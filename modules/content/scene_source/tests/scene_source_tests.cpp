@@ -694,3 +694,44 @@ TEST_CASE("Scene source reads one homogeneous absorbing medium interface", "[sce
         R"({"name": "Light", "model": "medium_interface", "medium": {"type": "homogeneous", "absorption": [1, 1, 1]}})");
     RequireFailure(twoMedia, SceneSourceStatus::InvalidValue, "declares a second medium");
 }
+
+TEST_CASE("Scene source reads skin scattering distances", "[scene-source][skin]")
+{
+    constexpr std::string_view MODEL = R"({"name": "Wall", "model": "diffuse", "base_color": [0.8, 0.5, 0.25]})";
+    SceneSource scene;
+    SceneSourceError error;
+    REQUIRE(ParseSceneSource(ReplaceInValid(MODEL,
+                                            R"({"name": "Wall", "model": "skin", "base_color": [0.8, 0.5, 0.4],
+                                                "roughness": 0.45, "scattering_distance": [0.012, 0.006, 0.003]})"),
+                             scene,
+                             error) == SceneSourceStatus::Success);
+    CHECK(scene.Materials[0].Model == SourceMaterialModel::Skin);
+    CHECK(scene.Materials[0].ScatteringDistance == math::Vector3d{0.012, 0.006, 0.003});
+    CHECK(scene.Materials[0].Roughness == 0.45);
+    CHECK(scene.Materials[0].Metallic == 0.0);
+    // The distance is required, so a zero spread is a deliberate authored value.
+    RequireFailure(ReplaceInValid(MODEL, R"({"name": "Wall", "model": "skin", "base_color": [0.8, 0.5, 0.4]})"),
+                   SceneSourceStatus::Malformed,
+                   "scattering_distance: missing member");
+    RequireFailure(ReplaceInValid(MODEL,
+                                  R"({"name": "Wall", "model": "skin", "base_color": [0.8, 0.5, 0.4],
+                                      "scattering_distance": [0.012, -0.006, 0.003]})"),
+                   SceneSourceStatus::InvalidValue,
+                   "scattering_distance[1]");
+    RequireFailure(ReplaceInValid(MODEL,
+                                  R"({"name": "Wall", "model": "skin", "base_color": [0.8, 0.5, 0.4],
+                                      "scattering_distance": [0.5, 0, 0]})"),
+                   SceneSourceStatus::InvalidValue,
+                   "scattering_distance[0]");
+    // Skin is a dielectric, and only skin scatters.
+    RequireFailure(ReplaceInValid(MODEL,
+                                  R"({"name": "Wall", "model": "skin", "base_color": [0.8, 0.5, 0.4], "metallic": 0,
+                                      "scattering_distance": [0, 0, 0]})"),
+                   SceneSourceStatus::InvalidValue,
+                   "skin is a dielectric");
+    RequireFailure(ReplaceInValid(MODEL,
+                                  R"({"name": "Wall", "model": "diffuse", "base_color": [0.8, 0.5, 0.4],
+                                      "scattering_distance": [0, 0, 0]})"),
+                   SceneSourceStatus::InvalidValue,
+                   "scattering_distance requires the skin model");
+}

@@ -480,6 +480,29 @@ def wgsl_uniform_type(code, kind, depth=0, *, compute=False):
     raise RuntimeError('Browser raster uniforms require float/vector/mat4 or bounded vec4/mat4 arrays')
 
 
+def verify_wgsl_compute_storage(code, interface):
+    """Verify each reflected compute storage buffer's emitted WGSL element type and access.
+
+    Read-write buffers of 32-bit integer scalars may hold atomic elements (`array<atomic<u32>>`),
+    which Slang emits for `Atomic<uint>` storage: WGSL requires atomic types for atomic operations,
+    and an atomic<u32> or atomic<i32> has the size and alignment of its scalar, so the record
+    stride the reflection verified is unchanged.
+    """
+    for binding in interface['entries']:
+        if binding['kind'] not in ('StorageRead', 'StorageReadWrite'):
+            continue
+        scalar = {'float32': 'f32', 'uint32': 'u32', 'int32': 'i32'}[binding['scalar']]
+        element = scalar if binding['width'] == 1 else f'vec{binding["width"]}<{scalar}>'
+        access = 'read' if binding['kind'] == 'StorageRead' else 'read_write'
+        elements = [re.escape(element)]
+        if access == 'read_write' and binding['width'] == 1 and scalar in ('u32', 'i32'):
+            elements.append(re.escape(f'atomic<{scalar}>'))
+        pattern = (r'@binding\(' + str(binding['binding']) + r'\)\s+@group\(0\)\s+var<storage,\s*' + access +
+                   r'>\s+\w+\s*:\s*array<(?:' + '|'.join(elements) + r')>\s*;')
+        if re.search(pattern, code) is None:
+            raise RuntimeError('WGSL emitted storage packing/access differs from reflection')
+
+
 def wgsl_contract(code, reflected, stage):
     """Verify emitted uniform packing and normalize bounded vertex input locations.
 
@@ -962,15 +985,7 @@ def compile_raster(args, lock):
                 local = re.search(r'@workgroup_size\((\d+),\s*(\d+),\s*(\d+)\)', code)
                 if local is None or [int(x) for x in local.groups()] != interface['workgroup']:
                     raise RuntimeError('WGSL emitted workgroup differs from reflection')
-                for binding in interface['entries']:
-                    if binding['kind'] not in ('StorageRead', 'StorageReadWrite'):
-                        continue
-                    scalar = {'float32': 'f32', 'uint32': 'u32', 'int32': 'i32'}[binding['scalar']]
-                    element = scalar if binding['width'] == 1 else f'vec{binding["width"]}<{scalar}>'
-                    access = 'read' if binding['kind'] == 'StorageRead' else 'read_write'
-                    pattern = r'@binding\(' + str(binding['binding']) + r'\)\s+@group\(0\)\s+var<storage,\s*' + access + r'>\s+\w+\s*:\s*array<' + re.escape(element) + r'>\s*;'
-                    if re.search(pattern, code) is None:
-                        raise RuntimeError('WGSL emitted storage packing/access differs from reflection')
+                verify_wgsl_compute_storage(code, interface)
             names = re.findall(r'@' + stage + (r'\s+@workgroup_size\([^)]*\)' if compute else '') + r'\s+fn\s+(\w+)', code)
             if len(names) != 1:
                 raise RuntimeError('Expected one emitted WGSL raster entry')

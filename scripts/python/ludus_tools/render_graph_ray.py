@@ -140,6 +140,16 @@ LTC_TABLE_STRIDE = 16
 # Per-job failure summary (LUDUS_GRAPH_FAILURE_BINDING); one uint count per LUDUS_SCENE_FAILURE_* reason.
 FAILURE_SLOT = 14
 FAILURE_STRIDE = 4
+# World-feature tables (renderer_gpu_preview_layout.h; docs/development/render-graph-authoring.md#world-features).
+# Scene compute kernels bind each float4 table only when they call its scene function, so reflection keeping a slot
+# records the graph's support. Native ray stages reserve slot 11 for their function table and define neither slot.
+AERIAL_PERSPECTIVE_SLOT = 11
+ATMOSPHERE_SKY_SLOT = 15
+WORLD_TABLE_STRIDE = 16
+WORLD_FEATURE_DEFINES = ('#define LUDUS_AERIAL_PERSPECTIVE_BINDING LUDUS_GRAPH_AERIAL_PERSPECTIVE_BINDING\n'
+                         '#define LUDUS_ATMOSPHERE_SKY_BINDING LUDUS_GRAPH_ATMOSPHERE_SKY_BINDING\n')
+# Matches MAX_SCENE_WORK_ITEMS in render_graph_format/plan.h.
+MAX_SCENE_WORK_ITEMS = 16 * 1024 * 1024
 MAX_LOCAL_PAYLOAD_BYTES = 4096
 PAYLOAD_FIELD_ALIGNMENT_BYTES = 16
 DEFAULT_PAYLOAD = '_ludus_ray/scene_payload.slang'
@@ -209,7 +219,7 @@ def lower(node, where, graph):
     return record, mappings, outputs
 
 
-def lower_ports(node, where, graph, noun, profile):
+def lower_ports(node, where, graph, noun, profile, *, is_buffer_dispatch=False):
     """Check the shared C04 port contract of ray and scene compute passes.
 
     Returns the input mappings, the output mappings and the color output port. The
@@ -217,7 +227,8 @@ def lower_ports(node, where, graph, noun, profile):
     """
     types = {port['id']: port['type'] for port in node['inputs']}
     mappings = {}
-    for aspect, kind in (('scene', 'Scene'), ('view', 'View')):
+    required = (('scene', 'Scene'),) if is_buffer_dispatch else (('scene', 'Scene'), ('view', 'View'))
+    for aspect, kind in required:
         choices = [identity for identity, value in types.items() if value == kind]
         graph._require(len(choices) == 1, 'IncompletePipeline', where, f'exactly one {kind} input required',
                        field='inputs', expected=f'one {kind} input', actual=f'{len(choices)} inputs',
@@ -227,6 +238,11 @@ def lower_ports(node, where, graph, noun, profile):
     graph._require(len(storage) <= buffers.MAX_BUFFERS, 'Capacity', where, 'at most two Buffer inputs supported')
     mappings.update({'buffer:' + name: name for name in storage})
     colors = [port for port in node['outputs'] if port['type'] == 'ColorTexture']
+    if is_buffer_dispatch:
+        graph._require(storage and set(types.values()) <= {'Scene', 'Buffer'} and not colors,
+                       'Capability', where, 'a buffer-only scene dispatch requires Scene and Buffer ports',
+                       repair='Remove View and texture ports, then connect a writable Buffer with Load/Store.')
+        return mappings, lower_buffer_outputs(node, where, graph, storage, None), None
     graph._require(len(colors) == 1, 'Capability', where, f'{noun} pipelines require one color output')
     mappings['color'] = colors[0]['target']
     graph._require(types.get(mappings['color']) == 'ColorTexture', 'Capability', where, f'{noun} output requires color input')
@@ -253,15 +269,20 @@ def lower_ports(node, where, graph, noun, profile):
     output = colors[0]
     graph._require(output['target'] == mappings['color'] and output['load'] == 'Clear' and output['store'] == 'Store',
                    'Capability', where, f'{noun} output must Clear/Store its ColorTexture target')
-    outputs = {'color': output['id']}
+    outputs = {'color': output['id'], **lower_buffer_outputs(node, where, graph, storage, output)}
+    return mappings, outputs, output
+
+
+def lower_buffer_outputs(node, where, graph, storage, color):
+    outputs = {}
     for port in node['outputs']:
-        if port is output:
+        if port is color:
             continue
         graph._require(port['type'] == 'Buffer' and port['target'] in storage and
                        port['load'] == 'Load' and port['store'] == 'Store', 'Capability', where,
                        'writable structured buffers require Load/Store on a paired Buffer input')
         outputs['buffer:' + port['target']] = port['id']
-    return mappings, outputs, output
+    return outputs
 
 
 def validate_program(program, build):
@@ -336,6 +357,7 @@ def group_profiles(plans, technique, build):
         group = groups.setdefault((has_visibility, has_native_queries), {'variants': set(), 'persistent': False, 'structured_buffers': False})
         group['variants'].update(get_callback_variant(operation['pipeline']) for operation in operations)
         group['structured_buffers'] |= any(operation.get('buffers') for operation in operations)
+        group['scene_dispatch'] = group.get('scene_dispatch', False) or any('work_items' in operation for operation in operations)
         # GraphBuffer0/1 and GetGraphPassIndex exist only in the persistent wrapper, so a
         # single scene compute pass needs it as well (compute ray tracing design, section 3.3).
         has_shader_traversal = any(invocation.resolve_traversal(operation['pipeline']) in
@@ -360,6 +382,7 @@ def group_profiles(plans, technique, build):
                       'ordered ray passes use shared Buffer nodes; StructuredBuffer nodes remain private to one ray job')
         result.append({'workgroup': workgroup, 'visibility_buffer': has_visibility, 'native_ray_queries': has_native_queries,
                        'native_pipeline': group.get('native_pipeline', False),
+                       'scene_dispatch': group.get('scene_dispatch', False),
                        'variants': sorted(group['variants']),
                        'persistent': group['persistent'] or len(group['variants']) > 1,
                        'compute': ((VISIBILITY_COMPUTE_ID if has_visibility and (False, has_native_queries) in groups else COMPUTE_ID) if has_native_queries else
@@ -369,7 +392,7 @@ def group_profiles(plans, technique, build):
 
 def expand_programs(programs, technique, snapshot, helper, build, variants=None, persistent=False, schemas=None,
                     compute_identity=COMPUTE_ID, native_ray_queries=True, ray_path_capture=False,
-                    native_ray_pipeline=False, workgroup=None):
+                    native_ray_pipeline=False, workgroup=None, scene_dispatch=False):
     """Capture the engine kernel and all three functions in one linked compute entry.
 
     ray_path_capture links the diagnostic LUDUS_RAY_PATH_CAPTURE variant of the same
@@ -409,14 +432,12 @@ static const float RAY_DIRECTION_SQUARED_TOLERANCE = 0.00001;
     launch.PositionPixel = uint2(pixel % Dimensions.x, pixel / Dimensions.x);
     launch.ExtentPixel = Dimensions.xy;
     float2 positionUv = (float2(launch.PositionPixel) + 0.5) / float2(launch.ExtentPixel);
-    float4 nearPositionWorld = mul(ClipToWorld, float4(positionUv.x * 2 - 1, 1 - positionUv.y * 2, 0, 1));
-    float4 farPositionWorld = mul(ClipToWorld, float4(positionUv.x * 2 - 1, 1 - positionUv.y * 2, 1, 1));
-    nearPositionWorld /= nearPositionWorld.w;
-    farPositionWorld /= farPositionWorld.w;
-    launch.CameraRay.OriginWorld = CameraPositionWorld.w != 0 ? nearPositionWorld.xyz : CameraPositionWorld.xyz;
-    launch.CameraRay.DirectionWorld = NormalizeOrZero(farPositionWorld.xyz - launch.CameraRay.OriginWorld);
-    launch.CameraRay.MinDistanceWorld = CameraPositionWorld.w != 0 ? 0 : dot(nearPositionWorld.xyz - launch.CameraRay.OriginWorld, launch.CameraRay.DirectionWorld);
-    launch.CameraRay.MaxDistanceWorld = dot(farPositionWorld.xyz - launch.CameraRay.OriginWorld, launch.CameraRay.DirectionWorld);
+    CameraRaySegment camera = MakeCameraRaySegment(ClipToEye, CameraPositionWorld.xyz, CameraPositionWorld.w != 0,
+                                                   float2(positionUv.x * 2 - 1, 1 - positionUv.y * 2), 0);
+    launch.CameraRay.OriginWorld = camera.OriginWorld;
+    launch.CameraRay.DirectionWorld = camera.DirectionWorld;
+    launch.CameraRay.MinDistanceWorld = camera.MinDistanceWorld;
+    launch.CameraRay.MaxDistanceWorld = camera.MaxDistanceWorld;
     Ray ray = RAY_GENERATION(launch);
     if (any(isfinite(ray.OriginWorld) == false) || any(isfinite(ray.DirectionWorld) == false) ||
         isfinite(ray.MinDistanceWorld) == false || isfinite(ray.MaxDistanceWorld) == false ||
@@ -468,10 +489,14 @@ static const float RAY_DIRECTION_SQUARED_TOLERANCE = 0.00001;
                       'native ray stages, ordered ray passes and persistent buffers require the scene callback interface')
         wrapper = persistent_wrapper(programs, technique, variants, snapshot, build, compute_recipe, compatibility,
                                      native_ray_queries, native_ray_pipeline, persistent, storage_source)
+    if scene_dispatch:
+        wrapper = '#define LUDUS_GRAPH_BUFFER_DISPATCH 1\n' + wrapper
     workgroup = list(workgroup or DEFAULT_WORKGROUP_SIZE)
     build.require(workgroup in SUPPORTED_WORKGROUP_SIZES, 'Capability', 'ray workgroups', 'unsupported ray workgroup')
     wrapper = wrapper.replace('[numthreads(LUDUS_GPU_PREVIEW_GROUP_WIDTH, 1, 1)]',
                               '[numthreads(' + ', '.join(str(value) for value in workgroup) + ')]')
+    if technique.get('scene_interface') is not None and not native_ray_pipeline:
+        wrapper = WORLD_FEATURE_DEFINES + wrapper
     if not native_ray_queries:
         wrapper = '#define LUDUS_SOFTWARE_RAY_TRAVERSAL 1\n' + wrapper
     if ray_path_capture:
@@ -559,11 +584,16 @@ def check_interface(program, result, build):
                       [(entry['binding'], entry['kind'], entry['size']) for entry in entries if program.get('persistent_ray_profile') or entry['binding'] < buffers.FIRST_SLOT or entry['binding'] >= VISIBILITY_SLOT] ==
                       expected + ([(VISIBILITY_SLOT, 'Texture2D', 0), (VISIBILITY_SLOT + 1, 'TextureDepth2D', 0)] if program.get('visibility_buffer', False) else []) +
                       ([(RAY_PATH_CAPTURE_SLOT, 'StorageReadWrite', RAY_PATH_CAPTURE_STRIDE)] if program.get('ray_path_capture', False) else []) +
+                      # World-feature tables appear exactly when a callback calls their scene function.
+                      ([(AERIAL_PERSPECTIVE_SLOT, 'StorageRead', WORLD_TABLE_STRIDE)] if not program.get('native_ray_pipeline') and
+                       any(entry['binding'] == AERIAL_PERSPECTIVE_SLOT for entry in entries) else []) +
                       # Reflection drops the table when no callback reads it; the renderer then binds nothing.
                       ([(LTC_TABLE_SLOT, 'StorageRead', LTC_TABLE_STRIDE)] if program.get('ltc_table', False) and
                        any(entry['binding'] == LTC_TABLE_SLOT for entry in entries) else []) +
                       # Every graph ray kernel counts its latched pixels by failure reason.
-                      [(FAILURE_SLOT, 'StorageReadWrite', FAILURE_STRIDE)],
+                      [(FAILURE_SLOT, 'StorageReadWrite', FAILURE_STRIDE)] +
+                      ([(ATMOSPHERE_SKY_SLOT, 'StorageRead', WORLD_TABLE_STRIDE)] if not program.get('native_ray_pipeline') and
+                       any(entry['binding'] == ATMOSPHERE_SKY_SLOT for entry in entries) else []),
                       'ShaderInterface', program['id'], 'ray compute reflection differs from the selected renderer ABI')
         declared = program.get('storage_bindings', [])
         extra = [entry for entry in entries if buffers.FIRST_SLOT <= entry['binding'] < VISIBILITY_SLOT and not program.get('persistent_ray_profile')]
@@ -666,28 +696,31 @@ float3 EvaluateGraphRay(uint pixel)
     queries.MaximumSurfaceQueries = MAX_SURFACE_QUERIES;
     queries.MaximumVisibilityQueries = MAX_VISIBILITY_QUERIES;
     queries.MaximumLineQueries = MAX_LINE_QUERIES;
-    RayLaunch launch;
-    launch.PositionPixel = uint2(pixel % Dimensions.x, pixel / Dimensions.x);
-    launch.ExtentPixel = Dimensions.xy;
-    launch.CameraClipToWorld = ClipToWorld;
-    launch.CameraPositionWorld = CameraPositionWorld.xyz;
-    launch.IsOrthographic = CameraPositionWorld.w != 0;
-    launch.IsFullImageDispatch = all(Tile.xy == uint2(0)) && all(Tile.zw == Dimensions.xy);
-    launch.SampleIndex = asuint(accumulation[pixel * 2].w);
+    RayLaunch launch = (RayLaunch)0;
+#if defined(LUDUS_GRAPH_BUFFER_DISPATCH)
+    if ((Sampling.z & LUDUS_GPU_PREVIEW_SCENE_WORK_FLAG) != 0)
+    {
+        launch.WorkItemIndex = pixel;
+        launch.WorkItemCount = Dimensions.w;
+    }
+    else
+#endif
+    {
+        launch.PositionPixel = uint2(pixel % Dimensions.x, pixel / Dimensions.x);
+        launch.ExtentPixel = Dimensions.xy;
+        launch.CameraClipToWorld = MakeCameraClipToWorld(ClipToEye, CameraPositionWorld.xyz);
+        launch.CameraClipToEye = ClipToEye;
+        launch.CameraPositionWorld = CameraPositionWorld.xyz;
+        launch.IsOrthographic = CameraPositionWorld.w != 0;
+        launch.IsFullImageDispatch = all(Tile.xy == uint2(0)) && all(Tile.zw == Dimensions.xy);
+        launch.SampleIndex = asuint(accumulation[pixel * 2].w);
+        launch.CameraRay = MakeCameraRay(launch, float2(0.5));
+    }
     launch.Seed = Sampling.xy;
     queries.RandomSeed = launch.Seed;
     queries.RandomPixel = pixel;
     queries.RandomSampleIndex = launch.SampleIndex;
     queries.NextRandomDimension = 0;
-    float2 positionUv = (float2(launch.PositionPixel) + 0.5) / float2(launch.ExtentPixel);
-    float4 nearPositionWorld = mul(ClipToWorld, float4(positionUv.x * 2 - 1, 1 - positionUv.y * 2, 0, 1));
-    float4 farPositionWorld = mul(ClipToWorld, float4(positionUv.x * 2 - 1, 1 - positionUv.y * 2, 1, 1));
-    nearPositionWorld /= nearPositionWorld.w;
-    farPositionWorld /= farPositionWorld.w;
-    launch.CameraRay.OriginWorld = CameraPositionWorld.w != 0 ? nearPositionWorld.xyz : CameraPositionWorld.xyz;
-    launch.CameraRay.DirectionWorld = NormalizeOrZero(farPositionWorld.xyz - launch.CameraRay.OriginWorld);
-    launch.CameraRay.MinDistanceWorld = CameraPositionWorld.w != 0 ? 0 : dot(nearPositionWorld.xyz - launch.CameraRay.OriginWorld, launch.CameraRay.DirectionWorld);
-    launch.CameraRay.MaxDistanceWorld = dot(farPositionWorld.xyz - launch.CameraRay.OriginWorld, launch.CameraRay.DirectionWorld);
     float3 radiance = RAY_GENERATION(scene, launch, queries);
     if (queries.HasFailed == true)
     {

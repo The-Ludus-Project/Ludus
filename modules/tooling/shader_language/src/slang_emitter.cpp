@@ -607,6 +607,9 @@ private:
             case IrHelperKind::CallAdapter:
                 write("_luslCall");
                 break;
+            case IrHelperKind::Dimensions:
+                write("_luslDimensions");
+                break;
             default:
                 write("_luslWrap");
                 break;
@@ -642,8 +645,31 @@ private:
                         writeAdapter(helper);
                     }
                     break;
+                case IrHelperKind::Dimensions:
+                    writeDimensionsHelper(helper);
+                    break;
             }
         }
+    }
+
+    /// `GetDimensions()` returns by value: the helper calls Slang's `out`-parameter form.
+    void writeDimensionsHelper(uint32 helper) noexcept
+    {
+        const IrHelper& entry = mModule.Helpers[helper];
+        const ResourceKind kind = getType(entry.Type).Resource;
+        const bool isTexture = kind == ResourceKind::Texture2D || kind == ResourceKind::RWTexture2D;
+        write(isTexture == true ? "uint2 " : "uint ");
+        writeHelperName(helper);
+        write("(");
+        writeResourceType(entry.Type, entry.Symbol != NO_SYMBOL);
+        write(" resource)\n{\n");
+        if (isTexture == true)
+        {
+            write("    uint width;\n    uint height;\n    resource.GetDimensions(width, height);\n");
+            write("    return uint2(width, height);\n}\n");
+            return;
+        }
+        write("    uint count;\n    uint stride;\n    resource.GetDimensions(count, stride);\n    return count;\n}\n");
     }
 
     void writeZeroHelper(uint32 helper) noexcept
@@ -1150,15 +1176,40 @@ private:
         }
     }
 
-    /// Write `type name[dimensions]`, the C declaration form.
-    void writeDeclaration(uint32 type, std::string_view name) noexcept
+    /// Write a resource type; atomic storage spells its elements `Atomic<T>`, which every target
+    /// accepts in atomic operations (WGSL requires atomic types for them).
+    void writeResourceType(uint32 type, bool isAtomic) noexcept
+    {
+        const SemanticType& shape = getType(type);
+        if (isAtomic == false || shape.Element == NO_TYPE)
+        {
+            writeType(type);
+            return;
+        }
+        write(internal::GetResourceName(shape.Resource));
+        write("<Atomic<");
+        writeType(shape.Element);
+        write(">>");
+    }
+
+    /// Write `type name[dimensions]`, the C declaration form; `Atomic<element>` for atomic storage.
+    void writeDeclaration(uint32 type, std::string_view name, bool isAtomic = false) noexcept
     {
         uint32 element = type;
         while (getType(element).Kind == TypeKind::Array)
         {
             element = getType(element).Element;
         }
-        writeType(element);
+        if (isAtomic == true)
+        {
+            write("Atomic<");
+            writeType(element);
+            write(">");
+        }
+        else
+        {
+            writeType(element);
+        }
         write(" ");
         write(name);
         for (uint32 dimension = type; getType(dimension).Kind == TypeKind::Array;
@@ -1317,7 +1368,7 @@ private:
             case IrKind::Groupshared:
                 mapLine(node.Location);
                 write("groupshared ");
-                writeDeclaration(node.Type, getName(node.Symbol));
+                writeDeclaration(node.Type, getName(node.Symbol), getSymbol(node.Symbol).IsAtomic);
                 write(";");
                 newline();
                 return;
@@ -1342,7 +1393,7 @@ private:
         write("[[vk::binding(");
         writeUnsigned(declared.Slot);
         write(", 0)]] ");
-        writeType(node.Type);
+        writeResourceType(node.Type, declared.IsAtomic);
         write(" ");
         write(getName(node.Symbol));
         write(" : register(");
@@ -1787,6 +1838,14 @@ private:
             case IrKind::Evaluate:
                 writeExpression(node.FirstChild, true);
                 return;
+            case IrKind::AtomicStore: {
+                const uint32 target = node.FirstChild;
+                writeExpression(target, false);
+                write(".store(");
+                writeExpression(at(target).NextSibling, true);
+                write(")");
+                return;
+            }
             default:
                 return;
         }
@@ -1805,7 +1864,13 @@ private:
             case IrKind::Increment:
             case IrKind::WrappedUpdate:
             case IrKind::Evaluate:
+            case IrKind::AtomicStore:
                 mapLine(node.Location);
+                if (isBufferExchange(statement) == true)
+                {
+                    writeBufferExchange(at(statement).FirstChild);
+                    return;
+                }
                 writeIndent();
                 writeSimpleStatement(statement);
                 write(";");
@@ -1922,6 +1987,13 @@ private:
                 write("GroupMemoryBarrierWithGroupSync();");
                 newline();
                 return;
+            case IrKind::Barrier:
+                mapLine(node.Location);
+                writeIndent();
+                write((node.Flags & IR_ALL_MEMORY) != 0 ? "AllMemoryBarrierWithGroupSync();"
+                                                        : "GroupMemoryBarrierWithGroupSync();");
+                newline();
+                return;
             default:
                 return;
         }
@@ -2011,9 +2083,7 @@ private:
             writeIndent();
             write("    ");
             write(name);
-            write(" = ");
-            writeZero(type);
-            write(";");
+            writeClearValue(node.Symbol, type);
             newline();
             writeIndent();
             write("}");
@@ -2048,13 +2118,26 @@ private:
             write("u]");
             element = getType(dimension).Element;
         }
-        write(" = ");
-        writeZero(element);
-        write(";");
+        writeClearValue(node.Symbol, element);
         newline();
         writeIndent();
         write("}");
         newline();
+    }
+
+    /// ` = zero;`, or `.store(zero);` for an `Atomic<T>` element.
+    void writeClearValue(uint32 symbol, uint32 element) noexcept
+    {
+        if (getSymbol(symbol).IsAtomic == true)
+        {
+            write(".store(");
+            writeZero(element);
+            write(");");
+            return;
+        }
+        write(" = ");
+        writeZero(element);
+        write(";");
     }
 
     // ----- Expressions ---------------------------------------------------------------------------
@@ -2211,12 +2294,27 @@ private:
                 write(")");
                 return;
             case IrKind::ResourceMethodCall:
+                if (node.Index != NO_INDEX)
+                {
+                    writeHelperName(node.Index);
+                    write("(");
+                    writeExpression(node.FirstChild, true);
+                    write(")");
+                    return;
+                }
                 writeExpression(node.FirstChild, false);
                 write(".");
                 write(spellToken(node.Token));
                 write("(");
                 writeArguments(at(node.FirstChild).NextSibling);
                 write(")");
+                return;
+            case IrKind::AtomicCall:
+                writeAtomicCall(expression, isDelimited);
+                return;
+            case IrKind::AtomicLoad:
+                writeExpression(node.FirstChild, false);
+                write(".load()");
                 return;
             case IrKind::Construct:
             case IrKind::Convert:
@@ -2231,6 +2329,197 @@ private:
             default:
                 return;
         }
+    }
+
+    /// An `Interlocked` operation. Atomic storage calls its `Atomic<T>` method and assigns the
+    /// returned original value: `original = counters[i].add(1u)`. Storage an `extern slang` block
+    /// declares keeps Slang's `InterlockedAdd(destination, value, original)`.
+    void writeAtomicCall(uint32 expression, bool isDelimited) noexcept
+    {
+        const IrNode& node = at(expression);
+        const IntrinsicFamily family = INTRINSICS[node.Symbol].Family;
+        const uint32 operandCount = GetAtomicOperandCount(family);
+        if ((node.Flags & IR_ATOMIC_STORAGE) == 0)
+        {
+            write(getName(node.Symbol));
+            write("(");
+            writeArguments(node.FirstChild);
+            write(")");
+            return;
+        }
+        const uint32 destination = node.FirstChild;
+        uint32 original = at(destination).NextSibling;
+        for (uint32 i = 0; i < operandCount; ++i)
+        {
+            original = at(original).NextSibling;
+        }
+        const bool hasOriginal = original != NO_IR;
+        if (hasOriginal == true)
+        {
+            write(isDelimited == true ? "" : "(");
+            writeExpression(original, false);
+            write(" = ");
+        }
+        writeExpression(destination, false);
+        write(".");
+        write(GetAtomicMethodName(getName(node.Symbol)));
+        write("(");
+        uint32 value = at(destination).NextSibling;
+        for (uint32 i = 0; i < operandCount; ++i)
+        {
+            write(i == 0 ? "" : ", ");
+            writeExpression(value, true);
+            value = at(value).NextSibling;
+        }
+        write(")");
+        if (hasOriginal == true)
+        {
+            write(isDelimited == true ? "" : ")");
+        }
+    }
+
+    /// True for an `InterlockedExchange` statement into a buffer element.
+    [[nodiscard]] bool isBufferExchange(uint32 statement) const noexcept
+    {
+        const IrNode& node = at(statement);
+        if (node.Kind != IrKind::Evaluate || node.FirstChild == NO_IR || at(node.FirstChild).Kind != IrKind::AtomicCall)
+        {
+            return false;
+        }
+        const IrNode& call = at(node.FirstChild);
+        return INTRINSICS[call.Symbol].Family == IntrinsicFamily::AtomicExchange &&
+               (call.Flags & IR_BUFFER_DESTINATION) != 0;
+    }
+
+    /// `InterlockedExchange` into a buffer element. The pinned Slang (2026.1.2) crashes while
+    /// emitting SPIR-V 1.3 for a buffer-element exchange whose original value is used, so SPIR-V,
+    /// whose compare-exchange is strong, exchanges through a compare-exchange loop; the other
+    /// targets exchange directly. The value is evaluated once.
+    void writeBufferExchange(uint32 expression) noexcept
+    {
+        const IrNode& node = at(expression);
+        const bool isAtomic = (node.Flags & IR_ATOMIC_STORAGE) != 0;
+        const uint32 destination = node.FirstChild;
+        const uint32 value = at(destination).NextSibling;
+        const uint32 original = at(value).NextSibling;
+        const uint32 type = at(destination).Type;
+        const auto writeTemporary = [this,
+                                     expression](std::string_view stem) { // ludus-style: inferred-type: lambda closure
+            write(stem);
+            writeUnsigned(expression);
+        };
+        const auto writeLine = [this](std::string_view text) { // ludus-style: inferred-type: lambda closure
+            writeIndent();
+            write(text);
+            newline();
+        };
+        writeLine("{");
+        ++mIndent;
+        writeIndent();
+        writeType(type);
+        write(" ");
+        writeTemporary("_luslValue");
+        write(" = ");
+        writeExpression(value, true);
+        write(";");
+        newline();
+        writeLine("__target_switch");
+        writeLine("{");
+        writeLine("case spirv:");
+        ++mIndent;
+        writeIndent();
+        writeType(type);
+        write(" ");
+        writeTemporary("_luslExpected");
+        write(" = ");
+        writeExpression(destination, false);
+        write(isAtomic == true ? ".load();" : ";");
+        newline();
+        writeLine("for (;;)");
+        writeLine("{");
+        ++mIndent;
+        writeIndent();
+        writeType(type);
+        write(" ");
+        writeTemporary("_luslObserved");
+        if (isAtomic == true)
+        {
+            write(" = ");
+            writeExpression(destination, false);
+            write(".compareExchange(");
+            writeTemporary("_luslExpected");
+            write(", ");
+            writeTemporary("_luslValue");
+            write(");");
+        }
+        else
+        {
+            write(";");
+            newline();
+            writeIndent();
+            write("InterlockedCompareExchange(");
+            writeExpression(destination, true);
+            write(", ");
+            writeTemporary("_luslExpected");
+            write(", ");
+            writeTemporary("_luslValue");
+            write(", ");
+            writeTemporary("_luslObserved");
+            write(");");
+        }
+        newline();
+        writeIndent();
+        write("if (");
+        writeTemporary("_luslObserved");
+        write(" == ");
+        writeTemporary("_luslExpected");
+        write(")");
+        newline();
+        writeLine("{");
+        writeLine("    break;");
+        writeLine("}");
+        writeIndent();
+        writeTemporary("_luslExpected");
+        write(" = ");
+        writeTemporary("_luslObserved");
+        write(";");
+        newline();
+        --mIndent;
+        writeLine("}");
+        writeIndent();
+        writeExpression(original, true);
+        write(" = ");
+        writeTemporary("_luslExpected");
+        write(";");
+        newline();
+        --mIndent;
+        writeLine("default:");
+        ++mIndent;
+        writeIndent();
+        if (isAtomic == true)
+        {
+            writeExpression(original, true);
+            write(" = ");
+            writeExpression(destination, false);
+            write(".exchange(");
+            writeTemporary("_luslValue");
+            write(");");
+        }
+        else
+        {
+            write("InterlockedExchange(");
+            writeExpression(destination, true);
+            write(", ");
+            writeTemporary("_luslValue");
+            write(", ");
+            writeExpression(original, true);
+            write(");");
+        }
+        newline();
+        --mIndent;
+        writeLine("}");
+        --mIndent;
+        writeLine("}");
     }
 
     void writeMethodCall(uint32 expression) noexcept

@@ -277,3 +277,91 @@ TEST_CASE("Public RHI resources render changing uniforms across resize and resta
         REQUIRE(rhi::GetStatus(replacement) == rhi::ResourceStatus::InvalidHandle);
     }
 }
+
+TEST_CASE("R14b headless surfaces of one device share pipelines and resize independently", "[rhi][gpu][surface]")
+{
+    struct Guard final
+    {
+        ~Guard() noexcept
+        {
+            rhi::Shutdown();
+        }
+    } guard;
+    rhi::Shutdown();
+    rhi::DeviceHandle device;
+    rhi::SurfaceHandle primary;
+    const rhi::DeviceStatus created = rhi::CreateDevice({}, { .Width = 96, .Height = 64 }, {}, device, primary);
+#if defined(LUDUS_TEST_METAL)
+    if (created != rhi::DeviceStatus::Ready)
+    {
+        SKIP("No Metal adapter on this host");
+    }
+#endif
+    REQUIRE(created == rhi::DeviceStatus::Ready);
+    rhi::SurfaceHandle second;
+    const rhi::DeviceStatus added = rhi::CreateSurface(device, { .Width = 96, .Height = 64 }, second);
+    if (added == rhi::DeviceStatus::Unsupported)
+    {
+        SKIP("This backend hosts only its primary surface");
+    }
+    REQUIRE(added == rhi::DeviceStatus::Ready);
+    rhi::ShaderHandle vertex;
+    rhi::ShaderHandle fragment;
+    rhi::UniformHandle uniform;
+    rhi::PipelineHandle pipeline;
+    REQUIRE(rhi::CreateShader(device, ludus::shaders::diagnostic::Vertex(), vertex) == rhi::ResourceStatus::Ready);
+    REQUIRE(rhi::CreateShader(device, ludus::shaders::diagnostic::Fragment(), fragment) == rhi::ResourceStatus::Ready);
+    REQUIRE(rhi::CreateUniform(device, 48, uniform) == rhi::ResourceStatus::Ready);
+    REQUIRE(rhi::CreatePipeline(device, {vertex, fragment, uniform}, pipeline) == rhi::ResourceStatus::Ready);
+    const float32 values[12] = {96, 64, 2, 0, 0.2F, 0.4F, 0.6F, 0, 0.6F, 0.4F, 0.2F, 1};
+    REQUIRE(rhi::UpdateUniform(device, uniform, {reinterpret_cast<const uint8*>(values), sizeof(values)}) ==
+            rhi::ResourceStatus::Ready);
+    const auto draw = [&](rhi::SurfaceHandle surface, std::span<uint8> pixels) {
+        REQUIRE(rhi::SetFrameTarget(device, surface, { .Width = 96, .Height = 64 }) == rhi::DeviceStatus::Ready);
+        REQUIRE(rhi::BeginFrame(device, surface) == rhi::DeviceStatus::Ready);
+        REQUIRE(rhi::DrawFullscreen(device, pipeline) == rhi::ResourceStatus::Ready);
+        REQUIRE(rhi::EndFrame(device) == rhi::DeviceStatus::Ready);
+        REQUIRE(rhi::backend::ReadHeadlessPixels(pixels));
+    };
+    uint8 reference[96 * 64 * 4]{};
+    uint8 shared[96 * 64 * 4]{};
+    draw(primary, reference);
+    // The primary surface's pipeline draws the same image into the second surface.
+    draw(second, shared);
+    CHECK(std::equal(reference, reference + sizeof(reference), shared));
+
+    // Resizing the second surface leaves the primary's extent and image unchanged.
+    REQUIRE(rhi::SetFrameTarget(device, second, { .Width = 48, .Height = 32, .Green = 1, .Alpha = 1 }) ==
+            rhi::DeviceStatus::Ready);
+    REQUIRE(rhi::BeginFrame(device, second) == rhi::DeviceStatus::Ready);
+    rhi::FrameInfo frame;
+    REQUIRE(rhi::GetFrameInfo(device, second, frame) == rhi::DeviceStatus::Ready);
+    CHECK(frame.Width == 48);
+    CHECK(frame.Height == 32);
+    REQUIRE(rhi::EndFrame(device) == rhi::DeviceStatus::Ready);
+    uint8 resized[48 * 32 * 4]{};
+    REQUIRE(rhi::backend::ReadHeadlessPixels(resized));
+    CHECK(std::all_of(resized, resized + sizeof(resized), [index = usize{0}](uint8 value) mutable {
+        const usize channel = index++ % 4;
+        return value == (channel == 1 || channel == 3 ? 255 : 0);
+    }));
+    uint8 again[96 * 64 * 4]{};
+    draw(primary, again);
+    CHECK(std::equal(reference, reference + sizeof(reference), again));
+
+    // Readback waited for every frame; headless surfaces present nothing.
+    rhi::SurfaceInfo info;
+    REQUIRE(rhi::GetSurfaceInfo(device, second, info) == rhi::DeviceStatus::Ready);
+    CHECK(info.SubmittedFrames == 2);
+    CHECK(info.RenderedFrames == 2);
+    CHECK(info.PresentedFrames == 0);
+    REQUIRE(rhi::GetSurfaceInfo(device, primary, info) == rhi::DeviceStatus::Ready);
+    CHECK(info.SubmittedFrames == 2);
+    CHECK(info.RenderedFrames == 2);
+
+    // Retiring the second surface keeps the device, its pipeline and the primary working.
+    REQUIRE(rhi::DestroySurface(device, second) == rhi::DeviceStatus::Ready);
+    draw(primary, again);
+    CHECK(std::equal(reference, reference + sizeof(reference), again));
+    REQUIRE(rhi::DestroyDevice(device) == rhi::DeviceStatus::Ready);
+}

@@ -23,6 +23,14 @@ class WorldDocument;
 /// Set up a coating field with a round-trippable initial value for the inspector or Material document.
 void SetCoatingInput(QLineEdit& inoutInput, const QJsonValue& value);
 
+/// Parse one numeric material field with a number property (label, min and max). Keep its original precision if its
+/// text is unchanged since SetCoatingInput. On failure outError names the field and its accepted range.
+[[nodiscard]] bool ReadMaterialNumberInput(const QJsonObject& property,
+                                           const QLineEdit& input,
+                                           QJsonValue& outValue,
+                                           bool& outHasChanged,
+                                           QString& outError);
+
 /// Parse one field with the coating schema. Keep its original precision if its text is unchanged.
 [[nodiscard]] bool ReadCoatingInput(const CoatingField& field,
                                     const QLineEdit& input,

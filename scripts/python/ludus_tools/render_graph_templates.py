@@ -13,6 +13,8 @@ TEMPLATES = {
     'visibility-buffer': ('visibility_buffer', 'Visibility buffer', None),
     'visibility-secondary-rays': ('visibility_secondary_rays', 'Visibility + secondary rays', 'native-ray-tracing'),
     'hybrid-shadows': ('hybrid_shadows', 'Hybrid shadows', 'native-ray-tracing'),
+    'hybrid-reflections': ('hybrid_reflections', 'Hybrid reflections', 'native-ray-tracing'),
+    'hybrid-indirect-diffuse': ('hybrid_indirect_diffuse', 'Hybrid indirect diffuse', 'native-ray-tracing'),
     'tiled-vbuffer-nee': ('tiled_vbuffer_nee', 'Tiled visibility-buffer NEE', 'native-ray-tracing'),
     'simple-compute-ray-tracing': ('simple_compute_ray_tracing', 'Simple compute ray tracing', 'native-ray-tracing'),
     'compute-ray-tracing': ('compute_ray_tracing', 'Compute ray tracing', 'native-ray-tracing'),

@@ -9,6 +9,7 @@
 #include <ludus/foundation/base/pointer.hpp>
 #include <ludus/foundation/containers/static_array.hpp>
 #include <ludus/foundation/math/matrix.hpp>
+#include <ludus/foundation/math/scalar.hpp>
 #include <ludus/foundation/math/vector.hpp>
 #include <ludus/graphics/renderer/gpu_preview.hpp>
 #include <ludus/graphics/renderer/render_graph.hpp>
@@ -24,17 +25,21 @@ inline constexpr usize GPU_PREVIEW_JOB_COUNT =
     content::render_graph_format::MAX_RAY_PASSES * (GPU_PREVIEW_RETAINED_SCENE_COUNT + 1);
 inline constexpr usize GPU_GRAPH_BUFFER_COUNT = 2;
 /// Every compute binding of one job: the frozen ABI, visibility textures, structured storage, the
-/// ray path capture buffer of a diagnostic capture-variant kernel, the LTC table and, last, the failure summary.
+/// ray path capture buffer of a diagnostic capture-variant kernel, the aerial perspective table, the LTC table, the
+/// failure summary and, last, the Atmosphere sky.
 inline constexpr usize GPU_PREVIEW_COMPUTE_BINDING_CAPACITY =
     LUDUS_GRAPH_VISIBILITY_BINDING_COUNT + content::render_graph_format::MAX_STORAGE_BUFFERS + 1 +
-    LUDUS_GRAPH_LTC_TABLE_BINDING_COUNT + LUDUS_GRAPH_FAILURE_BINDING_COUNT;
+    LUDUS_GRAPH_LTC_TABLE_BINDING_COUNT + LUDUS_GRAPH_FAILURE_BINDING_COUNT + LUDUS_GRAPH_WORLD_TABLE_BINDING_COUNT;
 /// The presentation quad's four float2 corners and six uint16 indices.
 inline constexpr usize GPU_PREVIEW_QUAD_BYTES = 44;
 /// Components of GpuPreviewUniform::Tile: origin x, y, then exclusive end x, y.
 inline constexpr usize GPU_PREVIEW_TILE_COMPONENT_COUNT = 4;
 struct GpuPreviewUniform final
 {
-    math::Matrix4 ClipToWorld;
+    /// Clip to eye-relative world: world axes with the origin at CameraPositionWorld.xyz (ReferenceJob::ClipToEye).
+    /// Kernels build camera rays from it and add the eye last; graph kernels rebuild the world-space
+    /// RayLaunch::CameraClipToWorld from both.
+    math::Matrix4 ClipToEye;
     math::Vector4 CameraPositionWorld;
     uint32 Dimensions[4]{};
     uint32 Offsets[4]{};
@@ -50,6 +55,17 @@ struct GpuPreviewUniform final
     uint32 Tile[GPU_PREVIEW_TILE_COMPONENT_COUNT]{};
 };
 static_assert(sizeof(GpuPreviewUniform) == LUDUS_GPU_PREVIEW_PARAMETERS_BYTES);
+
+/// Buffer-only launches fold the requested item count into bounded rows independently of image dimensions.
+LUDUS_INLINE uint32 GetSceneWorkRowWidth(uint32 workItemCount) noexcept
+{
+    return math::Min(workItemCount, uint32{LUDUS_GPU_PREVIEW_SCENE_WORK_ROW_WIDTH});
+}
+
+LUDUS_INLINE uint32 GetSceneWorkRowCount(uint32 workItemCount) noexcept
+{
+    return (workItemCount - 1) / GetSceneWorkRowWidth(workItemCount) + 1;
+}
 /// Components of GpuPreviewUniform::Tile.
 inline constexpr usize GPU_PREVIEW_TILE_ORIGIN_X = 0;
 inline constexpr usize GPU_PREVIEW_TILE_ORIGIN_Y = 1;
@@ -94,6 +110,14 @@ inline constexpr usize NO_GPU_PREVIEW_SCENE = ~usize{0};
 /// native geometry. The ray jobs of one graph update that read the same scene data reference one
 /// record, so the scene is stored and charged to the preview and RHI budgets once. The last job
 /// dropped releases it, after its own producers retired.
+/// Byte ranges of a graph scene's World-feature tables in its Data buffer; zero bytes when the scene has none.
+struct GpuPreviewWorldTables final
+{
+    usize AerialPerspectiveOffset = 0;
+    usize AerialPerspectiveBytes = 0;
+    usize AtmosphereSkyOffset = 0;
+    usize AtmosphereSkyBytes = 0;
+};
 struct GpuPreviewSceneRecord final
 {
     usize References = 0;
@@ -117,12 +141,15 @@ struct GpuPreviewSceneRecord final
     GpuPreviewUniform PackedUniform{};
     /// Peak CPU bytes of the scene built for Capture; a reusing job is admitted against the same bound.
     usize SceneCpuBytes = 0;
+    /// World-feature table ranges packed with the scene; a reusing job binds the same ranges.
+    GpuPreviewWorldTables WorldTables{};
 };
 struct GpuPreviewRecord final
 {
     /// Referenced GpuPreviewState::Scenes slot; Data, Texels and NativeGeometry below copy its handles.
     usize Scene = NO_GPU_PREVIEW_SCENE;
     bool HasNativeRayInvocation = false;
+    uint32 WorkItemCount = 0;
     uint64 Generation = 1;
     bool Used = false;
     bool Owned = false;
@@ -132,6 +159,8 @@ struct GpuPreviewRecord final
     bool IsNativeSceneCreated = false;
     RenderGraphStorage Storage;
     rhi::BufferHandle Data{};
+    /// World-feature table ranges of Data, copied from the scene record.
+    GpuPreviewWorldTables WorldTables{};
     rhi::BufferHandle Texels{};
     rhi::BufferHandle Parameters{};
     rhi::BufferHandle Accumulation{};

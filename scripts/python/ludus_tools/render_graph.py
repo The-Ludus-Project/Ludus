@@ -929,27 +929,30 @@ class _Compiler:
                 self.cameras.append(camera)
                 outputs["view"] = _Value("View", origin=where, cameras=(where,) if node["active"] else ())
             elif kind == "RayTracing":
-                target = self.resources[inputs['color'].resource]
                 is_compute = authored_pipeline['kind'] == compute.SOURCE_KIND
-                label = 'scene compute pass' if is_compute else 'ray pipeline'
-                _require(inputs['view'].cameras, 'CameraTarget', where, f'{label} requires an active camera',
-                         port=input_mapping['view'], direction='input', expected='active camera View', actual='inactive camera View',
-                         repair='Enable Active on the connected camera and give it a route to Export or Present.')
-                _require(target['format'] == 'RGBA8Unorm' and target['samples'] == 1 and not target['presentation'],
-                         'Capability', where, f'{label} requires an offscreen single-sample RGBA8Unorm target',
-                         port=input_mapping['color'], direction='input', expected='offscreen RGBA8Unorm, samples=1',
-                         actual=f"{target['format']}, samples={target['samples']}, presentation={target['presentation']}",
-                         repair='Connect an offscreen single-sample RGBA8Unorm color target.')
-                dimensions = authored_pipeline['invocation']['dimensions']
-                expected_dimensions = [*target['extent'], 1]
-                _require(dimensions == 'ColorTarget' or (not target.get('view_scale') and dimensions == expected_dimensions),
-                         'AttachmentMismatch', where,
-                         (f"Color target '{inputs['color'].resource}' is view-relative; explicit launch dimensions {dimensions} "
-                          'cannot follow view changes. Choose Match color target in Invocation.' if target.get('view_scale') else
-                          f"{'Scene compute' if is_compute else 'Ray'} launch dimensions are {dimensions}, but color target '{inputs['color'].resource}' "
-                          f"requires {expected_dimensions}. Choose Match color target in Invocation, or set dimensions to {expected_dimensions}."),
-                         field='invocation.dimensions', expected='ColorTarget' if target.get('view_scale') else expected_dimensions,
-                         actual=dimensions, repair='Choose Match color target in Invocation → Launch size.')
+                work_items = authored_pipeline['invocation'].get('work_items', 0)
+                expected_dimensions = None
+                if work_items == 0:
+                    target = self.resources[inputs['color'].resource]
+                    label = 'scene compute pass' if is_compute else 'ray pipeline'
+                    _require(inputs['view'].cameras, 'CameraTarget', where, f'{label} requires an active camera',
+                             port=input_mapping['view'], direction='input', expected='active camera View', actual='inactive camera View',
+                             repair='Enable Active on the connected camera and give it a route to Export or Present.')
+                    _require(target['format'] == 'RGBA8Unorm' and target['samples'] == 1 and not target['presentation'],
+                             'Capability', where, f'{label} requires an offscreen single-sample RGBA8Unorm target',
+                             port=input_mapping['color'], direction='input', expected='offscreen RGBA8Unorm, samples=1',
+                             actual=f"{target['format']}, samples={target['samples']}, presentation={target['presentation']}",
+                             repair='Connect an offscreen single-sample RGBA8Unorm color target.')
+                    dimensions = authored_pipeline['invocation']['dimensions']
+                    expected_dimensions = [*target['extent'], 1]
+                    _require(dimensions == 'ColorTarget' or (not target.get('view_scale') and dimensions == expected_dimensions),
+                             'AttachmentMismatch', where,
+                             (f"Color target '{inputs['color'].resource}' is view-relative; explicit launch dimensions {dimensions} "
+                              'cannot follow view changes. Choose Match color target in Invocation.' if target.get('view_scale') else
+                              f"{'Scene compute' if is_compute else 'Ray'} launch dimensions are {dimensions}, but color target '{inputs['color'].resource}' "
+                              f"requires {expected_dimensions}. Choose Match color target in Invocation, or set dimensions to {expected_dimensions}."),
+                             field='invocation.dimensions', expected='ColorTarget' if target.get('view_scale') else expected_dimensions,
+                             actual=dimensions, repair='Choose Match color target in Invocation → Launch size.')
                 visibility_reads = {}
                 if 'visibility' in inputs:
                     for aspect in ('visibility', 'visibility_depth'):
@@ -982,7 +985,18 @@ class _Compiler:
                     buffer_outputs[output['id']] = written
                 _require(len({use['resource'] for use in buffer_uses}) == len(buffer_uses), 'MultipleWriters', where,
                          'one physical buffer cannot occupy both buffer inputs of a pass')
-                value = self.write(inputs['color'], node, 'color', where, inputs['view'].cameras)
+                attachments = {}
+                color_outputs = {}
+                if work_items == 0:
+                    value = self.write(inputs['color'], node, 'color', where, inputs['view'].cameras)
+                    attachments['color'] = {'resource': value.resource, 'input_version': inputs['color'].version,
+                                            'output_version': value.version, 'defined': value.defined,
+                                            'load': 'Clear', 'store': 'Store'}
+                    color_outputs[output_mapping['color']] = value
+                    launch = {'view': inputs['view'].origin, 'cameras': list(inputs['view'].cameras),
+                              'dimensions': expected_dimensions}
+                else:
+                    launch = {'work_items': work_items}
                 storage = {}
                 storage_outputs = {}
                 for name in sorted(set(inputs) - {'scene', 'view', 'color', 'visibility', 'visibility_depth'}):
@@ -1008,15 +1022,14 @@ class _Compiler:
                 self.add_pass({'id': where, 'kind': 'RayTracing', 'configuration': 'RayTracing',
                     'technique': ray.TECHNIQUE, 'source': self.library.label(path), 'asset': self.library.assets[path]['id'],
                     'asset_configuration': config['id'], 'vertex_layout': 'RendererStatic', 'material': 'DefaultOpaque',
-                    'scene': inputs['scene'].origin, 'scene_data': inputs['scene'].scene_data, 'view': inputs['view'].origin, 'cameras': list(inputs['view'].cameras),
+                    'scene': inputs['scene'].origin, 'scene_data': inputs['scene'].scene_data, **launch,
                     'dependencies': sorted({v.producer for v in inputs.values() if v.producer}), 'pipeline': authored_pipeline,
-                    'dimensions': expected_dimensions, 'persistent_buffers': buffer_uses, 'buffers': storage, **visibility_reads,
-                    'attachments': {'color': {'resource': value.resource, 'input_version': inputs['color'].version,
-                        'output_version': value.version, 'defined': value.defined, 'load': 'Clear', 'store': 'Store'}}})
+                    'persistent_buffers': buffer_uses, 'buffers': storage, **visibility_reads,
+                    'attachments': attachments})
                 if is_compute:
                     # Only the offline plan names the source; the numeric pass record stays RayTracing (design D1).
                     self.passes[-1]['source_kind'] = compute.SOURCE_KIND
-                outputs = {output_mapping['color']: value, **buffer_outputs, **storage_outputs}
+                outputs = {**color_outputs, **buffer_outputs, **storage_outputs}
             elif kind == "Upscale":
                 source = inputs['color']
                 destination = inputs['destination']
@@ -1385,7 +1398,10 @@ def dump_plan(plan):
         if entry['kind'] == 'ToneMap':
             lines.append(f"    {entry.get('curve', 'Reinhard')} + sRGB; exposure multiplier: {entry['exposure']}")
         if entry['kind'] == 'RayTracing':
-            lines.append(f"    launch: {entry['dimensions']}; color target: {entry['attachments']['color']['resource']}")
+            if 'work_items' in entry:
+                lines.append(f"    launch: {entry['work_items']} scene work items")
+            else:
+                lines.append(f"    launch: {entry['dimensions']}; color target: {entry['attachments']['color']['resource']}")
             if 'source_kind' in entry:
                 lines.append(f"    source: {entry['source_kind']} (scene compute pass in the ray sequence)")
         for name, use in entry.get('buffers', {}).items():
@@ -1458,7 +1474,9 @@ def new_workspace(destination, *, output="presentation", renderer_static=False, 
     """Publish an editable built-in render graph template in a new directory.
 
     template selects raster (the default), forward-lit, restir-di, visibility-buffer,
-    visibility-secondary-rays, hybrid-shadows, tiled-vbuffer-nee, compute-ray-tracing, simple-compute-ray-tracing,
+    visibility-secondary-rays, hybrid-shadows, hybrid-reflections, hybrid-indirect-diffuse, tiled-vbuffer-nee,
+    compute-ray-tracing,
+    simple-compute-ray-tracing,
     veach-guibas-mis, line-sampling, ris-projected-solid-angle, salesin-jarosz-lines,
     polygonal-light-sampling, slice-sampling-luminaire, rough-pair-slice, steinberg-plt, steinberg-physical-optics, wave-tracing, restir-gi,
     rao-blackwell-mh, conditional-restir or one-more-vertex-nee. Offscreen

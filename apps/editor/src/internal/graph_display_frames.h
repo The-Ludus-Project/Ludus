@@ -100,7 +100,8 @@ private:
         foundation::uint32 Width = 0;
         foundation::uint32 Height = 0;
         foundation::uint32 Readers = 0;
-        foundation::uint64 Serial = 0;
+        /// Producer identity of the image held by the current readers.
+        foundation::uint64 ReadProducerOrdinal = 0;
         /// World to clip of the camera that rendered the image; meaningful when HasView is true.
         foundation::math::Matrix4 WorldToClip{};
         bool HasView = false;
@@ -144,6 +145,7 @@ private:
     foundation::int32 mLatest = -1;
     foundation::int32 mCopying = -1;
     foundation::int32 mCompleted = -1;
+    /// Publication serial of the shown image, including a clean snapshot shown again after outline removal.
     foundation::uint64 mSerial = 0;
     bool mHasDevice = false;
     bool mIsPrepared = false;

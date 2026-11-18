@@ -1,3 +1,4 @@
+#include "internal/adapter.h"
 #include "internal/backend.h"
 #include "internal/dxil_container.h"
 #include "internal/graphics_capture.h"
@@ -8,7 +9,10 @@
 #include "internal/raster.h"
 #include "internal/resources.h"
 #include "internal/storage.h"
+#include "internal/surface.h"
 #include <ludus/foundation/containers/borrowed_view.hpp>
+#include <ludus/foundation/containers/static_array.hpp>
+#include <ludus/graphics/rhi/device.h>
 #include <ludus/graphics/rhi/render.h>
 #include <ludus/graphics/rhi/rhi.h>
 
@@ -31,9 +35,17 @@ bool gDrawn = false;
 bool gRasterDrawn = false;
 bool gRequireRaster = false;
 bool gRequireCompute = false;
-// Last accepted frame target, so a capture is not started for a frame that cannot open.
-bool isFrameTargetEmpty = false;
-bool isFrameTargetOffscreen = false;
+// Frame state of each surface slot (R14b). The last accepted target keeps a capture from
+// starting for a frame that cannot open.
+struct SurfaceFrames final
+{
+    bool IsTargetEmpty = false;
+    bool IsTargetOffscreen = false;
+    ludus::foundation::uint64 SubmittedFrames = 0;
+};
+ludus::foundation::StaticArray<SurfaceFrames, MAX_DEVICE_SURFACES> gSurfaceFrames{};
+/// Slot of the open frame's surface; meaningful only while gFrame.
+ludus::foundation::usize gFrameSurface = 0;
 DeviceProfileRequirements gRequiredProfile;
 DeviceProfile gProfile;
 internal::FallbackHandler gFallback = nullptr;
@@ -331,7 +343,9 @@ StartupInfo GetStartup() noexcept
 {
     return gStartup;
 }
-FrameStatus SetFrameTarget(const FrameTarget& target) noexcept
+namespace internal
+{
+FrameStatus SetSurfaceFrameTarget(ludus::foundation::usize slot, const FrameTarget& target) noexcept
 {
     if (gStartup.State != StartupState::Ready)
     {
@@ -346,15 +360,16 @@ FrameStatus SetFrameTarget(const FrameTarget& target) noexcept
     {
         return FrameStatus::Failed;
     }
+    backend::SelectSurface(slot);
     const FrameStatus result = backend::SetTarget(target);
     if (result == FrameStatus::Ready)
     {
-        isFrameTargetEmpty = target.Width == 0 || target.Height == 0;
-        isFrameTargetOffscreen = target.ShouldPresentToSurface == false;
+        gSurfaceFrames[slot].IsTargetEmpty = target.Width == 0 || target.Height == 0;
+        gSurfaceFrames[slot].IsTargetOffscreen = target.ShouldPresentToSurface == false;
     }
     return result;
 }
-FrameStatus BeginFrameStatus() noexcept
+FrameStatus BeginSurfaceFrame(ludus::foundation::usize slot) noexcept
 {
     if (gStartup.State != StartupState::Ready)
     {
@@ -369,14 +384,37 @@ FrameStatus BeginFrameStatus() noexcept
         return FrameStatus::Failed;
     }
     // An armed capture starts before the frame's command buffers exist (Metal requires it).
-    internal::BeginGraphicsCaptureFrame(isFrameTargetEmpty, isFrameTargetOffscreen);
+    internal::BeginGraphicsCaptureFrame(gSurfaceFrames[slot].IsTargetEmpty, gSurfaceFrames[slot].IsTargetOffscreen);
+    backend::SelectSurface(slot);
     const auto result = backend::Begin();
     gFrame = result == FrameStatus::Ready;
+    gFrameSurface = slot;
     gDrawn = false;
     gRasterDrawn = false;
     internal::RasterBeginFrame();
     internal::FinishGraphicsCaptureBegin(gFrame);
     return result;
+}
+ludus::foundation::usize GetFrameSurface() noexcept
+{
+    return gFrameSurface;
+}
+void ResetSurfaceFrames(ludus::foundation::usize slot) noexcept
+{
+    gSurfaceFrames[slot] = {};
+}
+ludus::foundation::uint64 GetSurfaceSubmittedFrames(ludus::foundation::usize slot) noexcept
+{
+    return gSurfaceFrames[slot].SubmittedFrames;
+}
+} // namespace internal
+FrameStatus SetFrameTarget(const FrameTarget& target) noexcept
+{
+    return internal::SetSurfaceFrameTarget(0, target);
+}
+FrameStatus BeginFrameStatus() noexcept
+{
+    return internal::BeginSurfaceFrame(0);
 }
 FrameStatus EndFrameStatus() noexcept
 {
@@ -394,6 +432,11 @@ FrameStatus EndFrameStatus() noexcept
     }
     gFrame = false;
     const auto result = backend::End();
+    // Skipped means the frame was submitted but its presentation was out of date.
+    if (result == FrameStatus::Ready || result == FrameStatus::Skipped)
+    {
+        ++gSurfaceFrames[gFrameSurface].SubmittedFrames;
+    }
     internal::RasterEndFrame(result == FrameStatus::Ready || result == FrameStatus::Skipped);
     internal::EndGraphicsCaptureFrame((result == FrameStatus::Ready || result == FrameStatus::Skipped) &&
                                       gStartup.State == StartupState::Ready);
@@ -440,13 +483,14 @@ void Shutdown() noexcept
 {
     // Stop or abandon a capture before any native object it borrows is released.
     internal::EndGraphicsCaptureSession(GraphicsCaptureError::SessionEnded);
-    isFrameTargetEmpty = false;
-    isFrameTargetOffscreen = false;
+    gSurfaceFrames.Fill({});
+    gFrameSurface = 0;
     gDeviceOwner = 0;
     internal::SetGpuTimingRequest(false);
     gRayProfileRequest = false;
     internal::SetBindlessRequest(false);
     internal::SetRuntimeTextureArrayRequest(false);
+    internal::SetAdapterRequest({});
     gFallback = nullptr;
     gToken = 0;
     if (internal::DeferNativeInteropShutdown())

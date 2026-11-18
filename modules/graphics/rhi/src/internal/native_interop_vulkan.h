@@ -217,15 +217,17 @@ void NativeInteropDetachSurface() noexcept
     // A borrowed context is headless: keep its private pools/targets until the
     // last native pin retires. In particular, do not wait on a foreign consumer
     // whose forward progress may depend on this shutdown returning to its owner.
-    if (gHostedProducer.IsConnected() == true)
+    // Created surfaces (R14b) borrow windows too, so they are released first.
+    ReleaseCreatedSurfaces();
+    if (GetActiveSurface().HostedProducer.IsConnected() == true)
     {
         // The hosted window's channel is borrowed only until the surface detaches.
         WaitIdle();
-        gHostedProducer.Disconnect();
+        GetActiveSurface().HostedProducer.Disconnect();
     }
-    if (gSurface == VK_NULL_HANDLE)
+    if (GetActiveSurface().Surface == VK_NULL_HANDLE)
     {
-        gWindow = {};
+        GetActiveSurface().Window = {};
         return;
     }
     RetireAcquiredImage();
@@ -234,12 +236,12 @@ void NativeInteropDetachSurface() noexcept
     ReleaseTargets();
     vkDestroyRenderPass(gDevice, gPass, nullptr);
     gPass = VK_NULL_HANDLE;
-    if (gSurface != VK_NULL_HANDLE)
+    if (GetActiveSurface().Surface != VK_NULL_HANDLE)
     {
-        vkDestroySurfaceKHR(gInstance, gSurface, nullptr);
-        gSurface = VK_NULL_HANDLE;
+        vkDestroySurfaceKHR(gInstance, GetActiveSurface().Surface, nullptr);
+        GetActiveSurface().Surface = VK_NULL_HANDLE;
     }
-    gWindow = {};
+    GetActiveSurface().Window = {};
 }
 void NativeInteropReset() noexcept {}
 } // namespace ludus::graphics::rhi::backend

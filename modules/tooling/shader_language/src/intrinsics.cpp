@@ -17,6 +17,36 @@ constexpr uint32 TERNARY_ARITY = 3;
 }
 } // namespace
 
+std::string_view GetAtomicMethodName(std::string_view intrinsic) noexcept
+{
+    /// `Interlocked` names and their `Atomic<T>` methods, in INTRINSICS order.
+    struct AtomicMethod final
+    {
+        std::string_view Intrinsic;
+        std::string_view Method;
+    };
+    constexpr foundation::usize ATOMIC_METHOD_COUNT = 9;
+    constexpr foundation::StaticArray<AtomicMethod, ATOMIC_METHOD_COUNT> METHODS = {{
+        {"InterlockedAdd", "add"},
+        {"InterlockedAnd", "and"},
+        {"InterlockedOr", "or"},
+        {"InterlockedXor", "xor"},
+        {"InterlockedMin", "min"},
+        {"InterlockedMax", "max"},
+        {"InterlockedExchange", "exchange"},
+        {"InterlockedCompareExchange", "compareExchange"},
+        {"InterlockedCompareStore", "compareExchange"},
+    }};
+    for (const AtomicMethod& entry : METHODS)
+    {
+        if (entry.Intrinsic == intrinsic)
+        {
+            return entry.Method;
+        }
+    }
+    return {};
+}
+
 uint32 GetIntrinsicArity(IntrinsicFamily family) noexcept
 {
     switch (family)
@@ -27,10 +57,15 @@ uint32 GetIntrinsicArity(IntrinsicFamily family) noexcept
         case IntrinsicFamily::Distance:
         case IntrinsicFamily::Cross:
         case IntrinsicFamily::Reflect:
+        case IntrinsicFamily::AtomicUpdate:
             return 2;
         case IntrinsicFamily::NumericTernary:
         case IntrinsicFamily::FloatTernary:
+        case IntrinsicFamily::AtomicExchange:
+        case IntrinsicFamily::AtomicCompareStore:
             return TERNARY_ARITY;
+        case IntrinsicFamily::AtomicCompareExchange:
+            return TERNARY_ARITY + 1;
         default:
             return 1;
     }
@@ -134,6 +169,12 @@ bool ResolveIntrinsic(IntrinsicFamily family,
             }
             outResultType = types.GetMatrix(shape.Scalar, shape.Columns, shape.Rows);
             return true;
+        case IntrinsicFamily::AtomicUpdate:
+        case IntrinsicFamily::AtomicExchange:
+        case IntrinsicFamily::AtomicCompareExchange:
+        case IntrinsicFamily::AtomicCompareStore:
+            // The checker binds atomics itself: their first argument is a destination.
+            return false;
     }
     return false;
 }

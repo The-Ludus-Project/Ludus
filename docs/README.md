@@ -137,6 +137,7 @@ for content changes. Module/sample/tool READMEs link to these owners.
 - [Filesystem architecture](architecture/filesystem.md)
 - [Foundational Headers, Include Strategy, and the Ludus Core Vocabulary](architecture/foundational-headers.md)
 - [Frame and tick updates](architecture/frame-update.md)
+- [From an authored World to a playable app](architecture/playable-world-workflow.md)
 - [Game world architecture](architecture/game-world.md)
 - [Gameplay foundation architecture](architecture/gameplay-foundations.md)
 - [Gameplay languages and visual authoring architecture](architecture/scripting.md)
@@ -189,10 +190,12 @@ for content changes. Module/sample/tool READMEs link to these owners.
 - [Shared scene, material and lighting shader contract](architecture/shared-scene-shader-contract.md)
 - [Skeletal animation architecture](architecture/skeletal-animation.md)
 - [Smart pointer architecture](architecture/smart-pointers.md)
+- [Terrain foliage architecture](architecture/foliage.md)
 - [Terrain generation architecture](architecture/terrain-generation.md)
 - [Terrain systems architecture](architecture/terrain.md)
 - [Threading architecture](architecture/threading.md)
 - [Windows and Direct3D 12 backend](architecture/windows-direct3d12.md)
+- [World environment architecture](architecture/world-environment.md)
 
 ## Decisions
 

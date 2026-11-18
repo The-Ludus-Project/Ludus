@@ -405,7 +405,7 @@ BorrowedView<const renderer::RenderGraphCapturePixel> ViewportGraphCapture::GetP
     return mCapture.GetPixels();
 }
 
-QImage ViewportGraphCapture::MakeDisplayImage() const
+QImage ViewportGraphCapture::MakeDisplayImage(const ViewportDisplayTransform& display) const
 {
     const renderer::RenderGraphCaptureInfo info = mCapture.GetInfo();
     const BorrowedView<const renderer::RenderGraphCapturePixel> pixels = mCapture.GetPixels();
@@ -424,10 +424,10 @@ QImage ViewportGraphCapture::MakeDisplayImage() const
         QRgb* row = reinterpret_cast<QRgb*>(image.scanLine(static_cast<int32>(y)));
         for (uint32 x = 0; x < info.Width; ++x)
         {
-            const math::Vector3 display = EncodeReferenceDisplayColor(pixels[usize{y} * info.Width + x].Mean);
-            row[x] = qRgb(qRound(display.X * CHANNEL_MAXIMUM),
-                          qRound(display.Y * CHANNEL_MAXIMUM),
-                          qRound(display.Z * CHANNEL_MAXIMUM));
+            const math::Vector3 encoded = EncodeReferenceDisplayColor(pixels[usize{y} * info.Width + x].Mean, display);
+            row[x] = qRgb(qRound(encoded.X * CHANNEL_MAXIMUM),
+                          qRound(encoded.Y * CHANNEL_MAXIMUM),
+                          qRound(encoded.Z * CHANNEL_MAXIMUM));
         }
     }
     return image;

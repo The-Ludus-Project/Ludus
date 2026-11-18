@@ -206,6 +206,182 @@
           "to": "output.texture"
         }
       ]
+    },
+    {
+      "id": "WorkItems",
+      "inputs": [],
+      "outputs": [],
+      "nodes": [
+        {
+          "id": "scene",
+          "kind": "Scene"
+        },
+        {
+          "active": true,
+          "id": "camera",
+          "kind": "Camera",
+          "role": "Offscreen",
+          "target_type": "ColorTexture"
+        },
+        {
+          "extent": [
+            96,
+            64
+          ],
+          "format": "RGBA8Unorm",
+          "id": "color",
+          "imported": false,
+          "initialized": false,
+          "kind": "Target",
+          "presentation": false,
+          "samples": 1,
+          "type": "ColorTexture"
+        },
+        {
+          "id": "output",
+          "kind": "Export",
+          "type": "ColorTexture"
+        },
+        {
+          "id": "info",
+          "kind": "ComputePipeline",
+          "inputs": [
+            {
+              "id": "scene",
+              "type": "Scene",
+              "required": true
+            },
+            {
+              "id": "view",
+              "type": "View",
+              "required": true
+            },
+            {
+              "id": "color",
+              "type": "ColorTexture",
+              "required": true
+            },
+            {
+              "id": "hits",
+              "type": "Buffer",
+              "required": true
+            }
+          ],
+          "outputs": [
+            {
+              "id": "color",
+              "type": "ColorTexture",
+              "target": "color",
+              "format": "RGBA8Unorm",
+              "load": "Clear",
+              "store": "Store"
+            },
+            {
+              "id": "hits",
+              "target": "hits",
+              "type": "Buffer",
+              "format": "Bytes",
+              "load": "Load",
+              "store": "Store"
+            }
+          ],
+          "shaders": [
+            {
+              "id": "compute",
+              "stage": "compute",
+              "program": "ResolveWorkItems"
+            }
+          ],
+          "state": {},
+          "invocation": {
+            "dimensions": "ColorTarget",
+            "traversal": "ComputeBvh"
+          }
+        },
+        {
+          "id": "hits",
+          "kind": "Buffer",
+          "bytes": 112032
+        },
+        {
+          "id": "trace",
+          "kind": "ComputePipeline",
+          "inputs": [
+            {
+              "id": "scene",
+              "type": "Scene",
+              "required": true
+            },
+            {
+              "id": "hits",
+              "type": "Buffer",
+              "required": true
+            }
+          ],
+          "outputs": [
+            {
+              "id": "hits",
+              "target": "hits",
+              "type": "Buffer",
+              "format": "Bytes",
+              "load": "Load",
+              "store": "Store"
+            }
+          ],
+          "shaders": [
+            {
+              "id": "compute",
+              "stage": "compute",
+              "program": "TraceWorkItems"
+            }
+          ],
+          "state": {
+            "group_size": [
+              8,
+              8,
+              1
+            ]
+          },
+          "invocation": {
+            "work_items": 7001,
+            "traversal": "ComputeBvh"
+          }
+        }
+      ],
+      "edges": [
+        {
+          "from": "color.texture",
+          "to": "camera.target"
+        },
+        {
+          "from": "scene.scene",
+          "to": "info.scene"
+        },
+        {
+          "from": "camera.view",
+          "to": "info.view"
+        },
+        {
+          "from": "color.texture",
+          "to": "info.color"
+        },
+        {
+          "from": "scene.scene",
+          "to": "trace.scene"
+        },
+        {
+          "from": "hits.buffer",
+          "to": "trace.hits"
+        },
+        {
+          "from": "trace.hits",
+          "to": "info.hits"
+        },
+        {
+          "from": "info.color",
+          "to": "output.texture"
+        }
+      ]
     }
   ],
   "default": "Default",

@@ -1,6 +1,7 @@
 #pragma once
 
 #include <ludus/content/scene_format/material.h>
+#include <ludus/foundation/containers/static_array.hpp>
 
 #include <QColor>
 #include <QImage>
@@ -48,6 +49,130 @@ inline const CoatingField COATING_FIELDS[] = {
      content::scene_format::MAX_MATERIAL_OPTICAL_CONSTANT},
 };
 
+/// One editable strand control of a World hair-card slot, stored under Key in the slot's "hair_card" object.
+struct HairCardField final
+{
+    const char* Key;
+    const char* Label;
+    foundation::float32 content::scene_format::HairCardParameters::* Member;
+    foundation::float32 Minimum;
+    foundation::float32 Maximum;
+
+    /// Number property with this field's label and bounds, for WorldDocument::ParseValue.
+    [[nodiscard]] QJsonObject MakeNumberProperty() const;
+};
+
+/// The strand controls of a World hair-card slot, in the order the inspector lists them. Bounds are the
+/// scene format's admission limits.
+inline const HairCardField HAIR_CARD_FIELDS[] = {
+    {"strand_direction_degrees",
+     "Strand direction (°)",
+     &content::scene_format::HairCardParameters::StrandDirectionDegrees,
+     -content::scene_format::MAX_HAIR_CARD_STRAND_DEGREES,
+     content::scene_format::MAX_HAIR_CARD_STRAND_DEGREES},
+    {"primary_shift_degrees",
+     "Primary highlight shift (°)",
+     &content::scene_format::HairCardParameters::PrimaryShiftDegrees,
+     -content::scene_format::MAX_HAIR_CARD_SHIFT_DEGREES,
+     content::scene_format::MAX_HAIR_CARD_SHIFT_DEGREES},
+    {"secondary_shift_degrees",
+     "Secondary highlight shift (°)",
+     &content::scene_format::HairCardParameters::SecondaryShiftDegrees,
+     -content::scene_format::MAX_HAIR_CARD_SHIFT_DEGREES,
+     content::scene_format::MAX_HAIR_CARD_SHIFT_DEGREES},
+    {"primary_weight", "Primary highlight weight", &content::scene_format::HairCardParameters::PrimaryWeight, 0, 1},
+    {"secondary_weight",
+     "Tinted secondary highlight weight",
+     &content::scene_format::HairCardParameters::SecondaryWeight,
+     0,
+     1},
+};
+
+/// Key of a hair-card slot's optional mask cutoff override; only masked materials accept it.
+inline constexpr const char* HAIR_CARD_CUTOFF_KEY = "alpha_cutoff";
+
+/// Number property of the hair-card mask cutoff, in [0, 1].
+[[nodiscard]] QJsonObject MakeHairCardCutoffProperty();
+
+/// A "hair_card" slot object with every strand control at its scene-format default and no cutoff override.
+[[nodiscard]] QJsonObject MakeDefaultHairCard();
+
+/// Key of a World skin slot's scattering distance in its "skin" object: linear RGB metres, as in the scene source
+/// format.
+inline constexpr const char* SKIN_DISTANCE_KEY = "scattering_distance";
+/// The inspector edits skin scattering distances in millimetres; slots store metres.
+inline constexpr foundation::float64 MILLIMETRES_PER_METRE = 1000;
+
+/// One channel of a World skin slot's scattering distance, edited in millimetres.
+struct SkinDistanceField final
+{
+    const char* Key;   ///< Field key below "scene/skin/".
+    const char* Label; ///< Short inspector label.
+    foundation::usize Channel;
+
+    /// Number property in millimetres, bounded by content::scene_format::MAX_SKIN_SCATTERING_DISTANCE.
+    [[nodiscard]] QJsonObject MakeNumberProperty() const;
+};
+
+/// The red, green and blue scattering-distance fields of a World skin slot, in that order.
+inline const foundation::StaticArray<SkinDistanceField, content::scene_format::MATERIAL_RGB_CHANNELS>
+    SKIN_DISTANCE_FIELDS{{
+        {"scattering_red_mm", "Scattering red (mm)", 0},
+        {"scattering_green_mm", "Scattering green (mm)", 1},
+        {"scattering_blue_mm", "Scattering blue (mm)", 2},
+    }};
+
+/// Key of a World skin slot's optional linear RGB base colour in its "skin" object, in [0, 1] as in the scene source
+/// format. It replaces the inherited material's reflectance, which scales the base colour map.
+inline constexpr const char* SKIN_BASE_COLOR_KEY = "base_color";
+/// Key of a World skin slot's optional perceptual roughness in its "skin" object, in
+/// [content::scene_format::MIN_AUTHORED_ROUGHNESS, 1].
+inline constexpr const char* SKIN_ROUGHNESS_KEY = "roughness";
+/// SkinSurfaceField::Channel of the roughness field; the base colour fields use their colour channel.
+inline constexpr foundation::usize SKIN_ROUGHNESS_CHANNEL = content::scene_format::MATERIAL_RGB_CHANNELS;
+/// Base colour channels and the roughness.
+inline constexpr foundation::usize SKIN_SURFACE_FIELD_COUNT = content::scene_format::MATERIAL_RGB_CHANNELS + 1;
+
+/// One surface value of a World skin slot, edited beside its scattering distance: a base colour channel or the
+/// roughness. A slot without the key inherits the value from its imported material.
+struct SkinSurfaceField final
+{
+    const char* Key;           ///< Field key below "scene/skin/".
+    const char* Label;         ///< Short inspector label.
+    foundation::usize Channel; ///< Base colour channel, or SKIN_ROUGHNESS_CHANNEL.
+
+    /// Report whether this field edits the roughness rather than a base colour channel.
+    [[nodiscard]] bool IsRoughness() const noexcept
+    {
+        return Channel == SKIN_ROUGHNESS_CHANNEL;
+    }
+    /// Number property bounded as the scene format admits the value: [0, 1] for a base colour channel and
+    /// [MIN_AUTHORED_ROUGHNESS, 1] for the roughness.
+    [[nodiscard]] QJsonObject MakeNumberProperty() const;
+};
+
+/// The base colour red, green and blue fields and the roughness field of a World skin slot, in that order.
+inline const foundation::StaticArray<SkinSurfaceField, SKIN_SURFACE_FIELD_COUNT> SKIN_SURFACE_FIELDS{{
+    {"base_color_red", "Base colour red", 0},
+    {"base_color_green", "Base colour green", 1},
+    {"base_color_blue", "Base colour blue", 2},
+    {"roughness", "Roughness", SKIN_ROUGHNESS_CHANNEL},
+}};
+
+/// The shortest decimal that reads back as `value` in float32, so a cooked value shows as it was authored ("0.6",
+/// not "0.600000024").
+[[nodiscard]] foundation::float64 GetShortestFloat32Decimal(foundation::float32 value);
+
+/// A "skin" slot object. A material that is already skin keeps its scattering distance; any other starts from human
+/// skin's normalized-diffusion distance d, (1.50, 0.94, 0.57) mm. It comes from the measured skin1 coefficients of
+/// Henrik Wann Jensen, Stephen R. Marschner, Marc Levoy and Pat Hanrahan, "A Practical Model for Subsurface Light
+/// Transport", SIGGRAPH 2001, Table 2 (sigma_s' = 0.74, 0.88, 1.01 and sigma_a = 0.032, 0.17, 0.48 per mm), as the
+/// mean free path l = 1 / sigma_t' over Per H. Christensen's scale s = 1.85 - A + 7 (0.8 - A)^3 with A =
+/// sigma_s' / sigma_t' ("An Approximate Reflectance Profile for Efficient Subsurface Scattering", SIGGRAPH 2015
+/// Talks, Eq. 2, DOI 10.1145/2775280.2792555). Skin1's diffuse mean free path, (3.67, 1.37, 0.68) mm, is a different
+/// distance and blurs the profile about twice as wide.
+[[nodiscard]] QJsonObject MakeDefaultSkin(const resources::SceneMaterial* materialOrNull);
+
 /// Borrow the resolved material for as long as the scene definition is retained.
 [[nodiscard]] const resources::SceneMaterial* GetSceneObjectMaterialOrNull(const RenderScene& scene,
                                                                            const QString& objectId);
@@ -55,13 +180,20 @@ inline const CoatingField COATING_FIELDS[] = {
 /// One read-only row of the World inspector's Material group.
 struct MaterialPropertyRow final
 {
-    QString Label;                   ///< Property name, with its unit or space where it has one.
+    QString Label;                   ///< Short property name; a short unit such as "(lm)" stays, the rest is Detail.
     QString Value;                   ///< Displayed value; colours are comma-separated linear RGB.
     bool IsCoatingParameter = false; ///< Editable separately in an imported coated-diffuse slot.
     /// Display colour of a colour row, shown as a swatch beside Value; invalid for other rows.
     QColor Swatch{};
     /// Small preview of a texture row, shown beside Value; null for other rows and for missing textures.
     QImage Thumbnail{};
+    /// What the short Label leaves out (its colour space, unit or meaning) and, for a texture, which texture it is;
+    /// shown as the row's tooltip. Empty when Label and Value say everything.
+    QString Detail{};
+    /// Editable separately in a World hair-card slot.
+    bool IsHairCardParameter = false;
+    /// Editable separately in a World skin slot.
+    bool IsSkinParameter = false;
 };
 
 /// Edge of a texture thumbnail in pixels; the longer side of the texture is scaled to it.

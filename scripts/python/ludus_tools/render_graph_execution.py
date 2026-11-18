@@ -29,7 +29,7 @@ MAX_UNIFORM_BINDINGS = 16
 MAX_UNIFORM_FIELDS = 256
 MAX_UNIFORM_BLOCK_BYTES = 1024
 UNIFORM_SLOT_COUNT = 8
-FORMAT_VERSION = 14
+FORMAT_VERSION = 15
 ABSENT = 0xFFFFFFFF
 # Exact technique identities and their numeric program roles, in format order.
 PROGRAMS = {'DefaultStaticOpaque.ColorAndDepth': 'ColorAndDepth', 'DefaultStaticOpaque.DepthOnly': 'DepthOnly',
@@ -114,7 +114,7 @@ def lower_plan(package, configuration):
     resources = lowered_resources(plan)
     rasters = [p for p in plan['passes'] if p['kind'] in ('Raster', 'RayTracing')]
     operations = [p for p in plan['passes'] if p['kind'] in ('Raster', 'RayTracing', 'Upscale')]
-    cameras = sorted({p['view'] for p in rasters})
+    cameras = sorted({p['view'] for p in rasters if 'view' in p})
     build.require(sum(p['kind'] == 'RayTracing' for p in rasters) <= MAX_RAY_PASSES, 'Capacity', configuration,
                   f'at most {MAX_RAY_PASSES} triangle ray passes are admitted per configuration')
     build.require(all(p['kind'] in ('Raster', 'RayTracing', 'Upscale', 'Accumulate', 'ToneMap', 'Denoise', 'Export', 'Present') for p in plan['passes']) and
@@ -200,7 +200,7 @@ def lower_plan(package, configuration):
                                   all(item.get('load') == 'Clear' and item.get('store') == 'Store' for item in (color_output, depth_output)),
                                   'Configuration', operation['id'],
                                   'visibility/depth must come from the immediately preceding opaque Clear/Store raster using the same view')
-            color = operation['attachments']['color']
+            color = operation['attachments'].get('color')
             recipes = [recipe for recipe in package.get('recipes', []) if recipe['technique'] == ray.TECHNIQUE and
                        recipe.get('visibility_buffer', False) == ('visibility' in operation) and
                        recipe.get('native_ray_queries', True) == ray.requires_native_queries(plan)]
@@ -211,8 +211,9 @@ def lower_plan(package, configuration):
             persistent_slots = [ABSENT] * ray.MAX_BUFFERS
             for use in operation.get('persistent_buffers', []):
                 persistent_slots[use['slot']] = resources.index(use['resource'])
-            pass_records.append({'Program': 'RayTracing', 'Camera': cameras.index(operation['view']),
-                'Color': resources.index(color['resource']), 'Depth': ABSENT, 'ColorLoad': 'Clear', 'ColorStore': 'Store',
+            pass_records.append({'Program': 'RayTracing', 'Camera': cameras.index(operation['view']) if color else ABSENT,
+                'Color': resources.index(color['resource']) if color else ABSENT, 'Depth': ABSENT,
+                'ColorLoad': 'Clear' if color else 'Discard', 'ColorStore': 'Store' if color else 'Discard',
                 'DepthLoad': 'Discard', 'DepthStore': 'Discard', 'AllowsRepeatedCoverage': 0, 'SceneData': operation.get('scene_data', graph.scene_bundle.ALL_DATA),
                 'RayProgram': variants.index(variant), 'Buffer0': persistent_slots[0], 'Buffer1': persistent_slots[1],
                 'Visibility': resources.index(operation['visibility']['resource']) if 'visibility' in operation else ABSENT,
@@ -277,6 +278,8 @@ def lower_plan(package, configuration):
         record['Traversal'] = (ray.get_traversal(ray.program_tuple(operation['pipeline']))
                                if operation['kind'] == 'RayTracing' else 'NativeQuery')
         record['ToneMappingCurve'] = operation.get('tone_mapping', {}).get('curve', 'Reinhard')
+        if 'work_items' in operation:
+            record['WorkItemCount'] = operation['work_items']
     return plan, resource_records, pass_records, cameras
 
 
@@ -334,7 +337,12 @@ CAPTURE_PROFILE_PACKAGE_MAGIC = 0x4352554C
 # Version 28: ray kernels dispatch the ray uniform's tile region (a 240-byte uniform), so captures may tile.
 # Version 33: per-callback capture warm-up counts follow the scene resource word.
 # Version 34 adds the optional forward surface-chart fragment and a chart-free realtime fragment.
-PACKAGE_VERSION = 35
+# Version 36 adds the optional deferred probe G-buffer fragment for passes with Baked Lighting connected.
+# Version 37 adds the optional deferred surface-chart G-buffer fragment for the same passes.
+# Version 38 admits the World-feature scene resource bits: the linked ray kernel reads the Atmosphere sky or the
+# aerial perspective table.
+# Version 39 appends the buffer-only scene dispatch work item count to each pass.
+PACKAGE_VERSION = 39
 # render_graph_format::DisplayCurve codes, by index; zero (Reinhard) also marks a pass without a ToneMap.
 DISPLAY_CURVE_CODES = ('Reinhard', 'PbrNeutral')
 # Version 25 scene resource word: the linked ray kernel reads the renderer's LTC table.
@@ -342,6 +350,10 @@ SCENE_RESOURCE_LTC_TABLE = 1
 # Scene resource bit: the linked ray kernels count latched pixels by failure reason (LUDUS_GRAPH_FAILURE_BINDING).
 SCENE_RESOURCE_FAILURE_SUMMARY = 2
 SCENE_RESOURCE_LIGHT_TRANSFORMER = 4
+# Version 38 World-feature bits: reflection kept the Atmosphere sky (EvaluateEnvironment) or the aerial perspective
+# table (ApplyAerialPerspective) of the linked ray kernel. docs/development/render-graph-authoring.md#world-features.
+SCENE_RESOURCE_ATMOSPHERE_SKY = 8
+SCENE_RESOURCE_AERIAL_PERSPECTIVE = 16
 RESOURCE_FIELD_COUNT = 9
 RESOURCE_RECORD_BYTES = RESOURCE_FIELD_COUNT * 4
 MAX_PASS_NAME_BYTES = 127
@@ -364,6 +376,11 @@ def role(program, stage):
         return {'compute': 8, 'vertex': 9, 'fragment': 10}[stage]
     if program == 'ForwardSurfaceChart':
         return role('DeferredOpaqueGBuffer', 'fragment') + 1
+    if program == 'DeferredProbeGBuffer':
+        # Follows ForwardSurfaceChart and the ForwardRealtime fragment.
+        return role('ForwardSurfaceChart', 'fragment') + 2
+    if program == 'DeferredSurfaceChartGBuffer':
+        return role('DeferredProbeGBuffer', 'fragment') + 1
     if program.startswith('Deferred'):
         return FORWARD_DEPTH_STAGE_ROLE + 1 + forward.ROLE_KEYS.index((program, stage)) - forward.ROLE_KEYS.index(('DeferredGBuffer', 'fragment'))
     if (program, stage) in forward.ROLE_KEYS:
@@ -502,7 +519,9 @@ def _runtime_contents(path, configuration):
         build.require(any(p['Program'] == 'ColorAndDepth' for p in passes) and
                       all(p['Program'] in allowed and p['SceneData'] == graph.scene_bundle.ALL_DATA for p in passes),
                       'Capability', configuration, 'forward-lit requires opaque color passes with the complete Scene bundle')
-        bake_modes = {operation.get('baked_lighting', False) for operation in plan['passes'] if operation['kind'] == 'Raster'}
+        # A depth-only prepass has no lighting and never connects Baked Lighting.
+        bake_modes = {operation.get('baked_lighting', False) for operation in plan['passes']
+                      if operation['kind'] == 'Raster' and operation.get('configuration') != 'DepthOnly'}
         build.require(len(bake_modes) <= 1, 'Capability', configuration,
                       'Forward lighting passes must agree on Baked Lighting. Connect it to every forward lighting pass or disconnect it.')
         has_surface_charts = True in bake_modes
@@ -511,7 +530,7 @@ def _runtime_contents(path, configuration):
                 continue
             for identity, key in recipe.get('forward_stages', {}).items():
                 group, stage = identity.split(':')
-                if group == 'ForwardSurfaceChart' and not has_surface_charts:
+                if group in forward.BAKED_LIGHTING_GROUPS and not has_surface_charts:
                     continue
                 matches = [program for program in package['programs'] if program['key'] == key and program['profile'] == recipe['profile']]
                 build.require(len(matches) == 1, 'Package', identity, 'missing forward support artifact')
@@ -597,6 +616,15 @@ def _runtime_contents(path, configuration):
                     for key, item in artifacts.items() if key[0] == 'RayTracing' and key[1] == 'compute'}
     build.require(len(ltc_profiles) <= 1, 'ShaderInterface', 'ltc_table',
                   'targets of the linked ray kernel disagree whether they read the LTC table')
+    # A World feature is drawn exactly when the compiled kernel calls its scene function, which keeps the table's slot.
+    world_feature_profiles = {}
+    for feature, slot in (('atmosphere_sky', ray.ATMOSPHERE_SKY_SLOT), ('aerial_perspective', ray.AERIAL_PERSPECTIVE_SLOT)):
+        world_feature_profiles[feature] = {
+            any(entry['binding'] == slot for entry in item['descriptor']['interface']['entries'])
+            for key, item in artifacts.items() if key[0] == 'RayTracing' and key[1] == 'compute'}
+        build.require(len(world_feature_profiles[feature]) <= 1, 'ShaderInterface', feature,
+                      'targets of the linked ray kernel disagree whether they read the ' + feature.replace('_', ' ') +
+                      ' table')
     failure_profiles = {any(entry['binding'] == ray.FAILURE_SLOT for entry in item['descriptor']['interface']['entries'])
                         for key, item in artifacts.items() if key[0] == 'RayTracing' and key[1] == 'compute'}
     build.require(len(failure_profiles) <= 1, 'ShaderInterface', 'failure_summary',
@@ -607,7 +635,7 @@ def _runtime_contents(path, configuration):
                   ray_passes[0]['Traversal'] == 'ComputeBvh' and ray_passes[0]['Buffer0'] != ABSENT),
                   'Capability', 'light_transformer', 'use one ComputeBvh scene compute pass wired to an embedding Buffer')
     recipe_keys = _routed_recipe_keys(package, configuration, selected_techniques, ray_recipes, roles)
-    return {'recipe_keys': recipe_keys, 'capture_warmup_samples': capture_warmup_samples, 'light_transformer': has_light_transformer, 'ltc_table': ltc_profiles == {True}, 'failure_summary': failure_profiles == {True}, 'clustered_deferred': any(recipe.get('clustered_deferred', False) for recipe in package['recipes'] if recipe['technique'] in selected_techniques), 'clustered_forward': is_clustered_forward, 'forward_lit': has_forward, 'persistent_buffers': persistent, 'ray_path_capture': ray_path_capture, 'capture_profile': capture_profile, 'visibility_buffer': has_visibility, 'scene_interface': scene_versions == {1}, 'path': path, 'package': package, 'plan': plan, 'resources': resources, 'passes': passes,
+    return {'recipe_keys': recipe_keys, 'capture_warmup_samples': capture_warmup_samples, 'light_transformer': has_light_transformer, 'ltc_table': ltc_profiles == {True}, 'atmosphere_sky': world_feature_profiles['atmosphere_sky'] == {True}, 'aerial_perspective': world_feature_profiles['aerial_perspective'] == {True}, 'failure_summary': failure_profiles == {True}, 'clustered_deferred': any(recipe.get('clustered_deferred', False) for recipe in package['recipes'] if recipe['technique'] in selected_techniques), 'clustered_forward': is_clustered_forward, 'forward_lit': has_forward, 'persistent_buffers': persistent, 'ray_path_capture': ray_path_capture, 'capture_profile': capture_profile, 'visibility_buffer': has_visibility, 'scene_interface': scene_versions == {1}, 'path': path, 'package': package, 'plan': plan, 'resources': resources, 'passes': passes,
             'cameras': cameras, 'camera_targets': camera_targets, 'artifacts': artifacts,
             'uniform_values': value_count, 'bindings': bindings, 'blocks': blocks, 'fields': fields,
             'storage_buffers': storage_buffers, 'uniform_interface': uniform_interface,
@@ -813,6 +841,10 @@ def _emit_runtime(path, destination, *, configuration='Default', name='DefaultGr
         lines.append('    result.HasRayPathCapture = true;')
     if contents.get('ltc_table', False):
         lines.append('    result.HasLtcTable = true;')
+    if contents.get('atmosphere_sky', False):
+        lines.append('    result.HasAtmosphereSky = true;')
+    if contents.get('aerial_perspective', False):
+        lines.append('    result.HasAerialPerspective = true;')
     # Generated headers always link the current ray kernel, which dispatches the uniform's tile region.
     if any(operation['kind'] == 'RayTracing' for operation in contents['plan']['passes']):
         lines.append('    result.HasRayTiles = true;')
@@ -914,7 +946,7 @@ def encode_runtime_package(contents, *, magic=PACKAGE_MAGIC):
         data += u32(p.get('SourceColor', ABSENT))
         data += u32(p.get('DenoisingQuality', 0))
         data += u32(ray.TRAVERSAL_CODES.index(p.get('Traversal', 'NativeQuery')))
-        data += u32(DISPLAY_CURVE_CODES.index(p.get('ToneMappingCurve', 'Reinhard')))
+        data += u32(DISPLAY_CURVE_CODES.index(p.get('ToneMappingCurve', 'Reinhard')), p.get('WorkItemCount', 0))
     for b in contents['bindings']:
         data += u32(PROGRAM_CODES[b['Program']], b['Slot'], VISIBILITY[b['Stages']], b['ValueOffset'], b['ValueCount'])
     for b in contents['blocks']:
@@ -956,7 +988,9 @@ def encode_runtime_package(contents, *, magic=PACKAGE_MAGIC):
         data += u32(buffer['Slot'], buffer['Stride'], buffer['Count'], buffer['IsReadOnly'])
     data += u32((SCENE_RESOURCE_LTC_TABLE if contents.get('ltc_table', False) else 0) |
                 (SCENE_RESOURCE_FAILURE_SUMMARY if contents.get('failure_summary', False) else 0) |
-                (SCENE_RESOURCE_LIGHT_TRANSFORMER if contents.get('light_transformer', False) else 0))
+                (SCENE_RESOURCE_LIGHT_TRANSFORMER if contents.get('light_transformer', False) else 0) |
+                (SCENE_RESOURCE_ATMOSPHERE_SKY if contents.get('atmosphere_sky', False) else 0) |
+                (SCENE_RESOURCE_AERIAL_PERSPECTIVE if contents.get('aerial_perspective', False) else 0))
     data += u32(*contents.get('capture_warmup_samples', [0] * ray.MAX_RAY_PROGRAMS))
     keys = sorted(contents.get('recipe_keys', []),
                   key=lambda row: (PROGRAM_CODES[row['program']], TARGET_CODES[row['profile']]))

@@ -8,6 +8,7 @@
 
 #include <ludus/foundation/containers/array.hpp>
 #include <ludus/foundation/containers/static_array.hpp>
+#include <ludus/graphics/renderer/deferred_layout.h>
 #include <ludus/graphics/renderer/render_graph_activation.hpp>
 #include <ludus/graphics/rhi/device.h>
 
@@ -254,6 +255,10 @@ void WritePlan(PackageWriter& inoutWriter, const PackageOptions& options, uint32
     if (options.Version >= format::RASTER_TONE_MAPPING_PACKAGE_VERSION)
     {
         inoutWriter.WriteWord(static_cast<uint32>(options.ToneMappingCurve));
+    }
+    if (options.Version >= format::SCENE_WORK_ITEMS_PACKAGE_VERSION)
+    {
+        inoutWriter.WriteWord(0);
     }
     if (options.HasUniforms == false)
     {
@@ -878,6 +883,134 @@ TEST_CASE("RG3 activation waits for confirmed submission and retires the old gen
     CHECK(rhi::reference::Destroys[static_cast<usize>(rhi::internal::RasterKind::Texture)] > textureDestroys);
 }
 
+TEST_CASE("Rejected extractions name their scene-level cause for the drawing graph and the candidate",
+          "[render-graph][activation]")
+{
+    ActivationFixture fixture;
+    fixture.ActivateFirst();
+    renderer::RenderGraph* activeOrNull = fixture.Activation.GetActiveOrNull();
+    REQUIRE(activeOrNull != nullptr);
+    CHECK(activeOrNull->GetLastRejection() == renderer::RenderGraphSceneRejection::None);
+    rhi::reference::Next = rhi::RasterStatus::Pending;
+    PackageOptions second;
+    second.Generation = 2;
+    REQUIRE(fixture.Activation.Stage(MakePackage(second)) == rhi::RasterStatus::Pending);
+    ActivationFixture::CompletePending(rhi::RasterStatus::Ready);
+    REQUIRE(fixture.Activation.Poll() == rhi::RasterStatus::Ready);
+    renderer::RenderGraphReport report;
+    fixture.Cameras[0].Depth = renderer::DepthConvention::ReverseZ;
+    fixture.Cameras[0].InfiniteFar = true;
+    CHECK(fixture.Update(report, 3) == rhi::RasterStatus::Unsupported);
+    CHECK(activeOrNull->GetLastRejection() == renderer::RenderGraphSceneRejection::CameraDepth);
+    CHECK(fixture.Activation.GetReport().CandidateRejection == renderer::RenderGraphSceneRejection::CameraDepth);
+    CHECK(fixture.Activation.GetReport().ActiveGeneration == 1);
+    // An accepted extraction clears the cause, and a newly staged candidate starts without one.
+    fixture.Cameras[0].Depth = renderer::DepthConvention::Conventional;
+    fixture.Cameras[0].InfiniteFar = false;
+    REQUIRE(fixture.Update(report, 4) == rhi::RasterStatus::Ready);
+    CHECK(activeOrNull->GetLastRejection() == renderer::RenderGraphSceneRejection::None);
+    CHECK(fixture.Activation.GetReport().CandidateRejection == renderer::RenderGraphSceneRejection::None);
+    fixture.Cameras[0].InfiniteFar = true;
+    fixture.Cameras[0].Depth = renderer::DepthConvention::ReverseZ;
+    CHECK(fixture.Update(report, 5) == rhi::RasterStatus::Unsupported);
+    PackageOptions third;
+    third.Generation = 3;
+    REQUIRE(fixture.Activation.Stage(MakePackage(third)) == rhi::RasterStatus::Ready);
+    CHECK(fixture.Activation.GetReport().CandidateRejection == renderer::RenderGraphSceneRejection::None);
+}
+
+TEST_CASE("Rejected generations name the stage that failed, and a newly staged candidate starts without one",
+          "[render-graph][activation]")
+{
+    using Stage = renderer::RenderGraphFailureStage;
+    ActivationFixture fixture;
+    fixture.ActivateFirst();
+    renderer::RenderGraph* activeOrNull = fixture.Activation.GetActiveOrNull();
+    REQUIRE(activeOrNull != nullptr);
+    CHECK(activeOrNull->GetLastFailureStage() == Stage::None);
+    // The drawing graph names the step of its own rejected Update and clears it once an Update is accepted.
+    renderer::RenderGraphReport report;
+    fixture.Cameras[0].RasterExposureStops = 2 * renderer::ViewDescription::MAXIMUM_RASTER_EXPOSURE_STOPS;
+    CHECK(fixture.Update(report, 2) == rhi::RasterStatus::InvalidDescription);
+    CHECK(activeOrNull->GetLastFailureStage() == Stage::CameraValues);
+    fixture.Cameras[0].RasterExposureStops = 0;
+    REQUIRE(fixture.Update(report, 3) == rhi::RasterStatus::Ready);
+    CHECK(activeOrNull->GetLastFailureStage() == Stage::None);
+
+    // A candidate needing per-draw values that the drawing graph does not fails at its item values, while the
+    // drawing graph accepts the same extraction and keeps drawing.
+    PackageOptions bound;
+    bound.HasUniforms = true;
+    bound.Generation = 2;
+    REQUIRE(fixture.Activation.Stage(MakePackage(bound)) == rhi::RasterStatus::Ready);
+    REQUIRE(fixture.Activation.Poll() == rhi::RasterStatus::Ready);
+    CHECK(fixture.Update(report, 4) == rhi::RasterStatus::Ready);
+    const renderer::RenderGraphActivationReport itemValues = fixture.Activation.GetReport();
+    CHECK(itemValues.Candidate == renderer::RenderGraphCandidateState::Failed);
+    CHECK(itemValues.LastFailure == rhi::RasterStatus::InvalidDescription);
+    CHECK(itemValues.CandidateFailureStage == Stage::ItemValues);
+    CHECK(itemValues.CandidateRejection == renderer::RenderGraphSceneRejection::None);
+    CHECK(itemValues.ActiveGeneration == 1);
+    CHECK(activeOrNull->GetLastFailureStage() == Stage::None);
+
+    // Asynchronous pipeline preparation that fails names its own stage; staging clears the previous one.
+    rhi::reference::Next = rhi::RasterStatus::Pending;
+    PackageOptions pending;
+    pending.Generation = 3;
+    REQUIRE(fixture.Activation.Stage(MakePackage(pending)) == rhi::RasterStatus::Pending);
+    CHECK(fixture.Activation.GetReport().CandidateFailureStage == Stage::None);
+    ActivationFixture::CompletePending(rhi::RasterStatus::Failed);
+    CHECK(fixture.Activation.Poll() == rhi::RasterStatus::Ready);
+    CHECK(fixture.Activation.GetReport().Candidate == renderer::RenderGraphCandidateState::Failed);
+    CHECK(fixture.Activation.GetReport().CandidateFailureStage == Stage::PipelinePreparation);
+
+    // A plan rejected before GPU work fails at setup.
+    PackageOptions malformed;
+    malformed.Generation = 4;
+    malformed.Backing = 31;
+    CHECK(fixture.Activation.Stage(MakePackage(malformed)) == rhi::RasterStatus::InvalidDescription);
+    CHECK(fixture.Activation.GetReport().Candidate == renderer::RenderGraphCandidateState::Failed);
+    CHECK(fixture.Activation.GetReport().CandidateFailureStage == Stage::Setup);
+    CHECK(fixture.Activation.GetReport().ActiveGeneration == 1);
+    fixture.Render();
+}
+
+TEST_CASE("A graph without clustered deferred programs draws a World with an Atmosphere and reports the omission",
+          "[render-graph][activation][world-features]")
+{
+    ActivationFixture fixture;
+    fixture.ActivateFirst();
+    renderer::RenderGraph* activeOrNull = fixture.Activation.GetActiveOrNull();
+    REQUIRE(activeOrNull != nullptr);
+    // The fixture's raster graph has neither clustered deferred programs nor a ray kernel calling a feature function.
+    CHECK(activeOrNull->GetWorldFeatureSupport(renderer::WorldFeature::AtmosphereSky) ==
+          renderer::WorldFeatureSupport::NotRendered);
+    CHECK(activeOrNull->GetWorldFeatureSupport(renderer::WorldFeature::AerialPerspective) ==
+          renderer::WorldFeatureSupport::NotRendered);
+    renderer::RenderGraphReport report;
+    REQUIRE(fixture.Update(report, 2) == rhi::RasterStatus::Ready);
+    CHECK(report.UnrenderedWorldFeatures == 0);
+    // It draws the rest of the World rather than rejecting the extraction, and names both missing features.
+    fixture.Cameras[0].Atmosphere.IsEnabled = true;
+    fixture.Cameras[0].Atmosphere.ShouldLightScene = true;
+    REQUIRE(fixture.Update(report, 3) == rhi::RasterStatus::Ready);
+    const renderer::WorldFeatureMask both = renderer::GetWorldFeatureBit(renderer::WorldFeature::AtmosphereSky) |
+                                            renderer::GetWorldFeatureBit(renderer::WorldFeature::AerialPerspective);
+    CHECK(report.IsAccepted == true);
+    CHECK(report.UnrenderedWorldFeatures == both);
+    CHECK(activeOrNull->GetLastRejection() == renderer::RenderGraphSceneRejection::None);
+    CHECK(activeOrNull->GetReport().UnrenderedWorldFeatures == both);
+    CHECK(fixture.Activation.GetReport().ActiveGeneration == 1);
+    // An Atmosphere that does not light the scene draws no haze, so only its sky is missing.
+    fixture.Cameras[0].Atmosphere.ShouldLightScene = false;
+    REQUIRE(fixture.Update(report, 4) == rhi::RasterStatus::Ready);
+    CHECK(report.UnrenderedWorldFeatures == renderer::GetWorldFeatureBit(renderer::WorldFeature::AtmosphereSky));
+    // Turning the Atmosphere off clears the report on the next accepted extraction.
+    fixture.Cameras[0].Atmosphere.IsEnabled = false;
+    REQUIRE(fixture.Update(report, 5) == rhi::RasterStatus::Ready);
+    CHECK(report.UnrenderedWorldFeatures == 0);
+}
+
 TEST_CASE("RG3 a newer candidate supersedes an unactivated one", "[render-graph][activation]")
 {
     ActivationFixture fixture;
@@ -1412,15 +1545,16 @@ TEST_CASE("runtime independent shader pairs decode with their own stage and bind
         // WritePlan's uniform fixture starts with the legacy color program. Retarget
         // that serialized binding explicitly; the rest of its layout is unchanged.
         constexpr usize LEGACY_PASS_FIELDS = 10;
-        const usize passBytes = (version >= format::RASTER_TONE_MAPPING_PACKAGE_VERSION ? format::PASS_FIELD_COUNT
-                                 : version >= format::SOFTWARE_RAY_PACKAGE_VERSION      ? format::PASS_FIELD_COUNT - 1
-                                 : version >= format::DENOISING_PACKAGE_VERSION         ? format::PASS_FIELD_COUNT - 2
-                                 : version >= format::BILINEAR_PACKAGE_VERSION          ? format::PASS_FIELD_COUNT - 3
-                                 : version >= format::TONE_MAPPING_PACKAGE_VERSION      ? format::PASS_FIELD_COUNT - 4
-                                 : version >= format::ACCUMULATION_PACKAGE_VERSION      ? format::PASS_FIELD_COUNT - 5
-                                 : version >= format::VISIBILITY_PACKAGE_VERSION        ? format::PASS_FIELD_COUNT - 6
-                                 : version >= format::ORDERED_PACKAGE_VERSION           ? format::PASS_FIELD_COUNT - 8
-                                                                                        : LEGACY_PASS_FIELDS) *
+        const usize passBytes = (version >= format::SCENE_WORK_ITEMS_PACKAGE_VERSION      ? format::PASS_FIELD_COUNT
+                                 : version >= format::RASTER_TONE_MAPPING_PACKAGE_VERSION ? format::PASS_FIELD_COUNT - 1
+                                 : version >= format::SOFTWARE_RAY_PACKAGE_VERSION        ? format::PASS_FIELD_COUNT - 2
+                                 : version >= format::DENOISING_PACKAGE_VERSION           ? format::PASS_FIELD_COUNT - 3
+                                 : version >= format::BILINEAR_PACKAGE_VERSION            ? format::PASS_FIELD_COUNT - 4
+                                 : version >= format::TONE_MAPPING_PACKAGE_VERSION        ? format::PASS_FIELD_COUNT - 5
+                                 : version >= format::ACCUMULATION_PACKAGE_VERSION        ? format::PASS_FIELD_COUNT - 6
+                                 : version >= format::VISIBILITY_PACKAGE_VERSION          ? format::PASS_FIELD_COUNT - 7
+                                 : version >= format::ORDERED_PACKAGE_VERSION             ? format::PASS_FIELD_COUNT - 9
+                                                                                          : LEGACY_PASS_FIELDS) *
                                 sizeof(uint32);
         const usize bindingOffset =
             format::HEADER_BYTES +
@@ -1745,9 +1879,10 @@ TEST_CASE("runtime denoising fields preserve modes and reject invalid raster use
 namespace
 {
 /// One WGSL ray generation: the given compute role and the ray image pair, then the scene resource word.
-Array<uint8> MakeRayPackageBytes(format::StageRole compute, uint32 sceneResources)
+/// base supplies the version and any other plan option; the ray program and accumulation are fixed.
+Array<uint8> MakeRayPackageBytes(format::StageRole compute, uint32 sceneResources, const PackageOptions& base = {})
 {
-    PackageOptions options;
+    PackageOptions options = base;
     options.Program = format::Technique::RayTracing;
     options.AccumulationSamples = 2;
     PackageWriter writer;
@@ -1852,6 +1987,63 @@ TEST_CASE("RG3 version 25 packages append the LTC table binding to each scene co
     CHECK(DecodeBytes(raster.Bytes) == renderer::RenderGraphPackageStatus::Malformed);
 }
 
+TEST_CASE("RG3 version 38 packages append the World-feature tables in slot order",
+          "[render-graph][activation][world-features]")
+{
+    constexpr uint32 ALL_TABLES = format::SCENE_RESOURCE_LTC_TABLE | format::SCENE_RESOURCE_FAILURE_SUMMARY |
+                                  format::SCENE_RESOURCE_ATMOSPHERE_SKY | format::SCENE_RESOURCE_AERIAL_PERSPECTIVE;
+    for (const format::StageRole compute :
+         {format::StageRole::SceneRayCompute, format::StageRole::PersistentRayCompute})
+    {
+        renderer::RenderGraphPackage plain;
+        const Array<uint8> plainBytes = MakeRayPackageBytes(compute, format::SCENE_RESOURCE_FAILURE_SUMMARY);
+        REQUIRE(plain.Decode({plainBytes.GetData(), plainBytes.GetSize()}) ==
+                renderer::RenderGraphPackageStatus::Ready);
+        const renderer::RenderGraphPrograms ordinary = plain.GetPrograms({}, {});
+        CHECK(ordinary.HasAtmosphereSky == false);
+        CHECK(ordinary.HasAerialPerspective == false);
+        CHECK(renderer::GetWorldFeatureSupport(ordinary, renderer::WorldFeature::AtmosphereSky) ==
+              renderer::WorldFeatureSupport::NotRendered);
+
+        renderer::RenderGraphPackage featured;
+        const Array<uint8> featuredBytes = MakeRayPackageBytes(compute, ALL_TABLES);
+        REQUIRE(featured.Decode({featuredBytes.GetData(), featuredBytes.GetSize()}) ==
+                renderer::RenderGraphPackageStatus::Ready);
+        const renderer::RenderGraphPrograms programs = featured.GetPrograms({}, {});
+        CHECK(programs.HasAtmosphereSky == true);
+        CHECK(programs.HasAerialPerspective == true);
+        CHECK(renderer::GetWorldFeatureSupport(programs, renderer::WorldFeature::AtmosphereSky) ==
+              renderer::WorldFeatureSupport::Approximated);
+        CHECK(renderer::GetWorldFeatureSupport(programs, renderer::WorldFeature::AerialPerspective) ==
+              renderer::WorldFeatureSupport::Approximated);
+        // The renderer-owned slots close the frozen ABI in slot order, as reflection orders them in a header.
+        const usize count = programs.RayCompute.Bindings.GetSize();
+        constexpr usize RENDERER_SLOTS = 4;
+        REQUIRE(count == ordinary.RayCompute.Bindings.GetSize() - LUDUS_GRAPH_FAILURE_BINDING_COUNT + RENDERER_SLOTS);
+        const StaticArray<uint32, RENDERER_SLOTS> expected{{LUDUS_GRAPH_AERIAL_PERSPECTIVE_BINDING,
+                                                            LUDUS_GRAPH_LTC_TABLE_BINDING,
+                                                            LUDUS_GRAPH_FAILURE_BINDING,
+                                                            LUDUS_GRAPH_ATMOSPHERE_SKY_BINDING}};
+        for (usize i = 0; i < RENDERER_SLOTS; ++i)
+        {
+            const rhi::RasterBinding& binding = programs.RayCompute.Bindings[count - RENDERER_SLOTS + i];
+            CHECK(binding.Binding == expected[i]);
+            CHECK(binding.Visibility == rhi::RasterVisibility::Compute);
+        }
+        CHECK(programs.RayCompute.Bindings[count - 1].Kind == rhi::RasterBindingKind::StorageRead);
+        CHECK(programs.RayCompute.Bindings[count - 1].MinSize == LUDUS_GPU_PREVIEW_VECTOR_BYTES);
+    }
+    // Earlier generations never carry the World-feature bits.
+    PackageOptions earlier;
+    earlier.Version = format::DEFERRED_SURFACE_CHART_GBUFFER_PACKAGE_VERSION;
+    CHECK(DecodeBytes(MakeRayPackageBytes(format::StageRole::SceneRayCompute,
+                                          format::SCENE_RESOURCE_ATMOSPHERE_SKY,
+                                          earlier)) == renderer::RenderGraphPackageStatus::Malformed);
+    CHECK(DecodeBytes(MakeRayPackageBytes(format::StageRole::SceneRayCompute,
+                                          format::SCENE_RESOURCE_AERIAL_PERSPECTIVE,
+                                          earlier)) == renderer::RenderGraphPackageStatus::Malformed);
+}
+
 TEST_CASE("deferred runtime roles are complete per target and require the mesh-light binding version",
           "[render-graph][deferred]")
 {
@@ -1874,22 +2066,36 @@ TEST_CASE("deferred runtime roles are complete per target and require the mesh-l
                                   uint32 omittedRole,
                                   format::ShaderTarget target = format::ShaderTarget::Wgsl,
                                   format::StageRole blockRole = format::StageRole::DeferredLightingFragment,
-                                  bool shouldWriteOpaqueGBuffer = true) {
+                                  bool shouldWriteOpaqueGBuffer = true,
+                                  bool shouldWriteProbeGBuffer = false,
+                                  bool shouldWriteChartGBuffer = false) {
         // NOLINTEND(bugprone-easily-swappable-parameters)
         // Packages before the opaque G-buffer version are cooked without its role.
         const bool hasOpaqueGBuffer =
             shouldWriteOpaqueGBuffer == true && version >= format::OPAQUE_GBUFFER_PACKAGE_VERSION;
         const uint32 omittedCount = (omittedRole == format::ABSENT ? 0 : 1) + (hasOpaqueGBuffer == true ? 0 : 1);
+        const uint32 probeCount = (shouldWriteProbeGBuffer == true ? 1 : 0) + (shouldWriteChartGBuffer == true ? 1 : 0);
         PackageWriter writer;
         PackageOptions options;
         options.Version = version;
-        WritePlan(writer, options, static_cast<uint32>(SUPPORT_COUNT + 2 - omittedCount));
+        WritePlan(writer, options, static_cast<uint32>(SUPPORT_COUNT + 2 + probeCount - omittedCount));
         WriteStage(writer, format::StageRole::ColorVertex, target, VERTEX_TEXT, "VertexMain");
         WriteStage(writer, format::StageRole::ColorFragment, target, FRAGMENT_TEXT, "FragmentMain");
-        for (const format::StageRole role : roles)
+        // The optional baked-lighting G-buffer roles follow the required ones.
+        constexpr usize BAKED_ROLE_COUNT = 2;
+        StaticArray<format::StageRole, SUPPORT_COUNT + BAKED_ROLE_COUNT> writtenRoles{};
+        for (usize index = 0; index < SUPPORT_COUNT; ++index)
+        {
+            writtenRoles[index] = roles[index];
+        }
+        writtenRoles[SUPPORT_COUNT] = format::StageRole::DeferredProbeGBufferFragment;
+        writtenRoles[SUPPORT_COUNT + 1] = format::StageRole::DeferredSurfaceChartGBufferFragment;
+        for (const format::StageRole role : writtenRoles)
         {
             if (static_cast<uint32>(role) == omittedRole ||
-                (role == format::StageRole::DeferredOpaqueGBufferFragment && hasOpaqueGBuffer == false))
+                (role == format::StageRole::DeferredOpaqueGBufferFragment && hasOpaqueGBuffer == false) ||
+                (role == format::StageRole::DeferredProbeGBufferFragment && shouldWriteProbeGBuffer == false) ||
+                (role == format::StageRole::DeferredSurfaceChartGBufferFragment && shouldWriteChartGBuffer == false))
             {
                 continue;
             }
@@ -1994,8 +2200,8 @@ TEST_CASE("deferred runtime roles are complete per target and require the mesh-l
         core::UniquePtr<renderer::RenderGraphPackage> package{allocationOrNull};
         REQUIRE(package.Get() != nullptr);
         CHECK(package->Decode({missing.GetData(), missing.GetSize()}) == renderer::RenderGraphPackageStatus::Malformed);
-        // The current fixture relabelled as version 30, whose packages cannot name the opaque role.
-        Array<uint8> early = makeDeferred(format::PACKAGE_VERSION, format::ABSENT);
+        // Version 30 cannot name the opaque role. Use the same pass record width before relabelling.
+        Array<uint8> early = makeDeferred(format::WORLD_FEATURE_PACKAGE_VERSION, format::ABSENT);
         constexpr usize VERSION_BYTE = sizeof(uint32);
         early[VERSION_BYTE] = static_cast<uint8>(format::RASTER_MESH_LIGHT_BOUND_PACKAGE_VERSION);
         CHECK(package->Decode({early.GetData(), early.GetSize()}) ==
@@ -2011,6 +2217,93 @@ TEST_CASE("deferred runtime roles are complete per target and require the mesh-l
         REQUIRE(package.Get() != nullptr);
         // Earlier role layouts retain their eight-slot uniform-name bounds.
         CHECK(package->Decode({bytes.GetData(), bytes.GetSize()}) == renderer::RenderGraphPackageStatus::Malformed);
+    }
+    {
+        // A deferred pass with Baked Lighting connected carries the probe G-buffer; others leave it empty.
+        const Array<uint8> realtime = makeDeferred(format::PACKAGE_VERSION, format::ABSENT);
+        const Array<uint8> baked = makeDeferred(format::PACKAGE_VERSION,
+                                                format::ABSENT,
+                                                format::ShaderTarget::Wgsl,
+                                                format::StageRole::DeferredLightingFragment,
+                                                true,
+                                                true);
+        renderer::RenderGraphPackage* realtimeOrNull = new (std::nothrow) renderer::RenderGraphPackage;
+        core::UniquePtr<renderer::RenderGraphPackage> realtimePackage{realtimeOrNull};
+        REQUIRE(realtimePackage.Get() != nullptr);
+        REQUIRE(realtimePackage->Decode({realtime.GetData(), realtime.GetSize()}) ==
+                renderer::RenderGraphPackageStatus::Ready);
+        CHECK(realtimePackage->GetPrograms({}, {}).DeferredProbeGBufferFragment.Artifact.Wgsl.empty() == true);
+        renderer::RenderGraphPackage* bakedOrNull = new (std::nothrow) renderer::RenderGraphPackage;
+        core::UniquePtr<renderer::RenderGraphPackage> package{bakedOrNull};
+        REQUIRE(package.Get() != nullptr);
+        REQUIRE(package->Decode({baked.GetData(), baked.GetSize()}) == renderer::RenderGraphPackageStatus::Ready);
+        const renderer::RenderGraphPrograms programs = package->GetPrograms({}, {});
+        CHECK(programs.DeferredProbeGBufferFragment.Artifact.Wgsl.empty() == false);
+        CHECK(programs.DeferredProbeGBufferFragment.Bindings.GetSize() == 11);
+        // Packages before format::DEFERRED_PROBE_GBUFFER_PACKAGE_VERSION cannot name the probe role.
+        Array<uint8> early = makeDeferred(format::WORLD_FEATURE_PACKAGE_VERSION,
+                                          format::ABSENT,
+                                          format::ShaderTarget::Wgsl,
+                                          format::StageRole::DeferredLightingFragment,
+                                          true,
+                                          true);
+        constexpr usize VERSION_BYTE = sizeof(uint32);
+        early[VERSION_BYTE] = static_cast<uint8>(format::RECIPE_KEY_PACKAGE_VERSION);
+        renderer::RenderGraphPackage* earlyOrNull = new (std::nothrow) renderer::RenderGraphPackage;
+        core::UniquePtr<renderer::RenderGraphPackage> earlyPackage{earlyOrNull};
+        REQUIRE(earlyPackage.Get() != nullptr);
+        CHECK(earlyPackage->Decode({early.GetData(), early.GetSize()}) ==
+              renderer::RenderGraphPackageStatus::UnsupportedVersion);
+    }
+    {
+        // The surface-chart G-buffer accompanies the probe G-buffer in packages that connect Baked Lighting.
+        const Array<uint8> baked = makeDeferred(format::PACKAGE_VERSION,
+                                                format::ABSENT,
+                                                format::ShaderTarget::Wgsl,
+                                                format::StageRole::DeferredLightingFragment,
+                                                true,
+                                                true,
+                                                true);
+        renderer::RenderGraphPackage* bakedOrNull = new (std::nothrow) renderer::RenderGraphPackage;
+        core::UniquePtr<renderer::RenderGraphPackage> package{bakedOrNull};
+        REQUIRE(package.Get() != nullptr);
+        REQUIRE(package->Decode({baked.GetData(), baked.GetSize()}) == renderer::RenderGraphPackageStatus::Ready);
+        const renderer::RenderGraphPrograms programs = package->GetPrograms({}, {});
+        CHECK(programs.DeferredSurfaceChartGBufferFragment.Artifact.Wgsl.empty() == false);
+        CHECK(programs.DeferredSurfaceChartGBufferFragment.Artifact.Stage == rhi::ShaderStage::Fragment);
+        // The chart G-buffer keeps the clustered material bindings; the resolve's sixteen are unchanged.
+        CHECK(programs.DeferredSurfaceChartGBufferFragment.Bindings.GetSize() ==
+              programs.DeferredGBufferFragment.Bindings.GetSize());
+        CHECK(programs.DeferredLightingFragment.Bindings.GetSize() == renderer::DEFERRED_BINDING_COUNT);
+        CHECK(programs.DeferredProbeGBufferFragment.Artifact.Wgsl.empty() == false);
+        // Packages before format::DEFERRED_SURFACE_CHART_GBUFFER_PACKAGE_VERSION cannot name the chart role.
+        Array<uint8> early = makeDeferred(format::WORLD_FEATURE_PACKAGE_VERSION,
+                                          format::ABSENT,
+                                          format::ShaderTarget::Wgsl,
+                                          format::StageRole::DeferredLightingFragment,
+                                          true,
+                                          true,
+                                          true);
+        constexpr usize VERSION_BYTE = sizeof(uint32);
+        early[VERSION_BYTE] = static_cast<uint8>(format::DEFERRED_PROBE_GBUFFER_PACKAGE_VERSION);
+        renderer::RenderGraphPackage* earlyOrNull = new (std::nothrow) renderer::RenderGraphPackage;
+        core::UniquePtr<renderer::RenderGraphPackage> earlyPackage{earlyOrNull};
+        REQUIRE(earlyPackage.Get() != nullptr);
+        CHECK(earlyPackage->Decode({early.GetData(), early.GetSize()}) ==
+              renderer::RenderGraphPackageStatus::UnsupportedVersion);
+        // Version 36 packages carrying only the probe G-buffer stay accepted.
+        Array<uint8> probeOnly = makeDeferred(format::DEFERRED_PROBE_GBUFFER_PACKAGE_VERSION,
+                                              format::ABSENT,
+                                              format::ShaderTarget::Wgsl,
+                                              format::StageRole::DeferredLightingFragment,
+                                              true,
+                                              true);
+        renderer::RenderGraphPackage* probeOrNull = new (std::nothrow) renderer::RenderGraphPackage;
+        core::UniquePtr<renderer::RenderGraphPackage> probePackage{probeOrNull};
+        REQUIRE(probePackage.Get() != nullptr);
+        REQUIRE(probePackage->Decode({probeOnly.GetData(), probeOnly.GetSize()}) ==
+                renderer::RenderGraphPackageStatus::Ready);
+        CHECK(probePackage->GetPrograms({}, {}).DeferredSurfaceChartGBufferFragment.Artifact.Wgsl.empty() == true);
     }
     for (usize role = format::DEFERRED_STAGE_ROLE_FIRST; role <= format::DEFERRED_OPAQUE_GBUFFER_STAGE_ROLE; ++role)
     {

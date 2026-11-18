@@ -19,6 +19,24 @@ class WindowsQualificationTests(unittest.TestCase):
             with self.subTest(actual=actual), self.assertRaisesRegex(RuntimeError, "inventory mismatch"):
                 qualification.require_inventory(["one", "two"], actual)
 
+    def test_sharded_suites_must_register_every_catch2_shard(self):
+        def shard(index, count=3, name=None):
+            return {"name": name or f"suite_{index}",
+                    "command": ["suite.exe", "--shard-count", str(count), "--shard-index", str(index), "--durations",
+                                "yes"]}
+
+        tests = [shard(2), {"name": "other", "command": ["other.exe"]}, shard(0), shard(1)]
+        self.assertEqual(qualification.find_shards("suite", tests), ["suite_0", "suite_1", "suite_2"])
+        self.assertRegex("suite_12", qualification.test_inventory(["other"], qualification.shard_inventory(["suite"])))
+        self.assertNotRegex("suite_x", qualification.test_inventory([], qualification.shard_inventory(["suite"])))
+        for name, broken in (("missing shard", [shard(0), shard(2)]),
+                             ("no shards", [{"name": "other", "command": ["other.exe"]}]),
+                             ("other count", [shard(0), shard(1), shard(2, count=4)]),
+                             ("wrong index", [shard(0), shard(1), shard(1, name="suite_2")]),
+                             ("unnamed shard", [{"name": "suite_0", "command": ["suite.exe"]}])):
+            with self.subTest(name), self.assertRaisesRegex(RuntimeError, "shard|inventory"):
+                qualification.find_shards("suite", broken)
+
     def test_required_ctest_cases_must_run_and_pass(self):
         with tempfile.TemporaryDirectory() as directory:
             report = Path(directory) / "ctest.xml"

@@ -8,6 +8,7 @@ from __future__ import annotations
 
 from copy import deepcopy
 
+from . import render_graph_ray as ray
 from . import render_graph_ray_invocation as ray_invocation
 
 KINDS = ('GraphicsPipeline', 'ComputePipeline', 'RayTracingPipeline')
@@ -155,9 +156,14 @@ def validate(node, where, graph):
         graph._keys(state, (), where, ('group_size',))
         if 'group_size' in state:
             _dimensions(state['group_size'], where, graph, 'Pipeline State → group_size')
-        graph._keys(invocation, ('dimensions',), where, ('type', 'traversal', 'traversal_source'))
-        if invocation['dimensions'] != 'ColorTarget':
-            _dimensions(invocation['dimensions'], where, graph, 'Invocation → dimensions')
+        if 'work_items' in invocation:
+            graph._keys(invocation, ('work_items',), where, ('type', 'traversal', 'traversal_source'))
+            _check_field(graph._integer, invocation['work_items'], 'Invocation → work_items', where, graph, 1,
+                         ray.MAX_SCENE_WORK_ITEMS)
+        else:
+            graph._keys(invocation, ('dimensions',), where, ('type', 'traversal', 'traversal_source'))
+            if invocation['dimensions'] != 'ColorTarget':
+                _dimensions(invocation['dimensions'], where, graph, 'Invocation → dimensions')
     elif node['kind'] == 'ComputePipeline':
         _check_field(graph._keys, state, 'Pipeline State', where, graph, ('group_size',))
         _dimensions(state['group_size'], where, graph, 'Pipeline State → group_size')

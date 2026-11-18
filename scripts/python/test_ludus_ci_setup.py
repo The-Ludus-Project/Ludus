@@ -15,7 +15,7 @@ from pathlib import Path
 
 from ludus_tools import ci_setup, cli, create, workflow_steps
 from ludus_tools.errors import ToolingError
-from ludus_tools.release_setup import RELEASE_TOOLS_VENV, setup_release
+from ludus_tools.release_setup import setup_release
 from ludus_tools.release_setup import workflow_text as release_workflow_text
 
 try:
@@ -34,69 +34,66 @@ def make_project(root: Path, **options) -> Path:
 
 
 class WorkflowTextTests(unittest.TestCase):
-    def test_linux_workflow_builds_release_profile_without_secrets(self):
-        text = ci_setup.workflow_text("linux-x64")
+    def test_linux_workflow_provisions_and_uses_the_pin_without_secrets(self):
+        text = ci_setup.workflow_text("linux-x64", preset="linux-clang-development")
         self.assertIn("runs-on: ubuntu-24.04", text)
         self.assertIn("permissions:\n  contents: read\n", text)
-        self.assertIn("ludus project build . --profile linux-clang-release", text)
-        self.assertIn("ctest --test-dir out/build/linux-clang-release", text)
-        self.assertIn(f"CXX: {workflow_steps.pinned_compiler()}", text)
+        self.assertIn("LUDUS_CI_PROFILE: linux-clang-development", text)
+        self.assertIn("repository: The-Ludus-Project/Ludus", text)
+        self.assertIn("ref: ${{ steps.ludus-revision.outputs.revision }}", text)
+        self.assertIn("revision=$(cat config/ludus-tools-revision.txt)", text)
+        self.assertLess(text.index("./scripts/shader-probe bootstrap"),
+                        text.index('./scripts/install-sdk "$LUDUS_CI_PROFILE"'))
+        self.assertIn('ludus project repair . --profile "$LUDUS_CI_PROFILE"', text)
+        self.assertIn('--tools "$GITHUB_WORKSPACE/out/ludus-ci-engine" --sdk "$LUDUS_CI_SDK_PREFIX"', text)
         self.assertIn(workflow_steps.CHECKOUT_STEP, text)
-        # The only credential is the job's own read-only token, for this repository's release assets.
+        # Only the digest-checked archive download gets the built-in read-only job token.
         self.assertEqual(text.count("GH_TOKEN: ${{ github.token }}\n"), 1)
         for forbidden in ("secrets.", "pull_request_target", "BUTLER_API_KEY", "TOKEN"):
             self.assertNotIn(forbidden, text.replace("GH_TOKEN: ${{ github.token }}\n", ""))
 
-    def test_macos_workflow_uses_native_runner_and_homebrew_llvm(self):
-        text = ci_setup.workflow_text("macos-arm64")
-        self.assertIn("runs-on: macos-15\n", text)
-        self.assertIn("--profile macos-clang-release", text)
-        self.assertNotIn("apt.llvm.org", text)
-        self.assertNotIn("CXX:", text)
-        self.assertLess(text.index("brew update --quiet"), text.index("brew install python@3.12"))
+    def test_macos_workflow_builds_selected_flavor(self):
+        for flavor in ("debug", "development", "release"):
+            with self.subTest(flavor=flavor):
+                preset = f"macos-clang-{flavor}"
+                text = ci_setup.workflow_text("macos-arm64", preset=preset)
+                self.assertIn("runs-on: macos-15\n", text)
+                self.assertIn(f"LUDUS_CI_PROFILE: {preset}", text)
+                self.assertIn(f"vars.LUDUS_{flavor.upper()}_SDK_URL", text)
 
     def test_macos_x64_is_refused_without_a_hosted_toolchain(self):
         self.assertEqual(workflow_steps.HOSTED_PLATFORMS, ("linux-x64", "macos-arm64"))
         for platforms in (("macos-x64",), ("linux-x64", "macos-x64")):
             with self.subTest(platforms=platforms), self.assertRaisesRegex(ToolingError, "Intel macOS bottles"):
-                ci_setup.workflow_text(*platforms)
-
-    def test_release_and_ci_workflows_share_the_pinned_toolchain(self):
-        for platform in workflow_steps.HOSTED_PLATFORMS:
-            self.assertIn(workflow_steps.build_prerequisites(platform, ci_setup.CI_TOOLS_VENV),
-                          ci_setup.workflow_text(platform))
-        self.assertIn(workflow_steps.build_prerequisites("linux-x64", RELEASE_TOOLS_VENV),
-                      release_workflow_text("linux-release", "linux", "linux-x64"))
-        self.assertIn(workflow_steps.build_prerequisites("macos-arm64", RELEASE_TOOLS_VENV),
-                      release_workflow_text("macos-release", "macos", "macos-arm64"))
-
-    def test_missing_sdk_variables_skip_the_toolchain(self):
-        text = ci_setup.workflow_text("linux-x64")
-        notice, build = text.split("  build-and-test:\n", 1)
-        self.assertIn("if: vars.LUDUS_RELEASE_SDK_URL == '' && vars.LUDUS_RELEASE_SDK_SHA256 == ''", notice)
-        self.assertIn("::notice", notice)
-        self.assertNotIn("apt-get", notice)
-        self.assertTrue(build.startswith("    if: vars.LUDUS_RELEASE_SDK_URL != '' || vars.LUDUS_RELEASE_SDK_SHA256 != ''"))
+                ci_setup.workflow_text(*platforms, preset="macos-clang-development")
 
     @unittest.skipIf(yaml is None, "requires PyYAML")
-    def test_workflow_is_valid_yaml(self):
-        for platform in workflow_steps.HOSTED_PLATFORMS:
-            document = yaml.safe_load(ci_setup.workflow_text(platform))
-            self.assertEqual(document["permissions"], {"contents": "read"})
-            self.assertEqual(set(document["jobs"]), {"sdk-not-configured", "build-and-test"})
-            # PyYAML reads the bare `on:` key as boolean true (YAML 1.1).
-            self.assertIn("pull_request", document[True])
+    def test_workflow_keeps_the_build_job_and_selects_one_sdk_step(self):
+        document = yaml.safe_load(ci_setup.workflow_text("linux-x64", preset="linux-clang-release"))
+        self.assertEqual(document["permissions"], {"contents": "read"})
+        self.assertEqual(set(document["jobs"]), {"build-and-test"})
+        # PyYAML reads the bare on key as boolean true (YAML 1.1).
+        self.assertIn("pull_request", document[True])
+        job = document["jobs"]["build-and-test"]
+        self.assertNotIn("if", job)
+        steps = {step.get("name"): step for step in job["steps"]}
+        self.assertEqual(steps["Prepare pinned Ludus tooling"]["working-directory"], "out/ludus-ci-engine")
+        self.assertEqual(steps["Acquire digest-pinned Release SDK"]["if"],
+                         "vars.LUDUS_RELEASE_SDK_URL != '' || vars.LUDUS_RELEASE_SDK_SHA256 != ''")
+        fallback = steps["Build and install the pinned Ludus SDK"]
+        self.assertEqual(fallback["if"], "vars.LUDUS_RELEASE_SDK_URL == '' && vars.LUDUS_RELEASE_SDK_SHA256 == ''")
+        self.assertEqual(fallback["working-directory"], "out/ludus-ci-engine")
+        self.assertNotIn("if", steps["Build and test the game"])
 
-    def test_rejects_unknown_platform(self):
-        with self.assertRaises(ToolingError):
-            ci_setup.workflow_text("web")
-        with self.assertRaises(ToolingError):
-            ci_setup.workflow_text("linux-x64", "web")
-        with self.assertRaises(ToolingError):
-            ci_setup.workflow_text()
+    def test_rejects_unknown_platform_or_preset(self):
+        for platforms in (("web",), ("linux-x64", "web"), ()):
+            with self.subTest(platforms=platforms), self.assertRaises(ToolingError):
+                ci_setup.workflow_text(*platforms, preset="linux-clang-development")
+        with self.assertRaisesRegex(ToolingError, "unsupported CI preset"):
+            ci_setup.workflow_text("linux-x64", preset="windows-msvc-development")
 
     def test_sdk_install_failure_keeps_its_diagnostic(self):
-        text = ci_setup.workflow_text("linux-x64")
+        text = ci_setup.workflow_text("linux-x64", preset="linux-clang-development")
         self.assertIn("stdout=subprocess.PIPE", text)
         self.assertNotIn("capture_output", text)
 
@@ -151,10 +148,11 @@ class ReleaseSdkDownloadTests(unittest.TestCase):
     def test_step_passes_the_job_token_to_gh(self):
         step = workflow_steps.release_sdk_step("Acquire SDK", "invalid SDK variables")
         self.assertIn("          GH_TOKEN: ${{ github.token }}\n        run: |\n", step)
-        # The CI and release workflows share the step, so private repositories can build and package.
-        for text in (ci_setup.workflow_text("linux-x64"), release_workflow_text("macos-release", "macos", "macos-arm64")):
-            self.assertIn("          GH_TOKEN: ${{ github.token }}\n        run: |\n", text)
-            self.assertIn(step.split("SystemExit('invalid SDK variables')\n", 1)[1], text)
+        release_text = release_workflow_text("macos-release", "macos", "macos-arm64")
+        self.assertIn(step.split("SystemExit('invalid SDK variables')\n", 1)[1], release_text)
+        ci_text = ci_setup.workflow_text("linux-x64", preset="linux-clang-development")
+        self.assertIn("          GH_TOKEN: ${{ github.token }}\n", ci_text)
+        self.assertIn("output.write('LUDUS_CI_SDK_PREFIX=' + prefix", ci_text)
 
     def test_own_release_asset_is_downloaded_with_gh_and_digest_checked(self):
         digest = hashlib.sha256(self.ARCHIVE).hexdigest()
@@ -187,57 +185,43 @@ class ReleaseSdkDownloadTests(unittest.TestCase):
                 self.assertEqual(self.github_env.read_text(), "")
 
     def test_invalid_variables_fail_before_any_download(self):
-        result = self.run_step("http://example.invalid/sdk.tar", hashlib.sha256(self.ARCHIVE).hexdigest())
-        self.assertNotEqual(result.returncode, 0)
-        self.assertIn("invalid SDK variables", result.stderr)
-        self.assertFalse((self.root / "gh-argv.json").exists())
+        digest = hashlib.sha256(self.ARCHIVE).hexdigest()
+        for url, checksum in (("http://example.invalid/sdk.tar", digest),
+                              ("", digest), ("https://example.invalid/sdk.tar", "")):
+            with self.subTest(url=url, checksum=checksum):
+                result = self.run_step(url, checksum)
+                self.assertNotEqual(result.returncode, 0)
+                self.assertIn("invalid SDK variables", result.stderr)
+                self.assertFalse((self.root / "gh-argv.json").exists())
+
 
 
 class MultiPlatformWorkflowTests(unittest.TestCase):
     PLATFORMS = ("macos-arm64", "linux-x64", "linux-x64")
 
-    def test_each_platform_gets_a_job_gated_on_its_own_sdk_variables(self):
-        text = ci_setup.workflow_text(*self.PLATFORMS)
+    def test_each_platform_gets_the_selected_flavor_and_its_own_sdk_variables(self):
+        text = ci_setup.workflow_text(*self.PLATFORMS, preset="macos-clang-development")
         self.assertNotIn("  build-and-test:\n", text)
         for platform in workflow_steps.HOSTED_PLATFORMS:
-            url, sha = ci_setup.sdk_variables(platform, workflow_steps.HOSTED_PLATFORMS)
-            self.assertEqual((url, sha), ("LUDUS_RELEASE_SDK_URL_" + platform.upper().replace("-", "_"),
-                                          "LUDUS_RELEASE_SDK_SHA256_" + platform.upper().replace("-", "_")))
+            suffix = platform.upper().replace("-", "_")
+            url = "LUDUS_DEVELOPMENT_SDK_URL_" + suffix
+            sha = "LUDUS_DEVELOPMENT_SDK_SHA256_" + suffix
             job = text.split(f"  build-and-test-{platform}:\n", 1)[1].split("\n  build-and-test-", 1)[0]
-            self.assertTrue(job.startswith(f"    if: vars.{url} != '' || vars.{sha} != ''\n"))
-            self.assertIn(f"runs-on: {workflow_steps.runner_for(platform)}\n", job)
+            family = platform.split("-", 1)[0]
+            self.assertIn(f"LUDUS_CI_PROFILE: {family}-clang-development", job)
+            self.assertIn(f"runs-on: {workflow_steps.runner_for(platform)}", job)
             self.assertIn("SDK_URL: ${{ vars." + url + " }}", job)
             self.assertIn("SDK_SHA256: ${{ vars." + sha + " }}", job)
-            self.assertIn(workflow_steps.build_prerequisites(platform, ci_setup.CI_TOOLS_VENV), job)
-            self.assertNotIn("vars.LUDUS_RELEASE_SDK_URL }}", job)
+            self.assertIn(f"if: vars.{url} == '' && vars.{sha} == ''", job)
         self.assertEqual(text.count("  build-and-test-"), 2)
-        # Jobs follow NATIVE_PLATFORMS order whatever order the platforms were requested in.
         self.assertLess(text.index("build-and-test-linux-x64:"), text.index("build-and-test-macos-arm64:"))
 
-    def test_notice_reports_each_unconfigured_platform(self):
-        text = ci_setup.workflow_text(*self.PLATFORMS)
-        notice = text.split("  sdk-not-configured:\n", 1)[1].split("\n  build-and-test-", 1)[0]
-        conditions = []
-        for platform in workflow_steps.HOSTED_PLATFORMS:
-            url, sha = ci_setup.sdk_variables(platform, workflow_steps.HOSTED_PLATFORMS)
-            unset = f"vars.{url} == '' && vars.{sha} == ''"
-            conditions.append(f"({unset})")
-            self.assertIn(f"        if: {unset}\n", notice)
-            self.assertIn(f"Set repository variables {url} and {sha} to build and test on {platform}.", notice)
-        self.assertTrue(notice.startswith("    if: " + " || ".join(conditions) + "\n"))
-        self.assertNotIn("apt-get", notice)
-
-    def test_a_single_platform_keeps_the_shared_release_variables(self):
-        self.assertEqual(ci_setup.workflow_text("linux-x64", "linux-x64"), ci_setup.workflow_text("linux-x64"))
-        self.assertEqual(ci_setup.sdk_variables("linux-x64", ("linux-x64",)),
+    def test_single_release_platform_keeps_the_shared_archive_variables(self):
+        preset = "linux-clang-release"
+        self.assertEqual(ci_setup.workflow_text("linux-x64", "linux-x64", preset=preset),
+                         ci_setup.workflow_text("linux-x64", preset=preset))
+        self.assertEqual(ci_setup.sdk_variables("linux-x64", ("linux-x64",), "Release"),
                          ("LUDUS_RELEASE_SDK_URL", "LUDUS_RELEASE_SDK_SHA256"))
-
-    @unittest.skipIf(yaml is None, "requires PyYAML")
-    def test_multi_platform_workflow_is_valid_yaml(self):
-        document = yaml.safe_load(ci_setup.workflow_text(*self.PLATFORMS))
-        self.assertEqual(set(document["jobs"]), {"sdk-not-configured", "build-and-test-linux-x64",
-                                                 "build-and-test-macos-arm64"})
-        self.assertEqual(len(document["jobs"]["sdk-not-configured"]["steps"]), 2)
 
 
 class RepositoryPlacementTests(unittest.TestCase):
@@ -276,7 +260,7 @@ class SetupTests(unittest.TestCase):
             files = ci_setup.setup_ci(root, tools_ref=TOOLS_REF)
             self.assertEqual(files, [ci_setup.WORKFLOW_RELPATH, workflow_steps.TOOLS_REVISION_RELPATH])
             self.assertEqual((root / workflow_steps.TOOLS_REVISION_RELPATH).read_text(), TOOLS_REF + "\n")
-            self.assertEqual((root / ci_setup.WORKFLOW_RELPATH).read_text(), ci_setup.workflow_text("linux-x64"))
+            self.assertEqual((root / ci_setup.WORKFLOW_RELPATH).read_text(), ci_setup.workflow_text("linux-x64", preset="linux-clang-development"))
             self.assertEqual(source, (root / "src/main.cpp").read_bytes())
             (root / ci_setup.WORKFLOW_RELPATH).write_text("edited\n")
             with self.assertRaisesRegex(ToolingError, "overwrite"):
@@ -335,7 +319,7 @@ class CreationTests(unittest.TestCase):
     def test_create_stages_the_workflow_with_the_project(self):
         with tempfile.TemporaryDirectory() as temp:
             root = make_project(Path(temp) / "game", ci="github", tools_ref=TOOLS_REF)
-            self.assertEqual((root / ci_setup.WORKFLOW_RELPATH).read_text(), ci_setup.workflow_text("linux-x64"))
+            self.assertEqual((root / ci_setup.WORKFLOW_RELPATH).read_text(), ci_setup.workflow_text("linux-x64", preset="linux-clang-development"))
             self.assertEqual((root / workflow_steps.TOOLS_REVISION_RELPATH).read_text(), TOOLS_REF + "\n")
 
     def test_create_validates_ci_options_before_writing(self):
@@ -379,9 +363,8 @@ class CreationTests(unittest.TestCase):
                                  "--platform", "macos-arm64", "--platform", "linux-x64"])
             self.assertEqual(code, 0)
             self.assertEqual((root / ci_setup.WORKFLOW_RELPATH).read_text(),
-                             ci_setup.workflow_text("linux-x64", "macos-arm64"))
-            self.assertIn("LUDUS_RELEASE_SDK_URL_LINUX_X64 and LUDUS_RELEASE_SDK_SHA256_LINUX_X64", output.getvalue())
-            self.assertIn("LUDUS_RELEASE_SDK_URL_MACOS_ARM64 and LUDUS_RELEASE_SDK_SHA256_MACOS_ARM64", output.getvalue())
+                             ci_setup.workflow_text("linux-x64", "macos-arm64", preset="linux-clang-development"))
+            self.assertIn("CI builds the selected SDK from the commit", output.getvalue())
 
 
 if __name__ == "__main__":

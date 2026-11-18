@@ -997,13 +997,57 @@ class RayCompilerAcceptance(unittest.TestCase):
                     self.assertIn(b'[[buffer(13)]]', compute['bytes'])
                 execution.cook_runtime(str(package), root / 'graph.lurgrt', configuration='Default')
                 parsed = parse_runtime((root / 'graph.lurgrt').read_bytes())
-                # Every scene ray kernel also counts its failed pixels; only the table bit depends on the callbacks.
-                expected_resources = execution.SCENE_RESOURCE_FAILURE_SUMMARY
+                # Every scene ray kernel also counts its failed pixels, and this fixture's miss callback returns
+                # EvaluateEnvironment, which reads the Atmosphere sky; only the LTC bit depends on the change.
+                expected_resources = execution.SCENE_RESOURCE_FAILURE_SUMMARY | execution.SCENE_RESOURCE_ATMOSPHERE_SKY
                 if reads_table:
                     expected_resources |= execution.SCENE_RESOURCE_LTC_TABLE
                 self.assertEqual(expected_resources, parsed['scene_resources'])
                 execution.emit_runtime(str(package), root / 'graph.h', name='Graph', configuration='Default')
                 self.assertEqual(reads_table, 'result.HasLtcTable = true;' in (root / 'graph.h').read_text())
+
+    def test_world_feature_tables_follow_the_functions_the_kernel_calls(self):
+        from test_render_graph_authoring import parse_runtime
+        for applies_haze in (False, True):
+            with self.subTest(applies_haze=applies_haze), tempfile.TemporaryDirectory() as temporary:
+                root = Path(temporary)
+                source = root / 'source'
+                shutil.copytree(ROOT / 'tests/sdk_consumer/rg2/scene_ray', source)
+                manifest = source / 'main.lushader.json'
+                manifest.write_text((source / 'main.lushader.json.in').read_text().replace('@RG2_TEST_PROFILES@', '["metal"]'))
+                if applies_haze:
+                    closest = source / 'main_shaders/closest.slang'
+                    line = '    payload.Radiance = material.BaseColor + EvaluateEmission(scene, hit, -hit.IncomingRay.DirectionWorld);\n'
+                    self.assertIn(line, closest.read_text())
+                    closest.write_text(closest.read_text().replace(line, line + (
+                        '    payload.Radiance = ApplyAerialPerspective(scene, hit.IncomingRay.OriginWorld, hit.PositionWorld, '
+                        'payload.Radiance);\n'), 1))
+                result = build.build_package(manifest, root / 'build', helper=os.environ['LUDUS_RG1_HELPER'],
+                                             compiler=os.environ['LUDUS_RG1_SLANG'], spirv_cross=os.environ['LUDUS_RG1_CROSS'])
+                package = Path(result['package'])
+                contents = execution._runtime_contents(str(package), 'Default')
+                # The miss callback returns EvaluateEnvironment, so the sky table is always read; the haze table only
+                # when a callback calls ApplyAerialPerspective. No manifest field takes part.
+                self.assertTrue(contents['atmosphere_sky'])
+                self.assertEqual(applies_haze, contents['aerial_perspective'])
+                compute = contents['artifacts'][('RayTracing', 'compute', 'metal')]
+                entries = {entry['binding']: entry for entry in compute['descriptor']['interface']['entries']}
+                self.assertEqual(('StorageRead', ray.WORLD_TABLE_STRIDE),
+                                 (entries[ray.ATMOSPHERE_SKY_SLOT]['kind'], entries[ray.ATMOSPHERE_SKY_SLOT]['size']))
+                self.assertEqual(applies_haze, ray.AERIAL_PERSPECTIVE_SLOT in entries)
+                # The explicit registers keep the renderer's slots as Metal buffer indices.
+                self.assertIn(b'[[buffer(15)]]', compute['bytes'])
+                self.assertEqual(applies_haze, b'[[buffer(11)]]' in compute['bytes'])
+                execution.cook_runtime(str(package), root / 'graph.lurgrt', configuration='Default')
+                parsed = parse_runtime((root / 'graph.lurgrt').read_bytes())
+                expected_resources = execution.SCENE_RESOURCE_FAILURE_SUMMARY | execution.SCENE_RESOURCE_ATMOSPHERE_SKY
+                if applies_haze:
+                    expected_resources |= execution.SCENE_RESOURCE_AERIAL_PERSPECTIVE
+                self.assertEqual(expected_resources, parsed['scene_resources'])
+                execution.emit_runtime(str(package), root / 'graph.h', name='Graph', configuration='Default')
+                header = (root / 'graph.h').read_text()
+                self.assertIn('result.HasAtmosphereSky = true;', header)
+                self.assertEqual(applies_haze, 'result.HasAerialPerspective = true;' in header)
 
     def test_custom_traversal_compiles_without_native_queries_and_invalidates_with_its_source(self):
         with tempfile.TemporaryDirectory() as temporary:

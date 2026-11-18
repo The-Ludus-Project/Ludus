@@ -107,7 +107,8 @@ bool IsMaterialValid(const SceneShaderMaterial& material) noexcept
            internal::IsReferenceDielectricSupported(material.Scattering) == true &&
            (material.Scattering.Model != content::scene_format::MaterialModel::Conductor ||
             material.Scattering.AlphaU == material.Scattering.AlphaV) &&
-           (material.Scattering.Model != content::scene_format::MaterialModel::HairCard || material.Metallic == 0) &&
+           (content::scene_format::RequiresZeroMetallic(material.Scattering.Model) == false ||
+            material.Metallic == 0) &&
            material.HasError == false && ReferenceColor(material.BaseColor, 1) &&
            ReferenceColor(material.Emission, MAX_EMISSION) && math::IsFinite(material.Metallic) &&
            material.Metallic >= 0 && material.Metallic <= 1 && math::IsFinite(material.Roughness) &&
@@ -244,6 +245,9 @@ Status BuildMaterialGraphRayScene(const RenderGraphSceneDescription& source,
         TryAddSceneAllocation(input.Inputs.Materials.GetSize(), sizeof(SceneShaderMaterial), peak) == false ||
         TryAddSceneAllocation(input.Inputs.EnvironmentPixels.GetSize(),
                               sizeof(math::Vector4) + sizeof(float64),
+                              peak) == false ||
+        TryAddSceneAllocation(input.AtmosphereSkyTable.GetSize() + input.AerialPerspectiveTable.GetSize(),
+                              sizeof(math::Vector4),
                               peak) == false ||
         TryAddSceneAllocation(surfaceCapacity,
                               sizeof(ReferenceInstance) + sizeof(ReferenceSurfaceData) + sizeof(math::Vector4) +
@@ -649,6 +653,23 @@ Status BuildMaterialGraphRayScene(const RenderGraphSceneDescription& source,
     if (status != Status::Ready)
     {
         return status;
+    }
+    // World-feature tables are uploaded beside the scene words for the kernels that read them.
+    if (input.AtmosphereSkyTable.IsValid() == false || input.AerialPerspectiveTable.IsValid() == false ||
+        candidate->AtmosphereSkyTable.TryResize(input.AtmosphereSkyTable.GetSize()) == false ||
+        candidate->AerialPerspectiveTable.TryResize(input.AerialPerspectiveTable.GetSize()) == false)
+    {
+        return input.AtmosphereSkyTable.IsValid() == false || input.AerialPerspectiveTable.IsValid() == false
+                   ? Status::InvalidDescription
+                   : Status::OutOfMemory;
+    }
+    for (usize i = 0; i < input.AtmosphereSkyTable.GetSize(); ++i)
+    {
+        candidate->AtmosphereSkyTable[i] = input.AtmosphereSkyTable[i];
+    }
+    for (usize i = 0; i < input.AerialPerspectiveTable.GetSize(); ++i)
+    {
+        candidate->AerialPerspectiveTable[i] = input.AerialPerspectiveTable[i];
     }
     candidate->Info.CpuBytes = static_cast<usize>(peak);
     outJob.Swap(candidate);

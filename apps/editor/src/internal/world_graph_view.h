@@ -33,6 +33,8 @@ struct WorldGraphControls
     QWidget* OutputOrNull = nullptr;
     /// Exposure adjustment; it joins the display group and overflows before the output choice.
     QAction* ExposureOrNull = nullptr;
+    /// Camera spotlight for the final raster output, beside Exposure.
+    QAction* WorkLightOrNull = nullptr;
 };
 /// Interactive World output of the project's active graph. Owns only display/target selection;
 /// RendererWorkspace owns builds and RenderGraphPreview owns GPU production and readback.
@@ -95,6 +97,12 @@ protected:
 private:
     ViewportObjectInteraction* mInteractionOrNull = nullptr;
     void refreshTargets();
+    /// Send the selected output's lighting view to the source preview, or Final for any other output.
+    void applyLightingView();
+    /// Show the dominant-light legend while that lighting view is selected.
+    void refreshLegend();
+    /// Rebuild the output menu when the extraction's lights or their names changed.
+    void refreshLightingTargets();
     void refreshFrame();
     void refreshStatus();
     void refreshStatistics();
@@ -103,6 +111,11 @@ private:
     RenderGraphPreview& mPreview;
     QComboBox* mTargets;
     QLabel* mStatus;
+    QLabel* mLegend;
+    /// Preview whose camera carries the selected lighting view; set by TakeControls.
+    RenderPreview* mSourceOrNull = nullptr;
+    /// Source IDs and names the lighting entries were built from.
+    QString mLightingTargetsKey;
     QLabel* mStatistics;
     QTimer mStatisticsTimer;
     bool mIsStatisticsVisible = false;

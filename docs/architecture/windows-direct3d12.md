@@ -928,8 +928,10 @@ with optional tooling absent.
   graph's manifest lists `dxil` on Windows, so the installed template cooks for
   Direct3D 12. MetalFX cases skip through the capability query. The first
   Windows run of these fixtures reached the 260-character path limit in the
-  clustered `ZPrepass` cook; the graph build now stages programs under shorter
-  names and reports a path at that limit with the repair
+  clustered `ZPrepass` cook, and again when the 35-character
+  `DeferredSurfaceChartGBufferFragment` program joined it. The graph build now
+  names each stage directory by its job index and target (`12-dxil`), so program
+  IDs no longer lengthen staged paths, and reports a path at that limit with the repair
   ([authoring guide](../development/render-graph-authoring.md#windows-worker)).
   DXIL validation accepts layout entries a stage does not read, while every
   resource the stage reads must match its layout entry. Texture uploads may

@@ -72,7 +72,8 @@ bridge, and presentation state. `GameWorld` owns its entity registry, component
 pools, gameplay random streams, tick queues, and logical references to loaded
 assets. The renderer owns GPU resources and their retirement. The platform owns
 window and event operations. No service reaches into another owner's mutable
-storage through a global singleton.
+storage through a global singleton. The [World environment](world-environment.md)
+uses this extraction boundary for climate, weather, wind and medium inputs.
 
 An authored level is an initial condition. A live world contains changing state.
 A render frame contains the values required to draw one presentation frame.

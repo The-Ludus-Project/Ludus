@@ -913,6 +913,15 @@ def require_paths_within_windows_limit(where, paths, limit=WINDOWS_MAX_PATH):
             f'{longest}. Build into a shorter directory or shorten the graph target and NAME.')
 
 
+def stage_directory_name(index, target):
+    """Name one stage's work directory from its build-order job index and target.
+
+    The name is unique within one build's temporary stage and independent of the
+    program ID's length, so long authored IDs never lengthen staged include paths.
+    """
+    return f'{index}-{target}'
+
+
 def compile_program(program, schemas, closure, snapshot, work, helper, tools, target, cancel, worker_socket=None, worker_identity=None):
     """Compile only captured sources; reject any untracked compiler dependency."""
     source = work / 'source'
@@ -1022,8 +1031,10 @@ def compile_stages(jobs, stage, schemas, snapshot, helper, tools, cancel, worker
             # Native Metal ray pipelines always use their own compiler process.
             with worker if worker and not program.get('native_ray_pipeline') else nullcontext():
                 checkpoint(stopped)
-                # Short stage names keep deep Windows build trees under the path limit.
-                work = stage / (program['id'] + '-' + target)
+                # The job index, not the program ID, names the stage: authored IDs such as
+                # DeferredSurfaceChartGBufferFragment otherwise push deep Windows build trees
+                # past the path limit. Diagnostics name the program, never this directory.
+                work = stage / stage_directory_name(index, target)
                 work.mkdir()
                 should_trace = stage_timings is not None and index < len(stage_timings)
                 helper_started = trace_ticks() if should_trace else 0
@@ -1124,8 +1135,11 @@ def prepare_sources(manifest, helper, *, root=None, ray_path_capture=False, capt
                 continue
             node = operation['pipeline']
             technique = techniques[operation['technique']]
-            require(not operation.get('baked_lighting', False) or technique.get('scene_interface') == forward.PROFILE,
-                    'Capability', operation['id'], 'Baked Lighting requires the ForwardLit scene profile. Disconnect the bake input or use a Forward lit graph.')
+            require(not operation.get('baked_lighting', False) or
+                    technique.get('scene_interface') in (forward.PROFILE, forward.DEFERRED_PROFILE),
+                    'Capability', operation['id'],
+                    'Baked Lighting requires the ForwardLit or ClusteredDeferred scene profile. Disconnect the bake input '
+                    'or use a Forward lit or default raster graph.')
             if node['kind'] == 'ComputePipeline':
                 continue  # A scene compute kernel selects no recipe; lowering admitted its fixed state.
             assigned = {shader['stage']: shader['program'] for shader in node['shaders']}
@@ -1185,7 +1199,8 @@ def prepare_sources(manifest, helper, *, root=None, ray_path_capture=False, capt
                                                                     interface['visibility_queries'])
             expanded = ray.expand_programs(authored_programs, technique, snapshot, helper, sys.modules[__name__],
                                           profile['variants'], profile['persistent'], schemas, profile['compute'],
-                                          profile['native_ray_queries'], ray_path_capture, workgroup=profile['workgroup'])
+                                          profile['native_ray_queries'], ray_path_capture, workgroup=profile['workgroup'],
+                                          scene_dispatch=profile['scene_dispatch'])
             linked_programs.update(expanded)
             if profile['native_pipeline']:
                 require('metal' in value['profiles'], 'Capability', 'RayTracing',
@@ -1414,7 +1429,7 @@ def build_package(manifest, output, *, helper, compiler, validator=None, spirv_c
                                                      for group, (_, stages) in forward.SUPPORT.items() for stage in stages
                                                      if (not group.startswith('Deferred') or any(forward.is_deferred(item) for item in techniques.values())) and
                                                      (group != 'ForwardDepth' or is_clustered_depth or forward.is_clustered(technique)) and
-                                                     (group != 'ForwardSurfaceChart' or (forward.support_program(techniques, group, stage), target) in entries)}}
+                                                     (group not in forward.BAKED_LIGHTING_GROUPS or (forward.support_program(techniques, group, stage), target) in entries)}}
                         record['canonical'] = deepcopy(record)
                         record['key'] = identity(record['canonical'])
                         recipes.append(record)

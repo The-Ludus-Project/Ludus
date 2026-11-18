@@ -44,6 +44,8 @@ constexpr PackageLocation SURFACE_PACKAGE{LUDUS_RG3_SURFACE_DIRECTORY, "rg2_surf
 constexpr PackageLocation BOUND_PACKAGE{LUDUS_RG3_BOUND_DIRECTORY, "rg2_bound.lurgrt"};
 /// rg2_bound with its vertex, color and depth callbacks written in LUSL.
 constexpr PackageLocation BOUND_LUSL_PACKAGE{LUDUS_RG3_BOUND_LUSL_DIRECTORY, "rg2_bound_lusl.lurgrt"};
+constexpr PackageLocation BOUND_LUSL_VARIANT_PACKAGE{LUDUS_RG3_BOUND_LUSL_VARIANT_DIRECTORY,
+                                                     "rg2_bound_lusl_variant.lurgrt"};
 core::UniquePtr<renderer::RenderGraphPackage> LoadSurfacePackage()
 {
     return LoadPackage(SURFACE_PACKAGE);
@@ -498,13 +500,14 @@ TEST_CASE("RG2 bound uniforms render per-draw material values without shader per
     CHECK(fixture.Pixels[left] <= 128);
     CHECK(fixture.Pixels[right + 1] >= 127);
 }
-TEST_CASE("LUSL raster callbacks render the same pixels as their Slang originals", "[render-graph][gpu]")
+TEST_CASE("Equivalent LUSL and Slang raster callbacks render the same pixels", "[render-graph][gpu]")
 {
     // rg2_bound_lusl is rg2_bound with its vertex, color and depth callbacks ported to LUSL; they
     // read the schemas and the material binding through the generated graph_schemas.luslh
     // (docs/architecture/shading-language.md#delivery-plan, L3 acceptance).
     StaticArray<uint8, PIXEL_BYTES> slang{};
     StaticArray<uint8, PIXEL_BYTES> lusl{};
+    StaticArray<uint8, PIXEL_BYTES> variant{};
     RenderBoundPackage(BOUND_PACKAGE,
                        shaders::renderer_composite::Vertex(),
                        shaders::renderer_composite::Fragment(),
@@ -513,12 +516,19 @@ TEST_CASE("LUSL raster callbacks render the same pixels as their Slang originals
                        shaders::renderer_composite::Vertex(),
                        shaders::renderer_composite::Fragment(),
                        lusl);
-    usize differing = 0;
+    RenderBoundPackage(BOUND_LUSL_VARIANT_PACKAGE,
+                       shaders::renderer_composite::Vertex(),
+                       shaders::renderer_composite::Fragment(),
+                       variant);
+    usize differingSlangBytes = 0;
+    usize differingVariantBytes = 0;
     for (usize i = 0; i < PIXEL_BYTES; ++i)
     {
-        differing += slang[i] != lusl[i] ? 1 : 0;
+        differingSlangBytes += slang[i] != lusl[i] ? 1 : 0;
+        differingVariantBytes += lusl[i] != variant[i] ? 1 : 0;
     }
-    CHECK(differing == 0);
+    CHECK(differingSlangBytes == 0);
+    CHECK(differingVariantBytes == 0);
     // The two draws carry different material values, so equality is not vacuous.
     const usize left = GetPixel(24, 32);
     const usize right = GetPixel(72, 32);

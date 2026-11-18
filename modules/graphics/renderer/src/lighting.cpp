@@ -1,5 +1,7 @@
 #include <ludus/graphics/renderer/lighting.hpp>
 
+#include <ludus/graphics/renderer/renderer.hpp>
+
 #include <ludus/content/scene_format/luscn.h>
 #include <ludus/foundation/math/projection.hpp>
 #include <ludus/foundation/math/scalar.hpp>
@@ -75,8 +77,8 @@ constexpr float32 MIN_ROUGHNESS = 0.045F;
 /// Accepted directional shadow map resolution, in texels per side.
 constexpr uint32 MIN_SHADOW_RESOLUTION = 4;
 constexpr uint32 MAX_SHADOW_RESOLUTION = 2048;
-/// Smallest light-space width or height a shadow projection may cover.
-constexpr float32 MIN_SHADOW_PROJECTION_EXTENT = 1e-5F;
+/// Minimum light-space span in metres to keep a collapsed shadow projection invertible.
+constexpr float32 MIN_SHADOW_PROJECTION_EXTENT_METRES = 1e-5F;
 bool Bounded(math::Vector3 value, float32 minimum, float32 maximum) noexcept
 {
     return math::IsFinite(value) == true && value.X >= minimum && value.X <= maximum && value.Y >= minimum &&
@@ -96,6 +98,9 @@ bool NormalizeLight(DirectLight& inoutLight) noexcept
            math::IsFinite(light.Direction) == true && math::IsFinite(light.Range) == true && light.Range >= 0.01F &&
            light.Range <= 1000000 && math::IsFinite(light.InnerCos) == true && math::IsFinite(light.OuterCos) == true &&
            light.OuterCos > -1 && light.OuterCos < light.InnerCos && light.InnerCos <= 1 &&
+           math::IsFinite(light.AngularRadiusRadians) == true && light.AngularRadiusRadians >= 0 &&
+           light.AngularRadiusRadians <= MAX_DIRECTIONAL_ANGULAR_RADIUS_RADIANS &&
+           (light.Kind == LightKind::Directional || light.AngularRadiusRadians == 0) &&
            (light.Kind == LightKind::Point ||
             math::TryNormalize(light.Direction, light.Direction) == math::MathStatus::Success);
 }
@@ -658,22 +663,26 @@ rhi::RasterStatus EvaluateLitBrdf(math::Vector3 baseColor,
     math::Vector3 result;
     const auto nv = math::Max(math::Dot(normal, view), 0.0F);
     const auto nl = math::Max(math::Dot(normal, light), 0.0F);
-    math::Vector3 half;
-    if (nv > 0 && nl > 0 && math::TryNormalize(view + light, half) == math::MathStatus::Success)
+    math::Vector3 halfWorld;
+    if (nv > 0 && nl > 0 && math::TryNormalize(view + light, halfWorld) == math::MathStatus::Success)
     {
         // Thanks to Google/Filament authors, "Physically Based Rendering in Filament",
         // sections 4.4.1-4.4.4 and 5.2.2, https://google.github.io/filament/main/filament.html.
         // Adopt GGX, correlated Smith visibility and Schlick; use Fresnel-weighted Lambert
         // diffuse and single scattering (no compensation/DFG LUT). CPU reference, not copied code.
-        const auto nh = math::Clamp(math::Dot(normal, half), 0.0F, 1.0F);
-        const auto lh = math::Clamp(math::Dot(light, half), 0.0F, 1.0F);
-        const auto alpha = roughness * roughness, a2 = alpha * alpha;
-        const float32 denominator = (1 - nh * nh) + nh * nh * a2;
-        const auto distribution = a2 / (math::kPiF * denominator * denominator);
-        const auto visibility =
-            0.5F /
-            math::Max(nl * math::Sqrt(nv * nv * (1 - a2) + a2) + nv * math::Sqrt(nl * nl * (1 - a2) + a2), 1e-6F);
-        const auto fresnelWeight = Fifth(1 - lh);
+        // Use the squared cross product from Filament section 4.4.2 to retain the angle near the highlight.
+        const float32 halfCosine = math::Clamp(math::Dot(normal, halfWorld), 0.0F, 1.0F);
+        const float32 halfSineSquared = halfCosine > 0 ? math::LengthSquared(math::Cross(normal, halfWorld)) : 1.0F;
+        const float32 halfLightCosine = math::Clamp(math::Dot(light, halfWorld), 0.0F, 1.0F);
+        const float32 alpha = roughness * roughness;
+        const float32 alphaSquared = alpha * alpha;
+        const float32 denominator = halfSineSquared + halfCosine * halfCosine * alphaSquared;
+        const float32 distribution = alphaSquared / (math::kPiF * denominator * denominator);
+        constexpr float32 MINIMUM_VISIBILITY_DENOMINATOR = 1e-6F;
+        const float32 visibility = 0.5F / math::Max(nl * math::Sqrt(nv * nv * (1 - alphaSquared) + alphaSquared) +
+                                                        nv * math::Sqrt(nl * nl * (1 - alphaSquared) + alphaSquared),
+                                                    MINIMUM_VISIBILITY_DENOMINATOR);
+        const float32 fresnelWeight = Fifth(1 - halfLightCosine);
         const float32 colors[]{baseColor.X, baseColor.Y, baseColor.Z};
         float32 channels[3]{};
         for (usize i = 0; i < 3; ++i)
@@ -719,37 +728,63 @@ rhi::RasterStatus BuildDirectionalShadowMatrix(const math::Aabb3& bounds,
                    math::Max(maximum.Y, projected.Y),
                    math::Max(maximum.Z, projected.Z)};
     }
-    auto width = maximum.X - minimum.X, height = maximum.Y - minimum.Y;
-    if (math::IsFinite(width) == false || math::IsFinite(height) == false || width <= MIN_SHADOW_PROJECTION_EXTENT ||
-        height <= MIN_SHADOW_PROJECTION_EXTENT)
+    const float32 width = maximum.X - minimum.X;
+    const float32 height = maximum.Y - minimum.Y;
+    if (math::IsFinite(width) == false || math::IsFinite(height) == false)
     {
         return rhi::RasterStatus::InvalidDescription;
     }
-    const auto step = math::Max(width, height) / static_cast<float32>(resolution - 2);
+    const float32 span = math::Max(math::Max(width, height), MIN_SHADOW_PROJECTION_EXTENT_METRES);
+    const float32 step = span / static_cast<float32>(resolution - 2);
     const auto cx =
         static_cast<float32>(math::Floor(static_cast<float64>((minimum.X + maximum.X) * 0.5F / step) + 0.5)) * step;
     const auto cy =
         static_cast<float32>(math::Floor(static_cast<float64>((minimum.Y + maximum.Y) * 0.5F / step) + 0.5)) * step;
-    width += 2 * step;
-    height += 2 * step;
+    // Widen a collapsed axis only in light space. A metre-scale margin on the world bounds would
+    // consume the map's resolution and enlarge its world-space depth bias for small objects.
+    const float32 paddedWidth = math::Max(width, step) + 2 * step;
+    const float32 paddedHeight = math::Max(height, step) + 2 * step;
     const auto near = minimum.Z - step, depth = maximum.Z - minimum.Z + 2 * step;
     if (math::IsFinite(near) == false || math::IsFinite(depth) == false || depth <= 0)
     {
         return rhi::RasterStatus::InvalidDescription;
     }
     math::Matrix4 matrix{};
-    for (usize column = 0; column < 3; ++column)
+    constexpr usize TRANSLATION_COLUMN = 3;
+    for (usize column = 0; column < TRANSLATION_COLUMN; ++column)
     {
-        const float32 x[]{right.X, right.Y, right.Z}, y[]{vertical.X, vertical.Y, vertical.Z},
-            z[]{direction.X, direction.Y, direction.Z};
-        matrix.Columns[column] = {2 * x[column] / width, 2 * y[column] / height, z[column] / depth, 0};
+        const float32 x[]{right.X, right.Y, right.Z};
+        const float32 y[]{vertical.X, vertical.Y, vertical.Z};
+        const float32 z[]{direction.X, direction.Y, direction.Z};
+        matrix.Columns[column] = {2 * x[column] / paddedWidth, 2 * y[column] / paddedHeight, z[column] / depth, 0};
     }
-    matrix.Columns[3] = {-2 * cx / width, -2 * cy / height, -near / depth, 1};
+    matrix.Columns[TRANSLATION_COLUMN] = {-2 * cx / paddedWidth, -2 * cy / paddedHeight, -near / depth, 1};
     if (math::IsFinite(matrix) == false)
     {
         return rhi::RasterStatus::InvalidDescription;
     }
     output = matrix;
     return rhi::RasterStatus::Ready;
+}
+math::Vector3 GetDeferredLightingViewHue(uint32 category) noexcept
+{
+    // The shader's GetLightingViewHue: a fully saturated, full-value HSV hue.
+    constexpr float64 HUE_OFFSET = LUDUS_DEFERRED_LIGHTING_VIEW_HUE_OFFSET;
+    constexpr float64 HUE_STEP = LUDUS_DEFERRED_LIGHTING_VIEW_HUE_STEP;
+    constexpr float64 SEXTANTS = 6;
+    constexpr float64 HALF_TURN_SEXTANTS = 3;
+    constexpr usize CHANNEL_COUNT = 3;
+    const float64 turns = HUE_OFFSET + static_cast<float64>(category) * HUE_STEP;
+    const float64 hue = turns - math::Floor(turns);
+    StaticArray<float32, CHANNEL_COUNT> channels{};
+    for (usize channel = 0; channel < CHANNEL_COUNT; ++channel)
+    {
+        // Red, green and blue peak a third of a turn apart.
+        const float64 shifted = hue + static_cast<float64>(CHANNEL_COUNT - channel) / CHANNEL_COUNT;
+        const float64 phase = shifted - math::Floor(shifted);
+        channels[channel] =
+            static_cast<float32>(math::Clamp(math::Abs(phase * SEXTANTS - HALF_TURN_SEXTANTS) - 1, 0.0, 1.0));
+    }
+    return {channels[0], channels[1], channels[2]};
 }
 } // namespace ludus::graphics::renderer

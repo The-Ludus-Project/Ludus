@@ -13,6 +13,7 @@
 #include <ludus/graphics/renderer/lighting.hpp>
 #include <ludus/runtime/resources/scene.h>
 
+#include <QHash>
 #include <QImage>
 #include <QJsonObject>
 #include <QSet>
@@ -161,6 +162,9 @@ struct RenderScene final
     QString LogicalId;
     bool Lit = false;
     graphics::renderer::LightSelection AuthoredLights{};
+    /// Entity names of the authored lights by source ID, for lighting-view menus and legends. Kept through Merge;
+    /// imported lights have none.
+    QHash<foundation::uint64, QString> LightNames;
     /// Source IDs of enabled authored lights excluded from raster shadow-map assignment.
     /// Kept with the World snapshot when cooked lighting is composed or switched.
     QVector<foundation::uint64> RasterUnshadowedLightIds;
@@ -249,6 +253,12 @@ struct RenderScene final
                                    bool shouldComposeLighting = true);
     /// Copy the atmosphere with preview light switches applied.
     [[nodiscard]] graphics::renderer::AtmosphereDescription GetAtmosphereForView() const noexcept;
+    /// Illuminance in lux that the presented directional lights deliver to a plane facing upWorld: each light's
+    /// luminance (BT.709 weights of its colour times its lux) times the cosine of its incidence, when positive.
+    /// The Atmosphere's linked Sun is skipped, because MeterAtmosphereIlluminance meters it after transmittance.
+    /// Switched-off lights are not presented and add nothing. Point, spot and area lights are not metered.
+    /// @param upWorld Unit-length normal of the metered plane, normally the Atmosphere's SurfaceUpWorld.
+    [[nodiscard]] foundation::float64 MeterDirectionalIlluminance(foundation::math::Vector3 upWorld) const noexcept;
     /// True when a loaded World has neither drawable objects nor an Atmosphere request.
     [[nodiscard]] bool ShouldUseEmptyWorldView() const noexcept;
     /// Bounds of the extracted visible objects, or one selected stable ID; failure preserves output.

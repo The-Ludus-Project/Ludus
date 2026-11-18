@@ -101,9 +101,13 @@ public:
     [[nodiscard]] bool IsDocumentCurrent(const QWidget* document) const;
     /// True for a registered view whose tab close is decided by its owner.
     [[nodiscard]] bool IsDocumentOwnerClosed(const QWidget* document) const;
-    /// Change a view's tab title, for example to add a `*` while it has unsaved changes.
+    /// Change a view's tab title, usually its file name.
     void SetDocumentTitle(QWidget* document, const QString& title);
     [[nodiscard]] QString GetDocumentTitle(const QWidget* document) const;
+    /// Mark a view as holding unsaved changes: its tab shows a dot in place of the close cross, and its tooltip says
+    /// so. The mark is kept while the view is closed and returns with its tab.
+    void SetDocumentModified(QWidget* document, bool isModified);
+    [[nodiscard]] bool IsDocumentModified(const QWidget* document) const;
     /// Current view of the active tab group, or null when no document is open.
     [[nodiscard]] QWidget* GetActiveDocumentOrNull() const;
     /// Registered views in registration order.
@@ -167,6 +171,7 @@ private:
         QString Title;
         bool IsAvailable;
         DocumentCloseMode CloseMode;
+        bool IsModified = false;
     };
     [[nodiscard]] QTabWidget* createGroup(foundation::int32 index);
     [[nodiscard]] QTabWidget* activeGroup() const;
@@ -174,6 +179,8 @@ private:
     [[nodiscard]] Entry* findEntryOrNull(const QWidget* document);
     [[nodiscard]] QTabWidget* groupOfOrNull(const QWidget* document) const;
     void insertInto(QTabWidget* group, QWidget* document, foundation::int32 index);
+    /// Show entry's title, unsaved mark and tooltip on its tab, if it has one.
+    void renderTab(const Entry& entry);
     void detach(QWidget* document);
     void hideDocument(QWidget* document);
     void rememberClosedDocument(QWidget* document);

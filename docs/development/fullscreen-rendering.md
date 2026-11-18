@@ -231,7 +231,183 @@ output preservation, cancellation, late completions, fallback generations,
 cross-owner misuse, loss and non-wrapping owner exhaustion. R1/R2 add typed
 slot/generation resources, retained command batches and deferred retirement;
 R3 adds ordered graph compilation. [Profile negotiation](#profile-format-and-limit-negotiation)
-adds enabled limit/format admission; independent devices/surfaces remain [architecture extensions](../architecture/rhi-gdi.md#remaining-work-and-decision-gates).
+adds enabled limit/format admission; [adapter selection](#adapter-catalog-and-selection-r14a)
+picks the native adapter; multiple surfaces and devices remain [architecture extensions](../architecture/rhi-gdi.md#remaining-work-and-decision-gates).
+
+### Adapter catalog and selection (R14a)
+
+Include `ludus/graphics/rhi/adapter.h` to list a native build's adapters
+without starting a device. `GetAdapterCatalog` reports, in API order, each
+adapter's stable identity, name, kind, PCI vendor/device IDs, reported memory,
+raw 2D texture edge and whether it meets the backend baseline (Vulkan 1.1 with a
+graphics queue, Metal Mac2/Apple4, Direct3D 12 feature level 11.0). It works
+before, during and after a session and never changes it. The catalog holds
+`MAX_CATALOG_ADAPTERS` entries; `ReportedCount` greater than `Count` means it
+was truncated. Browser builds return `Unsupported`, because WebGPU exposes only
+the one adapter the browser grants.
+
+```cpp
+namespace rhi = ludus::graphics::rhi;
+rhi::AdapterCatalog catalog;
+if (rhi::GetAdapterCatalog(catalog) == rhi::AdapterStatus::Ready)
+{
+    for (ludus::foundation::usize i = 0; i < catalog.Count; ++i)
+    {
+        // Offer catalog.Adapters[i].Name; keep Identity in the user's settings.
+    }
+}
+rhi::DeviceDescription request;
+request.Adapter = chosen.Identity; // All-zero bytes keep the automatic choice.
+rhi::StartupInfo failure;
+const auto started = rhi::CreateDevice(app, window, request, device, surface, &failure);
+// Failed with failure.Error == AdapterUnavailable: the adapter is gone or below
+// the baseline. Offer the catalog again, or clear request.Adapter for Auto.
+```
+
+The identity is a Vulkan device UUID, a Direct3D 12 LUID or a Metal registry ID.
+A Vulkan UUID and Metal registry ID survive restarts while the driver and
+hardware stay the same; a Direct3D 12 LUID changes after a reboot. An identity
+from another backend returns `InvalidDescription`, and an explicit identity on a
+browser build returns `Unsupported`. Creation looks the identity up in the
+catalog before any backend work. An absent or below-baseline adapter returns
+`Failed` with `StartupError::AdapterUnavailable`, leaves the outputs null and
+opens no session. After Ready, the session is checked against the request; an
+imported native device on another adapter is torn down with the same error.
+Required workloads still apply on the chosen adapter. Explicit selection never
+falls back to another adapter.
+
+`DeviceInfo::Adapter` reports the catalog entry of the session's adapter while
+Ready, including an automatic choice; browser sessions leave it zero. These are
+raw adapter claims. Admission, limits and formats come only from
+`DeviceInfo::Profile`, so a larger raw texture edge never raises an enabled
+limit. A hosted Direct3D 12 or Vulkan game started on an explicit adapter other
+than the hosting editor's keeps it; the editor then refuses its images as an
+adapter mismatch.
+
+The reference-backend lifecycle suite covers truncation, output preservation,
+UTF-8 name shortening, foreign/browser/absent/below-baseline rejection without
+backend work, raw-versus-enabled reporting and post-Ready mismatch teardown. The
+macOS Metal suite lists the system devices, starts on a catalog entry and
+rejects an unknown identity. Vulkan and Direct3D 12 use the same contract;
+their first hardware runs are the Linux batch and Windows Direct3D 12 lanes.
+
+### Multiple surfaces per device (R14b)
+
+`CreateDevice` publishes the device's primary surface. `CreateSurface` borrows
+another platform target as a further surface of the same ready device, up to
+`MAX_DEVICE_SURFACES` in all. Each surface keeps its own frame target,
+presentation resources (a drawable layer, hosted producer or headless texture),
+depth attachment and counters, so surfaces resize, present and retire
+independently. A device still has one open frame at a time; `BeginFrame` chooses
+the surface it acquires, and `EndFrame` presents it.
+
+```cpp
+namespace rhi = ludus::graphics::rhi;
+rhi::SurfaceHandle inspector;
+const auto created = rhi::CreateSurface(device, inspectorWindow, inspector);
+// Unsupported: this backend hosts only its primary surface; draw the inspector
+// into a texture of the primary frame instead.
+rhi::SetFrameTarget(device, inspector, { .Width = width, .Height = height });
+if (rhi::BeginFrame(device, inspector) == rhi::DeviceStatus::SurfaceLost)
+{
+    // The inspector's view left its window. The device and other surfaces still
+    // work: destroy this surface and create one for the new target.
+    rhi::DestroySurface(device, inspector);
+}
+```
+
+Creation requires a Ready device and no open frame, and returns
+`CapacityExceeded` when the device hosts its maximum. A target that another live
+surface of the device already borrows, an invalid window or an extent above the
+enabled frame dimension returns `InvalidDescription` with the output still null.
+On WebGPU, another selector that names a canvas a live surface already uses is
+the same target. Every surface shares the primary surface's color format, because pipelines are
+created for it; a target that needs another format (a Metal or Direct3D 12 hosted
+surface on a windowed or headless device) returns `Unsupported`. Vulkan surfaces also share the
+primary's window system, because the surface render pass and its final image
+layout come from it: a Wayland device hosts Wayland surfaces, a headless device
+headless ones and a hosted device hosted ones. Vulkan builds the new surface's
+swapchain during `CreateSurface`, so a Wayland surface the queue cannot present
+to, or one whose swapchain needs another format, returns `Failed`. Direct3D 12
+creates a Win32 surface's swap chain during `CreateSurface` too. WebGPU surfaces
+are canvases: a canvas that already holds another context mode, such as WebGL 2,
+returns `Failed`. Surface
+identities are never reused. A destroyed surface, a surface of another device and a surface from a
+previous session return `InvalidHandle`, and `GetFrameInfo` for a surface other
+than the open frame's returns `InvalidState`.
+
+A created surface is lost when its platform target stops accepting frames: a
+Cocoa view that left the window it was borrowed from, a Vulkan surface that
+reports `VK_ERROR_SURFACE_LOST_KHR` or whose swapchain cannot be rebuilt, a
+Win32 window that was destroyed or whose swap chain fails to resize or present
+without device removal, a hosted consumer that failed, or a WebGPU canvas that
+left the document, whose configuration fails validation or whose context cannot
+supply a texture. The backend waits for that surface's submitted frames (Vulkan
+and Direct3D 12 wait for the queue to idle; WebGPU keeps the canvas textures of
+submitted work alive itself), retires its presentation resources and restores
+the borrowed view. Its frame calls then
+return `SurfaceLost`, while the device, its resources and its other surfaces keep
+working. `DestroySurface` retires a created surface in the same way, also after
+its loss or after device failure. The primary surface keeps the facade's
+contract: it is retired only by `DestroyDevice`, and its acquisition failures
+still fail the device.
+
+`GetSurfaceInfo` reports a surface's state, window system, last accepted target
+and three counters. `SubmittedFrames` counts frames ended on the surface.
+`RenderedFrames` counts those whose GPU work the owner thread has observed
+complete; it is polled without waiting, so it can lag the GPU.
+`PresentedFrames` counts frames scheduled on the platform presentation queue or
+handed to the hosted consumer. It is not a display time, and headless surfaces
+present nothing.
+
+WebGPU validates a created canvas's configuration asynchronously, so
+`CreateSurface` can return `Ready` for a canvas that is lost before its first
+frame. Configuration results and completion callbacks carry the identity of the
+surface that issued them: after `DestroySurface`, a late result is ignored, also
+when a new surface reuses the slot, and frames still in flight are not counted.
+WebGPU asks the queue for completion only when `GetSurfaceInfo` reads the
+counters, so `RenderedFrames` advances on a later call. `PresentedFrames` counts
+frames that submitted their canvas texture, which the browser presents when the
+current task returns.
+
+Metal implements additional surfaces for Cocoa, headless and hosted targets,
+Vulkan for Wayland, headless and hosted targets, Direct3D 12 for Win32,
+headless and hosted targets, and WebGPU for browser canvases. A Vulkan device imported through
+`CreateNativeDevice` renders only its headless primary. On Vulkan,
+`RenderedFrames` follows each frame's fence and `PresentedFrames` counts
+presentations the queue accepted (`VK_SUCCESS` or `VK_SUBOPTIMAL_KHR`). On
+Direct3D 12, `RenderedFrames` follows each frame's queue fence value and
+`PresentedFrames` counts successful `Present` calls (an occluded window still
+succeeds). Direct3D 12 surfaces share one surface depth buffer, which is resized
+when consecutive frames target different extents. A WebGL 2 context belongs to
+one canvas, so a WebGL 2 device, including an Auto fallback, hosts only its
+primary surface: `CreateSurface` returns `Unsupported`, and the primary reports
+`SubmittedFrames` but not render or presentation completion.
+
+The reference-backend lifecycle suite covers independent targets and counters,
+one frame per device, primary-surface protection, borrowed-target, capacity and
+backend refusals, loss isolation, slot reuse under a new identity, stale and
+cross-session rejection, and destruction after device loss. The macOS Metal
+suite clears and reads back two headless surfaces at different, independently
+resized extents, checks render completion, and retires one while the other keeps
+rendering. With `LUDUS_TEST_COCOA=1` it also presents to two Cocoa windows,
+loses the second when its content view is replaced, verifies the restored layer
+and keeps presenting the first. The shared native render suite draws one
+pipeline into two headless surfaces of a device and compares the images, then
+resizes and retires the second while the primary keeps its image; it runs on
+Metal and, in the Linux batch, on Vulkan. The Windows Direct3D 12 suite clears
+and reads back two headless surfaces at independently resized extents, and
+loses a second Win32 surface when its window is destroyed while the first keeps
+presenting. The browser surface probe (`ludus_web_surface_semantics`) runs the
+real WebGPU port against a recording Node provider with one context per canvas.
+It renders and resizes several canvases of one device; rejects borrowed,
+missing, WebGL 2 and over-capacity canvases and stale handles; ignores late
+configuration and completion results of destroyed surfaces whose slot was
+reused; and loses one canvas when its configuration fails during an open frame
+and another when it leaves the document, while the primary keeps presenting.
+The [Wayland test](vulkan-wayland.md#verification) injects Vulkan surface-loss
+results with two live swapchains and checks that the surviving surface keeps
+presenting.
 
 ### Profile, format and limit negotiation
 
@@ -956,6 +1132,47 @@ are nonzero and at most 65535 on each axis, again clamped to enabled limits.
 reflection; bounds checks, shader-local synchronization and race freedom are
 kernel obligations. There is no separate asynchronous queue; indirect dispatch is
 the [R12a profile](#expanded-indirect-draws-and-dispatches-r12a).
+
+### Choose a compute dispatch ID
+
+`[numthreads(x, y, z)]` declares the local shape of one workgroup in Slang.
+`ComputeDispatch::Groups` specifies how many workgroups to launch along each
+axis. Choose the entry-point semantic that matches the storage you index.
+
+| Slang semantic | Type | Use |
+| --- | --- | --- |
+| `SV_DispatchThreadID` | `uint3` | Coordinate in the dispatch. Use `.x` for a 1D buffer or `.xy` for a 2D image with one invocation per element. |
+| `SV_GroupID` | `uint3` | Workgroup coordinate. Use it for one record per tile or for the partial result of a workgroup reduction. |
+| `SV_GroupThreadID` | `uint3` | Coordinate within the workgroup. Use it to address a tile in `groupshared` memory. |
+| `SV_GroupIndex` | `uint` | Linear index within the workgroup, with x varying fastest. Use it for a flat `groupshared` array. |
+
+The dispatch coordinate is `groupId * groupSize + groupThreadId` componentwise.
+The linear local index is `groupThreadId.x + groupSize.x * (groupThreadId.y +
+groupSize.y * groupThreadId.z)`. Request these values through the built-ins.
+Slang lowers them for the selected target. [Microsoft's HLSL system-value
+reference](https://learn.microsoft.com/en-us/windows/win32/direct3dhlsl/dx-graphics-hlsl-semantics)
+and [Slang's target-specific reference](https://docs.shader-slang.org/en/latest/external/slang/docs/user-guide/a2-target-specific-features.html)
+describe those semantics and lowerings.
+
+For one invocation per element, round the logical extent up to whole groups on
+each axis using the reflected local size. Integer ceiling division can use
+`extent / localSize + (extent % localSize != 0)`. Skip a direct dispatch with an
+empty logical extent. For example, a 19 × 11 image and `numthreads(8, 8, 1)`
+need `Groups = {3, 2, 1}`. This launches a 24 × 16 grid. Guard image reads and
+writes against the logical extent. In a cooperative kernel, have invocations
+outside the extent initialize their shared slots with suitable padding and
+participate in the same group barriers as the other invocations. Predicate
+out-of-range resource accesses. [Group barrier reference](https://learn.microsoft.com/en-us/windows/win32/direct3dhlsl/groupmemorybarrierwithgroupsync).
+
+The [point-neighbor kernel](../../modules/graphics/renderer/shaders/renderer_point_neighbors.slang)
+shows a 1D bounds check. For a 2D example, the [generated scene compute
+entry point](render-graph-authoring.md#author-scene-compute-passes) handles
+dispatch coordinates and edge groups before calling authored shader functions.
+
+Try manual ID arithmetic only for a measured kernel on a named target, with
+generated-code inspection and matching output. Thanks to dickyjim for the 1D
+and 2D examples that informed this guide. [*Which Compute ID for me?*
+(2017)](https://dickyjim.wordpress.com/2017/09/05/which-compute-id-for-me/)
 
 ### Ordered dispatches and indirect commands
 

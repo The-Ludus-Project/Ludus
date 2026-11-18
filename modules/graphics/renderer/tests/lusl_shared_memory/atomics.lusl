@@ -1,0 +1,57 @@
+// L5a GPU evidence: every Interlocked operation on buffer elements and groupshared memory
+// (docs/modules/tooling/shader-language.md#resources-and-bindings). atomics.slang is the Slang
+// equivalent; every result is independent of thread order, so the two compare word for word.
+static const uint32 BIN_COUNT = 4;
+static const uint32 WORD_BITS = 32;
+static const uint32 TICKETS = 0;
+static const uint32 MAXIMUM = 1;
+static const uint32 MINIMUM = 2;
+static const uint32 OR_BITS = 3;
+static const uint32 XOR_IDS = 4;
+static const uint32 AND_BITS = 5;
+static const uint32 STORED = 6;
+static const uint32 CLAIMED = 7;
+static const uint32 WINNERS = 8;
+static const uint32 SWAPPED = 9;
+static const uint32 SWAPPED_SUM = 10;
+static const uint32 BINS = 11;
+static const uint32 CLAIM_VALUE = 9;
+static const uint32 SWAP_VALUE = 5;
+static const uint32 STORE_VALUE = 1;
+
+RWStructuredBuffer<uint32> counters;
+RWStructuredBuffer<uint32> results;
+RWStructuredBuffer<int32> balances;
+groupshared uint32 bins[BIN_COUNT] = 0;
+
+[stage(compute), threads(64, 1, 1)]
+void Main(in uint32x3 id : DispatchThreadId, in uint32 groupIndex : GroupIndex)
+{
+    uint32 ticket = 0;
+    InterlockedAdd(counters[TICKETS], 1, out ticket);
+    results[ticket] = ticket + 1;
+    InterlockedMax(counters[MAXIMUM], id.x);
+    InterlockedMin(counters[MINIMUM], id.x);
+    uint32 bit = uint32(1) << (id.x % WORD_BITS);
+    InterlockedOr(counters[OR_BITS], bit);
+    InterlockedXor(counters[XOR_IDS], id.x);
+    InterlockedAnd(counters[AND_BITS], ~bit);
+    InterlockedCompareStore(counters[STORED], 0, STORE_VALUE);
+    uint32 previous = 0;
+    InterlockedCompareExchange(counters[CLAIMED], 0, CLAIM_VALUE, out previous);
+    if (previous == 0)
+    {
+        InterlockedAdd(counters[WINNERS], 1);
+    }
+    uint32 swapped = 0;
+    InterlockedExchange(counters[SWAPPED], SWAP_VALUE, out swapped);
+    InterlockedAdd(counters[SWAPPED_SUM], swapped);
+    InterlockedAdd(balances[0], -1);
+    InterlockedMin(balances[1], -int32(id.x));
+    InterlockedAdd(bins[groupIndex % BIN_COUNT], 1);
+    barrier groupshared;
+    if (groupIndex < BIN_COUNT)
+    {
+        InterlockedAdd(counters[BINS + groupIndex], bins[groupIndex]);
+    }
+}

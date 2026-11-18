@@ -17,13 +17,25 @@ def main():
     if match is None:
         raise RuntimeError("Cannot locate the editor browser dependency block")
     browser_block = match.group()
+    # The block reads editor-level variables (such as the Wasm memory limit); carry their real definitions.
+    definitions = []
+    for name in dict.fromkeys(re.findall(r"\$\{(\w+)\}", browser_block)):
+        if name.startswith("CMAKE_"):
+            continue
+        definition = re.search(rf"^set\({re.escape(name)} [^\n]*\)$", editor, re.MULTILINE)
+        if definition is None:
+            raise RuntimeError(f"Cannot locate the editor definition of {name} read by the browser block")
+        definitions.append(definition.group())
+    # Every browser JavaScript file the block links or depends on must exist for the build to start.
+    scripts = sorted(set(re.findall(r"\$\{CMAKE_CURRENT_SOURCE_DIR\}/(browser/[\w.-]+\.js)", browser_block)))
     version = json.loads((source / "config/editor_web_toolchain.json").read_text())["qt"]
     with tempfile.TemporaryDirectory(prefix="editor-browser-dependencies-", dir=build_directory) as temporary:
         root = Path(temporary)
         fixture = root / "source"
         fixture.mkdir()
         (fixture / "browser").mkdir()
-        (fixture / "browser/files.js").write_text("// Link dependency fixture.\n")
+        for script in scripts:
+            (fixture / script).write_text("// Link dependency fixture.\n")
         private_include = fixture / f"include/QtCore/{version}"
         header = private_include / "QtCore/private/qstdweb_p.h"
         header.parent.mkdir(parents=True)
@@ -65,7 +77,8 @@ def main():
                 # Keep the real dependency operations; a native linker cannot consume Emscripten's JS flags.
                 "function(target_link_options)\nendfunction()\n"
                 + ("target_compile_definitions(ludus_editor_content PRIVATE EXPECT_QT_PRIVATE_HEADER)\n"
-                   if is_browser else "") + block + "\n")
+                   if is_browser else "") + "".join(f"{definition}\n" for definition in definitions)
+                + block + "\n")
             build = root / name
             configure = [cmake, "-S", str(fixture), "-B", str(build), "-G", "Ninja",
                          f"-DCMAKE_CXX_COMPILER={compiler}", f"-DCMAKE_MAKE_PROGRAM={ninja}"]

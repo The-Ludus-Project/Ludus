@@ -49,26 +49,36 @@ void SetCoatingInput(QLineEdit& inoutInput, const QJsonValue& value)
     inoutInput.setProperty("initialCoatingValue", value.toDouble());
 }
 
+bool ReadMaterialNumberInput(const QJsonObject& property,
+                             const QLineEdit& input,
+                             QJsonValue& outValue,
+                             bool& outHasChanged,
+                             QString& outError)
+{
+    const QJsonValue initial = input.property("initialCoatingValue").toDouble();
+    QJsonValue value = initial;
+    if (input.text() != input.property("initialCoatingText").toString() &&
+        WorldDocument::ParseValue(property, input.text(), value, outError) == false)
+    {
+        outError = QStringLiteral("%1: enter a finite value from %2 to %3.")
+                       .arg(property.value(QStringLiteral("label")).toString(),
+                            QString::number(property.value(QStringLiteral("min")).toDouble()),
+                            QString::number(property.value(QStringLiteral("max")).toDouble()));
+        return false;
+    }
+    outValue = value;
+    outHasChanged =
+        static_cast<foundation::float32>(value.toDouble()) != static_cast<foundation::float32>(initial.toDouble());
+    return true;
+}
+
 bool ReadCoatingInput(const CoatingField& field,
                       const QLineEdit& input,
                       QJsonValue& outValue,
                       bool& outHasChanged,
                       QString& outError)
 {
-    const QJsonValue initial = input.property("initialCoatingValue").toDouble();
-    outValue = initial;
-    if (input.text() != input.property("initialCoatingText").toString() &&
-        WorldDocument::ParseValue(field.MakeNumberProperty(), input.text(), outValue, outError) == false)
-    {
-        outError = QStringLiteral("%1: enter a finite value from %2 to %3.")
-                       .arg(QString::fromLatin1(field.Label),
-                            QString::number(static_cast<foundation::float64>(field.Minimum)),
-                            QString::number(static_cast<foundation::float64>(field.Maximum)));
-        return false;
-    }
-    outHasChanged =
-        static_cast<foundation::float32>(outValue.toDouble()) != static_cast<foundation::float32>(initial.toDouble());
-    return true;
+    return ReadMaterialNumberInput(field.MakeNumberProperty(), input, outValue, outHasChanged, outError);
 }
 
 QJsonObject

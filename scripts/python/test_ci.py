@@ -59,6 +59,32 @@ class WindowsClosureTests(unittest.TestCase):
         self.assertLess(modules.index("modules/platform"), modules.index("modules/graphics/rhi"))
 
 
+class RenderGraphVulkanEvidenceTests(unittest.TestCase):
+    """Development and SDK runs ludus_renderer_render_tests '[render-graph]' on llvmpipe and rejects skips."""
+    ROOT = Path(__file__).resolve().parents[2]
+    GATE = "ludus_renderer_render_tests '[render-graph]'"
+
+    def render_test_sources(self) -> list[Path]:
+        text = (self.ROOT / "modules/graphics/renderer/CMakeLists.txt").read_text(encoding="utf-8")
+        lists = re.findall(r"(?:add_executable|target_sources)\(ludus_renderer_render_tests\b([^)]*)\)", text)
+        sources = sorted({name for listed in lists for name in re.findall(r"tests/[\w/]+\.cpp", listed)})
+        self.assertIn("tests/hybrid_reflection_tests.cpp", sources)
+        return [self.ROOT / "modules/graphics/renderer" / name for name in sources]
+
+    def test_render_graph_evidence_has_no_native_ray_query_cases(self):
+        # llvmpipe has no ray queries, so such a case skips and fails the gate (batch 44231568980).
+        workflow = (self.ROOT / ".github/workflows/ci.yml").read_text(encoding="utf-8")
+        self.assertIn(self.GATE, workflow)
+        self.assertIn('"skipped" not in text', workflow.split(self.GATE, 1)[1].split("\n", 3)[1])
+        case = re.compile(r'TEST_CASE\(((?:\s*"(?:[^"\\]|\\.)*")+)\s*,\s*"([^"]*)"', re.S)
+        offending = []
+        for path in self.render_test_sources():
+            for name, tags in case.findall(path.read_text(encoding="utf-8")):
+                if "[render-graph]" in tags and "[native-ray-queries]" in tags:
+                    offending.append(f"{path.name}: {name.strip()}")
+        self.assertEqual(offending, [], "drop [render-graph] from native-query cases; ludus_renderer_pixels runs them")
+
+
 class ToolchainPinTests(unittest.TestCase):
     """Copies of the LLVM pin that cannot read config/tool_versions.json must agree with it."""
     ROOT = Path(__file__).resolve().parents[2]
@@ -363,10 +389,13 @@ class NativePrerequisiteTests(unittest.TestCase):
         self.assertIn("restore-keys: |\n          conan-v3-${{ runner.os }}-${{ runner.arch }}-${{ inputs.preset }}-\n",
                       reader)
 
-    def test_rendered_editor_setup_installs_software_vulkan_before_initialization(self):
+    def native_prerequisite_command(self):
         action = (self.ROOT / ".github/actions/native-setup/action.yml").read_text()
         step = action.split("    - name: Install native prerequisites\n", 1)[1]
-        command = step.split("      run: |\n", 1)[1].split("    - name:", 1)[0]
+        return step.split("      run: |\n", 1)[1].split("    - name:", 1)[0]
+
+    def test_rendered_editor_setup_installs_software_vulkan_before_initialization(self):
+        command = self.native_prerequisite_command()
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
             for name, body in (("timeout", 'shift 3; exec "$@"'), ("sudo", 'exec "$@"'),
@@ -385,22 +414,65 @@ class NativePrerequisiteTests(unittest.TestCase):
                 for package in ("qt6-base-dev", "qt6-declarative-dev", "qt6-wayland", "libvulkan1", "mesa-vulkan-drivers"):
                     self.assertEqual(package in arguments, editor == "true", package)
 
+    def write_apt_tools(self, root, apt_body, *, should_mock_timeout):
+        tools = [("python3", "exit 0"), ("sudo", 'exec "$@"'), ("apt-get", apt_body),
+                 ("dpkg", 'printf "unexpected dpkg call\\n"; exit 1')]
+        if should_mock_timeout:
+            tools.append(("timeout", 'export UNDER_DEADLINE=true; shift 3; exec "$@"'))
+        for name, body in tools:
+            tool = root / name
+            tool.write_text("#!/bin/sh\n" + body + "\n")
+            tool.chmod(0o755)
+
     @unittest.skipUnless(shutil.which("timeout"), "GNU timeout is provided by the Linux CI runner")
     def test_silent_package_update_has_a_wall_clock_deadline(self):
-        action = (self.ROOT / ".github/actions/native-setup/action.yml").read_text()
-        command = next(line.strip() for line in action.splitlines()
-                       if "timeout --signal=TERM" in line and "update -qq" in line)
-        command = command.replace("5m", "0.1s").replace("--kill-after=30s", "--kill-after=0.1s")
+        command = self.native_prerequisite_command().replace("fetch_with_apt 5m", "fetch_with_apt 0.1s")
+        command = command.replace("--kill-after=30s", "--kill-after=0.1s")
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
-            for name, body in (("sudo", 'exec "$@"'), ("apt-get", "exec /bin/sleep 30")):
-                tool = root / name
-                tool.write_text("#!/bin/sh\n" + body + "\n")
-                tool.chmod(0o755)
-            environment = {**os.environ, "PATH": str(root) + os.pathsep + os.environ["PATH"]}
-            result = subprocess.run(["/bin/bash", "-c", "apt_options=();\n" + command],
-                                    env=environment, capture_output=True, text=True, timeout=3)
+            self.write_apt_tools(root, "exec /bin/sleep 30", should_mock_timeout=False)
+            environment = {**os.environ, "PATH": str(root) + os.pathsep + os.environ["PATH"],
+                           "WITH_EDITOR": "false"}
+            result = subprocess.run(["/bin/bash", "-e", "-c", command],
+                                    env=environment, capture_output=True, text=True, timeout=10)
+            # Every attempt meets its deadline; the job fails with timeout's status after the last.
             self.assertEqual(result.returncode, 124, result.stdout + result.stderr)
+            self.assertEqual(result.stdout.count("::warning::apt-get update attempt"), 3, result.stdout)
+            self.assertNotIn("unexpected dpkg call", result.stdout)
+
+    def test_install_uses_cached_packages_only_after_download_succeeds(self):
+        command = self.native_prerequisite_command()
+        apt_body = """
+case " $* " in
+  *" update "*) printf "update %s\\n" "$UNDER_DEADLINE";;
+  *" install --download-only "*)
+    printf "download %s\\n" "$UNDER_DEADLINE"
+    [ "$FAIL_ALL_DOWNLOADS" = false ] && [ -e "$DOWNLOAD_ATTEMPT" ] && exit 0
+    : > "$DOWNLOAD_ATTEMPT"
+    exit 124
+    ;;
+  *" install --no-download "*) printf "install %s\\n" "$UNDER_DEADLINE";;
+  *) exit 1;;
+esac
+"""
+        for should_fail_all_downloads in (False, True):
+            with (self.subTest(should_fail_all_downloads=should_fail_all_downloads),
+                  tempfile.TemporaryDirectory() as temporary):
+                root = Path(temporary)
+                self.write_apt_tools(root, apt_body, should_mock_timeout=True)
+                environment = {**os.environ, "PATH": str(root), "WITH_EDITOR": "false",
+                               "DOWNLOAD_ATTEMPT": str(root / "download-attempt"),
+                               "FAIL_ALL_DOWNLOADS": str(should_fail_all_downloads).lower(),
+                               "UNDER_DEADLINE": "false"}
+                result = subprocess.run(["/bin/bash", "-e", "-c", command], env=environment,
+                                        capture_output=True, text=True, timeout=10)
+                expected = ["update true", "download true", "download true"]
+                expected.append("download true" if should_fail_all_downloads else "install false")
+                self.assertEqual(result.returncode, 124 if should_fail_all_downloads else 0,
+                                 result.stdout + result.stderr)
+                self.assertIn("::warning::apt-get install attempt 1 of 3 failed with exit status 124", result.stdout)
+                self.assertEqual([line for line in result.stdout.splitlines() if not line.startswith("::warning::")],
+                                 expected)
 
     def test_macos_cache_launchers_survive_restricted_consumer_path(self):
         action = (self.ROOT / ".github/actions/macos-setup/action.yml").read_text()

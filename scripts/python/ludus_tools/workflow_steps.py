@@ -15,7 +15,9 @@ from .toolchain import LLVM_APT_KEY_FINGERPRINT, PINNED_LLVM_MAJOR, pinned_llvm_
 # The pinned Ludus host tools commit recorded by generated workflows.
 TOOLS_REVISION_RELPATH = "config/ludus-tools-revision.txt"
 
-CHECKOUT_STEP = '''      - uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd # v5.0.1 (Node 24)
+CHECKOUT_ACTION = "actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd # v5.0.1 (Node 24)"
+
+CHECKOUT_STEP = f'''      - uses: {CHECKOUT_ACTION}
         with:
           persist-credentials: false
 '''
@@ -65,7 +67,7 @@ _HOST_TOOLS = '''          ref=$(cat TOOLS_REVISION_TOKEN)
 '''
 
 _SDK_STEP = r"""      - name: STEP_NAME_TOKEN
-        env:
+CONDITION_TOKEN        env:
           SDK_URL: ${{ vars.URL_VARIABLE_TOKEN }}
           SDK_SHA256: ${{ vars.SHA_VARIABLE_TOKEN }}
           GH_TOKEN: ${{ github.token }}
@@ -106,7 +108,7 @@ _SDK_STEP = r"""      - name: STEP_NAME_TOKEN
           result = subprocess.run(['ludus', '--json', 'sdk', 'install', '--archive', path, '--digest', expected], text=True, stdout=subprocess.PIPE, check=True)
           prefix = json.loads(result.stdout)['installed']['prefix']
           with open(os.environ['GITHUB_ENV'], 'a') as output:
-              output.write('LUDUS_RELEASE_SDK_PREFIX=' + prefix + '\n')
+              output.write('PREFIX_VARIABLE_TOKEN=' + prefix + '\n')
           PYTHON
 """
 
@@ -165,10 +167,11 @@ def host_tools(venv: str) -> str:
 
 
 def release_sdk_step(name: str, invalid_message: str, *, url_variable: str = "LUDUS_RELEASE_SDK_URL",
-                     sha_variable: str = "LUDUS_RELEASE_SDK_SHA256") -> str:
+                     sha_variable: str = "LUDUS_RELEASE_SDK_SHA256",
+                     prefix_variable: str = "LUDUS_RELEASE_SDK_PREFIX", condition: str = "") -> str:
     """Return a step that installs the digest-pinned Release SDK named by repository variables.
 
-    The step exports ``LUDUS_RELEASE_SDK_PREFIX`` and fails the job with
+    The step exports ``prefix_variable`` and fails the job with
     ``invalid_message`` unless ``url_variable`` holds an HTTPS URL and
     ``sha_variable`` a SHA-256 digest. A release asset of the workflow's own
     repository is fetched with ``gh release download`` and the job's read-only
@@ -176,4 +179,6 @@ def release_sdk_step(name: str, invalid_message: str, *, url_variable: str = "LU
     directly without credentials.
     """
     return (_SDK_STEP.replace("STEP_NAME_TOKEN", name).replace("INVALID_SDK_TOKEN", invalid_message)
-            .replace("URL_VARIABLE_TOKEN", url_variable).replace("SHA_VARIABLE_TOKEN", sha_variable))
+            .replace("URL_VARIABLE_TOKEN", url_variable).replace("SHA_VARIABLE_TOKEN", sha_variable)
+            .replace("PREFIX_VARIABLE_TOKEN", prefix_variable)
+            .replace("CONDITION_TOKEN", f"        if: {condition}\n" if condition else ""))

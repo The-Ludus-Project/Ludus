@@ -441,6 +441,11 @@ bool ReadPreviewShaderRecipes(const PreviewShaderSources& sources, PreviewShader
     return true;
 }
 
+QStringList GetPreviewShaderIncludePatterns()
+{
+    return {QStringLiteral("*.slang"), QStringLiteral("*.h"), QStringLiteral("*.inc")};
+}
+
 bool CapturePreviewShaderSnapshot(const PreviewShaderSources& sources,
                                   const PreviewShaderRecipes& recipes,
                                   PreviewShaderSnapshot& outSnapshot,
@@ -461,7 +466,7 @@ bool CapturePreviewShaderSnapshot(const PreviewShaderSources& sources,
         }
         QStringList names;
         QDirIterator iterator(root,
-                              {QStringLiteral("*.slang"), QStringLiteral("*.h")},
+                              GetPreviewShaderIncludePatterns(),
                               QDir::Files | QDir::System | QDir::Hidden,
                               QDirIterator::Subdirectories);
         while (iterator.hasNext() == true)

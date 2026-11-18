@@ -35,6 +35,7 @@ float3 EvaluateGraphRay(uint pixel)
     launch.CameraClipToWorld = float4x4(1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1);
     // Odd pixels miss the floor through a shorter camera interval, exercising primary environment emission.
     launch.CameraClipToWorld[2][2] = pixel % 2 == 1 ? 0.25f : 1;
+    launch.CameraClipToEye = launch.CameraClipToWorld; // The eye is the world origin.
     launch.IsOrthographic = true;
     launch.Seed = Sampling.xy;
     float3 radiances[MH_ESTIMATOR_COUNT];

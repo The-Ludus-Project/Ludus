@@ -51,6 +51,18 @@ GetScrubStep(const QString& unit, foundation::float64 minimum, foundation::float
 /// The shortest double text of value, every stored digit included, for a tooltip beside FormatInspectorNumber.
 [[nodiscard]] QString FormatStoredNumber(foundation::float64 value);
 
+/// A Transform axis as its one-line vector row shows it: four significant digits from one up ("1.878", "18.76",
+/// "-100.8", "1235"), three decimals below one, and trailing zeros dropped, so X, Y and Z fit one line as zeros do.
+/// Fields that show it are marked with MarkCompactNumberField; their tooltip keeps the stored value, and a field left
+/// as shown writes the stored value back unchanged.
+[[nodiscard]] QString FormatCompactInspectorNumber(foundation::float64 value);
+
+/// Marks field as showing FormatCompactInspectorNumber, so a drag on its axis letter keeps that form.
+void MarkCompactNumberField(QLineEdit& inoutField);
+
+/// Whether field shows FormatCompactInspectorNumber (MarkCompactNumberField).
+[[nodiscard]] bool IsCompactNumberField(const QLineEdit& field);
+
 /// How a bounded slider spreads its positions over a number's range.
 enum class SliderScale : foundation::uint8
 {

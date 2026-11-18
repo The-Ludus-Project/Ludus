@@ -78,12 +78,19 @@ struct RayLaunch
     uint2 ExtentPixel;
     Ray CameraRay;
     float4x4 CameraClipToWorld;
+    /// Clip to eye-relative world: world axes with the origin at CameraPositionWorld. Build camera rays from it and
+    /// add the eye last, as MakeCameraRay does; CameraClipToWorld loses pixel-scale directions to its eye * w terms
+    /// when the camera is far from the world origin with a centimetre near plane.
+    float4x4 CameraClipToEye;
     float3 CameraPositionWorld;
     bool IsOrthographic;
     /// True when this invocation belongs to an entire-image dispatch rather than a capture row band.
     bool IsFullImageDispatch;
     uint SampleIndex;
     uint2 Seed;
+    /// Linear item index and exact count for buffer-only dispatches. Both are zero for image dispatches.
+    uint WorkItemIndex;
+    uint WorkItemCount;
 };
 struct SceneContext
 {
@@ -526,9 +533,117 @@ float3 EvaluateEmission(SceneContext scene, SurfaceHit hit, float3 directionAway
         return float3(0);
     return material.Emission;
 }
+// World features (graphics::renderer::WorldFeature; docs/development/render-graph-authoring.md#world-features). A
+// renderer-owned table backs each feature's function. The scene ray wrapper defines a table's slot only for kernels
+// that can bind it, and reflection keeps the table exactly when the kernel calls the function, which is how the
+// builder records the graph's support. Without the slot each function keeps its plain behaviour. The tables come
+// from the CPU clear-sky model (render_graph_world_features.cpp); thanks to Sebastien Hillaire, "A Scalable and
+// Production Ready Sky and Atmosphere Rendering Technique", Computer Graphics Forum 39(4), 2020, sections 4-5,
+// https://doi.org/10.1111/cgf.14050.
+#if defined(LUDUS_ATMOSPHERE_SKY_BINDING)
+LUDUS_SHADER_BINDING(LUDUS_ATMOSPHERE_SKY_BINDING)
+StructuredBuffer<float4> LudusAtmosphereSky LUDUS_SHADER_TEXTURE_REGISTER(LUDUS_ATMOSPHERE_SKY_BINDING);
+/// Bilinear Atmosphere sky radiance toward a unit world direction. False when the scene keeps the World environment,
+/// as for a World without an Atmosphere or a camera outside its shell.
+bool TryEvaluateAtmosphereSky(float3 directionWorld, out float3 outRadiance)
+{
+    outRadiance = float3(0);
+    const float4 header = LudusAtmosphereSky[0];
+    const uint width = uint(header.x);
+    const uint height = uint(header.y);
+    if (width == 0 || height == 0)
+        return false;
+    // Texel centres sit at half-texel offsets; longitude wraps, latitude clamps at the poles.
+    const float2 positionTexel =
+        ComputeEnvironmentCoordinates(directionWorld) * float2(float(width), float(height)) - float2(0.5);
+    const float2 lowTexel = floor(positionTexel);
+    const float2 fraction = positionTexel - lowTexel;
+    const uint column0 = uint(int(lowTexel.x) + int(width)) % width;
+    const uint column1 = (column0 + 1) % width;
+    const uint row0 = uint(clamp(lowTexel.y, 0.0, float(height - 1)));
+    const uint row1 = uint(clamp(lowTexel.y + 1, 0.0, float(height - 1)));
+    const uint first = LUDUS_ATMOSPHERE_SKY_HEADER_WORDS;
+    const float3 top = lerp(LudusAtmosphereSky[first + row0 * width + column0].xyz,
+                            LudusAtmosphereSky[first + row0 * width + column1].xyz,
+                            fraction.x);
+    const float3 bottom = lerp(LudusAtmosphereSky[first + row1 * width + column0].xyz,
+                               LudusAtmosphereSky[first + row1 * width + column1].xyz,
+                               fraction.x);
+    outRadiance = lerp(top, bottom, fraction.y);
+    return true;
+}
+#endif
+#if defined(LUDUS_AERIAL_PERSPECTIVE_BINDING)
+LUDUS_SHADER_BINDING(LUDUS_AERIAL_PERSPECTIVE_BINDING)
+StructuredBuffer<float4> LudusAerialPerspective LUDUS_SHADER_TEXTURE_REGISTER(LUDUS_AERIAL_PERSPECTIVE_BINDING);
+/// Horizontal lengths below this treat a direction as vertical, as the sky table lookup does.
+static const float AERIAL_PERSPECTIVE_DIRECTION_EPSILON = 0.000001;
+/// Corners of the table cell a trilinear lookup blends.
+static const uint AERIAL_PERSPECTIVE_CELL_CORNERS = 8;
+#endif
+/// Background radiance toward a unit world direction for a ray that leaves the scene. With an Atmosphere that lights
+/// the scene, kernels see its distant sky at the camera altitude (World feature AtmosphereSky); otherwise the World
+/// environment. Light sampling of the environment source evaluates the same radiance.
 float3 EvaluateEnvironment(SceneContext scene, float3 directionWorld)
 {
+#if defined(LUDUS_ATMOSPHERE_SKY_BINDING)
+    float3 sky;
+    if (TryEvaluateAtmosphereSky(directionWorld, sky) == true)
+        return sky;
+#endif
     return EvaluateEnvironmentWorld(directionWorld).xyz;
+}
+/// Haze between originWorld and a visible surface point hitWorld (World feature AerialPerspective): returns
+/// radiance * T + L, the surface radiance attenuated by the air's RGB transmittance T plus the sky light L it scatters
+/// toward the origin. Call it on the radiance a camera ray brings back from a surface. Positions are in world metres;
+/// segments use the haze seen from the camera's altitude and stop growing beyond 32 km. Returns radiance unchanged
+/// without an Atmosphere that lights the scene, for a degenerate segment, or in a kernel that cannot bind the table.
+float3 ApplyAerialPerspective(SceneContext scene, float3 originWorld, float3 hitWorld, float3 radiance)
+{
+#if defined(LUDUS_AERIAL_PERSPECTIVE_BINDING)
+    if (LudusAerialPerspective[0].x <= 0)
+        return radiance;
+    const float3 offsetWorld = hitWorld - originWorld;
+    const float distanceWorld = length(offsetWorld);
+    if (isfinite(distanceWorld) == false || distanceWorld <= 0)
+        return radiance;
+    const float3 upWorld = LudusAerialPerspective[1].xyz;
+    const float3 sunWorld = LudusAerialPerspective[2].xyz;
+    const float3 directionWorld = offsetWorld / distanceWorld;
+    const float zenithCosine = clamp(dot(directionWorld, upWorld), -1.0, 1.0);
+    const float3 horizontalWorld = directionWorld - upWorld * zenithCosine;
+    const float3 sunHorizontalWorld = sunWorld - upWorld * dot(sunWorld, upWorld);
+    const float product = length(horizontalWorld) * length(sunHorizontalWorld);
+    const float azimuth = product > AERIAL_PERSPECTIVE_DIRECTION_EPSILON
+                              ? acos(clamp(dot(horizontalWorld, sunHorizontalWorld) / product, -1.0, 1.0)) / PI
+                              : 0;
+    const float slice = sqrt(saturate(distanceWorld / float(LUDUS_AERIAL_PERSPECTIVE_MAX_METRES)));
+    const uint3 lastEntry = uint3(LUDUS_AERIAL_PERSPECTIVE_AZIMUTH_COUNT - 1,
+                                  LUDUS_AERIAL_PERSPECTIVE_ZENITH_COUNT - 1,
+                                  LUDUS_AERIAL_PERSPECTIVE_SLICE_COUNT - 1);
+    const float3 positionEntry = float3(azimuth, acos(zenithCosine) / PI, slice) * float3(lastEntry);
+    const uint3 low = min(uint3(positionEntry), lastEntry);
+    const uint3 high = min(low + uint3(1), lastEntry);
+    const float3 fraction = positionEntry - float3(low);
+    float3 scattered = float3(0);
+    float3 transmittance = float3(0);
+    for (uint corner = 0; corner < AERIAL_PERSPECTIVE_CELL_CORNERS; ++corner)
+    {
+        const uint3 isHigh = uint3(corner & 1u, (corner >> 1) & 1u, (corner >> 2) & 1u);
+        const uint3 entry = select(isHigh != uint3(0), high, low);
+        const float3 weights = select(isHigh != uint3(0), fraction, float3(1) - fraction);
+        const float weight = weights.x * weights.y * weights.z;
+        const uint index =
+            (entry.z * LUDUS_AERIAL_PERSPECTIVE_ZENITH_COUNT + entry.y) * LUDUS_AERIAL_PERSPECTIVE_AZIMUTH_COUNT +
+            entry.x;
+        const uint word = LUDUS_AERIAL_PERSPECTIVE_HEADER_WORDS + index * LUDUS_AERIAL_PERSPECTIVE_ENTRY_WORDS;
+        scattered += weight * LudusAerialPerspective[word].xyz;
+        transmittance += weight * LudusAerialPerspective[word + 1].xyz;
+    }
+    return radiance * transmittance + scattered;
+#else
+    return radiance;
+#endif
 }
 bool IsSceneRayValid(Ray ray)
 {
@@ -855,7 +970,7 @@ SampleIncidentLightAtCoordinates(SceneContext scene, LightInfo light, SurfaceHit
         float radius = sqrt(max(0, 1 - cosine * cosine));
         float longitude = 2 * PI * shapeSample.z;
         result.DirectionWorld = float3(radius * cos(longitude), cosine, radius * sin(longitude));
-        result.IncidentCoefficient = EvaluateEnvironmentWorld(result.DirectionWorld).xyz;
+        result.IncidentCoefficient = EvaluateEnvironment(scene, result.DirectionWorld);
         result.ConditionalProbability = UNIFORM_ENVIRONMENT_PDF_SOLID_ANGLE;
     }
     else
@@ -1449,6 +1564,60 @@ float3 SampleStandardBsdf(MaterialSample material, float3 viewDirectionWorld, fl
                                 samples);
 }
 
+/// True when the standard BSDF has a separable GGX specular reflection lobe: the MetallicRoughness and Conductor
+/// models, and DiffuseConductorMix with a positive conductor weight. Hybrid effects that trace the specular and
+/// diffuse lobes separately use EvaluateStandardSpecularLobe and SampleStandardSpecularLobe. Glass, coatings,
+/// ProjectBrdf and Program materials have no such lobe here.
+bool HasStandardSpecularLobe(MaterialSample material)
+{
+    if (material.Model == MaterialModel::MetallicRoughness || material.Model == MaterialModel::Conductor)
+        return true;
+    return material.Model == MaterialModel::DiffuseConductorMix && material.Metallic > 0;
+}
+/// The GGX specular lobe of EvaluateStandardBsdf alone, and the solid-angle density of lightDirectionWorld under
+/// SampleStandardSpecularLobe. outValue includes DiffuseConductorMix's conductor weight; the diffuse remainder of
+/// EvaluateStandardBsdf is not included. Both outputs are zero below the shading hemisphere and for materials for
+/// which HasStandardSpecularLobe is false. Requires unit directions.
+void EvaluateStandardSpecularLobe(MaterialSample material,
+                                  float3 viewDirectionWorld,
+                                  float3 lightDirectionWorld,
+                                  out float3 outValue,
+                                  out float outPdf)
+{
+    outValue = 0;
+    outPdf = 0;
+    if (HasStandardSpecularLobe(material) == false)
+        return;
+    EvaluateScatteringSpecularLobe(material.BaseColor,
+                                   material.Metallic,
+                                   material.Roughness,
+                                   material.Model,
+                                   material.Eta,
+                                   material.K,
+                                   material.AlphaU,
+                                   material.ShadingNormalWorld,
+                                   viewDirectionWorld,
+                                   lightDirectionWorld,
+                                   outValue,
+                                   outPdf);
+}
+/// Propose a direction from the GGX specular lobe's visible normals, from two uniform samples in [0,1). Returns zero,
+/// the ordinary rejection, when HasStandardSpecularLobe is false, the viewer is below the shading hemisphere or the
+/// reflected direction leaves it. Its density is EvaluateStandardSpecularLobe's outPdf.
+float3 SampleStandardSpecularLobe(MaterialSample material, float3 viewDirectionWorld, float2 samples)
+{
+    if (HasStandardSpecularLobe(material) == false)
+        return float3(0);
+    // Probability one selects the visible-normal branch of the standard mixture sampler.
+    const float3 directionWorld =
+        SampleScatteringBsdf(material.ShadingNormalWorld,
+                             viewDirectionWorld,
+                             ComputeMaterialAlpha(material.Model, material.Roughness, material.AlphaU),
+                             1,
+                             float3(0, samples.x, samples.y));
+    return dot(material.ShadingNormalWorld, directionWorld) > 0 ? directionWorld : float3(0);
+}
+
 /// Complete continuation proposal for the typed reference models. Weight already
 /// contains f*cos/pdf; Pdf is solely the external MIS density (estimated for coatings).
 /// A specular (glass) sample carries its complete weight with Pdf one: emission it finds takes the
@@ -1689,16 +1858,16 @@ SceneInfo GetSceneInfo(SceneContext scene)
 Ray MakeCameraRay(RayLaunch launch, float2 samplePixel)
 {
     float2 positionUv = (float2(launch.PositionPixel) + samplePixel) / float2(launch.ExtentPixel);
-    float4 nearPositionWorld = mul(launch.CameraClipToWorld, float4(positionUv.x * 2 - 1, 1 - positionUv.y * 2, 0, 1));
-    float4 farPositionWorld = mul(launch.CameraClipToWorld, float4(positionUv.x * 2 - 1, 1 - positionUv.y * 2, 1, 1));
-    nearPositionWorld /= nearPositionWorld.w;
-    farPositionWorld /= farPositionWorld.w;
+    CameraRaySegment camera = MakeCameraRaySegment(launch.CameraClipToEye,
+                                                   launch.CameraPositionWorld,
+                                                   launch.IsOrthographic,
+                                                   float2(positionUv.x * 2 - 1, 1 - positionUv.y * 2),
+                                                   0);
     Ray ray;
-    ray.OriginWorld = launch.IsOrthographic == true ? nearPositionWorld.xyz : launch.CameraPositionWorld;
-    ray.DirectionWorld = NormalizeOrZero(farPositionWorld.xyz - ray.OriginWorld);
-    ray.MinDistanceWorld =
-        launch.IsOrthographic == true ? 0 : dot(nearPositionWorld.xyz - ray.OriginWorld, ray.DirectionWorld);
-    ray.MaxDistanceWorld = dot(farPositionWorld.xyz - ray.OriginWorld, ray.DirectionWorld);
+    ray.OriginWorld = camera.OriginWorld;
+    ray.DirectionWorld = camera.DirectionWorld;
+    ray.MinDistanceWorld = camera.MinDistanceWorld;
+    ray.MaxDistanceWorld = camera.MaxDistanceWorld;
     return ray;
 }
 

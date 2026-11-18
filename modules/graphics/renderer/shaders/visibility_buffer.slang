@@ -32,7 +32,6 @@ float4 EncodeVisibility(uint instanceIndex, uint primitiveIndex)
 #ifdef LUDUS_RENDER_GRAPH_VISIBILITY_INPUTS
 LUDUS_SHADER_BINDING(LUDUS_GRAPH_VISIBILITY_BINDING) Texture2D<float4> GraphVisibility;
 LUDUS_SHADER_BINDING(LUDUS_GRAPH_VISIBILITY_DEPTH_BINDING) Texture2D<float> GraphVisibilityDepth;
-static const float VISIBILITY_BARYCENTRIC_TOLERANCE = 0.001;
 
 /// Resolve the stored instance/local primitive to packed ray-scene triangle without traversal.
 /// Identity table is immutable with the scene; material slots and overrides need no G-buffer field.
@@ -58,6 +57,106 @@ uint FindVisibilityTriangle(SceneContext scene, uint instanceIndex, uint primiti
         return SCENE_INVALID_INDEX;
     uint3 record = asuint(SceneValue(table + first).xyz);
     return record.x == instanceIndex && record.y == primitiveIndex ? record.z : SCENE_INVALID_INDEX;
+}
+
+/// Largest distance, in pixels at the closest approach, between the pixel-centre camera ray and the stored triangle.
+/// The raster covers a pixel centre with a triangle whose vertices it snapped to a sub-pixel grid (1/256 pixel on
+/// current hardware), so the ray passes within that distance of the triangle. A mismatched identity, camera or extent
+/// places the triangle pixels away.
+static const float VISIBILITY_COVERAGE_TOLERANCE_PIXELS = 1.0 / 16;
+
+/// Closest approach of the launch's pixel-centre camera ray to the segment from startWorld to endWorld. outSegment is
+/// the parameter in [0,1] of the segment's closest point, outMissSquared its squared distance from the ray, and
+/// outFootprintSquared the squared pixel footprint there: the separation of the neighbouring pixel-centre rays at that
+/// distance along the ray, the smaller of the two image axes, which holds for perspective and orthographic cameras.
+void MeasureVisibilityEdgeMiss(RayLaunch launch,
+                               float3 startWorld,
+                               float3 endWorld,
+                               out float outSegment,
+                               out float outMissSquared,
+                               out float outFootprintSquared)
+{
+    const Ray ray = launch.CameraRay;
+    const float3 edgeWorld = endWorld - startWorld;
+    const float3 startOffsetWorld = startWorld - ray.OriginWorld;
+    const float edgeAlongRay = dot(edgeWorld, ray.DirectionWorld);
+    // The squared distance from the ray's line is a convex quadratic in the segment parameter, minimised at the
+    // unconstrained solution and clamped to the segment; an edge parallel to the ray takes its start.
+    const float denominator = dot(edgeWorld, edgeWorld) - edgeAlongRay * edgeAlongRay;
+    outSegment = 0;
+    if (denominator > 0)
+        outSegment =
+            saturate((edgeAlongRay * dot(startOffsetWorld, ray.DirectionWorld) - dot(edgeWorld, startOffsetWorld)) /
+                     denominator);
+    const float3 pointWorld = startWorld + edgeWorld * outSegment;
+    const float distanceWorld = dot(pointWorld - ray.OriginWorld, ray.DirectionWorld);
+    const float3 rayPointWorld = ray.OriginWorld + ray.DirectionWorld * distanceWorld;
+    const float3 missWorld = pointWorld - rayPointWorld;
+    outMissSquared = dot(missWorld, missWorld);
+    const Ray right = MakeCameraRay(launch, float2(1.5, 0.5));
+    const Ray below = MakeCameraRay(launch, float2(0.5, 1.5));
+    const float3 rightOffsetWorld = right.OriginWorld + right.DirectionWorld * distanceWorld - rayPointWorld;
+    const float3 belowOffsetWorld = below.OriginWorld + below.DirectionWorld * distanceWorld - rayPointWorld;
+    outFootprintSquared = min(dot(rightOffsetWorld, rightOffsetWorld), dot(belowOffsetWorld, belowOffsetWorld));
+}
+/// True when an edge's miss is within VISIBILITY_COVERAGE_TOLERANCE_PIXELS and, relative to its footprint, smaller
+/// than the best accepted so far. Compares the ratios by cross-multiplication, so no footprint divides.
+bool IsCloserVisibilityEdge(float missSquared,
+                            float footprintSquared,
+                            bool hasBest,
+                            float bestMissSquared,
+                            float bestFootprintSquared)
+{
+    if (isfinite(missSquared) == false || isfinite(footprintSquared) == false || footprintSquared <= 0 ||
+        missSquared > VISIBILITY_COVERAGE_TOLERANCE_PIXELS * VISIBILITY_COVERAGE_TOLERANCE_PIXELS * footprintSquared)
+        return false;
+    return hasBest == false || missSquared * bestFootprintSquared < bestMissSquared * footprintSquared;
+}
+/// The boundary point of a triangle nearest the launch's pixel-centre camera ray, as barycentric weights of corners
+/// one and two, when the ray passes within VISIBILITY_COVERAGE_TOLERANCE_PIXELS of the boundary. Returns false, with
+/// zero weights, otherwise.
+/// Out of line: inlined and run for every pixel, an earlier version of this pure test changed the hybrid reflections
+/// kernel's radiance on Metal (Apple M5), although it accepted every pixel.
+[noinline]
+bool TryFindVisibilityEdgePoint(RayLaunch launch,
+                                float3 position0World,
+                                float3 position1World,
+                                float3 position2World,
+                                out float2 outBarycentric)
+{
+    outBarycentric = float2(0);
+    bool hasBest = false;
+    float bestMissSquared = 0;
+    float bestFootprintSquared = 0;
+    float segment;
+    float missSquared;
+    float footprintSquared;
+    // Corner 0 to corner 1.
+    MeasureVisibilityEdgeMiss(launch, position0World, position1World, segment, missSquared, footprintSquared);
+    if (IsCloserVisibilityEdge(missSquared, footprintSquared, hasBest, bestMissSquared, bestFootprintSquared) == true)
+    {
+        outBarycentric = float2(segment, 0);
+        hasBest = true;
+        bestMissSquared = missSquared;
+        bestFootprintSquared = footprintSquared;
+    }
+    // Corner 1 to corner 2.
+    MeasureVisibilityEdgeMiss(launch, position1World, position2World, segment, missSquared, footprintSquared);
+    if (IsCloserVisibilityEdge(missSquared, footprintSquared, hasBest, bestMissSquared, bestFootprintSquared) == true)
+    {
+        outBarycentric = float2(1 - segment, segment);
+        hasBest = true;
+        bestMissSquared = missSquared;
+        bestFootprintSquared = footprintSquared;
+    }
+    // Corner 2 to corner 0.
+    MeasureVisibilityEdgeMiss(launch, position2World, position0World, segment, missSquared, footprintSquared);
+    if (IsCloserVisibilityEdge(missSquared, footprintSquared, hasBest, bestMissSquared, bestFootprintSquared) == true)
+    {
+        outBarycentric = float2(0, 1 - segment);
+        hasBest = true;
+    }
+    return hasBest;
 }
 
 /// Load a center-sampled raster first hit and reconstruct its complete surface without a ray query.
@@ -87,33 +186,46 @@ SceneQuery LoadVisibilitySurfaceWithoutCapture(SceneContext scene,
         FailSceneQuery(inoutQueries, LUDUS_SCENE_FAILURE_STORED_RECORD);
         return SceneQuery::Failure;
     }
-    float2 positionUv = (float2(launch.PositionPixel) + 0.5) / float2(launch.ExtentPixel);
-    float4 positionHomogeneousWorld =
-        mul(launch.CameraClipToWorld, float4(positionUv.x * 2 - 1, 1 - positionUv.y * 2, depth, 1));
-    if (any(isfinite(positionHomogeneousWorld) == false) || positionHomogeneousWorld.w == 0)
-    {
-        FailSceneQuery(inoutQueries, LUDUS_SCENE_FAILURE_STORED_RECORD);
-        return SceneQuery::Failure;
-    }
-    float3 positionWorld = positionHomogeneousWorld.xyz / positionHomogeneousWorld.w;
     TriangleData triangle = GetTriangle(scene, triangleIndex);
     float3 edge1World = triangle.Position1World - triangle.Position0World;
     float3 edge2World = triangle.Position2World - triangle.Position0World;
     float3 normalWorld = cross(edge1World, edge2World);
     float denominator = dot(normalWorld, normalWorld);
-    float3 offsetWorld = positionWorld - triangle.Position0World;
-    float2 barycentric =
-        float2(dot(cross(offsetWorld, edge2World), normalWorld), dot(cross(edge1World, offsetWorld), normalWorld)) /
-        denominator;
-    if (denominator <= 0 || any(isfinite(barycentric) == false) ||
-        any(barycentric < -VISIBILITY_BARYCENTRIC_TOLERANCE) ||
-        barycentric.x + barycentric.y > 1 + VISIBILITY_BARYCENTRIC_TOLERANCE)
+    if (denominator <= 0 || isfinite(denominator) == false)
     {
         FailSceneQuery(inoutQueries, LUDUS_SCENE_FAILURE_STORED_RECORD);
         return SceneQuery::Failure;
     }
-    barycentric = max(barycentric, 0);
-    barycentric /= max(1, barycentric.x + barycentric.y);
+    // The stored identity and the pixel centre locate the first hit: where the pixel-centre camera ray meets the
+    // stored triangle. Depth does not: conventional float32 depth places the point centimetres along that ray at tens
+    // of metres, and at grazing incidence nearly all of that error lies in the triangle's plane, where it moves the
+    // point off the triangle at its edges.
+    const float3 directionWorld = launch.CameraRay.DirectionWorld;
+    const float cosine = dot(directionWorld, normalWorld);
+    float2 barycentric = float2(0);
+    bool isInside = false;
+    if (cosine != 0)
+    {
+        const float rayDistance = dot(triangle.Position0World - launch.CameraRay.OriginWorld, normalWorld) / cosine;
+        const float3 offsetWorld =
+            launch.CameraRay.OriginWorld + directionWorld * rayDistance - triangle.Position0World;
+        barycentric =
+            float2(dot(cross(offsetWorld, edge2World), normalWorld), dot(cross(edge1World, offsetWorld), normalWorld)) /
+            denominator;
+        isInside = isfinite(rayDistance) == true && rayDistance >= 0 && all(isfinite(barycentric)) == true &&
+                   all(barycentric >= 0) == true && barycentric.x + barycentric.y <= 1;
+    }
+    // The raster covered the pixel centre with this triangle, so a ray that misses it, as rasterizer vertex snapping
+    // and rounding allow at edges, passes just outside its boundary; the hit is the boundary point nearest the ray.
+    if (isInside == false && TryFindVisibilityEdgePoint(launch,
+                                                        triangle.Position0World,
+                                                        triangle.Position1World,
+                                                        triangle.Position2World,
+                                                        barycentric) == false)
+    {
+        FailSceneQuery(inoutQueries, LUDUS_SCENE_FAILURE_STORED_RECORD);
+        return SceneQuery::Failure;
+    }
     outHit = GetSurfaceHit(scene, triangleIndex, barycentric);
     outHit.IncomingRay = launch.CameraRay;
     outHit.DistanceWorld = dot(outHit.PositionWorld - launch.CameraRay.OriginWorld, launch.CameraRay.DirectionWorld);

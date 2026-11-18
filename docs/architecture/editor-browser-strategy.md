@@ -29,7 +29,8 @@ Browser parity is evaluated per operation, not by enabling every desktop button:
 | Ordinary raster viewport | Scene/camera/navigation and direct lighting | [Offscreen shadow preparation follow-up](https://github.com/The-Ludus-Project/Ludus/pull/462) preserves the last displayed image; raster shadows require no ray-tracing feature |
 | GPU ray queries | Browser backend reports unavailable | Require the selected API/device capability; compute support alone does not admit rays. An API-level ray flag is not itself evidence of dedicated hardware acceleration |
 | Builds, debugger, native Play, external editors | Unavailable in the static browser host; shipped web sample players remain usable | Local processes require a separate authorized host transport or build service |
-| Durable project storage and recovery | Session memory plus explicit download | Quota-aware persistent storage, recovery and tested import/export round trips remain work; a download request cannot certify that a file was saved |
+| Project folders on disk | Opened in place: read on first use; saved back to the folder in Chrome/Edge, read-only with download elsewhere ([host project folders](#host-project-folders)) | Firefox and Safari cannot write to a folder on disk; recovery of unsaved session edits after a reload remains work |
+| Durable project storage and recovery | Saves to a folder opened read-write; otherwise session memory plus explicit download | Quota-aware persistent storage for projects not on disk, recovery and tested import/export round trips remain work; a download request cannot certify that a file was saved |
 
 The Content WebAssembly smoke target exercises real MEMFS publication and reads.
 The editor's content suite also runs through the browser's cooperative scheduler
@@ -44,8 +45,8 @@ scene editor. See [ADR 0009](../decisions/0009-browser-webgpu-toolchain.md),
 
 The native editor currently targets Linux x64. Its controller owns
 QProcess-based Python/build/debugger/Play adapters. A browser cannot simply start
-the user's local CMake/compiler/RAD process. The WebAssembly target uses single-threaded static Qt, Asyncify modal dialogs
-and explicit file import/download.
+the user's local CMake/compiler/RAD process. The WebAssembly target uses single-threaded static Qt, Asyncify modal dialogs,
+project folders opened in place and explicit file import/download.
 [Qt's WebAssembly documentation](https://doc.qt.io/qt-6/wasm.html) describes
 asynchronous constraints and matching Qt/Emscripten builds. Do not infer that our
 pinned engine WebGPU SDK is ABI-compatible with Qt's current Wasm requirements.
@@ -55,6 +56,85 @@ quota-limited storage and is removed when site data is cleared; provide explicit
 project export/import and recovery. [MDN OPFS documentation](https://developer.mozilla.org/en-US/docs/Web/API/File_System_API/Origin_private_file_system).
 Emscripten's default MEMFS is volatile; IDBFS persistence requires explicit
 synchronization. [Emscripten filesystem documentation](https://emscripten.org/docs/api_reference/Filesystem-API.html).
+
+## Host project folders
+
+**Decision (2026-11-17, [issue 1743](https://github.com/The-Ludus-Project/Ludus/issues/1743)).**
+The browser editor works on a project folder the user picks on disk, in place,
+instead of copying every file into the tab first. A web page can reach only a
+folder the user picks; it can never open an arbitrary host path. Nothing is
+uploaded: the files stay on the user's machine and are read into the tab's
+memory. The browser editor still cannot run CMake or compile C++, so a folder
+opened this way supports authoring and preview only.
+
+Browser support, checked on 2026-11-17 against MDN and the web-features
+explorer: `showDirectoryPicker()` and read-write `FileSystemDirectoryHandle`s
+exist only in Chromium browsers (Chrome and Edge 86+, Chrome for Android 132+);
+Mozilla's position is negative and WebKit's opposed. Firefox and Safari list a
+folder only through `<input webkitdirectory>`, which gives read-only `File`
+snapshots. Handles are structured-cloneable, so IndexedDB can keep one across
+sessions; using it again needs `requestPermission()` after a click.
+
+How it works (`apps/editor/browser/host_folder.js`, `apps/editor/src/browser_host_folder.cpp`):
+
+- **Picking lists, it does not read.** Chromium asks for `readwrite` access and
+  walks the handle tree; elsewhere the directory input lists its `File`s. The
+  generated top-level folders (`out`, `build`, `.git`, `.ludus`,
+  `node_modules`) are skipped without being walked. The editor admits the list
+  (file count, per-file size, paths, `ludus.project.json` or a scene entry)
+  before anything is mounted.
+- **A mount type over MEMFS.** The folder is mounted at
+  `/browser-folders/<n>/<folder name>`. Every file exists with its size, so
+  `stat()` and directory listings need no bytes. A file's bytes are read on its
+  first `open()`: the overridden `__syscall_openat` suspends the calling Wasm
+  code with `Asyncify.handleSleep` while the file is read, exactly as
+  Emscripten's own `fd_sync` suspends for a mount's `syncfs()`. Qt, the
+  FoundationFilesystem layer and SceneCook therefore read folder files through
+  their ordinary synchronous calls. An open that truncates reads nothing.
+- **One memory budget.** `BROWSER_FILE_BUDGET_BYTES`
+  (`apps/editor/src/internal/browser_folder.h`) is a quarter of the editor's
+  maximum WebAssembly memory (`QT_WASM_MAXIMUM_MEMORY`, 2 GiB, so 512 MiB). It
+  bounds the largest file of an opened folder, the resident copies of folder
+  files (least recently opened clean, closed copies are dropped and read again
+  when next opened), the files copied by single-document, audio and `.zip`
+  imports, and a Download Project archive. A folder's total size is not limited;
+  at most 4096 files are opened outside the generated folders.
+- **Saves reach the folder.** Writes land in MEMFS first and are recorded.
+  `rename()` (how QSaveFile and Ludus persistence publish a save) and `fsync()`
+  wait until the recorded changes are written with `createWritable()`, which
+  Chromium replaces atomically on close, so a failed disk write fails the save
+  that caused it and the change is kept for the next save. Plain writes, new
+  folders and deletions reach the folder on the next event-loop turn after
+  `close()`; a failure there is reported in the editor. Changes inside generated
+  folders stay in the session. The page asks before leaving while writes are
+  pending.
+- **Reopening.** Chromium keeps the last read-write folder handle in IndexedDB.
+  **File → Reopen Last Project Folder** asks the browser for permission again
+  and lists the folder; **Open Project...** starts its picker in that folder.
+- **Fallback.** Firefox and Safari open the same folder read-only and lazily:
+  edits stay in the session and **Download Project** saves them. A `File` that
+  changed on disk after picking cannot be read again; the editor reports it and
+  asks to open the folder again.
+
+Rejected alternatives: raising the copy limit (memory and startup grow with the
+whole project, and saves still need a download); a WasmFS OPFS or custom
+backend (its asynchronous backends need pthreads and cross-origin isolation,
+which the Pages host cannot provide, and Qt is built against the legacy FS);
+JSPI (not available in every target browser and not what the pinned Qt build
+uses); synchronous `XMLHttpRequest` of blob URLs (deprecated on the main
+thread); and reading a file in an editor-level event loop before each use
+(Content, SceneCook and Qt read files at hundreds of call sites).
+
+Limits and coupling: a nested Wasm call made while another call is suspended
+cannot wait for disk and fails with `EIO` (Qt queues its own events during the
+suspension, so this needs a JavaScript callback that calls Wasm directly).
+Renames across mounts fail with `EXDEV`, which Qt turns into copies. Symbolic
+links cannot be created in a folder mount. The overrides reproduce Emscripten
+4.0.23's `__syscall_openat` and `__syscall_renameat` over the public FS API and
+rely on MEMFS node fields; re-verify them in a browser when
+`config/web_toolchain.json` changes the Emscripten pin.
+`tools/web-browser-tests/host_folder_fs.mjs` checks the mount through a Qt-free
+Wasm harness; the editor acceptance test opens and saves a project through it.
 
 ## Investment order
 
@@ -79,9 +159,10 @@ browser application is not automatically a complete development environment.
 The preview reuses existing private Qt models, validation and serializers. It
 does not turn them into a portable editor SDK. Native process, source-watch and
 audio adapters are replaced explicitly; the browser does not simulate successful
-builds. Files use volatile session memory and explicit downloads. Persistent
-project storage and a scene/game viewport are later increments requiring their
-own round-trip and performance evidence.
+builds. Projects opened from a folder on disk are read in place and, where the browser
+allows, saved back to it; other files use volatile session memory and explicit
+downloads. Persistent storage for projects that are not on disk is a later
+increment requiring its own round-trip and performance evidence.
 
 For cloud compilation, keep the operation protocol and cleanup/revision contract,
 but execute jobs in isolated workers with resource limits and explicit ownership.
