@@ -782,6 +782,11 @@ headers. Separate the groups with a blank line.
   invocation and discovery include the same tests. Preserve this when appending tests.
 - Required SDK acceptance checks raise explicit errors rather than relying on Python
   `assert`, which `python -O` disables. Test rejection under optimization when adding guards.
+- Select a generated program, recipe or wrapper by its identity (authored source or a
+  marker unique to one kernel), never as the first entry of a directory listing or
+  recipe list: listing order differs between filesystems and a fixture can gain a
+  configuration. `find_ray_compute` and `find_wrapper_path` in
+  `scripts/python/test_render_graph_ray.py` require exactly one match.
 
 ### Game project setup checks
 

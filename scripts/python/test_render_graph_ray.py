@@ -52,6 +52,35 @@ def compile_without_tools(program, schemas, closure, snapshot, work, helper, too
     return output, result
 
 
+def find_wrapper_path(package, marker):
+    """Return the path of the one generated wrapper in package whose text contains marker.
+
+    Programs live in content-hashed directories whose listing order differs between filesystems, so a
+    test names text that identifies one kernel. More than one match fails instead of taking whichever
+    the filesystem lists first.
+    """
+    matches = [path for path in sorted((package / 'programs').glob('*/wrapper.slang')) if marker in path.read_text()]
+    if len(matches) != 1:
+        raise AssertionError(f'{len(matches)} generated wrappers contain {marker!r}; expected one')
+    return matches[0]
+
+
+def find_ray_compute(package, source):
+    """Return the one ray-tracing recipe whose compute kernel compiles source, and its wrapper text.
+
+    A package holds a ray recipe per configuration, in no configuration order, so a test names the authored
+    kernel source it examines instead of taking the first recipe or program directory listed.
+    """
+    descriptor = json.loads((package / 'package.json').read_text())
+    keys = {program['key'] for program in descriptor['programs'] if program['descriptor']['stage'] == 'compute'
+            and program['descriptor']['source_map']['function'] == source}
+    recipes = [recipe for recipe in descriptor['recipes']
+               if recipe['technique'] == ray.TECHNIQUE and recipe['compute'] in keys]
+    if len(recipes) != 1:
+        raise AssertionError(f'{len(recipes)} ray recipes compile {source}; expected one')
+    return recipes[0], (package / 'programs' / recipes[0]['compute'] / 'wrapper.slang').read_text()
+
+
 def make_legacy_scene_bridge(root):
     """Reproduce the old editor bridge after replacing its closest-hit source."""
     helper = root / 'main_shaders/scene_legacy_callbacks.slang'
@@ -1136,8 +1165,7 @@ class RayCompilerAcceptance(unittest.TestCase):
                            spirv_cross=os.environ['LUDUS_RG1_CROSS'])
             result = build.build_package(manifest, root / 'build', **options)
             package = Path(result['package'])
-            wrapper = next(path.read_text() for path in (package / 'programs').glob('*/wrapper.slang')
-                           if 'GetGraphTraversalStrategy' in path.read_text())
+            wrapper = find_wrapper_path(package, 'GetGraphTraversalStrategy').read_text()
             self.assertIn('#define LUDUS_SOFTWARE_RAY_TRAVERSAL 1', wrapper)
             self.assertIn('const uint strategies[] = { LUDUS_GRAPH_TRAVERSAL_TRIANGLE_LOOP }', wrapper)
             self.assertNotIn('#define LUDUS_GRAPH_COMPUTE_BVH_TRAVERSAL', wrapper)
@@ -1166,8 +1194,7 @@ class RayCompilerAcceptance(unittest.TestCase):
             node['invocation']['traversal'] = 'NativeQuery'
             path.write_bytes(graph.canonical_asset(document))
             rebuilt = build.build_package(manifest, root / 'build', **options)
-            rebuilt_wrapper = next(path.read_text() for path in (Path(rebuilt['package']) / 'programs').glob('*/wrapper.slang')
-                                   if 'float3 EvaluateGraphRay' in path.read_text())
+            rebuilt_wrapper = find_wrapper_path(Path(rebuilt['package']), 'float3 EvaluateGraphRay').read_text()
             self.assertNotIn('GetGraphTraversalStrategy', rebuilt_wrapper)
             self.assertEqual(shader_bytes, {path: path.read_bytes() for path in shader_bytes})
 
@@ -1189,8 +1216,7 @@ class RayCompilerAcceptance(unittest.TestCase):
             callbacks = ['Generate', 'Miss', 'Closest']
             self.assertEqual([callbacks + [ray.COMPUTE_BVH_TAG], callbacks + [ray.TRIANGLE_LOOP_TAG]],
                              software['ray_programs'])
-            wrapper_path = next(path for path in (package / 'programs').glob('*/wrapper.slang')
-                                if 'GetGraphTraversalStrategy' in path.read_text())
+            wrapper_path = find_wrapper_path(package, 'GetGraphTraversalStrategy')
             wrapper = wrapper_path.read_text()
             self.assertIn('const uint strategies[] = { LUDUS_GRAPH_TRAVERSAL_COMPUTE_BVH, '
                           'LUDUS_GRAPH_TRAVERSAL_TRIANGLE_LOOP }', wrapper)
