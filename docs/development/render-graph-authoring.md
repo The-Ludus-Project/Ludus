@@ -3550,12 +3550,17 @@ The sources in `main_shaders/` cite the paper's equations at each step.
   shows an image of the source at the wavelength that the grating equation sends
   toward the viewer. These closed forms are derived from the paper's equations; the
   paper does not print them.
-- **Spectral camera** (`spectrum.slang`). Wavelengths are uniform over 380–780 nm.
-  The camera's three channels are the CIE 1931 colour-matching functions
-  (Wyman, Sloan and Shirley's fit) converted to linear sRGB, with their negative
-  lobes removed. Renderer accumulation rejects negative samples, so spectral colors
-  outside the sRGB gamut are drawn inside it. Scene RGB values become piecewise-constant spectra
-  that this camera reads back exactly; white becomes a flat spectrum.
+- **Spectral camera** (`spectrum.slang`). The full-range sampler draws wavelengths
+  uniformly over 380–780 nm. Both Steinberg templates evaluate the CIE 1931 2° observer using the multi-lobe fit in
+  [Wyman, Sloan and Shirley, §2.2, Eq. (4)](https://jcgt.org/published/0002/02/01/paper.pdf#page=4).
+  To form the camera response, they convert XYZ to linear sRGB at each wavelength,
+  clip negative channel sensitivities to zero for accumulation, and scale each channel
+  so a unit equal-energy spectrum reads as white.
+  Scene emissions and reflectances use a three-band spectrum. White gives a flat
+  spectrum. Other linear RGB inputs round-trip within numerical precision when all
+  three computed band values are nonnegative. A saturated input such as pure red
+  needs a negative green-band value. The shader clips that value to zero, so the
+  camera reads back some green.
 - **Estimators** (`shade.slang`). For a directional, point or spot light, every
   order is integrated over the band of wavelengths in which it sees the source's
   disk, with four stratified wavelengths per band. For a 1 mm source that band is
