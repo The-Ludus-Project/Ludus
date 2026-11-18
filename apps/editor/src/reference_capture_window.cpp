@@ -190,7 +190,7 @@ ReferenceCaptureWindow::ReferenceCaptureWindow(RenderPreview* preview, QWidget* 
     : QWidget(parentOrNull, Qt::Window), mPreview(preview), mLongSide(new QSpinBox(this)), mSamples(new QSpinBox(this)),
       mMaxDepth(new QSpinBox(this)), mTraversal(new QComboBox(this)),
       mCenterRays(new QCheckBox(QStringLiteral("Trace pixel centres"), this)),
-      mCompare(new QCheckBox(QStringLiteral("Compare with the viewport's render graph output"), this)),
+      mCompare(new QCheckBox(QStringLiteral("Compare with the render graph"), this)),
       mCaptureButton(new QPushButton(QStringLiteral("Capture viewport"), this)),
       mStopButton(new QPushButton(QStringLiteral("Stop"), this)),
       mSaveButton(new QPushButton(QStringLiteral("Save…"), this)), mProgress(new QProgressBar(this)),

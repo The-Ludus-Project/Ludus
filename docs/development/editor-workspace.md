@@ -2965,6 +2965,13 @@ scattering depth and the traversal, then choose **Capture viewport**. The
 **Render graph** source captures the viewport's own graph instead; see
 [Capture the render graph](#capture-the-render-graph).
 
+The settings, the capture buttons, progress and status sit in one column at the
+window's leading edge; the Reference, Render graph and Difference images take the
+rest. A short window scrolls the column. The graph summary under **Graph** is one
+line, and its tooltip has the full text. The progress bar stays hidden until a
+capture runs. It moves without showing a fraction while the scene is prepared,
+then fills as samples per pixel arrive.
+
 The capture uses the scene and camera as they were when you clicked. Later
 navigation or edits do not change it; capture again to include them. The window
 shows the image as it fills in, the minimum samples reached per pixel, the number
@@ -3122,9 +3129,8 @@ as it does reference captures. See the
 
 #### Compare with the viewport's render graph
 
-In the native editor, **Compare with the viewport's render graph output** is on
-by default. Each capture then also renders the World viewport's current render
-graph: the same package, raster fallback, output target and **Force raster**
+In the native editor, **Compare with the render graph** is on by default. Each
+capture then also renders the World viewport's current render graph: the same package, raster fallback, output target and **Force raster**
 choice the viewport shows. It uses a private producer on the same device, with
 the same frozen camera. When the output can be
 [captured](#capture-the-render-graph), the graph side runs to the same samples per
