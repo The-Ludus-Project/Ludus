@@ -26,6 +26,7 @@
 #include <ludus/foundation/containers/array.hpp>
 #include <ludus/foundation/containers/sort.hpp>
 #include <ludus/foundation/containers/static_array.hpp>
+#include <ludus/foundation/math/projection.hpp>
 #include <ludus/foundation/math/scalar.hpp>
 #include <ludus/foundation/math/vector.hpp>
 #include <ludus/foundation/threading/thread.hpp>
@@ -1032,6 +1033,170 @@ TEST_CASE("Hybrid rough reflections of offscreen geometry match the oracle and R
         const ImageDifference difference = Compare(replay[checkpoint], checkpoints[STATE_COUNT - 1][checkpoint]);
         CHECK(difference.MaximumAbsolute == 0);
     }
+}
+
+namespace
+{
+// A ground grid seen at a grazing angle through a perspective camera with a centimetre near plane, as the Editor's
+// World viewport draws terrain. A graph with visibility-buffer consumers draws in conventional depth, whose float32
+// texels place a pixel's surface centimetres along its ray at tens of metres. At a grazing angle that error lies
+// almost entirely in the ground plane, so a first hit rebuilt from depth slides off the triangle the raster stored
+// at its edges; with the 0.001 barycentric tolerance this rebuild once used, 84 pixels of this view failed. The
+// first surface must instead lie on the pixel-centre camera ray. The camera stands near the world origin, where its
+// float32 clip-to-world matrix keeps camera rays on the raster's projection.
+constexpr uint32 GROUND_CELLS_PER_SIDE = 128;
+constexpr float32 GROUND_CELL_WORLD = .25F;
+constexpr uint32 GROUND_VERTICES_PER_SIDE = GROUND_CELLS_PER_SIDE + 1;
+constexpr usize GROUND_VERTEX_COUNT = static_cast<usize>(GROUND_VERTICES_PER_SIDE) * GROUND_VERTICES_PER_SIDE;
+constexpr usize GROUND_INDEX_COUNT =
+    static_cast<usize>(GROUND_CELLS_PER_SIDE) * GROUND_CELLS_PER_SIDE * ONE_SIDED_INDEX_COUNT;
+/// The grid spans x in [-16, 16] m and z in [-32, 0] m in quarter-metre cells; the camera stands over its near edge.
+constexpr float32 GROUND_HALF_WIDTH_WORLD = GROUND_CELLS_PER_SIDE * GROUND_CELL_WORLD / 2;
+constexpr math::Vector3 GRAZING_EYE_WORLD{0, 1.5F, 0};
+/// The view centre points about 2 degrees below the horizon, at the ground 40 m ahead beyond the grid's far edge.
+constexpr math::Vector3 GRAZING_TARGET_WORLD{0, 0, -40};
+constexpr float32 GRAZING_VERTICAL_FOV_RADIANS = 1;
+constexpr float32 GRAZING_NEAR_WORLD = .01F;
+constexpr float32 GRAZING_FAR_WORLD = 1000;
+/// Frames drawn before the failure summary is read; each draws one sample per pixel.
+constexpr uint32 GRAZING_FRAMES = 4;
+constexpr uint32 SHADE_PASS = REFLECTIONS_PASS_COUNT - 1;
+
+/// The grid's vertices and triangles, two per cell with geometric normal +Y, and one rough dielectric material.
+struct GroundScene final
+{
+    Array<math::Vector3> Positions;
+    Array<math::Vector3> Normals;
+    Array<uint32> Indices;
+    uint32 MaterialIndex = 0;
+    renderer::RenderGraphMesh Mesh{};
+    renderer::RenderGraphItem Item{};
+    renderer::SceneShaderMaterial Material{};
+    renderer::DirectLight Light = MakeLight();
+    renderer::SceneShaderInputs Inputs{};
+    renderer::ViewDescription Camera{};
+    GroundScene()
+    {
+        REQUIRE(Positions.TryResize(GROUND_VERTEX_COUNT) == true);
+        REQUIRE(Normals.TryResize(GROUND_VERTEX_COUNT) == true);
+        REQUIRE(Indices.TryResize(GROUND_INDEX_COUNT) == true);
+        for (uint32 row = 0; row < GROUND_VERTICES_PER_SIDE; ++row)
+        {
+            for (uint32 column = 0; column < GROUND_VERTICES_PER_SIDE; ++column)
+            {
+                const usize vertex = static_cast<usize>(row) * GROUND_VERTICES_PER_SIDE + column;
+                Positions[vertex] = {static_cast<float32>(column) * GROUND_CELL_WORLD - GROUND_HALF_WIDTH_WORLD,
+                                     0,
+                                     -static_cast<float32>(row) * GROUND_CELL_WORLD};
+                Normals[vertex] = {0, 1, 0};
+            }
+        }
+        usize index = 0;
+        for (uint32 row = 0; row < GROUND_CELLS_PER_SIDE; ++row)
+        {
+            for (uint32 column = 0; column < GROUND_CELLS_PER_SIDE; ++column)
+            {
+                const uint32 corner = row * GROUND_VERTICES_PER_SIDE + column;
+                const uint32 right = corner + 1;
+                const uint32 farCorner = corner + GROUND_VERTICES_PER_SIDE;
+                // Counterclockwise about +Y; the shared diagonal runs from the cell's corner to its far right.
+                const StaticArray<uint32, ONE_SIDED_INDEX_COUNT> cell{
+                    {corner, right, farCorner + 1, corner, farCorner + 1, farCorner}};
+                for (const uint32 vertex : cell)
+                {
+                    Indices[index++] = vertex;
+                }
+            }
+        }
+        Mesh.Geometry = {Positions.GetData(), Positions.GetSize(), Indices.GetData(), Indices.GetSize()};
+        Mesh.Geometry.Normals = Normals.GetData();
+        Mesh.MaterialBindings = {&MaterialIndex, 1};
+        Item.SourceId = 1;
+        Material.BaseColor = {PANEL_ALBEDO, PANEL_ALBEDO, PANEL_ALBEDO};
+        Material.Roughness = MOTION_ROUGHNESS;
+        Material.Metallic = 0;
+        Material.Scattering.Model = format::MaterialModel::MetallicRoughness;
+        Light.Direction = {0, -1, -1};
+        Inputs.Materials = {&Material, 1};
+        Inputs.Lights = {&Light, 1};
+        math::Matrix4 view;
+        math::Matrix4 projection;
+        REQUIRE(math::TryLookAt(GRAZING_EYE_WORLD, GRAZING_TARGET_WORLD, {0, 1, 0}, view) == math::MathStatus::Success);
+        REQUIRE(math::TryPerspectiveReverseZ(GRAZING_VERTICAL_FOV_RADIANS,
+                                             static_cast<float32>(WIDTH) / static_cast<float32>(HEIGHT),
+                                             GRAZING_NEAR_WORLD,
+                                             GRAZING_FAR_WORLD,
+                                             projection) == math::MathStatus::Success);
+        Camera.WorldToClip = projection * view;
+        Camera.Depth = renderer::DepthConvention::ReverseZ;
+        Camera.CameraPosition = GRAZING_EYE_WORLD;
+        Camera.CameraForward = GRAZING_TARGET_WORLD - GRAZING_EYE_WORLD;
+    }
+    GroundScene(const GroundScene&) = delete;
+    GroundScene& operator=(const GroundScene&) = delete;
+};
+
+/// Poll a graph's failure summary of one ray pass until its read-back completes.
+renderer::RenderGraphRayFailures ReadRayFailures(renderer::RenderGraph& inoutGraph, uint32 pass)
+{
+    renderer::RenderGraphRayFailures failures;
+    const uint64 beginning = time::NowTicks();
+    S status = inoutGraph.PollRayFailures(pass, failures);
+    while (status == S::Pending && time::NowTicks() - beginning < TIMEOUT_NANOSECONDS)
+    {
+        threading::YieldThread();
+        status = inoutGraph.PollRayFailures(pass, failures);
+    }
+    REQUIRE(status == S::Ready);
+    return failures;
+}
+} // namespace
+
+TEST_CASE("Hybrid reflections rebuild grazing first hits at triangle edges without failures",
+          "[render-graph][gpu][hybrid-reflections][native-ray-queries]")
+{
+    const Device device(true);
+    if (device.HasRays == false)
+    {
+        SKIP("Native ray queries are unavailable");
+    }
+    const core::UniquePtr<renderer::RenderGraphPackage> package = LoadPackage(REFLECTIONS_PACKAGE);
+    const renderer::RenderGraphPlan plan = package->GetPlan();
+    REQUIRE(plan.Passes.GetSize() == REFLECTIONS_PASS_COUNT);
+    const renderer::RenderGraphPrograms programs =
+        package->GetPrograms(shaders::renderer_composite::Vertex(), shaders::renderer_composite::Fragment());
+    renderer::RenderGraph graph;
+    REQUIRE(Poll(graph, graph.Initialize(device.Handle, plan, programs, nullptr, WIDTH, HEIGHT)) == S::Ready);
+    // Visibility consumers rebuild positions in conventional depth, so the graph converts the reverse-Z camera.
+    REQUIRE(graph.CanUseReverseDepth() == false);
+    GroundScene scene;
+    renderer::RenderGraphReport report;
+    constexpr uint64 REVISION = 1;
+    const S updated = graph.Update({&scene.Mesh, 1},
+                                   {&scene.Item, 1},
+                                   {&scene.Camera, 1},
+                                   REVISION,
+                                   renderer::RenderGraphCoveragePolicy::RejectIncomplete,
+                                   report,
+                                   &scene.Inputs,
+                                   REVISION);
+    REQUIRE(Poll(graph, updated) == S::Ready);
+    for (uint32 frame = 0; frame < GRAZING_FRAMES; ++frame)
+    {
+        DrawGraphAndWait(device, graph);
+    }
+    // The ground fills much of the lower half of the image; the black environment fills the rest.
+    LinearImage image{};
+    ReadExport(device, graph, plan.Passes[SHADE_PASS].Color, image);
+    usize litPixels = 0;
+    for (const float32 value : image)
+    {
+        litPixels += value > 0 ? 1 : 0;
+    }
+    CHECK(litPixels > PIXEL_COUNT / 4);
+    const renderer::RenderGraphRayFailures failures = ReadRayFailures(graph, SHADE_PASS);
+    CAPTURE(failures.MainReason, failures.Pixels[static_cast<usize>(renderer::RenderGraphFailureReason::StoredRecord)]);
+    CHECK(failures.TotalPixels == 0);
 }
 
 TEST_CASE("RT2 raster fallback has no reflection of offscreen geometry", "[render-graph][gpu][hybrid-reflections]")
