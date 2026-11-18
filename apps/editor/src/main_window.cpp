@@ -174,6 +174,13 @@ MainWindow::MainWindow(EditorController* controller, QWidget* parent, const QStr
         showToolWindow(mErrorListDock);
         static_cast<void>(mErrorList->SelectFirstProblem());
     });
+    connect(Renderer_, &RendererWorkspace::ErrorListEntryRequested, this, [this](const QString& code) {
+        showToolWindow(mErrorListDock);
+        if (mErrorList->SelectEntry(code) == false)
+        {
+            static_cast<void>(mErrorList->SelectFirstProblem());
+        }
+    });
     connect(mErrorList, &ErrorList::ProblemsReported, this, &MainWindow::revealErrorList);
     mBuildErrorsTimer.setSingleShot(true);
     mBuildErrorsTimer.setInterval(BUILD_ERRORS_DELAY_MILLISECONDS);

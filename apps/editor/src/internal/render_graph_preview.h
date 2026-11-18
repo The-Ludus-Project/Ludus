@@ -55,6 +55,9 @@ DescribeRenderGraphExtractionFailure(graphics::rhi::RasterStatus status,
 /// @param features Unrendered features; zero yields an empty string.
 [[nodiscard]] QString DescribeUnrenderedWorldFeatures(const QString& configuration,
                                                       graphics::renderer::WorldFeatureMask features);
+/// The same omission as one short line for a viewport, such as "Aerial perspective not rendered by this graph"; the
+/// full DescribeUnrenderedWorldFeatures text stays in the Error List. Zero features yield an empty string.
+[[nodiscard]] QString SummarizeUnrenderedWorldFeatures(graphics::renderer::WorldFeatureMask features);
 /// The step a rejected generation failed at and its repair, as a clause that continues "Renderer generation N was
 /// rejected (Status) ...", for example "while resizing its targets to the viewport. Reduce ...". Empty for None.
 [[nodiscard]] QString DescribeRenderGraphFailureStage(graphics::renderer::RenderGraphFailureStage stage);

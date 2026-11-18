@@ -27,12 +27,15 @@
 #include <QLineEdit>
 #include <QPixmap>
 #include <QPlainTextEdit>
+#include <QScrollBar>
 #include <QSignalSpy>
 #include <QTabWidget>
 #include <QTableWidget>
 #include <QTemporaryDir>
 #include <QTest>
 #include <QTimer>
+#include <QToolButton>
+#include <QVBoxLayout>
 
 using namespace ludus::editor;
 using namespace ludus::foundation;
@@ -421,9 +424,102 @@ TEST_CASE("the World features table names each feature's scene function and the 
     workspace.RevealWorldFeatures();
     CHECK(tableOrNull->currentRow() == 0);
     CHECK(tableOrNull->selectionModel()->isRowSelected(0, {}) == true);
+    // The current row's function and where to call it read under the list.
+    QLabel* detailOrNull = workspace.findChild<QLabel*>(QStringLiteral("renderGraphWorldFeatureDetail"));
+    REQUIRE(detailOrNull != nullptr);
+    const renderer::WorldFeatureDescription first =
+        renderer::DescribeWorldFeature(renderer::WorldFeature::AtmosphereSky);
+    CHECK(detailOrNull->text().contains(QString::fromUtf8(first.Function)) == true);
+    CHECK(detailOrNull->text().contains(QString::fromUtf8(first.Callback)) == true);
+    tableOrNull->setCurrentCell(1, 0);
+    CHECK(detailOrNull->text().contains(QString::fromUtf8(
+              renderer::DescribeWorldFeature(renderer::WorldFeature::AerialPerspective).Function)) == true);
     const QList<ErrorListEntry> rows =
         MakeRenderGraphFeatureWarningEntries(QStringLiteral("World features not rendered: Atmosphere sky."),
                                              QStringLiteral("main.lurender.json"));
     REQUIRE(rows.size() == 1);
     CHECK(rows.first().Code == QString::fromLatin1(renderer::WORLD_FEATURE_WARNING_CODE));
+}
+
+TEST_CASE("Render Preview fits a narrow dock: a compact World features list and no empty preview box",
+          "[editor][render-graph][diagnostic-navigation][world-features][layout]")
+{
+    namespace renderer = ludus::graphics::renderer;
+    RendererWorkspace workspace({});
+    QWidget* panelOrNull = workspace.findChild<QWidget*>(QStringLiteral("renderGraphPreviewPanel"));
+    QTableWidget* tableOrNull = workspace.findChild<QTableWidget*>(QStringLiteral("renderGraphWorldFeatures"));
+    QWidget* imageOrNull = workspace.findChild<QWidget*>(QStringLiteral("renderGraphPreviewImage"));
+    QLabel* detailOrNull = workspace.findChild<QLabel*>(QStringLiteral("renderGraphWorldFeatureDetail"));
+    REQUIRE(panelOrNull != nullptr);
+    REQUIRE(tableOrNull != nullptr);
+    REQUIRE(imageOrNull != nullptr);
+    REQUIRE(detailOrNull != nullptr);
+    // The Render Preview tool window hosts the panel; a MacBook Air's default left dock is about this wide.
+    QWidget dock;
+    QVBoxLayout* layout = new QVBoxLayout(&dock);
+    layout->setContentsMargins(0, 0, 0, 0);
+    panelOrNull->setParent(&dock);
+    layout->addWidget(panelOrNull);
+    panelOrNull->show();
+    constexpr int DOCK_WIDTH = 240;
+    constexpr int DOCK_HEIGHT = 640;
+    dock.resize(DOCK_WIDTH, DOCK_HEIGHT);
+    dock.show();
+    QApplication::processEvents();
+    // Two columns: feature and support. The long function and callback text stay in the model only.
+    CHECK(tableOrNull->isColumnHidden(0) == false);
+    CHECK(tableOrNull->isColumnHidden(1) == false);
+    CHECK(tableOrNull->isColumnHidden(2) == true);
+    CHECK(tableOrNull->isColumnHidden(3) == true);
+    // It fits the dock: no sideways scrolling, every row one line, and the whole list shown without scrolling.
+    CHECK(tableOrNull->horizontalScrollBar()->isVisible() == false);
+    CHECK(tableOrNull->width() <= dock.width());
+    const int lineHeight = tableOrNull->fontMetrics().height();
+    for (int row = 0; row < tableOrNull->rowCount(); ++row)
+    {
+        CHECK(tableOrNull->rowHeight(row) < 2 * lineHeight);
+    }
+    CHECK(tableOrNull->verticalScrollBar()->maximum() == 0);
+    CHECK(detailOrNull->isVisible() == true);
+    CHECK(detailOrNull->width() <= dock.width());
+    // Without a frame the preview is one caption line, not a black box taking the dock's height.
+    CHECK(imageOrNull->isVisible() == true);
+    CHECK(imageOrNull->height() < 2 * lineHeight);
+    CHECK(tableOrNull->mapTo(&dock, QPoint(0, 0)).y() < DOCK_HEIGHT / 2);
+}
+
+TEST_CASE("a link to the World features warning selects its Error List row",
+          "[editor][render-graph][diagnostic-navigation][world-features]")
+{
+    namespace renderer = ludus::graphics::renderer;
+    ErrorList list;
+    QTableWidget* tableOrNull = list.findChild<QTableWidget*>();
+    REQUIRE(tableOrNull != nullptr);
+    ErrorListEntry error;
+    error.Severity = ErrorListSeverity::Error;
+    error.Producer = ErrorListProducer::Build;
+    error.Code = QStringLiteral("BuildError");
+    error.Description = QStringLiteral("main.cpp:1: error: broken");
+    list.ReplaceEntries(ErrorListProducer::Build, {error});
+    list.ReplaceEntries(
+        ErrorListProducer::RenderPreview,
+        MakeRenderGraphFeatureWarningEntries(QStringLiteral("World features not rendered: Aerial perspective."),
+                                             QStringLiteral("main.lurender.json")));
+    const QString code = QString::fromLatin1(renderer::WORLD_FEATURE_WARNING_CODE);
+    CHECK(list.SelectEntry(QStringLiteral("NoSuchCode")) == false);
+    REQUIRE(list.SelectEntry(code) == true);
+    const auto selectedCode = [&list, tableOrNull]() {
+        const QModelIndexList rows = tableOrNull->selectionModel()->selectedRows();
+        REQUIRE(rows.size() == 1);
+        const int entry = tableOrNull->item(rows.first().row(), 0)->data(Qt::UserRole).toInt();
+        return list.GetEntries().at(entry).Code;
+    };
+    CHECK(selectedCode() == code);
+    // A filtered-out warning is shown again rather than missed.
+    QToolButton* warningsOrNull = list.findChild<QToolButton*>(QStringLiteral("errorListWarnings"));
+    REQUIRE(warningsOrNull != nullptr);
+    warningsOrNull->setChecked(false);
+    REQUIRE(list.SelectEntry(code) == true);
+    CHECK(warningsOrNull->isChecked() == true);
+    CHECK(selectedCode() == code);
 }

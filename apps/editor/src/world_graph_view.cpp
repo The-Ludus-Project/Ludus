@@ -11,6 +11,7 @@
 #include <ludus/foundation/profiling/profiling.hpp>
 #include <ludus/foundation/time/time.hpp>
 #include <ludus/graphics/renderer/renderer.hpp>
+#include <ludus/graphics/renderer/world_feature.hpp>
 
 #include <QAction>
 #include <QActionGroup>
@@ -658,6 +659,7 @@ void WorldGraphView::refreshStatus()
     QString text;
     QString fullText;
     mHasProblemChip = false;
+    mHasFeatureLink = false;
     const bool isBuildFailure = mWorkspace.GetLastResult().Request.Request != 0 &&
                                 mWorkspace.GetLastResult().IsSuccessful == false &&
                                 mWorkspace.GetLastResult().Request.Action == QStringLiteral("build");
@@ -700,16 +702,26 @@ void WorldGraphView::refreshStatus()
     }
     if (mWorkspace.GetRenderProblem().isEmpty() == true)
     {
-        for (const QString& warning : {mWorkspace.GetRenderWarning(), mWorkspace.GetOmittedFeatureWarning()})
+        const QString& warning = mWorkspace.GetRenderWarning();
+        if (warning.isEmpty() == false)
         {
-            if (warning.isEmpty() == false)
+            if (text.isEmpty() == false)
             {
-                if (text.isEmpty() == false)
-                {
-                    text += QLatin1Char('\n');
-                }
-                text += warning;
+                text += QLatin1Char('\n');
             }
+            text += warning;
+        }
+        // The omitted World features are one short line over the picture; the full explanation (the functions to
+        // call and the other repairs) is the Error List row it links to, and the tooltip.
+        if (mWorkspace.GetOmittedFeatureWarning().isEmpty() == false)
+        {
+            if (text.isEmpty() == false)
+            {
+                text += QLatin1Char('\n');
+            }
+            text += FormatFeatureStatusLine(mWorkspace.GetOmittedFeatureSummary());
+            fullText = mWorkspace.GetOmittedFeatureWarning();
+            mHasFeatureLink = true;
         }
     }
     if (mHasProblemChip == false && mWorkspace.IsUsingDefaultRenderer() == true && mWorkspace.IsBuiltIn() == false)
@@ -722,7 +734,7 @@ void WorldGraphView::refreshStatus()
     }
     // The view lets pointer input through to the viewport that navigates; only while the chip is shown does it take
     // presses, and a press outside the chip is ignored so it still reaches the viewport.
-    setAttribute(Qt::WA_TransparentForMouseEvents, mHasProblemChip == false);
+    setAttribute(Qt::WA_TransparentForMouseEvents, HasStatusLink() == false);
     mStatus->setText(text);
     mStatus->setToolTip(fullText);
     mStatus->setVisible(text.isEmpty() == false);
@@ -732,12 +744,27 @@ QString WorldGraphView::GetProblemChipLink()
 {
     return QStringLiteral("Show in Error List");
 }
-void WorldGraphView::mousePressEvent(QMouseEvent* event)
+QString WorldGraphView::FormatFeatureStatusLine(const QString& summary)
 {
-    if (event->button() == Qt::LeftButton && mHasProblemChip == true && mStatus->isVisible() == true &&
-        mStatus->geometry().contains(event->position().toPoint()) == true)
+    return QStringLiteral("%1 · Details").arg(summary);
+}
+void WorldGraphView::ActivateStatusLink()
+{
+    if (mHasProblemChip == true)
     {
         mWorkspace.RequestErrorList();
+    }
+    else if (mHasFeatureLink == true)
+    {
+        mWorkspace.RequestErrorListEntry(QString::fromLatin1(graphics::renderer::WORLD_FEATURE_WARNING_CODE));
+    }
+}
+void WorldGraphView::mousePressEvent(QMouseEvent* event)
+{
+    if (event->button() == Qt::LeftButton && HasStatusLink() == true && mStatus->isVisible() == true &&
+        mStatus->geometry().contains(event->position().toPoint()) == true)
+    {
+        ActivateStatusLink();
         event->accept();
         return;
     }

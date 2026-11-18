@@ -579,6 +579,41 @@ bool ErrorList::SelectFirstProblem()
     return true;
 }
 
+bool ErrorList::SelectEntry(const QString& code)
+{
+    foundation::int32 entry = -1;
+    for (foundation::int32 index = 0; index < static_cast<foundation::int32>(mEntries.size()); ++index)
+    {
+        if (mEntries.at(index).Code == code)
+        {
+            entry = index;
+            break;
+        }
+    }
+    if (entry < 0)
+    {
+        return false;
+    }
+    if (isShown(mEntries.at(entry).Severity) == false)
+    {
+        QToolButton* filter = mEntries.at(entry).Severity == ErrorListSeverity::Error     ? mErrors
+                              : mEntries.at(entry).Severity == ErrorListSeverity::Warning ? mWarnings
+                                                                                          : mMessages;
+        filter->setChecked(true);
+    }
+    for (foundation::int32 row = 0; row < mTable->rowCount(); ++row)
+    {
+        const QTableWidgetItem* itemOrNull = mTable->item(row, SEVERITY_COLUMN);
+        if (itemOrNull != nullptr && itemOrNull->data(ENTRY_ROLE).toInt() == entry)
+        {
+            mTable->selectRow(row);
+            mTable->scrollToItem(itemOrNull);
+            return true;
+        }
+    }
+    return false;
+}
+
 void ErrorList::render()
 {
     mErrors->setText(QStringLiteral("%1 Errors").arg(GetCount(ErrorListSeverity::Error)));
