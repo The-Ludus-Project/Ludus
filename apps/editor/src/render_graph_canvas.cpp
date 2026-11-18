@@ -1374,8 +1374,9 @@ void RenderGraphCanvas::updateSemanticZoom(bool shouldForce)
         {
             QGraphicsSimpleTextItem& title = *view->TitleLabelOrNull;
             title.setVisible(hasReadableCards);
-            // Without port labels the card body is free, so the overview title wraps into it and its header grows
-            // to hold it; with port rows showing, the title keeps to the one-line header.
+            // Without port labels the card body has nothing to show, so in the overview the coloured header fills
+            // the whole card and its title wraps and centres in it, rather than leaving an empty box under a title
+            // strip; with port rows showing, the title keeps to the one-line header.
             SetScaledLabel(title,
                            hasDetails == true ? view->Title
                                               : (view->Id == GetOutputsNode() ? QStringLiteral("outputs") : view->Id),
@@ -1384,10 +1385,7 @@ void RenderGraphCanvas::updateSemanticZoom(bool shouldForce)
                            NODE_WIDTH - 2 * NODE_PADDING,
                            hasPortLabels == true ? 0 : view->Frame->rect().height() - NODE_PADDING);
             const float64 titleHeight = title.boundingRect().height() * title.scale();
-            const float64 headerHeight =
-                hasPortLabels == true
-                    ? HEADER_HEIGHT
-                    : math::Min(view->Frame->rect().height(), math::Max(HEADER_HEIGHT, titleHeight + NODE_PADDING));
+            const float64 headerHeight = hasPortLabels == true ? HEADER_HEIGHT : view->Frame->rect().height();
             if (view->HeaderOrNull != nullptr)
             {
                 view->HeaderOrNull->setRect(0, 0, NODE_WIDTH, headerHeight);
