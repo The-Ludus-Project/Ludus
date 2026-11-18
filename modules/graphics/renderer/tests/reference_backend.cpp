@@ -1,6 +1,7 @@
 #include "internal/adapter.h"
 #include "internal/backend.h"
 #include "internal/lifecycle.h"
+#include "internal/owner.h"
 #include "internal/resources.h"
 #include "internal/surface.h"
 #include <ludus/foundation/containers/borrowed_view.hpp>
@@ -31,6 +32,11 @@ AdapterStatus EnumerateAdapters(AdapterCatalog&) noexcept
 bool GetSelectedAdapter(AdapterInfo&) noexcept
 {
     return false;
+}
+// R14c: the renderer's reference backend keeps one session.
+foundation::usize GetDeviceOwnerLimit() noexcept
+{
+    return 1;
 }
 // R14b: the renderer's reference backend hosts only its primary surface.
 foundation::usize AdditionalSurfaceLimit() noexcept

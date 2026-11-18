@@ -73,14 +73,24 @@ template <typename RecordType, typename Handle>
 concept NativeInteropRecordFor =
     (std::is_same_v<RecordType, NativeDeviceRecord> && std::is_same_v<Handle, NativeDeviceLease>) ||
     (std::is_same_v<RecordType, NativeReadRecord> && std::is_same_v<Handle, NativeTextureRead>);
-StorageTable<NativeDeviceRecord> gNativeDevices;
-StorageTable<NativeReadRecord> gNativeReads;
-NativeDeviceDescription gNativeSource;
-usize gNativePins = 0;
-bool gNativeSourcePinned = false;
-bool gNativeCallback = false;
-bool gNativeRetiring = false;
-bool gNativeTerminalLoss = false;
+/// Native interop leases, imported source and teardown state of one owner slot (R14c).
+struct NativeInteropState final
+{
+    StorageTable<NativeDeviceRecord> Devices;
+    StorageTable<NativeReadRecord> Reads;
+    NativeDeviceDescription Source;
+    usize Pins = 0;
+    bool IsSourcePinned = false;
+    bool IsInCallback = false;
+    bool IsRetiring = false;
+    bool HasTerminalLoss = false;
+};
+StaticArray<NativeInteropState, MAX_DEVICE_OWNERS> gNativeInteropStates{};
+/// The native interop state of the bound owner slot.
+NativeInteropState& GetNativeInteropState() noexcept
+{
+    return gNativeInteropStates[GetBoundOwnerSlot()];
+}
 
 bool SameNativeContext(const NativeDeviceIdentity& producer, const NativeDeviceIdentity& consumer) noexcept
 {
@@ -103,6 +113,23 @@ T* NativeResolve(StorageTable<T>& records, const H& handle) noexcept
                    record.Lease.Generation == NativeInteropAccess::Generation(handle)
                ? &record
                : nullptr;
+}
+/// @brief Bind the owner slot whose interop table holds `handle` (R14c).
+///
+/// Leases and reads can outlive DestroyDevice while foreign consumers finish, so the slot is
+/// found by its records rather than by a live device owner. An unknown handle binds nothing.
+template <NativeInteropRecord T, NativeInteropHandle H>
+    requires NativeInteropRecordFor<T, H>
+void BindNativeOwner(StorageTable<T> NativeInteropState::* table, const H& handle) noexcept
+{
+    for (usize slot = 0; slot < MAX_DEVICE_OWNERS; ++slot)
+    {
+        if (NativeResolve(gNativeInteropStates[slot].*table, handle) != nullptr)
+        {
+            BindOwnerSlot(slot);
+            return;
+        }
+    }
 }
 template <NativeInteropRecord T>
 RasterStatus NativeReserve(StorageTable<T>& records, usize& slot) noexcept
@@ -133,12 +160,12 @@ void NativeReset(T& record) noexcept
 NativeDeviceInfo NativeSnapshot(const NativeDeviceRecord& record) noexcept
 {
     auto result = record.Info;
-    result.Retiring = gNativeRetiring || GetStartup().State != StartupState::Ready;
+    result.Retiring = GetNativeInteropState().IsRetiring || internal::GetStartup().State != StartupState::Ready;
     return result;
 }
 RasterStatus CloseNativeRead(NativeTextureRead& handle, bool wait) noexcept
 {
-    auto* read = NativeResolve(gNativeReads, handle);
+    NativeReadRecord* read = NativeResolve(GetNativeInteropState().Reads, handle);
     if (read == nullptr)
     {
         return RasterStatus::InvalidHandle;
@@ -167,10 +194,10 @@ RasterStatus CloseNativeRead(NativeTextureRead& handle, bool wait) noexcept
     auto& texture = At(RasterKind::Texture, read->Texture);
     --texture.ExternalReads;
     Release(RasterKind::Texture, read->Texture);
-    --gNativeDevices[read->Device].Reads;
+    --GetNativeInteropState().Devices[read->Device].Reads;
     NativeReset(*read);
     handle = {};
-    if (gNativeRetiring == false)
+    if (GetNativeInteropState().IsRetiring == false)
     {
         Collect();
     }
@@ -181,38 +208,38 @@ namespace internal
 {
 bool NativeInteropPinned() noexcept
 {
-    return gNativePins != 0;
+    return GetNativeInteropState().Pins != 0;
 }
 bool NativeInteropBusy() noexcept
 {
-    return gNativeCallback || gNativeRetiring;
+    return GetNativeInteropState().IsInCallback || GetNativeInteropState().IsRetiring;
 }
 bool DeferNativeInteropShutdown() noexcept
 {
-    if (gNativePins == 0)
+    if (GetNativeInteropState().Pins == 0)
     {
         return false;
     }
-    gNativeRetiring = true;
-    gNativeTerminalLoss |= GetStartup().State == StartupState::DeviceLost;
+    GetNativeInteropState().IsRetiring = true;
+    GetNativeInteropState().HasTerminalLoss |= internal::GetStartup().State == StartupState::DeviceLost;
     return true;
 }
 const NativeDeviceDescription* NativeDeviceRequest() noexcept
 {
-    return gNativeSourcePinned ? &gNativeSource : nullptr;
+    return GetNativeInteropState().IsSourcePinned ? &GetNativeInteropState().Source : nullptr;
 }
 void ReleaseNativeDeviceSource() noexcept
 {
-    if (gNativeSourcePinned == false)
+    if (GetNativeInteropState().IsSourcePinned == false)
     {
         return;
     }
-    const auto lifetime = gNativeSource.Lifetime;
-    gNativeSource = {};
-    gNativeSourcePinned = false;
-    gNativeCallback = true;
+    const NativeDeviceLifetime lifetime = GetNativeInteropState().Source.Lifetime;
+    GetNativeInteropState().Source = {};
+    GetNativeInteropState().IsSourcePinned = false;
+    GetNativeInteropState().IsInCallback = true;
     lifetime.Release(lifetime.Context);
-    gNativeCallback = false;
+    GetNativeInteropState().IsInCallback = false;
 }
 DeviceStatus PrepareNativeDeviceSource(const NativeDeviceDescription& description) noexcept
 {
@@ -254,21 +281,21 @@ DeviceStatus PrepareNativeDeviceSource(const NativeDeviceDescription& descriptio
     {
         return DeviceStatus::InvalidDescription;
     }
-    gNativeCallback = true;
+    GetNativeInteropState().IsInCallback = true;
     const bool retained = description.Lifetime.Retain(description.Lifetime.Context);
-    gNativeCallback = false;
+    GetNativeInteropState().IsInCallback = false;
     if (retained == false)
     {
         return DeviceStatus::Failed;
     }
-    gNativeSource = description;
-    gNativeSourcePinned = true;
+    GetNativeInteropState().Source = description;
+    GetNativeInteropState().IsSourcePinned = true;
     return DeviceStatus::Ready;
 }
 void NativeInteropShutdownFinished() noexcept
 {
-    gNativeRetiring = false;
-    gNativeTerminalLoss = false;
+    GetNativeInteropState().IsRetiring = false;
+    GetNativeInteropState().HasTerminalLoss = false;
     ReleaseNativeDeviceSource();
 }
 } // namespace internal
@@ -308,12 +335,12 @@ RasterStatus AcquireNativeDevice(DeviceHandle device, NativeDeviceLease& output)
         return snapshot;
     }
     usize slot = 0;
-    const auto reserved = NativeReserve(gNativeDevices, slot);
+    const RasterStatus reserved = NativeReserve(GetNativeInteropState().Devices, slot);
     if (reserved != RasterStatus::Ready)
     {
         return reserved;
     }
-    auto& record = gNativeDevices[slot];
+    NativeDeviceRecord& record = GetNativeInteropState().Devices[slot];
     info.Incarnation = DeviceOwner();
     record =
     {
@@ -321,13 +348,14 @@ RasterStatus AcquireNativeDevice(DeviceHandle device, NativeDeviceLease& output)
         .Session = device,
         .Info = info,
     };
-    ++gNativePins;
+    ++GetNativeInteropState().Pins;
     NativeInteropAccess::Set(output, {record.Lease.Owner, slot, record.Lease.Generation});
     return RasterStatus::Ready;
 }
 RasterStatus GetNativeDeviceInfo(NativeDeviceLease handle, NativeDeviceInfo& output) noexcept
 {
-    const auto* record = NativeResolve(gNativeDevices, handle);
+    BindNativeOwner(&NativeInteropState::Devices, handle);
+    const NativeDeviceRecord* record = NativeResolve(GetNativeInteropState().Devices, handle);
     if (record == nullptr)
     {
         return RasterStatus::InvalidHandle;
@@ -337,7 +365,8 @@ RasterStatus GetNativeDeviceInfo(NativeDeviceLease handle, NativeDeviceInfo& out
 }
 RasterStatus ReleaseNativeDevice(NativeDeviceLease& handle) noexcept
 {
-    auto* record = NativeResolve(gNativeDevices, handle);
+    BindNativeOwner(&NativeInteropState::Devices, handle);
+    NativeDeviceRecord* record = NativeResolve(GetNativeInteropState().Devices, handle);
     if (record == nullptr)
     {
         return RasterStatus::InvalidHandle;
@@ -347,9 +376,9 @@ RasterStatus ReleaseNativeDevice(NativeDeviceLease& handle) noexcept
         return RasterStatus::InvalidState;
     }
     NativeReset(*record);
-    --gNativePins;
+    --GetNativeInteropState().Pins;
     handle = {};
-    if (gNativePins == 0 && gNativeRetiring)
+    if (GetNativeInteropState().Pins == 0 && GetNativeInteropState().IsRetiring)
     {
         FinishNativeInteropShutdown();
     }
@@ -362,12 +391,13 @@ RasterStatus AcquireNativeTextureRead(NativeDeviceLease device,
                                       NativeTextureRead& output,
                                       NativeTextureInfo& info) noexcept
 {
-    auto* native = NativeResolve(gNativeDevices, device);
+    BindNativeOwner(&NativeInteropState::Devices, device);
+    NativeDeviceRecord* native = NativeResolve(GetNativeInteropState().Devices, device);
     if (native == nullptr)
     {
         return RasterStatus::InvalidHandle;
     }
-    if (gNativeRetiring || native->Lease.Owner != DeviceOwner())
+    if (GetNativeInteropState().IsRetiring || native->Lease.Owner != DeviceOwner())
     {
         return RasterStatus::InvalidState;
     }
@@ -410,14 +440,14 @@ RasterStatus AcquireNativeTextureRead(NativeDeviceLease device,
     }
     const auto ordinal = LifetimeAccess::Ordinal(producer);
     if (LifetimeAccess::Owner(producer) != native->Lease.Owner || ordinal == 0 || ordinal != texture->LastUse ||
-        ordinal < gFirstAcceptedSubmission || ordinal > gLastAcceptedSubmission)
+        ordinal < GetRasterState().FirstAcceptedSubmission || ordinal > GetRasterState().LastAcceptedSubmission)
     {
         return RasterStatus::InvalidHandle;
     }
     // An accepted producer can still be in flight; the shared native queue barrier
     // orders the following foreign sample without a CPU completion wait.
     usize slot = 0;
-    const auto reserved = NativeReserve(gNativeReads, slot);
+    const RasterStatus reserved = NativeReserve(GetNativeInteropState().Reads, slot);
     if (reserved != RasterStatus::Ready)
     {
         return reserved;
@@ -443,7 +473,7 @@ RasterStatus AcquireNativeTextureRead(NativeDeviceLease device,
     texture->TextureUse = RasterTextureUse::SampledFragment;
     ++texture->TextureRevision;
     ++texture->ExternalReads;
-    auto& read = gNativeReads[slot];
+    NativeReadRecord& read = GetNativeInteropState().Reads[slot];
     read =
     {
         .Lease = { .Owner = native->Lease.Owner, .Generation = read.Lease.Generation },
@@ -458,7 +488,8 @@ RasterStatus AcquireNativeTextureRead(NativeDeviceLease device,
 }
 RasterStatus GetNativeTextureInfo(NativeTextureRead handle, NativeTextureInfo& output) noexcept
 {
-    const auto* read = NativeResolve(gNativeReads, handle);
+    BindNativeOwner(&NativeInteropState::Reads, handle);
+    const NativeReadRecord* read = NativeResolve(GetNativeInteropState().Reads, handle);
     if (read == nullptr)
     {
         return RasterStatus::InvalidHandle;
@@ -467,7 +498,8 @@ RasterStatus GetNativeTextureInfo(NativeTextureRead handle, NativeTextureInfo& o
     {
         return RasterStatus::InvalidState;
     }
-    if (gNativeTerminalLoss || (read->Lease.Owner == DeviceOwner() && GetStartup().State == StartupState::DeviceLost))
+    if (GetNativeInteropState().HasTerminalLoss ||
+        (read->Lease.Owner == DeviceOwner() && internal::GetStartup().State == StartupState::DeviceLost))
     {
         return RasterStatus::DeviceLost;
     }
@@ -477,26 +509,30 @@ RasterStatus GetNativeTextureInfo(NativeTextureRead handle, NativeTextureInfo& o
         return status;
     }
     auto result = read->Info;
-    result.Device = NativeSnapshot(gNativeDevices[read->Device]);
+    result.Device = NativeSnapshot(GetNativeInteropState().Devices[read->Device]);
     output = result;
     return RasterStatus::Ready;
 }
 RasterStatus ReleaseNativeTextureRead(NativeTextureRead& read) noexcept
 {
+    BindNativeOwner(&NativeInteropState::Reads, read);
     return CloseNativeRead(read, false);
 }
 RasterStatus DrainNativeTextureRead(NativeTextureRead& read) noexcept
 {
+    BindNativeOwner(&NativeInteropState::Reads, read);
     return CloseNativeRead(read, true);
 }
 RasterStatus GetStatus(NativeTextureRead handle) noexcept
 {
-    const auto* read = NativeResolve(gNativeReads, handle);
+    BindNativeOwner(&NativeInteropState::Reads, handle);
+    const NativeReadRecord* read = NativeResolve(GetNativeInteropState().Reads, handle);
     if (read == nullptr)
     {
         return RasterStatus::InvalidHandle;
     }
-    if (gNativeTerminalLoss || (read->Lease.Owner == DeviceOwner() && GetStartup().State == StartupState::DeviceLost))
+    if (GetNativeInteropState().HasTerminalLoss ||
+        (read->Lease.Owner == DeviceOwner() && internal::GetStartup().State == StartupState::DeviceLost))
     {
         return RasterStatus::DeviceLost;
     }

@@ -13,7 +13,13 @@ struct NativeMetalRead final
     id<MTLCommandBuffer> Completion = nil;
     bool Released = false;
 };
-internal::StorageTable<NativeMetalRead> gNativeMetalReads;
+/// Native texture reads of one Metal owner (R14c).
+StaticArray<internal::StorageTable<NativeMetalRead>, MAX_DEVICE_OWNERS> gNativeMetalReads{};
+/// The native texture reads of the bound owner slot.
+internal::StorageTable<NativeMetalRead>& GetNativeMetalReads() noexcept
+{
+    return gNativeMetalReads[internal::GetBoundOwnerSlot()];
+}
 } // namespace
 bool NativeInteropSupported() noexcept
 {
@@ -21,7 +27,7 @@ bool NativeInteropSupported() noexcept
 }
 RasterStatus NativeDeviceSnapshot(NativeDeviceInfo& output) noexcept
 {
-    if (gDevice == nil || gQueue == nil)
+    if (GetMetal().Device == nil || GetMetal().Queue == nil)
     {
         return RasterStatus::NotReady;
     }
@@ -30,10 +36,10 @@ RasterStatus NativeDeviceSnapshot(NativeDeviceInfo& output) noexcept
         .Identity =
         {
             .Api = Backend::Metal,
-            .Device = NativeLogicalDevice{(__bridge void*)gDevice},
-            .CommandQueue = NativeCommandQueue{(__bridge void*)gQueue},
+            .Device = NativeLogicalDevice{(__bridge void*)GetMetal().Device},
+            .CommandQueue = NativeCommandQueue{(__bridge void*)GetMetal().Queue},
         },
-        .RegistryId = gDevice.registryID,
+        .RegistryId = GetMetal().Device.registryID,
     };
     return RasterStatus::Ready;
 }
@@ -42,14 +48,14 @@ RasterStatus NativeTexturePublish(const internal::NativeTexturePublication& publ
 {
     const auto slot = publication.Lease;
     const auto textureSlot = publication.Texture;
-    if (gNativeMetalReads.EnsureSlots(slot + 1) == false)
+    if (GetNativeMetalReads().EnsureSlots(slot + 1) == false)
     {
         return internal::StorageFailure();
     }
-    auto& record = gNativeMetalReads[slot];
-    record.Texture = gRasterTextures[textureSlot];
-    record.Publication = [gQueue commandBuffer];
-    record.Completion = [gQueue commandBuffer];
+    NativeMetalRead& record = GetNativeMetalReads()[slot];
+    record.Texture = GetRasterMetal().Textures[textureSlot];
+    record.Publication = [GetMetal().Queue commandBuffer];
+    record.Completion = [GetMetal().Queue commandBuffer];
     if (record.Texture == nil || record.Publication == nil || record.Completion == nil)
     {
         record = {};
@@ -63,7 +69,7 @@ RasterStatus NativeTexturePublish(const internal::NativeTexturePublication& publ
 }
 RasterStatus NativeTextureRelease(usize slot) noexcept
 {
-    auto& record = gNativeMetalReads[slot];
+    NativeMetalRead& record = GetNativeMetalReads()[slot];
     if (record.Released == false)
     {
         [record.Completion commit];
@@ -73,7 +79,7 @@ RasterStatus NativeTextureRelease(usize slot) noexcept
 }
 RasterStatus NativeTexturePoll(usize slot, bool wait) noexcept
 {
-    auto& record = gNativeMetalReads[slot];
+    NativeMetalRead& record = GetNativeMetalReads()[slot];
     const auto command = record.Released ? record.Completion : record.Publication;
     if (command == nil)
     {
@@ -89,16 +95,16 @@ RasterStatus NativeTexturePoll(usize slot, bool wait) noexcept
 }
 void NativeTextureDestroy(usize slot) noexcept
 {
-    if (slot < gNativeMetalReads.GetSize())
+    if (slot < GetNativeMetalReads().GetSize())
     {
-        gNativeMetalReads[slot] = {};
+        GetNativeMetalReads()[slot] = {};
     }
 }
 void NativeInteropDetachSurface() noexcept
 {
     ShutdownRendering();
     DisconnectSurfaces();
-    gConnected = false;
+    GetMetal().IsConnected = false;
 }
 void NativeInteropReset() noexcept {}
 } // namespace ludus::graphics::rhi::backend

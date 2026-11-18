@@ -143,11 +143,11 @@ RasterStatus EncodeCompute(const ComputePacket& packet) noexcept
 {
     if (At(RasterKind::ComputePipeline, packet.Pipeline).Compute.Native.SubmitOrNull != nullptr)
     {
-        if (gNativeComputePassCount == MAX_NATIVE_COMPUTE_PASSES_PER_FRAME)
+        if (GetRasterState().NativeComputePassCount == MAX_NATIVE_COMPUTE_PASSES_PER_FRAME)
         {
             return RasterStatus::CapacityExceeded;
         }
-        ++gNativeComputePassCount;
+        ++GetRasterState().NativeComputePassCount;
     }
     FrameRetain(RasterKind::ComputePipeline, packet.Pipeline);
     FrameRetain(RasterKind::Set, packet.Set);

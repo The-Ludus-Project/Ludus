@@ -9,9 +9,11 @@
 #include "internal/lifecycle.h"
 #include "internal/measurement.h"
 #include "internal/native_interop.h"
+#include "internal/owner.h"
 #include "internal/profile.h"
 #include "internal/raster.h"
 #include "internal/ray_backend.h"
+#include "internal/resources.h"
 #include "internal/storage.h"
 #include "internal/surface.h"
 
@@ -48,7 +50,6 @@ namespace
 {
 using internal::DeviceAccess;
 internal::DeviceOwnerSequence gOwners;
-DeviceDescription gDescription;
 
 // R14b surface registry. Slot 0 is the primary surface; a record is live only while its
 // owner is the current device owner, so DestroyDevice and restart retire every record
@@ -65,14 +66,66 @@ struct SurfaceRecord final
     foundation::uint64 SubmittedFrames = 0;
     bool IsLost = false;
 };
-foundation::StaticArray<SurfaceRecord, MAX_DEVICE_SURFACES> gSurfaces{};
+/// Copied description and surface registry of one owner slot (R14c).
+struct OwnerRecord final
+{
+    DeviceDescription Description;
+    foundation::StaticArray<SurfaceRecord, MAX_DEVICE_SURFACES> Surfaces{};
+    bool IsGpuTimingRequested = false;
+};
+foundation::StaticArray<OwnerRecord, MAX_DEVICE_OWNERS> gOwnerRecords{};
+/// Surface identities are process-wide, so no owner resolves another owner's surface.
 internal::DeviceOwnerSequence gSurfaceIdentities;
+/// The description and surfaces of the bound owner slot.
+OwnerRecord& GetOwnerRecord() noexcept
+{
+    return gOwnerRecords[internal::GetBoundOwnerSlot()];
+}
 
 // R0 shares the existing registry/loss protocol rather than introducing a second
 // resource registry. See docs/architecture/rhi-gdi.md, ownership and identity.
+/// Bind the slot of a live device so the rest of the operation addresses only its state.
 bool Valid(DeviceHandle device) noexcept
 {
-    return DeviceAccess::Owner(device) != 0 && DeviceAccess::Owner(device) == internal::DeviceOwner();
+    const foundation::usize slot = internal::FindOwnerSlot(DeviceAccess::Owner(device));
+    if (slot == MAX_DEVICE_OWNERS)
+    {
+        return false;
+    }
+    internal::BindOwnerSlot(slot);
+    return true;
+}
+/// @brief Bind the lowest free owner slot for a new device (R14c).
+///
+/// A device-less facade session or native interop teardown pending in any slot rejects
+/// creation, as does a live owner on a backend that hosts one.
+DeviceStatus BindFreeOwnerSlot() noexcept
+{
+    const foundation::usize limit = backend::GetDeviceOwnerLimit();
+    foundation::usize freeSlot = MAX_DEVICE_OWNERS;
+    bool hasUnownedSession = false;
+    for (foundation::usize slot = 0; slot < MAX_DEVICE_OWNERS; ++slot)
+    {
+        internal::BindOwnerSlot(slot);
+        if (internal::SessionBusy() == true)
+        {
+            hasUnownedSession = hasUnownedSession == true || internal::DeviceOwner() == 0;
+        }
+        else if (freeSlot == MAX_DEVICE_OWNERS && slot < limit)
+        {
+            freeSlot = slot;
+        }
+    }
+    if (hasUnownedSession == true || (freeSlot == MAX_DEVICE_OWNERS && limit <= 1))
+    {
+        return DeviceStatus::InvalidState;
+    }
+    if (freeSlot == MAX_DEVICE_OWNERS)
+    {
+        return DeviceStatus::CapacityExceeded;
+    }
+    internal::BindOwnerSlot(freeSlot);
+    return DeviceStatus::Ready;
 }
 bool IsLive(const SurfaceRecord& record) noexcept
 {
@@ -88,7 +141,8 @@ foundation::usize FindSurface(DeviceHandle device, SurfaceHandle surface) noexce
     }
     for (foundation::usize slot = 0; slot < MAX_DEVICE_SURFACES; ++slot)
     {
-        if (IsLive(gSurfaces[slot]) == true && gSurfaces[slot].Identity == DeviceAccess::Identity(surface))
+        if (IsLive(GetOwnerRecord().Surfaces[slot]) == true &&
+            GetOwnerRecord().Surfaces[slot].Identity == DeviceAccess::Identity(surface))
         {
             return slot;
         }
@@ -116,6 +170,8 @@ const void* GetTargetIdentityOrNull(const WindowInfo& window) noexcept
     return nullptr;
 }
 /// Two live surfaces of one device must not borrow the same native target.
+/// No two live surfaces borrow the same native target, also across device owners (R14c): a
+/// view, window or canvas hosts one presentation layer.
 bool IsTargetBorrowed(const WindowInfo& window) noexcept
 {
     const void* targetOrNull = GetTargetIdentityOrNull(window);
@@ -123,11 +179,15 @@ bool IsTargetBorrowed(const WindowInfo& window) noexcept
     {
         return false;
     }
-    for (const SurfaceRecord& record : gSurfaces)
+    for (const OwnerRecord& owner : gOwnerRecords)
     {
-        if (IsLive(record) == true && record.System == window.System && record.TargetOrNull == targetOrNull)
+        for (const SurfaceRecord& record : owner.Surfaces)
         {
-            return true;
+            if (record.Owner != 0 && internal::FindOwnerSlot(record.Owner) != MAX_DEVICE_OWNERS &&
+                record.System == window.System && record.TargetOrNull == targetOrNull)
+            {
+                return true;
+            }
         }
     }
     return false;
@@ -139,7 +199,7 @@ void PublishSurface(foundation::usize slot,
                     SurfaceHandle& outSurface) noexcept
 {
     const foundation::uint64 identity = gSurfaceIdentities.Take();
-    gSurfaces[slot] =
+    GetOwnerRecord().Surfaces[slot] =
     {
         .Owner = owner,
         .Identity = identity,
@@ -153,7 +213,7 @@ void PublishSurface(foundation::usize slot,
 }
 DeviceStatus State() noexcept
 {
-    switch (GetStartup().State)
+    switch (internal::GetStartup().State)
     {
         case StartupState::Ready:
             return DeviceStatus::Ready;
@@ -304,21 +364,24 @@ BackendAvailability GetCompiledBackends() noexcept
         .HasDirect3D12 = kind == Backend::Direct3D12,
     };
 }
-DeviceStatus CreateDevice(const ApplicationInfo& application,
-                          const WindowInfo& window,
-                          const DeviceDescription& description,
-                          DeviceHandle& device,
-                          SurfaceHandle& surface,
-                          StartupInfo* failure) noexcept
+namespace
 {
-    if (DeviceAccess::Owner(device) != 0 || DeviceAccess::Owner(surface) != 0 || internal::SessionBusy())
-    {
-        return DeviceStatus::InvalidState;
-    }
-    const auto admission = ValidateDeviceDescription(description);
+/// Start a device in the bound free owner slot; see CreateDevice.
+DeviceStatus CreateBoundDevice(const ApplicationInfo& application,
+                               const WindowInfo& window,
+                               const DeviceDescription& description,
+                               DeviceHandle& outDevice,
+                               SurfaceHandle& outSurface,
+                               StartupInfo* failureOrNull) noexcept
+{
+    const DeviceStatus admission = ValidateDeviceDescription(description);
     if (admission != DeviceStatus::Ready)
     {
         return admission;
+    }
+    if (IsTargetBorrowed(window) == true)
+    {
+        return DeviceStatus::InvalidDescription;
     }
     if (gOwners.Next == 0 || gSurfaceIdentities.Next == 0)
     {
@@ -326,7 +389,7 @@ DeviceStatus CreateDevice(const ApplicationInfo& application,
     }
     if (description.Adapter.IsAutomatic() == false && IsRequestedAdapterAvailable(description.Adapter) == false)
     {
-        ReportAdapterUnavailable(failure);
+        ReportAdapterUnavailable(failureOrNull);
         return DeviceStatus::Failed;
     }
     internal::SetGpuTimingRequest(description.EnableGpuTiming);
@@ -358,42 +421,61 @@ DeviceStatus CreateDevice(const ApplicationInfo& application,
     }
     if (result == StartStatus::Failed)
     {
-        if (failure != nullptr)
+        if (failureOrNull != nullptr)
         {
-            *failure = GetStartup();
+            *failureOrNull = internal::GetStartup();
         }
-        Shutdown();
+        internal::Shutdown();
         return DeviceStatus::Failed;
     }
     if (result == StartStatus::Ready && IsSelectedAdapterRequested(description.Adapter) == false)
     {
-        Shutdown();
-        ReportAdapterUnavailable(failure);
+        internal::Shutdown();
+        ReportAdapterUnavailable(failureOrNull);
         return DeviceStatus::Failed;
     }
     if (result == StartStatus::Ready && description.Required.RayQueries && backend::RayLimits().InlineQueries == false)
     {
-        Shutdown();
+        internal::Shutdown();
         return DeviceStatus::Unsupported;
     }
     if (result == StartStatus::Ready && description.Required.BindlessTextureIndexing == true &&
         backend::BindingLimits().HasBindlessTextureIndexing == false)
     {
-        Shutdown();
+        internal::Shutdown();
         return DeviceStatus::Unsupported;
     }
     if (result == StartStatus::Ready && description.Required.HasRuntimeTextureArrays == true &&
         backend::BindingLimits().HasRuntimeTextureArrays == false)
     {
-        Shutdown();
+        internal::Shutdown();
         return DeviceStatus::Unsupported;
     }
     const auto owner = gOwners.Take();
     internal::SetDeviceOwner(owner);
-    gDescription = description;
-    DeviceAccess::Set(device, owner);
-    PublishSurface(0, owner, window, surface);
+    GetOwnerRecord().Description = description;
+    DeviceAccess::Set(outDevice, owner);
+    PublishSurface(0, owner, window, outSurface);
     return result == StartStatus::Ready ? DeviceStatus::Ready : DeviceStatus::Pending;
+}
+} // namespace
+DeviceStatus CreateDevice(const ApplicationInfo& application,
+                          const WindowInfo& window,
+                          const DeviceDescription& description,
+                          DeviceHandle& outDevice,
+                          SurfaceHandle& outSurface,
+                          StartupInfo* failureOrNull) noexcept
+{
+    if (DeviceAccess::Owner(outDevice) != 0 || DeviceAccess::Owner(outSurface) != 0)
+    {
+        return DeviceStatus::InvalidState;
+    }
+    const DeviceStatus reserved = BindFreeOwnerSlot();
+    if (reserved != DeviceStatus::Ready)
+    {
+        return reserved;
+    }
+    return CreateBoundDevice(application, window, description, outDevice, outSurface, failureOrNull);
 }
 DeviceStatus CreateNativeDevice(const ApplicationInfo& application,
                                 const NativeDeviceDescription& native,
@@ -403,9 +485,15 @@ DeviceStatus CreateNativeDevice(const ApplicationInfo& application,
                                 DeviceHandle& device,
                                 SurfaceHandle& surface) noexcept
 {
-    if (DeviceAccess::Owner(device) != 0 || DeviceAccess::Owner(surface) != 0 || internal::SessionBusy())
+    if (DeviceAccess::Owner(device) != 0 || DeviceAccess::Owner(surface) != 0)
     {
         return DeviceStatus::InvalidState;
+    }
+    // The imported source is pinned in the slot the device will occupy.
+    const DeviceStatus reserved = BindFreeOwnerSlot();
+    if (reserved != DeviceStatus::Ready)
+    {
+        return reserved;
     }
     if (width == 0 || height == 0)
     {
@@ -426,7 +514,7 @@ DeviceStatus CreateNativeDevice(const ApplicationInfo& application,
         return prepared;
     }
     const WindowInfo window{ .Width = width, .Height = height };
-    const auto result = CreateDevice(application, window, description, device, surface);
+    const DeviceStatus result = CreateBoundDevice(application, window, description, device, surface, nullptr);
     if (result != DeviceStatus::Ready && result != DeviceStatus::Pending)
     {
         internal::ReleaseNativeDeviceSource();
@@ -441,8 +529,8 @@ DeviceStatus GetDeviceInfo(DeviceHandle device, DeviceInfo& info) noexcept
     }
     info = {};
     info.Compiled = GetCompiledBackends();
-    info.Startup = GetStartup();
-    info.Description = gDescription;
+    info.Startup = internal::GetStartup();
+    info.Description = GetOwnerRecord().Description;
     const auto state = State();
     if (state == DeviceStatus::Ready)
     {
@@ -468,18 +556,23 @@ DeviceStatus GetDeviceInfo(DeviceHandle device, DeviceInfo& info) noexcept
         info.Enabled.IndirectRendering = info.Supported.IndirectRendering;
         info.UnmetPreferences =
         {
-            .FullscreenRaster = gDescription.Preferred.FullscreenRaster && info.Enabled.FullscreenRaster == false,
-            .PortableRaster = gDescription.Preferred.PortableRaster && info.Enabled.PortableRaster == false,
-            .Compute = gDescription.Preferred.Compute && info.Enabled.Compute == false,
-            .IndirectRendering = gDescription.Preferred.IndirectRendering && info.Enabled.IndirectRendering == false,
-            .RayQueries = gDescription.Preferred.RayQueries && info.Enabled.RayQueries == false,
-            .OrderedRasterGraph = gDescription.Preferred.OrderedRasterGraph && info.Enabled.OrderedRasterGraph == false,
-            .BindlessTextureIndexing =
-                gDescription.Preferred.BindlessTextureIndexing == true && info.Enabled.BindlessTextureIndexing == false,
-            .HasRuntimeTextureArrays =
-                gDescription.Preferred.HasRuntimeTextureArrays == true && info.Enabled.HasRuntimeTextureArrays == false,
+            .FullscreenRaster =
+                GetOwnerRecord().Description.Preferred.FullscreenRaster && info.Enabled.FullscreenRaster == false,
+            .PortableRaster =
+                GetOwnerRecord().Description.Preferred.PortableRaster && info.Enabled.PortableRaster == false,
+            .Compute = GetOwnerRecord().Description.Preferred.Compute && info.Enabled.Compute == false,
+            .IndirectRendering =
+                GetOwnerRecord().Description.Preferred.IndirectRendering && info.Enabled.IndirectRendering == false,
+            .RayQueries = GetOwnerRecord().Description.Preferred.RayQueries && info.Enabled.RayQueries == false,
+            .OrderedRasterGraph =
+                GetOwnerRecord().Description.Preferred.OrderedRasterGraph && info.Enabled.OrderedRasterGraph == false,
+            .BindlessTextureIndexing = GetOwnerRecord().Description.Preferred.BindlessTextureIndexing == true &&
+                                       info.Enabled.BindlessTextureIndexing == false,
+            .HasRuntimeTextureArrays = GetOwnerRecord().Description.Preferred.HasRuntimeTextureArrays == true &&
+                                       info.Enabled.HasRuntimeTextureArrays == false,
         };
-        info.UnmetProfilePreference = internal::CheckProfile(gDescription.PreferredProfile, info.Profile);
+        info.UnmetProfilePreference =
+            internal::CheckProfile(GetOwnerRecord().Description.PreferredProfile, info.Profile);
     }
     return state;
 }
@@ -553,10 +646,6 @@ RasterStatus GetGpuTiming(DeviceHandle device, GpuTiming& output) noexcept
 }
 namespace internal
 {
-namespace
-{
-bool gGpuTimingRequested = false;
-}
 RasterStatus ValidateMeasurementDevice(DeviceHandle device) noexcept
 {
     if (Valid(device) == false)
@@ -577,11 +666,11 @@ RasterStatus ValidateMeasurementDevice(DeviceHandle device) noexcept
 }
 void SetGpuTimingRequest(bool requested) noexcept
 {
-    gGpuTimingRequested = requested;
+    GetOwnerRecord().IsGpuTimingRequested = requested;
 }
 bool GpuTimingRequested() noexcept
 {
-    return gGpuTimingRequested;
+    return GetOwnerRecord().IsGpuTimingRequested;
 }
 } // namespace internal
 DeviceStatus DestroyDevice(DeviceHandle& device) noexcept
@@ -590,7 +679,7 @@ DeviceStatus DestroyDevice(DeviceHandle& device) noexcept
     {
         return DeviceStatus::InvalidHandle;
     }
-    Shutdown();
+    internal::Shutdown();
     device = {};
     return DeviceStatus::Ready;
 }
@@ -598,14 +687,15 @@ namespace internal
 {
 void LoseSurface(foundation::usize slot) noexcept
 {
-    if (slot != 0 && slot < MAX_DEVICE_SURFACES && IsLive(gSurfaces[slot]) == true)
+    if (slot != 0 && slot < MAX_DEVICE_SURFACES && IsLive(GetOwnerRecord().Surfaces[slot]) == true)
     {
-        gSurfaces[slot].IsLost = true;
+        GetOwnerRecord().Surfaces[slot].IsLost = true;
     }
 }
 bool IsSurfaceLost(foundation::usize slot) noexcept
 {
-    return slot < MAX_DEVICE_SURFACES && IsLive(gSurfaces[slot]) == true && gSurfaces[slot].IsLost == true;
+    return slot < MAX_DEVICE_SURFACES && IsLive(GetOwnerRecord().Surfaces[slot]) == true &&
+           GetOwnerRecord().Surfaces[slot].IsLost == true;
 }
 } // namespace internal
 DeviceStatus SetFrameTarget(DeviceHandle device, SurfaceHandle surface, const FrameTarget& target) noexcept
@@ -622,8 +712,8 @@ DeviceStatus SetFrameTarget(DeviceHandle device, SurfaceHandle surface, const Fr
     const FrameStatus result = internal::SetSurfaceFrameTarget(slot, target);
     if (result == FrameStatus::Ready)
     {
-        gSurfaces[slot].Width = target.Width;
-        gSurfaces[slot].Height = target.Height;
+        GetOwnerRecord().Surfaces[slot].Width = target.Width;
+        GetOwnerRecord().Surfaces[slot].Height = target.Height;
     }
     return FrameResult(result);
 }
@@ -648,7 +738,7 @@ DeviceStatus BeginFrame(DeviceHandle device, SurfaceHandle surface) noexcept
 }
 DeviceStatus EndFrame(DeviceHandle device) noexcept
 {
-    return Valid(device) ? FrameResult(EndFrameStatus()) : DeviceStatus::InvalidHandle;
+    return Valid(device) ? FrameResult(internal::EndFrameStatus()) : DeviceStatus::InvalidHandle;
 }
 DeviceStatus GetFrameInfo(DeviceHandle device, SurfaceHandle surface, FrameInfo& info) noexcept
 {
@@ -666,7 +756,7 @@ DeviceStatus GetFrameInfo(DeviceHandle device, SurfaceHandle surface, FrameInfo&
     {
         return DeviceStatus::InvalidState;
     }
-    const auto acquired = GetFrameInfo();
+    const FrameInfo acquired = internal::GetFrameInfo();
     if (acquired.Width == 0 || acquired.Height == 0)
     {
         return DeviceStatus::InvalidState;
@@ -698,7 +788,7 @@ DeviceStatus CreateSurface(DeviceHandle device, const WindowInfo& window, Surfac
     {
         return DeviceStatus::Unsupported;
     }
-    const foundation::uint32 maxDimension = GetStartup().Capabilities.MaxFrameDimension2D;
+    const foundation::uint32 maxDimension = internal::GetStartup().Capabilities.MaxFrameDimension2D;
     if (window.Width > maxDimension || window.Height > maxDimension || IsTargetBorrowed(window) == true)
     {
         return DeviceStatus::InvalidDescription;
@@ -710,7 +800,7 @@ DeviceStatus CreateSurface(DeviceHandle device, const WindowInfo& window, Surfac
     foundation::usize slot = MAX_DEVICE_SURFACES;
     for (foundation::usize candidate = 1; candidate <= limit && candidate < MAX_DEVICE_SURFACES; ++candidate)
     {
-        if (IsLive(gSurfaces[candidate]) == false)
+        if (IsLive(GetOwnerRecord().Surfaces[candidate]) == false)
         {
             slot = candidate;
             break;
@@ -747,7 +837,7 @@ DeviceStatus DestroySurface(DeviceHandle device, SurfaceHandle& inoutSurface) no
         return DeviceStatus::InvalidState;
     }
     backend::DestroySurface(slot);
-    gSurfaces[slot] = {};
+    GetOwnerRecord().Surfaces[slot] = {};
     inoutSurface = {};
     return DeviceStatus::Ready;
 }
@@ -758,7 +848,7 @@ DeviceStatus GetSurfaceInfo(DeviceHandle device, SurfaceHandle surface, SurfaceI
     {
         return DeviceStatus::InvalidHandle;
     }
-    const SurfaceRecord& record = gSurfaces[slot];
+    const SurfaceRecord& record = GetOwnerRecord().Surfaces[slot];
     const backend::SurfaceCompletion completion = backend::GetSurfaceCompletion(slot);
     outInfo =
     {
@@ -776,59 +866,60 @@ DeviceStatus GetSurfaceInfo(DeviceHandle device, SurfaceHandle surface, SurfaceI
 ResourceStatus CreateShader(DeviceHandle device, const ShaderDescription& description, ShaderHandle& shader) noexcept
 {
     const auto admission = ResourceAdmission(device);
-    return admission == ResourceStatus::Ready ? ResourceResult(CreateShader(description, shader)) : admission;
+    return admission == ResourceStatus::Ready ? ResourceResult(internal::CreateShader(description, shader)) : admission;
 }
 ResourceStatus CreateUniform(DeviceHandle device, foundation::usize size, UniformHandle& uniform) noexcept
 {
     const auto admission = ResourceAdmission(device);
-    return admission == ResourceStatus::Ready ? ResourceResult(CreateUniform(size, uniform)) : admission;
+    return admission == ResourceStatus::Ready ? ResourceResult(internal::CreateUniform(size, uniform)) : admission;
 }
 ResourceStatus
 CreatePipeline(DeviceHandle device, const PipelineDescription& description, PipelineHandle& pipeline) noexcept
 {
     const auto admission = ResourceAdmission(device);
-    return admission == ResourceStatus::Ready ? ResourceResult(CreatePipeline(description, pipeline)) : admission;
+    return admission == ResourceStatus::Ready ? ResourceResult(internal::CreatePipeline(description, pipeline))
+                                              : admission;
 }
 ResourceStatus GetStatus(DeviceHandle device, ShaderHandle shader) noexcept
 {
     const auto admission = ResourceAdmission(device);
-    return admission == ResourceStatus::Ready ? ResourceResult(GetStatus(shader)) : admission;
+    return admission == ResourceStatus::Ready ? ResourceResult(internal::GetStatus(shader)) : admission;
 }
 ResourceStatus GetStatus(DeviceHandle device, UniformHandle uniform) noexcept
 {
     const auto admission = ResourceAdmission(device);
-    return admission == ResourceStatus::Ready ? ResourceResult(GetStatus(uniform)) : admission;
+    return admission == ResourceStatus::Ready ? ResourceResult(internal::GetStatus(uniform)) : admission;
 }
 ResourceStatus GetStatus(DeviceHandle device, PipelineHandle pipeline) noexcept
 {
     const auto admission = ResourceAdmission(device);
-    return admission == ResourceStatus::Ready ? ResourceResult(GetStatus(pipeline)) : admission;
+    return admission == ResourceStatus::Ready ? ResourceResult(internal::GetStatus(pipeline)) : admission;
 }
 ResourceStatus UpdateUniform(DeviceHandle device,
                              UniformHandle uniform,
                              ludus::foundation::BorrowedView<const foundation::uint8> bytes) noexcept
 {
     const auto admission = ResourceAdmission(device);
-    return admission == ResourceStatus::Ready ? ResourceResult(UpdateUniform(uniform, bytes)) : admission;
+    return admission == ResourceStatus::Ready ? ResourceResult(internal::UpdateUniform(uniform, bytes)) : admission;
 }
 ResourceStatus Destroy(DeviceHandle device, ShaderHandle shader) noexcept
 {
     const auto admission = ResourceAdmission(device);
-    return admission == ResourceStatus::Ready ? ResourceResult(Destroy(shader)) : admission;
+    return admission == ResourceStatus::Ready ? ResourceResult(internal::Destroy(shader)) : admission;
 }
 ResourceStatus Destroy(DeviceHandle device, UniformHandle uniform) noexcept
 {
     const auto admission = ResourceAdmission(device);
-    return admission == ResourceStatus::Ready ? ResourceResult(Destroy(uniform)) : admission;
+    return admission == ResourceStatus::Ready ? ResourceResult(internal::Destroy(uniform)) : admission;
 }
 ResourceStatus Destroy(DeviceHandle device, PipelineHandle pipeline) noexcept
 {
     const auto admission = ResourceAdmission(device);
-    return admission == ResourceStatus::Ready ? ResourceResult(Destroy(pipeline)) : admission;
+    return admission == ResourceStatus::Ready ? ResourceResult(internal::Destroy(pipeline)) : admission;
 }
 ResourceStatus DrawFullscreen(DeviceHandle device, PipelineHandle pipeline) noexcept
 {
     const auto admission = ResourceAdmission(device);
-    return admission == ResourceStatus::Ready ? ResourceResult(DrawFullscreen(pipeline)) : admission;
+    return admission == ResourceStatus::Ready ? ResourceResult(internal::DrawFullscreen(pipeline)) : admission;
 }
 } // namespace ludus::graphics::rhi

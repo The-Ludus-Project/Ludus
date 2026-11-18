@@ -1091,7 +1091,7 @@ RasterStatus GetPreparationStatus(VkResult result) noexcept
     static_cast<void>(Check(result)); // Owner-thread diagnostics; failure publication stays outside the worker.
     if (result == VK_ERROR_DEVICE_LOST)
     {
-        if (isPreparationDraining == false)
+        if (GetPreparation().IsDraining == false)
         {
             hasPreparationDeviceLoss = true;
         }

@@ -29,31 +29,41 @@ struct ClockSample final
     MTLTimestamp CpuTimestamp = 0;
     MTLTimestamp DeviceTimestamp = 0;
 };
-internal::GpuPassTimingBuffer gPassTimings;
-id<MTLCounterSampleBuffer> gPassSamplesOrNull = nil;
-id<MTLCommandBuffer> gPassCommandOrNull = nil;
-/// Innermost open scope name, which labels each new encoder; nil without a scope.
-NSString* gPassLabelOrNull = nil;
-/// Command-buffer debug group per open scope, outermost first; entries past the depth are nil.
-StaticArray<NSString*, MAX_GPU_SCOPE_DEPTH> gScopeLabels;
-/// Untimed logical-pass groups pushed on gEncoder; closed before the encoder ends.
-uint32 gPassLabelDepth = 0;
+/// Pass timing, debug labels and submit clock of one Metal owner (R14c).
+struct GpuScopeMetalState final
+{
+    internal::GpuPassTimingBuffer PassTimings;
+    id<MTLCounterSampleBuffer> PassSamplesOrNull = nil;
+    id<MTLCommandBuffer> PassCommandOrNull = nil;
+    /// Innermost open scope name, which labels each new encoder; nil without a scope.
+    NSString* PassLabelOrNull = nil;
+    /// Command-buffer debug group per open scope, outermost first; entries past the depth are nil.
+    StaticArray<NSString*, MAX_GPU_SCOPE_DEPTH> ScopeLabels;
+    /// Untimed logical-pass groups pushed on the frame encoder; closed before the encoder ends.
+    uint32 PassLabelDepth = 0;
+    ClockSample PassSubmitClock;
+    bool HasPassSubmitClock = false;
+};
+StaticArray<GpuScopeMetalState, MAX_DEVICE_OWNERS> gGpuScopeMetalStates{};
+/// The pass timing state of the bound owner slot.
+GpuScopeMetalState& GetGpuScopeMetal() noexcept
+{
+    return gGpuScopeMetalStates[internal::GetBoundOwnerSlot()];
+}
 void ClearScopeLabels() noexcept
 {
-    for (usize index = 0; index < gScopeLabels.GetSize(); ++index)
+    for (usize index = 0; index < GetGpuScopeMetal().ScopeLabels.GetSize(); ++index)
     {
-        gScopeLabels[index] = nil;
+        GetGpuScopeMetal().ScopeLabels[index] = nil;
     }
-    gPassLabelOrNull = nil;
+    GetGpuScopeMetal().PassLabelOrNull = nil;
 }
-ClockSample gPassSubmitClock;
-bool hasPassSubmitClock = false;
 bool SampleClocks(ClockSample& outSample) noexcept
 {
     const uint64 before = foundation::time::NowTicks();
     MTLTimestamp cpu = 0;
     MTLTimestamp device = 0;
-    [gDevice sampleTimestamps:&cpu gpuTimestamp:&device];
+    [GetMetal().Device sampleTimestamps:&cpu gpuTimestamp:&device];
     const uint64 after = foundation::time::NowTicks();
     if (after < before || device == 0)
     {
@@ -98,38 +108,40 @@ internal::ClockCalibration ToCalibration(const ClockSample& sample) noexcept
 } // namespace
 void ResetPassTimings() noexcept
 {
-    gPassSamplesOrNull = nil;
-    gPassCommandOrNull = nil;
-    gPassLabelOrNull = nil;
+    GetGpuScopeMetal().PassSamplesOrNull = nil;
+    GetGpuScopeMetal().PassCommandOrNull = nil;
+    GetGpuScopeMetal().PassLabelOrNull = nil;
     ClearScopeLabels();
-    gPassLabelDepth = 0;
-    hasPassSubmitClock = false;
-    gPassTimings.Reset();
+    GetGpuScopeMetal().PassLabelDepth = 0;
+    GetGpuScopeMetal().HasPassSubmitClock = false;
+    GetGpuScopeMetal().PassTimings.Reset();
 }
 GpuPassTimings PollPassTimings() noexcept
 {
-    GpuPassTimings& report = gPassTimings.GetReport();
+    GpuPassTimings& report = GetGpuScopeMetal().PassTimings.GetReport();
     if (report.State != GpuTimingState::Pending)
     {
         return report;
     }
-    if (gPassCommandOrNull.status == MTLCommandBufferStatusError)
+    if (GetGpuScopeMetal().PassCommandOrNull.status == MTLCommandBufferStatusError)
     {
         report.State = GpuTimingState::Failed;
         for (usize index = 0; index < report.Count; ++index)
         {
             report.Passes[index].Timing.State = GpuTimingState::Failed;
         }
-        hasPassSubmitClock = false;
-        static_cast<void>(CheckCommand(gPassCommandOrNull));
+        GetGpuScopeMetal().HasPassSubmitClock = false;
+        static_cast<void>(CheckCommand(GetGpuScopeMetal().PassCommandOrNull));
     }
-    else if (gPassCommandOrNull.status == MTLCommandBufferStatusCompleted)
+    else if (GetGpuScopeMetal().PassCommandOrNull.status == MTLCommandBufferStatusCompleted)
     {
-        NSData* dataOrNull = [gPassSamplesOrNull resolveCounterRange:NSMakeRange(0, report.Count * PASS_SAMPLE_STRIDE)];
+        NSData* dataOrNull = [GetGpuScopeMetal().PassSamplesOrNull
+            resolveCounterRange:NSMakeRange(0, report.Count * PASS_SAMPLE_STRIDE)];
         ClockSample completionClock;
         uint64 uncertainty = 0;
-        const bool isCalibrated = hasPassSubmitClock == true && SampleClocks(completionClock) == true &&
-                                  IsCalibrationValid(gPassSubmitClock, completionClock, uncertainty) == true;
+        const bool isCalibrated =
+            GetGpuScopeMetal().HasPassSubmitClock == true && SampleClocks(completionClock) == true &&
+            IsCalibrationValid(GetGpuScopeMetal().PassSubmitClock, completionClock, uncertainty) == true;
         for (usize index = 0; index < report.Count; ++index)
         {
             GpuTiming& timing = report.Passes[index].Timing;
@@ -160,11 +172,12 @@ GpuPassTimings PollPassTimings() noexcept
                 timing.State = GpuTimingState::Available;
                 GpuPassTiming& pass = report.Passes[index];
                 internal::TimestampInterval ticks;
-                if (isCalibrated == true && internal::MapCalibratedInterval(ToCalibration(gPassSubmitClock),
-                                                                            ToCalibration(completionClock),
-                                                                            sizeof(MTLTimestamp) * CHAR_BIT,
-                                                                            { .Start = start, .End = end },
-                                                                            ticks) == true)
+                if (isCalibrated == true &&
+                    internal::MapCalibratedInterval(ToCalibration(GetGpuScopeMetal().PassSubmitClock),
+                                                    ToCalibration(completionClock),
+                                                    sizeof(MTLTimestamp) * CHAR_BIT,
+                                                    { .Start = start, .End = end },
+                                                    ticks) == true)
                 {
                     pass.HasCpuInterval = true;
                     pass.StartTicks = ticks.Start;
@@ -174,31 +187,32 @@ GpuPassTimings PollPassTimings() noexcept
             }
         }
         report.State = GpuTimingState::Available;
-        gPassCommandOrNull = nil;
-        hasPassSubmitClock = false;
+        GetGpuScopeMetal().PassCommandOrNull = nil;
+        GetGpuScopeMetal().HasPassSubmitClock = false;
     }
     return report;
 }
 RasterStatus ArmPassTimings() noexcept
 {
     static_cast<void>(PollPassTimings());
-    if (gDevice == nil)
+    if (GetMetal().Device == nil)
     {
-        return GetStartup().State == StartupState::DeviceLost ? RasterStatus::DeviceLost : RasterStatus::Failed;
+        return internal::GetStartup().State == StartupState::DeviceLost ? RasterStatus::DeviceLost
+                                                                        : RasterStatus::Failed;
     }
-    if (gPassTimings.CanArm() == false)
+    if (GetGpuScopeMetal().PassTimings.CanArm() == false)
     {
         return RasterStatus::InvalidState;
     }
-    if ([gDevice supportsCounterSampling:MTLCounterSamplingPointAtStageBoundary] == NO)
+    if ([GetMetal().Device supportsCounterSampling:MTLCounterSamplingPointAtStageBoundary] == NO)
     {
-        gPassTimings.GetReport() = { .State = GpuTimingState::Unavailable };
+        GetGpuScopeMetal().PassTimings.GetReport() = { .State = GpuTimingState::Unavailable };
         return RasterStatus::Unsupported;
     }
-    if (gPassSamplesOrNull == nil)
+    if (GetGpuScopeMetal().PassSamplesOrNull == nil)
     {
         id<MTLCounterSet> timestampSetOrNull = nil;
-        for (id<MTLCounterSet> counterSet in gDevice.counterSets)
+        for (id<MTLCounterSet> counterSet in GetMetal().Device.counterSets)
         {
             if ([counterSet.name isEqualToString:MTLCommonCounterSetTimestamp] == YES)
             {
@@ -208,7 +222,7 @@ RasterStatus ArmPassTimings() noexcept
         }
         if (timestampSetOrNull == nil)
         {
-            gPassTimings.GetReport() = { .State = GpuTimingState::Unavailable };
+            GetGpuScopeMetal().PassTimings.GetReport() = { .State = GpuTimingState::Unavailable };
             return RasterStatus::Unsupported;
         }
         MTLCounterSampleBufferDescriptor* descriptionOrNull = [MTLCounterSampleBufferDescriptor new];
@@ -221,13 +235,14 @@ RasterStatus ArmPassTimings() noexcept
         descriptionOrNull.storageMode = MTLStorageModeShared;
         descriptionOrNull.label = @"Ludus per-pass timestamps";
         NSError* errorOrNull = nil;
-        gPassSamplesOrNull = [gDevice newCounterSampleBufferWithDescriptor:descriptionOrNull error:&errorOrNull];
-        if (gPassSamplesOrNull == nil)
+        GetGpuScopeMetal().PassSamplesOrNull = [GetMetal().Device newCounterSampleBufferWithDescriptor:descriptionOrNull
+                                                                                                 error:&errorOrNull];
+        if (GetGpuScopeMetal().PassSamplesOrNull == nil)
         {
             return RasterStatus::OutOfMemory;
         }
     }
-    gPassTimings.Arm();
+    GetGpuScopeMetal().PassTimings.Arm();
     return RasterStatus::Ready;
 }
 // Thanks to Apple, "pushDebugGroup(_:)" and "label", Metal command-buffer/encoder
@@ -236,102 +251,103 @@ RasterStatus ArmPassTimings() noexcept
 // Logical passes inside one render encoder use that encoder's own debug groups.
 RasterStatus BeginScope(const GpuScopeDescription& scope) noexcept
 {
-    if (gPassTimings.BeginScope(scope) == false)
+    if (GetGpuScopeMetal().PassTimings.BeginScope(scope) == false)
     {
         return RasterStatus::CapacityExceeded;
     }
     NSString* labelOrNull = [NSString stringWithUTF8String:scope.Name.GetData()];
     if (labelOrNull == nil)
     {
-        static_cast<void>(gPassTimings.EndScope());
+        static_cast<void>(GetGpuScopeMetal().PassTimings.EndScope());
         return RasterStatus::OutOfMemory;
     }
-    gScopeLabels[gPassTimings.GetDepth() - 1] = labelOrNull;
-    gPassLabelOrNull = labelOrNull;
-    [gCommand pushDebugGroup:labelOrNull];
+    GetGpuScopeMetal().ScopeLabels[GetGpuScopeMetal().PassTimings.GetDepth() - 1] = labelOrNull;
+    GetGpuScopeMetal().PassLabelOrNull = labelOrNull;
+    [GetMetal().Command pushDebugGroup:labelOrNull];
     return RasterStatus::Ready;
 }
 RasterStatus EndScope() noexcept
 {
-    if (gPassTimings.EndScope() == false)
+    if (GetGpuScopeMetal().PassTimings.EndScope() == false)
     {
         return RasterStatus::InvalidState;
     }
-    const uint32 depth = gPassTimings.GetDepth();
-    gScopeLabels[depth] = nil;
-    gPassLabelOrNull = depth == 0 ? nil : gScopeLabels[depth - 1];
-    [gCommand popDebugGroup];
+    const uint32 depth = GetGpuScopeMetal().PassTimings.GetDepth();
+    GetGpuScopeMetal().ScopeLabels[depth] = nil;
+    GetGpuScopeMetal().PassLabelOrNull = depth == 0 ? nil : GetGpuScopeMetal().ScopeLabels[depth - 1];
+    [GetMetal().Command popDebugGroup];
     return RasterStatus::Ready;
 }
 internal::GpuScopePosition GetScopePosition() noexcept
 {
-    return gPassTimings.GetPosition();
+    return GetGpuScopeMetal().PassTimings.GetPosition();
 }
-/// Close the open scopes' groups on gCommand before it is committed mid-frame; the scopes
+/// Close the open scopes' groups on the frame command buffer before it is committed mid-frame; the scopes
 /// stay open and PushScopeGroups reopens them on the replacement command buffer.
 void PopScopeGroups() noexcept
 {
-    for (uint32 index = 0; index < gPassTimings.GetDepth(); ++index)
+    for (uint32 index = 0; index < GetGpuScopeMetal().PassTimings.GetDepth(); ++index)
     {
-        [gCommand popDebugGroup];
+        [GetMetal().Command popDebugGroup];
     }
 }
 void PushScopeGroups() noexcept
 {
-    for (uint32 index = 0; index < gPassTimings.GetDepth(); ++index)
+    for (uint32 index = 0; index < GetGpuScopeMetal().PassTimings.GetDepth(); ++index)
     {
-        [gCommand pushDebugGroup:gScopeLabels[index]];
+        [GetMetal().Command pushDebugGroup:GetGpuScopeMetal().ScopeLabels[index]];
     }
 }
 void BeginPassLabel(const char* name) noexcept
 {
-    NSString* labelOrNull = gEncoder != nil ? [NSString stringWithUTF8String:name] : nil;
+    NSString* labelOrNull = GetMetal().Encoder != nil ? [NSString stringWithUTF8String:name] : nil;
     if (labelOrNull != nil)
     {
-        [gEncoder pushDebugGroup:labelOrNull];
-        ++gPassLabelDepth;
+        [GetMetal().Encoder pushDebugGroup:labelOrNull];
+        ++GetGpuScopeMetal().PassLabelDepth;
     }
 }
 void EndPassLabel() noexcept
 {
-    if (gPassLabelDepth != 0)
+    if (GetGpuScopeMetal().PassLabelDepth != 0)
     {
-        --gPassLabelDepth;
-        [gEncoder popDebugGroup];
+        --GetGpuScopeMetal().PassLabelDepth;
+        [GetMetal().Encoder popDebugGroup];
     }
 }
 void ClosePassLabels() noexcept
 {
-    while (gPassLabelDepth != 0)
+    while (GetGpuScopeMetal().PassLabelDepth != 0)
     {
         EndPassLabel();
     }
 }
 void BeginPassTimingFrame() noexcept
 {
-    gPassTimings.BeginFrame();
+    GetGpuScopeMetal().PassTimings.BeginFrame();
 }
 void SubmitPassTimings() noexcept
 {
     // Scopes never span submission: close every region an early return left open.
     PopScopeGroups();
-    static_cast<void>(gPassTimings.CloseScopes());
+    static_cast<void>(GetGpuScopeMetal().PassTimings.CloseScopes());
     ClearScopeLabels();
-    gPassTimings.Submit();
-    if (gPassTimings.GetReport().State == GpuTimingState::Pending && gPassCommandOrNull == nil)
+    GetGpuScopeMetal().PassTimings.Submit();
+    if (GetGpuScopeMetal().PassTimings.GetReport().State == GpuTimingState::Pending &&
+        GetGpuScopeMetal().PassCommandOrNull == nil)
     {
-        gPassCommandOrNull = gCommand;
+        GetGpuScopeMetal().PassCommandOrNull = GetMetal().Command;
         // Sampled before commit, so no operation of this command buffer can precede it.
-        hasPassSubmitClock = SampleClocks(gPassSubmitClock);
+        GetGpuScopeMetal().HasPassSubmitClock = SampleClocks(GetGpuScopeMetal().PassSubmitClock);
     }
 }
 void ConfigurePassTiming(MTLRenderPassDescriptor* description) noexcept
 {
-    const usize index = gPassTimings.AddPass(GpuPassKind::Raster);
+    const usize index = GetGpuScopeMetal().PassTimings.AddPass(GpuPassKind::Raster);
     if (index < MAX_GPU_TIMED_PASSES)
     {
         MTLRenderPassSampleBufferAttachmentDescriptor* attachment = description.sampleBufferAttachments[0];
-        attachment.sampleBuffer = gPassSamplesOrNull;
+        attachment.sampleBuffer = GetGpuScopeMetal().PassSamplesOrNull;
         const usize first = index * PASS_SAMPLE_STRIDE;
         attachment.startOfVertexSampleIndex = first;
         attachment.endOfVertexSampleIndex = first + 1;
@@ -341,11 +357,11 @@ void ConfigurePassTiming(MTLRenderPassDescriptor* description) noexcept
 }
 void ConfigurePassTiming(MTLComputePassDescriptor* description, GpuPassKind kind = GpuPassKind::Compute) noexcept
 {
-    const usize index = gPassTimings.AddPass(kind);
+    const usize index = GetGpuScopeMetal().PassTimings.AddPass(kind);
     if (index < MAX_GPU_TIMED_PASSES)
     {
         MTLComputePassSampleBufferAttachmentDescriptor* attachment = description.sampleBufferAttachments[0];
-        attachment.sampleBuffer = gPassSamplesOrNull;
+        attachment.sampleBuffer = GetGpuScopeMetal().PassSamplesOrNull;
         attachment.startOfEncoderSampleIndex = index * PASS_SAMPLE_STRIDE;
         attachment.endOfEncoderSampleIndex = index * PASS_SAMPLE_STRIDE + 1;
     }

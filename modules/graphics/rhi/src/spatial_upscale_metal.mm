@@ -1,4 +1,5 @@
 #include "internal/spatial_upscale_metal.h"
+#include "internal/owner.h"
 #include "internal/spatial_upscale_backend.h"
 #include "internal/storage.h"
 
@@ -14,8 +15,14 @@ namespace ludus::graphics::rhi::backend
 {
 namespace
 {
-internal::StorageTable<id<MTLFXSpatialScaler>> gSpatialUpscalers;
+/// MetalFX spatial scalers of one device owner (R14c).
+foundation::StaticArray<internal::StorageTable<id<MTLFXSpatialScaler>>, MAX_DEVICE_OWNERS> gSpatialUpscalers{};
+/// The spatial scalers of the bound owner slot.
+internal::StorageTable<id<MTLFXSpatialScaler>>& GetSpatialUpscalers() noexcept
+{
+    return gSpatialUpscalers[internal::GetBoundOwnerSlot()];
 }
+} // namespace
 bool IsMetalFxSpatialSupported() noexcept
 {
     id<MTLDevice> deviceOrNull = GetSpatialUpscaleMetalDevice();
@@ -23,7 +30,7 @@ bool IsMetalFxSpatialSupported() noexcept
 }
 RasterStatus SpatialUpscaleGrow(foundation::usize count) noexcept
 {
-    return gSpatialUpscalers.EnsureSlots(count) == true ? RasterStatus::Ready : internal::StorageFailure();
+    return GetSpatialUpscalers().EnsureSlots(count) == true ? RasterStatus::Ready : internal::StorageFailure();
 }
 RasterStatus SpatialUpscaleCreate(foundation::usize slot, const SpatialUpscalerDescription& description) noexcept
 {
@@ -53,14 +60,15 @@ RasterStatus SpatialUpscaleCreate(foundation::usize slot, const SpatialUpscalerD
         {
             return RasterStatus::Failed;
         }
-        gSpatialUpscalers[slot] = scalerOrNull;
+        GetSpatialUpscalers()[slot] = scalerOrNull;
         return RasterStatus::Ready;
     }
 }
 RasterStatus
+// NOLINTNEXTLINE(bugprone-easily-swappable-parameters): shared backend signature
 SpatialUpscaleEncode(foundation::usize slot, foundation::usize source, foundation::usize destination) noexcept
 {
-    id<MTLFXSpatialScaler> scalerOrNull = gSpatialUpscalers[slot];
+    id<MTLFXSpatialScaler> scalerOrNull = GetSpatialUpscalers()[slot];
     id<MTLTexture> inputOrNull = GetSpatialUpscaleMetalTexture(source);
     id<MTLTexture> outputOrNull = GetSpatialUpscaleMetalTexture(destination);
     id<MTLCommandBuffer> commandOrNull = GetSpatialUpscaleMetalCommandBuffer();
@@ -87,6 +95,6 @@ SpatialUpscaleEncode(foundation::usize slot, foundation::usize source, foundatio
 }
 void SpatialUpscaleDestroy(foundation::usize slot) noexcept
 {
-    gSpatialUpscalers[slot] = nil;
+    GetSpatialUpscalers()[slot] = nil;
 }
 } // namespace ludus::graphics::rhi::backend

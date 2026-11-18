@@ -13,6 +13,7 @@
 #include "internal/graphics_capture.h"
 #include "internal/lifecycle.h"
 #include "internal/measurement.h"
+#include "internal/owner.h"
 #include "internal/raster.h"
 
 #include <span>
@@ -73,10 +74,21 @@ struct CaptureRecord final
     bool HasVerifiedArtifact = false;
 };
 
-CaptureRecord gRecord;
-internal::GraphicsCaptureAdapter* gAdapterOrNull = nullptr;
+/// Capture record, native adapter and frame sequence of one owner slot (R14c).
+struct CaptureState final
+{
+    CaptureRecord Record;
+    internal::GraphicsCaptureAdapter* AdapterOrNull = nullptr;
+    uint64 FrameSequence = 0;
+};
+foundation::StaticArray<CaptureState, MAX_DEVICE_OWNERS> gCaptures{};
+/// Request numbers are process-wide, so an identity names one owner's capture.
 uint64 gNextRequest = 1;
-uint64 gFrameSequence = 0;
+/// The capture state of the bound owner slot.
+CaptureState& GetCapture() noexcept
+{
+    return gCaptures[internal::GetBoundOwnerSlot()];
+}
 
 [[nodiscard]] bool IsContinuationByte(char character) noexcept
 {
@@ -114,9 +126,30 @@ template <usize N>
     return state == GraphicsCaptureState::Armed || state == GraphicsCaptureState::Capturing ||
            state == GraphicsCaptureState::Finalizing;
 }
+/// Bind the owner slot whose capture `identity` names; false for a stale or zero identity.
 [[nodiscard]] bool IsCurrent(GraphicsCaptureIdentity identity) noexcept
 {
-    return identity.Request != 0 && identity == gRecord.Report.Identity;
+    for (usize slot = 0; identity.Request != 0 && slot < MAX_DEVICE_OWNERS; ++slot)
+    {
+        if (identity == gCaptures[slot].Record.Report.Identity)
+        {
+            internal::BindOwnerSlot(slot);
+            return true;
+        }
+    }
+    return false;
+}
+/// One native capture runs per process: capture tools such as MTLCaptureManager are process-wide.
+[[nodiscard]] bool IsAnyCaptureActive() noexcept
+{
+    for (const CaptureState& capture : gCaptures)
+    {
+        if (IsActive(capture.Record.Report.State) == true)
+        {
+            return true;
+        }
+    }
+    return false;
 }
 template <usize N>
 [[nodiscard]] bool AppendDecimal(uint64 value, foundation::StaticString<N>& inoutText) noexcept
@@ -304,55 +337,55 @@ private:
 
 void Terminate(GraphicsCaptureState state, GraphicsCaptureError error) noexcept
 {
-    gRecord.Report.State = state;
-    gRecord.Report.Error = error;
-    gRecord.IsCancelRequested = false;
-    gRecord.HasVerifiedArtifact = false;
-    gRecord.Deadline.Cancel();
+    GetCapture().Record.Report.State = state;
+    GetCapture().Record.Report.Error = error;
+    GetCapture().Record.IsCancelRequested = false;
+    GetCapture().Record.HasVerifiedArtifact = false;
+    GetCapture().Record.Deadline.Cancel();
 }
 /// Run the adapter's synchronous cleanup and record any partial artifact it identifies.
 void AbandonNativeCapture() noexcept
 {
-    if (gAdapterOrNull == nullptr)
+    if (GetCapture().AdapterOrNull == nullptr)
     {
         return;
     }
     internal::GraphicsCaptureCleanup cleanup;
-    gAdapterOrNull->Abandon(gRecord.Report.Identity, cleanup);
+    GetCapture().AdapterOrNull->Abandon(GetCapture().Record.Report.Identity, cleanup);
     const std::string_view artifact = GetText(cleanup.Artifact);
-    if (cleanup.IsArtifactPreserved == true && IsArtifactName(artifact, gRecord.Stem.GetView()) == true)
+    if (cleanup.IsArtifactPreserved == true && IsArtifactName(artifact, GetCapture().Record.Stem.GetView()) == true)
     {
-        gRecord.Report.IsArtifactPreserved = true;
-        CopyText(artifact, gRecord.Report.Artifact);
+        GetCapture().Record.Report.IsArtifactPreserved = true;
+        CopyText(artifact, GetCapture().Record.Report.Artifact);
     }
 }
 void PublishManifest() noexcept
 {
     CaptureName manifestName{};
     std::span<const uint8> bytes;
-    const MeasurementAdapter& gpu = gRecord.Gpu;
+    const MeasurementAdapter& gpu = GetCapture().Record.Gpu;
     ManifestWriter writer;
     writer.WriteText({"format"}, "ludus-graphics-capture");
     writer.WriteNumber({"version"}, MANIFEST_VERSION);
-    writer.WriteNumber({"session"}, gRecord.Report.Identity.Session);
-    writer.WriteNumber({"request"}, gRecord.Report.Identity.Request);
+    writer.WriteNumber({"session"}, GetCapture().Record.Report.Identity.Session);
+    writer.WriteNumber({"request"}, GetCapture().Record.Report.Identity.Request);
     writer.WriteText({"build"}, GetBuildConfigurationName());
-    writer.WriteText({"backend"}, GetBackendName(gRecord.SelectedBackend));
-    writer.WriteText({"tool"}, GetToolName(gRecord.Report.Tool));
-    writer.WriteText({"toolVersion"}, GetText(gRecord.Report.ToolVersion));
+    writer.WriteText({"backend"}, GetBackendName(GetCapture().Record.SelectedBackend));
+    writer.WriteText({"tool"}, GetToolName(GetCapture().Record.Report.Tool));
+    writer.WriteText({"toolVersion"}, GetText(GetCapture().Record.Report.ToolVersion));
     writer.WriteText({"adapter"}, std::string_view{gpu.Name});
     writer.WriteNumber({"vendorId"}, gpu.VendorId);
     writer.WriteNumber({"deviceId"}, gpu.DeviceId);
     writer.WriteNumber({"driverVersion"}, gpu.DriverVersion);
     writer.WriteText({"captureScope"}, "device frame");
-    writer.WriteNumber({"requestedFrame"}, gRecord.Report.RequestedFrame);
-    writer.WriteNumber({"capturedFrame"}, gRecord.Report.CapturedFrame);
-    writer.WriteNumber({"skippedFrames"}, gRecord.Report.SkippedFrames);
-    writer.WriteText({"artifact"}, GetText(gRecord.Report.Artifact));
+    writer.WriteNumber({"requestedFrame"}, GetCapture().Record.Report.RequestedFrame);
+    writer.WriteNumber({"capturedFrame"}, GetCapture().Record.Report.CapturedFrame);
+    writer.WriteNumber({"skippedFrames"}, GetCapture().Record.Report.SkippedFrames);
+    writer.WriteText({"artifact"}, GetText(GetCapture().Record.Report.Artifact));
     filesystem::WriteDirectory directory;
     filesystem::PublicationResult published;
-    if (writer.Finish(bytes) == true && MakeManifestName(gRecord.Stem.GetView(), manifestName) == true &&
-        directory.Open(gRecord.Destination.GetView()).Succeeded() == true)
+    if (writer.Finish(bytes) == true && MakeManifestName(GetCapture().Record.Stem.GetView(), manifestName) == true &&
+        directory.Open(GetCapture().Record.Destination.GetView()).Succeeded() == true)
     {
         const filesystem::WriteOptions options =
         {
@@ -363,37 +396,40 @@ void PublishManifest() noexcept
         published = directory.Publish(GetText(manifestName), bytes, options);
     }
     // The verified artifact stays in place either way; only the manifest claim differs.
-    gRecord.Report.IsArtifactPreserved = true;
+    GetCapture().Record.Report.IsArtifactPreserved = true;
     if (published.Published == true)
     {
-        gRecord.Report.IsManifestPublished = true;
-        gRecord.Report.Manifest = manifestName;
+        GetCapture().Record.Report.IsManifestPublished = true;
+        GetCapture().Record.Report.Manifest = manifestName;
         Terminate(GraphicsCaptureState::Complete, GraphicsCaptureError::None);
         return;
     }
-    CopyText("the capture manifest could not be published; the artifact is preserved", gRecord.Report.Diagnostic);
+    CopyText("the capture manifest could not be published; the artifact is preserved",
+             GetCapture().Record.Report.Diagnostic);
     Terminate(GraphicsCaptureState::Failed, GraphicsCaptureError::ManifestFailed);
 }
 /// Poll finalization, publish a verified artifact and expire deadlines, outside frames.
 void AdvanceRecord() noexcept
 {
-    if (IsActive(gRecord.Report.State) == false || internal::FrameOpen() == true)
+    if (IsActive(GetCapture().Record.Report.State) == false || internal::FrameOpen() == true)
     {
         return;
     }
-    if (gRecord.Report.State == GraphicsCaptureState::Finalizing && gRecord.HasVerifiedArtifact == false &&
-        gAdapterOrNull != nullptr)
+    if (GetCapture().Record.Report.State == GraphicsCaptureState::Finalizing &&
+        GetCapture().Record.HasVerifiedArtifact == false && GetCapture().AdapterOrNull != nullptr)
     {
-        gAdapterOrNull->PollFinalization(gRecord.Report.Identity);
+        GetCapture().AdapterOrNull->PollFinalization(GetCapture().Record.Report.Identity);
     }
-    if (gRecord.Report.State == GraphicsCaptureState::Finalizing && gRecord.HasVerifiedArtifact == true)
+    if (GetCapture().Record.Report.State == GraphicsCaptureState::Finalizing &&
+        GetCapture().Record.HasVerifiedArtifact == true)
     {
         PublishManifest();
         return;
     }
-    if (IsActive(gRecord.Report.State) == true && gRecord.Deadline.IsExpired(time::Now()) == true)
+    if (IsActive(GetCapture().Record.Report.State) == true &&
+        GetCapture().Record.Deadline.IsExpired(time::Now()) == true)
     {
-        if (gRecord.Report.State == GraphicsCaptureState::Finalizing)
+        if (GetCapture().Record.Report.State == GraphicsCaptureState::Finalizing)
         {
             AbandonNativeCapture();
         }
@@ -462,37 +498,37 @@ namespace internal
 {
 void SetGraphicsCaptureAdapter(GraphicsCaptureAdapter* adapterOrNull) noexcept
 {
-    gAdapterOrNull = adapterOrNull;
+    GetCapture().AdapterOrNull = adapterOrNull;
 }
 void ReportGraphicsCaptureFinalization(GraphicsCaptureIdentity identity,
                                        const GraphicsCaptureFinalization& finalization) noexcept
 {
-    if (IsCurrent(identity) == false || gRecord.Report.State != GraphicsCaptureState::Finalizing ||
-        gRecord.HasVerifiedArtifact == true)
+    if (IsCurrent(identity) == false || GetCapture().Record.Report.State != GraphicsCaptureState::Finalizing ||
+        GetCapture().Record.HasVerifiedArtifact == true)
     {
         return;
     }
-    CopyText(finalization.ToolVersionOrNull, gRecord.Report.ToolVersion);
-    CopyText(finalization.DiagnosticOrNull, gRecord.Report.Diagnostic);
+    CopyText(finalization.ToolVersionOrNull, GetCapture().Record.Report.ToolVersion);
+    CopyText(finalization.DiagnosticOrNull, GetCapture().Record.Report.Diagnostic);
     const std::string_view artifact =
         finalization.ArtifactOrNull == nullptr ? std::string_view{} : std::string_view{finalization.ArtifactOrNull};
-    const bool isArtifactNamed = IsArtifactName(artifact, gRecord.Stem.GetView());
+    const bool isArtifactNamed = IsArtifactName(artifact, GetCapture().Record.Stem.GetView());
     if (finalization.Error == GraphicsCaptureError::None && finalization.IsArtifactVerified == true &&
         isArtifactNamed == true)
     {
-        CopyText(artifact, gRecord.Report.Artifact);
-        gRecord.HasVerifiedArtifact = true;
+        CopyText(artifact, GetCapture().Record.Report.Artifact);
+        GetCapture().Record.HasVerifiedArtifact = true;
         return;
     }
     if ((finalization.IsArtifactPreserved == true || finalization.Error == GraphicsCaptureError::None) &&
         isArtifactNamed == true)
     {
-        gRecord.Report.IsArtifactPreserved = true;
-        CopyText(artifact, gRecord.Report.Artifact);
+        GetCapture().Record.Report.IsArtifactPreserved = true;
+        CopyText(artifact, GetCapture().Record.Report.Artifact);
     }
     if (finalization.Error == GraphicsCaptureError::None && finalization.DiagnosticOrNull == nullptr)
     {
-        CopyText("the adapter reported no verified artifact", gRecord.Report.Diagnostic);
+        CopyText("the adapter reported no verified artifact", GetCapture().Record.Report.Diagnostic);
     }
     Terminate(GraphicsCaptureState::Failed,
               finalization.Error == GraphicsCaptureError::Busy ? GraphicsCaptureError::Busy
@@ -500,11 +536,11 @@ void ReportGraphicsCaptureFinalization(GraphicsCaptureIdentity identity,
 }
 void BeginGraphicsCaptureFrame(bool isTargetEmpty, bool isTargetOffscreen) noexcept
 {
-    if (gRecord.Report.State != GraphicsCaptureState::Armed)
+    if (GetCapture().Record.Report.State != GraphicsCaptureState::Armed)
     {
         return;
     }
-    if (gRecord.Deadline.IsExpired(time::Now()) == true)
+    if (GetCapture().Record.Deadline.IsExpired(time::Now()) == true)
     {
         Terminate(GraphicsCaptureState::Failed, GraphicsCaptureError::DeadlineExceeded);
         return;
@@ -513,12 +549,12 @@ void BeginGraphicsCaptureFrame(bool isTargetEmpty, bool isTargetOffscreen) noexc
     {
         return;
     }
-    if (gAdapterOrNull == nullptr)
+    if (GetCapture().AdapterOrNull == nullptr)
     {
         Terminate(GraphicsCaptureState::Failed, GraphicsCaptureError::SessionEnded);
         return;
     }
-    const GraphicsCaptureAdapterState state = gAdapterOrNull->QueryState();
+    const GraphicsCaptureAdapterState state = GetCapture().AdapterOrNull->QueryState();
     const GraphicsCaptureError availability = GetAdapterAvailability(state);
     if (availability != GraphicsCaptureError::None)
     {
@@ -527,20 +563,20 @@ void BeginGraphicsCaptureFrame(bool isTargetEmpty, bool isTargetOffscreen) noexc
     }
     if (isTargetOffscreen == true && state.CanCaptureOffscreen == false)
     {
-        CopyText("this tool cannot capture offscreen-only frames", gRecord.Report.Diagnostic);
+        CopyText("this tool cannot capture offscreen-only frames", GetCapture().Record.Report.Diagnostic);
         Terminate(GraphicsCaptureState::Failed, GraphicsCaptureError::InvalidTarget);
         return;
     }
     const GraphicsCaptureStart start =
     {
-        .Identity = gRecord.Report.Identity,
-        .Destination = gRecord.Destination.GetData(),
-        .ArtifactStem = gRecord.Stem.GetData(),
+        .Identity = GetCapture().Record.Report.Identity,
+        .Destination = GetCapture().Record.Destination.GetData(),
+        .ArtifactStem = GetCapture().Record.Stem.GetData(),
     };
-    const GraphicsCaptureError started = gAdapterOrNull->BeginFrameCapture(start);
+    const GraphicsCaptureError started = GetCapture().AdapterOrNull->BeginFrameCapture(start);
     if (started == GraphicsCaptureError::None)
     {
-        gRecord.Report.State = GraphicsCaptureState::Capturing;
+        GetCapture().Record.Report.State = GraphicsCaptureState::Capturing;
         return;
     }
     Terminate(GraphicsCaptureState::Failed,
@@ -551,33 +587,33 @@ void FinishGraphicsCaptureBegin(bool isFrameOpen) noexcept
 {
     if (isFrameOpen == true)
     {
-        ++gFrameSequence;
+        ++GetCapture().FrameSequence;
     }
-    if (gRecord.Report.State == GraphicsCaptureState::Capturing)
+    if (GetCapture().Record.Report.State == GraphicsCaptureState::Capturing)
     {
         if (isFrameOpen == true)
         {
-            gRecord.Report.CapturedFrame = gFrameSequence;
+            GetCapture().Record.Report.CapturedFrame = GetCapture().FrameSequence;
             return;
         }
         // A skipped acquisition must not consume the request: discard the empty capture.
         AbandonNativeCapture();
-        gRecord.Report.State = GraphicsCaptureState::Armed;
-        gRecord.Report.IsArtifactPreserved = false;
-        gRecord.Report.Artifact = {};
+        GetCapture().Record.Report.State = GraphicsCaptureState::Armed;
+        GetCapture().Record.Report.IsArtifactPreserved = false;
+        GetCapture().Record.Report.Artifact = {};
     }
-    if (gRecord.Report.State == GraphicsCaptureState::Armed && isFrameOpen == false)
+    if (GetCapture().Record.Report.State == GraphicsCaptureState::Armed && isFrameOpen == false)
     {
-        ++gRecord.Report.SkippedFrames;
+        ++GetCapture().Record.Report.SkippedFrames;
     }
 }
 void EndGraphicsCaptureFrame(bool isSubmitted) noexcept
 {
-    if (gRecord.Report.State != GraphicsCaptureState::Capturing)
+    if (GetCapture().Record.Report.State != GraphicsCaptureState::Capturing)
     {
         return;
     }
-    if (gAdapterOrNull == nullptr)
+    if (GetCapture().AdapterOrNull == nullptr)
     {
         Terminate(GraphicsCaptureState::Failed, GraphicsCaptureError::SessionEnded);
         return;
@@ -588,20 +624,20 @@ void EndGraphicsCaptureFrame(bool isSubmitted) noexcept
         Terminate(GraphicsCaptureState::Failed, GraphicsCaptureError::FrameFailed);
         return;
     }
-    if (gRecord.IsCancelRequested == true)
+    if (GetCapture().Record.IsCancelRequested == true)
     {
         AbandonNativeCapture();
         Terminate(GraphicsCaptureState::Cancelled, GraphicsCaptureError::None);
         return;
     }
     // Finalizing first: the adapter may report its outcome before EndFrameCapture returns.
-    gRecord.Report.State = GraphicsCaptureState::Finalizing;
-    const GraphicsCaptureIdentity identity = gRecord.Report.Identity;
-    const GraphicsCaptureError stopped = gAdapterOrNull->EndFrameCapture(identity);
+    GetCapture().Record.Report.State = GraphicsCaptureState::Finalizing;
+    const GraphicsCaptureIdentity identity = GetCapture().Record.Report.Identity;
+    const GraphicsCaptureError stopped = GetCapture().AdapterOrNull->EndFrameCapture(identity);
     if (stopped != GraphicsCaptureError::None && IsCurrent(identity) == true &&
-        gRecord.Report.State == GraphicsCaptureState::Finalizing)
+        GetCapture().Record.Report.State == GraphicsCaptureState::Finalizing)
     {
-        gRecord.HasVerifiedArtifact = false;
+        GetCapture().Record.HasVerifiedArtifact = false;
         AbandonNativeCapture();
         Terminate(GraphicsCaptureState::Failed,
                   stopped == GraphicsCaptureError::Busy ? GraphicsCaptureError::Busy
@@ -612,16 +648,16 @@ void EndGraphicsCaptureSession(GraphicsCaptureError reason) noexcept
 {
     // A verified artifact no longer depends on native objects; its manifest is still
     // published at the next poll. Anything else is abandoned before the device goes away.
-    if (IsActive(gRecord.Report.State) == true && gRecord.HasVerifiedArtifact == false)
+    if (IsActive(GetCapture().Record.Report.State) == true && GetCapture().Record.HasVerifiedArtifact == false)
     {
-        if (gRecord.Report.State != GraphicsCaptureState::Armed)
+        if (GetCapture().Record.Report.State != GraphicsCaptureState::Armed)
         {
             AbandonNativeCapture();
         }
         Terminate(GraphicsCaptureState::Failed, reason);
     }
-    gAdapterOrNull = nullptr;
-    gFrameSequence = 0;
+    GetCapture().AdapterOrNull = nullptr;
+    GetCapture().FrameSequence = 0;
 }
 } // namespace internal
 
@@ -635,17 +671,17 @@ GraphicsCaptureError GetGraphicsCaptureCapabilities(DeviceHandle device,
     }
     AdvanceRecord();
     GraphicsCaptureCapabilities capabilities;
-    if (gAdapterOrNull != nullptr)
+    if (GetCapture().AdapterOrNull != nullptr)
     {
-        const internal::GraphicsCaptureAdapterState state = gAdapterOrNull->QueryState();
-        capabilities.Tool = gAdapterOrNull->GetTool();
+        const internal::GraphicsCaptureAdapterState state = GetCapture().AdapterOrNull->QueryState();
+        capabilities.Tool = GetCapture().AdapterOrNull->GetTool();
         capabilities.HasAdapter = true;
         capabilities.IsToolAttached = state.IsToolAttached;
         capabilities.IsRestartRequired = state.IsRestartRequired;
         capabilities.IsExternalCaptureActive = state.IsExternalCaptureActive;
         capabilities.CanCaptureOffscreen = state.CanCaptureOffscreen;
         capabilities.Unavailable = GetAdapterAvailability(state);
-        if (capabilities.Unavailable == GraphicsCaptureError::None && IsActive(gRecord.Report.State) == true)
+        if (capabilities.Unavailable == GraphicsCaptureError::None && IsAnyCaptureActive() == true)
         {
             capabilities.Unavailable = GraphicsCaptureError::Busy;
         }
@@ -674,15 +710,15 @@ GraphicsCaptureError RequestGraphicsCapture(DeviceHandle device,
         return GraphicsCaptureError::InvalidRequest;
     }
     AdvanceRecord();
-    if (IsActive(gRecord.Report.State) == true)
+    if (IsAnyCaptureActive() == true)
     {
         return GraphicsCaptureError::Busy;
     }
-    if (gAdapterOrNull == nullptr)
+    if (GetCapture().AdapterOrNull == nullptr)
     {
         return GraphicsCaptureError::UnsupportedBackend;
     }
-    const GraphicsCaptureError availability = GetAdapterAvailability(gAdapterOrNull->QueryState());
+    const GraphicsCaptureError availability = GetAdapterAvailability(GetCapture().AdapterOrNull->QueryState());
     if (availability != GraphicsCaptureError::None)
     {
         return availability;
@@ -705,20 +741,20 @@ GraphicsCaptureError RequestGraphicsCapture(DeviceHandle device,
         return GraphicsCaptureError::InvalidDestination;
     }
     ++gNextRequest;
-    gRecord = {};
-    if (gRecord.Destination.TryAssign(destination) != foundation::StringStatus::Ok)
+    GetCapture().Record = {};
+    if (GetCapture().Record.Destination.TryAssign(destination) != foundation::StringStatus::Ok)
     {
         return GraphicsCaptureError::InvalidRequest;
     }
-    gRecord.Stem = stem;
-    gRecord.Deadline = deadline;
-    gRecord.Report.Identity = identity;
-    gRecord.Report.State = GraphicsCaptureState::Armed;
-    gRecord.Report.Tool = gAdapterOrNull->GetTool();
-    gRecord.Report.RequestedFrame = gFrameSequence;
-    gRecord.SelectedBackend = backend::Kind();
-    gRecord.Gpu = backend::TimingAdapter();
-    gRecord.Gpu.Name[sizeof(gRecord.Gpu.Name) - 1] = '\0';
+    GetCapture().Record.Stem = stem;
+    GetCapture().Record.Deadline = deadline;
+    GetCapture().Record.Report.Identity = identity;
+    GetCapture().Record.Report.State = GraphicsCaptureState::Armed;
+    GetCapture().Record.Report.Tool = GetCapture().AdapterOrNull->GetTool();
+    GetCapture().Record.Report.RequestedFrame = GetCapture().FrameSequence;
+    GetCapture().Record.SelectedBackend = backend::Kind();
+    GetCapture().Record.Gpu = backend::TimingAdapter();
+    GetCapture().Record.Gpu.Name[sizeof(GetCapture().Record.Gpu.Name) - 1] = '\0';
     outIdentity = identity;
     return GraphicsCaptureError::None;
 }
@@ -729,19 +765,19 @@ GraphicsCaptureError CancelGraphicsCapture(GraphicsCaptureIdentity identity) noe
     {
         return GraphicsCaptureError::StaleIdentity;
     }
-    switch (gRecord.Report.State)
+    switch (GetCapture().Record.Report.State)
     {
         case GraphicsCaptureState::Armed:
             Terminate(GraphicsCaptureState::Cancelled, GraphicsCaptureError::None);
             return GraphicsCaptureError::None;
         case GraphicsCaptureState::Capturing:
             // The frame's commands are already inside the native interval; stop after submission.
-            gRecord.IsCancelRequested = true;
+            GetCapture().Record.IsCancelRequested = true;
             return GraphicsCaptureError::None;
         case GraphicsCaptureState::Finalizing:
-            if (gRecord.HasVerifiedArtifact == true)
+            if (GetCapture().Record.HasVerifiedArtifact == true)
             {
-                gRecord.Report.IsArtifactPreserved = true;
+                GetCapture().Record.Report.IsArtifactPreserved = true;
             }
             else
             {
@@ -766,7 +802,7 @@ GraphicsCaptureError GetGraphicsCaptureReport(GraphicsCaptureIdentity identity,
         return GraphicsCaptureError::StaleIdentity;
     }
     AdvanceRecord();
-    outReport = gRecord.Report;
+    outReport = GetCapture().Record.Report;
     return GraphicsCaptureError::None;
 }
 } // namespace ludus::graphics::rhi

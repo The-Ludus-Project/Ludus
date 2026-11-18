@@ -1,6 +1,7 @@
 #include "internal/adapter.h"
 #include "internal/backend.h"
 #include "internal/lifecycle.h"
+#include "internal/owner.h"
 #include "internal/resources.h"
 #include "internal/surface.h"
 #include "reference_raster.h"
@@ -108,6 +109,12 @@ foundation::usize LastDestroyedSurface = 0;
 bool ShouldLoseNextSurface = false;
 foundation::StaticArray<SurfaceCompletion, MAX_DEVICE_SURFACES> SurfaceCompletions{};
 foundation::StaticArray<FrameTarget, MAX_DEVICE_SURFACES> SurfaceTargets{};
+// R14c: owners this reference backend admits; owner tests raise it and restore 1.
+foundation::usize DeviceOwners = 1;
+foundation::usize GetDeviceOwnerLimit() noexcept
+{
+    return DeviceOwners;
+}
 foundation::usize AdditionalSurfaceLimit() noexcept
 {
     return AdditionalSurfaces;

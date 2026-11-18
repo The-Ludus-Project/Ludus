@@ -16,9 +16,11 @@ namespace internal
 struct DeviceAccess;
 }
 
-/// Identity of the single explicitly owned device session; never a backend pointer.
+/// Identity of one explicitly owned device session; never a backend pointer.
 /// Copying does not transfer ownership. Main-thread use only; destroy exactly once.
 /// The owner identity never wraps or becomes valid again after destruction/restart.
+/// A backend that hosts several owners (R14c) gives each its own registries, completion
+/// ordinals and loss state; handles of one owner are rejected by every other owner.
 struct DeviceHandle final
 {
     /// Compare session identities only, without querying readiness or retaining ownership.
@@ -49,6 +51,12 @@ private:
 /// Maximum surfaces one device hosts at once, including the primary surface CreateDevice
 /// publishes (R14b). A backend may host fewer; see CreateSurface.
 inline constexpr ludus::foundation::usize MAX_DEVICE_SURFACES = 4;
+
+/// @brief Maximum device owners one process hosts at once (R14c).
+///
+/// A backend may host fewer; see CreateDevice. Owners share the owner thread but never
+/// share registries, frames, completion ordinals, loss or retirement.
+inline constexpr ludus::foundation::usize MAX_DEVICE_OWNERS = 4;
 
 /// Presentation state of one surface; independent of the device's startup state.
 enum class SurfaceState : ludus::foundation::uint8
@@ -186,7 +194,8 @@ enum class DeviceStatus : ludus::foundation::uint8
     IdentityExhausted,
     /// The surface was lost; the device stays usable. Destroy and recreate the surface.
     SurfaceLost,
-    /// The device already hosts as many surfaces as its backend allows.
+    /// The device already hosts as many surfaces as its backend allows, or the process
+    /// already hosts as many device owners as its backend allows (R14c).
     CapacityExceeded,
 };
 
@@ -227,25 +236,34 @@ struct DeviceInfo final
 /// Query backend build availability without starting a device or requesting an adapter.
 [[nodiscard]] BackendAvailability GetCompiledBackends() noexcept;
 
-/// Start the single explicit device and its frame target on the main thread.
+/// Start an explicit device and its frame target on the main thread.
 /// @pre Both outputs are null; the borrowed Platform window/canvas outlives DestroyDevice.
 /// @return Ready/Pending publishes both handles and requires DestroyDevice, including
 /// subsequent failure/loss. Admission or synchronous startup failure preserves null outputs.
-/// Duplicate creation or an existing facade session returns InvalidState without changing it.
+/// An occupied output, a facade session started with Start or Initialize, or native
+/// interop teardown still pending returns InvalidState without changing them. A target
+/// that a live surface of any device already borrows returns InvalidDescription.
 /// Descriptions are copied; backend artifact inputs continue to use their existing contracts.
+/// @note Metal hosts up to MAX_DEVICE_OWNERS concurrent owners (R14c); each may select
+/// its own catalog adapter. When they are all live, CreateDevice returns
+/// CapacityExceeded. Vulkan, Direct3D 12 and the browser backends host one owner in
+/// this release: a second CreateDevice returns InvalidState while the first lives.
+/// Device-less facade calls (Start, BeginFrame(), CreateShader without a device, ...)
+/// address the owner in the first slot, which is the device created while no other
+/// device was live, so a single-device program behaves as before.
 /// @param application Startup application metadata, consumed during the call.
 /// @param window Borrowed Platform target; must outlive the owned device.
 /// @param description Copied backend/workload/limit admission request.
-/// @param device Null output receiving the single owned lifecycle record on Ready/Pending.
-/// @param surface Null output receiving the target borrowed from that owned session.
-/// @param failure Optional synchronous-startup diagnostic output, written only when startup
-/// fails; never retained. Other return paths preserve this output.
+/// @param outDevice Null output receiving the owned lifecycle record on Ready/Pending.
+/// @param outSurface Null output receiving the target borrowed from that owned session.
+/// @param failureOrNull Optional synchronous-startup diagnostic output, written only when
+/// startup fails; never retained. Other return paths preserve this output.
 [[nodiscard]] DeviceStatus CreateDevice(const ApplicationInfo& application,
                                         const WindowInfo& window,
                                         const DeviceDescription& description,
-                                        DeviceHandle& device,
-                                        SurfaceHandle& surface,
-                                        StartupInfo* failure = nullptr) noexcept;
+                                        DeviceHandle& outDevice,
+                                        SurfaceHandle& outSurface,
+                                        StartupInfo* failureOrNull = nullptr) noexcept;
 
 /// Poll an owned startup/loss record without waiting. InvalidHandle preserves info.
 /// Ready/Pending/Failed/DeviceLost writes the snapshot; Failed/Lost still require destruction.
@@ -253,7 +271,8 @@ struct DeviceInfo final
 
 /// Cancel pending startup or destroy a ready/failed/lost session; invalidates callback tokens
 /// before backend teardown. Clears device on success; borrowed surface copies become stale.
-/// InvalidHandle preserves device and cannot destroy another owner's session. Never waits for
+/// InvalidHandle preserves device and cannot destroy another owner's session. Other owners'
+/// resources, frames and completion state are unaffected. Never waits for
 /// browser callbacks. Native interop leases defer physical teardown until foreign
 /// consumers complete; new device creation rejects InvalidState until all pins retire.
 [[nodiscard]] DeviceStatus DestroyDevice(DeviceHandle& device) noexcept;
@@ -286,7 +305,7 @@ SetFrameTarget(DeviceHandle device, SurfaceHandle surface, const FrameTarget& ta
 /// @param outSurface Null output; written only on Ready.
 /// @return Ready on success; InvalidHandle for a stale/foreign device; InvalidState for a
 /// non-null output or an open frame; InvalidDescription for an invalid window or one whose
-/// target another surface already borrows; Unsupported when the backend hosts only its
+/// target another surface, of this or another device, already borrows; Unsupported when the backend hosts only its
 /// primary surface (WebGL 2 and an imported Vulkan device in this release), the
 /// window system cannot share the primary color format (Metal, Direct3D 12), or differs
 /// from the primary's window system (Vulkan); CapacityExceeded when the device hosts its

@@ -79,10 +79,22 @@ struct PipelineLease final : LifetimeRecord
     /// The request joined a native pipeline an earlier request had already queued or created.
     bool IsShared = false;
 };
-StorageTable<BatchRecord> gBatches;
-TransferRecord gUploads[LIFETIME_TRANSFERS];
-TransferRecord gReadbacks[LIFETIME_TRANSFERS];
-StorageTable<PipelineLease> gPipelineLeases;
+/// Batch, transfer and pipeline-lease records of one owner slot (R14c).
+struct LifetimeState final
+{
+    StorageTable<BatchRecord> Batches;
+    TransferRecord Uploads[LIFETIME_TRANSFERS];
+    TransferRecord Readbacks[LIFETIME_TRANSFERS];
+    StorageTable<PipelineLease> PipelineLeases;
+};
+StaticArray<LifetimeState, MAX_DEVICE_OWNERS> gLifetimeStates{};
+/// The lifetime records of the bound owner slot.
+LifetimeState& GetLifetimeState() noexcept
+{
+    return gLifetimeStates[GetBoundOwnerSlot()];
+}
+// Transfer scratch is shared by every owner: an operation fills it and the backend copies it
+// into its own staging before returning to the owner thread, so no owner's bytes outlive the call.
 alignas(16) uint8 gReadbackScratch[LIFETIME_TRANSFER_BYTES]{};
 alignas(16) uint8 gUploadBytes[LIFETIME_TRANSFERS][LIFETIME_TRANSFER_BYTES]{};
 
@@ -335,13 +347,13 @@ void PollTransfers() noexcept
         for (usize direction = 0; direction < 2; ++direction)
         {
             const bool readback = direction != 0;
-            auto& record = readback ? gReadbacks[i] : gUploads[i];
+            TransferRecord& record = readback ? GetLifetimeState().Readbacks[i] : GetLifetimeState().Uploads[i];
             if (record.Owner == 0)
             {
                 continue;
             }
             const auto status = backend::LifetimePollTransfer(readback, i);
-            if (GetStartup().State != StartupState::Ready)
+            if (internal::GetStartup().State != StartupState::Ready)
             {
                 return; // completion-observed loss can reset all registries.
             }
@@ -398,19 +410,19 @@ namespace internal
 {
 void ResetLifetimeRecords() noexcept
 {
-    for (auto& batch : gBatches)
+    for (BatchRecord& batch : GetLifetimeState().Batches)
     {
         ResetLifetime(batch);
     }
-    for (auto& record : gUploads)
+    for (TransferRecord& record : GetLifetimeState().Uploads)
     {
         ResetLifetime(record);
     }
-    for (auto& record : gReadbacks)
+    for (TransferRecord& record : GetLifetimeState().Readbacks)
     {
         ResetLifetime(record);
     }
-    for (auto& record : gPipelineLeases)
+    for (PipelineLease& record : GetLifetimeState().PipelineLeases)
     {
         ResetLifetime(record);
     }
@@ -443,12 +455,12 @@ RasterStatus BeginCommands(DeviceHandle device, CommandBatch& output) noexcept
         return RasterStatus::InvalidState;
     }
     usize slot = 0;
-    const auto reservation = ReserveLifetime(gBatches, slot, CurrentStorageLimits().Batches);
+    const RasterStatus reservation = ReserveLifetime(GetLifetimeState().Batches, slot, CurrentStorageLimits().Batches);
     if (reservation != RasterStatus::Ready)
     {
         return reservation;
     }
-    auto& record = gBatches[slot];
+    BatchRecord& record = GetLifetimeState().Batches[slot];
     record.Owner = DeviceOwner();
     record.Published = true;
     LifetimeAccess::Set(output, {DeviceOwner(), slot, record.Generation});
@@ -461,7 +473,7 @@ RasterStatus RecordDraw(DeviceHandle device, CommandBatch batch, const RasterDra
     {
         return admission;
     }
-    auto* record = ResolveLifetime(gBatches, batch);
+    BatchRecord* record = ResolveLifetime(GetLifetimeState().Batches, batch);
     if (record == nullptr)
     {
         return RasterStatus::InvalidHandle;
@@ -495,7 +507,7 @@ RasterStatus FinishCommands(DeviceHandle device, CommandBatch batch) noexcept
     {
         return admission;
     }
-    auto* record = ResolveLifetime(gBatches, batch);
+    BatchRecord* record = ResolveLifetime(GetLifetimeState().Batches, batch);
     if (record == nullptr)
     {
         return RasterStatus::InvalidHandle;
@@ -514,7 +526,7 @@ RasterStatus DiscardCommands(DeviceHandle device, CommandBatch& batch) noexcept
     {
         return admission;
     }
-    auto* record = ResolveLifetime(gBatches, batch);
+    BatchRecord* record = ResolveLifetime(GetLifetimeState().Batches, batch);
     if (record == nullptr)
     {
         return RasterStatus::InvalidHandle;
@@ -539,7 +551,8 @@ RasterStatus GetStatus(DeviceHandle device, SubmissionToken completion) noexcept
         return admission;
     }
     const auto ordinal = LifetimeAccess::Ordinal(completion);
-    if (ordinal == 0 || ordinal < gFirstAcceptedSubmission || ordinal > gLastAcceptedSubmission)
+    if (ordinal == 0 || ordinal < GetRasterState().FirstAcceptedSubmission ||
+        ordinal > GetRasterState().LastAcceptedSubmission)
     {
         return RasterStatus::InvalidHandle;
     }
@@ -573,7 +586,7 @@ RasterStatus EndFrame(DeviceHandle device, SubmissionToken& completion) noexcept
     {
         return reservation;
     }
-    const auto ordinal = gFrameSubmission;
+    const uint64 ordinal = GetRasterState().FrameSubmission;
     const auto ended = EndFrame(device);
     if (ended == DeviceStatus::Ready || ended == DeviceStatus::Skipped)
     {
@@ -596,7 +609,7 @@ SubmitCommands(DeviceHandle device, SurfaceHandle surface, CommandBatch& batch, 
     {
         return admission;
     }
-    auto* record = ResolveLifetime(gBatches, batch);
+    BatchRecord* record = ResolveLifetime(GetLifetimeState().Batches, batch);
     if (record == nullptr)
     {
         return RasterStatus::InvalidHandle;
@@ -626,7 +639,7 @@ SubmitCommands(DeviceHandle device, SurfaceHandle surface, CommandBatch& batch, 
             return compatible;
         }
     }
-    if (gSubmissions.Next == 0)
+    if (GetRasterState().Submissions.Next == 0)
     {
         return RasterStatus::IdentityExhausted;
     }
@@ -691,7 +704,7 @@ RasterStatus PollLifetime(DeviceHandle device) noexcept
     {
         return current;
     }
-    for (usize slot = 0; slot < gRecords[static_cast<usize>(RasterKind::Pipeline)].GetSize(); ++slot)
+    for (usize slot = 0; slot < GetRasterState().Records[static_cast<usize>(RasterKind::Pipeline)].GetSize(); ++slot)
     {
         auto& pipeline = At(RasterKind::Pipeline, slot);
         if (pipeline.QueuedPipeline == false)
@@ -730,13 +743,14 @@ RequestPipeline(DeviceHandle device, const RasterPipelineDescription& descriptio
     }
     CanonicalizePipeline(info);
     usize leaseSlot = 0;
-    const auto reservation = ReserveLifetime(gPipelineLeases, leaseSlot, CurrentStorageLimits().ResourcesPerKind);
+    const RasterStatus reservation =
+        ReserveLifetime(GetLifetimeState().PipelineLeases, leaseSlot, CurrentStorageLimits().ResourcesPerKind);
     if (reservation != RasterStatus::Ready)
     {
         return reservation;
     }
     usize pipelineSlot = RASTER_INVALID;
-    for (usize i = 0; i < gRecords[static_cast<usize>(RasterKind::Pipeline)].GetSize(); ++i)
+    for (usize i = 0; i < GetRasterState().Records[static_cast<usize>(RasterKind::Pipeline)].GetSize(); ++i)
     {
         const auto& record = At(RasterKind::Pipeline, i);
         if (record.Owner == DeviceOwner() && record.Published == true && record.ServiceOwned == true &&
@@ -750,7 +764,7 @@ RequestPipeline(DeviceHandle device, const RasterPipelineDescription& descriptio
     const bool isShared = pipelineSlot != RASTER_INVALID;
     if (isShared == true)
     {
-        ++gPipelinePreparation.SharedRequests;
+        ++GetRasterState().PipelinePreparation.SharedRequests;
     }
     else
     {
@@ -768,7 +782,7 @@ RequestPipeline(DeviceHandle device, const RasterPipelineDescription& descriptio
         record.Preparation.IsRequested = true;
         Dependencies(record, RasterKind::Pipeline, true);
     }
-    auto& lease = gPipelineLeases[leaseSlot];
+    PipelineLease& lease = GetLifetimeState().PipelineLeases[leaseSlot];
     lease.Owner = DeviceOwner();
     lease.Published = true;
     lease.Pipeline = pipelineSlot;
@@ -784,7 +798,7 @@ RasterStatus GetStatus(DeviceHandle device, PipelineRequest request) noexcept
     {
         return admission;
     }
-    const auto* lease = ResolveLifetime(gPipelineLeases, request);
+    const PipelineLease* lease = ResolveLifetime(GetLifetimeState().PipelineLeases, request);
     if (lease == nullptr)
     {
         return RasterStatus::InvalidHandle;
@@ -809,14 +823,14 @@ RasterStatus GetRequestedPipeline(DeviceHandle device, PipelineRequest request, 
     if (status != RasterStatus::Ready)
     {
         // Inside a frame no creation can launch, so a still-preparing pipeline misses this draw.
-        const PipelineLease* pendingLeaseOrNull = ResolveLifetime(gPipelineLeases, request);
+        const PipelineLease* pendingLeaseOrNull = ResolveLifetime(GetLifetimeState().PipelineLeases, request);
         if (status == RasterStatus::Pending && pendingLeaseOrNull != nullptr && FrameOpen() == true)
         {
             NoteFirstUseMiss(At(RasterKind::Pipeline, pendingLeaseOrNull->Pipeline));
         }
         return status;
     }
-    const auto* lease = ResolveLifetime(gPipelineLeases, request);
+    const PipelineLease* lease = ResolveLifetime(GetLifetimeState().PipelineLeases, request);
     if (lease == nullptr)
     {
         return RasterStatus::InvalidHandle;
@@ -832,7 +846,7 @@ RasterStatus Release(DeviceHandle device, PipelineRequest& request) noexcept
     {
         return admission;
     }
-    auto* lease = ResolveLifetime(gPipelineLeases, request);
+    PipelineLease* lease = ResolveLifetime(GetLifetimeState().PipelineLeases, request);
     if (lease == nullptr)
     {
         return RasterStatus::InvalidHandle;
@@ -841,7 +855,7 @@ RasterStatus Release(DeviceHandle device, PipelineRequest& request) noexcept
     ResetLifetime(*lease);
     request = {};
     bool owned = false;
-    for (const auto& other : gPipelineLeases)
+    for (const PipelineLease& other : GetLifetimeState().PipelineLeases)
     {
         owned = owned || (other.Owner == DeviceOwner() && other.Published && other.Pipeline == slot);
     }
@@ -865,7 +879,7 @@ namespace
 uint32 CountPipelineRequests(usize pipelineSlot) noexcept
 {
     uint32 count = 0;
-    for (const PipelineLease& lease : gPipelineLeases)
+    for (const PipelineLease& lease : GetLifetimeState().PipelineLeases)
     {
         if (lease.Owner == DeviceOwner() && lease.Published == true && lease.Pipeline == pipelineSlot)
         {
@@ -902,7 +916,7 @@ GetPipelinePreparation(DeviceHandle device, PipelineRequest request, PipelinePre
     {
         return admission;
     }
-    const PipelineLease* leaseOrNull = ResolveLifetime(gPipelineLeases, request);
+    const PipelineLease* leaseOrNull = ResolveLifetime(GetLifetimeState().PipelineLeases, request);
     if (leaseOrNull == nullptr)
     {
         return RasterStatus::InvalidHandle;
@@ -922,8 +936,8 @@ RasterStatus GetPipelinePreparationReport(DeviceHandle device, PipelinePreparati
         return admission;
     }
     PipelinePreparationReport report;
-    report.SelectedBackend = GetStartup().SelectedBackend;
-    for (const Record& record : gRecords[static_cast<usize>(RasterKind::Pipeline)])
+    report.SelectedBackend = internal::GetStartup().SelectedBackend;
+    for (const Record& record : GetRasterState().Records[static_cast<usize>(RasterKind::Pipeline)])
     {
         if (record.Owner != DeviceOwner())
         {
@@ -938,11 +952,12 @@ RasterStatus GetPipelinePreparationReport(DeviceHandle device, PipelinePreparati
             ++report.PreparingPipelines;
         }
     }
-    report.NativeCreations = gPipelinePreparation.NativeCreations;
-    report.SharedRequests = gPipelinePreparation.SharedRequests;
-    report.FirstUseMisses = gPipelinePreparation.FirstUseMisses;
-    report.FailedPreparations = gPipelinePreparation.FailedPreparations;
-    report.PreparationSeconds = time::ToSeconds(time::Duration{gPipelinePreparation.PreparationNanoseconds});
+    report.NativeCreations = GetRasterState().PipelinePreparation.NativeCreations;
+    report.SharedRequests = GetRasterState().PipelinePreparation.SharedRequests;
+    report.FirstUseMisses = GetRasterState().PipelinePreparation.FirstUseMisses;
+    report.FailedPreparations = GetRasterState().PipelinePreparation.FailedPreparations;
+    report.PreparationSeconds =
+        time::ToSeconds(time::Duration{GetRasterState().PipelinePreparation.PreparationNanoseconds});
     outReport = report;
     return RasterStatus::Ready;
 }
@@ -983,7 +998,7 @@ RasterStatus RequestBufferUpload(DeviceHandle device,
         return polled;
     }
     usize slot = 0;
-    const auto reserved = ReserveLifetime(gUploads, slot, [](usize candidate) noexcept {
+    const RasterStatus reserved = ReserveLifetime(GetLifetimeState().Uploads, slot, [](usize candidate) noexcept {
         return backend::LifetimeTransferAvailable(false, candidate);
     });
     if (reserved != RasterStatus::Ready)
@@ -1021,7 +1036,7 @@ RasterStatus RequestBufferUpload(DeviceHandle device,
     {
         return created;
     }
-    auto& request = gUploads[slot];
+    TransferRecord& request = GetLifetimeState().Uploads[slot];
     request.Owner = DeviceOwner();
     request.Published = true;
     request.Source = RasterAccess::Slot(buffer);
@@ -1069,7 +1084,7 @@ RasterStatus RequestBufferReadback(DeviceHandle device,
         return polled;
     }
     usize slot = 0;
-    const auto reserved = ReserveLifetime(gReadbacks, slot, [](usize candidate) noexcept {
+    const RasterStatus reserved = ReserveLifetime(GetLifetimeState().Readbacks, slot, [](usize candidate) noexcept {
         return backend::LifetimeTransferAvailable(true, candidate);
     });
     if (reserved != RasterStatus::Ready)
@@ -1082,11 +1097,11 @@ RasterStatus RequestBufferReadback(DeviceHandle device,
     {
         return started;
     }
-    if (GetStartup().State != StartupState::Ready)
+    if (internal::GetStartup().State != StartupState::Ready)
     {
         return Admission(device);
     }
-    auto& request = gReadbacks[slot];
+    TransferRecord& request = GetLifetimeState().Readbacks[slot];
     request.Owner = DeviceOwner();
     request.Published = true;
     request.Source = RasterAccess::Slot(source);
@@ -1103,7 +1118,7 @@ RasterStatus GetStatus(DeviceHandle device, UploadTicket ticket) noexcept
     {
         return admission;
     }
-    auto* record = ResolveLifetime(gUploads, ticket);
+    TransferRecord* record = ResolveLifetime(GetLifetimeState().Uploads, ticket);
     if (record == nullptr)
     {
         return RasterStatus::InvalidHandle;
@@ -1125,7 +1140,7 @@ RasterStatus GetStatus(DeviceHandle device, ReadbackTicket ticket) noexcept
     {
         return admission;
     }
-    auto* record = ResolveLifetime(gReadbacks, ticket);
+    TransferRecord* record = ResolveLifetime(GetLifetimeState().Readbacks, ticket);
     if (record == nullptr)
     {
         return RasterStatus::InvalidHandle;
@@ -1156,7 +1171,7 @@ RasterStatus TakeUploadedBuffer(DeviceHandle device, UploadTicket& ticket, Buffe
     {
         return status;
     }
-    auto* record = ResolveLifetime(gUploads, ticket);
+    TransferRecord* record = ResolveLifetime(GetLifetimeState().Uploads, ticket);
     if (record == nullptr)
     {
         return RasterStatus::InvalidHandle;
@@ -1174,7 +1189,7 @@ RasterStatus CopyReadback(DeviceHandle device, ReadbackTicket ticket, uint8* out
     {
         return admission;
     }
-    const auto* record = ResolveLifetime(gReadbacks, ticket);
+    const TransferRecord* record = ResolveLifetime(GetLifetimeState().Readbacks, ticket);
     if (record == nullptr)
     {
         return RasterStatus::InvalidHandle;
@@ -1221,7 +1236,7 @@ RasterStatus Release(DeviceHandle device, UploadTicket& ticket) noexcept
     {
         return admission;
     }
-    auto* record = ResolveLifetime(gUploads, ticket);
+    TransferRecord* record = ResolveLifetime(GetLifetimeState().Uploads, ticket);
     if (record == nullptr)
     {
         return RasterStatus::InvalidHandle;
@@ -1244,7 +1259,7 @@ RasterStatus Release(DeviceHandle device, ReadbackTicket& ticket) noexcept
     {
         return admission;
     }
-    auto* record = ResolveLifetime(gReadbacks, ticket);
+    TransferRecord* record = ResolveLifetime(GetLifetimeState().Readbacks, ticket);
     if (record == nullptr)
     {
         return RasterStatus::InvalidHandle;
