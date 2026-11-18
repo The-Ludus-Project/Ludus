@@ -432,7 +432,7 @@ class WindowTests(unittest.TestCase):
                  and widget.cget("text") == "Initialize").invoke()
 
         # Shorter than the selector, as on a 1280x720 display or a laptop with the Dock shown.
-        with patch.object(init_theme, "usable_screen_height", return_value=420):
+        with patch.object(init_theme, "usable_screen_area", return_value=(0, 420)):
             self.assertIsNotNone(self.select(accept, engine.NATIVE_PRESET_PREFIX + "-development"))
 
     def test_denoiser_checkbox_follows_host_support_and_opts_out(self):

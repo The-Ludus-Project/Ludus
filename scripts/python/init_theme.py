@@ -55,7 +55,8 @@ Icons
     the display scale because Tk's own indicator is an X on some platforms.
 
 Size
-    A window is never taller than its screen's usable height; the option
+    A window is never taller than its screen's usable height (on macOS the
+    area the menu bar and Dock leave free, read from AppKit); the option
     selector scrolls its options so the header and the Cancel and Initialize
     buttons stay on screen.
 """
@@ -1007,19 +1008,78 @@ class ScrollArea:
             self.canvas.yview_moveto(-(-(bottom - self.canvas.winfo_height()) // step) * step / total)
 
 
-def usable_screen_height(window, scale: float = 1.0) -> int:
-    """Height a window's content may take on its screen, leaving room for the title bar and system bars.
+class _Point(ctypes.Structure):
+    _fields_ = [("x", ctypes.c_double), ("y", ctypes.c_double)]
 
-    On macOS Tk's maximum size already excludes the menu bar and the Dock; elsewhere the screen fraction keeps
-    a taskbar clear.
+
+class _Size(ctypes.Structure):
+    _fields_ = [("width", ctypes.c_double), ("height", ctypes.c_double)]
+
+
+class _Rectangle(ctypes.Structure):
+    _fields_ = [("origin", _Point), ("size", _Size)]
+
+
+def macos_visible_frame() -> tuple[float, float] | None:
+    """Top and height, in points from the top of the main screen, of the area the menu bar and Dock leave free.
+
+    Read from ``[[NSScreen mainScreen] visibleFrame]`` through the Objective-C runtime, without PyObjC. Tk's
+    screen height and maximum window size both include the menu bar and the Dock, so a window sized or centred
+    from them can sit behind the Dock. Returns None when the frame cannot be read.
     """
+    try:
+        library = ctypes.util.find_library("objc")
+        if not library:
+            return None
+        objc = ctypes.cdll.LoadLibrary(library)
+        ctypes.cdll.LoadLibrary("/System/Library/Frameworks/AppKit.framework/AppKit")
+        objc.objc_getClass.restype = ctypes.c_void_p
+        objc.objc_getClass.argtypes = [ctypes.c_char_p]
+        objc.sel_registerName.restype = ctypes.c_void_p
+        objc.sel_registerName.argtypes = [ctypes.c_char_p]
+        send = ctypes.CFUNCTYPE(ctypes.c_void_p, ctypes.c_void_p, ctypes.c_void_p)(
+            ctypes.cast(objc.objc_msgSend, ctypes.c_void_p).value)
+        # A 32-byte struct comes back in registers on arm64 and through memory (the _stret entry) on x86-64.
+        rectangle_entry = objc.objc_msgSend if platform.machine() == "arm64" else objc.objc_msgSend_stret
+        send_rectangle = ctypes.CFUNCTYPE(_Rectangle, ctypes.c_void_p, ctypes.c_void_p)(
+            ctypes.cast(rectangle_entry, ctypes.c_void_p).value)
+        screen = send(objc.objc_getClass(b"NSScreen"), objc.sel_registerName(b"mainScreen"))
+        if not screen:
+            return None
+        whole = send_rectangle(screen, objc.sel_registerName(b"frame"))
+        visible = send_rectangle(screen, objc.sel_registerName(b"visibleFrame"))
+    except Exception:  # noqa: BLE001 - no AppKit, or an unexpected runtime.
+        return None
+    if visible.size.height <= 0 or whole.size.height <= 0:
+        return None
+    # AppKit measures up from the bottom of the screen; Tk measures down from the top.
+    top = whole.size.height - (visible.origin.y - whole.origin.y + visible.size.height)
+    return max(0.0, top), visible.size.height
+
+
+def usable_screen_area(window, scale: float = 1.0, *, system: str | None = None) -> tuple[int, int]:
+    """Top and height of the screen area a window may take, with room left for its title bar.
+
+    On macOS this is the area the menu bar and Dock leave free. Elsewhere it is Tk's maximum window size, at most
+    a fraction of the screen so a taskbar stays clear.
+    """
+    system = system or platform.system()
+    frame = int(round(WINDOW_FRAME_ALLOWANCE_POINTS * scale))
+    visible = macos_visible_frame() if system == "Darwin" else None
+    if visible is not None:
+        top, height = visible
+        return int(top), max(1, int(height) - frame)
     screen = window.winfo_screenheight()
     try:
         maximum = int(window.wm_maxsize()[1])
     except Exception:  # noqa: BLE001 - a Tk without a window manager answer.
         maximum = screen
-    frame = int(round(WINDOW_FRAME_ALLOWANCE_POINTS * scale))
-    return max(1, int(min(maximum, screen * USABLE_SCREEN_FRACTION)) - frame)
+    return 0, max(1, int(min(maximum, screen * USABLE_SCREEN_FRACTION)) - frame)
+
+
+def usable_screen_height(window, scale: float = 1.0) -> int:
+    """Height a window's content may take on its screen; see ``usable_screen_area``."""
+    return usable_screen_area(window, scale)[1]
 
 
 def fit_to_screen(window, scale: float = 1.0) -> None:
@@ -1032,11 +1092,12 @@ def fit_to_screen(window, scale: float = 1.0) -> None:
 
 
 def centre_window(window, scale: float = 1.0) -> None:
-    """Place ``window`` in the middle of its screen at its requested size, or the screen's usable height."""
+    """Centre ``window`` in the usable screen area at its requested size, or that area's height."""
     window.update_idletasks()
-    width, height = window.winfo_reqwidth(), min(window.winfo_reqheight(), usable_screen_height(window, scale))
+    top, usable = usable_screen_area(window, scale)
+    width, height = window.winfo_reqwidth(), min(window.winfo_reqheight(), usable)
     x = max(0, (window.winfo_screenwidth() - width) // 2)
-    y = max(0, (window.winfo_screenheight() - height) // 2)
+    y = top + max(0, (usable - height) // 2)
     window.geometry(f"+{x}+{y}")
 
 
