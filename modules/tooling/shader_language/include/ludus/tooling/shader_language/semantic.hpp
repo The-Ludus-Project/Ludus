@@ -184,6 +184,11 @@ struct Symbol final
     bool IsMutating = false;
     /// True for a `groupshared` variable.
     bool IsGroupshared = false;
+    /// True for a `groupshared` variable or `RWStructuredBuffer` binding declared in LUSL that an
+    /// `Interlocked` call updates. Lowering declares its storage `Atomic<T>`, so every target,
+    /// WGSL included, accepts the atomic operations; its other reads and writes become loads and
+    /// stores.
+    bool IsAtomic = false;
     /// True for a parameter declared `uniform`: every invocation that makes a call passes the same
     /// value, so the body may decide on it before a derivative operation.
     bool IsUniform = false;
@@ -279,8 +284,12 @@ enum class CallKind : foundation::uint8
     /// An explicit conversion of one value, such as `float32(count)` or `Mode(word)`.
     Conversion,
     /// An operation of a resource, such as `image.Sample(imageSampler, uv)`; lowered to the Slang
-    /// method of that name.
+    /// method of that name, or for `GetDimensions()` to a generated helper that returns the size.
     ResourceMethod,
+    /// An `Interlocked` operation, such as `InterlockedAdd(counters[i], 1, out original)`;
+    /// SemanticModel::NodeSymbols names the intrinsic. The first argument is the destination and an
+    /// `out` last argument receives the original value.
+    Atomic,
 };
 
 /// The value of an integer or boolean constant expression, as SemanticModel records it per node.

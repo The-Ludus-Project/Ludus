@@ -390,14 +390,33 @@ void RunScenario(const DeviceOwner& owner, bool isTrial, ScenarioResult& outResu
         REQUIRE(rhi::GetGpuPassTimings(device, outResult.Timings) == rhi::RasterStatus::Ready);
     }
 
+    // The first graph has executed and consumed its graph handle. Drop the remaining binding leases
+    // before updating the buffer between submissions.
+    for (rhi::ComputeDispatch& dispatch : advances)
+    {
+        REQUIRE(rhi::Destroy(device, dispatch.Bindings) == rhi::RasterStatus::Ready);
+    }
+    REQUIRE(rhi::Destroy(device, prepare.Bindings) == rhi::RasterStatus::Ready);
+
     // A direct update between submissions makes any first-graph snapshot stale.
     const uint32 zero = 0;
     UpdateBuffer(device, counters, stride, {reinterpret_cast<const uint8*>(&zero), sizeof(zero)});
+    const rhi::RasterBindingResource secondBinding{advanceShader.Bindings[0].Binding, counters, stride, sizeof(uint32)};
+    rhi::ComputeDispatch secondAdvance = MakeDispatch(device, advanceShader, {&secondBinding, 1});
     rhi::OrderedGraph second;
     REQUIRE(rhi::CreateOrderedGraph(device, second) == rhi::RasterStatus::Ready);
-    REQUIRE(rhi::ImportGraphBuffer(device, second, counters, counterVersion) == rhi::RasterStatus::Ready);
-    AddAdvancePass(device, second, "advance updated counter 1", counterVersion, advances[1], stride, sizeof(uint32));
-    REQUIRE(rhi::AddGraphRoot(device, second, counterVersion, rhi::GraphRoot::Readback) == rhi::RasterStatus::Ready);
+    // Each graph imports into a null version; counterVersion still names the first graph's resource.
+    rhi::GraphVersion secondCounterVersion;
+    REQUIRE(rhi::ImportGraphBuffer(device, second, counters, secondCounterVersion) == rhi::RasterStatus::Ready);
+    AddAdvancePass(device,
+                   second,
+                   "advance updated counter 1",
+                   secondCounterVersion,
+                   secondAdvance,
+                   stride,
+                   sizeof(uint32));
+    REQUIRE(rhi::AddGraphRoot(device, second, secondCounterVersion, rhi::GraphRoot::Readback) ==
+            rhi::RasterStatus::Ready);
     REQUIRE(rhi::CompileOrderedGraph(device, second, report) == rhi::RasterStatus::Ready);
     rhi::SubmissionToken secondCompletion;
     REQUIRE(rhi::ExecuteOrderedGraph(device, owner.Surface, second, secondCompletion) == rhi::RasterStatus::Ready);
@@ -547,10 +566,10 @@ void RunScenario(const DeviceOwner& owner, bool isTrial, ScenarioResult& outResu
     for (rhi::ComputeDispatch& dispatch : advances)
     {
         REQUIRE(rhi::Destroy(device, dispatch.Pipeline) == rhi::RasterStatus::Ready);
-        REQUIRE(rhi::Destroy(device, dispatch.Bindings) == rhi::RasterStatus::Ready);
     }
     REQUIRE(rhi::Destroy(device, prepare.Pipeline) == rhi::RasterStatus::Ready);
-    REQUIRE(rhi::Destroy(device, prepare.Bindings) == rhi::RasterStatus::Ready);
+    REQUIRE(rhi::Destroy(device, secondAdvance.Pipeline) == rhi::RasterStatus::Ready);
+    REQUIRE(rhi::Destroy(device, secondAdvance.Bindings) == rhi::RasterStatus::Ready);
 }
 } // namespace
 

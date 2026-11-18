@@ -1,5 +1,7 @@
 #include "internal/world_celestial_light.h"
 
+#include "internal/world_earth_time_zone.h"
+
 #include <ludus/foundation/base/types.h>
 #include <ludus/gameplay/world/celestial_transform.hpp>
 
@@ -125,6 +127,15 @@ QJsonArray MakeWorldCelestialProperties()
             .Minimum = -MAX_EARTH_CELESTIAL_DAYS,
             .Maximum = MAX_EARTH_CELESTIAL_DAYS,
         }),
+        QJsonObject{
+            {QStringLiteral("id"), WORLD_CELESTIAL_TIME_ZONE},
+            {QStringLiteral("label"), QStringLiteral("Time Zone")},
+            {QStringLiteral("type"), QStringLiteral("string")},
+            {QStringLiteral("default"), WORLD_EARTH_UTC_TIME_ZONE},
+            {QStringLiteral("help"),
+             QStringLiteral("Clock that shows the Earth date and time. Choosing a different zone keeps the clock "
+                            "reading, so noon stays noon. The World stores the instant in UTC.")},
+            {QStringLiteral("unit"), QString()}},
         MakeCelestialNumberProperty(
         {
             .Id = WORLD_CELESTIAL_LATITUDE,
@@ -226,7 +237,8 @@ WorldCelestialFieldGroup GetWorldCelestialFieldGroup(QStringView property)
     {
         return WorldCelestialFieldGroup::Observer;
     }
-    if (property == WORLD_CELESTIAL_TIME || property == WORLD_CELESTIAL_MANUAL_PHOTOMETRY)
+    if (property == WORLD_CELESTIAL_TIME || property == WORLD_CELESTIAL_TIME_ZONE ||
+        property == WORLD_CELESTIAL_MANUAL_PHOTOMETRY)
     {
         return WorldCelestialFieldGroup::Earth;
     }
@@ -253,12 +265,14 @@ bool IsWorldEarthLight(const QJsonObject& light)
 
 bool AreWorldEarthObserversEqual(const QJsonObject& first, const QJsonObject& second)
 {
-    for (const QLatin1StringView property : {WORLD_CELESTIAL_TIME, WORLD_CELESTIAL_LATITUDE, WORLD_CELESTIAL_LONGITUDE})
+    for (const QLatin1StringView property : WORLD_EARTH_OBSERVER_PROPERTIES)
     {
+        const QJsonValue omitted =
+            property == WORLD_CELESTIAL_TIME_ZONE ? QJsonValue(WORLD_EARTH_UTC_TIME_ZONE) : QJsonValue(0);
         const QJsonValue firstValue = first.value(property);
         const QJsonValue secondValue = second.value(property);
-        if ((firstValue.isUndefined() == true ? QJsonValue(0) : firstValue) !=
-            (secondValue.isUndefined() == true ? QJsonValue(0) : secondValue))
+        if ((firstValue.isUndefined() == true ? omitted : firstValue) !=
+            (secondValue.isUndefined() == true ? omitted : secondValue))
         {
             return false;
         }
@@ -268,7 +282,7 @@ bool AreWorldEarthObserversEqual(const QJsonObject& first, const QJsonObject& se
 
 void CopyWorldEarthObserver(const QJsonObject& source, QJsonObject& inoutLight)
 {
-    for (const QLatin1StringView property : {WORLD_CELESTIAL_TIME, WORLD_CELESTIAL_LATITUDE, WORLD_CELESTIAL_LONGITUDE})
+    for (const QLatin1StringView property : WORLD_EARTH_OBSERVER_PROPERTIES)
     {
         const QJsonValue value = source.value(property);
         if (value.isUndefined() == true)
@@ -280,6 +294,160 @@ void CopyWorldEarthObserver(const QJsonObject& source, QJsonObject& inoutLight)
             inoutLight.insert(property, value);
         }
     }
+}
+
+namespace
+{
+QJsonObject GetEntityLight(const QJsonObject& entity)
+{
+    return entity.value(QStringLiteral("components")).toObject().value(QStringLiteral("light")).toObject();
+}
+
+void RemoveWorldEarthObserver(QJsonObject& inoutEntity)
+{
+    QJsonObject components = inoutEntity.value(QStringLiteral("components")).toObject();
+    QJsonObject light = components.value(QStringLiteral("light")).toObject();
+    for (const QLatin1StringView property : WORLD_EARTH_OBSERVER_PROPERTIES)
+    {
+        light.remove(property);
+    }
+    components.insert(QStringLiteral("light"), light);
+    inoutEntity.insert(QStringLiteral("components"), components);
+}
+} // namespace
+
+bool IsWorldCustomOrbitLight(const QJsonObject& light)
+{
+    return light.value(QStringLiteral("kind")).toString() == QStringLiteral("directional") &&
+           light.value(WORLD_CELESTIAL_ROLE).toString() == WORLD_CELESTIAL_DYNAMIC &&
+           light.value(WORLD_CELESTIAL_DRIVER).toString() == WORLD_CELESTIAL_ORBIT;
+}
+
+QJsonObject GetWorldEarthObserver(const QJsonObject& world)
+{
+    const QJsonValue shared = world.value(WORLD_EARTH_OBSERVER);
+    if (shared.isUndefined() == false)
+    {
+        return shared.toObject();
+    }
+    for (const QJsonValue entity : world.value(QStringLiteral("entities")).toArray())
+    {
+        const QJsonObject light = GetEntityLight(entity.toObject());
+        if (IsWorldEarthLight(light) == true)
+        {
+            QJsonObject observer;
+            CopyWorldEarthObserver(light, observer);
+            return observer;
+        }
+    }
+    return {};
+}
+
+// NOLINTNEXTLINE(bugprone-easily-swappable-parameters): a light component, then the World that owns it.
+QJsonObject MakeWorldLightValues(const QJsonObject& light, const QJsonObject& world)
+{
+    const bool hasSharedObserver = world.contains(WORLD_EARTH_OBSERVER);
+    if (hasSharedObserver == false && IsWorldEarthLight(light) == true)
+    {
+        return light;
+    }
+    const QJsonObject observer = GetWorldEarthObserver(world);
+    if (hasSharedObserver == false && observer.isEmpty() == true)
+    {
+        return light;
+    }
+    QJsonObject values = light;
+    if (IsWorldCustomOrbitLight(light) == true)
+    {
+        // An orbit keeps its own coordinates; only the Earth date is shared, for a later switch to Earth.
+        const QJsonValue time = observer.value(WORLD_CELESTIAL_TIME);
+        if (time.isUndefined() == false)
+        {
+            values.insert(WORLD_CELESTIAL_TIME, time);
+        }
+        return values;
+    }
+    CopyWorldEarthObserver(observer, values);
+    return values;
+}
+
+void LiftWorldEarthObserver(const QJsonObject& previousWorld, qsizetype editedIndex, QJsonObject& inoutWorld)
+{
+    QJsonArray entities = inoutWorld.value(QStringLiteral("entities")).toArray();
+    const QJsonArray previousEntities = previousWorld.value(QStringLiteral("entities")).toArray();
+    if (editedIndex < 0 || editedIndex >= entities.size() || editedIndex >= previousEntities.size())
+    {
+        return;
+    }
+    const QJsonObject light = GetEntityLight(entities[editedIndex].toObject());
+    if (IsWorldEarthLight(light) == false)
+    {
+        return;
+    }
+    const QJsonObject previousLight = GetEntityLight(previousEntities[editedIndex].toObject());
+    // Without the root member, an Earth light's own saved values are what it showed; they become the World's.
+    QJsonObject observer =
+        previousWorld.contains(WORLD_EARTH_OBSERVER) == false && IsWorldEarthLight(previousLight) == true
+            ? QJsonObject{}
+            : GetWorldEarthObserver(previousWorld);
+    const QJsonObject shown = MakeWorldLightValues(previousLight, previousWorld);
+    for (const QLatin1StringView property : WORLD_EARTH_OBSERVER_PROPERTIES)
+    {
+        const QJsonValue proposed = light.value(property);
+        if (proposed.isUndefined() == false &&
+            (observer.contains(property) == false || proposed != shown.value(property)))
+        {
+            observer.insert(property, proposed);
+        }
+    }
+    inoutWorld.insert(WORLD_EARTH_OBSERVER, observer);
+    for (qsizetype i = 0; i < entities.size(); ++i)
+    {
+        QJsonObject entity = entities[i].toObject();
+        if (IsWorldEarthLight(GetEntityLight(entity)) == true)
+        {
+            RemoveWorldEarthObserver(entity);
+            entities[i] = entity;
+        }
+    }
+    inoutWorld.insert(QStringLiteral("entities"), entities);
+}
+
+bool IsWorldEarthObserverValid(const QJsonValue& value)
+{
+    using namespace gameplay::world;
+    if (value.isObject() == false)
+    {
+        return false;
+    }
+    const QJsonObject observer = value.toObject();
+    qsizetype known = 0;
+    for (const QLatin1StringView property : WORLD_EARTH_OBSERVER_PROPERTIES)
+    {
+        const QJsonValue member = observer.value(property);
+        if (member.isUndefined() == true)
+        {
+            continue;
+        }
+        ++known;
+        if (property == WORLD_CELESTIAL_TIME_ZONE)
+        {
+            if (member.isString() == false || IsEarthTimeZoneIdValid(member.toString()) == false)
+            {
+                return false;
+            }
+            continue;
+        }
+        const float64 limit = property == WORLD_CELESTIAL_TIME       ? MAX_EARTH_CELESTIAL_DAYS
+                              : property == WORLD_CELESTIAL_LATITUDE ? MAX_CELESTIAL_LATITUDE_DEGREES
+                                                                     : MAX_CELESTIAL_LONGITUDE_DEGREES;
+        const float64 number = member.toDouble();
+        if (member.isDouble() == false || number < -limit || number > limit)
+        {
+            return false;
+        }
+    }
+    return known == observer.size();
 }
 
 bool TrySampleWorldEarthLight(const QJsonObject& light, gameplay::world::EarthCelestialLighting& outLighting)

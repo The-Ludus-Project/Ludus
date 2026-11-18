@@ -197,15 +197,47 @@ Tool and payload identity: build-info.json.
     return site
 
 
+HOST_FOLDER_HARNESS = "apps/editor/tests/browser/host_folder_harness.cpp"
+HOST_FOLDER_TEST = "tools/web-browser-tests/host_folder_fs.mjs"
+
+
+def test_host_folder(sdk: Path, web_lock: dict) -> None:
+    """Build the Qt-free host-folder harness with the pinned SDK and run its Node checks."""
+    env = sdk_environment(sdk, web_lock)
+    output = ROOT / "out/editor-host-folder-test"
+    output.mkdir(parents=True, exist_ok=True)
+    harness = output / "host_folder_harness.mjs"
+    run([sdk / "upstream/emscripten/em++", "-std=c++23", "-O1", "-fno-exceptions", "-Werror",
+         f"-I{ROOT / 'modules/foundation/base/include'}", ROOT / HOST_FOLDER_HARNESS, "-o", harness,
+         "-sASYNCIFY", "-lembind", f"--js-library={ROOT / 'apps/editor/browser/host_folder.js'}",
+         "-sMODULARIZE", "-sEXPORT_ES6", "-sENVIRONMENT=node", "-sALLOW_MEMORY_GROWTH", "-sASSERTIONS=1",
+         "-sEXPORTED_RUNTIME_METHODS=ccall,HEAPU8", "-sEXPORTED_FUNCTIONS=_malloc,_free"], env=env)
+    node = env.get("EMSDK_NODE")
+    if not node:
+        raise ValueError("The pinned Emscripten SDK did not report its Node.js; run scripts/build-web-editor --bootstrap.")
+    run([node, ROOT / HOST_FOLDER_TEST, harness], env=env)
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--bootstrap", action="store_true", help="download pinned SDK, Qt source and Qt host tools")
     parser.add_argument("--rebuild-qt", action="store_true", help="rebuild Qt after local source modifications")
     parser.add_argument("--qt-host", type=Path, help="existing Qt host tools of the pinned Qt version")
     parser.add_argument("--check-package", action="store_true", help="verify an existing staged package without building")
+    parser.add_argument("--test-host-folder", action="store_true",
+                        help="build and run the host-folder file-system checks (needs the pinned SDK)")
     args = parser.parse_args()
     if args.check_package:
         validate_package(ROOT / "out/editor-pages")
+        return 0
+    if args.test_host_folder:
+        web_lock = json.loads((ROOT / "config/web_toolchain.json").read_text())
+        sdk = ROOT / "out/host-tools/emsdk"
+        if args.bootstrap:
+            prepare_sdk(web_lock, ROOT / "out/editor-tools")
+        if not (sdk / "upstream/emscripten/em++").is_file():
+            raise ValueError("Missing pinned Emscripten SDK; run scripts/build-web-editor --bootstrap --test-host-folder.")
+        test_host_folder(sdk, web_lock)
         return 0
     qt_lock = json.loads((ROOT / "config/editor_web_toolchain.json").read_text())
     web_lock = json.loads((ROOT / "config/web_toolchain.json").read_text())

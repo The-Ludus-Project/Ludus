@@ -6,8 +6,10 @@
 #include <ludus/content/scene_cook/best_effort_import.h>
 #include <ludus/content/scene_format/luscn.h>
 #include <ludus/foundation/base/byte_order.hpp>
+#include <ludus/foundation/containers/array.hpp>
 #include <ludus/foundation/containers/static_array.hpp>
 #include <ludus/foundation/math/scalar.hpp>
+#include <ludus/foundation/math/transform.hpp>
 #include <ludus/runtime/resources/scene.h>
 
 #include "importers/import_diagnostics.h"
@@ -24,6 +26,7 @@ namespace
 using namespace ludus::scene_import_tests;
 using namespace ludus::content::scene_cook;
 using ludus::foundation::core::float32;
+using ludus::foundation::core::float64;
 using ludus::foundation::core::uint32;
 using ludus::foundation::core::usize;
 namespace codes = ludus::content::scene_cook::importers::codes;
@@ -175,6 +178,74 @@ TEST_CASE("Ludus scene import cooks the engine's single-slit diffraction scene",
     CHECK(emitters == 1);
     // Wall and light quads plus the four screen quads around the slit.
     CHECK(triangles == 12);
+}
+
+TEST_CASE("Ludus scene import cooks the edge diffraction reference scenes", "[scene_cook][ludus-scene][diffraction]")
+{
+    // See the scene source guide for the Sommerfeld, conducting wedge and double-slit references.
+    constexpr usize SCENE_COUNT = 3;
+    constexpr usize QUAD_TRIANGLES = 2;
+    constexpr ludus::foundation::StaticArray<ExpectedScene, SCENE_COUNT> SCENES{{
+        { .File = "diffraction/knife-edge.luscene.json", .Triangles = 6 },
+        { .File = "diffraction/right-angle-wedge.luscene.json", .Triangles = 8 },
+        { .File = "diffraction/double-slit.luscene.json", .Triangles = 30 },
+    }};
+    for (const ExpectedScene& expected : SCENES)
+    {
+        INFO(expected.File);
+        const std::string entry = GetTestScene(expected.File);
+        BestEffortResult result;
+        CookError error;
+        REQUIRE(ImportSceneBestEffort(entry, {}, result, error) == true);
+        CHECK(result.Summary.Errors == 0);
+        CHECK(result.Summary.SourceAreaLights == 1);
+
+        ludus::resources::SceneDefinition decoded;
+        REQUIRE(ludus::resources::SceneDefinition::Decode(result.Bundle.GetData(), result.Bundle.GetSize(), decoded) ==
+                ludus::resources::Status::Ok);
+        REQUIRE(decoded.Objects.GetSize() == 3);
+        usize triangles = 0;
+        usize emitters = 0;
+        usize receivers = 0;
+        for (const ludus::resources::SceneObject& object : decoded.Objects)
+        {
+            const ludus::resources::SceneMesh& mesh = decoded.Meshes[object.Mesh];
+            REQUIRE(mesh.Positions.IsEmpty() == false);
+            const usize meshTriangles = mesh.Indices.GetSize() / 3;
+            triangles += meshTriangles;
+            const ludus::resources::SceneMaterial& material = decoded.Materials[object.Material];
+            if (material.Emission.X > 0)
+            {
+                ++emitters;
+                CHECK(meshTriangles == QUAD_TRIANGLES);
+                CHECK(material.IsEmissionTwoSided == false);
+                for (const math::Vector3& normal : mesh.Normals)
+                {
+                    CHECK(normal == math::Vector3{0, 0, -1});
+                }
+                for (const math::Vector3& position : mesh.Positions)
+                {
+                    CHECK(position.Z == 0.5F);
+                }
+            }
+            else if (mesh.Positions[0].Z == -1)
+            {
+                ++receivers;
+                CHECK(meshTriangles == QUAD_TRIANGLES);
+                for (const math::Vector3& normal : mesh.Normals)
+                {
+                    CHECK(normal == math::Vector3{0, 0, 1});
+                }
+                for (const math::Vector3& position : mesh.Positions)
+                {
+                    CHECK(position.Z == -1);
+                }
+            }
+        }
+        CHECK(emitters == 1);
+        CHECK(receivers == 1);
+        CHECK(triangles == expected.Triangles);
+    }
 }
 
 TEST_CASE("Ludus scene import can leave the slit's aperture to the importing World", "[scene_cook][ludus-scene]")
@@ -561,4 +632,159 @@ TEST_CASE("Ludus scene import cooks an absorbing medium boundary into LUSCN vers
     CHECK(ImportSceneBestEffort(entry, {}, failed, error) == false);
     CHECK(ReportHasCode(failed, codes::MALFORMED_INPUT) == true);
     CHECK(GetReport(failed).find("is an unsupported medium type") != std::string_view::npos);
+}
+
+TEST_CASE("Ludus scene import cooks the engine's skin bench into LUSCN version 14", "[scene_cook][ludus-scene][skin]")
+{
+    namespace format = ludus::content::scene_format;
+    BestEffortResult result;
+    CookError error;
+    REQUIRE(ImportSceneBestEffort(GetTestScene("materials/skin-diffusion-bench.luscene.json"), {}, result, error) ==
+            true);
+    CHECK(result.Summary.Errors == 0);
+    uint32 version = 0;
+    REQUIRE(ludus::foundation::core::TryReadLittleEndian<uint32>(
+                {result.Bundle.GetData() + format::MAGIC.size(), sizeof(uint32)},
+                version) == true);
+    CHECK(version == format::VERSION_14);
+    ludus::resources::SceneDefinition decoded;
+    REQUIRE(ludus::resources::SceneDefinition::Decode(result.Bundle.GetData(), result.Bundle.GetSize(), decoded) ==
+            ludus::resources::Status::Ok);
+    usize skinObjects = 0;
+    usize otherObjects = 0;
+    for (const ludus::resources::SceneObject& object : decoded.Objects)
+    {
+        const ludus::resources::SceneMaterial& material = decoded.Materials[object.Material];
+        if (material.Scattering.Model != format::MaterialModel::Skin)
+        {
+            ++otherObjects;
+            continue;
+        }
+        ++skinObjects;
+        CHECK(material.Name.View() == "Skin");
+        CHECK(material.Scattering.K[0] == 0.012F);
+        CHECK(material.Scattering.K[1] == 0.006F);
+        CHECK(material.Scattering.K[2] == 0.003F);
+        CHECK(material.Metallic == 0);
+        CHECK(math::Abs(material.Roughness - 0.45F) < 1e-6F);
+        CHECK(material.Reflectance == math::Vector3{0.8F, 0.5F, 0.4F});
+        CHECK(format::IsMaterialScatteringValid(material.Scattering) == true);
+    }
+    // The skin block sits beside a non-skin block, under a non-skin bar, on a floor, under a light.
+    CHECK(skinObjects == 1);
+    CHECK(otherObjects == 4);
+
+    // Skin is a dielectric: the decoder rejects a stored metallic fraction. The record's metallic and
+    // roughness fields are adjacent, and only the skin material has roughness 0.45.
+    constexpr float32 SKIN_ROUGHNESS = 0.45F;
+    constexpr float32 EDITED_VALUE = 0.5F;
+    const ludus::foundation::StaticArray<float32, 2> metallicAndRoughness{{0, SKIN_ROUGHNESS}};
+    ludus::foundation::StaticArray<ludus::foundation::core::uint8, 2 * sizeof(float32)> pattern{};
+    std::memcpy(pattern.GetData(), metallicAndRoughness.GetData(), pattern.GetSize());
+    usize metallicAt = result.Bundle.GetSize();
+    for (usize at = 0; at + pattern.GetSize() <= result.Bundle.GetSize(); ++at)
+    {
+        if (std::memcmp(result.Bundle.GetData() + at, pattern.GetData(), pattern.GetSize()) == 0)
+        {
+            REQUIRE(metallicAt == result.Bundle.GetSize());
+            metallicAt = at;
+        }
+    }
+    REQUIRE(metallicAt < result.Bundle.GetSize());
+    // Control: editing the adjacent roughness still decodes, so the rejection below is the metallic check.
+    ludus::foundation::Array<ludus::foundation::core::uint8> edited;
+    REQUIRE(edited.TryResize(result.Bundle.GetSize()) == true);
+    std::memcpy(edited.GetData(), result.Bundle.GetData(), edited.GetSize());
+    std::memcpy(edited.GetData() + metallicAt + sizeof(float32), &EDITED_VALUE, sizeof(float32));
+    CHECK(ludus::resources::SceneDefinition::Decode(edited.GetData(), edited.GetSize(), decoded) ==
+          ludus::resources::Status::Ok);
+    std::memcpy(edited.GetData(), result.Bundle.GetData(), edited.GetSize());
+    std::memcpy(edited.GetData() + metallicAt, &EDITED_VALUE, sizeof(float32));
+    CHECK(ludus::resources::SceneDefinition::Decode(edited.GetData(), edited.GetSize(), decoded) !=
+          ludus::resources::Status::Ok);
+}
+
+TEST_CASE("The engine's character bust imports with its maps, licence and metre scale", "[scene_cook][gltf][skin]")
+{
+    namespace format = ludus::content::scene_format;
+    BestEffortResult result;
+    CookError error;
+    REQUIRE(ImportSceneBestEffort(GetTestScene("characters/infinite-head/infinite-head.gltf"), {}, result, error) ==
+            true);
+    CHECK(result.Format == SceneSourceFormat::Gltf);
+    CHECK(result.Summary.Errors == 0);
+    // One mesh in one material slot, the slot an artist assigns skin to.
+    constexpr uint32 HEAD_TRIANGLES = 17684;
+    CHECK(result.Summary.SourceIndices == HEAD_TRIANGLES * 3);
+    CHECK(result.Summary.CookedMaterials == 1);
+    CHECK(ReportHasCode(result, codes::TANGENTS_GENERATED) == true);
+    bool hasLicense = false;
+    for (const ludus::foundation::String& input : result.Inputs)
+    {
+        hasLicense = hasLicense == true || input.GetView() == "LICENSE.txt";
+    }
+    CHECK(hasLicense == true);
+
+    ludus::resources::SceneDefinition decoded;
+    REQUIRE(ludus::resources::SceneDefinition::Decode(result.Bundle.GetData(), result.Bundle.GetSize(), decoded) ==
+            ludus::resources::Status::Ok);
+    REQUIRE(decoded.Materials.GetSize() == 1);
+    const ludus::resources::SceneMaterial& slot = decoded.Materials[0];
+    CHECK(slot.Name.View() == "Skin");
+    CHECK(slot.Scattering.Model == format::MaterialModel::MetallicRoughness);
+    CHECK(slot.Metallic == 0);
+    CHECK(slot.Texture != format::NO_TEXTURE);
+    CHECK(slot.SurfaceTexture != format::NO_TEXTURE);
+    CHECK(slot.NormalScale > 0);
+    // About 17 cm wide in metres, so authored scattering distances are in skin's millimetre range.
+    constexpr float32 MIN_WIDTH_WORLD = 0.15F;
+    constexpr float32 MAX_WIDTH_WORLD = 0.19F;
+    float32 minimumX = 0;
+    float32 maximumX = 0;
+    bool hasPosition = false;
+    for (const ludus::resources::SceneObject& object : decoded.Objects)
+    {
+        for (const math::Vector3& positionMesh : decoded.Meshes[object.Mesh].Positions)
+        {
+            const math::Vector3 positionWorld = math::TransformPoint(object.Transform, positionMesh);
+            minimumX = hasPosition == true ? math::Min(minimumX, positionWorld.X) : positionWorld.X;
+            maximumX = hasPosition == true ? math::Max(maximumX, positionWorld.X) : positionWorld.X;
+            hasPosition = true;
+        }
+    }
+    REQUIRE(hasPosition == true);
+    CHECK(maximumX - minimumX > MIN_WIDTH_WORLD);
+    CHECK(maximumX - minimumX < MAX_WIDTH_WORLD);
+
+    // glTF texture coordinates put v = 0 at the top of the image, and the colour map
+    // has the crown at the top and the shoulders at the bottom. Height must therefore
+    // fall as v grows; the scan's original bottom-up UVs gave the opposite sign and
+    // drew the lips below the chin.
+    constexpr float64 MAX_HEIGHT_TO_V_CORRELATION = -0.5;
+    REQUIRE(decoded.Meshes.GetSize() == 1);
+    const ludus::resources::SceneMesh& head = decoded.Meshes[0];
+    REQUIRE(head.Texcoords.GetSize() == head.Positions.GetSize());
+    REQUIRE(head.Positions.GetSize() > 0);
+    const float64 count = static_cast<float64>(head.Positions.GetSize());
+    float64 meanHeight = 0;
+    float64 meanV = 0;
+    for (usize i = 0; i < head.Positions.GetSize(); ++i)
+    {
+        meanHeight += static_cast<float64>(head.Positions[i].Y) / count;
+        meanV += static_cast<float64>(head.Texcoords[i].Y) / count;
+    }
+    float64 covariance = 0;
+    float64 heightVariance = 0;
+    float64 vVariance = 0;
+    for (usize i = 0; i < head.Positions.GetSize(); ++i)
+    {
+        const float64 height = static_cast<float64>(head.Positions[i].Y) - meanHeight;
+        const float64 v = static_cast<float64>(head.Texcoords[i].Y) - meanV;
+        covariance += height * v;
+        heightVariance += height * height;
+        vVariance += v * v;
+    }
+    REQUIRE(heightVariance > 0);
+    REQUIRE(vVariance > 0);
+    CHECK(covariance / math::Sqrt(heightVariance * vVariance) < MAX_HEIGHT_TO_V_CORRELATION);
 }

@@ -1,6 +1,8 @@
 #include <ludus/foundation/base/pointer.hpp>
 #include <ludus/foundation/base/types.h>
 #include <ludus/foundation/containers/borrowed_view.hpp>
+#include <ludus/graphics/rhi/adapter.h>
+#include <ludus/graphics/rhi/device.h>
 #include <ludus/graphics/rhi/gpu_scope.h>
 #include <ludus/graphics/rhi/graph.h>
 #include <ludus/graphics/rhi/lifetime.h>
@@ -412,4 +414,219 @@ TEST_CASE("Metal labels named textures and balances nested scopes across submiss
     REQUIRE(rhi::Destroy(device, texture) == rhi::RasterStatus::Ready);
     rhi::Shutdown();
     CHECK(source.Retained == source.Released);
+}
+
+TEST_CASE("R14a Metal lists system adapters and starts on the selected one", "[rhi][macos][gpu][adapter]")
+{
+    Guard guard;
+    rhi::AdapterCatalog catalog;
+    REQUIRE(rhi::GetAdapterCatalog(catalog) == rhi::AdapterStatus::Ready);
+    CHECK(catalog.Api == rhi::Backend::Metal);
+    CHECK(catalog.ReportedCount >= catalog.Count);
+    if (catalog.Count == 0)
+    {
+        SKIP("No Metal adapter on this host");
+    }
+    @autoreleasepool
+    {
+        // The system default device must be in the catalog under its registry ID.
+        id<MTLDevice> systemDevice = MTLCreateSystemDefaultDevice();
+        REQUIRE(systemDevice != nil);
+        bool hasSystemDevice = false;
+        for (usize i = 0; i < catalog.Count; ++i)
+        {
+            uint64 registryId = 0;
+            std::memcpy(&registryId, catalog.Adapters[i].Identity.Bytes.GetData(), sizeof(registryId));
+            hasSystemDevice = hasSystemDevice || registryId == systemDevice.registryID;
+            CHECK(catalog.Adapters[i].Identity.Api == rhi::Backend::Metal);
+            CHECK(catalog.Adapters[i].Name.IsEmpty() == false);
+        }
+        CHECK(hasSystemDevice);
+    }
+    usize selected = catalog.Count;
+    for (usize i = 0; i < catalog.Count && selected == catalog.Count; ++i)
+    {
+        selected = catalog.Adapters[i].HasBackendBaseline == true ? i : selected;
+    }
+    if (selected == catalog.Count)
+    {
+        SKIP("No Metal adapter meets the backend baseline");
+    }
+    const rhi::AdapterInfo& adapter = catalog.Adapters[selected];
+    rhi::DeviceDescription description;
+    description.Adapter = adapter.Identity;
+    rhi::DeviceHandle device;
+    rhi::SurfaceHandle surface;
+    REQUIRE(rhi::CreateDevice({}, { .Width = 17, .Height = 9 }, description, device, surface) ==
+            rhi::DeviceStatus::Ready);
+    rhi::DeviceInfo info;
+    REQUIRE(rhi::GetDeviceInfo(device, info) == rhi::DeviceStatus::Ready);
+    CHECK(info.Adapter.Identity == adapter.Identity);
+    CHECK(info.Adapter.Name.GetView() == adapter.Name.GetView());
+    // Enabled limits come from the negotiated profile, never above the raw claim.
+    CHECK(info.Startup.Capabilities.MaxFrameDimension2D <= adapter.MaxTextureDimension2D);
+    // The catalog stays available, unchanged, while a session is live.
+    rhi::AdapterCatalog during;
+    REQUIRE(rhi::GetAdapterCatalog(during) == rhi::AdapterStatus::Ready);
+    CHECK(during.Count == catalog.Count);
+    CHECK(during.Adapters[selected].Identity == adapter.Identity);
+    REQUIRE(rhi::DestroyDevice(device) == rhi::DeviceStatus::Ready);
+
+    // An identity absent from the catalog publishes no device.
+    description.Adapter.Bytes.Fill(0xFF);
+    rhi::StartupInfo failure;
+    surface = {};
+    CHECK(rhi::CreateDevice({}, { .Width = 17, .Height = 9 }, description, device, surface, &failure) ==
+          rhi::DeviceStatus::Failed);
+    CHECK(failure.Error == rhi::StartupError::AdapterUnavailable);
+    CHECK(device == rhi::DeviceHandle{});
+    description.Adapter.Api = rhi::Backend::Vulkan;
+    CHECK(rhi::ValidateDeviceDescription(description) == rhi::DeviceStatus::InvalidDescription);
+}
+
+namespace
+{
+/// Clear one surface of `device` to a colour and read back its headless target.
+void ClearAndRead(rhi::DeviceHandle device,
+                  rhi::SurfaceHandle surface,
+                  const rhi::FrameTarget& target,
+                  BorrowedView<uint8> pixels)
+{
+    REQUIRE(rhi::SetFrameTarget(device, surface, target) == rhi::DeviceStatus::Ready);
+    REQUIRE(rhi::BeginFrame(device, surface) == rhi::DeviceStatus::Ready);
+    rhi::FrameInfo frame;
+    REQUIRE(rhi::GetFrameInfo(device, surface, frame) == rhi::DeviceStatus::Ready);
+    CHECK(frame.Width == target.Width);
+    CHECK(frame.Height == target.Height);
+    REQUIRE(rhi::EndFrame(device) == rhi::DeviceStatus::Ready);
+    REQUIRE(rhi::backend::ReadHeadlessPixels({pixels.GetDataOrNull(), pixels.GetSize()}));
+}
+bool IsFilled(BorrowedView<const uint8> pixels, uint8 red, uint8 green, uint8 blue) noexcept
+{
+    for (usize i = 0; i < pixels.GetSize(); i += 4)
+    {
+        const uint8* pixel = pixels.GetDataOrNull() + i;
+        if (pixel[0] != red || pixel[1] != green || pixel[2] != blue || pixel[3] != 255)
+        {
+            return false;
+        }
+    }
+    return true;
+}
+} // namespace
+
+TEST_CASE("R14b Metal surfaces of one device acquire, resize and retire independently", "[rhi][macos][gpu][surface]")
+{
+    Guard guard;
+    rhi::DeviceHandle device;
+    rhi::SurfaceHandle primary;
+    if (rhi::CreateDevice({}, { .Width = 17, .Height = 9 }, {}, device, primary) != rhi::DeviceStatus::Ready)
+    {
+        SKIP("No Metal adapter on this host");
+    }
+    rhi::SurfaceHandle second;
+    REQUIRE(rhi::CreateSurface(device, { .Width = 11, .Height = 5 }, second) == rhi::DeviceStatus::Ready);
+
+    uint8 primaryPixels[17 * 9 * 4]{};
+    ClearAndRead(device, primary, { .Width = 17, .Height = 9, .Red = 1, .Alpha = 1 }, primaryPixels);
+    CHECK(IsFilled(primaryPixels, 255, 0, 0));
+    uint8 smallPixels[11 * 5 * 4]{};
+    ClearAndRead(device, second, { .Width = 11, .Height = 5, .Green = 1, .Alpha = 1 }, smallPixels);
+    CHECK(IsFilled(smallPixels, 0, 255, 0));
+
+    // Resizing the second surface leaves the primary target and its contents unchanged.
+    uint8 resizedPixels[23 * 7 * 4]{};
+    ClearAndRead(device, second, { .Width = 23, .Height = 7, .Blue = 1, .Alpha = 1 }, resizedPixels);
+    CHECK(IsFilled(resizedPixels, 0, 0, 255));
+    REQUIRE(rhi::BeginFrame(device, primary) == rhi::DeviceStatus::Ready);
+    rhi::FrameInfo frame;
+    REQUIRE(rhi::GetFrameInfo(device, primary, frame) == rhi::DeviceStatus::Ready);
+    CHECK(frame.Width == 17);
+    CHECK(frame.Height == 9);
+    REQUIRE(rhi::EndFrame(device) == rhi::DeviceStatus::Ready);
+    REQUIRE(rhi::backend::ReadHeadlessPixels(primaryPixels));
+    CHECK(IsFilled(primaryPixels, 255, 0, 0));
+
+    // Readback waited for every frame, so render completion is observed; headless presents nothing.
+    rhi::SurfaceInfo info;
+    REQUIRE(rhi::GetSurfaceInfo(device, second, info) == rhi::DeviceStatus::Ready);
+    CHECK(info.State == rhi::SurfaceState::Ready);
+    CHECK(info.Width == 23);
+    CHECK(info.SubmittedFrames == 2);
+    CHECK(info.RenderedFrames == 2);
+    CHECK(info.PresentedFrames == 0);
+    REQUIRE(rhi::GetSurfaceInfo(device, primary, info) == rhi::DeviceStatus::Ready);
+    CHECK(info.IsPrimary);
+    CHECK(info.SubmittedFrames == 2);
+    CHECK(info.RenderedFrames == 2);
+
+    // Retiring the second surface leaves the device and its primary surface working.
+    const rhi::SurfaceHandle retired = second;
+    REQUIRE(rhi::DestroySurface(device, second) == rhi::DeviceStatus::Ready);
+    CHECK(rhi::BeginFrame(device, retired) == rhi::DeviceStatus::InvalidHandle);
+    ClearAndRead(device, primary, { .Width = 17, .Height = 9, .Red = 1, .Green = 1, .Alpha = 1 }, primaryPixels);
+    CHECK(IsFilled(primaryPixels, 255, 255, 0));
+    REQUIRE(rhi::DestroyDevice(device) == rhi::DeviceStatus::Ready);
+}
+
+TEST_CASE("R14b Metal loses a created Cocoa surface whose view leaves its window", "[rhi][macos][cocoa][gpu][surface]")
+{
+    if (std::getenv("LUDUS_TEST_COCOA") == nullptr)
+    {
+        SKIP("Set LUDUS_TEST_COCOA=1 with a WindowServer session");
+    }
+    @autoreleasepool
+    {
+        Guard guard;
+        using namespace ludus::platform;
+        WindowManager manager;
+        REQUIRE(manager.Initialize({}));
+        UniquePtr<Window> first;
+        UniquePtr<Window> second;
+        REQUIRE(manager.CreateWindow({ .Name = "R14b primary", .Width = 160, .Height = 120 }, first));
+        REQUIRE(manager.CreateWindow({ .Name = "R14b second", .Width = 96, .Height = 64 }, second));
+        // Destroy the connections before the borrowed views on assertion failure.
+        Guard connectionGuard;
+        const NativeWindowInfo primaryWindow = first->GetNativeWindowInfo();
+        const NativeWindowInfo secondWindow = second->GetNativeWindowInfo();
+        NSView* secondView = (__bridge NSView*)secondWindow.CocoaView;
+        NSWindow* secondNative = (__bridge NSWindow*)secondWindow.CocoaWindow;
+        CALayer* previous = secondView.layer;
+        const BOOL wantsLayer = secondView.wantsLayer;
+        rhi::DeviceHandle device;
+        rhi::SurfaceHandle primary;
+        REQUIRE(rhi::CreateDevice({}, primaryWindow, {}, device, primary) == rhi::DeviceStatus::Ready);
+        rhi::SurfaceHandle surface;
+        CHECK(rhi::CreateSurface(device, primaryWindow, surface) == rhi::DeviceStatus::InvalidDescription);
+        REQUIRE(rhi::CreateSurface(device, secondWindow, surface) == rhi::DeviceStatus::Ready);
+        CHECK([secondView.layer isKindOfClass:[CAMetalLayer class]]);
+        REQUIRE(rhi::SetFrameTarget(device, surface, { .Width = 96, .Height = 64, .Blue = 1, .Alpha = 1 }) ==
+                rhi::DeviceStatus::Ready);
+        REQUIRE(rhi::BeginFrame(device, surface) == rhi::DeviceStatus::Ready);
+        REQUIRE(rhi::EndFrame(device) == rhi::DeviceStatus::Ready);
+        rhi::SurfaceInfo info;
+        REQUIRE(rhi::GetSurfaceInfo(device, surface, info) == rhi::DeviceStatus::Ready);
+        CHECK(info.System == WindowSystem::Cocoa);
+        CHECK(info.SubmittedFrames == 1);
+        CHECK(info.PresentedFrames == 1);
+
+        // Replace the borrowed content view: the surface is lost and its view's layer restored.
+        NSView* replacement = [[NSView alloc] initWithFrame:secondView.frame];
+        secondNative.contentView = replacement;
+        CHECK(rhi::BeginFrame(device, surface) == rhi::DeviceStatus::SurfaceLost);
+        CHECK(secondView.layer == previous);
+        CHECK(secondView.wantsLayer == wantsLayer);
+        REQUIRE(rhi::GetSurfaceInfo(device, surface, info) == rhi::DeviceStatus::Ready);
+        CHECK(info.State == rhi::SurfaceState::Lost);
+        CHECK(info.PresentedFrames == 1);
+        rhi::DeviceInfo deviceInfo;
+        CHECK(rhi::GetDeviceInfo(device, deviceInfo) == rhi::DeviceStatus::Ready);
+        REQUIRE(rhi::SetFrameTarget(device, primary, { .Width = 160, .Height = 120, .Green = 1, .Alpha = 1 }) ==
+                rhi::DeviceStatus::Ready);
+        REQUIRE(rhi::BeginFrame(device, primary) == rhi::DeviceStatus::Ready);
+        REQUIRE(rhi::EndFrame(device) == rhi::DeviceStatus::Ready);
+        REQUIRE(rhi::DestroySurface(device, surface) == rhi::DeviceStatus::Ready);
+        secondNative.contentView = secondView;
+        REQUIRE(rhi::DestroyDevice(device) == rhi::DeviceStatus::Ready);
+    }
 }

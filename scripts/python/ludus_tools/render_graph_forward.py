@@ -17,14 +17,22 @@ SUPPORT = {
     'DeferredDepthCopy': ('renderer_deferred_depth', ('fragment',)),
     # Package version 31: the G-buffer fragment without the coverage discard, drawn for opaque materials.
     'DeferredOpaqueGBuffer': ('renderer_deferred_material', ('fragment',)),
+    # Package version 36: the G-buffer fragment for GI Probe Receivers of a pass with Baked Lighting connected.
+    'DeferredProbeGBuffer': ('renderer_deferred_material', ('fragment',)),
+    # Package version 37: the G-buffer fragment for static surfaces with a ready chart in the same passes.
+    'DeferredSurfaceChartGBuffer': ('renderer_deferred_material', ('fragment',)),
 }
-# Both G-buffer groups wrap the authored material; the opaque one compiles it with LUDUS_OPAQUE_COVERAGE.
-GBUFFER_GROUPS = ('DeferredGBuffer', 'DeferredOpaqueGBuffer')
+# The G-buffer groups wrap the authored material; the opaque one compiles it with LUDUS_OPAQUE_COVERAGE, the probe
+# one adds the baked probe volume's diffuse bounce and the chart one adds the surface chart's baked diffuse.
+GBUFFER_GROUPS = ('DeferredGBuffer', 'DeferredOpaqueGBuffer', 'DeferredProbeGBuffer', 'DeferredSurfaceChartGBuffer')
+# Groups emitted only for passes with a connected SceneBakedLighting input.
+BAKED_LIGHTING_GROUPS = ('ForwardSurfaceChart', 'DeferredProbeGBuffer', 'DeferredSurfaceChartGBuffer')
 ROLE_KEYS = [('ForwardLit', 'vertex'), ('ForwardLit', 'fragment'), ('ForwardShadow', 'fragment'),
              ('ForwardOutput', 'vertex'), ('ForwardOutput', 'fragment'), ('ForwardFlatShadow', 'fragment'),
              ('ForwardDepth', 'fragment'), ('DeferredGBuffer', 'fragment'), ('DeferredLighting', 'vertex'),
-             ('DeferredLighting', 'fragment'), ('DeferredDepthCopy', 'fragment'), ('DeferredOpaqueGBuffer', 'fragment'), ('ForwardSurfaceChart', 'fragment')]
-MEMBERS = ['ForwardVertex', 'ForwardFragment', 'ForwardShadow', 'LightingVertex', 'LightingFragment', 'LightingShadow', 'ForwardDepth', 'DeferredGBufferFragment', 'DeferredLightingVertex', 'DeferredLightingFragment', 'DeferredDepthCopyFragment', 'DeferredOpaqueGBufferFragment', 'ForwardSurfaceChartFragment']
+             ('DeferredLighting', 'fragment'), ('DeferredDepthCopy', 'fragment'), ('DeferredOpaqueGBuffer', 'fragment'), ('ForwardSurfaceChart', 'fragment'),
+             ('DeferredProbeGBuffer', 'fragment'), ('DeferredSurfaceChartGBuffer', 'fragment')]
+MEMBERS = ['ForwardVertex', 'ForwardFragment', 'ForwardShadow', 'LightingVertex', 'LightingFragment', 'LightingShadow', 'ForwardDepth', 'DeferredGBufferFragment', 'DeferredLightingVertex', 'DeferredLightingFragment', 'DeferredDepthCopyFragment', 'DeferredOpaqueGBufferFragment', 'ForwardSurfaceChartFragment', 'DeferredProbeGBufferFragment', 'DeferredSurfaceChartGBufferFragment']
 INPUTS = [{'location': i, 'format': 'Float3' if i in (0, 7) else 'Float2' if i in (6, 13, 15) else 'Float4'} for i in range(16)]
 
 
@@ -70,12 +78,14 @@ def material_layout(snapshot, build, is_clustered_profile=False):
     offsets = {name: index * word for index, name in enumerate(names)}
     coefficients = constant(environment, 'LUDUS_ENVIRONMENT_SH_COEFFICIENTS')
     hair_words = constant(environment, 'LUDUS_HAIR_CARD_PARAMETER_WORDS')
+    skin_words = constant(environment, 'LUDUS_SKIN_PARAMETER_WORDS')
     offsets.update(ShadowData=shadow_offset, SurfaceMap=surface_offset, Authored=surface_offset + word, IrradianceSh=surface_offset + 2 * word,
-                   HairStrand=surface_offset + (2 + coefficients) * word, HairHighlights=surface_offset + (3 + coefficients) * word)
+                   HairStrand=surface_offset + (2 + coefficients) * word, HairHighlights=surface_offset + (3 + coefficients) * word,
+                   SkinScattering=surface_offset + (2 + coefficients + hair_words) * word)
     if is_clustered_profile:
         offsets.update(GridRows=grid_offset, GridMinimum=grid_offset + 3 * word, GridScale=grid_offset + 4 * word)
     shapes = {name: 'Float4Array' if name in ('Lights', 'ShadowData', 'IrradianceSh', 'GridRows') else 'Float4' for name in offsets}
-    return {'offsets': offsets, 'shapes': shapes, 'size': surface_offset + (2 + coefficients + hair_words) * word}
+    return {'offsets': offsets, 'shapes': shapes, 'size': surface_offset + (2 + coefficients + hair_words + skin_words) * word}
 
 
 def expand(programs, techniques, snapshot, helper, build, has_surface_charts=False):
@@ -110,7 +120,10 @@ def expand(programs, techniques, snapshot, helper, build, has_surface_charts=Fal
                   'Capability', 'ClusteredDeferred', 'an authored DeferredLighting fragment callback is required')
     result = dict(programs)
     for group, (recipe_name, stages) in SUPPORT.items():
-        if group == 'ForwardSurfaceChart' and not has_surface_charts:
+        if group in BAKED_LIGHTING_GROUPS and not has_surface_charts:
+            continue
+        # Clustered profiles consume the bake through the deferred G-buffer groups, not the forward chart fragment.
+        if group == 'ForwardSurfaceChart' and is_clustered_profile:
             continue
         if group.startswith('Deferred') and not is_deferred_profile:
             continue
@@ -122,13 +135,15 @@ def expand(programs, techniques, snapshot, helper, build, has_surface_charts=Fal
         capture(recipe['source'])
         for stage in stages:
             identity = support_program(techniques, group, stage)
-            if group == 'ForwardSurfaceChart':
+            if group in BAKED_LIGHTING_GROUPS:
                 build.require(identity not in programs, 'Source', identity,
                               'The renderer reserves this support program ID. Rename the authored program and update its assignments.')
             original = programs.get(technique['fragment'] if group in (*GBUFFER_GROUPS, 'ForwardSurfaceChart') else identity)
             source = '#define LUDUS_OPAQUE_COVERAGE 1\n' if group == 'DeferredOpaqueGBuffer' else ''
-            if group == 'ForwardSurfaceChart':
+            if group in ('ForwardSurfaceChart', 'DeferredSurfaceChartGBuffer'):
                 source = '#define LUDUS_GRAPH_SURFACE_CHART 1\n'
+            elif group == 'DeferredProbeGBuffer':
+                source = '#define LUDUS_GRAPH_PROBE_GI 1\n'
             elif group == 'ForwardLit' and stage == 'fragment' and not is_clustered_profile:
                 source = '#define LUDUS_GRAPH_REALTIME 1\n'
             source += '#include "_ludus_forward/' + recipe['source'] + '"\n'
@@ -140,6 +155,10 @@ def expand(programs, techniques, snapshot, helper, build, has_surface_charts=Fal
             expression = function + '(value)'
             if is_deferred_profile and group == 'ForwardLit' and stage == 'fragment':
                 expression = 'ShadeMaterial(' + expression + ', value)'
+            elif group == 'DeferredProbeGBuffer':
+                expression = 'PackDeferredProbeMaterial(' + expression + ', value)'
+            elif group == 'DeferredSurfaceChartGBuffer':
+                expression = 'PackDeferredSurfaceChartMaterial(' + expression + ', value)'
             elif group in GBUFFER_GROUPS:
                 expression = 'PackDeferredMaterial(' + expression + ')'
             semantic = ' : SV_Target0' if stage == 'fragment' and output == 'float4' else ''
@@ -194,8 +213,8 @@ def check_interface(program, result, build):
                           'Layout', program['id'], 'deferred material layout differs from the owned ABI')
         if group == 'DeferredLighting' and stage == 'fragment':
             view = next((entry for entry in entries if entry['binding'] == 15), {})
-            layout = {'size': 112, 'offsets': {'ClipToWorldRows': 0, 'EyeWorld': 64, 'TargetSizePixel': 80, 'Options': 96},
-                      'shapes': {'ClipToWorldRows': 'Float4Array', 'EyeWorld': 'Float4', 'TargetSizePixel': 'Float4', 'Options': 'Float4'}}
+            layout = {'size': 128, 'offsets': {'ClipToWorldRows': 0, 'EyeWorld': 64, 'TargetSizePixel': 80, 'Options': 96, 'LightingView': 112},
+                      'shapes': {'ClipToWorldRows': 'Float4Array', 'EyeWorld': 'Float4', 'TargetSizePixel': 'Float4', 'Options': 'Float4', 'LightingView': 'Float4'}}
             build.require(all(view.get(field) == value for field, value in layout.items()),
                           'Layout', program['id'], 'deferred view layout differs from the owned ABI')
         return []

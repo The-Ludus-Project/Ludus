@@ -498,11 +498,16 @@ def parse_perfetto_scopes(trace: Mapping[str, object] | Sequence[object]) -> dic
         elif name == FRAME_MARK:
             frames.append(timestamp)
     metrics: dict[str, float] = {}
+    # Thanks to Andreas Fredriksson, More Performance, More Gameplay (CEDEC 2017,
+    # pp. 13–14), for the emphasis on measuring worst cases and reproducing spikes.
+    # https://deplinenoise.wordpress.com/wp-content/uploads/2017/09/fredriksson_cedec_2017_final.pdf#page=13
+    # Keep the longest sample alongside each percentile summary.
     for name, values in sorted(durations.items()):
         nanoseconds = [value * NANOSECONDS_PER_MICROSECOND for value in values]
         metrics[f"scope={name}/count"] = float(len(values))
         metrics[f"scope={name}/median_ns"] = median(nanoseconds)
         metrics[f"scope={name}/p95_ns"] = percentile(nanoseconds, 0.95)
+        metrics[f"scope={name}/max_ns"] = max(nanoseconds)
     if frames:
         metrics["frames/count"] = float(len(frames))
     if len(frames) > 1:
@@ -510,6 +515,7 @@ def parse_perfetto_scopes(trace: Mapping[str, object] | Sequence[object]) -> dic
         intervals = [(b - a) * NANOSECONDS_PER_MICROSECOND for a, b in zip(ordered, ordered[1:])]
         metrics["frames/interval_median_ns"] = median(intervals)
         metrics["frames/interval_p95_ns"] = percentile(intervals, 0.95)
+        metrics["frames/interval_max_ns"] = max(intervals)
     if not metrics:
         raise ProfileError("trace contains no scopes or frame marks")
     return metrics

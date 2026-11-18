@@ -498,6 +498,82 @@ class HybridShadowsTemplateTests(unittest.TestCase):
         self.assertEqual(arguments.template, 'hybrid-shadows')
 
 
+
+class HybridReflectionsTemplateTests(unittest.TestCase):
+    def setUp(self):
+        self.directory = tempfile.TemporaryDirectory()
+        self.addCleanup(self.directory.cleanup)
+
+    def create(self, profiles=('metal', 'spirv')):
+        return graph.new_workspace(Path(self.directory.name) / 'HybridReflections', output='offscreen',
+                                   renderer_static=True, profiles=profiles, template='hybrid-reflections')
+
+    def test_raster_visibility_feeds_one_reflection_pass_and_a_running_mean(self):
+        root = self.create()
+        plan = graph.compile_graph(root)
+        raster = next(operation for operation in plan['passes'] if operation['kind'] == 'Raster')
+        rays = [operation for operation in plan['passes'] if operation['kind'] == 'RayTracing']
+        self.assertEqual(len(rays), 1)
+        ray_pass = rays[0]
+        self.assertEqual(ray_pass['visibility']['resource'], raster['attachments']['color']['resource'])
+        self.assertEqual(ray_pass['visibility_depth']['resource'], raster['attachments']['depth']['resource'])
+        # One stochastic reflection sample per pixel per frame; Accumulate's running mean reconstructs it.
+        self.assertTrue(any(operation['kind'] == 'Accumulate' for operation in plan['passes']))
+        exported = [operation['resource'] for operation in plan['passes'] if operation['kind'] == 'Export']
+        self.assertIn(raster['attachments']['depth']['resource'], exported)
+        manifest = json.loads(root.with_name('main.lushader.json').read_text())
+        build.validate_manifest(manifest)
+        interface = next(technique['scene_interface'] for technique in manifest['techniques']
+                         if 'scene_interface' in technique)
+        self.assertTrue(interface['visibility_buffer'])
+        # The reflection ray is the one closest-hit query.
+        self.assertEqual(interface['surface_queries'], 1)
+        # The first surface and the reflection hit share the interactive visibility ceiling equally.
+        self.assertEqual(interface['visibility_queries'], ray.SCENE_QUERY_LIMITS['MAX_VISIBILITY_QUERIES'])
+        shade = root.with_name('main_shaders') / 'shade.slang'
+        self.assertIn(f"MAXIMUM_SHADOW_RAYS_PER_SURFACE = {interface['visibility_queries'] // 2};", shade.read_text())
+
+    def test_reflection_rays_require_a_native_target_and_create_nothing_otherwise(self):
+        with self.assertRaises(ToolingError):
+            self.create(('wgsl',))
+        self.assertFalse((Path(self.directory.name) / 'HybridReflections').exists())
+
+    def test_cli_exposes_the_template(self):
+        from ludus_tools.cli import build_parser
+        arguments = build_parser().parse_args(['render-graph', 'new', 'graphs/Main', '--template', 'hybrid-reflections',
+                                               '--output', 'offscreen', '--renderer-static', '--profiles', 'metal'])
+        self.assertEqual(arguments.template, 'hybrid-reflections')
+
+class HybridIndirectDiffuseTemplateTests(unittest.TestCase):
+    def test_visibility_feeds_bounded_native_transport_and_a_running_mean(self):
+        with tempfile.TemporaryDirectory() as directory:
+            destination = Path(directory) / 'IndirectDiffuse'
+            with self.assertRaises(ToolingError):
+                graph.new_workspace(destination, output='offscreen', renderer_static=True, profiles=('wgsl',),
+                                    template='hybrid-indirect-diffuse')
+            self.assertFalse(destination.exists())
+            root = graph.new_workspace(destination, output='offscreen', renderer_static=True,
+                                       profiles=('metal', 'spirv'), template='hybrid-indirect-diffuse')
+            plan = graph.compile_graph(root)
+            raster = next(operation for operation in plan['passes'] if operation['kind'] == 'Raster')
+            ray_pass, = (operation for operation in plan['passes'] if operation['kind'] == 'RayTracing')
+            self.assertEqual(ray_pass['visibility']['resource'], raster['attachments']['color']['resource'])
+            self.assertEqual(ray_pass['visibility_depth']['resource'], raster['attachments']['depth']['resource'])
+            self.assertTrue(any(operation['kind'] == 'Accumulate' for operation in plan['passes']))
+            manifest = json.loads(root.with_name('main.lushader.json').read_text())
+            build.validate_manifest(manifest)
+            interface = next(technique['scene_interface'] for technique in manifest['techniques']
+                             if 'scene_interface' in technique)
+            self.assertEqual((interface['surface_queries'], interface['visibility_queries']), (1, 2))
+
+    def test_cli_exposes_the_template(self):
+        from ludus_tools.cli import build_parser
+        arguments = build_parser().parse_args(
+            ['render-graph', 'new', 'graphs/Main', '--template', 'hybrid-indirect-diffuse',
+             '--output', 'offscreen', '--renderer-static', '--profiles', 'metal'])
+        self.assertEqual(arguments.template, 'hybrid-indirect-diffuse')
+
+
 class TiledVbufferNeeTemplateTests(unittest.TestCase):
     def setUp(self):
         self.directory = tempfile.TemporaryDirectory()
@@ -2054,6 +2130,30 @@ class RasterTemplateTests(unittest.TestCase):
             self.assertEqual([(item['ToneMappingExposure'], item['ToneMappingCurve']) for item in lowered],
                              [(0.0, 'Reinhard'), (1.0, 'PbrNeutral')])
 
+
+    def test_default_color_passes_connect_baked_lighting_and_disconnect_to_realtime(self):
+        from ludus_tools import render_graph_forward as forward
+        with tempfile.TemporaryDirectory() as directory:
+            root = graph.new_workspace(Path(directory) / 'Raster', output='offscreen',
+                                       renderer_static=True, profiles=('wgsl',))
+            for configuration in ('Default', 'ZPrepass'):
+                plan = graph.compile_graph(root, configuration=configuration)
+                modes = {(item['configuration'], item.get('baked_lighting', False))
+                         for item in plan['passes'] if item['kind'] == 'Raster'}
+                expected = {('ColorAndDepth', True)} | ({('DepthOnly', False)} if configuration == 'ZPrepass' else set())
+                self.assertEqual(modes, expected)
+            # The deferred probe and surface-chart G-buffers consume the bake in this profile; the forward chart
+            # stage is skipped.
+            for group in ('DeferredProbeGBuffer', 'DeferredSurfaceChartGBuffer'):
+                self.assertIn(group, forward.BAKED_LIGHTING_GROUPS)
+                self.assertIn((group, 'fragment'), forward.ROLE_KEYS)
+            document = json.loads(root.read_text())
+            for configuration in document['configurations']:
+                configuration['edges'] = [edge for edge in configuration['edges']
+                                          if edge['from'] != 'scene.bakedLighting']
+            root.write_bytes(graph.canonical_asset(document))
+            realtime = graph.compile_graph(root)
+            self.assertFalse(any(item.get('baked_lighting', False) for item in realtime['passes']))
 
     def test_relocated_sdk_copies_the_default_without_a_source_checkout(self):
         from ludus_tools import render_graph_templates

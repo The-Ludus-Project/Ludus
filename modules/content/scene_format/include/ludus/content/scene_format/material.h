@@ -40,6 +40,8 @@ static const MaterialModelTag LUDUS_MATERIAL_MODEL_PROGRAM = 9;
 static const MaterialModelTag LUDUS_MATERIAL_MODEL_MEDIUM_INTERFACE = 10;
 /// Two-sided alpha-masked hair card with an authored strand direction and directional highlights.
 static const MaterialModelTag LUDUS_MATERIAL_MODEL_HAIR_CARD = 11;
+/// Skin: a dielectric surface whose diffuse lighting spreads over per-channel scattering distances.
+static const MaterialModelTag LUDUS_MATERIAL_MODEL_SKIN = 12;
 /// Maximum authored cosine exponent before applying perceptual roughness.
 static const MaterialScalar LUDUS_PROJECT_BRDF_MAX_POWER = 32;
 /// Minimum total lobe weight, to keep normalization bounded in binary32.
@@ -106,9 +108,16 @@ enum class MaterialModel : foundation::uint32
     /// reference evaluators shade the card with the metallic/roughness dielectric lobes
     /// (GetSurfaceReflectionScattering); the strand highlight is a raster technique.
     HairCard = LUDUS_MATERIAL_MODEL_HAIR_CARD,
+    /// Skin: the record's base colour and roughness with zero metallic, and K holding the linear RGB
+    /// scattering distance in world metres, each channel in [0, MAX_SKIN_SCATTERING_DISTANCE]. Every
+    /// other scattering field keeps its default (IsMaterialScatteringValid). The surface reflection is the
+    /// metallic/roughness model's dielectric lobes (GetSurfaceReflectionScattering), so a zero distance
+    /// reproduces that model exactly. Renderers currently shade the surface reflection only: the raster
+    /// screen-space diffusion is issue #1372 and reference subsurface transport is issue #1373.
+    Skin = LUDUS_MATERIAL_MODEL_SKIN,
 };
 /// Highest stored MaterialModel tag; readers reject larger tags.
-inline constexpr MaterialModel LAST_MATERIAL_MODEL = MaterialModel::HairCard;
+inline constexpr MaterialModel LAST_MATERIAL_MODEL = MaterialModel::Skin;
 /// Report whether the model uses the complex-IOR GGX lobe and its authored alpha.
 [[nodiscard]] constexpr bool HasRoughConductorLobe(MaterialModel model) noexcept
 {
@@ -128,6 +137,7 @@ inline constexpr MaterialModel LAST_MATERIAL_MODEL = MaterialModel::HairCard;
         case MaterialModel::Conductor:
         case MaterialModel::DiffuseConductorMix:
         case MaterialModel::HairCard:
+        case MaterialModel::Skin:
             return LUDUS_MATERIAL_CAPABILITY_CONTINUOUS_REFLECTION | LUDUS_MATERIAL_CAPABILITY_FIXED_DIMENSION_SAMPLER;
         case MaterialModel::CoatedDiffuse:
             return LUDUS_MATERIAL_CAPABILITY_CONTINUOUS_REFLECTION | LUDUS_MATERIAL_CAPABILITY_INTERNAL_WALK;
@@ -185,6 +195,9 @@ inline constexpr foundation::float32 MAX_MATERIAL_OPTICAL_CONSTANT = 10000;
 /// Largest admitted medium absorption coefficient per world metre: transmittance through one
 /// millimetre is then exp(-10), and larger values add no reference evidence before underflow.
 inline constexpr foundation::float32 MAX_MEDIUM_ABSORPTION_PER_WORLD = 10000;
+/// Largest admitted skin scattering distance, in world metres. Skin spreads light over millimetres;
+/// a screen-space diffusion of ten centimetres no longer represents a surface's own scattering.
+inline constexpr foundation::float32 MAX_SKIN_SCATTERING_DISTANCE = 0.1F;
 /// Default PBRT coated-diffuse dielectric index of refraction.
 inline constexpr foundation::float32 DEFAULT_COATING_ETA = 1.5F;
 /// Default PBRT coated-diffuse optical thickness.
@@ -321,19 +334,27 @@ struct HairCardParameters final
            scattering.AlphaU == defaults.AlphaU && scattering.AlphaV == defaults.AlphaV &&
            scattering.CoatingEta == defaults.CoatingEta && scattering.CoatingThickness == defaults.CoatingThickness;
 }
-/// The scattering a ray or reference evaluator applies to a surface. A hair card reflects through the
-/// metallic/roughness dielectric lobes there, since its strand highlight is a raster technique; every
-/// other model is returned unchanged.
+/// Report whether the model is a dielectric whose material record must store zero metallic: hair cards
+/// and skin. Decoders and renderers reject such a record with a nonzero metallic fraction.
+[[nodiscard]] constexpr bool RequiresZeroMetallic(MaterialModel model) noexcept
+{
+    return model == MaterialModel::HairCard || model == MaterialModel::Skin;
+}
+/// The scattering a ray or reference evaluator applies to a surface. Hair cards and skin reflect through
+/// the metallic/roughness dielectric lobes there, since the strand highlight and the skin diffusion are
+/// raster techniques; every other model is returned unchanged.
 [[nodiscard]] constexpr MaterialScattering GetSurfaceReflectionScattering(const MaterialScattering& scattering) noexcept
 {
-    return scattering.Model == MaterialModel::HairCard ? MaterialScattering{} : scattering;
+    return scattering.Model == MaterialModel::HairCard || scattering.Model == MaterialModel::Skin ? MaterialScattering{}
+                                                                                                  : scattering;
 }
 /// Number of scalar float32 fields in the explicit MaterialScattering wire schema.
 inline constexpr foundation::usize MATERIAL_SCATTERING_FLOATS = MATERIAL_RGB_CHANNELS + MATERIAL_RGB_CHANNELS + 2 + 2;
 /// Validate finite bounded optical parameters. Unsupported model tags, including the unresolved
 /// marker, reject. A closure program keeps every field at its default, so equal programs cook to
 /// equal bytes; its program is validated by IsMaterialProgramValid. A hair card is validated by
-/// IsHairCardValid.
+/// IsHairCardValid. Skin admits only its scattering distances in K, each in
+/// [0, MAX_SKIN_SCATTERING_DISTANCE], with every other field at its default.
 /// An evaluator separately admits the supported anisotropy.
 [[nodiscard]] constexpr bool IsMaterialScatteringValid(const MaterialScattering& scattering) noexcept
 {
@@ -369,6 +390,20 @@ inline constexpr foundation::usize MATERIAL_SCATTERING_FLOATS = MATERIAL_RGB_CHA
         return total >= LUDUS_PROJECT_BRDF_MIN_WEIGHT && scattering.AlphaU == 1 && scattering.AlphaV == 1 &&
                scattering.CoatingEta == DEFAULT_COATING_ETA &&
                (scattering.CoatingThickness == 0 || scattering.CoatingThickness == 1);
+    }
+    if (scattering.Model == MaterialModel::Skin)
+    {
+        const MaterialScattering defaults;
+        for (foundation::usize channel = 0; channel < MATERIAL_RGB_CHANNELS; ++channel)
+        {
+            if (scattering.Eta[channel] != defaults.Eta[channel] ||
+                (scattering.K[channel] >= 0 && scattering.K[channel] <= MAX_SKIN_SCATTERING_DISTANCE) == false)
+            {
+                return false;
+            }
+        }
+        return scattering.AlphaU == defaults.AlphaU && scattering.AlphaV == defaults.AlphaV &&
+               scattering.CoatingEta == defaults.CoatingEta && scattering.CoatingThickness == defaults.CoatingThickness;
     }
     if (scattering.Model > MaterialModel::DiffuseConductorMix ||
         (scattering.Model == MaterialModel::DiffuseConductorMix && scattering.AlphaU != scattering.AlphaV) ||
@@ -441,5 +476,6 @@ enum MaterialModel : MaterialModelTag
     ProjectBrdf = LUDUS_MATERIAL_MODEL_PROJECT_BRDF,                  ///< Bounded project-authored reflection program.
     Program = LUDUS_MATERIAL_MODEL_PROGRAM,    ///< Closure program at MaterialSample.ProgramOffset.
     HairCard = LUDUS_MATERIAL_MODEL_HAIR_CARD, ///< Raster hair card; ray evaluators receive MetallicRoughness.
+    Skin = LUDUS_MATERIAL_MODEL_SKIN,          ///< Ray evaluators receive MetallicRoughness; K is scattering distance.
 };
 #endif // __cplusplus

@@ -23,12 +23,12 @@
 // reference_bsdf.cpp/reference_path.cpp; renderer-systems.md owns quality limits.
 LUDUS_SHADER_BINDING(0) cbuffer Parameters
 {
-    column_major float4x4 ClipToWorld;
-    float4 CameraPositionWorld;
-    uint4 Dimensions; // width, height, depth, roulette
-    uint4 Offsets;    // nodes, order, emitters, surfaces
-    uint4 Counts;     // triangles, nodes, emitters, analytic lights
-    uint4 Sampling;   // key lo, key hi, flags (reverse/infinite/center), target
+    column_major float4x4 ClipToEye; // clip to eye-relative world: world axes, origin at CameraPositionWorld.xyz
+    float4 CameraPositionWorld;      // w: orthographic flag
+    uint4 Dimensions;                // width, height, depth, roulette
+    uint4 Offsets;                   // nodes, order, emitters, surfaces
+    uint4 Counts;                    // triangles, nodes, emitters, analytic lights
+    uint4 Sampling;                  // key lo, key hi, flags (reverse/infinite/center), target
     float4 Environment;
     float4
         Options; // secondary range, exposure (zero bypasses graph ToneMap), material count bits, scene data group bits
@@ -44,6 +44,50 @@ float4 SceneValue(uint index)
     return asfloat(sceneWords[index]);
 }
 #include "material_program.slang"
+/// A camera ray built about the eye, its world origin added last.
+struct CameraRaySegment
+{
+    float3 OriginWorld;
+    float3 DirectionWorld;
+    float MinDistanceWorld;
+    /// Distance to the far plane; zero when HasFarPlane is false.
+    float MaxDistanceWorld;
+    /// False when the far point is at infinity: an infinite far plane.
+    bool HasFarPlane;
+};
+/// The camera ray through clip position positionClip. clipToEye maps clip to eye-relative world: world axes with
+/// the origin at eyeWorld. A world-space inverse of a camera far from the origin with a centimetre near plane carries
+/// eye * w terms that cost float32 directions a sizeable fraction of a pixel (issue #1761); the eye-relative points
+/// keep them. A pinhole ray starts at the eye and points at its far-plane point: the float32 projection's centre lies
+/// micrometres from the eye, which would turn the direction to a centimetre-near point by up to a pixel, while the far
+/// point's cancelling w only scales its offset; an infinite far plane gives the direction itself. An orthographic ray
+/// starts on the near plane. nearClipZ is the near plane's clip depth: 0, or 1 under reverse Z. The RT1 CPU oracle's
+/// CameraRay (reference_scene.cpp) builds the same ray.
+CameraRaySegment
+MakeCameraRaySegment(float4x4 clipToEye, float3 eyeWorld, bool isOrthographic, float2 positionClip, float nearClipZ)
+{
+    float4 nearHomogeneousEye = mul(clipToEye, float4(positionClip, nearClipZ, 1));
+    float4 farHomogeneousEye = mul(clipToEye, float4(positionClip, 1 - nearClipZ, 1));
+    float3 nearPositionEye = nearHomogeneousEye.xyz / nearHomogeneousEye.w;
+    float3 originEye = isOrthographic == true ? nearPositionEye : float3(0);
+    CameraRaySegment ray;
+    ray.HasFarPlane = farHomogeneousEye.w != 0;
+    float3 farPositionEye = ray.HasFarPlane == true ? farHomogeneousEye.xyz / farHomogeneousEye.w : float3(0);
+    ray.OriginWorld = eyeWorld + originEye;
+    ray.DirectionWorld = NormalizeOrZero(ray.HasFarPlane == true ? farPositionEye - originEye : farHomogeneousEye.xyz);
+    ray.MinDistanceWorld = isOrthographic == true ? 0 : dot(nearPositionEye, ray.DirectionWorld);
+    ray.MaxDistanceWorld = ray.HasFarPlane == true ? dot(farPositionEye - originEye, ray.DirectionWorld) : 0;
+    return ray;
+}
+/// The world-space clip-to-world matrix of clipToEye and eyeWorld: the eye added to the position rows.
+float4x4 MakeCameraClipToWorld(float4x4 clipToEye, float3 eyeWorld)
+{
+    float4x4 clipToWorld = clipToEye;
+    clipToWorld[0] += eyeWorld.x * clipToEye[3];
+    clipToWorld[1] += eyeWorld.y * clipToEye[3];
+    clipToWorld[2] += eyeWorld.z * clipToEye[3];
+    return clipToWorld;
+}
 LUDUS_SHADER_BINDING(2) RWStructuredBuffer<float4> accumulation; // sum/count, compensation/error
 #if defined(LUDUS_RENDER_GRAPH_RAY_PIPELINE)
 // An authored weighted estimator owns its numerator/denominator in persistent storage.
@@ -733,6 +777,43 @@ float HitEmitterSelection(uint t, uint lightCount)
     uint emitter;
     return FindEmitter(t, emitter) == true ? EmitterSelection(emitter, lightCount) : 0;
 }
+/// GGX terms of the shared specular reflection lobe for unit view and light directions above the shading hemisphere,
+/// whose cosines are nv and nl: Fresnel (Schlick, or complex-IOR for the conductor lobes), Filament's distribution and
+/// the height-correlated Smith visibility, with ViewLambda the view term of the visible-normal density.
+struct GgxReflectionTerms
+{
+    float3 Fresnel;
+    float Distribution;
+    float Visibility;
+    float ViewLambda;
+};
+GgxReflectionTerms EvaluateGgxReflectionTerms(float3 color,
+                                              float metallic,
+                                              MaterialModel model,
+                                              float3 eta,
+                                              float3 extinction,
+                                              float alpha,
+                                              float3 normalWorld,
+                                              float3 v,
+                                              float3 l,
+                                              float nv,
+                                              float nl)
+{
+    GgxReflectionTerms result;
+    float3 halfWorld = NormalizeOrZero(v + l);
+    float vh = saturate(dot(v, halfWorld));
+    float a2 = alpha * alpha;
+    result.Distribution = ComputeGgxNormalDistribution(normalWorld, halfWorld, a2);
+    result.ViewLambda = sqrt(nv * nv * (1 - a2) + a2);
+    float gl = sqrt(nl * nl * (1 - a2) + a2);
+    result.Visibility = .5 / max(nl * result.ViewLambda + nv * gl, 1e-6);
+    float3 f0 = .04 * (1 - metallic) + color * metallic;
+    float term = 1 - vh;
+    result.Fresnel = f0 + (1 - f0) * term * term * term * term * term;
+    if (HasRoughConductorLobe(model) == true)
+        result.Fresnel = ComputeConductorFresnelRgb(vh, eta, extinction);
+    return result;
+}
 void EvaluateScattering(float3 color,
                         float metallic,
                         float roughness,
@@ -778,26 +859,67 @@ void EvaluateScattering(float3 color,
         outPdf = nl / PI;
         return;
     }
-    float3 halfWorld = NormalizeOrZero(v + l);
-    float vh = saturate(dot(v, halfWorld));
-    float alpha = ComputeMaterialAlpha(model, roughness, conductorAlpha);
-    float a2 = alpha * alpha;
-    float distribution = ComputeGgxNormalDistribution(normalWorld, halfWorld, a2);
-    float gv = sqrt(nv * nv * (1 - a2) + a2);
-    float gl = sqrt(nl * nl * (1 - a2) + a2);
-    float visibility = .5 / max(nl * gv + nv * gl, 1e-6);
-    float3 f0 = .04 * (1 - metallic) + color * metallic;
-    float term = 1 - vh;
-    float3 fresnel = f0 + (1 - f0) * term * term * term * term * term;
+    GgxReflectionTerms specular = EvaluateGgxReflectionTerms(color,
+                                                             metallic,
+                                                             model,
+                                                             eta,
+                                                             extinction,
+                                                             ComputeMaterialAlpha(model, roughness, conductorAlpha),
+                                                             normalWorld,
+                                                             v,
+                                                             l,
+                                                             nv,
+                                                             nl);
+    float3 fresnel = specular.Fresnel;
     bool isConductor = model == MaterialModel::Conductor;
-    if (HasRoughConductorLobe(model) == true)
-        fresnel = ComputeConductorFresnelRgb(vh, eta, extinction);
     float diffuseFraction = isConductor == true ? 0 : 1 - metallic;
-    outValue = fresnel * (distribution * visibility) + color * (1 - fresnel) * (diffuseFraction / PI);
+    outValue = fresnel * (specular.Distribution * specular.Visibility) + color * (1 - fresnel) * (diffuseFraction / PI);
     float probability = ComputeMaterialSpecularProbability(model, metallic);
     if (isMix == true)
-        outValue = fresnel * (distribution * visibility * probability) + color * ((1 - probability) / PI);
-    outPdf = probability * distribution / (2 * (nv + gv)) + (1 - probability) * nl / PI;
+        outValue =
+            fresnel * (specular.Distribution * specular.Visibility * probability) + color * ((1 - probability) / PI);
+    outPdf = probability * specular.Distribution / (2 * (nv + specular.ViewLambda)) + (1 - probability) * nl / PI;
+}
+/// The GGX specular lobe of EvaluateScattering alone: its value without the lobe's mixture weight, which is one
+/// except for DiffuseConductorMix, times that weight, and the visible-normal reflection density SampleScatteringBsdf
+/// proposes with probability one. Zero for directions outside the shading hemisphere and for models without the lobe
+/// (Diffuse, a DiffuseConductorMix of conductor weight zero, ProjectBrdf and Program). The remaining lobe of
+/// EvaluateScattering is diffuse. For MetallicRoughness that remainder still depends on the specular Fresnel term.
+void EvaluateScatteringSpecularLobe(float3 color,
+                                    float metallic,
+                                    float roughness,
+                                    MaterialModel model,
+                                    float3 eta,
+                                    float3 extinction,
+                                    float conductorAlpha,
+                                    float3 normalWorld,
+                                    float3 v,
+                                    float3 l,
+                                    out float3 outValue,
+                                    out float outPdf)
+{
+    outValue = 0;
+    outPdf = 0;
+    float nv = dot(normalWorld, v);
+    float nl = dot(normalWorld, l);
+    bool isMix = model == MaterialModel::DiffuseConductorMix;
+    if (nv <= 0 || nl <= 0 || model == MaterialModel::Diffuse || model == MaterialModel::ProjectBrdf ||
+        model == MaterialModel::Program || (isMix == true && metallic == 0))
+        return;
+    GgxReflectionTerms specular = EvaluateGgxReflectionTerms(color,
+                                                             metallic,
+                                                             model,
+                                                             eta,
+                                                             extinction,
+                                                             ComputeMaterialAlpha(model, roughness, conductorAlpha),
+                                                             normalWorld,
+                                                             v,
+                                                             l,
+                                                             nv,
+                                                             nl);
+    float weight = isMix == true ? ComputeMaterialSpecularProbability(model, metallic) : 1;
+    outValue = specular.Fresnel * (specular.Distribution * specular.Visibility * weight);
+    outPdf = specular.Distribution / (2 * (nv + specular.ViewLambda));
 }
 float3 SampleScatteringBsdf(float3 normalWorld, float3 viewDirectionWorld, float alpha, float probability, float3 u)
 {
@@ -912,17 +1034,18 @@ float3 Integrate(uint pixel, uint sample)
     float2 jitter = (Sampling.z & 4) != 0 ? float2(.5) : float2(Random01(pixel, sample, 0), Random01(pixel, sample, 1));
     float2 positionUv = (float2(pixel % Dimensions.x, pixel / Dimensions.x) + jitter) / float2(Dimensions.xy);
     float nearClipZ = (Sampling.z & 1) != 0 ? 1 : 0;
-    float4 nearPositionWorld = mul(ClipToWorld, float4(positionUv.x * 2 - 1, 1 - positionUv.y * 2, nearClipZ, 1));
-    nearPositionWorld /= nearPositionWorld.w;
-    float4 farPositionWorld = mul(ClipToWorld, float4(positionUv.x * 2 - 1, 1 - positionUv.y * 2, 1 - nearClipZ, 1));
-    // Match RT1's farPositionWorld-plane/homogeneous shadowDirectionWorld, including non-default pinholes.
-    float3 originWorld = CameraPositionWorld.w != 0 ? nearPositionWorld.xyz : CameraPositionWorld.xyz;
-    float3 directionWorld = NormalizeOrZero(
-        farPositionWorld.w != 0 ? farPositionWorld.xyz / farPositionWorld.w - originWorld : farPositionWorld.xyz);
-    float minimum = CameraPositionWorld.w != 0 ? 0 : dot(nearPositionWorld.xyz - originWorld, directionWorld);
+    // Match RT1's eye-relative camera ray (GenerateCameraRay), including its infinite far plane.
+    CameraRaySegment camera = MakeCameraRaySegment(ClipToEye,
+                                                   CameraPositionWorld.xyz,
+                                                   CameraPositionWorld.w != 0,
+                                                   float2(positionUv.x * 2 - 1, 1 - positionUv.y * 2),
+                                                   nearClipZ);
+    float3 originWorld = camera.OriginWorld;
+    float3 directionWorld = camera.DirectionWorld;
+    float minimum = camera.MinDistanceWorld;
     float maximum = Options.x;
-    if (farPositionWorld.w != 0)
-        maximum = dot(farPositionWorld.xyz / farPositionWorld.w - originWorld, directionWorld);
+    if (camera.HasFarPlane == true)
+        maximum = camera.MaxDistanceWorld;
     else
     {
         maximum = 0;
@@ -1237,6 +1360,28 @@ float3 Integrate(uint pixel, uint sample)
 // indices, sample streams and accumulation are those of an untiled dispatch.
 LUDUS_GPU_PREVIEW_COMPUTE_ENTRY void ComputeMain(uint3 dispatchPixel : SV_DispatchThreadID)
 {
+#if defined(LUDUS_GRAPH_BUFFER_DISPATCH)
+    if ((Sampling.z & LUDUS_GPU_PREVIEW_SCENE_WORK_FLAG) != 0)
+    {
+        uint rowWidth = min(Dimensions.w, LUDUS_GPU_PREVIEW_SCENE_WORK_ROW_WIDTH);
+        uint workItem = dispatchPixel.y * rowWidth + dispatchPixel.x;
+        if (dispatchPixel.x < rowWidth && workItem < Dimensions.w)
+        {
+            graphFailureReason = LUDUS_SCENE_FAILURE_INVALID_RADIANCE;
+            graphRadianceIsResolved = false;
+            if (SurfaceLayout.x == LUDUS_GPU_PREVIEW_SURFACE_WORDS &&
+                SurfaceLayout.z == LUDUS_GPU_PREVIEW_KERNEL_VERSION)
+            {
+                float3 status = EvaluateGraphRay(workItem);
+                if (any(isfinite(status) == false) || any(status < 0))
+                    LUDUS_COUNT_GRAPH_FAILURE(graphFailureReason);
+            }
+            else
+                LUDUS_COUNT_GRAPH_FAILURE(LUDUS_SCENE_FAILURE_INTERFACE_VERSION);
+        }
+        return;
+    }
+#endif
     uint3 positionPixel = uint3(dispatchPixel.xy + Tile.xy, dispatchPixel.z);
     if (positionPixel.x >= Tile.z || positionPixel.y >= Tile.w)
         return;

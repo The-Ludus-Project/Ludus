@@ -121,6 +121,11 @@ enum class SyntaxKind : foundation::uint8
     DiscardStatement,
     /// `[[fallthrough]];` at the end of a CaseClause.
     FallthroughStatement,
+    /// `barrier groupshared;` or `barrier all;`, a group execution and memory barrier of a compute
+    /// stage. `barrier` is contextual: it begins the statement only before `groupshared` or `all`
+    /// and `;`. Token: `groupshared` (`groupshared` memory) or `all` (`groupshared` and device
+    /// memory).
+    BarrierStatement,
 
     /// An identifier in an expression. Token: the identifier.
     Name,

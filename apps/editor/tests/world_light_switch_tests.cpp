@@ -4,15 +4,18 @@
 #include "internal/preview_lighting.h"
 #include "internal/render_graph_preview.h"
 #include "internal/world_lights_panel.h"
+#include "internal/world_materials_panel.h"
 #include "internal/world_workspace.h"
 
 #include <ludus/foundation/base/types.h>
 
 #include <QAction>
+#include <QApplication>
 #include <QByteArray>
 #include <QDir>
 #include <QFile>
 #include <QFileInfo>
+#include <QHeaderView>
 #include <QJsonArray>
 #include <QJsonDocument>
 #include <QJsonObject>
@@ -21,6 +24,7 @@
 #include <QPushButton>
 #include <QScrollBar>
 #include <QString>
+#include <QTabWidget>
 #include <QTemporaryDir>
 #include <QTest>
 #include <QTreeWidget>
@@ -196,6 +200,31 @@ void CheckExtraction(const RenderScene& scene, uint64 switchedOffSourceIdOrZero,
             scene.Definition->Materials[static_cast<usize>(object.Surface)].AreaSourceId == switchedOffSourceIdOrZero)
         {
             CHECK(material.Emission == math::Vector3{});
+        }
+    }
+}
+/// Fails for every pair of shown child widgets of page that overlap, and for any that leaves the page.
+void CheckNoOverlappingChildren(const QWidget& page)
+{
+    QVector<const QWidget*> shown;
+    for (const QWidget* childOrNull : page.findChildren<QWidget*>(Qt::FindDirectChildrenOnly))
+    {
+        if (childOrNull->isVisible() == true && childOrNull->isWindow() == false)
+        {
+            shown.append(childOrNull);
+        }
+    }
+    REQUIRE(shown.isEmpty() == false);
+    for (qsizetype first = 0; first < shown.size(); ++first)
+    {
+        INFO(shown[first]->objectName().toStdString()
+             << " at " << shown[first]->geometry().x() << "," << shown[first]->geometry().y() << " "
+             << shown[first]->geometry().width() << "x" << shown[first]->geometry().height());
+        CHECK(page.rect().contains(shown[first]->geometry()) == true);
+        for (qsizetype second = first + 1; second < shown.size(); ++second)
+        {
+            INFO("overlaps " << shown[second]->objectName().toStdString());
+            CHECK(shown[first]->geometry().intersects(shown[second]->geometry()) == false);
         }
     }
 }
@@ -659,7 +688,7 @@ TEST_CASE("Switching a light keeps the light list's scroll position and selectio
         row.Label = QStringLiteral("Imported object %1").arg(i);
         rows.append(row);
     }
-    // The panel hides itself while it has no rows, so it lives in a window of its own.
+    // The panel is shown on its own, in a window sized like the World sidebar.
     QWidget window;
     QVBoxLayout* layout = new QVBoxLayout(&window);
     WorldLightsPanel* panelOrNull = new WorldLightsPanel(&window);
@@ -700,4 +729,144 @@ TEST_CASE("Switching a light keeps the light list's scroll position and selectio
     QTreeWidgetItem* topOrNull = treeOrNull->itemAt(0, 0);
     REQUIRE(topOrNull != nullptr);
     CHECK(topOrNull->text(0) == QStringLiteral("Imported object %1").arg(selectedRow));
+}
+
+TEST_CASE("The World Lights and Materials tabs each show only their own list and commands",
+          "[editor][world][lighting][light-switches][layout]")
+{
+    QTemporaryDir directory;
+    REQUIRE(directory.isValid() == true);
+    const QString projectPath = QDir(directory.path()).filePath(QStringLiteral("project"));
+    REQUIRE(QDir().mkpath(projectPath) == true);
+    const QString root = QFileInfo(projectPath).canonicalFilePath();
+    const QString source = directory.filePath(QStringLiteral("source/scene.pbrt"));
+    WriteSwitchSource(source);
+    const QString path = QDir(root).filePath(QStringLiteral("tabs.world.json"));
+    CreateImportedWorld(root, path, source);
+
+    // The host keeps the workspace at the requested size even where the runner's screen is smaller.
+    QWidget host;
+    QVBoxLayout* hostLayout = new QVBoxLayout(&host);
+    hostLayout->setContentsMargins(0, 0, 0, 0);
+    WorldWorkspace* workspaceOrNull = new WorldWorkspace(MakeSceneTools(), &host);
+    hostLayout->addWidget(workspaceOrNull);
+    WorldWorkspace& workspace = *workspaceOrNull;
+    workspace.SetProject(root, 1);
+    REQUIRE(workspace.Open(path) == true);
+    WaitForWorld(workspace);
+    QTabWidget* listsOrNull = workspace.findChild<QTabWidget*>(QStringLiteral("worldSidebarLists"));
+    WorldLightsPanel* lightsOrNull = workspace.findChild<WorldLightsPanel*>();
+    WorldMaterialsPanel* materialsOrNull = workspace.findChild<WorldMaterialsPanel*>();
+    REQUIRE(listsOrNull != nullptr);
+    REQUIRE(lightsOrNull != nullptr);
+    REQUIRE(materialsOrNull != nullptr);
+    QTreeWidget* materialTreeOrNull = materialsOrNull->findChild<QTreeWidget*>(QStringLiteral("worldMaterials"));
+    REQUIRE(materialTreeOrNull != nullptr);
+    REQUIRE(materialTreeOrNull->topLevelItemCount() > 0);
+    const QString renderable = materialTreeOrNull->topLevelItem(0)->child(0)->data(0, Qt::UserRole).toString();
+
+    struct WindowSize final
+    {
+        const char* Name;
+        int32 Width;
+        int32 Height;
+    };
+    // A narrow window, and a 13-inch MacBook Air's maximized window at its default scale.
+    constexpr int32 NARROW_WIDTH = 900;
+    constexpr int32 NARROW_HEIGHT = 740;
+    constexpr int32 MACBOOK_AIR_WIDTH = 1470;
+    constexpr int32 MACBOOK_AIR_HEIGHT = 920;
+    const QString captures = qEnvironmentVariable("LUDUS_EDITOR_LAYOUT_CAPTURE");
+    for (const WindowSize size : {WindowSize{"narrow", NARROW_WIDTH, NARROW_HEIGHT},
+                                  WindowSize{"macbook-air", MACBOOK_AIR_WIDTH, MACBOOK_AIR_HEIGHT}})
+    {
+        INFO(size.Name);
+        host.resize(size.Width, size.Height);
+        host.show();
+        REQUIRE(QTest::qWaitForWindowExposed(&host) == true);
+
+        // Materials first: refreshing the World (here by selecting a renderable) refreshes the light list too,
+        // which must not bring the Lights page, its commands or its hints up over the Materials tab.
+        listsOrNull->setCurrentWidget(materialsOrNull);
+        REQUIRE(workspace.SelectEntity(renderable) == true);
+        materialTreeOrNull->topLevelItem(0)->setExpanded(true);
+        materialTreeOrNull->setCurrentItem(materialTreeOrNull->topLevelItem(0)->child(0));
+        QApplication::processEvents();
+        CHECK(lightsOrNull->isVisible() == false);
+        CHECK(materialsOrNull->isVisible() == true);
+        CheckNoOverlappingChildren(*materialsOrNull);
+        // The Used by count keeps its whole header, never a clipped "ht".
+        const QHeaderView& header = *materialTreeOrNull->header();
+        CHECK(header.sectionSize(1) >= header.fontMetrics().horizontalAdvance(QStringLiteral("Used by")));
+        if (captures.isEmpty() == false)
+        {
+            REQUIRE(listsOrNull->grab().save(captures + QStringLiteral("-materials-") + QString::fromLatin1(size.Name) +
+                                             QStringLiteral(".png")) == true);
+        }
+
+        listsOrNull->setCurrentWidget(lightsOrNull);
+        QApplication::processEvents();
+        CHECK(lightsOrNull->isVisible() == true);
+        CHECK(materialsOrNull->isVisible() == false);
+        CheckNoOverlappingChildren(*lightsOrNull);
+        if (captures.isEmpty() == false)
+        {
+            REQUIRE(listsOrNull->grab().save(captures + QStringLiteral("-lights-") + QString::fromLatin1(size.Name) +
+                                             QStringLiteral(".png")) == true);
+        }
+    }
+
+    // With no lights the Lights tab stays a page with an empty list and a one-line hint, never a blank tab.
+    lightsOrNull->SetRows({}, {});
+    QApplication::processEvents();
+    CHECK(lightsOrNull->isVisible() == true);
+    const QLabel* hintOrNull = lightsOrNull->findChild<QLabel*>(QStringLiteral("worldLightsStatus"));
+    REQUIRE(hintOrNull != nullptr);
+    CHECK(hintOrNull->isVisible() == true);
+    CHECK(hintOrNull->height() <= hintOrNull->fontMetrics().height() * 2);
+    CheckNoOverlappingChildren(*lightsOrNull);
+    workspace.StopPreview();
+}
+
+TEST_CASE("Materials that share a name read as different rows", "[editor][world][scene-materials][layout]")
+{
+    QWidget window;
+    QVBoxLayout* layout = new QVBoxLayout(&window);
+    WorldMaterialsPanel* panelOrNull = new WorldMaterialsPanel(&window);
+    layout->addWidget(panelOrNull);
+    panelOrNull->SetRows({{QStringLiteral("material/aaaa1111"),
+                           QStringLiteral("metal_door"),
+                           {{QStringLiteral("entity-1"), QStringLiteral("metal_door")}}},
+                          {QStringLiteral("material/bbbb2222"),
+                           QStringLiteral("metal_door"),
+                           {{QStringLiteral("entity-2"), QStringLiteral("metal_door")}}},
+                          {QStringLiteral("material/cccc3333"),
+                           QStringLiteral("glass"),
+                           {{QStringLiteral("entity-3"), QStringLiteral("glass")}}}});
+    QTreeWidget* treeOrNull = panelOrNull->findChild<QTreeWidget*>(QStringLiteral("worldMaterials"));
+    REQUIRE(treeOrNull != nullptr);
+    REQUIRE(treeOrNull->topLevelItemCount() == 3);
+    QStringList shown;
+    for (int32 index = 0; index < treeOrNull->topLevelItemCount(); ++index)
+    {
+        const QTreeWidgetItem& item = *treeOrNull->topLevelItem(index);
+        CHECK(shown.contains(item.text(0)) == false);
+        shown.append(item.text(0));
+        // A material and the renderables that use it are told apart at a glance, even when they share a name.
+        CHECK(item.icon(0).isNull() == false);
+        REQUIRE(item.childCount() == 1);
+        CHECK(item.child(0)->icon(0).isNull() == false);
+        CHECK(item.child(0)->icon(0).cacheKey() != item.icon(0).cacheKey());
+        CHECK(item.child(0)->flags().testFlag(Qt::ItemIsEditable) == false);
+    }
+    // A unique name stays as it is; shared names keep the name first and add the resource it comes from.
+    CHECK(shown.contains(QStringLiteral("glass")) == true);
+    CHECK(shown.filter(QStringLiteral("metal_door")).size() == 2);
+    for (const QString& text : shown.filter(QStringLiteral("metal_door")))
+    {
+        CHECK(text.startsWith(QStringLiteral("metal_door")) == true);
+        CHECK(text != QStringLiteral("metal_door"));
+    }
+    // The focused row is marked across the whole row, not as a box around the name that reads as a text field.
+    CHECK(treeOrNull->allColumnsShowFocus() == true);
 }

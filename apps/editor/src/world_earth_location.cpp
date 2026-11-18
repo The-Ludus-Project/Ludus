@@ -1,10 +1,13 @@
 #include "internal/world_earth_location.h"
 
+#include "internal/world_earth_time_zone.h"
+
 #include <ludus/foundation/base/config.h>
 #include <ludus/foundation/math/scalar.hpp>
 #include <ludus/gameplay/world/celestial_transform.hpp>
 
 #include <QByteArray>
+#include <QComboBox>
 #include <QDialog>
 #include <QDialogButtonBox>
 #include <QHBoxLayout>
@@ -18,6 +21,7 @@
 #include <QNetworkReply>
 #include <QNetworkRequest>
 #include <QPointF>
+#include <QPointer>
 #include <QPushButton>
 #include <QStringList>
 #include <QTimer>
@@ -54,6 +58,8 @@ constexpr int32 MAXIMUM_QUERY_CHARACTERS = 200;
 constexpr int32 LOCATION_TIMEOUT_MILLISECONDS = 15'000;
 constexpr int64 MAXIMUM_RESPONSE_BYTES = 128 * 1024;
 constexpr int32 COORDINATE_DISPLAY_DIGITS = 10;
+constexpr int32 PLACE_COORDINATES_ROLE = Qt::UserRole;
+constexpr int32 PLACE_TIME_ZONE_ROLE = Qt::UserRole + 1;
 
 bool AreEarthCoordinatesValid(float64 latitude, float64 longitude)
 {
@@ -217,14 +223,20 @@ public:
     }
 #endif
 
-    [[nodiscard]] bool TryGetCoordinates(QPointF& outCoordinates) const
+    /// The selected result's longitude (x) and latitude (y), and its time zone.
+    [[nodiscard]] bool TryGetPlace(QPointF& outCoordinates, QString& outTimeZone) const
     {
         const QListWidgetItem* itemOrNull = mResults->currentItem();
         if (mOperation != Operation::Idle || itemOrNull == nullptr)
         {
             return false;
         }
-        outCoordinates = itemOrNull->data(Qt::UserRole).toPointF();
+        outCoordinates = itemOrNull->data(PLACE_COORDINATES_ROLE).toPointF();
+        outTimeZone = itemOrNull->data(PLACE_TIME_ZONE_ROLE).toString();
+        if (outTimeZone.isEmpty() == true)
+        {
+            outTimeZone = FindEarthTimeZone(outCoordinates.y(), outCoordinates.x(), {});
+        }
         return true;
     }
 
@@ -262,11 +274,15 @@ private:
 
     void addResult(const EarthPlace& place)
     {
-        QListWidgetItem* item = new QListWidgetItem(
-            QStringLiteral("%1\nLatitude %2°, longitude %3°")
-                .arg(place.Label, FormatCoordinate(place.LatitudeDegrees), FormatCoordinate(place.LongitudeDegrees)),
-            mResults);
-        item->setData(Qt::UserRole, QPointF(place.LongitudeDegrees, place.LatitudeDegrees));
+        const QString timeZone = FindEarthTimeZone(place.LatitudeDegrees, place.LongitudeDegrees, place.CountryCode);
+        QListWidgetItem* item = new QListWidgetItem(QStringLiteral("%1\nLatitude %2°, longitude %3° · %4")
+                                                        .arg(place.Label,
+                                                             FormatCoordinate(place.LatitudeDegrees),
+                                                             FormatCoordinate(place.LongitudeDegrees),
+                                                             timeZone),
+                                                    mResults);
+        item->setData(PLACE_COORDINATES_ROLE, QPointF(place.LongitudeDegrees, place.LatitudeDegrees));
+        item->setData(PLACE_TIME_ZONE_ROLE, timeZone);
     }
 
     void search()
@@ -318,7 +334,7 @@ private:
             }
             finish(places.isEmpty() == true
                        ? QStringLiteral("No matches. Try adding a region or country to your search.")
-                       : QStringLiteral("Select the matching place to use its coordinates."));
+                       : QStringLiteral("Select the matching place to use its coordinates and time zone."));
         });
     }
 
@@ -425,9 +441,9 @@ private:
             finish(QStringLiteral("The device returned invalid coordinates. Search for a place or enter coordinates."));
             return;
         }
-        addResult({QStringLiteral("Device location"), latitude, longitude});
+        addResult({QStringLiteral("Device location"), latitude, longitude, QString()});
         mResults->setCurrentRow(0);
-        finish(QStringLiteral("Review the coordinates before copying them to this World."));
+        finish(QStringLiteral("Review the coordinates and time zone before copying them to this World."));
     }
 #endif
 
@@ -478,10 +494,11 @@ bool TryReadEarthPlaces(const QByteArray& response, QList<EarthPlace>& outPlaces
         }
         const float64 longitude = coordinates.at(0).toDouble();
         const float64 latitude = coordinates.at(1).toDouble();
-        const QString label = FormatPlaceLabel(place.value(QStringLiteral("properties")).toObject());
+        const QJsonObject properties = place.value(QStringLiteral("properties")).toObject();
+        const QString label = FormatPlaceLabel(properties);
         if (AreEarthCoordinatesValid(latitude, longitude) == true && label.isEmpty() == false)
         {
-            outPlaces.append({label, latitude, longitude});
+            outPlaces.append({label, latitude, longitude, properties.value(QStringLiteral("countrycode")).toString()});
             if (outPlaces.size() == MAXIMUM_PLACES)
             {
                 break;
@@ -491,18 +508,30 @@ bool TryReadEarthPlaces(const QByteArray& response, QList<EarthPlace>& outPlaces
     return true;
 }
 
-void OpenWorldEarthLocation(QWidget& inoutOwner, QLineEdit& inoutLatitude, QLineEdit& inoutLongitude)
+void OpenWorldEarthLocation(QWidget& inoutOwner,
+                            QLineEdit& inoutLatitude,
+                            QLineEdit& inoutLongitude,
+                            QComboBox* timeZoneOrNull)
 {
     EarthLocationDialog* dialog = new EarthLocationDialog(inoutOwner);
-    QObject::connect(dialog, &QDialog::accepted, &inoutOwner, [dialog, &inoutOwner, &inoutLatitude, &inoutLongitude]() {
-        QPointF coordinates;
-        if (inoutOwner.isHidden() == false && dialog->TryGetCoordinates(coordinates) == true)
-        {
-            inoutLatitude.setText(FormatCoordinate(coordinates.y()));
-            inoutLongitude.setText(FormatCoordinate(coordinates.x()));
-            Q_EMIT inoutLongitude.textEdited(inoutLongitude.text());
-        }
-    });
+    const QPointer<QComboBox> timeZoneFieldOrNull(timeZoneOrNull);
+    QObject::connect(dialog,
+                     &QDialog::accepted,
+                     &inoutOwner,
+                     [dialog, &inoutOwner, &inoutLatitude, &inoutLongitude, timeZoneFieldOrNull]() {
+                         QPointF coordinates;
+                         QString timeZone;
+                         if (inoutOwner.isHidden() == false && dialog->TryGetPlace(coordinates, timeZone) == true)
+                         {
+                             inoutLatitude.setText(FormatCoordinate(coordinates.y()));
+                             inoutLongitude.setText(FormatCoordinate(coordinates.x()));
+                             if (timeZoneFieldOrNull.isNull() == false)
+                             {
+                                 SelectEarthTimeZone(*timeZoneFieldOrNull, timeZone);
+                             }
+                             Q_EMIT inoutLongitude.textEdited(inoutLongitude.text());
+                         }
+                     });
     dialog->open();
 }
 } // namespace ludus::editor

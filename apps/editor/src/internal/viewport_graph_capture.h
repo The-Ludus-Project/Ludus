@@ -12,6 +12,7 @@
 
 #include "internal/render_graph_preview.h"
 #include "internal/viewport_raster_capture.h"
+#include "internal/viewport_tone_curve.h"
 
 #include <QByteArray>
 #include <QImage>
@@ -88,8 +89,9 @@ public:
     /// Linear means and committed counts of the last read-back, top-left rows; empty before one finished.
     [[nodiscard]] foundation::BorrowedView<const graphics::renderer::RenderGraphCapturePixel>
     GetPixels() const noexcept;
-    /// Display image of the last read-back, encoded like the viewport (EncodeReferenceDisplayColor).
-    [[nodiscard]] QImage MakeDisplayImage() const;
+    /// Display image of the last read-back, encoded like the viewport (EncodeReferenceDisplayColor with display).
+    /// Save writes it with the default transform. Empty before a read-back finished.
+    [[nodiscard]] QImage MakeDisplayImage(const ViewportDisplayTransform& display = {}) const;
     /// Write the `.lurgcap` capture and, beside it, its display PNG (GetDisplayImagePath).
     [[nodiscard]] bool Save(const QString& capturePath, QString& outError) const;
     /// PNG path written beside a `.lurgcap` path by Save.

@@ -141,6 +141,9 @@ does not already expose a general borrowed/multiple-surface editor contract.
 Never couple Qt widget lifetime to live game-module memory. GPU picking and worker results carry
 scene/session revision so delayed hits cannot select obsolete objects.
 
+The proposed [playable World workflow](playable-world-workflow.md) specifies
+how an author sets up Play, tests interactions and exports an editor-authored app.
+
 ## Renderer authoring workspace
 
 The Renderer workspace uses the same document/command core for graph,

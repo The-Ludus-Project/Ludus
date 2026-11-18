@@ -86,6 +86,8 @@ TEST_CASE("the built-in template catalog keeps the editor's existing template li
                                                QStringLiteral("visibility-buffer"),
                                                QStringLiteral("visibility-secondary-rays"),
                                                QStringLiteral("hybrid-shadows"),
+                                               QStringLiteral("hybrid-reflections"),
+                                               QStringLiteral("hybrid-indirect-diffuse"),
                                                QStringLiteral("restir-di"),
                                                QStringLiteral("tiled-vbuffer-nee"),
                                                QStringLiteral("compute-ray-tracing"),
@@ -109,8 +111,12 @@ TEST_CASE("the built-in template catalog keeps the editor's existing template li
     CHECK(graphs.at(0).Label == QStringLiteral("Raster"));
     CHECK(graphs.at(4).Label == QStringLiteral("Hybrid shadows — ray-traced analytic light shadows"));
     CHECK(graphs.at(4).Category == QStringLiteral("hybrid"));
-    CHECK(graphs.at(5).Label == QStringLiteral("ReSTIR DI — mesh emitter lighting"));
-    CHECK(graphs.at(7).Category == QStringLiteral("ray-traced"));
+    CHECK(graphs.at(5).Label == QStringLiteral("Hybrid reflections — roughness-aware ray-traced reflections"));
+    CHECK(graphs.at(5).Category == QStringLiteral("hybrid"));
+    CHECK(graphs.at(6).Label == QStringLiteral("Hybrid indirect diffuse — one diffuse bounce"));
+    CHECK(graphs.at(6).Category == QStringLiteral("hybrid"));
+    CHECK(graphs.at(7).Label == QStringLiteral("ReSTIR DI — mesh emitter lighting"));
+    CHECK(graphs.at(9).Category == QStringLiteral("ray-traced"));
     for (const RenderGraphTemplate& graph : graphs)
     {
         CAPTURE(graph.Identity.toStdString());
@@ -120,6 +126,8 @@ TEST_CASE("the built-in template catalog keeps the editor's existing template li
             graph.Identity == QStringLiteral("restir-di") ||
             graph.Identity == QStringLiteral("visibility-secondary-rays") ||
             graph.Identity == QStringLiteral("hybrid-shadows") ||
+            graph.Identity == QStringLiteral("hybrid-reflections") ||
+            graph.Identity == QStringLiteral("hybrid-indirect-diffuse") ||
             graph.Identity == QStringLiteral("tiled-vbuffer-nee") ||
             graph.Identity == QStringLiteral("compute-ray-tracing") ||
             graph.Identity == QStringLiteral("simple-compute-ray-tracing") ||

@@ -33,8 +33,15 @@ def lower(node, where, graph):
                    f'the authored group_size {group_size} is not supported',
                    field='state.group_size', expected=list(ray.SUPPORTED_WORKGROUP_SIZES), actual=group_size,
                    repair='Clear group_size so Pipeline State is automatic (state: {}).')
-    mappings, outputs, color = ray.lower_ports(node, where, graph, 'scene compute', 'scene compute')
-    record = {'id': node['id'], 'kind': 'RayTracing', 'color_load': color['load'], 'color_store': color['store']}
+    is_buffer_dispatch = 'work_items' in node['invocation']
+    graph._require(not is_buffer_dispatch or not has_callbacks, 'Capability', where,
+                   'a buffer-only scene dispatch requires one compute kernel',
+                   repair='Assign a compute program and remove the ray callbacks.')
+    mappings, outputs, color = ray.lower_ports(node, where, graph, 'scene compute', 'scene compute',
+                                              is_buffer_dispatch=is_buffer_dispatch)
+    record = {'id': node['id'], 'kind': 'RayTracing',
+              'color_load': color['load'] if color else 'Discard',
+              'color_store': color['store'] if color else 'Discard'}
     return record, mappings, outputs
 
 

@@ -738,7 +738,8 @@ class StatusIcon:
         canvas, size, palette = self.canvas, self.size, self.theme.palette
         canvas.delete("all")
         stroke = max(MINIMUM_STROKE_PIXELS, size / SYMBOL_STROKE_DIVISOR)
-        inset = stroke / 2 + 1
+        edge_padding = 1
+        inset = stroke / 2 + edge_padding
         box = (inset, inset, size - inset, size - inset)
         colour = status_colour(palette, self.status)
         mark = palette.panel if self.theme.appearance == LIGHT else palette.workspace
@@ -750,7 +751,8 @@ class StatusIcon:
             canvas.create_arc(*box, start=self.angle, extent=SPINNER_EXTENT_DEGREES, style="arc", outline=colour,
                               width=stroke)
             return
-        canvas.create_oval(0, 0, size, size, fill=colour, outline=colour)
+        canvas.create_oval(edge_padding, edge_padding, size - edge_padding, size - edge_padding,
+                           fill=colour, outline="")
         if self.status in (init_progress.DONE, SUCCESS):
             canvas.create_line(*[value * size for point in CHECK_POINTS for value in point], fill=mark, width=stroke,
                                capstyle="round", joinstyle="round")

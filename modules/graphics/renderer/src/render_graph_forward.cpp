@@ -13,7 +13,7 @@ namespace format = content::render_graph_format;
 namespace
 {
 constexpr usize FORWARD_BINDING_COUNT = 10;
-constexpr usize FORWARD_MEMBER_COUNT = 16;
+constexpr usize FORWARD_MEMBER_COUNT = 17;
 constexpr usize OUTPUT_BINDING_COUNT = 3;
 constexpr usize CLUSTERED_BINDING_COUNT = FORWARD_BINDING_COUNT + 1;
 constexpr usize CLUSTERED_MEMBER_COUNT = FORWARD_MEMBER_COUNT + CLUSTERED_GRID_ROWS;
@@ -83,6 +83,10 @@ constexpr StaticArray<rhi::RasterUniformMember, FORWARD_MEMBER_COUNT> FORWARD_ME
      {0,
       "HairHighlights",
       FORWARD_SURFACE_OFFSET + (3 + LUDUS_ENVIRONMENT_SH_COEFFICIENTS) * FLOAT4_BYTES,
+      rhi::RasterUniformShape::Float4},
+     {0,
+      "SkinScattering",
+      FORWARD_SURFACE_OFFSET + (4 + LUDUS_ENVIRONMENT_SH_COEFFICIENTS) * FLOAT4_BYTES,
       rhi::RasterUniformShape::Float4}},
 };
 constexpr StaticArray<rhi::RasterBinding, CLUSTERED_BINDING_COUNT> CLUSTERED_BINDINGS = []() noexcept {
@@ -132,7 +136,9 @@ constexpr StaticArray<rhi::RasterBinding, OUTPUT_BINDING_COUNT> OUTPUT_BINDINGS{
 };
 constexpr StaticArray<rhi::RasterUniformMember, 1> OUTPUT_MEMBERS{{{0, "Output", 0, rhi::RasterUniformShape::Float4}}};
 constexpr StaticArray<rhi::RasterShaderInput, 1> OUTPUT_INPUTS{{{0, rhi::RasterVertexFormat::Float4}}};
-constexpr usize DEFERRED_MEMBER_COUNT = CLUSTERED_MEMBER_COUNT + DEFERRED_VIEW_ROWS;
+/// ClipToWorldRows, EyeWorld, TargetSizePixel, Options and LightingView.
+constexpr usize DEFERRED_VIEW_MEMBER_COUNT = 5;
+constexpr usize DEFERRED_MEMBER_COUNT = CLUSTERED_MEMBER_COUNT + DEFERRED_VIEW_MEMBER_COUNT;
 constexpr StaticArray<rhi::RasterBinding, DEFERRED_BINDING_COUNT> DEFERRED_BINDINGS = []() noexcept {
     StaticArray<rhi::RasterBinding, DEFERRED_BINDING_COUNT> bindings;
     for (usize index = 0; index < CLUSTERED_BINDING_COUNT; ++index)
@@ -164,18 +170,16 @@ constexpr StaticArray<rhi::RasterUniformMember, DEFERRED_MEMBER_COUNT> DEFERRED_
                                        "ClipToWorldRows",
                                        0,
                                        rhi::RasterUniformShape::Float4Array};
-    members[CLUSTERED_MEMBER_COUNT + 1] = {DEFERRED_VIEW_BINDING,
-                                           "EyeWorld",
-                                           DEFERRED_VIEW_ROWS * FLOAT4_BYTES,
-                                           rhi::RasterUniformShape::Float4};
-    members[CLUSTERED_MEMBER_COUNT + 2] = {DEFERRED_VIEW_BINDING,
-                                           "TargetSizePixel",
-                                           (DEFERRED_VIEW_ROWS + 1) * FLOAT4_BYTES,
-                                           rhi::RasterUniformShape::Float4};
-    members[DEFERRED_MEMBER_COUNT - 1] = {DEFERRED_VIEW_BINDING,
-                                          "Options",
-                                          (DEFERRED_VIEW_ROWS + 2) * FLOAT4_BYTES,
-                                          rhi::RasterUniformShape::Float4};
+    // The view block after the inverse transform's rows: one Float4 per member, in declaration order.
+    constexpr StaticArray<const char*, DEFERRED_VIEW_MEMBER_COUNT - 1> VIEW_WORD_MEMBERS{
+        {"EyeWorld", "TargetSizePixel", "Options", "LightingView"}};
+    for (usize word = 0; word < VIEW_WORD_MEMBERS.GetSize(); ++word)
+    {
+        members[CLUSTERED_MEMBER_COUNT + 1 + word] = {DEFERRED_VIEW_BINDING,
+                                                      VIEW_WORD_MEMBERS[word],
+                                                      (DEFERRED_VIEW_ROWS + word) * FLOAT4_BYTES,
+                                                      rhi::RasterUniformShape::Float4};
+    }
     return members;
 }();
 constexpr StaticArray<rhi::RasterBinding, 1> DEPTH_COPY_BINDINGS{
@@ -199,6 +203,8 @@ void SetRenderGraphForwardInterface(rhi::RasterShaderDescription& inoutDescripti
     {
         case format::StageRole::DeferredGBufferFragment:
         case format::StageRole::DeferredOpaqueGBufferFragment:
+        case format::StageRole::DeferredProbeGBufferFragment:
+        case format::StageRole::DeferredSurfaceChartGBufferFragment:
             inoutDescription.Artifact.Stage = rhi::ShaderStage::Fragment;
             inoutDescription.Bindings = {CLUSTERED_BINDINGS.GetData(), CLUSTERED_BINDINGS.GetSize()};
             inoutDescription.UniformMembers = {CLUSTERED_MEMBERS.GetData(), CLUSTERED_MEMBERS.GetSize()};

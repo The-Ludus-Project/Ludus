@@ -1,10 +1,13 @@
 #include "coated_diffuse.slang"
 #include "dielectric.slang"
+#include "lighting_layout.h"
 #include "material_scattering.slang"
 #include "math.slang"
 #include "raster_bindings.slang"
+#include "renderer_atmosphere_celestial.slang"
 #include "renderer_gpu_preview_layout.h"
 #include "renderer_reference_layout.h"
+#include "renderer_reference_sky_layout.h"
 #include "renderer_surface_functions.slang"
 
 // GPU-compute implementation of the frozen RT1 reference integral. Each function
@@ -33,18 +36,18 @@
 // https://www.thesalmons.org/john/random123/papers/random123sc11.pdf, for Philox4x32-10.
 LUDUS_SHADER_BINDING(LUDUS_REFERENCE_PARAMETERS_BINDING) cbuffer Parameters
 {
-    column_major float4x4 ClipToWorld;
-    float4 CameraPositionWorld; // w: orthographic flag
-    uint4 Dimensions;           // width, height, maximum depth, roulette depth
-    uint4 Offsets;              // nodes, order, emitters, surfaces
-    uint4 Counts;               // triangles, nodes, emitters, analytic lights
-    uint4 Sampling;             // key low, key high, flags (reverse/infinite/center/opaque), target
+    column_major float4x4 ClipToEye; // clip to eye-relative world: world axes, origin at CameraPositionWorld.xyz
+    float4 CameraPositionWorld;      // w: orthographic flag
+    uint4 Dimensions;                // width, height, maximum depth, roulette depth
+    uint4 Offsets;                   // nodes, order, emitters, surfaces
+    uint4 Counts;                    // triangles, nodes, emitters, analytic lights
+    uint4 Sampling;                  // key low, key high, flags (reverse/infinite/center/opaque), target
     float4 Environment;
     float4 Options; // secondary range, unused exposure, instance count bits, scene data bits
     float4 BoundsMinimumWorld;
     float4 BoundsMaximumWorld;
     uint4 SurfaceLayout; // surface stride, analytic light offset, profile version, environment offset + 1
-    uint4 Tile;          // x: directional prefix length; the reference kernel covers Dimensions.xy
+    uint4 Tile;          // directional prefix length, medium offset/count, optional sky offset + 1
 };
 LUDUS_SHADER_BINDING(LUDUS_REFERENCE_SCENE_BINDING) StructuredBuffer<uint4> sceneWords;
 LUDUS_SHADER_BINDING(LUDUS_REFERENCE_ACCUMULATION_BINDING) RWStructuredBuffer<float4> accumulation;
@@ -384,27 +387,36 @@ bool GenerateCameraRay(uint pixel, uint sample, out Ray outRay)
     float clipX = 2 * (float(pixel % Dimensions.x) + jitterX) / float(Dimensions.x) - 1;
     float clipY = 1 - 2 * (float(pixel / Dimensions.x) + jitterY) / float(Dimensions.y);
     float nearClipZ = (Sampling.z & REVERSE_Z_FLAG) != 0 ? 1 : 0;
-    float4 nearWorld = mul(ClipToWorld, float4(clipX, clipY, nearClipZ, 1));
-    float4 farWorld = mul(ClipToWorld, float4(clipX, clipY, 1 - nearClipZ, 1));
-    if (all(isfinite(nearWorld)) == false || all(isfinite(farWorld)) == false || nearWorld.w == 0)
+    // The ray is built about the eye and translated last, as the CPU oracle's CameraRay: a world-space ClipToWorld
+    // of a camera far from the origin with a centimetre near plane loses pixel-scale directions to its eye * w
+    // terms (issue #1761). A pinhole ray points at its far-plane point, whose cancelling w only scales the offset.
+    float4 nearHomogeneousEye = mul(ClipToEye, float4(clipX, clipY, nearClipZ, 1));
+    float4 farHomogeneousEye = mul(ClipToEye, float4(clipX, clipY, 1 - nearClipZ, 1));
+    if (all(isfinite(nearHomogeneousEye)) == false || all(isfinite(farHomogeneousEye)) == false ||
+        nearHomogeneousEye.w == 0)
         return false;
-    float3 nearPositionWorld = nearWorld.xyz / nearWorld.w;
+    float3 nearPositionEye = nearHomogeneousEye.xyz / nearHomogeneousEye.w;
     bool isOrthographic = CameraPositionWorld.w != 0;
-    float3 originWorld = isOrthographic == true ? nearPositionWorld : CameraPositionWorld.xyz;
+    float3 originEye = isOrthographic == true ? nearPositionEye : float3(0);
+    float3 originWorld = CameraPositionWorld.xyz + originEye;
     float3 directionWorld;
-    if (farWorld.w == 0)
+    float3 farPositionEye = 0;
+    if (farHomogeneousEye.w == 0)
     {
         if ((Sampling.z & INFINITE_FAR_FLAG) == 0 || isOrthographic == true)
             return false;
-        directionWorld = NormalizeOrZero(farWorld.xyz);
+        directionWorld = NormalizeOrZero(farHomogeneousEye.xyz);
     }
     else
-        directionWorld = NormalizeOrZero(farWorld.xyz / farWorld.w - originWorld);
+    {
+        farPositionEye = farHomogeneousEye.xyz / farHomogeneousEye.w;
+        directionWorld = NormalizeOrZero(farPositionEye - originEye);
+    }
     if (IsWithinWorld(originWorld) == false || all(directionWorld == 0))
         return false;
     float distanceWorld = 1;
-    if (farWorld.w != 0)
-        distanceWorld = dot(farWorld.xyz / farWorld.w - originWorld, directionWorld);
+    if (farHomogeneousEye.w != 0)
+        distanceWorld = dot(farPositionEye - originEye, directionWorld);
     else if (all(BoundsMinimumWorld.xyz <= BoundsMaximumWorld.xyz))
     {
         float maximumWorld = 0;
@@ -417,7 +429,7 @@ bool GenerateCameraRay(uint pixel, uint sample, out Ray outRay)
         }
         distanceWorld = maximumWorld * INFINITE_FAR_DISTANCE_SCALE + 1;
     }
-    float minimumWorld = isOrthographic == true ? 0 : dot(nearPositionWorld - originWorld, directionWorld);
+    float minimumWorld = isOrthographic == true ? 0 : dot(nearPositionEye, directionWorld);
     if (isfinite(distanceWorld) == false || distanceWorld < 0 || minimumWorld < 0 || minimumWorld > distanceWorld)
         return false;
     outRay.OriginWorld = originWorld;
@@ -613,21 +625,104 @@ float ComputeEnvironmentSolidAngle(uint row, uint width, uint height)
     // Subtractive cosine loses FP32 precision near poles; use the sine identity.
     return (2 * PI / float(width)) * 2 * sin(PI * (float(row) + .5) / float(height)) * sin(PI / (2 * float(height)));
 }
+// Matches EvaluateFilteredEnvironment in environment.cpp.
+float3 EvaluateFilteredEnvironment(float2 coordinates, uint width, uint height)
+{
+    float x = coordinates.x * float(width) - 0.5;
+    float y = clamp(coordinates.y * float(height) - 0.5, 0, float(height - 1));
+    int lowerX = int(floor(x));
+    uint left = lowerX < 0 ? width - 1 : uint(lowerX);
+    uint right = left + 1 == width ? 0 : left + 1;
+    uint top = uint(y);
+    uint bottom = min(top + 1, height - 1);
+    uint topRow = SurfaceLayout.w + top * width;
+    uint bottomRow = SurfaceLayout.w + bottom * width;
+    float fractionX = x - float(lowerX);
+    float3 upper = lerp(SceneValue(topRow + left).xyz, SceneValue(topRow + right).xyz, fractionX);
+    float3 lower = lerp(SceneValue(bottomRow + left).xyz, SceneValue(bottomRow + right).xyz, fractionX);
+    return lerp(upper, lower, y - float(top));
+}
+
 // RGB radiance and solid-angle density of the frozen environment in one direction.
-float4 EvaluateEnvironmentWorld(float3 directionWorld)
+float4 EvaluateEnvironmentWorld(float3 directionWorld, bool shouldFilterRadiance)
 {
     if (SurfaceLayout.w == 0)
         return float4(Environment.xyz, 1 / (4 * PI));
     uint width = asuint(SceneValue(SurfaceLayout.w - 1).x);
     uint height = asuint(SceneValue(SurfaceLayout.w - 1).y);
-    uint2 cell =
-        min(uint2(ComputeEnvironmentCoordinates(directionWorld) * float2(width, height)), uint2(width - 1, height - 1));
+    float2 coordinates = ComputeEnvironmentCoordinates(directionWorld);
+    if (shouldFilterRadiance == true)
+    {
+        // This lookup is for a primary miss, which always has unit MIS weight.
+        return float4(EvaluateFilteredEnvironment(coordinates, width, height), 0);
+    }
+    uint2 cell = min(uint2(coordinates * float2(width, height)), uint2(width - 1, height - 1));
     uint pixel = cell.y * width + cell.x;
     float4 value = SceneValue(SurfaceLayout.w + pixel);
     float previous = pixel == 0 ? 0 : SceneValue(SurfaceLayout.w + pixel - 1).w;
     value.w = (value.w - previous) / ComputeEnvironmentSolidAngle(cell.y, width, height);
     return value;
 }
+float3 EvaluateReferenceNightSky(uint start, float3 directionWorld, float3 directionGalactic, float footprint)
+{
+    float peak = SceneValue(start + LUDUS_REFERENCE_SKY_SUN_RADIANCE).w;
+    float3 radiance = peak > 0 ? EvaluateCelestialStars(directionGalactic, footprint, peak) : float3(0);
+    uint count = uint(SceneValue(start + LUDUS_REFERENCE_SKY_LUNAR_LIGHT_WORLD).w);
+    for (uint index = 0; index < count; ++index)
+    {
+        uint word = start + LUDUS_REFERENCE_SKY_PLANETS + index * LUDUS_REFERENCE_SKY_PLANET_WORDS;
+        float weight = ComputePlanetPointWeight(directionWorld, SceneValue(word).xyz, footprint);
+        radiance += SceneValue(word + 1).xyz * weight;
+    }
+    return radiance;
+}
+
+float3 EvaluateReferenceSky(uint start, float3 directionWorld)
+{
+    float4 up = SceneValue(start + LUDUS_REFERENCE_SKY_UP_WORLD);
+    float zenithCosine = dot(directionWorld, up.xyz);
+    if (zenithCosine < up.w)
+    {
+        return 0;
+    }
+    float4 moon = SceneValue(start + LUDUS_REFERENCE_SKY_MOON_WORLD);
+    float4 sun = SceneValue(start + LUDUS_REFERENCE_SKY_SUN_WORLD);
+    float sunChord = length(directionWorld - sun.xyz);
+    float3 solarRadiance = SceneValue(start + LUDUS_REFERENCE_SKY_SUN_RADIANCE).xyz;
+    float3 radiance;
+    if (moon.w > 0 && length(directionWorld - moon.xyz) <= moon.w)
+    {
+        float4 lunarRadiance = SceneValue(start + LUDUS_REFERENCE_SKY_MOON_RADIANCE);
+        float3 lunarLightWorld = SceneValue(start + LUDUS_REFERENCE_SKY_LUNAR_LIGHT_WORLD).xyz;
+        radiance = lunarRadiance.xyz * EvaluateLunarPhase(directionWorld, moon.xyz, lunarLightWorld, lunarRadiance.w);
+    }
+    else if (sunChord <= sun.w && HasPositiveComponent(solarRadiance) == true)
+    {
+        radiance = solarRadiance * EvaluateSolarLimb(sunChord, sun.w);
+    }
+    else
+    {
+        float4 north = SceneValue(start + LUDUS_REFERENCE_SKY_GALACTIC_NORTH_WORLD);
+        float4 center = SceneValue(start + LUDUS_REFERENCE_SKY_GALACTIC_CENTER_WORLD);
+        float3 directionGalactic = directionWorld;
+        if (north.w > 0)
+        {
+            directionGalactic = float3(dot(directionWorld, center.xyz),
+                                       dot(directionWorld, cross(north.xyz, center.xyz)),
+                                       dot(directionWorld, north.xyz));
+        }
+        radiance = EvaluateReferenceNightSky(start, directionWorld, directionGalactic, center.w);
+    }
+    const uint LAST_SAMPLE = LUDUS_REFERENCE_SKY_TRANSMITTANCE_SAMPLES - 1;
+    float coordinate = sqrt(saturate((zenithCosine - up.w) / (1 - up.w))) * LAST_SAMPLE;
+    uint lower = uint(coordinate);
+    uint upper = min(lower + 1, LAST_SAMPLE);
+    float3 transmittance = lerp(SceneValue(start + LUDUS_REFERENCE_SKY_TRANSMITTANCE + lower).xyz,
+                                SceneValue(start + LUDUS_REFERENCE_SKY_TRANSMITTANCE + upper).xyz,
+                                coordinate - float(lower));
+    return radiance * transmittance;
+}
+
 void SampleEnvironmentWorld(float selector,
                             float latitude,
                             out float3 outDirectionWorld,
@@ -1000,7 +1095,33 @@ ReferenceLightChoice SelectReferenceLight(uint pixel, uint sample, uint depth, u
                                     emitter,
                                     GetEmitterSelection(emitter, lightCount));
 }
-ReferenceIncidentLight EvaluateAnalyticIncidentLight(uint lightIndex, float3 positionWorld)
+// Uniform direction in the disk of a directional light of positive angular radius; reference_path.cpp
+// SampleDirectionalDisk owns the derivation, the PBRT 4e §A.5.4 attribution and the same operation order. The
+// incident radiance carries E * 2 / (1 + cos r), so the disk keeps the light's illuminance at normal incidence.
+void SampleDirectionalDisk(uint pixel,
+                           uint sample,
+                           uint depth,
+                           float angularRadius,
+                           inout ReferenceIncidentLight inoutResult)
+{
+    float3 axisWorld = inoutResult.DirectionWorld;
+    uint first = LUDUS_REFERENCE_DIRECTIONAL_DISK_FIRST_DIMENSION + LUDUS_REFERENCE_DIRECTIONAL_DISK_DIMENSIONS * depth;
+    float firstSample = RandomValue(pixel, sample, first);
+    float secondSample = RandomValue(pixel, sample, first + 1);
+    float halfSine = sin(0.5 * angularRadius);
+    float oneMinusCosMaximum = 2 * halfSine * halfSine;
+    float oneMinusCos = firstSample * oneMinusCosMaximum;
+    float sine = sqrt(max(0, oneMinusCos * (2 - oneMinusCos)));
+    float angle = 2 * PI * secondSample;
+    float3 axisXWorld =
+        NormalizeOrZero(cross(abs(axisWorld.z) < BASIS_POLE_COSINE ? float3(0, 0, 1) : float3(0, 1, 0), axisWorld));
+    float3 axisYWorld = cross(axisWorld, axisXWorld);
+    inoutResult.DirectionWorld =
+        axisXWorld * (sine * cos(angle)) + axisYWorld * (sine * sin(angle)) + axisWorld * (1 - oneMinusCos);
+    inoutResult.Radiance *= 2 / (2 - oneMinusCosMaximum);
+}
+ReferenceIncidentLight
+EvaluateAnalyticIncidentLight(uint pixel, uint sample, uint depth, uint lightIndex, float3 positionWorld)
 {
     ReferenceIncidentLight result = (ReferenceIncidentLight)0;
     uint light = SurfaceLayout.y + lightIndex * LUDUS_GPU_PREVIEW_LIGHT_WORDS;
@@ -1008,12 +1129,16 @@ ReferenceIncidentLight EvaluateAnalyticIncidentLight(uint lightIndex, float3 pos
     float4 positionAndRangeWorld = SceneValue(light + 1);
     float4 directionAndOuterWorld = SceneValue(light + 2);
     uint kind = uint(colorAndKind.w);
+    // A disk is still estimated only by light sampling: no BSDF-sampled path reaches it, so it takes no MIS weight.
     result.IsDelta = true;
     result.Radiance = colorAndKind.xyz;
     if (kind == DIRECTIONAL_LIGHT)
     {
         result.DirectionWorld = -directionAndOuterWorld.xyz;
         result.DistanceWorld = Options.x;
+        float angularRadius = SceneValue(light + LUDUS_GRAPH_LIGHT_SOURCE_WORD).w;
+        if (angularRadius > 0)
+            SampleDirectionalDisk(pixel, sample, depth, angularRadius, result);
         return result;
     }
     float3 deltaWorld = positionAndRangeWorld.xyz - positionWorld;
@@ -1095,7 +1220,7 @@ SampleReferenceIncidentLight(uint pixel, uint sample, uint depth, ReferenceLight
     switch (choice.Kind)
     {
         case ReferenceLightChoiceKind::Analytic:
-            return EvaluateAnalyticIncidentLight(choice.Index, positionWorld);
+            return EvaluateAnalyticIncidentLight(pixel, sample, depth, choice.Index, positionWorld);
         case ReferenceLightChoiceKind::Triangle:
             return SampleTriangleIncidentLight(pixel, sample, depth, choice.Index, positionWorld);
         case ReferenceLightChoiceKind::Environment:
@@ -1301,7 +1426,7 @@ bool EvaluateDirectProposal(inout PathSample inoutPath,
         MarkInvalid(inoutPath, depth, LUDUS_REFERENCE_FAILURE_INVALID_LIGHT_SAMPLE);
         return false;
     }
-    ReferenceIncidentLight incident = EvaluateAnalyticIncidentLight(selected, positionWorld);
+    ReferenceIncidentLight incident = EvaluateAnalyticIncidentLight(pixel, sample, depth, selected, positionWorld);
     if (incident.HasFailed == true || IsValidContribution(incident.Radiance) == false)
     {
         MarkInvalid(inoutPath, depth, LUDUS_REFERENCE_FAILURE_INVALID_LIGHT_SAMPLE);
@@ -1865,7 +1990,14 @@ PathSample TracePath(uint pixel, uint sample)
         throughput *= segmentTransmittance;
         if (hit.Triangle == NO_TRIANGLE)
         {
-            float4 environment = EvaluateEnvironmentWorld(ray.DirectionWorld);
+            bool hasSky = depth == 0 && Tile.w != 0;
+            bool shouldFilterEnvironment =
+                hasSky == true && SceneValue(Tile.w - 1 + LUDUS_REFERENCE_SKY_FILTER_ENVIRONMENT).w > 0;
+            float4 environment = EvaluateEnvironmentWorld(ray.DirectionWorld, shouldFilterEnvironment);
+            if (hasSky == true)
+            {
+                environment.xyz += EvaluateReferenceSky(Tile.w - 1, ray.DirectionWorld);
+            }
             float lightPdf = ComputeEnvironmentLightPdf(environment.w, lights);
             float weight =
                 depth == 0 || isPreviousSpecular == true ? 1 : (Options.y > 0 ? 0 : PowerWeight(previousPdf, lightPdf));

@@ -1,3 +1,6 @@
+#include "editor_default_graph.h"
+#include "hybrid_diffuse_scene.h"
+#include "internal/graph_display_frames.h"
 #include "internal/level.h"
 #include "internal/level_workspace.h"
 #include "internal/preview_gpu_generation.h"
@@ -5,8 +8,10 @@
 #include "internal/preview_shading.h"
 #include "internal/preview_viewport.h"
 #include "internal/readback.h"
+#include "internal/render_graph_defaults.h"
 #include "internal/render_graph_preview.h"
 #include "internal/render_preview.h"
+#include "internal/renderer_workspace.h"
 #include "internal/viewport_object_interaction.h"
 #include "internal/viewport_reference_capture.h"
 #include "internal/world_surface_bake.h"
@@ -14,11 +19,20 @@
 #include "renderer_composite.h"
 #include "renderer_flat.h"
 #include <QQuickWindow>
+#include <ludus/content/scene_format/luscn.h>
 #include <ludus/foundation/containers/array.hpp>
+#include <ludus/foundation/containers/static_array.hpp>
+#include <ludus/foundation/math/scalar.hpp>
 #include <ludus/foundation/memory/allocation_domain.hpp>
 #include <ludus/foundation/memory/owned_object.hpp>
 #include <ludus/foundation/memory/shared_ptr.hpp>
+#include <ludus/foundation/threading/jobs.hpp>
+#include <ludus/graphics/renderer/lighting.hpp>
+#include <ludus/graphics/renderer/static_lighting.hpp>
+#include <ludus/graphics/renderer/tone_mapping.hpp>
+#include <ludus/graphics/rhi/device.h>
 #include <ludus/platform/entropy.h>
+#include <ludus/runtime/resources/scene.h>
 
 #import <Cocoa/Cocoa.h>
 
@@ -1071,6 +1085,12 @@ TEST_CASE("Native Lit probe GI follows a receiver and rejects bounce through a w
     REQUIRE(extraction.SurfaceCharts.size() == litRoom.Objects.size());
     CHECK(extraction.SurfaceCharts.first().SourceId == extraction.Items.first().SourceId);
     CHECK(extraction.SurfaceCharts.last().SourceId == 0);
+    // The receiver has no chart; deferred Baked Lighting passes sample the saved probe atlas for it instead.
+    CHECK(extraction.ProbeReceiverIds == QVector<uint64>{extraction.Items.last().SourceId});
+    CHECK(extraction.ShaderInputs.ProbeVolume.Atlas.Width == saved->ProbeAtlas.Width);
+    CHECK(extraction.ShaderInputs.ProbeVolume.Atlas.Height == saved->ProbeAtlas.Height);
+    CHECK(extraction.ShaderInputs.ProbeVolume.IrradianceScale == saved->ProbeAtlas.IrradianceScale);
+    CHECK(extraction.ShaderInputs.ProbeVolume.Grid.Spacing == litRoom.ProbeGrid.Spacing);
     reopened.Poll(litRoom);
     CHECK(reopened.GetReady() == saved);
     // Keep the receiver and geometry in place; move only the volume away from them.
@@ -1101,6 +1121,1245 @@ TEST_CASE("Native Lit probe GI follows a receiver and rejects bounce through a w
     CAPTURE(lit.red(), lit.green(), dark.red(), dark.green());
     CHECK(lit.red() > lit.green() + 15);
     CHECK(dark.red() <= dark.green() + 3);
+    preview.Stop();
+}
+
+namespace
+{
+namespace rr = ludus::graphics::renderer;
+// Probe GI visibility qualification. The grid mirrors the synthetic unit cell of
+// docs/architecture/renderer-systems.md#probe-visibility-near-walls-and-openings: the studied cell
+// spans x = 0 (lit probes) to x = 1 (dark probes), y = 0.5 to 1.5 and z = -0.5 to 0.5, in metres.
+enum class ProbeDivider : uint8
+{
+    AxisWall,
+    DiagonalWall,
+    Doorway,
+    EmbeddedLayers,
+};
+enum class ProbeVisibility : uint8
+{
+    DepthMap,
+    SeamAwareDepthMap,
+    Exact,
+};
+struct ProbeQuad final
+{
+    math::Vector3 CornerWorld;
+    math::Vector3 EdgeU;
+    math::Vector3 EdgeV;
+};
+struct ProbeOccluders final
+{
+    QVector<ProbeQuad> Grey;
+    QVector<ProbeQuad> Black;
+};
+struct ProbeLookup final
+{
+    float32 Irradiance = 0;
+    uint32 AdmittedProbes = 0;
+};
+constexpr float32 PROBE_ROOM_HALF_WIDTH_METRES = 3;
+constexpr float32 PROBE_WALL_HEIGHT_METRES = 3;
+constexpr float32 PROBE_WALL_X_METRES = .5F;
+constexpr float32 PROBE_DIAGONAL_SLOPE = .4F;
+constexpr float32 PROBE_CELL_CENTRE_Y_METRES = 1;
+constexpr float32 PROBE_DOOR_BOTTOM_METRES = .9F;
+constexpr float32 PROBE_DOOR_TOP_METRES = 1.1F;
+constexpr float32 PROBE_LOWER_LAYER_Y_METRES = .5F;
+constexpr float32 PROBE_UPPER_LAYER_Y_METRES = 1.5F;
+// Inside the bake's minimum clearance (2/255 of the two-cell depth range), so every probe touches geometry.
+constexpr float32 PROBE_EMBEDDED_CLEARANCE_METRES = .003F;
+constexpr float32 PROBE_RECEIVER_SIZE_METRES = .06F;
+constexpr float32 PROBE_RECEIVER_ALBEDO = .7F;
+constexpr uint32 PROBE_PATH_RECEIVERS = 10;
+constexpr float32 PROBE_PATH_STEP_METRES = .1F;
+constexpr uint32 PROBE_REFERENCE_SEEDS = 16;
+constexpr uint32 PROBE_REFERENCE_WORKERS = 4;
+constexpr int32 PROBE_BAKE_DEADLINE_MILLISECONDS = 30000;
+// probe_volume_layout.h: six ambient-cube texels, then six square depth faces. The reference bake checks the
+// resulting atlas height, so a layout change fails here rather than misreading texels.
+constexpr uint32 PROBE_FACES = 6;
+constexpr uint32 PROBE_FACE_WIDTH = 8;
+constexpr uint32 PROBE_FACE_TEXELS = PROBE_FACE_WIDTH * PROBE_FACE_WIDTH;
+constexpr uint32 PROBE_TEXELS = PROBE_FACES + PROBE_FACES * PROBE_FACE_TEXELS;
+constexpr uint32 PROBE_ATLAS_WIDTH = 256;
+constexpr uint32 PROBE_DEPTH_CELLS = 2;
+constexpr float32 PROBE_DEPTH_BIAS_CELLS = .03125F;
+constexpr uint32 PROBE_POSITIVE_Z_FACE = 4;
+constexpr usize PROBE_ALPHA_CHANNEL = 3;
+constexpr float32 UNORM_BYTE_MAX = 255;
+
+rr::GiProbeGrid MakeProbeQualificationGrid()
+{
+    rr::GiProbeGrid grid;
+    grid.OriginWorld = {-1, PROBE_LOWER_LAYER_Y_METRES, -.5F};
+    grid.Spacing = 1;
+    grid.Counts = {3, 2, 2};
+    return grid;
+}
+float32 GetComponent(math::Vector3 value, uint32 axis)
+{
+    return axis == 0 ? value.X : (axis == 1 ? value.Y : value.Z);
+}
+math::Vector3 MakeAxis(uint32 axis, float32 length)
+{
+    return {axis == 0 ? length : 0, axis == 1 ? length : 0, axis == 2 ? length : 0};
+}
+void AddProbeQuad(ludus::resources::SceneMesh& inoutMesh, const ProbeQuad& quad)
+{
+    const uint32 start = static_cast<uint32>(inoutMesh.Positions.GetSize());
+    const math::Vector3 normalWorld = math::Cross(quad.EdgeU, quad.EdgeV);
+    const math::Vector3 unitNormalWorld = normalWorld / math::Length(normalWorld);
+    const StaticArray<math::Vector3, 4> cornersWorld{quad.CornerWorld,
+                                                     quad.CornerWorld + quad.EdgeU,
+                                                     quad.CornerWorld + quad.EdgeU + quad.EdgeV,
+                                                     quad.CornerWorld + quad.EdgeV};
+    const StaticArray<math::Vector2, 4> texcoords{math::Vector2{0, 0}, {1, 0}, {1, 1}, {0, 1}};
+    for (usize i = 0; i < cornersWorld.GetSize(); ++i)
+    {
+        REQUIRE(inoutMesh.Positions.TryAdd(cornersWorld[i]) == true);
+        REQUIRE(inoutMesh.Normals.TryAdd(unitNormalWorld) == true);
+        REQUIRE(inoutMesh.Texcoords.TryAdd(texcoords[i]) == true);
+    }
+    // Counter-clockwise about Cross(EdgeU, EdgeV), the front face.
+    const StaticArray<uint32, 6> order{0, 1, 2, 0, 2, 3};
+    for (const uint32 corner : order)
+    {
+        REQUIRE(inoutMesh.Indices.TryAdd(start + corner) == true);
+    }
+}
+ProbeOccluders MakeProbeOccluders(ProbeDivider divider)
+{
+    constexpr float32 HALF = PROBE_ROOM_HALF_WIDTH_METRES;
+    constexpr float32 SPAN = 2 * PROBE_ROOM_HALF_WIDTH_METRES;
+    constexpr float32 HEIGHT = PROBE_WALL_HEIGHT_METRES;
+    ProbeOccluders occluders;
+    const bool isEmbedded = divider == ProbeDivider::EmbeddedLayers;
+    const float32 floorY = isEmbedded == true ? PROBE_LOWER_LAYER_Y_METRES - PROBE_EMBEDDED_CLEARANCE_METRES : 0;
+    occluders.Grey.append(ProbeQuad{{-HALF, floorY, -HALF}, {0, 0, SPAN}, {SPAN, 0, 0}});
+    if (isEmbedded == true)
+    {
+        // A ceiling just above the upper probe layer, facing down.
+        occluders.Grey.append(ProbeQuad{{-HALF, PROBE_UPPER_LAYER_Y_METRES + PROBE_EMBEDDED_CLEARANCE_METRES, -HALF},
+                                        {SPAN, 0, 0},
+                                        {0, 0, SPAN}});
+    }
+    if (divider == ProbeDivider::DiagonalWall)
+    {
+        // The plane x + 0.4 (y - 1) = 0.5 leans over the lit room and contains the camera's view axis.
+        const float32 baseX = PROBE_WALL_X_METRES + PROBE_DIAGONAL_SLOPE * PROBE_CELL_CENTRE_Y_METRES;
+        occluders.Black.append(ProbeQuad{{baseX, 0, -HALF}, {-PROBE_DIAGONAL_SLOPE * HEIGHT, HEIGHT, 0}, {0, 0, SPAN}});
+    }
+    else if (divider == ProbeDivider::Doorway)
+    {
+        // An opening for 0.9 < y < 1.1 across the whole wall.
+        occluders.Black.append(
+            ProbeQuad{{PROBE_WALL_X_METRES, 0, -HALF}, {0, PROBE_DOOR_BOTTOM_METRES, 0}, {0, 0, SPAN}});
+        occluders.Black.append(ProbeQuad{{PROBE_WALL_X_METRES, PROBE_DOOR_TOP_METRES, -HALF},
+                                         {0, HEIGHT - PROBE_DOOR_TOP_METRES, 0},
+                                         {0, 0, SPAN}});
+    }
+    else
+    {
+        occluders.Black.append(ProbeQuad{{PROBE_WALL_X_METRES, 0, -HALF}, {0, HEIGHT, 0}, {0, 0, SPAN}});
+    }
+    return occluders;
+}
+// Receivers face +Z, away from the point light at z = -0.4, so their only illumination is probe GI.
+RenderScene MakeProbeQualificationScene(ProbeDivider divider,
+                                        const QVector<math::Vector3>& receiversWorld,
+                                        const QByteArray& identity,
+                                        float32 receiverScale = 1)
+{
+    using ludus::resources::SceneDefinition;
+    using ludus::resources::SceneLight;
+    SharedPtr<SceneDefinition> definition;
+    REQUIRE(TryMakeShared<SceneDefinition>(GetSystemAllocationDomain(), definition) == OwnershipStatus::Ok);
+    SceneDefinition& data = *definition;
+    constexpr uint32 GREY = 0;
+    constexpr uint32 BLACK = 1;
+    constexpr uint32 RECEIVER_MESH = 2;
+    constexpr uint32 MESH_COUNT = RECEIVER_MESH + 1;
+    constexpr uint32 MATERIAL_COUNT = BLACK + 1;
+    constexpr uint64 FIRST_SOURCE = 300;
+    const ProbeOccluders occluders = MakeProbeOccluders(divider);
+    REQUIRE(data.Meshes.TryResize(MESH_COUNT) == true);
+    for (const ProbeQuad& quad : occluders.Grey)
+    {
+        AddProbeQuad(data.Meshes[GREY], quad);
+    }
+    for (const ProbeQuad& quad : occluders.Black)
+    {
+        AddProbeQuad(data.Meshes[BLACK], quad);
+    }
+    constexpr float32 HALF_RECEIVER = PROBE_RECEIVER_SIZE_METRES / 2;
+    AddProbeQuad(
+        data.Meshes[RECEIVER_MESH],
+        {{-HALF_RECEIVER, -HALF_RECEIVER, 0}, {PROBE_RECEIVER_SIZE_METRES, 0, 0}, {0, PROBE_RECEIVER_SIZE_METRES, 0}});
+    REQUIRE(data.Materials.TryResize(MATERIAL_COUNT) == true);
+    const usize objectCount = RECEIVER_MESH + static_cast<usize>(receiversWorld.size());
+    REQUIRE(data.Objects.TryResize(objectCount) == true);
+    for (usize index = 0; index < objectCount; ++index)
+    {
+        ludus::resources::SceneObject& object = data.Objects[index];
+        object.SourceId = FIRST_SOURCE + index;
+        object.Mesh = static_cast<uint32>(index < RECEIVER_MESH ? index : RECEIVER_MESH);
+        object.Material = index == BLACK ? BLACK : GREY;
+        if (index >= RECEIVER_MESH)
+        {
+            object.Transform.Translation = receiversWorld[static_cast<qsizetype>(index - RECEIVER_MESH)];
+            object.Transform.Columns[0].X = receiverScale;
+            object.Transform.Columns[1].Y = receiverScale;
+            object.Transform.Columns[2].Z = receiverScale;
+        }
+    }
+    data.Eye = {PROBE_WALL_X_METRES, PROBE_CELL_CENTRE_Y_METRES, 3.5F};
+    data.Target = {PROBE_WALL_X_METRES, PROBE_CELL_CENTRE_Y_METRES, 0};
+    data.Up = {0, 1, 0};
+    REQUIRE(data.Lights.TryResize(1) == true);
+    SceneLight& light = data.Lights[0];
+    light.SourceId = FIRST_SOURCE - 1;
+    light.Kind = ludus::resources::SceneLightKind::Point;
+    light.PositionWorld = {-.5F, 1.2F, -.4F};
+    light.IntensityRgb = {15, 0, 0};
+    light.Range = 6;
+
+    RenderScene scene;
+    scene.LogicalId = QStringLiteral("level/gi-probe-qualification");
+    scene.Identity = identity;
+    // Geometry differs per divider, so each divider needs its own asset identity in the lighting key.
+    scene.AssetsIdentity =
+        QByteArrayLiteral("gi-probe-qualification-assets/") + QByteArray::number(static_cast<uint32>(divider));
+    scene.Lit = true;
+    scene.StartView =
+    {
+        .EyeWorld = {static_cast<float64>(data.Eye.X),
+                     static_cast<float64>(data.Eye.Y),
+                     static_cast<float64>(data.Eye.Z)},
+        .TargetWorld = {static_cast<float64>(data.Target.X),
+                        static_cast<float64>(data.Target.Y),
+                        static_cast<float64>(data.Target.Z)},
+        .UpWorld = data.Up,
+        .VerticalFov = data.VerticalFov,
+    };
+    scene.HasStartView = true;
+    scene.Center = data.Target;
+    scene.Radius = 4;
+    scene.Meshes.resize(MESH_COUNT);
+    scene.Surfaces.resize(MATERIAL_COUNT);
+    scene.Surfaces[GREY].Tint = {PROBE_RECEIVER_ALBEDO, PROBE_RECEIVER_ALBEDO, PROBE_RECEIVER_ALBEDO, 1};
+    scene.Surfaces[BLACK].Tint = {0, 0, 0, 1};
+    for (PreviewSurface& surface : scene.Surfaces)
+    {
+        surface.Roughness = 1;
+    }
+    for (usize index = 0; index < objectCount; ++index)
+    {
+        const ludus::resources::SceneObject& source = data.Objects[index];
+        PreviewObject object;
+        object.Id = QString::number(source.SourceId);
+        object.Transform = source.Transform;
+        object.Mesh = static_cast<int32>(source.Mesh);
+        object.Surface = static_cast<int32>(source.Material);
+        scene.Objects.append(object);
+        if (index >= RECEIVER_MESH)
+        {
+            scene.GiProbeReceiverIds.append(source.SourceId);
+        }
+    }
+    QString error;
+    REQUIRE(RenderScene::LoadCookedLights(data, scene.AuthoredLights, error) == true);
+    scene.AlwaysOnLightIds.append(light.SourceId);
+    scene.ProbeGrid = MakeProbeQualificationGrid();
+    scene.Definition = Move(definition);
+    return scene;
+}
+float32 DecodeSrgb(float64 encoded)
+{
+    constexpr float64 LINEAR_LIMIT = .04045;
+    constexpr float64 LINEAR_SLOPE = 12.92;
+    constexpr float64 OFFSET = .055;
+    constexpr float64 GAMMA = 2.4;
+    return static_cast<float32>(encoded <= LINEAR_LIMIT ? encoded / LINEAR_SLOPE
+                                                        : math::Pow((encoded + OFFSET) / (1 + OFFSET), GAMMA));
+}
+struct ProbeReceiverMeasurement final
+{
+    float32 Irradiance = 0;
+    /// World positions on the receiver plane (z = receiver z) of the averaged pixel centres.
+    QVector<math::Vector3> PixelsWorld;
+};
+math::Vector2 ProjectToPixel(const rr::ViewDescription& view, const QImage& image, math::Vector3 positionWorld)
+{
+    const math::Vector4 clip = view.WorldToClip * math::Vector4{positionWorld.X, positionWorld.Y, positionWorld.Z, 1};
+    return {(clip.X / clip.W * .5F + .5F) * static_cast<float32>(image.width()),
+            (.5F - clip.Y / clip.W * .5F) * static_cast<float32>(image.height())};
+}
+// Probe irradiance recovered from the presented frame: decode sRGB, invert the viewport's PBR Neutral curve at
+// exposure one, then divide the scene-linear red radiance by the receiver's Lambertian reflectance and the
+// shader's Schlick transmission (1 - F) for its view angle. The pixel centres are mapped back to the receiver
+// plane through the local projection so a CPU lookup can be evaluated at the same points.
+ProbeReceiverMeasurement MeasureProbeReceiver(const QImage& image,
+                                              const rr::ViewDescription& view,
+                                              math::Vector3 receiverWorld,
+                                              math::Vector3 eyeWorld)
+{
+    const math::Vector2 centre = ProjectToPixel(view, image, receiverWorld);
+    constexpr float32 JACOBIAN_STEP_METRES = .01F;
+    const math::Vector2 alongX =
+        (ProjectToPixel(view, image, receiverWorld + math::Vector3{JACOBIAN_STEP_METRES, 0, 0}) - centre) /
+        JACOBIAN_STEP_METRES;
+    const math::Vector2 alongY =
+        (ProjectToPixel(view, image, receiverWorld + math::Vector3{0, JACOBIAN_STEP_METRES, 0}) - centre) /
+        JACOBIAN_STEP_METRES;
+    const float32 determinant = alongX.X * alongY.Y - alongY.X * alongX.Y;
+    REQUIRE(determinant != 0);
+    const QPoint centrePixel(static_cast<int32>(centre.X), static_cast<int32>(centre.Y));
+    constexpr int32 RADIUS_PIXELS = 1;
+    ProbeReceiverMeasurement measurement;
+    float64 sum = 0;
+    for (int32 y = -RADIUS_PIXELS; y <= RADIUS_PIXELS; ++y)
+    {
+        for (int32 x = -RADIUS_PIXELS; x <= RADIUS_PIXELS; ++x)
+        {
+            const QPoint positionPixel = centrePixel + QPoint(x, y);
+            REQUIRE(image.rect().contains(positionPixel) == true);
+            const QColor color = image.pixelColor(positionPixel);
+            const math::Vector3 display = {DecodeSrgb(static_cast<float64>(color.redF())),
+                                           DecodeSrgb(static_cast<float64>(color.greenF())),
+                                           DecodeSrgb(static_cast<float64>(color.blueF()))};
+            sum += static_cast<float64>(rr::InvertPbrNeutral(display).X);
+            const math::Vector2 offsetPixel = math::Vector2{static_cast<float32>(positionPixel.x()) + .5F,
+                                                            static_cast<float32>(positionPixel.y()) + .5F} -
+                                              centre;
+            const float32 metresX = (offsetPixel.X * alongY.Y - alongY.X * offsetPixel.Y) / determinant;
+            const float32 metresY = (alongX.X * offsetPixel.Y - offsetPixel.X * alongX.Y) / determinant;
+            measurement.PixelsWorld.append(receiverWorld + math::Vector3{metresX, metresY, 0});
+        }
+    }
+    const math::Vector3 viewWorld = eyeWorld - receiverWorld;
+    const float32 cosineView = viewWorld.Z / math::Length(viewWorld);
+    constexpr float32 DIELECTRIC_FRESNEL = .04F;
+    const float32 grazing = 1 - cosineView;
+    const float32 fresnel =
+        DIELECTRIC_FRESNEL + (1 - DIELECTRIC_FRESNEL) * grazing * grazing * grazing * grazing * grazing;
+    measurement.Irradiance = static_cast<float32>(sum / static_cast<float64>(measurement.PixelsWorld.size())) *
+                             math::kPiF / (PROBE_RECEIVER_ALBEDO * (1 - fresnel));
+    return measurement;
+}
+float32 ReadProbeUnorm(const WorldProbeAtlas& atlas, uint32 probe, uint32 texel, usize channel)
+{
+    // The atlas rows are PROBE_ATLAS_WIDTH texels, so texel indices run contiguously across rows.
+    const usize offset = (usize{probe} * PROBE_TEXELS + texel) * ludus::content::scene_format::TEXEL_BYTES + channel;
+    REQUIRE(offset < static_cast<usize>(atlas.Pixels.size()));
+    return static_cast<float32>(static_cast<uint8>(atlas.Pixels[static_cast<qsizetype>(offset)])) / UNORM_BYTE_MAX;
+}
+bool IsSegmentBlocked(math::Vector3 fromWorld, math::Vector3 toWorld, const ProbeOccluders& occluders)
+{
+    constexpr float32 END_EPSILON = 1e-4F;
+    const math::Vector3 segmentWorld = toWorld - fromWorld;
+    const auto isBlockedBy = [&](const ProbeQuad& quad) {
+        const math::Vector3 normalWorld = math::Cross(quad.EdgeU, quad.EdgeV);
+        const float32 denominator = math::Dot(normalWorld, segmentWorld);
+        if (denominator == 0)
+        {
+            return false;
+        }
+        const float32 t = math::Dot(normalWorld, quad.CornerWorld - fromWorld) / denominator;
+        if (t <= END_EPSILON || t >= 1 - END_EPSILON)
+        {
+            return false;
+        }
+        const math::Vector3 localWorld = fromWorld + segmentWorld * t - quad.CornerWorld;
+        const float32 u = math::Dot(localWorld, quad.EdgeU) / math::Dot(quad.EdgeU, quad.EdgeU);
+        const float32 v = math::Dot(localWorld, quad.EdgeV) / math::Dot(quad.EdgeV, quad.EdgeV);
+        return u >= 0 && u <= 1 && v >= 0 && v <= 1;
+    };
+    for (const QVector<ProbeQuad>* group : {&occluders.Grey, &occluders.Black})
+    {
+        for (const ProbeQuad& quad : *group)
+        {
+            if (isBlockedBy(quad) == true)
+            {
+                return true;
+            }
+        }
+    }
+    return false;
+}
+// CPU twin of renderer_lit.slang IsGiProbeVisible: one nearest texel of the dominant axis's depth face.
+bool IsFaceProbeVisible(const WorldProbeAtlas& atlas, uint32 probe, math::Vector3 offsetInCells, uint32 axis)
+{
+    const float32 distanceInCells = math::Abs(GetComponent(offsetInCells, axis));
+    const uint32 face = 2 * axis + (GetComponent(offsetInCells, axis) < 0 ? 1 : 0);
+    // A neighbouring face reads its clamped edge texel.
+    const float32 u = math::Clamp(GetComponent(offsetInCells, (axis + 1) % 3) / distanceInCells, -1.F, 1.F);
+    const float32 v = math::Clamp(GetComponent(offsetInCells, (axis + 2) % 3) / distanceInCells, -1.F, 1.F);
+    const uint32 column =
+        math::Min(static_cast<uint32>((u * .5F + .5F) * static_cast<float32>(PROBE_FACE_WIDTH)), PROBE_FACE_WIDTH - 1);
+    const uint32 row =
+        math::Min(static_cast<uint32>((v * .5F + .5F) * static_cast<float32>(PROBE_FACE_WIDTH)), PROBE_FACE_WIDTH - 1);
+    const float32 depthInCells =
+        ReadProbeUnorm(atlas, probe, PROBE_FACES + face * PROBE_FACE_TEXELS + row * PROBE_FACE_WIDTH + column, 0) *
+        PROBE_DEPTH_CELLS;
+    return distanceInCells <= depthInCells + PROBE_DEPTH_BIAS_CELLS;
+}
+// CPU twin of renderer_lit.slang IsGiProbeVisible: one nearest texel of the dominant axis's depth face. The
+// seam-aware variant also requires each face whose axis is within one edge texel of dominant to admit the probe.
+bool IsDepthMapProbeVisible(const WorldProbeAtlas& atlas,
+                            uint32 probe,
+                            math::Vector3 offsetInCells,
+                            bool shouldCheckSeams)
+{
+    const math::Vector3 magnitude = {math::Abs(offsetInCells.X),
+                                     math::Abs(offsetInCells.Y),
+                                     math::Abs(offsetInCells.Z)};
+    const uint32 axis =
+        magnitude.X >= magnitude.Y && magnitude.X >= magnitude.Z ? 0 : (magnitude.Y >= magnitude.Z ? 1 : 2);
+    const float32 distanceInCells = GetComponent(magnitude, axis);
+    if (distanceInCells == 0)
+    {
+        return true;
+    }
+    if (IsFaceProbeVisible(atlas, probe, offsetInCells, axis) == false)
+    {
+        return false;
+    }
+    if (shouldCheckSeams == false)
+    {
+        return true;
+    }
+    const float32 seamInCells = distanceInCells * (1 - 2.F / static_cast<float32>(PROBE_FACE_WIDTH));
+    for (uint32 other = 0; other < rr::GI_PROBE_DIMENSIONS; ++other)
+    {
+        if (other != axis && GetComponent(magnitude, other) >= seamInCells &&
+            IsFaceProbeVisible(atlas, probe, offsetInCells, other) == false)
+        {
+            return false;
+        }
+    }
+    return true;
+}
+// CPU twin of renderer_lit.slang EvaluateGiProbeIrradiance for a +Z normal, with either the baked depth test or an
+// exact probe-to-receiver segment test. Both keep the same trilinear weights, validity flags and renormalization.
+ProbeLookup EvaluateProbeLookup(const WorldProbeAtlas& atlas,
+                                const rr::GiProbeGrid& grid,
+                                math::Vector3 positionWorld,
+                                ProbeVisibility visibility,
+                                const ProbeOccluders& occluders)
+{
+    ProbeLookup lookup;
+    const math::Vector3 positionInGrid = (positionWorld - grid.OriginWorld) / grid.Spacing;
+    StaticArray<uint32, rr::GI_PROBE_DIMENSIONS> first{};
+    StaticArray<float32, rr::GI_PROBE_DIMENSIONS> fraction{};
+    for (uint32 axis = 0; axis < rr::GI_PROBE_DIMENSIONS; ++axis)
+    {
+        const float32 coordinate = GetComponent(positionInGrid, axis);
+        if (coordinate < 0 || coordinate > static_cast<float32>(grid.Counts[axis] - 1))
+        {
+            return lookup;
+        }
+        first[axis] = math::Min(static_cast<uint32>(coordinate), grid.Counts[axis] - 2);
+        fraction[axis] = coordinate - static_cast<float32>(first[axis]);
+    }
+    float32 sum = 0;
+    float32 totalWeight = 0;
+    for (uint32 corner = 0; corner < 8; ++corner)
+    {
+        StaticArray<uint32, rr::GI_PROBE_DIMENSIONS> cell{};
+        float32 weight = 1;
+        for (uint32 axis = 0; axis < rr::GI_PROBE_DIMENSIONS; ++axis)
+        {
+            const uint32 offset = (corner >> axis) & 1U;
+            cell[axis] = first[axis] + offset;
+            weight *= offset == 1 ? fraction[axis] : 1 - fraction[axis];
+        }
+        const uint32 probe = cell[0] + grid.Counts[0] * (cell[1] + grid.Counts[1] * cell[2]);
+        const math::Vector3 cellInGrid = {static_cast<float32>(cell[0]),
+                                          static_cast<float32>(cell[1]),
+                                          static_cast<float32>(cell[2])};
+        if (weight <= 0 || ReadProbeUnorm(atlas, probe, 0, PROBE_ALPHA_CHANNEL) <= 0)
+        {
+            continue;
+        }
+        const bool isVisible =
+            visibility == ProbeVisibility::Exact
+                ? IsSegmentBlocked(grid.OriginWorld + cellInGrid * grid.Spacing, positionWorld, occluders) == false
+                : IsDepthMapProbeVisible(atlas,
+                                         probe,
+                                         positionInGrid - cellInGrid,
+                                         visibility == ProbeVisibility::SeamAwareDepthMap);
+        if (isVisible == true)
+        {
+            sum += weight * ReadProbeUnorm(atlas, probe, PROBE_POSITIVE_Z_FACE, 0);
+            totalWeight += weight;
+            ++lookup.AdmittedProbes;
+        }
+    }
+    lookup.Irradiance = totalWeight > 0 ? sum * atlas.IrradianceScale / totalWeight : 0;
+    return lookup;
+}
+// Reference irradiance about +Z at each receiver: the bake's own probe transport (selected lights, at least one
+// bounce, receivers excluded) evaluated at the receiver positions, averaged over independent seeds.
+QVector<float64> BakeReferenceIrradiance(const RenderScene& scene,
+                                         math::Vector3 firstWorld,
+                                         uint32 pathAxis,
+                                         float64& outMillisecondsPerBake)
+{
+    rr::GiProbeGrid grid;
+    grid.OriginWorld = firstWorld;
+    grid.Spacing = PROBE_PATH_STEP_METRES;
+    grid.Counts = {2, 2, 2};
+    grid.Counts[pathAxis] = PROBE_PATH_RECEIVERS;
+    const QByteArray key = preview_lighting::MakeKey(scene);
+    preview_lighting::Inputs inputs;
+    REQUIRE(preview_lighting::BuildInputs(scene, key, inputs, preview_lighting::InputsTarget::Surfaces) ==
+            ludus::graphics::rhi::RasterStatus::Ready);
+    threading::JobSystem jobs;
+    REQUIRE(jobs.Initialize({ .WorkerCount = PROBE_REFERENCE_WORKERS }) == threading::JobStatus::Ok);
+    const uint32 stride = pathAxis == 0 ? 1 : (pathAxis == 1 ? grid.Counts[0] : grid.Counts[0] * grid.Counts[1]);
+    const uint32 probeCount = grid.Counts[0] * grid.Counts[1] * grid.Counts[2];
+    QVector<float64> sums(static_cast<qsizetype>(PROBE_PATH_RECEIVERS), 0);
+    QElapsedTimer timer;
+    timer.start();
+    for (uint32 seed = 0; seed < PROBE_REFERENCE_SEEDS; ++seed)
+    {
+        rr::StaticLightingBakeDescription description;
+        description.SceneRevision = inputs.SceneRevision;
+        description.DependencyRevision = inputs.DependencyRevision;
+        // Charts are unused; probes always take their fixed sample count.
+        description.SamplesPerTriangle = 1;
+        description.Seed = seed + 1;
+        description.Surfaces = {inputs.Surfaces.GetData(), inputs.Surfaces.GetSize()};
+        description.AnalyticLightIds = {scene.AlwaysOnLightIds.constData(),
+                                        static_cast<usize>(scene.AlwaysOnLightIds.size())};
+        description.ProbeGrid = grid;
+        rr::StaticLightingBake bake;
+        REQUIRE(bake.Submit(jobs, *scene.Definition, description) == ludus::graphics::rhi::RasterStatus::Pending);
+        REQUIRE(bake.Finish() == ludus::graphics::rhi::RasterStatus::Ready);
+        rr::StaticGiProbeAtlas atlas;
+        REQUIRE(bake.GetProbeAtlas(atlas) == ludus::graphics::rhi::RasterStatus::Ready);
+        REQUIRE(atlas.Height == (probeCount * PROBE_TEXELS + PROBE_ATLAS_WIDTH - 1) / PROBE_ATLAS_WIDTH);
+        for (uint32 i = 0; i < PROBE_PATH_RECEIVERS; ++i)
+        {
+            const usize offset =
+                (usize{i * stride} * PROBE_TEXELS + PROBE_POSITIVE_Z_FACE) * ludus::content::scene_format::TEXEL_BYTES;
+            REQUIRE(atlas.Pixels[offset + PROBE_ALPHA_CHANNEL] == static_cast<uint8>(UNORM_BYTE_MAX));
+            sums[static_cast<qsizetype>(i)] += static_cast<float64>(atlas.Pixels[offset]) /
+                                               static_cast<float64>(UNORM_BYTE_MAX) *
+                                               static_cast<float64>(atlas.IrradianceScale);
+        }
+    }
+    outMillisecondsPerBake = static_cast<float64>(timer.nsecsElapsed()) / 1e6 / PROBE_REFERENCE_SEEDS;
+    for (float64& sum : sums)
+    {
+        sum /= PROBE_REFERENCE_SEEDS;
+    }
+    return sums;
+}
+bool WaitForProbeBake(RenderPreview& inoutPreview, const RenderScene& scene)
+{
+    const QByteArray key = preview_lighting::MakeKey(scene);
+    constexpr int32 POLL_MILLISECONDS = 10;
+    QElapsedTimer timer;
+    timer.start();
+    while (timer.elapsed() < PROBE_BAKE_DEADLINE_MILLISECONDS)
+    {
+        const QSharedPointer<const WorldSurfaceBake> bake = inoutPreview.GetSurfaceBake();
+        if (bake.isNull() == false && bake->LightingKey == key && bake->ProbeAtlas.Pixels.isEmpty() == false &&
+            inoutPreview.Scene().Identity == scene.Identity &&
+            inoutPreview.Status().contains(QStringLiteral("probe GI baked")) == true)
+        {
+            return Frames(inoutPreview, inoutPreview.Frames() + 3);
+        }
+        QTest::qWait(POLL_MILLISECONDS);
+    }
+    return false;
+}
+} // namespace
+
+namespace
+{
+struct ProbeReceiverResult final
+{
+    math::Vector3 PositionWorld;
+    float64 Reference = 0;
+    float32 Native = 0;
+    float32 DepthMap = 0;
+    float32 SeamAware = 0;
+    float32 Exact = 0;
+    uint32 MinimumAdmitted = 0;
+};
+// Average one CPU lookup over the receiver points behind the sampled pixels, as the native sample averages them.
+ProbeLookup AverageProbeLookup(const WorldProbeAtlas& atlas,
+                               const rr::GiProbeGrid& grid,
+                               const QVector<math::Vector3>& pointsWorld,
+                               ProbeVisibility visibility,
+                               const ProbeOccluders& occluders)
+{
+    ProbeLookup average;
+    average.AdmittedProbes = ~uint32{0};
+    for (const math::Vector3& pointWorld : pointsWorld)
+    {
+        const ProbeLookup lookup = EvaluateProbeLookup(atlas, grid, pointWorld, visibility, occluders);
+        average.Irradiance += lookup.Irradiance;
+        average.AdmittedProbes = math::Min(average.AdmittedProbes, lookup.AdmittedProbes);
+    }
+    average.Irradiance /= static_cast<float32>(pointsWorld.size());
+    return average;
+}
+QImage ReadProbeFrame(RenderPreview& inoutPreview, rr::ViewDescription& outView)
+{
+    const QImage image = ReadViewport();
+    REQUIRE(image.isNull() == false);
+    QString error;
+    REQUIRE(inoutPreview.DescribeView(static_cast<uint32>(image.width()),
+                                      static_cast<uint32>(image.height()),
+                                      outView,
+                                      error) == true);
+    return image;
+}
+} // namespace
+
+TEST_CASE("Native Lit probe GI visibility qualification around thin and diagonal walls and a doorway",
+          "[.render-native][lighting][probe-gi]")
+{
+    struct QualificationCase final
+    {
+        const char* Name;
+        ProbeDivider Divider;
+        math::Vector3 FirstWorld;
+        uint32 PathAxis;
+    };
+    // Paths cross the studied cell at its centre height unless they test a wall's near field.
+    enum : uint32
+    {
+        AXIS_CONTROL,
+        AXIS_NEAR_FIELD,
+        DIAGONAL,
+        DOORWAY,
+        EMBEDDED,
+        CASE_COUNT,
+    };
+    const StaticArray<QualificationCase, CASE_COUNT> cases{
+        QualificationCase{"axis wall control", ProbeDivider::AxisWall, {.05F, 1, 0}, 0},
+        QualificationCase{"axis wall near field", ProbeDivider::AxisWall, {.55F, .55F, 0}, 1},
+        QualificationCase{"diagonal wall", ProbeDivider::DiagonalWall, {.05F, .75F, 0}, 0},
+        QualificationCase{"doorway", ProbeDivider::Doorway, {.05F, 1, 0}, 0},
+        QualificationCase{"embedded probe layers", ProbeDivider::EmbeddedLayers, {.05F, 1, 0}, 0},
+    };
+    RenderPreview preview;
+    PreviewViewport viewport(&preview);
+    viewport.resize(640, 480);
+    viewport.show();
+    bool hasStarted = false;
+    StaticArray<QVector<ProbeReceiverResult>, CASE_COUNT> results;
+    StaticArray<WorldProbeAtlas, CASE_COUNT> atlases;
+    QString bakeTimes;
+    QString table = QStringLiteral("case\tx\ty\tz\treference\tnative\tdepth map\tseam aware\texact\tadmitted\n");
+    for (uint32 caseIndex = 0; caseIndex < CASE_COUNT; ++caseIndex)
+    {
+        const QualificationCase& qualification = cases[caseIndex];
+        QVector<math::Vector3> receiversWorld;
+        for (uint32 i = 0; i < PROBE_PATH_RECEIVERS; ++i)
+        {
+            receiversWorld.append(qualification.FirstWorld +
+                                  MakeAxis(qualification.PathAxis, PROBE_PATH_STEP_METRES * static_cast<float32>(i)));
+        }
+        const RenderScene scene =
+            MakeProbeQualificationScene(qualification.Divider,
+                                        receiversWorld,
+                                        QByteArray("gi-probe-qualification/") + qualification.Name);
+        REQUIRE(preview.SetScene(scene) == true);
+        if (hasStarted == false)
+        {
+            preview.SetShading(PreviewShading::Lit);
+            REQUIRE(preview.Start() == true);
+            hasStarted = true;
+        }
+        INFO(qualification.Name);
+        const bool hasBaked = WaitForProbeBake(preview, scene);
+        INFO(preview.Status().toStdString());
+        REQUIRE(hasBaked == true);
+        atlases[caseIndex] = preview.GetSurfaceBake()->ProbeAtlas;
+        float64 millisecondsPerBake = 0;
+        const QVector<float64> reference =
+            BakeReferenceIrradiance(scene, qualification.FirstWorld, qualification.PathAxis, millisecondsPerBake);
+        bakeTimes += QStringLiteral("%1: %2 ms\n")
+                         .arg(QString::fromUtf8(qualification.Name))
+                         .arg(millisecondsPerBake, 0, 'f', 1);
+        const ProbeOccluders occluders = MakeProbeOccluders(qualification.Divider);
+        rr::ViewDescription view;
+        const QImage image = ReadProbeFrame(preview, view);
+        for (uint32 i = 0; i < PROBE_PATH_RECEIVERS; ++i)
+        {
+            ProbeReceiverResult result;
+            result.PositionWorld = receiversWorld[static_cast<qsizetype>(i)];
+            result.Reference = reference[static_cast<qsizetype>(i)];
+            const ProbeReceiverMeasurement measurement =
+                MeasureProbeReceiver(image, view, result.PositionWorld, scene.Definition->Eye);
+            result.Native = measurement.Irradiance;
+            const ProbeLookup depthMap = AverageProbeLookup(atlases[caseIndex],
+                                                            scene.ProbeGrid,
+                                                            measurement.PixelsWorld,
+                                                            ProbeVisibility::DepthMap,
+                                                            occluders);
+            const ProbeLookup exact = AverageProbeLookup(atlases[caseIndex],
+                                                         scene.ProbeGrid,
+                                                         measurement.PixelsWorld,
+                                                         ProbeVisibility::Exact,
+                                                         occluders);
+            result.DepthMap = depthMap.Irradiance;
+            result.SeamAware = AverageProbeLookup(atlases[caseIndex],
+                                                  scene.ProbeGrid,
+                                                  measurement.PixelsWorld,
+                                                  ProbeVisibility::SeamAwareDepthMap,
+                                                  occluders)
+                                   .Irradiance;
+            result.Exact = exact.Irradiance;
+            result.MinimumAdmitted = depthMap.AdmittedProbes;
+            results[caseIndex].append(result);
+            table += QStringLiteral("%1\t%2\t%3\t%4\t%5\t%6\t%7\t%8\t%9\t%10/%11\n")
+                         .arg(QString::fromUtf8(qualification.Name))
+                         .arg(static_cast<float64>(result.PositionWorld.X), 0, 'f', 2)
+                         .arg(static_cast<float64>(result.PositionWorld.Y), 0, 'f', 2)
+                         .arg(static_cast<float64>(result.PositionWorld.Z), 0, 'f', 2)
+                         .arg(result.Reference, 0, 'f', 4)
+                         .arg(static_cast<float64>(result.Native), 0, 'f', 4)
+                         .arg(static_cast<float64>(result.DepthMap), 0, 'f', 4)
+                         .arg(static_cast<float64>(result.SeamAware), 0, 'f', 4)
+                         .arg(static_cast<float64>(result.Exact), 0, 'f', 4)
+                         .arg(depthMap.AdmittedProbes)
+                         .arg(exact.AdmittedProbes);
+        }
+    }
+    WARN(table.toStdString());
+
+    // Irradiance tolerances are absolute, in the fixture's units: the lit half of the studied cell receives about
+    // 0.4 in the reference. Native frames carry 8-bit sRGB quantization after tone mapping.
+    constexpr float32 NATIVE_ABSOLUTE_TOLERANCE = .02F;
+    constexpr float32 NATIVE_RELATIVE_TOLERANCE = .03F;
+    constexpr float64 DARK_REFERENCE = .001;
+    constexpr float64 LEAK_TOLERANCE = .01;
+    const auto isNativeLookup = [](const ProbeReceiverResult& result) {
+        return math::Abs(result.Native - result.DepthMap) <=
+               NATIVE_ABSOLUTE_TOLERANCE + NATIVE_RELATIVE_TOLERANCE * result.DepthMap;
+    };
+    for (uint32 caseIndex = 0; caseIndex < CASE_COUNT; ++caseIndex)
+    {
+        for (const ProbeReceiverResult& result : results[caseIndex])
+        {
+            CAPTURE(cases[caseIndex].Name,
+                    result.PositionWorld.X,
+                    result.PositionWorld.Y,
+                    result.Native,
+                    result.DepthMap);
+            // The native Lit shader evaluates the baked lookup that the CPU twin models.
+            CHECK(isNativeLookup(result) == true);
+            if (cases[caseIndex].Divider != ProbeDivider::EmbeddedLayers && result.Reference <= DARK_REFERENCE)
+            {
+                // With exact visibility the same probes and weights keep every closed-off receiver dark, so any
+                // remaining leak belongs to the depth-map representation.
+                CHECK(static_cast<float64>(result.Exact) <= result.Reference + LEAK_TOLERANCE);
+            }
+        }
+    }
+    // Closed walls stay dark away from the near field, including behind the diagonal wall that the 4 x 4 faces
+    // leaked through (0.51 at x = 0.65).
+    for (const uint32 caseIndex : {static_cast<uint32>(AXIS_CONTROL), static_cast<uint32>(DIAGONAL)})
+    {
+        for (const ProbeReceiverResult& result : results[caseIndex])
+        {
+            CAPTURE(cases[caseIndex].Name, result.PositionWorld.X, result.Native);
+            if (result.Reference <= DARK_REFERENCE)
+            {
+                CHECK(static_cast<float64>(result.Native) <= result.Reference + LEAK_TOLERANCE);
+            }
+        }
+    }
+    // Trilinear interpolation over 1 m cells overestimates the lit side by about half; record a drift.
+    constexpr float64 LIT_INTERPOLATION_RANGE = 2;
+    for (const ProbeReceiverResult& result : results[AXIS_CONTROL])
+    {
+        if (result.Reference > DARK_REFERENCE)
+        {
+            CAPTURE(result.PositionWorld.X, result.Native, result.Reference);
+            CHECK(static_cast<float64>(result.Native) >= result.Reference / LIT_INTERPOLATION_RANGE);
+            CHECK(static_cast<float64>(result.Native) <= result.Reference * LIT_INTERPOLATION_RANGE);
+        }
+    }
+    // Documented near-field limit: a receiver within 5 cm of an axis-aligned wall can still admit a lit probe
+    // whose dominant face texel crosses the wall elsewhere. Exceeding this bound is a regression.
+    constexpr float32 NEAR_FIELD_LEAK_BOUND = .2F;
+    for (const ProbeReceiverResult& result : results[AXIS_NEAR_FIELD])
+    {
+        CAPTURE(result.PositionWorld.Y, result.Native);
+        CHECK(result.Native <= NEAR_FIELD_LEAK_BOUND);
+    }
+    // Bounce through the opening survives just past the wall; the 4 x 4 faces kept 5 % of it at x = 0.55.
+    constexpr qsizetype PAST_OPENING = 5;
+    constexpr float64 RETAINED_FRACTION = .5;
+    const ProbeReceiverResult& pastOpening = results[DOORWAY][PAST_OPENING];
+    CAPTURE(pastOpening.Native, pastOpening.Reference);
+    CHECK(static_cast<float64>(pastOpening.Native) >= RETAINED_FRACTION * pastOpening.Reference);
+    // Probe layers on the floor and ceiling invalidate every probe. Receivers then fall back to live lighting
+    // with no probe contribution rather than a stale or undefined one.
+    const WorldProbeAtlas& embedded = atlases[EMBEDDED];
+    const rr::GiProbeGrid qualificationGrid = MakeProbeQualificationGrid();
+    for (uint32 probe = 0;
+         probe < qualificationGrid.Counts[0] * qualificationGrid.Counts[1] * qualificationGrid.Counts[2];
+         ++probe)
+    {
+        CHECK(ReadProbeUnorm(embedded, probe, 0, PROBE_ALPHA_CHANNEL) == 0);
+    }
+    constexpr float32 FALLBACK_TOLERANCE = .001F;
+    for (const ProbeReceiverResult& result : results[EMBEDDED])
+    {
+        CHECK(result.MinimumAdmitted == 0);
+        CHECK(result.Native <= FALLBACK_TOLERANCE);
+    }
+    WARN("Reference bake (40 probes, one chart sample per triangle, 4 workers) per seed:\n" << bakeTimes.toStdString());
+
+    // Receiver movement: one marked receiver steps through the doorway. Each step is a new World extraction.
+    QString movement = QStringLiteral("x\tbake ms\tnative\tdepth map\n");
+    const StaticArray<float32, 4> movementX{.25F, .45F, .55F, .75F};
+    for (const float32 x : movementX)
+    {
+        const math::Vector3 receiverWorld = {x, PROBE_CELL_CENTRE_Y_METRES, 0};
+        const RenderScene scene = MakeProbeQualificationScene(ProbeDivider::Doorway,
+                                                              {receiverWorld},
+                                                              QByteArrayLiteral("gi-probe-movement/") +
+                                                                  QByteArray::number(static_cast<float64>(x)));
+        QElapsedTimer timer;
+        timer.start();
+        REQUIRE(preview.SetScene(scene) == true);
+        REQUIRE(WaitForProbeBake(preview, scene) == true);
+        const int64 bakeMilliseconds = timer.elapsed();
+        rr::ViewDescription view;
+        const QImage image = ReadProbeFrame(preview, view);
+        const ProbeReceiverMeasurement measurement =
+            MeasureProbeReceiver(image, view, receiverWorld, scene.Definition->Eye);
+        const ProbeLookup model = AverageProbeLookup(preview.GetSurfaceBake()->ProbeAtlas,
+                                                     scene.ProbeGrid,
+                                                     measurement.PixelsWorld,
+                                                     ProbeVisibility::DepthMap,
+                                                     MakeProbeOccluders(ProbeDivider::Doorway));
+        // The moved receiver shows the same bounce as the static receiver at that position, without a stale frame.
+        const qsizetype staticIndex = static_cast<qsizetype>(
+            math::Floor(static_cast<float64>((x - cases[DOORWAY].FirstWorld.X) / PROBE_PATH_STEP_METRES) + .5));
+        const ProbeReceiverResult& staticResult = results[DOORWAY][staticIndex];
+        CAPTURE(x, measurement.Irradiance, staticResult.Native, model.Irradiance);
+        CHECK(math::Abs(measurement.Irradiance - staticResult.Native) <=
+              NATIVE_ABSOLUTE_TOLERANCE + NATIVE_RELATIVE_TOLERANCE * staticResult.Native);
+        CHECK(math::Abs(measurement.Irradiance - model.Irradiance) <=
+              NATIVE_ABSOLUTE_TOLERANCE + NATIVE_RELATIVE_TOLERANCE * model.Irradiance);
+        movement += QStringLiteral("%1\t%2\t%3\t%4\n")
+                        .arg(static_cast<float64>(x), 0, 'f', 2)
+                        .arg(bakeMilliseconds)
+                        .arg(static_cast<float64>(measurement.Irradiance), 0, 'f', 4)
+                        .arg(static_cast<float64>(model.Irradiance), 0, 'f', 4);
+    }
+    WARN(movement.toStdString());
+
+    // GPU frame cost with one receiver covering most of the view, against the same frame with the volume moved
+    // away so every lookup returns before reading probes. The preview draws on demand, so small orbits drive frames.
+    preview.SetStatisticsVisible(true);
+    constexpr float32 COST_RECEIVER_SCALE = 30;
+    const RenderScene costScene = MakeProbeQualificationScene(ProbeDivider::Doorway,
+                                                              {{PROBE_WALL_X_METRES, PROBE_CELL_CENTRE_Y_METRES, 0}},
+                                                              QByteArrayLiteral("gi-probe-cost"),
+                                                              COST_RECEIVER_SCALE);
+    const auto measureGpu = [&preview]() {
+        constexpr uint32 TIMED_FRAMES = 120;
+        constexpr float32 ORBIT_PIXELS = .5F;
+        for (uint32 frame = 0; frame < TIMED_FRAMES; ++frame)
+        {
+            preview.Orbit(frame % 2 == 0 ? ORBIT_PIXELS : -ORBIT_PIXELS, 0);
+            // Timing is evidence, not an acceptance gate: an occluded test window stops presentation.
+            if (Frames(preview, preview.Frames() + 1) == false)
+            {
+                break;
+            }
+        }
+        const ViewportStatistics& statistics = preview.GetStatistics();
+        return QStringLiteral("%1 x %2: mean %3 ms, p95 %4 ms over %5 frames (state %6)")
+            .arg(statistics.Width)
+            .arg(statistics.Height)
+            .arg(statistics.GpuMilliseconds.GetAverage(), 0, 'f', 3)
+            .arg(statistics.GpuMilliseconds.GetPercentile95(), 0, 'f', 3)
+            .arg(statistics.GpuMilliseconds.GetCount())
+            .arg(static_cast<uint32>(statistics.GpuState));
+    };
+    REQUIRE(preview.SetScene(costScene) == true);
+    REQUIRE(WaitForProbeBake(preview, costScene) == true);
+    const QString withProbes = measureGpu();
+    const qsizetype atlasBytes = preview.GetSurfaceBake()->ProbeAtlas.Pixels.size();
+    rr::GiProbeGrid outsideGrid = costScene.ProbeGrid;
+    constexpr float32 OUTSIDE_GRID_ORIGIN_X_METRES = 10;
+    outsideGrid.OriginWorld.X = OUTSIDE_GRID_ORIGIN_X_METRES;
+    preview.SetProbeGrid(outsideGrid);
+    RenderScene outsideScene = costScene;
+    outsideScene.ProbeGrid = outsideGrid;
+    REQUIRE(WaitForProbeBake(preview, outsideScene) == true);
+    const QString withoutProbes = measureGpu();
+    WARN("GPU with probe lookups " << withProbes.toStdString() << "; outside the volume " << withoutProbes.toStdString()
+                                   << "; atlas " << atlasBytes << " bytes");
+    preview.Stop();
+}
+
+TEST_CASE("Force raster's default graph adds GI Probe Receivers' baked bounce like the native Lit viewport",
+          "[.render-native][lighting][probe-gi]")
+{
+    namespace default_graph = ludus::render_graph_packages::editor_default_graph;
+    const QString runtime = GetDefaultRenderGraphRuntime();
+    REQUIRE(runtime.isEmpty() == false);
+    RenderPreview preview;
+    PreviewViewport viewport(&preview);
+    viewport.resize(640, 480);
+    viewport.show();
+    bool hasStarted = false;
+    // The doorway admits bounce from both rooms; the closed wall keeps the dark half dark.
+    for (const ProbeDivider divider : {ProbeDivider::AxisWall, ProbeDivider::Doorway})
+    {
+        QVector<math::Vector3> receiversWorld;
+        for (uint32 i = 0; i < PROBE_PATH_RECEIVERS; ++i)
+        {
+            receiversWorld.append(
+                {.05F + PROBE_PATH_STEP_METRES * static_cast<float32>(i), PROBE_CELL_CENTRE_Y_METRES, 0});
+        }
+        const RenderScene scene = MakeProbeQualificationScene(divider,
+                                                              receiversWorld,
+                                                              QByteArrayLiteral("gi-probe-graph/") +
+                                                                  QByteArray::number(static_cast<uint32>(divider)));
+        REQUIRE(preview.SetScene(scene) == true);
+        if (hasStarted == false)
+        {
+            preview.SetShading(PreviewShading::Lit);
+            REQUIRE(preview.Start() == true);
+            hasStarted = true;
+        }
+        const bool hasBaked = WaitForProbeBake(preview, scene);
+        INFO(preview.Status().toStdString());
+        REQUIRE(hasBaked == true);
+        rr::ViewDescription litView;
+        const QImage lit = ReadProbeFrame(preview, litView);
+
+        RenderGraphPreview graph(
+            {default_graph::INTERFACE_IDENTITY.GetData(), default_graph::INTERFACE_IDENTITY.GetSize()},
+            ludus::shaders::renderer_composite::Vertex(),
+            ludus::shaders::renderer_composite::Fragment());
+        REQUIRE(graph.Attach(preview.GetDevice(), preview.GetSurface()) == true);
+        graph.SetReferenceSize(lit.size());
+        rr::ViewDescription graphView;
+        QString error;
+        REQUIRE(preview.DescribeConventionalView(static_cast<uint32>(lit.width()),
+                                                 static_cast<uint32>(lit.height()),
+                                                 graphView,
+                                                 error) == true);
+        RenderGraphExtraction extraction;
+        REQUIRE(MakeRenderGraphExtraction(preview.Scene(), graphView, 1, extraction, error, preview.GetSurfaceBake()) ==
+                true);
+        REQUIRE(extraction.ProbeReceiverIds.size() == receiversWorld.size());
+        graph.SetExtraction(extraction);
+        REQUIRE(graph.Load(runtime) == RenderGraphPreviewLoad::Staged);
+        constexpr int32 GRAPH_DEADLINE_MILLISECONDS = 30000;
+        constexpr int32 POLL_MILLISECONDS = 2;
+        QElapsedTimer timer;
+        timer.start();
+        while (graph.GetPresentedGeneration() == 0 && timer.elapsed() < GRAPH_DEADLINE_MILLISECONDS)
+        {
+            graph.Tick();
+            QApplication::processEvents();
+            QTest::qWait(POLL_MILLISECONDS);
+        }
+        INFO(graph.GetDisplayStatus().toStdString());
+        REQUIRE(graph.GetPresentedGeneration() != 0);
+        CHECK(graph.GetProbeReceiverDrawCount() == static_cast<usize>(receiversWorld.size()));
+        const QImage raster = graph.GetImage();
+        REQUIRE(raster.size() == lit.size());
+        rr::ViewDescription presented;
+        REQUIRE(graph.TryGetPresentedView(presented) == true);
+        for (const math::Vector3& receiverWorld : receiversWorld)
+        {
+            const float32 native = MeasureProbeReceiver(lit, litView, receiverWorld, scene.Definition->Eye).Irradiance;
+            const float32 forced =
+                MeasureProbeReceiver(raster, presented, receiverWorld, scene.Definition->Eye).Irradiance;
+            CAPTURE(static_cast<uint32>(divider), receiverWorld.X, native, forced);
+            // Both paths evaluate the same atlas lookup and diffuse term; only display quantization differs.
+            constexpr float32 ABSOLUTE_TOLERANCE = .02F;
+            constexpr float32 RELATIVE_TOLERANCE = .03F;
+            CHECK(math::Abs(forced - native) <= ABSOLUTE_TOLERANCE + RELATIVE_TOLERANCE * native);
+        }
+        graph.Detach();
+    }
+    preview.Stop();
+}
+
+namespace
+{
+constexpr float32 CHART_ROOM_HALF_WIDTH_METRES = 1.5F;
+// The room stands above the editor's World grid at y = 0. A floor in that plane depth-fights the grid in both the
+// native viewport and the graph, so a grid line can fall in a measured window at one resolution and not another:
+// at device pixel ratio 1 (the hosted macOS runner) a floor point read 0.47 natively and 0.65 in the graph.
+constexpr float32 CHART_ROOM_FLOOR_HEIGHT_METRES = .25F;
+constexpr float32 CHART_LIGHT_INTENSITY = 3;
+// The always-on bake stores one irradiance per triangle, evaluated at its centroid, so a two-triangle quad bakes as
+// two flat halves split along its diagonal. Six cells per side give each surface 72 chart tiles over several chart
+// rows, a stepped falloff and distinct values at the measured points.
+constexpr uint32 CHART_ROOM_CELLS_PER_SIDE = 6;
+// Adds a quad as cellsPerSide x cellsPerSide sub-quads, each split like AddProbeQuad.
+void AddSubdividedQuad(ludus::resources::SceneMesh& inoutMesh, const ProbeQuad& quad, uint32 cellsPerSide)
+{
+    const float32 cellScale = 1.F / static_cast<float32>(cellsPerSide);
+    const math::Vector3 cellEdgeU = quad.EdgeU * cellScale;
+    const math::Vector3 cellEdgeV = quad.EdgeV * cellScale;
+    for (uint32 v = 0; v < cellsPerSide; ++v)
+    {
+        for (uint32 u = 0; u < cellsPerSide; ++u)
+        {
+            const math::Vector3 cornerWorld =
+                quad.CornerWorld + cellEdgeU * static_cast<float32>(u) + cellEdgeV * static_cast<float32>(v);
+            AddProbeQuad(inoutMesh, {cornerWorld, cellEdgeU, cellEdgeV});
+        }
+    }
+}
+// A grey floor and back wall facing each other across their corner, lit by one always-on point light. Their charts
+// carry each other's bounce, which realtime lighting omits, so a draw that ignores its chart reads differently.
+RenderScene MakeSurfaceChartScene()
+{
+    using ludus::resources::SceneDefinition;
+    using ludus::resources::SceneLight;
+    SharedPtr<SceneDefinition> definition;
+    REQUIRE(TryMakeShared<SceneDefinition>(GetSystemAllocationDomain(), definition) == OwnershipStatus::Ok);
+    SceneDefinition& data = *definition;
+    constexpr uint32 FLOOR = 0;
+    constexpr uint32 WALL = 1;
+    constexpr uint32 OBJECT_COUNT = WALL + 1;
+    constexpr uint64 FIRST_SOURCE = 500;
+    constexpr float32 HALF = CHART_ROOM_HALF_WIDTH_METRES;
+    constexpr float32 SPAN = 2 * CHART_ROOM_HALF_WIDTH_METRES;
+    constexpr float32 FLOOR_HEIGHT = CHART_ROOM_FLOOR_HEIGHT_METRES;
+    REQUIRE(data.Meshes.TryResize(OBJECT_COUNT) == true);
+    AddSubdividedQuad(data.Meshes[FLOOR],
+                      {{-HALF, FLOOR_HEIGHT, -HALF}, {0, 0, SPAN}, {SPAN, 0, 0}},
+                      CHART_ROOM_CELLS_PER_SIDE);
+    AddSubdividedQuad(data.Meshes[WALL],
+                      {{-HALF, FLOOR_HEIGHT, -HALF}, {SPAN, 0, 0}, {0, SPAN, 0}},
+                      CHART_ROOM_CELLS_PER_SIDE);
+    REQUIRE(data.Materials.TryResize(1) == true);
+    REQUIRE(data.Objects.TryResize(OBJECT_COUNT) == true);
+    for (uint32 index = 0; index < OBJECT_COUNT; ++index)
+    {
+        data.Objects[index].SourceId = FIRST_SOURCE + index;
+        data.Objects[index].Mesh = index;
+        data.Objects[index].Material = 0;
+    }
+    data.Eye = {0, 1.2F + FLOOR_HEIGHT, 3.5F};
+    data.Target = {0, .6F + FLOOR_HEIGHT, -HALF};
+    data.Up = {0, 1, 0};
+    REQUIRE(data.Lights.TryResize(1) == true);
+    SceneLight& light = data.Lights[0];
+    light.SourceId = FIRST_SOURCE - 1;
+    light.Kind = ludus::resources::SceneLightKind::Point;
+    light.PositionWorld = {.4F, .9F + FLOOR_HEIGHT, -.6F};
+    light.IntensityRgb = {CHART_LIGHT_INTENSITY, 0, 0};
+    light.Range = 6;
+
+    RenderScene scene;
+    scene.LogicalId = QStringLiteral("level/surface-chart-comparison");
+    scene.Identity = QByteArrayLiteral("surface-chart-comparison");
+    scene.AssetsIdentity = QByteArrayLiteral("surface-chart-comparison-assets");
+    scene.Lit = true;
+    scene.StartView =
+    {
+        .EyeWorld = {static_cast<float64>(data.Eye.X),
+                     static_cast<float64>(data.Eye.Y),
+                     static_cast<float64>(data.Eye.Z)},
+        .TargetWorld = {static_cast<float64>(data.Target.X),
+                        static_cast<float64>(data.Target.Y),
+                        static_cast<float64>(data.Target.Z)},
+        .UpWorld = data.Up,
+        .VerticalFov = data.VerticalFov,
+    };
+    scene.HasStartView = true;
+    scene.Center = data.Target;
+    scene.Radius = 3;
+    scene.Meshes.resize(OBJECT_COUNT);
+    scene.Surfaces.resize(1);
+    scene.Surfaces[0].Tint = {PROBE_RECEIVER_ALBEDO, PROBE_RECEIVER_ALBEDO, PROBE_RECEIVER_ALBEDO, 1};
+    scene.Surfaces[0].Roughness = 1;
+    for (uint32 index = 0; index < OBJECT_COUNT; ++index)
+    {
+        PreviewObject object;
+        object.Id = QString::number(data.Objects[index].SourceId);
+        object.Transform = data.Objects[index].Transform;
+        object.Mesh = static_cast<int32>(index);
+        object.Surface = 0;
+        scene.Objects.append(object);
+    }
+    QString error;
+    REQUIRE(RenderScene::LoadCookedLights(data, scene.AuthoredLights, error) == true);
+    scene.AlwaysOnLightIds.append(light.SourceId);
+    scene.Definition = Move(definition);
+    return scene;
+}
+// Scene-linear red radiance at a world point of a presented frame: the 3 x 3 pixels around its projection, decoded
+// from sRGB and the viewport's PBR Neutral curve at exposure one.
+float32 MeasureSceneRed(const QImage& image, const rr::ViewDescription& view, math::Vector3 pointWorld)
+{
+    const math::Vector2 centre = ProjectToPixel(view, image, pointWorld);
+    const QPoint centrePixel(static_cast<int32>(centre.X), static_cast<int32>(centre.Y));
+    constexpr int32 RADIUS_PIXELS = 1;
+    float64 sum = 0;
+    uint32 count = 0;
+    for (int32 y = -RADIUS_PIXELS; y <= RADIUS_PIXELS; ++y)
+    {
+        for (int32 x = -RADIUS_PIXELS; x <= RADIUS_PIXELS; ++x)
+        {
+            const QPoint positionPixel = centrePixel + QPoint(x, y);
+            REQUIRE(image.rect().contains(positionPixel) == true);
+            const QColor color = image.pixelColor(positionPixel);
+            const math::Vector3 display = {DecodeSrgb(static_cast<float64>(color.redF())),
+                                           DecodeSrgb(static_cast<float64>(color.greenF())),
+                                           DecodeSrgb(static_cast<float64>(color.blueF()))};
+            sum += static_cast<float64>(rr::InvertPbrNeutral(display).X);
+            ++count;
+        }
+    }
+    return static_cast<float32>(sum / count);
+}
+} // namespace
+
+TEST_CASE("Force raster's default graph draws static surfaces' baked charts like the native Lit viewport",
+          "[.render-native][lighting][surface-chart]")
+{
+    namespace default_graph = ludus::render_graph_packages::editor_default_graph;
+    const QString runtime = GetDefaultRenderGraphRuntime();
+    REQUIRE(runtime.isEmpty() == false);
+    RenderPreview preview;
+    PreviewViewport viewport(&preview);
+    viewport.resize(640, 480);
+    viewport.show();
+    const RenderScene scene = MakeSurfaceChartScene();
+    REQUIRE(preview.SetScene(scene) == true);
+    preview.SetShading(PreviewShading::Lit);
+    REQUIRE(preview.Start() == true);
+    const QByteArray key = preview_lighting::MakeKey(scene);
+    const bool hasBaked = QTest::qWaitFor(
+        [&]() {
+            const QSharedPointer<const WorldSurfaceBake> bake = preview.GetSurfaceBake();
+            return bake.isNull() == false && bake->LightingKey == key &&
+                   preview.Status().contains(QStringLiteral("always-on lighting baked")) == true;
+        },
+        PROBE_BAKE_DEADLINE_MILLISECONDS);
+    INFO(preview.Status().toStdString());
+    REQUIRE(hasBaked == true);
+    REQUIRE(Frames(preview, preview.Frames() + 3) == true);
+    rr::ViewDescription litView;
+    const QImage lit = ReadProbeFrame(preview, litView);
+
+    // Renders the default graph for one extraction; a null bake draws every surface in realtime.
+    const auto renderGraph =
+        [&](const QSharedPointer<const WorldSurfaceBake>& bake, QImage& outImage, rr::ViewDescription& outView) {
+            RenderGraphPreview graph(
+                {default_graph::INTERFACE_IDENTITY.GetData(), default_graph::INTERFACE_IDENTITY.GetSize()},
+                ludus::shaders::renderer_composite::Vertex(),
+                ludus::shaders::renderer_composite::Fragment());
+            REQUIRE(graph.Attach(preview.GetDevice(), preview.GetSurface()) == true);
+            graph.SetReferenceSize(lit.size());
+            rr::ViewDescription graphView;
+            QString error;
+            REQUIRE(preview.DescribeConventionalView(static_cast<uint32>(lit.width()),
+                                                     static_cast<uint32>(lit.height()),
+                                                     graphView,
+                                                     error) == true);
+            RenderGraphExtraction extraction;
+            REQUIRE(MakeRenderGraphExtraction(preview.Scene(), graphView, 1, extraction, error, bake) == true);
+            graph.SetExtraction(extraction);
+            REQUIRE(graph.Load(runtime) == RenderGraphPreviewLoad::Staged);
+            constexpr int32 GRAPH_DEADLINE_MILLISECONDS = 30000;
+            constexpr int32 POLL_MILLISECONDS = 2;
+            QElapsedTimer timer;
+            timer.start();
+            while (graph.GetPresentedGeneration() == 0 && timer.elapsed() < GRAPH_DEADLINE_MILLISECONDS)
+            {
+                graph.Tick();
+                QApplication::processEvents();
+                QTest::qWait(POLL_MILLISECONDS);
+            }
+            INFO(graph.GetDisplayStatus().toStdString());
+            REQUIRE(graph.GetPresentedGeneration() != 0);
+            const usize chartDraws = graph.GetSurfaceChartDrawCount();
+            outImage = graph.GetImage();
+            REQUIRE(outImage.size() == lit.size());
+            REQUIRE(graph.TryGetPresentedView(outView) == true);
+            graph.Detach();
+            return chartDraws;
+        };
+    QImage baked;
+    rr::ViewDescription bakedView;
+    // Both static surfaces draw through the deferred chart G-buffer.
+    CHECK(renderGraph(preview.GetSurfaceBake(), baked, bakedView) == static_cast<usize>(scene.Objects.size()));
+    QImage realtime;
+    rr::ViewDescription realtimeView;
+    CHECK(renderGraph({}, realtime, realtimeView) == 0);
+
+    // Points on the floor and the wall, nearer and farther from their shared corner. On each surface the first point
+    // lies far from the light and a later one near it.
+    constexpr float32 HALF = CHART_ROOM_HALF_WIDTH_METRES;
+    constexpr float32 FLOOR_HEIGHT = CHART_ROOM_FLOOR_HEIGHT_METRES;
+    constexpr usize POINT_COUNT = 6;
+    const StaticArray<math::Vector3, POINT_COUNT> pointsWorld{
+        math::Vector3{-.6F, FLOOR_HEIGHT, -.9F},
+        {.2F, FLOOR_HEIGHT, -1.2F},
+        {.8F, FLOOR_HEIGHT, -.3F},
+        {-.6F, .3F + FLOOR_HEIGHT, -HALF},
+        {.2F, .8F + FLOOR_HEIGHT, -HALF},
+        {.8F, 1.4F + FLOOR_HEIGHT, -HALF},
+    };
+    // Both paths sample the same chart texels and evaluate the same diffuse and live specular terms; only display
+    // quantization and half-float G-buffer storage differ.
+    constexpr float32 ABSOLUTE_TOLERANCE = .02F;
+    constexpr float32 RELATIVE_TOLERANCE = .03F;
+    float32 largestRealtimeError = 0;
+    QString table = QStringLiteral("x\ty\tz\tnative\tforced\trealtime\n");
+    StaticArray<float32, POINT_COUNT> nativeRed{};
+    StaticArray<float32, POINT_COUNT> realtimeRed{};
+    for (usize i = 0; i < POINT_COUNT; ++i)
+    {
+        const math::Vector3& pointWorld = pointsWorld[i];
+        const float32 native = MeasureSceneRed(lit, litView, pointWorld);
+        const float32 forced = MeasureSceneRed(baked, bakedView, pointWorld);
+        const float32 live = MeasureSceneRed(realtime, realtimeView, pointWorld);
+        nativeRed[i] = native;
+        realtimeRed[i] = live;
+        CAPTURE(pointWorld.X, pointWorld.Y, pointWorld.Z, native, forced, live);
+        CHECK(math::Abs(forced - native) <= ABSOLUTE_TOLERANCE + RELATIVE_TOLERANCE * native);
+        largestRealtimeError = math::Max(largestRealtimeError,
+                                         math::Abs(live - native) / (ABSOLUTE_TOLERANCE + RELATIVE_TOLERANCE * native));
+        table += QStringLiteral("%1\t%2\t%3\t%4\t%5\t%6\n")
+                     .arg(static_cast<float64>(pointWorld.X), 0, 'f', 2)
+                     .arg(static_cast<float64>(pointWorld.Y), 0, 'f', 2)
+                     .arg(static_cast<float64>(pointWorld.Z), 0, 'f', 2)
+                     .arg(static_cast<float64>(native), 0, 'f', 4)
+                     .arg(static_cast<float64>(forced), 0, 'f', 4)
+                     .arg(static_cast<float64>(live), 0, 'f', 4);
+    }
+    WARN(table.toStdString());
+    // Realtime lighting misses the bounce and the chart reconstruction, so this comparison discriminates.
+    CHECK(largestRealtimeError > 1);
+    // The bake follows the light's falloff: a chart that drew a two-triangle quad's flat halves, or read another
+    // triangle's tile, would not separate these points as the realtime render does.
+    constexpr usize FLOOR_FAR = 0;
+    constexpr usize FLOOR_NEAR = 2;
+    constexpr usize WALL_FAR = 3;
+    constexpr usize WALL_NEAR = 4;
+    constexpr float32 FALLOFF_RATIO = 2;
+    CHECK(realtimeRed[FLOOR_NEAR] > FALLOFF_RATIO * realtimeRed[FLOOR_FAR]);
+    CHECK(realtimeRed[WALL_NEAR] > FALLOFF_RATIO * realtimeRed[WALL_FAR]);
+    CHECK(nativeRed[FLOOR_NEAR] > FALLOFF_RATIO * nativeRed[FLOOR_FAR]);
+    CHECK(nativeRed[WALL_NEAR] > FALLOFF_RATIO * nativeRed[WALL_FAR]);
     preview.Stop();
 }
 
@@ -1269,4 +2528,194 @@ TEST_CASE("Native World-demo World renders its game extraction in the shared vie
     }
     CHECK(playerPixels >= MINIMUM_PLAYER_PIXELS);
     workspace.StopPreview();
+}
+
+TEST_CASE("The Metal World viewport restarts diffuse bounce history after an emitter edit",
+          "[.render-native][world-graph][hybrid-indirect-diffuse]")
+{
+    using namespace ludus::tests::hybrid_diffuse;
+    namespace rhi = ludus::graphics::rhi;
+    constexpr int32 DEADLINE_MILLISECONDS = 45000;
+    constexpr int32 WIDTH = 640;
+    constexpr int32 HEIGHT = 480;
+    constexpr float64 EYE_DEPTH_WORLD = .05;
+    constexpr float32 START_FOV = 1.35F;
+    constexpr int32 NOISE_FLOOR = 3;
+    constexpr uint64 MINIMUM_LIT_SIGNAL = 256;
+
+    Room room;
+    room.Apply(STATES[1]);
+    RenderScene lit;
+    lit.Identity = QByteArrayLiteral("diffuse-lit");
+    lit.AssetsIdentity = QByteArrayLiteral("diffuse-room");
+    lit.LogicalId = QStringLiteral("level/diffuse-room");
+    lit.Lit = true;
+    lit.HasStartView = true;
+    lit.StartView.EyeWorld = {0, 0, EYE_DEPTH_WORLD};
+    lit.StartView.TargetWorld = {0, 0, static_cast<float64>(room.Positions[RECEIVER][0].Z)};
+    lit.StartView.VerticalFov = START_FOV;
+    namespace resources = ludus::resources;
+    SharedPtr<resources::SceneDefinition> definition;
+    REQUIRE(TryMakeShared<resources::SceneDefinition>(GetSystemAllocationDomain(), definition) == OwnershipStatus::Ok);
+    resources::SceneDefinition& data = *definition;
+    REQUIRE(data.Meshes.TryResize(QUAD_COUNT) == true);
+    REQUIRE(data.Materials.TryResize(QUAD_COUNT) == true);
+    REQUIRE(data.Objects.TryResize(QUAD_COUNT) == true);
+    data.Eye = {0, 0, static_cast<float32>(EYE_DEPTH_WORLD)};
+    data.Target = room.Positions[RECEIVER][0];
+    data.Target.X = 0;
+    data.Target.Y = 0;
+    data.Up = lit.StartView.UpWorld;
+    data.VerticalFov = START_FOV;
+    lit.Meshes.resize(QUAD_COUNT);
+    for (usize quad = 0; quad < QUAD_COUNT; ++quad)
+    {
+        const renderer::MeshDescription& mesh = room.Meshes[quad].Geometry;
+        const renderer::SceneShaderMaterial& material = room.Materials[quad];
+        resources::SceneMesh& cookedMesh = data.Meshes[quad];
+        REQUIRE(cookedMesh.Positions.TryAddRange({mesh.Positions, mesh.VertexCount}) == true);
+        REQUIRE(cookedMesh.Normals.TryAddRange({mesh.Normals, mesh.VertexCount}) == true);
+        REQUIRE(cookedMesh.Indices.TryAddRange({mesh.Indices, mesh.IndexCount}) == true);
+        resources::SceneMaterial& cookedMaterial = data.Materials[quad];
+        cookedMaterial.Reflectance = material.BaseColor;
+        cookedMaterial.Scattering = material.Scattering;
+        cookedMaterial.Emission = material.Emission;
+        cookedMaterial.IsEmissionTwoSided = false;
+        cookedMaterial.HasSourceMaterial = true;
+        cookedMaterial.AreaSourceId = quad == EMITTER ? room.Items[quad].SourceId : 0;
+        PreviewSurface surface;
+        surface.Tint = {material.BaseColor.X, material.BaseColor.Y, material.BaseColor.Z, 1};
+        surface.FlatTint = surface.Tint;
+        surface.Scattering = material.Scattering;
+        surface.Emission = material.Emission;
+        lit.Surfaces.append(surface);
+        resources::SceneObject& cookedObject = data.Objects[quad];
+        cookedObject.Mesh = static_cast<uint32>(quad);
+        cookedObject.Material = cookedObject.Mesh;
+        cookedObject.SourceId = room.Items[quad].SourceId;
+        cookedObject.Transform = room.Items[quad].MeshToWorld;
+        PreviewObject object;
+        object.Id = QString::number(cookedObject.SourceId);
+        object.Mesh = static_cast<int32>(quad);
+        object.Surface = object.Mesh;
+        object.Transform = cookedObject.Transform;
+        lit.Objects.append(object);
+    }
+    lit.Definition = Move(definition);
+
+    rhi::Shutdown();
+    QTemporaryDir project;
+    REQUIRE(project.isValid() == true);
+    RendererWorkspace workspace({});
+    RenderPreview source;
+    PreviewViewport viewport(&source);
+    viewport.resize(WIDTH, HEIGHT);
+    viewport.show();
+    viewport.UseProjectGraph(workspace);
+    workspace.SetPreviewSource(&source);
+    workspace.EnableWorldRendering();
+    workspace.SetProject(project.path(), 1);
+    REQUIRE(source.SetScene(lit) == true);
+    REQUIRE(source.Start() == true);
+    RenderGraphPreview* graphOrNull = workspace.GetPreviewOrNull();
+    REQUIRE(graphOrNull != nullptr);
+    graphOrNull->SetSlowFrameMilliseconds(1000);
+    graphOrNull->SetWorkLightEnabled(false);
+
+    const auto waitFor = [&](const auto& isReady) {
+        QElapsedTimer timer;
+        timer.start();
+        while (isReady() == false && timer.elapsed() < DEADLINE_MILLISECONDS)
+        {
+            QTest::qWait(1);
+            workspace.ServicePreview();
+        }
+        return isReady();
+    };
+    REQUIRE(waitFor([&]() { return source.HasDevice(); }) == true);
+    rhi::RayCapabilities capabilities;
+    if (rhi::GetRayCapabilities(source.GetDevice(), capabilities) != rhi::RasterStatus::Ready)
+    {
+        SKIP("The native World viewport device has no ray queries");
+    }
+    const QString package = QStringLiteral(LUDUS_EDITOR_INDIRECT_DIFFUSE_PACKAGE);
+    REQUIRE(graphOrNull->Load(package, GetDefaultRenderGraphRuntime()) == RenderGraphPreviewLoad::Staged);
+    const bool hasPresentedInitial = waitFor([&]() {
+        return graphOrNull->GetActivePackagePath() == package && graphOrNull->HasGpuFrame() == true &&
+               graphOrNull->GetPresentedGeneration() == graphOrNull->GetReport().ActiveGeneration;
+    });
+    INFO(graphOrNull->GetDisplayStatus().toStdString());
+    CAPTURE(graphOrNull->GetReport().ActiveGeneration,
+            graphOrNull->GetReport().LatestSceneRevision,
+            source.ShouldRenderPresentation());
+    REQUIRE(hasPresentedInitial == true);
+    REQUIRE(graphOrNull->GetReport().ActiveRenderer == renderer::RenderGraphRenderer::HardwareRayTracing);
+    REQUIRE(&viewport.GetFrameSource() == &graphOrNull->GetDisplayFrames());
+    const uint64 firstFrame = graphOrNull->GetDisplayFrames().GetLatestSerial();
+    REQUIRE(firstFrame != 0);
+    REQUIRE(waitFor([&]() { return viewport.GetPresentedGraphFrameSerial() >= firstFrame; }) == true);
+
+    const auto measureRedSignal = []() {
+        const QImage image = ReadViewport();
+        REQUIRE(image.isNull() == false);
+        constexpr int32 SAMPLE_STRIDE = 4;
+        constexpr int32 CROP_DIVISOR = 4;
+        const int32 marginX = image.width() / CROP_DIVISOR;
+        const int32 marginY = image.height() / CROP_DIVISOR;
+        uint64 signal = 0;
+        for (int32 y = marginY; y < image.height() - marginY; y += SAMPLE_STRIDE)
+        {
+            for (int32 x = marginX; x < image.width() - marginX; x += SAMPLE_STRIDE)
+            {
+                const QRgb value = image.pixel(x, y);
+                const int32 difference = qRed(value) - qBlue(value);
+                if (difference > NOISE_FLOOR)
+                {
+                    signal += static_cast<uint64>(difference);
+                }
+            }
+        }
+        return signal;
+    };
+    const uint64 litRevision = graphOrNull->GetPresentedRevision();
+    const uint64 litFrame = viewport.GetPresentedGraphFrameSerial();
+    renderer::ViewDescription litView;
+    REQUIRE(graphOrNull->TryGetPresentedView(litView) == true);
+    const uint64 litSignal = measureRedSignal();
+    REQUIRE(litSignal >= MINIMUM_LIT_SIGNAL);
+
+    RenderScene dark = lit;
+    dark.Identity = QByteArrayLiteral("diffuse-dark");
+    constexpr float32 DIM_RADIANCE = .125F;
+    dark.Surfaces[EMITTER].Emission = {DIM_RADIANCE, DIM_RADIANCE, DIM_RADIANCE};
+    SharedPtr<resources::SceneDefinition> darkDefinition;
+    REQUIRE(TryMakeShared<resources::SceneDefinition>(GetSystemAllocationDomain(), darkDefinition) ==
+            OwnershipStatus::Ok);
+    REQUIRE(lit.Definition->TryCopyTo(*darkDefinition) == resources::Status::Ok);
+    darkDefinition->Materials[EMITTER].Emission = dark.Surfaces[EMITTER].Emission;
+    dark.Definition = Move(darkDefinition);
+    REQUIRE(source.SetScene(dark) == true);
+    CHECK(graphOrNull->GetPresentedRevision() == litRevision);
+    const bool hasPresentedEdit = waitFor([&]() { return graphOrNull->GetPresentedRevision() > litRevision; });
+    INFO(graphOrNull->GetDisplayStatus().toStdString());
+    INFO(workspace.GetScenePreparationProblem().toStdString());
+    CAPTURE(source.ShouldRenderPresentation(),
+            graphOrNull->HasPendingWork(),
+            graphOrNull->GetReport().LatestSceneRevision,
+            litRevision,
+            graphOrNull->GetDisplayFrames().GetShownSize().width(),
+            graphOrNull->GetDisplayFrames().GetShownSize().height());
+    REQUIRE(hasPresentedEdit == true);
+    const uint64 darkFrame = graphOrNull->GetDisplayFrames().GetLatestSerial();
+    REQUIRE(darkFrame > litFrame);
+    REQUIRE(waitFor([&]() { return viewport.GetPresentedGraphFrameSerial() >= darkFrame; }) == true);
+    constexpr uint64 MAXIMUM_SIGNAL_FRACTION_DIVISOR = 4;
+    CHECK(measureRedSignal() <= litSignal / MAXIMUM_SIGNAL_FRACTION_DIVISOR);
+    renderer::ViewDescription darkView;
+    REQUIRE(graphOrNull->TryGetPresentedView(darkView) == true);
+    CHECK(darkView.WorldToClip == litView.WorldToClip);
+
+    source.Stop();
+    workspace.SetPreviewSource(nullptr);
+    rhi::Shutdown();
 }

@@ -58,6 +58,13 @@ MakeSpecializedModel(const SemanticModel& model, foundation::uint32 index, Seman
 /// @return False when allocation failed.
 [[nodiscard]] bool AnalyzeUniformity(const AnalysisInputs& inputs, DiagnosticSink& inoutSink) noexcept;
 
+/// @brief Report uses of atomic storage (Symbol::IsAtomic) that lowering cannot spell with
+/// `Atomic<T>`: compound assignments, `++`/`--`, `out`/`inout` arguments and whole arrays or buffers
+/// used as values.
+/// @pre The model checked without errors.
+/// @return False when allocation failed.
+[[nodiscard]] bool AnalyzeAtomics(const AnalysisInputs& inputs, DiagnosticSink& inoutSink) noexcept;
+
 /// @brief Report values of different coordinate spaces that meet: in an operator, an assignment,
 /// an argument, a return, or a matrix applied outside its source space.
 /// @pre The model checked without errors.

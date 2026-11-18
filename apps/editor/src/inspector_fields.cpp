@@ -58,6 +58,10 @@ constexpr int32 LINE_EDIT_TEXT_MARGIN = 2;
 /// Characters an elided label keeps at each end at its narrowest, so a shortened reference still reads.
 constexpr int32 ELIDED_KEPT_CHARACTERS = 3;
 constexpr int32 AXIS_WIDTH = design::SPACING_MEDIUM;
+/// Significant digits a compact vector row shows from one up, and decimals it shows below one.
+constexpr int32 COMPACT_SIGNIFICANT_DIGITS = 4;
+constexpr int32 COMPACT_FRACTION_DECIMALS = 3;
+const char* const COMPACT_NUMBER_PROPERTY = "isCompactNumber";
 constexpr int32 SWATCH_WIDTH = design::SPACING_EXTRA_LARGE + design::SPACING_MEDIUM;
 constexpr int32 SWATCH_HEIGHT = design::SPACING_EXTRA_LARGE;
 constexpr int32 CHIP_SIZE = design::SPACING_LARGE;
@@ -156,6 +160,59 @@ QString FormatInspectorNumber(float64 value)
 QString FormatStoredNumber(float64 value)
 {
     return QString::number(value, 'g', QLocale::FloatingPointShortest);
+}
+
+QString FormatCompactInspectorNumber(float64 value)
+{
+    if (math::IsFinite(value) == false)
+    {
+        return FormatInspectorNumber(value);
+    }
+    const float64 magnitude = math::Abs(value);
+    int32 decimals = COMPACT_FRACTION_DECIMALS;
+    if (magnitude >= 1)
+    {
+        // Digits before the point: 1 for 1.878, 2 for 18.76, 3 for 100.8.
+        int32 wholeDigits = 1;
+        for (float64 limit = DECIMAL_BASE; magnitude >= limit && wholeDigits < COMPACT_SIGNIFICANT_DIGITS;
+             limit *= DECIMAL_BASE)
+        {
+            ++wholeDigits;
+        }
+        decimals = COMPACT_SIGNIFICANT_DIGITS - wholeDigits;
+    }
+    QString text = QString::number(value, 'f', decimals);
+    if (text.contains(QLatin1Char('.')) == true)
+    {
+        while (text.endsWith(QLatin1Char('0')) == true)
+        {
+            text.chop(1);
+        }
+        if (text.endsWith(QLatin1Char('.')) == true)
+        {
+            text.chop(1);
+        }
+    }
+    if (text == QStringLiteral("-0"))
+    {
+        text = QStringLiteral("0");
+    }
+    // A small value that would round to zero keeps its first digits instead of reading as nothing.
+    if (text == QStringLiteral("0") && value != 0)
+    {
+        return QString::number(value, 'g', COMPACT_FRACTION_DECIMALS);
+    }
+    return text;
+}
+
+void MarkCompactNumberField(QLineEdit& inoutField)
+{
+    inoutField.setProperty(COMPACT_NUMBER_PROPERTY, true);
+}
+
+bool IsCompactNumberField(const QLineEdit& field)
+{
+    return field.property(COMPACT_NUMBER_PROPERTY).toBool();
 }
 
 bool HasSliderRange(float64 minimum, float64 maximum)
@@ -787,7 +844,10 @@ void ScrubLabel::mouseMoveEvent(QMouseEvent* event)
         return;
     }
     mHasMoved = true;
-    const QString text = FormatInspectorNumber(ComputeScrubbedValue(mStartValue, delta, mSettings, event->modifiers()));
+    const float64 value = ComputeScrubbedValue(mStartValue, delta, mSettings, event->modifiers());
+    // A compact vector row keeps its short numbers while dragging, so the row never jumps to stacked fields.
+    const QString text =
+        IsCompactNumberField(mField) == true ? FormatCompactInspectorNumber(value) : FormatInspectorNumber(value);
     if (text != mField.text())
     {
         mField.setText(text);

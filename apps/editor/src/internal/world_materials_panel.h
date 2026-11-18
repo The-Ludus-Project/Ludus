@@ -7,7 +7,6 @@
 QT_BEGIN_NAMESPACE
 class QEvent;
 class QJsonObject;
-class QLabel;
 class QPushButton;
 class QTreeWidget;
 class QTreeWidgetItem;
@@ -15,6 +14,7 @@ QT_END_NAMESPACE
 
 namespace ludus::editor
 {
+class CaptionLabel;
 class WorldDocument;
 struct RenderScene;
 
@@ -64,7 +64,7 @@ private:
     QTreeWidget* mTree;
     QPushButton* mCopy;
     QPushButton* mEdit;
-    QLabel* mStatus;
+    CaptionLabel* mStatus;
     QVector<WorldMaterialRow> mRows;
 };
 } // namespace ludus::editor

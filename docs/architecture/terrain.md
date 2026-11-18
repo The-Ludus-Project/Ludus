@@ -400,7 +400,7 @@ Road/river tools may consume the proposed geometry path/sweep owners; they bake
 stamps and meshes in world metres. Their dependency is an adapter, not a Terrain
 dependency on all of Geometry. Water consumes bathymetry and revisions through
 the [fluid boundary](fluid-field.md), with its own height/current representation.
-Navigation cooks separate traversability data. Foliage and props consume
+Navigation cooks separate traversability data. [Foliage](foliage.md) and props consume
 deterministic placement records, terrain revisions and exclusion masks; their
 instances, culling, wind and interaction belong to separate consumers.
 

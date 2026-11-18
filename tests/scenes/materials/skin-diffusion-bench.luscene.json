@@ -1,0 +1,60 @@
+{
+  "format": "ludus.scene",
+  "version": 1,
+  "name": "Skin diffusion bench",
+  "description": "A head-sized bench for real-time skin: a skin block beside a glossy white non-skin block at the same depth, with a dark bar floating in front that casts a sharp shadow band across both faces at y = 0, all under a small one-sided light in front of them. The bar's silhouette is a depth discontinuity over the skin, the white block is a profile boundary at equal depth, and the shadow edge shows the diffusion's spread. Its scattering distances are exaggerated so the spread covers several pixels of the 96 x 64 test image. The skin cook check of the scene import tests uses it.",
+  "camera": {
+    "eye": [0, 0.02, 0.45],
+    "target": [0, -0.02, 0],
+    "up": [0, 1, 0],
+    "vertical_fov_degrees": 48.88790956083307
+  },
+  "materials": [
+    {"name": "Floor", "model": "diffuse", "base_color": [0.5, 0.5, 0.5]},
+    {"name": "Skin", "model": "skin", "base_color": [0.8, 0.5, 0.4], "roughness": 0.45, "scattering_distance": [0.012, 0.006, 0.003]},
+    {"name": "Eye", "model": "metallic_roughness", "base_color": [0.9, 0.9, 0.9], "metallic": 0, "roughness": 0.1},
+    {"name": "Hair", "model": "diffuse", "base_color": [0.05, 0.04, 0.03]},
+    {"name": "Light", "model": "metallic_roughness", "base_color": [0.8, 0.8, 0.8], "roughness": 1, "emission": {"radiance": [20, 20, 20], "two_sided": false}}
+  ],
+  "objects": [
+    {
+      "name": "Floor",
+      "material": "Floor",
+      "positions": [[-0.2, -0.1, 0.2], [0.2, -0.1, 0.2], [0.2, -0.1, -0.2], [-0.2, -0.1, -0.2]],
+      "polygons": [[0, 1, 2, 3]]
+    },
+    {
+      "name": "Skin block",
+      "material": "Skin",
+      "positions": [
+        [-0.1, -0.099, 0], [0.02, -0.099, 0], [0.02, -0.099, -0.06], [-0.1, -0.099, -0.06],
+        [-0.1, 0.06, 0], [0.02, 0.06, 0], [0.02, 0.06, -0.06], [-0.1, 0.06, -0.06]
+      ],
+      "polygons": [[4, 5, 6, 7], [0, 1, 5, 4], [1, 2, 6, 5], [2, 3, 7, 6], [3, 0, 4, 7], [3, 2, 1, 0]]
+    },
+    {
+      "name": "Eye block",
+      "material": "Eye",
+      "positions": [
+        [0.021, -0.099, 0], [0.1, -0.099, 0], [0.1, -0.099, -0.06], [0.021, -0.099, -0.06],
+        [0.021, 0.06, 0], [0.1, 0.06, 0], [0.1, 0.06, -0.06], [0.021, 0.06, -0.06]
+      ],
+      "polygons": [[4, 5, 6, 7], [0, 1, 5, 4], [1, 2, 6, 5], [2, 3, 7, 6], [3, 0, 4, 7], [3, 2, 1, 0]]
+    },
+    {
+      "name": "Hair bar",
+      "material": "Hair",
+      "positions": [
+        [-0.12, 0.018, 0.04], [0.12, 0.018, 0.04], [0.12, 0.018, 0.03], [-0.12, 0.018, 0.03],
+        [-0.12, 0.03, 0.04], [0.12, 0.03, 0.04], [0.12, 0.03, 0.03], [-0.12, 0.03, 0.03]
+      ],
+      "polygons": [[4, 5, 6, 7], [0, 1, 5, 4], [1, 2, 6, 5], [2, 3, 7, 6], [3, 0, 4, 7], [3, 2, 1, 0]]
+    },
+    {
+      "name": "Light",
+      "material": "Light",
+      "positions": [[-0.03, 0.15, 0.2], [0.03, 0.15, 0.2], [0.03, 0.15, 0.26], [-0.03, 0.15, 0.26]],
+      "polygons": [[0, 1, 2, 3]]
+    }
+  ]
+}

@@ -5,6 +5,7 @@
 
 #include "internal/reference_comparison.h"
 #include "internal/viewport_reference_capture.h"
+#include "internal/viewport_tone_curve.h"
 #if defined(LUDUS_EDITOR_NATIVE_PREVIEW)
 #    include "internal/render_graph_library_capture.h"
 #    include "internal/viewport_graph_capture.h"
@@ -177,6 +178,13 @@ private:
     [[nodiscard]] bool isAwaitingCaptureProfile() const noexcept;
     /// One line on the capture profile of a selected graph capture; empty when none applies.
     [[nodiscard]] QString describeCaptureProfile() const;
+    /// Copy the viewport's exposure mode, EV100 and compensation into a capture view and hide the World grid, an
+    /// editor overlay the reference never draws, so the render graph side shows the scene as the viewport does.
+    void prepareCaptureView(graphics::renderer::ViewDescription& inoutView) const;
+    /// Display transform of the viewport output for a view prepared by prepareCaptureView: its ToneMap's exposure
+    /// and curve when one draws the output, otherwise the viewport's default transform.
+    [[nodiscard]] ViewportDisplayTransform
+    resolveDisplayTransform(const graphics::renderer::ViewDescription& view) const;
     [[nodiscard]] bool startRasterCapture(const QSize& requestedSize, QSize& outExtent, QString& outError);
     [[nodiscard]] bool startGraphCapture(const QSize& requestedSize, QSize& outExtent, QString& outError);
     [[nodiscard]] bool startGraphSource();
@@ -184,6 +192,8 @@ private:
     [[nodiscard]] bool saveComparison(const QString& hdrPath, QString& outError) const;
     QPointer<RenderPreview> mPreview;
     ViewportReferenceCapture mCapture;
+    /// Display transform of every image of the running or last capture, frozen when it started.
+    ViewportDisplayTransform mDisplay{};
 #if defined(LUDUS_EDITOR_NATIVE_PREVIEW)
     void openGraphComparison();
     QPointer<GraphComparisonWindow> mGraphComparison;

@@ -16,6 +16,7 @@
 #include <limits>
 #include <string_view>
 
+#include <QJsonArray>
 #include <QStringList>
 
 namespace ludus::editor
@@ -123,6 +124,8 @@ QString GetModelName(format::MaterialModel model)
             return QStringLiteral("Absorbing medium boundary");
         case format::MaterialModel::HairCard:
             return QStringLiteral("Hair card");
+        case format::MaterialModel::Skin:
+            return QStringLiteral("Skin");
     }
     return QStringLiteral("Unknown (%1)").arg(static_cast<uint32>(model));
 }
@@ -152,8 +155,8 @@ QImage MakeThumbnail(const resources::SceneDefinition& definition, uint32 textur
                        Qt::SmoothTransformation);
 }
 
-/// A colour row: its text, and the display colour that stands for it.
-MaterialPropertyRow MakeColourRow(const QString& label, const foundation::math::Vector3& linear)
+/// A colour row: its text, the display colour that stands for it, and what its short label leaves out.
+MaterialPropertyRow MakeColourRow(const QString& label, const foundation::math::Vector3& linear, const QString& detail)
 {
     return {label,
             FormatRgb(linear),
@@ -161,10 +164,14 @@ MaterialPropertyRow MakeColourRow(const QString& label, const foundation::math::
             ConvertLinearToDisplayColour(static_cast<foundation::float64>(linear.X),
                                          static_cast<foundation::float64>(linear.Y),
                                          static_cast<foundation::float64>(linear.Z)),
-            {}};
+            {},
+            detail};
 }
 
-/// "Texture 3 · 1024 × 512 · sRGB", or "None" for format::NO_TEXTURE.
+/// What a texture is, readably: "1024 × 512 · sRGB", "Constant white" for an importer's one-texel stand-in, "None"
+/// for format::NO_TEXTURE or "Missing" for an index past the scene's textures. A cooked scene keeps no texture
+/// names, so its size and encoding (with the thumbnail beside them) say which texture it is; the scene's own texture
+/// number is in DescribeTextureDetail, not in a "Texture 3 · …" prefix that shortened to "Texture 3…48".
 QString DescribeTexture(const resources::SceneDefinition& definition, uint32 texture)
 {
     if (texture == format::NO_TEXTURE)
@@ -173,7 +180,7 @@ QString DescribeTexture(const resources::SceneDefinition& definition, uint32 tex
     }
     if (static_cast<usize>(texture) >= definition.Textures.GetSize())
     {
-        return QStringLiteral("Texture %1 (missing)").arg(texture);
+        return QStringLiteral("Missing");
     }
     const resources::SceneTexture& source = definition.Textures[texture];
     const QString encoding = source.IsLinear == true ? QStringLiteral("linear") : QStringLiteral("sRGB");
@@ -194,13 +201,44 @@ QString DescribeTexture(const resources::SceneDefinition& definition, uint32 tex
                                  source.Pixels[1] == std::numeric_limits<foundation::uint8>::max() &&
                                  source.Pixels[2] == std::numeric_limits<foundation::uint8>::max();
             const bool isBlack = source.Pixels[0] == 0 && source.Pixels[1] == 0 && source.Pixels[2] == 0;
-            const QString constant = isWhite == true   ? QStringLiteral("Constant white")
-                                     : isBlack == true ? QStringLiteral("Constant black")
-                                                       : QStringLiteral("Constant colour");
-            return QStringLiteral("%1 · %2 × %3 · %4").arg(constant).arg(source.Width).arg(source.Height).arg(encoding);
+            return isWhite == true   ? QStringLiteral("Constant white")
+                   : isBlack == true ? QStringLiteral("Constant black")
+                                     : QStringLiteral("Constant colour");
         }
     }
-    return QStringLiteral("Texture %1 · %2 × %3 · %4").arg(texture).arg(source.Width).arg(source.Height).arg(encoding);
+    return QStringLiteral("%1 × %2 · %3").arg(source.Width).arg(source.Height).arg(encoding);
+}
+
+/// The tooltip of a texture row: its role, then the scene's texture number, size and encoding.
+QString DescribeTextureDetail(const QString& role, const resources::SceneDefinition& definition, uint32 texture)
+{
+    if (texture == format::NO_TEXTURE)
+    {
+        return QStringLiteral("%1: none").arg(role);
+    }
+    if (static_cast<usize>(texture) >= definition.Textures.GetSize())
+    {
+        return QStringLiteral("%1: texture %2 is missing from the cooked scene").arg(role).arg(texture);
+    }
+    const resources::SceneTexture& source = definition.Textures[texture];
+    return QStringLiteral("%1: texture %2 of the cooked scene, %3 × %4, %5")
+        .arg(role)
+        .arg(texture)
+        .arg(source.Width)
+        .arg(source.Height)
+        .arg(source.IsLinear == true ? QStringLiteral("linear data") : QStringLiteral("sRGB colour"));
+}
+
+/// A texture row: what the texture is, its thumbnail, and its role and number in the tooltip.
+MaterialPropertyRow
+MakeTextureRow(const QString& label, const QString& role, const resources::SceneDefinition& definition, uint32 texture)
+{
+    return {label,
+            DescribeTexture(definition, texture),
+            false,
+            {},
+            MakeThumbnail(definition, texture),
+            DescribeTextureDetail(role, definition, texture)};
 }
 } // namespace
 
@@ -215,6 +253,81 @@ QJsonObject MakeProjectBrdfRoughnessProperty()
             {QStringLiteral("label"), QStringLiteral("Project BRDF roughness")},
             {QStringLiteral("min"), format::MIN_AUTHORED_ROUGHNESS},
             {QStringLiteral("max"), 1}};
+}
+
+QJsonObject HairCardField::MakeNumberProperty() const
+{
+    return {{QStringLiteral("type"), QStringLiteral("number")},
+            {QStringLiteral("label"), QString::fromUtf8(Label)},
+            {QStringLiteral("min"), static_cast<foundation::float64>(Minimum)},
+            {QStringLiteral("max"), static_cast<foundation::float64>(Maximum)}};
+}
+
+QJsonObject MakeHairCardCutoffProperty()
+{
+    return {{QStringLiteral("type"), QStringLiteral("number")},
+            {QStringLiteral("label"), QStringLiteral("Mask cutoff")},
+            {QStringLiteral("min"), 0},
+            {QStringLiteral("max"), 1}};
+}
+
+QJsonObject MakeDefaultHairCard()
+{
+    const format::HairCardParameters defaults;
+    QJsonObject hair;
+    for (const HairCardField& field : HAIR_CARD_FIELDS)
+    {
+        hair.insert(QString::fromLatin1(field.Key), static_cast<foundation::float64>(defaults.*field.Member));
+    }
+    return hair;
+}
+
+QJsonObject SkinDistanceField::MakeNumberProperty() const
+{
+    return {{QStringLiteral("type"), QStringLiteral("number")},
+            {QStringLiteral("label"), QString::fromUtf8(Label)},
+            {QStringLiteral("min"), 0},
+            {QStringLiteral("max"),
+             static_cast<foundation::float64>(format::MAX_SKIN_SCATTERING_DISTANCE) * MILLIMETRES_PER_METRE}};
+}
+
+QJsonObject SkinSurfaceField::MakeNumberProperty() const
+{
+    return {{QStringLiteral("type"), QStringLiteral("number")},
+            {QStringLiteral("label"), QString::fromUtf8(Label)},
+            {QStringLiteral("min"), IsRoughness() == true ? format::MIN_AUTHORED_ROUGHNESS : 0.0},
+            {QStringLiteral("max"), 1}};
+}
+
+foundation::float64 GetShortestFloat32Decimal(float32 value)
+{
+    // Nine significant digits round-trip every float32.
+    constexpr foundation::int32 FLOAT32_ROUND_TRIP_DIGITS = 9;
+    for (foundation::int32 digits = 1; digits < FLOAT32_ROUND_TRIP_DIGITS; ++digits)
+    {
+        const foundation::float64 candidate =
+            QString::number(static_cast<foundation::float64>(value), 'g', digits).toDouble();
+        if (static_cast<float32>(candidate) == value)
+        {
+            return candidate;
+        }
+    }
+    return static_cast<foundation::float64>(value);
+}
+
+QJsonObject MakeDefaultSkin(const resources::SceneMaterial* materialOrNull)
+{
+    // Human skin's normalized-diffusion distance in metres (see the declaration for its derivation).
+    constexpr foundation::StaticArray<foundation::float64, format::MATERIAL_RGB_CHANNELS> HUMAN_SKIN_DISTANCE{
+        {0.0015, 0.00094, 0.00057}};
+    const bool isSkin = materialOrNull != nullptr && materialOrNull->Scattering.Model == format::MaterialModel::Skin;
+    QJsonArray distance;
+    for (usize channel = 0; channel < format::MATERIAL_RGB_CHANNELS; ++channel)
+    {
+        distance.append(isSkin == true ? static_cast<foundation::float64>(materialOrNull->Scattering.K[channel])
+                                       : HUMAN_SKIN_DISTANCE[channel]);
+    }
+    return {{QString::fromLatin1(SKIN_DISTANCE_KEY), distance}};
 }
 
 QJsonObject CoatingField::MakeNumberProperty() const
@@ -280,12 +393,12 @@ bool DescribeSceneObjectMaterial(const RenderScene& scene,
                                                   : material.Texture == format::NO_TEXTURE
                                                       ? foundation::math::Vector3{}
                                                       : foundation::math::Vector3{1, 1, 1};
-    rows.append(MakeColourRow(QStringLiteral("Reflectance (linear RGB)"), reflectance));
-    rows.append({QStringLiteral("Base colour map"),
-                 DescribeTexture(definition, material.Texture),
-                 false,
-                 {},
-                 MakeThumbnail(definition, material.Texture)});
+    // A skin slot edits its base colour and roughness beside its scattering distance.
+    const bool isSkin = material.Scattering.Model == format::MaterialModel::Skin;
+    rows.append(MakeColourRow(QStringLiteral("Reflectance"), reflectance, QStringLiteral("Reflectance, linear RGB")));
+    rows.last().IsSkinParameter = isSkin;
+    rows.append(
+        MakeTextureRow(QStringLiteral("Base colour"), QStringLiteral("Base colour map"), definition, material.Texture));
     if (material.Texture != format::NO_TEXTURE)
     {
         rows.append({QStringLiteral("Addressing"),
@@ -295,13 +408,15 @@ bool DescribeSceneObjectMaterial(const RenderScene& scene,
     const bool isProgram = material.Scattering.Model == format::MaterialModel::Program;
     if (material.Scattering.Model != format::MaterialModel::ProjectBrdf)
     {
-        rows.append({isMix == true       ? QStringLiteral("Conductor weight")
-                     : isProgram == true ? QStringLiteral("Metallic (program input)")
-                                         : QStringLiteral("Metallic"),
-                     FormatScalar(material.Metallic)});
-        rows.append(
-            {isProgram == true ? QStringLiteral("Roughness (program input)") : QStringLiteral("Roughness (perceptual)"),
-             FormatScalar(material.Roughness)});
+        MaterialPropertyRow metallic{isMix == true ? QStringLiteral("Conductor weight") : QStringLiteral("Metallic"),
+                                     FormatScalar(material.Metallic)};
+        MaterialPropertyRow roughness{QStringLiteral("Roughness"), FormatScalar(material.Roughness)};
+        metallic.Detail = isProgram == true ? QStringLiteral("Metallic, an input of the closure program") : QString();
+        roughness.Detail = isProgram == true ? QStringLiteral("Roughness, an input of the closure program")
+                                             : QStringLiteral("Perceptual roughness, 0.045 to 1");
+        rows.append(metallic);
+        roughness.IsSkinParameter = isSkin;
+        rows.append(roughness);
     }
     const format::MaterialScattering& scattering = material.Scattering;
     if (isProgram == true)
@@ -351,18 +466,31 @@ bool DescribeSceneObjectMaterial(const RenderScene& scene,
     {
         const format::HairCardParameters hair = format::GetHairCardParameters(scattering);
         rows.append({QStringLiteral("Strand direction (°)"), FormatScalar(hair.StrandDirectionDegrees)});
-        rows.append({QStringLiteral("Highlight shifts (°, primary / secondary)"),
-                     QStringLiteral("%1 / %2").arg(FormatScalar(hair.PrimaryShiftDegrees),
-                                                   FormatScalar(hair.SecondaryShiftDegrees))});
-        rows.append(
-            {QStringLiteral("Highlight weights (primary / tinted secondary)"),
-             QStringLiteral("%1 / %2").arg(FormatScalar(hair.PrimaryWeight), FormatScalar(hair.SecondaryWeight))});
+        rows.last().IsHairCardParameter = true;
+        MaterialPropertyRow shifts{QStringLiteral("Shifts (°)"),
+                                   QStringLiteral("%1 / %2").arg(FormatScalar(hair.PrimaryShiftDegrees),
+                                                                 FormatScalar(hair.SecondaryShiftDegrees))};
+        shifts.Detail = QStringLiteral("Highlight shifts in degrees, primary / secondary");
+        MaterialPropertyRow weights{
+            QStringLiteral("Highlights"),
+            QStringLiteral("%1 / %2").arg(FormatScalar(hair.PrimaryWeight), FormatScalar(hair.SecondaryWeight))};
+        weights.Detail = QStringLiteral("Highlight weights, primary / tinted secondary");
+        shifts.IsHairCardParameter = true;
+        weights.IsHairCardParameter = true;
+        rows.append(shifts);
+        rows.append(weights);
     }
-    rows.append({QStringLiteral("Surface map"),
-                 DescribeTexture(definition, material.SurfaceTexture),
-                 false,
-                 {},
-                 MakeThumbnail(definition, material.SurfaceTexture)});
+    else if (scattering.Model == format::MaterialModel::Skin)
+    {
+        MaterialPropertyRow distance{QStringLiteral("Scattering (m)"), FormatRgb(scattering.K)};
+        distance.Detail = QStringLiteral("Subsurface scattering distance in metres, linear RGB");
+        distance.IsSkinParameter = true;
+        rows.append(distance);
+    }
+    rows.append(MakeTextureRow(QStringLiteral("Surface map"),
+                               QStringLiteral("Surface map"),
+                               definition,
+                               material.SurfaceTexture));
     if (material.SurfaceTexture != format::NO_TEXTURE)
     {
         rows.append({QStringLiteral("Normal scale"), FormatScalar(material.NormalScale)});
@@ -372,7 +500,12 @@ bool DescribeSceneObjectMaterial(const RenderScene& scene,
                      ? QStringLiteral("Masked below %1").arg(FormatScalar(material.AlphaCutoff))
                      : QStringLiteral("Opaque")});
     const bool isEmissive = material.Emission.X > 0 || material.Emission.Y > 0 || material.Emission.Z > 0;
-    MaterialPropertyRow emission{QStringLiteral("Emission (linear RGB)"), FormatRgb(material.Emission), false, {}, {}};
+    MaterialPropertyRow emission{QStringLiteral("Emission"),
+                                 FormatRgb(material.Emission),
+                                 false,
+                                 {},
+                                 {},
+                                 QStringLiteral("Emission, linear RGB in nits")};
     if (isEmissive == true)
     {
         // Emission is in nits and can exceed one; the swatch shows its hue at full brightness.
@@ -391,11 +524,10 @@ bool DescribeSceneObjectMaterial(const RenderScene& scene,
         {
             rows.append({QStringLiteral("Emission power (lm)"), FormatScalar(material.EmissionPower)});
         }
-        rows.append({QStringLiteral("Emission map"),
-                     DescribeTexture(definition, material.EmissionTexture),
-                     false,
-                     {},
-                     MakeThumbnail(definition, material.EmissionTexture)});
+        rows.append(MakeTextureRow(QStringLiteral("Emission map"),
+                                   QStringLiteral("Emission map"),
+                                   definition,
+                                   material.EmissionTexture));
     }
     outRows = rows;
     return true;

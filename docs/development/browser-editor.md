@@ -61,11 +61,60 @@ and file reader behind one private `.cpp` boundary. Its admission callback check
 before reading, and Qt owns the suspend/resume dispatch. This is an intentional
 version coupling: editor upgrades must verify this adapter in a browser. Browser
 downloads use a separate JavaScript bridge with copied bytes and explicit names.
+Project and scene folders do not use the import wrapper; they open in place
+through `browser/host_folder.js` (see [Project folders on disk](#project-folders-on-disk)),
+which couples to the pinned Emscripten's file system as recorded in the
+[design](../architecture/editor-browser-strategy.md#host-project-folders).
 
 Static analysis still uses Clang 23. `web_build.analysis_commands` enables
 `-frelaxed-template-template-args` for the standard template-matching rule that
 is already the default in the newer SDK compiler; this is required to parse
 Emscripten's `val.h`. The language mode remains C++23 and diagnostics remain errors.
+
+## Project folders on disk
+
+**File → Open Project...** opens a project folder from your computer in place.
+Nothing is uploaded and the folder is not copied: the editor lists its files,
+then reads each file from disk the first time it is opened. A 37 MB project
+such as Dolomites Survival opens without reading its assets until a World or
+scene needs them. The folder appears in the editor as
+`/browser-folders/<n>/<folder name>`.
+
+| Browser | Picker | Saves |
+| --- | --- | --- |
+| Chrome, Edge (`showDirectoryPicker`) | The browser asks to let the site view and edit the folder | Written to the files in the folder. **File → Reopen Last Project Folder** opens the same folder in a later session after the browser asks again |
+| Firefox, Safari | The browser asks to upload the folder's files to the page; nothing leaves the computer | Kept in the tab only. The editor says the folder is read-only; use **Download Project** to keep edits |
+
+A save is on disk when the editor reports it saved: QSaveFile and Ludus
+persistence publish with `rename()`, which waits for the folder. A failed disk
+write fails the save, keeps the edit in the tab and names the file, the cause
+and the next step. Plain file writes and deletions reach the folder a moment
+after they finish; the page asks before leaving while any are pending. Files
+under `out`, `build`, `.git`, `.ludus` and `node_modules` are neither listed nor
+written back: build outputs and caches stay on the desktop, and the browser's
+own caches stay in the tab.
+
+Limits come from one constant, `BROWSER_FILE_BUDGET_BYTES`: a quarter of the
+editor's 2 GiB maximum WebAssembly memory, 512 MiB. No single file may exceed
+it, and the editor keeps at most that much of the folder's files in memory,
+reading older ones again when they are next opened. The folder's total size is
+not limited; at most 4096 files outside the generated folders are opened. The
+same budget caps files copied by single-document, audio and `.zip` imports and
+a **Download Project** archive. Every refusal names the file or the count, the
+limit and what to do next (move or split the file, remove files the project does
+not need, or use the desktop editor).
+
+**Import scene… → Scene folder…** opens a scene folder the same way, read-only.
+One scene file with its companions, or a `.zip`, is still copied into the tab.
+
+The browser cannot run CMake, compile the project's C++ or start its game, so
+a folder opened here is for authoring and preview; build and run it with the
+desktop editor. Check the file-system layer without Qt, through a small Wasm
+harness and mock folder handles:
+
+```sh
+python scripts/build-web-editor --test-host-folder
+```
 
 ## New projects
 
@@ -91,11 +140,12 @@ build it.
 
 ## Scene import and viewport
 
-World authoring works on the session's in-memory (MEMFS) project. **Import
-scene…** offers a scene folder, or one `.zip` (stored or deflated entries, no
-ZIP64) or a `.pbrt` with its companion files. The selection is copied into
-MEMFS, then the linked SceneCook importer cooks it to LUSCN in process, exactly
-as on the desktop; MEMFS has no `flock`, so the cook lock is skipped there
+World authoring works on the session's in-memory (MEMFS) file system, where a
+project folder opened from disk is mounted in place. **Import scene…** offers a
+scene folder, read in place like a [project folder](#project-folders-on-disk),
+or one `.zip` (stored or deflated entries, no ZIP64) or a `.pbrt` with its
+companion files, which are copied into MEMFS. The linked SceneCook importer
+then cooks the scene to LUSCN in process, exactly as on the desktop; MEMFS has no `flock`, so the cook lock is skipped there
 (one thread owns the file system). MEMFS also has no hard links: immutable
 artifacts use an existence check followed by rename without yielding. Existing
 identical artifacts are reused, while conflicting contents reject publication.

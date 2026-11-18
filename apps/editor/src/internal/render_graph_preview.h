@@ -7,6 +7,8 @@
 #include <ludus/foundation/math/vector.hpp>
 #include <ludus/graphics/renderer/render_graph_activation.hpp>
 #include <ludus/graphics/renderer/render_graph_capture.hpp>
+#include <ludus/graphics/renderer/tone_mapping.hpp>
+#include <ludus/graphics/renderer/world_feature.hpp>
 #include <ludus/graphics/rhi/device.h>
 #include <ludus/graphics/rhi/raster.h>
 
@@ -42,6 +44,25 @@ enum class RenderGraphPreviewWork : foundation::uint8
 [[nodiscard]] QString
 DescribeRenderGraphExtractionFailure(graphics::rhi::RasterStatus status,
                                      const graphics::renderer::SceneShaderDiagnostics& diagnostics);
+/// Name the World input a graph rejected and the repair, for example a camera with an infinite far plane. Coverage
+/// counts come from report. Empty for RenderGraphSceneRejection::None.
+[[nodiscard]] QString DescribeRenderGraphSceneRejection(graphics::renderer::RenderGraphSceneRejection rejection,
+                                                        const graphics::renderer::RenderGraphReport& report);
+/// Warning for a graph that draws the World without some of its features (RenderGraphReport::UnrenderedWorldFeatures):
+/// what is not rendered, the scene functions that draw it, where the World features table is, and the other repairs.
+/// Never blocks drawing. Feature text comes from graphics::renderer::DescribeWorldFeature.
+/// @param configuration Display name of the drawing graph configuration; empty omits the name.
+/// @param features Unrendered features; zero yields an empty string.
+[[nodiscard]] QString DescribeUnrenderedWorldFeatures(const QString& configuration,
+                                                      graphics::renderer::WorldFeatureMask features);
+/// The step a rejected generation failed at and its repair, as a clause that continues "Renderer generation N was
+/// rejected (Status) ...", for example "while resizing its targets to the viewport. Reduce ...". Empty for None.
+[[nodiscard]] QString DescribeRenderGraphFailureStage(graphics::renderer::RenderGraphFailureStage stage);
+/// Viewport status for a failed or restart-requiring candidate. It names the scene-level cause when the renderer
+/// attributed one, otherwise the failing stage and its repair, otherwise only the raw status; empty while the
+/// candidate is neither Failed nor RestartRequired.
+[[nodiscard]] QString
+DescribeRenderGraphActivationFailure(const graphics::renderer::RenderGraphActivationReport& report);
 /// One World extraction converted to RenderGraph records. Mesh geometry borrows Scene's
 /// storage (its PreviewMesh arrays or its shared cooked Definition), which this value keeps
 /// alive by implicit sharing and reference counting until it is replaced.
@@ -58,6 +79,8 @@ struct RenderGraphExtraction final
     QVector<foundation::uint32> MaterialOverrides;
     QSharedPointer<const WorldSurfaceBake> SurfaceBake;
     QVector<graphics::renderer::SceneSurfaceChart> SurfaceCharts;
+    /// Placed GI Probe Receivers that sample SurfaceBake's probe atlas; empty without a ready atlas.
+    QVector<foundation::uint64> ProbeReceiverIds;
     graphics::renderer::SceneShaderInputs ShaderInputs;
     graphics::renderer::ViewDescription View{};
     /// Nonzero caller revision; a changed revision makes the preview prepare again.
@@ -145,14 +168,18 @@ public:
     void Detach() noexcept;
     [[nodiscard]] bool IsAttached() const noexcept;
     /// Explicitly preview one cooked runtime generation; the previous request is superseded.
-    /// An RT request automatically selects rasterFallbackPath when native traversal is unavailable
-    /// or Force raster is selected. The fallback must be an authored raster-only package.
+    /// While Force raster is selected, rasterFallbackPath (the engine default raster graph in the World
+    /// viewport) is drawn instead of any requested package, including raster graphs and graphs that trace
+    /// rays in authored compute pipelines. Without Force raster, an RT request selects it only when native
+    /// traversal is unavailable. The fallback must be an authored raster-only package.
     /// Optional source provenance is copied and accepted only for its exact decoded generation.
-    /// No fallback is needed for a raster request. Selection is repeated on device attachment.
+    /// Without a fallback, a raster request is drawn even under Force raster (its status says so) and a
+    /// Force raster RT request is Unsupported. Selection is repeated on device attachment.
     [[nodiscard]] RenderGraphPreviewLoad Load(const QString& runtimePackagePath,
                                               const QString& rasterFallbackPath = {},
                                               const RenderGraphPreviewSource& source = {});
-    /// Queue selection between frames; retain the last drawable image while preparing.
+    /// Draw the raster fallback instead of the requested package. Selection is queued between frames and
+    /// the last drawable image is retained while the replacement prepares.
     void SetForceRaster(bool shouldForceRaster);
     [[nodiscard]] bool ShouldForceRaster() const noexcept;
     /// Choose the World display attachment by expanded name; empty selects the exported output.
@@ -161,6 +188,24 @@ public:
     /// Whether the active final output directly resolves an enabled clustered deferred ToneMap
     /// and the graph camera can accept a view update.
     [[nodiscard]] bool CanAdjustRasterExposure() const noexcept;
+    /// The authored ToneMap multiplier of the clustered deferred pass that draws the active output, before
+    /// ViewDescription exposure; zero when no enabled clustered deferred ToneMap draws it, including before a
+    /// generation is active. Pass it to ComputeReferenceDisplayExposure. GUI thread only.
+    [[nodiscard]] foundation::float32 GetRasterToneMappingExposure() const noexcept;
+    /// The curve of that ToneMap; Reinhard when GetRasterToneMappingExposure is zero. GUI thread only.
+    [[nodiscard]] graphics::renderer::ToneCurve GetRasterToneCurve() const noexcept;
+    /// Whether the active final output is drawn by a raster colour pass whose clustered deferred resolve honours
+    /// ViewDescription::LightingView. Clustered forward graphs ignore lighting views.
+    [[nodiscard]] bool CanShowLightingViews() const noexcept;
+    /// Set the World viewport's session-local camera spotlight preference, initially off.
+    void SetWorkLightEnabled(bool isEnabled);
+    [[nodiscard]] bool IsWorkLightEnabled() const noexcept;
+    /// Whether the built-in raster graph is drawing its final output and can accept camera updates.
+    [[nodiscard]] bool CanShowWorkLight() const noexcept;
+    /// Whether to request the spotlight when submitting the live viewport camera.
+    [[nodiscard]] bool ShouldShowWorkLight() const noexcept;
+    /// Analytic lights of the retained World extraction, in extraction order; empty before one is set.
+    [[nodiscard]] QVector<graphics::renderer::DirectLight> GetExtractionLights() const;
     /// True while a completed graph attachment is being copied for display.
     [[nodiscard]] bool IsCopyingOutput() const noexcept;
     /// Replace the World extraction. A new revision is prepared by the active graph and candidate.
@@ -213,8 +258,8 @@ public:
     /// Package of the active graph, including a raster fallback when selected.
     [[nodiscard]] const QString& GetActivePackagePath() const noexcept;
     [[nodiscard]] const QString& GetRasterFallbackPath() const noexcept;
-    /// True when a ray renderer draws the requested package and Force raster would replace it with the
-    /// authored raster fallback (the engine default raster graph in the World viewport).
+    /// True when the requested package draws and Force raster would replace it with the authored raster
+    /// fallback (the engine default raster graph in the World viewport).
     [[nodiscard]] bool CanSwitchToRasterFallback() const noexcept;
     /// Claim the suggestion announced by SlowFramesDetected. Several viewports can present one preview, so only
     /// the first visible one should ask the user. True at most once per active package for the lifetime of this
@@ -346,6 +391,15 @@ public:
     /// text (the active graph keeps drawing while its first frame is presented or a replacement prepares).
     [[nodiscard]] QString GetDisplayStatus() const;
     [[nodiscard]] foundation::usize GetSurfaceChartDrawCount() const noexcept;
+    /// Draws of the active graph sampling the baked probe volume; zero without a deferred Baked Lighting pass.
+    [[nodiscard]] foundation::usize GetProbeReceiverDrawCount() const noexcept;
+    /// World features the latest extraction uses that the active graph does not render; zero without an active graph.
+    /// See DescribeUnrenderedWorldFeatures.
+    [[nodiscard]] graphics::renderer::WorldFeatureMask GetUnrenderedWorldFeatures() const noexcept;
+    /// How much of a World feature the active graph draws (RenderGraph::GetWorldFeatureSupport). False, leaving
+    /// outSupport unchanged, without an active graph.
+    [[nodiscard]] bool GetWorldFeatureSupport(graphics::renderer::WorldFeature feature,
+                                              graphics::renderer::WorldFeatureSupport& outSupport) const noexcept;
     /// Pixels and main reason of the latched failure colour, or empty; part of GetDisplayStatus.
     [[nodiscard]] LUDUS_INLINE const QString& GetFailureText() const noexcept
     {

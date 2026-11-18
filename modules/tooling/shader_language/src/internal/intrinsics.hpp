@@ -32,6 +32,14 @@ enum class IntrinsicFamily : foundation::uint8
     BitcastToFloat, ///< (32-bit T) -> float32 T: asfloat.
     BitCount,       ///< (32-bit integer T) -> uint32 T: countbits, firstbithigh, firstbitlow, reversebits.
     Transpose,      ///< (matrix R x C) -> matrix C x R.
+    /// (destination, value, out original?) -> void: InterlockedAdd, And, Or, Xor, Min, Max.
+    AtomicUpdate,
+    /// (destination, value, out original) -> void: InterlockedExchange.
+    AtomicExchange,
+    /// (destination, compare, value, out original) -> void: InterlockedCompareExchange.
+    AtomicCompareExchange,
+    /// (destination, compare, value) -> void: InterlockedCompareStore.
+    AtomicCompareStore,
 };
 
 /// One built-in function; its Slang name is the same.
@@ -42,9 +50,10 @@ struct IntrinsicSpelling final
 };
 
 /// Number of built-in functions.
-inline constexpr foundation::usize INTRINSIC_COUNT = 46;
+inline constexpr foundation::usize INTRINSIC_COUNT = 55;
 
-/// The built-in functions, lowered 1:1 to the Slang intrinsics of the same name.
+/// The built-in functions. Most lower 1:1 to the Slang intrinsics of the same name; the atomic
+/// families lower to `Atomic<T>` methods for LUSL atomic storage (GetAtomicMethodName).
 inline constexpr foundation::StaticArray<IntrinsicSpelling, INTRINSIC_COUNT> INTRINSICS = {{
     {"sqrt", IntrinsicFamily::FloatUnary},
     {"rsqrt", IntrinsicFamily::FloatUnary},
@@ -92,7 +101,57 @@ inline constexpr foundation::StaticArray<IntrinsicSpelling, INTRINSIC_COUNT> INT
     {"firstbitlow", IntrinsicFamily::BitCount},
     {"reversebits", IntrinsicFamily::BitCount},
     {"transpose", IntrinsicFamily::Transpose},
+    {"InterlockedAdd", IntrinsicFamily::AtomicUpdate},
+    {"InterlockedAnd", IntrinsicFamily::AtomicUpdate},
+    {"InterlockedOr", IntrinsicFamily::AtomicUpdate},
+    {"InterlockedXor", IntrinsicFamily::AtomicUpdate},
+    {"InterlockedMin", IntrinsicFamily::AtomicUpdate},
+    {"InterlockedMax", IntrinsicFamily::AtomicUpdate},
+    {"InterlockedExchange", IntrinsicFamily::AtomicExchange},
+    {"InterlockedCompareExchange", IntrinsicFamily::AtomicCompareExchange},
+    {"InterlockedCompareStore", IntrinsicFamily::AtomicCompareStore},
 }};
+
+/// True for the `Interlocked` families, which the checker binds as CallKind::Atomic.
+[[nodiscard]] constexpr bool IsAtomicFamily(IntrinsicFamily family) noexcept
+{
+    return family == IntrinsicFamily::AtomicUpdate || family == IntrinsicFamily::AtomicExchange ||
+           family == IntrinsicFamily::AtomicCompareExchange || family == IntrinsicFamily::AtomicCompareStore;
+}
+
+/// Values an atomic family takes after the destination: one, or a compare value and a value.
+[[nodiscard]] constexpr foundation::uint32 GetAtomicOperandCount(IntrinsicFamily family) noexcept
+{
+    return family == IntrinsicFamily::AtomicCompareExchange || family == IntrinsicFamily::AtomicCompareStore ? 2U : 1U;
+}
+
+/// How an atomic family returns the destination's original value.
+enum class AtomicOriginal : foundation::uint8
+{
+    None,     ///< No original value: InterlockedCompareStore.
+    Optional, ///< An optional `out` last argument.
+    Required, ///< A required `out` last argument.
+};
+
+/// The original-value rule of an atomic family.
+[[nodiscard]] constexpr AtomicOriginal GetAtomicOriginal(IntrinsicFamily family) noexcept
+{
+    switch (family)
+    {
+        case IntrinsicFamily::AtomicUpdate:
+            return AtomicOriginal::Optional;
+        case IntrinsicFamily::AtomicExchange:
+        case IntrinsicFamily::AtomicCompareExchange:
+            return AtomicOriginal::Required;
+        default:
+            return AtomicOriginal::None;
+    }
+}
+
+/// @brief The Slang `Atomic<T>` method that performs an `Interlocked` intrinsic: `add` for
+/// `InterlockedAdd`, `compareExchange` for both compare forms.
+/// @return An empty view for a name that is not an atomic intrinsic.
+[[nodiscard]] std::string_view GetAtomicMethodName(std::string_view intrinsic) noexcept;
 
 /// Number of arguments a family takes.
 [[nodiscard]] foundation::uint32 GetIntrinsicArity(IntrinsicFamily family) noexcept;

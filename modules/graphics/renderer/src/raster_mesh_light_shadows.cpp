@@ -12,7 +12,9 @@
 // and filtered by the fraction of closer samples (percentage-closer filtering, used by the resolve): each caster
 // stores, per cube-face texel, the depth of the nearest occluder, and a receiver deeper than it is shadowed. The maps
 // are rendered once per prepared scene, because lights and geometry are static while the camera moves, with the
-// renderer's flat shadow pipeline, which stores conventional depth as 16 bits in red and green.
+// renderer's shadow pipelines. Cube faces store linear forward depth as 16 bits in red and green: conventional depth
+// resolves only distance^2 / (near * 65535) there, which forced a near plane far beyond the occluders around a bright
+// emitter, while linear depth resolves (range - near) / 65535 at every distance with any near plane.
 namespace ludus::graphics::renderer::internal
 {
 using namespace foundation;
@@ -54,9 +56,12 @@ constexpr float32 ONE_SIDED_OFFSET_RELATIVE = 0.05F;
 constexpr float32 FACE_BEHIND_COSINE = -0.81649658F;
 /// The range always exceeds the near distance by at least this factor, so the projection stays well formed.
 constexpr float32 MINIMUM_RANGE_OVER_NEAR = 2;
-/// The near distance is at least this fraction of the range: 16-bit conventional depth resolves about
-/// distance^2 / (near * 65535), so a centimetre near plane would blur occluders metres away.
-constexpr float32 NEAR_RANGE_FRACTION = 0.01F;
+/// How much farther from a caster than the surface the resolve looks a receiver up: it moves the receiver
+/// LUDUS_MESH_LIGHT_SHADOW_NORMAL_OFFSET_TEXELS texels along its normal, and a texel of the smallest face slot spans
+/// 2 * distance / (MIN_MESH_LIGHT_SHADOW_FACE_TEXELS - 2 * MESH_LIGHT_SHADOW_GUTTER_TEXELS) at that distance.
+constexpr float32 RECEIVER_LOOKUP_REACH =
+    1 + 2 * static_cast<float32>(LUDUS_MESH_LIGHT_SHADOW_NORMAL_OFFSET_TEXELS) /
+            static_cast<float32>(MIN_MESH_LIGHT_SHADOW_FACE_TEXELS - 2 * MESH_LIGHT_SHADOW_GUTTER_TEXELS);
 /// Smallest near distance in metres, for a degenerate two-sided caster.
 constexpr float32 MINIMUM_NEAR_METERS = 0.001F;
 /// Largest 16-bit depth code.
@@ -96,6 +101,7 @@ struct RecordInfo final
     math::Vector3 NormalWorld;
     bool IsTwoSided = false;
     float32 Flux = 0;
+    float32 AreaSquareMeters = 0;
     math::Vector3 ReachCenterWorld;
     float32 ReachRadius = 0;
     /// Index into the caster list, or casters' size when unshadowed.
@@ -119,6 +125,9 @@ struct CasterBuild final
     /// Whether the caster renders from its members' sphere centre, seeing past them, rather than from in front.
     bool IsEnclosing = false;
     float32 Flux = 0;
+    /// Flux-weighted sum of each member's area / pi plus twice its squared distance from CenterWorld: twice the
+    /// members' second moment of area about the centre, which is the squared radius of the uniform disk sharing it.
+    float32 MomentSum = 0;
 };
 math::Vector3 GetPosition(math::Vector4 word) noexcept
 {
@@ -261,6 +270,7 @@ struct LargerSlotFirst final
 
 Status BuildRasterMeshLightShadowCasters(Array<math::Vector4>& inoutWords,
                                          uint32 recordCount,
+                                         const math::Aabb3& receiversWorld,
                                          Array<MeshLightShadowCaster>& outCasters,
                                          MeshLightShadowReport& outReport) noexcept
 {
@@ -286,8 +296,8 @@ Status BuildRasterMeshLightShadowCasters(Array<math::Vector4>& inoutWords,
         info.NormalWorld = GetPosition(words[offset + NORMAL_WORD]);
         info.IsTwoSided = words[offset + NORMAL_WORD].W != 0;
         const math::Vector4 emission = words[offset + EMISSION_WORD];
-        info.Flux = math::Max(emission.X, math::Max(emission.Y, emission.Z)) *
-                    words[offset + MESH_LIGHT_POLYGON_HEADER_WORDS].W;
+        info.AreaSquareMeters = words[offset + MESH_LIGHT_POLYGON_HEADER_WORDS].W;
+        info.Flux = math::Max(emission.X, math::Max(emission.Y, emission.Z)) * info.AreaSquareMeters;
         if (GetRasterMeshLightReach(words, offset, info.ReachCenterWorld, info.ReachRadius) == false ||
             math::IsFinite(info.CenterWorld) == false || math::IsFinite(info.Flux) == false || info.Radius < 0)
         {
@@ -325,6 +335,8 @@ Status BuildRasterMeshLightShadowCasters(Array<math::Vector4>& inoutWords,
         CasterBuild& build = builds[record.Caster];
         build.NormalSumWorld = build.NormalSumWorld + record.NormalWorld * record.Flux;
         build.Flux += record.Flux;
+        build.MomentSum += record.Flux * (record.AreaSquareMeters / static_cast<float32>(math::kPi) +
+                                          2 * math::LengthSquared(record.CenterWorld - build.CenterWorld));
         build.IsEnclosing = build.IsEnclosing == true || record.IsTwoSided == true;
         ++report.ShadowedRecords;
     }
@@ -361,6 +373,10 @@ Status BuildRasterMeshLightShadowCasters(Array<math::Vector4>& inoutWords,
         }
         result.PositionWorld = build.CenterWorld + normalWorld * offsetMeters;
         result.LightRadiusMeters = build.Radius;
+        result.LightNormalWorld = build.IsEnclosing == true ? math::Vector3{} : normalWorld;
+        // A caster of zero flux keeps its sphere radius.
+        result.DiskRadiusMeters =
+            build.Flux > 0 ? math::Min(math::Sqrt(build.MomentSum / build.Flux), build.Radius) : build.Radius;
         // A one-sided caster sits in front of its emitters, which lie behind it and never block a receiver they
         // light; an enclosing one sits inside its emitters and must see past them.
         result.NearMeters =
@@ -392,7 +408,19 @@ Status BuildRasterMeshLightShadowCasters(Array<math::Vector4>& inoutWords,
     }
     for (MeshLightShadowCaster& caster : casters)
     {
-        caster.NearMeters = math::Max(caster.NearMeters, NEAR_RANGE_FRACTION * caster.RangeMeters);
+        // Every receiver lies inside receiversWorld, so a culling reach beyond its farthest corner (tens of metres or
+        // more for a bright emitter in a small room) would only coarsen the depth codes.
+        if (math::IsEmpty(receiversWorld) == false)
+        {
+            const math::Vector3 positionWorld = caster.PositionWorld;
+            const math::Vector3 farthestWorld{math::Max(math::Abs(positionWorld.X - receiversWorld.Min.X),
+                                                        math::Abs(receiversWorld.Max.X - positionWorld.X)),
+                                              math::Max(math::Abs(positionWorld.Y - receiversWorld.Min.Y),
+                                                        math::Abs(receiversWorld.Max.Y - positionWorld.Y)),
+                                              math::Max(math::Abs(positionWorld.Z - receiversWorld.Min.Z),
+                                                        math::Abs(receiversWorld.Max.Z - positionWorld.Z))};
+            caster.RangeMeters = math::Min(caster.RangeMeters, math::Length(farthestWorld) * RECEIVER_LOOKUP_REACH);
+        }
         caster.RangeMeters = math::Max(caster.RangeMeters, caster.NearMeters * MINIMUM_RANGE_OVER_NEAR);
         report.Faces += GetBitCount(caster.FaceMask);
         if (math::IsFinite(caster.PositionWorld) == false || math::IsFinite(caster.RangeMeters) == false)
@@ -411,13 +439,52 @@ Status BuildRasterMeshLightShadowCasters(Array<math::Vector4>& inoutWords,
     return Status::Ready;
 }
 
+rhi::RasterRectangle GetDirectionalShadowInterior(uint32 index) noexcept
+{
+    constexpr uint32 CELLS_PER_SIDE = DIRECTIONAL_SHADOW_TEXELS / MIN_MESH_LIGHT_SHADOW_FACE_TEXELS;
+    constexpr uint32 GUTTER_TEXELS = 1;
+    const uint32 cursor = index * CELLS_PER_SIDE * CELLS_PER_SIDE;
+    return {GetMortonAxis(cursor, 0) * MIN_MESH_LIGHT_SHADOW_FACE_TEXELS + GUTTER_TEXELS,
+            GetMortonAxis(cursor, 1) * MIN_MESH_LIGHT_SHADOW_FACE_TEXELS + GUTTER_TEXELS,
+            DIRECTIONAL_SHADOW_TEXELS - 2 * GUTTER_TEXELS,
+            DIRECTIONAL_SHADOW_TEXELS - 2 * GUTTER_TEXELS};
+}
+rhi::RasterRectangle GetSkyVisibilityInterior(const rhi::RasterRectangle& squareInterior, uint32 direction) noexcept
+{
+    // The square's interior starts one gutter texel in; each slot keeps its own gutter.
+    constexpr uint32 GUTTER_TEXELS = 1;
+    return {squareInterior.X + (direction % SKY_VISIBILITY_SLOTS_PER_SIDE) * SKY_VISIBILITY_SLOT_TEXELS,
+            squareInterior.Y + (direction / SKY_VISIBILITY_SLOTS_PER_SIDE) * SKY_VISIBILITY_SLOT_TEXELS,
+            SKY_VISIBILITY_SLOT_TEXELS - 2 * GUTTER_TEXELS,
+            SKY_VISIBILITY_SLOT_TEXELS - 2 * GUTTER_TEXELS};
+}
+math::Vector3 GetSkyVisibilityDirection(uint32 direction) noexcept
+{
+    // pi (3 - sqrt(5)): the azimuth step that spreads a spiral's successive points most evenly.
+    constexpr float64 GOLDEN_ANGLE_RADIANS = 2.39996322972865332;
+    constexpr float64 HALF_STEP = 0.5;
+    const float64 sine = (static_cast<float64>(direction) + HALF_STEP) / SKY_VISIBILITY_DIRECTION_COUNT;
+    const float64 cosine = math::Sqrt(math::Max(1 - sine * sine, 0.0));
+    const float64 azimuth = static_cast<float64>(direction) * GOLDEN_ANGLE_RADIANS;
+    return {static_cast<float32>(cosine * math::Cos(azimuth)),
+            static_cast<float32>(sine),
+            static_cast<float32>(cosine * math::Sin(azimuth))};
+}
+uint32 GetReservedShadowAtlasTexels(uint32 reservedSquareCount) noexcept
+{
+    // Z-order fills a square of twice the side, four slots, after one slot; MAX_RESERVED_SHADOW_SQUARES fits it.
+    constexpr uint32 SLOTS_IN_DOUBLED_SQUARE = 4;
+    static_assert(MAX_RESERVED_SHADOW_SQUARES <= SLOTS_IN_DOUBLED_SQUARE);
+    return reservedSquareCount <= 1 ? DIRECTIONAL_SHADOW_TEXELS : 2 * DIRECTIONAL_SHADOW_TEXELS;
+}
 bool AllocateRasterMeshLightShadowFaces(Array<MeshLightShadowCaster>& inoutCasters,
                                         uint32 atlasTexels,
-                                        bool hasDirectionalShadow) noexcept
+                                        uint32 reservedSquareCount) noexcept
 {
     const uint32 atlasCells = atlasTexels / MIN_MESH_LIGHT_SHADOW_FACE_TEXELS;
     if (atlasTexels % MIN_MESH_LIGHT_SHADOW_FACE_TEXELS != 0 || atlasCells == 0 ||
-        (atlasCells & (atlasCells - 1)) != 0 || atlasCells > (1U << MORTON_AXIS_BITS))
+        (atlasCells & (atlasCells - 1)) != 0 || atlasCells > (1U << MORTON_AXIS_BITS) ||
+        reservedSquareCount > MAX_RESERVED_SHADOW_SQUARES)
     {
         return false;
     }
@@ -447,10 +514,9 @@ bool AllocateRasterMeshLightShadowFaces(Array<MeshLightShadowCaster>& inoutCaste
     constexpr uint32 DIRECTIONAL_CELL_COUNT = DIRECTIONAL_CELLS_PER_SIDE * DIRECTIONAL_CELLS_PER_SIDE;
     static_assert(MAX_MESH_LIGHT_SHADOW_FACE_TEXELS <= DIRECTIONAL_SHADOW_TEXELS);
     static_assert((DIRECTIONAL_CELLS_PER_SIDE & (DIRECTIONAL_CELLS_PER_SIDE - 1)) == 0);
-    const uint32 reservedCells = hasDirectionalShadow == true ? DIRECTIONAL_CELL_COUNT : 0;
+    const uint32 reservedCells = reservedSquareCount * DIRECTIONAL_CELL_COUNT;
     const uint64 atlasArea = uint64{atlasTexels} * atlasTexels;
-    const uint64 reservedArea =
-        hasDirectionalShadow == true ? uint64{DIRECTIONAL_SHADOW_TEXELS} * DIRECTIONAL_SHADOW_TEXELS : 0;
+    const uint64 reservedArea = uint64{reservedSquareCount} * DIRECTIONAL_SHADOW_TEXELS * DIRECTIONAL_SHADOW_TEXELS;
     while (true)
     {
         uint64 area = reservedArea;
@@ -521,7 +587,8 @@ Status AppendRasterMeshLightShadowTable(Array<math::Vector4>& inoutWords,
 {
     const usize tableWord = inoutWords.GetSize();
     if (inoutWords.TryEnsureCapacity(tableWord + MESH_LIGHT_SHADOW_HEADER_WORDS +
-                                     casters.GetSize() * MESH_LIGHT_SHADOW_CASTER_WORDS) == false)
+                                     casters.GetSize() *
+                                         (MESH_LIGHT_SHADOW_CASTER_WORDS + MESH_LIGHT_SHADOW_DISK_WORDS)) == false)
     {
         return Status::OutOfMemory;
     }
@@ -529,7 +596,7 @@ Status AppendRasterMeshLightShadowTable(Array<math::Vector4>& inoutWords,
     static_cast<void>(inoutWords.TryAdd({static_cast<float32>(casters.GetSize()),
                                          static_cast<float32>(atlasTexels),
                                          1.0F / static_cast<float32>(atlasTexels),
-                                         0}));
+                                         1}));
     for (usize index = 0; index < casters.GetSize(); ++index)
     {
         const MeshLightShadowCaster& caster = casters[index];
@@ -553,6 +620,11 @@ Status AppendRasterMeshLightShadowTable(Array<math::Vector4>& inoutWords,
             const math::Vector2 second = getOrigin(face + 1);
             static_cast<void>(inoutWords.TryAdd({first.X, first.Y, second.X, second.Y}));
         }
+    }
+    for (const MeshLightShadowCaster& caster : casters)
+    {
+        const math::Vector3 normalWorld = caster.LightNormalWorld;
+        static_cast<void>(inoutWords.TryAdd({normalWorld.X, normalWorld.Y, normalWorld.Z, caster.DiskRadiusMeters}));
     }
     outTableWord = static_cast<uint32>(tableWord);
     return Status::Ready;
@@ -584,12 +656,21 @@ Status MakeRasterMeshLightShadowFaceToClip(const MeshLightShadowCaster& caster,
     {
         return Status::InvalidDescription;
     }
-    // Conventional depth, as BuildPointShadowMatrix converts its reverse-Z projection.
+    // Conventional depth, as BuildPointShadowMatrix converts its reverse-Z projection: clip z is
+    // range * (forward - near) / (range - near) and clip w the forward distance. Dividing every row by the range
+    // leaves the rasterized position and depth unchanged and makes clip z the linear depth the face stores.
+    const float32 inverseRange = 1.0F / caster.RangeMeters;
     for (math::Vector4& column : viewToClip.Columns)
     {
         column.Z = column.W - column.Z;
+        column = column * inverseRange;
     }
-    outWorldToClip = viewToClip * worldToView;
+    const math::Matrix4 worldToClip = viewToClip * worldToView;
+    if (math::IsFinite(worldToClip) == false)
+    {
+        return Status::InvalidDescription;
+    }
+    outWorldToClip = worldToClip;
     return Status::Ready;
 }
 
@@ -623,10 +704,8 @@ bool LocateRasterMeshLightShadowTexel(const MeshLightShadowCaster& caster,
     outFace = face;
     outTexel = {static_cast<float32>(caster.FaceOrigins[face].X) + (ndcX * 0.5F + 0.5F) * texels,
                 static_cast<float32>(caster.FaceOrigins[face].Y) + (0.5F - ndcY * 0.5F) * texels};
-    // Conventional depth of the face projection: far * (z - near) / (z * (far - near)) for forward distance z.
-    const float32 nearMeters = caster.NearMeters;
-    const float32 farMeters = caster.RangeMeters;
-    outDepth = farMeters * (forward - nearMeters) / (forward * (farMeters - nearMeters));
+    // Linear depth of the face projection's clip z: (z - near) / (range - near) for forward distance z.
+    outDepth = (forward - caster.NearMeters) / (caster.RangeMeters - caster.NearMeters);
     return true;
 }
 

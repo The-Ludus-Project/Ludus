@@ -11,9 +11,12 @@
 #include <ludus/content/render_graph_format/plan.h>
 #include <ludus/foundation/containers/fixed_array.hpp>
 #include <ludus/foundation/containers/static_array.hpp>
+#include <ludus/graphics/renderer/lighting.hpp>
+#include <ludus/graphics/renderer/tone_mapping.hpp>
 #include <ludus/runtime/resources/scene.h>
 
 #include "internal/offscreen_frame_reader.h"
+#include "internal/render_graph_defaults.h"
 #include "internal/render_graph_resources.h"
 #include "internal/render_target_reader.h"
 
@@ -23,6 +26,7 @@
 #include <QFileInfo>
 #include <QLocale>
 #include <QSize>
+#include <QStringList>
 
 #include <new>
 
@@ -137,6 +141,165 @@ QString DescribeRenderGraphExtractionFailure(rhi::RasterStatus status,
                                      .arg(diagnostics.AvailableBytes);
     return QStringLiteral("The World extraction was rejected (%1).%2 The shown frame is kept.")
         .arg(DescribeRasterStatus(status), detail);
+}
+
+QString DescribeRenderGraphSceneRejection(renderer::RenderGraphSceneRejection rejection,
+                                          const renderer::RenderGraphReport& report)
+{
+    switch (rejection)
+    {
+        case renderer::RenderGraphSceneRejection::None:
+            return {};
+        case renderer::RenderGraphSceneRejection::CameraDepth:
+            return QStringLiteral("The view camera has an infinite far plane or an unknown depth convention, which "
+                                  "render graphs cannot draw. Give the camera a finite far plane.");
+        case renderer::RenderGraphSceneRejection::Coverage: {
+            QStringList causes;
+            if (report.Conflicting != 0)
+            {
+                causes.append(QStringLiteral("%1 item views conflict: remove duplicate items or allow repeated "
+                                             "coverage on the passes that draw them")
+                                  .arg(report.Conflicting));
+            }
+            if (report.Unsupported != 0)
+            {
+                causes.append(QStringLiteral("%1 item views have no compatible pass: add a pass for their material "
+                                             "or exclude them")
+                                  .arg(report.Unsupported));
+            }
+            return causes.isEmpty() == true ? QStringLiteral("The graph configuration does not cover every World item.")
+                                            : QStringLiteral("The graph configuration does not cover this World: %1.")
+                                                  .arg(causes.join(QStringLiteral("; ")));
+        }
+        case renderer::RenderGraphSceneRejection::MaskedDepthPrepass:
+            return QStringLiteral("This World has alpha-masked materials, and the graph's opaque depth-only prepass "
+                                  "would seal their cut-out holes. Remove the depth-only prepass from the graph "
+                                  "configuration, or set those materials' Alpha to Opaque.");
+    }
+    return {};
+}
+
+QString DescribeUnrenderedWorldFeatures(const QString& configuration, renderer::WorldFeatureMask features)
+{
+    QStringList names;
+    QStringList functions;
+    QStringList omissions;
+    for (usize index = 0; index < renderer::WORLD_FEATURE_COUNT; ++index)
+    {
+        const renderer::WorldFeature feature = static_cast<renderer::WorldFeature>(index);
+        if ((features & renderer::GetWorldFeatureBit(feature)) == 0)
+        {
+            continue;
+        }
+        const renderer::WorldFeatureDescription description = renderer::DescribeWorldFeature(feature);
+        names.append(QString::fromUtf8(description.Name));
+        functions.append(QString::fromUtf8(description.Function));
+        omissions.append(QString::fromUtf8(description.Omission));
+    }
+    if (names.isEmpty() == true)
+    {
+        return {};
+    }
+    const QString graph = configuration.isEmpty() == true
+                              ? QStringLiteral("The selected graph configuration")
+                              : QStringLiteral("Graph configuration “%1”").arg(configuration);
+    return QStringLiteral("World features not rendered: %1. %2 draws the World without them. %3 To draw them, call %4 "
+                          "from a ray callback, as the World features table in Render Preview shows. Or turn on Force "
+                          "raster in the viewport toolbar to see them with the engine's default raster graph, or "
+                          "disable the Atmosphere entity in the World.")
+        .arg(names.join(QStringLiteral(", ")),
+             graph,
+             omissions.join(QLatin1Char(' ')),
+             functions.join(QStringLiteral(" and ")));
+}
+
+QString DescribeRenderGraphFailureStage(renderer::RenderGraphFailureStage stage)
+{
+    using Stage = renderer::RenderGraphFailureStage;
+    switch (stage)
+    {
+        case Stage::None:
+            return {};
+        case Stage::Setup:
+            return QStringLiteral("while setting up its passes and shader programs. Build the graph again with Build "
+                                  "Graph and fix the errors it reports; Validate checks its nodes and connections.");
+        case Stage::Resize:
+            return QStringLiteral(
+                "while resizing its targets to the viewport. Reduce the connected RenderSize scale or "
+                "fixed dimensions, or make the viewport smaller.");
+        case Stage::PipelinePreparation:
+            return QStringLiteral(
+                "while preparing its pipelines on this GPU. Fix the shader errors in the Output panel "
+                "and build the graph again, or turn on Force raster to draw the World with the "
+                "engine's default raster graph meanwhile.");
+        case Stage::ScenePreparation:
+            return QStringLiteral("while preparing the World on the GPU. Reopen the World to prepare it again; if this "
+                                  "repeats, hide large objects to find the one the GPU cannot prepare.");
+        case Stage::ExtractionInputs:
+            return QStringLiteral("while admitting the World extraction: its mesh, object or camera counts do not "
+                                  "match what the graph admits. Give the graph one active Camera node for the "
+                                  "viewport, and hide objects if the World exceeds the runtime's object or mesh "
+                                  "limits.");
+        case Stage::CameraValues:
+            return QStringLiteral("while reading the viewport camera's exposure or lighting view. Reset the viewport "
+                                  "exposure and choose Final output in the viewport menu.");
+        case Stage::ItemValues:
+            return QStringLiteral("while reading the objects' per-draw values, which are missing or not finite. Build "
+                                  "the graph again so its uniform table matches the World, and check objects for "
+                                  "non-finite transforms or colors.");
+        case Stage::SceneResources:
+            return QStringLiteral("while uploading the World's materials, textures and per-draw values. Fix or "
+                                  "reassign the materials in the Materials tab whose textures did not load.");
+        case Stage::Meshes:
+            return QStringLiteral("while uploading the World's meshes: a mesh has invalid bounds or geometry. Hide "
+                                  "objects in the Entities list to find it, then import or regenerate it.");
+        case Stage::WorldTables:
+            return QStringLiteral("while resolving the Atmosphere's sky and haze for its ray passes. Check the "
+                                  "Atmosphere entity's Sun and Moon and keep the camera above the ground, or disable "
+                                  "the Atmosphere entity.");
+        case Stage::LightTransformer:
+            return QStringLiteral("while preparing its light transformer model for this World. Check the model "
+                                  "assigned to the graph and its entries in the Error List.");
+        case Stage::RayScene:
+            return QStringLiteral("while building the ray-traced scene for its ray passes: a mesh, material or light "
+                                  "could not be packed for ray tracing. Hide objects or disable lights to find which "
+                                  "one, or turn on Force raster to draw the World with the engine's default raster "
+                                  "graph.");
+    }
+    return {};
+}
+
+QString DescribeRenderGraphActivationFailure(const renderer::RenderGraphActivationReport& report)
+{
+    if (report.Candidate == renderer::RenderGraphCandidateState::RestartRequired)
+    {
+        return QStringLiteral("Renderer activation requires an editor restart (%1) for generation %2; "
+                              "the last good scene is kept.")
+            .arg(DescribeRasterStatus(report.LastFailure))
+            .arg(report.CandidateGeneration);
+    }
+    if (report.Candidate != renderer::RenderGraphCandidateState::Failed)
+    {
+        return {};
+    }
+    const QString cause = DescribeRenderGraphSceneRejection(report.CandidateRejection, report.CandidateReport);
+    if (cause.isEmpty() == false)
+    {
+        return QStringLiteral("Renderer generation %1 cannot draw this World. %2 The last good scene is kept.")
+            .arg(report.CandidateGeneration)
+            .arg(cause);
+    }
+    const QString stage = DescribeRenderGraphFailureStage(report.CandidateFailureStage);
+    if (stage.isEmpty() == false)
+    {
+        return QStringLiteral("Renderer generation %1 was rejected (%2) %3 The last good scene is kept.")
+            .arg(report.CandidateGeneration)
+            .arg(DescribeRasterStatus(report.LastFailure))
+            .arg(stage);
+    }
+    return QStringLiteral("Renderer activation failed (%1) for generation %2; the last good scene is kept.")
+        .arg(DescribeRasterStatus(report.LastFailure))
+        .arg(report.CandidateGeneration);
 }
 
 // NOLINTNEXTLINE(bugprone-easily-swappable-parameters) — distinct scene/view/revision inputs.
@@ -393,14 +556,35 @@ bool MakeRenderGraphExtraction(const RenderScene& scene,
     {
         extraction.SurfaceBake = surfaceBake;
         extraction.SurfaceCharts.reserve(extraction.Items.size());
+        // The atlas belongs to the bake's grid, which the lighting key covers; a mismatched extent supplies none.
+        const WorldProbeAtlas& atlas = surfaceBake->ProbeAtlas;
+        const bool hasProbeAtlas = atlas.Pixels.isEmpty() == false &&
+                                   renderer::HasGiProbeAtlasExtent(scene.ProbeGrid, atlas.Width, atlas.Height);
+        if (hasProbeAtlas == true)
+        {
+            renderer::SceneGiProbeVolume& volume = extraction.ShaderInputs.ProbeVolume;
+            volume.Grid = scene.ProbeGrid;
+            volume.IrradianceScale = atlas.IrradianceScale;
+            volume.Atlas = {reinterpret_cast<const uint8*>(atlas.Pixels.constData()),
+                            static_cast<usize>(atlas.Pixels.size()),
+                            static_cast<usize>(atlas.Width) * content::scene_format::TEXEL_BYTES,
+                            atlas.Width,
+                            atlas.Height,
+                            rhi::RasterFormat::Rgba8Unorm};
+        }
         for (qsizetype index = 0; index < extraction.Items.size(); ++index)
         {
             const renderer::RenderGraphItem& item = extraction.Items.at(index);
             const resources::SceneObject& sourceObject = definitionOrNull->Objects[static_cast<usize>(index)];
             if (scene.GiProbeReceiverIds.contains(sourceObject.SourceId) == true)
             {
-                // Keep the chart table aligned with the draw list and use realtime shading for this receiver.
+                // Keep the chart table aligned with the draw list. Deferred Baked Lighting passes sample the probe
+                // volume for this receiver; other passes shade it in realtime.
                 extraction.SurfaceCharts.append(renderer::SceneSurfaceChart{});
+                if (hasProbeAtlas == true)
+                {
+                    extraction.ProbeReceiverIds.append(item.SourceId);
+                }
                 continue;
             }
             const WorldSurfaceChart& source = surfaceBake->Charts.at(index);
@@ -432,10 +616,17 @@ struct RenderGraphPreview::State final
         uint32 Height = 0;
         uint32 Cameras = 0;
         bool HasRasterExposure = false;
+        /// Authored ToneMap multiplier of the pass drawing Resource when HasRasterExposure; zero otherwise.
+        float32 RasterToneMappingExposure = 0;
+        /// Curve of that ToneMap.
+        renderer::ToneCurve RasterToneCurve = renderer::ToneCurve::Reinhard;
+        bool HasLightingViews = false;
+        bool HasWorkLight = false;
         /// Every texture of the generation, for the texture viewer.
         RenderGraphTargetCatalogue Catalogue;
         QString RendererStatus;
-        /// A ray renderer draws this generation and an authored raster fallback could replace it (Force raster).
+        /// The requested graph draws this generation and the engine default raster graph could replace it (Force
+        /// raster).
         bool CanUseRasterFallback = false;
         /// Runtime package and generation identity, for ray path capture of this generation.
         QString PackagePath;
@@ -461,6 +652,7 @@ struct RenderGraphPreview::State final
     RenderTargetReader Reader;
     GraphDisplayFrames Display;
     bool ShouldPresentDirectly = false;
+    bool IsWorkLightEnabled = false;
     bool IsCopyingDisplay = false;
     bool HasGpuFrame = false;
     bool HasPendingPreparation = false;
@@ -803,19 +995,31 @@ RenderGraphPreviewLoad RenderGraphPreview::Load(const QString& runtimePackagePat
     }
     QString selectedPath = runtimePackagePath;
     QString rendererStatus = QStringLiteral("Raster renderer.");
-    bool canUseRasterFallback = false;
-    if (renderer::UsesRayTracing(package->GetPlan()) == true)
+    const bool hasRayTracingPass = renderer::UsesRayTracing(package->GetPlan());
+    const bool hasDistinctFallback = rasterFallbackPath.isEmpty() == false && rasterFallbackPath != runtimePackagePath;
+    // Force raster draws the engine's default raster graph whatever the requested graph contains: a graph can
+    // trace rays in authored compute pipelines without a RayTracing pass, and an authored raster graph may lack
+    // what the World needs (only the default clustered deferred programs draw an Atmosphere).
+    // A ray graph named as its own fallback still reads it, so the raytracing pass is rejected below.
+    bool shouldUseFallback =
+        state.ShouldForceRaster == true && (hasDistinctFallback == true || hasRayTracingPass == true);
+    if (state.ShouldForceRaster == true && hasRayTracingPass == true && rasterFallbackPath.isEmpty() == true)
+    {
+        setStatus(QStringLiteral("Force raster needs the engine's default raster package, which this editor build "
+                                 "does not have. Turn Force raster off to draw the selected render graph."));
+        return RenderGraphPreviewLoad::Unsupported;
+    }
+    QString rayRendererStatus;
+    if (hasRayTracingPass == true && state.ShouldForceRaster == false)
     {
         const bool hasNativeRayQueries = renderer::RequiresHardwareRayTracing(package->GetPlan());
         renderer::RenderGraphRenderer selected = hasNativeRayQueries == true
                                                      ? renderer::RenderGraphRenderer::HardwareRayTracing
                                                      : renderer::RenderGraphRenderer::ComputeRayTracing;
-        const renderer::RenderGraphPreference preference = state.ShouldForceRaster == true
-                                                               ? renderer::RenderGraphPreference::ForceRaster
-                                                               : renderer::RenderGraphPreference::Automatic;
         if (state.IsAttached == true && hasNativeRayQueries == true)
         {
-            const rhi::RasterStatus status = renderer::SelectRenderGraphRenderer(state.Device, preference, selected);
+            const rhi::RasterStatus status =
+                renderer::SelectRenderGraphRenderer(state.Device, renderer::RenderGraphPreference::Automatic, selected);
             if (status != rhi::RasterStatus::Ready)
             {
                 setStatus(QStringLiteral("Renderer selection failed (%1); the shown frame is kept.")
@@ -823,36 +1027,53 @@ RenderGraphPreviewLoad RenderGraphPreview::Load(const QString& runtimePackagePat
                 return RenderGraphPreviewLoad::Failed;
             }
         }
-        if (state.ShouldForceRaster == true || selected == renderer::RenderGraphRenderer::Raster)
+        if (selected == renderer::RenderGraphRenderer::Raster)
         {
             if (rasterFallbackPath.isEmpty() == true)
             {
                 setStatus(QStringLiteral("A raster runtime package is required for this renderer selection."));
                 return RenderGraphPreviewLoad::Unsupported;
             }
-            loaded = readPackage(rasterFallbackPath);
-            if (loaded != RenderGraphPreviewLoad::Staged)
-            {
-                return loaded;
-            }
-            if (renderer::UsesRayTracing(package->GetPlan()) == true)
-            {
-                setStatus(QStringLiteral("The raster fallback contains a raytracing pass; it was rejected."));
-                return RenderGraphPreviewLoad::Unsupported;
-            }
-            selectedPath = rasterFallbackPath;
-            rendererStatus = state.ShouldForceRaster == true
-                                 ? QStringLiteral("Raster renderer (Force raster).")
-                                 : QStringLiteral("Raster renderer (hardware raytracing unavailable on this GPU/API).");
+            shouldUseFallback = true;
         }
         else
         {
-            rendererStatus = hasNativeRayQueries == true
-                                 ? QStringLiteral("Compute raytracing renderer (native hardware BVH queries).")
-                                 : QStringLiteral("Compute raytracing renderer (shader traversal).");
-            canUseRasterFallback = rasterFallbackPath.isEmpty() == false && rasterFallbackPath != runtimePackagePath;
+            rayRendererStatus = hasNativeRayQueries == true
+                                    ? QStringLiteral("Compute raytracing renderer (native hardware BVH queries).")
+                                    : QStringLiteral("Compute raytracing renderer (shader traversal).");
         }
     }
+    if (shouldUseFallback == true)
+    {
+        loaded = readPackage(rasterFallbackPath);
+        if (loaded != RenderGraphPreviewLoad::Staged)
+        {
+            return loaded;
+        }
+        if (renderer::UsesRayTracing(package->GetPlan()) == true)
+        {
+            setStatus(QStringLiteral("The raster fallback contains a raytracing pass; it was rejected."));
+            return RenderGraphPreviewLoad::Unsupported;
+        }
+        selectedPath = rasterFallbackPath;
+    }
+    if (state.ShouldForceRaster == true)
+    {
+        rendererStatus = selectedPath == rasterFallbackPath
+                             ? QStringLiteral("Raster renderer (Force raster: engine default raster graph).")
+                             : QStringLiteral("Raster renderer. Force raster has no engine default raster package in "
+                                              "this editor build, so the selected render graph is drawn.");
+    }
+    else if (shouldUseFallback == true)
+    {
+        rendererStatus = QStringLiteral("Raster renderer (hardware raytracing unavailable on this GPU/API).");
+    }
+    else if (rayRendererStatus.isEmpty() == false)
+    {
+        rendererStatus = rayRendererStatus;
+    }
+    // Force raster could replace any requested graph other than the engine default itself.
+    const bool canUseRasterFallback = shouldUseFallback == false && hasDistinctFallback == true;
     // Denoising only filters the image. Without the optional denoiser, preview the graph as if its
     // Denoise nodes were disabled rather than show nothing; staging would otherwise reject it.
     if (renderer::RequiresDenoising(package->GetPlan()) == true && renderer::IsDenoisingAvailable() == false)
@@ -897,6 +1118,11 @@ RenderGraphPreviewLoad RenderGraphPreview::Load(const QString& runtimePackagePat
             plan.Resources[pass.Color].Backing == plan.Resources[target.Resource].Backing)
         {
             target.HasRasterExposure = pass.Program == format::Technique::ColorAndDepth && pass.ToneMappingExposure > 0;
+            target.RasterToneMappingExposure = target.HasRasterExposure == true ? pass.ToneMappingExposure : 0;
+            target.RasterToneCurve = pass.ToneMappingCurve == format::DisplayCurve::PbrNeutral
+                                         ? renderer::ToneCurve::PbrNeutral
+                                         : renderer::ToneCurve::Reinhard;
+            target.HasLightingViews = pass.Program == format::Technique::ColorAndDepth;
             break;
         }
     }
@@ -904,6 +1130,7 @@ RenderGraphPreviewLoad RenderGraphPreview::Load(const QString& runtimePackagePat
     {
         target.CaptureProblems[resource] = renderer::FindRenderGraphCaptureProblem(plan, resource);
     }
+    target.HasWorkLight = target.HasLightingViews == true && selectedPath == GetDefaultRenderGraphRuntime();
     target.Cameras = static_cast<uint32>(plan.Description.CameraCount);
     for (uint32 pass = 0; pass < plan.Passes.GetSize() && target.RayPassCount < target.RayPasses.GetSize(); ++pass)
     {
@@ -1068,6 +1295,43 @@ const QString& RenderGraphPreview::GetOutputTarget() const noexcept
 bool RenderGraphPreview::CanAdjustRasterExposure() const noexcept
 {
     return mState->Active.HasRasterExposure == true && mState->IsFrozen == false;
+}
+float32 RenderGraphPreview::GetRasterToneMappingExposure() const noexcept
+{
+    return mState->Active.RasterToneMappingExposure;
+}
+renderer::ToneCurve RenderGraphPreview::GetRasterToneCurve() const noexcept
+{
+    return mState->Active.RasterToneCurve;
+}
+bool RenderGraphPreview::CanShowLightingViews() const noexcept
+{
+    return mState->Active.HasLightingViews == true && mState->IsFrozen == false;
+}
+void RenderGraphPreview::SetWorkLightEnabled(bool isEnabled)
+{
+    if (mState->IsWorkLightEnabled != isEnabled)
+    {
+        mState->IsWorkLightEnabled = isEnabled;
+        Q_EMIT Changed();
+    }
+}
+bool RenderGraphPreview::IsWorkLightEnabled() const noexcept
+{
+    return mState->IsWorkLightEnabled;
+}
+bool RenderGraphPreview::CanShowWorkLight() const noexcept
+{
+    const State& state = *mState;
+    return state.Active.HasWorkLight == true && state.OutputName.isEmpty() == true && state.IsFrozen == false;
+}
+bool RenderGraphPreview::ShouldShowWorkLight() const noexcept
+{
+    return mState->IsWorkLightEnabled == true && CanShowWorkLight() == true;
+}
+QVector<renderer::DirectLight> RenderGraphPreview::GetExtractionLights() const
+{
+    return mState->Extraction.Lights;
 }
 bool RenderGraphPreview::FindActiveCaptureProblem(uint32 resource,
                                                   renderer::RenderGraphCaptureProblem& outProblem) const noexcept
@@ -1567,6 +1831,13 @@ void RenderGraphPreview::advance(bool shouldSubmitFrame)
         state.Active = state.Candidate;
         state.Candidate = {};
         EndViewportTrace(state.CandidateActivationTrace, "activated");
+        // The activation records only revisions the drawing generation accepted, so a generation replacing one
+        // that rejected the retained extraction (Force raster over a graph that rejects the World's alpha-masked
+        // materials) activates without it. Offer the extraction again rather than wait for a World edit.
+        if (IsAccepted(state.ExtractionUpdateStatus) == false)
+        {
+            state.UpdatedRevision = 0;
+        }
         if (state.IsFrozen == true)
         {
             markRayPathStale(QStringLiteral("The graph was rebuilt after this capture; capture again to trace the "
@@ -1591,6 +1862,8 @@ void RenderGraphPreview::advance(bool shouldSubmitFrame)
                                       static_cast<usize>(state.Extraction.SurfaceCharts.size())};
         shaderInputs.BakedLightIds = {state.Extraction.Scene.AlwaysOnLightIds.constData(),
                                       static_cast<usize>(state.Extraction.Scene.AlwaysOnLightIds.size())};
+        shaderInputs.ProbeReceiverIds = {state.Extraction.ProbeReceiverIds.constData(),
+                                         static_cast<usize>(state.Extraction.ProbeReceiverIds.size())};
         shaderInputs.Lights = {state.Extraction.Lights.constData(), static_cast<usize>(state.Extraction.Lights.size())};
         shaderInputs.Luminaires = {state.Extraction.Scene.Luminaires.Luminaires,
                                    state.Extraction.Scene.Luminaires.Count};
@@ -1621,7 +1894,10 @@ void RenderGraphPreview::advance(bool shouldSubmitFrame)
             const float64 maximumAltitude =
                 renderer::GetAtmosphereMaximumViewAltitude(atmosphere, state.Extraction.View.OrthographicCamera);
             float64 altitude = 0;
+            // A graph that omits the Atmosphere sky draws none, so its altitude range does not apply.
             if (atmosphere.IsEnabled == true &&
+                (graphReport.UnrenderedWorldFeatures &
+                 renderer::GetWorldFeatureBit(renderer::WorldFeature::AtmosphereSky)) == 0 &&
                 renderer::TryGetAtmosphereAltitude(atmosphere, state.Extraction.View.CameraPosition, altitude) ==
                     true &&
                 (altitude < 0 || altitude > maximumAltitude))
@@ -1648,10 +1924,15 @@ void RenderGraphPreview::advance(bool shouldSubmitFrame)
             if (IsAccepted(updated) == false)
             {
                 const QString modelFailure = DescribeLightTransformerPreparationFailure(graphReport.Model);
-                if (updated == rhi::RasterStatus::Unsupported && state.Extraction.View.Atmosphere.IsEnabled == true)
+                // Update reports the active graph's result, or the candidate's while none is active.
+                const renderer::RenderGraph* drawingOrNull = state.Activation.GetActiveOrNull();
+                const QString rejection = DescribeRenderGraphSceneRejection(
+                    drawingOrNull != nullptr ? drawingOrNull->GetLastRejection()
+                                             : state.Activation.GetReport().CandidateRejection,
+                    graphReport);
+                if (rejection.isEmpty() == false)
                 {
-                    setStatus(QStringLiteral("Atmosphere needs a supported clustered deferred raster configuration. "
-                                             "Select the default Raster configuration. The shown frame is kept."));
+                    setStatus(rejection + QStringLiteral(" The shown frame is kept."));
                 }
                 else
                 {
@@ -1672,6 +1953,14 @@ void RenderGraphPreview::advance(bool shouldSubmitFrame)
         if (modelFailure.isEmpty() == false)
         {
             setStatus(modelFailure + QStringLiteral(" The shown frame is kept; repair the inputs and preview again."));
+        }
+        else if (const QString rejection =
+                     DescribeRenderGraphSceneRejection(modelReport.CandidateRejection, modelReport.CandidateReport);
+                 rejection.isEmpty() == false)
+        {
+            // The replacement rejected the World the drawing generation accepts, as when Force raster is turned off
+            // over a graph whose depth-only prepass would seal alpha-masked materials.
+            setStatus(rejection + QStringLiteral(" The shown frame is kept."));
         }
     }
     renderer::RenderGraph* activeOrNull = state.Activation.GetActiveOrNull();
@@ -2109,18 +2398,36 @@ usize RenderGraphPreview::GetSurfaceChartDrawCount() const noexcept
     return activeOrNull != nullptr ? activeOrNull->GetReport().Resources.SurfaceChartDraws : 0;
 }
 
+usize RenderGraphPreview::GetProbeReceiverDrawCount() const noexcept
+{
+    const renderer::RenderGraph* activeOrNull = mState->Activation.GetActiveOrNull();
+    return activeOrNull != nullptr ? activeOrNull->GetReport().Resources.ProbeReceiverDraws : 0;
+}
+
+renderer::WorldFeatureMask RenderGraphPreview::GetUnrenderedWorldFeatures() const noexcept
+{
+    const renderer::RenderGraph* activeOrNull = mState->Activation.GetActiveOrNull();
+    return activeOrNull != nullptr ? activeOrNull->GetReport().UnrenderedWorldFeatures : 0;
+}
+
+bool RenderGraphPreview::GetWorldFeatureSupport(renderer::WorldFeature feature,
+                                                renderer::WorldFeatureSupport& outSupport) const noexcept
+{
+    const renderer::RenderGraph* activeOrNull = mState->Activation.GetActiveOrNull();
+    if (activeOrNull == nullptr)
+    {
+        return false;
+    }
+    outSupport = activeOrNull->GetWorldFeatureSupport(feature);
+    return true;
+}
+
 QString RenderGraphPreview::GetDisplayStatus() const
 {
-    const renderer::RenderGraphActivationReport report = mState->Activation.GetReport();
-    if (report.Candidate == renderer::RenderGraphCandidateState::Failed ||
-        report.Candidate == renderer::RenderGraphCandidateState::RestartRequired)
+    const QString activationFailure = DescribeRenderGraphActivationFailure(mState->Activation.GetReport());
+    if (activationFailure.isEmpty() == false)
     {
-        const QString failure = report.Candidate == renderer::RenderGraphCandidateState::RestartRequired
-                                    ? QStringLiteral("Renderer activation requires an editor restart")
-                                    : QStringLiteral("Renderer activation failed");
-        return QStringLiteral("%1 (%2) for generation %3; the last good scene is kept.")
-            .arg(failure, DescribeRasterStatus(report.LastFailure))
-            .arg(report.CandidateGeneration);
+        return activationFailure;
     }
     if (mStatus.isEmpty() == false)
     {
@@ -2256,11 +2563,19 @@ QString RenderGraphPreview::GetStatus() const
                 parts.append(QStringLiteral("Candidate generation %1 is preparing; the shown frame is kept.")
                                  .arg(report.CandidateGeneration));
                 break;
-            case renderer::RenderGraphCandidateState::Failed:
-                parts.append(QStringLiteral("Candidate generation %1 failed (%2); the shown frame is kept.")
-                                 .arg(report.CandidateGeneration)
-                                 .arg(DescribeRasterStatus(report.LastFailure)));
+            case renderer::RenderGraphCandidateState::Failed: {
+                const QString cause =
+                    DescribeRenderGraphSceneRejection(report.CandidateRejection, report.CandidateReport);
+                parts.append(cause.isEmpty() == true
+                                 ? QStringLiteral("Candidate generation %1 failed (%2); the shown frame is kept.")
+                                       .arg(report.CandidateGeneration)
+                                       .arg(DescribeRasterStatus(report.LastFailure))
+                                 : QStringLiteral("Candidate generation %1 cannot draw this World. %2 The shown frame "
+                                                  "is kept.")
+                                       .arg(report.CandidateGeneration)
+                                       .arg(cause));
                 break;
+            }
             case renderer::RenderGraphCandidateState::RestartRequired:
                 parts.append(QStringLiteral("Candidate generation %1 needs a restart: its CPU interface differs from "
                                             "this editor's compiled interface. Nothing was staged.")

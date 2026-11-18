@@ -156,6 +156,7 @@ QJsonObject ApplyComputeProfile(const QJsonObject& previousNode, const QJsonObje
         state.insert(QStringLiteral("group_size"), QJsonArray{1, 1, 1});
     }
     QJsonObject invocation = result.value(QStringLiteral("invocation")).toObject();
+    invocation.remove(QStringLiteral("work_items"));
     if (invocation.value(QStringLiteral("dimensions")).isArray() == false)
     {
         invocation.insert(QStringLiteral("dimensions"), QJsonArray{1, 1, 1});

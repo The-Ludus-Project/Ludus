@@ -4,6 +4,7 @@
 #include "internal/path_text.h"
 
 #include <ludus/foundation/base/core.h>
+#include <ludus/graphics/renderer/world_feature.hpp>
 
 #include <QAbstractItemView>
 #include <QHBoxLayout>
@@ -202,6 +203,16 @@ QList<ErrorListEntry> MakeRenderPreviewWarningEntries(const QString& warning, co
         .Backends = {},
         .Count = 1,
     }};
+}
+
+QList<ErrorListEntry> MakeRenderGraphFeatureWarningEntries(const QString& warning, const QString& file)
+{
+    QList<ErrorListEntry> entries = MakeRenderPreviewWarningEntries(warning, file);
+    for (ErrorListEntry& entry : entries)
+    {
+        entry.Code = QString::fromLatin1(graphics::renderer::WORLD_FEATURE_WARNING_CODE);
+    }
+    return entries;
 }
 
 QList<ErrorListEntry> MakeRenderGraphErrorEntries(const RenderGraphJobResult& result)

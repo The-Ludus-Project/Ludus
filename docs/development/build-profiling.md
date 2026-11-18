@@ -786,8 +786,8 @@ It counts compilations instead of timing them, so its result does not depend on
 host load or runner speed. `config/build_graph.json` lists the exceptions:
 
 - A **variant** compiles differently for each target: fault-injection backends,
-  the renderer test oracles' floating-point flags, the editor's
-  configuration tests without the GPU preview. Each rule states its reason.
+  the editor's configuration tests without the GPU preview. Each rule states
+  its reason.
 - A **baseline** entry is identical duplication not yet migrated. The list may
   only shrink: once a tree containing every target a rule names compiles each of
   its sources once, the check fails until the rule is removed.
@@ -823,6 +823,9 @@ The reference raster and unsupported ray implementations each compile once.
 Storage-allocation failure injection is compiled into the shared RHI registry
 only when tests are enabled, with its declaration kept in a private header.
 `config/build_graph.json` grants no renderer or RHI production-source variants.
+The five CPU test oracles (`modules/graphics/renderer/tests/*_oracle.cpp`)
+compile once, with `-ffp-contract=off`, in the static `ludus_renderer_test_oracles`
+library; see [Renderer and RHI test compilations](#renderer-and-rhi-test-compilations).
 
 The assertion runtime also shares its identical objects between FoundationBase
 and the isolated fake-platform death-test executable. Each final binary still
@@ -878,6 +881,49 @@ direction holds; the translation unit counts are the load-independent result.
 Generated shaders and graphs were not rebuilt in this pair; their halved counts
 are in the table. Compare the CI job summaries' build times across several
 batches before drawing conclusions about runner wall time.
+
+### Renderer and RHI test compilations
+
+The 2026-11-08 batch profile ([run 42522837843](https://github.com/The-Ludus-Project/Ludus/actions/runs/42522837843))
+showed `ludus_renderer_tests` recompiling 52 renderer sources (27.6 s parse,
+10.5 s code generation) and the RHI sources compiled by three targets, about
+17 s more. PR 1139 removed those variants (see Editor shared objects above). Its
+reason, the deterministic reference backend, needed a link-time choice, not a
+second compilation: the tests link reference backend objects ahead of the RHI
+archive, and the storage-failure hook is compiled into the shared registry in
+test-enabled builds.
+
+The five CPU test oracles were the remaining renderer duplicates. Each was
+compiled by every executable that called it: with `-ffp-contract=off` in
+`ludus_renderer_tests`, and with the default contraction in
+`ludus_renderer_render_tests`, `ludus_render_graph_ray_tests` and
+`ludus_one_more_vertex_oracle_tests` (which also compiled `one_more_vertex_oracle.cpp`
+identically to `ludus_render_graph_ray_tests`). No consumer needed contracted
+arithmetic, and the renderer's CPU reference paths already disable it. The
+oracles now compile once in the static `ludus_renderer_test_oracles` library
+with `-ffp-contract=off`, so the CPU oracle tests and the GPU parity suites
+compare against the same objects. A static archive lets each executable pull only
+the oracles it calls. The oracle variant rule is gone from `config/build_graph.json`;
+parity and oracle tolerances are unchanged.
+
+Measured on `macos-clang-debug` with tests and shader tools enabled and the
+editor off. The compilation counts come from `tools/check_build_graph.py`.
+CPU is the user plus system time of replaying every `compile_commands.json` entry
+whose object lies under `modules/graphics/renderer` or `modules/graphics/rhi`,
+8 at a time, without ccache, on a shared 10-core Apple M5:
+
+| Tree | Compilations | Extra (variant) | Renderer/RHI compilations | Their CPU |
+| --- | ---: | ---: | ---: | ---: |
+| Before PR 1139 (`181ee44ab`) | 898 | 97 | 349 | 182.8 s (load 39) |
+| PR 1139 (`9c4669f8a`) | 825 | 24 | 276 | 165.3 s (load 27) |
+| `develop` before the oracle library (`5c7824bae`) | 899 | 25 | — | — |
+| Oracle library | 894 | 20 | — | 1.7 s for the 5 oracles |
+
+PR 1139 removed 73 compilations and about 17 s (10%) of the renderer and RHI
+compile CPU in this single pair; the load differed, so the CPU difference is
+indicative and the counts are the load-independent result. The oracle library
+removes 5 more compilations, about 2 s of CPU. Later `develop` rows include the
+sources added since PR 1139.
 
 ## Fresh worktree setup cost
 

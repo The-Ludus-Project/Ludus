@@ -14,7 +14,7 @@ namespace
 {
 constexpr usize CHANNEL_COUNT = 4;
 constexpr usize COLOR_CHANNEL_COUNT = 3;
-constexpr usize PARENT_TEXELS_PER_TEXEL = 4;
+constexpr usize MAX_AXIS_TAPS = 3;
 constexpr usize CODE_COUNT = 256;
 constexpr float32 CODE_MAXIMUM = 255;
 /// Linear light of every sRGB byte code, so filtering never evaluates the transfer per texel.
@@ -51,34 +51,64 @@ struct LevelView final
     uint32 Width = 0;
     uint32 Height = 0;
 };
-/// Column and row of a texel within its level.
-struct TexelCoordinate final
+/// Consecutive parent texels and their relative overlap widths as integers.
+struct AxisFootprint final
 {
-    uint32 X = 0;
-    uint32 Y = 0;
+    uint32 FirstTexel;
+    usize TapCount;
+    uint32 TotalWeight;
+    StaticArray<uint32, MAX_AXIS_TAPS> Weights;
 };
-/// Average the 2x2 parent block of one level texel into its four channels.
-void FilterTexel(const LevelView& parent, TexelCoordinate texel, bool isSrgb, uint8* outTexel) noexcept
+
+// Thanks to Mehdi NS, “Notes on Anti-Aliasing: Texture filtering (part 3),” for prompting the minification review.
+// https://mehdins.wordpress.com/2017/08/29/notes-on-anti-aliasing-texture-filtering-part-3/
+AxisFootprint ComputeAxisFootprint(uint32 parentExtent, uint32 childTexel) noexcept
+{
+    if (parentExtent == 1)
+    {
+        return {0, 1, 1, {{1, 0, 0}}};
+    }
+    const uint32 firstTexel = childTexel * 2;
+    if (parentExtent % 2 == 0)
+    {
+        return {firstTexel, 2, 2, {{1, 1, 0}}};
+    }
+    // Match the footprint geometry in cmake/shaders/cook_texture.py so odd edges contribute.
+    // With n = floor(parentExtent / 2), the box spans [2i + i/n, 2i + 2 + (i+1)/n].
+    const uint32 childExtent = parentExtent / 2;
+    return {firstTexel, MAX_AXIS_TAPS, parentExtent, {{childExtent - childTexel, childExtent, childTexel + 1}}};
+}
+
+void FilterTexel(const LevelView& parent,
+                 const AxisFootprint& horizontal,
+                 const AxisFootprint& vertical,
+                 bool isSrgb,
+                 uint8* outTexel) noexcept
 {
     const SrgbDecodeTable& decodeTable = GetSrgbDecodeTable();
-    const uint32 x0 = texel.X * 2 < parent.Width ? texel.X * 2 : parent.Width - 1;
-    const uint32 y0 = texel.Y * 2 < parent.Height ? texel.Y * 2 : parent.Height - 1;
-    const uint32 x1 = x0 + 1 < parent.Width ? x0 + 1 : x0;
-    const uint32 y1 = y0 + 1 < parent.Height ? y0 + 1 : y0;
-    const StaticArray<usize, PARENT_TEXELS_PER_TEXEL> offsets{{(usize{y0} * parent.Width + x0) * CHANNEL_COUNT,
-                                                               (usize{y0} * parent.Width + x1) * CHANNEL_COUNT,
-                                                               (usize{y1} * parent.Width + x0) * CHANNEL_COUNT,
-                                                               (usize{y1} * parent.Width + x1) * CHANNEL_COUNT}};
+    const float32 area = static_cast<float32>(horizontal.TotalWeight) * static_cast<float32>(vertical.TotalWeight);
+    StaticArray<float32, CHANNEL_COUNT> sums{};
+    for (usize row = 0; row < vertical.TapCount; ++row)
+    {
+        const usize rowOffset = (vertical.FirstTexel + row) * parent.Width;
+        const float32 rowWeight = static_cast<float32>(vertical.Weights[row]);
+        for (usize column = 0; column < horizontal.TapCount; ++column)
+        {
+            const usize offset = (rowOffset + horizontal.FirstTexel + column) * CHANNEL_COUNT;
+            const float32 weight = rowWeight * static_cast<float32>(horizontal.Weights[column]);
+            for (usize channel = 0; channel < CHANNEL_COUNT; ++channel)
+            {
+                const uint8 code = parent.Texels[offset + channel];
+                const bool isColor = isSrgb == true && channel < COLOR_CHANNEL_COUNT;
+                sums[channel] +=
+                    weight * (isColor == true ? decodeTable.Linear[code] : static_cast<float32>(code) / CODE_MAXIMUM);
+            }
+        }
+    }
     for (usize channel = 0; channel < CHANNEL_COUNT; ++channel)
     {
         const bool isColor = isSrgb == true && channel < COLOR_CHANNEL_COUNT;
-        float32 sum = 0;
-        for (const usize offset : offsets)
-        {
-            const uint8 code = parent.Texels[offset + channel];
-            sum += isColor == true ? decodeTable.Linear[code] : static_cast<float32>(code) / CODE_MAXIMUM;
-        }
-        const float32 mean = sum / static_cast<float32>(PARENT_TEXELS_PER_TEXEL);
+        const float32 mean = sums[channel] / area;
         outTexel[channel] = EncodeCode(isColor == true ? math::EncodeSrgb(mean) : mean);
     }
 }
@@ -146,9 +176,11 @@ BuildRgba8MipChain(const rhi::TextureCpuContent& source, uint32 levelCount, Rgba
         uint8* texels = chain.Bytes.GetData() + offset;
         for (uint32 y = 0; y < height; ++y)
         {
+            const AxisFootprint vertical = ComputeAxisFootprint(parent.Height, y);
             for (uint32 x = 0; x < width; ++x)
             {
-                FilterTexel(parent, {x, y}, isSrgb, texels + (usize{y} * width + x) * CHANNEL_COUNT);
+                const AxisFootprint horizontal = ComputeAxisFootprint(parent.Width, x);
+                FilterTexel(parent, horizontal, vertical, isSrgb, texels + (usize{y} * width + x) * CHANNEL_COUNT);
             }
         }
         chain.Mips[level] = {offset, usize{width} * CHANNEL_COUNT};

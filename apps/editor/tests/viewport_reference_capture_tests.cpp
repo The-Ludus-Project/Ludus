@@ -11,6 +11,7 @@
 #include "internal/render_graph_preview.h"
 #include "internal/renderer_workspace.h"
 #include "internal/viewport_reference_capture.h"
+#include "internal/viewport_tone_curve.h"
 #include "viewport_fixture.h"
 #include <ludus/content/scene_cook/scene_assets.h>
 
@@ -30,6 +31,7 @@
 #include <ludus/graphics/renderer/reference.hpp>
 #include <ludus/graphics/renderer/renderer.hpp>
 #include <ludus/graphics/renderer/static_lighting.hpp>
+#include <ludus/graphics/renderer/tone_mapping.hpp>
 
 #include <QByteArray>
 #include <QCheckBox>
@@ -45,10 +47,12 @@
 #include <QSpinBox>
 #include <QStandardItemModel>
 #include <QString>
+#include <QTabWidget>
 #include <QTemporaryDir>
 #include <QThread>
 #include <QtEndian>
 
+#include <catch2/catch_approx.hpp>
 #include <catch2/catch_test_macros.hpp>
 
 using namespace ludus::editor;
@@ -221,6 +225,58 @@ TEST_CASE("Reference display encoding matches the viewport's exposure-one PBR Ne
     CHECK(EncodeReferenceDisplayChannel(__builtin_nanf("")) == 0);
 }
 
+TEST_CASE("Reference display transform follows the viewport output's ToneMap exposure and curve",
+          "[editor][reference-capture][exposure]")
+{
+    renderer::ViewDescription view;
+    // Without a ToneMap the view's exposure fields do not apply: the viewport's exposure-one transform.
+    view.Exposure = renderer::ExposureMode::Physical;
+    view.ExposureValue100 = 12;
+    ViewportDisplayTransform display = ComputeReferenceDisplayTransform(view, 0, renderer::ToneCurve::Reinhard);
+    CHECK(display.Exposure == 1);
+    CHECK(display.Curve == VIEWPORT_TONE_CURVE);
+    // Graph exposure keeps the authored multiplier and curve, and compensation doubles it per stop.
+    constexpr float32 AUTHORED_EXPOSURE = 2;
+    view.Exposure = renderer::ExposureMode::Graph;
+    view.RasterExposureStops = 1;
+    display = ComputeReferenceDisplayTransform(view, AUTHORED_EXPOSURE, renderer::ToneCurve::Reinhard);
+    CHECK(display.Exposure == Catch::Approx(4));
+    CHECK(display.Curve == renderer::ToneCurve::Reinhard);
+    // A physical camera replaces the authored multiplier, as RenderGraphDeferredPass does.
+    view.Exposure = renderer::ExposureMode::Physical;
+    view.RasterExposureStops = -1;
+    display = ComputeReferenceDisplayTransform(view, AUTHORED_EXPOSURE, renderer::ToneCurve::PbrNeutral);
+    CHECK(display.Exposure == Catch::Approx(renderer::ComputeExposureMultiplier(12) / 2));
+    CHECK(display.Curve == renderer::ToneCurve::PbrNeutral);
+    // Exposure fields RenderGraph rejects fall back to the default transform instead of an unusable exposure.
+    view.ExposureValue100 = renderer::MAX_EXPOSURE_VALUE_100 + 1;
+    CHECK(ComputeReferenceDisplayTransform(view, AUTHORED_EXPOSURE, renderer::ToneCurve::PbrNeutral).Exposure == 1);
+    view.ExposureValue100 = 12;
+    view.RasterExposureStops = __builtin_nanf("");
+    CHECK(ComputeReferenceDisplayTransform(view, AUTHORED_EXPOSURE, renderer::ToneCurve::PbrNeutral).Exposure == 1);
+}
+
+TEST_CASE("Reference display encoding applies the supplied exposure and curve", "[editor][reference-capture][exposure]")
+{
+    // Daylight radiance in physical units saturates at exposure one but encodes like 0.3 once exposed.
+    constexpr float32 DAYLIGHT_RADIANCE = 3000;
+    constexpr float32 EXPOSED_GREY = 0.3F;
+    const ViewportDisplayTransform exposed{ .Exposure = EXPOSED_GREY / DAYLIGHT_RADIANCE };
+    // PBR Neutral approaches white asymptotically; saturated means within half an eight-bit level of it.
+    constexpr float64 HALF_EIGHT_BIT_LEVEL = 0.5 / 255;
+    CHECK(EncodeReferenceDisplayColor({DAYLIGHT_RADIANCE, DAYLIGHT_RADIANCE, DAYLIGHT_RADIANCE}).X ==
+          Catch::Approx(1).margin(HALF_EIGHT_BIT_LEVEL));
+    CHECK(EncodeReferenceDisplayColor({DAYLIGHT_RADIANCE, DAYLIGHT_RADIANCE, DAYLIGHT_RADIANCE}, exposed).X ==
+          Catch::Approx(EncodeReferenceDisplayValue(EXPOSED_GREY)));
+    // Reinhard maps 0.3 to 0.3 / 1.3 before sRGB, unlike PBR Neutral.
+    const ViewportDisplayTransform reinhard{ .Curve = renderer::ToneCurve::Reinhard };
+    CHECK(EncodeReferenceDisplayColor({EXPOSED_GREY, EXPOSED_GREY, EXPOSED_GREY}, reinhard).X ==
+          Catch::Approx(math::EncodeSrgb(EXPOSED_GREY / (1 + EXPOSED_GREY))));
+    // An unusable exposure encodes black rather than an arbitrary colour.
+    CHECK(EncodeReferenceDisplayColor({1, 1, 1}, { .Exposure = 0 }).X == 0);
+    CHECK(EncodeReferenceDisplayColor({1, 1, 1}, { .Exposure = __builtin_nanf("") }).X == 0);
+}
+
 TEST_CASE("Reference lights exclude the raster viewport's emissive area proxies", "[editor][reference-capture]")
 {
     renderer::LightSelection selection;
@@ -306,6 +362,11 @@ TEST_CASE("Reference capture rejects unlit scenes and out-of-range settings befo
     settings.LongSide = MAXIMUM_REFERENCE_LONG_SIDE + 1;
     error.clear();
     CHECK(capture.Start({}, {}, lit, view, extent, settings, error) == false);
+    settings.LongSide = TEST_LONG_SIDE;
+    settings.Display.Exposure = 0;
+    error.clear();
+    CHECK(capture.Start({}, {}, lit, view, extent, settings, error) == false);
+    CHECK(error.contains(QStringLiteral("admitted ranges")) == true);
     CHECK(capture.GetPhase() == ViewportReferencePhase::Idle);
 }
 
@@ -398,6 +459,69 @@ TEST_CASE("A reference capture traces pixel centres when asked and records it in
         const uint32 flags = qFromLittleEndian<uint32>(hdr.constData() + LUHDR_FLAGS_OFFSET);
         CHECK(((flags & LUHDR_CENTER_RAYS_FLAG) != 0) == shouldCenterRays);
     }
+}
+
+TEST_CASE("Reference capture lights the scene with the World Atmosphere's sky as the raster does",
+          "[editor][reference-capture][gpu][atmosphere]")
+{
+    DeviceFixture device;
+    if (device.IsAvailable == false)
+    {
+        SKIP("No GPU adapter on this host");
+    }
+    QTemporaryDir root;
+    REQUIRE(root.isValid() == true);
+    RenderScene scene;
+    tests::MakeLitScene(root.path(), scene);
+    const QSize extent = ComputeReferenceExtent(QSize(640, 480), TEST_LONG_SIDE);
+    renderer::ViewDescription view;
+    DescribeTestView(scene, extent, view);
+    ViewportReferenceSettings settings;
+    settings.LongSide = TEST_LONG_SIDE;
+    settings.Samples = TEST_SAMPLES;
+    settings.MaxDepth = TEST_DEPTH;
+    settings.Traversal = renderer::ReferenceTraversal::CpuOracle;
+    const auto captureRadiance = [&](const RenderScene& source, bool& outHasSky) {
+        ViewportReferenceCapture capture;
+        QString error;
+        REQUIRE(capture.Start(device.Device, device.Surface, source, view, extent, settings, error) == true);
+        const ViewportReferencePhase phase = RunToEnd(capture);
+        INFO(capture.GetError().toStdString());
+        REQUIRE(phase == ViewportReferencePhase::Complete);
+        Array<renderer::ReferencePixel> pixels;
+        REQUIRE(capture.CopyPixels(pixels, error) == true);
+        float64 total = 0;
+        for (const renderer::ReferencePixel& pixel : pixels)
+        {
+            total += static_cast<float64>(pixel.Radiance.X + pixel.Radiance.Y + pixel.Radiance.Z);
+        }
+        outHasSky = capture.HasAtmosphereSky();
+        return total;
+    };
+    bool hasSky = true;
+    const float64 withoutAtmosphere = captureRadiance(scene, hasSky);
+    CHECK(hasSky == false);
+
+    // A clear sky with its ground ten metres below the camera and a Sun linked to no scene light.
+    constexpr float32 ANCHOR_DEPTH_METRES = 10;
+    constexpr float32 SOLAR_ILLUMINANCE = 4;
+    RenderScene sky = scene;
+    sky.Atmosphere.IsEnabled = true;
+    sky.Atmosphere.ShouldLightScene = true;
+    sky.Atmosphere.SurfaceAnchorWorld = view.CameraPosition - math::Vector3{0, ANCHOR_DEPTH_METRES, 0};
+    sky.Atmosphere.DirectionToSunWorld = math::Vector3{.3F, .8F, .2F} / math::Length(math::Vector3{.3F, .8F, .2F});
+    sky.Atmosphere.SolarIlluminance = {SOLAR_ILLUMINANCE, SOLAR_ILLUMINANCE, SOLAR_ILLUMINANCE};
+    const float64 withAtmosphere = captureRadiance(sky, hasSky);
+    CHECK(hasSky == true);
+    CAPTURE(withoutAtmosphere, withAtmosphere);
+    CHECK(withAtmosphere > withoutAtmosphere);
+
+    // Below the Atmosphere's ground the raster adds no sky, and neither does the reference.
+    RenderScene buried = sky;
+    buried.Atmosphere.SurfaceAnchorWorld = view.CameraPosition + math::Vector3{0, ANCHOR_DEPTH_METRES, 0};
+    const float64 belowGround = captureRadiance(buried, hasSky);
+    CHECK(hasSky == false);
+    CHECK(belowGround == withoutAtmosphere);
 }
 
 TEST_CASE("GPU compute reference capture completes with more emissive patches than raster lights",
@@ -627,6 +751,20 @@ TEST_CASE("Reference capture window offers the render graph source only with a p
     CHECK(centerRays->isEnabled() == false);
     CHECK(window.findChild<QComboBox*>(QStringLiteral("referenceTraversal"))->isEnabled() == false);
     CHECK(window.findChild<QCheckBox*>(QStringLiteral("referenceCompare"))->isEnabled() == false);
+}
+
+TEST_CASE("Reference capture window names the compared image after the render graph, not raster",
+          "[editor][reference-capture]")
+{
+    ReferenceCaptureWindow window(nullptr);
+    QTabWidget* images = window.findChild<QTabWidget*>(QStringLiteral("referenceImages"));
+    REQUIRE(images != nullptr);
+    REQUIRE(images->count() == 3);
+    // The viewport may draw any render graph, including an accumulating ray-traced one.
+    CHECK(images->tabText(0) == QStringLiteral("Reference"));
+    CHECK(images->tabText(1) == QStringLiteral("Render graph"));
+    CHECK(images->tabText(2) == QStringLiteral("Difference"));
+    CHECK(images->widget(1)->accessibleName() == QStringLiteral("Render graph image"));
 }
 
 namespace ludus::editor::tests
