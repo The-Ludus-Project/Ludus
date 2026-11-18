@@ -4868,6 +4868,7 @@ node editor to resize them together.
 | **Visibility + secondary rays** (`visibility-secondary-rays`) | The same raster producer feeds a ray pass and a separate shaded color target. It also exports visibility and depth for inspection. Requires native Metal or Vulkan ray tracing. |
 | **Hybrid shadows — ray-traced analytic light shadows** (`hybrid-shadows`) | The same raster producer feeds one ray pass that lights the first surface with the World's directional, point and spot lights, each shadowed by a ray, then ToneMap. Exports visibility and depth for inspection. Requires native Metal or Vulkan ray tracing. See [Shadow analytic lights with rays](#shadow-analytic-lights-with-rays). |
 | **Hybrid reflections — roughness-aware ray-traced reflections** (`hybrid-reflections`) | The same raster producer feeds one ray pass that lights the first surface like Hybrid shadows and traces one reflection ray per pixel from its GGX specular lobe, then Accumulate and ToneMap. Exports visibility and depth for inspection. Requires native Metal or Vulkan ray tracing. See [Trace rough reflections](#trace-rough-reflections). |
+| **Hybrid indirect diffuse — one diffuse bounce** (`hybrid-indirect-diffuse`) | Raster first hits feed one native ray pass for direct light and one diffuse bounce. Accumulate reconstructs the scene-linear signal before tone mapping. Exports visibility and depth. See [Trace one diffuse bounce](#trace-one-diffuse-bounce). |
 | **Tiled vbuffer NEE — many-light direct lighting** (`tiled-vbuffer-nee`) | The same raster producer feeds three ray passes that build one emitter-selection table per 16 × 16 tile and shade direct mesh-emitter lighting with MIS, then Accumulate. Exports visibility and depth for inspection. Requires native Metal or Vulkan ray tracing. See [Select emitters per screen tile](#select-emitters-per-screen-tile). |
 
 Create the same packages through the CLI:
@@ -5229,6 +5230,42 @@ pixels each motion step changes, and a fresh graph's bit-exact replay. See the
 [fixture and measurements](../architecture/renderer-systems.md#roughness-aware-reflections).
 Run `ludus_renderer_render_tests "[.benchmark][hybrid-reflections]"` for the
 blocker-move preparation latency and the shade pass's GPU time.
+
+#### Trace one diffuse bounce
+
+Create the **Hybrid indirect diffuse** starter from the renderer workspace or run
+`ludus render-graph new graphs/Main --template hybrid-indirect-diffuse --output offscreen --renderer-static`
+with the Metal or SPIR-V profile. Cook the package with the project's ordinary
+render-graph build, then select it as the World renderer. The viewport renders
+from the current World camera, and an SDK app can stage the same package through
+`RenderGraphActivation`.
+
+The visibility and depth raster passes provide the first surface. Each pixel
+samples one authored light at that surface, proposes one cosine-weighted ray,
+and samples one light at the ray's hit. Mesh emitters, analytic lights and the
+environment share the existing light catalog. The ray queries use the scene's
+geometry, including offscreen triangles. A continuation contributes only the
+diffuse lobe at both vertices. Diffuse, metallic-roughness and diffuse-conductor
+mix materials provide those lobes. Primary emission and directly visible sky
+are included. The direct light sample handles paths to emitters and the
+environment without a bounce.
+
+The budget is one closest-hit query and two visibility queries per pixel per
+frame. **Accumulate** reconstructs a scene-linear RGB mean of up to 4096 samples
+before ToneMap. It uses two float4 words (32 bytes) per pixel for RGB sums,
+compensation, count and bookkeeping, per active scene generation. Geometry,
+instances, materials (including mesh emission), analytic lights, environment,
+camera, extent and shader changes restart the mean. The new revision starts with
+fresh shading, and any previously presented image remains available during GPU
+preparation. Reconstruction uses a fixed-view running mean.
+
+Automatic uses the authored raster fallback when the device cannot run native
+rays. The default raster graph combines its direct lights, sky, and any authored
+baked or probe lighting. This graph's live diffuse bounce comes from native
+rays. Use **Force raster** to inspect the fallback on a ray-capable device.
+
+See the [one-bounce fixture](../architecture/renderer-systems.md#bounded-one-bounce-indirect-diffuse)
+for the paired RT1 and history checks.
 
 ### Select emissive triangles by power
 

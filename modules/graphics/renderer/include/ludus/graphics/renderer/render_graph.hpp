@@ -1048,7 +1048,7 @@ public:
     /// by the bit-preserved uint32 count in the first word's W to recover linear RGB.
     /// @param pass Plan pass index of a ray pass.
     /// @param outBuffer Receives the borrowed buffer; unchanged on failure.
-    /// @return Ready after producer completion; NotReady while no completed output exists;
+    /// @return Ready after the current scene and camera produce a completed frame; NotReady while they have none.
     /// InvalidDescription for a pass that is not a ray pass. Outputs are preserved on failure.
     [[nodiscard]] rhi::RasterStatus GetAccumulation(foundation::uint32 pass,
                                                     rhi::BufferHandle& outBuffer) const noexcept;

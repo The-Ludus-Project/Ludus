@@ -1,4 +1,6 @@
 #include "editor_default_graph.h"
+#include "hybrid_diffuse_scene.h"
+#include "internal/graph_display_frames.h"
 #include "internal/level.h"
 #include "internal/level_workspace.h"
 #include "internal/preview_gpu_generation.h"
@@ -9,6 +11,7 @@
 #include "internal/render_graph_defaults.h"
 #include "internal/render_graph_preview.h"
 #include "internal/render_preview.h"
+#include "internal/renderer_workspace.h"
 #include "internal/viewport_object_interaction.h"
 #include "internal/viewport_reference_capture.h"
 #include "internal/world_surface_bake.h"
@@ -27,7 +30,9 @@
 #include <ludus/graphics/renderer/lighting.hpp>
 #include <ludus/graphics/renderer/static_lighting.hpp>
 #include <ludus/graphics/renderer/tone_mapping.hpp>
+#include <ludus/graphics/rhi/device.h>
 #include <ludus/platform/entropy.h>
+#include <ludus/runtime/resources/scene.h>
 
 #import <Cocoa/Cocoa.h>
 
@@ -2523,4 +2528,194 @@ TEST_CASE("Native World-demo World renders its game extraction in the shared vie
     }
     CHECK(playerPixels >= MINIMUM_PLAYER_PIXELS);
     workspace.StopPreview();
+}
+
+TEST_CASE("The Metal World viewport restarts diffuse bounce history after an emitter edit",
+          "[.render-native][world-graph][hybrid-indirect-diffuse]")
+{
+    using namespace ludus::tests::hybrid_diffuse;
+    namespace rhi = ludus::graphics::rhi;
+    constexpr int32 DEADLINE_MILLISECONDS = 45000;
+    constexpr int32 WIDTH = 640;
+    constexpr int32 HEIGHT = 480;
+    constexpr float64 EYE_DEPTH_WORLD = .05;
+    constexpr float32 START_FOV = 1.35F;
+    constexpr int32 NOISE_FLOOR = 3;
+    constexpr uint64 MINIMUM_LIT_SIGNAL = 256;
+
+    Room room;
+    room.Apply(STATES[1]);
+    RenderScene lit;
+    lit.Identity = QByteArrayLiteral("diffuse-lit");
+    lit.AssetsIdentity = QByteArrayLiteral("diffuse-room");
+    lit.LogicalId = QStringLiteral("level/diffuse-room");
+    lit.Lit = true;
+    lit.HasStartView = true;
+    lit.StartView.EyeWorld = {0, 0, EYE_DEPTH_WORLD};
+    lit.StartView.TargetWorld = {0, 0, static_cast<float64>(room.Positions[RECEIVER][0].Z)};
+    lit.StartView.VerticalFov = START_FOV;
+    namespace resources = ludus::resources;
+    SharedPtr<resources::SceneDefinition> definition;
+    REQUIRE(TryMakeShared<resources::SceneDefinition>(GetSystemAllocationDomain(), definition) == OwnershipStatus::Ok);
+    resources::SceneDefinition& data = *definition;
+    REQUIRE(data.Meshes.TryResize(QUAD_COUNT) == true);
+    REQUIRE(data.Materials.TryResize(QUAD_COUNT) == true);
+    REQUIRE(data.Objects.TryResize(QUAD_COUNT) == true);
+    data.Eye = {0, 0, static_cast<float32>(EYE_DEPTH_WORLD)};
+    data.Target = room.Positions[RECEIVER][0];
+    data.Target.X = 0;
+    data.Target.Y = 0;
+    data.Up = lit.StartView.UpWorld;
+    data.VerticalFov = START_FOV;
+    lit.Meshes.resize(QUAD_COUNT);
+    for (usize quad = 0; quad < QUAD_COUNT; ++quad)
+    {
+        const renderer::MeshDescription& mesh = room.Meshes[quad].Geometry;
+        const renderer::SceneShaderMaterial& material = room.Materials[quad];
+        resources::SceneMesh& cookedMesh = data.Meshes[quad];
+        REQUIRE(cookedMesh.Positions.TryAddRange({mesh.Positions, mesh.VertexCount}) == true);
+        REQUIRE(cookedMesh.Normals.TryAddRange({mesh.Normals, mesh.VertexCount}) == true);
+        REQUIRE(cookedMesh.Indices.TryAddRange({mesh.Indices, mesh.IndexCount}) == true);
+        resources::SceneMaterial& cookedMaterial = data.Materials[quad];
+        cookedMaterial.Reflectance = material.BaseColor;
+        cookedMaterial.Scattering = material.Scattering;
+        cookedMaterial.Emission = material.Emission;
+        cookedMaterial.IsEmissionTwoSided = false;
+        cookedMaterial.HasSourceMaterial = true;
+        cookedMaterial.AreaSourceId = quad == EMITTER ? room.Items[quad].SourceId : 0;
+        PreviewSurface surface;
+        surface.Tint = {material.BaseColor.X, material.BaseColor.Y, material.BaseColor.Z, 1};
+        surface.FlatTint = surface.Tint;
+        surface.Scattering = material.Scattering;
+        surface.Emission = material.Emission;
+        lit.Surfaces.append(surface);
+        resources::SceneObject& cookedObject = data.Objects[quad];
+        cookedObject.Mesh = static_cast<uint32>(quad);
+        cookedObject.Material = cookedObject.Mesh;
+        cookedObject.SourceId = room.Items[quad].SourceId;
+        cookedObject.Transform = room.Items[quad].MeshToWorld;
+        PreviewObject object;
+        object.Id = QString::number(cookedObject.SourceId);
+        object.Mesh = static_cast<int32>(quad);
+        object.Surface = object.Mesh;
+        object.Transform = cookedObject.Transform;
+        lit.Objects.append(object);
+    }
+    lit.Definition = Move(definition);
+
+    rhi::Shutdown();
+    QTemporaryDir project;
+    REQUIRE(project.isValid() == true);
+    RendererWorkspace workspace({});
+    RenderPreview source;
+    PreviewViewport viewport(&source);
+    viewport.resize(WIDTH, HEIGHT);
+    viewport.show();
+    viewport.UseProjectGraph(workspace);
+    workspace.SetPreviewSource(&source);
+    workspace.EnableWorldRendering();
+    workspace.SetProject(project.path(), 1);
+    REQUIRE(source.SetScene(lit) == true);
+    REQUIRE(source.Start() == true);
+    RenderGraphPreview* graphOrNull = workspace.GetPreviewOrNull();
+    REQUIRE(graphOrNull != nullptr);
+    graphOrNull->SetSlowFrameMilliseconds(1000);
+    graphOrNull->SetWorkLightEnabled(false);
+
+    const auto waitFor = [&](const auto& isReady) {
+        QElapsedTimer timer;
+        timer.start();
+        while (isReady() == false && timer.elapsed() < DEADLINE_MILLISECONDS)
+        {
+            QTest::qWait(1);
+            workspace.ServicePreview();
+        }
+        return isReady();
+    };
+    REQUIRE(waitFor([&]() { return source.HasDevice(); }) == true);
+    rhi::RayCapabilities capabilities;
+    if (rhi::GetRayCapabilities(source.GetDevice(), capabilities) != rhi::RasterStatus::Ready)
+    {
+        SKIP("The native World viewport device has no ray queries");
+    }
+    const QString package = QStringLiteral(LUDUS_EDITOR_INDIRECT_DIFFUSE_PACKAGE);
+    REQUIRE(graphOrNull->Load(package, GetDefaultRenderGraphRuntime()) == RenderGraphPreviewLoad::Staged);
+    const bool hasPresentedInitial = waitFor([&]() {
+        return graphOrNull->GetActivePackagePath() == package && graphOrNull->HasGpuFrame() == true &&
+               graphOrNull->GetPresentedGeneration() == graphOrNull->GetReport().ActiveGeneration;
+    });
+    INFO(graphOrNull->GetDisplayStatus().toStdString());
+    CAPTURE(graphOrNull->GetReport().ActiveGeneration,
+            graphOrNull->GetReport().LatestSceneRevision,
+            source.ShouldRenderPresentation());
+    REQUIRE(hasPresentedInitial == true);
+    REQUIRE(graphOrNull->GetReport().ActiveRenderer == renderer::RenderGraphRenderer::HardwareRayTracing);
+    REQUIRE(&viewport.GetFrameSource() == &graphOrNull->GetDisplayFrames());
+    const uint64 firstFrame = graphOrNull->GetDisplayFrames().GetLatestSerial();
+    REQUIRE(firstFrame != 0);
+    REQUIRE(waitFor([&]() { return viewport.GetPresentedGraphFrameSerial() >= firstFrame; }) == true);
+
+    const auto measureRedSignal = []() {
+        const QImage image = ReadViewport();
+        REQUIRE(image.isNull() == false);
+        constexpr int32 SAMPLE_STRIDE = 4;
+        constexpr int32 CROP_DIVISOR = 4;
+        const int32 marginX = image.width() / CROP_DIVISOR;
+        const int32 marginY = image.height() / CROP_DIVISOR;
+        uint64 signal = 0;
+        for (int32 y = marginY; y < image.height() - marginY; y += SAMPLE_STRIDE)
+        {
+            for (int32 x = marginX; x < image.width() - marginX; x += SAMPLE_STRIDE)
+            {
+                const QRgb value = image.pixel(x, y);
+                const int32 difference = qRed(value) - qBlue(value);
+                if (difference > NOISE_FLOOR)
+                {
+                    signal += static_cast<uint64>(difference);
+                }
+            }
+        }
+        return signal;
+    };
+    const uint64 litRevision = graphOrNull->GetPresentedRevision();
+    const uint64 litFrame = viewport.GetPresentedGraphFrameSerial();
+    renderer::ViewDescription litView;
+    REQUIRE(graphOrNull->TryGetPresentedView(litView) == true);
+    const uint64 litSignal = measureRedSignal();
+    REQUIRE(litSignal >= MINIMUM_LIT_SIGNAL);
+
+    RenderScene dark = lit;
+    dark.Identity = QByteArrayLiteral("diffuse-dark");
+    constexpr float32 DIM_RADIANCE = .125F;
+    dark.Surfaces[EMITTER].Emission = {DIM_RADIANCE, DIM_RADIANCE, DIM_RADIANCE};
+    SharedPtr<resources::SceneDefinition> darkDefinition;
+    REQUIRE(TryMakeShared<resources::SceneDefinition>(GetSystemAllocationDomain(), darkDefinition) ==
+            OwnershipStatus::Ok);
+    REQUIRE(lit.Definition->TryCopyTo(*darkDefinition) == resources::Status::Ok);
+    darkDefinition->Materials[EMITTER].Emission = dark.Surfaces[EMITTER].Emission;
+    dark.Definition = Move(darkDefinition);
+    REQUIRE(source.SetScene(dark) == true);
+    CHECK(graphOrNull->GetPresentedRevision() == litRevision);
+    const bool hasPresentedEdit = waitFor([&]() { return graphOrNull->GetPresentedRevision() > litRevision; });
+    INFO(graphOrNull->GetDisplayStatus().toStdString());
+    INFO(workspace.GetScenePreparationProblem().toStdString());
+    CAPTURE(source.ShouldRenderPresentation(),
+            graphOrNull->HasPendingWork(),
+            graphOrNull->GetReport().LatestSceneRevision,
+            litRevision,
+            graphOrNull->GetDisplayFrames().GetShownSize().width(),
+            graphOrNull->GetDisplayFrames().GetShownSize().height());
+    REQUIRE(hasPresentedEdit == true);
+    const uint64 darkFrame = graphOrNull->GetDisplayFrames().GetLatestSerial();
+    REQUIRE(darkFrame > litFrame);
+    REQUIRE(waitFor([&]() { return viewport.GetPresentedGraphFrameSerial() >= darkFrame; }) == true);
+    constexpr uint64 MAXIMUM_SIGNAL_FRACTION_DIVISOR = 4;
+    CHECK(measureRedSignal() <= litSignal / MAXIMUM_SIGNAL_FRACTION_DIVISOR);
+    renderer::ViewDescription darkView;
+    REQUIRE(graphOrNull->TryGetPresentedView(darkView) == true);
+    CHECK(darkView.WorldToClip == litView.WorldToClip);
+
+    source.Stop();
+    workspace.SetPreviewSource(nullptr);
+    rhi::Shutdown();
 }

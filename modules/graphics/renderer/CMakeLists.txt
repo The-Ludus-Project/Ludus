@@ -289,13 +289,13 @@ if(TARGET ludus_rhi_render_tests AND NOT WIN32)
         tests/wave_tracing_graph_tests.cpp PROPERTIES COMPILE_DEFINITIONS
         "LUDUS_RENDERER_TEST_COLD_GPU_TIMEOUT_SECONDS=${renderer_test_cold_gpu_timeout_seconds}")
     set_source_files_properties(tests/reference_compute_tests.cpp tests/metropolis_parity_tests.cpp
-        tests/hybrid_shadow_tests.cpp tests/hybrid_area_shadow_tests.cpp tests/hybrid_reflection_tests.cpp
+        tests/hybrid_shadow_tests.cpp tests/hybrid_area_shadow_tests.cpp tests/hybrid_reflection_tests.cpp tests/hybrid_indirect_diffuse_tests.cpp
         PROPERTIES COMPILE_DEFINITIONS
         "LUDUS_RENDERER_TEST_COLD_GPU_TIMEOUT_SECONDS=${renderer_test_reference_cold_gpu_timeout_seconds}")
     set_source_files_properties(tests/wave_scene_graph_tests.cpp PROPERTIES COMPILE_DEFINITIONS
         "LUDUS_RENDERER_TEST_COLD_GPU_TIMEOUT_SECONDS=${renderer_test_scene_cold_gpu_timeout_seconds}")
     add_executable(ludus_renderer_render_tests tests/render_tests.cpp tests/denoising_tests.cpp tests/gpu_preview_tests.cpp tests/ray_opacity_tests.cpp tests/visibility_tests.cpp tests/reference_compute_tests.cpp tests/reference_light_sampling_benchmark.cpp tests/gpu_random_tests.cpp tests/projected_solid_angle_parity_tests.cpp tests/power_cdf_parity_tests.cpp tests/ris_projected_solid_angle_weight_tests.cpp tests/reference_light_sampling_parity_tests.cpp tests/polygonal_light_sampling_parity_tests.cpp tests/slice_sampling_luminaire_estimator_tests.cpp tests/metropolis_parity_tests.cpp tests/steinberg_physical_optics_parity_tests.cpp tests/restir_selection_tests.cpp tests/pairwise_reuse_tests.cpp tests/guided_fg_parity_tests.cpp tests/authored_tests.cpp tests/render_graph_render_tests.cpp tests/render_graph_default_render_tests.cpp tests/render_graph_hair_card_render_tests.cpp tests/render_graph_skin_render_tests.cpp tests/render_graph_reload_render_tests.cpp tests/render_graph_pool_render_tests.cpp tests/render_graph_ordered_render_tests.cpp tests/selection_outline_render_tests.cpp
-        tests/hybrid_shadow_tests.cpp tests/hybrid_area_shadow_tests.cpp tests/hybrid_reflection_tests.cpp)
+        tests/hybrid_shadow_tests.cpp tests/hybrid_area_shadow_tests.cpp tests/hybrid_reflection_tests.cpp tests/hybrid_indirect_diffuse_tests.cpp)
     target_sources(ludus_renderer_render_tests PRIVATE tests/wave_tracing_parity_tests.cpp)
     target_sources(ludus_renderer_render_tests PRIVATE tests/viewport_antialiasing_coverage_tests.cpp
         "$<TARGET_OBJECTS:ludus_renderer_earth_sky_quadrature>")
@@ -735,7 +735,7 @@ if(TARGET ludus_renderer_render_tests)
     cmake_path(GET rg2_tiled_vbuffer_nee_linear_RUNTIME_PACKAGE PARENT_PATH tiled_nee_package_directory)
     target_compile_definitions(ludus_renderer_render_tests PRIVATE
         LUDUS_RG3_TILED_VBUFFER_NEE_LINEAR_DIRECTORY="${tiled_nee_package_directory}")
-    # RT2 reflections (tests/hybrid_reflection_tests.cpp) read the hybrid reflections template's running mean as
+    # RT2 reflections (tests/hybrid_reflection_tests.cpp tests/hybrid_indirect_diffuse_tests.cpp) read the hybrid reflections template's running mean as
     # clamped linear colour, so this copy disables its ToneMap and keeps its Accumulate node.
     set(hybrid_reflections_staged "${CMAKE_CURRENT_BINARY_DIR}/rg2-inputs/hybrid_reflections_linear")
     ludus_stage_render_graph_fixture("${CMAKE_CURRENT_SOURCE_DIR}/render_graphs/hybrid_reflections"
@@ -746,6 +746,14 @@ if(TARGET ludus_renderer_render_tests)
     cmake_path(GET rg2_hybrid_reflections_linear_RUNTIME_PACKAGE PARENT_PATH hybrid_reflections_package_directory)
     target_compile_definitions(ludus_renderer_render_tests PRIVATE
         LUDUS_RG3_HYBRID_REFLECTIONS_LINEAR_DIRECTORY="${hybrid_reflections_package_directory}")
+    set(indirect_diffuse_staged "${CMAKE_CURRENT_BINARY_DIR}/rg2-inputs/hybrid_indirect_diffuse")
+    ludus_stage_render_graph_fixture("${CMAKE_CURRENT_SOURCE_DIR}/render_graphs/hybrid_indirect_diffuse"
+        "${indirect_diffuse_staged}")
+    ludus_compile_render_graph(TARGET ludus_renderer_render_tests NAME rg2_hybrid_indirect_diffuse
+        MANIFEST "${indirect_diffuse_staged}/main.lushader.json" RUNTIME_PACKAGE)
+    cmake_path(GET rg2_hybrid_indirect_diffuse_RUNTIME_PACKAGE PARENT_PATH indirect_diffuse_package_directory)
+    target_compile_definitions(ludus_renderer_render_tests PRIVATE
+        LUDUS_RG3_HYBRID_INDIRECT_DIFFUSE_DIRECTORY="${indirect_diffuse_package_directory}")
     if(TARGET ludus-shader-worker AND NOT WIN32)
         add_test(NAME ludus_shader_reload_gpu COMMAND "${Python3_EXECUTABLE}"
             "${PROJECT_SOURCE_DIR}/tools/shader-worker/test_worker.py"

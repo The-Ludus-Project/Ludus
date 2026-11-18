@@ -55,6 +55,15 @@
     },
     {
       "kind": "graph",
+      "identity": "hybrid-indirect-diffuse",
+      "label": "Hybrid indirect diffuse — one diffuse bounce",
+      "category": "hybrid",
+      "requirements": ["native-ray-tracing"],
+      "keywords": ["diffuse", "indirect lighting", "bounce", "hybrid", "ray tracing"],
+      "description": "Rasterize first hits and shade them with authored lights and one diffuse bounce per pixel. Accumulate while the view is still and restart the mean when the scene changes. Requires native ray tracing."
+    },
+    {
+      "kind": "graph",
       "identity": "restir-di",
       "label": "ReSTIR DI — mesh emitter lighting",
       "category": "ray-traced",
