@@ -1387,9 +1387,13 @@ reports each graph's requests, shared requests and preparation seconds
 separately from frame time, and `RenderGraphProgramCacheReport` counts created
 and shared dependency sets. Reference-backend tests cover sharing, distinct
 targets, resize and rebind reuse, cancellation and in-flight retirement. A
-native pixel test compares the shared graphs with an unshared graph. No
-browser fixture draws the bilinear pass yet, so browser pixel parity remains
-open. Other renderer-owned programs keep their direct creation.
+native pixel test compares the shared graphs with an unshared graph. The
+installed-SDK consumer `tests/sdk_consumer/render_graph_bilinear.cpp` repeats
+that comparison through the public API on Metal and Vulkan and, in Chromium,
+on WebGPU (`render-graph-bilinear-browser-test.mjs`). Each run compares every
+exported byte of the shared graphs with the unshared graph on the same
+backend. It does not compare bytes across backends. Other renderer-owned
+programs keep their direct creation.
 
 Thanks to Oleksandr Drazhevskyi for separating logical resources from their
 backend objects, Sebastian Aaltonen for preparing pipeline state outside the

@@ -7533,6 +7533,18 @@ active graph and a candidate graph drew with one shared cache:
 The shared graphs' pixels equal the unshared graph's pixels. Each graph still
 creates its own scene-stage pipelines, as described above.
 
+The installed-SDK consumer `tests/sdk_consumer/render_graph_bilinear.cpp` runs
+the same three graphs through the public API. It runs natively in the macOS
+and Linux SDK jobs, under the Vulkan validation layer on Linux. In the browser
+it runs in Chromium on the SwiftShader WebGPU adapter, through
+`render-graph-bilinear-browser-test.mjs` in the "Renderer browser tests
+(baseline)" job. It fails unless the candidate joins the active graph's
+pipeline and both shared exports equal the unshared export byte for byte. One
+`bilinear graph=` log line per graph reports requests, shared requests and
+upscale prewarm and queue microseconds. The same line gives the wall time until
+the graph was drawable and the `Render` CPU time. Browser builds need the
+Linux-pinned SPIR-V validator, so the browser case has no local run.
+
 Masked color and depth fixtures, measured on 14 November 2026 on an Apple M5
 with Metal under a load average of about 17–26. The build was `macos-clang-debug`,
 with three fresh processes per fixture. The Metal driver's own shader cache was

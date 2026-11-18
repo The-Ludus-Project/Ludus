@@ -262,6 +262,9 @@ jobs:
             out/build/renderer-web-sdk/render-graph-pooling.js
             out/build/renderer-web-sdk/render-graph-pooling.wasm
             out/build/renderer-web-sdk/render-graph-pooling.html
+            out/build/renderer-web-sdk/render-graph-bilinear.js
+            out/build/renderer-web-sdk/render-graph-bilinear.wasm
+            out/build/renderer-web-sdk/render-graph-bilinear.html
           if-no-files-found: error
       - uses: actions/upload-artifact@v4
         with:
@@ -657,6 +660,9 @@ jobs:
       - name: Activate an installed RG3 runtime generation on WebGPU and compare its exported pixels
         if: matrix.suite == 'baseline'
         run: node tests/sdk_consumer/render-graph-runtime-browser-test.mjs out/renderer-web-sdk-consumer out/browser-qa/results/render-graph-runtime
+      - name: Share one managed bilinear upscale pipeline on WebGPU and compare exported pixels with the unshared pass
+        if: matrix.suite == 'baseline'
+        run: node tests/sdk_consumer/render-graph-bilinear-browser-test.mjs out/renderer-web-sdk-consumer out/browser-qa/results/render-graph-bilinear
       - name: Verify L5 renderer scaling browser pixels
         if: matrix.suite == 'scaling'
         run: node tests/sdk_consumer/renderer-scaling-browser-test.mjs out/renderer-web-sdk-consumer out/browser-qa/results/renderer-l5
