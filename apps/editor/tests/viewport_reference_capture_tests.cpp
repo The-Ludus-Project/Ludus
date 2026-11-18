@@ -33,14 +33,19 @@
 #include <ludus/graphics/renderer/static_lighting.hpp>
 #include <ludus/graphics/renderer/tone_mapping.hpp>
 
+#include <QApplication>
 #include <QByteArray>
 #include <QCheckBox>
 #include <QComboBox>
+#include <QCoreApplication>
 #include <QElapsedTimer>
 #include <QFile>
 #include <QFileInfo>
+#include <QFormLayout>
 #include <QImage>
 #include <QJsonDocument>
+#include <QLabel>
+#include <QProgressBar>
 #include <QPushButton>
 #include <QSignalSpy>
 #include <QSize>
@@ -54,6 +59,8 @@
 
 #include <catch2/catch_approx.hpp>
 #include <catch2/catch_test_macros.hpp>
+
+#include <algorithm>
 
 using namespace ludus::editor;
 using namespace ludus::foundation;
@@ -751,6 +758,110 @@ TEST_CASE("Reference capture window offers the render graph source only with a p
     CHECK(centerRays->isEnabled() == false);
     CHECK(window.findChild<QComboBox*>(QStringLiteral("referenceTraversal"))->isEnabled() == false);
     CHECK(window.findChild<QCheckBox*>(QStringLiteral("referenceCompare"))->isEnabled() == false);
+}
+
+TEST_CASE("Capture progress hides when idle, moves without a fraction before samples and fills once they are known",
+          "[editor][reference-capture]")
+{
+    constexpr int32 TARGET = 64;
+    constexpr int32 HALF = 32;
+    const CaptureProgressView idle = DescribeCaptureProgress(false, 0, TARGET);
+    CHECK(idle.IsVisible == false);
+    // Building the scene or rendering the raster side has no sample count to show yet.
+    const CaptureProgressView preparing = DescribeCaptureProgress(true, 0, TARGET);
+    CHECK(preparing.IsVisible == true);
+    CHECK(preparing.IsBusy == true);
+    const CaptureProgressView unknownTarget = DescribeCaptureProgress(true, HALF, 0);
+    CHECK(unknownTarget.IsBusy == true);
+    const CaptureProgressView tracing = DescribeCaptureProgress(true, HALF, TARGET);
+    CHECK(tracing.IsVisible == true);
+    CHECK(tracing.IsBusy == false);
+    CHECK(tracing.Maximum == TARGET);
+    CHECK(tracing.Value == HALF);
+    // A finished or stopped capture keeps what it reached; a count past the target never overflows the bar.
+    const CaptureProgressView stopped = DescribeCaptureProgress(false, HALF, TARGET);
+    CHECK(stopped.IsVisible == true);
+    CHECK(stopped.IsBusy == false);
+    CHECK(stopped.Value == HALF);
+    CHECK(DescribeCaptureProgress(false, TARGET + HALF, TARGET).Value == TARGET);
+}
+
+TEST_CASE("Reference capture window keeps its settings in a column beside the images at default and floating sizes",
+          "[editor][reference-capture][layout]")
+{
+    // The floating size a capture window takes beside the editor on a MacBook Air.
+    constexpr int32 FLOATING_WIDTH = 680;
+    constexpr int32 FLOATING_HEIGHT = 780;
+    ReferenceCaptureWindow window(nullptr);
+    window.show();
+    QWidget* settings = window.findChild<QWidget*>(QStringLiteral("referenceSettingsScroll"));
+    QWidget* images = window.findChild<QTabWidget*>(QStringLiteral("referenceImages"));
+    QLabel* graph = window.findChild<QLabel*>(QStringLiteral("referenceGraph"));
+    QPushButton* capture = window.findChild<QPushButton*>(QStringLiteral("referenceCapture"));
+    QProgressBar* progress = window.findChild<QProgressBar*>(QStringLiteral("referenceProgress"));
+    REQUIRE(settings != nullptr);
+    REQUIRE(images != nullptr);
+    REQUIRE(graph != nullptr);
+    REQUIRE(capture != nullptr);
+    REQUIRE(progress != nullptr);
+    CHECK(capture->property("visualRole").toString() == QStringLiteral("primary"));
+    // Nothing has run, so an empty bar would only take room.
+    CHECK(progress->isVisible() == false);
+    // Without a project graph the line stays short and the tooltip says why.
+    CHECK(window.GetGraphText() == QStringLiteral("None. RT1 reference only"));
+    CHECK(graph->toolTip().startsWith(QStringLiteral("This viewport has no project render graph")) == true);
+
+    const QSize defaultSize = window.size();
+    CHECK(defaultSize.width() >= window.minimumSizeHint().width());
+    CHECK(defaultSize.height() >= window.minimumSizeHint().height());
+    CHECK(window.minimumSizeHint().width() <= FLOATING_WIDTH);
+    for (const QSize size : {defaultSize, QSize(FLOATING_WIDTH, FLOATING_HEIGHT)})
+    {
+        CAPTURE(size.width(), size.height());
+        window.resize(size);
+        QCoreApplication::sendPostedEvents();
+        QApplication::processEvents();
+        const QRect column = settings->geometry();
+        const QRect preview = images->geometry();
+        // Settings lead, the images take the rest, and neither overlaps the other or the window's edge.
+        CHECK(column.right() < preview.left());
+        CHECK(preview.width() > column.width());
+        CHECK(preview.right() < window.width());
+        CHECK(preview.bottom() < window.height());
+        CHECK(column.top() == preview.top());
+        // The summary is one line under the Graph choice, never wrapped to push the form down.
+        CHECK(graph->height() < 2 * graph->fontMetrics().lineSpacing());
+        // Every field and label sits whole inside the column; the form's labels share one leading edge.
+        QWidget* content = settings->findChild<QWidget*>(QStringLiteral("referenceSettings"));
+        REQUIRE(content != nullptr);
+        CHECK(content->width() <= settings->width());
+        QList<int32> labelEdges;
+        QFormLayout* form = content->findChild<QFormLayout*>();
+        REQUIRE(form != nullptr);
+        for (int32 row = 0; row < form->rowCount(); ++row)
+        {
+            QLayoutItem* labelItemOrNull = form->itemAt(row, QFormLayout::LabelRole);
+            if (labelItemOrNull != nullptr && labelItemOrNull->widget() != nullptr &&
+                labelItemOrNull->widget()->isVisible() == true)
+            {
+                labelEdges.append(labelItemOrNull->widget()->geometry().left());
+            }
+        }
+        REQUIRE(labelEdges.isEmpty() == false);
+        CHECK(std::all_of(labelEdges.cbegin(), labelEdges.cend(), [&labelEdges](int32 edge) {
+                  return edge == labelEdges.front();
+              }) == true);
+        for (QWidget* child : content->findChildren<QWidget*>())
+        {
+            if (child->isVisible() == false || child->parentWidget() != content)
+            {
+                continue;
+            }
+            CAPTURE(child->objectName().toStdString(), child->metaObject()->className());
+            CHECK(child->geometry().left() >= 0);
+            CHECK(child->geometry().right() < content->width());
+        }
+    }
 }
 
 TEST_CASE("Reference capture window names the compared image after the render graph, not raster",
