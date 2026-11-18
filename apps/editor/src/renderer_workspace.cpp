@@ -874,9 +874,12 @@ RendererWorkspace::RendererWorkspace(const ToolingPaths& tooling, QWidget* paren
     mSourceStatus = new QLabel(sourcePage);
     mSourceStatus->setObjectName(QStringLiteral("renderGraphSourceStatus"));
     mSourceStatus->setTextFormat(Qt::PlainText);
-    // Status changes must not resize the editor; the tooltip retains the full message.
-    mSourceStatus->setWordWrap(false);
+    // Status changes must not resize the editor: the line keeps to the status row's height, breaking at a word,
+    // and the tooltip retains the full message.
+    mSourceStatus->setWordWrap(true);
+    mSourceStatus->setAlignment(Qt::AlignLeft | Qt::AlignTop);
     mSourceStatus->setSizePolicy(QSizePolicy::Ignored, QSizePolicy::Fixed);
+    mSourceStatus->setFixedHeight(mSourceStatus->fontMetrics().lineSpacing() * STATUS_VISIBLE_LINES);
 #if defined(Q_OS_WASM)
     openCodeEditor->setEnabled(false);
     chooseCodeEditor->setEnabled(false);
@@ -1049,7 +1052,7 @@ RendererWorkspace::RendererWorkspace(const ToolingPaths& tooling, QWidget* paren
     // and never moves the editor.
     statusRowLayout->addWidget(mSourceStatus, 1, Qt::AlignTop);
     statusRowLayout->addWidget(mSourceAssistance->GetStatusLabel(), 1, Qt::AlignTop);
-    statusRowLayout->addWidget(mStatusPanel, 2);
+    statusRowLayout->addWidget(mStatusPanel, 1);
     connect(mSourceAssistance, &RenderGraphShaderAssistance::StatusTextChanged, this, [this]() {
         updateChromeVisibility();
     });

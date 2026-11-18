@@ -43,7 +43,6 @@ namespace
 constexpr int32 MAX_PORTS = 8;
 constexpr int32 PAIRED_INPUT_ROLE = Qt::UserRole + 1;
 constexpr int32 MAX_SHADERS = 16;
-constexpr int32 TABLE_HEIGHT = 160;
 constexpr int32 MAX_PROPERTY_VALUE = 65535;
 constexpr int32 DIMENSION_COUNT = 3;
 constexpr int32 MAX_RAY_RECURSION = 31;
@@ -578,9 +577,10 @@ RenderGraphPipelineEditor::createTable(const QString& name, const QStringList& f
     table->setColumnCount(static_cast<int32>(fields.size()));
     table->setHorizontalHeaderLabels(fields);
     table->horizontalHeader()->setSectionResizeMode(QHeaderView::ResizeToContents);
-    // The table is as tall as its rows (at least a few), and the buttons sit right under it, instead of
-    // the table stretching into a large empty box.
-    table->setMinimumHeight(TABLE_HEIGHT);
+    // The table is as tall as its rows (at least one), and the buttons sit right under it, instead of the table
+    // holding a large empty box under a single row. An empty part shows a one-line note instead (below).
+    table->setMinimumHeight(table->horizontalHeader()->sizeHint().height() +
+                            table->verticalHeader()->defaultSectionSize() + 2 * table->frameWidth());
     table->setSizeAdjustPolicy(QAbstractScrollArea::AdjustToContents);
     table->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Preferred);
     table->horizontalHeader()->setStretchLastSection(true);
