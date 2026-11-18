@@ -6,6 +6,7 @@
 #include "internal/render_graph_pipeline.h"
 #include "internal/renderer_workspace.h"
 #include "internal/theme_colour.h"
+#include "internal/world_workspace.h"
 #include "mouse_fixture.h"
 
 #include <ludus/foundation/base/core.h>
@@ -37,9 +38,11 @@
 #include <QPlainTextEdit>
 #include <QPointingDevice>
 #include <QPushButton>
+#include <QScrollArea>
 #include <QSignalSpy>
 #include <QSpinBox>
 #include <QStandardPaths>
+#include <QTabWidget>
 #include <QTableWidget>
 #include <QTemporaryDir>
 #include <QTest>
@@ -2060,4 +2063,89 @@ TEST_CASE("scene compute nodes are authored on the canvas with Properties hidden
     RenderGraphDocument reopened;
     REQUIRE(reopened.Load(package, GetRootGraph()) == RenderGraphDocumentStatus::Ok);
     CHECK(reopened.GetDraft(GetRootGraph()) == workspace.GetDocument().GetDraft(GetRootGraph()));
+}
+
+TEST_CASE("node Properties fit the Properties dock without running past its right edge",
+          "[editor][render-graph][canvas][properties-layout]")
+{
+    // The Properties dock on a 1470-point MacBook Air display opens about this wide.
+    constexpr int32 MACBOOK_AIR_PROPERTIES_WIDTH = 300;
+    constexpr int32 DOCK_HEIGHT = 700;
+    constexpr int32 SETTLE_TIMEOUT_MILLISECONDS = 2000;
+    // A per-pixel hit buffer feeding a compute pipeline and a ray pipeline: tables, parts, options and invocation.
+    QTemporaryDir project;
+    const QDir source(QStringLiteral(LUDUS_EDITOR_PROJECT_ROOT "/tests/sdk_consumer/rg2/compute_mixed"));
+    const QString package = QDir(project.path()).filePath(QStringLiteral("graphs"));
+    WriteFile(QDir(package).filePath(GetRootGraph()), ReadFile(source.filePath(GetRootGraph())));
+    for (const QString& file : QDir(source.filePath(QStringLiteral("main_shaders"))).entryList(QDir::Files))
+    {
+        WriteFile(QDir(package).filePath(QStringLiteral("main_shaders/") + file),
+                  ReadFile(source.filePath(QStringLiteral("main_shaders/") + file)));
+    }
+    QByteArray manifest = ReadFile(source.filePath(QStringLiteral("main.lushader.json.in")));
+    manifest.replace("@RG2_TEST_PROFILES@", "[\"metal\", \"wgsl\"]");
+    WriteFile(QDir(package).filePath(QStringLiteral("main.lushader.json")), manifest);
+    RendererWorkspace workspace({});
+    workspace.SetProject(project.path(), 1);
+    REQUIRE(workspace.OpenGraph(QDir(package).filePath(GetRootGraph())) == true);
+    workspace.SetLivePreview(false);
+    QWidget dock;
+    QVBoxLayout* dockLayout = new QVBoxLayout(&dock);
+    dockLayout->setContentsMargins(0, 0, 0, 0);
+    QScrollArea* propertiesOrNull = qobject_cast<QScrollArea*>(workspace.TakeInspectorPanel(&dock));
+    REQUIRE(propertiesOrNull != nullptr);
+    QScrollArea& properties = *propertiesOrNull;
+    dockLayout->addWidget(&properties);
+    dock.show();
+    const QJsonArray nodes = GetConfiguration(workspace.GetDocument(), GetRootGraph(), GetDefaultConfiguration())
+                                 .value(QStringLiteral("nodes"))
+                                 .toArray();
+    REQUIRE(nodes.isEmpty() == false);
+    bool hasPipeline = false;
+    for (const int32 width : {WORLD_PROPERTIES_MINIMUM_WIDTH, MACBOOK_AIR_PROPERTIES_WIDTH})
+    {
+        dock.resize(width, DOCK_HEIGHT);
+        for (const QJsonValueConstRef value : nodes)
+        {
+            const QString identity = value.toObject().value(QStringLiteral("id")).toString();
+            REQUIRE(workspace.SelectNode(GetRootGraph(), GetDefaultConfiguration(), identity) == true);
+            QTabWidget* partsOrNull = properties.findChild<QTabWidget*>(QStringLiteral("renderGraphPipelineParts"));
+            hasPipeline = hasPipeline == true || partsOrNull != nullptr;
+            const int32 partCount = partsOrNull == nullptr ? 1 : partsOrNull->count();
+            for (int32 part = 0; part < partCount; ++part)
+            {
+                if (partsOrNull != nullptr)
+                {
+                    partsOrNull->setCurrentIndex(part);
+                }
+                INFO("Dock width " << width << ", node " << identity.toStdString() << ", part " << part);
+                // Let the rebuilt rows post and run their layout requests before measuring.
+                QCoreApplication::processEvents();
+                QCoreApplication::processEvents();
+                CHECK(QTest::qWaitFor(
+                          [&properties]() { return properties.widget()->width() <= properties.viewport()->width(); },
+                          SETTLE_TIMEOUT_MILLISECONDS) == true);
+                // Every control ends inside the panel; a table's cells scroll inside the table itself.
+                for (const QWidget* child : properties.widget()->findChildren<QWidget*>())
+                {
+                    bool isInsideItemView = false;
+                    for (const QWidget* ancestorOrNull = child->parentWidget(); ancestorOrNull != nullptr;
+                         ancestorOrNull = ancestorOrNull->parentWidget())
+                    {
+                        isInsideItemView = isInsideItemView == true ||
+                                           qobject_cast<const QAbstractItemView*>(ancestorOrNull) != nullptr;
+                    }
+                    if (child->isVisible() == false || isInsideItemView == true)
+                    {
+                        continue;
+                    }
+                    INFO(child->metaObject()->className() << " " << child->objectName().toStdString() << " "
+                                                          << child->property("text").toString().toStdString());
+                    CHECK(child->mapTo(properties.viewport(), QPoint(child->width(), 0)).x() <=
+                          properties.viewport()->width());
+                }
+            }
+        }
+    }
+    CHECK(hasPipeline == true);
 }

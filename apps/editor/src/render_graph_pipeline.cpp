@@ -50,7 +50,7 @@ constexpr int32 MAX_RAY_RECURSION = 31;
 constexpr int32 MAX_RAY_INTERFACE_BYTES = 4096;
 constexpr int32 AUTOMATIC_RAY_LIMIT = -1;
 /// An assigned-shader chip shows at most this many characters' width; its tooltip carries the whole program name.
-constexpr int32 SHADER_CHIP_MAX_CHARACTERS = 30;
+constexpr int32 SHADER_CHIP_MAX_CHARACTERS = 24;
 
 /// Items left to right, wrapping onto a new row when the next one would not fit, so a narrow Properties dock shows
 /// every part button instead of truncating them to "Read... Writable R...".
@@ -362,9 +362,13 @@ RenderGraphPipelineEditor::RenderGraphPipelineEditor(const QJsonObject& node, QW
                             QStringLiteral("Program")}))
 {
     QVBoxLayout* layout = new QVBoxLayout(this);
+    // The editor sits inside a form or dialog that already has margins; its own would only narrow the content.
+    layout->setContentsMargins(0, 0, 0, 0);
     QTabWidget* tabs = new QTabWidget(this);
     mTabs = tabs;
     mTabs->setObjectName(QStringLiteral("renderGraphPipelineParts"));
+    // A narrow dialog or dock scrolls the part tabs instead of growing to fit every one of them.
+    mTabs->setUsesScrollButtons(true);
     for (QTableWidget* table : {mInputs, mOutputs, mShaders})
     {
         const QString name = table->objectName();
@@ -681,7 +685,8 @@ RenderGraphPipelineEditor::createTable(const QString& name, const QStringList& f
         }
     }
     layout->addWidget(table);
-    QHBoxLayout* buttons = new QHBoxLayout;
+    // The buttons wrap under each other in a narrow dock rather than widening the panel past its edge.
+    FlowLayout* buttons = new FlowLayout(nullptr, design::SPACING_SMALL);
     QPushButton* add = new QPushButton(QStringLiteral("Add"), panel);
     QPushButton* remove = new QPushButton(QStringLiteral("Remove Selected"), panel);
     add->setObjectName(QStringLiteral("renderGraphAdd_") + name);
@@ -881,6 +886,7 @@ void RenderGraphPipelineEditor::addProperties(QFormLayout& outForm, const QStrin
             constexpr int32 WORK_ITEMS_INDEX = 2;
             QWidget* row = new QWidget(this);
             QVBoxLayout* layout = new QVBoxLayout(row);
+            layout->setContentsMargins(0, 0, 0, 0);
             QComboBox* mode = new QComboBox(row);
             mode->setObjectName(QStringLiteral("rayLaunchSizeMode"));
             mode->addItems({QStringLiteral("Match color target"), QStringLiteral("Explicit size")});
@@ -898,9 +904,14 @@ void RenderGraphPipelineEditor::addProperties(QFormLayout& outForm, const QStrin
 
             QWidget* dimensions = new QWidget(row);
             QHBoxLayout* dimensionLayout = new QHBoxLayout(dimensions);
+            // Three sizes share one row of the narrowest Properties dock, so the row adds no margins of its own.
+            dimensionLayout->setContentsMargins(0, 0, 0, 0);
+            dimensionLayout->setSpacing(design::SPACING_EXTRA_SMALL);
             for (int32 dimension = 0; dimension < DIMENSION_COUNT; ++dimension)
             {
                 QSpinBox* control = new QSpinBox(dimensions);
+                // A vector reads as plain number fields (typed, arrow keys or the wheel), so three fit one row.
+                control->setButtonSymbols(QAbstractSpinBox::NoButtons);
                 control->setObjectName(QStringLiteral("rayLaunchDimension%1").arg(dimension));
                 control->setRange(1, MAX_PROPERTY_VALUE);
                 control->setValue(value.isArray() == true ? value.toArray().at(dimension).toInt() : 1);
@@ -985,9 +996,13 @@ void RenderGraphPipelineEditor::addProperties(QFormLayout& outForm, const QStrin
         {
             QWidget* row = new QWidget(this);
             QHBoxLayout* layout = new QHBoxLayout(row);
+            layout->setContentsMargins(0, 0, 0, 0);
+            layout->setSpacing(design::SPACING_EXTRA_SMALL);
             for (int32 dimension = 0; dimension < DIMENSION_COUNT; ++dimension)
             {
                 QSpinBox* control = new QSpinBox(row);
+                // A vector reads as plain number fields (typed, arrow keys or the wheel), so three fit one row.
+                control->setButtonSymbols(QAbstractSpinBox::NoButtons);
                 control->setRange(1, MAX_PROPERTY_VALUE);
                 control->setValue(value.toArray().at(dimension).toInt());
                 connect(control, &QSpinBox::valueChanged, this, [this, name, key, dimension](int32 number) {

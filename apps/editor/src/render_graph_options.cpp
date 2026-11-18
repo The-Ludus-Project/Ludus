@@ -6,7 +6,7 @@
 
 #include <QComboBox>
 #include <QFormLayout>
-#include <QHBoxLayout>
+#include <QGridLayout>
 #include <QHeaderView>
 #include <QJsonDocument>
 #include <QLabel>
@@ -462,14 +462,18 @@ RenderGraphOptionsEditor::RenderGraphOptionsEditor(const QJsonArray& declaration
             addDeclaration(option.toObject());
         }
         layout->addWidget(mTableOrNull);
-        QHBoxLayout* actions = new QHBoxLayout;
-        QPushButton* add = new QPushButton(QStringLiteral("Add Option"), this);
-        QPushButton* remove = new QPushButton(QStringLiteral("Remove Option"), this);
+        // Row edits sit together under the table and Apply on its own row, so the actions fit a narrow dock
+        // instead of widening the panel past its edge.
+        QGridLayout* actions = new QGridLayout;
+        QPushButton* add = new QPushButton(QStringLiteral("Add"), this);
+        add->setToolTip(QStringLiteral("Add a public option"));
+        QPushButton* remove = new QPushButton(QStringLiteral("Remove"), this);
+        remove->setToolTip(QStringLiteral("Remove the selected public option"));
         QPushButton* apply = new QPushButton(QStringLiteral("Apply Options"), this);
         apply->setObjectName(QStringLiteral("renderGraphApplyOptions"));
-        actions->addWidget(add);
-        actions->addWidget(remove);
-        actions->addWidget(apply);
+        actions->addWidget(add, 0, 0);
+        actions->addWidget(remove, 0, 1);
+        actions->addWidget(apply, 1, 0, 1, 2);
         layout->addLayout(actions);
         connect(add, &QPushButton::clicked, this, [this]() {
             if (mTableOrNull->rowCount() < MAX_OPTIONS)
