@@ -553,6 +553,70 @@ TEST_CASE("glTF extension policy: required unsupported fails, optional is report
     CHECK(HasCode(versionLog, codes::UNSUPPORTED_FEATURE));
 }
 
+TEST_CASE("glTF unlit fallback explains the lighting change and re-export in World preview",
+          "[scene_cook][gltf][unlit]")
+{
+    ScratchDirectory scratch;
+    const std::string entry = scratch.GetPath("scene.gltf");
+    constexpr std::string_view UNLIT_MATERIAL =
+        R"("materials":[{"pbrMetallicRoughness":{"baseColorFactor":[1,0.5,0,1],"metallicFactor":0.5},)"
+        R"("extensions":{"KHR_materials_unlit":{}}}])";
+    const std::string optional =
+        std::string(R"(,"extensionsUsed":["KHR_materials_unlit"],)") + std::string(UNLIT_MATERIAL);
+    WriteFile(entry, MakeTriangle(optional, {}, R"(,"material":0)"));
+
+    constexpr std::string_view FALLBACK =
+        "materials[0]: KHR_materials_unlit was skipped. The metallic-roughness fallback responds to scene lighting.";
+    constexpr std::string_view REPAIR = "Re-export with a metallic-roughness material.";
+    BestEffortOptions dryRun;
+    dryRun.IsDryRun = true;
+    BestEffortResult plan;
+    CookError error;
+    REQUIRE(ImportGltfBestEffort(entry, dryRun, plan, error) == true);
+    const std::string_view report(reinterpret_cast<const char*>(plan.Report.GetData()), plan.Report.GetSize());
+    CHECK(report.find(codes::MATERIAL_APPROXIMATED) != std::string_view::npos);
+    CHECK(report.find(FALLBACK) != std::string_view::npos);
+    CHECK(report.find(REPAIR) != std::string_view::npos);
+
+    EditorSceneRequest request;
+    request.Operation = EditorSceneOperation::PreviewImport;
+    request.Source = scratch.Path;
+    AssetOptions previewOptions;
+    previewOptions.SourceEntry = "scene.gltf";
+    EditorSceneResult preview;
+    AssetError previewError;
+    REQUIRE(OperateEditorScene(request, previewOptions, preview, previewError) == true);
+    const std::string_view previewText(reinterpret_cast<const char*>(preview.Response.GetData()),
+                                       preview.Response.GetSize());
+    CHECK(previewText.find(R"("code":"MATERIAL_APPROXIMATED")") != std::string_view::npos);
+    CHECK(previewText.find(R"("severity":"warning")") != std::string_view::npos);
+    CHECK(previewText.find(FALLBACK) != std::string_view::npos);
+    CHECK(previewText.find(REPAIR) != std::string_view::npos);
+
+    BestEffortResult cooked;
+    REQUIRE(ImportGltfBestEffort(entry, {}, cooked, error) == true);
+    const std::string_view cookedReport(reinterpret_cast<const char*>(cooked.Report.GetData()),
+                                        cooked.Report.GetSize());
+    CHECK(cookedReport.find(FALLBACK) != std::string_view::npos);
+    CHECK(cookedReport.find(REPAIR) != std::string_view::npos);
+    ludus::resources::SceneDefinition decoded;
+    REQUIRE(ludus::resources::SceneDefinition::Decode(cooked.Bundle.GetData(), cooked.Bundle.GetSize(), decoded) ==
+            ludus::resources::Status::Ok);
+    REQUIRE(decoded.Materials.GetSize() == 1);
+    CHECK(decoded.Materials[0].Metallic == 0.5F);
+    CHECK(decoded.Materials[0].Roughness == 1.0F);
+
+    const std::string required = optional + R"(,"extensionsRequired":["KHR_materials_unlit"])";
+    WriteFile(entry, MakeTriangle(required, {}, R"(,"material":0)"));
+    BestEffortResult rejected;
+    CHECK(ImportGltfBestEffort(entry, {}, rejected, error) == false);
+    CHECK(rejected.Bundle.IsEmpty() == true);
+    const std::string_view rejectedReport(reinterpret_cast<const char*>(rejected.Report.GetData()),
+                                          rejected.Report.GetSize());
+    CHECK(rejectedReport.find(codes::EXTENSION_REQUIRED) != std::string_view::npos);
+    CHECK(rejectedReport.find(FALLBACK) == std::string_view::npos);
+}
+
 TEST_CASE("Optional glTF iridescence cooks the base material and explains the fallback", "[scene_cook][gltf]")
 {
     ScratchDirectory scratch;

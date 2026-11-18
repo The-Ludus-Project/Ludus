@@ -150,6 +150,14 @@ retains the base metallic-roughness material, so both the viewport and a game
 that loads the bundle show the base appearance without the film's angle-dependent
 colour. Review that appearance before using the cooked asset.
 
+An optional [`KHR_materials_unlit`](https://github.com/KhronosGroup/glTF/tree/main/extensions/2.0/Khronos/KHR_materials_unlit)
+material produces `MATERIAL_APPROXIMATED` with the source material index. The
+cooked metallic-roughness material responds to scene lighting in the viewport
+and in games that load the bundle. For a supported export, use a
+metallic-roughness material in the source scene (for example, Principled BSDF
+in Blender) and re-export. An asset that requires the unlit extension fails
+with `EXTENSION_REQUIRED`.
+
 ### Export static 3D art for Ludus
 
 Prefer glTF 2.0 for static 3D art from a modelling tool. It carries the scene
@@ -165,7 +173,13 @@ axis and unit conventions. Ludus cooks those inputs into its LUSCN scene bundle.
    Disable Draco or meshopt compression for the handoff. If the asset depends
    on a rig or morph target for its shape, bake the desired pose to a static
    mesh before export.
-3. Select the file in World **Import scene…** and inspect the preview. From
+3. To check the export independently, run the [Khronos glTF Validator](https://github.com/KhronosGroup/glTF-Validator)
+   on the GLB or the glTF entry with its resources. Open the same export in the
+   [Khronos glTF Sample Viewer](https://github.khronos.org/glTF-Sample-Viewer-Release/)
+   and check placement, textures and material appearance. The validator checks
+   glTF conformance. Use the Ludus report to check support for this import
+   profile.
+4. Select the file in World **Import scene…** and inspect the preview. From
    the command line, run `ludus-cook gltf path/to/scene.glb --dry-run` to check
    geometry and planned counts in the JSON report printed to standard output.
    A full import is needed to check texture decoding. If the report contains
@@ -175,7 +189,10 @@ axis and unit conventions. Ludus cooks those inputs into its LUSCN scene bundle.
 
 This workflow applies the exchange-format argument in Juan Linietsky's
 [Why we should all support glTF 2.0 as THE standard asset exchange format for game engines](https://godotengine.org/article/we-should-all-use-gltf-20-export-3d-assets-game-engines/)
-(Godot Engine, August 2017) to Ludus's static import profile.
+(Godot Engine, August 2017) to Ludus's static import profile. The independent
+viewer check follows Don McCurdy's
+[*State of glTF 2.0 for WebVR Devs*, Testing](https://gist.github.com/donmccurdy/de7ff6c44ecd76fddf1ecad170a114a8#testing)
+(September 2017).
 
 ## Wavefront OBJ/MTL profile (`obj-best-effort-v1`)
 
