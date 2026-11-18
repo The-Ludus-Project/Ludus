@@ -351,6 +351,14 @@ class WindowTests(unittest.TestCase):
                 observed["copy_label"] = str(window.copy_button.cget("text"))
                 observed["log_height"] = int(window.log.cget("height"))
                 observed["icons"] = [icon.status for icon, _label, _duration in window.step_rows]
+                window.window.update()
+                top = window.window.winfo_rooty()
+                observed["window_height"] = window.window.winfo_height()
+                observed["footer_bottoms"] = [button.winfo_rooty() + button.winfo_height() - top
+                                              for button in (window.copy_button, window.cancel_button)]
+                observed["outcome_visible"] = (window.outcome_label.winfo_rooty() + window.outcome_label.winfo_height()
+                                               <= window.scroll.canvas.winfo_rooty()
+                                               + window.scroll.canvas.winfo_height())
                 window.copy_log()
                 observed["clipboard"] = window.window.clipboard_get()
                 if log_path is not None:
@@ -376,6 +384,18 @@ class WindowTests(unittest.TestCase):
         # A skipped step says so instead of showing a near-zero time.
         self.assertEqual(observed["durations"][1], init_progress.UP_TO_DATE_LABEL)
         self.assertNotEqual(observed["durations"][0], init_progress.UP_TO_DATE_LABEL)
+
+    def test_short_screen_keeps_the_footer_and_outcome_visible(self):
+        # Shorter than the finished window, as on a MacBook Air with the Dock shown.
+        usable = 420
+        for outcome in ("pass", "fail"):
+            with self.subTest(outcome=outcome), \
+                    patch.object(init_window.init_theme, "usable_screen_area", return_value=(0, usable)):
+                _code, _window, observed = self.run_window(outcome)
+                self.assertLessEqual(observed["window_height"], usable)
+                for bottom in observed["footer_bottoms"]:
+                    self.assertLessEqual(bottom, observed["window_height"])
+                self.assertTrue(observed["outcome_visible"])
 
     def test_failure_shows_error_and_offers_retry(self):
         code, window, observed = self.run_window("fail")

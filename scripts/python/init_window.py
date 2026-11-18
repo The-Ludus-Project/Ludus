@@ -189,11 +189,12 @@ class SetupWindow:
         self.theme = init_theme.Theme(self.window, ttk)
         self.theme.apply_window_icon(self.window)
         self._build(title)
-        init_theme.fit_minimum_size(self.window)
+        init_theme.fit_to_screen(self.window, self.theme.scale)
+        self.fitted_height = self.scroll.content.winfo_reqheight()
         if geometry:
             self.window.geometry(geometry)
         else:
-            init_theme.centre_window(self.window)
+            init_theme.centre_window(self.window, self.theme.scale)
         self.window.protocol("WM_DELETE_WINDOW", self.request_close)
         self.window.bind("<Escape>", lambda _event: self.request_close())
         self.window.bind("<Return>", lambda _event: self.activate_default())
@@ -213,9 +214,14 @@ class SetupWindow:
         build_header(ttk, self.window, theme, "", "", title_variable=self.heading,
                      subtitle_variable=self.subtitle).grid(row=0, column=0, sticky="ew")
 
-        panel = ttk.Frame(self.window, style="Workspace.TFrame",
+        # The status, steps, outcome and log scroll on a short screen, so the Copy output and Close footer stays put.
+        self.scroll = init_theme.ScrollArea(tk, ttk, self.window, theme)
+        self.scroll.grid(row=1, column=0, sticky="nsew")
+        self.scroll.content.columnconfigure(0, weight=1)
+        self.scroll.content.rowconfigure(0, weight=1)
+        panel = ttk.Frame(self.scroll.content, style="Workspace.TFrame",
                           padding=(space(init_theme.SPACE_EXTRA_LARGE), space(init_theme.SPACE_LARGE)))
-        panel.grid(row=1, column=0, sticky="nsew")
+        panel.grid(row=0, column=0, sticky="nsew")
         panel.columnconfigure(0, weight=1)
         self.panel = panel
         card_padding = (space(init_theme.SPACE_LARGE), space(init_theme.SPACE_MEDIUM))
@@ -521,6 +527,19 @@ class SetupWindow:
             self.note_label.grid()
         else:
             self.note_label.grid_remove()
+        self.fit_to_content()
+
+    def fit_to_content(self) -> None:
+        """Resize the window when its content asks for a different height: the outcome banner, a note or the log.
+
+        The window grows to the content's height but never past the usable screen; beyond that the content
+        scrolls and the footer stays visible.
+        """
+        self.window.update_idletasks()
+        height = self.scroll.content.winfo_reqheight()
+        if height != self.fitted_height:
+            self.fitted_height = height
+            init_theme.fit_to_screen(self.window, self.theme.scale)
 
     def _finish(self, exit_code: int | None) -> None:
         now = self.clock()
@@ -566,6 +585,9 @@ class SetupWindow:
             self.outcome_label.grid()
         self.note_label.grid_remove()
         self._refresh()
+        if self.outcome.get():
+            # On a short screen the summary may sit below the fold; bring it into view.
+            self.window.after_idle(lambda: self.scroll.show(self.outcome_label))
         self.cancel_button.configure(text="Close", state="normal", command=self.window.quit,
                                      style="Primary.TButton" if outcome == init_progress.DONE else "TButton")
         if outcome != init_progress.DONE:
@@ -623,6 +645,7 @@ class SetupWindow:
         else:
             self.log_frame.grid_remove()
             self.details_button.configure(text="Show output")
+        self.fit_to_content()
 
     def copy_log(self) -> None:
         """Copy the output; after a failure copy a report with the step, hint, log path and last lines."""

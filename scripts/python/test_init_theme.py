@@ -295,6 +295,42 @@ class ThemeWindowTests(unittest.TestCase):
         finally:
             root.destroy()
 
+    def test_macos_windows_fit_between_the_menu_bar_and_the_dock(self):
+        import tkinter as tk
+
+        root = init_theme.create_root(tk)
+        try:
+            menu_bar, visible = 37, 380
+            tall = tk.Frame(root, width=200, height=root.winfo_screenheight() * 2)
+            tall.grid()
+            with patch.object(init_theme, "macos_visible_frame", return_value=(float(menu_bar), float(visible))), \
+                    patch.object(init_theme.platform, "system", return_value="Darwin"):
+                top, usable = init_theme.usable_screen_area(root)
+                init_theme.fit_to_screen(root)
+                init_theme.centre_window(root)
+            root.update()
+            self.assertEqual(top, menu_bar)
+            self.assertEqual(usable, visible - init_theme.WINDOW_FRAME_ALLOWANCE_POINTS)
+            self.assertLessEqual(root.winfo_height(), usable)
+            # Centred in the free area: below the menu bar, and its bottom (title bar included) above the Dock.
+            self.assertGreaterEqual(root.winfo_y(), menu_bar)
+            self.assertLessEqual(root.winfo_y() + root.winfo_height() + init_theme.WINDOW_FRAME_ALLOWANCE_POINTS,
+                                 menu_bar + visible)
+        finally:
+            root.destroy()
+
+    def test_unreadable_macos_frame_falls_back_to_the_screen(self):
+        import tkinter as tk
+
+        root = init_theme.create_root(tk)
+        try:
+            with patch.object(init_theme, "macos_visible_frame", return_value=None):
+                top, usable = init_theme.usable_screen_area(root, system="Darwin")
+            self.assertEqual(top, 0)
+            self.assertLess(usable, root.winfo_screenheight())
+        finally:
+            root.destroy()
+
     def test_windows_fit_the_usable_screen_height(self):
         import tkinter as tk
 

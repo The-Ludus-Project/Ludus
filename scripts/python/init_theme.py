@@ -55,7 +55,8 @@ Icons
     the display scale because Tk's own indicator is an X on some platforms.
 
 Size
-    A window is never taller than its screen's usable height; the option
+    A window is never taller than its screen's usable height (on macOS the
+    area the menu bar and Dock leave free, read from AppKit); the option
     selector scrolls its options so the header and the Cancel and Initialize
     buttons stay on screen.
 """
@@ -931,6 +932,8 @@ class ScrollArea:
 
     The area asks for its content's whole size, so it costs nothing on a screen with room. The scroll bar floats
     over the right edge (the content's own margin) instead of taking width, so showing it never rewraps text.
+    When the area is taller than its content, the content is stretched to fill it, so rows with grid weight (the
+    progress window's log) still take the extra height. ``fit_to_screen`` refreshes every area of its window.
     """
 
     def __init__(self, tk, ttk, parent, theme: Theme, surface: str = WORKSPACE_SURFACE):
@@ -952,6 +955,7 @@ class ScrollArea:
         self.frame.bind("<Enter>", lambda _event: self._bind_wheel(True), add="+")
         self.frame.bind("<Leave>", lambda _event: self._bind_wheel(False), add="+")
         self.frame.bind("<Destroy>", lambda _event: self._bind_wheel(False), add="+")
+        self.canvas.winfo_toplevel().__dict__.setdefault("_ludus_scroll_areas", []).append(self)
 
     def grid(self, **options) -> None:
         self.frame.grid(**options)
@@ -964,9 +968,17 @@ class ScrollArea:
         self.canvas.itemconfigure(self._item, width=event.width)
         self._update()
 
+    def refresh(self) -> None:
+        """Follow a change in the content's requested size, which Tk reports to no event once it fills the area."""
+        self._update()
+
     def _update(self) -> None:
         width, height = self.content.winfo_reqwidth(), self.content.winfo_reqheight()
-        self.canvas.configure(width=width, height=height, scrollregion=(0, 0, width, height))
+        visible = self.canvas.winfo_height()
+        filled = max(height, visible) if visible > 1 else height
+        self.canvas.configure(width=width, height=height, scrollregion=(0, 0, width, filled))
+        if int(float(self.canvas.itemcget(self._item, "height") or 0)) != filled:
+            self.canvas.itemconfigure(self._item, height=filled)
         if self.is_scrollable:
             self.scrollbar.place(in_=self.canvas, relx=1.0, rely=0.0, relheight=1.0, anchor="ne")
         else:
@@ -1007,36 +1019,109 @@ class ScrollArea:
             self.canvas.yview_moveto(-(-(bottom - self.canvas.winfo_height()) // step) * step / total)
 
 
-def usable_screen_height(window, scale: float = 1.0) -> int:
-    """Height a window's content may take on its screen, leaving room for the title bar and system bars.
+class _Point(ctypes.Structure):
+    _fields_ = [("x", ctypes.c_double), ("y", ctypes.c_double)]
 
-    On macOS Tk's maximum size already excludes the menu bar and the Dock; elsewhere the screen fraction keeps
-    a taskbar clear.
+
+class _Size(ctypes.Structure):
+    _fields_ = [("width", ctypes.c_double), ("height", ctypes.c_double)]
+
+
+class _Rectangle(ctypes.Structure):
+    _fields_ = [("origin", _Point), ("size", _Size)]
+
+
+def macos_visible_frame() -> tuple[float, float] | None:
+    """Top and height, in points from the top of the main screen, of the area the menu bar and Dock leave free.
+
+    Read from ``[[NSScreen mainScreen] visibleFrame]`` through the Objective-C runtime, without PyObjC. Tk's
+    screen height and maximum window size both include the menu bar and the Dock, so a window sized or centred
+    from them can sit behind the Dock. Returns None when the frame cannot be read.
     """
+    try:
+        library = ctypes.util.find_library("objc")
+        if not library:
+            return None
+        objc = ctypes.cdll.LoadLibrary(library)
+        ctypes.cdll.LoadLibrary("/System/Library/Frameworks/AppKit.framework/AppKit")
+        objc.objc_getClass.restype = ctypes.c_void_p
+        objc.objc_getClass.argtypes = [ctypes.c_char_p]
+        objc.sel_registerName.restype = ctypes.c_void_p
+        objc.sel_registerName.argtypes = [ctypes.c_char_p]
+        send = ctypes.CFUNCTYPE(ctypes.c_void_p, ctypes.c_void_p, ctypes.c_void_p)(
+            ctypes.cast(objc.objc_msgSend, ctypes.c_void_p).value)
+        # A 32-byte struct comes back in registers on arm64 and through memory (the _stret entry) on x86-64.
+        rectangle_entry = objc.objc_msgSend if platform.machine() == "arm64" else objc.objc_msgSend_stret
+        send_rectangle = ctypes.CFUNCTYPE(_Rectangle, ctypes.c_void_p, ctypes.c_void_p)(
+            ctypes.cast(rectangle_entry, ctypes.c_void_p).value)
+        screen = send(objc.objc_getClass(b"NSScreen"), objc.sel_registerName(b"mainScreen"))
+        if not screen:
+            return None
+        whole = send_rectangle(screen, objc.sel_registerName(b"frame"))
+        visible = send_rectangle(screen, objc.sel_registerName(b"visibleFrame"))
+    except Exception:  # noqa: BLE001 - no AppKit, or an unexpected runtime.
+        return None
+    if visible.size.height <= 0 or whole.size.height <= 0:
+        return None
+    # AppKit measures up from the bottom of the screen; Tk measures down from the top.
+    top = whole.size.height - (visible.origin.y - whole.origin.y + visible.size.height)
+    return max(0.0, top), visible.size.height
+
+
+def usable_screen_area(window, scale: float = 1.0, *, system: str | None = None) -> tuple[int, int]:
+    """Top and height of the screen area a window may take, with room left for its title bar.
+
+    On macOS this is the area the menu bar and Dock leave free. Elsewhere it is Tk's maximum window size, at most
+    a fraction of the screen so a taskbar stays clear.
+    """
+    system = system or platform.system()
+    frame = int(round(WINDOW_FRAME_ALLOWANCE_POINTS * scale))
+    visible = macos_visible_frame() if system == "Darwin" else None
+    if visible is not None:
+        top, height = visible
+        return int(top), max(1, int(height) - frame)
     screen = window.winfo_screenheight()
     try:
         maximum = int(window.wm_maxsize()[1])
     except Exception:  # noqa: BLE001 - a Tk without a window manager answer.
         maximum = screen
-    frame = int(round(WINDOW_FRAME_ALLOWANCE_POINTS * scale))
-    return max(1, int(min(maximum, screen * USABLE_SCREEN_FRACTION)) - frame)
+    return 0, max(1, int(min(maximum, screen * USABLE_SCREEN_FRACTION)) - frame)
+
+
+def usable_screen_height(window, scale: float = 1.0) -> int:
+    """Height a window's content may take on its screen; see ``usable_screen_area``."""
+    return usable_screen_area(window, scale)[1]
 
 
 def fit_to_screen(window, scale: float = 1.0) -> None:
-    """Size ``window`` to its content but never taller than its screen; a ``ScrollArea`` takes up the difference."""
+    """Size ``window`` to its content but never taller than its screen; a ``ScrollArea`` takes up the difference.
+
+    A window that would now reach past the bottom of the usable area moves up so its footer stays on screen.
+    """
+    window.update_idletasks()
+    areas = [area for area in window.__dict__.get("_ludus_scroll_areas", []) if area.frame.winfo_exists()]
+    window.__dict__["_ludus_scroll_areas"] = areas
+    for area in areas:
+        area.refresh()
     window.update_idletasks()
     width, height = window.winfo_reqwidth(), min(window.winfo_reqheight(), usable_screen_height(window, scale))
     minimum = min(height, int(round(MINIMUM_WINDOW_HEIGHT_POINTS * scale)))
     window.minsize(width, minimum)
-    window.geometry(f"{width}x{height}")
+    top, usable = usable_screen_area(window, scale)
+    y = window.winfo_y()
+    if window.winfo_ismapped() and y + height > top + usable:
+        window.geometry(f"{width}x{height}+{window.winfo_x()}+{max(top, top + usable - height)}")
+    else:
+        window.geometry(f"{width}x{height}")
 
 
 def centre_window(window, scale: float = 1.0) -> None:
-    """Place ``window`` in the middle of its screen at its requested size, or the screen's usable height."""
+    """Centre ``window`` in the usable screen area at its requested size, or that area's height."""
     window.update_idletasks()
-    width, height = window.winfo_reqwidth(), min(window.winfo_reqheight(), usable_screen_height(window, scale))
+    top, usable = usable_screen_area(window, scale)
+    width, height = window.winfo_reqwidth(), min(window.winfo_reqheight(), usable)
     x = max(0, (window.winfo_screenwidth() - width) // 2)
-    y = max(0, (window.winfo_screenheight() - height) // 2)
+    y = top + max(0, (usable - height) // 2)
     window.geometry(f"+{x}+{y}")
 
 
