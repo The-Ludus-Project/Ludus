@@ -1564,6 +1564,14 @@ if(LUDUS_BUILD_TESTS AND NOT EMSCRIPTEN)
         set(native_mis_saved_profiles "${LUDUS_DEFAULT_RENDER_GRAPH_PROFILES}")
         # Preserve the editor host's Metal/WGSL CPU interface identity; transport executes on Metal.
         set(LUDUS_DEFAULT_RENDER_GRAPH_PROFILES "[\"metal\", \"wgsl\"]")
+        set(editor_diffuse_source "${PROJECT_SOURCE_DIR}/modules/graphics/renderer/render_graphs/hybrid_indirect_diffuse")
+        set(editor_diffuse_staged "${CMAKE_CURRENT_BINARY_DIR}/hybrid-indirect-diffuse-inputs")
+        ludus_stage_render_graph_fixture("${editor_diffuse_source}" "${editor_diffuse_staged}")
+        ludus_compile_render_graph(TARGET ludus_editor_tests NAME editor_indirect_diffuse
+            MANIFEST "${editor_diffuse_staged}/main.lushader.json" RUNTIME_PACKAGE)
+        target_compile_definitions(ludus_editor_tests PRIVATE
+            LUDUS_EDITOR_INDIRECT_DIFFUSE_PACKAGE="${editor_indirect_diffuse_RUNTIME_PACKAGE}")
+        target_include_directories(ludus_editor_tests PRIVATE "${PROJECT_SOURCE_DIR}/tests/sdk_consumer")
         foreach(shape IN ITEMS LINEAR TILED)
             set(mis_source "${PROJECT_SOURCE_DIR}/modules/graphics/renderer/render_graphs/veach_guibas_mis")
             set(mis_staged "${CMAKE_CURRENT_BINARY_DIR}/native-mis-inputs/${shape}")

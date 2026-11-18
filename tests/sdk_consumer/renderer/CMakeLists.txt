@@ -225,3 +225,40 @@ if(NOT EMSCRIPTEN)
     ludus_compile_render_graph(TARGET ludus_sdk_forward_lit_consumer NAME forward_lit
         MANIFEST "${forward_staged}/main.lushader.json" RUNTIME_PACKAGE)
 endif()
+
+# Cook the same RT2 template from the SDK's installed sources and run it across World snapshot edits.
+if(NOT EMSCRIPTEN AND NOT WIN32)
+    set(diffuse_source "${Ludus_DIR}/render_graph/templates/hybrid_indirect_diffuse")
+    set(diffuse_staged "${CMAKE_CURRENT_BINARY_DIR}/hybrid_indirect_diffuse_source")
+    foreach(file main.lurender.json library.lurender.json main_shaders/geometry.slang main_shaders/color.slang
+            main_shaders/depth.slang main_shaders/shade.slang main_shaders/closest.slang main_shaders/miss.slang
+            main_shaders/payload.slang)
+        configure_file("${diffuse_source}/${file}" "${diffuse_staged}/${file}" COPYONLY)
+    endforeach()
+    if(APPLE)
+        set(LUDUS_DEFAULT_RENDER_GRAPH_PROFILES "[\"metal\"]")
+    else()
+        set(LUDUS_DEFAULT_RENDER_GRAPH_PROFILES "[\"spirv\"]")
+    endif()
+    configure_file("${diffuse_source}/main.lushader.json.in"
+        "${diffuse_staged}/main.lushader.json" @ONLY)
+    add_executable(ludus_sdk_hybrid_indirect_diffuse_consumer ../hybrid_diffuse.cpp)
+    target_link_libraries(ludus_sdk_hybrid_indirect_diffuse_consumer
+        PRIVATE Ludus::GraphicsRenderer Ludus::FoundationTime Ludus::FoundationThreading)
+    target_compile_options(ludus_sdk_hybrid_indirect_diffuse_consumer PRIVATE -Wall -Wextra -Wpedantic -Werror -fno-exceptions)
+    ludus_compile_renderer_shaders(TARGET ludus_sdk_hybrid_indirect_diffuse_consumer SHADERS renderer_composite)
+    ludus_compile_render_graph(TARGET ludus_sdk_hybrid_indirect_diffuse_consumer NAME hybrid_indirect_diffuse
+        MANIFEST "${diffuse_staged}/main.lushader.json" RUNTIME_PACKAGE)
+    set(diffuse_embedded "${rg3_embedded}/hybrid_indirect_diffuse_package.h")
+    add_custom_command(OUTPUT "${diffuse_embedded}"
+        COMMAND "${CMAKE_COMMAND}" "-DINPUT=${hybrid_indirect_diffuse_RUNTIME_PACKAGE}"
+            "-DOUTPUT=${diffuse_embedded}" -DNAME=HYBRID_INDIRECT_DIFFUSE_PACKAGE
+            -P "${CMAKE_CURRENT_SOURCE_DIR}/embed_bytes.cmake"
+        DEPENDS "${hybrid_indirect_diffuse_RUNTIME_PACKAGE}" "${CMAKE_CURRENT_SOURCE_DIR}/embed_bytes.cmake"
+        VERBATIM)
+    target_sources(ludus_sdk_hybrid_indirect_diffuse_consumer PRIVATE "${diffuse_embedded}")
+    target_include_directories(ludus_sdk_hybrid_indirect_diffuse_consumer PRIVATE "${rg3_embedded}")
+    enable_testing()
+    add_test(NAME ludus_sdk_hybrid_indirect_diffuse_consumer COMMAND ludus_sdk_hybrid_indirect_diffuse_consumer)
+    set_tests_properties(ludus_sdk_hybrid_indirect_diffuse_consumer PROPERTIES SKIP_RETURN_CODE 77 TIMEOUT 210)
+endif()

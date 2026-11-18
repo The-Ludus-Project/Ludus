@@ -637,7 +637,8 @@ def build_parser() -> argparse.ArgumentParser:
     new_graph.add_argument("destination")
     new_graph.add_argument("--template", choices=("raster", "forward-lit", "restir-di", "visibility-buffer",
                                                    "visibility-secondary-rays", "hybrid-shadows", "hybrid-reflections",
-                                                   "tiled-vbuffer-nee", "compute-ray-tracing", "simple-compute-ray-tracing", "veach-guibas-mis", "line-sampling",
+                                                   "hybrid-indirect-diffuse", "tiled-vbuffer-nee", "compute-ray-tracing",
+                                                   "simple-compute-ray-tracing", "veach-guibas-mis", "line-sampling",
                                                    "ris-projected-solid-angle", "salesin-jarosz-lines",
                                                    "polygonal-light-sampling", "slice-sampling-luminaire", "rough-pair-slice",
                                                    "steinberg-plt", "steinberg-physical-optics", "wave-tracing",

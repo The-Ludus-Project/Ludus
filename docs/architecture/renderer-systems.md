@@ -3875,9 +3875,68 @@ state. Hybrid reflections is the route that shows offscreen geometry.
 The timings come from the opt-in `[.benchmark][hybrid-reflections]` case. The shade
 pass's GPU time varied between the two runs with the device clock.
 
+#### Bounded one-bounce indirect diffuse
+
+The [hybrid indirect diffuse graph](../development/render-graph-authoring.md#trace-one-diffuse-bounce)
+estimates the first diffuse interreflection from raster first hits. At the first
+surface it adds one next-event estimate of direct light. At a cosine-weighted
+secondary hit it estimates the next light connection with the diffuse lobe,
+then weights that estimate by the receiver's diffuse BRDF times π. The effect
+uses up to one surface and two visibility queries per pixel. Accumulate shares
+the shade dispatch and retains a fixed-view scene-linear mean. An accepted
+scene or view update resets the sample count and its history. An accumulation
+readback becomes available when the drawable revision produces a completed
+frame. Until then, a completed display image can retain its previous revision.
+
+The `[hybrid-indirect-diffuse]` fixture uses a fixed orthographic camera, a neutral
+diffuse receiver, an offscreen colored reflector and a one-sided mesh emitter
+facing the reflector. A black blocker moves between them. The emitter faces away
+from the receiver, so the RT1 direct and emission channels are zero at the
+probes. The RT1 CPU oracle and GPU compute evaluate two scattering events, and
+the test compares their one-bounce indirect output with RT2's raw first sample
+and running mean. An emitter-only edit comes before the blocker edit. The test
+submits an old-revision frame before staging each edit, checks the output revision
+and accumulation boundary, and compares each new checkpoint with a fresh graph
+at that revision. It reports error over changed and stable receiver pixels and
+the first checkpoint to reach the declared RMS tolerance.
+
+On Apple M5 with Metal, at 96 × 64 and center rays, the 256-sample CPU oracle
+and the 1024-sample GPU RT1 capture differed by at most 1.1e-4 in mean signed
+red radiance. The raw hybrid frames had RMS errors of 0.061–0.245, and the
+256-frame running means had RMS errors of 0.0043–0.0173 against GPU RT1.
+Changed-region RMS fell to 0.0177 after the emitter edit and 0.0195 after the
+occluder edit at frame 256, within the declared 0.02 tolerance. Stable-region
+RMS was 0.0067 and 0.0111. The fresh graph reproduced the sampled checkpoints
+exactly. The previous output revision remained available until the first new
+frame, when the new history held one sample per pixel.
+
+The running mean uses 196,608 bytes at that extent. Over three 21-frame
+measurements, emitter edit to drawable publication took 3.23–4.11 ms at the
+median and 6.15–12.75 ms at p95, including preparation and polling. The fused
+ray shade and reconstruction took 0.15–0.19 ms median and 0.25–0.29 ms p95 in
+GPU timestamps. ForceRaster rendered the same inputs using the default raster
+graph. Automatic fallback is exercised on Vulkan devices with native rays
+unrequested.
+
+The offline comparison traces cosine-weighted walks from the same emitter and
+places one point light at each unblocked reflector hit. It checks visibility back
+to regular probes and to probes 15 mm from the reflector. The near probes use an
+independent cosine-hemisphere integral. The virtual-light run reports budgets of
+64, 256 and 1024 source paths, the number of point lights and visibility tests, the
+signed error against RT1 and the near-surface peak error. It measures the lost
+radiance when the inverse-square denominator is clamped at an 80 mm distance.
+Thanks to Alexander Keller for the virtual point light construction and the
+discussion of its near-source singularity in
+[Instant Radiosity, SIGGRAPH 1997, pp. 49–56](https://doi.org/10.1145/258734.258769).
+At 64, 256 and 1024 source paths, it retained 49, 194 and 761 virtual lights
+and checked about 5.9k, 23k and 91k visibility segments. Mean signed red error
+against GPU RT1 stayed within 0.0025 at the regular probes. Near the reflector,
+the largest errors were 5.60, 12.39 and 2.69 before clamping, and 1.29, 1.36 and
+1.37 after. Clamping also removed 0.82–1.62 mean red radiance at those probes.
+That near-field trade-off keeps virtual lights as an offline comparison.
+
 [Issue 1248](https://github.com/The-Ludus-Project/Ludus/issues/1248) tracks the
-remaining bounded indirect diffuse, stale-history validation in the World viewport
-and an installed-SDK app, and Vulkan evidence for the automatic raster fallback.
+RT2 acceptance evidence across the World viewport, installed SDK and Vulkan.
 
 Start with ordinary sampling plus a modest, inspectable temporal/spatial filter.
 ReSTIR DI (direct light sampling), GI (indirect paths) and PT (path resampling)
