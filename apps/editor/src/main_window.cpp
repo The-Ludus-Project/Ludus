@@ -20,6 +20,7 @@
 #include "internal/project_explorer.h"
 #include "internal/project_rendering_settings.h"
 #include "internal/project_setup_dialog.h"
+#include "internal/recent_project_delegate.h"
 #include "internal/renderer_workspace.h"
 #if defined(LUDUS_EDITOR_NATIVE_PREVIEW)
 #    include "internal/saved_graph_comparison_view.h"
@@ -96,7 +97,7 @@ MainWindow::MainWindow(EditorController* controller, QWidget* parent, const QStr
       mProjectExplorerDock(new QDockWidget(QStringLiteral("Project Explorer"), this)),
       mProjectExplorer(new ProjectExplorer(mProjectExplorerDock)),
       mPropertiesDock(new QDockWidget(QStringLiteral("Properties"), this)),
-      mProperties(new QStackedWidget(mPropertiesDock)), mNoProperties(new QLabel(mProperties)),
+      mProperties(new QStackedWidget(mPropertiesDock)), mNoProperties(new StateView(mProperties)),
       mErrorListDock(new QDockWidget(QStringLiteral("Error List"), this)), mErrorList(new ErrorList(mErrorListDock)),
       mContentDock(new QDockWidget(QStringLiteral("Content"), this)),
       mRenderPreviewDock(new QDockWidget(QStringLiteral("Render Preview"), this)),
@@ -1122,6 +1123,7 @@ void MainWindow::OnStateChanged()
         static_cast<void>(mDocuments->OpenDocument(World_));
         World_->setFocus();
     }
+    renderEmptyStates();
     Audio_->setEnabled(state.Document == DocumentState::ProjectLoaded && AudioClosing_ == false &&
                        AudioLaunchPending_ == false);
     if (state.Document == DocumentState::ProjectLoaded)
@@ -1257,13 +1259,28 @@ void MainWindow::RenderRecentProjects()
     const QSignalBlocker blocker(RecentList_);
     RecentList_->clear();
     RecentMenu_->clear();
+    // Projects that can open come first; missing ones follow in their own quieter section, so a stale entry never
+    // pushes a working project down the list. The File menu keeps the plain most-recent order.
+    QList<RecentProject> listed;
+    QList<RecentProject> missing;
     for (const RecentProject& project : projects)
     {
-        const bool isMissing = QFileInfo(project.DescriptorPath).isFile() == false;
+        (QFileInfo(project.DescriptorPath).isFile() == true ? listed : missing).append(project);
+    }
+    const qsizetype missingStart = listed.size();
+    listed.append(missing);
+    for (qsizetype row = 0; row < listed.size(); ++row)
+    {
+        const RecentProject& project = listed.at(row);
+        const bool isMissing = row >= missingStart;
         const QString name = isMissing ? QStringLiteral("%1 (missing)").arg(project.Name) : project.Name;
+        // The text is what assistive technology reads; RecentProjectDelegate draws the name and path from the roles.
         auto* item = new QListWidgetItem(name + QStringLiteral("\n") + project.DescriptorPath, RecentList_);
         item->setIcon(windowIcon());
         item->setData(Qt::UserRole, project.DescriptorPath);
+        item->setData(RECENT_PROJECT_NAME_ROLE, project.Name);
+        item->setData(RECENT_PROJECT_IS_MISSING_ROLE, isMissing);
+        item->setData(RECENT_PROJECT_STARTS_MISSING_SECTION_ROLE, row == missingStart);
         item->setToolTip(isMissing ? QStringLiteral("%1\nThis project's file is missing. Remove it from the list.")
                                          .arg(project.DescriptorPath)
                                    : project.DescriptorPath);
@@ -1276,6 +1293,11 @@ void MainWindow::RenderRecentProjects()
         {
             RecentList_->setCurrentItem(item);
         }
+    }
+    for (const RecentProject& project : projects)
+    {
+        const bool isMissing = QFileInfo(project.DescriptorPath).isFile() == false;
+        const QString name = isMissing ? QStringLiteral("%1 (missing)").arg(project.Name) : project.Name;
         // Escape ampersands so project names/paths are literal menu labels.
         QString label = name + QStringLiteral(" — ") + project.DescriptorPath;
         label.replace(QStringLiteral("&"), QStringLiteral("&&"));
@@ -1286,12 +1308,15 @@ void MainWindow::RenderRecentProjects()
             QTimer::singleShot(0, this, [this, path]() { OpenProjectPath(path); });
         });
     }
+    mRecentRemoveMissingButtonOrNull->setText(QStringLiteral("Remove Missing (%1)").arg(missing.size()));
+    mRecentRemoveMissingButtonOrNull->setVisible(missing.isEmpty() == false);
     if (RecentList_->currentItem() == nullptr && RecentList_->count() != 0)
     {
         RecentList_->setCurrentRow(0);
     }
     RecentOpenButton_->setEnabled(Controller_->Caps().CanOpen && RecentList_->currentItem() != nullptr);
     mRecentRemoveButtonOrNull->setEnabled(Controller_->Caps().CanOpen && RecentList_->currentItem() != nullptr);
+    mRecentRemoveMissingButtonOrNull->setEnabled(Controller_->Caps().CanOpen);
 }
 
 void MainWindow::RenderFields()
@@ -1465,6 +1490,7 @@ void MainWindow::RenderCapabilities()
                                   RecentList_->currentItem() != nullptr);
     mRecentRemoveButtonOrNull->setEnabled(caps.CanOpen && Content_->Importing() == false &&
                                           RecentList_->currentItem() != nullptr);
+    mRecentRemoveMissingButtonOrNull->setEnabled(caps.CanOpen && Content_->Importing() == false);
     BrowseProjectButton_->setEnabled(caps.CanOpen && Content_->Importing() == false);
     ClearRecentAction_->setEnabled(caps.CanOpen && Controller_->RecentProjects().isEmpty() == false);
     RenderDocumentActions();

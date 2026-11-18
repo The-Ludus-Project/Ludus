@@ -899,6 +899,8 @@ ludus_editor_add_objects(ludus_editor_application
     src/main_window_layout.cpp
     src/main_window_tools.cpp
     src/main_window_project_files.cpp
+    src/internal/recent_project_delegate.h
+    src/recent_project_delegate.cpp
     src/internal/command_palette.h
     src/command_palette.cpp
     src/internal/edit_history.h
