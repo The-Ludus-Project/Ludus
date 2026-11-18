@@ -16,6 +16,7 @@
 #include "internal/world_workspace.h"
 
 #include <ludus/foundation/base/types.h>
+#include <ludus/graphics/renderer/world_feature.hpp>
 
 #include <catch2/catch_test_macros.hpp>
 
@@ -1930,4 +1931,41 @@ TEST_CASE("Save saves the active code tab", "[editor][shell][code-editor]")
     Settle();
     CHECK(tab->IsDirty() == false);
     CHECK(ReadBytes(script) == QByteArrayLiteral("xreturn 1\n"));
+}
+
+TEST_CASE("The viewport's World features link opens the Error List on that warning", "[editor][shell][world-features]")
+{
+    QTemporaryDir settings;
+    EditorController controller(ToolingPaths{}, nullptr, QDir(settings.path()).filePath(QStringLiteral("recent.json")));
+    MainWindow window(&controller, nullptr, QDir(settings.path()).filePath(QStringLiteral("workspace.json")));
+    window.show();
+    Settle();
+    ErrorList* list = window.findChild<ErrorList*>();
+    RendererWorkspace* renderer = window.findChild<RendererWorkspace*>();
+    QDockWidget* dock = Dock(window, QStringLiteral("errorListDock"));
+    REQUIRE(list != nullptr);
+    REQUIRE(renderer != nullptr);
+    REQUIRE(dock != nullptr);
+    ErrorListEntry error;
+    error.Severity = ErrorListSeverity::Error;
+    error.Producer = ErrorListProducer::Build;
+    error.Code = QStringLiteral("BuildError");
+    error.Description = QStringLiteral("main.cpp:1: error: broken");
+    list->ReplaceEntries(ErrorListProducer::Build, {error});
+    list->ReplaceEntries(
+        ErrorListProducer::RenderPreview,
+        MakeRenderGraphFeatureWarningEntries(QStringLiteral("World features not rendered: Aerial perspective."),
+                                             QStringLiteral("main.lurender.json")));
+    dock->hide();
+    renderer->RequestErrorListEntry(QString::fromLatin1(ludus::graphics::renderer::WORLD_FEATURE_WARNING_CODE));
+    Settle();
+    CHECK(dock->isVisible() == true);
+    QTableWidget* table = list->findChild<QTableWidget*>();
+    REQUIRE(table != nullptr);
+    const QModelIndexList rows = table->selectionModel()->selectedRows();
+    REQUIRE(rows.size() == 1);
+    // The warning, not the first error, is the selected row.
+    const int entry = table->item(rows.first().row(), 0)->data(Qt::UserRole).toInt();
+    CHECK(list->GetEntries().at(entry).Code ==
+          QString::fromLatin1(ludus::graphics::renderer::WORLD_FEATURE_WARNING_CODE));
 }

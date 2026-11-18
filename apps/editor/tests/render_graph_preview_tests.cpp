@@ -1316,6 +1316,14 @@ TEST_CASE("a graph that omits World features names them, the functions that draw
                                         "configuration")) == true);
     CHECK(sky.contains(QStringLiteral("ApplyAerialPerspective")) == false);
     CHECK(DescribeUnrenderedWorldFeatures(QStringLiteral("main"), 0).isEmpty() == true);
+    // Over the viewport it is one short line that links to the Error List row holding the text above.
+    const QString line = WorldGraphView::FormatFeatureStatusLine(
+        SummarizeUnrenderedWorldFeatures(renderer::GetWorldFeatureBit(renderer::WorldFeature::AerialPerspective)));
+    CHECK(line == QStringLiteral("Aerial perspective not rendered by this graph · Details"));
+    CHECK(SummarizeUnrenderedWorldFeatures(both) ==
+          QStringLiteral("Atmosphere sky and aerial perspective not rendered by this graph"));
+    CHECK(SummarizeUnrenderedWorldFeatures(0).isEmpty() == true);
+    CHECK(line.contains(QLatin1Char('\n')) == false);
 }
 
 TEST_CASE("a failed candidate names the World input it cannot draw and the repair", "[editor][render-graph][preview]")

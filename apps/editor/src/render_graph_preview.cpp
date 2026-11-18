@@ -179,6 +179,29 @@ QString DescribeRenderGraphSceneRejection(renderer::RenderGraphSceneRejection re
     return {};
 }
 
+QString SummarizeUnrenderedWorldFeatures(renderer::WorldFeatureMask features)
+{
+    QStringList names;
+    for (usize index = 0; index < renderer::WORLD_FEATURE_COUNT; ++index)
+    {
+        const renderer::WorldFeature feature = static_cast<renderer::WorldFeature>(index);
+        if ((features & renderer::GetWorldFeatureBit(feature)) != 0)
+        {
+            const QString name = QString::fromUtf8(renderer::DescribeWorldFeature(feature).Name);
+            // Later names continue the sentence: "Atmosphere sky and aerial perspective".
+            names.append(names.isEmpty() == true ? name : name.left(1).toLower() + name.mid(1));
+        }
+    }
+    if (names.isEmpty() == true)
+    {
+        return {};
+    }
+    const QString last = names.takeLast();
+    const QString joined =
+        names.isEmpty() == true ? last : QStringLiteral("%1 and %2").arg(names.join(QStringLiteral(", ")), last);
+    return QStringLiteral("%1 not rendered by this graph").arg(joined);
+}
+
 QString DescribeUnrenderedWorldFeatures(const QString& configuration, renderer::WorldFeatureMask features)
 {
     QStringList names;

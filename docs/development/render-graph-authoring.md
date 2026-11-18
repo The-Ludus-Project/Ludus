@@ -5458,14 +5458,17 @@ follow the camera of the graph's first ray pass.
 
 #### Find what a graph does not render
 
-When the World uses a feature that the drawing graph does not render, the World
-viewport and the Error List show a **World features not rendered** warning with
-code `RenderGraphFeatureNotRendered`. It names each missing feature, what you
-see instead and the function to call. The graph still draws the rest of the
-World. Activate the warning row to open **Render Preview** at its **World
-features** table. The table lists every feature with the drawing graph's
-support, the scene function and where to call it. Hover over a support cell to
-see what the graph shows instead, or the limits of its approximation. Other
+When the World uses a feature that the drawing graph does not render, the
+Error List shows a **World features not rendered** warning with code
+`RenderGraphFeatureNotRendered`. It names each missing feature, what you see
+instead and the function to call. The World viewport shows one short line, such
+as "Aerial perspective not rendered by this graph · Details"; click it to open
+the Error List at that warning. The graph still draws the rest of the World.
+Activate the warning row to open **Render Preview** at its **World features**
+list. The list shows every feature with the drawing graph's support, marking
+the features this World uses. Select a feature to read its scene function and
+where to call it below the list. Hover over a support cell to see what the
+graph shows instead, or the limits of its approximation. Other
 repairs are to turn on **Force raster** in the viewport toolbar, or to disable
 the Atmosphere entity.
 

@@ -81,6 +81,18 @@ public:
     }
     /// Words that end the chip's text and name where its full problem is listed.
     [[nodiscard]] static QString GetProblemChipLink();
+    /// True while the status text ends in a link to an Error List row: the problem chip, or the one-line World
+    /// features warning (whose full text is the row and the tooltip). A click on the status then activates it.
+    [[nodiscard]] LUDUS_INLINE bool HasStatusLink() const noexcept
+    {
+        return mHasProblemChip == true || mHasFeatureLink == true;
+    }
+    /// Show the Error List row the status links to: the first problem for the chip, the World features warning for
+    /// its line. No-op without a link.
+    void ActivateStatusLink();
+    /// The viewport's line for World features the graph does not render: summary
+    /// (RendererWorkspace::GetOmittedFeatureSummary), then " · Details", the link to the Error List row.
+    [[nodiscard]] static QString FormatFeatureStatusLine(const QString& summary);
 
 Q_SIGNALS:
     /// Refreshed overlay text, also consumed by the shared-device presentation.
@@ -107,6 +119,7 @@ private:
     void refreshStatus();
     void refreshStatistics();
     bool mHasProblemChip = false;
+    bool mHasFeatureLink = false;
     RendererWorkspace& mWorkspace;
     RenderGraphPreview& mPreview;
     QComboBox* mTargets;

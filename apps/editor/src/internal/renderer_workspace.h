@@ -353,6 +353,12 @@ public:
     {
         Q_EMIT ErrorListRequested();
     }
+    /// Ask the shell to show its Error List with the row of the given code selected, such as the viewport's
+    /// World features line asking for graphics::renderer::WORLD_FEATURE_WARNING_CODE.
+    void RequestErrorListEntry(const QString& code)
+    {
+        Q_EMIT ErrorListEntryRequested(code);
+    }
     /// Last current activation failure, including the runtime status and candidate generation.
     /// Cleared by a replacement candidate or document change, independently of compiler results.
     [[nodiscard]] LUDUS_INLINE const QString& GetActivationProblem() const noexcept
@@ -376,6 +382,11 @@ public:
     [[nodiscard]] LUDUS_INLINE const QString& GetOmittedFeatureWarning() const noexcept
     {
         return mOmittedFeatureWarning;
+    }
+    /// GetOmittedFeatureWarning as one short line for the viewport (SummarizeUnrenderedWorldFeatures); empty with it.
+    [[nodiscard]] LUDUS_INLINE const QString& GetOmittedFeatureSummary() const noexcept
+    {
+        return mOmittedFeatureSummary;
     }
     /// Select and focus the World features table row of the first feature the drawing graph does not render, or its
     /// first row, so an author activating the RenderGraphFeatureNotRendered warning lands on the function to call.
@@ -467,6 +478,8 @@ Q_SIGNALS:
     void FocusViewRequested();
     /// A viewport asked to see the problems listed for this graph; the shell shows its Error List.
     void ErrorListRequested();
+    /// A viewport asked to see one listed problem, by its code; the shell shows the Error List with that row selected.
+    void ErrorListEntryRequested(const QString& code);
     void DocumentChanged();
     /// Node fields changed; the originating surface may retain its active controls.
     /// editOriginOrNull is borrowed during synchronous notification, or null for a full refresh.
@@ -512,6 +525,8 @@ private:
     void refreshRenderWarning(const RenderScene& scene);
     /// Fill the World features table from the drawing graph's support and mUnrenderedWorldFeatures.
     void refreshWorldFeatures();
+    /// Show the current World features row's scene function and where to call it under the list.
+    void refreshWorldFeatureDetail();
     void prepareDefaultPreview();
     void renderTree(bool shouldRefreshInspector = true, QWidget* editOriginOrNull = nullptr);
     void renderInspector();
@@ -674,6 +689,7 @@ private:
     QString mActivationProblem;
     QString mRenderWarning;
     QString mOmittedFeatureWarning;
+    QString mOmittedFeatureSummary;
     /// Whether mRenderWarning is the slice-sampling-luminaire coverage warning, which offers a repair.
     bool mIsLuminaireWarning = false;
     /// The World lighting check mRenderWarning reports when it is not the luminaire warning.
@@ -693,8 +709,11 @@ private:
     QLabel* mPreviewStatus;
     QPushButton* mPreviewButton;
     /// World features table in Render Preview: one row per graphics::renderer::WorldFeature with the drawing graph's
-    /// support, the scene function that draws the feature and where to call it.
+    /// support, the scene function that draws the feature and where to call it. Only the feature and support columns
+    /// show; mWorldFeatureDetail shows the other two for the current row.
     QTableWidget* mWorldFeatures;
+    /// Under the World features list: the current row's scene function and where to call it.
+    QLabel* mWorldFeatureDetail;
     /// Features of the latest World extraction the drawing graph does not render; refreshed with the warning.
     graphics::renderer::WorldFeatureMask mUnrenderedWorldFeatures = 0;
     RenderPreview* mPreviewSourceOrNull = nullptr;

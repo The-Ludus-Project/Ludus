@@ -39,6 +39,7 @@
 #include "internal/render_graph_template_registry.h"
 #include "internal/render_graph_upscale_node.h"
 #include "internal/renderer_workspace.h"
+#include "internal/theme_colour.h"
 
 #include <ludus/foundation/base/core.h>
 
@@ -77,6 +78,7 @@
 #include <QHBoxLayout>
 #include <QHash>
 #include <QHeaderView>
+#include <QIcon>
 #include <QInputDialog>
 #include <QJsonArray>
 #include <QJsonDocument>
@@ -109,6 +111,8 @@
 #include <QTreeWidget>
 #include <QVBoxLayout>
 
+#include <algorithm>
+
 namespace ludus::editor
 {
 using namespace foundation;
@@ -135,6 +139,9 @@ namespace renderer = graphics::renderer;
 constexpr usize WORLD_FEATURE_COLUMN_COUNT = 4;
 /// Support column, whose tooltip explains the support level instead of repeating the cell.
 constexpr usize WORLD_FEATURE_SUPPORT_COLUMN = 1;
+/// Scene function and callback columns: kept in the model, shown under the list for the current row.
+constexpr int32 WORLD_FEATURE_FUNCTION_COLUMN = 2;
+constexpr int32 WORLD_FEATURE_CALLBACK_COLUMN = 3;
 /// Tabs of the document's view switcher, in order.
 enum DocumentView : int32
 {
@@ -157,31 +164,53 @@ void SetSourceStatus(QLabel& inoutLabel, const QString& status, const QString& p
                  problem.isEmpty() == true ? QString() : QStringLiteral("<pre>%1</pre>").arg(problem.toHtmlEscaped())));
 }
 
-/// Paints the last presented preview frame, letterboxed to its aspect ratio.
+/// Smallest preview frame, in logical pixels; a frame letterboxes into whatever the dock gives beyond it.
+constexpr int32 PREVIEW_MINIMUM_WIDTH = 160;
+constexpr int32 PREVIEW_MINIMUM_HEIGHT = 120;
+
+/// Paints the last presented preview frame, letterboxed to its aspect ratio. Until a frame arrives it is one quiet
+/// caption line instead of an empty black box, so the dock's other contents keep the room; it stays shown (and
+/// visible to the render loop's consumer check) so the first frame can arrive.
 class PreviewImage final : public QWidget
 {
 public:
     explicit PreviewImage(QWidget* parentOrNull) : QWidget(parentOrNull)
     {
         setObjectName(QStringLiteral("renderGraphPreviewImage"));
-        setMinimumSize(160, 120);
-        setAttribute(Qt::WA_OpaquePaintEvent);
+        setAccessibleName(QStringLiteral("Render preview"));
+        applyEmptyState();
     }
     void SetImage(const QImage& image)
     {
+        const bool wasEmpty = mImage.isNull();
         mImage = image;
+        if (wasEmpty != mImage.isNull())
+        {
+            applyEmptyState();
+        }
         update();
+    }
+    [[nodiscard]] bool IsEmpty() const noexcept
+    {
+        return mImage.isNull();
+    }
+    /// What the empty preview says in place of a frame.
+    [[nodiscard]] static QString GetEmptyText()
+    {
+        return QStringLiteral("No preview frame yet");
     }
 
 protected:
     void paintEvent(QPaintEvent*) override
     {
         QPainter painter(this);
-        painter.fillRect(rect(), QColor(9, 12, 15));
         if (mImage.isNull() == true)
         {
+            painter.setPen(GetThemeQColour(design::ThemeColour::TextTertiary));
+            painter.drawText(rect(), Qt::AlignLeft | Qt::AlignVCenter, GetEmptyText());
             return;
         }
+        painter.fillRect(rect(), GetThemeQColour(design::ThemeColour::SurfaceViewport));
         const QSize size = mImage.size().scaled(this->size(), Qt::KeepAspectRatio);
         const QRect target(QPoint((width() - size.width()) / 2, (height() - size.height()) / 2), size);
         painter.setRenderHint(QPainter::SmoothPixmapTransform);
@@ -189,6 +218,23 @@ protected:
     }
 
 private:
+    void applyEmptyState()
+    {
+        const bool isEmpty = mImage.isNull();
+        setAttribute(Qt::WA_OpaquePaintEvent, isEmpty == false);
+        if (isEmpty == true)
+        {
+            setMinimumSize(0, fontMetrics().height());
+            setMaximumHeight(fontMetrics().height());
+        }
+        else
+        {
+            setMinimumSize(PREVIEW_MINIMUM_WIDTH, PREVIEW_MINIMUM_HEIGHT);
+            setMaximumHeight(QWIDGETSIZE_MAX);
+        }
+        updateGeometry();
+    }
+
     QImage mImage;
 };
 
@@ -625,7 +671,7 @@ RendererWorkspace::RendererWorkspace(const ToolingPaths& tooling, QWidget* paren
       mPreviewPage(new QWidget(this)), mPreviewImage(new PreviewImage(mPreviewPage)),
       mPreviewStatus(new QLabel(mPreviewPage)),
       mPreviewButton(new QPushButton(QStringLiteral("&Preview Runtime"), mPreviewPage)),
-      mWorldFeatures(new QTableWidget(mPreviewPage))
+      mWorldFeatures(new QTableWidget(mPreviewPage)), mWorldFeatureDetail(new QLabel(mPreviewPage))
 {
     setObjectName(QStringLiteral("rendererWorkspace"));
     // The rarely needed explicit copy of the engine default sits in the source tree's context
@@ -951,12 +997,36 @@ RendererWorkspace::RendererWorkspace(const ToolingPaths& tooling, QWidget* paren
     mWorldFeatures->setSelectionMode(QAbstractItemView::SingleSelection);
     // Read-only rows: arrow keys move between them, and Tab leaves the table instead of walking its cells (WCAG 2.1.2).
     mWorldFeatures->setTabKeyNavigation(false);
-    mWorldFeatures->setWordWrap(true);
+    // A compact two-column list that fits the dock: feature and support, one line each. The scene function and where
+    // to call it are long sentences, so they stay in the table's model (and tooltips) but show below the list for the
+    // current row, wrapped to the dock, instead of as squeezed columns.
+    mWorldFeatures->setWordWrap(false);
+    mWorldFeatures->setTextElideMode(Qt::ElideRight);
+    mWorldFeatures->setHorizontalScrollBarPolicy(Qt::ScrollBarAlwaysOff);
+    mWorldFeatures->setVerticalScrollBarPolicy(Qt::ScrollBarAlwaysOff);
+    mWorldFeatures->setShowGrid(false);
+    mWorldFeatures->setColumnHidden(WORLD_FEATURE_FUNCTION_COLUMN, true);
+    mWorldFeatures->setColumnHidden(WORLD_FEATURE_CALLBACK_COLUMN, true);
     mWorldFeatures->verticalHeader()->hide();
-    mWorldFeatures->horizontalHeader()->setStretchLastSection(true);
+    mWorldFeatures->verticalHeader()->setSectionResizeMode(QHeaderView::Fixed);
+    mWorldFeatures->verticalHeader()->setDefaultSectionSize(mWorldFeatures->fontMetrics().height() +
+                                                            design::SPACING_SMALL);
+    mWorldFeatures->horizontalHeader()->setSectionResizeMode(0, QHeaderView::Stretch);
+    mWorldFeatures->horizontalHeader()->setSectionResizeMode(static_cast<int>(WORLD_FEATURE_SUPPORT_COLUMN),
+                                                             QHeaderView::ResizeToContents);
     mWorldFeatures->setSizeAdjustPolicy(QAbstractScrollArea::AdjustToContents);
+    mWorldFeatures->setSizePolicy(QSizePolicy::Ignored, QSizePolicy::Fixed);
+    mWorldFeatureDetail->setObjectName(QStringLiteral("renderGraphWorldFeatureDetail"));
+    mWorldFeatureDetail->setTextFormat(Qt::PlainText);
+    mWorldFeatureDetail->setWordWrap(true);
+    mWorldFeatureDetail->setTextInteractionFlags(Qt::TextSelectableByMouse | Qt::TextSelectableByKeyboard);
+    mWorldFeatureDetail->setProperty("visualRole", QStringLiteral("secondary"));
+    mWorldFeatureDetail->setSizePolicy(QSizePolicy::Ignored, QSizePolicy::Preferred);
+    connect(mWorldFeatures, &QTableWidget::currentCellChanged, this, [this]() { refreshWorldFeatureDetail(); });
     previewLayout->addWidget(worldFeaturesHeading);
     previewLayout->addWidget(mWorldFeatures);
+    previewLayout->addWidget(mWorldFeatureDetail);
+    previewLayout->addStretch();
     refreshWorldFeatures();
     mPreviewPage->hide();
 
@@ -2489,6 +2559,9 @@ void RendererWorkspace::refreshRenderWarning(const RenderScene& scene)
     {
         mRenderWarning = warning;
         mOmittedFeatureWarning = omittedFeatureWarning;
+        mOmittedFeatureSummary = omittedFeatureWarning.isEmpty() == true
+                                     ? QString()
+                                     : SummarizeUnrenderedWorldFeatures(mUnrenderedWorldFeatures);
         Q_EMIT RenderProblemChanged();
     }
 #else
@@ -2507,18 +2580,20 @@ void RendererWorkspace::refreshWorldFeatures()
         hasGraph = mPreviewOrNull != nullptr && mPreviewOrNull->GetWorldFeatureSupport(feature, support) == true;
 #endif
         const bool isMissing = (mUnrenderedWorldFeatures & renderer::GetWorldFeatureBit(feature)) != 0;
-        QString supportText = hasGraph == true ? QString::fromUtf8(renderer::DescribeWorldFeatureSupport(support))
-                                               : QStringLiteral("No drawing graph");
+        const QString supportText = hasGraph == true ? QString::fromUtf8(renderer::DescribeWorldFeatureSupport(support))
+                                                     : QStringLiteral("No drawing graph");
+        QString supportHelp = support == renderer::WorldFeatureSupport::Approximated
+                                  ? QString::fromUtf8(description.Approximation)
+                              : support == renderer::WorldFeatureSupport::NotRendered
+                                  ? QString::fromUtf8(description.Omission)
+                                  : QStringLiteral("The graph composes this feature like the engine's default "
+                                                   "raster graph.");
+        // A feature this World uses but the graph leaves out is marked with the warning icon, which the support
+        // cell's tooltip and accessible text put into words.
         if (isMissing == true)
         {
-            supportText += QStringLiteral(" (this World uses it)");
+            supportHelp = QStringLiteral("This World uses it. ") + supportHelp;
         }
-        const QString supportHelp = support == renderer::WorldFeatureSupport::Approximated
-                                        ? QString::fromUtf8(description.Approximation)
-                                    : support == renderer::WorldFeatureSupport::NotRendered
-                                        ? QString::fromUtf8(description.Omission)
-                                        : QStringLiteral("The graph composes this feature like the engine's default "
-                                                         "raster graph.");
         const StaticArray<QString, WORLD_FEATURE_COLUMN_COUNT> cells{{QString::fromUtf8(description.Name),
                                                                       supportText,
                                                                       QString::fromUtf8(description.Function),
@@ -2533,9 +2608,26 @@ void RendererWorkspace::refreshWorldFeatures()
             }
             itemOrNull->setText(cells[column]);
             itemOrNull->setToolTip(column == WORLD_FEATURE_SUPPORT_COLUMN ? supportHelp : cells[column]);
+            if (column == WORLD_FEATURE_SUPPORT_COLUMN)
+            {
+                itemOrNull->setIcon(isMissing == true ? GetEditorIcon(EditorIcon::Warning) : QIcon());
+                itemOrNull->setData(Qt::AccessibleTextRole,
+                                    isMissing == true ? cells[column] + QStringLiteral(", this World uses it")
+                                                      : cells[column]);
+            }
         }
     }
-    mWorldFeatures->resizeRowsToContents();
+    refreshWorldFeatureDetail();
+}
+void RendererWorkspace::refreshWorldFeatureDetail()
+{
+    const int row = std::max(mWorldFeatures->currentRow(), 0);
+    const renderer::WorldFeatureDescription description =
+        renderer::DescribeWorldFeature(static_cast<renderer::WorldFeature>(row));
+    mWorldFeatureDetail->setText(QStringLiteral("%1: call %2. %3")
+                                     .arg(QString::fromUtf8(description.Name),
+                                          QString::fromUtf8(description.Function),
+                                          QString::fromUtf8(description.Callback)));
 }
 void RendererWorkspace::RevealWorldFeatures()
 {

@@ -116,6 +116,10 @@ public:
     /// Select the first shown Error row without navigating to its source, or the first shown row when there is no
     /// error. False when no row is shown.
     bool SelectFirstProblem();
+    /// Select the first row with code without navigating to its source, turning its severity filter on if it was
+    /// off, so a link to that problem (such as the viewport's World features line) lands on it. False when no row has
+    /// the code.
+    bool SelectEntry(const QString& code);
 
 Q_SIGNALS:
     /// The user activated a row; the shell navigates to its source.
