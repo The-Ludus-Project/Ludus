@@ -5053,11 +5053,17 @@ float3 GenerateRay(SceneContext scene, RayLaunch launch, inout RayQueryContext i
 ```
 
 `LoadVisibilitySurface` loads exact texels, resolves instance/primitive through a
-sorted immutable indirection, unprojects stored depth, and computes barycentrics.
-It fills the incoming camera ray, distance and front-face state in addition to the
-attributes supplied by `GetSurfaceHit`. Background returns MISS; invalid IDs,
-depth or reconstruction latch query failure and return FAILURE. Reconstruction
-uses no ray query budget. `EvaluateMaterial` applies the triangle's slot and
+sorted immutable indirection, and places the hit where the pixel-centre camera
+ray meets the stored triangle. It does not unproject stored depth: conventional
+float32 depth with a centimetre near plane places a point centimetres along its
+ray at tens of metres, which at grazing incidence moves it off the triangle at
+its edges. Where rasterizer vertex snapping lets the ray pass just outside the
+triangle, the hit is the boundary point nearest the ray, accepted within 1/16 of
+a pixel at that distance. The depth texel is still validated. It fills the incoming
+camera ray, distance and front-face state in addition to the attributes supplied
+by `GetSurfaceHit`. Background returns MISS; invalid IDs or depth, or a triangle
+farther from the ray, latch the Stored record failure and return FAILURE.
+Reconstruction uses no ray query budget. `EvaluateMaterial` applies the triangle's slot and
 instance overrides; material identity is not duplicated in the image. Material
 sampling retains the scene interface's fixed-mip policy.
 
