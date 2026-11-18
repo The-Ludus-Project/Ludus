@@ -114,9 +114,24 @@ class OutputPump:
         self.log_path = log_path
         self.echo = echo
         self.thread = threading.Thread(target=self._run, name="ludus-init-output", daemon=True)
+        self.log_lock = threading.RLock()
+        self.log = None
 
     def start(self) -> None:
         self.thread.start()
+
+    def write_note(self, line: str) -> None:
+        """Add one line of setup's own to the log, between the child's output chunks; any thread."""
+        try:
+            with self.log_lock:
+                self._write_note(line)
+        except (OSError, ValueError):
+            pass
+
+    def _write_note(self, line: str) -> None:
+        if self.log is not None:
+            self.log.write((line + "\n").encode("utf-8"))
+            self.log.flush()
 
     def _run(self) -> None:
         log = None
@@ -126,6 +141,13 @@ class OutputPump:
                 log = self.log_path.open("wb")
             except OSError:
                 log = None
+        if log is not None:
+            # Where the setup windows went comes first, so a window off screen can be explained from the log.
+            with self.log_lock:
+                self.log = log
+                for line in init_theme.diagnostic_lines():
+                    self.write_note(line)
+            init_theme.set_diagnostic_sink(self.write_note)
         pending = b""
         stream = self.process.stdout
         try:
@@ -136,8 +158,9 @@ class OutputPump:
                 for sink in (self.echo, log):
                     if sink is not None:
                         try:
-                            sink.write(chunk)
-                            sink.flush()
+                            with self.log_lock:
+                                sink.write(chunk)
+                                sink.flush()
                         except (OSError, ValueError):
                             pass
                 pending += chunk
@@ -150,7 +173,10 @@ class OutputPump:
             if pending:
                 self.lines.put(pending.decode("utf-8", errors="replace"))
             if log is not None:
-                log.close()
+                init_theme.set_diagnostic_sink(None)
+                with self.log_lock:
+                    self.log = None
+                    log.close()
             self.lines.put(None)
 
 
@@ -195,6 +221,8 @@ class SetupWindow:
             self.window.geometry(geometry)
         else:
             init_theme.centre_window(self.window, self.theme.scale)
+        # The option window's place is a hint: a taller progress window there is pulled back on screen.
+        init_theme.check_window_fit_later(self.window, "progress", self.theme.scale)
         self.window.protocol("WM_DELETE_WINDOW", self.request_close)
         self.window.bind("<Escape>", lambda _event: self.request_close())
         self.window.bind("<Return>", lambda _event: self.activate_default())

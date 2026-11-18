@@ -12,7 +12,9 @@ import os
 import platform
 import sys
 from dataclasses import dataclass
+from pathlib import Path
 
+import init_failure
 from init_denoiser import preset_supports, validate_denoiser_options
 
 
@@ -464,6 +466,10 @@ def select_options(args: argparse.Namespace, engine) -> argparse.Namespace | Non
                 widget.bind("<FocusIn>", lambda event: scroll.show(event.widget), add="+")
         init_theme.fit_to_screen(window, theme.scale)
         init_theme.centre_window(window, theme.scale)
+        # Once drawn, the window is pulled back on screen if needed, and where it went is written to the setup
+        # log, so a window that still reaches past the screen can be explained from the user's log.
+        init_theme.check_window_fit_later(window, "options", theme.scale,
+                                          log_path=Path(engine.repo_root()) / init_failure.LOG_RELATIVE_PATH)
         initialize.focus_set()
         window.mainloop()
     finally:

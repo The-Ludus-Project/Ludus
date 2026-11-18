@@ -129,6 +129,10 @@ CHECKBOX_SUPERSAMPLING = 4
 # Room kept free around a window for the title bar and, where Tk cannot see them, the menu bar, Dock or taskbar.
 WINDOW_FRAME_ALLOWANCE_POINTS = 48
 USABLE_SCREEN_FRACTION = 0.9
+# The menu bar of a MacBook with a notch, the tallest macOS draws; the fallback when AppKit cannot be read.
+MACOS_MENU_BAR_ALLOWANCE_POINTS = 38
+# How long after a window first shows that its place is checked and logged; Aqua applies geometry late.
+WINDOW_FIT_CHECK_MILLISECONDS = 400
 # A window never asks to be shorter than this, or its whole height when that is less.
 MINIMUM_WINDOW_HEIGHT_POINTS = 360
 SCROLL_STEP_POINTS = 24
@@ -1031,17 +1035,20 @@ class _Rectangle(ctypes.Structure):
     _fields_ = [("origin", _Point), ("size", _Size)]
 
 
-def macos_visible_frame() -> tuple[float, float] | None:
-    """Top and height, in points from the top of the main screen, of the area the menu bar and Dock leave free.
+Frame = tuple[tuple[float, float], tuple[float, float]]
 
-    Read from ``[[NSScreen mainScreen] visibleFrame]`` through the Objective-C runtime, without PyObjC. Tk's
-    screen height and maximum window size both include the menu bar and the Dock, so a window sized or centred
-    from them can sit behind the Dock. Returns None when the frame cannot be read.
+
+def read_appkit_frames() -> tuple[Frame | None, Frame | None, str]:
+    """The frame and visible frame of the menu bar's screen, in AppKit points, and a note on how they were read.
+
+    Read from ``[[NSScreen screens] firstObject]`` through the Objective-C runtime, without PyObjC. That screen,
+    unlike ``mainScreen`` (the screen of the key window, often a Terminal on another display), is the one Tk
+    measures ``winfo_screenheight`` and window positions on. Returns None frames and the reason on failure.
     """
     try:
         library = ctypes.util.find_library("objc")
         if not library:
-            return None
+            return None, None, "no Objective-C runtime"
         objc = ctypes.cdll.LoadLibrary(library)
         ctypes.cdll.LoadLibrary("/System/Library/Frameworks/AppKit.framework/AppKit")
         objc.objc_getClass.restype = ctypes.c_void_p
@@ -1054,38 +1061,89 @@ def macos_visible_frame() -> tuple[float, float] | None:
         rectangle_entry = objc.objc_msgSend if platform.machine() == "arm64" else objc.objc_msgSend_stret
         send_rectangle = ctypes.CFUNCTYPE(_Rectangle, ctypes.c_void_p, ctypes.c_void_p)(
             ctypes.cast(rectangle_entry, ctypes.c_void_p).value)
-        screen = send(objc.objc_getClass(b"NSScreen"), objc.sel_registerName(b"mainScreen"))
+        screens = send(objc.objc_getClass(b"NSScreen"), objc.sel_registerName(b"screens"))
+        screen = send(screens, objc.sel_registerName(b"firstObject")) if screens else None
         if not screen:
-            return None
+            return None, None, "NSScreen lists no screen"
         whole = send_rectangle(screen, objc.sel_registerName(b"frame"))
         visible = send_rectangle(screen, objc.sel_registerName(b"visibleFrame"))
-    except Exception:  # noqa: BLE001 - no AppKit, or an unexpected runtime.
+    except Exception as error:  # noqa: BLE001 - no AppKit, or an unexpected runtime.
+        return None, None, f"AppKit unreadable ({type(error).__name__}: {error})"
+
+    def plain(rectangle) -> Frame:
+        return ((rectangle.origin.x, rectangle.origin.y), (rectangle.size.width, rectangle.size.height))
+    return plain(whole), plain(visible), "NSScreen screens[0]"
+
+
+def visible_area_from_frames(whole: Frame, visible: Frame, screen_height: float) -> tuple[float, float] | None:
+    """Top and height, in Tk points from the top of the screen, of ``visible`` inside ``whole``, or None.
+
+    AppKit measures up from the bottom of the screen; Tk measures down from the top. A frame that does not lie
+    inside Tk's own screen (another display's, or a misread structure) is rejected rather than trusted: a window
+    sized from it reaches past the bottom of the screen Tk draws on.
+    """
+    (whole_x, whole_y), (whole_width, whole_height) = whole
+    (visible_x, visible_y), (visible_width, visible_height) = visible
+    if whole_height <= 0 or visible_height <= 0 or visible_width <= 0:
         return None
-    if visible.size.height <= 0 or whole.size.height <= 0:
+    top = whole_height - (visible_y - whole_y + visible_height)
+    tolerance = 1.0
+    if top < -tolerance or visible_height > whole_height + tolerance:
         return None
-    # AppKit measures up from the bottom of the screen; Tk measures down from the top.
-    top = whole.size.height - (visible.origin.y - whole.origin.y + visible.size.height)
-    return max(0.0, top), visible.size.height
+    if abs(whole_height - screen_height) > tolerance or top + visible_height > screen_height + tolerance:
+        return None
+    return max(0.0, top), visible_height
+
+
+# One line per fact about where a setup window went, for out/init/setup.log; see ``record_window_fit``.
+_diagnostics: list[str] = []
+_diagnostic_sink: list = []
+_last_frame_note = ["not read"]
+
+
+def macos_visible_frame(screen_height: float | None = None) -> tuple[float, float] | None:
+    """Top and height, in points from the top of the screen, of the area the menu bar and Dock leave free.
+
+    Tk's screen height and maximum window size both include the menu bar and the Dock, so a window sized or
+    centred from them can sit behind the Dock. Returns None, with the reason kept for the setup log, when the
+    frame cannot be read or does not match the screen Tk draws on (``screen_height``).
+    """
+    whole, visible, note = read_appkit_frames()
+    if whole is None or visible is None:
+        _last_frame_note[0] = note
+        return None
+    description = (f"{note} frame {whole[1][0]:g}x{whole[1][1]:g} visible {visible[1][0]:g}x{visible[1][1]:g}"
+                   f" at y {visible[0][1]:g}")
+    area = visible_area_from_frames(whole, visible, whole[1][1] if screen_height is None else screen_height)
+    if area is None:
+        _last_frame_note[0] = f"{description}, rejected: not inside Tk's {screen_height}-point screen"
+        return None
+    _last_frame_note[0] = description
+    return area
 
 
 def usable_screen_area(window, scale: float = 1.0, *, system: str | None = None) -> tuple[int, int]:
     """Top and height of the screen area a window may take, with room left for its title bar.
 
-    On macOS this is the area the menu bar and Dock leave free. Elsewhere it is Tk's maximum window size, at most
-    a fraction of the screen so a taskbar stays clear.
+    On macOS this is the area the menu bar and Dock leave free. Elsewhere, or when that area cannot be read, it
+    is Tk's maximum window size, at most a fraction of the screen so a taskbar stays clear.
     """
     system = system or platform.system()
     frame = int(round(WINDOW_FRAME_ALLOWANCE_POINTS * scale))
-    visible = macos_visible_frame() if system == "Darwin" else None
+    screen = window.winfo_screenheight()
+    visible = macos_visible_frame(float(screen)) if system == "Darwin" else None
     if visible is not None:
         top, height = visible
         return int(top), max(1, int(height) - frame)
-    screen = window.winfo_screenheight()
     try:
         maximum = int(window.wm_maxsize()[1])
     except Exception:  # noqa: BLE001 - a Tk without a window manager answer.
         maximum = screen
-    return 0, max(1, int(min(maximum, screen * USABLE_SCREEN_FRACTION)) - frame)
+    # A cap this module set earlier (see fit_to_screen) is not the window manager's answer.
+    maximum = screen if maximum <= 1 or getattr(window, "_ludus_height_cap", None) == maximum else maximum
+    # Without AppKit's answer, macOS still has a menu bar above the window: start below the tallest one.
+    top = int(round(MACOS_MENU_BAR_ALLOWANCE_POINTS * scale)) if system == "Darwin" else 0
+    return top, max(1, int(min(maximum, screen * USABLE_SCREEN_FRACTION)) - frame - top)
 
 
 def usable_screen_height(window, scale: float = 1.0) -> int:
@@ -1096,7 +1154,9 @@ def usable_screen_height(window, scale: float = 1.0) -> int:
 def fit_to_screen(window, scale: float = 1.0) -> None:
     """Size ``window`` to its content but never taller than its screen; a ``ScrollArea`` takes up the difference.
 
-    A window that would now reach past the bottom of the usable area moves up so its footer stays on screen.
+    The usable height is also the window's maximum size, so content that asks for more later (a font resolved
+    when the window is first drawn, a section opened) shrinks the scroll area instead of pushing the footer off
+    the screen. A window that would now reach past the bottom of the usable area moves up.
     """
     window.update_idletasks()
     areas = [area for area in window.__dict__.get("_ludus_scroll_areas", []) if area.frame.winfo_exists()]
@@ -1104,10 +1164,12 @@ def fit_to_screen(window, scale: float = 1.0) -> None:
     for area in areas:
         area.refresh()
     window.update_idletasks()
-    width, height = window.winfo_reqwidth(), min(window.winfo_reqheight(), usable_screen_height(window, scale))
+    top, usable = usable_screen_area(window, scale)
+    width, height = window.winfo_reqwidth(), min(window.winfo_reqheight(), usable)
     minimum = min(height, int(round(MINIMUM_WINDOW_HEIGHT_POINTS * scale)))
     window.minsize(width, minimum)
-    top, usable = usable_screen_area(window, scale)
+    window.maxsize(max(width, window.winfo_screenwidth()), usable)
+    window.__dict__["_ludus_height_cap"] = usable
     y = window.winfo_y()
     if window.winfo_ismapped() and y + height > top + usable:
         window.geometry(f"{width}x{height}+{window.winfo_x()}+{max(top, top + usable - height)}")
@@ -1123,6 +1185,102 @@ def centre_window(window, scale: float = 1.0) -> None:
     x = max(0, (window.winfo_screenwidth() - width) // 2)
     y = top + max(0, (usable - height) // 2)
     window.geometry(f"+{x}+{y}")
+
+
+def keep_on_screen(window, scale: float = 1.0) -> bool:
+    """Pull a drawn window back inside the usable area if it ended up taller or lower; True when it moved.
+
+    Tk applies a geometry asynchronously on some window systems, so this runs again once the window shows.
+    """
+    window.update_idletasks()
+    top, usable = usable_screen_area(window, scale)
+    height, y = window.winfo_height(), window.winfo_y()
+    if height <= 1 or (height <= usable and y + height <= top + usable and y >= top):
+        return False
+    height = min(height, usable)
+    y = min(max(top, y), top + usable - height)
+    window.geometry(f"{window.winfo_width()}x{height}+{window.winfo_x()}+{y}")
+    return True
+
+
+def describe_window_fit(window, label: str, scale: float = 1.0, *, system: str | None = None) -> str:
+    """One line for the setup log: the screen, the free area and where ``label``'s window was put."""
+    system = system or platform.system()
+    top, usable = usable_screen_area(window, scale, system=system)
+    try:
+        tk_version = str(window.tk.call("info", "patchlevel"))
+        windowing = str(window.tk.call("tk", "windowingsystem"))
+        tk_scaling = float(window.tk.call("tk", "scaling"))
+    except Exception:  # noqa: BLE001 - a stub root in tests.
+        tk_version, windowing, tk_scaling = "?", "?", 0.0
+    try:
+        maximum = "x".join(str(value) for value in window.wm_maxsize())
+    except Exception:  # noqa: BLE001
+        maximum = "?"
+    frame = _last_frame_note[0] if system == "Darwin" else "not used on " + system
+    return (f"Ludus Setup window ({label}): {system} {platform.machine()}, Tk {tk_version} {windowing}, "
+            f"tk scaling {tk_scaling:.3f}, interface scale {scale:g}, "
+            f"screen {window.winfo_screenwidth()}x{window.winfo_screenheight()}, "
+            f"visible frame: {frame}, usable area top {top} height {usable}, maximum size {maximum}, "
+            f"content {window.winfo_reqwidth()}x{window.winfo_reqheight()}, "
+            f"window {window.winfo_width()}x{window.winfo_height()}+{window.winfo_x()}+{window.winfo_y()}")
+
+
+def record_window_fit(window, label: str, scale: float = 1.0) -> str:
+    """Note where ``label``'s window went; the line reaches out/init/setup.log (see ``write_diagnostics``)."""
+    line = describe_window_fit(window, label, scale)
+    _diagnostics.append(line)
+    for sink in list(_diagnostic_sink):
+        sink(line)
+    return line
+
+
+def diagnostic_lines() -> list[str]:
+    return list(_diagnostics)
+
+
+def set_diagnostic_sink(sink) -> None:
+    """Send later window notes to ``sink`` (the progress window's log writer), or stop when it is None."""
+    _diagnostic_sink.clear()
+    if sink is not None:
+        _diagnostic_sink.append(sink)
+
+
+def write_diagnostics(path: Path) -> bool:
+    """Write the window notes so far to ``path`` (the setup log, replaced by the next setup run's log)."""
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text("".join(line + "\n" for line in _diagnostics), encoding="utf-8")
+    except OSError:
+        return False
+    return True
+
+
+def check_window_fit_later(window, label: str, scale: float = 1.0, *, log_path: Path | None = None) -> None:
+    """Once ``window`` is drawn, keep it on screen and log where it went."""
+    def check() -> None:
+        try:
+            if not window.winfo_exists():
+                return
+            if keep_on_screen(window, scale):
+                window.update_idletasks()
+                record_window_fit(window, label + ", moved back on screen", scale)
+            else:
+                record_window_fit(window, label, scale)
+        except Exception:  # noqa: BLE001 - TclError: the window closed first.
+            return
+        if log_path is not None:
+            write_diagnostics(log_path)
+    timer = window.after(WINDOW_FIT_CHECK_MILLISECONDS, check)
+
+    def cancel(event) -> None:
+        # A window closed before the check must not leave Tk a timer for a deleted callback.
+        if event.widget is window:
+            try:
+                window.after_cancel(timer)
+            except Exception:  # noqa: BLE001 - TclError: the check already ran.
+                pass
+    window.bind("<Destroy>", cancel, add="+")
 
 
 def fit_minimum_size(window) -> None:

@@ -5,6 +5,7 @@ import contextlib
 import io
 import os
 import platform
+import re
 import sys
 import tempfile
 import time
@@ -15,6 +16,7 @@ from unittest.mock import Mock, patch
 
 import engine
 import init_denoiser
+import init_failure
 import init_editor
 import init_ui
 import init_options
@@ -381,7 +383,13 @@ class WindowTests(unittest.TestCase):
             return window
 
         args = init_ui.apply_defaults(engine.make_parser().parse_args(["init", "--gui", *options]))
-        with patch.object(init_theme, "create_root", side_effect=create_window):
+        # The selector logs where its window went; keep that out of the checkout's real setup log.
+        log_directory = tempfile.TemporaryDirectory()
+        self.addCleanup(log_directory.cleanup)
+        self.log_path = Path(log_directory.name) / "setup.log"
+        with patch.object(init_theme, "create_root", side_effect=create_window), \
+                patch.object(init_failure, "LOG_RELATIVE_PATH", self.log_path), \
+                patch.object(init_theme, "_diagnostics", []):
             result = init_ui.select_options(args, engine)
         self.assertEqual(errors, [])
         self.assertEqual(timed_out, [], "the selector did not close after the test's action")
@@ -434,6 +442,26 @@ class WindowTests(unittest.TestCase):
         # Shorter than the selector, as on a 1280x720 display or a laptop with the Dock shown.
         with patch.object(init_theme, "usable_screen_area", return_value=(0, 420)):
             self.assertIsNotNone(self.select(accept, engine.NATIVE_PRESET_PREFIX + "-development"))
+
+    def test_the_option_window_logs_where_it_went(self):
+        def accept(window, widgets):
+            # Wait for the check that runs once the window shows.
+            for _ in range(100):
+                if self.log_path.exists():
+                    break
+                window.after(20)
+                window.update()
+            next(widget for widget in widgets if widget.winfo_class() == "TButton"
+                 and widget.cget("text") == "Initialize").invoke()
+
+        with patch.object(init_theme, "usable_screen_area", return_value=(37, 420)):
+            self.assertIsNotNone(self.select(accept, engine.NATIVE_PRESET_PREFIX + "-development"))
+        log = self.log_path.read_text(encoding="utf-8")
+        self.assertIn("Ludus Setup window (options", log)
+        self.assertIn("usable area top 37 height 420", log)
+        match = re.search(r"window \d+x(\d+)\+", log)
+        self.assertIsNotNone(match)
+        self.assertLessEqual(int(match.group(1)), 420)
 
     def test_denoiser_checkbox_follows_host_support_and_opts_out(self):
         supported = init_denoiser.preset_supports(engine.NATIVE_PRESET_PREFIX + "-development")

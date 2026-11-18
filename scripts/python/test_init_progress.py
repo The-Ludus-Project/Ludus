@@ -255,6 +255,36 @@ class SelectionTests(unittest.TestCase):
         self.assertTrue(window.call_args.args[0].no_system_install)
 
 
+class SetupLogTests(unittest.TestCase):
+    def test_the_log_starts_with_where_the_windows_went_then_takes_later_notes(self):
+        import init_theme
+
+        directory = tempfile.TemporaryDirectory()
+        self.addCleanup(directory.cleanup)
+        log_path = Path(directory.name) / "setup.log"
+        process = subprocess.Popen([sys.executable, "-c", "import sys, time; sys.stdin.readline(); print('child output')"],
+                                   stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
+        window_line = "Ludus Setup window (options): test"
+        with patch.object(init_theme, "_diagnostics", [window_line]):
+            pump = init_window.OutputPump(process, log_path)
+            pump.start()
+            for _ in range(200):
+                if init_theme._diagnostic_sink:
+                    break
+                time.sleep(0.01)
+            # The progress window's own line, recorded once it shows, lands in the open log.
+            init_theme._diagnostic_sink[0]("Ludus Setup window (progress): test")
+            process.stdin.write(b"go\n")
+            process.stdin.close()
+            while pump.lines.get(timeout=10) is not None:
+                pass
+            process.wait(timeout=10)
+            process.stdout.close()
+        self.assertEqual(init_theme._diagnostic_sink, [])
+        lines = log_path.read_text(encoding="utf-8").splitlines()
+        self.assertEqual(lines, [window_line, "Ludus Setup window (progress): test", "child output"])
+
+
 @unittest.skipIf(os.name == "nt", "POSIX process tree")
 class ProcessTreeTests(unittest.TestCase):
     def test_cancel_reaches_grandchildren(self):
