@@ -1776,13 +1776,16 @@ if(LUDUS_BUILD_TESTS AND NOT EMSCRIPTEN)
     # under its existing hang deadline without accumulating all cases into that deadline.
     ludus_add_editor_test_shards(ludus_render_graph_configuration_tests 2 "${graph_configuration_timeout}" "editor;render-graph")
     if(LUDUS_SLANG_COMPILER AND LUDUS_SPIRV_CROSS AND (APPLE OR LUDUS_SPIRV_VALIDATOR))
+        set(opaque_resolve_validator_arguments)
+        if(LUDUS_SPIRV_VALIDATOR)
+            list(APPEND opaque_resolve_validator_arguments --validator "${LUDUS_SPIRV_VALIDATOR}")
+        endif()
         add_test(NAME ludus_editor_opaque_resolve_cook
             COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/tests/cook_canvas_opaque_resolve.py"
                 "$<TARGET_FILE:ludus_render_graph_configuration_tests>" "${PROJECT_SOURCE_DIR}/scripts/python"
                 --helper "${editor_test_render_graph_helper}" --compiler "${LUDUS_SLANG_COMPILER}"
                 --spirv-cross "${LUDUS_SPIRV_CROSS}"
-                $<$<BOOL:${LUDUS_SPIRV_VALIDATOR}>:--validator> $<$<BOOL:${LUDUS_SPIRV_VALIDATOR}>:${LUDUS_SPIRV_VALIDATOR}>
-            COMMAND_EXPAND_LISTS)
+                ${opaque_resolve_validator_arguments})
         set_tests_properties(ludus_editor_opaque_resolve_cook PROPERTIES LABELS "editor;render-graph"
             TIMEOUT "${graph_configuration_timeout}" ENVIRONMENT "${editor_test_environment}")
     endif()
