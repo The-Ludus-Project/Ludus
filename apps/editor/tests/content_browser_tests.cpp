@@ -24,6 +24,7 @@
 #include <QPersistentModelIndex>
 #include <QProgressBar>
 #include <QPushButton>
+#include <QSet>
 #include <QSignalSpy>
 #include <QSortFilterProxyModel>
 #include <QSysInfo>
@@ -1085,6 +1086,8 @@ TEST_CASE("Content filters and actions fit a narrow dock without clipping a labe
     // The narrowest a side dock gets, and a width that holds every chip.
     constexpr int32 NARROW_DOCK_WIDTH = 220;
     constexpr int32 WIDE_DOCK_WIDTH = 900;
+    // Room for two actions side by side, not for all of them in one row.
+    constexpr int32 GRID_DOCK_WIDTH = 340;
     constexpr int32 DOCK_HEIGHT = 600;
     // A project with content, so the chips have counts and stay enabled.
     QTemporaryDir root;
@@ -1133,14 +1136,26 @@ TEST_CASE("Content filters and actions fit a narrow dock without clipping a labe
         }
     }
     CHECK(hiddenCount == strip->GetOverflowCount());
-    // Every footer action is whole: the row wraps rather than squeezing a label.
+    // Every footer action is whole: the row wraps rather than squeezing a label. Wrapped actions share one width,
+    // so their column has a straight edge instead of a ragged one.
+    QList<QPushButton*> actions;
     for (QPushButton* action : workspace.findChildren<QPushButton*>())
     {
         if (action->isVisible() == true)
         {
             checkWhole(*action, workspace);
+            actions.append(action);
         }
     }
+    REQUIRE(actions.size() > 1);
+    QSet<int32> rowTops;
+    for (const QPushButton* action : std::as_const(actions))
+    {
+        rowTops.insert(action->y());
+        CHECK(action->width() == actions.front()->width());
+        CHECK(action->x() == actions.front()->x());
+    }
+    CHECK(rowTops.size() == actions.size());
 
     // The More menu offers the hidden chips; choosing one turns that filter on and lights More.
     QMenu* menu = strip->GetOverflowButton().menu();
@@ -1168,6 +1183,18 @@ TEST_CASE("Content filters and actions fit a narrow dock without clipping a labe
     entries[enabledIndex]->trigger();
     CHECK(hiddenChips[enabledIndex]->isChecked() == true);
     CHECK(strip->GetOverflowButton().isChecked() == true);
+
+    // At a middle width the actions form a grid of equal cells, two or more to a row.
+    workspace.resize(GRID_DOCK_WIDTH, DOCK_HEIGHT);
+    QApplication::processEvents();
+    QSet<int32> gridTops;
+    for (const QPushButton* action : std::as_const(actions))
+    {
+        checkWhole(*action, workspace);
+        gridTops.insert(action->y());
+        CHECK(action->width() == actions.front()->width());
+    }
+    CHECK(gridTops.size() < actions.size());
 
     // With room for every chip, More goes away and the chips show in order.
     workspace.resize(WIDE_DOCK_WIDTH, DOCK_HEIGHT);

@@ -7,8 +7,12 @@
 #include "internal/theme_fonts.h"
 
 #include <QApplication>
+#include <QDir>
+#include <QFileInfo>
 #include <QFontMetrics>
+#include <QHash>
 #include <QPainter>
+#include <QSet>
 #include <QStyle>
 #include <QStyleOptionViewItem>
 
@@ -22,18 +26,33 @@ namespace
 constexpr int RECENT_PROJECT_ICON_SIZE = 32;
 /// Gap between the name line and the path line.
 constexpr int NAME_PATH_GAP = 2;
+/// A qualifier is drawn only when it can show this many ellipsis widths of text.
+constexpr int MINIMUM_QUALIFIER_ELLIPSIS_WIDTHS = 3;
 
 struct RowFonts
 {
     QFont Name;
     QFont Detail;
+    /// The dimmed folder after a shared name: the name's size without its weight.
+    QFont Qualifier;
 };
+
+/// The last count folders of folder joined with "/", or the whole folder when it has no more.
+[[nodiscard]] QString GetTrailingFolders(const QStringList& folders, qsizetype count)
+{
+    return folders.mid(std::max<qsizetype>(0, folders.size() - count)).join(QLatin1Char('/'));
+}
 
 [[nodiscard]] RowFonts MakeRowFonts(const QFont& base)
 {
     QFont name = MakeTypeFont(base, TypeRole::Body);
     name.setBold(true);
-    return { .Name = name, .Detail = MakeTypeFont(base, TypeRole::Caption) };
+    return
+    {
+        .Name = name,
+        .Detail = MakeTypeFont(base, TypeRole::Caption),
+        .Qualifier = MakeTypeFont(base, TypeRole::Body),
+    };
 }
 
 [[nodiscard]] int GetSectionHeadingHeight(const QFont& detail)
@@ -47,6 +66,62 @@ struct RowFonts
                               : option.palette.color(QPalette::PlaceholderText);
 }
 } // namespace
+
+QStringList GetRecentProjectQualifiers(const QStringList& names, const QStringList& descriptorPaths)
+{
+    QStringList qualifiers(names.size());
+    QHash<QString, QList<qsizetype>> rowsByName;
+    for (qsizetype row = 0; row < names.size() && row < descriptorPaths.size(); ++row)
+    {
+        rowsByName[names.at(row).toCaseFolded()].append(row);
+    }
+    for (const QList<qsizetype>& rows : std::as_const(rowsByName))
+    {
+        if (rows.size() < 2)
+        {
+            continue;
+        }
+        QList<QStringList> folders;
+        qsizetype deepest = 0;
+        for (const qsizetype row : rows)
+        {
+            const QString folder = QFileInfo(QDir::cleanPath(descriptorPaths.at(row))).path();
+            folders.append(folder.split(QLatin1Char('/'), Qt::SkipEmptyParts));
+            deepest = std::max(deepest, folders.last().size());
+        }
+        qsizetype depth = 1;
+        for (; depth < deepest; ++depth)
+        {
+            QSet<QString> seen;
+            for (const QStringList& folder : std::as_const(folders))
+            {
+                seen.insert(GetTrailingFolders(folder, depth).toCaseFolded());
+            }
+            if (seen.size() == rows.size())
+            {
+                break;
+            }
+        }
+        // The folders below the one that differs are the same for every row (Samples/Dolomites in each worktree),
+        // so that one folder alone ("milestone-2") is enough when it tells them apart by itself.
+        QStringList differing;
+        QSet<QString> seenDiffering;
+        for (const QStringList& folder : std::as_const(folders))
+        {
+            const QString single = folder.size() >= depth ? folder.at(folder.size() - depth) : QString();
+            differing.append(single);
+            seenDiffering.insert(single.toCaseFolded());
+        }
+        const bool isOneFolderEnough =
+            seenDiffering.size() == rows.size() && seenDiffering.contains(QString()) == false;
+        for (qsizetype index = 0; index < rows.size(); ++index)
+        {
+            qualifiers[rows.at(index)] =
+                isOneFolderEnough == true ? differing.at(index) : GetTrailingFolders(folders.at(index), depth);
+        }
+    }
+    return qualifiers;
+}
 
 QString GetMissingRecentProjectsHeading()
 {
@@ -140,10 +215,26 @@ void RecentProjectDelegate::paint(QPainter* painter, const QStyleOptionViewItem&
     }
     painter->setFont(fonts.Name);
     painter->setPen(nameColour);
-    const QString name = index.data(RECENT_PROJECT_NAME_ROLE).toString();
-    painter->drawText(nameRect,
-                      Qt::AlignLeft | Qt::AlignVCenter,
-                      nameMetrics.elidedText(name, Qt::ElideRight, textWidth));
+    const QString name =
+        nameMetrics.elidedText(index.data(RECENT_PROJECT_NAME_ROLE).toString(), Qt::ElideRight, textWidth);
+    painter->drawText(nameRect, Qt::AlignLeft | Qt::AlignVCenter, name);
+    // A shared name is followed by the folder that tells it apart, dimmed and cut before the name is.
+    const QString qualifier = index.data(RECENT_PROJECT_QUALIFIER_ROLE).toString();
+    const int nameWidth = nameMetrics.horizontalAdvance(name);
+    const QFontMetrics qualifierMetrics(fonts.Qualifier);
+    const int qualifierWidth = textWidth - nameWidth;
+    if (qualifier.isEmpty() == false &&
+        qualifierWidth >=
+            qualifierMetrics.horizontalAdvance(GetDocumentQualifierSeparator() +
+                                               QStringLiteral("\u2026").repeated(MINIMUM_QUALIFIER_ELLIPSIS_WIDTHS)))
+    {
+        painter->setFont(fonts.Qualifier);
+        painter->setPen(GetSecondaryColour(row, isSelected));
+        painter->drawText(
+            QRect(nameRect.left() + nameWidth, nameRect.top(), qualifierWidth, nameRect.height()),
+            Qt::AlignLeft | Qt::AlignVCenter,
+            qualifierMetrics.elidedText(GetDocumentQualifierSeparator() + qualifier, Qt::ElideRight, qualifierWidth));
+    }
 
     const int pathWidth = std::max(0, content.right() - textLeft + 1);
     const QRect pathRect(textLeft, nameRect.bottom() + 1 + NAME_PATH_GAP, pathWidth, detailMetrics.height());

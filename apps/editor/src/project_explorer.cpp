@@ -248,6 +248,9 @@ ProjectExplorer::addItem(QTreeWidgetItem* parentOrNull, const QString& text, Pro
     item->setData(0, KIND_ROLE, static_cast<foundation::int32>(kind));
     item->setData(0, PATH_ROLE, path);
     item->setToolTip(0, path.isEmpty() == true ? text : QDir::toNativeSeparators(path));
+    // Every row holds a name, not a path (documents leave out their folder, which the tooltip has), so every row
+    // elides at its end and reads from its start, with a qualifier only where a shared name needs one.
+    item->setData(0, DOCUMENT_QUALIFIER_ROLE, QString());
     return item;
 }
 
@@ -376,7 +379,6 @@ void ProjectExplorer::scan(const ScanFolders& folders)
             QTreeWidgetItem* item =
                 addItem(parentOrNull, RemoveKnownSuffix(name, QString(GetKnownSuffix(name))), kind, entry.filePath());
             item->setData(0, RELATIVE_PATH_ROLE, relativePath);
-            item->setData(0, DOCUMENT_QUALIFIER_ROLE, QString());
             item->setToolTip(0, QDir::toNativeSeparators(relativePath));
             item->setData(0, Qt::AccessibleDescriptionRole, QDir::toNativeSeparators(relativePath));
         }

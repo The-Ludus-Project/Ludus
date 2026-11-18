@@ -108,29 +108,68 @@ int32 FlowLayout::arrange(const QRect& area, bool shouldPlace) const
 {
     const QMargins margins = contentsMargins();
     const QRect inner = area.adjusted(margins.left(), margins.top(), -margins.right(), -margins.bottom());
-    int32 x = inner.x();
-    int32 y = inner.y();
-    int32 rowHeight = 0;
+    const int32 available = std::max(inner.width(), 0);
+    QList<QLayoutItem*> shown;
+    int32 rowWidth = 0;
+    int32 cellWidth = 0;
     for (QLayoutItem* item : mItems)
     {
         if (item->isEmpty() == true)
         {
             continue;
         }
-        const QSize hint = item->sizeHint().boundedTo(QSize(std::max(inner.width(), 0), item->sizeHint().height()));
-        if (x > inner.x() && x + hint.width() > inner.right() + 1)
-        {
-            x = inner.x();
-            y += rowHeight + spacing();
-            rowHeight = 0;
-        }
-        if (shouldPlace == true)
-        {
-            item->setGeometry(QRect(QPoint(x, y), hint));
-        }
-        x += hint.width() + spacing();
-        rowHeight = std::max(rowHeight, hint.height());
+        const int32 width = item->sizeHint().width();
+        rowWidth += width + (shown.isEmpty() == false ? spacing() : 0);
+        cellWidth = std::max(cellWidth, width);
+        shown.append(item);
     }
-    return y + rowHeight - area.y() + margins.bottom();
+    if (shown.isEmpty() == true)
+    {
+        return margins.top() + margins.bottom();
+    }
+    // Everything fits: one row at the items' own widths.
+    if (rowWidth <= available)
+    {
+        int32 x = inner.x();
+        int32 rowHeight = 0;
+        for (QLayoutItem* item : std::as_const(shown))
+        {
+            const QSize hint = item->sizeHint();
+            if (shouldPlace == true)
+            {
+                item->setGeometry(QRect(QPoint(x, inner.y()), hint));
+            }
+            x += hint.width() + spacing();
+            rowHeight = std::max(rowHeight, hint.height());
+        }
+        return inner.y() + rowHeight - area.y() + margins.bottom();
+    }
+    // Otherwise a grid of equal cells as wide as the widest item, stretched to fill each row, so wrapped buttons
+    // line up instead of leaving a ragged edge.
+    cellWidth = std::min(cellWidth, available);
+    const qsizetype columns =
+        std::clamp<qsizetype>((available + spacing()) / std::max(cellWidth + spacing(), 1), 1, shown.size());
+    const int32 columnCount = static_cast<int32>(columns);
+    const int32 stretchedWidth = std::max(cellWidth, (available - (columnCount - 1) * spacing()) / columnCount);
+    int32 y = inner.y();
+    for (qsizetype first = 0; first < shown.size(); first += columns)
+    {
+        int32 rowHeight = 0;
+        for (qsizetype index = first; index < std::min(first + columns, shown.size()); ++index)
+        {
+            rowHeight = std::max(rowHeight, shown.at(index)->sizeHint().height());
+        }
+        for (qsizetype index = first; index < std::min(first + columns, shown.size()); ++index)
+        {
+            const int32 column = static_cast<int32>(index - first);
+            if (shouldPlace == true)
+            {
+                shown.at(index)->setGeometry(
+                    QRect(inner.x() + column * (stretchedWidth + spacing()), y, stretchedWidth, rowHeight));
+            }
+        }
+        y += rowHeight + spacing();
+    }
+    return y - spacing() - area.y() + margins.bottom();
 }
 } // namespace ludus::editor
