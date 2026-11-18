@@ -2611,8 +2611,6 @@ TEST_CASE("The Metal World viewport restarts diffuse bounce history after an emi
     PreviewViewport viewport(&source);
     viewport.resize(WIDTH, HEIGHT);
     viewport.show();
-    viewport.raise();
-    viewport.activateWindow();
     viewport.UseProjectGraph(workspace);
     workspace.SetPreviewSource(&source);
     workspace.EnableWorldRendering();
@@ -2625,12 +2623,14 @@ TEST_CASE("The Metal World viewport restarts diffuse bounce history after an emi
     graphOrNull->SetWorkLightEnabled(false);
 
     const auto waitFor = [&](const auto& isReady) {
-        return QTest::qWaitFor(
-            [&]() {
-                workspace.ServicePreview();
-                return isReady();
-            },
-            DEADLINE_MILLISECONDS);
+        QElapsedTimer timer;
+        timer.start();
+        while (isReady() == false && timer.elapsed() < DEADLINE_MILLISECONDS)
+        {
+            QTest::qWait(1);
+            workspace.ServicePreview();
+        }
+        return isReady();
     };
     REQUIRE(waitFor([&]() { return source.HasDevice(); }) == true);
     rhi::RayCapabilities capabilities;
@@ -2640,10 +2640,15 @@ TEST_CASE("The Metal World viewport restarts diffuse bounce history after an emi
     }
     const QString package = QStringLiteral(LUDUS_EDITOR_INDIRECT_DIFFUSE_PACKAGE);
     REQUIRE(graphOrNull->Load(package, GetDefaultRenderGraphRuntime()) == RenderGraphPreviewLoad::Staged);
-    REQUIRE(waitFor([&]() {
-                return graphOrNull->GetActivePackagePath() == package && graphOrNull->HasGpuFrame() == true &&
-                       graphOrNull->GetPresentedGeneration() == graphOrNull->GetReport().ActiveGeneration;
-            }) == true);
+    const bool hasPresentedInitial = waitFor([&]() {
+        return graphOrNull->GetActivePackagePath() == package && graphOrNull->HasGpuFrame() == true &&
+               graphOrNull->GetPresentedGeneration() == graphOrNull->GetReport().ActiveGeneration;
+    });
+    INFO(graphOrNull->GetDisplayStatus().toStdString());
+    CAPTURE(graphOrNull->GetReport().ActiveGeneration,
+            graphOrNull->GetReport().LatestSceneRevision,
+            source.ShouldRenderPresentation());
+    REQUIRE(hasPresentedInitial == true);
     REQUIRE(graphOrNull->GetReport().ActiveRenderer == renderer::RenderGraphRenderer::HardwareRayTracing);
     REQUIRE(&viewport.GetFrameSource() == &graphOrNull->GetDisplayFrames());
     const uint64 firstFrame = graphOrNull->GetDisplayFrames().GetLatestSerial();

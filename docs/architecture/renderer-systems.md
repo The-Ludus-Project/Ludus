@@ -3910,10 +3910,10 @@ RMS was 0.0067 and 0.0111. The fresh graph reproduced the sampled checkpoints
 exactly. The previous output revision remained available until the first new
 frame, when the new history held one sample per pixel.
 
-The running mean uses 196,608 bytes at that extent. Over three 21-frame
-measurements, emitter edit to drawable publication took 3.23–4.11 ms at the
+The running mean uses 196,608 bytes at that extent. Over four 21-frame
+measurements, emitter edit to drawable publication took 2.77–4.11 ms at the
 median and 6.15–12.75 ms at p95, including preparation and polling. The fused
-ray shade and reconstruction took 0.15–0.19 ms median and 0.25–0.29 ms p95 in
+ray shade and reconstruction took 0.15–0.26 ms median and 0.25–0.29 ms p95 in
 GPU timestamps. ForceRaster rendered the same inputs using the default raster
 graph. Automatic fallback is exercised on Vulkan devices with native rays
 unrequested.
