@@ -745,6 +745,9 @@ struct Renderer::State final
         usize Count = 0, SnapshotSlot = 0;
         uint32 Width = 0, Height = 0, References = 0;
         bool Rendered = false, Failed = false;
+        usize LastReceiverSlot = 0;
+        uint64 LastReceiverGeneration = 0;
+        bool HasMatchingCasters = false;
     };
     Array<ShadowRecord> Shadows;
     Status LightingSetup = Status::NotReady;
@@ -1032,6 +1035,7 @@ struct Renderer::State final
     }
     [[nodiscard]] bool SameCasters(const SnapshotRecord& a, usize right) const noexcept
     {
+        LUDUS_PROFILE_SCOPE(RendererCompareShadowCasters);
         const auto& b = SnapshotRecords[right];
         usize ca = 0, cb = 0;
         for (usize i = 0; i < a.Count; ++i)
@@ -1080,6 +1084,22 @@ struct Renderer::State final
             }
         }
         return true;
+    }
+    // Thanks to Tobias Persson, "Simple Parallel Rendering" (Our Machinery), for the idea of
+    // avoiding repeated object visits. Here the shared work is an exact caster-set comparison.
+    // https://ruby0x1.github.io/machinery_blog_archive/post/simple-parallel-rendering/index.html#a-cleaner-approach
+    [[nodiscard]] bool HasMatchingShadowCasters(usize shadowSlot, Snapshot receivers) noexcept
+    {
+        ShadowRecord& atlas = Shadows[shadowSlot];
+        const usize receiverSlot = Access::Slot(receivers);
+        const uint64 receiverGeneration = Access::Generation(receivers);
+        if (atlas.LastReceiverSlot != receiverSlot || atlas.LastReceiverGeneration != receiverGeneration)
+        {
+            atlas.HasMatchingCasters = SameCasters(SnapshotRecords[atlas.SnapshotSlot], receiverSlot);
+            atlas.LastReceiverSlot = receiverSlot;
+            atlas.LastReceiverGeneration = receiverGeneration;
+        }
+        return atlas.HasMatchingCasters;
     }
     void DropPresentation(PresentationRecord& presentation) noexcept
     {
@@ -4334,10 +4354,7 @@ Status Renderer::PrepareView(Snapshot handle,
                 if (material.ShadowSlot != NO_SHADOW)
                 {
                     candidate.Data.Eye.W =
-                        mState->SameCasters(mState->SnapshotRecords[mState->Shadows[material.ShadowSlot].SnapshotSlot],
-                                            Access::Slot(handle))
-                            ? 1.0F
-                            : 0.0F;
+                        mState->HasMatchingShadowCasters(material.ShadowSlot, handle) == true ? 1.0F : 0.0F;
                 }
             }
             if (description.OrthographicCamera)

@@ -554,10 +554,13 @@ spot projection authoring; no temporal jitter or automatic fit policy is hidden.
 Atlas light identity, position/direction/range/cone must match selected material
 lights; color/intensity may change without changing visibility. New geometry,
 source identity, transform, opacity domain, or masked material incarnation invalidates
-cached visibility. The complete caster set is compared conservatively; even a moved
-caster outside the main view selects unshadowed direct lighting and increments
+cached visibility. Each atlas remembers the complete caster-set comparison for its
+most recent receiver snapshot, including its generation. Receivers and camera views
+sharing that snapshot reuse the result. Even a moved caster outside the main view
+selects unshadowed direct lighting and increments
 `ShadowFallbacks`. Lighting-only opaque material replacement keeps visibility valid.
-A new rendered atlas is required to restore shadows; no stale shadow is sampled.
+Render a new atlas for the changed casters. Restoring the original caster set also
+makes the retained atlas valid again.
 
 ### Linear composition and capabilities
 

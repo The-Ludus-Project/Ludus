@@ -1314,11 +1314,14 @@ TEST_CASE("L4 lit versions retain atlases and invalidate changed casters conserv
     rr::MaterialVersion initial;
     rr::LightSelection selected;
     REQUIRE(session.Renderer.CreateLitMaterial(program, description, initial, selected) == rhi::RasterStatus::Ready);
-    auto item = session.Item(1);
-    item.Geometry = mesh;
-    item.Surface = initial;
+    rr::SceneItem receivers[]{session.Item(1), session.Item(2)};
+    for (rr::SceneItem& receiver : receivers)
+    {
+        receiver.Geometry = mesh;
+        receiver.Surface = initial;
+    }
     rr::Snapshot casters;
-    REQUIRE(session.Renderer.CreateSnapshot(&item, 1, casters) == rhi::RasterStatus::Ready);
+    REQUIRE(session.Renderer.CreateSnapshot(receivers, 2, casters) == rhi::RasterStatus::Ready);
     rr::ShadowRegion region;
     region.Light = light;
     region.Interior = {1, 1, 14, 14};
@@ -1338,19 +1341,36 @@ TEST_CASE("L4 lit versions retain atlases and invalidate changed casters conserv
             rhi::RasterStatus::Ready);
     REQUIRE(session.Renderer.Release(atlas) == rhi::RasterStatus::Ready);
     REQUIRE(session.Renderer.PublishMaterial(replacement, initial) == rhi::RasterStatus::Ready);
-    item.Surface = initial;
+    for (rr::SceneItem& receiver : receivers)
+    {
+        receiver.Surface = initial;
+    }
     rr::Snapshot same;
-    REQUIRE(session.Renderer.CreateSnapshot(&item, 1, same) == rhi::RasterStatus::Ready);
+    REQUIRE(session.Renderer.CreateSnapshot(receivers, 2, same) == rhi::RasterStatus::Ready);
     rr::PreparedView view;
     rr::ViewReport report;
-    REQUIRE(session.Renderer.PrepareView(same, {}, view, report) == rhi::RasterStatus::Ready);
-    CHECK(report.ShadowFallbacks == 0);
-    REQUIRE(session.Renderer.Release(view) == rhi::RasterStatus::Ready);
-    item.Transform.Translation.X = .01F;
+    for (usize i = 0; i < 2; ++i)
+    {
+        REQUIRE(session.Renderer.PrepareView(same, {}, view, report) == rhi::RasterStatus::Ready);
+        CHECK(report.Visible == 2);
+        CHECK(report.ShadowFallbacks == 0);
+        REQUIRE(session.Renderer.Release(view) == rhi::RasterStatus::Ready);
+    }
+    receivers[1].Transform.Translation.X = 0.01F;
     rr::Snapshot moved;
-    REQUIRE(session.Renderer.CreateSnapshot(&item, 1, moved) == rhi::RasterStatus::Ready);
+    REQUIRE(session.Renderer.CreateSnapshot(receivers, 2, moved) == rhi::RasterStatus::Ready);
     REQUIRE(session.Renderer.PrepareView(moved, {}, view, report) == rhi::RasterStatus::Ready);
-    CHECK(report.ShadowFallbacks == 1);
+    CHECK(report.ShadowFallbacks == 2);
+    REQUIRE(session.Renderer.Release(view) == rhi::RasterStatus::Ready);
+    REQUIRE(session.Renderer.Release(moved) == rhi::RasterStatus::Ready);
+
+    // The repaired snapshot reuses the moved snapshot's slot with a new generation.
+    receivers[1].Transform.Translation.X = 0;
+    rr::Snapshot repaired;
+    REQUIRE(session.Renderer.CreateSnapshot(receivers, 2, repaired) == rhi::RasterStatus::Ready);
+    REQUIRE(session.Renderer.PrepareView(repaired, {}, view, report) == rhi::RasterStatus::Ready);
+    CHECK(report.Visible == 2);
+    CHECK(report.ShadowFallbacks == 0);
     REQUIRE(session.Renderer.Release(initial) == rhi::RasterStatus::Ready);
     REQUIRE(session.Renderer.Release(program) == rhi::RasterStatus::Ready);
     REQUIRE(session.Renderer.Release(mesh) == rhi::RasterStatus::Ready);
