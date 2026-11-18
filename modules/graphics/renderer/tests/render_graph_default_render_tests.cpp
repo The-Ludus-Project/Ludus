@@ -8,6 +8,7 @@
 #include "../src/internal/render_graph_metalfx.h"
 #include "../src/internal/render_graph_upscale.h"
 #include "earth_sky_quadrature.hpp"
+#include "hair_card_coverage_fixture.h"
 #include "render_graph_gpu_fixture.h"
 #include "renderer_composite.h"
 #include "rg2_forward_lit.h"
@@ -1580,6 +1581,43 @@ TEST_CASE("default deferred lighting casts directional and mesh-light shadows",
         render();
         CHECK(fixture.Pixels[center] == litRed);
         CHECK(fixture.Pixels[center + 1] == litGreen);
+    }
+    SECTION("a textured hair card blocks a directional shadow only where its mask passes")
+    {
+        constexpr usize MATERIAL_COUNT = 3;
+        constexpr uint32 CASTER_MATERIAL = MATERIAL_COUNT - 1;
+        StaticArray<renderer::SceneShaderMaterial, MATERIAL_COUNT> shadowMaterials{};
+        HairCardCoverageFixture coverage;
+        coverage.SetMask(shadowMaterials[CASTER_MATERIAL]);
+        meshes[2].MaterialBindings = {&CASTER_MATERIAL, 1};
+        inputs.Materials = {shadowMaterials.GetData(), shadowMaterials.GetSize()};
+        renderer::DirectLight light;
+        light.SourceId = 1;
+        light.Kind = renderer::LightKind::Directional;
+        light.Direction = {-1, 0, -1};
+        light.Color = {1, 1, 1};
+        light.Intensity = 2;
+        inputs.Lights = {&light, 1};
+        REQUIRE(update(1) == rhi::RasterStatus::Ready);
+        render();
+        const uint8 lit = fixture.Pixels[center];
+        REQUIRE(lit > 32);
+        const auto measureShadow = [&](uint8 alpha, float32 cutoff, bool hasExpectedCoverage) {
+            coverage.Texture[HairCardCoverageFixture::TEXEL_BYTES - 1] = alpha;
+            shadowMaterials[CASTER_MATERIAL].AlphaCutoff = cutoff;
+            REQUIRE(update(SCENE_COUNT) == rhi::RasterStatus::Ready);
+            render();
+            CAPTURE(alpha, cutoff);
+            CHECK(fixture.Graph.GetReport().Resources.DirectionalShadowLights == 1);
+            const uint8 red = fixture.Pixels[center];
+            CHECK(red == (hasExpectedCoverage == true ? 0 : lit));
+            return red != lit;
+        };
+        CHECK(measureShadow(0, HAIR_MASK_CUTOFF, false) == false);
+        CHECK(measureShadow(HAIR_MASK_SOLID_ALPHA, HAIR_MASK_CUTOFF, true) == true);
+        const bool hasMatchedShadow = measureShadow(HAIR_MASK_MID_ALPHA, HAIR_MASK_CUTOFF, true);
+        const bool hasMismatchedShadow = measureShadow(HAIR_MASK_MID_ALPHA, HAIR_MASK_MISMATCHED_CUTOFF, false);
+        CHECK(hasMatchedShadow != hasMismatchedShadow);
     }
     SECTION("every directional light up to the capacity keeps its own map")
     {

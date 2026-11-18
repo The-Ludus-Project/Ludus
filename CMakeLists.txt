@@ -738,7 +738,8 @@ install(FILES scripts/python/ludus_tools/__init__.py scripts/python/ludus_tools/
     scripts/python/ludus_tools/render_graph_template_update.py
     DESTINATION "${CMAKE_INSTALL_LIBDIR}/cmake/Ludus/render_graph/ludus_tools")
 foreach(template_directory IN ITEMS default forward_lit restir_di visibility_buffer visibility_secondary_rays hybrid_shadows
-        hybrid_reflections tiled_vbuffer_nee compute_ray_tracing simple_compute_ray_tracing veach_guibas_mis line_sampling ris_projected_solid_angle
+        hybrid_reflections hybrid_indirect_diffuse tiled_vbuffer_nee compute_ray_tracing simple_compute_ray_tracing
+        veach_guibas_mis line_sampling ris_projected_solid_angle
         salesin_jarosz_lines polygonal_light_sampling slice_sampling_luminaire rough_pair_slice steinberg_plt
         steinberg_physical_optics wave_tracing restir_gi rao_blackwell_mh guided_restir_fg_plus conditional_restir one_more_vertex_nee light_transformer)
     install(DIRECTORY "modules/graphics/renderer/render_graphs/${template_directory}/"

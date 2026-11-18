@@ -2484,12 +2484,18 @@ TEST_CASE("Selected project World edits reach the delegated graph viewport", "[e
     rhi::Shutdown();
 }
 
-TEST_CASE("The World viewport draws the skin bust through light edits, orbit and resize",
-          "[editor][render-graph][world-graph][skin]")
+TEST_CASE("The World viewport draws the character bust through light edits, orbit and resize",
+          "[editor][render-graph][world-graph][skin][hair-card]")
 {
-    // The engine's lit character bust imported into a new World and made skin through the inspector, drawn by the
-    // project's default render graph (clustered deferred, which spreads skin's diffuse light). Each interactive edit
-    // presents a new frame of the current World.
+    namespace format = ludus::content::scene_format;
+    bool shouldAssignHair = false;
+    SECTION("skin diffusion in clustered deferred") {}
+    SECTION("hair cards in forward lit")
+    {
+        shouldAssignHair = true;
+    }
+    const format::MaterialModel model =
+        shouldAssignHair == true ? format::MaterialModel::HairCard : format::MaterialModel::Skin;
     constexpr int32 TIMEOUT_MILLISECONDS = 60000;
     rhi::Shutdown();
     QTemporaryDir project;
@@ -2516,7 +2522,9 @@ TEST_CASE("The World viewport draws the skin bust through light edits, orbit and
     world.resize(1000, 700);
     world.show();
     REQUIRE(world.Create(root.filePath(QStringLiteral("bust.world.json"))) == true);
-    REQUIRE(world.ImportScene(copy.filePath(QStringLiteral("infinite-head-lit.gltf"))) == true);
+    const QString sceneFile =
+        shouldAssignHair == true ? QStringLiteral("infinite-head-hair.gltf") : QStringLiteral("infinite-head-lit.gltf");
+    REQUIRE(world.ImportScene(copy.filePath(sceneFile)) == true);
     const auto waitFor = [&](const auto& isReady) {
         QElapsedTimer timer;
         timer.start();
@@ -2533,17 +2541,18 @@ TEST_CASE("The World viewport draws the skin bust through light edits, orbit and
     // Importing pauses the preview; it resumes on the validated World.
     world.ResumePreview();
     REQUIRE(waitFor([&]() { return source().Scene().Objects.isEmpty() == false; }) == true);
-    QString head;
+    const std::string_view slotName = shouldAssignHair == true ? "Hair" : "Skin";
+    QString slot;
     for (const PreviewObject& object : source().Scene().Objects)
     {
         const ludus::resources::SceneMaterial* materialOrNull =
             GetSceneObjectMaterialOrNull(source().Scene(), object.Id);
-        if (materialOrNull != nullptr && materialOrNull->Name.View() == "Skin")
+        if (materialOrNull != nullptr && materialOrNull->Name.View() == slotName)
         {
-            head = object.Id;
+            slot = object.Id;
         }
     }
-    REQUIRE(head.isEmpty() == false);
+    REQUIRE(slot.isEmpty() == false);
     QWidget* viewport = world.findChild<QWidget*>(QStringLiteral("worldViewport"));
     REQUIRE(viewport != nullptr);
     WorldGraphView* graphView = viewport->findChild<WorldGraphView*>();
@@ -2557,7 +2566,17 @@ TEST_CASE("The World viewport draws the skin bust through light edits, orbit and
                    graphView->GetImage() != previous;
         });
     };
-    REQUIRE(source().FrameEntity(head) == true);
+    if (shouldAssignHair == true)
+    {
+        // Wait for the viewport to attach its device before selecting the built forward template.
+        REQUIRE(waitFor([&]() { return graphView->GetImage().isNull() == false; }) == true);
+        const QString forward = QStringLiteral(LUDUS_EDITOR_FORWARD_GRAPH_FIXTURE);
+        REQUIRE(previewOrNull->Load(forward, GetDefaultRenderGraphRuntime()) == RenderGraphPreviewLoad::Staged);
+        REQUIRE(waitFor([&]() {
+                    return previewOrNull->GetActivePackagePath() == forward && graphView->GetImage().isNull() == false;
+                }) == true);
+    }
+    REQUIRE(source().FrameEntity(slot) == true);
     REQUIRE(waitFor([&]() {
                 return graphView->GetImage().isNull() == false && source().IsBuiltInViewShown() == false;
             }) == true);
@@ -2565,24 +2584,41 @@ TEST_CASE("The World viewport draws the skin bust through light edits, orbit and
     const QImage metallicRoughness = graphView->GetImage();
     uint64 revision = previewOrNull->GetPresentedRevision();
 
-    // Make Skin replaces the metallic-roughness frame with one whose diffuse light spreads.
-    REQUIRE(world.SelectEntity(head) == true);
-    QPushButton* assignOrNull = world.findChild<QPushButton*>(QStringLiteral("worldAssignSkin"));
+    REQUIRE(world.SelectEntity(slot) == true);
+    const QString assignButton =
+        shouldAssignHair == true ? QStringLiteral("worldAssignHairCard") : QStringLiteral("worldAssignSkin");
+    QPushButton* assignOrNull = world.findChild<QPushButton*>(assignButton);
     REQUIRE(assignOrNull != nullptr);
     assignOrNull->click();
     REQUIRE(waitFor([&]() {
                 const ludus::resources::SceneMaterial* materialOrNull =
-                    GetSceneObjectMaterialOrNull(source().Scene(), head);
-                return materialOrNull != nullptr &&
-                       materialOrNull->Scattering.Model == ludus::content::scene_format::MaterialModel::Skin;
+                    GetSceneObjectMaterialOrNull(source().Scene(), slot);
+                return materialOrNull != nullptr && materialOrNull->Scattering.Model == model;
             }) == true);
     REQUIRE(waitForNewFrame(revision, metallicRoughness) == true);
     REQUIRE(waitFor([&]() { return previewOrNull->HasPendingWork() == false; }) == true);
     INFO(workspace.GetRenderProblem().toStdString());
     CHECK(workspace.GetRenderProblem().isEmpty() == true);
-    QImage skin = graphView->GetImage();
-    CHECK(skin != metallicRoughness);
+    QImage image = graphView->GetImage();
     revision = previewOrNull->GetPresentedRevision();
+    if (shouldAssignHair == true)
+    {
+        QLineEdit* strandOrNull =
+            world.findChild<QLineEdit*>(QStringLiteral("worldField:scene/hair_card/strand_direction_degrees"));
+        REQUIRE(strandOrNull != nullptr);
+        strandOrNull->setFocus();
+        strandOrNull->selectAll();
+        QTest::keyClicks(strandOrNull, QStringLiteral("200"));
+        CHECK(world.Apply() == false);
+        REQUIRE(previewOrNull->GetPresentedRevision() == revision);
+        CHECK(graphView->GetImage() == image);
+        strandOrNull->selectAll();
+        QTest::keyClicks(strandOrNull, QStringLiteral("90"));
+        REQUIRE(world.Apply() == true);
+        REQUIRE(waitForNewFrame(revision, image) == true);
+        image = graphView->GetImage();
+        revision = previewOrNull->GetPresentedRevision();
+    }
 
     // A lighting edit: switching the imported key light off presents a new frame.
     WorldLightsPanel* lightsOrNull = world.findChild<WorldLightsPanel*>();
@@ -2593,22 +2629,26 @@ TEST_CASE("The World viewport draws the skin bust through light edits, orbit and
     QTreeWidgetItem* keyOrNull = lightTreeOrNull->topLevelItem(0);
     REQUIRE(keyOrNull != nullptr);
     keyOrNull->setCheckState(0, Qt::Unchecked);
-    REQUIRE(waitForNewFrame(revision, skin) == true);
-    skin = graphView->GetImage();
+    REQUIRE(waitForNewFrame(revision, image) == true);
+    image = graphView->GetImage();
     revision = previewOrNull->GetPresentedRevision();
 
-    // Orbit and resize present the skin World from the new camera and at the new extent.
+    // Orbit and resize present the World from the new camera and at the new extent.
     source().Orbit(20, 0);
-    REQUIRE(waitForNewFrame(revision, skin) == true);
-    skin = graphView->GetImage();
+    REQUIRE(waitForNewFrame(revision, image) == true);
+    image = graphView->GetImage();
     revision = previewOrNull->GetPresentedRevision();
-    const QSize extent = skin.size();
+    const QSize extent = image.size();
     world.resize(1200, 820);
     REQUIRE(waitFor([&]() {
                 return previewOrNull->GetPresentedRevision() > revision && graphView->GetImage().size() != extent;
             }) == true);
     INFO(workspace.GetRenderProblem().toStdString());
     CHECK(workspace.GetRenderProblem().isEmpty() == true);
+    if (shouldAssignHair == true)
+    {
+        CHECK(previewOrNull->GetActivePackagePath() == QStringLiteral(LUDUS_EDITOR_FORWARD_GRAPH_FIXTURE));
+    }
     world.StopPreview();
     workspace.SetPreviewSource(nullptr);
     rhi::Shutdown();

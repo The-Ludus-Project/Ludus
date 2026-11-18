@@ -2271,7 +2271,9 @@ Status RenderGraph::GetAccumulation(uint32 pass, rhi::BufferHandle& outBuffer) c
     {
         return Status::Unsupported;
     }
-    if (state.HasValidOutput == false || state.Producer.IsNull() == true ||
+    // Scene/camera publication resets both counters even when it reuses the same caller revision.
+    const bool hasSubmittedBand = state.Current->SubmittedRaySamples != 0 || state.Current->NextRayTile != 0;
+    if (hasSubmittedBand == false || state.HasValidOutput == false || state.Producer.IsNull() == true ||
         rhi::GetStatus(state.Device, state.Producer) != Status::Ready)
     {
         return Status::NotReady;

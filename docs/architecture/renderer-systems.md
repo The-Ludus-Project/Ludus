@@ -1803,8 +1803,9 @@ its typed scattering slots (`HairCardParameters`). Its record keeps zero metalli
 and base colour, roughness, textures and the alpha mask keep their usual meaning.
 Author it in a [scene source](scene-source-format.md#hair-card) or from code.
 
-The forward raster profile with authored inputs, which the World viewport uses,
-shades a hair card as follows:
+The forward raster profile with authored inputs shades a hair card as follows.
+Select the [Forward lit template](../development/render-graph-authoring.md#use-the-forward-lit-template)
+in the World viewport to use this profile.
 
 - **Strand frame.** The authored tangent sets the frame. Without one, the
   texture-coordinate derivatives give dP/du and the handedness. A card with
@@ -1835,14 +1836,20 @@ shades a hair card as follows:
 longitudinal peak at two incident angles and three shifts. They check the peak
 value, rotation with the strand direction, both sides and finite output near
 tangent-aligned directions. The `[hair-card][gpu]` forward-lit test in `ludus_renderer_render_tests` checks the
-same behaviour in raster pixels: the highlight moves with the strand, back faces
-match front faces where an ordinary card is dark, far-side lights are gated, and
-masks discard. It also checks that a metallic hair card is rejected while the
+same behaviour in linear raster pixels. It samples nine view directions at each
+of two incident angles and compares them to the independent longitudinal
+`cos^p((θᵢ + θₒ)/2 + s)` curve. An ordinary masked surface provides a control.
+Back faces match front faces where an ordinary card is dark, and far-side lights
+are gated. It also checks that a metallic hair card is rejected while the
 last drawable scene is kept.
 
-Coverage reuses the material's mask in every pass. Colour, depth and shadow
-casting discard through `SampleBaseTexel` with the same cutoff. Ray scenes apply
-the record's mask in closest-hit and shadow queries as for any masked material.
+The masked color pass also writes depth. It and the shadow caster discard through
+`SampleBaseTexel` with the same cutoff. Ray scenes apply the record's mask in
+closest-hit and shadow queries. The coverage fixtures use the same RGBA texel
+and cutoff across the forward color/depth pass, the deferred directional shadow
+pass and the triangle-loop, compute BVH and supported native ray queries. A
+separate probe raises the cutoff from 0.5 to 0.75 with alpha held at 128/255,
+so each coverage comparison detects a cutoff mismatch.
 
 Other paths make declared approximations:
 
@@ -1859,12 +1866,9 @@ Other paths make declared approximations:
 World slots become hair cards in the editor, which edits the strand controls
 and mask cutoff with the World history. See
 [make a slot a hair card](../development/editor-workspace.md#make-a-slot-a-hair-card).
-Still open in [#1371](https://github.com/The-Ludus-Project/Ludus/issues/1371):
-
-- The shared static bust.
-- The matched-cutoff and mismatched-cutoff coverage comparison across raster
-  passes and ray queries.
-- GPU time and overdraw measurements against an ordinary masked material.
+The [shared character bust](scene-source-format.md#character-bust) supplies the
+interactive World fixture and the
+[matched hair timing and overdraw comparison](../development/benchmark-scenes.md#measure-raster-hair-on-the-character-bust).
 
 #### Raster skin diffusion
 
@@ -3875,9 +3879,68 @@ state. Hybrid reflections is the route that shows offscreen geometry.
 The timings come from the opt-in `[.benchmark][hybrid-reflections]` case. The shade
 pass's GPU time varied between the two runs with the device clock.
 
+#### Bounded one-bounce indirect diffuse
+
+The [hybrid indirect diffuse graph](../development/render-graph-authoring.md#trace-one-diffuse-bounce)
+estimates the first diffuse interreflection from raster first hits. At the first
+surface it adds one next-event estimate of direct light. At a cosine-weighted
+secondary hit it estimates the next light connection with the diffuse lobe,
+then weights that estimate by the receiver's diffuse BRDF times π. The effect
+uses up to one surface and two visibility queries per pixel. Accumulate shares
+the shade dispatch and retains a fixed-view scene-linear mean. An accepted
+scene or view update resets the sample count and its history. An accumulation
+readback becomes available when the drawable revision produces a completed
+frame. Until then, a completed display image can retain its previous revision.
+
+The `[hybrid-indirect-diffuse]` fixture uses a fixed orthographic camera, a neutral
+diffuse receiver, an offscreen colored reflector and a one-sided mesh emitter
+facing the reflector. A black blocker moves between them. The emitter faces away
+from the receiver, so the RT1 direct and emission channels are zero at the
+probes. The RT1 CPU oracle and GPU compute evaluate two scattering events, and
+the test compares their one-bounce indirect output with RT2's raw first sample
+and running mean. An emitter-only edit comes before the blocker edit. The test
+submits an old-revision frame before staging each edit, checks the output revision
+and accumulation boundary, and compares each new checkpoint with a fresh graph
+at that revision. It reports error over changed and stable receiver pixels and
+the first checkpoint to reach the declared RMS tolerance.
+
+On Apple M5 with Metal, at 96 × 64 and center rays, the 256-sample CPU oracle
+and the 1024-sample GPU RT1 capture differed by at most 1.1e-4 in mean signed
+red radiance. The raw hybrid frames had RMS errors of 0.061–0.245, and the
+256-frame running means had RMS errors of 0.0043–0.0173 against GPU RT1.
+Changed-region RMS fell to 0.0177 after the emitter edit and 0.0195 after the
+occluder edit at frame 256, within the declared 0.02 tolerance. Stable-region
+RMS was 0.0067 and 0.0111. The fresh graph reproduced the sampled checkpoints
+exactly. The previous output revision remained available until the first new
+frame, when the new history held one sample per pixel.
+
+The running mean uses 196,608 bytes at that extent. Over four 21-frame
+measurements, emitter edit to drawable publication took 2.77–4.11 ms at the
+median and 6.15–12.75 ms at p95, including preparation and polling. The fused
+ray shade and reconstruction took 0.15–0.26 ms median and 0.25–0.29 ms p95 in
+GPU timestamps. ForceRaster rendered the same inputs using the default raster
+graph. Automatic fallback is exercised on Vulkan devices with native rays
+unrequested.
+
+The offline comparison traces cosine-weighted walks from the same emitter and
+places one point light at each unblocked reflector hit. It checks visibility back
+to regular probes and to probes 15 mm from the reflector. The near probes use an
+independent cosine-hemisphere integral. The virtual-light run reports budgets of
+64, 256 and 1024 source paths, the number of point lights and visibility tests, the
+signed error against RT1 and the near-surface peak error. It measures the lost
+radiance when the inverse-square denominator is clamped at an 80 mm distance.
+Thanks to Alexander Keller for the virtual point light construction and the
+discussion of its near-source singularity in
+[Instant Radiosity, SIGGRAPH 1997, pp. 49–56](https://doi.org/10.1145/258734.258769).
+At 64, 256 and 1024 source paths, it retained 49, 194 and 761 virtual lights
+and checked about 5.9k, 23k and 91k visibility segments. Mean signed red error
+against GPU RT1 stayed within 0.0025 at the regular probes. Near the reflector,
+the largest errors were 5.60, 12.39 and 2.69 before clamping, and 1.29, 1.36 and
+1.37 after. Clamping also removed 0.82–1.62 mean red radiance at those probes.
+That near-field trade-off keeps virtual lights as an offline comparison.
+
 [Issue 1248](https://github.com/The-Ludus-Project/Ludus/issues/1248) tracks the
-remaining bounded indirect diffuse, stale-history validation in the World viewport
-and an installed-SDK app, and Vulkan evidence for the automatic raster fallback.
+RT2 acceptance evidence across the World viewport, installed SDK and Vulkan.
 
 Start with ordinary sampling plus a modest, inspectable temporal/spatial filter.
 ReSTIR DI (direct light sampling), GI (indirect paths) and PT (path resampling)

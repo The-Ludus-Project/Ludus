@@ -2027,8 +2027,11 @@ also requires the program's fixed-dimension reflection declaration.
 
 ### Make a slot a hair card
 
-Import a hair card mesh, for example a glTF card whose base texture's alpha
-masks the strands. Select its slot and choose **Make Hair Card** in the
+Import a hair card mesh. The engine's
+[character bust](../architecture/scene-source-format.md#character-bust)
+(`tests/scenes/characters/infinite-head/infinite-head-hair.gltf`) has a
+separate **Hair** slot with an opacity texture and two lights. Select the slot
+and choose **Make Hair Card** in the
 **Material** group. The slot keeps its base colour, roughness, textures and
 mask, and the viewport shades it two-sided with highlights that follow the
 strand direction. If the slot has its own coating instance, a confirmation
@@ -2054,8 +2057,11 @@ material. The assignment, each edit and the restore are undoable, and **Save
 World** keeps them across reopening and reimport. Slots with equal values share
 one cooked material.
 
-The raster viewport shades the strand highlight; ray previews and reference
-captures use the card's metallic/roughness surface lobes. See
+Use the [Forward lit template](render-graph-authoring.md#use-the-forward-lit-template)
+in the project's World viewport to see the strand highlights. On the bust,
+set **Strand direction (°)** to 90 to follow the ribbons from root to tip.
+Clustered deferred, ray previews and reference captures use the card's
+metallic/roughness surface lobes. See
 [raster hair cards](../architecture/renderer-systems.md#raster-hair-cards).
 
 ### Make a slot skin

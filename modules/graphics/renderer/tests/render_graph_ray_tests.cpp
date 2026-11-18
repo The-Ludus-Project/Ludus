@@ -3,6 +3,7 @@
 #include "../src/internal/ltc_table.h"
 #include "../src/internal/reference_data.h"
 #include "../src/internal/render_graph_ray_scene.h"
+#include "hair_card_coverage_fixture.h"
 
 #include "ltc_lookup_cases.h"
 #include "material_program_fixtures.h"
@@ -63,6 +64,7 @@
 #include <ludus/foundation/math/status.hpp>
 #include <ludus/foundation/threading/thread.hpp>
 #include <ludus/foundation/time/time.hpp>
+#include <ludus/foundation/time/timers.hpp>
 #include <ludus/graphics/renderer/atmosphere.hpp>
 #include <ludus/graphics/renderer/reference.hpp>
 #include <ludus/graphics/renderer/render_graph_activation.hpp>
@@ -589,6 +591,76 @@ TEST_CASE("Shared alpha masks agree between CPU queries and GPU graph traversal"
             CHECK(fixture.Pixels[center + 2] == (hasCoverage == true ? 0 : 188));
         }
     }
+}
+
+TEST_CASE("Hair card masks agree in GPU closest and visibility queries", "[render-graph][gpu][scene-mask][hair-card]")
+{
+    using namespace ludus::graphics::renderer::testing;
+    PackageLocation location{LUDUS_HAIR_CARD_RAY_DEFAULT_DIRECTORY, "rg2_hair_card_ray_default.lurgrt"};
+    bool shouldUseNativeQueries = false;
+    SECTION("triangle loop") {}
+    SECTION("compute BVH")
+    {
+        location = {LUDUS_HAIR_CARD_RAY_COMPUTEBVH_DIRECTORY, "rg2_hair_card_ray_computebvh.lurgrt"};
+    }
+    SECTION("native queries")
+    {
+        location = {LUDUS_HAIR_CARD_RAY_NATIVE_DIRECTORY, "rg2_hair_card_ray_native.lurgrt"};
+        shouldUseNativeQueries = true;
+    }
+    GraphGpuFixture fixture(false, shouldUseNativeQueries);
+    const core::UniquePtr<renderer::RenderGraphPackage> package = LoadPackage(location);
+    const renderer::RenderGraphPrograms programs =
+        package->GetPrograms(shaders::renderer_composite::Vertex(), shaders::renderer_composite::Fragment());
+    const auto waitReady = [&fixture](rhi::RasterStatus status) {
+        time::Deadline deadline;
+        REQUIRE(deadline.Arm(time::Now(), time::Seconds(LUDUS_RENDERER_TEST_COLD_GPU_TIMEOUT_SECONDS)) ==
+                time::TimeStatus::Ok);
+        while (status == rhi::RasterStatus::Pending && deadline.IsExpired(time::Now()) == false)
+        {
+            threading::SleepFor(time::Milliseconds(1));
+            status = fixture.Graph.Poll();
+        }
+        REQUIRE(status == rhi::RasterStatus::Ready);
+    };
+    waitReady(fixture.Graph.Initialize(fixture.Device, package->GetPlan(), programs));
+    fixture.Cameras[0].OrthographicCamera = true;
+    const uint32 binding = 0;
+    fixture.Meshes[0].MaterialBindings = {&binding, 1};
+    renderer::SceneShaderMaterial material;
+    HairCardCoverageFixture coverage;
+    coverage.SetMask(material);
+    renderer::SceneShaderInputs inputs;
+    inputs.Materials = {&material, 1};
+    uint64 revision = 0;
+    const auto measureQueries = [&](uint8 alpha, float32 cutoff, bool hasExpectedCoverage) {
+        coverage.Texture[HairCardCoverageFixture::TEXEL_BYTES - 1] = alpha;
+        material.AlphaCutoff = cutoff;
+        ++revision;
+        renderer::RenderGraphReport report;
+        waitReady(fixture.Graph.Update({fixture.Meshes.GetData(), fixture.Meshes.GetSize()},
+                                       {fixture.Items.GetData(), fixture.Items.GetSize()},
+                                       {fixture.Cameras.GetData(), fixture.Cameras.GetSize()},
+                                       revision,
+                                       renderer::RenderGraphCoveragePolicy::RejectIncomplete,
+                                       report,
+                                       &inputs,
+                                       revision));
+        ReadGraphFrame(fixture);
+        const usize center = GetPixel(WIDTH / 2, HEIGHT / 2);
+        const bool hasClosestHit = fixture.Pixels[center] != 0;
+        const bool hasShadowHit = fixture.Pixels[center + 1] != 0;
+        CAPTURE(alpha, cutoff);
+        CHECK(fixture.Pixels[center + 2] == 0);
+        CHECK(hasClosestHit == hasShadowHit);
+        CHECK(hasClosestHit == hasExpectedCoverage);
+        return hasClosestHit;
+    };
+    CHECK(measureQueries(0, HAIR_MASK_CUTOFF, false) == false);
+    CHECK(measureQueries(HAIR_MASK_SOLID_ALPHA, HAIR_MASK_CUTOFF, true) == true);
+    const bool hasMatchedHit = measureQueries(HAIR_MASK_MID_ALPHA, HAIR_MASK_CUTOFF, true);
+    const bool hasMismatchedHit = measureQueries(HAIR_MASK_MID_ALPHA, HAIR_MASK_MISMATCHED_CUTOFF, false);
+    CHECK(hasMatchedHit != hasMismatchedHit);
 }
 
 TEST_CASE("Scene callbacks preserve material and scene generation through native GPU rendering",

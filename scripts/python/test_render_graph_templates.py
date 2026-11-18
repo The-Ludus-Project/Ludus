@@ -544,6 +544,36 @@ class HybridReflectionsTemplateTests(unittest.TestCase):
                                                '--output', 'offscreen', '--renderer-static', '--profiles', 'metal'])
         self.assertEqual(arguments.template, 'hybrid-reflections')
 
+class HybridIndirectDiffuseTemplateTests(unittest.TestCase):
+    def test_visibility_feeds_bounded_native_transport_and_a_running_mean(self):
+        with tempfile.TemporaryDirectory() as directory:
+            destination = Path(directory) / 'IndirectDiffuse'
+            with self.assertRaises(ToolingError):
+                graph.new_workspace(destination, output='offscreen', renderer_static=True, profiles=('wgsl',),
+                                    template='hybrid-indirect-diffuse')
+            self.assertFalse(destination.exists())
+            root = graph.new_workspace(destination, output='offscreen', renderer_static=True,
+                                       profiles=('metal', 'spirv'), template='hybrid-indirect-diffuse')
+            plan = graph.compile_graph(root)
+            raster = next(operation for operation in plan['passes'] if operation['kind'] == 'Raster')
+            ray_pass, = (operation for operation in plan['passes'] if operation['kind'] == 'RayTracing')
+            self.assertEqual(ray_pass['visibility']['resource'], raster['attachments']['color']['resource'])
+            self.assertEqual(ray_pass['visibility_depth']['resource'], raster['attachments']['depth']['resource'])
+            self.assertTrue(any(operation['kind'] == 'Accumulate' for operation in plan['passes']))
+            manifest = json.loads(root.with_name('main.lushader.json').read_text())
+            build.validate_manifest(manifest)
+            interface = next(technique['scene_interface'] for technique in manifest['techniques']
+                             if 'scene_interface' in technique)
+            self.assertEqual((interface['surface_queries'], interface['visibility_queries']), (1, 2))
+
+    def test_cli_exposes_the_template(self):
+        from ludus_tools.cli import build_parser
+        arguments = build_parser().parse_args(
+            ['render-graph', 'new', 'graphs/Main', '--template', 'hybrid-indirect-diffuse',
+             '--output', 'offscreen', '--renderer-static', '--profiles', 'metal'])
+        self.assertEqual(arguments.template, 'hybrid-indirect-diffuse')
+
+
 class TiledVbufferNeeTemplateTests(unittest.TestCase):
     def setUp(self):
         self.directory = tempfile.TemporaryDirectory()
