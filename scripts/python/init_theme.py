@@ -932,6 +932,8 @@ class ScrollArea:
 
     The area asks for its content's whole size, so it costs nothing on a screen with room. The scroll bar floats
     over the right edge (the content's own margin) instead of taking width, so showing it never rewraps text.
+    When the area is taller than its content, the content is stretched to fill it, so rows with grid weight (the
+    progress window's log) still take the extra height. ``fit_to_screen`` refreshes every area of its window.
     """
 
     def __init__(self, tk, ttk, parent, theme: Theme, surface: str = WORKSPACE_SURFACE):
@@ -953,6 +955,7 @@ class ScrollArea:
         self.frame.bind("<Enter>", lambda _event: self._bind_wheel(True), add="+")
         self.frame.bind("<Leave>", lambda _event: self._bind_wheel(False), add="+")
         self.frame.bind("<Destroy>", lambda _event: self._bind_wheel(False), add="+")
+        self.canvas.winfo_toplevel().__dict__.setdefault("_ludus_scroll_areas", []).append(self)
 
     def grid(self, **options) -> None:
         self.frame.grid(**options)
@@ -965,9 +968,17 @@ class ScrollArea:
         self.canvas.itemconfigure(self._item, width=event.width)
         self._update()
 
+    def refresh(self) -> None:
+        """Follow a change in the content's requested size, which Tk reports to no event once it fills the area."""
+        self._update()
+
     def _update(self) -> None:
         width, height = self.content.winfo_reqwidth(), self.content.winfo_reqheight()
-        self.canvas.configure(width=width, height=height, scrollregion=(0, 0, width, height))
+        visible = self.canvas.winfo_height()
+        filled = max(height, visible) if visible > 1 else height
+        self.canvas.configure(width=width, height=height, scrollregion=(0, 0, width, filled))
+        if int(float(self.canvas.itemcget(self._item, "height") or 0)) != filled:
+            self.canvas.itemconfigure(self._item, height=filled)
         if self.is_scrollable:
             self.scrollbar.place(in_=self.canvas, relx=1.0, rely=0.0, relheight=1.0, anchor="ne")
         else:
@@ -1083,12 +1094,25 @@ def usable_screen_height(window, scale: float = 1.0) -> int:
 
 
 def fit_to_screen(window, scale: float = 1.0) -> None:
-    """Size ``window`` to its content but never taller than its screen; a ``ScrollArea`` takes up the difference."""
+    """Size ``window`` to its content but never taller than its screen; a ``ScrollArea`` takes up the difference.
+
+    A window that would now reach past the bottom of the usable area moves up so its footer stays on screen.
+    """
+    window.update_idletasks()
+    areas = [area for area in window.__dict__.get("_ludus_scroll_areas", []) if area.frame.winfo_exists()]
+    window.__dict__["_ludus_scroll_areas"] = areas
+    for area in areas:
+        area.refresh()
     window.update_idletasks()
     width, height = window.winfo_reqwidth(), min(window.winfo_reqheight(), usable_screen_height(window, scale))
     minimum = min(height, int(round(MINIMUM_WINDOW_HEIGHT_POINTS * scale)))
     window.minsize(width, minimum)
-    window.geometry(f"{width}x{height}")
+    top, usable = usable_screen_area(window, scale)
+    y = window.winfo_y()
+    if window.winfo_ismapped() and y + height > top + usable:
+        window.geometry(f"{width}x{height}+{window.winfo_x()}+{max(top, top + usable - height)}")
+    else:
+        window.geometry(f"{width}x{height}")
 
 
 def centre_window(window, scale: float = 1.0) -> None:
