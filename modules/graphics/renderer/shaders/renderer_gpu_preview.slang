@@ -23,12 +23,12 @@
 // reference_bsdf.cpp/reference_path.cpp; renderer-systems.md owns quality limits.
 LUDUS_SHADER_BINDING(0) cbuffer Parameters
 {
-    column_major float4x4 ClipToWorld;
-    float4 CameraPositionWorld;
-    uint4 Dimensions; // width, height, depth, roulette
-    uint4 Offsets;    // nodes, order, emitters, surfaces
-    uint4 Counts;     // triangles, nodes, emitters, analytic lights
-    uint4 Sampling;   // key lo, key hi, flags (reverse/infinite/center), target
+    column_major float4x4 ClipToEye; // clip to eye-relative world: world axes, origin at CameraPositionWorld.xyz
+    float4 CameraPositionWorld;      // w: orthographic flag
+    uint4 Dimensions;                // width, height, depth, roulette
+    uint4 Offsets;                   // nodes, order, emitters, surfaces
+    uint4 Counts;                    // triangles, nodes, emitters, analytic lights
+    uint4 Sampling;                  // key lo, key hi, flags (reverse/infinite/center), target
     float4 Environment;
     float4
         Options; // secondary range, exposure (zero bypasses graph ToneMap), material count bits, scene data group bits
@@ -44,6 +44,50 @@ float4 SceneValue(uint index)
     return asfloat(sceneWords[index]);
 }
 #include "material_program.slang"
+/// A camera ray built about the eye, its world origin added last.
+struct CameraRaySegment
+{
+    float3 OriginWorld;
+    float3 DirectionWorld;
+    float MinDistanceWorld;
+    /// Distance to the far plane; zero when HasFarPlane is false.
+    float MaxDistanceWorld;
+    /// False when the far point is at infinity: an infinite far plane.
+    bool HasFarPlane;
+};
+/// The camera ray through clip position positionClip. clipToEye maps clip to eye-relative world: world axes with
+/// the origin at eyeWorld. A world-space inverse of a camera far from the origin with a centimetre near plane carries
+/// eye * w terms that cost float32 directions a sizeable fraction of a pixel (issue #1761); the eye-relative points
+/// keep them. A pinhole ray starts at the eye and points at its far-plane point: the float32 projection's centre lies
+/// micrometres from the eye, which would turn the direction to a centimetre-near point by up to a pixel, while the far
+/// point's cancelling w only scales its offset; an infinite far plane gives the direction itself. An orthographic ray
+/// starts on the near plane. nearClipZ is the near plane's clip depth: 0, or 1 under reverse Z. The RT1 CPU oracle's
+/// CameraRay (reference_scene.cpp) builds the same ray.
+CameraRaySegment
+MakeCameraRaySegment(float4x4 clipToEye, float3 eyeWorld, bool isOrthographic, float2 positionClip, float nearClipZ)
+{
+    float4 nearHomogeneousEye = mul(clipToEye, float4(positionClip, nearClipZ, 1));
+    float4 farHomogeneousEye = mul(clipToEye, float4(positionClip, 1 - nearClipZ, 1));
+    float3 nearPositionEye = nearHomogeneousEye.xyz / nearHomogeneousEye.w;
+    float3 originEye = isOrthographic == true ? nearPositionEye : float3(0);
+    CameraRaySegment ray;
+    ray.HasFarPlane = farHomogeneousEye.w != 0;
+    float3 farPositionEye = ray.HasFarPlane == true ? farHomogeneousEye.xyz / farHomogeneousEye.w : float3(0);
+    ray.OriginWorld = eyeWorld + originEye;
+    ray.DirectionWorld = NormalizeOrZero(ray.HasFarPlane == true ? farPositionEye - originEye : farHomogeneousEye.xyz);
+    ray.MinDistanceWorld = isOrthographic == true ? 0 : dot(nearPositionEye, ray.DirectionWorld);
+    ray.MaxDistanceWorld = ray.HasFarPlane == true ? dot(farPositionEye - originEye, ray.DirectionWorld) : 0;
+    return ray;
+}
+/// The world-space clip-to-world matrix of clipToEye and eyeWorld: the eye added to the position rows.
+float4x4 MakeCameraClipToWorld(float4x4 clipToEye, float3 eyeWorld)
+{
+    float4x4 clipToWorld = clipToEye;
+    clipToWorld[0] += eyeWorld.x * clipToEye[3];
+    clipToWorld[1] += eyeWorld.y * clipToEye[3];
+    clipToWorld[2] += eyeWorld.z * clipToEye[3];
+    return clipToWorld;
+}
 LUDUS_SHADER_BINDING(2) RWStructuredBuffer<float4> accumulation; // sum/count, compensation/error
 #if defined(LUDUS_RENDER_GRAPH_RAY_PIPELINE)
 // An authored weighted estimator owns its numerator/denominator in persistent storage.
@@ -990,17 +1034,18 @@ float3 Integrate(uint pixel, uint sample)
     float2 jitter = (Sampling.z & 4) != 0 ? float2(.5) : float2(Random01(pixel, sample, 0), Random01(pixel, sample, 1));
     float2 positionUv = (float2(pixel % Dimensions.x, pixel / Dimensions.x) + jitter) / float2(Dimensions.xy);
     float nearClipZ = (Sampling.z & 1) != 0 ? 1 : 0;
-    float4 nearPositionWorld = mul(ClipToWorld, float4(positionUv.x * 2 - 1, 1 - positionUv.y * 2, nearClipZ, 1));
-    nearPositionWorld /= nearPositionWorld.w;
-    float4 farPositionWorld = mul(ClipToWorld, float4(positionUv.x * 2 - 1, 1 - positionUv.y * 2, 1 - nearClipZ, 1));
-    // Match RT1's farPositionWorld-plane/homogeneous shadowDirectionWorld, including non-default pinholes.
-    float3 originWorld = CameraPositionWorld.w != 0 ? nearPositionWorld.xyz : CameraPositionWorld.xyz;
-    float3 directionWorld = NormalizeOrZero(
-        farPositionWorld.w != 0 ? farPositionWorld.xyz / farPositionWorld.w - originWorld : farPositionWorld.xyz);
-    float minimum = CameraPositionWorld.w != 0 ? 0 : dot(nearPositionWorld.xyz - originWorld, directionWorld);
+    // Match RT1's eye-relative camera ray (GenerateCameraRay), including its infinite far plane.
+    CameraRaySegment camera = MakeCameraRaySegment(ClipToEye,
+                                                   CameraPositionWorld.xyz,
+                                                   CameraPositionWorld.w != 0,
+                                                   float2(positionUv.x * 2 - 1, 1 - positionUv.y * 2),
+                                                   nearClipZ);
+    float3 originWorld = camera.OriginWorld;
+    float3 directionWorld = camera.DirectionWorld;
+    float minimum = camera.MinDistanceWorld;
     float maximum = Options.x;
-    if (farPositionWorld.w != 0)
-        maximum = dot(farPositionWorld.xyz / farPositionWorld.w - originWorld, directionWorld);
+    if (camera.HasFarPlane == true)
+        maximum = camera.MaxDistanceWorld;
     else
     {
         maximum = 0;

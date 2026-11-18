@@ -36,12 +36,12 @@
 // https://www.thesalmons.org/john/random123/papers/random123sc11.pdf, for Philox4x32-10.
 LUDUS_SHADER_BINDING(LUDUS_REFERENCE_PARAMETERS_BINDING) cbuffer Parameters
 {
-    column_major float4x4 ClipToWorld;
-    float4 CameraPositionWorld; // w: orthographic flag
-    uint4 Dimensions;           // width, height, maximum depth, roulette depth
-    uint4 Offsets;              // nodes, order, emitters, surfaces
-    uint4 Counts;               // triangles, nodes, emitters, analytic lights
-    uint4 Sampling;             // key low, key high, flags (reverse/infinite/center/opaque), target
+    column_major float4x4 ClipToEye; // clip to eye-relative world: world axes, origin at CameraPositionWorld.xyz
+    float4 CameraPositionWorld;      // w: orthographic flag
+    uint4 Dimensions;                // width, height, maximum depth, roulette depth
+    uint4 Offsets;                   // nodes, order, emitters, surfaces
+    uint4 Counts;                    // triangles, nodes, emitters, analytic lights
+    uint4 Sampling;                  // key low, key high, flags (reverse/infinite/center/opaque), target
     float4 Environment;
     float4 Options; // secondary range, unused exposure, instance count bits, scene data bits
     float4 BoundsMinimumWorld;
@@ -387,27 +387,36 @@ bool GenerateCameraRay(uint pixel, uint sample, out Ray outRay)
     float clipX = 2 * (float(pixel % Dimensions.x) + jitterX) / float(Dimensions.x) - 1;
     float clipY = 1 - 2 * (float(pixel / Dimensions.x) + jitterY) / float(Dimensions.y);
     float nearClipZ = (Sampling.z & REVERSE_Z_FLAG) != 0 ? 1 : 0;
-    float4 nearWorld = mul(ClipToWorld, float4(clipX, clipY, nearClipZ, 1));
-    float4 farWorld = mul(ClipToWorld, float4(clipX, clipY, 1 - nearClipZ, 1));
-    if (all(isfinite(nearWorld)) == false || all(isfinite(farWorld)) == false || nearWorld.w == 0)
+    // The ray is built about the eye and translated last, as the CPU oracle's CameraRay: a world-space ClipToWorld
+    // of a camera far from the origin with a centimetre near plane loses pixel-scale directions to its eye * w
+    // terms (issue #1761). A pinhole ray points at its far-plane point, whose cancelling w only scales the offset.
+    float4 nearHomogeneousEye = mul(ClipToEye, float4(clipX, clipY, nearClipZ, 1));
+    float4 farHomogeneousEye = mul(ClipToEye, float4(clipX, clipY, 1 - nearClipZ, 1));
+    if (all(isfinite(nearHomogeneousEye)) == false || all(isfinite(farHomogeneousEye)) == false ||
+        nearHomogeneousEye.w == 0)
         return false;
-    float3 nearPositionWorld = nearWorld.xyz / nearWorld.w;
+    float3 nearPositionEye = nearHomogeneousEye.xyz / nearHomogeneousEye.w;
     bool isOrthographic = CameraPositionWorld.w != 0;
-    float3 originWorld = isOrthographic == true ? nearPositionWorld : CameraPositionWorld.xyz;
+    float3 originEye = isOrthographic == true ? nearPositionEye : float3(0);
+    float3 originWorld = CameraPositionWorld.xyz + originEye;
     float3 directionWorld;
-    if (farWorld.w == 0)
+    float3 farPositionEye = 0;
+    if (farHomogeneousEye.w == 0)
     {
         if ((Sampling.z & INFINITE_FAR_FLAG) == 0 || isOrthographic == true)
             return false;
-        directionWorld = NormalizeOrZero(farWorld.xyz);
+        directionWorld = NormalizeOrZero(farHomogeneousEye.xyz);
     }
     else
-        directionWorld = NormalizeOrZero(farWorld.xyz / farWorld.w - originWorld);
+    {
+        farPositionEye = farHomogeneousEye.xyz / farHomogeneousEye.w;
+        directionWorld = NormalizeOrZero(farPositionEye - originEye);
+    }
     if (IsWithinWorld(originWorld) == false || all(directionWorld == 0))
         return false;
     float distanceWorld = 1;
-    if (farWorld.w != 0)
-        distanceWorld = dot(farWorld.xyz / farWorld.w - originWorld, directionWorld);
+    if (farHomogeneousEye.w != 0)
+        distanceWorld = dot(farPositionEye - originEye, directionWorld);
     else if (all(BoundsMinimumWorld.xyz <= BoundsMaximumWorld.xyz))
     {
         float maximumWorld = 0;
@@ -420,7 +429,7 @@ bool GenerateCameraRay(uint pixel, uint sample, out Ray outRay)
         }
         distanceWorld = maximumWorld * INFINITE_FAR_DISTANCE_SCALE + 1;
     }
-    float minimumWorld = isOrthographic == true ? 0 : dot(nearPositionWorld - originWorld, directionWorld);
+    float minimumWorld = isOrthographic == true ? 0 : dot(nearPositionEye, directionWorld);
     if (isfinite(distanceWorld) == false || distanceWorld < 0 || minimumWorld < 0 || minimumWorld > distanceWorld)
         return false;
     outRay.OriginWorld = originWorld;
