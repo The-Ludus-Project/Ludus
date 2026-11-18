@@ -191,8 +191,128 @@ class AssetTests(unittest.TestCase):
         self.assertTrue(set(init_theme.WINDOW_ICON_SIZES) <= set(init_theme.ICON_SIZES))
 
 
+class CheckboxTests(unittest.TestCase):
+    """The setup check box is the Editor's: a rounded token-size box, filled with the accent and ticked when on."""
+
+    def render(self, *, mark):
+        palette = init_theme.LIGHT_PALETTE
+        size, gap = init_theme.CHECKBOX_INDICATOR_POINTS, init_theme.SPACE_SMALL
+        rows = init_theme.render_checkbox(size, gap, background=palette.workspace, fill=palette.primary if mark
+                                          else palette.panel, edge=palette.primary if mark else palette.border,
+                                          mark=mark, edge_width=1, radius=init_theme.CONTROL_RADIUS_POINTS,
+                                          stroke=init_theme.CHECKBOX_TICK_STROKE_POINTS)
+        return palette, size, gap, rows
+
+    def test_box_has_token_size_rounded_corners_and_a_gap_before_the_label(self):
+        palette, size, gap, rows = self.render(mark=None)
+        self.assertEqual(len(rows), size)
+        self.assertTrue(all(len(row) == size + gap for row in rows))
+        # Rounded: the corner pixel is the surface, the middle of each edge is the control border.
+        self.assertEqual(rows[0][0], palette.workspace.lower())
+        self.assertEqual(rows[0][size // 2], palette.border.lower())
+        self.assertEqual(rows[size // 2][0], palette.border.lower())
+        self.assertEqual(rows[size // 2][size // 2], palette.panel.lower())
+        self.assertEqual({pixel for row in rows for pixel in row[size:]}, {palette.workspace.lower()})
+
+    def test_checked_box_is_filled_and_carries_a_tick_not_a_cross(self):
+        palette, size, _gap, rows = self.render(mark=init_theme.LIGHT_PALETTE.on_primary)
+        mark = palette.on_primary.lower()
+        corner_x, corner_y = (round(value * size - 0.5) for value in init_theme.CHECKBOX_TICK_POINTS[1])
+        # The tick is thinner than a pixel is wide at 1x, so its corner pixel is mostly, not wholly, the mark.
+        def distance(first: str, second: str) -> int:
+            return sum(abs(int(first[index:index + 2], 16) - int(second[index:index + 2], 16)) for index in (1, 3, 5))
+        self.assertLess(distance(rows[corner_y][corner_x], mark), distance(rows[corner_y][corner_x],
+                                                                           palette.primary.lower()))
+        # A cross would mark the upper-left and lower-right quarters; the tick leaves them filled.
+        quarter = size // 4
+        self.assertEqual(rows[quarter + 1][quarter + 1], palette.primary.lower())
+        self.assertEqual(rows[size - quarter - 2][size - quarter - 2], palette.primary.lower())
+
+
 @unittest.skipUnless(os.environ.get("LUDUS_TEST_GUI") == "1", "requires a desktop display")
 class ThemeWindowTests(unittest.TestCase):
+    def test_check_buttons_draw_the_token_indicator_in_every_state(self):
+        import tkinter as tk
+        from tkinter import ttk
+
+        root = init_theme.create_root(tk)
+        try:
+            for appearance in (init_theme.LIGHT, init_theme.DARK):
+                with self.subTest(appearance=appearance):
+                    theme = init_theme.Theme(root, ttk, appearance=appearance)
+                    for surface in (init_theme.WORKSPACE_SURFACE, init_theme.CARD_SURFACE):
+                        layout = str(theme.style.layout(f"{surface}.TCheckbutton"))
+                        self.assertIn(f"{surface}.Ludus", layout)
+                        self.assertNotIn("Checkbutton.indicator", layout)
+                    states = next(iter(root._ludus_checkbox_images.values()))
+                    self.assertEqual(set(states), {"unchecked", "hovered", "checked", "disabled", "disabled_checked"})
+                    for image in states.values():
+                        self.assertEqual(int(root.tk.call("image", "height", image)),
+                                         theme.space(init_theme.CHECKBOX_INDICATOR_POINTS))
+                    box = ttk.Checkbutton(root, text="Option", style="Card.TCheckbutton")
+                    box.grid()
+                    box.invoke()
+                    root.update_idletasks()
+                    self.assertTrue(box.instate(["selected"]))
+                    box.destroy()
+            # A second theme with the same look reuses the elements instead of failing to recreate them.
+            init_theme.Theme(root, ttk, appearance=init_theme.LIGHT)
+        finally:
+            root.destroy()
+
+    def test_scroll_area_scrolls_only_when_its_content_is_taller(self):
+        import tkinter as tk
+        from tkinter import ttk
+
+        root = init_theme.create_root(tk)
+        try:
+            theme = init_theme.Theme(root, ttk, appearance=init_theme.LIGHT)
+            root.columnconfigure(0, weight=1)
+            root.rowconfigure(0, weight=1)
+            area = init_theme.ScrollArea(tk, ttk, root, theme)
+            area.grid(row=0, column=0, sticky="nsew")
+            rows = [ttk.Label(area.content, text=f"Row {index}") for index in range(40)]
+            for index, label in enumerate(rows):
+                label.grid(row=index, column=0, sticky="w")
+            root.update_idletasks()
+            natural = root.winfo_reqheight()
+            root.geometry(f"{root.winfo_reqwidth()}x{natural}")
+            root.update()
+            self.assertFalse(area.is_scrollable)
+            self.assertFalse(area.scrollbar.winfo_ismapped())
+
+            root.geometry(f"{root.winfo_reqwidth()}x{natural // 3}")
+            root.update()
+            self.assertTrue(area.is_scrollable)
+            self.assertTrue(area.scrollbar.winfo_ismapped())
+            # The scroll bar floats over the margin, so the content keeps its width.
+            self.assertEqual(area.content.winfo_width(), area.canvas.winfo_width())
+            area.show(rows[-1])
+            root.update()
+            bottom = rows[-1].winfo_rooty() + rows[-1].winfo_height()
+            self.assertLessEqual(bottom, area.canvas.winfo_rooty() + area.canvas.winfo_height())
+            self.assertGreater(area.canvas.canvasy(0), 0)
+        finally:
+            root.destroy()
+
+    def test_windows_fit_the_usable_screen_height(self):
+        import tkinter as tk
+
+        root = init_theme.create_root(tk)
+        try:
+            tall = tk.Frame(root, width=200, height=root.winfo_screenheight() * 2)
+            tall.grid()
+            init_theme.fit_to_screen(root)
+            init_theme.centre_window(root)
+            root.update()
+            usable = init_theme.usable_screen_height(root)
+            self.assertLess(usable, root.winfo_screenheight())
+            self.assertLessEqual(root.winfo_height(), usable)
+            self.assertGreaterEqual(root.winfo_rooty(), 0)
+            self.assertLessEqual(root.winfo_rooty() + root.winfo_height(), root.winfo_screenheight())
+        finally:
+            root.destroy()
+
     def test_completed_status_disk_is_inset_from_canvas_edges(self):
         import tkinter as tk
         from tkinter import ttk
