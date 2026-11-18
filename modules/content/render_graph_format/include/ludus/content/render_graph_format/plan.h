@@ -13,7 +13,7 @@ namespace ludus::content::render_graph_format
 {
 /// Static triangle execution profile: opaque/masked raster with per-draw uniforms,
 /// and authored ray functions over immutable scene geometry, materials and lighting.
-inline constexpr foundation::uint32 VERSION = 14;
+inline constexpr foundation::uint32 VERSION = 15;
 /// Opt-in portable raster ABI: static inputs plus primitive halves and draw/instance references.
 inline constexpr foundation::usize VISIBILITY_INPUT_COUNT = 8;
 /// Maximum authored passes in one admitted configuration.
@@ -56,6 +56,8 @@ inline constexpr foundation::uint32 RAY_BUFFER_WORD_BYTES = 16;
 inline constexpr foundation::uint32 MAX_RAY_BUFFER_PIXEL_BYTES = 4096;
 /// Maximum bytes in one persistent buffer, fixed or resolved per pixel.
 inline constexpr foundation::uint32 MAX_RAY_BUFFER_BYTES = 256 * 1024 * 1024;
+/// Maximum logical invocations in one buffer-only scene dispatch.
+inline constexpr foundation::uint32 MAX_SCENE_WORK_ITEMS = 16 * 1024 * 1024;
 /// Number of shader stages (vertex and fragment) of one technique.
 inline constexpr foundation::usize TECHNIQUE_STAGE_COUNT = 2;
 /// Number of artifact targets a generation may carry.
@@ -75,7 +77,7 @@ inline constexpr foundation::usize MAX_UNIFORM_BLOCK_BYTES = 1024;
 /// Largest number of distinct per-draw uniform value sets one technique prepares per extraction.
 inline constexpr foundation::usize MAX_UNIFORM_SETS = 16;
 /// Number of explicitly serialized four-byte fields in a current pass record (uint32 or float32).
-inline constexpr foundation::usize PASS_FIELD_COUNT = 21;
+inline constexpr foundation::usize PASS_FIELD_COUNT = 22;
 /// Serialized four-byte field index of Pass::DenoisingQuality, stable since it was appended in
 /// runtime package version 16; later versions append fields after it.
 inline constexpr foundation::usize PASS_DENOISING_QUALITY_FIELD = 18;
@@ -239,8 +241,8 @@ enum class RayTraversal : foundation::uint32
 struct Pass final
 {
     Technique Program;         ///< Explicit authored shader choice.
-    foundation::uint32 Camera; ///< Index into the current camera extraction.
-    foundation::uint32 Color;  ///< Logical color resource, or ABSENT for a depth-only technique.
+    foundation::uint32 Camera; ///< Camera extraction index, or ABSENT for a buffer-only scene dispatch.
+    foundation::uint32 Color;  ///< Logical color resource, or ABSENT for a depth-only or buffer-only pass.
     foundation::uint32 Depth;  ///< Logical depth resource; ABSENT for ray passes, which produce only color.
     Load ColorLoad;            ///< For depth-only techniques, declares compatibility color initialization.
     Store ColorStore;          ///< For depth-only techniques, controls compatibility allocation color retention.
@@ -276,6 +278,8 @@ struct Pass final
     /// Curve of the ToneMap described by ToneMappingExposure; Reinhard when that exposure is zero.
     /// Packages before RASTER_TONE_MAPPING_PACKAGE_VERSION imply Reinhard.
     DisplayCurve ToneMappingCurve = DisplayCurve::Reinhard;
+    /// Positive for a buffer-only scene compute pass with no camera or color, zero for existing passes.
+    foundation::uint32 WorkItemCount = 0;
 };
 /// Whether a pass's ToneMap fields form an admitted pair: a zero exposure with the Reinhard (zero) code, or an exposure
 /// in [MIN_TONE_MAPPING_EXPOSURE, MAX_TONE_MAPPING_EXPOSURE] with either curve on a RayTracing or ColorAndDepth pass.

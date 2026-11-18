@@ -2562,8 +2562,21 @@ TEST_CASE("scene compute nodes use automatic state and launch size while generic
                      [&canvasEdit](const QJsonObject& candidate) { canvasEdit = candidate; });
     QGroupBox* canvasAdvanced = canvasEditor.findChild<QGroupBox*>(QStringLiteral("renderGraphComputeAdvanced"));
     QComboBox* canvasGroup = canvasEditor.findChild<QComboBox*>(QStringLiteral("renderGraphComputeGroupSize"));
+    QComboBox* launchModeOrNull = canvasEditor.findChild<QComboBox*>(QStringLiteral("rayLaunchSizeMode"));
+    QSpinBox* workItemsOrNull = canvasEditor.findChild<QSpinBox*>(QStringLiteral("sceneWorkItemCount"));
     REQUIRE(canvasAdvanced != nullptr);
     REQUIRE(canvasGroup != nullptr);
+    REQUIRE(launchModeOrNull != nullptr);
+    REQUIRE(workItemsOrNull != nullptr);
+    launchModeOrNull->setCurrentText(QStringLiteral("Work items"));
+    workItemsOrNull->setValue(7001);
+    QJsonObject invocation = canvasEdit.value(QStringLiteral("invocation")).toObject();
+    CHECK(invocation.value(QStringLiteral("work_items")).toInt() == 7001);
+    CHECK(invocation.contains(QStringLiteral("dimensions")) == false);
+    launchModeOrNull->setCurrentText(QStringLiteral("Match color target"));
+    invocation = canvasEdit.value(QStringLiteral("invocation")).toObject();
+    CHECK(invocation.value(QStringLiteral("dimensions")).toString() == QStringLiteral("ColorTarget"));
+    CHECK(invocation.contains(QStringLiteral("work_items")) == false);
     canvasAdvanced->setChecked(true);
     canvasGroup->setCurrentIndex(1);
     CHECK(canvasEdit.value(QStringLiteral("state")).toObject().value(QStringLiteral("group_size")).toArray() ==

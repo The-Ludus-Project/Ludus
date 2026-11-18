@@ -29,7 +29,7 @@ MAX_UNIFORM_BINDINGS = 16
 MAX_UNIFORM_FIELDS = 256
 MAX_UNIFORM_BLOCK_BYTES = 1024
 UNIFORM_SLOT_COUNT = 8
-FORMAT_VERSION = 14
+FORMAT_VERSION = 15
 ABSENT = 0xFFFFFFFF
 # Exact technique identities and their numeric program roles, in format order.
 PROGRAMS = {'DefaultStaticOpaque.ColorAndDepth': 'ColorAndDepth', 'DefaultStaticOpaque.DepthOnly': 'DepthOnly',
@@ -114,7 +114,7 @@ def lower_plan(package, configuration):
     resources = lowered_resources(plan)
     rasters = [p for p in plan['passes'] if p['kind'] in ('Raster', 'RayTracing')]
     operations = [p for p in plan['passes'] if p['kind'] in ('Raster', 'RayTracing', 'Upscale')]
-    cameras = sorted({p['view'] for p in rasters})
+    cameras = sorted({p['view'] for p in rasters if 'view' in p})
     build.require(sum(p['kind'] == 'RayTracing' for p in rasters) <= MAX_RAY_PASSES, 'Capacity', configuration,
                   f'at most {MAX_RAY_PASSES} triangle ray passes are admitted per configuration')
     build.require(all(p['kind'] in ('Raster', 'RayTracing', 'Upscale', 'Accumulate', 'ToneMap', 'Denoise', 'Export', 'Present') for p in plan['passes']) and
@@ -200,7 +200,7 @@ def lower_plan(package, configuration):
                                   all(item.get('load') == 'Clear' and item.get('store') == 'Store' for item in (color_output, depth_output)),
                                   'Configuration', operation['id'],
                                   'visibility/depth must come from the immediately preceding opaque Clear/Store raster using the same view')
-            color = operation['attachments']['color']
+            color = operation['attachments'].get('color')
             recipes = [recipe for recipe in package.get('recipes', []) if recipe['technique'] == ray.TECHNIQUE and
                        recipe.get('visibility_buffer', False) == ('visibility' in operation) and
                        recipe.get('native_ray_queries', True) == ray.requires_native_queries(plan)]
@@ -211,8 +211,9 @@ def lower_plan(package, configuration):
             persistent_slots = [ABSENT] * ray.MAX_BUFFERS
             for use in operation.get('persistent_buffers', []):
                 persistent_slots[use['slot']] = resources.index(use['resource'])
-            pass_records.append({'Program': 'RayTracing', 'Camera': cameras.index(operation['view']),
-                'Color': resources.index(color['resource']), 'Depth': ABSENT, 'ColorLoad': 'Clear', 'ColorStore': 'Store',
+            pass_records.append({'Program': 'RayTracing', 'Camera': cameras.index(operation['view']) if color else ABSENT,
+                'Color': resources.index(color['resource']) if color else ABSENT, 'Depth': ABSENT,
+                'ColorLoad': 'Clear' if color else 'Discard', 'ColorStore': 'Store' if color else 'Discard',
                 'DepthLoad': 'Discard', 'DepthStore': 'Discard', 'AllowsRepeatedCoverage': 0, 'SceneData': operation.get('scene_data', graph.scene_bundle.ALL_DATA),
                 'RayProgram': variants.index(variant), 'Buffer0': persistent_slots[0], 'Buffer1': persistent_slots[1],
                 'Visibility': resources.index(operation['visibility']['resource']) if 'visibility' in operation else ABSENT,
@@ -277,6 +278,8 @@ def lower_plan(package, configuration):
         record['Traversal'] = (ray.get_traversal(ray.program_tuple(operation['pipeline']))
                                if operation['kind'] == 'RayTracing' else 'NativeQuery')
         record['ToneMappingCurve'] = operation.get('tone_mapping', {}).get('curve', 'Reinhard')
+        if 'work_items' in operation:
+            record['WorkItemCount'] = operation['work_items']
     return plan, resource_records, pass_records, cameras
 
 
@@ -338,7 +341,8 @@ CAPTURE_PROFILE_PACKAGE_MAGIC = 0x4352554C
 # Version 37 adds the optional deferred surface-chart G-buffer fragment for the same passes.
 # Version 38 admits the World-feature scene resource bits: the linked ray kernel reads the Atmosphere sky or the
 # aerial perspective table.
-PACKAGE_VERSION = 38
+# Version 39 appends the buffer-only scene dispatch work item count to each pass.
+PACKAGE_VERSION = 39
 # render_graph_format::DisplayCurve codes, by index; zero (Reinhard) also marks a pass without a ToneMap.
 DISPLAY_CURVE_CODES = ('Reinhard', 'PbrNeutral')
 # Version 25 scene resource word: the linked ray kernel reads the renderer's LTC table.
@@ -942,7 +946,7 @@ def encode_runtime_package(contents, *, magic=PACKAGE_MAGIC):
         data += u32(p.get('SourceColor', ABSENT))
         data += u32(p.get('DenoisingQuality', 0))
         data += u32(ray.TRAVERSAL_CODES.index(p.get('Traversal', 'NativeQuery')))
-        data += u32(DISPLAY_CURVE_CODES.index(p.get('ToneMappingCurve', 'Reinhard')))
+        data += u32(DISPLAY_CURVE_CODES.index(p.get('ToneMappingCurve', 'Reinhard')), p.get('WorkItemCount', 0))
     for b in contents['bindings']:
         data += u32(PROGRAM_CODES[b['Program']], b['Slot'], VISIBILITY[b['Stages']], b['ValueOffset'], b['ValueCount'])
     for b in contents['blocks']:

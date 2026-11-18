@@ -277,7 +277,7 @@ struct RenderGraphRayFailures final
 /// Ray work of one sample of a RenderGraph's current scene, from which a frame capture sizes its tiles.
 struct RenderGraphRayWorkload final
 {
-    /// Pixels shaded per sample, summed over every ray pass.
+    /// Invocation count per sample, summed over image pixels and buffer-only work items.
     foundation::uint64 Pixels = 0;
     /// Emissive triangles plus analytic lights of the largest ray pass scene; an environment is not counted.
     foundation::uint32 Lights = 0;

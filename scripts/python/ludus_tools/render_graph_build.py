@@ -1199,7 +1199,8 @@ def prepare_sources(manifest, helper, *, root=None, ray_path_capture=False, capt
                                                                     interface['visibility_queries'])
             expanded = ray.expand_programs(authored_programs, technique, snapshot, helper, sys.modules[__name__],
                                           profile['variants'], profile['persistent'], schemas, profile['compute'],
-                                          profile['native_ray_queries'], ray_path_capture, workgroup=profile['workgroup'])
+                                          profile['native_ray_queries'], ray_path_capture, workgroup=profile['workgroup'],
+                                          scene_dispatch=profile['scene_dispatch'])
             linked_programs.update(expanded)
             if profile['native_pipeline']:
                 require('metal' in value['profiles'], 'Capability', 'RayTracing',

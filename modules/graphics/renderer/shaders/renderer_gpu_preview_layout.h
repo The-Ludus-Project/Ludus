@@ -99,6 +99,10 @@
 #define LUDUS_GPU_PREVIEW_MIXED_OPACITY_FLAG 32
 // The graph ToneMap applies Khronos PBR Neutral instead of Reinhard (display_tone_mapping.slang).
 #define LUDUS_GPU_PREVIEW_PBR_NEUTRAL_FLAG 64
+// Scene work uses the compute graph wrapper without a camera or an image. Dimensions.w carries its item count.
+#define LUDUS_GPU_PREVIEW_SCENE_WORK_FLAG 128u
+#define LUDUS_GPU_PREVIEW_SCENE_WORK_ROW_WIDTH 1024u
+#define LUDUS_GPU_PREVIEW_ROULETTE_OR_WORK_COUNT_COMPONENT 3
 #define LUDUS_GPU_PREVIEW_HISTORY_SHIFT 12
 #define LUDUS_GPU_PREVIEW_FLAGS_MASK ((1u << LUDUS_GPU_PREVIEW_HISTORY_SHIFT) - 1u)
 #define LUDUS_GPU_PREVIEW_MAX_HISTORY_EPOCH (0xffffffffu >> LUDUS_GPU_PREVIEW_HISTORY_SHIFT)
