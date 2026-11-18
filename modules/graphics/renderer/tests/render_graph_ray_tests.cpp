@@ -3429,6 +3429,63 @@ void WaitForGraph(renderer::RenderGraph& inoutGraph, rhi::RasterStatus initial)
     REQUIRE(status == rhi::RasterStatus::Ready);
 }
 
+TEST_CASE("Opaque material resolve shades the raster surface without ray features",
+          "[render-graph][gpu][opaque-material-resolve]")
+{
+    GraphGpuFixture fixture(false, false);
+    const core::UniquePtr<renderer::RenderGraphPackage> package =
+        LoadPackage({LUDUS_RG3_OPAQUE_MATERIAL_RESOLVE_DIRECTORY, "rg2_opaque_material_resolve.lurgrt"});
+    const renderer::RenderGraphPlan plan = package->GetPlan();
+    REQUIRE(renderer::RequiresHardwareRayTracing(plan) == false);
+    REQUIRE(plan.Passes.GetSize() == 2);
+    REQUIRE(plan.Passes[1].Visibility == plan.Passes[0].Color);
+    REQUIRE(plan.Passes[1].VisibilityDepth == plan.Passes[0].Depth);
+    const renderer::RenderGraphPrograms programs =
+        package->GetPrograms(shaders::renderer_composite::Vertex(), shaders::renderer_composite::Fragment());
+    WaitForGraph(fixture.Graph, fixture.Graph.Initialize(fixture.Device, plan, programs, nullptr, WIDTH, HEIGHT));
+    // Face the orthographic camera at the near plane and the light travelling along +Z.
+    fixture.Indices[1] = 2;
+    fixture.Indices[2] = 1;
+    fixture.Cameras[0].OrthographicCamera = true;
+    uint32 materialIndex = 0;
+    fixture.Meshes[0].MaterialBindings = {&materialIndex, 1};
+    renderer::SceneShaderMaterial material;
+    material.BaseColor = {1, 1, 1};
+    material.Emission = {0, .5F, 0};
+    material.IsEmissionTwoSided = true;
+    renderer::SceneShaderInputs inputs;
+    inputs.Materials = {&material, 1};
+    inputs.Environment = {0, 0, 1};
+    const auto render = [&](uint64 revision) {
+        renderer::RenderGraphReport report;
+        WaitForGraph(fixture.Graph,
+                     fixture.Graph.Update({fixture.Meshes.GetData(), 1},
+                                          {fixture.Items.GetData(), 1},
+                                          {fixture.Cameras.GetData(), 1},
+                                          revision,
+                                          renderer::RenderGraphCoveragePolicy::RejectIncomplete,
+                                          report,
+                                          &inputs,
+                                          revision));
+        ReadGraphFrame(fixture, plan.Passes[1].Color);
+    };
+    render(1);
+    const usize center = GetPixel(WIDTH / 2, HEIGHT / 2);
+    CHECK(fixture.Pixels[center] == 0);
+    CHECK(fixture.Pixels[center + 1] == 128);
+    CHECK(fixture.Pixels[center + 2] == 0);
+    CHECK(fixture.Pixels[GetPixel(0, 0) + 2] == 255);
+    renderer::DirectLight light;
+    light.SourceId = 1;
+    light.Color = {1, 0, 0};
+    light.Direction = {0, 0, 1};
+    inputs.Lights = {&light, 1};
+    render(2);
+    CHECK(fixture.Pixels[center] > 0);
+    CHECK(fixture.Pixels[center + 1] == 128);
+    CHECK(fixture.Pixels[center + 2] == 0);
+}
+
 /// Initialize a graph from a decoded package, submit the World and return its exported resource.
 uint32 PrepareRoomGraph(renderer::RenderGraph& inoutGraph,
                         const GraphGpuFixture& fixture,

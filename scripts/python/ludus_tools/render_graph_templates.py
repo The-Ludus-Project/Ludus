@@ -11,6 +11,7 @@ TEMPLATES = {
     'forward-lit': ('forward_lit', 'Forward lit', None),
     'restir-di': ('restir_di', 'ReSTIR DI', 'native-ray-tracing'),
     'visibility-buffer': ('visibility_buffer', 'Visibility buffer', None),
+    'opaque-material-resolve': ('visibility_buffer', 'Opaque material resolve', 'compute-ray-tracing'),
     'visibility-secondary-rays': ('visibility_secondary_rays', 'Visibility + secondary rays', 'native-ray-tracing'),
     'hybrid-shadows': ('hybrid_shadows', 'Hybrid shadows', 'native-ray-tracing'),
     'hybrid-reflections': ('hybrid_reflections', 'Hybrid reflections', 'native-ray-tracing'),
@@ -55,7 +56,11 @@ def template_files(identity, profiles, graph):
     source = next((path for path in candidates if path.is_dir()), None)
     graph._require(source is not None, 'Source', label, 'built-in template files are missing; repair the engine installation')
     snapshot = build.Snapshot(source)
-    text = snapshot.load('main.lushader.json.in').decode('utf-8')
+    # Two starters compose the same visibility producer and raster shader sources.
+    stem = 'resolve' if identity == 'opaque-material-resolve' else 'main'
+    root_graph = stem + '.lurender.json'
+    root_manifest = stem + '.lushader.json.in'
+    text = snapshot.load(root_manifest).decode('utf-8')
     text = text.replace('@LUDUS_DEFAULT_RENDER_GRAPH_PROFILES@', json.dumps(list(profiles)))
     if identity == 'light-transformer':
         snapshot.load('light_transformer/model.json')
@@ -64,7 +69,7 @@ def template_files(identity, profiles, graph):
         text = json.dumps(document, indent=2) + '\n'
     manifest = json.loads(text)
     build.validate_manifest(manifest)
-    pending = ['main.lurender.json']
+    pending = [root_graph]
     captured = set()
     while pending:
         relative = pending.pop()
@@ -82,6 +87,6 @@ def template_files(identity, profiles, graph):
     snapshot.verify()
     files = {'main.lushader.json': text}
     for relative, data in sorted(snapshot.files.items()):
-        if relative != 'main.lushader.json.in':
-            files[relative] = data.decode('utf-8')
+        if relative != root_manifest:
+            files['main.lurender.json' if relative == root_graph else relative] = data.decode('utf-8')
     return files

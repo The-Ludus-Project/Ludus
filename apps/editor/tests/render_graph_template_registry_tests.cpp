@@ -107,7 +107,8 @@ TEST_CASE("the built-in template catalog keeps the editor's existing template li
                                                QStringLiteral("restir-gi"),
                                                QStringLiteral("guided-restir-fg-plus"),
                                                QStringLiteral("conditional-restir"),
-                                               QStringLiteral("one-more-vertex-nee")});
+                                               QStringLiteral("one-more-vertex-nee"),
+                                               QStringLiteral("opaque-material-resolve")});
     CHECK(graphs.at(0).Label == QStringLiteral("Raster"));
     CHECK(graphs.at(4).Label == QStringLiteral("Hybrid shadows — ray-traced analytic light shadows"));
     CHECK(graphs.at(4).Category == QStringLiteral("hybrid"));
@@ -137,7 +138,8 @@ TEST_CASE("the built-in template catalog keeps the editor's existing template li
         CHECK(graph.Requirements.contains(QStringLiteral("native-ray-tracing")) == isRayTraced);
         // Triangle-loop and compute-BVH templates run on Metal or Vulkan compute and must not claim ray hardware.
         CHECK(graph.Requirements.contains(QStringLiteral("compute-ray-tracing")) ==
-              (graph.Identity == QStringLiteral("line-sampling") ||
+              (graph.Identity == QStringLiteral("opaque-material-resolve") ||
+               graph.Identity == QStringLiteral("line-sampling") ||
                graph.Identity == QStringLiteral("ris-projected-solid-angle") ||
                graph.Identity == QStringLiteral("salesin-jarosz-lines") ||
                graph.Identity == QStringLiteral("polygonal-light-sampling") ||

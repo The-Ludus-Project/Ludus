@@ -881,6 +881,16 @@ if(TARGET ludus_renderer_render_tests)
         target_compile_definitions(ludus_render_graph_ray_tests PRIVATE
             "LUDUS_RG3_${template_definition}_TEMPLATE_DIRECTORY=\"${template_package_directory}\"")
     endforeach()
+    # The second starter in visibility_buffer shares its raster library and shader sources.
+    set(resolve_source "${CMAKE_CURRENT_SOURCE_DIR}/render_graphs/visibility_buffer")
+    set(resolve_staged "${CMAKE_CURRENT_BINARY_DIR}/rg2-inputs/opaque_material_resolve")
+    ludus_stage_render_graph_inputs("${resolve_source}" "${resolve_staged}" main.lurender.json)
+    configure_file("${resolve_source}/resolve.lushader.json.in" "${resolve_staged}/resolve.lushader.json" @ONLY)
+    ludus_compile_render_graph(TARGET ludus_render_graph_ray_tests NAME rg2_opaque_material_resolve
+        MANIFEST "${resolve_staged}/resolve.lushader.json" RUNTIME_PACKAGE)
+    cmake_path(GET rg2_opaque_material_resolve_RUNTIME_PACKAGE PARENT_PATH resolve_package_directory)
+    target_compile_definitions(ludus_render_graph_ray_tests PRIVATE
+        LUDUS_RG3_OPAQUE_MATERIAL_RESOLVE_DIRECTORY="${resolve_package_directory}")
     ludus_compile_render_graph(TARGET ludus_render_graph_ray_tests NAME rg2_rough_pair_slice_fresh
         MANIFEST "${CMAKE_CURRENT_BINARY_DIR}/rg2-inputs/rough_pair_slice_template/main.lushader.json"
         CONFIGURATION FreshSlice RUNTIME_PACKAGE)

@@ -401,6 +401,24 @@ class VisibilityTemplateTests(unittest.TestCase):
                     self.assertEqual(interface['visibility_queries'], 0)
                     self.assertFalse(any(program['bindings'] for program in manifest['programs']))
 
+    def test_opaque_resolve_composes_the_visibility_producer_without_ray_features(self):
+        producer = self.create('visibility-buffer')
+        root = self.create('opaque-material-resolve')
+        self.assertEqual(root.with_name('library.lurender.json').read_bytes(),
+                         producer.with_name('library.lurender.json').read_bytes())
+        plan = graph.compile_graph(root)
+        passes = [operation for operation in plan['passes'] if operation['kind'] != 'Export']
+        raster, resolve = passes
+        self.assertEqual(raster['kind'], 'Raster')
+        self.assertFalse(ray.requires_native_queries(plan))
+        self.assertEqual(resolve['pipeline']['shaders'],
+                         [{'id': 'compute', 'stage': 'compute', 'program': 'ResolveOpaqueMaterial'}])
+        self.assertEqual(resolve['visibility']['resource'], raster['attachments']['color']['resource'])
+        self.assertEqual(resolve['visibility_depth']['resource'], raster['attachments']['depth']['resource'])
+        exports = {operation['resource'] for operation in plan['passes'] if operation['kind'] == 'Export'}
+        self.assertEqual(exports, {resolve['attachments']['color']['resource'], resolve['visibility']['resource'],
+                                   resolve['visibility_depth']['resource']})
+
     def test_shared_render_size_resizes_all_attachments(self):
         root = self.create('visibility-secondary-rays')
         asset = json.loads(root.read_text())
@@ -417,6 +435,8 @@ class VisibilityTemplateTests(unittest.TestCase):
         with self.assertRaises(ToolingError):
             self.create('visibility-secondary-rays', ('wgsl',))
         self.assertFalse((Path(self.directory.name) / 'visibility-secondary-rays').exists())
+        with self.assertRaises(ToolingError):
+            self.create('opaque-material-resolve', ('wgsl',))
 
     def test_existing_destinations_are_preserved(self):
         for identity in ('visibility-buffer', 'visibility-secondary-rays'):
@@ -434,10 +454,10 @@ class VisibilityTemplateTests(unittest.TestCase):
         installed = Path(self.directory.name) / 'sdk/lib/cmake/Ludus/render_graph'
         module = installed / 'ludus_tools/render_graph_templates.py'
         module.parent.mkdir(parents=True)
-        for identity, directory in (('visibility-buffer', 'visibility_buffer'),
-                                     ('visibility-secondary-rays', 'visibility_secondary_rays')):
+        for directory in ('visibility_buffer', 'visibility_secondary_rays'):
             source = Path(__file__).resolve().parents[2] / 'modules/graphics/renderer/render_graphs' / directory
             shutil.copytree(source, installed / 'templates' / directory)
+        for identity in ('visibility-buffer', 'opaque-material-resolve', 'visibility-secondary-rays'):
             with patch.object(render_graph_templates, '__file__', str(module)):
                 files = render_graph_templates.template_files(identity, ('spirv', 'wgsl'), graph)
             manifest = json.loads(files['main.lushader.json'])
