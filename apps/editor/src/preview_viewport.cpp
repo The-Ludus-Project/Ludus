@@ -866,6 +866,12 @@ struct PreviewViewport::State final
     QLabel* TerrainPreviewLabelOrNull = nullptr;
     EmptyWorldView* MessageOrNull = nullptr;
     uint64 Presented = 0;
+    /// Count an image handed to Qt and report it at the observation point ImagePresented documents.
+    void notePresentedImage()
+    {
+        ++Presented;
+        Q_EMIT Widget->ImagePresented(time::NowTicks());
+    }
     /// Statistics overlay text currently shown; empty while the overlay is off.
     QString StatisticsText;
     /// Bars behind the pass rows that end StatisticsText; empty when it has none.
@@ -954,7 +960,7 @@ struct PreviewViewport::State final
                     QSizeF(mState.ProjectGraph->GetImage().size()).scaled(boundingRect().size(), Qt::KeepAspectRatio);
                 node->setRect(QRectF(QPointF((width() - size.width()) / 2, (height() - size.height()) / 2), size));
                 mState.PresentedCpuImageKey = mState.ProjectGraph->GetImage().cacheKey();
-                ++mState.Presented;
+                mState.notePresentedImage();
                 return node;
             }
             if (mState.Pending >= 0)
@@ -992,7 +998,7 @@ struct PreviewViewport::State final
                     mState.PaintTrace.Queue(next.TraceIdentity, next.FrameBeginTicks);
                     mState.PaintTrace.BeginPaint();
                 }
-                ++mState.Presented;
+                mState.notePresentedImage();
             }
             if (node != nullptr)
             {
@@ -1198,7 +1204,7 @@ private:
             {
                 CanvasOrNull->SetImage(Reader.TakeImage());
                 releaseReadLease();
-                ++Presented;
+                notePresentedImage();
             }
             else if (status == OffscreenReadStatus::Failed)
             {

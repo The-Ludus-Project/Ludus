@@ -1310,6 +1310,8 @@ if(LUDUS_BUILD_TESTS AND NOT EMSCRIPTEN)
         tests/viewport_debug_tests.cpp
         tests/preview_generation_tests.cpp
         tests/viewport_navigation_tests.cpp
+        tests/viewport_pacing.cpp
+        tests/viewport_pacing_tests.cpp
         tests/viewport_object_overlay_tests.cpp
         tests/mesh_silhouette_tests.cpp
         tests/orientation_widget_tests.cpp
