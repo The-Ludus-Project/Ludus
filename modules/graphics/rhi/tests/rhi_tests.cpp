@@ -1,6 +1,8 @@
 // Include the public API before Volk to catch native-handle namespace mistakes.
+#include <ludus/foundation/base/core.h>
 #include <ludus/foundation/base/pointer.hpp>
 #include <ludus/foundation/logging/log_format.hpp>
+#include <ludus/graphics/rhi/device.h>
 #include <ludus/graphics/rhi/rhi.h>
 #include <ludus/platform/base/window.h>
 #include <ludus/platform/native_window.h>
@@ -50,6 +52,51 @@ TEST_CASE("A window cannot connect before RHI initialization", "[rhi]")
     graphics::rhi::Shutdown();
 }
 
+#if defined(VK_USE_PLATFORM_WAYLAND_KHR)
+namespace
+{
+namespace rhi = graphics::rhi;
+
+platform::WindowManager& GetWaylandWindowManager()
+{
+    // Platform owns one Wayland registry for the process, including across Catch2 sections.
+    static platform::WindowManager manager = [] {
+        platform::WindowManager windowManager;
+        REQUIRE(windowManager.Initialize({}) == true);
+        return windowManager;
+    }();
+    return manager;
+}
+
+struct ShutdownGuard final
+{
+    ~ShutdownGuard()
+    {
+        rhi::Shutdown();
+    }
+};
+
+VKAPI_ATTR VkResult VKAPI_CALL
+LoseOnAcquire(VkDevice, VkSwapchainKHR, foundation::uint64, VkSemaphore, VkFence, foundation::uint32*) noexcept
+{
+    return VK_ERROR_SURFACE_LOST_KHR;
+}
+
+PFN_vkQueuePresentKHR presentOrNull = nullptr;
+
+VKAPI_ATTR VkResult VKAPI_CALL LoseOnPresent(VkQueue queue, const VkPresentInfoKHR* present) noexcept
+{
+    // Thanks to Khronos Group's Vulkan Specification, vkQueuePresentKHR:
+    // https://docs.vulkan.org/refpages/latest/refpages/source/vkQueuePresentKHR.html
+    // A surface-lost result still enqueues the wait. Keep the real present and its fence
+    // in flight and change only the result observed by the RHI.
+    LUDUS_REQUIRE(presentOrNull != nullptr);
+    const VkResult result = presentOrNull(queue, present);
+    return result == VK_SUCCESS || result == VK_SUBOPTIMAL_KHR ? VK_ERROR_SURFACE_LOST_KHR : result;
+}
+} // namespace
+#endif
+
 TEST_CASE("Wayland surface and device lifecycle", "[rhi][wayland]")
 {
     // Opt in on hosts with a running compositor and an eligible Vulkan GPU.
@@ -58,18 +105,11 @@ TEST_CASE("Wayland surface and device lifecycle", "[rhi][wayland]")
         SKIP("Set LUDUS_TEST_WAYLAND=1 to exercise the live Wayland/Vulkan lifecycle.");
     }
 #if defined(VK_USE_PLATFORM_WAYLAND_KHR)
-    platform::WindowManager manager;
+    platform::WindowManager& manager = GetWaylandWindowManager();
     foundation::UniquePtr<platform::Window> window;
     // Destroy Vulkan objects before the platform window even on assertion failure.
-    struct ShutdownGuard
-    {
-        ~ShutdownGuard()
-        {
-            graphics::rhi::Shutdown();
-        }
-    } guard;
+    const ShutdownGuard guard;
 
-    REQUIRE(manager.Initialize({}));
     REQUIRE(manager.CreateWindow({ .Name = "Ludus Wayland lifecycle test" }, window));
     const auto native = window->GetNativeWindowInfo();
     REQUIRE(native.System == platform::WindowSystem::Wayland);
@@ -90,6 +130,98 @@ TEST_CASE("Wayland surface and device lifecycle", "[rhi][wayland]")
     SKIP("Wayland was disabled at build time.");
 #endif
 }
+
+#if defined(VK_USE_PLATFORM_WAYLAND_KHR)
+TEST_CASE("R14b losing a Vulkan Wayland surface preserves the other swapchain", "[rhi][wayland][surface]")
+{
+    if (std::getenv("LUDUS_TEST_WAYLAND") == nullptr)
+    {
+        SKIP("Set LUDUS_TEST_WAYLAND=1 to exercise Vulkan presentation on a running Wayland compositor.");
+    }
+
+    platform::WindowManager& manager = GetWaylandWindowManager();
+    foundation::UniquePtr<platform::Window> primaryWindow;
+    foundation::UniquePtr<platform::Window> secondWindow;
+    const ShutdownGuard guard;
+
+    REQUIRE(manager.CreateWindow({ .Name = "R14b Wayland primary" }, primaryWindow));
+    REQUIRE(manager.CreateWindow({ .Name = "R14b Wayland second" }, secondWindow));
+    const platform::NativeWindowInfo primaryTarget = primaryWindow->GetNativeWindowInfo();
+    const platform::NativeWindowInfo secondTarget = secondWindow->GetNativeWindowInfo();
+    REQUIRE(primaryTarget.System == platform::WindowSystem::Wayland);
+    REQUIRE(secondTarget.System == platform::WindowSystem::Wayland);
+
+    rhi::DeviceHandle device;
+    rhi::SurfaceHandle primary;
+    REQUIRE(rhi::CreateDevice({}, primaryTarget, {}, device, primary) == rhi::DeviceStatus::Ready);
+    REQUIRE(rhi::SetFrameTarget(device, primary, { .Width = primaryTarget.Width, .Height = primaryTarget.Height }) ==
+            rhi::DeviceStatus::Ready);
+    rhi::SurfaceHandle second;
+    REQUIRE(rhi::CreateSurface(device, secondTarget, second) == rhi::DeviceStatus::Ready);
+
+    REQUIRE(rhi::BeginFrame(device, primary) == rhi::DeviceStatus::Ready);
+    REQUIRE(rhi::EndFrame(device) == rhi::DeviceStatus::Ready);
+    REQUIRE(rhi::BeginFrame(device, second) == rhi::DeviceStatus::Ready);
+    REQUIRE(rhi::EndFrame(device) == rhi::DeviceStatus::Ready);
+
+    foundation::uint64 submittedFrames = 1;
+    SECTION("Acquisition fails before submission")
+    {
+        const PFN_vkAcquireNextImageKHR acquire = vkAcquireNextImageKHR;
+        vkAcquireNextImageKHR = LoseOnAcquire;
+        const rhi::DeviceStatus status = rhi::BeginFrame(device, second);
+        vkAcquireNextImageKHR = acquire;
+        REQUIRE(status == rhi::DeviceStatus::SurfaceLost);
+    }
+    SECTION("Presentation fails after submission")
+    {
+        REQUIRE(rhi::BeginFrame(device, second) == rhi::DeviceStatus::Ready);
+        presentOrNull = vkQueuePresentKHR;
+        vkQueuePresentKHR = LoseOnPresent;
+        const rhi::DeviceStatus status = rhi::EndFrame(device);
+        vkQueuePresentKHR = presentOrNull;
+        presentOrNull = nullptr;
+        REQUIRE(status == rhi::DeviceStatus::Ready);
+        ++submittedFrames;
+    }
+
+    rhi::SurfaceInfo info;
+    REQUIRE(rhi::GetSurfaceInfo(device, second, info) == rhi::DeviceStatus::Ready);
+    CHECK(info.State == rhi::SurfaceState::Lost);
+    CHECK(info.SubmittedFrames == submittedFrames);
+    CHECK(info.RenderedFrames == submittedFrames);
+    CHECK(info.PresentedFrames == 1);
+    CHECK(rhi::BeginFrame(device, second) == rhi::DeviceStatus::SurfaceLost);
+
+    rhi::DeviceInfo deviceInfo;
+    REQUIRE(rhi::GetDeviceInfo(device, deviceInfo) == rhi::DeviceStatus::Ready);
+    REQUIRE(rhi::GetSurfaceInfo(device, primary, info) == rhi::DeviceStatus::Ready);
+    CHECK(info.State == rhi::SurfaceState::Ready);
+    CHECK(info.SubmittedFrames == 1);
+    CHECK(info.RenderedFrames == 1);
+    CHECK(info.PresentedFrames == 1);
+    REQUIRE(rhi::BeginFrame(device, primary) == rhi::DeviceStatus::Ready);
+    REQUIRE(rhi::EndFrame(device) == rhi::DeviceStatus::Ready);
+    REQUIRE(rhi::GetSurfaceInfo(device, primary, info) == rhi::DeviceStatus::Ready);
+    CHECK(info.SubmittedFrames == 2);
+    CHECK(info.PresentedFrames == 2);
+
+    const rhi::SurfaceHandle stale = second;
+    REQUIRE(rhi::DestroySurface(device, second) == rhi::DeviceStatus::Ready);
+    REQUIRE(rhi::CreateSurface(device, secondTarget, second) == rhi::DeviceStatus::Ready);
+    CHECK(rhi::BeginFrame(device, stale) == rhi::DeviceStatus::InvalidHandle);
+    REQUIRE(rhi::GetSurfaceInfo(device, second, info) == rhi::DeviceStatus::Ready);
+    CHECK(info.SubmittedFrames == 0);
+    CHECK(info.RenderedFrames == 0);
+    CHECK(info.PresentedFrames == 0);
+    REQUIRE(rhi::BeginFrame(device, second) == rhi::DeviceStatus::Ready);
+    REQUIRE(rhi::EndFrame(device) == rhi::DeviceStatus::Ready);
+    REQUIRE(rhi::GetSurfaceInfo(device, second, info) == rhi::DeviceStatus::Ready);
+    CHECK(info.SubmittedFrames == 1);
+    CHECK(info.PresentedFrames == 1);
+    REQUIRE(rhi::DestroyDevice(device) == rhi::DeviceStatus::Ready);
+}
+#endif
 
 TEST_CASE("Native startup rejects invalid windows without loading a GPU", "[rhi][lifecycle]")
 {

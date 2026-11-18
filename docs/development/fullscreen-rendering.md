@@ -405,7 +405,9 @@ missing, WebGL 2 and over-capacity canvases and stale handles; ignores late
 configuration and completion results of destroyed surfaces whose slot was
 reused; and loses one canvas when its configuration fails during an open frame
 and another when it leaves the document, while the primary keeps presenting.
-Wayland surface loss has no automated coverage yet.
+The [Wayland test](vulkan-wayland.md#verification) injects Vulkan surface-loss
+results with two live swapchains and checks that the surviving surface keeps
+presenting.
 
 ### Profile, format and limit negotiation
 

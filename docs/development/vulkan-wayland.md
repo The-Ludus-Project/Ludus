@@ -21,7 +21,8 @@ without the Wayland macro or Wayland extension requests.
 3. Pass the descriptor to `graphics::rhi::ConnectWindow`. The RHI creates the
    surface, selects a GPU with graphics and presentation support, and requests
    one queue from each selected family (one total when the family is shared).
-   The device must support `VK_KHR_swapchain`.
+   The device must support `VK_KHR_swapchain` and swapchain maintenance1 for
+   safe presentation retirement.
 4. Call `graphics::rhi::Shutdown` before destroying the window or its display.
    Shutdown destroys the device, surface, and instance, then finalizes Volk.
 
@@ -30,9 +31,8 @@ connecting a different window while one is connected returns false. A failed
 connection releases its temporary surface and can be retried. Headless windows
 have no presentation connection; the smoke app skips `ConnectWindow` for them.
 
-This establishes the surface and device. Swapchain creation and rendering are
-still future work. Existing GPU eligibility and optional-feature policies remain
-in `rhi.cpp`.
+For swapchains that share a device, use the
+[multiple-surface device API](fullscreen-rendering.md#multiple-surfaces-per-device-r14b).
 
 ## Verification
 
@@ -48,5 +48,11 @@ lifecycle test (also supported with `linux-clang-asan-ubsan`):
 LUDUS_TEST_WAYLAND=1 out/build/linux-clang-debug/modules/graphics/rhi/ludus_graphics_rhi_tests '[wayland]'
 ```
 
-The live test checks repeated connection, invalid handles, shutdown, and
-reinitialization. It is opt-in so ordinary CI does not require a compositor/GPU.
+The facade case checks repeated connection, invalid handles, shutdown and
+reinitialization. The multiple-surface case presents to two windows and injects
+`VK_ERROR_SURFACE_LOST_KHR` at acquisition and presentation, in separate
+runs. It checks that the lost surface retains its completion counts, the
+primary swapchain still presents, and a replacement starts with fresh counters.
+Both cases are opt-in. The Linux **Development and SDK** batch runs the
+multiple-surface case under headless Weston with Lavapipe and Vulkan validation
+layers.
