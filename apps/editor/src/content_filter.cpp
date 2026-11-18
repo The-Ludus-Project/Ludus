@@ -20,9 +20,20 @@ bool DoesContentRowMatch(const ContentRow& row, const QStringList& terms, Conten
     {
         return true;
     }
+    // Thanks to Crytek, "CRYENGINE 5.4.0", Asset System Updates, for the asset dependency inspection workflow.
+    // https://www.cryengine.com/docs/static/engines/cryengine-5/categories/47316993/pages/44962676
     const QString typeName = GetContentTypeName(row.Type);
     for (const QString& term : terms)
     {
+        if (term.startsWith(CONTENT_USES_PREFIX, Qt::CaseInsensitive) == true)
+        {
+            const QStringView id = QStringView(term).sliced(CONTENT_USES_PREFIX.size());
+            if (id.isEmpty() == true || row.Dependencies.contains(id, Qt::CaseSensitive) == false)
+            {
+                return false;
+            }
+            continue;
+        }
         if (row.Id.contains(term, Qt::CaseInsensitive) == false &&
             row.Label.contains(term, Qt::CaseInsensitive) == false &&
             typeName.contains(term, Qt::CaseInsensitive) == false &&

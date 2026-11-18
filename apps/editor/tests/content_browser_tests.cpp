@@ -639,7 +639,8 @@ void WriteSceneProject(const QString& root, // NOLINT(bugprone-easily-swappable-
         MakeRecord(QStringLiteral("material"), QStringLiteral("brick1"), {QStringLiteral("texture/checker")}));
     resources.insert(QStringLiteral("material/gold"), MakeRecord(QStringLiteral("material"), QStringLiteral("gold1")));
     resources.insert(QStringLiteral("mesh/quad"), MakeRecord(QStringLiteral("mesh"), QStringLiteral("quad1")));
-    resources.insert(QStringLiteral("scene/main"), MakeRecord(QStringLiteral("scene"), QStringLiteral("main1")));
+    resources.insert(QStringLiteral("scene/main"),
+                     MakeRecord(QStringLiteral("scene"), QStringLiteral("main1"), {QStringLiteral("material/brick")}));
     resources.insert(QStringLiteral("license/cc0"), MakeRecord(QStringLiteral("license"), QStringLiteral("cc01")));
     QJsonObject catalog;
     catalog.insert(QStringLiteral("resources"), resources);
@@ -730,6 +731,17 @@ TEST_CASE("Content search matches every term against name, type and path, and ch
     grown.append(MakeRow(QStringLiteral("sound/step"), QStringLiteral("step.json"), ContentType::Sound));
     model.SetRows(grown);
     CHECK(proxy.rowCount() == 4);
+    // A refreshed catalog can change only a binding while the exact-ID query is active.
+    proxy.SetCategoryMask(materials);
+    proxy.SetSearchText(QStringLiteral("uses:texture/brick"));
+    CHECK(proxy.rowCount() == 0);
+    grown[1].Dependencies = {QStringLiteral("texture/brick")};
+    model.SetRows(grown);
+    REQUIRE(proxy.rowCount() == 1);
+    CHECK(proxy.index(0, 0).data(Qt::UserRole).toString() == QStringLiteral("material/brick"));
+    grown[1].Dependencies.clear();
+    model.SetRows(grown);
+    CHECK(proxy.rowCount() == 0);
 }
 
 TEST_CASE("Cooked texture and material thumbnails are drawn from artifact bytes", "[editor][content][thumbnail]")
@@ -937,6 +949,33 @@ TEST_CASE("The content browser lists cooked scene assets with thumbnails, chips 
     CHECK(table->model()->index(brick, 0).data().toString() == QStringLiteral("Brick wall"));
     CHECK(table->model()->index(brick, static_cast<int>(ContentColumn::Type)).data().toString() ==
           QStringLiteral("Material"));
+
+    // Only direct users appear. The scene uses brick, which in turn uses checker.
+    QPushButton* findUsers = workspace.findChild<QPushButton*>(QStringLiteral("contentFindUsers"));
+    REQUIRE(findUsers != nullptr);
+    textures->click();
+    const int checker = static_cast<int>(GetVisibleIds(*table).indexOf(QStringLiteral("texture/checker")));
+    REQUIRE(checker >= 0);
+    table->setCurrentIndex(table->model()->index(checker, 0));
+    REQUIRE(findUsers->isEnabled() == true);
+    findUsers->click();
+    CHECK(textures->isChecked() == false);
+    CHECK(search->text() == QStringLiteral("uses:texture/checker"));
+    CHECK(GetVisibleIds(*table) == QStringList{QStringLiteral("material/brick")});
+    search->setText(QStringLiteral("uses:texture/checker WALL"));
+    CHECK(GetVisibleIds(*table) == QStringList{QStringLiteral("material/brick")});
+    materials->click();
+    search->setText(QStringLiteral("uses:material/brick"));
+    CHECK(table->model()->rowCount() == 0);
+    materials->click();
+    CHECK(GetVisibleIds(*table) == QStringList{QStringLiteral("scene/main")});
+    for (const QString& query :
+         {QStringLiteral("uses:texture/check"), QStringLiteral("uses:Texture/checker"), QStringLiteral("uses:")})
+    {
+        search->setText(query);
+        CHECK(table->model()->rowCount() == 0);
+    }
+    search->clear();
 
     workspace.resize(800, 600);
     workspace.show();
