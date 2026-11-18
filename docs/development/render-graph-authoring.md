@@ -10477,8 +10477,11 @@ an explicit draw. Mesh normals are required. Base-color, packed normal/roughness
 metallic and emission maps use the existing authored material evaluation. Constant
 and HDR environments reuse Renderer lighting/environment preparation. Fixed source
 mip zero is used for these scene maps; this does not introduce texture streaming.
-Unassigned materials use the existing neutral material. Invalid references, error
-materials, masked/transparent coverage and missing normals reject the candidate.
+Base texture alpha and the material cutoff control masked coverage in the
+color and depth attachments. The forward profile evaluates the authored strand
+direction for [hair cards](../architecture/renderer-systems.md#raster-hair-cards).
+Unassigned slots use the neutral material. Invalid references, error
+materials, transparent coverage and missing normals reject the candidate.
 The previous drawable scene remains available while a replacement is pending or fails.
 
 The template connects **Baked Lighting** from **Scene** to its forward raster

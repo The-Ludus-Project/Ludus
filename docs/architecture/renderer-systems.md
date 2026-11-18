@@ -1803,8 +1803,9 @@ its typed scattering slots (`HairCardParameters`). Its record keeps zero metalli
 and base colour, roughness, textures and the alpha mask keep their usual meaning.
 Author it in a [scene source](scene-source-format.md#hair-card) or from code.
 
-The forward raster profile with authored inputs, which the World viewport uses,
-shades a hair card as follows:
+The forward raster profile with authored inputs shades a hair card as follows.
+Select the [Forward lit template](../development/render-graph-authoring.md#use-the-forward-lit-template)
+in the World viewport to use this profile.
 
 - **Strand frame.** The authored tangent sets the frame. Without one, the
   texture-coordinate derivatives give dP/du and the handedness. A card with
@@ -1835,14 +1836,20 @@ shades a hair card as follows:
 longitudinal peak at two incident angles and three shifts. They check the peak
 value, rotation with the strand direction, both sides and finite output near
 tangent-aligned directions. The `[hair-card][gpu]` forward-lit test in `ludus_renderer_render_tests` checks the
-same behaviour in raster pixels: the highlight moves with the strand, back faces
-match front faces where an ordinary card is dark, far-side lights are gated, and
-masks discard. It also checks that a metallic hair card is rejected while the
+same behaviour in linear raster pixels. It samples nine view directions at each
+of two incident angles and compares them to the independent longitudinal
+`cos^p((θᵢ + θₒ)/2 + s)` curve. An ordinary masked surface provides a control.
+Back faces match front faces where an ordinary card is dark, and far-side lights
+are gated. It also checks that a metallic hair card is rejected while the
 last drawable scene is kept.
 
-Coverage reuses the material's mask in every pass. Colour, depth and shadow
-casting discard through `SampleBaseTexel` with the same cutoff. Ray scenes apply
-the record's mask in closest-hit and shadow queries as for any masked material.
+The masked color pass also writes depth. It and the shadow caster discard through
+`SampleBaseTexel` with the same cutoff. Ray scenes apply the record's mask in
+closest-hit and shadow queries. The coverage fixtures use the same RGBA texel
+and cutoff across the forward color/depth pass, the deferred directional shadow
+pass and the triangle-loop, compute BVH and supported native ray queries. A
+separate probe raises the cutoff from 0.5 to 0.75 with alpha held at 128/255,
+so each coverage comparison detects a cutoff mismatch.
 
 Other paths make declared approximations:
 
@@ -1859,12 +1866,9 @@ Other paths make declared approximations:
 World slots become hair cards in the editor, which edits the strand controls
 and mask cutoff with the World history. See
 [make a slot a hair card](../development/editor-workspace.md#make-a-slot-a-hair-card).
-Still open in [#1371](https://github.com/The-Ludus-Project/Ludus/issues/1371):
-
-- The shared static bust.
-- The matched-cutoff and mismatched-cutoff coverage comparison across raster
-  passes and ray queries.
-- GPU time and overdraw measurements against an ordinary masked material.
+The [shared character bust](scene-source-format.md#character-bust) supplies the
+interactive World fixture and the
+[matched hair timing and overdraw comparison](../development/benchmark-scenes.md#measure-raster-hair-on-the-character-bust).
 
 #### Raster skin diffusion
 

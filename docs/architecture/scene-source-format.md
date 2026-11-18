@@ -101,6 +101,12 @@ eyes, teeth or hair. `ludus_scene_import_tests` checks its slot, maps, licence
 and scale. `infinite-head-lit.gltf` is the same bust standing on the ground with
 a warm key and a cool fill directional light, for the
 [skin measurements](../development/benchmark-scenes.md#measure-raster-skin-on-the-character-bust).
+`infinite-head-hair.gltf` adds a second mesh and a separate `Hair` slot to
+that same lit bust. The mesh has 44 overlapping ribbons in two layers. The
+RGBA strand texture supplies colour and opacity, and the imported slot starts
+as a masked dielectric at cutoff 0.5. The ribbons' UVs run along V from root
+to tip. [Use Make Hair Card in the World inspector](../development/editor-workspace.md#make-a-slot-a-hair-card)
+to set the strand direction and highlights.
 
 ### Keeping the files and the GPU fixtures in step
 
