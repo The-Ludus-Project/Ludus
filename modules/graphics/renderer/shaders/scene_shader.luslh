@@ -88,6 +88,8 @@ extern slang
         bool IsFullImageDispatch;
         uint32 SampleIndex;
         uint32x2 Seed;
+        uint32 WorkItemIndex;
+        uint32 WorkItemCount;
     };
     /// The scene a callback reads; pass it unchanged to the scene operations.
     struct SceneContext
