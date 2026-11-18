@@ -148,6 +148,16 @@ After **Initialize**, a progress window runs setup and shows:
   and, for a recognised cause, a plain-language fix. **Retry** reruns the same
   choices after a failure or cancellation.
 
+Both windows stay inside the area the menu bar and Dock (or taskbar) leave
+free, read on macOS from the menu bar's screen (`[NSScreen screens]` first
+entry, the screen Tk places windows on). That height is also each window's
+maximum size, so content taller than the screen scrolls between the pinned
+header and the Cancel/Initialize footer. The log starts with one
+`Ludus Setup window (…)` line per window, giving the screen size, the visible
+frame (or why it could not be used), the usable area and where the window
+ended up. Quote it when a window does not fit. The option window also writes
+that line to `out/init/setup.log` on its own, so it is there when you cancel.
+
 When setup fails, **Open full log** opens `out/init/setup.log` in the desktop's
 viewer (`open` on macOS, `xdg-open` on Linux), **Copy path** copies its
 location and **Copy error report** copies the failed step, error, hint, log

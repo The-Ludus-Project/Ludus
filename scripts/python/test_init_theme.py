@@ -229,6 +229,45 @@ class CheckboxTests(unittest.TestCase):
         self.assertEqual(rows[size - quarter - 2][size - quarter - 2], palette.primary.lower())
 
 
+# A MacBook Air (13-inch, notch): 1470 x 956 points, a 37-point menu bar and a 70-point Dock at the bottom.
+MACBOOK_AIR_FRAME = ((0.0, 0.0), (1470.0, 956.0))
+MACBOOK_AIR_VISIBLE = ((0.0, 70.0), (1470.0, 849.0))
+# A 1080p display beside it, which [NSScreen mainScreen] answers while the launching Terminal is the key window.
+EXTERNAL_FRAME = ((1470.0, 0.0), (1920.0, 1080.0))
+EXTERNAL_VISIBLE = ((1470.0, 0.0), (1920.0, 1055.0))
+
+
+class VisibleFrameTests(unittest.TestCase):
+    def test_menu_bar_screen_converts_to_tk_coordinates(self):
+        self.assertEqual(init_theme.visible_area_from_frames(MACBOOK_AIR_FRAME, MACBOOK_AIR_VISIBLE, 956.0),
+                         (37.0, 849.0))
+
+    def test_another_displays_frame_is_rejected(self):
+        # Trusting it gave a 1007-point usable height on a 956-point screen: the window was centred for a taller
+        # screen and its footer ended below the Dock (round 11 MacBook Air capture).
+        self.assertIsNone(init_theme.visible_area_from_frames(EXTERNAL_FRAME, EXTERNAL_VISIBLE, 956.0))
+        # A visible frame taller than its own screen is a misread structure, not a screen.
+        self.assertIsNone(init_theme.visible_area_from_frames(MACBOOK_AIR_FRAME, ((0.0, 0.0), (1470.0, 2000.0)),
+                                                              956.0))
+
+    def test_rejected_frame_falls_back_and_says_why(self):
+        root = SimpleNamespace(winfo_screenheight=lambda: 956, winfo_screenwidth=lambda: 1470,
+                               wm_maxsize=lambda: (1470, 956))
+        with patch.object(init_theme, "read_appkit_frames",
+                          return_value=(EXTERNAL_FRAME, EXTERNAL_VISIBLE, "NSScreen screens[0]")):
+            top, usable = init_theme.usable_screen_area(root, system="Darwin")
+            self.assertIn("rejected", init_theme._last_frame_note[0])
+        self.assertEqual(top, init_theme.MACOS_MENU_BAR_ALLOWANCE_POINTS)
+        self.assertLessEqual(top + usable + init_theme.WINDOW_FRAME_ALLOWANCE_POINTS, 956)
+        with patch.object(init_theme, "read_appkit_frames", return_value=(None, None, "AppKit unreadable (OSError)")):
+            init_theme.usable_screen_area(root, system="Darwin")
+            self.assertEqual(init_theme._last_frame_note[0], "AppKit unreadable (OSError)")
+        with patch.object(init_theme, "read_appkit_frames",
+                          return_value=(MACBOOK_AIR_FRAME, MACBOOK_AIR_VISIBLE, "NSScreen screens[0]")):
+            self.assertEqual(init_theme.usable_screen_area(root, system="Darwin"),
+                             (37, 849 - init_theme.WINDOW_FRAME_ALLOWANCE_POINTS))
+
+
 @unittest.skipUnless(os.environ.get("LUDUS_TEST_GUI") == "1", "requires a desktop display")
 class ThemeWindowTests(unittest.TestCase):
     def test_check_buttons_draw_the_token_indicator_in_every_state(self):
@@ -326,10 +365,69 @@ class ThemeWindowTests(unittest.TestCase):
         try:
             with patch.object(init_theme, "macos_visible_frame", return_value=None):
                 top, usable = init_theme.usable_screen_area(root, system="Darwin")
-            self.assertEqual(top, 0)
-            self.assertLess(usable, root.winfo_screenheight())
+            # Below the tallest menu bar, and with its title bar room still above the bottom of the screen.
+            self.assertEqual(top, init_theme.MACOS_MENU_BAR_ALLOWANCE_POINTS)
+            self.assertLessEqual(top + usable + init_theme.WINDOW_FRAME_ALLOWANCE_POINTS, root.winfo_screenheight())
         finally:
             root.destroy()
+
+    def test_content_that_grows_after_the_fit_scrolls_instead_of_pushing_the_footer_off(self):
+        import tkinter as tk
+        from tkinter import ttk
+
+        root = init_theme.create_root(tk)
+        try:
+            theme = init_theme.Theme(root, ttk)
+            root.columnconfigure(0, weight=1)
+            root.rowconfigure(0, weight=1)
+            area = init_theme.ScrollArea(tk, ttk, root, theme)
+            area.grid(row=0, column=0, sticky="nsew")
+            tk.Frame(area.content, width=300, height=200).grid(row=0, column=0)
+            footer = ttk.Button(root, text="Initialize")
+            footer.grid(row=1, column=0)
+            with patch.object(init_theme, "usable_screen_area", return_value=(37, 400)):
+                init_theme.fit_to_screen(root)
+                init_theme.centre_window(root)
+                root.update()
+                self.assertEqual(int(root.wm_maxsize()[1]), 400)
+                # Content asks for far more once the window shows, as fonts resolved at first draw do on macOS.
+                tk.Frame(area.content, width=300, height=root.winfo_screenheight()).grid(row=1, column=0)
+                root.update()
+                area.refresh()
+                root.update()
+                self.assertLessEqual(root.winfo_height(), 400)
+                self.assertTrue(area.is_scrollable)
+                self.assertLessEqual(footer.winfo_rooty() + footer.winfo_height(), root.winfo_rooty() + 400)
+        finally:
+            root.destroy()
+
+    def test_a_window_drawn_too_low_is_pulled_back_and_logged(self):
+        import tempfile
+        import tkinter as tk
+
+        root = init_theme.create_root(tk)
+        directory = tempfile.TemporaryDirectory()
+        try:
+            tk.Frame(root, width=300, height=300).grid()
+            log_path = Path(directory.name) / "out/init/setup.log"
+            with patch.object(init_theme, "usable_screen_area", return_value=(37, 500)):
+                root.geometry("300x300+40+400")
+                root.update()
+                init_theme.check_window_fit_later(root, "options", log_path=log_path)
+                deadline = 50
+                while not log_path.exists() and deadline:
+                    root.after(50)
+                    root.update()
+                    deadline -= 1
+                root.update()
+                self.assertLessEqual(root.winfo_y() + root.winfo_height(), 37 + 500)
+            log = log_path.read_text(encoding="utf-8")
+            self.assertIn("Ludus Setup window (options, moved back on screen)", log)
+            for fact in ("screen ", "visible frame", "usable area top 37 height 500", "content ", "window 300x"):
+                self.assertIn(fact, log)
+        finally:
+            root.destroy()
+            directory.cleanup()
 
     def test_windows_fit_the_usable_screen_height(self):
         import tkinter as tk
