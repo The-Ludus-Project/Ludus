@@ -82,6 +82,7 @@ extern slang
         uint32x2 ExtentPixel;
         Ray CameraRay;
         float32x4x4 CameraClipToWorld;
+        float32x4x4 CameraClipToEye;
         float32x3 CameraPositionWorld;
         bool IsOrthographic;
         bool IsFullImageDispatch;

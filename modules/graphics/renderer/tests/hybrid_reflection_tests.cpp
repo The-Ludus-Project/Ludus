@@ -1042,8 +1042,9 @@ namespace
 // texels place a pixel's surface centimetres along its ray at tens of metres. At a grazing angle that error lies
 // almost entirely in the ground plane, so a first hit rebuilt from depth slides off the triangle the raster stored
 // at its edges; with the 0.001 barycentric tolerance this rebuild once used, 84 pixels of this view failed. The
-// first surface must instead lie on the pixel-centre camera ray. The camera stands near the world origin, where its
-// float32 clip-to-world matrix keeps camera rays on the raster's projection.
+// first surface must instead lie on the pixel-centre camera ray. A second variant translates the scene and camera
+// far from the world origin, where a float32 world-space clip-to-world matrix moves camera rays a sizeable fraction
+// of a pixel off the raster's projection (issue #1761); camera rays are built about the eye instead.
 constexpr uint32 GROUND_CELLS_PER_SIDE = 128;
 constexpr float32 GROUND_CELL_WORLD = .25F;
 constexpr uint32 GROUND_VERTICES_PER_SIDE = GROUND_CELLS_PER_SIDE + 1;
@@ -1058,6 +1059,8 @@ constexpr math::Vector3 GRAZING_TARGET_WORLD{0, 0, -40};
 constexpr float32 GRAZING_VERTICAL_FOV_RADIANS = 1;
 constexpr float32 GRAZING_NEAR_WORLD = .01F;
 constexpr float32 GRAZING_FAR_WORLD = 1000;
+/// The far variant's translation of scene and camera: the eye stands about 850 m from the world origin.
+constexpr math::Vector3 DISTANT_GROUND_OFFSET_WORLD{600, 0, -600};
 /// Frames drawn before the failure summary is read; each draws one sample per pixel.
 constexpr uint32 GRAZING_FRAMES = 4;
 constexpr uint32 SHADE_PASS = REFLECTIONS_PASS_COUNT - 1;
@@ -1075,7 +1078,8 @@ struct GroundScene final
     renderer::DirectLight Light = MakeLight();
     renderer::SceneShaderInputs Inputs{};
     renderer::ViewDescription Camera{};
-    GroundScene()
+    /// The grid and camera translated by offsetWorld.
+    explicit GroundScene(math::Vector3 offsetWorld)
     {
         REQUIRE(Positions.TryResize(GROUND_VERTEX_COUNT) == true);
         REQUIRE(Normals.TryResize(GROUND_VERTEX_COUNT) == true);
@@ -1085,9 +1089,11 @@ struct GroundScene final
             for (uint32 column = 0; column < GROUND_VERTICES_PER_SIDE; ++column)
             {
                 const usize vertex = static_cast<usize>(row) * GROUND_VERTICES_PER_SIDE + column;
-                Positions[vertex] = {static_cast<float32>(column) * GROUND_CELL_WORLD - GROUND_HALF_WIDTH_WORLD,
-                                     0,
-                                     -static_cast<float32>(row) * GROUND_CELL_WORLD};
+                Positions[vertex] =
+                    math::Vector3{static_cast<float32>(column) * GROUND_CELL_WORLD - GROUND_HALF_WIDTH_WORLD,
+                                  0,
+                                  -static_cast<float32>(row) * GROUND_CELL_WORLD} +
+                    offsetWorld;
                 Normals[vertex] = {0, 1, 0};
             }
         }
@@ -1121,7 +1127,9 @@ struct GroundScene final
         Inputs.Lights = {&Light, 1};
         math::Matrix4 view;
         math::Matrix4 projection;
-        REQUIRE(math::TryLookAt(GRAZING_EYE_WORLD, GRAZING_TARGET_WORLD, {0, 1, 0}, view) == math::MathStatus::Success);
+        const math::Vector3 eyeWorld = GRAZING_EYE_WORLD + offsetWorld;
+        const math::Vector3 targetWorld = GRAZING_TARGET_WORLD + offsetWorld;
+        REQUIRE(math::TryLookAt(eyeWorld, targetWorld, {0, 1, 0}, view) == math::MathStatus::Success);
         REQUIRE(math::TryPerspectiveReverseZ(GRAZING_VERTICAL_FOV_RADIANS,
                                              static_cast<float32>(WIDTH) / static_cast<float32>(HEIGHT),
                                              GRAZING_NEAR_WORLD,
@@ -1129,8 +1137,8 @@ struct GroundScene final
                                              projection) == math::MathStatus::Success);
         Camera.WorldToClip = projection * view;
         Camera.Depth = renderer::DepthConvention::ReverseZ;
-        Camera.CameraPosition = GRAZING_EYE_WORLD;
-        Camera.CameraForward = GRAZING_TARGET_WORLD - GRAZING_EYE_WORLD;
+        Camera.CameraPosition = eyeWorld;
+        Camera.CameraForward = targetWorld - eyeWorld;
     }
     GroundScene(const GroundScene&) = delete;
     GroundScene& operator=(const GroundScene&) = delete;
@@ -1150,10 +1158,10 @@ renderer::RenderGraphRayFailures ReadRayFailures(renderer::RenderGraph& inoutGra
     REQUIRE(status == S::Ready);
     return failures;
 }
-} // namespace
 
-TEST_CASE("Hybrid reflections rebuild grazing first hits at triangle edges without failures",
-          "[render-graph][gpu][hybrid-reflections][native-ray-queries]")
+/// Draw the ground grid translated by offsetWorld through the hybrid reflections template and require that no
+/// pixel latches a ray failure.
+void CheckGroundWithoutFailures(math::Vector3 offsetWorld)
 {
     const Device device(true);
     if (device.HasRays == false)
@@ -1169,7 +1177,7 @@ TEST_CASE("Hybrid reflections rebuild grazing first hits at triangle edges witho
     REQUIRE(Poll(graph, graph.Initialize(device.Handle, plan, programs, nullptr, WIDTH, HEIGHT)) == S::Ready);
     // Visibility consumers rebuild positions in conventional depth, so the graph converts the reverse-Z camera.
     REQUIRE(graph.CanUseReverseDepth() == false);
-    GroundScene scene;
+    GroundScene scene(offsetWorld);
     renderer::RenderGraphReport report;
     constexpr uint64 REVISION = 1;
     const S updated = graph.Update({&scene.Mesh, 1},
@@ -1197,6 +1205,19 @@ TEST_CASE("Hybrid reflections rebuild grazing first hits at triangle edges witho
     const renderer::RenderGraphRayFailures failures = ReadRayFailures(graph, SHADE_PASS);
     CAPTURE(failures.MainReason, failures.Pixels[static_cast<usize>(renderer::RenderGraphFailureReason::StoredRecord)]);
     CHECK(failures.TotalPixels == 0);
+}
+} // namespace
+
+TEST_CASE("Hybrid reflections rebuild grazing first hits at triangle edges without failures",
+          "[render-graph][gpu][hybrid-reflections][native-ray-queries]")
+{
+    CheckGroundWithoutFailures({});
+}
+
+TEST_CASE("Hybrid reflections rebuild first hits of a camera far from the world origin without failures",
+          "[render-graph][gpu][hybrid-reflections][visibility][native-ray-queries]")
+{
+    CheckGroundWithoutFailures(DISTANT_GROUND_OFFSET_WORLD);
 }
 
 TEST_CASE("RT2 raster fallback has no reflection of offscreen geometry", "[render-graph][gpu][hybrid-reflections]")

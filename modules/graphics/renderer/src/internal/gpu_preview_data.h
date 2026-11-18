@@ -36,7 +36,10 @@ inline constexpr usize GPU_PREVIEW_QUAD_BYTES = 44;
 inline constexpr usize GPU_PREVIEW_TILE_COMPONENT_COUNT = 4;
 struct GpuPreviewUniform final
 {
-    math::Matrix4 ClipToWorld;
+    /// Clip to eye-relative world: world axes with the origin at CameraPositionWorld.xyz (ReferenceJob::ClipToEye).
+    /// Kernels build camera rays from it and add the eye last; graph kernels rebuild the world-space
+    /// RayLaunch::CameraClipToWorld from both.
+    math::Matrix4 ClipToEye;
     math::Vector4 CameraPositionWorld;
     uint32 Dimensions[4]{};
     uint32 Offsets[4]{};

@@ -112,6 +112,21 @@ float32 TransformPointComponent(float32 rowX,
     };
     return math::TryInverse(eyeRelativeToClip, outClipToEye) == math::MathStatus::Success;
 }
+math::Matrix4 MakeCameraClipToEye(const math::Matrix4& clipToWorld, math::Vector3 eyeWorld) noexcept
+{
+    math::Matrix4 clipToEye = clipToWorld;
+    for (math::Vector4& column : clipToEye.Columns)
+    {
+        const float64 homogeneous = static_cast<float64>(column.W);
+        column.X =
+            static_cast<float32>(static_cast<float64>(column.X) - static_cast<float64>(eyeWorld.X) * homogeneous);
+        column.Y =
+            static_cast<float32>(static_cast<float64>(column.Y) - static_cast<float64>(eyeWorld.Y) * homogeneous);
+        column.Z =
+            static_cast<float32>(static_cast<float64>(column.Z) - static_cast<float64>(eyeWorld.Z) * homogeneous);
+    }
+    return clipToEye;
+}
 bool TryMakeCameraClipToWorld(const ViewDescription& camera, math::Matrix4& outClipToWorld) noexcept
 {
     math::Matrix4 clipToEyeRelative;

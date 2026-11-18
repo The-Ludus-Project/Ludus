@@ -519,7 +519,7 @@ Status PackGpuScene(const ReferenceJob& job,
                                                                luminaire.BeamTwist,
                                                                0};
     }
-    outUniform.ClipToWorld = job.ClipToWorld;
+    outUniform.ClipToEye = job.ClipToEye;
     outUniform.CameraPositionWorld =
         GpuVector(job.Description.CameraPosition, job.Description.OrthographicCamera ? 1.0F : 0.0F);
     outUniform.Dimensions[0] = job.Description.Width;
