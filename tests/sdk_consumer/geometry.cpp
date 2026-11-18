@@ -1,8 +1,12 @@
 // Installed Ludus::FoundationGeometry: prepare a path and track, build a
 // Certified distance map and invert a distance, then bake frames, project a
 // point and emit a ribbon sweep, and prepare a twisted patch and build a mesh
-// with a Certified bound, through public headers only.
+// with a Certified bound. Also cook, load and sample an authored cubic through
+// the installed GeometryContent export. All checks use public headers.
 
+#include <ludus/content/content.h>
+#include <ludus/content/geometry_format/geometry_format.h>
+#include <ludus/foundation/containers/array.hpp>
 #include <ludus/foundation/containers/static_array.hpp>
 #include <ludus/foundation/geometry/distance.hpp>
 #include <ludus/foundation/geometry/frame.hpp>
@@ -13,6 +17,72 @@
 #include <ludus/foundation/geometry/tessellation.hpp>
 #include <ludus/foundation/geometry/track.hpp>
 #include <ludus/foundation/math/enclosure.hpp>
+#include <ludus/foundation/math/vector.hpp>
+#include <ludus/geometry/content/geometry_content.h>
+
+namespace
+{
+bool ExerciseCookedCubic(const ludus::foundation::geometry::ToleranceProfile& tolerance,
+                         const ludus::foundation::geometry::WorkLimits& limits) noexcept
+{
+    using namespace ludus::foundation::geometry;
+    using ludus::content::Status;
+    using ludus::content::geometry_format::GeometryKindTag;
+    using ludus::foundation::uint8;
+    using ludus::foundation::core::Array;
+    using ludus::foundation::math::Vector3;
+    using ludus::geometry::content::AuthoredSpan;
+    using ludus::geometry::content::CookGeometry;
+    using ludus::geometry::content::GeometryDiagnosticReport;
+    using ludus::geometry::content::GeometryLoad;
+    using ludus::geometry::content::GeometrySource;
+    using ludus::geometry::content::LoadGeometry;
+
+    // Thanks to Bekwnn Dev, The Artful Shape of Functions, example 2, for the
+    // noncollinear control points. The fixture checks the cooked SDK path.
+    // https://bekwnn.github.io/blog/2017/09/14/the-artful-shape-of-functions.html#example-2-bezier-curve
+    const AuthoredSpan span
+    {
+        .AuthorId = 1,
+        .Control = {{{1, 0, 0}, {0, 3, 0}, {4, 6, 0}, {4, 0, 0}}},
+    };
+    GeometrySource source;
+    source.Tolerance = tolerance;
+    source.Limits = limits;
+    if (source.Spans.TryAdd(span) == false)
+    {
+        return false;
+    }
+
+    Array<uint8> blob;
+    GeometryDiagnosticReport diagnostic;
+    GeometryLoad load;
+    if (CookGeometry(source, blob, diagnostic) != Status::Ok ||
+        LoadGeometry({blob.GetData(), blob.GetSize()}, limits, load, diagnostic) != Status::Ok ||
+        load.Kind != GeometryKindTag::Path)
+    {
+        return false;
+    }
+
+    const PathView path = load.Path.GetView();
+    Vector3 start;
+    Vector3 midpoint;
+    Vector3 end;
+    // The Bernstein weights at u = 1/2 are (1, 3, 3, 1) / 8.
+    constexpr Vector3 EXPECTED_START{1, 0, 0};
+    constexpr Vector3 EXPECTED_MIDPOINT{2.125F, 3.375F, 0};
+    constexpr Vector3 EXPECTED_END{4, 0, 0};
+    return TryEvaluatePath(path, SegmentParameter{ .U = 0 }, start) == GeometryStatus::Success &&
+           TryEvaluatePath(path, SegmentParameter{ .U = 0.5 }, midpoint) == GeometryStatus::Success &&
+           TryEvaluatePath(path,
+                           SegmentParameter
+                           {
+                               .U = 1,
+                           },
+                           end) == GeometryStatus::Success &&
+           start == EXPECTED_START && midpoint == EXPECTED_MIDPOINT && end == EXPECTED_END;
+}
+} // namespace
 
 bool ExerciseInstalledGeometry() noexcept
 {
@@ -178,5 +248,6 @@ bool ExerciseInstalledGeometry() noexcept
         mesh.GetView().Report.PositionBound >= 2.25 && mesh.GetView().Report.PositionBound <= 2.25 * (1.0 + 1e-12) &&
         mesh.GetView().Indices.GetSize() == 6;
     return isPathOk == true && isTrackOk == true && isFrameOk == true && isProjectionOk == true && isSweepOk == true &&
-           isSurfaceOk == true && IsStrictGuarantee(GuaranteeClass::Certified) == true;
+           isSurfaceOk == true && IsStrictGuarantee(GuaranteeClass::Certified) == true &&
+           ExerciseCookedCubic(tolerance, limits) == true;
 }
