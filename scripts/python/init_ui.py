@@ -245,9 +245,13 @@ def select_options(args: argparse.Namespace, engine) -> argparse.Namespace | Non
         header = build_header(ttk, window, theme, "Set up Ludus", "Choose the tools and workflow you need.")
         header.grid(row=0, column=0, sticky="ew")
 
-        panel = ttk.Frame(window, style="Workspace.TFrame",
+        # The options scroll on a short screen, so the header and the Cancel and Initialize buttons always show.
+        scroll = init_theme.ScrollArea(tk, ttk, window, theme)
+        scroll.grid(row=1, column=0, sticky="nsew")
+        scroll.content.columnconfigure(0, weight=1)
+        panel = ttk.Frame(scroll.content, style="Workspace.TFrame",
                           padding=(space(init_theme.SPACE_EXTRA_LARGE), space(init_theme.SPACE_LARGE)))
-        panel.grid(row=1, column=0, sticky="nsew")
+        panel.grid(row=0, column=0, sticky="nsew")
         panel.columnconfigure(0, weight=1)
 
         persona = tk.StringVar(value=next(item.label for item in PERSONAS if item.key == args.persona))
@@ -416,7 +420,10 @@ def select_options(args: argparse.Namespace, engine) -> argparse.Namespace | Non
                 advanced.grid_remove()
             else:
                 advanced.grid()
-            init_theme.fit_minimum_size(window)
+            init_theme.fit_to_screen(window, theme.scale)
+            if advanced.grid_info():
+                # Once the window has its new size, bring the opened section into view.
+                window.after_idle(lambda: scroll.show(advanced))
 
         workflow.bind("<<ComboboxSelected>>", change_workflow)
         presets.bind("<<ComboboxSelected>>", lambda _event: refresh())
@@ -447,8 +454,16 @@ def select_options(args: argparse.Namespace, engine) -> argparse.Namespace | Non
         window.bind("<Return>", accept)
         window.bind("<KP_Enter>", accept)
         refresh()
-        init_theme.fit_minimum_size(window)
-        init_theme.centre_window(window)
+
+        def descendants(widget):
+            children = widget.winfo_children()
+            return children + [nested for child in children for nested in descendants(child)]
+        # Tabbing to an option scrolled out of view brings it back into view.
+        for widget in descendants(panel):
+            if widget.winfo_class() in ("TCheckbutton", "TCombobox", "TButton"):
+                widget.bind("<FocusIn>", lambda event: scroll.show(event.widget), add="+")
+        init_theme.fit_to_screen(window, theme.scale)
+        init_theme.centre_window(window, theme.scale)
         initialize.focus_set()
         window.mainloop()
     finally:

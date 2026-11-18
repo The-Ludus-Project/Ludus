@@ -1250,10 +1250,12 @@ Proposed, November 2026. A project can reuse a pass definition across graphs and
 run it with different inputs. Its invocations should share a prepared pipeline
 when their device state matches. Today `RenderGraphActivation` stages an
 immutable package and retains the active graph until the candidate is ready.
-Many graph programs still create their own shader, layout and pipeline handles
+Most graph programs still create their own shader, layout and pipeline handles
 during preparation. RHI's raster `RequestPipeline` coalesces requests that
 already share exact shader and layout handles. Two graph generations can
-therefore prepare the same device state separately.
+therefore prepare the same device state separately. The bilinear upscale pass is
+the first migrated exception; see
+[First migration and acceptance](#first-migration-and-acceptance).
 
 | Resource or instance | Identity and owner |
 | --- | --- |
@@ -1359,6 +1361,35 @@ still references it. Use existing native and browser raster fixtures to
 qualify the profile. Record creation counts and preparation time separately
 from frame time. Before widening reuse, test inequality for every newly
 admitted field that affects compatibility or rendering.
+
+**Status** Implemented for the bilinear pilot (issue 1307). A
+`RenderGraphProgramCache` bound to one device owns the pass's vertex and
+fragment stages, binding layout, linear sampler and full-target quad. Graphs
+lease a dependency set by the complete canonical description of the composite
+stages: the stage, every target artifact and entry point, reflected inputs,
+bindings, uniform members and GLSL ES names. Pointers and hashes never select a
+set. The native-preparation hint is excluded because it does not change device
+state. Each graph then owns one `rhi::RequestPipeline` request per target it
+draws. Equal shader and layout incarnations and fixed state therefore share one
+native pipeline, while the surface and RGBA8 targets keep distinct pipelines.
+Source views and binding sets stay with the graph's scene. A resize or input
+rebind recreates only those and issues no pipeline request.
+
+`RenderGraphActivation` owns one cache shared by its active and candidate
+generations. A graph initialized without a cache gets a private one, so separate
+hosts keep their previous isolation. Pipeline acquisition stays inside
+preparation, and the existing activation transaction publishes the candidate.
+A cancelled candidate releases its request; when it was the only owner, the
+queued native creation is dropped. The final lease destroys a dependency set.
+RHI retires pipelines and shaders still referenced by accepted frames only after
+completion. No idle set is retained. `RenderGraphPipelineReport::Upscale`
+reports each graph's requests, shared requests and preparation seconds
+separately from frame time, and `RenderGraphProgramCacheReport` counts created
+and shared dependency sets. Reference-backend tests cover sharing, distinct
+targets, resize and rebind reuse, cancellation and in-flight retirement. A
+native pixel test compares the shared graphs with an unshared graph. No
+browser fixture draws the bilinear pass yet, so browser pixel parity remains
+open. Other renderer-owned programs keep their direct creation.
 
 Thanks to Oleksandr Drazhevskyi for separating logical resources from their
 backend objects, Sebastian Aaltonen for preparing pipeline state outside the
@@ -1741,7 +1772,15 @@ lobes, sampled directions, energy, and raw CPU/GPU reference results.
    composition on newly loaded geometry without editing either graph.
 3. Import an unsupported material shared across several slots. Select its
    diagnostic surface, create or map a replacement, then verify undo,
-   save/reopen and reimport.
+   save/reopen and reimport. Status: World offers **Map to existing
+   material** and **Create material from import**, a diffuse or
+   metallic-roughness draft from the imported values. The Editor regression
+   covers the selected slot, cancel, an in-dialog rejection, one-step undo
+   and redo, and a failed preparation that keeps the last published view. It
+   also covers save/reopen and reimport
+   ([repair an unsupported imported material](../development/editor-workspace.md#repair-an-unsupported-imported-material)).
+   Coated, layered and project-BRDF drafts remain open, and the dialog does
+   not yet list the unsupported source inputs by name.
 4. Register a project-defined BRDF with paired reference implementations.
    Verify that the general graph accepts it with unchanged source and the
    restricted graph either admits it or identifies a missing guarantee.

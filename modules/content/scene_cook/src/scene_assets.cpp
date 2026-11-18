@@ -953,6 +953,86 @@ constexpr std::string_view SKIN_ROUGHNESS_KEY = "roughness";
     return true;
 }
 
+/// A level's created material for one resolved material resource ID (the level's "material_definitions" table):
+/// a typed model and its values that replace the imported scattering, base colour, metallic and roughness. The
+/// imported textures, emission, alpha mode and name are kept. An unassigned definition leaves the material unchanged.
+struct MaterialDefinition final
+{
+    bool IsAssigned = false;
+    format::MaterialModel Model = format::MaterialModel::Diffuse;
+    foundation::StaticArray<float32, format::MATERIAL_RGB_CHANNELS> BaseColor{};
+    float32 Metallic = 0;
+    float32 Roughness = 1;
+};
+/// Members of a "material_definitions" entry; the names match the World document's.
+constexpr std::string_view DEFINITION_MODEL_KEY = "model";
+constexpr std::string_view DEFINITION_BASE_COLOR_KEY = "base_color";
+constexpr std::string_view DEFINITION_METALLIC_KEY = "metallic";
+constexpr std::string_view DEFINITION_ROUGHNESS_KEY = "roughness";
+/// "model" values of a "material_definitions" entry.
+constexpr std::string_view DEFINITION_DIFFUSE_MODEL = "diffuse";
+constexpr std::string_view DEFINITION_METALLIC_ROUGHNESS_MODEL = "metallic_roughness";
+/// Members of a metallic-roughness definition: its model, base colour, metallic and roughness.
+constexpr usize METALLIC_ROUGHNESS_DEFINITION_MEMBERS = 4;
+/// Members of a diffuse definition: its model and base colour.
+constexpr usize DIFFUSE_DEFINITION_MEMBERS = 2;
+
+/// Read one "material_definitions" entry. A diffuse entry holds exactly its model and a linear RGB base colour in
+/// [0, 1]; a metallic-roughness entry also holds a metallic in [0, 1] and a roughness in [MIN_AUTHORED_ROUGHNESS, 1].
+/// A missing node leaves the definition unassigned. Invalid entries return false and preserve outDefinition.
+[[nodiscard]] bool
+ReadMaterialDefinition(const JsonTree& tree, JsonIndex node, MaterialDefinition& outDefinition) noexcept
+{
+    if (node == NO_JSON_NODE)
+    {
+        outDefinition = {};
+        return true;
+    }
+    if (tree.GetKind(node) != JsonKind::Object)
+    {
+        return false;
+    }
+    MaterialDefinition definition;
+    definition.IsAssigned = true;
+    const JsonIndex model = tree.GetMember(node, DEFINITION_MODEL_KEY);
+    usize expectedMembers = 0;
+    if (tree.IsString(model, DEFINITION_DIFFUSE_MODEL) == true)
+    {
+        definition.Model = format::MaterialModel::Diffuse;
+        expectedMembers = DIFFUSE_DEFINITION_MEMBERS;
+    }
+    else if (tree.IsString(model, DEFINITION_METALLIC_ROUGHNESS_MODEL) == true)
+    {
+        definition.Model = format::MaterialModel::MetallicRoughness;
+        expectedMembers = METALLIC_ROUGHNESS_DEFINITION_MEMBERS;
+    }
+    else
+    {
+        return false;
+    }
+    if (tree.GetCount(node) != expectedMembers ||
+        ReadSkinChannels(tree, tree.GetMember(node, DEFINITION_BASE_COLOR_KEY), 0, 1, definition.BaseColor) == false)
+    {
+        return false;
+    }
+    if (definition.Model == format::MaterialModel::MetallicRoughness)
+    {
+        PythonNumber metallic;
+        PythonNumber roughness;
+        if (IsAuthoredNumber(tree, tree.GetMember(node, DEFINITION_METALLIC_KEY), metallic) == false ||
+            metallic.ToFloat() < 0 || metallic.ToFloat() > 1 ||
+            IsAuthoredNumber(tree, tree.GetMember(node, DEFINITION_ROUGHNESS_KEY), roughness) == false ||
+            roughness.ToFloat() < format::MIN_AUTHORED_ROUGHNESS || roughness.ToFloat() > 1)
+        {
+            return false;
+        }
+        definition.Metallic = static_cast<float32>(metallic.ToFloat());
+        definition.Roughness = static_cast<float32>(roughness.ToFloat());
+    }
+    outDefinition = definition;
+    return true;
+}
+
 [[nodiscard]] bool ReadProjectBrdfBinding(const JsonTree& tree, JsonIndex binding, float32& outRoughness) noexcept
 {
     outRoughness = 0;
@@ -1005,9 +1085,11 @@ constexpr std::string_view SKIN_ROUGHNESS_KEY = "roughness";
         {"version", "id", "name", "profile", "objects", "camera", "imports"};
     const JsonIndex mappings = tree.GetMember(level, "material_mappings");
     const JsonIndex sharedCoatings = tree.GetMember(level, "shared_coatings");
+    const JsonIndex definitions = tree.GetMember(level, "material_definitions");
     constexpr usize REQUIRED_FIELDS = sizeof(LEVEL_KEYS) / sizeof(LEVEL_KEYS[0]);
-    const usize optionalFields =
-        (mappings == NO_JSON_NODE ? usize{0} : usize{1}) + (sharedCoatings == NO_JSON_NODE ? usize{0} : usize{1});
+    const usize optionalFields = (mappings == NO_JSON_NODE ? usize{0} : usize{1}) +
+                                 (sharedCoatings == NO_JSON_NODE ? usize{0} : usize{1}) +
+                                 (definitions == NO_JSON_NODE ? usize{0} : usize{1});
     if (tree.GetKind(level) != JsonKind::Object || tree.GetCount(level) != REQUIRED_FIELDS + optionalFields)
     {
         return inoutFailure.FailInvalid("Invalid level fields");
@@ -1051,6 +1133,31 @@ constexpr std::string_view SKIN_ROUGHNESS_KEY = "roughness";
                 ReadCoatingOverride(tree, tree.GetValue(sharedCoatings, index), parameters) == false)
             {
                 return inoutFailure.FailInvalid("A shared coating needs an imported material ID and valid parameters");
+            }
+        }
+    }
+    if (definitions != NO_JSON_NODE)
+    {
+        if (tree.GetKind(definitions) != JsonKind::Object ||
+            tree.GetCount(definitions) > format::IMPORT_LIMITS.Materials)
+        {
+            return inoutFailure.FailInvalid("Invalid created material table");
+        }
+        for (usize index = 0; index < tree.GetCount(definitions); ++index)
+        {
+            const std::string_view material = tree.GetKey(definitions, index);
+            MaterialDefinition definition;
+            if (IsResourceIdText(material, "material") == false ||
+                ReadMaterialDefinition(tree, tree.GetValue(definitions, index), definition) == false)
+            {
+                return inoutFailure.FailInvalid("A created material needs an imported material ID, a diffuse or "
+                                                "metallic-roughness model and values in range. Create it again "
+                                                "from the import.");
+            }
+            if (mappings != NO_JSON_NODE && tree.GetMember(mappings, material) != NO_JSON_NODE)
+            {
+                return inoutFailure.FailInvalid("An imported material is both mapped and replaced by a created "
+                                                "material. Keep one repair: undo the mapping or the creation.");
             }
         }
     }
@@ -3098,6 +3205,21 @@ AssembleLighting(std::string_view root, const Document& closure, Array<uint8>& o
     return writer.IsOk() == true ? true : inoutFailure.FailOutOfMemory();
 }
 
+/// Replace a source record's scattering and reflectance with a created material. The reflectance scales the base
+/// colour map like an imported material's; the record's metallic and roughness are the definition's. An unassigned
+/// definition changes nothing.
+void ApplyMaterialDefinition(const MaterialDefinition& definition, SourceMaterialRecord& inoutSource) noexcept
+{
+    if (definition.IsAssigned == false)
+    {
+        return;
+    }
+    inoutSource.Scattering = {};
+    inoutSource.Scattering.Model = definition.Model;
+    inoutSource.Program = {};
+    inoutSource.Reflectance = {definition.BaseColor[0], definition.BaseColor[1], definition.BaseColor[2]};
+}
+
 struct MaterialVariant final
 {
     usize SourceIndex = 0;
@@ -3105,6 +3227,8 @@ struct MaterialVariant final
     float32 ProjectRoughness = 0;
     HairCardOverride HairCard;
     SkinOverride Skin;
+    /// The level's created material for the source material, shared by all of its variants.
+    MaterialDefinition Definition;
 };
 
 /// Preserve source material ordering and share records for identical slot overrides.
@@ -3119,6 +3243,7 @@ struct MaterialVariant final
     const JsonIndex objects = tree.GetMember(level, "objects");
     const JsonIndex sharedCoatings = tree.GetMember(level, "shared_coatings");
     const JsonIndex mappings = tree.GetMember(level, "material_mappings");
+    const JsonIndex definitions = tree.GetMember(level, "material_definitions");
     const usize objectCount = tree.GetCount(objects);
     Array<uint32> sourceIndices;
     if (sourceIndices.TryResize(objectCount) == false || outObjectMaterials.TryResize(objectCount) == false)
@@ -3144,6 +3269,13 @@ struct MaterialVariant final
         {
             return false;
         }
+        MaterialDefinition definition;
+        if (ReadMaterialDefinition(tree, tree.GetMember(definitions, materials[sourceIndex]), definition) == false)
+        {
+            return inoutFailure.FailInvalid("Invalid created material. Create it again from the import.");
+        }
+        // Coating admission below checks the created model, not the replaced one.
+        ApplyMaterialDefinition(definition, source);
         for (usize objectIndex = 0; objectIndex < objectCount; ++objectIndex)
         {
             if (sourceIndices[objectIndex] != sourceIndex)
@@ -3218,7 +3350,8 @@ struct MaterialVariant final
                     return inoutFailure.FailInvalid("Scene material capacity exceeded. Reset a slot override or reuse "
                                                     "existing material parameters.");
                 }
-                if (outVariants.TryAdd(MaterialVariant{sourceIndex, coating, roughness, hair, skin}) == false)
+                if (outVariants.TryAdd(MaterialVariant{sourceIndex, coating, roughness, hair, skin, definition}) ==
+                    false)
                 {
                     return inoutFailure.FailOutOfMemory();
                 }
@@ -3323,6 +3456,11 @@ struct MaterialVariant final
     }
     for (const MaterialVariant& variant : variants)
     {
+        if (variant.Definition.IsAssigned == true)
+        {
+            // A created material stores its model and base colour in the typed record of LUSCN v7.
+            isVersion7 = true;
+        }
         if (variant.HairCard.IsAssigned == true)
         {
             // A World hair card stores its strand controls in the typed record of LUSCN v13.
@@ -3540,9 +3678,18 @@ struct MaterialVariant final
         {
             source.Reflectance = {};
         }
-        float64 roughness = variant.ProjectRoughness > 0
-                                ? static_cast<float64>(variant.ProjectRoughness)
+        const MaterialDefinition& definition = variant.Definition;
+        ApplyMaterialDefinition(definition, source);
+        const float64 metallic = definition.IsAssigned == true
+                                     ? static_cast<float64>(definition.Metallic)
+                                     : GetNumberMember(tree, description.Root, "metallic").ToFloat();
+        float64 roughness = definition.IsAssigned == true
+                                ? static_cast<float64>(definition.Roughness)
                                 : GetNumberMember(tree, description.Root, "roughness").ToFloat();
+        if (variant.ProjectRoughness > 0)
+        {
+            roughness = static_cast<float64>(variant.ProjectRoughness);
+        }
         const CoatingOverride& coating = variant.Coating;
         if (coating.Alpha > 0)
         {
@@ -3584,8 +3731,7 @@ struct MaterialVariant final
         const bool isRepeat = tree.IsString(tree.GetMember(description.Root, "address"), "repeat");
         writer.AppendUint32(texture.empty() == true ? format::NO_TEXTURE : FindIndex(textures, texture));
         writer.AppendUint32(isRepeat == true ? format::ADDRESS_REPEAT : format::ADDRESS_CLAMP);
-        writer.AppendFloat32(
-            isDielectricOverride == true ? 0.0 : GetNumberMember(tree, description.Root, "metallic").ToFloat());
+        writer.AppendFloat32(isDielectricOverride == true ? 0.0 : metallic);
         writer.AppendFloat32(roughness);
         const JsonIndex emission = tree.GetMember(description.Root, "emission");
         for (usize channel = 0; channel < 3; ++channel)

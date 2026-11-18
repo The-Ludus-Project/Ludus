@@ -132,6 +132,7 @@ for content changes. Module/sample/tool READMEs link to these owners.
 - [Developer tools: RAD Debugger, code editors, and future scripting](architecture/developer-tools.md)
 - [Drift game engine integration](architecture/drift-game-integration.md)
 - [Engine configuration](architecture/engine-configuration.md)
+- [Engine loop overview](architecture/engine-loop.md)
 - [Engineering quality and CI architecture](architecture/engineering-quality.md)
 - [Entities and component storage](architecture/entity-world.md)
 - [Filesystem architecture](architecture/filesystem.md)

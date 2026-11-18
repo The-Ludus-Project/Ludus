@@ -7494,11 +7494,44 @@ its place.
 One recipe becomes several native pipelines. A technique's Renderer context
 prepares surface and offscreen variants, conventional and reverse depth, and an
 overlay. Rows do not include pipelines the Renderer owns, such as composite,
-lighting, deferred resolve, upscale and compute pipelines. Those pipelines count
-only in `Device`. Stage pipelines are created directly for each graph. A second
-graph or activated generation with identical stages therefore prepares its own
-native pipelines. Only `rhi::RequestPipeline` callers with identical stage
-handles and state share one native pipeline (`SharedRequests`).
+lighting, deferred resolve and compute pipelines. Those pipelines count only in
+`Device`. Stage pipelines are created directly for each graph. A second graph or
+activated generation with identical stages therefore prepares its own native
+pipelines. Only `rhi::RequestPipeline` callers with identical stage handles and
+state share one native pipeline (`SharedRequests`).
+
+The bilinear upscale pass, including the MetalFX surface copy, is the exception.
+Its pipelines are reported in `Upscale`, not `Recipes`. Graphs initialized with
+the same `RenderGraphProgramCache` share its shaders and layout. They request
+the pipeline through `rhi::RequestPipeline`, so equal targets share one native
+creation. `RenderGraphActivation` passes one cache to its active and candidate
+generations. `GetProgramCacheReport` returns created and shared dependency sets.
+
+| `Upscale` field | Contents |
+| --- | --- |
+| `Requests` | Pipeline requests the graph owns, one per target it draws (surface, RGBA8) |
+| `SharedRequests` | Of those, requests that joined a pipeline another graph or generation had queued or created |
+| `ReadyRequests` | Of those, requests whose native pipeline completed |
+| `PrewarmSeconds` / `QueueSeconds` | Native creation and queue time of the ready pipelines; a shared pipeline reports its single creation |
+
+See the [managed pipeline pilot](../architecture/renderer-systems.md#first-migration-and-acceptance)
+for ownership, cancellation and retirement.
+
+Bilinear pilot, measured on 18 November 2026 on an Apple M5 with Metal under a
+load average of about 40–50. The build was `macos-clang-debug`, with three runs
+of a 48×32 to 96×64 surface upscale. An unshared graph drew first. Then an
+active graph and a candidate graph drew with one shared cache:
+
+| | Active graph | Candidate graph |
+| --- | --- | --- |
+| Upscale requests / shared | 1 / 0 | 1 / 1 |
+| Native upscale creations | 1 | 0 |
+| Upscale native preparation | 0.25–0.28 ms | shares the active creation |
+| Upscale queue time | 0.04 ms | shares the active creation |
+| `Render` CPU time, after preparation | 0.39–0.49 ms | 0.39–0.49 ms |
+
+The shared graphs' pixels equal the unshared graph's pixels. Each graph still
+creates its own scene-stage pipelines, as described above.
 
 Masked color and depth fixtures, measured on 14 November 2026 on an Apple M5
 with Metal under a load average of about 17–26. The build was `macos-clang-debug`,

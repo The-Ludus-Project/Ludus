@@ -1645,6 +1645,16 @@ Status SceneReader::defineMaterial(Directive& inoutDirective, std::string_view t
         if (name.empty() == false && type.empty() == false)
         {
             material.Scattering.Model = format::MaterialModel::Unresolved;
+            // Keep the inputs a supported model can reuse, so World's Create material from import starts from them.
+            // An untextured colour stays the material's reflectance instead of a swatch the created material
+            // would scale.
+            readBaseColour(inoutDirective, "reflectance", material.BaseColour[0], material);
+            material.IsUntexturedReflectanceExact = true;
+            if (findParameter(inoutDirective, "roughness") != nullptr ||
+                findParameter(inoutDirective, "uroughness") != nullptr)
+            {
+                static_cast<void>(readRoughness(inoutDirective, 0.0, material.Roughness));
+            }
         }
         markAllUsed(inoutDirective);
     }

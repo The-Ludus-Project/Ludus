@@ -621,6 +621,8 @@ namespace internal
 class RenderGraphRayPass;
 /// Private access from RenderGraph to its attachment pool.
 struct RenderGraphPoolAccess;
+/// Private access from graph programs to their shared program dependencies.
+struct RenderGraphProgramCacheAccess;
 } // namespace internal
 /// Largest idle-entry capacity of one attachment pool: every backing of the largest plan.
 /// Idle entries keep their RHI texture records and logical bytes (StorageLimits::ResourcesPerKind
@@ -679,6 +681,58 @@ private:
     foundation::core::UniquePtr<State> mState;
     /// Grants RenderGraph acquisition and release of pooled attachments.
     friend struct internal::RenderGraphPoolAccess;
+};
+/// Most distinct renderer-owned program dependency sets one RenderGraphProgramCache holds at once.
+/// Every graph using the built-in composite recipe needs one set; a second set exists only while
+/// graphs initialized from different composite artifacts are alive together.
+inline constexpr foundation::uint32 RENDER_GRAPH_PROGRAM_CACHE_CAPACITY = 4;
+/// Copied counters of one program cache. Counts are dependency sets and leases, never bytes or
+/// native pipelines: rhi::PipelinePreparationReport counts the pipelines prepared from them.
+struct RenderGraphProgramCacheReport final
+{
+    foundation::uint32 LiveEntries = 0;    ///< Dependency sets currently held by at least one lease.
+    foundation::uint32 Leases = 0;         ///< Program leases currently held across those sets.
+    foundation::uint64 CreatedEntries = 0; ///< Acquisitions that created a set: its shaders, layout, sampler and quad.
+    foundation::uint64 SharedLeases = 0;   ///< Acquisitions that joined a live set with an equal canonical description.
+    foundation::uint64 ReleasedEntries = 0; ///< Sets destroyed by their final lease; RHI retires their in-flight uses.
+};
+/// Device-session owner of the immutable dependencies of renderer-owned graph programs, shared by
+/// every RenderGraph initialized with it. The first pilot is the built-in bilinear upscale pass
+/// (BilinearUpscale and the MetalFX surface copy): its vertex and fragment stages, binding layout,
+/// linear sampler and full-target quad. Graphs acquire a set by the complete canonical description of
+/// the composite stages (stage, every target artifact and entry, reflected inputs, bindings, uniform
+/// members and GLSL ES names), never by pointer or hash, so graphs and generations with equal stages
+/// share the same RHI incarnations. Each graph then acquires its raster pipeline through
+/// rhi::RequestPipeline, which coalesces equal shader, layout and fixed-state requests into one native
+/// pipeline; distinct targets (surface or RGBA8) keep distinct pipelines. Input bindings, targets and
+/// extents remain local to each graph instance. A set is destroyed by its final lease release, and RHI
+/// retires uses still referenced by accepted work. No idle set is retained.
+/// Not thread-safe: use the RHI owner thread between frames. The device outlives the cache; the cache
+/// outlives every graph initialized with it and must be Reset before the device is destroyed.
+/// See docs/architecture/renderer-systems.md, "First migration and acceptance".
+class RenderGraphProgramCache final
+{
+public:
+    RenderGraphProgramCache() noexcept;                                          ///< Construct without a device.
+    ~RenderGraphProgramCache() noexcept;                                         ///< Reset; see Reset.
+    RenderGraphProgramCache(const RenderGraphProgramCache&) = delete;            ///< Ownership is noncopyable.
+    RenderGraphProgramCache& operator=(const RenderGraphProgramCache&) = delete; ///< Ownership is nonassignable.
+    /// Bind the cache to a ready device without allocating GPU resources.
+    /// @param device Ready owned device; outlives the cache and every graph initialized with it.
+    /// @return InvalidState when already initialized, OutOfMemory when bookkeeping cannot be
+    /// allocated, otherwise the device admission status; failure leaves the cache empty.
+    [[nodiscard]] rhi::RasterStatus Initialize(rhi::DeviceHandle device) noexcept;
+    /// Copy the counters; an uninitialized cache reports zeros.
+    [[nodiscard]] RenderGraphProgramCacheReport GetReport() const noexcept;
+    /// Unbind the device.
+    /// @pre No graph initialized with this cache still exists; leases are asserted to be zero.
+    void Reset() noexcept;
+
+private:
+    struct State;
+    foundation::core::UniquePtr<State> mState;
+    /// Grants renderer-owned graph programs acquisition and release of shared dependency sets.
+    friend struct internal::RenderGraphProgramCacheAccess;
 };
 /// Copied attachment ownership of one graph; byte estimates are explicitly named.
 struct RenderGraphAllocationReport final
@@ -750,9 +804,10 @@ struct RenderGraphExecutionReport final
 /// A recipe is prepared as several fixed-function native pipelines (surface and offscreen targets,
 /// conventional and reverse depth, overlay), so NativePipelines can exceed one for one recipe key.
 /// Renderer-owned composite, lighting, deferred-resolve, upscale and compute pipelines are not
-/// attributed to a recipe; they appear only in RenderGraphPipelineReport::Device. Stage pipelines are
-/// created directly for each graph, so another graph or generation with identical stages prepares its own
-/// native pipelines; only RHI RequestPipeline callers share them (rhi::PipelinePreparationReport::SharedRequests).
+/// attributed to a recipe; they appear only in RenderGraphPipelineReport::Device, except the bilinear
+/// upscale pipelines, reported in RenderGraphPipelineReport::Upscale. Stage pipelines are created directly
+/// for each graph, so another graph or generation with identical stages prepares its own native pipelines;
+/// only RHI RequestPipeline callers share them (rhi::PipelinePreparationReport::SharedRequests).
 struct RenderGraphPipelineRecipe final
 {
     /// Recipe identity; Recipe.Target is the device's shader target and Recipe.Key is valid when HasRecipeKey.
@@ -775,9 +830,28 @@ struct RenderGraphPipelineRecipe final
     /// Sum of the seconds those pipelines waited in the request queue before native creation launched.
     foundation::float64 QueueSeconds = 0;
 };
+/// Device preparation of the raster pipelines one graph acquires through rhi::RequestPipeline for a
+/// renderer-owned pass. Preparation time is owner-thread wall time and is separate from frame time:
+/// Render and Encode never prepare a pipeline.
+struct RenderGraphManagedPipelines final
+{
+    /// Pipeline requests the graph owns for the pass, one per distinct target it draws (surface, RGBA8).
+    foundation::uint32 Requests = 0;
+    /// Of those, requests that joined a native pipeline another request (another graph or generation
+    /// sharing the RenderGraphProgramCache) had already queued or created, so they launched no creation.
+    foundation::uint32 SharedRequests = 0;
+    /// Of those, requests whose shared native pipeline completed with Ready.
+    foundation::uint32 ReadyRequests = 0;
+    /// Native preparation seconds of the ready pipelines; a shared pipeline reports its single creation.
+    foundation::float64 PrewarmSeconds = 0;
+    /// Seconds those pipelines waited in the request queue before native creation launched.
+    foundation::float64 QueueSeconds = 0;
+};
 /// Device pipeline preparation of one graph, keyed by recipe and the qualified device's backend and target.
 struct RenderGraphPipelineReport final
 {
+    /// Bilinear upscale pipelines (BilinearUpscale passes and the MetalFX surface copy) of this graph.
+    RenderGraphManagedPipelines Upscale{};
     /// Totals of the whole device session, including pipelines owned by other graphs and renderers.
     rhi::PipelinePreparationReport Device{};
     /// Shader target this graph's device consumes; RenderGraphPipelineRecipe rows use it.
@@ -820,13 +894,19 @@ public:
     /// @param modelOrNull Required exactly for HasLightTransformer programs. Assets are copied;
     /// encoder artifact storage survives Poll. The model uses diffuse mesh-emitter inputs
     /// and fixed training scale; pending/failed scene encoding keeps the drawable generation.
+    /// @param programCacheOrNull Optional program cache on the same device, shared with other graphs and
+    /// generations so equal renderer-owned programs (the bilinear upscale pass) share their shaders,
+    /// layout and native pipeline. Null gives the graph a private cache: it prepares its own dependencies
+    /// and shares a pipeline only with requests for those same incarnations. An uninitialized cache, or one
+    /// bound to another device, rejects with InvalidDescription. The cache must outlive this graph.
     [[nodiscard]] rhi::RasterStatus Initialize(rhi::DeviceHandle device,
                                                const RenderGraphPlan& plan,
                                                const RenderGraphPrograms& programs,
                                                RenderGraphAttachmentPool* poolOrNull = nullptr,
                                                foundation::uint32 referenceWidth = 0,
                                                foundation::uint32 referenceHeight = 0,
-                                               const LightTransformerModelDescription* modelOrNull = nullptr) noexcept;
+                                               const LightTransformerModelDescription* modelOrNull = nullptr,
+                                               RenderGraphProgramCache* programCacheOrNull = nullptr) noexcept;
     /// Request new per-view drawable dimensions between frames, without shader/pipeline preparation.
     /// Fixed targets ignore the reference. Zero dimensions return NotReady and preserve any pending request.
     /// A new request supersedes an unactivated resize. Ready means unchanged; Pending requires Update

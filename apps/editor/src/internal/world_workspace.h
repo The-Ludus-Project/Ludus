@@ -290,6 +290,11 @@ private:
     /// presented viewport scene; a placeholder until that scene has loaded.
     void addMaterialGroup();
     void addMaterialRepair(QFormLayout& inoutRows);
+    /// Explain a slot whose material the World created from an unsupported import, and offer to edit it.
+    void addCreatedMaterial(QFormLayout& inoutRows);
+    /// Open the creation dialog for an imported material: a new draft from its imported values, or its existing
+    /// created material. Applying it replaces the material for every slot that resolves to it in one edit.
+    void createImportedMaterial(const QString& source);
     /// Offer component in the Add Component menu.
     void addComponentChoice(const QString& label, const QString& component);
     /// Give a long Add Component menu its search field, once every choice is in.

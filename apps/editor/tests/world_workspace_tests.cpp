@@ -28,6 +28,7 @@
 #include "internal/world_entity_search.h"
 #include "internal/world_lighting_coverage.h"
 #include "internal/world_lights_panel.h"
+#include "internal/world_material_creation.h"
 #include "internal/world_probe_volume.h"
 #include "internal/world_surface_bake.h"
 #include "internal/world_workspace.h"
@@ -52,6 +53,7 @@
 #include <QDateTime>
 #include <QDateTimeEdit>
 #include <QDialog>
+#include <QDialogButtonBox>
 #include <QDir>
 #include <QDockWidget>
 #include <QElapsedTimer>
@@ -6155,6 +6157,221 @@ Shape "trianglemesh" "point3 P" [-0.4 -0.7 0 0.4 -0.7 0 0 0.7 0] "integer indice
     CHECK(sharedSlots == 3);
     checkMaterial(reopened, first, format::MaterialModel::Diffuse);
     checkMaterial(reopened, second, format::MaterialModel::Diffuse);
+    reopened.StopPreview();
+}
+
+TEST_CASE("World creates a material from a shared unsupported PBRT import across undo, failure, save and reimport",
+          "[editor][world][material-repair]")
+{
+    namespace format = ludus::content::scene_format;
+    using ludus::foundation::math::Vector3;
+    QTemporaryDir directory;
+    const QString path = Fixture(directory);
+    const QString source = directory.filePath(QStringLiteral("fibers.pbrt"));
+    Write(source, QByteArrayLiteral(R"(LookAt 0 0 4 0 0 0 0 1 0
+Camera "perspective" "float fov" 55
+WorldBegin
+MakeNamedMaterial "Fiber" "string type" "hair" "rgb reflectance" [0.5 0.25 0.125] "float eta" 1.55
+NamedMaterial "Fiber"
+Shape "trianglemesh" "point3 P" [-1.7 -0.7 0 -0.5 -0.7 0 -1.1 0.7 0] "integer indices" [0 1 2]
+)"));
+    WorldWorkspace workspace;
+    workspace.SetProject(directory.path(), 1);
+    REQUIRE(workspace.Open(path) == true);
+    // Import twice to place the same named material on two distinct World slots.
+    REQUIRE(workspace.ImportScene(source) == true);
+    WaitForValidatedScene(workspace);
+    REQUIRE(workspace.ImportScene(source) == true);
+    WaitForValidatedScene(workspace);
+    const auto getBinding = [](const WorldWorkspace& view, const QString& id) {
+        return view.Document().ScenePlacement(view.Document().Entity(id)).value(QStringLiteral("material")).toString();
+    };
+    QStringList fibers;
+    for (const PreviewObject& object : GetLevel(workspace).PreviewScene().Objects)
+    {
+        fibers.append(object.Id);
+    }
+    REQUIRE(fibers.size() == 2);
+    const QString original = getBinding(workspace, fibers[0]);
+    REQUIRE(getBinding(workspace, fibers[1]) == original);
+    const auto getMaterial = [](const RenderScene& scene, const QString& id) -> const ludus::resources::SceneMaterial& {
+        const ludus::resources::SceneMaterial* materialOrNull = GetSceneObjectMaterialOrNull(scene, id);
+        REQUIRE(materialOrNull != nullptr);
+        return *materialOrNull;
+    };
+    const auto checkUnresolved = [&](const RenderScene& scene, const QString& id) {
+        CHECK(getMaterial(scene, id).Scattering.Model == format::MaterialModel::Unresolved);
+    };
+    const auto checkCreated = [&](const RenderScene& scene,
+                                  const QString& id,
+                                  format::MaterialModel model,
+                                  const Vector3& baseColor,
+                                  ludus::foundation::float32 roughness) {
+        const ludus::resources::SceneMaterial& material = getMaterial(scene, id);
+        CHECK(material.Scattering.Model == model);
+        CHECK(material.Reflectance == baseColor);
+        CHECK(material.Roughness == roughness);
+        CHECK(material.Metallic == 0);
+        CHECK(material.Name.View() == "Fiber");
+    };
+    const Vector3 imported{0.5F, 0.25F, 0.125F};
+    // The unsupported import keeps its recoverable reflectance for the draft.
+    checkUnresolved(GetLevel(workspace).PreviewScene(), fibers[0]);
+    CHECK(getMaterial(GetLevel(workspace).PreviewScene(), fibers[0]).Reflectance == imported);
+
+    REQUIRE(workspace.SelectEntity(fibers[0]) == true);
+    QPushButton* createOrNull = workspace.findChild<QPushButton*>(QStringLiteral("worldCreateMaterial"));
+    REQUIRE(createOrNull != nullptr);
+    REQUIRE(createOrNull->isEnabled() == true);
+    const QString catalogPath = directory.filePath(QStringLiteral("assets/catalog.json"));
+    const QByteArray catalog = Read(catalogPath);
+    const QJsonObject before = workspace.Document().Draft();
+    const auto getDialog = []() -> WorldMaterialCreationDialog& {
+        WorldMaterialCreationDialog* dialogOrNull =
+            qobject_cast<WorldMaterialCreationDialog*>(QApplication::activeModalWidget());
+        REQUIRE(dialogOrNull != nullptr);
+        return *dialogOrNull;
+    };
+    const auto getInput = [](const WorldMaterialCreationDialog& dialog, const QString& name) -> QLineEdit& {
+        QLineEdit* inputOrNull = dialog.findChild<QLineEdit*>(name);
+        REQUIRE(inputOrNull != nullptr);
+        return *inputOrNull;
+    };
+
+    // The draft names the source identity and both affected slots, starts from the imported values, and Cancel,
+    // the default, changes nothing.
+    QTimer::singleShot(0, [&]() {
+        WorldMaterialCreationDialog& dialog = getDialog();
+        const QLabel* identityOrNull = dialog.findChild<QLabel*>(QStringLiteral("worldMaterialCreationSource"));
+        REQUIRE(identityOrNull != nullptr);
+        CHECK(identityOrNull->text().contains(QStringLiteral("Fiber · ") + original) == true);
+        const QLabel* slotsOrNull = dialog.findChild<QLabel*>(QStringLiteral("worldMaterialCreationSlots"));
+        REQUIRE(slotsOrNull != nullptr);
+        CHECK(slotsOrNull->text().contains(fibers[0]) == true);
+        CHECK(slotsOrNull->text().contains(fibers[1]) == true);
+        // The untextured import has no maps to keep; its colour is not shown as a one-texel swatch.
+        const QLabel* keptOrNull = dialog.findChild<QLabel*>(QStringLiteral("worldMaterialCreationKept"));
+        REQUIRE(keptOrNull != nullptr);
+        CHECK(keptOrNull->text().contains(QStringLiteral("no maps")) == true);
+        CHECK(getInput(dialog, QStringLiteral("worldMaterialCreationBaseColor0")).text().toFloat() == imported.X);
+        CHECK(getInput(dialog, QStringLiteral("worldMaterialCreationBaseColor1")).text().toFloat() == imported.Y);
+        CHECK(getInput(dialog, QStringLiteral("worldMaterialCreationBaseColor2")).text().toFloat() == imported.Z);
+        QDialogButtonBox* buttonsOrNull = dialog.findChild<QDialogButtonBox*>();
+        REQUIRE(buttonsOrNull != nullptr);
+        QPushButton* cancelOrNull = buttonsOrNull->button(QDialogButtonBox::Cancel);
+        REQUIRE(cancelOrNull != nullptr);
+        CHECK(cancelOrNull->isDefault() == true);
+        cancelOrNull->click();
+    });
+    createOrNull->click();
+    CHECK(workspace.Document().Draft() == before);
+
+    // A rejected field is reported in the dialog, which keeps the typed text; the corrected draft applies.
+    const Vector3 baseColor{0.25F, 0.5F, 0.75F};
+    QTimer::singleShot(0, [&]() {
+        WorldMaterialCreationDialog& dialog = getDialog();
+        QPushButton* applyOrNull = dialog.findChild<QPushButton*>(QStringLiteral("worldConfirmMaterialCreation"));
+        REQUIRE(applyOrNull != nullptr);
+        QLineEdit& roughness = getInput(dialog, QStringLiteral("worldMaterialCreationRoughness"));
+        roughness.setText(QStringLiteral("0.01"));
+        applyOrNull->click();
+        const QLabel* errorOrNull = dialog.findChild<QLabel*>(QStringLiteral("worldMaterialCreationError"));
+        REQUIRE(errorOrNull != nullptr);
+        CHECK(errorOrNull->isHidden() == false);
+        CHECK(errorOrNull->text().contains(QStringLiteral("Roughness")) == true);
+        CHECK(roughness.text() == QStringLiteral("0.01"));
+        CHECK(dialog.isVisible() == true);
+        CHECK(workspace.Document().Draft() == before);
+        roughness.setText(QStringLiteral("0.6"));
+        getInput(dialog, QStringLiteral("worldMaterialCreationMetallic")).setText(QStringLiteral("0"));
+        getInput(dialog, QStringLiteral("worldMaterialCreationBaseColor0")).setText(QStringLiteral("0.25"));
+        getInput(dialog, QStringLiteral("worldMaterialCreationBaseColor1")).setText(QStringLiteral("0.5"));
+        getInput(dialog, QStringLiteral("worldMaterialCreationBaseColor2")).setText(QStringLiteral("0.75"));
+        applyOrNull->click();
+    });
+    createOrNull->click();
+    WaitForValidatedScene(workspace);
+    for (const QString& id : fibers)
+    {
+        checkCreated(GetLevel(workspace).PreviewScene(), id, format::MaterialModel::MetallicRoughness, baseColor, 0.6F);
+        CHECK(getBinding(workspace, id) == original);
+    }
+    // The World holds the repair; the project catalog is unchanged.
+    CHECK(Read(catalogPath) == catalog);
+
+    // The creation is one undoable edit.
+    workspace.Undo();
+    WaitForValidatedScene(workspace);
+    CHECK(workspace.Document().Draft() == before);
+    checkUnresolved(GetLevel(workspace).PreviewScene(), fibers[0]);
+    checkUnresolved(GetLevel(workspace).PreviewScene(), fibers[1]);
+    workspace.Redo();
+    WaitForValidatedScene(workspace);
+    checkCreated(GetLevel(workspace).PreviewScene(),
+                 fibers[1],
+                 format::MaterialModel::MetallicRoughness,
+                 baseColor,
+                 0.6F);
+
+    // A replacement whose preparation fails keeps the last published material visible and reports the failure.
+    REQUIRE(workspace.SelectEntity(fibers[1]) == true);
+    QPushButton* editOrNull = workspace.findChild<QPushButton*>(QStringLiteral("worldEditCreatedMaterial"));
+    REQUIRE(editOrNull != nullptr);
+    const QJsonObject resources =
+        QJsonDocument::fromJson(catalog).object().value(QStringLiteral("resources")).toObject();
+    const QString artifactPath =
+        directory.filePath(resources.value(original).toObject().value(QStringLiteral("path")).toString());
+    const QByteArray artifact = Read(artifactPath);
+    REQUIRE(artifact.isEmpty() == false);
+    Write(artifactPath, QByteArrayLiteral("{\"damaged\":true}"));
+    QTimer::singleShot(0, [&]() {
+        WorldMaterialCreationDialog& dialog = getDialog();
+        QComboBox* modelOrNull = dialog.findChild<QComboBox*>(QStringLiteral("worldMaterialCreationModel"));
+        REQUIRE(modelOrNull != nullptr);
+        modelOrNull->setCurrentIndex(modelOrNull->findData(QStringLiteral("diffuse")));
+        CHECK(getInput(dialog, QStringLiteral("worldMaterialCreationRoughness")).isEnabled() == false);
+        QPushButton* applyOrNull = dialog.findChild<QPushButton*>(QStringLiteral("worldConfirmMaterialCreation"));
+        REQUIRE(applyOrNull != nullptr);
+        CHECK(applyOrNull->text() == QStringLiteral("Apply changes"));
+        applyOrNull->click();
+    });
+    editOrNull->click();
+    LevelWorkspace& level = GetLevel(workspace);
+    REQUIRE(QTest::qWaitFor([&level]() { return level.CanStartOperation() == true; }, MAX_SCENE_WAIT_MILLISECONDS) ==
+            true);
+    CHECK(level.StatusText().isEmpty() == false);
+    checkCreated(level.GetPresentedScene(), fibers[0], format::MaterialModel::MetallicRoughness, baseColor, 0.6F);
+    // Repair the project and undo the failed edit: the last good material publishes again.
+    Write(artifactPath, artifact);
+    workspace.Undo();
+    WaitForValidatedScene(workspace);
+    checkCreated(level.GetPresentedScene(), fibers[0], format::MaterialModel::MetallicRoughness, baseColor, 0.6F);
+    workspace.Redo();
+    WaitForValidatedScene(workspace);
+    checkCreated(GetLevel(workspace).PreviewScene(), fibers[0], format::MaterialModel::Diffuse, baseColor, 1);
+    REQUIRE(workspace.Save() == true);
+    WaitForValidatedScene(workspace);
+    CHECK(workspace.Dirty() == false);
+    workspace.StopPreview();
+
+    // Reopening keeps the created material, and reimporting the source applies it to the new slot as well.
+    WorldWorkspace reopened;
+    reopened.SetProject(directory.path(), 2);
+    REQUIRE(reopened.Open(path) == true);
+    WaitForValidatedScene(reopened);
+    for (const QString& id : fibers)
+    {
+        checkCreated(GetLevel(reopened).PreviewScene(), id, format::MaterialModel::Diffuse, baseColor, 1);
+    }
+    REQUIRE(reopened.ImportScene(source) == true);
+    WaitForValidatedScene(reopened);
+    const RenderScene& reimported = GetLevel(reopened).PreviewScene();
+    REQUIRE(reimported.Objects.size() == 3);
+    for (const PreviewObject& object : reimported.Objects)
+    {
+        CHECK(getBinding(reopened, object.Id) == original);
+        checkCreated(reimported, object.Id, format::MaterialModel::Diffuse, baseColor, 1);
+    }
     reopened.StopPreview();
 }
 

@@ -5,6 +5,7 @@ validation evidence. This page is a reading path; each document has one source
 shared by the wiki and offline readers.
 
 - [Main contract](../../architecture/editor-architecture.md)
+- [Engine loop overview](../../architecture/engine-loop.md)
 - [live-editing guide](../../development/project-live-reload.md)
 - [ABI decision](../../decisions/0012-game-host-and-live-reload.md)
 - [reload design](../../architecture/project-live-reload.md)
