@@ -1688,6 +1688,9 @@ struct RenderGraphActivation::State final
     /// so their graphs return leased attachments before the pool is destroyed.
     RenderGraphAttachmentPool Pool;
     bool IsPooled = false;
+    /// Shared by every generation, so active and candidate graphs share renderer-owned programs.
+    /// Declared before the generations, so their graphs return program leases before it is destroyed.
+    RenderGraphProgramCache ProgramCache;
     core::UniquePtr<Generation> Active;
     core::UniquePtr<Generation> Candidate;
     uint64 NextSerial = 0;
@@ -1747,6 +1750,11 @@ Status RenderGraphActivation::Initialize(rhi::DeviceHandle device,
     candidate->CompositeVertex = compositeVertex;
     candidate->CompositeFragment = compositeFragment;
     candidate->IsPooled = allocation == RenderGraphAllocation::ExactPool;
+    const Status cached = candidate->ProgramCache.Initialize(device);
+    if (cached != Status::Ready)
+    {
+        return cached;
+    }
     if (candidate->IsPooled == true)
     {
         const Status bound = candidate->Pool.Initialize(device);
@@ -1815,7 +1823,8 @@ Status RenderGraphActivation::Stage(core::UniquePtr<RenderGraphPackage> package,
                                                        state.IsPooled == true ? &state.Pool : nullptr,
                                                        state.ReferenceWidth,
                                                        state.ReferenceHeight,
-                                                       modelOrNull);
+                                                       modelOrNull,
+                                                       &state.ProgramCache);
     if (IsAccepted(status) == false)
     {
         state.FailCandidate(status, RenderGraphFailureStage::Setup);
@@ -2030,6 +2039,10 @@ RenderGraphPoolReport RenderGraphActivation::GetPoolReport() const noexcept
 {
     return mState.Get() != nullptr ? mState->Pool.GetReport() : RenderGraphPoolReport{};
 }
+RenderGraphProgramCacheReport RenderGraphActivation::GetProgramCacheReport() const noexcept
+{
+    return mState.Get() != nullptr ? mState->ProgramCache.GetReport() : RenderGraphProgramCacheReport{};
+}
 void RenderGraphActivation::TrimPool() noexcept
 {
     if (mState.Get() != nullptr)
@@ -2044,6 +2057,7 @@ void RenderGraphActivation::Reset() noexcept
         mState->Candidate.Reset();
         mState->Active.Reset();
         mState->Pool.Reset();
+        mState->ProgramCache.Reset();
     }
     mState.Reset();
 }

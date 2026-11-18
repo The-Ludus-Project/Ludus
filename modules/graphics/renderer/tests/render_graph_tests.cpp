@@ -1,4 +1,5 @@
 #include "../src/internal/render_graph_storage.h"
+#include "../src/internal/render_graph_upscale.h"
 #include "internal/lifecycle.h"
 #include "reference_raster.h"
 
@@ -1389,6 +1390,323 @@ TEST_CASE("spatial graph passes retain resize and camera transactions without sc
     CHECK(description.Width == 193);
     completion = {};
     REQUIRE(fixture.Graph.Render(fixture.Surface, 96, 64, completion) == rhi::RasterStatus::Ready);
+}
+
+namespace
+{
+constexpr usize BILINEAR_RESOURCE_COUNT = 3;
+constexpr usize BILINEAR_PASS_COUNT = 2;
+constexpr uint32 BILINEAR_REFERENCE_WIDTH = 192;
+constexpr uint32 BILINEAR_REFERENCE_HEIGHT = 128;
+/// A ColorAndDepth pass at half the reference extent upscaled bilinearly into an exported RGBA8 target or the
+/// surface. The plan borrows this object's records.
+struct BilinearGraphPlan final
+{
+    StaticArray<format::Resource, BILINEAR_RESOURCE_COUNT> Resources{};
+    StaticArray<format::Pass, BILINEAR_PASS_COUNT> Passes{};
+    StaticArray<format::Camera, CAMERA_COUNT> Targets{{{2}}};
+    BilinearGraphPlan(const GraphFixture& fixture, bool isSurface)
+    {
+        Resources = {{fixture.Resources[0],
+                      fixture.Resources[1],
+                      {BILINEAR_REFERENCE_WIDTH,
+                       BILINEAR_REFERENCE_HEIGHT,
+                       format::Aspect::Color,
+                       2,
+                       isSurface == true ? 1U : 0U,
+                       isSurface == true ? 0U : 1U}}};
+        Resources[0].IsExported = 0;
+        for (usize index = 0; index < RESOURCE_COUNT; ++index)
+        {
+            Resources[index].ViewNumerator = 1;
+            Resources[index].ViewDenominator = 2;
+        }
+        Resources[2].ViewNumerator = 1;
+        Resources[2].ViewDenominator = 1;
+        Passes = {{fixture.Passes[0],
+                   {format::Technique::BilinearUpscale,
+                    0,
+                    2,
+                    format::ABSENT,
+                    format::Load::Clear,
+                    format::Store::Store,
+                    format::Load::Discard,
+                    format::Store::Discard,
+                    0}}};
+        Passes[1].SceneData = 0;
+        Passes[1].SourceColor = 0;
+    }
+    [[nodiscard]] renderer::RenderGraphPlan Make(const GraphFixture& fixture) const noexcept
+    {
+        renderer::RenderGraphPlan plan = fixture.MakePlan();
+        plan.Description.ResourceCount = BILINEAR_RESOURCE_COUNT;
+        plan.Description.PassCount = BILINEAR_PASS_COUNT;
+        plan.Resources = {Resources.GetData(), Resources.GetSize()};
+        plan.Passes = {Passes.GetData(), Passes.GetSize()};
+        plan.Cameras = {Targets.GetData(), Targets.GetSize()};
+        return plan;
+    }
+};
+[[nodiscard]] rhi::RasterStatus InitializeBilinearGraph(GraphFixture& inoutFixture,
+                                                        renderer::RenderGraph& inoutGraph,
+                                                        const BilinearGraphPlan& plan,
+                                                        renderer::RenderGraphProgramCache* cacheOrNull)
+{
+    return inoutGraph.Initialize(inoutFixture.Device,
+                                 plan.Make(inoutFixture),
+                                 inoutFixture.MakePrograms(),
+                                 nullptr,
+                                 BILINEAR_REFERENCE_WIDTH,
+                                 BILINEAR_REFERENCE_HEIGHT,
+                                 nullptr,
+                                 cacheOrNull);
+}
+[[nodiscard]] rhi::RasterStatus
+UpdateGraph(GraphFixture& inoutFixture, renderer::RenderGraph& inoutGraph, uint64 revision)
+{
+    renderer::RenderGraphReport report;
+    return inoutGraph.Update({inoutFixture.Meshes.GetData(), inoutFixture.Meshes.GetSize()},
+                             {inoutFixture.Items.GetData(), inoutFixture.Items.GetSize()},
+                             {inoutFixture.Cameras.GetData(), inoutFixture.Cameras.GetSize()},
+                             revision,
+                             renderer::RenderGraphCoveragePolicy::RejectIncomplete,
+                             report);
+}
+[[nodiscard]] usize CountPipelineCreations() noexcept
+{
+    return rhi::reference::Creates[static_cast<usize>(rhi::internal::RasterKind::Pipeline)];
+}
+[[nodiscard]] usize CountShaderCreations() noexcept
+{
+    return rhi::reference::Creates[static_cast<usize>(rhi::internal::RasterKind::Shader)];
+}
+[[nodiscard]] renderer::RenderGraphPipelineReport GetPipelineReport(const renderer::RenderGraph& graph)
+{
+    renderer::RenderGraphPipelineReport report;
+    REQUIRE(graph.GetPipelineReport(report) == rhi::RasterStatus::Ready);
+    return report;
+}
+} // namespace
+
+TEST_CASE("bilinear graphs sharing a program cache prepare one upscale pipeline per target",
+          "[render-graph][bilinear][managed-pipeline]")
+{
+    GraphFixture fixture;
+    renderer::RenderGraphProgramCache cache;
+    REQUIRE(cache.Initialize(fixture.Device) == rhi::RasterStatus::Ready);
+    const BilinearGraphPlan offscreen{fixture, false};
+    const BilinearGraphPlan surface{fixture, true};
+    renderer::RenderGraph active;
+    REQUIRE(InitializeBilinearGraph(fixture, active, offscreen, &cache) == rhi::RasterStatus::Ready);
+    REQUIRE(UpdateGraph(fixture, active, 1) == rhi::RasterStatus::Ready);
+    renderer::RenderGraphPipelineReport report = GetPipelineReport(active);
+    CHECK(report.Upscale.Requests == 1);
+    CHECK(report.Upscale.SharedRequests == 0);
+    CHECK(report.Upscale.ReadyRequests == 1);
+    CHECK(cache.GetReport().CreatedEntries == 1);
+    CHECK(cache.GetReport().Leases == 1);
+    const usize shaders = CountShaderCreations();
+    const usize pipelines = CountPipelineCreations();
+    const uint64 sharedRequests = report.Device.SharedRequests;
+
+    // A second compatible instance, like a candidate generation beside the active one, joins both the
+    // dependency set and the native pipeline: only its own scene-stage pipelines are created.
+    renderer::RenderGraph candidate;
+    REQUIRE(InitializeBilinearGraph(fixture, candidate, offscreen, &cache) == rhi::RasterStatus::Ready);
+    const usize sceneShaders = CountShaderCreations() - shaders;
+    const usize scenePipelines = CountPipelineCreations() - pipelines;
+    REQUIRE(UpdateGraph(fixture, candidate, 1) == rhi::RasterStatus::Ready);
+    report = GetPipelineReport(candidate);
+    CHECK(report.Upscale.Requests == 1);
+    CHECK(report.Upscale.SharedRequests == 1);
+    CHECK(report.Upscale.ReadyRequests == 1);
+    CHECK(report.Device.SharedRequests == sharedRequests + 1);
+    CHECK(CountShaderCreations() - shaders == sceneShaders);
+    CHECK(CountPipelineCreations() - pipelines == scenePipelines);
+    CHECK(cache.GetReport().CreatedEntries == 1);
+    CHECK(cache.GetReport().SharedLeases == 1);
+    CHECK(cache.GetReport().LiveEntries == 1);
+    CHECK(cache.GetReport().Leases == 2);
+
+    // An incompatible target contract (the surface rather than RGBA8) receives its own pipeline from the
+    // same shared shaders and layout.
+    renderer::RenderGraph presenting;
+    const usize beforeSurface = CountPipelineCreations();
+    REQUIRE(InitializeBilinearGraph(fixture, presenting, surface, &cache) == rhi::RasterStatus::Ready);
+    const usize surfaceScenePipelines = CountPipelineCreations() - beforeSurface;
+    REQUIRE(UpdateGraph(fixture, presenting, 1) == rhi::RasterStatus::Ready);
+    report = GetPipelineReport(presenting);
+    CHECK(report.Upscale.Requests == 1);
+    CHECK(report.Upscale.SharedRequests == 0);
+    CHECK(CountPipelineCreations() - beforeSurface == surfaceScenePipelines + 1);
+    CHECK(cache.GetReport().CreatedEntries == 1);
+    CHECK(cache.GetReport().Leases == 3);
+
+    // Releasing the active instance keeps the candidate's shared pipeline and dependencies drawable.
+    active.Reset();
+    CHECK(cache.GetReport().Leases == 2);
+    rhi::SubmissionToken completion;
+    REQUIRE(candidate.Render(fixture.Surface, 96, 64, completion) == rhi::RasterStatus::Ready);
+    CHECK(rhi::reference::Draws == 2);
+    candidate.Reset();
+    presenting.Reset();
+    CHECK(cache.GetReport().Leases == 0);
+    CHECK(cache.GetReport().LiveEntries == 0);
+    CHECK(cache.GetReport().ReleasedEntries == 1);
+}
+
+TEST_CASE("bilinear graphs without a shared cache keep private upscale dependencies",
+          "[render-graph][bilinear][managed-pipeline]")
+{
+    GraphFixture fixture;
+    const BilinearGraphPlan offscreen{fixture, false};
+    renderer::RenderGraph first;
+    REQUIRE(InitializeBilinearGraph(fixture, first, offscreen, nullptr) == rhi::RasterStatus::Ready);
+    REQUIRE(UpdateGraph(fixture, first, 1) == rhi::RasterStatus::Ready);
+    renderer::RenderGraph second;
+    REQUIRE(InitializeBilinearGraph(fixture, second, offscreen, nullptr) == rhi::RasterStatus::Ready);
+    REQUIRE(UpdateGraph(fixture, second, 1) == rhi::RasterStatus::Ready);
+    // Distinct shader incarnations never share a native pipeline.
+    CHECK(GetPipelineReport(second).Upscale.SharedRequests == 0);
+    // A cache bound to no device, or never initialized, is rejected before any GPU work.
+    renderer::RenderGraphProgramCache unbound;
+    renderer::RenderGraph rejected;
+    const usize shaders = CountShaderCreations();
+    CHECK(InitializeBilinearGraph(fixture, rejected, offscreen, &unbound) == rhi::RasterStatus::InvalidDescription);
+    CHECK(CountShaderCreations() == shaders);
+}
+
+TEST_CASE("bilinear resize and input rebinding reuse the prepared upscale pipeline",
+          "[render-graph][bilinear][managed-pipeline]")
+{
+    GraphFixture fixture;
+    renderer::RenderGraphProgramCache cache;
+    REQUIRE(cache.Initialize(fixture.Device) == rhi::RasterStatus::Ready);
+    const BilinearGraphPlan offscreen{fixture, false};
+    renderer::RenderGraph graph;
+    REQUIRE(InitializeBilinearGraph(fixture, graph, offscreen, &cache) == rhi::RasterStatus::Ready);
+    REQUIRE(UpdateGraph(fixture, graph, 1) == rhi::RasterStatus::Ready);
+    rhi::SubmissionToken completion;
+    REQUIRE(graph.Render(fixture.Surface, 96, 64, completion) == rhi::RasterStatus::Ready);
+    rhi::reference::Completed = rhi::reference::Submitted;
+    const usize pipelines = CountPipelineCreations();
+    const usize shaders = CountShaderCreations();
+    const uint64 requests = GetPipelineReport(graph).Device.SharedRequests;
+    // An extent-only resize replaces the source attachment, so the pass rebinds its input; a full
+    // extraction rebinds it again. Neither requests a pipeline nor leases another dependency set.
+    REQUIRE(graph.Resize(BILINEAR_REFERENCE_WIDTH + 1, BILINEAR_REFERENCE_HEIGHT + 1) == rhi::RasterStatus::Pending);
+    REQUIRE(UpdateGraph(fixture, graph, 2) == rhi::RasterStatus::Ready);
+    fixture.Items[0].Material.Color = {.5F, .5F, .5F, 1};
+    REQUIRE(UpdateGraph(fixture, graph, 3) == rhi::RasterStatus::Ready);
+    completion = {};
+    REQUIRE(graph.Render(fixture.Surface, 96, 64, completion) == rhi::RasterStatus::Ready);
+    const renderer::RenderGraphPipelineReport report = GetPipelineReport(graph);
+    CHECK(report.Upscale.Requests == 1);
+    CHECK(report.Device.SharedRequests == requests);
+    CHECK(CountPipelineCreations() == pipelines);
+    CHECK(CountShaderCreations() == shaders);
+    CHECK(cache.GetReport().CreatedEntries == 1);
+    CHECK(cache.GetReport().Leases == 1);
+}
+
+TEST_CASE("a cancelled bilinear candidate releases its pending pipeline request",
+          "[render-graph][bilinear][managed-pipeline]")
+{
+    GraphFixture fixture;
+    renderer::RenderGraphProgramCache cache;
+    REQUIRE(cache.Initialize(fixture.Device) == rhi::RasterStatus::Ready);
+    const BilinearGraphPlan offscreen{fixture, false};
+    const BilinearGraphPlan surface{fixture, true};
+    renderer::RenderGraph active;
+    REQUIRE(InitializeBilinearGraph(fixture, active, offscreen, &cache) == rhi::RasterStatus::Ready);
+    REQUIRE(UpdateGraph(fixture, active, 1) == rhi::RasterStatus::Ready);
+    rhi::PipelinePreparationReport device;
+    REQUIRE(rhi::GetPipelinePreparationReport(fixture.Device, device) == rhi::RasterStatus::Ready);
+    const uint32 preparing = device.PreparingPipelines;
+
+    // The candidate draws to another target, so its upscale request queues its own native creation.
+    renderer::RenderGraph candidate;
+    REQUIRE(InitializeBilinearGraph(fixture, candidate, surface, &cache) == rhi::RasterStatus::Ready);
+    rhi::reference::Next = rhi::RasterStatus::Pending;
+    REQUIRE(UpdateGraph(fixture, candidate, 1) == rhi::RasterStatus::Pending);
+    // Complete the candidate's asynchronous scene resources one poll at a time until its upscale program
+    // queues its pipeline request; that native creation is then left pending.
+    constexpr usize POLL_ATTEMPTS = 64;
+    usize completed = 0;
+    for (usize attempt = 0; attempt < POLL_ATTEMPTS && GetPipelineReport(candidate).Upscale.Requests == 0; ++attempt)
+    {
+        for (; completed < rhi::reference::PendingCount; ++completed)
+        {
+            rhi::internal::RasterComplete(rhi::reference::PendingRequests[completed], rhi::RasterStatus::Ready);
+        }
+        CHECK(candidate.Poll() == rhi::RasterStatus::Pending);
+    }
+    REQUIRE(GetPipelineReport(candidate).Upscale.Requests == 1);
+    CHECK(GetPipelineReport(candidate).Upscale.ReadyRequests == 0);
+    REQUIRE(rhi::GetPipelinePreparationReport(fixture.Device, device) == rhi::RasterStatus::Ready);
+    CHECK(device.PreparingPipelines > preparing);
+
+    // The active graph keeps drawing while the replacement is pending, then the candidate is cancelled.
+    rhi::SubmissionToken completion;
+    REQUIRE(active.Render(fixture.Surface, 96, 64, completion) == rhi::RasterStatus::Ready);
+    candidate.Reset();
+    rhi::reference::Next = rhi::RasterStatus::Ready;
+    for (; completed < rhi::reference::PendingCount; ++completed)
+    {
+        rhi::internal::RasterComplete(rhi::reference::PendingRequests[completed], rhi::RasterStatus::Ready);
+    }
+    rhi::reference::Completed = rhi::reference::Submitted;
+    REQUIRE(rhi::PollLifetime(fixture.Device) == rhi::RasterStatus::Ready);
+    REQUIRE(rhi::GetPipelinePreparationReport(fixture.Device, device) == rhi::RasterStatus::Ready);
+    CHECK(device.PreparingPipelines == preparing);
+    CHECK(cache.GetReport().Leases == 1);
+    completion = {};
+    REQUIRE(active.Render(fixture.Surface, 96, 64, completion) == rhi::RasterStatus::Ready);
+    CHECK(GetPipelineReport(active).Upscale.ReadyRequests == 1);
+}
+
+TEST_CASE("an accepted bilinear frame retains its released upscale pipeline until completion",
+          "[render-graph][bilinear][managed-pipeline]")
+{
+    GraphFixture fixture;
+    renderer::RenderGraphProgramCache cache;
+    REQUIRE(cache.Initialize(fixture.Device) == rhi::RasterStatus::Ready);
+    const renderer::RenderGraphPrograms programs = fixture.MakePrograms();
+    const StaticArray<uint8, TEXEL_BYTES> texel{{255, 128, 64, 255}};
+    rhi::TextureDescription sourceDescription;
+    sourceDescription.Width = 1;
+    sourceDescription.Height = 1;
+    rhi::TextureHandle source;
+    REQUIRE(rhi::CreateTexture(fixture.Device,
+                               sourceDescription,
+                               {{texel.GetData(), texel.GetSize()}, TEXEL_BYTES},
+                               source) == rhi::RasterStatus::Ready);
+    renderer::internal::RenderGraphUpscaleProgram program;
+    REQUIRE(program.Initialize(cache, programs.CompositeVertex, programs.CompositeFragment, true) ==
+            rhi::RasterStatus::Ready);
+    const usize pipelines = rhi::reference::Destroys[static_cast<usize>(rhi::internal::RasterKind::Pipeline)];
+    const usize shaders = rhi::reference::Destroys[static_cast<usize>(rhi::internal::RasterKind::Shader)];
+    {
+        renderer::internal::RenderGraphUpscalePass pass;
+        REQUIRE(pass.Initialize(program, source) == rhi::RasterStatus::Ready);
+        REQUIRE(rhi::BeginFrame(fixture.Device, fixture.Surface) == rhi::DeviceStatus::Ready);
+        REQUIRE(pass.Draw({}) == rhi::RasterStatus::Ready);
+        rhi::SubmissionToken completion;
+        REQUIRE(rhi::EndFrame(fixture.Device, completion) == rhi::RasterStatus::Ready);
+    }
+    // The last request and lease are released while the accepted frame still references the pipeline.
+    program.Reset();
+    CHECK(program.HasRequest() == false);
+    CHECK(cache.GetReport().Leases == 0);
+    CHECK(cache.GetReport().ReleasedEntries == 1);
+    REQUIRE(rhi::PollLifetime(fixture.Device) == rhi::RasterStatus::Ready);
+    CHECK(rhi::reference::Destroys[static_cast<usize>(rhi::internal::RasterKind::Pipeline)] == pipelines);
+    CHECK(rhi::reference::Destroys[static_cast<usize>(rhi::internal::RasterKind::Shader)] == shaders);
+    rhi::reference::Completed = rhi::reference::Submitted;
+    REQUIRE(rhi::PollLifetime(fixture.Device) == rhi::RasterStatus::Ready);
+    CHECK(rhi::reference::Destroys[static_cast<usize>(rhi::internal::RasterKind::Pipeline)] == pipelines + 1);
+    CHECK(rhi::reference::Destroys[static_cast<usize>(rhi::internal::RasterKind::Shader)] == shaders + 2);
+    REQUIRE(rhi::Destroy(fixture.Device, source) == rhi::RasterStatus::Ready);
 }
 
 TEST_CASE("bilinear numeric plans reject aliasing and uninitialized reads before GPU creation",

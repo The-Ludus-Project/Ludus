@@ -929,8 +929,10 @@ TEST_CASE("bilinear GPU sampling matches pixel centers and clamps source edges",
                                                               {{pixels.GetData(), pixels.GetSize()}, 2 * CHANNEL_COUNT},
                                                               source);
     RequireTextureReady(fixture.Device, source, sourceStatus);
+    renderer::RenderGraphProgramCache cache;
+    REQUIRE(cache.Initialize(fixture.Device) == rhi::RasterStatus::Ready);
     renderer::internal::RenderGraphUpscaleProgram program;
-    REQUIRE(program.Initialize(fixture.Device,
+    REQUIRE(program.Initialize(cache,
                                shaders::renderer_composite::Vertex(),
                                shaders::renderer_composite::Fragment(),
                                true) == rhi::RasterStatus::Ready);
@@ -1040,6 +1042,102 @@ TEST_CASE("spatial graph executes rendered scene color and responds to camera ed
     CheckSpatialGraphCameraEdits(format::Technique::BilinearUpscale);
 }
 
+TEST_CASE("bilinear graphs sharing a program cache draw the private pass pixels with one upscale pipeline",
+          "[render-graph][gpu][bilinear][managed-pipeline]")
+{
+    GraphGpuFixture fixture;
+    constexpr usize UPSCALE_RESOURCE_COUNT = 3;
+    constexpr usize UPSCALE_PASS_COUNT = 2;
+    const StaticArray<format::Resource, UPSCALE_RESOURCE_COUNT> resources{
+        {{WIDTH / 2, HEIGHT / 2, format::Aspect::Color, 0, 0, 0},
+         {WIDTH / 2, HEIGHT / 2, format::Aspect::Depth, 0, 0, 0},
+         {WIDTH, HEIGHT, format::Aspect::Color, 2, 1, 0}}};
+    StaticArray<format::Pass, UPSCALE_PASS_COUNT> passes{{packages::rg2_offscreen::PASSES[0],
+                                                          {format::Technique::BilinearUpscale,
+                                                           0,
+                                                           2,
+                                                           format::ABSENT,
+                                                           format::Load::Clear,
+                                                           format::Store::Store,
+                                                           format::Load::Discard,
+                                                           format::Store::Discard,
+                                                           0}}};
+    passes[1].SceneData = 0;
+    passes[1].SourceColor = 0;
+    const StaticArray<format::Camera, TABLE_COUNT> cameras{{{2}}};
+    renderer::RenderGraphPlan plan = packages::rg2_offscreen::MakePlan();
+    plan.Description.ResourceCount = UPSCALE_RESOURCE_COUNT;
+    plan.Description.PassCount = UPSCALE_PASS_COUNT;
+    plan.Resources = {resources.GetData(), resources.GetSize()};
+    plan.Passes = {passes.GetData(), passes.GetSize()};
+    plan.Cameras = {cameras.GetData(), cameras.GetSize()};
+    plan.PassNames = {};
+    fixture.Items[0].Material.Color = {.25F, .5F, .75F, 1};
+    const renderer::RenderGraphPrograms programs =
+        packages::rg2_offscreen::MakePrograms(shaders::renderer_composite::Vertex(),
+                                              shaders::renderer_composite::Fragment());
+    const auto draw = [&](renderer::RenderGraph& inoutGraph, StaticArray<uint8, PIXEL_BYTES>& outPixels) {
+        renderer::RenderGraphReport report;
+        REQUIRE(inoutGraph.Update({fixture.Meshes.GetData(), fixture.Meshes.GetSize()},
+                                  {fixture.Items.GetData(), fixture.Items.GetSize()},
+                                  {fixture.Cameras.GetData(), fixture.Cameras.GetSize()},
+                                  1,
+                                  renderer::RenderGraphCoveragePolicy::RejectIncomplete,
+                                  report) == rhi::RasterStatus::Ready);
+        rhi::SubmissionToken completion;
+        REQUIRE(inoutGraph.Render(fixture.Surface, WIDTH, HEIGHT, completion) == rhi::RasterStatus::Ready);
+        REQUIRE(rhi::backend::ReadHeadlessPixels(MakeSpan(outPixels)) == true);
+    };
+    const auto getReport = [](const renderer::RenderGraph& graph) {
+        renderer::RenderGraphPipelineReport report;
+        REQUIRE(graph.GetPipelineReport(report) == rhi::RasterStatus::Ready);
+        return report;
+    };
+    // The private-cache graph is the unshared pass: its own shaders, layout and pipeline.
+    StaticArray<uint8, PIXEL_BYTES> unshared{};
+    REQUIRE(fixture.Graph.Initialize(fixture.Device, plan, programs) == rhi::RasterStatus::Ready);
+    draw(fixture.Graph, unshared);
+    CHECK(getReport(fixture.Graph).Upscale.SharedRequests == 0);
+    fixture.Graph.Reset();
+
+    renderer::RenderGraphProgramCache cache;
+    REQUIRE(cache.Initialize(fixture.Device) == rhi::RasterStatus::Ready);
+    renderer::RenderGraph active;
+    REQUIRE(active.Initialize(fixture.Device, plan, programs, nullptr, 0, 0, nullptr, &cache) ==
+            rhi::RasterStatus::Ready);
+    StaticArray<uint8, PIXEL_BYTES> activePixels{};
+    draw(active, activePixels);
+    // A candidate generation prepared beside the active graph joins its upscale pipeline.
+    renderer::RenderGraph candidate;
+    REQUIRE(candidate.Initialize(fixture.Device, plan, programs, nullptr, 0, 0, nullptr, &cache) ==
+            rhi::RasterStatus::Ready);
+    StaticArray<uint8, PIXEL_BYTES> candidatePixels{};
+    draw(candidate, candidatePixels);
+    const renderer::RenderGraphPipelineReport activeReport = getReport(active);
+    const renderer::RenderGraphPipelineReport candidateReport = getReport(candidate);
+    CHECK(activeReport.Upscale.Requests == 1);
+    CHECK(activeReport.Upscale.SharedRequests == 0);
+    CHECK(activeReport.Upscale.ReadyRequests == 1);
+    CHECK(candidateReport.Upscale.Requests == 1);
+    CHECK(candidateReport.Upscale.SharedRequests == 1);
+    CHECK(candidateReport.Upscale.ReadyRequests == 1);
+    CHECK(activeReport.Upscale.PrewarmSeconds == candidateReport.Upscale.PrewarmSeconds);
+    CHECK(cache.GetReport().CreatedEntries == 1);
+    CHECK(cache.GetReport().SharedLeases == 1);
+    // Sharing changes no pixel: the same artifacts, layout and fixed state draw the same image.
+    bool isActiveEqual = true;
+    bool isCandidateEqual = true;
+    for (usize index = 0; index < PIXEL_BYTES; ++index)
+    {
+        isActiveEqual = isActiveEqual == true && activePixels[index] == unshared[index];
+        isCandidateEqual = isCandidateEqual == true && candidatePixels[index] == unshared[index];
+    }
+    CHECK(isActiveEqual == true);
+    CHECK(isCandidateEqual == true);
+    candidate.Reset();
+    active.Reset();
+}
+
 // The trusted Vulkan validation workflow requires [render-graph] cases to execute without skips.
 // Platform-specific MetalFX cases remain in the full GPU suite and macOS qualification.
 TEST_CASE("MetalFX graph executes rendered scene color and responds to camera edits",
@@ -1083,8 +1181,10 @@ TEST_CASE("MetalFX preserves constant RGB through its private output and surface
                            {{pixels.GetData(), pixels.GetSize()}, SOURCE_WIDTH * TEXEL_BYTES},
                            source);
     RequireTextureReady(fixture.Device, source, sourceStatus);
+    renderer::RenderGraphProgramCache cache;
+    REQUIRE(cache.Initialize(fixture.Device) == rhi::RasterStatus::Ready);
     renderer::internal::RenderGraphUpscaleProgram program;
-    REQUIRE(program.Initialize(fixture.Device,
+    REQUIRE(program.Initialize(cache,
                                shaders::renderer_composite::Vertex(),
                                shaders::renderer_composite::Fragment(),
                                true) == rhi::RasterStatus::Ready);

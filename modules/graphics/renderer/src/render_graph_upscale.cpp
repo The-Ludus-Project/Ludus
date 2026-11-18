@@ -1,7 +1,8 @@
 #include "internal/render_graph_upscale.h"
 
+#include "internal/render_graph_program_cache.h"
+
 #include <ludus/foundation/containers/static_array.hpp>
-#include <ludus/foundation/math/vector.hpp>
 #include <ludus/graphics/rhi/graph.h>
 
 namespace ludus::graphics::renderer::internal
@@ -14,7 +15,6 @@ constexpr usize QUAD_VERTEX_COUNT = 4;
 constexpr usize QUAD_INDEX_COUNT = 6;
 constexpr usize VERTEX_COMPONENT_COUNT = 4;
 constexpr usize VERTEX_BYTES = QUAD_VERTEX_COUNT * VERTEX_COMPONENT_COUNT * sizeof(float32);
-constexpr usize INDEX_BYTES = QUAD_INDEX_COUNT * sizeof(uint32);
 constexpr usize BINDING_COUNT = 2;
 constexpr usize VERTEX_STREAM_COUNT = 1;
 bool IsAccepted(Status status) noexcept
@@ -25,21 +25,41 @@ bool IsAccepted(Status status) noexcept
 
 RenderGraphUpscaleProgram::~RenderGraphUpscaleProgram() noexcept
 {
-    static_cast<void>(rhi::Destroy(mDevice, mPipeline));
-    static_cast<void>(rhi::Destroy(mDevice, mLayout));
-    static_cast<void>(rhi::Destroy(mDevice, mSampler));
-    static_cast<void>(rhi::Destroy(mDevice, mVertices));
-    static_cast<void>(rhi::Destroy(mDevice, mIndices));
-    static_cast<void>(rhi::Destroy(mDevice, mVertex));
-    static_cast<void>(rhi::Destroy(mDevice, mFragment));
+    Reset();
 }
 
-Status RenderGraphUpscaleProgram::Initialize(rhi::DeviceHandle device,
+void RenderGraphUpscaleProgram::Reset() noexcept
+{
+    if (mHasRequest == true)
+    {
+        // Accepted batches retain the borrowed pipeline beyond this release.
+        static_cast<void>(rhi::Release(mDevice, mRequest));
+        mHasRequest = false;
+    }
+    mRequest = {};
+    mPipeline = {};
+    if (mCacheOrNull != nullptr)
+    {
+        RenderGraphProgramCacheAccess::Release(*mCacheOrNull, mDependenciesOrNull);
+    }
+    mCacheOrNull = nullptr;
+    mDependenciesOrNull = nullptr;
+    mDevice = {};
+    mPhase = Phase::Empty;
+    mStatus = Status::InvalidState;
+    mIsSurface = false;
+}
+
+Status RenderGraphUpscaleProgram::Initialize(RenderGraphProgramCache& inoutCache,
                                              const rhi::RasterShaderDescription& vertex,
                                              const rhi::RasterShaderDescription& fragment,
                                              bool isSurface) noexcept
 {
-    if (mPhase != Phase::Empty || vertex.Inputs.GetSize() != 1 || vertex.Inputs[0].Location != 0 ||
+    if (mPhase != Phase::Empty)
+    {
+        return Status::InvalidState;
+    }
+    if (vertex.Inputs.GetSize() != 1 || vertex.Inputs[0].Location != 0 ||
         vertex.Inputs[0].Format != rhi::RasterVertexFormat::Float4 || vertex.Bindings.IsEmpty() == false ||
         fragment.Bindings.GetSize() != BINDING_COUNT || fragment.Bindings[0].Binding != 0 ||
         fragment.Bindings[0].Kind != rhi::RasterBindingKind::Texture2D || fragment.Bindings[1].Binding != 1 ||
@@ -47,44 +67,25 @@ Status RenderGraphUpscaleProgram::Initialize(rhi::DeviceHandle device,
     {
         return Status::InvalidDescription;
     }
+    const rhi::DeviceHandle device = RenderGraphProgramCacheAccess::GetDevice(inoutCache);
+    if (RenderGraphProgramCacheAccess::IsUsable(inoutCache, device) == false)
+    {
+        return Status::InvalidDescription;
+    }
+    RenderGraphUpscaleDependencies* dependenciesOrNull = nullptr;
+    const Status status =
+        RenderGraphProgramCacheAccess::AcquireUpscale(inoutCache, vertex, fragment, dependenciesOrNull);
+    if (IsAccepted(status) == false)
+    {
+        return status;
+    }
     mDevice = device;
+    mCacheOrNull = &inoutCache;
+    mDependenciesOrNull = dependenciesOrNull;
     mIsSurface = isSurface;
-    Status status = rhi::CreateRasterShader(device, vertex, mVertex);
-    if (IsAccepted(status) == true)
-    {
-        status = rhi::CreateRasterShader(device, fragment, mFragment);
-    }
-    if (IsAccepted(status) == true)
-    {
-        status = rhi::CreateBindingLayout(device, fragment.Bindings, mLayout);
-    }
-    rhi::SamplerDescription sampler;
-    sampler.Filter = rhi::RasterFilter::Linear;
-    if (IsAccepted(status) == true)
-    {
-        status = rhi::CreateSampler(device, sampler, mSampler);
-    }
-    // Reuse the installed renderer_composite recipe's canonical top-left UV mapping.
-    const StaticArray<math::Vector4, QUAD_VERTEX_COUNT> vertices{
-        {{-1, 1, 0, 0}, {1, 1, 1, 0}, {1, -1, 1, 1}, {-1, -1, 0, 1}}};
-    const StaticArray<uint32, QUAD_INDEX_COUNT> indices{{0, 1, 2, 2, 3, 0}};
-    if (IsAccepted(status) == true)
-    {
-        status = rhi::CreateBuffer(device,
-                                   {rhi::BufferRole::Vertex, VERTEX_BYTES},
-                                   {reinterpret_cast<const uint8*>(vertices.GetData()), VERTEX_BYTES},
-                                   mVertices);
-    }
-    if (IsAccepted(status) == true)
-    {
-        status = rhi::CreateBuffer(device,
-                                   {rhi::BufferRole::Index32, INDEX_BYTES},
-                                   {reinterpret_cast<const uint8*>(indices.GetData()), INDEX_BYTES},
-                                   mIndices);
-    }
-    mPhase = IsAccepted(status) == true ? Phase::Dependencies : Phase::Failed;
+    mPhase = Phase::Dependencies;
     mStatus = status;
-    return IsAccepted(status) == true ? Poll() : status;
+    return Poll();
 }
 
 Status RenderGraphUpscaleProgram::Poll() noexcept
@@ -96,53 +97,40 @@ Status RenderGraphUpscaleProgram::Poll() noexcept
     Status status = Status::Ready;
     if (mPhase == Phase::Dependencies)
     {
-        status = rhi::GetStatus(mDevice, mVertex);
+        status = RenderGraphProgramCacheAccess::Poll(*mDependenciesOrNull);
         if (status == Status::Ready)
         {
-            status = rhi::GetStatus(mDevice, mFragment);
-        }
-        if (status == Status::Ready)
-        {
-            status = rhi::GetStatus(mDevice, mLayout);
-        }
-        if (status == Status::Ready)
-        {
-            status = rhi::GetStatus(mDevice, mSampler);
-        }
-        if (status == Status::Ready)
-        {
-            status = rhi::GetStatus(mDevice, mVertices);
-        }
-        if (status == Status::Ready)
-        {
-            status = rhi::GetStatus(mDevice, mIndices);
-        }
-        if (status == Status::Ready)
-        {
-            mPhase = Phase::PipelineCreation;
+            mPhase = Phase::PipelineRequest;
         }
     }
-    if (status == Status::Ready && mPhase == Phase::PipelineCreation)
+    if (status == Status::Ready && mPhase == Phase::PipelineRequest)
     {
         const StaticArray<rhi::RasterVertexStream, VERTEX_STREAM_COUNT> streams{
             {{VERTEX_COMPONENT_COUNT * sizeof(float32), false}}};
         const StaticArray<rhi::RasterVertexAttribute, VERTEX_STREAM_COUNT> attributes{
             {{0, 0, 0, rhi::RasterVertexFormat::Float4}}};
-        rhi::RasterPipelineDescription description{mVertex,
-                                                   mFragment,
-                                                   mLayout,
+        rhi::RasterPipelineDescription description{mDependenciesOrNull->Vertex,
+                                                   mDependenciesOrNull->Fragment,
+                                                   mDependenciesOrNull->Layout,
                                                    {streams.GetData(), streams.GetSize()},
                                                    {attributes.GetData(), attributes.GetSize()}};
         description.Target = mIsSurface == true ? rhi::RasterTarget::Surface : rhi::RasterTarget::Rgba8Unorm;
-        status = rhi::CreateRasterPipeline(mDevice, description, mPipeline);
+        // Equal shader/layout incarnations and fixed state join one native pipeline in the RHI.
+        status = rhi::RequestPipeline(mDevice, description, mRequest);
         if (IsAccepted(status) == true)
         {
+            mHasRequest = true;
             mPhase = Phase::Pipeline;
+            status = Status::Ready;
         }
     }
     if (status == Status::Ready && mPhase == Phase::Pipeline)
     {
-        status = rhi::GetStatus(mDevice, mPipeline);
+        status = rhi::GetStatus(mDevice, mRequest);
+        if (status == Status::Ready)
+        {
+            status = rhi::GetRequestedPipeline(mDevice, mRequest, mPipeline);
+        }
         if (status == Status::Ready)
         {
             mPhase = Phase::Ready;
@@ -171,12 +159,13 @@ Status RenderGraphUpscaleProgram::Draw(rhi::BindingSetHandle bindings, rhi::Text
     {
         return status;
     }
-    const StaticArray<rhi::RasterVertexSlice, VERTEX_STREAM_COUNT> vertices{{{mVertices, 0, VERTEX_BYTES}}};
+    const StaticArray<rhi::RasterVertexSlice, VERTEX_STREAM_COUNT> vertices{
+        {{mDependenciesOrNull->Vertices, 0, VERTEX_BYTES}}};
     return rhi::DrawIndexed(mDevice,
                             {mPipeline,
                              bindings,
                              {vertices.GetData(), vertices.GetSize()},
-                             mIndices,
+                             mDependenciesOrNull->Indices,
                              0,
                              QUAD_INDEX_COUNT,
                              QUAD_VERTEX_COUNT,
@@ -209,10 +198,11 @@ Status RenderGraphUpscalePass::Poll() noexcept
     Status status = rhi::GetStatus(mProgramOrNull->mDevice, mSource);
     if (status == Status::Ready && mHasBindings == false)
     {
+        const RenderGraphUpscaleDependencies& dependencies = *mProgramOrNull->mDependenciesOrNull;
         const StaticArray<rhi::RasterBindingResource, BINDING_COUNT> resources{
-            {{ .Binding = 0, .Texture = mSource }, { .Binding = 1, .Sampler = mProgramOrNull->mSampler }}};
+            {{ .Binding = 0, .Texture = mSource }, { .Binding = 1, .Sampler = dependencies.Sampler }}};
         status = rhi::CreateBindingSet(mProgramOrNull->mDevice,
-                                       mProgramOrNull->mLayout,
+                                       dependencies.Layout,
                                        {resources.GetData(), resources.GetSize()},
                                        mBindings);
         mHasBindings = IsAccepted(status);
