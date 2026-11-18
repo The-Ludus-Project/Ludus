@@ -290,7 +290,7 @@ CreateRayScene(DeviceHandle device, const RaySceneDescription& description, RayS
         return StorageFailure();
     }
     StorageArray<usize> uvOffsets;
-    if (uvOffsets.TryResize(gRecords[static_cast<usize>(RasterKind::RayGeometry)].GetSize()) == false)
+    if (uvOffsets.TryResize(GetRasterState().Records[static_cast<usize>(RasterKind::RayGeometry)].GetSize()) == false)
     {
         return StorageFailure();
     }
@@ -552,7 +552,7 @@ RasterStatus GetRayResourceStats(DeviceHandle device, RayResourceStats& output) 
     RayResourceStats result;
     for (usize kind = RASTER_KINDS; kind < KINDS; ++kind)
     {
-        const auto& pool = gRecords[kind];
+        const StorageTable<Record>& pool = GetRasterState().Records[kind];
         for (usize slot = 0; slot < pool.GetSize(); ++slot)
         {
             const auto& record = pool[slot];

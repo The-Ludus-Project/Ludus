@@ -56,7 +56,7 @@ RasterStatus MutableDestination(Record& record, RasterKind kind) noexcept
         return record.Status == RasterStatus::Pending ? RasterStatus::NotReady : record.Status;
     }
     const auto completed = backend::RasterCompleted();
-    if (GetStartup().State != StartupState::Ready)
+    if (internal::GetStartup().State != StartupState::Ready)
     {
         return RasterStatus::DeviceLost;
     }
@@ -90,7 +90,7 @@ RasterStatus TransferRows(const TextureRegion& region, usize pitch, usize& nativ
 }
 RasterStatus ReserveMutation(usize& slot) noexcept
 {
-    return ReserveLifetime(gUploads, slot, [](usize candidate) noexcept {
+    return ReserveLifetime(GetLifetimeState().Uploads, slot, [](usize candidate) noexcept {
         return backend::LifetimeTransferAvailable(false, candidate);
     });
 }
@@ -101,7 +101,7 @@ void PublishMutation(usize slot,
                      const TextureRegion& region,
                      TransferTicket& output) noexcept
 {
-    auto& request = gUploads[slot];
+    TransferRecord& request = GetLifetimeState().Uploads[slot];
     request.Owner = DeviceOwner();
     request.Published = true;
     request.Mutable = true;
@@ -182,7 +182,7 @@ RasterStatus RequestBufferUpdate(DeviceHandle device,
                                                        buffer->Buffer.Role,
                                                        {RasterAccess::Slot(handle), offset, size},
                                                        gUploadBytes[slot]);
-    if (GetStartup().State != StartupState::Ready)
+    if (internal::GetStartup().State != StartupState::Ready)
     {
         return Admission(device);
     }
@@ -251,7 +251,7 @@ RasterStatus RequestTextureUpdate(DeviceHandle device,
     info.RowPitch = pitch;
     info.Size = size;
     const auto started = backend::LifetimeTextureTransfer(slot, info, gUploadBytes[slot]);
-    if (GetStartup().State != StartupState::Ready)
+    if (internal::GetStartup().State != StartupState::Ready)
     {
         return Admission(device);
     }
@@ -320,7 +320,7 @@ RasterStatus RequestTextureCopy(DeviceHandle device,
     info.Destination = RasterAccess::Slot(destinationHandle);
     info.DestinationRegion = destinationRegion;
     const auto started = backend::LifetimeTextureTransfer(slot, info, nullptr);
-    if (GetStartup().State != StartupState::Ready)
+    if (internal::GetStartup().State != StartupState::Ready)
     {
         return Admission(device);
     }
@@ -371,7 +371,7 @@ RasterStatus RequestTextureReadback(DeviceHandle device,
         return rows;
     }
     usize slot = 0;
-    const auto reserved = ReserveLifetime(gReadbacks, slot, [](usize candidate) noexcept {
+    const RasterStatus reserved = ReserveLifetime(GetLifetimeState().Readbacks, slot, [](usize candidate) noexcept {
         return backend::LifetimeTransferAvailable(true, candidate);
     });
     if (reserved != RasterStatus::Ready)
@@ -385,7 +385,7 @@ RasterStatus RequestTextureReadback(DeviceHandle device,
     info.RowPitch = pitch;
     info.Size = size;
     const auto started = backend::LifetimeTextureTransfer(slot, info, nullptr);
-    if (GetStartup().State != StartupState::Ready)
+    if (internal::GetStartup().State != StartupState::Ready)
     {
         return Admission(device);
     }
@@ -393,7 +393,7 @@ RasterStatus RequestTextureReadback(DeviceHandle device,
     {
         return started;
     }
-    auto& request = gReadbacks[slot];
+    TransferRecord& request = GetLifetimeState().Readbacks[slot];
     request.Owner = DeviceOwner();
     request.Published = true;
     request.Kind = RasterKind::Texture;
@@ -443,7 +443,7 @@ RasterStatus GetStatus(DeviceHandle device, TransferTicket ticket) noexcept
     {
         return admission;
     }
-    auto* record = ResolveLifetime(gUploads, ticket);
+    TransferRecord* record = ResolveLifetime(GetLifetimeState().Uploads, ticket);
     if (record == nullptr || record->Mutable == false)
     {
         return RasterStatus::InvalidHandle;
@@ -465,7 +465,7 @@ RasterStatus Release(DeviceHandle device, TransferTicket& ticket) noexcept
     {
         return admission;
     }
-    auto* record = ResolveLifetime(gUploads, ticket);
+    TransferRecord* record = ResolveLifetime(GetLifetimeState().Uploads, ticket);
     if (record == nullptr || record->Mutable == false)
     {
         return RasterStatus::InvalidHandle;

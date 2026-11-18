@@ -38,6 +38,7 @@ extern foundation::usize LastDestroyedSurface;
 extern bool ShouldLoseNextSurface;
 extern foundation::StaticArray<SurfaceCompletion, MAX_DEVICE_SURFACES> SurfaceCompletions;
 extern foundation::StaticArray<FrameTarget, MAX_DEVICE_SURFACES> SurfaceTargets;
+extern foundation::usize DeviceOwners;
 } // namespace ludus::graphics::rhi::backend
 using namespace ludus::graphics::rhi;
 namespace
@@ -65,6 +66,7 @@ void Reset() noexcept
     backend::ShouldLoseNextSurface = false;
     backend::SurfaceCompletions.Fill({});
     backend::SurfaceTargets.Fill({});
+    backend::DeviceOwners = 1;
 }
 void Ready() noexcept
 {
@@ -772,4 +774,220 @@ TEST_CASE("R14b losing or destroying one surface leaves the device and other sur
     CHECK(BeginFrame(next, primary) == DeviceStatus::InvalidHandle);
     CHECK(GetSurfaceInfo(next, replacement, info) == DeviceStatus::InvalidHandle);
     REQUIRE(DestroyDevice(next) == DeviceStatus::Ready);
+}
+
+namespace
+{
+/// Fullscreen uniform bytes the owner tests write; one 16-byte register.
+constexpr ludus::foundation::usize OWNER_UNIFORM_BYTES = 16;
+/// Restores the single-owner reference backend for the tests that follow, also when a
+/// REQUIRE stops an owner test early.
+struct OwnerBackendReset final
+{
+    OwnerBackendReset() noexcept = default;
+    OwnerBackendReset(const OwnerBackendReset&) = delete;
+    OwnerBackendReset& operator=(const OwnerBackendReset&) = delete;
+    ~OwnerBackendReset() noexcept
+    {
+        backend::DeviceOwners = 1;
+        backend::ShouldCompleteDuringStart = false;
+    }
+};
+/// Start a Ready device synchronously, as the native backends do, and report its startup token.
+DeviceStatus
+CreateReadyOwner(DeviceHandle& outDevice, SurfaceHandle& outSurface, ludus::foundation::uint32& outToken) noexcept
+{
+    backend::ShouldCompleteDuringStart = true;
+    const DeviceStatus status = CreateDevice({}, { .Width = 64, .Height = 32 }, {}, outDevice, outSurface);
+    outToken = backend::PendingToken;
+    return status;
+}
+} // namespace
+
+TEST_CASE("R14c device owners keep independent sessions, resources and frames", "[rhi][device][owner]")
+{
+    Reset();
+    const OwnerBackendReset restore;
+    backend::DeviceOwners = 2;
+    DeviceHandle first;
+    SurfaceHandle firstSurface;
+    ludus::foundation::uint32 firstToken = 0;
+    REQUIRE(CreateReadyOwner(first, firstSurface, firstToken) == DeviceStatus::Ready);
+    DeviceHandle second;
+    SurfaceHandle secondSurface;
+    ludus::foundation::uint32 secondToken = 0;
+    REQUIRE(CreateReadyOwner(second, secondSurface, secondToken) == DeviceStatus::Ready);
+    CHECK(first != second);
+    CHECK(firstSurface != secondSurface);
+    CHECK(firstToken != secondToken);
+
+    // The backend hosts two owners; a third is refused without publishing anything.
+    DeviceHandle third;
+    SurfaceHandle thirdSurface;
+    CHECK(CreateDevice({}, {}, {}, third, thirdSurface) == DeviceStatus::CapacityExceeded);
+    CHECK(third == DeviceHandle{});
+    CHECK(thirdSurface == SurfaceHandle{});
+
+    // Resources resolve only in the owner that created them.
+    UniformHandle firstUniform;
+    REQUIRE(CreateUniform(first, OWNER_UNIFORM_BYTES, firstUniform) == ResourceStatus::Ready);
+    UniformHandle secondUniform;
+    REQUIRE(CreateUniform(second, OWNER_UNIFORM_BYTES, secondUniform) == ResourceStatus::Ready);
+    CHECK(GetStatus(second, firstUniform) == ResourceStatus::InvalidHandle);
+    CHECK(GetStatus(first, secondUniform) == ResourceStatus::InvalidHandle);
+    CHECK(Destroy(second, firstUniform) == ResourceStatus::InvalidHandle);
+    const ludus::foundation::StaticArray<ludus::foundation::uint8, OWNER_UNIFORM_BYTES> bytes{};
+    CHECK(UpdateUniform(second, firstUniform, {bytes.GetData(), bytes.GetSize()}) == ResourceStatus::InvalidHandle);
+    CHECK(GetStatus(first, firstUniform) == ResourceStatus::Ready);
+    CHECK(GetStatus(second, secondUniform) == ResourceStatus::Ready);
+
+    // Surfaces belong to one owner; frames of different owners are independent.
+    CHECK(SetFrameTarget(first, secondSurface, {}) == DeviceStatus::InvalidHandle);
+    CHECK(BeginFrame(second, firstSurface) == DeviceStatus::InvalidHandle);
+    REQUIRE(BeginFrame(first, firstSurface) == DeviceStatus::Ready);
+    REQUIRE(BeginFrame(second, secondSurface) == DeviceStatus::Ready);
+    DeviceInfo info;
+    REQUIRE(GetDeviceInfo(first, info) == DeviceStatus::Ready);
+    CHECK(info.FrameOpen);
+    REQUIRE(EndFrame(second) == DeviceStatus::Ready);
+    REQUIRE(GetDeviceInfo(first, info) == DeviceStatus::Ready);
+    CHECK(info.FrameOpen);
+    REQUIRE(GetDeviceInfo(second, info) == DeviceStatus::Ready);
+    CHECK_FALSE(info.FrameOpen);
+    REQUIRE(EndFrame(first) == DeviceStatus::Ready);
+    SurfaceInfo surface;
+    REQUIRE(GetSurfaceInfo(first, firstSurface, surface) == DeviceStatus::Ready);
+    CHECK(surface.SubmittedFrames == 1);
+    REQUIRE(GetSurfaceInfo(second, secondSurface, surface) == DeviceStatus::Ready);
+    CHECK(surface.SubmittedFrames == 1);
+
+    // Loss of one owner stops only that owner's work.
+    internal::Fail(secondToken, StartupError::DeviceLost);
+    CHECK(GetDeviceInfo(second, info) == DeviceStatus::DeviceLost);
+    CHECK(GetStatus(second, secondUniform) == ResourceStatus::DeviceLost);
+    CHECK(BeginFrame(second, secondSurface) == DeviceStatus::DeviceLost);
+    REQUIRE(GetDeviceInfo(first, info) == DeviceStatus::Ready);
+    CHECK(GetStatus(first, firstUniform) == ResourceStatus::Ready);
+    REQUIRE(BeginFrame(first, firstSurface) == DeviceStatus::Ready);
+    REQUIRE(EndFrame(first) == DeviceStatus::Ready);
+
+    // Destroying one owner retires only its session; its handles never resolve again.
+    const DeviceHandle staleSecond = second;
+    REQUIRE(DestroyDevice(second) == DeviceStatus::Ready);
+    CHECK(GetDeviceInfo(staleSecond, info) == DeviceStatus::InvalidHandle);
+    REQUIRE(GetDeviceInfo(first, info) == DeviceStatus::Ready);
+    CHECK(GetStatus(first, firstUniform) == ResourceStatus::Ready);
+
+    // A replacement takes the free slot under a new identity and rejects the old handles.
+    DeviceHandle replacement;
+    SurfaceHandle replacementSurface;
+    ludus::foundation::uint32 replacementToken = 0;
+    REQUIRE(CreateReadyOwner(replacement, replacementSurface, replacementToken) == DeviceStatus::Ready);
+    CHECK(replacement != staleSecond);
+    CHECK(GetStatus(replacement, secondUniform) == ResourceStatus::InvalidHandle);
+    CHECK(GetStatus(replacement, firstUniform) == ResourceStatus::InvalidHandle);
+    CHECK(BeginFrame(replacement, secondSurface) == DeviceStatus::InvalidHandle);
+    CHECK(GetSurfaceInfo(replacement, secondSurface, surface) == DeviceStatus::InvalidHandle);
+    internal::Fail(secondToken, StartupError::DeviceLost);
+    CHECK(GetDeviceInfo(replacement, info) == DeviceStatus::Ready);
+
+    REQUIRE(DestroyDevice(first) == DeviceStatus::Ready);
+    REQUIRE(GetDeviceInfo(replacement, info) == DeviceStatus::Ready);
+    REQUIRE(DestroyDevice(replacement) == DeviceStatus::Ready);
+}
+
+TEST_CASE("R14c device owners never borrow the same native target", "[rhi][device][owner]")
+{
+    Reset();
+    const OwnerBackendReset restore;
+    backend::DeviceOwners = 2;
+    backend::AdditionalSurfaces = MAX_DEVICE_SURFACES - 1;
+    backend::ShouldCompleteDuringStart = true;
+    ludus::foundation::uint8 firstView = 0;
+    ludus::foundation::uint8 secondView = 0;
+    const WindowInfo firstWindow{ .System = ludus::platform::WindowSystem::Cocoa, .CocoaView = &firstView };
+    const WindowInfo secondWindow{ .System = ludus::platform::WindowSystem::Cocoa, .CocoaView = &secondView };
+    DeviceHandle first;
+    SurfaceHandle firstSurface;
+    REQUIRE(CreateDevice({}, firstWindow, {}, first, firstSurface) == DeviceStatus::Ready);
+
+    // Another owner cannot borrow a view the first owner presents to, as a primary or a further surface.
+    DeviceHandle second;
+    SurfaceHandle secondSurface;
+    CHECK(CreateDevice({}, firstWindow, {}, second, secondSurface) == DeviceStatus::InvalidDescription);
+    CHECK(second == DeviceHandle{});
+    REQUIRE(CreateDevice({}, secondWindow, {}, second, secondSurface) == DeviceStatus::Ready);
+    SurfaceHandle borrowed;
+    CHECK(CreateSurface(second, firstWindow, borrowed) == DeviceStatus::InvalidDescription);
+    CHECK(borrowed == SurfaceHandle{});
+    CHECK(CreateSurface(first, secondWindow, borrowed) == DeviceStatus::InvalidDescription);
+
+    // Destroying the owner releases its view for the other owner.
+    REQUIRE(DestroyDevice(first) == DeviceStatus::Ready);
+    REQUIRE(CreateSurface(second, firstWindow, borrowed) == DeviceStatus::Ready);
+    REQUIRE(DestroySurface(second, borrowed) == DeviceStatus::Ready);
+    REQUIRE(DestroyDevice(second) == DeviceStatus::Ready);
+}
+
+TEST_CASE("R14c device-less facade calls address the first owner slot", "[rhi][device][owner]")
+{
+    Reset();
+    const OwnerBackendReset restore;
+    backend::DeviceOwners = 2;
+    DeviceHandle first;
+    SurfaceHandle firstSurface;
+    ludus::foundation::uint32 token = 0;
+    REQUIRE(CreateReadyOwner(first, firstSurface, token) == DeviceStatus::Ready);
+    DeviceHandle second;
+    SurfaceHandle secondSurface;
+    REQUIRE(CreateReadyOwner(second, secondSurface, token) == DeviceStatus::Ready);
+
+    // Device-less calls keep driving the first device, whichever owner was addressed last.
+    UniformHandle secondUniform;
+    REQUIRE(CreateUniform(second, OWNER_UNIFORM_BYTES, secondUniform) == ResourceStatus::Ready);
+    CHECK(GetStatus(secondUniform) == ResourceStatus::InvalidHandle);
+    UniformHandle facadeUniform;
+    REQUIRE(CreateUniform(OWNER_UNIFORM_BYTES, facadeUniform) == ResourceStatus::Ready);
+    CHECK(GetStatus(first, facadeUniform) == ResourceStatus::Ready);
+    CHECK(GetStatus(second, facadeUniform) == ResourceStatus::InvalidHandle);
+    REQUIRE(BeginFrame(second, secondSurface) == DeviceStatus::Ready);
+    REQUIRE(BeginFrameStatus() == FrameStatus::Ready);
+    DeviceInfo info;
+    REQUIRE(GetDeviceInfo(first, info) == DeviceStatus::Ready);
+    CHECK(info.FrameOpen);
+    REQUIRE(EndFrameStatus() == FrameStatus::Ready);
+    REQUIRE(EndFrame(second) == DeviceStatus::Ready);
+
+    // A facade session never starts beside explicit owners, and blocks them while it runs.
+    CHECK(Start({}, {}) == StartStatus::Busy);
+    REQUIRE(DestroyDevice(first) == DeviceStatus::Ready);
+    CHECK(GetStartup().State == StartupState::Idle);
+    REQUIRE(GetDeviceInfo(second, info) == DeviceStatus::Ready);
+    CHECK(Start({}, {}) == StartStatus::Busy);
+    REQUIRE(DestroyDevice(second) == DeviceStatus::Ready);
+    backend::ShouldCompleteDuringStart = true;
+    REQUIRE(Start({}, {}) == StartStatus::Ready);
+    DeviceHandle blocked;
+    SurfaceHandle blockedSurface;
+    CHECK(CreateDevice({}, {}, {}, blocked, blockedSurface) == DeviceStatus::InvalidState);
+    CHECK(blocked == DeviceHandle{});
+    Shutdown();
+}
+
+TEST_CASE("R14c single-owner backends keep refusing a second device", "[rhi][device][owner]")
+{
+    Reset();
+    const OwnerBackendReset restore;
+    DeviceHandle first;
+    SurfaceHandle firstSurface;
+    ludus::foundation::uint32 token = 0;
+    REQUIRE(CreateReadyOwner(first, firstSurface, token) == DeviceStatus::Ready);
+    DeviceHandle second;
+    SurfaceHandle secondSurface;
+    CHECK(CreateDevice({}, {}, {}, second, secondSurface) == DeviceStatus::InvalidState);
+    CHECK(second == DeviceHandle{});
+    CHECK(secondSurface == SurfaceHandle{});
+    REQUIRE(DestroyDevice(first) == DeviceStatus::Ready);
+    REQUIRE(CreateReadyOwner(second, secondSurface, token) == DeviceStatus::Ready);
+    REQUIRE(DestroyDevice(second) == DeviceStatus::Ready);
 }

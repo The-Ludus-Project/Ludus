@@ -285,7 +285,8 @@ RasterStatus ArmPassTimings() noexcept
     static_cast<void>(PollPassTimings());
     if (gDevice == VK_NULL_HANDLE)
     {
-        return GetStartup().State == StartupState::DeviceLost ? RasterStatus::DeviceLost : RasterStatus::Failed;
+        return internal::GetStartup().State == StartupState::DeviceLost ? RasterStatus::DeviceLost
+                                                                        : RasterStatus::Failed;
     }
     if (gPassTimings.CanArm() == false)
     {

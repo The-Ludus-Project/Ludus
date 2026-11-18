@@ -34,21 +34,13 @@ struct RasterMetalPipeline final
     id<MTLDepthStencilState> Depth = nil;
     internal::RasterPipelineInfo Info;
 };
-internal::StorageTable<id<MTLBuffer>> gRasterBuffers;
-internal::StorageTable<id<MTLTexture>> gRasterTextures;
-internal::StorageTable<id<MTLTexture>> gRasterDepths;
-internal::StorageTable<id<MTLTexture>> gRasterViews;
-internal::StorageTable<id<MTLTexture>> gRasterViewDepths;
-internal::StorageTable<id<MTLSamplerState>> gRasterSamplers;
-internal::StorageTable<RasterMetalShader> gRasterShaders;
-internal::StorageTable<internal::RasterLayout> gRasterLayouts;
-internal::StorageTable<internal::RasterSet> gRasterSets;
-internal::StorageTable<RasterMetalPipeline> gRasterPipelines;
 // Thanks to KhronosGroup, SPIRV-Cross CompilerMSL::Options::buffer_size_buffer_index:
 // https://github.com/KhronosGroup/SPIRV-Cross/blob/main/spirv_msl.hpp
 // Its OpArrayLength lowering reads byte ranges indexed by native buffer slot.
 // Keep the reserved auxiliary slot separate from the public group-zero layout.
 constexpr uint32 METAL_BUFFER_SIZE_TABLE_SLOT = 25;
+/// Multisample count the attachment profile reports when the device supports it, beside one sample.
+constexpr uint32 METAL_MULTISAMPLE_COUNT = 4;
 using MetalBufferSizeTable = foundation::StaticArray<uint32, internal::RASTER_BINDINGS>;
 struct MetalComputePipeline final
 {
@@ -59,12 +51,33 @@ struct MetalComputePipeline final
     id<MTLSharedEvent> NativeEventOrNull = nil;
     uint64 NativeEventValue = 0;
 };
-internal::StorageTable<MetalComputePipeline> gComputePipelines;
-internal::StorageTable<internal::ComputePipelineInfo> gComputeInfos;
-uint64 gRasterOrdinals[FRAMES]{};
-uint64 gRasterCompleted = 0;
-uint32 gRasterWidth = 0, gRasterHeight = 0;
-RasterPassDescription gRasterRegion{};
+/// Native raster and compute objects and submission ordinals of one Metal owner (R14c).
+struct RasterMetalState final
+{
+    internal::StorageTable<id<MTLBuffer>> Buffers;
+    internal::StorageTable<id<MTLTexture>> Textures;
+    internal::StorageTable<id<MTLTexture>> Depths;
+    internal::StorageTable<id<MTLTexture>> Views;
+    internal::StorageTable<id<MTLTexture>> ViewDepths;
+    internal::StorageTable<id<MTLSamplerState>> Samplers;
+    internal::StorageTable<RasterMetalShader> Shaders;
+    internal::StorageTable<internal::RasterLayout> Layouts;
+    internal::StorageTable<internal::RasterSet> Sets;
+    internal::StorageTable<RasterMetalPipeline> Pipelines;
+    internal::StorageTable<MetalComputePipeline> ComputePipelines;
+    internal::StorageTable<internal::ComputePipelineInfo> ComputeInfos;
+    uint64 Ordinals[FRAMES]{};
+    uint64 Completed = 0;
+    uint32 Width = 0;
+    uint32 Height = 0;
+    RasterPassDescription Region{};
+};
+StaticArray<RasterMetalState, MAX_DEVICE_OWNERS> gRasterMetalStates{};
+/// The native raster objects of the bound owner slot.
+RasterMetalState& GetRasterMetal() noexcept
+{
+    return gRasterMetalStates[internal::GetBoundOwnerSlot()];
+}
 bool IsMetalBufferSizeTable(id<MTLBinding> binding, ShaderStage stage) noexcept
 {
     return stage == ShaderStage::Compute && binding.type == MTLBindingTypeBuffer &&
@@ -187,7 +200,8 @@ bool RasterMetalBindings(NSArray<id<MTLBinding>>* bindings,
 // no storage/MSAA or R8/RG8 attachment path is advertised. R8 copies use RGBA8Unorm.
 FormatCapabilities FormatLimits(RasterFormat format) noexcept
 {
-    if (gDevice == nil || (internal::CompressedTexture(format) && gDevice.supportsBCTextureCompression == false))
+    if (GetMetal().Device == nil ||
+        (internal::CompressedTexture(format) && GetMetal().Device.supportsBCTextureCompression == false))
     {
         return {};
     }
@@ -210,7 +224,9 @@ FormatCapabilities FormatLimits(RasterFormat format) noexcept
         result.DepthSampled = true;
         result.StencilAttachment = true;
         result.StencilSampled = true;
-        result.SampleCounts = 1U | ([gDevice supportsTextureSampleCount:4] ? 4U : 0U);
+        result.SampleCounts = 1U | ([GetMetal().Device supportsTextureSampleCount:METAL_MULTISAMPLE_COUNT] == YES
+                                        ? METAL_MULTISAMPLE_COUNT
+                                        : 0U);
     }
     result.MaxAttachmentCubeDimension = result.Uses.ColorAttachment ? result.MaxCubeDimension : 0;
     return result;
@@ -229,7 +245,7 @@ bool GetDescriptorArenaUsage(internal::DescriptorArenaUsage&) noexcept
 }
 BindingCapabilities BindingLimits() noexcept
 {
-    if (gDevice == nil)
+    if (GetMetal().Device == nil)
     {
         return {};
     }
@@ -253,10 +269,10 @@ BindingCapabilities BindingLimits() noexcept
 }
 RasterCapabilities RasterLimits() noexcept
 {
-    const usize max = internal::GetResourceSizeLimit(gDevice.maxBufferLength);
+    const usize max = internal::GetResourceSizeLimit(GetMetal().Device.maxBufferLength);
     return
     {
-        .MaxBufferSize = gDevice.maxBufferLength < max ? gDevice.maxBufferLength : max,
+        .MaxBufferSize = GetMetal().Device.maxBufferLength < max ? GetMetal().Device.maxBufferLength : max,
         .MaxTextureDimension2D = MAX_DIMENSION,
         .UniformOffsetAlignment = 256,
         .MaxUniformRange = 16384,
@@ -275,12 +291,12 @@ RasterCapabilities RasterLimits() noexcept
 // Tracked resources and encoder boundaries order these writes before later reads.
 RasterStorageCapabilities RasterStorageLimits() noexcept
 {
-    if (gDevice == nil)
+    if (GetMetal().Device == nil)
     {
         return {};
     }
-    const bool hasWritableTextures =
-        [gDevice supportsFamily:MTLGPUFamilyApple3] == YES || [gDevice supportsFamily:MTLGPUFamilyMac2] == YES;
+    const bool hasWritableTextures = [GetMetal().Device supportsFamily:MTLGPUFamilyApple3] == YES ||
+                                     [GetMetal().Device supportsFamily:MTLGPUFamilyMac2] == YES;
     const uint32 slots = static_cast<uint32>(internal::RASTER_BINDINGS);
     return
     {
@@ -297,12 +313,12 @@ RasterStorageCapabilities RasterStorageLimits() noexcept
 // layouts match the engine ABI. https://developer.apple.com/metal/Metal-Feature-Set-Tables.pdf
 IndirectCapabilities IndirectLimits() noexcept
 {
-    if (gDevice == nil)
+    if (GetMetal().Device == nil)
     {
         return {};
     }
-    const bool hasBaseVertexInstance =
-        [gDevice supportsFamily:MTLGPUFamilyApple3] == YES || [gDevice supportsFamily:MTLGPUFamilyMac2] == YES;
+    const bool hasBaseVertexInstance = [GetMetal().Device supportsFamily:MTLGPUFamilyApple3] == YES ||
+                                       [GetMetal().Device supportsFamily:MTLGPUFamilyMac2] == YES;
     return
     {
         .ArgumentAlignment = internal::INDIRECT_ARGUMENT_ALIGNMENT_BYTES,
@@ -318,13 +334,13 @@ IndirectCapabilities IndirectLimits() noexcept
 // https://developer.apple.com/documentation/metal/mtlcomputecommandencoder
 ComputeCapabilities ComputeLimits() noexcept
 {
-    if (gDevice == nil)
+    if (GetMetal().Device == nil)
     {
         return {};
     }
-    const MTLSize threads = gDevice.maxThreadsPerThreadgroup;
+    const MTLSize threads = GetMetal().Device.maxThreadsPerThreadgroup;
     const usize range = RasterLimits().MaxBufferSize;
-    return {gDevice.maxBufferLength < range ? gDevice.maxBufferLength : range,
+    return {GetMetal().Device.maxBufferLength < range ? GetMetal().Device.maxBufferLength : range,
             256,
             {static_cast<uint32>(threads.width < 256 ? threads.width : 256),
              static_cast<uint32>(threads.height < 256 ? threads.height : 256),
@@ -401,7 +417,7 @@ struct MetalShaderPreparation final : NativePreparationTask
     {
         if (Outcome == RasterStatus::Ready)
         {
-            gRasterShaders[ResourceSlot] = Shader;
+            GetRasterMetal().Shaders[ResourceSlot] = Shader;
         }
         else
         {
@@ -430,10 +446,10 @@ struct MetalComputePreparation final : NativePreparationTask
     {
         if (Outcome == RasterStatus::Ready)
         {
-            gComputePipelines[ResourceSlot].ObjectOrNull = ObjectOrNull;
-            gComputePipelines[ResourceSlot].HasBufferSizeTable = HasBufferSizeTable;
-            gComputePipelines[ResourceSlot].RayPipeline = RayPipeline;
-            gComputeInfos[ResourceSlot] = Info;
+            GetRasterMetal().ComputePipelines[ResourceSlot].ObjectOrNull = ObjectOrNull;
+            GetRasterMetal().ComputePipelines[ResourceSlot].HasBufferSizeTable = HasBufferSizeTable;
+            GetRasterMetal().ComputePipelines[ResourceSlot].RayPipeline = RayPipeline;
+            GetRasterMetal().ComputeInfos[ResourceSlot] = Info;
         }
         else
         {
@@ -461,7 +477,7 @@ struct MetalRasterPreparation final : NativePreparationTask
     {
         if (Outcome == RasterStatus::Ready)
         {
-            gRasterPipelines[ResourceSlot] = Pipeline;
+            GetRasterMetal().Pipelines[ResourceSlot] = Pipeline;
         }
         else
         {
@@ -526,33 +542,35 @@ RasterStatus ComputeCreatePipeline(usize slot, const internal::ComputePipelineIn
 {
     if (info.Native.SubmitOrNull != nullptr)
     {
-        MetalComputePipeline& pipeline = gComputePipelines[slot];
+        MetalComputePipeline& pipeline = GetRasterMetal().ComputePipelines[slot];
         if (pipeline.NativeQueueOrNull == nil)
         {
-            pipeline.NativeQueueOrNull = [gDevice newCommandQueue];
-            pipeline.NativeEventOrNull = [gDevice newSharedEvent];
+            pipeline.NativeQueueOrNull = [GetMetal().Device newCommandQueue];
+            pipeline.NativeEventOrNull = [GetMetal().Device newSharedEvent];
         }
         if (pipeline.NativeQueueOrNull == nil || pipeline.NativeEventOrNull == nil)
         {
             return RasterStatus::OutOfMemory;
         }
-        const internal::RasterSet& set = gRasterSets[info.NativeSet];
+        const internal::RasterSet& set = GetRasterMetal().Sets[info.NativeSet];
         StaticArray<NativeComputeBuffer, internal::RASTER_BINDINGS> buffers{};
         for (usize index = 0; index < set.Description.Count; ++index)
         {
-            buffers[index] = {(__bridge void*)gRasterBuffers[set.Slots[index]], set.Offsets[index], set.Sizes[index]};
+            buffers[index] = {(__bridge void*)GetRasterMetal().Buffers[set.Slots[index]],
+                              set.Offsets[index],
+                              set.Sizes[index]};
         }
         const NativeDeviceIdentity identity
         {
             .Api = Backend::Metal,
-            .Device = NativeLogicalDevice{(__bridge void*)gDevice},
+            .Device = NativeLogicalDevice{(__bridge void*)GetMetal().Device},
             .CommandQueue = NativeCommandQueue{(__bridge void*)pipeline.NativeQueueOrNull},
         };
         const RasterStatus status =
             info.Native.PrepareOrNull(info.Native.ContextOrNull, identity, {buffers.GetData(), set.Description.Count});
         if (status == RasterStatus::Ready || status == RasterStatus::Pending)
         {
-            gComputeInfos[slot] = info;
+            GetRasterMetal().ComputeInfos[slot] = info;
         }
         return status;
     }
@@ -563,8 +581,8 @@ RasterStatus ComputeCreatePipeline(usize slot, const internal::ComputePipelineIn
     }
     task->IsPipelinePreparation = true;
     task->Kind = internal::RasterKind::ComputePipeline;
-    task->DeviceOrNull = gDevice;
-    task->Shader = gRasterShaders[info.Shader];
+    task->DeviceOrNull = GetMetal().Device;
+    task->Shader = GetRasterMetal().Shaders[info.Shader];
     task->Info = info;
     task->ResourceSlot = slot;
     task->Request = request;
@@ -578,11 +596,11 @@ struct RayMetalSceneBinding final
 void BindRayMetalScene(id<MTLComputeCommandEncoder> encoder, const RayMetalSceneBinding& description) noexcept;
 RasterStatus ComputeEncode(const internal::ComputePacket& packet) noexcept
 {
-    const internal::ComputePipelineInfo& info = gComputeInfos[packet.Pipeline];
+    const internal::ComputePipelineInfo& info = GetRasterMetal().ComputeInfos[packet.Pipeline];
     if (info.Native.SubmitOrNull != nullptr)
     {
-        MetalComputePipeline& pipeline = gComputePipelines[packet.Pipeline];
-        MetalCommandPrefixes& prefixes = gCommandPrefixes[gSlot];
+        MetalComputePipeline& pipeline = GetRasterMetal().ComputePipelines[packet.Pipeline];
+        MetalCommandPrefixes& prefixes = GetMetal().CommandPrefixes[GetMetal().Slot];
         if (MAX_NATIVE_COMPUTE_PREFIXES - prefixes.Count < PREFIXES_PER_NATIVE_COMPUTE)
         {
             return RasterStatus::CapacityExceeded;
@@ -592,7 +610,7 @@ RasterStatus ComputeEncode(const internal::ComputePacket& packet) noexcept
         {
             return RasterStatus::IdentityExhausted;
         }
-        id<MTLCommandBuffer> nextOrNull = [gQueue commandBuffer];
+        id<MTLCommandBuffer> nextOrNull = [GetMetal().Queue commandBuffer];
         id<MTLCommandBuffer> waitOrNull = [pipeline.NativeQueueOrNull commandBuffer];
         id<MTLCommandBuffer> completedOrNull = [pipeline.NativeQueueOrNull commandBuffer];
         if (nextOrNull == nil || waitOrNull == nil || completedOrNull == nil)
@@ -605,9 +623,9 @@ RasterStatus ComputeEncode(const internal::ComputePacket& packet) noexcept
         PopScopeGroups();
         // The private queue can initialize models off-thread without submitting on
         // a borrowed framework queue. Native events order access to the shared data.
-        [gCommand encodeSignalEvent:pipeline.NativeEventOrNull value:producerValue];
-        prefixes.CommandsOrNull[prefixes.Count++] = gCommand;
-        [gCommand commit];
+        [GetMetal().Command encodeSignalEvent:pipeline.NativeEventOrNull value:producerValue];
+        prefixes.CommandsOrNull[prefixes.Count++] = GetMetal().Command;
+        [GetMetal().Command commit];
         [waitOrNull encodeWaitForEvent:pipeline.NativeEventOrNull value:producerValue];
         prefixes.CommandsOrNull[prefixes.Count++] = waitOrNull;
         [waitOrNull commit];
@@ -615,15 +633,15 @@ RasterStatus ComputeEncode(const internal::ComputePacket& packet) noexcept
         [completedOrNull encodeSignalEvent:pipeline.NativeEventOrNull value:completionValue];
         prefixes.CommandsOrNull[prefixes.Count++] = completedOrNull;
         [completedOrNull commit];
-        gCommand = nextOrNull;
-        [gCommand encodeWaitForEvent:pipeline.NativeEventOrNull value:completionValue];
-        hasNativeComputeSplit = true;
+        GetMetal().Command = nextOrNull;
+        [GetMetal().Command encodeWaitForEvent:pipeline.NativeEventOrNull value:completionValue];
+        GetMetal().HasNativeComputeSplit = true;
         if (status != RasterStatus::Ready)
         {
             // Fence partial library work even when the graph cannot publish output.
-            [gCommand commit];
-            gSubmitted[gSlot] = gCommand;
-            gCommand = nil;
+            [GetMetal().Command commit];
+            GetMetal().Submitted[GetMetal().Slot] = GetMetal().Command;
+            GetMetal().Command = nil;
         }
         else
         {
@@ -631,8 +649,8 @@ RasterStatus ComputeEncode(const internal::ComputePacket& packet) noexcept
         }
         return status;
     }
-    const MetalComputePipeline& pipeline = gComputePipelines[packet.Pipeline];
-    const internal::RasterSet& bindings = gRasterSets[packet.Set];
+    const MetalComputePipeline& pipeline = GetRasterMetal().ComputePipelines[packet.Pipeline];
+    const internal::RasterSet& bindings = GetRasterMetal().Sets[packet.Set];
     MetalBufferSizeTable bufferSizes{};
     if (pipeline.HasBufferSizeTable == true)
     {
@@ -649,8 +667,8 @@ RasterStatus ComputeEncode(const internal::ComputePacket& packet) noexcept
     MTLComputePassDescriptor* description = [MTLComputePassDescriptor computePassDescriptor];
     ConfigurePassTiming(description,
                         pipeline.RayPipeline.StagesOrNull != nil ? GpuPassKind::RayTracing : GpuPassKind::Compute);
-    id<MTLComputeCommandEncoder> encoder = [gCommand computeCommandEncoderWithDescriptor:description];
-    encoder.label = gPassLabelOrNull;
+    id<MTLComputeCommandEncoder> encoder = [GetMetal().Command computeCommandEncoderWithDescriptor:description];
+    encoder.label = GetGpuScopeMetal().PassLabelOrNull;
     if (encoder == nil)
     {
         return RasterStatus::OutOfMemory;
@@ -660,7 +678,7 @@ RasterStatus ComputeEncode(const internal::ComputePacket& packet) noexcept
     {
         [encoder setBytes:bufferSizes.GetData() length:sizeof(bufferSizes) atIndex:METAL_BUFFER_SIZE_TABLE_SLOT];
     }
-    const auto& set = gRasterSets[packet.Set];
+    const internal::RasterSet& set = GetRasterMetal().Sets[packet.Set];
     const internal::RasterLayout& layout = set.Description;
     for (usize i = 0; i < layout.Count; ++i)
     {
@@ -671,11 +689,11 @@ RasterStatus ComputeEncode(const internal::ComputePacket& packet) noexcept
         }
         if (internal::ViewBinding(layout.Entries[i].Kind) == true)
         {
-            [encoder setTexture:gRasterViews[set.Slots[i]] atIndex:layout.Entries[i].Binding];
+            [encoder setTexture:GetRasterMetal().Views[set.Slots[i]] atIndex:layout.Entries[i].Binding];
         }
         else
         {
-            [encoder setBuffer:gRasterBuffers[set.Slots[i]]
+            [encoder setBuffer:GetRasterMetal().Buffers[set.Slots[i]]
                         offset:set.Offsets[i] + packet.BindingOffsets.Bytes[layout.Entries[i].Binding]
                        atIndex:layout.Entries[i].Binding];
         }
@@ -694,7 +712,7 @@ RasterStatus ComputeEncode(const internal::ComputePacket& packet) noexcept
             const uint32 binding = layout.Entries[index].Binding;
             if (binding == 0 || binding == 1 || binding == LUDUS_METAL_RAY_ALPHA_TEXTURE_BINDING)
             {
-                [intersectionsOrNull setBuffer:gRasterBuffers[set.Slots[index]]
+                [intersectionsOrNull setBuffer:GetRasterMetal().Buffers[set.Slots[index]]
                                         offset:set.Offsets[index] + packet.BindingOffsets.Bytes[binding]
                                        atIndex:binding];
             }
@@ -707,7 +725,7 @@ RasterStatus ComputeEncode(const internal::ComputePacket& packet) noexcept
     const MTLSize threads = MTLSizeMake(info.WorkgroupSize[0], info.WorkgroupSize[1], info.WorkgroupSize[2]);
     if (packet.Indirect != internal::RASTER_INVALID)
     {
-        [encoder dispatchThreadgroupsWithIndirectBuffer:gRasterBuffers[packet.Indirect]
+        [encoder dispatchThreadgroupsWithIndirectBuffer:GetRasterMetal().Buffers[packet.Indirect]
                                    indirectBufferOffset:packet.IndirectOffset
                                   threadsPerThreadgroup:threads];
     }
@@ -727,11 +745,11 @@ RasterStatus RasterCreateBuffer(usize slot,
 {
     @autoreleasepool
     {
-        gRasterBuffers[slot] = [gDevice newBufferWithBytes:bytes.GetDataOrNull()
-                                                    length:bytes.GetSize()
-                                                   options:MTLResourceStorageModeShared];
+        GetRasterMetal().Buffers[slot] = [GetMetal().Device newBufferWithBytes:bytes.GetDataOrNull()
+                                                                        length:bytes.GetSize()
+                                                                       options:MTLResourceStorageModeShared];
     }
-    return gRasterBuffers[slot] != nil ? RasterStatus::Ready : RasterStatus::OutOfMemory;
+    return GetRasterMetal().Buffers[slot] != nil ? RasterStatus::Ready : RasterStatus::OutOfMemory;
 }
 RasterStatus
 RasterCreateTexture(usize slot, const TextureDescription& info, const TextureUpload& upload, uint32) noexcept
@@ -762,7 +780,7 @@ RasterCreateTexture(usize slot, const TextureDescription& info, const TextureUpl
         descriptor.storageMode = info.Attachment                            ? MTLStorageModePrivate
                                  : internal::CompressedTexture(info.Format) ? MTLStorageModeManaged
                                                                             : MTLStorageModeShared;
-        auto texture = [gDevice newTextureWithDescriptor:descriptor];
+        auto texture = [GetMetal().Device newTextureWithDescriptor:descriptor];
         if (texture == nil)
         {
             return RasterStatus::OutOfMemory;
@@ -819,13 +837,13 @@ RasterCreateTexture(usize slot, const TextureDescription& info, const TextureUpl
             depth.sampleCount = info.SampleCount;
             depth.usage = MTLTextureUsageRenderTarget | MTLTextureUsageShaderRead | MTLTextureUsagePixelFormatView;
             depth.storageMode = MTLStorageModePrivate;
-            gRasterDepths[slot] = [gDevice newTextureWithDescriptor:depth];
-            if (gRasterDepths[slot] == nil)
+            GetRasterMetal().Depths[slot] = [GetMetal().Device newTextureWithDescriptor:depth];
+            if (GetRasterMetal().Depths[slot] == nil)
             {
                 return RasterStatus::OutOfMemory;
             }
         }
-        gRasterTextures[slot] = texture;
+        GetRasterMetal().Textures[slot] = texture;
         return RasterStatus::Ready;
     }
 }
@@ -834,29 +852,29 @@ RasterCreateTexture(usize slot, const TextureDescription& info, const TextureUpl
 // alias views with explicit mip and slice lifetimes. R9 retains the source allocation.
 RasterStatus RasterCreateView(usize slot, const internal::RasterViewSource& source, uint32) noexcept
 {
-    auto texture =
-        source.View.Aspect == TextureAspect::Color ? gRasterTextures[source.Texture] : gRasterDepths[source.Texture];
+    id<MTLTexture> texture = source.View.Aspect == TextureAspect::Color ? GetRasterMetal().Textures[source.Texture]
+                                                                        : GetRasterMetal().Depths[source.Texture];
     const auto format = source.View.Aspect == TextureAspect::Stencil ? MTLPixelFormatX32_Stencil8 : texture.pixelFormat;
     const auto type =
         texture.sampleCount == 4 ? MTLTextureType2DMultisample : RasterMetalTextureType(source.View.Dimension);
-    gRasterViews[slot] =
+    GetRasterMetal().Views[slot] =
         [texture newTextureViewWithPixelFormat:format
                                    textureType:type
                                         levels:NSMakeRange(source.View.BaseMip, source.View.MipCount)
                                         slices:NSMakeRange(source.View.BaseLayer, source.View.LayerCount)];
     if (source.View.Attachment)
     {
-        auto depth = gRasterDepths[source.Texture];
-        gRasterViewDepths[slot] = [depth newTextureViewWithPixelFormat:depth.pixelFormat
-                                                           textureType:type
-                                                                levels:NSMakeRange(source.View.BaseMip, 1)
-                                                                slices:NSMakeRange(source.View.BaseLayer, 1)];
-        if (gRasterViewDepths[slot] == nil)
+        id<MTLTexture> depth = GetRasterMetal().Depths[source.Texture];
+        GetRasterMetal().ViewDepths[slot] = [depth newTextureViewWithPixelFormat:depth.pixelFormat
+                                                                     textureType:type
+                                                                          levels:NSMakeRange(source.View.BaseMip, 1)
+                                                                          slices:NSMakeRange(source.View.BaseLayer, 1)];
+        if (GetRasterMetal().ViewDepths[slot] == nil)
         {
             return RasterStatus::OutOfMemory;
         }
     }
-    return gRasterViews[slot] != nil ? RasterStatus::Ready : RasterStatus::OutOfMemory;
+    return GetRasterMetal().Views[slot] != nil ? RasterStatus::Ready : RasterStatus::OutOfMemory;
 }
 RasterStatus RasterCreateSampler(usize slot, const SamplerDescription& info, uint32) noexcept
 {
@@ -876,8 +894,8 @@ RasterStatus RasterCreateSampler(usize slot, const SamplerDescription& info, uin
             info.V == RasterAddress::Clamp ? MTLSamplerAddressModeClampToEdge : MTLSamplerAddressModeRepeat;
         descriptor.rAddressMode =
             info.W == RasterAddress::Clamp ? MTLSamplerAddressModeClampToEdge : MTLSamplerAddressModeRepeat;
-        gRasterSamplers[slot] = [gDevice newSamplerStateWithDescriptor:descriptor];
-        return gRasterSamplers[slot] != nil ? RasterStatus::Ready : RasterStatus::OutOfMemory;
+        GetRasterMetal().Samplers[slot] = [GetMetal().Device newSamplerStateWithDescriptor:descriptor];
+        return GetRasterMetal().Samplers[slot] != nil ? RasterStatus::Ready : RasterStatus::OutOfMemory;
     }
 }
 RasterStatus RasterCreateShader(usize slot,
@@ -899,7 +917,7 @@ RasterStatus RasterCreateShader(usize slot,
             return internal::StorageFailure();
         }
         task->AllocationBytes += sourceBytes;
-        task->DeviceOrNull = gDevice;
+        task->DeviceOrNull = GetMetal().Device;
         task->SourceOrNull = [[NSString alloc] initWithBytes:artifact.Msl.data()
                                                       length:artifact.Msl.size()
                                                     encoding:NSUTF8StringEncoding];
@@ -918,13 +936,13 @@ RasterStatus RasterCreateShader(usize slot,
 }
 RasterStatus RasterCreateLayout(usize slot, const internal::RasterLayout& info, uint32) noexcept
 {
-    gRasterLayouts[slot] = info;
+    GetRasterMetal().Layouts[slot] = info;
     return RasterStatus::Ready;
 }
 RasterStatus
 RasterCreateSet(usize slot, const internal::RasterLayout&, const internal::RasterSet& info, uint32) noexcept
 {
-    return gRasterSets[slot].TryCopyFrom(info) == true ? RasterStatus::Ready : internal::StorageFailure();
+    return GetRasterMetal().Sets[slot].TryCopyFrom(info) == true ? RasterStatus::Ready : internal::StorageFailure();
 }
 RasterStatus MetalRasterPreparation::Build() noexcept
 {
@@ -936,7 +954,7 @@ RasterStatus MetalRasterPreparation::Build() noexcept
         descriptor.fragmentFunction = Fragment.Function;
         descriptor.colorAttachments[0].pixelFormat =
             info.Target == RasterTarget::Rgba16Float  ? MTLPixelFormatRGBA16Float
-            : info.Target == RasterTarget::Surface    ? gSurfaceFormat
+            : info.Target == RasterTarget::Surface    ? GetMetal().SurfaceFormat
             : info.Target == RasterTarget::Rgba8Unorm ? MTLPixelFormatRGBA8Unorm
                                                       : MTLPixelFormatRGBA8Unorm_sRGB;
         descriptor.rasterSampleCount = info.SampleCount;
@@ -1060,9 +1078,9 @@ RasterStatus RasterCreatePipeline(usize slot, const internal::RasterPipelineInfo
     }
     task->IsPipelinePreparation = true;
     task->Kind = internal::RasterKind::Pipeline;
-    task->DeviceOrNull = gDevice;
-    task->Vertex = gRasterShaders[info.Vertex];
-    task->Fragment = gRasterShaders[info.Fragment];
+    task->DeviceOrNull = GetMetal().Device;
+    task->Vertex = GetRasterMetal().Shaders[info.Vertex];
+    task->Fragment = GetRasterMetal().Shaders[info.Fragment];
     task->Info = info;
     task->ResourceSlot = slot;
     task->Request = request;
@@ -1078,12 +1096,12 @@ void RasterSetDebugName(internal::RasterKind kind, usize slot, const char* name)
         NSString* labelOrNull = name[0] == '\0' ? nil : [NSString stringWithUTF8String:name];
         if (kind == internal::RasterKind::Buffer)
         {
-            gRasterBuffers[slot].label = labelOrNull;
+            GetRasterMetal().Buffers[slot].label = labelOrNull;
         }
         else if (kind == internal::RasterKind::Texture)
         {
-            gRasterTextures[slot].label = labelOrNull;
-            gRasterDepths[slot].label = labelOrNull;
+            GetRasterMetal().Textures[slot].label = labelOrNull;
+            GetRasterMetal().Depths[slot].label = labelOrNull;
         }
     }
 }
@@ -1092,34 +1110,34 @@ void RasterDestroy(internal::RasterKind kind, usize slot) noexcept
     switch (kind)
     {
         case internal::RasterKind::Buffer:
-            gRasterBuffers[slot] = nil;
+            GetRasterMetal().Buffers[slot] = nil;
             break;
         case internal::RasterKind::Texture:
-            gRasterTextures[slot] = nil;
-            gRasterDepths[slot] = nil;
+            GetRasterMetal().Textures[slot] = nil;
+            GetRasterMetal().Depths[slot] = nil;
             break;
         case internal::RasterKind::View:
-            gRasterViews[slot] = nil;
-            gRasterViewDepths[slot] = nil;
+            GetRasterMetal().Views[slot] = nil;
+            GetRasterMetal().ViewDepths[slot] = nil;
             break;
         case internal::RasterKind::Sampler:
-            gRasterSamplers[slot] = nil;
+            GetRasterMetal().Samplers[slot] = nil;
             break;
         case internal::RasterKind::Shader:
-            gRasterShaders[slot] = {};
+            GetRasterMetal().Shaders[slot] = {};
             break;
         case internal::RasterKind::Layout:
-            gRasterLayouts[slot] = {};
+            GetRasterMetal().Layouts[slot] = {};
             break;
         case internal::RasterKind::Set:
-            gRasterSets[slot] = {};
+            GetRasterMetal().Sets[slot] = {};
             break;
         case internal::RasterKind::Pipeline:
-            gRasterPipelines[slot] = {};
+            GetRasterMetal().Pipelines[slot] = {};
             break;
         case internal::RasterKind::ComputePipeline:
-            gComputePipelines[slot] = {};
-            gComputeInfos[slot] = {};
+            GetRasterMetal().ComputePipelines[slot] = {};
+            GetRasterMetal().ComputeInfos[slot] = {};
             break;
         case internal::RasterKind::SpatialUpscaler:
             SpatialUpscaleDestroy(slot);
@@ -1136,13 +1154,13 @@ void RasterDestroy(internal::RasterKind kind, usize slot) noexcept
 }
 RasterStatus RasterDraw(const internal::RasterPacket& packet) noexcept
 {
-    const auto& pipeline = gRasterPipelines[packet.Pipeline];
-    const auto& set = gRasterSets[packet.Set];
+    const RasterMetalPipeline& pipeline = GetRasterMetal().Pipelines[packet.Pipeline];
+    const internal::RasterSet& set = GetRasterMetal().Sets[packet.Set];
     const internal::RasterLayout& layout = set.Description;
-    [gEncoder setRenderPipelineState:pipeline.Object];
-    [gEncoder setDepthStencilState:pipeline.Depth];
-    [gEncoder setStencilReferenceValue:pipeline.Info.StencilReference];
-    [gEncoder setFrontFacingWinding:MTLWindingCounterClockwise];
+    [GetMetal().Encoder setRenderPipelineState:pipeline.Object];
+    [GetMetal().Encoder setDepthStencilState:pipeline.Depth];
+    [GetMetal().Encoder setStencilReferenceValue:pipeline.Info.StencilReference];
+    [GetMetal().Encoder setFrontFacingWinding:MTLWindingCounterClockwise];
     for (usize i = 0; i < layout.DescriptorCount; ++i)
     {
         const RasterBinding& entry = layout.GetDescriptorBinding(i);
@@ -1154,54 +1172,55 @@ RasterStatus RasterDraw(const internal::RasterPacket& packet) noexcept
         {
             if (vertex)
             {
-                [gEncoder setVertexBuffer:gRasterBuffers[set.Slots[i]]
-                                   offset:set.Offsets[i] + packet.BindingOffsets.Bytes[entry.Binding]
-                                  atIndex:textureIndex];
+                [GetMetal().Encoder setVertexBuffer:GetRasterMetal().Buffers[set.Slots[i]]
+                                             offset:set.Offsets[i] + packet.BindingOffsets.Bytes[entry.Binding]
+                                            atIndex:textureIndex];
             }
             if (fragment)
             {
-                [gEncoder setFragmentBuffer:gRasterBuffers[set.Slots[i]]
-                                     offset:set.Offsets[i] + packet.BindingOffsets.Bytes[entry.Binding]
-                                    atIndex:textureIndex];
+                [GetMetal().Encoder setFragmentBuffer:GetRasterMetal().Buffers[set.Slots[i]]
+                                               offset:set.Offsets[i] + packet.BindingOffsets.Bytes[entry.Binding]
+                                              atIndex:textureIndex];
             }
         }
         else if (internal::ViewBinding(entry.Kind))
         {
             if (vertex)
             {
-                [gEncoder setVertexTexture:gRasterViews[set.Slots[i]] atIndex:textureIndex];
+                [GetMetal().Encoder setVertexTexture:GetRasterMetal().Views[set.Slots[i]] atIndex:textureIndex];
             }
             if (fragment)
             {
-                [gEncoder setFragmentTexture:gRasterViews[set.Slots[i]] atIndex:textureIndex];
+                [GetMetal().Encoder setFragmentTexture:GetRasterMetal().Views[set.Slots[i]] atIndex:textureIndex];
             }
         }
         else
         {
             if (vertex)
             {
-                [gEncoder setVertexSamplerState:gRasterSamplers[set.Slots[i]] atIndex:textureIndex];
+                [GetMetal().Encoder setVertexSamplerState:GetRasterMetal().Samplers[set.Slots[i]] atIndex:textureIndex];
             }
             if (fragment)
             {
-                [gEncoder setFragmentSamplerState:gRasterSamplers[set.Slots[i]] atIndex:textureIndex];
+                [GetMetal().Encoder setFragmentSamplerState:GetRasterMetal().Samplers[set.Slots[i]]
+                                                    atIndex:textureIndex];
             }
         }
     }
     for (usize i = 0; i < pipeline.Info.StreamCount; ++i)
     {
-        [gEncoder setVertexBuffer:gRasterBuffers[packet.Vertices[i]]
-                           offset:packet.Offsets[i]
-                          atIndex:internal::RASTER_BINDINGS + i];
+        [GetMetal().Encoder setVertexBuffer:GetRasterMetal().Buffers[packet.Vertices[i]]
+                                     offset:packet.Offsets[i]
+                                    atIndex:internal::RASTER_BINDINGS + i];
     }
-    [gEncoder setCullMode:MTLCullModeNone];
+    [GetMetal().Encoder setCullMode:MTLCullModeNone];
     // Encoder state outlives the draw, so every packet states its own fill mode.
-    [gEncoder setTriangleFillMode:pipeline.Info.FillMode == RasterFillMode::Lines ? MTLTriangleFillModeLines
-                                                                                  : MTLTriangleFillModeFill];
+    [GetMetal().Encoder setTriangleFillMode:pipeline.Info.FillMode == RasterFillMode::Lines ? MTLTriangleFillModeLines
+                                                                                            : MTLTriangleFillModeFill];
     internal::RasterArea area;
-    const auto width = gRasterWidth == 0 ? gFrame.Width : gRasterWidth;
-    const auto height = gRasterHeight == 0 ? gFrame.Height : gRasterHeight;
-    if (internal::RasterResolveArea(gRasterRegion, width, height, area) == false)
+    const uint32 width = GetRasterMetal().Width == 0 ? GetMetal().Frame.Width : GetRasterMetal().Width;
+    const uint32 height = GetRasterMetal().Height == 0 ? GetMetal().Frame.Height : GetRasterMetal().Height;
+    if (internal::RasterResolveArea(GetRasterMetal().Region, width, height, area) == false)
     {
         return RasterStatus::InvalidDescription;
     }
@@ -1211,13 +1230,13 @@ RasterStatus RasterDraw(const internal::RasterPacket& packet) noexcept
     }
     const auto& v = area.Viewport;
     const auto& c = area.Scissor;
-    [gEncoder setViewport:MTLViewport{static_cast<float64>(v.X),
-                                      static_cast<float64>(v.Y),
-                                      static_cast<float64>(v.Width),
-                                      static_cast<float64>(v.Height),
-                                      0,
-                                      1}];
-    [gEncoder setScissorRect:MTLScissorRect{c.X, c.Y, c.Width, c.Height}];
+    [GetMetal().Encoder setViewport:MTLViewport{static_cast<float64>(v.X),
+                                                static_cast<float64>(v.Y),
+                                                static_cast<float64>(v.Width),
+                                                static_cast<float64>(v.Height),
+                                                0,
+                                                1}];
+    [GetMetal().Encoder setScissorRect:MTLScissorRect{c.X, c.Y, c.Width, c.Height}];
     if (packet.Indirect != internal::RASTER_INVALID)
     {
         // R12a: ordered single commands; native multi-draw is outside this profile.
@@ -1226,44 +1245,44 @@ RasterStatus RasterDraw(const internal::RasterPacket& packet) noexcept
             const usize offset = packet.IndirectOffset + usize{command} * packet.IndirectStride;
             if (packet.Indices == internal::RASTER_INVALID)
             {
-                [gEncoder drawPrimitives:MTLPrimitiveTypeTriangle
-                          indirectBuffer:gRasterBuffers[packet.Indirect]
-                    indirectBufferOffset:offset];
+                [GetMetal().Encoder drawPrimitives:MTLPrimitiveTypeTriangle
+                                    indirectBuffer:GetRasterMetal().Buffers[packet.Indirect]
+                              indirectBufferOffset:offset];
             }
             else
             {
-                [gEncoder drawIndexedPrimitives:MTLPrimitiveTypeTriangle
-                                      indexType:packet.Index32 ? MTLIndexTypeUInt32 : MTLIndexTypeUInt16
-                                    indexBuffer:gRasterBuffers[packet.Indices]
-                              indexBufferOffset:packet.IndexOffset
-                                 indirectBuffer:gRasterBuffers[packet.Indirect]
-                           indirectBufferOffset:offset];
+                [GetMetal().Encoder drawIndexedPrimitives:MTLPrimitiveTypeTriangle
+                                                indexType:packet.Index32 ? MTLIndexTypeUInt32 : MTLIndexTypeUInt16
+                                              indexBuffer:GetRasterMetal().Buffers[packet.Indices]
+                                        indexBufferOffset:packet.IndexOffset
+                                           indirectBuffer:GetRasterMetal().Buffers[packet.Indirect]
+                                     indirectBufferOffset:offset];
             }
         }
     }
     else
     {
-        [gEncoder drawIndexedPrimitives:MTLPrimitiveTypeTriangle
-                             indexCount:packet.IndexCount
-                              indexType:packet.Index32 ? MTLIndexTypeUInt32 : MTLIndexTypeUInt16
-                            indexBuffer:gRasterBuffers[packet.Indices]
-                      indexBufferOffset:packet.IndexOffset
-                          instanceCount:packet.InstanceCount];
+        [GetMetal().Encoder drawIndexedPrimitives:MTLPrimitiveTypeTriangle
+                                       indexCount:packet.IndexCount
+                                        indexType:packet.Index32 ? MTLIndexTypeUInt32 : MTLIndexTypeUInt16
+                                      indexBuffer:GetRasterMetal().Buffers[packet.Indices]
+                                indexBufferOffset:packet.IndexOffset
+                                    instanceCount:packet.InstanceCount];
     }
     return RasterStatus::Ready;
 }
 void RasterFrameExtent() noexcept
 {
-    gRasterWidth = gRasterHeight = 0;
-    gRasterRegion = {};
+    GetRasterMetal().Width = GetRasterMetal().Height = 0;
+    GetRasterMetal().Region = {};
 }
 void RasterEndPass() noexcept
 {
-    if (gEncoder != nil)
+    if (GetMetal().Encoder != nil)
     {
         ClosePassLabels();
-        [gEncoder endEncoding];
-        gEncoder = nil;
+        [GetMetal().Encoder endEncoding];
+        GetMetal().Encoder = nil;
     }
 }
 RasterStatus RasterPreparePass(const internal::RasterPassInfo&) noexcept
@@ -1277,10 +1296,10 @@ RasterStatus RasterBeginPass(const internal::RasterPassInfo& info) noexcept
     {
         const auto& state = info.Description;
         const bool surface = info.Texture == internal::RASTER_INVALID;
-        id<MTLTexture> color = surface ? gSurfaceTexture : gRasterTextures[info.Texture];
-        auto depth = surface                ? gDepth
-                     : info.ColorCount == 0 ? gRasterDepths[info.Texture]
-                                            : gRasterViewDepths[info.Colors[0].View];
+        id<MTLTexture> color = surface ? GetMetal().SurfaceTexture : GetRasterMetal().Textures[info.Texture];
+        id<MTLTexture> depth = surface                ? GetMetal().Depth
+                               : info.ColorCount == 0 ? GetRasterMetal().Depths[info.Texture]
+                                                      : GetRasterMetal().ViewDepths[info.Colors[0].View];
         auto pass = [MTLRenderPassDescriptor renderPassDescriptor];
         auto attachment = pass.colorAttachments[0];
         attachment.texture = color;
@@ -1298,7 +1317,7 @@ RasterStatus RasterBeginPass(const internal::RasterPassInfo& info) noexcept
             {
                 const auto& c = info.Colors[i];
                 auto target = pass.colorAttachments[i];
-                target.texture = gRasterViews[c.View];
+                target.texture = GetRasterMetal().Views[c.View];
                 target.loadAction = c.Load == RasterLoad::Clear  ? MTLLoadActionClear
                                     : c.Load == RasterLoad::Load ? MTLLoadActionLoad
                                                                  : MTLLoadActionDontCare;
@@ -1309,7 +1328,7 @@ RasterStatus RasterBeginPass(const internal::RasterPassInfo& info) noexcept
                                                       static_cast<float64>(c.Clear[3]));
                 if (c.ResolveView != internal::RASTER_INVALID)
                 {
-                    target.resolveTexture = gRasterViews[c.ResolveView];
+                    target.resolveTexture = GetRasterMetal().Views[c.ResolveView];
                     target.storeAction = c.Store == RasterStore::Store ? MTLStoreActionStoreAndMultisampleResolve
                                                                        : MTLStoreActionMultisampleResolve;
                 }
@@ -1333,12 +1352,12 @@ RasterStatus RasterBeginPass(const internal::RasterPassInfo& info) noexcept
             pass.stencilAttachment.clearStencil = state.ClearStencil;
         }
         ConfigurePassTiming(pass);
-        gEncoder = [gCommand renderCommandEncoderWithDescriptor:pass];
-        gEncoder.label = gPassLabelOrNull;
-        gRasterRegion = state;
-        gRasterWidth = surface ? static_cast<uint32>(color.width) : info.Width;
-        gRasterHeight = surface ? static_cast<uint32>(color.height) : info.Height;
-        return gEncoder != nil ? RasterStatus::Ready : RasterStatus::Failed;
+        GetMetal().Encoder = [GetMetal().Command renderCommandEncoderWithDescriptor:pass];
+        GetMetal().Encoder.label = GetGpuScopeMetal().PassLabelOrNull;
+        GetRasterMetal().Region = state;
+        GetRasterMetal().Width = surface ? static_cast<uint32>(color.width) : info.Width;
+        GetRasterMetal().Height = surface ? static_cast<uint32>(color.height) : info.Height;
+        return GetMetal().Encoder != nil ? RasterStatus::Ready : RasterStatus::Failed;
     }
 }
 RasterStatus RasterReserveSubmission() noexcept
@@ -1347,52 +1366,52 @@ RasterStatus RasterReserveSubmission() noexcept
 }
 void RasterSubmit(uint64 ordinal) noexcept
 {
-    gRasterOrdinals[(gSlot + FRAMES - 1) % FRAMES] = ordinal;
+    GetRasterMetal().Ordinals[(GetMetal().Slot + FRAMES - 1) % FRAMES] = ordinal;
 }
 uint64 RasterCompleted() noexcept
 {
     PollNativePreparation();
     for (usize i = 0; i < FRAMES; ++i)
     {
-        for (usize prefix = 0; prefix < gCommandPrefixes[i].Count; ++prefix)
+        for (usize prefix = 0; prefix < GetMetal().CommandPrefixes[i].Count; ++prefix)
         {
-            if (CheckCommand(gCommandPrefixes[i].CommandsOrNull[prefix]) == false)
+            if (CheckCommand(GetMetal().CommandPrefixes[i].CommandsOrNull[prefix]) == false)
             {
-                return gRasterCompleted;
+                return GetRasterMetal().Completed;
             }
         }
-        if (gSubmitted[i] != nil && CheckCommand(gSubmitted[i]) == false)
+        if (GetMetal().Submitted[i] != nil && CheckCommand(GetMetal().Submitted[i]) == false)
         {
-            return gRasterCompleted;
+            return GetRasterMetal().Completed;
         }
-        if (gSubmitted[i] != nil && gSubmitted[i].status == MTLCommandBufferStatusCompleted &&
-            gRasterOrdinals[i] > gRasterCompleted)
+        if (GetMetal().Submitted[i] != nil && GetMetal().Submitted[i].status == MTLCommandBufferStatusCompleted &&
+            GetRasterMetal().Ordinals[i] > GetRasterMetal().Completed)
         {
-            gRasterCompleted = gRasterOrdinals[i];
+            GetRasterMetal().Completed = GetRasterMetal().Ordinals[i];
         }
     }
-    return gRasterCompleted;
+    return GetRasterMetal().Completed;
 }
 void RasterReset() noexcept
 {
     // Foreign work may already be queued when a later graph encoder fails.
     // Submit the trailing RHI buffer before waiting/releasing any retained context.
-    if (hasNativeComputeSplit == true && gCommand != nil)
+    if (GetMetal().HasNativeComputeSplit == true && GetMetal().Command != nil)
     {
         ClosePassLabels();
-        [gEncoder endEncoding];
-        gEncoder = nil;
+        [GetMetal().Encoder endEncoding];
+        GetMetal().Encoder = nil;
         PopScopeGroups();
-        [gCommand commit];
-        gSubmitted[gSlot] = gCommand;
-        gCommand = nil;
+        [GetMetal().Command commit];
+        GetMetal().Submitted[GetMetal().Slot] = GetMetal().Command;
+        GetMetal().Command = nil;
     }
     // Failed producers may never execute their GPU signal. Unblock joins during
     // fault cleanup, then wait every private completion before releasing storage.
-    const StartupState startup = GetStartup().State;
+    const StartupState startup = internal::GetStartup().State;
     if (startup == StartupState::Failed || startup == StartupState::DeviceLost)
     {
-        for (MetalComputePipeline& pipeline : gComputePipelines)
+        for (MetalComputePipeline& pipeline : GetRasterMetal().ComputePipelines)
         {
             if (pipeline.NativeEventOrNull != nil)
             {
@@ -1401,16 +1420,16 @@ void RasterReset() noexcept
         }
     }
     DrainNativePreparation();
-    for (auto command : gSubmitted)
+    for (id<MTLCommandBuffer> command : GetMetal().Submitted)
     {
         [command waitUntilCompleted];
     }
-    for (auto& ordinal : gRasterOrdinals)
+    for (uint64& ordinal : GetRasterMetal().Ordinals)
     {
         ordinal = 0;
     }
-    gRasterCompleted = 0;
-    for (MetalCommandPrefixes& prefixes : gCommandPrefixes)
+    GetRasterMetal().Completed = 0;
+    for (MetalCommandPrefixes& prefixes : GetMetal().CommandPrefixes)
     {
         for (usize index = 0; index < prefixes.Count; ++index)
         {
@@ -1426,25 +1445,28 @@ RasterStatus RasterGrow(internal::RasterKind kind, usize count) noexcept
     switch (kind)
     {
         case internal::RasterKind::Buffer:
-            return gRasterBuffers.EnsureSlots(count) ? RasterStatus::Ready : internal::StorageFailure();
+            return GetRasterMetal().Buffers.EnsureSlots(count) ? RasterStatus::Ready : internal::StorageFailure();
         case internal::RasterKind::Texture:
-            return gRasterTextures.EnsureSlots(count) && gRasterDepths.EnsureSlots(count) ? RasterStatus::Ready
-                                                                                          : internal::StorageFailure();
+            return GetRasterMetal().Textures.EnsureSlots(count) && GetRasterMetal().Depths.EnsureSlots(count)
+                       ? RasterStatus::Ready
+                       : internal::StorageFailure();
         case internal::RasterKind::View:
-            return gRasterViews.EnsureSlots(count) && gRasterViewDepths.EnsureSlots(count) ? RasterStatus::Ready
-                                                                                           : internal::StorageFailure();
+            return GetRasterMetal().Views.EnsureSlots(count) && GetRasterMetal().ViewDepths.EnsureSlots(count)
+                       ? RasterStatus::Ready
+                       : internal::StorageFailure();
         case internal::RasterKind::Sampler:
-            return gRasterSamplers.EnsureSlots(count) ? RasterStatus::Ready : internal::StorageFailure();
+            return GetRasterMetal().Samplers.EnsureSlots(count) ? RasterStatus::Ready : internal::StorageFailure();
         case internal::RasterKind::Shader:
-            return gRasterShaders.EnsureSlots(count) ? RasterStatus::Ready : internal::StorageFailure();
+            return GetRasterMetal().Shaders.EnsureSlots(count) ? RasterStatus::Ready : internal::StorageFailure();
         case internal::RasterKind::Layout:
-            return gRasterLayouts.EnsureSlots(count) ? RasterStatus::Ready : internal::StorageFailure();
+            return GetRasterMetal().Layouts.EnsureSlots(count) ? RasterStatus::Ready : internal::StorageFailure();
         case internal::RasterKind::Set:
-            return gRasterSets.EnsureSlots(count) ? RasterStatus::Ready : internal::StorageFailure();
+            return GetRasterMetal().Sets.EnsureSlots(count) ? RasterStatus::Ready : internal::StorageFailure();
         case internal::RasterKind::Pipeline:
-            return gRasterPipelines.EnsureSlots(count) ? RasterStatus::Ready : internal::StorageFailure();
+            return GetRasterMetal().Pipelines.EnsureSlots(count) ? RasterStatus::Ready : internal::StorageFailure();
         case internal::RasterKind::ComputePipeline:
-            return gComputePipelines.EnsureSlots(count) && gComputeInfos.EnsureSlots(count)
+            return GetRasterMetal().ComputePipelines.EnsureSlots(count) &&
+                           GetRasterMetal().ComputeInfos.EnsureSlots(count)
                        ? RasterStatus::Ready
                        : internal::StorageFailure();
         default:

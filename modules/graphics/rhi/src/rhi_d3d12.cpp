@@ -8,6 +8,7 @@
 #include "internal/lifecycle.h"
 #include "internal/measurement.h"
 #include "internal/native_interop.h"
+#include "internal/owner.h"
 #include "internal/resources.h"
 #include "internal/surface.h"
 #if defined(LUDUS_RHI_TEST_READBACK)
@@ -1343,6 +1344,11 @@ void Shutdown() noexcept
     gSurfaces[0].RenderedFrames = 0;
     gSurfaces[0].PresentedFrames = 0;
     gToken = 0;
+}
+// R14c: this backend keeps one process session, so the facade admits a single device owner.
+usize GetDeviceOwnerLimit() noexcept
+{
+    return 1;
 }
 usize AdditionalSurfaceLimit() noexcept
 {

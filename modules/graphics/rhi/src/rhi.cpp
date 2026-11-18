@@ -5,6 +5,7 @@
 #include "internal/lifecycle.h"
 #include "internal/measurement.h"
 #include "internal/native_interop.h"
+#include "internal/owner.h"
 #include "internal/profile.h"
 #include "internal/raster.h"
 #include "internal/resources.h"
@@ -23,18 +24,6 @@ namespace ludus::graphics::rhi
 namespace
 {
 using ludus::foundation::uint32;
-StartupInfo gStartup;
-uint32 gToken = 0;
-uint32 gNextToken = 1;
-ludus::foundation::uint64 gDeviceOwner = 0;
-bool gLegacy = false;
-bool gRendering = false;
-bool gFrame = false;
-bool gRayProfileRequest = false;
-bool gDrawn = false;
-bool gRasterDrawn = false;
-bool gRequireRaster = false;
-bool gRequireCompute = false;
 // Frame state of each surface slot (R14b). The last accepted target keeps a capture from
 // starting for a frame that cannot open.
 struct SurfaceFrames final
@@ -43,61 +32,127 @@ struct SurfaceFrames final
     bool IsTargetOffscreen = false;
     ludus::foundation::uint64 SubmittedFrames = 0;
 };
-ludus::foundation::StaticArray<SurfaceFrames, MAX_DEVICE_SURFACES> gSurfaceFrames{};
-/// Slot of the open frame's surface; meaningful only while gFrame.
-ludus::foundation::usize gFrameSurface = 0;
-DeviceProfileRequirements gRequiredProfile;
-DeviceProfile gProfile;
-internal::FallbackHandler gFallback = nullptr;
+/// Startup, frame and admission state of one owner slot (R14c).
+struct SessionState final
+{
+    StartupInfo Startup;
+    /// Callback token of the current startup attempt; zero when none is live.
+    uint32 Token = 0;
+    ludus::foundation::uint64 DeviceOwner = 0;
+    bool IsLegacy = false;
+    bool IsRendering = false;
+    bool IsFrameOpen = false;
+    bool IsRayProfileRequested = false;
+    bool IsDrawn = false;
+    bool IsRasterDrawn = false;
+    bool IsRasterRequired = false;
+    bool IsComputeRequired = false;
+    ludus::foundation::StaticArray<SurfaceFrames, MAX_DEVICE_SURFACES> SurfaceFrames{};
+    /// Slot of the open frame's surface; meaningful only while IsFrameOpen.
+    ludus::foundation::usize FrameSurface = 0;
+    DeviceProfileRequirements RequiredProfile;
+    DeviceProfile Profile;
+    internal::FallbackHandler Fallback = nullptr;
+};
+ludus::foundation::StaticArray<SessionState, MAX_DEVICE_OWNERS> gSessions{};
+/// Callback tokens are process-wide, so a token names exactly one owner's attempt.
+uint32 gNextToken = 1;
+/// The session state of the bound owner slot.
+SessionState& GetSession() noexcept
+{
+    return gSessions[internal::GetBoundOwnerSlot()];
+}
 } // namespace
 namespace internal
 {
 DeviceProfile CurrentDeviceProfile() noexcept
 {
-    return gStartup.State == StartupState::Ready ? gProfile : DeviceProfile{};
+    return GetSession().Startup.State == StartupState::Ready ? GetSession().Profile : DeviceProfile{};
 }
 bool RequestsRayProfile() noexcept
 {
-    return gRayProfileRequest;
+    return GetSession().IsRayProfileRequested;
 }
 void SetRayProfileRequest(bool value) noexcept
 {
-    gRayProfileRequest = value;
+    GetSession().IsRayProfileRequested = value;
 }
 bool FrameOpen() noexcept
 {
-    return gFrame;
+    return GetSession().IsFrameOpen;
 }
 bool ClaimRasterFrame() noexcept
 {
-    if (gFrame == false || gDrawn)
+    if (GetSession().IsFrameOpen == false || GetSession().IsDrawn)
     {
         return false;
     }
-    gRasterDrawn = true;
+    GetSession().IsRasterDrawn = true;
     return true;
 }
 
 ludus::foundation::uint64 DeviceOwner() noexcept
 {
-    return gDeviceOwner;
+    return GetSession().DeviceOwner;
 }
 void SetDeviceOwner(ludus::foundation::uint64 owner) noexcept
 {
-    gDeviceOwner = owner;
+    GetSession().DeviceOwner = owner;
 }
 bool SessionBusy() noexcept
 {
-    return gLegacy || gStartup.State != StartupState::Idle || NativeInteropBusy();
+    return GetSession().IsLegacy || GetSession().Startup.State != StartupState::Idle || NativeInteropBusy();
 }
 void SetFallback(FallbackHandler handler) noexcept
 {
-    gFallback = handler;
+    GetSession().Fallback = handler;
+}
+ludus::foundation::usize FindOwnerSlot(ludus::foundation::uint64 owner) noexcept
+{
+    for (ludus::foundation::usize slot = 0; owner != 0 && slot < MAX_DEVICE_OWNERS; ++slot)
+    {
+        if (gSessions[slot].DeviceOwner == owner)
+        {
+            return slot;
+        }
+    }
+    return MAX_DEVICE_OWNERS;
+}
+ludus::foundation::usize FindTokenSlot(uint32 token) noexcept
+{
+    for (ludus::foundation::usize slot = 0; token != 0 && slot < MAX_DEVICE_OWNERS; ++slot)
+    {
+        const SessionState& session = gSessions[slot];
+        if (session.Token == token &&
+            (session.Startup.State == StartupState::Pending || session.Startup.State == StartupState::Ready))
+        {
+            return slot;
+        }
+    }
+    return MAX_DEVICE_OWNERS;
+}
+bool IsAnySessionBusy() noexcept
+{
+    const ludus::foundation::usize bound = GetBoundOwnerSlot();
+    bool isBusy = false;
+    for (ludus::foundation::usize slot = 0; slot < MAX_DEVICE_OWNERS; ++slot)
+    {
+        BindOwnerSlot(slot);
+        isBusy = isBusy == true || SessionBusy() == true;
+    }
+    BindOwnerSlot(bound);
+    return isBusy;
 }
 bool Current(uint32 token) noexcept
 {
-    return token != 0 && token == gToken &&
-           (gStartup.State == StartupState::Pending || gStartup.State == StartupState::Ready);
+    // A callback token names one owner's attempt; bind it so the caller updates that owner.
+    const ludus::foundation::usize slot = FindTokenSlot(token);
+    if (slot == MAX_DEVICE_OWNERS)
+    {
+        return false;
+    }
+    BindOwnerSlot(slot);
+    return true;
 }
 void Fail(uint32 token, StartupError error) noexcept
 {
@@ -108,25 +163,26 @@ void Fail(uint32 token, StartupError error) noexcept
     // Browser Auto may convert a Pending-attempt failure into another backend
     // attempt. The handler tears down the failed sub-backend and restarts under
     // the same session token; the session stays Pending and is not finalized.
-    if (gFallback != nullptr && gStartup.State == StartupState::Pending && gFallback(token, error))
+    if (GetSession().Fallback != nullptr && GetSession().Startup.State == StartupState::Pending &&
+        GetSession().Fallback(token, error))
     {
         return;
     }
-    RecordAttempt(token, gStartup.SelectedBackend, error);
+    RecordAttempt(token, GetSession().Startup.SelectedBackend, error);
     // Abandon a capture with the adapter's cleanup while its borrowed native objects live.
     EndGraphicsCaptureSession(error == StartupError::DeviceLost ? GraphicsCaptureError::DeviceLost
                                                                 : GraphicsCaptureError::SessionEnded);
-    gToken = 0;
-    gStartup.State = error == StartupError::DeviceLost ? StartupState::DeviceLost : StartupState::Failed;
-    gStartup.Error = error;
-    gStartup.Capabilities = {};
-    gProfile = {};
+    GetSession().Token = 0;
+    GetSession().Startup.State = error == StartupError::DeviceLost ? StartupState::DeviceLost : StartupState::Failed;
+    GetSession().Startup.Error = error;
+    GetSession().Startup.Capabilities = {};
+    GetSession().Profile = {};
     if (error != StartupError::RequirementsUnsatisfied)
     {
-        gStartup.UnmetRequirement = RequirementFailure::None;
-        gStartup.ProfileFailure = {};
+        GetSession().Startup.UnmetRequirement = RequirementFailure::None;
+        GetSession().Startup.ProfileFailure = {};
     }
-    gFrame = false;
+    GetSession().IsFrameOpen = false;
     if (DeferNativeInteropShutdown())
     {
         backend::NativeInteropDetachSurface();
@@ -138,11 +194,11 @@ void Fail(uint32 token, StartupError error) noexcept
 }
 void FaultRasterSession() noexcept
 {
-    Fail(gToken, StartupError::RenderingUnavailable);
+    Fail(GetSession().Token, StartupError::RenderingUnavailable);
 }
 void Complete(uint32 token, StartupError error, const BackendLimits& limits) noexcept
 {
-    if (Current(token) == false || gStartup.State != StartupState::Pending)
+    if (Current(token) == false || GetSession().Startup.State != StartupState::Pending)
     {
         return;
     }
@@ -163,40 +219,41 @@ void Complete(uint32 token, StartupError error, const BackendLimits& limits) noe
         Fail(token, StartupError::DeviceUnavailable);
         return;
     }
-    gStartup.UnmetRequirement =
-        gStartup.Requirements.MinFrameDimension2D > maxTextureDimension ? RequirementFailure::FrameDimension2D
-        : gStartup.Requirements.MinUniformBufferSize > uniformSize      ? RequirementFailure::UniformBufferSize
-                                                                        : RequirementFailure::None;
-    if (gStartup.UnmetRequirement != RequirementFailure::None)
+    GetSession().Startup.UnmetRequirement = GetSession().Startup.Requirements.MinFrameDimension2D > maxTextureDimension
+                                                ? RequirementFailure::FrameDimension2D
+                                            : GetSession().Startup.Requirements.MinUniformBufferSize > uniformSize
+                                                ? RequirementFailure::UniformBufferSize
+                                                : RequirementFailure::None;
+    if (GetSession().Startup.UnmetRequirement != RequirementFailure::None)
     {
         Fail(token, StartupError::RequirementsUnsatisfied);
         return;
     }
     const auto profile = QueryDeviceProfile();
-    gStartup.ProfileFailure = CheckProfile(gRequiredProfile, profile);
-    if (gStartup.ProfileFailure.Requirement != ProfileRequirement::None)
+    GetSession().Startup.ProfileFailure = CheckProfile(GetSession().RequiredProfile, profile);
+    if (GetSession().Startup.ProfileFailure.Requirement != ProfileRequirement::None)
     {
-        gStartup.UnmetRequirement = RequirementFailure::Profile;
+        GetSession().Startup.UnmetRequirement = RequirementFailure::Profile;
         Fail(token, StartupError::RequirementsUnsatisfied);
         return;
     }
-    if (gRequireRaster == true &&
+    if (GetSession().IsRasterRequired == true &&
         (profile.Raster.MaxUniformRange < PORTABLE_UNIFORM_BYTES || profile.Raster.DrawsPerFrame == 0))
     {
-        gStartup.UnmetRequirement = RequirementFailure::PortableRaster;
+        GetSession().Startup.UnmetRequirement = RequirementFailure::PortableRaster;
         Fail(token, StartupError::RequirementsUnsatisfied);
         return;
     }
-    if (gRequireCompute && backend::ComputeLimits().MaxStorageRange == 0)
+    if (GetSession().IsComputeRequired && backend::ComputeLimits().MaxStorageRange == 0)
     {
-        gStartup.UnmetRequirement = RequirementFailure::Compute;
+        GetSession().Startup.UnmetRequirement = RequirementFailure::Compute;
         Fail(token, StartupError::RequirementsUnsatisfied);
         return;
     }
-    gProfile = profile;
-    RecordAttempt(token, gStartup.SelectedBackend, StartupError::None);
-    gStartup.MaxTextureDimension2D = maxTextureDimension;
-    gStartup.Capabilities =
+    GetSession().Profile = profile;
+    RecordAttempt(token, GetSession().Startup.SelectedBackend, StartupError::None);
+    GetSession().Startup.MaxTextureDimension2D = maxTextureDimension;
+    GetSession().Startup.Capabilities =
     {
         .MaxFrameDimension2D = maxTextureDimension,
         .MaxUniformBufferSize = uniformSize,
@@ -206,7 +263,7 @@ void Complete(uint32 token, StartupError error, const BackendLimits& limits) noe
         .MaxPipelines = static_cast<uint32>(RESOURCE_CAPACITY),
         .MaxDrawsPerFrame = 1,
     };
-    gStartup.State = StartupState::Ready;
+    GetSession().Startup.State = StartupState::Ready;
 }
 void SelectBackend(uint32 token, Backend backend) noexcept
 {
@@ -214,13 +271,13 @@ void SelectBackend(uint32 token, Backend backend) noexcept
     {
         return;
     }
-    gStartup.SelectedBackend = backend;
-    gStartup.ProfileFailure = {};
-    gStartup.UnmetRequirement = RequirementFailure::None;
+    GetSession().Startup.SelectedBackend = backend;
+    GetSession().Startup.ProfileFailure = {};
+    GetSession().Startup.UnmetRequirement = RequirementFailure::None;
 }
 uint32 Reissue(uint32 token) noexcept
 {
-    if (Current(token) == false || gStartup.State != StartupState::Pending)
+    if (Current(token) == false || GetSession().Startup.State != StartupState::Pending)
     {
         return 0;
     }
@@ -228,8 +285,8 @@ uint32 Reissue(uint32 token) noexcept
     {
         return 0;
     }
-    gToken = gNextToken++;
-    return gToken;
+    GetSession().Token = gNextToken++;
+    return GetSession().Token;
 }
 void RecordAttempt(uint32 token, Backend backend, StartupError error) noexcept
 {
@@ -237,14 +294,14 @@ void RecordAttempt(uint32 token, Backend backend, StartupError error) noexcept
     {
         return;
     }
-    AttemptInfo* attempt = backend == Backend::WebGL2   ? &gStartup.WebGL2
-                           : backend == Backend::WebGPU ? &gStartup.WebGpu
+    AttemptInfo* attempt = backend == Backend::WebGL2   ? &GetSession().Startup.WebGL2
+                           : backend == Backend::WebGPU ? &GetSession().Startup.WebGpu
                                                         : nullptr;
     if (attempt != nullptr)
     {
         attempt->Attempted = true;
         attempt->Error = error;
-        attempt->ProfileFailure = gStartup.ProfileFailure;
+        attempt->ProfileFailure = GetSession().Startup.ProfileFailure;
     }
 }
 } // namespace internal
@@ -265,52 +322,52 @@ StartStatus StartSelected(const ApplicationInfo& app,
     }
     if (internal::ConfigureStorage(storage) == false)
     {
-        gStartup = {};
-        gStartup.State = StartupState::Failed;
-        gStartup.Error = StartupError::DeviceUnavailable;
+        GetSession().Startup = {};
+        GetSession().Startup.State = StartupState::Failed;
+        GetSession().Startup.Error = StartupError::DeviceUnavailable;
         return StartStatus::Failed;
     }
-    gStartup.Requested = selection;
-    gStartup.Requirements = requirements;
-    gRequireRaster = requireRaster;
-    gRequireCompute = requireCompute;
-    gRequiredProfile = profile;
-    gProfile = {};
+    GetSession().Startup.Requested = selection;
+    GetSession().Startup.Requirements = requirements;
+    GetSession().IsRasterRequired = requireRaster;
+    GetSession().IsComputeRequired = requireCompute;
+    GetSession().RequiredProfile = profile;
+    GetSession().Profile = {};
     // A forced selection the build cannot provide fails explicitly; it never
     // silently switches to another backend.
     if (backend::Supports(selection) == false)
     {
-        gStartup.State = StartupState::Failed;
-        gStartup.Error = StartupError::BackendUnavailable;
+        GetSession().Startup.State = StartupState::Failed;
+        GetSession().Startup.Error = StartupError::BackendUnavailable;
         return StartStatus::Failed;
     }
     if (gNextToken == 0)
     {
-        gStartup.State = StartupState::Failed;
-        gStartup.Error = StartupError::GenerationExhausted;
+        GetSession().Startup.State = StartupState::Failed;
+        GetSession().Startup.Error = StartupError::GenerationExhausted;
         return StartStatus::Failed;
     }
-    gStartup.Requested = selection;
-    gStartup.SelectedBackend = backend::Kind();
-    gToken = gNextToken++;
-    gStartup.State = StartupState::Pending;
-    const auto error = backend::Start(app, window, gToken, selection);
+    GetSession().Startup.Requested = selection;
+    GetSession().Startup.SelectedBackend = backend::Kind();
+    GetSession().Token = gNextToken++;
+    GetSession().Startup.State = StartupState::Pending;
+    const StartupError error = backend::Start(app, window, GetSession().Token, selection);
     if (error != StartupError::None)
     {
-        internal::Fail(gToken, error);
+        internal::Fail(GetSession().Token, error);
     }
-    if (gStartup.State == StartupState::Ready)
+    if (GetSession().Startup.State == StartupState::Ready)
     {
         return StartStatus::Ready;
     }
-    return gStartup.State == StartupState::Pending ? StartStatus::Pending : StartStatus::Failed;
+    return GetSession().Startup.State == StartupState::Pending ? StartStatus::Pending : StartStatus::Failed;
 }
 } // namespace
 namespace internal
 {
 bool RequiresComputeProfile() noexcept
 {
-    return gStartup.State == StartupState::Pending && gRequireCompute;
+    return GetSession().Startup.State == StartupState::Pending && GetSession().IsComputeRequired;
 }
 StartStatus StartOwned(const ApplicationInfo& app,
                        const WindowInfo& window,
@@ -326,37 +383,43 @@ StartStatus StartOwned(const ApplicationInfo& app,
 } // namespace internal
 StartStatus Start(const ApplicationInfo& app, const WindowInfo& window) noexcept
 {
-    return StartSelected(app, window, BackendSelection::Auto, {});
+    return Start(app, window, BackendSelection::Auto, {});
 }
 StartStatus Start(const ApplicationInfo& app, const WindowInfo& window, BackendSelection selection) noexcept
 {
-    return StartSelected(app, window, selection, {});
+    return Start(app, window, selection, {});
 }
 StartStatus Start(const ApplicationInfo& app,
                   const WindowInfo& window,
                   BackendSelection selection,
                   const DeviceRequirements& requirements) noexcept
 {
+    internal::BindOwnerSlot(0);
+    // The device-less facade owns the first slot and runs only while no other owner is live.
+    if (internal::IsAnySessionBusy() == true)
+    {
+        return StartStatus::Busy;
+    }
     return StartSelected(app, window, selection, requirements);
 }
-StartupInfo GetStartup() noexcept
+StartupInfo internal::GetStartup() noexcept
 {
-    return gStartup;
+    return GetSession().Startup;
 }
 namespace internal
 {
 FrameStatus SetSurfaceFrameTarget(ludus::foundation::usize slot, const FrameTarget& target) noexcept
 {
-    if (gStartup.State != StartupState::Ready)
+    if (GetSession().Startup.State != StartupState::Ready)
     {
         return FrameStatus::NotReady;
     }
-    if (gFrame)
+    if (GetSession().IsFrameOpen)
     {
         return FrameStatus::InvalidState;
     }
-    if (target.Width > gStartup.Capabilities.MaxFrameDimension2D ||
-        target.Height > gStartup.Capabilities.MaxFrameDimension2D)
+    if (target.Width > GetSession().Startup.Capabilities.MaxFrameDimension2D ||
+        target.Height > GetSession().Startup.Capabilities.MaxFrameDimension2D)
     {
         return FrameStatus::Failed;
     }
@@ -364,18 +427,18 @@ FrameStatus SetSurfaceFrameTarget(ludus::foundation::usize slot, const FrameTarg
     const FrameStatus result = backend::SetTarget(target);
     if (result == FrameStatus::Ready)
     {
-        gSurfaceFrames[slot].IsTargetEmpty = target.Width == 0 || target.Height == 0;
-        gSurfaceFrames[slot].IsTargetOffscreen = target.ShouldPresentToSurface == false;
+        GetSession().SurfaceFrames[slot].IsTargetEmpty = target.Width == 0 || target.Height == 0;
+        GetSession().SurfaceFrames[slot].IsTargetOffscreen = target.ShouldPresentToSurface == false;
     }
     return result;
 }
 FrameStatus BeginSurfaceFrame(ludus::foundation::usize slot) noexcept
 {
-    if (gStartup.State != StartupState::Ready)
+    if (GetSession().Startup.State != StartupState::Ready)
     {
         return FrameStatus::NotReady;
     }
-    if (gFrame)
+    if (GetSession().IsFrameOpen)
     {
         return FrameStatus::InvalidState;
     }
@@ -384,45 +447,48 @@ FrameStatus BeginSurfaceFrame(ludus::foundation::usize slot) noexcept
         return FrameStatus::Failed;
     }
     // An armed capture starts before the frame's command buffers exist (Metal requires it).
-    internal::BeginGraphicsCaptureFrame(gSurfaceFrames[slot].IsTargetEmpty, gSurfaceFrames[slot].IsTargetOffscreen);
+    internal::BeginGraphicsCaptureFrame(GetSession().SurfaceFrames[slot].IsTargetEmpty,
+                                        GetSession().SurfaceFrames[slot].IsTargetOffscreen);
     backend::SelectSurface(slot);
     const auto result = backend::Begin();
-    gFrame = result == FrameStatus::Ready;
-    gFrameSurface = slot;
-    gDrawn = false;
-    gRasterDrawn = false;
+    GetSession().IsFrameOpen = result == FrameStatus::Ready;
+    GetSession().FrameSurface = slot;
+    GetSession().IsDrawn = false;
+    GetSession().IsRasterDrawn = false;
     internal::RasterBeginFrame();
-    internal::FinishGraphicsCaptureBegin(gFrame);
+    internal::FinishGraphicsCaptureBegin(GetSession().IsFrameOpen);
     return result;
 }
 ludus::foundation::usize GetFrameSurface() noexcept
 {
-    return gFrameSurface;
+    return GetSession().FrameSurface;
 }
 void ResetSurfaceFrames(ludus::foundation::usize slot) noexcept
 {
-    gSurfaceFrames[slot] = {};
+    GetSession().SurfaceFrames[slot] = {};
 }
 ludus::foundation::uint64 GetSurfaceSubmittedFrames(ludus::foundation::usize slot) noexcept
 {
-    return gSurfaceFrames[slot].SubmittedFrames;
+    return GetSession().SurfaceFrames[slot].SubmittedFrames;
 }
 } // namespace internal
 FrameStatus SetFrameTarget(const FrameTarget& target) noexcept
 {
+    internal::BindOwnerSlot(0);
     return internal::SetSurfaceFrameTarget(0, target);
 }
 FrameStatus BeginFrameStatus() noexcept
 {
+    internal::BindOwnerSlot(0);
     return internal::BeginSurfaceFrame(0);
 }
-FrameStatus EndFrameStatus() noexcept
+FrameStatus internal::EndFrameStatus() noexcept
 {
-    if (gStartup.State != StartupState::Ready)
+    if (GetSession().Startup.State != StartupState::Ready)
     {
         return FrameStatus::NotReady;
     }
-    if (gFrame == false)
+    if (GetSession().IsFrameOpen == false)
     {
         return FrameStatus::InvalidState;
     }
@@ -430,69 +496,69 @@ FrameStatus EndFrameStatus() noexcept
     {
         return FrameStatus::Failed;
     }
-    gFrame = false;
+    GetSession().IsFrameOpen = false;
     const auto result = backend::End();
     // Skipped means the frame was submitted but its presentation was out of date.
     if (result == FrameStatus::Ready || result == FrameStatus::Skipped)
     {
-        ++gSurfaceFrames[gFrameSurface].SubmittedFrames;
+        ++GetSession().SurfaceFrames[GetSession().FrameSurface].SubmittedFrames;
     }
     internal::RasterEndFrame(result == FrameStatus::Ready || result == FrameStatus::Skipped);
     internal::EndGraphicsCaptureFrame((result == FrameStatus::Ready || result == FrameStatus::Skipped) &&
-                                      gStartup.State == StartupState::Ready);
+                                      GetSession().Startup.State == StartupState::Ready);
     return result;
 }
 bool Initialize(const ApplicationInfo& app) noexcept
 {
-    if (internal::NativeInteropBusy())
+    internal::BindOwnerSlot(0);
+    if (internal::IsAnySessionBusy() == true)
     {
         return false;
     }
-    if (gStartup.State != StartupState::Idle)
-    {
-        return false;
-    }
-    gLegacy = backend::Initialize(app);
-    return gLegacy;
+    GetSession().IsLegacy = backend::Initialize(app);
+    return GetSession().IsLegacy;
 }
 bool ConnectWindow(const WindowInfo& window) noexcept
 {
-    return gLegacy && backend::ConnectWindow(window);
+    internal::BindOwnerSlot(0);
+    return GetSession().IsLegacy && backend::ConnectWindow(window);
 }
 bool InitializeRendering() noexcept
 {
-    if (gLegacy == false)
+    internal::BindOwnerSlot(0);
+    if (GetSession().IsLegacy == false)
     {
         return false;
     }
-    if (gRendering == false)
+    if (GetSession().IsRendering == false)
     {
-        gRendering = backend::InitializeRendering();
+        GetSession().IsRendering = backend::InitializeRendering();
     }
-    return gRendering;
+    return GetSession().IsRendering;
 }
 void ShutdownRendering() noexcept
 {
-    if (gLegacy && gRendering)
+    internal::BindOwnerSlot(0);
+    if (GetSession().IsLegacy && GetSession().IsRendering)
     {
         backend::ShutdownRendering();
     }
-    gRendering = false;
+    GetSession().IsRendering = false;
 }
-void Shutdown() noexcept
+void internal::Shutdown() noexcept
 {
     // Stop or abandon a capture before any native object it borrows is released.
     internal::EndGraphicsCaptureSession(GraphicsCaptureError::SessionEnded);
-    gSurfaceFrames.Fill({});
-    gFrameSurface = 0;
-    gDeviceOwner = 0;
+    GetSession().SurfaceFrames.Fill({});
+    GetSession().FrameSurface = 0;
+    GetSession().DeviceOwner = 0;
     internal::SetGpuTimingRequest(false);
-    gRayProfileRequest = false;
+    GetSession().IsRayProfileRequested = false;
     internal::SetBindlessRequest(false);
     internal::SetRuntimeTextureArrayRequest(false);
     internal::SetAdapterRequest({});
-    gFallback = nullptr;
-    gToken = 0;
+    GetSession().Fallback = nullptr;
+    GetSession().Token = 0;
     if (internal::DeferNativeInteropShutdown())
     {
         backend::NativeInteropDetachSurface();
@@ -501,10 +567,10 @@ void Shutdown() noexcept
     {
         internal::FinishNativeInteropShutdown();
     }
-    gStartup = {};
-    gLegacy = false;
-    gRendering = false;
-    gFrame = false;
+    GetSession().Startup = {};
+    GetSession().IsLegacy = false;
+    GetSession().IsRendering = false;
+    GetSession().IsFrameOpen = false;
 }
 namespace internal
 {
@@ -519,11 +585,15 @@ void FinishNativeInteropShutdown() noexcept
 } // namespace internal
 bool BeginFrame() noexcept
 {
-    return gLegacy ? (gRendering && backend::BeginFrame()) : BeginFrameStatus() == FrameStatus::Ready;
+    internal::BindOwnerSlot(0);
+    return GetSession().IsLegacy ? (GetSession().IsRendering && backend::BeginFrame())
+                                 : BeginFrameStatus() == FrameStatus::Ready;
 }
 bool EndFrame() noexcept
 {
-    return gLegacy ? (gRendering && backend::EndFrame()) : EndFrameStatus() == FrameStatus::Ready;
+    internal::BindOwnerSlot(0);
+    return GetSession().IsLegacy ? (GetSession().IsRendering && backend::EndFrame())
+                                 : EndFrameStatus() == FrameStatus::Ready;
 }
 
 namespace internal
@@ -557,10 +627,21 @@ struct Resource final
     usize Fragment = 0;
     usize Uniform = 0;
 };
-Resource gShaders[internal::RESOURCE_CAPACITY];
-Resource gUniforms[internal::RESOURCE_CAPACITY];
-Resource gPipelines[internal::RESOURCE_CAPACITY];
+/// Fullscreen shader, uniform and pipeline records of one owner slot (R14c).
+struct ResourceState final
+{
+    Resource Shaders[internal::RESOURCE_CAPACITY];
+    Resource Uniforms[internal::RESOURCE_CAPACITY];
+    Resource Pipelines[internal::RESOURCE_CAPACITY];
+};
+foundation::StaticArray<ResourceState, MAX_DEVICE_OWNERS> gResources{};
+/// Fullscreen resource identities are process-wide, so one owner never resolves another's.
 uint32 gNextResource = 1;
+/// The fullscreen resource records of the bound owner slot.
+ResourceState& GetResources() noexcept
+{
+    return gResources[internal::GetBoundOwnerSlot()];
+}
 constexpr usize MISSING = internal::RESOURCE_CAPACITY;
 
 usize Find(const Resource* resources, uint32 id) noexcept
@@ -584,11 +665,11 @@ ResourceStatus Status(const Resource* resources, uint32 id) noexcept
 }
 ResourceStatus Allocate(Resource* resources, usize& slot) noexcept
 {
-    if (gStartup.State != StartupState::Ready)
+    if (GetSession().Startup.State != StartupState::Ready)
     {
         return ResourceStatus::NotReady;
     }
-    if (gFrame)
+    if (GetSession().IsFrameOpen)
     {
         return ResourceStatus::InvalidState;
     }
@@ -616,7 +697,7 @@ bool ValidEntry(std::string_view entry) noexcept
 }
 ResourceStatus Finish(Resource& resource, ResourceStatus result) noexcept
 {
-    if (resource.Id == 0 || gStartup.State != StartupState::Ready)
+    if (resource.Id == 0 || GetSession().Startup.State != StartupState::Ready)
     {
         // A synchronous loss callback can invalidate the creation in progress.
         return ResourceStatus::Failed;
@@ -633,25 +714,36 @@ namespace internal
 {
 void ResourceComplete(uint32 id, ResourceStatus status) noexcept
 {
-    if (gStartup.State != StartupState::Ready)
+    // Identities are process-wide; a completion updates the owner that created the resource.
+    for (foundation::usize owner = 0; owner < MAX_DEVICE_OWNERS; ++owner)
+    {
+        const ResourceState& resources = gResources[owner];
+        if (Find(resources.Shaders, id) != MISSING || Find(resources.Uniforms, id) != MISSING ||
+            Find(resources.Pipelines, id) != MISSING)
+        {
+            BindOwnerSlot(owner);
+            break;
+        }
+    }
+    if (GetSession().Startup.State != StartupState::Ready)
     {
         return;
     }
-    const auto shader = Find(gShaders, id);
-    const auto uniform = Find(gUniforms, id);
-    const auto pipeline = Find(gPipelines, id);
+    const usize shader = Find(GetResources().Shaders, id);
+    const usize uniform = Find(GetResources().Uniforms, id);
+    const usize pipeline = Find(GetResources().Pipelines, id);
     Resource* resource = nullptr;
     if (shader != MISSING)
     {
-        resource = &gShaders[shader];
+        resource = &GetResources().Shaders[shader];
     }
     if (uniform != MISSING)
     {
-        resource = &gUniforms[uniform];
+        resource = &GetResources().Uniforms[uniform];
     }
     if (pipeline != MISSING)
     {
-        resource = &gPipelines[pipeline];
+        resource = &GetResources().Pipelines[pipeline];
     }
     if (resource == nullptr || resource->Status != ResourceStatus::Pending)
     {
@@ -677,15 +769,15 @@ void ResourceComplete(uint32 id, ResourceStatus status) noexcept
 void ReleaseResources() noexcept
 {
     // Invalidate all IDs before releasing backend state; callbacks may be delayed.
-    for (auto& resource : gPipelines)
+    for (Resource& resource : GetResources().Pipelines)
     {
         resource.Id = 0;
     }
-    for (auto& resource : gShaders)
+    for (Resource& resource : GetResources().Shaders)
     {
         resource.Id = 0;
     }
-    for (auto& resource : gUniforms)
+    for (Resource& resource : GetResources().Uniforms)
     {
         resource.Id = 0;
     }
@@ -697,21 +789,21 @@ void ReleaseResources() noexcept
     }
 }
 } // namespace internal
-ResourceStatus GetStatus(ShaderHandle handle) noexcept
+ResourceStatus internal::GetStatus(ShaderHandle handle) noexcept
 {
-    return Status(gShaders, ResourceAccess::Id(handle));
+    return Status(GetResources().Shaders, ResourceAccess::Id(handle));
 }
-ResourceStatus GetStatus(UniformHandle handle) noexcept
+ResourceStatus internal::GetStatus(UniformHandle handle) noexcept
 {
-    return Status(gUniforms, ResourceAccess::Id(handle));
+    return Status(GetResources().Uniforms, ResourceAccess::Id(handle));
 }
-ResourceStatus GetStatus(PipelineHandle handle) noexcept
+ResourceStatus internal::GetStatus(PipelineHandle handle) noexcept
 {
-    return Status(gPipelines, ResourceAccess::Id(handle));
+    return Status(GetResources().Pipelines, ResourceAccess::Id(handle));
 }
-ResourceStatus CreateShader(const ShaderDescription& description, ShaderHandle& handle) noexcept
+ResourceStatus internal::CreateShader(const ShaderDescription& description, ShaderHandle& outHandle) noexcept
 {
-    if (ResourceAccess::Id(handle) != 0)
+    if (ResourceAccess::Id(outHandle) != 0)
     {
         return ResourceStatus::InvalidState;
     }
@@ -720,7 +812,8 @@ ResourceStatus CreateShader(const ShaderDescription& description, ShaderHandle& 
     {
         return ResourceStatus::InvalidDescription;
     }
-    if (gStartup.State == StartupState::Ready && description.UniformSize > gStartup.Capabilities.MaxUniformBufferSize)
+    if (GetSession().Startup.State == StartupState::Ready &&
+        description.UniformSize > GetSession().Startup.Capabilities.MaxUniformBufferSize)
     {
         return ResourceStatus::InvalidDescription;
     }
@@ -741,20 +834,20 @@ ResourceStatus CreateShader(const ShaderDescription& description, ShaderHandle& 
         return ResourceStatus::InvalidDescription;
     }
     usize slot = 0;
-    const auto admission = Allocate(gShaders, slot);
+    const ResourceStatus admission = Allocate(GetResources().Shaders, slot);
     if (admission != ResourceStatus::Ready)
     {
         return admission;
     }
-    auto& resource = gShaders[slot];
+    Resource& resource = GetResources().Shaders[slot];
     resource.Stage = description.Stage;
     resource.Size = description.UniformSize;
-    ResourceAccess::Set(handle, resource.Id);
+    ResourceAccess::Set(outHandle, resource.Id);
     return Finish(resource, backend::CreateShader(slot, description, resource.Id));
 }
-ResourceStatus CreateUniform(usize size, UniformHandle& handle) noexcept
+ResourceStatus internal::CreateUniform(usize size, UniformHandle& outHandle) noexcept
 {
-    if (ResourceAccess::Id(handle) != 0)
+    if (ResourceAccess::Id(outHandle) != 0)
     {
         return ResourceStatus::InvalidState;
     }
@@ -762,43 +855,47 @@ ResourceStatus CreateUniform(usize size, UniformHandle& handle) noexcept
     {
         return ResourceStatus::InvalidDescription;
     }
-    if (gStartup.State == StartupState::Ready && size > gStartup.Capabilities.MaxUniformBufferSize)
+    if (GetSession().Startup.State == StartupState::Ready &&
+        size > GetSession().Startup.Capabilities.MaxUniformBufferSize)
     {
         return ResourceStatus::InvalidDescription;
     }
     usize slot = 0;
-    const auto admission = Allocate(gUniforms, slot);
+    const ResourceStatus admission = Allocate(GetResources().Uniforms, slot);
     if (admission != ResourceStatus::Ready)
     {
         return admission;
     }
-    auto& resource = gUniforms[slot];
+    Resource& resource = GetResources().Uniforms[slot];
     resource.Size = size;
-    ResourceAccess::Set(handle, resource.Id);
+    ResourceAccess::Set(outHandle, resource.Id);
     return Finish(resource, backend::CreateUniform(slot, { .Size = size }, resource.Id));
 }
-ResourceStatus CreatePipeline(const PipelineDescription& description, PipelineHandle& handle) noexcept
+ResourceStatus internal::CreatePipeline(const PipelineDescription& description, PipelineHandle& outHandle) noexcept
 {
-    if (ResourceAccess::Id(handle) != 0)
+    if (ResourceAccess::Id(outHandle) != 0)
     {
         return ResourceStatus::InvalidState;
     }
-    const auto vertex = Find(gShaders, ResourceAccess::Id(description.Vertex));
-    const auto fragment = Find(gShaders, ResourceAccess::Id(description.Fragment));
-    const auto uniform = Find(gUniforms, ResourceAccess::Id(description.Uniform));
+    const usize vertex = Find(GetResources().Shaders, ResourceAccess::Id(description.Vertex));
+    const usize fragment = Find(GetResources().Shaders, ResourceAccess::Id(description.Fragment));
+    const usize uniform = Find(GetResources().Uniforms, ResourceAccess::Id(description.Uniform));
     if (vertex == MISSING || fragment == MISSING || uniform == MISSING)
     {
         return ResourceStatus::InvalidHandle;
     }
-    if (gShaders[vertex].Stage != ShaderStage::Vertex || gShaders[fragment].Stage != ShaderStage::Fragment)
+    if (GetResources().Shaders[vertex].Stage != ShaderStage::Vertex ||
+        GetResources().Shaders[fragment].Stage != ShaderStage::Fragment)
     {
         return ResourceStatus::InvalidDescription;
     }
-    for (auto status : {gShaders[vertex].Status, gShaders[fragment].Status, gUniforms[uniform].Status})
+    for (ResourceStatus status : {GetResources().Shaders[vertex].Status,
+                                  GetResources().Shaders[fragment].Status,
+                                  GetResources().Uniforms[uniform].Status})
     {
         if (status == ResourceStatus::Pending)
         {
-            // Pending is reserved for a creation that owns its output handle.
+            // Pending is reserved for a creation that owns its output outHandle.
             return ResourceStatus::NotReady;
         }
         if (status != ResourceStatus::Ready)
@@ -806,80 +903,82 @@ ResourceStatus CreatePipeline(const PipelineDescription& description, PipelineHa
             return status;
         }
     }
-    if (gUniforms[uniform].Size < gShaders[vertex].Size || gUniforms[uniform].Size < gShaders[fragment].Size)
+    if (GetResources().Uniforms[uniform].Size < GetResources().Shaders[vertex].Size ||
+        GetResources().Uniforms[uniform].Size < GetResources().Shaders[fragment].Size)
     {
         return ResourceStatus::InvalidDescription;
     }
     usize slot = 0;
-    const auto admission = Allocate(gPipelines, slot);
+    const ResourceStatus admission = Allocate(GetResources().Pipelines, slot);
     if (admission != ResourceStatus::Ready)
     {
         return admission;
     }
-    auto& resource = gPipelines[slot];
+    Resource& resource = GetResources().Pipelines[slot];
     resource.Vertex = vertex;
     resource.Fragment = fragment;
     resource.Uniform = uniform;
-    ResourceAccess::Set(handle, resource.Id);
+    ResourceAccess::Set(outHandle, resource.Id);
     return Finish(
         resource,
         backend::CreatePipeline(slot, { .Vertex = vertex, .Fragment = fragment, .Uniform = uniform }, resource.Id));
 }
-FrameInfo GetFrameInfo() noexcept
+FrameInfo internal::GetFrameInfo() noexcept
 {
-    return gFrame && gStartup.State == StartupState::Ready ? backend::GetFrameInfo() : FrameInfo{};
+    return GetSession().IsFrameOpen && GetSession().Startup.State == StartupState::Ready ? backend::GetFrameInfo()
+                                                                                         : FrameInfo{};
 }
-ResourceStatus UpdateUniform(UniformHandle handle,
-                             ludus::foundation::BorrowedView<const foundation::uint8> bytes) noexcept
+ResourceStatus internal::UpdateUniform(UniformHandle handle,
+                                       ludus::foundation::BorrowedView<const foundation::uint8> bytes) noexcept
 {
-    const auto slot = Find(gUniforms, ResourceAccess::Id(handle));
+    const usize slot = Find(GetResources().Uniforms, ResourceAccess::Id(handle));
     if (slot == MISSING)
     {
         return ResourceStatus::InvalidHandle;
     }
-    if (gFrame && gDrawn)
+    if (GetSession().IsFrameOpen && GetSession().IsDrawn)
     {
         return ResourceStatus::InvalidState;
     }
-    if (gUniforms[slot].Status != ResourceStatus::Ready)
+    if (GetResources().Uniforms[slot].Status != ResourceStatus::Ready)
     {
-        return gUniforms[slot].Status;
+        return GetResources().Uniforms[slot].Status;
     }
-    if (bytes.IsValid() == false || bytes.GetSize() != gUniforms[slot].Size)
+    if (bytes.IsValid() == false || bytes.GetSize() != GetResources().Uniforms[slot].Size)
     {
         return ResourceStatus::InvalidDescription;
     }
     backend::UpdateUniform(slot, bytes);
-    gUniforms[slot].Updated = true;
+    GetResources().Uniforms[slot].Updated = true;
     return ResourceStatus::Ready;
 }
-ResourceStatus Destroy(PipelineHandle handle) noexcept
+ResourceStatus internal::Destroy(PipelineHandle handle) noexcept
 {
-    const auto slot = Find(gPipelines, ResourceAccess::Id(handle));
+    const usize slot = Find(GetResources().Pipelines, ResourceAccess::Id(handle));
     if (slot == MISSING)
     {
         return ResourceStatus::InvalidHandle;
     }
-    if (gFrame)
+    if (GetSession().IsFrameOpen)
     {
         return ResourceStatus::InvalidState;
     }
-    gPipelines[slot].Id = 0;
+    GetResources().Pipelines[slot].Id = 0;
     backend::DestroyPipeline(slot);
     return ResourceStatus::Ready;
 }
-ResourceStatus Destroy(ShaderHandle handle) noexcept
+ResourceStatus internal::Destroy(ShaderHandle handle) noexcept
 {
-    const auto slot = Find(gShaders, ResourceAccess::Id(handle));
+    const usize slot = Find(GetResources().Shaders, ResourceAccess::Id(handle));
     if (slot == MISSING)
     {
         return ResourceStatus::InvalidHandle;
     }
-    if (gFrame)
+    if (GetSession().IsFrameOpen)
     {
         return ResourceStatus::InvalidState;
     }
-    for (const auto& pipeline : gPipelines)
+    for (const Resource& pipeline : GetResources().Pipelines)
     {
         if (pipeline.Id != 0 && pipeline.Status != ResourceStatus::Failed &&
             (pipeline.Vertex == slot || pipeline.Fragment == slot))
@@ -887,49 +986,130 @@ ResourceStatus Destroy(ShaderHandle handle) noexcept
             return ResourceStatus::InUse;
         }
     }
-    gShaders[slot].Id = 0;
+    GetResources().Shaders[slot].Id = 0;
     backend::DestroyShader(slot);
     return ResourceStatus::Ready;
 }
-ResourceStatus Destroy(UniformHandle handle) noexcept
+ResourceStatus internal::Destroy(UniformHandle handle) noexcept
 {
-    const auto slot = Find(gUniforms, ResourceAccess::Id(handle));
+    const usize slot = Find(GetResources().Uniforms, ResourceAccess::Id(handle));
     if (slot == MISSING)
     {
         return ResourceStatus::InvalidHandle;
     }
-    if (gFrame)
+    if (GetSession().IsFrameOpen)
     {
         return ResourceStatus::InvalidState;
     }
-    for (const auto& pipeline : gPipelines)
+    for (const Resource& pipeline : GetResources().Pipelines)
     {
         if (pipeline.Id != 0 && pipeline.Status != ResourceStatus::Failed && pipeline.Uniform == slot)
         {
             return ResourceStatus::InUse;
         }
     }
-    gUniforms[slot].Id = 0;
+    GetResources().Uniforms[slot].Id = 0;
     backend::DestroyUniform(slot);
     return ResourceStatus::Ready;
 }
-ResourceStatus DrawFullscreen(PipelineHandle handle) noexcept
+ResourceStatus internal::DrawFullscreen(PipelineHandle handle) noexcept
 {
-    const auto slot = Find(gPipelines, ResourceAccess::Id(handle));
+    const usize slot = Find(GetResources().Pipelines, ResourceAccess::Id(handle));
     if (slot == MISSING)
     {
         return ResourceStatus::InvalidHandle;
     }
-    if (gPipelines[slot].Status != ResourceStatus::Ready)
+    if (GetResources().Pipelines[slot].Status != ResourceStatus::Ready)
     {
-        return gPipelines[slot].Status;
+        return GetResources().Pipelines[slot].Status;
     }
-    if (gFrame == false || gDrawn || gRasterDrawn || gUniforms[gPipelines[slot].Uniform].Updated == false)
+    if (GetSession().IsFrameOpen == false || GetSession().IsDrawn || GetSession().IsRasterDrawn ||
+        GetResources().Uniforms[GetResources().Pipelines[slot].Uniform].Updated == false)
     {
         return ResourceStatus::InvalidState;
     }
     const auto result = backend::Draw(slot);
-    gDrawn = result == ResourceStatus::Ready;
+    GetSession().IsDrawn = result == ResourceStatus::Ready;
     return result;
+}
+} // namespace ludus::graphics::rhi
+namespace ludus::graphics::rhi
+{
+// Device-less facade calls address the first owner slot (R14c); the RHI's own callers use the
+// internal forms, which address the bound owner.
+StartupInfo GetStartup() noexcept
+{
+    internal::BindOwnerSlot(0);
+    return internal::GetStartup();
+}
+FrameStatus EndFrameStatus() noexcept
+{
+    internal::BindOwnerSlot(0);
+    return internal::EndFrameStatus();
+}
+void Shutdown() noexcept
+{
+    internal::BindOwnerSlot(0);
+    internal::Shutdown();
+}
+ResourceStatus GetStatus(ShaderHandle handle) noexcept
+{
+    internal::BindOwnerSlot(0);
+    return internal::GetStatus(handle);
+}
+ResourceStatus GetStatus(UniformHandle handle) noexcept
+{
+    internal::BindOwnerSlot(0);
+    return internal::GetStatus(handle);
+}
+ResourceStatus GetStatus(PipelineHandle handle) noexcept
+{
+    internal::BindOwnerSlot(0);
+    return internal::GetStatus(handle);
+}
+ResourceStatus CreateShader(const ShaderDescription& description, ShaderHandle& outHandle) noexcept
+{
+    internal::BindOwnerSlot(0);
+    return internal::CreateShader(description, outHandle);
+}
+ResourceStatus CreateUniform(foundation::usize size, UniformHandle& outHandle) noexcept
+{
+    internal::BindOwnerSlot(0);
+    return internal::CreateUniform(size, outHandle);
+}
+ResourceStatus CreatePipeline(const PipelineDescription& description, PipelineHandle& outHandle) noexcept
+{
+    internal::BindOwnerSlot(0);
+    return internal::CreatePipeline(description, outHandle);
+}
+FrameInfo GetFrameInfo() noexcept
+{
+    internal::BindOwnerSlot(0);
+    return internal::GetFrameInfo();
+}
+ResourceStatus UpdateUniform(UniformHandle handle, foundation::BorrowedView<const foundation::uint8> bytes) noexcept
+{
+    internal::BindOwnerSlot(0);
+    return internal::UpdateUniform(handle, bytes);
+}
+ResourceStatus Destroy(PipelineHandle handle) noexcept
+{
+    internal::BindOwnerSlot(0);
+    return internal::Destroy(handle);
+}
+ResourceStatus Destroy(ShaderHandle handle) noexcept
+{
+    internal::BindOwnerSlot(0);
+    return internal::Destroy(handle);
+}
+ResourceStatus Destroy(UniformHandle handle) noexcept
+{
+    internal::BindOwnerSlot(0);
+    return internal::Destroy(handle);
+}
+ResourceStatus DrawFullscreen(PipelineHandle handle) noexcept
+{
+    internal::BindOwnerSlot(0);
+    return internal::DrawFullscreen(handle);
 }
 } // namespace ludus::graphics::rhi

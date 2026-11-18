@@ -1,6 +1,8 @@
 #include "internal/adapter.h"
+#include "internal/owner.h"
 
 #include <ludus/foundation/base/core.h>
+#include <ludus/foundation/containers/static_array.hpp>
 
 namespace ludus::graphics::rhi
 {
@@ -13,8 +15,18 @@ using foundation::usize;
 constexpr uint8 UTF8_CONTINUATION_MASK = 0xC0;
 constexpr uint8 UTF8_CONTINUATION_BITS = 0x80;
 
-bool isAdapterRequested = false;
-AdapterIdentity gAdapterRequest;
+/// Explicit adapter request of one owner slot (R14c); each owner may select its own adapter.
+struct AdapterRequest final
+{
+    bool IsRequested = false;
+    AdapterIdentity Identity;
+};
+foundation::StaticArray<AdapterRequest, MAX_DEVICE_OWNERS> gAdapterRequests{};
+/// The adapter request of the bound owner slot.
+AdapterRequest& GetAdapterRequest() noexcept
+{
+    return gAdapterRequests[internal::GetBoundOwnerSlot()];
+}
 } // namespace
 
 AdapterStatus GetAdapterCatalog(AdapterCatalog& outCatalog) noexcept
@@ -32,13 +44,13 @@ namespace internal
 {
 void SetAdapterRequest(const AdapterIdentity& adapter) noexcept
 {
-    isAdapterRequested = adapter.IsAutomatic() == false;
-    gAdapterRequest = isAdapterRequested == true ? adapter : AdapterIdentity{};
+    GetAdapterRequest().IsRequested = adapter.IsAutomatic() == false;
+    GetAdapterRequest().Identity = GetAdapterRequest().IsRequested == true ? adapter : AdapterIdentity{};
 }
 
 const AdapterIdentity* GetRequestedAdapterOrNull() noexcept
 {
-    return isAdapterRequested == true ? &gAdapterRequest : nullptr;
+    return GetAdapterRequest().IsRequested == true ? &GetAdapterRequest().Identity : nullptr;
 }
 
 void AssignAdapterName(std::string_view reported, AdapterName& outName) noexcept

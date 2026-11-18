@@ -7,6 +7,7 @@
 
 #include "internal/native_interop.h"
 #include "internal/native_preparation.h"
+#include "internal/owner.h"
 #include "internal/raster.h"
 #include "internal/ray_backend.h"
 #include "internal/resources.h"
@@ -83,6 +84,8 @@ namespace
 using namespace foundation;
 constexpr logging::LogCategory LOG_RHI{"RHI"};
 constexpr usize FRAMES = 2;
+/// The compatibility fullscreen draw is one triangle that covers the target.
+constexpr usize FULLSCREEN_VERTEX_COUNT = 3;
 constexpr uint32 MAX_DIMENSION = 16384;
 // Thanks to Apple, "MTLPipelineOption", Metal documentation, for the reflection
 // flags: https://developer.apple.com/documentation/metal/mtlpipelineoption
@@ -109,9 +112,6 @@ struct Pipeline final
     id<MTLRenderPipelineState> Object = nil;
     usize UniformSlot = 0;
 };
-id<MTLDevice> gDevice = nil;
-id<MTLCommandQueue> gQueue = nil;
-id<MTLCommandBuffer> gSubmitted[FRAMES]{};
 constexpr usize PREFIXES_PER_NATIVE_COMPUTE = 3;
 constexpr usize MAX_NATIVE_COMPUTE_PREFIXES = MAX_NATIVE_COMPUTE_PASSES_PER_FRAME * PREFIXES_PER_NATIVE_COMPUTE;
 struct MetalCommandPrefixes final
@@ -119,14 +119,10 @@ struct MetalCommandPrefixes final
     id<MTLCommandBuffer> CommandsOrNull[MAX_NATIVE_COMPUTE_PREFIXES]{};
     usize Count = 0;
 };
-MetalCommandPrefixes gCommandPrefixes[FRAMES]{};
-bool hasNativeComputeSplit = false;
-id<MTLCommandBuffer> gCommand = nil;
-id<MTLRenderCommandEncoder> gEncoder = nil;
 /// @brief Presentation record of one surface (R14b): its borrowed target, drawable layer or
 /// hosted producer, offscreen and depth attachments, frame target and completion counters.
 ///
-/// Slot 0 is the primary surface. Every record of a session shares gSurfaceFormat, so the
+/// Slot 0 is the primary surface. Every record of a session shares MetalState::SurfaceFormat, so the
 /// pipelines created for the primary surface draw to all of them.
 struct MetalSurface final
 {
@@ -147,24 +143,44 @@ struct MetalSurface final
     uint64 PresentedFrames = 0;
     bool IsConnected = false;
 };
-StaticArray<MetalSurface, MAX_DEVICE_SURFACES> gSurfaces{};
-/// Surface routed SetTarget/Begin/End; see backend::SelectSurface.
-usize gActiveSurface = 0;
-/// Depth attachment of the open frame's surface.
-id<MTLTexture> gDepth = nil;
-id<CAMetalDrawable> gDrawable = nil;
-/// Color format of every frame target: BGRA8 drawables, or RGBA8 hosted images.
-MTLPixelFormat gSurfaceFormat = MTLPixelFormatBGRA8Unorm;
-/// Color attachment of the open frame: drawable, hosted image or headless texture.
-id<MTLTexture> gSurfaceTexture = nil;
-Shader gShaders[internal::RESOURCE_CAPACITY];
-Uniform gUniforms[internal::RESOURCE_CAPACITY];
-Pipeline gPipelines[internal::RESOURCE_CAPACITY];
-FrameInfo gFrame{};
-usize gSlot = 0;
-uint32 gToken = 0;
-bool gConnected = false;
-bool gRendering = false;
+/// @brief Native device, queue, surfaces and frame state of one Metal device owner (R14c).
+///
+/// Each owner creates its own MTLDevice and command queue, so one owner's submission,
+/// loss or teardown never touches another owner's commands or presentation.
+struct MetalState final
+{
+    id<MTLDevice> Device = nil;
+    id<MTLCommandQueue> Queue = nil;
+    id<MTLCommandBuffer> Submitted[FRAMES]{};
+    MetalCommandPrefixes CommandPrefixes[FRAMES]{};
+    bool HasNativeComputeSplit = false;
+    id<MTLCommandBuffer> Command = nil;
+    id<MTLRenderCommandEncoder> Encoder = nil;
+    StaticArray<MetalSurface, MAX_DEVICE_SURFACES> Surfaces{};
+    /// Surface routed SetTarget/Begin/End; see backend::SelectSurface.
+    usize ActiveSurface = 0;
+    /// Depth attachment of the open frame's surface.
+    id<MTLTexture> Depth = nil;
+    id<CAMetalDrawable> Drawable = nil;
+    /// Color format of every frame target: BGRA8 drawables, or RGBA8 hosted images.
+    MTLPixelFormat SurfaceFormat = MTLPixelFormatBGRA8Unorm;
+    /// Color attachment of the open frame: drawable, hosted image or headless texture.
+    id<MTLTexture> SurfaceTexture = nil;
+    Shader Shaders[internal::RESOURCE_CAPACITY];
+    Uniform Uniforms[internal::RESOURCE_CAPACITY];
+    Pipeline Pipelines[internal::RESOURCE_CAPACITY];
+    FrameInfo Frame{};
+    usize Slot = 0;
+    uint32 Token = 0;
+    bool IsConnected = false;
+    bool IsRendering = false;
+};
+StaticArray<MetalState, MAX_DEVICE_OWNERS> gMetalStates{};
+/// The Metal device state of the bound owner slot.
+MetalState& GetMetal() noexcept
+{
+    return gMetalStates[internal::GetBoundOwnerSlot()];
+}
 
 // A compiler service failure reports only "Compilation failed", unlike a source error, whose description carries
 // the program_source log. The domain, code and underlying error tell the two apart in CI logs.
@@ -199,9 +215,9 @@ bool CheckCommand(id<MTLCommandBuffer> command) noexcept
     const StartupError error = command.error.code == MTLCommandBufferErrorDeviceRemoved
                                    ? StartupError::DeviceLost
                                    : StartupError::RenderingUnavailable;
-    if (internal::Current(gToken))
+    if (internal::Current(GetMetal().Token))
     {
-        internal::Fail(gToken, error);
+        internal::Fail(GetMetal().Token, error);
     }
     else
     {
@@ -254,9 +270,9 @@ bool BindingsFit(NSArray<id<MTLBinding>>* bindings, usize declaredSize, usize bu
 }
 FrameStatus FrameFailure() noexcept
 {
-    if (internal::Current(gToken))
+    if (internal::Current(GetMetal().Token))
     {
-        internal::Fail(gToken, StartupError::RenderingUnavailable);
+        internal::Fail(GetMetal().Token, StartupError::RenderingUnavailable);
     }
     else
     {
@@ -266,7 +282,7 @@ FrameStatus FrameFailure() noexcept
 }
 MetalSurface& GetActiveSurface() noexcept
 {
-    return gSurfaces[gActiveSurface];
+    return GetMetal().Surfaces[GetMetal().ActiveSurface];
 }
 MTLPixelFormat GetSurfaceFormat(const WindowInfo& window) noexcept
 {
@@ -325,7 +341,7 @@ bool ConnectSurface(MetalSurface& outSurface, const WindowInfo& window) noexcept
         outSurface.WindowOrNull = (__bridge NSWindow*)window.CocoaWindow;
         outSurface.ViewOrNull = (__bridge NSView*)window.CocoaView;
         outSurface.LayerOrNull = layerOrNull;
-        layerOrNull.device = gDevice;
+        layerOrNull.device = GetMetal().Device;
         layerOrNull.pixelFormat = MTLPixelFormatBGRA8Unorm;
         layerOrNull.framebufferOnly = YES;
         layerOrNull.maximumDrawableCount = FRAMES;
@@ -337,7 +353,7 @@ bool ConnectSurface(MetalSurface& outSurface, const WindowInfo& window) noexcept
     }
     if (window.System == platform::WindowSystem::Hosted)
     {
-        outSurface.Hosted.Connect(gDevice, *window.HostedSurfaceOrNull);
+        outSurface.Hosted.Connect(GetMetal().Device, *window.HostedSurfaceOrNull);
     }
     outSurface.Target = { .Width = window.Width, .Height = window.Height };
     outSurface.RenderedFrames = 0;
@@ -375,12 +391,12 @@ void DisconnectSurface(MetalSurface& inoutSurface) noexcept
 /// Disconnect every surface, the primary included, and route frames back to the primary.
 void DisconnectSurfaces() noexcept
 {
-    for (MetalSurface& surface : gSurfaces)
+    for (MetalSurface& surface : GetMetal().Surfaces)
     {
         DisconnectSurface(surface);
     }
-    gActiveSurface = 0;
-    gSurfaceFormat = MTLPixelFormatBGRA8Unorm;
+    GetMetal().ActiveSurface = 0;
+    GetMetal().SurfaceFormat = MTLPixelFormatBGRA8Unorm;
 }
 /// @brief A created surface stopped accepting frames (its view left its window or its hosted
 /// consumer failed). Retire only its presentation resources and report it lost; the device
@@ -388,16 +404,16 @@ void DisconnectSurfaces() noexcept
 FrameStatus LoseActiveSurface() noexcept
 {
     DisconnectSurface(GetActiveSurface());
-    internal::LoseSurface(gActiveSurface);
+    internal::LoseSurface(GetMetal().ActiveSurface);
     return FrameStatus::Skipped;
 }
 /// Announce completed hosted frames of every surface; a failed created surface is lost.
 /// @return false when the primary surface's hosted consumer failed.
 bool PollHostedSurfaces() noexcept
 {
-    for (usize slot = 0; slot < gSurfaces.GetSize(); ++slot)
+    for (usize slot = 0; slot < GetMetal().Surfaces.GetSize(); ++slot)
     {
-        MetalSurface& surface = gSurfaces[slot];
+        MetalSurface& surface = GetMetal().Surfaces[slot];
         if (surface.Hosted.IsConnected() == false || surface.Hosted.Poll() == true)
         {
             continue;
@@ -490,11 +506,11 @@ bool GetSelectedAdapter(AdapterInfo& outAdapter) noexcept
 {
     @autoreleasepool
     {
-        if (gDevice == nil)
+        if (GetMetal().Device == nil)
         {
             return false;
         }
-        DescribeMetalAdapter(gDevice, outAdapter);
+        DescribeMetalAdapter(GetMetal().Device, outAdapter);
         return true;
     }
 }
@@ -510,10 +526,10 @@ StartupError Start(const ApplicationInfo& app, const WindowInfo& window, uint32 
         {
             return StartupError::InvalidWindow;
         }
-        gToken = token;
+        GetMetal().Token = token;
         if (backend::Initialize(app) == false)
         {
-            return gDevice == nil ? StartupError::AdapterUnavailable : StartupError::DeviceUnavailable;
+            return GetMetal().Device == nil ? StartupError::AdapterUnavailable : StartupError::DeviceUnavailable;
         }
         if (ConnectWindow(window) == false)
         {
@@ -523,7 +539,7 @@ StartupError Start(const ApplicationInfo& app, const WindowInfo& window, uint32 
         {
             return StartupError::RenderingUnavailable;
         }
-        internal::Complete(token, StartupError::None, {MAX_DIMENSION, gDevice.maxBufferLength});
+        internal::Complete(token, StartupError::None, {MAX_DIMENSION, GetMetal().Device.maxBufferLength});
         return StartupError::None;
     }
 }
@@ -535,93 +551,93 @@ bool Initialize(const ApplicationInfo&) noexcept
         {
             return false;
         }
-        if (gDevice != nil)
+        if (GetMetal().Device != nil)
         {
-            return gQueue != nil;
+            return GetMetal().Queue != nil;
         }
         const auto* imported = internal::NativeDeviceRequest();
         if (imported != nullptr)
         {
-            gDevice = (__bridge id<MTLDevice>)imported->Identity.Device.GetObject();
-            gQueue = (__bridge id<MTLCommandQueue>)imported->Identity.CommandQueue.GetObject();
-            if (gQueue.device != gDevice)
+            GetMetal().Device = (__bridge id<MTLDevice>)imported->Identity.Device.GetObject();
+            GetMetal().Queue = (__bridge id<MTLCommandQueue>)imported->Identity.CommandQueue.GetObject();
+            if (GetMetal().Queue.device != GetMetal().Device)
             {
-                gQueue = nil;
-                gDevice = nil;
+                GetMetal().Queue = nil;
+                GetMetal().Device = nil;
                 return false;
             }
         }
         else
         {
             const AdapterIdentity* requestedOrNull = internal::GetRequestedAdapterOrNull();
-            gDevice =
+            GetMetal().Device =
                 requestedOrNull != nullptr ? FindMetalDeviceOrNil(*requestedOrNull) : MTLCreateSystemDefaultDevice();
         }
         // Thanks to Apple's "Metal Feature Set Tables" (resource limits),
         // https://developer.apple.com/metal/Metal-Feature-Set-Tables.pdf:
         // Mac2 / Apple4 and later guarantee the conservative 16384 texture limit.
-        if (gDevice == nil || MeetsMetalBaseline(gDevice) == false)
+        if (GetMetal().Device == nil || MeetsMetalBaseline(GetMetal().Device) == false)
         {
-            gDevice = nil;
+            GetMetal().Device = nil;
             return false;
         }
-        if (gQueue == nil)
+        if (GetMetal().Queue == nil)
         {
-            gQueue = [gDevice newCommandQueue];
+            GetMetal().Queue = [GetMetal().Device newCommandQueue];
         }
-        return gQueue != nil;
+        return GetMetal().Queue != nil;
     }
 }
 bool ConnectWindow(const WindowInfo& window) noexcept
 {
     @autoreleasepool
     {
-        if ([NSThread isMainThread] == false || gDevice == nil || gConnected || ValidWindow(window) == false ||
-            window.Width > MAX_DIMENSION || window.Height > MAX_DIMENSION)
+        if ([NSThread isMainThread] == false || GetMetal().Device == nil || GetMetal().IsConnected ||
+            ValidWindow(window) == false || window.Width > MAX_DIMENSION || window.Height > MAX_DIMENSION)
         {
             return false;
         }
-        if (ConnectSurface(gSurfaces[0], window) == false)
+        if (ConnectSurface(GetMetal().Surfaces[0], window) == false)
         {
             return false;
         }
-        gSurfaceFormat = GetSurfaceFormat(window);
-        gActiveSurface = 0;
-        gConnected = true;
+        GetMetal().SurfaceFormat = GetSurfaceFormat(window);
+        GetMetal().ActiveSurface = 0;
+        GetMetal().IsConnected = true;
         return true;
     }
 }
 bool InitializeRendering() noexcept
 {
-    gRendering = gQueue != nil && gConnected;
-    return gRendering;
+    GetMetal().IsRendering = GetMetal().Queue != nil && GetMetal().IsConnected;
+    return GetMetal().IsRendering;
 }
 void ShutdownRendering() noexcept
 {
     @autoreleasepool
     {
         ClosePassLabels();
-        [gEncoder endEncoding];
-        gEncoder = nil;
-        gCommand = nil;
-        gDrawable = nil;
-        for (auto& command : gSubmitted)
+        [GetMetal().Encoder endEncoding];
+        GetMetal().Encoder = nil;
+        GetMetal().Command = nil;
+        GetMetal().Drawable = nil;
+        for (__strong id<MTLCommandBuffer>& command : GetMetal().Submitted)
         {
             [command waitUntilCompleted];
             command = nil;
         }
-        for (MetalSurface& surface : gSurfaces)
+        for (MetalSurface& surface : GetMetal().Surfaces)
         {
             surface.Hosted.Cancel();
             RefreshSurface(surface);
             surface.HeadlessOrNull = nil;
             surface.DepthOrNull = nil;
         }
-        gSurfaceTexture = nil;
-        gDepth = nil;
-        gFrame = {};
-        gSlot = 0;
-        gRendering = false;
+        GetMetal().SurfaceTexture = nil;
+        GetMetal().Depth = nil;
+        GetMetal().Frame = {};
+        GetMetal().Slot = 0;
+        GetMetal().IsRendering = false;
     }
 }
 void Shutdown() noexcept
@@ -630,57 +646,67 @@ void Shutdown() noexcept
     {
         ShutdownRendering();
         DisconnectSurfaces();
-        gQueue = nil;
-        gDevice = nil;
-        gConnected = false;
-        gToken = 0;
+        GetMetal().Queue = nil;
+        GetMetal().Device = nil;
+        GetMetal().IsConnected = false;
+        GetMetal().Token = 0;
     }
+}
+// R14c: every owner slot keeps its own MetalState, command queue and native tables.
+usize GetDeviceOwnerLimit() noexcept
+{
+    return MAX_DEVICE_OWNERS;
 }
 usize AdditionalSurfaceLimit() noexcept
 {
-    return gRendering == true ? MAX_DEVICE_SURFACES - 1 : 0;
+    return GetMetal().IsRendering == true ? MAX_DEVICE_SURFACES - 1 : 0;
 }
 StartupError CreateSurface(usize slot, const WindowInfo& window) noexcept
 {
     @autoreleasepool
     {
-        if ([NSThread isMainThread] == false || gRendering == false || slot == 0 || slot >= gSurfaces.GetSize() ||
-            gSurfaces[slot].IsConnected == true || ValidWindow(window) == false || window.Width > MAX_DIMENSION ||
-            window.Height > MAX_DIMENSION)
+        if ([NSThread isMainThread] == false || GetMetal().IsRendering == false || slot == 0 ||
+            slot >= GetMetal().Surfaces.GetSize() || GetMetal().Surfaces[slot].IsConnected == true ||
+            ValidWindow(window) == false || window.Width > MAX_DIMENSION || window.Height > MAX_DIMENSION)
         {
             return StartupError::InvalidWindow;
         }
-        // Pipelines target gSurfaceFormat, so every surface of a session shares it.
-        if (GetSurfaceFormat(window) != gSurfaceFormat)
+        // Pipelines target the session surface format, so every surface of a session shares it.
+        if (GetSurfaceFormat(window) != GetMetal().SurfaceFormat)
         {
             return StartupError::BackendUnavailable;
         }
-        return ConnectSurface(gSurfaces[slot], window) == true ? StartupError::None : StartupError::SurfaceUnavailable;
+        return ConnectSurface(GetMetal().Surfaces[slot], window) == true ? StartupError::None
+                                                                         : StartupError::SurfaceUnavailable;
     }
 }
 void DestroySurface(usize slot) noexcept
 {
     @autoreleasepool
     {
-        if (slot != 0 && slot < gSurfaces.GetSize())
+        if (slot != 0 && slot < GetMetal().Surfaces.GetSize())
         {
-            DisconnectSurface(gSurfaces[slot]);
-            gActiveSurface = gActiveSurface == slot ? 0 : gActiveSurface;
+            DisconnectSurface(GetMetal().Surfaces[slot]);
+            GetMetal().ActiveSurface = GetMetal().ActiveSurface == slot ? 0 : GetMetal().ActiveSurface;
         }
     }
 }
 void SelectSurface(usize slot) noexcept
 {
-    gActiveSurface = slot < gSurfaces.GetSize() ? slot : 0;
+    GetMetal().ActiveSurface = slot < GetMetal().Surfaces.GetSize() ? slot : 0;
 }
 SurfaceCompletion GetSurfaceCompletion(usize slot) noexcept
 {
-    if (slot >= gSurfaces.GetSize())
+    if (slot >= GetMetal().Surfaces.GetSize())
     {
         return {};
     }
-    RefreshSurface(gSurfaces[slot]);
-    return { .RenderedFrames = gSurfaces[slot].RenderedFrames, .PresentedFrames = gSurfaces[slot].PresentedFrames };
+    RefreshSurface(GetMetal().Surfaces[slot]);
+    return
+    {
+        .RenderedFrames = GetMetal().Surfaces[slot].RenderedFrames,
+        .PresentedFrames = GetMetal().Surfaces[slot].PresentedFrames,
+    };
 }
 FrameStatus SetTarget(const FrameTarget& target) noexcept
 {
@@ -688,7 +714,7 @@ FrameStatus SetTarget(const FrameTarget& target) noexcept
     {
         return FrameStatus::Unsupported;
     }
-    if (gEncoder != nil)
+    if (GetMetal().Encoder != nil)
     {
         return FrameStatus::InvalidState;
     }
@@ -705,16 +731,16 @@ FrameStatus Begin() noexcept
 {
     @autoreleasepool
     {
-        if (gRendering == false)
+        if (GetMetal().IsRendering == false)
         {
             return FrameStatus::NotReady;
         }
-        if (gEncoder != nil)
+        if (GetMetal().Encoder != nil)
         {
             return FrameStatus::InvalidState;
         }
-        gFrame = {};
-        for (auto command : gSubmitted)
+        GetMetal().Frame = {};
+        for (id<MTLCommandBuffer> command : GetMetal().Submitted)
         {
             if (command != nil && CheckCommand(command) == false)
             {
@@ -726,13 +752,13 @@ FrameStatus Begin() noexcept
             return FrameFailure();
         }
         MetalSurface& surface = GetActiveSurface();
-        if (gActiveSurface != 0 && surface.IsConnected == false)
+        if (GetMetal().ActiveSurface != 0 && surface.IsConnected == false)
         {
             // Lost earlier, for example while another surface polled its hosted consumer.
             return FrameStatus::Skipped;
         }
         // A created Cocoa surface is lost once its view leaves the window it was borrowed from.
-        if (gActiveSurface != 0 && surface.ViewOrNull != nil &&
+        if (GetMetal().ActiveSurface != 0 && surface.ViewOrNull != nil &&
             (surface.ViewOrNull.window != surface.WindowOrNull ||
              surface.WindowOrNull.contentView != surface.ViewOrNull))
         {
@@ -745,15 +771,16 @@ FrameStatus Begin() noexcept
         {
             return FrameStatus::Skipped;
         }
-        [gSubmitted[gSlot] waitUntilCompleted];
+        [GetMetal().Submitted[GetMetal().Slot] waitUntilCompleted];
         (void)RasterCompleted();
-        if (gSubmitted[gSlot] != nil && CheckCommand(gSubmitted[gSlot]) == false)
+        if (GetMetal().Submitted[GetMetal().Slot] != nil &&
+            CheckCommand(GetMetal().Submitted[GetMetal().Slot]) == false)
         {
             return FrameStatus::Failed;
         }
-        gSubmitted[gSlot] = nil;
-        gCommandPrefixes[gSlot] = {};
-        hasNativeComputeSplit = false;
+        GetMetal().Submitted[GetMetal().Slot] = nil;
+        GetMetal().CommandPrefixes[GetMetal().Slot] = {};
+        GetMetal().HasNativeComputeSplit = false;
         id<MTLTexture> texture = nil;
         if (surface.Hosted.IsConnected() == true)
         {
@@ -764,7 +791,7 @@ FrameStatus Begin() noexcept
             }
             if (acquired == HostedAcquireStatus::Failed)
             {
-                return gActiveSurface != 0 ? LoseActiveSurface() : FrameFailure();
+                return GetMetal().ActiveSurface != 0 ? LoseActiveSurface() : FrameFailure();
             }
         }
         else if (surface.LayerOrNull != nil)
@@ -772,12 +799,12 @@ FrameStatus Begin() noexcept
             surface.LayerOrNull.frame = surface.ViewOrNull.bounds;
             surface.LayerOrNull.contentsScale = surface.WindowOrNull.backingScaleFactor;
             surface.LayerOrNull.drawableSize = CGSizeMake(target.Width, target.Height);
-            gDrawable = [surface.LayerOrNull nextDrawable];
-            if (gDrawable == nil)
+            GetMetal().Drawable = [surface.LayerOrNull nextDrawable];
+            if (GetMetal().Drawable == nil)
             {
                 return FrameStatus::Skipped;
             }
-            texture = gDrawable.texture;
+            texture = GetMetal().Drawable.texture;
         }
         else
         {
@@ -791,7 +818,7 @@ FrameStatus Begin() noexcept
                                                                    mipmapped:NO];
                 description.usage = MTLTextureUsageRenderTarget;
                 description.storageMode = MTLStorageModePrivate;
-                surface.HeadlessOrNull = [gDevice newTextureWithDescriptor:description];
+                surface.HeadlessOrNull = [GetMetal().Device newTextureWithDescriptor:description];
             }
             texture = surface.HeadlessOrNull;
         }
@@ -809,19 +836,19 @@ FrameStatus Begin() noexcept
                                                                mipmapped:NO];
             depth.usage = MTLTextureUsageRenderTarget;
             depth.storageMode = MTLStorageModePrivate;
-            surface.DepthOrNull = [gDevice newTextureWithDescriptor:depth];
+            surface.DepthOrNull = [GetMetal().Device newTextureWithDescriptor:depth];
         }
         if (surface.DepthOrNull == nil)
         {
             surface.Hosted.Cancel();
             return FrameFailure();
         }
-        gDepth = surface.DepthOrNull;
-        gCommand = [gQueue commandBuffer];
-        gCommand.label = @"Ludus/Frame";
+        GetMetal().Depth = surface.DepthOrNull;
+        GetMetal().Command = [GetMetal().Queue commandBuffer];
+        GetMetal().Command.label = @"Ludus/Frame";
         BeginPassTimingFrame();
         MTLRenderPassDescriptor* pass = [MTLRenderPassDescriptor renderPassDescriptor];
-        pass.depthAttachment.texture = gDepth;
+        pass.depthAttachment.texture = GetMetal().Depth;
         pass.depthAttachment.loadAction = MTLLoadActionClear;
         pass.depthAttachment.storeAction = MTLStoreActionDontCare;
         pass.depthAttachment.clearDepth = 1;
@@ -829,16 +856,18 @@ FrameStatus Begin() noexcept
         pass.colorAttachments[0].loadAction = MTLLoadActionClear;
         pass.colorAttachments[0].storeAction = MTLStoreActionStore;
         pass.colorAttachments[0].clearColor = MTLClearColorMake(target.Red, target.Green, target.Blue, target.Alpha);
-        gEncoder = [gCommand renderCommandEncoderWithDescriptor:pass];
-        if (gEncoder == nil)
+        GetMetal().Encoder = [GetMetal().Command renderCommandEncoderWithDescriptor:pass];
+        if (GetMetal().Encoder == nil)
         {
             surface.Hosted.Cancel();
             return FrameFailure();
         }
-        gSurfaceTexture = texture;
+        GetMetal().SurfaceTexture = texture;
         RasterFrameExtent();
         // Extent comes from the acquired texture, bounded by the target above.
-        gFrame = {static_cast<uint32>(texture.width), static_cast<uint32>(texture.height), SurfaceEncoding::Unorm};
+        GetMetal().Frame = {static_cast<uint32>(texture.width),
+                            static_cast<uint32>(texture.height),
+                            SurfaceEncoding::Unorm};
         return FrameStatus::Ready;
     }
 }
@@ -846,42 +875,42 @@ FrameStatus End() noexcept
 {
     @autoreleasepool
     {
-        if (gCommand == nil)
+        if (GetMetal().Command == nil)
         {
             return FrameStatus::InvalidState;
         }
-        if (gEncoder != nil)
+        if (GetMetal().Encoder != nil)
         {
             ClosePassLabels();
-            [gEncoder endEncoding];
+            [GetMetal().Encoder endEncoding];
         }
-        gEncoder = nil;
+        GetMetal().Encoder = nil;
         MetalSurface& surface = GetActiveSurface();
         bool isPresented = false;
-        if (gDrawable != nil)
+        if (GetMetal().Drawable != nil)
         {
-            [gCommand presentDrawable:gDrawable];
+            [GetMetal().Command presentDrawable:GetMetal().Drawable];
             isPresented = true;
         }
         TimingEnd();
         SubmitPassTimings();
-        [gCommand commit];
+        [GetMetal().Command commit];
         if (surface.Hosted.IsConnected() == true)
         {
             // Announced with Present once the command buffer completes (CPU fence).
-            surface.Hosted.Submit(gCommand);
+            surface.Hosted.Submit(GetMetal().Command);
             static_cast<void>(surface.Hosted.Poll());
             isPresented = true;
         }
-        TrackSurfaceFrame(surface, gCommand);
+        TrackSurfaceFrame(surface, GetMetal().Command);
         surface.PresentedFrames += isPresented == true ? 1 : 0;
-        gSurfaceTexture = nil;
-        gDepth = nil;
-        gSubmitted[gSlot] = gCommand;
-        gCommand = nil;
-        gDrawable = nil;
-        gFrame = {};
-        gSlot = (gSlot + 1) % FRAMES;
+        GetMetal().SurfaceTexture = nil;
+        GetMetal().Depth = nil;
+        GetMetal().Submitted[GetMetal().Slot] = GetMetal().Command;
+        GetMetal().Command = nil;
+        GetMetal().Drawable = nil;
+        GetMetal().Frame = {};
+        GetMetal().Slot = (GetMetal().Slot + 1) % FRAMES;
         return FrameStatus::Ready;
     }
 }
@@ -910,7 +939,7 @@ ResourceStatus CreateShader(usize slot, const ShaderDescription& description, ui
         NSError* error = nil;
         MTLCompileOptions* options = [MTLCompileOptions new];
         options.languageVersion = MTLLanguageVersion2_3;
-        id<MTLLibrary> library = [gDevice newLibraryWithSource:source options:options error:&error];
+        id<MTLLibrary> library = [GetMetal().Device newLibraryWithSource:source options:options error:&error];
         if (library == nil)
         {
             LogError(error);
@@ -923,7 +952,7 @@ ResourceStatus CreateShader(usize slot, const ShaderDescription& description, ui
         {
             return ResourceStatus::Failed;
         }
-        gShaders[slot] = {function, description.UniformSize};
+        GetMetal().Shaders[slot] = {function, description.UniformSize};
         return ResourceStatus::Ready;
     }
 }
@@ -931,11 +960,11 @@ ResourceStatus CreateUniform(usize slot, const UniformDescription& description, 
 {
     @autoreleasepool
     {
-        auto& uniform = gUniforms[slot];
+        Uniform& uniform = GetMetal().Uniforms[slot];
         uniform.Size = description.Size;
         for (auto& buffer : uniform.Buffers)
         {
-            buffer = [gDevice newBufferWithLength:uniform.Size options:MTLResourceStorageModeShared];
+            buffer = [GetMetal().Device newBufferWithLength:uniform.Size options:MTLResourceStorageModeShared];
             if (buffer == nil || buffer.contents == nullptr)
             {
                 return ResourceStatus::Failed;
@@ -949,67 +978,71 @@ ResourceStatus CreatePipeline(usize slot, const PipelineResources& resources, ui
     @autoreleasepool
     {
         MTLRenderPipelineDescriptor* description = [MTLRenderPipelineDescriptor new];
-        description.vertexFunction = gShaders[resources.Vertex].Function;
-        description.fragmentFunction = gShaders[resources.Fragment].Function;
-        description.colorAttachments[0].pixelFormat = gSurfaceFormat;
+        description.vertexFunction = GetMetal().Shaders[resources.Vertex].Function;
+        description.fragmentFunction = GetMetal().Shaders[resources.Fragment].Function;
+        description.colorAttachments[0].pixelFormat = GetMetal().SurfaceFormat;
         description.depthAttachmentPixelFormat = MTLPixelFormatDepth32Float;
         NSError* error = nil;
         MTLRenderPipelineReflection* reflection = nil;
         id<MTLRenderPipelineState> pipeline =
-            [gDevice newRenderPipelineStateWithDescriptor:description
-                                                  options:BINDING_INFO | MTLPipelineOptionBufferTypeInfo
-                                               reflection:&reflection
-                                                    error:&error];
+            [GetMetal().Device newRenderPipelineStateWithDescriptor:description
+                                                            options:BINDING_INFO | MTLPipelineOptionBufferTypeInfo
+                                                         reflection:&reflection
+                                                              error:&error];
         if (pipeline == nil)
         {
             LogError(error);
             return ResourceStatus::Failed;
         }
-        const usize size = gUniforms[resources.Uniform].Size;
+        const usize size = GetMetal().Uniforms[resources.Uniform].Size;
         if (reflection == nil ||
-            BindingsFit(reflection.vertexBindings, gShaders[resources.Vertex].UniformSize, size) == false ||
-            BindingsFit(reflection.fragmentBindings, gShaders[resources.Fragment].UniformSize, size) == false)
+            BindingsFit(reflection.vertexBindings, GetMetal().Shaders[resources.Vertex].UniformSize, size) == false ||
+            BindingsFit(reflection.fragmentBindings, GetMetal().Shaders[resources.Fragment].UniformSize, size) == false)
         {
             return ResourceStatus::Failed;
         }
-        gPipelines[slot] = {pipeline, resources.Uniform};
+        GetMetal().Pipelines[slot] = {pipeline, resources.Uniform};
         return ResourceStatus::Ready;
     }
 }
 void DestroyShader(usize slot) noexcept
 {
-    gShaders[slot] = {};
+    GetMetal().Shaders[slot] = {};
 }
 void DestroyUniform(usize slot) noexcept
 {
-    gUniforms[slot] = {};
+    GetMetal().Uniforms[slot] = {};
 }
 void DestroyPipeline(usize slot) noexcept
 {
-    gPipelines[slot] = {};
+    GetMetal().Pipelines[slot] = {};
 }
 void UpdateUniform(usize slot, ludus::foundation::BorrowedView<const uint8> bytes) noexcept
 {
-    std::memcpy(gUniforms[slot].Bytes, bytes.GetDataOrNull(), bytes.GetSize());
+    std::memcpy(GetMetal().Uniforms[slot].Bytes, bytes.GetDataOrNull(), bytes.GetSize());
 }
 FrameInfo GetFrameInfo() noexcept
 {
-    return gFrame;
+    return GetMetal().Frame;
 }
 ResourceStatus Draw(usize slot) noexcept
 {
-    auto& pipeline = gPipelines[slot];
-    auto& uniform = gUniforms[pipeline.UniformSlot];
-    id<MTLBuffer> buffer = uniform.Buffers[gSlot];
+    Pipeline& pipeline = GetMetal().Pipelines[slot];
+    Uniform& uniform = GetMetal().Uniforms[pipeline.UniformSlot];
+    id<MTLBuffer> buffer = uniform.Buffers[GetMetal().Slot];
     std::memcpy(buffer.contents, uniform.Bytes, uniform.Size);
-    [gEncoder setRenderPipelineState:pipeline.Object];
-    [gEncoder setVertexBuffer:buffer offset:0 atIndex:0];
-    [gEncoder setFragmentBuffer:buffer offset:0 atIndex:0];
-    [gEncoder
-        setViewport:MTLViewport{0, 0, static_cast<float64>(gFrame.Width), static_cast<float64>(gFrame.Height), 0, 1}];
-    [gEncoder setCullMode:MTLCullModeNone];
-    [gEncoder setTriangleFillMode:MTLTriangleFillModeFill];
-    [gEncoder drawPrimitives:MTLPrimitiveTypeTriangle vertexStart:0 vertexCount:3];
+    [GetMetal().Encoder setRenderPipelineState:pipeline.Object];
+    [GetMetal().Encoder setVertexBuffer:buffer offset:0 atIndex:0];
+    [GetMetal().Encoder setFragmentBuffer:buffer offset:0 atIndex:0];
+    [GetMetal().Encoder setViewport:MTLViewport{0,
+                                                0,
+                                                static_cast<float64>(GetMetal().Frame.Width),
+                                                static_cast<float64>(GetMetal().Frame.Height),
+                                                0,
+                                                1}];
+    [GetMetal().Encoder setCullMode:MTLCullModeNone];
+    [GetMetal().Encoder setTriangleFillMode:MTLTriangleFillModeFill];
+    [GetMetal().Encoder drawPrimitives:MTLPrimitiveTypeTriangle vertexStart:0 vertexCount:FULLSCREEN_VERTEX_COUNT];
     return ResourceStatus::Ready;
 }
 #if defined(LUDUS_RHI_TEST_READBACK)
@@ -1018,7 +1051,8 @@ bool ReadHeadlessPixels(std::span<uint8> pixels) noexcept
     @autoreleasepool
     {
         id<MTLTexture> headlessOrNull = GetActiveSurface().HeadlessOrNull;
-        if (gRendering == false || GetActiveSurface().LayerOrNull != nil || gEncoder != nil || headlessOrNull == nil)
+        if (GetMetal().IsRendering == false || GetActiveSurface().LayerOrNull != nil || GetMetal().Encoder != nil ||
+            headlessOrNull == nil)
         {
             return false;
         }
@@ -1028,7 +1062,7 @@ bool ReadHeadlessPixels(std::span<uint8> pixels) noexcept
         {
             return false;
         }
-        for (auto command : gSubmitted)
+        for (id<MTLCommandBuffer> command : GetMetal().Submitted)
         {
             [command waitUntilCompleted];
             if (command != nil && CheckCommand(command) == false)
@@ -1037,8 +1071,9 @@ bool ReadHeadlessPixels(std::span<uint8> pixels) noexcept
             }
         }
         const usize pitch = (width * 4 + 255) / 256 * 256;
-        id<MTLBuffer> buffer = [gDevice newBufferWithLength:pitch * height options:MTLResourceStorageModeShared];
-        id<MTLCommandBuffer> command = [gQueue commandBuffer];
+        id<MTLBuffer> buffer = [GetMetal().Device newBufferWithLength:pitch * height
+                                                              options:MTLResourceStorageModeShared];
+        id<MTLCommandBuffer> command = [GetMetal().Queue commandBuffer];
         id<MTLBlitCommandEncoder> encoder = [command blitCommandEncoder];
         if (buffer == nil || encoder == nil)
         {
@@ -1095,14 +1130,14 @@ namespace ludus::graphics::rhi::backend
 {
 id<MTLDevice> GetSpatialUpscaleMetalDevice() noexcept
 {
-    return gDevice;
+    return GetMetal().Device;
 }
 id<MTLTexture> GetSpatialUpscaleMetalTexture(foundation::usize slot) noexcept
 {
-    return gRasterTextures[slot];
+    return GetRasterMetal().Textures[slot];
 }
 id<MTLCommandBuffer> GetSpatialUpscaleMetalCommandBuffer() noexcept
 {
-    return gCommand;
+    return GetMetal().Command;
 }
 } // namespace ludus::graphics::rhi::backend

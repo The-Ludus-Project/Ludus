@@ -16,6 +16,20 @@ inline constexpr ludus::foundation::usize UNIFORM_CAPACITY = 16384;
 // Stable process storage and monotonically assigned IDs; no application pointers.
 void ResourceComplete(ludus::foundation::uint32 id, ResourceStatus status) noexcept;
 void ReleaseResources() noexcept;
+/// The fullscreen resource operations of render.h for the bound owner slot (R14c). The public
+/// device-less forms bind the first slot; the explicit-device forms bind their device.
+[[nodiscard]] ResourceStatus CreateShader(const ShaderDescription& description, ShaderHandle& outHandle) noexcept;
+[[nodiscard]] ResourceStatus CreateUniform(ludus::foundation::usize size, UniformHandle& outHandle) noexcept;
+[[nodiscard]] ResourceStatus CreatePipeline(const PipelineDescription& description, PipelineHandle& outHandle) noexcept;
+[[nodiscard]] ResourceStatus GetStatus(ShaderHandle handle) noexcept;
+[[nodiscard]] ResourceStatus GetStatus(UniformHandle handle) noexcept;
+[[nodiscard]] ResourceStatus GetStatus(PipelineHandle handle) noexcept;
+[[nodiscard]] ResourceStatus
+UpdateUniform(UniformHandle handle, ludus::foundation::BorrowedView<const ludus::foundation::uint8> bytes) noexcept;
+[[nodiscard]] ResourceStatus Destroy(ShaderHandle handle) noexcept;
+[[nodiscard]] ResourceStatus Destroy(UniformHandle handle) noexcept;
+[[nodiscard]] ResourceStatus Destroy(PipelineHandle handle) noexcept;
+[[nodiscard]] ResourceStatus DrawFullscreen(PipelineHandle handle) noexcept;
 } // namespace ludus::graphics::rhi::internal
 namespace ludus::graphics::rhi::backend
 {

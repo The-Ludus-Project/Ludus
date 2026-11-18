@@ -7,8 +7,18 @@ namespace ludus::graphics::rhi::backend
 {
 namespace
 {
-GpuTiming gTiming;
-id<MTLCommandBuffer> gTimingCommand = nil;
+/// Frame timing request of one Metal owner (R14c).
+struct MeasurementMetalState final
+{
+    GpuTiming Timing;
+    id<MTLCommandBuffer> TimingCommand = nil;
+};
+StaticArray<MeasurementMetalState, MAX_DEVICE_OWNERS> gMeasurementMetalStates{};
+/// The frame timing request of the bound owner slot.
+MeasurementMetalState& GetMeasurementMetal() noexcept
+{
+    return gMeasurementMetalStates[internal::GetBoundOwnerSlot()];
+}
 } // namespace
 bool AllocatorBlockBytes(uint64& bytes) noexcept
 {
@@ -18,79 +28,83 @@ bool AllocatorBlockBytes(uint64& bytes) noexcept
 MeasurementAdapter TimingAdapter() noexcept
 {
     MeasurementAdapter output;
-    internal::CopyMeasurementName(gDevice.name.UTF8String, 255, output.Name);
+    internal::CopyMeasurementName(GetMetal().Device.name.UTF8String, sizeof(output.Name), output.Name);
     output.SoftwareKnown = true;
     return output;
 }
 void TimingReset() noexcept
 {
-    gTimingCommand = nil;
-    gTiming = {};
+    GetMeasurementMetal().TimingCommand = nil;
+    GetMeasurementMetal().Timing = {};
 }
 GpuTiming TimingPoll() noexcept
 {
-    if (gTiming.State == GpuTimingState::Pending)
+    if (GetMeasurementMetal().Timing.State == GpuTimingState::Pending)
     {
-        if (gTimingCommand.status == MTLCommandBufferStatusError)
+        if (GetMeasurementMetal().TimingCommand.status == MTLCommandBufferStatusError)
         {
-            gTiming.State = GpuTimingState::Failed;
-            (void)CheckCommand(gTimingCommand);
+            GetMeasurementMetal().Timing.State = GpuTimingState::Failed;
+            (void)CheckCommand(GetMeasurementMetal().TimingCommand);
         }
-        else if (gTimingCommand.status == MTLCommandBufferStatusCompleted)
+        else if (GetMeasurementMetal().TimingCommand.status == MTLCommandBufferStatusCompleted)
         {
-            const auto start = gTimingCommand.GPUStartTime, end = gTimingCommand.GPUEndTime;
-            if (start > 0 && end >= start && end - start < 1e9)
+            // GPU start and end times are host seconds.
+            const CFTimeInterval start = GetMeasurementMetal().TimingCommand.GPUStartTime;
+            const CFTimeInterval end = GetMeasurementMetal().TimingCommand.GPUEndTime;
+            const float64 nanosecondsPerSecond = static_cast<float64>(foundation::time::NANOSECONDS_PER_SECOND);
+            if (start > 0 && end >= start && end - start < nanosecondsPerSecond)
             {
-                gTiming.DurationNanoseconds = (end - start) * 1e9;
-                gTiming.State = GpuTimingState::Available;
+                GetMeasurementMetal().Timing.DurationNanoseconds = (end - start) * nanosecondsPerSecond;
+                GetMeasurementMetal().Timing.State = GpuTimingState::Available;
             }
             else
             {
-                gTiming.State = GpuTimingState::Disjoint;
+                GetMeasurementMetal().Timing.State = GpuTimingState::Disjoint;
             }
         }
     }
-    return gTiming;
+    return GetMeasurementMetal().Timing;
 }
 RasterStatus TimingArm() noexcept
 {
     const auto state = TimingPoll().State;
-    if (gDevice == nil)
+    if (GetMetal().Device == nil)
     {
-        return GetStartup().State == StartupState::DeviceLost ? RasterStatus::DeviceLost : RasterStatus::Failed;
+        return internal::GetStartup().State == StartupState::DeviceLost ? RasterStatus::DeviceLost
+                                                                        : RasterStatus::Failed;
     }
     if (state == GpuTimingState::Armed || state == GpuTimingState::Pending)
     {
         return RasterStatus::InvalidState;
     }
     TimingReset();
-    gTiming.State = GpuTimingState::Armed;
+    GetMeasurementMetal().Timing.State = GpuTimingState::Armed;
     return RasterStatus::Ready;
 }
 void TimingBegin() noexcept {}
 void TimingEnd() noexcept
 {
-    if (gTiming.State == GpuTimingState::Armed && hasNativeComputeSplit == true)
+    if (GetMeasurementMetal().Timing.State == GpuTimingState::Armed && GetMetal().HasNativeComputeSplit == true)
     {
-        gTiming.State = GpuTimingState::Disjoint;
+        GetMeasurementMetal().Timing.State = GpuTimingState::Disjoint;
         return;
     }
-    if (gTiming.State == GpuTimingState::Armed)
+    if (GetMeasurementMetal().Timing.State == GpuTimingState::Armed)
     {
-        gTimingCommand = gCommand;
-        gTiming.State = GpuTimingState::Pending;
+        GetMeasurementMetal().TimingCommand = GetMetal().Command;
+        GetMeasurementMetal().Timing.State = GpuTimingState::Pending;
     }
 }
 bool RasterAllocationBytes(internal::RasterKind kind, usize slot, uint64& bytes) noexcept
 {
     bytes = 0;
-    if (kind == internal::RasterKind::Buffer && slot < gRasterBuffers.GetSize())
+    if (kind == internal::RasterKind::Buffer && slot < GetRasterMetal().Buffers.GetSize())
     {
-        bytes = gRasterBuffers[slot].allocatedSize;
+        bytes = GetRasterMetal().Buffers[slot].allocatedSize;
     }
-    else if (kind == internal::RasterKind::Texture && slot < gRasterTextures.GetSize())
+    else if (kind == internal::RasterKind::Texture && slot < GetRasterMetal().Textures.GetSize())
     {
-        bytes = gRasterTextures[slot].allocatedSize + gRasterDepths[slot].allocatedSize;
+        bytes = GetRasterMetal().Textures[slot].allocatedSize + GetRasterMetal().Depths[slot].allocatedSize;
     }
     return true;
 }

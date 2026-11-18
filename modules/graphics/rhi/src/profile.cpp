@@ -1,3 +1,6 @@
+#include <ludus/foundation/containers/static_array.hpp>
+
+#include "internal/owner.h"
 #include "internal/profile.h"
 #include "internal/raster.h"
 #include "internal/storage.h"
@@ -549,46 +552,56 @@ namespace ludus::graphics::rhi::internal
 {
 namespace
 {
-bool gIsBindlessRequested = false;
-bool gIsBindlessRequired = false;
-bool gIsRuntimeTextureArrayRequested = false;
-bool gIsRuntimeTextureArrayRequired = false;
-StorageLimits gStorageLimits;
-StorageUsage gStorageUsage;
-RasterStatus gStorageFailure = RasterStatus::CapacityExceeded;
+/// Copied optional binding requests, storage limits and storage accounting of one owner (R14c).
+struct ProfileState final
+{
+    bool IsBindlessRequested = false;
+    bool IsBindlessRequired = false;
+    bool IsRuntimeTextureArrayRequested = false;
+    bool IsRuntimeTextureArrayRequired = false;
+    StorageLimits Limits;
+    StorageUsage Usage;
+    RasterStatus Failure = RasterStatus::CapacityExceeded;
 #if defined(LUDUS_RHI_TEST_STORAGE)
-bool gFailStorageAllocation = false;
+    bool ShouldFailAllocation = false;
 #endif
+};
+foundation::StaticArray<ProfileState, MAX_DEVICE_OWNERS> gProfileStates{};
+/// The requests and storage accounting of the bound owner slot.
+ProfileState& GetProfileState() noexcept
+{
+    return gProfileStates[GetBoundOwnerSlot()];
+}
 } // namespace
 bool IsBindlessRequested() noexcept
 {
-    return gIsBindlessRequested;
+    return GetProfileState().IsBindlessRequested;
 }
 bool IsBindlessRequired() noexcept
 {
-    return gIsBindlessRequired;
+    return GetProfileState().IsBindlessRequired;
 }
 void SetBindlessRequest(bool isRequested, bool isRequired) noexcept
 {
-    gIsBindlessRequested = isRequested;
-    gIsBindlessRequired = isRequired;
+    GetProfileState().IsBindlessRequested = isRequested;
+    GetProfileState().IsBindlessRequired = isRequired;
 }
 const StorageLimits& CurrentStorageLimits() noexcept
 {
-    return gStorageLimits;
+    return GetProfileState().Limits;
 }
 bool IsRuntimeTextureArrayRequested() noexcept
 {
-    return gIsRuntimeTextureArrayRequested;
+    return GetProfileState().IsRuntimeTextureArrayRequested;
 }
 bool IsRuntimeTextureArrayRequired() noexcept
 {
-    return gIsRuntimeTextureArrayRequired;
+    return GetProfileState().IsRuntimeTextureArrayRequired;
 }
 void SetRuntimeTextureArrayRequest(bool isRequested, bool isRequired) noexcept
 {
-    gIsRuntimeTextureArrayRequested = isRequested;
-    gIsRuntimeTextureArrayRequired = isRequired;
+    GetProfileState().IsRuntimeTextureArrayRequested = isRequested;
+    GetProfileState().IsRuntimeTextureArrayRequired = isRequired;
 }
 bool ValidStorageLimits(const StorageLimits& limits) noexcept
 {
@@ -621,78 +634,78 @@ bool ValidStorageLimits(const StorageLimits& limits) noexcept
 }
 bool ConfigureStorage(const StorageLimits& limits) noexcept
 {
-    if (ValidStorageLimits(limits) == false || limits.HostBytes < gStorageUsage.HostBytes ||
-        limits.ResourceBytes < gStorageUsage.ResourceBytes)
+    if (ValidStorageLimits(limits) == false || limits.HostBytes < GetProfileState().Usage.HostBytes ||
+        limits.ResourceBytes < GetProfileState().Usage.ResourceBytes)
     {
         return false;
     }
-    gStorageLimits = limits;
+    GetProfileState().Limits = limits;
     return true;
 }
 RasterStatus StorageFailure() noexcept
 {
-    return gStorageFailure;
+    return GetProfileState().Failure;
 }
 bool ReserveHostStorage(foundation::usize bytes) noexcept
 {
 #if defined(LUDUS_RHI_TEST_STORAGE)
-    if (gFailStorageAllocation)
+    if (GetProfileState().ShouldFailAllocation)
     {
-        gFailStorageAllocation = false;
-        gStorageFailure = RasterStatus::OutOfMemory;
+        GetProfileState().ShouldFailAllocation = false;
+        GetProfileState().Failure = RasterStatus::OutOfMemory;
         return false;
     }
 #endif
-    gStorageFailure = FrameOpen() ? RasterStatus::InvalidState : RasterStatus::CapacityExceeded;
-    if (FrameOpen() || bytes > gStorageLimits.HostBytes - gStorageUsage.HostBytes)
+    GetProfileState().Failure = FrameOpen() ? RasterStatus::InvalidState : RasterStatus::CapacityExceeded;
+    if (FrameOpen() || bytes > GetProfileState().Limits.HostBytes - GetProfileState().Usage.HostBytes)
     {
         return false;
     }
-    gStorageUsage.HostBytes += bytes;
-    if (gStorageUsage.HostBytes > gStorageUsage.PeakHostBytes)
+    GetProfileState().Usage.HostBytes += bytes;
+    if (GetProfileState().Usage.HostBytes > GetProfileState().Usage.PeakHostBytes)
     {
-        gStorageUsage.PeakHostBytes = gStorageUsage.HostBytes;
+        GetProfileState().Usage.PeakHostBytes = GetProfileState().Usage.HostBytes;
     }
     return true;
 }
 void ReleaseHostStorage(foundation::usize bytes) noexcept
 {
-    gStorageUsage.HostBytes -= bytes;
+    GetProfileState().Usage.HostBytes -= bytes;
 }
 void StorageAllocationFailed() noexcept
 {
-    gStorageFailure = RasterStatus::OutOfMemory;
+    GetProfileState().Failure = RasterStatus::OutOfMemory;
 }
 void StorageCapacityFailed() noexcept
 {
-    gStorageFailure = RasterStatus::CapacityExceeded;
+    GetProfileState().Failure = RasterStatus::CapacityExceeded;
 }
 #if defined(LUDUS_RHI_TEST_STORAGE)
 void FailNextStorageAllocation() noexcept
 {
-    gFailStorageAllocation = true;
+    GetProfileState().ShouldFailAllocation = true;
 }
 #endif
 bool ReserveResourceStorage(foundation::uint64 bytes) noexcept
 {
-    gStorageFailure = RasterStatus::CapacityExceeded;
-    if (bytes > gStorageLimits.ResourceBytes - gStorageUsage.ResourceBytes)
+    GetProfileState().Failure = RasterStatus::CapacityExceeded;
+    if (bytes > GetProfileState().Limits.ResourceBytes - GetProfileState().Usage.ResourceBytes)
     {
         return false;
     }
-    gStorageUsage.ResourceBytes += bytes;
-    if (gStorageUsage.ResourceBytes > gStorageUsage.PeakResourceBytes)
+    GetProfileState().Usage.ResourceBytes += bytes;
+    if (GetProfileState().Usage.ResourceBytes > GetProfileState().Usage.PeakResourceBytes)
     {
-        gStorageUsage.PeakResourceBytes = gStorageUsage.ResourceBytes;
+        GetProfileState().Usage.PeakResourceBytes = GetProfileState().Usage.ResourceBytes;
     }
     return true;
 }
 void ReleaseResourceStorage(foundation::uint64 bytes) noexcept
 {
-    gStorageUsage.ResourceBytes -= bytes;
+    GetProfileState().Usage.ResourceBytes -= bytes;
 }
 StorageUsage CurrentStorageUsage() noexcept
 {
-    return gStorageUsage;
+    return GetProfileState().Usage;
 }
 } // namespace ludus::graphics::rhi::internal

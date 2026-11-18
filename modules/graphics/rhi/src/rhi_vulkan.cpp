@@ -7,6 +7,7 @@
 #include "internal/measurement.h"
 #include "internal/native_interop.h"
 #include "internal/native_preparation.h"
+#include "internal/owner.h"
 #include "internal/raster.h"
 #include "internal/ray_backend.h"
 #include "internal/resources.h"
@@ -1659,6 +1660,11 @@ void Shutdown() noexcept
     GetActiveSurface().Target = {};
     GetActiveSurface().Extent = {};
     GetActiveSurface().RequestedExtent = {};
+}
+// R14c: this backend keeps one process session, so the facade admits a single device owner.
+usize GetDeviceOwnerLimit() noexcept
+{
+    return 1;
 }
 usize AdditionalSurfaceLimit() noexcept
 {

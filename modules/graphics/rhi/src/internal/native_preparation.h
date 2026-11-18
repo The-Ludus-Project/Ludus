@@ -4,6 +4,8 @@
 #include <ludus/foundation/containers/static_array.hpp>
 #include <ludus/foundation/threading/worker_queue.hpp>
 
+#include "owner.h"
+
 #if defined(LUDUS_RHI_TEST_READBACK)
 #    include <atomic>
 #endif
@@ -32,10 +34,23 @@ struct NativePreparationTask
     virtual void Execute() noexcept = 0;
     virtual RasterStatus Complete(bool isDraining) noexcept = 0;
 };
-threading::WorkerQueue gPreparationQueue;
-foundation::StaticArray<UniquePtr<NativePreparationTask>, threading::MAX_WORKER_QUEUE_TASKS> gPreparationTasks{};
-bool isPreparationInitialized = false;
-bool isPreparationDraining = false;
+/// @brief Worker queue and queued tasks of one device owner (R14c).
+///
+/// Each owner polls only its own queue, so a completion always runs bound to the owner whose
+/// tables it updates. Workers never read the owner binding.
+struct NativePreparationState final
+{
+    threading::WorkerQueue Queue;
+    foundation::StaticArray<UniquePtr<NativePreparationTask>, threading::MAX_WORKER_QUEUE_TASKS> Tasks{};
+    bool IsInitialized = false;
+    bool IsDraining = false;
+};
+foundation::StaticArray<NativePreparationState, MAX_DEVICE_OWNERS> gPreparationStates{};
+/// The preparation queue of the bound owner slot.
+NativePreparationState& GetPreparation() noexcept
+{
+    return gPreparationStates[internal::GetBoundOwnerSlot()];
+}
 #if defined(LUDUS_RHI_TEST_READBACK)
 std::atomic<bool> isPreparationPaused{false};
 std::atomic<foundation::uint32> gPreparationStarted{0};
@@ -62,9 +77,9 @@ void CompleteNativePreparation(void* contextOrNull) noexcept
     if (internal::IsRasterRequestCurrent(
             { .Kind = task.Kind, .ResourceSlot = task.ResourceSlot, .Request = task.Request }) == true)
     {
-        static_cast<void>(task.Complete(isPreparationDraining));
+        static_cast<void>(task.Complete(GetPreparation().IsDraining));
     }
-    gPreparationTasks[task.QueueSlot].Reset();
+    GetPreparation().Tasks[task.QueueSlot].Reset();
 }
 template <typename T>
 [[nodiscard]] UniquePtr<T> MakePreparationTask() noexcept
@@ -94,31 +109,31 @@ RasterStatus SubmitNativePreparation(UniquePtr<NativePreparationTask> task, bool
         task->Execute();
         return task->Complete(false);
     }
-    if (isPreparationInitialized == false)
+    if (GetPreparation().IsInitialized == false)
     {
-        const threading::WorkerQueueStatus started = gPreparationQueue.Initialize();
+        const threading::WorkerQueueStatus started = GetPreparation().Queue.Initialize();
         if (started != threading::WorkerQueueStatus::Ready)
         {
             return started == threading::WorkerQueueStatus::OutOfMemory ? RasterStatus::OutOfMemory
                                                                         : RasterStatus::Failed;
         }
-        isPreparationInitialized = true;
+        GetPreparation().IsInitialized = true;
     }
-    for (foundation::usize i = 0; i < gPreparationTasks.GetSize(); ++i)
+    for (foundation::usize i = 0; i < GetPreparation().Tasks.GetSize(); ++i)
     {
-        if (gPreparationTasks[i].Get() != nullptr)
+        if (GetPreparation().Tasks[i].Get() != nullptr)
         {
             continue;
         }
         task->QueueSlot = i;
         const threading::WorkerQueueStatus admitted =
-            gPreparationQueue.Submit(ExecuteNativePreparation, CompleteNativePreparation, task.Get());
+            GetPreparation().Queue.Submit(ExecuteNativePreparation, CompleteNativePreparation, task.Get());
         if (admitted != threading::WorkerQueueStatus::Ready)
         {
             return RasterStatus::CapacityExceeded;
         }
         internal::RasterExpect(task->Request, internal::RasterCallbacks::One);
-        gPreparationTasks[i] = foundation::Move(task);
+        GetPreparation().Tasks[i] = foundation::Move(task);
         return RasterStatus::Pending;
     }
     internal::StorageCapacityFailed();
@@ -128,7 +143,7 @@ void PollNativePreparation() noexcept
 {
     for (foundation::usize i = 0; i < threading::MAX_WORKER_QUEUE_TASKS; ++i)
     {
-        if (gPreparationQueue.Poll() == false)
+        if (GetPreparation().Queue.Poll() == false)
         {
             break;
         }
@@ -140,10 +155,10 @@ void DrainNativePreparation() noexcept
     isPreparationPaused.store(false, std::memory_order_release);
     isPreparationPaused.notify_all();
 #endif
-    isPreparationDraining = true;
-    LUDUS_REQUIRE(gPreparationQueue.Shutdown() == threading::WorkerQueueStatus::Ready);
-    isPreparationInitialized = false;
-    isPreparationDraining = false;
+    GetPreparation().IsDraining = true;
+    LUDUS_REQUIRE(GetPreparation().Queue.Shutdown() == threading::WorkerQueueStatus::Ready);
+    GetPreparation().IsInitialized = false;
+    GetPreparation().IsDraining = false;
 }
 } // namespace
 #if defined(LUDUS_RHI_TEST_READBACK)

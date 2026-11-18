@@ -107,7 +107,8 @@ RasterStatus TimingArm() noexcept
     const auto state = TimingPoll().State;
     if (gDevice == VK_NULL_HANDLE)
     {
-        return GetStartup().State == StartupState::DeviceLost ? RasterStatus::DeviceLost : RasterStatus::Failed;
+        return internal::GetStartup().State == StartupState::DeviceLost ? RasterStatus::DeviceLost
+                                                                        : RasterStatus::Failed;
     }
     if (state == GpuTimingState::Armed || state == GpuTimingState::Pending)
     {

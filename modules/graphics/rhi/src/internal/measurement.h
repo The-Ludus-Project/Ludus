@@ -112,7 +112,7 @@ public:
     explicit TimingArmRollback(GpuTiming& output) noexcept : Output(output), Previous(output), Owner(DeviceOwner()) {}
     ~TimingArmRollback() noexcept
     {
-        if (Accepted == false && DeviceOwner() == Owner && GetStartup().State == StartupState::Ready)
+        if (Accepted == false && DeviceOwner() == Owner && internal::GetStartup().State == StartupState::Ready)
         {
             Output = Previous;
         }

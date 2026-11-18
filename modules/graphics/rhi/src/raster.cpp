@@ -6,6 +6,7 @@
 #include "internal/gpu_scope_backend.h"
 #include "internal/measurement.h"
 #include "internal/native_interop.h"
+#include "internal/owner.h"
 
 #include <ludus/graphics/rhi/graph.h>
 #include <ludus/graphics/rhi/pipeline_preparation.h>
@@ -236,20 +237,33 @@ struct Record final
     PipelinePreparationHistory Preparation;
 };
 constexpr usize RASTER_KINDS = static_cast<usize>(RasterKind::RayGeometry);
-StorageTable<Record> gRecords[KINDS];
-RasterSequence<uint32> gRequests;
-RasterSequence<uint64> gSubmissions;
-uint64 gFrameSubmission = 0;
-PipelinePreparationTotals gPipelinePreparation;
-uint64 gFirstAcceptedSubmission = 0;
-uint64 gLastAcceptedSubmission = 0;
-usize gDrawCount = 0;
-usize gNativeComputePassCount = 0;
-RasterPassInfo gRasterPass;
-bool gSurfaceColorDefined = true;
-bool gSurfaceDepthDefined = false;
-bool gGraphExecuting = false;
-bool shouldBeginRasterPassAfterSpatialUpscale = false;
+/// @brief Resource registry, callback requests and submission ordinals of one owner (R14c).
+///
+/// Handles carry the owner identity, so a record resolves only for the owner that created
+/// it. Submission ordinals and completion are per owner and never order another owner.
+struct RasterState final
+{
+    StorageTable<Record> Records[KINDS];
+    RasterSequence<uint32> Requests;
+    RasterSequence<uint64> Submissions;
+    uint64 FrameSubmission = 0;
+    PipelinePreparationTotals PipelinePreparation;
+    uint64 FirstAcceptedSubmission = 0;
+    uint64 LastAcceptedSubmission = 0;
+    usize DrawCount = 0;
+    usize NativeComputePassCount = 0;
+    RasterPassInfo RasterPass;
+    bool IsSurfaceColorDefined = true;
+    bool IsSurfaceDepthDefined = false;
+    bool IsGraphExecuting = false;
+    bool ShouldBeginRasterPassAfterSpatialUpscale = false;
+};
+StaticArray<RasterState, MAX_DEVICE_OWNERS> gRasterStates{};
+/// The raster registry of the bound owner slot.
+RasterState& GetRasterState() noexcept
+{
+    return gRasterStates[GetBoundOwnerSlot()];
+}
 void ResetGraphRecords() noexcept;
 RasterStatus ValidatePacketPass(const RasterPacket&, const RasterPassInfo&, bool) noexcept;
 RasterStatus ComputeAdmission(DeviceHandle, bool = true) noexcept;
@@ -266,14 +280,14 @@ void RetainPacketTextures(const RasterPacket&) noexcept;
 
 Record& At(RasterKind kind, usize slot) noexcept
 {
-    return gRecords[static_cast<usize>(kind)][slot];
+    return GetRasterState().Records[static_cast<usize>(kind)][slot];
 }
 /// Stamp the launch of one native raster pipeline creation on the owner thread.
 void BeginPipelinePreparation(Record& inoutRecord) noexcept
 {
     inoutRecord.Preparation.LaunchedNanoseconds = time::NowTicks();
     inoutRecord.Preparation.IsLaunched = true;
-    ++gPipelinePreparation.NativeCreations;
+    ++GetRasterState().PipelinePreparation.NativeCreations;
 }
 /// Stamp the first observed final outcome of a launched creation; Pending and later outcomes are ignored.
 void FinishPipelinePreparation(Record& inoutRecord, RasterStatus status) noexcept
@@ -289,11 +303,12 @@ void FinishPipelinePreparation(Record& inoutRecord, RasterStatus status) noexcep
     history.IsReady = status == RasterStatus::Ready;
     if (history.IsReady == true)
     {
-        gPipelinePreparation.PreparationNanoseconds += history.FinishedNanoseconds - history.LaunchedNanoseconds;
+        GetRasterState().PipelinePreparation.PreparationNanoseconds +=
+            history.FinishedNanoseconds - history.LaunchedNanoseconds;
     }
     else
     {
-        ++gPipelinePreparation.FailedPreparations;
+        ++GetRasterState().PipelinePreparation.FailedPreparations;
     }
 }
 /// Record that a draw-time use found a pipeline still preparing; each pipeline counts once.
@@ -302,7 +317,7 @@ void NoteFirstUseMiss(Record& inoutPipeline) noexcept
     if (inoutPipeline.Status == RasterStatus::Pending && inoutPipeline.Preparation.HasFirstUseMiss == false)
     {
         inoutPipeline.Preparation.HasFirstUseMiss = true;
-        ++gPipelinePreparation.FirstUseMisses;
+        ++GetRasterState().PipelinePreparation.FirstUseMisses;
     }
 }
 /// Copy one pipeline record's history into the public report shape.
@@ -355,7 +370,7 @@ template <typename T>
 Record* Resolve(T handle, RasterKind kind, bool published = true) noexcept
 {
     const auto slot = RasterAccess::Slot(handle);
-    if (slot >= gRecords[static_cast<usize>(kind)].GetSize() || RasterAccess::Owner(handle) == 0)
+    if (slot >= GetRasterState().Records[static_cast<usize>(kind)].GetSize() || RasterAccess::Owner(handle) == 0)
     {
         return nullptr;
     }
@@ -447,17 +462,17 @@ void Collect() noexcept
     const auto completed = backend::RasterCompleted();
     for (usize kind = static_cast<usize>(RasterKind::RayGeometry); kind < KINDS; ++kind)
     {
-        auto& pool = gRecords[kind];
+        StorageTable<Record>& pool = GetRasterState().Records[kind];
         for (usize slot = 0; slot < pool.GetSize(); ++slot)
         {
-            auto& record = gRecords[kind][slot];
+            Record& record = GetRasterState().Records[kind][slot];
             if (record.Owner != 0 && record.Status == RasterStatus::Pending)
             {
                 record.Status = backend::RayPoll(static_cast<RasterKind>(kind), slot);
             }
         }
     }
-    StorageTable<Record>& nativePipelines = gRecords[static_cast<usize>(RasterKind::ComputePipeline)];
+    StorageTable<Record>& nativePipelines = GetRasterState().Records[static_cast<usize>(RasterKind::ComputePipeline)];
     for (usize slot = 0; slot < nativePipelines.GetSize(); ++slot)
     {
         Record& pipeline = nativePipelines[slot];
@@ -473,9 +488,9 @@ void Collect() noexcept
         bool hasRetiredResources = false;
         for (usize kind = KINDS; kind-- > 0;)
         {
-            for (usize slot = 0; slot < gRecords[kind].GetSize(); ++slot)
+            for (usize slot = 0; slot < GetRasterState().Records[kind].GetSize(); ++slot)
             {
-                auto& record = gRecords[kind][slot];
+                Record& record = GetRasterState().Records[kind][slot];
                 if (record.Owner == 0 || record.References != 0 || record.Status == RasterStatus::Pending ||
                     record.Callbacks != 0 || record.LastUse > completed)
                 {
@@ -503,7 +518,7 @@ void Collect() noexcept
 }
 RasterStatus Reserve(RasterKind kind, usize& slot) noexcept
 {
-    auto& records = gRecords[static_cast<usize>(kind)];
+    StorageTable<Record>& records = GetRasterState().Records[static_cast<usize>(kind)];
     bool exhausted = false;
     const auto limit = static_cast<usize>(kind) < RASTER_KINDS ? usize{CurrentDeviceProfile().Raster.ResourcesPerKind}
                                                                : usize{CurrentStorageLimits().RayResourcesPerKind};
@@ -528,7 +543,7 @@ RasterStatus Reserve(RasterKind kind, usize& slot) noexcept
             exhausted = true;
             continue;
         }
-        if (gRequests.Next == 0)
+        if (GetRasterState().Requests.Next == 0)
         {
             return RasterStatus::IdentityExhausted;
         }
@@ -541,7 +556,7 @@ RasterStatus Reserve(RasterKind kind, usize& slot) noexcept
         }
         record.Owner = DeviceOwner();
         record.References = 1;
-        record.Request = gRequests.Take();
+        record.Request = GetRasterState().Requests.Take();
         record.Status = RasterStatus::Pending;
         return RasterStatus::Ready;
     }
@@ -559,9 +574,10 @@ RasterStatus Publish(RasterKind kind, T& output, Create create, uint64 storageBy
     // "Under The Hood" (https://floooh.github.io/2017/07/29/sokol-gfx-tour.html#under-the-hood).
     // Collect once before both byte and slot admission so eligible storage can be reclaimed.
     Collect();
-    if (GetStartup().State != StartupState::Ready)
+    if (internal::GetStartup().State != StartupState::Ready)
     {
-        return GetStartup().State == StartupState::DeviceLost ? RasterStatus::DeviceLost : RasterStatus::Failed;
+        return internal::GetStartup().State == StartupState::DeviceLost ? RasterStatus::DeviceLost
+                                                                        : RasterStatus::Failed;
     }
     if (ReserveResourceStorage(storageBytes) == false)
     {
@@ -578,7 +594,8 @@ RasterStatus Publish(RasterKind kind, T& output, Create create, uint64 storageBy
     const auto result = create(slot, record);
     if (record.Owner == 0)
     {
-        return GetStartup().State == StartupState::DeviceLost ? RasterStatus::DeviceLost : RasterStatus::Failed;
+        return internal::GetStartup().State == StartupState::DeviceLost ? RasterStatus::DeviceLost
+                                                                        : RasterStatus::Failed;
     }
     // Spontaneous error-scope callbacks may have updated Status inside create.
     if (result != RasterStatus::Ready && result != RasterStatus::Pending)
@@ -1722,7 +1739,7 @@ CreateRasterShader(DeviceHandle device, const RasterShaderDescription& descripti
         info.Inputs[i] = input;
     }
     const auto& artifact = description.Artifact;
-    const auto backendKind = GetStartup().SelectedBackend;
+    const Backend backendKind = internal::GetStartup().SelectedBackend;
     if (backendKind == Backend::WebGL2)
     {
         for (usize i = 0; i < info.Layout.Count; ++i)
@@ -1795,7 +1812,7 @@ namespace
 uint64 CountBindingDescriptors() noexcept
 {
     uint64 count = 0;
-    for (const Record& record : gRecords[static_cast<usize>(RasterKind::Set)])
+    for (const Record& record : GetRasterState().Records[static_cast<usize>(RasterKind::Set)])
     {
         if (record.Owner != 0)
         {
@@ -2569,28 +2586,28 @@ RasterStatus ValidateDraw(DeviceHandle device, const RasterDraw& draw, RasterPac
 }
 RasterStatus ReserveFrameSubmission() noexcept
 {
-    if (gFrameSubmission != 0)
+    if (GetRasterState().FrameSubmission != 0)
     {
         return RasterStatus::Ready;
     }
-    if (gSubmissions.Next == 0)
+    if (GetRasterState().Submissions.Next == 0)
     {
         return RasterStatus::IdentityExhausted;
     }
     const auto result = backend::RasterReserveSubmission();
     if (result == RasterStatus::Ready)
     {
-        gFrameSubmission = gSubmissions.Next;
+        GetRasterState().FrameSubmission = GetRasterState().Submissions.Next;
     }
     return result;
 }
 RasterStatus EncodePacket(const RasterPacket& packet) noexcept
 {
-    if (shouldBeginRasterPassAfterSpatialUpscale == true)
+    if (GetRasterState().ShouldBeginRasterPassAfterSpatialUpscale == true)
     {
         return RasterStatus::InvalidState;
     }
-    if (gDrawCount >= CurrentDeviceProfile().Raster.DrawsPerFrame)
+    if (GetRasterState().DrawCount >= CurrentDeviceProfile().Raster.DrawsPerFrame)
     {
         return RasterStatus::CapacityExceeded;
     }
@@ -2618,13 +2635,13 @@ RasterStatus EncodePacket(const RasterPacket& packet) noexcept
         FrameRetain(RasterKind::Buffer, packet.Vertices[i]);
     }
     RetainPacketTextures(packet);
-    ++gDrawCount;
+    ++GetRasterState().DrawCount;
     return backend::RasterDraw(packet);
 }
 } // namespace
 RasterStatus DrawIndexed(DeviceHandle device, const RasterDraw& draw) noexcept
 {
-    if (FrameOpen() == false || shouldBeginRasterPassAfterSpatialUpscale == true)
+    if (FrameOpen() == false || GetRasterState().ShouldBeginRasterPassAfterSpatialUpscale == true)
     {
         const auto admission = Admission(device, false);
         return admission == RasterStatus::Ready ? RasterStatus::InvalidState : admission;
@@ -2635,7 +2652,7 @@ RasterStatus DrawIndexed(DeviceHandle device, const RasterDraw& draw) noexcept
     {
         return valid;
     }
-    const auto compatible = ValidatePacketPass(packet, gRasterPass, true);
+    const RasterStatus compatible = ValidatePacketPass(packet, GetRasterState().RasterPass, true);
     return compatible == RasterStatus::Ready ? EncodePacket(packet) : compatible;
 }
 
@@ -2643,7 +2660,7 @@ namespace internal
 {
 void RasterExpect(uint32 request, RasterCallbacks callbacks) noexcept
 {
-    for (auto& records : gRecords)
+    for (StorageTable<Record>& records : GetRasterState().Records)
     {
         for (auto& record : records)
         {
@@ -2657,7 +2674,7 @@ void RasterExpect(uint32 request, RasterCallbacks callbacks) noexcept
 }
 bool IsRasterRequestCurrent(RasterRequestIdentity identity) noexcept
 {
-    const StorageTable<Record>& records = gRecords[static_cast<usize>(identity.Kind)];
+    const StorageTable<Record>& records = GetRasterState().Records[static_cast<usize>(identity.Kind)];
     if (identity.ResourceSlot >= records.GetSize())
     {
         return false;
@@ -2667,7 +2684,7 @@ bool IsRasterRequestCurrent(RasterRequestIdentity identity) noexcept
 }
 void RasterComplete(uint32 request, RasterStatus status) noexcept
 {
-    for (auto& records : gRecords)
+    for (StorageTable<Record>& records : GetRasterState().Records)
     {
         for (auto& record : records)
         {
@@ -2690,7 +2707,7 @@ void RasterComplete(uint32 request, RasterStatus status) noexcept
 }
 void RasterFail(uint32 request, RasterStatus status) noexcept
 {
-    for (auto& records : gRecords)
+    for (StorageTable<Record>& records : GetRasterState().Records)
     {
         for (auto& record : records)
         {
@@ -2709,33 +2726,33 @@ bool PrepareRasterFrame() noexcept
 }
 void RasterBeginFrame() noexcept
 {
-    gFrameSubmission = 0;
-    gDrawCount = 0;
-    gNativeComputePassCount = 0;
-    gRasterPass = {};
-    gGraphExecuting = false;
-    shouldBeginRasterPassAfterSpatialUpscale = false;
-    gSurfaceColorDefined = true;
-    gSurfaceDepthDefined = false;
+    GetRasterState().FrameSubmission = 0;
+    GetRasterState().DrawCount = 0;
+    GetRasterState().NativeComputePassCount = 0;
+    GetRasterState().RasterPass = {};
+    GetRasterState().IsGraphExecuting = false;
+    GetRasterState().ShouldBeginRasterPassAfterSpatialUpscale = false;
+    GetRasterState().IsSurfaceColorDefined = true;
+    GetRasterState().IsSurfaceDepthDefined = false;
     Collect();
 }
 void RasterEndFrame(bool accepted) noexcept
 {
-    if (gFrameSubmission != 0 && accepted)
+    if (GetRasterState().FrameSubmission != 0 && accepted)
     {
-        (void)gSubmissions.Take();
-        if (gFirstAcceptedSubmission == 0)
+        (void)GetRasterState().Submissions.Take();
+        if (GetRasterState().FirstAcceptedSubmission == 0)
         {
-            gFirstAcceptedSubmission = gFrameSubmission;
+            GetRasterState().FirstAcceptedSubmission = GetRasterState().FrameSubmission;
         }
-        gLastAcceptedSubmission = gFrameSubmission;
-        backend::RasterSubmit(gFrameSubmission);
+        GetRasterState().LastAcceptedSubmission = GetRasterState().FrameSubmission;
+        backend::RasterSubmit(GetRasterState().FrameSubmission);
     }
     if (accepted == false)
     {
         backend::RasterDiscardSubmission();
     }
-    for (auto& records : gRecords)
+    for (StorageTable<Record>& records : GetRasterState().Records)
     {
         for (auto& record : records)
         {
@@ -2745,8 +2762,8 @@ void RasterEndFrame(bool accepted) noexcept
             }
             if (accepted)
             {
-                record.LastUse = gFrameSubmission;
-                if (&records == &gRecords[static_cast<usize>(RasterKind::Texture)])
+                record.LastUse = GetRasterState().FrameSubmission;
+                if (&records == &GetRasterState().Records[static_cast<usize>(RasterKind::Texture)])
                 {
                     record.TextureUse = record.FrameTextureUse;
                     record.ColorDefined = record.FrameColorDefined;
@@ -2768,7 +2785,7 @@ void RasterEndFrame(bool accepted) noexcept
             --record.References;
         }
     }
-    gFrameSubmission = 0;
+    GetRasterState().FrameSubmission = 0;
     Collect();
 }
 void ReleaseRasterResources() noexcept
@@ -2784,9 +2801,9 @@ void ReleaseRasterResources() noexcept
     ResetGraphRecords();
     for (usize kind = KINDS; kind-- > 0;)
     {
-        for (usize slot = 0; slot < gRecords[kind].GetSize(); ++slot)
+        for (usize slot = 0; slot < GetRasterState().Records[kind].GetSize(); ++slot)
         {
-            auto& record = gRecords[kind][slot];
+            Record& record = GetRasterState().Records[kind][slot];
             if (record.Owner == 0)
             {
                 continue;
@@ -2808,12 +2825,12 @@ void ReleaseRasterResources() noexcept
         }
     }
     backend::RasterShutdown();
-    gPipelinePreparation = {};
-    gFirstAcceptedSubmission = 0;
-    gLastAcceptedSubmission = 0;
-    gFrameSubmission = 0;
-    gDrawCount = 0;
-    gNativeComputePassCount = 0;
+    GetRasterState().PipelinePreparation = {};
+    GetRasterState().FirstAcceptedSubmission = 0;
+    GetRasterState().LastAcceptedSubmission = 0;
+    GetRasterState().FrameSubmission = 0;
+    GetRasterState().DrawCount = 0;
+    GetRasterState().NativeComputePassCount = 0;
 }
 } // namespace internal
 RasterStatus GetAllocationTelemetry(DeviceHandle device, AllocationTelemetry& output) noexcept
@@ -2829,7 +2846,7 @@ RasterStatus GetAllocationTelemetry(DeviceHandle device, AllocationTelemetry& ou
         return status;
     }
     output.BindingDescriptors = CountBindingDescriptors();
-    for (const Record& record : gRecords[static_cast<usize>(RasterKind::Set)])
+    for (const Record& record : GetRasterState().Records[static_cast<usize>(RasterKind::Set)])
     {
         if (record.Owner != 0 && record.Published == false)
         {
@@ -2852,9 +2869,9 @@ RasterStatus GetAllocationTelemetry(DeviceHandle device, AllocationTelemetry& ou
                                backend::Kind() == Backend::Direct3D12;
     for (usize kind = 0; kind < 2; ++kind)
     {
-        for (usize slot = 0; slot < gRecords[kind].GetSize(); ++slot)
+        for (usize slot = 0; slot < GetRasterState().Records[kind].GetSize(); ++slot)
         {
-            const auto& record = gRecords[kind][slot];
+            const Record& record = GetRasterState().Records[kind][slot];
             if (record.Owner == 0)
             {
                 continue;
@@ -2906,7 +2923,7 @@ RasterStatus GetStorageUsage(DeviceHandle device, StorageUsage& output) noexcept
         return status;
     }
     output = CurrentStorageUsage();
-    for (auto& records : gRecords)
+    for (StorageTable<Record>& records : GetRasterState().Records)
     {
         for (const auto& record : records)
         {
@@ -3442,7 +3459,7 @@ RasterStatus EncodeSpatialUpscale(DeviceHandle device,
     {
         return admission;
     }
-    if (FrameOpen() == false || gGraphExecuting == true)
+    if (FrameOpen() == false || GetRasterState().IsGraphExecuting == true)
     {
         return RasterStatus::InvalidState;
     }
@@ -3487,7 +3504,7 @@ RasterStatus EncodeSpatialUpscale(DeviceHandle device,
     {
         return RasterStatus::InvalidState;
     }
-    if (gDrawCount >= CurrentDeviceProfile().Raster.DrawsPerFrame)
+    if (GetRasterState().DrawCount >= CurrentDeviceProfile().Raster.DrawsPerFrame)
     {
         return RasterStatus::CapacityExceeded;
     }
@@ -3504,13 +3521,13 @@ RasterStatus EncodeSpatialUpscale(DeviceHandle device,
     FrameRetain(RasterKind::Texture, RasterAccess::Slot(source));
     FrameRetain(RasterKind::Texture, RasterAccess::Slot(destination));
     backend::RasterEndPass();
-    shouldBeginRasterPassAfterSpatialUpscale = true;
+    GetRasterState().ShouldBeginRasterPassAfterSpatialUpscale = true;
     backend::RasterTextureBarrier(RasterAccess::Slot(source), RasterTextureUse::SampledBoth);
     backend::RasterTextureBarrier(RasterAccess::Slot(destination), RasterTextureUse::ColorAttachment);
     const RasterStatus status = backend::SpatialUpscaleEncode(RasterAccess::Slot(upscaler),
                                                               RasterAccess::Slot(source),
                                                               RasterAccess::Slot(destination));
-    ++gDrawCount;
+    ++GetRasterState().DrawCount;
     inputOrNull->FrameTextureUse = RasterTextureUse::SampledBoth;
     outputOrNull->FrameTextureUse = RasterTextureUse::ColorAttachment;
     if (status == RasterStatus::Ready)

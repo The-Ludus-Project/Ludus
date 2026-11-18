@@ -2,6 +2,7 @@
 
 #include <ludus/foundation/base/types.h>
 
+#include <ludus/graphics/rhi/render.h>
 #include <ludus/graphics/rhi/rhi.h>
 
 namespace ludus::graphics::rhi::internal
@@ -11,6 +12,15 @@ namespace ludus::graphics::rhi::internal
 ludus::foundation::uint64 DeviceOwner() noexcept;
 void SetDeviceOwner(ludus::foundation::uint64 owner) noexcept;
 bool SessionBusy() noexcept;
+/// True when any owner slot holds a session, native interop teardown or a legacy session.
+/// Restores the binding before returning.
+[[nodiscard]] bool IsAnySessionBusy() noexcept;
+/// GetStartup, EndFrameStatus, Shutdown and GetFrameInfo for the bound owner slot (R14c).
+/// The public device-less forms bind the first slot; RHI code uses these forms.
+[[nodiscard]] StartupInfo GetStartup() noexcept;
+[[nodiscard]] FrameStatus EndFrameStatus() noexcept;
+void Shutdown() noexcept;
+[[nodiscard]] FrameInfo GetFrameInfo() noexcept;
 // True only while starting an owned session that requires the R4 profile.
 bool RequiresComputeProfile() noexcept;
 // Copied optional native-ray admission request, fixed before backend startup.

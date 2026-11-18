@@ -31,10 +31,20 @@ struct RayMetalBatch final
     id<MTLCommandBuffer> Command = nil;
     foundation::usize Count = 0;
 };
-internal::StorageTable<RayMetalGeometry> gRayMetalGeometry;
-internal::StorageTable<RayMetalScene> gRayMetalScene;
-internal::StorageTable<RayMetalBatch> gRayMetalBatch;
-internal::StorageTable<id<MTLComputePipelineState>> gRayMetalPrograms;
+/// Native ray structures, batches and programs of one Metal owner (R14c).
+struct RayMetalState final
+{
+    internal::StorageTable<RayMetalGeometry> Geometry;
+    internal::StorageTable<RayMetalScene> Scenes;
+    internal::StorageTable<RayMetalBatch> Batches;
+    internal::StorageTable<id<MTLComputePipelineState>> Programs;
+};
+StaticArray<RayMetalState, MAX_DEVICE_OWNERS> gRayMetalStates{};
+/// The native ray objects of the bound owner slot.
+RayMetalState& GetRayMetal() noexcept
+{
+    return gRayMetalStates[internal::GetBoundOwnerSlot()];
+}
 RasterStatus RayMetalCommandStatus(id<MTLCommandBuffer> command) noexcept
 {
     if (command == nil)
@@ -71,8 +81,8 @@ RayCapabilities RayLimits() noexcept
     // https://developer.apple.com/videos/play/tech-talks/111431/ .
     // Apple GPU family 9 introduces hardware ray traversal. Older families can
     // expose Metal ray APIs through shader execution and are deliberately excluded.
-    if (gDevice == nil || gQueue == nil || gDevice.supportsRaytracing == false ||
-        [gDevice supportsFamily:MTLGPUFamilyApple9] == false)
+    if (GetMetal().Device == nil || GetMetal().Queue == nil || GetMetal().Device.supportsRaytracing == false ||
+        [GetMetal().Device supportsFamily:MTLGPUFamilyApple9] == false)
     {
         return {};
     }
@@ -80,24 +90,24 @@ RayCapabilities RayLimits() noexcept
     {
         .StaticTriangles = true,
         .InlineQueries = true,
-        .RayPipelines = gDevice.supportsFunctionPointers == true,
+        .RayPipelines = GetMetal().Device.supportsFunctionPointers == true,
         .MaxInstances = internal::CurrentStorageLimits().RayInstances,
         .MaxRays = 4096,
-        .MaxBufferBytes = internal::GetResourceSizeLimit(gDevice.maxBufferLength),
+        .MaxBufferBytes = internal::GetResourceSizeLimit(GetMetal().Device.maxBufferLength),
     };
 }
 void BindRayMetalScene(id<MTLComputeCommandEncoder> encoder, const RayMetalSceneBinding& description) noexcept
 {
-    const RayMetalScene& scene = gRayMetalScene[description.Scene];
+    const RayMetalScene& scene = GetRayMetal().Scenes[description.Scene];
     [encoder setAccelerationStructure:scene.Structure atBufferIndex:description.Binding];
     for (usize i = 0; i < scene.GeometryCount; ++i)
     {
-        [encoder useResource:gRayMetalGeometry[scene.Geometries[i]].Structure usage:MTLResourceUsageRead];
+        [encoder useResource:GetRayMetal().Geometry[scene.Geometries[i]].Structure usage:MTLResourceUsageRead];
     }
 }
 RasterStatus RayCreateProgram(usize slot, const ShaderDescription& description) noexcept
 {
-    if (gRayMetalPrograms.EnsureSlots(slot + 1) == false)
+    if (GetRayMetal().Programs.EnsureSlots(slot + 1) == false)
     {
         return internal::StorageFailure();
     }
@@ -121,7 +131,7 @@ RasterStatus RayCreateProgram(usize slot, const ShaderDescription& description) 
         options.languageVersion = MTLLanguageVersion2_4;
         ConfigureMetalComputeMath(options);
         NSError* error = nil;
-        id<MTLLibrary> library = [gDevice newLibraryWithSource:source options:options error:&error];
+        id<MTLLibrary> library = [GetMetal().Device newLibraryWithSource:source options:options error:&error];
         if (library == nil)
         {
             LogError(error);
@@ -133,10 +143,10 @@ RasterStatus RayCreateProgram(usize slot, const ShaderDescription& description) 
             return RasterStatus::InvalidDescription;
         }
         MTLComputePipelineReflection* reflection = nil;
-        id<MTLComputePipelineState> pipeline = [gDevice newComputePipelineStateWithFunction:function
-                                                                                    options:BINDING_INFO
-                                                                                 reflection:&reflection
-                                                                                      error:&error];
+        id<MTLComputePipelineState> pipeline = [GetMetal().Device newComputePipelineStateWithFunction:function
+                                                                                              options:BINDING_INFO
+                                                                                           reflection:&reflection
+                                                                                                error:&error];
         if (pipeline == nil)
         {
             LogError(error);
@@ -180,13 +190,13 @@ RasterStatus RayCreateProgram(usize slot, const ShaderDescription& description) 
                 return RasterStatus::InvalidDescription;
             }
         }
-        gRayMetalPrograms[slot] = pipeline;
+        GetRayMetal().Programs[slot] = pipeline;
         return RasterStatus::Ready;
     }
 }
 RasterStatus RayCreateGeometry(usize slot, const RayGeometryDescription& d, RayAllocation& allocation) noexcept
 {
-    if (gRayMetalGeometry.EnsureSlots(slot + 1) == false)
+    if (GetRayMetal().Geometry.EnsureSlots(slot + 1) == false)
     {
         return internal::StorageFailure();
     }
@@ -198,12 +208,12 @@ RasterStatus RayCreateGeometry(usize slot, const RayGeometryDescription& d, RayA
             return RasterStatus::CapacityExceeded;
         }
         RayMetalGeometry geometry;
-        geometry.Vertices = [gDevice newBufferWithBytes:d.Positions
-                                                 length:vertexBytes
-                                                options:MTLResourceStorageModeShared];
-        geometry.Indices = [gDevice newBufferWithBytes:d.Indices
-                                                length:indexBytes
-                                               options:MTLResourceStorageModeShared];
+        geometry.Vertices = [GetMetal().Device newBufferWithBytes:d.Positions
+                                                           length:vertexBytes
+                                                          options:MTLResourceStorageModeShared];
+        geometry.Indices = [GetMetal().Device newBufferWithBytes:d.Indices
+                                                          length:indexBytes
+                                                         options:MTLResourceStorageModeShared];
         if (geometry.Vertices == nil || geometry.Indices == nil)
         {
             return RasterStatus::OutOfMemory;
@@ -235,15 +245,15 @@ RasterStatus RayCreateGeometry(usize slot, const RayGeometryDescription& d, RayA
         {
             descriptor.geometryDescriptors = @[ triangles ];
         }
-        const auto sizes = [gDevice accelerationStructureSizesWithDescriptor:descriptor];
+        const auto sizes = [GetMetal().Device accelerationStructureSizesWithDescriptor:descriptor];
         if (RayMetalSizes(sizes, vertexBytes + indexBytes, d.ByteBudget, allocation) == false)
         {
             return RasterStatus::CapacityExceeded;
         }
-        geometry.Structure = [gDevice newAccelerationStructureWithSize:sizes.accelerationStructureSize];
-        geometry.Scratch = [gDevice newBufferWithLength:sizes.buildScratchBufferSize
-                                                options:MTLResourceStorageModePrivate];
-        geometry.Command = [gQueue commandBuffer];
+        geometry.Structure = [GetMetal().Device newAccelerationStructureWithSize:sizes.accelerationStructureSize];
+        geometry.Scratch = [GetMetal().Device newBufferWithLength:sizes.buildScratchBufferSize
+                                                          options:MTLResourceStorageModePrivate];
+        geometry.Command = [GetMetal().Queue commandBuffer];
         if (geometry.Structure == nil || geometry.Scratch == nil || geometry.Command == nil)
         {
             return RasterStatus::OutOfMemory;
@@ -258,7 +268,7 @@ RasterStatus RayCreateGeometry(usize slot, const RayGeometryDescription& d, RayA
                               scratchBuffer:geometry.Scratch
                         scratchBufferOffset:0];
         [encoder endEncoding];
-        gRayMetalGeometry[slot] = geometry;
+        GetRayMetal().Geometry[slot] = geometry;
         [geometry.Command commit];
         return RasterStatus::Pending;
     }
@@ -266,7 +276,7 @@ RasterStatus RayCreateGeometry(usize slot, const RayGeometryDescription& d, RayA
 RasterStatus
 RayCreateScene(usize slot, const internal::NativeRaySceneDescription& description, RayAllocation& allocation) noexcept
 {
-    if (gRayMetalScene.EnsureSlots(slot + 1) == false)
+    if (GetRayMetal().Scenes.EnsureSlots(slot + 1) == false)
     {
         return internal::StorageFailure();
     }
@@ -288,8 +298,10 @@ RayCreateScene(usize slot, const internal::NativeRaySceneDescription& descriptio
         {
             return internal::StorageFailure();
         }
-        scene.Instances = [gDevice newBufferWithLength:instanceBytes options:MTLResourceStorageModeShared];
-        scene.Opacity = [gDevice newBufferWithBytes:opacity length:opacityBytes options:MTLResourceStorageModeShared];
+        scene.Instances = [GetMetal().Device newBufferWithLength:instanceBytes options:MTLResourceStorageModeShared];
+        scene.Opacity = [GetMetal().Device newBufferWithBytes:opacity
+                                                       length:opacityBytes
+                                                      options:MTLResourceStorageModeShared];
         if (scene.Instances == nil || scene.Opacity == nil)
         {
             return RasterStatus::OutOfMemory;
@@ -307,7 +319,7 @@ RayCreateScene(usize slot, const internal::NativeRaySceneDescription& descriptio
             if (index == scene.GeometryCount)
             {
                 scene.Geometries[index] = source.Geometry;
-                [structures addObject:gRayMetalGeometry[source.Geometry].Structure];
+                [structures addObject:GetRayMetal().Geometry[source.Geometry].Structure];
                 ++scene.GeometryCount;
             }
             auto& instance = instances[i];
@@ -330,15 +342,15 @@ RayCreateScene(usize slot, const internal::NativeRaySceneDescription& descriptio
         descriptor.instanceDescriptorBuffer = scene.Instances;
         descriptor.instanceCount = count;
         descriptor.instancedAccelerationStructures = structures;
-        const auto sizes = [gDevice accelerationStructureSizesWithDescriptor:descriptor];
+        const auto sizes = [GetMetal().Device accelerationStructureSizesWithDescriptor:descriptor];
         if (RayMetalSizes(sizes, instanceBytes + opacityBytes, budget, allocation) == false)
         {
             return RasterStatus::CapacityExceeded;
         }
-        scene.Structure = [gDevice newAccelerationStructureWithSize:sizes.accelerationStructureSize];
-        scene.Scratch = [gDevice newBufferWithLength:sizes.buildScratchBufferSize
-                                             options:MTLResourceStorageModePrivate];
-        scene.Command = [gQueue commandBuffer];
+        scene.Structure = [GetMetal().Device newAccelerationStructureWithSize:sizes.accelerationStructureSize];
+        scene.Scratch = [GetMetal().Device newBufferWithLength:sizes.buildScratchBufferSize
+                                                       options:MTLResourceStorageModePrivate];
+        scene.Command = [GetMetal().Queue commandBuffer];
         if (scene.Structure == nil || scene.Scratch == nil || scene.Command == nil)
         {
             return RasterStatus::OutOfMemory;
@@ -353,14 +365,14 @@ RayCreateScene(usize slot, const internal::NativeRaySceneDescription& descriptio
                               scratchBuffer:scene.Scratch
                         scratchBufferOffset:0];
         [encoder endEncoding];
-        gRayMetalScene[slot] = Move(scene);
-        [gRayMetalScene[slot].Command commit];
+        GetRayMetal().Scenes[slot] = Move(scene);
+        [GetRayMetal().Scenes[slot].Command commit];
         return RasterStatus::Pending;
     }
 }
 RasterStatus RaySubmit(usize slot, const internal::NativeRaySubmission& submission, RayAllocation& allocation) noexcept
 {
-    if (gRayMetalBatch.EnsureSlots(slot + 1) == false)
+    if (GetRayMetal().Batches.EnsureSlots(slot + 1) == false)
     {
         return internal::StorageFailure();
     }
@@ -371,11 +383,12 @@ RasterStatus RaySubmit(usize slot, const internal::NativeRaySubmission& submissi
     {
         RayMetalBatch batch;
         batch.Count = count;
-        batch.Inputs = [gDevice newBufferWithBytes:rays
-                                            length:count * sizeof(RayInput)
-                                           options:MTLResourceStorageModeShared];
-        batch.Outputs = [gDevice newBufferWithLength:count * sizeof(RayResult) options:MTLResourceStorageModeShared];
-        batch.Command = [gQueue commandBuffer];
+        batch.Inputs = [GetMetal().Device newBufferWithBytes:rays
+                                                      length:count * sizeof(RayInput)
+                                                     options:MTLResourceStorageModeShared];
+        batch.Outputs = [GetMetal().Device newBufferWithLength:count * sizeof(RayResult)
+                                                       options:MTLResourceStorageModeShared];
+        batch.Command = [GetMetal().Queue commandBuffer];
         if (batch.Inputs == nil || batch.Outputs == nil || batch.Command == nil)
         {
             return RasterStatus::OutOfMemory;
@@ -385,8 +398,8 @@ RasterStatus RaySubmit(usize slot, const internal::NativeRaySubmission& submissi
         {
             return RasterStatus::Failed;
         }
-        const auto& source = gRayMetalScene[scene];
-        [encoder setComputePipelineState:gRayMetalPrograms[program]];
+        const RayMetalScene& source = GetRayMetal().Scenes[scene];
+        [encoder setComputePipelineState:GetRayMetal().Programs[program]];
         [encoder setAccelerationStructure:source.Structure atBufferIndex:0];
         [encoder setBuffer:batch.Inputs offset:0 atIndex:1];
         [encoder setBuffer:batch.Outputs offset:0 atIndex:2];
@@ -395,11 +408,11 @@ RasterStatus RaySubmit(usize slot, const internal::NativeRaySubmission& submissi
         [encoder setBytes:parameters length:sizeof(parameters) atIndex:4];
         for (usize i = 0; i < source.GeometryCount; ++i)
         {
-            [encoder useResource:gRayMetalGeometry[source.Geometries[i]].Structure usage:MTLResourceUsageRead];
+            [encoder useResource:GetRayMetal().Geometry[source.Geometries[i]].Structure usage:MTLResourceUsageRead];
         }
         [encoder dispatchThreadgroups:MTLSizeMake((count + 63) / 64, 1, 1) threadsPerThreadgroup:MTLSizeMake(64, 1, 1)];
         [encoder endEncoding];
-        gRayMetalBatch[slot] = batch;
+        GetRayMetal().Batches[slot] = batch;
         allocation = {count * (sizeof(RayInput) + sizeof(RayResult)), 0};
         [batch.Command commit];
         return RasterStatus::Pending;
@@ -409,32 +422,32 @@ RasterStatus RayPoll(internal::RasterKind kind, usize slot) noexcept
 {
     if (kind == internal::RasterKind::RayProgram)
     {
-        return gRayMetalPrograms[slot] == nil ? RasterStatus::Failed : RasterStatus::Ready;
+        return GetRayMetal().Programs[slot] == nil ? RasterStatus::Failed : RasterStatus::Ready;
     }
     if (kind == internal::RasterKind::RayBatch)
     {
-        return RayMetalCommandStatus(gRayMetalBatch[slot].Command);
+        return RayMetalCommandStatus(GetRayMetal().Batches[slot].Command);
     }
     if (kind == internal::RasterKind::RayGeometry)
     {
-        const auto status = RayMetalCommandStatus(gRayMetalGeometry[slot].Command);
+        const RasterStatus status = RayMetalCommandStatus(GetRayMetal().Geometry[slot].Command);
         if (status == RasterStatus::Ready)
         {
-            gRayMetalGeometry[slot].Scratch = nil;
+            GetRayMetal().Geometry[slot].Scratch = nil;
         }
         return status;
     }
-    const auto status = RayMetalCommandStatus(gRayMetalScene[slot].Command);
+    const RasterStatus status = RayMetalCommandStatus(GetRayMetal().Scenes[slot].Command);
     if (status == RasterStatus::Ready)
     {
-        gRayMetalScene[slot].Scratch = nil;
+        GetRayMetal().Scenes[slot].Scratch = nil;
     }
     return status;
 }
 RasterStatus RayRead(usize slot, RayResult* output, usize count) noexcept
 {
-    const auto& batch = gRayMetalBatch[slot];
-    const auto status = RayMetalCommandStatus(batch.Command);
+    const RayMetalBatch& batch = GetRayMetal().Batches[slot];
+    const RasterStatus status = RayMetalCommandStatus(batch.Command);
     if (status != RasterStatus::Ready)
     {
         return status;
@@ -448,40 +461,40 @@ RasterStatus RayRead(usize slot, RayResult* output, usize count) noexcept
 }
 void RayDestroy(internal::RasterKind kind, usize slot) noexcept
 {
-    if (kind == internal::RasterKind::RayGeometry && slot < gRayMetalGeometry.GetSize())
+    if (kind == internal::RasterKind::RayGeometry && slot < GetRayMetal().Geometry.GetSize())
     {
-        gRayMetalGeometry[slot] = {};
+        GetRayMetal().Geometry[slot] = {};
     }
-    else if (kind == internal::RasterKind::RayScene && slot < gRayMetalScene.GetSize())
+    else if (kind == internal::RasterKind::RayScene && slot < GetRayMetal().Scenes.GetSize())
     {
-        gRayMetalScene[slot] = {};
+        GetRayMetal().Scenes[slot] = {};
     }
-    else if (kind == internal::RasterKind::RayBatch && slot < gRayMetalBatch.GetSize())
+    else if (kind == internal::RasterKind::RayBatch && slot < GetRayMetal().Batches.GetSize())
     {
-        gRayMetalBatch[slot] = {};
+        GetRayMetal().Batches[slot] = {};
     }
-    else if (kind == internal::RasterKind::RayProgram && slot < gRayMetalPrograms.GetSize())
+    else if (kind == internal::RasterKind::RayProgram && slot < GetRayMetal().Programs.GetSize())
     {
-        gRayMetalPrograms[slot] = nil;
+        GetRayMetal().Programs[slot] = nil;
     }
 }
 void RayDrain() noexcept
 {
-    for (auto& batch : gRayMetalBatch)
+    for (RayMetalBatch& batch : GetRayMetal().Batches)
     {
         if (batch.Command != nil)
         {
             [batch.Command waitUntilCompleted];
         }
     }
-    for (auto& scene : gRayMetalScene)
+    for (RayMetalScene& scene : GetRayMetal().Scenes)
     {
         if (scene.Command != nil)
         {
             [scene.Command waitUntilCompleted];
         }
     }
-    for (auto& geometry : gRayMetalGeometry)
+    for (RayMetalGeometry& geometry : GetRayMetal().Geometry)
     {
         if (geometry.Command != nil)
         {

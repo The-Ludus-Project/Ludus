@@ -127,16 +127,26 @@ struct GraphPoolRecord final
     bool Occupied = false;
     usize Texture = 0;
 };
-StorageTable<GraphRecord> gGraphs;
-StorageTable<GraphPoolRecord> gGraphPool;
+/// Ordered graph records and transient texture pool of one owner slot (R14c).
+struct GraphState final
+{
+    StorageTable<GraphRecord> Graphs;
+    StorageTable<GraphPoolRecord> Pool;
+};
+StaticArray<GraphState, MAX_DEVICE_OWNERS> gGraphStates{};
+/// The ordered graphs of the bound owner slot.
+GraphState& GetGraphState() noexcept
+{
+    return gGraphStates[GetBoundOwnerSlot()];
+}
 GraphRecord* ResolveGraph(OrderedGraph handle) noexcept
 {
     const auto slot = GraphAccess::Slot(handle);
-    if (slot >= gGraphs.GetSize())
+    if (slot >= GetGraphState().Graphs.GetSize())
     {
         return nullptr;
     }
-    auto& graph = gGraphs[slot];
+    GraphRecord& graph = GetGraphState().Graphs[slot];
     return graph.Published && graph.Owner == DeviceOwner() && graph.Owner == GraphAccess::Owner(handle) &&
                    graph.Generation == GraphAccess::Generation(handle)
                ? &graph
@@ -248,11 +258,11 @@ void DropGraph(GraphRecord& graph) noexcept
 void ResetGraphRecords() noexcept
 {
     // Teardown releases every registry record unconditionally after backend drain.
-    for (auto& graph : gGraphs)
+    for (GraphRecord& graph : GetGraphState().Graphs)
     {
         ResetGraph(graph);
     }
-    for (auto& pool : gGraphPool)
+    for (GraphPoolRecord& pool : GetGraphState().Pool)
     {
         pool = {};
     }
@@ -603,8 +613,8 @@ bool ValidatePassLoads(const RasterPassInfo& pass) noexcept
 {
     if (pass.Texture == RASTER_INVALID)
     {
-        return (pass.Description.ColorLoad != RasterLoad::Load || gSurfaceColorDefined) &&
-               (pass.Description.DepthLoad != RasterLoad::Load || gSurfaceDepthDefined);
+        return (pass.Description.ColorLoad != RasterLoad::Load || GetRasterState().IsSurfaceColorDefined) &&
+               (pass.Description.DepthLoad != RasterLoad::Load || GetRasterState().IsSurfaceDepthDefined);
     }
     for (usize i = 0; i < PassColorCount(pass); ++i)
     {
@@ -627,12 +637,14 @@ void ApplyPassState(const RasterPassInfo& pass) noexcept
     const auto& description = pass.Description;
     if (pass.Texture == RASTER_INVALID)
     {
-        gSurfaceColorDefined = description.ColorStore == RasterStore::Store &&
-                               (description.ColorLoad == RasterLoad::Clear ||
-                                (description.ColorLoad == RasterLoad::Load && gSurfaceColorDefined));
-        gSurfaceDepthDefined = description.DepthStore == RasterStore::Store &&
-                               (description.DepthLoad == RasterLoad::Clear ||
-                                (description.DepthLoad == RasterLoad::Load && gSurfaceDepthDefined));
+        GetRasterState().IsSurfaceColorDefined =
+            description.ColorStore == RasterStore::Store &&
+            (description.ColorLoad == RasterLoad::Clear ||
+             (description.ColorLoad == RasterLoad::Load && GetRasterState().IsSurfaceColorDefined));
+        GetRasterState().IsSurfaceDepthDefined =
+            description.DepthStore == RasterStore::Store &&
+            (description.DepthLoad == RasterLoad::Clear ||
+             (description.DepthLoad == RasterLoad::Load && GetRasterState().IsSurfaceDepthDefined));
     }
     else
     {
@@ -671,24 +683,26 @@ void ApplyPassState(const RasterPassInfo& pass) noexcept
         }
     }
     PassViews(pass, true, true);
-    gRasterPass = pass;
-    shouldBeginRasterPassAfterSpatialUpscale = false;
+    GetRasterState().RasterPass = pass;
+    GetRasterState().ShouldBeginRasterPassAfterSpatialUpscale = false;
 }
 RasterStatus StartPass(const RasterPassInfo& pass) noexcept
 {
     backend::RasterEndPass();
-    if (GetStartup().State != StartupState::Ready)
+    if (internal::GetStartup().State != StartupState::Ready)
     {
-        return GetStartup().State == StartupState::DeviceLost ? RasterStatus::DeviceLost : RasterStatus::Failed;
+        return internal::GetStartup().State == StartupState::DeviceLost ? RasterStatus::DeviceLost
+                                                                        : RasterStatus::Failed;
     }
-    for (usize i = 0; i < PassColorCount(gRasterPass); ++i)
+    for (usize i = 0; i < PassColorCount(GetRasterState().RasterPass); ++i)
     {
-        for (const auto slot : {gRasterPass.Colors[i].Texture, gRasterPass.Colors[i].ResolveTexture})
+        for (const usize slot :
+             {GetRasterState().RasterPass.Colors[i].Texture, GetRasterState().RasterPass.Colors[i].ResolveTexture})
         {
             if (slot != RASTER_INVALID)
             {
                 backend::RasterTextureBarrier(slot, RasterTextureUse::SampledBoth);
-                if (GetStartup().State != StartupState::Ready)
+                if (internal::GetStartup().State != StartupState::Ready)
                 {
                     return RasterStatus::Failed;
                 }
@@ -697,7 +711,7 @@ RasterStatus StartPass(const RasterPassInfo& pass) noexcept
         }
     }
     const auto started = backend::RasterBeginPass(pass);
-    const auto current = GetStartup().State;
+    const StartupState current = internal::GetStartup().State;
     if (current != StartupState::Ready)
     {
         return current == StartupState::DeviceLost ? RasterStatus::DeviceLost : RasterStatus::Failed;
@@ -772,21 +786,21 @@ namespace internal
 {
 bool RasterFinishFrame() noexcept
 {
-    if (gSurfaceColorDefined == false)
+    if (GetRasterState().IsSurfaceColorDefined == false)
     {
         internal::FaultRasterSession();
         return false;
     }
     backend::RasterEndPass();
-    if (GetStartup().State != StartupState::Ready)
+    if (internal::GetStartup().State != StartupState::Ready)
     {
         return false;
     }
-    if (gGraphExecuting)
+    if (GetRasterState().IsGraphExecuting)
     {
         return true;
     }
-    for (usize slot = 0; slot < gRecords[static_cast<usize>(RasterKind::Texture)].GetSize(); ++slot)
+    for (usize slot = 0; slot < GetRasterState().Records[static_cast<usize>(RasterKind::Texture)].GetSize(); ++slot)
     {
         auto& texture = At(RasterKind::Texture, slot);
         if (texture.InFrame &&
@@ -796,7 +810,7 @@ bool RasterFinishFrame() noexcept
              texture.FrameTextureUse == RasterTextureUse::StorageCompute))
         {
             backend::RasterTextureBarrier(slot, RasterTextureUse::SampledBoth);
-            if (GetStartup().State != StartupState::Ready)
+            if (internal::GetStartup().State != StartupState::Ready)
             {
                 return false;
             }
@@ -844,7 +858,7 @@ RasterStatus BeginRasterPass(DeviceHandle device, const RasterPassDescription& d
     }
     if (pass.Texture == RASTER_INVALID)
     {
-        const auto extent = GetFrameInfo();
+        const FrameInfo extent = internal::GetFrameInfo();
         RasterArea area;
         if (RasterResolveArea(description, extent.Width, extent.Height, area) == false)
         {
@@ -888,12 +902,12 @@ RasterStatus CreateOrderedGraph(DeviceHandle device, OrderedGraph& output) noexc
         return RasterStatus::InvalidState;
     }
     usize slot = 0;
-    const auto reserved = ReserveLifetime(gGraphs, slot, GraphCount());
+    const RasterStatus reserved = ReserveLifetime(GetGraphState().Graphs, slot, GraphCount());
     if (reserved != RasterStatus::Ready)
     {
         return reserved;
     }
-    auto& graph = gGraphs[slot];
+    GraphRecord& graph = GetGraphState().Graphs[slot];
     graph.Owner = DeviceOwner();
     graph.Published = true;
     GraphAccess::Set(output, {DeviceOwner(), slot, graph.Generation});
@@ -1020,7 +1034,7 @@ RasterStatus CreateGraphTexture(DeviceHandle device,
     }
     if (graph->Resources.TryResize(graph->ResourceCount + 1) == false ||
         graph->Report.Resources.TryResize(graph->ResourceCount + 1) == false ||
-        gGraphPool.EnsureSlots(GraphPool()) == false)
+        GetGraphState().Pool.EnsureSlots(GraphPool()) == false)
     {
         return StorageFailure();
     }
@@ -1033,7 +1047,7 @@ RasterStatus CreateGraphTexture(DeviceHandle device,
     usize freePool = GraphPool(), evictPool = GraphPool();
     for (usize i = 0; i < GraphPool(); ++i)
     {
-        const auto& pool = gGraphPool[i];
+        const GraphPoolRecord& pool = GetGraphState().Pool[i];
         if (pool.Occupied == false)
         {
             if (freePool == GraphPool())
@@ -1065,8 +1079,8 @@ RasterStatus CreateGraphTexture(DeviceHandle device,
     if (freePool == GraphPool() && evictPool != GraphPool())
     {
         freePool = evictPool;
-        Release(RasterKind::Texture, gGraphPool[freePool].Texture);
-        gGraphPool[freePool] = {};
+        Release(RasterKind::Texture, GetGraphState().Pool[freePool].Texture);
+        GetGraphState().Pool[freePool] = {};
         Collect();
     }
     if (freePool == GraphPool())
@@ -1080,7 +1094,7 @@ RasterStatus CreateGraphTexture(DeviceHandle device,
     }
     const auto slot = RasterAccess::Slot(output);
     At(RasterKind::Texture, slot).ServiceOwned = true;
-    gGraphPool[freePool] = {true, slot};
+    GetGraphState().Pool[freePool] = {true, slot};
     (void)AddImport(*graph, handle, RasterKind::Texture, slot, version, true);
     return created;
 }
@@ -2373,12 +2387,13 @@ RasterStatus ExecuteGraphCommands(DeviceHandle device,
             ++nativePassCount;
         }
     }
-    if (nativePassCount > MAX_NATIVE_COMPUTE_PASSES_PER_FRAME - (shouldSubmit == true ? 0 : gNativeComputePassCount))
+    if (nativePassCount >
+        MAX_NATIVE_COMPUTE_PASSES_PER_FRAME - (shouldSubmit == true ? 0 : GetRasterState().NativeComputePassCount))
     {
         return RasterStatus::CapacityExceeded;
     }
     if (graph->Report.Summary.DrawCount >
-        CurrentDeviceProfile().Raster.DrawsPerFrame - (shouldSubmit == true ? 0 : gDrawCount))
+        CurrentDeviceProfile().Raster.DrawsPerFrame - (shouldSubmit == true ? 0 : GetRasterState().DrawCount))
     {
         return RasterStatus::CapacityExceeded;
     }
@@ -2434,7 +2449,7 @@ RasterStatus ExecuteGraphCommands(DeviceHandle device,
             return prepared;
         }
     }
-    if (gSubmissions.Next == 0)
+    if (GetRasterState().Submissions.Next == 0)
     {
         return RasterStatus::IdentityExhausted;
     }
@@ -2467,7 +2482,7 @@ RasterStatus ExecuteGraphCommands(DeviceHandle device,
     }
     // Surface rectangles can only be checked against the actual acquired extent.
     // Acquisition may already encode its clear; report that accepted work separately.
-    const auto extent = GetFrameInfo();
+    const FrameInfo extent = internal::GetFrameInfo();
     for (usize p = 0; p < graph->PassCount; ++p)
     {
         const auto& pass = graph->Passes[p];
@@ -2485,8 +2500,8 @@ RasterStatus ExecuteGraphCommands(DeviceHandle device,
             return ended == RasterStatus::Ready ? RasterStatus::InvalidDescription : ended;
         }
     }
-    gFrameSubmission = gSubmissions.Next;
-    gGraphExecuting = true;
+    GetRasterState().FrameSubmission = GetRasterState().Submissions.Next;
+    GetRasterState().IsGraphExecuting = true;
     // Backend synchronization calls below read their graph context from this site (R13a).
     const internal::GraphLoweringSiteReset siteReset;
     const uint64 execution = ++internal::gGraphLoweringExecutions;
@@ -2526,7 +2541,7 @@ RasterStatus ExecuteGraphCommands(DeviceHandle device,
                 {
                     .Boundary = internal::GraphLoweringBoundary::Pass,
                     .Scope = p + 1,
-                    .Submission = gFrameSubmission,
+                    .Submission = GetRasterState().FrameSubmission,
                     .Execution = execution,
                     .Resource = static_cast<uint32>(resourceIndex + 1),
                     .Offset = isBuffer == true ? use.Offset : 0,
@@ -2646,7 +2661,7 @@ RasterStatus ExecuteGraphCommands(DeviceHandle device,
         internal::gGraphLoweringSite =
         {
             .Boundary = internal::GraphLoweringBoundary::Final,
-            .Submission = gFrameSubmission,
+            .Submission = GetRasterState().FrameSubmission,
             .Execution = execution,
             .Resource = static_cast<uint32>(r + 1),
         };
@@ -2687,7 +2702,7 @@ RasterStatus ExecuteGraphCommands(DeviceHandle device,
     const RasterStatus ended = shouldSubmit == true ? EndFrame(device, outCompletion) : RasterStatus::Ready;
     if (shouldSubmit == false)
     {
-        gGraphExecuting = false;
+        GetRasterState().IsGraphExecuting = false;
     }
     if (graph->Owner != 0)
     {
@@ -2695,7 +2710,7 @@ RasterStatus ExecuteGraphCommands(DeviceHandle device,
     }
     inoutHandle = {};
     Collect();
-    if (ended != RasterStatus::Ready && GetStartup().State == StartupState::Ready)
+    if (ended != RasterStatus::Ready && internal::GetStartup().State == StartupState::Ready)
     {
         internal::FaultRasterSession();
     }

@@ -14,7 +14,19 @@ struct LifetimeMetalTransfer final
     id<MTLCommandBuffer> Command = nil;
     bool Busy = false;
 };
-LifetimeMetalTransfer gLifetimeMetal[2][internal::LIFETIME_TRANSFERS];
+/// Staging slices of one transfer direction.
+using LifetimeMetalTransfers = StaticArray<LifetimeMetalTransfer, internal::LIFETIME_TRANSFERS>;
+/// Upload (0) and readback (1) staging slices of one Metal owner (R14c).
+struct LifetimeMetalState final
+{
+    StaticArray<LifetimeMetalTransfers, 2> Transfers{};
+};
+StaticArray<LifetimeMetalState, MAX_DEVICE_OWNERS> gLifetimeMetalStates{};
+/// The staging slices of the bound owner slot.
+LifetimeMetalState& GetLifetimeMetal() noexcept
+{
+    return gLifetimeMetalStates[internal::GetBoundOwnerSlot()];
+}
 RasterStatus LifetimeMetalStage(LifetimeMetalTransfer& transfer) noexcept
 {
     if (transfer.Busy)
@@ -23,8 +35,8 @@ RasterStatus LifetimeMetalStage(LifetimeMetalTransfer& transfer) noexcept
     }
     if (transfer.Staging == nil)
     {
-        transfer.Staging = [gDevice newBufferWithLength:internal::CurrentStorageLimits().TransferBytes
-                                                options:MTLResourceStorageModeShared];
+        transfer.Staging = [GetMetal().Device newBufferWithLength:internal::CurrentStorageLimits().TransferBytes
+                                                          options:MTLResourceStorageModeShared];
     }
     return transfer.Staging != nil ? RasterStatus::Ready : RasterStatus::OutOfMemory;
 }
@@ -34,7 +46,7 @@ RasterStatus LifetimeMetalCopy(LifetimeMetalTransfer& transfer,
                                id<MTLBuffer> destination,
                                usize size) noexcept
 {
-    transfer.Command = [gQueue commandBuffer];
+    transfer.Command = [GetMetal().Queue commandBuffer];
     if (transfer.Command == nil)
     {
         return RasterStatus::OutOfMemory;
@@ -54,7 +66,7 @@ RasterStatus LifetimeMetalCopy(LifetimeMetalTransfer& transfer,
 } // namespace
 bool LifetimeTransferAvailable(bool readback, usize slot) noexcept
 {
-    return gLifetimeMetal[readback ? 1 : 0][slot].Busy == false;
+    return GetLifetimeMetal().Transfers[readback ? 1 : 0][slot].Busy == false;
 }
 RasterStatus LifetimeUpload(usize transferSlot,
                             const BufferDescription&,
@@ -66,19 +78,20 @@ RasterStatus LifetimeUpload(usize transferSlot,
 
     @autoreleasepool
     {
-        auto& transfer = gLifetimeMetal[0][transferSlot];
+        LifetimeMetalTransfer& transfer = GetLifetimeMetal().Transfers[0][transferSlot];
         const auto ready = LifetimeMetalStage(transfer);
         if (ready != RasterStatus::Ready)
         {
             return ready;
         }
-        gRasterBuffers[bufferSlot] = [gDevice newBufferWithLength:size options:MTLResourceStorageModePrivate];
-        if (gRasterBuffers[bufferSlot] == nil)
+        GetRasterMetal().Buffers[bufferSlot] = [GetMetal().Device newBufferWithLength:size
+                                                                              options:MTLResourceStorageModePrivate];
+        if (GetRasterMetal().Buffers[bufferSlot] == nil)
         {
             return RasterStatus::OutOfMemory;
         }
         std::memcpy([transfer.Staging contents], bytes, size);
-        return LifetimeMetalCopy(transfer, transfer.Staging, 0, gRasterBuffers[bufferSlot], size);
+        return LifetimeMetalCopy(transfer, transfer.Staging, 0, GetRasterMetal().Buffers[bufferSlot], size);
     }
 }
 RasterStatus LifetimeReadback(usize transferSlot, BufferRole, const internal::LifetimeCopyRange& range) noexcept
@@ -88,10 +101,10 @@ RasterStatus LifetimeReadback(usize transferSlot, BufferRole, const internal::Li
     const auto size = range.Size;
     @autoreleasepool
     {
-        auto& transfer = gLifetimeMetal[1][transferSlot];
+        LifetimeMetalTransfer& transfer = GetLifetimeMetal().Transfers[1][transferSlot];
         const auto ready = LifetimeMetalStage(transfer);
         return ready == RasterStatus::Ready
-                   ? LifetimeMetalCopy(transfer, gRasterBuffers[bufferSlot], offset, transfer.Staging, size)
+                   ? LifetimeMetalCopy(transfer, GetRasterMetal().Buffers[bufferSlot], offset, transfer.Staging, size)
                    : ready;
     }
 }
@@ -103,14 +116,14 @@ LifetimeBufferUpdate(usize slot, BufferRole, const internal::LifetimeCopyRange& 
 {
     @autoreleasepool
     {
-        auto& transfer = gLifetimeMetal[0][slot];
+        LifetimeMetalTransfer& transfer = GetLifetimeMetal().Transfers[0][slot];
         const auto ready = LifetimeMetalStage(transfer);
         if (ready != RasterStatus::Ready)
         {
             return ready;
         }
         std::memcpy([transfer.Staging contents], bytes, range.Size);
-        transfer.Command = [gQueue commandBuffer];
+        transfer.Command = [GetMetal().Queue commandBuffer];
         if (transfer.Command == nil)
         {
             return RasterStatus::OutOfMemory;
@@ -123,7 +136,7 @@ LifetimeBufferUpdate(usize slot, BufferRole, const internal::LifetimeCopyRange& 
         }
         [encoder copyFromBuffer:transfer.Staging
                    sourceOffset:0
-                       toBuffer:gRasterBuffers[range.Buffer]
+                       toBuffer:GetRasterMetal().Buffers[range.Buffer]
               destinationOffset:range.Offset
                            size:range.Size];
         [encoder endEncoding];
@@ -137,13 +150,13 @@ RasterStatus LifetimeTextureTransfer(usize slot, const internal::TextureTransfer
     @autoreleasepool
     {
         const bool readback = info.Operation == internal::TextureTransferOperation::Readback;
-        auto& transfer = gLifetimeMetal[readback ? 1 : 0][slot];
+        LifetimeMetalTransfer& transfer = GetLifetimeMetal().Transfers[readback ? 1 : 0][slot];
         const auto ready = LifetimeMetalStage(transfer);
         if (ready != RasterStatus::Ready)
         {
             return ready;
         }
-        transfer.Command = [gQueue commandBuffer];
+        transfer.Command = [GetMetal().Queue commandBuffer];
         if (transfer.Command == nil)
         {
             return RasterStatus::OutOfMemory;
@@ -164,14 +177,14 @@ RasterStatus LifetimeTextureTransfer(usize slot, const internal::TextureTransfer
                   sourceBytesPerRow:info.RowPitch
                 sourceBytesPerImage:info.Size
                          sourceSize:MTLSizeMake(destination.Width, destination.Height, 1)
-                          toTexture:gRasterTextures[info.Destination]
+                          toTexture:GetRasterMetal().Textures[info.Destination]
                    destinationSlice:0
                    destinationLevel:destination.Mip
                   destinationOrigin:MTLOriginMake(destination.X, destination.Y, 0)];
         }
         else if (readback)
         {
-            [encoder copyFromTexture:gRasterTextures[info.Source]
+            [encoder copyFromTexture:GetRasterMetal().Textures[info.Source]
                              sourceSlice:0
                              sourceLevel:source.Mip
                             sourceOrigin:MTLOriginMake(source.X, source.Y, 0)
@@ -183,12 +196,12 @@ RasterStatus LifetimeTextureTransfer(usize slot, const internal::TextureTransfer
         }
         else
         {
-            [encoder copyFromTexture:gRasterTextures[info.Source]
+            [encoder copyFromTexture:GetRasterMetal().Textures[info.Source]
                          sourceSlice:0
                          sourceLevel:source.Mip
                         sourceOrigin:MTLOriginMake(source.X, source.Y, 0)
                           sourceSize:MTLSizeMake(source.Width, source.Height, 1)
-                           toTexture:gRasterTextures[info.Destination]
+                           toTexture:GetRasterMetal().Textures[info.Destination]
                     destinationSlice:0
                     destinationLevel:destination.Mip
                    destinationOrigin:MTLOriginMake(destination.X, destination.Y, 0)];
@@ -201,7 +214,7 @@ RasterStatus LifetimeTextureTransfer(usize slot, const internal::TextureTransfer
 }
 RasterStatus LifetimePollTransfer(bool readback, usize slot) noexcept
 {
-    auto& transfer = gLifetimeMetal[readback ? 1 : 0][slot];
+    LifetimeMetalTransfer& transfer = GetLifetimeMetal().Transfers[readback ? 1 : 0][slot];
     if (transfer.Busy == false || transfer.Command == nil)
     {
         return RasterStatus::Failed;
@@ -222,20 +235,20 @@ RasterStatus LifetimeCopyReadback(usize slot, uint8* output, usize size) noexcep
     {
         return ready;
     }
-    std::memcpy(output, [gLifetimeMetal[1][slot].Staging contents], size);
+    std::memcpy(output, [GetLifetimeMetal().Transfers[1][slot].Staging contents], size);
     return RasterStatus::Ready;
 }
 void LifetimeReleaseTransfer(bool readback, usize slot) noexcept
 {
-    auto& transfer = gLifetimeMetal[readback ? 1 : 0][slot];
+    LifetimeMetalTransfer& transfer = GetLifetimeMetal().Transfers[readback ? 1 : 0][slot];
     transfer.Command = nil;
     transfer.Busy = false;
 }
 void LifetimeReset() noexcept
 {
-    for (auto& direction : gLifetimeMetal)
+    for (LifetimeMetalTransfers& direction : GetLifetimeMetal().Transfers)
     {
-        for (auto& transfer : direction)
+        for (LifetimeMetalTransfer& transfer : direction)
         {
             if (transfer.Command != nil)
             {

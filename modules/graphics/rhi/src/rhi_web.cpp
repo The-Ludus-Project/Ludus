@@ -1,6 +1,7 @@
 #include "internal/adapter.h"
 #include "internal/backend.h"
 #include "internal/lifecycle.h"
+#include "internal/owner.h"
 #include "internal/resources.h"
 #include "internal/surface.h"
 #include "internal/web_backends.h"
@@ -325,6 +326,11 @@ void UpdateUniform(usize slot, ludus::foundation::BorrowedView<const uint8> byte
 ResourceStatus Draw(usize slot) noexcept
 {
     return gActive == Backend::WebGL2 ? webgl::Draw(slot) : webgpu::Draw(slot);
+}
+// R14c: the browser dispatcher binds one backend per process, so the facade admits a single device owner.
+usize GetDeviceOwnerLimit() noexcept
+{
+    return 1;
 }
 // R14b: WebGPU hosts further canvases on its device. A WebGL 2 context belongs to one
 // canvas, so a WebGL 2 session hosts only its primary surface and reports no completion.
