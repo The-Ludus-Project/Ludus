@@ -499,6 +499,29 @@ a deadline per attempt. After the packages are cached, APT installs them locally
 under the job's overall timeout. This keeps the network deadline from interrupting
 dpkg while it unpacks or configures packages.
 
+### Linux pull-request image
+
+The Editor job and both Clang analysis shards on integration PRs look up the
+Ubuntu 24.04 image for the checked-out merge revision. Its key covers the
+Dockerfile, native package installer, LLVM source helper and signing key, tool
+versions, shader lock and shader bootstrap. An ordinary source edit keeps the
+same key. On a hit the jobs pull the resolved GHCR digest with read access.
+LLVM, Qt, Wayland, Mesa and the pinned CMake, Ninja and Conan environment are
+already installed. The Editor bootstrap verifies the image's shader archives
+against the checkout's lock. Conan still checks the project lock and local
+recipes, and CMake configures the current checkout. Setup configures the Editor
+with verified shader tools. The explicit build step then compiles every default
+target with the shader worker enabled.
+
+When the exact image is missing or its lookup fails, the jobs run the checkout's
+native setup on the hosted VM. A PR changing the image inputs also builds the
+recipe and configures an Editor checkout in it during **Source formatting**.
+After acceptance, **Develop compiler cache** publishes a missing image from
+`develop` and warms the Editor build in that image. Only the publisher job
+requests package write access. Manually dispatch that workflow on `develop` to
+refresh Ubuntu packages within the same recipe. Full batch and nightly
+qualification continue to use the hosted VM setup.
+
 ### macOS runner images
 
 Native jobs use `macos-15` arm64. Host and documentation tooling separately check

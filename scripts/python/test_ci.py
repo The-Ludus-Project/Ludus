@@ -209,7 +209,8 @@ class ToolchainPinTests(unittest.TestCase):
     def test_ci_and_devcontainer_install_the_pinned_llvm_from_its_apt_source(self):
         import re
 
-        files = [*sorted((self.ROOT / ".github").rglob("*.yml")), self.ROOT / ".devcontainer/Dockerfile"]
+        files = [*sorted((self.ROOT / ".github").rglob("*.yml")), self.ROOT / ".devcontainer/Dockerfile",
+                 self.ROOT / ".github/actions/native-setup/install-packages.sh"]
         tools = r"(?:clang|clang\+\+|clang-format|clang-tidy|clang-tools|lld|llvm|libclang-rt)"
         versioned = re.compile(rf"\b{tools}[-@](\d+)\b")
         apt_package = re.compile(rf"(?<![/\w-]){tools}-\d+\b")
@@ -449,10 +450,55 @@ class NativePrerequisiteTests(unittest.TestCase):
         self.assertIn("restore-keys: |\n          conan-v3-${{ runner.os }}-${{ runner.arch }}-${{ inputs.preset }}-\n",
                       reader)
 
+    def test_native_image_selection_uses_the_dependency_revision(self):
+        image = self.ROOT / ".github/actions/native-image"
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            def git(*arguments):
+                return subprocess.check_output(["git", *arguments], cwd=root, text=True).strip()
+
+            git("init", "-q")
+            git("config", "user.email", "test@example.invalid")
+            git("config", "user.name", "CI test")
+            recipe = root / ".github/actions/native-image/Dockerfile"
+            recipe.parent.mkdir(parents=True)
+            shutil.copy(image / "Dockerfile", recipe)
+            git("add", ".")
+            git("commit", "-qm", "base")
+            base = git("rev-parse", "HEAD")
+            docker = root / "docker"
+            docker.write_text('#!/bin/sh\ncase "$1" in\n  login) cat >/dev/null;;\n'
+                              '  buildx) echo "$4" >> "$TAGS"; echo "$DIGEST";;\n  *) exit 1;;\nesac\n')
+            docker.chmod(0o755)
+            output = root / "output"
+            tags = root / "tags"
+            digest = "sha256:" + "1" * 64
+            environment = {**os.environ, "PATH": str(root) + os.pathsep + os.environ["PATH"],
+                           "BASE_SHA": base, "GITHUB_REPOSITORY": "Owner/Repo", "GITHUB_ACTOR": "tester",
+                           "GH_TOKEN": "test", "GITHUB_OUTPUT": str(output), "TAGS": str(tags)}
+            def resolve(manifest):
+                output.write_text("")
+                subprocess.run(["bash", str(image / "image.sh"), "resolve"], cwd=root,
+                               env={**environment, "DIGEST": manifest}, check=True, capture_output=True)
+                return output.read_text().splitlines()
+
+            expected = [f"image=ghcr.io/owner/repo-native-ci@{digest}"]
+            self.assertEqual(resolve(digest), expected)
+            (root / "engine.cpp").touch()
+            git("add", "engine.cpp")
+            git("commit", "-qm", "source")
+            self.assertEqual(resolve(digest), expected)
+            recipe.write_text("FROM ubuntu:24.04\n")
+            git("commit", "-qam", "changed dependencies")
+            self.assertEqual(resolve("missing"), ["recipe_changed=true"])
+            self.assertEqual(resolve(digest), ["recipe_changed=true", *expected])
+            first, unchanged, changed, retried = tags.read_text().splitlines()
+            self.assertEqual(first, unchanged)
+            self.assertNotEqual(first, changed)
+            self.assertEqual(changed, retried)
+
     def native_prerequisite_command(self):
-        action = (self.ROOT / ".github/actions/native-setup/action.yml").read_text()
-        step = action.split("    - name: Install native prerequisites\n", 1)[1]
-        return step.split("      run: |\n", 1)[1].split("    - name:", 1)[0]
+        return (self.ROOT / ".github/actions/native-setup/install-packages.sh").read_text()
 
     def test_rendered_editor_setup_installs_software_vulkan_before_initialization(self):
         command = self.native_prerequisite_command()

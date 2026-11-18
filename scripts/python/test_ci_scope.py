@@ -449,7 +449,7 @@ class RequiredGateTests(unittest.TestCase):
         guard = "        if: needs.changes.outputs.validation_tier != 'integration'\n"
         steps = re.findall(r"(?ms)^      - (?:name|uses): ([^\n]*)\n(.*?)(?=^      - |\Z)", editor)
         self.assertTrue(steps)
-        compile_only = ("Prepare and configure trusted authoring shaders", "Check that each source compiles once",
+        compile_only = ("Configure the shader worker with verified authoring tools", "Check that each source compiles once",
                         "Build every default target with the Editor and shader worker",
                         "Analyze document interactions and regressions", "Report compiler cache")
         # The one test step integration runs: quick generated-file comparisons on the built tree
@@ -755,12 +755,13 @@ class DevelopCompilerCacheTests(unittest.TestCase):
                          {key: value for key, value in develop.items() if key not in writers})
         self.assertEqual(develop["compiler-cache-writer"], "'true'")
         self.assertEqual(develop["conan-cache-writer"], "'true'")
-        # Shader-tool bootstrap, configure flags and the build command are identical
+        # Configure flags and the build command are identical
         # to the steps a pull request runs before the batch-only tests and journeys.
         compile_steps = editor.split("      - name: Verify unit and Editor tests", 1)[0]
         configure_and_build = self.runs(compile_steps)
         self.assertEqual(self.runs(cache), configure_and_build)
-        self.assertEqual(len(configure_and_build), 3)
+        self.assertEqual(len(configure_and_build), 2)
+        self.assertEqual(develop["configure-editor-only"], "'true'")
         self.assertIn('LUDUS_EDITOR_PRECOMPILED_HEADERS: "0"', editor)
         self.assertIn('LUDUS_EDITOR_PRECOMPILED_HEADERS: "0"', cache)
         for name in ("CI", "LUDUS_DIAGNOSTIC_INTERACTIVE", "CMAKE_BUILD_PARALLEL_LEVEL"):
@@ -773,7 +774,7 @@ class DevelopCompilerCacheTests(unittest.TestCase):
         self.assertIn("\nconcurrency:\n  group: develop-compiler-cache\n  cancel-in-progress: false\n", warm)
         self.assertIn("\npermissions:\n  contents: read\n\n", warm)
         cache = self.job(warm, "editor")
-        self.assertIn("    if: github.ref == 'refs/heads/develop'\n", cache)
+        self.assertIn("    if: ${{ !cancelled() && github.ref == 'refs/heads/develop' }}\n", cache)
         self.assertNotIn("actions: write", cache)
         # A develop compile failure still saves the objects that compiled.
         self.assertRegex(cache, r"id: build\n        continue-on-error: true\n")

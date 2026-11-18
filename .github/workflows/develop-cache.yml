@@ -35,12 +35,46 @@ env:
   CMAKE_BUILD_PARALLEL_LEVEL: "4"
 
 jobs:
+  native-image:
+    if: github.ref == 'refs/heads/develop'
+    name: Prepare the native PR image
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    permissions:
+      contents: read
+      packages: write
+    outputs:
+      image: ${{ steps.prepare.outputs.image }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Publish missing native dependencies
+        id: prepare
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REFRESH_IMAGE: ${{ github.event_name == 'workflow_dispatch' }}
+        run: bash .github/actions/native-image/image.sh publish
+
   # The job ID matches ci.yml's editor job: native-setup selects its runtime
   # profile by GITHUB_JOB, and every compile input must match for cache hits.
   editor:
-    if: github.ref == 'refs/heads/develop'
+    needs: native-image
+    # A registry outage still leaves a hosted VM that can warm the compiler cache.
+    if: ${{ !cancelled() && github.ref == 'refs/heads/develop' }}
     name: Warm the Editor compile cache
     runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+      packages: read
+    container:
+      image: ${{ needs.native-image.outputs.image }}
+      credentials:
+        username: ${{ github.actor }}
+        password: ${{ secrets.GITHUB_TOKEN }}
+    defaults:
+      run:
+        shell: bash
     timeout-minutes: 120
     env:
       LUDUS_EDITOR_PRECOMPILED_HEADERS: "0"
@@ -52,12 +86,12 @@ jobs:
         with:
           preset: linux-clang-development
           editor: 'true'
+          configure-editor-only: 'true'
           cache-variant: editor
           conan-cache-writer: 'true'
           compiler-cache-writer: 'true'
-      - name: Prepare and configure trusted authoring shaders
+      - name: Configure the shader worker with verified authoring tools
         run: |
-          ./scripts/shader-probe bootstrap
           out/host-tools/venv/bin/cmake --preset linux-clang-development -DLUDUS_EDITOR_RENDER_PREVIEW=ON -DLUDUS_BUILD_SHADER_WORKER=ON -DLUDUS_EDITOR_PRECOMPILED_HEADERS=OFF -DLUDUS_SLANG_COMPILER="$PWD/out/shader-tools/slang/bin/slangc" -DLUDUS_SPIRV_VALIDATOR="$PWD/out/shader-tools/spirv-tools/usr/bin/spirv-val"
       # A compile failure on develop still leaves every object that compiled, and
       # the next pull request (often its fix) reuses them, so the cache is saved.
