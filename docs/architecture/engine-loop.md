@@ -215,7 +215,7 @@ RHI and renderer in hand-written order and stop them in destructors or
 This section records a review of the loops above against their contracts and
 the repository's [responsibility-boundary rules](../../AGENTS.md#responsibility-boundaries-and-incremental-refactoring).
 Each finding names its evidence so it can be re-checked; the recommendations are
-proposals, and each needs its own issue and change.
+proposals; each is tracked by the issue in the table below.
 
 ### Keep these properties
 
@@ -241,20 +241,20 @@ in any refactoring:
 
 ### Findings
 
-| # | Finding | Severity | Size |
-| --- | --- | --- | --- |
-| 1 | [The fixed-tick contract has no engine implementation](#1-the-fixed-tick-contract-has-no-engine-implementation) | High | M |
-| 2 | [Game host ticks are coupled to frames](#2-game-host-ticks-are-coupled-to-frames) | High (decision) | M |
-| 3 | [The engine game path cannot draw a World](#3-the-engine-game-path-cannot-draw-a-world) | High (direction) | L |
-| 4 | [Subsystems are built ahead of any loop](#4-subsystems-are-built-ahead-of-any-loop) | High | Policy |
-| 5 | [Three game-API frame loops](#5-three-game-api-frame-loops) | Medium | S |
-| 6 | [`HostSession` concentrates five responsibilities](#6-hostsession-concentrates-five-responsibilities) | Medium | M |
-| 7 | [Frame bookkeeping is repeated above the RHI](#7-frame-bookkeeping-is-repeated-above-the-rhi) | Medium | M |
-| 8 | [Two pacing policies over one pacer](#8-two-pacing-policies-over-one-pacer) | Low | S |
-| 9 | [The lifecycle runner has one consumer](#9-the-lifecycle-runner-has-one-consumer) | Low | S |
-| 10 | [Two RHI frame entry points and an unused synchronous API](#10-two-rhi-frame-entry-points-and-an-unused-synchronous-api) | Low | S |
-| 11 | [The input step contract names the wrong unit](#11-the-input-step-contract-names-the-wrong-unit) | Low | S |
-| 12 | [Repeated helpers and constants in the loop path](#12-repeated-helpers-and-constants-in-the-loop-path) | Low | S |
+| # | Finding | Severity | Size | Issue |
+| --- | --- | --- | --- | --- |
+| 1 | [The fixed-tick contract has no engine implementation](#1-the-fixed-tick-contract-has-no-engine-implementation) | High | M | [#1783](https://github.com/The-Ludus-Project/Ludus/issues/1783) |
+| 2 | [Game host ticks are coupled to frames](#2-game-host-ticks-are-coupled-to-frames) | High (decision) | M | [#1784](https://github.com/The-Ludus-Project/Ludus/issues/1784) |
+| 3 | [The engine game path cannot draw a World](#3-the-engine-game-path-cannot-draw-a-world) | High (direction) | L | [#1785](https://github.com/The-Ludus-Project/Ludus/issues/1785) |
+| 4 | [Subsystems are built ahead of any loop](#4-subsystems-are-built-ahead-of-any-loop) | High | Policy | [#1786](https://github.com/The-Ludus-Project/Ludus/issues/1786) |
+| 5 | [Three game-API frame loops](#5-three-game-api-frame-loops) | Medium | S | [#1787](https://github.com/The-Ludus-Project/Ludus/issues/1787) |
+| 6 | [`HostSession` concentrates five responsibilities](#6-hostsession-concentrates-five-responsibilities) | Medium | M | [#1788](https://github.com/The-Ludus-Project/Ludus/issues/1788) |
+| 7 | [Frame bookkeeping is repeated above the RHI](#7-frame-bookkeeping-is-repeated-above-the-rhi) | Medium | M | [#1789](https://github.com/The-Ludus-Project/Ludus/issues/1789) |
+| 8 | [Two pacing policies over one pacer](#8-two-pacing-policies-over-one-pacer) | Low | S | [#1790](https://github.com/The-Ludus-Project/Ludus/issues/1790) |
+| 9 | [The lifecycle runner has one consumer](#9-the-lifecycle-runner-has-one-consumer) | Low | S | [#1791](https://github.com/The-Ludus-Project/Ludus/issues/1791) |
+| 10 | [Two RHI frame entry points and an unused synchronous API](#10-two-rhi-frame-entry-points-and-an-unused-synchronous-api) | Low | S | [#1792](https://github.com/The-Ludus-Project/Ludus/issues/1792) |
+| 11 | [The input step contract names the wrong unit](#11-the-input-step-contract-names-the-wrong-unit) | Low | S | [#1793](https://github.com/The-Ludus-Project/Ludus/issues/1793) |
+| 12 | [Repeated helpers and constants in the loop path](#12-repeated-helpers-and-constants-in-the-loop-path) | Low | S | [#1794](https://github.com/The-Ludus-Project/Ludus/issues/1794) |
 
 #### 1. The fixed-tick contract has no engine implementation
 
