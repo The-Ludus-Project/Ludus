@@ -73,9 +73,11 @@ namespace
 constexpr uint32 TEST_LONG_SIDE = 24;
 constexpr uint32 TEST_SAMPLES = 2;
 constexpr uint32 TEST_DEPTH = 3;
-/// Generous wall-time bound for preparation plus tracing on a loaded machine.
-constexpr int64 CAPTURE_TIMEOUT_MILLISECONDS = 120000;
+/// Generous wall-time bound for a CPU-oracle capture of the small fixture on a loaded machine.
+constexpr int64 CPU_CAPTURE_TIMEOUT_MILLISECONDS = 120000;
 constexpr int64 MILLISECONDS_PER_SECOND = 1000;
+/// GPU traversals compile the monolithic reference kernel cold, so they share the renderer-owned cold
+/// preparation budget (modules/graphics/renderer/CMakeLists.txt).
 constexpr int64 GPU_CAPTURE_TIMEOUT_MILLISECONDS =
     LUDUS_EDITOR_REFERENCE_TEST_COLD_TIMEOUT_SECONDS * MILLISECONDS_PER_SECOND;
 constexpr uint64 TEST_SERVICE_BUDGET_NANOSECONDS = 50'000'000;
@@ -151,8 +153,38 @@ void DescribeTestView(const RenderScene& scene, const QSize& extent, renderer::V
     REQUIRE(isDescribed == true);
 }
 
-ViewportReferencePhase RunToEnd(ViewportReferenceCapture& inoutCapture,
-                                int64 timeoutMilliseconds = CAPTURE_TIMEOUT_MILLISECONDS)
+/// The wall bound for preparing and tracing a capture of the small fixture with this traversal. Waits take
+/// it from the traversal they chose, so a GPU capture never runs under the CPU oracle's bound. Cold GPU
+/// captures belong in [reference-compute] cases, which CTest runs with their own deadline.
+int64 GetCaptureTimeoutMilliseconds(renderer::ReferenceTraversal traversal)
+{
+    return traversal == renderer::ReferenceTraversal::CpuOracle ? CPU_CAPTURE_TIMEOUT_MILLISECONDS
+                                                                : GPU_CAPTURE_TIMEOUT_MILLISECONDS;
+}
+
+/// Choose a traversal as the user does, so a later device change keeps it rather than the default.
+void SelectTraversal(ReferenceCaptureWindow& inoutWindow, renderer::ReferenceTraversal traversal)
+{
+    QComboBox* traversalOrNull = inoutWindow.findChild<QComboBox*>(QStringLiteral("referenceTraversal"));
+    REQUIRE(traversalOrNull != nullptr);
+    const int32 index = static_cast<int32>(traversal);
+    REQUIRE(index < traversalOrNull->count());
+    traversalOrNull->setCurrentIndex(index);
+    Q_EMIT traversalOrNull->activated(index);
+}
+
+/// Wait for the window's capture to finish within the budget of the traversal the window runs, which is GPU
+/// compute by default on a capable device.
+bool WaitForCapture(const ReferenceCaptureWindow& window, QSignalSpy& inoutFinished)
+{
+    const QComboBox* traversalOrNull = window.findChild<QComboBox*>(QStringLiteral("referenceTraversal"));
+    REQUIRE(traversalOrNull != nullptr);
+    const renderer::ReferenceTraversal traversal =
+        static_cast<renderer::ReferenceTraversal>(traversalOrNull->currentIndex());
+    return inoutFinished.wait(static_cast<int32>(GetCaptureTimeoutMilliseconds(traversal)));
+}
+
+ViewportReferencePhase RunToEnd(ViewportReferenceCapture& inoutCapture, int64 timeoutMilliseconds)
 {
     QElapsedTimer timer;
     timer.start();
@@ -402,7 +434,7 @@ TEST_CASE("CPU oracle reference capture of the viewport scene completes and save
     QString error;
     REQUIRE(capture.Start(device.Device, device.Surface, scene, view, extent, settings, error) == true);
     CHECK(capture.GetPhase() == ViewportReferencePhase::Preparing);
-    const ViewportReferencePhase phase = RunToEnd(capture);
+    const ViewportReferencePhase phase = RunToEnd(capture, GetCaptureTimeoutMilliseconds(settings.Traversal));
     INFO(capture.GetError().toStdString());
     REQUIRE(phase == ViewportReferencePhase::Complete);
     // Only the authored point lamps reach RT1; the fixture's cubes do not emit.
@@ -457,7 +489,7 @@ TEST_CASE("A reference capture traces pixel centres when asked and records it in
         QString error;
         REQUIRE(capture.Start(device.Device, device.Surface, scene, view, extent, settings, error) == true);
         CHECK(capture.AreRaysCentered() == shouldCenterRays);
-        const ViewportReferencePhase phase = RunToEnd(capture);
+        const ViewportReferencePhase phase = RunToEnd(capture, GetCaptureTimeoutMilliseconds(settings.Traversal));
         INFO(capture.GetError().toStdString());
         REQUIRE(phase == ViewportReferencePhase::Complete);
         QByteArray hdr;
@@ -492,7 +524,7 @@ TEST_CASE("Reference capture lights the scene with the World Atmosphere's sky as
         ViewportReferenceCapture capture;
         QString error;
         REQUIRE(capture.Start(device.Device, device.Surface, source, view, extent, settings, error) == true);
-        const ViewportReferencePhase phase = RunToEnd(capture);
+        const ViewportReferencePhase phase = RunToEnd(capture, GetCaptureTimeoutMilliseconds(settings.Traversal));
         INFO(capture.GetError().toStdString());
         REQUIRE(phase == ViewportReferencePhase::Complete);
         Array<renderer::ReferencePixel> pixels;
@@ -554,7 +586,7 @@ TEST_CASE("GPU compute reference capture completes with more emissive patches th
     ViewportReferenceCapture capture;
     QString error;
     REQUIRE(capture.Start(device.Device, device.Surface, scene, view, extent, settings, error) == true);
-    const ViewportReferencePhase phase = RunToEnd(capture, GPU_CAPTURE_TIMEOUT_MILLISECONDS);
+    const ViewportReferencePhase phase = RunToEnd(capture, GetCaptureTimeoutMilliseconds(settings.Traversal));
     INFO(capture.GetError().toStdString());
     REQUIRE(phase == ViewportReferencePhase::Complete);
     CHECK(capture.GetLightCount() == static_cast<usize>(tests::LAMP_COUNT));
@@ -585,7 +617,7 @@ TEST_CASE("Native query reference capture completes where the device supports ra
     ViewportReferenceCapture capture;
     QString error;
     REQUIRE(capture.Start(device.Device, device.Surface, scene, view, extent, settings, error) == true);
-    const ViewportReferencePhase phase = RunToEnd(capture);
+    const ViewportReferencePhase phase = RunToEnd(capture, GetCaptureTimeoutMilliseconds(settings.Traversal));
     INFO(capture.GetError().toStdString());
     REQUIRE(phase == ViewportReferencePhase::Complete);
     CheckCompleteCapture(capture, extent);
@@ -631,10 +663,7 @@ TEST_CASE("GPU compute reference capture matches the CPU oracle on the viewport 
         ViewportReferenceCapture capture;
         QString error;
         REQUIRE(capture.Start(device.Device, device.Surface, scene, view, extent, settings, error) == true);
-        const int64 timeoutMilliseconds = traversals[index] == renderer::ReferenceTraversal::GpuCompute
-                                              ? GPU_CAPTURE_TIMEOUT_MILLISECONDS
-                                              : CAPTURE_TIMEOUT_MILLISECONDS;
-        const ViewportReferencePhase phase = RunToEnd(capture, timeoutMilliseconds);
+        const ViewportReferencePhase phase = RunToEnd(capture, GetCaptureTimeoutMilliseconds(settings.Traversal));
         INFO(capture.GetError().toStdString());
         REQUIRE(phase == ViewportReferencePhase::Complete);
         CheckCompleteCapture(capture, extent);
@@ -719,6 +748,10 @@ TEST_CASE("Reference capture releases viewport GPU admission on stop and complet
     REQUIRE(samples != nullptr);
     longSide->setValue(TEST_LONG_SIDE);
     samples->setValue(TEST_SAMPLES);
+    // Every traversal holds the same admission. The window would choose GPU compute and compile its kernel
+    // cold inside this shared test shard; GPU captures run in the [reference-compute] cases instead.
+    constexpr renderer::ReferenceTraversal TRAVERSAL = renderer::ReferenceTraversal::CpuOracle;
+    SelectTraversal(window, TRAVERSAL);
     REQUIRE(window.StartCapture() == true);
     CHECK(preview.HasActiveGpuCapture() == true);
     window.StopCapture();
@@ -727,9 +760,12 @@ TEST_CASE("Reference capture releases viewport GPU admission on stop and complet
     QSignalSpy finished(&window, &ReferenceCaptureWindow::CaptureFinished);
     REQUIRE(window.StartCapture() == true);
     CHECK(preview.HasActiveGpuCapture() == true);
-    REQUIRE(finished.wait(static_cast<int32>(CAPTURE_TIMEOUT_MILLISECONDS)) == true);
+    REQUIRE(WaitForCapture(window, finished) == true);
     INFO(window.GetStatusText().toStdString());
     CHECK(window.GetCapture().GetPhase() == ViewportReferencePhase::Complete);
+    renderer::ReferenceCaptureInfo information;
+    REQUIRE(window.GetCapture().GetInfo(information) == true);
+    CHECK(information.Traversal == TRAVERSAL);
     CHECK(preview.HasActiveGpuCapture() == false);
 }
 
@@ -1049,8 +1085,7 @@ TEST_CASE("Supplied World completes reference capture with all reference modes",
                                          : static_cast<int32>(renderer::ReferenceTraversal::CpuOracle);
         REQUIRE(traversalIndex >= 0);
         REQUIRE(traversalIndex < traversalOrNull->count());
-        traversalOrNull->setCurrentIndex(traversalIndex);
-        Q_EMIT traversalOrNull->activated(traversalIndex);
+        SelectTraversal(window, static_cast<renderer::ReferenceTraversal>(traversalIndex));
         REQUIRE(compareOrNull->isEnabled() == true);
         compareOrNull->setChecked(true);
         QSignalSpy finished(&window, &ReferenceCaptureWindow::CaptureFinished);
