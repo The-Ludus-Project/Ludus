@@ -272,6 +272,7 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument('--tool', required=True, help='the lusl-declarations executable')
     parser.add_argument('--check', action='store_true', help='fail when a header differs from its template')
+    parser.add_argument('--regenerate-target', help='the build target that rewrites the headers, named on failure')
     parser.add_argument('templates', nargs='+', type=Path)
     args = parser.parse_args()
     stale = []
@@ -294,9 +295,13 @@ def main():
             header.write_text(text, encoding='utf-8')
     if stale:
         names = ' '.join(str(path) for path in stale)
+        command = ('python3 cmake/shaders/generate_luslh.py --tool <build>/tools/lusl-declarations/lusl-declarations '
+                   + ' '.join(str(template) for template in args.templates))
+        if args.regenerate_target:
+            command = f'cmake --build <build> --target {args.regenerate_target}'
         print(f'generate_luslh: stale generated headers: {names}\n'
-              'Regenerate them with: python3 cmake/shaders/generate_luslh.py --tool <build>/tools/lusl-declarations/'
-              'lusl-declarations ' + ' '.join(str(template) for template in args.templates), file=sys.stderr)
+              'A change to the Slang they reflect needs them regenerated in the same commit.\n'
+              f'Regenerate them with: {command}', file=sys.stderr)
         return 1
     return 0
 

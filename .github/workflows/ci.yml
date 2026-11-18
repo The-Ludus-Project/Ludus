@@ -1565,6 +1565,10 @@ jobs:
         run: out/host-tools/venv/bin/python tools/check_build_graph.py out/build/linux-clang-development --summary "$GITHUB_STEP_SUMMARY" --report out/build-graph/linux-clang-development.json
       - name: Build every default target with the Editor and shader worker
         run: out/host-tools/venv/bin/cmake --build --preset linux-clang-development
+      # Checked-in generated sources (such as the SDK .luslh headers) need tools only this
+      # build produces, so integration pull requests check them here rather than in a batch.
+      - name: Check checked-in generated sources
+        run: out/host-tools/venv/bin/ctest --preset linux-clang-development --label-regex '^generated-source$' --output-on-failure --no-tests=error
       - name: Verify unit and Editor tests and worker-on target detection
         if: needs.changes.outputs.validation_tier != 'integration'
         env:

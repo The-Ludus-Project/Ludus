@@ -765,6 +765,15 @@ headers. Separate the groups with a blank line.
   each with its own deadline. Reuse the renderer-owned cold preparation budget and
   yield during asynchronous polling; keep unrelated scenarios out of a shared
   short raster deadline. These choices still require semantic review.
+- Regenerate checked-in generated files in the commit that changes their inputs. A
+  change to Slang or a C header that an SDK `.luslh` template reflects needs
+  `cmake --build <build> --target ludus_generate_luslh`. A new checked-in generated
+  file gets a `--check` freshness CTest labelled `generated-source`, which every
+  pull request's Editor build runs after its build, and a regeneration target named
+  in its failure. Keep labelled tests to quick comparisons (`TIMEOUT` at most 120 s,
+  no fixtures) so they add seconds, not build work, to pull requests; `test_ci.py`
+  rejects an unlabelled generator check and an unbounded labelled test. See
+  `docs/development/continuous-integration.md#generated-sources`.
 - Close CMake source lists before invoking another build command. The changed-source
   gate rejects direct nested build commands in `add_executable`, `add_library` and
   `target_sources` lists touched by a change. This lexical check does not evaluate

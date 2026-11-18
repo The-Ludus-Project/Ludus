@@ -20,8 +20,10 @@ syntax checks, tooling regressions, the installed host-tooling tests, and public
 API/documentation validation. Drafts retain these checks. When the change is not
 documentation-only, they also compile: the **Editor, shader worker and unit tests**
 job checks that each source compiles once, builds every default target with the
-Editor and shader worker and warnings as errors, and analyzes the Editor document
-sources, without running its tests or journeys. Both **Clang static analysis**
+Editor and shader worker and warnings as errors, checks the
+[checked-in generated sources](#generated-sources) that build produces tools for,
+and analyzes the Editor document sources, without running its other tests or
+journeys. Both **Clang static analysis**
 shards analyze every translation unit, and shard 0 checks changed lines with the
 naming and magic-number rules. These jobs restore Conan and compiler caches
 without saving their own, so they cannot evict a shared baseline. The Editor job
@@ -397,6 +399,31 @@ move into docs does not hide an engine change. The `Ubuntu Clang` gate checks th
 complete job inventory and requires exactly the successes/skips selected by the
 tier. Missing outputs or failed/cancelled dependencies fail the gate; the only
 exception is a superseded pull-request run, described below.
+
+### Generated sources
+
+Some generated files are checked in because builds without their generator still
+consume them, such as the SDK `.luslh` headers that only Slang-linked
+shader-worker builds can regenerate. Each has a freshness CTest that fails when
+the checked-in copy differs from what its inputs generate, and carries the
+`generated-source` label. The **Editor, shader worker and unit tests** job runs
+that label right after its build on every tier, integration pull requests
+included, so a change to an input that leaves its generated file stale fails
+before it reaches `develop`. Earlier the check ran only with the batch's unit
+tests, and stale `scene_shader.luslh` headers reached `develop` three times.
+
+The step adds no build work: it runs CTest on the tree the job already built, and
+`lusl_declarations_tests` took 1.5 s of a 25-38 minute job. Labelled tests must
+stay that cheap. They compare files with tools the build already produced, declare
+a `TIMEOUT` of at most 120 s and use no CTest fixtures, whose setup tests would
+also run on every pull request.
+
+A new checked-in generated file follows the same contract: a `--check` freshness
+test labelled `generated-source`, and a build target that regenerates it, named in
+the test's failure. `scripts/python/test_ci.py` (`GeneratedSourceCheckTests`)
+rejects a generator `--check` test without the label, a labelled test without a
+bounded timeout or with fixtures, and an Editor job whose check is missing,
+gated by tier or placed before the build.
 
 Required checks use job conditions instead of workflow-level path filtering, so
 branch protection receives a result even when expensive jobs are intentionally
