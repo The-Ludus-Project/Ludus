@@ -517,15 +517,29 @@ this sequence. The **macOS native backends and diagnostics** job uploads JUnit
 results from its native CTest suite, including individual case times on test
 failures.
 
-Native viewport scheduling acceptance requires presentation and camera input to
-advance in each of three consecutive one-second windows while input stays active.
-An initial idle window confirms that the native viewport is presenting. A separate
-regression verifies that repeated start requests preserve the active service
-timer's identity and deadline. The screen's reported refresh rate is approximate,
-and shared-runner load and sanitizer overhead affect input and idle work
-differently. See Qt's
+#### Native viewport scheduling acceptance
+
+The native viewport scheduling case alternates five idle and five camera-input
+windows of one second each, after a warm-up. It records the time of every new
+image the viewport hands to Qt (`PreviewViewport::ImagePresented`). That point
+precedes Qt's draw and display scanout. A run passes when every input window
+delivers more than 20 camera updates and more than two new images. If the idle
+median reaches at least 20 images, the input median must keep at least a third of
+it. The median longest gap without a new image during input must stay within the
+larger of 250 ms and four times the idle median. Medians over the repeated windows
+tolerate one slow window, while a regression that affects every input window
+still fails. Deterministic cases check that the rule rejects throttled input and a
+long stall that keeps the image count. A separate regression verifies that
+repeated start requests preserve the active service timer's identity and deadline.
+The screen's reported refresh rate is approximate, and shared-runner load and
+sanitizer overhead affect input and idle work differently. See Qt's
 [screen refresh contract](https://doc.qt.io/qt-6/qscreen.html#refreshRate-prop) and
 [timer accuracy contract](https://doc.qt.io/qt-6/qtimer.html#accuracy-and-timer-resolution).
+The thresholds come from the measured
+[viewport input pacing baseline](viewport-pacing-evidence.md). Set
+`LUDUS_EDITOR_PACING_RECORD` to a file path to write a run's raw windows and
+intervals; failures report the same record. A covered or minimized window stops
+presenting on macOS, so the record notes each window's exposure.
 Display throughput follows the separate
 [runtime timing policy](runtime-profiling.md#toward-a-timing-gate).
 

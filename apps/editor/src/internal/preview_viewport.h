@@ -202,6 +202,16 @@ public:
 Q_SIGNALS:
     /// Right click on the edit surface or a keyboard context request. Entity ID is empty on the background.
     void WorldContextMenuRequested(const QPoint& positionGlobal, const QString& entityId);
+    /// @brief A new image reached this viewport's own presentation and PresentedFrames() advanced by one.
+    ///
+    /// The observation point is where the viewport hands Qt a different image: the Qt Quick
+    /// scene-graph update (updatePaintNode) on the native path, or the readback canvas update on the
+    /// offscreen path. It precedes Qt's draw and display scanout. Delegated World graph views and the
+    /// browser canvas count their images in PresentedFrames() without emitting this signal.
+    /// Emitted on the GUI thread; on the native path a connected slot runs inside Qt Quick's scene
+    /// synchronization, so it must not block or change this viewport.
+    /// @param presentedTicks Monotonic foundation::time::NowTicks() reading in nanoseconds.
+    void ImagePresented(foundation::uint64 presentedTicks);
 
 protected:
     bool eventFilter(QObject* watched, QEvent* event) override;

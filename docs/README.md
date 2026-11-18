@@ -324,6 +324,7 @@ for content changes. Module/sample/tool READMEs link to these owners.
 - [Text/font rendering — F0–F2 native CPU results and environment report](architecture/text-font-rendering-evidence/f0-f2-native-results.md)
 - [Text/font rendering — verified dependency and asset manifest (F0)](architecture/text-font-rendering-evidence/dependency-manifest.md)
 - [Threading kernel validation and performance evidence](development/threading-evidence.md)
+- [Viewport input pacing baseline](development/viewport-pacing-evidence.md)
 - [W0 probe evidence and handoff](development/webgpu-w0-evidence.md)
 - [W1 FoundationBase browser evidence](development/webgpu-w1-evidence.md)
 - [W2 browser logging and profiling evidence](development/webgpu-w2-evidence.md)

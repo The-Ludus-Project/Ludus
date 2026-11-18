@@ -4,7 +4,10 @@
 #include "internal/render_preview.h"
 #include "internal/render_scene.h"
 #include "viewport_fixture.h"
+#include "viewport_pacing.h"
 
+#include <ludus/foundation/containers/array.hpp>
+#include <ludus/foundation/containers/borrowed_view.hpp>
 #include <ludus/foundation/containers/static_array.hpp>
 #include <ludus/foundation/math/geometry.hpp>
 #include <ludus/foundation/math/matrix.hpp>
@@ -13,6 +16,7 @@
 #include <ludus/foundation/math/scalar.hpp>
 #include <ludus/foundation/math/transform.hpp>
 #include <ludus/foundation/math/vector.hpp>
+#include <ludus/foundation/time/time.hpp>
 #include <ludus/gameplay/camera/camera.hpp>
 
 #include <QAction>
@@ -22,9 +26,12 @@
 #include <QDoubleSpinBox>
 #include <QElapsedTimer>
 #include <QEventLoop>
+#include <QFile>
 #include <QFileInfo>
 #include <QFocusEvent>
 #include <QImage>
+#include <QJsonArray>
+#include <QJsonDocument>
 #include <QJsonObject>
 #include <QKeyEvent>
 #include <QLabel>
@@ -42,6 +49,7 @@
 #include <QTimer>
 #include <QToolButton>
 #include <QWheelEvent>
+#include <QWindow>
 
 #include <catch2/catch_approx.hpp>
 #include <catch2/catch_test_macros.hpp>
@@ -61,6 +69,84 @@ void ActivateViewportForPacing(PreviewViewport& inoutViewport);
 #endif
 namespace
 {
+/// Length of each sampled pacing window.
+constexpr int32 PACING_WINDOW_MILLISECONDS = 1000;
+/// Interleaved idle and input windows, starting with idle: five of each.
+constexpr usize PACING_WINDOW_COUNT = 10;
+/// Camera update period while input is active.
+constexpr int32 PACING_INPUT_INTERVAL_MILLISECONDS = 2;
+/// Presentation ticks reserved before sampling, well above the windows at any display rate.
+constexpr usize PACING_TIMELINE_CAPACITY = 8192;
+/// Host conditions observed at the end of one pacing window.
+struct PacingWindowHost final
+{
+    /// PresentedFrames() advance during the window, to cross-check the ImagePresented timeline.
+    uint64 PresentedFrames = 0;
+    /// Whether the viewport's native window was exposed (not occluded or minimized).
+    bool IsExposed = false;
+    /// Whether the application was active, as for a real viewport drag.
+    bool IsActive = false;
+};
+/// Raw windows, ticks relative to the first window and gap summaries as JSON, for failure reports
+/// and LUDUS_EDITOR_PACING_RECORD.
+QString DescribePacingRecord(BorrowedView<const uint64> presentedTicks,
+                             BorrowedView<const tests::ViewportPacingWindow> windows,
+                             BorrowedView<const PacingWindowHost> hosts,
+                             const QString& statistics)
+{
+    const uint64 origin = windows.IsEmpty() == true ? 0 : windows[0].BeginTicks;
+    QJsonArray windowRecords;
+    for (usize index = 0; index < windows.GetSize(); ++index)
+    {
+        const tests::ViewportPacingWindow& window = windows[index];
+        const PacingWindowHost host = index < hosts.GetSize() ? hosts[index] : PacingWindowHost{};
+        QJsonArray presented;
+        QJsonArray intervals;
+        uint64 previous = 0;
+        for (const uint64 ticks : presentedTicks)
+        {
+            if (ticks < window.BeginTicks || ticks >= window.EndTicks)
+            {
+                continue;
+            }
+            if (presented.isEmpty() == false)
+            {
+                intervals.append(static_cast<qint64>(ticks - previous));
+            }
+            presented.append(static_cast<qint64>(ticks - window.BeginTicks));
+            previous = ticks;
+        }
+        tests::ViewportPacingWindowSummary summary;
+        const bool isSummarized = tests::SummarizeViewportPacingWindow(presentedTicks, window, summary);
+        windowRecords.append(QJsonObject{
+            {QStringLiteral("kind"),
+             window.Kind == tests::ViewportPacingWindowKind::Input ? QStringLiteral("input") : QStringLiteral("idle")},
+            {QStringLiteral("beginNs"), static_cast<qint64>(window.BeginTicks - origin)},
+            {QStringLiteral("endNs"), static_cast<qint64>(window.EndTicks - origin)},
+            {QStringLiteral("inputCount"), static_cast<qint64>(window.InputCount)},
+            {QStringLiteral("images"), static_cast<qint64>(summary.Images)},
+            {QStringLiteral("presentedFrames"), static_cast<qint64>(host.PresentedFrames)},
+            {QStringLiteral("isExposed"), host.IsExposed},
+            {QStringLiteral("isActive"), host.IsActive},
+            {QStringLiteral("isSummarized"), isSummarized},
+            {QStringLiteral("medianIntervalNs"), static_cast<qint64>(summary.MedianInterval)},
+            {QStringLiteral("p95IntervalNs"), static_cast<qint64>(summary.P95Interval)},
+            {QStringLiteral("longestGapNs"), static_cast<qint64>(summary.LongestGap)},
+            {QStringLiteral("presentedNs"), presented},
+            {QStringLiteral("intervalsNs"), intervals},
+        });
+    }
+    const QJsonObject record{
+        {QStringLiteral("observationPoint"),
+         QStringLiteral("PreviewViewport::ImagePresented (new image handed to Qt)")},
+        {QStringLiteral("clock"), QStringLiteral("foundation::time::NowTicks, nanoseconds")},
+        {QStringLiteral("windowMilliseconds"), PACING_WINDOW_MILLISECONDS},
+        {QStringLiteral("inputIntervalMilliseconds"), PACING_INPUT_INTERVAL_MILLISECONDS},
+        {QStringLiteral("statistics"), statistics},
+        {QStringLiteral("windows"), windowRecords},
+    };
+    return QString::fromUtf8(QJsonDocument(record).toJson(QJsonDocument::Compact));
+}
 constexpr QSize ORIENTATION_TEST_VIEWPORT_SIZE(800, 600);
 constexpr int ORIENTATION_TEST_WAIT_MILLISECONDS = 120000;
 RenderScene MakeNavigationScene()
@@ -960,20 +1046,31 @@ TEST_CASE("Continuous camera input does not postpone viewport frames",
     tests::ActivateViewportForPacing(viewport);
     REQUIRE(QTest::qWaitFor([]() { return QGuiApplication::applicationState() == Qt::ApplicationActive; }) == true);
 #endif
+    // Observation point: the viewport hands Qt a new image (Qt Quick updatePaintNode on the native
+    // path, the readback canvas on the offscreen path), before Qt draws it and before scanout.
+    Array<uint64> presentedTicks;
+    REQUIRE(presentedTicks.TryEnsureCapacity(PACING_TIMELINE_CAPACITY) == true);
+    bool hasDroppedTicks = false;
+    QObject::connect(&viewport,
+                     &PreviewViewport::ImagePresented,
+                     &viewport,
+                     [&presentedTicks, &hasDroppedTicks](uint64 ticks) {
+                         hasDroppedTicks = presentedTicks.TryAdd(ticks) == false || hasDroppedTicks == true;
+                     });
     REQUIRE(preview.SetScene(scene) == true);
     preview.SetStatisticsVisible(true);
     REQUIRE(preview.Start() == true);
     REQUIRE(QTest::qWaitFor([&viewport]() { return viewport.PresentedFrames() > 0; }, 120000) == true);
-    constexpr int32 SAMPLE_MILLISECONDS = 1000;
-    const auto sampleFrames = []() {
+    const auto sampleWindow = [](tests::ViewportPacingWindow& inoutWindow) {
         QEventLoop loop;
-        QTimer::singleShot(SAMPLE_MILLISECONDS, &loop, &QEventLoop::quit);
+        QTimer::singleShot(PACING_WINDOW_MILLISECONDS, Qt::PreciseTimer, &loop, &QEventLoop::quit);
+        inoutWindow.BeginTicks = time::NowTicks();
         loop.exec();
+        inoutWindow.EndTicks = time::NowTicks();
     };
-    const uint64 beforeIdle = viewport.PresentedFrames();
-    sampleFrames();
-    const uint64 idleFrames = viewport.PresentedFrames() - beforeIdle;
-    const uint64 beforeInput = viewport.PresentedFrames();
+    // Let startup presentation settle before the first measured window.
+    tests::ViewportPacingWindow warmup;
+    sampleWindow(warmup);
     uint32 inputCount = 0;
     QTimer input;
     input.setTimerType(Qt::PreciseTimer);
@@ -981,39 +1078,68 @@ TEST_CASE("Continuous camera input does not postpone viewport frames",
         ++inputCount;
         preview.Look(0, inputCount % 2 == 0 ? 1 : -1);
     });
-    input.start(2);
     // Thanks to The Qt Company, "QScreen Class", refreshRate property, and "QTimer Class", accuracy:
     // https://doc.qt.io/qt-6/qscreen.html#refreshRate-prop
     // https://doc.qt.io/qt-6/qtimer.html#accuracy-and-timer-resolution
-    // Check progress throughout continuous input. Hosted display pacing and sanitizer
-    // overhead can change the input/idle throughput ratio without postponing every frame.
-    // The frame-pump regression separately checks the timer identity and deadline.
-    constexpr usize INPUT_SAMPLE_COUNT = 3;
-    uint64 previousFrames = beforeInput;
-    uint32 previousInputCount = 0;
-    for (usize sample = 0; sample < INPUT_SAMPLE_COUNT; ++sample)
+    // The reported refresh rate is approximate and hosted display pacing and sanitizer overhead
+    // change idle and input throughput differently, so the check compares medians of interleaved
+    // windows and new-image gaps rather than one input/idle ratio. The frame-pump regression
+    // separately checks the timer identity and deadline.
+    StaticArray<tests::ViewportPacingWindow, PACING_WINDOW_COUNT> windows;
+    StaticArray<PacingWindowHost, PACING_WINDOW_COUNT> hosts;
+    bool isExposedThroughout = true;
+    for (usize index = 0; index < PACING_WINDOW_COUNT; ++index)
     {
-        sampleFrames();
-        const uint64 presentedFrames = viewport.PresentedFrames();
-        CAPTURE(sample,
-                idleFrames,
-                presentedFrames,
-                previousFrames,
-                inputCount,
-                previousInputCount,
-                viewport.GetStatisticsText().toStdString());
-        CHECK(inputCount - previousInputCount > 20);
-        CHECK(presentedFrames - previousFrames > 2);
-        previousFrames = presentedFrames;
-        previousInputCount = inputCount;
+        tests::ViewportPacingWindow& window = windows[index];
+        window.Kind = index % 2 == 0 ? tests::ViewportPacingWindowKind::Idle : tests::ViewportPacingWindowKind::Input;
+        const uint32 previousInputCount = inputCount;
+        const uint64 previousFrames = viewport.PresentedFrames();
+        if (window.Kind == tests::ViewportPacingWindowKind::Input)
+        {
+            input.start(PACING_INPUT_INTERVAL_MILLISECONDS);
+        }
+        sampleWindow(window);
+        input.stop();
+        window.InputCount = inputCount - previousInputCount;
+        const QWindow* nativeWindowOrNull = viewport.window()->windowHandle();
+        hosts[index] =
+        {
+            .PresentedFrames = viewport.PresentedFrames() - previousFrames,
+            .IsExposed = nativeWindowOrNull != nullptr && nativeWindowOrNull->isExposed() == true,
+            .IsActive = QGuiApplication::applicationState() == Qt::ApplicationActive,
+        };
+        isExposedThroughout = isExposedThroughout == true && hosts[index].IsExposed == true;
     }
-    input.stop();
-    const uint64 inputFrames = viewport.PresentedFrames() - beforeInput;
-    CAPTURE(idleFrames, inputFrames, inputCount, viewport.GetStatisticsText().toStdString());
-    CHECK(inputCount > 20);
-    CHECK(inputFrames > 2);
-    CHECK(idleFrames > 2);
+    const QString statistics = viewport.GetStatisticsText();
     preview.Stop();
+    const BorrowedView<const uint64> timeline = presentedTicks.AsView();
+    const BorrowedView<const tests::ViewportPacingWindow> sampled(windows.GetData(), windows.GetSize());
+    const QString record = DescribePacingRecord(timeline,
+                                                sampled,
+                                                BorrowedView<const PacingWindowHost>(hosts.GetData(), hosts.GetSize()),
+                                                statistics);
+    const QString recordPath = qEnvironmentVariable("LUDUS_EDITOR_PACING_RECORD");
+    if (recordPath.isEmpty() == false)
+    {
+        QFile file(recordPath);
+        REQUIRE(file.open(QIODevice::WriteOnly | QIODevice::Truncate) == true);
+        REQUIRE(file.write(record.toUtf8()) > 0);
+    }
+    tests::ViewportPacingVerdict verdict;
+    REQUIRE(tests::EvaluateViewportPacing(timeline, sampled, verdict) == true);
+    // An occluded window stops presenting on macOS; report that rather than only a pacing failure.
+    CAPTURE(record.toStdString(),
+            isExposedThroughout,
+            verdict.IdleMedianImages,
+            verdict.InputMedianImages,
+            verdict.IdleMedianLongestGap,
+            verdict.InputMedianLongestGap,
+            verdict.InputLongestGapLimit);
+    CHECK(hasDroppedTicks == false);
+    CHECK(verdict.IsInputSustained == true);
+    CHECK(verdict.HasProgress == true);
+    CHECK(verdict.IsThroughputKept == true);
+    CHECK(verdict.IsCadenceKept == true);
 }
 
 TEST_CASE("An empty viewport draws a navigable coordinate grid without a renderer", "[editor][navigation][grid]")
