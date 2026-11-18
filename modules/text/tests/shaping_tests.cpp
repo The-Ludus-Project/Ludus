@@ -9,6 +9,8 @@
 
 #include <catch2/catch_test_macros.hpp>
 
+#include <string>
+
 using namespace ludus::text;
 using ludus::text::test::ArabicFont;
 using ludus::text::test::HangulFont;
@@ -72,6 +74,45 @@ TEST_CASE("Latin shaping produces one glyph per visible character and advances",
     CHECK(view.Glyphs[0].Cluster == 0);
     CHECK(view.Glyphs[1].Cluster == 1);
     CHECK(view.Metrics.MissingGlyphCount == 0);
+}
+
+TEST_CASE("Long kerned runs measure the complete fractional pen advance", "[text][shaping]")
+{
+    using namespace ludus::foundation;
+    SystemGuard guard;
+    const FontId font = LoadFixture(guard.System, LatinFont());
+    constexpr uint32 PIXEL_HEIGHT = 128;
+    constexpr usize PAIR_COUNT = 2048;
+    std::string run;
+    for (usize i = 0; i < PAIR_COUNT; ++i)
+    {
+        run += "AV";
+    }
+    LayoutId layout;
+    REQUIRE(ShapeLatin(guard.System, font, run, PIXEL_HEIGHT, &layout) == Status::Ok);
+    LayoutView view;
+    REQUIRE(GetLayout(guard.System, layout, &view) == Status::Ok);
+    REQUIRE(view.Glyphs.size() == run.size());
+
+    int64 totalAdvance = 0;
+    for (const ShapedGlyph& glyph : view.Glyphs)
+    {
+        totalAdvance += glyph.XAdvance;
+    }
+    constexpr float64 UNITS_PER_PIXEL = 64;
+    CHECK(view.Metrics.AdvanceX == static_cast<float32>(static_cast<float64>(totalAdvance) / UNITS_PER_PIXEL));
+
+    LayoutId lastLayout;
+    REQUIRE(ShapeLatin(guard.System, font, "V", PIXEL_HEIGHT, &lastLayout) == Status::Ok);
+    LayoutView lastView;
+    REQUIRE(GetLayout(guard.System, lastLayout, &lastView) == Status::Ok);
+    REQUIRE(lastView.Glyphs.size() == 1);
+    const ShapedGlyph& lastGlyph = view.Glyphs.back();
+    REQUIRE(lastGlyph.GlyphId == lastView.Glyphs.front().GlyphId);
+    const int64 lastOrigin = totalAdvance - lastGlyph.XAdvance + lastGlyph.XOffset - lastView.Glyphs.front().XOffset;
+    const float64 right =
+        static_cast<float64>(lastOrigin) / UNITS_PER_PIXEL + static_cast<float64>(lastView.Metrics.Ink.Right);
+    CHECK(view.Metrics.Ink.Right == static_cast<float32>(right));
 }
 
 TEST_CASE("The office ligature keeps byte clusters", "[text][shaping]")

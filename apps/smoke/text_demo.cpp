@@ -148,9 +148,6 @@ bool RunDemo() noexcept
     text::LayoutView view;
     if (text::Status status = text::GetLayout(system, layout, &view); text::IsOk(status))
     {
-        // Shaped positions are 26.6 signed fixed-point physical pixels: divide by
-        // 64.0 to get fractional pixels.
-        constexpr float32 kFixed = 64.0F;
         LUDUS_LOG_INFO(LOG_CORE,
                        "text demo: shaped \"{}\" at {}px -> {} glyphs, advance {:.1f}px, line {:.1f}px",
                        kText,
@@ -171,7 +168,7 @@ bool RunDemo() noexcept
         // as a GPU renderer would when placing textured quads. The per-glyph x
         // position is computed inline in the log call so it is not an unused
         // local in builds where LUDUS_LOG_INFO compiles out (e.g. Release).
-        [[maybe_unused]] float32 penX = 0.0F;
+        [[maybe_unused]] int64 penX = 0;
         for (usize i = 0; i < view.Glyphs.size(); ++i)
         {
             const text::ShapedGlyph& glyph = view.Glyphs[i];
@@ -180,10 +177,10 @@ bool RunDemo() noexcept
                            i,
                            glyph.GlyphId,
                            glyph.Cluster,
-                           penX + static_cast<float32>(glyph.XOffset) / kFixed,
-                           static_cast<float32>(glyph.XAdvance) / kFixed,
+                           static_cast<float64>(penX + glyph.XOffset) / text::ShapedGlyph::UNITS_PER_PIXEL,
+                           static_cast<float64>(glyph.XAdvance) / text::ShapedGlyph::UNITS_PER_PIXEL,
                            glyph.IsMissing ? " (missing/.notdef)" : "");
-            penX += static_cast<float32>(glyph.XAdvance) / kFixed;
+            penX += glyph.XAdvance;
         }
 
         // 5. Rasterize the first visible glyph into an R8 coverage mask and show
