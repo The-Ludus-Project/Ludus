@@ -334,7 +334,9 @@ TEST_CASE("A menu button keeps its label and its chevron apart", "[editor][style
     }
 }
 
-TEST_CASE("A mode toggle that is on fills with the accent; a disclosure button does not", "[editor][style]")
+TEST_CASE("A mode toggle that is on fills with the accent, one that is off keeps an edge, and a disclosure button "
+          "does neither",
+          "[editor][style]")
 {
     QWidget root;
     ApplyWorkspaceStyle(&root);
@@ -345,6 +347,8 @@ TEST_CASE("A mode toggle that is on fills with the accent; a disclosure button d
         button->setCheckable(true);
         button->setChecked(isChecked);
         button->setFocusPolicy(Qt::NoFocus);
+        // Like the viewport toolbar's buttons, which draw no panel at rest unless the style asks for one.
+        button->setAutoRaise(true);
         if (isToggle == true)
         {
             button->setProperty("visualRole", QStringLiteral("toggle"));
@@ -355,6 +359,7 @@ TEST_CASE("A mode toggle that is on fills with the accent; a disclosure button d
     QToolButton* on = addButton(QStringLiteral("Force raster"), true, true);
     QToolButton* off = addButton(QStringLiteral("Stats"), true, false);
     QToolButton* disclosure = addButton(QStringLiteral("Advanced"), false, true);
+    QToolButton* plain = addButton(QStringLiteral("Details"), false, false);
     root.show();
     QApplication::processEvents();
     const QColor accent = root.palette().color(QPalette::Link);
@@ -368,6 +373,15 @@ TEST_CASE("A mode toggle that is on fills with the accent; a disclosure button d
     CHECK(sampleInside(off) != accent);
     // Opening a disclosure changes no mode, so it keeps the quieter edge-only look.
     CHECK(sampleInside(disclosure) != accent);
+    // A switch that is off still shows its edge in the control border token, so Work Light reads as a switch next
+    // to a lit Stats rather than as a plain label; a plain tool button shows nothing until hovered.
+    const auto sampleEdge = [](QToolButton* button) {
+        const QImage image = RenderWidgetAtLogicalSize(*button);
+        return image.pixelColor(0, image.height() / 2);
+    };
+    const QColor offEdge = sampleEdge(off);
+    CHECK(offEdge != sampleEdge(plain));
+    CHECK(offEdge != sampleInside(off));
     on->setEnabled(false);
     QApplication::processEvents();
     CHECK(sampleInside(on) != accent);

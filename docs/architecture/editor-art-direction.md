@@ -163,9 +163,12 @@ button and field edges and focus rings, tab underlines, dock titles, toolbar and
 status bar rules, header sections and the dock separator. Controls therefore
 inherit palette changes normally, keep platform metrics where they are not
 overridden, and show the focus ring in the same widths (2 px, 3 px in high
-contrast) in both appearances. `visualRole` (`primary`, `secondary`) and
+contrast) in both appearances. `visualRole` (`primary`, `secondary`, `toggle`) and
 `density=compact` properties are read by the style, and `itemPadding` pads a list's
-rows. The few per-widget `setStyleSheet` calls that remain (graph node details,
+rows. A `toggle` is a switch (Force raster, Work Light, Stats, the Content filter
+chips): on, it fills with the accent; off, it keeps the `BorderControl` edge
+(`BorderSubtle` when disabled), even as an auto-raise toolbar button at rest, so it
+reads as something to press rather than as a label. The few per-widget `setStyleSheet` calls that remain (graph node details,
 quick add, the world graph view and the state view) are local and are the
 candidates for the next pass. The `[style][.gallery]` test writes a gallery of the
 controls in dark, light and high contrast to `LUDUS_STYLE_GALLERY_DIR` for visual
