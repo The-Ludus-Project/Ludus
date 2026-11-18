@@ -62,7 +62,7 @@ Their capabilities describe implemented operations on the enabled device.
 | [Lifetime services](../../modules/graphics/rhi/include/ludus/graphics/rhi/lifetime.h) | Retained command batches, actual completion tokens, bounded buffer/texture transfers, initialized mip primitives and canonical pipeline requests | Partial sampled views, sparse memory/eviction and persistent driver cache remain extensions |
 | [Ordered graph](../../modules/graphics/rhi/include/ludus/graphics/rhi/graph.h) | Authored order, in-place versions, RAW/WAR/WAW reports, culling, completion-gated object pooling and opt-in raster merging | Conservative whole-resource hazards; no heap aliasing, parallel recording or async queues |
 | [Compute](../../modules/graphics/rhi/include/ludus/graphics/rhi/compute.h) | Single-queue buffer dispatch, R12a indirect dispatch and indexed/non-indexed indirect drawing on Vulkan, Metal, Direct3D 12 and WebGPU, subject to profile limits | WebGL 2 requires an authored CPU/direct variant; native multi-draw and GPU-provided counts are deferred |
-| [Vulkan](../../modules/graphics/rhi/src/rhi_vulkan.cpp) and [Metal](../../modules/graphics/rhi/src/rhi_metal.mm) | Both lower bounded raster/compute, R6 storage, R7 measurement and R8 transfers; Vulkan general allocations use private VMA 3.3.0, while legacy frame targets retain their allocation path | Keep native allocation, synchronization and presentation retirement private |
+| [Vulkan](../../modules/graphics/rhi/src/rhi_vulkan.cpp) and [Metal](../../modules/graphics/rhi/src/rhi_metal.mm) | Both lower bounded raster/compute, R6 storage, R7 measurement and R8 transfers; Vulkan general allocations use private VMA, while legacy frame targets retain their allocation path | Keep native allocation, synchronization and presentation retirement private |
 | [Direct3D 12](windows-direct3d12.md) | Bounded raster, transfers, buffer compute and ordered graphs; DXIL and the adapter's enabled profile govern admission | Hosted WARP tests verify the software regression lane. [D7 qualification](windows-direct3d12.md#d7-qualify-the-windows-profiles) owns the outstanding physical GPU and desktop evidence |
 | [Browser dispatcher](../../modules/graphics/rhi/src/rhi_web.cpp) | WebGPU startup with one requirement-aware WebGL 2 fallback and Platform-managed canvas replacement | Preserve ADR 0014 and callback isolation |
 | [Shader build helper](../../cmake/shaders/compile_shader.py) | Pinned Slang emits SPIR-V/WGSL and macOS MSL 2.3; pinned SPIRV-Cross emits GLSL ES 3.00, with bounded raster/compute reflection and target layout validation | Reject unverified layout forms; broader package/feature support is future work |
@@ -389,7 +389,11 @@ GPU allocation belongs to RHI. GDI manages budgets and schedules, without
 assuming that FoundationMemory arenas are already implemented. Frame storage
 resets only after its CPU packet jobs and GPU storage leases have retired.
 
-General Vulkan resources already use a **pinned private VMA 3.3.0 adapter**.
+General Vulkan resources use a **pinned private VMA adapter**. The
+[3.5.0 release](https://github.com/GPUOpen-LibrariesAndSDKs/VulkanMemoryAllocator/releases/tag/v3.5.0)
+includes GPUOpen's [buffer–image granularity fix](https://github.com/GPUOpen-LibrariesAndSDKs/VulkanMemoryAllocator/issues/517),
+which corrects the free-space search when allocating buffers and optimal
+images from the same device memory block.
 Keep that allocation boundary rather than extending the legacy frame-target
 allocation-per-resource helper into a second allocator. VMA returns explicit
 errors and does not require

@@ -750,8 +750,8 @@ is still live. Shutdown/loss invalidates all records and drains/drops the native
 device; late browser callbacks cannot affect the next session.
 
 Vulkan general allocations use the private MIT-licensed
-[Vulkan Memory Allocator 3.3.0](https://github.com/GPUOpen-LibrariesAndSDKs/VulkanMemoryAllocator/releases/tag/v3.3.0),
-pinned with header/license hashes in `config/vulkan_memory_allocator.json`.
+[Vulkan Memory Allocator 3.5.0](https://github.com/GPUOpen-LibrariesAndSDKs/VulkanMemoryAllocator/releases/tag/v3.5.0),
+pinned by commit and header/license hashes in `config/vulkan_memory_allocator.json`.
 VMA handles mapped allocation flush alignment. The existing ordered queue's
 fences establish resource retirement; Metal uses command-buffer completion,
 WebGPU queue work-done callbacks, and WebGL nonblocking sync polling.
@@ -1556,7 +1556,7 @@ Vulkan also reports actual `vkAllocateMemory` block bytes in the raster allocato
 including pool slack, transfer rings and ray allocations sharing that allocator.
 That broader scope is explicitly separate from general resource binding spans;
 it excludes the facade and swapchain. Thanks to AMD GPUOpen for
-[Vulkan Memory Allocator 3.3.0 statistics](https://gpuopen-librariesandsdks.github.io/VulkanMemoryAllocator/html/statistics.html),
+[Vulkan Memory Allocator statistics](https://gpuopen-librariesandsdks.github.io/VulkanMemoryAllocator/html/statistics.html),
 which distinguish block bytes from allocation bytes. Metal has no corresponding
 allocator-block observation. WebGPU/WebGL texture backing is opaque, so complete
 resource API byte totals are unavailable on those backends. No partial sum becomes
