@@ -23,6 +23,7 @@ fiber scheduler, or editor before the game can run.
 | [Level data](level-data.md) | How do authors describe a level and replace the active world safely? |
 | [Entities and component storage](entity-world.md) | What identifies an entity and who owns its state? |
 | [Frame and tick updates](frame-update.md) | When do input, gameplay, events, async results, and rendering take effect? |
+| [Engine loop overview](engine-loop.md) | Which loop drives each executable, and where does the implementation diverge from these contracts? |
 | [Gems article review](game-world-gems-review.md) | Which chapters were read, which changes did they justify, and which techniques were deferred? |
 | [Gameplay foundation extension](gameplay-foundations.md) | How can this baseline grow into static cells, agent simulation, addressed messages, streaming, scripting integration and session flow? |
 
