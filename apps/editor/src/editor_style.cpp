@@ -772,10 +772,22 @@ void EditorStyle::drawPrimitive(PrimitiveElement element,
             // A switch that is on (visual role "toggle", such as Force raster) fills with the accent like a selected
             // segment, so its state reads at a glance. Disclosure buttons (Advanced, Details) keep the edge only:
             // being open is not a mode that changes what the editor does.
-            if (isEnabled == true && option->state.testFlag(State_On) == true &&
-                HasProperty(widgetOrNull, VISUAL_ROLE_PROPERTY, "toggle") == true)
+            const bool isSwitch = HasProperty(widgetOrNull, VISUAL_ROLE_PROPERTY, "toggle") == true;
+            if (isEnabled == true && option->state.testFlag(State_On) == true && isSwitch == true)
             {
                 DrawControlBody(painter, option->rect, { .Fill = mColours.Accent, .Edge = mColours.Accent }, edgeWidth);
+            }
+            // A switch that is off keeps the control edge, so it reads as something to press rather than as a
+            // label beside the switches that are on (Work Light next to a lit Stats).
+            else if (isSwitch == true && option->state.testFlag(State_On) == false)
+            {
+                DrawControlBody(painter,
+                                option->rect,
+                                {
+                                    .Fill = isHovered == true && isEnabled == true ? mColours.Raised : Qt::transparent,
+                                    .Edge = isEnabled == true ? mColours.Border : mColours.SubtleBorder,
+                                },
+                                edgeWidth);
             }
             // A checked toggle (Live Preview) keeps an accent edge so its state reads without hovering.
             else if (option->state.testFlag(State_On) == true)
@@ -1184,7 +1196,21 @@ void EditorStyle::drawComplexControl(ComplexControl control,
         // PE_PanelButtonTool, so a switch that is on (Force raster, Stats) showed only a faint native fill. The common
         // layout paints through the panel primitive above on every platform.
         // https://github.com/qt/qtbase/blob/v6.8.3/src/widgets/styles/qcommonstyle.cpp
-        QCommonStyle::drawComplexControl(control, option, painter, widgetOrNull);
+        const QStyleOptionToolButton* tool = qstyleoption_cast<const QStyleOptionToolButton*>(option);
+        if (tool != nullptr && option->state.testFlag(State_On) == false &&
+            HasProperty(widgetOrNull, VISUAL_ROLE_PROPERTY, "toggle") == true)
+        {
+            // The common style clears State_Raised from an auto-raise button at rest and then draws no panel; a
+            // switch that is off asks for the panel anyway, so the panel primitive can give it its edge.
+            QStyleOptionToolButton atRest = *tool;
+            atRest.state &= ~State_AutoRaise;
+            atRest.state |= State_Raised;
+            QCommonStyle::drawComplexControl(control, &atRest, painter, widgetOrNull);
+        }
+        else
+        {
+            QCommonStyle::drawComplexControl(control, option, painter, widgetOrNull);
+        }
         // An auto-raise button at rest draws no panel at all, so ring keyboard focus here.
         if (isRingShown == true)
         {
