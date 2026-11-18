@@ -1574,7 +1574,7 @@ jobs:
         env:
           QT_QPA_PLATFORM: offscreen
         run: |
-          out/host-tools/venv/bin/ctest --preset linux-clang-development --label-regex '^(unit|editor)$' --no-tests=error
+          out/host-tools/venv/bin/ctest --preset linux-clang-development --label-regex '^(unit|editor)$' --label-exclude '^generated-source$' --no-tests=error
           out/host-tools/venv/bin/ctest --preset linux-clang-development --tests-regex '^ludus_target_detection$' --output-on-failure --no-tests=error
       # Play in the viewport on Linux: Qt's own Vulkan device on an Xvfb display,
       # with Mesa's lavapipe for both the editor and the game, imports the game's
