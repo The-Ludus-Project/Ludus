@@ -385,22 +385,53 @@ class NativePrerequisiteTests(unittest.TestCase):
                 for package in ("qt6-base-dev", "qt6-declarative-dev", "qt6-wayland", "libvulkan1", "mesa-vulkan-drivers"):
                     self.assertEqual(package in arguments, editor == "true", package)
 
+    def native_apt_function(self):
+        """The native setup's bounded apt retry, from its attempt count through its definition."""
+        action = (self.ROOT / ".github/actions/native-setup/action.yml").read_text()
+        step = action.split("    - name: Install native prerequisites\n", 1)[1]
+        command = step.split("      run: |\n", 1)[1].split("    - name:", 1)[0]
+        start = command.index("        APT_ATTEMPTS=")
+        end = command.index("        run_apt 5m update -qq")
+        return "apt_options=()\n" + command[start:end]
+
+    def write_apt_tools(self, root, apt_body):
+        for name, body in (("sudo", 'exec "$@"'), ("apt-get", apt_body),
+                           ("dpkg", f'printf "dpkg %s\\n" "$*" >> "{root}/calls"')):
+            tool = root / name
+            tool.write_text("#!/bin/sh\n" + body + "\n")
+            tool.chmod(0o755)
+
     @unittest.skipUnless(shutil.which("timeout"), "GNU timeout is provided by the Linux CI runner")
     def test_silent_package_update_has_a_wall_clock_deadline(self):
-        action = (self.ROOT / ".github/actions/native-setup/action.yml").read_text()
-        command = next(line.strip() for line in action.splitlines()
-                       if "timeout --signal=TERM" in line and "update -qq" in line)
-        command = command.replace("5m", "0.1s").replace("--kill-after=30s", "--kill-after=0.1s")
+        command = self.native_apt_function() + "run_apt 0.1s update -qq\n"
+        command = command.replace("--kill-after=30s", "--kill-after=0.1s")
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
-            for name, body in (("sudo", 'exec "$@"'), ("apt-get", "exec /bin/sleep 30")):
-                tool = root / name
-                tool.write_text("#!/bin/sh\n" + body + "\n")
-                tool.chmod(0o755)
+            self.write_apt_tools(root, "exec /bin/sleep 30")
             environment = {**os.environ, "PATH": str(root) + os.pathsep + os.environ["PATH"]}
-            result = subprocess.run(["/bin/bash", "-c", "apt_options=();\n" + command],
-                                    env=environment, capture_output=True, text=True, timeout=3)
+            result = subprocess.run(["/bin/bash", "-e", "-c", command],
+                                    env=environment, capture_output=True, text=True, timeout=10)
+            # Every attempt meets its deadline; the job fails with timeout's status after the last.
             self.assertEqual(result.returncode, 124, result.stdout + result.stderr)
+            self.assertEqual(result.stdout.count("::warning::apt-get update attempt"), 3, result.stdout)
+            self.assertEqual((root / "calls").read_text().splitlines(), ["dpkg --configure -a"] * 3)
+
+    def test_failed_package_install_is_retried_after_repairing_dpkg(self):
+        command = self.native_apt_function() + "run_apt 10m install -y -qq clang\n"
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            # The first attempt fails as a deadline would; the second installs.
+            self.write_apt_tools(root, f'printf "apt-get %s\\n" "$*" >> "{root}/calls"\n'
+                                       f'[ -e "{root}/failed" ] && exit 0\ntouch "{root}/failed"\nexit 124')
+            (root / "timeout").write_text('#!/bin/sh\nshift 3\nexec "$@"\n')
+            (root / "timeout").chmod(0o755)
+            environment = {**os.environ, "PATH": str(root) + os.pathsep + os.environ["PATH"]}
+            result = subprocess.run(["/bin/bash", "-e", "-c", command],
+                                    env=environment, capture_output=True, text=True, timeout=10)
+            self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+            self.assertIn("::warning::apt-get install attempt 1 of 3 failed with exit status 124", result.stdout)
+            self.assertEqual((root / "calls").read_text().splitlines(),
+                             ["apt-get install -y -qq clang", "dpkg --configure -a", "apt-get install -y -qq clang"])
 
     def test_macos_cache_launchers_survive_restricted_consumer_path(self):
         action = (self.ROOT / ".github/actions/macos-setup/action.yml").read_text()

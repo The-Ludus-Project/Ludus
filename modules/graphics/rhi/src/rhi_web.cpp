@@ -2,6 +2,7 @@
 #include "internal/backend.h"
 #include "internal/lifecycle.h"
 #include "internal/resources.h"
+#include "internal/surface.h"
 #include "internal/web_backends.h"
 #include "internal/webgpu_probe.h"
 #include <ludus/foundation/base/core.h>
@@ -324,6 +325,35 @@ void UpdateUniform(usize slot, ludus::foundation::BorrowedView<const uint8> byte
 ResourceStatus Draw(usize slot) noexcept
 {
     return gActive == Backend::WebGL2 ? webgl::Draw(slot) : webgpu::Draw(slot);
+}
+// R14b: WebGPU hosts further canvases on its device. A WebGL 2 context belongs to one
+// canvas, so a WebGL 2 session hosts only its primary surface and reports no completion.
+usize AdditionalSurfaceLimit() noexcept
+{
+    return gBound == true && gActive == Backend::WebGPU ? webgpu::AdditionalSurfaceLimit() : 0;
+}
+StartupError CreateSurface(usize slot, const WindowInfo& window) noexcept
+{
+    return gBound == true && gActive == Backend::WebGPU ? webgpu::CreateSurface(slot, window)
+                                                        : StartupError::BackendUnavailable;
+}
+void DestroySurface(usize slot) noexcept
+{
+    if (gBound == true && gActive == Backend::WebGPU)
+    {
+        webgpu::DestroySurface(slot);
+    }
+}
+void SelectSurface(usize slot) noexcept
+{
+    if (gBound == true && gActive == Backend::WebGPU)
+    {
+        webgpu::SelectSurface(slot);
+    }
+}
+SurfaceCompletion GetSurfaceCompletion(usize slot) noexcept
+{
+    return gBound == true && gActive == Backend::WebGPU ? webgpu::GetSurfaceCompletion(slot) : SurfaceCompletion{};
 }
 // WebGPU-only private interop re-exported for the W5/W6 sample renderers. These
 // are only meaningful while the WebGPU sub-backend is bound; the WebGL 2 sample

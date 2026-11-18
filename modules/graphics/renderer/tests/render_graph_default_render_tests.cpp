@@ -8,6 +8,7 @@
 #include "../src/internal/render_graph_metalfx.h"
 #include "../src/internal/render_graph_upscale.h"
 #include "earth_sky_quadrature.hpp"
+#include "hair_card_coverage_fixture.h"
 #include "render_graph_gpu_fixture.h"
 #include "renderer_composite.h"
 #include "rg2_forward_lit.h"
@@ -1581,6 +1582,43 @@ TEST_CASE("default deferred lighting casts directional and mesh-light shadows",
         CHECK(fixture.Pixels[center] == litRed);
         CHECK(fixture.Pixels[center + 1] == litGreen);
     }
+    SECTION("a textured hair card blocks a directional shadow only where its mask passes")
+    {
+        constexpr usize MATERIAL_COUNT = 3;
+        constexpr uint32 CASTER_MATERIAL = MATERIAL_COUNT - 1;
+        StaticArray<renderer::SceneShaderMaterial, MATERIAL_COUNT> shadowMaterials{};
+        HairCardCoverageFixture coverage;
+        coverage.SetMask(shadowMaterials[CASTER_MATERIAL]);
+        meshes[2].MaterialBindings = {&CASTER_MATERIAL, 1};
+        inputs.Materials = {shadowMaterials.GetData(), shadowMaterials.GetSize()};
+        renderer::DirectLight light;
+        light.SourceId = 1;
+        light.Kind = renderer::LightKind::Directional;
+        light.Direction = {-1, 0, -1};
+        light.Color = {1, 1, 1};
+        light.Intensity = 2;
+        inputs.Lights = {&light, 1};
+        REQUIRE(update(1) == rhi::RasterStatus::Ready);
+        render();
+        const uint8 lit = fixture.Pixels[center];
+        REQUIRE(lit > 32);
+        const auto measureShadow = [&](uint8 alpha, float32 cutoff, bool hasExpectedCoverage) {
+            coverage.Texture[HairCardCoverageFixture::TEXEL_BYTES - 1] = alpha;
+            shadowMaterials[CASTER_MATERIAL].AlphaCutoff = cutoff;
+            REQUIRE(update(SCENE_COUNT) == rhi::RasterStatus::Ready);
+            render();
+            CAPTURE(alpha, cutoff);
+            CHECK(fixture.Graph.GetReport().Resources.DirectionalShadowLights == 1);
+            const uint8 red = fixture.Pixels[center];
+            CHECK(red == (hasExpectedCoverage == true ? 0 : lit));
+            return red != lit;
+        };
+        CHECK(measureShadow(0, HAIR_MASK_CUTOFF, false) == false);
+        CHECK(measureShadow(HAIR_MASK_SOLID_ALPHA, HAIR_MASK_CUTOFF, true) == true);
+        const bool hasMatchedShadow = measureShadow(HAIR_MASK_MID_ALPHA, HAIR_MASK_CUTOFF, true);
+        const bool hasMismatchedShadow = measureShadow(HAIR_MASK_MID_ALPHA, HAIR_MASK_MISMATCHED_CUTOFF, false);
+        CHECK(hasMatchedShadow != hasMismatchedShadow);
+    }
     SECTION("every directional light up to the capacity keeps its own map")
     {
         const bool hasMeshLight = GENERATE(false, true);
@@ -1868,63 +1906,81 @@ TEST_CASE("default deferred lighting casts directional and mesh-light shadows",
                               quadIndices.GetSize()};
         meshes[0].Geometry.Normals = quadNormals.GetData();
 
-        const float32 eyeHeightMeters = GENERATE(50.0F, 150.0F);
-        const float32 lightAngleDegrees = GENERATE(30.0F, 60.0F, 80.0F);
+        // One prepared graph draws every combination. As GENERATE values, each re-ran the whole test case with its
+        // cold graph preparation, about 19 s apiece on WARP.
+        constexpr usize EYE_HEIGHT_COUNT = 2;
+        constexpr usize LIGHT_ANGLE_COUNT = 3;
+        constexpr usize DISK_RADIUS_COUNT = 2;
+        const StaticArray<float32, EYE_HEIGHT_COUNT> eyeHeightsMeters{{50.0F, 150.0F}};
+        const StaticArray<float32, LIGHT_ANGLE_COUNT> lightAnglesDegrees{{30.0F, 60.0F, 80.0F}};
+        // The Sun's apparent disk widens the comparison filter; a flat receiver must stay free of acne with it too.
+        const StaticArray<float32, DISK_RADIUS_COUNT> diskRadiiRadians{{0.0F, SUN_ANGULAR_RADIUS_RADIANS}};
         constexpr float32 NEAR_PLANE_METERS = .01F;
         constexpr float32 FAR_PLANE_METERS = 400;
         // The view spans the same ten metres of receiver around the centre at every eye height.
         constexpr float32 VIEW_HALF_EXTENT_METERS = 10;
-        const float32 focal = eyeHeightMeters / VIEW_HALF_EXTENT_METERS;
-        const math::Vector3 eyeWorld{0, 0, RECEIVER_HEIGHT_METERS + eyeHeightMeters};
         const float32 depthScale = FAR_PLANE_METERS / (FAR_PLANE_METERS - NEAR_PLANE_METERS);
-        renderer::ViewDescription& farCamera = fixture.Cameras[0];
-        farCamera.OrthographicCamera = false;
-        farCamera.Depth = renderer::DepthConvention::Conventional;
-        farCamera.CameraPosition = eyeWorld;
-        farCamera.CameraForward = {0, 0, -1};
-        farCamera.WorldToClip.Columns[0] = {focal, 0, 0, 0};
-        farCamera.WorldToClip.Columns[1] = {0, focal, 0, 0};
-        farCamera.WorldToClip.Columns[2] = {0, 0, -depthScale, -1};
-        farCamera.WorldToClip.Columns[3] = {0, 0, depthScale * (eyeWorld.Z - NEAR_PLANE_METERS), eyeWorld.Z};
-
-        // Only the red light casts. Its otherwise identical green control shows the unoccluded contribution.
-        const float32 lightAngleRadians = math::DegreesToRadians(lightAngleDegrees);
-        StaticArray<renderer::DirectLight, 2> lights;
-        lights[0].SourceId = 1;
-        lights[0].Kind = renderer::LightKind::Directional;
-        lights[0].Color = {1, 0, 0};
-        lights[0].Intensity = 8;
-        lights[0].Direction = {-std::sin(lightAngleRadians), 0, -std::cos(lightAngleRadians)};
-        // The Sun's apparent disk widens the comparison filter; a flat receiver must stay free of acne with it too.
-        lights[0].AngularRadiusRadians = GENERATE(0.0F, SUN_ANGULAR_RADIUS_RADIANS);
-        lights[1] = lights[0];
-        lights[1].SourceId = 2;
-        lights[1].Color = {0, 1, 0};
-        lights[1].ShouldCastRasterShadows = false;
-        inputs.Lights = {lights.GetData(), lights.GetSize()};
-
-        REQUIRE(update(1) == rhi::RasterStatus::Ready);
-        render();
-        REQUIRE(fixture.Graph.GetReport().Resources.DirectionalShadowLightSourceId == lights[0].SourceId);
         constexpr uint32 PROBE_HALF_WIDTH_PIXELS = 24;
         constexpr uint32 PROBE_HALF_HEIGHT_PIXELS = 16;
         constexpr float32 MAX_CHANNEL_DIFFERENCE = 2;
-        float32 maximumDifference = 0;
-        uint32 darkenedPixels = 0;
-        for (uint32 y = HEIGHT / 2 - PROBE_HALF_HEIGHT_PIXELS; y < HEIGHT / 2 + PROBE_HALF_HEIGHT_PIXELS; ++y)
+        renderer::ViewDescription& farCamera = fixture.Cameras[0];
+        StaticArray<renderer::DirectLight, 2> lights;
+        inputs.Lights = {lights.GetData(), lights.GetSize()};
+        for (const float32 eyeHeightMeters : eyeHeightsMeters)
         {
-            for (uint32 x = WIDTH / 2 - PROBE_HALF_WIDTH_PIXELS; x < WIDTH / 2 + PROBE_HALF_WIDTH_PIXELS; ++x)
+            const float32 focal = eyeHeightMeters / VIEW_HALF_EXTENT_METERS;
+            const math::Vector3 eyeWorld{0, 0, RECEIVER_HEIGHT_METERS + eyeHeightMeters};
+            farCamera.OrthographicCamera = false;
+            farCamera.Depth = renderer::DepthConvention::Conventional;
+            farCamera.CameraPosition = eyeWorld;
+            farCamera.CameraForward = {0, 0, -1};
+            farCamera.WorldToClip.Columns[0] = {focal, 0, 0, 0};
+            farCamera.WorldToClip.Columns[1] = {0, focal, 0, 0};
+            farCamera.WorldToClip.Columns[2] = {0, 0, -depthScale, -1};
+            farCamera.WorldToClip.Columns[3] = {0, 0, depthScale * (eyeWorld.Z - NEAR_PLANE_METERS), eyeWorld.Z};
+            for (const float32 lightAngleDegrees : lightAnglesDegrees)
             {
-                const usize pixel = GetPixel(x, y);
-                REQUIRE(fixture.Pixels[pixel + 1] > 32);
-                const float32 difference =
-                    math::Abs(float32(fixture.Pixels[pixel]) - float32(fixture.Pixels[pixel + 1]));
-                maximumDifference = math::Max(maximumDifference, difference);
-                darkenedPixels += difference > MAX_CHANNEL_DIFFERENCE ? 1 : 0;
+                for (const float32 diskRadiusRadians : diskRadiiRadians)
+                {
+                    // Only the red light casts. Its otherwise identical green control shows the unoccluded
+                    // contribution.
+                    const float32 lightAngleRadians = math::DegreesToRadians(lightAngleDegrees);
+                    lights[0] = {};
+                    lights[0].SourceId = 1;
+                    lights[0].Kind = renderer::LightKind::Directional;
+                    lights[0].Color = {1, 0, 0};
+                    lights[0].Intensity = 8;
+                    lights[0].Direction = {-std::sin(lightAngleRadians), 0, -std::cos(lightAngleRadians)};
+                    lights[0].AngularRadiusRadians = diskRadiusRadians;
+                    lights[1] = lights[0];
+                    lights[1].SourceId = 2;
+                    lights[1].Color = {0, 1, 0};
+                    lights[1].ShouldCastRasterShadows = false;
+
+                    REQUIRE(update(1) == rhi::RasterStatus::Ready);
+                    render();
+                    REQUIRE(fixture.Graph.GetReport().Resources.DirectionalShadowLightSourceId == lights[0].SourceId);
+                    float32 maximumDifference = 0;
+                    uint32 darkenedPixels = 0;
+                    for (uint32 y = HEIGHT / 2 - PROBE_HALF_HEIGHT_PIXELS; y < HEIGHT / 2 + PROBE_HALF_HEIGHT_PIXELS;
+                         ++y)
+                    {
+                        for (uint32 x = WIDTH / 2 - PROBE_HALF_WIDTH_PIXELS; x < WIDTH / 2 + PROBE_HALF_WIDTH_PIXELS;
+                             ++x)
+                        {
+                            const usize pixel = GetPixel(x, y);
+                            REQUIRE(fixture.Pixels[pixel + 1] > 32);
+                            const float32 difference =
+                                math::Abs(float32(fixture.Pixels[pixel]) - float32(fixture.Pixels[pixel + 1]));
+                            maximumDifference = math::Max(maximumDifference, difference);
+                            darkenedPixels += difference > MAX_CHANNEL_DIFFERENCE ? 1 : 0;
+                        }
+                    }
+                    CAPTURE(eyeHeightMeters, lightAngleDegrees, diskRadiusRadians, darkenedPixels);
+                    CHECK(maximumDifference <= MAX_CHANNEL_DIFFERENCE);
+                }
             }
         }
-        CAPTURE(eyeHeightMeters, lightAngleDegrees, darkenedPixels);
-        CHECK(maximumDifference <= MAX_CHANNEL_DIFFERENCE);
     }
     SECTION("oblique far cameras keep a grazing-lit receiver free of reconstruction acne")
     {
@@ -1952,58 +2008,70 @@ TEST_CASE("default deferred lighting casts directional and mesh-light shadows",
 
         constexpr float32 LIGHT_ANGLE_DEGREES = 75;
         const float32 lightAngleRadians = math::DegreesToRadians(LIGHT_ANGLE_DEGREES);
-        // Only the red light casts. Its otherwise identical green control shows the unoccluded contribution.
-        StaticArray<renderer::DirectLight, 2> lights;
-        lights[0].SourceId = 1;
-        lights[0].Kind = renderer::LightKind::Directional;
-        lights[0].Color = {1, 0, 0};
-        lights[0].Intensity = 8;
-        lights[0].Direction = {-std::sin(lightAngleRadians), 0, -std::cos(lightAngleRadians)};
+        // One prepared graph draws every combination, as in the far perspective section above.
+        constexpr usize DISK_RADIUS_COUNT = 2;
+        constexpr usize EYE_DISTANCE_COUNT = 2;
         // The Sun's apparent disk widens the comparison filter; a flat receiver must stay free of acne with it too.
-        lights[0].AngularRadiusRadians = GENERATE(0.0F, SUN_ANGULAR_RADIUS_RADIANS);
-        lights[1] = lights[0];
-        lights[1].SourceId = 2;
-        lights[1].Color = {0, 1, 0};
-        lights[1].ShouldCastRasterShadows = false;
+        const StaticArray<float32, DISK_RADIUS_COUNT> diskRadiiRadians{{0.0F, SUN_ANGULAR_RADIUS_RADIANS}};
+        const StaticArray<float32, EYE_DISTANCE_COUNT> eyeDistancesMeters{{50.0F, 120.0F}};
+        StaticArray<renderer::DirectLight, 2> lights;
         inputs.Lights = {lights.GetData(), lights.GetSize()};
-
-        const float32 eyeDistanceMeters = GENERATE(50.0F, 120.0F);
         constexpr int32 POSE_COUNT = 8;
         // A few millimetres between poses: far below a pixel, enough to change every rounding in the view.
         constexpr float32 POSE_STEP_METERS = .0037F;
         constexpr uint32 PROBE_HALF_WIDTH_PIXELS = 24;
         constexpr uint32 PROBE_HALF_HEIGHT_PIXELS = 16;
         constexpr float32 MAX_CHANNEL_DIFFERENCE = 2;
-        float32 maximumDifference = 0;
-        uint32 darkenedPixels = 0;
-        for (int32 pose = 0; pose < POSE_COUNT; ++pose)
+        for (const float32 diskRadiusRadians : diskRadiiRadians)
         {
-            // Forty-five degrees above the receiver, so depth varies from pixel to pixel.
-            const float32 offset = eyeDistanceMeters * math::Sqrt(0.5F);
-            const math::Vector3 targetWorld{0, 0, RECEIVER_HEIGHT_METERS};
-            const math::Vector3 eyeWorld{static_cast<float32>(pose) * POSE_STEP_METERS,
-                                         -offset,
-                                         RECEIVER_HEIGHT_METERS + offset};
-            BuildConventionalEditorCamera(eyeWorld, targetWorld, fixture.Cameras[0]);
-
-            REQUIRE(update(1) == rhi::RasterStatus::Ready);
-            render();
-            REQUIRE(fixture.Graph.GetReport().Resources.DirectionalShadowLightSourceId == lights[0].SourceId);
-            for (uint32 y = HEIGHT / 2 - PROBE_HALF_HEIGHT_PIXELS; y < HEIGHT / 2 + PROBE_HALF_HEIGHT_PIXELS; ++y)
+            // Only the red light casts. Its otherwise identical green control shows the unoccluded contribution.
+            lights[0] = {};
+            lights[0].SourceId = 1;
+            lights[0].Kind = renderer::LightKind::Directional;
+            lights[0].Color = {1, 0, 0};
+            lights[0].Intensity = 8;
+            lights[0].Direction = {-std::sin(lightAngleRadians), 0, -std::cos(lightAngleRadians)};
+            lights[0].AngularRadiusRadians = diskRadiusRadians;
+            lights[1] = lights[0];
+            lights[1].SourceId = 2;
+            lights[1].Color = {0, 1, 0};
+            lights[1].ShouldCastRasterShadows = false;
+            for (const float32 eyeDistanceMeters : eyeDistancesMeters)
             {
-                for (uint32 x = WIDTH / 2 - PROBE_HALF_WIDTH_PIXELS; x < WIDTH / 2 + PROBE_HALF_WIDTH_PIXELS; ++x)
+                float32 maximumDifference = 0;
+                uint32 darkenedPixels = 0;
+                for (int32 pose = 0; pose < POSE_COUNT; ++pose)
                 {
-                    const usize pixel = GetPixel(x, y);
-                    REQUIRE(fixture.Pixels[pixel + 1] > 32);
-                    const float32 difference =
-                        math::Abs(float32(fixture.Pixels[pixel]) - float32(fixture.Pixels[pixel + 1]));
-                    maximumDifference = math::Max(maximumDifference, difference);
-                    darkenedPixels += difference > MAX_CHANNEL_DIFFERENCE ? 1 : 0;
+                    // Forty-five degrees above the receiver, so depth varies from pixel to pixel.
+                    const float32 offset = eyeDistanceMeters * math::Sqrt(0.5F);
+                    const math::Vector3 targetWorld{0, 0, RECEIVER_HEIGHT_METERS};
+                    const math::Vector3 eyeWorld{static_cast<float32>(pose) * POSE_STEP_METERS,
+                                                 -offset,
+                                                 RECEIVER_HEIGHT_METERS + offset};
+                    BuildConventionalEditorCamera(eyeWorld, targetWorld, fixture.Cameras[0]);
+
+                    REQUIRE(update(1) == rhi::RasterStatus::Ready);
+                    render();
+                    REQUIRE(fixture.Graph.GetReport().Resources.DirectionalShadowLightSourceId == lights[0].SourceId);
+                    for (uint32 y = HEIGHT / 2 - PROBE_HALF_HEIGHT_PIXELS; y < HEIGHT / 2 + PROBE_HALF_HEIGHT_PIXELS;
+                         ++y)
+                    {
+                        for (uint32 x = WIDTH / 2 - PROBE_HALF_WIDTH_PIXELS; x < WIDTH / 2 + PROBE_HALF_WIDTH_PIXELS;
+                             ++x)
+                        {
+                            const usize pixel = GetPixel(x, y);
+                            REQUIRE(fixture.Pixels[pixel + 1] > 32);
+                            const float32 difference =
+                                math::Abs(float32(fixture.Pixels[pixel]) - float32(fixture.Pixels[pixel + 1]));
+                            maximumDifference = math::Max(maximumDifference, difference);
+                            darkenedPixels += difference > MAX_CHANNEL_DIFFERENCE ? 1 : 0;
+                        }
+                    }
                 }
+                CAPTURE(diskRadiusRadians, eyeDistanceMeters, darkenedPixels);
+                CHECK(maximumDifference <= MAX_CHANNEL_DIFFERENCE);
             }
         }
-        CAPTURE(eyeDistanceMeters, darkenedPixels);
-        CHECK(maximumDifference <= MAX_CHANNEL_DIFFERENCE);
     }
     SECTION("oblique far cameras keep an area-lit receiver free of reconstruction acne")
     {
@@ -2058,152 +2126,159 @@ TEST_CASE("default deferred lighting casts directional and mesh-light shadows",
         REQUIRE(recordCount == 1);
         const renderer::SceneShaderMaterial& receiver = materials[0];
 
-        const float32 eyeDistanceMeters = GENERATE(50.0F, 120.0F);
-        constexpr int32 POSE_COUNT = 8;
-        // A few millimetres between poses: far below a pixel, enough to change every rounding in the view.
-        constexpr float32 POSE_STEP_METERS = .0037F;
-        // Pixels whose ray passes this close to the emitter may show it instead of the floor.
-        constexpr float32 EMITTER_MARGIN_METERS = .5F;
-        // Checked pixels: well lit by the emitter and clear of eight-bit saturation.
-        constexpr float32 MIN_CHECKED_CODE = 24;
-        constexpr float32 MAX_CHECKED_CODE = 240;
-        constexpr float32 CODE_SCALE = 255;
-        // The resolve's float evaluation and eight-bit output differ from the CPU integral by a couple of codes;
-        // one shadowed filter tap of nine already darkens a checked pixel by more.
-        constexpr float32 MAX_DIFFERENCE_CODES = 3;
-        constexpr uint32 MIN_CHECKED_PIXELS = 64;
-        // Agreement of the CPU pixel rays with the camera's projection, in normalized device coordinates.
-        constexpr float32 MAX_RAY_ERROR_NDC = 1e-3F;
-        // The resolve's allowance for a rebuilt receiver: four units in the last place of the stored depth.
-        constexpr float32 DEPTH_RELATIVE_UNCERTAINTY = 2.384185791015625e-07F;
-        const auto evaluateCode = [&](math::Vector3 positionWorld) {
-            math::Vector3 viewWorld;
-            REQUIRE(math::TryNormalize(fixture.Cameras[0].CameraPosition - positionWorld, viewWorld) ==
-                    math::MathStatus::Success);
-            math::Vector3 radiance;
-            if (renderer::internal::TryEvaluateRasterMeshLightFar({words.GetData(), words.GetSize()},
-                                                                  positionWorld,
-                                                                  {0, 0, 1},
-                                                                  viewWorld,
-                                                                  receiver.BaseColor,
-                                                                  receiver.Metallic,
-                                                                  receiver.Roughness,
-                                                                  radiance) == false)
-            {
-                radiance = renderer::internal::EvaluateRasterMeshLight({words.GetData(), words.GetSize()},
-                                                                       positionWorld,
-                                                                       {0, 0, 1},
-                                                                       viewWorld,
-                                                                       receiver.BaseColor,
-                                                                       receiver.Metallic,
-                                                                       receiver.Roughness);
-            }
-            return radiance.X * CODE_SCALE;
-        };
-        constexpr usize LATERAL_BOUND_COUNT = 5;
-        const float32 tangentY = std::tan(EDITOR_VERTICAL_FOV_RADIANS / 2);
-        const float32 tangentX = tangentY * static_cast<float32>(WIDTH) / static_cast<float32>(HEIGHT);
-        float32 maximumDarkening = 0;
-        // The unshadowed CPU integral bounds the image from above too, which shows the check itself is sound.
-        float32 maximumBrightening = 0;
-        float32 maximumRayError = 0;
-        uint32 darkenedPixels = 0;
-        uint32 checkedPixels = 0;
-        for (int32 pose = 0; pose < POSE_COUNT; ++pose)
+        // One prepared graph checks both distances, as in the far perspective section above.
+        constexpr usize EYE_DISTANCE_COUNT = 2;
+        const StaticArray<float32, EYE_DISTANCE_COUNT> eyeDistancesMeters{{50.0F, 120.0F}};
+        for (const float32 eyeDistanceMeters : eyeDistancesMeters)
         {
-            // Forty-five degrees above the receiver, so depth varies from pixel to pixel.
-            const float32 offset = eyeDistanceMeters * math::Sqrt(0.5F);
-            const math::Vector3 targetWorld{0, 0, RECEIVER_HEIGHT_METERS};
-            const math::Vector3 eyeWorld{static_cast<float32>(pose) * POSE_STEP_METERS,
-                                         -offset,
-                                         RECEIVER_HEIGHT_METERS + offset};
-            renderer::ViewDescription& obliqueCamera = fixture.Cameras[0];
-            BuildConventionalEditorCamera(eyeWorld, targetWorld, obliqueCamera);
-            // The view basis of math::TryLookAt, for the ray through each pixel centre.
-            const math::Vector3 forwardWorld = obliqueCamera.CameraForward;
-            math::Vector3 rightWorld;
-            REQUIRE(math::TryNormalize(math::Cross(forwardWorld, {0, 0, 1}), rightWorld) == math::MathStatus::Success);
-            const math::Vector3 upWorld = math::Cross(rightWorld, forwardWorld);
-            const auto intersectReceiver = [&](math::Vector3 directionWorld) {
-                return eyeWorld + directionWorld * ((RECEIVER_HEIGHT_METERS - eyeWorld.Z) / directionWorld.Z);
-            };
-
-            REQUIRE(update(SCENE_COUNT - 1) == rhi::RasterStatus::Ready);
-            render();
-            REQUIRE(fixture.Graph.GetReport().Resources.MeshLightShadowCasters == 1);
-            REQUIRE(fixture.Graph.GetReport().PendingMeshLightShadowFaces == 0);
-            for (uint32 y = 0; y < HEIGHT; ++y)
-            {
-                for (uint32 x = 0; x < WIDTH; ++x)
+            constexpr int32 POSE_COUNT = 8;
+            // A few millimetres between poses: far below a pixel, enough to change every rounding in the view.
+            constexpr float32 POSE_STEP_METERS = .0037F;
+            // Pixels whose ray passes this close to the emitter may show it instead of the floor.
+            constexpr float32 EMITTER_MARGIN_METERS = .5F;
+            // Checked pixels: well lit by the emitter and clear of eight-bit saturation.
+            constexpr float32 MIN_CHECKED_CODE = 24;
+            constexpr float32 MAX_CHECKED_CODE = 240;
+            constexpr float32 CODE_SCALE = 255;
+            // The resolve's float evaluation and eight-bit output differ from the CPU integral by a couple of codes;
+            // one shadowed filter tap of nine already darkens a checked pixel by more.
+            constexpr float32 MAX_DIFFERENCE_CODES = 3;
+            constexpr uint32 MIN_CHECKED_PIXELS = 64;
+            // Agreement of the CPU pixel rays with the camera's projection, in normalized device coordinates.
+            constexpr float32 MAX_RAY_ERROR_NDC = 1e-3F;
+            // The resolve's allowance for a rebuilt receiver: four units in the last place of the stored depth.
+            constexpr float32 DEPTH_RELATIVE_UNCERTAINTY = 2.384185791015625e-07F;
+            const auto evaluateCode = [&](math::Vector3 positionWorld) {
+                math::Vector3 viewWorld;
+                REQUIRE(math::TryNormalize(fixture.Cameras[0].CameraPosition - positionWorld, viewWorld) ==
+                        math::MathStatus::Success);
+                math::Vector3 radiance;
+                if (renderer::internal::TryEvaluateRasterMeshLightFar({words.GetData(), words.GetSize()},
+                                                                      positionWorld,
+                                                                      {0, 0, 1},
+                                                                      viewWorld,
+                                                                      receiver.BaseColor,
+                                                                      receiver.Metallic,
+                                                                      receiver.Roughness,
+                                                                      radiance) == false)
                 {
-                    const float32 ndcX = (static_cast<float32>(x) + 0.5F) / static_cast<float32>(WIDTH) * 2 - 1;
-                    const float32 ndcY = 1 - (static_cast<float32>(y) + 0.5F) / static_cast<float32>(HEIGHT) * 2;
-                    const math::Vector3 directionWorld =
-                        forwardWorld + rightWorld * (ndcX * tangentX) + upWorld * (ndcY * tangentY);
-                    if (directionWorld.Z >= 0)
+                    radiance = renderer::internal::EvaluateRasterMeshLight({words.GetData(), words.GetSize()},
+                                                                           positionWorld,
+                                                                           {0, 0, 1},
+                                                                           viewWorld,
+                                                                           receiver.BaseColor,
+                                                                           receiver.Metallic,
+                                                                           receiver.Roughness);
+                }
+                return radiance.X * CODE_SCALE;
+            };
+            constexpr usize LATERAL_BOUND_COUNT = 5;
+            const float32 tangentY = std::tan(EDITOR_VERTICAL_FOV_RADIANS / 2);
+            const float32 tangentX = tangentY * static_cast<float32>(WIDTH) / static_cast<float32>(HEIGHT);
+            float32 maximumDarkening = 0;
+            // The unshadowed CPU integral bounds the image from above too, which shows the check itself is sound.
+            float32 maximumBrightening = 0;
+            float32 maximumRayError = 0;
+            uint32 darkenedPixels = 0;
+            uint32 checkedPixels = 0;
+            for (int32 pose = 0; pose < POSE_COUNT; ++pose)
+            {
+                // Forty-five degrees above the receiver, so depth varies from pixel to pixel.
+                const float32 offset = eyeDistanceMeters * math::Sqrt(0.5F);
+                const math::Vector3 targetWorld{0, 0, RECEIVER_HEIGHT_METERS};
+                const math::Vector3 eyeWorld{static_cast<float32>(pose) * POSE_STEP_METERS,
+                                             -offset,
+                                             RECEIVER_HEIGHT_METERS + offset};
+                renderer::ViewDescription& obliqueCamera = fixture.Cameras[0];
+                BuildConventionalEditorCamera(eyeWorld, targetWorld, obliqueCamera);
+                // The view basis of math::TryLookAt, for the ray through each pixel centre.
+                const math::Vector3 forwardWorld = obliqueCamera.CameraForward;
+                math::Vector3 rightWorld;
+                REQUIRE(math::TryNormalize(math::Cross(forwardWorld, {0, 0, 1}), rightWorld) ==
+                        math::MathStatus::Success);
+                const math::Vector3 upWorld = math::Cross(rightWorld, forwardWorld);
+                const auto intersectReceiver = [&](math::Vector3 directionWorld) {
+                    return eyeWorld + directionWorld * ((RECEIVER_HEIGHT_METERS - eyeWorld.Z) / directionWorld.Z);
+                };
+
+                REQUIRE(update(SCENE_COUNT - 1) == rhi::RasterStatus::Ready);
+                render();
+                REQUIRE(fixture.Graph.GetReport().Resources.MeshLightShadowCasters == 1);
+                REQUIRE(fixture.Graph.GetReport().PendingMeshLightShadowFaces == 0);
+                for (uint32 y = 0; y < HEIGHT; ++y)
+                {
+                    for (uint32 x = 0; x < WIDTH; ++x)
                     {
-                        continue;
-                    }
-                    const math::Vector3 emitterHitWorld =
-                        eyeWorld + directionWorld * ((EMITTER_HEIGHT_METERS - eyeWorld.Z) / directionWorld.Z);
-                    if (math::Abs(emitterHitWorld.X) < EMITTER_HALF_EXTENT_METERS + EMITTER_MARGIN_METERS &&
-                        math::Abs(emitterHitWorld.Y) < EMITTER_HALF_EXTENT_METERS + EMITTER_MARGIN_METERS)
-                    {
-                        continue;
-                    }
-                    const math::Vector3 positionWorld = intersectReceiver(directionWorld);
-                    const math::Vector4 positionClip =
-                        obliqueCamera.WorldToClip * math::Vector4{positionWorld.X, positionWorld.Y, positionWorld.Z, 1};
-                    maximumRayError = math::Max(maximumRayError,
-                                                math::Max(math::Abs(positionClip.X / positionClip.W - ndcX),
-                                                          math::Abs(positionClip.Y / positionClip.W - ndcY)));
-                    const float32 expectedCode = evaluateCode(positionWorld);
-                    if (expectedCode < MIN_CHECKED_CODE || expectedCode > MAX_CHECKED_CODE)
-                    {
-                        continue;
-                    }
-                    // The resolve shades a receiver rebuilt from depth, which lies within the depth allowance along
-                    // the ray and, tens of metres away, a fraction of a pixel to its side. The unshadowed radiance
-                    // over half a pixel around the centre and that allowance bounds the pixel. One unit of view
-                    // depth moves the position by directionWorld.
-                    const float32 viewDepthMeters = math::Dot(positionWorld - eyeWorld, forwardWorld);
-                    const float32 depth = EDITOR_FAR_PLANE_METERS * (viewDepthMeters - EDITOR_NEAR_PLANE_METERS) /
-                                          (viewDepthMeters * (EDITOR_FAR_PLANE_METERS - EDITOR_NEAR_PLANE_METERS));
-                    const float32 viewDepthPerDepth = viewDepthMeters * viewDepthMeters *
-                                                      (EDITOR_FAR_PLANE_METERS - EDITOR_NEAR_PLANE_METERS) /
-                                                      (EDITOR_FAR_PLANE_METERS * EDITOR_NEAR_PLANE_METERS);
-                    const math::Vector3 uncertaintyWorld =
-                        directionWorld * (viewDepthPerDepth * depth * DEPTH_RELATIVE_UNCERTAINTY);
-                    const math::Vector3 halfPixelRightWorld = rightWorld * (tangentX / static_cast<float32>(WIDTH));
-                    const math::Vector3 halfPixelUpWorld = upWorld * (tangentY / static_cast<float32>(HEIGHT));
-                    const StaticArray<math::Vector3, LATERAL_BOUND_COUNT> lateralWorld{
-                        {{}, -halfPixelRightWorld, halfPixelRightWorld, -halfPixelUpWorld, halfPixelUpWorld}};
-                    float32 lowerCode = expectedCode;
-                    float32 upperCode = expectedCode;
-                    for (const math::Vector3& sideWorld : lateralWorld)
-                    {
-                        const math::Vector3 sidePositionWorld = intersectReceiver(directionWorld + sideWorld);
-                        for (const float32 along : {-1.0F, 0.0F, 1.0F})
+                        const float32 ndcX = (static_cast<float32>(x) + 0.5F) / static_cast<float32>(WIDTH) * 2 - 1;
+                        const float32 ndcY = 1 - (static_cast<float32>(y) + 0.5F) / static_cast<float32>(HEIGHT) * 2;
+                        const math::Vector3 directionWorld =
+                            forwardWorld + rightWorld * (ndcX * tangentX) + upWorld * (ndcY * tangentY);
+                        if (directionWorld.Z >= 0)
                         {
-                            const float32 boundCode = evaluateCode(sidePositionWorld + uncertaintyWorld * along);
-                            lowerCode = math::Min(lowerCode, boundCode);
-                            upperCode = math::Max(upperCode, boundCode);
+                            continue;
                         }
+                        const math::Vector3 emitterHitWorld =
+                            eyeWorld + directionWorld * ((EMITTER_HEIGHT_METERS - eyeWorld.Z) / directionWorld.Z);
+                        if (math::Abs(emitterHitWorld.X) < EMITTER_HALF_EXTENT_METERS + EMITTER_MARGIN_METERS &&
+                            math::Abs(emitterHitWorld.Y) < EMITTER_HALF_EXTENT_METERS + EMITTER_MARGIN_METERS)
+                        {
+                            continue;
+                        }
+                        const math::Vector3 positionWorld = intersectReceiver(directionWorld);
+                        const math::Vector4 positionClip =
+                            obliqueCamera.WorldToClip *
+                            math::Vector4{positionWorld.X, positionWorld.Y, positionWorld.Z, 1};
+                        maximumRayError = math::Max(maximumRayError,
+                                                    math::Max(math::Abs(positionClip.X / positionClip.W - ndcX),
+                                                              math::Abs(positionClip.Y / positionClip.W - ndcY)));
+                        const float32 expectedCode = evaluateCode(positionWorld);
+                        if (expectedCode < MIN_CHECKED_CODE || expectedCode > MAX_CHECKED_CODE)
+                        {
+                            continue;
+                        }
+                        // The resolve shades a receiver rebuilt from depth, which lies within the depth allowance along
+                        // the ray and, tens of metres away, a fraction of a pixel to its side. The unshadowed radiance
+                        // over half a pixel around the centre and that allowance bounds the pixel. One unit of view
+                        // depth moves the position by directionWorld.
+                        const float32 viewDepthMeters = math::Dot(positionWorld - eyeWorld, forwardWorld);
+                        const float32 depth = EDITOR_FAR_PLANE_METERS * (viewDepthMeters - EDITOR_NEAR_PLANE_METERS) /
+                                              (viewDepthMeters * (EDITOR_FAR_PLANE_METERS - EDITOR_NEAR_PLANE_METERS));
+                        const float32 viewDepthPerDepth = viewDepthMeters * viewDepthMeters *
+                                                          (EDITOR_FAR_PLANE_METERS - EDITOR_NEAR_PLANE_METERS) /
+                                                          (EDITOR_FAR_PLANE_METERS * EDITOR_NEAR_PLANE_METERS);
+                        const math::Vector3 uncertaintyWorld =
+                            directionWorld * (viewDepthPerDepth * depth * DEPTH_RELATIVE_UNCERTAINTY);
+                        const math::Vector3 halfPixelRightWorld = rightWorld * (tangentX / static_cast<float32>(WIDTH));
+                        const math::Vector3 halfPixelUpWorld = upWorld * (tangentY / static_cast<float32>(HEIGHT));
+                        const StaticArray<math::Vector3, LATERAL_BOUND_COUNT> lateralWorld{
+                            {{}, -halfPixelRightWorld, halfPixelRightWorld, -halfPixelUpWorld, halfPixelUpWorld}};
+                        float32 lowerCode = expectedCode;
+                        float32 upperCode = expectedCode;
+                        for (const math::Vector3& sideWorld : lateralWorld)
+                        {
+                            const math::Vector3 sidePositionWorld = intersectReceiver(directionWorld + sideWorld);
+                            for (const float32 along : {-1.0F, 0.0F, 1.0F})
+                            {
+                                const float32 boundCode = evaluateCode(sidePositionWorld + uncertaintyWorld * along);
+                                lowerCode = math::Min(lowerCode, boundCode);
+                                upperCode = math::Max(upperCode, boundCode);
+                            }
+                        }
+                        ++checkedPixels;
+                        const float32 code = float32(fixture.Pixels[GetPixel(x, y)]);
+                        const float32 darkening = lowerCode - code;
+                        maximumDarkening = math::Max(maximumDarkening, darkening);
+                        maximumBrightening = math::Max(maximumBrightening, code - upperCode);
+                        darkenedPixels += darkening > MAX_DIFFERENCE_CODES ? 1 : 0;
                     }
-                    ++checkedPixels;
-                    const float32 code = float32(fixture.Pixels[GetPixel(x, y)]);
-                    const float32 darkening = lowerCode - code;
-                    maximumDarkening = math::Max(maximumDarkening, darkening);
-                    maximumBrightening = math::Max(maximumBrightening, code - upperCode);
-                    darkenedPixels += darkening > MAX_DIFFERENCE_CODES ? 1 : 0;
                 }
             }
+            CAPTURE(eyeDistanceMeters, checkedPixels, darkenedPixels, maximumDarkening, maximumBrightening);
+            REQUIRE(maximumRayError <= MAX_RAY_ERROR_NDC);
+            REQUIRE(checkedPixels >= MIN_CHECKED_PIXELS * POSE_COUNT);
+            CHECK(maximumBrightening <= MAX_DIFFERENCE_CODES);
+            CHECK(maximumDarkening <= MAX_DIFFERENCE_CODES);
         }
-        CAPTURE(eyeDistanceMeters, checkedPixels, darkenedPixels, maximumDarkening, maximumBrightening);
-        REQUIRE(maximumRayError <= MAX_RAY_ERROR_NDC);
-        REQUIRE(checkedPixels >= MIN_CHECKED_PIXELS * POSE_COUNT);
-        CHECK(maximumBrightening <= MAX_DIFFERENCE_CODES);
-        CHECK(maximumDarkening <= MAX_DIFFERENCE_CODES);
     }
     SECTION("front-facing geometry stays lit at the shading-normal horizon")
     {

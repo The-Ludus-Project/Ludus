@@ -5319,47 +5319,64 @@ TEST_CASE("World document validates hair-card slots and writes them to the level
     CHECK(isWritten == true);
 }
 
-TEST_CASE("World makes a masked slot a hair card and keeps its strand edits across save, reopen and reimport",
-          "[editor][world][hair-card]")
+TEST_CASE(
+    "World dresses the character bust with hair cards and keeps its strand edits across save, reopen and reimport",
+    "[editor][world][hair-card]")
 {
     namespace format = ludus::content::scene_format;
     using ludus::foundation::float32;
-    QTemporaryDir directory;
+    const QString destination = qEnvironmentVariable("LUDUS_HAIR_BUST_PROJECTS");
+    QTemporaryDir directory(destination.isEmpty() == true
+                                ? QDir::temp().filePath(QStringLiteral("hair-bust-XXXXXX"))
+                                : QDir(destination).filePath(QStringLiteral("hair-bust-XXXXXX")));
+    const QString path = Fixture(directory);
+    QJsonObject world = QJsonDocument::fromJson(Read(path)).object();
+    world.insert(QStringLiteral("entities"), QJsonArray());
+    Write(path, QJsonDocument(world).toJson());
     WorldWorkspace workspace;
     if (PreviewViewport::CanPresent() == true)
     {
         workspace.show();
     }
-    static_cast<void>(OpenPlacementWorld(directory, workspace));
+    workspace.SetProject(directory.path(), 1);
+    REQUIRE(workspace.Open(path) == true);
     WaitForValidatedScene(workspace);
-    const QString path = workspace.Path();
-    // The cutout glTF fixture: a card masked at 0.25 by its base texture's alpha, and an opaque (blended) panel.
-    const QString source = directory.filePath(QStringLiteral("cutout.gltf"));
-    REQUIRE(
-        QFile::copy(QDir(QStringLiteral(LUDUS_EDITOR_PROJECT_ROOT))
-                        .filePath(QStringLiteral("modules/content/scene_cook/tests/fixtures/gltf/cutout/scene.gltf")),
-                    source) == true);
+    const QDir bust(QDir(QStringLiteral(LUDUS_EDITOR_PROJECT_ROOT))
+                        .filePath(QStringLiteral("tests/scenes/characters/infinite-head")));
+    const QDir sourceDirectory(directory.filePath(QStringLiteral("infinite-head")));
+    REQUIRE(QDir().mkpath(sourceDirectory.path()) == true);
+    for (const QString& file : bust.entryList(QDir::Files))
+    {
+        REQUIRE(QFile::copy(bust.filePath(file), sourceDirectory.filePath(file)) == true);
+    }
+    const QString source = sourceDirectory.filePath(QStringLiteral("infinite-head-hair.gltf"));
     REQUIRE(workspace.ImportScene(source) == true);
     WaitForValidatedScene(workspace);
     QString card;
-    QString panel;
+    QString head;
     for (const PreviewObject& object : GetLevel(workspace).PreviewScene().Objects)
     {
         const ludus::resources::SceneMaterial* materialOrNull =
             GetSceneObjectMaterialOrNull(GetLevel(workspace).PreviewScene(), object.Id);
         REQUIRE(materialOrNull != nullptr);
         const std::string_view name = materialOrNull->Name.View();
-        if (name == "Cutout")
+        if (name == "Hair")
         {
             card = object.Id;
         }
-        else if (name == "Glass")
+        else if (name == "Skin")
         {
-            panel = object.Id;
+            head = object.Id;
         }
     }
     REQUIRE(card.isEmpty() == false);
-    REQUIRE(panel.isEmpty() == false);
+    REQUIRE(head.isEmpty() == false);
+    REQUIRE(GetLevel(workspace).PreviewScene().Definition->Lights.GetSize() == 2);
+    const auto getSlot = [&card](const WorldWorkspace& view) {
+        return view.Document().GetMaterialResourceId(view.Document().ScenePlacement(view.Document().Entity(card)));
+    };
+    const QString slot = getSlot(workspace);
+    REQUIRE(slot.isEmpty() == false);
     const auto getMaterial = [](const WorldWorkspace& view,
                                 const QString& id) -> const ludus::resources::SceneMaterial& {
         const ludus::resources::SceneMaterial* materialOrNull =
@@ -5372,6 +5389,8 @@ TEST_CASE("World makes a masked slot a hair card and keeps its strand edits acro
         REQUIRE(material.Scattering.Model == format::MaterialModel::HairCard);
         CHECK(material.Metallic == 0);
         CHECK(material.IsAlphaMasked == true);
+        CHECK(material.Texture != format::NO_TEXTURE);
+        CHECK(getSlot(view) == slot);
         CHECK(material.AlphaCutoff == cutoff);
         const format::HairCardParameters hair = format::GetHairCardParameters(material.Scattering);
         CHECK(hair.StrandDirectionDegrees == strandDegrees);
@@ -5379,7 +5398,7 @@ TEST_CASE("World makes a masked slot a hair card and keeps its strand edits acro
         CHECK(hair.SecondaryWeight == format::DEFAULT_HAIR_CARD_SECONDARY_WEIGHT);
     };
     CHECK(getMaterial(workspace, card).Scattering.Model == format::MaterialModel::MetallicRoughness);
-    CHECK(getMaterial(workspace, card).AlphaCutoff == 0.25F);
+    CHECK(getMaterial(workspace, card).AlphaCutoff == 0.5F);
 
     // Assign the hair card from the inspector; the viewport scene follows with the default strand controls.
     REQUIRE(workspace.SelectEntity(card) == true);
@@ -5388,17 +5407,17 @@ TEST_CASE("World makes a masked slot a hair card and keeps its strand edits acro
     REQUIRE(assignOrNull->isEnabled() == true);
     assignOrNull->click();
     WaitForValidatedScene(workspace);
-    checkHairCard(workspace, 0, 0.25F);
+    checkHairCard(workspace, 0, 0.5F);
     CHECK(workspace.findChild<QPushButton*>(QStringLiteral("worldAssignHairCard")) == nullptr);
 
     // Edit the strand direction and the mask cutoff, which the masked material authors.
     const QString strandField = QStringLiteral("scene/hair_card/strand_direction_degrees");
     const QString cutoffField = QStringLiteral("scene/hair_card/alpha_cutoff");
     Type(Field(workspace, strandField), QStringLiteral("90"));
-    Type(Field(workspace, cutoffField), QStringLiteral("0.5"));
+    Type(Field(workspace, cutoffField), QStringLiteral("0.625"));
     REQUIRE(workspace.Apply() == true);
     WaitForValidatedScene(workspace);
-    checkHairCard(workspace, 90, 0.5F);
+    checkHairCard(workspace, 90, 0.625F);
 
     // An out-of-range strand is rejected beside the field, and the viewport keeps the last applied card.
     Type(Field(workspace, strandField), QStringLiteral("200"));
@@ -5409,35 +5428,54 @@ TEST_CASE("World makes a masked slot a hair card and keeps its strand edits acro
     CHECK(errorOrNull->text().contains(QStringLiteral("Strand direction")) == true);
     CHECK(errorOrNull->text().contains(QStringLiteral("-180 to 180")) == true);
     WaitForValidatedScene(workspace);
-    checkHairCard(workspace, 90, 0.5F);
+    checkHairCard(workspace, 90, 0.625F);
     Type(Field(workspace, strandField), QStringLiteral("45"));
     REQUIRE(workspace.Apply() == true);
     CHECK(errorOrNull->isHidden() == true);
     CHECK(errorOrNull->text().isEmpty() == true);
     WaitForValidatedScene(workspace);
-    checkHairCard(workspace, 45, 0.5F);
+    checkHairCard(workspace, 45, 0.625F);
 
     // Undo and redo the strand edit, then the assignment.
     REQUIRE(workspace.CanUndo() == true);
     workspace.Undo();
     WaitForValidatedScene(workspace);
-    checkHairCard(workspace, 90, 0.5F);
+    checkHairCard(workspace, 90, 0.625F);
     REQUIRE(workspace.CanRedo() == true);
     workspace.Redo();
     WaitForValidatedScene(workspace);
-    checkHairCard(workspace, 45, 0.5F);
+    checkHairCard(workspace, 45, 0.625F);
 
-    // A slot without a mask offers no cutoff.
-    REQUIRE(workspace.SelectEntity(panel) == true);
-    QPushButton* panelAssignOrNull = workspace.findChild<QPushButton*>(QStringLiteral("worldAssignHairCard"));
-    REQUIRE(panelAssignOrNull != nullptr);
-    panelAssignOrNull->click();
+    workspace.Undo();
     WaitForValidatedScene(workspace);
-    CHECK(getMaterial(workspace, panel).Scattering.Model == format::MaterialModel::HairCard);
+    checkHairCard(workspace, 90, 0.625F);
+    workspace.Undo();
+    WaitForValidatedScene(workspace);
+    checkHairCard(workspace, 0, 0.5F);
+    workspace.Undo();
+    WaitForValidatedScene(workspace);
+    CHECK(getMaterial(workspace, card).Scattering.Model == format::MaterialModel::MetallicRoughness);
+    workspace.Redo();
+    WaitForValidatedScene(workspace);
+    checkHairCard(workspace, 0, 0.5F);
+    workspace.Redo();
+    WaitForValidatedScene(workspace);
+    checkHairCard(workspace, 90, 0.625F);
+    workspace.Redo();
+    WaitForValidatedScene(workspace);
+    checkHairCard(workspace, 45, 0.625F);
+
+    // The skin fixture's original slot has no opacity mask.
+    REQUIRE(workspace.SelectEntity(head) == true);
+    QPushButton* headAssignOrNull = workspace.findChild<QPushButton*>(QStringLiteral("worldAssignHairCard"));
+    REQUIRE(headAssignOrNull != nullptr);
+    headAssignOrNull->click();
+    WaitForValidatedScene(workspace);
+    CHECK(getMaterial(workspace, head).Scattering.Model == format::MaterialModel::HairCard);
     CHECK(workspace.findChild<QLineEdit*>(QStringLiteral("worldField:") + cutoffField) == nullptr);
     workspace.Undo();
     WaitForValidatedScene(workspace);
-    CHECK(getMaterial(workspace, panel).Scattering.Model != format::MaterialModel::HairCard);
+    CHECK(getMaterial(workspace, head).Scattering.Model != format::MaterialModel::HairCard);
     REQUIRE(workspace.Save() == true);
     WaitForValidatedScene(workspace);
     workspace.StopPreview();
@@ -5452,13 +5490,13 @@ TEST_CASE("World makes a masked slot a hair card and keeps its strand edits acro
     reopened.SetProject(directory.path(), 2);
     REQUIRE(reopened.Open(path) == true);
     WaitForValidatedScene(reopened);
-    checkHairCard(reopened, 45, 0.5F);
+    checkHairCard(reopened, 45, 0.625F);
     REQUIRE(reopened.ImportScene(source) == true);
     WaitForValidatedScene(reopened);
-    checkHairCard(reopened, 45, 0.5F);
+    checkHairCard(reopened, 45, 0.625F);
     REQUIRE(reopened.SelectEntity(card) == true);
     CHECK(Field(reopened, strandField)->text() == QStringLiteral("45"));
-    CHECK(Field(reopened, cutoffField)->text() == QStringLiteral("0.5"));
+    CHECK(Field(reopened, cutoffField)->text() == QStringLiteral("0.625"));
 
     // Use Inherited Material restores the imported material in one undoable edit.
     QPushButton* restoreOrNull = reopened.findChild<QPushButton*>(QStringLiteral("worldRestoreHairCard"));
@@ -5466,11 +5504,22 @@ TEST_CASE("World makes a masked slot a hair card and keeps its strand edits acro
     restoreOrNull->click();
     WaitForValidatedScene(reopened);
     CHECK(getMaterial(reopened, card).Scattering.Model == format::MaterialModel::MetallicRoughness);
-    CHECK(getMaterial(reopened, card).AlphaCutoff == 0.25F);
+    CHECK(getMaterial(reopened, card).AlphaCutoff == 0.5F);
     reopened.Undo();
     WaitForValidatedScene(reopened);
-    checkHairCard(reopened, 45, 0.5F);
+    checkHairCard(reopened, 45, 0.625F);
     reopened.StopPreview();
+    if (destination.isEmpty() == false)
+    {
+        // Leave a saved World with the strand along the ribbons for the timing comparison.
+        REQUIRE(reopened.SelectEntity(card) == true);
+        Type(Field(reopened, strandField), QStringLiteral("90"));
+        REQUIRE(reopened.Apply() == true);
+        WaitForValidatedScene(reopened);
+        REQUIRE(reopened.Save() == true);
+        directory.setAutoRemove(false);
+        WARN(QStringLiteral("hair bust project: %1").arg(directory.path()).toStdString());
+    }
 }
 
 TEST_CASE("World document validates skin slots and writes them to the level", "[editor][world][skin]")

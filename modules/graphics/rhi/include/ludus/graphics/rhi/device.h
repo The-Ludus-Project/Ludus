@@ -287,10 +287,12 @@ SetFrameTarget(DeviceHandle device, SurfaceHandle surface, const FrameTarget& ta
 /// @return Ready on success; InvalidHandle for a stale/foreign device; InvalidState for a
 /// non-null output or an open frame; InvalidDescription for an invalid window or one whose
 /// target another surface already borrows; Unsupported when the backend hosts only its
-/// primary surface (browser backends and an imported Vulkan device in this release), the
+/// primary surface (WebGL 2 and an imported Vulkan device in this release), the
 /// window system cannot share the primary color format (Metal, Direct3D 12), or differs
 /// from the primary's window system (Vulkan); CapacityExceeded when the device hosts its
-/// maximum; Failed when the platform target or its swap chain could not be created.
+/// maximum; Failed when the platform target or its swap chain could not be created, or a
+/// canvas already holds another context mode. WebGPU validates a canvas configuration
+/// asynchronously: a failure after Ready reports the surface Lost instead.
 [[nodiscard]] DeviceStatus
 CreateSurface(DeviceHandle device, const WindowInfo& window, SurfaceHandle& outSurface) noexcept;
 /// @brief Retire one surface created by CreateSurface and clear the handle.
