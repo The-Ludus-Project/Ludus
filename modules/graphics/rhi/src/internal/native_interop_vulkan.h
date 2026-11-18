@@ -18,7 +18,13 @@ struct NativeVulkanRead final
     VkFence Completion = VK_NULL_HANDLE;
     bool Released = false;
 };
-internal::StorageTable<NativeVulkanRead> gNativeVulkanReads;
+/// One read table per device owner slot (R14c); see internal/owner.h.
+foundation::StaticArray<internal::StorageTable<NativeVulkanRead>, MAX_DEVICE_OWNERS> gNativeVulkanReadTables{};
+/// Native image reads of the bound owner slot.
+internal::StorageTable<NativeVulkanRead>& GetNativeVulkanReads() noexcept
+{
+    return gNativeVulkanReadTables[internal::GetBoundOwnerSlot()];
+}
 RasterStatus NativeVkResult(VkResult result) noexcept
 {
     return result == VK_SUCCESS                             ? RasterStatus::Ready
@@ -35,7 +41,7 @@ bool NativeInteropSupported() noexcept
 }
 RasterStatus NativeDeviceSnapshot(NativeDeviceInfo& output) noexcept
 {
-    if (gDevice == VK_NULL_HANDLE || gQueue == VK_NULL_HANDLE)
+    if (GetVulkan().Device == VK_NULL_HANDLE || GetVulkan().Queue == VK_NULL_HANDLE)
     {
         return RasterStatus::NotReady;
     }
@@ -45,14 +51,14 @@ RasterStatus NativeDeviceSnapshot(NativeDeviceInfo& output) noexcept
         .Identity =
         {
             .Api = Backend::Vulkan,
-            .Instance = NativeInstance{gInstance},
-            .PhysicalDevice = NativePhysicalDevice{gPhysical},
-            .Device = NativeLogicalDevice{gDevice},
-            .CommandQueue = NativeCommandQueue{gQueue},
-            .QueueFamily = gFamily,
+            .Instance = NativeInstance{GetVulkan().Instance},
+            .PhysicalDevice = NativePhysicalDevice{GetVulkan().Physical},
+            .Device = NativeLogicalDevice{GetVulkan().Device},
+            .CommandQueue = NativeCommandQueue{GetVulkan().Queue},
+            .QueueFamily = GetVulkan().Family,
             .QueueIndex = imported == nullptr ? 0 : imported->Identity.QueueIndex,
         },
-        .InstanceApiVersion = gNativeInstanceVersion,
+        .InstanceApiVersion = GetVulkan().NativeInstanceVersion,
     };
     VkPhysicalDeviceIDProperties identity
     {
@@ -63,7 +69,7 @@ RasterStatus NativeDeviceSnapshot(NativeDeviceInfo& output) noexcept
         .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PROPERTIES_2,
         .pNext = &identity,
     };
-    vkGetPhysicalDeviceProperties2(gPhysical, &properties);
+    vkGetPhysicalDeviceProperties2(GetVulkan().Physical, &properties);
     std::memcpy(result.DeviceUuid, identity.deviceUUID, sizeof(result.DeviceUuid));
     output = result;
     return RasterStatus::Ready;
@@ -73,17 +79,17 @@ RasterStatus NativeTexturePublish(const internal::NativeTexturePublication& publ
 {
     const auto slot = publication.Lease;
     const auto textureSlot = publication.Texture;
-    if (gNativeVulkanReads.EnsureSlots(slot + 1) == false)
+    if (GetNativeVulkanReads().EnsureSlots(slot + 1) == false)
     {
         return internal::StorageFailure();
     }
-    auto& read = gNativeVulkanReads[slot];
+    NativeVulkanRead& read = GetNativeVulkanReads()[slot];
     VkCommandPoolCreateInfo pool
     {
         .sType = VK_STRUCTURE_TYPE_COMMAND_POOL_CREATE_INFO,
-        .queueFamilyIndex = gFamily,
+        .queueFamilyIndex = GetVulkan().Family,
     };
-    auto result = vkCreateCommandPool(gDevice, &pool, nullptr, &read.Pool);
+    VkResult result = vkCreateCommandPool(GetVulkan().Device, &pool, nullptr, &read.Pool);
     if (result != VK_SUCCESS)
     {
         return NativeVkResult(result);
@@ -95,7 +101,7 @@ RasterStatus NativeTexturePublish(const internal::NativeTexturePublication& publ
         .level = VK_COMMAND_BUFFER_LEVEL_PRIMARY,
         .commandBufferCount = 1,
     };
-    result = vkAllocateCommandBuffers(gDevice, &allocate, &read.Command);
+    result = vkAllocateCommandBuffers(GetVulkan().Device, &allocate, &read.Command);
     if (result != VK_SUCCESS)
     {
         return NativeVkResult(result);
@@ -104,12 +110,12 @@ RasterStatus NativeTexturePublish(const internal::NativeTexturePublication& publ
     {
         .sType = VK_STRUCTURE_TYPE_FENCE_CREATE_INFO,
     };
-    result = vkCreateFence(gDevice, &fence, nullptr, &read.Publication);
+    result = vkCreateFence(GetVulkan().Device, &fence, nullptr, &read.Publication);
     if (result != VK_SUCCESS)
     {
         return NativeVkResult(result);
     }
-    result = vkCreateFence(gDevice, &fence, nullptr, &read.Completion);
+    result = vkCreateFence(GetVulkan().Device, &fence, nullptr, &read.Completion);
     if (result != VK_SUCCESS)
     {
         return NativeVkResult(result);
@@ -124,7 +130,7 @@ RasterStatus NativeTexturePublish(const internal::NativeTexturePublication& publ
     {
         return NativeVkResult(result);
     }
-    auto& texture = gRasterTextures[textureSlot];
+    RasterVulkanTexture& texture = GetRasterVulkan().Textures[textureSlot];
     VkImageMemoryBarrier barrier
     {
         .sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER,
@@ -162,7 +168,7 @@ RasterStatus NativeTexturePublish(const internal::NativeTexturePublication& publ
         .commandBufferCount = 1,
         .pCommandBuffers = &read.Command,
     };
-    result = vkQueueSubmit(gQueue, 1, &submit, read.Publication);
+    result = vkQueueSubmit(GetVulkan().Queue, 1, &submit, read.Publication);
     if (result != VK_SUCCESS)
     {
         return NativeVkResult(result);
@@ -181,12 +187,12 @@ RasterStatus NativeTexturePublish(const internal::NativeTexturePublication& publ
 }
 RasterStatus NativeTextureRelease(usize slot) noexcept
 {
-    auto& read = gNativeVulkanReads[slot];
+    NativeVulkanRead& read = GetNativeVulkanReads()[slot];
     if (read.Released)
     {
         return RasterStatus::Pending;
     }
-    const auto result = vkQueueSubmit(gQueue, 0, nullptr, read.Completion);
+    const VkResult result = vkQueueSubmit(GetVulkan().Queue, 0, nullptr, read.Completion);
     if (result == VK_SUCCESS || result == VK_ERROR_DEVICE_LOST)
     {
         read.Released = true;
@@ -195,21 +201,21 @@ RasterStatus NativeTextureRelease(usize slot) noexcept
 }
 RasterStatus NativeTexturePoll(usize slot, bool wait) noexcept
 {
-    auto& read = gNativeVulkanReads[slot];
+    NativeVulkanRead& read = GetNativeVulkanReads()[slot];
     const auto fence = read.Released ? read.Completion : read.Publication;
-    return NativeVkResult(wait ? vkWaitForFences(gDevice, 1, &fence, VK_TRUE, 5000000000ULL)
-                               : vkGetFenceStatus(gDevice, fence));
+    return NativeVkResult(wait ? vkWaitForFences(GetVulkan().Device, 1, &fence, VK_TRUE, FENCE_TIMEOUT_NANOSECONDS)
+                               : vkGetFenceStatus(GetVulkan().Device, fence));
 }
 void NativeTextureDestroy(usize slot) noexcept
 {
-    if (slot >= gNativeVulkanReads.GetSize())
+    if (slot >= GetNativeVulkanReads().GetSize())
     {
         return;
     }
-    auto& read = gNativeVulkanReads[slot];
-    vkDestroyFence(gDevice, read.Publication, nullptr);
-    vkDestroyFence(gDevice, read.Completion, nullptr);
-    vkDestroyCommandPool(gDevice, read.Pool, nullptr);
+    NativeVulkanRead& read = GetNativeVulkanReads()[slot];
+    vkDestroyFence(GetVulkan().Device, read.Publication, nullptr);
+    vkDestroyFence(GetVulkan().Device, read.Completion, nullptr);
+    vkDestroyCommandPool(GetVulkan().Device, read.Pool, nullptr);
     read = {};
 }
 void NativeInteropDetachSurface() noexcept
@@ -232,13 +238,13 @@ void NativeInteropDetachSurface() noexcept
     }
     RetireAcquiredImage();
     WaitIdle();
-    gEncoding = false;
+    GetVulkan().IsEncoding = false;
     ReleaseTargets();
-    vkDestroyRenderPass(gDevice, gPass, nullptr);
-    gPass = VK_NULL_HANDLE;
+    vkDestroyRenderPass(GetVulkan().Device, GetVulkan().Pass, nullptr);
+    GetVulkan().Pass = VK_NULL_HANDLE;
     if (GetActiveSurface().Surface != VK_NULL_HANDLE)
     {
-        vkDestroySurfaceKHR(gInstance, GetActiveSurface().Surface, nullptr);
+        vkDestroySurfaceKHR(GetVulkan().Instance, GetActiveSurface().Surface, nullptr);
         GetActiveSurface().Surface = VK_NULL_HANDLE;
     }
     GetActiveSurface().Window = {};

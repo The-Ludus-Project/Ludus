@@ -697,7 +697,7 @@ void Shutdown() noexcept
     }
 }
 // R14c: every owner slot keeps its own MetalState, command queue and native tables.
-usize GetDeviceOwnerLimit() noexcept
+usize GetDeviceOwnerLimit(bool) noexcept
 {
     return MAX_DEVICE_OWNERS;
 }

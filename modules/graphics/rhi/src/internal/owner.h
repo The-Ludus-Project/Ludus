@@ -40,7 +40,11 @@ LUDUS_INLINE void BindOwnerSlot(foundation::usize slot) noexcept
 
 namespace ludus::graphics::rhi::backend
 {
-/// Device owners this backend hosts at once, between 1 and MAX_DEVICE_OWNERS. A backend
-/// returning 1 keeps one process session and the facade admits a single owner.
-[[nodiscard]] foundation::usize GetDeviceOwnerLimit() noexcept;
+/// @brief Device owners this backend hosts at once when admitting a new owner, between 1 and
+/// MAX_DEVICE_OWNERS, counting the live owners and the new one.
+///
+/// `isNativeDevice` is true for an owner that adopts an imported native device
+/// (CreateNativeDevice). A result of 1 admits the new owner only while no other owner is
+/// live; the facade then reports InvalidState rather than CapacityExceeded.
+[[nodiscard]] foundation::usize GetDeviceOwnerLimit(bool isNativeDevice) noexcept;
 } // namespace ludus::graphics::rhi::backend

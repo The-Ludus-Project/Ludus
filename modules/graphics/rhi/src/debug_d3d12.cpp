@@ -1,5 +1,6 @@
 #include "internal/d3d12_device.h"
 #include "internal/d3d12_diagnostics.h"
+#include "internal/owner.h"
 
 #include <ludus/foundation/base/config.h>
 #include <ludus/foundation/containers/static_array.hpp>
@@ -24,10 +25,36 @@ using DiagnosticName = StaticArray<char, MAX_DRED_NAME_UNITS * MAX_UTF8_BYTES_PE
 using PixBeginEvent = void(WINAPI*)(ID3D12GraphicsCommandList*, UINT64, PCSTR);
 using PixEndEvent = void(WINAPI*)(ID3D12GraphicsCommandList*);
 constexpr uint64 PIX_EVENT_COLOR = 0xff65a8e0;
+// WinPixEventRuntime is loaded once per process; each owner slot holds at most one
+// reference, and the last released reference unloads it (R14c).
 HMODULE gPixRuntimeOrNull = nullptr;
 PixBeginEvent gPixBeginEventOrNull = nullptr;
 PixEndEvent gPixEndEventOrNull = nullptr;
-bool hasLoggedRemoval = false;
+StaticArray<bool, MAX_DEVICE_OWNERS> gHasPixReference{};
+/// Each owner logs its own device removal once.
+StaticArray<bool, MAX_DEVICE_OWNERS> gHasLoggedRemoval{};
+
+[[nodiscard]] bool HasAnyPixReference() noexcept
+{
+    for (const bool hasReference : gHasPixReference)
+    {
+        if (hasReference == true)
+        {
+            return true;
+        }
+    }
+    return false;
+}
+void UnloadPixRuntime() noexcept
+{
+    gPixBeginEventOrNull = nullptr;
+    gPixEndEventOrNull = nullptr;
+    if (gPixRuntimeOrNull != nullptr)
+    {
+        FreeLibrary(gPixRuntimeOrNull);
+        gPixRuntimeOrNull = nullptr;
+    }
+}
 
 template <typename Procedure>
 Procedure LoadPixProcedureOrNull(const char* name) noexcept
@@ -127,6 +154,17 @@ void LogAllocations(const char* category, const D3D12_DRED_ALLOCATION_NODE* node
 
 void InitializePixMarkers() noexcept
 {
+    const usize slot = internal::GetBoundOwnerSlot();
+    if (gHasPixReference[slot] == true)
+    {
+        return;
+    }
+    const bool isLoaded = HasAnyPixReference();
+    gHasPixReference[slot] = true;
+    if (isLoaded == true)
+    {
+        return;
+    }
     // Opt-in deployment beside the executable. Exclude the working directory
     // and PATH from DLL search, and leave the renderer usable without the DLL.
     gPixRuntimeOrNull = LoadLibraryExW(L"WinPixEventRuntime.dll",
@@ -138,19 +176,22 @@ void InitializePixMarkers() noexcept
         gPixEndEventOrNull = LoadPixProcedureOrNull<PixEndEvent>("PIXEndEventOnCommandList");
         if (gPixBeginEventOrNull == nullptr || gPixEndEventOrNull == nullptr)
         {
-            ReleasePixMarkers();
+            UnloadPixRuntime();
         }
     }
 }
 
 void ReleasePixMarkers() noexcept
 {
-    gPixBeginEventOrNull = nullptr;
-    gPixEndEventOrNull = nullptr;
-    if (gPixRuntimeOrNull != nullptr)
+    const usize slot = internal::GetBoundOwnerSlot();
+    if (gHasPixReference[slot] == false)
     {
-        FreeLibrary(gPixRuntimeOrNull);
-        gPixRuntimeOrNull = nullptr;
+        return;
+    }
+    gHasPixReference[slot] = false;
+    if (HasAnyPixReference() == false)
+    {
+        UnloadPixRuntime();
     }
 }
 
@@ -172,7 +213,8 @@ void EndPixEvent(ID3D12GraphicsCommandList& inoutCommands) noexcept
 
 void ConfigureDred() noexcept
 {
-    hasLoggedRemoval = false;
+    // Settings apply to devices created afterwards; live devices of other owners keep theirs.
+    gHasLoggedRemoval[internal::GetBoundOwnerSlot()] = false;
 #if defined(LUDUS_BUILD_DEBUG) || defined(LUDUS_BUILD_DEVELOPMENT)
     ID3D12DeviceRemovedExtendedDataSettings* settingsOrNull = nullptr;
     const HRESULT result =
@@ -192,7 +234,8 @@ void ConfigureDred() noexcept
 
 void LogDeviceRemoval(ID3D12Device* deviceOrNull) noexcept
 {
-    if (deviceOrNull == nullptr || hasLoggedRemoval == true)
+    const usize slot = internal::GetBoundOwnerSlot();
+    if (deviceOrNull == nullptr || gHasLoggedRemoval[slot] == true)
     {
         return;
     }
@@ -201,7 +244,7 @@ void LogDeviceRemoval(ID3D12Device* deviceOrNull) noexcept
     {
         return;
     }
-    hasLoggedRemoval = true;
+    gHasLoggedRemoval[slot] = true;
     LUDUS_LOG_ERROR(LOG_RHI,
                     "Direct3D 12 device removed (HRESULT {:x}). Recreate the device",
                     static_cast<uint32>(reason));

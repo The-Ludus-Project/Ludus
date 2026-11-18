@@ -1,5 +1,6 @@
 #include "internal/d3d12_raster.h"
 #include "internal/d3d12_transfer.h"
+#include "internal/owner.h"
 
 #include <ludus/foundation/containers/static_array.hpp>
 
@@ -34,8 +35,19 @@ struct Transfer final
     usize Bytes = 0;
     uint32 Request = 0;
 };
-StaticArray<StaticArray<Transfer, LIFETIME_TRANSFERS>, TRANSFER_DIRECTIONS> gTransfers;
-StorageTable<Transfer> gInitialBuffers;
+/// Lifetime transfer slices and initial buffer uploads of one device owner (R14c).
+struct TransferD3D12State final
+{
+    StaticArray<StaticArray<Transfer, LIFETIME_TRANSFERS>, TRANSFER_DIRECTIONS> Transfers;
+    StorageTable<Transfer> InitialBuffers;
+};
+/// One record per device owner slot (R14c); see internal/owner.h.
+foundation::StaticArray<TransferD3D12State, MAX_DEVICE_OWNERS> gTransferD3D12States{};
+/// TransferD3D12State of the bound owner slot.
+TransferD3D12State& GetTransferD3D12() noexcept
+{
+    return gTransferD3D12States[internal::GetBoundOwnerSlot()];
+}
 
 RasterStatus GetTransferFailure(HRESULT result) noexcept
 {
@@ -257,7 +269,7 @@ namespace d3d12
 {
 void PollInitialBuffers() noexcept
 {
-    for (Transfer& transfer : gInitialBuffers)
+    for (Transfer& transfer : GetTransferD3D12().InitialBuffers)
     {
         if (transfer.Fence != 0)
         {
@@ -277,12 +289,12 @@ RasterStatus CreateInitialBuffer(const LifetimeUploadTarget& target,
 {
     const usize slot = target.Buffer;
     const uint32 request = target.Request;
-    if (gInitialBuffers.EnsureSlots(slot + 1) == false)
+    if (GetTransferD3D12().InitialBuffers.EnsureSlots(slot + 1) == false)
     {
         return StorageFailure();
     }
     PollInitialBuffers();
-    Transfer& transfer = gInitialBuffers[slot];
+    Transfer& transfer = GetTransferD3D12().InitialBuffers[slot];
     if (transfer.Fence != 0)
     {
         return RasterStatus::CapacityExceeded;
@@ -302,7 +314,7 @@ RasterStatus CreateInitialBuffer(const LifetimeUploadTarget& target,
 
 bool LifetimeTransferAvailable(bool isReadback, usize slot) noexcept
 {
-    Transfer& transfer = gTransfers[isReadback == true ? 1 : 0][slot];
+    Transfer& transfer = GetTransferD3D12().Transfers[isReadback == true ? 1 : 0][slot];
     if (transfer.Fence != 0 && transfer.Completion.Get() != GetFenceOrNull() &&
         PollTransfer(transfer) != RasterStatus::Pending)
     {
@@ -316,11 +328,11 @@ RasterStatus LifetimeUpload(usize slot,
                             const uint8* bytes,
                             usize size) noexcept
 {
-    return UploadBuffer(gTransfers[0][slot], target.Buffer, description, {bytes, size});
+    return UploadBuffer(GetTransferD3D12().Transfers[0][slot], target.Buffer, description, {bytes, size});
 }
 RasterStatus LifetimeReadback(usize slot, BufferRole, const LifetimeCopyRange& range) noexcept
 {
-    Transfer& transfer = gTransfers[1][slot];
+    Transfer& transfer = GetTransferD3D12().Transfers[1][slot];
     const RasterStatus status = PrepareTransfer(transfer, true, {}, range.Size);
     if (status != RasterStatus::Ready)
     {
@@ -332,7 +344,7 @@ RasterStatus LifetimeReadback(usize slot, BufferRole, const LifetimeCopyRange& r
 }
 RasterStatus LifetimeBufferUpdate(usize slot, BufferRole, const LifetimeCopyRange& range, const uint8* bytes) noexcept
 {
-    Transfer& transfer = gTransfers[0][slot];
+    Transfer& transfer = GetTransferD3D12().Transfers[0][slot];
     const RasterStatus status = PrepareTransfer(transfer, false, {bytes, range.Size}, range.Size);
     if (status != RasterStatus::Ready)
     {
@@ -350,7 +362,7 @@ RasterStatus LifetimeTextureTransfer(usize slot, const TextureTransfer& informat
 {
     const bool isReadback = information.Operation == TextureTransferOperation::Readback;
     const bool isCopy = information.Operation == TextureTransferOperation::Copy;
-    Transfer& transfer = gTransfers[isReadback == true ? 1 : 0][slot];
+    Transfer& transfer = GetTransferD3D12().Transfers[isReadback == true ? 1 : 0][slot];
     const RasterStatus ready = PrepareTransfer(
         transfer,
         isReadback,
@@ -417,11 +429,11 @@ RasterStatus LifetimeTextureTransfer(usize slot, const TextureTransfer& informat
 }
 RasterStatus LifetimePollTransfer(bool isReadback, usize slot) noexcept
 {
-    return PollTransfer(gTransfers[isReadback == true ? 1 : 0][slot]);
+    return PollTransfer(GetTransferD3D12().Transfers[isReadback == true ? 1 : 0][slot]);
 }
 RasterStatus LifetimeCopyReadback(usize slot, uint8* outBytes, usize size) noexcept
 {
-    Transfer& transfer = gTransfers[1][slot];
+    Transfer& transfer = GetTransferD3D12().Transfers[1][slot];
     const RasterStatus status = PollTransfer(transfer);
     if (status != RasterStatus::Ready)
     {
@@ -445,7 +457,7 @@ RasterStatus LifetimeCopyReadback(usize slot, uint8* outBytes, usize size) noexc
 }
 void LifetimeReleaseTransfer(bool isReadback, usize slot) noexcept
 {
-    Transfer& transfer = gTransfers[isReadback == true ? 1 : 0][slot];
+    Transfer& transfer = GetTransferD3D12().Transfers[isReadback == true ? 1 : 0][slot];
     LUDUS_ASSERT(PollTransfer(transfer) != RasterStatus::Pending);
     ClearTransfer(transfer);
 }
@@ -464,14 +476,14 @@ void LifetimeReset() noexcept
         // A timeout does not establish completion. Preserve old native references
         // and their fence across restart; the slice cannot be reused prematurely.
     };
-    for (StaticArray<Transfer, LIFETIME_TRANSFERS>& direction : gTransfers)
+    for (StaticArray<Transfer, LIFETIME_TRANSFERS>& direction : GetTransferD3D12().Transfers)
     {
         for (Transfer& transfer : direction)
         {
             reset(transfer);
         }
     }
-    for (Transfer& transfer : gInitialBuffers)
+    for (Transfer& transfer : GetTransferD3D12().InitialBuffers)
     {
         reset(transfer);
     }

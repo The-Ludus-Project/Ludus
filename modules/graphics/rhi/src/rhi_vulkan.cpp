@@ -60,6 +60,8 @@ constexpr usize IMAGES = 8;
 constexpr uint32 MAX_PHYSICAL_DEVICES = 32;
 /// Instance extensions one loader may report; a larger count is rejected, never truncated.
 constexpr uint32 MAX_AVAILABLE_INSTANCE_EXTENSIONS = 128;
+/// Queue families one adapter may report; later families are not considered.
+constexpr uint32 MAX_QUEUE_FAMILIES = 32;
 /// Surface formats one swapchain query may report.
 constexpr uint32 MAX_SURFACE_FORMATS = 64;
 /// Longest wait for a frame or present fence: five seconds.
@@ -99,28 +101,6 @@ struct Pipeline final
     VkPipeline Object = VK_NULL_HANDLE;
     usize UniformSlot = 0;
 };
-VkInstance gInstance = VK_NULL_HANDLE;
-VkPhysicalDevice gPhysical = VK_NULL_HANDLE;
-VkDevice gDevice = VK_NULL_HANDLE;
-VkQueue gQueue = VK_NULL_HANDLE;
-uint32 gFamily = 0;
-bool gQueueCompute = false;
-bool gRayEnabled = false, gRayApiAvailable = false;
-bool gHasUniformTextureIndexing = false;
-bool gHasBindlessTextureIndexing = false;
-bool gHasRuntimeTextureArrays = false;
-bool gHasBindingApi = false;
-VkPhysicalDeviceAccelerationStructurePropertiesKHR gRayProperties{};
-VkCommandPool gCommands = VK_NULL_HANDLE;
-VkRenderPass gPass = VK_NULL_HANDLE;
-bool gAcquiredWait = false;
-bool gOwnedImage = false;
-/// Surface slot whose swapchain image gOwnedImage refers to.
-usize gOwnedImageSurface = 0;
-bool gInstanceMaintenance = false;
-VkFormat gDepthFormat = VK_FORMAT_D32_SFLOAT;
-usize gFrame = 0;
-Frame gFrames[FRAMES];
 /// @brief Presentation record of one surface (R14b): its borrowed window, swapchain or
 /// hosted producer, offscreen and depth images, framebuffers, frame target and counters.
 ///
@@ -148,7 +128,7 @@ struct VulkanSurface final
     VkExtent2D RequestedExtent{};
     FrameTarget Target;
     /// Renders a WindowSystem::Hosted window's frames into exported images. Hosted
-    /// targets follow the headless layouts (gHeadless is true).
+    /// targets follow the headless layouts (VulkanState::IsHeadless is true).
     HostedProducerVulkan HostedProducer;
     /// Framebuffer of the acquired hosted image during a hosted frame.
     VkFramebuffer HostedFramebuffer = VK_NULL_HANDLE;
@@ -159,39 +139,104 @@ struct VulkanSurface final
     uint64 RenderedFrames = 0;
     uint64 PresentedFrames = 0;
 };
-foundation::StaticArray<VulkanSurface, MAX_DEVICE_SURFACES> gSurfaces{};
-/// Surface routed SetTarget/Begin/End; see backend::SelectSurface.
-usize gActiveSurface = 0;
+/// @brief Vulkan instance, device, queue, frames, surfaces and fullscreen resources of one
+/// device owner (R14c). Every owner creates its own instance and device; see AcquireLoader.
+struct VulkanState final
+{
+    VkInstance Instance = VK_NULL_HANDLE;
+    VkPhysicalDevice Physical = VK_NULL_HANDLE;
+    VkDevice Device = VK_NULL_HANDLE;
+    VkQueue Queue = VK_NULL_HANDLE;
+    uint32 Family = 0;
+    bool HasQueueCompute = false;
+    bool IsRayEnabled = false;
+    bool IsRayApiAvailable = false;
+    bool HasUniformTextureIndexing = false;
+    bool HasBindlessTextureIndexing = false;
+    bool HasRuntimeTextureArrays = false;
+    bool HasBindingApi = false;
+    VkPhysicalDeviceAccelerationStructurePropertiesKHR RayProperties{};
+    VkCommandPool Commands = VK_NULL_HANDLE;
+    VkRenderPass Pass = VK_NULL_HANDLE;
+    bool ShouldWaitAcquired = false;
+    bool HasOwnedImage = false;
+    /// Surface slot whose swapchain image HasOwnedImage refers to.
+    usize OwnedImageSurface = 0;
+    bool HasInstanceMaintenance = false;
+    VkFormat DepthFormat = VK_FORMAT_D32_SFLOAT;
+    usize FrameIndex = 0;
+    foundation::StaticArray<Frame, FRAMES> Frames{};
+    foundation::StaticArray<VulkanSurface, MAX_DEVICE_SURFACES> Surfaces{};
+    /// Surface routed SetTarget/Begin/End; see backend::SelectSurface.
+    usize ActiveSurface = 0;
+    foundation::StaticArray<Shader, internal::RESOURCE_CAPACITY> Shaders{};
+    foundation::StaticArray<Uniform, internal::RESOURCE_CAPACITY> Uniforms{};
+    foundation::StaticArray<Pipeline, internal::RESOURCE_CAPACITY> Pipelines{};
+    VkFormat Format = VK_FORMAT_UNDEFINED;
+    uint32 Session = 0;
+    uint32 MaxDimension = 0;
+    uint32 MaxUniformSize = 0;
+    bool IsHeadless = false;
+    bool IsBorrowedDevice = false;
+    bool HasDebugLabels = false;
+    uint32 NativeInstanceVersion = VK_API_VERSION_1_1;
+    bool IsEncoding = false;
+    VkResult LastResult = VK_SUCCESS;
+};
+/// One record per device owner slot (R14c); see internal/owner.h.
+foundation::StaticArray<VulkanState, MAX_DEVICE_OWNERS> gVulkanStates{};
+/// VulkanState of the bound owner slot.
+VulkanState& GetVulkan() noexcept
+{
+    return gVulkanStates[internal::GetBoundOwnerSlot()];
+}
 VulkanSurface& GetActiveSurface() noexcept
 {
-    return gSurfaces[gActiveSurface];
+    return GetVulkan().Surfaces[GetVulkan().ActiveSurface];
+}
+/// @brief The VkInstance that every owner creating its own device shares (R14c).
+///
+/// Thanks to Khronos, Vulkan Specification, "Command Function Pointers": a command pointer
+/// returned by vkGetInstanceProcAddr must only be called with that instance or one of its
+/// children. volk keeps one process-wide table, so owners share one instance and dispatch
+/// their devices through its loader trampolines; volk never loads one owner's device table.
+/// https://docs.vulkan.org/spec/latest/chapters/initialization.html#initialization-functionpointers
+/// A borrowed (native interop) device brings its own instance, so it is the only owner.
+struct SharedVulkanInstance final
+{
+    VkInstance Object = VK_NULL_HANDLE;
+    uint32 ApiVersion = VK_API_VERSION_1_1;
+    bool HasInstanceMaintenance = false;
+    bool HasDebugLabels = false;
+    /// Owners holding Object; the last one destroys it and unloads volk.
+    usize Users = 0;
+};
+SharedVulkanInstance gSharedInstance;
+/// Instance of any live owner, borrowed or shared, or VK_NULL_HANDLE when none holds one.
+VkInstance FindLiveInstance() noexcept
+{
+    for (const VulkanState& state : gVulkanStates)
+    {
+        if (state.Instance != VK_NULL_HANDLE)
+        {
+            return state.Instance;
+        }
+    }
+    return VK_NULL_HANDLE;
 }
 /// Count a frame's render completion for its surface once its fence is known signaled.
 void CountRenderedFrame(Frame& inoutFrame) noexcept
 {
     if (inoutFrame.IsRenderPending == true)
     {
-        ++gSurfaces[inoutFrame.Surface].RenderedFrames;
+        ++GetVulkan().Surfaces[inoutFrame.Surface].RenderedFrames;
         inoutFrame.IsRenderPending = false;
     }
 }
-Shader gShaders[internal::RESOURCE_CAPACITY];
-Uniform gUniforms[internal::RESOURCE_CAPACITY];
-Pipeline gPipelines[internal::RESOURCE_CAPACITY];
-VkFormat gFormat = VK_FORMAT_UNDEFINED;
-uint32 gSession = 0;
-uint32 gMaxDimension = 0;
-uint32 gMaxUniformSize = 0;
-bool gHeadless = false;
-bool gBorrowedDevice = false;
-bool hasDebugLabels = false;
-uint32 gNativeInstanceVersion = VK_API_VERSION_1_1;
-bool gEncoding = false;
-VkResult gLastResult = VK_SUCCESS;
 
 bool Check(VkResult result) noexcept
 {
-    gLastResult = result;
+    GetVulkan().LastResult = result;
     if (result != VK_SUCCESS)
     {
         LUDUS_LOG_ERROR(LOG_RHI, "Vulkan operation failed: {}", static_cast<int32>(result));
@@ -236,15 +281,15 @@ bool HasDeviceExtension(VkPhysicalDevice physical, const char* name) noexcept
 }
 void WaitIdle() noexcept
 {
-    if (gDevice != VK_NULL_HANDLE)
+    if (GetVulkan().Device != VK_NULL_HANDLE)
     {
-        if (gBorrowedDevice || internal::NativeInteropPinned())
+        if (GetVulkan().IsBorrowedDevice || internal::NativeInteropPinned())
         {
             // A foreign queue can wait for a later host submission. Drain only
             // accepted RHI work, never the source device's unrelated submissions.
-            for (auto& frame : gFrames)
+            for (Frame& frame : GetVulkan().Frames)
             {
-                if (frame.Submitted && Check(vkWaitForFences(gDevice, 1, &frame.Fence, VK_TRUE, UINT64_MAX)))
+                if (frame.Submitted && Check(vkWaitForFences(GetVulkan().Device, 1, &frame.Fence, VK_TRUE, UINT64_MAX)))
                 {
                     frame.Submitted = false;
                 }
@@ -254,14 +299,14 @@ void WaitIdle() noexcept
         }
         else
         {
-            (void)Check(vkDeviceWaitIdle(gDevice));
+            (void)Check(vkDeviceWaitIdle(GetVulkan().Device));
         }
     }
 }
 bool Allocate(const VkMemoryRequirements& requirements, VkMemoryPropertyFlags flags, VkDeviceMemory& memory) noexcept
 {
     VkPhysicalDeviceMemoryProperties properties{};
-    vkGetPhysicalDeviceMemoryProperties(gPhysical, &properties);
+    vkGetPhysicalDeviceMemoryProperties(GetVulkan().Physical, &properties);
     for (usize i = 0; i < properties.memoryTypeCount; ++i)
     {
         if ((requirements.memoryTypeBits & (1U << i)) != 0 &&
@@ -271,7 +316,7 @@ bool Allocate(const VkMemoryRequirements& requirements, VkMemoryPropertyFlags fl
             info.sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO;
             info.allocationSize = requirements.size;
             info.memoryTypeIndex = static_cast<uint32>(i);
-            return Check(vkAllocateMemory(gDevice, &info, nullptr, &memory));
+            return Check(vkAllocateMemory(GetVulkan().Device, &info, nullptr, &memory));
         }
     }
     LUDUS_LOG_ERROR(LOG_RHI, "No compatible Vulkan memory type");
@@ -279,7 +324,7 @@ bool Allocate(const VkMemoryRequirements& requirements, VkMemoryPropertyFlags fl
 }
 void WaitPresents() noexcept
 {
-    if (gDevice == VK_NULL_HANDLE)
+    if (GetVulkan().Device == VK_NULL_HANDLE)
     {
         return;
     }
@@ -287,18 +332,19 @@ void WaitPresents() noexcept
     {
         if (GetActiveSurface().Presented[i])
         {
-            (void)Check(vkWaitForFences(gDevice, 1, &GetActiveSurface().PresentFences[i], VK_TRUE, UINT64_MAX));
+            (void)Check(
+                vkWaitForFences(GetVulkan().Device, 1, &GetActiveSurface().PresentFences[i], VK_TRUE, UINT64_MAX));
             GetActiveSurface().Presented[i] = false;
         }
     }
 }
 void RetireAcquiredImage() noexcept
 {
-    if (gOwnedImage == false || gDevice == VK_NULL_HANDLE)
+    if (GetVulkan().HasOwnedImage == false || GetVulkan().Device == VK_NULL_HANDLE)
     {
         return;
     }
-    if (gAcquiredWait)
+    if (GetVulkan().ShouldWaitAcquired)
     {
         // Abort may occur after acquisition but before submission. Consume the
         // asynchronous acquisition signal before releasing its semaphore.
@@ -306,14 +352,14 @@ void RetireAcquiredImage() noexcept
         VkSubmitInfo submit{};
         submit.sType = VK_STRUCTURE_TYPE_SUBMIT_INFO;
         submit.waitSemaphoreCount = 1;
-        submit.pWaitSemaphores = &gFrames[gFrame].Acquired;
+        submit.pWaitSemaphores = &GetVulkan().Frames[GetVulkan().FrameIndex].Acquired;
         submit.pWaitDstStageMask = &stage;
-        auto& frame = gFrames[gFrame];
-        if (Check(vkResetFences(gDevice, 1, &frame.Fence)))
+        Frame& frame = GetVulkan().Frames[GetVulkan().FrameIndex];
+        if (Check(vkResetFences(GetVulkan().Device, 1, &frame.Fence)))
         {
-            frame.Submitted = Check(vkQueueSubmit(gQueue, 1, &submit, frame.Fence));
+            frame.Submitted = Check(vkQueueSubmit(GetVulkan().Queue, 1, &submit, frame.Fence));
         }
-        gAcquiredWait = false;
+        GetVulkan().ShouldWaitAcquired = false;
     }
     WaitIdle();
     VkReleaseSwapchainImagesInfoEXT release{};
@@ -321,42 +367,42 @@ void RetireAcquiredImage() noexcept
     release.swapchain = GetActiveSurface().Swapchain;
     release.imageIndexCount = 1;
     release.pImageIndices = &GetActiveSurface().Image;
-    (void)Check(vkReleaseSwapchainImagesEXT(gDevice, &release));
-    gOwnedImage = false;
+    (void)Check(vkReleaseSwapchainImagesEXT(GetVulkan().Device, &release));
+    GetVulkan().HasOwnedImage = false;
 }
 void ReleaseTargets() noexcept
 {
-    if (gDevice == VK_NULL_HANDLE)
+    if (GetVulkan().Device == VK_NULL_HANDLE)
     {
         return;
     }
     WaitPresents();
     for (usize i = 0; i < IMAGES; ++i)
     {
-        vkDestroyFence(gDevice, GetActiveSurface().PresentFences[i], nullptr);
+        vkDestroyFence(GetVulkan().Device, GetActiveSurface().PresentFences[i], nullptr);
         GetActiveSurface().PresentFences[i] = VK_NULL_HANDLE;
-        vkDestroyFramebuffer(gDevice, GetActiveSurface().Targets[i], nullptr);
+        vkDestroyFramebuffer(GetVulkan().Device, GetActiveSurface().Targets[i], nullptr);
         GetActiveSurface().Targets[i] = VK_NULL_HANDLE;
-        vkDestroyImageView(gDevice, GetActiveSurface().Views[i], nullptr);
+        vkDestroyImageView(GetVulkan().Device, GetActiveSurface().Views[i], nullptr);
         GetActiveSurface().Views[i] = VK_NULL_HANDLE;
-        vkDestroySemaphore(gDevice, GetActiveSurface().Finished[i], nullptr);
+        vkDestroySemaphore(GetVulkan().Device, GetActiveSurface().Finished[i], nullptr);
         GetActiveSurface().Finished[i] = VK_NULL_HANDLE;
     }
-    vkDestroyImageView(gDevice, GetActiveSurface().DepthView, nullptr);
-    vkDestroyImage(gDevice, GetActiveSurface().DepthImage, nullptr);
-    vkFreeMemory(gDevice, GetActiveSurface().DepthMemory, nullptr);
+    vkDestroyImageView(GetVulkan().Device, GetActiveSurface().DepthView, nullptr);
+    vkDestroyImage(GetVulkan().Device, GetActiveSurface().DepthImage, nullptr);
+    vkFreeMemory(GetVulkan().Device, GetActiveSurface().DepthMemory, nullptr);
     GetActiveSurface().DepthView = VK_NULL_HANDLE;
     GetActiveSurface().DepthImage = VK_NULL_HANDLE;
     GetActiveSurface().DepthMemory = VK_NULL_HANDLE;
-    if (gHeadless)
+    if (GetVulkan().IsHeadless)
     {
-        vkDestroyImage(gDevice, GetActiveSurface().Images[0], nullptr);
-        vkFreeMemory(gDevice, GetActiveSurface().HeadlessMemory, nullptr);
+        vkDestroyImage(GetVulkan().Device, GetActiveSurface().Images[0], nullptr);
+        vkFreeMemory(GetVulkan().Device, GetActiveSurface().HeadlessMemory, nullptr);
         GetActiveSurface().HeadlessMemory = VK_NULL_HANDLE;
     }
     if (GetActiveSurface().Swapchain != VK_NULL_HANDLE)
     {
-        vkDestroySwapchainKHR(gDevice, GetActiveSurface().Swapchain, nullptr);
+        vkDestroySwapchainKHR(GetVulkan().Device, GetActiveSurface().Swapchain, nullptr);
     }
     GetActiveSurface().Swapchain = VK_NULL_HANDLE;
     for (VkImage& image : GetActiveSurface().Images)
@@ -374,15 +420,15 @@ void ReleaseTargets() noexcept
 void ReleaseActiveSurface() noexcept
 {
     VulkanSurface& surface = GetActiveSurface();
-    if (gOwnedImage == true && gOwnedImageSurface == gActiveSurface)
+    if (GetVulkan().HasOwnedImage == true && GetVulkan().OwnedImageSurface == GetVulkan().ActiveSurface)
     {
         RetireAcquiredImage();
     }
     WaitIdle();
-    for (Frame& frame : gFrames)
+    for (Frame& frame : GetVulkan().Frames)
     {
         // WaitIdle drained every submission, so each pending frame of this surface rendered.
-        if (frame.Surface == gActiveSurface && gDevice != VK_NULL_HANDLE)
+        if (frame.Surface == GetVulkan().ActiveSurface && GetVulkan().Device != VK_NULL_HANDLE)
         {
             CountRenderedFrame(frame);
         }
@@ -392,9 +438,9 @@ void ReleaseActiveSurface() noexcept
     {
         surface.HostedProducer.Disconnect();
     }
-    if (surface.Surface != VK_NULL_HANDLE && gInstance != VK_NULL_HANDLE)
+    if (surface.Surface != VK_NULL_HANDLE && GetVulkan().Instance != VK_NULL_HANDLE)
     {
-        vkDestroySurfaceKHR(gInstance, surface.Surface, nullptr);
+        vkDestroySurfaceKHR(GetVulkan().Instance, surface.Surface, nullptr);
     }
     surface.Surface = VK_NULL_HANDLE;
     surface.HostedFramebuffer = VK_NULL_HANDLE;
@@ -409,49 +455,50 @@ void ReleaseActiveSurface() noexcept
 /// Retire every created surface (slots above the primary) and route frames to the primary.
 void ReleaseCreatedSurfaces() noexcept
 {
-    for (usize slot = 1; slot < gSurfaces.GetSize(); ++slot)
+    for (usize slot = 1; slot < GetVulkan().Surfaces.GetSize(); ++slot)
     {
-        if (gSurfaces[slot].IsConnected == true)
+        if (GetVulkan().Surfaces[slot].IsConnected == true)
         {
-            gActiveSurface = slot;
+            GetVulkan().ActiveSurface = slot;
             ReleaseActiveSurface();
         }
     }
-    gActiveSurface = 0;
+    GetVulkan().ActiveSurface = 0;
 }
 /// @brief A created surface stopped accepting frames: retire only its presentation resources
 /// and report it lost. The device and other surfaces keep working; no frame opens.
 FrameStatus LoseActiveSurface() noexcept
 {
-    const usize slot = gActiveSurface;
+    const usize slot = GetVulkan().ActiveSurface;
     ReleaseActiveSurface();
     internal::LoseSurface(slot);
     return FrameStatus::Skipped;
 }
 bool CreatePass() noexcept
 {
-    if (gPass != VK_NULL_HANDLE)
+    if (GetVulkan().Pass != VK_NULL_HANDLE)
     {
         return true;
     }
     VkFormatProperties depthProperties{};
-    vkGetPhysicalDeviceFormatProperties(gPhysical, VK_FORMAT_D32_SFLOAT, &depthProperties);
-    gDepthFormat = (depthProperties.optimalTilingFeatures & VK_FORMAT_FEATURE_DEPTH_STENCIL_ATTACHMENT_BIT) != 0
-                       ? VK_FORMAT_D32_SFLOAT
-                       : VK_FORMAT_D16_UNORM;
+    vkGetPhysicalDeviceFormatProperties(GetVulkan().Physical, VK_FORMAT_D32_SFLOAT, &depthProperties);
+    GetVulkan().DepthFormat =
+        (depthProperties.optimalTilingFeatures & VK_FORMAT_FEATURE_DEPTH_STENCIL_ATTACHMENT_BIT) != 0
+            ? VK_FORMAT_D32_SFLOAT
+            : VK_FORMAT_D16_UNORM;
     VkAttachmentDescription attachments[2]{
         { .samples = VK_SAMPLE_COUNT_1_BIT },
         { .samples = VK_SAMPLE_COUNT_1_BIT },
     };
     auto& color = attachments[0];
-    color.format = gFormat;
+    color.format = GetVulkan().Format;
     color.samples = VK_SAMPLE_COUNT_1_BIT;
     color.loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR;
     color.storeOp = VK_ATTACHMENT_STORE_OP_STORE;
     color.initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
-    color.finalLayout = gHeadless ? VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL : VK_IMAGE_LAYOUT_PRESENT_SRC_KHR;
+    color.finalLayout = GetVulkan().IsHeadless ? VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL : VK_IMAGE_LAYOUT_PRESENT_SRC_KHR;
     auto& depth = attachments[1];
-    depth.format = gDepthFormat;
+    depth.format = GetVulkan().DepthFormat;
     depth.samples = VK_SAMPLE_COUNT_1_BIT;
     depth.loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR;
     depth.storeOp = VK_ATTACHMENT_STORE_OP_DONT_CARE;
@@ -477,7 +524,7 @@ bool CreatePass() noexcept
     info.pSubpasses = &subpass;
     info.dependencyCount = 2;
     info.pDependencies = dependencies;
-    return Check(vkCreateRenderPass(gDevice, &info, nullptr, &gPass));
+    return Check(vkCreateRenderPass(GetVulkan().Device, &info, nullptr, &GetVulkan().Pass));
 }
 bool CreateTargets() noexcept
 {
@@ -492,17 +539,17 @@ bool CreateTargets() noexcept
     {
         // The hosted producer owns the color images and their framebuffers; only
         // the shared depth attachment and the surface pass are created here.
-        gFormat = HOSTED_IMAGE_FORMAT;
+        GetVulkan().Format = HOSTED_IMAGE_FORMAT;
         GetActiveSurface().ImageCount = 0;
     }
-    else if (gHeadless)
+    else if (GetVulkan().IsHeadless)
     {
-        gFormat = VK_FORMAT_R8G8B8A8_UNORM;
+        GetVulkan().Format = VK_FORMAT_R8G8B8A8_UNORM;
         GetActiveSurface().ImageCount = 1;
         VkImageCreateInfo info{ .samples = VK_SAMPLE_COUNT_1_BIT };
         info.sType = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO;
         info.imageType = VK_IMAGE_TYPE_2D;
-        info.format = gFormat;
+        info.format = GetVulkan().Format;
         info.extent =
         {
             .width = GetActiveSurface().Extent.width,
@@ -514,15 +561,17 @@ bool CreateTargets() noexcept
         info.samples = VK_SAMPLE_COUNT_1_BIT;
         info.tiling = VK_IMAGE_TILING_OPTIMAL;
         info.usage = VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_TRANSFER_SRC_BIT;
-        if (Check(vkCreateImage(gDevice, &info, nullptr, &GetActiveSurface().Images[0])) == false)
+        if (Check(vkCreateImage(GetVulkan().Device, &info, nullptr, &GetActiveSurface().Images[0])) == false)
         {
             return false;
         }
         VkMemoryRequirements requirements{};
-        vkGetImageMemoryRequirements(gDevice, GetActiveSurface().Images[0], &requirements);
+        vkGetImageMemoryRequirements(GetVulkan().Device, GetActiveSurface().Images[0], &requirements);
         if (Allocate(requirements, 0, GetActiveSurface().HeadlessMemory) == false ||
-            Check(vkBindImageMemory(gDevice, GetActiveSurface().Images[0], GetActiveSurface().HeadlessMemory, 0)) ==
-                false)
+            Check(vkBindImageMemory(GetVulkan().Device,
+                                    GetActiveSurface().Images[0],
+                                    GetActiveSurface().HeadlessMemory,
+                                    0)) == false)
         {
             return false;
         }
@@ -530,7 +579,8 @@ bool CreateTargets() noexcept
     else
     {
         VkSurfaceCapabilitiesKHR caps{ .currentTransform = VK_SURFACE_TRANSFORM_IDENTITY_BIT_KHR };
-        if (Check(vkGetPhysicalDeviceSurfaceCapabilitiesKHR(gPhysical, GetActiveSurface().Surface, &caps)) == false)
+        if (Check(vkGetPhysicalDeviceSurfaceCapabilitiesKHR(GetVulkan().Physical, GetActiveSurface().Surface, &caps)) ==
+            false)
         {
             return false;
         }
@@ -548,14 +598,16 @@ bool CreateTargets() noexcept
                                                                        caps.maxImageExtent.height);
         }
         uint32 count = 0;
-        if (Check(vkGetPhysicalDeviceSurfaceFormatsKHR(gPhysical, GetActiveSurface().Surface, &count, nullptr)) ==
-                false ||
+        if (Check(vkGetPhysicalDeviceSurfaceFormatsKHR(GetVulkan().Physical,
+                                                       GetActiveSurface().Surface,
+                                                       &count,
+                                                       nullptr)) == false ||
             count == 0 || count > MAX_SURFACE_FORMATS)
         {
             return false;
         }
         foundation::StaticArray<VkSurfaceFormatKHR, MAX_SURFACE_FORMATS> formats{};
-        if (Check(vkGetPhysicalDeviceSurfaceFormatsKHR(gPhysical,
+        if (Check(vkGetPhysicalDeviceSurfaceFormatsKHR(GetVulkan().Physical,
                                                        GetActiveSurface().Surface,
                                                        &count,
                                                        formats.GetData())) == false)
@@ -584,11 +636,11 @@ bool CreateTargets() noexcept
             LUDUS_LOG_ERROR(LOG_RHI, "Surface has no supported RGBA8/BGRA8 UNORM or sRGB format");
             return false;
         }
-        if (gFormat != VK_FORMAT_UNDEFINED && gFormat != selected.format)
+        if (GetVulkan().Format != VK_FORMAT_UNDEFINED && GetVulkan().Format != selected.format)
         {
             return false;
         }
-        gFormat = selected.format;
+        GetVulkan().Format = selected.format;
         // A minimized surface can negotiate zero pixels. Its format still
         // defines a valid pipeline; defer framebuffer/swapchain creation.
         if (GetActiveSurface().Extent.width == 0 || GetActiveSurface().Extent.height == 0)
@@ -612,7 +664,7 @@ bool CreateTargets() noexcept
         info.sType = VK_STRUCTURE_TYPE_SWAPCHAIN_CREATE_INFO_KHR;
         info.surface = GetActiveSurface().Surface;
         info.minImageCount = desired;
-        info.imageFormat = gFormat;
+        info.imageFormat = GetVulkan().Format;
         info.imageColorSpace = selected.colorSpace;
         info.imageExtent = GetActiveSurface().Extent;
         info.imageArrayLayers = 1;
@@ -632,13 +684,13 @@ bool CreateTargets() noexcept
         }
         info.presentMode = VK_PRESENT_MODE_FIFO_KHR;
         info.clipped = VK_TRUE;
-        if (Check(vkCreateSwapchainKHR(gDevice, &info, nullptr, &GetActiveSurface().Swapchain)) == false ||
-            Check(vkGetSwapchainImagesKHR(gDevice,
+        if (Check(vkCreateSwapchainKHR(GetVulkan().Device, &info, nullptr, &GetActiveSurface().Swapchain)) == false ||
+            Check(vkGetSwapchainImagesKHR(GetVulkan().Device,
                                           GetActiveSurface().Swapchain,
                                           &GetActiveSurface().ImageCount,
                                           nullptr)) == false ||
             GetActiveSurface().ImageCount > IMAGES ||
-            Check(vkGetSwapchainImagesKHR(gDevice,
+            Check(vkGetSwapchainImagesKHR(GetVulkan().Device,
                                           GetActiveSurface().Swapchain,
                                           &GetActiveSurface().ImageCount,
                                           GetActiveSurface().Images.GetData())) == false)
@@ -653,7 +705,7 @@ bool CreateTargets() noexcept
     VkImageCreateInfo depthImage{ .samples = VK_SAMPLE_COUNT_1_BIT };
     depthImage.sType = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO;
     depthImage.imageType = VK_IMAGE_TYPE_2D;
-    depthImage.format = gDepthFormat;
+    depthImage.format = GetVulkan().DepthFormat;
     depthImage.extent = {GetActiveSurface().Extent.width, GetActiveSurface().Extent.height, 1};
     depthImage.mipLevels = 1;
     depthImage.arrayLayers = 1;
@@ -661,14 +713,16 @@ bool CreateTargets() noexcept
     depthImage.tiling = VK_IMAGE_TILING_OPTIMAL;
     depthImage.usage = VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT;
     ++GetActiveSurface().DepthEpoch;
-    if (Check(vkCreateImage(gDevice, &depthImage, nullptr, &GetActiveSurface().DepthImage)) == false)
+    if (Check(vkCreateImage(GetVulkan().Device, &depthImage, nullptr, &GetActiveSurface().DepthImage)) == false)
     {
         return false;
     }
     VkMemoryRequirements depthMemory{};
-    vkGetImageMemoryRequirements(gDevice, GetActiveSurface().DepthImage, &depthMemory);
+    vkGetImageMemoryRequirements(GetVulkan().Device, GetActiveSurface().DepthImage, &depthMemory);
     if (Allocate(depthMemory, 0, GetActiveSurface().DepthMemory) == false ||
-        Check(vkBindImageMemory(gDevice, GetActiveSurface().DepthImage, GetActiveSurface().DepthMemory, 0)) == false)
+        Check(
+            vkBindImageMemory(GetVulkan().Device, GetActiveSurface().DepthImage, GetActiveSurface().DepthMemory, 0)) ==
+            false)
     {
         return false;
     }
@@ -676,11 +730,11 @@ bool CreateTargets() noexcept
     depthView.sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO;
     depthView.image = GetActiveSurface().DepthImage;
     depthView.viewType = VK_IMAGE_VIEW_TYPE_2D;
-    depthView.format = gDepthFormat;
+    depthView.format = GetVulkan().DepthFormat;
     depthView.subresourceRange.aspectMask = VK_IMAGE_ASPECT_DEPTH_BIT;
     depthView.subresourceRange.levelCount = 1;
     depthView.subresourceRange.layerCount = 1;
-    if (Check(vkCreateImageView(gDevice, &depthView, nullptr, &GetActiveSurface().DepthView)) == false)
+    if (Check(vkCreateImageView(GetVulkan().Device, &depthView, nullptr, &GetActiveSurface().DepthView)) == false)
     {
         return false;
     }
@@ -690,35 +744,37 @@ bool CreateTargets() noexcept
         view.sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO;
         view.image = GetActiveSurface().Images[i];
         view.viewType = VK_IMAGE_VIEW_TYPE_2D;
-        view.format = gFormat;
+        view.format = GetVulkan().Format;
         view.subresourceRange.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
         view.subresourceRange.levelCount = 1;
         view.subresourceRange.layerCount = 1;
-        if (Check(vkCreateImageView(gDevice, &view, nullptr, &GetActiveSurface().Views[i])) == false)
+        if (Check(vkCreateImageView(GetVulkan().Device, &view, nullptr, &GetActiveSurface().Views[i])) == false)
         {
             return false;
         }
         VkFramebufferCreateInfo target{};
         target.sType = VK_STRUCTURE_TYPE_FRAMEBUFFER_CREATE_INFO;
-        target.renderPass = gPass;
+        target.renderPass = GetVulkan().Pass;
         const VkImageView attachments[2]{GetActiveSurface().Views[i], GetActiveSurface().DepthView};
         target.attachmentCount = 2;
         target.pAttachments = attachments;
         target.width = GetActiveSurface().Extent.width;
         target.height = GetActiveSurface().Extent.height;
         target.layers = 1;
-        if (Check(vkCreateFramebuffer(gDevice, &target, nullptr, &GetActiveSurface().Targets[i])) == false)
+        if (Check(vkCreateFramebuffer(GetVulkan().Device, &target, nullptr, &GetActiveSurface().Targets[i])) == false)
         {
             return false;
         }
-        if (gHeadless == false)
+        if (GetVulkan().IsHeadless == false)
         {
             VkSemaphoreCreateInfo semaphore{};
             semaphore.sType = VK_STRUCTURE_TYPE_SEMAPHORE_CREATE_INFO;
             VkFenceCreateInfo fence{};
             fence.sType = VK_STRUCTURE_TYPE_FENCE_CREATE_INFO;
-            if (Check(vkCreateFence(gDevice, &fence, nullptr, &GetActiveSurface().PresentFences[i])) == false ||
-                Check(vkCreateSemaphore(gDevice, &semaphore, nullptr, &GetActiveSurface().Finished[i])) == false)
+            if (Check(vkCreateFence(GetVulkan().Device, &fence, nullptr, &GetActiveSurface().PresentFences[i])) ==
+                    false ||
+                Check(vkCreateSemaphore(GetVulkan().Device, &semaphore, nullptr, &GetActiveSurface().Finished[i])) ==
+                    false)
             {
                 return false;
             }
@@ -729,15 +785,16 @@ bool CreateTargets() noexcept
 }
 FrameStatus Failure() noexcept
 {
-    internal::Fail(gSession,
-                   gLastResult == VK_ERROR_DEVICE_LOST ? StartupError::DeviceLost : StartupError::RenderingUnavailable);
+    internal::Fail(GetVulkan().Session,
+                   GetVulkan().LastResult == VK_ERROR_DEVICE_LOST ? StartupError::DeviceLost
+                                                                  : StartupError::RenderingUnavailable);
     return FrameStatus::Failed;
 }
 ResourceStatus ResourceFailure() noexcept
 {
-    if (gLastResult == VK_ERROR_DEVICE_LOST)
+    if (GetVulkan().LastResult == VK_ERROR_DEVICE_LOST)
     {
-        internal::Fail(gSession, StartupError::DeviceLost);
+        internal::Fail(GetVulkan().Session, StartupError::DeviceLost);
     }
     return ResourceStatus::Failed;
 }
@@ -779,7 +836,6 @@ AdapterKind GetVulkanKind(VkPhysicalDeviceType type) noexcept
 }
 bool HasGraphicsQueue(VkPhysicalDevice device) noexcept
 {
-    constexpr uint32 MAX_QUEUE_FAMILIES = 32;
     uint32 count = 0;
     vkGetPhysicalDeviceQueueFamilyProperties(device, &count, nullptr);
     count = count < MAX_QUEUE_FAMILIES ? count : MAX_QUEUE_FAMILIES;
@@ -844,6 +900,98 @@ AdapterStatus ListAdapters(VkInstance instance, AdapterCatalog& outCatalog) noex
     outCatalog.ReportedCount = count > outCatalog.ReportedCount ? count : outCatalog.ReportedCount;
     return AdapterStatus::Ready;
 }
+/// @brief Create the shared owned instance and load volk from it (R14c); see
+/// SharedVulkanInstance. The first owner's application name and version describe it.
+bool CreateSharedInstance(const ApplicationInfo& app) noexcept
+{
+    if (Check(volkInitialize()) == false)
+    {
+        return false;
+    }
+    constexpr usize MAX_INSTANCE_EXTENSIONS = 5;
+    StaticArray<const char*, MAX_INSTANCE_EXTENSIONS> extensions;
+    extensions[0] = VK_KHR_SURFACE_EXTENSION_NAME;
+    extensions[1] = "VK_KHR_wayland_surface";
+    uint32 extensionCount = 0;
+#if defined(VK_USE_PLATFORM_WAYLAND_KHR)
+    extensionCount = 2;
+    uint32 availableCount = 0;
+    if (Check(vkEnumerateInstanceExtensionProperties(nullptr, &availableCount, nullptr)) == false ||
+        availableCount > MAX_AVAILABLE_INSTANCE_EXTENSIONS)
+    {
+        volkFinalize();
+        return false;
+    }
+    VkExtensionProperties available[MAX_AVAILABLE_INSTANCE_EXTENSIONS]{};
+    if (Check(vkEnumerateInstanceExtensionProperties(nullptr, &availableCount, available)) == false)
+    {
+        volkFinalize();
+        return false;
+    }
+    bool hasSurfaceCapabilities2 = false;
+    bool hasSurfaceMaintenance = false;
+    for (usize i = 0; i < availableCount; ++i)
+    {
+        hasSurfaceCapabilities2 =
+            hasSurfaceCapabilities2 == true ||
+            std::strcmp(available[i].extensionName, VK_KHR_GET_SURFACE_CAPABILITIES_2_EXTENSION_NAME) == 0;
+        hasSurfaceMaintenance =
+            hasSurfaceMaintenance == true ||
+            std::strcmp(available[i].extensionName, VK_EXT_SURFACE_MAINTENANCE_1_EXTENSION_NAME) == 0;
+    }
+    gSharedInstance.HasInstanceMaintenance = hasSurfaceCapabilities2 == true && hasSurfaceMaintenance == true;
+    if (gSharedInstance.HasInstanceMaintenance)
+    {
+        extensions[extensionCount++] = VK_KHR_GET_SURFACE_CAPABILITIES_2_EXTENSION_NAME;
+        extensions[extensionCount++] = VK_EXT_SURFACE_MAINTENANCE_1_EXTENSION_NAME;
+    }
+#endif
+    uint32 propertyCount = 0;
+    gSharedInstance.HasDebugLabels = false;
+    if (vkEnumerateInstanceExtensionProperties(nullptr, &propertyCount, nullptr) == VK_SUCCESS &&
+        propertyCount <= MAX_AVAILABLE_INSTANCE_EXTENSIONS)
+    {
+        StaticArray<VkExtensionProperties, MAX_AVAILABLE_INSTANCE_EXTENSIONS> properties;
+        if (vkEnumerateInstanceExtensionProperties(nullptr, &propertyCount, properties.GetData()) == VK_SUCCESS)
+        {
+            for (usize index = 0; index < propertyCount; ++index)
+            {
+                if (std::strcmp(properties[index].extensionName, VK_EXT_DEBUG_UTILS_EXTENSION_NAME) == 0)
+                {
+                    extensions[extensionCount++] = VK_EXT_DEBUG_UTILS_EXTENSION_NAME;
+                    gSharedInstance.HasDebugLabels = true;
+                    break;
+                }
+            }
+        }
+    }
+    VkApplicationInfo application{};
+    application.sType = VK_STRUCTURE_TYPE_APPLICATION_INFO;
+    application.pApplicationName = app.Name.c_str();
+    application.applicationVersion = app.Version;
+    uint32 loaderVersion = VK_API_VERSION_1_0;
+    if (vkEnumerateInstanceVersion != nullptr)
+    {
+        static_cast<void>(vkEnumerateInstanceVersion(&loaderVersion));
+    }
+    // Owners created later share this instance, so it carries the version any owner's ray or
+    // binding-model profile needs; each device still enables only what its owner requested.
+    application.apiVersion = loaderVersion >= VK_API_VERSION_1_2 ? VK_API_VERSION_1_2 : VK_API_VERSION_1_1;
+    gSharedInstance.ApiVersion = application.apiVersion;
+    VkInstanceCreateInfo info{};
+    info.sType = VK_STRUCTURE_TYPE_INSTANCE_CREATE_INFO;
+    info.pApplicationInfo = &application;
+    info.enabledExtensionCount = extensionCount;
+    info.ppEnabledExtensionNames = extensions.GetData();
+    if (Check(vkCreateInstance(&info, nullptr, &gSharedInstance.Object)) == false)
+    {
+        gSharedInstance = {};
+        volkFinalize();
+        return false;
+    }
+    volkLoadInstance(gSharedInstance.Object);
+    return true;
+}
 } // namespace
 Backend Kind() noexcept
 {
@@ -851,9 +999,12 @@ Backend Kind() noexcept
 }
 AdapterStatus EnumerateAdapters(AdapterCatalog& outCatalog) noexcept
 {
-    if (gInstance != VK_NULL_HANDLE)
+    // Any live owner's instance enumerates the same adapters; reloading volk for a temporary
+    // instance would replace the function table that owner is dispatching through.
+    const VkInstance live = FindLiveInstance();
+    if (live != VK_NULL_HANDLE)
     {
-        return ListAdapters(gInstance, outCatalog);
+        return ListAdapters(live, outCatalog);
     }
     // Without a session, list through a temporary instance and unload it again, so the
     // next Initialize loads the loader and its instance functions from a clean state.
@@ -890,11 +1041,11 @@ AdapterStatus EnumerateAdapters(AdapterCatalog& outCatalog) noexcept
 }
 bool GetSelectedAdapter(AdapterInfo& outAdapter) noexcept
 {
-    if (gPhysical == VK_NULL_HANDLE)
+    if (GetVulkan().Physical == VK_NULL_HANDLE)
     {
         return false;
     }
-    DescribeVulkanAdapter(gPhysical, outAdapter);
+    DescribeVulkanAdapter(GetVulkan().Physical, outAdapter);
     return true;
 }
 bool Supports(BackendSelection selection) noexcept
@@ -911,152 +1062,84 @@ bool Initialize(const ApplicationInfo& app) noexcept
         {
             return false;
         }
-        gBorrowedDevice = true;
-        gInstance = static_cast<VkInstance>(imported->Identity.Instance.GetObject());
-        volkLoadInstance(gInstance);
-        gDevice = static_cast<VkDevice>(imported->Identity.Device.GetObject());
-        gPhysical = static_cast<VkPhysicalDevice>(imported->Identity.PhysicalDevice.GetObject());
-        gQueue = static_cast<VkQueue>(imported->Identity.CommandQueue.GetObject());
-        gFamily = imported->Identity.QueueFamily;
-        gNativeInstanceVersion = imported->InstanceApiVersion;
-        volkLoadDevice(gDevice);
+        GetVulkan().IsBorrowedDevice = true;
+        GetVulkan().Instance = static_cast<VkInstance>(imported->Identity.Instance.GetObject());
+        volkLoadInstance(GetVulkan().Instance);
+        GetVulkan().Device = static_cast<VkDevice>(imported->Identity.Device.GetObject());
+        GetVulkan().Physical = static_cast<VkPhysicalDevice>(imported->Identity.PhysicalDevice.GetObject());
+        GetVulkan().Queue = static_cast<VkQueue>(imported->Identity.CommandQueue.GetObject());
+        GetVulkan().Family = imported->Identity.QueueFamily;
+        GetVulkan().NativeInstanceVersion = imported->InstanceApiVersion;
+        volkLoadDevice(GetVulkan().Device);
         // Only an extension the source declares enabled may be called; otherwise duration-only.
-        ConnectClockCalibration(AdmitClockCalibrationExtensionOrNull(gPhysical, imported->CalibratedTimestamps));
+        ConnectClockCalibration(
+            AdmitClockCalibrationExtensionOrNull(GetVulkan().Physical, imported->CalibratedTimestamps));
         uint32 count = 0;
-        vkGetPhysicalDeviceQueueFamilyProperties(gPhysical, &count, nullptr);
-        if (count > 32 || gFamily >= count)
+        vkGetPhysicalDeviceQueueFamilyProperties(GetVulkan().Physical, &count, nullptr);
+        if (count > MAX_QUEUE_FAMILIES || GetVulkan().Family >= count)
         {
             return false;
         }
-        VkQueueFamilyProperties families[32]{};
-        vkGetPhysicalDeviceQueueFamilyProperties(gPhysical, &count, families);
-        if ((families[gFamily].queueFlags & VK_QUEUE_GRAPHICS_BIT) == 0 ||
-            imported->Identity.QueueIndex >= families[gFamily].queueCount)
+        StaticArray<VkQueueFamilyProperties, MAX_QUEUE_FAMILIES> families{};
+        vkGetPhysicalDeviceQueueFamilyProperties(GetVulkan().Physical, &count, families.GetData());
+        if ((families[GetVulkan().Family].queueFlags & VK_QUEUE_GRAPHICS_BIT) == 0 ||
+            imported->Identity.QueueIndex >= families[GetVulkan().Family].queueCount)
         {
             return false;
         }
         // The source contract guarantees that this queue was created on this device.
         VkQueue actual = VK_NULL_HANDLE;
-        vkGetDeviceQueue(gDevice, gFamily, imported->Identity.QueueIndex, &actual);
-        if (actual != gQueue)
+        vkGetDeviceQueue(GetVulkan().Device, GetVulkan().Family, imported->Identity.QueueIndex, &actual);
+        if (actual != GetVulkan().Queue)
         {
             return false;
         }
         VkPhysicalDeviceProperties properties{};
-        vkGetPhysicalDeviceProperties(gPhysical, &properties);
+        vkGetPhysicalDeviceProperties(GetVulkan().Physical, &properties);
         if (properties.apiVersion < VK_API_VERSION_1_1)
         {
             return false;
         }
-        gMaxDimension = properties.limits.maxImageDimension2D;
-        gMaxUniformSize = properties.limits.maxUniformBufferRange;
-        gQueueCompute = (families[gFamily].queueFlags & VK_QUEUE_COMPUTE_BIT) != 0;
-        gRayEnabled = gRayApiAvailable = false;
-        gHasUniformTextureIndexing = false;
-        gHasBindlessTextureIndexing = false;
-        gHasRuntimeTextureArrays = false;
-        gHasBindingApi = false;
-        gHeadless = true;
+        GetVulkan().MaxDimension = properties.limits.maxImageDimension2D;
+        GetVulkan().MaxUniformSize = properties.limits.maxUniformBufferRange;
+        GetVulkan().HasQueueCompute = (families[GetVulkan().Family].queueFlags & VK_QUEUE_COMPUTE_BIT) != 0;
+        GetVulkan().IsRayEnabled = GetVulkan().IsRayApiAvailable = false;
+        GetVulkan().HasUniformTextureIndexing = false;
+        GetVulkan().HasBindlessTextureIndexing = false;
+        GetVulkan().HasRuntimeTextureArrays = false;
+        GetVulkan().HasBindingApi = false;
+        GetVulkan().IsHeadless = true;
         return true;
     }
-    if (gInstance != VK_NULL_HANDLE)
+    if (GetVulkan().Instance != VK_NULL_HANDLE)
     {
         return true;
     }
-    if (Check(volkInitialize()) == false)
+    if (gSharedInstance.Users == 0 && CreateSharedInstance(app) == false)
     {
         return false;
     }
-    constexpr usize MAX_INSTANCE_EXTENSIONS = 5;
-    StaticArray<const char*, MAX_INSTANCE_EXTENSIONS> extensions;
-    extensions[0] = VK_KHR_SURFACE_EXTENSION_NAME;
-    extensions[1] = "VK_KHR_wayland_surface";
-    uint32 extensionCount = 0;
-#if defined(VK_USE_PLATFORM_WAYLAND_KHR)
-    extensionCount = 2;
-    uint32 availableCount = 0;
-    if (Check(vkEnumerateInstanceExtensionProperties(nullptr, &availableCount, nullptr)) == false ||
-        availableCount > MAX_AVAILABLE_INSTANCE_EXTENSIONS)
-    {
-        volkFinalize();
-        return false;
-    }
-    VkExtensionProperties available[MAX_AVAILABLE_INSTANCE_EXTENSIONS]{};
-    if (Check(vkEnumerateInstanceExtensionProperties(nullptr, &availableCount, available)) == false)
-    {
-        volkFinalize();
-        return false;
-    }
-    bool caps = false, maintenance = false;
-    for (usize i = 0; i < availableCount; ++i)
-    {
-        caps = caps || std::strcmp(available[i].extensionName, VK_KHR_GET_SURFACE_CAPABILITIES_2_EXTENSION_NAME) == 0;
-        maintenance =
-            maintenance || std::strcmp(available[i].extensionName, VK_EXT_SURFACE_MAINTENANCE_1_EXTENSION_NAME) == 0;
-    }
-    gInstanceMaintenance = caps && maintenance;
-    if (gInstanceMaintenance)
-    {
-        extensions[extensionCount++] = VK_KHR_GET_SURFACE_CAPABILITIES_2_EXTENSION_NAME;
-        extensions[extensionCount++] = VK_EXT_SURFACE_MAINTENANCE_1_EXTENSION_NAME;
-    }
-#endif
-    uint32 propertyCount = 0;
-    hasDebugLabels = false;
-    if (vkEnumerateInstanceExtensionProperties(nullptr, &propertyCount, nullptr) == VK_SUCCESS &&
-        propertyCount <= MAX_AVAILABLE_INSTANCE_EXTENSIONS)
-    {
-        StaticArray<VkExtensionProperties, MAX_AVAILABLE_INSTANCE_EXTENSIONS> properties;
-        if (vkEnumerateInstanceExtensionProperties(nullptr, &propertyCount, properties.GetData()) == VK_SUCCESS)
-        {
-            for (usize index = 0; index < propertyCount; ++index)
-            {
-                if (std::strcmp(properties[index].extensionName, VK_EXT_DEBUG_UTILS_EXTENSION_NAME) == 0)
-                {
-                    extensions[extensionCount++] = VK_EXT_DEBUG_UTILS_EXTENSION_NAME;
-                    hasDebugLabels = true;
-                    break;
-                }
-            }
-        }
-    }
-    VkApplicationInfo application{};
-    application.sType = VK_STRUCTURE_TYPE_APPLICATION_INFO;
-    application.pApplicationName = app.Name.c_str();
-    application.applicationVersion = app.Version;
-    uint32 loaderVersion = VK_API_VERSION_1_0;
-    if (vkEnumerateInstanceVersion != nullptr)
-    {
-        static_cast<void>(vkEnumerateInstanceVersion(&loaderVersion));
-    }
-    gRayApiAvailable = internal::RequestsRayProfile() && loaderVersion >= VK_API_VERSION_1_2;
-    gHasBindingApi = (internal::IsBindlessRequested() == true || internal::IsRuntimeTextureArrayRequested() == true) &&
-                     loaderVersion >= VK_API_VERSION_1_2;
-    application.apiVersion =
-        gRayApiAvailable == true || gHasBindingApi == true ? VK_API_VERSION_1_2 : VK_API_VERSION_1_1;
-    gNativeInstanceVersion = application.apiVersion;
-    VkInstanceCreateInfo info{};
-    info.sType = VK_STRUCTURE_TYPE_INSTANCE_CREATE_INFO;
-    info.pApplicationInfo = &application;
-    info.enabledExtensionCount = extensionCount;
-    info.ppEnabledExtensionNames = extensions.GetData();
-    if (Check(vkCreateInstance(&info, nullptr, &gInstance)) == false)
-    {
-        volkFinalize();
-        return false;
-    }
-    volkLoadInstance(gInstance);
+    ++gSharedInstance.Users;
+    GetVulkan().Instance = gSharedInstance.Object;
+    GetVulkan().HasInstanceMaintenance = gSharedInstance.HasInstanceMaintenance;
+    GetVulkan().HasDebugLabels = gSharedInstance.HasDebugLabels;
+    GetVulkan().NativeInstanceVersion = gSharedInstance.ApiVersion;
+    const bool hasVersion12 = gSharedInstance.ApiVersion >= VK_API_VERSION_1_2;
+    GetVulkan().IsRayApiAvailable = internal::RequestsRayProfile() == true && hasVersion12 == true;
+    GetVulkan().HasBindingApi =
+        (internal::IsBindlessRequested() == true || internal::IsRuntimeTextureArrayRequested() == true) &&
+        hasVersion12 == true;
     return true;
 }
 bool ConnectWindow(const WindowInfo& window) noexcept
 {
-    if (gInstance == VK_NULL_HANDLE)
+    if (GetVulkan().Instance == VK_NULL_HANDLE)
     {
         return false;
     }
     // The legacy and owned startup paths connect only the primary surface.
-    gActiveSurface = 0;
-    if (gBorrowedDevice && gPass == VK_NULL_HANDLE)
+    GetVulkan().ActiveSurface = 0;
+    if (GetVulkan().IsBorrowedDevice && GetVulkan().Pass == VK_NULL_HANDLE)
     {
         if (window.System == platform::WindowSystem::Hosted)
         {
@@ -1064,17 +1147,18 @@ bool ConnectWindow(const WindowInfo& window) noexcept
             return false;
         }
         GetActiveSurface().Window = window;
-        gHeadless = true;
+        GetVulkan().IsHeadless = true;
         GetActiveSurface().Target.Width = window.Width;
         GetActiveSurface().Target.Height = window.Height;
-        if (window.Width == 0 || window.Height == 0 || window.Width > gMaxDimension || window.Height > gMaxDimension)
+        if (window.Width == 0 || window.Height == 0 || window.Width > GetVulkan().MaxDimension ||
+            window.Height > GetVulkan().MaxDimension)
         {
             return false;
         }
         GetActiveSurface().RequestedExtent = { .width = window.Width, .height = window.Height };
         return CreateTargets();
     }
-    if (gDevice != VK_NULL_HANDLE)
+    if (GetVulkan().Device != VK_NULL_HANDLE)
     {
         return GetActiveSurface().Window.System == window.System &&
                GetActiveSurface().Window.Display == window.Display &&
@@ -1085,8 +1169,8 @@ bool ConnectWindow(const WindowInfo& window) noexcept
     {
         return false;
     }
-    gHeadless = window.System == platform::WindowSystem::Headless || IsHostedWindow() == true;
-    if (gHeadless == false)
+    GetVulkan().IsHeadless = window.System == platform::WindowSystem::Headless || IsHostedWindow() == true;
+    if (GetVulkan().IsHeadless == false)
     {
 #if defined(VK_USE_PLATFORM_WAYLAND_KHR)
         if (window.System != platform::WindowSystem::Wayland || window.Display == nullptr || window.Surface == nullptr)
@@ -1097,7 +1181,8 @@ bool ConnectWindow(const WindowInfo& window) noexcept
         info.sType = VK_STRUCTURE_TYPE_WAYLAND_SURFACE_CREATE_INFO_KHR;
         info.display = window.Display;
         info.surface = window.Surface;
-        if (Check(vkCreateWaylandSurfaceKHR(gInstance, &info, nullptr, &GetActiveSurface().Surface)) == false)
+        if (Check(vkCreateWaylandSurfaceKHR(GetVulkan().Instance, &info, nullptr, &GetActiveSurface().Surface)) ==
+            false)
         {
             return false;
         }
@@ -1106,47 +1191,47 @@ bool ConnectWindow(const WindowInfo& window) noexcept
 #endif
     }
     uint32 count = 0;
-    if (Check(vkEnumeratePhysicalDevices(gInstance, &count, nullptr)) == false || count == 0 ||
+    if (Check(vkEnumeratePhysicalDevices(GetVulkan().Instance, &count, nullptr)) == false || count == 0 ||
         count > MAX_PHYSICAL_DEVICES)
     {
         return false;
     }
     foundation::StaticArray<VkPhysicalDevice, MAX_PHYSICAL_DEVICES> devices{};
-    if (Check(vkEnumeratePhysicalDevices(gInstance, &count, devices.GetData())) == false)
+    if (Check(vkEnumeratePhysicalDevices(GetVulkan().Instance, &count, devices.GetData())) == false)
     {
         return false;
     }
     const auto connectAdapter = [&window]() noexcept {
         VkPhysicalDeviceProperties properties{};
-        vkGetPhysicalDeviceProperties(gPhysical, &properties);
+        vkGetPhysicalDeviceProperties(GetVulkan().Physical, &properties);
         if (properties.apiVersion < VK_API_VERSION_1_1)
         {
             LUDUS_LOG_ERROR(LOG_RHI, "Vulkan 1.1 is required for the generated SPIR-V profile");
             return false;
         }
-        if (IsHostedWindow() == true && HasDeviceExtension(gPhysical, HOSTED_MEMORY_EXTENSION_NAME) == false)
+        if (IsHostedWindow() == true && HasDeviceExtension(GetVulkan().Physical, HOSTED_MEMORY_EXTENSION_NAME) == false)
         {
             // Filter before committing to the adapter, so a later capable one is still considered.
             LUDUS_LOG_ERROR(LOG_RHI, "A hosted window needs VK_KHR_external_memory_fd on the adapter");
             return false;
         }
-        gMaxDimension = properties.limits.maxImageDimension2D;
+        GetVulkan().MaxDimension = properties.limits.maxImageDimension2D;
         const uint32 dimensionLimits[] = {properties.limits.maxFramebufferWidth,
                                           properties.limits.maxFramebufferHeight,
                                           properties.limits.maxViewportDimensions[0],
                                           properties.limits.maxViewportDimensions[1]};
         for (const auto limit : dimensionLimits)
         {
-            if (limit < gMaxDimension)
+            if (limit < GetVulkan().MaxDimension)
             {
-                gMaxDimension = limit;
+                GetVulkan().MaxDimension = limit;
             }
         }
-        gMaxUniformSize = properties.limits.maxUniformBufferRange;
+        GetVulkan().MaxUniformSize = properties.limits.maxUniformBufferRange;
         const float32 priority = 1;
         VkDeviceQueueCreateInfo queue{};
         queue.sType = VK_STRUCTURE_TYPE_DEVICE_QUEUE_CREATE_INFO;
-        queue.queueFamilyIndex = gFamily;
+        queue.queueFamilyIndex = GetVulkan().Family;
         queue.queueCount = 1;
         queue.pQueuePriorities = &priority;
         // Swapchain (two), ray queries (three), the hosted memory extension (one) or
@@ -1154,18 +1239,18 @@ bool ConnectWindow(const WindowInfo& window) noexcept
         constexpr usize MAX_ENABLED_DEVICE_EXTENSIONS = 7;
         const char* extensions[MAX_ENABLED_DEVICE_EXTENSIONS] = {VK_KHR_SWAPCHAIN_EXTENSION_NAME,
                                                                  VK_EXT_SWAPCHAIN_MAINTENANCE_1_EXTENSION_NAME};
-        uint32 enabledExtensions = gHeadless ? 0U : 2U;
+        uint32 enabledExtensions = GetVulkan().IsHeadless ? 0U : 2U;
         if (IsHostedWindow() == true)
         {
             extensions[enabledExtensions++] = HOSTED_MEMORY_EXTENSION_NAME;
         }
         // Optional: places timed passes on the CPU trace clock; absence keeps them duration-only.
         const char* clockCalibrationExtensionOrNull =
-            AdmitClockCalibrationExtensionOrNull(gPhysical, NativeCalibratedTimestamps::Khr);
+            AdmitClockCalibrationExtensionOrNull(GetVulkan().Physical, NativeCalibratedTimestamps::Khr);
         if (clockCalibrationExtensionOrNull == nullptr)
         {
             clockCalibrationExtensionOrNull =
-                AdmitClockCalibrationExtensionOrNull(gPhysical, NativeCalibratedTimestamps::Ext);
+                AdmitClockCalibrationExtensionOrNull(GetVulkan().Physical, NativeCalibratedTimestamps::Ext);
         }
         if (clockCalibrationExtensionOrNull != nullptr)
         {
@@ -1173,11 +1258,12 @@ bool ConnectWindow(const WindowInfo& window) noexcept
         }
         VkPhysicalDeviceSwapchainMaintenance1FeaturesEXT maintenance{};
         maintenance.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_SWAPCHAIN_MAINTENANCE_1_FEATURES_EXT;
-        if (gHeadless == false)
+        if (GetVulkan().IsHeadless == false)
         {
             uint32 countExtensions = 0;
-            if (gInstanceMaintenance == false ||
-                Check(vkEnumerateDeviceExtensionProperties(gPhysical, nullptr, &countExtensions, nullptr)) == false ||
+            if (GetVulkan().HasInstanceMaintenance == false ||
+                Check(vkEnumerateDeviceExtensionProperties(GetVulkan().Physical, nullptr, &countExtensions, nullptr)) ==
+                    false ||
                 countExtensions > 512)
             {
                 LUDUS_LOG_ERROR(LOG_RHI,
@@ -1185,9 +1271,10 @@ bool ConnectWindow(const WindowInfo& window) noexcept
                 return false;
             }
             VkExtensionProperties propertiesExtensions[512]{};
-            if (Check(
-                    vkEnumerateDeviceExtensionProperties(gPhysical, nullptr, &countExtensions, propertiesExtensions)) ==
-                false)
+            if (Check(vkEnumerateDeviceExtensionProperties(GetVulkan().Physical,
+                                                           nullptr,
+                                                           &countExtensions,
+                                                           propertiesExtensions)) == false)
             {
                 return false;
             }
@@ -1204,7 +1291,7 @@ bool ConnectWindow(const WindowInfo& window) noexcept
             VkPhysicalDeviceFeatures2 features{};
             features.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2;
             features.pNext = &maintenance;
-            vkGetPhysicalDeviceFeatures2(gPhysical, &features);
+            vkGetPhysicalDeviceFeatures2(GetVulkan().Physical, &features);
             if (maintenance.swapchainMaintenance1 != VK_TRUE)
             {
                 return false;
@@ -1216,15 +1303,17 @@ bool ConnectWindow(const WindowInfo& window) noexcept
         structures.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_ACCELERATION_STRUCTURE_FEATURES_KHR;
         VkPhysicalDeviceRayQueryFeaturesKHR queries{};
         queries.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_RAY_QUERY_FEATURES_KHR;
-        gRayEnabled = false;
-        if (gRayApiAvailable && properties.apiVersion >= VK_API_VERSION_1_2 && gQueueCompute)
+        GetVulkan().IsRayEnabled = false;
+        if (GetVulkan().IsRayApiAvailable && properties.apiVersion >= VK_API_VERSION_1_2 && GetVulkan().HasQueueCompute)
         {
             uint32 extensionCount = 0;
-            if (vkEnumerateDeviceExtensionProperties(gPhysical, nullptr, &extensionCount, nullptr) == VK_SUCCESS &&
+            if (vkEnumerateDeviceExtensionProperties(GetVulkan().Physical, nullptr, &extensionCount, nullptr) ==
+                    VK_SUCCESS &&
                 extensionCount <= 512)
             {
                 VkExtensionProperties available[512]{};
-                if (vkEnumerateDeviceExtensionProperties(gPhysical, nullptr, &extensionCount, available) == VK_SUCCESS)
+                if (vkEnumerateDeviceExtensionProperties(GetVulkan().Physical, nullptr, &extensionCount, available) ==
+                    VK_SUCCESS)
                 {
                     const char* required[]{VK_KHR_ACCELERATION_STRUCTURE_EXTENSION_NAME,
                                            VK_KHR_RAY_QUERY_EXTENSION_NAME,
@@ -1246,10 +1335,10 @@ bool ConnectWindow(const WindowInfo& window) noexcept
                         VkPhysicalDeviceFeatures2 features{};
                         features.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2;
                         features.pNext = &address;
-                        vkGetPhysicalDeviceFeatures2(gPhysical, &features);
-                        gRayEnabled =
+                        vkGetPhysicalDeviceFeatures2(GetVulkan().Physical, &features);
+                        GetVulkan().IsRayEnabled =
                             address.bufferDeviceAddress && structures.accelerationStructure && queries.rayQuery;
-                        if (gRayEnabled)
+                        if (GetVulkan().IsRayEnabled)
                         {
                             // Enable only the implemented static/query subset, not unrelated advertised bits.
                             address =
@@ -1273,17 +1362,17 @@ bool ConnectWindow(const WindowInfo& window) noexcept
                             {
                                 extensions[enabledExtensions++] = name;
                             }
-                            queries.pNext = gHeadless ? nullptr : &maintenance;
-                            gRayProperties =
+                            queries.pNext = GetVulkan().IsHeadless ? nullptr : &maintenance;
+                            GetVulkan().RayProperties =
                             {
                                 .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_ACCELERATION_STRUCTURE_PROPERTIES_KHR,
                             };
                             VkPhysicalDeviceProperties2 rayProperties
                             {
                                 .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PROPERTIES_2,
-                                .pNext = &gRayProperties,
+                                .pNext = &GetVulkan().RayProperties,
                             };
-                            vkGetPhysicalDeviceProperties2(gPhysical, &rayProperties);
+                            vkGetPhysicalDeviceProperties2(GetVulkan().Physical, &rayProperties);
                         }
                     }
                 }
@@ -1297,24 +1386,24 @@ bool ConnectWindow(const WindowInfo& window) noexcept
         {
             .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_DESCRIPTOR_INDEXING_FEATURES,
         };
-        gHasBindlessTextureIndexing = false;
-        gHasRuntimeTextureArrays = false;
-        if (gHasBindingApi == true && properties.apiVersion >= VK_API_VERSION_1_2)
+        GetVulkan().HasBindlessTextureIndexing = false;
+        GetVulkan().HasRuntimeTextureArrays = false;
+        if (GetVulkan().HasBindingApi == true && properties.apiVersion >= VK_API_VERSION_1_2)
         {
             VkPhysicalDeviceFeatures2 features
             {
                 .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2,
                 .pNext = &indexing,
             };
-            vkGetPhysicalDeviceFeatures2(gPhysical, &features);
-            gHasBindlessTextureIndexing = internal::IsBindlessRequested() == true &&
-                                          indexing.shaderSampledImageArrayNonUniformIndexing == VK_TRUE;
-            gHasRuntimeTextureArrays = internal::IsRuntimeTextureArrayRequested() == true &&
-                                       indexing.runtimeDescriptorArray == VK_TRUE &&
-                                       indexing.descriptorBindingVariableDescriptorCount == VK_TRUE;
+            vkGetPhysicalDeviceFeatures2(GetVulkan().Physical, &features);
+            GetVulkan().HasBindlessTextureIndexing = internal::IsBindlessRequested() == true &&
+                                                     indexing.shaderSampledImageArrayNonUniformIndexing == VK_TRUE;
+            GetVulkan().HasRuntimeTextureArrays = internal::IsRuntimeTextureArrayRequested() == true &&
+                                                  indexing.runtimeDescriptorArray == VK_TRUE &&
+                                                  indexing.descriptorBindingVariableDescriptorCount == VK_TRUE;
         }
-        if ((internal::IsBindlessRequired() == true && gHasBindlessTextureIndexing == false) ||
-            (internal::IsRuntimeTextureArrayRequired() == true && gHasRuntimeTextureArrays == false))
+        if ((internal::IsBindlessRequired() == true && GetVulkan().HasBindlessTextureIndexing == false) ||
+            (internal::IsRuntimeTextureArrayRequired() == true && GetVulkan().HasRuntimeTextureArrays == false))
         {
             // Required profiles filter candidates before committing native device
             // ownership, so a later supported adapter is still considered.
@@ -1323,20 +1412,22 @@ bool ConnectWindow(const WindowInfo& window) noexcept
         indexing =
         {
             .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_DESCRIPTOR_INDEXING_FEATURES,
-            .shaderSampledImageArrayNonUniformIndexing = gHasBindlessTextureIndexing == true ? VK_TRUE : VK_FALSE,
-            .descriptorBindingVariableDescriptorCount = gHasRuntimeTextureArrays == true ? VK_TRUE : VK_FALSE,
-            .runtimeDescriptorArray = gHasRuntimeTextureArrays == true ? VK_TRUE : VK_FALSE,
+            .shaderSampledImageArrayNonUniformIndexing =
+                GetVulkan().HasBindlessTextureIndexing == true ? VK_TRUE : VK_FALSE,
+            .descriptorBindingVariableDescriptorCount =
+                GetVulkan().HasRuntimeTextureArrays == true ? VK_TRUE : VK_FALSE,
+            .runtimeDescriptorArray = GetVulkan().HasRuntimeTextureArrays == true ? VK_TRUE : VK_FALSE,
         };
-        void* featureChain = gRayEnabled == true ? static_cast<void*>(&address)
-                             : gHeadless == true ? nullptr
-                                                 : static_cast<void*>(&maintenance);
-        if (gHasBindlessTextureIndexing == true || gHasRuntimeTextureArrays == true)
+        void* featureChain = GetVulkan().IsRayEnabled == true ? static_cast<void*>(&address)
+                             : GetVulkan().IsHeadless == true ? nullptr
+                                                              : static_cast<void*>(&maintenance);
+        if (GetVulkan().HasBindlessTextureIndexing == true || GetVulkan().HasRuntimeTextureArrays == true)
         {
             indexing.pNext = featureChain;
             featureChain = &indexing;
         }
         VkPhysicalDeviceFeatures supported{};
-        vkGetPhysicalDeviceFeatures(gPhysical, &supported);
+        vkGetPhysicalDeviceFeatures(GetVulkan().Physical, &supported);
         const VkPhysicalDeviceFeatures enabled
         {
             // R12a GPU-written nonzero firstInstance; reported only when enabled here.
@@ -1347,7 +1438,7 @@ bool ConnectWindow(const WindowInfo& window) noexcept
             .fragmentStoresAndAtomics = supported.fragmentStoresAndAtomics,
             .shaderSampledImageArrayDynamicIndexing = supported.shaderSampledImageArrayDynamicIndexing,
         };
-        gHasUniformTextureIndexing = enabled.shaderSampledImageArrayDynamicIndexing == VK_TRUE;
+        GetVulkan().HasUniformTextureIndexing = enabled.shaderSampledImageArrayDynamicIndexing == VK_TRUE;
         const VkDeviceCreateInfo device
         {
             .sType = VK_STRUCTURE_TYPE_DEVICE_CREATE_INFO,
@@ -1358,24 +1449,30 @@ bool ConnectWindow(const WindowInfo& window) noexcept
             .ppEnabledExtensionNames = extensions,
             .pEnabledFeatures = &enabled,
         };
-        if (Check(vkCreateDevice(gPhysical, &device, nullptr, &gDevice)) == false)
+        if (Check(vkCreateDevice(GetVulkan().Physical, &device, nullptr, &GetVulkan().Device)) == false)
         {
             return false;
         }
-        volkLoadDevice(gDevice);
+        // No volkLoadDevice: other owners' devices dispatch through the same table
+        // (SharedVulkanInstance), so device commands keep the instance's loader trampolines.
         ConnectClockCalibration(clockCalibrationExtensionOrNull);
-        vkGetDeviceQueue(gDevice, gFamily, 0, &gQueue);
-        SetVulkanObjectName(VK_OBJECT_TYPE_QUEUE, reinterpret_cast<uint64>(gQueue), "Ludus/Queue");
+        vkGetDeviceQueue(GetVulkan().Device, GetVulkan().Family, 0, &GetVulkan().Queue);
+        SetVulkanObjectName(VK_OBJECT_TYPE_QUEUE, reinterpret_cast<uint64>(GetVulkan().Queue), "Ludus/Queue");
         if (IsHostedWindow() == true)
         {
             GetActiveSurface().HostedProducer.Connect(
-                { .PhysicalDevice = gPhysical, .Device = gDevice, .QueueFamily = gFamily },
+                {
+                    .PhysicalDevice = GetVulkan().Physical,
+                    .Device = GetVulkan().Device,
+                    .QueueFamily = GetVulkan().Family,
+                },
                 *window.HostedSurfaceOrNull);
         }
         GetActiveSurface().Target.Width = window.Width;
         GetActiveSurface().Target.Height = window.Height;
         if (GetActiveSurface().Target.Width == 0 || GetActiveSurface().Target.Height == 0 ||
-            GetActiveSurface().Target.Width > gMaxDimension || GetActiveSurface().Target.Height > gMaxDimension)
+            GetActiveSurface().Target.Width > GetVulkan().MaxDimension ||
+            GetActiveSurface().Target.Height > GetVulkan().MaxDimension)
         {
             return false;
         }
@@ -1435,30 +1532,31 @@ bool ConnectWindow(const WindowInfo& window) noexcept
         for (usize j = 0; j < families; ++j)
         {
             VkBool32 present = VK_TRUE;
-            if (gHeadless == false && Check(vkGetPhysicalDeviceSurfaceSupportKHR(devices[i],
-                                                                                 static_cast<uint32>(j),
-                                                                                 GetActiveSurface().Surface,
-                                                                                 &present)) == false)
+            if (GetVulkan().IsHeadless == false &&
+                Check(vkGetPhysicalDeviceSurfaceSupportKHR(devices[i],
+                                                           static_cast<uint32>(j),
+                                                           GetActiveSurface().Surface,
+                                                           &present)) == false)
             {
                 continue;
             }
             if (properties[j].queueCount != 0 && (properties[j].queueFlags & VK_QUEUE_GRAPHICS_BIT) != 0 &&
                 present == VK_TRUE)
             {
-                gPhysical = devices[i];
-                gFamily = static_cast<uint32>(j);
-                gQueueCompute = (properties[j].queueFlags & VK_QUEUE_COMPUTE_BIT) != 0;
+                GetVulkan().Physical = devices[i];
+                GetVulkan().Family = static_cast<uint32>(j);
+                GetVulkan().HasQueueCompute = (properties[j].queueFlags & VK_QUEUE_COMPUTE_BIT) != 0;
                 // Required workloads filter candidates before committing to a
                 // queue/adapter, so a later usable candidate remains reachable.
                 if (internal::RequiresComputeProfile() && ComputeLimits().MaxStorageRange == 0)
                 {
-                    gPhysical = VK_NULL_HANDLE;
+                    GetVulkan().Physical = VK_NULL_HANDLE;
                     continue;
                 }
                 break;
             }
         }
-        if (gPhysical != VK_NULL_HANDLE)
+        if (GetVulkan().Physical != VK_NULL_HANDLE)
         {
             if (connectAdapter())
             {
@@ -1466,17 +1564,17 @@ bool ConnectWindow(const WindowInfo& window) noexcept
             }
             ReleaseTargets();
             GetActiveSurface().HostedProducer.Disconnect();
-            if (gDevice != VK_NULL_HANDLE)
+            if (GetVulkan().Device != VK_NULL_HANDLE)
             {
-                vkDestroyRenderPass(gDevice, gPass, nullptr);
-                vkDestroyDevice(gDevice, nullptr);
+                vkDestroyRenderPass(GetVulkan().Device, GetVulkan().Pass, nullptr);
+                vkDestroyDevice(GetVulkan().Device, nullptr);
             }
-            gDevice = VK_NULL_HANDLE;
-            gPhysical = VK_NULL_HANDLE;
-            gQueue = VK_NULL_HANDLE;
-            gPass = VK_NULL_HANDLE;
-            gFormat = VK_FORMAT_UNDEFINED;
-            gEncoding = false;
+            GetVulkan().Device = VK_NULL_HANDLE;
+            GetVulkan().Physical = VK_NULL_HANDLE;
+            GetVulkan().Queue = VK_NULL_HANDLE;
+            GetVulkan().Pass = VK_NULL_HANDLE;
+            GetVulkan().Format = VK_FORMAT_UNDEFINED;
+            GetVulkan().IsEncoding = false;
         }
     }
     return false;
@@ -1487,7 +1585,8 @@ bool ConnectWindow(const WindowInfo& window) noexcept
 // An empty name removes the object's name. Absent VK_EXT_debug_utils keeps objects unnamed.
 void SetVulkanObjectName(VkObjectType type, uint64 object, const char* name) noexcept
 {
-    if (object == 0 || gDevice == VK_NULL_HANDLE || hasDebugLabels == false || vkSetDebugUtilsObjectNameEXT == nullptr)
+    if (object == 0 || GetVulkan().Device == VK_NULL_HANDLE || GetVulkan().HasDebugLabels == false ||
+        vkSetDebugUtilsObjectNameEXT == nullptr)
     {
         return;
     }
@@ -1498,34 +1597,34 @@ void SetVulkanObjectName(VkObjectType type, uint64 object, const char* name) noe
         .objectHandle = object,
         .pObjectName = name,
     };
-    static_cast<void>(vkSetDebugUtilsObjectNameEXT(gDevice, &information));
+    static_cast<void>(vkSetDebugUtilsObjectNameEXT(GetVulkan().Device, &information));
 }
 bool InitializeRendering() noexcept
 {
-    if (gDevice == VK_NULL_HANDLE)
+    if (GetVulkan().Device == VK_NULL_HANDLE)
     {
         return false;
     }
-    if (gCommands != VK_NULL_HANDLE)
+    if (GetVulkan().Commands != VK_NULL_HANDLE)
     {
         return true;
     }
     VkCommandPoolCreateInfo pool{};
     pool.sType = VK_STRUCTURE_TYPE_COMMAND_POOL_CREATE_INFO;
     pool.flags = VK_COMMAND_POOL_CREATE_RESET_COMMAND_BUFFER_BIT;
-    pool.queueFamilyIndex = gFamily;
-    if (Check(vkCreateCommandPool(gDevice, &pool, nullptr, &gCommands)) == false)
+    pool.queueFamilyIndex = GetVulkan().Family;
+    if (Check(vkCreateCommandPool(GetVulkan().Device, &pool, nullptr, &GetVulkan().Commands)) == false)
     {
         return false;
     }
-    for (auto& frame : gFrames)
+    for (Frame& frame : GetVulkan().Frames)
     {
         VkCommandBufferAllocateInfo allocate{};
         allocate.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO;
-        allocate.commandPool = gCommands;
+        allocate.commandPool = GetVulkan().Commands;
         allocate.level = VK_COMMAND_BUFFER_LEVEL_PRIMARY;
         allocate.commandBufferCount = 1;
-        if (Check(vkAllocateCommandBuffers(gDevice, &allocate, &frame.Command)) == false)
+        if (Check(vkAllocateCommandBuffers(GetVulkan().Device, &allocate, &frame.Command)) == false)
         {
             return false;
         }
@@ -1535,8 +1634,8 @@ bool InitializeRendering() noexcept
         fence.flags = VK_FENCE_CREATE_SIGNALED_BIT;
         VkSemaphoreCreateInfo semaphore{};
         semaphore.sType = VK_STRUCTURE_TYPE_SEMAPHORE_CREATE_INFO;
-        if (Check(vkCreateFence(gDevice, &fence, nullptr, &frame.Fence)) == false ||
-            Check(vkCreateSemaphore(gDevice, &semaphore, nullptr, &frame.Acquired)) == false)
+        if (Check(vkCreateFence(GetVulkan().Device, &fence, nullptr, &frame.Fence)) == false ||
+            Check(vkCreateSemaphore(GetVulkan().Device, &semaphore, nullptr, &frame.Acquired)) == false)
         {
             return false;
         }
@@ -1553,7 +1652,7 @@ StartupError Start(const ApplicationInfo& app, const WindowInfo& window, uint32 
     {
         return StartupError::InvalidWindow;
     }
-    gSession = token;
+    GetVulkan().Session = token;
     if (backend::Initialize(app) == false)
     {
         return StartupError::InstanceUnavailable;
@@ -1566,40 +1665,41 @@ StartupError Start(const ApplicationInfo& app, const WindowInfo& window, uint32 
     {
         return StartupError::RenderingUnavailable;
     }
-    internal::Complete(token,
-                       StartupError::None,
-                       { .MaxFrameDimension2D = gMaxDimension, .MaxUniformBufferSize = gMaxUniformSize });
+    internal::Complete(
+        token,
+        StartupError::None,
+        { .MaxFrameDimension2D = GetVulkan().MaxDimension, .MaxUniformBufferSize = GetVulkan().MaxUniformSize });
     return StartupError::None;
 }
 void ShutdownRendering() noexcept
 {
-    if (gDevice == VK_NULL_HANDLE)
+    if (GetVulkan().Device == VK_NULL_HANDLE)
     {
         return;
     }
-    const usize selected = gActiveSurface;
+    const usize selected = GetVulkan().ActiveSurface;
     // An acquired image belongs to the surface whose frame acquired it.
-    gActiveSurface = gOwnedImage == true ? gOwnedImageSurface : selected;
+    GetVulkan().ActiveSurface = GetVulkan().HasOwnedImage == true ? GetVulkan().OwnedImageSurface : selected;
     RetireAcquiredImage();
     WaitIdle();
-    for (usize slot = 0; slot < gSurfaces.GetSize(); ++slot)
+    for (usize slot = 0; slot < GetVulkan().Surfaces.GetSize(); ++slot)
     {
-        gActiveSurface = slot;
+        GetVulkan().ActiveSurface = slot;
         WaitPresents();
-        gSurfaces[slot].HostedProducer.Cancel();
-        gSurfaces[slot].HostedFramebuffer = VK_NULL_HANDLE;
+        GetVulkan().Surfaces[slot].HostedProducer.Cancel();
+        GetVulkan().Surfaces[slot].HostedFramebuffer = VK_NULL_HANDLE;
     }
-    gActiveSurface = selected;
-    for (auto& frame : gFrames)
+    GetVulkan().ActiveSurface = selected;
+    for (Frame& frame : GetVulkan().Frames)
     {
         CountRenderedFrame(frame);
-        vkDestroyFence(gDevice, frame.Fence, nullptr);
-        vkDestroySemaphore(gDevice, frame.Acquired, nullptr);
+        vkDestroyFence(GetVulkan().Device, frame.Fence, nullptr);
+        vkDestroySemaphore(GetVulkan().Device, frame.Acquired, nullptr);
         frame = {};
     }
-    vkDestroyCommandPool(gDevice, gCommands, nullptr);
-    gCommands = VK_NULL_HANDLE;
-    gEncoding = false;
+    vkDestroyCommandPool(GetVulkan().Device, GetVulkan().Commands, nullptr);
+    GetVulkan().Commands = VK_NULL_HANDLE;
+    GetVulkan().IsEncoding = false;
 }
 void Shutdown() noexcept
 {
@@ -1608,79 +1708,100 @@ void Shutdown() noexcept
     ReleaseTargets();
     // ShutdownRendering waited for every submission that wrote a hosted image.
     GetActiveSurface().HostedProducer.Disconnect();
-    if (gDevice != VK_NULL_HANDLE)
+    if (GetVulkan().Device != VK_NULL_HANDLE)
     {
-        vkDestroyRenderPass(gDevice, gPass, nullptr);
-        gPass = VK_NULL_HANDLE;
-        if (gBorrowedDevice == false)
+        vkDestroyRenderPass(GetVulkan().Device, GetVulkan().Pass, nullptr);
+        GetVulkan().Pass = VK_NULL_HANDLE;
+        if (GetVulkan().IsBorrowedDevice == false)
         {
-            vkDestroyDevice(gDevice, nullptr);
+            vkDestroyDevice(GetVulkan().Device, nullptr);
         }
-        gDevice = VK_NULL_HANDLE;
+        GetVulkan().Device = VK_NULL_HANDLE;
     }
-    if (gInstance != VK_NULL_HANDLE)
+    if (GetVulkan().Instance != VK_NULL_HANDLE)
     {
         if (GetActiveSurface().Surface != VK_NULL_HANDLE)
         {
-            vkDestroySurfaceKHR(gInstance, GetActiveSurface().Surface, nullptr);
+            vkDestroySurfaceKHR(GetVulkan().Instance, GetActiveSurface().Surface, nullptr);
         }
         GetActiveSurface().Surface = VK_NULL_HANDLE;
-        if (gBorrowedDevice == false)
+        GetVulkan().Instance = VK_NULL_HANDLE;
+        if (GetVulkan().IsBorrowedDevice == true)
         {
-            vkDestroyInstance(gInstance, nullptr);
+            // The source owns the instance; this owner loaded volk alone.
+            volkFinalize();
         }
-        gInstance = VK_NULL_HANDLE;
-        volkFinalize();
+        else if (--gSharedInstance.Users == 0)
+        {
+            vkDestroyInstance(gSharedInstance.Object, nullptr);
+            gSharedInstance = {};
+            volkFinalize();
+        }
     }
-    gBorrowedDevice = false;
-    hasDebugLabels = false;
+    GetVulkan().IsBorrowedDevice = false;
+    GetVulkan().HasDebugLabels = false;
     ConnectClockCalibration(nullptr);
-    gNativeInstanceVersion = VK_API_VERSION_1_1;
-    gPhysical = VK_NULL_HANDLE;
-    gRayEnabled = gRayApiAvailable = false;
-    gHasUniformTextureIndexing = false;
-    gHasBindlessTextureIndexing = false;
-    gHasRuntimeTextureArrays = false;
-    gHasBindingApi = false;
-    gRayProperties = {};
-    gQueue = VK_NULL_HANDLE;
-    gFrame = 0;
-    gSession = 0;
-    gMaxDimension = 0;
-    gMaxUniformSize = 0;
-    gAcquiredWait = false;
-    gOwnedImage = false;
-    gInstanceMaintenance = false;
-    gOwnedImageSurface = 0;
-    gActiveSurface = 0;
-    gSurfaces[0].RenderedFrames = 0;
-    gSurfaces[0].PresentedFrames = 0;
+    GetVulkan().NativeInstanceVersion = VK_API_VERSION_1_1;
+    GetVulkan().Physical = VK_NULL_HANDLE;
+    GetVulkan().IsRayEnabled = GetVulkan().IsRayApiAvailable = false;
+    GetVulkan().HasUniformTextureIndexing = false;
+    GetVulkan().HasBindlessTextureIndexing = false;
+    GetVulkan().HasRuntimeTextureArrays = false;
+    GetVulkan().HasBindingApi = false;
+    GetVulkan().RayProperties = {};
+    GetVulkan().Queue = VK_NULL_HANDLE;
+    GetVulkan().FrameIndex = 0;
+    GetVulkan().Session = 0;
+    GetVulkan().MaxDimension = 0;
+    GetVulkan().MaxUniformSize = 0;
+    GetVulkan().ShouldWaitAcquired = false;
+    GetVulkan().HasOwnedImage = false;
+    GetVulkan().HasInstanceMaintenance = false;
+    GetVulkan().OwnedImageSurface = 0;
+    GetVulkan().ActiveSurface = 0;
+    GetVulkan().Surfaces[0].RenderedFrames = 0;
+    GetVulkan().Surfaces[0].PresentedFrames = 0;
     GetActiveSurface().ShouldResize = true;
-    gFormat = VK_FORMAT_UNDEFINED;
+    GetVulkan().Format = VK_FORMAT_UNDEFINED;
     GetActiveSurface().Target = {};
     GetActiveSurface().Extent = {};
     GetActiveSurface().RequestedExtent = {};
 }
-// R14c: this backend keeps one process session, so the facade admits a single device owner.
-usize GetDeviceOwnerLimit() noexcept
+// R14c: owners that create their device share one instance (SharedVulkanInstance) and keep
+// their own device, queue and VulkanState. A borrowed device is dispatched through volk's
+// single device table from its source's instance, so it is hosted only as the sole owner.
+usize GetDeviceOwnerLimit(bool isNativeDevice) noexcept
 {
-    return 1;
+    if (isNativeDevice == true)
+    {
+        return 1;
+    }
+    for (const VulkanState& state : gVulkanStates)
+    {
+        if (state.IsBorrowedDevice == true)
+        {
+            return 1;
+        }
+    }
+    return MAX_DEVICE_OWNERS;
 }
 usize AdditionalSurfaceLimit() noexcept
 {
     // A borrowed device renders only its imported headless target.
-    return gCommands != VK_NULL_HANDLE && gBorrowedDevice == false ? MAX_DEVICE_SURFACES - 1 : 0;
+    return GetVulkan().Commands != VK_NULL_HANDLE && GetVulkan().IsBorrowedDevice == false ? MAX_DEVICE_SURFACES - 1
+                                                                                           : 0;
 }
 StartupError CreateSurface(usize slot, const WindowInfo& window) noexcept
 {
-    if (gCommands == VK_NULL_HANDLE || gBorrowedDevice == true || gEncoding == true || slot == 0 ||
-        slot >= gSurfaces.GetSize() || gSurfaces[slot].IsConnected == true || window.Width > gMaxDimension ||
-        window.Height > gMaxDimension)
+    if (GetVulkan().Commands == VK_NULL_HANDLE || GetVulkan().IsBorrowedDevice == true ||
+        GetVulkan().IsEncoding == true || slot == 0 || slot >= GetVulkan().Surfaces.GetSize() ||
+        GetVulkan().Surfaces[slot].IsConnected == true || window.Width > GetVulkan().MaxDimension ||
+        window.Height > GetVulkan().MaxDimension)
     {
         return StartupError::InvalidWindow;
     }
     // Surface passes, pipelines and device extensions follow the primary window system.
-    if (window.System != gSurfaces[0].Window.System)
+    if (window.System != GetVulkan().Surfaces[0].Window.System)
     {
         return StartupError::BackendUnavailable;
     }
@@ -1688,7 +1809,7 @@ StartupError CreateSurface(usize slot, const WindowInfo& window) noexcept
     {
         return StartupError::InvalidWindow;
     }
-    VulkanSurface& surface = gSurfaces[slot];
+    VulkanSurface& surface = GetVulkan().Surfaces[slot];
     if (window.System == platform::WindowSystem::Wayland)
     {
 #if defined(VK_USE_PLATFORM_WAYLAND_KHR)
@@ -1700,15 +1821,18 @@ StartupError CreateSurface(usize slot, const WindowInfo& window) noexcept
         info.sType = VK_STRUCTURE_TYPE_WAYLAND_SURFACE_CREATE_INFO_KHR;
         info.display = window.Display;
         info.surface = window.Surface;
-        if (Check(vkCreateWaylandSurfaceKHR(gInstance, &info, nullptr, &surface.Surface)) == false)
+        if (Check(vkCreateWaylandSurfaceKHR(GetVulkan().Instance, &info, nullptr, &surface.Surface)) == false)
         {
             return StartupError::SurfaceUnavailable;
         }
         VkBool32 canPresent = VK_FALSE;
-        if (Check(vkGetPhysicalDeviceSurfaceSupportKHR(gPhysical, gFamily, surface.Surface, &canPresent)) == false ||
+        if (Check(vkGetPhysicalDeviceSurfaceSupportKHR(GetVulkan().Physical,
+                                                       GetVulkan().Family,
+                                                       surface.Surface,
+                                                       &canPresent)) == false ||
             canPresent == VK_FALSE)
         {
-            vkDestroySurfaceKHR(gInstance, surface.Surface, nullptr);
+            vkDestroySurfaceKHR(GetVulkan().Instance, surface.Surface, nullptr);
             surface.Surface = VK_NULL_HANDLE;
             return StartupError::SurfaceUnavailable;
         }
@@ -1723,12 +1847,13 @@ StartupError CreateSurface(usize slot, const WindowInfo& window) noexcept
     surface.RenderedFrames = 0;
     surface.PresentedFrames = 0;
     surface.IsConnected = true;
-    const usize selected = gActiveSurface;
-    gActiveSurface = slot;
+    const usize selected = GetVulkan().ActiveSurface;
+    GetVulkan().ActiveSurface = slot;
     if (window.System == platform::WindowSystem::Hosted)
     {
-        surface.HostedProducer.Connect({ .PhysicalDevice = gPhysical, .Device = gDevice, .QueueFamily = gFamily },
-                                       *window.HostedSurfaceOrNull);
+        surface.HostedProducer.Connect(
+            { .PhysicalDevice = GetVulkan().Physical, .Device = GetVulkan().Device, .QueueFamily = GetVulkan().Family },
+            *window.HostedSurfaceOrNull);
     }
     // Build the swapchain now so a format or extent the primary's pass cannot serve fails here.
     const bool isCreated = window.Width == 0 || window.Height == 0 || CreateTargets() == true;
@@ -1736,43 +1861,47 @@ StartupError CreateSurface(usize slot, const WindowInfo& window) noexcept
     {
         ReleaseActiveSurface();
     }
-    gActiveSurface = selected;
-    if (isCreated == false && gLastResult == VK_ERROR_DEVICE_LOST)
+    GetVulkan().ActiveSurface = selected;
+    if (isCreated == false && GetVulkan().LastResult == VK_ERROR_DEVICE_LOST)
     {
-        internal::Fail(gSession, StartupError::DeviceLost);
+        internal::Fail(GetVulkan().Session, StartupError::DeviceLost);
     }
     return isCreated == true ? StartupError::None : StartupError::SurfaceUnavailable;
 }
 void DestroySurface(usize slot) noexcept
 {
-    if (slot == 0 || slot >= gSurfaces.GetSize() || gSurfaces[slot].IsConnected == false)
+    if (slot == 0 || slot >= GetVulkan().Surfaces.GetSize() || GetVulkan().Surfaces[slot].IsConnected == false)
     {
         return;
     }
-    const usize selected = gActiveSurface;
-    gActiveSurface = slot;
+    const usize selected = GetVulkan().ActiveSurface;
+    GetVulkan().ActiveSurface = slot;
     ReleaseActiveSurface();
-    gActiveSurface = selected == slot ? 0 : selected;
+    GetVulkan().ActiveSurface = selected == slot ? 0 : selected;
 }
 void SelectSurface(usize slot) noexcept
 {
-    gActiveSurface = slot < gSurfaces.GetSize() ? slot : 0;
+    GetVulkan().ActiveSurface = slot < GetVulkan().Surfaces.GetSize() ? slot : 0;
 }
 SurfaceCompletion GetSurfaceCompletion(usize slot) noexcept
 {
-    if (slot >= gSurfaces.GetSize())
+    if (slot >= GetVulkan().Surfaces.GetSize())
     {
         return {};
     }
-    for (Frame& frame : gFrames)
+    for (Frame& frame : GetVulkan().Frames)
     {
         if (frame.IsRenderPending == true && frame.Surface == slot && frame.Fence != VK_NULL_HANDLE &&
-            gDevice != VK_NULL_HANDLE && vkGetFenceStatus(gDevice, frame.Fence) == VK_SUCCESS)
+            GetVulkan().Device != VK_NULL_HANDLE && vkGetFenceStatus(GetVulkan().Device, frame.Fence) == VK_SUCCESS)
         {
             CountRenderedFrame(frame);
         }
     }
-    return { .RenderedFrames = gSurfaces[slot].RenderedFrames, .PresentedFrames = gSurfaces[slot].PresentedFrames };
+    return
+    {
+        .RenderedFrames = GetVulkan().Surfaces[slot].RenderedFrames,
+        .PresentedFrames = GetVulkan().Surfaces[slot].PresentedFrames,
+    };
 }
 namespace
 {
@@ -1787,8 +1916,9 @@ FrameStatus SetTarget(const FrameTarget& target) noexcept
     {
         return FrameStatus::Unsupported;
     }
-    if (target.Width > gMaxDimension || target.Height > gMaxDimension || ValidColor(target.Red) == false ||
-        ValidColor(target.Green) == false || ValidColor(target.Blue) == false || ValidColor(target.Alpha) == false)
+    if (target.Width > GetVulkan().MaxDimension || target.Height > GetVulkan().MaxDimension ||
+        ValidColor(target.Red) == false || ValidColor(target.Green) == false || ValidColor(target.Blue) == false ||
+        ValidColor(target.Alpha) == false)
     {
         return FrameStatus::InvalidState;
     }
@@ -1808,11 +1938,11 @@ FrameStatus SetTarget(const FrameTarget& target) noexcept
 /// @return false when the primary surface's hosted consumer failed.
 bool PollHostedSurfaces() noexcept
 {
-    const usize selected = gActiveSurface;
+    const usize selected = GetVulkan().ActiveSurface;
     bool isPrimaryHealthy = true;
-    for (usize slot = 0; slot < gSurfaces.GetSize(); ++slot)
+    for (usize slot = 0; slot < GetVulkan().Surfaces.GetSize(); ++slot)
     {
-        HostedProducerVulkan& producer = gSurfaces[slot].HostedProducer;
+        HostedProducerVulkan& producer = GetVulkan().Surfaces[slot].HostedProducer;
         if (producer.IsConnected() == false || producer.Poll() == true)
         {
             continue;
@@ -1822,20 +1952,20 @@ bool PollHostedSurfaces() noexcept
             isPrimaryHealthy = false;
             continue;
         }
-        gActiveSurface = slot;
+        GetVulkan().ActiveSurface = slot;
         static_cast<void>(LoseActiveSurface());
     }
-    gActiveSurface = selected;
+    GetVulkan().ActiveSurface = selected;
     return isPrimaryHealthy;
 }
 FrameStatus Begin() noexcept
 {
     if (PollHostedSurfaces() == false)
     {
-        gLastResult = VK_ERROR_DEVICE_LOST;
+        GetVulkan().LastResult = VK_ERROR_DEVICE_LOST;
         return Failure();
     }
-    if (gActiveSurface != 0 && GetActiveSurface().IsConnected == false)
+    if (GetVulkan().ActiveSurface != 0 && GetActiveSurface().IsConnected == false)
     {
         // Lost earlier, for example while polling its hosted consumer above.
         return FrameStatus::Skipped;
@@ -1847,21 +1977,22 @@ FrameStatus Begin() noexcept
     if (GetActiveSurface().ShouldResize && CreateTargets() == false)
     {
         // A created surface whose swapchain cannot be rebuilt is lost; the device is not.
-        return gActiveSurface != 0 && gLastResult != VK_ERROR_DEVICE_LOST ? LoseActiveSurface() : Failure();
+        return GetVulkan().ActiveSurface != 0 && GetVulkan().LastResult != VK_ERROR_DEVICE_LOST ? LoseActiveSurface()
+                                                                                                : Failure();
     }
     if (GetActiveSurface().Extent.width == 0 || GetActiveSurface().Extent.height == 0)
     {
         return FrameStatus::Skipped;
     }
-    auto& frame = gFrames[gFrame];
-    if (Check(vkWaitForFences(gDevice, 1, &frame.Fence, VK_TRUE, FENCE_TIMEOUT_NANOSECONDS)) == false)
+    Frame& frame = GetVulkan().Frames[GetVulkan().FrameIndex];
+    if (Check(vkWaitForFences(GetVulkan().Device, 1, &frame.Fence, VK_TRUE, FENCE_TIMEOUT_NANOSECONDS)) == false)
     {
         return Failure();
     }
     frame.Submitted = false;
     CountRenderedFrame(frame);
     // Hosted frames guarded by this fence have completed; it may be reset from now on.
-    for (VulkanSurface& hosted : gSurfaces)
+    for (VulkanSurface& hosted : GetVulkan().Surfaces)
     {
         if (hosted.HostedProducer.IsConnected() == true)
         {
@@ -1871,12 +2002,12 @@ FrameStatus Begin() noexcept
     // Harvest the captured query before its frame fence can be reset for later work.
     (void)TimingPoll();
     static_cast<void>(PollPassTimings());
-    if (gDevice == VK_NULL_HANDLE)
+    if (GetVulkan().Device == VK_NULL_HANDLE)
     {
         return FrameStatus::Failed;
     }
     (void)RasterCompleted();
-    if (gDevice == VK_NULL_HANDLE)
+    if (GetVulkan().Device == VK_NULL_HANDLE)
     {
         return FrameStatus::Failed;
     }
@@ -1886,7 +2017,7 @@ FrameStatus Begin() noexcept
         const HostedVulkanAcquireStatus acquired =
             GetActiveSurface().HostedProducer.Acquire(GetActiveSurface().Extent.width,
                                                       GetActiveSurface().Extent.height,
-                                                      gPass,
+                                                      GetVulkan().Pass,
                                                       GetActiveSurface().DepthView,
                                                       GetActiveSurface().DepthEpoch,
                                                       GetActiveSurface().HostedFramebuffer);
@@ -1896,12 +2027,12 @@ FrameStatus Begin() noexcept
         }
         if (acquired == HostedVulkanAcquireStatus::Failed)
         {
-            return gActiveSurface != 0 ? LoseActiveSurface() : Failure();
+            return GetVulkan().ActiveSurface != 0 ? LoseActiveSurface() : Failure();
         }
     }
-    if (gHeadless == false)
+    if (GetVulkan().IsHeadless == false)
     {
-        const VkResult result = vkAcquireNextImageKHR(gDevice,
+        const VkResult result = vkAcquireNextImageKHR(GetVulkan().Device,
                                                       GetActiveSurface().Swapchain,
                                                       5000000000ULL,
                                                       frame.Acquired,
@@ -1916,7 +2047,7 @@ FrameStatus Begin() noexcept
         {
             return FrameStatus::Skipped;
         }
-        if (result == VK_ERROR_SURFACE_LOST_KHR && gActiveSurface != 0)
+        if (result == VK_ERROR_SURFACE_LOST_KHR && GetVulkan().ActiveSurface != 0)
         {
             return LoseActiveSurface();
         }
@@ -1929,19 +2060,21 @@ FrameStatus Begin() noexcept
             return Failure();
         }
     }
-    if (gHeadless == false)
+    if (GetVulkan().IsHeadless == false)
     {
-        gAcquiredWait = true;
-        gOwnedImage = true;
-        gOwnedImageSurface = gActiveSurface;
+        GetVulkan().ShouldWaitAcquired = true;
+        GetVulkan().HasOwnedImage = true;
+        GetVulkan().OwnedImageSurface = GetVulkan().ActiveSurface;
         if (GetActiveSurface().Presented[GetActiveSurface().Image])
         {
-            if (Check(vkWaitForFences(gDevice,
+            if (Check(vkWaitForFences(GetVulkan().Device,
                                       1,
                                       &GetActiveSurface().PresentFences[GetActiveSurface().Image],
                                       VK_TRUE,
                                       FENCE_TIMEOUT_NANOSECONDS)) == false ||
-                Check(vkResetFences(gDevice, 1, &GetActiveSurface().PresentFences[GetActiveSurface().Image])) == false)
+                Check(vkResetFences(GetVulkan().Device,
+                                    1,
+                                    &GetActiveSurface().PresentFences[GetActiveSurface().Image])) == false)
             {
                 return Failure();
             }
@@ -1979,25 +2112,25 @@ FrameStatus Begin() noexcept
     };
     VkRenderPassBeginInfo pass{};
     pass.sType = VK_STRUCTURE_TYPE_RENDER_PASS_BEGIN_INFO;
-    pass.renderPass = gPass;
+    pass.renderPass = GetVulkan().Pass;
     pass.framebuffer = SurfaceFramebuffer();
     pass.renderArea.extent = GetActiveSurface().Extent;
     pass.clearValueCount = 2;
     pass.pClearValues = clears;
     vkCmdBeginRenderPass(frame.Command, &pass, VK_SUBPASS_CONTENTS_INLINE);
-    gEncoding = true;
+    GetVulkan().IsEncoding = true;
     RasterFrameExtent();
     return FrameStatus::Ready;
 }
 FrameStatus End() noexcept
 {
-    auto& frame = gFrames[gFrame];
-    if (gEncoding)
+    Frame& frame = GetVulkan().Frames[GetVulkan().FrameIndex];
+    if (GetVulkan().IsEncoding)
     {
         ClosePassLabels();
         vkCmdEndRenderPass(frame.Command);
     }
-    gEncoding = false;
+    GetVulkan().IsEncoding = false;
     // Scopes never span submission: end every label region an early return left open.
     CloseScopeLabels();
     TimingEnd();
@@ -2006,7 +2139,8 @@ FrameStatus End() noexcept
         // Hand the image to the editor: VK_QUEUE_FAMILY_EXTERNAL, SHADER_READ_ONLY_OPTIMAL.
         GetActiveSurface().HostedProducer.RecordRelease(frame.Command);
     }
-    if (Check(vkEndCommandBuffer(frame.Command)) == false || Check(vkResetFences(gDevice, 1, &frame.Fence)) == false)
+    if (Check(vkEndCommandBuffer(frame.Command)) == false ||
+        Check(vkResetFences(GetVulkan().Device, 1, &frame.Fence)) == false)
     {
         GetActiveSurface().HostedProducer.Cancel();
         return Failure();
@@ -2016,7 +2150,7 @@ FrameStatus End() noexcept
     submit.sType = VK_STRUCTURE_TYPE_SUBMIT_INFO;
     submit.commandBufferCount = 1;
     submit.pCommandBuffers = &frame.Command;
-    if (gHeadless == false)
+    if (GetVulkan().IsHeadless == false)
     {
         submit.waitSemaphoreCount = 1;
         submit.pWaitSemaphores = &frame.Acquired;
@@ -2024,13 +2158,13 @@ FrameStatus End() noexcept
         submit.signalSemaphoreCount = 1;
         submit.pSignalSemaphores = &GetActiveSurface().Finished[GetActiveSurface().Image];
     }
-    if (Check(vkQueueSubmit(gQueue, 1, &submit, frame.Fence)) == false)
+    if (Check(vkQueueSubmit(GetVulkan().Queue, 1, &submit, frame.Fence)) == false)
     {
         GetActiveSurface().HostedProducer.Cancel();
         return Failure();
     }
     frame.Submitted = true;
-    frame.Surface = gActiveSurface;
+    frame.Surface = GetVulkan().ActiveSurface;
     frame.IsRenderPending = true;
     if (GetActiveSurface().HostedProducer.IsConnected() == true)
     {
@@ -2042,9 +2176,9 @@ FrameStatus End() noexcept
     }
     TimingSubmitted();
     SubmitPassTimings();
-    gAcquiredWait = false;
-    gFrame = (gFrame + 1) % FRAMES;
-    if (gHeadless == false)
+    GetVulkan().ShouldWaitAcquired = false;
+    GetVulkan().FrameIndex = (GetVulkan().FrameIndex + 1) % FRAMES;
+    if (GetVulkan().IsHeadless == false)
     {
         VkSwapchainPresentFenceInfoEXT fence{};
         fence.sType = VK_STRUCTURE_TYPE_SWAPCHAIN_PRESENT_FENCE_INFO_EXT;
@@ -2058,19 +2192,19 @@ FrameStatus End() noexcept
         present.swapchainCount = 1;
         present.pSwapchains = &GetActiveSurface().Swapchain;
         present.pImageIndices = &GetActiveSurface().Image;
-        const auto result = vkQueuePresentKHR(gQueue, &present);
+        const VkResult result = vkQueuePresentKHR(GetVulkan().Queue, &present);
         // Outdated/lost surfaces still enqueue the wait and presentation fence.
         if (result == VK_SUCCESS || result == VK_SUBOPTIMAL_KHR || result == VK_ERROR_OUT_OF_DATE_KHR ||
             result == VK_ERROR_SURFACE_LOST_KHR)
         {
             GetActiveSurface().Presented[GetActiveSurface().Image] = true;
-            gOwnedImage = false;
+            GetVulkan().HasOwnedImage = false;
         }
         if (result == VK_SUCCESS || result == VK_SUBOPTIMAL_KHR)
         {
             ++GetActiveSurface().PresentedFrames;
         }
-        if (result == VK_ERROR_SURFACE_LOST_KHR && gActiveSurface != 0)
+        if (result == VK_ERROR_SURFACE_LOST_KHR && GetVulkan().ActiveSurface != 0)
         {
             // The frame was submitted; only its created surface stops presenting.
             static_cast<void>(LoseActiveSurface());
@@ -2124,7 +2258,7 @@ ResourceStatus CreateShader(usize slot, const ShaderDescription& description, ui
     {
         return ResourceFailure();
     }
-    auto& shader = gShaders[slot];
+    Shader& shader = GetVulkan().Shaders[slot];
     shader.Stage = description.Stage;
     std::memcpy(shader.Entry, description.SpirvEntry.data(), description.SpirvEntry.size());
     shader.Entry[description.SpirvEntry.size()] = '\0';
@@ -2132,21 +2266,21 @@ ResourceStatus CreateShader(usize slot, const ShaderDescription& description, ui
     info.sType = VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO;
     info.codeSize = (description.Spirv.GetSize() * sizeof(uint32));
     info.pCode = description.Spirv.GetDataOrNull();
-    return Check(vkCreateShaderModule(gDevice, &info, nullptr, &shader.Module)) ? ResourceStatus::Ready
-                                                                                : ResourceFailure();
+    return Check(vkCreateShaderModule(GetVulkan().Device, &info, nullptr, &shader.Module)) ? ResourceStatus::Ready
+                                                                                           : ResourceFailure();
 }
 void DestroyShader(usize slot) noexcept
 {
-    if (gDevice != VK_NULL_HANDLE)
+    if (GetVulkan().Device != VK_NULL_HANDLE)
     {
-        vkDestroyShaderModule(gDevice, gShaders[slot].Module, nullptr);
+        vkDestroyShaderModule(GetVulkan().Device, GetVulkan().Shaders[slot].Module, nullptr);
     }
-    gShaders[slot] = {};
+    GetVulkan().Shaders[slot] = {};
 }
 ResourceStatus CreateUniform(usize slot, const UniformDescription& description, uint32) noexcept
 {
     const usize size = description.Size;
-    auto& uniform = gUniforms[slot];
+    Uniform& uniform = GetVulkan().Uniforms[slot];
     uniform.Size = size;
     for (usize i = 0; i < FRAMES; ++i)
     {
@@ -2154,17 +2288,17 @@ ResourceStatus CreateUniform(usize slot, const UniformDescription& description, 
         info.sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO;
         info.size = size;
         info.usage = VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT;
-        if (Check(vkCreateBuffer(gDevice, &info, nullptr, &uniform.Buffers[i])) == false)
+        if (Check(vkCreateBuffer(GetVulkan().Device, &info, nullptr, &uniform.Buffers[i])) == false)
         {
             return ResourceFailure();
         }
         VkMemoryRequirements requirements{};
-        vkGetBufferMemoryRequirements(gDevice, uniform.Buffers[i], &requirements);
+        vkGetBufferMemoryRequirements(GetVulkan().Device, uniform.Buffers[i], &requirements);
         if (Allocate(requirements,
                      VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT,
                      uniform.Memory[i]) == false ||
-            Check(vkBindBufferMemory(gDevice, uniform.Buffers[i], uniform.Memory[i], 0)) == false ||
-            Check(vkMapMemory(gDevice, uniform.Memory[i], 0, size, 0, &uniform.Mapped[i])) == false)
+            Check(vkBindBufferMemory(GetVulkan().Device, uniform.Buffers[i], uniform.Memory[i], 0)) == false ||
+            Check(vkMapMemory(GetVulkan().Device, uniform.Memory[i], 0, size, 0, &uniform.Mapped[i])) == false)
         {
             return ResourceFailure();
         }
@@ -2173,12 +2307,12 @@ ResourceStatus CreateUniform(usize slot, const UniformDescription& description, 
 }
 void UpdateUniform(usize slot, ludus::foundation::BorrowedView<const uint8> bytes) noexcept
 {
-    std::memcpy(gUniforms[slot].Bytes, bytes.GetDataOrNull(), bytes.GetSize());
+    std::memcpy(GetVulkan().Uniforms[slot].Bytes, bytes.GetDataOrNull(), bytes.GetSize());
 }
 void DestroyUniform(usize slot) noexcept
 {
-    auto& uniform = gUniforms[slot];
-    if (gDevice != VK_NULL_HANDLE)
+    Uniform& uniform = GetVulkan().Uniforms[slot];
+    if (GetVulkan().Device != VK_NULL_HANDLE)
     {
         if (uniform.Size != 0)
         {
@@ -2188,22 +2322,22 @@ void DestroyUniform(usize slot) noexcept
         {
             if (uniform.Mapped[i] != nullptr)
             {
-                vkUnmapMemory(gDevice, uniform.Memory[i]);
+                vkUnmapMemory(GetVulkan().Device, uniform.Memory[i]);
             }
-            vkDestroyBuffer(gDevice, uniform.Buffers[i], nullptr);
-            vkFreeMemory(gDevice, uniform.Memory[i], nullptr);
+            vkDestroyBuffer(GetVulkan().Device, uniform.Buffers[i], nullptr);
+            vkFreeMemory(GetVulkan().Device, uniform.Memory[i], nullptr);
         }
     }
     uniform = {};
 }
 ResourceStatus CreatePipeline(usize slot, const PipelineResources& resources, uint32) noexcept
 {
-    if (gPass == VK_NULL_HANDLE)
+    if (GetVulkan().Pass == VK_NULL_HANDLE)
     {
         return ResourceFailure();
     }
     const usize vertex = resources.Vertex, fragment = resources.Fragment, uniform = resources.Uniform;
-    auto& pipeline = gPipelines[slot];
+    Pipeline& pipeline = GetVulkan().Pipelines[slot];
     pipeline.UniformSlot = uniform;
     VkDescriptorSetLayoutBinding binding{};
     binding.descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
@@ -2213,7 +2347,7 @@ ResourceStatus CreatePipeline(usize slot, const PipelineResources& resources, ui
     bindings.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO;
     bindings.bindingCount = 1;
     bindings.pBindings = &binding;
-    if (Check(vkCreateDescriptorSetLayout(gDevice, &bindings, nullptr, &pipeline.Bindings)) == false)
+    if (Check(vkCreateDescriptorSetLayout(GetVulkan().Device, &bindings, nullptr, &pipeline.Bindings)) == false)
     {
         return ResourceFailure();
     }
@@ -2225,7 +2359,7 @@ ResourceStatus CreatePipeline(usize slot, const PipelineResources& resources, ui
     pool.maxSets = FRAMES;
     pool.poolSizeCount = 1;
     pool.pPoolSizes = &poolSize;
-    if (Check(vkCreateDescriptorPool(gDevice, &pool, nullptr, &pipeline.Pool)) == false)
+    if (Check(vkCreateDescriptorPool(GetVulkan().Device, &pool, nullptr, &pipeline.Pool)) == false)
     {
         return ResourceFailure();
     }
@@ -2235,28 +2369,28 @@ ResourceStatus CreatePipeline(usize slot, const PipelineResources& resources, ui
     allocate.descriptorPool = pipeline.Pool;
     allocate.descriptorSetCount = FRAMES;
     allocate.pSetLayouts = layouts;
-    if (Check(vkAllocateDescriptorSets(gDevice, &allocate, pipeline.Sets)) == false)
+    if (Check(vkAllocateDescriptorSets(GetVulkan().Device, &allocate, pipeline.Sets)) == false)
     {
         return ResourceFailure();
     }
     for (usize i = 0; i < FRAMES; ++i)
     {
         VkDescriptorBufferInfo buffer{};
-        buffer.buffer = gUniforms[uniform].Buffers[i];
-        buffer.range = gUniforms[uniform].Size;
+        buffer.buffer = GetVulkan().Uniforms[uniform].Buffers[i];
+        buffer.range = GetVulkan().Uniforms[uniform].Size;
         VkWriteDescriptorSet write{};
         write.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
         write.dstSet = pipeline.Sets[i];
         write.descriptorCount = 1;
         write.descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
         write.pBufferInfo = &buffer;
-        vkUpdateDescriptorSets(gDevice, 1, &write, 0, nullptr);
+        vkUpdateDescriptorSets(GetVulkan().Device, 1, &write, 0, nullptr);
     }
     VkPipelineLayoutCreateInfo layout{};
     layout.sType = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO;
     layout.setLayoutCount = 1;
     layout.pSetLayouts = &pipeline.Bindings;
-    if (Check(vkCreatePipelineLayout(gDevice, &layout, nullptr, &pipeline.Layout)) == false)
+    if (Check(vkCreatePipelineLayout(GetVulkan().Device, &layout, nullptr, &pipeline.Layout)) == false)
     {
         return ResourceFailure();
     }
@@ -2266,11 +2400,11 @@ ResourceStatus CreatePipeline(usize slot, const PipelineResources& resources, ui
     };
     stages[0].sType = stages[1].sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
     stages[0].stage = VK_SHADER_STAGE_VERTEX_BIT;
-    stages[0].module = gShaders[vertex].Module;
-    stages[0].pName = gShaders[vertex].Entry;
+    stages[0].module = GetVulkan().Shaders[vertex].Module;
+    stages[0].pName = GetVulkan().Shaders[vertex].Entry;
     stages[1].stage = VK_SHADER_STAGE_FRAGMENT_BIT;
-    stages[1].module = gShaders[fragment].Module;
-    stages[1].pName = gShaders[fragment].Entry;
+    stages[1].module = GetVulkan().Shaders[fragment].Module;
+    stages[1].pName = GetVulkan().Shaders[fragment].Entry;
     VkPipelineVertexInputStateCreateInfo input{};
     input.sType = VK_STRUCTURE_TYPE_PIPELINE_VERTEX_INPUT_STATE_CREATE_INFO;
     VkPipelineInputAssemblyStateCreateInfo assembly{};
@@ -2313,24 +2447,24 @@ ResourceStatus CreatePipeline(usize slot, const PipelineResources& resources, ui
     info.pColorBlendState = &blend;
     info.pDynamicState = &dynamic;
     info.layout = pipeline.Layout;
-    info.renderPass = gPass;
-    return Check(vkCreateGraphicsPipelines(gDevice, VK_NULL_HANDLE, 1, &info, nullptr, &pipeline.Object))
+    info.renderPass = GetVulkan().Pass;
+    return Check(vkCreateGraphicsPipelines(GetVulkan().Device, VK_NULL_HANDLE, 1, &info, nullptr, &pipeline.Object))
                ? ResourceStatus::Ready
                : ResourceFailure();
 }
 void DestroyPipeline(usize slot) noexcept
 {
-    auto& pipeline = gPipelines[slot];
-    if (gDevice != VK_NULL_HANDLE)
+    Pipeline& pipeline = GetVulkan().Pipelines[slot];
+    if (GetVulkan().Device != VK_NULL_HANDLE)
     {
         if (pipeline.Object != VK_NULL_HANDLE)
         {
             WaitIdle();
         }
-        vkDestroyPipeline(gDevice, pipeline.Object, nullptr);
-        vkDestroyPipelineLayout(gDevice, pipeline.Layout, nullptr);
-        vkDestroyDescriptorPool(gDevice, pipeline.Pool, nullptr);
-        vkDestroyDescriptorSetLayout(gDevice, pipeline.Bindings, nullptr);
+        vkDestroyPipeline(GetVulkan().Device, pipeline.Object, nullptr);
+        vkDestroyPipelineLayout(GetVulkan().Device, pipeline.Layout, nullptr);
+        vkDestroyDescriptorPool(GetVulkan().Device, pipeline.Pool, nullptr);
+        vkDestroyDescriptorSetLayout(GetVulkan().Device, pipeline.Bindings, nullptr);
     }
     pipeline = {};
 }
@@ -2340,16 +2474,17 @@ FrameInfo GetFrameInfo() noexcept
     {
         .Width = GetActiveSurface().Extent.width,
         .Height = GetActiveSurface().Extent.height,
-        .Encoding = gFormat == VK_FORMAT_B8G8R8A8_SRGB || gFormat == VK_FORMAT_R8G8B8A8_SRGB ? SurfaceEncoding::Srgb
-                                                                                             : SurfaceEncoding::Unorm,
+        .Encoding = GetVulkan().Format == VK_FORMAT_B8G8R8A8_SRGB || GetVulkan().Format == VK_FORMAT_R8G8B8A8_SRGB
+                        ? SurfaceEncoding::Srgb
+                        : SurfaceEncoding::Unorm,
     };
 }
 ResourceStatus Draw(usize slot) noexcept
 {
-    auto& pipeline = gPipelines[slot];
-    auto& uniform = gUniforms[pipeline.UniformSlot];
-    std::memcpy(uniform.Mapped[gFrame], uniform.Bytes, uniform.Size);
-    const auto command = gFrames[gFrame].Command;
+    Pipeline& pipeline = GetVulkan().Pipelines[slot];
+    Uniform& uniform = GetVulkan().Uniforms[pipeline.UniformSlot];
+    std::memcpy(uniform.Mapped[GetVulkan().FrameIndex], uniform.Bytes, uniform.Size);
+    const VkCommandBuffer command = GetVulkan().Frames[GetVulkan().FrameIndex].Command;
     VkViewport viewport{};
     viewport.width = static_cast<float32>(GetActiveSurface().Extent.width);
     viewport.height = static_cast<float32>(GetActiveSurface().Extent.height);
@@ -2364,7 +2499,7 @@ ResourceStatus Draw(usize slot) noexcept
                             pipeline.Layout,
                             0,
                             1,
-                            &pipeline.Sets[gFrame],
+                            &pipeline.Sets[GetVulkan().FrameIndex],
                             0,
                             nullptr);
     vkCmdDraw(command, 3, 1, 0, 0);
@@ -2376,7 +2511,7 @@ bool ReadHeadlessPixels(std::span<uint8> pixels) noexcept
 {
     /// Bytes in one RGBA8 headless readback pixel.
     constexpr usize READBACK_PIXEL_BYTES = 4;
-    if (gHeadless == false || gEncoding ||
+    if (GetVulkan().IsHeadless == false || GetVulkan().IsEncoding ||
         pixels.size() != static_cast<usize>(GetActiveSurface().Extent.width) * GetActiveSurface().Extent.height *
                              READBACK_PIXEL_BYTES)
     {
@@ -2392,10 +2527,10 @@ bool ReadHeadlessPixels(std::span<uint8> pixels) noexcept
             WaitIdle();
             if (Command != VK_NULL_HANDLE)
             {
-                vkFreeCommandBuffers(gDevice, gCommands, 1, &Command);
+                vkFreeCommandBuffers(GetVulkan().Device, GetVulkan().Commands, 1, &Command);
             }
-            vkDestroyBuffer(gDevice, Buffer, nullptr);
-            vkFreeMemory(gDevice, Memory, nullptr);
+            vkDestroyBuffer(GetVulkan().Device, Buffer, nullptr);
+            vkFreeMemory(GetVulkan().Device, Memory, nullptr);
         }
     } copy;
     WaitIdle();
@@ -2403,25 +2538,25 @@ bool ReadHeadlessPixels(std::span<uint8> pixels) noexcept
     buffer.sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO;
     buffer.size = pixels.size();
     buffer.usage = VK_BUFFER_USAGE_TRANSFER_DST_BIT;
-    if (Check(vkCreateBuffer(gDevice, &buffer, nullptr, &copy.Buffer)) == false)
+    if (Check(vkCreateBuffer(GetVulkan().Device, &buffer, nullptr, &copy.Buffer)) == false)
     {
         return false;
     }
     VkMemoryRequirements requirements{};
-    vkGetBufferMemoryRequirements(gDevice, copy.Buffer, &requirements);
+    vkGetBufferMemoryRequirements(GetVulkan().Device, copy.Buffer, &requirements);
     if (Allocate(requirements,
                  VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT,
                  copy.Memory) == false ||
-        Check(vkBindBufferMemory(gDevice, copy.Buffer, copy.Memory, 0)) == false)
+        Check(vkBindBufferMemory(GetVulkan().Device, copy.Buffer, copy.Memory, 0)) == false)
     {
         return false;
     }
     VkCommandBufferAllocateInfo allocate{};
     allocate.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO;
-    allocate.commandPool = gCommands;
+    allocate.commandPool = GetVulkan().Commands;
     allocate.level = VK_COMMAND_BUFFER_LEVEL_PRIMARY;
     allocate.commandBufferCount = 1;
-    if (Check(vkAllocateCommandBuffers(gDevice, &allocate, &copy.Command)) == false)
+    if (Check(vkAllocateCommandBuffers(GetVulkan().Device, &allocate, &copy.Command)) == false)
     {
         return false;
     }
@@ -2468,17 +2603,18 @@ bool ReadHeadlessPixels(std::span<uint8> pixels) noexcept
     submit.sType = VK_STRUCTURE_TYPE_SUBMIT_INFO;
     submit.commandBufferCount = 1;
     submit.pCommandBuffers = &copy.Command;
-    if (Check(vkQueueSubmit(gQueue, 1, &submit, VK_NULL_HANDLE)) == false || Check(vkQueueWaitIdle(gQueue)) == false)
+    if (Check(vkQueueSubmit(GetVulkan().Queue, 1, &submit, VK_NULL_HANDLE)) == false ||
+        Check(vkQueueWaitIdle(GetVulkan().Queue)) == false)
     {
         return false;
     }
     void* mapped = nullptr;
-    if (Check(vkMapMemory(gDevice, copy.Memory, 0, pixels.size(), 0, &mapped)) == false)
+    if (Check(vkMapMemory(GetVulkan().Device, copy.Memory, 0, pixels.size(), 0, &mapped)) == false)
     {
         return false;
     }
     std::memcpy(pixels.data(), mapped, pixels.size());
-    vkUnmapMemory(gDevice, copy.Memory);
+    vkUnmapMemory(GetVulkan().Device, copy.Memory);
     return true;
 }
 #endif

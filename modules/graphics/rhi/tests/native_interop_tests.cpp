@@ -13,6 +13,7 @@ extern foundation::uint32 PendingToken;
 extern bool SelectionSupported;
 extern FrameStatus NextFrame;
 extern Backend ActiveKind;
+extern foundation::usize DeviceOwners;
 } // namespace ludus::graphics::rhi::backend
 using namespace ludus::foundation;
 using namespace ludus::graphics::rhi;
@@ -404,4 +405,61 @@ TEST_CASE("Terminal device loss remains observable after native retirement begin
     REQUIRE(DrainNativeTextureRead(session.Reads[0]) == RasterStatus::Ready);
     REQUIRE(ReleaseNativeDevice(session.Lease) == RasterStatus::Ready);
     CHECK(session.Owner.Released == 1);
+}
+
+TEST_CASE("R14c a native device hosted only alone waits until no owner is live", "[rhi][native-interop][owner]")
+{
+    PrepareReference();
+    struct Restore final
+    {
+        Restore() noexcept = default;
+        Restore(const Restore&) = delete;
+        Restore& operator=(const Restore&) = delete;
+        ~Restore() noexcept
+        {
+            backend::DeviceOwners = 1;
+            Shutdown();
+        }
+    } restore;
+    backend::DeviceOwners = 2;
+    constexpr uint32 EXTENT = 8;
+    const internal::BackendLimits limits{4096, 16384};
+    DeviceHandle first;
+    SurfaceHandle firstSurface;
+    REQUIRE(CreateDevice({}, { .Width = EXTENT, .Height = EXTENT }, {}, first, firstSurface) == DeviceStatus::Pending);
+    internal::Complete(backend::PendingToken, StartupError::None, limits);
+    DeviceHandle second;
+    SurfaceHandle secondSurface;
+    REQUIRE(CreateDevice({},
+                         {
+                             .Width = EXTENT,
+                             .Height = EXTENT,
+                         },
+                         {},
+                         second,
+                         secondSurface) == DeviceStatus::Pending);
+    internal::Complete(backend::PendingToken, StartupError::None, limits);
+
+    // The first slot is free again, yet an owner is live: the native device is refused
+    // before its source is retained, and the live owner keeps working.
+    REQUIRE(DestroyDevice(first) == DeviceStatus::Ready);
+    SourceOwner owner;
+    DeviceHandle native;
+    SurfaceHandle nativeSurface;
+    CHECK(CreateNativeDevice({}, SourceDescription(owner), {}, EXTENT, EXTENT, native, nativeSurface) ==
+          DeviceStatus::InvalidState);
+    CHECK(native == DeviceHandle{});
+    CHECK(nativeSurface == SurfaceHandle{});
+    CHECK(owner.Retained == 0);
+    DeviceInfo info;
+    REQUIRE(GetDeviceInfo(second, info) == DeviceStatus::Ready);
+
+    // Alone, it is admitted into the lowest free slot.
+    REQUIRE(DestroyDevice(second) == DeviceStatus::Ready);
+    REQUIRE(CreateNativeDevice({}, SourceDescription(owner), {}, EXTENT, EXTENT, native, nativeSurface) ==
+            DeviceStatus::Pending);
+    internal::Complete(backend::PendingToken, StartupError::None, limits);
+    CHECK(owner.Retained == 1);
+    REQUIRE(GetDeviceInfo(native, info) == DeviceStatus::Ready);
+    REQUIRE(DestroyDevice(native) == DeviceStatus::Ready);
 }

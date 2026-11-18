@@ -328,7 +328,7 @@ ResourceStatus Draw(usize slot) noexcept
     return gActive == Backend::WebGL2 ? webgl::Draw(slot) : webgpu::Draw(slot);
 }
 // R14c: the browser dispatcher binds one backend per process, so the facade admits a single device owner.
-usize GetDeviceOwnerLimit() noexcept
+usize GetDeviceOwnerLimit(bool) noexcept
 {
     return 1;
 }

@@ -109,11 +109,12 @@ foundation::usize LastDestroyedSurface = 0;
 bool ShouldLoseNextSurface = false;
 foundation::StaticArray<SurfaceCompletion, MAX_DEVICE_SURFACES> SurfaceCompletions{};
 foundation::StaticArray<FrameTarget, MAX_DEVICE_SURFACES> SurfaceTargets{};
-// R14c: owners this reference backend admits; owner tests raise it and restore 1.
+// R14c: owners this reference backend admits; owner tests raise it and restore 1. A native
+// device is hosted only as the sole owner, as on Vulkan, whatever DeviceOwners allows.
 foundation::usize DeviceOwners = 1;
-foundation::usize GetDeviceOwnerLimit() noexcept
+foundation::usize GetDeviceOwnerLimit(bool isNativeDevice) noexcept
 {
-    return DeviceOwners;
+    return isNativeDevice == true ? 1 : DeviceOwners;
 }
 foundation::usize AdditionalSurfaceLimit() noexcept
 {

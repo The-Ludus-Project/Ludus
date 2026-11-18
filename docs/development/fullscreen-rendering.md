@@ -424,11 +424,11 @@ presenting.
 
 ### Multiple device owners (R14c)
 
-On Metal, one process can own up to `MAX_DEVICE_OWNERS` devices at once. Each
-`CreateDevice` call starts an independent owner. An owner has its own command
-queue, startup and loss state, resource registries, ordered graphs, transfer
-rings, pipeline-preparation worker, submission ordinals and surfaces. Every
-owner can select its own catalog adapter. All owners are used from the one
+On Metal, Vulkan and Direct3D 12, one process can own up to `MAX_DEVICE_OWNERS`
+devices at once. Each `CreateDevice` call starts an independent owner. An owner
+has its own native device and command queue, startup and loss state, resource
+registries, ordered graphs, transfer rings, pipeline-preparation worker,
+submission ordinals and surfaces. Every owner can select its own catalog adapter. All owners are used from the one
 owner thread. Frames of different owners are independent: one device can hold an
 open frame while another opens, submits and completes its own.
 
@@ -438,8 +438,9 @@ rhi::DeviceHandle preview;
 rhi::SurfaceHandle previewSurface;
 const auto created = rhi::CreateDevice(app, previewWindow, request, preview, previewSurface);
 // CapacityExceeded: every owner slot is live; destroy an owner first.
-// InvalidState: this backend keeps one owner (Vulkan, Direct3D 12, browser) or a
-// facade session from rhi::Start is running; reuse the existing device instead.
+// InvalidState: this backend keeps one owner (WebGPU, WebGL 2), a Vulkan device
+// adopted with CreateNativeDevice is live, or a facade session from rhi::Start is
+// running; reuse the existing device instead.
 ```
 
 The facade keeps every owner's state apart. Handles carry their owner, so a
@@ -465,22 +466,46 @@ capture runs per process, because native capture tools such as
 `MTLCaptureManager` are process-wide, so a request while another owner captures
 returns `Busy`.
 
-Vulkan, Direct3D 12, WebGPU and WebGL 2 keep one process session in this
-release: a second `CreateDevice` returns `InvalidState` while the first lives,
-as before. The facade state they share is already kept per owner; each of these
-backends becomes multi-owner once its native state is kept per owner and checked
-on its hardware.
+Backend notes:
+
+- **Vulkan.** Owners that create their device share one `VkInstance`; the first
+  owner's application name and version describe it, and the last owner to leave
+  destroys it. A command pointer from `vkGetInstanceProcAddr` may only be called
+  with that instance or its children, and volk keeps one process-wide table, so
+  every owner's device dispatches through the shared instance's loader
+  trampolines; the backend no longer loads one device's direct table. The shared
+  instance requests Vulkan 1.2 whenever the loader offers it, so a later owner's
+  ray or binding-model profile is never limited by the first owner's request;
+  each device still enables only what its own owner requested. A device adopted
+  with `CreateNativeDevice` brings its source's instance, so Vulkan hosts it only
+  as the sole owner: `CreateNativeDevice` returns `InvalidState` while another
+  owner is live, and `CreateDevice` returns `InvalidState` while it lives.
+- **Direct3D 12.** Each owner creates its own DXGI factory, device, direct queue
+  and fence. Enabling the debug layer after a device exists removes that device,
+  so in Debug and Development builds the layer is enabled only by an owner that
+  starts while no other owner holds a device. Once enabled it stays enabled for
+  the process, so later owners use it too. The optional PIX event runtime is
+  loaded once per process and unloaded when the last owner releases it. An
+  adopted device may run beside owned devices.
+- **WebGPU and WebGL 2** keep one process session: a second `CreateDevice`
+  returns `InvalidState` while the first lives, as before.
 
 The reference-backend lifecycle suite creates two owners and checks capacity,
 cross-owner rejection of resources, surfaces and borrowed targets, independent frames and
 submission counters, loss of one owner, stale handles after destruction and slot
 reuse, device-less facade addressing, facade-session exclusion and the
-single-owner refusal. The macOS Metal suite starts two owners and reads back
-distinct storage buffers through each owner's transfer ring. It clears each
-owner's surface and leases each native context. It then destroys one owner while
-the other keeps reading and rendering, starts a replacement beside the
-survivor, starts owners on an explicit and an automatic adapter, and fills every
-owner slot before checking `CapacityExceeded`.
+single-owner refusal. It also checks that a native device hosted only alone is
+refused while another owner is live, even when the first slot is free, and
+admitted once it is alone. The portable owner conformance suite
+(`portable_device_owner_conformance_tests.cpp`) runs on Metal, Vulkan and
+Direct3D 12. It starts two owners and reads back distinct storage buffers
+through each owner's transfer ring. It clears each owner's surface, draws the
+same fullscreen pipeline through each owner's own shaders and compares the
+images, and leases each native device and queue. It then destroys one owner
+while the other keeps reading and rendering, and starts a replacement beside
+the survivor. A second case starts owners on an explicit and an automatic
+adapter, lists adapters while they live, and fills every owner slot before
+checking `CapacityExceeded`.
 
 ### Profile, format and limit negotiation
 

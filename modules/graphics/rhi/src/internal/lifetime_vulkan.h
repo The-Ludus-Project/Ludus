@@ -18,7 +18,19 @@ struct LifetimeVulkanTransfer final
     VkFence Fence = VK_NULL_HANDLE;
     bool Busy = false;
 };
-LifetimeVulkanTransfer gLifetimeVulkan[2][internal::LIFETIME_TRANSFERS];
+/// Upload (0) and readback (1) transfer slices of one device owner (R14c).
+struct LifetimeVulkanState final
+{
+    foundation::StaticArray<foundation::StaticArray<LifetimeVulkanTransfer, internal::LIFETIME_TRANSFERS>, 2>
+        Transfers{};
+};
+/// One record per device owner slot (R14c); see internal/owner.h.
+foundation::StaticArray<LifetimeVulkanState, MAX_DEVICE_OWNERS> gLifetimeVulkanStates{};
+/// LifetimeVulkanState of the bound owner slot.
+LifetimeVulkanState& GetLifetimeVulkan() noexcept
+{
+    return gLifetimeVulkanStates[internal::GetBoundOwnerSlot()];
+}
 VkResult LifetimeVulkanBegin(LifetimeVulkanTransfer& transfer, bool readback) noexcept
 {
     auto result = RasterAllocator();
@@ -38,7 +50,7 @@ VkResult LifetimeVulkanBegin(LifetimeVulkanTransfer& transfer, bool readback) no
             VMA_ALLOCATION_CREATE_MAPPED_BIT | (readback ? VMA_ALLOCATION_CREATE_HOST_ACCESS_RANDOM_BIT
                                                          : VMA_ALLOCATION_CREATE_HOST_ACCESS_SEQUENTIAL_WRITE_BIT);
         VmaAllocationInfo mapped{};
-        result = vmaCreateBuffer(gRasterAllocator,
+        result = vmaCreateBuffer(GetRasterVulkan().Allocator,
                                  &buffer,
                                  &allocation,
                                  &transfer.Staging.Object,
@@ -58,10 +70,10 @@ VkResult LifetimeVulkanBegin(LifetimeVulkanTransfer& transfer, bool readback) no
     {
         VkCommandBufferAllocateInfo allocate{};
         allocate.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO;
-        allocate.commandPool = gCommands;
+        allocate.commandPool = GetVulkan().Commands;
         allocate.level = VK_COMMAND_BUFFER_LEVEL_PRIMARY;
         allocate.commandBufferCount = 1;
-        result = vkAllocateCommandBuffers(gDevice, &allocate, &transfer.Command);
+        result = vkAllocateCommandBuffers(GetVulkan().Device, &allocate, &transfer.Command);
         if (result != VK_SUCCESS)
         {
             return result;
@@ -71,13 +83,13 @@ VkResult LifetimeVulkanBegin(LifetimeVulkanTransfer& transfer, bool readback) no
     {
         VkFenceCreateInfo fence{};
         fence.sType = VK_STRUCTURE_TYPE_FENCE_CREATE_INFO;
-        result = vkCreateFence(gDevice, &fence, nullptr, &transfer.Fence);
+        result = vkCreateFence(GetVulkan().Device, &fence, nullptr, &transfer.Fence);
         if (result != VK_SUCCESS)
         {
             return result;
         }
     }
-    result = vkResetFences(gDevice, 1, &transfer.Fence);
+    result = vkResetFences(GetVulkan().Device, 1, &transfer.Fence);
     if (result == VK_SUCCESS)
     {
         result = vkResetCommandBuffer(transfer.Command, 0);
@@ -102,7 +114,7 @@ VkResult LifetimeVulkanSubmit(LifetimeVulkanTransfer& transfer) noexcept
     submit.sType = VK_STRUCTURE_TYPE_SUBMIT_INFO;
     submit.commandBufferCount = 1;
     submit.pCommandBuffers = &transfer.Command;
-    result = vkQueueSubmit(gQueue, 1, &submit, transfer.Fence);
+    result = vkQueueSubmit(GetVulkan().Queue, 1, &submit, transfer.Fence);
     transfer.Busy = result == VK_SUCCESS;
     return result;
 }
@@ -130,11 +142,11 @@ void RecordTransferSynchronization(const LifetimeVkTransferSite& site,
                                    VkPipelineStageFlags destinationStages,
                                    const VkBufferMemoryBarrier& barrier) noexcept
 {
-    if (gSynchronizationTrace.IsEnabled() == false)
+    if (GetRasterVulkan().SynchronizationTrace.IsEnabled() == false)
     {
         return;
     }
-    gSynchronizationTrace.Append(
+    GetRasterVulkan().SynchronizationTrace.Append(
     {
         .Site = site.Site,
         .Object = site.Object,
@@ -152,7 +164,7 @@ void RecordTransferSynchronization(const LifetimeVkTransferSite& site,
 } // namespace
 bool LifetimeTransferAvailable(bool readback, usize slot) noexcept
 {
-    return gLifetimeVulkan[readback ? 1 : 0][slot].Busy == false;
+    return GetLifetimeVulkan().Transfers[readback ? 1 : 0][slot].Busy == false;
 }
 RasterStatus LifetimeUpload(usize transferSlot,
                             const BufferDescription& info,
@@ -162,7 +174,7 @@ RasterStatus LifetimeUpload(usize transferSlot,
 {
     const auto bufferSlot = uploadTarget.Buffer;
 
-    auto& transfer = gLifetimeVulkan[0][transferSlot];
+    LifetimeVulkanTransfer& transfer = GetLifetimeVulkan().Transfers[0][transferSlot];
     if (transfer.Busy)
     {
         return RasterStatus::CapacityExceeded;
@@ -181,15 +193,19 @@ RasterStatus LifetimeUpload(usize transferSlot,
                                                       : VK_BUFFER_USAGE_INDEX_BUFFER_BIT);
     VmaAllocationCreateInfo allocation{};
     allocation.usage = VMA_MEMORY_USAGE_AUTO_PREFER_DEVICE;
-    auto& destination = gRasterBuffers[bufferSlot];
-    result =
-        vmaCreateBuffer(gRasterAllocator, &buffer, &allocation, &destination.Object, &destination.Allocation, nullptr);
+    RasterVulkanBuffer& destination = GetRasterVulkan().Buffers[bufferSlot];
+    result = vmaCreateBuffer(GetRasterVulkan().Allocator,
+                             &buffer,
+                             &allocation,
+                             &destination.Object,
+                             &destination.Allocation,
+                             nullptr);
     if (result != VK_SUCCESS)
     {
         return RasterError(result);
     }
     std::memcpy(transfer.Mapped, bytes, size);
-    result = vmaFlushAllocation(gRasterAllocator, transfer.Staging.Allocation, 0, size);
+    result = vmaFlushAllocation(GetRasterVulkan().Allocator, transfer.Staging.Allocation, 0, size);
     if (result != VK_SUCCESS)
     {
         return RasterError(result);
@@ -218,7 +234,7 @@ RasterStatus LifetimeUpload(usize transferSlot,
         VK_PIPELINE_STAGE_TRANSFER_BIT,
         UPLOAD_CONSUMERS,
         barrier);
-    gBufferRangeTrial.Ranges.Forget(bufferSlot);
+    GetRasterVulkan().BufferRangeTrial.Ranges.Forget(bufferSlot);
     return RasterError(LifetimeVulkanSubmit(transfer));
 }
 RasterStatus LifetimeReadback(usize transferSlot, BufferRole, const internal::LifetimeCopyRange& range) noexcept
@@ -226,7 +242,7 @@ RasterStatus LifetimeReadback(usize transferSlot, BufferRole, const internal::Li
     const auto bufferSlot = range.Buffer;
     const auto offset = range.Offset;
     const auto size = range.Size;
-    auto& transfer = gLifetimeVulkan[1][transferSlot];
+    LifetimeVulkanTransfer& transfer = GetLifetimeVulkan().Transfers[1][transferSlot];
     if (transfer.Busy)
     {
         return RasterStatus::CapacityExceeded;
@@ -236,12 +252,12 @@ RasterStatus LifetimeReadback(usize transferSlot, BufferRole, const internal::Li
     {
         return RasterError(result);
     }
-    auto source = LifetimeVulkanBarrier(gRasterBuffers[bufferSlot].Object);
+    VkBufferMemoryBarrier source = LifetimeVulkanBarrier(GetRasterVulkan().Buffers[bufferSlot].Object);
     source.srcAccessMask =
-        VK_ACCESS_HOST_WRITE_BIT | VK_ACCESS_TRANSFER_WRITE_BIT | gRasterBuffers[bufferSlot].WriterAccess;
+        VK_ACCESS_HOST_WRITE_BIT | VK_ACCESS_TRANSFER_WRITE_BIT | GetRasterVulkan().Buffers[bufferSlot].WriterAccess;
     source.dstAccessMask = VK_ACCESS_TRANSFER_READ_BIT;
     const VkPipelineStageFlags sourceStages =
-        VK_PIPELINE_STAGE_HOST_BIT | VK_PIPELINE_STAGE_TRANSFER_BIT | gRasterBuffers[bufferSlot].WriterStage;
+        VK_PIPELINE_STAGE_HOST_BIT | VK_PIPELINE_STAGE_TRANSFER_BIT | GetRasterVulkan().Buffers[bufferSlot].WriterStage;
     vkCmdPipelineBarrier(transfer.Command,
                          sourceStages,
                          VK_PIPELINE_STAGE_TRANSFER_BIT,
@@ -280,9 +296,9 @@ RasterStatus LifetimeReadback(usize transferSlot, BufferRole, const internal::Li
     const auto submitted = LifetimeVulkanSubmit(transfer);
     if (submitted == VK_SUCCESS)
     {
-        gRasterBuffers[bufferSlot].Stage |= VK_PIPELINE_STAGE_TRANSFER_BIT;
-        gRasterBuffers[bufferSlot].Access |= VK_ACCESS_TRANSFER_READ_BIT;
-        gBufferRangeTrial.Ranges.Forget(bufferSlot);
+        GetRasterVulkan().Buffers[bufferSlot].Stage |= VK_PIPELINE_STAGE_TRANSFER_BIT;
+        GetRasterVulkan().Buffers[bufferSlot].Access |= VK_ACCESS_TRANSFER_READ_BIT;
+        GetRasterVulkan().BufferRangeTrial.Ranges.Forget(bufferSlot);
     }
     return RasterError(submitted);
 }
@@ -292,7 +308,7 @@ RasterStatus LifetimeReadback(usize transferSlot, BufferRole, const internal::Li
 RasterStatus
 LifetimeBufferUpdate(usize slot, BufferRole, const internal::LifetimeCopyRange& range, const uint8* bytes) noexcept
 {
-    auto& transfer = gLifetimeVulkan[0][slot];
+    LifetimeVulkanTransfer& transfer = GetLifetimeVulkan().Transfers[0][slot];
     if (transfer.Busy)
     {
         return RasterStatus::CapacityExceeded;
@@ -303,12 +319,12 @@ LifetimeBufferUpdate(usize slot, BufferRole, const internal::LifetimeCopyRange& 
         return RasterError(result);
     }
     std::memcpy(transfer.Mapped, bytes, range.Size);
-    result = vmaFlushAllocation(gRasterAllocator, transfer.Staging.Allocation, 0, range.Size);
+    result = vmaFlushAllocation(GetRasterVulkan().Allocator, transfer.Staging.Allocation, 0, range.Size);
     if (result != VK_SUCCESS)
     {
         return RasterError(result);
     }
-    auto& destination = gRasterBuffers[range.Buffer];
+    RasterVulkanBuffer& destination = GetRasterVulkan().Buffers[range.Buffer];
     auto barrier = LifetimeVulkanBarrier(destination.Object);
     barrier.srcAccessMask = destination.Access | destination.WriterAccess;
     barrier.dstAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
@@ -351,7 +367,7 @@ LifetimeBufferUpdate(usize slot, BufferRole, const internal::LifetimeCopyRange& 
     {
         destination.Stage = destination.WriterStage = VK_PIPELINE_STAGE_TRANSFER_BIT;
         destination.Access = destination.WriterAccess = VK_ACCESS_TRANSFER_WRITE_BIT;
-        gBufferRangeTrial.Ranges.Forget(range.Buffer);
+        GetRasterVulkan().BufferRangeTrial.Ranges.Forget(range.Buffer);
     }
     return RasterError(result);
 }
@@ -389,9 +405,9 @@ void LifetimeVkImageBarrier(VkCommandBuffer command,
                          nullptr,
                          1,
                          &barrier);
-    if (gSynchronizationTrace.IsEnabled() == true)
+    if (GetRasterVulkan().SynchronizationTrace.IsEnabled() == true)
     {
-        gSynchronizationTrace.Append(
+        GetRasterVulkan().SynchronizationTrace.Append(
         {
             .Site = VulkanSynchronizationSite::TextureTransfer,
             .Object = VulkanSynchronizationObject::ColorImage,
@@ -419,7 +435,7 @@ RasterStatus LifetimeTextureTransfer(usize slot, const internal::TextureTransfer
 {
     const bool readback = info.Operation == internal::TextureTransferOperation::Readback;
     const bool update = info.Operation == internal::TextureTransferOperation::Update;
-    auto& transfer = gLifetimeVulkan[readback ? 1 : 0][slot];
+    LifetimeVulkanTransfer& transfer = GetLifetimeVulkan().Transfers[readback ? 1 : 0][slot];
     if (transfer.Busy)
     {
         return RasterStatus::CapacityExceeded;
@@ -432,7 +448,7 @@ RasterStatus LifetimeTextureTransfer(usize slot, const internal::TextureTransfer
     if (update)
     {
         std::memcpy(transfer.Mapped, bytes, info.Size);
-        result = vmaFlushAllocation(gRasterAllocator, transfer.Staging.Allocation, 0, info.Size);
+        result = vmaFlushAllocation(GetRasterVulkan().Allocator, transfer.Staging.Allocation, 0, info.Size);
         if (result != VK_SUCCESS)
         {
             return RasterError(result);
@@ -441,7 +457,7 @@ RasterStatus LifetimeTextureTransfer(usize slot, const internal::TextureTransfer
     constexpr VkAccessFlags memory = VK_ACCESS_MEMORY_READ_BIT | VK_ACCESS_MEMORY_WRITE_BIT;
     if (update == false)
     {
-        const auto& source = gRasterTextures[info.Source];
+        const RasterVulkanTexture& source = GetRasterVulkan().Textures[info.Source];
         LifetimeVkImageBarrier(transfer.Command,
                                info.Source,
                                source,
@@ -454,7 +470,7 @@ RasterStatus LifetimeTextureTransfer(usize slot, const internal::TextureTransfer
     }
     if (readback == false)
     {
-        const auto& destination = gRasterTextures[info.Destination];
+        const RasterVulkanTexture& destination = GetRasterVulkan().Textures[info.Destination];
         LifetimeVkImageBarrier(transfer.Command,
                                info.Destination,
                                destination,
@@ -476,7 +492,7 @@ RasterStatus LifetimeTextureTransfer(usize slot, const internal::TextureTransfer
     {
         vkCmdCopyBufferToImage(transfer.Command,
                                transfer.Staging.Object,
-                               gRasterTextures[info.Destination].Object,
+                               GetRasterVulkan().Textures[info.Destination].Object,
                                VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
                                1,
                                &buffer);
@@ -484,7 +500,7 @@ RasterStatus LifetimeTextureTransfer(usize slot, const internal::TextureTransfer
     else if (readback)
     {
         vkCmdCopyImageToBuffer(transfer.Command,
-                               gRasterTextures[info.Source].Object,
+                               GetRasterVulkan().Textures[info.Source].Object,
                                VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
                                transfer.Staging.Object,
                                1,
@@ -520,16 +536,16 @@ RasterStatus LifetimeTextureTransfer(usize slot, const internal::TextureTransfer
         copy.dstOffset = LifetimeVkOffset(info.DestinationRegion);
         copy.extent = {region.Width, region.Height, 1};
         vkCmdCopyImage(transfer.Command,
-                       gRasterTextures[info.Source].Object,
+                       GetRasterVulkan().Textures[info.Source].Object,
                        VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
-                       gRasterTextures[info.Destination].Object,
+                       GetRasterVulkan().Textures[info.Destination].Object,
                        VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
                        1,
                        &copy);
     }
     if (update == false)
     {
-        const auto& source = gRasterTextures[info.Source];
+        const RasterVulkanTexture& source = GetRasterVulkan().Textures[info.Source];
         LifetimeVkImageBarrier(transfer.Command,
                                info.Source,
                                source,
@@ -542,7 +558,7 @@ RasterStatus LifetimeTextureTransfer(usize slot, const internal::TextureTransfer
     }
     if (readback == false)
     {
-        const auto& destination = gRasterTextures[info.Destination];
+        const RasterVulkanTexture& destination = GetRasterVulkan().Textures[info.Destination];
         LifetimeVkImageBarrier(transfer.Command,
                                info.Destination,
                                destination,
@@ -558,12 +574,12 @@ RasterStatus LifetimeTextureTransfer(usize slot, const internal::TextureTransfer
     {
         if (update == false)
         {
-            gRasterTextures[info.Source].ColorStage |= VK_PIPELINE_STAGE_TRANSFER_BIT;
-            gRasterTextures[info.Source].ColorAccess |= VK_ACCESS_TRANSFER_READ_BIT;
+            GetRasterVulkan().Textures[info.Source].ColorStage |= VK_PIPELINE_STAGE_TRANSFER_BIT;
+            GetRasterVulkan().Textures[info.Source].ColorAccess |= VK_ACCESS_TRANSFER_READ_BIT;
         }
         if (readback == false)
         {
-            auto& destination = gRasterTextures[info.Destination];
+            RasterVulkanTexture& destination = GetRasterVulkan().Textures[info.Destination];
             destination.ColorLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
             destination.ColorStage = VK_PIPELINE_STAGE_VERTEX_SHADER_BIT | VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT;
             destination.ColorAccess = VK_ACCESS_SHADER_READ_BIT;
@@ -576,12 +592,12 @@ RasterStatus LifetimeTextureTransfer(usize slot, const internal::TextureTransfer
 }
 RasterStatus LifetimePollTransfer(bool readback, usize slot) noexcept
 {
-    auto& transfer = gLifetimeVulkan[readback ? 1 : 0][slot];
-    if (transfer.Busy == false || gDevice == VK_NULL_HANDLE)
+    LifetimeVulkanTransfer& transfer = GetLifetimeVulkan().Transfers[readback ? 1 : 0][slot];
+    if (transfer.Busy == false || GetVulkan().Device == VK_NULL_HANDLE)
     {
         return RasterStatus::Failed;
     }
-    const auto result = vkGetFenceStatus(gDevice, transfer.Fence);
+    const VkResult result = vkGetFenceStatus(GetVulkan().Device, transfer.Fence);
     if (result == VK_NOT_READY)
     {
         return RasterStatus::Pending;
@@ -592,7 +608,7 @@ RasterStatus LifetimePollTransfer(bool readback, usize slot) noexcept
     }
     // An error is not proof of safe reuse. Close the session and let teardown
     // establish device-idle/lost ownership before releasing any ring allocation.
-    internal::Fail(gSession,
+    internal::Fail(GetVulkan().Session,
                    result == VK_ERROR_DEVICE_LOST ? StartupError::DeviceLost : StartupError::RenderingUnavailable);
     return result == VK_ERROR_DEVICE_LOST ? RasterStatus::DeviceLost : RasterStatus::Failed;
 }
@@ -603,8 +619,8 @@ RasterStatus LifetimeCopyReadback(usize slot, uint8* output, usize size) noexcep
     {
         return ready;
     }
-    auto& transfer = gLifetimeVulkan[1][slot];
-    const auto result = vmaInvalidateAllocation(gRasterAllocator, transfer.Staging.Allocation, 0, size);
+    LifetimeVulkanTransfer& transfer = GetLifetimeVulkan().Transfers[1][slot];
+    const VkResult result = vmaInvalidateAllocation(GetRasterVulkan().Allocator, transfer.Staging.Allocation, 0, size);
     if (result != VK_SUCCESS)
     {
         return RasterError(result);
@@ -614,17 +630,18 @@ RasterStatus LifetimeCopyReadback(usize slot, uint8* output, usize size) noexcep
 }
 void LifetimeReleaseTransfer(bool readback, usize slot) noexcept
 {
-    gLifetimeVulkan[readback ? 1 : 0][slot].Busy = false;
+    GetLifetimeVulkan().Transfers[readback ? 1 : 0][slot].Busy = false;
 }
 void WaitLifetimeSubmissions() noexcept
 {
-    for (const auto& direction : gLifetimeVulkan)
+    for (const StaticArray<LifetimeVulkanTransfer, internal::LIFETIME_TRANSFERS>& direction :
+         GetLifetimeVulkan().Transfers)
     {
         for (const auto& transfer : direction)
         {
             if (transfer.Busy)
             {
-                (void)Check(vkWaitForFences(gDevice, 1, &transfer.Fence, VK_TRUE, UINT64_MAX));
+                (void)Check(vkWaitForFences(GetVulkan().Device, 1, &transfer.Fence, VK_TRUE, UINT64_MAX));
             }
         }
     }
@@ -633,20 +650,20 @@ void LifetimeReset() noexcept
 {
     // RasterReset has already drained accepted RHI frame/upload/transfer fences
     // (or an owned device idle/lost), without waiting unrelated foreign work.
-    for (auto& direction : gLifetimeVulkan)
+    for (StaticArray<LifetimeVulkanTransfer, internal::LIFETIME_TRANSFERS>& direction : GetLifetimeVulkan().Transfers)
     {
         for (auto& transfer : direction)
         {
-            if (gDevice != VK_NULL_HANDLE)
+            if (GetVulkan().Device != VK_NULL_HANDLE)
             {
                 if (transfer.Command != VK_NULL_HANDLE)
                 {
-                    vkFreeCommandBuffers(gDevice, gCommands, 1, &transfer.Command);
+                    vkFreeCommandBuffers(GetVulkan().Device, GetVulkan().Commands, 1, &transfer.Command);
                 }
-                vkDestroyFence(gDevice, transfer.Fence, nullptr);
+                vkDestroyFence(GetVulkan().Device, transfer.Fence, nullptr);
                 if (transfer.Staging.Object != VK_NULL_HANDLE)
                 {
-                    vmaDestroyBuffer(gRasterAllocator, transfer.Staging.Object, transfer.Staging.Allocation);
+                    vmaDestroyBuffer(GetRasterVulkan().Allocator, transfer.Staging.Object, transfer.Staging.Allocation);
                 }
             }
             transfer = {};

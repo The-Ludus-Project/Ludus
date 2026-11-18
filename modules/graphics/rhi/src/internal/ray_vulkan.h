@@ -43,14 +43,26 @@ struct RayVulkanBatch final
     VkFence Fence = VK_NULL_HANDLE;
     usize Count = 0;
 };
-internal::StorageTable<RayVulkanStructure> gRayVulkanGeometry, gRayVulkanScene;
-internal::StorageTable<RayVulkanProgram> gRayVulkanProgram;
-internal::StorageTable<RayVulkanBatch> gRayVulkanBatch;
+/// Acceleration structures, ray programs and batches of one device owner (R14c).
+struct RayVulkanState final
+{
+    internal::StorageTable<RayVulkanStructure> Geometry;
+    internal::StorageTable<RayVulkanStructure> Scenes;
+    internal::StorageTable<RayVulkanProgram> Programs;
+    internal::StorageTable<RayVulkanBatch> Batches;
+};
+/// One record per device owner slot (R14c); see internal/owner.h.
+foundation::StaticArray<RayVulkanState, MAX_DEVICE_OWNERS> gRayVulkanStates{};
+/// RayVulkanState of the bound owner slot.
+RayVulkanState& GetRayVulkan() noexcept
+{
+    return gRayVulkanStates[internal::GetBoundOwnerSlot()];
+}
 void RayVulkanDropBuffer(RayVulkanBuffer& buffer) noexcept
 {
     if (buffer.Object != VK_NULL_HANDLE)
     {
-        vmaDestroyBuffer(gRasterAllocator, buffer.Object, buffer.Allocation);
+        vmaDestroyBuffer(GetRasterVulkan().Allocator, buffer.Object, buffer.Allocation);
     }
     buffer = {};
 }
@@ -74,7 +86,7 @@ VkResult RayVulkanBufferCreate(usize size,
         allocation.flags = VMA_ALLOCATION_CREATE_HOST_ACCESS_RANDOM_BIT | VMA_ALLOCATION_CREATE_MAPPED_BIT;
     }
     VmaAllocationInfo details{};
-    result = vmaCreateBufferWithAlignment(gRasterAllocator,
+    result = vmaCreateBufferWithAlignment(GetRasterVulkan().Allocator,
                                           &info,
                                           &allocation,
                                           alignment,
@@ -94,31 +106,31 @@ VkResult RayVulkanBufferCreate(usize size,
     if (input != nullptr)
     {
         std::memcpy(buffer.Mapped, input, size);
-        return vmaFlushAllocation(gRasterAllocator, buffer.Allocation, 0, size);
+        return vmaFlushAllocation(GetRasterVulkan().Allocator, buffer.Allocation, 0, size);
     }
     return VK_SUCCESS;
 }
 VkDeviceAddress RayVulkanAddress(const RayVulkanBuffer& buffer) noexcept
 {
     VkBufferDeviceAddressInfo info{ .sType = VK_STRUCTURE_TYPE_BUFFER_DEVICE_ADDRESS_INFO, .buffer = buffer.Object };
-    return vkGetBufferDeviceAddress(gDevice, &info);
+    return vkGetBufferDeviceAddress(GetVulkan().Device, &info);
 }
 VkResult RayVulkanBegin(VkCommandBuffer& command, VkFence& fence) noexcept
 {
     VkCommandBufferAllocateInfo allocate
     {
         .sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO,
-        .commandPool = gCommands,
+        .commandPool = GetVulkan().Commands,
         .level = VK_COMMAND_BUFFER_LEVEL_PRIMARY,
         .commandBufferCount = 1,
     };
-    auto result = vkAllocateCommandBuffers(gDevice, &allocate, &command);
+    VkResult result = vkAllocateCommandBuffers(GetVulkan().Device, &allocate, &command);
     if (result != VK_SUCCESS)
     {
         return result;
     }
     VkFenceCreateInfo create{ .sType = VK_STRUCTURE_TYPE_FENCE_CREATE_INFO };
-    result = vkCreateFence(gDevice, &create, nullptr, &fence);
+    result = vkCreateFence(GetVulkan().Device, &create, nullptr, &fence);
     if (result != VK_SUCCESS)
     {
         return result;
@@ -138,7 +150,7 @@ VkResult RayVulkanSubmit(VkCommandBuffer command, VkFence fence) noexcept
         return result;
     }
     VkSubmitInfo submit{ .sType = VK_STRUCTURE_TYPE_SUBMIT_INFO, .commandBufferCount = 1, .pCommandBuffers = &command };
-    return vkQueueSubmit(gQueue, 1, &submit, fence);
+    return vkQueueSubmit(GetVulkan().Queue, 1, &submit, fence);
 }
 struct RayVulkanDependency final
 {
@@ -168,15 +180,15 @@ void RayVulkanDropStructure(RayVulkanStructure& structure) noexcept
 {
     if (structure.Object != VK_NULL_HANDLE)
     {
-        vkDestroyAccelerationStructureKHR(gDevice, structure.Object, nullptr);
+        vkDestroyAccelerationStructureKHR(GetVulkan().Device, structure.Object, nullptr);
     }
     if (structure.Command != VK_NULL_HANDLE)
     {
-        vkFreeCommandBuffers(gDevice, gCommands, 1, &structure.Command);
+        vkFreeCommandBuffers(GetVulkan().Device, GetVulkan().Commands, 1, &structure.Command);
     }
     if (structure.Fence != VK_NULL_HANDLE)
     {
-        vkDestroyFence(gDevice, structure.Fence, nullptr);
+        vkDestroyFence(GetVulkan().Device, structure.Fence, nullptr);
     }
     RayVulkanDropBuffer(structure.Storage);
     RayVulkanDropBuffer(structure.Inputs);
@@ -211,7 +223,7 @@ RasterStatus RayVulkanBuild(RayVulkanStructure& structure,
     }
     const auto inputs = description.InputBytes, budget = description.ByteBudget;
 
-    if (geometryCount > gRayProperties.maxGeometryCount)
+    if (geometryCount > GetVulkan().RayProperties.maxGeometryCount)
     {
         return RasterStatus::CapacityExceeded;
     }
@@ -228,7 +240,7 @@ RasterStatus RayVulkanBuild(RayVulkanStructure& structure,
     {
         .sType = VK_STRUCTURE_TYPE_ACCELERATION_STRUCTURE_BUILD_SIZES_INFO_KHR,
     };
-    vkGetAccelerationStructureBuildSizesKHR(gDevice,
+    vkGetAccelerationStructureBuildSizesKHR(GetVulkan().Device,
                                             VK_ACCELERATION_STRUCTURE_BUILD_TYPE_DEVICE_KHR,
                                             &build,
                                             primitives.GetData(),
@@ -252,7 +264,7 @@ RasterStatus RayVulkanBuild(RayVulkanStructure& structure,
                                        false,
                                        nullptr,
                                        structure.Scratch,
-                                       gRayProperties.minAccelerationStructureScratchOffsetAlignment);
+                                       GetVulkan().RayProperties.minAccelerationStructureScratchOffsetAlignment);
     }
     if (result != VK_SUCCESS)
     {
@@ -265,7 +277,7 @@ RasterStatus RayVulkanBuild(RayVulkanStructure& structure,
         .size = sizes.accelerationStructureSize,
         .type = type,
     };
-    result = vkCreateAccelerationStructureKHR(gDevice, &create, nullptr, &structure.Object);
+    result = vkCreateAccelerationStructureKHR(GetVulkan().Device, &create, nullptr, &structure.Object);
     if (result == VK_SUCCESS)
     {
         result = RayVulkanBegin(structure.Command, structure.Fence);
@@ -308,12 +320,13 @@ RasterStatus RayVulkanBuild(RayVulkanStructure& structure,
 } // namespace
 RayCapabilities RayLimits() noexcept
 {
-    if (gRayEnabled == false || gDevice == VK_NULL_HANDLE || gQueueCompute == false)
+    if (GetVulkan().IsRayEnabled == false || GetVulkan().Device == VK_NULL_HANDLE ||
+        GetVulkan().HasQueueCompute == false)
     {
         return {};
     }
     VkPhysicalDeviceProperties properties{};
-    vkGetPhysicalDeviceProperties(gPhysical, &properties);
+    vkGetPhysicalDeviceProperties(GetVulkan().Physical, &properties);
     if (properties.deviceType != VK_PHYSICAL_DEVICE_TYPE_DISCRETE_GPU &&
         properties.deviceType != VK_PHYSICAL_DEVICE_TYPE_INTEGRATED_GPU)
     {
@@ -321,8 +334,9 @@ RayCapabilities RayLimits() noexcept
     }
     const auto bufferLimit = ComputeLimits().MaxStorageRange;
     const auto requested = internal::CurrentStorageLimits().RayInstances;
-    const auto supported =
-        gRayProperties.maxInstanceCount < requested ? static_cast<uint32>(gRayProperties.maxInstanceCount) : requested;
+    const uint32 supported = GetVulkan().RayProperties.maxInstanceCount < requested
+                                 ? static_cast<uint32>(GetVulkan().RayProperties.maxInstanceCount)
+                                 : requested;
     // Vulkan instanceCustomIndex is a 24-bit field; query results use that identity.
     return
     {
@@ -335,11 +349,11 @@ RayCapabilities RayLimits() noexcept
 }
 VkAccelerationStructureKHR GetRayVulkanScene(usize slot) noexcept
 {
-    return gRayVulkanScene[slot].Object;
+    return GetRayVulkan().Scenes[slot].Object;
 }
 RasterStatus RayCreateProgram(usize slot, const ShaderDescription& description) noexcept
 {
-    if (gRayVulkanProgram.EnsureSlots(slot + 1) == false)
+    if (GetRayVulkan().Programs.EnsureSlots(slot + 1) == false)
     {
         return internal::StorageFailure();
     }
@@ -349,14 +363,14 @@ RasterStatus RayCreateProgram(usize slot, const ShaderDescription& description) 
     {
         return RasterStatus::InvalidDescription;
     }
-    auto& program = gRayVulkanProgram[slot];
+    RayVulkanProgram& program = GetRayVulkan().Programs[slot];
     VkShaderModuleCreateInfo shader
     {
         .sType = VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO,
         .codeSize = (description.Spirv.GetSize() * sizeof(ludus::foundation::uint32)),
         .pCode = description.Spirv.GetDataOrNull(),
     };
-    auto result = vkCreateShaderModule(gDevice, &shader, nullptr, &program.Shader);
+    VkResult result = vkCreateShaderModule(GetVulkan().Device, &shader, nullptr, &program.Shader);
     VkDescriptorSetLayoutBinding bindings[5]{};
     for (uint32 i = 0; i < 5; ++i)
     {
@@ -378,7 +392,7 @@ RasterStatus RayCreateProgram(usize slot, const ShaderDescription& description) 
     };
     if (result == VK_SUCCESS)
     {
-        result = vkCreateDescriptorSetLayout(gDevice, &bindingInfo, nullptr, &program.Bindings);
+        result = vkCreateDescriptorSetLayout(GetVulkan().Device, &bindingInfo, nullptr, &program.Bindings);
     }
     VkPipelineLayoutCreateInfo layout
     {
@@ -388,7 +402,7 @@ RasterStatus RayCreateProgram(usize slot, const ShaderDescription& description) 
     };
     if (result == VK_SUCCESS)
     {
-        result = vkCreatePipelineLayout(gDevice, &layout, nullptr, &program.Layout);
+        result = vkCreatePipelineLayout(GetVulkan().Device, &layout, nullptr, &program.Layout);
     }
     char entry[ENTRY_CAPACITY]{};
     std::memcpy(entry, description.SpirvEntry.data(), description.SpirvEntry.size());
@@ -406,25 +420,28 @@ RasterStatus RayCreateProgram(usize slot, const ShaderDescription& description) 
     };
     if (result == VK_SUCCESS)
     {
-        result = vkCreateComputePipelines(gDevice, VK_NULL_HANDLE, 1, &pipeline, nullptr, &program.Pipeline);
+        result = vkCreateComputePipelines(GetVulkan().Device, VK_NULL_HANDLE, 1, &pipeline, nullptr, &program.Pipeline);
     }
     return RasterError(result);
 }
 RasterStatus
 RayCreateGeometry(usize slot, const RayGeometryDescription& description, RayAllocation& allocation) noexcept
 {
-    if (gRayVulkanGeometry.EnsureSlots(slot + 1) == false)
+    if (GetRayVulkan().Geometry.EnsureSlots(slot + 1) == false)
     {
         return internal::StorageFailure();
     }
     const auto& d = description;
-    const auto vertexBytes = d.VertexCount * 3 * sizeof(float32), indexBytes = d.IndexCount * sizeof(uint32);
-    if (d.IndexCount / 3 > gRayProperties.maxPrimitiveCount || vertexBytes > d.ByteBudget ||
+    constexpr usize VERTEX_POSITION_FLOATS = 3;
+    constexpr usize TRIANGLE_INDICES = 3;
+    const usize vertexBytes = d.VertexCount * VERTEX_POSITION_FLOATS * sizeof(float32);
+    const usize indexBytes = d.IndexCount * sizeof(uint32);
+    if (d.IndexCount / TRIANGLE_INDICES > GetVulkan().RayProperties.maxPrimitiveCount || vertexBytes > d.ByteBudget ||
         indexBytes > d.ByteBudget - vertexBytes)
     {
         return RasterStatus::CapacityExceeded;
     }
-    auto& geometry = gRayVulkanGeometry[slot];
+    RayVulkanStructure& geometry = GetRayVulkan().Geometry[slot];
     const auto usage = VK_BUFFER_USAGE_ACCELERATION_STRUCTURE_BUILD_INPUT_READ_ONLY_BIT_KHR |
                        VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT;
     auto result = RayVulkanBufferCreate(vertexBytes, usage, true, d.Positions, geometry.Inputs);
@@ -476,7 +493,7 @@ RayCreateGeometry(usize slot, const RayGeometryDescription& description, RayAllo
 RasterStatus
 RayCreateScene(usize slot, const internal::NativeRaySceneDescription& description, RayAllocation& allocation) noexcept
 {
-    if (gRayVulkanScene.EnsureSlots(slot + 1) == false)
+    if (GetRayVulkan().Scenes.EnsureSlots(slot + 1) == false)
     {
         return internal::StorageFailure();
     }
@@ -490,7 +507,7 @@ RayCreateScene(usize slot, const internal::NativeRaySceneDescription& descriptio
     {
         return RasterStatus::CapacityExceeded;
     }
-    auto& scene = gRayVulkanScene[slot];
+    RayVulkanStructure& scene = GetRayVulkan().Scenes[slot];
     auto result = RayVulkanBufferCreate(instanceBytes,
                                         VK_BUFFER_USAGE_ACCELERATION_STRUCTURE_BUILD_INPUT_READ_ONLY_BIT_KHR |
                                             VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT,
@@ -518,11 +535,12 @@ RayCreateScene(usize slot, const internal::NativeRaySceneDescription& descriptio
         VkAccelerationStructureDeviceAddressInfoKHR address
         {
             .sType = VK_STRUCTURE_TYPE_ACCELERATION_STRUCTURE_DEVICE_ADDRESS_INFO_KHR,
-            .accelerationStructure = gRayVulkanGeometry[input[i].Geometry].Object,
+            .accelerationStructure = GetRayVulkan().Geometry[input[i].Geometry].Object,
         };
-        instance.accelerationStructureReference = vkGetAccelerationStructureDeviceAddressKHR(gDevice, &address);
+        instance.accelerationStructureReference =
+            vkGetAccelerationStructureDeviceAddressKHR(GetVulkan().Device, &address);
     }
-    result = vmaFlushAllocation(gRasterAllocator, scene.Inputs.Allocation, 0, instanceBytes);
+    result = vmaFlushAllocation(GetRasterVulkan().Allocator, scene.Inputs.Allocation, 0, instanceBytes);
     if (result != VK_SUCCESS)
     {
         return RasterError(result);
@@ -549,16 +567,16 @@ RayCreateScene(usize slot, const internal::NativeRaySceneDescription& descriptio
 }
 RasterStatus RaySubmit(usize slot, const internal::NativeRaySubmission& submission, RayAllocation& allocation) noexcept
 {
-    if (gRayVulkanBatch.EnsureSlots(slot + 1) == false)
+    if (GetRayVulkan().Batches.EnsureSlots(slot + 1) == false)
     {
         return internal::StorageFailure();
     }
     const auto programSlot = submission.Program, sceneSlot = submission.Scene, count = submission.Count;
     const auto* rays = submission.Rays;
 
-    auto& batch = gRayVulkanBatch[slot];
-    const auto& program = gRayVulkanProgram[programSlot];
-    const auto& scene = gRayVulkanScene[sceneSlot];
+    RayVulkanBatch& batch = GetRayVulkan().Batches[slot];
+    const RayVulkanProgram& program = GetRayVulkan().Programs[programSlot];
+    const RayVulkanStructure& scene = GetRayVulkan().Scenes[sceneSlot];
     batch.Count = count;
     const uint32 parameters[4]{static_cast<uint32>(count), 0, 0, 0};
     auto result =
@@ -591,7 +609,7 @@ RasterStatus RaySubmit(usize slot, const internal::NativeRaySubmission& submissi
     };
     if (result == VK_SUCCESS)
     {
-        result = vkCreateDescriptorPool(gDevice, &pool, nullptr, &batch.Pool);
+        result = vkCreateDescriptorPool(GetVulkan().Device, &pool, nullptr, &batch.Pool);
     }
     VkDescriptorSetAllocateInfo allocate
     {
@@ -602,7 +620,7 @@ RasterStatus RaySubmit(usize slot, const internal::NativeRaySubmission& submissi
     };
     if (result == VK_SUCCESS)
     {
-        result = vkAllocateDescriptorSets(gDevice, &allocate, &batch.Set);
+        result = vkAllocateDescriptorSets(GetVulkan().Device, &allocate, &batch.Set);
     }
     if (result != VK_SUCCESS)
     {
@@ -618,8 +636,10 @@ RasterStatus RaySubmit(usize slot, const internal::NativeRaySubmission& submissi
                                            {batch.Outputs.Object, 0, batch.Outputs.Size},
                                            {scene.Opacity.Object, 0, scene.Opacity.Size},
                                            {batch.Parameters.Object, 0, batch.Parameters.Size}};
-    VkWriteDescriptorSet writes[5]{};
-    for (uint32 i = 0; i < 5; ++i)
+    // The scene, then the input, output and parameter buffers.
+    constexpr uint32 BATCH_DESCRIPTOR_WRITES = 5;
+    foundation::StaticArray<VkWriteDescriptorSet, BATCH_DESCRIPTOR_WRITES> writes{};
+    for (uint32 i = 0; i < BATCH_DESCRIPTOR_WRITES; ++i)
     {
         writes[i] =
         {
@@ -634,7 +654,7 @@ RasterStatus RaySubmit(usize slot, const internal::NativeRaySubmission& submissi
             .pBufferInfo = i == 0 ? nullptr : &buffers[i - 1],
         };
     }
-    vkUpdateDescriptorSets(gDevice, 5, writes, 0, nullptr);
+    vkUpdateDescriptorSets(GetVulkan().Device, BATCH_DESCRIPTOR_WRITES, writes.GetData(), 0, nullptr);
     result = RayVulkanBegin(batch.Command, batch.Fence);
     if (result != VK_SUCCESS)
     {
@@ -678,30 +698,31 @@ RasterStatus RayPoll(internal::RasterKind kind, usize slot) noexcept
 {
     if (kind == internal::RasterKind::RayProgram)
     {
-        return gRayVulkanProgram[slot].Pipeline == VK_NULL_HANDLE ? RasterStatus::Failed : RasterStatus::Ready;
+        return GetRayVulkan().Programs[slot].Pipeline == VK_NULL_HANDLE ? RasterStatus::Failed : RasterStatus::Ready;
     }
-    auto fence = kind == internal::RasterKind::RayBatch      ? gRayVulkanBatch[slot].Fence
-                 : kind == internal::RasterKind::RayGeometry ? gRayVulkanGeometry[slot].Fence
-                                                             : gRayVulkanScene[slot].Fence;
+    VkFence fence = kind == internal::RasterKind::RayBatch      ? GetRayVulkan().Batches[slot].Fence
+                    : kind == internal::RasterKind::RayGeometry ? GetRayVulkan().Geometry[slot].Fence
+                                                                : GetRayVulkan().Scenes[slot].Fence;
     if (fence == VK_NULL_HANDLE)
     {
         return RasterStatus::Failed;
     }
-    const auto result = vkGetFenceStatus(gDevice, fence);
+    const VkResult result = vkGetFenceStatus(GetVulkan().Device, fence);
     if (result == VK_NOT_READY)
     {
         return RasterStatus::Pending;
     }
     if (result == VK_SUCCESS && kind != internal::RasterKind::RayBatch)
     {
-        auto& structure = kind == internal::RasterKind::RayGeometry ? gRayVulkanGeometry[slot] : gRayVulkanScene[slot];
+        RayVulkanStructure& structure =
+            kind == internal::RasterKind::RayGeometry ? GetRayVulkan().Geometry[slot] : GetRayVulkan().Scenes[slot];
         RayVulkanDropBuffer(structure.Scratch);
     }
     return RasterError(result);
 }
 RasterStatus RayRead(usize slot, RayResult* output, usize count) noexcept
 {
-    auto& batch = gRayVulkanBatch[slot];
+    RayVulkanBatch& batch = GetRayVulkan().Batches[slot];
     const auto ready = RayPoll(internal::RasterKind::RayBatch, slot);
     if (ready != RasterStatus::Ready)
     {
@@ -711,7 +732,8 @@ RasterStatus RayRead(usize slot, RayResult* output, usize count) noexcept
     {
         return RasterStatus::InvalidDescription;
     }
-    const auto result = vmaInvalidateAllocation(gRasterAllocator, batch.Outputs.Allocation, 0, batch.Outputs.Size);
+    const VkResult result =
+        vmaInvalidateAllocation(GetRasterVulkan().Allocator, batch.Outputs.Allocation, 0, batch.Outputs.Size);
     if (result != VK_SUCCESS)
     {
         return RasterError(result);
@@ -721,49 +743,49 @@ RasterStatus RayRead(usize slot, RayResult* output, usize count) noexcept
 }
 void RayDestroy(internal::RasterKind kind, usize slot) noexcept
 {
-    if (kind == internal::RasterKind::RayGeometry && slot < gRayVulkanGeometry.GetSize())
+    if (kind == internal::RasterKind::RayGeometry && slot < GetRayVulkan().Geometry.GetSize())
     {
-        RayVulkanDropStructure(gRayVulkanGeometry[slot]);
+        RayVulkanDropStructure(GetRayVulkan().Geometry[slot]);
     }
-    else if (kind == internal::RasterKind::RayScene && slot < gRayVulkanScene.GetSize())
+    else if (kind == internal::RasterKind::RayScene && slot < GetRayVulkan().Scenes.GetSize())
     {
-        RayVulkanDropStructure(gRayVulkanScene[slot]);
+        RayVulkanDropStructure(GetRayVulkan().Scenes[slot]);
     }
-    else if (kind == internal::RasterKind::RayProgram && slot < gRayVulkanProgram.GetSize())
+    else if (kind == internal::RasterKind::RayProgram && slot < GetRayVulkan().Programs.GetSize())
     {
-        auto& program = gRayVulkanProgram[slot];
+        RayVulkanProgram& program = GetRayVulkan().Programs[slot];
         if (program.Pipeline != VK_NULL_HANDLE)
         {
-            vkDestroyPipeline(gDevice, program.Pipeline, nullptr);
+            vkDestroyPipeline(GetVulkan().Device, program.Pipeline, nullptr);
         }
         if (program.Layout != VK_NULL_HANDLE)
         {
-            vkDestroyPipelineLayout(gDevice, program.Layout, nullptr);
+            vkDestroyPipelineLayout(GetVulkan().Device, program.Layout, nullptr);
         }
         if (program.Bindings != VK_NULL_HANDLE)
         {
-            vkDestroyDescriptorSetLayout(gDevice, program.Bindings, nullptr);
+            vkDestroyDescriptorSetLayout(GetVulkan().Device, program.Bindings, nullptr);
         }
         if (program.Shader != VK_NULL_HANDLE)
         {
-            vkDestroyShaderModule(gDevice, program.Shader, nullptr);
+            vkDestroyShaderModule(GetVulkan().Device, program.Shader, nullptr);
         }
         program = {};
     }
-    else if (kind == internal::RasterKind::RayBatch && slot < gRayVulkanBatch.GetSize())
+    else if (kind == internal::RasterKind::RayBatch && slot < GetRayVulkan().Batches.GetSize())
     {
-        auto& batch = gRayVulkanBatch[slot];
+        RayVulkanBatch& batch = GetRayVulkan().Batches[slot];
         if (batch.Pool != VK_NULL_HANDLE)
         {
-            vkDestroyDescriptorPool(gDevice, batch.Pool, nullptr);
+            vkDestroyDescriptorPool(GetVulkan().Device, batch.Pool, nullptr);
         }
         if (batch.Command != VK_NULL_HANDLE)
         {
-            vkFreeCommandBuffers(gDevice, gCommands, 1, &batch.Command);
+            vkFreeCommandBuffers(GetVulkan().Device, GetVulkan().Commands, 1, &batch.Command);
         }
         if (batch.Fence != VK_NULL_HANDLE)
         {
-            vkDestroyFence(gDevice, batch.Fence, nullptr);
+            vkDestroyFence(GetVulkan().Device, batch.Fence, nullptr);
         }
         RayVulkanDropBuffer(batch.Inputs);
         RayVulkanDropBuffer(batch.Outputs);
@@ -773,9 +795,9 @@ void RayDestroy(internal::RasterKind kind, usize slot) noexcept
 }
 void RayDrain() noexcept
 {
-    if (gDevice != VK_NULL_HANDLE && gRayEnabled)
+    if (GetVulkan().Device != VK_NULL_HANDLE && GetVulkan().IsRayEnabled)
     {
-        static_cast<void>(vkDeviceWaitIdle(gDevice));
+        static_cast<void>(vkDeviceWaitIdle(GetVulkan().Device));
     }
 }
 } // namespace ludus::graphics::rhi::backend

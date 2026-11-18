@@ -7,10 +7,21 @@ namespace ludus::graphics::rhi::backend
 {
 namespace
 {
-GpuTiming gTiming;
-VkQueryPool gTimingPool = VK_NULL_HANDLE;
-uint64 gTimingCpuStart = 0;
-usize gTimingFrame = 0;
+/// Frame timestamp queries of one device owner (R14c).
+struct MeasurementVulkanState final
+{
+    GpuTiming Timing;
+    VkQueryPool Pool = VK_NULL_HANDLE;
+    uint64 CpuStart = 0;
+    usize Frame = 0;
+};
+/// One record per device owner slot (R14c); see internal/owner.h.
+foundation::StaticArray<MeasurementVulkanState, MAX_DEVICE_OWNERS> gMeasurementVulkanStates{};
+/// MeasurementVulkanState of the bound owner slot.
+MeasurementVulkanState& GetMeasurementVulkan() noexcept
+{
+    return gMeasurementVulkanStates[internal::GetBoundOwnerSlot()];
+}
 } // namespace
 // Thanks to AMD GPUOpen, Vulkan Memory Allocator 3.3.0, Statistics:
 // https://gpuopen-librariesandsdks.github.io/VulkanMemoryAllocator/html/statistics.html
@@ -18,10 +29,10 @@ usize gTimingFrame = 0;
 bool AllocatorBlockBytes(uint64& bytes) noexcept
 {
     bytes = 0;
-    if (gRasterAllocator != nullptr)
+    if (GetRasterVulkan().Allocator != nullptr)
     {
         VmaTotalStatistics statistics{};
-        vmaCalculateStatistics(gRasterAllocator, &statistics);
+        vmaCalculateStatistics(GetRasterVulkan().Allocator, &statistics);
         bytes = statistics.total.statistics.blockBytes;
     }
     return true;
@@ -29,7 +40,7 @@ bool AllocatorBlockBytes(uint64& bytes) noexcept
 MeasurementAdapter TimingAdapter() noexcept
 {
     VkPhysicalDeviceProperties properties{};
-    vkGetPhysicalDeviceProperties(gPhysical, &properties);
+    vkGetPhysicalDeviceProperties(GetVulkan().Physical, &properties);
     MeasurementAdapter output;
     internal::CopyMeasurementName(properties.deviceName, sizeof(properties.deviceName), output.Name);
     output.VendorId = properties.vendorID;
@@ -42,70 +53,73 @@ MeasurementAdapter TimingAdapter() noexcept
 }
 void TimingReset() noexcept
 {
-    if (gTimingPool != VK_NULL_HANDLE && gDevice != VK_NULL_HANDLE)
+    if (GetMeasurementVulkan().Pool != VK_NULL_HANDLE && GetVulkan().Device != VK_NULL_HANDLE)
     {
         // Device teardown already drains rendering before releasing raster records.
-        vkDestroyQueryPool(gDevice, gTimingPool, nullptr);
+        vkDestroyQueryPool(GetVulkan().Device, GetMeasurementVulkan().Pool, nullptr);
     }
-    gTimingPool = VK_NULL_HANDLE;
-    gTiming = {};
+    GetMeasurementVulkan().Pool = VK_NULL_HANDLE;
+    GetMeasurementVulkan().Timing = {};
 }
 GpuTiming TimingPoll() noexcept
 {
-    if (gTiming.State == GpuTimingState::Pending)
+    if (GetMeasurementVulkan().Timing.State == GpuTimingState::Pending)
     {
         // Query reset executes on the GPU. Old values can remain available until then;
         // the captured submission fence must complete before reading the reused pool.
-        const auto fence = vkGetFenceStatus(gDevice, gFrames[gTimingFrame].Fence);
+        const VkResult fence =
+            vkGetFenceStatus(GetVulkan().Device, GetVulkan().Frames[GetMeasurementVulkan().Frame].Fence);
         if (fence == VK_NOT_READY)
         {
-            return gTiming;
+            return GetMeasurementVulkan().Timing;
         }
         if (fence != VK_SUCCESS)
         {
-            gTiming.State = GpuTimingState::Failed;
+            GetMeasurementVulkan().Timing.State = GpuTimingState::Failed;
             if (fence == VK_ERROR_DEVICE_LOST)
             {
-                internal::Fail(gSession, StartupError::DeviceLost);
+                internal::Fail(GetVulkan().Session, StartupError::DeviceLost);
             }
-            return gTiming;
+            return GetMeasurementVulkan().Timing;
         }
         uint64 values[4]{};
-        const auto result = vkGetQueryPoolResults(gDevice,
-                                                  gTimingPool,
-                                                  0,
-                                                  2,
-                                                  sizeof(values),
-                                                  values,
-                                                  sizeof(uint64) * 2,
-                                                  VK_QUERY_RESULT_64_BIT | VK_QUERY_RESULT_WITH_AVAILABILITY_BIT);
+        const VkResult result = vkGetQueryPoolResults(GetVulkan().Device,
+                                                      GetMeasurementVulkan().Pool,
+                                                      0,
+                                                      2,
+                                                      sizeof(values),
+                                                      values,
+                                                      sizeof(uint64) * 2,
+                                                      VK_QUERY_RESULT_64_BIT | VK_QUERY_RESULT_WITH_AVAILABILITY_BIT);
         if (result == VK_SUCCESS && values[1] != 0 && values[3] != 0)
         {
             const auto now = time::NowTicks();
-            gTiming.State =
-                now >= gTimingCpuStart && internal::TimestampDuration(values[0],
-                                                                      values[2],
-                                                                      {gTiming.ValidBits, gTiming.TickNanoseconds},
-                                                                      now - gTimingCpuStart,
-                                                                      gTiming.DurationNanoseconds)
+            GetMeasurementVulkan().Timing.State =
+                now >= GetMeasurementVulkan().CpuStart &&
+                        internal::TimestampDuration(
+                            values[0],
+                            values[2],
+                            {GetMeasurementVulkan().Timing.ValidBits, GetMeasurementVulkan().Timing.TickNanoseconds},
+                            now - GetMeasurementVulkan().CpuStart,
+                            GetMeasurementVulkan().Timing.DurationNanoseconds)
                     ? GpuTimingState::Available
                     : GpuTimingState::Disjoint;
         }
         else if (result != VK_NOT_READY && result != VK_SUCCESS)
         {
-            gTiming.State = GpuTimingState::Failed;
+            GetMeasurementVulkan().Timing.State = GpuTimingState::Failed;
             if (result == VK_ERROR_DEVICE_LOST)
             {
-                internal::Fail(gSession, StartupError::DeviceLost);
+                internal::Fail(GetVulkan().Session, StartupError::DeviceLost);
             }
         }
     }
-    return gTiming;
+    return GetMeasurementVulkan().Timing;
 }
 RasterStatus TimingArm() noexcept
 {
     const auto state = TimingPoll().State;
-    if (gDevice == VK_NULL_HANDLE)
+    if (GetVulkan().Device == VK_NULL_HANDLE)
     {
         return internal::GetStartup().State == StartupState::DeviceLost ? RasterStatus::DeviceLost
                                                                         : RasterStatus::Failed;
@@ -116,27 +130,28 @@ RasterStatus TimingArm() noexcept
     }
     VkQueueFamilyProperties families[32]{};
     uint32 count = 32;
-    vkGetPhysicalDeviceQueueFamilyProperties(gPhysical, &count, families);
+    vkGetPhysicalDeviceQueueFamilyProperties(GetVulkan().Physical, &count, families);
     VkPhysicalDeviceProperties properties{};
-    vkGetPhysicalDeviceProperties(gPhysical, &properties);
-    if (gFamily >= count || families[gFamily].timestampValidBits == 0 || properties.limits.timestampPeriod <= 0)
+    vkGetPhysicalDeviceProperties(GetVulkan().Physical, &properties);
+    if (GetVulkan().Family >= count || families[GetVulkan().Family].timestampValidBits == 0 ||
+        properties.limits.timestampPeriod <= 0)
     {
-        gTiming = { .State = GpuTimingState::Unavailable };
+        GetMeasurementVulkan().Timing = { .State = GpuTimingState::Unavailable };
         return RasterStatus::Unsupported;
     }
-    if (gTimingPool == VK_NULL_HANDLE)
+    if (GetMeasurementVulkan().Pool == VK_NULL_HANDLE)
     {
         VkQueryPoolCreateInfo info{};
         info.sType = VK_STRUCTURE_TYPE_QUERY_POOL_CREATE_INFO;
         info.queryType = VK_QUERY_TYPE_TIMESTAMP;
         info.queryCount = 2;
-        const auto result = vkCreateQueryPool(gDevice, &info, nullptr, &gTimingPool);
+        const VkResult result = vkCreateQueryPool(GetVulkan().Device, &info, nullptr, &GetMeasurementVulkan().Pool);
         if (result != VK_SUCCESS)
         {
-            gTimingPool = VK_NULL_HANDLE;
+            GetMeasurementVulkan().Pool = VK_NULL_HANDLE;
             if (result == VK_ERROR_DEVICE_LOST)
             {
-                internal::Fail(gSession, StartupError::DeviceLost);
+                internal::Fail(GetVulkan().Session, StartupError::DeviceLost);
                 return RasterStatus::DeviceLost;
             }
             return result == VK_ERROR_OUT_OF_HOST_MEMORY || result == VK_ERROR_OUT_OF_DEVICE_MEMORY
@@ -144,36 +159,42 @@ RasterStatus TimingArm() noexcept
                        : RasterStatus::Failed;
         }
     }
-    gTiming =
+    GetMeasurementVulkan().Timing =
     {
         .State = GpuTimingState::Armed,
         .TickNanoseconds = static_cast<float64>(properties.limits.timestampPeriod),
-        .ValidBits = families[gFamily].timestampValidBits,
+        .ValidBits = families[GetVulkan().Family].timestampValidBits,
     };
     return RasterStatus::Ready;
 }
 void TimingBegin() noexcept
 {
-    if (gTiming.State == GpuTimingState::Armed)
+    if (GetMeasurementVulkan().Timing.State == GpuTimingState::Armed)
     {
-        gTimingCpuStart = time::NowTicks();
-        vkCmdResetQueryPool(gFrames[gFrame].Command, gTimingPool, 0, 2);
-        vkCmdWriteTimestamp(gFrames[gFrame].Command, VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT, gTimingPool, 0);
+        GetMeasurementVulkan().CpuStart = time::NowTicks();
+        vkCmdResetQueryPool(GetVulkan().Frames[GetVulkan().FrameIndex].Command, GetMeasurementVulkan().Pool, 0, 2);
+        vkCmdWriteTimestamp(GetVulkan().Frames[GetVulkan().FrameIndex].Command,
+                            VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT,
+                            GetMeasurementVulkan().Pool,
+                            0);
     }
 }
 void TimingEnd() noexcept
 {
-    if (gTiming.State == GpuTimingState::Armed)
+    if (GetMeasurementVulkan().Timing.State == GpuTimingState::Armed)
     {
-        vkCmdWriteTimestamp(gFrames[gFrame].Command, VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT, gTimingPool, 1);
-        gTimingFrame = gFrame;
+        vkCmdWriteTimestamp(GetVulkan().Frames[GetVulkan().FrameIndex].Command,
+                            VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT,
+                            GetMeasurementVulkan().Pool,
+                            1);
+        GetMeasurementVulkan().Frame = GetVulkan().FrameIndex;
     }
 }
 void TimingSubmitted() noexcept
 {
-    if (gTiming.State == GpuTimingState::Armed)
+    if (GetMeasurementVulkan().Timing.State == GpuTimingState::Armed)
     {
-        gTiming.State = GpuTimingState::Pending;
+        GetMeasurementVulkan().Timing.State = GpuTimingState::Pending;
     }
 }
 bool RasterAllocationBytes(internal::RasterKind kind, usize slot, uint64& bytes) noexcept
@@ -183,17 +204,17 @@ bool RasterAllocationBytes(internal::RasterKind kind, usize slot, uint64& bytes)
         if (allocation != nullptr)
         {
             VmaAllocationInfo info{};
-            vmaGetAllocationInfo(gRasterAllocator, allocation, &info);
+            vmaGetAllocationInfo(GetRasterVulkan().Allocator, allocation, &info);
             bytes += info.size;
         }
     };
-    if (kind == internal::RasterKind::Buffer && slot < gRasterBuffers.GetSize())
+    if (kind == internal::RasterKind::Buffer && slot < GetRasterVulkan().Buffers.GetSize())
     {
-        add(gRasterBuffers[slot].Allocation);
+        add(GetRasterVulkan().Buffers[slot].Allocation);
     }
-    else if (kind == internal::RasterKind::Texture && slot < gRasterTextures.GetSize())
+    else if (kind == internal::RasterKind::Texture && slot < GetRasterVulkan().Textures.GetSize())
     {
-        const auto& texture = gRasterTextures[slot];
+        const RasterVulkanTexture& texture = GetRasterVulkan().Textures[slot];
         add(texture.Allocation);
         add(texture.DepthAllocation);
         add(texture.Upload.Allocation);

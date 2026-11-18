@@ -370,6 +370,11 @@ struct NativeTextureInfo final
 /// @return Ready on success; Unsupported for unsupported backend/profile, or an explicit
 /// admission failure. Device/surface outputs are preserved on rejection. Vulkan ray queries
 /// and BC formats are not enabled by foreign-device admission.
+/// @note R14c: Vulkan dispatches an adopted device through its source's instance, so it
+/// hosts that device only as the sole owner. While any other owner is live this returns
+/// InvalidState before retaining the source, and while the adopted device lives
+/// CreateDevice returns InvalidState. Direct3D 12 and Metal adopt a device beside other
+/// owners, up to MAX_DEVICE_OWNERS.
 DeviceStatus CreateNativeDevice(const ApplicationInfo& application,
                                 const NativeDeviceDescription& native,
                                 const DeviceDescription& description,

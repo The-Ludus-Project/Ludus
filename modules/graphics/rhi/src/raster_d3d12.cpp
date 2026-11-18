@@ -2,6 +2,7 @@
 #include "internal/d3d12_raster.h"
 #include "internal/d3d12_transfer.h"
 #include "internal/dxil_container.h"
+#include "internal/owner.h"
 #include "internal/raster.h"
 
 #include <ludus/foundation/base/checked_integer.hpp>
@@ -101,16 +102,27 @@ struct Submission final
     uint64 Ordinal = 0;
     uint64 Fence = 0;
 };
-StorageTable<Buffer> gBuffers;
-StorageTable<Texture> gTextures;
-StorageTable<View> gViews;
-StorageTable<Sampler> gSamplers;
-StorageTable<Shader> gRasterShaders;
-StorageTable<Layout> gLayouts;
-StorageTable<Set> gSets;
-StorageArray<Submission> gSubmissions;
-uint64 gCompletedOrdinal = 0;
-usize gReservedSubmission = RASTER_INVALID;
+/// Raster resource registry and accepted submissions of one device owner (R14c).
+struct RasterD3D12State final
+{
+    StorageTable<Buffer> Buffers;
+    StorageTable<Texture> Textures;
+    StorageTable<View> Views;
+    StorageTable<Sampler> Samplers;
+    StorageTable<Shader> Shaders;
+    StorageTable<Layout> Layouts;
+    StorageTable<Set> Sets;
+    StorageArray<Submission> Submissions;
+    uint64 CompletedOrdinal = 0;
+    usize ReservedSubmission = RASTER_INVALID;
+};
+/// One record per device owner slot (R14c); see internal/owner.h.
+foundation::StaticArray<RasterD3D12State, MAX_DEVICE_OWNERS> gRasterD3D12States{};
+/// RasterD3D12State of the bound owner slot.
+RasterD3D12State& GetRasterD3D12() noexcept
+{
+    return gRasterD3D12States[internal::GetBoundOwnerSlot()];
+}
 
 // Thanks to Microsoft, "ID3D12Device::GetResourceAllocationInfo", Direct3D 12 API
 // reference: query this adapter's padded allocation size for each committed backing.
@@ -226,7 +238,7 @@ void ReleaseUpload(Texture& inoutTexture) noexcept
 }
 void PollTextures() noexcept
 {
-    for (Texture& texture : gTextures)
+    for (Texture& texture : GetRasterD3D12().Textures)
     {
         if (texture.Fence == 0)
         {
@@ -397,7 +409,7 @@ FormatCapabilities FormatLimits(RasterFormat format) noexcept
 bool GetDescriptorArenaUsage(DescriptorArenaUsage& outUsage) noexcept
 {
     outUsage = {};
-    for (Set& set : gSets)
+    for (Set& set : GetRasterD3D12().Sets)
     {
         outUsage.Pools += (set.Resources.Get() != nullptr ? 1U : 0U) + (set.Samplers.Get() != nullptr ? 1U : 0U);
         outUsage.ReservedDescriptors += uint64{set.ResourceCount} + set.SamplerCount;
@@ -410,25 +422,25 @@ RasterStatus RasterGrow(RasterKind kind, usize count) noexcept
     switch (kind)
     {
         case RasterKind::Buffer:
-            isReady = gBuffers.EnsureSlots(count);
+            isReady = GetRasterD3D12().Buffers.EnsureSlots(count);
             break;
         case RasterKind::Texture:
-            isReady = gTextures.EnsureSlots(count);
+            isReady = GetRasterD3D12().Textures.EnsureSlots(count);
             break;
         case RasterKind::View:
-            isReady = gViews.EnsureSlots(count);
+            isReady = GetRasterD3D12().Views.EnsureSlots(count);
             break;
         case RasterKind::Sampler:
-            isReady = gSamplers.EnsureSlots(count);
+            isReady = GetRasterD3D12().Samplers.EnsureSlots(count);
             break;
         case RasterKind::Shader:
-            isReady = gRasterShaders.EnsureSlots(count);
+            isReady = GetRasterD3D12().Shaders.EnsureSlots(count);
             break;
         case RasterKind::Layout:
-            isReady = gLayouts.EnsureSlots(count);
+            isReady = GetRasterD3D12().Layouts.EnsureSlots(count);
             break;
         case RasterKind::Set:
-            isReady = gSets.EnsureSlots(count);
+            isReady = GetRasterD3D12().Sets.EnsureSlots(count);
             break;
         case RasterKind::Pipeline:
             return GrowPipelines(count);
@@ -443,19 +455,20 @@ RasterStatus RasterPrepareStorage() noexcept
 {
     PollTextures();
     PollInitialBuffers();
-    return gSubmissions.TryResize(CurrentStorageLimits().Submissions) == true ? RasterStatus::Ready : StorageFailure();
+    return GetRasterD3D12().Submissions.TryResize(CurrentStorageLimits().Submissions) == true ? RasterStatus::Ready
+                                                                                              : StorageFailure();
 }
 bool RasterAllocationBytes(RasterKind kind, usize slot, uint64& outBytes) noexcept
 {
     uint64 bytes = 0;
     bool isAvailable = false;
-    if (kind == RasterKind::Buffer && slot < gBuffers.GetSize())
+    if (kind == RasterKind::Buffer && slot < GetRasterD3D12().Buffers.GetSize())
     {
-        isAvailable = AddAllocationBytes(gBuffers[slot].Resource.Get(), bytes);
+        isAvailable = AddAllocationBytes(GetRasterD3D12().Buffers[slot].Resource.Get(), bytes);
     }
-    else if (kind == RasterKind::Texture && slot < gTextures.GetSize())
+    else if (kind == RasterKind::Texture && slot < GetRasterD3D12().Textures.GetSize())
     {
-        const Texture& texture = gTextures[slot];
+        const Texture& texture = GetRasterD3D12().Textures[slot];
         isAvailable = AddAllocationBytes(texture.Resource.Get(), bytes) == true &&
                       AddAllocationBytes(texture.Depth.Get(), bytes) == true &&
                       AddAllocationBytes(texture.Upload.Get(), bytes) == true;
@@ -476,7 +489,7 @@ RasterStatus RasterCreateTexture(usize slot,
                                  uint32 request) noexcept
 {
     PollTextures();
-    Texture& texture = gTextures[slot];
+    Texture& texture = GetRasterD3D12().Textures[slot];
     if (texture.Fence != 0)
     {
         return RasterStatus::CapacityExceeded;
@@ -703,7 +716,7 @@ RasterStatus RasterCreateView(usize slot, const RasterViewSource& source, uint32
     {
         return RasterStatus::Unsupported;
     }
-    const TextureDescription& texture = gTextures[source.Texture].Description;
+    const TextureDescription& texture = GetRasterD3D12().Textures[source.Texture].Description;
     const TextureViewDescription& view = source.View;
     D3D12_SHADER_RESOURCE_VIEW_DESC native{};
     native.Format = isDepth == true ? GetDepthFormats(texture.Stencil).Sampled : GetFormat(texture.Format);
@@ -746,7 +759,7 @@ RasterStatus RasterCreateView(usize slot, const RasterViewSource& source, uint32
     }
     if (view.Attachment == true)
     {
-        gViews[slot] = { .TextureSlot = source.Texture, .Description = native };
+        GetRasterD3D12().Views[slot] = { .TextureSlot = source.Texture, .Description = native };
         return RasterStatus::Ready;
     }
     // D3D12 cannot bind a one-layer array SRV as Texture2D. Do not reinterpret it.
@@ -754,7 +767,7 @@ RasterStatus RasterCreateView(usize slot, const RasterViewSource& source, uint32
     {
         return RasterStatus::Unsupported;
     }
-    gViews[slot] = { .TextureSlot = source.Texture, .Description = native, .IsDepth = isDepth };
+    GetRasterD3D12().Views[slot] = { .TextureSlot = source.Texture, .Description = native, .IsDepth = isDepth };
     return RasterStatus::Ready;
 }
 RasterStatus RasterCreateSampler(usize slot, const SamplerDescription& description, uint32) noexcept
@@ -776,7 +789,7 @@ RasterStatus RasterCreateSampler(usize slot, const SamplerDescription& descripti
     native.ComparisonFunc = D3D12_COMPARISON_FUNC_ALWAYS;
     native.MinLOD = description.MinLod;
     native.MaxLOD = description.MipFilter == RasterMipFilter::None ? 0 : description.MaxLod;
-    gSamplers[slot].Description = native;
+    GetRasterD3D12().Samplers[slot].Description = native;
     return RasterStatus::Ready;
 }
 RasterStatus
@@ -792,7 +805,7 @@ RasterCreateShader(usize slot, const ShaderDescription& description, const Raste
     {
         return RasterStatus::InvalidDescription;
     }
-    Shader& shader = gRasterShaders[slot];
+    Shader& shader = GetRasterD3D12().Shaders[slot];
     if (shader.Bytes.TryResize(description.Dxil.GetSize()) == false)
     {
         return StorageFailure();
@@ -865,7 +878,7 @@ RasterStatus RasterCreateLayout(usize slot, const RasterLayout& layout, uint32) 
     {
         return GetFailure(result);
     }
-    gLayouts[slot].Signature = ComOwner<ID3D12RootSignature>(signatureOrNull);
+    GetRasterD3D12().Layouts[slot].Signature = ComOwner<ID3D12RootSignature>(signatureOrNull);
     return RasterStatus::Ready;
 }
 RasterStatus RasterCreateSet(usize slot, const RasterLayout& layout, const RasterSet& snapshot, uint32) noexcept
@@ -903,7 +916,7 @@ RasterStatus RasterCreateSet(usize slot, const RasterLayout& layout, const Raste
         if (binding.Kind == RasterBindingKind::Sampler)
         {
             GetDeviceOrNull()->CreateSampler(
-                &gSamplers[resourceSlot].Description,
+                &GetRasterD3D12().Samplers[resourceSlot].Description,
                 GetDescriptor(candidate.Samplers.Get(), D3D12_DESCRIPTOR_HEAP_TYPE_SAMPLER, samplerIndex++));
             continue;
         }
@@ -913,9 +926,9 @@ RasterStatus RasterCreateSet(usize slot, const RasterLayout& layout, const Raste
         {
             const usize size = snapshot.Sizes[entry];
             const usize roundedSize = (size + CBV_ALIGNMENT - 1) / CBV_ALIGNMENT * CBV_ALIGNMENT;
-            const D3D12_CONSTANT_BUFFER_VIEW_DESC uniform{gBuffers[resourceSlot].Resource->GetGPUVirtualAddress() +
-                                                              snapshot.Offsets[entry],
-                                                          static_cast<UINT>(roundedSize)};
+            const D3D12_CONSTANT_BUFFER_VIEW_DESC uniform{
+                GetRasterD3D12().Buffers[resourceSlot].Resource->GetGPUVirtualAddress() + snapshot.Offsets[entry],
+                static_cast<UINT>(roundedSize)};
             GetDeviceOrNull()->CreateConstantBufferView(&uniform, descriptor);
         }
         else if (binding.Kind == RasterBindingKind::StorageRead || binding.Kind == RasterBindingKind::StorageReadWrite)
@@ -927,7 +940,7 @@ RasterStatus RasterCreateSet(usize slot, const RasterLayout& layout, const Raste
             {
                 return RasterStatus::InvalidDescription;
             }
-            ID3D12Resource* resource = gBuffers[resourceSlot].Resource.Get();
+            ID3D12Resource* resource = GetRasterD3D12().Buffers[resourceSlot].Resource.Get();
             candidate.BufferSlots[entry] = resourceSlot;
             const uint64 firstElement = offset / stride;
             const uint32 elementCount = static_cast<uint32>(size / stride);
@@ -956,26 +969,26 @@ RasterStatus RasterCreateSet(usize slot, const RasterLayout& layout, const Raste
         {
             // Thanks to Microsoft, "Typed unordered access view (UAV) loads", for typed UAV
             // stores of RGBA8/RGBA16F; write-only access needs no additional load support.
-            const View& view = gViews[resourceSlot];
+            const View& view = GetRasterD3D12().Views[resourceSlot];
             D3D12_UNORDERED_ACCESS_VIEW_DESC storage{};
             storage.Format = GetFormat(binding.StorageFormat);
             storage.ViewDimension = D3D12_UAV_DIMENSION_TEXTURE2D;
-            GetDeviceOrNull()->CreateUnorderedAccessView(gTextures[view.TextureSlot].Resource.Get(),
+            GetDeviceOrNull()->CreateUnorderedAccessView(GetRasterD3D12().Textures[view.TextureSlot].Resource.Get(),
                                                          nullptr,
                                                          &storage,
                                                          descriptor);
         }
         else
         {
-            const View& view = gViews[resourceSlot];
-            const Texture& texture = gTextures[view.TextureSlot];
+            const View& view = GetRasterD3D12().Views[resourceSlot];
+            const Texture& texture = GetRasterD3D12().Textures[view.TextureSlot];
             GetDeviceOrNull()->CreateShaderResourceView(view.IsDepth == true ? texture.Depth.Get()
                                                                              : texture.Resource.Get(),
                                                         &view.Description,
                                                         descriptor);
         }
     }
-    gSets[slot] = Move(candidate);
+    GetRasterD3D12().Sets[slot] = Move(candidate);
     return RasterStatus::Ready;
 }
 // Thanks to Microsoft, "ID3D12Object::SetName", Direct3D 12 documentation:
@@ -999,12 +1012,12 @@ void RasterSetDebugName(RasterKind kind, usize slot, const char* name) noexcept
 {
     if (kind == RasterKind::Buffer)
     {
-        SetD3d12Name(gBuffers[slot].Resource.Get(), name);
+        SetD3d12Name(GetRasterD3D12().Buffers[slot].Resource.Get(), name);
     }
     else if (kind == RasterKind::Texture)
     {
-        SetD3d12Name(gTextures[slot].Resource.Get(), name);
-        SetD3d12Name(gTextures[slot].Depth.Get(), name);
+        SetD3d12Name(GetRasterD3D12().Textures[slot].Resource.Get(), name);
+        SetD3d12Name(GetRasterD3D12().Textures[slot].Depth.Get(), name);
     }
 }
 void RasterDestroy(RasterKind kind, usize slot) noexcept
@@ -1012,10 +1025,10 @@ void RasterDestroy(RasterKind kind, usize slot) noexcept
     switch (kind)
     {
         case RasterKind::Buffer:
-            gBuffers[slot] = {};
+            GetRasterD3D12().Buffers[slot] = {};
             break;
         case RasterKind::Texture: {
-            Texture& texture = gTextures[slot];
+            Texture& texture = GetRasterD3D12().Textures[slot];
             if (texture.Fence != 0)
             {
                 texture.IsRetired = true;
@@ -1029,16 +1042,16 @@ void RasterDestroy(RasterKind kind, usize slot) noexcept
             break;
         }
         case RasterKind::View:
-            gViews[slot] = {};
+            GetRasterD3D12().Views[slot] = {};
             break;
         case RasterKind::Sampler:
-            gSamplers[slot] = {};
+            GetRasterD3D12().Samplers[slot] = {};
             break;
         case RasterKind::Shader:
-            gRasterShaders[slot].Bytes.Clear();
+            GetRasterD3D12().Shaders[slot].Bytes.Clear();
             break;
         case RasterKind::Layout:
-            gLayouts[slot] = {};
+            GetRasterD3D12().Layouts[slot] = {};
             break;
         case RasterKind::Pipeline:
             DestroyPipeline(slot);
@@ -1047,7 +1060,7 @@ void RasterDestroy(RasterKind kind, usize slot) noexcept
             DestroyComputePipeline(slot);
             break;
         case RasterKind::Set:
-            gSets[slot] = {};
+            GetRasterD3D12().Sets[slot] = {};
             break;
         default:
             break;
@@ -1055,15 +1068,15 @@ void RasterDestroy(RasterKind kind, usize slot) noexcept
 }
 RasterStatus RasterReserveSubmission() noexcept
 {
-    if (gReservedSubmission != RASTER_INVALID)
+    if (GetRasterD3D12().ReservedSubmission != RASTER_INVALID)
     {
         return RasterStatus::Ready;
     }
-    for (usize index = 0; index < gSubmissions.GetSize(); ++index)
+    for (usize index = 0; index < GetRasterD3D12().Submissions.GetSize(); ++index)
     {
-        if (gSubmissions[index].Ordinal == 0)
+        if (GetRasterD3D12().Submissions[index].Ordinal == 0)
         {
-            gReservedSubmission = index;
+            GetRasterD3D12().ReservedSubmission = index;
             return RasterStatus::Ready;
         }
     }
@@ -1071,31 +1084,31 @@ RasterStatus RasterReserveSubmission() noexcept
 }
 void RasterDiscardSubmission() noexcept
 {
-    gReservedSubmission = RASTER_INVALID;
+    GetRasterD3D12().ReservedSubmission = RASTER_INVALID;
 }
 void RasterSubmit(uint64 ordinal) noexcept
 {
-    LUDUS_ASSERT(gReservedSubmission != RASTER_INVALID);
-    gSubmissions[gReservedSubmission] = { .Ordinal = ordinal, .Fence = GetLastFence() };
-    gReservedSubmission = RASTER_INVALID;
+    LUDUS_ASSERT(GetRasterD3D12().ReservedSubmission != RASTER_INVALID);
+    GetRasterD3D12().Submissions[GetRasterD3D12().ReservedSubmission] = { .Ordinal = ordinal, .Fence = GetLastFence() };
+    GetRasterD3D12().ReservedSubmission = RASTER_INVALID;
 }
 uint64 RasterCompleted() noexcept
 {
     PollTextures();
     PollInitialBuffers();
     const uint64 completed = GetCompletedFence();
-    for (Submission& submission : gSubmissions)
+    for (Submission& submission : GetRasterD3D12().Submissions)
     {
         if (submission.Ordinal != 0 && submission.Fence <= completed)
         {
-            if (submission.Ordinal > gCompletedOrdinal)
+            if (submission.Ordinal > GetRasterD3D12().CompletedOrdinal)
             {
-                gCompletedOrdinal = submission.Ordinal;
+                GetRasterD3D12().CompletedOrdinal = submission.Ordinal;
             }
             submission = {};
         }
     }
-    return gCompletedOrdinal;
+    return GetRasterD3D12().CompletedOrdinal;
 }
 void RasterReset() noexcept
 {
@@ -1106,7 +1119,7 @@ void RasterReset() noexcept
     PollTextures();
     if (isDrained == true)
     {
-        for (Texture& texture : gTextures)
+        for (Texture& texture : GetRasterD3D12().Textures)
         {
             if (texture.Fence != 0 && texture.CompletionFence.Get() == GetFenceOrNull())
             {
@@ -1117,18 +1130,18 @@ void RasterReset() noexcept
             }
         }
     }
-    for (Submission& submission : gSubmissions)
+    for (Submission& submission : GetRasterD3D12().Submissions)
     {
         submission = {};
     }
-    gReservedSubmission = RASTER_INVALID;
-    gCompletedOrdinal = 0;
+    GetRasterD3D12().ReservedSubmission = RASTER_INVALID;
+    GetRasterD3D12().CompletedOrdinal = 0;
 }
 void RasterShutdown() noexcept
 {
     // Reset/drain precedes facade physical destruction, including rejected uploads
     // whose signal failed. A removed device has no remaining usable GPU work.
-    for (Texture& texture : gTextures)
+    for (Texture& texture : GetRasterD3D12().Textures)
     {
         if (texture.Fence == 0)
         {
@@ -1143,11 +1156,11 @@ void RasterShutdown() noexcept
             texture.Request = 0;
         }
     }
-    gSubmissions.Clear();
+    GetRasterD3D12().Submissions.Clear();
 }
 void RasterTextureBarrier(usize slot, RasterTextureUse use) noexcept
 {
-    Texture& texture = gTextures[slot];
+    Texture& texture = GetRasterD3D12().Textures[slot];
     constexpr D3D12_RESOURCE_STATES SAMPLED =
         D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE | D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE;
     const bool isAttachment = use == RasterTextureUse::ColorAttachment;
@@ -1182,7 +1195,7 @@ void RasterTextureBarrier(usize slot, RasterTextureUse use) noexcept
 // https://learn.microsoft.com/windows/win32/direct3d12/using-resource-barriers-to-synchronize-resource-states-in-direct3d-12
 void ComputeBufferBarrier(usize slot, GraphAccessMode use) noexcept
 {
-    Buffer& buffer = gBuffers[slot];
+    Buffer& buffer = GetRasterD3D12().Buffers[slot];
     if (buffer.HasStorage == false)
     {
         return;
@@ -1215,45 +1228,45 @@ DXGI_FORMAT GetRasterFormat(RasterFormat format) noexcept
 }
 void SetBuffer(usize slot, bool hasStorage, ComOwner<ID3D12Resource>&& resource) noexcept
 {
-    gBuffers[slot] = { .Resource = Move(resource), .HasStorage = hasStorage };
+    GetRasterD3D12().Buffers[slot] = { .Resource = Move(resource), .HasStorage = hasStorage };
 }
 void ResetBufferStates() noexcept
 {
     // Every transfer and frame is a separate ExecuteCommandLists call on the
     // same queue. Begin tracking again when a fresh frame list starts.
-    for (Buffer& buffer : gBuffers)
+    for (Buffer& buffer : GetRasterD3D12().Buffers)
     {
         buffer.State = D3D12_RESOURCE_STATE_COMMON;
     }
 }
 ID3D12Resource* GetTexture(usize slot) noexcept
 {
-    return gTextures[slot].Resource.Get();
+    return GetRasterD3D12().Textures[slot].Resource.Get();
 }
 D3D12_RESOURCE_STATES GetTextureState(usize slot) noexcept
 {
-    return gTextures[slot].State;
+    return GetRasterD3D12().Textures[slot].State;
 }
 void SetTextureState(usize slot, D3D12_RESOURCE_STATES state) noexcept
 {
-    gTextures[slot].State = state;
+    GetRasterD3D12().Textures[slot].State = state;
 }
 ID3D12Resource* GetBuffer(usize slot) noexcept
 {
-    return gBuffers[slot].Resource.Get();
+    return GetRasterD3D12().Buffers[slot].Resource.Get();
 }
 D3D12_SHADER_BYTECODE GetShader(usize slot) noexcept
 {
-    const Shader& shader = gRasterShaders[slot];
+    const Shader& shader = GetRasterD3D12().Shaders[slot];
     return {shader.Bytes.GetData(), shader.Bytes.GetSize()};
 }
 ID3D12RootSignature* GetSignature(usize slot) noexcept
 {
-    return gLayouts[slot].Signature.Get();
+    return GetRasterD3D12().Layouts[slot].Signature.Get();
 }
 Attachment GetAttachment(usize slot, uint32 mip, uint32 layer) noexcept
 {
-    Texture& texture = gTextures[slot];
+    Texture& texture = GetRasterD3D12().Textures[slot];
     const uint32 index = mip + layer * texture.Description.MipLevels;
     return {texture.Resource.Get(),
             texture.Depth.Get(),
@@ -1262,7 +1275,7 @@ Attachment GetAttachment(usize slot, uint32 mip, uint32 layer) noexcept
 }
 void BindSet(ID3D12GraphicsCommandList* commands, usize slot, ShaderStage stage) noexcept
 {
-    const Set& set = gSets[slot];
+    const Set& set = GetRasterD3D12().Sets[slot];
     if (stage != ShaderStage::Compute)
     {
         // The ordered graph transitions the buffers a dispatch declares. A raster draw binds its

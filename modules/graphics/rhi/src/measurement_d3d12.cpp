@@ -4,6 +4,7 @@
 #include "internal/gpu_pass_timing_buffer.h"
 #include "internal/gpu_scope_backend.h"
 #include "internal/measurement.h"
+#include "internal/owner.h"
 
 #include <ludus/foundation/base/core.h>
 #include <ludus/foundation/containers/borrowed_view.hpp>
@@ -38,13 +39,24 @@ struct QueryStorage final
     uint64 Fence = 0;
 };
 
-QueryStorage gFrameQueries;
-QueryStorage gPassQueries;
-GpuTiming gFrameTiming;
-internal::GpuPassTimingBuffer gPassTimings;
-usize gActivePass = MAX_GPU_TIMED_PASSES;
-/// Untimed logical-pass events open inside the current raster pass.
-uint32 gPassLabelDepth = 0;
+/// Frame and pass timestamp probes of one device owner (R14c).
+struct MeasurementD3D12State final
+{
+    QueryStorage FrameQueries;
+    QueryStorage PassQueries;
+    GpuTiming FrameTiming;
+    internal::GpuPassTimingBuffer PassTimings;
+    usize ActivePass = MAX_GPU_TIMED_PASSES;
+    /// Untimed logical-pass events open inside the current raster pass.
+    uint32 PassLabelDepth = 0;
+};
+/// One record per device owner slot (R14c); see internal/owner.h.
+foundation::StaticArray<MeasurementD3D12State, MAX_DEVICE_OWNERS> gMeasurementD3D12States{};
+/// MeasurementD3D12State of the bound owner slot.
+MeasurementD3D12State& GetMeasurementD3D12() noexcept
+{
+    return gMeasurementD3D12States[internal::GetBoundOwnerSlot()];
+}
 
 RasterStatus GetQueryFailure(HRESULT result) noexcept
 {
@@ -214,43 +226,47 @@ RasterStatus TimingArm() noexcept
     {
         return RasterStatus::DeviceLost;
     }
-    const RasterStatus status = PrepareQueries(FRAME_QUERY_COUNT, gFrameQueries);
+    const RasterStatus status = PrepareQueries(FRAME_QUERY_COUNT, GetMeasurementD3D12().FrameQueries);
     if (status == RasterStatus::Ready)
     {
-        gFrameTiming = { .State = GpuTimingState::Armed };
+        GetMeasurementD3D12().FrameTiming = { .State = GpuTimingState::Armed };
     }
     else if (status == RasterStatus::Unsupported)
     {
-        gFrameTiming = { .State = GpuTimingState::Unavailable };
+        GetMeasurementD3D12().FrameTiming = { .State = GpuTimingState::Unavailable };
     }
     return status;
 }
 
 GpuTiming TimingPoll() noexcept
 {
-    if (gFrameTiming.State == GpuTimingState::Pending)
+    if (GetMeasurementD3D12().FrameTiming.State == GpuTimingState::Pending)
     {
         StaticArray<uint64, FRAME_QUERY_COUNT> timestamps;
-        const GpuTimingState state = ReadTimestamps(gFrameQueries, {timestamps.GetData(), timestamps.GetSize()});
+        const GpuTimingState state =
+            ReadTimestamps(GetMeasurementD3D12().FrameQueries, {timestamps.GetData(), timestamps.GetSize()});
         if (state == GpuTimingState::Available)
         {
-            const GpuTimingState clock = ValidateFrequency(gFrameQueries);
-            gFrameTiming = clock == GpuTimingState::Available
-                               ? MeasureInterval(gFrameQueries, timestamps[0], timestamps[1], time::NowTicks())
-                               : GpuTiming{ .State = clock };
+            const GpuTimingState clock = ValidateFrequency(GetMeasurementD3D12().FrameQueries);
+            GetMeasurementD3D12().FrameTiming = clock == GpuTimingState::Available
+                                                    ? MeasureInterval(GetMeasurementD3D12().FrameQueries,
+                                                                      timestamps[0],
+                                                                      timestamps[1],
+                                                                      time::NowTicks())
+                                                    : GpuTiming{ .State = clock };
             static_cast<void>(CheckDeviceRemoval());
         }
         else if (state == GpuTimingState::Failed && GetDeviceOrNull() != nullptr)
         {
-            gFrameTiming = { .State = state };
+            GetMeasurementD3D12().FrameTiming = { .State = state };
         }
     }
-    return gFrameTiming;
+    return GetMeasurementD3D12().FrameTiming;
 }
 
 void TimingReset() noexcept
 {
-    gFrameTiming = {};
+    GetMeasurementD3D12().FrameTiming = {};
 }
 
 RasterStatus ArmPassTimings() noexcept
@@ -260,45 +276,47 @@ RasterStatus ArmPassTimings() noexcept
     {
         return RasterStatus::DeviceLost;
     }
-    if (gPassTimings.CanArm() == false)
+    if (GetMeasurementD3D12().PassTimings.CanArm() == false)
     {
         return RasterStatus::InvalidState;
     }
-    const RasterStatus status = PrepareQueries(PASS_QUERY_COUNT, gPassQueries);
+    const RasterStatus status = PrepareQueries(PASS_QUERY_COUNT, GetMeasurementD3D12().PassQueries);
     if (status == RasterStatus::Ready)
     {
-        gPassTimings.Arm();
+        GetMeasurementD3D12().PassTimings.Arm();
     }
     else if (status == RasterStatus::Unsupported)
     {
-        gPassTimings.GetReport() = { .State = GpuTimingState::Unavailable };
+        GetMeasurementD3D12().PassTimings.GetReport() = { .State = GpuTimingState::Unavailable };
     }
     return status;
 }
 
 GpuPassTimings PollPassTimings() noexcept
 {
-    GpuPassTimings& report = gPassTimings.GetReport();
+    GpuPassTimings& report = GetMeasurementD3D12().PassTimings.GetReport();
     if (report.State != GpuTimingState::Pending)
     {
         return report;
     }
     StaticArray<uint64, PASS_QUERY_COUNT> timestamps;
-    const GpuTimingState state =
-        ReadTimestamps(gPassQueries, {timestamps.GetData(), report.Count * TIMESTAMPS_PER_INTERVAL});
+    const GpuTimingState state = ReadTimestamps(GetMeasurementD3D12().PassQueries,
+                                                {timestamps.GetData(), report.Count * TIMESTAMPS_PER_INTERVAL});
     if (state == GpuTimingState::Pending || GetDeviceOrNull() == nullptr)
     {
         return report;
     }
-    const GpuTimingState clock = state == GpuTimingState::Available ? ValidateFrequency(gPassQueries) : state;
+    const GpuTimingState clock =
+        state == GpuTimingState::Available ? ValidateFrequency(GetMeasurementD3D12().PassQueries) : state;
     report.State = clock == GpuTimingState::Failed ? GpuTimingState::Failed : GpuTimingState::Available;
     const uint64 now = time::NowTicks();
     for (usize index = 0; index < report.Count; ++index)
     {
         const usize first = index * TIMESTAMPS_PER_INTERVAL;
-        report.Passes[index].Timing = clock == GpuTimingState::Available
-                                          ? MeasureInterval(gPassQueries, timestamps[first], timestamps[first + 1], now)
-                                          : GpuTiming{ .State = clock };
+        report.Passes[index].Timing =
+            clock == GpuTimingState::Available
+                ? MeasureInterval(GetMeasurementD3D12().PassQueries, timestamps[first], timestamps[first + 1], now)
+                : GpuTiming{ .State = clock };
     }
     static_cast<void>(CheckDeviceRemoval());
     return report;
@@ -311,7 +329,7 @@ RasterStatus BeginScope(const GpuScopeDescription& scope) noexcept
     {
         return RasterStatus::InvalidState;
     }
-    if (gPassTimings.BeginScope(scope) == false)
+    if (GetMeasurementD3D12().PassTimings.BeginScope(scope) == false)
     {
         return RasterStatus::CapacityExceeded;
     }
@@ -322,7 +340,7 @@ RasterStatus BeginScope(const GpuScopeDescription& scope) noexcept
 RasterStatus EndScope() noexcept
 {
     ID3D12GraphicsCommandList* commandsOrNull = GetCommandsOrNull();
-    if (commandsOrNull == nullptr || gPassTimings.EndScope() == false)
+    if (commandsOrNull == nullptr || GetMeasurementD3D12().PassTimings.EndScope() == false)
     {
         return RasterStatus::InvalidState;
     }
@@ -332,7 +350,7 @@ RasterStatus EndScope() noexcept
 
 internal::GpuScopePosition GetScopePosition() noexcept
 {
-    return gPassTimings.GetPosition();
+    return GetMeasurementD3D12().PassTimings.GetPosition();
 }
 
 void BeginPassLabel(const char* name) noexcept
@@ -341,25 +359,25 @@ void BeginPassLabel(const char* name) noexcept
     if (commandsOrNull != nullptr)
     {
         BeginPixEvent(*commandsOrNull, name);
-        ++gPassLabelDepth;
+        ++GetMeasurementD3D12().PassLabelDepth;
     }
 }
 
 void EndPassLabel() noexcept
 {
     ID3D12GraphicsCommandList* commandsOrNull = GetCommandsOrNull();
-    if (gPassLabelDepth != 0 && commandsOrNull != nullptr)
+    if (GetMeasurementD3D12().PassLabelDepth != 0 && commandsOrNull != nullptr)
     {
-        --gPassLabelDepth;
+        --GetMeasurementD3D12().PassLabelDepth;
         EndPixEvent(*commandsOrNull);
     }
 }
 
 void ResetPassTimings() noexcept
 {
-    gPassTimings.Reset();
-    gActivePass = MAX_GPU_TIMED_PASSES;
-    gPassLabelDepth = 0;
+    GetMeasurementD3D12().PassTimings.Reset();
+    GetMeasurementD3D12().ActivePass = MAX_GPU_TIMED_PASSES;
+    GetMeasurementD3D12().PassLabelDepth = 0;
 }
 
 namespace d3d12
@@ -367,22 +385,22 @@ namespace d3d12
 void BeginTimingFrame(ID3D12GraphicsCommandList& inoutCommands) noexcept
 {
     BeginPixEvent(inoutCommands, "Ludus/Frame");
-    gPassLabelDepth = 0;
-    gPassTimings.BeginFrame();
-    if (gPassTimings.GetReport().State == GpuTimingState::Armed)
+    GetMeasurementD3D12().PassLabelDepth = 0;
+    GetMeasurementD3D12().PassTimings.BeginFrame();
+    if (GetMeasurementD3D12().PassTimings.GetReport().State == GpuTimingState::Armed)
     {
-        gPassQueries.StartNanoseconds = time::NowTicks();
+        GetMeasurementD3D12().PassQueries.StartNanoseconds = time::NowTicks();
     }
-    if (gFrameTiming.State == GpuTimingState::Armed)
+    if (GetMeasurementD3D12().FrameTiming.State == GpuTimingState::Armed)
     {
-        gFrameQueries.StartNanoseconds = time::NowTicks();
-        WriteTimestamp(inoutCommands, gFrameQueries, 0);
+        GetMeasurementD3D12().FrameQueries.StartNanoseconds = time::NowTicks();
+        WriteTimestamp(inoutCommands, GetMeasurementD3D12().FrameQueries, 0);
     }
 }
 
 void ClosePassLabels(ID3D12GraphicsCommandList& inoutCommands) noexcept
 {
-    for (; gPassLabelDepth != 0; --gPassLabelDepth)
+    for (; GetMeasurementD3D12().PassLabelDepth != 0; --GetMeasurementD3D12().PassLabelDepth)
     {
         EndPixEvent(inoutCommands);
     }
@@ -392,7 +410,7 @@ void CloseTimingScopes(ID3D12GraphicsCommandList& inoutCommands) noexcept
 {
     // Scopes never span submission: end every event an early return left open, then the frame.
     ClosePassLabels(inoutCommands);
-    for (uint32 closed = gPassTimings.CloseScopes(); closed != 0; --closed)
+    for (uint32 closed = GetMeasurementD3D12().PassTimings.CloseScopes(); closed != 0; --closed)
     {
         EndPixEvent(inoutCommands);
     }
@@ -402,15 +420,17 @@ void CloseTimingScopes(ID3D12GraphicsCommandList& inoutCommands) noexcept
 void EndTimingFrame(ID3D12GraphicsCommandList& inoutCommands) noexcept
 {
     CloseTimingScopes(inoutCommands);
-    if (gFrameTiming.State == GpuTimingState::Armed)
+    if (GetMeasurementD3D12().FrameTiming.State == GpuTimingState::Armed)
     {
-        WriteTimestamp(inoutCommands, gFrameQueries, 1);
-        ResolveTimestamps(inoutCommands, gFrameQueries, FRAME_QUERY_COUNT);
+        WriteTimestamp(inoutCommands, GetMeasurementD3D12().FrameQueries, 1);
+        ResolveTimestamps(inoutCommands, GetMeasurementD3D12().FrameQueries, FRAME_QUERY_COUNT);
     }
-    const GpuPassTimings& report = gPassTimings.GetReport();
+    const GpuPassTimings& report = GetMeasurementD3D12().PassTimings.GetReport();
     if (report.State == GpuTimingState::Armed && report.Count != 0)
     {
-        ResolveTimestamps(inoutCommands, gPassQueries, static_cast<uint32>(report.Count) * TIMESTAMPS_PER_INTERVAL);
+        ResolveTimestamps(inoutCommands,
+                          GetMeasurementD3D12().PassQueries,
+                          static_cast<uint32>(report.Count) * TIMESTAMPS_PER_INTERVAL);
     }
 }
 
@@ -418,28 +438,30 @@ void MarkTimingsQueued() noexcept
 {
     // ExecuteCommandLists can enqueue work even when the later Present or
     // Signal fails. A drain or the removed-device sentinel then proves safety.
-    if (gFrameTiming.State == GpuTimingState::Armed)
+    if (GetMeasurementD3D12().FrameTiming.State == GpuTimingState::Armed)
     {
-        gFrameQueries.Fence = UNKNOWN_SUBMISSION_FENCE;
+        GetMeasurementD3D12().FrameQueries.Fence = UNKNOWN_SUBMISSION_FENCE;
     }
-    if (gPassTimings.GetReport().State == GpuTimingState::Armed && gPassTimings.GetReport().Count != 0)
+    if (GetMeasurementD3D12().PassTimings.GetReport().State == GpuTimingState::Armed &&
+        GetMeasurementD3D12().PassTimings.GetReport().Count != 0)
     {
-        gPassQueries.Fence = UNKNOWN_SUBMISSION_FENCE;
+        GetMeasurementD3D12().PassQueries.Fence = UNKNOWN_SUBMISSION_FENCE;
     }
 }
 
 void SubmitTimings(uint64 fence) noexcept
 {
-    if (gFrameTiming.State == GpuTimingState::Armed)
+    if (GetMeasurementD3D12().FrameTiming.State == GpuTimingState::Armed)
     {
-        gFrameQueries.Fence = fence;
-        gFrameTiming.State = GpuTimingState::Pending;
+        GetMeasurementD3D12().FrameQueries.Fence = fence;
+        GetMeasurementD3D12().FrameTiming.State = GpuTimingState::Pending;
     }
-    if (gPassQueries.Fence == UNKNOWN_SUBMISSION_FENCE && gPassTimings.GetReport().State == GpuTimingState::Armed)
+    if (GetMeasurementD3D12().PassQueries.Fence == UNKNOWN_SUBMISSION_FENCE &&
+        GetMeasurementD3D12().PassTimings.GetReport().State == GpuTimingState::Armed)
     {
-        gPassQueries.Fence = fence;
+        GetMeasurementD3D12().PassQueries.Fence = fence;
     }
-    gPassTimings.Submit();
+    GetMeasurementD3D12().PassTimings.Submit();
 }
 
 void ReleaseTimings(bool isQueueDrained) noexcept
@@ -453,25 +475,29 @@ void ReleaseTimings(bool isQueueDrained) noexcept
             inoutStorage = {};
         }
     };
-    release(gFrameQueries);
-    release(gPassQueries);
+    release(GetMeasurementD3D12().FrameQueries);
+    release(GetMeasurementD3D12().PassQueries);
 }
 
 void BeginPhysicalPassTiming(ID3D12GraphicsCommandList& inoutCommands, GpuPassKind kind) noexcept
 {
-    gActivePass = gPassTimings.AddPass(kind);
-    if (gActivePass < MAX_GPU_TIMED_PASSES)
+    GetMeasurementD3D12().ActivePass = GetMeasurementD3D12().PassTimings.AddPass(kind);
+    if (GetMeasurementD3D12().ActivePass < MAX_GPU_TIMED_PASSES)
     {
-        WriteTimestamp(inoutCommands, gPassQueries, static_cast<uint32>(gActivePass) * TIMESTAMPS_PER_INTERVAL);
+        WriteTimestamp(inoutCommands,
+                       GetMeasurementD3D12().PassQueries,
+                       static_cast<uint32>(GetMeasurementD3D12().ActivePass) * TIMESTAMPS_PER_INTERVAL);
     }
 }
 
 void EndPhysicalPassTiming(ID3D12GraphicsCommandList& inoutCommands) noexcept
 {
-    if (gActivePass < MAX_GPU_TIMED_PASSES)
+    if (GetMeasurementD3D12().ActivePass < MAX_GPU_TIMED_PASSES)
     {
-        WriteTimestamp(inoutCommands, gPassQueries, static_cast<uint32>(gActivePass) * TIMESTAMPS_PER_INTERVAL + 1);
-        gActivePass = MAX_GPU_TIMED_PASSES;
+        WriteTimestamp(inoutCommands,
+                       GetMeasurementD3D12().PassQueries,
+                       static_cast<uint32>(GetMeasurementD3D12().ActivePass) * TIMESTAMPS_PER_INTERVAL + 1);
+        GetMeasurementD3D12().ActivePass = MAX_GPU_TIMED_PASSES;
     }
 }
 } // namespace d3d12

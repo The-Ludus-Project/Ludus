@@ -134,18 +134,6 @@ struct Pipeline final
     usize UniformSlot = 0;
 };
 
-ComOwner<IDXGIFactory6> gFactory;
-ComOwner<IDXGIAdapter1> gAdapter;
-ComOwner<ID3D12Device> gDevice;
-ComOwner<ID3D12CommandQueue> gQueue;
-ComOwner<ID3D12Fence> gFence;
-HANDLE gFenceEventOrNull = nullptr;
-uint64 gFenceValue = 0;
-uint64 gSubmitted[FRAME_COUNT]{};
-ComOwner<ID3D12CommandAllocator> gAllocators[FRAME_COUNT];
-ComOwner<ID3D12GraphicsCommandList> gCommands;
-ComOwner<ID3D12DescriptorHeap> gTargetHeap;
-uint32 gTargetDescriptorSize = 0;
 /// @brief Presentation record of one surface (R14b): its borrowed window, swap chain or
 /// hosted producer, headless target, frame target and completion counters.
 ///
@@ -168,28 +156,52 @@ struct Direct3D12Surface final
     uint64 PresentedFrames = 0;
     bool IsConnected = false;
 };
-StaticArray<Direct3D12Surface, MAX_DEVICE_SURFACES> gSurfaces{};
-/// Surface routed SetTarget/Begin/End; see backend::SelectSurface.
-usize gActiveSurface = 0;
+/// @brief DXGI factory, device, direct queue, frame fence, surfaces and fullscreen resources
+/// of one device owner (R14c).
+struct Direct3D12State final
+{
+    ComOwner<IDXGIFactory6> Factory;
+    ComOwner<IDXGIAdapter1> Adapter;
+    ComOwner<ID3D12Device> Device;
+    ComOwner<ID3D12CommandQueue> Queue;
+    ComOwner<ID3D12Fence> Fence;
+    HANDLE FenceEventOrNull = nullptr;
+    uint64 FenceValue = 0;
+    foundation::StaticArray<uint64, FRAME_COUNT> Submitted{};
+    foundation::StaticArray<ComOwner<ID3D12CommandAllocator>, FRAME_COUNT> Allocators{};
+    ComOwner<ID3D12GraphicsCommandList> Commands;
+    ComOwner<ID3D12DescriptorHeap> TargetHeap;
+    uint32 TargetDescriptorSize = 0;
+    StaticArray<Direct3D12Surface, MAX_DEVICE_SURFACES> Surfaces{};
+    /// Surface routed SetTarget/Begin/End; see backend::SelectSurface.
+    usize ActiveSurface = 0;
+    /// Shared by every fullscreen pipeline; created with the device.
+    ComOwner<ID3D12RootSignature> RootSignature;
+    foundation::StaticArray<Shader, internal::RESOURCE_CAPACITY> Shaders{};
+    foundation::StaticArray<Uniform, internal::RESOURCE_CAPACITY> Uniforms{};
+    foundation::StaticArray<Pipeline, internal::RESOURCE_CAPACITY> Pipelines{};
+    /// Color target of the open frame: a swap chain buffer or the headless texture.
+    ID3D12Resource* SurfaceOrNull = nullptr;
+    D3D12_CPU_DESCRIPTOR_HANDLE SurfaceDescriptor{};
+    FrameInfo Frame{};
+    usize Slot = 0;
+    uint32 Token = 0;
+    bool IsSoftwareAdapter = false;
+    bool IsConnected = false;
+    bool IsRendering = false;
+    bool IsRecording = false;
+};
+/// One record per device owner slot (R14c); see internal/owner.h.
+foundation::StaticArray<Direct3D12State, MAX_DEVICE_OWNERS> gDirect3D12States{};
+/// Direct3D12State of the bound owner slot.
+Direct3D12State& GetDirect3D12() noexcept
+{
+    return gDirect3D12States[internal::GetBoundOwnerSlot()];
+}
 Direct3D12Surface& GetActiveSurface() noexcept
 {
-    return gSurfaces[gActiveSurface];
+    return GetDirect3D12().Surfaces[GetDirect3D12().ActiveSurface];
 }
-/// Shared by every fullscreen pipeline; created with the device.
-ComOwner<ID3D12RootSignature> gRootSignature;
-Shader gShaders[internal::RESOURCE_CAPACITY];
-Uniform gUniforms[internal::RESOURCE_CAPACITY];
-Pipeline gPipelines[internal::RESOURCE_CAPACITY];
-/// Color target of the open frame: a swap chain buffer or the headless texture.
-ID3D12Resource* gSurfaceOrNull = nullptr;
-D3D12_CPU_DESCRIPTOR_HANDLE gSurfaceDescriptor{};
-FrameInfo gFrame{};
-usize gSlot = 0;
-uint32 gToken = 0;
-bool isSoftwareAdapter = false;
-bool isConnected = false;
-bool isRendering = false;
-bool isRecording = false;
 
 template <typename ObjectType>
 [[nodiscard]] ComOwner<ObjectType> Adopt(ObjectType* objectOrNull) noexcept
@@ -230,7 +242,7 @@ void LogFailure(const char* operation, HRESULT result) noexcept
 
 [[nodiscard]] bool IsDeviceRemoved() noexcept
 {
-    return gDevice.Get() != nullptr && gDevice->GetDeviceRemovedReason() != S_OK;
+    return GetDirect3D12().Device.Get() != nullptr && GetDirect3D12().Device->GetDeviceRemovedReason() != S_OK;
 }
 
 [[nodiscard]] bool IsDeviceLossResult(HRESULT result) noexcept
@@ -241,14 +253,14 @@ void LogFailure(const char* operation, HRESULT result) noexcept
 
 [[nodiscard]] FrameStatus FailFrame(StartupError error) noexcept
 {
-    LogDeviceRemoval(gDevice.Get());
+    LogDeviceRemoval(GetDirect3D12().Device.Get());
     DiscardRecording();
-    gSurfaceOrNull = nullptr;
-    gFrame = {};
-    if (internal::Current(gToken) == true)
+    GetDirect3D12().SurfaceOrNull = nullptr;
+    GetDirect3D12().Frame = {};
+    if (internal::Current(GetDirect3D12().Token) == true)
     {
         // The facade finalizes the session and calls Shutdown(); state is released there.
-        internal::Fail(gToken, error);
+        internal::Fail(GetDirect3D12().Token, error);
     }
     else
     {
@@ -266,30 +278,30 @@ void LogFailure(const char* operation, HRESULT result) noexcept
 
 [[nodiscard]] bool WaitForFence(uint64 value) noexcept
 {
-    const uint64 completed = gFence->GetCompletedValue();
+    const uint64 completed = GetDirect3D12().Fence->GetCompletedValue();
     if (completed == ~uint64{0})
     {
-        LogDeviceRemoval(gDevice.Get());
+        LogDeviceRemoval(GetDirect3D12().Device.Get());
         return false;
     }
     if (value == 0 || completed >= value)
     {
         return true;
     }
-    const HRESULT armed = gFence->SetEventOnCompletion(value, gFenceEventOrNull);
+    const HRESULT armed = GetDirect3D12().Fence->SetEventOnCompletion(value, GetDirect3D12().FenceEventOrNull);
     if (FAILED(armed) == true)
     {
         LogFailure("Fence completion event", armed);
         return false;
     }
-    DWORD waited = WaitForSingleObject(gFenceEventOrNull, FENCE_TIMEOUT_MILLISECONDS);
-    if (waited == WAIT_TIMEOUT && isSoftwareAdapter == true)
+    DWORD waited = WaitForSingleObject(GetDirect3D12().FenceEventOrNull, FENCE_TIMEOUT_MILLISECONDS);
+    if (waited == WAIT_TIMEOUT && GetDirect3D12().IsSoftwareAdapter == true)
     {
         LUDUS_LOG_WARN(LOG_RHI,
                        "Direct3D 12: the software adapter is still executing after {} ms; waiting up to {} ms more",
                        static_cast<uint32>(FENCE_TIMEOUT_MILLISECONDS),
                        static_cast<uint32>(SOFTWARE_FENCE_EXTRA_TIMEOUT_MILLISECONDS));
-        waited = WaitForSingleObject(gFenceEventOrNull, SOFTWARE_FENCE_EXTRA_TIMEOUT_MILLISECONDS);
+        waited = WaitForSingleObject(GetDirect3D12().FenceEventOrNull, SOFTWARE_FENCE_EXTRA_TIMEOUT_MILLISECONDS);
     }
     if (waited != WAIT_OBJECT_0)
     {
@@ -298,21 +310,21 @@ void LogFailure(const char* operation, HRESULT result) noexcept
                         "the queue is hung or the frame is too heavy for this adapter",
                         value,
                         static_cast<uint32>(waited),
-                        gFence->GetCompletedValue());
+                        GetDirect3D12().Fence->GetCompletedValue());
         return false;
     }
-    const uint64 signaled = gFence->GetCompletedValue();
+    const uint64 signaled = GetDirect3D12().Fence->GetCompletedValue();
     return signaled >= value && signaled != ~uint64{0};
 }
 
 [[nodiscard]] bool SignalFence(uint64& outValue) noexcept
 {
-    const uint64 value = gFenceValue + 1;
-    if (FAILED(gQueue->Signal(gFence.Get(), value)) == true)
+    const uint64 value = GetDirect3D12().FenceValue + 1;
+    if (FAILED(GetDirect3D12().Queue->Signal(GetDirect3D12().Fence.Get(), value)) == true)
     {
         return false;
     }
-    gFenceValue = value;
+    GetDirect3D12().FenceValue = value;
     outValue = value;
     return true;
 }
@@ -320,20 +332,20 @@ void LogFailure(const char* operation, HRESULT result) noexcept
 /// Waits for every submitted command list; false when the queue cannot be drained.
 [[nodiscard]] bool WaitForIdle() noexcept
 {
-    if (gQueue.Get() == nullptr || gFence.Get() == nullptr)
+    if (GetDirect3D12().Queue.Get() == nullptr || GetDirect3D12().Fence.Get() == nullptr)
     {
         return true;
     }
     if (IsDeviceRemoved() == true)
     {
-        LogDeviceRemoval(gDevice.Get());
+        LogDeviceRemoval(GetDirect3D12().Device.Get());
         return false;
     }
     uint64 value = 0;
     const bool isDrained = SignalFence(value) == true && WaitForFence(value) == true;
     if (isDrained == false)
     {
-        LogDeviceRemoval(gDevice.Get());
+        LogDeviceRemoval(GetDirect3D12().Device.Get());
     }
     return isDrained;
 }
@@ -341,9 +353,9 @@ void LogFailure(const char* operation, HRESULT result) noexcept
 /// Descriptor `index` (a back buffer or HEADLESS_DESCRIPTOR) of the active surface.
 [[nodiscard]] D3D12_CPU_DESCRIPTOR_HANDLE GetTargetDescriptor(uint32 index) noexcept
 {
-    D3D12_CPU_DESCRIPTOR_HANDLE handle = gTargetHeap->GetCPUDescriptorHandleForHeapStart();
-    const usize surfaceIndex = gActiveSurface * SURFACE_DESCRIPTOR_COUNT + index;
-    handle.ptr += surfaceIndex * gTargetDescriptorSize;
+    D3D12_CPU_DESCRIPTOR_HANDLE handle = GetDirect3D12().TargetHeap->GetCPUDescriptorHandleForHeapStart();
+    const usize surfaceIndex = GetDirect3D12().ActiveSurface * SURFACE_DESCRIPTOR_COUNT + index;
+    handle.ptr += surfaceIndex * GetDirect3D12().TargetDescriptorSize;
     return handle;
 }
 
@@ -397,8 +409,8 @@ void EnableDebugLayer() noexcept
     {
         return false;
     }
-    gDevice = Adopt(deviceOrNull);
-    static_cast<void>(gDevice->SetName(L"Ludus/Device"));
+    GetDirect3D12().Device = Adopt(deviceOrNull);
+    static_cast<void>(GetDirect3D12().Device->SetName(L"Ludus/Device"));
     return true;
 }
 
@@ -471,9 +483,9 @@ void DescribeD3D12Adapter(const DXGI_ADAPTER_DESC1& description,
         LUDUS_LOG_WARN(LOG_RHI, "Direct3D 12: the requested adapter differs from the hosting editor's");
     }
     IDXGIAdapter1* adapterOrNull = nullptr;
-    const HRESULT found = gFactory->EnumAdapterByLuid(GetD3D12Luid(requested),
-                                                      GetInterfaceId(adapterOrNull),
-                                                      GetInterfaceOutput(adapterOrNull));
+    const HRESULT found = GetDirect3D12().Factory->EnumAdapterByLuid(GetD3D12Luid(requested),
+                                                                     GetInterfaceId(adapterOrNull),
+                                                                     GetInterfaceOutput(adapterOrNull));
     ComOwner<IDXGIAdapter1> adapter = Adopt(adapterOrNull);
     DXGI_ADAPTER_DESC1 description{};
     if (FAILED(found) == true || adapter.Get() == nullptr || FAILED(adapter->GetDesc1(&description)) == true)
@@ -486,8 +498,8 @@ void DescribeD3D12Adapter(const DXGI_ADAPTER_DESC1& description,
     {
         return false;
     }
-    gAdapter = Move(adapter);
-    isSoftwareAdapter = isSoftware;
+    GetDirect3D12().Adapter = Move(adapter);
+    GetDirect3D12().IsSoftwareAdapter = isSoftware;
     return true;
 }
 
@@ -521,9 +533,9 @@ void DescribeD3D12Adapter(const DXGI_ADAPTER_DESC1& description,
     if (channelOrNull != nullptr && channelOrNull->TryGetConsumerAdapter(preferred) == true)
     {
         IDXGIAdapter1* adapterOrNull = nullptr;
-        const HRESULT found = gFactory->EnumAdapterByLuid(DecodeHostedAdapter(preferred),
-                                                          GetInterfaceId(adapterOrNull),
-                                                          GetInterfaceOutput(adapterOrNull));
+        const HRESULT found = GetDirect3D12().Factory->EnumAdapterByLuid(DecodeHostedAdapter(preferred),
+                                                                         GetInterfaceId(adapterOrNull),
+                                                                         GetInterfaceOutput(adapterOrNull));
         ComOwner<IDXGIAdapter1> adapter = Adopt(adapterOrNull);
         DXGI_ADAPTER_DESC1 description{};
         if (FAILED(found) == true || adapter.Get() == nullptr || FAILED(adapter->GetDesc1(&description)) == true)
@@ -536,17 +548,18 @@ void DescribeD3D12Adapter(const DXGI_ADAPTER_DESC1& description,
         {
             return false;
         }
-        gAdapter = Move(adapter);
-        isSoftwareAdapter = isSoftware;
+        GetDirect3D12().Adapter = Move(adapter);
+        GetDirect3D12().IsSoftwareAdapter = isSoftware;
         return true;
     }
     for (UINT index = 0; shouldUseWarp == false; ++index)
     {
         IDXGIAdapter1* adapterOrNull = nullptr;
-        if (gFactory->EnumAdapterByGpuPreference(index,
-                                                 DXGI_GPU_PREFERENCE_HIGH_PERFORMANCE,
-                                                 GetInterfaceId(adapterOrNull),
-                                                 GetInterfaceOutput(adapterOrNull)) == DXGI_ERROR_NOT_FOUND)
+        if (GetDirect3D12().Factory->EnumAdapterByGpuPreference(index,
+                                                                DXGI_GPU_PREFERENCE_HIGH_PERFORMANCE,
+                                                                GetInterfaceId(adapterOrNull),
+                                                                GetInterfaceOutput(adapterOrNull)) ==
+            DXGI_ERROR_NOT_FOUND)
         {
             break;
         }
@@ -562,8 +575,8 @@ void DescribeD3D12Adapter(const DXGI_ADAPTER_DESC1& description,
         }
         if (CreateDeviceOn(adapter.Get()) == true)
         {
-            gAdapter = Move(adapter);
-            isSoftwareAdapter = false;
+            GetDirect3D12().Adapter = Move(adapter);
+            GetDirect3D12().IsSoftwareAdapter = false;
             return true;
         }
     }
@@ -573,7 +586,8 @@ void DescribeD3D12Adapter(const DXGI_ADAPTER_DESC1& description,
         return false;
     }
     IDXGIAdapter1* warpOrNull = nullptr;
-    if (FAILED(gFactory->EnumWarpAdapter(GetInterfaceId(warpOrNull), GetInterfaceOutput(warpOrNull))) == true ||
+    if (FAILED(GetDirect3D12().Factory->EnumWarpAdapter(GetInterfaceId(warpOrNull), GetInterfaceOutput(warpOrNull))) ==
+            true ||
         warpOrNull == nullptr)
     {
         return false;
@@ -583,8 +597,8 @@ void DescribeD3D12Adapter(const DXGI_ADAPTER_DESC1& description,
     {
         return false;
     }
-    gAdapter = Move(warp);
-    isSoftwareAdapter = true;
+    GetDirect3D12().Adapter = Move(warp);
+    GetDirect3D12().IsSoftwareAdapter = true;
     LUDUS_LOG_INFO(LOG_RHI, "Direct3D 12: using WARP");
     return true;
 }
@@ -611,18 +625,18 @@ void DescribeD3D12Adapter(const DXGI_ADAPTER_DESC1& description,
         return false;
     }
     IDXGIAdapter1* adapterOrNull = nullptr;
-    const HRESULT adapterResult = gFactory->EnumAdapterByLuid(device->GetAdapterLuid(),
-                                                              GetInterfaceId(adapterOrNull),
-                                                              GetInterfaceOutput(adapterOrNull));
+    const HRESULT adapterResult = GetDirect3D12().Factory->EnumAdapterByLuid(device->GetAdapterLuid(),
+                                                                             GetInterfaceId(adapterOrNull),
+                                                                             GetInterfaceOutput(adapterOrNull));
     if (FAILED(adapterResult) == true || adapterOrNull == nullptr)
     {
         return false;
     }
-    gAdapter = Adopt(adapterOrNull);
+    GetDirect3D12().Adapter = Adopt(adapterOrNull);
     device->AddRef();
     queue->AddRef();
-    gDevice = Adopt(device);
-    gQueue = Adopt(queue);
+    GetDirect3D12().Device = Adopt(device);
+    GetDirect3D12().Queue = Adopt(queue);
     return true;
 }
 
@@ -636,62 +650,62 @@ void DescribeD3D12Adapter(const DXGI_ADAPTER_DESC1& description,
         .NodeMask = 0,
     };
     ID3D12CommandQueue* queueOrNull = nullptr;
-    if (FAILED(gDevice->CreateCommandQueue(&queueDescription,
-                                           GetInterfaceId(queueOrNull),
-                                           GetInterfaceOutput(queueOrNull))) == true)
+    if (FAILED(GetDirect3D12().Device->CreateCommandQueue(&queueDescription,
+                                                          GetInterfaceId(queueOrNull),
+                                                          GetInterfaceOutput(queueOrNull))) == true)
     {
         return false;
     }
-    gQueue = Adopt(queueOrNull);
-    static_cast<void>(gQueue->SetName(L"Ludus/DirectQueue"));
+    GetDirect3D12().Queue = Adopt(queueOrNull);
+    static_cast<void>(GetDirect3D12().Queue->SetName(L"Ludus/DirectQueue"));
     return true;
 }
 
 [[nodiscard]] bool CreateQueueObjects() noexcept
 {
-    if (gQueue.Get() == nullptr && CreateDirectQueue() == false)
+    if (GetDirect3D12().Queue.Get() == nullptr && CreateDirectQueue() == false)
     {
         return false;
     }
     ID3D12Fence* fenceOrNull = nullptr;
-    if (FAILED(gDevice->CreateFence(0,
-                                    D3D12_FENCE_FLAG_NONE,
-                                    GetInterfaceId(fenceOrNull),
-                                    GetInterfaceOutput(fenceOrNull))) == true)
+    if (FAILED(GetDirect3D12().Device->CreateFence(0,
+                                                   D3D12_FENCE_FLAG_NONE,
+                                                   GetInterfaceId(fenceOrNull),
+                                                   GetInterfaceOutput(fenceOrNull))) == true)
     {
         return false;
     }
-    gFence = Adopt(fenceOrNull);
-    gFenceEventOrNull = CreateEventW(nullptr, FALSE, FALSE, nullptr);
-    if (gFenceEventOrNull == nullptr)
+    GetDirect3D12().Fence = Adopt(fenceOrNull);
+    GetDirect3D12().FenceEventOrNull = CreateEventW(nullptr, FALSE, FALSE, nullptr);
+    if (GetDirect3D12().FenceEventOrNull == nullptr)
     {
         return false;
     }
-    for (ComOwner<ID3D12CommandAllocator>& allocator : gAllocators)
+    for (ComOwner<ID3D12CommandAllocator>& allocator : GetDirect3D12().Allocators)
     {
         ID3D12CommandAllocator* allocatorOrNull = nullptr;
-        if (FAILED(gDevice->CreateCommandAllocator(D3D12_COMMAND_LIST_TYPE_DIRECT,
-                                                   GetInterfaceId(allocatorOrNull),
-                                                   GetInterfaceOutput(allocatorOrNull))) == true)
+        if (FAILED(GetDirect3D12().Device->CreateCommandAllocator(D3D12_COMMAND_LIST_TYPE_DIRECT,
+                                                                  GetInterfaceId(allocatorOrNull),
+                                                                  GetInterfaceOutput(allocatorOrNull))) == true)
         {
             return false;
         }
         allocator = Adopt(allocatorOrNull);
     }
     ID3D12GraphicsCommandList* commandsOrNull = nullptr;
-    if (FAILED(gDevice->CreateCommandList(0,
-                                          D3D12_COMMAND_LIST_TYPE_DIRECT,
-                                          gAllocators[0].Get(),
-                                          nullptr,
-                                          GetInterfaceId(commandsOrNull),
-                                          GetInterfaceOutput(commandsOrNull))) == true)
+    if (FAILED(GetDirect3D12().Device->CreateCommandList(0,
+                                                         D3D12_COMMAND_LIST_TYPE_DIRECT,
+                                                         GetDirect3D12().Allocators[0].Get(),
+                                                         nullptr,
+                                                         GetInterfaceId(commandsOrNull),
+                                                         GetInterfaceOutput(commandsOrNull))) == true)
     {
         return false;
     }
-    gCommands = Adopt(commandsOrNull);
-    static_cast<void>(gCommands->SetName(L"Ludus/FrameCommands"));
+    GetDirect3D12().Commands = Adopt(commandsOrNull);
+    static_cast<void>(GetDirect3D12().Commands->SetName(L"Ludus/FrameCommands"));
     // Command lists are created open; every frame resets it again.
-    if (FAILED(gCommands->Close()) == true)
+    if (FAILED(GetDirect3D12().Commands->Close()) == true)
     {
         return false;
     }
@@ -703,14 +717,15 @@ void DescribeD3D12Adapter(const DXGI_ADAPTER_DESC1& description,
         .NodeMask = 0,
     };
     ID3D12DescriptorHeap* heapOrNull = nullptr;
-    if (FAILED(gDevice->CreateDescriptorHeap(&heapDescription,
-                                             GetInterfaceId(heapOrNull),
-                                             GetInterfaceOutput(heapOrNull))) == true)
+    if (FAILED(GetDirect3D12().Device->CreateDescriptorHeap(&heapDescription,
+                                                            GetInterfaceId(heapOrNull),
+                                                            GetInterfaceOutput(heapOrNull))) == true)
     {
         return false;
     }
-    gTargetHeap = Adopt(heapOrNull);
-    gTargetDescriptorSize = gDevice->GetDescriptorHandleIncrementSize(D3D12_DESCRIPTOR_HEAP_TYPE_RTV);
+    GetDirect3D12().TargetHeap = Adopt(heapOrNull);
+    GetDirect3D12().TargetDescriptorSize =
+        GetDirect3D12().Device->GetDescriptorHandleIncrementSize(D3D12_DESCRIPTOR_HEAP_TYPE_RTV);
     return true;
 }
 
@@ -744,17 +759,17 @@ void DescribeD3D12Adapter(const DXGI_ADAPTER_DESC1& description,
         return false;
     }
     ID3D12RootSignature* signatureOrNull = nullptr;
-    result = gDevice->CreateRootSignature(0,
-                                          serialized->GetBufferPointer(),
-                                          serialized->GetBufferSize(),
-                                          GetInterfaceId(signatureOrNull),
-                                          GetInterfaceOutput(signatureOrNull));
+    result = GetDirect3D12().Device->CreateRootSignature(0,
+                                                         serialized->GetBufferPointer(),
+                                                         serialized->GetBufferSize(),
+                                                         GetInterfaceId(signatureOrNull),
+                                                         GetInterfaceOutput(signatureOrNull));
     if (FAILED(result) == true)
     {
         LogFailure("CreateRootSignature", result);
         return false;
     }
-    gRootSignature = Adopt(signatureOrNull);
+    GetDirect3D12().RootSignature = Adopt(signatureOrNull);
     return true;
 }
 
@@ -780,7 +795,7 @@ void ReleaseBackBuffers() noexcept
             return result;
         }
         GetActiveSurface().BackBuffers[index] = Adopt(bufferOrNull);
-        gDevice->CreateRenderTargetView(bufferOrNull, nullptr, GetTargetDescriptor(index));
+        GetDirect3D12().Device->CreateRenderTargetView(bufferOrNull, nullptr, GetTargetDescriptor(index));
     }
     DXGI_SWAP_CHAIN_DESC1 description{};
     const HRESULT result = GetActiveSurface().SwapChain->GetDesc1(&description);
@@ -811,8 +826,12 @@ void ReleaseBackBuffers() noexcept
         .Flags = 0,
     };
     IDXGISwapChain1* swapChainOrNull = nullptr;
-    HRESULT result =
-        gFactory->CreateSwapChainForHwnd(gQueue.Get(), window, &description, nullptr, nullptr, &swapChainOrNull);
+    HRESULT result = GetDirect3D12().Factory->CreateSwapChainForHwnd(GetDirect3D12().Queue.Get(),
+                                                                     window,
+                                                                     &description,
+                                                                     nullptr,
+                                                                     nullptr,
+                                                                     &swapChainOrNull);
     if (FAILED(result) == true || swapChainOrNull == nullptr)
     {
         LogFailure("CreateSwapChainForHwnd", result);
@@ -828,7 +847,7 @@ void ReleaseBackBuffers() noexcept
     }
     GetActiveSurface().SwapChain = Adopt(swapChain3OrNull);
     // Ludus owns fullscreen policy; DXGI must not toggle it on Alt+Enter.
-    static_cast<void>(gFactory->MakeWindowAssociation(window, DXGI_MWA_NO_ALT_ENTER));
+    static_cast<void>(GetDirect3D12().Factory->MakeWindowAssociation(window, DXGI_MWA_NO_ALT_ENTER));
     result = AcquireBackBuffers();
     if (FAILED(result) == true)
     {
@@ -900,26 +919,26 @@ void ReleaseBackBuffers() noexcept
     };
     ID3D12Resource* textureOrNull = nullptr;
     // Between frames the headless target rests in COMMON, like a presented swap chain buffer.
-    const HRESULT result = gDevice->CreateCommittedResource(&heap,
-                                                            D3D12_HEAP_FLAG_NONE,
-                                                            &description,
-                                                            D3D12_RESOURCE_STATE_COMMON,
-                                                            nullptr,
-                                                            GetInterfaceId(textureOrNull),
-                                                            GetInterfaceOutput(textureOrNull));
+    const HRESULT result = GetDirect3D12().Device->CreateCommittedResource(&heap,
+                                                                           D3D12_HEAP_FLAG_NONE,
+                                                                           &description,
+                                                                           D3D12_RESOURCE_STATE_COMMON,
+                                                                           nullptr,
+                                                                           GetInterfaceId(textureOrNull),
+                                                                           GetInterfaceOutput(textureOrNull));
     if (FAILED(result) == true)
     {
         return result;
     }
     GetActiveSurface().Headless = Adopt(textureOrNull);
-    gDevice->CreateRenderTargetView(textureOrNull, nullptr, GetTargetDescriptor(HEADLESS_DESCRIPTOR));
+    GetDirect3D12().Device->CreateRenderTargetView(textureOrNull, nullptr, GetTargetDescriptor(HEADLESS_DESCRIPTOR));
     return S_OK;
 }
 
 /// Count this surface's completed frames without waiting.
 void RefreshSurface(Direct3D12Surface& inoutSurface) noexcept
 {
-    const uint64 completed = gFence.Get() != nullptr ? gFence->GetCompletedValue() : 0;
+    const uint64 completed = GetDirect3D12().Fence.Get() != nullptr ? GetDirect3D12().Fence->GetCompletedValue() : 0;
     if (completed == ~uint64{0})
     {
         // A removed device signals nothing reliably; device loss is reported elsewhere.
@@ -970,7 +989,8 @@ void TrackSurfaceFrame(Direct3D12Surface& inoutSurface, uint64 fence) noexcept
         LUDUS_ASSERT(channelOrNull != nullptr);
         platform::HostedAdapterIdentity preferred;
         if (channelOrNull->TryGetConsumerAdapter(preferred) == true &&
-            internal::AreAdaptersEqual(preferred, EncodeHostedAdapter(gDevice->GetAdapterLuid())) == false)
+            internal::AreAdaptersEqual(preferred, EncodeHostedAdapter(GetDirect3D12().Device->GetAdapterLuid())) ==
+                false)
         {
             LUDUS_LOG_ERROR(LOG_RHI, "Direct3D 12: the hosted viewport requires the editor's GPU adapter");
             return false;
@@ -1012,21 +1032,21 @@ void ReleaseActiveSurface() noexcept
 /// Retire every created surface (slots above the primary) and route frames to the primary.
 void ReleaseCreatedSurfaces() noexcept
 {
-    for (usize slot = 1; slot < gSurfaces.GetSize(); ++slot)
+    for (usize slot = 1; slot < GetDirect3D12().Surfaces.GetSize(); ++slot)
     {
-        if (gSurfaces[slot].IsConnected == true)
+        if (GetDirect3D12().Surfaces[slot].IsConnected == true)
         {
-            gActiveSurface = slot;
+            GetDirect3D12().ActiveSurface = slot;
             ReleaseActiveSurface();
         }
     }
-    gActiveSurface = 0;
+    GetDirect3D12().ActiveSurface = 0;
 }
 /// @brief A created surface stopped accepting frames: retire only its presentation
 /// resources and report it lost. The device and other surfaces keep working; no frame opens.
 [[nodiscard]] FrameStatus LoseActiveSurface() noexcept
 {
-    const usize slot = gActiveSurface;
+    const usize slot = GetDirect3D12().ActiveSurface;
     ReleaseActiveSurface();
     internal::LoseSurface(slot);
     return FrameStatus::Skipped;
@@ -1036,27 +1056,27 @@ void ReleaseDevice() noexcept
 {
     ReleasePixMarkers();
     ReleaseCompute();
-    gRootSignature.Reset();
-    gCommands.Reset();
-    for (ComOwner<ID3D12CommandAllocator>& allocator : gAllocators)
+    GetDirect3D12().RootSignature.Reset();
+    GetDirect3D12().Commands.Reset();
+    for (ComOwner<ID3D12CommandAllocator>& allocator : GetDirect3D12().Allocators)
     {
         allocator.Reset();
     }
-    gTargetHeap.Reset();
-    gFence.Reset();
-    if (gFenceEventOrNull != nullptr)
+    GetDirect3D12().TargetHeap.Reset();
+    GetDirect3D12().Fence.Reset();
+    if (GetDirect3D12().FenceEventOrNull != nullptr)
     {
-        CloseHandle(gFenceEventOrNull);
-        gFenceEventOrNull = nullptr;
+        CloseHandle(GetDirect3D12().FenceEventOrNull);
+        GetDirect3D12().FenceEventOrNull = nullptr;
     }
-    gQueue.Reset();
-    gDevice.Reset();
-    gAdapter.Reset();
-    gFactory.Reset();
-    gFenceValue = 0;
-    gTargetDescriptorSize = 0;
-    isSoftwareAdapter = false;
-    for (uint64& submitted : gSubmitted)
+    GetDirect3D12().Queue.Reset();
+    GetDirect3D12().Device.Reset();
+    GetDirect3D12().Adapter.Reset();
+    GetDirect3D12().Factory.Reset();
+    GetDirect3D12().FenceValue = 0;
+    GetDirect3D12().TargetDescriptorSize = 0;
+    GetDirect3D12().IsSoftwareAdapter = false;
+    for (uint64& submitted : GetDirect3D12().Submitted)
     {
         submitted = 0;
     }
@@ -1068,17 +1088,17 @@ namespace d3d12
 void DiscardRecording() noexcept
 {
     GetActiveSurface().Hosted.Cancel();
-    if (isRecording == true)
+    if (GetDirect3D12().IsRecording == true)
     {
-        CloseTimingScopes(*gCommands);
-        static_cast<void>(gCommands->Close());
-        isRecording = false;
+        CloseTimingScopes(*GetDirect3D12().Commands);
+        static_cast<void>(GetDirect3D12().Commands->Close());
+        GetDirect3D12().IsRecording = false;
     }
 }
 
 ID3D12GraphicsCommandList* GetCommandsOrNull() noexcept
 {
-    return isRecording == true ? gCommands.Get() : nullptr;
+    return GetDirect3D12().IsRecording == true ? GetDirect3D12().Commands.Get() : nullptr;
 }
 DXGI_FORMAT GetSurfaceColorFormat() noexcept
 {
@@ -1086,19 +1106,19 @@ DXGI_FORMAT GetSurfaceColorFormat() noexcept
 }
 Attachment GetSurfaceAttachment() noexcept
 {
-    return { .ColorOrNull = gSurfaceOrNull, .Color = gSurfaceDescriptor };
+    return { .ColorOrNull = GetDirect3D12().SurfaceOrNull, .Color = GetDirect3D12().SurfaceDescriptor };
 }
 ID3D12Device* GetDeviceOrNull() noexcept
 {
-    return gDevice.Get();
+    return GetDirect3D12().Device.Get();
 }
 ID3D12CommandQueue* GetQueueOrNull() noexcept
 {
-    return gQueue.Get();
+    return GetDirect3D12().Queue.Get();
 }
 ID3D12Fence* GetFenceOrNull() noexcept
 {
-    return gFence.Get();
+    return GetDirect3D12().Fence.Get();
 }
 bool CheckDeviceRemoval() noexcept
 {
@@ -1111,11 +1131,11 @@ bool CheckDeviceRemoval() noexcept
 }
 uint64 GetCompletedFence() noexcept
 {
-    if (gFence.Get() == nullptr)
+    if (GetDirect3D12().Fence.Get() == nullptr)
     {
         return 0;
     }
-    const uint64 completed = gFence->GetCompletedValue();
+    const uint64 completed = GetDirect3D12().Fence->GetCompletedValue();
     if (completed == ~uint64{0})
     {
         static_cast<void>(FailFrame(StartupError::DeviceLost));
@@ -1125,7 +1145,7 @@ uint64 GetCompletedFence() noexcept
 }
 uint64 GetLastFence() noexcept
 {
-    return gFenceValue;
+    return GetDirect3D12().FenceValue;
 }
 bool WaitForQueue() noexcept
 {
@@ -1143,7 +1163,7 @@ bool SubmitCreation(ID3D12CommandList* commands, uint64& outFence) noexcept
 {
     LUDUS_ASSERT(commands != nullptr);
     ID3D12CommandList* const lists[] = {commands};
-    gQueue->ExecuteCommandLists(1, lists);
+    GetDirect3D12().Queue->ExecuteCommandLists(1, lists);
     // A failed signal cannot prove completion. Retain the creation backing until
     // shutdown instead of reclaiming it through the failed publication path.
     outFence = ~uint64{0};
@@ -1166,7 +1186,7 @@ AdapterStatus EnumerateAdapters(AdapterCatalog& outCatalog) noexcept
 {
     // Without a session, list through a temporary factory released on return.
     ComOwner<IDXGIFactory6> temporary;
-    IDXGIFactory6* factory = gFactory.Get();
+    IDXGIFactory6* factory = GetDirect3D12().Factory.Get();
     if (factory == nullptr)
     {
         IDXGIFactory6* createdOrNull = nullptr;
@@ -1205,7 +1225,7 @@ AdapterStatus EnumerateAdapters(AdapterCatalog& outCatalog) noexcept
 bool GetSelectedAdapter(AdapterInfo& outAdapter) noexcept
 {
     DXGI_ADAPTER_DESC1 description{};
-    if (gAdapter.Get() == nullptr || FAILED(gAdapter->GetDesc1(&description)) == true)
+    if (GetDirect3D12().Adapter.Get() == nullptr || FAILED(GetDirect3D12().Adapter->GetDesc1(&description)) == true)
     {
         return false;
     }
@@ -1217,18 +1237,39 @@ bool Supports(BackendSelection selection) noexcept
 {
     return selection == BackendSelection::Auto;
 }
+/// @brief True when another owner slot holds a live device (R14c).
+///
+/// Thanks to Microsoft, "ID3D12Debug::EnableDebugLayer method": enabling the debug layer
+/// after a device exists removes that device. A later owner therefore leaves the layer as the
+/// first owner's start set it; the layer stays enabled for the process once enabled.
+/// https://learn.microsoft.com/windows/win32/api/d3d12sdklayers/nf-d3d12sdklayers-id3d12debug-enabledebuglayer
+[[nodiscard]] static bool HasOtherOwnerDevice() noexcept
+{
+    const usize bound = internal::GetBoundOwnerSlot();
+    for (usize slot = 0; slot < gDirect3D12States.GetSize(); ++slot)
+    {
+        if (slot != bound && gDirect3D12States[slot].Device.Get() != nullptr)
+        {
+            return true;
+        }
+    }
+    return false;
+}
 static bool InitializeDevice(const platform::HostedSurfaceChannel* channelOrNull) noexcept
 {
-    if (gDevice.Get() != nullptr)
+    if (GetDirect3D12().Device.Get() != nullptr)
     {
-        return gCommands.Get() != nullptr;
+        return GetDirect3D12().Commands.Get() != nullptr;
     }
     const NativeDeviceDescription* importedOrNull = internal::NativeDeviceRequest();
     InitializePixMarkers();
     if (importedOrNull == nullptr)
     {
         ConfigureDred();
-        EnableDebugLayer();
+        if (HasOtherOwnerDevice() == false)
+        {
+            EnableDebugLayer();
+        }
     }
     UINT factoryFlags = 0;
 #if defined(LUDUS_BUILD_DEBUG) || defined(LUDUS_BUILD_DEVELOPMENT)
@@ -1246,7 +1287,7 @@ static bool InitializeDevice(const platform::HostedSurfaceChannel* channelOrNull
         LogFailure("CreateDXGIFactory2", result);
         return false;
     }
-    gFactory = Adopt(factoryOrNull);
+    GetDirect3D12().Factory = Adopt(factoryOrNull);
     const bool hasDevice =
         importedOrNull != nullptr ? AdoptNativeDevice(importedOrNull->Identity) : SelectAdapter(channelOrNull);
     if (hasDevice == false)
@@ -1269,12 +1310,12 @@ StartupError Start(const ApplicationInfo&, const WindowInfo& window, uint32 toke
     {
         return StartupError::InvalidWindow;
     }
-    gToken = token;
+    GetDirect3D12().Token = token;
     if (InitializeDevice(window.HostedSurfaceOrNull) == false)
     {
-        return gFactory.Get() == nullptr  ? StartupError::InstanceUnavailable
-               : gDevice.Get() == nullptr ? StartupError::AdapterUnavailable
-                                          : StartupError::DeviceUnavailable;
+        return GetDirect3D12().Factory.Get() == nullptr  ? StartupError::InstanceUnavailable
+               : GetDirect3D12().Device.Get() == nullptr ? StartupError::AdapterUnavailable
+                                                         : StartupError::DeviceUnavailable;
     }
     if (ConnectWindow(window) == false)
     {
@@ -1295,70 +1336,71 @@ bool Initialize(const ApplicationInfo&) noexcept
 }
 bool ConnectWindow(const WindowInfo& window) noexcept
 {
-    if (gDevice.Get() == nullptr || isConnected == true || IsValidWindow(window) == false ||
-        window.Width > MAX_DIMENSION || window.Height > MAX_DIMENSION)
+    if (GetDirect3D12().Device.Get() == nullptr || GetDirect3D12().IsConnected == true ||
+        IsValidWindow(window) == false || window.Width > MAX_DIMENSION || window.Height > MAX_DIMENSION)
     {
         return false;
     }
     // The legacy and owned startup paths connect only the primary surface.
-    gActiveSurface = 0;
+    GetDirect3D12().ActiveSurface = 0;
     if (ConnectSurface(window) == false)
     {
         return false;
     }
-    isConnected = true;
+    GetDirect3D12().IsConnected = true;
     return true;
 }
 bool InitializeRendering() noexcept
 {
-    isRendering = gCommands.Get() != nullptr && isConnected == true;
-    return isRendering;
+    GetDirect3D12().IsRendering = GetDirect3D12().Commands.Get() != nullptr && GetDirect3D12().IsConnected == true;
+    return GetDirect3D12().IsRendering;
 }
 void ShutdownRendering() noexcept
 {
     const bool isDrained = WaitForIdle();
     DiscardRecording();
     ReleaseTimings(isDrained);
-    for (Direct3D12Surface& surface : gSurfaces)
+    for (Direct3D12Surface& surface : GetDirect3D12().Surfaces)
     {
         RefreshSurface(surface);
         surface.Hosted.Disconnect();
         surface.Headless.Reset();
     }
-    gSurfaceOrNull = nullptr;
-    gFrame = {};
-    gSlot = 0;
-    isRendering = false;
+    GetDirect3D12().SurfaceOrNull = nullptr;
+    GetDirect3D12().Frame = {};
+    GetDirect3D12().Slot = 0;
+    GetDirect3D12().IsRendering = false;
 }
 void NativeInteropDetachSurface() noexcept
 {
     ShutdownRendering();
     ReleaseCreatedSurfaces();
     ReleaseActiveSurface();
-    isConnected = false;
+    GetDirect3D12().IsConnected = false;
 }
 void Shutdown() noexcept
 {
     NativeInteropDetachSurface();
     ReleaseDevice();
-    gSurfaces[0].RenderedFrames = 0;
-    gSurfaces[0].PresentedFrames = 0;
-    gToken = 0;
+    GetDirect3D12().Surfaces[0].RenderedFrames = 0;
+    GetDirect3D12().Surfaces[0].PresentedFrames = 0;
+    GetDirect3D12().Token = 0;
 }
-// R14c: this backend keeps one process session, so the facade admits a single device owner.
-usize GetDeviceOwnerLimit() noexcept
+// R14c: every owner slot keeps its own factory, device, direct queue, fence and
+// Direct3D12State; a borrowed device needs no process-wide state, so it may join others.
+usize GetDeviceOwnerLimit(bool) noexcept
 {
-    return 1;
+    return MAX_DEVICE_OWNERS;
 }
 usize AdditionalSurfaceLimit() noexcept
 {
-    return isRendering == true ? MAX_DEVICE_SURFACES - 1 : 0;
+    return GetDirect3D12().IsRendering == true ? MAX_DEVICE_SURFACES - 1 : 0;
 }
 StartupError CreateSurface(usize slot, const WindowInfo& window) noexcept
 {
-    if (isRendering == false || isRecording == true || slot == 0 || slot >= gSurfaces.GetSize() ||
-        gSurfaces[slot].IsConnected == true || IsValidWindow(window) == false || window.Width > MAX_DIMENSION ||
-        window.Height > MAX_DIMENSION)
+    if (GetDirect3D12().IsRendering == false || GetDirect3D12().IsRecording == true || slot == 0 ||
+        slot >= GetDirect3D12().Surfaces.GetSize() || GetDirect3D12().Surfaces[slot].IsConnected == true ||
+        IsValidWindow(window) == false || window.Width > MAX_DIMENSION || window.Height > MAX_DIMENSION)
     {
         return StartupError::InvalidWindow;
     }
@@ -1368,14 +1410,14 @@ StartupError CreateSurface(usize slot, const WindowInfo& window) noexcept
     {
         return StartupError::BackendUnavailable;
     }
-    const usize selected = gActiveSurface;
-    gActiveSurface = slot;
+    const usize selected = GetDirect3D12().ActiveSurface;
+    GetDirect3D12().ActiveSurface = slot;
     const bool isCreated = ConnectSurface(window);
     if (isCreated == false)
     {
         ReleaseActiveSurface();
     }
-    gActiveSurface = selected;
+    GetDirect3D12().ActiveSurface = selected;
     if (isCreated == false && IsDeviceRemoved() == true)
     {
         static_cast<void>(FailFrame(StartupError::DeviceLost));
@@ -1384,31 +1426,35 @@ StartupError CreateSurface(usize slot, const WindowInfo& window) noexcept
 }
 void DestroySurface(usize slot) noexcept
 {
-    if (slot == 0 || slot >= gSurfaces.GetSize() || gSurfaces[slot].IsConnected == false)
+    if (slot == 0 || slot >= GetDirect3D12().Surfaces.GetSize() || GetDirect3D12().Surfaces[slot].IsConnected == false)
     {
         return;
     }
-    const usize selected = gActiveSurface;
-    gActiveSurface = slot;
+    const usize selected = GetDirect3D12().ActiveSurface;
+    GetDirect3D12().ActiveSurface = slot;
     ReleaseActiveSurface();
-    gActiveSurface = selected == slot ? 0 : selected;
+    GetDirect3D12().ActiveSurface = selected == slot ? 0 : selected;
 }
 void SelectSurface(usize slot) noexcept
 {
-    gActiveSurface = slot < gSurfaces.GetSize() ? slot : 0;
+    GetDirect3D12().ActiveSurface = slot < GetDirect3D12().Surfaces.GetSize() ? slot : 0;
 }
 SurfaceCompletion GetSurfaceCompletion(usize slot) noexcept
 {
-    if (slot >= gSurfaces.GetSize())
+    if (slot >= GetDirect3D12().Surfaces.GetSize())
     {
         return {};
     }
-    RefreshSurface(gSurfaces[slot]);
-    return { .RenderedFrames = gSurfaces[slot].RenderedFrames, .PresentedFrames = gSurfaces[slot].PresentedFrames };
+    RefreshSurface(GetDirect3D12().Surfaces[slot]);
+    return
+    {
+        .RenderedFrames = GetDirect3D12().Surfaces[slot].RenderedFrames,
+        .PresentedFrames = GetDirect3D12().Surfaces[slot].PresentedFrames,
+    };
 }
 FrameStatus SetTarget(const FrameTarget& target) noexcept
 {
-    if (isRecording == true)
+    if (GetDirect3D12().IsRecording == true)
     {
         return FrameStatus::InvalidState;
     }
@@ -1423,26 +1469,26 @@ FrameStatus SetTarget(const FrameTarget& target) noexcept
 }
 FrameStatus Begin() noexcept
 {
-    if (isRendering == false)
+    if (GetDirect3D12().IsRendering == false)
     {
         return FrameStatus::NotReady;
     }
-    if (isRecording == true)
+    if (GetDirect3D12().IsRecording == true)
     {
         return FrameStatus::InvalidState;
     }
-    gFrame = {};
+    GetDirect3D12().Frame = {};
     if (IsDeviceRemoved() == true)
     {
-        return FailFrame("device", gDevice->GetDeviceRemovedReason());
+        return FailFrame("device", GetDirect3D12().Device->GetDeviceRemovedReason());
     }
-    if (gActiveSurface != 0 && GetActiveSurface().IsConnected == false)
+    if (GetDirect3D12().ActiveSurface != 0 && GetActiveSurface().IsConnected == false)
     {
         // Lost earlier; the facade reports SurfaceLost.
         return FrameStatus::Skipped;
     }
     // A created surface is lost once its window is destroyed or leaves this thread.
-    if (gActiveSurface != 0 && GetActiveSurface().WindowOrNull != nullptr &&
+    if (GetDirect3D12().ActiveSurface != 0 && GetActiveSurface().WindowOrNull != nullptr &&
         IsOwnedWin32Window(GetActiveSurface().WindowOrNull) == false)
     {
         return LoseActiveSurface();
@@ -1454,17 +1500,17 @@ FrameStatus Begin() noexcept
     {
         return FrameStatus::Skipped;
     }
-    if (WaitForFence(gSubmitted[gSlot]) == false)
+    if (WaitForFence(GetDirect3D12().Submitted[GetDirect3D12().Slot]) == false)
     {
         LUDUS_LOG_ERROR(LOG_RHI, "Direct3D 12: frame fence wait failed or timed out");
         return FailFrame(StartupError::DeviceLost);
     }
-    gSubmitted[gSlot] = 0;
+    GetDirect3D12().Submitted[GetDirect3D12().Slot] = 0;
     HRESULT result = S_OK;
     if (GetActiveSurface().SwapChain.Get() != nullptr && GetActiveSurface().Target.ShouldPresentToSurface == true)
     {
         result = ResizeSwapChain(GetActiveSurface().Target.Width, GetActiveSurface().Target.Height);
-        if (FAILED(result) == true && gActiveSurface != 0 && IsDeviceLossResult(result) == false)
+        if (FAILED(result) == true && GetDirect3D12().ActiveSurface != 0 && IsDeviceLossResult(result) == false)
         {
             LogFailure("ResizeBuffers", result);
             return LoseActiveSurface();
@@ -1474,21 +1520,21 @@ FrameStatus Begin() noexcept
             return FailFrame("ResizeBuffers", result);
         }
         const uint32 index = GetActiveSurface().SwapChain->GetCurrentBackBufferIndex();
-        gSurfaceOrNull = GetActiveSurface().BackBuffers[index].Get();
-        gSurfaceDescriptor = GetTargetDescriptor(index);
+        GetDirect3D12().SurfaceOrNull = GetActiveSurface().BackBuffers[index].Get();
+        GetDirect3D12().SurfaceDescriptor = GetTargetDescriptor(index);
     }
     else if (GetActiveSurface().Hosted.IsConnected() == true &&
              GetActiveSurface().Target.ShouldPresentToSurface == true)
     {
         const HostedAcquire acquired = GetActiveSurface().Hosted.Acquire(GetActiveSurface().Target.Width,
                                                                          GetActiveSurface().Target.Height,
-                                                                         gSurfaceOrNull,
-                                                                         gSurfaceDescriptor);
+                                                                         GetDirect3D12().SurfaceOrNull,
+                                                                         GetDirect3D12().SurfaceDescriptor);
         if (acquired == HostedAcquire::Pending)
         {
             return FrameStatus::Skipped;
         }
-        if (acquired == HostedAcquire::Failed && gActiveSurface != 0 && IsDeviceRemoved() == false)
+        if (acquired == HostedAcquire::Failed && GetDirect3D12().ActiveSurface != 0 && IsDeviceRemoved() == false)
         {
             return LoseActiveSurface();
         }
@@ -1504,71 +1550,72 @@ FrameStatus Begin() noexcept
         {
             return FailFrame("headless target creation", result);
         }
-        gSurfaceOrNull = GetActiveSurface().Headless.Get();
-        gSurfaceDescriptor = GetTargetDescriptor(HEADLESS_DESCRIPTOR);
+        GetDirect3D12().SurfaceOrNull = GetActiveSurface().Headless.Get();
+        GetDirect3D12().SurfaceDescriptor = GetTargetDescriptor(HEADLESS_DESCRIPTOR);
     }
-    ID3D12CommandAllocator* allocator = gAllocators[gSlot].Get();
+    ID3D12CommandAllocator* allocator = GetDirect3D12().Allocators[GetDirect3D12().Slot].Get();
     result = allocator->Reset();
     if (FAILED(result) == true)
     {
         return FailFrame("ID3D12CommandAllocator::Reset", result);
     }
-    result = gCommands->Reset(allocator, nullptr);
+    result = GetDirect3D12().Commands->Reset(allocator, nullptr);
     if (FAILED(result) == true)
     {
         return FailFrame("ID3D12GraphicsCommandList::Reset", result);
     }
-    isRecording = true;
+    GetDirect3D12().IsRecording = true;
     ResetBufferStates();
     RasterEndPass();
-    BeginTimingFrame(*gCommands);
+    BeginTimingFrame(*GetDirect3D12().Commands);
     const D3D12_RESOURCE_BARRIER toTarget =
-        MakeTransition(gSurfaceOrNull,
+        MakeTransition(GetDirect3D12().SurfaceOrNull,
                        { .Before = D3D12_RESOURCE_STATE_PRESENT, .After = D3D12_RESOURCE_STATE_RENDER_TARGET });
-    gCommands->ResourceBarrier(1, &toTarget);
+    GetDirect3D12().Commands->ResourceBarrier(1, &toTarget);
     const float32 color[CLEAR_COLOR_CHANNELS] = {
         static_cast<float32>(GetActiveSurface().Target.Red),
         static_cast<float32>(GetActiveSurface().Target.Green),
         static_cast<float32>(GetActiveSurface().Target.Blue),
         static_cast<float32>(GetActiveSurface().Target.Alpha),
     };
-    gCommands->ClearRenderTargetView(gSurfaceDescriptor, color, 0, nullptr);
-    gCommands->OMSetRenderTargets(1, &gSurfaceDescriptor, FALSE, nullptr);
-    const D3D12_RESOURCE_DESC surface = gSurfaceOrNull->GetDesc();
+    GetDirect3D12().Commands->ClearRenderTargetView(GetDirect3D12().SurfaceDescriptor, color, 0, nullptr);
+    GetDirect3D12().Commands->OMSetRenderTargets(1, &GetDirect3D12().SurfaceDescriptor, FALSE, nullptr);
+    const D3D12_RESOURCE_DESC surface = GetDirect3D12().SurfaceOrNull->GetDesc();
     // Extent comes from the acquired target, bounded by the frame target above.
-    gFrame = {static_cast<uint32>(surface.Width), surface.Height, SurfaceEncoding::Unorm};
+    GetDirect3D12().Frame = {static_cast<uint32>(surface.Width), surface.Height, SurfaceEncoding::Unorm};
     return FrameStatus::Ready;
 }
 FrameStatus End() noexcept
 {
-    if (isRecording == false)
+    if (GetDirect3D12().IsRecording == false)
     {
         return FrameStatus::InvalidState;
     }
     RasterEndPass();
     const D3D12_RESOURCE_BARRIER toPresent =
-        MakeTransition(gSurfaceOrNull,
+        MakeTransition(GetDirect3D12().SurfaceOrNull,
                        { .Before = D3D12_RESOURCE_STATE_RENDER_TARGET, .After = D3D12_RESOURCE_STATE_PRESENT });
-    gCommands->ResourceBarrier(1, &toPresent);
-    EndTimingFrame(*gCommands);
-    HRESULT result = gCommands->Close();
-    isRecording = false;
-    gSurfaceOrNull = nullptr;
-    gFrame = {};
+    GetDirect3D12().Commands->ResourceBarrier(1, &toPresent);
+    EndTimingFrame(*GetDirect3D12().Commands);
+    HRESULT result = GetDirect3D12().Commands->Close();
+    GetDirect3D12().IsRecording = false;
+    GetDirect3D12().SurfaceOrNull = nullptr;
+    GetDirect3D12().Frame = {};
     if (FAILED(result) == true)
     {
         return FailFrame("ID3D12GraphicsCommandList::Close", result);
     }
-    ID3D12CommandList* const lists[] = {gCommands.Get()};
+    ID3D12CommandList* const lists[] = {GetDirect3D12().Commands.Get()};
     MarkTimingsQueued();
-    gQueue->ExecuteCommandLists(1, lists);
+    GetDirect3D12().Queue->ExecuteCommandLists(1, lists);
     bool isPresented = false;
     bool isSurfaceLost = false;
     if (GetActiveSurface().SwapChain.Get() != nullptr && GetActiveSurface().Target.ShouldPresentToSurface == true)
     {
         // Synchronize to vertical blank; DXGI_STATUS_OCCLUDED is a success code.
         result = GetActiveSurface().SwapChain->Present(1, 0);
-        isSurfaceLost = FAILED(result) == true && gActiveSurface != 0 && IsDeviceLossResult(result) == false;
+        isSurfaceLost =
+            FAILED(result) == true && GetDirect3D12().ActiveSurface != 0 && IsDeviceLossResult(result) == false;
         if (FAILED(result) == true && isSurfaceLost == false)
         {
             return FailFrame("IDXGISwapChain::Present", result);
@@ -1588,8 +1635,8 @@ FrameStatus End() noexcept
     }
     TrackSurfaceFrame(GetActiveSurface(), value);
     GetActiveSurface().PresentedFrames += isPresented == true ? 1 : 0;
-    gSubmitted[gSlot] = value;
-    gSlot = (gSlot + 1) % FRAME_COUNT;
+    GetDirect3D12().Submitted[GetDirect3D12().Slot] = value;
+    GetDirect3D12().Slot = (GetDirect3D12().Slot + 1) % FRAME_COUNT;
     if (isSurfaceLost == true)
     {
         // The frame was submitted; only its created surface stops presenting.
@@ -1616,12 +1663,12 @@ ResourceStatus CreateShader(usize slot, const ShaderDescription& description, ui
         LUDUS_LOG_ERROR(LOG_RHI, "Direct3D 12: DXIL container does not hold the requested stage and entry");
         return ResourceStatus::Failed;
     }
-    return gShaders[slot].Bytecode.TryAddRange(description.Dxil) == true ? ResourceStatus::Ready
-                                                                         : ResourceStatus::Failed;
+    return GetDirect3D12().Shaders[slot].Bytecode.TryAddRange(description.Dxil) == true ? ResourceStatus::Ready
+                                                                                        : ResourceStatus::Failed;
 }
 ResourceStatus CreateUniform(usize slot, const UniformDescription& description, uint32) noexcept
 {
-    Uniform& uniform = gUniforms[slot];
+    Uniform& uniform = GetDirect3D12().Uniforms[slot];
     uniform.Size = description.Size;
     const D3D12_HEAP_PROPERTIES heap =
     {
@@ -1648,13 +1695,13 @@ ResourceStatus CreateUniform(usize slot, const UniformDescription& description, 
     for (usize index = 0; index < FRAME_COUNT; ++index)
     {
         ID3D12Resource* bufferOrNull = nullptr;
-        HRESULT result = gDevice->CreateCommittedResource(&heap,
-                                                          D3D12_HEAP_FLAG_NONE,
-                                                          &bufferDescription,
-                                                          D3D12_RESOURCE_STATE_GENERIC_READ,
-                                                          nullptr,
-                                                          GetInterfaceId(bufferOrNull),
-                                                          GetInterfaceOutput(bufferOrNull));
+        HRESULT result = GetDirect3D12().Device->CreateCommittedResource(&heap,
+                                                                         D3D12_HEAP_FLAG_NONE,
+                                                                         &bufferDescription,
+                                                                         D3D12_RESOURCE_STATE_GENERIC_READ,
+                                                                         nullptr,
+                                                                         GetInterfaceId(bufferOrNull),
+                                                                         GetInterfaceOutput(bufferOrNull));
         if (FAILED(result) == true)
         {
             LogFailure("uniform buffer creation", result);
@@ -1676,8 +1723,8 @@ ResourceStatus CreateUniform(usize slot, const UniformDescription& description, 
 }
 ResourceStatus CreatePipeline(usize slot, const PipelineResources& resources, uint32) noexcept
 {
-    const Array<uint8>& vertex = gShaders[resources.Vertex].Bytecode;
-    const Array<uint8>& fragment = gShaders[resources.Fragment].Bytecode;
+    const Array<uint8>& vertex = GetDirect3D12().Shaders[resources.Vertex].Bytecode;
+    const Array<uint8>& fragment = GetDirect3D12().Shaders[resources.Fragment].Bytecode;
     // Every slot holds valid enums; only slot 0 is bound.
     static_assert(D3D12_SIMULTANEOUS_RENDER_TARGET_COUNT == RENDER_TARGET_SLOTS);
     const D3D12_BLEND_DESC blend =
@@ -1706,7 +1753,7 @@ ResourceStatus CreatePipeline(usize slot, const PipelineResources& resources, ui
     };
     D3D12_GRAPHICS_PIPELINE_STATE_DESC description =
     {
-        .pRootSignature = gRootSignature.Get(),
+        .pRootSignature = GetDirect3D12().RootSignature.Get(),
         .VS = { .pShaderBytecode = vertex.GetData(), .BytecodeLength = vertex.GetSize() },
         .PS = { .pShaderBytecode = fragment.GetData(), .BytecodeLength = fragment.GetSize() },
         .DS = { .pShaderBytecode = nullptr, .BytecodeLength = 0 },
@@ -1760,26 +1807,26 @@ ResourceStatus CreatePipeline(usize slot, const PipelineResources& resources, ui
         .Flags = D3D12_PIPELINE_STATE_FLAG_NONE,
     };
     ID3D12PipelineState* stateOrNull = nullptr;
-    const HRESULT result = gDevice->CreateGraphicsPipelineState(&description,
-                                                                GetInterfaceId(stateOrNull),
-                                                                GetInterfaceOutput(stateOrNull));
+    const HRESULT result = GetDirect3D12().Device->CreateGraphicsPipelineState(&description,
+                                                                               GetInterfaceId(stateOrNull),
+                                                                               GetInterfaceOutput(stateOrNull));
     if (FAILED(result) == true)
     {
         LogFailure("CreateGraphicsPipelineState", result);
         return ResourceStatus::Failed;
     }
-    gPipelines[slot] = { .State = Adopt(stateOrNull), .UniformSlot = resources.Uniform };
+    GetDirect3D12().Pipelines[slot] = { .State = Adopt(stateOrNull), .UniformSlot = resources.Uniform };
     return ResourceStatus::Ready;
 }
 void DestroyShader(usize slot) noexcept
 {
     // Pipeline state objects keep their own compiled copy of the bytecode.
     Array<uint8> released;
-    gShaders[slot].Bytecode.Swap(released);
+    GetDirect3D12().Shaders[slot].Bytecode.Swap(released);
 }
 void DestroyUniform(usize slot) noexcept
 {
-    Uniform& uniform = gUniforms[slot];
+    Uniform& uniform = GetDirect3D12().Uniforms[slot];
     // A frame in flight may still read the buffers.
     if (uniform.Size != 0)
     {
@@ -1794,7 +1841,7 @@ void DestroyUniform(usize slot) noexcept
 }
 void DestroyPipeline(usize slot) noexcept
 {
-    Pipeline& pipeline = gPipelines[slot];
+    Pipeline& pipeline = GetDirect3D12().Pipelines[slot];
     if (pipeline.State.Get() != nullptr)
     {
         static_cast<void>(WaitForIdle());
@@ -1804,24 +1851,24 @@ void DestroyPipeline(usize slot) noexcept
 }
 void UpdateUniform(usize slot, ludus::foundation::BorrowedView<const uint8> bytes) noexcept
 {
-    std::memcpy(gUniforms[slot].Bytes, bytes.GetDataOrNull(), bytes.GetSize());
+    std::memcpy(GetDirect3D12().Uniforms[slot].Bytes, bytes.GetDataOrNull(), bytes.GetSize());
 }
 FrameInfo GetFrameInfo() noexcept
 {
-    return gFrame;
+    return GetDirect3D12().Frame;
 }
 ResourceStatus Draw(usize slot) noexcept
 {
-    const Pipeline& pipeline = gPipelines[slot];
-    const Uniform& uniform = gUniforms[pipeline.UniformSlot];
+    const Pipeline& pipeline = GetDirect3D12().Pipelines[slot];
+    const Uniform& uniform = GetDirect3D12().Uniforms[pipeline.UniformSlot];
     // Begin waited for this slot's fence, so the GPU no longer reads its buffer.
-    std::memcpy(uniform.MappedOrNull[gSlot], uniform.Bytes, uniform.Size);
+    std::memcpy(uniform.MappedOrNull[GetDirect3D12().Slot], uniform.Bytes, uniform.Size);
     const D3D12_VIEWPORT viewport =
     {
         .TopLeftX = 0,
         .TopLeftY = 0,
-        .Width = static_cast<float32>(gFrame.Width),
-        .Height = static_cast<float32>(gFrame.Height),
+        .Width = static_cast<float32>(GetDirect3D12().Frame.Width),
+        .Height = static_cast<float32>(GetDirect3D12().Frame.Height),
         .MinDepth = 0,
         .MaxDepth = 1,
     };
@@ -1829,17 +1876,18 @@ ResourceStatus Draw(usize slot) noexcept
     {
         .left = 0,
         .top = 0,
-        .right = static_cast<LONG>(gFrame.Width),
-        .bottom = static_cast<LONG>(gFrame.Height),
+        .right = static_cast<LONG>(GetDirect3D12().Frame.Width),
+        .bottom = static_cast<LONG>(GetDirect3D12().Frame.Height),
     };
-    gCommands->SetGraphicsRootSignature(gRootSignature.Get());
-    gCommands->SetPipelineState(pipeline.State.Get());
-    gCommands->SetGraphicsRootConstantBufferView(UNIFORM_ROOT_PARAMETER,
-                                                 uniform.Buffers[gSlot]->GetGPUVirtualAddress());
-    gCommands->IASetPrimitiveTopology(D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
-    gCommands->RSSetViewports(1, &viewport);
-    gCommands->RSSetScissorRects(1, &scissor);
-    gCommands->DrawInstanced(FULLSCREEN_VERTEX_COUNT, 1, 0, 0);
+    GetDirect3D12().Commands->SetGraphicsRootSignature(GetDirect3D12().RootSignature.Get());
+    GetDirect3D12().Commands->SetPipelineState(pipeline.State.Get());
+    GetDirect3D12().Commands->SetGraphicsRootConstantBufferView(
+        UNIFORM_ROOT_PARAMETER,
+        uniform.Buffers[GetDirect3D12().Slot]->GetGPUVirtualAddress());
+    GetDirect3D12().Commands->IASetPrimitiveTopology(D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
+    GetDirect3D12().Commands->RSSetViewports(1, &viewport);
+    GetDirect3D12().Commands->RSSetScissorRects(1, &scissor);
+    GetDirect3D12().Commands->DrawInstanced(FULLSCREEN_VERTEX_COUNT, 1, 0, 0);
     return ResourceStatus::Ready;
 }
 // Adapter identity is independent of optional timing and allocation telemetry.
@@ -1851,7 +1899,7 @@ MeasurementAdapter TimingAdapter() noexcept
 {
     MeasurementAdapter output;
     DXGI_ADAPTER_DESC1 description{};
-    if (gAdapter.Get() == nullptr || FAILED(gAdapter->GetDesc1(&description)) == true)
+    if (GetDirect3D12().Adapter.Get() == nullptr || FAILED(GetDirect3D12().Adapter->GetDesc1(&description)) == true)
     {
         return output;
     }
@@ -1874,7 +1922,8 @@ MeasurementAdapter TimingAdapter() noexcept
     output.DeviceId = description.DeviceId;
     // DXGI flags the software rasterizer (WARP) explicitly; every other adapter is hardware.
     output.SoftwareKnown = true;
-    output.Software = isSoftwareAdapter == true || (description.Flags & DXGI_ADAPTER_FLAG_SOFTWARE) != 0;
+    output.Software =
+        GetDirect3D12().IsSoftwareAdapter == true || (description.Flags & DXGI_ADAPTER_FLAG_SOFTWARE) != 0;
     return output;
 }
 #if defined(LUDUS_RHI_TEST_READBACK)
@@ -1887,15 +1936,15 @@ bool ReadHeadlessPixels(std::span<uint8> pixels) noexcept
     constexpr usize SURFACE_RED = 2;
     constexpr usize SURFACE_ALPHA = 3;
     // Each refusal names its cause: a bare false left deferred WARP failures undiagnosable.
-    if (isRendering == false || GetActiveSurface().SwapChain.Get() != nullptr || isRecording == true ||
-        GetActiveSurface().Headless.Get() == nullptr)
+    if (GetDirect3D12().IsRendering == false || GetActiveSurface().SwapChain.Get() != nullptr ||
+        GetDirect3D12().IsRecording == true || GetActiveSurface().Headless.Get() == nullptr)
     {
         LUDUS_LOG_ERROR(LOG_RHI,
                         "Direct3D 12: headless readback needs an idle headless frame (rendering {}, swap chain {}, "
                         "recording {}, headless target {})",
-                        isRendering,
+                        GetDirect3D12().IsRendering,
                         GetActiveSurface().SwapChain.Get() != nullptr,
-                        isRecording,
+                        GetDirect3D12().IsRecording,
                         GetActiveSurface().Headless.Get() != nullptr);
         return false;
     }
@@ -1918,7 +1967,7 @@ bool ReadHeadlessPixels(std::span<uint8> pixels) noexcept
     }
     D3D12_PLACED_SUBRESOURCE_FOOTPRINT footprint{};
     UINT64 readbackBytes = 0;
-    gDevice->GetCopyableFootprints(&source, 0, 1, 0, &footprint, nullptr, nullptr, &readbackBytes);
+    GetDirect3D12().Device->GetCopyableFootprints(&source, 0, 1, 0, &footprint, nullptr, nullptr, &readbackBytes);
     const D3D12_HEAP_PROPERTIES heap =
     {
         .Type = D3D12_HEAP_TYPE_READBACK,
@@ -1941,27 +1990,27 @@ bool ReadHeadlessPixels(std::span<uint8> pixels) noexcept
         .Flags = D3D12_RESOURCE_FLAG_NONE,
     };
     ID3D12Resource* bufferOrNull = nullptr;
-    const HRESULT created = gDevice->CreateCommittedResource(&heap,
-                                                             D3D12_HEAP_FLAG_NONE,
-                                                             &bufferDescription,
-                                                             D3D12_RESOURCE_STATE_COPY_DEST,
-                                                             nullptr,
-                                                             GetInterfaceId(bufferOrNull),
-                                                             GetInterfaceOutput(bufferOrNull));
+    const HRESULT created = GetDirect3D12().Device->CreateCommittedResource(&heap,
+                                                                            D3D12_HEAP_FLAG_NONE,
+                                                                            &bufferDescription,
+                                                                            D3D12_RESOURCE_STATE_COPY_DEST,
+                                                                            nullptr,
+                                                                            GetInterfaceId(bufferOrNull),
+                                                                            GetInterfaceOutput(bufferOrNull));
     if (FAILED(created) == true)
     {
         LogFailure("Headless readback buffer creation", created);
         return false;
     }
     ComOwner<ID3D12Resource> buffer = Adopt(bufferOrNull);
-    ID3D12CommandAllocator* allocator = gAllocators[gSlot].Get();
+    ID3D12CommandAllocator* allocator = GetDirect3D12().Allocators[GetDirect3D12().Slot].Get();
     const HRESULT allocatorReset = allocator->Reset();
     if (FAILED(allocatorReset) == true)
     {
         LogFailure("Headless readback command allocator reset", allocatorReset);
         return false;
     }
-    const HRESULT commandsReset = gCommands->Reset(allocator, nullptr);
+    const HRESULT commandsReset = GetDirect3D12().Commands->Reset(allocator, nullptr);
     if (FAILED(commandsReset) == true)
     {
         LogFailure("Headless readback command list reset", commandsReset);
@@ -1970,7 +2019,7 @@ bool ReadHeadlessPixels(std::span<uint8> pixels) noexcept
     const D3D12_RESOURCE_BARRIER toCopy =
         MakeTransition(GetActiveSurface().Headless.Get(),
                        { .Before = D3D12_RESOURCE_STATE_COMMON, .After = D3D12_RESOURCE_STATE_COPY_SOURCE });
-    gCommands->ResourceBarrier(1, &toCopy);
+    GetDirect3D12().Commands->ResourceBarrier(1, &toCopy);
     D3D12_TEXTURE_COPY_LOCATION destination{};
     destination.pResource = buffer.Get();
     destination.Type = D3D12_TEXTURE_COPY_TYPE_PLACED_FOOTPRINT;
@@ -1979,19 +2028,19 @@ bool ReadHeadlessPixels(std::span<uint8> pixels) noexcept
     copySource.pResource = GetActiveSurface().Headless.Get();
     copySource.Type = D3D12_TEXTURE_COPY_TYPE_SUBRESOURCE_INDEX;
     copySource.SubresourceIndex = 0;
-    gCommands->CopyTextureRegion(&destination, 0, 0, 0, &copySource, nullptr);
+    GetDirect3D12().Commands->CopyTextureRegion(&destination, 0, 0, 0, &copySource, nullptr);
     const D3D12_RESOURCE_BARRIER toCommon =
         MakeTransition(GetActiveSurface().Headless.Get(),
                        { .Before = D3D12_RESOURCE_STATE_COPY_SOURCE, .After = D3D12_RESOURCE_STATE_COMMON });
-    gCommands->ResourceBarrier(1, &toCommon);
-    const HRESULT closed = gCommands->Close();
+    GetDirect3D12().Commands->ResourceBarrier(1, &toCommon);
+    const HRESULT closed = GetDirect3D12().Commands->Close();
     if (FAILED(closed) == true)
     {
         LogFailure("Headless readback command list close", closed);
         return false;
     }
-    ID3D12CommandList* const lists[] = {gCommands.Get()};
-    gQueue->ExecuteCommandLists(1, lists);
+    ID3D12CommandList* const lists[] = {GetDirect3D12().Commands.Get()};
+    GetDirect3D12().Queue->ExecuteCommandLists(1, lists);
     if (WaitForIdle() == false)
     {
         LUDUS_LOG_ERROR(LOG_RHI, "Direct3D 12: headless readback copy did not complete");
