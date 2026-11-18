@@ -1,6 +1,8 @@
 """Tests of the SDK .luslh generator (cmake/shaders/generate_luslh.py)."""
 
+import contextlib
 import importlib.util
+import io
 import os
 import stat
 import sys
@@ -150,6 +152,14 @@ class GenerateLuslhTests(unittest.TestCase):
         header.write_text('stale\n')
         sys.argv = ['generate_luslh.py', '--check', '--tool', str(self.tool), str(template)]
         self.assertEqual(generate_luslh.main(), 1)
+        self.assertEqual(header.read_text(), 'stale\n')
+        # The failure names the one command that repairs it.
+        sys.argv = ['generate_luslh.py', '--check', '--regenerate-target', 'ludus_generate_luslh', '--tool',
+                    str(self.tool), str(template)]
+        errors = io.StringIO()
+        with contextlib.redirect_stderr(errors):
+            self.assertEqual(generate_luslh.main(), 1)
+        self.assertIn('Regenerate them with: cmake --build <build> --target ludus_generate_luslh', errors.getvalue())
         self.assertEqual(header.read_text(), 'stale\n')
         sys.argv = ['generate_luslh.py', '--tool', str(self.tool), str(template)]
         self.assertEqual(generate_luslh.main(), 0)

@@ -452,10 +452,16 @@ class RequiredGateTests(unittest.TestCase):
         compile_only = ("Prepare and configure trusted authoring shaders", "Check that each source compiles once",
                         "Build every default target with the Editor and shader worker",
                         "Analyze document interactions and regressions", "Report compiler cache")
+        # The one test step integration runs: quick generated-file comparisons on the built tree
+        # (docs/development/continuous-integration.md#generated-sources).
+        generated_sources = "Check checked-in generated sources"
         for title, body in steps:
             with self.subTest(step=title):
                 runs_tests = "ctest" in body or "ludus_editor_tests" in body or "upload-artifact" in title
-                if title in compile_only or title.startswith(("actions/checkout", "./.github/actions/native-setup")):
+                if title == generated_sources:
+                    self.assertNotIn(guard, body)
+                    self.assertIn("--label-regex '^generated-source$'", body)
+                elif title in compile_only or title.startswith(("actions/checkout", "./.github/actions/native-setup")):
                     self.assertNotIn(guard, body)
                 else:
                     self.assertTrue(runs_tests, title)
@@ -548,9 +554,11 @@ class RequiredGateTests(unittest.TestCase):
         build = next(line.strip() for line in editor.splitlines() if line.strip().startswith("run:")
                      and "cmake --build" in line)
         self.assertEqual(build, "run: out/host-tools/venv/bin/cmake --build --preset linux-clang-development")
-        self.assertIn("--label-regex '^(unit|editor)$' --no-tests=error", editor)
+        # Generated-source checks also carry unit; their own step runs them, so the batch skips them here.
+        self.assertIn("--label-regex '^(unit|editor)$' --label-exclude '^generated-source$' --no-tests=error", editor)
         self.assertIn("--tests-regex '^ludus_target_detection$' --output-on-failure --no-tests=error", editor)
-        self.assertEqual(editor.count('--label-regex'), 1, 'Tests carrying both labels must run once.')
+        self.assertEqual(editor.count("--label-regex '^(unit|editor)$'"), 1, 'Tests carrying both labels must run once.')
+        self.assertEqual(editor.count('--label-regex'), 2, 'Only the generated-source step adds a label run.')
         self.assertIn('QT_QPA_PLATFORM: offscreen', editor)
         self.assertIn("'[.script-journey]'", editor)
 

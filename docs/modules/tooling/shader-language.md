@@ -1213,14 +1213,19 @@ directives.
   signatures one parameter per line. A name the file does not declare, a
   resource or other type LUSL cannot spell, or an array (LUSL needs a named
   size) is an error that names the template line.
-- The generated headers are checked in and installed as before. The CTest
-  `lusl_declarations_tests` (shader-worker builds, which link Slang) regenerates
-  them and fails when one is stale, printing the command that rewrites them:
+- The generated headers are checked in and installed as before. A change to
+  any Slang file or C header a template reflects, such as a new `RayLaunch`
+  field in `scene_shader.slang`, must regenerate them in the same commit. In a
+  shader-worker build (which links Slang), one command rewrites them:
 
   ```bash
-  python3 cmake/shaders/generate_luslh.py --tool out/build/<preset>/tools/lusl-declarations/lusl-declarations \
-      modules/foundation/math/shaders/math.luslh.in modules/graphics/renderer/shaders/*.luslh.in
+  cmake --build out/build/<preset> --target ludus_generate_luslh
   ```
+
+  The CTest `lusl_declarations_tests` regenerates them in memory and fails when
+  one is stale, naming that command. It carries the `generated-source` label,
+  which every pull request's Editor build runs
+  ([generated sources](../../development/continuous-integration.md#generated-sources)).
 
 ## Interfaces and templates
 
