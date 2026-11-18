@@ -90,6 +90,8 @@ struct RunSpec final
 /// first original UTF-8 byte offset that produced this glyph (diagnostic provenance, not a caret API).
 struct ShapedGlyph final
 {
+    /// Number of shaped advance or offset units in one physical framebuffer pixel.
+    static constexpr int32 UNITS_PER_PIXEL = 64;
     uint32 GlyphId = 0;     ///< FreeType/OpenType glyph index (0 == .notdef).
     uint32 Cluster = 0;     ///< UTF-8 byte offset of the originating cluster.
     int32 XAdvance = 0;     ///< 26.6 signed.

@@ -82,8 +82,12 @@ Status PrepareText(CoverageAtlas& atlas,
         {
             return ready;
         }
-        const auto x = static_cast<float32>(static_cast<float64>(penX + shaped.XOffset) / 64 + glyph.BearingLeft);
-        const auto y = static_cast<float32>(-static_cast<float64>(penY + shaped.YOffset) / 64 - glyph.BearingTop);
+        const float32 x = static_cast<float32>(static_cast<float64>(penX + shaped.XOffset) /
+                                                   ludus::text::ShapedGlyph::UNITS_PER_PIXEL +
+                                               glyph.BearingLeft);
+        const float32 y = static_cast<float32>(-static_cast<float64>(penY + shaped.YOffset) /
+                                                   ludus::text::ShapedGlyph::UNITS_PER_PIXEL -
+                                               glyph.BearingTop);
         scratch[used++] = {{x, y, x + static_cast<float32>(glyph.Width), y + static_cast<float32>(glyph.Height)},
                            glyph.Uv,
                            shaped.Cluster};

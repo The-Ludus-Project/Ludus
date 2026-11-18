@@ -66,9 +66,9 @@ constexpr uint32 kMaxGeneration = (1U << (32U - kSlotBits)) - 1U;
     return value >> kSlotBits;
 }
 
-[[nodiscard]] float32 F26Dot6ToPixels(long value) noexcept
+[[nodiscard]] foundation::float64 ConvertTextUnitsToPixels(foundation::int64 value) noexcept
 {
-    return static_cast<float32>(value) / 64.0F;
+    return static_cast<foundation::float64>(value) / ShapedGlyph::UNITS_PER_PIXEL;
 }
 
 // A loaded font: owned bytes plus the FreeType face and referenced HarfBuzz
@@ -595,9 +595,11 @@ Status ShapeInternal(FontSystem* system,
     }
     staging.Source.assign(utf8.data(), utf8.size());
 
-    // Pen-walked ink bounds and advance, in physical pixels.
-    float32 penX = 0.0F;
-    float32 penY = 0.0F;
+    // Thanks to Nicolas P. Rougier, “Higher Quality 2D Text Rendering,” JCGT 2(1), §2.4,
+    // https://jcgt.org/published/0002/01/04/paper.pdf#page=7, for preserving fractional advances.
+    // HarfBuzz supplies the kerned positions. Sum them in their native units before measuring in pixels.
+    foundation::int64 penX = 0;
+    foundation::int64 penY = 0;
     float32 inkLeft = 0.0F;
     float32 inkTop = 0.0F;
     float32 inkRight = 0.0F;
@@ -623,17 +625,19 @@ Status ShapeInternal(FontSystem* system,
         // Ink extent from glyph bbox at the current pen (via FreeType).
         if (FT_Load_Glyph(fontSlot.Face, glyph.GlyphId, kLoadFlags) == 0)
         {
-            const FT_GlyphSlot gs = fontSlot.Face->glyph;
-            const float32 gx = penX + F26Dot6ToPixels(positions[i].x_offset) + static_cast<float32>(gs->bitmap_left);
-            const float32 gyTop = penY - F26Dot6ToPixels(positions[i].y_offset) - static_cast<float32>(gs->bitmap_top);
-            const float32 metricsW = F26Dot6ToPixels(static_cast<long>(gs->metrics.width));
-            const float32 metricsH = F26Dot6ToPixels(static_cast<long>(gs->metrics.height));
-            if (metricsW > 0.0F && metricsH > 0.0F)
+            const FT_GlyphSlot glyphSlot = fontSlot.Face->glyph;
+            if (glyphSlot->metrics.width > 0 && glyphSlot->metrics.height > 0)
             {
-                const float32 left = gx;
-                const float32 top = gyTop;
-                const float32 right = gx + metricsW;
-                const float32 bottom = gyTop + metricsH;
+                const foundation::float64 originX =
+                    ConvertTextUnitsToPixels(penX + glyph.XOffset) + glyphSlot->bitmap_left;
+                const foundation::float64 originY =
+                    -ConvertTextUnitsToPixels(penY + glyph.YOffset) - glyphSlot->bitmap_top;
+                const float32 left = static_cast<float32>(originX);
+                const float32 top = static_cast<float32>(originY);
+                const float32 right =
+                    static_cast<float32>(originX + ConvertTextUnitsToPixels(glyphSlot->metrics.width));
+                const float32 bottom =
+                    static_cast<float32>(originY + ConvertTextUnitsToPixels(glyphSlot->metrics.height));
                 if (haveInk == false)
                 {
                     inkLeft = left;
@@ -652,20 +656,20 @@ Status ShapeInternal(FontSystem* system,
             }
         }
 
-        penX += F26Dot6ToPixels(positions[i].x_advance);
-        penY += F26Dot6ToPixels(positions[i].y_advance);
+        penX += glyph.XAdvance;
+        penY += glyph.YAdvance;
         staging.Glyphs.Add(glyph);
     }
 
     hb_buffer_destroy(buffer);
 
     // Face-level metrics (sized).
-    const FT_Size_Metrics& sm = fontSlot.Face->size->metrics;
-    staging.Metrics.Ascent = F26Dot6ToPixels(sm.ascender);
-    staging.Metrics.Descent = -F26Dot6ToPixels(sm.descender); // descender is negative
-    staging.Metrics.LineAdvance = F26Dot6ToPixels(sm.height);
-    staging.Metrics.AdvanceX = penX;
-    staging.Metrics.AdvanceY = penY;
+    const FT_Size_Metrics& sizeMetrics = fontSlot.Face->size->metrics;
+    staging.Metrics.Ascent = static_cast<float32>(ConvertTextUnitsToPixels(sizeMetrics.ascender));
+    staging.Metrics.Descent = static_cast<float32>(-ConvertTextUnitsToPixels(sizeMetrics.descender));
+    staging.Metrics.LineAdvance = static_cast<float32>(ConvertTextUnitsToPixels(sizeMetrics.height));
+    staging.Metrics.AdvanceX = static_cast<float32>(ConvertTextUnitsToPixels(penX));
+    staging.Metrics.AdvanceY = static_cast<float32>(ConvertTextUnitsToPixels(penY));
     staging.Metrics.GlyphCount = glyphCount;
     staging.Metrics.MissingGlyphCount = missing;
     if (haveInk)

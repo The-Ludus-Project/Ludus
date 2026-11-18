@@ -50,6 +50,20 @@ prebaked alphabet. Cache only glyphs actually returned by shaping, at the sizes
 actually used. No LCD rendering: monitor subpixel order and browser compositing
 are unsuitable assumptions for a shared renderer.
 
+### Fractional glyph positioning
+
+Nicolas P. Rougier shows why rounding an advance can change the length of a
+line. Ludus takes the signed advances and offsets from HarfBuzz, which already
+accounts for kerning. CPU measurement and GraphicsText accumulate the pen in
+26.6 units and convert at the pixel boundary. The paper's horizontal RGB filter
+assumes a known display subpixel order. Ludus uses grayscale coverage for
+composited targets, and the Qt editor HUD uses Qt's own font metrics and painter.
+Figure 7's fractional-origin sweep is a way to evaluate the rendered result in
+an installed app. Compare dark-on-light and light-on-dark text at the same
+positions and record the target encoding before considering a coverage change.
+[Rougier, *Higher Quality 2D Text Rendering*, JCGT 2(1), §§2.3–2.5 and Fig. 7](https://jcgt.org/published/0002/01/04/paper.pdf#page=6)
+· [U1 installed-app qualification](https://github.com/The-Ludus-Project/Ludus/issues/1219)
+
 ## Local Gems readings
 
 The local `references/game-dev-gems-toc.md` was searched for font, text,
