@@ -548,8 +548,10 @@ QString ReferenceCaptureWindow::GetGraphText() const
 
 void ReferenceCaptureWindow::updateGraphDescription()
 {
-    QString text = QStringLiteral("None. This viewport has no project render graph, so only the RT1 reference can "
-                                  "be captured.");
+    // Short enough for the settings column; the tooltip says why.
+    QString text = QStringLiteral("None. RT1 reference only");
+    QString explanation = QStringLiteral("This viewport has no project render graph, so only the RT1 reference can "
+                                         "be captured.");
 #if defined(LUDUS_EDITOR_NATIVE_PREVIEW)
     const bool hasRequestedGraph =
         mProjectGraph.isNull() == false && mProjectGraph->GetRequestedPackagePath().isEmpty() == false;
@@ -564,6 +566,7 @@ void ReferenceCaptureWindow::updateGraphDescription()
     {
         text = QStringLiteral("Library %1 · configuration %2 · output %3, built from the viewport's generation")
                    .arg(library.Library, library.Configuration, library.Output);
+        explanation = text;
     }
     else if (mProjectWorkspace.isNull() == false && hasRequestedGraph == true)
     {
@@ -590,6 +593,7 @@ void ReferenceCaptureWindow::updateGraphDescription()
             parts.append(QStringLiteral("Force raster"));
         }
         text = parts.join(QStringLiteral(" · "));
+        explanation = text;
     }
 #endif
     mGraph->setText(text);
@@ -597,7 +601,7 @@ void ReferenceCaptureWindow::updateGraphDescription()
                                       "the viewport's toolbar; change them there. A library output renders one "
                                       "output of a library configuration, such as a slow reference template, "
                                       "without changing the viewport.")
-                           .arg(text));
+                           .arg(explanation));
     QString problem;
 #if defined(LUDUS_EDITOR_NATIVE_PREVIEW)
     // The viewport output's route decides only its own capture; a library output has its own package.

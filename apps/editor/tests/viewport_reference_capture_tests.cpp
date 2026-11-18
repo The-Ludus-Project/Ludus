@@ -807,8 +807,9 @@ TEST_CASE("Reference capture window keeps its settings in a column beside the im
     CHECK(capture->property("visualRole").toString() == QStringLiteral("primary"));
     // Nothing has run, so an empty bar would only take room.
     CHECK(progress->isVisible() == false);
-    // The tooltip carries the whole summary however the line is shortened.
-    CHECK(graph->toolTip().startsWith(window.GetGraphText()) == true);
+    // Without a project graph the line stays short and the tooltip says why.
+    CHECK(window.GetGraphText() == QStringLiteral("None. RT1 reference only"));
+    CHECK(graph->toolTip().startsWith(QStringLiteral("This viewport has no project render graph")) == true);
 
     const QSize defaultSize = window.size();
     CHECK(defaultSize.width() >= window.minimumSizeHint().width());
