@@ -612,6 +612,20 @@ mapping per slot and retains the original IDs and import provenance for
 reimport. Renderers require resolved scattering. World draws the unresolved
 surface with an editor diagnostic and asks the author to choose a replacement.
 
+World level `material_definitions` optionally holds a created material per
+resolved material resource ID. An entry is `{"model":"diffuse","base_color"}`
+or `{"model":"metallic_roughness","base_color","metallic","roughness"}`, with a
+linear RGB `base_color` in [0, 1], `metallic` in [0, 1] and `roughness` in
+[0.045, 1]. Assembly writes every slot that resolves to the ID with that model
+and those values in one shared v7 record. A diffuse record has zero metallic
+and roughness 1. The record keeps the imported textures, emission, alpha mode
+and name, and the base colour scales the base colour map. Skin and hair-card
+slot overrides apply on top; a coating still needs a coated-diffuse material.
+A source cannot be both a mapping source and a created material. The
+catalog is unchanged, so reimport resolves new slots through the same entry.
+Validation names the repair for an unknown model, missing or extra members and
+out-of-range values.
+
 World and level documents can store one `shared_coatings` instance per resolved
 material resource ID. A slot-level `coating` record takes precedence over that
 instance. Slots with neither use the imported values. Cooking interns matching

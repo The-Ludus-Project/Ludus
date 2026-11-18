@@ -1741,7 +1741,15 @@ lobes, sampled directions, energy, and raw CPU/GPU reference results.
    composition on newly loaded geometry without editing either graph.
 3. Import an unsupported material shared across several slots. Select its
    diagnostic surface, create or map a replacement, then verify undo,
-   save/reopen and reimport.
+   save/reopen and reimport. Status: World offers **Map to existing
+   material** and **Create material from import**, a diffuse or
+   metallic-roughness draft from the imported values. The Editor regression
+   covers the selected slot, cancel, an in-dialog rejection, one-step undo
+   and redo, and a failed preparation that keeps the last published view. It
+   also covers save/reopen and reimport
+   ([repair an unsupported imported material](../development/editor-workspace.md#repair-an-unsupported-imported-material)).
+   Coated, layered and project-BRDF drafts remain open, and the dialog does
+   not yet list the unsupported source inputs by name.
 4. Register a project-defined BRDF with paired reference implementations.
    Verify that the general graph accepts it with unchanged source and the
    restricted graph either admits it or identifies a missing guarantee.

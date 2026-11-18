@@ -5,6 +5,7 @@
 #include "internal/material_inspection.h"
 #include "internal/world_aperture.h"
 #include "internal/world_celestial_light.h"
+#include "internal/world_material_creation.h"
 #include "internal/world_probe_volume.h"
 #include "internal/world_terrain.h"
 
@@ -1201,6 +1202,7 @@ bool WorldDocument::Validate(const QJsonObject& candidate, QString& error) const
     {
         const QJsonObject scene = candidate.value(QStringLiteral("scene")).toObject();
         const QJsonValue mappings = scene.value(QStringLiteral("material_mappings"));
+        const QJsonValue definitions = scene.value(QStringLiteral("material_definitions"));
         constexpr qsizetype SCENE_FIELDS = 6;
         if (candidate.value(QStringLiteral("scene")).isObject() == false ||
             Fields(scene,
@@ -1210,8 +1212,10 @@ bool WorldDocument::Validate(const QJsonObject& candidate, QString& error) const
                     QStringLiteral("profile"),
                     QStringLiteral("camera"),
                     QStringLiteral("imports"),
-                    QStringLiteral("material_mappings")}) == false ||
-            scene.size() != SCENE_FIELDS + (mappings.isUndefined() == true ? 0 : 1) ||
+                    QStringLiteral("material_mappings"),
+                    QStringLiteral("material_definitions")}) == false ||
+            scene.size() !=
+                SCENE_FIELDS + (mappings.isUndefined() == true ? 0 : 1) + (definitions.isUndefined() == true ? 0 : 1) ||
             scene.value(QStringLiteral("version")) != QJsonValue(1) ||
             QUuid(scene.value(QStringLiteral("id")).toString()).isNull() ||
             scene.value(QStringLiteral("profile")) != QJsonValue(QStringLiteral("resident-reference-v1")) ||
@@ -1236,6 +1240,34 @@ bool WorldDocument::Validate(const QJsonObject& candidate, QString& error) const
                     table.contains(entry.value().toString()) == true)
                 {
                     return Fail(error, QStringLiteral("Use distinct material IDs and remove chained mappings."));
+                }
+            }
+        }
+        if (definitions.isUndefined() == false)
+        {
+            const QJsonObject table = definitions.toObject();
+            const QJsonObject mapped = mappings.toObject();
+            if (definitions.isObject() == false ||
+                table.size() > static_cast<qsizetype>(content::scene_format::IMPORT_LIMITS.Materials))
+            {
+                return Fail(error, QStringLiteral("Invalid created material table."));
+            }
+            for (QJsonObject::const_iterator entry = table.constBegin(); entry != table.constEnd(); ++entry)
+            {
+                if (ResourceId(QJsonValue(entry.key()), QStringLiteral("material")) == false)
+                {
+                    return Fail(error,
+                                QStringLiteral("A created material must name an imported material resource ID."));
+                }
+                if (mapped.contains(entry.key()) == true)
+                {
+                    return Fail(error,
+                                QStringLiteral("An imported material is both mapped and replaced by a created "
+                                               "material. Keep one repair: undo the mapping or the creation."));
+                }
+                if (ValidateCreatedMaterial(entry.value(), error) == false)
+                {
+                    return false;
                 }
             }
         }
@@ -1993,6 +2025,36 @@ bool WorldDocument::SetSharedCoating(const QString& material, const QJsonObject&
     instances.insert(material, coating);
     candidate.insert(QStringLiteral("shared_coatings"), instances);
     return commit(candidate, outError, "Edit Shared Coating");
+}
+
+bool WorldDocument::DefineSceneMaterial(const QString& source, const QJsonObject& definition, QString& outError)
+{
+    QJsonObject scene = Draft_.value(QStringLiteral("scene")).toObject();
+    if (scene.isEmpty() == true)
+    {
+        return Fail(outError, QStringLiteral("Import a scene before creating a material."));
+    }
+    QJsonObject definitions = scene.value(QStringLiteral("material_definitions")).toObject();
+    if (definitions.value(source).toObject() == definition)
+    {
+        return true;
+    }
+    const bool isEditing = definitions.contains(source);
+    definitions.insert(source, definition);
+    scene.insert(QStringLiteral("material_definitions"), definitions);
+    QJsonObject candidate = Draft_;
+    candidate.insert(QStringLiteral("scene"), scene);
+    return commit(candidate, outError, isEditing == true ? "Edit Created Material" : "Create Material");
+}
+
+QJsonObject WorldDocument::GetSceneMaterialDefinition(const QString& material) const
+{
+    return Draft_.value(QStringLiteral("scene"))
+        .toObject()
+        .value(QStringLiteral("material_definitions"))
+        .toObject()
+        .value(material)
+        .toObject();
 }
 
 bool WorldDocument::SetSceneStartView(const QJsonObject& camera, QString& outError)

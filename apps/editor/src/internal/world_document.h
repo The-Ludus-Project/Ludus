@@ -184,6 +184,16 @@ public:
     [[nodiscard]] QJsonObject SceneLevel() const;
     /// Map all current and future slots of a logical source material in one World history entry.
     [[nodiscard]] bool MapSceneMaterial(const QString& source, const QString& replacement, QString& outError);
+    /// Create or replace the material that stands in for an imported material in every current and future slot that
+    /// resolves to it (`scene.material_definitions`), as one World history entry ("Create Material", or "Edit Created
+    /// Material" when one exists). An equal definition adds no history.
+    /// @param source Imported material resource ID; it must not also be a mapping source.
+    /// @param definition A created material that ValidateCreatedMaterial accepts.
+    /// @param outError On failure the reason; the draft and history are unchanged.
+    /// @return Whether the World holds the definition.
+    [[nodiscard]] bool DefineSceneMaterial(const QString& source, const QJsonObject& definition, QString& outError);
+    /// The created material standing in for this imported material resource ID, or an empty object.
+    [[nodiscard]] QJsonObject GetSceneMaterialDefinition(const QString& material) const;
     /// Resolve an imported slot's inherited material through the World repair mapping.
     [[nodiscard]] QString GetInheritedMaterialId(const QJsonObject& placement) const;
     /// Get the material resource bound by a World or cooked level placement.
