@@ -4,6 +4,7 @@
 #include <ludus/foundation/base/types.h>
 #include <ludus/foundation/containers/borrowed_view.hpp>
 
+#include <ludus/graphics/rhi/adapter.h>
 #include <ludus/graphics/rhi/profile.h>
 #include <ludus/graphics/rhi/render.h>
 #include <ludus/graphics/rhi/rhi.h>
@@ -30,14 +31,61 @@ private:
 };
 
 /// Borrowed frame target belonging to one device session, including a headless target.
-/// The Platform window/canvas must outlive the device. Destruction/loss invalidates
-/// target operations; copying the handle does not extend its lifetime.
+/// The Platform window/canvas must outlive the surface. Destruction/loss invalidates
+/// target operations; copying the handle does not extend its lifetime. Each surface of a
+/// device has its own identity (R14b), never reused after DestroySurface or DestroyDevice.
 struct SurfaceHandle final
 {
+    /// Compare surface identities only, without querying the surface or its device.
+    [[nodiscard]] LUDUS_INLINE bool operator==(const SurfaceHandle&) const noexcept = default;
+
 private:
     ludus::foundation::uint64 Owner = 0;
+    ludus::foundation::uint64 mIdentity = 0;
     /// Grants private dispatch access to assign and validate the borrowed owner identity.
     friend struct internal::DeviceAccess;
+};
+
+/// Maximum surfaces one device hosts at once, including the primary surface CreateDevice
+/// publishes (R14b). A backend may host fewer; see CreateSurface.
+inline constexpr ludus::foundation::usize MAX_DEVICE_SURFACES = 4;
+
+/// Presentation state of one surface; independent of the device's startup state.
+enum class SurfaceState : ludus::foundation::uint8
+{
+    /// The surface acquires and presents frames.
+    Ready,
+    /// The platform target stopped accepting frames (for example its view left its window).
+    /// Its presentation resources are retired; the device and other surfaces keep working.
+    /// Destroy the surface and create a replacement to recover.
+    Lost,
+};
+
+/// @brief Snapshot of one surface's target and completion counters (R14b).
+///
+/// Counters start at zero when the surface is created, count only this surface's frames
+/// and never decrease. Render completion and presentation are reported separately: a
+/// frame can be presented before or after its rendering is observed complete.
+struct SurfaceInfo final
+{
+    /// Presentation state; Lost surfaces reject frames with DeviceStatus::SurfaceLost.
+    SurfaceState State = SurfaceState::Ready;
+    /// True for the surface CreateDevice published; it is retired only by DestroyDevice.
+    bool IsPrimary = false;
+    /// Window system of the borrowed target.
+    ludus::platform::WindowSystem System = ludus::platform::WindowSystem::Headless;
+    /// Last accepted frame target width in pixels; zero skips acquisition.
+    ludus::foundation::uint32 Width = 0;
+    /// Last accepted frame target height in pixels; zero skips acquisition.
+    ludus::foundation::uint32 Height = 0;
+    /// Frames this surface acquired and submitted with EndFrame.
+    ludus::foundation::uint64 SubmittedFrames = 0;
+    /// Submitted frames whose GPU work the owner thread has observed complete. Observation
+    /// is polled without waiting, so it can lag the GPU.
+    ludus::foundation::uint64 RenderedFrames = 0;
+    /// Submitted frames handed to the platform's presentation queue or hosted consumer.
+    /// Headless surfaces present nothing, so this stays zero. It is not a display time.
+    ludus::foundation::uint64 PresentedFrames = 0;
 };
 
 /// Implemented workload capabilities, independently queryable from a backend name.
@@ -87,6 +135,11 @@ struct DeviceDescription final
 {
     /// Native accepts Auto; browser supports Auto or a forced browser backend.
     BackendSelection Selection = BackendSelection::Auto;
+    /// Native adapter to start on, from GetAdapterCatalog (R14a). All-zero bytes keep the
+    /// automatic choice. A foreign backend returns InvalidDescription, browser builds
+    /// Unsupported, and an identity absent from the catalog or below its backend baseline
+    /// fails with StartupError::AdapterUnavailable before any device is published.
+    AdapterIdentity Adapter{};
     /// Minimum effective fullscreen limits; checked on each backend attempt.
     DeviceRequirements Limits;
     /// Required workloads; unimplemented operations reject before startup, while the
@@ -131,6 +184,10 @@ enum class DeviceStatus : ludus::foundation::uint8
     DeviceLost,
     /// Process device-owner identities exhausted; no backend request was launched.
     IdentityExhausted,
+    /// The surface was lost; the device stays usable. Destroy and recreate the surface.
+    SurfaceLost,
+    /// The device already hosts as many surfaces as its backend allows.
+    CapacityExceeded,
 };
 
 /// Snapshot of one owned session, including its copied admission request.
@@ -148,6 +205,9 @@ struct DeviceInfo final
     DeviceFeatures Enabled;
     /// Immutable enabled limit/format snapshot; zero before Ready and after failure/loss.
     DeviceProfile Profile;
+    /// Raw catalog entry of the adapter this native session runs on, separate from the
+    /// enabled Profile; populated only while Ready, and zero on browser backends.
+    AdapterInfo Adapter{};
     /// Preferred workloads absent from Enabled; populated only while Ready.
     DeviceFeatures UnmetPreferences;
     /// First unmet preferred profile constraint; populated only while Ready.
@@ -199,17 +259,54 @@ struct DeviceInfo final
 [[nodiscard]] DeviceStatus DestroyDevice(DeviceHandle& device) noexcept;
 
 /// Set a borrowed target between frames; dimensions are pixels and zero skips acquisition.
-/// Validates both owners before delegating to the facade's effective-limit checks.
+/// Validates both owners before delegating to the facade's effective-limit checks. Each
+/// surface keeps its own target (R14b); a Lost surface returns SurfaceLost.
 [[nodiscard]] DeviceStatus
 SetFrameTarget(DeviceHandle device, SurfaceHandle surface, const FrameTarget& target) noexcept;
-/// Acquire a frame for this owner/target. Skipped opens no frame; nested acquisition is invalid.
+/// Acquire a frame for this owner/target. Skipped opens no frame; nested acquisition is invalid,
+/// including on another surface of the device. SurfaceLost reports a lost created surface
+/// (R14b) without affecting the device; the primary surface keeps the facade loss contract.
 [[nodiscard]] DeviceStatus BeginFrame(DeviceHandle device, SurfaceHandle surface) noexcept;
-/// Submit/end this owner's open frame once; fails explicitly after device loss.
+/// Submit/end this owner's open frame once, on the surface BeginFrame acquired; fails
+/// explicitly after device loss.
 [[nodiscard]] DeviceStatus EndFrame(DeviceHandle device) noexcept;
 /// Query acquired dimensions/encoding; offscreen-only frames report their logical target extent.
-/// Invalid owner, pending startup or closed frame
+/// Invalid owner, pending startup, closed frame or another surface's open frame
 /// preserves info. This is not a presentation-completion query.
 [[nodiscard]] DeviceStatus GetFrameInfo(DeviceHandle device, SurfaceHandle surface, FrameInfo& info) noexcept;
+
+/// @brief Borrow another platform target as a surface of a ready device (R14b).
+///
+/// Each surface keeps its own frame target, swapchain or drawable layer, depth attachment
+/// and completion counters, so surfaces acquire, resize and present independently. One
+/// frame is open per device at a time: BeginFrame chooses its surface. Call only between
+/// frames. Every surface of a device shares the primary surface's color format.
+/// @param device Ready owner; Pending startup returns NotReady and failure/loss its status.
+/// @param window Borrowed target that must outlive DestroySurface or DestroyDevice.
+/// @param outSurface Null output; written only on Ready.
+/// @return Ready on success; InvalidHandle for a stale/foreign device; InvalidState for a
+/// non-null output or an open frame; InvalidDescription for an invalid window or one whose
+/// target another surface already borrows; Unsupported when the backend hosts only its
+/// primary surface (WebGL 2 and an imported Vulkan device in this release), the
+/// window system cannot share the primary color format (Metal, Direct3D 12), or differs
+/// from the primary's window system (Vulkan); CapacityExceeded when the device hosts its
+/// maximum; Failed when the platform target or its swap chain could not be created, or a
+/// canvas already holds another context mode. WebGPU validates a canvas configuration
+/// asynchronously: a failure after Ready reports the surface Lost instead.
+[[nodiscard]] DeviceStatus
+CreateSurface(DeviceHandle device, const WindowInfo& window, SurfaceHandle& outSurface) noexcept;
+/// @brief Retire one surface created by CreateSurface and clear the handle.
+///
+/// Waits for this surface's submitted frames, then releases only its presentation
+/// resources and restores its borrowed view; the device, its resources and its other
+/// surfaces are unaffected. Lost surfaces and surfaces of a failed or lost device are
+/// accepted. Copies of the handle become stale.
+/// @return Ready on success; InvalidHandle preserves a stale/foreign handle; InvalidState
+/// for the primary surface (retired by DestroyDevice) or the surface of the open frame.
+[[nodiscard]] DeviceStatus DestroySurface(DeviceHandle device, SurfaceHandle& inoutSurface) noexcept;
+/// @brief Snapshot one surface's state, target and completion counters without waiting.
+/// @return Ready writes info, also for a Lost surface; InvalidHandle preserves info.
+[[nodiscard]] DeviceStatus GetSurfaceInfo(DeviceHandle device, SurfaceHandle surface, SurfaceInfo& outInfo) noexcept;
 
 /// Create a facade shader after validating device ownership; output/async artifact contracts
 /// match CreateShader without a device parameter. Invalid owner returns InvalidHandle.

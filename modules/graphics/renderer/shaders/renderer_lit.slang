@@ -1,4 +1,5 @@
 #include "lighting_layout.h"
+#include "material_scattering.slang"
 #include "math.slang"
 #include "raster_bindings.slang"
 #include "renderer_environment_layout.h"
@@ -41,6 +42,9 @@ struct Parameters
     float4 HairStrand;
     // X, Y: primary and base-colour-tinted secondary highlight weights.
     float4 HairHighlights;
+    // XYZ: a skin material's linear RGB scattering distance in metres. W: its one-based skin profile slot
+    // (DEFERRED_MAX_SKIN_PROFILES), or zero for every other material.
+    float4 SkinScattering;
 #endif
 };
 LUDUS_SHADER_BINDING(0) ConstantBuffer<Parameters> material : register(b0);
@@ -222,17 +226,43 @@ float3 EvaluateBrdf(float3 baseColor,
     if (nv <= 0 || nl <= 0 || dot(halfSumWorld, halfSumWorld) < 1e-12)
         return float3(0);
     float3 halfDirectionWorld = NormalizeOrZero(halfSumWorld);
-    float nh = saturate(dot(normalWorld, halfDirectionWorld));
     float lh = saturate(dot(lightDirectionWorld, halfDirectionWorld));
     float a = roughness * roughness;
     float a2 = a * a;
-    float d = (1 - nh * nh) + nh * nh * a2;
-    float distribution = a2 / (PI * d * d);
+    float distribution = ComputeGgxNormalDistribution(normalWorld, halfDirectionWorld, a2);
     float visibility = 0.5 / max(nl * sqrt(nv * nv * (1 - a2) + a2) + nv * sqrt(nl * nl * (1 - a2) + a2), 1e-6);
     float3 f0 = lerp(float3(0.04), baseColor, metallic);
     float3 fresnel = f0 + (1 - f0) * ComputeFifth(1 - lh);
     return nl * (distribution * visibility * fresnel +
                  baseColor * (1 - metallic) * (1 - fresnel) * (isBakedDiffuse ? 0 : 1) / PI);
+}
+// EvaluateBrdf's two lobes apart: returns the specular lobe and writes the diffuse one, for a skin resolve that
+// spreads only diffuse lighting (renderer_deferred_lighting.slang).
+float3 EvaluateBrdfLobes(float3 baseColor,
+                         float3 normalWorld,
+                         float3 viewDirectionWorld,
+                         float3 lightDirectionWorld,
+                         float metallic,
+                         float roughness,
+                         bool isBakedDiffuse,
+                         out float3 outDiffuse)
+{
+    outDiffuse = float3(0);
+    float nv = max(dot(normalWorld, viewDirectionWorld), 0);
+    float nl = max(dot(normalWorld, lightDirectionWorld), 0);
+    float3 halfSumWorld = viewDirectionWorld + lightDirectionWorld;
+    if (nv <= 0 || nl <= 0 || dot(halfSumWorld, halfSumWorld) < 1e-12)
+        return float3(0);
+    float3 halfDirectionWorld = NormalizeOrZero(halfSumWorld);
+    float lh = saturate(dot(lightDirectionWorld, halfDirectionWorld));
+    float a = roughness * roughness;
+    float a2 = a * a;
+    float distribution = ComputeGgxNormalDistribution(normalWorld, halfDirectionWorld, a2);
+    float visibility = 0.5 / max(nl * sqrt(nv * nv * (1 - a2) + a2) + nv * sqrt(nl * nl * (1 - a2) + a2), 1e-6);
+    float3 f0 = lerp(float3(0.04), baseColor, metallic);
+    float3 fresnel = f0 + (1 - f0) * ComputeFifth(1 - lh);
+    outDiffuse = nl * baseColor * (1 - metallic) * (1 - fresnel) * (isBakedDiffuse ? 0 : 1) / PI;
+    return nl * distribution * visibility * fresnel;
 }
 #ifdef LUDUS_AUTHORED_INPUTS
 // Raster hair cards (content::scene_format::MaterialModel::HairCard). hair_card.cpp mirrors every operation for
@@ -333,8 +363,185 @@ int GetEyeFlags(Varying input)
 {
     return int(input.EyeWorld.w + 0.5);
 }
-float ComputeShadowVisibility(int light, Varying input)
+// The encoded depth and slope a shadow map stores at uv: the mesh-light atlas in the deferred resolve.
+float4 ReadShadowCode(float2 uv)
 {
+#ifdef LUDUS_DEFERRED_MESH_LIGHTS
+    return meshLightShadowAtlas.SampleLevel(shadowSampler, uv, 0);
+#else
+    return shadowTexture.SampleLevel(shadowSampler, uv, 0);
+#endif
+}
+// One shadow region lookup: the receiver's place in the map and how far its position may be off its surface.
+struct ShadowLookup
+{
+    float4 Rectangle;
+    float4 Settings;
+    float2 ReceiverTexel;
+    float ReceiverDepth;
+    float2 UncertaintyTexel;
+    float UncertaintyDepth;
+};
+// The depth the caster stored at sampleUv has at the receiver's location, and the tolerance its comparison allows.
+float ProjectShadowCaster(in ShadowLookup lookup, float2 sampleUv, out float outTolerance, out float outStored)
+{
+    float4 code = ReadShadowCode(sampleUv);
+    float2 centerTexel = sampleUv / lookup.Settings.zw;
+    // Thanks to Microsoft, "Cascaded Shadow Maps", Depth Bias,
+    // https://learn.microsoft.com/en-us/windows/win32/dxtecharts/cascaded-shadow-maps,
+    // for comparing depths at matching locations across a PCF filter.
+    // Light projections map planes to planes, so each caster plane is projected to the receiver's
+    // location from the slope stored at the sampled texel. A fixed bias alone cannot cover the depth
+    // a grazing light spans across one texel: Sun-lit floors then shadowed themselves in texel stripes
+    // that aliased into blotches moving with the camera.
+    float2 slope = DecodeShadowSlope(code.ba);
+    outStored = DecodeShadowDepth(code.rg);
+    // The displaced receiver changes its own depth and where it meets the caster's plane. Allow both,
+    // or a surface lit at a grazing angle shadows itself wherever the depth buffer rounds unfavourably.
+    outTolerance = lookup.Settings.x + lookup.UncertaintyDepth + dot(abs(slope), lookup.UncertaintyTexel);
+    return outStored + dot(slope, lookup.ReceiverTexel - centerTexel);
+}
+// Visibility of the receiver against the four map texels nearest sampleTexel, bilinearly weighted.
+float CompareShadowTexels(in ShadowLookup lookup, float2 sampleTexel)
+{
+    float2 lowerTexel = floor(sampleTexel - 0.5) + 0.5;
+    float2 fraction = sampleTexel - lowerTexel;
+    float visible = 0;
+    const int SHADOW_FILTER_TAP_COUNT = 4;
+    for (int tap = 0; tap < SHADOW_FILTER_TAP_COUNT; ++tap)
+    {
+        float2 corner = float2(tap & 1, (tap >> 1) & 1);
+        float2 sampleUv = clamp((lowerTexel + corner) * lookup.Settings.zw, lookup.Rectangle.xy, lookup.Rectangle.zw);
+        float tolerance;
+        float stored;
+        float projected = ProjectShadowCaster(lookup, sampleUv, tolerance, stored);
+        float2 weights = lerp(1 - fraction, fraction, corner);
+        float weight = weights.x * weights.y;
+        visible += lookup.ReceiverDepth - tolerance <= projected ? weight : 0;
+    }
+    return visible;
+}
+// Directional penumbrae (DirectLight::AngularRadiusRadians). Thanks to Randima Fernando, "Percentage-Closer Soft
+// Shadows", ACM SIGGRAPH 2005 Sketches, p. 35, https://doi.org/10.1145/1187112.1187153, for estimating the penumbra
+// from the average blocker depth and widening the comparison filter by it, and to Helmut Vogel, "A better way to
+// construct the sunflower head", Mathematical Biosciences 44(3-4), 1979, pp. 179-189,
+// https://doi.org/10.1016/0025-5564(79)90080-4, for the evenly spread golden-angle disk of taps. A disk of angular
+// radius r casts a penumbra of radius tan(r) times the distance from the blocker to the receiver along the light; the
+// orthographic map turns depth and texel offsets into metres through its projection rows. The filter radius is
+// clamped to DIRECTIONAL_PENUMBRA_MAXIMUM_TEXELS, which bounds the cost and keeps wider penumbrae soft but too narrow.
+static const int DIRECTIONAL_PENUMBRA_TAP_COUNT = 16;
+static const float DIRECTIONAL_PENUMBRA_MAXIMUM_TEXELS = 32;
+// Golden-angle disk tap `tap` of DIRECTIONAL_PENUMBRA_TAP_COUNT, inside the unit disk.
+float2 GetDirectionalPenumbraTap(int tap)
+{
+    float radius = sqrt((float(tap) + 0.5) / float(DIRECTIONAL_PENUMBRA_TAP_COUNT));
+    float angle = float(tap) * GOLDEN_ANGLE_RADIANS;
+    return radius * float2(cos(angle), sin(angle));
+}
+// Visibility of the receiver from a directional light's disk whose angular radius has tangent diskTangent.
+// texelsPerDepth converts a map depth difference into map texels of penumbra radius per unit disk tangent.
+float FilterDirectionalPenumbra(in ShadowLookup lookup, float diskTangent, float2 texelsPerDepth)
+{
+    // Nothing nearer than the map's near plane can block: it bounds the widest penumbra the receiver can be in.
+    float2 searchTexels = clamp(diskTangent * lookup.ReceiverDepth * texelsPerDepth,
+                                float2(1),
+                                float2(DIRECTIONAL_PENUMBRA_MAXIMUM_TEXELS));
+    float blockerSum = 0;
+    float blockerCount = 0;
+    for (int tap = 0; tap < DIRECTIONAL_PENUMBRA_TAP_COUNT; ++tap)
+    {
+        float2 sampleTexel = floor(lookup.ReceiverTexel + GetDirectionalPenumbraTap(tap) * searchTexels) + 0.5;
+        float2 sampleUv = clamp(sampleTexel * lookup.Settings.zw, lookup.Rectangle.xy, lookup.Rectangle.zw);
+        float tolerance;
+        float stored;
+        float projected = ProjectShadowCaster(lookup, sampleUv, tolerance, stored);
+        if (lookup.ReceiverDepth - tolerance > projected)
+        {
+            blockerSum += stored;
+            blockerCount += 1;
+        }
+    }
+    if (blockerCount == 0)
+        return CompareShadowTexels(lookup, lookup.ReceiverTexel);
+    float blockerDepth = blockerSum / blockerCount;
+    float2 radiusTexels = min(diskTangent * max(lookup.ReceiverDepth - blockerDepth, 0) * texelsPerDepth,
+                              float2(DIRECTIONAL_PENUMBRA_MAXIMUM_TEXELS));
+    // A penumbra narrower than a texel is the bilinear comparison's own transition.
+    if (max(radiusTexels.x, radiusTexels.y) < 1)
+        return CompareShadowTexels(lookup, lookup.ReceiverTexel);
+    float visible = 0;
+    for (int tap = 0; tap < DIRECTIONAL_PENUMBRA_TAP_COUNT; ++tap)
+        visible += CompareShadowTexels(lookup, lookup.ReceiverTexel + GetDirectionalPenumbraTap(tap) * radiusTexels);
+    return visible / float(DIRECTIONAL_PENUMBRA_TAP_COUNT);
+}
+// Visibility of positionWorld in shadow region region, bilinearly filtered over its four nearest texels, or over a
+// directional light's penumbra when its disk has a positive angular radius.
+// outIsInside is false, and the result one, when the position falls outside the region's projection.
+float SampleShadowRegion(int region, int light, float3 positionWorld, Varying input, out bool outIsInside)
+{
+    outIsInside = false;
+    float4 settings = material.ShadowData[region * SHADOW_REGION_WORDS + 5];
+    float4 p = float4(positionWorld, 1);
+    float4 clip = float4(dot(material.ShadowData[region * SHADOW_REGION_WORDS], p),
+                         dot(material.ShadowData[region * SHADOW_REGION_WORDS + 1], p),
+                         dot(material.ShadowData[region * SHADOW_REGION_WORDS + 2], p),
+                         dot(material.ShadowData[region * SHADOW_REGION_WORDS + 3], p));
+    if (clip.w <= 1e-6)
+        return 1;
+    float3 ndc = clip.xyz / clip.w;
+    if (abs(ndc.x) > 1 || abs(ndc.y) > 1 || ndc.z < 0 || ndc.z > 1)
+        return 1;
+    outIsInside = true;
+    ShadowLookup lookup;
+    lookup.Rectangle = material.ShadowData[region * SHADOW_REGION_WORDS + 4];
+    lookup.Settings = settings;
+    float4 rect = lookup.Rectangle;
+    float2 projectedUv = float2(ndc.x * 0.5 + 0.5, 0.5 - ndc.y * 0.5);
+    // Every region is drawn with its interior as the viewport, so the projection maps clip edges to viewport
+    // edges. The atlas rectangle supplied by the host bounds legal texel centres.
+    float2 uv = lerp(rect.xy - settings.zw * 0.5, rect.zw + settings.zw * 0.5, projectedUv);
+    lookup.ReceiverTexel = uv / settings.zw;
+    lookup.ReceiverDepth = ndc.z;
+    // Map texels per unit of normalized device coordinates.
+    float2 texelsPerNdc = 0.5 * (rect.zw - rect.xy + settings.zw) / settings.zw;
+#ifdef LUDUS_DEFERRED_MESH_LIGHTS
+    // A receiver rebuilt from depth may sit off its surface by PositionUncertaintyWorld. Express that
+    // displacement in map texels and light depth, so each tap can allow for it below.
+    float3 uncertaintyClip =
+        float3(dot(material.ShadowData[region * SHADOW_REGION_WORDS].xyz, input.PositionUncertaintyWorld),
+               dot(material.ShadowData[region * SHADOW_REGION_WORDS + 1].xyz, input.PositionUncertaintyWorld),
+               dot(material.ShadowData[region * SHADOW_REGION_WORDS + 2].xyz, input.PositionUncertaintyWorld)) /
+        clip.w;
+    lookup.UncertaintyTexel = abs(uncertaintyClip.xy) * texelsPerNdc;
+    lookup.UncertaintyDepth = abs(uncertaintyClip.z);
+#else
+    // Forward passes interpolate the receiver's exact position.
+    lookup.UncertaintyTexel = float2(0);
+    lookup.UncertaintyDepth = 0;
+#endif
+    float diskTangent = material.Lights[light * 4 + 3].z;
+    // Only an orthographic directional region has a disk: its projection's last row is (0, 0, 0, 1).
+    if (diskTangent > 0 && material.Lights[light * 4].w == 0 &&
+        dot(material.ShadowData[region * SHADOW_REGION_WORDS + 3].xyz,
+            material.ShadowData[region * SHADOW_REGION_WORDS + 3].xyz) == 0)
+    {
+        // Orthographic rows are the light basis scaled by NDC units per metre: a depth difference spans
+        // 1 / |depth row| metres, and one metre across spans |row| NDC units.
+        float metresPerDepth = 1 / length(material.ShadowData[region * SHADOW_REGION_WORDS + 2].xyz);
+        float2 texelsPerMetre =
+            texelsPerNdc * float2(length(material.ShadowData[region * SHADOW_REGION_WORDS].xyz),
+                                  length(material.ShadowData[region * SHADOW_REGION_WORDS + 1].xyz));
+        return FilterDirectionalPenumbra(lookup, diskTangent, metresPerDepth * texelsPerMetre);
+    }
+    return CompareShadowTexels(lookup, lookup.ReceiverTexel);
+}
+// Shadow-map coverage of a light at a receiver, for the shadow coverage debug view.
+static const int SHADOW_COVERAGE_NONE = 0;    // The light has no map.
+static const int SHADOW_COVERAGE_INSIDE = 1;  // A map of the light covers the receiver.
+static const int SHADOW_COVERAGE_OUTSIDE = 2; // The light has maps, but none covers the receiver.
+float ComputeShadowCoverage(int light, Varying input, out int outCoverage)
+{
+    outCoverage = SHADOW_COVERAGE_NONE;
     if ((GetEyeFlags(input) & 1) == 0)
         return 1;
     bool hasLocalShadowCoverage = false;
@@ -343,75 +550,95 @@ float ComputeShadowVisibility(int light, Varying input)
         if (region >= int(material.Pbr.w))
             break;
         float4 settings = material.ShadowData[region * SHADOW_REGION_WORDS + 5];
+#ifdef LUDUS_DEFERRED_MESH_LIGHTS
+        // Sky visibility regions trail every light's.
+        if (int(settings.y + 0.5) == int(SKY_VISIBILITY_REGION_TAG))
+            break;
+#endif
         if (int(settings.y) != light)
             continue;
         hasLocalShadowCoverage = hasLocalShadowCoverage || material.Lights[light * 4].w >= 1;
-        float4 p = float4(input.PositionWorld, 1);
-        float4 clip = float4(dot(material.ShadowData[region * SHADOW_REGION_WORDS], p),
-                             dot(material.ShadowData[region * SHADOW_REGION_WORDS + 1], p),
-                             dot(material.ShadowData[region * SHADOW_REGION_WORDS + 2], p),
-                             dot(material.ShadowData[region * SHADOW_REGION_WORDS + 3], p));
-        if (clip.w <= 1e-6)
-            continue;
-        float3 ndc = clip.xyz / clip.w;
-        if (abs(ndc.x) > 1 || abs(ndc.y) > 1 || ndc.z < 0 || ndc.z > 1)
-            continue;
-        float4 rect = material.ShadowData[region * SHADOW_REGION_WORDS + 4];
-        float2 projectedUv = float2(ndc.x * 0.5 + 0.5, 0.5 - ndc.y * 0.5);
-#ifdef LUDUS_DEFERRED_MESH_LIGHTS
-        // The directional projection maps clip edges to viewport edges. The
-        // atlas rectangle supplied by the host bounds legal texel centres.
-        float2 uv = lerp(rect.xy - settings.zw * 0.5, rect.zw + settings.zw * 0.5, projectedUv);
-        float2 receiverTexel = uv / settings.zw;
-        float2 lowerTexel = floor(receiverTexel - 0.5) + 0.5;
-        float2 fraction = receiverTexel - lowerTexel;
-        // A receiver rebuilt from depth may sit off its surface by PositionUncertaintyWorld. Express that
-        // displacement in map texels and light depth, so each tap can allow for it below.
-        float3 uncertaintyClip =
-            float3(dot(material.ShadowData[region * SHADOW_REGION_WORDS].xyz, input.PositionUncertaintyWorld),
-                   dot(material.ShadowData[region * SHADOW_REGION_WORDS + 1].xyz, input.PositionUncertaintyWorld),
-                   dot(material.ShadowData[region * SHADOW_REGION_WORDS + 2].xyz, input.PositionUncertaintyWorld)) /
-            clip.w;
-        float2 uncertaintyTexel = abs(uncertaintyClip.xy) * 0.5 * (rect.zw - rect.xy + settings.zw) / settings.zw;
-        float uncertaintyDepth = abs(uncertaintyClip.z);
-#else
-        float2 uv = lerp(rect.xy, rect.zw, projectedUv);
-#endif
-        float visible = 0;
-        const int SHADOW_FILTER_TAP_COUNT = 4;
-        for (int tap = 0; tap < SHADOW_FILTER_TAP_COUNT; ++tap)
+        outCoverage = SHADOW_COVERAGE_OUTSIDE;
+        bool isInside;
+        float visible = SampleShadowRegion(region, light, input.PositionWorld, input, isInside);
+        if (isInside == true)
         {
-            float2 corner = float2(tap & 1, (tap >> 1) & 1);
-#ifdef LUDUS_DEFERRED_MESH_LIGHTS
-            float2 sampleUv = clamp((lowerTexel + corner) * settings.zw, rect.xy, rect.zw);
-            float4 code = meshLightShadowAtlas.SampleLevel(shadowSampler, sampleUv, 0);
-            float2 centerTexel = sampleUv / settings.zw;
-            // Thanks to Microsoft, "Cascaded Shadow Maps", Depth Bias,
-            // https://learn.microsoft.com/en-us/windows/win32/dxtecharts/cascaded-shadow-maps,
-            // for comparing depths at matching locations across a PCF filter.
-            // The orthographic atlas lets us project each caster plane to the
-            // receiver's location from the slope stored at the sampled texel.
-            float2 slope = DecodeShadowSlope(code.ba);
-            float stored = DecodeShadowDepth(code.rg) + dot(slope, receiverTexel - centerTexel);
-            float2 weights = lerp(1 - fraction, fraction, corner);
-            float weight = weights.x * weights.y;
-            // The displaced receiver changes its own depth and where it meets the caster's plane. Allow both,
-            // or a surface lit at a grazing angle shadows itself wherever the depth buffer rounds unfavourably.
-            float tolerance = settings.x + uncertaintyDepth + dot(abs(slope), uncertaintyTexel);
-#else
-            float2 sampleUv = clamp(uv + (corner - 0.5) * settings.zw, rect.xy, rect.zw);
-            float stored = DecodeShadowDepth(shadowTexture.SampleLevel(shadowSampler, sampleUv, 0).rg);
-            float weight = 1.0 / SHADOW_FILTER_TAP_COUNT;
-            float tolerance = settings.x;
-#endif
-            visible += ndc.z - tolerance <= stored ? weight : 0;
+            outCoverage = SHADOW_COVERAGE_INSIDE;
+            return visible;
         }
-        return visible;
     }
     return hasLocalShadowCoverage
                ? 0
                : 1; // Local coverage gaps conservatively occlude; directional cascade contract stays explicit.
 }
+float ComputeShadowVisibility(int light, Varying input)
+{
+    int coverage;
+    return ComputeShadowCoverage(light, input, coverage);
+}
+#ifdef LUDUS_DEFERRED_MESH_LIGHTS
+// Sky visibility (render-graph-authoring.md, "Sky visibility"). The host renders SKY_VISIBILITY_DIRECTION_COUNT
+// orthographic depth maps of the scene from fixed upper-hemisphere directions and appends them after the directional
+// regions. A receiver sees the sky in a direction when that map does not hold a nearer caster, so sky and
+// environment light reach it only through openings: without them every interior surface received the whole sky.
+// The receiver moves this many map texels along its normal first, so a surface does not occlude its own sky where
+// the coarse map's depth steps across it.
+static const float SKY_VISIBILITY_NORMAL_OFFSET_TEXELS = 1.5;
+// Upper bound of the cosine-power lobe that weights sky directions about a reflection vector. The directions are
+// about 25 degrees apart, so a sharper lobe would switch between single directions and band along reflections.
+static const float SKY_SPECULAR_LOBE_EXPONENT_MAXIMUM = 8;
+// Guards the reciprocal map scale and lobe width against degenerate inputs.
+static const float SKY_VISIBILITY_SCALE_EPSILON = 1e-6;
+// Rec. 709 luminance of linear RGB, which weights the reflection lobe's sky directions by brightness.
+static const float3 SKY_LUMINANCE_WEIGHTS = float3(0.2126, 0.7152, 0.0722);
+// First sky visibility region, or -1 when the scene has no sky visibility maps.
+int GetSkyVisibilityFirstRegion()
+{
+    int first = int(material.Pbr.w) - int(SKY_VISIBILITY_DIRECTION_COUNT);
+    if (first < 0)
+        return -1;
+    return int(material.ShadowData[first * SHADOW_REGION_WORDS + 5].y + 0.5) == int(SKY_VISIBILITY_REGION_TAG) ? first
+                                                                                                               : -1;
+}
+// Unit world direction toward the sky of a sky visibility region. Its projection's depth row is the direction the
+// map looks along, scaled by the reciprocal depth range.
+float3 GetSkyVisibilityDirection(int region)
+{
+    return -NormalizeOrZero(material.ShadowData[region * SHADOW_REGION_WORDS + 2].xyz);
+}
+// Fraction of positionWorld's neighbourhood that sees past the scene along a sky visibility region's direction,
+// bilinearly filtered over the four nearest texels' caster planes. Positions outside the map see the sky. Unlike a
+// light's lookup it allows no depth-buffer uncertainty: the normal offset already exceeds it.
+float SampleSkyVisibilityRegion(int region, in float3 positionWorld)
+{
+    float4 p = float4(positionWorld, 1);
+    // Orthographic: the projection's last row is (0, 0, 0, 1).
+    float3 clip = float3(dot(material.ShadowData[region * SHADOW_REGION_WORDS], p),
+                         dot(material.ShadowData[region * SHADOW_REGION_WORDS + 1], p),
+                         dot(material.ShadowData[region * SHADOW_REGION_WORDS + 2], p));
+    if (abs(clip.x) > 1 || abs(clip.y) > 1 || clip.z < 0 || clip.z > 1)
+        return 1;
+    float4 rect = material.ShadowData[region * SHADOW_REGION_WORDS + 4];
+    float4 settings = material.ShadowData[region * SHADOW_REGION_WORDS + 5];
+    float2 projectedUv = float2(clip.x * 0.5 + 0.5, 0.5 - clip.y * 0.5);
+    float2 receiverTexel = lerp(rect.xy - settings.zw * 0.5, rect.zw + settings.zw * 0.5, projectedUv) / settings.zw;
+    float2 lowerTexel = floor(receiverTexel - 0.5) + 0.5;
+    float2 fraction = receiverTexel - lowerTexel;
+    float visible = 0;
+    const int SKY_FILTER_TAP_COUNT = 4;
+    for (int tap = 0; tap < SKY_FILTER_TAP_COUNT; ++tap)
+    {
+        float2 corner = float2(tap & 1, (tap >> 1) & 1);
+        float2 sampleUv = clamp((lowerTexel + corner) * settings.zw, rect.xy, rect.zw);
+        float4 code = meshLightShadowAtlas.SampleLevel(shadowSampler, sampleUv, 0);
+        float stored =
+            DecodeShadowDepth(code.rg) + dot(DecodeShadowSlope(code.ba), receiverTexel - sampleUv / settings.zw);
+        float2 weights = lerp(1 - fraction, fraction, corner);
+        visible += clip.z - settings.x <= stored ? weights.x * weights.y : 0;
+    }
+    return visible;
+}
+#endif
 #ifndef LUDUS_DEFERRED_MESH_LIGHTS
 float4 SampleBaseTexel(Varying input)
 {
@@ -642,6 +869,8 @@ struct SurfaceSample
     float Alpha;
     // Unit hair-card strand direction; zero for every other material.
     float3 StrandWorld = float3(0);
+    // One-based skin profile slot of a skin material with a scattering distance; zero for every other material.
+    float SkinProfile = 0;
 };
 #ifndef LUDUS_DEFERRED_MESH_LIGHTS
 SurfaceSample SampleMaterial(in Varying input)
@@ -765,6 +994,7 @@ SurfaceSample SampleMaterial(in Varying input)
     output.Alpha = material.Options.z == 2 ? baseColor.a : 1;
 #    ifdef LUDUS_AUTHORED_INPUTS
     output.StrandWorld = strandWorld;
+    output.SkinProfile = material.SkinScattering.w;
 #    endif
     return output;
 }
@@ -774,8 +1004,136 @@ SurfaceSample SampleMaterial(in Varying input)
 #    include "renderer_atmosphere_transport.slang"
 #endif
 
-float4 ShadeMaterial(in SurfaceSample surface, in Varying input)
+#ifdef LUDUS_DEFERRED_MESH_LIGHTS
+// Sky visibility of one receiver, accumulated in a single pass over the directions.
+struct SkyVisibility
 {
+    bool IsAvailable;
+    // Cosine-weighted fraction of the sky directions in front of the surface that see past the scene; scales
+    // environment irradiance from above and below the horizon alike.
+    float Irradiance;
+    // Visibility about the reflection vector, weighted by a cosine-power lobe that narrows with smoothness.
+    float Specular;
+    // Visibility applied to light from below the horizon: the same cosine-weighted visibility.
+    float Ground;
+#    ifdef LUDUS_ATMOSPHERE_SURFACE
+    // Atmosphere sky irradiance through the visible directions above the horizon.
+    float3 Radiance;
+#    endif
+};
+SkyVisibility EvaluateSkyVisibility(in float3 normalWorld, in float3 reflectionWorld, float roughness, Varying input)
+{
+    SkyVisibility sky;
+    sky.IsAvailable = false;
+    sky.Irradiance = 1;
+    sky.Specular = 1;
+    sky.Ground = 1;
+#    ifdef LUDUS_ATMOSPHERE_SURFACE
+    sky.Radiance = 0;
+#    endif
+    int first = GetSkyVisibilityFirstRegion();
+    if (first < 0 || (GetEyeFlags(input) & 1) == 0)
+        return sky;
+    sky.IsAvailable = true;
+    // Every map spans the same padded scene bounds, so one texel size, from the first map's horizontal row (two
+    // over its width in metres) and interior texels, moves the receiver for all of them.
+    float texelWorld =
+        2 / (max(length(material.ShadowData[first * SHADOW_REGION_WORDS].xyz), SKY_VISIBILITY_SCALE_EPSILON) *
+             float(SKY_VISIBILITY_SLOT_TEXELS - 2));
+    float3 positionWorld = input.PositionWorld + normalWorld * (SKY_VISIBILITY_NORMAL_OFFSET_TEXELS * texelWorld);
+    float alpha = max(roughness * roughness, SKY_VISIBILITY_SCALE_EPSILON);
+    float exponent = clamp(2 / (alpha * alpha) - 2, 1, SKY_SPECULAR_LOBE_EXPONENT_MAXIMUM);
+    float solidAngle = 2 * PI / float(SKY_VISIBILITY_DIRECTION_COUNT);
+    float visibleCosine = 0;
+    float totalCosine = 0;
+    float visibleLobe = 0;
+    float totalLobe = 0;
+    for (int direction = 0; direction < int(SKY_VISIBILITY_DIRECTION_COUNT); ++direction)
+    {
+        int region = first + direction;
+        float3 skyWorld = GetSkyVisibilityDirection(region);
+        float cosine = max(dot(normalWorld, skyWorld), 0) * solidAngle;
+        // Metal compiles render stages with fast math, where pow(0, y) may read log2(0); never take it.
+        float lobeCosine = dot(reflectionWorld, skyWorld);
+        float lobe = lobeCosine > 0 ? pow(lobeCosine, exponent) : 0;
+        // Directions behind both the surface and its reflection lobe change neither integral.
+        if (cosine <= 0 && lobe <= 0)
+            continue;
+        float visible = SampleSkyVisibilityRegion(region, positionWorld);
+        visibleCosine += visible * cosine;
+        totalCosine += cosine;
+#    ifdef LUDUS_ATMOSPHERE_SURFACE
+        float3 skyRadiance = SampleAtmosphereEnvironment(skyWorld);
+        sky.Radiance += skyRadiance * (visible * cosine);
+        // Weight the reflection lobe by the sky's own brightness, so a blocked bright direction removes its share:
+        // under an arcade the glowing sunset horizon is hidden while the dim sky overhead is open, and an
+        // unweighted lobe let the reflected horizon through.
+        float lobeRadiance = lobe * dot(skyRadiance, SKY_LUMINANCE_WEIGHTS);
+        visibleLobe += visible * lobeRadiance;
+        totalLobe += lobeRadiance;
+#    else
+        visibleLobe += visible * lobe;
+        totalLobe += lobe;
+#    endif
+    }
+    // The cosine-weighted visibility of the sky directions in front of the surface also scales the light it receives
+    // from below the horizon, which no map measures. A surface facing straight down sees no sky direction and none.
+    sky.Ground = totalCosine > 0 ? visibleCosine / totalCosine : 0;
+    sky.Irradiance = sky.Ground;
+    sky.Specular = totalLobe > 0 ? visibleLobe / totalLobe : sky.Ground;
+    return sky;
+}
+#endif
+// Separate lighting terms of one shaded surface, for the deferred resolve's lighting views.
+struct LightingTerms
+{
+    float3 SkyDiffuse;
+    float3 SkySpecular;
+    // Shadowed direct radiance of every analytic light, and of the isolated one.
+    float3 Direct;
+    float3 Isolated;
+    // Largest analytic light by luminance, or -1, and that luminance.
+    int DominantLight;
+    float DominantLuminance;
+    // Cosine-weighted sky visibility about the normal, or -1 without sky visibility maps.
+    float SkyVisibility;
+    // With shouldSeparateDiffuse: the sky and analytic-light diffuse radiance left out of the result, for a skin
+    // resolve that spreads it. Zero otherwise.
+    float3 Diffuse;
+};
+float ComputeLightingLuminance(in float3 radiance)
+{
+    return dot(radiance, float3(0.2126, 0.7152, 0.0722));
+}
+float ComputePunctualAttenuation(float distanceSquaredMetres, float rangeMetres)
+{
+    static const float MINIMUM_DISTANCE_SQUARED_METRES = 1e-4;
+    float ratio = distanceSquaredMetres / (rangeMetres * rangeMetres);
+    float edge = max(1 - ratio * ratio, 0);
+    return edge * edge / max(distanceSquaredMetres, MINIMUM_DISTANCE_SQUARED_METRES);
+}
+float ComputeSpotConeAttenuation(float directionCosine, float innerCosine, float outerCosine)
+{
+    static const float MINIMUM_SPOT_COSINE_DELTA = 1e-6;
+    float cone = saturate((directionCosine - outerCosine) / max(innerCosine - outerCosine, MINIMUM_SPOT_COSINE_DELTA));
+    return cone * cone;
+}
+// Shade the surface and report its lighting terms. With shouldSeparateDiffuse the diffuse terms go to outTerms.Diffuse
+// instead of the returned radiance; otherwise the radiance keeps the summation order of the combined path.
+float4 ShadeMaterialTerms(in SurfaceSample surface,
+                          in Varying input,
+                          int isolatedLight,
+                          bool shouldSeparateDiffuse,
+                          out LightingTerms outTerms)
+{
+    outTerms.Diffuse = 0;
+    outTerms.SkyDiffuse = 0;
+    outTerms.SkySpecular = 0;
+    outTerms.Direct = 0;
+    outTerms.Isolated = 0;
+    outTerms.DominantLight = -1;
+    outTerms.DominantLuminance = 0;
+    outTerms.SkyVisibility = -1;
     float4 baseColor = surface.BaseColor;
     float3 normalWorld = surface.NormalWorld;
     float3 viewDirectionWorld = surface.ViewDirectionWorld;
@@ -784,10 +1142,26 @@ float4 ShadeMaterial(in SurfaceSample surface, in Varying input)
     float nv = max(dot(normalWorld, viewDirectionWorld), 0);
     float3 f0 = lerp(float3(0.04), baseColor.rgb, metallic);
     float3 f = f0 + (1 - f0) * ComputeFifth(1 - nv);
+#ifdef LUDUS_DEFERRED_MESH_LIGHTS
+    SkyVisibility sky = EvaluateSkyVisibility(normalWorld, reflect(-viewDirectionWorld, normalWorld), roughness, input);
+#endif
 #ifdef LUDUS_ATMOSPHERE_SURFACE
     float3 irradiance = 0;
     float3 specularEnvironment = 0;
-    if (nv > 0)
+    if (nv > 0 && sky.IsAvailable == true)
+    {
+        EvaluateVisibleAtmosphereEnvironment(normalWorld,
+                                             viewDirectionWorld,
+                                             roughness,
+                                             f0,
+                                             nv,
+                                             sky.Radiance,
+                                             sky.Ground,
+                                             sky.Specular,
+                                             irradiance,
+                                             specularEnvironment);
+    }
+    else if (nv > 0)
     {
         EvaluateAtmosphereEnvironment(normalWorld,
                                       viewDirectionWorld,
@@ -816,6 +1190,13 @@ float4 ShadeMaterial(in SurfaceSample surface, in Varying input)
         specularEnvironment = radiance * (f0 * dfg.x + dfg.y);
     }
 #    endif
+#    ifdef LUDUS_DEFERRED_MESH_LIGHTS
+    if (sky.IsAvailable == true)
+    {
+        irradiance *= sky.Irradiance;
+        specularEnvironment *= sky.Specular;
+    }
+#    endif
 #endif
 #if !defined(LUDUS_DEFERRED_MESH_LIGHTS) && !defined(LUDUS_GRAPH_REALTIME)
 #    ifndef LUDUS_GRAPH_SURFACE_CHART
@@ -837,7 +1218,23 @@ float4 ShadeMaterial(in SurfaceSample surface, in Varying input)
 #endif
     float3 result = surface.Emission;
     if (nv > 0)
-        result += irradiance * baseColor.rgb * (1 - metallic) * (1 - f) / PI + specularEnvironment;
+    {
+        outTerms.SkyDiffuse = irradiance * baseColor.rgb * (1 - metallic) * (1 - f) / PI;
+        outTerms.SkySpecular = specularEnvironment;
+        if (shouldSeparateDiffuse == true)
+        {
+            outTerms.Diffuse += outTerms.SkyDiffuse;
+            result += outTerms.SkySpecular;
+        }
+        else
+        {
+            result += outTerms.SkyDiffuse + outTerms.SkySpecular;
+        }
+    }
+#ifdef LUDUS_DEFERRED_MESH_LIGHTS
+    if (sky.IsAvailable == true)
+        outTerms.SkyVisibility = sky.Irradiance;
+#endif
 #ifdef LUDUS_DEBUG_VIEW
     int lightCount = 0;
 #endif
@@ -898,17 +1295,14 @@ float4 ShadeMaterial(in SurfaceSample surface, in Varying input)
         float attenuation = 1;
         if (color.w != 0)
         {
-            float3 delta = position.xyz - input.PositionWorld;
-            float distance2 = dot(delta, delta);
-            lightDirectionWorld = NormalizeOrZero(delta);
-            float ratio = distance2 / (position.w * position.w);
-            float edge = max(1 - ratio * ratio, 0);
-            attenuation = edge * edge / max(distance2, 1e-4);
+            float3 deltaWorld = position.xyz - input.PositionWorld;
+            float distanceSquaredMetres = dot(deltaWorld, deltaWorld);
+            lightDirectionWorld = NormalizeOrZero(deltaWorld);
+            attenuation = ComputePunctualAttenuation(distanceSquaredMetres, position.w);
             if (color.w == 2)
             {
-                float cone = saturate((dot(-lightDirectionWorld, direction.xyz) - direction.w) /
-                                      max(extra.x - direction.w, 1e-6));
-                attenuation *= cone * cone;
+                attenuation *=
+                    ComputeSpotConeAttenuation(dot(-lightDirectionWorld, direction.xyz), extra.x, direction.w);
             }
             if (color.w == 3 || color.w == 4)
             {
@@ -931,32 +1325,59 @@ float4 ShadeMaterial(in SurfaceSample surface, in Varying input)
 #else
     const bool shouldReplaceDiffuse = input.IsBakeValid > 0.5 && extra.y > 0.5;
 #endif
+        float3 diffuseReflectance = float3(0);
+        float3 reflectance;
+        if (shouldSeparateDiffuse == true)
+        {
+            reflectance = EvaluateBrdfLobes(baseColor.rgb,
+                                            normalWorld,
+                                            viewDirectionWorld,
+                                            lightDirectionWorld,
+                                            metallic,
+                                            roughness,
+                                            shouldReplaceDiffuse,
+                                            diffuseReflectance);
+        }
+        else
+        {
 #ifdef LUDUS_AUTHORED_INPUTS
-        float3 reflectance = IsHairCard() == true ? EvaluateHairCard(baseColor.rgb,
-                                                                     roughness,
-                                                                     normalWorld,
-                                                                     surface.StrandWorld,
-                                                                     viewDirectionWorld,
-                                                                     lightDirectionWorld,
-                                                                     shouldReplaceDiffuse)
-                                                  : EvaluateBrdf(baseColor.rgb,
-                                                                 normalWorld,
-                                                                 viewDirectionWorld,
-                                                                 lightDirectionWorld,
-                                                                 metallic,
-                                                                 roughness,
-                                                                 shouldReplaceDiffuse);
+            reflectance = IsHairCard() == true ? EvaluateHairCard(baseColor.rgb,
+                                                                  roughness,
+                                                                  normalWorld,
+                                                                  surface.StrandWorld,
+                                                                  viewDirectionWorld,
+                                                                  lightDirectionWorld,
+                                                                  shouldReplaceDiffuse)
+                                               : EvaluateBrdf(baseColor.rgb,
+                                                              normalWorld,
+                                                              viewDirectionWorld,
+                                                              lightDirectionWorld,
+                                                              metallic,
+                                                              roughness,
+                                                              shouldReplaceDiffuse);
 #else
-        float3 reflectance = EvaluateBrdf(baseColor.rgb,
-                                          normalWorld,
-                                          viewDirectionWorld,
-                                          lightDirectionWorld,
-                                          metallic,
-                                          roughness,
-                                          shouldReplaceDiffuse);
+            reflectance = EvaluateBrdf(baseColor.rgb,
+                                       normalWorld,
+                                       viewDirectionWorld,
+                                       lightDirectionWorld,
+                                       metallic,
+                                       roughness,
+                                       shouldReplaceDiffuse);
 #endif
-        float3 contribution = reflectance * lightColor * attenuation * ComputeShadowVisibility(i, input);
+        }
+        float shadowVisibility = ComputeShadowVisibility(i, input);
+        float3 contribution = reflectance * lightColor * attenuation * shadowVisibility;
+        outTerms.Diffuse += diffuseReflectance * lightColor * attenuation * shadowVisibility;
         result += contribution;
+        outTerms.Direct += contribution;
+        if (i == isolatedLight)
+            outTerms.Isolated = contribution;
+        float luminance = ComputeLightingLuminance(contribution);
+        if (luminance > outTerms.DominantLuminance)
+        {
+            outTerms.DominantLight = i;
+            outTerms.DominantLuminance = luminance;
+        }
 #ifdef LUDUS_DEBUG_VIEW
         lightCount += any(contribution > 0) ? 1 : 0;
 #endif
@@ -969,16 +1390,26 @@ float4 ShadeMaterial(in SurfaceSample surface, in Varying input)
                       1);
 #endif
     float alpha = surface.Alpha;
+    outTerms.Diffuse = min(max(outTerms.Diffuse, float3(0)), float3(65504)) * alpha;
     return float4(min(max(result, float3(0)), float3(65504)) * alpha, alpha);
+}
+float4 ShadeMaterial(in SurfaceSample surface, in Varying input)
+{
+    LightingTerms terms;
+    return ShadeMaterialTerms(surface, input, -1, false, terms);
 }
 #ifndef LUDUS_DEFERRED_MESH_LIGHTS
 [shader("fragment")] float4 FragmentMain(Varying input) : SV_Target
 {
     return ShadeMaterial(SampleMaterial(input), input);
 }
+// Masked coverage for a shadow map. A mesh-light cube face's instance tags its colour red, which IsBakeValid carries,
+// and gives in EyeWorld the world-space row of its face projection's clip z, the linear depth it stores
+// (SelectShadowDepth); PositionWorld is exact at the fragment, so the row needs no further varying.
 [shader("fragment")] float4 ShadowMain(Varying input) : SV_Target
 {
-    float4 encoded = EncodeShadowDepth(input.PositionClip.z);
+    float linearDepth = dot(input.PositionWorld, input.EyeWorld.xyz) + input.EyeWorld.w;
+    float4 encoded = EncodeShadowDepth(SelectShadowDepth(input.PositionClip.z, input.IsBakeValid, linearDepth));
     SampleBaseTexel(input);
     return encoded;
 }

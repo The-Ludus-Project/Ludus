@@ -307,6 +307,30 @@ private:
                                 const resources::SceneMaterial* materialOrNull,
                                 const QJsonObject& placement);
     void assignProjectBrdf(const QString& material);
+    /// Offer Make Hair Card on an ordinary slot, or the strand controls, mask cutoff and Use Inherited Material on a
+    /// hair-card slot, with an inline message for a rejected strand edit.
+    void addHairCardControls(QFormLayout& inoutRows,
+                             const resources::SceneMaterial* materialOrNull,
+                             const QJsonObject& placement);
+    /// Give the selected slot a default hair card (isAssigned) or restore its inherited material, as one undoable
+    /// edit. Replacing a slot coating asks first.
+    void assignHairCard(bool isAssigned);
+    /// Read the hair-card fields into inoutScene's "hair_card" object when any of them changed.
+    [[nodiscard]] bool readHairCardFields(QJsonObject& inoutScene, QString& outError, QWidget*& outInvalidOrNull);
+    /// Show error beside the hair-card controls when invalidOrNull is one of their fields; clear it otherwise.
+    void showHairCardError(const QWidget* invalidOrNull, const QString& error);
+    /// Offer Make Skin on an ordinary slot, or the scattering-distance fields and Use Inherited Material on a skin
+    /// slot, with an inline message for a rejected distance.
+    void addSkinControls(QFormLayout& inoutRows,
+                         const resources::SceneMaterial* materialOrNull,
+                         const QJsonObject& placement);
+    /// Make the selected slot skin (isAssigned) or restore its inherited material, as one undoable edit. Replacing a
+    /// slot coating asks first.
+    void assignSkin(bool isAssigned);
+    /// Read the skin fields, in millimetres, into inoutScene's "skin" object when any of them changed.
+    [[nodiscard]] bool readSkinFields(QJsonObject& inoutScene, QString& outError, QWidget*& outInvalidOrNull);
+    /// Show error beside the skin controls when invalidOrNull is one of their fields; clear it otherwise.
+    void showSkinError(const QWidget* invalidOrNull, const QString& error);
     [[nodiscard]] bool readProjectBrdfRoughness(QJsonObject& inoutScene, QString& outError, QWidget*& outInvalidOrNull);
     void mapImportedMaterial(const QString& source, const QString& replacement, const QString& label);
     void bindViewportInteraction();

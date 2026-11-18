@@ -1,3 +1,4 @@
+#include "internal/error_list.h"
 #include "internal/render_graph_diagnostics.h"
 #include "internal/render_graph_history.h"
 #include "internal/render_graph_live_build.h"
@@ -5,6 +6,8 @@
 #include "internal/renderer_workspace.h"
 
 #include <ludus/foundation/base/types.h>
+
+#include <ludus/graphics/renderer/world_feature.hpp>
 
 #include <catch2/catch_test_macros.hpp>
 
@@ -26,6 +29,7 @@
 #include <QPlainTextEdit>
 #include <QSignalSpy>
 #include <QTabWidget>
+#include <QTableWidget>
 #include <QTemporaryDir>
 #include <QTest>
 #include <QTimer>
@@ -391,4 +395,35 @@ TEST_CASE("canvas F8 shortcuts reveal field controls without stealing source or 
     CHECK(canvas.GetDiagnostics().GetCurrentRow() == 1);
     CHECK(GetAction(canvas, QStringLiteral("renderGraphPreviousDiagnostic")).shortcut() ==
           QKeySequence(Qt::SHIFT | Qt::Key_F8));
+}
+
+TEST_CASE("the World features table names each feature's scene function and the feature warning reveals it",
+          "[editor][render-graph][diagnostic-navigation][world-features]")
+{
+    namespace renderer = ludus::graphics::renderer;
+    RendererWorkspace workspace({});
+    QTableWidget* tableOrNull = workspace.findChild<QTableWidget*>(QStringLiteral("renderGraphWorldFeatures"));
+    REQUIRE(tableOrNull != nullptr);
+    REQUIRE(tableOrNull->rowCount() == static_cast<int>(renderer::WORLD_FEATURE_COUNT));
+    for (usize index = 0; index < renderer::WORLD_FEATURE_COUNT; ++index)
+    {
+        const int row = static_cast<int>(index);
+        const renderer::WorldFeatureDescription description =
+            renderer::DescribeWorldFeature(static_cast<renderer::WorldFeature>(index));
+        REQUIRE(tableOrNull->item(row, 0) != nullptr);
+        CHECK(tableOrNull->item(row, 0)->text() == QString::fromUtf8(description.Name));
+        // Without a drawing graph the table says so instead of guessing a support level.
+        CHECK(tableOrNull->item(row, 1)->text() == QStringLiteral("No drawing graph"));
+        CHECK(tableOrNull->item(row, 2)->text() == QString::fromUtf8(description.Function));
+        CHECK(tableOrNull->item(row, 3)->text() == QString::fromUtf8(description.Callback));
+    }
+    // Activating the warning lands on the table; with no missing feature the first row is selected.
+    workspace.RevealWorldFeatures();
+    CHECK(tableOrNull->currentRow() == 0);
+    CHECK(tableOrNull->selectionModel()->isRowSelected(0, {}) == true);
+    const QList<ErrorListEntry> rows =
+        MakeRenderGraphFeatureWarningEntries(QStringLiteral("World features not rendered: Atmosphere sky."),
+                                             QStringLiteral("main.lurender.json"));
+    REQUIRE(rows.size() == 1);
+    CHECK(rows.first().Code == QString::fromLatin1(renderer::WORLD_FEATURE_WARNING_CODE));
 }

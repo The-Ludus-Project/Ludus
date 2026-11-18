@@ -3,6 +3,7 @@
 #include "../src/internal/ltc_table.h"
 #include "../src/internal/reference_data.h"
 #include "../src/internal/render_graph_ray_scene.h"
+#include "hair_card_coverage_fixture.h"
 
 #include "ltc_lookup_cases.h"
 #include "material_program_fixtures.h"
@@ -23,6 +24,7 @@
 #include "rg2_salesin_jarosz_lines_template.h"
 #include "rg2_scene_compute.h"
 #include "rg2_scene_ray.h"
+#include "rg2_scene_work_items.h"
 #include "rg2_shared_ray_computebvh.h"
 #include "ris_projected_solid_angle_benchmark_variants.h"
 #if defined(__APPLE__)
@@ -62,6 +64,8 @@
 #include <ludus/foundation/math/status.hpp>
 #include <ludus/foundation/threading/thread.hpp>
 #include <ludus/foundation/time/time.hpp>
+#include <ludus/foundation/time/timers.hpp>
+#include <ludus/graphics/renderer/atmosphere.hpp>
 #include <ludus/graphics/renderer/reference.hpp>
 #include <ludus/graphics/renderer/render_graph_activation.hpp>
 #include <ludus/graphics/renderer/render_graph_capture.hpp>
@@ -71,6 +75,7 @@
 
 #include <catch2/catch_test_macros.hpp>
 #include <catch2/generators/catch_generators.hpp>
+#include <cmath>
 #include <cstdlib>
 #include <cstring>
 #include <fstream>
@@ -588,6 +593,76 @@ TEST_CASE("Shared alpha masks agree between CPU queries and GPU graph traversal"
     }
 }
 
+TEST_CASE("Hair card masks agree in GPU closest and visibility queries", "[render-graph][gpu][scene-mask][hair-card]")
+{
+    using namespace ludus::graphics::renderer::testing;
+    PackageLocation location{LUDUS_HAIR_CARD_RAY_DEFAULT_DIRECTORY, "rg2_hair_card_ray_default.lurgrt"};
+    bool shouldUseNativeQueries = false;
+    SECTION("triangle loop") {}
+    SECTION("compute BVH")
+    {
+        location = {LUDUS_HAIR_CARD_RAY_COMPUTEBVH_DIRECTORY, "rg2_hair_card_ray_computebvh.lurgrt"};
+    }
+    SECTION("native queries")
+    {
+        location = {LUDUS_HAIR_CARD_RAY_NATIVE_DIRECTORY, "rg2_hair_card_ray_native.lurgrt"};
+        shouldUseNativeQueries = true;
+    }
+    GraphGpuFixture fixture(false, shouldUseNativeQueries);
+    const core::UniquePtr<renderer::RenderGraphPackage> package = LoadPackage(location);
+    const renderer::RenderGraphPrograms programs =
+        package->GetPrograms(shaders::renderer_composite::Vertex(), shaders::renderer_composite::Fragment());
+    const auto waitReady = [&fixture](rhi::RasterStatus status) {
+        time::Deadline deadline;
+        REQUIRE(deadline.Arm(time::Now(), time::Seconds(LUDUS_RENDERER_TEST_COLD_GPU_TIMEOUT_SECONDS)) ==
+                time::TimeStatus::Ok);
+        while (status == rhi::RasterStatus::Pending && deadline.IsExpired(time::Now()) == false)
+        {
+            threading::SleepFor(time::Milliseconds(1));
+            status = fixture.Graph.Poll();
+        }
+        REQUIRE(status == rhi::RasterStatus::Ready);
+    };
+    waitReady(fixture.Graph.Initialize(fixture.Device, package->GetPlan(), programs));
+    fixture.Cameras[0].OrthographicCamera = true;
+    const uint32 binding = 0;
+    fixture.Meshes[0].MaterialBindings = {&binding, 1};
+    renderer::SceneShaderMaterial material;
+    HairCardCoverageFixture coverage;
+    coverage.SetMask(material);
+    renderer::SceneShaderInputs inputs;
+    inputs.Materials = {&material, 1};
+    uint64 revision = 0;
+    const auto measureQueries = [&](uint8 alpha, float32 cutoff, bool hasExpectedCoverage) {
+        coverage.Texture[HairCardCoverageFixture::TEXEL_BYTES - 1] = alpha;
+        material.AlphaCutoff = cutoff;
+        ++revision;
+        renderer::RenderGraphReport report;
+        waitReady(fixture.Graph.Update({fixture.Meshes.GetData(), fixture.Meshes.GetSize()},
+                                       {fixture.Items.GetData(), fixture.Items.GetSize()},
+                                       {fixture.Cameras.GetData(), fixture.Cameras.GetSize()},
+                                       revision,
+                                       renderer::RenderGraphCoveragePolicy::RejectIncomplete,
+                                       report,
+                                       &inputs,
+                                       revision));
+        ReadGraphFrame(fixture);
+        const usize center = GetPixel(WIDTH / 2, HEIGHT / 2);
+        const bool hasClosestHit = fixture.Pixels[center] != 0;
+        const bool hasShadowHit = fixture.Pixels[center + 1] != 0;
+        CAPTURE(alpha, cutoff);
+        CHECK(fixture.Pixels[center + 2] == 0);
+        CHECK(hasClosestHit == hasShadowHit);
+        CHECK(hasClosestHit == hasExpectedCoverage);
+        return hasClosestHit;
+    };
+    CHECK(measureQueries(0, HAIR_MASK_CUTOFF, false) == false);
+    CHECK(measureQueries(HAIR_MASK_SOLID_ALPHA, HAIR_MASK_CUTOFF, true) == true);
+    const bool hasMatchedHit = measureQueries(HAIR_MASK_MID_ALPHA, HAIR_MASK_CUTOFF, true);
+    const bool hasMismatchedHit = measureQueries(HAIR_MASK_MID_ALPHA, HAIR_MASK_MISMATCHED_CUTOFF, false);
+    CHECK(hasMatchedHit != hasMismatchedHit);
+}
+
 TEST_CASE("Scene callbacks preserve material and scene generation through native GPU rendering",
           "[render-graph][gpu][scene-shader]")
 {
@@ -875,6 +950,8 @@ TEST_CASE("Legacy software ray packages require recooking", "[render-graph][ray-
     REQUIRE(package.Decode({bytes.GetData(), bytes.GetSize()}) == renderer::RenderGraphPackageStatus::Ready);
     constexpr usize WORD_BYTES = sizeof(uint32);
     const auto readWord = [&bytes](usize offset) {
+        REQUIRE(offset <= bytes.GetSize());
+        REQUIRE(bytes.GetSize() - offset >= WORD_BYTES);
         uint32 value = 0;
         REQUIRE(TryReadLittleEndian({bytes.GetData() + offset, WORD_BYTES}, value) == true);
         return value;
@@ -889,6 +966,7 @@ TEST_CASE("Legacy software ray packages require recooking", "[render-graph][ray-
     constexpr usize STAGE_COUNT_OFFSET = 9 * WORD_BYTES;
     const uint32 resourceCount = readWord(RESOURCE_COUNT_OFFSET);
     const uint32 cameraCount = readWord(CAMERA_COUNT_OFFSET);
+    REQUIRE(readWord(PASS_COUNT_OFFSET) == 1);
     // Version 21 inserts workgroup words into each ray compute stage and version 20 admits a
     // native ray-stage record. Stages follow every fixed-width record; strip them first.
     const uint32 stageCount = readWord(STAGE_COUNT_OFFSET);
@@ -931,6 +1009,25 @@ TEST_CASE("Legacy software ray packages require recooking", "[render-graph][ray-
         }
     }
     REQUIRE(TryWriteLittleEndian(legacyStageCount, {bytes.GetData() + STAGE_COUNT_OFFSET, WORD_BYTES}) == true);
+    // This fixture has no storage records. Keep the count for the version 8 decode.
+    REQUIRE(readWord(stage) == 0);
+    const usize sceneResourceOffset = stage + WORD_BYTES;
+    const usize warmupOffset = sceneResourceOffset + WORD_BYTES;
+    for (usize program = 0; program < format::MAX_RAY_PROGRAMS; ++program)
+    {
+        REQUIRE(readWord(warmupOffset + program * WORD_BYTES) == 0);
+    }
+    // Each recipe key holds a technique word, a shader target word and a digest.
+    constexpr usize RECIPE_KEY_RECORD_BYTES = 2 * WORD_BYTES + format::IDENTITY_BYTES;
+    const usize recipeCountOffset = warmupOffset + format::MAX_RAY_PROGRAMS * WORD_BYTES;
+    const uint32 recipeCount = readWord(recipeCountOffset);
+    REQUIRE(recipeCount <= format::MAX_RECIPE_KEYS);
+    const usize passNameOffset = recipeCountOffset + WORD_BYTES + recipeCount * RECIPE_KEY_RECORD_BYTES;
+    const uint32 nameBytes = readWord(passNameOffset);
+    REQUIRE(nameBytes == package.GetPlan().PassNames[0].GetSize());
+    const usize nameRecordBytes = WORD_BYTES + padWord(nameBytes);
+    REQUIRE(passNameOffset + nameRecordBytes == bytes.GetSize());
+    bytes.RemoveRange(sceneResourceOffset, passNameOffset);
     // Versions 6 through 8 lack the three per-pass words added in version 9.
     constexpr usize LEGACY_PASS_FIELDS = 10;
     const usize extension = format::HEADER_BYTES + resourceCount * format::RESOURCE_RECORD_BYTES +
@@ -942,25 +1039,11 @@ TEST_CASE("Legacy software ray packages require recooking", "[render-graph][ray-
         const usize word = format::HEADER_BYTES + i * format::RESOURCE_RECORD_BYTES - sizeof(uint32);
         bytes.RemoveRange(word, word + sizeof(uint32));
     }
-    // Version 25 appends the scene resource word between the storage records and the pass names.
-    const usize nameBytes = package.GetPlan().PassNames[0].GetSize();
-    const usize paddedNameBytes = ((nameBytes + WORD_BYTES - 1) / WORD_BYTES) * WORD_BYTES;
-    // Version 33 inserts a warm-up count per ray program after the scene resource word.
-    // This fixture has no warm-up work, so dropping that table preserves its legacy behavior.
-    const usize warmupBytes = format::MAX_RAY_PROGRAMS * WORD_BYTES;
-    const usize warmupOffset = bytes.GetSize() - paddedNameBytes - WORD_BYTES - warmupBytes;
-    for (usize program = 0; program < format::MAX_RAY_PROGRAMS; ++program)
-    {
-        REQUIRE(readWord(warmupOffset + program * WORD_BYTES) == 0);
-    }
-    bytes.RemoveRange(warmupOffset, warmupOffset + warmupBytes);
-    const usize sceneResourceOffset = bytes.GetSize() - paddedNameBytes - 2 * WORD_BYTES;
-    bytes.RemoveRange(sceneResourceOffset, sceneResourceOffset + WORD_BYTES);
     REQUIRE(TryWriteLittleEndian(format::STORAGE_PACKAGE_VERSION, {bytes.GetData() + sizeof(uint32), sizeof(uint32)}) ==
             true);
     renderer::RenderGraphPackage storageGeneration;
     REQUIRE(storageGeneration.Decode({bytes.GetData(), bytes.GetSize()}) == renderer::RenderGraphPackageStatus::Ready);
-    const usize storageCountOffset = bytes.GetSize() - paddedNameBytes - 2 * WORD_BYTES;
+    const usize storageCountOffset = bytes.GetSize() - nameRecordBytes - WORD_BYTES;
     bytes.RemoveRange(storageCountOffset, storageCountOffset + WORD_BYTES);
     REQUIRE(TryWriteLittleEndian(format::NATIVE_RAY_PACKAGE_VERSION,
                                  {bytes.GetData() + sizeof(uint32), sizeof(uint32)}) == true);
@@ -1534,6 +1617,56 @@ constexpr uint8 GetDisplayedMean(float32 exposure) noexcept
     return exposure == 0 ? 255 : exposure == 1 ? 203 : 225;
 }
 } // namespace
+
+TEST_CASE("A buffer-only scene dispatch can trace more rays than there are pixels",
+          "[render-graph][gpu][compute-ray-tracing][scene-dispatch]")
+{
+    GraphGpuFixture fixture(false, false);
+    const core::UniquePtr<renderer::RenderGraphPackage> package =
+        LoadPackage({LUDUS_RG3_SCENE_WORK_ITEMS_DIRECTORY, "rg2_scene_work_items.lurgrt"});
+    const renderer::RenderGraphPrograms programs =
+        package->GetPrograms(shaders::renderer_composite::Vertex(), shaders::renderer_composite::Fragment());
+    const renderer::RenderGraphPlan plan = package->GetPlan();
+    const renderer::RenderGraphPlan compiled = packages::rg2_scene_work_items::MakePlan();
+    REQUIRE(plan.Passes.GetSize() == 2);
+    REQUIRE(plan.Passes[0].Camera == format::ABSENT);
+    REQUIRE(plan.Passes[0].Color == format::ABSENT);
+    REQUIRE(plan.Passes[0].WorkItemCount == compiled.Passes[0].WorkItemCount);
+    REQUIRE(plan.Passes[0].WorkItemCount > WIDTH * HEIGHT);
+    REQUIRE(plan.Passes[1].Buffer0 == plan.Passes[0].Buffer0);
+    REQUIRE(renderer::RequiresHardwareRayTracing(plan) == false);
+
+    const auto finish = [&fixture](rhi::RasterStatus status) {
+        const uint64 beginning = time::NowTicks();
+        while (status == rhi::RasterStatus::Pending && time::NowTicks() - beginning < FIRST_SAMPLE_TIMEOUT_NANOSECONDS)
+        {
+            threading::SleepFor(COMPLETION_POLL_INTERVAL);
+            status = fixture.Graph.Poll();
+        }
+        CAPTURE(fixture.Graph.GetLastFailureStage());
+        REQUIRE(status == rhi::RasterStatus::Ready);
+    };
+    finish(fixture.Graph.Initialize(fixture.Device, plan, programs));
+    fixture.Cameras[0].OrthographicCamera = true;
+    renderer::RenderGraphReport report;
+    finish(fixture.Graph.Update({fixture.Meshes.GetData(), fixture.Meshes.GetSize()},
+                                {fixture.Items.GetData(), fixture.Items.GetSize()},
+                                {fixture.Cameras.GetData(), fixture.Cameras.GetSize()},
+                                1,
+                                renderer::RenderGraphCoveragePolicy::RejectIncomplete,
+                                report,
+                                nullptr,
+                                1));
+    ReadGraphFrame(fixture, plan.Passes[1].Color);
+    constexpr usize CHANNEL_COUNT = 4;
+    constexpr uint8 GREEN = 255;
+    for (usize pixel = 0; pixel < fixture.Pixels.GetSize(); pixel += CHANNEL_COUNT)
+    {
+        REQUIRE(fixture.Pixels[pixel] == 0);
+        REQUIRE(fixture.Pixels[pixel + 1] == GREEN);
+        REQUIRE(fixture.Pixels[pixel + 2] == 0);
+    }
+}
 
 TEST_CASE("A scene compute pass traces the World and feeds Accumulate and ToneMap",
           "[render-graph][gpu][compute-ray-tracing][accumulation][tone-mapping]")
@@ -2981,6 +3114,150 @@ TEST_CASE("The simple triangle-loop template keeps the nearest instance in eithe
     CHECK(pixels[center + 1] == 0);
     CHECK(pixels[center + 2] == 0);
     CHECK(CountFailurePixels(pixels) == 0);
+}
+
+namespace
+{
+/// Bilinear radiance of a latitude/longitude sky image toward a unit world direction, with the texel addressing of
+/// TryEvaluateAtmosphereSky in scene_shader.slang (longitude wraps, latitude clamps). The image is width texels wide.
+math::Vector3 SampleSkyImage(const Array<math::Vector4>& pixels, uint32 width, math::Vector3 directionWorld)
+{
+    const uint32 height = static_cast<uint32>(pixels.GetSize() / width);
+    constexpr float32 TWO_PI = 2 * math::kPiF;
+    float32 longitude = std::atan2(directionWorld.Z, directionWorld.X) / TWO_PI;
+    longitude -= std::floor(longitude);
+    const float32 polar =
+        std::atan2(std::sqrt(directionWorld.X * directionWorld.X + directionWorld.Z * directionWorld.Z),
+                   directionWorld.Y) /
+        math::kPiF;
+    const float32 x = longitude * static_cast<float32>(width) - .5F;
+    const float32 y = polar * static_cast<float32>(height) - .5F;
+    const float32 lowX = std::floor(x);
+    const float32 lowY = std::floor(y);
+    const uint32 column0 = static_cast<uint32>(static_cast<int32>(lowX) + static_cast<int32>(width)) % width;
+    const uint32 column1 = (column0 + 1) % width;
+    const uint32 row0 = static_cast<uint32>(math::Clamp(lowY, 0.0F, static_cast<float32>(height - 1)));
+    const uint32 row1 = static_cast<uint32>(math::Clamp(lowY + 1, 0.0F, static_cast<float32>(height - 1)));
+    const auto load = [&pixels, width](uint32 column, uint32 row) {
+        const math::Vector4 value = pixels[static_cast<usize>(row) * width + column];
+        return math::Vector3{value.X, value.Y, value.Z};
+    };
+    const float32 fractionX = x - lowX;
+    const float32 fractionY = y - lowY;
+    const math::Vector3 top = load(column0, row0) * (1 - fractionX) + load(column1, row0) * fractionX;
+    const math::Vector3 bottom = load(column0, row1) * (1 - fractionX) + load(column1, row1) * fractionX;
+    return top * (1 - fractionY) + bottom * fractionY;
+}
+} // namespace
+
+TEST_CASE("A ray template draws a World's Atmosphere sky through EvaluateEnvironment",
+          "[render-graph][gpu][simple-compute-template][world-features]")
+{
+    GraphGpuFixture fixture;
+    const core::UniquePtr<renderer::RenderGraphPackage> package = LoadPackage(
+        {LUDUS_RG3_SIMPLE_COMPUTE_RAY_TRACING_TEMPLATE_DIRECTORY, "rg2_simple_compute_ray_tracing_template.lurgrt"});
+    const renderer::RenderGraphPlan plan = package->GetPlan();
+    const renderer::RenderGraphPrograms programs =
+        package->GetPrograms(shaders::renderer_composite::Vertex(), shaders::renderer_composite::Fragment());
+    // The template's miss path returns EvaluateEnvironment and nothing calls ApplyAerialPerspective, so reflection
+    // kept the sky table only: the build derived the support from the kernel's calls.
+    CHECK(programs.HasAtmosphereSky == true);
+    CHECK(programs.HasAerialPerspective == false);
+    CHECK(packages::rg2_simple_compute_ray_tracing_template::MakePrograms(shaders::renderer_composite::Vertex(),
+                                                                          shaders::renderer_composite::Fragment())
+              .HasAtmosphereSky == true);
+    uint32 output = 0;
+    for (uint32 resource = 0; resource < plan.Resources.GetSize(); ++resource)
+    {
+        output = plan.Resources[resource].IsExported == 1 ? resource : output;
+    }
+    constexpr uint64 TIMEOUT = 10 * time::NANOSECONDS_PER_SECOND;
+    const auto wait = [&fixture](rhi::RasterStatus initial) {
+        rhi::RasterStatus status = initial;
+        const uint64 beginning = time::NowTicks();
+        while (status == rhi::RasterStatus::Pending && time::NowTicks() - beginning < TIMEOUT)
+        {
+            status = fixture.Graph.Poll();
+        }
+        REQUIRE(status == rhi::RasterStatus::Ready);
+    };
+    wait(fixture.Graph.Initialize(fixture.Device, plan, programs, nullptr, WIDTH, HEIGHT));
+    CHECK(fixture.Graph.GetWorldFeatureSupport(renderer::WorldFeature::AtmosphereSky) ==
+          renderer::WorldFeatureSupport::Approximated);
+    CHECK(fixture.Graph.GetWorldFeatureSupport(renderer::WorldFeature::AerialPerspective) ==
+          renderer::WorldFeatureSupport::NotRendered);
+
+    // An empty World under a low Sun: every orthographic camera ray misses and sees the same sky direction.
+    renderer::ViewDescription& camera = fixture.Cameras[0];
+    camera.OrthographicCamera = true;
+    renderer::AtmosphereDescription& atmosphere = camera.Atmosphere;
+    atmosphere.IsEnabled = true;
+    atmosphere.ShouldLightScene = true;
+    constexpr float32 SUN_HORIZONTAL = .8F;
+    constexpr float32 SUN_ELEVATION_SINE = .6F;
+    constexpr float32 SOLAR_ILLUMINANCE = 3;
+    atmosphere.DirectionToSunWorld = {SUN_HORIZONTAL, SUN_ELEVATION_SINE, 0};
+    atmosphere.SolarIlluminance = {SOLAR_ILLUMINANCE, SOLAR_ILLUMINANCE, SOLAR_ILLUMINANCE};
+    renderer::SceneShaderInputs inputs;
+    renderer::RenderGraphReport report;
+    const auto update = [&fixture, &inputs, &report, &wait](uint64 revision) {
+        wait(fixture.Graph.Update({fixture.Meshes.GetData(), fixture.Meshes.GetSize()},
+                                  {},
+                                  {fixture.Cameras.GetData(), fixture.Cameras.GetSize()},
+                                  revision,
+                                  renderer::RenderGraphCoveragePolicy::RejectIncomplete,
+                                  report,
+                                  &inputs));
+    };
+    update(1);
+    // The sky is drawn; the haze is the one feature this graph leaves out.
+    CHECK(report.UnrenderedWorldFeatures == renderer::GetWorldFeatureBit(renderer::WorldFeature::AerialPerspective));
+    Array<uint8> pixels;
+    RenderExport(fixture.Graph, fixture, output, {}, pixels);
+    CHECK(CountFailurePixels(pixels) == 0);
+
+    // The CPU sky the renderer resolved for this camera, toward the kernel's camera-ray direction.
+    Array<math::Vector4> sky;
+    REQUIRE(sky.TryResize(usize{LUDUS_ATMOSPHERE_SKY_TABLE_WIDTH} * LUDUS_ATMOSPHERE_SKY_TABLE_HEIGHT) == true);
+    math::Vector3 sunIlluminance;
+    REQUIRE(renderer::ResolveAtmosphereEnvironment(atmosphere,
+                                                   camera.CameraPosition,
+                                                   LUDUS_ATMOSPHERE_SKY_TABLE_WIDTH,
+                                                   LUDUS_ATMOSPHERE_SKY_TABLE_HEIGHT,
+                                                   {sky.GetData(), sky.GetSize()},
+                                                   sunIlluminance) == renderer::AtmosphereEnvironmentStatus::Ready);
+    math::Matrix4 clipToWorld;
+    REQUIRE(math::TryInverse(camera.WorldToClip, clipToWorld) == math::MathStatus::Success);
+    const math::Vector4 nearWorld = clipToWorld * math::Vector4{0, 0, 0, 1};
+    const math::Vector4 farWorld = clipToWorld * math::Vector4{0, 0, 1, 1};
+    math::Vector3 directionWorld;
+    REQUIRE(math::TryNormalize(math::Vector3{farWorld.X, farWorld.Y, farWorld.Z} / farWorld.W -
+                                   math::Vector3{nearWorld.X, nearWorld.Y, nearWorld.Z} / nearWorld.W,
+                               directionWorld) == math::MathStatus::Success);
+    const math::Vector3 expected = SampleSkyImage(sky, LUDUS_ATMOSPHERE_SKY_TABLE_WIDTH, directionWorld);
+    REQUIRE(expected.Z > 0);
+    for (const usize pixel : {GetPixel(0, 0), GetPixel(WIDTH / 2, HEIGHT / 2), GetPixel(WIDTH - 1, HEIGHT - 1)})
+    {
+        const math::Vector3 drawn{DecodeToneMapped(pixels[pixel]),
+                                  DecodeToneMapped(pixels[pixel + 1]),
+                                  DecodeToneMapped(pixels[pixel + 2])};
+        // RGBA8 quantization of the tone-mapped value, and float32 lookups on the GPU.
+        constexpr float32 RELATIVE_TOLERANCE = .04F;
+        constexpr float32 ABSOLUTE_TOLERANCE = .004F;
+        INFO("pixel " << pixel << " drawn " << drawn.X << ", " << drawn.Y << ", " << drawn.Z << " expected "
+                      << expected.X << ", " << expected.Y << ", " << expected.Z);
+        CHECK(std::abs(drawn.X - expected.X) <= ABSOLUTE_TOLERANCE + RELATIVE_TOLERANCE * expected.X);
+        CHECK(std::abs(drawn.Y - expected.Y) <= ABSOLUTE_TOLERANCE + RELATIVE_TOLERANCE * expected.Y);
+        CHECK(std::abs(drawn.Z - expected.Z) <= ABSOLUTE_TOLERANCE + RELATIVE_TOLERANCE * expected.Z);
+    }
+    // Disabling the Atmosphere prepares the scene again with the World environment, black by default.
+    atmosphere.IsEnabled = false;
+    update(2);
+    CHECK(report.UnrenderedWorldFeatures == 0);
+    RenderExport(fixture.Graph, fixture, output, {}, pixels);
+    const usize center = GetPixel(WIDTH / 2, HEIGHT / 2);
+    CHECK(pixels[center] == 0);
+    CHECK(pixels[center + 2] == 0);
 }
 
 TEST_CASE("The compute ray-tracing template matches a single-pass direct-lighting reference",
@@ -8887,13 +9164,13 @@ TEST_CASE("A render graph kernel reads the renderer-bound LTC table like the CPU
     REQUIRE(decoded.HasLtcTable == true);
     REQUIRE(compiled.HasLtcTable == true);
     // The package rebuilds the reflected binding list of the generated header: the table slot, then the failure
-    // summary last.
+    // summary, then the Atmosphere sky when the kernel calls EvaluateEnvironment.
     CheckSameStage(decoded.RayCompute, compiled.RayCompute);
-    const usize bindingCount = decoded.RayCompute.Bindings.GetSize();
+    CHECK(decoded.HasAtmosphereSky == compiled.HasAtmosphereSky);
+    const usize bindingCount = decoded.RayCompute.Bindings.GetSize() - (decoded.HasAtmosphereSky == true ? 1 : 0);
     REQUIRE(bindingCount >= 2);
     CHECK(decoded.RayCompute.Bindings[bindingCount - 2].Binding == LUDUS_GRAPH_LTC_TABLE_BINDING);
-    CHECK(decoded.RayCompute.Bindings[decoded.RayCompute.Bindings.GetSize() - 1].Binding ==
-          LUDUS_GRAPH_FAILURE_BINDING);
+    CHECK(decoded.RayCompute.Bindings[bindingCount - 1].Binding == LUDUS_GRAPH_FAILURE_BINDING);
     renderer::RenderGraphPlan plan = package->GetPlan();
     constexpr usize PASS_COUNT = 1;
     REQUIRE(plan.Passes.GetSize() == PASS_COUNT);

@@ -189,6 +189,7 @@ void AdoptAuthoredScene(const RenderScene& authored, RenderScene& inoutScene)
     inoutScene.TransformBinding = authored.TransformBinding;
     // Disabled authored lights stay listed, and switchable, beside the imported ones.
     inoutScene.LightBinding = authored.LightBinding;
+    inoutScene.LightNames = authored.LightNames;
     inoutScene.RasterUnshadowedLightIds = authored.RasterUnshadowedLightIds;
     inoutScene.AlwaysOnLightIds = authored.AlwaysOnLightIds;
     inoutScene.ProbeGrid = authored.ProbeGrid;
@@ -687,19 +688,29 @@ struct AtmosphereLight final
     bool IsEnabled = false;
 };
 
-QJsonObject GetAtmosphereLightValues(const QJsonObject& entity)
+/// The light's values with the World's shared Earth date, time and location applied.
+QJsonObject GetAtmosphereLightValues(const QJsonObject& entity, const WorldDocument& world)
 {
-    return entity.value(QStringLiteral("components")).toObject().value(QStringLiteral("light")).toObject();
+    return MakeWorldLightValues(
+        entity.value(QStringLiteral("components")).toObject().value(QStringLiteral("light")).toObject(),
+        world.Draft());
 }
 
-bool TrySetEarthNightSky(const QJsonObject& entity, rr::CelestialBackgroundDescription& inoutCelestial)
+bool TrySetEarthNightSky(const QJsonObject& entity,
+                         const WorldDocument& world,
+                         rr::CelestialBackgroundDescription& inoutCelestial)
 {
     gameplay::world::EarthNightSkySample sky;
-    if (inoutCelestial.StarRadiance == 0 || TrySampleWorldEarthNightSky(GetAtmosphereLightValues(entity), sky) == false)
+    if (inoutCelestial.StarRadiance == 0 ||
+        TrySampleWorldEarthNightSky(GetAtmosphereLightValues(entity, world), sky) == false)
     {
         return false;
     }
-    constexpr float32 MILKY_WAY_RADIANCE = 0.045F; // Scene-linear nits for the editor's procedural dark-sky band.
+    // Scene-linear nits for the procedural band, whose brightest point is 2.25 times this scale. That peak is set
+    // near 8e-4 cd/m^2, about four times the 2e-4 cd/m^2 (21.8 mag/arcsec^2) truly dark sky in Wikipedia's
+    // "Surface brightness" article (https://en.wikipedia.org/wiki/Surface_brightness), an estimate for the
+    // brightest star clouds. Physical values let a metered night exposure show the band without saturating it.
+    constexpr float32 MILKY_WAY_RADIANCE = 0.00036F;
     inoutCelestial.MilkyWayRadiance = MILKY_WAY_RADIANCE;
     inoutCelestial.GalacticNorthWorld = sky.GalacticNorthWorld;
     inoutCelestial.GalacticCenterWorld = sky.GalacticCenterWorld;
@@ -713,6 +724,7 @@ bool TrySetEarthNightSky(const QJsonObject& entity, rr::CelestialBackgroundDescr
 }
 
 bool ReadAtmosphereLight(const QJsonObject& entity,
+                         const WorldDocument& world,
                          const QJsonObject& transformBinding,
                          AtmosphereLight& outLight,
                          QString& outError)
@@ -727,7 +739,7 @@ bool ReadAtmosphereLight(const QJsonObject& entity,
     {
         return false;
     }
-    const QJsonObject light = GetAtmosphereLightValues(entity);
+    const QJsonObject light = GetAtmosphereLightValues(entity, world);
     bool isAboveHorizon = true;
     gameplay::world::EarthCelestialLighting earth;
     if (TryResolveWorldCelestialRotation(light, transform.Rotation, isAboveHorizon, earth) == false)
@@ -790,7 +802,7 @@ void ExtractWorldAtmosphere(const WorldDocument& world, const QJsonObject& trans
     }
     AtmosphereLight sun;
     const QJsonObject sunEntity = world.Entity(sunId);
-    if (ReadAtmosphereLight(sunEntity, transformBinding, sun, error) == false)
+    if (ReadAtmosphereLight(sunEntity, world, transformBinding, sun, error) == false)
     {
         inoutScene.AtmosphereStatus = QStringLiteral("Check Atmosphere → Sun. %1").arg(error);
         return;
@@ -815,7 +827,7 @@ void ExtractWorldAtmosphere(const WorldDocument& world, const QJsonObject& trans
     rr::CelestialBackgroundDescription& celestial = inoutScene.Atmosphere.Celestial;
     celestial.IsEnabled = true;
     celestial.StarRadiance = properties.value(QStringLiteral("stars")).toBool(true) == true ? 1.0F : 0.0F;
-    const bool hasEarthSky = TrySetEarthNightSky(sunEntity, celestial);
+    const bool hasEarthSky = TrySetEarthNightSky(sunEntity, world, celestial);
     const QString moonId = properties.value(QStringLiteral("moon")).toString();
     if (moonId.isEmpty() == true)
     {
@@ -828,14 +840,14 @@ void ExtractWorldAtmosphere(const WorldDocument& world, const QJsonObject& trans
     }
     AtmosphereLight moon;
     const QJsonObject moonEntity = world.Entity(moonId);
-    if (ReadAtmosphereLight(moonEntity, transformBinding, moon, error) == false)
+    if (ReadAtmosphereLight(moonEntity, world, transformBinding, moon, error) == false)
     {
         inoutScene.AtmosphereStatus = QStringLiteral("Check Atmosphere → Moon. %1").arg(error);
         return;
     }
     if (hasEarthSky == false)
     {
-        static_cast<void>(TrySetEarthNightSky(moonEntity, celestial));
+        static_cast<void>(TrySetEarthNightSky(moonEntity, world, celestial));
     }
     celestial.DirectionToMoonWorld = moon.DirectionWorld;
     if (moon.IsEnabled == false)
@@ -1172,8 +1184,9 @@ bool RenderScene::Load(const QString& root,
                 }
                 math::Quaternion lightRotation = trs.Rotation;
                 bool isAboveHorizon = true;
-                const QJsonObject lightProperties =
-                    entity.value(QStringLiteral("components")).toObject().value(QStringLiteral("light")).toObject();
+                const QJsonObject lightProperties = MakeWorldLightValues(
+                    entity.value(QStringLiteral("components")).toObject().value(QStringLiteral("light")).toObject(),
+                    world.Draft());
                 if (world.HasBuiltInSchema() == true && light.Kind == rr::LightKind::Directional)
                 {
                     gameplay::world::EarthCelestialLighting earth;
@@ -1184,6 +1197,10 @@ bool RenderScene::Load(const QString& root,
                                     name + QStringLiteral(
                                                ": set the active celestial preset fields within their shown ranges."));
                     }
+                    // The Earth Sun and Earth Moon disks soften direct shadows with the same angular size as the sky
+                    // disk; a manual photometry override replaces only colour and intensity.
+                    light.AngularRadiusRadians =
+                        math::Min(earth.AngularRadiusRadians, rr::MAX_DIRECTIONAL_ANGULAR_RADIUS_RADIANS);
                     if (earth.AngularRadiusRadians > 0 &&
                         lightProperties.value(WORLD_CELESTIAL_MANUAL_PHOTOMETRY).toBool() == false)
                     {
@@ -1206,6 +1223,7 @@ bool RenderScene::Load(const QString& root,
                     return Fail(outError, QStringLiteral("World exceeds the authored-light capacity."));
                 }
                 candidate.AuthoredLights.Lights[candidate.AuthoredLights.Count++] = light;
+                candidate.LightNames.insert(light.SourceId, name.isEmpty() == true ? id : name);
                 const bool isBuiltInLight =
                     IsBuiltInWorld(world) == true &&
                     lightBinding.value(QStringLiteral("component")) == QJsonValue(QStringLiteral("light"));
@@ -1657,6 +1675,33 @@ rr::AtmosphereDescription RenderScene::GetAtmosphereForView() const noexcept
         atmosphere.Celestial.LunarAngularRadiusRadians = 0;
     }
     return atmosphere;
+}
+
+float64 RenderScene::MeterDirectionalIlluminance(math::Vector3 upWorld) const noexcept
+{
+    // ITU-R BT.709 relative luminance of a display-linear light colour.
+    constexpr math::Vector3 LUMINANCE_WEIGHTS{0.2126F, 0.7152F, 0.0722F};
+    float64 illuminance = 0;
+    for (uint32 i = 0; i < AuthoredLights.Count; ++i)
+    {
+        const rr::DirectLight& light = AuthoredLights.Lights[i];
+        if (light.Kind != rr::LightKind::Directional ||
+            (Atmosphere.IsEnabled == true && light.SourceId == Atmosphere.SunSourceId))
+        {
+            continue;
+        }
+        math::Vector3 towardLightWorld;
+        if (math::TryNormalize(-light.Direction, towardLightWorld) != math::MathStatus::Success)
+        {
+            continue;
+        }
+        const float32 cosine = math::Dot(towardLightWorld, upWorld);
+        if (cosine > 0)
+        {
+            illuminance += static_cast<float64>(math::Dot(light.Color, LUMINANCE_WEIGHTS) * light.Intensity * cosine);
+        }
+    }
+    return illuminance;
 }
 
 bool RenderScene::ShouldUseEmptyWorldView() const noexcept

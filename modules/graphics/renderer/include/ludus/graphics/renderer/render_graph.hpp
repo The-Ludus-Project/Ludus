@@ -8,9 +8,11 @@
 #include <ludus/foundation/containers/borrowed_view.hpp>
 #include <ludus/foundation/containers/static_array.hpp>
 #include <ludus/foundation/math/geometry.hpp>
+#include <ludus/foundation/math/vector.hpp>
 #include <ludus/graphics/renderer/light_transformer_encoder.hpp>
 #include <ludus/graphics/renderer/renderer.hpp>
 #include <ludus/graphics/renderer/scene_shader.hpp>
+#include <ludus/graphics/renderer/world_feature.hpp>
 #include <ludus/graphics/rhi/gpu_scope.h>
 #include <ludus/graphics/rhi/graph.h>
 #include <ludus/graphics/rhi/pipeline_preparation.h>
@@ -158,6 +160,17 @@ struct RenderGraphPrograms final
     /// format::OPAQUE_GBUFFER_PACKAGE_VERSION; empty in earlier packages, which draw every material through
     /// DeferredGBufferFragment.
     rhi::RasterShaderDescription DeferredOpaqueGBufferFragment{};
+    /// Optional G-buffer fragment for GI Probe Receivers of a deferred pass with a connected Baked Lighting input.
+    /// It applies alpha-masked coverage and adds the baked probe volume's diffuse bounce to the emission target.
+    /// Present with HasClusteredDeferred in packages from format::DEFERRED_PROBE_GBUFFER_PACKAGE_VERSION that connect
+    /// Baked Lighting; empty otherwise, which draws every receiver with realtime lighting.
+    rhi::RasterShaderDescription DeferredProbeGBufferFragment{};
+    /// Optional G-buffer fragment for static surfaces with a ready chart in a deferred pass with a connected Baked
+    /// Lighting input. It applies alpha-masked coverage, adds the chart's baked diffuse to the emission target and
+    /// marks the pixel so the resolve omits the baked lights' live diffuse while keeping their specular. Present with
+    /// HasClusteredDeferred in packages from format::DEFERRED_SURFACE_CHART_GBUFFER_PACKAGE_VERSION that connect
+    /// Baked Lighting; empty otherwise, which draws every static surface with realtime lighting.
+    rhi::RasterShaderDescription DeferredSurfaceChartGBufferFragment{};
     /// Renderer fullscreen geometry for deferred lighting and optional prepass depth transfer.
     rhi::RasterShaderDescription DeferredLightingVertex{};
     /// Clustered lighting resolve; reads the G-buffer and writes linear color plus scene depth.
@@ -178,6 +191,15 @@ struct RenderGraphPrograms final
     /// renderer uploads and binds that buffer; RayCompute.Bindings must name the slot exactly when
     /// this is true. See docs/development/ltc-table.md.
     bool HasLtcTable = false;
+    /// RayCompute calls EvaluateEnvironment, so reflection kept the Atmosphere sky table at slot 15
+    /// (LUDUS_GRAPH_ATMOSPHERE_SKY_BINDING), its last binding after the failure summary. The renderer resolves the
+    /// sky for each prepared scene and binds it; RayCompute.Bindings must name the slot exactly when this is true.
+    /// Requires HasSceneShaderInterface. See GetWorldFeatureSupport.
+    bool HasAtmosphereSky = false;
+    /// RayCompute calls ApplyAerialPerspective, so reflection kept the aerial perspective table at slot 11
+    /// (LUDUS_GRAPH_AERIAL_PERSPECTIVE_BINDING). The renderer resolves and binds it for each prepared scene;
+    /// RayCompute.Bindings must name the slot exactly when this is true. Requires HasSceneShaderInterface.
+    bool HasAerialPerspective = false;
     /// RayCompute offsets its dispatch by the ray uniform's tile region (runtime package version 28 and later,
     /// and every generated header), so RenderGraph::SetRayTileCount may split a sample into row bands. Older
     /// kernels cover the whole image on every dispatch and therefore cannot be tiled.
@@ -191,6 +213,14 @@ struct RenderGraphPrograms final
     // NOLINTNEXTLINE(readability-redundant-member-init)
     foundation::BorrowedView<const RenderGraphRecipeKey> RecipeKeys{};
 };
+/// How much of a World feature a graph with these programs draws. The clustered deferred resolve composes every
+/// feature (Supported). Otherwise a ray kernel draws a feature as the documented approximation (Approximated) exactly
+/// when it calls the feature's scene function, which HasAtmosphereSky and HasAerialPerspective record from the compiled
+/// kernel's reflection; every other graph draws the World without it (NotRendered).
+/// @param programs Programs as RenderGraph::Initialize admits them.
+/// @param feature A WorldFeature value; values outside the enum return NotRendered.
+[[nodiscard]] WorldFeatureSupport GetWorldFeatureSupport(const RenderGraphPrograms& programs,
+                                                         WorldFeature feature) noexcept;
 /// Why a graph ray invocation failed: the scene interface's reasons, recorded by the shader function
 /// FailSceneQuery (scene_shader_layout.h, LUDUS_SCENE_FAILURE_*). Authored shaders may report their own reasons from
 /// RENDER_GRAPH_FAILURE_AUTHORED_FIRST. See docs/development/render-graph-authoring.md, "Explain failed pixels".
@@ -247,7 +277,7 @@ struct RenderGraphRayFailures final
 /// Ray work of one sample of a RenderGraph's current scene, from which a frame capture sizes its tiles.
 struct RenderGraphRayWorkload final
 {
-    /// Pixels shaded per sample, summed over every ray pass.
+    /// Invocation count per sample, summed over image pixels and buffer-only work items.
     foundation::uint64 Pixels = 0;
     /// Emissive triangles plus analytic lights of the largest ray pass scene; an environment is not counted.
     foundation::uint32 Lights = 0;
@@ -431,6 +461,17 @@ struct RenderGraphSceneDescription final
     /// Selected ::ludus::content::render_graph_format::SCENE_DATA_* groups; Lights retain emitter emission
     /// dependencies. Consumed before Update returns.
     foundation::uint32 SceneData = ::ludus::content::render_graph_format::SCENE_DATA_ALL;
+    /// Atmosphere sky table read by EvaluateEnvironment in kernels with RenderGraphPrograms::HasAtmosphereSky, header
+    /// included, in the LUDUS_GRAPH_ATMOSPHERE_SKY_BINDING layout of renderer_gpu_preview_layout.h. RenderGraph::Update
+    /// resolves it from the camera's Atmosphere; preparation copies it before returning. Empty binds no table.
+    // Keep partial aggregate callers warning-clean when these optional fields are omitted.
+    // NOLINTNEXTLINE(readability-redundant-member-init)
+    foundation::BorrowedView<const foundation::math::Vector4> AtmosphereSkyTable{};
+    /// Aerial perspective table read by ApplyAerialPerspective in kernels with
+    /// RenderGraphPrograms::HasAerialPerspective, in the LUDUS_GRAPH_AERIAL_PERSPECTIVE_BINDING layout. Copied during
+    /// preparation; empty binds no table.
+    // NOLINTNEXTLINE(readability-redundant-member-init)
+    foundation::BorrowedView<const foundation::math::Vector4> AerialPerspectiveTable{};
 };
 /// Scene compatibility for a rendering role, independent of runtime culling.
 enum class RenderGraphCoverage : foundation::uint8
@@ -458,6 +499,35 @@ struct RenderGraphCoverageRecord final
     RenderGraphReason Reason = RenderGraphReason::None; ///< Preserved mismatch explanation.
     bool HasDiagnosticRoute = false; ///< A color marker/proxy may render; never establishes depth correctness.
 };
+/// Scene-level cause of the latest Update rejection, so callers can name the input and the repair.
+/// Only causes this graph can attribute are reported; other Unsupported results report None.
+enum class RenderGraphSceneRejection : foundation::uint8
+{
+    None,               ///< The latest Update was not rejected for a scene-level cause.
+    CameraDepth,        ///< A camera has an infinite far plane or an unknown depth convention.
+    Coverage,           ///< Conflicting coverage, or incomplete coverage under RejectIncomplete.
+    MaskedDepthPrepass, ///< Alpha-masked materials would be sealed by the opaque depth-only prepass.
+};
+/// Step at which a graph operation last failed, so a host can say where a generation was rejected and what to repair.
+/// RenderGraph records the steps of Poll and Update (GetLastFailureStage); RenderGraphActivation adds Setup and Resize
+/// for the Initialize and Resize calls it makes on a candidate. A stage locates the check that failed; the returned
+/// rhi::RasterStatus remains the outcome, and RenderGraphSceneRejection still names the attributable scene causes.
+enum class RenderGraphFailureStage : foundation::uint8
+{
+    None,                ///< No failure: the latest call was accepted, pending or not ready, or none was made.
+    Setup,               ///< Initialize rejected the plan, its programs or resource descriptions, or ran out of memory.
+    Resize,              ///< Resize rejected the reference extent or could not recreate the graph's attachments.
+    PipelinePreparation, ///< Poll: preparing the graph's pipelines, programs or resources failed.
+    ScenePreparation,    ///< Poll or Update: preparing an accepted camera or scene on the GPU failed.
+    ExtractionInputs,    ///< Update: mesh, item or camera counts, the scene revisions or the coverage policy.
+    CameraValues,        ///< Update: a camera's exposure, exposure mode or lighting view.
+    ItemValues,          ///< Update: an item's source identity, mesh index or per-draw uniform values.
+    SceneResources,      ///< Update: materials and textures, or the buffers and uniform sets created for the scene.
+    Meshes,              ///< Update: a mesh's bounds or its geometry upload.
+    WorldTables,         ///< Update: resolving the Atmosphere sky and haze tables that ray passes read.
+    LightTransformer,    ///< Update: preparing the light transformer model for the scene.
+    RayScene,            ///< Update: building a ray pass's packed scene and acceleration structure.
+};
 /// Editor and shipping admission are explicit policies.
 enum class RenderGraphCoveragePolicy : foundation::uint8
 {
@@ -483,8 +553,11 @@ struct RenderGraphSceneRevisions final
 /// Camera-only updates preserve resource acquisition counters. Reuse compares complete copied content.
 struct RenderGraphSceneResourceReport final
 {
-    /// Draw items using the specialized surface-chart shader in the currently drawable scene.
+    /// Draw items using a specialized surface-chart shader (the forward chart fragment or the deferred chart G-buffer)
+    /// in the currently drawable scene.
     foundation::usize SurfaceChartDraws = 0;
+    /// Draw items sampling the baked probe volume through the deferred probe G-buffer in the currently drawable scene.
+    foundation::usize ProbeReceiverDraws = 0;
     foundation::uint64 CreatedMeshes = 0;     ///< Immutable mesh uploads admitted by the cache.
     foundation::uint64 ReusedMeshes = 0;      ///< Exact cached mesh acquisitions.
     foundation::uint64 CreatedTextures = 0;   ///< Immutable texture uploads admitted by the cache.
@@ -503,8 +576,21 @@ struct RenderGraphSceneResourceReport final
     foundation::uint32 ClusterAssignments = 0; ///< Latest material's stored cell/light intersections.
     foundation::uint32 DroppedLights =
         0; ///< Latest forward material's dropped light count; clustered shading retains all admitted lights.
-    /// Source ID assigned the latest prepared deferred scene's directional shadow map, or zero if none.
+    /// Source ID of the brightest directional light given a shadow map in the latest prepared deferred scene, or zero
+    /// if none. Ties go to the lower source ID.
     foundation::uint64 DirectionalShadowLightSourceId = 0;
+    /// Directional lights given a shadow map in the latest prepared deferred scene, brightest first, at most two:
+    /// enough for an Atmosphere's Sun and Moon.
+    foundation::uint32 DirectionalShadowLights = 0;
+    /// Eligible directional lights (raster shadows requested, positive intensity, nonblack color) of the latest
+    /// prepared deferred scene left without a map because two brighter ones hold them. They illuminate unshadowed;
+    /// clear their raster shadow request to make that explicit.
+    foundation::uint32 UnshadowedDirectionalLights = 0;
+    /// Sky visibility maps of the latest prepared deferred scene: SKY_VISIBILITY_DIRECTION_COUNT
+    /// (deferred_layout.h) orthographic depth maps from fixed upper-hemisphere directions, rendered once into the
+    /// shadow atlas, or zero for a scene without geometry. The resolve integrates environment and Atmosphere sky
+    /// light over those directions only where they see past the scene (render-graph-authoring.md, "Sky visibility").
+    foundation::uint32 SkyVisibilityMaps = 0;
 };
 /// Summary of the latest candidate, separately from the last rendered image.
 struct RenderGraphReport final
@@ -519,6 +605,11 @@ struct RenderGraphReport final
     foundation::uint32 Excluded = 0;           ///< Explicit omissions.
     bool IsAccepted = false;                   ///< Candidate was accepted for asynchronous preparation.
     bool IsReady = false;                      ///< Accepted scene is drawable; producer completion is separate.
+    /// World features the accepted extraction uses and this graph does not render (GetWorldFeatureSupport returns
+    /// NotRendered). A camera that enables an Atmosphere uses AtmosphereSky; one whose Atmosphere also lights the scene
+    /// uses AerialPerspective. The graph still draws the rest of the World, so callers can tell the user what is
+    /// missing (DescribeWorldFeature). Zero when nothing is missing and before an extraction is accepted.
+    WorldFeatureMask UnrenderedWorldFeatures = 0;
     LightTransformerPreparationReport Model{}; ///< Latest model candidate diagnostics; independent of drawable output.
     /// Mesh-light shadow faces of the drawable scene not yet drawn into its atlas; each Render draws some within its
     /// per-frame budgets, and receivers of an undrawn face read as unoccluded. Zero without a drawable scene or
@@ -601,6 +692,12 @@ struct RenderGraphAllocationReport final
     foundation::uint32 DeferredAllocations = 0;
     /// Logical color plus private depth bytes of those allocations; excludes native padding and per-view bindings.
     foundation::uint64 DeferredAttachmentBytes = 0;
+    /// Live skin diffusion allocations: three RGBA16F targets with private depth per deferred view that draws skin
+    /// (a Skin material with a nonzero scattering distance), allocated on its first such view. Separate from the
+    /// G-buffer allocations above.
+    foundation::uint32 DeferredSkinAllocations = 0;
+    /// Logical color plus private depth bytes of the skin allocations, 36 per pixel of the view.
+    foundation::uint64 DeferredSkinAttachmentBytes = 0;
 };
 /// How Render and Encode record the raster passes of the drawable scene.
 /// See "Logical resource uses and submitted work" in docs/architecture/render-graph-authoring.md.
@@ -819,6 +916,15 @@ public:
     [[nodiscard]] foundation::BorrowedView<const RenderGraphCoverageRecord> GetCoverage() const noexcept;
     /// Copy the latest candidate report, independent of the drawable extraction.
     [[nodiscard]] RenderGraphReport GetReport() const noexcept;
+    /// Cause of the latest Update's Unsupported result; None after any other result, before the
+    /// first Update and after Reset. Diagnostic only: it never changes the drawable or pending scene.
+    [[nodiscard]] RenderGraphSceneRejection GetLastRejection() const noexcept;
+    /// Step of the latest Poll or Update that failed; None after an accepted, Pending or NotReady result, before the
+    /// first call and after Reset. Diagnostic only: it never changes the drawable or pending scene. Owner-thread query.
+    [[nodiscard]] RenderGraphFailureStage GetLastFailureStage() const noexcept;
+    /// How much of a World feature this graph draws, derived from its programs (see GetWorldFeatureSupport).
+    /// NotRendered before Initialize succeeds.
+    [[nodiscard]] WorldFeatureSupport GetWorldFeatureSupport(WorldFeature feature) const noexcept;
     /// Return the revision of the last Ready extraction, or zero when none exists.
     [[nodiscard]] foundation::uint64 GetDrawableSceneRevision() const noexcept;
     /// True when the last ray writer of any color target outputs individual samples or has an
@@ -942,7 +1048,7 @@ public:
     /// by the bit-preserved uint32 count in the first word's W to recover linear RGB.
     /// @param pass Plan pass index of a ray pass.
     /// @param outBuffer Receives the borrowed buffer; unchanged on failure.
-    /// @return Ready after producer completion; NotReady while no completed output exists;
+    /// @return Ready after the current scene and camera produce a completed frame; NotReady while they have none.
     /// InvalidDescription for a pass that is not a ray pass. Outputs are preserved on failure.
     [[nodiscard]] rhi::RasterStatus GetAccumulation(foundation::uint32 pass,
                                                     rhi::BufferHandle& outBuffer) const noexcept;
@@ -998,6 +1104,18 @@ private:
     /// Allow the internal parity fixture to borrow completed pass history without a public readback API.
     friend class internal::RenderGraphRayPass;
     struct State;
+    /// Body of Poll; it marks State's current step so Poll can record the failing one.
+    [[nodiscard]] rhi::RasterStatus pollPreparation() noexcept;
+    /// Body of Update with the same contract; it marks State's current step so Update can record the failing one.
+    [[nodiscard]] rhi::RasterStatus updateScene(foundation::BorrowedView<const RenderGraphMesh> meshes,
+                                                foundation::BorrowedView<const RenderGraphItem> items,
+                                                foundation::BorrowedView<const ViewDescription> cameras,
+                                                foundation::uint64 sceneRevision,
+                                                RenderGraphCoveragePolicy policy,
+                                                RenderGraphReport& outReport,
+                                                const SceneShaderInputs* sceneInputsOrNull,
+                                                foundation::uint64 contentRevision,
+                                                const RenderGraphSceneRevisions& revisions) noexcept;
     foundation::core::UniquePtr<State> mState;
 };
 } // namespace ludus::graphics::renderer

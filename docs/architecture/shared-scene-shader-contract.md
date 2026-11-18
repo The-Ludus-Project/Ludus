@@ -337,6 +337,16 @@ package-local shared Slang source, carries only bounded plain shader-local value
 and is initialized by the author. Its compiled size is admitted against an
 explicit local-payload budget; it is not a serialized CPU or native RT payload.
 
+Its camera data holds `CameraClipToWorld` and the eye-relative `CameraClipToEye`,
+which maps clip space to world axes with the origin at `CameraPositionWorld`.
+Build camera rays from `CameraClipToEye` and add the eye last, as `MakeCameraRay`
+and the wrapper's `CameraRay` do. A float32 world-space inverse of a camera far
+from the world origin with a centimetre near plane carries eye-times-w terms that
+move its ray directions a sizeable fraction of a pixel off the raster projection
+(issue #1761), which a visibility-buffer reconstruction reports as a missed
+triangle. The renderer packs one eye-relative matrix for the graph kernels, the
+GPU preview and RT1 alike; RT1's CPU oracle builds the same ray.
+
 RayQueryContext is a separate invocation-local mutable context initialized once
 by the generated wrapper. It carries query counters and the failure latch;
 every query and callback forwards that same context by inout reference. Scene

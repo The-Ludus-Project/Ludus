@@ -29,9 +29,21 @@
 // The specular term also uses the point only when the sphere's angular radius, radius / distance, stays below this
 // fraction of the GGX alpha (roughness squared), so the LTC density barely varies across the emitter.
 #define LUDUS_MESH_LIGHT_FAR_SPECULAR_ANGLE_PER_ALPHA 0.25
+// The dominant-light view draws contributor category c with hue frac(OFFSET + c * STEP), the golden ratio's
+// conjugate spreading successive categories far apart on the colour wheel; the sky starts on blue.
+#define LUDUS_DEFERRED_LIGHTING_VIEW_HUE_OFFSET 0.6
+#define LUDUS_DEFERRED_LIGHTING_VIEW_HUE_STEP 0.6180339887498949
 // Mesh-light shadow lookups move the receiver this many shadow-map texels along its normal, so a surface does not
 // shadow itself where the map's depth steps across it at grazing angles.
 #define LUDUS_MESH_LIGHT_SHADOW_NORMAL_OFFSET_TEXELS 1.5
 // A stored depth shadows a receiver only when nearer by more than this many 16-bit depth codes, absorbing the
 // quantization of the RGBA8 atlas.
 #define LUDUS_MESH_LIGHT_SHADOW_DEPTH_BIAS_CODES 3.0
+// A shadow-map instance whose colour red holds this value stores linear depth (renderer_shadow_depth.slang,
+// SelectShadowDepth): mesh-light cube faces, whose colour green and blue hold the face's near distance and range.
+// Every other instance colour channel lies in [0, 1].
+#define LUDUS_LINEAR_SHADOW_DEPTH_TAG (-1.0)
+// Opaque cube-face fragments rebuild linear depth from their rasterized float32 depth, which is uncertain by about
+// this much (four units in the last place below one). The resolve widens its comparison by the forward^2 / near
+// metres that spans at each tap.
+#define LUDUS_MESH_LIGHT_SHADOW_RASTER_DEPTH_ERROR 2.384185791015625e-7

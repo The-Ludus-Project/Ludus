@@ -250,8 +250,6 @@ TEST_CASE("Hair cards store strand controls in LUSCN v13 and reflect as metallic
     CHECK(read.SecondaryWeight == 0.5F);
     CHECK(format::GetMaterialModelBundleVersion(format::MaterialModel::HairCard) == format::VERSION_13);
     CHECK(format::IsSupportedVersion(format::VERSION_13) == true);
-    CHECK(format::IsSupportedVersion(format::VERSION_13 + 1) == false);
-    CHECK(format::LAST_MATERIAL_MODEL == format::MaterialModel::HairCard);
     CHECK(format::SupportsFixedDimensionReflection(scattering) == true);
     // Ray and reference evaluators receive the metallic/roughness lobes; other models pass through.
     CHECK(format::GetSurfaceReflectionScattering(scattering).Model == format::MaterialModel::MetallicRoughness);
@@ -323,4 +321,50 @@ TEST_CASE("Medium interfaces store absorption in LUSCN v12 and are never surface
     scattering.Model = format::MaterialModel::MediumInterface;
     scattering.AlphaU = .5F;
     CHECK(format::IsStoredMaterialScatteringValid(scattering) == false);
+}
+
+TEST_CASE("Skin stores scattering distances in LUSCN v14 and reflects like metallic-roughness",
+          "[scene_format][materials][skin]")
+{
+    format::MaterialScattering scattering;
+    scattering.Model = format::MaterialModel::Skin;
+    scattering.K = {{0.012F, 0.006F, 0.003F}};
+    CHECK(format::IsMaterialScatteringValid(scattering) == true);
+    CHECK(format::IsStoredMaterialScatteringValid(scattering) == true);
+    // The surface reflection is the metallic-roughness dielectric, so fixed-dimension estimators accept it.
+    CHECK(format::GetMaterialCapabilities(scattering) ==
+          format::GetMaterialCapabilities(format::MaterialModel::MetallicRoughness));
+    CHECK(format::SupportsFixedDimensionReflection(scattering) == true);
+    CHECK(format::GetMaterialModelBundleVersion(format::MaterialModel::Skin) == format::VERSION_14);
+    CHECK(format::IsSupportedVersion(format::VERSION_14) == true);
+    CHECK(format::IsSupportedVersion(format::VERSION_14 + 1) == false);
+    // Ray and reference evaluators receive the metallic/roughness dielectric lobes.
+    CHECK(format::GetSurfaceReflectionScattering(scattering).Model == format::MaterialModel::MetallicRoughness);
+    CHECK(format::LAST_MATERIAL_MODEL == format::MaterialModel::Skin);
+    // Zero distance is admitted: it reproduces the unfiltered metallic-roughness lighting.
+    scattering.K = {};
+    CHECK(format::IsMaterialScatteringValid(scattering) == true);
+    scattering.K = {{format::MAX_SKIN_SCATTERING_DISTANCE, 0, 0}};
+    CHECK(format::IsMaterialScatteringValid(scattering) == true);
+    for (const format::float32 invalid : {-0.001F,
+                                          std::numeric_limits<format::float32>::quiet_NaN(),
+                                          format::MAX_SKIN_SCATTERING_DISTANCE * 2,
+                                          std::numeric_limits<format::float32>::infinity()})
+    {
+        scattering.K = {{0, 0, invalid}};
+        CHECK(format::IsMaterialScatteringValid(scattering) == false);
+    }
+    // Every other field keeps its default, so equal skin materials cook to equal bytes.
+    scattering.K = {};
+    scattering.Eta = {{1.4F, 1.4F, 1.4F}};
+    CHECK(format::IsMaterialScatteringValid(scattering) == false);
+    scattering = {};
+    scattering.Model = format::MaterialModel::Skin;
+    scattering.AlphaU = .5F;
+    scattering.AlphaV = .5F;
+    CHECK(format::IsMaterialScatteringValid(scattering) == false);
+    scattering = {};
+    scattering.Model = format::MaterialModel::Skin;
+    scattering.CoatingThickness = 0;
+    CHECK(format::IsMaterialScatteringValid(scattering) == false);
 }

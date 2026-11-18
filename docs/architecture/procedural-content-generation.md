@@ -464,6 +464,9 @@ terrain contract, independently of placement scheduling and camera movement.
 
 ### Vegetation and scatter
 
+The [terrain foliage architecture](foliage.md) connects these generation
+primitives to the foliage cook, World authoring and packaged play.
+
 Represent dense static vegetation as compact placements referencing reusable
 species assets. Derive suitability from elevation/slope, moisture, light,
 distance fields and authored masks. Generate large obstacles and trees before

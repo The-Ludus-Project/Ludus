@@ -22,6 +22,7 @@
 #include "environment_data.h"
 #include "reference_light_sampling.h"
 #include "reference_medium.h"
+#include "reference_sky.h"
 
 namespace ludus::graphics::renderer::internal
 {
@@ -280,9 +281,13 @@ struct ReferenceJob final
     PanelLuminaire Luminaires[MAX_PANEL_LUMINAIRES];
     uint32 LuminaireCount = 0;
     EnvironmentData* EnvironmentOrNull = nullptr;
+    ReferenceSky Sky;
     /// Admitted copy of Description.MediumOrNull, which the job keeps null; empty for vacuum.
     ReferenceMediumData Medium;
     math::Matrix4 ClipToWorld;
+    /// Clip to eye-relative world: world axes with the origin at Description.CameraPosition. Camera rays are built
+    /// from it and translated last, so a camera far from the world origin keeps its pixel-scale ray directions.
+    math::Matrix4 ClipToEye;
     math::RandomKey Key;
     ReferenceSceneData Scene;
     Array<ReferenceSurfaceData> FlatSurfaces;
@@ -291,6 +296,9 @@ struct ReferenceJob final
     Array<math::Vector4> ShaderEmitters;
     Array<ReferenceEmitterBounds> ShaderEmitterBounds; // Parallel to ShaderEmitters.
     Array<uint8> ShaderTextureBytes;
+    /// World-feature tables of a graph ray scene (RenderGraphSceneDescription), packed after the scene words.
+    Array<math::Vector4> AtmosphereSkyTable;
+    Array<math::Vector4> AerialPerspectiveTable;
     Array<ReferenceAccumulator> Pixels;
     Array<ReferencePath> Paths;
     Array<rhi::RayInput> Rays;
@@ -407,6 +415,9 @@ static_assert(LUDUS_REFERENCE_RIS_NORMALIZATION_FIRST_SLOT + LUDUS_REFERENCE_RIS
               "sampler version 2 slots stay disjoint within one bounce");
 static_assert(LUDUS_GPU_PREVIEW_MAX_DEPTH <= LUDUS_REFERENCE_MAX_DEPTH, "GPU preview mirrors reference addresses");
 static_assert(LUDUS_REFERENCE_DIRECTIONAL_FIRST_DIMENSION + LUDUS_REFERENCE_MAX_DEPTH - 1 <= math::RandomMaxDimension);
+static_assert(LUDUS_REFERENCE_DIRECTIONAL_DISK_FIRST_DIMENSION +
+                  LUDUS_REFERENCE_DIRECTIONAL_DISK_DIMENSIONS * LUDUS_REFERENCE_MAX_DEPTH - 1 <=
+              math::RandomMaxDimension);
 /// Dimensions per scattering event of `sampling`'s sampler version.
 [[nodiscard]] inline constexpr uint32 GetReferenceDimensionsPerBounce(ReferenceLightSampling sampling) noexcept
 {

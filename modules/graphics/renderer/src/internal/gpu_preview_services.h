@@ -74,9 +74,9 @@ math::Vector4 GpuVector(math::Vector3 value, float32 w = 0) noexcept
     return {value.X, value.Y, value.Z, w};
 }
 // AreCapturesEqual names every field; extend it whenever ReferenceCaptureDescription changes.
-// The description holds three borrowed pointers and a usize, so its size follows the pointer width:
-// 176 bytes on 64-bit targets and 160 bytes on 32-bit targets such as wasm32 (eight-byte aligned).
-constexpr usize EXPECTED_CAPTURE_DESCRIPTION_BYTES_64_BIT = 176;
+// The description holds four borrowed pointers and a usize, so its size follows the pointer width:
+// 184 bytes on 64-bit targets and 160 bytes on 32-bit targets such as wasm32 (eight-byte aligned).
+constexpr usize EXPECTED_CAPTURE_DESCRIPTION_BYTES_64_BIT = 184;
 constexpr usize EXPECTED_CAPTURE_DESCRIPTION_BYTES_32_BIT = 160;
 constexpr usize POINTER_BYTES_64_BIT = 8;
 constexpr usize EXPECTED_CAPTURE_DESCRIPTION_BYTES = sizeof(void*) == POINTER_BYTES_64_BIT
@@ -85,7 +85,7 @@ constexpr usize EXPECTED_CAPTURE_DESCRIPTION_BYTES = sizeof(void*) == POINTER_BY
 static_assert(sizeof(ReferenceCaptureDescription) == EXPECTED_CAPTURE_DESCRIPTION_BYTES,
               "compare every ReferenceCaptureDescription field in AreCapturesEqual");
 /// Every field: equal captures of one scene build, fingerprint and pack identical GPU scene data.
-/// Borrowed environment, light and medium inputs compare by identity, as one graph update passes them.
+/// Borrowed inputs compare by identity within one graph update. The preview supplies no atmosphere background.
 bool AreCapturesEqual(const ReferenceCaptureDescription& left, const ReferenceCaptureDescription& right) noexcept
 {
     return left.WorldToClip == right.WorldToClip && left.CameraPosition == right.CameraPosition &&
@@ -97,7 +97,8 @@ bool AreCapturesEqual(const ReferenceCaptureDescription& left, const ReferenceCa
            left.Lights == right.Lights && left.LightCount == right.LightCount && left.TextureMip == right.TextureMip &&
            left.Seed == right.Seed && left.CenterRays == right.CenterRays &&
            left.LightSampling == right.LightSampling && left.MaterialProfile == right.MaterialProfile &&
-           left.OpticalWavelengthWorld == right.OpticalWavelengthWorld && left.MediumOrNull == right.MediumOrNull;
+           left.OpticalWavelengthWorld == right.OpticalWavelengthWorld && left.MediumOrNull == right.MediumOrNull &&
+           left.AtmosphereBackgroundOrNull == right.AtmosphereBackgroundOrNull;
 }
 bool SameGpuTexture(const rhi::TextureCpuContent& a, const rhi::TextureCpuContent& b) noexcept
 {
@@ -502,7 +503,7 @@ Status PackGpuScene(const ReferenceJob& job,
             light.InnerCos,
             GpuBits(static_cast<uint32>(light.SourceId)),
             GpuBits(static_cast<uint32>(light.SourceId >> LUDUS_GRAPH_SOURCE_HIGH_SHIFT)),
-            0};
+            light.AngularRadiusRadians};
     }
     data[static_cast<usize>(luminairesWide)] = {GpuBits(job.LuminaireCount), 0, 0, 0};
     for (usize i = 0; i < job.LuminaireCount; ++i)
@@ -518,7 +519,7 @@ Status PackGpuScene(const ReferenceJob& job,
                                                                luminaire.BeamTwist,
                                                                0};
     }
-    outUniform.ClipToWorld = job.ClipToWorld;
+    outUniform.ClipToEye = job.ClipToEye;
     outUniform.CameraPositionWorld =
         GpuVector(job.Description.CameraPosition, job.Description.OrthographicCamera ? 1.0F : 0.0F);
     outUniform.Dimensions[0] = job.Description.Width;
@@ -668,6 +669,24 @@ usize MakeGpuComputeBindings(
             case LUDUS_GRAPH_LTC_TABLE_BINDING:
                 binding = {slot, state.LtcTable, 0, sizeof(internal::LTC_TABLE)};
                 break;
+            case LUDUS_GRAPH_AERIAL_PERSPECTIVE_BINDING:
+                // A kernel reads this table only when its scene carries it (RenderGraph::Update supplies one).
+                if (job.WorldTables.AerialPerspectiveBytes == 0)
+                {
+                    return 0;
+                }
+                binding = {slot,
+                           job.Data,
+                           job.WorldTables.AerialPerspectiveOffset,
+                           job.WorldTables.AerialPerspectiveBytes};
+                break;
+            case LUDUS_GRAPH_ATMOSPHERE_SKY_BINDING:
+                if (job.WorldTables.AtmosphereSkyBytes == 0)
+                {
+                    return 0;
+                }
+                binding = {slot, job.Data, job.WorldTables.AtmosphereSkyOffset, job.WorldTables.AtmosphereSkyBytes};
+                break;
             case LUDUS_GRAPH_FAILURE_BINDING:
                 binding = {slot, failures, 0, LUDUS_GRAPH_FAILURE_BYTES};
                 break;
@@ -681,12 +700,12 @@ Status PollGpuJob(rhi::DeviceHandle device, GpuPreviewState& inoutState, GpuPrev
 {
     if (inoutJob.Setup == Status::Pending)
     {
+        const bool hasImage = inoutJob.WorkItemCount == 0;
         const rhi::BufferHandle buffers[]{inoutJob.Data,
                                           inoutJob.Texels,
                                           inoutJob.Parameters,
                                           inoutJob.Accumulation,
-                                          inoutJob.Colors,
-                                          inoutJob.ImageParameters};
+                                          inoutJob.Colors};
         for (rhi::BufferHandle buffer : buffers)
         {
             const Status status = rhi::GetStatus(device, buffer);
@@ -793,8 +812,13 @@ Status PollGpuJob(rhi::DeviceHandle device, GpuPreviewState& inoutState, GpuPrev
             }
             inoutJob.ComputeBindingsCreated = true;
         }
-        if (inoutJob.ImageBindingsCreated == false)
+        if (hasImage == true && inoutJob.ImageBindingsCreated == false)
         {
+            const Status ready = rhi::GetStatus(device, inoutJob.ImageParameters);
+            if (ready != Status::Ready)
+            {
+                return Accepted(ready) == true ? Status::Pending : (inoutJob.Setup = ready);
+            }
             constexpr usize IMAGE_BINDING_COUNT = 2;
             const StaticArray<rhi::RasterBindingResource, IMAGE_BINDING_COUNT> bindings{
                 {{0, inoutJob.ImageParameters, 0, sizeof(math::Vector4)},
@@ -811,17 +835,16 @@ Status PollGpuJob(rhi::DeviceHandle device, GpuPreviewState& inoutState, GpuPrev
         }
         Status status =
             inoutJob.ComputeBindingsCreated == true ? rhi::GetStatus(device, inoutJob.ComputeBindings) : Status::Ready;
-        if (status == Status::Ready)
+        if (hasImage == true && status == Status::Ready)
         {
             status = rhi::GetStatus(device, inoutJob.ImageBindings);
         }
-        if (status == Status::Ready)
+        for (const internal::GpuFrameRecord& frame : inoutJob.Frames)
         {
-            status = rhi::GetStatus(device, inoutJob.Frames[0].Texture);
-        }
-        if (status == Status::Ready)
-        {
-            status = rhi::GetStatus(device, inoutJob.Frames[1].Texture);
+            if (hasImage == true && status == Status::Ready)
+            {
+                status = rhi::GetStatus(device, frame.Texture);
+            }
         }
         if (status != Status::Ready)
         {
@@ -1083,59 +1106,46 @@ Status Renderer::EnableGpuPreview(const rhi::RasterShaderDescription& compute,
     {
         return status;
     }
-    // A graph ray kernel declares its failure summary last, after every other slot.
+    // A graph ray kernel closes its bindings with renderer-owned slots in slot order: the ray path capture buffer of a
+    // diagnostic capture-variant kernel, the aerial perspective table, the LTC table, the failure summary and the
+    // Atmosphere sky. Each is optional; peel them from the back and validate each as the renderer binds it.
+    std::span<const rhi::RasterBinding> kernelBindings = {compute.Bindings.GetDataOrNull(), compute.Bindings.GetSize()};
+    bool isTrailingValid = true;
+    const auto peel = [&kernelBindings, &isTrailingValid](uint32 slot,
+                                                          rhi::RasterBindingKind kind,
+                                                          usize size) -> const rhi::RasterBinding* {
+        if (kernelBindings.empty() == true || kernelBindings.back().Binding != slot)
+        {
+            return nullptr;
+        }
+        const rhi::RasterBinding* bindingOrNull = &kernelBindings.back();
+        isTrailingValid = isTrailingValid == true && bindingOrNull->Kind == kind &&
+                          bindingOrNull->Visibility == rhi::RasterVisibility::Compute &&
+                          bindingOrNull->MinSize == size && bindingOrNull->HasDynamicOffset == false &&
+                          bindingOrNull->Count == 1 && bindingOrNull->IsRuntimeSized == false &&
+                          bindingOrNull->HasPartialBinding == false &&
+                          bindingOrNull->Indexing == rhi::RasterBindingIndexing::Constant;
+        kernelBindings = kernelBindings.first(kernelBindings.size() - 1);
+        return bindingOrNull;
+    };
+    const rhi::RasterBinding* skyBindingOrNull =
+        peel(LUDUS_GRAPH_ATMOSPHERE_SKY_BINDING, rhi::RasterBindingKind::StorageRead, LUDUS_GPU_PREVIEW_VECTOR_BYTES);
     const rhi::RasterBinding* failureBindingOrNull =
-        compute.Bindings.IsEmpty() == false &&
-                compute.Bindings[compute.Bindings.GetSize() - 1].Binding == LUDUS_GRAPH_FAILURE_BINDING
-            ? &compute.Bindings[compute.Bindings.GetSize() - 1]
-            : nullptr;
-    if (failureBindingOrNull != nullptr &&
-        (failureBindingOrNull->Kind != rhi::RasterBindingKind::StorageReadWrite ||
-         failureBindingOrNull->Visibility != rhi::RasterVisibility::Compute ||
-         failureBindingOrNull->MinSize != sizeof(uint32) || failureBindingOrNull->HasDynamicOffset == true ||
-         failureBindingOrNull->Count != 1 || failureBindingOrNull->IsRuntimeSized == true ||
-         failureBindingOrNull->HasPartialBinding == true ||
-         failureBindingOrNull->Indexing != rhi::RasterBindingIndexing::Constant))
-    {
-        return Status::InvalidDescription;
-    }
-    const std::span<const rhi::RasterBinding> summaryBindings = {
-        compute.Bindings.GetDataOrNull(),
-        compute.Bindings.GetSize() - (failureBindingOrNull != nullptr ? LUDUS_GRAPH_FAILURE_BINDING_COUNT : 0)};
-    // A kernel reading the renderer's LTC table declares it next, after every remaining slot.
+        peel(LUDUS_GRAPH_FAILURE_BINDING, rhi::RasterBindingKind::StorageReadWrite, sizeof(uint32));
     const rhi::RasterBinding* ltcTableBindingOrNull =
-        summaryBindings.empty() == false && summaryBindings.back().Binding == LUDUS_GRAPH_LTC_TABLE_BINDING
-            ? &summaryBindings.back()
-            : nullptr;
-    if (ltcTableBindingOrNull != nullptr &&
-        (ltcTableBindingOrNull->Kind != rhi::RasterBindingKind::StorageRead ||
-         ltcTableBindingOrNull->Visibility != rhi::RasterVisibility::Compute ||
-         ltcTableBindingOrNull->MinSize != LUDUS_GPU_PREVIEW_VECTOR_BYTES ||
-         ltcTableBindingOrNull->HasDynamicOffset == true || ltcTableBindingOrNull->Count != 1 ||
-         ltcTableBindingOrNull->IsRuntimeSized == true || ltcTableBindingOrNull->HasPartialBinding == true ||
-         ltcTableBindingOrNull->Indexing != rhi::RasterBindingIndexing::Constant))
+        peel(LUDUS_GRAPH_LTC_TABLE_BINDING, rhi::RasterBindingKind::StorageRead, LUDUS_GPU_PREVIEW_VECTOR_BYTES);
+    const rhi::RasterBinding* aerialBindingOrNull = peel(LUDUS_GRAPH_AERIAL_PERSPECTIVE_BINDING,
+                                                         rhi::RasterBindingKind::StorageRead,
+                                                         LUDUS_GPU_PREVIEW_VECTOR_BYTES);
+    const rhi::RasterBinding* captureBindingOrNull = peel(LUDUS_RAY_PATH_CAPTURE_BINDING,
+                                                          rhi::RasterBindingKind::StorageReadWrite,
+                                                          LUDUS_RAY_PATH_CAPTURE_WORD_BYTES);
+    // A World-feature table is read only through the graph scene that supplies it.
+    if (isTrailingValid == false ||
+        ((skyBindingOrNull != nullptr || aerialBindingOrNull != nullptr) && failureBindingOrNull == nullptr))
     {
         return Status::InvalidDescription;
     }
-    const std::span<const rhi::RasterBinding> leadingBindings = summaryBindings.first(
-        summaryBindings.size() - (ltcTableBindingOrNull != nullptr ? LUDUS_GRAPH_LTC_TABLE_BINDING_COUNT : 0));
-    // A diagnostic capture-variant kernel declares its capture buffer after every frozen ABI slot.
-    const rhi::RasterBinding* captureBindingOrNull =
-        leadingBindings.empty() == false && leadingBindings.back().Binding == LUDUS_RAY_PATH_CAPTURE_BINDING
-            ? &leadingBindings.back()
-            : nullptr;
-    if (captureBindingOrNull != nullptr &&
-        (captureBindingOrNull->Kind != rhi::RasterBindingKind::StorageReadWrite ||
-         captureBindingOrNull->Visibility != rhi::RasterVisibility::Compute ||
-         captureBindingOrNull->MinSize != LUDUS_RAY_PATH_CAPTURE_WORD_BYTES ||
-         captureBindingOrNull->HasDynamicOffset == true || captureBindingOrNull->Count != 1 ||
-         captureBindingOrNull->IsRuntimeSized == true || captureBindingOrNull->HasPartialBinding == true ||
-         captureBindingOrNull->Indexing != rhi::RasterBindingIndexing::Constant))
-    {
-        return Status::InvalidDescription;
-    }
-    const std::span<const rhi::RasterBinding> kernelBindings =
-        leadingBindings.first(leadingBindings.size() - (captureBindingOrNull != nullptr ? 1 : 0));
     bool hasNativeRayQueries = false;
     for (const rhi::RasterBinding& binding : kernelBindings)
     {
@@ -1568,6 +1578,17 @@ Status Renderer::BeginGpuPreview(Snapshot snapshot,
         return Status::Unsupported;
     }
     internal::GpuPreviewState& state = *mState->GpuPreview;
+    const uint32 workItemCount = invocationOrNull != nullptr ? invocationOrNull->WorkItemCount : 0;
+    const bool isBufferDispatch = workItemCount != 0;
+    if (isBufferDispatch == true &&
+        (workItemCount > content::render_graph_format::MAX_SCENE_WORK_ITEMS || description.Width != 1 ||
+         description.Height != 1 || state.HasPersistentBuffers == false || state.HasVisibilityBuffer == true ||
+         state.HasRayPathCapture == true || invocationOrNull->HasNativeRayInvocation == true ||
+         invocationOrNull->AccumulationSamples != 0 || invocationOrNull->DenoisingQuality != 0 ||
+         invocationOrNull->ToneMappingExposure != 0))
+    {
+        return Status::InvalidDescription;
+    }
     if (invocationOrNull != nullptr &&
         (state.IsGraphRayScene == false ||
          (state.HasPersistentBuffers == false &&
@@ -1734,10 +1755,12 @@ Status Renderer::BeginGpuPreview(Snapshot snapshot,
     uint32 sceneData = 0;
     uint64 fingerprintLow = 0;
     uint64 fingerprintHigh = 0;
+    internal::GpuPreviewWorldTables worldTables;
     if (shouldReusePackedScene == true)
     {
         const internal::GpuPreviewSceneRecord& record = state.Scenes[sharedScene];
         uniform = record.PackedUniform;
+        worldTables = record.WorldTables;
         dataBytes = record.DataBytes;
         texelBytes = record.TexelBytes;
         sceneData = record.SceneData;
@@ -1757,6 +1780,37 @@ Status Renderer::BeginGpuPreview(Snapshot snapshot,
         if (status != Status::Ready)
         {
             return status;
+        }
+        // World-feature tables follow the scene words at an aligned offset, so each binds as its own range.
+        struct WorldTableRange final
+        {
+            const Array<math::Vector4>* Table;
+            usize* OutOffset;
+            usize* OutBytes;
+        };
+        const StaticArray<WorldTableRange, 2> ranges{{
+            {&scene->AerialPerspectiveTable, &worldTables.AerialPerspectiveOffset, &worldTables.AerialPerspectiveBytes},
+            {&scene->AtmosphereSkyTable, &worldTables.AtmosphereSkyOffset, &worldTables.AtmosphereSkyBytes},
+        }};
+        for (const WorldTableRange& range : ranges)
+        {
+            const Array<math::Vector4>& table = *range.Table;
+            if (table.IsEmpty() == true)
+            {
+                continue;
+            }
+            constexpr usize ALIGNMENT_WORDS = LUDUS_GRAPH_WORLD_TABLE_ALIGNMENT_BYTES / sizeof(math::Vector4);
+            const usize offsetWords = (data.GetSize() + ALIGNMENT_WORDS - 1) / ALIGNMENT_WORDS * ALIGNMENT_WORDS;
+            if (data.TryResize(offsetWords + table.GetSize()) == false)
+            {
+                return Status::OutOfMemory;
+            }
+            for (usize i = 0; i < table.GetSize(); ++i)
+            {
+                data[offsetWords + i] = table[i];
+            }
+            *range.OutOffset = offsetWords * sizeof(math::Vector4);
+            *range.OutBytes = table.GetSize() * sizeof(math::Vector4);
         }
         dataBytes = data.GetSize() * sizeof(math::Vector4);
         texelBytes = texels.GetSize() * sizeof(math::Vector4);
@@ -1779,10 +1833,15 @@ Status Renderer::BeginGpuPreview(Snapshot snapshot,
     }
     // A shared scene is already uploaded and charged by its record.
     const usize sceneUploadBytes = isSceneShared == true ? 0 : uploadBytes;
+    // The common shader binding layout needs one scratch record for buffer-only jobs.
+    const usize bytesPerItem = isBufferDispatch == true
+                                   ? LUDUS_GPU_PREVIEW_ACCUMULATION_BYTES + LUDUS_GPU_PREVIEW_VECTOR_BYTES
+                                   : GPU_PREVIEW_BYTES_PER_PIXEL;
+    const usize uniformBytes = sizeof(uniform) + (isBufferDispatch == true ? 0 : sizeof(math::Vector4));
     usize gpuBytes = 0;
-    if (foundation::TryMultiply(pixels, GPU_PREVIEW_BYTES_PER_PIXEL, gpuBytes) == false ||
+    if (foundation::TryMultiply(pixels, bytesPerItem, gpuBytes) == false ||
         foundation::TryAdd(gpuBytes, sceneUploadBytes, gpuBytes) == false ||
-        foundation::TryAdd(gpuBytes, sizeof(uniform) + sizeof(math::Vector4), gpuBytes) == false)
+        foundation::TryAdd(gpuBytes, uniformBytes, gpuBytes) == false)
     {
         return Status::CapacityExceeded;
     }
@@ -1849,10 +1908,23 @@ Status Renderer::BeginGpuPreview(Snapshot snapshot,
                                            largestStorageBuffer,
                                            computeCaps.MaxStorageRange);
     }
-    if ((description.Width - 1) / state.WorkgroupWidth + 1 > computeCaps.MaxDispatch[0] ||
-        (description.Height - 1) / state.WorkgroupHeight + 1 > computeCaps.MaxDispatch[1] ||
-        description.Width > formatCaps.MaxAttachmentDimension2D ||
-        description.Height > formatCaps.MaxAttachmentDimension2D)
+    // World-feature tables bind at LUDUS_GRAPH_WORLD_TABLE_ALIGNMENT_BYTES offsets into the scene buffer.
+    if (computeCaps.StorageOffsetAlignment != 0 &&
+        ((worldTables.AerialPerspectiveBytes != 0 &&
+          worldTables.AerialPerspectiveOffset % computeCaps.StorageOffsetAlignment != 0) ||
+         (worldTables.AtmosphereSkyBytes != 0 &&
+          worldTables.AtmosphereSkyOffset % computeCaps.StorageOffsetAlignment != 0)))
+    {
+        return Status::Unsupported;
+    }
+    const uint32 dispatchWidth =
+        isBufferDispatch == true ? internal::GetSceneWorkRowWidth(workItemCount) : description.Width;
+    const uint32 dispatchHeight =
+        isBufferDispatch == true ? internal::GetSceneWorkRowCount(workItemCount) : description.Height;
+    if ((dispatchWidth - 1) / state.WorkgroupWidth + 1 > computeCaps.MaxDispatch[0] ||
+        (dispatchHeight - 1) / state.WorkgroupHeight + 1 > computeCaps.MaxDispatch[1] ||
+        (isBufferDispatch == false && (description.Width > formatCaps.MaxAttachmentDimension2D ||
+                                       description.Height > formatCaps.MaxAttachmentDimension2D)))
     {
         return Status::Unsupported;
     }
@@ -1900,10 +1972,18 @@ Status Renderer::BeginGpuPreview(Snapshot snapshot,
         record.Capture = description;
         record.PackedUniform = uniform;
         record.SceneCpuBytes = sceneCpuBytes;
+        record.WorldTables = worldTables;
         job.Scene = sceneSlot;
     }
+    job.WorldTables = worldTables;
     job.Width = description.Width;
     job.Height = description.Height;
+    job.WorkItemCount = workItemCount;
+    if (isBufferDispatch == true)
+    {
+        uniform.Sampling[2] |= LUDUS_GPU_PREVIEW_SCENE_WORK_FLAG;
+        uniform.Dimensions[LUDUS_GPU_PREVIEW_ROULETTE_OR_WORK_COUNT_COMPONENT] = workItemCount;
+    }
     job.Info.TargetSamples = description.TargetSamples;
     job.Info.SceneFingerprintLow = fingerprintLow;
     job.Info.SceneFingerprintHigh = fingerprintHigh;
@@ -1968,7 +2048,7 @@ Status Renderer::BeginGpuPreview(Snapshot snapshot,
                                    {zeros.GetData(), pixels * LUDUS_GPU_PREVIEW_VECTOR_BYTES},
                                    job.Colors);
     }
-    if (Accepted(status))
+    if (Accepted(status) == true && isBufferDispatch == false)
     {
         status = rhi::CreateBuffer(mState->Device,
                                    {rhi::BufferRole::Uniform, sizeof(dimensions)},
@@ -1977,7 +2057,7 @@ Status Renderer::BeginGpuPreview(Snapshot snapshot,
     }
     for (internal::GpuFrameRecord& frame : job.Frames)
     {
-        if (Accepted(status))
+        if (Accepted(status) == true && isBufferDispatch == false)
         {
             status = rhi::CreateTexture(mState->Device,
                                         {job.Width, job.Height, rhi::RasterFormat::Rgba8Unorm, true},
@@ -2174,6 +2254,15 @@ Status Renderer::prepareGpuPreviewGraphSequence(BorrowedView<const renderer::Gpu
         {
             return status;
         }
+        if (jobOrNull->WorkItemCount != 0)
+        {
+            if (rhi::IsNull(targets[index]) == false || visibilityOrNull != nullptr || tile != 0)
+            {
+                return Status::InvalidDescription;
+            }
+            records[index] = jobOrNull;
+            continue;
+        }
         rhi::TextureDescription description;
         status = rhi::GetTextureDescription(mState->Device, targets[index], description);
         if (status != Status::Ready)
@@ -2227,7 +2316,7 @@ Status Renderer::AdvanceGpuPreview(renderer::GpuPreview handle,
     {
         return status == Status::Pending ? Status::NotReady : status;
     }
-    if (job->Info.Complete)
+    if (job->Info.Complete == true || job->WorkItemCount != 0)
     {
         return Status::InvalidState;
     }

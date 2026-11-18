@@ -1,0 +1,13 @@
+// L5a GPU evidence: a texture's size, returned by value
+// (docs/modules/tooling/shader-language.md#resources-and-bindings). queries.slang is the Slang
+// equivalent; lusl_shared_memory_tests.cpp compares their results.
+Texture2D<float32x4> image;
+RWStructuredBuffer<uint32> results;
+
+[stage(compute), threads(1, 1, 1)]
+void Main()
+{
+    uint32x2 size = image.GetDimensions();
+    results[0] = size.x;
+    results[1] = size.y;
+}

@@ -83,10 +83,20 @@ Metric names are paths: `iterations=10000/workers=4/median_ns`,
 `case=xxh3_64/ns_per_operation`, `scope=WorldTick/p95_ns`,
 `R7/layers=8/merge=1/gpu_duration_median_ns`. Names ending in `_ns`
 or `ns_per_operation` are nanoseconds. Every scenario also reports
-`process/wall_ns`. Trace scenarios report each scope's `count`, `median_ns` and
-`p95_ns`, plus `frames/count` and frame-interval percentiles from
-`LUDUS_PROFILE_FRAME()` markers. Percentiles use the nearest-rank convention
+`process/wall_ns`. Scenarios that use the Perfetto scope parser report each
+scope's `count`, `median_ns`, `p95_ns` and `max_ns`, plus `frames/count`
+and the median, p95 and maximum interval between consecutive
+`LUDUS_PROFILE_FRAME()` markers. The marker placement defines the observation
+point. Percentiles use the nearest-rank convention
 shared with `scripts/benchmark-rhi`.
+
+Each `max_ns` or `interval_max_ns` sample is the longest observed value in one
+measured repetition. The Markdown row's **Median** gives the typical
+repetition's maximum and its **Max** gives the longest sample across all
+measured repetitions. Use these rows to spot a single stall that leaves p95
+steady. Reproduce the suspected workload in a controlled run to locate it in
+the trace. The saved trace is from the last measured repetition and may come
+from a different run than the stall. Older baselines simply lack these rows.
 
 Reports identify the percentile method as `nearest-rank`. Historical reports
 without that marker used a lower rank that understated p95 for some sample

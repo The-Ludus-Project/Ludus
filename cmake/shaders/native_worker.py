@@ -15,6 +15,10 @@ MAX_SOURCE_FILES = 64
 MAX_SOURCE_BYTES = 4 * 1024 * 1024
 DEFINES_ROOT = '__ludus_defines.slang'
 INCLUDE_PATTERN = re.compile(r'^\s*#\s*include\s+"([^"\n]+)"', re.M)
+# Include files a shader may reach: Slang sources, and the C headers and .inc fragments shared with
+# C++ (for example renderer/detail/deferred_binding_slots.inc). The Editor's preview snapshot
+# (apps/editor/src/preview_shader_build.cpp, GetPreviewShaderIncludePatterns) captures the same suffixes.
+SHADER_INCLUDE_SUFFIXES = ('.slang', '.h', '.inc')
 # Windows workers listen on a local named pipe; elsewhere the endpoint is a Unix socket path.
 PIPE_PREFIX = '\\\\.\\pipe\\'
 # ERROR_PIPE_BUSY: every listening instance is serving, as a full Unix listen backlog would be.
@@ -139,7 +143,7 @@ def capture_include_closure(source, roots):
     candidates = {}
     for root in roots:
         for path in sorted(root.rglob('*')):
-            if path.suffix not in ('.slang', '.h') or not path.is_file():
+            if path.suffix not in SHADER_INCLUDE_SUFFIXES or not path.is_file():
                 continue
             relative = path.relative_to(root)
             if any(part.startswith('.') or part == 'out' for part in relative.parts):

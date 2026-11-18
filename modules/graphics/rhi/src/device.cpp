@@ -1,6 +1,8 @@
 #include <ludus/foundation/containers/borrowed_view.hpp>
+#include <ludus/foundation/containers/static_array.hpp>
 #include <ludus/graphics/rhi/device.h>
 
+#include "internal/adapter.h"
 #include "internal/backend.h"
 #include "internal/device.h"
 #include "internal/gpu_scope_backend.h"
@@ -11,6 +13,7 @@
 #include "internal/raster.h"
 #include "internal/ray_backend.h"
 #include "internal/storage.h"
+#include "internal/surface.h"
 
 namespace ludus::graphics::rhi
 {
@@ -29,6 +32,16 @@ struct DeviceAccess final
     {
         handle.Owner = owner;
     }
+
+    static ludus::foundation::uint64 Identity(SurfaceHandle surface) noexcept
+    {
+        return surface.mIdentity;
+    }
+
+    static void SetIdentity(SurfaceHandle& outSurface, ludus::foundation::uint64 identity) noexcept
+    {
+        outSurface.mIdentity = identity;
+    }
 };
 } // namespace internal
 namespace
@@ -37,15 +50,106 @@ using internal::DeviceAccess;
 internal::DeviceOwnerSequence gOwners;
 DeviceDescription gDescription;
 
+// R14b surface registry. Slot 0 is the primary surface; a record is live only while its
+// owner is the current device owner, so DestroyDevice and restart retire every record
+// without a separate reset. Identities come from a process sequence and are never reused.
+struct SurfaceRecord final
+{
+    foundation::uint64 Owner = 0;
+    foundation::uint64 Identity = 0;
+    platform::WindowSystem System = platform::WindowSystem::Headless;
+    /// Borrowed native target, compared only for identity and never dereferenced.
+    const void* TargetOrNull = nullptr;
+    foundation::uint32 Width = 0;
+    foundation::uint32 Height = 0;
+    foundation::uint64 SubmittedFrames = 0;
+    bool IsLost = false;
+};
+foundation::StaticArray<SurfaceRecord, MAX_DEVICE_SURFACES> gSurfaces{};
+internal::DeviceOwnerSequence gSurfaceIdentities;
+
 // R0 shares the existing registry/loss protocol rather than introducing a second
 // resource registry. See docs/architecture/rhi-gdi.md, ownership and identity.
 bool Valid(DeviceHandle device) noexcept
 {
     return DeviceAccess::Owner(device) != 0 && DeviceAccess::Owner(device) == internal::DeviceOwner();
 }
-bool Valid(DeviceHandle device, SurfaceHandle surface) noexcept
+bool IsLive(const SurfaceRecord& record) noexcept
 {
-    return Valid(device) && DeviceAccess::Owner(surface) == DeviceAccess::Owner(device);
+    return record.Owner != 0 && record.Owner == internal::DeviceOwner();
+}
+/// Slot of a live surface of this device, or MAX_DEVICE_SURFACES for a null, stale or foreign handle.
+foundation::usize FindSurface(DeviceHandle device, SurfaceHandle surface) noexcept
+{
+    if (Valid(device) == false || DeviceAccess::Owner(surface) != DeviceAccess::Owner(device) ||
+        DeviceAccess::Identity(surface) == 0)
+    {
+        return MAX_DEVICE_SURFACES;
+    }
+    for (foundation::usize slot = 0; slot < MAX_DEVICE_SURFACES; ++slot)
+    {
+        if (IsLive(gSurfaces[slot]) == true && gSurfaces[slot].Identity == DeviceAccess::Identity(surface))
+        {
+            return slot;
+        }
+    }
+    return MAX_DEVICE_SURFACES;
+}
+/// The native object identifying a borrowed target; null for headless targets, which borrow nothing.
+const void* GetTargetIdentityOrNull(const WindowInfo& window) noexcept
+{
+    switch (window.System)
+    {
+        case platform::WindowSystem::Headless:
+            return nullptr;
+        case platform::WindowSystem::Wayland:
+            return window.Surface;
+        case platform::WindowSystem::WebCanvas:
+            return window.CanvasSelector;
+        case platform::WindowSystem::Cocoa:
+            return window.CocoaView;
+        case platform::WindowSystem::Hosted:
+            return window.HostedSurfaceOrNull;
+        case platform::WindowSystem::Win32:
+            return window.Win32WindowOrNull;
+    }
+    return nullptr;
+}
+/// Two live surfaces of one device must not borrow the same native target.
+bool IsTargetBorrowed(const WindowInfo& window) noexcept
+{
+    const void* targetOrNull = GetTargetIdentityOrNull(window);
+    if (targetOrNull == nullptr)
+    {
+        return false;
+    }
+    for (const SurfaceRecord& record : gSurfaces)
+    {
+        if (IsLive(record) == true && record.System == window.System && record.TargetOrNull == targetOrNull)
+        {
+            return true;
+        }
+    }
+    return false;
+}
+/// Publish a registry record for a connected surface and its handle.
+void PublishSurface(foundation::usize slot,
+                    foundation::uint64 owner,
+                    const WindowInfo& window,
+                    SurfaceHandle& outSurface) noexcept
+{
+    const foundation::uint64 identity = gSurfaceIdentities.Take();
+    gSurfaces[slot] =
+    {
+        .Owner = owner,
+        .Identity = identity,
+        .System = window.System,
+        .TargetOrNull = GetTargetIdentityOrNull(window),
+        .Width = window.Width,
+        .Height = window.Height,
+    };
+    DeviceAccess::Set(outSurface, owner);
+    DeviceAccess::SetIdentity(outSurface, identity);
 }
 DeviceStatus State() noexcept
 {
@@ -103,6 +207,42 @@ ResourceStatus ResourceResult(ResourceStatus result) noexcept
 {
     return State() == DeviceStatus::DeviceLost ? ResourceStatus::DeviceLost : result;
 }
+// R14a: an explicit adapter must be a catalog entry meeting its backend baseline,
+// checked before any backend request so failure publishes no device.
+bool IsRequestedAdapterAvailable(const AdapterIdentity& adapter) noexcept
+{
+    AdapterCatalog catalog;
+    if (GetAdapterCatalog(catalog) != AdapterStatus::Ready)
+    {
+        return false;
+    }
+    for (foundation::usize i = 0; i < catalog.Count; ++i)
+    {
+        if (catalog.Adapters[i].Identity == adapter)
+        {
+            return catalog.Adapters[i].HasBackendBaseline;
+        }
+    }
+    return false;
+}
+// The backend honours the request during selection; an imported native device or a
+// backend that ignored it is caught here after Ready.
+bool IsSelectedAdapterRequested(const AdapterIdentity& adapter) noexcept
+{
+    AdapterInfo selected;
+    return adapter.IsAutomatic() == true ||
+           (backend::GetSelectedAdapter(selected) == true && selected.Identity == adapter);
+}
+void ReportAdapterUnavailable(StartupInfo* failureOrNull) noexcept
+{
+    if (failureOrNull != nullptr)
+    {
+        *failureOrNull = {};
+        failureOrNull->SelectedBackend = backend::Kind();
+        failureOrNull->State = StartupState::Failed;
+        failureOrNull->Error = StartupError::AdapterUnavailable;
+    }
+}
 } // namespace
 DeviceStatus ValidateDeviceDescription(const DeviceDescription& description) noexcept
 {
@@ -118,6 +258,19 @@ DeviceStatus ValidateDeviceDescription(const DeviceDescription& description) noe
         return DeviceStatus::InvalidDescription;
     }
     const auto compiled = GetCompiledBackends();
+    if (description.Adapter.IsAutomatic() == false)
+    {
+        // R14a: only native backends publish a catalog; WebGPU exposes one requested adapter.
+        const bool isNative = compiled.Vulkan == true || compiled.Metal == true || compiled.HasDirect3D12 == true;
+        if (isNative == false)
+        {
+            return DeviceStatus::Unsupported;
+        }
+        if (description.Adapter.Api != backend::Kind())
+        {
+            return DeviceStatus::InvalidDescription;
+        }
+    }
     if (description.Required.BindlessTextureIndexing == true &&
         ((compiled.Metal == false && compiled.Vulkan == false) || description.Selection != BackendSelection::Auto))
     {
@@ -167,11 +320,17 @@ DeviceStatus CreateDevice(const ApplicationInfo& application,
     {
         return admission;
     }
-    if (gOwners.Next == 0)
+    if (gOwners.Next == 0 || gSurfaceIdentities.Next == 0)
     {
         return DeviceStatus::IdentityExhausted;
     }
+    if (description.Adapter.IsAutomatic() == false && IsRequestedAdapterAvailable(description.Adapter) == false)
+    {
+        ReportAdapterUnavailable(failure);
+        return DeviceStatus::Failed;
+    }
     internal::SetGpuTimingRequest(description.EnableGpuTiming);
+    internal::SetAdapterRequest(description.Adapter);
     internal::SetBindlessRequest(description.Required.BindlessTextureIndexing == true ||
                                      description.Preferred.BindlessTextureIndexing == true,
                                  description.Required.BindlessTextureIndexing);
@@ -206,6 +365,12 @@ DeviceStatus CreateDevice(const ApplicationInfo& application,
         Shutdown();
         return DeviceStatus::Failed;
     }
+    if (result == StartStatus::Ready && IsSelectedAdapterRequested(description.Adapter) == false)
+    {
+        Shutdown();
+        ReportAdapterUnavailable(failure);
+        return DeviceStatus::Failed;
+    }
     if (result == StartStatus::Ready && description.Required.RayQueries && backend::RayLimits().InlineQueries == false)
     {
         Shutdown();
@@ -227,7 +392,7 @@ DeviceStatus CreateDevice(const ApplicationInfo& application,
     internal::SetDeviceOwner(owner);
     gDescription = description;
     DeviceAccess::Set(device, owner);
-    DeviceAccess::Set(surface, owner);
+    PublishSurface(0, owner, window, surface);
     return result == StartStatus::Ready ? DeviceStatus::Ready : DeviceStatus::Pending;
 }
 DeviceStatus CreateNativeDevice(const ApplicationInfo& application,
@@ -287,6 +452,7 @@ DeviceStatus GetDeviceInfo(DeviceHandle device, DeviceInfo& info) noexcept
         info.Supported.FullscreenRaster = true;
         info.Enabled.FullscreenRaster = true;
         info.Profile = internal::CurrentDeviceProfile();
+        static_cast<void>(backend::GetSelectedAdapter(info.Adapter));
         info.Supported.BindlessTextureIndexing = info.Profile.Binding.HasBindlessTextureIndexing;
         info.Enabled.BindlessTextureIndexing = info.Supported.BindlessTextureIndexing;
         info.Supported.HasRuntimeTextureArrays = info.Profile.Binding.HasRuntimeTextureArrays;
@@ -428,13 +594,57 @@ DeviceStatus DestroyDevice(DeviceHandle& device) noexcept
     device = {};
     return DeviceStatus::Ready;
 }
+namespace internal
+{
+void LoseSurface(foundation::usize slot) noexcept
+{
+    if (slot != 0 && slot < MAX_DEVICE_SURFACES && IsLive(gSurfaces[slot]) == true)
+    {
+        gSurfaces[slot].IsLost = true;
+    }
+}
+bool IsSurfaceLost(foundation::usize slot) noexcept
+{
+    return slot < MAX_DEVICE_SURFACES && IsLive(gSurfaces[slot]) == true && gSurfaces[slot].IsLost == true;
+}
+} // namespace internal
 DeviceStatus SetFrameTarget(DeviceHandle device, SurfaceHandle surface, const FrameTarget& target) noexcept
 {
-    return Valid(device, surface) ? FrameResult(SetFrameTarget(target)) : DeviceStatus::InvalidHandle;
+    const foundation::usize slot = FindSurface(device, surface);
+    if (slot == MAX_DEVICE_SURFACES)
+    {
+        return DeviceStatus::InvalidHandle;
+    }
+    if (internal::IsSurfaceLost(slot) == true && State() == DeviceStatus::Ready)
+    {
+        return DeviceStatus::SurfaceLost;
+    }
+    const FrameStatus result = internal::SetSurfaceFrameTarget(slot, target);
+    if (result == FrameStatus::Ready)
+    {
+        gSurfaces[slot].Width = target.Width;
+        gSurfaces[slot].Height = target.Height;
+    }
+    return FrameResult(result);
 }
 DeviceStatus BeginFrame(DeviceHandle device, SurfaceHandle surface) noexcept
 {
-    return Valid(device, surface) ? FrameResult(BeginFrameStatus()) : DeviceStatus::InvalidHandle;
+    const foundation::usize slot = FindSurface(device, surface);
+    if (slot == MAX_DEVICE_SURFACES)
+    {
+        return DeviceStatus::InvalidHandle;
+    }
+    if (internal::IsSurfaceLost(slot) == true && State() == DeviceStatus::Ready)
+    {
+        return DeviceStatus::SurfaceLost;
+    }
+    const FrameStatus result = internal::BeginSurfaceFrame(slot);
+    // A backend reports a created surface's loss during acquisition without failing the device.
+    if (internal::IsSurfaceLost(slot) == true && State() == DeviceStatus::Ready)
+    {
+        return DeviceStatus::SurfaceLost;
+    }
+    return FrameResult(result);
 }
 DeviceStatus EndFrame(DeviceHandle device) noexcept
 {
@@ -442,7 +652,8 @@ DeviceStatus EndFrame(DeviceHandle device) noexcept
 }
 DeviceStatus GetFrameInfo(DeviceHandle device, SurfaceHandle surface, FrameInfo& info) noexcept
 {
-    if (Valid(device, surface) == false)
+    const foundation::usize slot = FindSurface(device, surface);
+    if (slot == MAX_DEVICE_SURFACES)
     {
         return DeviceStatus::InvalidHandle;
     }
@@ -451,12 +662,115 @@ DeviceStatus GetFrameInfo(DeviceHandle device, SurfaceHandle surface, FrameInfo&
     {
         return state == DeviceStatus::Pending ? DeviceStatus::NotReady : state;
     }
+    if (internal::FrameOpen() == true && internal::GetFrameSurface() != slot)
+    {
+        return DeviceStatus::InvalidState;
+    }
     const auto acquired = GetFrameInfo();
     if (acquired.Width == 0 || acquired.Height == 0)
     {
         return DeviceStatus::InvalidState;
     }
     info = acquired;
+    return DeviceStatus::Ready;
+}
+DeviceStatus CreateSurface(DeviceHandle device, const WindowInfo& window, SurfaceHandle& outSurface) noexcept
+{
+    if (Valid(device) == false)
+    {
+        return DeviceStatus::InvalidHandle;
+    }
+    if (DeviceAccess::Owner(outSurface) != 0 || DeviceAccess::Identity(outSurface) != 0)
+    {
+        return DeviceStatus::InvalidState;
+    }
+    const DeviceStatus state = State();
+    if (state != DeviceStatus::Ready)
+    {
+        return state == DeviceStatus::Pending ? DeviceStatus::NotReady : state;
+    }
+    if (internal::FrameOpen() == true)
+    {
+        return DeviceStatus::InvalidState;
+    }
+    const foundation::usize limit = backend::AdditionalSurfaceLimit();
+    if (limit == 0)
+    {
+        return DeviceStatus::Unsupported;
+    }
+    const foundation::uint32 maxDimension = GetStartup().Capabilities.MaxFrameDimension2D;
+    if (window.Width > maxDimension || window.Height > maxDimension || IsTargetBorrowed(window) == true)
+    {
+        return DeviceStatus::InvalidDescription;
+    }
+    if (gSurfaceIdentities.Next == 0)
+    {
+        return DeviceStatus::IdentityExhausted;
+    }
+    foundation::usize slot = MAX_DEVICE_SURFACES;
+    for (foundation::usize candidate = 1; candidate <= limit && candidate < MAX_DEVICE_SURFACES; ++candidate)
+    {
+        if (IsLive(gSurfaces[candidate]) == false)
+        {
+            slot = candidate;
+            break;
+        }
+    }
+    if (slot == MAX_DEVICE_SURFACES)
+    {
+        return DeviceStatus::CapacityExceeded;
+    }
+    const StartupError error = backend::CreateSurface(slot, window);
+    switch (error)
+    {
+        case StartupError::None:
+            PublishSurface(slot, DeviceAccess::Owner(device), window, outSurface);
+            internal::ResetSurfaceFrames(slot);
+            return DeviceStatus::Ready;
+        case StartupError::InvalidWindow:
+            return DeviceStatus::InvalidDescription;
+        case StartupError::BackendUnavailable:
+            return DeviceStatus::Unsupported;
+        default:
+            return State() == DeviceStatus::Ready ? DeviceStatus::Failed : State();
+    }
+}
+DeviceStatus DestroySurface(DeviceHandle device, SurfaceHandle& inoutSurface) noexcept
+{
+    const foundation::usize slot = FindSurface(device, inoutSurface);
+    if (slot == MAX_DEVICE_SURFACES)
+    {
+        return DeviceStatus::InvalidHandle;
+    }
+    if (slot == 0 || (internal::FrameOpen() == true && internal::GetFrameSurface() == slot))
+    {
+        return DeviceStatus::InvalidState;
+    }
+    backend::DestroySurface(slot);
+    gSurfaces[slot] = {};
+    inoutSurface = {};
+    return DeviceStatus::Ready;
+}
+DeviceStatus GetSurfaceInfo(DeviceHandle device, SurfaceHandle surface, SurfaceInfo& outInfo) noexcept
+{
+    const foundation::usize slot = FindSurface(device, surface);
+    if (slot == MAX_DEVICE_SURFACES)
+    {
+        return DeviceStatus::InvalidHandle;
+    }
+    const SurfaceRecord& record = gSurfaces[slot];
+    const backend::SurfaceCompletion completion = backend::GetSurfaceCompletion(slot);
+    outInfo =
+    {
+        .State = record.IsLost == true ? SurfaceState::Lost : SurfaceState::Ready,
+        .IsPrimary = slot == 0,
+        .System = record.System,
+        .Width = record.Width,
+        .Height = record.Height,
+        .SubmittedFrames = internal::GetSurfaceSubmittedFrames(slot),
+        .RenderedFrames = completion.RenderedFrames,
+        .PresentedFrames = completion.PresentedFrames,
+    };
     return DeviceStatus::Ready;
 }
 ResourceStatus CreateShader(DeviceHandle device, const ShaderDescription& description, ShaderHandle& shader) noexcept

@@ -6,9 +6,9 @@
 #include "internal/render_preview.h"
 #include "internal/render_scene.h"
 #include "internal/viewport_object_interaction.h"
-#include "internal/viewport_walk_collision.h"
 #include "internal/world_probe_volume.h"
 #include "internal/world_workspace.h"
+#include <walking_controller.h>
 
 #include <ludus/foundation/base/types.h>
 #include <ludus/foundation/math/scalar.hpp>
@@ -112,7 +112,7 @@ void WorldWorkspace::frameEntity(const QString& id)
         float32 speed = 0;
         if (ReadWorldFirstPersonPlayer(Document_, id, spawn, speed, spawnError) == true)
         {
-            if (preview.FrameBounds(ViewportWalkCollision::ComputeBodyBounds(spawn.Pose.Position)) == false)
+            if (preview.FrameBounds(first_person::WalkingController::ComputeBodyBounds(spawn.Pose.Position)) == false)
             {
                 Changed(QStringLiteral("Cannot frame this player. Use Frame all, then try framing the player again."));
             }

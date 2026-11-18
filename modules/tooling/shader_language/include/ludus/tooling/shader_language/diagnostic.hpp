@@ -250,6 +250,17 @@ enum class DiagnosticCode : foundation::uint16
     /// A space argument that names no `space`, a wrong number of them, or spaces on a type other
     /// than a floating-point vector or matrix.
     InvalidSpace = 556,
+    /// An `Interlocked` call whose destination is not an `int32` or `uint32` element of an
+    /// `RWStructuredBuffer` or `groupshared` variable, or whose original value is not an `out`
+    /// argument of the destination's type.
+    InvalidAtomic = 557,
+    /// Atomic storage used other than by loads, stores and `Interlocked` calls: a compound
+    /// assignment, `++`/`--`, an `out`/`inout` argument or a copy of a whole array.
+    AtomicStorageAccess = 558,
+    /// A `barrier` statement, or a call of a function that reaches one, in non-uniform control flow.
+    NonUniformBarrier = 559,
+    /// A `barrier` statement reached from a vertex or fragment entry point.
+    InvalidBarrier = 560,
 
     /// A name breaks the naming rules: PascalCase types, functions and fields, lowerCamelCase
     /// parameters and locals, `out`/`inout` prefixes, UPPER_CASE constants, question-like booleans.

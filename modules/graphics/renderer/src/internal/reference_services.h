@@ -32,6 +32,16 @@ constexpr usize FINGERPRINT_INSTANCE_BYTES = 7 * sizeof(uint64) + 14 * sizeof(fl
 constexpr usize FINGERPRINT_SURFACE_MAP_BYTES = 3 * sizeof(uint64) + sizeof(float32) + 5 * sizeof(uint32);
 constexpr usize FINGERPRINT_LIGHT_BYTES = sizeof(uint64) + sizeof(uint32) + 13 * sizeof(float32);
 constexpr usize FINGERPRINT_ENVIRONMENT_BYTES = 3 * sizeof(float32);
+// A directional light with an apparent disk appends its angular radius; a delta light hashes no extra bytes.
+[[nodiscard]] usize GetLightDiskFingerprintBytes(const DirectLight* lights, usize count) noexcept
+{
+    usize bytes = 0;
+    for (usize i = 0; i < count; ++i)
+    {
+        bytes += lights[i].AngularRadiusRadians != 0 ? sizeof(float32) : 0;
+    }
+    return bytes;
+}
 /// Serialized width of one fingerprinted RGB or world-space vector.
 constexpr usize FINGERPRINT_VECTOR_BYTES = 3 * sizeof(float32);
 // Panel luminaire: source ID, center/tangent/bitangent, half extent and the five beam scalars. A scene without
@@ -174,6 +184,26 @@ Status PrepareReferenceCompute(ReferenceJob& inoutJob, usize cpuRemaining, usize
         uniform.Tile[1] = static_cast<uint32>(first);
         uniform.Tile[2] = static_cast<uint32>(medium.CornersWorld.GetSize() / LUDUS_REFERENCE_MEDIUM_TRIANGLE_WORDS);
     }
+    if (inoutJob.Sky.IsEnabled() == true)
+    {
+        const usize first = data.GetSize();
+        const usize words = inoutJob.Sky.Words.GetSize();
+        const usize remainingWords = cpuRemaining / sizeof(math::Vector4);
+        if (first > ~uint32{0} - words || first + words > remainingWords ||
+            texels.GetSize() > remainingWords - (first + words))
+        {
+            return Status::CapacityExceeded;
+        }
+        if (data.TryResize(first + words) == false)
+        {
+            return Status::OutOfMemory;
+        }
+        for (usize index = 0; index < words; ++index)
+        {
+            data[first + index] = inoutJob.Sky.Words[index];
+        }
+        uniform.Tile[LUDUS_REFERENCE_SKY_TILE_COMPONENT] = static_cast<uint32>(first) + 1;
+    }
     const usize packedBytes = (data.GetSize() + texels.GetSize()) * sizeof(math::Vector4);
     const usize pixels = usize(inoutJob.Description.Width) * inoutJob.Description.Height;
     usize zeroBytes = 0;
@@ -203,11 +233,12 @@ bool SameReferenceLight(const DirectLight& a, const DirectLight& b) noexcept
 {
     return a.SourceId == b.SourceId && a.Kind == b.Kind && a.Color == b.Color && a.Intensity == b.Intensity &&
            a.Position == b.Position && a.Direction == b.Direction && a.Range == b.Range && a.InnerCos == b.InnerCos &&
-           a.OuterCos == b.OuterCos;
+           a.OuterCos == b.OuterCos && a.AngularRadiusRadians == b.AngularRadiusRadians;
 }
 bool SameReferenceIntegral(const ReferenceJob& a,
                            const ReferenceCaptureDescription& b,
-                           const LightSelection& lights) noexcept
+                           const LightSelection& lights,
+                           const internal::ReferenceSky& sky) noexcept
 {
     const auto& d = a.Description;
     if (d.WorldToClip != b.WorldToClip || d.CameraPosition != b.CameraPosition ||
@@ -217,7 +248,8 @@ bool SameReferenceIntegral(const ReferenceJob& a,
         a.EnvironmentOrNull != Access::GetEnvironment(b.EnvironmentTextureOrNull) || d.TextureMip != b.TextureMip ||
         d.Seed != b.Seed || d.CenterRays != b.CenterRays || d.LightSampling != b.LightSampling ||
         d.MaterialProfile != b.MaterialProfile || d.OpticalWavelengthWorld != b.OpticalWavelengthWorld ||
-        d.LightCount != lights.Count || internal::IsSameReferenceMedium(a.Medium, b.MediumOrNull) == false)
+        a.Sky.Words != sky.Words || d.LightCount != lights.Count ||
+        internal::IsSameReferenceMedium(a.Medium, b.MediumOrNull) == false)
     {
         return false;
     }
@@ -287,6 +319,11 @@ constexpr usize GetMediumFingerprintBytes(usize corners) noexcept
 {
     return corners == 0 ? 0 : sizeof(uint32) + (corners + 1) * FINGERPRINT_VECTOR_BYTES;
 }
+constexpr usize GetReferenceSkyFingerprintBytes(const internal::ReferenceSky& sky) noexcept
+{
+    return sky.IsEnabled() == true ? sizeof(uint32) + sky.Words.GetSize() * (FINGERPRINT_VECTOR_BYTES + sizeof(float32))
+                                   : 0;
+}
 bool ReferenceFingerprint(ReferenceJob& inoutJob, usize budget, SceneShaderDiagnostics* diagnosticsOrNull) noexcept
 {
     // One bounded cold scratch stream, serialized without padding or host byte order.
@@ -295,10 +332,12 @@ bool ReferenceFingerprint(ReferenceJob& inoutJob, usize budget, SceneShaderDiagn
     usize bytes =
         triangleBytes + inoutJob.Scene.InstanceCount * FINGERPRINT_INSTANCE_BYTES +
         inoutJob.Description.LightCount * FINGERPRINT_LIGHT_BYTES +
+        GetLightDiskFingerprintBytes(inoutJob.Lights, inoutJob.Description.LightCount) +
         (inoutJob.LuminaireCount != 0 ? sizeof(uint32) + inoutJob.LuminaireCount * FINGERPRINT_LUMINAIRE_BYTES : 0) +
         FINGERPRINT_ENVIRONMENT_BYTES +
         (inoutJob.EnvironmentOrNull != nullptr ? 2 * sizeof(uint64) + 2 * sizeof(uint32) : 0) +
-        GetMediumFingerprintBytes(inoutJob.Medium.CornersWorld.GetSize());
+        GetMediumFingerprintBytes(inoutJob.Medium.CornersWorld.GetSize()) +
+        GetReferenceSkyFingerprintBytes(inoutJob.Sky);
     for (usize i = 0; i < inoutJob.Scene.InstanceCount; ++i)
     {
         if (inoutJob.Scene.Instances[i].Surface->Bsdf.Scattering.Model !=
@@ -465,6 +504,11 @@ bool ReferenceFingerprint(ReferenceJob& inoutJob, usize budget, SceneShaderDiagn
         scalar(light.Range);
         scalar(light.InnerCos);
         scalar(light.OuterCos);
+        // A delta light keeps its existing identity bytes.
+        if (light.AngularRadiusRadians != 0)
+        {
+            scalar(light.AngularRadiusRadians);
+        }
     }
     if (inoutJob.LuminaireCount != 0)
     {
@@ -503,6 +547,15 @@ bool ReferenceFingerprint(ReferenceJob& inoutJob, usize budget, SceneShaderDiagn
         for (const math::Vector3 corner : inoutJob.Medium.CornersWorld)
         {
             vector(corner);
+        }
+    }
+    if (inoutJob.Sky.IsEnabled() == true)
+    {
+        word(LUDUS_REFERENCE_SKY_WORDS);
+        for (const math::Vector4 value : inoutJob.Sky.Words)
+        {
+            vector({value.X, value.Y, value.Z});
+            scalar(value.W);
         }
     }
     if (offset != bytes)
@@ -861,6 +914,16 @@ Status Renderer::State::BuildReferenceJob(usize snapshotSlot,
     {
         return status;
     }
+    internal::ReferenceSky sky;
+    status = internal::PrepareReferenceSky(description, sky);
+    if (status != Status::Ready)
+    {
+        return status;
+    }
+    if (gpuSetup == true && sky.IsEnabled() == true)
+    {
+        return Status::Unsupported;
+    }
     internal::EnvironmentData* environmentOrNull = Access::GetEnvironment(description.EnvironmentTextureOrNull);
     if (description.EnvironmentTextureOrNull != nullptr)
     {
@@ -1018,8 +1081,10 @@ Status Renderer::State::BuildReferenceJob(usize snapshotSlot,
         uint64(typedMaterials) *
             (sizeof(uint32) + content::scene_format::MATERIAL_SCATTERING_FLOATS * sizeof(float32)) +
         uint64(surfaceMaps) * FINGERPRINT_SURFACE_MAP_BYTES + uint64(lights.Count) * FINGERPRINT_LIGHT_BYTES +
-        FINGERPRINT_ENVIRONMENT_BYTES + (environmentOrNull != nullptr ? 2 * sizeof(uint64) + 2 * sizeof(uint32) : 0) +
-        GetMediumFingerprintBytes(mediumTriangles * REFERENCE_MEDIUM_TRIANGLE_CORNERS);
+        GetLightDiskFingerprintBytes(lights.Lights, lights.Count) + FINGERPRINT_ENVIRONMENT_BYTES +
+        (environmentOrNull != nullptr ? 2 * sizeof(uint64) + 2 * sizeof(uint32) : 0) +
+        GetMediumFingerprintBytes(mediumTriangles * REFERENCE_MEDIUM_TRIANGLE_CORNERS) +
+        GetReferenceSkyFingerprintBytes(sky);
     const uint64 nativeSetup =
         isOracle ? 0
                  : uint64(instances) * (sizeof(rhi::RayInstanceDescription) + sizeof(Array<float32>)) +
@@ -1052,6 +1117,8 @@ Status Renderer::State::BuildReferenceJob(usize snapshotSlot,
     job->Description = description;
     job->Description.EnvironmentTextureOrNull = nullptr;
     job->Description.MediumOrNull = nullptr;
+    job->Description.AtmosphereBackgroundOrNull = nullptr;
+    job->Sky = sky;
     if (description.MediumOrNull != nullptr)
     {
         status = internal::CopyReferenceMedium(*description.MediumOrNull, job->Medium);
@@ -1899,8 +1966,14 @@ Status Renderer::UpdateReferenceCapture(ReferenceCapture handle,
     {
         return status;
     }
+    internal::ReferenceSky sky;
+    status = internal::PrepareReferenceSky(description, sky);
+    if (status != Status::Ready)
+    {
+        return status;
+    }
     auto& old = *record->Job;
-    if (record->SnapshotSlot == Access::Slot(snapshot) && SameReferenceIntegral(old, description, lights))
+    if (record->SnapshotSlot == Access::Slot(snapshot) && SameReferenceIntegral(old, description, lights, sky))
     {
         old.Description.TargetSamples = description.TargetSamples;
         old.Info.TargetSamples = description.TargetSamples;

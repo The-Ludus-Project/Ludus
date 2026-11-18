@@ -167,6 +167,13 @@ struct RenderGraphActivationReport final
         RenderGraphRenderer::Raster;     ///< Last staged model; meaningful with CandidateGeneration.
     RenderGraphReport CandidateReport{}; ///< Latest candidate extraction diagnostics, retained after rejection
                                          ///< independently of the active graph.
+    /// Scene-level cause of the candidate's latest extraction rejection (see RenderGraph::GetLastRejection);
+    /// None once the candidate accepts an extraction and when a new candidate is staged.
+    RenderGraphSceneRejection CandidateRejection = RenderGraphSceneRejection::None;
+    /// Step at which the last candidate failed: Setup or Resize for this object's own calls, otherwise the candidate
+    /// graph's GetLastFailureStage from the failing Poll or Update. Meaningful while Candidate is Failed; None when a
+    /// new candidate is staged and when the failing graph could not attribute a step.
+    RenderGraphFailureStage CandidateFailureStage = RenderGraphFailureStage::None;
     /// True after Poll has observed the staged graph's initial preparation finish, while that graph
     /// still awaits scene data or publication. False when no candidate remains.
     bool IsCandidateSetupReady = false;

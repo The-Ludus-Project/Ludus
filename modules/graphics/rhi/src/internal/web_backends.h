@@ -9,6 +9,7 @@
 #include "measurement.h"
 #include "raster.h"
 #include "resources.h"
+#include "surface.h"
 #include <ludus/foundation/base/types.h>
 #include <ludus/foundation/containers/borrowed_view.hpp>
 
@@ -54,6 +55,17 @@ namespace ludus::graphics::rhi::webgpu
 WGPUDevice ProbeDevice() noexcept;
 WGPUTextureFormat ProbeFormat() noexcept;
 WGPURenderPassEncoder ProbePass() noexcept;
+} // namespace ludus::graphics::rhi::webgpu
+
+// R14b multiple canvases per device. WebGPU implements the backend surface contract of
+// surface.h; WebGL 2 has one context per canvas, so the dispatcher hosts only its primary.
+namespace ludus::graphics::rhi::webgpu
+{
+ludus::foundation::usize AdditionalSurfaceLimit() noexcept;
+StartupError CreateSurface(ludus::foundation::usize slot, const WindowInfo& window) noexcept;
+void DestroySurface(ludus::foundation::usize slot) noexcept;
+void SelectSurface(ludus::foundation::usize slot) noexcept;
+backend::SurfaceCompletion GetSurfaceCompletion(ludus::foundation::usize slot) noexcept;
 } // namespace ludus::graphics::rhi::webgpu
 
 namespace ludus::graphics::rhi::webgpu

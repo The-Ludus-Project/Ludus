@@ -13,6 +13,7 @@ set_target_properties(ludus_graphics_rhi PROPERTIES
 target_sources(ludus_graphics_rhi
     PRIVATE
         src/rhi.cpp
+        src/adapter.cpp
         src/device.cpp
         src/dxil_container.cpp
         src/gpu_scope.cpp
@@ -28,14 +29,16 @@ target_sources(ludus_graphics_rhi
         FILE_SET public_headers
         TYPE HEADERS
         BASE_DIRS include
-        FILES include/ludus/graphics/rhi/compute_cache.hpp include/ludus/graphics/rhi/compute_workload.hpp include/ludus/graphics/rhi/spatial_upscale.h include/ludus/graphics/rhi/native_compute.h include/ludus/graphics/rhi/gpu_scope.h include/ludus/graphics/rhi/graphics_capture.h include/ludus/graphics/rhi/native_interop.h include/ludus/graphics/rhi/hosted_recorder.h include/ludus/graphics/rhi/hosted_surface.h include/ludus/graphics/rhi/measurement.h include/ludus/graphics/rhi/ray.h include/ludus/graphics/rhi/profile.h include/ludus/graphics/rhi/compute.h include/ludus/graphics/rhi/graph.h include/ludus/graphics/rhi/lifetime.h include/ludus/graphics/rhi/pipeline_preparation.h include/ludus/graphics/rhi/rhi.h include/ludus/graphics/rhi/render.h include/ludus/graphics/rhi/device.h include/ludus/graphics/rhi/raster.h
+        FILES include/ludus/graphics/rhi/adapter.h include/ludus/graphics/rhi/compute_cache.hpp include/ludus/graphics/rhi/compute_workload.hpp include/ludus/graphics/rhi/spatial_upscale.h include/ludus/graphics/rhi/native_compute.h include/ludus/graphics/rhi/gpu_scope.h include/ludus/graphics/rhi/graphics_capture.h include/ludus/graphics/rhi/native_interop.h include/ludus/graphics/rhi/hosted_recorder.h include/ludus/graphics/rhi/hosted_surface.h include/ludus/graphics/rhi/measurement.h include/ludus/graphics/rhi/ray.h include/ludus/graphics/rhi/profile.h include/ludus/graphics/rhi/compute.h include/ludus/graphics/rhi/graph.h include/ludus/graphics/rhi/lifetime.h include/ludus/graphics/rhi/pipeline_preparation.h include/ludus/graphics/rhi/rhi.h include/ludus/graphics/rhi/render.h include/ludus/graphics/rhi/device.h include/ludus/graphics/rhi/raster.h
 )
 
 target_link_libraries(ludus_graphics_rhi
-    PRIVATE Ludus::FoundationStrings Ludus::FoundationMath Ludus::FoundationTime Ludus::FoundationFilesystem
+    PRIVATE Ludus::FoundationMath Ludus::FoundationTime Ludus::FoundationFilesystem
     PUBLIC
         Ludus::FoundationBase
         Ludus::FoundationContainers
+        # adapter.h stores bounded AdapterName text in the public catalog.
+        Ludus::FoundationStrings
         Ludus::Platform
     PRIVATE
         Ludus::FoundationLogging
@@ -47,7 +50,7 @@ endif()
 if(EMSCRIPTEN OR WIN32)
     add_library(ludus_rhi_ray_unsupported OBJECT src/ray_unsupported.cpp)
     target_include_directories(ludus_rhi_ray_unsupported PRIVATE include)
-    target_link_libraries(ludus_rhi_ray_unsupported PRIVATE Ludus::FoundationContainers Ludus::Platform)
+    target_link_libraries(ludus_rhi_ray_unsupported PRIVATE Ludus::FoundationContainers Ludus::FoundationStrings Ludus::Platform)
     ludus_apply_project_defaults(ludus_rhi_ray_unsupported)
 endif()
 if(EMSCRIPTEN)

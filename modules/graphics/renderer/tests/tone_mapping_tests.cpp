@@ -2,6 +2,7 @@
 #include <ludus/foundation/math/vector.hpp>
 #include <ludus/graphics/renderer/tone_mapping.hpp>
 
+#include <cmath>
 #include <limits>
 
 #include <catch2/catch_approx.hpp>
@@ -121,4 +122,42 @@ TEST_CASE("Reinhard and the curve selector keep the existing behaviour", "[rende
     CheckColour(renderer::ApplyToneCurve(renderer::ToneCurve::PbrNeutral, {0.3F, 0.3F, 0.3F}),
                 renderer::ApplyPbrNeutral({0.3F, 0.3F, 0.3F}),
                 0);
+}
+
+TEST_CASE("Physical exposure follows the saturation-based camera model", "[renderer][tone-mapping]")
+{
+    // 1 / (1.2 * 2^EV100): EV100 0 maps 1.2 nits to one, and each value halves the multiplier.
+    CHECK(renderer::ComputeExposureMultiplier(0) == Catch::Approx(1 / 1.2));
+    CHECK(renderer::ComputeExposureMultiplier(1) == Catch::Approx(1 / 2.4));
+    constexpr float32 SUNNY_EXPOSURE_VALUE = 15;
+    CHECK(renderer::ComputeExposureMultiplier(SUNNY_EXPOSURE_VALUE) == Catch::Approx(1 / (1.2 * 32768)));
+    // -log2(1.2) reproduces the graph's default multiplier of one.
+    CHECK(renderer::ComputeExposureMultiplier(static_cast<float32>(-std::log2(1.2))) == Catch::Approx(1));
+    CHECK(renderer::ComputeExposureMultiplier(renderer::MIN_EXPOSURE_VALUE_100) > 0);
+    CHECK(renderer::ComputeExposureMultiplier(renderer::MAX_EXPOSURE_VALUE_100) > 0);
+    CHECK(renderer::ComputeExposureMultiplier(renderer::MIN_EXPOSURE_VALUE_100 - 1) == 0);
+    CHECK(renderer::ComputeExposureMultiplier(renderer::MAX_EXPOSURE_VALUE_100 + 1) == 0);
+    CHECK(renderer::ComputeExposureMultiplier(std::numeric_limits<float32>::quiet_NaN()) == 0);
+    CHECK(renderer::ComputeExposureMultiplier(std::numeric_limits<float32>::infinity()) == 0);
+}
+
+TEST_CASE("Incident metering reads daylight, moonlight and a natural night", "[renderer][tone-mapping]")
+{
+    // EV = log2(E * 100 / 250) after adding the 0.002 lx night sky.
+    constexpr float64 SUNLIGHT_LUX = 100'000;
+    CHECK(renderer::ComputeIncidentExposureValue100(SUNLIGHT_LUX) ==
+          Catch::Approx(std::log2((SUNLIGHT_LUX + 0.002) * 0.4)));
+    // Sunny 16 at ISO 100 is EV 14.6; a flat meter under clear sun reads within a stop of it.
+    CHECK(renderer::ComputeIncidentExposureValue100(SUNLIGHT_LUX) > 14);
+    CHECK(renderer::ComputeIncidentExposureValue100(SUNLIGHT_LUX) < 16);
+    constexpr float64 FULL_MOON_LUX = 0.25;
+    CHECK(renderer::ComputeIncidentExposureValue100(FULL_MOON_LUX) == Catch::Approx(std::log2(0.252 * 0.4)));
+    // No light at all reads the natural night sky, not an unbounded exposure.
+    CHECK(renderer::ComputeIncidentExposureValue100(0) == Catch::Approx(std::log2(0.002 * 0.4)));
+    CHECK(renderer::ComputeIncidentExposureValue100(-1) == renderer::ComputeIncidentExposureValue100(0));
+    CHECK(renderer::ComputeIncidentExposureValue100(std::numeric_limits<float64>::quiet_NaN()) ==
+          renderer::ComputeIncidentExposureValue100(0));
+    CHECK(renderer::ComputeIncidentExposureValue100(1e30) == renderer::MAX_EXPOSURE_VALUE_100);
+    // Metered values are always admissible physical exposures.
+    CHECK(renderer::ComputeExposureMultiplier(renderer::ComputeIncidentExposureValue100(0)) > 0);
 }

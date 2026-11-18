@@ -97,6 +97,10 @@ def metal_layouts(code, interface, document, allows_arrays=False):
             raise RuntimeError('RG1 emitted Metal packing differs from target reflection')
 
 
+# Renderer-owned World-feature tables of scene_shader.slang, bound at fixed slots.
+WORLD_TABLE_NAMES = ('LudusAtmosphereSky', 'LudusAerialPerspective')
+
+
 def verify_ray_compute_metal(code, interface, requires_native_queries=True):
     """Verify translated compute bindings and the selected native/software traversal profile."""
     scenes = [entry for entry in interface['entries'] if entry['kind'] == 'RayScene']
@@ -106,7 +110,12 @@ def verify_ray_compute_metal(code, interface, requires_native_queries=True):
         raise RuntimeError('Software ray Metal artifact must not require native ray traversal')
     for binding in interface['entries']:
         resource = 'texture' if binding['kind'] in ('Texture2D', 'TextureDepth2D') else 'buffer'
-        if '[[' + resource + '(' + str(binding['binding']) + ')]]' not in code:
+        # Slang reflects a World-feature table (renderer_gpu_preview_layout.h) from the call graph, which records
+        # the graph's support; SPIRV-Cross may still drop a read its optimizer proved unreachable. The renderer
+        # binding a buffer at an index the kernel never declares is harmless, so only a moved slot fails.
+        name = binding.get('name', '')
+        if '[[' + resource + '(' + str(binding['binding']) + ')]]' not in code and (
+                name not in WORLD_TABLE_NAMES or name in code):
             raise RuntimeError('Ray compute Metal binding differs from target reflection')
     names = re.findall(r'kernel\s+void\s+(\w+)\s*\(', code)
     if len(names) != 1:

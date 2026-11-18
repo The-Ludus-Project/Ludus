@@ -521,8 +521,11 @@ The layout follows Visual Studio, built on Qt Widgets' own docking:
 - **Documents** occupy the centre. Opening a project opens its **World**, with
   **Project Settings** as a background tab. Open other documents from **Project
   Explorer**, **Project → Project Settings** or the document list at the bottom of
-  the **Window** menu. A tab shows the document's file and a `*` while it has
-  unsaved changes. Closing a tab (**Window → Close Document**, Ctrl+W) hides
+  the **Window** menu. A tab shows the document's file; while it has unsaved
+  changes a dot stands where its close cross would be (the cross returns when
+  the pointer reaches it), its tooltip says so, and the **Window** menu entry
+  ends in `*`. The close cross shows on the open tab and the tab under the
+  pointer only. Closing a tab (**Window → Close Document**, Ctrl+W) hides
   that view only; its draft stays open and quitting still asks about unsaved work.
 - **Tab groups.** **Window → New Vertical Tab Group** puts the active document
   beside the others (for example a render graph next to the World);
@@ -699,8 +702,11 @@ create a **Cube**, **Plane**, **Sphere**, **Point Light**, **Spot Light**, **Dir
 selects the new entity and creates one undo step. Geometry is one metre across,
 centred at the origin; the plane lies in XZ with its front face toward +Y.
 Use **Properties** to edit Transform, visibility and colour, or a light's kind,
-colour, intensity, range and spot angles, then **Apply Changes**. Save the World
-to retain the objects; duplication and deletion use the regular entity commands.
+colour, intensity, range and spot angles, then **Apply Changes**. Every entity's
+Transform, like a scene instance's, shows Position, Rotation and Scale as one
+X Y Z row each with four significant digits, such as 1.878; the field's tooltip
+gives the stored value, and **Apply Changes** keeps it unless you edit that field.
+Save the World to retain the objects; duplication and deletion use the regular entity commands.
 Lights start two metres above and in front of the origin, aimed down 45 degrees.
 **Sun** is a directional light of 10 lux, placed and aimed as described in
 [Lighting a World that renders black](#lighting-a-world-that-renders-black).
@@ -823,11 +829,17 @@ preview; its input and presentation limits are documented with that workflow.
 
 The viewport toolbar reads left to right in priority order: the configuration
 and output choice, size and view, then editing (object tool, **Edit Terrain…**,
-**Frame all**), display diagnostics (**Exposure**, **Force raster**, **Stats**,
+**Frame all**), display controls (**Exposure**, **Work Light**, **Force raster**, **Stats**,
 **Reference…**) and finally navigation help. The configuration menu appears only
 when the graph defines more than one configuration. When the viewport is too
 narrow, commands from the right end move into the **»** overflow menu whole,
 rather than being squeezed until their text is cut off.
+
+Turn on **Work Light** to illuminate nearby surfaces while navigating or editing in a dark area. Its soft spotlight
+follows the editor camera and starts off each editor session. It is available on **Final output** with the default
+raster graph. Use **Force raster** to switch to that graph if a project graph is active. The spotlight has a 12 m range
+and casts no shadows. The toggle lives in the viewport session, so it never edits the World or changes lighting
+diagnostics, Play mode or reference renders.
 
 ### Apertures
 
@@ -2013,6 +2025,86 @@ The raster viewport approximates the surface using base color and roughness.
 The reference paths and Wave Tracing evaluate the authored terms. Metropolis
 also requires the program's fixed-dimension reflection declaration.
 
+### Make a slot a hair card
+
+Import a hair card mesh. The engine's
+[character bust](../architecture/scene-source-format.md#character-bust)
+(`tests/scenes/characters/infinite-head/infinite-head-hair.gltf`) has a
+separate **Hair** slot with an opacity texture and two lights. Select the slot
+and choose **Make Hair Card** in the
+**Material** group. The slot keeps its base colour, roughness, textures and
+mask, and the viewport shades it two-sided with highlights that follow the
+strand direction. If the slot has its own coating instance, a confirmation
+names it and **Replace Coating** removes it in the same edit. Cancel is the
+default.
+
+Edit the hair-card fields and choose **Apply Changes**:
+
+- **Strand direction (°)**: the direction in the card's plane, from the surface
+  tangent (increasing texture U) toward the bitangent, in [−180, 180].
+- **Primary highlight shift (°)** and **Secondary highlight shift (°)**: the
+  tilt of each highlight toward the card normal, in [−30, 30].
+- **Primary highlight weight** and **Tinted secondary highlight weight**, in
+  [0, 1].
+- **Mask cutoff**: shown only for a masked material, in [0, 1]. It overrides the
+  imported cutoff for this slot.
+
+A value outside its range is rejected beside the hair-card fields, with the
+field's name and accepted range. The field keeps your text so you can correct
+it, and the viewport keeps the last applied card. The message clears after a
+valid **Apply Changes**. **Use Inherited Material** restores the imported
+material. The assignment, each edit and the restore are undoable, and **Save
+World** keeps them across reopening and reimport. Slots with equal values share
+one cooked material.
+
+Use the [Forward lit template](render-graph-authoring.md#use-the-forward-lit-template)
+in the project's World viewport to see the strand highlights. On the bust,
+set **Strand direction (°)** to 90 to follow the ribbons from root to tip.
+Clustered deferred, ray previews and reference captures use the card's
+metallic/roughness surface lobes. See
+[raster hair cards](../architecture/renderer-systems.md#raster-hair-cards).
+
+### Make a slot skin
+
+Import a character mesh at real scale, for example the engine's
+[character bust](../architecture/scene-source-format.md#character-bust)
+(`tests/scenes/characters/infinite-head/infinite-head.gltf`). Select its slot and
+choose **Make Skin** in the **Material** group. The slot keeps its base colour,
+roughness, emission and textures, and the default render graph's viewport spreads
+its diffuse light under the surface. Skin is a dielectric, so the slot shows no
+metallic; the imported material keeps it for **Use Inherited Material**. If the slot has its own coating instance, a confirmation
+names it and **Replace Coating** removes it in the same edit. Cancel is the
+default. A hair-card or project BRDF slot first returns to its inherited material.
+
+Edit the skin fields and choose **Apply Changes**:
+
+- **Scattering red (mm)**, **Scattering green (mm)** and **Scattering blue (mm)**:
+  how far each colour spreads under the surface, in [0, 100] mm. **Make Skin**
+  starts from human skin's scattering distance, (1.50, 0.94, 0.57) mm, derived from
+  measured skin coefficients
+  ([derivation](../architecture/renderer-systems.md#raster-skin-diffusion)); a
+  material that is already skin keeps its own distances. Zero shades the slot like
+  its metallic-roughness surface.
+- **Base colour red**, **Base colour green** and **Base colour blue**: the linear
+  base colour in [0, 1], which scales the base colour map.
+- **Roughness**: the specular roughness, in [0.045, 1].
+
+The base colour and roughness fields start from the imported material's values.
+The slot inherits them until you change one; editing a base colour channel stores
+all three.
+
+A value outside its range is rejected beside the skin fields, with the field's
+name and accepted range. The field keeps your text so you can correct it, and the
+viewport keeps the last applied skin. The message clears after a valid **Apply
+Changes**. **Use Inherited Material** restores the imported material. The
+assignment, each edit and the restore are undoable, and **Save World** keeps them
+across reopening and reimport. Slots with equal skin values share one cooked
+material.
+
+The clustered deferred viewport shades the spread; other raster profiles, ray
+previews and reference captures use the skin's metallic/roughness surface. See
+[raster skin diffusion](../architecture/renderer-systems.md#raster-skin-diffusion).
+
 ### Inspect a closure program
 
 Import a Ludus scene source whose material is a
@@ -2021,8 +2113,8 @@ example, use `tests/scenes/materials/closure-program-block.luscene.json`. Select
 the program's object. The **Material** group shows **Closure program** as its
 model, then one row per lobe with its operation and parameters, the size of
 the weight and roughness program, and the capabilities that pass requirements
-test. **Metallic (program input)** and **Roughness (program input)** are the
-values the program reads. The raster viewport draws them as a
+test. **Metallic** and **Roughness** are the values the program reads; their
+tooltips say so. The raster viewport draws them as a
 metallic-roughness approximation. The reference paths, Wave Tracing and
 Metropolis evaluate the program itself.
 
@@ -2163,11 +2255,39 @@ Apply the edit and save the World to keep the setting. The checkbox is on by
 default, including for older Worlds.
 
 The [default Raster graph](render-graph-authoring.md#directional-shadows) assigns
-one map to the eligible directional light with the lowest source ID. In that
-graph, point and spot lights illuminate without shadow maps. The native Lit
-preview also supports shadow maps for point and spot lights. Reference path
+maps to the two brightest eligible directional lights, such as an Atmosphere's
+Sun and Moon. In that graph, point and spot lights illuminate without shadow
+maps. The native Lit preview also supports shadow maps for point and spot lights. Reference path
 tracing and baked lighting compute visibility from scene geometry independently
 of this setting.
+
+### Inspect lighting terms
+
+To find where light at a pixel comes from, choose a **Lighting:** entry in the World
+viewport's output menu, below the debug views. The default Raster graph then draws
+one term of its lighting with the final output's camera, shadows and exposure:
+
+- **Light: *name*** shows one light alone, and **Lighting: Direct lights** every
+  Sun, Moon, point and spot light together. Light that appears where its source
+  cannot reach, such as Sun inside a roofed corridor, is a leak in that light.
+- **Shadow coverage: *name*** shows that light's shadow map at each surface: white
+  lit, black shadowed. Magenta marks surfaces outside every map of the light, which
+  it lights unshadowed; cyan means the light has no map (its **Raster Shadows** is
+  off or two brighter lights hold the maps).
+- **Lighting: Sky diffuse** and **Sky specular** show environment and Atmosphere sky
+  light, and **Lighting: Sky visibility** how much of the sky each surface sees
+  past the World's geometry. Sky light enters interiors only through openings
+  ([Sky visibility](render-graph-authoring.md#sky-visibility)).
+- **Lighting: Area lights** shows emissive meshes, and **Lighting: Aerial
+  perspective** the light an Atmosphere scatters toward the camera.
+- **Lighting: Dominant light** colours each pixel by its largest contributor. The
+  legend above the status line names the colours: the sky, the area lights, and each
+  light.
+
+Lights are named as in the World's **Lights** list; an imported light shows its kind
+and source identity. The choice belongs to the viewport session and is not saved.
+Choose **Final output** to return. Graphs that do not resolve through the clustered
+deferred pass do not offer these entries.
 
 ### Celestial directional lights
 
@@ -2179,30 +2299,63 @@ Worlds. The **Sun** creation and lighting repair actions assign **Static Sun**.
 Set **Dynamic Celestial → Celestial Preset** to **Transform** to use the entity's
 rotation, including rotation supplied by a game. Choose **Earth Sun** or
 **Earth Moon** to sample direction, colour, illuminance and apparent disk size
-from **Date & Time (UTC)** and the observer's coordinates. Earth Moon also
+from **Date & Time** and the observer's coordinates. Earth Moon also
 samples lunar phase using the Sun at that time. Open the calendar to pick a date or type into
 the date and time field. **Use Now** copies the current instant into the draft.
-The World stores fractional UTC days since January 1, 2000 at 12:00 UTC, so
-existing Earth Time values open at the same instant. The supported dates span
-approximately 1950–2050.
+The supported dates span approximately 1950–2050.
+
+**Date & Time** shows the clock of the World's **Time Zone**, and its caption
+names the zone and its UTC offset at that instant, such as
+`Asia/Seoul, UTC+09:00`. A World that names no zone shows UTC. Choosing a
+different zone keeps the clock reading: 12:00 in Seoul becomes 12:00 in
+Toronto, so the chosen time of day stays put at the new place. The World still
+stores the instant in UTC. Zone names come from the IANA time zone database
+bundled with the editor; Qt converts them with the operating system's zone
+rules. A build without zone rules, such as a browser without time zone data,
+shows UTC and says that the zone's data is unavailable.
+
+A World has one Earth date, time, time zone and location. Every Earth Sun and Earth Moon
+light shows the same values, and the note above **Date & Time** names the
+other lights that share them. Editing them on any Earth light changes them for
+all Earth lights and the Atmosphere night sky in one undoable change. The first
+Earth preset in a World starts at the current UTC time; later Earth lights
+start at the World's existing values. The World root stores them once as
+`earth_observer`, in fractional UTC days since January 1, 2000 at 12:00 UTC,
+so existing Earth Time values open at the same instant. Its optional
+`celestialTimeZone` holds the IANA zone identifier; an omitted zone means UTC. In a World saved
+before `earth_observer` existed, each Earth light keeps its saved values until
+an Earth light is next edited; the values that light showed then become the
+World's.
 
 Use **Choose Earth Location…** to search for a city, landmark, or address.
 Clicking **Search** sends the query to Photon, which uses OpenStreetMap data.
-Select a result to review its latitude and longitude. **Use my location**
+Select a result to review its latitude, longitude and time zone. **Use my location**
 requests the device's position once with permission. On desktop this action
 requires Qt Positioning and a system location provider. On the web it requires
 a secure browser context and location access. Choose **Use Coordinates** to
-copy the selected result into the inspector, then **Apply Changes** to apply
-the draft. Saved Worlds store the coordinates. Manual entry works offline and
+copy the selected result into the inspector and select its **Time Zone**,
+keeping the clock reading as described above, then **Apply Changes** to apply
+the draft. The editor finds the zone offline: it picks the zone whose principal
+city in the time zone database is nearest the place, among the zones of the
+place's country when the search result names one. Near a zone border inside
+one country, such as between US Mountain and Pacific time, check the zone and
+choose another from **Time Zone** if needed. Typing coordinates does not change
+the zone.
+
+The zone list is `zone.tab` from the [IANA time zone database](https://www.iana.org/time-zones)
+release 2026f, copied unchanged to `apps/editor/resources/time_zones/zone.tab`.
+Thanks to the time zone database contributors; the file is in the public
+domain. Replace it with a newer release's `zone.tab` to update the list. Saved Worlds store the coordinates. Manual entry works offline and
 when device location is unavailable. North latitude and east longitude are
-positive. Applying an Earth time or location edit updates all active Earth
-presets in one undoable change. A newly activated preset inherits the existing
-Earth observer unless the same edit supplies new observer values. Previously
-saved Earth lights can have different observers until the first time or location
-edit. The World frame is +X east, +Y up, and −Z north.
+positive. A **Custom Orbit** light keeps its own observer coordinates. The
+World frame is +X east, +Y up, and −Z north.
 
 Properties shows the calculated sea-level direct illuminance in lux, linear RGB
-colour and apparent diameter. The clear-sky model dims and warms direct light
+colour and apparent diameter. The same apparent diameter softens the light's
+direct shadows into a penumbra in raster shadow maps and in reference captures.
+Its illuminance is unchanged. The override below replaces only colour and
+intensity, so the disk size still follows the preset. See
+[Directional light angular size](../architecture/renderer-systems.md#directional-light-angular-size). The clear-sky model dims and warms direct light
 near the horizon, and a body at or below the geometric horizon contributes zero
 direct light. Enable **Override Earth Colour and Intensity** to use the light's
 authored values with the same celestial motion and disk geometry. Previously
@@ -2248,12 +2401,33 @@ with the clear sky, and adds haze along the camera-to-surface path. Other
 authored lights still contribute. If the Sun reference is empty or missing,
 pick a directional light in Properties.
 
+Clustered deferred raster configurations draw the whole Atmosphere. A
+ray-traced configuration draws the parts its ray kernels call
+[scene functions](render-graph-authoring.md#world-features) for. Most ray
+templates show the sky, without the night sky, and light the scene with it and
+the dimmed Sun, but add no haze. A forward configuration still draws the rest
+of the World. Its background is the World environment, and the linked Sun is
+an ordinary directional light that the air does not dim. When the World uses a
+feature the configuration does not draw, the viewport and the Error List show a
+**World features not rendered** warning (code `RenderGraphFeatureNotRendered`).
+It names the configuration, each missing feature and the function to call.
+Activate the warning row to open **Render Preview** at its **World features**
+table. It lists each feature with its support, its scene function and where to
+call it. Turn on **Force raster** in the viewport toolbar to see the full
+Atmosphere with the engine's default raster graph, or disable the Atmosphere
+entity to clear the warning.
+
+RT1 reference captures from inside the atmosphere also show the Sun and Moon
+disks, stars, and planets behind World geometry in both the CPU oracle and GPU
+compute modes. Surface lighting continues to use the sky environment and
+linked lights.
+
 **Night sky** shows stars beyond the atmosphere. Set the linked Sun to
 **Dynamic Celestial → Celestial Preset → Earth Sun** to also show the Milky
-Way and Mercury, Venus, Mars, Jupiter, and Saturn. The Sun preset's UTC date,
-time, latitude and longitude place the planets and rotate the star field and
-Milky Way. The linked **Earth Moon** preset supplies those settings when the Sun has
-an authored transform or a custom orbit. Look along the ecliptic after
+Way and Mercury, Venus, Mars, Jupiter, and Saturn. The World's shared Earth
+date, time and location place the planets and rotate the star field and Milky
+Way, and the Atmosphere's Properties show them. They apply when the linked Sun
+or Moon uses an Earth preset. Look along the ecliptic after
 dark for planets above the horizon. Their apparent brightness and color
 vary, and they appear as points at ordinary viewport fields of view.
 
@@ -2265,7 +2439,9 @@ For an authored Moon, colour and intensity set the full-phase brightness, and
 the linked Sun direction determines which part of the disk is lit. Atmospheric
 extinction dims the celestial background toward the horizon. Turning the linked Moon
 off in the light controls hides the disk. The presets' angular sizes drive the
-sky disks. Direct lights use the renderer's existing directional shadow path.
+sky disks. **Sun Disk Radius** sets the disk for a linked Sun with an authored
+direction; its default matches the real Sun. Properties hide it while the
+linked Sun uses an Earth preset, which sets its own size. Direct lights use the renderer's existing directional shadow path.
 
 A perspective camera above the atmosphere can see the illuminated limb and
 the celestial background. The ground uses a dark boundary. Below ground or
@@ -2288,7 +2464,12 @@ realtime lighting.
 
 The native built-in **Lit** viewport computes a shared diffuse bake for the
 selected lights. It stores coarse per-triangle irradiance for the current
-placed geometry, including their bounced light. Environment lighting, other
+placed geometry, including their bounced light. Each triangle receives one
+irradiance value, evaluated at its centre, so a large surface made of few
+triangles shows flat facets instead of a smooth falloff. For example, a
+two-triangle floor quad bakes as two flat halves split along its diagonal.
+Subdivide large static surfaces near baked lights for a smoother result.
+Environment lighting, other
 lights, and specular highlights stay live. Edits that change bake inputs
 prepare a fresh result. The viewport keeps the last presented view until the
 current World can render in realtime, then swaps in the baked lighting when it
@@ -2305,7 +2486,12 @@ The native [Forward lit template](render-graph-authoring.md#use-the-forward-lit-
 can use these charts through its **Baked Lighting** connection. Its preview
 status reports when surface charts are ready and how many draws use them.
 GI Probe Receivers use realtime lighting in this graph. The built-in Lit
-viewport samples the probe volume for those receivers.
+viewport samples the probe volume for those receivers. So does the engine's
+default raster graph, which **Force raster** and the **Raster** starter use.
+That graph also draws static surfaces with their surface charts, so Force raster
+shows the bake as the Lit viewport does. Its status reports how many draws use
+surface charts and how many receiver draws use the probe volume
+([Baked lighting: probe GI and surface charts](render-graph-authoring.md#deferred-baked-probe-gi)).
 Browser and packaged game hosts continue to use their existing inputs.
 
 ### Baking probe GI for moving objects
@@ -2362,14 +2548,23 @@ Outside the volume, or where no nearby probe has recorded visibility, receivers 
 realtime lighting and the authored environment. Save the World to keep the
 volume and receiver settings. Save again after the bake is ready to retain the
 atlas alongside the charts. If an older cache contains only charts, the native
-editor prepares the missing atlas in the background. The prototype uses coarse
-directional visibility. Move a GI Probe Receiver along both sides of a wall
-and through any doorway while checking the Lit viewport. If bounce crosses a
+editor prepares the missing atlas in the background. A cache saved with the
+earlier 4 × 4 visibility faces is also rebaked in the background; save again
+to keep the new atlas.
+
+Probe visibility is directional and coarse. Keep the volume's probe planes
+more than 1.6 % of the spacing from floors, ceilings and walls: a probe that
+touches geometry is ignored, and a receiver whose eight neighbours are all
+ignored gets no baked bounce. Receivers within about 5 % of the spacing of a
+wall can still pick up bounce from the far side, and so can receivers just
+past an opening. Move a GI Probe Receiver along both sides of a wall
+and through any doorway while checking the Lit viewport. Each move rebakes,
+which takes about half a second for a small volume. If bounce crosses a
 closed wall or disappears in the opening, adjust the volume's position or
 spacing, let it rebake, and repeat the same movement. Use the result that
 preserves bounce through the opening while keeping the closed wall dark where
 the neighbouring room is the only source of bounced light.
-[Probe visibility limits and test cases](../architecture/renderer-systems.md#probe-visibility-near-walls-and-openings)
+[Probe visibility limits and measurements](../architecture/renderer-systems.md#native-lit-probe-visibility-qualification)
 
 ### Switching lights
 
@@ -2756,7 +2951,14 @@ writes the linear `LUHDR01` capture and, beside it, a PNG with the same base nam
 A capture saved before it finishes is marked partial and keeps exact per-pixel
 sample counts. Convert the HDR file with
 [`scripts/reference-hdr`](../architecture/renderer-systems.md#reference-workflow-and-frozen-profile).
-The PNG uses the viewport's display transform: exposure one, Khronos PBR Neutral, then sRGB.
+The PNG and the window show the reference the way the viewport displays its
+output when the capture starts. When a ToneMap draws that output, they use its
+curve and the viewport's **Exposure** choice: **Automatic**, **Physical camera**
+or graph exposure, plus the compensation in stops (see
+[render-graph authoring](render-graph-authoring.md)). Otherwise they use exposure
+one and Khronos PBR Neutral. sRGB follows in both cases. The status line names the
+exposure, and the comparison JSON records it as `displayExposure` and
+`displayCurve`. The linear `LUHDR01` file is never scaled.
 
 Right-click any image in the window for **Copy image** or **Save image as…**.
 Both use the displayed image at full capture resolution, not the scaled preview,
@@ -2781,6 +2983,17 @@ stop a capture. Indirect light, soft shadows and inter-reflection
 therefore appear here, where a raster profile approximates or omits them; see
 [comparison](#compare-with-the-viewports-render-graph). Zero-area triangles are left out of the reference
 geometry. They have no area to hit or emit from.
+
+When the World has an [Atmosphere](../architecture/renderer-systems.md#reference-capture-of-an-atmosphere)
+that lights the viewport, the capture uses its sky as the environment in place of
+the scene's own, as the raster does. Its linked Sun arrives dimmed and reddened
+by the air between the Sun and the camera. The progress line then names
+**Atmosphere sky**. The sky is evaluated once at the camera's altitude, so a low
+Sun that the buildings block leaves an interior lit by skylight and
+inter-reflection alone, much darker than a raster profile that does not shadow
+its sky lighting. Night-sky stars, the Moon's disk and aerial perspective over
+scene distances are left out. Move the Sun with its celestial time or rotation
+for a brighter scene.
 
 | Traversal | Use |
 | --- | --- |
@@ -2856,7 +3069,7 @@ Accumulate's own 32-bit mean and per-pixel sample counts, not the displayed or
 16-bit output. Only a ray-traced output with an **Accumulate** can be captured:
 - a raster output stores display colour, not linear radiance;
 - a ray output without an Accumulate shows individual samples;
-- **Force raster** draws the raster fallback.
+- **Force raster** draws the engine's default raster graph.
 
 The window explains which applies before you capture. Under **Graph** it says
 why the selected output cannot be captured, and **Capture viewport** stays
@@ -2903,9 +3116,13 @@ uses. It is not the built-in Lit renderer. The editor's default graph draws
 flat colours, so compare a project graph to measure lighting. The browser editor
 has no project graph viewport and offers only the reference.
 
-The window shows the **Reference**, **Raster** and **Difference** images, and a
-summary that updates as samples accumulate. The difference image is red where
-the raster is brighter than the reference and blue where it is darker. It is
+The window shows the **Reference**, **Render graph** and **Difference** images,
+and a summary that updates as samples accumulate. **Render graph** is the
+viewport's graph output at the reference camera, whichever graph that is: a
+converged capture of an accumulating graph, or one frame of a raster graph. The
+summary says which. The render graph side uses the viewport's exposure, but not
+the World grid, which the reference never draws. The difference image is red where
+the render graph is brighter than the reference and blue where it is darker. It is
 black where they agree, saturates at 0.25 display units, and is grey where no
 reference sample exists yet. The statistics cover pixels with at least one
 reference sample. The summary labels an unfinished capture **INCOMPLETE** and a
@@ -2919,14 +3136,14 @@ unsampled pixels do not enter the statistics.
 
 | Statistic | Meaning |
 | --- | --- |
-| MAE, RMSE, max | Mean absolute, root mean squared and largest channel error, raster minus reference |
-| Luminance bias | Mean signed Rec. 709 luminance error; negative means the raster is darker, for example where it omits indirect light |
+| MAE, RMSE, max | Mean absolute, root mean squared and largest channel error, render graph minus reference |
+| Luminance bias | Mean signed Rec. 709 luminance error; negative means the render graph is darker, for example where it omits indirect light |
 | Visibly different | Pixels whose largest display-space channel error exceeds 0.05 (about 13 of 255 levels) |
 | PSNR | Display space only, for a peak of one; capped at 100 dB for identical images |
 | relMSE | Linear space only: squared error over squared reference plus 0.01, per channel |
 
 The space follows the graph's output format. An `RGBA8Unorm` output is the
-displayed image. Its values are compared with the reference after the viewport
+displayed image. Its values are compared with the reference after the same
 display transform, so a graph that skips tone mapping shows that difference. An
 `RGBA16F` output is scene-linear radiance and is compared with the raw reference
 means. To compare radiometrically, select an HDR target as the viewport output.

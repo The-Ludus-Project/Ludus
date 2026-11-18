@@ -20,3 +20,15 @@ ludus_apply_project_defaults(ludus_web_offscreen_probe)
 target_link_options(ludus_web_offscreen_probe PRIVATE -sENVIRONMENT=web -sALLOW_MEMORY_GROWTH=1 -sASSERTIONS=1)
 set_target_properties(ludus_web_offscreen_probe PROPERTIES OUTPUT_NAME offscreen SUFFIX ".js")
 configure_file(offscreen.html offscreen.html COPYONLY)
+
+# R14b: canvases of one WebGPU device acquire, present, resize and retire independently,
+# and late callbacks of a destroyed surface are ignored. A recording Node provider supplies
+# one WebGPU context per canvas; the port and C API are real.
+add_executable(ludus_web_surface_probe surfaces.cpp)
+target_link_libraries(ludus_web_surface_probe PRIVATE Ludus::GraphicsRhi)
+ludus_apply_project_defaults(ludus_web_surface_probe)
+target_link_options(ludus_web_surface_probe PRIVATE -fno-exceptions -g0 -g2 -sENVIRONMENT=web,node -sALLOW_MEMORY_GROWTH=1 -sASSERTIONS=1 "--pre-js=${CMAKE_CURRENT_SOURCE_DIR}/node_surface_fixture.js")
+set_target_properties(ludus_web_surface_probe PROPERTIES OUTPUT_NAME surfaces SUFFIX ".js")
+set_property(TARGET ludus_web_surface_probe APPEND PROPERTY LINK_DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/node_surface_fixture.js")
+add_test(NAME ludus_web_surface_semantics COMMAND "${CMAKE_CROSSCOMPILING_EMULATOR}" "$<TARGET_FILE:ludus_web_surface_probe>")
+set_tests_properties(ludus_web_surface_semantics PROPERTIES LABELS "web;rhi" TIMEOUT 60 PASS_REGULAR_EXPRESSION "\\[R14b-web:passed\\]")

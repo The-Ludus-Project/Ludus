@@ -252,6 +252,7 @@ copied from `modules/content/scene_cook/.clang-tidy`) are checked in full.
 | Boolean names read as questions | N3 (declarations spelled `bool`): adopted scopes and changed lines |
 | `OrNull` on nullable pointer variables | N4 (explicit null initializers): adopted scopes and changed lines; inferred nullability is review-only |
 | Spelled-out names | N5 abbreviation list (`arg`, `param`, `ctx`, `src`, `dst`, `num`, ...) on changed declarations; waive external API mirrors with `// ludus-style: abbreviation <reason>` |
+| `*`/`&`/`&&` attached to the type (`const void* pointer`), not the name | clang-format `PointerAlignment: Left`/`ReferenceAlignment: Left`: `--format` for C/C++ under `modules/`, `apps/`, `tests/`; `--format-changed` for every changed C++ and Slang source |
 | `condition == true` instead of a bare boolean operand, verb-first functions, literal template sizes beyond the magic-number gate, engine type reuse | Review-only (needs type or intent information) |
 
 `readability-simplify-boolean-expr` is disabled repository-wide because it
@@ -266,6 +267,15 @@ rejects the explicit `== true`/`== false` style.
   declarator lists, including members and loop initializers. Expression commas
   (arguments, aggregate values, loop increments) remain valid. The changed-source
   gate checks ordinary declarations; unusual declarators still require review.
+- Attach `*`, `&` and `&&` to the type, not to the name: `const void* pointer`,
+  `Scene& outScene`, `Bytes&& other`, `QLabel* GetLabel()`; never `int *value` or
+  `const Scene &scene`. This covers variables, members, parameters, return types,
+  casts and template arguments in C++, Objective-C++ and Slang. `.clang-format`
+  enforces it (`PointerAlignment: Left`, `ReferenceAlignment: Left`), which works
+  because each declaration names one variable: clang-format keeps the `*` beside
+  the name in a declarator list such as `QLabel *status, *file;`. Generated
+  sources and Doxygen-produced signatures (`docs/api-undocumented.json`) keep their
+  generator's spelling.
 - Reuse an existing mathematical constant from its owner, including FoundationMath's
   shader `PI`. Changed Slang rejects recognizable duplicated pi literals outside
   that owner. Other constants still need semantic review; give tolerances units

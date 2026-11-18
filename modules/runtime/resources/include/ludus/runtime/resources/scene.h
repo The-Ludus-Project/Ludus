@@ -55,6 +55,7 @@ struct SceneMaterial final
     /// Renderers reject the material, and RT1 reference captures take the boundary as a ReferenceMediumDescription.
     /// A version 13 HairCard material has zero Metallic; Scattering holds its strand direction, highlight shifts
     /// and weights (content::scene_format::GetHairCardParameters).
+    /// A version 14 Skin material has zero Metallic, and Scattering.K holds its RGB scattering distance in metres.
     content::scene_format::MaterialScattering Scattering{};
     bool HasSourceMaterial = false; ///< Version 7 retains reflectance even without a texture.
     /// Version 11 closure program, valid when Scattering.Model is Program and zero-initialized otherwise.

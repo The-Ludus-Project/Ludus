@@ -97,19 +97,7 @@ void NativeTextureDestroy(usize slot) noexcept
 void NativeInteropDetachSurface() noexcept
 {
     ShutdownRendering();
-    gHosted.Disconnect();
-    gSurfaceFormat = MTLPixelFormatBGRA8Unorm;
-    if (gView != nil && gView.layer == gLayer)
-    {
-        gView.layer = gPreviousLayer;
-        gView.wantsLayer = gPreviousWantsLayer;
-    }
-    gView = nil;
-    gWindow = nil;
-    gLayer = nil;
-    gPreviousLayer = nil;
-    gPreviousWantsLayer = NO;
-    gTarget = {};
+    DisconnectSurfaces();
     gConnected = false;
 }
 void NativeInteropReset() noexcept {}

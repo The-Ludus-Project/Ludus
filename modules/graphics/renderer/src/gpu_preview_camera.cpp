@@ -84,7 +84,7 @@ Status GpuPreviewCameraUpdate::Prepare(rhi::DeviceHandle device,
     }
     candidate->Device = device;
     candidate->Uniform = uniform;
-    candidate->Uniform.ClipToWorld = validation.ClipToWorld;
+    candidate->Uniform.ClipToEye = validation.ClipToEye;
     candidate->Uniform.CameraPositionWorld = {camera.CameraPosition.X,
                                               camera.CameraPosition.Y,
                                               camera.CameraPosition.Z,

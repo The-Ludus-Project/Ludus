@@ -58,6 +58,7 @@ constexpr std::string_view DIFFUSE_MODEL = "diffuse";
 constexpr std::string_view METALLIC_ROUGHNESS_MODEL = "metallic_roughness";
 constexpr std::string_view MEDIUM_INTERFACE_MODEL = "medium_interface";
 constexpr std::string_view HAIR_CARD_MODEL = "hair_card";
+constexpr std::string_view SKIN_MODEL = "skin";
 /// The one supported medium type: constant absorption without scattering or emission.
 constexpr std::string_view HOMOGENEOUS_MEDIUM_TYPE = "homogeneous";
 
@@ -1010,12 +1011,12 @@ ReadMaterial(JsonValue value, const JsonPath& path, Failure& inoutFailure, Sourc
     {
         return ReadMediumInterface(value, path, inoutFailure, outMaterial);
     }
-    SceneSourceStatus status =
-        CheckMembers(value,
-                     {"name", "model", "base_color"},
-                     {"metallic", "roughness", "emission", "weight", "conductor", "brdf", "program", "hair"},
-                     path,
-                     inoutFailure);
+    SceneSourceStatus status = CheckMembers(
+        value,
+        {"name", "model", "base_color"},
+        {"metallic", "roughness", "emission", "weight", "conductor", "brdf", "program", "hair", "scattering_distance"},
+        path,
+        inoutFailure);
     if (status == SceneSourceStatus::Success)
     {
         status = ReadText(value.Get("name"), false, JsonPath(path, "name"), inoutFailure, outMaterial.Name);
@@ -1058,6 +1059,19 @@ ReadMaterial(JsonValue value, const JsonPath& path, Failure& inoutFailure, Sourc
         return inoutFailure.Fail(SceneSourceStatus::InvalidValue,
                                  "hair requires the hair_card model",
                                  JsonPath(path, "hair"));
+    }
+    const bool isSkin = model == SKIN_MODEL;
+    if (isSkin == false && value.Get("scattering_distance").Valid() == true)
+    {
+        return inoutFailure.Fail(SceneSourceStatus::InvalidValue,
+                                 "scattering_distance requires the skin model",
+                                 JsonPath(path, "scattering_distance"));
+    }
+    if (isSkin == true && value.Get("scattering_distance").Valid() == false)
+    {
+        return inoutFailure.Fail(SceneSourceStatus::Malformed,
+                                 "missing member; use [0, 0, 0] for no scattering",
+                                 JsonPath(path, "scattering_distance"));
     }
     if (model == DIFFUSE_MODEL || isMix == true)
     {
@@ -1109,12 +1123,22 @@ ReadMaterial(JsonValue value, const JsonPath& path, Failure& inoutFailure, Sourc
         }
         outMaterial.Model = SourceMaterialModel::HairCard;
     }
+    else if (isSkin == true)
+    {
+        if (value.Get("metallic").Valid() == true)
+        {
+            return inoutFailure.Fail(SceneSourceStatus::InvalidValue,
+                                     "skin is a dielectric; remove metallic",
+                                     JsonPath(path, "metallic"));
+        }
+        outMaterial.Model = SourceMaterialModel::Skin;
+    }
     else
     {
-        return inoutFailure.Fail(
-            SceneSourceStatus::InvalidValue,
-            "must be diffuse, metallic_roughness, mix, project_brdf, program, hair_card or medium_interface",
-            JsonPath(path, "model"));
+        return inoutFailure.Fail(SceneSourceStatus::InvalidValue,
+                                 "must be diffuse, metallic_roughness, mix, project_brdf, program, hair_card, skin or "
+                                 "medium_interface",
+                                 JsonPath(path, "model"));
     }
     status = ReadVector(value.Get("base_color"),
                         0.0,
@@ -1155,6 +1179,15 @@ ReadMaterial(JsonValue value, const JsonPath& path, Failure& inoutFailure, Sourc
     {
         status =
             ReadMaterialProgram(value.Get("program"), JsonPath(path, "program"), inoutFailure, outMaterial.Program);
+    }
+    if (status == SceneSourceStatus::Success && isSkin == true)
+    {
+        status = ReadVector(value.Get("scattering_distance"),
+                            0.0,
+                            static_cast<float64>(scene_format::MAX_SKIN_SCATTERING_DISTANCE),
+                            JsonPath(path, "scattering_distance"),
+                            inoutFailure,
+                            outMaterial.ScatteringDistance);
     }
     const JsonValue emission = value.Get("emission");
     if (status == SceneSourceStatus::Success && emission.Valid() == true)

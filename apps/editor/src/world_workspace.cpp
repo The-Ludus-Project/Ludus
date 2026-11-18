@@ -11,6 +11,7 @@
 #include "internal/world_celestial_light.h"
 #include "internal/world_earth_location.h"
 #include "internal/world_earth_time_field.h"
+#include "internal/world_earth_time_zone.h"
 #include "internal/world_entity_search.h"
 #include "internal/world_probe_volume.h"
 
@@ -347,7 +348,24 @@ bool TryParseEarthCoordinate(const QLineEdit& field, foundation::float64& outCoo
     return true;
 }
 
-void ConfigureCelestialLightFields(QWidget& inoutGroup, QFormLayout& inoutRows, const QMap<QString, QWidget*>& fields)
+/// Explain that the Earth date, time and location belong to the World rather than to one light.
+/// @param otherEarthLights Names of the World's other Earth Sun and Earth Moon lights.
+QString MakeSharedEarthObserverText(const QStringList& otherEarthLights)
+{
+    if (otherEarthLights.isEmpty() == true)
+    {
+        return QStringLiteral("Every Earth Sun and Earth Moon light in this World shares this date, time and "
+                              "location, and the Atmosphere night sky uses them.");
+    }
+    return QStringLiteral("Shared with %1. Changing the date, time or location here changes them for every Earth "
+                          "light and the Atmosphere night sky in this World.")
+        .arg(otherEarthLights.join(QStringLiteral(", ")));
+}
+
+void ConfigureCelestialLightFields(QWidget& inoutGroup,
+                                   QFormLayout& inoutRows,
+                                   const QMap<QString, QWidget*>& fields,
+                                   const QStringList& otherEarthLights)
 {
     const QString component = QStringLiteral("light");
     QComboBox* kindOrNull = qobject_cast<QComboBox*>(fields.value(FieldKey(component, QStringLiteral("kind"))));
@@ -380,6 +398,7 @@ void ConfigureCelestialLightFields(QWidget& inoutGroup, QFormLayout& inoutRows, 
     }
     QLineEdit* latitudeOrNull = qobject_cast<QLineEdit*>(fields.value(FieldKey(component, WORLD_CELESTIAL_LATITUDE)));
     QLineEdit* longitudeOrNull = qobject_cast<QLineEdit*>(fields.value(FieldKey(component, WORLD_CELESTIAL_LONGITUDE)));
+    QComboBox* timeZoneOrNull = qobject_cast<QComboBox*>(fields.value(FieldKey(component, WORLD_CELESTIAL_TIME_ZONE)));
     if (latitudeOrNull != nullptr && longitudeOrNull != nullptr)
     {
         QPushButton* location = new QPushButton(QStringLiteral("Choose Earth Location…"), &inoutGroup);
@@ -389,19 +408,37 @@ void ConfigureCelestialLightFields(QWidget& inoutGroup, QFormLayout& inoutRows, 
         inoutRows.getWidgetPosition(longitudeOrNull, &longitudeRow, &longitudeRole);
         inoutRows.insertRow(longitudeRow + 1, location);
         celestialRows.append({WorldCelestialFieldGroup::Earth, location});
-        QObject::connect(location, &QPushButton::clicked, location, [location, latitudeOrNull, longitudeOrNull]() {
-            OpenWorldEarthLocation(*location, *latitudeOrNull, *longitudeOrNull);
-        });
+        QObject::connect(location,
+                         &QPushButton::clicked,
+                         location,
+                         [location, latitudeOrNull, longitudeOrNull, timeZoneOrNull]() {
+                             OpenWorldEarthLocation(*location, *latitudeOrNull, *longitudeOrNull, timeZoneOrNull);
+                         });
     }
     QCheckBox* manualOrNull =
         qobject_cast<QCheckBox*>(fields.value(FieldKey(component, WORLD_CELESTIAL_MANUAL_PHOTOMETRY)));
     WorldEarthTimeField* timeOrNull =
         qobject_cast<WorldEarthTimeField*>(fields.value(FieldKey(component, WORLD_CELESTIAL_TIME)));
+    if (timeOrNull != nullptr && timeZoneOrNull != nullptr)
+    {
+        // A different zone keeps the clock reading, so a chosen time of day stays put at the new place.
+        QObject::connect(timeZoneOrNull, &QComboBox::currentIndexChanged, timeOrNull, [timeOrNull, timeZoneOrNull]() {
+            timeOrNull->SetTimeZoneKeepingClock(timeZoneOrNull->currentData().toString());
+        });
+    }
     if (manualOrNull == nullptr || timeOrNull == nullptr || latitudeOrNull == nullptr || longitudeOrNull == nullptr)
     {
         return;
     }
-    timeOrNull->setToolTip(QStringLiteral("Applying Earth time and location updates all active Earth presets."));
+    timeOrNull->setToolTip(QStringLiteral("The World stores one Earth date, time and location for all Earth lights."));
+    QLabel* shared = new QLabel(MakeSharedEarthObserverText(otherEarthLights), &inoutGroup);
+    shared->setObjectName(QStringLiteral("worldEarthSharedObserver"));
+    shared->setWordWrap(true);
+    foundation::int32 timeRow = 0;
+    QFormLayout::ItemRole timeRole = QFormLayout::FieldRole;
+    inoutRows.getWidgetPosition(timeOrNull, &timeRow, &timeRole);
+    inoutRows.insertRow(timeRow, shared);
+    celestialRows.append({WorldCelestialFieldGroup::Earth, shared});
     QLabel* calculated = new QLabel(&inoutGroup);
     calculated->setObjectName(QStringLiteral("worldEarthComputedPhotometry"));
     calculated->setWordWrap(true);
@@ -498,6 +535,58 @@ void ConfigureCelestialLightFields(QWidget& inoutGroup, QFormLayout& inoutRows, 
     QObject::connect(driverOrNull, &QComboBox::currentIndexChanged, roleOrNull, updateRows);
     updateRows();
 }
+/// Show which Earth date and place drive the Atmosphere's night sky, and hide the Sun disk size while the
+/// linked Sun's Earth preset supplies its own.
+void ConfigureAtmosphereFields(QWidget& inoutGroup,
+                               QFormLayout& inoutRows,
+                               const QMap<QString, QWidget*>& fields,
+                               const WorldDocument& world)
+{
+    const QString component = GetWorldAtmosphereComponentId();
+    QComboBox* sunOrNull = qobject_cast<QComboBox*>(fields.value(FieldKey(component, QStringLiteral("sun"))));
+    QComboBox* moonOrNull = qobject_cast<QComboBox*>(fields.value(FieldKey(component, QStringLiteral("moon"))));
+    QWidget* radiusOrNull = fields.value(FieldKey(component, QStringLiteral("solarRadius")));
+    if (sunOrNull == nullptr || moonOrNull == nullptr || radiusOrNull == nullptr)
+    {
+        return;
+    }
+    QLabel* sky = new QLabel(&inoutGroup);
+    sky->setObjectName(QStringLiteral("worldAtmosphereEarthObserver"));
+    sky->setWordWrap(true);
+    sky->setTextInteractionFlags(Qt::TextSelectableByMouse | Qt::TextSelectableByKeyboard);
+    inoutRows.addRow(sky);
+    const auto getLight = [&world](const QComboBox& selector) {
+        return world.Entity(selector.currentData().toString())
+            .value(QStringLiteral("components"))
+            .toObject()
+            .value(QStringLiteral("light"))
+            .toObject();
+    };
+    const auto update = [&inoutGroup, &inoutRows, &world, sunOrNull, moonOrNull, radiusOrNull, sky, getLight]() {
+        const QJsonObject sun = getLight(*sunOrNull);
+        const QJsonObject moon = getLight(*moonOrNull);
+        const bool isEarthSun = IsWorldEarthLight(sun);
+        inoutRows.setRowVisible(GetFormRowWidget(inoutRows, radiusOrNull),
+                                sunOrNull->currentData().toString().isEmpty() == false && isEarthSun == false);
+        const QJsonObject earth = isEarthSun == true ? sun : moon;
+        const bool hasEarth = isEarthSun == true || IsWorldEarthLight(moon) == true;
+        inoutRows.setRowVisible(sky, hasEarth);
+        if (hasEarth == true)
+        {
+            const QJsonObject observer = MakeWorldLightValues(earth, world.Draft());
+            sky->setText(
+                QStringLiteral("Night sky: %1 at %2°, %3°. Change the World's Earth date, time and "
+                               "location on any Earth Sun or Earth Moon light.")
+                    .arg(WorldEarthTimeField::FormatDaysSinceEpoch(observer.value(WORLD_CELESTIAL_TIME).toDouble()),
+                         FormatInspectorNumber(observer.value(WORLD_CELESTIAL_LATITUDE).toDouble()),
+                         FormatInspectorNumber(observer.value(WORLD_CELESTIAL_LONGITUDE).toDouble())));
+        }
+        inoutGroup.setMinimumHeight(inoutRows.totalHeightForWidth(WORLD_PROPERTY_LAYOUT_WIDTH));
+    };
+    QObject::connect(sunOrNull, &QComboBox::currentIndexChanged, sky, update);
+    QObject::connect(moonOrNull, &QComboBox::currentIndexChanged, sky, update);
+    update();
+}
 QString Display(const QJsonValue& value)
 {
     if (value.isDouble())
@@ -505,6 +594,35 @@ QString Display(const QJsonValue& value)
         return FormatInspectorNumber(value.toDouble());
     }
     return value.toString();
+}
+/// A Transform axis as its one-line vector row shows it (FormatCompactInspectorNumber).
+QString DisplayCompact(const QJsonValue& value)
+{
+    if (value.isDouble())
+    {
+        return FormatCompactInspectorNumber(value.toDouble());
+    }
+    return value.toString();
+}
+/// Shows a Transform axis compactly in field, keeping every stored digit in its tooltip below tooltip.
+void ShowCompactNumber(QLineEdit& inoutField, const QJsonValue& value, const QString& tooltip)
+{
+    MarkCompactNumberField(inoutField);
+    inoutField.setText(DisplayCompact(value));
+    QString text = tooltip;
+    if (value.isDouble() == true && FormatStoredNumber(value.toDouble()) != inoutField.text() &&
+        text.contains(QStringLiteral("Stored value:")) == false)
+    {
+        text += (text.isEmpty() == true ? QString() : QStringLiteral("\n")) +
+                QStringLiteral("Stored value: %1").arg(FormatStoredNumber(value.toDouble()));
+    }
+    inoutField.setToolTip(text);
+}
+/// Whether field still shows value as the inspector put it there, so Apply keeps the stored number exactly.
+bool IsShownUnchanged(const QLineEdit& field, const QJsonValue& value)
+{
+    return field.text() == Display(value) ||
+           (IsCompactNumberField(field) == true && field.text() == DisplayCompact(value));
 }
 /// Editor preference holding the Play mode; project data never records it.
 [[nodiscard]] LUDUS_INLINE QString GetPlayModeKey()
@@ -583,7 +701,8 @@ WorldWorkspace::WorldWorkspace(const ToolingPaths& tooling, QWidget* parent)
         Changed(Scene_->StatusText());
     });
 #if defined(Q_OS_WASM)
-    // Browser: copy the chosen scene into MEMFS first; the session copy is then cooked in process.
+    // Browser: a scene folder is read in place; single files and .zip archives are copied into MEMFS.
+    // Either way the scene is then cooked in process.
     QMenu* importChoices = new QMenu(Import_);
     const auto importBrowserScene = [this](bool isFolder) {
         OpenBrowserSceneImport(this, isFolder, [this](const QString& source) { (void)PreviewImportScene(source); });
@@ -1210,9 +1329,11 @@ WorldWorkspace::WorldWorkspace(const ToolingPaths& tooling, QWidget* parent)
         }
     });
 #if defined(Q_OS_WASM)
-    intro->setText(QStringLiteral("Browser Worlds live in this session's in-memory project; export the project to keep "
-                                  "them. Import scene… copies a scene folder, .zip or .pbrt with its files into the "
-                                  "session and cooks it here. Play and runtime binding require the native editor."));
+    intro->setText(
+        QStringLiteral("Browser Worlds are saved to a project folder opened from disk in Chrome or Edge; "
+                       "otherwise download the project to keep them. Import scene… reads a scene folder in "
+                       "place, or copies a .zip or .pbrt with its files, and cooks it here. Play and runtime "
+                       "binding require the native editor."));
 #endif
     initializeTerrainAuthoring();
     bindViewportInteraction();
@@ -2002,6 +2123,8 @@ void WorldWorkspace::addMaterialGroup()
     const QJsonObject coating = localCoating.isEmpty() == true ? sharedCoating : localCoating;
     const bool canEditCoating = materialOrNull != nullptr &&
                                 materialOrNull->Scattering.Model == content::scene_format::MaterialModel::CoatedDiffuse;
+    const bool isHairCardSlot = scene.contains(QStringLiteral("hair_card"));
+    const bool isSkinSlot = scene.contains(QStringLiteral("skin"));
     QVector<MaterialPropertyRow> properties;
     if (DescribeSceneObjectMaterial(presented, Selected_, properties) == false)
     {
@@ -2012,29 +2135,41 @@ void WorldWorkspace::addMaterialGroup()
     }
     for (const MaterialPropertyRow& property : properties)
     {
-        if (canEditCoating == true && property.IsCoatingParameter == true)
+        if ((canEditCoating == true && property.IsCoatingParameter == true) ||
+            (isHairCardSlot == true && property.IsHairCardParameter == true) ||
+            (isSkinSlot == true && property.IsSkinParameter == true))
         {
             continue;
         }
-        // A texture reference ("Texture 6 · 4 × 4 · sRGB") stays on one line beside its thumbnail, shortened in the
-        // middle when the panel is narrow, rather than wrapping into a column of fragments.
+        // A texture reference ("1024 × 512 · sRGB") stays on one line beside its thumbnail, shortened in the middle
+        // when the panel is narrow, rather than wrapping into a column of fragments.
         const bool isReference = property.Thumbnail.isNull() == false;
         QLabel* value =
             isReference == true ? new ElidedLabel(property.Value, group) : new QLabel(property.Value, group);
         value->setObjectName(QStringLiteral("worldMaterial:") + property.Label);
         value->setTextFormat(Qt::PlainText);
-        if (isReference == true)
-        {
-            value->setToolTip(property.Value);
-        }
-        else
+        if (isReference == false)
         {
             value->setWordWrap(true);
         }
+        // Labels stay short enough for the label column ("Reflectance", not "Reflectance (linear RGB)"); what they
+        // leave out, and which texture a reference is, read in the tooltip of the label and the value.
+        const QString detail = property.Detail.isEmpty() == true ? property.Value : property.Detail;
+        if (isReference == true || property.Detail.isEmpty() == false)
+        {
+            value->setToolTip(detail);
+        }
         MarkReadOnlyValue(*value);
+        const auto addRow = [&rows, &property](QWidget& inoutField) {
+            InspectorLabel& label = AddInspectorRow(*rows, property.Label, inoutField);
+            if (property.Detail.isEmpty() == false)
+            {
+                label.setToolTip(property.Label + QLatin1Char('\n') + property.Detail);
+            }
+        };
         if (property.Swatch.isValid() == false && property.Thumbnail.isNull() == true)
         {
-            AddInspectorRow(*rows, property.Label, *value);
+            addRow(*value);
             continue;
         }
         // A colour or texture row leads with what it looks like, then its numbers.
@@ -2057,12 +2192,12 @@ void WorldWorkspace::addMaterialGroup()
                                           Qt::SmoothTransformation));
             swatch.setDevicePixelRatio(pixelRatio);
             thumbnail->setPixmap(swatch);
-            thumbnail->setToolTip(property.Value);
+            thumbnail->setToolTip(detail);
             thumbnail->setAccessibleName(property.Label + QStringLiteral(" preview"));
             rowLayout->addWidget(thumbnail);
         }
         rowLayout->addWidget(value, 1);
-        AddInspectorRow(*rows, property.Label, *row);
+        addRow(*row);
     }
     if (materialOrNull != nullptr &&
         materialOrNull->Scattering.Model == content::scene_format::MaterialModel::Unresolved)
@@ -2121,8 +2256,430 @@ void WorldWorkspace::addMaterialGroup()
         connect(restore, &QPushButton::clicked, this, &WorldWorkspace::restoreInheritedCoating);
         rows->addRow(restore);
     }
+    addHairCardControls(*rows, materialOrNull, scene);
+    addSkinControls(*rows, materialOrNull, scene);
     addProjectBrdfControls(*rows, materialOrNull, scene);
     Inspector_->addWidget(section);
+}
+
+void WorldWorkspace::addHairCardControls(QFormLayout& inoutRows,
+                                         const resources::SceneMaterial* materialOrNull,
+                                         const QJsonObject& placement)
+{
+    using content::scene_format::MaterialModel;
+    QWidget* group = inoutRows.parentWidget();
+    if (placement.contains(QStringLiteral("hair_card")) == false)
+    {
+        // Any resolved surface can become a card; a project BRDF slot first returns to its inherited material.
+        if (materialOrNull == nullptr || placement.contains(QStringLiteral("project_brdf")) == true ||
+            placement.contains(QStringLiteral("skin")) == true ||
+            materialOrNull->Scattering.Model == MaterialModel::Unresolved ||
+            materialOrNull->Scattering.Model == MaterialModel::MediumInterface ||
+            materialOrNull->Scattering.Model == MaterialModel::HairCard)
+        {
+            return;
+        }
+        QPushButton* assign = new QPushButton(QStringLiteral("Make Hair Card"), group);
+        assign->setObjectName(QStringLiteral("worldAssignHairCard"));
+        assign->setToolTip(
+            QStringLiteral("Shade this slot as a two-sided hair card whose highlights follow an authored "
+                           "strand direction. Its base colour, roughness, textures and mask are kept."));
+        connect(assign, &QPushButton::clicked, this, [this]() { assignHairCard(true); });
+        inoutRows.addRow(assign);
+        return;
+    }
+    const QJsonObject hair = placement.value(QStringLiteral("hair_card")).toObject();
+    QLabel* help = new QLabel(QStringLiteral("This slot is a hair card. Its highlights follow the strand direction, "
+                                             "measured from the surface tangent (increasing texture U) toward the "
+                                             "bitangent. Apply Changes updates the viewport."),
+                              group);
+    help->setWordWrap(true);
+    inoutRows.addRow(help);
+    for (const HairCardField& field : HAIR_CARD_FIELDS)
+    {
+        const QString key = QString::fromLatin1(field.Key);
+        QLineEdit* input = new QLineEdit(group);
+        SetCoatingInput(*input, hair.value(key));
+        const QString fieldKey = QStringLiteral("scene/hair_card/") + key;
+        input->setObjectName(QStringLiteral("worldField:") + fieldKey);
+        Fields_.insert(fieldKey, input);
+        connect(input, &QLineEdit::textEdited, this, [this]() { markInspectorPending(false); });
+        AddInspectorRow(inoutRows, QString::fromUtf8(field.Label), *input);
+    }
+    if (materialOrNull != nullptr && materialOrNull->IsAlphaMasked == true)
+    {
+        // The cutoff is offered only where the imported material has a mask to cut.
+        const QString key = QString::fromLatin1(HAIR_CARD_CUTOFF_KEY);
+        QLineEdit* input = new QLineEdit(group);
+        SetCoatingInput(*input,
+                        hair.contains(key) == true
+                            ? hair.value(key)
+                            : QJsonValue(static_cast<foundation::float64>(materialOrNull->AlphaCutoff)));
+        const QString fieldKey = QStringLiteral("scene/hair_card/") + key;
+        input->setObjectName(QStringLiteral("worldField:") + fieldKey);
+        Fields_.insert(fieldKey, input);
+        connect(input, &QLineEdit::textEdited, this, [this]() { markInspectorPending(false); });
+        AddInspectorRow(inoutRows, MakeHairCardCutoffProperty().value(QStringLiteral("label")).toString(), *input);
+    }
+    QLabel* error = new QLabel(group);
+    error->setObjectName(QStringLiteral("worldHairCardError"));
+    error->setTextFormat(Qt::PlainText);
+    error->setWordWrap(true);
+    error->setVisible(false);
+    inoutRows.addRow(error);
+    QPushButton* restore = new QPushButton(QStringLiteral("Use Inherited Material"), group);
+    restore->setObjectName(QStringLiteral("worldRestoreHairCard"));
+    connect(restore, &QPushButton::clicked, this, [this]() { assignHairCard(false); });
+    inoutRows.addRow(restore);
+}
+
+void WorldWorkspace::assignHairCard(bool isAssigned)
+{
+    if (Pending_ == true || SceneBusy() == true)
+    {
+        return;
+    }
+    const QJsonObject entity = Document_.Entity(Selected_);
+    QJsonObject scene = entity.value(QStringLiteral("scene")).toObject();
+    if (isAssigned == true && scene.contains(QStringLiteral("coating")) == true)
+    {
+        QMessageBox confirmation(QMessageBox::Question,
+                                 QStringLiteral("Make hair card"),
+                                 QStringLiteral("Replace this slot's coating with a hair card?"),
+                                 QMessageBox::Cancel,
+                                 this);
+        confirmation.setInformativeText(
+            QStringLiteral("The slot's own coating instance is removed. Undo restores it."));
+        QPushButton* replace = confirmation.addButton(QStringLiteral("Replace Coating"), QMessageBox::AcceptRole);
+        replace->setObjectName(QStringLiteral("worldConfirmHairCard"));
+        confirmation.setDefaultButton(QMessageBox::Cancel);
+        confirmation.exec();
+        if (confirmation.clickedButton() != replace)
+        {
+            Changed(QStringLiteral("The slot keeps its coating."));
+            return;
+        }
+        scene.remove(QStringLiteral("coating"));
+    }
+    if (isAssigned == true)
+    {
+        scene.insert(QStringLiteral("hair_card"), MakeDefaultHairCard());
+    }
+    else
+    {
+        scene.remove(QStringLiteral("hair_card"));
+    }
+    QString error;
+    if (Document_.Edit(Selected_,
+                       entity.value(QStringLiteral("components")).toObject(),
+                       entity.value(QStringLiteral("name")).toString(),
+                       error,
+                       &scene,
+                       isAssigned == true ? "Make Hair Card" : "Restore Material") == false)
+    {
+        Changed(error);
+        return;
+    }
+    Snapshot();
+    Changed(isAssigned == true ? QStringLiteral("Hair card assigned to this slot. Undo is available.")
+                               : QStringLiteral("Inherited material restored. Undo is available."));
+}
+
+bool WorldWorkspace::readHairCardFields(QJsonObject& inoutScene, QString& outError, QWidget*& outInvalidOrNull)
+{
+    if (inoutScene.contains(QStringLiteral("hair_card")) == false)
+    {
+        return true;
+    }
+    QJsonObject hair = inoutScene.value(QStringLiteral("hair_card")).toObject();
+    bool hasChanged = false;
+    const auto readField = [&](const QString& key, const QJsonObject& property) {
+        QLineEdit* fieldOrNull = qobject_cast<QLineEdit*>(Fields_.value(QStringLiteral("scene/hair_card/") + key));
+        if (fieldOrNull == nullptr)
+        {
+            return true;
+        }
+        QJsonValue value;
+        bool hasFieldChanged = false;
+        if (ReadMaterialNumberInput(property, *fieldOrNull, value, hasFieldChanged, outError) == false)
+        {
+            outInvalidOrNull = fieldOrNull;
+            return false;
+        }
+        if (hasFieldChanged == true)
+        {
+            hair.insert(key, value);
+            hasChanged = true;
+        }
+        return true;
+    };
+    for (const HairCardField& field : HAIR_CARD_FIELDS)
+    {
+        if (readField(QString::fromLatin1(field.Key), field.MakeNumberProperty()) == false)
+        {
+            return false;
+        }
+    }
+    if (readField(QString::fromLatin1(HAIR_CARD_CUTOFF_KEY), MakeHairCardCutoffProperty()) == false)
+    {
+        return false;
+    }
+    if (hasChanged == true)
+    {
+        inoutScene.insert(QStringLiteral("hair_card"), hair);
+    }
+    return true;
+}
+
+void WorldWorkspace::showHairCardError(const QWidget* invalidOrNull, const QString& error)
+{
+    QLabel* labelOrNull = findChild<QLabel*>(QStringLiteral("worldHairCardError"));
+    if (labelOrNull == nullptr)
+    {
+        return;
+    }
+    const bool isHairCardField = invalidOrNull != nullptr && invalidOrNull->objectName().startsWith(
+                                                                 QStringLiteral("worldField:scene/hair_card/")) == true;
+    labelOrNull->setText(isHairCardField == true ? error : QString());
+    labelOrNull->setVisible(isHairCardField == true);
+}
+
+void WorldWorkspace::addSkinControls(QFormLayout& inoutRows,
+                                     const resources::SceneMaterial* materialOrNull,
+                                     const QJsonObject& placement)
+{
+    using content::scene_format::MaterialModel;
+    QWidget* group = inoutRows.parentWidget();
+    if (placement.contains(QStringLiteral("skin")) == false)
+    {
+        // Any resolved surface can become skin; a project BRDF or hair-card slot first returns to its inherited
+        // material.
+        if (materialOrNull == nullptr || placement.contains(QStringLiteral("project_brdf")) == true ||
+            placement.contains(QStringLiteral("hair_card")) == true ||
+            materialOrNull->Scattering.Model == MaterialModel::Unresolved ||
+            materialOrNull->Scattering.Model == MaterialModel::MediumInterface ||
+            materialOrNull->Scattering.Model == MaterialModel::HairCard)
+        {
+            return;
+        }
+        QPushButton* assign = new QPushButton(QStringLiteral("Make Skin"), group);
+        assign->setObjectName(QStringLiteral("worldAssignSkin"));
+        assign->setToolTip(
+            QStringLiteral("Shade this slot as skin, whose diffuse light spreads under the surface over a per-channel "
+                           "scattering distance. Its base colour, roughness, emission and textures are kept; "
+                           "skin is not metallic."));
+        connect(assign, &QPushButton::clicked, this, [this]() { assignSkin(true); });
+        inoutRows.addRow(assign);
+        return;
+    }
+    const QJsonObject skin = placement.value(QStringLiteral("skin")).toObject();
+    const QJsonArray distance = skin.value(QString::fromLatin1(SKIN_DISTANCE_KEY)).toArray();
+    QLabel* help = new QLabel(QStringLiteral("This slot is skin. Light spreads under its surface over each colour's "
+                                             "scattering distance, so model the object at real scale; human skin "
+                                             "spreads red furthest, a few millimetres. The base colour scales the "
+                                             "base colour map. The default render graph shows the spread. Apply "
+                                             "Changes updates the viewport."),
+                              group);
+    help->setWordWrap(true);
+    inoutRows.addRow(help);
+    for (const SkinDistanceField& field : SKIN_DISTANCE_FIELDS)
+    {
+        QLineEdit* input = new QLineEdit(group);
+        SetCoatingInput(*input, distance.at(static_cast<qsizetype>(field.Channel)).toDouble() * MILLIMETRES_PER_METRE);
+        const QString fieldKey = QStringLiteral("scene/skin/") + QString::fromLatin1(field.Key);
+        input->setObjectName(QStringLiteral("worldField:") + fieldKey);
+        Fields_.insert(fieldKey, input);
+        connect(input, &QLineEdit::textEdited, this, [this]() { markInspectorPending(false); });
+        AddInspectorRow(inoutRows, QString::fromUtf8(field.Label), *input);
+    }
+    // The base colour and roughness show the slot's own values, or the inherited material's until edited.
+    const QJsonArray baseColor = skin.value(QString::fromLatin1(SKIN_BASE_COLOR_KEY)).toArray();
+    const QJsonValue roughness = skin.value(QString::fromLatin1(SKIN_ROUGHNESS_KEY));
+    for (const SkinSurfaceField& field : SKIN_SURFACE_FIELDS)
+    {
+        QJsonValue value =
+            field.IsRoughness() == true ? roughness : baseColor.at(static_cast<qsizetype>(field.Channel));
+        if (value.isDouble() == true)
+        {
+            value = GetShortestFloat32Decimal(static_cast<foundation::float32>(value.toDouble()));
+        }
+        else if (materialOrNull != nullptr)
+        {
+            const foundation::math::Vector3& reflectance = materialOrNull->Reflectance;
+            const foundation::StaticArray<foundation::float32, content::scene_format::MATERIAL_RGB_CHANNELS> inherited{
+                {reflectance.X, reflectance.Y, reflectance.Z}};
+            value = GetShortestFloat32Decimal(field.IsRoughness() == true ? materialOrNull->Roughness
+                                                                          : inherited[field.Channel]);
+        }
+        if (value.isDouble() == false)
+        {
+            continue;
+        }
+        QLineEdit* input = new QLineEdit(group);
+        SetCoatingInput(*input, value);
+        const QString fieldKey = QStringLiteral("scene/skin/") + QString::fromLatin1(field.Key);
+        input->setObjectName(QStringLiteral("worldField:") + fieldKey);
+        Fields_.insert(fieldKey, input);
+        connect(input, &QLineEdit::textEdited, this, [this]() { markInspectorPending(false); });
+        AddInspectorRow(inoutRows, QString::fromUtf8(field.Label), *input);
+    }
+    QLabel* error = new QLabel(group);
+    error->setObjectName(QStringLiteral("worldSkinError"));
+    error->setTextFormat(Qt::PlainText);
+    error->setWordWrap(true);
+    error->setVisible(false);
+    inoutRows.addRow(error);
+    QPushButton* restore = new QPushButton(QStringLiteral("Use Inherited Material"), group);
+    restore->setObjectName(QStringLiteral("worldRestoreSkin"));
+    connect(restore, &QPushButton::clicked, this, [this]() { assignSkin(false); });
+    inoutRows.addRow(restore);
+}
+
+void WorldWorkspace::assignSkin(bool isAssigned)
+{
+    if (Pending_ == true || SceneBusy() == true)
+    {
+        return;
+    }
+    const QJsonObject entity = Document_.Entity(Selected_);
+    QJsonObject scene = entity.value(QStringLiteral("scene")).toObject();
+    if (isAssigned == true && scene.contains(QStringLiteral("coating")) == true)
+    {
+        QMessageBox confirmation(QMessageBox::Question,
+                                 QStringLiteral("Make skin"),
+                                 QStringLiteral("Replace this slot's coating with skin?"),
+                                 QMessageBox::Cancel,
+                                 this);
+        confirmation.setInformativeText(
+            QStringLiteral("The slot's own coating instance is removed. Undo restores it."));
+        QPushButton* replace = confirmation.addButton(QStringLiteral("Replace Coating"), QMessageBox::AcceptRole);
+        replace->setObjectName(QStringLiteral("worldConfirmSkin"));
+        confirmation.setDefaultButton(QMessageBox::Cancel);
+        confirmation.exec();
+        if (confirmation.clickedButton() != replace)
+        {
+            Changed(QStringLiteral("The slot keeps its coating."));
+            return;
+        }
+        scene.remove(QStringLiteral("coating"));
+    }
+    if (isAssigned == true)
+    {
+        scene.insert(QStringLiteral("skin"),
+                     MakeDefaultSkin(GetSceneObjectMaterialOrNull(Scene_->PreviewScene(), Selected_)));
+    }
+    else
+    {
+        scene.remove(QStringLiteral("skin"));
+    }
+    QString error;
+    if (Document_.Edit(Selected_,
+                       entity.value(QStringLiteral("components")).toObject(),
+                       entity.value(QStringLiteral("name")).toString(),
+                       error,
+                       &scene,
+                       isAssigned == true ? "Make Skin" : "Restore Material") == false)
+    {
+        Changed(error);
+        return;
+    }
+    Snapshot();
+    Changed(isAssigned == true ? QStringLiteral("Skin assigned to this slot. Undo is available.")
+                               : QStringLiteral("Inherited material restored. Undo is available."));
+}
+
+bool WorldWorkspace::readSkinFields(QJsonObject& inoutScene, QString& outError, QWidget*& outInvalidOrNull)
+{
+    if (inoutScene.contains(QStringLiteral("skin")) == false)
+    {
+        return true;
+    }
+    QJsonObject skin = inoutScene.value(QStringLiteral("skin")).toObject();
+    QJsonArray distance = skin.value(QString::fromLatin1(SKIN_DISTANCE_KEY)).toArray();
+    bool hasChanged = false;
+    for (const SkinDistanceField& field : SKIN_DISTANCE_FIELDS)
+    {
+        QLineEdit* fieldOrNull =
+            qobject_cast<QLineEdit*>(Fields_.value(QStringLiteral("scene/skin/") + QString::fromLatin1(field.Key)));
+        if (fieldOrNull == nullptr)
+        {
+            continue;
+        }
+        QJsonValue millimetres;
+        bool hasFieldChanged = false;
+        if (ReadMaterialNumberInput(field.MakeNumberProperty(), *fieldOrNull, millimetres, hasFieldChanged, outError) ==
+            false)
+        {
+            outInvalidOrNull = fieldOrNull;
+            return false;
+        }
+        // An unchanged field keeps the stored metres exactly.
+        if (hasFieldChanged == true)
+        {
+            distance.replace(static_cast<qsizetype>(field.Channel), millimetres.toDouble() / MILLIMETRES_PER_METRE);
+            hasChanged = true;
+        }
+    }
+    if (hasChanged == true)
+    {
+        skin.insert(QString::fromLatin1(SKIN_DISTANCE_KEY), distance);
+    }
+    // A changed base colour channel writes all three; an untouched base colour or roughness stays inherited.
+    QJsonArray baseColor;
+    bool hasBaseColorChanged = false;
+    for (const SkinSurfaceField& field : SKIN_SURFACE_FIELDS)
+    {
+        QLineEdit* fieldOrNull =
+            qobject_cast<QLineEdit*>(Fields_.value(QStringLiteral("scene/skin/") + QString::fromLatin1(field.Key)));
+        if (fieldOrNull == nullptr)
+        {
+            continue;
+        }
+        QJsonValue number;
+        bool hasFieldChanged = false;
+        if (ReadMaterialNumberInput(field.MakeNumberProperty(), *fieldOrNull, number, hasFieldChanged, outError) ==
+            false)
+        {
+            outInvalidOrNull = fieldOrNull;
+            return false;
+        }
+        // The cook stores float32; the World keeps the shortest decimal that reads back as it ("0.7").
+        number = GetShortestFloat32Decimal(static_cast<foundation::float32>(number.toDouble()));
+        if (field.IsRoughness() == false)
+        {
+            baseColor.append(number);
+            hasBaseColorChanged = hasBaseColorChanged == true || hasFieldChanged == true;
+        }
+        else if (hasFieldChanged == true)
+        {
+            skin.insert(QString::fromLatin1(SKIN_ROUGHNESS_KEY), number);
+            hasChanged = true;
+        }
+    }
+    if (hasBaseColorChanged == true &&
+        baseColor.size() == static_cast<qsizetype>(content::scene_format::MATERIAL_RGB_CHANNELS))
+    {
+        skin.insert(QString::fromLatin1(SKIN_BASE_COLOR_KEY), baseColor);
+        hasChanged = true;
+    }
+    if (hasChanged == true)
+    {
+        inoutScene.insert(QStringLiteral("skin"), skin);
+    }
+    return true;
+}
+
+void WorldWorkspace::showSkinError(const QWidget* invalidOrNull, const QString& error)
+{
+    QLabel* labelOrNull = findChild<QLabel*>(QStringLiteral("worldSkinError"));
+    if (labelOrNull == nullptr)
+    {
+        return;
+    }
+    const bool isSkinField =
+        invalidOrNull != nullptr && invalidOrNull->objectName().startsWith(QStringLiteral("worldField:scene/skin/"));
+    labelOrNull->setText(isSkinField == true ? error : QString());
+    labelOrNull->setVisible(isSkinField == true);
 }
 
 void WorldWorkspace::addProjectBrdfControls(QFormLayout& inoutRows,
@@ -2795,7 +3352,10 @@ void WorldWorkspace::RenderInspector()
                 for (foundation::int32 axis = 0; axis < 3; ++axis)
                 {
                     const QString fieldKey = QStringLiteral("scene/") + vector.Key + QString::number(axis);
-                    auto* field = new QLineEdit(Display(values[axis]), group);
+                    QLineEdit* field = new QLineEdit(group);
+                    // Every Transform shows its axes the same way: short numbers on one line, stored digits in the
+                    // tooltip.
+                    ShowCompactNumber(*field, values[axis], QString());
                     field->setObjectName(QStringLiteral("worldField:") + fieldKey);
                     field->setAccessibleName(vector.Title + QStringLiteral(" ") + QString(QChar('X' + axis)));
                     Fields_.insert(fieldKey, field);
@@ -2878,7 +3438,19 @@ void WorldWorkspace::RenderInspector()
         QWidget* group = &section->GetFields();
         auto* rows = new QFormLayout(group);
         ConfigureInspectorForm(*rows);
-        const auto values = attached.value(cid).toObject();
+        QJsonObject values = attached.value(cid).toObject();
+        if (Document_.HasBuiltInSchema() == true && cid == QStringLiteral("light"))
+        {
+            // The light shows the World's shared Earth date, time and location. The first Earth preset of a
+            // World starts at the current time rather than at the epoch.
+            const bool hasEarthObserver = GetWorldEarthObserver(Document_.Draft()).isEmpty() == false;
+            const bool isEarthLight = IsWorldEarthLight(values);
+            values = MakeWorldLightValues(values, Document_.Draft());
+            if (hasEarthObserver == false && isEarthLight == false)
+            {
+                values.insert(WORLD_CELESTIAL_TIME, WorldEarthTimeField::GetCurrentDaysSinceEpoch());
+            }
+        }
         // Three numbers that belong together (a transform's position, rotation or scale, or a colour's red,
         // green and blue) share one compact row; their fields keep the names and signals they always had.
         struct VectorGroup final
@@ -2998,14 +3570,23 @@ void WorldWorkspace::RenderInspector()
             QWidget* field = nullptr;
             if (Document_.HasBuiltInSchema() == true && cid == QStringLiteral("light") && pid == WORLD_CELESTIAL_TIME)
             {
-                WorldEarthTimeField* time = new WorldEarthTimeField(current.toDouble(), *group);
+                const QString timeZone =
+                    values.value(WORLD_CELESTIAL_TIME_ZONE).toString(QString(WORLD_EARTH_UTC_TIME_ZONE));
+                WorldEarthTimeField* time = new WorldEarthTimeField(current.toDouble(), timeZone, *group);
                 time->setObjectName(QStringLiteral("worldField:") + FieldKey(cid, pid));
                 connect(time, &WorldEarthTimeField::Edited, this, [this]() { markInspectorPending(); });
                 Fields_.insert(FieldKey(cid, pid), time);
                 rows->addRow(time);
                 continue;
             }
-            if (type == QStringLiteral("boolean"))
+            if (Document_.HasBuiltInSchema() == true && cid == QStringLiteral("light") &&
+                pid == WORLD_CELESTIAL_TIME_ZONE)
+            {
+                QComboBox* timeZone = MakeEarthTimeZoneField(current.toString(), *group);
+                connect(timeZone, &QComboBox::currentIndexChanged, this, [this]() { markInspectorPending(); });
+                field = timeZone;
+            }
+            else if (type == QStringLiteral("boolean"))
             {
                 auto* check = new QCheckBox(group);
                 check->setChecked(current.toBool());
@@ -3152,6 +3733,11 @@ void WorldWorkspace::RenderInspector()
             const foundation::float64 minimum = p.value(QStringLiteral("min")).toDouble();
             const foundation::float64 maximum = p.value(QStringLiteral("max")).toDouble();
             const qsizetype axis = groupOrNull->Members.indexOf(pid);
+            if (groupOrNull->IsColour == false)
+            {
+                // Position, Rotation and Scale read like a scene instance's: short numbers, X, Y and Z on one line.
+                ShowCompactNumber(*textFieldOrNull, current, textFieldOrNull->toolTip());
+            }
             groupOrNull->Components.append(
             {
                 .Name = groupOrNull->AxisNames.at(axis),
@@ -3258,7 +3844,24 @@ void WorldWorkspace::RenderInspector()
         addComponentActions(*section, component);
         if (Document_.HasBuiltInSchema() == true && cid == QStringLiteral("light"))
         {
-            ConfigureCelestialLightFields(*group, *rows, Fields_);
+            QStringList otherEarthLights;
+            for (const QJsonValue candidate : Document_.Draft().value(QStringLiteral("entities")).toArray())
+            {
+                const QJsonObject otherEntity = candidate.toObject();
+                if (Document_.GetEntityKey(otherEntity) != Selected_ &&
+                    IsWorldEarthLight(otherEntity.value(QStringLiteral("components"))
+                                          .toObject()
+                                          .value(QStringLiteral("light"))
+                                          .toObject()) == true)
+                {
+                    otherEarthLights.append(otherEntity.value(QStringLiteral("name")).toString());
+                }
+            }
+            ConfigureCelestialLightFields(*group, *rows, Fields_, otherEarthLights);
+        }
+        else if (Document_.HasBuiltInSchema() == true && cid == GetWorldAtmosphereComponentId())
+        {
+            ConfigureAtmosphereFields(*group, *rows, Fields_, Document_);
         }
         else
         {
@@ -3796,6 +4399,10 @@ bool WorldWorkspace::readDraft(WorldDocument& inoutDocument,
     for (auto c = components.begin(); c != components.end(); ++c)
     {
         auto values = c.value().toObject();
+        // A light's fields show the World's shared Earth observer; compare against those values.
+        const QJsonObject shownValues = Document_.HasBuiltInSchema() == true && c.key() == QStringLiteral("light")
+                                            ? MakeWorldLightValues(values, Document_.Draft())
+                                            : values;
         for (const auto definition : Document_.Component(c.key()).value(QStringLiteral("properties")).toArray())
         {
             const auto p = definition.toObject();
@@ -3807,7 +4414,7 @@ bool WorldWorkspace::readDraft(WorldDocument& inoutDocument,
                 // A hidden driver's draft may be incomplete. Keep its last accepted settings.
                 continue;
             }
-            const QJsonValue authored = values.value(pid);
+            const QJsonValue authored = shownValues.value(pid);
             // A legacy probe volume's effective layout is counts, even though new volumes default to volume.
             const bool isLegacyProbeLayout = authored.isUndefined() == true && Document_.HasBuiltInSchema() == true &&
                                              c.key() == GetGiProbeVolumeComponentId() && pid == GetGiProbeLayoutKey();
@@ -3833,7 +4440,7 @@ bool WorldWorkspace::readDraft(WorldDocument& inoutDocument,
             {
                 // Preserve unchanged JSON numbers exactly rather than round them
                 // through the float32 text converter during an unrelated edit.
-                if (textOrNull->text() == Display(current))
+                if (IsShownUnchanged(*textOrNull, current) == true)
                 {
                     candidate = current;
                 }
@@ -3852,6 +4459,28 @@ bool WorldWorkspace::readDraft(WorldDocument& inoutDocument,
             if (authored.isUndefined() == false || candidate != current)
             {
                 values.insert(pid, candidate);
+            }
+        }
+        if (Document_.HasBuiltInSchema() == true && c.key() == QStringLiteral("light") &&
+            IsWorldEarthLight(values) == false)
+        {
+            // Only an Earth light writes the shared observer; other lights keep their own stored values.
+            const QJsonObject stored = c.value().toObject();
+            for (const QLatin1StringView property : WORLD_EARTH_OBSERVER_PROPERTIES)
+            {
+                if (IsWorldCustomOrbitLight(values) == true && property != WORLD_CELESTIAL_TIME)
+                {
+                    continue;
+                }
+                const QJsonValue value = stored.value(property);
+                if (value.isUndefined() == true)
+                {
+                    values.remove(property);
+                }
+                else
+                {
+                    values.insert(property, value);
+                }
             }
         }
         c.value() = values;
@@ -3877,7 +4506,7 @@ bool WorldWorkspace::readDraft(WorldDocument& inoutDocument,
                     outError = QStringLiteral("Scene inspector is stale.");
                     return false;
                 }
-                if (field->text() == Display(values[axis]))
+                if (IsShownUnchanged(*field, values[axis]) == true)
                 {
                     continue;
                 }
@@ -3902,7 +4531,9 @@ bool WorldWorkspace::readDraft(WorldDocument& inoutDocument,
         }
     }
     if (shouldReadMaterial == true && (readCoatingFields(scene, outError, outInvalidOrNull) == false ||
-                                       readProjectBrdfRoughness(scene, outError, outInvalidOrNull) == false))
+                                       readProjectBrdfRoughness(scene, outError, outInvalidOrNull) == false ||
+                                       readHairCardFields(scene, outError, outInvalidOrNull) == false ||
+                                       readSkinFields(scene, outError, outInvalidOrNull) == false))
     {
         return false;
     }
@@ -3914,12 +4545,15 @@ bool WorldWorkspace::readDraft(WorldDocument& inoutDocument,
     if (outHasInheritedEarthObserverOrNull != nullptr)
     {
         const QJsonObject proposed = components.value(QStringLiteral("light")).toObject();
-        const QJsonObject accepted = inoutDocument.Entity(Selected_)
-                                         .value(QStringLiteral("components"))
-                                         .toObject()
-                                         .value(QStringLiteral("light"))
-                                         .toObject();
-        *outHasInheritedEarthObserverOrNull = AreWorldEarthObserversEqual(proposed, accepted) == false;
+        const QJsonObject accepted = MakeWorldLightValues(inoutDocument.Entity(Selected_)
+                                                              .value(QStringLiteral("components"))
+                                                              .toObject()
+                                                              .value(QStringLiteral("light"))
+                                                              .toObject(),
+                                                          inoutDocument.Draft());
+        // Only an Earth light shows the shared observer; refresh it when the World kept different values.
+        *outHasInheritedEarthObserverOrNull =
+            IsWorldEarthLight(proposed) == true && AreWorldEarthObserversEqual(proposed, accepted) == false;
     }
     return true;
 }
@@ -4082,9 +4716,13 @@ bool WorldWorkspace::Apply()
         {
             invalid->setFocus();
         }
+        showHairCardError(invalid, error);
+        showSkinError(invalid, error);
         Changed(error);
         return false;
     }
+    showHairCardError(nullptr, {});
+    showSkinError(nullptr, {});
     const QJsonObject previousComponents = Document_.Entity(Selected_).value(QStringLiteral("components")).toObject();
     const QJsonObject appliedComponents = candidate.Entity(Selected_).value(QStringLiteral("components")).toObject();
     const QString probeComponent = GetGiProbeVolumeComponentId();

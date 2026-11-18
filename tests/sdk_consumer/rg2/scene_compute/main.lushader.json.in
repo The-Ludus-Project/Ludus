@@ -100,6 +100,24 @@
       "input": "RayLaunch",
       "output": "Radiance",
       "bindings": []
+    },
+    {
+      "id": "TraceWorkItems",
+      "stage": "compute",
+      "source": "main_shaders/work_items.slang",
+      "function": "TraceWorkItems",
+      "input": "RayLaunch",
+      "output": "Radiance",
+      "bindings": []
+    },
+    {
+      "id": "ResolveWorkItems",
+      "stage": "compute",
+      "source": "main_shaders/work_items.slang",
+      "function": "ResolveWorkItems",
+      "input": "RayLaunch",
+      "output": "Radiance",
+      "bindings": []
     }
   ],
   "techniques": [

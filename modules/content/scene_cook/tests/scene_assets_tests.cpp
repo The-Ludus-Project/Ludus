@@ -579,6 +579,182 @@ TEST_CASE("Invalid levels report the reference messages", "[scene_assets]")
     CHECK(error.Message.View() == "Degenerate authored camera");
 }
 
+TEST_CASE("Level hair-card slots cook into LUSCN v13 and reject unusable overrides", "[scene_assets][hair-card]")
+{
+    namespace format = ludus::content::scene_format;
+    namespace resources = ludus::resources;
+    GoldenProject golden;
+    const std::string original = ToText(golden.Level);
+    const std::string transform = R"("transform":[)";
+    const auto withFirstObject = [&](std::string_view member) {
+        std::string level = original;
+        const usize at = level.find(transform);
+        REQUIRE(at != std::string::npos);
+        level.insert(at, std::string(member) + ",");
+        return level;
+    };
+    const std::string hair = R"("hair_card":{"strand_direction_degrees":90,"primary_shift_degrees":-8,)"
+                             R"("secondary_shift_degrees":12,"primary_weight":0.25,"secondary_weight":0.5})";
+    AssetError error;
+    Array<uint8> bundle;
+    const std::string level = withFirstObject(hair);
+    REQUIRE(ValidateLevel(ToSpan(level), error) == true);
+    INFO(Describe(error));
+    REQUIRE(AssembleLevel(golden.Project.string(), ToSpan(level), {}, bundle, error));
+    uint32 version = 0;
+    REQUIRE(
+        ludus::foundation::core::TryReadLittleEndian<uint32>({bundle.GetData() + format::MAGIC.size(), sizeof(uint32)},
+                                                             version) == true);
+    CHECK(version == format::VERSION_13);
+    resources::SceneDefinition scene;
+    REQUIRE(resources::SceneDefinition::Decode(bundle.GetData(), bundle.GetSize(), scene) == resources::Status::Ok);
+    usize hairCards = 0;
+    for (const resources::SceneMaterial& material : scene.Materials)
+    {
+        if (material.Scattering.Model != format::MaterialModel::HairCard)
+        {
+            continue;
+        }
+        ++hairCards;
+        const format::HairCardParameters parameters = format::GetHairCardParameters(material.Scattering);
+        CHECK(parameters.StrandDirectionDegrees == 90);
+        CHECK(parameters.SecondaryShiftDegrees == 12);
+        CHECK(parameters.SecondaryWeight == 0.5F);
+        CHECK(material.Metallic == 0);
+    }
+    // Only the first slot became a card: its material record is split from the slots that inherit it.
+    CHECK(hairCards == 1);
+
+    // A cutoff needs a masked material, and a card cannot also hold a coating.
+    const std::string unmasked = withFirstObject(hair.substr(0, hair.size() - 1) + R"(,"alpha_cutoff":0.5})");
+    REQUIRE(ValidateLevel(ToSpan(unmasked), error) == true);
+    CHECK_FALSE(AssembleLevel(golden.Project.string(), ToSpan(unmasked), {}, bundle, error));
+    CHECK(std::string_view(error.Message.View()).find("mask cutoff needs a masked material") != std::string_view::npos);
+    const std::string coated = withFirstObject(hair + R"(,"coating":{"alpha":0.5,"eta":1.5,"thickness":0.01})");
+    CHECK_FALSE(ValidateLevel(ToSpan(coated), error));
+    CHECK(std::string_view(error.Message.View()).find("cannot also hold a coating") != std::string_view::npos);
+    const std::string outOfRange = withFirstObject(R"("hair_card":{"strand_direction_degrees":200,)"
+                                                   R"("primary_shift_degrees":-8,"secondary_shift_degrees":12,)"
+                                                   R"("primary_weight":0.25,"secondary_weight":0.5})");
+    CHECK_FALSE(ValidateLevel(ToSpan(outOfRange), error));
+    CHECK(std::string_view(error.Message.View()).find("strand direction in [-180, 180]") != std::string_view::npos);
+}
+
+TEST_CASE("Level skin slots cook into LUSCN v14 without metallic and reject unusable overrides", "[scene_assets][skin]")
+{
+    namespace format = ludus::content::scene_format;
+    namespace resources = ludus::resources;
+    GoldenProject golden;
+    const std::string original = ToText(golden.Level);
+    const std::string transform = R"("transform":[)";
+    const auto withFirstObject = [&](std::string_view member) {
+        std::string level = original;
+        const usize at = level.find(transform);
+        REQUIRE(at != std::string::npos);
+        level.insert(at, std::string(member) + ",");
+        return level;
+    };
+    const auto decode = [&](const std::string& level, resources::SceneDefinition& outScene) {
+        AssetError error;
+        Array<uint8> bundle;
+        REQUIRE(ValidateLevel(ToSpan(level), error) == true);
+        INFO(Describe(error));
+        REQUIRE(AssembleLevel(golden.Project.string(), ToSpan(level), {}, bundle, error));
+        uint32 version = 0;
+        REQUIRE(ludus::foundation::core::TryReadLittleEndian<uint32>(
+                    {bundle.GetData() + format::MAGIC.size(), sizeof(uint32)},
+                    version) == true);
+        CHECK(version == format::VERSION_14);
+        REQUIRE(resources::SceneDefinition::Decode(bundle.GetData(), bundle.GetSize(), outScene) ==
+                resources::Status::Ok);
+    };
+    const std::string skin = R"("skin":{"scattering_distance":[0.004,0.0015,0.0007]})";
+    resources::SceneDefinition scene;
+    decode(withFirstObject(skin), scene);
+    usize skinRecords = 0;
+    for (const resources::SceneMaterial& material : scene.Materials)
+    {
+        if (material.Scattering.Model != format::MaterialModel::Skin)
+        {
+            continue;
+        }
+        ++skinRecords;
+        CHECK(material.Scattering.K[0] == 0.004F);
+        CHECK(material.Scattering.K[1] == 0.0015F);
+        CHECK(material.Scattering.K[2] == 0.0007F);
+        CHECK(material.Metallic == 0);
+        CHECK(format::IsMaterialScatteringValid(material.Scattering) == true);
+    }
+    // Only the first slot became skin: its material record is split from the slots that inherit it.
+    CHECK(skinRecords == 1);
+
+    // An authored base colour and roughness replace the inherited ones; textures stay.
+    const std::string surface = R"("skin":{"scattering_distance":[0.004,0.0015,0.0007],"base_color":[0.6,0.4,0.3],)"
+                                R"("roughness":0.55})";
+    decode(withFirstObject(surface), scene);
+    skinRecords = 0;
+    for (const resources::SceneMaterial& material : scene.Materials)
+    {
+        if (material.Scattering.Model != format::MaterialModel::Skin)
+        {
+            continue;
+        }
+        ++skinRecords;
+        CHECK(material.HasSourceMaterial == true);
+        CHECK(material.Reflectance == ludus::foundation::math::Vector3{0.6F, 0.4F, 0.3F});
+        CHECK(material.Roughness == 0.55F);
+        CHECK(material.Scattering.K[0] == 0.004F);
+        CHECK(material.Metallic == 0);
+    }
+    CHECK(skinRecords == 1);
+
+    // Every slot made skin, the golden area lights and the brass conductor included: the skin records drop the
+    // conductor's metallic, which the decoder would reject, and the area lights keep emitting.
+    std::string everySlot = original;
+    for (usize at = everySlot.find(transform); at != std::string::npos;
+         at = everySlot.find(transform, at + skin.size() + 1 + transform.size()))
+    {
+        everySlot.insert(at, skin + ",");
+    }
+    decode(everySlot, scene);
+    usize emitters = 0;
+    for (const resources::SceneMaterial& material : scene.Materials)
+    {
+        CHECK(material.Scattering.Model == format::MaterialModel::Skin);
+        CHECK(material.Metallic == 0);
+        emitters += material.Emission != ludus::foundation::math::Vector3{} ? 1 : 0;
+    }
+    CHECK(emitters > 0);
+
+    // A skin slot holds exactly a scattering distance within [0, 0.1] m, and no other reflection override.
+    AssetError error;
+    const std::string coated = withFirstObject(skin + R"(,"coating":{"alpha":0.5,"eta":1.5,"thickness":0.01})");
+    CHECK_FALSE(ValidateLevel(ToSpan(coated), error));
+    CHECK(std::string_view(error.Message.View()).find("cannot also hold a coating") != std::string_view::npos);
+    const std::string hair =
+        withFirstObject(skin + R"(,"hair_card":{"strand_direction_degrees":90,"primary_shift_degrees":-8,)"
+                               R"("secondary_shift_degrees":12,"primary_weight":0.25,"secondary_weight":0.5})");
+    CHECK_FALSE(ValidateLevel(ToSpan(hair), error));
+    CHECK(std::string_view(error.Message.View()).find("hair card") != std::string_view::npos);
+    for (const std::string_view invalid : {R"("skin":{"scattering_distance":[0.2,0,0]})",
+                                           R"("skin":{"scattering_distance":[-0.001,0,0]})",
+                                           R"("skin":{"scattering_distance":[0.001,0.001]})",
+                                           R"("skin":{})"})
+    {
+        CHECK_FALSE(ValidateLevel(ToSpan(withFirstObject(invalid)), error));
+        CHECK(std::string_view(error.Message.View()).find("[0, 0.1] metres") != std::string_view::npos);
+    }
+    for (const std::string_view invalid : {R"("skin":{"scattering_distance":[0.001,0,0],"base_color":[1.5,0,0]})",
+                                           R"("skin":{"scattering_distance":[0.001,0,0],"base_color":[0.5,0.5]})",
+                                           R"("skin":{"scattering_distance":[0.001,0,0],"roughness":0.01})",
+                                           R"("skin":{"scattering_distance":[0.001,0,0],"roughness":1.5})",
+                                           R"("skin":{"scattering_distance":[0.001,0,0],"metallic":0})"})
+    {
+        CHECK_FALSE(ValidateLevel(ToSpan(withFirstObject(invalid)), error));
+        CHECK(std::string_view(error.Message.View()).find("roughness in [0.045, 1]") != std::string_view::npos);
+    }
+}
+
 TEST_CASE("Composed level transforms match the assembled bundle bit for bit", "[scene_assets]")
 {
     namespace format = ludus::content::scene_format;

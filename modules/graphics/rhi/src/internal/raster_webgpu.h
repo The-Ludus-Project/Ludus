@@ -695,7 +695,7 @@ RasterStatus RasterCreatePipeline(usize slot, const internal::RasterPipelineInfo
     // https://github.com/gpuweb/cts/blob/main/src/webgpu/api/validation/render_pipeline/fragment_state.spec.ts
     target.writeMask = info.ShouldWriteColor == true ? WGPUColorWriteMask_All : WGPUColorWriteMask_None;
     target.format = info.Target == RasterTarget::Rgba16Float  ? WGPUTextureFormat_RGBA16Float
-                    : info.Target == RasterTarget::Surface    ? gConfiguration.format
+                    : info.Target == RasterTarget::Surface    ? GetSurfaceFormat()
                     : info.Target == RasterTarget::Rgba8Unorm ? WGPUTextureFormat_RGBA8Unorm
                                                               : WGPUTextureFormat_RGBA8UnormSrgb;
     WGPUBlendState blend = WGPU_BLEND_STATE_INIT;
@@ -971,7 +971,8 @@ void RasterEndPass() noexcept
 }
 RasterStatus RasterPreparePass(const internal::RasterPassInfo& info) noexcept
 {
-    if (gTarget.ShouldPresentToSurface == false && info.Texture == internal::RASTER_INVALID && info.ColorCount == 0)
+    if (GetActiveSurface().Target.ShouldPresentToSurface == false && info.Texture == internal::RASTER_INVALID &&
+        info.ColorCount == 0)
     {
         return RasterStatus::InvalidState;
     }
@@ -1044,8 +1045,8 @@ RasterStatus RasterBeginPass(const internal::RasterPassInfo& info) noexcept
     pass.colorAttachmentCount = info.ColorCount == 0 ? 1 : info.ColorCount;
     pass.colorAttachments = info.ColorCount == 0 ? &color : colors;
     pass.depthStencilAttachment = &depth;
-    const auto width = surface ? gTarget.Width : info.Width;
-    const auto height = surface ? gTarget.Height : info.Height;
+    const uint32 width = surface == true ? GetActiveSurface().Target.Width : info.Width;
+    const uint32 height = surface == true ? GetActiveSurface().Target.Height : info.Height;
     if (internal::RasterResolveArea(state, width, height, gRasterArea) == false)
     {
         return RasterStatus::InvalidDescription;

@@ -182,6 +182,8 @@ struct RenderGraphPackage::State final
     bool HasPersistentBuffers = false;
     bool HasForwardStages = false;
     bool CanHaveForwardSurfaceCharts = false;
+    bool CanHaveDeferredProbeGBuffer = false;
+    bool CanHaveDeferredSurfaceChartGBuffer = false;
     bool CanHaveClusteredForward = false;
     bool CanHaveClusteredDeferred = false;
     bool HasExplicitAccumulation = false;
@@ -195,19 +197,25 @@ struct RenderGraphPackage::State final
     bool HasOpaqueGBuffer = false;
     /// The version 25 scene resource word names the LTC table: AppendLtcTableBindings adds its slot.
     bool HasLtcTable = false;
-    /// The scene resource word names the failure summary: AppendSceneResourceBindings adds its slot last.
+    /// The scene resource word names the failure summary: AppendSceneResourceBindings adds its slot after the LTC
+    /// table.
     bool HasFailureSummary = false;
+    /// Version 37 World-feature bits: the linked kernel reads the Atmosphere sky table (its last slot) or the aerial
+    /// perspective table (before the LTC table). AppendSceneResourceBindings adds them in slot order.
+    bool HasAtmosphereSky = false;
+    bool HasAerialPerspective = false;
     /// Version 28 and later ray kernels dispatch the uniform's tile region.
     bool HasRayTiles = false;
+    bool HasSceneWorkItems = false;
     // DecodeUniforms validates and writes every active stage before any binding is published.
     // NOLINTNEXTLINE(bugprone-invalid-enum-default-initialization)
     StaticArray<format::UniformBinding, format::MAX_UNIFORM_BINDINGS> UniformBindings{};
     StaticArray<format::UniformBlock, format::MAX_UNIFORM_BLOCKS> UniformBlocks{};
     StaticArray<format::UniformField, format::MAX_UNIFORM_FIELDS> UniformFields{};
     /// Stage binding requirements derived from the uniform records, one table per role.
-    static constexpr usize STAGE_BINDING_CAPACITY = LUDUS_GRAPH_VISIBILITY_BINDING_COUNT + format::MAX_STORAGE_BUFFERS +
-                                                    LUDUS_GRAPH_LTC_TABLE_BINDING_COUNT +
-                                                    LUDUS_GRAPH_FAILURE_BINDING_COUNT;
+    static constexpr usize STAGE_BINDING_CAPACITY =
+        LUDUS_GRAPH_VISIBILITY_BINDING_COUNT + format::MAX_STORAGE_BUFFERS + LUDUS_GRAPH_LTC_TABLE_BINDING_COUNT +
+        LUDUS_GRAPH_FAILURE_BINDING_COUNT + LUDUS_GRAPH_WORLD_TABLE_BINDING_COUNT;
     // RasterBinding initializes Visibility to Both, including every nested array element.
     // NOLINTNEXTLINE(bugprone-invalid-enum-default-initialization)
     StaticArray<StaticArray<rhi::RasterBinding, STAGE_BINDING_CAPACITY>, format::STAGE_ROLE_COUNT> Bindings{};
@@ -291,8 +299,19 @@ RenderGraphPackageStatus RenderGraphPackage::State::DecodeStages(ByteReader& ino
         }
         const bool isDeferredRole =
             role >= format::DEFERRED_STAGE_ROLE_FIRST && role <= format::DEFERRED_OPAQUE_GBUFFER_STAGE_ROLE;
-        const bool isSpecializedForward = role >= format::FORWARD_SURFACE_CHART_STAGE_ROLE;
+        const bool isSpecializedForward =
+            role >= format::FORWARD_SURFACE_CHART_STAGE_ROLE && role <= format::FORWARD_REALTIME_STAGE_ROLE;
         if (isSpecializedForward == true && CanHaveForwardSurfaceCharts == false)
+        {
+            return RenderGraphPackageStatus::UnsupportedVersion;
+        }
+        const bool isDeferredProbe = role == format::DEFERRED_PROBE_GBUFFER_STAGE_ROLE;
+        if (isDeferredProbe == true && CanHaveDeferredProbeGBuffer == false)
+        {
+            return RenderGraphPackageStatus::UnsupportedVersion;
+        }
+        const bool isDeferredSurfaceChart = role == format::DEFERRED_SURFACE_CHART_GBUFFER_STAGE_ROLE;
+        if (isDeferredSurfaceChart == true && CanHaveDeferredSurfaceChartGBuffer == false)
         {
             return RenderGraphPackageStatus::UnsupportedVersion;
         }
@@ -312,7 +331,8 @@ RenderGraphPackageStatus RenderGraphPackage::State::DecodeStages(ByteReader& ino
         }
         const bool isForwardRole = (role >= format::FORWARD_STAGE_ROLE_FIRST && role < format::NATIVE_RAY_STAGE_ROLE) ||
                                    isClusteredFragment == true || isForwardDepth == true || isDeferredRole == true ||
-                                   isSpecializedForward == true;
+                                   isSpecializedForward == true || isDeferredProbe == true ||
+                                   isDeferredSurfaceChart == true;
         if (isForwardRole == true && HasForwardStages == false)
         {
             return RenderGraphPackageStatus::UnsupportedVersion;
@@ -537,9 +557,30 @@ RenderGraphPackageStatus RenderGraphPackage::State::DecodeStages(ByteReader& ino
     {
         hasDeferred = hasDeferred == true || Stages[format::DEFERRED_STAGE_ROLE_FIRST][target].IsPresent == true;
     }
+    bool hasDeferredProbe = false;
+    bool hasDeferredSurfaceChart = false;
+    for (usize target = 0; target < format::SHADER_TARGET_COUNT; ++target)
+    {
+        hasDeferredProbe =
+            hasDeferredProbe == true || Stages[format::DEFERRED_PROBE_GBUFFER_STAGE_ROLE][target].IsPresent == true;
+        hasDeferredSurfaceChart = hasDeferredSurfaceChart == true ||
+                                  Stages[format::DEFERRED_SURFACE_CHART_GBUFFER_STAGE_ROLE][target].IsPresent == true;
+    }
     for (usize target = 0; target < format::SHADER_TARGET_COUNT; ++target)
     {
         const bool hasClusteredTarget = Stages[format::CLUSTERED_FORWARD_FRAGMENT_ROLE][target].IsPresent;
+        // The probe G-buffer accompanies every deferred target of a package that connects Baked Lighting.
+        if (Stages[format::DEFERRED_PROBE_GBUFFER_STAGE_ROLE][target].IsPresent !=
+            (hasDeferredProbe == true && Stages[format::DEFERRED_STAGE_ROLE_FIRST][target].IsPresent == true))
+        {
+            return RenderGraphPackageStatus::Malformed;
+        }
+        // So does the surface-chart G-buffer.
+        if (Stages[format::DEFERRED_SURFACE_CHART_GBUFFER_STAGE_ROLE][target].IsPresent !=
+            (hasDeferredSurfaceChart == true && Stages[format::DEFERRED_STAGE_ROLE_FIRST][target].IsPresent == true))
+        {
+            return RenderGraphPackageStatus::Malformed;
+        }
         if (Stages[format::FORWARD_SURFACE_CHART_STAGE_ROLE][target].IsPresent !=
             (hasSurfaceChartForward == true && Stages[format::FORWARD_REALTIME_STAGE_ROLE][target].IsPresent == true))
         {
@@ -681,9 +722,9 @@ void RenderGraphPackage::State::DeriveBindings() noexcept
 }
 RenderGraphPackageStatus RenderGraphPackage::State::AppendSceneResourceBindings() noexcept
 {
-    // The generated header's reflected compute bindings end with the LTC table slot and then the failure summary;
-    // a package carries the frozen ABI, so the decoder appends the slots its scene resource word names to each
-    // compute role it carries, in slot order.
+    // The generated header's reflected compute bindings end with the aerial perspective table, the LTC table, the
+    // failure summary and the Atmosphere sky; a package carries the frozen ABI, so the decoder appends the slots its
+    // scene resource word names to each compute role it carries, in slot order.
     bool hasVisibilityBuffer = false;
     for (usize i = 0; i < Header.PassCount; ++i)
     {
@@ -727,12 +768,23 @@ RenderGraphPackageStatus RenderGraphPackage::State::AppendSceneResourceBindings(
                 Bindings[role][BindingCounts[role]++] = binding;
             }
         }
+        // Native ray stages bind neither World-feature table: their kernels never define the slots.
+        const bool hasAerialPerspective = HasAerialPerspective == true && isNativeStages == false;
+        const bool hasAtmosphereSky = HasAtmosphereSky == true && isNativeStages == false;
         const usize appended =
             (HasLtcTable == true && isNativeStages == false ? LUDUS_GRAPH_LTC_TABLE_BINDING_COUNT : 0) +
-            (HasFailureSummary == true ? LUDUS_GRAPH_FAILURE_BINDING_COUNT : 0);
+            (HasFailureSummary == true ? LUDUS_GRAPH_FAILURE_BINDING_COUNT : 0) +
+            (hasAerialPerspective == true ? 1 : 0) + (hasAtmosphereSky == true ? 1 : 0);
         if (Bindings[role].GetSize() - BindingCounts[role] < appended)
         {
             return RenderGraphPackageStatus::CapacityExceeded;
+        }
+        if (hasAerialPerspective == true)
+        {
+            Bindings[role][BindingCounts[role]++] = {LUDUS_GRAPH_AERIAL_PERSPECTIVE_BINDING,
+                                                     rhi::RasterBindingKind::StorageRead,
+                                                     rhi::RasterVisibility::Compute,
+                                                     LUDUS_GPU_PREVIEW_VECTOR_BYTES};
         }
         if (HasLtcTable == true && isNativeStages == false)
         {
@@ -747,6 +799,13 @@ RenderGraphPackageStatus RenderGraphPackage::State::AppendSceneResourceBindings(
                                                      rhi::RasterBindingKind::StorageReadWrite,
                                                      rhi::RasterVisibility::Compute,
                                                      sizeof(uint32)};
+        }
+        if (hasAtmosphereSky == true)
+        {
+            Bindings[role][BindingCounts[role]++] = {LUDUS_GRAPH_ATMOSPHERE_SKY_BINDING,
+                                                     rhi::RasterBindingKind::StorageRead,
+                                                     rhi::RasterVisibility::Compute,
+                                                     LUDUS_GPU_PREVIEW_VECTOR_BYTES};
         }
     }
     return hasComputeRole == true ? RenderGraphPackageStatus::Ready : RenderGraphPackageStatus::Malformed;
@@ -839,6 +898,13 @@ RenderGraphPackageStatus RenderGraphPackage::State::DecodeRecords(ByteReader& in
             return RenderGraphPackageStatus::Malformed;
         }
         pass.ToneMappingCurve = static_cast<format::DisplayCurve>(curve);
+        pass.WorkItemCount = HasSceneWorkItems == true ? inoutReader.ReadWord() : 0;
+        if (pass.WorkItemCount > format::MAX_SCENE_WORK_ITEMS ||
+            (pass.WorkItemCount != 0 && (program != static_cast<uint32>(format::Technique::RayTracing) ||
+                                         pass.Camera != format::ABSENT || pass.Color != format::ABSENT)))
+        {
+            return RenderGraphPackageStatus::Malformed;
+        }
         HasNativeRayQueries =
             HasNativeRayQueries == true || (program == static_cast<uint32>(format::Technique::RayTracing) &&
                                             (pass.Traversal == format::RayTraversal::NativeQuery ||
@@ -916,7 +982,10 @@ RenderGraphPackageStatus RenderGraphPackage::decode(BorrowedView<const uint8> by
     const uint32 magic = reader.ReadWord();
     const uint32 version = reader.ReadWord();
     if (magic != expectedMagic ||
-        (version != format::RECIPE_KEY_PACKAGE_VERSION && version != format::FORWARD_SURFACE_CHART_PACKAGE_VERSION &&
+        (version != format::SCENE_WORK_ITEMS_PACKAGE_VERSION && version != format::WORLD_FEATURE_PACKAGE_VERSION &&
+         version != format::DEFERRED_SURFACE_CHART_GBUFFER_PACKAGE_VERSION &&
+         version != format::DEFERRED_PROBE_GBUFFER_PACKAGE_VERSION && version != format::RECIPE_KEY_PACKAGE_VERSION &&
+         version != format::FORWARD_SURFACE_CHART_PACKAGE_VERSION &&
          version != format::CAPTURE_WARMUP_PACKAGE_VERSION && version != format::LIGHT_TRANSFORMER_PACKAGE_VERSION &&
          version != format::OPAQUE_GBUFFER_PACKAGE_VERSION &&
          version != format::RASTER_MESH_LIGHT_BOUND_PACKAGE_VERSION &&
@@ -946,9 +1015,12 @@ RenderGraphPackageStatus RenderGraphPackage::decode(BorrowedView<const uint8> by
     candidate->HasPixelBuffers = version >= format::PIXEL_BUFFER_PACKAGE_VERSION;
     candidate->HasForwardStages = version >= format::FORWARD_PACKAGE_VERSION;
     candidate->CanHaveForwardSurfaceCharts = version >= format::FORWARD_SURFACE_CHART_PACKAGE_VERSION;
+    candidate->CanHaveDeferredProbeGBuffer = version >= format::DEFERRED_PROBE_GBUFFER_PACKAGE_VERSION;
+    candidate->CanHaveDeferredSurfaceChartGBuffer = version >= format::DEFERRED_SURFACE_CHART_GBUFFER_PACKAGE_VERSION;
     // Earlier clustered deferred resolves read emitter records without the bounding-sphere header word.
     candidate->CanHaveClusteredDeferred = version >= format::RASTER_MESH_LIGHT_BOUND_PACKAGE_VERSION;
     candidate->HasRayTiles = version >= format::TILED_RAY_PACKAGE_VERSION;
+    candidate->HasSceneWorkItems = version >= format::SCENE_WORK_ITEMS_PACKAGE_VERSION;
     candidate->CanHaveClusteredForward = version >= format::CLUSTERED_FORWARD_PACKAGE_VERSION;
     candidate->HasExplicitAccumulation = version >= format::ACCUMULATION_PACKAGE_VERSION;
     candidate->HasExplicitToneMapping = version >= format::TONE_MAPPING_PACKAGE_VERSION;
@@ -1099,12 +1171,16 @@ RenderGraphPackageStatus RenderGraphPackage::decode(BorrowedView<const uint8> by
         if (reader.IsOk() == false ||
             (sceneResources &
              ~(format::SCENE_RESOURCE_LTC_TABLE | format::SCENE_RESOURCE_FAILURE_SUMMARY |
-               (version >= format::LIGHT_TRANSFORMER_PACKAGE_VERSION ? format::SCENE_RESOURCE_LIGHT_TRANSFORMER
-                                                                     : 0))) != 0)
+               (version >= format::LIGHT_TRANSFORMER_PACKAGE_VERSION ? format::SCENE_RESOURCE_LIGHT_TRANSFORMER : 0) |
+               (version >= format::WORLD_FEATURE_PACKAGE_VERSION
+                    ? format::SCENE_RESOURCE_ATMOSPHERE_SKY | format::SCENE_RESOURCE_AERIAL_PERSPECTIVE
+                    : 0))) != 0)
         {
             return RenderGraphPackageStatus::Malformed;
         }
         candidate->HasLightTransformer = (sceneResources & format::SCENE_RESOURCE_LIGHT_TRANSFORMER) != 0;
+        candidate->HasAtmosphereSky = (sceneResources & format::SCENE_RESOURCE_ATMOSPHERE_SKY) != 0;
+        candidate->HasAerialPerspective = (sceneResources & format::SCENE_RESOURCE_AERIAL_PERSPECTIVE) != 0;
         candidate->HasLtcTable = (sceneResources & format::SCENE_RESOURCE_LTC_TABLE) != 0;
         candidate->HasFailureSummary = (sceneResources & format::SCENE_RESOURCE_FAILURE_SUMMARY) != 0;
     }
@@ -1203,7 +1279,8 @@ RenderGraphPackageStatus RenderGraphPackage::decode(BorrowedView<const uint8> by
         }
     }
     candidate->DeriveBindings();
-    if (candidate->HasLtcTable == true || candidate->HasFailureSummary == true)
+    if (candidate->HasLtcTable == true || candidate->HasFailureSummary == true || candidate->HasAtmosphereSky == true ||
+        candidate->HasAerialPerspective == true)
     {
         status = candidate->AppendSceneResourceBindings();
         if (status != RenderGraphPackageStatus::Ready)
@@ -1278,6 +1355,8 @@ RenderGraphPrograms RenderGraphPackage::GetPrograms(const rhi::RasterShaderDescr
     result.RecipeKeys = state.RecipeKeys;
     result.HasRayPathCapture = state.IsRayPathCapture;
     result.HasLtcTable = state.HasLtcTable;
+    result.HasAtmosphereSky = state.HasAtmosphereSky;
+    result.HasAerialPerspective = state.HasAerialPerspective;
     result.HasLightTransformer = state.HasLightTransformer;
     result.HasRayTiles = state.HasRayTiles;
     for (const State::StageView& view : state.Stages[format::CLUSTERED_FORWARD_FRAGMENT_ROLE])
@@ -1320,7 +1399,9 @@ RenderGraphPrograms RenderGraphPackage::GetPrograms(const rhi::RasterShaderDescr
                          &result.DeferredDepthCopyFragment,
                          &result.DeferredOpaqueGBufferFragment,
                          &result.ForwardSurfaceChartFragment,
-                         &result.ForwardFragment}};
+                         &result.ForwardFragment,
+                         &result.DeferredProbeGBufferFragment,
+                         &result.DeferredSurfaceChartGBufferFragment}};
     for (usize role = 0; role < format::STAGE_ROLE_COUNT; ++role)
     {
         rhi::RasterShaderDescription& description =
@@ -1613,11 +1694,12 @@ struct RenderGraphActivation::State final
     uint32 ReferenceWidth = 0;
     uint32 ReferenceHeight = 0;
     RenderGraphActivationReport Report{};
-    void FailCandidate(Status status) noexcept
+    void FailCandidate(Status status, RenderGraphFailureStage stage) noexcept
     {
         Candidate.Reset();
         Report.Candidate = RenderGraphCandidateState::Failed;
         Report.LastFailure = status;
+        Report.CandidateFailureStage = stage;
     }
     /// Publish the complete candidate; the replaced graph retires through RHI completion.
     void Activate() noexcept
@@ -1693,6 +1775,8 @@ Status RenderGraphActivation::Stage(core::UniquePtr<RenderGraphPackage> package,
     // A newer request supersedes any unactivated candidate, whatever its outcome.
     state.Candidate.Reset();
     state.Report.CandidateReport = {};
+    state.Report.CandidateRejection = RenderGraphSceneRejection::None;
+    state.Report.CandidateFailureStage = RenderGraphFailureStage::None;
     state.Report.CandidateGeneration = ++state.NextSerial;
     state.Report.CandidateRenderer =
         RequiresHardwareRayTracing(package->GetPlan()) == true
@@ -1709,7 +1793,7 @@ Status RenderGraphActivation::Stage(core::UniquePtr<RenderGraphPackage> package,
     core::UniquePtr<Generation> generation{allocationOrNull};
     if (generation.Get() == nullptr)
     {
-        state.FailCandidate(Status::OutOfMemory);
+        state.FailCandidate(Status::OutOfMemory, RenderGraphFailureStage::Setup);
         return Status::OutOfMemory;
     }
     generation->Package.Swap(package);
@@ -1722,7 +1806,7 @@ Status RenderGraphActivation::Stage(core::UniquePtr<RenderGraphPackage> package,
     const core::UniquePtr<RenderGraphPrograms> programs{programsOrNull};
     if (programs.Get() == nullptr)
     {
-        state.FailCandidate(Status::OutOfMemory);
+        state.FailCandidate(Status::OutOfMemory, RenderGraphFailureStage::Setup);
         return Status::OutOfMemory;
     }
     const Status status = generation->Graph.Initialize(state.Device,
@@ -1734,7 +1818,7 @@ Status RenderGraphActivation::Stage(core::UniquePtr<RenderGraphPackage> package,
                                                        modelOrNull);
     if (IsAccepted(status) == false)
     {
-        state.FailCandidate(status);
+        state.FailCandidate(status, RenderGraphFailureStage::Setup);
         return status;
     }
     state.Candidate.Swap(generation);
@@ -1808,7 +1892,7 @@ Status RenderGraphActivation::Resize(uint32 referenceWidth, uint32 referenceHeig
         const Status candidateStatus = state.Candidate->Graph.Resize(referenceWidth, referenceHeight);
         if (IsAccepted(candidateStatus) == false)
         {
-            state.FailCandidate(candidateStatus);
+            state.FailCandidate(candidateStatus, RenderGraphFailureStage::Resize);
             return candidateStatus;
         }
         if (candidateStatus == Status::Pending)
@@ -1844,7 +1928,7 @@ Status RenderGraphActivation::Poll() noexcept
     const Status candidateStatus = candidate.Graph.Poll();
     if (IsAccepted(candidateStatus) == false)
     {
-        state.FailCandidate(candidateStatus);
+        state.FailCandidate(candidateStatus, candidate.Graph.GetLastFailureStage());
         return state.Active.Get() != nullptr ? activeStatus : candidateStatus;
     }
     if (candidateStatus == Status::Pending)
@@ -1904,6 +1988,7 @@ Status RenderGraphActivation::Update(BorrowedView<const RenderGraphMesh> meshes,
     if (candidateStatus != Status::NotReady)
     {
         state.Report.CandidateReport = candidateReport;
+        state.Report.CandidateRejection = candidate.Graph.GetLastRejection();
     }
     if (IsAccepted(candidateStatus) == true)
     {
@@ -1913,7 +1998,7 @@ Status RenderGraphActivation::Update(BorrowedView<const RenderGraphMesh> meshes,
     else if (isActiveAccepting == true)
     {
         // The new generation cannot cover what the drawing generation accepts.
-        state.FailCandidate(candidateStatus);
+        state.FailCandidate(candidateStatus, candidate.Graph.GetLastFailureStage());
     }
     if (state.Active.Get() != nullptr)
     {

@@ -211,16 +211,58 @@ struct ReferenceIncidentLight final
 constexpr float32 NEAR_LIGHT_SQUARED_DISTANCE_FLOOR = 1e-4F;
 constexpr float32 SPHERE_SOLID_ANGLE_FACTOR = 4;
 
-ReferenceIncidentLight
-EvaluateAnalyticIncidentLight(const ReferenceJob& job, const DirectLight& light, math::Vector3 receiverWorld) noexcept
+// Below this absolute axis component, the disk frame starts from the world Z axis; otherwise from Y.
+constexpr float32 DISK_FRAME_POLE_COSINE = 0.999F;
+
+// Thanks to Matt Pharr, Wenzel Jakob and Greg Humphreys, Physically Based Rendering, 4th ed., §A.5.4,
+// https://pbr-book.org/4ed/Sampling_Algorithms/Sampling_Multidimensional_Functions, for uniform cone sampling.
+// A directional light of angular radius r is a uniformly bright disk whose radiance L gives its illuminance E at
+// normal incidence: E = L * pi * sin(r)^2. Sampling the cone of solid angle 2 pi (1 - cos r) uniformly, each sample
+// carries L / pdf = E * 2 / (1 + cos r), so the estimate keeps E as r changes and reduces to the delta light at r = 0.
+// 1 - cos theta is drawn directly so sin theta keeps its precision for the sun's 0.0047 radian disk.
+// renderer_reference.slang SampleDirectionalDisk evaluates the same operations.
+void SampleDirectionalDisk(const ReferenceJob& job,
+                           const ReferencePath& path,
+                           const DirectLight& light,
+                           ReferenceIncidentLight& inoutResult) noexcept
+{
+    const math::Vector3 axisWorld = -light.Direction;
+    const uint32 first = LUDUS_REFERENCE_DIRECTIONAL_DISK_FIRST_DIMENSION +
+                         LUDUS_REFERENCE_DIRECTIONAL_DISK_DIMENSIONS * static_cast<uint32>(path.Depth);
+    const float32 firstSample = ReferenceRandom(job, path, static_cast<uint16>(first));
+    const float32 secondSample = ReferenceRandom(job, path, static_cast<uint16>(first + 1));
+    const float32 halfSine = math::Sin(0.5F * light.AngularRadiusRadians);
+    const float32 oneMinusCosMaximum = 2 * halfSine * halfSine;
+    const float32 oneMinusCos = firstSample * oneMinusCosMaximum;
+    const float32 sine = math::Sqrt(math::Max(0.0F, oneMinusCos * (2 - oneMinusCos)));
+    const float32 angle = math::kTauF * secondSample;
+    math::Vector3 axisXWorld;
+    static_cast<void>(math::TryNormalize(
+        math::Cross(math::Abs(axisWorld.Z) < DISK_FRAME_POLE_COSINE ? math::Vector3{0, 0, 1} : math::Vector3{0, 1, 0},
+                    axisWorld),
+        axisXWorld));
+    const math::Vector3 axisYWorld = math::Cross(axisWorld, axisXWorld);
+    inoutResult.DirectionWorld =
+        axisXWorld * (sine * math::Cos(angle)) + axisYWorld * (sine * math::Sin(angle)) + axisWorld * (1 - oneMinusCos);
+    inoutResult.Radiance = inoutResult.Radiance * (2 / (2 - oneMinusCosMaximum));
+}
+ReferenceIncidentLight EvaluateAnalyticIncidentLight(const ReferenceJob& job,
+                                                     const ReferencePath& path,
+                                                     const DirectLight& light,
+                                                     math::Vector3 receiverWorld) noexcept
 {
     ReferenceIncidentLight result;
+    // A disk is still estimated only by light sampling: no BSDF-sampled path reaches it, so it takes no MIS weight.
     result.IsDelta = true;
     result.Radiance = light.Color * light.Intensity;
     if (light.Kind == LightKind::Directional)
     {
         result.DirectionWorld = -light.Direction;
         result.Distance = job.Description.SecondaryDistance;
+        if (light.AngularRadiusRadians > 0)
+        {
+            SampleDirectionalDisk(job, path, light, result);
+        }
     }
     else
     {
@@ -322,7 +364,7 @@ ReferenceIncidentLight SampleReferenceIncidentLight(const ReferenceJob& job,
     switch (choice.Kind)
     {
         case ReferenceLightChoiceKind::Analytic:
-            return EvaluateAnalyticIncidentLight(job, GetOrderedReferenceLight(job, choice.Index), receiverWorld);
+            return EvaluateAnalyticIncidentLight(job, path, GetOrderedReferenceLight(job, choice.Index), receiverWorld);
         case ReferenceLightChoiceKind::Triangle:
             return SampleTriangleIncidentLight(job, path, choice.Index, receiverWorld);
         case ReferenceLightChoiceKind::Environment:
@@ -650,14 +692,19 @@ rhi::RasterStatus PrepareReferenceVertex(const ReferenceJob& job,
             path.Depth == 0 || path.IsPreviousSpecular == true
                 ? 1
                 : (job.Description.OpticalWavelengthWorld > 0 ? 0 : ReferencePowerWeight(path.PreviousPdf, lightPdf));
-        AddTransport(path,
-                     math::Hadamard(path.Throughput,
-                                    job.EnvironmentOrNull != nullptr
-                                        ? EvaluateEnvironment(*job.EnvironmentOrNull, ReferenceDirection(path.Ray))
-                                        : job.Description.Environment) *
-                         weight,
-                     path.Depth,
-                     true);
+        const math::Vector3 directionWorld = ReferenceDirection(path.Ray);
+        math::Vector3 radiance = job.Description.Environment;
+        if (job.EnvironmentOrNull != nullptr)
+        {
+            radiance = path.Depth == 0 && job.Sky.ShouldFilterEnvironment() == true
+                           ? EvaluateFilteredEnvironment(*job.EnvironmentOrNull, directionWorld)
+                           : EvaluateEnvironment(*job.EnvironmentOrNull, directionWorld);
+        }
+        if (path.Depth == 0 && job.Sky.IsEnabled() == true)
+        {
+            radiance = radiance + EvaluateReferenceSky(job.Sky, directionWorld);
+        }
+        AddTransport(path, math::Hadamard(path.Throughput, radiance) * weight, path.Depth, true);
         return ValidContribution(path.Emission) && ValidContribution(path.Direct) && ValidContribution(path.Indirect)
                    ? rhi::RasterStatus::Ready
                    : FailReferencePath(inoutInfo, path, ReferenceFailure::InvalidRadiance);

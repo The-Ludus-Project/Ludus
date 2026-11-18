@@ -103,6 +103,8 @@ reviews or validating the selected World's interactive viewport.
   static analysis still use version 23. All other coding rules apply.
 - Compile warning-clean; CI is warnings-as-errors.
 - `#pragma once` for header guards.
+- Attach `*`/`&`/`&&` to the type, not the name: `const void* pointer`,
+  `Scene& outScene`, never `int *value` (`.clang-format` `PointerAlignment: Left`).
 - Follow the established naming conventions in the codebase / `.clang-tidy`.
 - Naming (full rules in `AGENTS.md` §Naming): spell names out (no `Arg`,
   `param`, `ctx`); functions start with a verb; booleans read as questions

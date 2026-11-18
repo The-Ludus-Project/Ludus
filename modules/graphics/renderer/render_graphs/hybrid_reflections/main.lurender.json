@@ -1,0 +1,120 @@
+{
+  "version": 2,
+  "id": "Main",
+  "default": "Default",
+  "configurations": [
+    {
+      "id": "Default",
+      "inputs": [],
+      "outputs": [],
+      "nodes": [
+        {
+          "id": "scene",
+          "kind": "Scene"
+        },
+        {
+          "active": true,
+          "id": "camera",
+          "kind": "Camera",
+          "role": "Offscreen",
+          "target_type": "ColorTexture"
+        },
+        {
+          "extent": "RenderSize",
+          "format": "RGBA8Unorm",
+          "id": "color",
+          "imported": false,
+          "initialized": false,
+          "kind": "Target",
+          "presentation": false,
+          "samples": 1,
+          "type": "ColorTexture"
+        },
+        {
+          "id": "renderSize",
+          "kind": "RenderSize",
+          "extent": {
+            "reference": "View",
+            "scale": [
+              1,
+              1
+            ]
+          }
+        },
+        {
+          "id": "output",
+          "kind": "Export",
+          "type": "ColorTexture"
+        },
+        {
+          "id": "visibilityOutput",
+          "kind": "Export",
+          "type": "ColorTexture"
+        },
+        {
+          "id": "depthOutput",
+          "kind": "Export",
+          "type": "DepthTexture"
+        },
+        {
+          "id": "transport",
+          "kind": "Subgraph",
+          "asset": "library.lurender.json",
+          "configuration": "HybridReflections"
+        },
+        {
+          "id": "accumulate",
+          "kind": "Accumulate",
+          "samples": 4096
+        },
+        {
+          "id": "tonemap",
+          "kind": "ToneMap",
+          "exposure": 1
+        }
+      ],
+      "edges": [
+        {
+          "from": "scene.scene",
+          "to": "transport.scene"
+        },
+        {
+          "from": "camera.view",
+          "to": "transport.view"
+        },
+        {
+          "from": "color.texture",
+          "to": "transport.color"
+        },
+        {
+          "from": "color.texture",
+          "to": "camera.target"
+        },
+        {
+          "from": "renderSize.size",
+          "to": "color.size"
+        },
+        {
+          "from": "tonemap.color",
+          "to": "output.texture"
+        },
+        {
+          "from": "transport.visibility",
+          "to": "visibilityOutput.texture"
+        },
+        {
+          "from": "transport.depth",
+          "to": "depthOutput.texture"
+        },
+        {
+          "from": "transport.color",
+          "to": "accumulate.color"
+        },
+        {
+          "from": "accumulate.color",
+          "to": "tonemap.color"
+        }
+      ]
+    }
+  ]
+}
