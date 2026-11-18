@@ -3795,8 +3795,14 @@ Text that does not fit is cut where it costs the least, and never silently:
   extensions. Rows are sorted by that name. When two rows in a group share it, each is followed by a dimmed
   folder ("sponza · assets"): the folder's own name when that tells them apart,
   else its path. The folder is cut first; a name that is still too wide is elided
-  from the middle, so its head and tail stay ("SliceSampl…Coupled"). The tooltip
-  and the search use the whole relative path.
+  at its end, so it reads from its start like the sorted list
+  ("SliceSamplingCo…"). The tooltip and the search use the whole relative path.
+  The Project Explorer opens at 18% of the window's width (220 to 360 px), so a
+  1470 px MacBook Air window gives it about 265 px.
+- **Filter chips** (Content) keep their order; the chips the dock's width cannot
+  hold move into a **More** menu at the end of the row, which reads as on while a
+  filter it holds is on. The row of actions under the list wraps onto another
+  line instead of clipping a label.
 - **Combo boxes** draw their current text with the same elision, never a cut
   mid-word, and ask for a width that holds their longest item.
 - **Tool window tab bars** show each window's icon and title while they fit. When

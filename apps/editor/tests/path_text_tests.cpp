@@ -85,7 +85,7 @@ TEST_CASE("A document name leaves out the suffix its group already names", "[edi
     CHECK(RemoveKnownSuffix(QStringLiteral("door.luau"), {}) == QStringLiteral("door.luau"));
 }
 
-TEST_CASE("A document name drops its qualifier before it elides, and keeps its head and tail", "[editor][path-text]")
+TEST_CASE("A document name drops its qualifier before it elides, and keeps its start", "[editor][path-text]")
 {
     const QFontMetrics metrics{QFont()};
     const QString name = QStringLiteral("SliceSamplingCoupled");
@@ -111,12 +111,11 @@ TEST_CASE("A document name drops its qualifier before it elides, and keeps its h
     CHECK(shownName == name);
     CHECK(shownQualifier.isEmpty() == true);
 
-    // Narrower than the name: it keeps its head and its tail, which is where similar names differ.
+    // Narrower than the name: it reads from its start and ends in the ellipsis, as a list sorted by name scans.
     const int narrow = metrics.horizontalAdvance(name) * 2 / 3;
     ElideDocumentName(name, qualifier, metrics, narrow, shownName, shownQualifier);
-    CHECK(shownName.startsWith(QStringLiteral("Slice")) == true);
-    CHECK(shownName.endsWith(QStringLiteral("led")) == true);
-    CHECK(shownName.contains(QStringLiteral("\u2026")) == true);
+    CHECK(shownName.startsWith(QStringLiteral("SliceSampl")) == true);
+    CHECK(shownName.endsWith(QStringLiteral("\u2026")) == true);
     CHECK(shownQualifier.isEmpty() == true);
     CHECK(metrics.horizontalAdvance(shownName) <= narrow);
 
@@ -124,5 +123,5 @@ TEST_CASE("A document name drops its qualifier before it elides, and keeps its h
     const QString dotted = QStringLiteral("sponza.lighting.review.final");
     const int dottedWidth = metrics.horizontalAdvance(dotted) / 2;
     ElideDocumentName(dotted, {}, metrics, dottedWidth, shownName, shownQualifier);
-    CHECK(shownName == metrics.elidedText(dotted, Qt::ElideMiddle, dottedWidth));
+    CHECK(shownName == metrics.elidedText(dotted, Qt::ElideRight, dottedWidth));
 }

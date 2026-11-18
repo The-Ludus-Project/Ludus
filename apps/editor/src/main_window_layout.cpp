@@ -98,9 +98,9 @@ constexpr foundation::int32 MIN_WINDOW_HEIGHT_PIXELS = 760;
 // narrower side, Properties the wider one.
 // The explorer grows with the window for longer document names; its minimum keeps a World document beside both
 // side tool windows usable when a window is made small after its layout was set.
-constexpr foundation::int32 EXPLORER_DOCK_PERCENT = 16;
+constexpr foundation::int32 EXPLORER_DOCK_PERCENT = 18;
 constexpr foundation::int32 MIN_EXPLORER_DOCK_PIXELS = 220;
-constexpr foundation::int32 MAX_EXPLORER_DOCK_PIXELS = 340;
+constexpr foundation::int32 MAX_EXPLORER_DOCK_PIXELS = 360;
 constexpr foundation::int32 PROPERTIES_DOCK_PERCENT = 20;
 constexpr foundation::int32 MIN_PROPERTIES_DOCK_PIXELS = 260;
 constexpr foundation::int32 MAX_PROPERTIES_DOCK_PIXELS = 380;

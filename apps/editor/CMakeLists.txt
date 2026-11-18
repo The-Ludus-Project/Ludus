@@ -715,6 +715,8 @@ target_link_libraries(ludus_editor_render_graph_canvas
 # File names and icons shared by the explorers, content browser and Renderer tab.
 ludus_editor_add_objects(ludus_editor_presentation
     src/internal/path_text.h src/path_text.cpp
+    src/internal/flow_layout.h src/flow_layout.cpp
+    src/internal/chip_strip.h src/chip_strip.cpp
     src/internal/editor_icons.h src/editor_icons.cpp
     src/internal/theme_fonts.h src/theme_fonts.cpp)
 target_link_libraries(ludus_editor_presentation PUBLIC Qt6::Widgets Ludus::FoundationBase Ludus::FoundationContainers)
