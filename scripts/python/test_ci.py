@@ -85,6 +85,66 @@ class RenderGraphVulkanEvidenceTests(unittest.TestCase):
         self.assertEqual(offending, [], "drop [render-graph] from native-query cases; ludus_renderer_pixels runs them")
 
 
+class GeneratedSourceCheckTests(unittest.TestCase):
+    """Freshness checks of checked-in generated sources run on pull requests, not only in batches."""
+    ROOT = Path(__file__).resolve().parents[2]
+    LABEL = "generated-source"
+    STEP = "--label-regex '^generated-source$'"
+
+    # The check runs on every pull request's Editor job after its build; keep it to quick
+    # comparisons with already built tools, never a build, a fixture or a long run.
+    MAXIMUM_TIMEOUT_SECONDS = 120
+
+    def cmake_tests(self) -> dict[str, tuple[str, str]]:
+        """Each CMake test, keyed by file and name, with its command and properties."""
+        tests = {}
+        for path in sorted(self.ROOT.glob("**/CMakeLists.txt")):
+            relative = path.relative_to(self.ROOT).as_posix()
+            if relative.startswith(("out/", "third_party/", "build/")):
+                continue
+            text = path.read_text(encoding="utf-8")
+            properties = {}
+            for names, listed in re.findall(r"set_tests_properties\(([^)]*?)\bPROPERTIES\b([^)]*)\)", text, re.S):
+                for name in names.split():
+                    properties[name] = properties.get(name, "") + listed
+            for name, command in re.findall(r"add_test\(NAME\s+(\S+)\s+COMMAND\b(.*?)\)\s*\n", text, re.S):
+                tests[f"{relative}: {name}"] = (command, properties.get(name, ""))
+        return tests
+
+    def labels(self, properties: str) -> set[str]:
+        listed = re.search(r'\bLABELS\s+"([^"]*)"', properties)
+        return set(listed.group(1).split(";")) if listed else set()
+
+    def test_generator_freshness_tests_carry_the_label(self):
+        freshness = {name: properties for name, (command, properties) in self.cmake_tests().items()
+                     if "--check" in command and re.search(r"generate_\w+\.py", command)}
+        self.assertIn("tools/lusl-declarations/CMakeLists.txt: lusl_declarations_tests", freshness)
+        unlabelled = [name for name, properties in freshness.items() if self.LABEL not in self.labels(properties)]
+        self.assertEqual(unlabelled, [], f"label generator --check tests {self.LABEL} so pull requests run them")
+
+    def test_labelled_tests_stay_cheap(self):
+        for name, (_, properties) in self.cmake_tests().items():
+            if self.LABEL not in self.labels(properties):
+                continue
+            with self.subTest(name):
+                timeout = re.search(r"\bTIMEOUT\s+(\d+)\b", properties)
+                self.assertIsNotNone(timeout, "declare a TIMEOUT for a pull-request generated-source check")
+                self.assertLessEqual(int(timeout.group(1)), self.MAXIMUM_TIMEOUT_SECONDS)
+                self.assertNotIn("FIXTURES_REQUIRED", properties, "a fixture would run its setup tests on every PR")
+
+    def test_pull_request_editor_build_runs_the_label(self):
+        # The SDK .luslh check ran only in batches, so stale headers reached develop (batch 44323710051).
+        workflow = (self.ROOT / ".github/workflows/ci.yml").read_text(encoding="utf-8")
+        editor = workflow.split("\n  editor:\n", 1)[1].split("\n  assertion-policy:\n", 1)[0]
+        steps = editor.split("\n      - ")
+        matching = [step for step in steps if self.STEP in step]
+        self.assertEqual(len(matching), 1, "the Editor job checks generated sources once")
+        self.assertNotIn("\n        if:", matching[0], "integration pull requests must run the check too")
+        self.assertIn("--no-tests=error", matching[0])
+        build = next(index for index, step in enumerate(steps) if "cmake --build --preset linux-clang-development" in step)
+        self.assertGreater(steps.index(matching[0]), build, "the check needs the built generator tools")
+
+
 class ToolchainPinTests(unittest.TestCase):
     """Copies of the LLVM pin that cannot read config/tool_versions.json must agree with it."""
     ROOT = Path(__file__).resolve().parents[2]

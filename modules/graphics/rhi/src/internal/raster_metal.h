@@ -1285,8 +1285,14 @@ void RasterEndPass() noexcept
         GetMetal().Encoder = nil;
     }
 }
-RasterStatus RasterPreparePass(const internal::RasterPassInfo&) noexcept
+RasterStatus RasterPreparePass(const internal::RasterPassInfo& info) noexcept
 {
+    if (info.Texture == internal::RASTER_INVALID &&
+        GetSurfaceDepthOrNull(GetMetal().SurfaceTexture, info.Description.DepthLoad, info.Description.DepthStore) ==
+            nil)
+    {
+        return RasterStatus::OutOfMemory;
+    }
     return RasterStatus::Ready;
 }
 void RasterTextureBarrier(usize, RasterTextureUse) noexcept {}
@@ -1297,9 +1303,13 @@ RasterStatus RasterBeginPass(const internal::RasterPassInfo& info) noexcept
         const auto& state = info.Description;
         const bool surface = info.Texture == internal::RASTER_INVALID;
         id<MTLTexture> color = surface ? GetMetal().SurfaceTexture : GetRasterMetal().Textures[info.Texture];
-        id<MTLTexture> depth = surface                ? GetMetal().Depth
-                               : info.ColorCount == 0 ? GetRasterMetal().Depths[info.Texture]
-                                                      : GetRasterMetal().ViewDepths[info.Colors[0].View];
+        id<MTLTexture> depthOrNull = surface ? GetSurfaceDepthOrNull(color, state.DepthLoad, state.DepthStore)
+                                     : info.ColorCount == 0 ? GetRasterMetal().Depths[info.Texture]
+                                                            : GetRasterMetal().ViewDepths[info.Colors[0].View];
+        if (surface == true && depthOrNull == nil)
+        {
+            return RasterStatus::OutOfMemory;
+        }
         auto pass = [MTLRenderPassDescriptor renderPassDescriptor];
         auto attachment = pass.colorAttachments[0];
         attachment.texture = color;
@@ -1334,7 +1344,7 @@ RasterStatus RasterBeginPass(const internal::RasterPassInfo& info) noexcept
                 }
             }
         }
-        pass.depthAttachment.texture = depth;
+        pass.depthAttachment.texture = depthOrNull;
         pass.depthAttachment.loadAction = state.DepthLoad == RasterLoad::Clear  ? MTLLoadActionClear
                                           : state.DepthLoad == RasterLoad::Load ? MTLLoadActionLoad
                                                                                 : MTLLoadActionDontCare;
@@ -1343,7 +1353,7 @@ RasterStatus RasterBeginPass(const internal::RasterPassInfo& info) noexcept
         pass.depthAttachment.clearDepth = static_cast<float64>(state.ClearDepth);
         if (info.Stencil)
         {
-            pass.stencilAttachment.texture = depth;
+            pass.stencilAttachment.texture = depthOrNull;
             pass.stencilAttachment.loadAction = state.StencilLoad == RasterLoad::Clear  ? MTLLoadActionClear
                                                 : state.StencilLoad == RasterLoad::Load ? MTLLoadActionLoad
                                                                                         : MTLLoadActionDontCare;

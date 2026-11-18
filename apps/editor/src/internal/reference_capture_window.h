@@ -48,6 +48,23 @@ void UpdateReferenceTraversalAvailability(QComboBox& inoutChoice,
                                           const RenderPreview* previewOrNull,
                                           bool shouldSelectDefault);
 
+/// How the capture window's progress bar reads for one state of a capture.
+struct CaptureProgressView final
+{
+    /// False before anything ran, or when a capture stopped before its first sample: an empty bar says nothing.
+    bool IsVisible = false;
+    /// True while work runs with no sample count yet (building the scene, rendering the comparison side): the bar
+    /// moves without claiming a fraction.
+    bool IsBusy = false;
+    /// The bar's range and position, in samples per pixel, when it is neither hidden nor busy.
+    foundation::int32 Maximum = 0;
+    foundation::int32 Value = 0;
+};
+
+/// The progress bar for a capture that isRunning (or not) with samples of targetSamples per pixel collected.
+[[nodiscard]] CaptureProgressView
+DescribeCaptureProgress(bool isRunning, foundation::int32 samples, foundation::int32 targetSamples) noexcept;
+
 /// Wall time one service tick may spend preparing or tracing before yielding to the event loop.
 inline constexpr foundation::uint64 REFERENCE_SERVICE_BUDGET_NANOSECONDS = 8'000'000;
 /// Shortest interval between progressive display refreshes while tracing.
@@ -161,6 +178,8 @@ private:
     void refreshImage();
     void updateComparison();
     void updateControls();
+    /// Show the progress bar as DescribeCaptureProgress says for the running or last capture.
+    void updateProgress(bool isRunning);
     void updateStatus();
     void updateTraversalAvailability();
     void updateComparisonAvailability();
@@ -236,6 +255,9 @@ private:
     bool mIsComparing = false;
     bool mHasSelectedTraversal = false;
     bool mIsComparisonAvailable = false;
+    /// Samples per pixel the running or last capture collected, and the count it aims for.
+    foundation::int32 mProgressSamples = 0;
+    foundation::int32 mProgressTarget = 0;
     // Child widgets, created in the constructor and owned by this window.
     QSpinBox* const mLongSide;
     QSpinBox* const mSamples;

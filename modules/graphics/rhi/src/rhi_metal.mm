@@ -135,7 +135,8 @@ struct MetalSurface final
     HostedProducerMetal Hosted;
     /// Color attachment of a headless surface, resized with its target.
     id<MTLTexture> HeadlessOrNull = nil;
-    id<MTLTexture> DepthOrNull = nil;
+    id<MTLTexture> PrivateDepthOrNull = nil;
+    id<MTLTexture> MemorylessDepthOrNull = nil;
     FrameTarget Target{};
     /// This surface's committed frames not yet observed complete.
     StaticArray<id<MTLCommandBuffer>, FRAMES> PendingOrNull{};
@@ -159,8 +160,6 @@ struct MetalState final
     StaticArray<MetalSurface, MAX_DEVICE_SURFACES> Surfaces{};
     /// Surface routed SetTarget/Begin/End; see backend::SelectSurface.
     usize ActiveSurface = 0;
-    /// Depth attachment of the open frame's surface.
-    id<MTLTexture> Depth = nil;
     id<CAMetalDrawable> Drawable = nil;
     /// Color format of every frame target: BGRA8 drawables, or RGBA8 hosted images.
     MTLPixelFormat SurfaceFormat = MTLPixelFormatBGRA8Unorm;
@@ -284,6 +283,45 @@ MetalSurface& GetActiveSurface() noexcept
 {
     return GetMetal().Surfaces[GetMetal().ActiveSurface];
 }
+using MetalTexture = id<MTLTexture>;
+MetalTexture CreateSurfaceDepthOrNull(MetalTexture color, MTLStorageMode mode) noexcept
+{
+    @autoreleasepool
+    {
+        MTLTextureDescriptor* description =
+            [MTLTextureDescriptor texture2DDescriptorWithPixelFormat:MTLPixelFormatDepth32Float
+                                                               width:color.width
+                                                              height:color.height
+                                                           mipmapped:NO];
+        description.usage = MTLTextureUsageRenderTarget;
+        description.storageMode = mode;
+        return [GetMetal().Device newTextureWithDescriptor:description];
+    }
+}
+MetalTexture GetSurfaceDepthOrNull(MetalTexture color, RasterLoad load, RasterStore store) noexcept
+{
+    MetalSurface& surface = GetActiveSurface();
+    // Apple's “Choosing a resource storage mode for Apple GPUs” describes depth kept in tile memory
+    // for a single render pass. A depth load or store across encoder boundaries needs private backing.
+    // https://developer.apple.com/documentation/metal/choosing-a-resource-storage-mode-for-apple-gpus
+    if (load != RasterLoad::Load && store == RasterStore::Discard &&
+        [GetMetal().Device supportsFamily:MTLGPUFamilyApple2] == YES)
+    {
+        if (surface.MemorylessDepthOrNull == nil)
+        {
+            surface.MemorylessDepthOrNull = CreateSurfaceDepthOrNull(color, MTLStorageModeMemoryless);
+        }
+        if (surface.MemorylessDepthOrNull != nil)
+        {
+            return surface.MemorylessDepthOrNull;
+        }
+    }
+    if (surface.PrivateDepthOrNull == nil)
+    {
+        surface.PrivateDepthOrNull = CreateSurfaceDepthOrNull(color, MTLStorageModePrivate);
+    }
+    return surface.PrivateDepthOrNull;
+}
 MTLPixelFormat GetSurfaceFormat(const WindowInfo& window) noexcept
 {
     // The editor presents hosted images as RGBA8 (docs/architecture/editor-gui-systems.md).
@@ -384,7 +422,8 @@ void DisconnectSurface(MetalSurface& inoutSurface) noexcept
     inoutSurface.PreviousLayerOrNull = nil;
     inoutSurface.PreviousWantsLayer = NO;
     inoutSurface.HeadlessOrNull = nil;
-    inoutSurface.DepthOrNull = nil;
+    inoutSurface.PrivateDepthOrNull = nil;
+    inoutSurface.MemorylessDepthOrNull = nil;
     inoutSurface.Target = {};
     inoutSurface.IsConnected = false;
 }
@@ -631,10 +670,10 @@ void ShutdownRendering() noexcept
             surface.Hosted.Cancel();
             RefreshSurface(surface);
             surface.HeadlessOrNull = nil;
-            surface.DepthOrNull = nil;
+            surface.PrivateDepthOrNull = nil;
+            surface.MemorylessDepthOrNull = nil;
         }
         GetMetal().SurfaceTexture = nil;
-        GetMetal().Depth = nil;
         GetMetal().Frame = {};
         GetMetal().Slot = 0;
         GetMetal().IsRendering = false;
@@ -826,29 +865,26 @@ FrameStatus Begin() noexcept
         {
             return FrameFailure();
         }
-        if (surface.DepthOrNull == nil || surface.DepthOrNull.width != texture.width ||
-            surface.DepthOrNull.height != texture.height)
+        if (surface.PrivateDepthOrNull.width != texture.width || surface.PrivateDepthOrNull.height != texture.height)
         {
-            MTLTextureDescriptor* depth =
-                [MTLTextureDescriptor texture2DDescriptorWithPixelFormat:MTLPixelFormatDepth32Float
-                                                                   width:texture.width
-                                                                  height:texture.height
-                                                               mipmapped:NO];
-            depth.usage = MTLTextureUsageRenderTarget;
-            depth.storageMode = MTLStorageModePrivate;
-            surface.DepthOrNull = [GetMetal().Device newTextureWithDescriptor:depth];
+            surface.PrivateDepthOrNull = nil;
         }
-        if (surface.DepthOrNull == nil)
+        if (surface.MemorylessDepthOrNull.width != texture.width ||
+            surface.MemorylessDepthOrNull.height != texture.height)
+        {
+            surface.MemorylessDepthOrNull = nil;
+        }
+        id<MTLTexture> depthOrNull = GetSurfaceDepthOrNull(texture, RasterLoad::Clear, RasterStore::Discard);
+        if (depthOrNull == nil)
         {
             surface.Hosted.Cancel();
             return FrameFailure();
         }
-        GetMetal().Depth = surface.DepthOrNull;
         GetMetal().Command = [GetMetal().Queue commandBuffer];
         GetMetal().Command.label = @"Ludus/Frame";
         BeginPassTimingFrame();
         MTLRenderPassDescriptor* pass = [MTLRenderPassDescriptor renderPassDescriptor];
-        pass.depthAttachment.texture = GetMetal().Depth;
+        pass.depthAttachment.texture = depthOrNull;
         pass.depthAttachment.loadAction = MTLLoadActionClear;
         pass.depthAttachment.storeAction = MTLStoreActionDontCare;
         pass.depthAttachment.clearDepth = 1;
@@ -905,7 +941,6 @@ FrameStatus End() noexcept
         TrackSurfaceFrame(surface, GetMetal().Command);
         surface.PresentedFrames += isPresented == true ? 1 : 0;
         GetMetal().SurfaceTexture = nil;
-        GetMetal().Depth = nil;
         GetMetal().Submitted[GetMetal().Slot] = GetMetal().Command;
         GetMetal().Command = nil;
         GetMetal().Drawable = nil;
@@ -1046,6 +1081,13 @@ ResourceStatus Draw(usize slot) noexcept
     return ResourceStatus::Ready;
 }
 #if defined(LUDUS_RHI_TEST_READBACK)
+bool GetMetalSurfaceDepthAllocations(usize& outMemorylessBytes, usize& outPrivateBytes) noexcept
+{
+    const MetalSurface& surface = GetActiveSurface();
+    outMemorylessBytes = surface.MemorylessDepthOrNull.allocatedSize;
+    outPrivateBytes = surface.PrivateDepthOrNull.allocatedSize;
+    return surface.MemorylessDepthOrNull.storageMode == MTLStorageModeMemoryless;
+}
 bool ReadHeadlessPixels(std::span<uint8> pixels) noexcept
 {
     @autoreleasepool

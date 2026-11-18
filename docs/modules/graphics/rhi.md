@@ -106,6 +106,47 @@ render passes and checks explicit results through the C API.
     out/build/linux-clang-development/apps/world_demo/ludus_world_demo --frames 3
   ```
 
+## Verify Vulkan rendering and compute without a compositor
+
+Sascha Willems's [*Headless Vulkan examples* (2017)](https://www.saschawillems.de/blog/2017/09/16/headless-vulkan-examples/)
+use a bounded submit-and-readback run for both raster and compute. On Linux,
+Ludus's headless RHI path likewise creates no Vulkan window surface or swapchain.
+It still needs a Vulkan loader and a driver that exposes the requested features.
+Mesa lavapipe can run the checks below as a software Vulkan device.
+
+From the checkout root, use the Linux Development SDK, dependency prefix and
+shell from [the installed-SDK setup](../../examples/cornell-box.md#manual-setup-and-command-line-workflow).
+Install the Khronos Vulkan validation layer and prepare the pinned SPIRV-Cross
+translator with `./scripts/bootstrap-spirv-cross` if needed. Build and run the
+installed R11 consumer with both display environment variables unset.
+
+```bash
+cmake -S tests/sdk_consumer/raster -B out/r11-raster-sdk -G Ninja \
+  -DCMAKE_BUILD_TYPE=RelWithDebInfo -DCMAKE_CXX_COMPILER=clang++ \
+  -DCMAKE_PREFIX_PATH="$LUDUS_SDK_PREFIX" \
+  -DLUDUS_SLANG_COMPILER="$LUDUS_SLANG_COMPILER" \
+  -DLUDUS_SPIRV_VALIDATOR="$LUDUS_SPIRV_VALIDATOR" \
+  -DLUDUS_SPIRV_CROSS="$PWD/out/shader-tools/spirv-cross/bin/spirv-cross"
+cmake --build out/r11-raster-sdk --target ludus_sdk_r11_consumer
+env -u DISPLAY -u WAYLAND_DISPLAY VK_INSTANCE_LAYERS=VK_LAYER_KHRONOS_validation \
+  ctest --test-dir out/r11-raster-sdk -R '^ludus_sdk_r11_consumer$' \
+  --no-tests=error --verbose
+```
+
+Expect one passing test. Check the log for `Validation Error` and `VUID-` even
+if CTest passes. The [consumer](../../../tests/sdk_consumer/r11.cpp) compares
+offscreen color stripes and checks a compute storage write with untouched bytes
+on both sides. It uses public texture and buffer readback tickets. Check loader,
+driver and layer availability if device creation fails. See [R11 qualification](../../development/fullscreen-rendering.md#correctness-and-measurement-evidence)
+for the optional array cases and their capability requirements.
+
+In an app, submit the producer work, request a readback, poll the ticket until
+Ready, copy the bytes, and release the ticket. See the [public readback API](../../../modules/graphics/rhi/include/ludus/graphics/rhi/lifetime.h)
+for formats, row pitch and ticket ownership. The [Editor viewport](../../development/editor-workspace.md#world-renderer-and-camera-preview)
+can fall back to GPU rendering with CPU pixel transfer into the Editor. Use the
+[windowed check above](#follow-a-vulkan-frame-on-linux) to exercise presentation
+and hosted Play separately.
+
 ## Raster color writes
 
 `RasterPipelineDescription::ShouldWriteColor` defaults to true. Set it to false

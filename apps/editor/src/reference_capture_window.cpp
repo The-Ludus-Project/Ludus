@@ -1,6 +1,8 @@
 #include "internal/reference_capture_window.h"
+#include "design_tokens.h"
 
 #include "internal/captured_image_view.h"
+#include "internal/inspector_fields.h"
 #include "internal/reference_comparison.h"
 #include "internal/render_preview.h"
 #if defined(LUDUS_EDITOR_NATIVE_PREVIEW)
@@ -42,6 +44,7 @@
 #include <QProgressBar>
 #include <QPushButton>
 #include <QSaveFile>
+#include <QScrollArea>
 #include <QShowEvent>
 #include <QSignalBlocker>
 #include <QSpinBox>
@@ -61,6 +64,16 @@ constexpr int32 CPU_ORACLE_INDEX = static_cast<int32>(renderer::ReferenceTravers
 constexpr int32 NATIVE_QUERIES_INDEX = static_cast<int32>(renderer::ReferenceTraversal::NativeQueries);
 constexpr int32 GPU_COMPUTE_INDEX = static_cast<int32>(renderer::ReferenceTraversal::GpuCompute);
 constexpr float64 MILLISECONDS_PER_SECOND = 1000;
+/// The settings column beside the image, in logical pixels: room for the "Long side" label and a field that shows
+/// "Native ray queries" whole.
+constexpr int32 SETTINGS_COLUMN_WIDTH = 288;
+/// The image tabs never shrink below a preview that still shows a scene's shapes. With the column, the window
+/// still fits a 680 px wide floating window beside the editor on a MacBook Air.
+constexpr int32 PREVIEW_MINIMUM_WIDTH = 320;
+constexpr int32 PREVIEW_MINIMUM_HEIGHT = 240;
+/// The window opens at this size: the settings column and a 16:10 image beside it.
+constexpr int32 DEFAULT_WINDOW_WIDTH = 1040;
+constexpr int32 DEFAULT_WINDOW_HEIGHT = 660;
 
 bool WriteAtomically(const QString& path, const QByteArray& bytes, QString& outError)
 {
@@ -96,6 +109,24 @@ QString DescribeDisplay(const renderer::ViewDescription& view, const ViewportDis
     return QStringLiteral(" Displayed with the viewport's exposure: %1%2, %3.").arg(base, compensation, curve);
 }
 } // namespace
+
+CaptureProgressView DescribeCaptureProgress(bool isRunning, int32 samples, int32 targetSamples) noexcept
+{
+    CaptureProgressView view;
+    if (isRunning == false && samples <= 0)
+    {
+        return view;
+    }
+    view.IsVisible = true;
+    if (targetSamples <= 0 || (isRunning == true && samples <= 0))
+    {
+        view.IsBusy = true;
+        return view;
+    }
+    view.Maximum = targetSamples;
+    view.Value = samples < targetSamples ? samples : targetSamples;
+    return view;
+}
 
 QString DescribeReferenceTraversal(renderer::ReferenceTraversal traversal)
 {
@@ -159,7 +190,7 @@ ReferenceCaptureWindow::ReferenceCaptureWindow(RenderPreview* preview, QWidget* 
     : QWidget(parentOrNull, Qt::Window), mPreview(preview), mLongSide(new QSpinBox(this)), mSamples(new QSpinBox(this)),
       mMaxDepth(new QSpinBox(this)), mTraversal(new QComboBox(this)),
       mCenterRays(new QCheckBox(QStringLiteral("Trace pixel centres"), this)),
-      mCompare(new QCheckBox(QStringLiteral("Compare with the viewport's render graph output"), this)),
+      mCompare(new QCheckBox(QStringLiteral("Compare with the render graph"), this)),
       mCaptureButton(new QPushButton(QStringLiteral("Capture viewport"), this)),
       mStopButton(new QPushButton(QStringLiteral("Stop"), this)),
       mSaveButton(new QPushButton(QStringLiteral("Save…"), this)), mProgress(new QProgressBar(this)),
@@ -167,7 +198,7 @@ ReferenceCaptureWindow::ReferenceCaptureWindow(RenderPreview* preview, QWidget* 
       mImageView(new CapturedImageView(QStringLiteral("reference"), this)),
       mRasterView(new CapturedImageView(QStringLiteral("raster"), this)),
       mDifferenceView(new CapturedImageView(QStringLiteral("difference"), this)), mSource(new QComboBox(this)),
-      mGraph(new QLabel(this)), mGraphProblem(new QLabel(this)), mGraphTarget(new QComboBox(this))
+      mGraph(new ElidedLabel(QString(), this)), mGraphProblem(new QLabel(this)), mGraphTarget(new QComboBox(this))
 {
     setObjectName(QStringLiteral("referenceCaptureWindow"));
     setWindowTitle(QStringLiteral("Reference capture"));
@@ -203,14 +234,17 @@ ReferenceCaptureWindow::ReferenceCaptureWindow(RenderPreview* preview, QWidget* 
     mSource->setToolTip(QStringLiteral("RT1 reference path-traces the scene as ground truth. Render graph runs the "
                                        "viewport's graph, output and package to the sample count and saves the "
                                        "linear mean of its Accumulate."));
+    // Settings sit in one column of aligned labels and fields that fill it on every platform; macOS would keep each
+    // field at its own width and leave a ragged edge.
     QFormLayout* form = new QFormLayout;
+    form->setFieldGrowthPolicy(QFormLayout::AllNonFixedFieldsGrow);
+    form->setRowWrapPolicy(QFormLayout::DontWrapRows);
+    form->setLabelAlignment(Qt::AlignLeft | Qt::AlignVCenter);
+    form->setFormAlignment(Qt::AlignLeft | Qt::AlignTop);
+    form->setContentsMargins(0, 0, 0, 0);
+    // The graph summary is one quiet line under the Graph choice; its tooltip carries the whole of it.
     mGraph->setObjectName(QStringLiteral("referenceGraph"));
-    mGraph->setWordWrap(true);
-    mGraph->setTextInteractionFlags(Qt::TextSelectableByMouse);
-    mGraph->setToolTip(QStringLiteral("Viewport output uses the graph, configuration and output selected in the "
-                                      "viewport's toolbar; change them there. A library output renders one output "
-                                      "of a library configuration, such as a slow reference template, without "
-                                      "changing the viewport."));
+    mGraph->setProperty("visualRole", QStringLiteral("secondary"));
     mGraphTarget->setObjectName(QStringLiteral("referenceGraphTarget"));
     mGraphTarget->insertItem(CAPTURE_GRAPH_VIEWPORT_INDEX, QStringLiteral("Viewport output"));
     mGraphTarget->setToolTip(
@@ -233,6 +267,7 @@ ReferenceCaptureWindow::ReferenceCaptureWindow(RenderPreview* preview, QWidget* 
     form->addRow(mCompare);
 
     mCaptureButton->setObjectName(QStringLiteral("referenceCapture"));
+    mCaptureButton->setProperty("visualRole", QStringLiteral("primary"));
     mCaptureButton->setToolTip(QStringLiteral("Render the viewport's current camera and scene. Navigating or "
                                               "editing afterwards does not change a running capture."));
     mStopButton->setObjectName(QStringLiteral("referenceStop"));
@@ -240,21 +275,28 @@ ReferenceCaptureWindow::ReferenceCaptureWindow(RenderPreview* preview, QWidget* 
     mSaveButton->setToolTip(QStringLiteral("Write the linear LUHDR01 capture and a display PNG beside it, plus the "
                                            "render graph image, difference image and metrics of a comparison. An "
                                            "unfinished capture is saved as partial."));
+    // The primary action and Stop share the first row; the actions on a finished capture follow.
     QHBoxLayout* buttons = new QHBoxLayout;
-    buttons->addWidget(mCaptureButton);
+    buttons->setSpacing(design::SPACING_SMALL);
+    buttons->addWidget(mCaptureButton, 1);
     buttons->addWidget(mStopButton);
+    QHBoxLayout* resultButtons = new QHBoxLayout;
+    resultButtons->setSpacing(design::SPACING_SMALL);
 #if defined(LUDUS_EDITOR_NATIVE_PREVIEW)
     mCompareGraphsOrNull = new QPushButton(QStringLiteral("Compare graphs…"), this);
     mCompareGraphsOrNull->setObjectName(QStringLiteral("referenceCompareGraphs"));
-    buttons->addWidget(mCompareGraphsOrNull);
+    resultButtons->addWidget(mCompareGraphsOrNull);
     connect(mCompareGraphsOrNull, &QPushButton::clicked, this, &ReferenceCaptureWindow::openGraphComparison);
 #endif
-    buttons->addStretch(1);
-    buttons->addWidget(mSaveButton);
+    resultButtons->addStretch(1);
+    resultButtons->addWidget(mSaveButton);
 
     mProgress->setObjectName(QStringLiteral("referenceProgress"));
+    mProgress->setAccessibleName(QStringLiteral("Capture progress"));
+    mProgress->setTextVisible(false);
     mProgress->setRange(0, 1);
     mProgress->setValue(0);
+    mProgress->hide();
     mStatus->setObjectName(QStringLiteral("referenceStatus"));
     mStatus->setWordWrap(true);
     mStatus->setTextInteractionFlags(Qt::TextSelectableByMouse);
@@ -277,13 +319,40 @@ ReferenceCaptureWindow::ReferenceCaptureWindow(RenderPreview* preview, QWidget* 
     mImages->addTab(mRasterView, QStringLiteral("Render graph"));
     mImages->addTab(mDifferenceView, QStringLiteral("Difference"));
 
-    QVBoxLayout* layout = new QVBoxLayout(this);
-    layout->addLayout(form);
-    layout->addLayout(buttons);
-    layout->addWidget(mProgress);
-    layout->addWidget(mStatus);
-    layout->addWidget(mComparisonText);
+    mImages->setMinimumSize(PREVIEW_MINIMUM_WIDTH, PREVIEW_MINIMUM_HEIGHT);
+
+    // Settings, actions and what the capture is doing read top to bottom in a column at the leading edge; the
+    // images take the rest of the window. A short window scrolls the column rather than squeezing it.
+    QWidget* settings = new QWidget;
+    settings->setObjectName(QStringLiteral("referenceSettings"));
+    QVBoxLayout* settingsLayout = new QVBoxLayout(settings);
+    settingsLayout->setContentsMargins(0, 0, 0, 0);
+    settingsLayout->setSpacing(design::SPACING_SMALL);
+    settingsLayout->addLayout(form);
+    settingsLayout->addSpacing(design::SPACING_SMALL);
+    settingsLayout->addLayout(buttons);
+    settingsLayout->addLayout(resultButtons);
+    settingsLayout->addWidget(mProgress);
+    settingsLayout->addWidget(mStatus);
+    settingsLayout->addWidget(mComparisonText);
+    settingsLayout->addStretch(1);
+    QScrollArea* settingsScroll = new QScrollArea(this);
+    settingsScroll->setObjectName(QStringLiteral("referenceSettingsScroll"));
+    settingsScroll->setWidget(settings);
+    settingsScroll->setWidgetResizable(true);
+    settingsScroll->setFrameShape(QFrame::NoFrame);
+    settingsScroll->setHorizontalScrollBarPolicy(Qt::ScrollBarAlwaysOff);
+    settingsScroll->setFixedWidth(SETTINGS_COLUMN_WIDTH);
+
+    QHBoxLayout* layout = new QHBoxLayout(this);
+    layout->setContentsMargins(design::SPACING_MEDIUM,
+                               design::SPACING_MEDIUM,
+                               design::SPACING_MEDIUM,
+                               design::SPACING_MEDIUM);
+    layout->setSpacing(design::SPACING_LARGE);
+    layout->addWidget(settingsScroll);
     layout->addWidget(mImages, 1);
+    resize(DEFAULT_WINDOW_WIDTH, DEFAULT_WINDOW_HEIGHT);
 
     mServiceTimer.setInterval(0);
     connect(&mServiceTimer, &QTimer::timeout, this, &ReferenceCaptureWindow::service);
@@ -479,8 +548,10 @@ QString ReferenceCaptureWindow::GetGraphText() const
 
 void ReferenceCaptureWindow::updateGraphDescription()
 {
-    QString text = QStringLiteral("None. This viewport has no project render graph, so only the RT1 reference can "
-                                  "be captured.");
+    // Short enough for the settings column; the tooltip says why.
+    QString text = QStringLiteral("None. RT1 reference only");
+    QString explanation = QStringLiteral("This viewport has no project render graph, so only the RT1 reference can "
+                                         "be captured.");
 #if defined(LUDUS_EDITOR_NATIVE_PREVIEW)
     const bool hasRequestedGraph =
         mProjectGraph.isNull() == false && mProjectGraph->GetRequestedPackagePath().isEmpty() == false;
@@ -495,6 +566,7 @@ void ReferenceCaptureWindow::updateGraphDescription()
     {
         text = QStringLiteral("Library %1 · configuration %2 · output %3, built from the viewport's generation")
                    .arg(library.Library, library.Configuration, library.Output);
+        explanation = text;
     }
     else if (mProjectWorkspace.isNull() == false && hasRequestedGraph == true)
     {
@@ -521,9 +593,15 @@ void ReferenceCaptureWindow::updateGraphDescription()
             parts.append(QStringLiteral("Force raster"));
         }
         text = parts.join(QStringLiteral(" · "));
+        explanation = text;
     }
 #endif
     mGraph->setText(text);
+    mGraph->setToolTip(QStringLiteral("%1\n\nViewport output uses the graph, configuration and output selected in "
+                                      "the viewport's toolbar; change them there. A library output renders one "
+                                      "output of a library configuration, such as a slow reference template, "
+                                      "without changing the viewport.")
+                           .arg(explanation));
     QString problem;
 #if defined(LUDUS_EDITOR_NATIVE_PREVIEW)
     // The viewport output's route decides only its own capture; a library output has its own package.
@@ -928,7 +1006,7 @@ bool ReferenceCaptureWindow::startGraphSource()
                    .arg(extent.width())
                    .arg(extent.height())
                    .arg(mSamples->value());
-    mProgress->setRange(0, mSamples->value());
+    mProgressTarget = mSamples->value();
 #if defined(LUDUS_EDITOR_NATIVE_PREVIEW)
     const renderer::RenderGraphCaptureInfo info = mGraphCapture.GetInfo();
     if (info.WarmupSamples != 0)
@@ -936,9 +1014,9 @@ bool ReferenceCaptureWindow::startGraphSource()
         mMessage +=
             QStringLiteral(" %1 warm-up invocations run before collecting those samples.").arg(info.WarmupSamples);
     }
-    mProgress->setRange(0, static_cast<int32>(info.TargetSamples));
+    mProgressTarget = static_cast<int32>(info.TargetSamples);
 #endif
-    mProgress->setValue(0);
+    mProgressSamples = 0;
     mCaptureTimer.start();
     mRefreshTimer.start();
     startService();
@@ -957,6 +1035,8 @@ bool ReferenceCaptureWindow::StartCapture()
 #endif
     stopService();
     releaseCaptures();
+    mProgressSamples = 0;
+    mProgressTarget = 0;
     mImage = {};
     mRasterImage = {};
     mDifferenceImage = {};
@@ -1051,8 +1131,8 @@ bool ReferenceCaptureWindow::StartCapture()
     hasToneMap = mProjectGraph.isNull() == false && mProjectGraph->GetRasterToneMappingExposure() > 0;
 #endif
     mMessage += DescribeDisplay(exposureView, mDisplay, hasToneMap);
-    mProgress->setRange(0, mSamples->value());
-    mProgress->setValue(0);
+    mProgressTarget = mSamples->value();
+    mProgressSamples = 0;
     mCaptureTimer.start();
     mRefreshTimer.start();
     startService();
@@ -1268,7 +1348,7 @@ void ReferenceCaptureWindow::refreshImage()
         {
             mImage = image;
         }
-        mProgress->setValue(static_cast<int32>(mGraphCapture.GetInfo().ReadbackSamples));
+        mProgressSamples = static_cast<int32>(mGraphCapture.GetInfo().ReadbackSamples);
         return;
     }
 #endif
@@ -1283,7 +1363,7 @@ void ReferenceCaptureWindow::refreshImage()
     {
         mImage = image;
     }
-    mProgress->setValue(static_cast<int32>(info.MinimumSamples));
+    mProgressSamples = static_cast<int32>(info.MinimumSamples);
 }
 
 void ReferenceCaptureWindow::updateComparison()
@@ -1393,6 +1473,24 @@ void ReferenceCaptureWindow::updateControls()
         mCaptureButton->setEnabled(false);
     }
 #endif
+    updateProgress(isRunning);
+}
+
+void ReferenceCaptureWindow::updateProgress(bool isRunning)
+{
+    // A sample count, once known, shows how far the capture is; before it (building the scene, rendering the
+    // comparison side) the bar moves without claiming a fraction, rather than sitting empty beside "Rendering…".
+    const CaptureProgressView view = DescribeCaptureProgress(isRunning, mProgressSamples, mProgressTarget);
+    mProgress->setVisible(view.IsVisible);
+    if (view.IsBusy == true)
+    {
+        mProgress->setRange(0, 0);
+        mProgress->setAccessibleDescription(QStringLiteral("Preparing"));
+        return;
+    }
+    mProgress->setRange(0, view.Maximum > 0 ? view.Maximum : 1);
+    mProgress->setValue(view.Value);
+    mProgress->setAccessibleDescription(QStringLiteral("%1 of %2 samples per pixel").arg(view.Value).arg(view.Maximum));
 }
 
 QString ReferenceCaptureWindow::describeRaster() const

@@ -392,7 +392,15 @@ backend refusals, loss isolation, slot reuse under a new identity, stale and
 cross-session rejection, and destruction after device loss. The macOS Metal
 suite clears and reads back two headless surfaces at different, independently
 resized extents, checks render completion, and retires one while the other keeps
-rendering. With `LUDUS_TEST_COCOA=1` it also presents to two Cocoa windows,
+rendering. On Apple GPUs with memoryless texture support, Metal uses tile
+memory for surface depth when a physical pass clears or discards on entry and
+discards on exit. A pass that loads or stores depth uses a lazily allocated
+private texture, which also serves as the fallback on other Metal devices.
+Offscreen depth keeps its existing storage and access rules. The Metal suite
+checks native allocation sizes and reads back depth-tested color for both
+storage paths. See [Apple's storage-mode guidance](https://developer.apple.com/documentation/metal/choosing-a-resource-storage-mode-for-apple-gpus).
+
+With `LUDUS_TEST_COCOA=1` the suite also presents to two Cocoa windows,
 loses the second when its content view is replaced, verifies the restored layer
 and keeps presenting the first. The shared native render suite draws one
 pipeline into two headless surfaces of a device and compares the images, then
@@ -775,8 +783,8 @@ is still live. Shutdown/loss invalidates all records and drains/drops the native
 device; late browser callbacks cannot affect the next session.
 
 Vulkan general allocations use the private MIT-licensed
-[Vulkan Memory Allocator 3.3.0](https://github.com/GPUOpen-LibrariesAndSDKs/VulkanMemoryAllocator/releases/tag/v3.3.0),
-pinned with header/license hashes in `config/vulkan_memory_allocator.json`.
+[Vulkan Memory Allocator 3.5.0](https://github.com/GPUOpen-LibrariesAndSDKs/VulkanMemoryAllocator/releases/tag/v3.5.0),
+pinned by commit and header/license hashes in `config/vulkan_memory_allocator.json`.
 VMA handles mapped allocation flush alignment. The existing ordered queue's
 fences establish resource retirement; Metal uses command-buffer completion,
 WebGPU queue work-done callbacks, and WebGL nonblocking sync polling.
@@ -1581,7 +1589,7 @@ Vulkan also reports actual `vkAllocateMemory` block bytes in the raster allocato
 including pool slack, transfer rings and ray allocations sharing that allocator.
 That broader scope is explicitly separate from general resource binding spans;
 it excludes the facade and swapchain. Thanks to AMD GPUOpen for
-[Vulkan Memory Allocator 3.3.0 statistics](https://gpuopen-librariesandsdks.github.io/VulkanMemoryAllocator/html/statistics.html),
+[Vulkan Memory Allocator statistics](https://gpuopen-librariesandsdks.github.io/VulkanMemoryAllocator/html/statistics.html),
 which distinguish block bytes from allocation bytes. Metal has no corresponding
 allocator-block observation. WebGPU/WebGL texture backing is opaque, so complete
 resource API byte totals are unavailable on those backends. No partial sum becomes

@@ -71,7 +71,24 @@ Cooked geometry is a `cooked-geometry` resource kind in the content catalog. The
 catalog schema version is extended to `2`; a version-1 catalog still parses and
 rejects the new kind, and a catalog without geometry round-trips as version 1.
 
+## Move along a cooked path
+
+Link `Ludus::GeometryContent` and pass the cooked bytes to `LoadGeometry`.
+Keep the returned path owner alive while sampling its view. A cubic span's
+first and last controls set the endpoints. Its two interior controls shape
+the approach and departure. An authored parameter can control pacing directly,
+but uniform steps in that parameter can cover different distances. For steady
+travel in asset units per second, build a distance map for the loaded revision,
+compute distance from elapsed time, resolve it to a segment parameter, and
+sample the position. See the
+[FoundationGeometry distance map contract](../modules/foundation/geometry.md#distance-maps)
+for the metric, cache lifetime, and error budget.
+
 ## Editor authoring
+
+For a manually authored cubic, edit the JSON source and cook it through
+`Ludus::GeometryContent`. The curve model has handle edits and a preview
+transaction. Interactive World viewport handle editing is pending.
 
 The editor-private adapters are Qt-free and build on the existing owners. A
 `CurveDocument` records semantic edits as undoable commands on the shared

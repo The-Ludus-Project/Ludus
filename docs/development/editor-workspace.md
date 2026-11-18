@@ -1968,6 +1968,29 @@ mappings and explicit Project BRDF assignments. Renderables that override
 coating or roughness still appear under the same resource. Inspect an individual
 renderable to see its effective values.
 
+### Check an imported diffuse material against a swatch
+
+For a glTF dielectric (`metallicFactor` set to zero and no metallic map),
+compare the reference swatch's **linear RGB** with the material's base color.
+For example, a neutral `#767676` decodes to about `0.181` in each linear channel.
+Use linear values for `baseColorFactor` and sRGB values for base-color image RGB.
+
+Select the imported surface in World and inspect **Material → Reflectance** and
+**Base colour** together. With a base-color image, shading multiplies the decoded
+texture by the linear factor. A constant material can cook to a colored swatch
+with a white multiplier, so inspect the map even for a solid color. Switch the
+viewport to **Albedo — unlit surface colours** to find mismatched colors or
+detail baked into the map. For a numeric comparison, decode the corresponding
+image patch to linear RGB and apply the factor before comparing it with the
+reference. To fix a mismatch, correct the source factor or image and re-import
+it. [How scene import cooks the material](best-effort-scene-import.md#budget-planner)
+
+Benoît Mayaux's *Passmw’Albedo* v0.5 illustrates the two encodings for diffuse
+swatches. Use its values as visual references. For quantitative comparisons,
+especially with very dark materials, use an independently calibrated swatch.
+[Passmw’Albedo v0.5](https://www.patapom.com/topics/WebGL/passmwalbedo/) ·
+[Mayaux's note on dark swatches](https://patapom.com/topics/WebGL/)
+
 ### Edit a coated-diffuse material from World
 
 Select an imported object whose Material model is **Coated diffuse** and choose
@@ -2965,6 +2988,13 @@ scattering depth and the traversal, then choose **Capture viewport**. The
 **Render graph** source captures the viewport's own graph instead; see
 [Capture the render graph](#capture-the-render-graph).
 
+The settings, the capture buttons, progress and status sit in one column at the
+window's leading edge; the Reference, Render graph and Difference images take the
+rest. A short window scrolls the column. The graph summary under **Graph** is one
+line, and its tooltip has the full text. The progress bar stays hidden until a
+capture runs. It moves without showing a fraction while the scene is prepared,
+then fills as samples per pixel arrive.
+
 The capture uses the scene and camera as they were when you clicked. Later
 navigation or edits do not change it; capture again to include them. The window
 shows the image as it fills in, the minimum samples reached per pixel, the number
@@ -3122,9 +3152,8 @@ as it does reference captures. See the
 
 #### Compare with the viewport's render graph
 
-In the native editor, **Compare with the viewport's render graph output** is on
-by default. Each capture then also renders the World viewport's current render
-graph: the same package, raster fallback, output target and **Force raster**
+In the native editor, **Compare with the render graph** is on by default. Each
+capture then also renders the World viewport's current render graph: the same package, raster fallback, output target and **Force raster**
 choice the viewport shows. It uses a private producer on the same device, with
 the same frozen camera. When the output can be
 [captured](#capture-the-render-graph), the graph side runs to the same samples per

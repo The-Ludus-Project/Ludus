@@ -1569,12 +1569,16 @@ jobs:
         run: out/host-tools/venv/bin/python tools/check_build_graph.py out/build/linux-clang-development --summary "$GITHUB_STEP_SUMMARY" --report out/build-graph/linux-clang-development.json
       - name: Build every default target with the Editor and shader worker
         run: out/host-tools/venv/bin/cmake --build --preset linux-clang-development
+      # Checked-in generated sources (such as the SDK .luslh headers) need tools only this
+      # build produces, so integration pull requests check them here rather than in a batch.
+      - name: Check checked-in generated sources
+        run: out/host-tools/venv/bin/ctest --preset linux-clang-development --label-regex '^generated-source$' --output-on-failure --no-tests=error
       - name: Verify unit and Editor tests and worker-on target detection
         if: needs.changes.outputs.validation_tier != 'integration'
         env:
           QT_QPA_PLATFORM: offscreen
         run: |
-          out/host-tools/venv/bin/ctest --preset linux-clang-development --label-regex '^(unit|editor)$' --no-tests=error
+          out/host-tools/venv/bin/ctest --preset linux-clang-development --label-regex '^(unit|editor)$' --label-exclude '^generated-source$' --no-tests=error
           out/host-tools/venv/bin/ctest --preset linux-clang-development --tests-regex '^ludus_target_detection$' --output-on-failure --no-tests=error
       # Play in the viewport on Linux: Qt's own Vulkan device on an Xvfb display,
       # with Mesa's lavapipe for both the editor and the game, imports the game's
