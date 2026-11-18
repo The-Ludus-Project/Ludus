@@ -11,6 +11,7 @@ import unittest
 from ludus_tools import render_graph as graph, render_graph_build as build, render_graph_ray as ray
 from ludus_tools import render_graph_compute as compute, render_graph_execution as execution
 from ludus_tools.errors import ToolingError
+from test_render_graph_ray import find_ray_compute
 
 ROOT = Path(__file__).resolve().parents[2]
 SCENE_COMPUTE = ROOT / 'tests/sdk_consumer/rg2/scene_compute'
@@ -292,7 +293,8 @@ class ManifestTests(unittest.TestCase):
 
 @unittest.skipUnless(all(os.environ.get(name) for name in NATIVE_TOOLS), 'requires pinned native shader tools')
 class NativeSceneComputeTests(unittest.TestCase):
-    def build(self, fixture, root):
+    def build(self, fixture, root, kernel_source):
+        """Build fixture and return its package, ray recipe and wrapper for the kernel compiled from kernel_source."""
         source = root / fixture.name
         shutil.copytree(fixture, source)
         manifest = source / 'main.lushader.json'
@@ -300,9 +302,8 @@ class NativeSceneComputeTests(unittest.TestCase):
         result = build.build_package(manifest, root / (fixture.name + '-build'), helper=os.environ['LUDUS_RG1_HELPER'],
                                      compiler=os.environ['LUDUS_RG1_SLANG'], spirv_cross=os.environ['LUDUS_RG1_CROSS'])
         package = Path(result['package'])
-        wrappers = [path.read_text() for path in (package / 'programs').glob('*/wrapper.slang')]
-        wrapper = next(text for text in wrappers if 'DispatchGraphRay' in text)
-        return package, wrapper
+        recipe, wrapper = find_ray_compute(package, kernel_source)
+        return package, recipe, wrapper
 
     @staticmethod
     def cases(wrapper, callback_arguments):
@@ -336,20 +337,19 @@ class NativeSceneComputeTests(unittest.TestCase):
         from test_render_graph_authoring import parse_runtime
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
-            package, wrapper = self.build(SCENE_COMPUTE, root)
+            # The fixture's Default configuration runs scene_info.slang; WorkItems adds a second ray kernel.
+            package, recipe, wrapper = self.build(SCENE_COMPUTE, root, 'main_shaders/scene_info.slang')
             self.assertIn('case 0: return GraphSource0::ShadeSceneInfo(scene, launch, queries);', wrapper)
             self.assertIn('RWStructuredBuffer<uint4> GraphBuffer0', wrapper)
             self.assertEqual([], self.cases(wrapper, '(scene, hit, queries, payload)'))
             self.assertEqual([], self.cases(wrapper, '(scene, ray, queries, payload)'))
-            descriptor = json.loads((package / 'package.json').read_text())
-            recipe = next(r for r in descriptor['recipes'] if r['technique'] == ray.TECHNIQUE)
             self.assertEqual([['SceneInfo']], recipe['ray_programs'])
             self.assertTrue(recipe['persistent_buffers'])
             destination = root / 'scene_compute.lurgrt'
             execution.cook_runtime(str(package), destination)
             self.assertEqual(execution.PACKAGE_VERSION, parse_runtime(destination.read_bytes())['version'])
 
-            _, wrapper = self.build(COMPUTE_MIXED, root)
+            _, _, wrapper = self.build(COMPUTE_MIXED, root, 'main_shaders/primary.slang')
             self.assertIn('case 0: return GraphSource2::TracePrimary(scene, launch, queries);', wrapper)
             self.assertIn('case 1: return GraphSource3::ShadeRecordedHit(scene, launch, queries);', wrapper)
             self.assertEqual(['1'], self.cases(wrapper, '(scene, hit, queries, payload)'))
