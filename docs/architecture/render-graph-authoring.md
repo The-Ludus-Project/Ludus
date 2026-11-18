@@ -592,19 +592,30 @@ use fewer inputs internally but cannot change the slot's declared external
 contract. The runtime receives resolved artifacts and recipes with no slot
 lookup or shader linking during drawing.
 
-Use the masked color and masked depth fixtures for the first experiment.
-They already test byte-identical depth, matching color coverage and a per-draw
-cutoff. They duplicate the coverage source across two package roots. Stage one
-authored helper inside each fixture's captured root, with explicit wrappers and
-existing schemas. A helper edit must rebuild the dependent stages in each
-package; a cutoff edit must change coverage without compiling or requesting a
-new pipeline. An incompatible signature or binding must fail the cook with
-a source location and preserve the active package; an effect mismatch must
-fail the existing pixel comparison. Qualify all profiles admitted by the
-fixtures in the source build and cover the same helper in the installed SDK
-consumer. Add a manifest slot only when a second concrete implementation
-needs to be selectable under the same contract. Cross-stage interpolation,
-stage placement and effect inference remain outside this slice.
+The [masked color and depth fixtures](../development/render-graph-authoring.md#masked-coverage)
+stage one authored coverage function in each cooked package. Both fragments call
+it through their explicit entry points. Editing the function rebuilds the
+dependent fragments and reuses the vertex stage. An invalid field reference
+reports the line in the shared source and preserves the published generation.
+Changing only the per-draw cutoff reuses the prepared pipeline.
+
+The pixel test compares the depth exports byte for byte and checks that colored
+pixels coincide with covered depth samples. This catches a change to the
+silhouette even when both shaders still compile with identical interfaces.
+The installed SDK consumer also checks kept and discarded pixels after loading
+the cooked masked color graph. See the [qualification evidence for issue
+#1315](https://github.com/The-Ludus-Project/Ludus/issues/1315).
+
+Godot 3 used shader effects such as vertex displacement and fragment discard
+to decide when geometry could share an opaque depth shader. Ludus expresses
+coverage in its techniques. For example, the default graph's opaque
+**ZPrepass** cannot draw a World with alpha-masked materials. Selecting
+**Default** keeps their cutouts. [Godot 3’s renderer design explained, “Shader
+abstraction”](https://godotengine.org/article/godot-3-renderer-design-explained/#shader-abstraction)
+
+Add a manifest slot when a second concrete implementation needs to be selectable
+under the same contract. Cross-stage interpolation, stage placement and effect
+inference remain separate design questions.
 
 Thanks to Simon Taylor, [“Flexible and Extensible Shader Authoring in Frostbite
 with Serac”](https://advances.realtimerendering.com/s2024/index.html#serac),
