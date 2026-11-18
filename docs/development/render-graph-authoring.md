@@ -1054,10 +1054,10 @@ The triangle profile resolves to `max_recursion: 1`, `payload_bytes: 0` and
 coordinates; normals, UVs and material data come from the triangle and scene.
 There is no byte count to maintain when editing ordinary shader code.
 
-**Pipeline State → Advanced overrides** exposes the explicit limits in both
+**Pipeline State → Overrides** exposes the explicit limits in both
 Properties and the canvas node editor. Each field can remain **Automatic**;
 **Use automatic settings** clears all overrides in one undoable edit. Collapsing
-Advanced retains authored values. Existing numeric state and recipe records stay
+Overrides retains authored values. Existing numeric state and recipe records stay
 compatible and are never silently rewritten; invalid overrides receive a build
 diagnostic. In particular, old drafts with `attribute_bytes: 0` can be repaired
 with **Use automatic settings**. Omitted limits in a manifest triangle recipe
@@ -1375,7 +1375,7 @@ surfaces make the same undoable document edit, and **Save** publishes it.
 5. **Invocation → Launch size** offers **Match color target** or **Explicit
    size**, as for ray nodes. An explicit `[width, height, 1]` must match the
    connected color target. The canvas reports a mismatch when you connect it.
-6. **Pipeline State → Advanced overrides → Group size** offers **64 × 1 × 1**
+6. **Pipeline State → Overrides → Group size** offers **64 × 1 × 1**
    and **8 × 8 × 1**. The same form is available from the canvas with Properties
    hidden. All explicit overrides in the bundle must agree; automatic passes
    inherit that choice. An unsupported saved size opens unchanged with a warning.

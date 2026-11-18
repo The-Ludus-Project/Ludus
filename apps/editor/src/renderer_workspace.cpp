@@ -127,6 +127,10 @@ constexpr int32 STATUS_VISIBLE_LINES = 1;
 constexpr int32 SOURCE_PAGE_MARGIN = design::SPACING_EXTRA_SMALL;
 constexpr int32 SOURCE_PAGE_SPACING = design::SPACING_EXTRA_SMALL;
 constexpr int32 STATUS_PADDING_PIXELS = 4;
+// Shares of the status row on the Source view: the graph status (build results and where their problems are listed)
+// keeps a whole line, while each source label clips to one line with its full text in the tooltip.
+constexpr int32 SOURCE_STATUS_SHARE = 1;
+constexpr int32 GRAPH_STATUS_SHARE = 3;
 constexpr int32 SOURCE_VIEW_STATE_VERSION = 1;
 
 // Initial share of the document's width: source tree, then the Canvas/Source/Plan/Textures views.
@@ -1121,9 +1125,9 @@ RendererWorkspace::RendererWorkspace(const ToolingPaths& tooling, QWidget* paren
     // On the Source view the source's own state (draft, save and build, then shader assistance) leads the one
     // status row under the code, beside the graph status, instead of taking lines of its own; it changes often
     // and never moves the editor.
-    statusRowLayout->addWidget(mSourceStatus, 1, Qt::AlignTop);
-    statusRowLayout->addWidget(mSourceAssistance->GetStatusLabel(), 1, Qt::AlignTop);
-    statusRowLayout->addWidget(mStatusPanel, 1);
+    statusRowLayout->addWidget(mSourceStatus, SOURCE_STATUS_SHARE, Qt::AlignTop);
+    statusRowLayout->addWidget(mSourceAssistance->GetStatusLabel(), SOURCE_STATUS_SHARE, Qt::AlignTop);
+    statusRowLayout->addWidget(mStatusPanel, GRAPH_STATUS_SHARE);
     connect(mSourceAssistance, &RenderGraphShaderAssistance::StatusTextChanged, this, [this]() {
         updateChromeVisibility();
     });
@@ -3744,7 +3748,7 @@ void RendererWorkspace::populateNodeFields(QFormLayout& outFields, QWidget& inou
     {
         // A setting of this node's scene input, so it reads as one beside its label rather than as a full-width
         // command bar; the canvas context menu offers the same switch.
-        QCheckBox* expand = new QCheckBox(QStringLiteral("Show each member as a port"), &inoutParent);
+        QCheckBox* expand = new QCheckBox(QStringLiteral("Expand"), &inoutParent);
         expand->setObjectName(QStringLiteral("renderGraphExpandSceneBundle"));
         expand->setToolTip(QStringLiteral("Expand Scene Bundle: show the scene's members as separate ports on the "
                                           "canvas so each can be wired on its own."));
