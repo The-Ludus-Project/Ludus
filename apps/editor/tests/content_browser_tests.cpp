@@ -38,6 +38,7 @@
 
 #include <algorithm>
 #include <cstdlib>
+#include <iterator>
 #include <string_view>
 #include <utility>
 
@@ -1085,9 +1086,11 @@ TEST_CASE("Content filters and actions fit a narrow dock without clipping a labe
     constexpr int32 NARROW_DOCK_WIDTH = 220;
     constexpr int32 WIDE_DOCK_WIDTH = 900;
     constexpr int32 DOCK_HEIGHT = 600;
+    // A project with content, so the chips have counts and stay enabled.
     QTemporaryDir root;
+    WriteSceneProject(root.path());
     ContentWorkspace workspace;
-    workspace.SetProject(root.path(), 1);
+    workspace.SetProject(QDir(root.path()).filePath(QStringLiteral("content")), 1, root.path());
     Wait(workspace);
     workspace.resize(NARROW_DOCK_WIDTH, DOCK_HEIGHT);
     workspace.show();
@@ -1145,11 +1148,25 @@ TEST_CASE("Content filters and actions fit a narrow dock without clipping a labe
     Q_EMIT menu->aboutToShow();
     const QList<QAction*> entries = menu->actions();
     REQUIRE(entries.size() == static_cast<qsizetype>(hiddenCount));
-    QToolButton* firstHidden =
-        *std::find_if(chips.cbegin(), chips.cend(), [](const QToolButton* chip) { return chip->isHidden() == true; });
-    CHECK(entries.front()->text() == firstHidden->text());
-    entries.front()->trigger();
-    CHECK(firstHidden->isChecked() == true);
+    // Each entry mirrors a hidden chip in order, enabled exactly when the chip is (an empty category is off).
+    QList<QToolButton*> hiddenChips;
+    std::copy_if(chips.cbegin(), chips.cend(), std::back_inserter(hiddenChips), [](const QToolButton* chip) {
+        return chip->isHidden() == true;
+    });
+    REQUIRE(hiddenChips.size() == entries.size());
+    qsizetype enabledIndex = -1;
+    for (qsizetype index = 0; index < entries.size(); ++index)
+    {
+        CHECK(entries[index]->text() == hiddenChips[index]->text());
+        CHECK(entries[index]->isEnabled() == hiddenChips[index]->isEnabled());
+        if (enabledIndex < 0 && entries[index]->isEnabled() == true)
+        {
+            enabledIndex = index;
+        }
+    }
+    REQUIRE(enabledIndex >= 0);
+    entries[enabledIndex]->trigger();
+    CHECK(hiddenChips[enabledIndex]->isChecked() == true);
     CHECK(strip->GetOverflowButton().isChecked() == true);
 
     // With room for every chip, More goes away and the chips show in order.

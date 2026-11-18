@@ -3775,7 +3775,8 @@ Text that does not fit is cut where it costs the least, and never silently:
   else its path. The folder is cut first; a name that is still too wide is elided
   at its end, so it reads from its start like the sorted list
   ("SliceSamplingCo…"). The tooltip and the search use the whole relative path.
-  The Project Explorer opens at a fifth of the window's width (220 to 360 px).
+  The Project Explorer opens at 18% of the window's width (220 to 360 px), so a
+  1470 px MacBook Air window gives it about 265 px.
 - **Filter chips** (Content) keep their order; the chips the dock's width cannot
   hold move into a **More** menu at the end of the row, which reads as on while a
   filter it holds is on. The row of actions under the list wraps onto another

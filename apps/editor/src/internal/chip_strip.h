@@ -16,6 +16,8 @@ namespace ludus::editor
 /// strip asks only for the More button's width as its minimum, so a narrow dock can shrink it. GUI thread only.
 class ChipStrip final : public QWidget
 {
+    Q_OBJECT
+
 public:
     explicit ChipStrip(QWidget* parentOrNull = nullptr);
 
