@@ -1265,6 +1265,16 @@ so it stays stable across workgroup overrides. See the [measured scope and
 reproduction workflow](../architecture/renderer-systems.md#authored-graph-workgroup-experiment)
 and the [dispatch ID guide for standalone kernels](fullscreen-rendering.md#choose-a-compute-dispatch-id).
 
+The pixel callback runs only for pixels that need a sample. At image or capture-tile
+edges, some invocations return before the callback. Even inside a full workgroup,
+individual pixels can have finished accumulating samples. A whole-workgroup
+barrier in the callback or any helper it calls would require those invocations
+to reach it too. For a reduction across a workgroup, use a standalone compute
+entry point where every invocation reaches each barrier and out-of-range lanes
+contribute the reduction's identity value (for example, zero for a sum).
+Thanks to Mark Harris and Kyrylo Perelygin for the helper-call example in the
+“Modularity” section of [*Cooperative Groups: Flexible CUDA Thread Programming*](https://developer.nvidia.com/blog/cooperative-groups/).
+
 Runtime package version 21 stores reflected X/Y/Z dimensions after the six fixed
 fields of every ray compute stage. All target artifacts for a role must agree.
 Earlier packages retain their implicit 64×1×1 grouping. Cooked headers and runtime
