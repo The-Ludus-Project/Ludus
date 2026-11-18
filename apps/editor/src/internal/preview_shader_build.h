@@ -42,17 +42,24 @@ using PreviewShaderRecipes = foundation::StaticArray<PreviewShaderRecipe, PREVIE
 [[nodiscard]] bool
 ReadPreviewShaderRecipes(const PreviewShaderSources& sources, PreviewShaderRecipes& outRecipes, QString& outError);
 
+/// File name patterns of the shader sources a recipe may include: Slang sources, and the C headers
+/// and .inc fragments shared with C++ (for example renderer/detail/deferred_binding_slots.inc). The
+/// build's native worker client captures the same suffixes (cmake/shaders/native_worker.py,
+/// SHADER_INCLUDE_SUFFIXES).
+/// @return The patterns for QDir name filters, such as `*.slang`.
+[[nodiscard]] QStringList GetPreviewShaderIncludePatterns();
+
 /// Immutable copy of the recipe sources and every file their quoted `#include` directives reach,
-/// among the .slang/.h files under the source roots. Names are relative to their root, hidden and
-/// out/ directories are skipped, and identical duplicates across roots collapse to one file.
-/// Files no recipe includes stay out of the compiler's snapshot, so unrelated renderer helpers
-/// do not count against its file and byte limits.
+/// among the GetPreviewShaderIncludePatterns() files under the source roots. Names are relative to their root, hidden
+/// and out/ directories are skipped, and identical duplicates across roots collapse to one file. Files no recipe
+/// includes stay out of the compiler's snapshot, so unrelated renderer helpers do not count against its file and byte
+/// limits.
 struct PreviewShaderSnapshot final
 {
     QStringList Names;       ///< Root-relative names given to the compiler.
     QList<QByteArray> Texts; ///< UTF-8 text of each name.
     QStringList Paths;       ///< Absolute path of each name, for diagnostics.
-    /// Absolute path of every .slang/.h file under the roots, captured or not, so watching them
+    /// Absolute path of every shader include file under the roots, captured or not, so watching them
     /// notices an edit that adds an include or creates a missing one.
     QStringList CandidatePaths;
 };

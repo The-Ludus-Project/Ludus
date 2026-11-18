@@ -4,6 +4,8 @@
 #include <ludus/foundation/base/types.h>
 
 #include <ludus/foundation/math/matrix.hpp>
+#include <ludus/graphics/renderer/renderer.hpp>
+#include <ludus/graphics/renderer/world_feature.hpp>
 
 #include "internal/controller.h"
 #include "internal/external_code_editor.h"
@@ -367,6 +369,18 @@ public:
     {
         return mRenderWarning;
     }
+    /// Advisory naming the World features the drawing graph does not render, such as an Atmosphere's sky under a graph
+    /// whose ray kernel never calls EvaluateEnvironment (DescribeUnrenderedWorldFeatures). The graph still draws the
+    /// rest of the World; empty when it renders every feature the World uses. Refreshed with GetRenderWarning, together
+    /// with the World features table in Render Preview; RenderProblemChanged reports it.
+    [[nodiscard]] LUDUS_INLINE const QString& GetOmittedFeatureWarning() const noexcept
+    {
+        return mOmittedFeatureWarning;
+    }
+    /// Select and focus the World features table row of the first feature the drawing graph does not render, or its
+    /// first row, so an author activating the RenderGraphFeatureNotRendered warning lands on the function to call.
+    /// The caller shows the Render Preview tool window that hosts the table. GUI thread only.
+    void RevealWorldFeatures();
     /// The World edit that resolves GetRenderWarning, fitted around the viewport's current camera; Repair is None
     /// when the warning offers none. The caller confirms it with the user and applies it to the World as one
     /// undoable edit (WorldWorkspace::ApplyLuminaireRepair). GUI thread only.
@@ -496,6 +510,8 @@ private:
     void applySourceEdit();
     void setProblem(QString& inoutProblem, const QString& text);
     void refreshRenderWarning(const RenderScene& scene);
+    /// Fill the World features table from the drawing graph's support and mUnrenderedWorldFeatures.
+    void refreshWorldFeatures();
     void prepareDefaultPreview();
     void renderTree(bool shouldRefreshInspector = true, QWidget* editOriginOrNull = nullptr);
     void renderInspector();
@@ -657,6 +673,7 @@ private:
     QString mExtractionProblem;
     QString mActivationProblem;
     QString mRenderWarning;
+    QString mOmittedFeatureWarning;
     /// Whether mRenderWarning is the slice-sampling-luminaire coverage warning, which offers a repair.
     bool mIsLuminaireWarning = false;
     /// The World lighting check mRenderWarning reports when it is not the luminaire warning.
@@ -675,6 +692,11 @@ private:
     QWidget* mPreviewImage;
     QLabel* mPreviewStatus;
     QPushButton* mPreviewButton;
+    /// World features table in Render Preview: one row per graphics::renderer::WorldFeature with the drawing graph's
+    /// support, the scene function that draws the feature and where to call it.
+    QTableWidget* mWorldFeatures;
+    /// Features of the latest World extraction the drawing graph does not render; refreshed with the warning.
+    graphics::renderer::WorldFeatureMask mUnrenderedWorldFeatures = 0;
     RenderPreview* mPreviewSourceOrNull = nullptr;
     RenderGraphPreview* mPreviewOrNull = nullptr;
     /// Renderer tab texture viewer; null in builds without the native GPU preview.
@@ -733,5 +755,10 @@ private:
     RenderGraphSource mPreviewSourceVersion = RenderGraphSource::Draft;
     foundation::math::Matrix4 mPreviewWorldToClip = foundation::math::Matrix4::Identity();
     foundation::float32 mPreviewExposureStops = 0;
+    graphics::renderer::ExposureMode mPreviewExposureMode = graphics::renderer::ExposureMode::Graph;
+    foundation::float32 mPreviewExposureValue100 = 0;
+    bool mShouldShowPreviewWorkLight = false;
+    graphics::renderer::DeferredLightingView mPreviewLightingView = graphics::renderer::DeferredLightingView::Final;
+    foundation::uint64 mPreviewLightingViewSourceId = 0;
 };
 } // namespace ludus::editor

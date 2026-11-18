@@ -4,11 +4,13 @@
 #include "internal/profile.h"
 #include "internal/raster.h"
 #include "internal/resources.h"
+#include "internal/surface.h"
 #include "internal/webgpu_probe.h"
 #include <ludus/foundation/base/core.h>
 #include <ludus/foundation/containers/borrowed_view.hpp>
 #include <ludus/foundation/containers/static_array.hpp>
 #include <ludus/foundation/logging/log_format.hpp>
+#include <ludus/graphics/rhi/device.h>
 #include <ludus/graphics/rhi/render.h>
 #include <ludus/graphics/rhi/rhi.h>
 
@@ -38,14 +40,81 @@ WGPUInstance gInstance = nullptr;
 WGPUAdapter gAdapter = nullptr;
 WGPUDevice gDevice = nullptr;
 WGPUQueue gQueue = nullptr;
-WGPUSurface gSurface = nullptr;
-bool gConfigured = false;
 bool gCompatibility = false;
 uint32 gMaxDimension = 0;
 uint64 gMaxUniformSize = 0;
 uint32 gSession = 0;
-FrameTarget gTarget;
-WGPUSurfaceConfiguration gConfiguration = WGPU_SURFACE_CONFIGURATION_INIT;
+
+/// @brief R14b presentation record of one canvas surface of the device.
+///
+/// Slot 0 is the primary canvas Start connects; slots 1.. are canvases CreateSurface
+/// connected afterwards. Every slot shares the primary's device and color format.
+/// See docs/development/fullscreen-rendering.md, "Multiple surfaces per device (R14b)".
+struct WebSurface final
+{
+    /// Port surface (a GPUCanvasContext) of this slot's canvas.
+    WGPUSurface SurfaceOrNull = nullptr;
+    /// Borrowed selector; WindowInfo keeps it naming the same canvas until disconnection.
+    const char* SelectorOrNull = nullptr;
+    /// Last target SetTarget accepted for this slot.
+    FrameTarget Target;
+    /// Last configuration applied to the canvas context; width/height are canvas pixels.
+    WGPUSurfaceConfiguration Configuration = WGPU_SURFACE_CONFIGURATION_INIT;
+    bool IsConfigured = false;
+    bool IsConnected = false;
+    /// A configuration failure arrived while this slot's frame was open; retire it at End.
+    bool IsLossPending = false;
+    /// Callback identity of this slot's current occupant; zero for a free slot.
+    uint32 Ticket = 0;
+    /// Frames of this slot submitted to the queue.
+    uint64 SubmittedFrames = 0;
+    /// Frames whose submitted work the queue reported done.
+    uint64 RenderedFrames = 0;
+    /// SubmittedFrames and Ticket when the in-flight completion query was issued.
+    uint64 QueriedFrames = 0;
+    uint32 QueriedTicket = 0;
+    /// Frames that submitted the canvas texture, which the browser presents after the task.
+    uint64 PresentedFrames = 0;
+};
+StaticArray<WebSurface, MAX_DEVICE_SURFACES> gSurfaces;
+/// Slot routed to SetTarget/Begin/End; see backend::SelectSurface.
+usize gActiveSurface = 0;
+/// Last callback ticket issued. Tickets keep growing across sessions, so a slot reused by a
+/// new surface never matches a late callback of its previous occupant.
+uint32 gLastTicket = 0;
+/// Queue completion queries in flight, zero or one; see RequestSurfaceCompletion.
+usize gPendingCompletionQueries = 0;
+
+WebSurface& GetActiveSurface() noexcept
+{
+    return gSurfaces[gActiveSurface];
+}
+/// Color format every surface and surface pipeline uses: the primary canvas's format.
+WGPUTextureFormat GetSurfaceFormat() noexcept
+{
+    return gSurfaces[0].Configuration.format;
+}
+uint32 TakeTicket() noexcept
+{
+    ++gLastTicket;
+    if (gLastTicket == 0)
+    {
+        ++gLastTicket;
+    }
+    return gLastTicket;
+}
+/// Slot whose current occupant owns `ticket`, or MAX_DEVICE_SURFACES for a retired surface.
+usize FindSurfaceTicket(uint32 ticket) noexcept
+{
+    for (usize slot = 0; slot < gSurfaces.GetSize(); ++slot)
+    {
+        if (ticket != 0 && gSurfaces[slot].Ticket == ticket)
+        {
+            return slot;
+        }
+    }
+    return MAX_DEVICE_SURFACES;
+}
 WGPUTexture gTexture = nullptr;
 WGPUTextureView gView = nullptr;
 WGPUCommandEncoder gEncoder = nullptr;
@@ -107,6 +176,20 @@ EM_JS(int32, CanCreateSurface, (const char* selector), {
         return canvas.getContext('webgpu') ? 1 : -1;
     } catch (_) { return 0; }
 });
+// R14b: a created canvas stops accepting frames when it leaves the document.
+EM_JS(int32, IsCanvasConnected, (const char* selector), {
+    try {
+        const canvas = document.querySelector(UTF8ToString(selector));
+        return canvas instanceof HTMLCanvasElement && canvas.isConnected ? 1 : 0;
+    } catch (_) { return 0; }
+});
+// R14b: distinct selector strings may name one canvas, which has one WebGPU context.
+EM_JS(int32, IsSameCanvas, (const char* first, const char* second), {
+    try {
+        const canvas = document.querySelector(UTF8ToString(first));
+        return canvas !== null && canvas === document.querySelector(UTF8ToString(second)) ? 1 : 0;
+    } catch (_) { return 0; }
+});
 // clang-format on
 
 void* Userdata(uint32 token) noexcept
@@ -134,6 +217,127 @@ void Diagnose(WGPUStringView message) noexcept
         }
         LUDUS_LOG_WARN(LOG_RHI, "WebGPU: {}", std::string_view(message.data, length));
     }
+}
+/// Release one created slot's canvas configuration and port surface. WebGPU keeps the canvas
+/// textures of submitted work alive until that work completes, so retirement needs no wait.
+/// The slot keeps its counters for GetSurfaceInfo; its ticket is cleared, so completions of
+/// frames still in flight are not counted.
+void ReleaseSurface(usize slot) noexcept
+{
+    WebSurface& surface = gSurfaces[slot];
+    if (surface.IsConfigured == true && surface.SurfaceOrNull != nullptr)
+    {
+        wgpuSurfaceUnconfigure(surface.SurfaceOrNull);
+    }
+    if (surface.SurfaceOrNull != nullptr)
+    {
+        wgpuSurfaceRelease(surface.SurfaceOrNull);
+    }
+    const uint64 submittedFrames = surface.SubmittedFrames;
+    const uint64 renderedFrames = surface.RenderedFrames;
+    const uint64 presentedFrames = surface.PresentedFrames;
+    surface = {};
+    surface.SubmittedFrames = submittedFrames;
+    surface.RenderedFrames = renderedFrames;
+    surface.PresentedFrames = presentedFrames;
+}
+/// A created canvas stopped accepting frames: retire only its presentation and report it lost.
+/// The device, its resources and its other surfaces keep working.
+void LoseCreatedSurface(usize slot) noexcept
+{
+    ReleaseSurface(slot);
+    internal::LoseSurface(slot);
+}
+/// Validation result of a created canvas's configuration. A destroyed surface, or a new
+/// surface that reuses its slot, carries another ticket, so a late result is ignored.
+void SurfaceConfigured(WGPUPopErrorScopeStatus status,
+                       WGPUErrorType error,
+                       WGPUStringView message,
+                       void* session,
+                       void* ticket) noexcept
+{
+    if (internal::Current(Token(session)) == false)
+    {
+        return;
+    }
+    const usize slot = FindSurfaceTicket(Token(ticket));
+    if (slot == 0 || slot == MAX_DEVICE_SURFACES ||
+        (status == WGPUPopErrorScopeStatus_Success && error == WGPUErrorType_NoError))
+    {
+        return;
+    }
+    Diagnose(message);
+    if (gEncoder != nullptr && gActiveSurface == slot)
+    {
+        // The open frame still owns this canvas texture; End submits it, then retires the slot.
+        gSurfaces[slot].IsLossPending = true;
+        return;
+    }
+    LoseCreatedSurface(slot);
+}
+/// Configure a created canvas inside a validation scope, so a configuration error loses only
+/// that surface instead of reaching the device's uncaptured-error handler.
+void ConfigureCreatedSurface(usize slot) noexcept
+{
+    WebSurface& surface = gSurfaces[slot];
+    wgpuDevicePushErrorScope(gDevice, WGPUErrorFilter_Validation);
+    wgpuSurfaceConfigure(surface.SurfaceOrNull, &surface.Configuration);
+    surface.IsConfigured = true;
+    WGPUPopErrorScopeCallbackInfo callback = WGPU_POP_ERROR_SCOPE_CALLBACK_INFO_INIT;
+    callback.mode = WGPUCallbackMode_AllowSpontaneous;
+    callback.callback = SurfaceConfigured;
+    callback.userdata1 = Userdata(gSession);
+    callback.userdata2 = Userdata(surface.Ticket);
+    (void)wgpuDevicePopErrorScope(gDevice, callback);
+}
+/// Queue completion of every frame submitted before the query. A surface destroyed or replaced
+/// since then carries another ticket, so its late completion is ignored.
+void SurfacesRendered(WGPUQueueWorkDoneStatus status, WGPUStringView, void* session, void*) noexcept
+{
+    if (internal::Current(Token(session)) == false)
+    {
+        return;
+    }
+    gPendingCompletionQueries = 0;
+    if (status != WGPUQueueWorkDoneStatus_Success)
+    {
+        return;
+    }
+    for (WebSurface& surface : gSurfaces)
+    {
+        if (surface.Ticket != 0 && surface.QueriedTicket == surface.Ticket &&
+            surface.QueriedFrames > surface.RenderedFrames)
+        {
+            surface.RenderedFrames = surface.QueriedFrames;
+        }
+    }
+}
+/// Ask the queue once whether the frames submitted so far completed. Queries are issued only when
+/// a caller reads surface counters, so frames add no completion callbacks of their own.
+void RequestSurfaceCompletion() noexcept
+{
+    if (gPendingCompletionQueries != 0 || gQueue == nullptr)
+    {
+        return;
+    }
+    bool hasPendingFrames = false;
+    for (WebSurface& surface : gSurfaces)
+    {
+        surface.QueriedFrames = surface.SubmittedFrames;
+        surface.QueriedTicket = surface.Ticket;
+        hasPendingFrames =
+            hasPendingFrames || (surface.Ticket != 0 && surface.SubmittedFrames > surface.RenderedFrames);
+    }
+    if (hasPendingFrames == false)
+    {
+        return;
+    }
+    gPendingCompletionQueries = 1;
+    WGPUQueueWorkDoneCallbackInfo callback = WGPU_QUEUE_WORK_DONE_CALLBACK_INFO_INIT;
+    callback.mode = WGPUCallbackMode_AllowSpontaneous;
+    callback.callback = SurfacesRendered;
+    callback.userdata1 = Userdata(gSession);
+    (void)wgpuQueueOnSubmittedWorkDone(gQueue, callback);
 }
 void Configured(WGPUPopErrorScopeStatus status,
                 WGPUErrorType error,
@@ -188,7 +392,7 @@ void DeviceReady(WGPURequestDeviceStatus status,
     WGPULimits limits = WGPU_LIMITS_INIT;
     WGPUSurfaceCapabilities capabilities = WGPU_SURFACE_CAPABILITIES_INIT;
     if (wgpuDeviceGetLimits(device, &limits) != WGPUStatus_Success ||
-        wgpuSurfaceGetCapabilities(gSurface, gAdapter, &capabilities) != WGPUStatus_Success ||
+        wgpuSurfaceGetCapabilities(gSurfaces[0].SurfaceOrNull, gAdapter, &capabilities) != WGPUStatus_Success ||
         capabilities.formatCount == 0 || gQueue == nullptr)
     {
         wgpuSurfaceCapabilitiesFreeMembers(capabilities);
@@ -213,9 +417,9 @@ void DeviceReady(WGPURequestDeviceStatus status,
     configuration.height = 1;
     configuration.presentMode = WGPUPresentMode_Fifo;
     wgpuDevicePushErrorScope(device, WGPUErrorFilter_Validation);
-    wgpuSurfaceConfigure(gSurface, &configuration);
-    gConfigured = true;
-    gConfiguration = configuration;
+    wgpuSurfaceConfigure(gSurfaces[0].SurfaceOrNull, &configuration);
+    gSurfaces[0].IsConfigured = true;
+    gSurfaces[0].Configuration = configuration;
     wgpuSurfaceCapabilitiesFreeMembers(capabilities);
     WGPUPopErrorScopeCallbackInfo callback = WGPU_POP_ERROR_SCOPE_CALLBACK_INFO_INIT;
     callback.mode = WGPUCallbackMode_AllowSpontaneous;
@@ -231,7 +435,7 @@ void AdapterReady(WGPURequestAdapterStatus status,
 void RequestAdapter(uint32 token) noexcept
 {
     WGPURequestAdapterOptions options = WGPU_REQUEST_ADAPTER_OPTIONS_INIT;
-    options.compatibleSurface = gSurface;
+    options.compatibleSurface = gSurfaces[0].SurfaceOrNull;
     options.featureLevel = gCompatibility ? WGPUFeatureLevel_Compatibility : WGPUFeatureLevel_Core;
     WGPURequestAdapterCallbackInfo callback = WGPU_REQUEST_ADAPTER_CALLBACK_INFO_INIT;
     callback.mode = WGPUCallbackMode_AllowSpontaneous;
@@ -389,11 +593,15 @@ StartupError Start(const ApplicationInfo&, const WindowInfo& window, uint32 toke
     source.selector = { .data = window.CanvasSelector, .length = WGPU_STRLEN };
     WGPUSurfaceDescriptor descriptor = WGPU_SURFACE_DESCRIPTOR_INIT;
     descriptor.nextInChain = &source.chain;
-    gSurface = wgpuInstanceCreateSurface(gInstance, &descriptor);
-    if (gSurface == nullptr)
+    gSurfaces[0].SurfaceOrNull = wgpuInstanceCreateSurface(gInstance, &descriptor);
+    if (gSurfaces[0].SurfaceOrNull == nullptr)
     {
         return StartupError::SurfaceUnavailable;
     }
+    gSurfaces[0].SelectorOrNull = window.CanvasSelector;
+    gSurfaces[0].IsConnected = true;
+    gSurfaces[0].Ticket = TakeTicket();
+    gActiveSurface = 0;
     gCompatibility = false;
     gSession = token;
     RequestAdapter(token);
@@ -403,11 +611,13 @@ void Shutdown() noexcept
 {
     // The facade invalidates callback tokens before this can trigger device loss.
     ReleaseFrame();
-    if (gConfigured && gSurface != nullptr)
+    for (usize slot = 0; slot < gSurfaces.GetSize(); ++slot)
     {
-        wgpuSurfaceUnconfigure(gSurface);
+        ReleaseSurface(slot);
+        gSurfaces[slot] = {};
     }
-    gConfigured = false;
+    gActiveSurface = 0;
+    gPendingCompletionQueries = 0;
     if (gQueue != nullptr)
     {
         wgpuQueueRelease(gQueue);
@@ -421,10 +631,6 @@ void Shutdown() noexcept
     {
         wgpuAdapterRelease(gAdapter);
     }
-    if (gSurface != nullptr)
-    {
-        wgpuSurfaceRelease(gSurface);
-    }
     if (gInstance != nullptr)
     {
         wgpuInstanceRelease(gInstance);
@@ -432,13 +638,10 @@ void Shutdown() noexcept
     gQueue = nullptr;
     gDevice = nullptr;
     gAdapter = nullptr;
-    gSurface = nullptr;
     gInstance = nullptr;
     gMaxDimension = 0;
     gMaxUniformSize = 0;
     gSession = 0;
-    gTarget = {};
-    gConfiguration = WGPU_SURFACE_CONFIGURATION_INIT;
 }
 bool Initialize(const ApplicationInfo&) noexcept
 {
@@ -461,11 +664,110 @@ bool EndFrame() noexcept
 {
     return false;
 }
+usize AdditionalSurfaceLimit() noexcept
+{
+    return gDevice != nullptr && gQueue != nullptr ? MAX_DEVICE_SURFACES - 1 : 0;
+}
+StartupError CreateSurface(usize slot, const WindowInfo& window) noexcept
+{
+    if (gDevice == nullptr || slot == 0 || slot >= gSurfaces.GetSize() || gSurfaces[slot].IsConnected == true ||
+        window.System != ludus::platform::WindowSystem::WebCanvas || window.CanvasSelector == nullptr ||
+        window.Width > gMaxDimension || window.Height > gMaxDimension)
+    {
+        return StartupError::InvalidWindow;
+    }
+    for (const WebSurface& surface : gSurfaces)
+    {
+        if (surface.IsConnected == true && IsSameCanvas(surface.SelectorOrNull, window.CanvasSelector) == 1)
+        {
+            return StartupError::InvalidWindow;
+        }
+    }
+    const int32 available = CanCreateSurface(window.CanvasSelector);
+    if (available == 0)
+    {
+        return StartupError::InvalidWindow;
+    }
+    if (available < 0)
+    {
+        // The canvas already holds another context mode, such as WebGL 2.
+        return StartupError::SurfaceUnavailable;
+    }
+    WGPUEmscriptenSurfaceSourceCanvasHTMLSelector source = WGPU_EMSCRIPTEN_SURFACE_SOURCE_CANVAS_HTML_SELECTOR_INIT;
+    source.selector = { .data = window.CanvasSelector, .length = WGPU_STRLEN };
+    WGPUSurfaceDescriptor descriptor = WGPU_SURFACE_DESCRIPTOR_INIT;
+    descriptor.nextInChain = &source.chain;
+    WGPUSurface createdOrNull = wgpuInstanceCreateSurface(gInstance, &descriptor);
+    if (createdOrNull == nullptr)
+    {
+        return StartupError::SurfaceUnavailable;
+    }
+    // Pipelines target the primary format, so every canvas must accept it.
+    WGPUSurfaceCapabilities capabilities = WGPU_SURFACE_CAPABILITIES_INIT;
+    const bool hasCapabilities =
+        wgpuSurfaceGetCapabilities(createdOrNull, gAdapter, &capabilities) == WGPUStatus_Success;
+    bool hasFormat = false;
+    for (usize i = 0; hasCapabilities == true && i < capabilities.formatCount; ++i)
+    {
+        hasFormat = hasFormat || capabilities.formats[i] == GetSurfaceFormat();
+    }
+    wgpuSurfaceCapabilitiesFreeMembers(capabilities);
+    if (hasFormat == false)
+    {
+        wgpuSurfaceRelease(createdOrNull);
+        return hasCapabilities == true ? StartupError::BackendUnavailable : StartupError::SurfaceUnavailable;
+    }
+    WebSurface& surface = gSurfaces[slot];
+    surface = {};
+    surface.SurfaceOrNull = createdOrNull;
+    surface.SelectorOrNull = window.CanvasSelector;
+    surface.Target = { .Width = window.Width, .Height = window.Height };
+    surface.Configuration = gSurfaces[0].Configuration;
+    // A zero extent leaves the canvas size alone; the first nonzero target reconfigures.
+    surface.Configuration.width = window.Width;
+    surface.Configuration.height = window.Height;
+    surface.IsConnected = true;
+    surface.Ticket = TakeTicket();
+    ConfigureCreatedSurface(slot);
+    // A synchronous validation result may already have retired the slot.
+    return surface.IsConnected == true ? StartupError::None : StartupError::SurfaceUnavailable;
+}
+void DestroySurface(usize slot) noexcept
+{
+    if (slot == 0 || slot >= gSurfaces.GetSize() || gSurfaces[slot].IsConnected == false)
+    {
+        return;
+    }
+    ReleaseSurface(slot);
+    if (gActiveSurface == slot)
+    {
+        gActiveSurface = 0;
+    }
+}
+void SelectSurface(usize slot) noexcept
+{
+    gActiveSurface = slot < gSurfaces.GetSize() ? slot : 0;
+}
+backend::SurfaceCompletion GetSurfaceCompletion(usize slot) noexcept
+{
+    if (slot >= gSurfaces.GetSize())
+    {
+        return {};
+    }
+    RequestSurfaceCompletion();
+    return { .RenderedFrames = gSurfaces[slot].RenderedFrames, .PresentedFrames = gSurfaces[slot].PresentedFrames };
+}
 namespace
 {
 bool ValidColor(float64 value) noexcept
 {
     return value >= 0 && value <= 1;
+}
+/// Retire the selected created surface after its canvas stopped accepting frames; no frame opens.
+FrameStatus LoseActiveSurface() noexcept
+{
+    LoseCreatedSurface(gActiveSurface);
+    return FrameStatus::Skipped;
 }
 } // namespace
 FrameStatus SetTarget(const FrameTarget& target) noexcept
@@ -475,16 +777,19 @@ FrameStatus SetTarget(const FrameTarget& target) noexcept
     {
         return FrameStatus::InvalidState;
     }
-    gTarget = target;
+    GetActiveSurface().Target = target;
     return FrameStatus::Ready;
 }
 FrameStatus Begin() noexcept
 {
-    if (gTarget.Width == 0 || gTarget.Height == 0)
+    WebSurface& surface = GetActiveSurface();
+    const FrameTarget& target = surface.Target;
+    const bool isCreated = gActiveSurface != 0;
+    if (target.Width == 0 || target.Height == 0 || (isCreated == true && surface.IsConnected == false))
     {
         return FrameStatus::Skipped;
     }
-    if (gTarget.ShouldPresentToSurface == false)
+    if (target.ShouldPresentToSurface == false)
     {
         // Thanks to W3C, WebGPU, "Canvas Contexts" and "GPUQueue.submit":
         // https://www.w3.org/TR/webgpu/#canvas-context
@@ -500,15 +805,32 @@ FrameStatus Begin() noexcept
         TimingBegin();
         return FrameStatus::Ready;
     }
-    if (gConfigured == false || gConfiguration.width != gTarget.Width || gConfiguration.height != gTarget.Height)
+    if (isCreated == true && IsCanvasConnected(surface.SelectorOrNull) == 0)
     {
-        gConfiguration.width = gTarget.Width;
-        gConfiguration.height = gTarget.Height;
-        wgpuSurfaceConfigure(gSurface, &gConfiguration);
-        gConfigured = true;
+        return LoseActiveSurface();
+    }
+    if (surface.IsConfigured == false || surface.Configuration.width != target.Width ||
+        surface.Configuration.height != target.Height)
+    {
+        surface.Configuration.width = target.Width;
+        surface.Configuration.height = target.Height;
+        if (isCreated == true)
+        {
+            ConfigureCreatedSurface(gActiveSurface);
+            if (surface.IsConnected == false)
+            {
+                // A synchronous validation result retired this slot.
+                return FrameStatus::Skipped;
+            }
+        }
+        else
+        {
+            wgpuSurfaceConfigure(surface.SurfaceOrNull, &surface.Configuration);
+            surface.IsConfigured = true;
+        }
     }
     WGPUSurfaceTexture current = WGPU_SURFACE_TEXTURE_INIT;
-    wgpuSurfaceGetCurrentTexture(gSurface, &current);
+    wgpuSurfaceGetCurrentTexture(surface.SurfaceOrNull, &current);
     gTexture = current.texture;
     if (current.status == WGPUSurfaceGetCurrentTextureStatus_Timeout ||
         current.status == WGPUSurfaceGetCurrentTextureStatus_Outdated)
@@ -517,8 +839,8 @@ FrameStatus Begin() noexcept
         // Reconfigure at the next nonzero frame; do not fabricate presentation.
         if (current.status != WGPUSurfaceGetCurrentTextureStatus_Timeout)
         {
-            wgpuSurfaceUnconfigure(gSurface);
-            gConfigured = false;
+            wgpuSurfaceUnconfigure(surface.SurfaceOrNull);
+            surface.IsConfigured = false;
         }
         return FrameStatus::Skipped;
     }
@@ -526,6 +848,12 @@ FrameStatus Begin() noexcept
          current.status != WGPUSurfaceGetCurrentTextureStatus_SuccessSuboptimal) ||
         gTexture == nullptr)
     {
+        if (isCreated == true)
+        {
+            // A created canvas whose context cannot supply a texture is lost alone.
+            ReleaseFrame();
+            return LoseActiveSurface();
+        }
         return FrameFailure();
     }
     gView = wgpuTextureCreateView(gTexture, nullptr);
@@ -539,12 +867,12 @@ FrameStatus Begin() noexcept
     color.view = gView;
     color.loadOp = WGPULoadOp_Clear;
     color.storeOp = WGPUStoreOp_Store;
-    color.clearValue = { .r = gTarget.Red, .g = gTarget.Green, .b = gTarget.Blue, .a = gTarget.Alpha };
+    color.clearValue = { .r = target.Red, .g = target.Green, .b = target.Blue, .a = target.Alpha };
     WGPURenderPassDescriptor descriptor = WGPU_RENDER_PASS_DESCRIPTOR_INIT;
     descriptor.colorAttachmentCount = 1;
     descriptor.colorAttachments = &color;
     WGPUTextureDescriptor depthTexture = WGPU_TEXTURE_DESCRIPTOR_INIT;
-    depthTexture.size = {gTarget.Width, gTarget.Height, 1};
+    depthTexture.size = {target.Width, target.Height, 1};
     depthTexture.format = WGPUTextureFormat_Depth24Plus;
     depthTexture.usage = WGPUTextureUsage_RenderAttachment;
     gDepthTexture = wgpuDeviceCreateTexture(gDevice, &depthTexture);
@@ -569,6 +897,8 @@ FrameStatus Begin() noexcept
 }
 FrameStatus End() noexcept
 {
+    const usize slot = gActiveSurface;
+    const bool isPresenting = gTexture != nullptr;
     if (gPass != nullptr)
     {
         wgpuRenderPassEncoderEnd(gPass);
@@ -583,7 +913,18 @@ FrameStatus End() noexcept
     TimingSubmitted();
     wgpuCommandBufferRelease(commands);
     ReleaseFrame();
-    // WebGPU presents the canvas after submission; there is no Vulkan-style present.
+    WebSurface& surface = gSurfaces[slot];
+    ++surface.SubmittedFrames;
+    // WebGPU has no explicit present: the browser presents a canvas texture submitted in
+    // this task when the task returns, so a submitted canvas frame counts as presented.
+    if (isPresenting == true)
+    {
+        ++surface.PresentedFrames;
+    }
+    if (surface.IsLossPending == true)
+    {
+        LoseCreatedSurface(slot);
+    }
     return FrameStatus::Ready;
 }
 WGPUDevice ProbeDevice() noexcept
@@ -592,7 +933,7 @@ WGPUDevice ProbeDevice() noexcept
 }
 WGPUTextureFormat ProbeFormat() noexcept
 {
-    return gConfiguration.format;
+    return GetSurfaceFormat();
 }
 WGPURenderPassEncoder ProbePass() noexcept
 {
@@ -702,7 +1043,7 @@ ResourceStatus CreatePipeline(usize slot, const backend::PipelineResources& reso
     group.entries = &entry;
     pipeline.Group = wgpuDeviceCreateBindGroup(gDevice, &group);
     WGPUColorTargetState color = WGPU_COLOR_TARGET_STATE_INIT;
-    color.format = gConfiguration.format;
+    color.format = GetSurfaceFormat();
     WGPUFragmentState fragmentState = WGPU_FRAGMENT_STATE_INIT;
     fragmentState.module = gShaders[fragment].Module;
     fragmentState.entryPoint = { .data = gShaders[fragment].Entry, .length = WGPU_STRLEN };
@@ -771,19 +1112,22 @@ void UpdateUniform(usize slot, ludus::foundation::BorrowedView<const uint8> byte
 }
 FrameInfo GetFrameInfo() noexcept
 {
+    const WebSurface& surface = GetActiveSurface();
+    const bool isPresenting = surface.Target.ShouldPresentToSurface == true;
     return
     {
-        .Width = gTarget.ShouldPresentToSurface == true ? gConfiguration.width : gTarget.Width,
-        .Height = gTarget.ShouldPresentToSurface == true ? gConfiguration.height : gTarget.Height,
-        .Encoding = gConfiguration.format == WGPUTextureFormat_BGRA8UnormSrgb ||
-                            gConfiguration.format == WGPUTextureFormat_RGBA8UnormSrgb
+        .Width = isPresenting == true ? surface.Configuration.width : surface.Target.Width,
+        .Height = isPresenting == true ? surface.Configuration.height : surface.Target.Height,
+        .Encoding = GetSurfaceFormat() == WGPUTextureFormat_BGRA8UnormSrgb ||
+                            GetSurfaceFormat() == WGPUTextureFormat_RGBA8UnormSrgb
                         ? SurfaceEncoding::Srgb
                         : SurfaceEncoding::Unorm,
     };
 }
 ResourceStatus Draw(usize slot) noexcept
 {
-    if (gTarget.ShouldPresentToSurface == false)
+    const FrameTarget& target = GetActiveSurface().Target;
+    if (target.ShouldPresentToSurface == false)
     {
         return ResourceStatus::InvalidState;
     }
@@ -794,8 +1138,8 @@ ResourceStatus Draw(usize slot) noexcept
     wgpuRenderPassEncoderSetViewport(gPass,
                                      0,
                                      0,
-                                     static_cast<float32>(gTarget.Width),
-                                     static_cast<float32>(gTarget.Height),
+                                     static_cast<float32>(target.Width),
+                                     static_cast<float32>(target.Height),
                                      0,
                                      1);
     wgpuRenderPassEncoderSetPipeline(gPass, pipeline.Object);

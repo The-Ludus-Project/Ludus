@@ -228,6 +228,7 @@ Status AppendGpuGraph(rhi::DeviceHandle device,
                       const rhi::GraphVersion* visibilityVersionOrNull = nullptr) noexcept
 {
     constexpr usize COLOR_BUFFER_INDEX = 3;
+    const bool isBufferDispatch = job.WorkItemCount != 0;
     Status status = Status::Ready;
     // A tiled job reads the uniform copy whose Tile selects its prepared band, through that copy's bindings.
     const GpuPreviewTiles* tilesOrNull = job.TilesOrNull.Get();
@@ -243,6 +244,10 @@ Status AppendGpuGraph(rhi::DeviceHandle device,
     StaticArray<rhi::GraphVersion, JOB_BUFFER_COUNT> versions{};
     for (usize i = 0; i < JOB_BUFFER_COUNT; ++i)
     {
+        if (isBufferDispatch == true && i >= QUAD_BUFFER_INDEX && i <= IMAGE_PARAMETERS_INDEX)
+        {
+            continue;
+        }
         status = inoutResources.ImportBuffer(device, graph, buffers[i], versions[i]);
         if (status != Status::Ready)
         {
@@ -254,10 +259,13 @@ Status AppendGpuGraph(rhi::DeviceHandle device,
     rhi::GraphVersion output;
     rhi::GraphVersion accumulation;
     rhi::GraphVersion colors;
-    status = inoutResources.ImportTexture(device, graph, target, texture);
-    if (status == Status::Ready)
+    if (isBufferDispatch == false)
     {
-        status = rhi::NextGraphVersion(device, graph, texture, output);
+        status = inoutResources.ImportTexture(device, graph, target, texture);
+        if (status == Status::Ready)
+        {
+            status = rhi::NextGraphVersion(device, graph, texture, output);
+        }
     }
     if (status == Status::Ready)
     {
@@ -423,17 +431,23 @@ Status AppendGpuGraph(rhi::DeviceHandle device,
                                           LUDUS_GRAPH_FAILURE_BYTES,
                                           rhi::RasterVisibility::Compute};
     }
-    const rhi::ComputeDispatch dispatch{
-        job.HasNativeRayInvocation == true ? state.NativeRayPipeline : state.ComputePipeline,
-        tilesOrNull != nullptr ? tilesOrNull->Bindings : job.ComputeBindings,
-        {(job.Width - 1) / state.WorkgroupWidth + 1, rows == 0 ? 1 : (rows - 1) / state.WorkgroupHeight + 1, 1}};
+    const uint32 dispatchWidth = isBufferDispatch == true ? GetSceneWorkRowWidth(job.WorkItemCount) : job.Width;
+    const uint32 dispatchRows = isBufferDispatch == true ? GetSceneWorkRowCount(job.WorkItemCount) : rows;
+    const rhi::ComputeDispatch dispatch{job.HasNativeRayInvocation == true ? state.NativeRayPipeline
+                                                                           : state.ComputePipeline,
+                                        tilesOrNull != nullptr ? tilesOrNull->Bindings : job.ComputeBindings,
+                                        {(dispatchWidth - 1) / state.WorkgroupWidth + 1,
+                                         dispatchRows == 0 ? 1 : (dispatchRows - 1) / state.WorkgroupHeight + 1,
+                                         1}};
     rhi::GraphPassDescription compute;
-    compute.Name = job.HasNativeRayInvocation == true ? "Native Metal ray stages" : "GPU preview transport";
+    compute.Name = isBufferDispatch == true             ? "Scene buffer dispatch"
+                   : job.HasNativeRayInvocation == true ? "Native Metal ray stages"
+                                                        : "GPU preview transport";
     compute.Uses = computeUses.GetData();
     compute.UseCount = computeUseCount;
     compute.Dispatch = &dispatch;
     status = rhi::AddGraphPass(device, graph, compute);
-    if (status != Status::Ready)
+    if (status != Status::Ready || isBufferDispatch == true)
     {
         return status;
     }

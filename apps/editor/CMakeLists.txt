@@ -20,6 +20,12 @@ if(NOT EMSCRIPTEN)
     endif()
 endif()
 
+# Maximum WebAssembly memory of the browser editor (QT_WASM_MAXIMUM_MEMORY below). The browser
+# file budget derives from it (src/internal/browser_folder.h); native builds compile the same
+# admission code for its tests.
+set(ludus_editor_wasm_maximum_memory_bytes 2147483648)
+add_compile_definitions(LUDUS_EDITOR_WASM_MAXIMUM_MEMORY_BYTES=${ludus_editor_wasm_maximum_memory_bytes}ULL)
+
 if(EMSCRIPTEN)
     set(editor_process_sources src/browser_processes.cpp)
     set(editor_audio_source src/audio_preview_browser.cpp)
@@ -400,6 +406,10 @@ function(ludus_editor_add_builtin_world target)
               "${CMAKE_CURRENT_FUNCTION_LIST_DIR}/resources/world/cube.mesh.json"
               "${CMAKE_CURRENT_FUNCTION_LIST_DIR}/resources/world/plane.mesh.json"
               "${CMAKE_CURRENT_FUNCTION_LIST_DIR}/resources/world/sphere.mesh.json")
+    # Public-domain tzdb zone.tab: the time zone of a chosen Earth location (world_earth_time_zone.cpp).
+    qt_add_resources(${target} ludus_earth_time_zones
+        PREFIX "/time-zones" BASE "${CMAKE_CURRENT_FUNCTION_LIST_DIR}/resources/time_zones"
+        FILES "${CMAKE_CURRENT_FUNCTION_LIST_DIR}/resources/time_zones/zone.tab")
 endfunction()
 
 # The default graph's authored sources, read-only inside the editor (also in builds
@@ -742,7 +752,7 @@ target_link_libraries(ludus_editor_render_graph_authoring
         Ludus::FoundationProfiling
     PRIVATE
         "$<COMPILE_ONLY:Ludus::GraphicsRenderer>" "$<COMPILE_ONLY:Ludus::GameplayCamera>"
-        "$<COMPILE_ONLY:Ludus::Resources>" "$<COMPILE_ONLY:Ludus::PhysicsCollision>")
+        "$<COMPILE_ONLY:Ludus::Resources>" "$<COMPILE_ONLY:ludus_first_person_walking>")
 
 # The content browser, its catalog and imports. The job scheduler (content_jobs.cpp)
 # differs between the native editor and the browser scheduler test.
@@ -751,7 +761,9 @@ ludus_editor_add_objects(ludus_editor_content
     src/internal/content_types.h src/content_types.cpp src/content_filter.cpp src/content_asset_catalog.cpp
     src/internal/content_thumbnails.h src/content_thumbnails.cpp
     src/internal/state_view.h src/state_view.cpp
-    src/editor_files.cpp src/internal/scene_archive.h src/scene_archive.cpp)
+    src/editor_files.cpp src/internal/scene_archive.h src/scene_archive.cpp
+    src/internal/browser_folder.h src/browser_folder.cpp
+    $<$<BOOL:${EMSCRIPTEN}>:src/browser_host_folder.cpp>)
 # Thumbnails decode cooked SceneFormat texture records; the scene catalog limits come from SceneCook's header only.
 target_link_libraries(ludus_editor_content PUBLIC ludus_editor_presentation Qt6::Core Qt6::Widgets
     Ludus::AudioContent Ludus::FoundationMath Ludus::SceneFormat ludus_stb_image
@@ -762,7 +774,8 @@ ludus_editor_add_objects(ludus_editor_project_explorer
     src/internal/project_files.h src/project_files.cpp)
 target_link_libraries(ludus_editor_project_explorer PUBLIC ludus_editor_presentation)
 
-ludus_editor_add_objects(ludus_editor_document_well src/internal/document_well.h src/document_well.cpp)
+ludus_editor_add_objects(ludus_editor_document_well src/internal/document_well.h src/document_well.cpp
+                         src/internal/tab_modified.h)
 target_link_libraries(ludus_editor_document_well PUBLIC Qt6::Widgets Ludus::FoundationBase Ludus::FoundationContainers)
 
 if(NOT EMSCRIPTEN AND (LUDUS_EDITOR_RENDER_PREVIEW OR LUDUS_BUILD_TESTS))
@@ -831,6 +844,8 @@ ludus_editor_add_objects(ludus_editor_application
     src/internal/import_report.h
     src/import_report.cpp
     src/internal/world_workspace.h
+    src/internal/caption_label.h
+    src/caption_label.cpp
     src/internal/world_lights_panel.h
     src/world_lights_panel.cpp
     src/internal/world_material_document.h
@@ -841,6 +856,7 @@ ludus_editor_add_objects(ludus_editor_application
     src/internal/world_celestial_light.h src/world_celestial_light.cpp
     src/internal/world_earth_location.h src/world_earth_location.cpp
     src/internal/world_earth_time_field.h src/world_earth_time_field.cpp
+    src/internal/world_earth_time_zone.h src/world_earth_time_zone.cpp
     src/world_document.cpp
     src/world_probe_volume.cpp
     src/world_terrain.cpp
@@ -932,8 +948,8 @@ target_link_libraries(ludus_editor_application
         Ludus::GameplayCamera
         Ludus::GameplayWorld
         Ludus::GraphicsRenderer
-        # Explore as Player sweeps its box against Static Collider meshes.
-        Ludus::PhysicsCollision
+        # Explore as Player uses the same walking controller as the built-in player.
+        ludus_first_person_walking
         Ludus::Resources
         Ludus::FoundationParsingJson
         Ludus::Platform
@@ -1332,6 +1348,7 @@ if(LUDUS_BUILD_TESTS AND NOT EMSCRIPTEN)
         tests/content_import_gate_tests.cpp
         tests/content_browser_tests.cpp
         tests/project_setup_dialog_tests.cpp
+        tests/browser_folder_tests.cpp
         tests/engine_pin_tests.cpp
         tests/project_lifecycle_tests.cpp
         tests/workspace_layout_tests.cpp
@@ -1547,6 +1564,14 @@ if(LUDUS_BUILD_TESTS AND NOT EMSCRIPTEN)
         set(native_mis_saved_profiles "${LUDUS_DEFAULT_RENDER_GRAPH_PROFILES}")
         # Preserve the editor host's Metal/WGSL CPU interface identity; transport executes on Metal.
         set(LUDUS_DEFAULT_RENDER_GRAPH_PROFILES "[\"metal\", \"wgsl\"]")
+        set(editor_diffuse_source "${PROJECT_SOURCE_DIR}/modules/graphics/renderer/render_graphs/hybrid_indirect_diffuse")
+        set(editor_diffuse_staged "${CMAKE_CURRENT_BINARY_DIR}/hybrid-indirect-diffuse-inputs")
+        ludus_stage_render_graph_fixture("${editor_diffuse_source}" "${editor_diffuse_staged}")
+        ludus_compile_render_graph(TARGET ludus_editor_tests NAME editor_indirect_diffuse
+            MANIFEST "${editor_diffuse_staged}/main.lushader.json" RUNTIME_PACKAGE)
+        target_compile_definitions(ludus_editor_tests PRIVATE
+            LUDUS_EDITOR_INDIRECT_DIFFUSE_PACKAGE="${editor_indirect_diffuse_RUNTIME_PACKAGE}")
+        target_include_directories(ludus_editor_tests PRIVATE "${PROJECT_SOURCE_DIR}/tests/sdk_consumer")
         foreach(shape IN ITEMS LINEAR TILED)
             set(mis_source "${PROJECT_SOURCE_DIR}/modules/graphics/renderer/render_graphs/veach_guibas_mis")
             set(mis_staged "${CMAKE_CURRENT_BINARY_DIR}/native-mis-inputs/${shape}")
@@ -1646,10 +1671,15 @@ if(EMSCRIPTEN)
     # editor_files.cpp compiles in this object library, before the final editor's usage requirements apply.
     target_link_libraries(ludus_editor_content PRIVATE Qt6::CorePrivate)
     target_link_libraries(ludus_editor PRIVATE Qt6::GuiPrivate)
-    set_property(TARGET ludus_editor APPEND PROPERTY LINK_DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/browser/files.js")
-    set_target_properties(ludus_editor PROPERTIES QT_WASM_INITIAL_MEMORY 33554432 QT_WASM_MAXIMUM_MEMORY 2147483648)
-    target_link_options(ludus_editor PRIVATE "-sASYNCIFY_STACK_SIZE=131072"
-        "--js-library=${CMAKE_CURRENT_SOURCE_DIR}/browser/files.js")
+    set_property(TARGET ludus_editor APPEND PROPERTY LINK_DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/browser/files.js"
+        "${CMAKE_CURRENT_SOURCE_DIR}/browser/host_folder.js")
+    set_target_properties(ludus_editor PROPERTIES QT_WASM_INITIAL_MEMORY 33554432
+        QT_WASM_MAXIMUM_MEMORY ${ludus_editor_wasm_maximum_memory_bytes})
+    # host_folder.js suspends open() and rename() deep inside Qt and engine file code while a
+    # folder file is read or a save reaches disk; the Asyncify buffer holds those call stacks.
+    target_link_options(ludus_editor PRIVATE "-sASYNCIFY_STACK_SIZE=524288"
+        "--js-library=${CMAKE_CURRENT_SOURCE_DIR}/browser/files.js"
+        "--js-library=${CMAKE_CURRENT_SOURCE_DIR}/browser/host_folder.js")
 endif()
 
 if(LUDUS_BUILD_TESTS AND NOT EMSCRIPTEN)
@@ -1724,7 +1754,7 @@ if(LUDUS_BUILD_TESTS AND NOT EMSCRIPTEN)
         Qt6::Widgets Qt6::Test Ludus::FoundationContainers Ludus::FoundationMath Ludus::FoundationProfiling
         Catch2::Catch2
         "$<COMPILE_ONLY:Ludus::GraphicsRenderer>" "$<COMPILE_ONLY:Ludus::GameplayCamera>"
-        "$<COMPILE_ONLY:Ludus::Resources>" "$<COMPILE_ONLY:Ludus::PhysicsCollision>")
+        "$<COMPILE_ONLY:Ludus::Resources>" "$<COMPILE_ONLY:ludus_first_person_walking>")
     ludus_apply_project_defaults(ludus_render_graph_configuration_tests)
     ludus_enable_test_exceptions(ludus_render_graph_configuration_tests)
     # The combined canvas suite exceeds 180 s on macOS, including ASan; keep every case

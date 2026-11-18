@@ -52,6 +52,8 @@ extern slang
         DiffuseConductorMix = 6,
         ProjectBrdf = 8,
         Program = 9,
+        HairCard = 11,
+        Skin = 12,
     };
     enum class IncidentLightMeasure : uint32
     {
@@ -80,6 +82,7 @@ extern slang
         uint32x2 ExtentPixel;
         Ray CameraRay;
         float32x4x4 CameraClipToWorld;
+        float32x4x4 CameraClipToEye;
         float32x3 CameraPositionWorld;
         bool IsOrthographic;
         bool IsFullImageDispatch;
@@ -228,6 +231,10 @@ extern slang
     MaterialSample EvaluateMaterial(in SceneContext scene, in SurfaceHit hit);
     float32x3 EvaluateEmission(in SceneContext scene, in SurfaceHit hit, in float32x3 directionAwayWorld);
     float32x3 EvaluateEnvironment(in SceneContext scene, in float32x3 directionWorld);
+    float32x3 ApplyAerialPerspective(in SceneContext scene,
+                                     in float32x3 originWorld,
+                                     in float32x3 hitWorld,
+                                     in float32x3 radiance);
     SceneInfo GetSceneInfo(in SceneContext scene);
     uint32 GetLightCount(in SceneContext scene);
     LightInfo GetLightInfo(in SceneContext scene, in uint32 lightIndex);

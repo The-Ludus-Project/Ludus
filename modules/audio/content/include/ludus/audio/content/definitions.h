@@ -17,6 +17,9 @@ using ludus::content::Diagnostic;
 using ludus::content::ResourceId;
 using ludus::content::Text;
 using ContentStatus = ludus::content::Status;
+/// Longest retrigger cooldown a sound definition may declare (`Sound::CooldownMs`), in
+/// milliseconds (ten minutes). Reading rejects larger values; editors use it as their input bound.
+inline constexpr uint64 MAX_COOLDOWN_MILLISECONDS = 600000;
 struct Loop final
 {
     bool Enabled = false;

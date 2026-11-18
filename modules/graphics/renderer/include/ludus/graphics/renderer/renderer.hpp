@@ -8,6 +8,7 @@
 #include <ludus/foundation/math/transform.hpp>
 #include <ludus/foundation/math/vector.hpp>
 #include <ludus/graphics/renderer/atmosphere.hpp>
+#include <ludus/graphics/renderer/deferred_layout.h>
 #include <ludus/graphics/renderer/gpu_preview.hpp>
 #include <ludus/graphics/renderer/lighting.hpp>
 #include <ludus/graphics/renderer/materials.hpp>
@@ -69,6 +70,9 @@ struct GpuPreviewGraphInvocation final
     const GpuPreview* SceneSourceOrNull = nullptr;
     /// Curve of a nonzero ToneMappingExposure: Reinhard or PbrNeutral. Ignored when exposure is zero.
     ToneCurve ToneMappingCurve = ToneCurve::Reinhard;
+    /// Positive logical invocation count for a compatible buffer-only graph kernel. Requires a 1x1 private
+    /// scratch extent in BeginGpuPreview and graph storage bindings. Zero selects the image launch.
+    foundation::uint32 WorkItemCount = 0;
 };
 namespace internal
 {
@@ -235,6 +239,41 @@ struct SceneItem final
     /// Visibility ABI instance reference, exact through 16-bit range; graph uses its extraction item index.
     ludus::foundation::uint32 InstanceIndex = 0;
 };
+/// Lighting term the clustered deferred resolve draws in place of its final colour, to see where each part of the
+/// lighting comes from (render-graph-authoring.md, "Lighting views"). Radiance views keep the pass's ToneMap
+/// exposure and curve, so they compare directly with Final. Other renderer entry points ignore it.
+enum class DeferredLightingView : foundation::uint8
+{
+    /// Ordinary radiance of every term.
+    Final = DEFERRED_LIGHTING_VIEW_FINAL,
+    /// Shadowed direct radiance of every analytic (directional, point, spot) light, without sky or emission.
+    DirectLights = DEFERRED_LIGHTING_VIEW_DIRECT_LIGHTS,
+    /// Shadowed direct radiance of the light ViewDescription::LightingViewSourceId names.
+    Light = DEFERRED_LIGHTING_VIEW_LIGHT,
+    /// Shadow-map test of the light ViewDescription::LightingViewSourceId names, regardless of its angle to the
+    /// surface: white where its map sees the surface, black where a caster occludes it, magenta where the light has
+    /// maps but none covers the surface (it is lit unshadowed there), cyan where the light has no map at all.
+    ShadowCoverage = DEFERRED_LIGHTING_VIEW_SHADOW_COVERAGE,
+    /// Diffuse environment or Atmosphere sky radiance, after sky visibility.
+    SkyDiffuse = DEFERRED_LIGHTING_VIEW_SKY_DIFFUSE,
+    /// Specular environment or Atmosphere sky radiance, after sky visibility.
+    SkySpecular = DEFERRED_LIGHTING_VIEW_SKY_SPECULAR,
+    /// Shadowed radiance of every emissive mesh (area) light.
+    AreaLights = DEFERRED_LIGHTING_VIEW_AREA_LIGHTS,
+    /// Radiance the Atmosphere scatters in between the camera and the surface; black without an Atmosphere.
+    AerialPerspective = DEFERRED_LIGHTING_VIEW_AERIAL_PERSPECTIVE,
+    /// Each pixel in the hue of its largest contributor (GetDeferredLightingViewHue): sky, area lights, or one
+    /// analytic light. Brightness follows the final colour from 35% to full, so dim pixels keep a readable hue;
+    /// pixels no term lights are black.
+    DominantLight = DEFERRED_LIGHTING_VIEW_DOMINANT_LIGHT,
+    /// Cosine-weighted fraction of the sky the surface sees past the scene, black to white; magenta where the scene
+    /// has no sky visibility maps.
+    SkyVisibility = DEFERRED_LIGHTING_VIEW_SKY_VISIBILITY,
+};
+/// Linear RGB hue the DominantLight lighting view draws contributor category in: DEFERRED_LIGHTING_VIEW_SKY_CATEGORY,
+/// DEFERRED_LIGHTING_VIEW_AREA_CATEGORY, or DEFERRED_LIGHTING_VIEW_FIRST_LIGHT_CATEGORY plus an analytic light's index
+/// among the scene's lights in ascending source ID order. Fully saturated, maximum channel one. For legends.
+[[nodiscard]] foundation::math::Vector3 GetDeferredLightingViewHue(foundation::uint32 category) noexcept;
 /// Finite canonical clip transform: XY [-1,1], Z [0,1], Y up.
 struct ViewDescription final
 {
@@ -284,13 +323,35 @@ struct ViewDescription final
     /// Maximum absolute adjustment of the clustered deferred graph's exposure, in stops.
     static constexpr ludus::foundation::float32 MAXIMUM_RASTER_EXPOSURE_STOPS = 6;
     /// Finite adjustment in [-MAXIMUM_RASTER_EXPOSURE_STOPS, MAXIMUM_RASTER_EXPOSURE_STOPS].
-    /// Zero uses the authored exposure. Each positive stop doubles the authored multiplier.
+    /// Zero uses the base exposure that Exposure selects. Each positive stop doubles that multiplier.
     /// Applies to enabled ToneMap nodes on clustered deferred passes only. Invalid values reject
     /// graph updates before publication. Other renderer entry points ignore this field.
     ludus::foundation::float32 RasterExposureStops = 0;
+    /// Base exposure of enabled clustered deferred ToneMap nodes, before RasterExposureStops. Graph keeps each
+    /// node's authored multiplier; Physical replaces it with ComputeExposureMultiplier(ExposureValue100), for
+    /// scenes lit in physical units such as an Earth Sun. Values outside ExposureMode reject graph updates before
+    /// publication. Raw linear outputs, ray captures and other renderer entry points are unaffected.
+    ExposureMode Exposure = ExposureMode::Graph;
+    /// Camera exposure value at ISO 100 that ExposureMode::Physical uses, within
+    /// [MIN_EXPOSURE_VALUE_100, MAX_EXPOSURE_VALUE_100]. ComputeIncidentExposureValue100 meters one from an
+    /// illuminance. Physical views with a nonfinite or out-of-range value reject graph updates; Graph ignores it.
+    ludus::foundation::float32 ExposureValue100 = 0;
+    /// Lighting term clustered deferred passes draw instead of their final colour. Values outside
+    /// DeferredLightingView reject graph updates before publication. Other renderer entry points ignore it.
+    DeferredLightingView LightingView = DeferredLightingView::Final;
+    /// Source ID of the analytic light the Light and ShadowCoverage lighting views isolate. A light the scene does
+    /// not hold draws black (Light) or cyan (ShadowCoverage).
+    ludus::foundation::uint64 LightingViewSourceId = 0;
     /// Optional Earth clear-sky background for the clustered deferred graph.
-    /// Out-of-shell cameras use the graph clear. Invalid inputs reject a new candidate.
+    /// Out-of-shell cameras use the graph clear. Invalid inputs reject a new candidate. A render graph without the
+    /// clustered deferred programs draws what its ray kernels call World-feature functions for
+    /// (GetWorldFeatureSupport) and reports the rest in RenderGraphReport::UnrenderedWorldFeatures.
     AtmosphereDescription Atmosphere{};
+    /// Add a short-range, shadowless camera spotlight to the clustered deferred graph's final colour.
+    /// Points along the centre ray. Starts at the eye in perspective and the centre of the near plane in
+    /// orthographic views. Off by default. Reference views, lighting diagnostics and other entry points
+    /// ignore this display aid. It does not change scene lights or baked data.
+    bool ShouldShowWorkLight = false;
 };
 /// Packet counts and a diagnostic prefix, copied to caller storage; IDs follow draw/instance order.
 struct ViewReport final
@@ -825,13 +886,17 @@ private:
     friend class RenderGraph;
     /// Grants the renderer-owned deferred resolve access to immutable view/material bindings.
     friend class internal::RenderGraphDeferredPass;
-    /// Allows the deferred scene generation to supply its directional shadow region during material preparation.
+    /// Allows the deferred scene generation to supply its directional shadow regions during material preparation.
     friend class internal::ForwardSceneGeneration;
+    /// directionalShadowsOrNull holds directionalShadowCount light regions followed by skyVisibilityCount sky
+    /// visibility regions (zero or SKY_VISIBILITY_DIRECTION_COUNT), all in one square atlas of shadowAtlasTexels.
     [[nodiscard]] rhi::RasterStatus createLitMaterial(MaterialProgram program,
                                                       const LitMaterialDescription& description,
                                                       MaterialVersion& outMaterial,
                                                       LightSelection& outSelection,
-                                                      const ShadowRegion* directionalShadowOrNull,
+                                                      const ShadowRegion* directionalShadowsOrNull,
+                                                      foundation::usize directionalShadowCount,
+                                                      foundation::usize skyVisibilityCount,
                                                       foundation::uint32 shadowAtlasTexels) noexcept;
     enum class DrawMode : foundation::uint8
     {
@@ -869,6 +934,9 @@ private:
                                                      const char* name,
                                                      rhi::GraphVersion previous,
                                                      rhi::GraphVersion& outWritten) noexcept;
+    /// Resolve bindings of one opaque packet's material in a Ready view. Every lit material of a prepared scene
+    /// carries the same lights, shadows and clusters, so any one serves the deferred resolve; a surface-chart material
+    /// is preferred because only its light words mark the baked lights whose diffuse charted pixels omit.
     [[nodiscard]] rhi::RasterStatus getDeferredMaterial(PreparedView handle,
                                                         internal::DeferredMaterialBindings& outBindings) noexcept;
     /// Between frames, build a prepared scene's mesh-light shadow face packets from snapshot, culling its opaque and

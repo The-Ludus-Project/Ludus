@@ -129,6 +129,9 @@ jobs:
         env:
           CMAKE_BUILD_PARALLEL_LEVEL: "2"
         run: python scripts/build-web-editor --bootstrap
+      - name: Check host project folders through the Wasm file-system harness
+        if: steps.payload.outputs.cache-hit != 'true'
+        run: python scripts/build-web-editor --test-host-folder
       - name: Validate editor assets, memory and notices
         id: validate-editor
         run: python scripts/build-web-editor --check-package
@@ -167,11 +170,17 @@ jobs:
         run: |
           cd tools/web-browser-tests
           node editor_viewport.mjs ../../out/editor-pages ../../out/editor-viewport-qa
+      - name: Verify a project folder opened in place saves to the folder in Chromium
+        run: |
+          cd tools/web-browser-tests
+          node editor_host_folder.mjs ../../out/editor-pages ../../out/editor-host-folder-qa
       - uses: actions/upload-artifact@v4
         if: always()
         with:
           name: browser-editor-viewport-screenshots
-          path: out/editor-viewport-qa
+          path: |
+            out/editor-viewport-qa
+            out/editor-host-folder-qa
           if-no-files-found: ignore
       - uses: actions/upload-artifact@v4
         if: always()

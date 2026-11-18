@@ -563,6 +563,15 @@ then gain absent tangents, version 3 parts dropping their stored bake UVs.
 
 ### Typed source materials (LUSCN v7)
 
+LUSCN v14 admits skin, written for a
+[`skin` source material](scene-source-format.md#skin). The tag-12 material keeps
+the v7 record: its K vector holds the RGB scattering distance in metres, each in
+[0, `MAX_SKIN_SCATTERING_DISTANCE`] (0.1 m), and every other scattering field keeps
+its default, so equal skin materials cook to equal bytes. The v6 record's metallic
+must be zero; the decoder rejects any other value. Its base colour, roughness and
+emission are the record's ordinary fields, so a zero distance is the
+metallic-roughness material.
+
 LUSCN v12 admits medium interfaces, written for a
 [`medium_interface` source material](scene-source-format.md#medium-interface).
 The tag-10 material keeps the v7 record: its K vector holds the enclosed medium's
@@ -608,6 +617,29 @@ material resource ID. A slot-level `coating` record takes precedence over that
 instance. Slots with neither use the imported values. Cooking interns matching
 coatings per source material in the same table, including an override equal to
 the imported defaults. Material mappings resolve the inherited instance from the original ID on reimport.
+
+A World or level slot can carry a `hair_card` object instead of a coating or a
+project BRDF. It holds the five
+[hair-card strand controls](scene-source-format.md#hair-card), under the same
+names as the scene source, and an optional `alpha_cutoff` in [0, 1] that
+overrides the mask cutoff of a masked material. Assembly writes such a slot as a
+LUSCN v13 `HairCard` record with zero metallic, keeping the inherited base colour,
+roughness, textures and mask, and splits it from slots that inherit the same
+material. Slots with equal controls share a record. Validation rejects a card
+combined with a coating or project BRDF, out-of-range controls, and a cutoff on an
+unmasked material, each with a message that names the repair.
+
+A slot can instead carry a `skin` object holding a
+[`scattering_distance`](scene-source-format.md#skin): three linear RGB metres in
+[0, 0.1]. It may also hold a `base_color`, three linear RGB values in [0, 1] that
+replace the inherited reflectance (which scales the base colour map), and a
+`roughness` in [0.045, 1]. Assembly writes it as a LUSCN v14 `Skin` record with
+zero metallic. The record keeps the inherited emission and textures, and the
+inherited base colour and roughness that the slot does not set. The inherited
+material keeps its own metallic for slots that still use it. Equal skin objects
+share a record. Validation rejects skin combined with a coating, a project BRDF or
+a hair card, out-of-range values, missing distances and other members, each with a
+message that names the repair.
 
 Version 7 keeps all version 6 records and appends a `MaterialExtensionV7` after
 **each** material. Its width is derived from the explicit wire fields in

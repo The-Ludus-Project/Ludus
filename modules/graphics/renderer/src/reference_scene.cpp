@@ -340,27 +340,41 @@ Texel(const rhi::TextureCpuContent& texture, const rhi::SamplerDescription& samp
 rhi::RasterStatus CameraRay(const ReferenceJob& job, float32 x, float32 y, rhi::RayInput& output) noexcept
 {
     const auto& d = job.Description;
-    const auto nearClip = d.ReverseZ ? 1.0F : 0.0F, farClip = 1 - nearClip;
-    const auto near = job.ClipToWorld * math::Vector4{x, y, nearClip, 1};
-    const auto far = job.ClipToWorld * math::Vector4{x, y, farClip, 1};
-    if (math::IsFinite(near) == false || math::IsFinite(far) == false || near.W == 0)
+    const float32 nearClip = d.ReverseZ == true ? 1.0F : 0.0F;
+    const float32 farClip = 1 - nearClip;
+    // The ray is built about the eye and translated last. A world-space ClipToWorld of a camera far from the origin
+    // with a centimetre near plane carries eye * w terms that cost float32 ray directions a sizeable fraction of a
+    // pixel (issue #1761); the eye-relative points keep them. A pinhole ray points at its far-plane point: the
+    // float32 projection's centre lies micrometres from the eye, which would turn the direction to a centimetre-near
+    // point by up to a pixel, while the far point's cancelling w only scales its offset.
+    const math::Vector4 nearHomogeneousEye = job.ClipToEye * math::Vector4{x, y, nearClip, 1};
+    const math::Vector4 farHomogeneousEye = job.ClipToEye * math::Vector4{x, y, farClip, 1};
+    if (math::IsFinite(nearHomogeneousEye) == false || math::IsFinite(farHomogeneousEye) == false ||
+        nearHomogeneousEye.W == 0)
     {
         return rhi::RasterStatus::InvalidDescription;
     }
-    const math::Vector3 nearPoint{near.X / near.W, near.Y / near.W, near.Z / near.W};
-    const auto origin = d.OrthographicCamera ? nearPoint : d.CameraPosition;
+    const math::Vector3 nearPositionEye{nearHomogeneousEye.X / nearHomogeneousEye.W,
+                                        nearHomogeneousEye.Y / nearHomogeneousEye.W,
+                                        nearHomogeneousEye.Z / nearHomogeneousEye.W};
+    const math::Vector3 originEye = d.OrthographicCamera == true ? nearPositionEye : math::Vector3{};
+    const math::Vector3 origin = d.CameraPosition + originEye;
     math::Vector3 direction;
-    if (far.W == 0)
+    math::Vector3 farPositionEye{};
+    if (farHomogeneousEye.W == 0)
     {
         if (d.InfiniteFar == false || d.OrthographicCamera)
         {
             return rhi::RasterStatus::InvalidDescription;
         }
-        direction = ReferenceNormalize({far.X, far.Y, far.Z});
+        direction = ReferenceNormalize({farHomogeneousEye.X, farHomogeneousEye.Y, farHomogeneousEye.Z});
     }
     else
     {
-        direction = ReferenceNormalize(math::Vector3{far.X / far.W, far.Y / far.W, far.Z / far.W} - origin);
+        farPositionEye = {farHomogeneousEye.X / farHomogeneousEye.W,
+                          farHomogeneousEye.Y / farHomogeneousEye.W,
+                          farHomogeneousEye.Z / farHomogeneousEye.W};
+        direction = ReferenceNormalize(farPositionEye - originEye);
     }
     if (math::IsFinite(origin) == false || math::Length(direction) == 0 || math::Abs(origin.X) > MAX_WORLD_COORDINATE ||
         math::Abs(origin.Y) > MAX_WORLD_COORDINATE || math::Abs(origin.Z) > MAX_WORLD_COORDINATE)
@@ -368,9 +382,9 @@ rhi::RasterStatus CameraRay(const ReferenceJob& job, float32 x, float32 y, rhi::
         return rhi::RasterStatus::InvalidDescription;
     }
     float32 distance = 1;
-    if (far.W != 0)
+    if (farHomogeneousEye.W != 0)
     {
-        distance = math::Dot(math::Vector3{far.X / far.W, far.Y / far.W, far.Z / far.W} - origin, direction);
+        distance = math::Dot(farPositionEye - originEye, direction);
     }
     else if (math::IsEmpty(job.Scene.Bounds) == false)
     {
@@ -386,7 +400,7 @@ rhi::RasterStatus CameraRay(const ReferenceJob& job, float32 x, float32 y, rhi::
         distance = static_cast<float32>(maximum * 1.000001 + 1);
     }
     auto result = ReferenceRay(origin, direction, distance);
-    result.MinDistance = d.OrthographicCamera ? 0 : math::Dot(nearPoint - origin, direction);
+    result.MinDistance = d.OrthographicCamera ? 0 : math::Dot(nearPositionEye, direction);
     if (math::IsFinite(distance) == false || distance < 0 || result.MinDistance < 0 || result.MinDistance > distance)
     {
         return rhi::RasterStatus::InvalidDescription;
@@ -825,15 +839,21 @@ rhi::RasterStatus PrepareReferenceCamera(ReferenceJob& job) noexcept
     {
         return rhi::RasterStatus::InvalidDescription;
     }
+    ViewDescription camera;
+    camera.CameraPosition = d.CameraPosition;
+    camera.WorldToClip = d.WorldToClip;
+    const bool hasClipToEye = TryMakeCameraClipToEye(camera, job.ClipToEye);
     if (math::TryInverse(d.WorldToClip, job.ClipToWorld) != math::MathStatus::Success)
     {
-        ViewDescription camera;
-        camera.CameraPosition = d.CameraPosition;
-        camera.WorldToClip = d.WorldToClip;
-        if (TryMakeCameraClipToWorld(camera, job.ClipToWorld) == false)
+        if (hasClipToEye == false || TryMakeCameraClipToWorld(camera, job.ClipToWorld) == false)
         {
             return rhi::RasterStatus::InvalidDescription;
         }
+    }
+    else if (hasClipToEye == false)
+    {
+        // A well-conditioned world inverse whose eye-relative projection is rejected: rebase the inverse instead.
+        job.ClipToEye = MakeCameraClipToEye(job.ClipToWorld, d.CameraPosition);
     }
     if (d.OrthographicCamera == false)
     {

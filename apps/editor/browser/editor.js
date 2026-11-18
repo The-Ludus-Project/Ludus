@@ -27,7 +27,8 @@ window.addEventListener('message', event => {
 });
 retry.addEventListener("click", () => location.reload());
 window.addEventListener("beforeunload", event => {
-  if (globalThis.ludusEditorEdited) {
+  // Saves to a folder opened from disk may still be reaching it (host_folder.js).
+  if (globalThis.ludusEditorEdited || (globalThis.ludusHostPendingWrites?.() ?? 0) > 0) {
     event.preventDefault();
     event.returnValue = "";
   }

@@ -108,6 +108,76 @@ InvertPbrNeutral(ludus::foundation::math::Vector3 display) noexcept
     return {map(color.X), map(color.Y), map(color.Z)};
 }
 
+/// How a clustered deferred ToneMap chooses its linear exposure multiplier.
+enum class ExposureMode : ludus::foundation::uint8
+{
+    /// The graph's authored ToneMap multiplier, so that one scene-linear nit is near display white.
+    Graph,
+    /// A camera exposure value at ISO 100 (ViewDescription::ExposureValue100) for scenes in physical units.
+    Physical,
+};
+/// Last ExposureMode enumerator.
+inline constexpr ludus::foundation::uint32 EXPOSURE_MODE_LAST =
+    static_cast<ludus::foundation::uint32>(ExposureMode::Physical);
+/// Darkest admitted exposure value at ISO 100, below a moonless overcast night.
+inline constexpr ludus::foundation::float32 MIN_EXPOSURE_VALUE_100 = -16;
+/// Brightest admitted exposure value at ISO 100, above sunlit snow and the solar disk's surroundings.
+inline constexpr ludus::foundation::float32 MAX_EXPOSURE_VALUE_100 = 24;
+/// ISO arithmetic speed that defines EV100.
+inline constexpr ludus::foundation::float64 EXPOSURE_REFERENCE_SPEED = 100;
+/// Saturation-based sensitivity constant of ISO 12232 (78) over the lens and vignetting attenuation q = 0.65.
+inline constexpr ludus::foundation::float64 SATURATION_EXPOSURE_FACTOR = 78 / (0.65 * EXPOSURE_REFERENCE_SPEED);
+/// Incident-light meter calibration constant for a flat receptor, in lux. ISO 2720:1974 recommends 240 to 400.
+inline constexpr ludus::foundation::float64 INCIDENT_METER_CALIBRATION_LUX = 250;
+/// Illuminance of a moonless clear night sky with airglow, in lux. The incident meter adds it to every reading,
+/// so the darkest metered exposure stays finite and matches a natural night rather than an empty sky.
+inline constexpr ludus::foundation::float64 NATURAL_NIGHT_SKY_ILLUMINANCE_LUX = 0.002;
+
+/// @brief The linear ToneMap multiplier that maps a camera exposure value at ISO 100 to display.
+///
+/// The saturation-based photometric exposure 1 / (1.2 * 2^EV100) maps the largest luminance the camera records
+/// without clipping to one, after the camera exposure discussion and its convertEV100ToExposure listing in Sébastien
+/// Lagarde and Charles de Rousiers, "Moving Frostbite to Physically Based Rendering", SIGGRAPH 2014 course notes v3,
+/// https://seblagarde.wordpress.com/wp-content/uploads/2015/07/course_notes_moving_frostbite_to_pbr_v32.pdf.
+/// An exposure value of -log2(1.2), about -0.26, reproduces the graph's default multiplier of one.
+/// @param exposureValue100 Finite, within [MIN_EXPOSURE_VALUE_100, MAX_EXPOSURE_VALUE_100]; other values return zero.
+/// @return The positive multiplier, or zero for an invalid exposure value.
+[[nodiscard]] inline ludus::foundation::float32
+ComputeExposureMultiplier(ludus::foundation::float32 exposureValue100) noexcept
+{
+    namespace math = ludus::foundation::math;
+    if (math::IsFinite(exposureValue100) == false || exposureValue100 < MIN_EXPOSURE_VALUE_100 ||
+        exposureValue100 > MAX_EXPOSURE_VALUE_100)
+    {
+        return 0;
+    }
+    return static_cast<ludus::foundation::float32>(
+        1 / (SATURATION_EXPOSURE_FACTOR * math::Pow(2, static_cast<ludus::foundation::float64>(exposureValue100))));
+}
+
+/// @brief The exposure value at ISO 100 that an incident-light meter reads under an illuminance.
+///
+/// Solves the incident-light exposure equation N^2 / t = E * S / C for EV = log2(N^2 / t) with S = 100 and
+/// C = INCIDENT_METER_CALIBRATION_LUX, after the incident-light calibration in Wikipedia's "Light meter" article
+/// (https://en.wikipedia.org/wiki/Light_meter). NATURAL_NIGHT_SKY_ILLUMINANCE_LUX
+/// (Wikipedia, "Lux", illuminance examples) is added to the reading. Clear midday sun reads about EV100 15, a
+/// full Moon about -3, and a moonless night about -10. The result is clamped to the admitted exposure range.
+/// @param illuminanceLux Finite and nonnegative illuminance on the meter's flat receptor; other values read as zero.
+[[nodiscard]] inline ludus::foundation::float32
+ComputeIncidentExposureValue100(ludus::foundation::float64 illuminanceLux) noexcept
+{
+    namespace math = ludus::foundation::math;
+    const ludus::foundation::float64 reading =
+        (math::IsFinite(illuminanceLux) == true ? math::Max(illuminanceLux, 0.0) : 0.0) +
+        NATURAL_NIGHT_SKY_ILLUMINANCE_LUX;
+    const ludus::foundation::float64 exposureValue =
+        math::Log(reading * EXPOSURE_REFERENCE_SPEED / INCIDENT_METER_CALIBRATION_LUX) / math::Log(2.0);
+    return static_cast<ludus::foundation::float32>(
+        math::Clamp(exposureValue,
+                    static_cast<ludus::foundation::float64>(MIN_EXPOSURE_VALUE_100),
+                    static_cast<ludus::foundation::float64>(MAX_EXPOSURE_VALUE_100)));
+}
+
 /// Apply a display curve to scene-linear colour that already includes exposure; the result is display-linear.
 [[nodiscard]] inline ludus::foundation::math::Vector3 ApplyToneCurve(ToneCurve curve,
                                                                      ludus::foundation::math::Vector3 color) noexcept

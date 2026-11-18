@@ -6,12 +6,14 @@
 // without a GPU adapter skip; this is not native Qt presentation evidence.
 #include "editor_default_graph.h"
 #include "editor_renderer_static.h"
+#include "internal/builtin_world.h"
 #include "internal/controller.h"
 #include "internal/error_list.h"
 #include "internal/graph_comparison_run.h"
 #include "internal/graph_display_frames.h"
 #include "internal/level_workspace.h"
 #include "internal/main_window.h"
+#include "internal/material_inspection.h"
 #include "internal/offscreen_frame_reader.h"
 #include "internal/preview_shading.h"
 #include "internal/preview_viewport.h"
@@ -34,8 +36,10 @@
 #include "internal/viewport_trace.h"
 #include "internal/world_demo_adapter.h"
 #include "internal/world_graph_view.h"
+#include "internal/world_lights_panel.h"
 #include "internal/world_workspace.h"
 #include "renderer_composite.h"
+#include "scene_fixture.h"
 
 #include <ludus/foundation/base/types.h>
 
@@ -103,6 +107,7 @@
 #include <QPushButton>
 #include <QQuickWindow>
 #include <QSaveFile>
+#include <QScopeGuard>
 #include <QSignalSpy>
 #include <QStandardItemModel>
 #include <QStandardPaths>
@@ -128,6 +133,9 @@ namespace
 constexpr int32 WIDTH = 96;
 constexpr int32 HEIGHT = 64;
 constexpr usize ATTEMPTS = 5000;
+/// Wall time a preview wait allows. A graph's first frame includes its cold pipeline preparation,
+/// which outlasted a 5000-tick bound on a slow software-driver runner (batch 44216838899).
+constexpr int64 PREVIEW_WAIT_MILLISECONDS = 60000;
 /// The format owner defines the serialized header words preceding the interface identity.
 constexpr qsizetype INTERFACE_OFFSET = format::HEADER_FIELD_COUNT * sizeof(uint32);
 constexpr qsizetype TRUNCATED_BYTES = 40;
@@ -294,11 +302,14 @@ RenderGraphPreview MakePreview()
                               shaders::renderer_composite::Fragment());
 }
 
-/// Tick until the predicate holds; the GPU completes asynchronously, so yield between ticks.
+/// Tick until the predicate holds or the wait deadline passes; the GPU completes asynchronously, so
+/// yield between ticks.
 template <typename Predicate>
 bool TickUntil(RenderGraphPreview& inoutPreview, Predicate predicate)
 {
-    for (usize attempt = 0; attempt < ATTEMPTS; ++attempt)
+    QElapsedTimer elapsed;
+    elapsed.start();
+    while (elapsed.elapsed() < PREVIEW_WAIT_MILLISECONDS)
     {
         if (predicate() == true)
         {
@@ -1275,6 +1286,92 @@ TEST_CASE("Rejected ray extractions name their measured memory ceiling", "[edito
     }
     CHECK(DescribeRenderGraphExtractionFailure(rhi::RasterStatus::InvalidDescription, {})
               .contains(QStringLiteral("memory budget")) == false);
+}
+
+TEST_CASE("a graph that omits World features names them, the functions that draw them and the repairs",
+          "[editor][render-graph][preview][world-features]")
+{
+    const renderer::WorldFeatureMask both = renderer::GetWorldFeatureBit(renderer::WorldFeature::AtmosphereSky) |
+                                            renderer::GetWorldFeatureBit(renderer::WorldFeature::AerialPerspective);
+    const QString named = DescribeUnrenderedWorldFeatures(QStringLiteral("main"), both);
+    CHECK(named.startsWith(
+              QStringLiteral("World features not rendered: Atmosphere sky, Aerial perspective. Graph configuration "
+                             "“main”")) == true);
+    // The renderer owns the feature text: the function to call and what is shown instead.
+    for (const renderer::WorldFeature feature :
+         {renderer::WorldFeature::AtmosphereSky, renderer::WorldFeature::AerialPerspective})
+    {
+        const renderer::WorldFeatureDescription description = renderer::DescribeWorldFeature(feature);
+        CHECK(named.contains(QString::fromUtf8(description.Function)) == true);
+        CHECK(named.contains(QString::fromUtf8(description.Omission)) == true);
+    }
+    CHECK(named.contains(QStringLiteral("World features table in Render Preview")) == true);
+    CHECK(named.contains(QStringLiteral("Force raster")) == true);
+    CHECK(named.contains(QStringLiteral("disable the Atmosphere entity")) == true);
+    // It is advice about a drawn frame, not a rejection.
+    CHECK(named.contains(QStringLiteral("cannot draw")) == false);
+    const QString sky =
+        DescribeUnrenderedWorldFeatures({}, renderer::GetWorldFeatureBit(renderer::WorldFeature::AtmosphereSky));
+    CHECK(sky.startsWith(QStringLiteral("World features not rendered: Atmosphere sky. The selected graph "
+                                        "configuration")) == true);
+    CHECK(sky.contains(QStringLiteral("ApplyAerialPerspective")) == false);
+    CHECK(DescribeUnrenderedWorldFeatures(QStringLiteral("main"), 0).isEmpty() == true);
+}
+
+TEST_CASE("a failed candidate names the World input it cannot draw and the repair", "[editor][render-graph][preview]")
+{
+    renderer::RenderGraphActivationReport report;
+    CHECK(DescribeRenderGraphActivationFailure(report).isEmpty() == true);
+    report.Candidate = renderer::RenderGraphCandidateState::Failed;
+    report.CandidateGeneration = 3;
+    report.LastFailure = rhi::RasterStatus::Unsupported;
+    // Without an attributed cause the status keeps the raw outcome.
+    CHECK(DescribeRenderGraphActivationFailure(report) ==
+          QStringLiteral("Renderer activation failed (Unsupported) for generation 3; the last good scene is kept."));
+    // A failing stage without a scene-level cause names the step, keeps the raw status and offers its repair.
+    report.LastFailure = rhi::RasterStatus::InvalidDescription;
+    report.CandidateFailureStage = renderer::RenderGraphFailureStage::WorldTables;
+    const QString world = DescribeRenderGraphActivationFailure(report);
+    CHECK(world.startsWith(QStringLiteral("Renderer generation 3 was rejected (InvalidDescription) while resolving the "
+                                          "Atmosphere's sky and haze for its ray passes.")) == true);
+    CHECK(world.contains(QStringLiteral("disable the Atmosphere entity")) == true);
+    CHECK(world.endsWith(QStringLiteral("The last good scene is kept.")) == true);
+    report.CandidateFailureStage = renderer::RenderGraphFailureStage::Resize;
+    CHECK(DescribeRenderGraphActivationFailure(report).contains(QStringLiteral("Reduce the connected RenderSize")) ==
+          true);
+    // Every stage other than None has its own clause and next step.
+    QStringList clauses;
+    for (uint8 value = static_cast<uint8>(renderer::RenderGraphFailureStage::Setup);
+         value <= static_cast<uint8>(renderer::RenderGraphFailureStage::RayScene);
+         ++value)
+    {
+        const QString clause = DescribeRenderGraphFailureStage(static_cast<renderer::RenderGraphFailureStage>(value));
+        CHECK(clause.startsWith(QStringLiteral("while ")) == true);
+        CHECK(clause.endsWith(QLatin1Char('.')) == true);
+        CHECK(clauses.contains(clause) == false);
+        clauses.append(clause);
+    }
+    CHECK(DescribeRenderGraphFailureStage(renderer::RenderGraphFailureStage::None).isEmpty() == true);
+    // A scene-level cause, when attributed, takes precedence over the stage.
+    report.CandidateRejection = renderer::RenderGraphSceneRejection::CameraDepth;
+    const QString depth = DescribeRenderGraphActivationFailure(report);
+    CHECK(depth.startsWith(QStringLiteral("Renderer generation 3 cannot draw this World.")) == true);
+    CHECK(depth.contains(QStringLiteral("finite far plane")) == true);
+    CHECK(depth.endsWith(QStringLiteral("The last good scene is kept.")) == true);
+    report.CandidateRejection = renderer::RenderGraphSceneRejection::Coverage;
+    report.CandidateReport.Conflicting = 2;
+    report.CandidateReport.Unsupported = 5;
+    const QString coverage = DescribeRenderGraphActivationFailure(report);
+    CHECK(coverage.contains(QStringLiteral("2 item views conflict")) == true);
+    CHECK(coverage.contains(QStringLiteral("5 item views have no compatible pass")) == true);
+    CHECK(DescribeRenderGraphSceneRejection(renderer::RenderGraphSceneRejection::MaskedDepthPrepass, {}).isEmpty() ==
+          false);
+    CHECK(DescribeRenderGraphSceneRejection(renderer::RenderGraphSceneRejection::None, {}).isEmpty() == true);
+    // Activation reports a restart with Unsupported.
+    report.Candidate = renderer::RenderGraphCandidateState::RestartRequired;
+    report.LastFailure = rhi::RasterStatus::Unsupported;
+    CHECK(DescribeRenderGraphActivationFailure(report).startsWith(
+              QStringLiteral("Renderer activation requires an editor restart (Unsupported) for generation 3")) == true);
 }
 
 TEST_CASE("RG3b Renderer workspace previews only explicitly requested generations", "[editor][render-graph][preview]")
@@ -2393,6 +2490,176 @@ TEST_CASE("Selected project World edits reach the delegated graph viewport", "[e
     rhi::Shutdown();
 }
 
+TEST_CASE("The World viewport draws the character bust through light edits, orbit and resize",
+          "[editor][render-graph][world-graph][skin][hair-card]")
+{
+    namespace format = ludus::content::scene_format;
+    bool shouldAssignHair = false;
+    SECTION("skin diffusion in clustered deferred") {}
+    SECTION("hair cards in forward lit")
+    {
+        shouldAssignHair = true;
+    }
+    const format::MaterialModel model =
+        shouldAssignHair == true ? format::MaterialModel::HairCard : format::MaterialModel::Skin;
+    constexpr int32 TIMEOUT_MILLISECONDS = 60000;
+    rhi::Shutdown();
+    QTemporaryDir project;
+    REQUIRE(project.isValid() == true);
+    const QDir root(QFileInfo(project.path()).canonicalFilePath());
+    const QDir bust(QDir(QStringLiteral(LUDUS_EDITOR_PROJECT_ROOT))
+                        .filePath(QStringLiteral("tests/scenes/characters/infinite-head")));
+    const QDir copy(root.filePath(QStringLiteral("infinite-head")));
+    REQUIRE(QDir().mkpath(copy.path()) == true);
+    for (const QString& file : bust.entryList(QDir::Files))
+    {
+        REQUIRE(QFile::copy(bust.filePath(file), copy.filePath(file)) == true);
+    }
+    RendererWorkspace workspace({});
+    WorldWorkspace world;
+    world.UseProjectGraph(workspace);
+    workspace.SetPreviewSource(&world.GetRenderPreview());
+    QObject::connect(&world, &WorldWorkspace::RenderPreviewChanged, &workspace, [&]() {
+        workspace.SetPreviewSource(&world.GetRenderPreview());
+    });
+    workspace.EnableWorldRendering();
+    workspace.SetProject(root.path(), 1);
+    world.SetProject(root.path(), 1);
+    world.resize(1000, 700);
+    world.show();
+    REQUIRE(world.Create(root.filePath(QStringLiteral("bust.world.json"))) == true);
+    const QString sceneFile =
+        shouldAssignHair == true ? QStringLiteral("infinite-head-hair.gltf") : QStringLiteral("infinite-head-lit.gltf");
+    REQUIRE(world.ImportScene(copy.filePath(sceneFile)) == true);
+    const auto waitFor = [&](const auto& isReady) {
+        QElapsedTimer timer;
+        timer.start();
+        while (isReady() == false && timer.elapsed() < TIMEOUT_MILLISECONDS)
+        {
+            QTest::qWait(1);
+            workspace.ServicePreview();
+        }
+        return isReady();
+    };
+    // Importing can replace the World's preview, so read it afresh.
+    const auto source = [&world]() -> RenderPreview& { return world.GetRenderPreview(); };
+    REQUIRE(waitFor([&]() { return world.CanSave() == true; }) == true);
+    // Importing pauses the preview; it resumes on the validated World.
+    world.ResumePreview();
+    REQUIRE(waitFor([&]() { return source().Scene().Objects.isEmpty() == false; }) == true);
+    const std::string_view slotName = shouldAssignHair == true ? "Hair" : "Skin";
+    QString slot;
+    for (const PreviewObject& object : source().Scene().Objects)
+    {
+        const ludus::resources::SceneMaterial* materialOrNull =
+            GetSceneObjectMaterialOrNull(source().Scene(), object.Id);
+        if (materialOrNull != nullptr && materialOrNull->Name.View() == slotName)
+        {
+            slot = object.Id;
+        }
+    }
+    REQUIRE(slot.isEmpty() == false);
+    QWidget* viewport = world.findChild<QWidget*>(QStringLiteral("worldViewport"));
+    REQUIRE(viewport != nullptr);
+    WorldGraphView* graphView = viewport->findChild<WorldGraphView*>();
+    REQUIRE(graphView != nullptr);
+    RenderGraphPreview* previewOrNull = workspace.GetPreviewOrNull();
+    REQUIRE(previewOrNull != nullptr);
+    // Wait for a frame after `revision` that differs from `previous`.
+    const auto waitForNewFrame = [&](uint64 revision, const QImage& previous) {
+        return waitFor([&]() {
+            return previewOrNull->GetPresentedRevision() > revision && graphView->GetImage().isNull() == false &&
+                   graphView->GetImage() != previous;
+        });
+    };
+    if (shouldAssignHair == true)
+    {
+        // Wait for the viewport to attach its device before selecting the built forward template.
+        REQUIRE(waitFor([&]() { return graphView->GetImage().isNull() == false; }) == true);
+        const QString forward = QStringLiteral(LUDUS_EDITOR_FORWARD_GRAPH_FIXTURE);
+        REQUIRE(previewOrNull->Load(forward, GetDefaultRenderGraphRuntime()) == RenderGraphPreviewLoad::Staged);
+        REQUIRE(waitFor([&]() {
+                    return previewOrNull->GetActivePackagePath() == forward && graphView->GetImage().isNull() == false;
+                }) == true);
+    }
+    REQUIRE(source().FrameEntity(slot) == true);
+    REQUIRE(waitFor([&]() {
+                return graphView->GetImage().isNull() == false && source().IsBuiltInViewShown() == false;
+            }) == true);
+    REQUIRE(waitFor([&]() { return previewOrNull->HasPendingWork() == false; }) == true);
+    const QImage metallicRoughness = graphView->GetImage();
+    uint64 revision = previewOrNull->GetPresentedRevision();
+
+    REQUIRE(world.SelectEntity(slot) == true);
+    const QString assignButton =
+        shouldAssignHair == true ? QStringLiteral("worldAssignHairCard") : QStringLiteral("worldAssignSkin");
+    QPushButton* assignOrNull = world.findChild<QPushButton*>(assignButton);
+    REQUIRE(assignOrNull != nullptr);
+    assignOrNull->click();
+    REQUIRE(waitFor([&]() {
+                const ludus::resources::SceneMaterial* materialOrNull =
+                    GetSceneObjectMaterialOrNull(source().Scene(), slot);
+                return materialOrNull != nullptr && materialOrNull->Scattering.Model == model;
+            }) == true);
+    REQUIRE(waitForNewFrame(revision, metallicRoughness) == true);
+    REQUIRE(waitFor([&]() { return previewOrNull->HasPendingWork() == false; }) == true);
+    INFO(workspace.GetRenderProblem().toStdString());
+    CHECK(workspace.GetRenderProblem().isEmpty() == true);
+    QImage image = graphView->GetImage();
+    revision = previewOrNull->GetPresentedRevision();
+    if (shouldAssignHair == true)
+    {
+        QLineEdit* strandOrNull =
+            world.findChild<QLineEdit*>(QStringLiteral("worldField:scene/hair_card/strand_direction_degrees"));
+        REQUIRE(strandOrNull != nullptr);
+        strandOrNull->setFocus();
+        strandOrNull->selectAll();
+        QTest::keyClicks(strandOrNull, QStringLiteral("200"));
+        CHECK(world.Apply() == false);
+        REQUIRE(previewOrNull->GetPresentedRevision() == revision);
+        CHECK(graphView->GetImage() == image);
+        strandOrNull->selectAll();
+        QTest::keyClicks(strandOrNull, QStringLiteral("90"));
+        REQUIRE(world.Apply() == true);
+        REQUIRE(waitForNewFrame(revision, image) == true);
+        image = graphView->GetImage();
+        revision = previewOrNull->GetPresentedRevision();
+    }
+
+    // A lighting edit: switching the imported key light off presents a new frame.
+    WorldLightsPanel* lightsOrNull = world.findChild<WorldLightsPanel*>();
+    REQUIRE(lightsOrNull != nullptr);
+    REQUIRE(lightsOrNull->GetRows().size() == 2);
+    QTreeWidget* lightTreeOrNull = lightsOrNull->findChild<QTreeWidget*>(QStringLiteral("worldLights"));
+    REQUIRE(lightTreeOrNull != nullptr);
+    QTreeWidgetItem* keyOrNull = lightTreeOrNull->topLevelItem(0);
+    REQUIRE(keyOrNull != nullptr);
+    keyOrNull->setCheckState(0, Qt::Unchecked);
+    REQUIRE(waitForNewFrame(revision, image) == true);
+    image = graphView->GetImage();
+    revision = previewOrNull->GetPresentedRevision();
+
+    // Orbit and resize present the World from the new camera and at the new extent.
+    source().Orbit(20, 0);
+    REQUIRE(waitForNewFrame(revision, image) == true);
+    image = graphView->GetImage();
+    revision = previewOrNull->GetPresentedRevision();
+    const QSize extent = image.size();
+    world.resize(1200, 820);
+    REQUIRE(waitFor([&]() {
+                return previewOrNull->GetPresentedRevision() > revision && graphView->GetImage().size() != extent;
+            }) == true);
+    INFO(workspace.GetRenderProblem().toStdString());
+    CHECK(workspace.GetRenderProblem().isEmpty() == true);
+    if (shouldAssignHair == true)
+    {
+        CHECK(previewOrNull->GetActivePackagePath() == QStringLiteral(LUDUS_EDITOR_FORWARD_GRAPH_FIXTURE));
+    }
+    world.StopPreview();
+    workspace.SetPreviewSource(nullptr);
+    rhi::Shutdown();
+}
+
 TEST_CASE("Graph output menu offers built-in debug views drawn by the World preview",
           "[editor][render-graph][world-graph][shading]")
 {
@@ -2529,6 +2796,124 @@ TEST_CASE("Graph output menu offers built-in debug views drawn by the World prev
     rhi::Shutdown();
 }
 
+TEST_CASE("Graph output menu offers the deferred resolve's lighting views", "[editor][render-graph][world-graph]")
+{
+    constexpr int32 TIMEOUT_MILLISECONDS = 30000;
+    rhi::Shutdown();
+    QTemporaryDir project;
+    REQUIRE(project.isValid() == true);
+    // A default World with a cube and one named point light.
+    QByteArray schema;
+    QString error;
+    REQUIRE(ReadBuiltInWorldAsset(QStringLiteral("world.schema.json"), schema, error) == true);
+    WorldDocument document;
+    REQUIRE(document.LoadSchema(schema, error) == true);
+    REQUIRE(document.New(error) == true);
+    const identity::EntropySource entropy = ludus::platform::GetSystemEntropySource();
+    QString cube;
+    QString lamp;
+    REQUIRE(CreateWorldObject(document, entropy, QStringLiteral("Cube"), cube, error) == true);
+    REQUIRE(CreateWorldObject(document, entropy, QStringLiteral("Point Light"), lamp, error) == true);
+    const QJsonObject lampEntity = document.Entity(lamp);
+    REQUIRE(document.Edit(lamp,
+                          lampEntity.value(QStringLiteral("components")).toObject(),
+                          QStringLiteral("Desk lamp"),
+                          error) == true);
+    const QString path =
+        QFileInfo(WriteBytes(project, QStringLiteral("lamp.world.json"), document.Encode())).canonicalFilePath();
+    RendererWorkspace workspace({});
+    WorldWorkspace world;
+    world.UseProjectGraph(workspace);
+    workspace.SetPreviewSource(&world.GetRenderPreview());
+    QObject::connect(&world, &WorldWorkspace::RenderPreviewChanged, &workspace, [&]() {
+        workspace.SetPreviewSource(&world.GetRenderPreview());
+    });
+    workspace.EnableWorldRendering();
+    workspace.SetProject(project.path(), 1);
+    world.SetProject(project.path(), 1);
+    world.resize(1000, 700);
+    world.show();
+    REQUIRE(world.Open(path) == true);
+    world.ResumePreview();
+    QWidget* viewport = world.findChild<QWidget*>(QStringLiteral("worldViewport"));
+    REQUIRE(viewport != nullptr);
+    WorldGraphView* graphView = viewport->findChild<WorldGraphView*>();
+    REQUIRE(graphView != nullptr);
+    const auto waitFor = [&](const auto& isReady) {
+        QElapsedTimer timer;
+        timer.start();
+        while (isReady() == false && timer.elapsed() < TIMEOUT_MILLISECONDS)
+        {
+            QTest::qWait(1);
+            workspace.ServicePreview();
+        }
+        return isReady();
+    };
+    REQUIRE(waitFor([&]() { return graphView->GetImage().isNull() == false; }) == true);
+    RenderPreview& preview = world.GetRenderPreview();
+    QComboBox* targets = viewport->findChild<QComboBox*>(QStringLiteral("worldGraphTargets"));
+    REQUIRE(targets != nullptr);
+    // The engine default graph resolves through the clustered deferred pass, so its lighting views follow the
+    // built-in debug views, each explained.
+    const QStringList terms{QStringLiteral("Direct lights"),
+                            QStringLiteral("Sky diffuse"),
+                            QStringLiteral("Sky specular"),
+                            QStringLiteral("Area lights"),
+                            QStringLiteral("Aerial perspective"),
+                            QStringLiteral("Dominant light"),
+                            QStringLiteral("Sky visibility")};
+    for (const QString& term : terms)
+    {
+        const int32 index = targets->findText(QStringLiteral("Lighting: %1").arg(term));
+        INFO(term.toStdString());
+        REQUIRE(index >= 0);
+        CHECK(targets->itemData(index, Qt::ToolTipRole).toString().isEmpty() == false);
+    }
+    CHECK(preview.GetLightingView() == renderer::DeferredLightingView::Final);
+
+    // Choosing a lighting view keeps the graph drawing and hands the view to the graph camera.
+    const uint64 presented = graphView->GetPresentedFrames();
+    targets->setCurrentIndex(targets->findText(QStringLiteral("Lighting: Sky visibility")));
+    CHECK(preview.GetLightingView() == renderer::DeferredLightingView::SkyVisibility);
+    CHECK(preview.GetLightingViewSourceId() == 0);
+    PreviewShading chosen = PreviewShading::Solid;
+    CHECK(graphView->TryGetDebugView(chosen) == false);
+    CHECK(graphView->isHidden() == false);
+    REQUIRE(waitFor([&]() { return graphView->GetPresentedFrames() > presented; }) == true);
+
+    // The dominant-light view names its colours: the sky, the area lights and every analytic light.
+    targets->setCurrentIndex(targets->findText(QStringLiteral("Lighting: Dominant light")));
+    QLabel* legend = graphView->findChild<QLabel*>(QStringLiteral("worldGraphLightingLegend"));
+    REQUIRE(legend != nullptr);
+    CHECK(legend->isHidden() == false);
+    CHECK(legend->text().contains(QStringLiteral("Sky")) == true);
+    CHECK(legend->text().contains(QStringLiteral("Area lights")) == true);
+
+    CHECK(legend->text().contains(QStringLiteral("Desk lamp")) == true);
+
+    // The light has its own contribution and shadow coverage entries, named as in the World's Lights list.
+    const int32 lampLight = targets->findText(QStringLiteral("Light: Desk lamp"));
+    REQUIRE(lampLight >= 0);
+    targets->setCurrentIndex(lampLight);
+    CHECK(preview.GetLightingView() == renderer::DeferredLightingView::Light);
+    CHECK(preview.GetLightingViewSourceId() == ComputeEntitySourceId(lamp));
+    const int32 lampCoverage = targets->findText(QStringLiteral("Shadow coverage: Desk lamp"));
+    REQUIRE(lampCoverage >= 0);
+    targets->setCurrentIndex(lampCoverage);
+    CHECK(preview.GetLightingView() == renderer::DeferredLightingView::ShadowCoverage);
+    CHECK(preview.GetLightingViewSourceId() == ComputeEntitySourceId(lamp));
+    CHECK(legend->isHidden() == true);
+
+    // The final output returns the graph camera to ordinary shading.
+    targets->setCurrentIndex(0);
+    CHECK(preview.GetLightingView() == renderer::DeferredLightingView::Final);
+    CHECK(preview.GetLightingViewSourceId() == 0);
+    CHECK(legend->isHidden() == true);
+    world.StopPreview();
+    workspace.SetPreviewSource(nullptr);
+    rhi::Shutdown();
+}
+
 TEST_CASE("An empty World shows the World preview's own view instead of the previous World's graph image",
           "[editor][render-graph][world-graph][empty-world]")
 {
@@ -2599,6 +2984,91 @@ TEST_CASE("An empty World shows the World preview's own view instead of the prev
     REQUIRE(waitFor([&]() { return preview.IsBuiltInViewShown() == false; }) == true);
     REQUIRE(waitFor([&]() { return graphView->GetImage().isNull() == false; }) == true);
     CHECK(graphView->isHidden() == false);
+    world.StopPreview();
+    workspace.SetPreviewSource(nullptr);
+    rhi::Shutdown();
+}
+
+TEST_CASE("Undoing deletion of the last imported entity restores its viewport frame",
+          "[editor][render-graph][world-graph][empty-world]")
+{
+    constexpr int32 TIMEOUT_MILLISECONDS = 30000;
+    rhi::Shutdown();
+    QTemporaryDir directory;
+    REQUIRE(directory.isValid() == true);
+    const QString projectPath = directory.filePath(QStringLiteral("project"));
+    const QString source = directory.filePath(QStringLiteral("source"));
+    const QString levelPath = QStringLiteral("room.lulevel");
+    QString error;
+    REQUIRE(tests::CreateFixtureSource(source) == true);
+    const bool hasImportedLevel = tests::PrepareImportedLevel(projectPath, levelPath, source, error);
+    INFO(error.toStdString());
+    REQUIRE(hasImportedLevel == true);
+    const QDir project(QFileInfo(projectPath).canonicalFilePath());
+
+    RendererWorkspace workspace({});
+    WorldWorkspace world;
+    world.UseProjectGraph(workspace);
+    QObject::connect(&world, &WorldWorkspace::RenderPreviewChanged, &workspace, [&]() {
+        workspace.SetPreviewSource(&world.GetRenderPreview());
+    });
+    workspace.EnableWorldRendering();
+    workspace.SetProject(project.path(), 1);
+    world.SetProject(project.path(), 1);
+    world.resize(1000, 700);
+    world.show();
+    REQUIRE(world.Open(project.filePath(levelPath)) == true);
+    REQUIRE(QTest::qWaitFor([&world]() { return world.CanSave() == true; }, TIMEOUT_MILLISECONDS) == true);
+
+    const RenderPreview& preview = world.GetRenderPreview();
+    REQUIRE(preview.Scene().Objects.size() == 1);
+    const QString objectId = preview.Scene().Objects.front().Id;
+    const uint64 deviceSerial = preview.GetDeviceSerial();
+    const RenderGraphPreview* graphOrNull = workspace.GetPreviewOrNull();
+    REQUIRE(graphOrNull != nullptr);
+    const uint64 originalRevision = graphOrNull->GetPresentedRevision();
+    const uint64 originalGeneration = graphOrNull->GetPresentedGeneration();
+    const bool canPresent = PreviewViewport::CanPresent();
+    if (canPresent == true)
+    {
+        REQUIRE(originalRevision != 0);
+        REQUIRE(preview.HasDevice() == true);
+    }
+
+    QTreeWidget* entitiesOrNull = world.findChild<QTreeWidget*>(QStringLiteral("worldEntities"));
+    REQUIRE(entitiesOrNull != nullptr);
+    entitiesOrNull->selectAll();
+    QAction* deleteOrNull = world.findChild<QAction*>(QStringLiteral("worldDelete"));
+    REQUIRE(deleteOrNull != nullptr);
+    REQUIRE(deleteOrNull->isEnabled() == true);
+    QTimer::singleShot(0, []() {
+        QMessageBox* confirmationOrNull = qobject_cast<QMessageBox*>(QApplication::activeModalWidget());
+        REQUIRE(confirmationOrNull != nullptr);
+        confirmationOrNull->button(QMessageBox::Yes)->click();
+    });
+    deleteOrNull->trigger();
+    REQUIRE(QTest::qWaitFor([&world]() { return world.CanUndo() == true; }, TIMEOUT_MILLISECONDS) == true);
+    CHECK(entitiesOrNull->topLevelItemCount() == 0);
+    CHECK(preview.Scene().ShouldUseEmptyWorldView() == true);
+    if (canPresent == true)
+    {
+        CHECK(preview.IsBuiltInViewShown() == true);
+        CHECK(preview.HasDevice() == true);
+    }
+
+    world.Undo();
+    REQUIRE(QTest::qWaitFor([&world]() { return world.CanRedo() == true; }, TIMEOUT_MILLISECONDS) == true);
+    CHECK(entitiesOrNull->topLevelItemCount() == 1);
+    REQUIRE(preview.Scene().Objects.size() == 1);
+    CHECK(preview.Scene().Objects.front().Id == objectId);
+    CHECK(preview.GetDeviceSerial() == deviceSerial);
+    if (canPresent == true)
+    {
+        CHECK(preview.IsBuiltInViewShown() == false);
+        CHECK(graphOrNull->GetPresentedRevision() > originalRevision);
+        CHECK(graphOrNull->GetPresentedGeneration() == originalGeneration);
+        CHECK(workspace.GetRenderProblem().isEmpty() == true);
+    }
     world.StopPreview();
     workspace.SetPreviewSource(nullptr);
     rhi::Shutdown();
@@ -2926,7 +3396,8 @@ TEST_CASE("Raster comparison reports a terminal failure for an infinite-far view
     INFO(capture.GetError().toStdString());
     CHECK(phase == ViewportRasterPhase::Failed);
     CHECK(capture.GetError().contains(QStringLiteral("failed to prepare for capture")) == true);
-    CHECK(capture.GetError().contains(QStringLiteral("The World extraction was rejected (Unsupported)")) == true);
+    CHECK(capture.GetError().contains(QStringLiteral("infinite far plane")) == true);
+    CHECK(capture.GetError().contains(QStringLiteral("Give the camera a finite far plane.")) == true);
 }
 
 TEST_CASE("Reference capture window offers the render graph source once the viewport requests its graph",
@@ -3976,6 +4447,181 @@ TEST_CASE("Viewport exposure adjusts the live frame without editing the graph",
     CHECK(exposure->value() == 0);
     CHECK(workspace.IsDirty() == false);
 
+    // Without an Atmosphere, Automatic keeps the graph's exposure. Typing an EV100 selects the physical camera.
+    QAction* automatic = viewport.findChild<QAction*>(QStringLiteral("viewportExposureAutomatic"));
+    QAction* graphExposure = viewport.findChild<QAction*>(QStringLiteral("viewportExposureGraph"));
+    QDoubleSpinBox* exposureValue = viewport.findChild<QDoubleSpinBox*>(QStringLiteral("viewportExposureValue100"));
+    REQUIRE(automatic != nullptr);
+    REQUIRE(graphExposure != nullptr);
+    REQUIRE(exposureValue != nullptr);
+    CHECK(automatic->isChecked() == true);
+    CHECK(source.ResolveExposure().Mode == renderer::ExposureMode::Graph);
+    constexpr float64 MANUAL_EXPOSURE_VALUE = 3;
+    const uint64 beforeManual = graph->GetPresentedRevision();
+    exposureValue->setValue(MANUAL_EXPOSURE_VALUE);
+    REQUIRE(waitForRevision(beforeManual) == true);
+    CHECK(source.GetExposureMode() == ViewportExposureMode::Manual);
+    CHECK(source.ResolveExposure().Mode == renderer::ExposureMode::Physical);
+    CHECK(source.ResolveExposure().ExposureValue100 == static_cast<float32>(MANUAL_EXPOSURE_VALUE));
+    CHECK(graph->GetImage() != authored);
+    CHECK(graph->GetPresentedGeneration() == generation);
+    const uint64 beforeGraph = graph->GetPresentedRevision();
+    graphExposure->trigger();
+    REQUIRE(waitForRevision(beforeGraph) == true);
+    CHECK(source.GetExposureMode() == ViewportExposureMode::Graph);
+    CHECK(graph->GetImage() == authored);
+    CHECK(workspace.IsDirty() == false);
+
+    source.Stop();
+    workspace.SetPreviewSource(nullptr);
+    rhi::Shutdown();
+}
+
+TEST_CASE("Automatic viewport exposure meters the World's Sun, sky and Moon", "[editor][render-graph][exposure]")
+{
+    RenderPreview source;
+    RenderScene scene = MakeScene({1, 1, 1, 1});
+    constexpr float32 EARTH_SUN_LUX = 133'800;
+    constexpr uint64 SUN_SOURCE_ID = 11;
+    scene.Atmosphere.IsEnabled = true;
+    scene.Atmosphere.ShouldLightScene = true;
+    scene.Atmosphere.DirectionToSunWorld = {0, 1, 0};
+    scene.Atmosphere.SolarIlluminance = {EARTH_SUN_LUX, EARTH_SUN_LUX, EARTH_SUN_LUX};
+    scene.Atmosphere.SunSourceId = SUN_SOURCE_ID;
+    // The linked Sun's own light is metered through the Atmosphere, after transmittance, not again here.
+    scene.AuthoredLights.Lights[0] =
+    {
+        .SourceId = SUN_SOURCE_ID,
+        .Kind = renderer::LightKind::Directional,
+        .Intensity = EARTH_SUN_LUX,
+        .Direction = {0, -1, 0},
+    };
+    scene.AuthoredLights.Count = 1;
+    REQUIRE(source.SetScene(scene) == true);
+    CHECK(source.GetExposureMode() == ViewportExposureMode::Automatic);
+    const ViewportExposure noon = source.ResolveExposure();
+    CHECK(noon.Mode == renderer::ExposureMode::Physical);
+    CHECK(noon.ExposureValue100 > 14);
+    CHECK(noon.ExposureValue100 < 16);
+
+    // At night the natural night sky sets the exposure, and a full Moon overhead brightens the reading.
+    constexpr float32 NIGHT_SINE = -0.5F;
+    scene.Atmosphere.DirectionToSunWorld = {math::Sqrt(1 - NIGHT_SINE * NIGHT_SINE), NIGHT_SINE, 0};
+    scene.Identity = QByteArrayLiteral("exposure-night");
+    REQUIRE(source.SetScene(scene) == true);
+    const ViewportExposure night = source.ResolveExposure();
+    CHECK(night.ExposureValue100 == Catch::Approx(renderer::ComputeIncidentExposureValue100(0)).margin(0.01));
+    constexpr float32 FULL_MOON_LUX = 0.25F;
+    constexpr uint64 MOON_SOURCE_ID = 12;
+    scene.AuthoredLights.Lights[1] =
+    {
+        .SourceId = MOON_SOURCE_ID,
+        .Kind = renderer::LightKind::Directional,
+        .Intensity = FULL_MOON_LUX,
+        .Direction = {0, -1, 0},
+    };
+    scene.AuthoredLights.Count = 2;
+    scene.Identity = QByteArrayLiteral("exposure-moonlight");
+    REQUIRE(source.SetScene(scene) == true);
+    const ViewportExposure moonlight = source.ResolveExposure();
+    CHECK(moonlight.ExposureValue100 ==
+          Catch::Approx(renderer::ComputeIncidentExposureValue100(static_cast<float64>(FULL_MOON_LUX))).margin(0.01));
+
+    // The physical camera and graph exposure ignore the meter; invalid values preserve the camera.
+    constexpr float32 MANUAL_EXPOSURE_VALUE = 12;
+    source.SetManualExposureValue100(MANUAL_EXPOSURE_VALUE);
+    source.SetManualExposureValue100(renderer::MAX_EXPOSURE_VALUE_100 + 1);
+    source.SetExposureMode(ViewportExposureMode::Manual);
+    CHECK(source.ResolveExposure().ExposureValue100 == MANUAL_EXPOSURE_VALUE);
+    source.SetExposureMode(ViewportExposureMode::Graph);
+    CHECK(source.ResolveExposure().Mode == renderer::ExposureMode::Graph);
+
+    // Worlds without an Atmosphere keep the graph exposure their lights were authored for.
+    source.SetExposureMode(ViewportExposureMode::Automatic);
+    scene.Atmosphere.IsEnabled = false;
+    scene.Identity = QByteArrayLiteral("exposure-no-atmosphere");
+    REQUIRE(source.SetScene(scene) == true);
+    CHECK(source.ResolveExposure().Mode == renderer::ExposureMode::Graph);
+}
+
+TEST_CASE("Viewport Work Light follows the live camera without entering the scene or capture view",
+          "[editor][render-graph][world-graph][work-light]")
+{
+    {
+        const DeviceFixture probe;
+        if (probe.IsAvailable == false)
+        {
+            SKIP("No GPU adapter on this host");
+        }
+    }
+    QTemporaryDir project;
+    REQUIRE(project.isValid() == true);
+    RendererWorkspace workspace({});
+    RenderPreview source;
+    PreviewViewport viewport(&source, static_cast<QWidget*>(nullptr), false);
+    viewport.UseProjectGraph(workspace);
+    workspace.SetPreviewSource(&source);
+    workspace.EnableWorldRendering();
+    workspace.SetProject(project.path(), 1);
+    const RenderScene scene = MakeCookedScene();
+    REQUIRE(source.SetScene(scene) == true);
+    REQUIRE(source.Start() == true);
+    RenderGraphPreview* graph = workspace.GetPreviewOrNull();
+    REQUIRE(graph != nullptr);
+    const auto waitForRevision = [&](uint64 previous) {
+        for (usize attempt = 0; attempt < ATTEMPTS; ++attempt)
+        {
+            QTest::qWait(1);
+            workspace.ServicePreview();
+            if (graph->GetPresentedRevision() > previous)
+            {
+                return true;
+            }
+        }
+        return false;
+    };
+    REQUIRE(waitForRevision(0) == true);
+    const QImage dark = graph->GetImage();
+    REQUIRE(dark.isNull() == false);
+    QToolButton* workLightButton = viewport.findChild<QToolButton*>(QStringLiteral("viewportWorkLight"));
+    REQUIRE(workLightButton != nullptr);
+    REQUIRE(workLightButton->isEnabled() == true);
+    CHECK(workLightButton->isChecked() == false);
+    const uint64 generation = graph->GetPresentedGeneration();
+    const uint64 darkRevision = graph->GetPresentedRevision();
+    const QJsonObject navigation = source.Navigation();
+    workLightButton->click();
+    REQUIRE(waitForRevision(darkRevision) == true);
+    CHECK(workLightButton->isChecked() == true);
+    CHECK(graph->GetImage() != dark);
+    CHECK(graph->GetExtractionLights().isEmpty() == true);
+    CHECK(source.Scene().AuthoredLights.Count == 0);
+    CHECK(source.Scene().Identity == scene.Identity);
+    CHECK(source.Navigation() == navigation);
+    CHECK(workspace.IsDirty() == false);
+
+    const QSize extent = graph->GetImage().size();
+    renderer::ViewDescription captureView;
+    QString error;
+    REQUIRE(source.DescribeConventionalView(static_cast<uint32>(extent.width()),
+                                            static_cast<uint32>(extent.height()),
+                                            captureView,
+                                            error) == true);
+    CHECK(captureView.ShouldShowWorkLight == false);
+
+    // Moving the camera beyond the light's range leaves the test triangle dark even with Work Light on.
+    const uint64 litRevision = graph->GetPresentedRevision();
+    constexpr float32 DISTANCE_BEYOND_WORK_LIGHT_METRES = 24;
+    source.SetFocusDistance(DISTANCE_BEYOND_WORK_LIGHT_METRES);
+    REQUIRE(waitForRevision(litRevision) == true);
+    const QImage distant = graph->GetImage();
+    const uint64 distantRevision = graph->GetPresentedRevision();
+    workLightButton->click();
+    REQUIRE(waitForRevision(distantRevision) == true);
+    CHECK(workLightButton->isChecked() == false);
+    CHECK(graph->GetImage() == distant);
+    CHECK(graph->GetPresentedGeneration() == generation);
+
     source.Stop();
     workspace.SetPreviewSource(nullptr);
     rhi::Shutdown();
@@ -4237,6 +4883,70 @@ TEST_CASE("Viewport forces authored raster before attaching a device", "[editor]
     CHECK(preview.GetImage().cacheKey() == last.cacheKey());
     CHECK(preview.Load(ray) == RenderGraphPreviewLoad::Unsupported);
     CHECK(preview.GetImage().cacheKey() == last.cacheKey());
+    preview.Detach();
+}
+TEST_CASE("Force raster draws the engine default graph instead of an authored raster graph",
+          "[editor][render-graph][selection]")
+{
+    // A project graph without a RayTracing pass (an authored raster graph, or one tracing rays in compute
+    // pipelines) used to ignore Force raster. A graph without the clustered deferred programs draws a World with an
+    // Atmosphere without its sky; Force raster draws the sky with the engine default graph.
+    DeviceFixture device;
+    if (device.IsAvailable == false)
+    {
+        SKIP("No GPU adapter on this host");
+    }
+    RenderGraphPreview preview(
+        {default_graph::INTERFACE_IDENTITY.GetData(), default_graph::INTERFACE_IDENTITY.GetSize()},
+        shaders::renderer_composite::Vertex(),
+        shaders::renderer_composite::Fragment());
+    REQUIRE(preview.Attach(device.Device, device.Surface) == true);
+    const auto isSkyOmitted = [&preview]() {
+        return (preview.GetUnrenderedWorldFeatures() &
+                renderer::GetWorldFeatureBit(renderer::WorldFeature::AtmosphereSky)) != 0;
+    };
+    RenderGraphExtraction extraction = MakeExtraction({.25F, .5F, .75F, 1}, 1);
+    extraction.View.Atmosphere.IsEnabled = true;
+    preview.SetExtraction(extraction);
+    const QString forward = QStringLiteral(LUDUS_EDITOR_FORWARD_GRAPH_FIXTURE);
+    const QString raster = GetDefaultRenderGraphRuntime();
+    REQUIRE(raster.isEmpty() == false);
+    REQUIRE(preview.Load(forward, raster) == RenderGraphPreviewLoad::Staged);
+    // The forward graph has no clustered deferred programs, so it draws the World and omits the Atmosphere.
+    const bool hasForwardFrame = TickUntil(preview, [&]() { return preview.GetPresentedRevision() == 1; });
+    INFO(preview.GetStatus().toStdString());
+    REQUIRE(hasForwardFrame == true);
+    CHECK(preview.WasExtractionRejected(1) == false);
+    CHECK(isSkyOmitted() == true);
+    CHECK(preview.GetActivePackagePath() == forward);
+    CHECK(preview.CanSwitchToRasterFallback() == true);
+
+    const uint64 forwardGeneration = preview.GetPresentedGeneration();
+    preview.SetForceRaster(true);
+    // The default graph replaces the forward graph and draws the same revision with the Atmosphere.
+    const bool hasForcedFrame =
+        TickUntil(preview, [&]() { return preview.GetPresentedGeneration() > forwardGeneration; });
+    INFO(preview.GetStatus().toStdString());
+    REQUIRE(hasForcedFrame == true);
+    CHECK(preview.GetPresentedRevision() == 1);
+    CHECK(preview.GetActivePackagePath() == raster);
+    CHECK(preview.GetRequestedPackagePath() == forward);
+    CHECK(preview.GetReport().ActiveRenderer == renderer::RenderGraphRenderer::Raster);
+    CHECK(isSkyOmitted() == false);
+    CHECK(preview.GetStatus().contains(QStringLiteral("Force raster")) == true);
+    CHECK(preview.CanSwitchToRasterFallback() == false);
+
+    // Turning it off selects the requested graph again, which draws the World without the Atmosphere.
+    const uint64 forcedGeneration = preview.GetPresentedGeneration();
+    preview.SetForceRaster(false);
+    const bool hasRequestedFrame =
+        TickUntil(preview, [&]() { return preview.GetPresentedGeneration() > forcedGeneration; });
+    INFO(preview.GetStatus().toStdString());
+    REQUIRE(hasRequestedFrame == true);
+    CHECK(preview.GetPresentedRevision() == 1);
+    CHECK(preview.GetActivePackagePath() == forward);
+    CHECK(isSkyOmitted() == true);
+    CHECK(preview.CanSwitchToRasterFallback() == true);
     preview.Detach();
 }
 TEST_CASE("Force raster switches the live hardware renderer and restores automatic selection",
@@ -5069,6 +5779,19 @@ TEST_CASE("Graph display frames draw the selection outline on the GPU and move i
     QImage clean;
     readShown(clean);
     CHECK(countOutline(clean) == 0);
+    rhi::NativeDeviceLease nativeLease;
+    REQUIRE(rhi::AcquireNativeDevice(device.Device, nativeLease) == rhi::RasterStatus::Ready);
+    ViewportFrameRead cleanRead;
+    const QScopeGuard releaseNativeRead([&]() {
+        if (cleanRead.Token != 0)
+        {
+            display.DrainFrameRead(cleanRead);
+        }
+        static_cast<void>(rhi::ReleaseNativeDevice(nativeLease));
+    });
+    rhi::NativeDeviceInfo native;
+    REQUIRE(rhi::GetNativeDeviceInfo(nativeLease, native) == rhi::RasterStatus::Ready);
+    REQUIRE(display.TakeFrameRead(nativeLease, native.Identity, cleanRead) == rhi::RasterStatus::Ready);
     // The scene's triangle is the selection, drawn through the camera of the shown frame.
     const RenderScene& scene = viewport.Scene();
     REQUIRE(scene.Objects.size() == 1);
@@ -5103,6 +5826,9 @@ TEST_CASE("Graph display frames draw the selection outline on the GPU and move i
     const uint64 movedSerial = display.GetLatestSerial();
     display.ClearSelectionOutline();
     REQUIRE(TickUntil(preview, [&]() { return display.GetLatestSerial() > movedSerial; }) == true);
+    // Qt can still hold a read of the clean snapshot from before the outline was shown.
+    display.DrainFrameRead(cleanRead);
+    CHECK(cleanRead.Token == 0);
     QImage restored;
     readShown(restored);
     CHECK(restored == clean);

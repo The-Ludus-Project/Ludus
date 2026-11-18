@@ -12,6 +12,7 @@
 #include "internal/render_graph_ray_path.h"
 #include "internal/render_graph_scene_resources.h"
 #include "internal/render_graph_upscale.h"
+#include "internal/render_graph_world_features.h"
 
 #include <ludus/foundation/base/compiler.h>
 #include <ludus/foundation/containers/array.hpp>
@@ -52,9 +53,14 @@ constexpr usize BOX_CORNER_COUNT = 8;
 constexpr usize BOX_INDEX_COUNT = 36;
 constexpr usize FLAT_INPUT_COUNT = 6;
 constexpr usize MAX_RETAINED_SCENES = 3;
-/// Frozen ray compute ABI, visibility textures, structured storage and the diagnostic capture slot.
+/// Material programs a forward-profile color context prewarms at most: the ordinary program plus the deferred
+/// profile's surface-chart and probe programs (the forward-lit profile has only a chart program).
+constexpr usize FORWARD_MATERIAL_PROGRAM_COUNT = 3;
+/// Frozen ray compute ABI, visibility textures, structured storage, the diagnostic capture slot and the
+/// renderer-owned tables.
 constexpr usize RAY_COMPUTE_BINDING_CAPACITY = LUDUS_GRAPH_VISIBILITY_BINDING_COUNT + format::MAX_STORAGE_BUFFERS + 1 +
-                                               LUDUS_GRAPH_LTC_TABLE_BINDING_COUNT + LUDUS_GRAPH_FAILURE_BINDING_COUNT;
+                                               LUDUS_GRAPH_LTC_TABLE_BINDING_COUNT + LUDUS_GRAPH_FAILURE_BINDING_COUNT +
+                                               LUDUS_GRAPH_WORLD_TABLE_BINDING_COUNT;
 constexpr usize MAX_COMPONENTS = 4;
 /// Largest packed uniform bytes of one technique: every slot at its largest block.
 constexpr usize MAX_TECHNIQUE_UNIFORM_BYTES = format::UNIFORM_SLOT_COUNT * format::MAX_UNIFORM_BLOCK_BYTES;
@@ -64,6 +70,11 @@ constexpr uint32 MAX_TARGET = static_cast<uint32>(format::ShaderTarget::Dxil);
 bool IsAccepted(Status status) noexcept
 {
     return status == Status::Ready || status == Status::Pending;
+}
+/// A Poll or Update result that records its step: NotReady only asks the caller to retry later.
+bool IsRecordedFailure(Status status) noexcept
+{
+    return IsAccepted(status) == false && status != Status::NotReady;
 }
 bool IsColorTechnique(format::Technique technique) noexcept
 {
@@ -107,6 +118,10 @@ Status MapDeviceStatus(rhi::DeviceStatus status) noexcept
             return Status::DeviceLost;
         case rhi::DeviceStatus::IdentityExhausted:
             return Status::IdentityExhausted;
+        case rhi::DeviceStatus::SurfaceLost:
+            return Status::Failed;
+        case rhi::DeviceStatus::CapacityExceeded:
+            return Status::CapacityExceeded;
     }
     return Status::InvalidDescription;
 }
@@ -500,6 +515,13 @@ Status ValidatePlan(const RenderGraphPlan& plan) noexcept
     for (usize passIndex = 0; passIndex < plan.Passes.GetSize(); ++passIndex)
     {
         const format::Pass& pass = plan.Passes[passIndex];
+        const bool isBufferDispatch = pass.WorkItemCount != 0;
+        if (isBufferDispatch == true &&
+            (pass.Program != format::Technique::RayTracing || pass.WorkItemCount > format::MAX_SCENE_WORK_ITEMS ||
+             pass.Camera != format::ABSENT || pass.Color != format::ABSENT))
+        {
+            return Status::InvalidDescription;
+        }
         if (format::IsImageTechnique(pass.Program) == true)
         {
             if (pass.Camera >= plan.Cameras.GetSize() || pass.Color >= plan.Resources.GetSize() ||
@@ -534,7 +556,8 @@ Status ValidatePlan(const RenderGraphPlan& plan) noexcept
         {
             return Status::InvalidDescription;
         }
-        if (static_cast<uint32>(pass.Program) > MAX_TECHNIQUE || pass.Camera >= plan.Description.CameraCount ||
+        if (static_cast<uint32>(pass.Program) > MAX_TECHNIQUE ||
+            (isBufferDispatch == false && pass.Camera >= plan.Description.CameraCount) ||
             (pass.Program != format::Technique::RayTracing && pass.Depth >= plan.Resources.GetSize()) ||
             pass.AllowsRepeatedCoverage > 1 ||
             static_cast<uint32>(pass.ColorLoad) > static_cast<uint32>(format::Load::Discard) ||
@@ -545,9 +568,12 @@ Status ValidatePlan(const RenderGraphPlan& plan) noexcept
             return Status::InvalidDescription;
         }
         isUsed[static_cast<usize>(pass.Program)] = true;
-        const uint32 requiredTarget = plan.Cameras[pass.Camera].Target;
-        hasCameraRoute[pass.Camera] =
-            hasCameraRoute[pass.Camera] == true || pass.Color == requiredTarget || pass.Depth == requiredTarget;
+        if (isBufferDispatch == false)
+        {
+            const uint32 requiredTarget = plan.Cameras[pass.Camera].Target;
+            hasCameraRoute[pass.Camera] =
+                hasCameraRoute[pass.Camera] == true || pass.Color == requiredTarget || pass.Depth == requiredTarget;
+        }
         if ((pass.SceneData & ~::ludus::content::render_graph_format::SCENE_DATA_ALL) != 0 ||
             (pass.SceneData & ::ludus::content::render_graph_format::SCENE_DATA_GEOMETRY) == 0)
         {
@@ -586,6 +612,20 @@ Status ValidatePlan(const RenderGraphPlan& plan) noexcept
                 return Status::InvalidDescription;
             }
             ++rayPassCount;
+            if (isBufferDispatch == true)
+            {
+                if (rayPassCount > format::MAX_RAY_PASSES || pass.Depth != format::ABSENT ||
+                    pass.ColorLoad != format::Load::Discard || pass.ColorStore != format::Store::Discard ||
+                    pass.DepthLoad != format::Load::Discard || pass.DepthStore != format::Store::Discard ||
+                    (pass.Buffer0 == format::ABSENT && pass.Buffer1 == format::ABSENT) ||
+                    pass.Visibility != format::ABSENT || pass.VisibilityDepth != format::ABSENT ||
+                    pass.Traversal == format::RayTraversal::HardwarePipeline || pass.AccumulationSamples != 0 ||
+                    pass.ToneMappingExposure != 0 || pass.DenoisingQuality != 0 || isVisibilitySequence == true)
+                {
+                    return Status::Unsupported;
+                }
+                continue;
+            }
             if (rayPassCount > format::MAX_RAY_PASSES || pass.Color >= plan.Resources.GetSize() ||
                 pass.Depth != format::ABSENT || plan.Resources[pass.Color].Kind != format::Aspect::Color ||
                 plan.Resources[pass.Color].IsSurface != 0 || pass.ColorLoad != format::Load::Clear ||
@@ -974,14 +1014,21 @@ struct RenderGraph::State final
     StaticArray<uint8, MAX_TECHNIQUE_UNIFORM_BYTES> Candidate{};
     internal::ForwardSceneResources ForwardResources;
     MaterialProgram ForwardProgram{};
+    /// Program drawing static surfaces with a ready chart: the forward chart fragment, or in the deferred profile the
+    /// chart G-buffer fragment.
     MaterialProgram ForwardSurfaceChartProgram{};
+    /// Deferred program drawing GI Probe Receivers through the probe G-buffer fragment.
+    MaterialProgram ForwardProbeProgram{};
     internal::RenderGraphDeferredProgram DeferredProgram;
     bool HasDeferredProgram = false;
     /// Update's cameras in the depth convention this graph draws; see RenderGraph::CanUseReverseDepth.
     StaticArray<ViewDescription, format::MAX_CAMERAS> AdmittedCameras{};
+    /// Sky, haze and substituted scene inputs of the latest ray scene preparation; reused across updates.
+    internal::RenderGraphWorldTables WorldTables;
     bool HasForwardLighting = false;
     bool HasForwardProgram = false;
     bool HasForwardSurfaceChartProgram = false;
+    bool HasForwardProbeProgram = false;
     bool HasForwardResources = false;
     /// The sample limit an Accumulate on operation averages to: the authored limit, or the capture override
     /// when one is set and the pass accumulates at all. Zero outputs individual samples.
@@ -1065,6 +1112,8 @@ struct RenderGraph::State final
         uint64 ContentRevision = 0;
         uint64 DeferredAttachmentBytes = 0;
         RenderGraphSceneRevisions Revisions{};
+        /// Atmosphere of the ray camera the World-feature tables were resolved from (internal::AreRayAtmospheresEqual).
+        AtmosphereDescription RayAtmosphere{};
         RenderGraphCoveragePolicy CoveragePolicy = RenderGraphCoveragePolicy::RejectIncomplete;
         /// Samples whose every band was submitted; one per frame when untiled.
         uint32 SubmittedRaySamples = 0;
@@ -1142,18 +1191,21 @@ struct RenderGraph::State final
                 return Status::OutOfMemory;
             }
             inoutPass = core::UniquePtr<internal::RenderGraphDeferredPass>{allocationOrNull};
-            const Status status =
-                inoutPass->Initialize(inoutTargets,
-                                      GetContext(format::Technique::ColorAndDepth),
-                                      view,
-                                      camera,
-                                      lighting.GetMeshLights(),
-                                      lighting.GetMeshLightCount(),
-                                      lighting.GetMeshLightGridWord(),
-                                      lighting.HasShadowAtlas(),
-                                      lighting.GetShadowAtlasView(),
-                                      operation,
-                                      lighting.FindDirectionalLightIndex(camera.Atmosphere.SunSourceId));
+            const Status status = inoutPass->Initialize(
+                inoutTargets,
+                GetContext(format::Technique::ColorAndDepth),
+                view,
+                camera,
+                lighting.GetMeshLights(),
+                lighting.GetMeshLightCount(),
+                lighting.GetMeshLightGridWord(),
+                lighting.HasShadowAtlas(),
+                lighting.GetShadowAtlasView(),
+                operation,
+                {
+                    .AtmosphereSunIndex = lighting.FindDirectionalLightIndex(camera.Atmosphere.SunSourceId),
+                    .LightingViewLightIndex = lighting.FindLightIndex(camera.LightingViewSourceId),
+                });
             if (IsAccepted(status) == false)
             {
                 return status;
@@ -1200,7 +1252,7 @@ struct RenderGraph::State final
         for (usize i = 0; i < Header.PassCount; ++i)
         {
             const format::Pass& pass = Passes[i];
-            if (format::IsImageTechnique(pass.Program) == true)
+            if (format::IsImageTechnique(pass.Program) == true || pass.WorkItemCount != 0)
             {
                 continue;
             }
@@ -1239,7 +1291,7 @@ struct RenderGraph::State final
         CameraUpdate& update = *PendingCamera;
         for (usize i = 0; i < Header.PassCount; ++i)
         {
-            if (format::IsImageTechnique(Passes[i].Program) == true)
+            if (format::IsImageTechnique(Passes[i].Program) == true || Passes[i].WorkItemCount != 0)
             {
                 continue;
             }
@@ -1271,7 +1323,7 @@ struct RenderGraph::State final
         // Publication cannot allocate or fail, and no producer is open.
         for (usize i = 0; i < Header.PassCount; ++i)
         {
-            if (format::IsImageTechnique(Passes[i].Program) == true)
+            if (format::IsImageTechnique(Passes[i].Program) == true || Passes[i].WorkItemCount != 0)
             {
                 continue;
             }
@@ -1302,6 +1354,12 @@ struct RenderGraph::State final
     StaticArray<RenderGraphCoverageRecord, MAX_COVERAGE> Coverage{};
     usize CoverageCount = 0;
     RenderGraphReport Report{};
+    /// Cause of the latest Update rejection; separate from Report, which preflight rejection preserves.
+    RenderGraphSceneRejection LastRejection = RenderGraphSceneRejection::None;
+    /// Step the running Poll or Update has reached; Poll and Update record it when they fail.
+    RenderGraphFailureStage Step = RenderGraphFailureStage::None;
+    /// Step at which the latest Poll or Update failed (GetLastFailureStage).
+    RenderGraphFailureStage LastFailureStage = RenderGraphFailureStage::None;
     bool IsReady = false;
     bool HasOpenFrame = false;
     bool HasExternalRecording = false;
@@ -1553,6 +1611,8 @@ struct RenderGraph::State final
             {
                 if (inoutScene.HasViews[i] == false)
                 {
+                    const format::Pass& pass = Passes[i];
+                    const bool isBufferDispatch = pass.WorkItemCount != 0;
                     GpuPreviewGraphInvocation invocation{0,
                                                          {},
                                                          GetAccumulationSamples(Passes[i]),
@@ -1560,15 +1620,16 @@ struct RenderGraph::State final
                                                          Passes[i].DenoisingQuality,
                                                          {},
                                                          Passes[i].Traversal == format::RayTraversal::HardwarePipeline};
-                    invocation.ToneMappingCurve = GetToneCurve(Passes[i]);
-                    const Status created =
-                        inoutScene.RayPasses[i].Initialize(context,
-                                                           inoutScene.Snapshots[i],
-                                                           inoutScene.Cameras[Passes[i].Camera],
-                                                           preparingResources[Passes[i].Color].Width,
-                                                           preparingResources[Passes[i].Color].Height,
-                                                           nullptr,
-                                                           &invocation);
+                    invocation.ToneMappingCurve = GetToneCurve(pass);
+                    invocation.WorkItemCount = pass.WorkItemCount;
+                    const Status created = inoutScene.RayPasses[i].Initialize(
+                        context,
+                        inoutScene.Snapshots[i],
+                        isBufferDispatch == true ? ViewDescription{} : inoutScene.Cameras[pass.Camera],
+                        isBufferDispatch == true ? 1 : preparingResources[pass.Color].Width,
+                        isBufferDispatch == true ? 1 : preparingResources[pass.Color].Height,
+                        nullptr,
+                        &invocation);
                     if (IsAccepted(created) == false)
                     {
                         return created;
@@ -1715,7 +1776,7 @@ struct RenderGraph::State final
                 continue;
             }
             if (pass + 1 < Header.PassCount && Passes[pass + 1].Program == format::Technique::RayTracing &&
-                Passes[pass + 1].Visibility == operation.Color)
+                Passes[pass + 1].Visibility != format::ABSENT && Passes[pass + 1].Visibility == operation.Color)
             {
                 continue;
             }
@@ -1985,6 +2046,7 @@ struct RenderGraph::State final
         ForwardResources.Reset();
         static_cast<void>(
             Contexts[static_cast<usize>(format::Technique::ColorAndDepth)].Release(ForwardSurfaceChartProgram));
+        static_cast<void>(Contexts[static_cast<usize>(format::Technique::ColorAndDepth)].Release(ForwardProbeProgram));
         static_cast<void>(Contexts[static_cast<usize>(format::Technique::ColorAndDepth)].Release(ForwardProgram));
         for (usize i = 0; i < Header.ResourceCount; ++i)
         {
@@ -2044,9 +2106,19 @@ Status RenderGraph::SetRayTileCount(uint32 tileCount) noexcept
     {
         return Status::InvalidState;
     }
-    if (tileCount > 1 && state.Programs.HasRayTiles == false)
+    if (tileCount > 1)
     {
-        return Status::Unsupported;
+        if (state.Programs.HasRayTiles == false)
+        {
+            return Status::Unsupported;
+        }
+        for (usize pass = 0; pass < state.Header.PassCount; ++pass)
+        {
+            if (state.Passes[pass].WorkItemCount != 0)
+            {
+                return Status::Unsupported;
+            }
+        }
     }
     state.RayTileCount = tileCount;
     if (state.Current.Get() != nullptr)
@@ -2169,8 +2241,16 @@ Status RenderGraph::GetRayWorkload(RenderGraphRayWorkload& outWorkload) const no
         {
             continue;
         }
-        const format::Resource& color = state.Resources[state.Passes[pass].Color];
-        workload.Pixels += uint64{color.Width} * color.Height;
+        const format::Pass& operation = state.Passes[pass];
+        if (operation.WorkItemCount != 0)
+        {
+            workload.Pixels += operation.WorkItemCount;
+        }
+        else
+        {
+            const format::Resource& color = state.Resources[operation.Color];
+            workload.Pixels += uint64{color.Width} * color.Height;
+        }
         workload.Lights = math::Max(workload.Lights, state.Current->RayPasses[pass].GetLightCount());
     }
     outWorkload = workload;
@@ -2187,7 +2267,13 @@ Status RenderGraph::GetAccumulation(uint32 pass, rhi::BufferHandle& outBuffer) c
     {
         return Status::InvalidDescription;
     }
-    if (state.HasValidOutput == false || state.Producer.IsNull() == true ||
+    if (state.Passes[pass].WorkItemCount != 0)
+    {
+        return Status::Unsupported;
+    }
+    // Scene/camera publication resets both counters even when it reuses the same caller revision.
+    const bool hasSubmittedBand = state.Current->SubmittedRaySamples != 0 || state.Current->NextRayTile != 0;
+    if (hasSubmittedBand == false || state.HasValidOutput == false || state.Producer.IsNull() == true ||
         rhi::GetStatus(state.Device, state.Producer) != Status::Ready)
     {
         return Status::NotReady;
@@ -2388,6 +2474,13 @@ Status RenderGraph::Initialize(rhi::DeviceHandle device,
             return Status::InvalidDescription;
         }
     }
+    // The probe and surface-chart G-buffer fragments are optional and accompany only the deferred profile.
+    if ((HasShaderArtifact(programs.DeferredProbeGBufferFragment) == true ||
+         HasShaderArtifact(programs.DeferredSurfaceChartGBufferFragment) == true) &&
+        programs.HasClusteredDeferred == false)
+    {
+        return Status::InvalidDescription;
+    }
     // The opaque G-buffer fragment is optional: packages before format::OPAQUE_GBUFFER_PACKAGE_VERSION omit it.
     if (HasShaderArtifact(programs.DeferredOpaqueGBufferFragment) == true && programs.HasClusteredDeferred == false)
     {
@@ -2396,6 +2489,12 @@ Status RenderGraph::Initialize(rhi::DeviceHandle device,
     for (usize index = 0; index < plan.Passes.GetSize(); ++index)
     {
         const format::Pass& pass = plan.Passes[index];
+        if (pass.WorkItemCount != 0 &&
+            (programs.HasSceneShaderInterface == false || programs.HasPersistentRayBuffers == false ||
+             programs.HasRayPathCapture == true))
+        {
+            return Status::Unsupported;
+        }
         // Raster display conversion is fused into the clustered deferred lighting resolve; no other raster
         // profile has a stage that could apply it.
         if (pass.Program != format::Technique::RayTracing && pass.ToneMappingExposure != 0 &&
@@ -2588,25 +2687,48 @@ Status RenderGraph::Initialize(rhi::DeviceHandle device,
     {
         return Status::InvalidDescription;
     }
-    // A graph ray kernel's failure summary is its last binding; the LTC table, when the programs declare it,
-    // precedes it.
-    const std::span<const rhi::RasterBinding> allRayBindings = {programs.RayCompute.Bindings.GetDataOrNull(),
-                                                                programs.RayCompute.Bindings.GetSize()};
-    const bool hasFailureBinding =
-        allRayBindings.empty() == false && allRayBindings.back().Binding == LUDUS_GRAPH_FAILURE_BINDING;
-    if (hasFailureBinding == true && (allRayBindings.back().Kind != rhi::RasterBindingKind::StorageReadWrite ||
-                                      allRayBindings.back().MinSize != sizeof(uint32)))
+    // A graph ray kernel's renderer-owned bindings close its binding list in slot order: the aerial perspective table,
+    // the LTC table, the failure summary, then the Atmosphere sky. Each table appears exactly when the programs
+    // declare it, so peel them from the back.
+    std::span<const rhi::RasterBinding> rayBindings = {programs.RayCompute.Bindings.GetDataOrNull(),
+                                                       programs.RayCompute.Bindings.GetSize()};
+    const auto peelBinding = [&rayBindings](uint32 slot, rhi::RasterBindingKind kind, usize size, bool& outHasBinding) {
+        outHasBinding = rayBindings.empty() == false && rayBindings.back().Binding == slot;
+        if (outHasBinding == false)
+        {
+            return true;
+        }
+        const bool isValid = rayBindings.back().Kind == kind && rayBindings.back().MinSize == size;
+        rayBindings = rayBindings.first(rayBindings.size() - 1);
+        return isValid;
+    };
+    bool hasSkyBinding = false;
+    bool hasFailureBinding = false;
+    bool hasLtcBinding = false;
+    bool hasAerialBinding = false;
+    if (peelBinding(LUDUS_GRAPH_ATMOSPHERE_SKY_BINDING,
+                    rhi::RasterBindingKind::StorageRead,
+                    LUDUS_GPU_PREVIEW_VECTOR_BYTES,
+                    hasSkyBinding) == false ||
+        peelBinding(LUDUS_GRAPH_FAILURE_BINDING,
+                    rhi::RasterBindingKind::StorageReadWrite,
+                    sizeof(uint32),
+                    hasFailureBinding) == false ||
+        peelBinding(LUDUS_GRAPH_LTC_TABLE_BINDING,
+                    rhi::RasterBindingKind::StorageRead,
+                    LUDUS_GPU_PREVIEW_VECTOR_BYTES,
+                    hasLtcBinding) == false ||
+        peelBinding(LUDUS_GRAPH_AERIAL_PERSPECTIVE_BINDING,
+                    rhi::RasterBindingKind::StorageRead,
+                    LUDUS_GPU_PREVIEW_VECTOR_BYTES,
+                    hasAerialBinding) == false)
     {
         return Status::InvalidDescription;
     }
-    const std::span<const rhi::RasterBinding> rayBindings = allRayBindings.first(
-        allRayBindings.size() - (hasFailureBinding == true ? LUDUS_GRAPH_FAILURE_BINDING_COUNT : 0));
-    const bool hasLtcBinding =
-        rayBindings.empty() == false && rayBindings.back().Binding == LUDUS_GRAPH_LTC_TABLE_BINDING;
-    if (hasLtcBinding != programs.HasLtcTable ||
-        (hasLtcBinding == true &&
-         (programs.HasSceneShaderInterface == false || rayBindings.back().Kind != rhi::RasterBindingKind::StorageRead ||
-          rayBindings.back().MinSize != LUDUS_GPU_PREVIEW_VECTOR_BYTES)))
+    if (hasLtcBinding != programs.HasLtcTable || hasSkyBinding != programs.HasAtmosphereSky ||
+        hasAerialBinding != programs.HasAerialPerspective ||
+        ((hasLtcBinding == true || hasSkyBinding == true || hasAerialBinding == true) &&
+         programs.HasSceneShaderInterface == false))
     {
         return Status::InvalidDescription;
     }
@@ -2686,11 +2808,10 @@ Status RenderGraph::Initialize(rhi::DeviceHandle device,
     if (programs.HasRayPathCapture == true)
     {
         // Runtime-package stage metadata never names the diagnostic slot; generated headers reflect it.
-        // The capture slot precedes the trailing LTC table and failure summary bindings, keeping slot order.
+        // The capture slot precedes the trailing renderer-owned bindings peeled above, keeping slot order.
         const std::span<const rhi::RasterBinding> bindings = {programs.RayCompute.Bindings.GetDataOrNull(),
                                                               programs.RayCompute.Bindings.GetSize()};
-        const usize kernelCount = bindings.size() - (hasLtcBinding == true ? LUDUS_GRAPH_LTC_TABLE_BINDING_COUNT : 0) -
-                                  (hasFailureBinding == true ? LUDUS_GRAPH_FAILURE_BINDING_COUNT : 0);
+        const usize kernelCount = rayBindings.size();
         const bool hasCaptureBinding =
             kernelCount != 0 && bindings[kernelCount - 1].Binding == LUDUS_RAY_PATH_CAPTURE_BINDING;
         const usize count = bindings.size() + (hasCaptureBinding == true ? 0 : 1);
@@ -2783,6 +2904,8 @@ Status RenderGraph::Initialize(rhi::DeviceHandle device,
         if (candidate->HasForwardProfile() == true)
         {
             limits.Materials = static_cast<uint32>(format::MAX_ITEMS * MAX_RETAINED_SCENES);
+            // The ordinary, surface-chart and probe material programs prewarm together in the deferred profile.
+            limits.MaterialPrograms = static_cast<uint32>(FORWARD_MATERIAL_PROGRAM_COUNT);
         }
         limits.UniformSets = static_cast<uint32>(format::MAX_UNIFORM_SETS * MAX_RETAINED_SCENES);
         status = candidate->Contexts[i].Initialize(device,
@@ -3029,12 +3152,22 @@ Status RenderGraph::GetPersistentBuffer(uint32 resource, rhi::BufferHandle& outB
 }
 Status RenderGraph::Poll() noexcept
 {
+    const Status status = pollPreparation();
+    if (mState.Get() != nullptr)
+    {
+        mState->LastFailureStage = IsRecordedFailure(status) == true ? mState->Step : RenderGraphFailureStage::None;
+    }
+    return status;
+}
+Status RenderGraph::pollPreparation() noexcept
+{
     LUDUS_PROFILE_SCOPE(RenderGraphPoll);
     if (mState.Get() == nullptr)
     {
         return Status::InvalidState;
     }
     State& state = *mState;
+    state.Step = RenderGraphFailureStage::None;
     if (state.HasExternalRecording == true)
     {
         return Status::InvalidState;
@@ -3044,6 +3177,7 @@ Status RenderGraph::Poll() noexcept
     {
         return admitted == Status::Ready ? Status::InvalidState : admitted;
     }
+    state.Step = RenderGraphFailureStage::PipelinePreparation;
     for (usize i = 0; i < format::TECHNIQUE_COUNT; ++i)
     {
         if (state.IsUsed[i] == false)
@@ -3146,14 +3280,26 @@ Status RenderGraph::Poll() noexcept
         {
             return status;
         }
-        if (HasShaderArtifact(state.Programs.ForwardSurfaceChartFragment) == true)
+        const bool hasDeferredSurfaceCharts = HasShaderArtifact(state.Programs.DeferredSurfaceChartGBufferFragment);
+        if (HasShaderArtifact(state.Programs.ForwardSurfaceChartFragment) == true || hasDeferredSurfaceCharts == true)
         {
             if (state.HasForwardSurfaceChartProgram == false)
             {
-                status = context.prewarmProgram(state.Programs.ForwardVertex,
-                                                state.Programs.ForwardSurfaceChartFragment,
-                                                &state.Programs.ForwardShadow,
-                                                state.ForwardSurfaceChartProgram);
+                // A deferred chart program differs from the ordinary one only in its G-buffer fragment, which also
+                // draws opaque charted surfaces so the realtime opaque G-buffer never reads a chart.
+                status = hasDeferredSurfaceCharts == true
+                             ? context.prewarmProgram(
+                                   state.Programs.ForwardVertex,
+                                   state.Programs.ForwardFragment,
+                                   &state.Programs.ForwardShadow,
+                                   state.ForwardSurfaceChartProgram,
+                                   state.Programs.HasClusteredForward == true ? &state.Programs.ForwardDepth : nullptr,
+                                   &state.Programs.DeferredSurfaceChartGBufferFragment,
+                                   nullptr)
+                             : context.prewarmProgram(state.Programs.ForwardVertex,
+                                                      state.Programs.ForwardSurfaceChartFragment,
+                                                      &state.Programs.ForwardShadow,
+                                                      state.ForwardSurfaceChartProgram);
                 if (IsAccepted(status) == false)
                 {
                     return status;
@@ -3161,6 +3307,32 @@ Status RenderGraph::Poll() noexcept
                 state.HasForwardSurfaceChartProgram = true;
             }
             status = context.GetStatus(state.ForwardSurfaceChartProgram);
+            if (status != Status::Ready)
+            {
+                return status;
+            }
+        }
+        if (HasShaderArtifact(state.Programs.DeferredProbeGBufferFragment) == true)
+        {
+            if (state.HasForwardProbeProgram == false)
+            {
+                // Receivers share every stage with the ordinary program except the G-buffer fragment, which also
+                // draws opaque receivers so the realtime opaque G-buffer never samples the probe volume.
+                status = context.prewarmProgram(
+                    state.Programs.ForwardVertex,
+                    state.Programs.ForwardFragment,
+                    &state.Programs.ForwardShadow,
+                    state.ForwardProbeProgram,
+                    state.Programs.HasClusteredForward == true ? &state.Programs.ForwardDepth : nullptr,
+                    &state.Programs.DeferredProbeGBufferFragment,
+                    nullptr);
+                if (IsAccepted(status) == false)
+                {
+                    return status;
+                }
+                state.HasForwardProbeProgram = true;
+            }
+            status = context.GetStatus(state.ForwardProbeProgram);
             if (status != Status::Ready)
             {
                 return status;
@@ -3174,7 +3346,8 @@ Status RenderGraph::Poll() noexcept
                                                        state.ForwardProgram,
                                                        state.Programs.HasClusteredForward,
                                                        state.Programs.HasClusteredDeferred,
-                                                       state.ForwardSurfaceChartProgram);
+                                                       state.ForwardSurfaceChartProgram,
+                                                       state.ForwardProbeProgram);
             if (status != Status::Ready)
             {
                 return status;
@@ -3217,6 +3390,7 @@ Status RenderGraph::Poll() noexcept
         }
     }
     state.IsReady = true;
+    state.Step = RenderGraphFailureStage::ScenePreparation;
     if (state.PendingCamera.Get() != nullptr)
     {
         return state.PollCameras();
@@ -3257,12 +3431,39 @@ Status RenderGraph::Update(BorrowedView<const RenderGraphMesh> meshes,
                            uint64 contentRevision,
                            const RenderGraphSceneRevisions& revisions) noexcept
 {
+    const Status status = updateScene(meshes,
+                                      items,
+                                      cameras,
+                                      sceneRevision,
+                                      policy,
+                                      outReport,
+                                      sceneInputsOrNull,
+                                      contentRevision,
+                                      revisions);
+    if (mState.Get() != nullptr)
+    {
+        mState->LastFailureStage = IsRecordedFailure(status) == true ? mState->Step : RenderGraphFailureStage::None;
+    }
+    return status;
+}
+Status RenderGraph::updateScene(BorrowedView<const RenderGraphMesh> meshes,
+                                BorrowedView<const RenderGraphItem> items,
+                                BorrowedView<const ViewDescription> cameras,
+                                uint64 sceneRevision,
+                                RenderGraphCoveragePolicy policy,
+                                RenderGraphReport& outReport,
+                                const SceneShaderInputs* sceneInputsOrNull,
+                                uint64 contentRevision,
+                                const RenderGraphSceneRevisions& revisions) noexcept
+{
     LUDUS_PROFILE_SCOPE(RenderGraphUpdate);
     if (mState.Get() == nullptr)
     {
         return Status::InvalidState;
     }
     State& state = *mState;
+    state.LastRejection = RenderGraphSceneRejection::None;
+    state.Step = RenderGraphFailureStage::None;
     if (state.HasExternalRecording == true)
     {
         return Status::InvalidState;
@@ -3278,6 +3479,7 @@ Status RenderGraph::Update(BorrowedView<const RenderGraphMesh> meshes,
     {
         return Status::InvalidState;
     }
+    state.Step = RenderGraphFailureStage::ExtractionInputs;
     if (meshes.IsValid() == false || items.IsValid() == false || cameras.IsValid() == false ||
         meshes.GetSize() > format::MAX_MESHES || items.GetSize() > format::MAX_ITEMS ||
         cameras.GetSize() != state.Header.CameraCount || sceneRevision == 0 ||
@@ -3285,32 +3487,71 @@ Status RenderGraph::Update(BorrowedView<const RenderGraphMesh> meshes,
     {
         return Status::InvalidDescription;
     }
+    state.Step = RenderGraphFailureStage::CameraValues;
     for (usize cameraIndex = 0; cameraIndex < cameras.GetSize(); ++cameraIndex)
     {
         const ViewDescription& camera = cameras[cameraIndex];
         if (math::IsFinite(camera.RasterExposureStops) == false ||
-            math::Abs(camera.RasterExposureStops) > ViewDescription::MAXIMUM_RASTER_EXPOSURE_STOPS)
+            math::Abs(camera.RasterExposureStops) > ViewDescription::MAXIMUM_RASTER_EXPOSURE_STOPS ||
+            static_cast<uint32>(camera.LightingView) > DEFERRED_LIGHTING_VIEW_LAST ||
+            static_cast<uint32>(camera.Exposure) > EXPOSURE_MODE_LAST ||
+            (camera.Exposure == ExposureMode::Physical && ComputeExposureMultiplier(camera.ExposureValue100) == 0))
         {
             return Status::InvalidDescription;
-        }
-        if (camera.Atmosphere.IsEnabled == true && state.Programs.HasClusteredDeferred == false)
-        {
-            return Status::Unsupported;
         }
         // The conventional rewrite below needs a finite far plane, and graph overlays bound a finite frustum.
         if ((camera.Depth == DepthConvention::ReverseZ && camera.InfiniteFar == true) ||
             (camera.Depth != DepthConvention::Conventional && camera.Depth != DepthConvention::ReverseZ))
         {
+            state.LastRejection = RenderGraphSceneRejection::CameraDepth;
             return Status::Unsupported;
         }
     }
     // Admit each camera in the convention every pass of this graph can draw and rebuild positions from. The
     // conventional rewrite is exact for a finite projection: reverse-Z depth z/w becomes (w - z)/w.
     const bool canUseReverseDepth = state.CanUseReverseDepth();
+    // An Atmosphere is an optional World feature. Only the clustered deferred programs compose it in raster passes; a
+    // ray kernel draws it through the World-feature tables when it calls their scene functions. Every other graph
+    // draws the World without it and reports what is missing (render_graph_world_features.cpp).
+    WorldFeatureMask unrenderedWorldFeatures = 0;
+    const bool hasWorldTables = state.Programs.HasAtmosphereSky == true || state.Programs.HasAerialPerspective == true;
+    // The ray scene is shared by every ray pass, so its tables follow the first ray pass's camera.
+    usize rayCameraIndex = 0;
+    for (usize pass = 0; pass < state.Header.PassCount; ++pass)
+    {
+        if (state.Passes[pass].Program == format::Technique::RayTracing &&
+            state.Passes[pass].Camera < cameras.GetSize())
+        {
+            rayCameraIndex = state.Passes[pass].Camera;
+            break;
+        }
+    }
+    const AtmosphereDescription rayAtmosphere =
+        cameras.IsEmpty() == false ? cameras[rayCameraIndex].Atmosphere : AtmosphereDescription{};
+    const math::Vector3 rayEyeWorld =
+        cameras.IsEmpty() == false ? cameras[rayCameraIndex].CameraPosition : math::Vector3{};
     for (usize cameraIndex = 0; cameraIndex < cameras.GetSize(); ++cameraIndex)
     {
         ViewDescription& admittedCamera = state.AdmittedCameras[cameraIndex];
         admittedCamera = cameras[cameraIndex];
+        if (admittedCamera.Atmosphere.IsEnabled == true)
+        {
+            if (renderer::GetWorldFeatureSupport(state.Programs, WorldFeature::AtmosphereSky) ==
+                WorldFeatureSupport::NotRendered)
+            {
+                unrenderedWorldFeatures |= GetWorldFeatureBit(WorldFeature::AtmosphereSky);
+            }
+            if (admittedCamera.Atmosphere.ShouldLightScene == true &&
+                renderer::GetWorldFeatureSupport(state.Programs, WorldFeature::AerialPerspective) ==
+                    WorldFeatureSupport::NotRendered)
+            {
+                unrenderedWorldFeatures |= GetWorldFeatureBit(WorldFeature::AerialPerspective);
+            }
+        }
+        if (state.Programs.HasClusteredDeferred == false)
+        {
+            admittedCamera.Atmosphere = {};
+        }
         if (admittedCamera.Depth == DepthConvention::ReverseZ && canUseReverseDepth == false)
         {
             for (math::Vector4& column : admittedCamera.WorldToClip.Columns)
@@ -3321,22 +3562,26 @@ Status RenderGraph::Update(BorrowedView<const RenderGraphMesh> meshes,
         }
     }
     cameras = {state.AdmittedCameras.GetData(), cameras.GetSize()};
+    state.Step = RenderGraphFailureStage::ExtractionInputs;
     const bool hasRevisions = revisions.Geometry != 0 && revisions.Instances != 0 && revisions.Materials != 0 &&
                               revisions.Lights != 0 && revisions.Environment != 0;
     if (hasRevisions == false && revisions != RenderGraphSceneRevisions{})
     {
         return Status::InvalidDescription;
     }
+    // A changed Atmosphere changes the ray scene's sky, Sun and haze, so the scene is prepared again.
     const bool canReuse =
         state.Current.Get() != nullptr && state.Current->CoveragePolicy == policy &&
         (hasRevisions == true ? state.Current->Revisions == revisions
-                              : contentRevision != 0 && state.Current->ContentRevision == contentRevision);
+                              : contentRevision != 0 && state.Current->ContentRevision == contentRevision) &&
+        (hasWorldTables == false || internal::AreRayAtmospheresEqual(state.Current->RayAtmosphere, rayAtmosphere));
     if (canReuse == true && state.Resizing.Get() == nullptr && state.Pending.Get() == nullptr)
     {
         if (state.PendingCamera.Get() != nullptr)
         {
             return Status::NotReady;
         }
+        state.Step = RenderGraphFailureStage::ScenePreparation;
         const Status prepared = state.PrepareCameras(cameras, sceneRevision);
         if (prepared != Status::IdentityExhausted || meshes.IsEmpty() == true)
         {
@@ -3345,12 +3590,14 @@ Status RenderGraph::Update(BorrowedView<const RenderGraphMesh> meshes,
                 state.Report.SceneRevision = sceneRevision;
                 state.Report.IsAccepted = true;
                 state.Report.IsReady = false;
+                state.Report.UnrenderedWorldFeatures = unrenderedWorldFeatures;
             }
             outReport = state.Report;
             return prepared;
         }
     }
     LUDUS_PROFILE_SCOPE(RenderGraphBuildScene);
+    state.Step = RenderGraphFailureStage::ItemValues;
     for (usize itemIndex = 0; itemIndex < items.GetSize(); ++itemIndex)
     {
         const RenderGraphItem& item = items[itemIndex];
@@ -3376,6 +3623,7 @@ Status RenderGraph::Update(BorrowedView<const RenderGraphMesh> meshes,
     state.CoverageCount = 0;
     state.Report = {};
     state.Report.SceneRevision = sceneRevision;
+    state.Report.UnrenderedWorldFeatures = unrenderedWorldFeatures;
     for (usize camera = 0; camera < cameras.GetSize(); ++camera)
     {
         for (usize role = 0; role < ROLE_COUNT; ++role)
@@ -3460,6 +3708,7 @@ Status RenderGraph::Update(BorrowedView<const RenderGraphMesh> meshes,
     if (state.Report.Conflicting != 0 ||
         (state.Report.Unsupported != 0 && policy == RenderGraphCoveragePolicy::RejectIncomplete))
     {
+        state.LastRejection = RenderGraphSceneRejection::Coverage;
         return Status::Unsupported;
     }
     State::Scene* allocationOrNull = new (std::nothrow) State::Scene;
@@ -3473,6 +3722,7 @@ Status RenderGraph::Update(BorrowedView<const RenderGraphMesh> meshes,
     candidate->Revision = sceneRevision;
     candidate->ContentRevision = contentRevision;
     candidate->Revisions = revisions;
+    candidate->RayAtmosphere = rayAtmosphere;
     candidate->CoveragePolicy = policy;
     for (usize camera = 0; camera < cameras.GetSize(); ++camera)
     {
@@ -3501,6 +3751,7 @@ Status RenderGraph::Update(BorrowedView<const RenderGraphMesh> meshes,
     };
     const bool hasDiagnostic =
         policy == RenderGraphCoveragePolicy::DiagnosticColor && state.HasDiagnosticContext() == true;
+    state.Step = RenderGraphFailureStage::SceneResources;
     if (state.HasForwardProfile() == true)
     {
         bool hasMaskedMaterials = false;
@@ -3530,6 +3781,7 @@ Status RenderGraph::Update(BorrowedView<const RenderGraphMesh> meshes,
             // mask combination before publication instead of sealing cut-out holes.
             if (state.Passes[pass].Program == format::Technique::DepthOnly && hasMaskedMaterials == true)
             {
+                state.LastRejection = RenderGraphSceneRejection::MaskedDepthPrepass;
                 return Status::Unsupported;
             }
         }
@@ -3545,6 +3797,7 @@ Status RenderGraph::Update(BorrowedView<const RenderGraphMesh> meshes,
             return prepared;
         }
     }
+    state.Step = RenderGraphFailureStage::Meshes;
     for (usize meshIndex = 0; state.HasForwardProfile() == false && meshIndex < meshes.GetSize(); ++meshIndex)
     {
         const RenderGraphMesh& mesh = meshes[meshIndex];
@@ -3604,6 +3857,7 @@ Status RenderGraph::Update(BorrowedView<const RenderGraphMesh> meshes,
             }
         }
     }
+    state.Step = RenderGraphFailureStage::SceneResources;
     // Pack and deduplicate per-draw values for every bound technique. Each distinct value
     // set becomes one immutable uniform set; equal values share it and stay instanced.
     for (usize context = 0; context < format::TECHNIQUE_COUNT; ++context)
@@ -3713,6 +3967,24 @@ Status RenderGraph::Update(BorrowedView<const RenderGraphMesh> meshes,
                                          policy == RenderGraphCoveragePolicy::DiagnosticColor,
                                          &state.Report.SceneDiagnostics,
                                          sceneRevision};
+    state.Step = RenderGraphFailureStage::WorldTables;
+    if (hasWorldTables == true)
+    {
+        const Status resolved = state.WorldTables.Resolve(rayAtmosphere,
+                                                          rayEyeWorld,
+                                                          state.Programs.HasAtmosphereSky,
+                                                          state.Programs.HasAerialPerspective,
+                                                          rayScene.Inputs);
+        if (resolved != Status::Ready)
+        {
+            outReport = state.Report;
+            return resolved;
+        }
+        rayScene.Inputs = state.WorldTables.GetInputs();
+        rayScene.AtmosphereSkyTable = state.WorldTables.GetSkyTable();
+        rayScene.AerialPerspectiveTable = state.WorldTables.GetAerialPerspectiveTable();
+    }
+    state.Step = RenderGraphFailureStage::LightTransformer;
     if (state.Model.Get() != nullptr)
     {
         for (usize pass = 0; pass < state.Header.PassCount; ++pass)
@@ -3734,6 +4006,7 @@ Status RenderGraph::Update(BorrowedView<const RenderGraphMesh> meshes,
             return encoded;
         }
     }
+    state.Step = RenderGraphFailureStage::RayScene;
     for (usize pass = 0; pass < state.Header.PassCount; ++pass)
     {
         if (state.Passes[pass].Program != format::Technique::RayTracing)
@@ -3792,13 +4065,16 @@ Status RenderGraph::Update(BorrowedView<const RenderGraphMesh> meshes,
             operation.Traversal == format::RayTraversal::HardwarePipeline,
             hasSceneSource == true ? &sceneSource : nullptr};
         invocation.ToneMappingCurve = GetToneCurve(operation);
-        const Status created = candidate->RayPasses[pass].Initialize(state.GetContext(operation.Program),
-                                                                     {},
-                                                                     cameras[operation.Camera],
-                                                                     preparingResources[operation.Color].Width,
-                                                                     preparingResources[operation.Color].Height,
-                                                                     &rayScene,
-                                                                     &invocation);
+        invocation.WorkItemCount = operation.WorkItemCount;
+        const bool isBufferDispatch = operation.WorkItemCount != 0;
+        const Status created = candidate->RayPasses[pass].Initialize(
+            state.GetContext(operation.Program),
+            {},
+            isBufferDispatch == true ? ViewDescription{} : cameras[operation.Camera],
+            isBufferDispatch == true ? 1 : preparingResources[operation.Color].Width,
+            isBufferDispatch == true ? 1 : preparingResources[operation.Color].Height,
+            &rayScene,
+            &invocation);
         if (IsAccepted(created) == false)
         {
             outReport = state.Report;
@@ -3806,6 +4082,7 @@ Status RenderGraph::Update(BorrowedView<const RenderGraphMesh> meshes,
         }
         candidate->HasViews[pass] = true;
     }
+    state.Step = RenderGraphFailureStage::ScenePreparation;
     const Status prepared = state.PollScene(*candidate);
     if (IsAccepted(prepared) == false)
     {
@@ -3841,15 +4118,30 @@ RenderGraphAllocationReport RenderGraph::GetAllocationReport() const noexcept
             report.DeferredAllocations += DEFERRED_TARGET_COUNT;
             report.DeferredAttachmentBytes += sceneOrNull->DeferredAttachmentBytes;
         }
+        if (sceneOrNull == nullptr)
+        {
+            continue;
+        }
+        for (const core::UniquePtr<internal::RenderGraphDeferredTargets>& targets : sceneOrNull->DeferredTargets)
+        {
+            const uint64 skinBytes = targets.Get() != nullptr ? targets->GetSkinAttachmentBytes() : 0;
+            if (skinBytes != 0)
+            {
+                report.DeferredSkinAllocations += internal::DEFERRED_SKIN_TARGET_COUNT;
+                report.DeferredSkinAttachmentBytes += skinBytes;
+            }
+        }
     }
     return report;
 }
 namespace
 {
-/// Pipelines one technique row can enumerate: the context's stage variants plus two material programs.
-constexpr usize RECIPE_PIPELINE_CAPACITY = 48;
 /// Handles enumerated per Renderer call; covers its stage variants or one material program.
 constexpr usize RENDERER_PIPELINE_CAPACITY = 16;
+/// Renderer calls one technique row makes: the context's stage variants plus each material program.
+constexpr usize RECIPE_RENDERER_CALLS = 1 + FORWARD_MATERIAL_PROGRAM_COUNT;
+/// Pipelines one technique row can enumerate.
+constexpr usize RECIPE_PIPELINE_CAPACITY = RENDERER_PIPELINE_CAPACITY * RECIPE_RENDERER_CALLS;
 } // namespace
 Status RenderGraph::GetPipelineReport(RenderGraphPipelineReport& outReport) const noexcept
 {
@@ -3878,7 +4170,10 @@ Status RenderGraph::GetPipelineReport(RenderGraphPipelineReport& outReport) cons
             const Renderer& context = state.Contexts[i];
             count += context.getProgramPipelines(state.ForwardProgram,
                                                  {pipelines.GetData() + count, RENDERER_PIPELINE_CAPACITY});
+            // The forward profile has at most a chart program; the deferred profile may have chart and probe programs.
             count += context.getProgramPipelines(state.ForwardSurfaceChartProgram,
+                                                 {pipelines.GetData() + count, RENDERER_PIPELINE_CAPACITY});
+            count += context.getProgramPipelines(state.ForwardProbeProgram,
                                                  {pipelines.GetData() + count, RENDERER_PIPELINE_CAPACITY});
         }
         RenderGraphPipelineRecipe& row = report.Recipes[report.RecipeCount++];
@@ -3921,6 +4216,20 @@ BorrowedView<const RenderGraphCoverageRecord> RenderGraph::GetCoverage() const n
     }
     return {mState->Coverage.GetData(), mState->CoverageCount};
 }
+RenderGraphSceneRejection RenderGraph::GetLastRejection() const noexcept
+{
+    return mState.Get() != nullptr ? mState->LastRejection : RenderGraphSceneRejection::None;
+}
+RenderGraphFailureStage RenderGraph::GetLastFailureStage() const noexcept
+{
+    return mState.Get() != nullptr ? mState->LastFailureStage : RenderGraphFailureStage::None;
+}
+WorldFeatureSupport RenderGraph::GetWorldFeatureSupport(WorldFeature feature) const noexcept
+{
+    return mState.Get() != nullptr && mState->IsReady == true
+               ? renderer::GetWorldFeatureSupport(mState->Programs, feature)
+               : WorldFeatureSupport::NotRendered;
+}
 RenderGraphReport RenderGraph::GetReport() const noexcept
 {
     RenderGraphReport report = mState.Get() == nullptr ? RenderGraphReport{} : mState->Report;
@@ -3931,6 +4240,7 @@ RenderGraphReport RenderGraph::GetReport() const noexcept
         {
             report.PendingMeshLightShadowFaces = mState->Current->ForwardGeneration->GetPendingMeshLightShadowFaces();
             report.Resources.SurfaceChartDraws = mState->Current->ForwardGeneration->GetSurfaceChartDrawCount();
+            report.Resources.ProbeReceiverDraws = mState->Current->ForwardGeneration->GetProbeReceiverDrawCount();
         }
     }
     return report;
@@ -3949,6 +4259,10 @@ bool RenderGraph::HasPendingSamples() const noexcept
     for (usize pass = 0; pass < state.Header.PassCount; ++pass)
     {
         const format::Pass& operation = state.Passes[pass];
+        if (operation.WorkItemCount != 0)
+        {
+            continue;
+        }
         bool hasLaterWriter = false;
         for (usize next = pass + 1; next < state.Header.PassCount; ++next)
         {
@@ -4038,7 +4352,7 @@ Status RenderGraph::PrepareEncoding() noexcept
             return tiles == Status::Pending ? Status::NotReady : tiles;
         }
         jobs[count] = state.Current->RayPasses[pass].GetJob();
-        targets[count++] = state.Textures[state.Passes[pass].Color];
+        targets[count++] = operation.WorkItemCount != 0 ? rhi::TextureHandle{} : state.Textures[operation.Color];
     }
     if (count != 0)
     {

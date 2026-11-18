@@ -55,6 +55,9 @@ QJsonObject GetDefaultRecipe(const WorldDocument& world)
     return recipe;
 }
 constexpr foundation::int32 TERRAIN_WAIT_MILLISECONDS = 15000;
+/// Deadline for a World's first native graph frame, which prepares the project graph's pipelines cold. MSVC ASan on
+/// WARP exceeded TERRAIN_WAIT_MILLISECONDS on a hosted runner about 1.25x slower than usual (batch 44149696037).
+constexpr foundation::int32 TERRAIN_COLD_GRAPH_WAIT_MILLISECONDS = 60000;
 
 QJsonObject GetTerrainRecipe(const WorldDocument& world, const QString& key)
 {
@@ -866,7 +869,7 @@ TEST_CASE("Terrain draft publication keeps the delegated World view during a ren
             renderer.ServicePreview();
             return commitOrNull->isEnabled() == true && viewport.PresentedFrames() > 0;
         },
-        TERRAIN_WAIT_MILLISECONDS));
+        TERRAIN_COLD_GRAPH_WAIT_MILLISECONDS));
 
     const QByteArray readyScene = world.GetRenderPreview().Scene().Identity;
     const foundation::uint64 readyFrames = viewport.PresentedFrames();

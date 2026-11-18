@@ -1,10 +1,12 @@
 #include "internal/render_preview.h"
+
 #include "internal/preview_gpu_generation.h"
 #include "internal/preview_lighting.h"
 #include "internal/preview_shading.h"
 #include "internal/render_scene_limits.h"
 #include "internal/viewport_device_description.h"
 #include "internal/viewport_tone_curve.h"
+#include "internal/viewport_walk_collision.h"
 #if defined(LUDUS_EDITOR_NATIVE_PREVIEW)
 #    include "renderer_overlay.h"
 #endif
@@ -106,6 +108,8 @@ QString DescribeBrowserAdmissionFailure(rhi::DeviceStatus status)
         case rhi::DeviceStatus::InvalidHandle:
         case rhi::DeviceStatus::InvalidDescription:
         case rhi::DeviceStatus::Failed:
+        case rhi::DeviceStatus::SurfaceLost:
+        case rhi::DeviceStatus::CapacityExceeded:
             break;
     }
     return QStringLiteral("startup failed");
@@ -1484,6 +1488,77 @@ void RenderPreview::SetRasterExposureStops(float32 stops)
     mRasterExposureStops = stops;
     Q_EMIT RasterExposureChanged();
 }
+void RenderPreview::SetExposureMode(ViewportExposureMode mode)
+{
+    if (static_cast<uint32>(mode) > static_cast<uint32>(ViewportExposureMode::Graph) || mode == mExposureMode)
+    {
+        return;
+    }
+    mExposureMode = mode;
+    Q_EMIT RasterExposureChanged();
+}
+void RenderPreview::SetManualExposureValue100(float32 exposureValue100)
+{
+    if (rr::ComputeExposureMultiplier(exposureValue100) == 0 || exposureValue100 == mManualExposureValue100)
+    {
+        return;
+    }
+    mManualExposureValue100 = exposureValue100;
+    Q_EMIT RasterExposureChanged();
+}
+ViewportExposure RenderPreview::ResolveExposure()
+{
+    if (mExposureMode == ViewportExposureMode::Graph)
+    {
+        return {};
+    }
+    if (mExposureMode == ViewportExposureMode::Manual)
+    {
+        return { .Mode = rr::ExposureMode::Physical, .ExposureValue100 = mManualExposureValue100 };
+    }
+    const rr::AtmosphereDescription atmosphere = Scene_.GetAtmosphereForView();
+    if (atmosphere.IsEnabled == false)
+    {
+        return {};
+    }
+    // Only these fields change the reading; the night-sky boundary does not light the ground.
+    const bool isCached = mHasMeteredAtmosphere == true &&
+                          mMeteredAtmosphere.ShouldLightScene == atmosphere.ShouldLightScene &&
+                          mMeteredAtmosphere.SurfaceAnchorWorld == atmosphere.SurfaceAnchorWorld &&
+                          mMeteredAtmosphere.SurfaceUpWorld == atmosphere.SurfaceUpWorld &&
+                          mMeteredAtmosphere.DirectionToSunWorld == atmosphere.DirectionToSunWorld &&
+                          mMeteredAtmosphere.SolarIlluminance == atmosphere.SolarIlluminance;
+    if (isCached == false)
+    {
+        float64 illuminance = 0;
+        if (rr::MeterAtmosphereIlluminance(atmosphere, illuminance) != rr::AtmosphereEnvironmentStatus::Ready)
+        {
+            mHasMeteredAtmosphere = false;
+            return {};
+        }
+        mMeteredAtmosphere = atmosphere;
+        mMeteredAtmosphereLux = illuminance;
+        mHasMeteredAtmosphere = true;
+    }
+    math::Vector3 upWorld;
+    if (math::TryNormalize(atmosphere.SurfaceUpWorld, upWorld) != math::MathStatus::Success)
+    {
+        return {};
+    }
+    const float64 illuminance = mMeteredAtmosphereLux + Scene_.MeterDirectionalIlluminance(upWorld);
+    return { .Mode = rr::ExposureMode::Physical, .ExposureValue100 = rr::ComputeIncidentExposureValue100(illuminance) };
+}
+void RenderPreview::SetLightingView(graphics::renderer::DeferredLightingView view, uint64 sourceId)
+{
+    if (static_cast<uint32>(view) > graphics::renderer::DEFERRED_LIGHTING_VIEW_LAST ||
+        (view == mLightingView && sourceId == mLightingViewSourceId))
+    {
+        return;
+    }
+    mLightingView = view;
+    mLightingViewSourceId = sourceId;
+    Q_EMIT LightingViewChanged();
+}
 void RenderPreview::SetViewportSize(usize presetIndex)
 {
     if (presetIndex >= VIEWPORT_SIZE_PRESET_COUNT || presetIndex == mViewportSizeIndex)
@@ -1512,8 +1587,8 @@ bool RenderPreview::BeginFirstPerson(const gameplay::camera::CameraSample& spawn
         outError = QStringLiteral("Set a valid Transform on the First Person Player and try again.");
         return false;
     }
-    using StartStatus = ViewportWalkCollision::StartStatus;
-    switch (mFirstPersonCollision.Start(Scene_, spawn.Pose.Position))
+    using StartStatus = first_person::WalkingController::StartStatus;
+    switch (StartWorldWalk(Scene_, spawn.Pose.Position, mFirstPersonCollision))
     {
         case StartStatus::NoGeometry:
             outError = QStringLiteral("Add Static Collider to a visible terrain or mesh floor before exploring.");

@@ -1,0 +1,238 @@
+{
+  "asset": {
+    "version": "2.0",
+    "generator": "Ludus: the Infinite head of infinite-head.gltf with a key and a fill light",
+    "copyright": "Infinite, 3D Head Scan by Lee Perry-Smith, CC BY 3.0; see LICENSE.txt"
+  },
+  "scene": 0,
+  "scenes": [
+    {
+      "name": "Lit head",
+      "nodes": [
+        0,
+        1,
+        2
+      ]
+    }
+  ],
+  "nodes": [
+    {
+      "name": "Infinite head",
+      "mesh": 0,
+      "scale": [
+        0.02,
+        0.02,
+        0.02
+      ],
+      "translation": [
+        0,
+        0.07945,
+        0
+      ]
+    },
+    {
+      "name": "Key light",
+      "rotation": [
+        -0.193488,
+        -0.322481,
+        -0.0,
+        0.92659
+      ],
+      "extensions": {
+        "KHR_lights_punctual": {
+          "light": 0
+        }
+      }
+    },
+    {
+      "name": "Fill light",
+      "rotation": [
+        -0.09736,
+        0.486801,
+        0.0,
+        0.86807
+      ],
+      "extensions": {
+        "KHR_lights_punctual": {
+          "light": 1
+        }
+      }
+    }
+  ],
+  "meshes": [
+    {
+      "name": "Infinite head",
+      "primitives": [
+        {
+          "attributes": {
+            "NORMAL": 2,
+            "POSITION": 1,
+            "TEXCOORD_0": 3
+          },
+          "indices": 0,
+          "material": 0
+        }
+      ]
+    }
+  ],
+  "materials": [
+    {
+      "name": "Skin",
+      "pbrMetallicRoughness": {
+        "baseColorTexture": {
+          "index": 0
+        },
+        "metallicFactor": 0,
+        "roughnessFactor": 0.5
+      },
+      "normalTexture": {
+        "index": 1
+      }
+    }
+  ],
+  "textures": [
+    {
+      "source": 0,
+      "sampler": 0
+    },
+    {
+      "source": 1,
+      "sampler": 0
+    }
+  ],
+  "samplers": [
+    {
+      "magFilter": 9729,
+      "minFilter": 9729
+    }
+  ],
+  "images": [
+    {
+      "uri": "Map-COL.jpg"
+    },
+    {
+      "uri": "Infinite-Level_02_Tangent_SmoothUV.jpg"
+    }
+  ],
+  "accessors": [
+    {
+      "bufferView": 0,
+      "componentType": 5123,
+      "count": 53052,
+      "max": [
+        9278
+      ],
+      "min": [
+        0
+      ],
+      "type": "SCALAR"
+    },
+    {
+      "bufferView": 1,
+      "componentType": 5126,
+      "count": 9279,
+      "max": [
+        4.276320934295654,
+        3.9725468158721924,
+        2.5903584957122803
+      ],
+      "min": [
+        -4.276320934295654,
+        -3.9725465774536133,
+        -2.5903775691986084
+      ],
+      "type": "VEC3"
+    },
+    {
+      "bufferView": 2,
+      "componentType": 5126,
+      "count": 9279,
+      "max": [
+        0.999908447265625,
+        0.9993896484375,
+        0.999786376953125
+      ],
+      "min": [
+        -0.999603271484375,
+        -0.999847412109375,
+        -0.99993896484375
+      ],
+      "type": "VEC3"
+    },
+    {
+      "bufferView": 3,
+      "componentType": 5126,
+      "count": 9279,
+      "max": [
+        0.9949300289154053,
+        0.9909300208091736
+      ],
+      "min": [
+        0.005049999803304672,
+        0.0024200081825256348
+      ],
+      "type": "VEC2"
+    }
+  ],
+  "bufferViews": [
+    {
+      "buffer": 0,
+      "byteLength": 106104,
+      "byteOffset": 0,
+      "target": 34963
+    },
+    {
+      "buffer": 0,
+      "byteLength": 111348,
+      "byteOffset": 106104,
+      "target": 34962
+    },
+    {
+      "buffer": 0,
+      "byteLength": 111348,
+      "byteOffset": 217452,
+      "target": 34962
+    },
+    {
+      "buffer": 0,
+      "byteLength": 74232,
+      "byteOffset": 328800,
+      "target": 34962
+    }
+  ],
+  "buffers": [
+    {
+      "uri": "infinite-head.bin",
+      "byteLength": 403032
+    }
+  ],
+  "extensionsUsed": [
+    "KHR_lights_punctual"
+  ],
+  "extensions": {
+    "KHR_lights_punctual": {
+      "lights": [
+        {
+          "name": "Key",
+          "type": "directional",
+          "color": [
+            1.0,
+            0.96,
+            0.9
+          ],
+          "intensity": 6.0
+        },
+        {
+          "name": "Fill",
+          "type": "directional",
+          "color": [
+            0.85,
+            0.9,
+            1.0
+          ],
+          "intensity": 1.2
+        }
+      ]
+    }
+  }
+}

@@ -19,10 +19,11 @@
 #define LUDUS_GPU_PREVIEW_LUMINAIRE_WORDS 4
 // Word of a luminaire record holding beam steering, spread and twist.
 #define LUDUS_GPU_PREVIEW_LUMINAIRE_BEAM_WORD 3
-// 16: an RT1 reference medium after the packed scene (renderer_reference_layout.h); 15: closure programs after the
-// environment; 12: panel luminaires after the lights; 9: emitter bounds after the emitter records; 8: BVH leaf order
-// in order word Z, beside native opacity ranges in X.
-#define LUDUS_GPU_PREVIEW_KERNEL_VERSION 16
+// 18: the camera matrix maps clip to eye-relative world (ClipToEye); 17: optional RT1 camera sky; 16: an RT1
+// reference medium (renderer_reference_layout.h); 15: closure programs after the environment; 12: panel luminaires
+// after the lights; 9: emitter bounds after the emitter records; 8: BVH leaf order in order word Z, beside native
+// opacity ranges in X.
+#define LUDUS_GPU_PREVIEW_KERNEL_VERSION 18
 // Closure programs (material_program.h) follow the environment. Each has a header word (instruction, lobe and
 // constant counts in X, Y and Z bits), its constants, one word per instruction (opcode, destination and operand A
 // bits, then operands B | C << PROGRAM_OPERAND_SHIFT), then PROGRAM_LOBE_WORDS per lobe: (operation, weight and
@@ -99,6 +100,10 @@
 #define LUDUS_GPU_PREVIEW_MIXED_OPACITY_FLAG 32
 // The graph ToneMap applies Khronos PBR Neutral instead of Reinhard (display_tone_mapping.slang).
 #define LUDUS_GPU_PREVIEW_PBR_NEUTRAL_FLAG 64
+// Scene work uses the compute graph wrapper without a camera or an image. Dimensions.w carries its item count.
+#define LUDUS_GPU_PREVIEW_SCENE_WORK_FLAG 128u
+#define LUDUS_GPU_PREVIEW_SCENE_WORK_ROW_WIDTH 1024u
+#define LUDUS_GPU_PREVIEW_ROULETTE_OR_WORK_COUNT_COMPONENT 3
 #define LUDUS_GPU_PREVIEW_HISTORY_SHIFT 12
 #define LUDUS_GPU_PREVIEW_FLAGS_MASK ((1u << LUDUS_GPU_PREVIEW_HISTORY_SHIFT) - 1u)
 #define LUDUS_GPU_PREVIEW_MAX_HISTORY_EPOCH (0xffffffffu >> LUDUS_GPU_PREVIEW_HISTORY_SHIFT)
@@ -217,7 +222,35 @@
 #define LUDUS_GRAPH_LTC_TABLE_BINDING_COUNT 1
 // Per-job failure summary of a graph ray kernel: one uint per LUDUS_SCENE_FAILURE_* reason (scene_shader_layout.h),
 // counting the pixels that latched that reason since the job's camera or scene last changed. Every graph ray kernel
-// binds it as its last binding, after the LTC table; the native preview and reference kernels do not.
+// binds it after the LTC table and before the Atmosphere sky; the native preview and reference kernels do not.
 #define LUDUS_GRAPH_FAILURE_BINDING 14
 #define LUDUS_GRAPH_FAILURE_BINDING_COUNT 1
 #define LUDUS_GRAPH_FAILURE_BYTES 256
+
+// World-feature tables (graphics::renderer::WorldFeature; docs/development/render-graph-authoring.md#world-features).
+// The renderer binds each read-only float4 table only to a scene compute kernel whose reflection keeps its slot, which
+// happens exactly when the kernel calls the scene function that reads it. Native ray stages reserve slot 11 for their
+// function table and bind neither. Both tables live in the job's scene buffer at a
+// LUDUS_GRAPH_WORLD_TABLE_ALIGNMENT_BYTES-aligned offset, after the scene words.
+//
+// Aerial perspective, read by ApplyAerialPerspective: a header of LUDUS_AERIAL_PERSPECTIVE_HEADER_WORDS words (word 0
+// x = 1 when present, 0 omits the haze; word 1 xyz = outward up; word 2 xyz = unit direction toward the Sun), then two
+// words per entry (in-scattered RGB radiance, RGB transmittance) ordered by distance slice, zenith row, then Sun
+// azimuth column. Slice k ends LUDUS_AERIAL_PERSPECTIVE_MAX_METRES * (k / (slices - 1))^2 metres from the observer.
+#define LUDUS_GRAPH_AERIAL_PERSPECTIVE_BINDING 11
+#define LUDUS_AERIAL_PERSPECTIVE_HEADER_WORDS 3
+#define LUDUS_AERIAL_PERSPECTIVE_ENTRY_WORDS 2
+#define LUDUS_AERIAL_PERSPECTIVE_AZIMUTH_COUNT 32
+#define LUDUS_AERIAL_PERSPECTIVE_ZENITH_COUNT 32
+#define LUDUS_AERIAL_PERSPECTIVE_SLICE_COUNT 32
+#define LUDUS_AERIAL_PERSPECTIVE_MAX_METRES 32000.0
+// Atmosphere sky, read by EvaluateEnvironment: one header word (x = width, y = height, as exact floats; zero width
+// keeps the World environment), then width * height RGB radiance texels in EnvironmentDescription's latitude/longitude
+// layout. The binding follows the failure summary and is a kernel's last binding.
+#define LUDUS_GRAPH_ATMOSPHERE_SKY_BINDING 15
+#define LUDUS_ATMOSPHERE_SKY_HEADER_WORDS 1
+#define LUDUS_ATMOSPHERE_SKY_TABLE_WIDTH 512
+#define LUDUS_ATMOSPHERE_SKY_TABLE_HEIGHT 256
+#define LUDUS_GRAPH_WORLD_TABLE_ALIGNMENT_BYTES 256
+// Renderer-owned World-feature tables one kernel may bind: the aerial perspective and Atmosphere sky tables.
+#define LUDUS_GRAPH_WORLD_TABLE_BINDING_COUNT 2

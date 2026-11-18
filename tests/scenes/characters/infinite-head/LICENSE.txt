@@ -1,0 +1,43 @@
+Infinite, 3D Head Scan by Lee Perry-Smith
+
+These files are not covered by the Ludus engine's MIT license. They are a
+third-party work under the Creative Commons Attribution 3.0 Unported License:
+https://creativecommons.org/licenses/by/3.0/
+
+The original license notice, distributed with the files:
+
+    Creative Commons Licence
+    Infinite, 3D Head Scan by Lee Perry-Smith is licensed under a Creative Commons Attribution 3.0 Unported License.
+    Based on a work at www.triplegangers.com.
+    Permissions beyond the scope of this license may be available at http://www.ir-ltd.net/
+    Please remember: Do what you want with the files, but always mention where you got them from...
+
+Source: the three.js repository, examples/models/gltf/LeePerrySmith, at commit
+ab6386854db0dcebd9800b95a9a5effde6071b19:
+https://github.com/mrdoob/three.js/tree/ab6386854db0dcebd9800b95a9a5effde6071b19/examples/models/gltf/LeePerrySmith
+
+SHA-256 of the source files used:
+
+    402b8a8ac9f03232e6d64b5962929703a069daf99d3c49ac8eb0e48bedc9c576  LeePerrySmith.glb
+    e976d73b31407f8d0967412bf468019ed26a5d5a32cf5811aabff7e816458a65  Map-COL.jpg
+    36925e51ad9b324b94e8faf4692da1b4132809f2762bb8d5bd549ffd215d4ca6  Infinite-Level_02_Tangent_SmoothUV.jpg
+
+Changes made for Ludus:
+
+- infinite-head.bin is the binary chunk of LeePerrySmith.glb with each
+  TEXCOORD_0 v replaced by 1 - v. The scan's UVs put v = 0 at the bottom of
+  the image, as three.js samples them; glTF puts v = 0 at the top.
+- infinite-head.gltf is a new glTF 2.0 document over that buffer. It keeps the
+  mesh's accessors, references the colour map and the tangent-space normal map,
+  names the one material slot "Skin", drops the exported camera and lamp nodes,
+  and scales the mesh by 0.02 so that it is about 17 cm wide in metres.
+- infinite-head-lit.gltf is infinite-head.gltf over the same buffer and maps,
+  with the head raised to stand on the ground plane and a warm key and a cool
+  fill directional light (KHR_lights_punctual) for the skin benchmark.
+- infinite-head-hair.gltf uses the same lit bust, with the original Ludus hair
+  ribbon mesh (hair-cards.bin) and RGBA strand texture (hair-cards.png) added
+  under the engine's MIT license. The original scan and maps retain CC BY 3.0.
+- Map-COL.jpg and Infinite-Level_02_Tangent_SmoothUV.jpg are unchanged.
+
+Thank you to Lee Perry-Smith and Infinite-Realities for making the scan
+available.

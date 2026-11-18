@@ -187,7 +187,10 @@ rhi::RasterStatus RenderGraphRayPass::Initialize(Renderer& inoutContext,
     ReferenceCaptureDescription description;
     description.WorldToClip = camera.WorldToClip;
     description.CameraPosition = camera.CameraPosition;
-    description.OrthographicCamera = camera.OrthographicCamera;
+    // Scene packing still validates the shared camera record. Buffer-only launches use its neutral
+    // orthographic projection and the shader leaves all camera fields zero.
+    description.OrthographicCamera =
+        camera.OrthographicCamera == true || (invocationOrNull != nullptr && invocationOrNull->WorkItemCount != 0);
     description.Width = width;
     description.Height = height;
     description.TargetSamples = invocationOrNull != nullptr && invocationOrNull->AccumulationSamples != 0

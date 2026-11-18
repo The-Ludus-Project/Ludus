@@ -1212,6 +1212,37 @@ TEST_CASE("Wireframe lit programs draw triangle edges while shadows stay filled"
                                              rhi::RasterFillMode::Lines) == rhi::RasterStatus::Unsupported);
 }
 
+TEST_CASE("Direct light admission bounds directional angular radii", "[renderer][l4]")
+{
+    rr::DirectLight light;
+    light.SourceId = 1;
+    rr::LightSelection selected;
+    // Zero keeps the delta light every existing directional light uses.
+    CHECK(light.AngularRadiusRadians == 0);
+    REQUIRE(rr::SelectDirectLights(&light, 1, selected) == rhi::RasterStatus::Ready);
+    CHECK(selected.Lights[0].AngularRadiusRadians == 0);
+    light.AngularRadiusRadians = rr::MAX_DIRECTIONAL_ANGULAR_RADIUS_RADIANS;
+    REQUIRE(rr::SelectDirectLights(&light, 1, selected) == rhi::RasterStatus::Ready);
+    CHECK(selected.Lights[0].AngularRadiusRadians == rr::MAX_DIRECTIONAL_ANGULAR_RADIUS_RADIANS);
+    const float32 rejected[] = {-1e-6F,
+                                std::nextafter(rr::MAX_DIRECTIONAL_ANGULAR_RADIUS_RADIANS, 1.0F),
+                                std::numeric_limits<float32>::quiet_NaN(),
+                                std::numeric_limits<float32>::infinity()};
+    for (const float32 radius : rejected)
+    {
+        CAPTURE(radius);
+        light.AngularRadiusRadians = radius;
+        CHECK(rr::SelectDirectLights(&light, 1, selected) == rhi::RasterStatus::InvalidDescription);
+        CHECK(selected.Lights[0].AngularRadiusRadians == rr::MAX_DIRECTIONAL_ANGULAR_RADIUS_RADIANS);
+    }
+    // Only a directional light has an apparent disk.
+    light.Kind = rr::LightKind::Point;
+    light.AngularRadiusRadians = 0;
+    REQUIRE(rr::SelectDirectLights(&light, 1, selected) == rhi::RasterStatus::Ready);
+    light.AngularRadiusRadians = rr::MAX_DIRECTIONAL_ANGULAR_RADIUS_RADIANS;
+    CHECK(rr::SelectDirectLights(&light, 1, selected) == rhi::RasterStatus::InvalidDescription);
+}
+
 TEST_CASE("L4 direct lists saturate stably and BRDF guards preserve reference outputs", "[renderer][l4]")
 {
     rr::DirectLight lights[10];
@@ -1258,6 +1289,9 @@ TEST_CASE("L4 direct lists saturate stably and BRDF guards preserve reference ou
     CHECK(rr::BuildDirectionalShadowMatrix({{-1, -1, -3e38F}, {1, 1, 3e38F}}, {0, 0, 1}, 32, matrix) ==
           rhi::RasterStatus::InvalidDescription);
     CHECK(matrix == old);
+    const math::Aabb3 edgeOnBoundsWorld{{0, -1, -1}, {0, 1, 1}};
+    REQUIRE(rr::BuildDirectionalShadowMatrix(edgeOnBoundsWorld, {0, 0, 1}, 32, matrix) == rhi::RasterStatus::Ready);
+    CHECK(math::IsFinite(matrix));
 }
 TEST_CASE("L4 lit versions retain atlases and invalidate changed casters conservatively", "[renderer][l4]")
 {

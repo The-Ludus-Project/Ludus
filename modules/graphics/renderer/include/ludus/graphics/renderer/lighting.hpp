@@ -337,7 +337,10 @@ struct LitMaterialDescription final
     MaterialDebugView DebugView = MaterialDebugView::None;
     /// Typed optical parameters; default preserves the legacy metallic/roughness model. A HairCard requires zero
     /// Metallic: authored lit programs shade its strand highlight two-sided (hair_card.hpp), other programs and
-    /// reference captures its metallic/roughness lobes.
+    /// reference captures its metallic/roughness lobes. A Skin material requires zero Metallic; the clustered deferred
+    /// profile spreads its diffuse lighting over Scattering.K metres and every other program shades its
+    /// metallic/roughness lobes. Each distinct nonzero distance takes one of DEFERRED_MAX_SKIN_PROFILES profile slots
+    /// while a material uses it; creation returns CapacityExceeded when every slot holds another distance.
     content::scene_format::MaterialScattering Scattering{};
     /// Closure program read when Scattering.Model is Program; it must satisfy IsMaterialProgramValid.
     content::scene_format::MaterialProgram Program{};
@@ -397,9 +400,9 @@ struct ShadowAtlasDescription final
     ludus::foundation::usize Count = 0;
 };
 /// Fit a stabilized directional light projection to finite receiver/caster bounds.
-/// Snaps XY center to the inner-resolution texel grid, pads one texel and uses conventional
-/// depth. Call with unjittered cascade bounds; no camera split policy is hidden here.
-/// Invalid/degenerate/nonrepresentable input preserves output. Allocation-free.
+/// Snaps the light-space XY center to the texel grid, widens collapsed axes in light space
+/// and leaves a texel of margin. Depth is conventional. Use unjittered bounds for a cascade.
+/// Invalid or nonrepresentable input preserves output. Allocation-free.
 [[nodiscard]] rhi::RasterStatus BuildDirectionalShadowMatrix(const ludus::foundation::math::Aabb3& bounds,
                                                              ludus::foundation::math::Vector3 direction,
                                                              ludus::foundation::uint32 resolution,

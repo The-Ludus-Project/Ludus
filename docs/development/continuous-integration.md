@@ -467,6 +467,11 @@ by the committed and fingerprint-checked `config/apt/apt.llvm.org.asc`
 its newest 23.1.x build. The macOS setup action installs `llvm@23` and `lld@23`
 from Homebrew; init rejects either if `brew upgrade` moved it to another major.
 
+The Linux native setup retries package index updates and package downloads with
+a deadline per attempt. After the packages are cached, APT installs them locally
+under the job's overall timeout. This keeps the network deadline from interrupting
+dpkg while it unpacks or configures packages.
+
 ### macOS runner images
 
 Native jobs use `macos-15` arm64. Host and documentation tooling separately check
@@ -614,6 +619,15 @@ before building, then exercises Foundation, Win32, RHI and the source runtime
 suite, including renderer, content, text, worker, GameHost and Behavior. Its positive
 control requires both a clean startup and a specific fatal heap-buffer-overflow
 finding. The job archives the probe, control logs and exact CTest results.
+Sanitized WARP work is slow and varies with the hosted runner, so this job has
+a 90-minute limit instead of 60. CTest runs `ludus_render_graph_dxil_tests` as
+four Catch2 shards, `ludus_render_graph_dxil_tests_0` to `_3`, each with a
+600-second deadline, or 1200 seconds under ASan/UBSan. A failing shard prints
+the duration of each of its cases. The qualification inventory requires every
+shard index named by `--shard-count`. On a typical runner the job takes about
+41 minutes and the whole suite about 510 seconds; a slow runner needs about
+1.5 times as long. Unsanitized, the suite grew from about 270 seconds to over
+600 on 17 November 2026 as default-graph cases were added.
 Windows quality subprocesses share the editor's suspended-process admission and
 kill-on-close Job owner. Their tests verify descendant cleanup, output bounds
 and timeout behavior.
@@ -872,6 +886,9 @@ keeps older trusted batch workflows complete when a new editor suite is added.
 The mandatory Vulkan pixel proof selects `[render-graph]` and rejects skipped
 cases. Portable bilinear upscaling stays in that set; optional MetalFX variants
 use `[render-graph-metalfx]` and remain in the full GPU and macOS suites.
+The offscreen blocker test for raster shadows and RT1 also stays in that set.
+Its hybrid shadow comparison uses `[native-ray-queries]` and runs in the full GPU
+suite and on macOS, where it skips only if the required device is unavailable.
 
 ## Scheduled runtime profiling
 

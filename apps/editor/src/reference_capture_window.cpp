@@ -26,6 +26,7 @@
 
 #include <ludus/graphics/renderer/reference.hpp>
 #include <ludus/graphics/renderer/renderer.hpp>
+#include <ludus/graphics/renderer/tone_mapping.hpp>
 
 #include <QCheckBox>
 #include <QComboBox>
@@ -70,6 +71,29 @@ bool WriteAtomically(const QString& path, const QByteArray& bytes, QString& outE
         return false;
     }
     return true;
+}
+
+/// One sentence on how a capture's images are displayed: the viewport's exposure when a ToneMap draws its output.
+QString DescribeDisplay(const renderer::ViewDescription& view, const ViewportDisplayTransform& display, bool hasToneMap)
+{
+    // Decimal places of an exposure value or compensation, as the viewport's Exposure menu shows them.
+    constexpr int32 EXPOSURE_DECIMALS = 1;
+    const QString curve =
+        display.Curve == renderer::ToneCurve::PbrNeutral ? QStringLiteral("PBR Neutral") : QStringLiteral("Reinhard");
+    if (hasToneMap == false)
+    {
+        return QStringLiteral(" Displayed at exposure one with %1.").arg(curve);
+    }
+    const QString compensation =
+        view.RasterExposureStops != 0
+            ? QStringLiteral(", %1 stops")
+                  .arg(static_cast<float64>(view.RasterExposureStops), 0, 'f', EXPOSURE_DECIMALS)
+            : QString{};
+    const QString base =
+        view.Exposure == renderer::ExposureMode::Physical
+            ? QStringLiteral("EV100 %1").arg(static_cast<float64>(view.ExposureValue100), 0, 'f', EXPOSURE_DECIMALS)
+            : QStringLiteral("graph exposure");
+    return QStringLiteral(" Displayed with the viewport's exposure: %1%2, %3.").arg(base, compensation, curve);
 }
 } // namespace
 
@@ -214,7 +238,7 @@ ReferenceCaptureWindow::ReferenceCaptureWindow(RenderPreview* preview, QWidget* 
     mStopButton->setObjectName(QStringLiteral("referenceStop"));
     mSaveButton->setObjectName(QStringLiteral("referenceSave"));
     mSaveButton->setToolTip(QStringLiteral("Write the linear LUHDR01 capture and a display PNG beside it, plus the "
-                                           "raster image, difference image and metrics of a comparison. An "
+                                           "render graph image, difference image and metrics of a comparison. An "
                                            "unfinished capture is saved as partial."));
     QHBoxLayout* buttons = new QHBoxLayout;
     buttons->addWidget(mCaptureButton);
@@ -240,14 +264,17 @@ ReferenceCaptureWindow::ReferenceCaptureWindow(RenderPreview* preview, QWidget* 
     mImageView->setObjectName(QStringLiteral("referenceImage"));
     mImageView->setAccessibleName(QStringLiteral("Reference image"));
     mRasterView->setObjectName(QStringLiteral("referenceRasterImage"));
-    mRasterView->setAccessibleName(QStringLiteral("Raster image"));
+    mRasterView->setAccessibleName(QStringLiteral("Render graph image"));
+    mRasterView->setToolTip(QStringLiteral("The viewport's render graph output at the reference camera: a converged "
+                                           "capture of an accumulating graph, or one frame of a raster graph."));
     mDifferenceView->setObjectName(QStringLiteral("referenceDifferenceImage"));
-    mDifferenceView->setAccessibleName(QStringLiteral("Raster minus reference difference image"));
-    mDifferenceView->setToolTip(QStringLiteral("Red: the raster image is brighter than the reference. Blue: it is "
-                                               "darker. Black: they agree. Grey: no reference sample yet."));
+    mDifferenceView->setAccessibleName(QStringLiteral("Render graph minus reference difference image"));
+    mDifferenceView->setToolTip(
+        QStringLiteral("Red: the render graph image is brighter than the reference. Blue: it is "
+                       "darker. Black: they agree. Grey: no reference sample yet."));
     mImages->setObjectName(QStringLiteral("referenceImages"));
     mImages->addTab(mImageView, QStringLiteral("Reference"));
-    mImages->addTab(mRasterView, QStringLiteral("Raster"));
+    mImages->addTab(mRasterView, QStringLiteral("Render graph"));
     mImages->addTab(mDifferenceView, QStringLiteral("Difference"));
 
     QVBoxLayout* layout = new QVBoxLayout(this);
@@ -718,6 +745,34 @@ void ReferenceCaptureWindow::updateComparisonAvailability()
     updateControls();
 }
 
+void ReferenceCaptureWindow::prepareCaptureView(renderer::ViewDescription& inoutView) const
+{
+    inoutView.WorldGrid.IsVisible = false;
+    if (mPreview.isNull() == true)
+    {
+        return;
+    }
+    // The viewport's graph view takes the same fields (RendererWorkspace's World preview update).
+    const ViewportExposure exposure = mPreview->ResolveExposure();
+    inoutView.Exposure = exposure.Mode;
+    inoutView.ExposureValue100 = exposure.ExposureValue100;
+    inoutView.RasterExposureStops = mPreview->GetRasterExposureStops();
+}
+
+ViewportDisplayTransform ReferenceCaptureWindow::resolveDisplayTransform(const renderer::ViewDescription& view) const
+{
+#if defined(LUDUS_EDITOR_NATIVE_PREVIEW)
+    if (mProjectGraph.isNull() == false)
+    {
+        return ComputeReferenceDisplayTransform(view,
+                                                mProjectGraph->GetRasterToneMappingExposure(),
+                                                mProjectGraph->GetRasterToneCurve());
+    }
+#endif
+    static_cast<void>(view);
+    return {};
+}
+
 bool ReferenceCaptureWindow::startRasterCapture(const QSize& requestedSize, QSize& outExtent, QString& outError)
 {
 #if defined(LUDUS_EDITOR_NATIVE_PREVIEW)
@@ -740,6 +795,7 @@ bool ReferenceCaptureWindow::startRasterCapture(const QSize& requestedSize, QSiz
         outError = QStringLiteral("The viewport camera cannot be described for the raster capture: %1").arg(error);
         return false;
     }
+    prepareCaptureView(view);
     if (mRasterCapture.Begin(mPreview->Scene(), view, outError) == false)
     {
         return false;
@@ -838,6 +894,7 @@ bool ReferenceCaptureWindow::startGraphCapture(const QSize& requestedSize, QSize
         outError = QStringLiteral("The viewport camera cannot be described for the graph capture: %1").arg(error);
         return false;
     }
+    prepareCaptureView(view);
     if (mGraphCapture.Begin(mPreview->Scene(), view, outError) == false)
     {
         return false;
@@ -916,6 +973,10 @@ bool ReferenceCaptureWindow::StartCapture()
         return false;
     }
     mIsCapturingGraph = isGraphSource();
+    // Every image of this capture is displayed as the viewport output was when it started.
+    renderer::ViewDescription exposureView;
+    prepareCaptureView(exposureView);
+    mDisplay = resolveDisplayTransform(exposureView);
 #if defined(LUDUS_EDITOR_NATIVE_PREVIEW)
     mIsGraphComparison = false;
     mGraphFallbackReason.clear();
@@ -966,6 +1027,8 @@ bool ReferenceCaptureWindow::StartCapture()
         updateStatus();
         return false;
     }
+    prepareCaptureView(view);
+    settings.Display = mDisplay;
     if (mCapture
             .Start(mPreview->GetDevice(), mPreview->GetSurface(), mPreview->Scene(), view, extent, settings, error) ==
         false)
@@ -983,6 +1046,11 @@ bool ReferenceCaptureWindow::StartCapture()
                    .arg(settings.MaxDepth)
                    .arg(DescribeReferenceTraversal(settings.Traversal))
                    .arg(settings.ShouldCenterRays == true ? QStringLiteral(", pixel centres") : QString{});
+    bool hasToneMap = false;
+#if defined(LUDUS_EDITOR_NATIVE_PREVIEW)
+    hasToneMap = mProjectGraph.isNull() == false && mProjectGraph->GetRasterToneMappingExposure() > 0;
+#endif
+    mMessage += DescribeDisplay(exposureView, mDisplay, hasToneMap);
     mProgress->setRange(0, mSamples->value());
     mProgress->setValue(0);
     mCaptureTimer.start();
@@ -1071,6 +1139,11 @@ bool ReferenceCaptureWindow::saveComparison(const QString& hdrPath, QString& out
         reference.insert(QStringLiteral("traversal"), DescribeReferenceTraversal(info.Traversal));
         reference.insert(QStringLiteral("seed"), QString::number(info.Seed));
         reference.insert(QStringLiteral("centerRays"), mCapture.AreRaysCentered());
+        const ViewportDisplayTransform& display = mCapture.GetDisplayTransform();
+        reference.insert(QStringLiteral("displayExposure"), static_cast<float64>(display.Exposure));
+        reference.insert(QStringLiteral("displayCurve"),
+                         display.Curve == renderer::ToneCurve::PbrNeutral ? QStringLiteral("PbrNeutral")
+                                                                          : QStringLiteral("Reinhard"));
     }
     const QJsonObject report{
         {QStringLiteral("reference"), reference},
@@ -1190,7 +1263,7 @@ void ReferenceCaptureWindow::refreshImage()
 #if defined(LUDUS_EDITOR_NATIVE_PREVIEW)
     if (mIsCapturingGraph == true)
     {
-        const QImage image = mGraphCapture.MakeDisplayImage();
+        const QImage image = mGraphCapture.MakeDisplayImage(mDisplay);
         if (image.isNull() == false)
         {
             mImage = image;
@@ -1240,13 +1313,14 @@ void ReferenceCaptureWindow::updateComparison()
     if (hasGraphPixels == true)
     {
         const renderer::RenderGraphCaptureInfo graph = mGraphCapture.GetInfo();
-        mRasterImage = mGraphCapture.MakeDisplayImage();
+        mRasterImage = mGraphCapture.MakeDisplayImage(mDisplay);
         isCompared = CompareGraphCaptureWithReference({pixels.GetData(), pixels.GetSize()},
                                                       information,
                                                       hasReferenceFailed,
                                                       mGraphCapture.GetPixels(),
                                                       graph.Width,
                                                       graph.Height,
+                                                      mDisplay,
                                                       comparison,
                                                       difference,
                                                       error);
@@ -1257,6 +1331,7 @@ void ReferenceCaptureWindow::updateComparison()
                                                 information,
                                                 hasReferenceFailed,
                                                 mRasterCapture.GetTexture(),
+                                                mDisplay,
                                                 comparison,
                                                 difference,
                                                 error);
@@ -1423,10 +1498,11 @@ QString ReferenceCaptureWindow::GetStatusText() const
     graphics::renderer::ReferenceCaptureInfo info;
     if (mCapture.GetInfo(info) == true)
     {
-        progress = QStringLiteral(" · %1/%2 samples per pixel · %3 analytic lights · %4 s")
+        progress = QStringLiteral(" · %1/%2 samples per pixel · %3 analytic lights%4 · %5 s")
                        .arg(info.MinimumSamples)
                        .arg(info.TargetSamples)
                        .arg(mCapture.GetLightCount())
+                       .arg(mCapture.HasAtmosphereSky() == true ? QStringLiteral(" · Atmosphere sky") : QString{})
                        .arg(static_cast<float64>(mCaptureTimer.elapsed()) / MILLISECONDS_PER_SECOND, 0, 'f', 1);
     }
     return QStringLiteral("%1\n%2%3").arg(mMessage, phase, progress);

@@ -3,6 +3,7 @@
 #include "internal/render_graph_scene_bundle.h"
 #include "internal/render_graph_settings_editor.h"
 #include <ludus/content/render_graph_format/plan.h>
+#include <ludus/foundation/containers/static_array.hpp>
 
 #if defined(LUDUS_EDITOR_NATIVE_PREVIEW)
 #    include "internal/render_graph_worker.h"
@@ -128,6 +129,11 @@ constexpr int32 SOURCE_TREE_SHARE = 1;
 constexpr int32 VIEWS_SHARE = 4;
 constexpr int32 SOURCE_TREE_COLUMN = 0;
 constexpr int32 VIEWS_COLUMN = 1;
+namespace renderer = graphics::renderer;
+/// Columns of the World features table: feature, support, scene function and where to call it.
+constexpr usize WORLD_FEATURE_COLUMN_COUNT = 4;
+/// Support column, whose tooltip explains the support level instead of repeating the cell.
+constexpr usize WORLD_FEATURE_SUPPORT_COLUMN = 1;
 /// Tabs of the document's view switcher, in order.
 enum DocumentView : int32
 {
@@ -188,6 +194,25 @@ private:
 #if defined(LUDUS_EDITOR_NATIVE_PREVIEW)
 namespace default_graph = render_graph_packages::editor_default_graph;
 namespace host_fixture = render_graph_packages::editor_renderer_static;
+
+/// What the World features table and warning depend on in the drawing graph, for the warning's refresh identity.
+QByteArray DescribeWorldFeatureIdentity(const RenderGraphPreview* previewOrNull)
+{
+    QByteArray identity;
+    if (previewOrNull == nullptr)
+    {
+        return identity;
+    }
+    identity += QByteArray::number(previewOrNull->GetUnrenderedWorldFeatures());
+    for (usize index = 0; index < renderer::WORLD_FEATURE_COUNT; ++index)
+    {
+        renderer::WorldFeatureSupport support = renderer::WorldFeatureSupport::NotRendered;
+        const bool hasGraph =
+            previewOrNull->GetWorldFeatureSupport(static_cast<renderer::WorldFeature>(index), support);
+        identity += hasGraph == true ? static_cast<char>('0' + static_cast<int>(support)) : '-';
+    }
+    return identity;
+}
 
 constexpr bool AreHostInterfacesEqual()
 {
@@ -596,7 +621,8 @@ RendererWorkspace::RendererWorkspace(const ToolingPaths& tooling, QWidget* paren
       mQuickAdd(new RenderGraphQuickAdd(RenderGraphTemplateRegistry::GetBuiltIn(), this)),
       mPreviewPage(new QWidget(this)), mPreviewImage(new PreviewImage(mPreviewPage)),
       mPreviewStatus(new QLabel(mPreviewPage)),
-      mPreviewButton(new QPushButton(QStringLiteral("&Preview Runtime"), mPreviewPage))
+      mPreviewButton(new QPushButton(QStringLiteral("&Preview Runtime"), mPreviewPage)),
+      mWorldFeatures(new QTableWidget(mPreviewPage))
 {
     setObjectName(QStringLiteral("rendererWorkspace"));
     // The rarely needed explicit copy of the engine default sits in the source tree's context
@@ -908,6 +934,31 @@ RendererWorkspace::RendererWorkspace(const ToolingPaths& tooling, QWidget* paren
     previewLayout->addWidget(mPreviewButton, 0, Qt::AlignLeft);
     previewLayout->addWidget(mPreviewStatus);
     previewLayout->addWidget(mPreviewImage, 1);
+    // World features: what the drawing graph renders of the World, and for each missing feature the engine scene
+    // function and callback that draw it (graphics::renderer::DescribeWorldFeature owns every cell's text).
+    QLabel* worldFeaturesHeading = new QLabel(QStringLiteral("World features"), mPreviewPage);
+    worldFeaturesHeading->setObjectName(QStringLiteral("renderGraphWorldFeaturesHeading"));
+    worldFeaturesHeading->setBuddy(mWorldFeatures);
+    mWorldFeatures->setObjectName(QStringLiteral("renderGraphWorldFeatures"));
+    mWorldFeatures->setAccessibleName(QStringLiteral("World features"));
+    mWorldFeatures->setColumnCount(WORLD_FEATURE_COLUMN_COUNT);
+    mWorldFeatures->setHorizontalHeaderLabels({QStringLiteral("Feature"),
+                                               QStringLiteral("Support"),
+                                               QStringLiteral("Scene function"),
+                                               QStringLiteral("Where to call it")});
+    mWorldFeatures->setRowCount(static_cast<int>(renderer::WORLD_FEATURE_COUNT));
+    mWorldFeatures->setEditTriggers(QAbstractItemView::NoEditTriggers);
+    mWorldFeatures->setSelectionBehavior(QAbstractItemView::SelectRows);
+    mWorldFeatures->setSelectionMode(QAbstractItemView::SingleSelection);
+    // Read-only rows: arrow keys move between them, and Tab leaves the table instead of walking its cells (WCAG 2.1.2).
+    mWorldFeatures->setTabKeyNavigation(false);
+    mWorldFeatures->setWordWrap(true);
+    mWorldFeatures->verticalHeader()->hide();
+    mWorldFeatures->horizontalHeader()->setStretchLastSection(true);
+    mWorldFeatures->setSizeAdjustPolicy(QAbstractScrollArea::AdjustToContents);
+    previewLayout->addWidget(worldFeaturesHeading);
+    previewLayout->addWidget(mWorldFeatures);
+    refreshWorldFeatures();
     mPreviewPage->hide();
 
     // Canvas, Source and Plan are views of the one document, switched below the view like a
@@ -2396,10 +2447,10 @@ void RendererWorkspace::refreshRenderWarning(const RenderScene& scene)
 {
 #if defined(LUDUS_EDITOR_NATIVE_PREVIEW)
     // Cheap per-tick identity: the draft revision covers the root's default configuration and every placement source.
-    const QByteArray identity = scene.Identity + '\n' + mDocument.GetPackageRoot().toUtf8() + '\n' +
-                                mDocument.GetRootGraph().toUtf8() + '\n' + mConfiguration->currentText().toUtf8() +
-                                '\n' + QByteArray::number(mDocument.GetRevision()) + '\n' +
-                                (mIsDefaultPreview == true ? '1' : '0');
+    const QByteArray identity =
+        scene.Identity + '\n' + mDocument.GetPackageRoot().toUtf8() + '\n' + mDocument.GetRootGraph().toUtf8() + '\n' +
+        mConfiguration->currentText().toUtf8() + '\n' + QByteArray::number(mDocument.GetRevision()) + '\n' +
+        (mIsDefaultPreview == true ? '1' : '0') + '\n' + DescribeWorldFeatureIdentity(mPreviewOrNull);
     if (identity == mRenderWarningIdentity)
     {
         return;
@@ -2431,14 +2482,78 @@ void RendererWorkspace::refreshRenderWarning(const RenderScene& scene)
     {
         warning = mWorldLighting.Warning;
     }
-    if (warning != mRenderWarning)
+    // The drawing graph reports the omission once it accepts the extraction, which the identity above follows.
+    mUnrenderedWorldFeatures = mPreviewOrNull != nullptr ? mPreviewOrNull->GetUnrenderedWorldFeatures() : 0;
+    refreshWorldFeatures();
+    const QString omittedFeatureWarning =
+        DescribeUnrenderedWorldFeatures(mIsDefaultPreview == true ? QString{} : configuration,
+                                        mUnrenderedWorldFeatures);
+    if (warning != mRenderWarning || omittedFeatureWarning != mOmittedFeatureWarning)
     {
         mRenderWarning = warning;
+        mOmittedFeatureWarning = omittedFeatureWarning;
         Q_EMIT RenderProblemChanged();
     }
 #else
     static_cast<void>(scene);
 #endif
+}
+void RendererWorkspace::refreshWorldFeatures()
+{
+    for (usize index = 0; index < renderer::WORLD_FEATURE_COUNT; ++index)
+    {
+        const renderer::WorldFeature feature = static_cast<renderer::WorldFeature>(index);
+        const renderer::WorldFeatureDescription description = renderer::DescribeWorldFeature(feature);
+        renderer::WorldFeatureSupport support = renderer::WorldFeatureSupport::NotRendered;
+        bool hasGraph = false;
+#if defined(LUDUS_EDITOR_NATIVE_PREVIEW)
+        hasGraph = mPreviewOrNull != nullptr && mPreviewOrNull->GetWorldFeatureSupport(feature, support) == true;
+#endif
+        const bool isMissing = (mUnrenderedWorldFeatures & renderer::GetWorldFeatureBit(feature)) != 0;
+        QString supportText = hasGraph == true ? QString::fromUtf8(renderer::DescribeWorldFeatureSupport(support))
+                                               : QStringLiteral("No drawing graph");
+        if (isMissing == true)
+        {
+            supportText += QStringLiteral(" (this World uses it)");
+        }
+        const QString supportHelp = support == renderer::WorldFeatureSupport::Approximated
+                                        ? QString::fromUtf8(description.Approximation)
+                                    : support == renderer::WorldFeatureSupport::NotRendered
+                                        ? QString::fromUtf8(description.Omission)
+                                        : QStringLiteral("The graph composes this feature like the engine's default "
+                                                         "raster graph.");
+        const StaticArray<QString, WORLD_FEATURE_COLUMN_COUNT> cells{{QString::fromUtf8(description.Name),
+                                                                      supportText,
+                                                                      QString::fromUtf8(description.Function),
+                                                                      QString::fromUtf8(description.Callback)}};
+        for (usize column = 0; column < cells.GetSize(); ++column)
+        {
+            QTableWidgetItem* itemOrNull = mWorldFeatures->item(static_cast<int>(index), static_cast<int>(column));
+            if (itemOrNull == nullptr)
+            {
+                itemOrNull = new QTableWidgetItem;
+                mWorldFeatures->setItem(static_cast<int>(index), static_cast<int>(column), itemOrNull);
+            }
+            itemOrNull->setText(cells[column]);
+            itemOrNull->setToolTip(column == WORLD_FEATURE_SUPPORT_COLUMN ? supportHelp : cells[column]);
+        }
+    }
+    mWorldFeatures->resizeRowsToContents();
+}
+void RendererWorkspace::RevealWorldFeatures()
+{
+    int row = 0;
+    for (usize index = 0; index < renderer::WORLD_FEATURE_COUNT; ++index)
+    {
+        if ((mUnrenderedWorldFeatures & renderer::GetWorldFeatureBit(static_cast<renderer::WorldFeature>(index))) != 0)
+        {
+            row = static_cast<int>(index);
+            break;
+        }
+    }
+    mWorldFeatures->selectRow(row);
+    mWorldFeatures->scrollToItem(mWorldFeatures->item(row, 0));
+    mWorldFeatures->setFocus(Qt::OtherFocusReason);
 }
 WorldLightingCoverage RendererWorkspace::MakeWorldLightingRepair() const
 {
@@ -5746,6 +5861,7 @@ void RendererWorkspace::SetPreviewSource(RenderPreview* sourceOrNull)
         };
         connect(mPreviewSourceOrNull, &RenderPreview::NavigationChanged, this, refreshView);
         connect(mPreviewSourceOrNull, &RenderPreview::RasterExposureChanged, this, refreshView);
+        connect(mPreviewSourceOrNull, &RenderPreview::LightingViewChanged, this, refreshView);
         connect(mPreviewSourceOrNull, &RenderPreview::Changed, this, [this]() {
             mArePreviewInputsDirty = true;
             refreshDeviceProfile();
@@ -5877,8 +5993,9 @@ void RendererWorkspace::ServicePreview()
     const QSharedPointer<const WorldSurfaceBake> surfaceBake = mPreviewSourceOrNull != nullptr
                                                                    ? mPreviewSourceOrNull->GetSurfaceBake()
                                                                    : QSharedPointer<const WorldSurfaceBake>{};
-    mArePreviewInputsDirty =
-        mArePreviewInputsDirty == true || target != mPreviewTargetSize || surfaceBake != mPreviewSurfaceBake;
+    const bool shouldShowWorkLight = preview.ShouldShowWorkLight();
+    mArePreviewInputsDirty = mArePreviewInputsDirty == true || target != mPreviewTargetSize ||
+                             surfaceBake != mPreviewSurfaceBake || shouldShowWorkLight != mShouldShowPreviewWorkLight;
     mPreviewTargetSize = target;
     if (mPreviewSourceOrNull != nullptr && preview.IsAttached() == true && target.isEmpty() == false &&
         mArePreviewInputsDirty == true)
@@ -5914,9 +6031,19 @@ void RendererWorkspace::ServicePreview()
                 setProblem(mExtractionProblem, error);
             }
             view.RasterExposureStops = mPreviewSourceOrNull->GetRasterExposureStops();
-            if (hasView == true && (scene.Identity != mPreviewSceneIdentity || surfaceBake != mPreviewSurfaceBake ||
-                                    AreMatricesEqual(view.WorldToClip, mPreviewWorldToClip) == false ||
-                                    view.RasterExposureStops != mPreviewExposureStops))
+            const ViewportExposure exposure = mPreviewSourceOrNull->ResolveExposure();
+            view.Exposure = exposure.Mode;
+            view.ExposureValue100 = exposure.ExposureValue100;
+            view.ShouldShowWorkLight = shouldShowWorkLight;
+            view.LightingView = mPreviewSourceOrNull->GetLightingView();
+            view.LightingViewSourceId = mPreviewSourceOrNull->GetLightingViewSourceId();
+            if (hasView == true &&
+                (scene.Identity != mPreviewSceneIdentity || surfaceBake != mPreviewSurfaceBake ||
+                 AreMatricesEqual(view.WorldToClip, mPreviewWorldToClip) == false ||
+                 view.RasterExposureStops != mPreviewExposureStops || view.Exposure != mPreviewExposureMode ||
+                 view.ExposureValue100 != mPreviewExposureValue100 || view.LightingView != mPreviewLightingView ||
+                 view.ShouldShowWorkLight != mShouldShowPreviewWorkLight ||
+                 view.LightingViewSourceId != mPreviewLightingViewSourceId))
             {
                 LUDUS_PROFILE_SCOPE(EditorGraphWorldExtraction);
                 bool hasUpdatedInputs = false;
@@ -5948,6 +6075,11 @@ void RendererWorkspace::ServicePreview()
                     mPreviewSurfaceBake = surfaceBake;
                     mPreviewWorldToClip = view.WorldToClip;
                     mPreviewExposureStops = view.RasterExposureStops;
+                    mPreviewExposureMode = view.Exposure;
+                    mPreviewExposureValue100 = view.ExposureValue100;
+                    mShouldShowPreviewWorkLight = view.ShouldShowWorkLight;
+                    mPreviewLightingView = view.LightingView;
+                    mPreviewLightingViewSourceId = view.LightingViewSourceId;
                 }
             }
         }
@@ -6001,10 +6133,18 @@ void RendererWorkspace::renderPreview()
         if (mPreviewSourceOrNull != nullptr && mPreviewSourceOrNull->Scene().AlwaysOnLightIds.isEmpty() == false)
         {
             const usize chartDraws = mPreviewOrNull->GetSurfaceChartDrawCount();
+            const usize probeDraws = mPreviewOrNull->GetProbeReceiverDrawCount();
             const QString failure = mPreviewSourceOrNull->GetSurfaceBakeFailure();
-            if (chartDraws != 0)
+            if (chartDraws != 0 || probeDraws != 0)
             {
-                previewStatus += QStringLiteral("\nSurface charts in use on %1 draws.").arg(chartDraws);
+                if (chartDraws != 0)
+                {
+                    previewStatus += QStringLiteral("\nSurface charts in use on %1 draws.").arg(chartDraws);
+                }
+                if (probeDraws != 0)
+                {
+                    previewStatus += QStringLiteral("\nProbe GI in use on %1 receiver draws.").arg(probeDraws);
+                }
             }
             else if (failure.isEmpty() == false)
             {

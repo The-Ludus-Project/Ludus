@@ -72,6 +72,30 @@ axes, which remain colored in Solid mode. Reports retain those RGB samples and
 failure screenshots so an overlay or layout change cannot silently qualify a
 material result.
 
+## Browser editor project folders
+
+[Project folders on disk](../browser-editor.md#project-folders-on-disk) have two
+runners. `host_folder_fs.mjs` checks `apps/editor/browser/host_folder.js`
+without Qt, through a small WebAssembly harness and mock folder handles over a
+temporary directory; build and run it with
+`python scripts/build-web-editor --test-host-folder`. `editor_host_folder.mjs`
+drives the real editor payload in Chromium:
+
+```sh
+cd tools/web-browser-tests
+node editor_host_folder.mjs ../../out/editor-pages ../../out/editor-host-folder-qa
+```
+
+It creates a project folder with a 40 MiB asset in Chromium's origin-private
+file system, returns its `FileSystemDirectoryHandle` from a stubbed
+`showDirectoryPicker`, opens it with the **Open** toolbar button, edits the
+project name in **Project Settings**, saves, and reads the descriptor back from
+the folder. The report records how many file bytes the editor read. Pass a
+project folder as the third argument to copy that project instead (generated
+folders are skipped); set `LUDUS_QA_NAME_FIELD='[x,y]'` when its settings page
+places the Name field elsewhere, and `LUDUS_QA_OPEN_WORLD='[x,y]'` to also open
+a World from the Project Explorer. The origin-private folder exercises the same
+handle API as a folder on disk, but not the browser's permission prompt.
 ## Offscreen WebGPU frames
 
 A web configuration with `LUDUS_BUILD_WEB_PROBES=ON` builds

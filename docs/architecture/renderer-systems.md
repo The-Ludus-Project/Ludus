@@ -1754,7 +1754,11 @@ Start with a static character bust shared by the renderer, World editor and
 installed SDK consumer. Use the same authored assets and lighting when
 comparing techniques. The first milestone uses the existing triangle scene
 and typed materials, with no dependency on skeletal deformation or native
-curve traversal.
+curve traversal. The bust is the
+[engine's Infinite head scan](scene-source-format.md#character-bust)
+(`tests/scenes/characters/infinite-head`, Creative Commons Attribution 3.0),
+which the Separable Subsurface Scattering demo also used. It is one skin slot
+without eyes or hair, so bleed tests add their own eye and hair geometry.
 
 - **Raster hair.** Render a hairstyle as two-sided, alpha-masked cards with an
   authored strand direction for directional highlights. Reuse mesh slots,
@@ -1769,6 +1773,13 @@ curve traversal.
   skin profile boundaries, and preserve specular detail. Expose base colour,
   roughness and RGB scattering distances in world units. Compare against
   ordinary PBR on the bust and measure GPU time and transient memory.
+  Status: the [`skin` material](scene-source-format.md#skin) cooks to LUSCN v14,
+  and the clustered deferred profile spreads its diffuse lighting
+  ([raster skin diffusion](#raster-skin-diffusion)), and World slots become skin
+  in the editor, with editable base colour, roughness and scattering distances.
+  On the bust, skin adds about 1.7 ms of GPU time per
+  1600×1080 frame on an Apple M5 over the matched PBR control, and 36 bytes per
+  pixel of targets ([measurements and comparison](../development/benchmark-scenes.md#measure-raster-skin-on-the-character-bust)).
   [Paper and implementation notes](https://iryoku.com/separable-sss/) ·
   [Real-time skin #1372](https://github.com/The-Ludus-Project/Ludus/issues/1372)
 - **Reference skin.** Use the normalized diffusion profile in Per H.
@@ -1792,8 +1803,9 @@ its typed scattering slots (`HairCardParameters`). Its record keeps zero metalli
 and base colour, roughness, textures and the alpha mask keep their usual meaning.
 Author it in a [scene source](scene-source-format.md#hair-card) or from code.
 
-The forward raster profile with authored inputs, which the World viewport uses,
-shades a hair card as follows:
+The forward raster profile with authored inputs shades a hair card as follows.
+Select the [Forward lit template](../development/render-graph-authoring.md#use-the-forward-lit-template)
+in the World viewport to use this profile.
 
 - **Strand frame.** The authored tangent sets the frame. Without one, the
   texture-coordinate derivatives give dP/du and the handedness. A card with
@@ -1824,14 +1836,20 @@ shades a hair card as follows:
 longitudinal peak at two incident angles and three shifts. They check the peak
 value, rotation with the strand direction, both sides and finite output near
 tangent-aligned directions. The `[hair-card][gpu]` forward-lit test in `ludus_renderer_render_tests` checks the
-same behaviour in raster pixels: the highlight moves with the strand, back faces
-match front faces where an ordinary card is dark, far-side lights are gated, and
-masks discard. It also checks that a metallic hair card is rejected while the
+same behaviour in linear raster pixels. It samples nine view directions at each
+of two incident angles and compares them to the independent longitudinal
+`cos^p((θᵢ + θₒ)/2 + s)` curve. An ordinary masked surface provides a control.
+Back faces match front faces where an ordinary card is dark, and far-side lights
+are gated. It also checks that a metallic hair card is rejected while the
 last drawable scene is kept.
 
-Coverage reuses the material's mask in every pass. Colour, depth and shadow
-casting discard through `SampleBaseTexel` with the same cutoff. Ray scenes apply
-the record's mask in closest-hit and shadow queries as for any masked material.
+The masked color pass also writes depth. It and the shadow caster discard through
+`SampleBaseTexel` with the same cutoff. Ray scenes apply the record's mask in
+closest-hit and shadow queries. The coverage fixtures use the same RGBA texel
+and cutoff across the forward color/depth pass, the deferred directional shadow
+pass and the triangle-loop, compute BVH and supported native ray queries. A
+separate probe raises the cutoff from 0.5 to 0.75 with alpha held at 128/255,
+so each coverage comparison detects a cutoff mismatch.
 
 Other paths make declared approximations:
 
@@ -1845,14 +1863,128 @@ Other paths make declared approximations:
 - **Raster mesh lights.** Deferred raster mesh lights shade a hair card with the
   ordinary lobes.
 
-The editor inspector lists the strand controls but cannot edit them yet. Still
-open in [#1371](https://github.com/The-Ludus-Project/Ludus/issues/1371):
+World slots become hair cards in the editor, which edits the strand controls
+and mask cutoff with the World history. See
+[make a slot a hair card](../development/editor-workspace.md#make-a-slot-a-hair-card).
+The [shared character bust](scene-source-format.md#character-bust) supplies the
+interactive World fixture and the
+[matched hair timing and overdraw comparison](../development/benchmark-scenes.md#measure-raster-hair-on-the-character-bust).
 
-- World assignment and editing with undo, save and reimport.
-- The shared static bust.
-- The matched-cutoff and mismatched-cutoff coverage comparison across raster
-  passes and ray queries.
-- GPU time and overdraw measurements against an ordinary masked material.
+#### Raster skin diffusion
+
+A `Skin` material (`content::scene_format::MaterialModel::Skin`, LUSCN v14)
+stores a linear RGB scattering distance in metres in `MaterialScattering::K`.
+Its record keeps zero metallic, and base colour, roughness, emission and textures
+keep their usual meaning. Author it in a
+[scene source](scene-source-format.md#skin) or from code
+(`LitMaterialDescription::Scattering`, `SceneShaderMaterial::Scattering`).
+
+The renderer gives each distinct nonzero scattering distance of its live skin
+materials a profile slot, at most `DEFERRED_MAX_SKIN_PROFILES` (64) at once;
+creating a material with another distance when every slot is taken returns
+`CapacityExceeded`. A skin pixel stores −(its one-based slot) in the G-buffer's
+metallic channel, which a dielectric does not need, and the diffusion passes read
+the slot's distance from a per-view profile table. The G-buffer layout and size
+are unchanged, and emission, baked probe and chart terms and coverage keep their
+meaning. A view whose opaque packets draw skin with a nonzero distance runs three
+passes in place of the single lighting resolve, for its final colour; lighting
+views (`DeferredLightingView`) keep the ordinary resolve:
+
+1. **Deferred/Lighting.** A built-in variant of the resolve
+   (`renderer_skin_deferred.slang`, or `renderer_atmosphere_skin_deferred.slang`
+   with the atmosphere) writes two RGBA16F targets. One holds the linear
+   radiance without skin diffuse; the other holds the skin pixels' diffuse
+   radiance from the environment, analytic lights and mesh lights. With an
+   atmosphere, the diffuse part takes the view segment's transmittance and the
+   inscattered light is added once, to the first target.
+2. **Deferred/SkinBlur.** A horizontal convolution of the skin diffuse.
+3. **Deferred/SkinComposite.** The vertical convolution, added to the first
+   target, then the graph's ToneMap into the RGBA8 output with the sky, as the
+   ordinary resolve writes it.
+
+Views without skin, or with only zero distances, keep the ordinary resolve.
+
+The kernel adapts Jorge Jimenez, Károly Zsolnai, Adrian Jarabo, Christian
+Freude, Thomas Auzinger, Xian-Chun Wu, Javier von der Pahlen, Michael Wimmer
+and Diego Gutierrez, *Separable Subsurface Scattering* (Computer Graphics
+Forum 34(6), 2015). Section 4, equations 4 and 5, give the pre-integrated
+kernel: the 1D marginal of a radially symmetric profile, applied as one
+horizontal and one vertical convolution of the diffuse layer only. The profile
+is Brent Burley's normalized diffusion as given by Per H. Christensen,
+*An Approximate Reflectance Profile for Efficient Subsurface Scattering*
+(SIGGRAPH 2015 Talks, section 2): `R(r) = (e^(−r/d) + e^(−r/(3d)))/(8πdr)`,
+with each channel's scattering distance as `d`. Thanks to the authors. The
+distance is the profile's own `d`, not a diffuse mean free path: for a medium
+with mean free path `ℓ = 1/σt′` and albedo `A = σs′/σt′`, `d = ℓ/s` with
+Christensen's equation 2, `s = 1.85 − A + 7(0.8 − A)³`. The editor's
+**Make Skin** default, (1.50, 0.94, 0.57) mm, is this distance for the skin1
+coefficients of Henrik Wann Jensen, Stephen R. Marschner, Marc Levoy and Pat
+Hanrahan, *A Practical Model for Subsurface Light Transport* (SIGGRAPH 2001,
+table 2). Their diffuse mean free path for the same skin, (3.67, 1.37, 0.68) mm,
+is about twice as wide.
+Following section 6 of the paper, the seven taps are shared by the three
+channels and placed by the dominant channel. Its 1D kernel is cut into a centre
+bin and three pairs of side bins of equal energy, truncated at 99 percent, with
+each side tap at its bin's energy median, about 0.31, 1.04 and 3.15 scattering
+distances out. Each channel weights a tap by its own profile's energy in the
+tap's bin, read from a 32-entry strip-energy table. A tap's world offset becomes
+pixels through the footprint of one pixel at the centre's depth.
+
+A tap counts only when it is skin and lies within half its offset of the
+centre's tangent plane. The weights of the taps that count are renormalized.
+Flat lighting is therefore unchanged, and other materials and surfaces at
+another depth neither bleed in nor darken the edge. Departures from the paper:
+
+- The filtering axes are not rotated per pixel (the paper's jittering), so
+  small bright features can show the separable kernel's cross.
+- The footprint is screen-aligned rather than on the surface's tangent plane.
+- The spread light is pre- and post-scatter textured, following Eugene d'Eon
+  and David Luebke, *Advanced Techniques for Realistic Real-Time Skin
+  Rendering* (GPU Gems 3, chapter 14, section 14.5.2): the resolve divides the
+  diffuse light by the square root of the albedo, and the composite multiplies
+  the spread light by the square root of the centre's albedo. Half of the base
+  colour's detail stays sharp. The paper spreads irradiance in texture space; a
+  channel of zero albedo receives no spread light here.
+- There is no transmission through thin features.
+- Emission and the baked probe and chart irradiance that the G-buffer stores with
+  it are not spread; only live sky, analytic-light and mesh-light diffuse is.
+
+The skin targets are three RGBA16F attachments with private depth at the
+G-buffer's extent, 36 bytes per pixel. They are allocated on a view's first skin
+draw and reported apart from the G-buffer in
+`RenderGraphAllocationReport::DeferredSkinAllocations` and
+`DeferredSkinAttachmentBytes`. `src/internal/skin_diffusion.h` builds the kernel
+on the CPU and mirrors the shader's weights. The `[skin]` tests in
+`ludus_reference_material_tests` check the strip energy against the Bessel-K₀
+form of the marginal, the bins and the per-channel weights. The `[skin][gpu]`
+tests in `ludus_renderer_render_tests` render quads through the default graph
+and compare each with the same scene at zero distance. They check that light
+crosses an albedo edge with red reaching furthest, that flat lighting is
+conserved, that spreading stops at a non-skin material and at a depth edge, that
+each material spreads by its own profile, that the skin targets appear only with
+skin, that emissive skin draws while metallic skin is rejected, and that the
+sharp specular edge between glossy and rough black skin is unchanged.
+
+Other paths make declared approximations:
+
+- **Forward raster profiles.** They shade skin as its metallic/roughness surface.
+- **Ray previews and reference captures.** They receive the metallic/roughness
+  dielectric lobes (`GetSurfaceReflectionScattering`).
+- **Builds without the renderer's built-in shaders.** They also keep the
+  ordinary resolve for skin (`LUDUS_RENDERER_SKIN_SHADERS`).
+
+The material layout gains `SkinScattering` after the hair-card words, so
+render-graph packages cooked before it are rejected until recooked, as for hair
+cards. World slots become skin in the editor, which edits the base colour,
+roughness and scattering distance with the World history. The editor's `[skin]`
+viewport case draws the bust in the World viewport through the default graph
+and checks that **Make Skin**, switching a light off, an orbit and a resize
+each present a new frame. See
+[make a slot skin](../development/editor-workspace.md#make-a-slot-skin).
+The [bust measurements](../development/benchmark-scenes.md#measure-raster-skin-on-the-character-bust)
+compare skin with ordinary PBR in one process and record the GPU time and the
+skin targets' memory. Metal reports one timing per command encoder, so the
+three passes' shares of the difference are not measured separately there.
 
 Reuse the [World material document and its undo history](../development/editor-workspace.md#edit-a-coated-diffuse-material-from-world).
 An artist must be able to import the bust, assign and edit hair and skin
@@ -1939,15 +2071,10 @@ invalidates its bake or uses a documented dynamic fallback. Lightmap packing,
 probe placement and content quality belong to cook tools; rendering only consumes
 ready versions. Missing bakes select a declared neutral/ambient fallback.
 
-Dynamic shadows start with one directional cascaded map and a bounded local-light
-atlas. Stabilize cascade texel placement, derive splits from unjittered views,
-reserve filtering gutters, bound bias in light-space/receiver units and expose
-split/bias/occupancy debug modes. Shadow maps may deliberately use conventional
-depth with an explicit sampler/compare contract even when the main view uses
-reverse-Z. Static shadow reuse keys include caster/material/light revisions;
-dynamic casters invalidate affected regions. Point/spot map costs count against
-an explicit per-view/frame budget. No cache claims correctness from “light did
-not move” alone.
+Dynamic shadows use bounded directional and local-light allocations. Each extra
+projection counts against the per-view draw and memory budgets. The
+[large-world visibility design](#large-world-raster-visibility) defines how the
+default graph scales its directional and sky coverage.
 
 An initial lit view follows this author-visible sequence:
 
@@ -1975,6 +2102,166 @@ blending, composite into a supported linear intermediate then encode once.
 Antialiasing starts with a simple spatial variant or verified MSAA path (the Editor viewport's FXAA is the
 spatial variant; see the output pass above); TAA is a later feature needing motion vectors, jitter and history rejection tests.
 
+## Large-world raster visibility
+
+Proposed for the default clustered deferred graph. The current graph fits
+one map per admitted directional light and 64 fixed sky-direction maps to the
+World's scene bounds. With an illustrative 18 km light-space span, the 1022-texel
+directional interior samples about 18 m per texel and the 126-texel sky
+interior about 143 m per texel. The projected span varies by direction. Both
+scales can miss a room-sized roof, and the sky shader's texel-scaled receiver
+offset also grows with the span. Measure direct visibility per light and
+diffuse sky visibility separately. The [current graph
+guide](../development/render-graph-authoring.md#directional-shadows) describes
+the shipped fit, filtering and scene resource reports.
+
+### Stabilized directional cascades
+
+Add one stabilized near cascade for each admitted directional light and retain
+its existing whole-scene map for far receivers and fallback. Keep light
+selection and shadow eligibility tied to the light's source identity. Sun and
+Moon each get independent visibility when both are admitted. The default graph
+owns cascade selection, atlas allocation and lifetime. World extraction and
+games continue to supply camera, light and caster inputs through the existing
+renderer boundary. Preserve the caller-authored atlas contract described in
+[Immutable shadow atlases](#immutable-shadow-atlases).
+
+- Derive a finite near receiver slice from the unjittered camera, including a
+  blend interval at the split. Enclose it in a sphere, use a padded square in
+  the light basis, and snap its center to a world-anchored texel grid. Keep the
+  footprint size fixed for a given lens and split. Select by unjittered
+  view-space depth and blend visibility where both maps provide valid coverage.
+- Extrude the guarded receiver footprint toward the light when collecting
+  casters. Include offscreen roofs, masked geometry and terrain ridges whose
+  bounds can intersect that volume. Fit conservative light-space depth
+  independently of XY, with padding for bias and filtering. Whole terrain
+  meshes remain valid caster inputs. Use finer terrain bounds when available
+  and measure the draw and triangle cost of large single meshes.
+- Start with the current conventional light depth and four-tap caster-plane
+  comparison. Bound bias using the chosen light-space depth range, effective
+  texel size and reconstructed receiver uncertainty. Keep filter taps inside
+  the tile. Measure both self-shadowing and detached contacts at grazing
+  incidence. If far casters force a depth span that makes packed depth too
+  coarse, qualify a higher-precision representation against these measurements.
+- Reuse a region while its snapped projection, caster coverage, geometry,
+  transforms and opacity inputs remain valid. A light-direction change
+  invalidates that light's affected regions. Intensity and color affect
+  admission and shading, and can reuse compatible visibility. Include
+  committed terrain coverage in the cache identity. Measure rebuilds caused
+  by coarse scene revisions during ordinary player and shutter motion.
+- Publish matching shadow data and view metadata through the existing
+  candidate and submission lifecycle. During preparation, use compatible
+  coarse coverage for a new view. Keep the last drawable accepted view when
+  replacement preparation fails. Retain resources through GPU completion and
+  account for overlapping generations. On atlas or draw-budget exhaustion,
+  use the valid whole-scene map and report the downgrade. Retain the declared
+  out-of-coverage behavior, and verify older graph packages and unsupported
+  profiles through their existing raster route.
+
+An initial Metal prototype can pack two 512 × 512 tiles in a separate
+1024 × 1024 attachment to preserve the existing mesh-light and sky slots.
+RGBA8 and a 32-bit depth attachment together occupy 8 MiB before alignment per
+generation. The prototype must measure actual allocation, submission cost and
+peak overlap. Keep this private to the renderer and RHI. Qualify any new
+binding or package layout through the source build and installed SDK before
+requiring it. [Directional implementation and acceptance #1723](https://github.com/The-Ludus-Project/Ludus/issues/1723)
+
+### Diffuse sky visibility
+
+At each receiver, integrate incident sky radiance over visible directions
+weighted by the surface cosine. Compare the existing maps with independent
+geometry rays at the same 64 directions, then compare both with a converged
+hemisphere integral. The first comparison measures spatial lookup error. The
+second measures the directional discretization, including narrow openings.
+Match the production treatment below the horizon or measure that contribution
+separately. Keep diffuse sky, analytic direct light and baked diffuse bounce
+independently inspectable.
+
+If spatial error dominates, prototype a bounded, world-anchored local region
+using the existing direction set. Include remote up-sky casters or combine
+local and distant blocker coverage per direction. Keep the visibility cache
+independent of sky radiance and camera motion. Invalidate affected regions when
+caster geometry, transforms, opacity or terrain coverage changes. For an
+unavailable or exhausted local region, use the coarse sky path and report
+its coverage. If angular error or the resolve cost dominates, compare with a
+compact directional visibility field. Qualify interpolation at thin walls and
+openings with directional radiance and geometry-ray controls. [Baseline sky
+visibility #1620](https://github.com/The-Ludus-Project/Ludus/issues/1620) ·
+[Large-world sky acceptance #1724](https://github.com/The-Ludus-Project/Ludus/issues/1724)
+
+### Qualification and SDK delivery
+
+Use a redistributable roof, wall, doorway and shutter fixture inside a landscape
+spanning approximately 18 km. Keep the landscape in the submitted scene and
+caster set. At fixed world-space receiver probes, record raw visibility and
+scene-linear radiance before tone mapping. Use **Shadow coverage** and
+**Light** for Sun and Moon, then **Sky visibility** and **Sky diffuse** with
+the sky radiance preserved. Include covered, opening,
+exterior and roof-removed controls. Test a grazing angle and an offscreen
+caster whose shadow crosses a visible receiver. Walk and turn through the
+doorway in both directions, cross the split, resize and test a camera cut.
+Independently test pending, failed and successful publication and stale
+completion.
+
+Starting targets are direct visibility at most 0.05 in known shadow and at
+least 0.95 in known light away from the filter band, a near footprint at most
+0.10 m per texel, and camera-induced drift at most one effective near texel
+against world-space edge samples. For sky, start with at most 0.10 absolute
+visibility error and diffuse luminance error at most 10% of the exposed
+control. Choose probes whose dense oracle predicts distinct covered and
+opening values. Confirm the thresholds on the reference geometry before
+collecting acceptance evidence.
+
+Report light and cascade identity, split and overlap, active sky region,
+metres per texel, bias, caster draws and triangles, invalidation cause,
+fallback and generation. On named macOS/Metal hardware at fixed resolution,
+record cold preparation, warmed shadow and resolve median and p95 timings,
+presented frame pacing, atlas occupancy and peak live bytes. Use the
+initial incremental GPU p95 budgets of 1.5 ms for the near cascades and
+3 ms for sky refinement as prototype gates. Start with caps of 8 MiB for
+additional direct map attachments and 16 MiB for additional resident sky
+map color per generation. Measure steady and replacement memory independently,
+including private depth and temporary attachments.
+
+Exercise **Force raster** in the editor and a native app built against a
+relocated arm64 macOS Development SDK at the same engine revision. Recook the
+default graph from that SDK, record the graph identity and compare the same
+probes and camera path through editor Run and a bundled launch outside the
+project directory. Verify the existing fallback on another supported raster
+backend and an older graph package. See the [lighting view
+guide](../development/editor-workspace.md#inspect-lighting-terms) and the
+[SDK installation workflow](../development/project-sdk-workflow.md#install-an-sdk).
+
+### Later shadow techniques
+
+Use fixed stabilized cascades as the portable baseline. Compare
+sample-distribution splits when a measured scene wastes resolution or submits
+too many casters with fixed splits. Quantize changes and measure coverage and
+edge motion at a camera cut or disocclusion. Evaluate moment filtering after
+projection tuning if edge aliasing remains, with matched light leak,
+contact error and memory tests.
+[Lauritzen, Salvi and Lefohn, *Sample Distribution Shadow Maps*](https://doi.org/10.1145/1944745.1944761) ·
+[Moment filtering #1717](https://github.com/The-Ludus-Project/Ludus/issues/1717)
+
+Adaptive shadow maps refine a bounded hierarchy in response to receiver demand.
+Virtual shadow maps take that approach to page residency and directional
+clipmaps. Consider a Metal prototype once fixed cascades miss a measured quality
+target and the renderer can bound caster submission per page, residency,
+invalidation and fallback. Compare camera cuts, large terrain primitives and
+rotating celestial lights against the fixed-cascade baseline. Qualify each
+required capability on the target device.
+[Fernando et al., *Adaptive Shadow Maps*](https://www.graphics.cornell.edu/pubs/2001/FFBG01.pdf) ·
+[Epic's Fortnite virtual shadow map report](https://www.unrealengine.com/tech-blog/virtual-shadow-maps-in-fortnite-battle-royale-chapter-4) ·
+[Apple Metal feature tables](https://developer.apple.com/metal/Metal-Feature-Set-Tables.pdf)
+
+The fixed-footprint design adapts Michal Valient's enclosing-sphere stabilization
+and Microsoft's texel placement and filter guidance. The directional sky-field
+candidate draws on Sloan, Kautz and Snyder's separation of incident lighting
+and precomputed transfer.
+[Valient, *The Rendering Technology of Killzone 2*, GDC 2009](https://www.guerrilla-games.com/media/News/Files/GDC09_Valient_Rendering_Technology_Of_KillZone_2_Extended_Presenter_Notes.pdf) ·
+[Microsoft, *Cascaded Shadow Maps*](https://learn.microsoft.com/en-us/windows/win32/dxtecharts/cascaded-shadow-maps) ·
+[Sloan, Kautz and Snyder, *Precomputed Radiance Transfer*, SIGGRAPH 2002](https://www.cs.jhu.edu/~misha/ReadingSeminar/Papers/Sloan02.pdf)
+
 ## Clear-sky atmosphere design
 
 Add an **Atmosphere** entity to the World to render a spherical Earth-like sky
@@ -1982,7 +2269,8 @@ lit by an authored distant Sun. The first viewport milestone covers a clear
 sky, a resolved solar disk, sunsets and the sunlit portion of twilight for
 cameras at or above the surface and inside the atmosphere. A sunless ray can
 go dark in this profile.
-Clouds are outside the atmosphere system.
+The [World environment architecture](world-environment.md#atmospheric-transport-and-renderer-integration)
+defines how clouds and local fog compose with the clear-sky path.
 
 ### Ownership and inputs
 
@@ -2123,9 +2411,72 @@ The deferred resolve integrates extinction and in-scattering over the finite
 camera-to-surface segment, clipped to the shell or ground. It applies that
 result to lit surface radiance before exposure and tone mapping. The
 renderer-owned resolve reuses texture slots after the G-buffer pass and keeps
-the graph package interface intact. Transparent surfaces, other renderer
-profiles, and reference path tracing remain outside this integration. If the
+the graph package interface intact. Transparent surfaces and other renderer
+profiles remain outside this integration. If the
 camera leaves the atmosphere shell, surfaces use the ordinary raster lighting.
+
+An Atmosphere is an optional World feature. `RenderGraph::Update` admits a
+camera with an enabled Atmosphere in a graph without the clustered deferred
+programs, and clears that camera's Atmosphere for the graph's raster passes.
+Ray kernels draw it through two scene functions instead.
+`EvaluateEnvironment` reads a CPU-resolved distant sky, the same one the RT1
+reference uses (below), and the linked Sun carries the transmitted illuminance.
+`ApplyAerialPerspective` reads a table of haze along view segments from the
+camera's altitude. The builder records which functions a kernel calls from its
+reflected bindings. `GetWorldFeatureSupport` reports each feature as Supported,
+Approximated or Not rendered. `RenderGraphReport::UnrenderedWorldFeatures`
+names the features the World uses and the graph does not draw. The editor
+reports those as a warning, not a rejection. The functions, their limits and the
+editor's table are described under
+[World features](../development/render-graph-authoring.md#world-features).
+
+### Reference capture of an Atmosphere
+
+RT1 receives the same distant lighting as the opaque raster resolve. When an
+Atmosphere lights the scene and the camera is inside its shell,
+`ResolveAtmosphereEnvironment` evaluates the transmittance, multiple-scattering
+and sky-view tables on the CPU, at the camera's altitude and solar zenith, with
+the shader's parameterizations, quadrature and bilinear lookups in binary64. The
+profile constants and step counts come from `renderer_atmosphere_layout.h`, which
+the Slang tables also read. The function writes a latitude/longitude image of
+the disk-free sky, averaged over 2 × 2 directions per texel. The editor uses
+512 × 256 texels, about one sky-table texel each. It also returns the linked Sun's
+illuminance after transmittance at the observer, zero below the geometric horizon.
+The editor's reference capture supplies the image as the capture's environment
+map. It replaces the imported environment, as the raster's atmosphere lighting
+does. Both RT1 paths bilinearly reconstruct its radiance on primary misses, with
+longitude wrap and latitude clamp. The capture also gives the `SunSourceId`
+directional light that illuminance.
+The CPU oracle and GPU compute therefore sample one input through their existing
+environment and directional-light estimators. Other lights are unchanged. A camera
+below the ground or above the shell, or an Atmosphere that does not light the scene,
+leaves the capture's inputs unchanged.
+
+For observers inside the atmosphere shell, primary rays that miss geometry also
+evaluate the Sun and Moon disks, procedural stars and unresolved planet points.
+The CPU oracle and GPU compute use the same frozen directions, apparent radii,
+lunar phase and RGB transmittance. The transmittance is sampled at the observer's
+altitude in 256 directions from the geometric horizon to zenith (uniform in the
+square root of the normalized zenith cosine), then interpolated for each ray.
+The ground blocks the boundary below the horizon. Disks use the ray direction
+directly. Stars and planets use the angular width of a pixel at image center to
+filter unresolved sources. The Sun's limb profile preserves its normalized
+disk radiance, and a dark lunar disk still blocks sources behind it.
+
+RT1 traces visibility for sky and direct lighting, where the raster's cosine
+and GGX sky quadrature is unshadowed. The celestial boundary contributes only
+to primary misses and has no light-sampling PDF. The environment CDF continues
+to sample the scattered sky, and the linked directional lights still supply
+direct Sun and Moon lighting. This preserves one owner for each direct
+contribution. Aerial perspective along scene segments, observer altitude
+changes along paths, orbital views, the Milky Way band, and finite celestial
+emitters in reflected or refracted paths remain outside this approximation. Tests cover four agreements. The CPU sky matches the
+independent single-scattering quadrature within 8%. Its higher orders match the
+24-order solution within 20%. The zenith Sun matches analytic optical depth
+within 0.2%. The GPU sky pixels match the CPU tables within 8-bit quantization
+plus 2%. A matched CPU-oracle and GPU-compute capture of the resolved sky and
+attenuated Sun meets the raw-AOV tolerances of the
+[GPU-compute reference](#gpu-compute-reference).
 
 ### Celestial background and orbital views
 
@@ -2333,6 +2684,68 @@ Rendering: From Theory to Implementation*, fourth edition, sections
 separation between source selection and per-light sampling and the treatment of
 delta distributions. Ludus uses indexed scene snapshots and explicitly
 addressed randomness for its CPU and shader paths.
+
+### Directional light angular size
+
+A directional light can have an apparent disk. `DirectLight::AngularRadiusRadians`
+gives its angular radius *r* in radians, from 0 to
+`MAX_DIRECTIONAL_ANGULAR_RADIUS_RADIANS` (0.5). Only directional lights accept
+a nonzero radius. Zero, the default, keeps the delta direction and hard shadows,
+so existing lights render unchanged. The Earth Sun and Earth Moon presets set
+the radius from the celestial sample that also sizes the sky disk. See
+[Celestial directional lights](../development/editor-workspace.md#celestial-directional-lights).
+
+The disk has uniform radiance *L*. `Intensity` stays the illuminance *E* on a
+surface facing the disk centre, so *E* = *L* π sin²*r*. Flux is therefore
+preserved as the radius changes. A receiver that sees the whole disk above its
+horizon gets the same Lambertian illuminance as from the delta light, because
+the projected solid angle of the cap is π sin²*r* times the centre cosine.
+Occluders now leave a penumbra, and glossy lobes see the disk's spread.
+
+**Reference transport.** The CPU oracle and GPU reference sample the disk
+direction uniformly within the cone, after Pharr, Jakob and Humphreys,
+*Physically Based Rendering*, 4th ed., §A.5.4. Each sample carries
+*L*/pdf = *E* · 2/(1 + cos *r*) along one direction and one shadow ray. The
+draw uses two dimensions per depth starting at
+`LUDUS_REFERENCE_DIRECTIONAL_DISK_FIRST_DIMENSION`, after the directional
+selection dimensions. It uses those dimensions in every light-sampling mode. A
+delta light draws nothing, so its addresses and output are unchanged. BSDF
+samples never reach the disk. The light is estimated by light sampling alone,
+like the delta light, and specular vertices still skip it. Both
+implementations draw 1 − cos θ directly, so sin θ keeps its precision for the
+Sun's 0.0047 radian disk. The reference kernel version is 13.
+
+**Raster shadows.** A directional shadow-map region whose light has a positive
+radius uses percentage-closer soft shadows. This follows Randima Fernando,
+"Percentage-Closer Soft Shadows", SIGGRAPH 2005 Sketches. A blocker search over
+a golden-angle disk of 16 taps estimates the mean blocker depth. Its radius is
+tan *r* times the receiver's depth below the map's near plane. The penumbra
+radius is tan *r* times the blocker-to-receiver distance along the light,
+converted to texels through the orthographic projection rows. Each of 16
+filter taps runs the existing bilinear caster-plane comparison, so grazing
+receivers keep their bias. Without blockers, or with a penumbra under one
+texel, the lookup is the delta light's bilinear comparison.
+
+The filter radius is clamped to 32 texels. Penumbrae wider than that stay soft
+but too narrow. Raster shading still evaluates the BSDF at the disk centre, so
+only visibility sees the disk. Lights without a map, and point, spot and area
+lights, are unchanged.
+
+**Coverage gaps.** These paths keep a delta direction for now:
+
+- the GPU preview kernel;
+- the render-graph scene shader interface (`SampleLight` and `LightInfo`);
+- static lighting bakes cooked from LUSCN light records, which store no radius;
+- runtime scenes loaded from LUSCN.
+
+`tests/renderer` covers each implemented path:
+
+- *Reference directional disks soften shadows and keep their illuminance on CPU
+  and GPU* checks the penumbra width, flux, delta compatibility and matched-sample
+  parity in UniformArea and SeparateDirectional modes.
+- *a directional disk widens the shadow edge and keeps the lit level* checks the
+  raster penumbra and flux.
+- Both far-camera acne cases sweep the Sun's radius.
 
 ### CPU and GPU reference implementation requirement
 
@@ -3047,10 +3460,12 @@ worse. About 1-2% of 4 x 4 captures failed. Safe math gave no wrong pixel in
 thousands of captures.
 
 `Scene wave graph repeats its wave and closure-program exports bit for bit`
-(`ludus_wave_graph_tests`) is the regression. It alternates the default-material
-wave export and the program's geometric export on one device at 64 x 64 for 16
-rounds and requires every capture to repeat the first bit for bit. With fast math
-it failed every run, with at least 160 wrong pixels.
+(`ludus_wave_graph_tests`) alternates the default-material wave export and the
+program's geometric export on one device and requires every capture to repeat the
+first bit for bit. On Metal it runs 16 rounds at 64 x 64 to stress the compiler
+regression. With fast math it failed every run, with at least 160 wrong pixels.
+Vulkan checks two rounds at 4 x 4, the same extent as the portable wave transport
+cases.
 
 Safe math still contracts `a * b + c` when it is written as one MSL expression;
 fast and relaxed math also contract across statements. Slang's `precise` does not
@@ -3308,9 +3723,224 @@ control. Both angles had zero falsely lit probes. The contact edge moved
 within a 1.5-pixel limit.
 
 Hard punctual shadows need no history or reconstruction filter.
+
+#### Partial area-light shadows
+
+The `[hybrid-shadows]` area-light fixture
+([`hybrid_area_shadow_tests.cpp`](../../modules/graphics/renderer/tests/hybrid_area_shadow_tests.cpp))
+places a Lambertian receiver plane under a one-sided, 0.8 m square mesh emitter of
+4.4 nits, 1.1 m away. Two opaque planar blockers sit 0.25 m and 0.5 m in front of the
+emitter. The emitter and blockers lie behind the orthographic camera's near plane,
+so every pixel sees the receiver. Four positions of the far blocker move its
+projection beside, then over, the near blocker's. An unobstructed scene and a
+near-blocker-only scene are the controls.
+
+The oracle backprojects both blockers from each receiver point onto the emitter
+plane, clips them to the emitter and subtracts their union by inclusion-exclusion.
+It integrates the receiver cosine over the visible part with the closed-form
+point-to-rectangle form factor. A CPU case checks it against a 1024 × 1024 visibility
+quadrature that intersects each emitter sample's segment with the blocker planes;
+they agree within 0.084% of the unoccluded integral. During the motion, the clipped
+projections go from separate to overlapping at 3,016 of the 6,144 pixels. Thanks to
+George Drettakis and Eugene Fiume for computing an area emitter's visible polygons
+from a receiver point and its diffuse illumination in
+[A Fast Shadow Algorithm for Area Light Sources Using Backprojection, SIGGRAPH ’94, pp. 223–230, §2](https://www-sop.inria.fr/reves/Basilic/1994/DF94/sig94.pdf).
+
+Measured on Apple M5 with Metal, 96 × 64 linear output and centre rays:
+
+| Route | Samples per pixel | Mean signed error | RMS error | Largest error | Overlap-pixel mean signed error |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| RT1 GPU compute, every scene | 1,024 | −1.1e-4 to −1.4e-5 | 0.0028–0.0050 | 0.026 | −3.1e-4 to −5.2e-5 |
+| RT1 CPU oracle, one blocker and full overlap | 256 | −1.3e-4 to 7.7e-5 | 0.0087–0.0094 | 0.047 | −1.4e-4 |
+| Tiled vbuffer NEE, raw first frame | 1 | −0.0032 to 0.0015 | 0.089–0.159 | 0.52 | −3.6e-4 to 0.0059 |
+| Tiled vbuffer NEE, Accumulate after 256 frames | 256 | −7.3e-5 to 1.1e-4 | 0.0056–0.0100 | 0.049 | −1.9e-5 to 1.8e-4 |
+
+No RT1 or accumulated pixel lies outside about seven standard errors of the oracle
+(0.04 for GPU RT1, 0.07 for the CPU oracle and the accumulated hybrid image). The
+accumulated hybrid image and GPU RT1 differ by at most 2.1e-4 in mean. The hybrid
+route subtracts the overlap once: its error over overlapping pixels is no larger
+than elsewhere.
+
+The template's reconstruction is its Accumulate running mean. A scene revision
+starts a new mean, so a fresh graph given only the final revision reproduces the
+moved graph's frames bit for bit at every checkpoint. Over the 1,464–3,018 pixels
+whose oracle radiance changes by more than four codes at a motion step, RMS error
+against the new oracle is 0.17–0.20 in the first frame, 0.022–0.025 after 64 frames
+and within the declared 0.02 tolerance by frame 128. Against the previous position's
+oracle it stays at 0.083–0.089 after 256 frames, so no old lighting is blended in.
+
+ForceRaster selects the default graph, and Automatic does so where native rays are
+unavailable. That fallback's unshadowed polygon integral follows the oracle within
+0.016 in the unobstructed control. It then multiplies by one cube-map caster's
+visibility. The caster's faces store linear depth, and its range stops at the scene
+bounds, so its near plane sits 1.4 cm in front of the emitter
+([Mesh-light shadows](../development/render-graph-authoring.md#mesh-light-shadows))
+and both blockers, 0.22 m and 0.47 m in front of the caster, cast shadows. Before
+that change, a near plane of a hundredth of the emitter's tens-of-metres culling reach
+hid both blockers: mean visibility exceeded the oracle's by 0.23–0.33 and by up to
+0.89 at a pixel. The emitter's penumbra spans hundreds of shadow texels. The
+resolve estimates it from light points on the caster's disk, here the 0.45 m
+equal-area disk in the emitter's plane: its search and filter taps are cube
+directions, spread by the blockers' heights above that plane, with each blocker layer
+filtered at its own height and each light point weighted by its form factor at the
+receiver. Its filter used to stay within the four-texel face gutter, which left
+nearly hard shadows: darker than the oracle inside the caster's own shadow and
+lighter outside it. Visibility error against the oracle, over the near-blocker control
+and the four motion steps:
+
+| Raster fallback visibility error | Gutter-clamped filter | Light-disk filter |
+| --- | ---: | ---: |
+| Mean signed | −0.095 to 0.005 | −0.0070 to 0.0073 |
+| RMS | 0.32–0.41 | 0.063–0.088 |
+| Mean false light (positive error per pixel) | 0.096–0.147 | 0.023–0.034 |
+| Mean false darkening (negative error per pixel) | 0.14–0.21 | 0.020–0.037 |
+| Largest false light / false darkening | 0.81 / 0.83 | 0.43 / 0.30 |
+| Mean false light where the oracle sees at most half the emitter (684–1,578 pixels) | 0.019–0.095 | 0.029–0.039 |
+
+The remaining error is the round disk against the square emitter and the per-pixel
+dither of twelve filter taps. The fixture bounds the mean signed error, mean false
+light and darkening, RMS and false light over the half-shadowed pixels at about one
+and a half times the light-disk values. A fallback that ignores the blockers fails
+the false-light bounds, and the gutter-clamped filter fails the RMS and false-darkening
+bounds.
+
+| Tiled vbuffer NEE timing, 21 samples | Median | p95 |
+| --- | ---: | ---: |
+| Far-blocker move to drawable revision, CPU wall time including acceleration update and polling | 22.1 ms | 40.0 ms |
+| `tiles` emitter table, GPU timestamps | 0.043 ms | 0.093 ms |
+| `prefix` tile CDF, GPU timestamps | 0.010 ms | 0.026 ms |
+| `shade` with emitter and BSDF rays and the fused running mean, GPU timestamps | 0.105 ms | 0.179 ms |
+
+The timings come from the opt-in `[.benchmark][hybrid-shadows]` case on a heavily
+loaded machine.
+
+#### Roughness-aware reflections
+
+The [hybrid reflections template](../development/render-graph-authoring.md#trace-rough-reflections)
+traces one ray per pixel from the first surface's GGX specular lobe and accumulates
+it. The `[hybrid-reflections]` fixture
+([`hybrid_reflection_tests.cpp`](../../modules/graphics/renderer/tests/hybrid_reflection_tests.cpp))
+places a metallic receiver of reflectance 0.9 at z = 0.5, facing the orthographic
+camera. A 3.2 m square Lambertian panel of albedo 0.8 faces it from z = −0.4, and a
+black, two-sided 0.3 m × 0.6 m blocker sits 0.1 m in front of the panel. Both lie
+behind the near plane, so the receiver shows the panel, the blocker's silhouette and
+its shadow on the panel only by reflection. One directional light of 11 lux reaches
+the panel's front at about 11° and only the receiver's back, so the receiver has no
+direct light. The states are receiver roughness 0.2 and 0.5, then four blocker
+positions 0.2 m apart at roughness 0.35. The environment is black.
+
+The oracle integrates the receiver's reflection in float64 over 256 × 256 stratified
+microfacet normals, drawn with density D(h) cos θₕ by the inverse CDF of Walter et al.
+It intersects each reflected direction with the blocker and panel planes, and
+projects the blocker along the light onto the panel for the shadow. Halving the
+strata per side changes no probe by more than 0.0014 at either roughness control. It is evaluated at 384 probes,
+one per 4 × 4 pixel block. Thanks to Bruce Walter, Stephen R. Marschner, Hongsong
+Li and Kenneth E. Torrance for the GGX distribution and its sampling in
+[Microfacet Models for Refraction through Rough Surfaces, EGSR 2007, §5.2](https://www.cs.cornell.edu/~srm/publications/EGSR07-btdf.pdf),
+and to Eric Heitz for the height-correlated masking-shadowing term and the
+visible-normal proposal in [Understanding the Masking-Shadowing Function in
+Microfacet-Based BRDFs, JCGT 3(2), 2014](https://jcgt.org/published/0003/02/03/) and
+[Sampling the GGX Distribution of Visible Normals, JCGT 7(4), 2018](https://jcgt.org/published/0007/04/01/).
+
+RT1 traces two scattering events without roulette. Measured on Apple M5 with Metal,
+96 × 64 linear output and centre rays:
+
+| Route | Samples per pixel | Compared with | Mean signed error | RMS error | Largest error |
+| --- | ---: | --- | ---: | ---: | ---: |
+| RT1 GPU compute, every state | 1,024 | Oracle probes | −2.6e-4 to 4.2e-4 | 0.0031–0.0068 | 0.023 |
+| RT1 CPU oracle, roughness 0.2 and last motion step | 256 | Oracle probes | −3.6e-4 to −2.3e-4 | 0.0064–0.0099 | 0.044 |
+| Hybrid reflections, raw first frame | 1 | RT1 GPU image | −0.0016 to 0.0019 | 0.097–0.21 | 0.49 |
+| Hybrid reflections, Accumulate after 256 frames | 256 | Oracle probes | −1.1e-4 to 7.3e-4 | 0.0060–0.0126 | 0.053 |
+| Hybrid reflections, Accumulate after 256 frames | 256 | RT1 GPU image | −1.1e-4 to 4.7e-4 | 0.0069–0.0145 | 0.061 |
+
+No RT1 or accumulated value lies outside about seven standard errors of the oracle
+or of RT1, with a per-sample standard deviation bounded by 0.25. RT1 GPU and CPU
+differ by at most 1.3e-4 in mean. Raw error grows with roughness, from RMS 0.097 at
+0.2 to 0.21 at 0.5, as the lobe spreads.
+
+A scene revision starts a new mean, so a fresh graph given only the final revision
+reproduces the moved graph's frames bit for bit at every checkpoint. Each motion
+step changes 978–984 pixels by more than 12 codes in the RT1 images. Over them, the
+RMS error against the new RT1 image is 0.21–0.22 in the first frame, 0.052–0.057
+after 16 frames and 0.028 after 64, and reaches the declared 0.02 tolerance by frame
+128. Against the previous position's RT1 image it stays near 0.10 after 256 frames,
+so no old reflection is blended in.
+
+ForceRaster selects the default graph, and Automatic does so where native rays are
+unavailable. That graph reflects only the environment and sky, so the receiver is
+black: the panel's reflection, 0.37–0.45 in mean over the probes, is missing in every
+state. Hybrid reflections is the route that shows offscreen geometry.
+
+| Hybrid reflections timing, 21 samples per run, two runs | Median | p95 |
+| --- | ---: | ---: |
+| Blocker move to drawable revision, CPU wall time including acceleration update and polling | 6.1–6.3 ms | 6.2–6.8 ms |
+| `shade` with shadow rays, the reflection ray and the fused running mean, GPU timestamps | 0.13–0.24 ms | 0.17–0.24 ms |
+
+The timings come from the opt-in `[.benchmark][hybrid-reflections]` case. The shade
+pass's GPU time varied between the two runs with the device clock.
+
+#### Bounded one-bounce indirect diffuse
+
+The [hybrid indirect diffuse graph](../development/render-graph-authoring.md#trace-one-diffuse-bounce)
+estimates the first diffuse interreflection from raster first hits. At the first
+surface it adds one next-event estimate of direct light. At a cosine-weighted
+secondary hit it estimates the next light connection with the diffuse lobe,
+then weights that estimate by the receiver's diffuse BRDF times π. The effect
+uses up to one surface and two visibility queries per pixel. Accumulate shares
+the shade dispatch and retains a fixed-view scene-linear mean. An accepted
+scene or view update resets the sample count and its history. An accumulation
+readback becomes available when the drawable revision produces a completed
+frame. Until then, a completed display image can retain its previous revision.
+
+The `[hybrid-indirect-diffuse]` fixture uses a fixed orthographic camera, a neutral
+diffuse receiver, an offscreen colored reflector and a one-sided mesh emitter
+facing the reflector. A black blocker moves between them. The emitter faces away
+from the receiver, so the RT1 direct and emission channels are zero at the
+probes. The RT1 CPU oracle and GPU compute evaluate two scattering events, and
+the test compares their one-bounce indirect output with RT2's raw first sample
+and running mean. An emitter-only edit comes before the blocker edit. The test
+submits an old-revision frame before staging each edit, checks the output revision
+and accumulation boundary, and compares each new checkpoint with a fresh graph
+at that revision. It reports error over changed and stable receiver pixels and
+the first checkpoint to reach the declared RMS tolerance.
+
+On Apple M5 with Metal, at 96 × 64 and center rays, the 256-sample CPU oracle
+and the 1024-sample GPU RT1 capture differed by at most 1.1e-4 in mean signed
+red radiance. The raw hybrid frames had RMS errors of 0.061–0.245, and the
+256-frame running means had RMS errors of 0.0043–0.0173 against GPU RT1.
+Changed-region RMS fell to 0.0177 after the emitter edit and 0.0195 after the
+occluder edit at frame 256, within the declared 0.02 tolerance. Stable-region
+RMS was 0.0067 and 0.0111. The fresh graph reproduced the sampled checkpoints
+exactly. The previous output revision remained available until the first new
+frame, when the new history held one sample per pixel.
+
+The running mean uses 196,608 bytes at that extent. Over four 21-frame
+measurements, emitter edit to drawable publication took 2.77–4.11 ms at the
+median and 6.15–12.75 ms at p95, including preparation and polling. The fused
+ray shade and reconstruction took 0.15–0.26 ms median and 0.25–0.29 ms p95 in
+GPU timestamps. ForceRaster rendered the same inputs using the default raster
+graph. Automatic fallback is exercised on Vulkan devices with native rays
+unrequested.
+
+The offline comparison traces cosine-weighted walks from the same emitter and
+places one point light at each unblocked reflector hit. It checks visibility back
+to regular probes and to probes 15 mm from the reflector. The near probes use an
+independent cosine-hemisphere integral. The virtual-light run reports budgets of
+64, 256 and 1024 source paths, the number of point lights and visibility tests, the
+signed error against RT1 and the near-surface peak error. It measures the lost
+radiance when the inverse-square denominator is clamped at an 80 mm distance.
+Thanks to Alexander Keller for the virtual point light construction and the
+discussion of its near-source singularity in
+[Instant Radiosity, SIGGRAPH 1997, pp. 49–56](https://doi.org/10.1145/258734.258769).
+At 64, 256 and 1024 source paths, it retained 49, 194 and 761 virtual lights
+and checked about 5.9k, 23k and 91k visibility segments. Mean signed red error
+against GPU RT1 stayed within 0.0025 at the regular probes. Near the reflector,
+the largest errors were 5.60, 12.39 and 2.69 before clamping, and 1.29, 1.36 and
+1.37 after. Clamping also removed 0.82–1.62 mean red radiance at those probes.
+That near-field trade-off keeps virtual lights as an offline comparison.
+
 [Issue 1248](https://github.com/The-Ludus-Project/Ludus/issues/1248) tracks the
-remaining area-light penumbrae, reflections, indirect diffuse, reconstruction
-and temporal fixtures.
+RT2 acceptance evidence across the World viewport, installed SDK and Vulkan.
 
 Start with ordinary sampling plus a modest, inspectable temporal/spatial filter.
 ReSTIR DI (direct light sampling), GI (indirect paths) and PT (path resampling)
@@ -3571,8 +4201,9 @@ from emissive triangles, merged into convex polygons where coplanar, using polyg
 for the records a conservative world-space culling grid lists at each pixel. Other
 raster profiles retain their existing emission behavior. Emissive indirect transport
 is still a separate lighting capability; see the [default raster contract](../development/render-graph-authoring.md#default-clustered-deferred-lighting).
-No editor lights or fake environment are added to hide that limitation. Choose
-optional GPU path tracing explicitly when emissive/indirect transport is wanted;
+The World viewport can explicitly request a camera **Work Light** for editing. It is evaluated during final raster
+resolve and uses the same camera update path as exposure. It remains outside the extracted light list, light budgets,
+shadows, bakes and diagnostics. Choose optional GPU path tracing explicitly when emissive/indirect transport is wanted;
 do not make it the prerequisite for ordinary scene navigation.
 
 Native acceptance changes a snapshot's material color and its camera while
@@ -4255,6 +4886,14 @@ use the capture's fixed `TextureMip`; that initialized mip must exist and have
 retained CPU content in **both** input textures. CPU retention supplies immutable
 setup bytes, not a GPU transport/readback fallback. Mip filtering is the declared
 filtered-channel model, without footprint-aware ray filtering or specular AA.
+
+The World raster upload builds successive floor-halved levels from the retained
+material image. Each level uses equal-area box footprints that cover the entire
+parent level, so an odd final row or column contributes with its fractional
+overlap. The discussion of texture minification in [Mehdi NS's texture filtering
+notes](https://mehdins.wordpress.com/2017/08/29/notes-on-anti-aliasing-texture-filtering-part-3/)
+prompted the review of this path against the offline texture cooker.
+
 Creation retains an exact texture view and rejects sRGB/data-format mismatch,
 attachments, unavailable resources and incompatible shader programs explicitly.
 Null preserves constant parameters and the mesh normal. Failed creation preserves
@@ -4346,6 +4985,20 @@ sampling with its matching PDF. Below-surface proposals remain null events;
 there is no retry, energy clamp or hidden change to conductor alpha. Storage
 preserves `AlphaU` and `AlphaV`; reference admission currently requires them to
 match, and requires positive alpha rather than implementing delta transport.
+
+The conductor PDF is per unit solid angle about the reflected direction. For a
+fixed unit view direction `v` and a valid unit light direction `l`, the half
+direction is `h = normalize(v + l)`. Convert a visible-normal density `p_h`
+to a light-direction density with `p_l = p_h / (4 * abs(dot(v, h)))`.
+The CPU and Slang GGX evaluators use the reduced form
+`D(h) / (2 * (viewCosine + lambdaView))` before lobe weighting, where `D` is
+the GGX normal distribution, `viewCosine = dot(n, v)` for shading normal `n`,
+and `lambdaView = sqrt(viewCosine² * (1 - alpha²) + alpha²)`. The factor
+`dot(v, h)` cancels against the same factor in the visible-normal density.
+Use the returned directional PDF directly for MIS with another solid-angle
+proposal.
+See [Mehdi NS, *Introduction to the Jacobian and its use in graphics*, example 2](https://web.archive.org/web/20170911052112/https://mehdins.wordpress.com/2017/09/04/introduction-to-the-jacobian-and-its-use-in-graphics/)
+and [Walter et al., *Microfacet Models for Refraction through Rough Surfaces*, Eq. 14](https://www.graphics.cornell.edu/~bjw/microfacetbsdf.pdf).
 
 CPU/native-query reference transport evaluates the CPU implementation;
 GPU-compute reference transport evaluates the corresponding Slang implementation.
@@ -4760,7 +5413,9 @@ explicitly. They evaluate the original source radiance and its importance PDF,
 including miss and next-event MIS terms; raster SH/prefiltered mips are never added
 to transport. CPU sampling uses exact row solid angles and a binary64 CDF;
 GPU packing stores the normalized CDF in binary32 and evaluates the corresponding
-quantized density. Both use piecewise-constant source radiance. Black maps have a
+quantized density. Both use piecewise-constant source radiance for surface
+transport and imported backgrounds. Primary misses use bilinear reconstruction
+for the [resolved atmosphere](#clear-sky-atmosphere-design). Black maps have a
 valid zero-radiance distribution. Tangents, vertex color, routed UVs and emission
 maps are copied/fingerprinted with the integral. The reference lighting profile remains
 version **4** (geometric emission sidedness); the packed GPU kernel ABI is version
@@ -4973,8 +5628,8 @@ its existing level-zero sampling contract.
 The optional analytic-light bake also samples incoming bounced radiance at
 a bounded uniform World grid. Six cosine projections form an ambient cube at
 each probe. Short first-hit rays populate six coarse face depth maps in the
-same atlas. The depth maps store distance along the face axis so planar walls
-aligned to the grid give consistent comparisons across neighbouring rays.
+same atlas, 8 × 8 texels per face. The depth maps store distance along the
+face axis so planar walls aligned to the grid give consistent comparisons across neighbouring rays.
 This adapts the visibility-aware interpolation of [Majercik, Guertin,
 Nowrouzezahrai and McGuire, *Dynamic Diffuse Global Illumination with Ray-Traced
 Irradiance Fields*, §5](https://jcgt.org/published/0008/02/01/) for an offline
@@ -4991,7 +5646,7 @@ to evaluate their original transport against the full scene.
 
 #### Probe visibility near walls and openings
 
-Each lookup compares the receiver against one nearest sample of a 4 × 4
+Each lookup compares the receiver against one nearest sample of an 8 × 8
 axial depth map per face. The ray through that texel's centre can cross a
 different part of a wall from the ray to the receiver. It can see around a
 thin or diagonal obstruction, or hit a wall where the receiver's ray would
@@ -5000,26 +5655,22 @@ single wrongly admitted probe. Receiver meshes marked for probe GI are
 excluded from the bake, so this test covers World occlusion. An asset's
 self-occlusion would require its own representation.
 
-A synthetic visibility check isolated this approximation with a unit probe
-cell and eight valid probes. The four probes at x = 0 had unit red irradiance
-on all faces and the four at x = 1 were black. An exact segment/plane
-intersection provided the visibility oracle. Both paths used the same
-trilinear weights and renormalization. The approximation used the shipped
-face size, depth quantization and bias.
+A synthetic visibility check first isolated this approximation with a unit
+probe cell and eight valid probes, using the earlier 4 × 4 faces. The four
+probes at x = 0 had unit red irradiance on all faces and the four at x = 1
+were black. An exact segment/plane intersection provided the visibility
+oracle. Both paths used the same trilinear weights and renormalization. The
+approximation used the face size, depth quantization and bias of that layout.
 
-| Divider in cell coordinates | Receiver (x, y, z) | Exact red | Depth map red |
+| Divider in cell coordinates | Receiver (x, y, z) | Exact red | 4 × 4 depth map red |
 | --- | --- | ---: | ---: |
 | Closed wall at x = 0.5 | (0.60, 0.50, 0.50) | 0 | 0 |
 | Closed wall at x = 0.5 | (0.55, 0.44, 0.50) | 0 | 0.265 |
 | Closed wall at x + 0.4(y − 0.5) = 0.5 | (0.66, 0.23, 0.50) | 0 | 0.691 |
 | Wall at x = 0.5 with an opening at 0.4 < y < 0.6 | (0.60, 0.50, 0.50) | 0.400 | 0 |
 
-These values isolate the visibility test with fixed probe irradiance.
-[Native Lit qualification](https://github.com/The-Ludus-Project/Ludus/issues/1367)
-needs scene-linear measurements during receiver movement, with the same
-baked inputs and a reference for both blocked bounce and bounce through an
-opening. A higher face resolution is a candidate if it improves both and
-fits the bake and GPU budgets.
+These values isolate the visibility test with fixed probe irradiance. The
+native qualification below measures the same dividers with baked inputs.
 
 Thanks to Michał Iwanicki and Peter-Pike Sloan, whose
 [Precomputed Lighting in Call of Duty: Infinite Warfare, SIGGRAPH 2017](https://advances.realtimerendering.com/s2017/index.html),
@@ -5027,6 +5678,112 @@ slides 55–60, motivates checking visibility before interpolation. Their
 light grid stores first-hit depth for each incident tetrahedron. Ludus
 uses a regular grid and per-probe cube faces. Their asset-space
 self-visibility in slides 14–25 is a separate approximation.
+
+#### Native Lit probe visibility qualification
+
+The hidden native editor test *Native Lit probe GI visibility qualification
+around thin and diagonal walls and a doorway*
+(`apps/editor/tests/render_native_tests.mm`, `[.render-native][probe-gi]`)
+renders the studied cell through the production World bake and native Lit
+viewport. It runs in the macOS batch jobs and locally with the Cocoa platform.
+
+- **Fixture.** A 3 × 2 × 2 grid with 1 m spacing and origin
+  (−1, 0.5, −0.5) m puts the studied cell between lit probes at x = 0 and
+  dark probes at x = 1. Black, absorbing walls 6 m wide and 3 m high
+  separate the rooms over a grey floor with albedo 0.7. A red point light of
+  15 W/sr at (−0.5, 1.2, −0.4) m is the selected always-on light. Each path
+  holds ten marked 6 cm receivers 0.1 m apart. They face +Z, away from the
+  light, so probe GI is their only illumination.
+- **Dividers.** The axis-aligned wall at x = 0.5 is the control along the
+  cell's centre line and the near-field case along x = 0.55. The diagonal wall
+  is x + 0.4(y − 1) = 0.5. The doorway wall is open for 0.9 < y < 1.1. In
+  the embedded case the floor and a ceiling sit 3 mm outside the two probe
+  layers, so every probe touches geometry and is invalid.
+- **Measurement.** Each receiver is read from a 3 × 3 block of presented
+  pixels. sRGB decoding and `InvertPbrNeutral` at exposure 1 give
+  scene-linear radiance. Dividing by the albedo and Schlick transmission
+  (1 − F) for the view angle, then multiplying by π, recovers probe
+  irradiance. A CPU copy of the shader's lookup reads the same atlas and
+  evaluates it at the pixels' receiver-plane positions. A second copy
+  replaces the depth test with an exact probe-to-receiver segment test.
+- **Reference.** The bake's own probe transport evaluates the receiver
+  positions: the selected light only, at least one bounce, receivers
+  excluded and a maximum depth of 4. The +Z ambient-cube faces of a 0.1 m
+  reference grid at the receivers average 16 seeds of 256 sphere samples.
+  Each seed is RGBA8-quantized.
+- **Tolerances.** Native and CPU lookups agree within 0.02 + 3 %. A closed-off
+  receiver leaks if it exceeds the reference by more than 0.01, about 2.5 %
+  of the lit half's reference irradiance (0.37–0.40). Bounce just past the
+  opening must keep at least half of the reference.
+
+Native irradiance in the fixture's units, with 4 × 4 faces before this
+qualification and 8 × 8 faces after it:
+
+| Path and position | Reference | 4 × 4 | 8 × 8 | Exact visibility |
+| --- | ---: | ---: | ---: | ---: |
+| Axis control, lit, x = 0.05–0.45 | 0.37–0.40 | 0.608 | 0.608 | 0.611 |
+| Axis control, dark, x = 0.55–0.95 | 0 | 0 | 0 | 0 |
+| Near field x = 0.55, worst y | 0 | 0.207 (y = 1.15) | 0.157 (y = 1.25) | 0 |
+| Near field, leaking receivers of ten | 0 | 4 | 4 | 0 |
+| Diagonal, dark, x = 0.65 | 0 | 0.508 | 0 | 0 |
+| Diagonal, dark, x = 0.75 | 0 | 0.041 | 0 | 0 |
+| Doorway, lit, x = 0.35 | 0.358 | 0.608 | 0.401 | 0.611 |
+| Doorway, past the opening, x = 0.55 | 0.157 | 0.009 | 0.279 | 0.279 |
+| Doorway, dark, x = 0.65 | 0.024 | 0.009 | 0.219 | 0.009 |
+| Embedded layers, lit, x = 0.05–0.45 | 1.96–3.43 | 0 | 0 | 0 |
+
+Native values matched the CPU lookup to within 0.003 except at one 4 × 4
+texel boundary (0.041 against 0.022), so the table measures the
+representation rather than the shader. Moving one receiver through the
+doorway at x = 0.25, 0.45, 0.55 and 0.75 changes the World lighting key and
+rebakes. Each step presented its new bounce in 355–413 ms, matching the
+static receiver at that position. In the embedded case no neighbour
+remains, and receivers fall back to live lighting with no probe term.
+
+Cost on an Apple M5 (Metal 4) with the macOS Clang debug build:
+
+| Measure | 4 × 4 | 8 × 8 |
+| --- | ---: | ---: |
+| Unpadded atlas bytes per probe | 408 | 1,560 |
+| Atlas bytes, 12 probes | 5,120 | 19,456 |
+| Atlas bytes, 12 × 12 × 12 probes | 705,536 | 2,696,192 |
+| Visibility rays per probe | 96 | 384 |
+| CPU bake, 40 probes, four workers | 18–44 ms | 36–63 ms |
+| GPU frame, receiver covering the view | 2.30 ms | 1.94 ms |
+| GPU frame, lookups outside the volume | 1.65 ms | 1.74 ms |
+
+The GPU rows are 30-frame means at 1024 × 697 physical pixels, with 95th
+percentiles up to 5.8 ms. The two layouts did not differ beyond run-to-run
+variation.
+
+**Decision.** The bake uses 8 × 8 faces. They remove the diagonal leak and
+keep the bounce through the opening at the exact-visibility value, for 3.8
+times the atlas bytes and no measurable GPU cost. Worlds saved with 4 × 4
+atlases fail the atlas extent check on open, so the editor rebakes them in
+the background. Two errors remain. A receiver 5 cm (5 % of the spacing) from
+an axis-aligned wall leaked at four of ten heights, where a lit probe's
+dominant face texel misses the wall. Just past an opening, one wrongly admitted probe outweighs the
+reference by 0.2. The exact-visibility lookup has neither error with the
+same weights, so both belong to the single nearest-texel depth comparison.
+A seam-aware variant also tested each face within one edge texel of the
+dominant axis. In the CPU lookup it removed two of the four near-field leaks
+but not the largest, so it was not adopted. A filtered distance
+representation, such as the mean and second-moment test of Majercik et al.
+§5, is the next candidate and should be measured with this fixture.
+
+Usable limits from the 1 m qualification:
+
+- Keep probe layers more than 1.6 % of the spacing from surfaces, the
+  bake's minimum clearance of 2/255 of its two-cell depth range. A probe
+  closer than that is invalid. Where every neighbour is invalid, receivers
+  lose all baked bounce; the embedded case lost 1.96–3.43.
+- Expect leaks at receivers about 5 % of the spacing from a wall and just
+  past an opening. Choose a spacing whose cells do not straddle a thin divider near
+  where receivers move, or move the volume so walls fall near cell centres.
+- Trilinear interpolation across 1 m cells overestimated the lit half by
+  51–62 %. Probes nearer the light and floor contributed brighter bounce.
+  Visibility does not cause this error. Smaller spacing reduces it but was
+  not qualified here.
 
 ### Material debug views
 

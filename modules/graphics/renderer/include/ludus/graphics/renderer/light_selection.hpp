@@ -18,11 +18,15 @@ inline constexpr ludus::foundation::float32 DEFAULT_LIGHT_RANGE_METERS = 10;
 inline constexpr ludus::foundation::float32 DEFAULT_SPOT_INNER_COSINE = 0.9F;
 /// Default spot outer half-angle cosine for a new DirectLight.
 inline constexpr ludus::foundation::float32 DEFAULT_SPOT_OUTER_COSINE = 0.8F;
+/// Largest admitted DirectLight::AngularRadiusRadians: a disk about 57 degrees across, whose cone of directions
+/// stays well inside the hemisphere around its centre.
+inline constexpr ludus::foundation::float32 MAX_DIRECTIONAL_ANGULAR_RADIUS_RADIANS = 0.5F;
 
 /// Punctual RGB light model; distances and positions use meters.
 enum class LightKind : ludus::foundation::uint8
 {
-    /// Uniform incident illuminance in lux; Direction points from light toward scene.
+    /// Uniform incident illuminance in lux; Direction points from light toward scene. A positive
+    /// DirectLight::AngularRadiusRadians spreads it over a uniformly bright disk of that radius.
     Directional,
     /// Isotropic luminous intensity in candela, with bounded smooth range falloff.
     Point,
@@ -55,6 +59,13 @@ struct DirectLight final
     ludus::foundation::float32 InnerCos = DEFAULT_SPOT_INNER_COSINE;
     /// Spot outer half-angle cosine, distinct from InnerCos.
     ludus::foundation::float32 OuterCos = DEFAULT_SPOT_OUTER_COSINE;
+    /// Directional lights only: angular radius in radians of the source's apparent disk, in
+    /// [0,MAX_DIRECTIONAL_ANGULAR_RADIUS_RADIANS]; zero for every other kind. Zero keeps the delta direction and hard
+    /// shadows. A positive radius models a uniformly bright disk whose illuminance at normal incidence stays
+    /// Intensity, so flux is preserved as the radius changes. Reference transport samples the disk; raster shadow maps
+    /// widen their filter by the penumbra it casts. Shading still evaluates the BSDF at the disk centre in raster.
+    /// See "Directional light angular size" in docs/architecture/renderer-systems.md.
+    ludus::foundation::float32 AngularRadiusRadians = 0;
     /// Allows automatic shadow-map assignment in raster graphs that support this light kind.
     /// The graph's shadow budget and selection rule still apply. Ray visibility is independent.
     bool ShouldCastRasterShadows = true;

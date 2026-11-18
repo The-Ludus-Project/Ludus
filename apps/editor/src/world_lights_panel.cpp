@@ -1,5 +1,6 @@
 #include "internal/world_lights_panel.h"
 
+#include "internal/caption_label.h"
 #include "internal/render_scene.h"
 
 #include <ludus/foundation/base/core.h>
@@ -401,6 +402,8 @@ WorldLightsPanel::WorldLightsPanel(QWidget* parentOrNull) : QWidget(parentOrNull
     mTreeOrNull->setItemsExpandable(false);
     mTreeOrNull->setRootIsDecorated(false);
     mTreeOrNull->setMinimumHeight(MIN_LIST_HEIGHT);
+    // Keyboard focus marks the whole row, as in the Materials list.
+    mTreeOrNull->setAllColumnsShowFocus(true);
     mTreeOrNull->setToolTip(QStringLiteral("Switch any light on or off. An imported area light can cover several "
                                            "emissive shapes. Switching it off keeps its authored values."));
     layout->addWidget(mTreeOrNull, 1);
@@ -422,6 +425,12 @@ WorldLightsPanel::WorldLightsPanel(QWidget* parentOrNull) : QWidget(parentOrNull
         commands->addWidget(button);
     }
     layout->addLayout(commands);
+    // The panel is a tab page: it stays shown with an empty list and this one-line hint rather than hiding itself,
+    // since showing a hidden page again would draw it over whichever tab is current.
+    mStatusOrNull = new CaptionLabel(this);
+    mStatusOrNull->setObjectName(QStringLiteral("worldLightsStatus"));
+    mStatusOrNull->SetCaption(QStringLiteral("No lights yet. Add one with +, or import a scene that has lights."));
+    layout->addWidget(mStatusOrNull);
     connect(mTreeOrNull, &QTreeWidget::itemChanged, this, &WorldLightsPanel::rowChanged);
     connect(mTreeOrNull, &QTreeWidget::itemSelectionChanged, this, &WorldLightsPanel::selectionChanged);
     connect(mSoloOrNull, &QPushButton::clicked, this, [this]() {
@@ -477,7 +486,7 @@ void WorldLightsPanel::SetRows(QVector<WorldLightRow> rows, LightSwitchSet switc
         rebuildItems(hasSelection == true ? &previous : nullptr);
     }
     mIsRendering = false;
-    setVisible(mRows.isEmpty() == false);
+    mStatusOrNull->setVisible(mRows.isEmpty());
     updateCommands();
 }
 void WorldLightsPanel::updateItems()

@@ -26,7 +26,7 @@ TARGET_TESTS = (
     "ludus_text_tests", "ludus_graphics_text_tests", "ludus_localization_tests",
     "ludus_ui_tests", "ludus_audio_tests",
     "ludus_network_core_tests", "ludus_physics_fluid_tests", "ludus_platform_pacing_tests",
-    "ludus_shader_compiler_tests", "ludus_render_graph_dxil_tests",
+    "ludus_shader_compiler_tests",
     "ludus_behavior_tests", "ludus_behavior_acceptance", "ludus_behavior_safety",
     "ludus_behavior_allocator_contract", "ludus_runtime_game_api_tests",
     "ludus_static_game_host_tests", "ludus_game_host_loader_tests", "ludus_game_host_reload_tests",
@@ -34,6 +34,9 @@ TARGET_TESTS = (
     "ludus_scene_cook_tests", "ludus_scene_assets_tests", "ludus_best_effort_import_tests",
     "ludus_scene_import_tests",
 )
+# Targets whose CTest tests are Catch2 shards named <target>_<index>; each shard's command names
+# --shard-count and --shard-index, and the inventory must cover every index (find_shards).
+SHARDED_TARGET_TESTS = ("ludus_render_graph_dxil_tests",)
 OTHER_TARGETS = (
     "ludus_world_demo", "ludus_world_frame_renderer_tests", "ludus_rhi_render_tests", "ludus-shader-worker",
     "ludus_game_host_app", "ludus_cook",
@@ -76,8 +79,38 @@ def run(*command, environment=None, capture=False):
                           encoding="utf-8", errors="replace").stdout
 
 
-def test_inventory(tests):
-    return "^(" + "|".join(re.escape(name) for name in tests) + ")$"
+def test_inventory(tests, patterns=()):
+    return "^(" + "|".join([re.escape(name) for name in tests] + list(patterns)) + ")$"
+
+
+def shard_inventory(targets):
+    return [rf"{re.escape(target)}_[0-9]+" for target in targets]
+
+
+def find_shards(target, tests):
+    """Return the CTest names of a target's Catch2 shards, which must cover --shard-index 0 to count - 1."""
+    pattern = re.compile(rf"{re.escape(target)}_([0-9]+)")
+    shards = {}
+    count = None
+    for test in tests:
+        match = pattern.fullmatch(test["name"])
+        if match is None:
+            continue
+        command = test.get("command", [])
+        try:
+            shard_count = int(command[command.index("--shard-count") + 1])
+            shard_index = int(command[command.index("--shard-index") + 1])
+        except (ValueError, IndexError):
+            raise RuntimeError(f"{test['name']} does not name its Catch2 --shard-count and --shard-index") from None
+        if shard_index != int(match.group(1)) or count not in (None, shard_count) or shard_index in shards:
+            raise RuntimeError(f"{test['name']} runs shard {shard_index} of {shard_count}, "
+                               f"inconsistent with the other {target} shards")
+        count = shard_count
+        shards[shard_index] = test["name"]
+    if count is None or sorted(shards) != list(range(count)):
+        raise RuntimeError(f"Required CTest inventory mismatch: {target} shards {sorted(shards)} "
+                           f"do not cover --shard-count {count}")
+    return [shards[index] for index in range(count)]
 
 
 def require_inventory(expected, actual):
@@ -206,7 +239,8 @@ def qualify(args):
         "-DLUDUS_BUILD_BEHAVIOR_ACCEPTANCE=ON", environment=environment)
     sanitizer_tests = SANITIZER_TARGET_TESTS if args.preset == "windows-msvc-asan" else ()
     allocation_tests = () if sanitizer_tests else ALLOCATION_TARGET_TESTS
-    targets = tuple(dict.fromkeys(TARGET_TESTS + OTHER_TARGETS + sanitizer_tests + allocation_tests))
+    targets = tuple(dict.fromkeys(TARGET_TESTS + SHARDED_TARGET_TESTS + OTHER_TARGETS + sanitizer_tests
+                                  + allocation_tests))
     if sanitizer_tests:
         targets += ("ludus_asan_control_child",)
     run("cmake", "--build", "--preset", args.preset, "--target", *targets,
@@ -214,9 +248,12 @@ def qualify(args):
     expected = tuple(dict.fromkeys(TARGET_TESTS + OTHER_TESTS + sanitizer_tests + allocation_tests))
     if sanitizer_tests:
         expected += ("ludus_asan_control",)
-    ctest = ("ctest", "--preset", args.preset, "--tests-regex", test_inventory(expected))
+    ctest = ("ctest", "--preset", args.preset, "--tests-regex",
+             test_inventory(expected, shard_inventory(SHARDED_TARGET_TESTS)))
     inventory = json.loads(run(*ctest, "--show-only=json-v1", capture=True, environment=environment))
     (args.output / "inventory.json").write_text(json.dumps(inventory, indent=2) + "\n", encoding="utf-8")
+    for target in SHARDED_TARGET_TESTS:
+        expected += tuple(find_shards(target, inventory["tests"]))
     require_inventory(expected, [test["name"] for test in inventory["tests"]])
     report = args.output / "ctest.xml"
     run(*ctest, "--output-on-failure", "--no-tests=error", "--output-junit", str(report), environment=environment)

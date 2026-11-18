@@ -230,6 +230,28 @@
     "vertex": "DeferredVertexMain",
     "fragment": "AtmosphereDisplayMain"
   },
+  "renderer_skin_deferred": {
+    "source": "renderer_skin_deferred.slang",
+    "vertex": "DeferredVertexMain",
+    "fragment": "DeferredSkinLightingMain",
+    "fragment_storage": true
+  },
+  "renderer_atmosphere_skin_deferred": {
+    "source": "renderer_atmosphere_skin_deferred.slang",
+    "vertex": "DeferredVertexMain",
+    "fragment": "DeferredSkinLightingMain",
+    "fragment_storage": true
+  },
+  "renderer_skin_blur": {
+    "source": "renderer_skin_blur.slang",
+    "vertex": "DeferredVertexMain",
+    "fragment": "SkinBlurMain"
+  },
+  "renderer_skin_composite": {
+    "source": "renderer_skin_composite.slang",
+    "vertex": "DeferredVertexMain",
+    "fragment": "SkinCompositeMain"
+  },
   "renderer_deferred_lighting": {
     "source": "renderer_deferred_lighting.slang",
     "vertex": "DeferredVertexMain",

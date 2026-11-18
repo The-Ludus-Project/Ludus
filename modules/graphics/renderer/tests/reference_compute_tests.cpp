@@ -19,6 +19,7 @@
 #include <ludus/foundation/math/vector.hpp>
 #include <ludus/foundation/threading/thread.hpp>
 #include <ludus/foundation/time/time.hpp>
+#include <ludus/graphics/renderer/atmosphere.hpp>
 #include <ludus/graphics/renderer/environment.hpp>
 #include <ludus/graphics/renderer/renderer.hpp>
 #include <ludus/graphics/rhi/device.h>
@@ -476,6 +477,9 @@ struct ReferenceRawAovCase final
     bool IsFarConventional = false;
     rr::ReferenceLightSampling LightSampling = rr::ReferenceLightSampling::UniformArea;
     bool HasSecondDirectionalLight = false;
+    /// Replace the environment map with a World Atmosphere's sky and attenuate the first light as its Sun,
+    /// as the editor's reference capture does.
+    bool HasAtmosphereSky = false;
 };
 
 void CheckReferenceRawAovs(const ReferenceRawAovCase& test)
@@ -550,11 +554,36 @@ void CheckReferenceRawAovs(const ReferenceRawAovCase& test)
     {
         pixel = pixel * 16;
     }
+    // A clear sky above an anchor below the scene, with a Sun forty degrees up.
+    constexpr uint32 ATMOSPHERE_WIDTH = 32;
+    constexpr uint32 ATMOSPHERE_HEIGHT = ATMOSPHERE_WIDTH / 2;
+    constexpr float32 ATMOSPHERE_ANCHOR_DEPTH = 5;
+    constexpr float32 SOLAR_ILLUMINANCE = 6;
+    StaticArray<math::Vector4, static_cast<usize>(ATMOSPHERE_WIDTH) * ATMOSPHERE_HEIGHT> atmospherePixels{};
+    rr::AtmosphereDescription atmosphere;
+    atmosphere.IsEnabled = true;
+    atmosphere.ShouldLightScene = true;
+    atmosphere.SurfaceAnchorWorld = {0, -ATMOSPHERE_ANCHOR_DEPTH, 0};
+    atmosphere.DirectionToSunWorld = math::Vector3{.4F, .64F, .3F} / math::Length(math::Vector3{.4F, .64F, .3F});
+    atmosphere.SolarIlluminance = {SOLAR_ILLUMINANCE, SOLAR_ILLUMINANCE, SOLAR_ILLUMINANCE};
+    math::Vector3 sunIlluminance{};
     rr::EnvironmentMap environment;
     rr::EnvironmentDescription environmentDescription;
     environmentDescription.PixelsOrNull = environmentPixels.GetData();
     environmentDescription.Width = 2;
     environmentDescription.Height = 2;
+    if (test.HasAtmosphereSky == true)
+    {
+        REQUIRE(rr::ResolveAtmosphereEnvironment(atmosphere,
+                                                 {0, 0, 0},
+                                                 ATMOSPHERE_WIDTH,
+                                                 ATMOSPHERE_HEIGHT,
+                                                 {atmospherePixels.GetData(), atmospherePixels.GetSize()},
+                                                 sunIlluminance) == rr::AtmosphereEnvironmentStatus::Ready);
+        environmentDescription.PixelsOrNull = atmospherePixels.GetData();
+        environmentDescription.Width = ATMOSPHERE_WIDTH;
+        environmentDescription.Height = ATMOSPHERE_HEIGHT;
+    }
     environmentDescription.FilterWidth = 16;
     environmentDescription.FilterSamples = 16;
     environmentDescription.CpuByteBudget = CPU_BUDGET;
@@ -596,6 +625,13 @@ void CheckReferenceRawAovs(const ReferenceRawAovCase& test)
         lights[3].Kind = rr::LightKind::Directional;
         lights[3].Direction = {0, 0, 1};
     }
+    if (test.HasAtmosphereSky == true)
+    {
+        lights[0].Direction = -atmosphere.DirectionToSunWorld;
+        lights[0].Intensity = math::Max(sunIlluminance.X, math::Max(sunIlluminance.Y, sunIlluminance.Z));
+        REQUIRE(lights[0].Intensity > 0);
+        lights[0].Color = sunIlluminance / lights[0].Intensity;
+    }
 
     rr::ReferenceCaptureDescription capture;
     capture.Width = CAPTURE_WIDTH_PIXELS;
@@ -606,8 +642,9 @@ void CheckReferenceRawAovs(const ReferenceRawAovCase& test)
     capture.RouletteDepth = test.RouletteDepth;
     capture.Seed = test.Seed;
     capture.LightSampling = test.LightSampling;
-    capture.Environment = {.3F, .4F, .5F};
-    capture.EnvironmentTextureOrNull = test.HasEnvironmentMap == true ? &environment : nullptr;
+    capture.Environment = test.HasAtmosphereSky == true ? math::Vector3{} : math::Vector3{.3F, .4F, .5F};
+    capture.EnvironmentTextureOrNull =
+        test.HasEnvironmentMap == true || test.HasAtmosphereSky == true ? &environment : nullptr;
     capture.Lights = lights.GetData();
     capture.LightCount = test.LightCount;
     if (test.IsPerspective == true)
@@ -753,6 +790,23 @@ TEST_CASE("GPU-compute raw AOVs match the CPU oracle: independent directional pr
         .HasEnvironmentMap = true,
         .LightSampling = rr::ReferenceLightSampling::SeparateDirectional,
         .HasSecondDirectionalLight = true,
+    });
+}
+
+TEST_CASE("GPU-compute raw AOVs match the CPU oracle: World Atmosphere sky and attenuated Sun",
+          "[renderer][gpu][reference-compute][atmosphere]")
+{
+    CheckReferenceRawAovs(
+    {
+        .Name = "World Atmosphere sky and attenuated Sun",
+        .IsPerspective = true,
+        .MaxDepth = 4,
+        .RouletteDepth = 3,
+        .Seed = 2718,
+        .LightCount = 1,
+        .HasEnvironmentMap = false,
+        .LightSampling = rr::ReferenceLightSampling::SeparateDirectional,
+        .HasAtmosphereSky = true,
     });
 }
 
@@ -1097,6 +1151,155 @@ TEST_CASE("RT1 directional shadow rays respect occlusion alongside emissive and 
         CHECK(lit[UNBLOCKED_PIXEL].Direct.X - dark[UNBLOCKED_PIXEL].Direct.X > 0.1F);
         CHECK(math::Distance(lit[BLOCKED_PIXEL].Direct, dark[BLOCKED_PIXEL].Direct) < 1e-5F);
         CHECK(lit[UNBLOCKED_PIXEL].Direct.Z == dark[UNBLOCKED_PIXEL].Direct.Z);
+    }
+}
+
+// The directional estimate at each pixel, isolated from the emitter's by subtracting a capture with the light off:
+// the directional draws use their own dimensions, so the remaining estimates match sample for sample.
+Array<float32> CaptureDirectionalSignal(Session& inoutSession,
+                                        rr::ReferenceCaptureDescription capture,
+                                        rr::DirectLight light,
+                                        rhi::SurfaceHandle surface)
+{
+    capture.Lights = &light;
+    capture.LightCount = 1;
+    Array<rr::ReferencePixel> dark;
+    Array<rr::ReferencePixel> lit;
+    rr::ReferenceCaptureInfo info;
+    const float32 intensity = light.Intensity;
+    light.Intensity = 0;
+    Capture(inoutSession, capture, surface, dark, info);
+    light.Intensity = intensity;
+    Capture(inoutSession, capture, surface, lit, info);
+    CHECK(info.InvalidContributions == 0);
+    Array<float32> signal;
+    REQUIRE(signal.TryResize(lit.GetSize()) == true);
+    for (usize i = 0; i < lit.GetSize(); ++i)
+    {
+        signal[i] = lit[i].Direct.X - dark[i].Direct.X;
+    }
+    return signal;
+}
+
+TEST_CASE("Reference directional disks soften shadows and keep their illuminance on CPU and GPU",
+          "[renderer][gpu][reference-compute]")
+{
+    rhi::Shutdown();
+    struct Guard final
+    {
+        ~Guard()
+        {
+            rhi::Shutdown();
+        }
+    } guard;
+    rhi::DeviceHandle device;
+    rhi::SurfaceHandle surface;
+    rhi::DeviceDescription deviceDescription;
+    deviceDescription.Required.PortableRaster = true;
+    deviceDescription.Required.Compute = true;
+    const rhi::DeviceStatus started =
+        rhi::CreateDevice({}, { .Width = 1, .Height = 1 }, deviceDescription, device, surface);
+    if (started != rhi::DeviceStatus::Ready && rhi::GetStartup().Error == rhi::StartupError::AdapterUnavailable)
+    {
+        SKIP("No offscreen compute adapter");
+    }
+    REQUIRE(started == rhi::DeviceStatus::Ready);
+    const rr::ReferenceLightSampling sampling =
+        GENERATE(rr::ReferenceLightSampling::UniformArea, rr::ReferenceLightSampling::SeparateDirectional);
+    CAPTURE(static_cast<uint32>(sampling));
+
+    // A row of floor receivers from x = -2 to 2 across the end of the L6 wall's shadow. A disk of radius r about the
+    // 45 degree light leaves receivers whose edge elevation atan(2.3 / (1.2 - x)) lies within r of 45 degrees in
+    // penumbra: x in [-1.61, -0.68] for r = 0.1, about seven pixels. Pixels 0 and 1 see the whole disk.
+    constexpr uint32 RECEIVER_COUNT = 32;
+    constexpr uint32 SAMPLE_COUNT = 256;
+    constexpr float32 DISK_RADIUS_RADIANS = 0.1F;
+    rr::ReferenceCaptureDescription capture;
+    capture.Width = RECEIVER_COUNT;
+    capture.Height = 1;
+    capture.TargetSamples = SAMPLE_COUNT;
+    capture.MaxDepth = 1;
+    capture.RouletteDepth = 1;
+    capture.CenterRays = true;
+    capture.OrthographicCamera = true;
+    capture.WorldToClip.Columns[0].X = 0.5F;
+    capture.WorldToClip.Columns[3].Z = 0.7F;
+    capture.CameraPosition.Z = -0.7F;
+    capture.LightSampling = sampling;
+    rr::DirectLight light;
+    light.SourceId = 1;
+    light.Kind = rr::LightKind::Directional;
+    light.Direction = {-0.70710677F, 0, 0.70710677F};
+    light.Color = {1, 0, 0};
+
+    StaticArray<Array<float32>, 2> disks;
+    usize traversalIndex = 0;
+    for (const rr::ReferenceTraversal traversal :
+         {rr::ReferenceTraversal::CpuOracle, rr::ReferenceTraversal::GpuCompute})
+    {
+        CAPTURE(static_cast<uint32>(traversal));
+        Session session;
+        REQUIRE(Prepare(device, traversal, session) == S::Ready);
+        light.AngularRadiusRadians = 0;
+        const Array<float32> delta = CaptureDirectionalSignal(session, capture, light, surface);
+        light.AngularRadiusRadians = DISK_RADIUS_RADIANS;
+        Array<float32> disk = CaptureDirectionalSignal(session, capture, light, surface);
+        const float32 unblocked = delta[0];
+        REQUIRE(unblocked > 0.1F);
+        // UniformArea picks the directional light at a random half of each pixel's vertices, so its per-pixel
+        // estimates differ by that selection. The delta and disk captures share the selection draws, so their ratio at
+        // a pixel the delta light reaches is the disk's visible fraction without it.
+        constexpr float32 HARD_EDGE_FRACTION = 1e-3F;
+        constexpr float32 SELECTION_NOISE_FRACTION = 0.5F;
+        constexpr float32 PENUMBRA_LOWER_FRACTION = 0.1F;
+        constexpr float32 PENUMBRA_UPPER_FRACTION = 0.95F;
+        constexpr float32 UMBRA_FRACTION = 0.05F;
+        uint32 litPenumbraPixels = 0;
+        uint32 blockedPenumbraPixels = 0;
+        for (usize i = 0; i < delta.GetSize(); ++i)
+        {
+            CAPTURE(i, delta[i], disk[i]);
+            // A zero radius keeps the delta light's hard edge: every receiver is wholly lit or wholly blocked.
+            const bool isBlocked = delta[i] <= HARD_EDGE_FRACTION * unblocked;
+            CHECK((isBlocked == true || delta[i] >= SELECTION_NOISE_FRACTION * unblocked));
+            if (sampling == rr::ReferenceLightSampling::SeparateDirectional && isBlocked == false)
+            {
+                CHECK(math::Abs(delta[i] - unblocked) <= HARD_EDGE_FRACTION * unblocked);
+            }
+            if (isBlocked == true)
+            {
+                blockedPenumbraPixels += disk[i] > UMBRA_FRACTION * unblocked ? 1U : 0U;
+                continue;
+            }
+            const float32 visible = disk[i] / delta[i];
+            litPenumbraPixels += visible > PENUMBRA_LOWER_FRACTION && visible < PENUMBRA_UPPER_FRACTION ? 1U : 0U;
+        }
+        // The disk spreads the edge over its predicted width on both sides of the delta light's edge: x in
+        // [-1.61, -0.68] holds four lit and three blocked pixel centres, and the outermost lit one sees almost all of
+        // the disk.
+        CAPTURE(litPenumbraPixels, blockedPenumbraPixels);
+        constexpr uint32 MINIMUM_LIT_PENUMBRA_PIXELS = 3;
+        constexpr uint32 MINIMUM_BLOCKED_PENUMBRA_PIXELS = 2;
+        CHECK(litPenumbraPixels >= MINIMUM_LIT_PENUMBRA_PIXELS);
+        CHECK(blockedPenumbraPixels >= MINIMUM_BLOCKED_PENUMBRA_PIXELS);
+        // Where the whole disk is visible it delivers the delta light's illuminance: the projected solid angle of a
+        // cap above the horizon is pi sin(r)^2 times its centre cosine. The residual is Monte Carlo error over the
+        // disk and the rough GGX lobe's variation across it.
+        constexpr float32 FLUX_TOLERANCE = 0.01F;
+        CHECK(math::Abs(disk[0] / delta[0] - 1) <= FLUX_TOLERANCE);
+        CHECK(math::Abs(disk[1] / delta[1] - 1) <= FLUX_TOLERANCE);
+        disks[traversalIndex++] = Move(disk);
+    }
+    // Matched samples draw matched disk directions. Float32 traversal near the occluder edge may still flip a
+    // sample's visibility, each worth 1 / SAMPLE_COUNT of the unblocked estimate.
+    constexpr float32 PARITY_TOLERANCE = 2e-3F;
+    constexpr float32 FLIPPED_SAMPLES = 2;
+    const float32 unblocked = disks[0][0];
+    for (usize i = 0; i < disks[0].GetSize(); ++i)
+    {
+        CAPTURE(i, disks[0][i], disks[1][i]);
+        CHECK(math::Abs(disks[0][i] - disks[1][i]) <=
+              (PARITY_TOLERANCE + FLIPPED_SAMPLES / static_cast<float32>(SAMPLE_COUNT)) * unblocked);
     }
 }
 
@@ -1737,12 +1940,29 @@ TEST_CASE("GPU-compute resampled reference matches the CPU oracle",
                         computeInfo.ClosestQueries,
                         oracleInfo.VisibilityQueries,
                         computeInfo.VisibilityQueries);
-                // The same addressed candidates and tickets select the same emitters in both precisions on these
-                // fixtures, so the UniformArea parity tolerances hold per pixel.
-                CHECK(comparison.MaximumRadiance <= 2e-3F);
-                CHECK(comparison.MaximumEmission <= 2e-3F);
-                CHECK(comparison.MaximumDirect <= 2e-3F);
-                CHECK(comparison.MaximumIndirect <= 2e-3F);
+                // The same addressed candidates and tickets select the same emitters in both precisions for almost
+                // every sample, so the UniformArea parity tolerance holds per pixel. A sample whose contribution
+                // rounds differently can still select another emitter (the visibility count below admits these);
+                // it moves its pixel by about one sample's share, the pixel's radiance / TargetSamples. The glossy
+                // sphere's worst such pixel differed by 2.0e-3 at radiance 0.26 on an Apple M5 and by 2.01e-3 on the
+                // GitHub macOS runner.
+                constexpr float32 PIXEL_TOLERANCE = 2e-3F;
+                usize radianceOutlierCount = 0;
+                usize directOutlierCount = 0;
+                for (usize i = 0; i < oracle.GetSize(); ++i)
+                {
+                    const float32 sampleShare =
+                        math::Length(oracle[i].Radiance) / static_cast<float32>(capture.TargetSamples);
+                    radianceOutlierCount +=
+                        math::Distance(oracle[i].Radiance, compute[i].Radiance) <= PIXEL_TOLERANCE + sampleShare ? 0U
+                                                                                                                 : 1U;
+                    directOutlierCount +=
+                        math::Distance(oracle[i].Direct, compute[i].Direct) <= PIXEL_TOLERANCE + sampleShare ? 0U : 1U;
+                }
+                CHECK(radianceOutlierCount == 0);
+                CHECK(directOutlierCount == 0);
+                CHECK(comparison.MaximumEmission <= PIXEL_TOLERANCE);
+                CHECK(comparison.MaximumIndirect <= PIXEL_TOLERANCE);
                 CHECK(math::Sqrt(comparison.SquaredRadiance) <= 2e-4F);
                 CHECK(radianceMean <= 1e-4F);
                 CHECK(computeInfo.ClosestQueries == oracleInfo.ClosestQueries);
@@ -2554,6 +2774,264 @@ LobeShape MeasureLobe(const StaticArray<float64, COUNT>& degrees, const StaticAr
 }
 } // namespace
 
+TEST_CASE("RT1 smooths the camera-visible atmosphere on CPU and GPU", "[renderer][gpu][reference-compute]")
+{
+    struct Shutdown final
+    {
+        ~Shutdown()
+        {
+            rhi::Shutdown();
+        }
+    } shutdown;
+    PairedSessions sessions;
+    if (const char* skipReasonOrNull = StartPairedSessions(sessions); skipReasonOrNull != nullptr)
+    {
+        SKIP(skipReasonOrNull);
+    }
+    QuadItem plane = MakeTestPlane();
+    for (math::Vector3& cornerWorld : plane.CornersWorld)
+    {
+        cornerWorld.X += 10;
+        cornerWorld.Z += 10;
+    }
+    UsePlane(sessions, plane);
+
+    // A coarse map with distinct rows and columns makes the interpolation weights observable in linear RGB.
+    constexpr uint32 SIDE = 2;
+    const StaticArray<math::Vector4, SIDE * SIDE> texels{{{1, 2, 3, 1}, {5, 6, 7, 1}, {3, 4, 5, 1}, {7, 8, 9, 1}}};
+    rr::EnvironmentDescription source;
+    source.PixelsOrNull = texels.GetData();
+    source.Width = SIDE;
+    source.Height = SIDE;
+    source.FilterWidth = 16;
+    source.FilterSamples = 16;
+    source.CpuByteBudget = CPU_BUDGET;
+    rr::EnvironmentMap environment;
+    S status = environment.Initialize(sessions.Device, source);
+    const uint64 started = time::NowTicks();
+    while (status == S::Pending && time::NowTicks() - started < TIMEOUT)
+    {
+        threading::YieldThread();
+        status = environment.GetStatus();
+    }
+    REQUIRE(status == S::Ready);
+
+    rr::AtmosphereDescription atmosphere;
+    atmosphere.IsEnabled = true;
+    atmosphere.SolarIlluminance = {};
+    rr::ReferenceCaptureDescription capture = MakeTiltedCapture({0, 0, 1}, 0.01F, 1);
+    capture.TargetSamples = 1;
+    capture.MaxDepth = 1;
+    capture.EnvironmentTextureOrNull = &environment;
+    capture.AtmosphereBackgroundOrNull = &atmosphere;
+
+    const auto checkSky = [&](math::Vector3 expected) {
+        for (Session* session : {&sessions.Cpu, &sessions.Gpu})
+        {
+            Array<rr::ReferencePixel> pixels;
+            rr::ReferenceCaptureInfo info;
+            Capture(*session, capture, sessions.Surface, pixels, info);
+            REQUIRE(pixels.GetSize() == 1);
+            CHECK(info.InvalidContributions == 0);
+            CHECK(pixels[0].Radiance == pixels[0].Emission);
+            CHECK(pixels[0].Direct == math::Vector3{});
+            CHECK(pixels[0].Indirect == math::Vector3{});
+            constexpr float32 RGB_TOLERANCE = 2e-5F;
+            CHECK(math::Length(pixels[0].Emission - expected) <= RGB_TOLERANCE);
+        }
+    };
+
+    {
+        INFO("Imported environment, nearest texel at the equator");
+        atmosphere.ShouldLightScene = false;
+        checkSky({3, 4, 5});
+    }
+    atmosphere.ShouldLightScene = true;
+    {
+        INFO("Atmosphere at the equator, halfway between rows");
+        checkSky({2, 3, 4});
+    }
+    {
+        INFO("Atmosphere at the longitude seam, halfway between all four texels");
+        const math::Vector4 horizontal = capture.WorldToClip.Columns[0];
+        capture.WorldToClip.Columns[0] = capture.WorldToClip.Columns[2];
+        capture.WorldToClip.Columns[2] = -horizontal;
+        checkSky({4, 5, 6});
+    }
+    {
+        INFO("Atmosphere above the northmost texel center");
+        capture.WorldToClip = MakeTiltedCapture({0, 0.8F, 0.6F}, 0.01F, 1).WorldToClip;
+        checkSky({1, 2, 3});
+    }
+}
+
+TEST_CASE("RT1 draws celestial disks and planet points on CPU and GPU", "[renderer][gpu][reference-compute]")
+{
+    struct Shutdown final
+    {
+        ~Shutdown()
+        {
+            rhi::Shutdown();
+        }
+    } shutdown;
+    PairedSessions sessions;
+    const char* skipReasonOrNull = StartPairedSessions(sessions);
+    if (skipReasonOrNull != nullptr)
+    {
+        SKIP(skipReasonOrNull);
+    }
+    QuadItem plane = MakeTestPlane();
+    for (math::Vector3& cornerWorld : plane.CornersWorld)
+    {
+        cornerWorld.X += 10;
+    }
+    UsePlane(sessions, plane);
+
+    const math::Vector3 directionWorld{0, 0, 1};
+    rr::ReferenceCaptureDescription capture = MakeTiltedCapture(directionWorld, 0.01F, 1);
+    capture.MaxDepth = 1;
+    capture.WorldToClip.Columns[3].Z = 0;
+    rr::AtmosphereDescription sky;
+    sky.IsEnabled = true;
+    sky.SurfaceAnchorWorld = capture.CameraPosition;
+    sky.SurfaceUpWorld = directionWorld;
+    sky.DirectionToSunWorld = directionWorld;
+    sky.SolarIlluminance = {0.02F, 0, 0};
+    capture.AtmosphereBackgroundOrNull = &sky;
+
+    const auto checkSky = [&](math::Vector3 minimum, math::Vector3 maximum) {
+        Array<rr::ReferencePixel> oracle;
+        Array<rr::ReferencePixel> compute;
+        rr::ReferenceCaptureInfo oracleInfo;
+        rr::ReferenceCaptureInfo computeInfo;
+        Capture(sessions.Cpu, capture, sessions.Surface, oracle, oracleInfo);
+        Capture(sessions.Gpu, capture, sessions.Surface, compute, computeInfo);
+        const Comparison comparison = Compare(oracle, compute, capture.TargetSamples);
+        constexpr float32 PARITY_TOLERANCE = 2e-3F;
+        CHECK(comparison.MaximumRadiance <= PARITY_TOLERANCE);
+        CHECK(comparison.MaximumEmission <= PARITY_TOLERANCE);
+        CHECK(comparison.MaximumDirect == 0);
+        CHECK(comparison.MaximumIndirect == 0);
+        const rr::ReferencePixel pixel = oracle[0];
+        CHECK(pixel.Radiance == pixel.Emission);
+        CHECK(pixel.Direct == math::Vector3{});
+        CHECK(pixel.Indirect == math::Vector3{});
+        CHECK(pixel.Emission.X >= minimum.X);
+        CHECK(pixel.Emission.Y >= minimum.Y);
+        CHECK(pixel.Emission.Z >= minimum.Z);
+        CHECK(pixel.Emission.X <= maximum.X);
+        CHECK(pixel.Emission.Y <= maximum.Y);
+        CHECK(pixel.Emission.Z <= maximum.Z);
+    };
+    INFO("Sun disk at zenith");
+    checkSky({100, 0, 0}, {400, 0, 0});
+
+    sky.Celestial.IsEnabled = true;
+    sky.Celestial.DirectionToMoonWorld = directionWorld;
+    sky.Celestial.DirectionToSunAtMoonWorld = -directionWorld;
+    sky.Celestial.LunarAngularRadiusRadians = rr::CelestialBackgroundDescription::DEFAULT_LUNAR_RADIUS_RADIANS;
+    sky.Celestial.LunarPeakRadiance = {0, 4, 0};
+    INFO("Full Moon occludes the Sun");
+    checkSky({0, 3, 0}, {0, 4, 0});
+
+    sky.Celestial.DirectionToSunAtMoonWorld = directionWorld;
+    INFO("Unlit lunar disk still occludes the Sun");
+    checkSky({}, {});
+
+    sky.Celestial.LunarAngularRadiusRadians = 0;
+    sky.SolarIlluminance = {};
+    sky.Celestial.Planets[0] = { .DirectionWorld = directionWorld, .Illuminance = {0, 0, 1e-5F} };
+    INFO("Unresolved planet disappears behind the ground");
+    checkSky({0, 0, 8}, {0, 0, 14});
+    for (Session* session : {&sessions.Cpu, &sessions.Gpu})
+    {
+        rr::ReferenceCapture handle;
+        const S begun = session->Renderer.BeginReferenceCapture(session->Snapshot, capture, handle);
+        REQUIRE((begun == S::Ready || begun == S::Pending));
+        REQUIRE(Run(session->Renderer, handle, sessions.Surface) == S::Ready);
+        rr::ReferenceCaptureInfo before;
+        REQUIRE(session->Renderer.GetReferenceCaptureInfo(handle, before) == S::Ready);
+
+        // Update reads the new fields even though the caller reused the description and its address.
+        sky.Celestial.LunarAngularRadiusRadians = -1;
+        CHECK(session->Renderer.UpdateReferenceCapture(handle, session->Snapshot, capture) == S::InvalidDescription);
+        CHECK(session->Renderer.GetStatus(handle) == S::Ready);
+        sky.Celestial.LunarAngularRadiusRadians = 0;
+        sky.SurfaceUpWorld = -directionWorld;
+        const S replaced = session->Renderer.UpdateReferenceCapture(handle, session->Snapshot, capture);
+        REQUIRE((replaced == S::Ready || replaced == S::Pending));
+        REQUIRE(Run(session->Renderer, handle, sessions.Surface) == S::Ready);
+        rr::ReferenceCaptureInfo after;
+        REQUIRE(session->Renderer.GetReferenceCaptureInfo(handle, after) == S::Ready);
+        CHECK(after.Revision > before.Revision);
+        rr::ReferencePixel pixel;
+        REQUIRE(session->Renderer.CopyReferencePixels(handle, &pixel, 1) == S::Ready);
+        CHECK(pixel.Radiance == math::Vector3{});
+        CHECK(pixel.Samples == capture.TargetSamples);
+        REQUIRE(session->Renderer.Release(handle) == S::Ready);
+        sky.SurfaceUpWorld = directionWorld;
+    }
+
+    sky.SurfaceUpWorld = directionWorld;
+    plane = MakeTestPlane();
+    for (math::Vector3& cornerWorld : plane.CornersWorld)
+    {
+        cornerWorld.Z = 1;
+    }
+    UsePlane(sessions, plane);
+    INFO("Geometry occludes the celestial background");
+    checkSky({}, {});
+}
+
+TEST_CASE("RT1 draws the same procedural star field on CPU and GPU", "[renderer][gpu][reference-compute]")
+{
+    struct Shutdown final
+    {
+        ~Shutdown()
+        {
+            rhi::Shutdown();
+        }
+    } shutdown;
+    PairedSessions sessions;
+    const char* skipReasonOrNull = StartPairedSessions(sessions);
+    if (skipReasonOrNull != nullptr)
+    {
+        SKIP(skipReasonOrNull);
+    }
+    QuadItem plane = MakeTestPlane();
+    for (math::Vector3& cornerWorld : plane.CornersWorld)
+    {
+        cornerWorld.X += 10;
+    }
+    UsePlane(sessions, plane);
+
+    constexpr uint32 EXTENT = 32;
+    rr::ReferenceCaptureDescription capture = MakePerspectiveCapture({0, 0, -2}, EXTENT, EXTENT);
+    capture.TargetSamples = 2;
+    capture.MaxDepth = 1;
+    rr::AtmosphereDescription sky;
+    sky.IsEnabled = true;
+    sky.SurfaceAnchorWorld = capture.CameraPosition;
+    sky.SurfaceUpWorld = {0, 0, 1};
+    sky.Celestial.IsEnabled = true;
+    sky.Celestial.StarRadiance = 4;
+    capture.AtmosphereBackgroundOrNull = &sky;
+
+    Array<rr::ReferencePixel> oracle;
+    Array<rr::ReferencePixel> compute;
+    rr::ReferenceCaptureInfo oracleInfo;
+    rr::ReferenceCaptureInfo computeInfo;
+    Capture(sessions.Cpu, capture, sessions.Surface, oracle, oracleInfo);
+    Capture(sessions.Gpu, capture, sessions.Surface, compute, computeInfo);
+    const Comparison comparison = Compare(oracle, compute, capture.TargetSamples);
+    constexpr float32 PARITY_TOLERANCE = 2e-3F;
+    CHECK(comparison.MaximumRadiance <= PARITY_TOLERANCE);
+    CHECK(comparison.MaximumEmission <= PARITY_TOLERANCE);
+    CHECK(comparison.MaximumDirect == 0);
+    CHECK(comparison.MaximumIndirect == 0);
+    CHECK(comparison.CpuMean.X > 0.01F);
+}
+
 TEST_CASE("RT1 multiple-scattering GGX white furnace approaches unit radiance on CPU and GPU",
           "[renderer][gpu][reference-compute][materials][multiple-scattering]")
 {
@@ -3113,7 +3591,8 @@ rr::ReferenceCaptureDescription MakeMediumCapture()
 math::Vector2 GetMediumPixelCenter(usize pixel)
 {
     const float64 column = static_cast<float64>(pixel % MEDIUM_IMAGE_EXTENT) + .5;
-    const float64 row = static_cast<float64>(pixel / MEDIUM_IMAGE_EXTENT) + .5;
+    const usize rowIndex = pixel / MEDIUM_IMAGE_EXTENT;
+    const float64 row = static_cast<float64>(rowIndex) + .5;
     return {static_cast<float32>(2 * column / MEDIUM_IMAGE_EXTENT - 1),
             static_cast<float32>(1 - 2 * row / MEDIUM_IMAGE_EXTENT)};
 }

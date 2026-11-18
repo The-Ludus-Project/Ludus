@@ -909,16 +909,21 @@ rendering the current World and camera. A raster project graph continues to run 
 a raster graph. The preview status identifies the selected renderer and explains
 when hardware raytracing is unavailable on the current GPU/API.
 
-Turn on **Force raster** in the viewport toolbar to exercise the raster path on RT
-hardware. This is a local saved viewport preference, restored with navigation
-settings; it does not edit the project's graph or shader manifest. Turn it off to
-return to Automatic and re-evaluate the requested project graph. Device restarts
+Turn on **Force raster** in the viewport toolbar to draw the engine's default
+raster graph instead of the selected project graph, whatever that graph contains:
+a raytracing graph, a graph that traces rays in authored compute pipelines, or an
+authored raster graph. Use it to exercise the raster path on RT hardware, or to
+see a World whose inputs the project graph cannot draw, such as an Atmosphere,
+which needs the default graph's clustered deferred programs. This is a local saved
+viewport preference, restored with navigation settings; it does not edit the
+project's graph or shader manifest. Turn it off to return to Automatic and
+re-evaluate the requested project graph. Device restarts
 also re-evaluate selection against the new device's enabled capabilities. Pending
 or failed replacements keep the last completed image until the new renderer
 presents. Automatic renderer selection never changes the authored traversal strategy or invokes CPU raytracing.
 
-When a raytracing graph is too slow to navigate, the viewport offers the raster
-graph itself. After three consecutive frames that each take at least one second,
+When a project graph is too slow to navigate, the viewport offers the engine's
+default raster graph itself. After three consecutive frames that each take at least one second,
 from the camera update before submission to presentation, a **Slow viewport**
 message names the measured frame time and asks whether to switch. The first
 frame of every generation is not counted, because it includes cold preparation
@@ -926,8 +931,9 @@ such as pipeline and acceleration-structure builds. **Switch to raster** turns o
 **Force raster**, exactly as the toolbar button does; **Keep current renderer**
 (Escape) changes nothing. Either way the message is not shown again for that
 runtime package until the editor restarts, so turning **Force raster** back off
-keeps the raytracing graph without asking again. The message never appears for
-a raster graph, while **Force raster** is on, or while the viewport is hidden.
+keeps the project graph without asking again. The message never appears for
+the engine's default raster graph itself, while **Force raster** is on, or while
+the viewport is hidden.
 
 #### See which nodes cannot run here
 
@@ -1242,8 +1248,16 @@ a fixed color target. Use `"state": {}` for automatic grouping, or
 explicit shapes are `[64, 1, 1]` and `[8, 8, 1]`. All explicit overrides across
 all configurations in one shader bundle must agree; automatic passes inherit
 that choice. With no override the bundle uses 64×1×1. Conflicts and unsupported
-shapes fail the build without rewriting sources. Partial edge groups are bounds
-checked. See the [measured scope and reproduction workflow](../architecture/renderer-systems.md#authored-graph-workgroup-experiment).
+shapes fail the build without rewriting sources. The renderer rounds the
+dispatch up to whole workgroups. The generated compute entry point filters out
+invocations outside the launch region before calling your shader. In the callback,
+use `launch.PositionPixel` for the pixel coordinate and `launch.ExtentPixel` for
+the full image dimensions. Use `launch.PositionPixel.y * launch.ExtentPixel.x +
+launch.PositionPixel.x` for a flat per-pixel buffer sized to that extent.
+Derive any logical tile coordinate from the pixel and the algorithm's tile size
+so it stays stable across workgroup overrides. See the [measured scope and
+reproduction workflow](../architecture/renderer-systems.md#authored-graph-workgroup-experiment)
+and the [dispatch ID guide for standalone kernels](fullscreen-rendering.md#choose-a-compute-dispatch-id).
 
 Runtime package version 21 stores reflected X/Y/Z dimensions after the six fixed
 fields of every ray compute stage. All target artifacts for a role must agree.
@@ -1390,6 +1404,52 @@ by a ray pass that resolves them. `ludus_render_graph_ray_tests` renders both on
 native ray hardware.
 
 <a id="select-emitters-per-screen-tile"></a>
+
+### Trace rays in a buffer-only scene dispatch
+
+A scene `ComputePipeline` can launch a fixed number of work items independently
+of the viewport. In the pipeline editor, select **Invocation → Launch size →
+Work items**. Use one Scene input and one or two raw Buffer inputs with matching
+**Load**/**Store** writable outputs. Remove the View and texture ports. Assign a
+single Slang compute program with the usual `RayLaunch` / `Radiance` signature.
+
+```json
+{
+  "id": "trace", "kind": "ComputePipeline",
+  "inputs": [{"id": "scene", "type": "Scene", "required": true},
+             {"id": "hits", "type": "Buffer", "required": true}],
+  "outputs": [{"id": "hits", "target": "hits", "type": "Buffer",
+               "format": "Bytes", "load": "Load", "store": "Store"}],
+  "shaders": [{"id": "compute", "stage": "compute", "program": "TraceWorkItems"}],
+  "state": {}, "invocation": {"work_items": 7000, "traversal": "ComputeBvh"}
+}
+```
+
+`launch.WorkItemIndex` runs from zero to `launch.WorkItemCount - 1` on each
+execution. Construct a `Ray` in world space with a unit direction and finite
+distance bounds, then call `TraceClosest` or the other scene query helpers. Use
+the index to read a ray record or write one result per invocation. The engine
+skips hardware padding. Size the Buffer for your record layout and bound
+all reads and writes against its actual capacity. Return `float3(0)` on success.
+Query failures feed the graph's failure summary. The launch supplies a seed
+and item-indexed random stream. Camera and pixel fields and `SampleIndex` are
+zero for this launch. Use your own buffer records and explicit random addresses
+to carry state across batches.
+
+Connect the dispatch's Buffer output to a later scene pass to order writes
+before reads. Keep an Export or Present route in the enclosing graph. The
+dispatch runs with the ordinary ray sequence and supports the same compute
+traversal strategies and query budgets. The count must be positive and at most
+16,777,216, subject to the device's dispatch limits. Larger workloads can be split
+into batches. This launch has no color accumulation, pixel ray-path capture,
+or frame-capture row bands. A ray sequence that uses the visibility/depth input
+pair needs a separate configuration. Rebuild the package with an SDK that
+supports runtime generation 39.
+
+The [work-items fixture](../../tests/sdk_consumer/rg2/scene_compute/main.lurender.json)
+traces 7,001 rays before a 96 by 64 resolve and verifies that the resolve sees
+every hit and miss and that the padded invocations leave the following record
+untouched.
 
 ### Select emitters per screen tile (tiled vbuffer NEE)
 
@@ -4542,6 +4602,17 @@ with an explicit `CoatingRandomContext` and `SampleStandardBsdfTransport`; the
 sample contains a complete throughput weight and a separate external MIS density.
 The original direction-only helpers retain their coating approximation.
 
+Effects that trace the specular and diffuse lobes separately, such as
+[Hybrid reflections](#trace-rough-reflections), use the GGX specular lobe alone.
+`HasStandardSpecularLobe` is true for `MetallicRoughness`, `Conductor` and a
+`DiffuseConductorMix` with a positive conductor weight. `SampleStandardSpecularLobe`
+proposes a reflection from the lobe's visible normals with two uniform samples, and
+`EvaluateStandardSpecularLobe` returns the lobe's value, including the mix's conductor
+weight, and that proposal's solid-angle density. A zero direction is the ordinary
+rejection: no such lobe, or a reflection below the shading hemisphere. The diffuse
+remainder of `EvaluateStandardBsdf` is not part of the lobe. Glass, coatings,
+`ProjectBrdf` and `Program` materials report no lobe.
+
 A [closure program](../architecture/scene-source-format.md#closure-program)
 material reports `MaterialModel::Program`. `MaterialSample.ProgramOffset`
 locates its packed program. `BaseColor`, `Metallic` and `Roughness` are its
@@ -4625,7 +4696,8 @@ wrappers include it automatically. Authors do not read private packed buffers.
 | SampleIncidentLight(scene, selected, receiver, shapeSample) | Explicit-coordinate compatibility overload returning a LightSample with the uniform source PMF. |
 | EvaluateLightPdfSolidAngle / EvaluateEnvironmentPdfSolidAngle | Compatibility helpers returning joint solid-angle densities under uniform source selection. |
 | SelectEmissiveTriangle / EvaluateEmissiveTriangleSelectionPmf | [Power-weighted emissive triangle](#select-emissive-triangles-by-power) at an explicit dimension / that selection's probability for a triangle |
-| EvaluateEnvironment | Environment emission along a world direction |
+| EvaluateEnvironment | Background radiance along a world direction: the Atmosphere's sky when the World has one that lights the scene, otherwise the World environment. See [World features](#world-features) |
+| ApplyAerialPerspective | Haze between a ray origin and a visible surface point: the surface radiance attenuated by the air plus the sky light it scatters. See [World features](#world-features) |
 | TraceClosest / TestVisibility | Closest or occlusion query with explicit miss/surface/failure status |
 | FindVisibleLineIntervals / ClearLineVisibility | Visible parts of a world-space segment from a receiver, as sorted parameter intervals; see [Find the visible parts of a segment](#find-the-visible-parts-of-a-segment) |
 | SpawnSurfaceRay | Error-bound origin offset for a unit world direction and explicit maximum distance |
@@ -4841,6 +4913,8 @@ node editor to resize them together.
 | **Visibility buffer + depth** (`visibility-buffer`) | One raster pass exports the exact RGBA8 identity image and its Depth32Float attachment. The identity image is the camera output; its alpha channel encodes identity rather than transparency. No ray-tracing capability is needed. |
 | **Visibility + secondary rays** (`visibility-secondary-rays`) | The same raster producer feeds a ray pass and a separate shaded color target. It also exports visibility and depth for inspection. Requires native Metal or Vulkan ray tracing. |
 | **Hybrid shadows — ray-traced analytic light shadows** (`hybrid-shadows`) | The same raster producer feeds one ray pass that lights the first surface with the World's directional, point and spot lights, each shadowed by a ray, then ToneMap. Exports visibility and depth for inspection. Requires native Metal or Vulkan ray tracing. See [Shadow analytic lights with rays](#shadow-analytic-lights-with-rays). |
+| **Hybrid reflections — roughness-aware ray-traced reflections** (`hybrid-reflections`) | The same raster producer feeds one ray pass that lights the first surface like Hybrid shadows and traces one reflection ray per pixel from its GGX specular lobe, then Accumulate and ToneMap. Exports visibility and depth for inspection. Requires native Metal or Vulkan ray tracing. See [Trace rough reflections](#trace-rough-reflections). |
+| **Hybrid indirect diffuse — one diffuse bounce** (`hybrid-indirect-diffuse`) | Raster first hits feed one native ray pass for direct light and one diffuse bounce. Accumulate reconstructs the scene-linear signal before tone mapping. Exports visibility and depth. See [Trace one diffuse bounce](#trace-one-diffuse-bounce). |
 | **Tiled vbuffer NEE — many-light direct lighting** (`tiled-vbuffer-nee`) | The same raster producer feeds three ray passes that build one emitter-selection table per 16 × 16 tile and shade direct mesh-emitter lighting with MIS, then Accumulate. Exports visibility and depth for inspection. Requires native Metal or Vulkan ray tracing. See [Select emitters per screen tile](#select-emitters-per-screen-tile). |
 
 Create the same packages through the CLI:
@@ -4852,6 +4926,8 @@ ludus render-graph new graphs/Reflections --template visibility-secondary-rays -
   --renderer-static --profiles metal wgsl
 ludus render-graph new graphs/Shadows --template hybrid-shadows --output offscreen \
   --renderer-static --profiles metal wgsl
+ludus render-graph new graphs/RoughReflections --template hybrid-reflections --output offscreen \
+  --renderer-static --profiles metal wgsl
 ludus render-graph new graphs/DirectLighting --template tiled-vbuffer-nee --output offscreen \
   --renderer-static --profiles metal wgsl
 ```
@@ -4860,7 +4936,8 @@ Use `spirv wgsl` for Vulkan. The raster-only template also accepts `wgsl` alone.
 The canonical packages are shipped with the SDK:
 [visibility and depth](../../modules/graphics/renderer/render_graphs/visibility_buffer/main.lurender.json),
 [secondary rays](../../modules/graphics/renderer/render_graphs/visibility_secondary_rays/main.lurender.json),
-[hybrid shadows](../../modules/graphics/renderer/render_graphs/hybrid_shadows/main.lurender.json)
+[hybrid shadows](../../modules/graphics/renderer/render_graphs/hybrid_shadows/main.lurender.json),
+[hybrid reflections](../../modules/graphics/renderer/render_graphs/hybrid_reflections/main.lurender.json)
 and [tiled vbuffer NEE](../../modules/graphics/renderer/render_graphs/tiled_vbuffer_nee/main.lurender.json).
 Existing graph folders are never overwritten; cancelling creation writes nothing.
 
@@ -4901,9 +4978,10 @@ because no analytic light reaches its delta lobes.
 
 Punctual lights cast hard shadows, and one deterministic ray per light gives a
 noise-free signal, so the graph keeps no history and applies no reconstruction
-filter: its raw and displayed images differ only by ToneMap. Area-light soft
-shadows, roughness-aware reflections and indirect diffuse remain the later RT2
-effects, with their reconstruction and history contracts. Devices without native
+filter: its raw and displayed images differ only by ToneMap. Area-light soft shadows
+come from the tiled vbuffer NEE template and roughness-aware reflections from
+[Hybrid reflections](#trace-rough-reflections), each with its own reconstruction and
+history contract. Indirect diffuse remains the later RT2 effect. Devices without native
 ray tracing reject preparation; the default raster graph is their shadow route.
 
 The `[hybrid-shadows]` GPU regression renders one closed box blocker over a planar
@@ -5022,11 +5100,19 @@ float3 GenerateRay(SceneContext scene, RayLaunch launch, inout RayQueryContext i
 ```
 
 `LoadVisibilitySurface` loads exact texels, resolves instance/primitive through a
-sorted immutable indirection, unprojects stored depth, and computes barycentrics.
-It fills the incoming camera ray, distance and front-face state in addition to the
-attributes supplied by `GetSurfaceHit`. Background returns MISS; invalid IDs,
-depth or reconstruction latch query failure and return FAILURE. Reconstruction
-uses no ray query budget. `EvaluateMaterial` applies the triangle's slot and
+sorted immutable indirection, and places the hit where the pixel-centre camera
+ray meets the stored triangle. It does not unproject stored depth: conventional
+float32 depth with a centimetre near plane places a point centimetres along its
+ray at tens of metres, which at grazing incidence moves it off the triangle at
+its edges. Where rasterizer vertex snapping lets the ray pass just outside the
+triangle, the hit is the boundary point nearest the ray, accepted within 1/16 of
+a pixel at that distance. The camera ray is built about the eye (`CameraClipToEye`),
+so a camera far from the world origin stays within that tolerance of the raster
+projection. The depth texel is still validated. It fills the incoming
+camera ray, distance and front-face state in addition to the attributes supplied
+by `GetSurfaceHit`. Background returns MISS; invalid IDs or depth, or a triangle
+farther from the ray, latch the Stored record failure and return FAILURE.
+Reconstruction uses no ray query budget. `EvaluateMaterial` applies the triangle's slot and
 instance overrides; material identity is not duplicated in the image. Material
 sampling retains the scene interface's fixed-mip policy.
 
@@ -5149,6 +5235,86 @@ selection policy to `EvaluateLightAlongRay`. Multiply its source PMF by its
 conditional solid-angle density.
 See the [light sampling architecture](../architecture/renderer-systems.md#unified-light-discovery-and-incident-sampling).
 
+#### Trace rough reflections
+
+The **Hybrid reflections** starter is the second RT2 effect: raster primary
+visibility, ray-shadowed analytic light and one reflection ray per pixel whose
+spread follows the surface roughness. `main_shaders/shade.slang` calls
+`LoadVisibilitySurface` and lights the first surface with the World's directional,
+point and spot lights as [Hybrid shadows](#shadow-analytic-lights-with-rays) does,
+with the standard BSDF and one `TestVisibility` shadow ray per light. It then draws
+two values from the invocation stream and calls `SampleStandardSpecularLobe`, which
+proposes a direction from the GGX specular lobe's visible normals, and weights the
+radiance arriving along it by `EvaluateStandardSpecularLobe`'s value times the
+cosine over its density. `TraceClosest` follows the ray. Its hit adds its emission
+and its own ray-shadowed analytic light; a miss adds `EvaluateEnvironment`.
+A reflected surface outside the camera frustum, or behind the camera, still appears.
+
+Each contribution is assigned once. Analytic lights reach the first surface only
+through its shadow rays, and emission, the environment and the light at the hit
+reach it only through the specular lobe. The diffuse lobe traces no ray, so mesh
+emitters and the environment light neither it nor the reflected surface: those are
+[tiled vbuffer NEE](#select-emitters-per-screen-tile) and the later indirect-diffuse
+effect. Materials without a specular lobe (see `HasStandardSpecularLobe`) get no
+reflection; glass shows only its emission, as in Hybrid shadows.
+
+The ray technique grants one surface query, the reflection ray, and 16 visibility
+queries. The first surface and the reflection hit share them equally, so
+`MAXIMUM_SHADOW_RAYS_PER_SURFACE` is 8: the first 8 contributing lights at each
+surface are ray shadowed and any further light adds unshadowed. A pixel's raw
+signal is one reflection sample. The graph's [Accumulate](#accumulate-ray-samples-explicitly)
+node is its reconstruction: a running mean of up to 4096 frames that any accepted
+camera, scene, extent or shader change restarts. The template has no spatial filter
+and no reprojection, so camera motion restarts the noisy first frames; history is
+never carried across a revision. Devices without native ray tracing reject
+preparation. The default raster graph is their route, and it reflects only the
+environment and sky, never scene geometry.
+
+The `[hybrid-reflections]` regressions compare the template, RT1 (CPU oracle and GPU
+compute) and the RT2 raster fallback with a float64 quadrature of a rough metal
+receiver's reflection of an offscreen lit panel, across a roughness sweep and a
+moving blocker. They check the raw frame, the accumulated mean, the error over the
+pixels each motion step changes, and a fresh graph's bit-exact replay. See the
+[fixture and measurements](../architecture/renderer-systems.md#roughness-aware-reflections).
+Run `ludus_renderer_render_tests "[.benchmark][hybrid-reflections]"` for the
+blocker-move preparation latency and the shade pass's GPU time.
+
+#### Trace one diffuse bounce
+
+Create the **Hybrid indirect diffuse** starter from the renderer workspace or run
+`ludus render-graph new graphs/Main --template hybrid-indirect-diffuse --output offscreen --renderer-static`
+with the Metal or SPIR-V profile. Cook the package with the project's ordinary
+render-graph build, then select it as the World renderer. The viewport renders
+from the current World camera, and an SDK app can stage the same package through
+`RenderGraphActivation`.
+
+The visibility and depth raster passes provide the first surface. Each pixel
+samples one authored light at that surface, proposes one cosine-weighted ray,
+and samples one light at the ray's hit. Mesh emitters, analytic lights and the
+environment share the existing light catalog. The ray queries use the scene's
+geometry, including offscreen triangles. A continuation contributes only the
+diffuse lobe at both vertices. Diffuse, metallic-roughness and diffuse-conductor
+mix materials provide those lobes. Primary emission and directly visible sky
+are included. The direct light sample handles paths to emitters and the
+environment without a bounce.
+
+The budget is one closest-hit query and two visibility queries per pixel per
+frame. **Accumulate** reconstructs a scene-linear RGB mean of up to 4096 samples
+before ToneMap. It uses two float4 words (32 bytes) per pixel for RGB sums,
+compensation, count and bookkeeping, per active scene generation. Geometry,
+instances, materials (including mesh emission), analytic lights, environment,
+camera, extent and shader changes restart the mean. The new revision starts with
+fresh shading, and any previously presented image remains available during GPU
+preparation. Reconstruction uses a fixed-view running mean.
+
+Automatic uses the authored raster fallback when the device cannot run native
+rays. The default raster graph combines its direct lights, sky, and any authored
+baked or probe lighting. This graph's live diffuse bounce comes from native
+rays. Use **Force raster** to inspect the fallback on a ray-capable device.
+
+See the [one-bounce fixture](../architecture/renderer-systems.md#bounded-one-bounce-indirect-diffuse)
+for the paired RT1 and history checks.
+
 ### Select emissive triangles by power
 
 For estimators that choose among emissive triangles themselves, such as
@@ -5211,6 +5377,98 @@ encoding require an explicit [ToneMap node](#tone-map-ray-output-explicitly). Wi
 the RGBA8 output clamps linear RGB to [0, 1]. Holding the camera still does not implicitly average
 these colors. ReSTIR reservoir reuse remains an independent, shader-authored
 operation that can also reduce noise.
+
+### World features
+
+A World can contain optional features, such as an **Atmosphere**, that a render
+graph may or may not draw. Each feature maps to one engine-owned scene function.
+When a ray kernel calls the function, the graph draws the feature. You do not
+declare support in the manifest. The builder records it from the functions the
+compiled kernel calls.
+
+| Feature | Scene function | Where to call it | Without it | Ray approximation |
+| --- | --- | --- | --- | --- |
+| Atmosphere sky | `EvaluateEnvironment(scene, directionWorld)` | Return it where a ray leaves the scene: in the miss callback, or where ray generation finds no surface. EvaluateLightAlongRay, SampleLight and FollowSpecularChain call it for you. | The background is the World environment, and the Atmosphere's Sun is not dimmed by the air. | A distant sky resolved at the camera's altitude when the scene is prepared, without the night sky, replaces the World environment; the linked Sun keeps the illuminance that reaches the camera. |
+| Aerial perspective | `ApplyAerialPerspective(scene, originWorld, hitWorld, radiance)` | Call it on the radiance a camera ray brings back from a surface, in the closest-hit callback or in ray generation after shading, with the ray origin and the hit position. | Distant surfaces are neither hazed nor dimmed by the air. | Every segment uses the haze seen from the camera's altitude, read from a table resolved when the scene is prepared, up to 32 km. |
+
+`graphics::renderer::DescribeWorldFeature` owns this text, and the editor shows
+the same table. A renderer test compares this page with it, so edit both
+together.
+
+Each graph has one support level per feature:
+
+| Support | Meaning |
+| --- | --- |
+| Supported | The graph has the clustered deferred programs, which compose the whole Atmosphere, as the engine's default raster graph does. |
+| Approximated | A ray kernel calls the feature's scene function. The function evaluates the ray approximation in the table above. |
+| Not rendered | The graph draws the World without the feature. |
+
+Most templates already draw the Atmosphere sky without changes. Their miss
+callbacks return `EvaluateEnvironment`, and `SampleLight` samples the same sky
+as the environment light. When the World's Atmosphere lights the scene, the sky
+replaces the World environment, and the linked Sun carries the transmitted
+illuminance. This matches the raster graph and the
+[RT1 reference capture](../architecture/renderer-systems.md#clear-sky-atmosphere-design).
+No template applies aerial perspective yet. To add haze, apply it to the
+radiance of the camera ray's first surface:
+
+```slang
+float3 ShadeCameraHit(SceneContext scene, inout RayQueryContext queries, Ray ray, SurfaceHit hit)
+{
+    float3 radiance = ShadeSurface(scene, queries, hit); // your shading
+    return ApplyAerialPerspective(scene, ray.OriginWorld, hit.PositionWorld, radiance);
+}
+```
+
+Apply haze only once per camera path, between the camera and the first surface
+it sees. Its table holds the haze seen from the camera's altitude, so later
+segments of a path would add the camera's haze again.
+
+#### How support is detected
+
+A renderer-owned read-only table backs each function: the Atmosphere sky at
+slot 15 and the aerial perspective table at slot 11. Slang drops a table from a
+kernel's reflection when no code path reads it. The builder sets the version 38
+scene resource bits `SCENE_RESOURCE_ATMOSPHERE_SKY` and
+`SCENE_RESOURCE_AERIAL_PERSPECTIVE` from the reflected slots. The renderer then
+binds only the tables a kernel reads, as it does for the
+[LTC table](ltc-table.md). Every target of the kernel must agree. `RenderGraphPrograms::HasAtmosphereSky`,
+`HasAerialPerspective` and `GetWorldFeatureSupport` expose the result to hosts.
+
+Native ray stages (hardware ray pipelines) reserve slot 11 for their function
+table, so they bind neither table. In those stages the functions keep their
+plain behaviour: `EvaluateEnvironment` returns the World environment and
+`ApplyAerialPerspective` returns its radiance unchanged. Such a graph reports
+both features as Not rendered. Older packages carry no bits, so their features
+are Not rendered until you rebuild them.
+
+The renderer resolves both tables on the CPU, with the same Earth clear-sky
+model as the raster tables. Resolution runs each time the ray scene is prepared:
+when the World, its lights or its Atmosphere change. Camera motion alone keeps
+the tables. A camera below the ground or outside the atmosphere shell keeps the
+World environment and the undimmed Sun, as the raster does. An Atmosphere with
+invalid fields rejects the extraction, again as the raster does. The tables
+follow the camera of the graph's first ray pass.
+
+#### Find what a graph does not render
+
+When the World uses a feature that the drawing graph does not render, the World
+viewport and the Error List show a **World features not rendered** warning with
+code `RenderGraphFeatureNotRendered`. It names each missing feature, what you
+see instead and the function to call. The graph still draws the rest of the
+World. Activate the warning row to open **Render Preview** at its **World
+features** table. The table lists every feature with the drawing graph's
+support, the scene function and where to call it. Hover over a support cell to
+see what the graph shows instead, or the limits of its approximation. Other
+repairs are to turn on **Force raster** in the viewport toolbar, or to disable
+the Atmosphere entity.
+
+These render graph templates are not reference path tracers. The RT1 reference
+capture consumes the same CPU sky in its CPU oracle and its GPU compute path
+(see [the clear-sky design](../architecture/renderer-systems.md#clear-sky-atmosphere-design)).
+A graph classed as a reference path tracer must add each feature to its CPU
+oracle and its GPU kernel together, with parity evidence, under the
+[CPU and GPU reference rule](../architecture/renderer-systems.md#cpu-and-gpu-reference-implementation-requirement).
 
 ### Explain failed pixels
 
@@ -5887,15 +6145,35 @@ rebuilds; a removed target returns to Final output. Discarded/undefined attachme
 that their contents cannot be shown. Depth is displayed with an automatic value range.
 The separate texture inspector has an independent selection.
 
-Open **Exposure** next to the output selector to adjust the viewport in stops.
-Zero uses the graph's authored exposure, +1 doubles it, and −1 halves it. Use
-**Reset to graph exposure** to return to zero. The adjustment stays with this
-viewport session as you navigate. It updates the lighting resolve before the
-tone curve and 8-bit output, without a graph rebuild or a saved World or graph
-edit.
+Open **Exposure** next to the output selector to choose the viewport's base exposure
+and adjust it in stops:
 
-Exposure is available for **Final output** when a clustered deferred raster pass
-with an enabled ToneMap directly writes the export. For other graphs or targets,
+- **Automatic** (the default) meters the World like an incident-light meter on level
+  ground at the Atmosphere's surface anchor: the transmitted Sun and the clear sky, the
+  Moon and any other directional lights, plus the 0.002 lx of a natural moonless night.
+  The menu shows the metered exposure value, about EV100 15 under a clear midday Sun,
+  −3 under a full Moon and −10 on a moonless night. Worlds without an Atmosphere keep the
+  graph's exposure, because their lights were chosen for its scale. The meter reads the
+  light outdoors, as a photographer's incident meter does, so a shaded interior such as
+  Sponza's arcades appears several stops dark: raise the stops, or choose Physical camera
+  with a lower EV100. Metering the rendered frame instead is tracked separately.
+- **Physical camera** exposes like a camera at ISO 100 with the **EV100** value you type;
+  typing a value selects it. The base multiplier is 1 / (1.2 × 2^EV100), so EV100 −0.26
+  equals the graph's default multiplier of one.
+- **Graph exposure** uses the ToneMap node's multiplier, where one scene-linear nit is near
+  display white.
+
+Use Automatic or Physical camera with physical light units such as the Earth Sun preset's
+133,800 lx: the graph multiplier's range cannot reach daylight. With physical exposure,
+daylight hides the procedural stars and night shows them, without changing either.
+
+The stops field is compensation on top of the base exposure: +1 doubles it and −1 halves it.
+Use **Reset compensation** to return to zero. These choices stay with this viewport session
+as you navigate. They update the lighting resolve before the tone curve and 8-bit output,
+without a graph rebuild or a saved World or graph edit.
+
+Exposure is available for **Final output** and the **Lighting** views when a clustered
+deferred raster pass with an enabled ToneMap directly writes the export. For other graphs or targets,
 return to a supported final output to use the control. Reference captures run
 with the graph's authored exposure.
 
@@ -5913,6 +6191,13 @@ selector returns to **Final output** and the status line says why; the graph's d
 image are kept, so the viewport never goes blank. The views and their colours are described under
 [the built-in viewport profile](editor-workspace.md#earlier-built-in-viewport-profile) in the editor
 workspace guide.
+
+When a raster colour pass writes the final output, the selector then offers the clustered
+deferred resolve's [lighting views](#lighting-views): **Lighting: Direct lights**, **Sky diffuse**,
+**Sky specular**, **Area lights**, **Aerial perspective**, **Dominant light** and **Sky
+visibility**, then **Light:** and **Shadow coverage:** for each analytic light, named as in the
+World. Unlike the debug views, the graph draws these itself, with the same camera, shadows and
+exposure as its final output. Clustered forward graphs show their final output for them.
 
 A World without objects, such as one just made with **New World**, gives the graph nothing to
 extract. The viewport then presents the built-in renderer's frames of that empty World (the
@@ -6012,9 +6297,13 @@ the editor extracts each object's tint (times its colour texture) as display-onl
 emission over a black base colour. That emission contributes no mesh area lighting.
 They require static triangles with normals and opaque or alpha-masked materials.
 Blended materials and invalid inputs reject preparation and retain the last drawable generation.
-The default shadows one authored directional light with a cached orthographic map.
+The default shadows up to two directional lights with cached orthographic maps
+([Directional shadows](#directional-shadows)), and environment and Atmosphere sky light
+reach a surface only through the directions in which it sees past the scene
+([Sky visibility](#sky-visibility)).
 Emissive meshes also provide direct area lighting, shadowed by cached cube shadow maps
 ([Mesh-light shadows](#mesh-light-shadows)). No proxy lights, ray tracing or indirect illumination are added.
+[Lighting views](#lighting-views) draw one term of the lighting at a time.
 The graph's ToneMap node (PBR Neutral at unit exposure) is fused into the lighting
 resolve: exposure, the curve and sRGB encoding run before the RGBA8 write, so radiance
 above one compresses toward white instead of clipping, and the exported image holds
@@ -6036,6 +6325,8 @@ loads that output afterward. Background coverage remains clear. Half-float mater
 storage and reconstructed positions introduce numerical differences; native tests
 compare against the same material callback in clustered forward within two linear
 RGBA8 codes per channel. This is a correctness tolerance, not a performance claim.
+Clustered forward applies no sky visibility, so where another object hides part of a
+surface's sky, the deferred result is darker than the forward one.
 
 Emissive triangles are integrated over their actual transformed geometry. The
 Lambert term uses the polygon's projected solid angle with view-dependent Schlick
@@ -6216,9 +6507,56 @@ depth and sixteen binding slots. Unsupported devices fail explicitly. The initia
 profile admits one clear/store opaque color node and its optional immediately
 preceding prepass with the same camera/depth.
 The profile retains the graph adapter's conventional-depth requirement. Transparent
-deferred materials, MSAA, baked lighting, GPU cluster assignment, image
+deferred materials, MSAA, GPU cluster assignment, image
 upscale integration and arbitrary MRT graph authoring remain outside this initial
 offline profile.
+
+<a id="deferred-baked-probe-gi"></a>
+
+### Baked lighting: probe GI and surface charts
+
+The engine default and the **Raster** starter connect **Baked Lighting** from
+**Scene** to the color subgraph in both configurations. This is the graph that
+the World viewport's **Force raster** draws. With the wire connected, the native
+editor supplies the World's ready
+[probe volume](editor-workspace.md#baking-probe-gi-for-moving-objects) and the
+placed GI Probe Receivers. The package then carries a third G-buffer fragment,
+`DeferredProbeGBufferFragment` (runtime package version 36), compiled with
+`LUDUS_GRAPH_PROBE_GI`. Scene preparation draws receivers through it. It samples
+the probe volume as the built-in Lit viewport does and stores the receiver's
+diffuse bounce in the emission target, which the lighting resolve adds once.
+Live direct light, specular and environment still come from the resolve.
+Other draws keep the realtime G-buffer fragments, so a missing, stale or
+mismatched bake leaves every draw in realtime. The preview status reports
+"Probe GI in use on N receiver draws."
+
+The same wire also brings in the World's ready
+[always-on surface charts](editor-workspace.md#baking-always-on-lights) for
+static surfaces. Package version 37 adds a fourth G-buffer fragment,
+`DeferredSurfaceChartGBufferFragment`, compiled with `LUDUS_GRAPH_SURFACE_CHART`.
+Scene preparation checks each placement against its chart, as the Forward lit
+template does, and draws matching surfaces through it. The fragment samples the
+chart's incoming diffuse irradiance, stores its diffuse term in the emission
+target and writes emission alpha 2 (`DEFERRED_SURFACE_CHART_COVERED`) in place
+of the ordinary coverage of 1. At those pixels the resolve omits the live
+diffuse of the baked always-on lights, which the chart already holds, and keeps
+their live specular. Other lights, mesh emitters and the environment stay live.
+These are the forward chart fragment's terms, so Force raster shows a bake as
+the native Lit viewport does. The flag rides in the existing coverage channel,
+so the resolve still uses its sixteen bindings. The resolve reads its light list
+from a chart material, because only chart materials mark which lights are baked.
+A draw without a matching chart keeps the realtime G-buffer and full live
+lighting. The preview status reports "Surface charts in use on N draws."
+
+Disconnect the wire and rebuild to draw every surface in realtime. Packages
+built before version 36 decode unchanged and render in realtime. Version 36
+packages draw probe receivers but not charts. The SDK accepts the same inputs
+through `SceneShaderInputs::ProbeVolume`, `ProbeReceiverIds`, `SurfaceCharts`
+and `BakedLightIds`. A receiver list with an atlas that does not match its grid,
+or a chart table that does not match the draw list, rejects the candidate and
+keeps the last drawable scene. The probe and chart fragments apply the
+alpha-masked coverage test for opaque draws too, so those draws do not get the
+opaque G-buffer's hidden-surface removal on Apple GPUs.
 
 The package compiles the G-buffer stage twice from the same `MaterialMain`. The
 `DeferredGBufferFragment` applies an alpha-masked material's cutoff with a `discard`;
@@ -6270,15 +6608,20 @@ checker against a uniform texture of its mean on the GPU.
 
 ### Directional shadows
 
-The default shadows the directional light with the lowest source identity among
-lights that request raster shadows and have positive intensity and a nonblack
-color. In the built-in World inspector, clear **Light → Raster Shadows** to
-exclude a light while keeping its illumination. SDK callers set
-`DirectLight::ShouldCastRasterShadows`. The resource report's
-`DirectionalShadowLightSourceId` identifies the light assigned a map and is zero
-when no light qualifies. The renderer fits one
-1022 × 1022 orthographic projection to the scene's caster and receiver bounds,
-with a one-texel atlas gutter. It snaps the projection to the texel grid. Each
+The default gives a shadow map to each of up to two directional lights that
+request raster shadows and have positive intensity and a nonblack color,
+brightest first, with ties going to the lower source identity. Two maps cover an
+Atmosphere's Sun and Moon, so neither lights the scene through walls and roofs
+while the other is above the horizon. Further eligible directional lights
+illuminate without analytic shadows. In the built-in World inspector, clear
+**Light → Raster Shadows** to exclude a light while keeping its illumination.
+SDK callers set `DirectLight::ShouldCastRasterShadows`. In the resource report,
+`DirectionalShadowLights` counts the lights given a map,
+`DirectionalShadowLightSourceId` identifies the brightest of them (zero when no
+light qualifies), and `UnshadowedDirectionalLights` counts eligible lights past
+the two maps. The renderer fits a 1022 × 1022 orthographic projection per light
+to the scene's caster and receiver bounds, with a one-texel atlas gutter. It snaps the projection to the texel grid and
+widens collapsed axes in light space so that a small scene keeps most of the map for its geometry. Each
 of the four depth comparisons uses the sampled caster's depth and slope to
 evaluate its plane at the receiver's location, with a receiver bias of 0.001 in
 normalized light depth. The resolve blends the four visibility results by
@@ -6297,19 +6640,100 @@ instead of showing dithered false shadows that change with the camera pose.
 The material pass clips shading normals to the camera-facing hemisphere on
 geometrically front-facing surfaces. This keeps smooth terrain ridges lit
 where an interpolated normal turns past the camera.
-The resolve applies visibility to the selected light's direct diffuse and specular
-contribution. Point and spot lights and additional directional lights are
-evaluated without analytic shadows in this profile.
+The resolve applies each map's visibility to its light's direct diffuse and
+specular contribution. Point and spot lights and directional lights past the two
+maps are evaluated without analytic shadows in this profile. The forward
+clustered profile shades with the same comparison, without the reconstruction
+allowance because it interpolates exact receiver positions.
 
-The atlas is prepared with the scene. The renderer draws the directional map
-before the first lighting resolve that has enough draw budget. Until then the
+The atlas is prepared with the scene. The renderer draws the directional maps
+before the first lighting resolve that has enough draw budget. Until then each
 light uses full visibility. Camera-only edits reuse it. Changes to scene geometry or lighting
 prepare a replacement, and failed preparation retains the previous drawable
-generation. The directional slot shares the mesh-light atlas when the scene
-has both kinds of casters. The whole-scene fit keeps the shadow stable as the
+generation. The directional slots share the mesh-light atlas when the scene
+has both kinds of casters; each one takes a quarter of the 2048 × 2048 atlas, as do
+the [sky visibility](#sky-visibility) maps, so with two directional maps one quarter is
+left for mesh-light cube faces. The whole-scene fit keeps the shadow stable as the
 camera moves. In large scenes, each texel covers more ground, so nearby edges
 can appear coarse. Recook existing clustered deferred shader packages to use
 the corrected directional shadow comparison.
+
+The proposed
+[large-world visibility design](../architecture/renderer-systems.md#large-world-raster-visibility)
+defines near directional cascades and the skylight qualification for Worlds
+with both room-sized casters and kilometre-scale terrain.
+
+### Sky visibility
+
+Without occlusion, environment and Atmosphere sky light reach every surface,
+including interiors under roofs and floors: in the Sample project's Sponza at sunset
+the vaults and corridors glowed orange and blue while the Sun itself was correctly
+shadowed. The default therefore renders 64 orthographic depth maps of the scene
+from fixed directions over the upper (+Y) hemisphere, once per prepared scene, into
+one 1024 × 1024 quarter of the shadow atlas: 126 × 126 texels each inside a
+one-texel gutter, fitted to the scene bounds like the
+[directional maps](#directional-shadows). The directions follow a spherical
+Fibonacci spiral, so each covers an equal solid angle and no azimuth is favoured.
+`RenderGraphSceneResourceReport::SkyVisibilityMaps` reports the count, zero for a
+scene without geometry.
+
+The resolve moves each receiver 1.5 map texels along its normal and tests it
+against the maps whose directions face the surface or its reflection, with the same
+bilinear caster-plane comparison as the directional maps. The cosine-weighted
+fraction of those directions that see past the scene scales the environment
+irradiance, from above and below the horizon alike; a surface facing straight down
+sees no sky direction and receives none. A cosine-power lobe about the reflection
+vector, narrowing with smoothness up to an exponent of 8, weights the visibility
+that scales the specular environment. With an Atmosphere, each direction's weight
+also carries the sky's luminance there, so hiding a bright part of the sky removes
+its share of the reflection: under an arcade, walls no longer reflect the glowing
+sunset horizon that the opposite building hides just because the dim sky overhead
+is open. With an Atmosphere, the visible directions
+also replace the quadrature about the normal for diffuse sky light: each one adds
+its sky radiance times its cosine and solid angle, and the sky table's ground half
+adds one radiance over the projected solid angle below the horizon, scaled by the
+same visibility. The quadrature about the normal took 12 samples that crossed the
+horizon one at a time as normals varied, which drew stepped bands on vaults and a
+horizontal line across walls near eye height; the fixed directions' weights vary
+continuously with the normal.
+
+Openings narrower than the spacing between directions, about 25 degrees, can fall
+between them, and texel-sized geometry can leak, because the maps are coarse:
+126 texels across the scene bounds. Interiors receive no light that bounces off
+other surfaces, so rooms lit only through openings are darker than with the
+unoccluded sky; probe GI and baked charts provide that light where configured.
+Clustered forward profiles and the built-in Lit viewport do not apply sky
+visibility. Until the maps are drawn after publication, the atlas reads as open
+sky. In the measured Sponza view at 1200 × 900 on an Apple M5 under a heavily loaded
+machine, the lighting resolve took about 14 to 16 ms with sky visibility and 7 to
+10 ms without; per-pass GPU time in the viewport's statistics overlay shows the cost
+on a given machine.
+
+### Lighting views
+
+`ViewDescription::LightingView` makes the clustered deferred resolve draw one term
+of its lighting instead of the final colour, to see where the light at a pixel
+comes from. In the editor, choose them from the World viewport's output menu
+([Inspect lighting terms](editor-workspace.md#inspect-lighting-terms)).
+
+| View | Shows |
+| --- | --- |
+| `DirectLights` | Shadowed light from every directional, point and spot light |
+| `Light` | Shadowed light from the light `LightingViewSourceId` names |
+| `ShadowCoverage` | That light's shadow-map test, independent of its angle to the surface: white lit, black shadowed, magenta where the light has maps but none covers the surface (it lights unshadowed there), cyan where it has no map |
+| `SkyDiffuse`, `SkySpecular` | Environment or Atmosphere sky light, after sky visibility |
+| `AreaLights` | Shadowed light from emissive meshes |
+| `AerialPerspective` | Light the Atmosphere scatters between the camera and the surface |
+| `DominantLight` | Each pixel in the hue of its largest contributor, brighter where the final colour is (from 35% so dim pixels stay readable); black where nothing lights it |
+| `SkyVisibility` | The cosine-weighted sky visibility as grey; magenta without sky visibility maps |
+
+Radiance views keep the pass's ToneMap exposure and curve, so they compare
+directly with the final output. `GetDeferredLightingViewHue` returns the
+dominant-light hue of each contributor: the sky, the area lights together, then
+each analytic light in ascending source ID order. A light the scene does not hold
+draws black in `Light` and cyan in `ShadowCoverage`. A value outside the
+enumeration rejects the update and keeps the last image. Clustered forward profiles
+ignore the field.
 
 ### Mesh-light shadows
 
@@ -6340,11 +6764,26 @@ it lights, and it renders no cube face that lies wholly behind them. Any other c
 encloses its members: two-sided emitters, or facets facing many ways. It sits at the
 centre of their enclosing sphere, renders all six faces and ignores occluders within
 its radius. Each caster's range is its members' culling reach, so every receiver the
-grid lists for a member is inside it.
+grid lists for a member is inside it, clamped to the farthest corner of the scene
+bounds widened by an eighth for the resolve's normal offset. A bright emitter's reach
+can be hundreds of metres, and the range sets the depth precision below.
 
 After the scene is published, each caster's cube faces are rendered once, with the
-renderer's flat shadow pipeline, into one 2048 x 2048 RGBA8 atlas holding 16-bit
-conventional depth. Face slots are powers of two from 32 to 512 texels, sized by the
+renderer's shadow pipelines, into one 2048 x 2048 RGBA8 atlas holding 16-bit linear
+depth, (forward distance - near) / (range - near). Each code spans
+(range - near) / 65,535 metres everywhere in the face: under 0.1 mm for a 4 m room and
+1.5 cm for a 1 km range. Conventional depth would resolve only
+distance² / (near × 65,535) metres, which forced a near plane of a hundredth of the
+range and ignored every occluder closer than that. A one-sided caster's near plane is
+therefore only half its offset in front of its emitters, at least 5 mm, and an
+enclosing caster's is its radius. Face instances tag their colour red, and the face
+projection is divided by the range so that its clip z is that linear depth while the
+rasterized depth stays conventional. The flat shadow fragment rebuilds linear depth
+from its float32 rasterized depth with the near distance and range the instance
+colour carries. That depth is uncertain by about distance² / near × 2.4e-7 metres, so
+the resolve widens each comparison by as much: 0.02 mm at 1 m from a 1.4 cm near
+plane, 2 cm at 20 m from a 5 mm one. Masked materials evaluate linear depth exactly
+from the world position and the projection's depth row. Face slots are powers of two from 32 to 512 texels, sized by the
 square root of the caster's flux share and halved together until they fit, and each
 slot has a four-texel gutter rendered with a slightly wider field of view. The first
 frame clears the atlas to the far depth. Faces are then drawn whole, brightest caster
@@ -6357,13 +6796,39 @@ Camera-only updates reuse the atlas, and masked materials cast through their
 alpha-tested shadow pipeline. The atlas takes the resolve's material base-colour
 slot, which the resolve never samples; the caster table follows the culling grid,
 whose cull word records its position. A package whose resolve predates shadows
-ignores both, so no package version changes.
+ignores both, so no package version changes. After every caster's words, the table
+holds one light-disk word per caster, which a flag in its header announces: a
+one-sided caster's flux-weighted mean emitter normal (zero for an enclosing caster)
+and the radius of the uniform disk with its members' flux-weighted second moment of
+area, at most its enclosing radius. A single polygon gets about its equal-area disk:
+0.45 m for a 0.8 m square, whose enclosing sphere has 0.57 m. A resolve cooked before
+the disk words reads the casters' words unchanged.
 
 The resolve multiplies each record's unshadowed integral by its caster's visibility at
-the receiver. It offsets the receiver by 1.5 shadow texels along its normal, searches
-five taps for occluders and, when it finds any, filters nine taps over a penumbra of
-the caster radius times (receiver distance - blocker distance) / blocker distance,
-clamped to the gutter. Each tap compares the stored depth with the depth the
+the receiver: the fraction of the caster's light disk that no occluder hides, each
+light point weighted by its diffuse form factor at the receiver. A one-sided caster's
+disk lies across its emitter normal and an enclosing caster's faces the receiver. The
+segment from the receiver to a light point at offset `r u` on the disk (`u` in the
+unit disk) reaches height `z` above the disk's plane in the direction
+`receiver + r u (h / z - 1)` from the caster, where `h` is the receiver's height.
+Every tap is such a direction, looked up on whichever cube face holds it, so the
+search and the filter cross face seams and widen with the light rather than stopping
+at the face gutter. The resolve offsets the receiver by 1.5 shadow texels along its
+normal and searches thirteen taps: the receiver's own direction, then four rings of
+three taps whose lateral widths lie an octave apart below that of the near plane, at
+most twice the receiver's distance. A receiver within half a ring's width of an
+occluder's hard shadow therefore always finds it. A found occluder counts only if it
+lies between the disk's plane and the receiver and, seen from the receiver,
+backprojects onto the disk; the emitters behind the plane hide nothing. When it finds
+any, the resolve filters twelve light points at the blockers' mean inverse height.
+Where the found blockers form two height layers, their widths differing by half
+again and by a texel, each light point is tested at both, and an occluder counts only
+in its own layer, so a blocker beside the light keeps its wide penumbra next to a
+sharp one near the receiver. A light whose widest penumbra spans at most two texels
+searches only the receiver's direction, and every filter spans at least a texel. The
+taps form a golden-angle disk rotated per pixel by interleaved gradient noise, which
+turns the steps of a fixed pattern into a fine, static dither without temporal
+accumulation. Each tap compares the stored depth with the depth the
 receiver's tangent plane has along that texel's ray, so a flat receiver never shadows
 itself at grazing angles. The receiver is rebuilt from the depth buffer, so, as for
 [directional shadows](#directional-shadows), its position is uncertain along the view
@@ -6378,11 +6843,17 @@ receivers shadow slightly later, and occluders that close to them cast no shadow
 The `[mesh-light-shadows]` regression sweeps sub-pixel poses of an oblique camera 50
 and 120 m from an area-lit floor and bounds every pixel by the CPU integral of the
 unshadowed emitter. The grid lists a caster's records together, so one lookup serves
-a run of them. The penumbra is an estimate from one point per caster: a large
-emitter's contact shadows are approximate, and occluders nearer than a caster's near
-distance (at least a hundredth of its range, and its radius when it encloses its
-members) are ignored. Geometry such as window glass that the scene draws as opaque
-also blocks mesh light in the shadow faces.
+a run of them. Occluders nearer than a caster's near distance are ignored: half its
+offset in front of one-sided emitters, and its radius when it encloses its members.
+The penumbra remains an estimate from one point per caster: the disk is round, the
+blockers' heights come from thirteen taps, and occluders nearer the light's plane
+than about half its radius filter too narrowly. Under a 0.8 m square of 4.4 nits with
+blockers 0.22 m and 0.47 m in front of its caster, the
+[RT2 area-light fixture](../architecture/renderer-systems.md#partial-area-light-shadows)
+measures visibility RMS error 0.063–0.088 against an exact backprojection oracle,
+where the earlier filter, clamped to the four-texel gutter, left nearly hard shadows
+with RMS error 0.32–0.41. Geometry such as window
+glass that the scene draws as opaque also blocks mesh light in the shadow faces.
 
 Measured with the `[.raster-mesh-light-benchmark]` editor test on an Apple M5 at
 1600 x 1080, with the editor viewport's device budgets. Each build ran five times,
@@ -6411,6 +6882,45 @@ averaged 27 ms on the loaded machine. With the gain of the mesh-light resolve ra
 64 times so that the lights dominate, 2.2% of Bistro's pixels darken by more than
 eight steps against an unshadowed resolve (0.5% with 64 casters). Sponza's bulbs emit
 too little to change its eight-bit image.
+
+Storing linear depth leaves the casters, faces and face-drawing frames unchanged.
+Measured with the same benchmark at the default framing of each World, the develop
+baseline and the linear-depth build ran interleaved (old, new, new, old) on the loaded
+machine:
+
+| Scene | Runs per build | Frame after faces, conventional depth (median of runs, fastest) | Frame after faces, linear depth (median of runs, fastest) |
+| --- | ---: | --- | --- |
+| Staircase2 | 16 | 4.7 ms, 4.1 ms | 5.0 ms, 4.3 ms |
+| Sponza | 16 | 9.1 ms, 5.1 ms | 9.5 ms, 5.9 ms |
+| Bistro | 6 | 7.9 ms, 6.3 ms | 7.2 ms, 5.2 ms |
+
+The differences lie within the run-to-run spread, which reached 16.7 ms for Sponza.
+Receivers whose occluders were hidden inside the old near plane now find blockers and
+run the nine-tap filter, which can add a little resolve time where nearby occluders
+are common.
+
+The light-disk filter reads up to thirteen search taps per caster and, where it finds
+blockers, twelve filter taps, or 24 across two layers, instead of five and nine. It
+was timed against the gutter-clamped filter in one process: both packages prepared
+the same World on one device, and twelve blocks of 20 frames alternated between them,
+so GPU clock changes affect both alike. The table gives the median of the block
+medians and of the per-block differences, on the loaded M5 with the
+`macos-clang-debug` editor tests at 1600 x 1080. The inside views use the navigation
+state `{"yaw": 35, "pitch": 8, "zoom": 0.12}`.
+
+| Scene and view | Gutter-clamped filter | Light-disk filter | Difference |
+| --- | ---: | ---: | ---: |
+| Staircase2, default framing | 2.87 ms | 5.39 ms | +2.44 ms |
+| Sponza, default framing | 4.84 ms | 5.77 ms | +0.55 ms |
+| Bistro, default framing | 4.44 ms | 5.13 ms | +0.46 ms |
+| Staircase2, inside | 80.8 ms | 121.2 ms | +40.9 ms |
+| Sponza, inside | 25.8 ms | 29.1 ms | +3.7 ms |
+| Bistro, inside | 29.7 ms | 36.9 ms | +7.6 ms |
+
+Staircase2's large emitters light every receiver near them through thirteen casters,
+and most of its receivers find blockers. Per-pixel tap rotation costs no more than a
+fixed pattern there: the extra time is the taps themselves, about a third in the search
+and two thirds in the filter.
 
 ## Create a saved graph and import it
 
@@ -8689,6 +9199,29 @@ referenced graph files, shader sources and the root shader manifest must match
 in the destination. Missing or mismatched dependencies reject the paste with a
 message, preserving the destination draft and history.
 
+### Add an optional post-process subgraph
+
+Place a Subgraph on the color connection between a scene pass and the root
+Export. For a ray color route, create a library with **Bypass** and **Mapped**
+configurations and give both the same interface: a `color: ColorTexture` input
+and a required `color: ColorTexture` output.
+
+1. In **Bypass**, connect the input box's `color` directly to the output box's
+   `color`. The compiler forwards the original texture version without a copy
+   or an additional pass.
+2. In **Mapped**, wire `color` through a [ToneMap](#tone-map-ray-output-explicitly) node
+   before connecting the output box. Keep the Export in the parent graph, so it
+   observes whichever texture version the selected child returns.
+3. In the parent, connect the ray color to the Subgraph input and its output
+   to Export. Set the Subgraph's **configuration** in its canvas field editor.
+   Matching port IDs and types let you switch modes with the same parent wires.
+
+Validate each choice from the parent. In the [Execution Plan](#inspect-the-execution-plan-on-the-canvas),
+**Bypass** exports the ray pass's version directly. **Mapped** lists ToneMap
+between the ray pass and Export, and Export reads the mapped version. Use
+**Build & Preview** to try the selected route. Save that selection before
+[cooking the app's runtime package](#runtime-generations-and-activation).
+
 ### Edit configuration inputs and outputs
 
 Choose **Edit Inputs / Outputs...** above the canvas or in the source-tree/canvas
@@ -8779,7 +9312,16 @@ only; unsaved changes remain in the draft. A result for an older saved version n
 replaces the current request. Validation, compilation and activation failures preserve
 the last drawable view; successful replacements publish only after readiness.
 An activation failure appears in the **Error List** with its runtime status and
-candidate generation, independently of compiler results. The viewport and Render
+candidate generation, independently of compiler results. When the renderer cannot
+attribute a scene-level cause, the message names the step that rejected the
+generation and its repair. The steps are: setup, resize, pipeline or scene
+preparation, admitting the extraction, the camera's values, the objects' per-draw
+values, materials and scene resources, meshes, the Atmosphere tables of ray
+passes, the light transformer model, and the ray-traced scene. For example:
+"Renderer generation 3 was rejected (InvalidDescription) while resolving the
+Atmosphere's sky and haze for its ray passes. …" The renderer exposes the step as
+`RenderGraphActivationReport::CandidateFailureStage`, and as
+`RenderGraph::GetLastFailureStage` for its latest `Poll` or `Update`. The viewport and Render
 Preview retain the last drawable view and show the failure. A successful graph
 build does not establish successful activation: its success row is hidden while
 the current renderer reports a problem. A replacement candidate clears the prior
@@ -9540,12 +10082,16 @@ owns it. Clients never silently switch to an offline compiler after worker failu
 Windows file APIs accept paths of fewer than 260 characters unless a program
 opts in to long paths, which the pinned Slang and DXC do not. A graph build
 stages each program's sources under
-`<output>/.rg1-<random>/<Program>-<target>/source/`, so a deep build tree with a
-long target or graph name can push a staged include past that limit; the build
+`<output>/.rg1-<random>/<index>-<target>/source/`, where `<index>` is the stage's
+position in build order, so program IDs do not lengthen staged paths. A deep
+build tree with a long target or graph name can still push a staged include past
+that limit; the build
 then stops with `RenderGraphBuildSource`, naming the longest staged path and
 asking for a shorter build directory or graph target/NAME, rather than letting
 `slangc` report the include as missing. The Windows lane's
-`ludus_render_graph_dxil_tests` fixtures sit a few characters below the limit.
+`ludus_render_graph_dxil_tests` fixtures' longest staged path, the clustered
+`ZPrepass` cook's `_ludus_forward/renderer_atmosphere_transport.slang`, sits
+about 30 characters below the limit.
 
 On a Windows host, bootstrap the pinned tools with `python scripts/shader-probe
 bootstrap`, then add the worker to the MSVC runtime preset. The worker builds only
@@ -10016,8 +10562,11 @@ an explicit draw. Mesh normals are required. Base-color, packed normal/roughness
 metallic and emission maps use the existing authored material evaluation. Constant
 and HDR environments reuse Renderer lighting/environment preparation. Fixed source
 mip zero is used for these scene maps; this does not introduce texture streaming.
-Unassigned materials use the existing neutral material. Invalid references, error
-materials, masked/transparent coverage and missing normals reject the candidate.
+Base texture alpha and the material cutoff control masked coverage in the
+color and depth attachments. The forward profile evaluates the authored strand
+direction for [hair cards](../architecture/renderer-systems.md#raster-hair-cards).
+Unassigned slots use the neutral material. Invalid references, error
+materials, transparent coverage and missing normals reject the candidate.
 The previous drawable scene remains available while a replacement is pending or fails.
 
 The template connects **Baked Lighting** from **Scene** to its forward raster
@@ -10029,12 +10578,15 @@ compiled chart fragment for matching draws. A chart samples incoming diffuse
 irradiance and replaces realtime diffuse for the covered lights. The material
 still supplies albedo and live specular. Ordinary draws use the realtime
 fragment, which has no chart texture binding. The first profile requires all
-forward raster passes in a configuration to agree on the bake connection.
+forward raster passes in a configuration to agree on the bake connection. A
+depth-only prepass has no lighting and is exempt. The `ClusteredForward`
+profile does not accept the connection.
 
 The SDK accepts the same typed chart inputs through `SceneShaderInputs`.
 Callers supply charts matching the submitted scene revision and item order.
-The editor owns its on-disk chart format. This integration covers surface
-charts in Forward lit.
+The editor owns its on-disk chart format. The engine's default deferred graph
+reads the same charts through its own G-buffer fragment
+([Baked lighting: probe GI and surface charts](#deferred-baked-probe-gi)).
 
 Direct lighting uses L4's declared selection: validate at most 128 unique sources,
 then retain the eight smallest source identities. `GetReport().Resources.DroppedLights`

@@ -205,6 +205,43 @@ class DisabledNodeTests(unittest.TestCase):
         self.assertFalse(any(operation['kind'] == 'ToneMap' for operation in plan['passes']))
         self.assertEqual((0, 0), self.lowered(plan))
 
+    def test_post_process_configurations_keep_the_same_parent_wiring(self):
+        # Thanks to Tobias Persson, "High-Level Rendering Using Render Graphs",
+        # Modules and Sub-Modules (2017). Use a typed child configuration for
+        # the authored insertion point. See docs/architecture/render-graph-authoring.md.
+        raw = self.compile()
+        library = self.path.parent / 'post.lurender.json'
+        color_input = {'id': 'color', 'type': 'ColorTexture'}
+        color_output = {'id': 'color', 'type': 'ColorTexture', 'required': True}
+        library.write_bytes(graph.canonical_asset({
+            'version': 1, 'id': 'Post', 'default': 'Bypass', 'configurations': [{
+                'id': 'Bypass', 'inputs': [color_input],
+                'outputs': [{**color_output, 'source': 'input.color'}],
+                'nodes': [], 'edges': [],
+            }, {
+                'id': 'Mapped', 'inputs': [color_input],
+                'outputs': [{**color_output, 'source': 'display.color'}],
+                'nodes': [{'id': 'display', 'kind': 'ToneMap', 'exposure': 2}],
+                'edges': [{'from': 'input.color', 'to': 'display.color'}],
+            }],
+        }))
+        post = {'id': 'post', 'kind': 'Subgraph', 'asset': library.name, 'configuration': 'Bypass'}
+        self.insert_before_output(post)
+
+        bypass = self.compile()
+        self.assertEqual(raw['passes'], bypass['passes'])
+        self.assertEqual(raw['roots'], bypass['roots'])
+        self.assertEqual(self.lowered(raw), self.lowered(bypass))
+
+        post['configuration'] = 'Mapped'
+        mapped = self.compile()
+        self.assertEqual(['Main/trace', 'Main/post/display', 'Main/output'],
+                         [operation['id'] for operation in mapped['passes']])
+        self.assertEqual(['Main/trace'], mapped['passes'][1]['dependencies'])
+        self.assertEqual(['Main/post/display'], mapped['passes'][2]['dependencies'])
+        self.assertEqual([{**raw['roots'][0], 'version': raw['roots'][0]['version'] + 1}], mapped['roots'])
+        self.assertEqual((0, 2), self.lowered(mapped))
+
 
 if __name__ == '__main__':
     unittest.main()

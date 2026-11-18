@@ -229,6 +229,144 @@ TEST_CASE("Direct3D 12 presents to a Win32 window and follows its extent", "[rhi
     rhi::Shutdown();
 }
 
+namespace
+{
+/// Clear one surface of `device` to a colour, end the frame and read its headless target.
+void ClearAndRead(rhi::DeviceHandle device,
+                  rhi::SurfaceHandle surface,
+                  const rhi::FrameTarget& target,
+                  std::span<uint8> pixels)
+{
+    REQUIRE(rhi::SetFrameTarget(device, surface, target) == rhi::DeviceStatus::Ready);
+    REQUIRE(rhi::BeginFrame(device, surface) == rhi::DeviceStatus::Ready);
+    rhi::FrameInfo frame;
+    REQUIRE(rhi::GetFrameInfo(device, surface, frame) == rhi::DeviceStatus::Ready);
+    CHECK(frame.Width == target.Width);
+    CHECK(frame.Height == target.Height);
+    REQUIRE(rhi::EndFrame(device) == rhi::DeviceStatus::Ready);
+    REQUIRE(rhi::backend::ReadHeadlessPixels(pixels) == true);
+}
+bool IsFilled(std::span<const uint8> pixels, uint8 red, uint8 green, uint8 blue) noexcept
+{
+    for (usize i = 0; i < pixels.size(); i += BYTES_PER_PIXEL)
+    {
+        if (pixels[i] != red || pixels[i + 1] != green || pixels[i + 2] != blue || pixels[i + 3] != 255)
+        {
+            return false;
+        }
+    }
+    return true;
+}
+} // namespace
+
+TEST_CASE("R14b Direct3D 12 surfaces of one device acquire, resize and retire independently",
+          "[rhi][windows][gpu][surface]")
+{
+    Guard guard;
+    rhi::DeviceHandle device;
+    rhi::SurfaceHandle primary;
+    REQUIRE(rhi::CreateDevice({},
+                              {
+                                  .Width = WIDTH,
+                                  .Height = HEIGHT,
+                              },
+                              {},
+                              device,
+                              primary) == rhi::DeviceStatus::Ready);
+    rhi::SurfaceHandle second;
+    REQUIRE(rhi::CreateSurface(device, { .Width = 11, .Height = 5 }, second) == rhi::DeviceStatus::Ready);
+    uint8 primaryPixels[WIDTH * HEIGHT * BYTES_PER_PIXEL]{};
+    ClearAndRead(device, primary, { .Width = WIDTH, .Height = HEIGHT, .Red = 1, .Alpha = 1 }, primaryPixels);
+    CHECK(IsFilled(primaryPixels, 255, 0, 0));
+    uint8 smallPixels[11 * 5 * BYTES_PER_PIXEL]{};
+    ClearAndRead(device, second, { .Width = 11, .Height = 5, .Green = 1, .Alpha = 1 }, smallPixels);
+    CHECK(IsFilled(smallPixels, 0, 255, 0));
+
+    // Resizing the second surface leaves the primary target and its contents unchanged.
+    uint8 resizedPixels[23 * 7 * BYTES_PER_PIXEL]{};
+    ClearAndRead(device, second, { .Width = 23, .Height = 7, .Blue = 1, .Alpha = 1 }, resizedPixels);
+    CHECK(IsFilled(resizedPixels, 0, 0, 255));
+    REQUIRE(rhi::BeginFrame(device, primary) == rhi::DeviceStatus::Ready);
+    rhi::FrameInfo frame;
+    REQUIRE(rhi::GetFrameInfo(device, primary, frame) == rhi::DeviceStatus::Ready);
+    CHECK(frame.Width == WIDTH);
+    CHECK(frame.Height == HEIGHT);
+    REQUIRE(rhi::EndFrame(device) == rhi::DeviceStatus::Ready);
+    REQUIRE(rhi::backend::ReadHeadlessPixels(primaryPixels) == true);
+    CHECK(IsFilled(primaryPixels, 255, 0, 0));
+
+    // Readback drained the queue, so render completion is observed; headless presents nothing.
+    rhi::SurfaceInfo info;
+    REQUIRE(rhi::GetSurfaceInfo(device, second, info) == rhi::DeviceStatus::Ready);
+    CHECK(info.State == rhi::SurfaceState::Ready);
+    CHECK(info.Width == 23);
+    CHECK(info.SubmittedFrames == 2);
+    CHECK(info.RenderedFrames == 2);
+    CHECK(info.PresentedFrames == 0);
+    REQUIRE(rhi::GetSurfaceInfo(device, primary, info) == rhi::DeviceStatus::Ready);
+    CHECK(info.IsPrimary == true);
+    CHECK(info.SubmittedFrames == 2);
+    CHECK(info.RenderedFrames == 2);
+
+    // Retiring the second surface leaves the device and its primary surface working.
+    const rhi::SurfaceHandle retired = second;
+    REQUIRE(rhi::DestroySurface(device, second) == rhi::DeviceStatus::Ready);
+    CHECK(rhi::BeginFrame(device, retired) == rhi::DeviceStatus::InvalidHandle);
+    ClearAndRead(device,
+                 primary,
+                 {
+                     .Width = WIDTH,
+                     .Height = HEIGHT,
+                     .Red = 1,
+                     .Green = 1,
+                     .Alpha = 1,
+                 },
+                 primaryPixels);
+    CHECK(IsFilled(primaryPixels, 255, 255, 0));
+    REQUIRE(rhi::DestroyDevice(device) == rhi::DeviceStatus::Ready);
+}
+
+TEST_CASE("R14b Direct3D 12 loses a created Win32 surface whose window is destroyed", "[rhi][windows][gpu][surface]")
+{
+    Guard guard;
+    UniquePtr<ludus::platform::Window> first = OpenWindow(160, 120);
+    UniquePtr<ludus::platform::Window> second = OpenWindow(96, 64);
+    const ludus::platform::NativeWindowInfo primaryWindow = first->GetNativeWindowInfo();
+    const ludus::platform::NativeWindowInfo secondWindow = second->GetNativeWindowInfo();
+    rhi::DeviceHandle device;
+    rhi::SurfaceHandle primary;
+    REQUIRE(rhi::CreateDevice({}, primaryWindow, {}, device, primary) == rhi::DeviceStatus::Ready);
+    rhi::SurfaceHandle surface;
+    CHECK(rhi::CreateSurface(device, primaryWindow, surface) == rhi::DeviceStatus::InvalidDescription);
+    REQUIRE(rhi::CreateSurface(device, secondWindow, surface) == rhi::DeviceStatus::Ready);
+    REQUIRE(rhi::SetFrameTarget(device, surface, { .Width = secondWindow.Width, .Height = secondWindow.Height }) ==
+            rhi::DeviceStatus::Ready);
+    REQUIRE(rhi::BeginFrame(device, surface) == rhi::DeviceStatus::Ready);
+    REQUIRE(rhi::EndFrame(device) == rhi::DeviceStatus::Ready);
+    rhi::SurfaceInfo info;
+    REQUIRE(rhi::GetSurfaceInfo(device, surface, info) == rhi::DeviceStatus::Ready);
+    CHECK(info.System == ludus::platform::WindowSystem::Win32);
+    CHECK(info.SubmittedFrames == 1);
+    CHECK(info.PresentedFrames == 1);
+
+    // Destroying the borrowed window loses only its surface.
+    second.Reset();
+    CHECK(rhi::BeginFrame(device, surface) == rhi::DeviceStatus::SurfaceLost);
+    REQUIRE(rhi::GetSurfaceInfo(device, surface, info) == rhi::DeviceStatus::Ready);
+    CHECK(info.State == rhi::SurfaceState::Lost);
+    CHECK(info.PresentedFrames == 1);
+    rhi::DeviceInfo deviceInfo;
+    CHECK(rhi::GetDeviceInfo(device, deviceInfo) == rhi::DeviceStatus::Ready);
+    REQUIRE(first->HandleEvent({}) == true);
+    REQUIRE(rhi::SetFrameTarget(device, primary, { .Width = primaryWindow.Width, .Height = primaryWindow.Height }) ==
+            rhi::DeviceStatus::Ready);
+    REQUIRE(rhi::BeginFrame(device, primary) == rhi::DeviceStatus::Ready);
+    REQUIRE(rhi::EndFrame(device) == rhi::DeviceStatus::Ready);
+    REQUIRE(rhi::DestroySurface(device, surface) == rhi::DeviceStatus::Ready);
+    // Release the primary swap chain before its window.
+    REQUIRE(rhi::DestroyDevice(device) == rhi::DeviceStatus::Ready);
+}
+
 #if defined(LUDUS_TEST_DXIL)
 namespace
 {

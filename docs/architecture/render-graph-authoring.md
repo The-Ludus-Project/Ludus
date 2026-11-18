@@ -385,6 +385,24 @@ history is an explicit persistent import/export with reset/invalidation policy;
 it is not a cycle hidden inside the current frame graph. A subgraph exposes its
 interface and effect summary, not permission to rewrite its internals.
 
+### Authored pass insertion
+
+Thanks to Tobias Persson, [*High-Level Rendering Using Render Graphs*](https://ruby0x1.github.io/machinery_blog_archive/post/high-level-rendering-using-render-graphs/index.html#modules-and-sub-modules),
+Our Machinery, August 28, 2017, for the idea of exposing a deliberate place
+to insert a reusable group of passes. In Ludus, the caller places a typed
+Subgraph between its producer and consumer. Child configurations with the same
+interface can forward the existing resource version or produce a new one. The
+saved choice is resolved during lowering, where output reachability and
+resource validation already apply. See the
+[optional post-process workflow](../development/render-graph-authoring.md#add-an-optional-post-process-subgraph).
+
+Persson also describes material-triggered work inside a draw layer for layered
+refraction. The [clear-glass raster trial](https://github.com/The-Ludus-Project/Ludus/issues/1387)
+can establish whether one declared scene-color input gives acceptable overlap
+for an authored consumer. Revisit per-draw scheduling only if that comparison
+shows a visible gap and a bounded copy/filter schedule fits the target's frame
+time and transient-memory budgets.
+
 ## Cameras, reusable raster graphs and scene coverage
 
 Every active presentation camera must have at least one valid graph route to its
@@ -1813,3 +1831,21 @@ and GGX/environment lighting remain shared shader functions, with material and
 lighting callbacks separated by three RGBA16F targets. The logical output keeps
 its RGBA8/private-depth contract. See the [default deferred workflow](../development/render-graph-authoring.md#default-clustered-deferred-lighting)
 for layout, capabilities, optional prepass, precision and memory limits.
+
+A deferred pass with a connected `SceneBakedLighting` input adds the optional
+`DeferredProbeGBufferFragment` role in package version 36. It must be present for every
+deferred target or none. The renderer prewarms a second material program that differs
+from the ordinary one only in this G-buffer fragment. Scene preparation pins the probe
+atlas through the same resource cache and assigns that program to receiver draws. The
+fragment adds the probe diffuse term to the emission target, so the resolve ABI and its
+sixteen bindings are unchanged. Package version 37 adds the optional
+`DeferredSurfaceChartGBufferFragment` role under the same all-or-none rule. A third
+material program differs from the ordinary one only in this G-buffer fragment, and
+scene preparation assigns it to draws with a matching surface chart. The fragment adds
+the chart diffuse term to the emission target and writes emission alpha 2. The resolve
+reads that value as the existing `IsBakeValid` input, so it omits the baked lights'
+diffuse there exactly once without another binding. The resolve takes its light words
+from a chart material, because only those mark the baked lights. A forward-profile
+color context therefore prewarms at most three material programs, and one technique
+row enumerates up to four renderer pipeline sets. See
+[Baked lighting: probe GI and surface charts](../development/render-graph-authoring.md#deferred-baked-probe-gi).

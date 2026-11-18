@@ -1,12 +1,14 @@
+#include "renderer_celestial_constants.h"
+
 // Procedural stars in the supplied celestial frame. A cell owns its star and leaves a margin around
 // it so changing cube faces cannot split a star across two different seeds.
 float3 EvaluateCelestialStars(in float3 directionCelestial, float angularFootprint, float peakRadiance)
 {
-    const uint FACE_CELLS = 96;
-    const float OCCUPANCY = 0.26;
-    const float STAR_CELL_RADIUS = 0.042;
-    const float STAR_CELL_MARGIN = 0.24;
-    const float MAXIMUM_FILTER_RADIUS = 0.19;
+    const uint FACE_CELLS = LUDUS_CELESTIAL_STAR_FACE_CELLS;
+    const float OCCUPANCY = LUDUS_CELESTIAL_STAR_OCCUPANCY;
+    const float STAR_CELL_RADIUS = LUDUS_CELESTIAL_STAR_CELL_RADIUS;
+    const float STAR_CELL_MARGIN = LUDUS_CELESTIAL_STAR_CELL_MARGIN;
+    const float MAXIMUM_FILTER_RADIUS = LUDUS_CELESTIAL_STAR_MAXIMUM_FILTER_RADIUS;
     float3 magnitude = abs(directionCelestial);
     float2 facePosition;
     uint face;
@@ -91,13 +93,13 @@ float3 EvaluateMilkyWay(in float3 directionGalactic, float radiance)
 
 float ComputePlanetPointWeight(in float3 directionWorld, in float3 planetWorld, float angularFootprint)
 {
-    const float MINIMUM_CHORD_RADIUS = 0.00085;
-    const float FILTER_WIDTH_IN_PIXELS = 1.25;
+    const float MINIMUM_CHORD_RADIUS = LUDUS_CELESTIAL_PLANET_MINIMUM_CHORD_RADIUS;
+    const float FILTER_WIDTH_IN_PIXELS = LUDUS_CELESTIAL_PLANET_FILTER_WIDTH_IN_PIXELS;
     float radius = max(MINIMUM_CHORD_RADIUS, FILTER_WIDTH_IN_PIXELS * angularFootprint);
     float3 offsetWorld = directionWorld - planetWorld;
     float coverage = saturate(1 - dot(offsetWorld, offsetWorld) / (radius * radius));
     // Integrate the squared radial kernel in solid angle using chord radius.
-    const float KERNEL_NORMALIZATION = 3 / PI;
+    const float KERNEL_NORMALIZATION = LUDUS_CELESTIAL_PLANET_KERNEL_NORMALIZATION / PI;
     return KERNEL_NORMALIZATION * coverage * coverage / (radius * radius);
 }
 
@@ -112,10 +114,25 @@ float ComputeCelestialDiskCoverage(float chord, float chordRadius, float chordWi
 // The RGB exponents approximate three wavelengths from Daniel Hestroffer and
 // Christian Magnan, "Wavelength dependency of the Solar limb darkening",
 // A&A 333 (1998), §2 and Table 2, https://ui.adsabs.harvard.edu/abs/1998A%26A...333..338H
-float3 EvaluateSolarDisk(float chord, float chordRadius, float angularFootprint, out float outCoverage)
+float3 EvaluateSolarLimb(float chord, float chordRadius)
 {
-    const float3 LIMB_EXPONENT = float3(0.397, 0.503, 0.652);
-    float chordWidth = max(fwidth(chord), DIRECTION_EPSILON);
+    const float3 LIMB_EXPONENT =
+        float3(LUDUS_CELESTIAL_SOLAR_LIMB_RED, LUDUS_CELESTIAL_SOLAR_LIMB_GREEN, LUDUS_CELESTIAL_SOLAR_LIMB_BLUE);
+    float halfChord = 0.5 * chord;
+    float halfRadius = 0.5 * chordRadius;
+    float radiusRatio = chord / chordRadius;
+    // mu^2 = 1 - (sin(view angle) / sin(angular radius))^2. Work in
+    // chord distances to keep precision for the small apparent Earth Sun.
+    float muSquared =
+        saturate(1 - radiusRatio * radiusRatio * (1 - halfChord * halfChord) / (1 - halfRadius * halfRadius));
+    // Projected disk area has measure 2*mu dmu. The mean of mu^a is 2/(2+a).
+    float3 exponent = 0.5 * LIMB_EXPONENT;
+    return (1 + exponent) * pow(muSquared, exponent);
+}
+
+float3
+EvaluateSolarDisk(float chord, float chordRadius, float chordWidth, float angularFootprint, out float outCoverage)
+{
     float coverage = ComputeCelestialDiskCoverage(chord, chordRadius, chordWidth);
     outCoverage = coverage;
     // Use the disk-average radiance when the pixel cannot resolve the profile.
@@ -127,17 +144,7 @@ float3 EvaluateSolarDisk(float chord, float chordRadius, float angularFootprint,
 
     // Sample the midpoint of the covered part of a partially covered pixel.
     float sampleChord = max(0, min(chord, chordRadius - 0.5 * coverage * chordWidth));
-    float halfChord = 0.5 * sampleChord;
-    float halfRadius = 0.5 * chordRadius;
-    float radiusRatio = sampleChord / chordRadius;
-    // mu^2 = 1 - (sin(view angle) / sin(angular radius))^2. Work in
-    // chord distances to keep precision for the small apparent Earth Sun.
-    float muSquared =
-        saturate(1 - radiusRatio * radiusRatio * (1 - halfChord * halfChord) / (1 - halfRadius * halfRadius));
-    // Projected disk area has measure 2*mu dmu. The mean of mu^a is 2/(2+a).
-    float3 exponent = 0.5 * LIMB_EXPONENT;
-    float3 profile = (1 + exponent) * pow(muSquared, exponent);
-    return coverage * lerp(float3(1), profile, profileWeight);
+    return coverage * lerp(float3(1), EvaluateSolarLimb(sampleChord, chordRadius), profileWeight);
 }
 
 // Thanks to NASA Science, "Moon Phases", for the Sun-lit sphere geometry.

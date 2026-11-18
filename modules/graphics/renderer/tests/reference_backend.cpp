@@ -1,6 +1,8 @@
+#include "internal/adapter.h"
 #include "internal/backend.h"
 #include "internal/lifecycle.h"
 #include "internal/resources.h"
+#include "internal/surface.h"
 #include <ludus/foundation/containers/borrowed_view.hpp>
 #include <ludus/graphics/rhi/render.h>
 
@@ -20,6 +22,30 @@ Backend Kind() noexcept
 bool Supports(BackendSelection) noexcept
 {
     return SelectionSupported;
+}
+// R14a: the renderer's reference backend publishes no adapter catalog.
+AdapterStatus EnumerateAdapters(AdapterCatalog&) noexcept
+{
+    return AdapterStatus::Unsupported;
+}
+bool GetSelectedAdapter(AdapterInfo&) noexcept
+{
+    return false;
+}
+// R14b: the renderer's reference backend hosts only its primary surface.
+foundation::usize AdditionalSurfaceLimit() noexcept
+{
+    return 0;
+}
+StartupError CreateSurface(foundation::usize, const WindowInfo&) noexcept
+{
+    return StartupError::BackendUnavailable;
+}
+void DestroySurface(foundation::usize) noexcept {}
+void SelectSurface(foundation::usize) noexcept {}
+SurfaceCompletion GetSurfaceCompletion(foundation::usize) noexcept
+{
+    return {};
 }
 StartupError Start(const ApplicationInfo&, const WindowInfo&, uint32 token, BackendSelection) noexcept
 {

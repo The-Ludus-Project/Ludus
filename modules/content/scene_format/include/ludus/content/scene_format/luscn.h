@@ -37,7 +37,7 @@
 /// vertices (VertexRecordV6 adds a tangent frame), within the same import profile.
 /// Version 7 appends MaterialExtensionV7 after each MaterialRecordV6 to preserve
 /// source names, reflectance and typed optical parameters; other v6 records remain unchanged.
-/// Versions 8 to 10, 12 and 13 admit further material models in the same layout. Version 11 appends a
+/// Versions 8 to 10 and 12 to 14 admit further material models in the same layout. Version 11 appends a
 /// MaterialProgram record (material_program.h) after the extension of every material whose
 /// model is MaterialModel::Program, and only there.
 ///
@@ -83,10 +83,13 @@ inline constexpr uint32 VERSION_11 = 11;
 inline constexpr uint32 VERSION_12 = 12;
 /// Version 13 admits hair cards (MaterialModel::HairCard) using the version-7 record layout.
 inline constexpr uint32 VERSION_13 = 13;
+/// Version 14 admits skin (MaterialModel::Skin) using the version-7 record layout.
+inline constexpr uint32 VERSION_14 = 14;
 /// Earliest typed bundle version that can store a validated material model.
 [[nodiscard]] constexpr uint32 GetMaterialModelBundleVersion(MaterialModel model) noexcept
 {
-    return model == MaterialModel::HairCard              ? VERSION_13
+    return model == MaterialModel::Skin                  ? VERSION_14
+           : model == MaterialModel::HairCard            ? VERSION_13
            : model == MaterialModel::MediumInterface     ? VERSION_12
            : model == MaterialModel::Program             ? VERSION_11
            : model == MaterialModel::ProjectBrdf         ? VERSION_10
@@ -162,7 +165,7 @@ inline constexpr float32 MAX_EMISSION = 10000.0F;
 struct Header final
 {
     char Magic[8];        ///< MAGIC.
-    uint32 Version;       ///< VERSION_1 through VERSION_13.
+    uint32 Version;       ///< VERSION_1 through VERSION_14.
     uint32 MeshCount;     ///< 1..BundleLimits::Meshes of the version.
     uint32 MaterialCount; ///< 1..BundleLimits::Materials of the version.
     uint32 TextureCount;  ///< 0..BundleLimits::Textures of the version.
@@ -457,10 +460,10 @@ static_assert(MAGIC.size() == sizeof(Header::Magic));
 /// True for a version this header describes.
 [[nodiscard]] constexpr bool IsSupportedVersion(uint32 version) noexcept
 {
-    return version >= VERSION_1 && version <= VERSION_13;
+    return version >= VERSION_1 && version <= VERSION_14;
 }
 /// True when the version carries version 3 material emission terms, object source
-/// IDs and the lighting trailer (versions 3 through 13).
+/// IDs and the lighting trailer (versions 3 through 14).
 [[nodiscard]] constexpr bool HasLightingRecords(uint32 version) noexcept
 {
     return version >= VERSION_3;
