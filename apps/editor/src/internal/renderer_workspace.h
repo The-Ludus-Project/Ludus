@@ -49,6 +49,7 @@ class QSplitter;
 class QStackedWidget;
 class QTabWidget;
 class QTableWidget;
+class QToolButton;
 class QTreeWidget;
 QT_END_NAMESPACE
 
@@ -344,6 +345,9 @@ public:
     [[nodiscard]] QString GetStatusText() const;
     /// Current source, activation, build or extraction diagnostic, even while another graph keeps rendering.
     [[nodiscard]] QString GetRenderProblem() const;
+    /// Whether GetRenderProblem is the activation failure the shell's Error List shows, so the workspace's own status
+    /// line becomes a compact link to it instead of repeating it.
+    [[nodiscard]] bool IsRenderProblemInErrorList() const;
     /// Ask the shell to show its Error List, selecting the first problem (the viewport's problem chip uses it).
     void RequestErrorList()
     {
@@ -616,6 +620,9 @@ private:
     QTreeWidget* mTree;
     QWidget* mNavigation;
     QScrollArea* mStatusPanel;
+    /// Status panel and the problem chip that replaces it while the Error List shows the problem.
+    QWidget* mStatusRow;
+    QToolButton* mProblemChip;
     QPushButton* mSourcesToggle;
     QTabWidget* mViews;
     QScrollArea* mInspectorPanel;
@@ -626,8 +633,15 @@ private:
     QComboBox* mNewKind;
     QLabel* mNodeCreationMessage;
     QTableWidget* mEdges;
-    QLineEdit* mEdgeFrom;
-    QLineEdit* mEdgeTo;
+    QComboBox* mEdgeFrom;
+    QComboBox* mEdgeTo;
+    /// Counts and outputs of the configuration, shown in Properties while no node is selected.
+    QLabel* mGraphSummary;
+    /// Layout position and Remove; shown only with a selection.
+    QWidget* mNodeTools;
+    /// The selection's connections, endpoint pickers and Connect/Disconnect; shown only with a selection.
+    QWidget* mConnections;
+    QLabel* mConnectionsHeading;
     QComboBox* mSourceFile;
     CodeEditor* mSource;
     CodeDocumentController* mSourceController;

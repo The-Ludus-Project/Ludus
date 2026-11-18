@@ -14,11 +14,13 @@
 #include <QLabel>
 #include <QLineEdit>
 #include <QListWidget>
+#include <QMenu>
 #include <QPoint>
 #include <QRect>
 #include <QScreen>
 #include <QSignalBlocker>
 #include <QToolBar>
+#include <QToolButton>
 #include <QVBoxLayout>
 #include <QWidget>
 
@@ -39,8 +41,9 @@ RenderGraphNavigation::RenderGraphNavigation(QToolBar& inoutToolbar, QWidget& in
       mFindAction(new QAction(QStringLiteral("Find Node…"), this)),
       mUpstreamAction(new QAction(QStringLiteral("Upstream"), this)),
       mDownstreamAction(new QAction(QStringLiteral("Downstream"), this)),
-      mClearAction(new QAction(QStringLiteral("Clear Trace"), this)), mPopup(new QFrame(&inoutCanvas, Qt::Popup)),
-      mSearch(new QLineEdit(mPopup)), mResults(new QListWidget(mPopup)), mResultCount(new QLabel(mPopup))
+      mClearAction(new QAction(QStringLiteral("Clear Trace"), this)), mTraceButton(new QToolButton(&inoutToolbar)),
+      mPopup(new QFrame(&inoutCanvas, Qt::Popup)), mSearch(new QLineEdit(mPopup)), mResults(new QListWidget(mPopup)),
+      mResultCount(new QLabel(mPopup))
 {
     setObjectName(QStringLiteral("renderGraphNavigation"));
     mFindAction->setObjectName(QStringLiteral("renderGraphFindNode"));
@@ -59,10 +62,21 @@ RenderGraphNavigation::RenderGraphNavigation(QToolBar& inoutToolbar, QWidget& in
         directions->addAction(action);
     }
     mToolbar.addSeparator();
-    for (QAction* action : {mFindAction, mUpstreamAction, mDownstreamAction, mClearAction})
-    {
-        mToolbar.addAction(action);
-    }
+    mToolbar.addAction(mFindAction);
+    // Tracing is one command with a direction: a single menu button keeps the toolbar to one control per idea.
+    QMenu* traceMenu = new QMenu(mTraceButton);
+    traceMenu->setObjectName(QStringLiteral("renderGraphTraceMenu"));
+    traceMenu->addAction(mUpstreamAction);
+    traceMenu->addAction(mDownstreamAction);
+    traceMenu->addSeparator();
+    traceMenu->addAction(mClearAction);
+    mTraceButton->setObjectName(QStringLiteral("renderGraphTrace"));
+    mTraceButton->setMenu(traceMenu);
+    mTraceButton->setPopupMode(QToolButton::InstantPopup);
+    mTraceButton->setToolButtonStyle(Qt::ToolButtonTextOnly);
+    mTraceButton->setCheckable(true);
+    mTraceButton->setAccessibleName(QStringLiteral("Trace dependencies"));
+    mToolbar.addWidget(mTraceButton);
     mClearAction->setToolTip(QStringLiteral("Clear dependency tracing, keeping selection (Escape on the canvas)"));
     mPopup->setObjectName(QStringLiteral("renderGraphFindPopup"));
     mPopup->setAccessibleName(QStringLiteral("Find Node"));
@@ -222,6 +236,16 @@ void RenderGraphNavigation::refreshActions()
     mUpstreamAction->setChecked(mDirection == RenderGraphTraceDirection::Upstream);
     mDownstreamAction->setChecked(mDirection == RenderGraphTraceDirection::Downstream);
     mClearAction->setEnabled(mDirection != RenderGraphTraceDirection::None);
+    // The button names the active direction, so a dimmed canvas always says why.
+    mTraceButton->setEnabled(mSelection.isEmpty() == false || mDirection != RenderGraphTraceDirection::None);
+    mTraceButton->setChecked(mDirection != RenderGraphTraceDirection::None);
+    mTraceButton->setText(mDirection == RenderGraphTraceDirection::Upstream     ? QStringLiteral("Trace: Upstream")
+                          : mDirection == RenderGraphTraceDirection::Downstream ? QStringLiteral("Trace: Downstream")
+                                                                                : QStringLiteral("Trace"));
+    mTraceButton->setToolTip(mSelection.isEmpty() == true
+                                 ? QStringLiteral("Select a node to trace what feeds it or what it feeds.")
+                                 : QStringLiteral("Trace the selected nodes' producers (Upstream) or consumers "
+                                                  "(Downstream) in this configuration."));
     const QString summary = QStringLiteral("\nActive trace: %1 nodes, %2 connections in the current configuration")
                                 .arg(mTrace.Nodes.size())
                                 .arg(mTrace.Edges.size());
