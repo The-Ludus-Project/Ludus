@@ -3,10 +3,12 @@
 #include "internal/document_well.h"
 #include "internal/main_window.h"
 #include "internal/project_creation_dialog.h"
+#include "internal/settings_page.h"
 #include "internal/workspace_style.h"
 
 #include <catch2/catch_test_macros.hpp>
 
+#include <QAbstractButton>
 #include <QAbstractItemModel>
 #include <QAction>
 #include <QApplication>
@@ -15,16 +17,20 @@
 #include <QDialog>
 #include <QDir>
 #include <QFile>
+#include <QFormLayout>
 #include <QJsonArray>
 #include <QJsonDocument>
 #include <QJsonObject>
 #include <QKeySequence>
 #include <QLabel>
+#include <QLineEdit>
 #include <QMainWindow>
 #include <QMessageBox>
 #include <QPalette>
 #include <QPixmap>
 #include <QPushButton>
+#include <QScrollArea>
+#include <QScrollBar>
 #include <QTemporaryDir>
 #include <QTest>
 #include <QTimer>
@@ -246,22 +252,30 @@ TEST_CASE("Project overview explains setup and reveals build details without edi
     QWidget* settings = window.findChild<QWidget*>(QStringLiteral("projectSettingsScroll"));
     REQUIRE(window.GetDocumentWell().IsDocumentOpen(settings) == true);
     REQUIRE(window.GetDocumentWell().OpenDocument(settings) == true);
-    auto* identity = window.findChild<QLabel*>(QStringLiteral("projectIdentity"));
+    auto* folder = window.findChild<QLabel*>(QStringLiteral("projectFolder"));
+    auto* savedProfile = window.findChild<QLabel*>(QStringLiteral("projectSavedProfile"));
     auto* setup = window.findChild<QLabel*>(QStringLiteral("projectSetupStatus"));
+    auto* chip = window.findChild<StatusChip*>(QStringLiteral("projectSetupChip"));
     auto* next = window.findChild<QLabel*>(QStringLiteral("projectNextStep"));
-    auto* advanced = window.findChild<QPushButton*>(QStringLiteral("projectAdvanced"));
+    auto* advanced = window.findChild<QAbstractButton*>(QStringLiteral("projectAdvanced"));
     auto* details = window.findChild<QWidget*>(QStringLiteral("projectBuildDetails"));
     auto* profile = window.findChild<QComboBox*>(QStringLiteral("projectProfile"));
-    REQUIRE(identity != nullptr);
+    REQUIRE(folder != nullptr);
+    REQUIRE(savedProfile != nullptr);
     REQUIRE(setup != nullptr);
+    REQUIRE(chip != nullptr);
     REQUIRE(next != nullptr);
     REQUIRE(advanced != nullptr);
     REQUIRE(details != nullptr);
     REQUIRE(profile != nullptr);
-    CHECK(identity->textFormat() == Qt::PlainText);
-    CHECK(QDir::fromNativeSeparators(identity->text()).contains(directory.path()));
-    CHECK(identity->text().contains(QStringLiteral("linux-clang-debug")));
-    CHECK(setup->text() == controller.State().SetupStatus);
+    CHECK(folder->textFormat() == Qt::PlainText);
+    CHECK(QDir::fromNativeSeparators(folder->text()).contains(directory.path()));
+    CHECK(savedProfile->text() == QStringLiteral("linux-clang-debug"));
+    // The chip names the state; the sentence after it is the rest of the controller's status.
+    const ProjectSetupSummary summary = DescribeProjectSetup(controller.State().SetupStatus, {});
+    CHECK(setup->text() == summary.Summary);
+    CHECK(chip->text() == summary.Chip);
+    CHECK(controller.State().SetupStatus.endsWith(setup->text(), Qt::CaseInsensitive) == true);
     CHECK_FALSE(details->isVisible());
     CHECK(profile->isVisible());
     const auto release = profile->findData(QStringLiteral("linux-clang-release"));
@@ -305,22 +319,26 @@ TEST_CASE("Friendly build profiles preserve preset identity and require explicit
     window.show();
     controller.OpenProject(path);
     auto* profile = window.findChild<QComboBox*>(QStringLiteral("projectProfile"));
-    auto* identity = window.findChild<QLabel*>(QStringLiteral("projectIdentity"));
+    auto* engine = window.findChild<QLabel*>(QStringLiteral("projectEngine"));
+    auto* components = window.findChild<QLabel*>(QStringLiteral("projectComponents"));
+    auto* savedProfile = window.findChild<QLabel*>(QStringLiteral("projectSavedProfile"));
     auto* next = window.findChild<QLabel*>(QStringLiteral("projectNextStep"));
     auto* save = window.findChild<QPushButton*>(QStringLiteral("projectSaveSettings"));
     auto* run = window.findChild<QPushButton*>(QStringLiteral("projectBuildRun"));
     auto* check = window.findChild<QPushButton*>(QStringLiteral("projectCheckSetup"));
     auto* repair = window.findChild<QPushButton*>(QStringLiteral("projectRepairSetup"));
     REQUIRE(profile != nullptr);
-    REQUIRE(identity != nullptr);
+    REQUIRE(engine != nullptr);
+    REQUIRE(components != nullptr);
+    REQUIRE(savedProfile != nullptr);
     REQUIRE(next != nullptr);
     REQUIRE(save != nullptr);
     REQUIRE(run != nullptr);
     REQUIRE(check != nullptr);
     REQUIRE(repair != nullptr);
     REQUIRE(controller.State().Saved.HasEngine);
-    CHECK(identity->text().contains(QStringLiteral("Required engine: Ludus 0.1.0")));
-    CHECK(identity->text().contains(QStringLiteral("FoundationBase")));
+    CHECK(engine->text() == QStringLiteral("Ludus 0.1.0"));
+    CHECK(components->text().contains(QStringLiteral("FoundationBase")));
     for (ludus::foundation::int32 i = 0; i < profile->count(); ++i)
     {
         profile->setCurrentIndex(i);
@@ -338,8 +356,204 @@ TEST_CASE("Friendly build profiles preserve preset identity and require explicit
     save->click();
     CHECK_FALSE(controller.State().Dirty());
     CHECK(controller.Store().Load(path).Parse.Descriptor.Preset == selectedPreset);
-    CHECK(identity->text().contains(selectedPreset));
+    CHECK(savedProfile->text() == selectedPreset);
     CHECK(check->isEnabled() == controller.Caps().CanProjectCheck);
     CHECK(repair->isEnabled() == controller.Caps().CanProjectSetup);
     CHECK(run->isEnabled() == controller.Caps().CanBuildRun);
+}
+
+TEST_CASE("Project setup status reads as a chip, one sentence and detail rows", "[editor][lifecycle][overview]")
+{
+    const ProjectSetupSummary unchecked = DescribeProjectSetup({}, {});
+    CHECK(unchecked.Tone == StatusTone::Neutral);
+    CHECK(unchecked.Chip == QStringLiteral("Not checked"));
+    CHECK(unchecked.Details.isEmpty() == true);
+    const ProjectSetupSummary ready =
+        DescribeProjectSetup(QStringLiteral("CMake setup ready: Setup checked: selectable presets, SDKs\n"
+                                            "Selected engine: Ludus 0.1.0 - Development\n"
+                                            "Installation: /Users/someone/Ludus/out/install/macos-clang-development"),
+                             {});
+    CHECK(ready.Tone == StatusTone::Success);
+    CHECK(ready.Chip == QStringLiteral("Ready"));
+    CHECK(ready.Summary == QStringLiteral("Setup checked: selectable presets, SDKs"));
+    REQUIRE(ready.Details.size() == 2);
+    CHECK(ready.Details.at(0).first == QStringLiteral("Selected engine"));
+    CHECK(ready.Details.at(0).second == QStringLiteral("Ludus 0.1.0 - Development"));
+    CHECK(ready.Details.at(1).first == QStringLiteral("Installation"));
+    const ProjectSetupSummary attention =
+        DescribeProjectSetup(QStringLiteral("CMake setup needs attention: run repair"), {});
+    CHECK(attention.Tone == StatusTone::Warning);
+    CHECK(attention.Summary == QStringLiteral("Run repair"));
+    const ProjectSetupSummary unavailable =
+        DescribeProjectSetup(QStringLiteral("Setup validation unavailable: managed editor tooling is missing"), {});
+    CHECK(unavailable.Chip == QStringLiteral("Unavailable"));
+    CHECK(DescribeProjectSetup(QStringLiteral("Checking selectable CMake presets and local toolchain…"), {}).Chip ==
+          QStringLiteral("Checking"));
+    // A stale engine is a detail row and turns a ready check into one that needs attention.
+    const ProjectSetupSummary stale =
+        DescribeProjectSetup(QStringLiteral("CMake setup ready: Setup checked"), QStringLiteral("Built from 0361c59."));
+    CHECK(stale.Tone == StatusTone::Warning);
+    REQUIRE(stale.Details.isEmpty() == false);
+    CHECK(stale.Details.last().first == QStringLiteral("Engine"));
+}
+
+namespace
+{
+/// Left edge of widget in the page column's coordinates.
+int GetColumnX(const QWidget& widget, const QWidget& column)
+{
+    return widget.mapTo(&column, QPoint(0, 0)).x();
+}
+
+/// A version-2 project with an engine, and a stand-in tool adapter whose setup check reports detail lines.
+QString WriteCheckedProject(QTemporaryDir& directory, ToolingPaths& outTooling)
+{
+    QFile file(directory.filePath(QStringLiteral("ludus.project.json")));
+    REQUIRE(file.open(QIODevice::WriteOnly));
+    file.write(QByteArrayLiteral(R"json({"version":2,"name":"Sample","provider":"cmake","source_dir":".",
+"preset":"macos-clang-development","target":"sample","run":{"cwd":".","args":[]},
+"engine":{"version":"0.1.0","components":["FoundationBase"],"features":[]}})json"));
+    file.close();
+    QFile lists(directory.filePath(QStringLiteral("CMakeLists.txt")));
+    REQUIRE(lists.open(QIODevice::WriteOnly));
+    lists.write(QByteArrayLiteral("cmake_minimum_required(VERSION 3.29)\n"));
+    lists.close();
+    const QString adapter = directory.filePath(QStringLiteral("setup_adapter.py"));
+    QFile script(adapter);
+    REQUIRE(script.open(QIODevice::WriteOnly));
+    script.write(QByteArrayLiteral(R"py(import json, sys
+def send(kind, **fields):
+    fields.update(protocol=1, type=kind)
+    if kind != 'ready': fields['job'] = request['job']
+    print(json.dumps(fields), flush=True)
+send('ready')
+request = json.loads(sys.stdin.readline())
+send('setup_details', text='Setup checked: selectable presets, SDKs, rendering tools and IDE settings\n'
+     'Selected engine: Ludus 0.1.0 - Development - arm64-apple-darwin\n'
+     'Engine revision: bba94d877466a34628aa473c015639d05336fe6a\n'
+     'Selection: saved .ludus/local.json override (local override)\n'
+     'Installation: /Users/someone/Ludus/out/install/macos-clang-development-c8b3337c1b31fe65')
+send('result', outcome='success', stage='configuring', code='Ok', message='Setup checked',
+     cleanup_confirmed=True, exit_code=None, signal=None)
+)py"));
+    script.close();
+    outTooling.PythonPath = QString::fromUtf8(LUDUS_TEST_PYTHON);
+    outTooling.AdapterPath = adapter;
+    outTooling.ToolingRoot = directory.path();
+    return file.fileName();
+}
+} // namespace
+
+TEST_CASE("Project Settings is one readable column of aligned sections at MacBook Air and wide sizes",
+          "[editor][lifecycle][overview][layout]")
+{
+    QTemporaryDir directory;
+    ToolingPaths tooling;
+    const QString path = WriteCheckedProject(directory, tooling);
+    EditorController controller(tooling, nullptr, directory.filePath(QStringLiteral("recent.json")));
+    MainWindow window(&controller, nullptr, directory.filePath(QStringLiteral("workspace.json")));
+    window.show();
+    controller.OpenProject(path);
+    QWidget* settings = window.findChild<QWidget*>(QStringLiteral("projectSettingsScroll"));
+    REQUIRE(settings != nullptr);
+    REQUIRE(window.GetDocumentWell().OpenDocument(settings) == true);
+    auto* chip = window.findChild<StatusChip*>(QStringLiteral("projectSetupChip"));
+    REQUIRE(chip != nullptr);
+    QTRY_VERIFY_WITH_TIMEOUT(chip->GetTone() == StatusTone::Success, 10000);
+    auto* scroll = qobject_cast<QScrollArea*>(settings);
+    auto* column = window.findChild<SettingsColumn*>(QStringLiteral("projectSettingsColumn"));
+    auto* name = window.findChild<QLineEdit*>(QStringLiteral("projectName"));
+    auto* profile = window.findChild<QComboBox*>(QStringLiteral("projectProfile"));
+    auto* resolution = window.findChild<QComboBox*>(QStringLiteral("projectResolutionProvider"));
+    auto* folder = window.findChild<QLabel*>(QStringLiteral("projectFolder"));
+    auto* save = window.findChild<QPushButton*>(QStringLiteral("projectSaveSettings"));
+    auto* advanced = window.findChild<QAbstractButton*>(QStringLiteral("projectAdvanced"));
+    auto* setupDetails = window.findChild<QWidget*>(QStringLiteral("projectSetupDetails"));
+    REQUIRE(scroll != nullptr);
+    REQUIRE(column != nullptr);
+    REQUIRE(name != nullptr);
+    REQUIRE(profile != nullptr);
+    REQUIRE(resolution != nullptr);
+    REQUIRE(folder != nullptr);
+    REQUIRE(save != nullptr);
+    REQUIRE(advanced != nullptr);
+    REQUIRE(setupDetails != nullptr);
+    CHECK(setupDetails->findChildren<QLabel*>(QStringLiteral("projectSetupDetail")).size() == 4);
+    const auto capture = qEnvironmentVariable("LUDUS_PROJECT_SETTINGS_CAPTURE");
+    // A MacBook Air's default logical size, and a wide external display.
+    for (const QSize size : {QSize(1470, 920), QSize(2560, 1400)})
+    {
+        INFO(size.width());
+        window.resize(size);
+        QApplication::processEvents();
+        QApplication::processEvents();
+        const int readable = column->fontMetrics().averageCharWidth() * SETTINGS_COLUMN_CHARACTERS;
+        CHECK(column->width() <= readable);
+        // The column starts at the page's left margin rather than being centred, and never runs past the page.
+        CHECK(column->mapTo(scroll->viewport(), QPoint(0, 0)).x() < column->fontMetrics().averageCharWidth() * 8);
+        CHECK(column->mapTo(scroll->viewport(), QPoint(column->width(), 0)).x() <= scroll->viewport()->width());
+        CHECK(scroll->horizontalScrollBar()->isVisible() == false);
+        // Fields of every section start on one edge, left of their column's middle.
+        const int fieldX = GetColumnX(*name, *column);
+        CHECK(GetColumnX(*profile, *column) == fieldX);
+        CHECK(GetColumnX(*resolution, *column) == fieldX);
+        CHECK(GetColumnX(*folder, *column) == fieldX);
+        CHECK(fieldX < column->width() / 2);
+        // Labels sit on the left edge of the column.
+        for (QFormLayout* form : column->findChildren<QFormLayout*>())
+        {
+            if (form->parentWidget() == setupDetails)
+            {
+                continue;
+            }
+            for (int row = 0; row < form->rowCount(); ++row)
+            {
+                const QLayoutItem* labelOrNull = form->itemAt(row, QFormLayout::LabelRole);
+                if (labelOrNull != nullptr && labelOrNull->widget() != nullptr && labelOrNull->widget()->isVisible())
+                {
+                    CHECK(GetColumnX(*labelOrNull->widget(), *column) == 0);
+                }
+            }
+        }
+        // The whole profile name is shown.
+        CHECK(profile->width() >= profile->fontMetrics().horizontalAdvance(profile->currentText()));
+        // Actions are sized to their words, not stretched into a grid.
+        for (const QString& identity : {QStringLiteral("projectCheckSetup"),
+                                        QStringLiteral("projectRepairSetup"),
+                                        QStringLiteral("projectBuildRun"),
+                                        QStringLiteral("projectStop"),
+                                        QStringLiteral("projectSaveSettings"),
+                                        QStringLiteral("projectEnableResolution")})
+        {
+            INFO(identity.toStdString());
+            QPushButton* action = window.findChild<QPushButton*>(identity);
+            REQUIRE(action != nullptr);
+            if (action->isVisible() == true)
+            {
+                CHECK(action->width() == action->sizeHint().width());
+            }
+        }
+        CHECK(advanced->width() == advanced->sizeHint().width());
+        // Save is the page's primary action, top right of the column.
+        CHECK(save->property("visualRole").toString() == QStringLiteral("primary"));
+        CHECK(GetColumnX(*save, *column) + save->width() == column->width());
+        CHECK(save->mapTo(column, QPoint(0, 0)).y() < name->mapTo(column, QPoint(0, 0)).y());
+        if (capture.isEmpty() == false)
+        {
+            REQUIRE(window.grab().save(QStringLiteral("%1-%2.png").arg(capture).arg(size.width())));
+        }
+    }
+    // Values can be selected and copied.
+    CHECK(folder->textInteractionFlags().testFlag(Qt::TextSelectableByMouse) == true);
+    CHECK(folder->textInteractionFlags().testFlag(Qt::TextSelectableByKeyboard) == true);
+    // Save waits for a change.
+    CHECK(save->isEnabled() == false);
+    name->setFocus();
+    QTest::keyClicks(name, QStringLiteral(" renamed"));
+    QApplication::processEvents();
+    CHECK(save->isEnabled() == true);
+    save->click();
+    CHECK(save->isEnabled() == false);
+    // Details fold away until asked for.
+    CHECK(window.findChild<QWidget*>(QStringLiteral("projectBuildDetails"))->isVisible() == false);
 }

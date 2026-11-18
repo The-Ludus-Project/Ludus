@@ -38,7 +38,7 @@ central document well, and **tool windows** dock around it (see
 | World | 2D/3D placement, game-owned entities/components, typed fields, references, shared history/save/recovery and trusted preview |
 | Render Graph | The open render-graph package: its source tree beside the node **Canvas**, the **Source** text editor and the validated **Plan** ([render-graph authoring](render-graph-authoring.md)) |
 | Code | Any project text file as a code tab: shared buffer, atomic save, external-change conflicts, crash recovery and the code status bar ([code editor](code-editor.md)) |
-| Project Settings | Setup/engine overview, lifecycle actions, rendering resolution/scale, name/profile and expandable build/launch details |
+| Project Settings | One readable column (at most about 110 characters wide, left-aligned) of **Project** (name, folder, engine, components), **Build** (profile, setup status chip with its check details and Check/Repair actions, Build and run/Stop, collapsible build and launch details) and **Rendering resolution** sections sharing one left-aligned label column; values can be selected and copied, and **Save settings** is the page's primary action, enabled once something changed |
 | Scripts | Project-owned script and sequence drafts |
 | Audio | Content selection, definitions, save and preview |
 | Configuration | Independent offline configuration preview and preference editing |

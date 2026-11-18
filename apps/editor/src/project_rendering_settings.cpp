@@ -1,4 +1,5 @@
 #include "internal/project_rendering_settings.h"
+#include "design_tokens.h"
 #include "internal/render_graph_resources.h"
 #include "internal/renderer_workspace.h"
 
@@ -49,9 +50,12 @@ ProjectRenderingSettings::ProjectRenderingSettings(RendererWorkspace& inoutRende
     setObjectName(QStringLiteral("projectRenderingSettings"));
     QVBoxLayout* layout = new QVBoxLayout(this);
     layout->setContentsMargins(0, 0, 0, 0);
-    QLabel* heading = new QLabel(QStringLiteral("Rendering resolution"), this);
-    layout->addWidget(heading);
+    layout->setSpacing(design::SPACING_SMALL);
+    // The host gives these rows their heading (Project Settings' Rendering resolution section).
     mFields = new QFormLayout;
+    mFields->setLabelAlignment(Qt::AlignLeft | Qt::AlignVCenter);
+    mFields->setFormAlignment(Qt::AlignLeft | Qt::AlignTop);
+    mFields->setFieldGrowthPolicy(QFormLayout::AllNonFixedFieldsGrow);
     layout->addLayout(mFields);
     mProvider = new QComboBox(this);
     mProvider->setObjectName(QStringLiteral("projectResolutionProvider"));
@@ -85,10 +89,12 @@ ProjectRenderingSettings::ProjectRenderingSettings(RendererWorkspace& inoutRende
     mStatus->setObjectName(QStringLiteral("projectResolutionStatus"));
     mStatus->setWordWrap(true);
     mStatus->setTextFormat(Qt::PlainText);
+    mStatus->setProperty("visualRole", QStringLiteral("secondary"));
+    mStatus->setTextInteractionFlags(Qt::TextSelectableByMouse | Qt::TextSelectableByKeyboard);
     layout->addWidget(mStatus);
     mEnable = new QPushButton(QStringLiteral("Enable resolution controls"), this);
     mEnable->setObjectName(QStringLiteral("projectEnableResolution"));
-    layout->addWidget(mEnable);
+    layout->addWidget(mEnable, 0, Qt::AlignLeft);
     connect(mProvider, &QComboBox::currentIndexChanged, this, [this]() { refresh(); });
     connect(mOutputMode, &QComboBox::currentIndexChanged, this, [this]() { apply(); });
     connect(mScale, &QComboBox::currentIndexChanged, this, [this]() {

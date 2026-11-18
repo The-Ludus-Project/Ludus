@@ -917,6 +917,8 @@ ludus_editor_add_objects(ludus_editor_application
     src/editor_style.cpp
     src/internal/editor_style.h
     src/workspace_style.cpp
+    src/internal/settings_page.h
+    src/settings_page.cpp
     src/internal/activity_chip.h
     src/activity_chip.cpp
     src/internal/window_size.h

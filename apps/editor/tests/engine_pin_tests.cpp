@@ -22,6 +22,7 @@
 #include <QLabel>
 #include <QLineEdit>
 #include <QPushButton>
+#include <QStringList>
 #include <QTemporaryDir>
 #include <QTest>
 #include <QToolBar>
@@ -208,9 +209,18 @@ else:
     EditorController controller(tooling);
     MainWindow window(&controller);
     QPushButton* useEngine = window.findChild<QPushButton*>(QStringLiteral("projectUseEditorEngine"));
-    QLabel* status = window.findChild<QLabel*>(QStringLiteral("projectSetupStatus"));
+    QWidget* status = window.findChild<QWidget*>(QStringLiteral("projectSetupDetails"));
     REQUIRE(useEngine != nullptr);
     REQUIRE(status != nullptr);
+    // The engine pin's message is one of the setup check's detail rows.
+    const auto details = [status]() {
+        QStringList texts;
+        for (const QLabel* value : status->findChildren<QLabel*>(QStringLiteral("projectSetupDetail")))
+        {
+            texts.append(value->text());
+        }
+        return texts.join(QLatin1Char('\n'));
+    };
     window.show();
     CHECK_FALSE(useEngine->isVisible());
 
@@ -223,7 +233,7 @@ else:
     // The failed check still reports the drift and its fix.
     CHECK(controller.State().Result.Kind == Outcome::Failed);
     QTRY_VERIFY_WITH_TIMEOUT(useEngine->isVisible() && useEngine->isEnabled(), 10000);
-    CHECK(status->text().contains(QStringLiteral("built from 0361c59")));
+    CHECK(details().contains(QStringLiteral("built from 0361c59")));
 
     useEngine->click();
     const QString requestPath = dir.filePath(QStringLiteral("setup_request.json"));

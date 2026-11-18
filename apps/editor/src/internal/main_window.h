@@ -70,6 +70,8 @@ class ScriptWorkspace;
 class StateView;
 class RendererWorkspace;
 class ProjectRenderingSettings;
+class SettingsColumn;
+class StatusChip;
 class TimingPanel;
 class ProfilingPanel;
 class WorldWorkspace;
@@ -378,8 +380,17 @@ private:
     QString mDismissedSetupProblem;
 
     // Project lifecycle presentation; controller actions own all operations.
-    QLabel* ProjectIdentity_ = nullptr;
+    /// The page column whose sections share one label column.
+    SettingsColumn* mProjectColumnOrNull = nullptr;
+    QLabel* mProjectFolderOrNull = nullptr;
+    QLabel* mProjectEngineOrNull = nullptr;
+    QLabel* mProjectComponentsOrNull = nullptr;
+    /// The saved descriptor's preset identity, beside the profile being edited.
+    QLabel* mSavedProfileOrNull = nullptr;
+    /// Setup check state as a chip, its summary sentence, and the check's detail rows.
+    StatusChip* mSetupChipOrNull = nullptr;
     QLabel* ProjectSetupStatus_ = nullptr;
+    QWidget* mSetupDetailsOrNull = nullptr;
     QLabel* ProjectNextStep_ = nullptr;
     QPushButton* ProjectCheckButton_ = nullptr;
     QPushButton* ProjectRepairButton_ = nullptr;
