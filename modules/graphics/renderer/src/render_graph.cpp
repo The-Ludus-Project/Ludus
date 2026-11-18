@@ -8,6 +8,7 @@
 #include "internal/render_graph_deferred.h"
 #include "internal/render_graph_metalfx.h"
 #include "internal/render_graph_pool.h"
+#include "internal/render_graph_program_cache.h"
 #include "internal/render_graph_ray.h"
 #include "internal/render_graph_ray_path.h"
 #include "internal/render_graph_scene_resources.h"
@@ -1007,6 +1008,10 @@ struct RenderGraph::State final
             HasFailureReadback = false;
         }
     }
+    /// Dependencies of a graph initialized without a shared cache; declared before the programs leasing from it.
+    RenderGraphProgramCache PrivateProgramCache;
+    /// The caller's shared cache, or PrivateProgramCache; set by Initialize and outlives UpscalePrograms.
+    RenderGraphProgramCache* ProgramCacheOrNull = nullptr;
     StaticArray<internal::RenderGraphUpscaleProgram, UPSCALE_TARGET_COUNT> UpscalePrograms{};
     StaticArray<bool, UPSCALE_TARGET_COUNT> HasUpscalePrograms{};
     /// Packed bytes of the distinct value sets of the technique being prepared; reused per Update.
@@ -1498,8 +1503,10 @@ struct RenderGraph::State final
                         internal::RenderGraphUpscaleProgram& program = UpscalePrograms[0];
                         if (HasUpscalePrograms[0] == false)
                         {
-                            const Status created =
-                                program.Initialize(Device, Programs.CompositeVertex, Programs.CompositeFragment, true);
+                            const Status created = program.Initialize(*ProgramCacheOrNull,
+                                                                      Programs.CompositeVertex,
+                                                                      Programs.CompositeFragment,
+                                                                      true);
                             if (IsAccepted(created) == false)
                             {
                                 return created;
@@ -1553,7 +1560,7 @@ struct RenderGraph::State final
                     internal::RenderGraphUpscaleProgram& program = UpscalePrograms[programIndex];
                     if (HasUpscalePrograms[programIndex] == false)
                     {
-                        const Status created = program.Initialize(Device,
+                        const Status created = program.Initialize(*ProgramCacheOrNull,
                                                                   Programs.CompositeVertex,
                                                                   Programs.CompositeFragment,
                                                                   programIndex == 0);
@@ -2043,6 +2050,11 @@ struct RenderGraph::State final
         Pending.Reset();
         Resizing.Reset();
         Current.Reset();
+        // Every pass borrowing an upscale program is gone; return requests and leases before the cache.
+        for (internal::RenderGraphUpscaleProgram& program : UpscalePrograms)
+        {
+            program.Reset();
+        }
         ForwardResources.Reset();
         static_cast<void>(
             Contexts[static_cast<usize>(format::Technique::ColorAndDepth)].Release(ForwardSurfaceChartProgram));
@@ -2366,7 +2378,8 @@ Status RenderGraph::Initialize(rhi::DeviceHandle device,
                                RenderGraphAttachmentPool* poolOrNull,
                                uint32 referenceWidth,
                                uint32 referenceHeight,
-                               const LightTransformerModelDescription* modelOrNull) noexcept
+                               const LightTransformerModelDescription* modelOrNull,
+                               RenderGraphProgramCache* programCacheOrNull) noexcept
 {
     if (mState.Get() != nullptr)
     {
@@ -2378,6 +2391,11 @@ Status RenderGraph::Initialize(rhi::DeviceHandle device,
         return status;
     }
     if (poolOrNull != nullptr && internal::RenderGraphPoolAccess::IsUsable(*poolOrNull) == false)
+    {
+        return Status::InvalidDescription;
+    }
+    if (programCacheOrNull != nullptr &&
+        internal::RenderGraphProgramCacheAccess::IsUsable(*programCacheOrNull, device) == false)
     {
         return Status::InvalidDescription;
     }
@@ -2857,6 +2875,16 @@ Status RenderGraph::Initialize(rhi::DeviceHandle device,
     }
     candidate->PoolOrNull = poolOrNull;
     candidate->Allocation.IsPooled = poolOrNull != nullptr;
+    if (programCacheOrNull == nullptr)
+    {
+        const Status bound = candidate->PrivateProgramCache.Initialize(device);
+        if (bound != Status::Ready)
+        {
+            return bound;
+        }
+    }
+    candidate->ProgramCacheOrNull =
+        programCacheOrNull != nullptr ? programCacheOrNull : &candidate->PrivateProgramCache;
     for (usize i = 0; i < plan.Resources.GetSize(); ++i)
     {
         candidate->Resources[i] = plan.Resources[i];
@@ -4157,6 +4185,23 @@ Status RenderGraph::GetPipelineReport(RenderGraphPipelineReport& outReport) cons
         return device;
     }
     report.Target = state.Target;
+    for (const internal::RenderGraphUpscaleProgram& program : state.UpscalePrograms)
+    {
+        rhi::PipelinePreparation preparation;
+        if (program.HasRequest() == false ||
+            rhi::GetPipelinePreparation(state.Device, program.GetRequest(), preparation) != Status::Ready)
+        {
+            continue;
+        }
+        ++report.Upscale.Requests;
+        report.Upscale.SharedRequests += preparation.IsShared == true ? 1 : 0;
+        if (preparation.IsReady == true)
+        {
+            ++report.Upscale.ReadyRequests;
+            report.Upscale.PrewarmSeconds += preparation.PreparationSeconds;
+            report.Upscale.QueueSeconds += preparation.QueueSeconds;
+        }
+    }
     for (usize i = 0; i < format::TECHNIQUE_COUNT; ++i)
     {
         if (state.IsUsed[i] == false)

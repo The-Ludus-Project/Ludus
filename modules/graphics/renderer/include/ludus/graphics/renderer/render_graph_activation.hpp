@@ -280,6 +280,10 @@ public:
     [[nodiscard]] RenderGraphActivationReport GetReport() const noexcept;
     /// Copy the owned pool's counters; SerialControl and an uninitialized activation report zeros.
     [[nodiscard]] RenderGraphPoolReport GetPoolReport() const noexcept;
+    /// Copy the owned program cache's counters. Every generation staged through this activation shares the
+    /// cache, so an active and a candidate generation with equal composite stages share one bilinear upscale
+    /// dependency set and native pipeline. An uninitialized activation reports zeros.
+    [[nodiscard]] RenderGraphProgramCacheReport GetProgramCacheReport() const noexcept;
     /// Destroy idle pooled attachments between frames, for example under memory pressure.
     /// Attachments of the active and candidate generations are unaffected.
     void TrimPool() noexcept;
