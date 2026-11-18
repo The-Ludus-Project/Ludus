@@ -1572,9 +1572,9 @@ constexpr const char* SHOWN_SETUP_DETAILS_PROPERTY = "shownSetupDetails";
 void ShowSetupDetails(QWidget& inoutDetails, const QList<QPair<QString, QString>>& rows)
 {
     QStringList identity;
-    for (const auto& [name, text] : rows)
+    for (const QPair<QString, QString>& row : rows)
     {
-        identity.append(name + QLatin1Char('\n') + text);
+        identity.append(row.first + QLatin1Char('\n') + row.second);
     }
     inoutDetails.setVisible(rows.isEmpty() == false);
     if (inoutDetails.property(SHOWN_SETUP_DETAILS_PROPERTY).toStringList() == identity)
@@ -1588,16 +1588,16 @@ void ShowSetupDetails(QWidget& inoutDetails, const QList<QPair<QString, QString>
     {
         form->removeRow(0);
     }
-    for (const auto& [name, text] : rows)
+    for (const QPair<QString, QString>& row : rows)
     {
-        QLabel* label = new QLabel(name, &inoutDetails);
+        QLabel* label = new QLabel(row.first, &inoutDetails);
         label->setProperty("visualRole", QStringLiteral("secondary"));
-        QLabel* value = new QLabel(text, &inoutDetails);
+        QLabel* value = new QLabel(row.second, &inoutDetails);
         value->setObjectName(QStringLiteral("projectSetupDetail"));
         MarkSelectableValue(*value);
         // One line each: paths and revisions have no spaces to wrap at; the tooltip and a copy hold the whole text.
         value->setWordWrap(false);
-        value->setToolTip(text);
+        value->setToolTip(row.second);
         form->addRow(label, value);
     }
 }

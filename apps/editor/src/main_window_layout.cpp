@@ -227,7 +227,7 @@ void MainWindow::BuildUi()
     // state it acts on, sized to its words.
     auto* form = new QWidget(projectScroll);
     form->setObjectName(QStringLiteral("projectSettingsPage"));
-    auto* pageLayout = new QHBoxLayout(form);
+    QHBoxLayout* pageLayout = new QHBoxLayout(form);
     pageLayout->setContentsMargins(design::SPACING_EXTRA_LARGE,
                                    design::SPACING_LARGE,
                                    design::SPACING_EXTRA_LARGE,
@@ -237,13 +237,13 @@ void MainWindow::BuildUi()
     pageLayout->addWidget(mProjectColumnOrNull, 1, Qt::AlignTop);
     pageLayout->addStretch(0);
     SettingsColumn* column = mProjectColumnOrNull;
-    auto* projectLayout = new QVBoxLayout(column);
+    QVBoxLayout* projectLayout = new QVBoxLayout(column);
     projectLayout->setContentsMargins(0, 0, 0, 0);
     projectLayout->setSpacing(design::SPACING_LARGE);
 
-    auto* header = new QHBoxLayout;
+    QHBoxLayout* header = new QHBoxLayout;
     header->setSpacing(design::SPACING_MEDIUM);
-    auto* heading = new QLabel(QStringLiteral("Your project"), column);
+    QLabel* heading = new QLabel(QStringLiteral("Your project"), column);
     heading->setObjectName(QStringLiteral("projectSettingsHeading"));
     heading->setFont(MakeTypeFont(heading->font(), TypeRole::Heading));
     header->addWidget(heading, 1);
@@ -260,14 +260,14 @@ void MainWindow::BuildUi()
     ProjectNextStep_->setProperty("visualRole", QStringLiteral("secondary"));
     projectLayout->addWidget(ProjectNextStep_);
     const auto value = [](const QString& name, QWidget* parent) {
-        auto* label = new QLabel(parent);
+        QLabel* label = new QLabel(parent);
         label->setObjectName(name);
         MarkSelectableValue(*label);
         return label;
     };
 
     // Project: what this project is and where it lives.
-    auto* projectSection = new SettingsSection(QStringLiteral("Project"), column);
+    SettingsSection* projectSection = new SettingsSection(QStringLiteral("Project"), column);
     projectSection->setObjectName(QStringLiteral("projectSection"));
     projectLayout->addWidget(projectSection);
     QFormLayout& identity = projectSection->GetForm();
@@ -275,15 +275,15 @@ void MainWindow::BuildUi()
     NameEdit_->setObjectName(QStringLiteral("projectName"));
     NameEdit_->setAccessibleName(QStringLiteral("Project name"));
     identity.addRow(QStringLiteral("&Name"), NameEdit_);
-    auto* folderRow = new QWidget(projectSection);
-    auto* folderLayout = new QHBoxLayout(folderRow);
+    QWidget* folderRow = new QWidget(projectSection);
+    QHBoxLayout* folderLayout = new QHBoxLayout(folderRow);
     folderLayout->setContentsMargins(0, 0, 0, 0);
     folderLayout->setSpacing(design::SPACING_SMALL);
     mProjectFolderOrNull = value(QStringLiteral("projectFolder"), folderRow);
     mProjectFolderOrNull->setAccessibleName(QStringLiteral("Project folder"));
     mProjectFolderOrNull->setWordWrap(false);
     folderLayout->addWidget(mProjectFolderOrNull, 1);
-    auto* copyFolder = new QToolButton(folderRow);
+    QToolButton* copyFolder = new QToolButton(folderRow);
     copyFolder->setObjectName(QStringLiteral("projectCopyFolder"));
     copyFolder->setIcon(GetEditorIcon(EditorIcon::Copy));
     copyFolder->setIconSize(QSize(design::SPACING_LARGE, design::SPACING_LARGE));
@@ -303,7 +303,7 @@ void MainWindow::BuildUi()
     identity.addRow(QStringLiteral("Components"), mProjectComponentsOrNull);
 
     // Build: the profile, whether this computer can build it, and the actions that check, repair and run it.
-    auto* buildSection = new SettingsSection(QStringLiteral("Build"), column);
+    SettingsSection* buildSection = new SettingsSection(QStringLiteral("Build"), column);
     buildSection->setObjectName(QStringLiteral("projectBuildSection"));
     projectLayout->addWidget(buildSection);
     QFormLayout& build = buildSection->GetForm();
@@ -340,12 +340,12 @@ void MainWindow::BuildUi()
     mSavedProfileOrNull->setProperty("visualRole", QStringLiteral("secondary"));
     build.addRow(QStringLiteral("Saved profile"), mSavedProfileOrNull);
 
-    auto* setup = new QWidget(buildSection);
+    QWidget* setup = new QWidget(buildSection);
     setup->setObjectName(QStringLiteral("projectSetup"));
-    auto* setupLayout = new QVBoxLayout(setup);
+    QVBoxLayout* setupLayout = new QVBoxLayout(setup);
     setupLayout->setContentsMargins(0, 0, 0, 0);
     setupLayout->setSpacing(design::SPACING_SMALL);
-    auto* setupHeadline = new QHBoxLayout;
+    QHBoxLayout* setupHeadline = new QHBoxLayout;
     setupHeadline->setSpacing(design::SPACING_SMALL);
     mSetupChipOrNull = new StatusChip(setup);
     mSetupChipOrNull->setObjectName(QStringLiteral("projectSetupChip"));
@@ -356,15 +356,15 @@ void MainWindow::BuildUi()
     // The check's own lines (selected engine, revision, installation...) as quiet name and value rows.
     mSetupDetailsOrNull = new QWidget(setup);
     mSetupDetailsOrNull->setObjectName(QStringLiteral("projectSetupDetails"));
-    auto* setupDetails = new QFormLayout(mSetupDetailsOrNull);
+    QFormLayout* setupDetails = new QFormLayout(mSetupDetailsOrNull);
     ConfigureSettingsForm(*setupDetails);
     setupDetails->setHorizontalSpacing(design::SPACING_MEDIUM);
     setupDetails->setVerticalSpacing(design::SPACING_EXTRA_SMALL);
     setupLayout->addWidget(mSetupDetailsOrNull);
-    auto* setupActions = new QHBoxLayout;
+    QHBoxLayout* setupActions = new QHBoxLayout;
     setupActions->setSpacing(design::SPACING_SMALL);
     const auto button = [setupActions](QWidget* parent, const QString& name, const QString& text) {
-        auto* action = new QPushButton(text, parent);
+        QPushButton* action = new QPushButton(text, parent);
         action->setObjectName(name);
         setupActions->addWidget(action);
         return action;
@@ -381,8 +381,8 @@ void MainWindow::BuildUi()
     setupLayout->addLayout(setupActions);
     build.addRow(QStringLiteral("Setup"), setup);
 
-    auto* run = new QWidget(buildSection);
-    auto* runLayout = new QHBoxLayout(run);
+    QWidget* run = new QWidget(buildSection);
+    QHBoxLayout* runLayout = new QHBoxLayout(run);
     runLayout->setContentsMargins(0, 0, 0, 0);
     runLayout->setSpacing(design::SPACING_SMALL);
     ProjectRunButton_ = new QPushButton(QStringLiteral("Build and run"), run);
@@ -401,7 +401,7 @@ void MainWindow::BuildUi()
     connect(mUseEditorEngineButtonOrNull, &QPushButton::clicked, Controller_, &EditorController::UseEditorEngine);
 
     // Build and launch details: what the build runs and how it launches, folded away until asked for.
-    auto* advanced = new QToolButton(buildSection);
+    QToolButton* advanced = new QToolButton(buildSection);
     advanced->setObjectName(QStringLiteral("projectAdvanced"));
     advanced->setText(QStringLiteral("Show build and launch details"));
     advanced->setCheckable(true);
@@ -409,17 +409,17 @@ void MainWindow::BuildUi()
     // A disclosure chevron beside the words, like a Properties section header.
     advanced->setToolButtonStyle(Qt::ToolButtonTextBesideIcon);
     advanced->setArrowType(Qt::RightArrow);
-    auto* details = new QWidget(buildSection);
+    QWidget* details = new QWidget(buildSection);
     details->setObjectName(QStringLiteral("projectBuildDetails"));
-    auto* formLayout = new QFormLayout(details);
+    QFormLayout* formLayout = new QFormLayout(details);
     details->hide();
     buildSection->GetFooter().addWidget(advanced, 0, Qt::AlignLeft);
     buildSection->GetFooter().addWidget(details);
     connect(advanced, &QToolButton::toggled, details, &QWidget::setVisible);
-    connect(advanced, &QToolButton::toggled, advanced, [advanced](bool expanded) {
-        advanced->setText(expanded ? QStringLiteral("Hide build and launch details")
-                                   : QStringLiteral("Show build and launch details"));
-        advanced->setArrowType(expanded == true ? Qt::DownArrow : Qt::RightArrow);
+    connect(advanced, &QToolButton::toggled, advanced, [advanced](bool isExpanded) {
+        advanced->setText(isExpanded == true ? QStringLiteral("Hide build and launch details")
+                                             : QStringLiteral("Show build and launch details"));
+        advanced->setArrowType(isExpanded == true ? Qt::DownArrow : Qt::RightArrow);
     });
     ProviderBox_ = new QComboBox(details);
     ProviderBox_->addItem(QStringLiteral("ludus"));
@@ -440,16 +440,16 @@ void MainWindow::BuildUi()
     ConfigureItemSelection(*ArgsList_);
     ArgsList_->setObjectName(QStringLiteral("projectArguments"));
     connect(ArgsList_->model(), &QAbstractItemModel::dataChanged, this, &MainWindow::OnFieldEdited);
-    auto* argsButtons = new QWidget(details);
-    auto* argsButtonsLayout = new QHBoxLayout(argsButtons);
-    argsButtonsLayout->setContentsMargins(0, 0, 0, 0);
-    AddArgButton_ = new QPushButton(QStringLiteral("Add argument"), argsButtons);
-    RemoveArgButton_ = new QPushButton(QStringLiteral("Remove argument"), argsButtons);
-    argsButtonsLayout->addWidget(AddArgButton_);
-    argsButtonsLayout->addWidget(RemoveArgButton_);
-    argsButtonsLayout->addStretch();
+    QWidget* argumentButtons = new QWidget(details);
+    QHBoxLayout* argumentButtonsLayout = new QHBoxLayout(argumentButtons);
+    argumentButtonsLayout->setContentsMargins(0, 0, 0, 0);
+    AddArgButton_ = new QPushButton(QStringLiteral("Add argument"), argumentButtons);
+    RemoveArgButton_ = new QPushButton(QStringLiteral("Remove argument"), argumentButtons);
+    argumentButtonsLayout->addWidget(AddArgButton_);
+    argumentButtonsLayout->addWidget(RemoveArgButton_);
+    argumentButtonsLayout->addStretch();
     formLayout->addRow(QStringLiteral("Run &arguments"), ArgsList_);
-    formLayout->addRow(QString(), argsButtons);
+    formLayout->addRow(QString(), argumentButtons);
     column->ShareLabelColumn(*formLayout);
     projectLayout->addStretch();
 
@@ -502,7 +502,7 @@ void MainWindow::BuildUi()
     connect(mCodeArea, &CodeEditorArea::TabsChanged, this, &MainWindow::RenderDocumentActions);
     connect(mCodeArea, &CodeEditorArea::ActiveTabChanged, this, &MainWindow::RenderDocumentActions);
     // Rendering resolution: the active renderer graph's output size and scale, saved with the project's settings.
-    auto* renderingSection = new SettingsSection(QStringLiteral("Rendering resolution"), column);
+    SettingsSection* renderingSection = new SettingsSection(QStringLiteral("Rendering resolution"), column);
     renderingSection->setObjectName(QStringLiteral("projectRenderingSection"));
     projectLayout->insertWidget(projectLayout->count() - 1, renderingSection);
     mRenderingSettingsOrNull = new ProjectRenderingSettings(*Renderer_, renderingSection);

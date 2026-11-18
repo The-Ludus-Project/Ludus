@@ -206,7 +206,7 @@ TEST_CASE("Pending argument text survives notifications and is included by Save"
     const auto path = Project(directory);
     controller.OpenProject(path);
     ShowReady(window, controller);
-    auto* advanced = window.findChild<QAbstractButton*>(QStringLiteral("projectAdvanced"));
+    QAbstractButton* advanced = window.findChild<QAbstractButton*>(QStringLiteral("projectAdvanced"));
     REQUIRE(advanced != nullptr);
     advanced->click();
     auto* arguments = window.findChild<QListWidget*>(QStringLiteral("projectArguments"));

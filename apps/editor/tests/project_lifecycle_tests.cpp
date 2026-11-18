@@ -252,12 +252,12 @@ TEST_CASE("Project overview explains setup and reveals build details without edi
     QWidget* settings = window.findChild<QWidget*>(QStringLiteral("projectSettingsScroll"));
     REQUIRE(window.GetDocumentWell().IsDocumentOpen(settings) == true);
     REQUIRE(window.GetDocumentWell().OpenDocument(settings) == true);
-    auto* folder = window.findChild<QLabel*>(QStringLiteral("projectFolder"));
-    auto* savedProfile = window.findChild<QLabel*>(QStringLiteral("projectSavedProfile"));
+    QLabel* folder = window.findChild<QLabel*>(QStringLiteral("projectFolder"));
+    QLabel* savedProfile = window.findChild<QLabel*>(QStringLiteral("projectSavedProfile"));
     auto* setup = window.findChild<QLabel*>(QStringLiteral("projectSetupStatus"));
-    auto* chip = window.findChild<StatusChip*>(QStringLiteral("projectSetupChip"));
+    StatusChip* chip = window.findChild<StatusChip*>(QStringLiteral("projectSetupChip"));
     auto* next = window.findChild<QLabel*>(QStringLiteral("projectNextStep"));
-    auto* advanced = window.findChild<QAbstractButton*>(QStringLiteral("projectAdvanced"));
+    QAbstractButton* advanced = window.findChild<QAbstractButton*>(QStringLiteral("projectAdvanced"));
     auto* details = window.findChild<QWidget*>(QStringLiteral("projectBuildDetails"));
     auto* profile = window.findChild<QComboBox*>(QStringLiteral("projectProfile"));
     REQUIRE(folder != nullptr);
@@ -319,9 +319,9 @@ TEST_CASE("Friendly build profiles preserve preset identity and require explicit
     window.show();
     controller.OpenProject(path);
     auto* profile = window.findChild<QComboBox*>(QStringLiteral("projectProfile"));
-    auto* engine = window.findChild<QLabel*>(QStringLiteral("projectEngine"));
-    auto* components = window.findChild<QLabel*>(QStringLiteral("projectComponents"));
-    auto* savedProfile = window.findChild<QLabel*>(QStringLiteral("projectSavedProfile"));
+    QLabel* engine = window.findChild<QLabel*>(QStringLiteral("projectEngine"));
+    QLabel* components = window.findChild<QLabel*>(QStringLiteral("projectComponents"));
+    QLabel* savedProfile = window.findChild<QLabel*>(QStringLiteral("projectSavedProfile"));
     auto* next = window.findChild<QLabel*>(QStringLiteral("projectNextStep"));
     auto* save = window.findChild<QPushButton*>(QStringLiteral("projectSaveSettings"));
     auto* run = window.findChild<QPushButton*>(QStringLiteral("projectBuildRun"));
@@ -406,7 +406,7 @@ int GetColumnX(const QWidget& widget, const QWidget& column)
 }
 
 /// A version-2 project with an engine, and a stand-in tool adapter whose setup check reports detail lines.
-QString WriteCheckedProject(QTemporaryDir& directory, ToolingPaths& outTooling)
+QString WriteCheckedProject(const QTemporaryDir& directory, ToolingPaths& outTooling)
 {
     QFile file(directory.filePath(QStringLiteral("ludus.project.json")));
     REQUIRE(file.open(QIODevice::WriteOnly));
@@ -457,18 +457,18 @@ TEST_CASE("Project Settings is one readable column of aligned sections at MacBoo
     QWidget* settings = window.findChild<QWidget*>(QStringLiteral("projectSettingsScroll"));
     REQUIRE(settings != nullptr);
     REQUIRE(window.GetDocumentWell().OpenDocument(settings) == true);
-    auto* chip = window.findChild<StatusChip*>(QStringLiteral("projectSetupChip"));
+    StatusChip* chip = window.findChild<StatusChip*>(QStringLiteral("projectSetupChip"));
     REQUIRE(chip != nullptr);
     QTRY_VERIFY_WITH_TIMEOUT(chip->GetTone() == StatusTone::Success, 10000);
-    auto* scroll = qobject_cast<QScrollArea*>(settings);
-    auto* column = window.findChild<SettingsColumn*>(QStringLiteral("projectSettingsColumn"));
-    auto* name = window.findChild<QLineEdit*>(QStringLiteral("projectName"));
-    auto* profile = window.findChild<QComboBox*>(QStringLiteral("projectProfile"));
-    auto* resolution = window.findChild<QComboBox*>(QStringLiteral("projectResolutionProvider"));
-    auto* folder = window.findChild<QLabel*>(QStringLiteral("projectFolder"));
-    auto* save = window.findChild<QPushButton*>(QStringLiteral("projectSaveSettings"));
-    auto* advanced = window.findChild<QAbstractButton*>(QStringLiteral("projectAdvanced"));
-    auto* setupDetails = window.findChild<QWidget*>(QStringLiteral("projectSetupDetails"));
+    QScrollArea* scroll = qobject_cast<QScrollArea*>(settings);
+    SettingsColumn* column = window.findChild<SettingsColumn*>(QStringLiteral("projectSettingsColumn"));
+    QLineEdit* name = window.findChild<QLineEdit*>(QStringLiteral("projectName"));
+    QComboBox* profile = window.findChild<QComboBox*>(QStringLiteral("projectProfile"));
+    QComboBox* resolution = window.findChild<QComboBox*>(QStringLiteral("projectResolutionProvider"));
+    QLabel* folder = window.findChild<QLabel*>(QStringLiteral("projectFolder"));
+    QPushButton* save = window.findChild<QPushButton*>(QStringLiteral("projectSaveSettings"));
+    QAbstractButton* advanced = window.findChild<QAbstractButton*>(QStringLiteral("projectAdvanced"));
+    QWidget* setupDetails = window.findChild<QWidget*>(QStringLiteral("projectSetupDetails"));
     REQUIRE(scroll != nullptr);
     REQUIRE(column != nullptr);
     REQUIRE(name != nullptr);
@@ -479,7 +479,7 @@ TEST_CASE("Project Settings is one readable column of aligned sections at MacBoo
     REQUIRE(advanced != nullptr);
     REQUIRE(setupDetails != nullptr);
     CHECK(setupDetails->findChildren<QLabel*>(QStringLiteral("projectSetupDetail")).size() == 4);
-    const auto capture = qEnvironmentVariable("LUDUS_PROJECT_SETTINGS_CAPTURE");
+    const QString capture = qEnvironmentVariable("LUDUS_PROJECT_SETTINGS_CAPTURE");
     // A MacBook Air's default logical size, and a wide external display.
     for (const QSize size : {QSize(1470, 920), QSize(2560, 1400)})
     {

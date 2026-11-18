@@ -33,14 +33,14 @@ struct SetupStatusPrefix final
 };
 
 /// The controller's setup status sentences (EditorController), by the words they start with.
-constexpr std::array<SetupStatusPrefix, 6> SETUP_STATUS_PREFIXES{{
+constexpr std::array SETUP_STATUS_PREFIXES = std::to_array<SetupStatusPrefix>({
     {"CMake setup ready: ", StatusTone::Success, "Ready"},
     {"CMake setup needs attention: ", StatusTone::Warning, "Needs attention"},
     {"Project setup needs attention: ", StatusTone::Warning, "Needs attention"},
     {"CMake setup validation unavailable: ", StatusTone::Warning, "Unavailable"},
     {"Setup validation unavailable: ", StatusTone::Warning, "Unavailable"},
     {"Browser workspace: ", StatusTone::Neutral, "Browser"},
-}};
+});
 
 design::ThemeColour GetChipText(StatusTone tone)
 {
