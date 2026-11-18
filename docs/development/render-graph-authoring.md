@@ -771,7 +771,7 @@ Use **Invocation → Ray traversal** to choose the compute intersection strategy
 | --- | --- |
 | Automatic | An explicit Compute invocation uses `TriangleLoop`. Legacy documents without an invocation type retain their defaults: shared callbacks in a ComputePipeline use `TriangleLoop`; a RayTracingPipeline and existing single-kernel compute passes use `NativeQuery`. |
 | Triangle loop (`TriangleLoop`) | Renderer-owned two-sided ray/triangle intersections scan the selected World's packed triangles. Closest queries retain the nearest accepted hit; visibility queries stop at the first accepted hit. |
-| Compute BVH (`ComputeBvh`) | Ordinary GPU compute walks the renderer's packed binned-SAH BVH with watertight triangle tests. Closest queries retain the nearest accepted hit; visibility queries stop at the first accepted hit. |
+| Compute BVH (`ComputeBvh`) | Ordinary GPU compute walks the renderer's packed binned-SAH BVH and tests triangles with float32 edge functions. Closest queries retain the nearest accepted hit; visibility queries stop at the first accepted hit. |
 | Native ray query (`NativeQuery`) | Inline native acceleration-structure queries perform triangle traversal. On Metal, each query runs in an out-of-line renderer function rather than in the merged kernel (see below). |
 | Custom traversal (`Custom`) | The package-relative **Traversal source** implements closest and visibility queries in compute. No native acceleration structure is created or bound. |
 
@@ -856,7 +856,13 @@ and `TriangleLoop` for small comparisons. Edge, tolerance and tie behavior can d
 from hardware intersection and from the loop's Moller-Trumbore test. A shader compiler
 may fuse the watertight test's edge products into multiply-adds; each edge function is
 therefore evaluated in a canonical vertex order, so triangles sharing an edge still
-compute exactly negated values and rays through the edge cannot miss both.
+compute opposite values for the same edge. This prevents cracks caused by
+multiply-add contraction. For small, distant triangles, an edge value can round
+to zero. The paper resolves that ambiguity in double precision and accounts for
+rounding in the ray-space transform when testing BVH bounds. The GPU kernel
+keeps the zero edge value and widens slab exits. Its shared-edge tests therefore
+establish coverage for the tested meshes and rays only.
+[Woop, Benthin and Wald, §§3.2–3.3](https://jcgt.org/published/0002/01/05/paper.pdf#page=7)
 
 The `ludus_render_graph_ray_tests` traversal parity test renders a
 [fixture](../../tests/sdk_consumer/rg2/traversal_parity/main.lurender.json) with
