@@ -117,7 +117,7 @@ math::Matrix4 MakeCameraClipToEye(const math::Matrix4& clipToWorld, math::Vector
     math::Matrix4 clipToEye = clipToWorld;
     for (math::Vector4& column : clipToEye.Columns)
     {
-        const float64 homogeneous = column.W;
+        const float64 homogeneous = static_cast<float64>(column.W);
         column.X =
             static_cast<float32>(static_cast<float64>(column.X) - static_cast<float64>(eyeWorld.X) * homogeneous);
         column.Y =

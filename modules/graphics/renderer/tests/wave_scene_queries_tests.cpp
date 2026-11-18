@@ -286,9 +286,18 @@ float64 TransformComponent(float32 rowX, float32 rowY, float32 rowZ, float32 row
     return static_cast<float64>(rowX) * pointWorld.X + static_cast<float64>(rowY) * pointWorld.Y +
            static_cast<float64>(rowZ) * pointWorld.Z + static_cast<float64>(rowTranslation);
 }
-/// Distance in pixels between a pixel centre and the float64 projection of a world point through worldToClip.
-float64 MeasurePixelMiss(const math::Matrix4& worldToClip, math::Vector3d pointWorld, uint32 x, uint32 y)
+/// A camera ray in float64: its world origin and unit direction.
+struct CameraRayLine final
 {
+    math::Vector3d OriginWorld{};
+    math::Vector3d Direction{};
+};
+/// Distance in pixels between the centre of a pixel, by row-major index, and the float64 projection of a world point
+/// through worldToClip.
+float64 MeasurePixelMiss(const math::Matrix4& worldToClip, math::Vector3d pointWorld, uint32 pixel)
+{
+    const uint32 x = pixel % DISTANT_WIDTH;
+    const uint32 y = pixel / DISTANT_WIDTH;
     const math::Vector4* columns = worldToClip.Columns;
     const float64 clipX = TransformComponent(columns[0].X, columns[1].X, columns[2].X, columns[3].X, pointWorld);
     const float64 clipY = TransformComponent(columns[0].Y, columns[1].Y, columns[2].Y, columns[3].Y, pointWorld);
@@ -299,7 +308,7 @@ float64 MeasurePixelMiss(const math::Matrix4& worldToClip, math::Vector3d pointW
     const float64 missY = pixelY - (static_cast<float64>(y) + .5);
     return math::Sqrt(missX * missX + missY * missY);
 }
-/// The largest miss over sampled pixel centres of rays from origin and direction at each probe distance.
+/// The largest miss over sampled pixel centres, by row-major index, of makeRay's rays at each probe distance.
 template <typename MakeRay>
 float64 MeasureLargestRayMiss(const internal::ReferenceJob& job, MakeRay makeRay)
 {
@@ -308,15 +317,14 @@ float64 MeasureLargestRayMiss(const internal::ReferenceJob& job, MakeRay makeRay
     {
         for (uint32 x = 0; x < DISTANT_WIDTH; x += DISTANT_STRIDE_PIXELS)
         {
-            math::Vector3d originWorld{};
-            math::Vector3d direction{};
-            makeRay(x, y, originWorld, direction);
+            const uint32 pixel = y * DISTANT_WIDTH + x;
+            const CameraRayLine ray = makeRay(pixel);
             for (const float64 distanceWorld : PROBE_DISTANCES_WORLD)
             {
-                const math::Vector3d pointWorld{originWorld.X + direction.X * distanceWorld,
-                                                originWorld.Y + direction.Y * distanceWorld,
-                                                originWorld.Z + direction.Z * distanceWorld};
-                largestMiss = math::Max(largestMiss, MeasurePixelMiss(job.Description.WorldToClip, pointWorld, x, y));
+                const math::Vector3d pointWorld{ray.OriginWorld.X + ray.Direction.X * distanceWorld,
+                                                ray.OriginWorld.Y + ray.Direction.Y * distanceWorld,
+                                                ray.OriginWorld.Z + ray.Direction.Z * distanceWorld};
+                largestMiss = math::Max(largestMiss, MeasurePixelMiss(job.Description.WorldToClip, pointWorld, pixel));
             }
         }
     }
@@ -325,16 +333,14 @@ float64 MeasureLargestRayMiss(const internal::ReferenceJob& job, MakeRay makeRay
 /// The oracle's pixel-centre camera ray.
 float64 MeasureOracleRayMiss(const internal::ReferenceJob& job)
 {
-    return MeasureLargestRayMiss(
-        job,
-        [&job](uint32 x, uint32 y, math::Vector3d& outOriginWorld, math::Vector3d& outDirection) {
-            internal::ReferencePath path;
-            path.Pixel = y * DISTANT_WIDTH + x;
-            rhi::RayInput ray;
-            REQUIRE(internal::GenerateReferencePrimary(job, path, ray) == rhi::RasterStatus::Ready);
-            outOriginWorld = WidenVector({ray.Origin[0], ray.Origin[1], ray.Origin[2]});
-            outDirection = WidenVector({ray.Direction[0], ray.Direction[1], ray.Direction[2]});
-        });
+    return MeasureLargestRayMiss(job, [&job](uint32 pixel) {
+        internal::ReferencePath path;
+        path.Pixel = pixel;
+        rhi::RayInput ray;
+        REQUIRE(internal::GenerateReferencePrimary(job, path, ray) == rhi::RasterStatus::Ready);
+        return CameraRayLine{WidenVector({ray.Origin[0], ray.Origin[1], ray.Origin[2]}),
+                             WidenVector({ray.Direction[0], ray.Direction[1], ray.Direction[2]})};
+    });
 }
 } // namespace
 
@@ -353,18 +359,18 @@ TEST_CASE("Camera rays of a camera far from the world origin stay on the raster 
         CHECK(oracleMiss < CAMERA_RAY_TOLERANCE_PIXELS);
         // The float32 world-space ClipToWorld the rays were once built from carries eye * w terms that cost the
         // same pixels a sizeable fraction of a pixel, so this camera exercises the eye-relative construction.
-        const float64 worldSpaceMiss = MeasureLargestRayMiss(
-            job,
-            [&job](uint32 x, uint32 y, math::Vector3d& outOriginWorld, math::Vector3d& outDirection) {
-                const float32 clipX = 2 * (static_cast<float32>(x) + .5F) / static_cast<float32>(DISTANT_WIDTH) - 1;
-                const float32 clipY = 1 - 2 * (static_cast<float32>(y) + .5F) / static_cast<float32>(DISTANT_HEIGHT);
-                const math::Vector4 farWorld = job.ClipToWorld * math::Vector4{clipX, clipY, 1, 1};
-                const math::Vector3 farPointWorld{farWorld.X / farWorld.W,
-                                                  farWorld.Y / farWorld.W,
-                                                  farWorld.Z / farWorld.W};
-                outOriginWorld = WidenVector(DISTANT_EYE_WORLD);
-                outDirection = WidenVector(internal::ReferenceNormalize(farPointWorld - DISTANT_EYE_WORLD));
-            });
+        const float64 worldSpaceMiss = MeasureLargestRayMiss(job, [&job](uint32 pixel) {
+            const uint32 x = pixel % DISTANT_WIDTH;
+            const uint32 y = pixel / DISTANT_WIDTH;
+            const float32 clipX = 2 * (static_cast<float32>(x) + .5F) / static_cast<float32>(DISTANT_WIDTH) - 1;
+            const float32 clipY = 1 - 2 * (static_cast<float32>(y) + .5F) / static_cast<float32>(DISTANT_HEIGHT);
+            const math::Vector4 farWorld = job.ClipToWorld * math::Vector4{clipX, clipY, 1, 1};
+            const math::Vector3 farPointWorld{farWorld.X / farWorld.W,
+                                              farWorld.Y / farWorld.W,
+                                              farWorld.Z / farWorld.W};
+            return CameraRayLine{WidenVector(DISTANT_EYE_WORLD),
+                                 WidenVector(internal::ReferenceNormalize(farPointWorld - DISTANT_EYE_WORLD))};
+        });
         CAPTURE(oracleMiss, worldSpaceMiss);
         CHECK(worldSpaceMiss > WORLD_SPACE_RAY_MISS_PIXELS);
     }
