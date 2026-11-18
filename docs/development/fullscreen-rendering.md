@@ -396,6 +396,9 @@ rendering. On Apple GPUs with memoryless texture support, Metal uses tile
 memory for surface depth when a physical pass clears or discards on entry and
 discards on exit. A pass that loads or stores depth uses a lazily allocated
 private texture, which also serves as the fallback on other Metal devices.
+Surface depth takes its extent from the acquired frame's color texture: a
+surface graph prepared before a frame is acquired defers the allocation to its
+first pass in that frame.
 Offscreen depth keeps its existing storage and access rules. The Metal suite
 checks native allocation sizes and reads back depth-tested color for both
 storage paths. See [Apple's storage-mode guidance](https://developer.apple.com/documentation/metal/choosing-a-resource-storage-mode-for-apple-gpus).
