@@ -50,6 +50,7 @@ vertex float4 vertexMain(uint index [[vertex_id]]) {
 }
 fragment float4 fragmentMain(constant float4& color [[buffer(0)]]) { return color; }
 fragment float4 badBinding(constant float4& color [[buffer(1)]]) { return color; }
+fragment float4 greenMain() { return float4(0,1,0,1); }
 )MSL";
 void RequireDevice()
 {
@@ -674,6 +675,122 @@ struct OwnerCleanup final
     }
 };
 } // namespace
+
+TEST_CASE("Metal keeps discard-only surface depth in tile memory", "[rhi][macos][gpu]")
+{
+    Guard guard;
+    OwnerCleanup owners;
+    id<MTLDevice> nativeDeviceOrNull = MTLCreateSystemDefaultDevice();
+    if (nativeDeviceOrNull == nil)
+    {
+        SKIP("No Metal adapter on this host");
+    }
+    constexpr uint32 WIDTH = 8;
+    constexpr uint32 HEIGHT = 4;
+    rhi::DeviceDescription description;
+    description.Required.PortableRaster = true;
+    rhi::SurfaceHandle surface;
+    REQUIRE(rhi::CreateDevice({}, { .Width = WIDTH, .Height = HEIGHT }, description, owners.Devices[0], surface) ==
+            rhi::DeviceStatus::Ready);
+    const rhi::DeviceHandle device = owners.Devices[0];
+    const bool hasMemorylessSupport = [nativeDeviceOrNull supportsFamily:MTLGPUFamilyApple2] == YES;
+
+    rhi::RasterShaderHandle vertex;
+    rhi::RasterShaderHandle fragment;
+    REQUIRE(rhi::CreateRasterShader(device,
+                                    {
+                                        .Artifact = Description(rhi::ShaderStage::Vertex, "vertexMain"),
+                                        .Inputs = {},
+                                        .Bindings = {},
+                                    },
+                                    vertex) == rhi::RasterStatus::Ready);
+    REQUIRE(rhi::CreateRasterShader(device,
+                                    {
+                                        .Artifact = Description(rhi::ShaderStage::Fragment, "greenMain"),
+                                        .Inputs = {},
+                                        .Bindings = {},
+                                    },
+                                    fragment) == rhi::RasterStatus::Ready);
+    rhi::BindingLayoutHandle layout;
+    rhi::BindingSetHandle bindings;
+    REQUIRE(rhi::CreateBindingLayout(device, {}, layout) == rhi::RasterStatus::Ready);
+    REQUIRE(rhi::CreateBindingSet(device, layout, {}, bindings) == rhi::RasterStatus::Ready);
+    rhi::RasterPipelineHandle pipeline;
+    REQUIRE(rhi::CreateRasterPipeline(device,
+                                      {
+                                          .Vertex = vertex,
+                                          .Fragment = fragment,
+                                          .Layout = layout,
+                                          .Streams = {},
+                                          .Attributes = {},
+                                          .Depth = true,
+                                      },
+                                      pipeline) == rhi::RasterStatus::Ready);
+    const uint16 indices[]{0, 1, 2};
+    rhi::BufferHandle indexBuffer;
+    REQUIRE(rhi::CreateBuffer(device,
+                              { .Role = rhi::BufferRole::Index16, .Size = sizeof(indices) },
+                              {reinterpret_cast<const uint8*>(indices), sizeof(indices)},
+                              indexBuffer) == rhi::RasterStatus::Ready);
+    const rhi::RasterDraw draw
+    {
+        .Pipeline = pipeline,
+        .Bindings = bindings,
+        .Vertices = {},
+        .Indices = indexBuffer,
+        .IndexCount = 3,
+        .VertexCount = 3,
+    };
+
+    usize memorylessBytes = 0;
+    usize privateBytes = 0;
+    REQUIRE(rhi::BeginFrame(device, surface) == rhi::DeviceStatus::Ready);
+    CHECK(rhi::backend::GetMetalSurfaceDepthAllocations(memorylessBytes, privateBytes) == hasMemorylessSupport);
+    CHECK(memorylessBytes == 0);
+    CHECK((privateBytes == 0) == hasMemorylessSupport);
+    rhi::RasterPassDescription pass;
+    REQUIRE(rhi::BeginRasterPass(device, pass) == rhi::RasterStatus::Ready);
+    REQUIRE(rhi::DrawIndexed(device, draw) == rhi::RasterStatus::Ready);
+    REQUIRE(rhi::EndFrame(device) == rhi::DeviceStatus::Ready);
+    uint8 pixels[WIDTH * HEIGHT * 4]{};
+    REQUIRE(rhi::backend::ReadHeadlessPixels(pixels));
+    constexpr uint8 GREEN[]{0, 255, 0, 255};
+    for (usize i = 0; i < sizeof(pixels); i += sizeof(GREEN))
+    {
+        CHECK(std::memcmp(pixels + i, GREEN, sizeof(GREEN)) == 0);
+    }
+
+    REQUIRE(rhi::BeginFrame(device, surface) == rhi::DeviceStatus::Ready);
+    pass.Clear[0] = 1;
+    pass.Clear[3] = 1;
+    pass.ClearDepth = 0;
+    pass.DepthStore = rhi::RasterStore::Store;
+    REQUIRE(rhi::BeginRasterPass(device, pass) == rhi::RasterStatus::Ready);
+    CHECK(rhi::backend::GetMetalSurfaceDepthAllocations(memorylessBytes, privateBytes) == hasMemorylessSupport);
+    CAPTURE(memorylessBytes, privateBytes);
+    CHECK(privateBytes > 0);
+    pass.ColorLoad = rhi::RasterLoad::Load;
+    pass.DepthLoad = rhi::RasterLoad::Load;
+    pass.DepthStore = rhi::RasterStore::Discard;
+    REQUIRE(rhi::BeginRasterPass(device, pass) == rhi::RasterStatus::Ready);
+    REQUIRE(rhi::DrawIndexed(device, draw) == rhi::RasterStatus::Ready);
+    CHECK(rhi::BeginRasterPass(device, pass) == rhi::RasterStatus::InvalidDescription);
+    REQUIRE(rhi::EndFrame(device) == rhi::DeviceStatus::Ready);
+    REQUIRE(rhi::backend::ReadHeadlessPixels(pixels));
+    constexpr uint8 RED[]{255, 0, 0, 255};
+    for (usize i = 0; i < sizeof(pixels); i += sizeof(RED))
+    {
+        CHECK(std::memcmp(pixels + i, RED, sizeof(RED)) == 0);
+    }
+
+    REQUIRE(rhi::SetFrameTarget(device, surface, { .Width = WIDTH + 1, .Height = HEIGHT }) == rhi::DeviceStatus::Ready);
+    REQUIRE(rhi::BeginFrame(device, surface) == rhi::DeviceStatus::Ready);
+    CHECK(rhi::GetFrameInfo().Width == WIDTH + 1);
+    CHECK(rhi::backend::GetMetalSurfaceDepthAllocations(memorylessBytes, privateBytes) == hasMemorylessSupport);
+    CHECK(memorylessBytes == 0);
+    CHECK((privateBytes == 0) == hasMemorylessSupport);
+    REQUIRE(rhi::EndFrame(device) == rhi::DeviceStatus::Ready);
+}
 
 TEST_CASE("R14c Metal hosts concurrent device owners with isolated resources and retirement",
           "[rhi][macos][gpu][owner]")
