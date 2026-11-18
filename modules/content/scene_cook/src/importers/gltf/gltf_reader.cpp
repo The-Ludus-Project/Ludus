@@ -1455,8 +1455,21 @@ Status GltfReader::loadMaterial(usize index, uint32& outMaterial) noexcept
             const bool isTransmission = key == "KHR_materials_transmission" || key == "KHR_materials_volume" ||
                                         key == "KHR_materials_diffuse_transmission";
             MessageBuilder message;
-            (void)message.Append(key).Append(
-                " was skipped. The imported material uses the base metallic-roughness inputs.");
+            if (key == "KHR_materials_unlit")
+            {
+                // Thanks to the Khronos 3D Formats Working Group for defining the lighting-independent
+                // appearance in KHR_materials_unlit. The static cook uses the lit core fallback.
+                // https://github.com/KhronosGroup/glTF/tree/main/extensions/2.0/Khronos/KHR_materials_unlit
+                (void)message.Append("materials[")
+                    .AppendUnsigned(index)
+                    .Append("]: KHR_materials_unlit was skipped. The metallic-roughness fallback responds to "
+                            "scene lighting. Re-export with a metallic-roughness material.");
+            }
+            else
+            {
+                (void)message.Append(key).Append(
+                    " was skipped. The imported material uses the base metallic-roughness inputs.");
+            }
             warn(isTransmission == true ? codes::TRANSMISSION_DROPPED : codes::MATERIAL_APPROXIMATED,
                  message.GetView());
             material.IsApproximated = true;
