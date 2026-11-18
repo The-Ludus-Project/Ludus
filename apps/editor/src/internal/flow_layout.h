@@ -34,7 +34,7 @@ public:
 
 private:
     /// Places the items in area (when shouldPlace) and returns the height they need.
-    foundation::int32 arrange(const QRect& area, bool shouldPlace) const;
+    [[nodiscard]] foundation::int32 arrange(const QRect& area, bool shouldPlace) const;
 
     QList<QLayoutItem*> mItems;
 };
