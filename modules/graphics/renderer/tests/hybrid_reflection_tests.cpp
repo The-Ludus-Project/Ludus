@@ -1208,14 +1208,16 @@ void CheckGroundWithoutFailures(math::Vector3 offsetWorld)
 }
 } // namespace
 
+// Native-query cases stay out of [render-graph]: the Vulkan evidence gate runs that tag on llvmpipe, which
+// has no ray queries, and rejects any skipped case. ludus_renderer_pixels still runs them on every backend.
 TEST_CASE("Hybrid reflections rebuild grazing first hits at triangle edges without failures",
-          "[render-graph][gpu][hybrid-reflections][native-ray-queries]")
+          "[gpu][hybrid-reflections][native-ray-queries]")
 {
     CheckGroundWithoutFailures({});
 }
 
 TEST_CASE("Hybrid reflections rebuild first hits of a camera far from the world origin without failures",
-          "[render-graph][gpu][hybrid-reflections][visibility][native-ray-queries]")
+          "[gpu][hybrid-reflections][visibility][native-ray-queries]")
 {
     CheckGroundWithoutFailures(DISTANT_GROUND_OFFSET_WORLD);
 }
