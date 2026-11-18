@@ -26,6 +26,7 @@
 #include "internal/state_view.h"
 #include "internal/world_demo_adapter.h"
 #include "internal/world_lights_panel.h"
+#include "internal/world_material_creation.h"
 #include "internal/world_material_document.h"
 #include "internal/world_materials_panel.h"
 #include "internal/world_terrain.h"
@@ -2204,6 +2205,11 @@ void WorldWorkspace::addMaterialGroup()
     {
         addMaterialRepair(*rows);
     }
+    else if (scene.contains(QStringLiteral("project_brdf")) == false &&
+             Document_.GetSceneMaterialDefinition(Document_.GetInheritedMaterialId(scene)).isEmpty() == false)
+    {
+        addCreatedMaterial(*rows);
+    }
     if (canEditCoating == true)
     {
         QLabel* help = new QLabel(
@@ -2810,7 +2816,8 @@ void WorldWorkspace::addMaterialRepair(QFormLayout& inoutRows)
     QWidget* group = inoutRows.parentWidget();
     QLabel* explanation = new QLabel(
         QStringLiteral("This imported PBRT material has no Ludus shading implementation. Map it to a material "
-                       "already assigned to a supported slot in this World."),
+                       "already assigned to a supported slot in this World, or create a material from its "
+                       "imported values."),
         group);
     explanation->setWordWrap(true);
     inoutRows.addRow(explanation);
@@ -2879,6 +2886,90 @@ void WorldWorkspace::addMaterialRepair(QFormLayout& inoutRows)
         mapImportedMaterial(source, replacements->currentData().toString(), replacements->currentText());
     });
     inoutRows.addRow(map);
+    QPushButton* create = new QPushButton(QStringLiteral("Create material from import…"), group);
+    create->setObjectName(QStringLiteral("worldCreateMaterial"));
+    create->setEnabled(Pending_ == false && SceneBusy() == false);
+    connect(create, &QPushButton::clicked, this, [this, source]() { createImportedMaterial(source); });
+    inoutRows.addRow(create);
+}
+
+void WorldWorkspace::addCreatedMaterial(QFormLayout& inoutRows)
+{
+    QWidget* group = inoutRows.parentWidget();
+    const QString source = Document_.GetInheritedMaterialId(Document_.ScenePlacement(Document_.Entity(Selected_)));
+    QLabel* explanation = new QLabel(
+        QStringLiteral("This World created this material from an unsupported imported material. Every slot and "
+                       "future import of the source material uses it."),
+        group);
+    explanation->setObjectName(QStringLiteral("worldCreatedMaterial"));
+    explanation->setWordWrap(true);
+    inoutRows.addRow(explanation);
+    QPushButton* edit = new QPushButton(QStringLiteral("Edit created material…"), group);
+    edit->setObjectName(QStringLiteral("worldEditCreatedMaterial"));
+    edit->setEnabled(Pending_ == false && SceneBusy() == false);
+    connect(edit, &QPushButton::clicked, this, [this, source]() { createImportedMaterial(source); });
+    inoutRows.addRow(edit);
+}
+
+void WorldWorkspace::createImportedMaterial(const QString& source)
+{
+    const RenderScene& presented = Scene_->PreviewScene();
+    const resources::SceneMaterial* materialOrNull = GetSceneObjectMaterialOrNull(presented, Selected_);
+    if (Pending_ == true || SceneBusy() == true || source.isEmpty() == true || materialOrNull == nullptr ||
+        presented.Definition == nullptr)
+    {
+        Changed(QStringLiteral("Finish the current World edit before creating a material."));
+        return;
+    }
+    MaterialCreationRequest request;
+    request.SourceId = source;
+    const std::string_view name = materialOrNull->Name.View();
+    request.SourceName = QString::fromUtf8(name.data(), static_cast<qsizetype>(name.size()));
+    request.KeptInputs = DescribeKeptMaterialInputs(*presented.Definition, *materialOrNull);
+    request.Draft = Document_.GetSceneMaterialDefinition(source);
+    request.IsEditing = request.Draft.isEmpty() == false;
+    if (request.IsEditing == false)
+    {
+        request.Draft = MakeCreatedMaterialDraft(*materialOrNull);
+    }
+    for (const QJsonValue value : Document_.Draft().value(QStringLiteral("entities")).toArray())
+    {
+        const QJsonObject entity = value.toObject();
+        const QJsonObject placement = entity.value(QStringLiteral("scene")).toObject();
+        if (placement.isEmpty() == false && placement.contains(QStringLiteral("project_brdf")) == false &&
+            Document_.GetInheritedMaterialId(placement) == source)
+        {
+            request.AffectedSlots.append(entity.value(QStringLiteral("name")).toString() + QStringLiteral(" · ") +
+                                         entity.value(QStringLiteral("id")).toString());
+        }
+    }
+    const QByteArray before = Document_.Encode();
+    const QString done = request.IsEditing == true
+                             ? QStringLiteral("Created material changed for %1 slots. Undo is available.")
+                             : QStringLiteral("Material created for %1 slots. Undo is available.");
+    const qsizetype affected = request.AffectedSlots.size();
+    WorldMaterialCreationDialog dialog(request, this);
+    connect(&dialog,
+            &WorldMaterialCreationDialog::CreationRequested,
+            this,
+            [this, &dialog, &before, &source, &done, affected](const QJsonObject& definition) {
+                if (Document_.Encode() != before || Pending_ == true || SceneBusy() == true)
+                {
+                    dialog.ShowError(QStringLiteral("The World changed while this dialog was open. Cancel, review "
+                                                    "the affected slots and create the material again."));
+                    return;
+                }
+                QString error;
+                if (Document_.DefineSceneMaterial(source, definition, error) == false)
+                {
+                    dialog.ShowError(error);
+                    return;
+                }
+                Snapshot();
+                Changed(done.arg(affected));
+                dialog.accept();
+            });
+    dialog.exec();
 }
 
 // NOLINTNEXTLINE(bugprone-easily-swappable-parameters): the source, replacement path and label are distinct.

@@ -755,6 +755,115 @@ TEST_CASE("Level skin slots cook into LUSCN v14 without metallic and reject unus
     }
 }
 
+TEST_CASE("Level created materials replace every slot of their imported material and reject unusable entries",
+          "[scene_assets][material-repair]")
+{
+    namespace format = ludus::content::scene_format;
+    namespace resources = ludus::resources;
+    GoldenProject golden;
+    const std::string original = ToText(golden.Level);
+    const std::string materialMember = R"("material":")";
+    const usize materialAt = original.find(materialMember);
+    REQUIRE(materialAt != std::string::npos);
+    const usize idAt = materialAt + materialMember.size();
+    const std::string material = original.substr(idAt, original.find('"', idAt) - idAt);
+    REQUIRE(material.starts_with("material/") == true);
+    usize slots = 0;
+    for (usize at = original.find(materialMember + material); at != std::string::npos;
+         at = original.find(materialMember + material, at + 1))
+    {
+        ++slots;
+    }
+    REQUIRE(slots > 0);
+    const auto withLevelMember = [&](std::string_view member) {
+        std::string level = original;
+        REQUIRE(level.starts_with('{') == true);
+        level.insert(1, std::string(member) + ",");
+        return level;
+    };
+    const auto withDefinition = [&](std::string_view definition) {
+        return withLevelMember(R"("material_definitions":{")" + material + R"(":)" + std::string(definition) + "}");
+    };
+    const auto decode = [&](const std::string& level, resources::SceneDefinition& outScene) {
+        AssetError error;
+        Array<uint8> bundle;
+        REQUIRE(ValidateLevel(ToSpan(level), error) == true);
+        INFO(Describe(error));
+        REQUIRE(AssembleLevel(golden.Project.string(), ToSpan(level), {}, bundle, error));
+        REQUIRE(resources::SceneDefinition::Decode(bundle.GetData(), bundle.GetSize(), outScene) ==
+                resources::Status::Ok);
+    };
+    resources::SceneDefinition unchanged;
+    decode(original, unchanged);
+    const usize materialCount = unchanged.Materials.GetSize();
+
+    // A metallic-roughness definition replaces the material's model, base colour, metallic and roughness for every
+    // slot that uses it, in one shared record.
+    resources::SceneDefinition scene;
+    decode(withDefinition(R"({"model":"metallic_roughness","base_color":[0.25,0.5,0.75],"metallic":0.3,)"
+                          R"("roughness":0.6})"),
+           scene);
+    CHECK(scene.Materials.GetSize() == materialCount);
+    const ludus::foundation::math::Vector3 created{0.25F, 0.5F, 0.75F};
+    usize createdRecords = 0;
+    for (const resources::SceneMaterial& record : scene.Materials)
+    {
+        if ((record.Reflectance == created) == false)
+        {
+            continue;
+        }
+        ++createdRecords;
+        CHECK(record.HasSourceMaterial == true);
+        CHECK(record.Scattering.Model == format::MaterialModel::MetallicRoughness);
+        CHECK(record.Metallic == 0.3F);
+        CHECK(record.Roughness == 0.6F);
+        CHECK(format::IsMaterialScatteringValid(record.Scattering) == true);
+    }
+    CHECK(createdRecords == 1);
+
+    // A diffuse definition holds only a base colour; the record has no metallic and full roughness.
+    decode(withDefinition(R"({"model":"diffuse","base_color":[0.25,0.5,0.75]})"), scene);
+    createdRecords = 0;
+    for (const resources::SceneMaterial& record : scene.Materials)
+    {
+        if (record.Reflectance == created)
+        {
+            ++createdRecords;
+            CHECK(record.Scattering.Model == format::MaterialModel::Diffuse);
+            CHECK(record.Metallic == 0);
+            CHECK(record.Roughness == 1);
+        }
+    }
+    CHECK(createdRecords == 1);
+
+    // Entries need an imported material ID, a known model with exactly its members, and values in range.
+    AssetError error;
+    for (const std::string_view invalid :
+         {R"({"model":"hair","base_color":[0.5,0.5,0.5]})",
+          R"({"model":"diffuse","base_color":[0.5,0.5]})",
+          R"({"model":"diffuse","base_color":[1.5,0.5,0.5]})",
+          R"({"model":"diffuse","base_color":[0.5,0.5,0.5],"roughness":0.5})",
+          R"({"model":"metallic_roughness","base_color":[0.5,0.5,0.5],"metallic":0.5})",
+          R"({"model":"metallic_roughness","base_color":[0.5,0.5,0.5],"metallic":1.5,"roughness":0.5})",
+          R"({"model":"metallic_roughness","base_color":[0.5,0.5,0.5],"metallic":0.5,"roughness":0.01})"})
+    {
+        INFO(invalid);
+        CHECK_FALSE(ValidateLevel(ToSpan(withDefinition(invalid)), error));
+        CHECK(std::string_view(error.Message.View()).find("Create it again from the import") != std::string_view::npos);
+    }
+    CHECK_FALSE(ValidateLevel(
+        ToSpan(withLevelMember(R"("material_definitions":{"mesh/x":{"model":"diffuse","base_color":[0,0,0]}})")),
+        error));
+    CHECK_FALSE(ValidateLevel(ToSpan(withLevelMember(R"("material_definitions":[])")), error));
+    CHECK(error.Message.View() == "Invalid created material table");
+    // A material is either mapped or replaced by a created material, not both.
+    const std::string both = withLevelMember(R"("material_definitions":{")" + material +
+                                             R"(":{"model":"diffuse","base_color":[0,0,0]}},"material_mappings":{")" +
+                                             material + R"(":"material/00000000-0000-0000-0000-000000000009"})");
+    CHECK_FALSE(ValidateLevel(ToSpan(both), error));
+    CHECK(std::string_view(error.Message.View()).find("Keep one repair") != std::string_view::npos);
+}
+
 TEST_CASE("Composed level transforms match the assembled bundle bit for bit", "[scene_assets]")
 {
     namespace format = ludus::content::scene_format;

@@ -2127,16 +2127,38 @@ import it again.
 
 When a PBRT scene assigns an unsupported named material, World keeps the geometry
 and marks those surfaces purple in its built-in viewport. Select one of the surfaces to see its imported
-name and the unsupported material diagnostic in **Material**. Choose a
-replacement already used on a supported imported slot in this World, then select
-**Map to existing material**. Review the affected slots and choose **Map and
-apply**.
+name and the unsupported material diagnostic in **Material**. Then either map
+the material to an existing one or create a material from the import.
 
-One World edit maps all slots that share the imported material identity. The
-previous view stays visible while the repaired scene prepares. Undo restores
-the diagnostic and redo reapplies the mapping. **Save World** keeps the mapping
-on reopen. Importing the same source again adds its geometry with the mapping
-already applied. The PBRT file and original slot assignments are preserved.
+To map it, choose a replacement already used on a supported imported slot in
+this World, then select **Map to existing material**. Review the affected slots
+and choose **Map and apply**.
+
+To create one, select **Create material from import…**. The dialog names the
+imported material and its resource ID, lists the affected slots, and names the
+imported maps, emission and alpha mask the new material keeps. Its fields start from the
+imported `reflectance` and roughness, when the PBRT material declares them:
+
+- **Model**: **Metallic-roughness**, or **Diffuse** for a Lambertian surface
+  that has no metallic or roughness.
+- **Base colour red**, **Base colour green** and **Base colour blue**: the
+  linear base colour in [0, 1], which scales an imported base colour map.
+- **Metallic**, in [0, 1], and **Roughness**, in [0.045, 1].
+
+Choose **Create and apply**. Cancel is the default. A value outside its range
+is reported in the dialog with the field's name and range; the dialog keeps
+your text so you can correct it. The other inputs of the unsupported PBRT model
+stay in the source file. A created slot shows **Edit created material…** in
+**Material**, which opens the same dialog with **Apply changes**.
+
+Either repair is one World edit for all slots that share the imported material
+identity. It leaves the project catalog unchanged. The previous view stays
+visible while the repaired scene prepares, and also if preparation fails; the
+failure appears in the World status. Undo restores the diagnostic and redo
+reapplies the repair. **Save World** keeps the repair on reopen. Importing the
+same source again adds its geometry with the repair already applied. The PBRT
+file and original slot assignments are preserved. See
+[created materials](../architecture/content-resources.md#typed-source-materials-luscn-v7) for the stored form.
 
 A reference capture requires resolved materials. The purple color is a viewport
 diagnostic, separate from the World's lighting.
