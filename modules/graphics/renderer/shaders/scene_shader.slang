@@ -88,6 +88,9 @@ struct RayLaunch
     bool IsFullImageDispatch;
     uint SampleIndex;
     uint2 Seed;
+    /// Linear item index and exact count for buffer-only dispatches. Both are zero for image dispatches.
+    uint WorkItemIndex;
+    uint WorkItemCount;
 };
 struct SceneContext
 {

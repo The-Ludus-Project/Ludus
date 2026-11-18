@@ -3,6 +3,8 @@
 
 #include <ludus/foundation/base/core.h>
 
+#include <ludus/content/render_graph_format/plan.h>
+
 #include <algorithm>
 
 #include <QButtonGroup>
@@ -871,16 +873,29 @@ void RenderGraphPipelineEditor::addProperties(QFormLayout& outForm, const QStrin
             mNode.insert(name, record);
             publishEdit();
         };
-        if (name == QStringLiteral("invocation") && key == QStringLiteral("dimensions") && UsesRayLaunch(mNode) == true)
+        if (name == QStringLiteral("invocation") && UsesRayLaunch(mNode) == true &&
+            (key == QStringLiteral("dimensions") || key == QStringLiteral("work_items")))
         {
+            constexpr int32 MATCH_COLOR_TARGET_INDEX = 0;
+            constexpr int32 EXPLICIT_SIZE_INDEX = 1;
+            constexpr int32 WORK_ITEMS_INDEX = 2;
             QWidget* row = new QWidget(this);
             QVBoxLayout* layout = new QVBoxLayout(row);
             QComboBox* mode = new QComboBox(row);
             mode->setObjectName(QStringLiteral("rayLaunchSizeMode"));
             mode->addItems({QStringLiteral("Match color target"), QStringLiteral("Explicit size")});
+            const bool isSceneCompute = IsSceneComputeNode(mNode);
+            if (isSceneCompute == true)
+            {
+                mode->addItem(QStringLiteral("Work items"));
+            }
+            const bool isBufferDispatch = key == QStringLiteral("work_items");
             const bool isAutomatic = value.toString() == QStringLiteral("ColorTarget");
-            mode->setCurrentIndex(isAutomatic == true ? 0 : 1);
+            mode->setCurrentIndex(isBufferDispatch == true ? WORK_ITEMS_INDEX
+                                  : isAutomatic == true    ? MATCH_COLOR_TARGET_INDEX
+                                                           : EXPLICIT_SIZE_INDEX);
             layout->addWidget(mode);
+
             QWidget* dimensions = new QWidget(row);
             QHBoxLayout* dimensionLayout = new QHBoxLayout(dimensions);
             for (int32 dimension = 0; dimension < DIMENSION_COUNT; ++dimension)
@@ -889,38 +904,63 @@ void RenderGraphPipelineEditor::addProperties(QFormLayout& outForm, const QStrin
                 control->setObjectName(QStringLiteral("rayLaunchDimension%1").arg(dimension));
                 control->setRange(1, MAX_PROPERTY_VALUE);
                 control->setValue(value.isArray() == true ? value.toArray().at(dimension).toInt() : 1);
-                connect(control, &QSpinBox::valueChanged, this, [setProperty, dimensions](int32) {
-                    QJsonArray values;
-                    for (const QSpinBox* field : dimensions->findChildren<QSpinBox*>())
-                    {
-                        values.append(field->value());
-                    }
-                    setProperty(values);
-                });
                 dimensionLayout->addWidget(control);
             }
-            dimensions->setVisible(isAutomatic == false);
+            QSpinBox* workItems = new QSpinBox(row);
+            workItems->setObjectName(QStringLiteral("sceneWorkItemCount"));
+            workItems->setRange(1, static_cast<int32>(content::render_graph_format::MAX_SCENE_WORK_ITEMS));
+            workItems->setValue(isBufferDispatch == true ? value.toInt() : 1);
             layout->addWidget(dimensions);
-            QLabel* help = new QLabel(
-                QStringLiteral("Match color target derives [width, height, 1] from the connected writable color "
-                               "target in each graph instance. Explicit size must match that target."),
-                row);
+            layout->addWidget(workItems);
+
+            QLabel* help = new QLabel(row);
             help->setWordWrap(true);
             layout->addWidget(help);
-            connect(mode, &QComboBox::currentIndexChanged, this, [setProperty, dimensions](int32 index) {
-                dimensions->setVisible(index != 0);
-                if (index == 0)
+            const auto showMode = [dimensions, workItems, help](int32 index) {
+                dimensions->setVisible(index == EXPLICIT_SIZE_INDEX);
+                workItems->setVisible(index == WORK_ITEMS_INDEX);
+                help->setText(index == WORK_ITEMS_INDEX
+                                  ? QStringLiteral("Dispatch this many work items. Use Scene and Buffer ports. "
+                                                   "Remove View and texture ports before building.")
+                                  : QStringLiteral("Match color target derives [width, height, 1] from the connected "
+                                                   "writable color target. Explicit size must match that target."));
+            };
+            const auto applyLaunch = [this, mode, dimensions, workItems]() {
+                QJsonObject invocation = mNode.value(QStringLiteral("invocation")).toObject();
+                const int32 index = mode->currentIndex();
+                if (index == WORK_ITEMS_INDEX)
                 {
-                    setProperty(QStringLiteral("ColorTarget"));
-                    return;
+                    invocation.remove(QStringLiteral("dimensions"));
+                    invocation.insert(QStringLiteral("work_items"), workItems->value());
                 }
-                QJsonArray values;
-                for (const QSpinBox* field : dimensions->findChildren<QSpinBox*>())
+                else
                 {
-                    values.append(field->value());
+                    invocation.remove(QStringLiteral("work_items"));
+                    QJsonValue size(QStringLiteral("ColorTarget"));
+                    if (index == EXPLICIT_SIZE_INDEX)
+                    {
+                        QJsonArray values;
+                        for (const QSpinBox* field : dimensions->findChildren<QSpinBox*>())
+                        {
+                            values.append(field->value());
+                        }
+                        size = values;
+                    }
+                    invocation.insert(QStringLiteral("dimensions"), size);
                 }
-                setProperty(values);
+                mNode.insert(QStringLiteral("invocation"), invocation);
+                publishEdit();
+            };
+            showMode(mode->currentIndex());
+            connect(mode, &QComboBox::currentIndexChanged, this, [showMode, applyLaunch](int32 index) {
+                showMode(index);
+                applyLaunch();
             });
+            for (QSpinBox* field : dimensions->findChildren<QSpinBox*>())
+            {
+                connect(field, &QSpinBox::valueChanged, this, applyLaunch);
+            }
+            connect(workItems, &QSpinBox::valueChanged, this, applyLaunch);
             row->setProperty("renderGraphField", name + QLatin1Char('.') + key);
             outForm.addRow(QStringLiteral("Launch size"), row);
         }

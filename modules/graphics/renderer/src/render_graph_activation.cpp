@@ -206,6 +206,7 @@ struct RenderGraphPackage::State final
     bool HasAerialPerspective = false;
     /// Version 28 and later ray kernels dispatch the uniform's tile region.
     bool HasRayTiles = false;
+    bool HasSceneWorkItems = false;
     // DecodeUniforms validates and writes every active stage before any binding is published.
     // NOLINTNEXTLINE(bugprone-invalid-enum-default-initialization)
     StaticArray<format::UniformBinding, format::MAX_UNIFORM_BINDINGS> UniformBindings{};
@@ -897,6 +898,13 @@ RenderGraphPackageStatus RenderGraphPackage::State::DecodeRecords(ByteReader& in
             return RenderGraphPackageStatus::Malformed;
         }
         pass.ToneMappingCurve = static_cast<format::DisplayCurve>(curve);
+        pass.WorkItemCount = HasSceneWorkItems == true ? inoutReader.ReadWord() : 0;
+        if (pass.WorkItemCount > format::MAX_SCENE_WORK_ITEMS ||
+            (pass.WorkItemCount != 0 && (program != static_cast<uint32>(format::Technique::RayTracing) ||
+                                         pass.Camera != format::ABSENT || pass.Color != format::ABSENT)))
+        {
+            return RenderGraphPackageStatus::Malformed;
+        }
         HasNativeRayQueries =
             HasNativeRayQueries == true || (program == static_cast<uint32>(format::Technique::RayTracing) &&
                                             (pass.Traversal == format::RayTraversal::NativeQuery ||
@@ -974,7 +982,7 @@ RenderGraphPackageStatus RenderGraphPackage::decode(BorrowedView<const uint8> by
     const uint32 magic = reader.ReadWord();
     const uint32 version = reader.ReadWord();
     if (magic != expectedMagic ||
-        (version != format::WORLD_FEATURE_PACKAGE_VERSION &&
+        (version != format::SCENE_WORK_ITEMS_PACKAGE_VERSION && version != format::WORLD_FEATURE_PACKAGE_VERSION &&
          version != format::DEFERRED_SURFACE_CHART_GBUFFER_PACKAGE_VERSION &&
          version != format::DEFERRED_PROBE_GBUFFER_PACKAGE_VERSION && version != format::RECIPE_KEY_PACKAGE_VERSION &&
          version != format::FORWARD_SURFACE_CHART_PACKAGE_VERSION &&
@@ -1012,6 +1020,7 @@ RenderGraphPackageStatus RenderGraphPackage::decode(BorrowedView<const uint8> by
     // Earlier clustered deferred resolves read emitter records without the bounding-sphere header word.
     candidate->CanHaveClusteredDeferred = version >= format::RASTER_MESH_LIGHT_BOUND_PACKAGE_VERSION;
     candidate->HasRayTiles = version >= format::TILED_RAY_PACKAGE_VERSION;
+    candidate->HasSceneWorkItems = version >= format::SCENE_WORK_ITEMS_PACKAGE_VERSION;
     candidate->CanHaveClusteredForward = version >= format::CLUSTERED_FORWARD_PACKAGE_VERSION;
     candidate->HasExplicitAccumulation = version >= format::ACCUMULATION_PACKAGE_VERSION;
     candidate->HasExplicitToneMapping = version >= format::TONE_MAPPING_PACKAGE_VERSION;

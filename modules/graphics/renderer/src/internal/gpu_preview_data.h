@@ -9,6 +9,7 @@
 #include <ludus/foundation/base/pointer.hpp>
 #include <ludus/foundation/containers/static_array.hpp>
 #include <ludus/foundation/math/matrix.hpp>
+#include <ludus/foundation/math/scalar.hpp>
 #include <ludus/foundation/math/vector.hpp>
 #include <ludus/graphics/renderer/gpu_preview.hpp>
 #include <ludus/graphics/renderer/render_graph.hpp>
@@ -54,6 +55,17 @@ struct GpuPreviewUniform final
     uint32 Tile[GPU_PREVIEW_TILE_COMPONENT_COUNT]{};
 };
 static_assert(sizeof(GpuPreviewUniform) == LUDUS_GPU_PREVIEW_PARAMETERS_BYTES);
+
+/// Buffer-only launches fold the requested item count into bounded rows independently of image dimensions.
+LUDUS_INLINE uint32 GetSceneWorkRowWidth(uint32 workItemCount) noexcept
+{
+    return math::Min(workItemCount, uint32{LUDUS_GPU_PREVIEW_SCENE_WORK_ROW_WIDTH});
+}
+
+LUDUS_INLINE uint32 GetSceneWorkRowCount(uint32 workItemCount) noexcept
+{
+    return (workItemCount - 1) / GetSceneWorkRowWidth(workItemCount) + 1;
+}
 /// Components of GpuPreviewUniform::Tile.
 inline constexpr usize GPU_PREVIEW_TILE_ORIGIN_X = 0;
 inline constexpr usize GPU_PREVIEW_TILE_ORIGIN_Y = 1;
@@ -137,6 +149,7 @@ struct GpuPreviewRecord final
     /// Referenced GpuPreviewState::Scenes slot; Data, Texels and NativeGeometry below copy its handles.
     usize Scene = NO_GPU_PREVIEW_SCENE;
     bool HasNativeRayInvocation = false;
+    uint32 WorkItemCount = 0;
     uint64 Generation = 1;
     bool Used = false;
     bool Owned = false;

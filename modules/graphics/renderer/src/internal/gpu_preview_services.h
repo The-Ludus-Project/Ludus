@@ -700,12 +700,12 @@ Status PollGpuJob(rhi::DeviceHandle device, GpuPreviewState& inoutState, GpuPrev
 {
     if (inoutJob.Setup == Status::Pending)
     {
+        const bool hasImage = inoutJob.WorkItemCount == 0;
         const rhi::BufferHandle buffers[]{inoutJob.Data,
                                           inoutJob.Texels,
                                           inoutJob.Parameters,
                                           inoutJob.Accumulation,
-                                          inoutJob.Colors,
-                                          inoutJob.ImageParameters};
+                                          inoutJob.Colors};
         for (rhi::BufferHandle buffer : buffers)
         {
             const Status status = rhi::GetStatus(device, buffer);
@@ -812,8 +812,13 @@ Status PollGpuJob(rhi::DeviceHandle device, GpuPreviewState& inoutState, GpuPrev
             }
             inoutJob.ComputeBindingsCreated = true;
         }
-        if (inoutJob.ImageBindingsCreated == false)
+        if (hasImage == true && inoutJob.ImageBindingsCreated == false)
         {
+            const Status ready = rhi::GetStatus(device, inoutJob.ImageParameters);
+            if (ready != Status::Ready)
+            {
+                return Accepted(ready) == true ? Status::Pending : (inoutJob.Setup = ready);
+            }
             constexpr usize IMAGE_BINDING_COUNT = 2;
             const StaticArray<rhi::RasterBindingResource, IMAGE_BINDING_COUNT> bindings{
                 {{0, inoutJob.ImageParameters, 0, sizeof(math::Vector4)},
@@ -830,17 +835,16 @@ Status PollGpuJob(rhi::DeviceHandle device, GpuPreviewState& inoutState, GpuPrev
         }
         Status status =
             inoutJob.ComputeBindingsCreated == true ? rhi::GetStatus(device, inoutJob.ComputeBindings) : Status::Ready;
-        if (status == Status::Ready)
+        if (hasImage == true && status == Status::Ready)
         {
             status = rhi::GetStatus(device, inoutJob.ImageBindings);
         }
-        if (status == Status::Ready)
+        for (const internal::GpuFrameRecord& frame : inoutJob.Frames)
         {
-            status = rhi::GetStatus(device, inoutJob.Frames[0].Texture);
-        }
-        if (status == Status::Ready)
-        {
-            status = rhi::GetStatus(device, inoutJob.Frames[1].Texture);
+            if (hasImage == true && status == Status::Ready)
+            {
+                status = rhi::GetStatus(device, frame.Texture);
+            }
         }
         if (status != Status::Ready)
         {
@@ -1574,6 +1578,17 @@ Status Renderer::BeginGpuPreview(Snapshot snapshot,
         return Status::Unsupported;
     }
     internal::GpuPreviewState& state = *mState->GpuPreview;
+    const uint32 workItemCount = invocationOrNull != nullptr ? invocationOrNull->WorkItemCount : 0;
+    const bool isBufferDispatch = workItemCount != 0;
+    if (isBufferDispatch == true &&
+        (workItemCount > content::render_graph_format::MAX_SCENE_WORK_ITEMS || description.Width != 1 ||
+         description.Height != 1 || state.HasPersistentBuffers == false || state.HasVisibilityBuffer == true ||
+         state.HasRayPathCapture == true || invocationOrNull->HasNativeRayInvocation == true ||
+         invocationOrNull->AccumulationSamples != 0 || invocationOrNull->DenoisingQuality != 0 ||
+         invocationOrNull->ToneMappingExposure != 0))
+    {
+        return Status::InvalidDescription;
+    }
     if (invocationOrNull != nullptr &&
         (state.IsGraphRayScene == false ||
          (state.HasPersistentBuffers == false &&
@@ -1818,10 +1833,15 @@ Status Renderer::BeginGpuPreview(Snapshot snapshot,
     }
     // A shared scene is already uploaded and charged by its record.
     const usize sceneUploadBytes = isSceneShared == true ? 0 : uploadBytes;
+    // The common shader binding layout needs one scratch record for buffer-only jobs.
+    const usize bytesPerItem = isBufferDispatch == true
+                                   ? LUDUS_GPU_PREVIEW_ACCUMULATION_BYTES + LUDUS_GPU_PREVIEW_VECTOR_BYTES
+                                   : GPU_PREVIEW_BYTES_PER_PIXEL;
+    const usize uniformBytes = sizeof(uniform) + (isBufferDispatch == true ? 0 : sizeof(math::Vector4));
     usize gpuBytes = 0;
-    if (foundation::TryMultiply(pixels, GPU_PREVIEW_BYTES_PER_PIXEL, gpuBytes) == false ||
+    if (foundation::TryMultiply(pixels, bytesPerItem, gpuBytes) == false ||
         foundation::TryAdd(gpuBytes, sceneUploadBytes, gpuBytes) == false ||
-        foundation::TryAdd(gpuBytes, sizeof(uniform) + sizeof(math::Vector4), gpuBytes) == false)
+        foundation::TryAdd(gpuBytes, uniformBytes, gpuBytes) == false)
     {
         return Status::CapacityExceeded;
     }
@@ -1897,10 +1917,14 @@ Status Renderer::BeginGpuPreview(Snapshot snapshot,
     {
         return Status::Unsupported;
     }
-    if ((description.Width - 1) / state.WorkgroupWidth + 1 > computeCaps.MaxDispatch[0] ||
-        (description.Height - 1) / state.WorkgroupHeight + 1 > computeCaps.MaxDispatch[1] ||
-        description.Width > formatCaps.MaxAttachmentDimension2D ||
-        description.Height > formatCaps.MaxAttachmentDimension2D)
+    const uint32 dispatchWidth =
+        isBufferDispatch == true ? internal::GetSceneWorkRowWidth(workItemCount) : description.Width;
+    const uint32 dispatchHeight =
+        isBufferDispatch == true ? internal::GetSceneWorkRowCount(workItemCount) : description.Height;
+    if ((dispatchWidth - 1) / state.WorkgroupWidth + 1 > computeCaps.MaxDispatch[0] ||
+        (dispatchHeight - 1) / state.WorkgroupHeight + 1 > computeCaps.MaxDispatch[1] ||
+        (isBufferDispatch == false && (description.Width > formatCaps.MaxAttachmentDimension2D ||
+                                       description.Height > formatCaps.MaxAttachmentDimension2D)))
     {
         return Status::Unsupported;
     }
@@ -1954,6 +1978,12 @@ Status Renderer::BeginGpuPreview(Snapshot snapshot,
     job.WorldTables = worldTables;
     job.Width = description.Width;
     job.Height = description.Height;
+    job.WorkItemCount = workItemCount;
+    if (isBufferDispatch == true)
+    {
+        uniform.Sampling[2] |= LUDUS_GPU_PREVIEW_SCENE_WORK_FLAG;
+        uniform.Dimensions[LUDUS_GPU_PREVIEW_ROULETTE_OR_WORK_COUNT_COMPONENT] = workItemCount;
+    }
     job.Info.TargetSamples = description.TargetSamples;
     job.Info.SceneFingerprintLow = fingerprintLow;
     job.Info.SceneFingerprintHigh = fingerprintHigh;
@@ -2018,7 +2048,7 @@ Status Renderer::BeginGpuPreview(Snapshot snapshot,
                                    {zeros.GetData(), pixels * LUDUS_GPU_PREVIEW_VECTOR_BYTES},
                                    job.Colors);
     }
-    if (Accepted(status))
+    if (Accepted(status) == true && isBufferDispatch == false)
     {
         status = rhi::CreateBuffer(mState->Device,
                                    {rhi::BufferRole::Uniform, sizeof(dimensions)},
@@ -2027,7 +2057,7 @@ Status Renderer::BeginGpuPreview(Snapshot snapshot,
     }
     for (internal::GpuFrameRecord& frame : job.Frames)
     {
-        if (Accepted(status))
+        if (Accepted(status) == true && isBufferDispatch == false)
         {
             status = rhi::CreateTexture(mState->Device,
                                         {job.Width, job.Height, rhi::RasterFormat::Rgba8Unorm, true},
@@ -2224,6 +2254,15 @@ Status Renderer::prepareGpuPreviewGraphSequence(BorrowedView<const renderer::Gpu
         {
             return status;
         }
+        if (jobOrNull->WorkItemCount != 0)
+        {
+            if (rhi::IsNull(targets[index]) == false || visibilityOrNull != nullptr || tile != 0)
+            {
+                return Status::InvalidDescription;
+            }
+            records[index] = jobOrNull;
+            continue;
+        }
         rhi::TextureDescription description;
         status = rhi::GetTextureDescription(mState->Device, targets[index], description);
         if (status != Status::Ready)
@@ -2277,7 +2316,7 @@ Status Renderer::AdvanceGpuPreview(renderer::GpuPreview handle,
     {
         return status == Status::Pending ? Status::NotReady : status;
     }
-    if (job->Info.Complete)
+    if (job->Info.Complete == true || job->WorkItemCount != 0)
     {
         return Status::InvalidState;
     }

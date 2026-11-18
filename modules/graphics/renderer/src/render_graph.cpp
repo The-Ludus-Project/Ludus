@@ -515,6 +515,13 @@ Status ValidatePlan(const RenderGraphPlan& plan) noexcept
     for (usize passIndex = 0; passIndex < plan.Passes.GetSize(); ++passIndex)
     {
         const format::Pass& pass = plan.Passes[passIndex];
+        const bool isBufferDispatch = pass.WorkItemCount != 0;
+        if (isBufferDispatch == true &&
+            (pass.Program != format::Technique::RayTracing || pass.WorkItemCount > format::MAX_SCENE_WORK_ITEMS ||
+             pass.Camera != format::ABSENT || pass.Color != format::ABSENT))
+        {
+            return Status::InvalidDescription;
+        }
         if (format::IsImageTechnique(pass.Program) == true)
         {
             if (pass.Camera >= plan.Cameras.GetSize() || pass.Color >= plan.Resources.GetSize() ||
@@ -549,7 +556,8 @@ Status ValidatePlan(const RenderGraphPlan& plan) noexcept
         {
             return Status::InvalidDescription;
         }
-        if (static_cast<uint32>(pass.Program) > MAX_TECHNIQUE || pass.Camera >= plan.Description.CameraCount ||
+        if (static_cast<uint32>(pass.Program) > MAX_TECHNIQUE ||
+            (isBufferDispatch == false && pass.Camera >= plan.Description.CameraCount) ||
             (pass.Program != format::Technique::RayTracing && pass.Depth >= plan.Resources.GetSize()) ||
             pass.AllowsRepeatedCoverage > 1 ||
             static_cast<uint32>(pass.ColorLoad) > static_cast<uint32>(format::Load::Discard) ||
@@ -560,9 +568,12 @@ Status ValidatePlan(const RenderGraphPlan& plan) noexcept
             return Status::InvalidDescription;
         }
         isUsed[static_cast<usize>(pass.Program)] = true;
-        const uint32 requiredTarget = plan.Cameras[pass.Camera].Target;
-        hasCameraRoute[pass.Camera] =
-            hasCameraRoute[pass.Camera] == true || pass.Color == requiredTarget || pass.Depth == requiredTarget;
+        if (isBufferDispatch == false)
+        {
+            const uint32 requiredTarget = plan.Cameras[pass.Camera].Target;
+            hasCameraRoute[pass.Camera] =
+                hasCameraRoute[pass.Camera] == true || pass.Color == requiredTarget || pass.Depth == requiredTarget;
+        }
         if ((pass.SceneData & ~::ludus::content::render_graph_format::SCENE_DATA_ALL) != 0 ||
             (pass.SceneData & ::ludus::content::render_graph_format::SCENE_DATA_GEOMETRY) == 0)
         {
@@ -601,6 +612,20 @@ Status ValidatePlan(const RenderGraphPlan& plan) noexcept
                 return Status::InvalidDescription;
             }
             ++rayPassCount;
+            if (isBufferDispatch == true)
+            {
+                if (rayPassCount > format::MAX_RAY_PASSES || pass.Depth != format::ABSENT ||
+                    pass.ColorLoad != format::Load::Discard || pass.ColorStore != format::Store::Discard ||
+                    pass.DepthLoad != format::Load::Discard || pass.DepthStore != format::Store::Discard ||
+                    (pass.Buffer0 == format::ABSENT && pass.Buffer1 == format::ABSENT) ||
+                    pass.Visibility != format::ABSENT || pass.VisibilityDepth != format::ABSENT ||
+                    pass.Traversal == format::RayTraversal::HardwarePipeline || pass.AccumulationSamples != 0 ||
+                    pass.ToneMappingExposure != 0 || pass.DenoisingQuality != 0 || isVisibilitySequence == true)
+                {
+                    return Status::Unsupported;
+                }
+                continue;
+            }
             if (rayPassCount > format::MAX_RAY_PASSES || pass.Color >= plan.Resources.GetSize() ||
                 pass.Depth != format::ABSENT || plan.Resources[pass.Color].Kind != format::Aspect::Color ||
                 plan.Resources[pass.Color].IsSurface != 0 || pass.ColorLoad != format::Load::Clear ||
@@ -1227,7 +1252,7 @@ struct RenderGraph::State final
         for (usize i = 0; i < Header.PassCount; ++i)
         {
             const format::Pass& pass = Passes[i];
-            if (format::IsImageTechnique(pass.Program) == true)
+            if (format::IsImageTechnique(pass.Program) == true || pass.WorkItemCount != 0)
             {
                 continue;
             }
@@ -1266,7 +1291,7 @@ struct RenderGraph::State final
         CameraUpdate& update = *PendingCamera;
         for (usize i = 0; i < Header.PassCount; ++i)
         {
-            if (format::IsImageTechnique(Passes[i].Program) == true)
+            if (format::IsImageTechnique(Passes[i].Program) == true || Passes[i].WorkItemCount != 0)
             {
                 continue;
             }
@@ -1298,7 +1323,7 @@ struct RenderGraph::State final
         // Publication cannot allocate or fail, and no producer is open.
         for (usize i = 0; i < Header.PassCount; ++i)
         {
-            if (format::IsImageTechnique(Passes[i].Program) == true)
+            if (format::IsImageTechnique(Passes[i].Program) == true || Passes[i].WorkItemCount != 0)
             {
                 continue;
             }
@@ -1586,6 +1611,8 @@ struct RenderGraph::State final
             {
                 if (inoutScene.HasViews[i] == false)
                 {
+                    const format::Pass& pass = Passes[i];
+                    const bool isBufferDispatch = pass.WorkItemCount != 0;
                     GpuPreviewGraphInvocation invocation{0,
                                                          {},
                                                          GetAccumulationSamples(Passes[i]),
@@ -1593,15 +1620,16 @@ struct RenderGraph::State final
                                                          Passes[i].DenoisingQuality,
                                                          {},
                                                          Passes[i].Traversal == format::RayTraversal::HardwarePipeline};
-                    invocation.ToneMappingCurve = GetToneCurve(Passes[i]);
-                    const Status created =
-                        inoutScene.RayPasses[i].Initialize(context,
-                                                           inoutScene.Snapshots[i],
-                                                           inoutScene.Cameras[Passes[i].Camera],
-                                                           preparingResources[Passes[i].Color].Width,
-                                                           preparingResources[Passes[i].Color].Height,
-                                                           nullptr,
-                                                           &invocation);
+                    invocation.ToneMappingCurve = GetToneCurve(pass);
+                    invocation.WorkItemCount = pass.WorkItemCount;
+                    const Status created = inoutScene.RayPasses[i].Initialize(
+                        context,
+                        inoutScene.Snapshots[i],
+                        isBufferDispatch == true ? ViewDescription{} : inoutScene.Cameras[pass.Camera],
+                        isBufferDispatch == true ? 1 : preparingResources[pass.Color].Width,
+                        isBufferDispatch == true ? 1 : preparingResources[pass.Color].Height,
+                        nullptr,
+                        &invocation);
                     if (IsAccepted(created) == false)
                     {
                         return created;
@@ -1748,7 +1776,7 @@ struct RenderGraph::State final
                 continue;
             }
             if (pass + 1 < Header.PassCount && Passes[pass + 1].Program == format::Technique::RayTracing &&
-                Passes[pass + 1].Visibility == operation.Color)
+                Passes[pass + 1].Visibility != format::ABSENT && Passes[pass + 1].Visibility == operation.Color)
             {
                 continue;
             }
@@ -2078,9 +2106,19 @@ Status RenderGraph::SetRayTileCount(uint32 tileCount) noexcept
     {
         return Status::InvalidState;
     }
-    if (tileCount > 1 && state.Programs.HasRayTiles == false)
+    if (tileCount > 1)
     {
-        return Status::Unsupported;
+        if (state.Programs.HasRayTiles == false)
+        {
+            return Status::Unsupported;
+        }
+        for (usize pass = 0; pass < state.Header.PassCount; ++pass)
+        {
+            if (state.Passes[pass].WorkItemCount != 0)
+            {
+                return Status::Unsupported;
+            }
+        }
     }
     state.RayTileCount = tileCount;
     if (state.Current.Get() != nullptr)
@@ -2203,8 +2241,16 @@ Status RenderGraph::GetRayWorkload(RenderGraphRayWorkload& outWorkload) const no
         {
             continue;
         }
-        const format::Resource& color = state.Resources[state.Passes[pass].Color];
-        workload.Pixels += uint64{color.Width} * color.Height;
+        const format::Pass& operation = state.Passes[pass];
+        if (operation.WorkItemCount != 0)
+        {
+            workload.Pixels += operation.WorkItemCount;
+        }
+        else
+        {
+            const format::Resource& color = state.Resources[operation.Color];
+            workload.Pixels += uint64{color.Width} * color.Height;
+        }
         workload.Lights = math::Max(workload.Lights, state.Current->RayPasses[pass].GetLightCount());
     }
     outWorkload = workload;
@@ -2220,6 +2266,10 @@ Status RenderGraph::GetAccumulation(uint32 pass, rhi::BufferHandle& outBuffer) c
     if (pass >= state.Header.PassCount || state.Passes[pass].Program != format::Technique::RayTracing)
     {
         return Status::InvalidDescription;
+    }
+    if (state.Passes[pass].WorkItemCount != 0)
+    {
+        return Status::Unsupported;
     }
     // Scene/camera publication resets both counters even when it reuses the same caller revision.
     const bool hasSubmittedBand = state.Current->SubmittedRaySamples != 0 || state.Current->NextRayTile != 0;
@@ -2439,6 +2489,12 @@ Status RenderGraph::Initialize(rhi::DeviceHandle device,
     for (usize index = 0; index < plan.Passes.GetSize(); ++index)
     {
         const format::Pass& pass = plan.Passes[index];
+        if (pass.WorkItemCount != 0 &&
+            (programs.HasSceneShaderInterface == false || programs.HasPersistentRayBuffers == false ||
+             programs.HasRayPathCapture == true))
+        {
+            return Status::Unsupported;
+        }
         // Raster display conversion is fused into the clustered deferred lighting resolve; no other raster
         // profile has a stage that could apply it.
         if (pass.Program != format::Technique::RayTracing && pass.ToneMappingExposure != 0 &&
@@ -4009,13 +4065,16 @@ Status RenderGraph::updateScene(BorrowedView<const RenderGraphMesh> meshes,
             operation.Traversal == format::RayTraversal::HardwarePipeline,
             hasSceneSource == true ? &sceneSource : nullptr};
         invocation.ToneMappingCurve = GetToneCurve(operation);
-        const Status created = candidate->RayPasses[pass].Initialize(state.GetContext(operation.Program),
-                                                                     {},
-                                                                     cameras[operation.Camera],
-                                                                     preparingResources[operation.Color].Width,
-                                                                     preparingResources[operation.Color].Height,
-                                                                     &rayScene,
-                                                                     &invocation);
+        invocation.WorkItemCount = operation.WorkItemCount;
+        const bool isBufferDispatch = operation.WorkItemCount != 0;
+        const Status created = candidate->RayPasses[pass].Initialize(
+            state.GetContext(operation.Program),
+            {},
+            isBufferDispatch == true ? ViewDescription{} : cameras[operation.Camera],
+            isBufferDispatch == true ? 1 : preparingResources[operation.Color].Width,
+            isBufferDispatch == true ? 1 : preparingResources[operation.Color].Height,
+            &rayScene,
+            &invocation);
         if (IsAccepted(created) == false)
         {
             outReport = state.Report;
@@ -4200,6 +4259,10 @@ bool RenderGraph::HasPendingSamples() const noexcept
     for (usize pass = 0; pass < state.Header.PassCount; ++pass)
     {
         const format::Pass& operation = state.Passes[pass];
+        if (operation.WorkItemCount != 0)
+        {
+            continue;
+        }
         bool hasLaterWriter = false;
         for (usize next = pass + 1; next < state.Header.PassCount; ++next)
         {
@@ -4289,7 +4352,7 @@ Status RenderGraph::PrepareEncoding() noexcept
             return tiles == Status::Pending ? Status::NotReady : tiles;
         }
         jobs[count] = state.Current->RayPasses[pass].GetJob();
-        targets[count++] = state.Textures[state.Passes[pass].Color];
+        targets[count++] = operation.WorkItemCount != 0 ? rhi::TextureHandle{} : state.Textures[operation.Color];
     }
     if (count != 0)
     {

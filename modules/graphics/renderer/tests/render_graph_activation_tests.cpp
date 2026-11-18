@@ -256,6 +256,10 @@ void WritePlan(PackageWriter& inoutWriter, const PackageOptions& options, uint32
     {
         inoutWriter.WriteWord(static_cast<uint32>(options.ToneMappingCurve));
     }
+    if (options.Version >= format::SCENE_WORK_ITEMS_PACKAGE_VERSION)
+    {
+        inoutWriter.WriteWord(0);
+    }
     if (options.HasUniforms == false)
     {
         return;
@@ -1541,15 +1545,16 @@ TEST_CASE("runtime independent shader pairs decode with their own stage and bind
         // WritePlan's uniform fixture starts with the legacy color program. Retarget
         // that serialized binding explicitly; the rest of its layout is unchanged.
         constexpr usize LEGACY_PASS_FIELDS = 10;
-        const usize passBytes = (version >= format::RASTER_TONE_MAPPING_PACKAGE_VERSION ? format::PASS_FIELD_COUNT
-                                 : version >= format::SOFTWARE_RAY_PACKAGE_VERSION      ? format::PASS_FIELD_COUNT - 1
-                                 : version >= format::DENOISING_PACKAGE_VERSION         ? format::PASS_FIELD_COUNT - 2
-                                 : version >= format::BILINEAR_PACKAGE_VERSION          ? format::PASS_FIELD_COUNT - 3
-                                 : version >= format::TONE_MAPPING_PACKAGE_VERSION      ? format::PASS_FIELD_COUNT - 4
-                                 : version >= format::ACCUMULATION_PACKAGE_VERSION      ? format::PASS_FIELD_COUNT - 5
-                                 : version >= format::VISIBILITY_PACKAGE_VERSION        ? format::PASS_FIELD_COUNT - 6
-                                 : version >= format::ORDERED_PACKAGE_VERSION           ? format::PASS_FIELD_COUNT - 8
-                                                                                        : LEGACY_PASS_FIELDS) *
+        const usize passBytes = (version >= format::SCENE_WORK_ITEMS_PACKAGE_VERSION      ? format::PASS_FIELD_COUNT
+                                 : version >= format::RASTER_TONE_MAPPING_PACKAGE_VERSION ? format::PASS_FIELD_COUNT - 1
+                                 : version >= format::SOFTWARE_RAY_PACKAGE_VERSION        ? format::PASS_FIELD_COUNT - 2
+                                 : version >= format::DENOISING_PACKAGE_VERSION           ? format::PASS_FIELD_COUNT - 3
+                                 : version >= format::BILINEAR_PACKAGE_VERSION            ? format::PASS_FIELD_COUNT - 4
+                                 : version >= format::TONE_MAPPING_PACKAGE_VERSION        ? format::PASS_FIELD_COUNT - 5
+                                 : version >= format::ACCUMULATION_PACKAGE_VERSION        ? format::PASS_FIELD_COUNT - 6
+                                 : version >= format::VISIBILITY_PACKAGE_VERSION          ? format::PASS_FIELD_COUNT - 7
+                                 : version >= format::ORDERED_PACKAGE_VERSION             ? format::PASS_FIELD_COUNT - 9
+                                                                                          : LEGACY_PASS_FIELDS) *
                                 sizeof(uint32);
         const usize bindingOffset =
             format::HEADER_BYTES +
@@ -2195,8 +2200,8 @@ TEST_CASE("deferred runtime roles are complete per target and require the mesh-l
         core::UniquePtr<renderer::RenderGraphPackage> package{allocationOrNull};
         REQUIRE(package.Get() != nullptr);
         CHECK(package->Decode({missing.GetData(), missing.GetSize()}) == renderer::RenderGraphPackageStatus::Malformed);
-        // The current fixture relabelled as version 30, whose packages cannot name the opaque role.
-        Array<uint8> early = makeDeferred(format::PACKAGE_VERSION, format::ABSENT);
+        // Version 30 cannot name the opaque role. Use the same pass record width before relabelling.
+        Array<uint8> early = makeDeferred(format::WORLD_FEATURE_PACKAGE_VERSION, format::ABSENT);
         constexpr usize VERSION_BYTE = sizeof(uint32);
         early[VERSION_BYTE] = static_cast<uint8>(format::RASTER_MESH_LIGHT_BOUND_PACKAGE_VERSION);
         CHECK(package->Decode({early.GetData(), early.GetSize()}) ==
@@ -2236,7 +2241,12 @@ TEST_CASE("deferred runtime roles are complete per target and require the mesh-l
         CHECK(programs.DeferredProbeGBufferFragment.Artifact.Wgsl.empty() == false);
         CHECK(programs.DeferredProbeGBufferFragment.Bindings.GetSize() == 11);
         // Packages before format::DEFERRED_PROBE_GBUFFER_PACKAGE_VERSION cannot name the probe role.
-        Array<uint8> early = baked;
+        Array<uint8> early = makeDeferred(format::WORLD_FEATURE_PACKAGE_VERSION,
+                                          format::ABSENT,
+                                          format::ShaderTarget::Wgsl,
+                                          format::StageRole::DeferredLightingFragment,
+                                          true,
+                                          true);
         constexpr usize VERSION_BYTE = sizeof(uint32);
         early[VERSION_BYTE] = static_cast<uint8>(format::RECIPE_KEY_PACKAGE_VERSION);
         renderer::RenderGraphPackage* earlyOrNull = new (std::nothrow) renderer::RenderGraphPackage;
@@ -2267,7 +2277,13 @@ TEST_CASE("deferred runtime roles are complete per target and require the mesh-l
         CHECK(programs.DeferredLightingFragment.Bindings.GetSize() == renderer::DEFERRED_BINDING_COUNT);
         CHECK(programs.DeferredProbeGBufferFragment.Artifact.Wgsl.empty() == false);
         // Packages before format::DEFERRED_SURFACE_CHART_GBUFFER_PACKAGE_VERSION cannot name the chart role.
-        Array<uint8> early = baked;
+        Array<uint8> early = makeDeferred(format::WORLD_FEATURE_PACKAGE_VERSION,
+                                          format::ABSENT,
+                                          format::ShaderTarget::Wgsl,
+                                          format::StageRole::DeferredLightingFragment,
+                                          true,
+                                          true,
+                                          true);
         constexpr usize VERSION_BYTE = sizeof(uint32);
         early[VERSION_BYTE] = static_cast<uint8>(format::DEFERRED_PROBE_GBUFFER_PACKAGE_VERSION);
         renderer::RenderGraphPackage* earlyOrNull = new (std::nothrow) renderer::RenderGraphPackage;

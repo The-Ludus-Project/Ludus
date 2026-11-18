@@ -1405,6 +1405,52 @@ native ray hardware.
 
 <a id="select-emitters-per-screen-tile"></a>
 
+### Trace rays in a buffer-only scene dispatch
+
+A scene `ComputePipeline` can launch a fixed number of work items independently
+of the viewport. In the pipeline editor, select **Invocation → Launch size →
+Work items**. Use one Scene input and one or two raw Buffer inputs with matching
+**Load**/**Store** writable outputs. Remove the View and texture ports. Assign a
+single Slang compute program with the usual `RayLaunch` / `Radiance` signature.
+
+```json
+{
+  "id": "trace", "kind": "ComputePipeline",
+  "inputs": [{"id": "scene", "type": "Scene", "required": true},
+             {"id": "hits", "type": "Buffer", "required": true}],
+  "outputs": [{"id": "hits", "target": "hits", "type": "Buffer",
+               "format": "Bytes", "load": "Load", "store": "Store"}],
+  "shaders": [{"id": "compute", "stage": "compute", "program": "TraceWorkItems"}],
+  "state": {}, "invocation": {"work_items": 7000, "traversal": "ComputeBvh"}
+}
+```
+
+`launch.WorkItemIndex` runs from zero to `launch.WorkItemCount - 1` on each
+execution. Construct a `Ray` in world space with a unit direction and finite
+distance bounds, then call `TraceClosest` or the other scene query helpers. Use
+the index to read a ray record or write one result per invocation. The engine
+skips hardware padding. Size the Buffer for your record layout and bound
+all reads and writes against its actual capacity. Return `float3(0)` on success.
+Query failures feed the graph's failure summary. The launch supplies a seed
+and item-indexed random stream. Camera and pixel fields and `SampleIndex` are
+zero for this launch. Use your own buffer records and explicit random addresses
+to carry state across batches.
+
+Connect the dispatch's Buffer output to a later scene pass to order writes
+before reads. Keep an Export or Present route in the enclosing graph. The
+dispatch runs with the ordinary ray sequence and supports the same compute
+traversal strategies and query budgets. The count must be positive and at most
+16,777,216, subject to the device's dispatch limits. Larger workloads can be split
+into batches. This launch has no color accumulation, pixel ray-path capture,
+or frame-capture row bands. A ray sequence that uses the visibility/depth input
+pair needs a separate configuration. Rebuild the package with an SDK that
+supports runtime generation 39.
+
+The [work-items fixture](../../tests/sdk_consumer/rg2/scene_compute/main.lurender.json)
+traces 7,001 rays before a 96 by 64 resolve and verifies that the resolve sees
+every hit and miss and that the padded invocations leave the following record
+untouched.
+
 ### Select emitters per screen tile (tiled vbuffer NEE)
 
 The **Tiled vbuffer NEE — many-light direct lighting** template (`tiled-vbuffer-nee`)

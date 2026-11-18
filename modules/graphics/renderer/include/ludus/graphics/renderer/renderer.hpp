@@ -70,6 +70,9 @@ struct GpuPreviewGraphInvocation final
     const GpuPreview* SceneSourceOrNull = nullptr;
     /// Curve of a nonzero ToneMappingExposure: Reinhard or PbrNeutral. Ignored when exposure is zero.
     ToneCurve ToneMappingCurve = ToneCurve::Reinhard;
+    /// Positive logical invocation count for a compatible buffer-only graph kernel. Requires a 1x1 private
+    /// scratch extent in BeginGpuPreview and graph storage bindings. Zero selects the image launch.
+    foundation::uint32 WorkItemCount = 0;
 };
 namespace internal
 {

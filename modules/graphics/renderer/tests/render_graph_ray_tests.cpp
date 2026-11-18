@@ -24,6 +24,7 @@
 #include "rg2_salesin_jarosz_lines_template.h"
 #include "rg2_scene_compute.h"
 #include "rg2_scene_ray.h"
+#include "rg2_scene_work_items.h"
 #include "rg2_shared_ray_computebvh.h"
 #include "ris_projected_solid_angle_benchmark_variants.h"
 #if defined(__APPLE__)
@@ -1616,6 +1617,56 @@ constexpr uint8 GetDisplayedMean(float32 exposure) noexcept
     return exposure == 0 ? 255 : exposure == 1 ? 203 : 225;
 }
 } // namespace
+
+TEST_CASE("A buffer-only scene dispatch can trace more rays than there are pixels",
+          "[render-graph][gpu][compute-ray-tracing][scene-dispatch]")
+{
+    GraphGpuFixture fixture(false, false);
+    const core::UniquePtr<renderer::RenderGraphPackage> package =
+        LoadPackage({LUDUS_RG3_SCENE_WORK_ITEMS_DIRECTORY, "rg2_scene_work_items.lurgrt"});
+    const renderer::RenderGraphPrograms programs =
+        package->GetPrograms(shaders::renderer_composite::Vertex(), shaders::renderer_composite::Fragment());
+    const renderer::RenderGraphPlan plan = package->GetPlan();
+    const renderer::RenderGraphPlan compiled = packages::rg2_scene_work_items::MakePlan();
+    REQUIRE(plan.Passes.GetSize() == 2);
+    REQUIRE(plan.Passes[0].Camera == format::ABSENT);
+    REQUIRE(plan.Passes[0].Color == format::ABSENT);
+    REQUIRE(plan.Passes[0].WorkItemCount == compiled.Passes[0].WorkItemCount);
+    REQUIRE(plan.Passes[0].WorkItemCount > WIDTH * HEIGHT);
+    REQUIRE(plan.Passes[1].Buffer0 == plan.Passes[0].Buffer0);
+    REQUIRE(renderer::RequiresHardwareRayTracing(plan) == false);
+
+    const auto finish = [&fixture](rhi::RasterStatus status) {
+        const uint64 beginning = time::NowTicks();
+        while (status == rhi::RasterStatus::Pending && time::NowTicks() - beginning < FIRST_SAMPLE_TIMEOUT_NANOSECONDS)
+        {
+            threading::SleepFor(COMPLETION_POLL_INTERVAL);
+            status = fixture.Graph.Poll();
+        }
+        CAPTURE(fixture.Graph.GetLastFailureStage());
+        REQUIRE(status == rhi::RasterStatus::Ready);
+    };
+    finish(fixture.Graph.Initialize(fixture.Device, plan, programs));
+    fixture.Cameras[0].OrthographicCamera = true;
+    renderer::RenderGraphReport report;
+    finish(fixture.Graph.Update({fixture.Meshes.GetData(), fixture.Meshes.GetSize()},
+                                {fixture.Items.GetData(), fixture.Items.GetSize()},
+                                {fixture.Cameras.GetData(), fixture.Cameras.GetSize()},
+                                1,
+                                renderer::RenderGraphCoveragePolicy::RejectIncomplete,
+                                report,
+                                nullptr,
+                                1));
+    ReadGraphFrame(fixture, plan.Passes[1].Color);
+    constexpr usize CHANNEL_COUNT = 4;
+    constexpr uint8 GREEN = 255;
+    for (usize pixel = 0; pixel < fixture.Pixels.GetSize(); pixel += CHANNEL_COUNT)
+    {
+        REQUIRE(fixture.Pixels[pixel] == 0);
+        REQUIRE(fixture.Pixels[pixel + 1] == GREEN);
+        REQUIRE(fixture.Pixels[pixel + 2] == 0);
+    }
+}
 
 TEST_CASE("A scene compute pass traces the World and feeds Accumulate and ToneMap",
           "[render-graph][gpu][compute-ray-tracing][accumulation][tone-mapping]")

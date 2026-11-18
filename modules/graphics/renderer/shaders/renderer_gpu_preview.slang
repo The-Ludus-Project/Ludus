@@ -1360,6 +1360,28 @@ float3 Integrate(uint pixel, uint sample)
 // indices, sample streams and accumulation are those of an untiled dispatch.
 LUDUS_GPU_PREVIEW_COMPUTE_ENTRY void ComputeMain(uint3 dispatchPixel : SV_DispatchThreadID)
 {
+#if defined(LUDUS_GRAPH_BUFFER_DISPATCH)
+    if ((Sampling.z & LUDUS_GPU_PREVIEW_SCENE_WORK_FLAG) != 0)
+    {
+        uint rowWidth = min(Dimensions.w, LUDUS_GPU_PREVIEW_SCENE_WORK_ROW_WIDTH);
+        uint workItem = dispatchPixel.y * rowWidth + dispatchPixel.x;
+        if (dispatchPixel.x < rowWidth && workItem < Dimensions.w)
+        {
+            graphFailureReason = LUDUS_SCENE_FAILURE_INVALID_RADIANCE;
+            graphRadianceIsResolved = false;
+            if (SurfaceLayout.x == LUDUS_GPU_PREVIEW_SURFACE_WORDS &&
+                SurfaceLayout.z == LUDUS_GPU_PREVIEW_KERNEL_VERSION)
+            {
+                float3 status = EvaluateGraphRay(workItem);
+                if (any(isfinite(status) == false) || any(status < 0))
+                    LUDUS_COUNT_GRAPH_FAILURE(graphFailureReason);
+            }
+            else
+                LUDUS_COUNT_GRAPH_FAILURE(LUDUS_SCENE_FAILURE_INTERFACE_VERSION);
+        }
+        return;
+    }
+#endif
     uint3 positionPixel = uint3(dispatchPixel.xy + Tile.xy, dispatchPixel.z);
     if (positionPixel.x >= Tile.z || positionPixel.y >= Tile.w)
         return;
