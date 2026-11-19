@@ -12,7 +12,10 @@ from pathlib import Path
 from unittest import mock
 
 import engine
-from changed_tidy import line_filter, parse_changed_lines, plan
+import subprocess
+
+from authored_lines import parse_authored_lines, to_ranges
+from changed_tidy import changed_lines, line_filter, parse_changed_lines, plan
 
 DIFF = """diff --git a/modules/a/src/a.cpp b/modules/a/src/a.cpp
 index 1..2 100644
@@ -47,6 +50,45 @@ class ChangedTidyTests(unittest.TestCase):
             {"modules/a/src/a.cpp": [[4, 5], [12, 12]], "modules/a/tests/a_tests.cpp": [[1, 1]],
              "modules/a/include/a.h": [[6, 6]]},
         )
+
+    def test_moved_lines_keep_their_origin_and_written_lines_count(self):
+        # The batch compares main with a candidate holding many pull requests; a block moved
+        # past an untouched line must not make that line "changed" (authored_lines.py).
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+
+            def git(*arguments):
+                return subprocess.run(
+                    ["git", *arguments], cwd=root, check=True, text=True, capture_output=True
+                ).stdout.strip()
+
+            git("init", "-q")
+            git("config", "user.name", "Tidy test")
+            git("config", "user.email", "tidy@example.invalid")
+            (root / "modules").mkdir()
+            source = root / "modules/a.cpp"
+            legacy = "const auto* imported = internal::NativeDeviceRequest();\n"
+            block = "".join(f"Status initialized{i} = InitializeOwnerSlot({i});\n" for i in range(4))
+            source.write_text(legacy + block)
+            git("add", ".")
+            git("commit", "-qm", "base")
+            base = git("rev-parse", "HEAD")
+            source.write_text(block + legacy)
+            git("commit", "-qam", "move")
+            self.assertEqual(changed_lines(root, base), {})
+            source.write_text(block + legacy + "int added = 42;\n")
+            self.assertEqual(changed_lines(root, base), {"modules/a.cpp": [[6, 6]]})
+
+    def test_blame_boundaries_are_not_authored(self):
+        old = "a" * 40
+        new = "b" * 40
+        porcelain = (
+            f"{old} 1 1 2\nauthor x\nboundary\nfilename a.cpp\n\tline\n"
+            f"{old} 2 2\n\tline\n"
+            f"{new} 3 3 1\nauthor y\nfilename a.cpp\n\tline\n"
+        )
+        self.assertEqual(parse_authored_lines(porcelain), {3})
+        self.assertEqual(to_ranges({1, 2, 3, 7, 9, 10}), [[1, 3], [7, 7], [9, 10]])
 
     def test_plans_changed_sources_with_test_policy_and_header_filter(self):
         root = Path("/repo")
