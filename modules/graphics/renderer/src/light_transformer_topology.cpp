@@ -300,7 +300,8 @@ void VisitSparseRuns(const EncoderSparseRows& rows, EncoderGrid coordinateGrid, 
                 }
                 if (lower < order.GetSize() && order[lower].Code == code)
                 {
-                    visit(lower, order[lower].End, (x * kernel + y) * kernel + z);
+                    const BorrowedView<const SparseOrderedPoint> run{order.GetData() + lower, order[lower].End - lower};
+                    visit(run, (x * kernel + y) * kernel + z);
                 }
             }
         }
@@ -342,9 +343,11 @@ Status CountEncoderSparse(const EncoderLevel& level, uint32 kernel, EncoderSpars
     {
         const SparseOrderedPoint& first = outRows.Order[begin];
         uint32 neighbors = 0;
-        VisitSparseRuns(outRows, level.CoordinatesGrid[first.Index], [&](usize lower, usize upper, uint32) {
-            neighbors += static_cast<uint32>(upper - lower);
-        });
+        VisitSparseRuns(outRows,
+                        level.CoordinatesGrid[first.Index],
+                        [&](BorrowedView<const SparseOrderedPoint> run, uint32) {
+                            neighbors += static_cast<uint32>(run.GetSize());
+                        });
         for (usize i = begin; i < first.End; ++i)
         {
             outRows.Starts[outRows.Order[i].Index + 1] = neighbors;
@@ -369,13 +372,15 @@ void FillEncoderSparse(const EncoderLevel& level, const EncoderSparseRows& rows,
         const SparseOrderedPoint& first = rows.Order[begin];
         const usize start = usize{rows.Starts[first.Index]} * SPARSE_PAIR_WORDS;
         usize cursor = start;
-        VisitSparseRuns(rows, level.CoordinatesGrid[first.Index], [&](usize lower, usize upper, uint32 offset) {
-            for (usize index = lower; index < upper; ++index)
-            {
-                pairs[cursor++] = rows.Order[index].Index;
-                pairs[cursor++] = offset;
-            }
-        });
+        VisitSparseRuns(rows,
+                        level.CoordinatesGrid[first.Index],
+                        [&](BorrowedView<const SparseOrderedPoint> run, uint32 offset) {
+                            for (const SparseOrderedPoint& point : run)
+                            {
+                                pairs[cursor++] = point.Index;
+                                pairs[cursor++] = offset;
+                            }
+                        });
         LUDUS_ASSERT(cursor == usize{rows.Starts[first.Index + 1]} * SPARSE_PAIR_WORDS);
         // Every output in this voxel has the same ordered (input, offset) list.
         // Duplicate rows still occupy their own disjoint slices in shader storage.

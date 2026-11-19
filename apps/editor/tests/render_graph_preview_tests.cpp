@@ -795,7 +795,7 @@ TEST_CASE("Native preview retains the presented frame across sparse encoder budg
         REQUIRE(hash.addData(&file) == true);
         return QString::fromLatin1(hash.result().toHex());
     };
-    constexpr int64 MODEL_BUDGET = 512 * 1024 * 1024;
+    constexpr qint64 MODEL_BUDGET = 512 * 1024 * 1024;
     QJsonObject configuration{{QStringLiteral("version"), 1},
                               {QStringLiteral("world_units_per_model_unit"), 256},
                               {QStringLiteral("scene_points"), 128},
@@ -805,7 +805,7 @@ TEST_CASE("Native preview retains the presented frame across sparse encoder budg
                                stageAsset(QStringLiteral(LUDUS_EDITOR_MODEL_ENCODER), QStringLiteral("encoder.llte"))},
                               {QStringLiteral("decoder_sha256"),
                                stageAsset(QStringLiteral(LUDUS_EDITOR_MODEL_DECODER), QStringLiteral("decoder.lltd"))}};
-    const auto writeBudget = [&](int64 budget) {
+    const auto writeBudget = [&](qint64 budget) {
         configuration.insert(QStringLiteral("maximum_buffer_bytes"), budget);
         QFile file(root.filePath(QStringLiteral("model.json")));
         REQUIRE(file.open(QIODevice::WriteOnly) == true);
@@ -844,7 +844,7 @@ TEST_CASE("Native preview retains the presented frame across sparse encoder budg
     CHECK(preview.GetStatus().contains(QString::number(budget)) == true);
     CHECK(preview.GetPresentedGeneration() == 1);
     CHECK(preview.GetImage() == previous);
-    writeBudget(static_cast<int64>(estimate));
+    writeBudget(static_cast<qint64>(estimate));
     REQUIRE(preview.Load(package, {}, source) == RenderGraphPreviewLoad::Staged);
     const bool hasPublished = TickUntil(preview, [&]() { return preview.GetPresentedGeneration() > 1; });
     INFO(preview.GetStatus().toStdString());
