@@ -39,8 +39,14 @@ def main():
         "--tools", ROOT, "--profile", "macos-clang-release", "--release")
     shutil.copyfile(FIXTURE / "pilot.cpp", project / "src/main.cpp")
     shutil.copyfile(FIXTURE / "WorldPilot.cmake", project / "cmake/WorldPilot.cmake")
-    with (project / "CMakeLists.txt").open("a") as cmake:
-        cmake.write(f'\nset(pilot_root [[{ROOT}]])\ninclude(cmake/WorldPilot.cmake)\n')
+    cmake_file = project / "CMakeLists.txt"
+    cmake = cmake_file.read_text()
+    # The starter game's default invocation prints its version. The pilot takes route arguments.
+    starter_test = "add_test(NAME version_query COMMAND $<TARGET_FILE:MetalBudget>)"
+    if starter_test not in cmake:
+        raise ValueError("Expected the generated game's version_query test")
+    cmake = cmake.replace(starter_test, "add_test(NAME version_query COMMAND $<TARGET_FILE:MetalBudget> --version)")
+    cmake_file.write_text(cmake + f'\nset(pilot_root [[{ROOT}]])\ninclude(cmake/WorldPilot.cmake)\n')
     result = run("--json", "project", "package", project, "--profile", "macos-release",
                  "--version", "0.1.0", "--sdk", args.sdk.resolve(), capture=True)
     package = Path(json.loads(result.stdout.splitlines()[-1])["package"])
