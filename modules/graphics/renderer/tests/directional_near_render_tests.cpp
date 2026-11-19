@@ -143,7 +143,8 @@ TEST_CASE("Near directional shadows preserve the doorway across camera updates",
             rhi::GpuTiming timing;
             REQUIRE(rhi::GetGpuTiming(device, timing) == Status::Ready);
             REQUIRE(timing.State == rhi::GpuTimingState::Available);
-            gpuNanoseconds = timing.DurationNanoseconds;
+            // The RHI reports float64 nanoseconds; the CSV records whole nanoseconds.
+            gpuNanoseconds = static_cast<uint64>(timing.DurationNanoseconds);
             rhi::GpuPassTimings passes;
             REQUIRE(rhi::GetGpuPassTimings(device, passes) == Status::Ready);
             resolveNanoseconds = 0;
@@ -152,7 +153,7 @@ TEST_CASE("Near directional shadows preserve the doorway across camera updates",
             if (passes.Count == 2 && passes.DroppedPasses == 0 &&
                 passes.Passes[1].Timing.State == rhi::GpuTimingState::Available)
             {
-                resolveNanoseconds = passes.Passes[1].Timing.DurationNanoseconds;
+                resolveNanoseconds = static_cast<uint64>(passes.Passes[1].Timing.DurationNanoseconds);
             }
         }
         rhi::TextureHandle texture;
