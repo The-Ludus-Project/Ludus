@@ -808,6 +808,7 @@ endif()
 # add only main.cpp or their tests, and main_window.cpp.
 ludus_editor_add_objects(ludus_editor_application
     ${editor_profiling_sources}
+    src/internal/project_save_conflict_dialog.h src/project_save_conflict_dialog.cpp
     src/internal/render_load_job.h
     src/render_load_job.cpp
     src/internal/render_preview.h

@@ -234,6 +234,7 @@ private:
     void showUndoFeedback(const QString& text);
     void CommitProjectFields();
     [[nodiscard]] bool SaveProjectSettings();
+    void reloadProject(bool hasConfirmedProjectDiscard);
 #if defined(Q_OS_WASM)
     [[nodiscard]] bool downloadBrowserProject();
 #endif
