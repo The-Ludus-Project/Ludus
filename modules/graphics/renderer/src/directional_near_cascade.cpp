@@ -95,19 +95,21 @@ bool TryFitDirectionalNearCascade(const ShadowRegion& whole,
     float32 maximum = minimum + 1 / depthScale;
     // A slab bounds the projection of every World point in the extruded XY square.
     // The bounds of a flat kilometre-scale landscape can otherwise consume all 16 depth bits.
-    const auto clipSlab = [&](float32 lower, float32 upper, float32 origin, float32 right, float32 up, float32 axis) {
-        if (axis != 0)
+    const auto clipSlab = [&](float32 math::Vector3::* component) {
+        const float32 direction = forwardWorld.*component;
+        if (direction != 0)
         {
-            const float32 pad = RADIUS_METRES * (math::Abs(right) + math::Abs(up));
-            const float32 a = (lower - origin - pad) / axis;
-            const float32 b = (upper - origin + pad) / axis;
-            minimum = math::Max(minimum, math::Min(a, b));
-            maximum = math::Min(maximum, math::Max(a, b));
+            const float32 pad = RADIUS_METRES * (math::Abs(rightWorld.*component) + math::Abs(upWorld.*component));
+            const float32 origin = originWorld.*component;
+            const float32 lower = (boundsWorld.Min.*component - origin - pad) / direction;
+            const float32 upper = (boundsWorld.Max.*component - origin + pad) / direction;
+            minimum = math::Max(minimum, math::Min(lower, upper));
+            maximum = math::Min(maximum, math::Max(lower, upper));
         }
     };
-    clipSlab(boundsWorld.Min.X, boundsWorld.Max.X, originWorld.X, rightWorld.X, upWorld.X, forwardWorld.X);
-    clipSlab(boundsWorld.Min.Y, boundsWorld.Max.Y, originWorld.Y, rightWorld.Y, upWorld.Y, forwardWorld.Y);
-    clipSlab(boundsWorld.Min.Z, boundsWorld.Max.Z, originWorld.Z, rightWorld.Z, upWorld.Z, forwardWorld.Z);
+    clipSlab(&math::Vector3::X);
+    clipSlab(&math::Vector3::Y);
+    clipSlab(&math::Vector3::Z);
     if (math::IsFinite(minimum) == false || math::IsFinite(maximum) == false || minimum > maximum)
     {
         return false;
