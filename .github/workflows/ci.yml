@@ -325,6 +325,23 @@ jobs:
           path: out/rg4-evidence/
           if-no-files-found: warn
           retention-days: 14
+      - name: Measure mesh-light cube seams on Metal
+        run: |
+          out/host-tools/venv/bin/python -m venv out/shadow-analysis
+          out/shadow-analysis/bin/python -m pip install numpy==2.5.5
+          build=out/build/macos-clang-development
+          graph="$build/modules/graphics/renderer/ludus-graphs/ludus_renderer_render_tests/rg2_clustered_Default/rg2_clustered_Default.lurgrt"
+          out/shadow-analysis/bin/python tests/sdk_consumer/mesh_shadow/qualify.py out/shadow-worlds "$graph" \
+            --editor "$build/apps/editor/ludus_editor_tests" --sdk out/renderer-sdk/mesh-shadow/ludus_sdk_mesh_shadow
+      - name: Preserve mesh-light shadow measurements
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: mesh-shadow-metal
+          path: |
+            out/shadow-worlds/
+            out/build/macos-clang-development/modules/graphics/renderer/ludus-graphs/ludus_renderer_render_tests/rg2_clustered_Default/rg2_clustered_Default.lurgrt
+          if-no-files-found: warn
       - name: Verify installed macOS game-project tooling
         run: |
           ./scripts/install-sdk macos-clang-development

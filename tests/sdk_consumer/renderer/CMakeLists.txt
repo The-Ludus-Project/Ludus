@@ -96,6 +96,10 @@ if(NOT EMSCRIPTEN AND LUDUS_SPIRV_CROSS)
     add_subdirectory("${CMAKE_CURRENT_SOURCE_DIR}/../../../examples/reference-scene" reference-scene)
 endif()
 
+if(APPLE AND NOT EMSCRIPTEN)
+    add_subdirectory(../mesh_shadow mesh-shadow)
+endif()
+
 # Installed authored/HDR declarations and recipe dependencies must compile together.
 if(NOT EMSCRIPTEN)
     add_executable(ludus_sdk_renderer_authored_consumer ../renderer_authored.cpp)
