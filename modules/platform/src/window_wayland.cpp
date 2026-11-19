@@ -625,7 +625,8 @@ UniquePtr<WindowWayland> CreateWindow(const Window::CreateInfo& info) noexcept
 
     // Engine code is exception-free (-fno-exceptions); use the non-throwing
     // new and null-check rather than relying on a bad_alloc exception.
-    UniquePtr<WindowWayland> window(new (std::nothrow) WindowWayland(std::move(createInfo))); // TODO: custom allocator
+    UniquePtr<WindowWayland> window;
+    window.Reset(new (std::nothrow) WindowWayland(std::move(createInfo)));
     if (window.Get() == nullptr)
     {
         LUDUS_LOG_ERROR(LOG_PLATFORM, "Failed to allocate Wayland window");
