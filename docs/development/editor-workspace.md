@@ -2640,6 +2640,28 @@ per-channel tolerance covers the view-dependent Fresnel weighting and display
 quantization. The unselected blue light remains additive within two RGBA8
 codes in the game.
 
+**Release size and timings.** The verified archive was 3,992,471 bytes. Its
+14 entries expanded to 6,439,539 bytes, including the signed app, build
+manifest and notices. The app's World SHA-256 was
+`20f8c23b0dab68eb6fdca80f8435851e04296ef32386974fbe4c2d8a82a2ac02`
+in both game routes. The archive SHA-256 was
+`d1d0e0f4633e31d158b4bc9b0a3a004cc678985d830e16a6b95f01947f9fe498`.
+The package manifest records a clean source tree and matching SDK revision
+`67bc2cd07776359a400c80be3c1b08b36bd0fc42`.
+
+| macOS 26.6, Apple M5 | Game drawable | Entry to first submitted frame | Median GPU frame | GPU range across 17 observations |
+| --- | --- | ---: | ---: | ---: |
+| Hosted Play | 1280 × 872 | 398.5 ms | 1.422 ms | 0.395–4.696 ms |
+| First relocated launch | 1280 × 960 | 1,840.4 ms | 0.847 ms | 0.286–27.849 ms |
+| Second relocated launch | 1280 × 960 | 815.9 ms | 1.477 ms | 0.414–3.185 ms |
+
+Metal frame timestamps include the graph and presentation composite. They
+exclude CPU readback and display latency. The native editor took 1,802 ms
+from fixture start to sampling its first baked overview, with a 7.437 ms GPU
+frame at that observation. The native interval also includes the World bake
+and waiting for presentation. These measurements describe individual runs on
+this Mac.
+
 #### Reproduce the three routes
 
 From the engine root with the macOS toolchain and a matching installed SDK,

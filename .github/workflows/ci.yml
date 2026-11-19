@@ -363,8 +363,8 @@ jobs:
           sdk="$PWD/out/install/macos-clang-release"
           sample=examples/lighting-room
           ./scripts/ludus project repair "$sample" --tools "$PWD" --sdk "$sdk" --profile macos-clang-release --no-web
-          ./scripts/ludus --json project package "$sample" --profile macos-release --version 0.1.0 --sdk "$sdk" > "$RUNNER_TEMP/lighting-room-package.json"
-          package_dir=$(jq -er '.package' "$RUNNER_TEMP/lighting-room-package.json")
+          ./scripts/ludus --json project package "$sample" --profile macos-release --version 0.1.0 --sdk "$sdk" > "$RUNNER_TEMP/lighting-room-package.log"
+          package_dir=$(tail -n 1 "$RUNNER_TEMP/lighting-room-package.log" | jq -er '.package')
           ./scripts/ludus project package verify "$package_dir"
           relocated=$(mktemp -d "$RUNNER_TEMP/Lighting Room.XXXXXX")
           ditto -x -k "$package_dir/game.zip" "$relocated"
