@@ -17,6 +17,7 @@ import subprocess
 import statistics
 import sys
 import time
+from typing import NamedTuple
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "scripts/python"))
 from pack_builder import StableSource, build_stream, portable_path, source_paths
@@ -160,6 +161,79 @@ def capture_startup(args):
     print(f"{args.repetitions} windowed startup runs and replay corpus saved to {args.directory}")
 
 
+class NativeRead(NamedTuple):
+    start: int
+    end: int
+    thread: int
+    entry: str
+    offset: int
+    size: int
+
+
+def import_macos_overlap(args):
+    events = []
+    counts = []
+    for line in args.reads.read_text().splitlines():
+        if line.startswith("read_count "):
+            counts.append(int(line.split()[1]))
+        if line.startswith("pread "):
+            _, thread, start, end, offset, requested, received, entry = line.split(maxsplit=7)
+            thread, start, end, offset, requested, received = map(
+                int, (thread, start, end, offset, requested, received))
+            portable_path(entry)
+            if thread <= 0 or not 0 <= start <= end or offset < 0 or not 0 < received == requested:
+                raise ValueError(f"invalid or incomplete native read: {line}")
+            events.append(NativeRead(start, end, thread, entry, offset, received))
+    if counts != [len(events)] or not events:
+        raise ValueError("missing native events, duplicate capture, or capture overflow")
+    events.sort()
+
+    overlap = None
+    for index, first in enumerate(events):
+        for second in itertools.islice(events, index + 1, None):
+            if second.start >= first.end:
+                break
+            if second.thread != first.thread and min(first.end, second.end) > second.start:
+                overlap = (first, second)
+                break
+        if overlap is not None:
+            break
+    if overlap is None:
+        raise ValueError("no overlapping native reads on different threads")
+
+    first, second = overlap
+    margin_ns = 100_000_000
+    selected = [read for read in events if first.start - margin_ns <= read.start < max(
+        first.end, second.end) + margin_ns]
+    release_origin = selected[0].start
+    entries = sorted({read.entry for read in selected})
+    file_index = {entry: index for index, entry in enumerate(entries)}
+    source = args.loose.resolve(strict=True)
+    args.directory.mkdir(parents=True)
+    hashes = {}
+    for entry in entries:
+        original = source / entry
+        hashes[entry] = file_hash(original)
+        for root in ("loose", "reference"):
+            destination = args.directory / root / entry
+            destination.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copyfile(original, destination)
+            if file_hash(destination) != hashes[entry]:
+                raise ValueError(f"native input changed while importing: {entry}")
+    rows = [(r.start - release_origin, file_index[r.entry], r.offset, r.size, 0, 0) for r in selected]
+    trace = args.directory / "transition.trace"
+    trace.write_text(f"fs-r2 2 {len(rows)} {len(entries)}\n" + "".join(f"{entry}\n" for entry in entries) +
+                     "".join(" ".join(map(str, row)) + "\n" for row in rows), encoding="utf-8", newline="\n")
+    manifest = {"schema": 1, "kind": "native-audio-overlap", "loose_reference": True, "files": hashes,
+                "game_binary_sha256": file_hash(args.native_demo), "read_log_sha256": file_hash(args.reads),
+                "traces": {"transition": file_hash(trace)}, "captured_requests": len(events),
+                "replayed_requests": len(rows), "replayed_bytes": sum(r.size for r in selected),
+                "cross_thread_overlap_ns": min(first.end, second.end) - second.start,
+                "overlapping_reads": [read._asdict() for read in overlap]}
+    (args.directory / "manifest.json").write_text(json.dumps(manifest, indent=2) + "\n")
+    print(f"Imported {len(rows)} of {len(events)} native reads around the first cross-thread overlap")
+
+
 def environment():
     result = {"platform": platform.platform(), "machine": platform.machine(), "python": sys.version,
               "frame_impact": "NOT MEASURED: standalone byte-delivery harness",
@@ -183,6 +257,9 @@ def measure(args):
     directory = args.directory.resolve(strict=True)
     manifest_path = directory / "manifest.json"
     manifest = json.loads(manifest_path.read_text())
+    reference = directory / "reference" if manifest.get("loose_reference") is True else None
+    if reference is not None and args.layouts != ["loose"]:
+        raise ValueError("captured loose files require --layouts loose")
     for layout in args.layouts:
         if layout != "loose" and file_hash(directory / layout) != manifest[layout]["sha256"]:
             raise ValueError(f"fixture hash mismatch: {layout}")
@@ -191,6 +268,8 @@ def measure(args):
     for name, expected in manifest["files"].items():
         if file_hash(directory / "loose" / name) != expected:
             raise ValueError(f"fixture hash mismatch: {name}")
+        if reference is not None and file_hash(reference / name) != expected:
+            raise ValueError(f"reference hash mismatch: {name}")
     args.output.mkdir(parents=True, exist_ok=True)
     metadata = environment()
     if hasattr(os, "getloadavg"):
@@ -216,6 +295,8 @@ def measure(args):
             command = [str(args.benchmark.resolve()), "--stream", str(directory / "loose" if layout == "loose" else directory),
                        layout, str(workers), str(trace), str(args.poll_us), str(contention), open_mode,
                        str(tracing), "v1", args.cache]
+            if reference is not None:
+                command.append(str(reference))
             started = time.time()
             completed = subprocess.run(command, text=True, capture_output=True, timeout=90)
             record = dict(family=family, layout=layout, open_mode=open_mode, cache=args.cache,
@@ -259,6 +340,11 @@ def main():
     capture.add_argument("--entry", required=True)
     capture.add_argument("--layout", choices=("raw.pack", "lz4.pack"), default="lz4.pack")
     capture.add_argument("--repetitions", type=int, choices=range(1, 31), default=5)
+    native = subparsers.add_parser("import-macos-overlap")
+    native.add_argument("directory", type=Path)
+    native.add_argument("--reads", type=Path, required=True, help="stderr from one successful native launch")
+    native.add_argument("--loose", type=Path, required=True, help="the immutable source used during capture")
+    native.add_argument("--native-demo", type=Path, required=True)
     run = subparsers.add_parser("measure")
     run.add_argument("directory", type=Path)
     run.add_argument("--benchmark", type=Path, required=True)
@@ -280,6 +366,8 @@ def main():
         generate(args.directory, args.count)
     elif args.operation == "capture-world-startup":
         capture_startup(args)
+    elif args.operation == "import-macos-overlap":
+        import_macos_overlap(args)
     else:
         if not 1 <= args.repetitions <= 30 or not 1 <= args.poll_us <= 1_000_000:
             parser.error("repetitions must be 1..30 and poll-us 1..1000000")

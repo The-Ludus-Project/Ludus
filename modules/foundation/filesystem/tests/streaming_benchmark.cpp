@@ -294,8 +294,11 @@ void PrintDistribution(const char* name, Array<uint64> values)
 } // namespace
 int RunStreamingBenchmark(int argumentCount, char** arguments)
 {
-    // --stream ROOT LAYOUT WORKERS TRACE POLL_US CONTENTION OPEN_MODE TRACE_CAPACITY CACHE
-    if (argumentCount != 12 || std::string_view(arguments[1]) != "--stream")
+    // --stream ROOT LAYOUT WORKERS TRACE POLL_US CONTENTION OPEN_MODE TRACE_CAPACITY v1 CACHE [REFERENCE_ROOT]
+    constexpr int STREAM_ARGUMENT_COUNT = 12;
+    const bool hasReferenceRoot = argumentCount == STREAM_ARGUMENT_COUNT + 1;
+    if ((argumentCount != STREAM_ARGUMENT_COUNT && hasReferenceRoot == false) ||
+        std::string_view(arguments[1]) != "--stream")
     {
         return 20;
     }
@@ -310,7 +313,7 @@ int RunStreamingBenchmark(int argumentCount, char** arguments)
     {
         return 21;
     }
-    // The last argument records the driver-controlled pass identity. A warm pass
+    // The cache argument records the driver-controlled pass identity. A warm pass
     // explicitly reads its trace before timing; uncontrolled makes no cold claim.
     // argument 10 is a required reserved schema token for future trace formats.
     if (std::string_view(arguments[10]) != "v1")
@@ -352,11 +355,17 @@ int RunStreamingBenchmark(int argumentCount, char** arguments)
     {
         return 23;
     }
+    if (capturedFiles.IsEmpty() == true && hasReferenceRoot == true)
+    {
+        return 24;
+    }
     if (capturedFiles.IsEmpty() == false)
     {
         ProviderHandle referenceStorage;
-        const std::string referenceRoot = std::string(arguments[2]) + "/loose";
-        if (layout == "loose" || CreateDirectoryProvider(referenceRoot, referenceStorage).Succeeded() == false)
+        const std::string referenceRoot =
+            hasReferenceRoot == true ? arguments[STREAM_ARGUMENT_COUNT] : std::string(arguments[2]) + "/loose";
+        if ((layout == "loose" && hasReferenceRoot == false) ||
+            CreateDirectoryProvider(referenceRoot, referenceStorage).Succeeded() == false)
         {
             return 24;
         }

@@ -357,9 +357,9 @@ independent loose source and replay trace. The version-2 trace header is
 `fs-r2 2 REQUEST_COUNT FILE_COUNT`, followed by one exact pack entry path per
 line in file-index order, then the same six-field request rows as version 1.
 Replay uses the captured pack and compares every delivered byte with the
-independent loose source loaded before the timed pass. Captured replays
-require a packed layout. Their reference files are capped at 2 MiB each and
-count toward process RSS. Release zero represents the game's first logical
+independent loose source loaded before the timed pass. Captured loose-file
+replays use an explicit independent reference directory. Reference files are
+capped at 2 MiB each and count toward process RSS. Release zero represents the game's first logical
 read. Pack header and index reads occur while opening the provider and are
 outside the replay service interval.
 
@@ -491,6 +491,70 @@ The worker's cancellation-to-collection p99 varied from 5.00 to 8.63 ms
 with one worker and 2.41 to 56.80 ms with four. Synchronous cancellation
 skips the reads and supplies no comparable wait sample. These stand-alone
 runs confirm result and trace accounting under load.
+
+### Native Audio Content overlap
+
+The [Audio Content demo](../examples/audio-content.md) plays a streamed WAV
+through CoreAudio while the loader handles a second music lookup. One of three
+unchanged `--native` runs on an Apple M5 showed overlapping native reads on
+different threads. All three runs completed, with zero reported stream
+starvations and errors. The overlap was between a 4,096-byte refill of
+`theme.wav` at byte 94,252 and a 418-byte read of `catalog.json` at byte zero.
+The refill entered the call about 0.55 ms before the catalog read. Their
+instrumented call intervals overlapped for 5.38 ms. These intervals bracket
+`pread` and include possible descheduling.
+
+The checked-in trace retains 50 reads of five files and 138,741 returned bytes
+from the first pair of overlapping calls and up to 100 ms on either side. The native run captured 841 reads in total. Releases retain their
+relative timing from the first selected read, and the replay uses the actual
+loose-file layout. This sample is an audio path. It does not exercise pack
+scratch sharing, cancellation, deadlines, or time to first graphics
+presentation.
+
+To reproduce the exact replay, generate the demo's original input bytes and
+use the recorded trace and hashes. The benchmark verifies the loose input and
+independent reference before measuring. A new capture can also be imported
+with `streaming.py import-macos-overlap`. Run the existing macOS shim with
+`FS_R2_CAPTURE_ROOT` set to the absolute flat fixture directory instead of
+`FS_R2_PACK_PATH`, launch `ludus_audio_content_demo --native`, and pass the
+successful launch's stderr plus the executable and source paths to the
+importer. A launch that shows no cross-thread overlap is rejected.
+
+```bash
+python=out/host-tools/venv/bin/python
+corpus=out/fs-r2-native-audio
+benchmark=out/build/macos-clang-development/modules/foundation/filesystem/ludus_filesystem_benchmark
+mkdir -p "$corpus"
+cp tests/filesystem/traces/native-audio/{manifest.json,transition.trace} "$corpus/"
+"$python" examples/audio-content/generate_fixtures.py "$corpus/loose"
+cp -R "$corpus/loose" "$corpus/reference"
+"$python" tests/filesystem/streaming.py measure "$corpus" --benchmark "$benchmark" \
+  --output out/fs-r2-native-audio-replay --families transition --layouts loose \
+  --workers 0 1 4 --contention 0 --open-modes independent --tracing 4096 --repetitions 3 \
+  --compiler-description 'Clang 23.1.3 Development O2' --storage-description 'record host and cache conditions'
+```
+
+The nine functional warm-cache passes validated 138,741 bytes in every
+synchronous, one-worker, and four-worker run. The worker runs collected all
+50 traces per pass, dropped none, and drained all requests and bytes. Peak
+in-flight requests reached the scheduler's 16-slot window in the worker runs.
+No artificial busy threads were requested. Other builds were active on the
+Mac and the one-minute load average was 127.75 before replay. The table records
+these runs for comparison with a quiet-host replay. It does not qualify the
+worker latency or establish a performance gain.
+
+| Workers | Queue p99 (ms) | Provider p99 (ms) | Delivery p99 (ms) | Completion p99 (ms) | CPU (ms) | Peak RSS (MiB) |
+| ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| 0 | 0 | 34.766 | 0 | 34.766 | 0.499 | 18.03 |
+| 1 | 62.822 | 7.627 | 75.434 | 100.862 | 1.215 | 22.53 |
+| 4 | 19.958 | 14.757 | 53.490 | 56.620 | 1.561 | 22.50 |
+
+Values are medians across three repetitions per worker count. The native route
+binary was built from checkout `6716ea67e05a` (Clang 23.1.3). Its SHA-256, the
+captured read log hash, the exact replay trace hash, and all input digests are
+in `tests/filesystem/traces/native-audio/manifest.json`. The replay benchmark
+SHA-256 was
+`cfc909f7b6c294c10b2a64f3d0fb11aacb6f7618ce7addad0e3eea7e6a52c48a`.
 
 ### Local FS-R2 harness validation
 
