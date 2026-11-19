@@ -5881,7 +5881,7 @@ Scene-compute bundles can opt into 8×8 groups using
 `"state": {"group_size": [8, 8, 1]}` on a scene compute node. All explicit
 sizes across the bundle's configurations must agree; automatic members inherit
 that choice. No override means 64×1. The editor exposes the same shapes through
-**Pipeline State → Advanced overrides → Group size**, including the canvas form.
+**Pipeline State → Overrides → Group size**, including the canvas form.
 Runtime package version 21 carries reflected dimensions for every ray compute
 stage; older packages retain 64×1. Device limits and edge bounds checks apply.
 

@@ -14,6 +14,7 @@
 #include <QPushButton>
 #include <QScrollBar>
 #include <QTextCursor>
+#include <QTextOption>
 #include <QWidget>
 
 using namespace ludus::editor;
@@ -166,7 +167,9 @@ TEST_CASE("Shader API lookup searches immediately and keeps position across refr
     nextOrNull->click();
     CHECK(text->textCursor().selectedText() == QStringLiteral("PositionWorld"));
     CHECK(text->textCursor().position() != first);
-    CHECK(text->lineWrapMode() == QPlainTextEdit::NoWrap);
+    // The narrow side panel wraps declarations at its edge, breaking long words anywhere.
+    CHECK(text->lineWrapMode() == QPlainTextEdit::WidgetWidth);
+    CHECK(text->wordWrapMode() == QTextOption::WrapAtWordBoundaryOrAnywhere);
     UpdateShaderInterfaceView(*text, QStringLiteral("miss.slang"), QStringLiteral("float3 ShadeMiss(Ray input);"));
     CHECK(text->verticalScrollBar()->value() == 0);
     const QString capture = qEnvironmentVariable("LUDUS_SHADER_API_CAPTURE");

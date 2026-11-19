@@ -930,10 +930,9 @@ void RenderGraphPipelineEditor::addProperties(QFormLayout& outForm, const QStrin
             layout->addWidget(mode);
 
             QWidget* dimensions = new QWidget(row);
-            QHBoxLayout* dimensionLayout = new QHBoxLayout(dimensions);
-            // Three sizes share one row of the narrowest Properties dock, so the row adds no margins of its own.
-            dimensionLayout->setContentsMargins(0, 0, 0, 0);
-            dimensionLayout->setSpacing(design::SPACING_EXTRA_SMALL);
+            // The three sizes share one row while they fit and wrap in the narrowest Properties dock, whose width
+            // depends on the platform font, instead of pushing the panel past the dock's edge.
+            FlowLayout* dimensionLayout = new FlowLayout(dimensions, design::SPACING_EXTRA_SMALL);
             for (int32 dimension = 0; dimension < DIMENSION_COUNT; ++dimension)
             {
                 QSpinBox* control = new QSpinBox(dimensions);
@@ -1067,7 +1066,7 @@ void RenderGraphPipelineEditor::addRayStateProperties(QFormLayout& outForm)
         this);
     explanation->setWordWrap(true);
     outForm.addRow(explanation);
-    QGroupBox* advanced = new QGroupBox(QStringLiteral("Advanced overrides"), this);
+    QGroupBox* advanced = new QGroupBox(QStringLiteral("Overrides"), this);
     advanced->setObjectName(QStringLiteral("renderGraphRayAdvanced"));
     advanced->setProperty("renderGraphField", QStringLiteral("state"));
     advanced->setCheckable(true);
@@ -1146,7 +1145,7 @@ void RenderGraphPipelineEditor::addSceneComputeStateProperties(QFormLayout& outF
         this);
     explanation->setWordWrap(true);
     outForm.addRow(explanation);
-    QGroupBox* advanced = new QGroupBox(QStringLiteral("Advanced overrides"), this);
+    QGroupBox* advanced = new QGroupBox(QStringLiteral("Overrides"), this);
     advanced->setObjectName(QStringLiteral("renderGraphComputeAdvanced"));
     advanced->setProperty("renderGraphField", QStringLiteral("state"));
     advanced->setCheckable(true);

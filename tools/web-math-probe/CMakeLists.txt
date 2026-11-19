@@ -1,9 +1,12 @@
+add_executable(ludus_web_math_probe main.cpp)
 # The installed-SDK Geometry exercise also runs here so the Wasm toolchain validates
 # FoundationGeometry's Certified distance map and surface mesh bound with the enclosure
-# helper they rely on.
-add_executable(ludus_web_math_probe main.cpp "${PROJECT_SOURCE_DIR}/tests/sdk_consumer/geometry.cpp")
+# helper they rely on, and the GeometryContent cook and load of an authored cubic. The
+# helper adds the source with its libraries, so the two builds cannot drift apart.
+include("${PROJECT_SOURCE_DIR}/tests/sdk_consumer/geometry.cmake")
+ludus_add_sdk_geometry_exercise(ludus_web_math_probe)
 # The procedural scatter golden digest shares its fixture with the native scatter tests.
-target_link_libraries(ludus_web_math_probe PRIVATE Ludus::FoundationMath Ludus::FoundationGeometry Ludus::ProceduralEnvironment)
+target_link_libraries(ludus_web_math_probe PRIVATE Ludus::FoundationMath Ludus::ProceduralEnvironment)
 # The enclosure oracle is shared with the native FoundationMath tests.
 target_include_directories(ludus_web_math_probe PRIVATE "${PROJECT_SOURCE_DIR}/modules/foundation/math/tests"
     "${PROJECT_SOURCE_DIR}/modules/content/procedural/environment/tests")
