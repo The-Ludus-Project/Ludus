@@ -2,6 +2,7 @@
 #include "patch_seam.h"
 #include "renderer_composite.h"
 
+#include <ludus/foundation/containers/array.hpp>
 #include <ludus/graphics/renderer/render_graph.hpp>
 #include <ludus/graphics/rhi/lifetime.h>
 
@@ -10,7 +11,6 @@
 #include <ludus/foundation/threading/thread.hpp>
 #include <ludus/foundation/time/time.hpp>
 #include <string>
-#include <vector>
 
 namespace
 {
@@ -64,18 +64,22 @@ bool Capture(rhi::DeviceHandle device,
     {
         return false;
     }
-    std::vector<math::Vector3> positions;
-    std::vector<math::Vector3> normals;
-    for (const geom::SurfaceMeshVertex& vertex : mesh.Vertices)
+    Array<math::Vector3> positions;
+    Array<math::Vector3> normals;
+    if (positions.TryResize(mesh.Vertices.GetSize()) == false || normals.TryResize(mesh.Vertices.GetSize()) == false)
     {
-        positions.push_back(vertex.Position);
-        normals.push_back(vertex.Normal);
+        return false;
+    }
+    for (usize i = 0; i < mesh.Vertices.GetSize(); ++i)
+    {
+        positions[i] = mesh.Vertices[i].Position;
+        normals[i] = mesh.Vertices[i].Normal;
     }
     const uint32 materialIndex = 0;
     renderer::RenderGraphMesh model;
-    model.Geometry.Positions = positions.data();
-    model.Geometry.Normals = normals.data();
-    model.Geometry.VertexCount = positions.size();
+    model.Geometry.Positions = positions.GetData();
+    model.Geometry.Normals = normals.GetData();
+    model.Geometry.VertexCount = positions.GetSize();
     model.Geometry.Indices = mesh.Indices.begin();
     model.Geometry.IndexCount = mesh.Indices.GetSize();
     model.MaterialBindings = {&materialIndex, 1};
@@ -122,22 +126,26 @@ bool Capture(rhi::DeviceHandle device,
     }
     rhi::ReadbackTicket readback;
     const usize pitch = extent * 4;
+    Array<uint8> pixels;
+    if (pixels.TryResize(pitch * extent) == false)
+    {
+        return false;
+    }
     status = rhi::RequestTextureReadback(device, texture, { .Width = extent, .Height = extent }, pitch, readback);
     if (status != rhi::RasterStatus::Ready && status != rhi::RasterStatus::Pending)
     {
         return false;
     }
-    std::vector<uint8> pixels(pitch * extent);
     if (Wait([&]() {
             static_cast<void>(rhi::PollLifetime(device));
-            return rhi::CopyReadback(device, readback, pixels.data(), pixels.size());
+            return rhi::CopyReadback(device, readback, pixels.GetData(), pixels.GetSize());
         }) == false ||
         rhi::Release(device, readback) != rhi::RasterStatus::Ready)
     {
         return false;
     }
     std::ofstream output(path, std::ios::binary);
-    output.write(reinterpret_cast<const char*>(pixels.data()), static_cast<std::streamsize>(pixels.size()));
+    output.write(reinterpret_cast<const char*>(pixels.GetData()), static_cast<std::streamsize>(pixels.GetSize()));
     output.close();
     return output.good();
 }

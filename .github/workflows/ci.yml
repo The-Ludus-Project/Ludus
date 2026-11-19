@@ -310,6 +310,14 @@ jobs:
           path = Path('examples/reference-scene/src/main.cpp')
           assert format_source(path.read_text(), path, 'out/host-tools/bin/clang-format') == path.read_text()
           PYFORMAT
+      - name: Upload cooked patch seam captures
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: patch-seam-metal
+          path: out/renderer-sdk/patch-seam/raster/
+          if-no-files-found: warn
+          retention-days: 14
       - name: Upload RG4 pooling evidence
         if: always()
         uses: actions/upload-artifact@v4
@@ -1091,6 +1099,14 @@ jobs:
           path = Path('examples/reference-scene/src/main.cpp')
           assert format_source(path.read_text(), path, 'out/host-tools/bin/clang-format') == path.read_text()
           PYFORMAT
+      - name: Upload cooked patch seam captures
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: patch-seam-vulkan
+          path: out/renderer-sdk/patch-seam/raster/
+          if-no-files-found: warn
+          retention-days: 14
       - name: Upload RG4 pooling evidence
         if: always()
         uses: actions/upload-artifact@v4

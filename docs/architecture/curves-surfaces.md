@@ -759,8 +759,11 @@ checks the indexed triangles at nine columns spanning the join, as well as
 adjacent rows along the visible seam. For the parabolic cylinders it solves
 the ray–surface quadratic, clips each root to its patch and depth range, and
 takes the nearest hit. Each verified frame has a viewable grayscale normal image
-(`.pgm`) beside its packed depth and coverage readback (`.rgba`). Rays just inside and outside the analytic tangent check
-the silhouette independently of which row the rasterizer covers.
+(`.pgm`) beside its packed depth and coverage readback (`.rgba`). The native
+batch runs publish these files in the `patch-seam-metal` and `patch-seam-vulkan`
+artifacts, grouped by fixture and tolerance. Rays just inside and outside the
+analytic tangent check the silhouette independently of which row the rasterizer
+covers.
 
 The table gives the largest center-column displacement in physical pixels over
 four perspective views in the native Metal SDK capture. The mixed surface joins
