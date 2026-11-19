@@ -14,6 +14,7 @@ namespace renderer = graphics::renderer;
 namespace rhi = graphics::rhi;
 inline constexpr uint32 WIDTH = 96;
 inline constexpr uint32 HEIGHT = 64;
+inline constexpr float32 VERTICAL_FOV_RADIANS = 0.2F;
 inline constexpr uint32 CHANNELS = 4;
 inline constexpr usize WALL_VERTEX_COUNT = 4;
 inline constexpr usize WALL_INDEX_COUNT = 6;
@@ -103,7 +104,7 @@ inline void AimCamera(math::Vector3 eyeWorld,
     renderer::ProjectionDescription projection;
     projection.Kind = renderer::ProjectionKind::Perspective;
     REQUIRE(math::TryLookAt(eyeWorld, targetWorld, {0, 0, 1}, projection.WorldToView) == math::MathStatus::Success);
-    projection.VerticalFovRadians = 0.2F;
+    projection.VerticalFovRadians = VERTICAL_FOV_RADIANS;
     projection.Near = 0.01F;
     projection.Far = 400;
     REQUIRE(renderer::BuildViewDescription(projection, mapping, outCamera) == rhi::RasterStatus::Ready);

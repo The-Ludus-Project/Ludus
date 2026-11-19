@@ -17,6 +17,7 @@
 #include <ludus/foundation/math/scalar.hpp>
 #include <ludus/foundation/threading/thread.hpp>
 #include <ludus/foundation/time/time.hpp>
+#include <ludus/graphics/renderer/deferred_layout.h>
 #include <ludus/graphics/renderer/render_graph_activation.hpp>
 #include <ludus/graphics/renderer/views.hpp>
 #include <ludus/graphics/rhi/device.h>
@@ -333,11 +334,34 @@ TEST_CASE("Near directional shadows preserve the doorway across camera updates",
         }
     }
     // Reverse the approach, cross the fixed overlap, and cut back to the same world-space probes.
-    for (float32 distance : {3.F, 9.F, 10.F, 11.F, 12.F, 16.F, 12.F, 10.F, 9.F, 3.F})
+    constexpr StaticArray<float32, 10> DISTANCES{{3, 9, 10, 11, 12, 16, 12, 10, 9, 3}};
+    StaticArray<uint8, DISTANCES.GetSize()> crossing{};
+    for (usize pose = 0; pose < DISTANCES.GetSize(); ++pose)
     {
-        eyeY = distance;
-        sample(-1, 0, 0, distance <= 9);
-        sample(0, 1, 0, distance <= 9);
+        eyeY = DISTANCES[pose];
+        crossing[pose] = sample(-1, 0, 0, eyeY <= 9);
+        sample(0, 1, 0);
+    }
+    if (isWholeSceneControl == false)
+    {
+        // The near probe is geometrically blocked. At 16 m the whole map supplies its measured endpoint.
+        // Intersect the centre pixel ray (half a pixel below the optical axis) with the floor.
+        constexpr usize FAR_POSE = 5;
+        const float32 halfAngle = VERTICAL_FOV_RADIANS * 0.5F;
+        const float32 halfHeightAtUnitDepth = math::Sin(halfAngle) / math::Cos(halfAngle);
+        for (usize pose = 0; pose < DISTANCES.GetSize(); ++pose)
+        {
+            const float32 horizontal = DISTANCES[pose];
+            const float32 opticalDistance = math::Sqrt(horizontal * horizontal + eyeHeight * eyeHeight);
+            const float32 depth =
+                opticalDistance / (1 + horizontal * halfHeightAtUnitDepth / (static_cast<float32>(HEIGHT) * eyeHeight));
+            constexpr float32 BLEND_START = static_cast<float32>(renderer::DIRECTIONAL_NEAR_BLEND_METRES);
+            constexpr float32 BLEND_WIDTH = static_cast<float32>(renderer::DIRECTIONAL_NEAR_END_METRES) - BLEND_START;
+            const float32 t = math::Clamp((depth - BLEND_START) / BLEND_WIDTH, 0.F, 1.F);
+            const float32 predicted = static_cast<float32>(crossing[FAR_POSE]) * t * t * (3 - 2 * t);
+            CAPTURE(horizontal, depth, predicted, crossing[pose]);
+            CHECK(math::Abs(static_cast<float32>(crossing[pose]) - predicted) <= 12);
+        }
     }
     eyeY = -3;
     // A grazing Sun, then the roof above the opening, then the Moon alone.
@@ -421,6 +445,32 @@ TEST_CASE("Near directional shadows preserve the doorway across camera updates",
     materials[1].IsAlphaMasked = false;
     ++contentRevision;
     sample(-1, 0, 0);
+    // A true inclined receiver with a Sun grazing the rising ground. The centre ray crosses
+    // the opening below the roof. Both independent rays leave the plane on its lit side.
+    math::Vector3 slopeNormalWorld;
+    REQUIRE(math::TryNormalize({-0.5F, 0, 1}, slopeNormalWorld) == math::MathStatus::Success);
+    for (usize vertex = 0; vertex < geometry.Ground.GetSize(); ++vertex)
+    {
+        geometry.Ground[vertex].Z = 0.5F * geometry.Ground[vertex].X;
+        geometry.GroundNormals[vertex] = slopeNormalWorld;
+    }
+    lights[0].Direction.Z = -0.55F;
+    ++contentRevision;
+    const uint8 slopeSunVisibility = sample(0, 0, 0);
+    const uint8 slopeMoonVisibility = sample(0, 1, 0);
+    if (shouldMeasure == true)
+    {
+        std::printf("slope,%d,%u,%u\n",
+                    int(isWholeSceneControl),
+                    unsigned(slopeSunVisibility),
+                    unsigned(slopeMoonVisibility));
+    }
+    for (usize vertex = 0; vertex < geometry.Ground.GetSize(); ++vertex)
+    {
+        geometry.Ground[vertex].Z = 0;
+        geometry.GroundNormals[vertex] = {0, 0, 1};
+    }
+    lights[0].Direction.Z = -1;
     width = 64;
     height = 48;
     const Status resizing = graph.Resize(width, height);

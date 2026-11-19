@@ -6752,7 +6752,10 @@ per source. Both the blocked and clear probes matched their exact endpoints
 roof across the opening, transparent and opaque masked geometry, moving the
 wall, editing the terrain, replacing the light direction, resize and camera
 updates with the scene inputs released. A CPU projection check keeps a
-1.5 km offscreen blocker inside the fitted light volume.
+1.5 km offscreen blocker inside the fitted light volume. On a second terrain
+with a 0.5 rise/run, a Sun at 0.55 rise/run grazed the slope through the
+open doorway. Both the Sun and Moon returned 255/255 at the clear probe in
+both modes, for zero measured false shadow there.
 
 | Incident light | Near footprint on horizontal ground (m) | Whole-scene footprint on horizontal ground (m) |
 | --- | ---: | ---: |
