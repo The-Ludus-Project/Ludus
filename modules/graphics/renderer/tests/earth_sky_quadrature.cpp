@@ -1,4 +1,5 @@
 #include "earth_sky_quadrature.hpp"
+#include "orbital_atmosphere_probes.hpp"
 
 #include <ludus/foundation/containers/static_array.hpp>
 #include <ludus/foundation/math/scalar.hpp>
@@ -30,31 +31,45 @@ EarthSkyIntegral IntegrateEarthSky(float64 altitude,
                                    usize solarSteps)
 // NOLINTEND(bugprone-easily-swappable-parameters)
 {
-    constexpr float64 GROUND = 6360;
-    constexpr float64 TOP = 6460;
+    constexpr float64 GROUND = EARTH_GROUND_RADIUS_KILOMETRES;
+    constexpr float64 TOP = EARTH_TOP_RADIUS_KILOMETRES;
     constexpr usize CHANNEL_COUNT = 3;
     constexpr StaticArray<float64, CHANNEL_COUNT> MOLECULAR{{0.005802, 0.013558, 0.033100}};
     const math::Vector3d observerWorld{0, GROUND + altitude, 0};
     const float64 projected = math::Dot(observerWorld, directionWorld);
     const float64 projectedSquared = projected * projected;
-    const float64 groundDiscriminant = projectedSquared + GROUND * GROUND - math::Dot(observerWorld, observerWorld);
-    const float64 distance =
-        projected < 0 && groundDiscriminant >= 0
-            ? -projected - std::sqrt(groundDiscriminant)
-            : -projected + std::sqrt(projectedSquared + TOP * TOP - math::Dot(observerWorld, observerWorld));
+    // Thanks to Nishita, Sirai, Tadamura and Nakamae, “Display of the Earth Taking into Account
+    // Atmospheric Scattering”, SIGGRAPH '93, pp. 175–182, https://doi.org/10.1145/166117.166140 .
+    // Clip the view integral to the spherical atmosphere. Each solar segment below tests the
+    // solid Earth's shadow independently, including along chords with both lit and unlit samples.
+    const float64 squaredEyeRadius = math::Dot(observerWorld, observerWorld);
+    const float64 topDiscriminant = projectedSquared + TOP * TOP - squaredEyeRadius;
+    if (topDiscriminant <= 0)
+    {
+        return {};
+    }
+    const float64 topRoot = std::sqrt(topDiscriminant);
+    const float64 entry = math::Max(0.0, -projected - topRoot);
+    const float64 groundDiscriminant = projectedSquared + GROUND * GROUND - squaredEyeRadius;
+    const float64 exitDistance =
+        projected < 0 && groundDiscriminant >= 0 ? -projected - std::sqrt(groundDiscriminant) : -projected + topRoot;
+    if (exitDistance <= entry)
+    {
+        return {};
+    }
     const float64 cosine = math::Dot(directionWorld, sunWorld);
     const float64 moleculePhase = 3 * (1 + cosine * cosine) / (16 * math::kPi);
     constexpr float64 ASYMMETRY = 0.8;
     const float64 aerosolPhase = 3 * (1 - ASYMMETRY * ASYMMETRY) * (1 + cosine * cosine) /
                                  (8 * math::kPi * (2 + ASYMMETRY * ASYMMETRY) *
                                   std::pow(1 + ASYMMETRY * ASYMMETRY - 2 * ASYMMETRY * cosine, 1.5));
-    const float64 step = distance / static_cast<float64>(viewSteps);
+    const float64 step = (exitDistance - entry) / static_cast<float64>(viewSteps);
     float64 opticalDepth = 0;
     EarthSkyIntegral result;
     for (usize sample = 0; sample < viewSteps; ++sample)
     {
         const math::Vector3d pointWorld =
-            observerWorld + directionWorld * ((static_cast<float64>(sample) + 0.5) * step);
+            observerWorld + directionWorld * (entry + (static_cast<float64>(sample) + 0.5) * step);
         const float64 height = math::Length(pointWorld) - GROUND;
         const float64 extinction = ComputeEarthExtinction(height, channel) * step;
         const float64 weight = std::exp(-opticalDepth - 0.5 * extinction) * step;
@@ -80,6 +95,10 @@ EarthSkyIntegral IntegrateEarthSky(float64 altitude,
             result.Radiance +=
                 weight * std::exp(-solarOpticalDepth) * (rayleigh * moleculePhase + aerosol * aerosolPhase);
         }
+        else
+        {
+            ++result.ShadowSamples;
+        }
         opticalDepth += extinction;
     }
     return result;
@@ -91,8 +110,8 @@ EarthSkyIntegral IntegrateEarthSky(float64 altitude,
 float64 IntegrateEarthBlueHigherOrders()
 {
     constexpr usize BLUE_CHANNEL = 2;
-    constexpr float64 GROUND = 6360;
-    constexpr float64 TOP = 6460;
+    constexpr float64 GROUND = EARTH_GROUND_RADIUS_KILOMETRES;
+    constexpr float64 TOP = EARTH_TOP_RADIUS_KILOMETRES;
     constexpr float64 BLUE_MOLECULAR_SCATTERING = 0.033100;
     constexpr usize VIEW_STEPS = 96;
     constexpr usize ZENITH_SAMPLES = 8;

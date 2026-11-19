@@ -2547,6 +2547,33 @@ support observer altitudes up to one billion metres. Orthographic views use
 the in-shell range and the observer's common ray direction. The graph uses
 its ordinary clear outside the supported range.
 
+The native `[orbital-limb]` tests observe Earth from 500 km. The renderer
+test aims the central pixel at rays with impact radii 103, 97, 1 and −1 km
+above the ground radius. These rays respectively miss the atmosphere, cross
+the outer shell, graze the ground and end at its surface. A black celestial
+boundary isolates single scattering. An overhead Sun lights each chord.
+A second Sun crosses the horizon along the +1 km chord and leaves the
+ground-terminated ray in shadow.
+
+The binary64 reference clips each ray to the two spheres and integrates
+view extinction and Sun-path extinction independently of the shader tables.
+The linear RGBA8 export has tone mapping disabled. Each RGB channel has a
+half-code rounding allowance (0.5/255) plus 4% of the reference radiance
+for transport discretization. Exactly dark probes must read zero. Run the
+renderer case with Catch2's `-s` to see the measured and expected radiance,
+absolute error and, for nonzero references, relative error. The editor case
+sweeps the selected World's perspective camera over the same directions at
+fixed exposure with its ordinary sky lighting enabled. The lunar
+transmittance fixture separately measures extinction of boundary radiance.
+
+On Apple M5 Metal, the maximum absolute error among 24 channel comparisons
+was 0.00872 (2.86% relative) in twilight red just above the ground tangent.
+At that same pixel, green read 1/255 against 0.004594 (14.6% relative
+error), and blue read zero against 0.000000730 (100%). The space probes and
+the shadowed ground-terminated probe returned exactly zero in all channels.
+Doubling the reference integration from 1,536 view × 384 solar midpoints
+changed predicted radiance by at most 0.000328 across the probes.
+
 The built-in World samples Mercury, Venus, Mars, Jupiter and Saturn from the
 linked Earth celestial driver's date and observer location. It prefers the
 Sun link, then uses the Moon link if it has the Earth driver. Directions

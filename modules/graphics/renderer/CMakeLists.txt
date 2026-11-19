@@ -266,6 +266,8 @@ if(LUDUS_BUILD_TESTS AND NOT EMSCRIPTEN)
         set(renderer_test_reference_cold_gpu_timeout_seconds 300)
         set(renderer_test_case_timeout_seconds 600)
     endif()
+    set_source_files_properties(tests/render_graph_default_render_tests.cpp PROPERTIES COMPILE_DEFINITIONS
+        "LUDUS_RENDERER_TEST_COLD_GPU_TIMEOUT_SECONDS=${renderer_test_reference_cold_gpu_timeout_seconds}")
     set_target_properties(ludus_graphics_renderer PROPERTIES
         LUDUS_REFERENCE_TEST_COLD_TIMEOUT_SECONDS "${renderer_test_reference_cold_gpu_timeout_seconds}"
         LUDUS_REFERENCE_TEST_CASE_TIMEOUT_SECONDS "${renderer_test_case_timeout_seconds}")

@@ -14,12 +14,15 @@ struct EarthSkyIntegral
 {
     foundation::float64 Radiance = 0;
     foundation::float64 ReturnFraction = 0;
+    /// Number of view quadrature points with the solar ray occluded by solid Earth.
+    foundation::usize ShadowSamples = 0;
 };
 
 /// Extinction per kilometre in one RGB channel (0..2) at an altitude in kilometres.
 foundation::float64 ComputeEarthExtinction(foundation::float64 altitude, foundation::usize channel);
 
 /// Single scattering toward an observer at altitude (kilometres) from a unit direction, Sun in sunWorld, +Y up.
+/// Outside the shell only its forward chord contributes. A miss or an outward ray gives zero.
 EarthSkyIntegral IntegrateEarthSky(foundation::float64 altitude,
                                    foundation::math::Vector3d directionWorld,
                                    foundation::math::Vector3d sunWorld,
