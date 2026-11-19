@@ -1,6 +1,7 @@
 #include <catch2/catch_test_macros.hpp>
 
 #if defined(LUDUS_EDITOR_NATIVE_PREVIEW)
+#    include "internal/preview_viewport.h"
 #    include "internal/render_preview.h"
 #    include "internal/selection_outline_request.h"
 #    include "internal/viewport_gizmo_readout.h"
@@ -9,6 +10,8 @@
 #    include "internal/viewport_object_overlay_item.h"
 #    include "internal/viewport_overlay_layer.h"
 #    include "internal/world_document.h"
+#    include "internal/world_workspace.h"
+#    include "selection_outline_fixture.hpp"
 
 #    include <ludus/foundation/base/types.h>
 #    include <ludus/graphics/renderer/renderer.hpp>
@@ -612,5 +615,64 @@ TEST_CASE("The browser overlay layer draws a selected object's outline from its 
         }
     }
     CHECK(hasAmber == true);
+}
+
+TEST_CASE("World viewport CPU fallback clips a perspective contour with Properties hidden",
+          "[editor][object-interaction][outline-clipping]")
+{
+    namespace fixture = ludus::test_support::outline;
+    WorldWorkspace workspace;
+    QWidget* propertiesOrNull = workspace.findChild<QWidget*>(QStringLiteral("worldProperties"));
+    PreviewViewport* viewportOrNull = workspace.findChild<PreviewViewport*>(QStringLiteral("worldViewport"));
+    REQUIRE(propertiesOrNull != nullptr);
+    REQUIRE(viewportOrNull != nullptr);
+    workspace.show();
+    propertiesOrNull->hide();
+    viewportOrNull->show();
+    REQUIRE(viewportOrNull->isVisible() == true);
+    REQUIRE(propertiesOrNull->isVisible() == false);
+    RenderScene scene;
+    scene.Identity = QByteArrayLiteral("outline-clipping");
+    PreviewMesh mesh;
+    for (const math::Vector3& positionMesh : fixture::POSITIONS_MESH)
+    {
+        mesh.Positions.append(positionMesh);
+    }
+    for (uint32 index : fixture::INDICES)
+    {
+        mesh.Indices.append(index);
+    }
+    scene.Meshes.append(mesh);
+    PreviewObject object;
+    object.Id = QStringLiteral("tetrahedron");
+    scene.Objects.append(object);
+    REQUIRE(workspace.GetRenderPreview().SetScene(scene) == true);
+    ViewportObjectInteraction& interaction = viewportOrNull->GetObjectInteraction();
+    interaction.SetWorld(workspace.Document(), object.Id, false);
+    interaction.SetActive(true);
+    interaction.SetTool(ViewportObjectInteraction::Tool::Select);
+    interaction.SetGpuOutlineEnabled(false);
+    for (int32 width : fixture::WIDTHS_PIXELS)
+    {
+        interaction.SetImageSize({width, fixture::HEIGHT_PIXELS});
+        QImage image(width, fixture::HEIGHT_PIXELS, QImage::Format_ARGB32_Premultiplied);
+        for (const fixture::Placement& placement : fixture::PLACEMENTS)
+        {
+            interaction.SetPresentedView(fixture::MakeMeshToClip(placement, width));
+            image.fill(Qt::transparent);
+            {
+                QPainter painter(&image);
+                interaction.Paint(painter, QRectF(image.rect()));
+            }
+            fixture::CheckImage(placement, width, [&](int32 x, int32 y) {
+                const QRgb pixel = image.pixel(x, y);
+                if (pixel == ViewportObjectOverlay::SELECTION_COLOR)
+                {
+                    return fixture::Mark::Stroke;
+                }
+                return qAlpha(pixel) == 0 ? fixture::Mark::Clear : fixture::Mark::Casing;
+            });
+        }
+    }
 }
 #endif

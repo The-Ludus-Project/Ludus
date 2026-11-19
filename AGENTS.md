@@ -86,7 +86,8 @@ existing item that covers the work.
   and report the task branch and worktree path for review.
 - Integration pull requests run source/tooling, installed host-tooling and public
   documentation checks. Changes that require native validation also run the Linux
-  Editor and shader-worker build and Clang static analysis. The batch coordinator
+  Editor and shader-worker build, its quick unit and Editor tests
+  (`config/pull_request_tests.txt`) and Clang static analysis. The batch coordinator
   captures one `develop` commit every 30 minutes and runs the full native,
   sanitizer, editor, browser and SDK suites once for the combined changes. Only
   the promotion workflow advances `main`, to exactly the validated commit, with

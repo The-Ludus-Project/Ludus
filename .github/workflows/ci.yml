@@ -286,6 +286,7 @@ jobs:
           out/renderer-sdk/ludus_sdk_renderer_lighting_consumer
           out/renderer-sdk/ludus_sdk_renderer_scaling_consumer
           out/host-tools/venv/bin/ctest --test-dir out/renderer-sdk --output-on-failure --no-tests=error -R "^ludus_sdk_hybrid_indirect_diffuse_consumer$"
+          out/host-tools/venv/bin/ctest --test-dir out/renderer-sdk -V --no-tests=error -R "^ludus_sdk_ray_storage_"
           out/renderer-sdk/ludus_sdk_render_graph_runtime_consumer
           out/renderer-sdk/ludus_sdk_render_graph_bilinear_consumer 2>&1 | tee out/bilinear-sdk-metal.log
           python3 -c 'from pathlib import Path; text=Path("out/bilinear-sdk-metal.log").read_text(); assert "bilinear passed" in text, text'
@@ -727,7 +728,7 @@ jobs:
         timeout-minutes: 10
         run: xvfb-run -a env LUDUS_TEST_GUI=1 python3 -m unittest discover -s scripts/python -p 'test_init*.py' -v
       - name: Test CI initialization and analysis contracts
-        run: PYTHONPATH=scripts/python python3 -m unittest test_ci test_batch_ci test_develop_health test_kanban_dependencies test_quality test_windows_qualification test_ray_reference test_runtime_profile -v
+        run: PYTHONPATH=scripts/python python3 -m unittest test_ci test_batch_ci test_develop_health test_kanban_dependencies test_quality test_windows_qualification test_ray_reference test_runtime_profile test_pull_request_tests -v
       - name: Live reload tooling tests
         run: |
           python3 -m unittest discover -s scripts/python -p 'test_play*.py' -v
@@ -1065,6 +1066,7 @@ jobs:
           out/renderer-sdk/ludus_sdk_renderer_lighting_consumer
           out/renderer-sdk/ludus_sdk_renderer_scaling_consumer
           out/host-tools/venv/bin/ctest --test-dir out/renderer-sdk --output-on-failure --no-tests=error -R "^ludus_sdk_hybrid_indirect_diffuse_consumer$"
+          VK_INSTANCE_LAYERS=VK_LAYER_KHRONOS_validation out/host-tools/venv/bin/ctest --test-dir out/renderer-sdk -V --no-tests=error -R "^ludus_sdk_ray_storage_"
           VK_INSTANCE_LAYERS=VK_LAYER_KHRONOS_validation out/renderer-sdk/ludus_sdk_render_graph_runtime_consumer 2>&1 | tee out/rg3-sdk-vulkan-validation.log
           python3 -c 'from pathlib import Path; text=Path("out/rg3-sdk-vulkan-validation.log").read_text(); assert "Validation Error" not in text and "VUID-" not in text, text'
           VK_INSTANCE_LAYERS=VK_LAYER_KHRONOS_validation out/renderer-sdk/ludus_sdk_render_graph_bilinear_consumer 2>&1 | tee out/bilinear-sdk-vulkan-validation.log
@@ -1553,8 +1555,9 @@ jobs:
   editor:
     needs: changes
     # Integration pull requests compile here (build graph, every default target
-    # with warnings as errors, Editor analysis) without running tests, restoring
-    # but never saving the batch's caches. Batches also run the tests and journeys.
+    # with warnings as errors, Editor analysis) and run only the generated-source
+    # checks and the quick unit/Editor list, restoring but never saving the batch's
+    # caches. Batches also run the remaining tests and journeys.
     if: needs.changes.outputs.native_required == 'true' && ((inputs.evidence_job || 'all') == 'all' || inputs.evidence_job == 'editor')
     name: Editor, shader worker and unit tests
     runs-on: ubuntu-24.04
@@ -1605,12 +1608,21 @@ jobs:
       # build produces, so integration pull requests check them here rather than in a batch.
       - name: Check checked-in generated sources
         run: out/host-tools/venv/bin/ctest --preset linux-clang-development --label-regex '^generated-source$' --output-on-failure --no-tests=error
+      # The build above already produced every unit and Editor test. Sub-second ones run on
+      # every pull request, so a change and the test it breaks meet before the batch; the
+      # batch's full run below excludes them (docs/development/continuous-integration.md#quick-pull-request-tests).
+      - name: Run quick unit and Editor tests
+        env:
+          QT_QPA_PLATFORM: offscreen
+        run: |
+          out/host-tools/venv/bin/python scripts/python/pull_request_tests.py out/build/linux-clang-development --ctest out/host-tools/venv/bin/ctest
+          out/host-tools/venv/bin/ctest --preset linux-clang-development --tests-from-file "$PWD/config/pull_request_tests.txt" --timeout 120 --output-on-failure --no-tests=error
       - name: Verify unit and Editor tests and worker-on target detection
         if: needs.changes.outputs.validation_tier != 'integration'
         env:
           QT_QPA_PLATFORM: offscreen
         run: |
-          out/host-tools/venv/bin/ctest --preset linux-clang-development --label-regex '^(unit|editor)$' --label-exclude '^generated-source$' --no-tests=error
+          out/host-tools/venv/bin/ctest --preset linux-clang-development --label-regex '^(unit|editor)$' --label-exclude '^generated-source$' --exclude-from-file "$PWD/config/pull_request_tests.txt" --no-tests=error
           out/host-tools/venv/bin/ctest --preset linux-clang-development --tests-regex '^ludus_target_detection$' --output-on-failure --no-tests=error
       # Play in the viewport on Linux: Qt's own Vulkan device on an Xvfb display,
       # with Mesa's lavapipe for both the editor and the game, imports the game's

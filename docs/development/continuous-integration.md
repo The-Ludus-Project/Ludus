@@ -438,6 +438,38 @@ rejects a generator `--check` test without the label, a labelled test without a
 bounded timeout or with fixtures, and an Editor job whose check is missing,
 gated by tier or placed before the build.
 
+### Quick pull-request tests
+
+The same job builds every unit and Editor test on every tier, but integration
+pull requests used to run none of them. A change and the test that covers it then
+met only in the batch, even when that test took a fraction of a second. Batch
+44365236406 failed on a Shader API test that #1905 had made stale; the test took
+0.06 s, and it failed on every platform.
+
+`config/pull_request_tests.txt` lists the unit and Editor CTest entries that
+finished in under a second in the batch's Linux Editor job: 98 entries, about 7 s
+together. Its **Run quick unit and Editor tests** step runs them on every tier,
+right after the generated-source check, with `--tests-from-file` and a `--timeout`
+of 120 s for entries that declare none. The batch's full unit and Editor run passes
+`--exclude-from-file` with the same list, so each test still runs once there.
+
+CTest skips a listed name that no longer exists, so the step first runs
+`scripts/python/pull_request_tests.py` on the built tree. It fails for a name with
+no CTest entry, an entry without the `unit` or `editor` label, an entry labelled
+`gpu`, `build-contract` or `generated-source`, one that uses CTest fixtures or a
+resource lock, or one that declares a `TIMEOUT` above 120 s. It also requires a
+sorted list of exact names, each defined on both Linux and macOS, so it can be run
+on a local build:
+
+```bash
+out/host-tools/venv/bin/python scripts/python/pull_request_tests.py out/build/macos-clang-debug --ctest out/host-tools/venv/bin/ctest
+```
+
+Add a test to the list when it runs in well under a second without a GPU, a
+display or fixtures. The long Editor test shards and the GPU suites stay in the
+batch. `test_ci_scope.py` rejects an Editor job whose quick-test step is gated by
+tier, runs the list unchecked, or whose batch run does not exclude the list.
+
 Required checks use job conditions instead of workflow-level path filtering, so
 branch protection receives a result even when expensive jobs are intentionally
 skipped. The full batch retains native Debug/Development/Profile/Release, SDK
