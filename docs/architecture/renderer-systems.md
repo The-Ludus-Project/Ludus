@@ -316,8 +316,9 @@ upload, and nothing is built from the mesh on the CPU. The editor uses it for th
 viewport's selection.
 
 - **Mask pass.** The mesh is rasterized into an RGBA8 mask the size of the target, white where it covers
-  a pixel. There is no depth test, so another object in front does not hide the outline, and depth is
-  pinned inside the clip volume so only the camera plane and the frame sides clip.
+  a pixel. The mask uses all four clip coordinates from the image’s mesh-to-clip transform. The
+  rasterizer clips triangles against the same near, far and side planes as the image. Scene-depth testing
+  is disabled so the outline stays visible through other objects.
 - **Edge pass.** One quad over the mesh's projected bounds, padded by the casing width, samples the mask.
   Each pixel searches its neighbourhood, a square of radius `ceil(casing half width)` pixels capped at
   eight, for the nearest pixel whose coverage differs from its own, and turns that distance into

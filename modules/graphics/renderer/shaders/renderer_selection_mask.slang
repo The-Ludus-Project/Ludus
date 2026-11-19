@@ -5,8 +5,7 @@
 //
 // ABI: renderer_flat's vertex stream and instance stream, without the colour. No uniforms or textures.
 //   PositionMesh    mesh-space position
-//   Row0..Row3      mesh-to-clip rows (Row2, the depth row, is not read)
-static const float DEPTH_FRACTION = 0.5;
+//   Row0..Row3      mesh-to-clip rows
 struct Input
 {
     LUDUS_SHADER_LOCATION(0) float3 PositionMesh : POSITION;
@@ -22,12 +21,11 @@ struct Varying
 [shader("vertex")] Varying MaskVertexMain(Input input) {
     Varying output;
     float4 positionHomogeneous = float4(input.PositionMesh, 1);
-    float clipX = dot(input.Row0, positionHomogeneous);
-    float clipY = dot(input.Row1, positionHomogeneous);
-    float clipW = dot(input.Row3, positionHomogeneous);
-    // Depth is pinned inside the clip volume: only the camera plane and the frame sides clip the mesh, so the mask
-    // matches the silhouette whatever the depth convention or far distance of the view.
-    output.PositionClip = float4(clipX, clipY, clipW * DEPTH_FRACTION, clipW);
+    // Keep the projected depth so the rasterizer clips the mask to the same frustum as the selected mesh.
+    output.PositionClip = float4(dot(input.Row0, positionHomogeneous),
+                                 dot(input.Row1, positionHomogeneous),
+                                 dot(input.Row2, positionHomogeneous),
+                                 dot(input.Row3, positionHomogeneous));
     return output;
 }[shader("fragment")] float4 MaskFragmentMain(Varying input)
     : SV_Target
