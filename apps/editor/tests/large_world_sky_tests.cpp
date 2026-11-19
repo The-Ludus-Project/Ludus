@@ -208,8 +208,7 @@ StaticArray<float64, 2> CaptureWorld(const RenderScene& scene,
         const float32 row = (0.5F - 0.5F * clip.Y / clip.W) * static_cast<float32>(extent);
         REQUIRE((column >= 0 && column < static_cast<float32>(extent)));
         REQUIRE((row >= 0 && row < static_cast<float32>(extent)));
-        const qsizetype offset =
-            static_cast<qsizetype>((static_cast<uint32>(row) * extent + static_cast<uint32>(column)) * 4);
+        const qsizetype offset = (static_cast<qsizetype>(row) * extent + static_cast<qsizetype>(column)) * 4;
         luminance[i] = (0.2126 * static_cast<uint8>(texture.Bytes[offset]) +
                         0.7152 * static_cast<uint8>(texture.Bytes[offset + 1]) +
                         0.0722 * static_cast<uint8>(texture.Bytes[offset + 2])) /

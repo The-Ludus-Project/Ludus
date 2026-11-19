@@ -120,7 +120,8 @@ Integral Integrate(const Panels& panels,
         }
         else
         {
-            const float64 sine = (static_cast<float64>(i / azimuths) + 0.5) / resolution;
+            const uint32 elevationBand = i / azimuths;
+            const float64 sine = (static_cast<float64>(elevationBand) + 0.5) / resolution;
             const float64 azimuth = 2 * math::kPi * (static_cast<float64>(i % azimuths) + 0.5) / azimuths;
             const float64 radius = std::sqrt(1 - sine * sine);
             directionWorld = {radius * std::cos(azimuth), sine, radius * std::sin(azimuth)};
@@ -219,7 +220,7 @@ TEST_CASE("default graph resolves large World skylight at fixed floor probes",
     rhi::StorageLimits limits;
     if (shouldConstrainStorage == true)
     {
-        limits.ResourceBytes = 15 * 1024 * 1024; // admits the 1024 square and rejects the 2048 square
+        limits.ResourceBytes = uint64{15} * 1024 * 1024; // admits the 1024 square and rejects the 2048 square
     }
     GraphGpuFixture fixture(limits);
     const core::UniquePtr<RenderGraphPackage> package =
@@ -382,9 +383,8 @@ TEST_CASE("default graph resolves large World skylight at fixed floor probes",
                     for (uint32 i = 0; i < PROBE_COUNT; ++i)
                     {
                         const int32 row = static_cast<int32>(HEIGHT / 2) + static_cast<int32>(4 * PROBE_Z[i]);
-                        const usize pixel = GetPixel(static_cast<usize>(static_cast<int32>(WIDTH / 2) - walk +
-                                                                        static_cast<int32>(4 * PROBE_X[i])),
-                                                     static_cast<usize>(row));
+                        const int32 column = static_cast<int32>(WIDTH / 2) - walk + static_cast<int32>(4 * PROBE_X[i]);
+                        const usize pixel = GetPixel(static_cast<usize>(column), static_cast<usize>(row));
                         const float64 actual = ComputeLuminance({static_cast<float64>(fixture.Pixels[pixel]),
                                                                  static_cast<float64>(fixture.Pixels[pixel + 1]),
                                                                  static_cast<float64>(fixture.Pixels[pixel + 2])}) /

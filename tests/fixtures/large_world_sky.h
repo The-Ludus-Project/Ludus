@@ -12,7 +12,7 @@ struct Panel
     math::Vector3 HalfUWorld;
     math::Vector3 HalfVWorld;
 };
-enum class Shutter
+enum class Shutter : uint8
 {
     Open,
     Narrow,
