@@ -778,6 +778,8 @@ jobs:
         run: python3 -m unittest discover -s scripts/python -p test_pack_builder.py -v
       - name: Test Metal shader reflection contracts
         run: PYTHONPATH=scripts/python python3 -m unittest test_rhi_measurements test_metal_shaders test_raster_shaders test_texture_cooker -v
+      - name: Test pinned shader tool download fallbacks
+        run: python3 -m unittest discover -s scripts/python -p test_shader_probe_fetch.py -v
       - name: Test optional RAD tooling contracts
         run: python3 -m unittest discover -s scripts/python -p 'test_rad_debugger.py' -v
       - name: Test graphical and CLI initialization routing
