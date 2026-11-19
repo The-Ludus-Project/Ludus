@@ -1,6 +1,6 @@
 // The viewport as a playing game's window (Play in the editor viewport, P6c). The
 // game receives exactly what its own Cocoa or Wayland window would give it: focus
-// with a held-key baseline, physical keys and visibility. See
+// with a held-key baseline, physical keys, visibility and opted-in relative mouse motion. See
 // docs/architecture/editor-gui-systems.md, "Input, focus and capture".
 #include "internal/preview_viewport.h"
 
@@ -8,9 +8,11 @@
 #include <ludus/platform/hosted_window.h>
 #include <ludus/platform/native_keymap.h>
 
+#include <QCursor>
 #include <QEvent>
 #include <QHideEvent>
 #include <QShowEvent>
+#include <QToolTip>
 
 namespace ludus::editor
 {
@@ -29,7 +31,7 @@ using foundation::uint32;
 {
     return IsChord(event, Qt::Key_F6);
 }
-/// Shift+F1 gives the keyboard back to the editor without stopping the game.
+/// Shift+F1 gives keyboard focus and the pointer back to the editor.
 [[nodiscard]] bool IsReleaseChord(const QKeyEvent& event) noexcept
 {
     return IsChord(event, Qt::Key_F1);
@@ -59,13 +61,14 @@ void PreviewViewport::SetPlayInput(platform::HostedWindowEndpoint* endpointOrNul
     {
         return;
     }
-    if (mPlayEndpointOrNull != nullptr && hasFocus() == true)
+    if (mPlayEndpointOrNull != nullptr)
     {
         sendPlayFocus(false);
     }
     EndFirstPerson();
     stopNavigation();
     mPlayEndpointOrNull = endpointOrNull;
+    mIsPlayInputSuspended = false;
     updateObjectInteractionAvailability();
     for (bool& isHeld : mPlayHeldKeys)
     {
@@ -82,14 +85,23 @@ void PreviewViewport::SetPlayInput(platform::HostedWindowEndpoint* endpointOrNul
     }
 }
 
+void PreviewViewport::SuspendPlayInput()
+{
+    mIsPlayInputSuspended = true;
+    sendPlayFocus(false);
+}
+
 void PreviewViewport::sendPlayFocus(bool isFocused)
 {
-    if (mPlayEndpointOrNull == nullptr)
+    if (mPlayEndpointOrNull == nullptr || mHasPlayFocus == isFocused ||
+        (isFocused == true && mIsPlayInputSuspended == true))
     {
         return;
     }
+    mHasPlayFocus = isFocused;
     if (isFocused == false)
     {
+        endPlayPointerCapture();
         // The game drops held keys exactly as on its own window's focus loss.
         static_cast<void>(mPlayEndpointOrNull->SendFocusLost());
         for (bool& isHeld : mPlayHeldKeys)
@@ -101,6 +113,43 @@ void PreviewViewport::sendPlayFocus(bool isFocused)
     input::FocusBaseline baseline;
     baseline.Focused = true;
     static_cast<void>(mPlayEndpointOrNull->SendFocusEntered(baseline));
+}
+
+void PreviewViewport::beginPlayPointerCapture()
+{
+#if defined(Q_OS_MACOS)
+    if (mHasPlayFocus == false || isVisible() == false || mHasPlayPointerCapture == true ||
+        mPlayEndpointOrNull == nullptr || mPlayEndpointOrNull->ShouldForwardRelativePointer() == false)
+    {
+        return;
+    }
+    if (mRelativeMouse.TryBegin() == false)
+    {
+        QToolTip::showText(
+            QCursor::pos(),
+            QStringLiteral(
+                "The game could not capture the mouse. Activate the editor window and click the Play viewport again."),
+            this);
+        return;
+    }
+    mHasPlayPointerCapture = true;
+    grabMouse(Qt::BlankCursor);
+#endif
+}
+
+void PreviewViewport::endPlayPointerCapture()
+{
+#if defined(Q_OS_MACOS)
+    if (mHasPlayPointerCapture == true)
+    {
+        mHasPlayPointerCapture = false;
+        mRelativeMouse.Stop();
+        if (QWidget::mouseGrabber() == this)
+        {
+            releaseMouse();
+        }
+    }
+#endif
 }
 
 bool PreviewViewport::handlePlayKey(QKeyEvent& inoutEvent, bool isPress)
@@ -119,13 +168,14 @@ bool PreviewViewport::handlePlayKey(QKeyEvent& inoutEvent, bool isPress)
     {
         if (isPress == true)
         {
+            sendPlayFocus(false);
             clearFocus();
         }
         inoutEvent.accept();
         return true;
     }
     const input::Key key = MapNativeKey(inoutEvent);
-    if (input::IsValidKey(key) == true)
+    if (mHasPlayFocus == true && input::IsValidKey(key) == true)
     {
         const bool isRepeat = inoutEvent.isAutoRepeat();
         bool& isHeld = mPlayHeldKeys[input::KeyIndex(key)];
@@ -148,10 +198,19 @@ bool PreviewViewport::event(QEvent* event)
 {
     if (event->type() == QEvent::WindowDeactivate)
     {
+        sendPlayFocus(false);
         EndFirstPerson();
+    }
+    if (event->type() == QEvent::WindowActivate && hasFocus() == true && isVisible() == true)
+    {
+        sendPlayFocus(true);
     }
     if (event->type() == QEvent::UngrabMouse || event->type() == QEvent::WindowDeactivate)
     {
+        if (mHasPlayPointerCapture == true)
+        {
+            sendPlayFocus(false);
+        }
         stopNavigation();
     }
     if (event->type() == QEvent::ShortcutOverride && Preview_->IsExploringFirstPerson() == true)
@@ -184,6 +243,10 @@ void PreviewViewport::showEvent(QShowEvent* event)
     if (mPlayEndpointOrNull != nullptr)
     {
         static_cast<void>(mPlayEndpointOrNull->SendVisibility(platform::WindowVisibility::Visible));
+        if (hasFocus() == true)
+        {
+            sendPlayFocus(true);
+        }
     }
     QWidget::showEvent(event);
 }

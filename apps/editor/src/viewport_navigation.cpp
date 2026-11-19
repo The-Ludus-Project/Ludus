@@ -100,7 +100,14 @@ void PreviewViewport::mousePressEvent(QMouseEvent* event)
     setFocus(Qt::MouseFocusReason);
     if (mPlayEndpointOrNull != nullptr)
     {
-        // A click gives the game the keyboard; there is no pointer input to forward yet.
+        if (hasFocus() == true)
+        {
+            sendPlayFocus(true);
+        }
+        if (event->button() == Qt::LeftButton)
+        {
+            beginPlayPointerCapture();
+        }
         event->accept();
         return;
     }
@@ -530,7 +537,10 @@ void PreviewViewport::stopNavigation()
     mObjectInteraction->Cancel();
     clearFlySpeedStatus();
 #if defined(Q_OS_MACOS)
-    mRelativeMouse.Stop();
+    if (mHasPlayPointerCapture == false)
+    {
+        mRelativeMouse.Stop();
+    }
 #endif
     mIsFlying = false;
     mNavigationTimer.stop();
@@ -607,6 +617,7 @@ void PreviewViewport::hideEvent(QHideEvent* event)
     setRenderPresentationVisible(false);
     if (mPlayEndpointOrNull != nullptr)
     {
+        sendPlayFocus(false);
         // A hidden tab or dock is an occluded window: the game drops to its hidden pacing.
         static_cast<void>(mPlayEndpointOrNull->SendVisibility(platform::WindowVisibility::Occluded));
     }

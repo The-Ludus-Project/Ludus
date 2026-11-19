@@ -22,6 +22,7 @@ target_sources(
         FILES
             include/ludus/input/key.h
             include/ludus/input/keyboard_event.h
+            include/ludus/input/relative_pointer_motion.h
             include/ludus/input/keyboard.h
             include/ludus/input/actions.h
             include/ludus/input/input_debug.h

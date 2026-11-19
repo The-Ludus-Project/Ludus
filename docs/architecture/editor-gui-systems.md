@@ -893,19 +893,20 @@ endpoint reports Unavailable.
   and version 3 (4 on Windows) no [hosted recording](#hosted-recording); either
   side refuses another version as IncompatibleVersion. Each message is
   a little-endian 4-byte header (`uint16` kind, `uint16` payload size) followed
-  by a fixed-size payload. A frame payload is at most 255 bytes, so a peer can
+  by a payload of the size specified for its message. A frame payload is at most 255 bytes, so a peer can
   read and refuse another version's Hello. The address keeps its own format
   version, `1:`.
 
 | Message | Direction | Payload |
 | --- | --- | --- |
-| Hello | window → endpoint | magic `LHWN`, version, key count, 32-byte token |
+| Hello | window → endpoint | magic `LHWN`, version, key count, 32-byte token, optional one-byte macOS relative pointer opt-in |
 | Welcome | endpoint → window | version, visibility, flags, width, height, scale, 16-byte Mach rendezvous nonce (zero on Linux), and the consumer adapter's `deviceUUID` and `driverUUID` (zero unless the consumer-adapter flag is set) |
 | Refused | endpoint → window | refusal reason |
 | Resize | endpoint → window | width and height in backing pixels (each ≤ 32768), scale (finite, in (0, 16]) |
 | Visibility | endpoint → window | Visible, Occluded or Minimized |
 | Reset | endpoint → window | FocusEntered, FocusLost or Overflow, plus a held-key bit mask (FocusEntered only) |
 | Key | endpoint → window | physical `input::Key`, Down/Up, repeat flag |
+| RelativePointerMotion | endpoint → window | signed horizontal and vertical binary32 motion, sent only during capture to a child that opted in |
 | Close | endpoint → window | none |
 | Images | window → endpoint | generation, width and height (1 to 32768), format (RGBA8), handle kind, Vulkan allocation and adapter identity fields or Windows handle values and adapter LUID |
 | ImagesCopied | endpoint → window | generation whose NT handles the editor duplicated, Windows only |
@@ -919,7 +920,9 @@ Either side treats an unknown kind, a wrong size, a nonzero reserved byte or an
 out-of-range value as a violation and closes the channel. Names are zero-padded,
 valid UTF-8 without embedded zeros. After the Hello, a window sends only Images,
 Present and recording messages; the endpoint treats anything else as a
-violation and disconnects it.
+violation and disconnects it. Keyboard-only clients retain the original Hello
+size and never receive motion. The opted-in Hello requires a current macOS
+editor. A saturated send queue may drop motion without resetting keys.
 
 The window reproduces the Cocoa contract:
 
@@ -1204,9 +1207,13 @@ not interpret game keys.
   - Shift+F6 stops Play (the existing Stop shortcut).
   - Shift+F1 releases capture and focus without stopping the game.
   - Esc belongs to the game.
-- **Capture.** Once Platform supports cursor capture, a capture request from the
-  game makes the viewport grab the mouse and hide the cursor, as navigation fly
-  mode already does. The release chord, focus loss and Stop each end the capture.
+- **Capture.** On macOS, a game opts in with
+  `Window::CreateInfo::ShouldReceiveHostedRelativePointer`. Left-clicking the
+  Play viewport then captures the mouse and hides the cursor. Tab can give the
+  game keyboard focus without requesting capture. The game drains motion with
+  `Window::TakeRelativePointerMotion()` while reading its keyboard snapshot.
+  Shift+F1, focus loss and Stop release the cursor and clear held input. A new
+  click is required to recapture. On other targets, hosted input is keyboard-only.
 - **Resize, scale and visibility.** A viewport resize or device pixel ratio
   change sends the hosted game the requested backing-pixel extent and current
   display scale together. A fixed-pixel preset keeps its extent when display

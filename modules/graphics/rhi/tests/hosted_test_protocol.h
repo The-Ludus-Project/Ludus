@@ -34,6 +34,7 @@ inline constexpr foundation::uint64 HOSTED_TEST_PASS_IDENTITY =
     0x4C48'5052; // ludus-style: magic-number "LHPR" scope tag
 
 /// What the producer reports on standard output when its window closes.
+/// Pointer mode also reports after changes to the sampled input.
 struct ProducerStatistics final
 {
     /// Frames for which BeginFrame returned Ready.
@@ -44,5 +45,12 @@ struct ProducerStatistics final
     foundation::uint64 MaxSkippedNanoseconds = 0;
     /// Display scale on the most recent frame the game rendered.
     foundation::float32 LastRenderedScale = 0;
+    /// Pointer-mode motion sampled while the physical W key was held.
+    foundation::float32 HorizontalLookWhileMoving = 0;
+    foundation::float32 VerticalLookWhileMoving = 0;
+    /// Times focus was taken from the child while W was held.
+    foundation::uint32 HeldMovementFocusLosses = 0;
+    /// Whether the most recent pointer-mode sample saw W held.
+    bool IsMovementHeld = false;
 };
 } // namespace ludus::graphics::rhi::hosted_test

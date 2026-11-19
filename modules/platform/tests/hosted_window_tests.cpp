@@ -201,25 +201,30 @@ struct ConnectedPair final
 };
 
 /// Admit one end of a socketpair, send the window's Hello and open the window.
-void Connect(ConnectedPair& outPair, const hosted::Token& windowToken, HostedRefusal& outRefusal)
+void Connect(ConnectedPair& outPair,
+             const hosted::Token& windowToken,
+             HostedRefusal& outRefusal,
+             bool shouldReceiveRelativePointer = false)
 {
     SocketPair pair = MakeSocketPair();
-    REQUIRE(hosted::TrySendHello(pair.WindowSide.Get(), windowToken));
+    REQUIRE(hosted::TrySendHello(pair.WindowSide.Get(), windowToken, shouldReceiveRelativePointer));
     outPair.Session.Admit(ludus::foundation::Move(pair.EndpointSide), At(0));
     outPair.Session.Pump(At(1));
+    Window::CreateInfo info = MakeCreateInfo();
+    info.ShouldReceiveHostedRelativePointer = shouldReceiveRelativePointer;
     outPair.HostedWindow = hosted::OpenWindow(ludus::foundation::Move(pair.WindowSide),
                                               windowToken,
-                                              MakeCreateInfo(),
+                                              info,
                                               OPEN_TIMEOUT_MILLISECONDS,
                                               outRefusal);
 }
 
-void ConnectAndAttach(ConnectedPair& outPair)
+void ConnectAndAttach(ConnectedPair& outPair, bool shouldReceiveRelativePointer = false)
 {
     const hosted::Token token = MakeToken(7);
     outPair.Session.Configure(token, hosted::GetCurrentUserId(), MakeInitialState());
     HostedRefusal refusal = HostedRefusal::None;
-    Connect(outPair, token, refusal);
+    Connect(outPair, token, refusal, shouldReceiveRelativePointer);
     REQUIRE(refusal == HostedRefusal::None);
     REQUIRE(outPair.HostedWindow.Get() != nullptr);
     REQUIRE(outPair.Session.GetPhase() == hosted::SessionPhase::Connected);
@@ -939,4 +944,70 @@ TEST_CASE("The hosted endpoint validates its start parameters", "[platform][host
     startInfo.ParentDirectory = "/nonexistent-ludus-parent";
     CHECK(endpoint.Start(startInfo) == HostedEndpointStatus::Unavailable);
     CHECK(endpoint.GetState() == HostedConnectionState::Stopped);
+}
+
+TEST_CASE("Hosted relative motion requires opt-in and focus", "[platform][hosted][relative-pointer]")
+{
+    ConnectedPair keyboardOnly;
+    ConnectAndAttach(keyboardOnly);
+    REQUIRE(keyboardOnly.Session.SendFocusEntered({}) == HostedEndpointStatus::Ok);
+    CHECK_FALSE(keyboardOnly.Session.ShouldForwardRelativePointer());
+    CHECK(keyboardOnly.Session.SendRelativePointerMotion({1, 2}) == HostedEndpointStatus::InvalidState);
+    CHECK(keyboardOnly.HostedWindow->TakeRelativePointerMotion().Horizontal == 0);
+
+    ConnectedPair pair;
+    ConnectAndAttach(pair, true);
+#if LUDUS_TARGET_OS == LUDUS_OS_MACOS
+    REQUIRE(pair.Session.ShouldForwardRelativePointer());
+    CHECK(pair.Session.SendRelativePointerMotion({1, 2}) == HostedEndpointStatus::InvalidState);
+    REQUIRE(pair.Session.SendFocusEntered({}) == HostedEndpointStatus::Ok);
+    REQUIRE(pair.Session.SendKey(Key::KeyW, KeyTransition::Down, false) == HostedEndpointStatus::Ok);
+    REQUIRE(pair.Session.SendRelativePointerMotion({1.5F, -3.25F}) == HostedEndpointStatus::Ok);
+    REQUIRE(pair.Session.SendRelativePointerMotion({2.5F, 0.5F}) == HostedEndpointStatus::Ok);
+    REQUIRE(pair.HostedWindow->HandleEvent({}));
+    CHECK(pair.Recorder.LastRecord.PhysicalKey == Key::KeyW);
+    CHECK(pair.Recorder.LastRecord.Transition == KeyTransition::Down);
+    const ludus::input::RelativePointerMotion motion = pair.HostedWindow->TakeRelativePointerMotion();
+    CHECK(motion.Horizontal == 4);
+    CHECK(motion.Vertical == -2.75F);
+    CHECK(pair.HostedWindow->TakeRelativePointerMotion().Horizontal == 0);
+
+    REQUIRE(pair.Session.SendRelativePointerMotion({1, 2}) == HostedEndpointStatus::Ok);
+    REQUIRE(pair.Session.SendFocusLost() == HostedEndpointStatus::Ok);
+    REQUIRE(pair.HostedWindow->HandleEvent({}));
+    CHECK(pair.HostedWindow->TakeRelativePointerMotion().Horizontal == 0);
+    CHECK(pair.Recorder.GetLastReset().Reason == ResetReason::FocusLost);
+    CHECK(CountHeld(pair.Recorder.GetLastReset().Baseline) == 0);
+    CHECK(pair.Session.SendRelativePointerMotion({1, 2}) == HostedEndpointStatus::InvalidState);
+
+    REQUIRE(pair.Session.SendFocusEntered({}) == HostedEndpointStatus::Ok);
+    REQUIRE(pair.Session.SendRelativePointerMotion({2, 1}) == HostedEndpointStatus::Ok);
+    REQUIRE(pair.Session.SendClose() == HostedEndpointStatus::Ok);
+    CHECK_FALSE(pair.HostedWindow->HandleEvent({}));
+    CHECK(pair.HostedWindow->TakeRelativePointerMotion().Horizontal == 0);
+    CHECK(pair.Recorder.GetLastReset().Reason == ResetReason::WindowClosed);
+#else
+    CHECK_FALSE(pair.Session.ShouldForwardRelativePointer());
+#endif
+}
+
+TEST_CASE("The hosted codec rejects non-finite pointer samples", "[platform][hosted][relative-pointer]")
+{
+    ludus::foundation::StaticArray<uint8, hosted::MAX_MESSAGE_BYTES> bytes{};
+    hosted::Message motion;
+    motion.Kind = hosted::MessageKind::RelativePointerMotion;
+    motion.PointerMotion = {-2.5F, 1.25F};
+    usize size = 0;
+    REQUIRE(hosted::TryEncodeMessage(motion, {bytes.GetData(), bytes.GetSize()}, size));
+    hosted::Message decoded;
+    usize consumed = 0;
+    REQUIRE(hosted::TryDecodeMessage({bytes.GetData(), size}, decoded, consumed) == hosted::DecodeStatus::Ok);
+    CHECK(decoded.PointerMotion.Horizontal == motion.PointerMotion.Horizontal);
+    CHECK(decoded.PointerMotion.Vertical == motion.PointerMotion.Vertical);
+    // All-one horizontal bits encode a NaN.
+    for (usize index = 0; index < sizeof(uint32); ++index)
+    {
+        bytes[hosted::HEADER_BYTES + index] = 0xFF;
+    }
+    CHECK(hosted::TryDecodeMessage({bytes.GetData(), size}, decoded, consumed) == hosted::DecodeStatus::Malformed);
 }

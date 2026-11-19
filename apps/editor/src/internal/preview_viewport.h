@@ -105,10 +105,12 @@ public:
     /// While set, the viewport acts as the game's window: keyboard focus becomes FocusEntered and
     /// FocusLost, keys go to the game by physical key (Platform's native key maps), editor
     /// shortcuts do not take them, and showing or hiding reports Visible or Occluded. Two chords
-    /// stay with the editor: Shift+F6 (Stop) and Shift+F1, which gives the keyboard back. Mouse
-    /// input does not navigate. Platform has no pointer input yet, so the game receives none.
+    /// stay with the editor: Shift+F6 (Stop) and Shift+F1, which releases Play focus and capture.
+    /// A click captures relative pointer motion for opted-in games on Cocoa.
     /// @param endpointOrNull The game's hosted window, borrowed until replaced; null ends forwarding.
     void SetPlayInput(platform::HostedWindowEndpoint* endpointOrNull);
+    /// Release input now while the stopping game's final frame still owns the viewport.
+    void SuspendPlayInput();
     /// Explore the currently presented World from spawn, at speed in metres per second.
     /// Existing right-drag navigation controls the camera; Escape or losing focus restores the editor view.
     [[nodiscard]] bool
@@ -278,6 +280,11 @@ private:
     foundation::StaticArray<bool, input::KEY_COUNT> mPlayHeldKeys{};
     [[nodiscard]] bool handlePlayKey(QKeyEvent& inoutEvent, bool isPress);
     void sendPlayFocus(bool isFocused);
+    void beginPlayPointerCapture();
+    void endPlayPointerCapture();
+    bool mHasPlayFocus = false;
+    bool mIsPlayInputSuspended = false;
+    bool mHasPlayPointerCapture = false;
 #if defined(Q_OS_MACOS)
     friend class ViewportRelativeMouse;
     ViewportRelativeMouse mRelativeMouse;
