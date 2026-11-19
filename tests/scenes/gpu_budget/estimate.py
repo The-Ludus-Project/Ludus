@@ -28,16 +28,27 @@ def fit(rows):
 def main(directory):
     training = []
     heldout = []
+    geometry = set()
+    authored = {}
     for size, (width, height) in SIZES.items():
         record = json.loads((directory / f"{size}-timed.json").read_text())
         if record["verdict"] == "inconclusive":
             raise ValueError(f"Insufficient timing coverage in {size}")
         for segment, sample in record["segments"].items():
+            geometry.add((tuple(sample["scene_draws"]), tuple(sample["scene_quads"])))
             row = width * height / 1e6, sample["nonblack_pixels"] / 1e6, sample["gpu_ms"]["p95"]
+            if segment == "authored":
+                authored[size] = row[2]
             if segment == "holdout":
                 heldout.append((size, row))
             else:
                 training.append(row)
+    if len(geometry) != 1 or any(len(values) != 1 for values in next(iter(geometry))):
+        raise ValueError("Controlled runs require identical draw and visible-quad counts")
+    difference = abs(authored["full"] - authored["half"])
+    if difference < 0.25 or difference < .10 * authored["full"]:
+        print(json.dumps(dict(material=False, authored_difference_ms=difference)))
+        return
     intercept, pixels, room = fit(training)
     predictions = []
     for size, (x, y, actual) in heldout:
@@ -45,8 +56,9 @@ def main(directory):
         predictions.append(dict(size=size, measured_ms=actual, predicted_ms=predicted,
                                 absolute_error_ms=abs(actual - predicted),
                                 false_under_budget=predicted <= BUDGET_MS < actual))
-    print(json.dumps(dict(intercept_ms=intercept, ms_per_megapixel=pixels, room_ms_per_megapixel=room,
-                          heldout=predictions), indent=2))
+    print(json.dumps(dict(material=True, authored_difference_ms=difference, intercept_ms=intercept, ms_per_megapixel=pixels, room_ms_per_megapixel=room,
+                          mean_absolute_error_ms=statistics.mean(p["absolute_error_ms"] for p in predictions),
+                          false_under_budget_count=sum(p["false_under_budget"] for p in predictions), heldout=predictions), indent=2))
 
 
 if __name__ == "__main__":

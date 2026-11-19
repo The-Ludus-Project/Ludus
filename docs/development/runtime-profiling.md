@@ -209,6 +209,53 @@ apps/world_demo/levels/first-room.world.json --frames 1200 --frame-rate 60 --pac
 The editor records its preview with Both, and the Development player advances
 simulation. The package freezes simulation to control the submitted geometry.
 
+#### Apple M5 first-room result
+
+The 8-core Apple M5 on macOS 26.6 (25G72) passed at all three sizes. The app
+selected Metal on Apple M5. The built-in panel ran at 60 Hz with 2× backing,
+AC power and Low Power Mode off. macOS reported fair thermal state before and
+after each capture. Other desktop applications were active. Each run presented
+4,500 frames over approximately 82 seconds, including warm-up. Inputs and
+geometry stayed fixed across sizes. Each counted frame drew 60 visible quads in
+one instanced draw, then two full-screen indexed quads for tone mapping and
+presentation, for three draws and 124 triangles in total.
+
+| Internal and Metal drawable | GPU p95 in ms, authored / wide / held-out | Worst hold p95 present-return interval | Completed GPU samples | GPU verdict |
+| --- | --- | ---: | ---: | --- |
+| 960 × 640 | 1.772 / 1.401 / 1.397 | 17.033 ms | 3,600 / 3,600 | Pass |
+| 720 × 480 | 1.576 / 1.265 / 1.592 | 17.600 ms | 3,600 / 3,600 | Pass |
+| 480 × 320 | 1.228 / 1.188 / 1.190 | 17.382 ms | 3,600 / 3,600 | Pass |
+| 960 × 640, timer disabled | Unavailable in every hold | 17.495 ms | 0 / 3,600 | Inconclusive |
+
+The renderer owner can retain full resolution for this room on this device.
+Reducing to half resolution saved 0.544 ms (31%) at authored-view p95 with the
+same geometry. The [full-resolution image](gpu-budget-evidence/full.png) and
+[half-resolution image](gpu-budget-evidence/half.png) preserve room layout and
+colors. Diagonal edges have coarser steps in the smaller render. The full-size
+timed and disabled textures were byte-identical for each camera hold. The
+frame-loop owner can investigate scheduling and presentation if a p95
+present-return interval within 16.67 ms is required. Enabled and disabled
+pacing distributions overlap. This single run per setting does not isolate a
+causal instrumentation cost. The measurement owner should enable timing or
+collect a supported trace for a GPU verdict on a timing-unavailable run.
+
+Triangle count alone gives the same prediction across the three resolutions.
+The six training observations gave a fixed-geometry p95 estimate in ms of
+`1.105 + 0.262 × internal megapixels + 0.999 × nonblack megapixels`.
+The held-out errors at full, medium and half size were 0.108, 0.262 and
+0.015 ms. None of the three predictions falsely passed the budget. All three
+measured values were well below it, so this pilot leaves prediction accuracy
+near the threshold untested.
+
+The [measurement archive](gpu-budget-evidence/apple-m5-first-room.zip) contains
+the per-frame CSVs, all twelve display textures, quantiles, withheld estimates,
+environment and package manifest. Times are elapsed nanoseconds in the CSVs,
+and unavailable durations are blank. The extracted archive SHA-256 was
+`3407136f50d732043b19a5f04ec6df939987735c64c67fccb2e8f42403f19b2f`.
+The SDK used Clang 23.1.3, arm64 Release at engine base
+`9def10d461343b26e56560e0728508eaa1052770` with the bundled Cocoa startup
+fix. The archive also records the installed Platform library hash.
+
 ## Scheduled workflow
 
 [`.github/workflows/performance.yml`](../../.github/workflows/performance.yml)
