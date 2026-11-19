@@ -31,7 +31,6 @@
 
 #include <walking_controller.h>
 
-#include <QByteArray>
 #include <QElapsedTimer>
 #include <QJsonObject>
 #include <QObject>
@@ -445,13 +444,6 @@ public:
     {
         return mHasPendingFrame;
     }
-#if defined(LUDUS_EDITOR_BROWSER_PREVIEW)
-    /// Identity captured at recording, for the completed frame just taken by the browser viewport.
-    [[nodiscard]] LUDUS_INLINE const QByteArray& GetBrowserCompletedSceneIdentity() const noexcept
-    {
-        return mBrowserCompletedSceneIdentity;
-    }
-#endif
 Q_SIGNALS:
     /// Drawable reference changed, in physical pixels before the preview rendering cap.
     /// Emitted on the GUI thread even when no device or rendered frame is ready.
@@ -579,11 +571,6 @@ private:
     graphics::renderer::ViewportFrame mPendingFrame;
     graphics::renderer::ViewportImage mPendingImage;
     graphics::rhi::SubmissionToken mProducer;
-#if defined(LUDUS_EDITOR_BROWSER_PREVIEW)
-    QByteArray mBrowserPreparedSceneIdentity;
-    QByteArray mBrowserSubmittedSceneIdentity;
-    QByteArray mBrowserCompletedSceneIdentity;
-#endif
     bool mHasPendingFrame = false;
     bool mHasFrame = false;
     bool mIsPresentationVisible = true;
