@@ -419,6 +419,7 @@ if(EMSCRIPTEN)
     add_subdirectory(modules/graphics/renderer)
     add_subdirectory(modules/runtime/shader_development)
     add_subdirectory(modules/graphics/text)
+    add_subdirectory(modules/graphics/ui_render)
     # NOTE: Ludus::Text is intentionally NOT built for the Emscripten target yet.
     # Its FreeType/HarfBuzz dependencies are resolved natively through Conan; the
     # separate pinned web source-bootstrap for those libraries is still pending
@@ -446,6 +447,7 @@ else()
     add_subdirectory(modules/runtime/shader_development)
     add_subdirectory(modules/text)
     add_subdirectory(modules/graphics/text)
+    add_subdirectory(modules/graphics/ui_render)
 
     # Qt-free static GameHost runtime library and loader (project-live-reload
     # design section 2). Native-only: it uses dlopen and the Platform/RHI
@@ -583,7 +585,7 @@ if(LUDUS_BUILD_UNICODE)
     ludus_sdk_register_dependency(ICU4C "78.3" "Unicode-3.0" bundled)
 endif()
 if(NOT EMSCRIPTEN)
-    foreach(_component Platform PlatformEntropy PlatformPacing GraphicsRhi GraphicsRenderer GraphicsText Text)
+    foreach(_component Platform PlatformEntropy PlatformPacing GraphicsRhi GraphicsRenderer GraphicsText UiRender Text)
         ludus_sdk_register_component(${_component})
         ludus_sdk_register_feature(${_component})
     endforeach()
@@ -594,7 +596,7 @@ if(NOT EMSCRIPTEN)
         ludus_sdk_register_feature(ShaderDevelopment)
     endif()
 else()
-    foreach(_component Platform PlatformEntropy PlatformPacing GraphicsRhi GraphicsRenderer GraphicsText)
+    foreach(_component Platform PlatformEntropy PlatformPacing GraphicsRhi GraphicsRenderer GraphicsText UiRender)
         ludus_sdk_register_component(${_component})
         ludus_sdk_register_feature(${_component})
     endforeach()
