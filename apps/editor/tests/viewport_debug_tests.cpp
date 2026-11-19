@@ -1008,12 +1008,14 @@ TEST_CASE("World companion HDR survives save and reopen and illuminates its Lit 
             // Supply the native device headlessly in place of the widget's Cocoa window.
             QObject::disconnect(&preview, &RenderPreview::DeviceRequested, nullptr, nullptr);
             REQUIRE(preview.GoToStartView() == true);
+            preview.SetPresentationVisible(true);
             preview.Resize(CAPTURE_EXTENT, CAPTURE_EXTENT);
             preview.SetShading(PreviewShading::Lit);
             REQUIRE(preview.Start() == true);
             REQUIRE(preview.AdmitOffscreenDevice() == true);
             const QImage image = CaptureShading(preview, PreviewShading::Lit);
             INFO(preview.Status().toStdString());
+            CAPTURE(preview.Frames(), image.width(), image.height());
             REQUIRE(image.size() == QSize(CAPTURE_EXTENT, CAPTURE_EXTENT));
             QFile probes(input.filePath(QStringLiteral("probes.txt")));
             REQUIRE(probes.open(QIODevice::ReadOnly) == true);

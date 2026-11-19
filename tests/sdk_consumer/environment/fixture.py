@@ -7,7 +7,7 @@ import struct
 SIZE = 65
 CENTER = SIZE // 2
 FOV = math.pi / 2
-PLANE_HEIGHT = 4
+PLANE_ORIGIN = (7, 4, 5)  # clear the Lit viewport grid and all three world axes
 FLOOR = (0.125,) * 3
 # (world direction, angular radius in degrees, RGB radiance). Longitude zero is +X.
 FEATURES = (
@@ -115,15 +115,15 @@ def write_plane(
     (root / "plane.bin").write_bytes(raw)
     right, up = basis(view, roll)
     matrix = [v for column in (right, up, view, view) for v in (*column, 0)]
-    # Keep the receiver and probes above the World viewport grid.
-    matrix[13] += PLANE_HEIGHT
+    for i, offset in enumerate(PLANE_ORIGIN):
+        matrix[12 + i] += offset
     matrix[-1] = 1
     shape = {
         "asset": {"version": "2.0"},
         "scene": 0,
         "scenes": [{"nodes": [0, 1]}],
         "nodes": [
-            {"mesh": 0, "translation": [0, PLANE_HEIGHT, 0]},
+            {"mesh": 0, "translation": PLANE_ORIGIN},
             {"camera": 0, "matrix": matrix},
         ],
         "cameras": [
@@ -162,7 +162,7 @@ def write_plane(
 
 
 def reflection(x, y, n, view, roll=False):
-    # The eye is one metre from the plane origin. Intersect its pixel-centre ray with n.p = 0.
+    # The eye is one metre from the receiver centre. Intersect in plane-centred coordinates.
     right, up = basis(view, roll)
     ray = unit(
         tuple(
@@ -171,8 +171,6 @@ def reflection(x, y, n, view, roll=False):
         )
     )
     t = -dot(n, view) / dot(n, ray)
-    point = tuple(
-        origin + v + t * q for origin, v, q in zip((0, PLANE_HEIGHT, 0), view, ray)
-    )
+    point = tuple(origin + v + t * q for origin, v, q in zip(PLANE_ORIGIN, view, ray))
     reflected = tuple(q - 2 * dot(n, ray) * a for q, a in zip(ray, n))
     return point, reflected

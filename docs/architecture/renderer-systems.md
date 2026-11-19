@@ -5496,7 +5496,9 @@ readback. The World check selects the same companion in the import preview,
 confirms the import, saves the World and opens it again. It compares every
 cooked RGB value and samples the Lit viewport before and after reopening.
 The viewport comparison applies its display transform to the SDK values and
-uses an absolute tolerance of 0.065 per display channel.
+uses an absolute tolerance of 0.065 per display channel. The World's grid and
+colored coordinate axes also appear in this frame. The receiver centre is at
+(7, 4, 5) metres so these overlays clear the lighting probes.
 
 Run the synthetic checks with the native renderer SDK consumer build, then run
 the World check with the native Editor test executable. The standalone consumer
@@ -5547,7 +5549,10 @@ sum to (1 − 0.55 × roughness), so division by this factor recovers the select
 mip from the linear pixel. Compare it with the independent binary64 integral
 of incident radiance weighted by D(H) max(N·L, 0)/4 divided by the integral of
 that weight, with V=N. The absolute tolerances are 0.18 at 32 filter samples,
-0.085 at 256 samples and 0.012 for a constant source.
+0.085 at 256 samples and 0.012 for a constant source. On Metal the largest compact
+patch mip errors were 0.138 and 0.050 at the two sample counts. Doubling the
+reference grid from two to four subdivisions per source-texel dimension must
+change the normalized convolution by at most 0.012.
 
 At N·V of 1 and 0.30, also integrate the full single-scattering GGX BRDF with
 height-correlated Smith visibility and unit Fresnel. Doubling the half-vector
@@ -5555,7 +5560,7 @@ quadrature resolution must change each channel by at most 0.035. The runner
 reports the ideal split-sum estimate minus direct integration and the observed
 raster minus direct integration separately. In particular, at 64 columns,
 roughness 1/6 and N·V = 0.30, the red-channel split-sum bias on Metal was
-about −0.59 for an integral of 3.53. This error is visible even with a well
+about −0.60 for an integral of 3.53. This error is visible even with a well
 converged prefilter. The raster-to-split-sum tolerance is 0.18. The
 raster-to-direct tolerances are 0.32 and 0.65 for the grazing compact patch.
 [Kautz et al.](https://jankautz.com/publications/unifiedRW00.pdf)
