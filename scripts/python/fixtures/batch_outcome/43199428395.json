@@ -1,0 +1,106 @@
+{
+  "run": {
+    "id": 43199428395,
+    "run_attempt": 1,
+    "status": "completed",
+    "head_branch": "main",
+    "path": ".github/workflows/batch-ci.yml",
+    "head_repository": {
+      "full_name": "The-Ludus-Project/Ludus"
+    },
+    "event": "schedule",
+    "actor": {
+      "login": "github-merge-queue[bot]",
+      "type": "Bot"
+    },
+    "conclusion": "cancelled",
+    "created_at": "2026-11-12T10:20:06Z",
+    "run_started_at": "2026-11-12T10:20:06Z"
+  },
+  "commit": {
+    "commit": {
+      "committer": {
+        "date": "2026-11-12T05:01:28Z"
+      }
+    }
+  },
+  "artifacts": [
+    {
+      "id": 13937066782,
+      "name": "macos-sanitizer-controls",
+      "expired": false,
+      "created_at": "2026-11-12T10:58:06Z"
+    },
+    {
+      "id": 13936058295,
+      "name": "sanitizer-controls",
+      "expired": false,
+      "created_at": "2026-11-12T10:47:55Z"
+    }
+  ],
+  "logs": {
+    "131118641624": "2026-11-12T10:20:24.7333028Z Validate frozen develop commit 3d836381edbb779f613dc8941b587c93cd6d2076 above main 3b2e4f8c12e5b3eb3c7d19530ef5068d3827fb38.",
+    "131118820253": "2026-11-12T11:26:16.0857887Z ### Batch stopped early\n2026-11-12T11:26:16.0939406Z - native / ASan and UBSan (4/4)\n2026-11-12T11:26:16.0939625Z - native / Editor, shader worker and unit tests\n2026-11-12T11:26:16.0939804Z - native / macOS ASan and UBSan",
+    "131151905412": "2026-11-12T11:26:21.9122147Z ✓ Request to cancel workflow 43199428395 submitted."
+  },
+  "jobs": [
+    {"id": 131118641624, "run_attempt": 1, "name": "Capture develop candidate", "started_at": "2026-11-12T10:20:11Z", "completed_at": "2026-11-12T10:20:26Z", "conclusion": "success", "steps": [{"name": "Capture exact commit, or report why no batch runs", "started_at": "2026-11-12T10:20:16Z", "completed_at": "2026-11-12T10:20:24Z", "conclusion": "success"}]},
+    {"id": 131118820253, "run_attempt": 1, "name": "Watch for failed suites", "started_at": "2026-11-12T10:20:28Z", "completed_at": "2026-11-12T11:26:18Z", "conclusion": "success", "steps": [{"name": "Set up job"}]},
+    {"id": 131118820519, "run_attempt": 1, "name": "browser / L0 ICU backend probe (wasm)", "started_at": "2026-11-12T10:20:28Z", "completed_at": "2026-11-12T10:24:28Z", "conclusion": "success", "steps": [{"name": "Set up job"}]},
+    {"id": 131118820590, "run_attempt": 1, "name": "browser / compile-and-package", "started_at": "2026-11-12T10:20:28Z", "completed_at": "2026-11-12T10:34:12Z", "conclusion": "success", "steps": [{"name": "Set up job"}]},
+    {"id": 131118820724, "run_attempt": 1, "name": "native / Classify changes", "started_at": "2026-11-12T10:20:29Z", "completed_at": "2026-11-12T10:20:40Z", "conclusion": "success", "steps": [{"name": "Set up job"}]},
+    {"id": 131118820750, "run_attempt": 1, "name": "wiki / Public API documentation", "started_at": "2026-11-12T10:20:29Z", "completed_at": "2026-11-12T10:21:39Z", "conclusion": "success", "steps": [{"name": "Set up job"}]},
+    {"id": 131118820801, "run_attempt": 1, "name": "windows / Windows Direct3D 12 bring-up", "started_at": "2026-11-12T10:20:28Z", "completed_at": "2026-11-12T10:24:27Z", "conclusion": "success", "steps": [{"name": "Set up job"}]},
+    {"id": 131118820816, "run_attempt": 1, "name": "wiki / Build or reuse browser editor", "started_at": "2026-11-12T10:20:28Z", "completed_at": "2026-11-12T10:30:44Z", "conclusion": "success", "steps": [{"name": "Set up job"}]},
+    {"id": 131118820840, "run_attempt": 1, "name": "windows / MSVC host and D3D12 / Ninja", "started_at": "2026-11-12T10:20:29Z", "completed_at": "2026-11-12T10:52:38Z", "conclusion": "success", "steps": [{"name": "Set up job"}]},
+    {"id": 131118820841, "run_attempt": 1, "name": "windows / MSVC host and D3D12 / MSBuild", "started_at": "2026-11-12T10:20:28Z", "completed_at": "2026-11-12T10:47:23Z", "conclusion": "success", "steps": [{"name": "Set up job"}]},
+    {"id": 131118820854, "run_attempt": 1, "name": "windows / MSVC host and D3D12 / Editor ASan", "started_at": "2026-11-12T10:20:29Z", "completed_at": "2026-11-12T11:02:07Z", "conclusion": "success", "steps": [{"name": "Set up job"}]},
+    {"id": 131118820864, "run_attempt": 1, "name": "windows / MSVC host and D3D12 / Runtime SDK (Profile)", "started_at": "2026-11-12T10:20:28Z", "completed_at": "2026-11-12T10:26:15Z", "conclusion": "success", "steps": [{"name": "Set up job"}]},
+    {"id": 131118820893, "run_attempt": 1, "name": "windows / MSVC host and D3D12 / Runtime SDK (Release)", "started_at": "2026-11-12T10:20:29Z", "completed_at": "2026-11-12T10:24:12Z", "conclusion": "success", "steps": [{"name": "Set up job"}]},
+    {"id": 131118820898, "run_attempt": 1, "name": "windows / MSVC host and D3D12 / MSVC ASan", "started_at": "2026-11-12T10:20:29Z", "completed_at": "2026-11-12T11:01:07Z", "conclusion": "success", "steps": [{"name": "Set up job"}]},
+    {"id": 131118820961, "run_attempt": 1, "name": "windows / MSVC host and D3D12 / Runtime SDK (Debug)", "started_at": "2026-11-12T10:20:28Z", "completed_at": "2026-11-12T10:24:30Z", "conclusion": "success", "steps": [{"name": "Set up job"}]},
+    {"id": 131118821075, "run_attempt": 1, "name": "windows / MSVC host and D3D12 / Editor", "started_at": "2026-11-12T10:20:29Z", "completed_at": "2026-11-12T10:44:38Z", "conclusion": "success", "steps": [{"name": "Set up job"}]},
+    {"id": 131118821668, "run_attempt": 1, "name": "windows / MSVC host and D3D12 / Runtime SDK (Development)", "started_at": "2026-11-12T10:20:28Z", "completed_at": "2026-11-12T10:30:36Z", "conclusion": "success", "steps": [{"name": "Set up job"}]},
+    {"id": 131118822608, "run_attempt": 1, "name": "native / Develop health", "started_at": "2026-11-12T10:20:27Z", "completed_at": "2026-11-12T10:20:27Z", "conclusion": "skipped"},
+    {"id": 131118822678, "run_attempt": 1, "name": "recovery", "started_at": "2026-11-12T10:20:27Z", "completed_at": "2026-11-12T10:20:26Z", "conclusion": "skipped"},
+    {"id": 131118822789, "run_attempt": 1, "name": "native / Build the shared Linux sanitizer preset", "started_at": "2026-11-12T10:20:27Z", "completed_at": "2026-11-12T10:20:27Z", "conclusion": "skipped"},
+    {"id": 131118822846, "run_attempt": 1, "name": "native / MH and Jump Restore Vulkan parity", "started_at": "2026-11-12T10:20:27Z", "completed_at": "2026-11-12T10:20:27Z", "conclusion": "skipped"},
+    {"id": 131118824092, "run_attempt": 1, "name": "wiki / Documentation tools (${{ matrix.runner }})", "started_at": "2026-11-12T10:20:27Z", "completed_at": "2026-11-12T10:20:27Z", "conclusion": "skipped"},
+    {"id": 131118824367, "run_attempt": 1, "name": "Mark run as not validated", "started_at": "2026-11-12T10:20:27Z", "completed_at": "2026-11-12T10:20:26Z", "conclusion": "skipped"},
+    {"id": 131118936921, "run_attempt": 1, "name": "native / Filesystem pack fuzzing", "started_at": "2026-11-12T10:20:42Z", "completed_at": "2026-11-12T10:22:27Z", "conclusion": "success", "steps": [{"name": "Set up job"}]},
+    {"id": 131118936983, "run_attempt": 1, "name": "native / Development and SDK", "started_at": "2026-11-12T10:20:42Z", "completed_at": "2026-11-12T11:10:00Z", "conclusion": "success", "steps": [{"name": "Set up job"}]},
+    {"id": 131118937029, "run_attempt": 1, "name": "native / Source formatting", "started_at": "2026-11-12T10:24:31Z", "completed_at": "2026-11-12T10:28:10Z", "conclusion": "success", "steps": [{"name": "Set up job"}]},
+    {"id": 131118937045, "run_attempt": 1, "name": "native / macOS ASan and UBSan", "started_at": "2026-11-12T10:21:41Z", "completed_at": "2026-11-12T10:58:13Z", "conclusion": "failure", "steps": [{"name": "Set up job"}]},
+    {"id": 131118937115, "run_attempt": 1, "name": "native / Debug runtime and source debugger", "started_at": "2026-11-12T10:24:30Z", "completed_at": "2026-11-12T10:28:59Z", "conclusion": "success", "steps": [{"name": "Set up job"}]},
+    {"id": 131118937128, "run_attempt": 1, "name": "native / Editor, shader worker and unit tests", "started_at": "2026-11-12T10:24:29Z", "completed_at": "2026-11-12T10:57:12Z", "conclusion": "failure", "steps": [{"name": "Set up job"}]},
+    {"id": 131118937129, "run_attempt": 1, "name": "native / Clang static analysis (1)", "started_at": "2026-11-12T10:24:13Z", "completed_at": "2026-11-12T10:29:40Z", "conclusion": "success", "steps": [{"name": "Set up job"}]},
+    {"id": 131118937168, "run_attempt": 1, "name": "native / Threading race detection", "started_at": "2026-11-12T10:29:42Z", "completed_at": "2026-11-12T10:30:37Z", "conclusion": "success", "steps": [{"name": "Set up job"}]},
+    {"id": 131118937213, "run_attempt": 1, "name": "native / Build-time budget", "started_at": "2026-11-12T10:20:42Z", "completed_at": "2026-11-12T10:25:31Z", "conclusion": "success", "steps": [{"name": "Set up job"}]},
+    {"id": 131118937248, "run_attempt": 1, "name": "native / ASan and UBSan (4/4)", "started_at": "2026-11-12T10:20:42Z", "completed_at": "2026-11-12T10:55:31Z", "conclusion": "failure", "steps": [{"name": "Set up job"}]},
+    {"id": 131118937325, "run_attempt": 1, "name": "native / ASan and UBSan (2/4)", "started_at": "2026-11-12T10:25:33Z", "completed_at": "2026-11-12T11:14:16Z", "conclusion": "success", "steps": [{"name": "Set up job"}]},
+    {"id": 131118937362, "run_attempt": 1, "name": "native / PCH build (LUDUS_ENABLE_PCH=ON)", "started_at": "2026-11-12T10:29:00Z", "completed_at": "2026-11-12T10:32:54Z", "conclusion": "success", "steps": [{"name": "Set up job"}]},
+    {"id": 131118937407, "run_attempt": 1, "name": "native / Assertion policy (linux-clang-profile)", "started_at": "2026-11-12T10:20:42Z", "completed_at": "2026-11-12T10:27:12Z", "conclusion": "success", "steps": [{"name": "Set up job"}]},
+    {"id": 131118937446, "run_attempt": 1, "name": "native / ASan and UBSan (1/4)", "started_at": "2026-11-12T10:27:14Z", "completed_at": "2026-11-12T11:24:02Z", "conclusion": "success", "steps": [{"name": "Set up job"}]},
+    {"id": 131118937452, "run_attempt": 1, "name": "native / S7 reference performance and release acceptance", "started_at": "2026-11-12T10:28:11Z", "completed_at": "2026-11-12T10:35:24Z", "conclusion": "success", "steps": [{"name": "Set up job"}]},
+    {"id": 131118937474, "run_attempt": 1, "name": "native / Assertion policy (linux-clang-release)", "started_at": "2026-11-12T10:22:29Z", "completed_at": "2026-11-12T10:28:35Z", "conclusion": "success", "steps": [{"name": "Set up job"}]},
+    {"id": 131118937493, "run_attempt": 1, "name": "native / ASan and UBSan (3/4)", "started_at": "2026-11-12T10:26:17Z", "completed_at": "2026-11-12T11:08:38Z", "conclusion": "success", "steps": [{"name": "Set up job"}]},
+    {"id": 131118937542, "run_attempt": 1, "name": "native / Clang static analysis (0)", "started_at": "2026-11-12T10:28:37Z", "completed_at": "2026-11-12T10:33:57Z", "conclusion": "success", "steps": [{"name": "Set up job"}]},
+    {"id": 131124125549, "run_attempt": 1, "name": "wiki / Playable web samples (software GPU)", "started_at": "2026-11-12T10:30:46Z", "completed_at": "2026-11-12T10:32:19Z", "conclusion": "success", "steps": [{"name": "Set up job"}]},
+    {"id": 131124926457, "run_attempt": 1, "name": "wiki / Build and check wiki", "started_at": "2026-11-12T10:32:21Z", "completed_at": "2026-11-12T10:34:15Z", "conclusion": "success", "steps": [{"name": "Set up job"}]},
+    {"id": 131125875801, "run_attempt": 1, "name": "browser / Renderer browser tests (baseline)", "started_at": "2026-11-12T10:34:14Z", "completed_at": "2026-11-12T10:38:05Z", "conclusion": "success", "steps": [{"name": "Set up job"}]},
+    {"id": 131125875883, "run_attempt": 1, "name": "browser / Renderer browser tests (scaling)", "started_at": "2026-11-12T10:34:14Z", "completed_at": "2026-11-12T10:40:03Z", "conclusion": "success", "steps": [{"name": "Set up job"}]},
+    {"id": 131125875980, "run_attempt": 1, "name": "browser / Packaged browser tests (software GPU)", "started_at": "2026-11-12T10:34:14Z", "completed_at": "2026-11-12T10:37:06Z", "conclusion": "success", "steps": [{"name": "Set up job"}]},
+    {"id": 131125876003, "run_attempt": 1, "name": "browser / Renderer browser tests (pooling)", "started_at": "2026-11-12T10:34:14Z", "completed_at": "2026-11-12T10:35:23Z", "conclusion": "success", "steps": [{"name": "Set up job"}]},
+    {"id": 131125904269, "run_attempt": 1, "name": "wiki / Publish wiki to GitHub Pages", "started_at": "2026-11-12T10:34:16Z", "completed_at": "2026-11-12T10:34:15Z", "conclusion": "skipped"},
+    {"id": 131137837793, "run_attempt": 1, "name": "native / macOS native backends and diagnostics", "started_at": "2026-11-12T10:58:16Z", "completed_at": "2026-11-12T11:26:42Z", "conclusion": "cancelled", "steps": [{"name": "Set up job"}]},
+    {"id": 131151905412, "run_attempt": 1, "name": "Cancel failed batch", "started_at": "2026-11-12T11:26:19Z", "completed_at": "2026-11-12T11:26:35Z", "conclusion": "cancelled", "steps": [{"name": "Set up job"}]},
+    {"id": 131152108109, "run_attempt": 1, "name": "native / Ubuntu Clang", "started_at": "2026-11-12T11:26:44Z", "completed_at": "2026-11-12T11:26:51Z", "conclusion": "failure", "steps": [{"name": "Set up job"}]},
+    {"id": 131152110694, "run_attempt": 1, "name": "native / macOS analyzer baseline", "started_at": "2026-11-12T11:26:43Z", "completed_at": "2026-11-12T11:26:42Z", "conclusion": "cancelled"},
+    {"id": 131152189190, "run_attempt": 1, "name": "Prune superseded caches", "started_at": "2026-11-12T11:26:53Z", "completed_at": "2026-11-12T11:27:02Z", "conclusion": "success", "steps": [{"name": "Set up job"}]},
+    {"id": 131152189958, "run_attempt": 1, "name": "sdk", "started_at": "2026-11-12T11:26:52Z", "completed_at": "2026-11-12T11:26:52Z", "conclusion": "skipped"},
+    {"id": 131152190514, "run_attempt": 1, "name": "threading", "started_at": "2026-11-12T11:26:52Z", "completed_at": "2026-11-12T11:26:52Z", "conclusion": "skipped"},
+    {"id": 131152190600, "run_attempt": 1, "name": "wiki-macos", "started_at": "2026-11-12T11:26:52Z", "completed_at": "2026-11-12T11:26:52Z", "conclusion": "skipped"},
+    {"id": 131152191122, "run_attempt": 1, "name": "Promote validated candidate", "started_at": "2026-11-12T11:26:52Z", "completed_at": "2026-11-12T11:26:52Z", "conclusion": "cancelled"},
+    {"id": 131152192419, "run_attempt": 1, "name": "Publish promoted documentation", "started_at": "2026-11-12T11:26:52Z", "completed_at": "2026-11-12T11:26:52Z", "conclusion": "cancelled"}
+  ]
+}
