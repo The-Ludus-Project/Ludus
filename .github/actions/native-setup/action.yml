@@ -72,6 +72,18 @@ runs:
         fi
         printf 'VK_DRIVER_FILES=%s\n' "$manifest" >> "$GITHUB_ENV"
         printf 'Vulkan software driver manifest: %s\n' "$manifest"
+    # Each batch starts about ten Linux jobs at once, and each downloaded the pinned
+    # shader tools; a 403 from one package host then failed them all. Only the
+    # SHA-256-verified archives are cached: scripts/shader-probe re-verifies and
+    # re-extracts them, and downloads from its mirrors on a miss.
+    - name: Cache pinned shader tool archives
+      if: inputs.prerequisites-only != 'true'
+      uses: actions/cache@v4
+      with:
+        path: |
+          out/shader-tools/slang.tar.gz
+          out/shader-tools/spirv-tools.deb
+        key: shader-tool-archives-v1-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('config/shader_toolchain.json') }}
     - name: Cache pip downloads
       if: inputs.prerequisites-only != 'true'
       uses: actions/cache@v4
