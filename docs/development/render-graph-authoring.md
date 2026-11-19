@@ -6199,6 +6199,14 @@ Use Automatic or Physical camera with physical light units such as the Earth Sun
 133,800 lx: the graph multiplier's range cannot reach daylight. With physical exposure,
 daylight hides the procedural stars and night shows them, without changing either.
 
+To reproduce the exposure settings of a photograph, select **Physical camera** and
+set compensation to zero. From the photo's f-number `N`, shutter time `t` in seconds
+and ISO speed `S`, enter `EV100 = log2(N² × 100 / (t × S))`. For example, f/8 at
+1/125 s and ISO 100 gives **12.97**. At ISO 200 the same aperture and shutter give
+**11.97**, doubling the exposure multiplier before the tone curve. This sets image
+brightness only. Stingray used this mapping to compare a controlled scene with
+white-balanced, linear photographs. [Physical Cameras in Stingray, “Properties Mapper” and “Validating Results”](https://bitsquid.blogspot.com/2017/09/physical-cameras-in-stingray.html)
+
 The stops field is compensation on top of the base exposure: +1 doubles it and −1 halves it.
 Use **Reset compensation** to return to zero. These choices stay with this viewport session
 as you navigate. They update the lighting resolve before the tone curve and 8-bit output,
@@ -6206,8 +6214,10 @@ without a graph rebuild or a saved World or graph edit.
 
 Exposure is available for **Final output** and the **Lighting** views when a clustered
 deferred raster pass with an enabled ToneMap directly writes the export. For other graphs or targets,
-return to a supported final output to use the control. Reference captures run
-with the graph's authored exposure.
+return to a supported final output to use the control. For a supported ToneMap output,
+the **Reference capture** window and its PNG use the viewport exposure and tone curve
+at capture start. Use the saved linear `LUHDR01` for scene-radiance measurements.
+See [Reference capture of the viewport](editor-workspace.md#reference-capture-of-the-viewport).
 
 After the graph's own outputs, the selector offers the editor's built-in debug views:
 **Debug: Albedo**, **Normal**, **Depth**, **Roughness**, **Metallic**, **UV**, **Light count**
