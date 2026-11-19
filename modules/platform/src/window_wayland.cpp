@@ -625,13 +625,12 @@ UniquePtr<WindowWayland> CreateWindow(const Window::CreateInfo& info) noexcept
 
     // Engine code is exception-free (-fno-exceptions); use the non-throwing
     // new and null-check rather than relying on a bad_alloc exception.
-    WindowWayland* window = new (std::nothrow) WindowWayland(std::move(createInfo)); // TODO: custom allocator
-    if (window == nullptr)
+    UniquePtr<WindowWayland> window(new (std::nothrow) WindowWayland(std::move(createInfo))); // TODO: custom allocator
+    if (window.Get() == nullptr)
     {
         LUDUS_LOG_ERROR(LOG_PLATFORM, "Failed to allocate Wayland window");
         return nullptr;
     }
-    UniquePtr<WindowWayland> owner(window);
     window->mScale.Reset(new (std::nothrow) SurfaceScale(window->mNativeWindowInfo, window->mVisibility));
     if (window->mScale.Get() == nullptr || window->mScale->Attach() == false)
     {
@@ -666,9 +665,9 @@ UniquePtr<WindowWayland> CreateWindow(const Window::CreateInfo& info) noexcept
         .configure_bounds = onXdgToplevelConfigureBounds,
         .wm_capabilities = onXdgToplevelWmCapabilities,
     };
-    xdg_toplevel_add_listener(window->mXdgToplevel.Get(), &TOPLEVEL_LISTENER, window);
+    xdg_toplevel_add_listener(window->mXdgToplevel.Get(), &TOPLEVEL_LISTENER, window.Get());
 
-    registerWindow(window);
+    registerWindow(window.Get());
 
     wl_surface_commit(window->mSurface.Get());
     if (wl_display_roundtrip(gDisplay.Get()) < 0)
@@ -676,7 +675,7 @@ UniquePtr<WindowWayland> CreateWindow(const Window::CreateInfo& info) noexcept
         return nullptr;
     }
     window->mScale->Publish();
-    return owner;
+    return window;
 }
 
 void onXdgSurfaceConfigure(void* data, [[maybe_unused]] xdg_surface* xdgSurface, uint32_t serial) noexcept

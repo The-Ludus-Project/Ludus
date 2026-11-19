@@ -49,6 +49,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
         with:
+          ref: ${{ inputs.batch_sha || github.sha }}
           persist-credentials: false
       - uses: ./.github/actions/native-setup
         with:
@@ -61,9 +62,11 @@ jobs:
           ./scripts/shader-probe bootstrap
           ./scripts/bootstrap-spirv-cross
           bash tests/sdk_consumer/wayland/build.sh "$RUNNER_TEMP/wayland-consumer"
+      - name: Install compositor and input tools
+        run: sudo apt-get install -y --no-install-recommends sway wtype weston wayland-utils mesa-vulkan-drivers
       - name: Exercise scaled Vulkan presentation and input
+        timeout-minutes: 10
         run: |
-          sudo apt-get install -y sway wtype weston wayland-utils mesa-vulkan-drivers
           dbus-run-session -- python3 tests/sdk_consumer/wayland/validate.py \
             "$RUNNER_TEMP/wayland-consumer/build/world_demo/ludus_world_demo" out/wayland-scale
       - uses: actions/upload-artifact@v4

@@ -27,6 +27,7 @@ def running(command, env, log):
 
 
 def wait_for(check, process, description):
+    print(f"Waiting for {description}", flush=True)
     end = time.monotonic() + 90
     while time.monotonic() < end:
         result = check()
@@ -39,7 +40,8 @@ def wait_for(check, process, description):
 
 
 def protocol_globals(env, log, fractional):
-    value = subprocess.check_output(["wayland-info"], env=env, text=True)
+    print(f"Inspecting compositor globals on {env['WAYLAND_DISPLAY']}", flush=True)
+    value = subprocess.check_output(["wayland-info"], env=env, text=True, timeout=20)
     log.write_text(value)
     if ("wp_fractional_scale_manager_v1" in value) != fractional:
         raise RuntimeError(f"Unexpected fractional-scale protocol inventory in {log}")
@@ -48,19 +50,20 @@ def protocol_globals(env, log, fractional):
 def presented(trace, width, height):
     # Lavapipe creates wl_shm buffers for the Vulkan swapchain. Match an actual
     # attach and commit of one of those exact buffers, including on output moves.
-    buffers = re.findall(
+    buffers = re.finditer(
         rf"create_buffer\(new id (wl_buffer[@#]\d+), \d+, {width}, {height},", trace
     )
     for buffer in buffers:
-        attach = re.search(r"(wl_surface[@#]\d+)\.attach\(" + re.escape(buffer) + r",", trace)
-        if attach and attach[1] + ".commit(" in trace[attach.end():]:
+        later = trace[buffer.end():]
+        attach = re.search(r"(wl_surface[@#]\d+)\.attach\(" + re.escape(buffer[1]) + r",", later)
+        if attach and attach[1] + ".commit(" in later[attach.end():]:
             return True
     return False
 
 
 def sway(demo, directory, env):
     config = directory / "sway.conf"
-    config.write_text("seat seat0 fallback true\n"
+    config.write_text("xwayland disable\nseat seat0 fallback true\n"
                       "default_floating_border none\nfor_window [app_id=\"ludus\"] floating enable\n"
                       "output HEADLESS-1 mode 1280x960 scale 1\n"
                       "output HEADLESS-2 mode 1920x1440 scale 1.5\n"
@@ -74,7 +77,8 @@ def sway(demo, directory, env):
         protocol_globals(env, directory / "sway-globals.txt", True)
 
         def command(*args):
-            result = json.loads(subprocess.check_output(["swaymsg", "-r", *args], env=env))
+            print(f"Sway IPC: {args}", flush=True)
+            result = json.loads(subprocess.check_output(["swaymsg", "-r", *args], env=env, timeout=20))
             if any(item.get("success") is False for item in result):
                 raise RuntimeError(str(result))
             return result
@@ -100,7 +104,7 @@ def sway(demo, directory, env):
                             and presented(trace, width, height))
                 wait_for(correct_frame, game, f"{scale}x backing pixels and Vulkan presentation")
                 after = log.stat().st_size
-                subprocess.run(["wtype", "-s", "500", "-P", "space", "-s", "150", "-p", "space"], env=env, check=True)
+                subprocess.run(["wtype", "-s", "500", "-P", "space", "-s", "150", "-p", "space"], env=env, check=True, timeout=20)
                 def input_and_frame():
                     with log.open("rb") as data:
                         data.seek(after)
@@ -120,11 +124,13 @@ def weston(demo, directory, env, native_build):
         socket = Path(env["XDG_RUNTIME_DIR"]) / env["WAYLAND_DISPLAY"]
         wait_for(socket.is_socket, compositor, "Weston display")
         protocol_globals(env, directory / "weston-globals.txt", False)
+        print("Running Platform event tests on Weston", flush=True)
         with (directory / "platform-events.log").open("w") as output:
             subprocess.run([native_build / "modules/platform/ludus_platform_wayland_tests"],
                            env=dict(env, LUDUS_TEST_WAYLAND="1"), stdout=output, stderr=subprocess.STDOUT,
                            check=True, timeout=30)
         rhi_tests = native_build / "modules/graphics/rhi/ludus_graphics_rhi_tests"
+        print("Checking zero-size recovery on Weston", flush=True)
         with (directory / "zero-extent.log").open("w") as output:
             subprocess.run([rhi_tests, "[wayland][resize]"], env=dict(env, LUDUS_TEST_WAYLAND="1"),
                            stdout=output, stderr=subprocess.STDOUT, check=True, timeout=60)
@@ -149,5 +155,12 @@ if __name__ == "__main__":
         driver, = Path("/usr/share/vulkan/icd.d").glob("lvp_icd*.json")
         environment = dict(os.environ, XDG_RUNTIME_DIR=runtime, WLR_BACKENDS="headless",
                            WLR_RENDERER="pixman", WLR_HEADLESS_OUTPUTS="3", VK_DRIVER_FILES=str(driver))
-        sway(args.demo.resolve(), args.directory.resolve(), environment)
-        weston(args.demo.resolve(), args.directory.resolve(), environment, args.native_build.resolve())
+        failures = []
+        for compositor, extra in ((sway, ()), (weston, (args.native_build.resolve(),))):
+            try:
+                compositor(args.demo.resolve(), args.directory.resolve(), environment, *extra)
+            except (OSError, RuntimeError, subprocess.SubprocessError) as error:
+                failures.append(f"{compositor.__name__}: {error}")
+                print(failures[-1], flush=True)
+        if failures:
+            raise SystemExit("\n".join(failures))
