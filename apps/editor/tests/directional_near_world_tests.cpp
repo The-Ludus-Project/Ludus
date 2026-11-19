@@ -1,6 +1,8 @@
 // Replay the same World geometry and cameras as the relocated SDK against the World viewport producer.
 #include "../../../tests/sdk_consumer/directional_near/doorway.hpp"
+#include "internal/preview_viewport.h"
 #include "internal/render_graph_preview.h"
+#include "internal/render_preview.h"
 #include "internal/render_scene.h"
 #include "internal/renderer_workspace.h"
 #include "internal/viewport_device_description.h"
@@ -8,7 +10,11 @@
 
 #include <QElapsedTimer>
 #include <QFile>
+#include <QGuiApplication>
+#include <QQuickWindow>
+#include <QScopeGuard>
 #include <QThread>
+#include <cstdio>
 
 namespace
 {
@@ -134,4 +140,130 @@ TEST_CASE("The Raster World viewport resolves each directional doorway shadow", 
         }
     }
     preview.Detach();
+}
+
+TEST_CASE("The native World viewport swaps new doorway frames", "[.directional-near-pacing]")
+{
+    REQUIRE(PreviewViewport::GetPresentation() == ViewportPresentation::SharedDevice);
+    const QString runtime = qEnvironmentVariable("LUDUS_DIRECTIONAL_GRAPH");
+    REQUIRE(runtime.isEmpty() == false);
+    RendererWorkspace workspace({});
+    RenderPreview source;
+    PreviewViewport viewport(&source);
+    viewport.UseProjectGraph(workspace);
+    viewport.resize(480, 320);
+    const RenderScene scene = MakeDoorwayWorld();
+    // The viewport owns the display device. Its navigation proxy uses procedural geometry;
+    // the graph below receives the full lit World and source identities on every update.
+    RenderScene navigation = scene;
+    navigation.Lit = false;
+    navigation.Surfaces.clear();
+    for (PreviewObject& object : navigation.Objects)
+    {
+        object.Surface = -1;
+    }
+    REQUIRE(source.SetScene(navigation) == true);
+    viewport.show();
+    viewport.raise();
+    viewport.activateWindow();
+    REQUIRE(source.Start() == true);
+    const auto waitFor = [](auto predicate) {
+        QElapsedTimer timer;
+        timer.start();
+        while (timer.elapsed() < 15000)
+        {
+            if (predicate() == true)
+            {
+                return true;
+            }
+            QCoreApplication::processEvents();
+            QThread::msleep(1);
+        }
+        return predicate();
+    };
+    REQUIRE(waitFor([&]() { return source.HasDevice(); }) == true);
+    QQuickWindow* windowOrNull = nullptr;
+    for (QWindow* window : QGuiApplication::allWindows())
+    {
+        if (window->objectName() == QStringLiteral("LudusGpuViewport") && window->isExposed() == true)
+        {
+            windowOrNull = static_cast<QQuickWindow*>(window);
+        }
+    }
+    REQUIRE(windowOrNull != nullptr);
+    REQUIRE(workspace.GetPreviewOrNull() != nullptr);
+    RenderGraphPreview& preview = *workspace.GetPreviewOrNull();
+    REQUIRE(preview.Attach(source.GetDevice(), source.GetSurface()) == true);
+    const QScopeGuard detachPreview([&]() { preview.Detach(); });
+    preview.SetDirectPresentation(true);
+    preview.SetReferenceSize(QSize(WIDTH, HEIGHT));
+    QElapsedTimer clock;
+    clock.start();
+    uint64 lastSwapSerial = 0;
+    qint64 lastSwapTicks = 0;
+    const QMetaObject::Connection swapConnection = QObject::connect(
+        windowOrNull,
+        &QQuickWindow::frameSwapped,
+        &viewport,
+        [&]() {
+            const uint64 serial = viewport.GetPresentedGraphFrameSerial();
+            if (serial > lastSwapSerial)
+            {
+                lastSwapSerial = serial;
+                lastSwapTicks = clock.nsecsElapsed();
+            }
+        },
+        Qt::DirectConnection);
+    const QScopeGuard disconnectSwap([&]() { QObject::disconnect(swapConnection); });
+    qint64 previous = 0;
+    renderer::ViewDescription camera;
+    AimCamera({0, -3, 2}, {0, 0, 0}, camera);
+    camera.LightingView = renderer::DeferredLightingView::ShadowCoverage;
+    camera.LightingViewSourceId = scene.AuthoredLights.Lights[0].SourceId;
+    constexpr uint64 WARMUP_FRAMES = 2;
+    constexpr uint64 MEASURED_FRAMES = 64;
+    for (uint64 revision = 1; revision <= WARMUP_FRAMES + MEASURED_FRAMES; ++revision)
+    {
+        QString error;
+        RenderGraphExtraction extraction;
+        REQUIRE(MakeRenderGraphExtraction(scene, camera, revision, extraction, error) == true);
+        extraction.ContentRevision = 1;
+        preview.SetExtraction(extraction);
+        if (revision == 1)
+        {
+            REQUIRE(preview.Load(runtime) == RenderGraphPreviewLoad::Staged);
+        }
+        const uint64 previousSerial = lastSwapSerial;
+        const bool hasSwapped = waitFor([&]() {
+            if (preview.GetPresentedRevision() != revision)
+            {
+                preview.Tick();
+            }
+            if (preview.GetPresentedRevision() == revision &&
+                lastSwapSerial != preview.GetDisplayFrames().GetLatestSerial())
+            {
+                viewport.ShowFrame();
+                windowOrNull->update();
+            }
+            return preview.GetPresentedRevision() == revision && lastSwapSerial > previousSerial &&
+                   lastSwapSerial == preview.GetDisplayFrames().GetLatestSerial();
+        });
+        INFO(preview.GetStatus().toStdString());
+        CAPTURE(revision,
+                lastSwapSerial,
+                preview.GetDisplayFrames().GetLatestSerial(),
+                viewport.GetPresentedGraphFrameSerial(),
+                viewport.PresentedFrames(),
+                source.Status().toStdString());
+        REQUIRE(hasSwapped == true);
+        REQUIRE(preview.HasGpuFrame() == true);
+        REQUIRE(preview.GetTargetSize() == QSize(WIDTH, HEIGHT));
+        if (revision > WARMUP_FRAMES)
+        {
+            std::printf("swap,%llu,%lld\n",
+                        static_cast<unsigned long long>(revision),
+                        static_cast<long long>(lastSwapTicks - previous));
+        }
+        previous = lastSwapTicks;
+    }
 }

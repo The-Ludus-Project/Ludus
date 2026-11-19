@@ -1306,7 +1306,6 @@ if(LUDUS_BUILD_TESTS AND NOT EMSCRIPTEN)
         set_tests_properties(ludus_light_transformer_preview_setup_tests PROPERTIES LABELS "unit;editor;light-transformer" TIMEOUT 60)
     endif()
     add_executable(ludus_editor_tests
-        tests/directional_near_world_tests.cpp
         tests/profiling_tests.cpp
         tests/viewport_trace_tests.cpp
         tests/import_report_tests.cpp
@@ -1445,6 +1444,7 @@ if(LUDUS_BUILD_TESTS AND NOT EMSCRIPTEN)
         target_link_libraries(ludus_editor_tests PRIVATE Ludus::FoundationTime)
     endif()
     if(LUDUS_EDITOR_RENDER_PREVIEW)
+        target_sources(ludus_editor_tests PRIVATE tests/directional_near_world_tests.cpp)
         target_link_libraries(ludus_editor_tests PRIVATE Ludus::GraphicsRhi Qt6::Quick)
     endif()
     if(LUDUS_EDITOR_RENDER_PREVIEW AND NOT WIN32)

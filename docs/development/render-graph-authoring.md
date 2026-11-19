@@ -6769,6 +6769,31 @@ horizontal distances of 9, 10, 11 and 12 m (eye height 2 m). It returned 255
 at 16 m. The fully visible probe stayed at 255. The blend therefore restores
 the coarse map's full visibility error at and beyond the far edge of the overlap.
 
+![Projected shadow texel size in both receiver directions and measured doorway visibility through the split](../assets/renderer/directional-near-split.png)
+
+The upper panel projects the two measured ground-plane texel dimensions into
+receiver pixels using the local perspective derivative at the sampled pixel.
+The camera looks obliquely across the floor. At 9 m horizontal distance, one
+near texel spans 4.62 pixels across the view and 0.71 along it. In the
+overlap, at 10 m horizontal distance, the two maps contributing to the blend
+span 4.18 × 0.58 and 556.76 × 109.94 pixels respectively. At 12 m the
+whole-scene footprint alone spans 467.45 × 77.49 pixels and the blocked wall
+probe is fully lit. At 16 m it still spans 353.77 × 44.39 pixels. These are
+local sampling rates at the probe. A large whole-scene texel extends beyond
+the region where the derivative is approximately constant.
+
+Over the ten outward and return poses, one blocked Sun probe and one clear
+Moon probe per pose give 20 absolute visibility errors. Median, p95 and
+maximum were 0, 1 and 1 for the near policy and 0.5, 1 and 1 for the
+whole-scene control. The dotted curve moves the same smooth blend to
+14–16 m offline, holding both projections, caster packets and measured
+near-only and whole-only visibility fixed. The narrow replay frustum fits
+the existing near tile at that distance. This delays the error on this route
+and still approaches full error at 16 m. Wider views need a separate
+coverage check before changing the default split. Reproduce the figure
+with `python tests/sdk_consumer/directional_near/plot_split.py replay.log split.png`
+using Matplotlib and the measured SDK replay log.
+
 | Relocated SDK, two lights, 64 warm frames | Whole-scene control median / p95 (ms) | Near cascades median / p95 (ms) |
 | --- | ---: | ---: |
 | Camera update through ready, including polling | 1.852 / 3.109 | 1.885 / 6.085 |
@@ -6782,6 +6807,13 @@ staging took 6.973 ms with cascades and 5.887 ms for the control. First-frame
 GPU time including the atlas fill was 10.182 and 9.501 ms respectively.
 Submit-through-completion was 30.401 and 16.910 ms. The headless measurement
 excludes display refresh and scanout.
+
+A separate visible Metal run drove the same 96 × 64 graph in the production
+Qt Quick World viewport, with two warmup frames and 64 measured intervals.
+Each interval ended at the first `QQuickWindow::frameSwapped` for the next
+graph image serial. Median / p95 intervals were 16.557 / 18.665 ms with
+cascades and 16.629 / 18.499 ms with the whole-scene control. These measure
+the application's presentation cadence. Panel scanout occurs later.
 
 Both modes used 33,554,432 unpadded shadow attachment bytes per drawable
 generation and zero mesh-light face texels. The final steady API allocation
@@ -6800,7 +6832,12 @@ stages the SDK's default graph with tone mapping disabled. Set
 `ludus_editor_tests`, run `[.directional-near-world]` with
 `LUDUS_DIRECTIONAL_GRAPH` pointing to the linear package and
 `LUDUS_DIRECTIONAL_CAPTURE` pointing to a second file. Compare the files
-byte for byte.
+byte for byte. On a native desktop, run `[.directional-near-pacing]` with
+the same graph to record the visible frame swaps. For the matched control,
+use a copy of the linear package with its little-endian version word at
+byte offset 4 set to 39. Versions 39 and 40 have identical record layouts.
+The older version disables the near regions while preserving the compiled
+shaders, export size and World.
 
 ### Sky visibility
 
