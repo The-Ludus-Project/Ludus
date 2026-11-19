@@ -78,6 +78,7 @@ jobs:
     outputs:
       native_image: ${{ steps.image.outputs.image }}
       image_recipe_changed: ${{ steps.image.outputs.recipe_changed }}
+      camera_pilot: ${{ steps.scope.outputs.camera_pilot }}
       native_required: ${{ steps.scope.outputs.native_required }}
       validation_tier: ${{ steps.scope.outputs.validation_tier }}
       validated_by: ${{ steps.scope.outputs.validated_by }}
@@ -1611,6 +1612,10 @@ jobs:
       # build produces, so integration pull requests check them here rather than in a batch.
       - name: Check checked-in generated sources
         run: out/host-tools/venv/bin/ctest --preset linux-clang-development --label-regex '^generated-source$' --output-on-failure --no-tests=error
+      - name: Run advisory RenderGraph camera pilot
+        if: needs.changes.outputs.validation_tier == 'integration' && needs.changes.outputs.camera_pilot == 'true'
+        continue-on-error: true
+        run: python3 scripts/python/camera_pilot.py
       - name: Verify unit and Editor tests and worker-on target detection
         if: needs.changes.outputs.validation_tier != 'integration'
         env:

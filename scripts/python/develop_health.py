@@ -353,7 +353,7 @@ def run_gate(client) -> int:
     head_sha = batch_ci.validate_sha(pull_request.get("head", {}).get("sha"))
     # Read the description live: a re-run keeps its original event payload.
     pull = client.get(f"pulls/{int(pull_request['number'])}")
-    required, _ = ci_scope.classify(event_name, event, Path.cwd())
+    required, _, _ = ci_scope.classify(event_name, event, Path.cwd())
     is_open, lines = evaluate(client, read_health(client), body=pull.get("body"), head_sha=head_sha,
                               branch=str(pull_request.get("head", {}).get("ref", "<branch>")),
                               is_documentation_only=not required,
