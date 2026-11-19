@@ -22,7 +22,7 @@ struct DeferredViewParameters
     float4 AtmosphereSunWorld;      // xyz: toward the Sun, w: one-based light index.
     float4 AtmosphereIlluminance;   // xyz: linear RGB illuminance at the top boundary.
     float4 AtmosphereCameraWorld;   // xyz: eye in metres, w: orthographic flag.
-    CloudLayerParameters AtmosphereCloudLayer;
+    float4 AtmosphereCloudLayer[CLOUD_LAYER_UNIFORM_ROWS];
 #endif
 };
 LUDUS_SHADER_BINDING(LUDUS_DEFERRED_NORMAL_BINDING)

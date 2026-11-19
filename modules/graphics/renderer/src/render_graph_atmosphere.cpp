@@ -114,6 +114,9 @@ bool IsAccepted(Status status) noexcept
 }
 } // namespace
 
+// The shaders read the layer as this many float4 rows (renderer_cloud_layer.slang).
+static_assert(sizeof(CloudLayerUniform) == LUDUS_CLOUD_LAYER_UNIFORM_ROWS * sizeof(math::Vector4));
+
 struct AtmosphereViewUniform final
 {
     StaticArray<math::Vector4, CLIP_ROWS> ClipToEyeRows{};

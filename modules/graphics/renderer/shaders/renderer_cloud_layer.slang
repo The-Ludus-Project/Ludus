@@ -22,7 +22,11 @@ static const float CLOUD_LAYER_METRES_PER_KILOMETRE = LUDUS_ATMOSPHERE_METRES_PE
 // A ray direction component below this is parallel to the slab faces normal to that axis.
 static const float CLOUD_LAYER_PARALLEL_EPSILON = 0.000001;
 
-// Packed by TryPackCloudLayer (render_graph_atmosphere.cpp). A zero AxisXWorld.w omits the layer.
+static const uint CLOUD_LAYER_UNIFORM_ROWS = LUDUS_CLOUD_LAYER_UNIFORM_ROWS;
+
+// Packed by TryPackCloudLayer (render_graph_atmosphere.cpp) as CLOUD_LAYER_UNIFORM_ROWS float4 rows, in this field
+// order; uniforms carry the rows because browser raster uniforms admit no nested structures. A zero AxisXWorld.w
+// omits the layer.
 struct CloudLayerParameters
 {
     float4 AxisXWorld;  // xyz: unit layer +X, w: one when the layer is drawn.
@@ -42,6 +46,18 @@ struct CloudLayerSegment
     float EntryMetres;
     float ExitMetres;
 };
+
+CloudLayerParameters UnpackCloudLayer(in float4 rows[CLOUD_LAYER_UNIFORM_ROWS])
+{
+    CloudLayerParameters cloud;
+    cloud.AxisXWorld = rows[0];
+    cloud.UpWorld = rows[1];
+    cloud.AxisZWorld = rows[2];
+    cloud.CameraLocal = rows[3];
+    cloud.Medium = rows[4];
+    cloud.Phase = rows[5];
+    return cloud;
+}
 
 float3 ToCloudLayerLocal(in CloudLayerParameters cloud, in float3 directionWorld)
 {

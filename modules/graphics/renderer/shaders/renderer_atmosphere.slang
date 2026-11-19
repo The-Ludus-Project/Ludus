@@ -23,7 +23,7 @@ struct AtmosphereViewParameters
     float4 GalacticCenterWorld;       // xyz: galactic center, orthogonal to GalacticNorthWorld.
     float4 PlanetDirectionsWorld[ATMOSPHERE_PLANET_CAPACITY];
     float4 PlanetIlluminance[ATMOSPHERE_PLANET_CAPACITY];
-    CloudLayerParameters CloudLayer;
+    float4 CloudLayer[CLOUD_LAYER_UNIFORM_ROWS];
 };
 LUDUS_SHADER_BINDING(0)
 ConstantBuffer<AtmosphereViewParameters> atmosphereView LUDUS_SHADER_UNIFORM_REGISTER(0);
@@ -226,7 +226,7 @@ float3 ComposeSkyCloudLayer(in float3 directionWorld, in float3 clearRadiance)
     bool hitsGround = zenithCosine < ComputeHorizonCosine(height);
     float boundary = hitsGround ? GetDistanceToGround(height, zenithCosine) : GetDistanceToTop(height, zenithCosine);
     CloudLayerSegment cloud = IntegrateCloudLayer(atmosphereTransmittance,
-                                                  atmosphereView.CloudLayer,
+                                                  UnpackCloudLayer(atmosphereView.CloudLayer),
                                                   directionWorld,
                                                   sunWorld,
                                                   atmosphereView.SolarIlluminance.xyz,
@@ -282,7 +282,7 @@ float3 ComposeSkyCloudLayer(in float3 directionWorld, in float3 clearRadiance)
     }
     AtmosphereBackgroundTransport transport = EvaluateAtmosphereBackground(directionWorld);
     float3 radiance = transport.Radiance * atmosphereView.SolarIlluminance.xyz + transport.Transmittance * boundary;
-    if (atmosphereView.CloudLayer.AxisXWorld.w > 0)
+    if (atmosphereView.CloudLayer[0].w > 0)
     {
         radiance = ComposeSkyCloudLayer(directionWorld, radiance);
     }
