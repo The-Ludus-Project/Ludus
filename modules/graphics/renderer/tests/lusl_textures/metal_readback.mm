@@ -23,7 +23,7 @@ constexpr NSUInteger COLOR_SAMPLER_SLOT = DEPTH_SLOT + 1;
 constexpr NSUInteger DEPTH_SAMPLER_SLOT = COLOR_SAMPLER_SLOT + 1;
 constexpr NSUInteger SECOND_COLOR_ROW = 1;
 constexpr NSUInteger VERTEX_COUNT = 3;
-constexpr float32 CLEAR_DEPTH = 0.75F;
+constexpr float64 CLEAR_DEPTH = 0.75;
 
 using MetalTexture = id<MTLTexture>;
 using MetalLibrary = id<MTLLibrary>;
