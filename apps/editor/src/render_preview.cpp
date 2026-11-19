@@ -2136,9 +2136,6 @@ bool RenderPreview::prepare()
         {
             return false;
         }
-#    if defined(LUDUS_EDITOR_BROWSER_PREVIEW)
-        mBrowserPreparedSceneIdentity = Scene_.Identity;
-#    endif
         ViewDirty_ = false;
         FreshReport_ = true;
         mHasPreparedView = true;
@@ -2306,9 +2303,6 @@ void RenderPreview::Tick()
             fail(QStringLiteral("GPU viewport image is unavailable. World edits are preserved."));
             return;
         }
-#    if defined(LUDUS_EDITOR_BROWSER_PREVIEW)
-        mBrowserCompletedSceneIdentity = mBrowserSubmittedSceneIdentity;
-#    endif
         mHasPendingFrame = true;
         mHasFrame = true;
         mIsAwaitingProducer = false;
@@ -2440,9 +2434,6 @@ void RenderPreview::Tick()
     // Arm immediately before the viewport frame so the probe encloses it, not a shadow submission.
     PrepareGpuProfileFrame();
     mProducer = {};
-#    if defined(LUDUS_EDITOR_BROWSER_PREVIEW)
-    mBrowserSubmittedSceneIdentity = mBrowserPreparedSceneIdentity;
-#    endif
     const rhi::RasterStatus rendered = mResources->Viewport.Render(Surface_, mProducer);
     if (rendered == rhi::RasterStatus::NotReady || rendered == rhi::RasterStatus::Pending)
     {
