@@ -459,6 +459,8 @@ foreach(conformance_target IN ITEMS ludus_rhi_render_tests ludus_rhi_d3d12_tests
         set(ordered_compute_shader "${CMAKE_CURRENT_SOURCE_DIR}/tests/shaders/ordered_compute.slang")
         ludus_compile_shader(TARGET ${conformance_target} NAME ordered_advance
             SOURCE "${ordered_compute_shader}" COMPUTE AdvanceCounter)
+        ludus_compile_shader(TARGET ${conformance_target} NAME ordered_advance_lusl
+            SOURCE "${CMAKE_CURRENT_SOURCE_DIR}/tests/shaders/ordered_advance.lusl" COMPUTE AdvanceCounter)
         ludus_compile_shader(TARGET ${conformance_target} NAME ordered_prepare
             SOURCE "${ordered_compute_shader}" COMPUTE PrepareDraw)
         ludus_compile_shader(TARGET ${conformance_target} NAME ordered_draw RASTER

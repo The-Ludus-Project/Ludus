@@ -6,6 +6,7 @@
 #include "indirect_prepare.h"
 #include "internal/readback.h"
 #include "ordered_advance.h"
+#include "ordered_advance_lusl.h"
 #include "ordered_draw.h"
 #include "ordered_prepare.h"
 #include "raster.h"
@@ -766,6 +767,13 @@ TEST_CASE("Portable ordered compute dispatches feed indirect raster and transfer
         {prepareShader.Bindings[2].Binding, arguments, 0, sizeof(initialArguments)},
     }};
     rhi::ComputeDispatch advance = makeDispatch(advanceShader, {&counterBinding, 1});
+    const rhi::RasterShaderDescription luslAdvanceShader = ludus::shaders::ordered_advance_lusl::Compute();
+    REQUIRE(luslAdvanceShader.Bindings.GetSize() == 1);
+    REQUIRE(luslAdvanceShader.Bindings[0].Binding == counterBinding.Binding);
+#if defined(_WIN32)
+    REQUIRE(luslAdvanceShader.Artifact.Dxil.IsEmpty() == false);
+#endif
+    rhi::ComputeDispatch luslAdvance = makeDispatch(luslAdvanceShader, {&counterBinding, 1});
     rhi::ComputeDispatch prepare = makeDispatch(prepareShader, {prepareBindings.GetData(), prepareBindings.GetSize()});
 
     rhi::RasterShaderHandle vertex;
@@ -832,7 +840,7 @@ TEST_CASE("Portable ordered compute dispatches feed indirect raster and transfer
                                       .Attachment = {},
                                       .Uses = &use,
                                       .UseCount = 1,
-                                      .Dispatch = &advance,
+                                      .Dispatch = pass == 0 ? &advance : &luslAdvance,
                                   }) == rhi::RasterStatus::Ready);
         counterInput = next;
     }
@@ -907,6 +915,8 @@ TEST_CASE("Portable ordered compute dispatches feed indirect raster and transfer
 
     REQUIRE(rhi::Destroy(device, advance.Pipeline) == rhi::RasterStatus::Ready);
     REQUIRE(rhi::Destroy(device, advance.Bindings) == rhi::RasterStatus::Ready);
+    REQUIRE(rhi::Destroy(device, luslAdvance.Pipeline) == rhi::RasterStatus::Ready);
+    REQUIRE(rhi::Destroy(device, luslAdvance.Bindings) == rhi::RasterStatus::Ready);
     REQUIRE(rhi::Destroy(device, prepare.Pipeline) == rhi::RasterStatus::Ready);
     REQUIRE(rhi::Destroy(device, prepare.Bindings) == rhi::RasterStatus::Ready);
     rhi::SubmissionToken completion;

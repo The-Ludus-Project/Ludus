@@ -8,25 +8,25 @@ static const uint32 SCALE = 3;
 RWStructuredBuffer<uint32> sums;
 RWStructuredBuffer<uint32> exchanged;
 RWStructuredBuffer<uint32> neighbors;
-groupshared uint32 partial[GROUP_SIZE] = void;
+groupshared int32 partial[GROUP_SIZE] = void;
 
 [stage(compute), threads(64, 1, 1)]
 void Main(in uint32x3 id : DispatchThreadId, in uint32 groupIndex : GroupIndex, in uint32x3 group : GroupId)
 {
-    partial[groupIndex] = id.x + 1;
+    partial[groupIndex] = int32(id.x + 1);
     exchanged[id.x] = id.x * SCALE;
     barrier all;
     neighbors[id.x] = exchanged[id.x ^ 1];
-    for (uint32 stride = GROUP_SIZE / 2; stride > 0; stride = stride >> 1)
+    for (int32 stride = int32(GROUP_SIZE / 2); stride > 0; stride = stride >> 1)
     {
-        if (groupIndex < stride)
+        if (int32(groupIndex) < stride)
         {
-            partial[groupIndex] = partial[groupIndex] + partial[groupIndex + stride];
+            partial[groupIndex] = partial[groupIndex] + partial[int32(groupIndex) + stride];
         }
         barrier groupshared;
     }
     if (groupIndex == 0)
     {
-        sums[group.x] = partial[0];
+        sums[group.x] = uint32(partial[0]);
     }
 }

@@ -2227,11 +2227,11 @@ Status RenderGraph::PollRayFailures(uint32 pass, RenderGraphRayFailures& outFail
         {
             return Status::Pending;
         }
-        StaticArray<uint32, MAX_RENDER_GRAPH_FAILURE_REASONS> pixels{};
+        StaticArray<uint32, LUDUS_GRAPH_FAILURE_WORDS> words{};
         const Status copied = status == Status::Ready ? rhi::CopyReadback(state.Device,
                                                                           state.FailureReadback,
-                                                                          reinterpret_cast<uint8*>(pixels.GetData()),
-                                                                          sizeof(pixels))
+                                                                          reinterpret_cast<uint8*>(words.GetData()),
+                                                                          sizeof(words))
                                                       : status;
         state.ReleaseFailureReadback();
         if (copied != Status::Ready)
@@ -2239,11 +2239,12 @@ Status RenderGraph::PollRayFailures(uint32 pass, RenderGraphRayFailures& outFail
             return copied;
         }
         RenderGraphRayFailures result;
-        result.Pixels = pixels;
+        result.LuslBoundsLine = words[LUDUS_GRAPH_FAILURE_BOUNDS_LINE_WORD];
         for (uint32 reason = 0; reason < MAX_RENDER_GRAPH_FAILURE_REASONS; ++reason)
         {
-            result.TotalPixels += pixels[reason];
-            result.MainReason = pixels[reason] > pixels[result.MainReason] ? reason : result.MainReason;
+            result.Pixels[reason] = words[reason];
+            result.TotalPixels += words[reason];
+            result.MainReason = words[reason] > words[result.MainReason] ? reason : result.MainReason;
         }
         outFailures = result;
         return Status::Ready;

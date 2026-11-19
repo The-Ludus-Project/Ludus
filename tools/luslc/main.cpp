@@ -50,8 +50,8 @@ const std::string_view USAGE =
     "       luslc lsp    [--root DIR] [--include-directory DIR]... [--style strict|warn|off]\n"
     "SOURCE, FILE and --include-directory are '/'-separated paths relative to --root (default: the\n"
     "current directory). --max-specializations is the specialization budget, 1 to 256 (default 256).\n"
-    "--report writes the specializations, groupshared clears, bindings and vertex inputs of the\n"
-    "lowered module. lsp serves the Language Server Protocol on standard input and output; without\n"
+    "--report writes specializations, groupshared clears, bindings, vertex inputs and bounds-check\n"
+    "sites in the lowered module. lsp serves the Language Server Protocol on standard input and output; without\n"
     "--root it uses the client's workspace root.\n";
 
 struct Options final
@@ -284,7 +284,8 @@ AppendLocation(const Snapshot& snapshot, const language::SourceLocation& locatio
 /// `specialization <template location> <name> <generated name>`,
 /// `groupshared-clear <entry location> <variable location> <unpadded bytes>`,
 /// `binding <variable location> <name> <kind> <slot>` and
-/// `vertex-input <entry location> <name> <location>`.
+/// `vertex-input <entry location> <name> <location>` and
+/// `bounds-check <index location> <failure code>`.
 [[nodiscard]] bool
 ComposeReport(const Snapshot& snapshot, const language::LoweringResult& result, Array<char>& outText) noexcept
 {
@@ -320,6 +321,17 @@ ComposeReport(const Snapshot& snapshot, const language::LoweringResult& result, 
             AppendLocation(snapshot, record.Entry, outText) == false || AppendText("\t", outText) == false ||
             AppendText(record.Name.GetView(), outText) == false || AppendText("\t", outText) == false ||
             AppendText(location.GetView(), outText) == false || AppendText("\n", outText) == false)
+        {
+            return false;
+        }
+    }
+    for (const language::BoundsCheckSite& site : result.BoundsChecks)
+    {
+        Line code;
+        code.AppendUnsigned(site.FailureCode);
+        if (AppendText("bounds-check\t", outText) == false ||
+            AppendLocation(snapshot, site.Location, outText) == false || AppendText("\t", outText) == false ||
+            AppendText(code.GetView(), outText) == false || AppendText("\n", outText) == false)
         {
             return false;
         }
