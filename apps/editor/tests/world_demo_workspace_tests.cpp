@@ -6,12 +6,13 @@
 #include "internal/render_scene.h"
 #include "internal/world_demo_adapter.h"
 #include "internal/world_workspace.h"
-#include <QElapsedTimer>
-#include <ludus/foundation/base/config.h>
+
+#include <ludus/foundation/profiling/profiling.hpp>
 
 #include <QAction>
 #include <QComboBox>
 #include <QDir>
+#include <QElapsedTimer>
 #include <QFile>
 #include <QFileInfo>
 #include <QItemSelectionModel>

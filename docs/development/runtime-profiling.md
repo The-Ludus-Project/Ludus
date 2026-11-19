@@ -211,8 +211,9 @@ simulation. The package freezes simulation to control the submitted geometry.
 
 #### Apple M5 first-room result
 
-The 8-core Apple M5 on macOS 26.6 (25G72) passed at all three sizes. The app
-selected Metal on Apple M5. The built-in panel ran at 60 Hz with 2× backing,
+The 8-core Apple M5 (Mac17,3, 16 GiB) on macOS 26.6 (25G72) passed at all three sizes. The app
+selected Metal on Apple M5. Both attached displays ran at 60 Hz with 2× backing.
+The package did not record which display contained the window. It ran with
 AC power and Low Power Mode off. macOS reported fair thermal state before and
 after each capture. Other desktop applications were active. Each run presented
 4,500 frames over approximately 82 seconds, including warm-up. Inputs and
@@ -255,6 +256,25 @@ and unavailable durations are blank. The extracted archive SHA-256 was
 The SDK used Clang 23.1.3, arm64 Release at engine base
 `9def10d461343b26e56560e0728508eaa1052770` with the bundled Cocoa startup
 fix. The archive also records the installed Platform library hash.
+
+The Development comparisons used the same first-room source. The native Cocoa editor
+opened the World through its adapter, showed the authored camera in Albedo shading,
+and recorded five seconds in Both mode. It completed 153 of 153 eligible frame
+timings (p50 1.211 ms, p95 4.371 ms, p99 5.572 ms), plus 306 physical pass samples.
+Submission timestamp intervals had p50 34.632 ms and p95 36.350 ms. The trace
+contains no compositor or scanout intervals. This comparison used Development
+editor objects from SDK manifest revision `62f86866e782009f6d20985bdd932b192078570a`
+and the pilot's capture fixture.
+
+The separate-window Development player ran the current World player sources against
+installed Clang 23 Development SDK `bba94d8774`, with a 60 Hz cap and the
+normal 960 × 640 point window. It presented 1,200 frames. A second 1,200-frame
+run confirmed the player window was onscreen after activation. Its 1,198 reported
+present-return intervals had p50 99.998 ms, p90 100.624 ms and p99 103.601 ms.
+The cadence is consistent with the player's 10 Hz occlusion policy. The report
+does not expose the per-frame visibility decision or standalone GPU durations.
+The player/platform owner can trace visibility and pacing policy selection on
+this desktop. Both play logs and the editor trace are in the measurement archive.
 
 ## Scheduled workflow
 
