@@ -132,6 +132,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
         with:
+          ref: ${{ inputs.batch_sha || github.sha }}
           persist-credentials: false
       - uses: ./.github/actions/native-setup
         with:
