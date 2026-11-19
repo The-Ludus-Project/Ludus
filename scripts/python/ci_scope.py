@@ -86,14 +86,42 @@ def changed_paths(event_name: str, event: dict, root: Path) -> list[str]:
     return [os.fsdecode(path) for path in result.stdout.split(b"\0") if path]
 
 
-def classify(event_name: str, event: dict, root: Path) -> tuple[bool, str]:
+# Camera admission, view construction, capture, and the fixtures that exercise them.
+CAMERA_PATHS = frozenset({
+    "modules/graphics/renderer/include/ludus/graphics/renderer/render_graph.hpp",
+    "modules/graphics/renderer/include/ludus/graphics/renderer/renderer.hpp",
+    "modules/graphics/renderer/src/render_graph.cpp",
+    "modules/graphics/renderer/src/render_graph_capture.cpp",
+    "modules/graphics/renderer/src/renderer.cpp",
+    "modules/graphics/renderer/src/views.cpp",
+    "modules/graphics/renderer/tests/render_graph_tests.cpp",
+    "apps/editor/tests/render_graph_preview_tests.cpp",
+    "scripts/python/camera_pilot.py",
+    "scripts/python/test_camera_pilot.py",
+})
+CAMERA_EDITOR_STEMS = frozenset({
+    "render_graph_preview", "render_preview", "render_scene", "viewport_raster_capture",
+})
+
+
+def camera_pilot_matches(paths: list[str]) -> bool:
+    for path in paths:
+        if path in CAMERA_PATHS:
+            return True
+        if path.startswith("apps/editor/src/") and PurePosixPath(path).stem in CAMERA_EDITOR_STEMS:
+            return True
+    return False
+
+
+def classify(event_name: str, event: dict, root: Path) -> tuple[bool, str, bool]:
     try:
         paths = changed_paths(event_name, event, root)
     except (KeyError, TypeError, ValueError, OSError, subprocess.SubprocessError):
-        return True, "Comparison unavailable or event requires full validation."
+        return True, "Comparison unavailable or event requires full validation.", event_name == "pull_request"
     if documentation_only(paths):
-        return False, f"All {len(paths)} changed paths are documentation or documentation tooling."
-    return True, "Engine, tooling, policy, unknown paths, or an empty diff require full validation."
+        return False, f"All {len(paths)} changed paths are documentation or documentation tooling.", False
+    reason = "Engine, tooling, policy, unknown paths, or an empty diff require full validation."
+    return True, reason, camera_pilot_matches(paths)
 
 
 def validation_tier(event_name: str, event: dict, *, is_batch: bool = False) -> str:
@@ -250,16 +278,20 @@ def main() -> int:
     event_name = os.environ.get("GITHUB_EVENT_NAME", "")
     try:
         event = json.loads(Path(os.environ["GITHUB_EVENT_PATH"]).read_text(encoding="utf-8"))
-        required, reason = classify(event_name, event, Path.cwd())
+        required, reason, camera = classify(event_name, event, Path.cwd())
         tier = validation_tier(event_name, event, is_batch=bool(os.environ.get("LUDUS_CI_BATCH_SHA")))
     except (OSError, ValueError, KeyError):
-        required, reason = True, "Event metadata unavailable; full validation required."
+        required, reason, camera = True, "Event metadata unavailable; full validation required.", True
         tier = FULL_TIER
     value = "true" if required else "false"
     with Path(os.environ["GITHUB_OUTPUT"]).open("a", encoding="utf-8") as output:
+        output.write(f"camera_pilot={str(camera).lower()}\n")
         output.write(f"native_required={value}\n")
         output.write(f"validation_tier={tier}\n")
     message = f"Native validation required: {value}. Validation tier: {tier}. {reason}"
+    if tier == INTEGRATION_TIER:
+        message += (" Camera pilot selected." if camera else
+                    " Camera pilot outside scope (0 test runner-minutes).")
     print(message)
     if os.environ.get("GITHUB_STEP_SUMMARY"):
         with Path(os.environ["GITHUB_STEP_SUMMARY"]).open("a", encoding="utf-8") as summary:

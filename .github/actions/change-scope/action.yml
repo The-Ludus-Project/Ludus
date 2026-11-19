@@ -1,6 +1,9 @@
 name: Change scope
 description: Conservatively identify documentation-only changes without installing native tools.
 outputs:
+  camera_pilot:
+    description: Whether the change touches the camera admission or raster capture pilot.
+    value: ${{ steps.classify.outputs.camera_pilot }}
   native_required:
     description: Whether native engine and host-tooling validation must run.
     value: ${{ steps.classify.outputs.native_required }}
@@ -12,7 +15,9 @@ runs:
   steps:
     - name: Test CI change routing and required gate
       shell: bash
-      run: python3 -m unittest discover -s scripts/python -p test_ci_scope.py -v
+      run: |
+        python3 -m unittest discover -s scripts/python -p test_ci_scope.py -v
+        python3 -m unittest discover -s scripts/python -p test_camera_pilot.py -v
     - name: Classify the complete change
       id: classify
       shell: bash
