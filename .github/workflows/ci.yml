@@ -289,6 +289,7 @@ jobs:
           out/host-tools/venv/bin/ctest --test-dir out/renderer-sdk/environment --output-on-failure --no-tests=error -R '^ludus_sdk_environment$'
           out/host-tools/venv/bin/ctest --test-dir out/renderer-sdk --output-on-failure --no-tests=error -R "^ludus_sdk_hybrid_indirect_diffuse_consumer$"
           out/host-tools/venv/bin/ctest --test-dir out/renderer-sdk -V --no-tests=error -R "^ludus_sdk_ray_storage_"
+          out/host-tools/venv/bin/ctest --test-dir out/renderer-sdk --output-on-failure --no-tests=error -R "^ludus_sdk_patch_seam_(geometry|raster)$"
           out/renderer-sdk/ludus_sdk_render_graph_runtime_consumer
           out/renderer-sdk/ludus_sdk_render_graph_bilinear_consumer 2>&1 | tee out/bilinear-sdk-metal.log
           python3 -c 'from pathlib import Path; text=Path("out/bilinear-sdk-metal.log").read_text(); assert "bilinear passed" in text, text'
@@ -307,6 +308,22 @@ jobs:
           path = Path('examples/reference-scene/src/main.cpp')
           assert format_source(path.read_text(), path, 'out/host-tools/bin/clang-format') == path.read_text()
           PYFORMAT
+      - name: Upload cooked patch seam captures
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: patch-seam-metal
+          path: out/renderer-sdk/patch-seam/raster/
+          if-no-files-found: warn
+          retention-days: 14
+      - name: Upload RG4 pooling evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: rg4-pooling-metal
+          path: out/rg4-evidence/
+          if-no-files-found: warn
+          retention-days: 14
       - name: Measure mesh-light cube seams on Metal
         run: |
           out/host-tools/venv/bin/python -m venv out/shadow-analysis
@@ -324,14 +341,6 @@ jobs:
             out/shadow-worlds/
             out/build/macos-clang-development/modules/graphics/renderer/ludus-graphs/ludus_renderer_render_tests/rg2_clustered_Default/rg2_clustered_Default.lurgrt
           if-no-files-found: warn
-      - name: Upload RG4 pooling evidence
-        if: always()
-        uses: actions/upload-artifact@v4
-        with:
-          name: rg4-pooling-metal
-          path: out/rg4-evidence/
-          if-no-files-found: warn
-          retention-days: 14
       - name: Verify installed macOS game-project tooling
         run: |
           ./scripts/install-sdk macos-clang-development
@@ -1110,6 +1119,7 @@ jobs:
           out/host-tools/venv/bin/ctest --test-dir out/renderer-sdk/environment --output-on-failure --no-tests=error -R '^ludus_sdk_environment$'
           out/host-tools/venv/bin/ctest --test-dir out/renderer-sdk --output-on-failure --no-tests=error -R "^ludus_sdk_hybrid_indirect_diffuse_consumer$"
           VK_INSTANCE_LAYERS=VK_LAYER_KHRONOS_validation out/host-tools/venv/bin/ctest --test-dir out/renderer-sdk -V --no-tests=error -R "^ludus_sdk_ray_storage_"
+          out/host-tools/venv/bin/ctest --test-dir out/renderer-sdk --output-on-failure --no-tests=error -R "^ludus_sdk_patch_seam_(geometry|raster)$"
           VK_INSTANCE_LAYERS=VK_LAYER_KHRONOS_validation out/renderer-sdk/ludus_sdk_render_graph_runtime_consumer 2>&1 | tee out/rg3-sdk-vulkan-validation.log
           python3 -c 'from pathlib import Path; text=Path("out/rg3-sdk-vulkan-validation.log").read_text(); assert "Validation Error" not in text and "VUID-" not in text, text'
           VK_INSTANCE_LAYERS=VK_LAYER_KHRONOS_validation out/renderer-sdk/ludus_sdk_render_graph_bilinear_consumer 2>&1 | tee out/bilinear-sdk-vulkan-validation.log
@@ -1130,6 +1140,14 @@ jobs:
           path = Path('examples/reference-scene/src/main.cpp')
           assert format_source(path.read_text(), path, 'out/host-tools/bin/clang-format') == path.read_text()
           PYFORMAT
+      - name: Upload cooked patch seam captures
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: patch-seam-vulkan
+          path: out/renderer-sdk/patch-seam/raster/
+          if-no-files-found: warn
+          retention-days: 14
       - name: Upload RG4 pooling evidence
         if: always()
         uses: actions/upload-artifact@v4

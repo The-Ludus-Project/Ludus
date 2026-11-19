@@ -1466,6 +1466,12 @@ if(LUDUS_BUILD_TESTS AND NOT EMSCRIPTEN)
         ludus_stage_render_graph_inputs("${editor_ray_source}" "${editor_ray_staged}")
         # Exercise the canonical editable forward template through the World preview path.
         set(editor_forward_source "${PROJECT_SOURCE_DIR}/modules/graphics/renderer/render_graphs/forward_lit")
+        include("${PROJECT_SOURCE_DIR}/tests/sdk_consumer/patch_seam/graph.cmake")
+        ludus_compile_patch_seam_graph(ludus_editor_tests "${editor_forward_source}")
+        target_sources(ludus_editor_tests PRIVATE tests/patch_seam_viewport_tests.cpp)
+        target_compile_definitions(ludus_editor_tests PRIVATE
+            LUDUS_PATCH_SEAM_VERIFY="${PROJECT_SOURCE_DIR}/tests/sdk_consumer/patch_seam/verify.py"
+            LUDUS_PATCH_SEAM_PYTHON="${Python3_EXECUTABLE}")
         set(editor_forward_staged "${CMAKE_CURRENT_BINARY_DIR}/forward-lit-inputs")
         foreach(file main.lurender.json rasterize.lurender.json main_shaders/geometry.slang main_shaders/color.slang)
             configure_file("${editor_forward_source}/${file}" "${editor_forward_staged}/${file}" COPYONLY)
@@ -1641,7 +1647,7 @@ if(LUDUS_BUILD_TESTS AND NOT EMSCRIPTEN)
                 ENVIRONMENT "${editor_test_environment}" RESOURCE_LOCK ludus_editor)
         endforeach()
     endfunction()
-    set(editor_shard_filter "~[reference-compute]")
+    set(editor_shard_filter "~[reference-compute]~[patch-seam-capture]")
     if(WIN32)
         # This journey runs in ludus_editor_hosted_play with a native viewport.
         string(APPEND editor_shard_filter "~[native-hosted-frames]")
@@ -1650,6 +1656,9 @@ if(LUDUS_BUILD_TESTS AND NOT EMSCRIPTEN)
     if(LUDUS_EDITOR_RENDER_PREVIEW AND NOT WIN32)
         # Give each cold GPU capture its own deadline, independent of the editor shard's other tests.
         get_target_property(editor_reference_case_timeout Ludus::GraphicsRenderer LUDUS_REFERENCE_TEST_CASE_TIMEOUT_SECONDS)
+        add_test(NAME ludus_editor_patch_seam_capture COMMAND ludus_editor_tests "[patch-seam-capture]")
+        set_tests_properties(ludus_editor_patch_seam_capture PROPERTIES LABELS "editor;geometry;gpu"
+            ENVIRONMENT "${editor_test_environment}" TIMEOUT 300 SKIP_RETURN_CODE 4 RESOURCE_LOCK ludus_editor)
         add_test(NAME ludus_editor_reference_emissive_patches COMMAND ludus_editor_tests
             "[reference-compute][emissive-patches]" --durations yes)
         add_test(NAME ludus_editor_reference_oracle_parity COMMAND ludus_editor_tests
