@@ -430,6 +430,13 @@ export async function qualifyWorldEdits({browser, canvas, click, importScene, op
         assert.deepEqual(getPlacement(recovered, originalId), originalId === id ? [finalEdit, 0, 0] : original.scene.position);
       }
 
+      await page.waitForFunction(() => window.ludusHostPendingWrites?.() === 0, null, {timeout: timeLimit});
+      assert.equal(await page.evaluate(path => window.qaEditor.FS.analyzePath(path).exists,
+        mount + '/' + recoveryFile), false, 'A successful retry must acknowledge the World and clear recovery');
+      sample.recovery.worldCommits = await page.evaluate(() => window.qaWorld.worldCommits);
+      assert.equal(sample.recovery.worldCommits, 1, 'Recovery must publish the intended World once');
+      await page.close();
+
       const {page: reopened, opening: reopening} = await openSavedProject();
       const reopenedFrame = await readMarker(reopened, canvas(reopened),
         offset => offset > initial.offsetPixels + 120 && offset < initial.offsetPixels + 200);
@@ -458,8 +465,6 @@ export async function qualifyWorldEdits({browser, canvas, click, importScene, op
         const frames = window.qaWorld.frames.slice(start);
         return frames.slice(1).map((frame, index) => frame.milliseconds - frames[index].milliseconds);
       }, orbitStart);
-      sample.recovery.worldCommits = await page.evaluate(() => window.qaWorld.worldCommits);
-      assert.equal(sample.recovery.worldCommits, 1, 'Recovery must publish the intended World once');
       sample.recovery.reopened = true;
     } catch (error) {
       const active = context.pages().at(-1);

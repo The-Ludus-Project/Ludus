@@ -10,6 +10,7 @@
 #include <ludus/foundation/base/types.h>
 
 #include <QByteArray>
+#include <QFile>
 #include <QJsonArray>
 #include <QJsonDocument>
 #include <QJsonObject>
@@ -23,6 +24,7 @@
 
 #include <QtCore/private/qstdweb_p.h>
 #include <emscripten/val.h>
+#include <unistd.h>
 
 extern "C" void LudusHostPickFolder(emscripten::EM_VAL target, ludus::foundation::int32 intent, const char* options);
 extern "C" void LudusHostReopenFolder(emscripten::EM_VAL target, const char* options);
@@ -290,6 +292,17 @@ bool IsBrowserFolderWritable(const QString& path)
 {
     const QByteArray bytes = path.toUtf8();
     return path.isEmpty() == false && LudusHostIsWritable(bytes.constData()) != 0;
+}
+
+bool FlushBrowserFolderWrites(const QString& path)
+{
+    if (IsBrowserFolderWritable(path) == false)
+    {
+        return false;
+    }
+    QFile file(path);
+    // Emscripten's fd_sync waits for the mounted folder's existing write queue.
+    return file.open(QIODevice::ReadOnly) == true && fsync(file.handle()) == 0;
 }
 
 void ReopenBrowserProjectFolder(QWidget* owner, const std::function<void(const QString&)>& loaded)

@@ -4980,7 +4980,15 @@ bool WorldWorkspace::Save()
         return false;
     }
     const QByteArray bytes = Document_.Encode();
-    if (Replace(Path_, bytes) == false)
+#if defined(Q_OS_WASM)
+    // The failed rename already installed these bytes in this tab. Retry its
+    // queued write instead of publishing the same World a second time.
+    const bool isSaved =
+        isPendingBrowserCopy == true && current == bytes ? FlushBrowserFolderWrites(Path_) : Replace(Path_, bytes);
+#else
+    const bool isSaved = Replace(Path_, bytes);
+#endif
+    if (isSaved == false)
     {
 #if defined(Q_OS_WASM)
         QByteArray session;
