@@ -64,6 +64,9 @@ public:
     /// @param outReason Why Play cannot open in the viewport, set on failure.
     /// @return True when the game's window will be this viewport.
     [[nodiscard]] bool BeginPlay(QString& outAddress, QString& outReason);
+    /// Host Play on a different edit viewport owned by the same World workspace.
+    [[nodiscard]] bool
+    BeginPlayOn(PreviewViewport& inoutViewport, RenderPreview& inoutPreview, QString& outAddress, QString& outReason);
     /// End Play in the viewport: present edit frames again and close the game's window.
     void EndPlay() noexcept;
     /// Close the game's window, as clicking a native window's close button would.
@@ -134,6 +137,8 @@ private:
     PreviewViewport* Viewport_;
     void updatePlay();
     PlayViewportSource* mPlayOrNull = nullptr;
+    PreviewViewport* mPlayViewportOrNull = nullptr;
+    RenderPreview* mPlayPreviewOrNull = nullptr;
     bool mIsPlaying = false;
     bool mIsPlayingElsewhere = false;
     QString mPlayUnavailableReason;

@@ -120,12 +120,14 @@ private:
     {
         Run,
         Play,
-        Debug
+        Debug,
+        BuiltInWorld,
     };
     void launchAfterPreview(LaunchAction action,
                             const QString& debugger = {},
                             bool shouldSetUpDebugger = false,
-                            const QString& hostedWindowAddress = {});
+                            const QString& hostedWindowAddress = {},
+                            const ToolLaunch& worldLaunch = {});
     /// Stop: a game playing in the viewport first gets a window close, then the supervisor's stop.
     void stopRun();
     void BuildUi();

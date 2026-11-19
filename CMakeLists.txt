@@ -337,7 +337,6 @@ add_subdirectory(modules/ui)
 # normalized keyboard record/sink vocabulary (one-way dependency).
 add_subdirectory(modules/input)
 add_subdirectory(apps/world_demo)
-add_subdirectory(apps/first_person_player)
 # Private pinned miniaudio C dependency (locked source bootstrap, hash-verified
 # at configure time). Added before the audio module, which links it PRIVATE. It
 # deliberately enables the C language for its own targets; the root project
@@ -486,6 +485,8 @@ else()
         endif()
     endif()
 endif()
+
+add_subdirectory(apps/first_person_player)
 
 # Editor-OFF builds never discover Qt; browser and native shells share widgets.
 if(LUDUS_BUILD_EDITOR)

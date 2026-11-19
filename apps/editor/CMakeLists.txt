@@ -1098,6 +1098,12 @@ set(editor_application_resources
     ludus_editor_icon_resources)
 
 qt_add_executable(ludus_editor main.cpp src/main_window.cpp)
+if(TARGET ludus_first_person_player)
+    add_dependencies(ludus_editor ludus_first_person_player)
+    # Stage beside the native editor executable, including inside its macOS bundle.
+    set_target_properties(ludus_first_person_player PROPERTIES
+        RUNTIME_OUTPUT_DIRECTORY "${CMAKE_CURRENT_BINARY_DIR}/ludus_editor.app/Contents/MacOS")
+endif()
 if(WIN32 AND LUDUS_EDITOR_RENDER_PREVIEW)
     ludus_attach_d3d12_agility(ludus_editor "${LUDUS_D3D12_AGILITY_SDK_VERSION}"
         "${LUDUS_D3D12_AGILITY_BINARIES}" "${LUDUS_D3D12_AGILITY_LICENSE}")
@@ -1574,6 +1580,18 @@ if(LUDUS_BUILD_TESTS AND NOT EMSCRIPTEN)
     endif()
     if(LUDUS_EDITOR_RENDER_PREVIEW AND NOT EMSCRIPTEN)
         target_sources(ludus_editor_tests PRIVATE tests/play_viewport_source_tests.cpp)
+        if(TARGET ludus_first_person_player)
+            set(player_fixture "${CMAKE_CURRENT_BINARY_DIR}/first-person-fixture.luplay")
+            set(player_fixture_script "${PROJECT_SOURCE_DIR}/apps/first_person_player/tests/native_fixture.py")
+            add_custom_command(OUTPUT "${player_fixture}"
+                COMMAND "${Python3_EXECUTABLE}" "${player_fixture_script}" --write "${player_fixture}"
+                DEPENDS "${player_fixture_script}" VERBATIM)
+            add_custom_target(ludus_first_person_fixture DEPENDS "${player_fixture}")
+            add_dependencies(ludus_editor_tests ludus_first_person_player ludus_first_person_fixture)
+            target_compile_definitions(ludus_editor_tests PRIVATE
+                LUDUS_FIRST_PERSON_PLAYER="$<TARGET_FILE:ludus_first_person_player>"
+                LUDUS_FIRST_PERSON_FIXTURE="${player_fixture}")
+        endif()
         if(TARGET ludus_rhi_hosted_producer)
             # A real hosted game: the RHI test producer renders a known colour into its hosted window.
             target_compile_definitions(ludus_editor_tests PRIVATE

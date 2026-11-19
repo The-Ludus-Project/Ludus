@@ -150,6 +150,8 @@ public:
     [[nodiscard]] PlayWindow PreparePlay(PlayMode mode, QString& outAddress);
     /// Why Play in the viewport is unavailable, as the workspace shows it; empty while no refusal is shown.
     [[nodiscard]] QString GetPlayUnavailableText() const;
+    /// Resolve the selected spawn or the sole spawn in the current saved built-in World.
+    [[nodiscard]] bool GetBuiltInPlaySelection(QString& outWorld, QString& outSpawn, QString& outError) const;
     /// Label the World viewport while a game runs in its own window, or remove the label.
     void SetPlayingElsewhere(bool isPlayingElsewhere);
     /// Return the viewport to editing and close the game's window, if a game plays in it.

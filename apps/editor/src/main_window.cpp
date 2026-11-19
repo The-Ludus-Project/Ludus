@@ -218,6 +218,39 @@ MainWindow::MainWindow(EditorController* controller, QWidget* parent, const QStr
                 matches = true;
             }
         }
+#if defined(Q_OS_MACOS)
+        if (World_->Document().HasBuiltInSchema() == true)
+        {
+            ToolLaunch launch;
+            QString error;
+            launch.EditorExecutable = QCoreApplication::applicationFilePath();
+            launch.BuiltInPlayer =
+                QDir(QCoreApplication::applicationDirPath()).filePath(QStringLiteral("ludus_first_person_player"));
+            if (Controller_->CanPlayWorld() == false)
+            {
+                StatusLabel_->setText(QStringLiteral("Finish the active job and save Project settings before Play."));
+                return;
+            }
+            if (QFileInfo(launch.BuiltInPlayer).isExecutable() == false)
+            {
+                StatusLabel_->setText(QStringLiteral("Install an Editor build with the Metal first-person player."));
+                return;
+            }
+            if (World_->GetBuiltInPlaySelection(launch.WorldPath, launch.SpawnEntity, error) == false)
+            {
+                StatusLabel_->setText(error);
+                return;
+            }
+            const PlayWindow window = World_->PreparePlay(mode, launch.HostedWindowAddress);
+            if (window == PlayWindow::Unavailable)
+            {
+                StatusLabel_->setText(World_->GetPlayUnavailableText());
+                return;
+            }
+            launchAfterPreview(LaunchAction::BuiltInWorld, {}, false, launch.HostedWindowAddress, launch);
+            return;
+        }
+#endif
         if (state.Saved.Target != QStringLiteral("ludus_world_demo") || matches == false)
         {
             StatusLabel_->setText(
@@ -801,10 +834,13 @@ void MainWindow::BuildMenus()
 void MainWindow::launchAfterPreview(LaunchAction action,
                                     const QString& debugger,
                                     bool shouldSetUpDebugger,
-                                    const QString& hostedWindowAddress)
+                                    const QString& hostedWindowAddress,
+                                    const ToolLaunch& worldLaunch)
 {
-    if (AudioLaunchPending_ || AudioClosing_ || Scripts_->ConfirmDiscard() == false ||
-        World_->ConfirmDiscard() == false || Renderer_->ConfirmDiscard() == false)
+    if (AudioLaunchPending_ || AudioClosing_ ||
+        (action != LaunchAction::BuiltInWorld &&
+         (Scripts_->ConfirmDiscard() == false || World_->ConfirmDiscard() == false ||
+          Renderer_->ConfirmDiscard() == false)))
     {
         World_->EndPlayInViewport();
         return;
@@ -830,7 +866,7 @@ void MainWindow::launchAfterPreview(LaunchAction action,
     connect(timer,
             &QTimer::timeout,
             this,
-            [this, timer, epoch, digest, action, debugger, shouldSetUpDebugger, hostedWindowAddress]() {
+            [this, timer, epoch, digest, action, debugger, shouldSetUpDebugger, hostedWindowAddress, worldLaunch]() {
                 if (Audio_->PreviewFinished() == false)
                 {
                     return;
@@ -857,6 +893,9 @@ void MainWindow::launchAfterPreview(LaunchAction action,
                 {
                     case LaunchAction::Run:
                         Controller_->BuildRun(hostedWindowAddress);
+                        break;
+                    case LaunchAction::BuiltInWorld:
+                        Controller_->PlayWorld(worldLaunch);
                         break;
                     case LaunchAction::Play:
                         Controller_->Play();
