@@ -106,6 +106,13 @@ EM_JS(void, TracePublishedWorldPlacement, (const char* scene, foundation::int32 
             byte => byte.toString(HEX_RADIX).padStart(2, '0')).join(''), milliseconds: performance.now()},
     }));
 });
+EM_JS(void, TraceAcceptedWorldEdit, (), {
+    const screen = document.getElementById('screen');
+    if (screen?.dataset.measureWorldEdits !== 'true') return;
+    screen.dispatchEvent(new CustomEvent('ludusworldeditaccepted', {
+        bubbles: true, detail: performance.now(),
+    }));
+});
 EM_JS(void, TraceWorldApplyAvailability, (foundation::int32 isEnabled), {
     const screen = document.getElementById('screen');
     if (screen?.dataset.measureWorldEdits !== 'true') return;
@@ -4869,6 +4876,9 @@ bool WorldWorkspace::Apply()
     DraftTimer_.stop();
     Document_ = candidate;
     Pending_ = false;
+#if defined(Q_OS_WASM)
+    TraceAcceptedWorldEdit();
+#endif
     if (isProbeLayoutChanged == true || hasInheritedEarthObserver == true)
     {
         // Layout changes and newly linked Earth lights can derive inspector values during the edit.

@@ -126,8 +126,9 @@ Each report records the browser, viewport API, output size, editor startup
 payload, time to the editor-ready marker and time from Open World to matching
 pixels. The test picks the named origin marker and changes its X placement
 through Properties while checking every other placement. It measures the
-pointer event to the matching core-backed recovery checkpoint and the
-published extraction to the first ready browser frame carrying its identity.
+pointer event to publication of the validated World draft, which the matching
+recovery checkpoint corroborates. It then measures from core acceptance to
+the first ready browser frame carrying the published extraction identity.
 A screenshot checks the marker itself. Screenshot sampling adds browser and
 capture overhead and is reported separately. The test checks that an older
 accepted extraction does not draw after the latest one. Draw calls and upload

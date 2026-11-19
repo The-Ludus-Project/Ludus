@@ -98,6 +98,7 @@ async function observeEditor(page) {
         return stream;
       });
     };
+    addEventListener('ludusworldeditaccepted', event => { trace.coreAcceptedAt = event.detail; });
     addEventListener('ludusworldplacement', event => trace.revisions.push(event.detail));
     addEventListener('ludusdrawablescene', event => {
       trace.drawable.push({...event.detail, canvas: event.target.id, frame: Number(event.target.dataset.frames)});
@@ -132,7 +133,7 @@ async function observeEditor(page) {
           const text = fs.readFile(newPath, {encoding: 'utf8'});
           const bytes = text.slice(text.indexOf('{'));
           trace.accepted.push({milliseconds: performance.now(), world: JSON.parse(bytes),
-            revision: trace.revisions.at(-1)});
+            coreAcceptedAt: trace.coreAcceptedAt, revision: trace.revisions.at(-1)});
         }
         return result;
       };
@@ -208,7 +209,8 @@ async function readMarker(page, surface, predicate) {
       }, sum / count - pixels.width / 2);
     }
   } while (Date.now() < deadline);
-  assert.fail('The viewport did not draw the requested placement marker');
+  const diagnostic = await page.locator('#screen').getAttribute('data-viewport-error');
+  assert.fail('The viewport did not draw the requested placement marker' + (diagnostic ? ': ' + diagnostic : ''));
 }
 
 async function replaceField(page, x) {
@@ -249,7 +251,7 @@ export async function qualifyWorldEdits({browser, canvas, click, importScene, op
   report.worldEditQualification = {frontend: 'Qt/Wasm', samples: [],
     boundaries: {
       input: 'Capturing DOM pointerdown for the trusted Apply Changes click',
-      accepted: 'Successful session rename of the matching core-backed World recovery checkpoint',
+      accepted: 'World Apply published the validated draft, corroborated by the matching recovery checkpoint',
       drawable: 'First ready browser viewport lease carrying the published World extraction identity',
       pixels: 'First composited screenshot with the expected marker position (observation upper bound)',
       geometry: 'Authored positions and indices of the one shared triangle, before cooking',
@@ -358,7 +360,8 @@ export async function qualifyWorldEdits({browser, canvas, click, importScene, op
         }
         const input = await applyField(page);
         const checkpoint = await waitForCheckpoint(page, id, x, input);
-        assert.ok(checkpoint.milliseconds >= input, 'Apply must precede the accepted checkpoint');
+        assert.ok(checkpoint.coreAcceptedAt >= input && checkpoint.milliseconds >= checkpoint.coreAcceptedAt,
+          'Apply must precede core publication and its recovery checkpoint');
         assert.ok(checkpoint.revision?.identity && checkpoint.revision.milliseconds >= input,
           'The checkpoint must identify the extraction accepted after this input');
         await page.waitForFunction(revision => window.qaWorld.drawable.some(frame =>
@@ -375,7 +378,8 @@ export async function qualifyWorldEdits({browser, canvas, click, importScene, op
         }
         const gpuAfter = await page.evaluate(() => window.qaWorld.gpu);
         const gpu = Object.fromEntries(Object.keys(gpuBefore).map(key => [key, gpuAfter[key] - gpuBefore[key]]));
-        sample.edits.push({x, gpu, inputToCheckpointMilliseconds: checkpoint.milliseconds - input,
+        sample.edits.push({x, gpu, inputToCoreAcceptanceMilliseconds: checkpoint.coreAcceptedAt - input,
+          coreAcceptanceToDrawableMilliseconds: drawable.milliseconds - checkpoint.coreAcceptedAt,
           publicationToDrawableMilliseconds: drawable.milliseconds - checkpoint.revision.milliseconds,
           checkpointToObservedFrameMilliseconds: frame.observedAtMilliseconds - checkpoint.milliseconds,
           revision: checkpoint.revision.identity, drawable, ...frame});
