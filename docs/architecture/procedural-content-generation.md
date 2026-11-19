@@ -816,8 +816,9 @@ cross-layer occupancy, where trees claim space before smaller plants, waits for
 P2, so in P0 only authored keep-out rectangles constrain every layer.
 
 **Kernel.** `Ludus::ProceduralEnvironment` (`modules/content/procedural/environment`)
-is headless and depends only on FoundationBase, FoundationContainers and
-FoundationMath. It never depends on GameplayWorld, so it builds for native and
+is available to installed SDK consumers through the `ProceduralEnvironment`
+CMake component. It is headless and depends only on FoundationBase,
+FoundationContainers and FoundationMath. It never depends on GameplayWorld, so it builds for native and
 browser targets alike. It is the serial reference: one call generates one layer
 over a requested range of cells into caller storage, without allocating. Job
 scheduling belongs to the caller. Generating a range in pieces and merging them
