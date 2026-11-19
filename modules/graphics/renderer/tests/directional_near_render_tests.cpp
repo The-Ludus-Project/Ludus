@@ -123,8 +123,8 @@ TEST_CASE("Near directional shadows preserve the doorway across camera updates",
     uint64 revision = 0;
     uint32 width = WIDTH;
     uint32 height = HEIGHT;
-    uint64 gpuNanoseconds = 0;
-    uint64 resolveNanoseconds = 0;
+    float64 gpuNanoseconds = 0;
+    float64 resolveNanoseconds = 0;
     uint64 submissionNanoseconds = 0;
     const auto render = [&] {
         if (shouldMeasure == true)
