@@ -240,11 +240,11 @@ class ReevaluateTests(unittest.TestCase):
                                                     "path": ".github/workflows/batch-ci.yml", "head_branch": "main"}
         self.client.responses["pulls?state=open&base=develop&per_page=100&page=1"] = [
             {"number": 7, "head": {"sha": HEAD}}, {"number": 8, "head": {"sha": "e" * 40}}]
-        self.client.add_runs("ci.yml", f"event=pull_request&head_sha={HEAD}&per_page=20",
+        self.client.add_runs(develop_health.GATE_WORKFLOW, f"event=pull_request&head_sha={HEAD}&per_page=20",
                              [{"id": 60, "head_sha": HEAD, "status": "completed"},
                               {"id": 55, "head_sha": HEAD, "status": "completed"}])
-        self.client.add_jobs(60, [job("Ubuntu Clang", "success", 600), job("Develop health", "success", 601)])
-        self.client.add_runs("ci.yml", f"event=pull_request&head_sha={'e' * 40}&per_page=20",
+        self.client.add_jobs(60, [job("Develop health", "success", 601)])
+        self.client.add_runs(develop_health.GATE_WORKFLOW, f"event=pull_request&head_sha={'e' * 40}&per_page=20",
                              [{"id": 61, "head_sha": "e" * 40, "status": "in_progress"}])
 
     def test_red_batch_reruns_each_latest_gate_and_reports_in_progress_runs(self):
@@ -291,14 +291,21 @@ class WorkflowContractTests(unittest.TestCase):
                 text = (self.ROOT / ".github/workflows" / workflow).read_text(encoding="utf-8")
                 self.assertRegex(text.split("\njobs:\n", 1)[0], r"(?m)^  workflow_dispatch:")
 
-    def test_gate_job_reads_only_and_runs_for_develop_pull_requests(self):
-        workflow = (self.ROOT / ".github/workflows/ci.yml").read_text(encoding="utf-8")
-        gate = workflow.split("\n  develop-health:\n", 1)[1].split("\n\n  ", 1)[0]
-        self.assertIn(f"name: {develop_health.GATE_JOB}", gate)
-        self.assertIn("if: github.event_name == 'pull_request' && github.base_ref == 'develop'", gate)
+    def test_gate_runs_alone_for_develop_pull_requests_and_reads_only(self):
+        workflow = (self.ROOT / ".github/workflows" / develop_health.GATE_WORKFLOW).read_text(encoding="utf-8")
+        triggers = workflow.split("\npermissions:", 1)[0]
+        # Description edits re-evaluate Batch-Fix declarations in this workflow only.
+        self.assertIn("    types: [opened, synchronize, reopened, edited]\n    branches: [develop]\n", triggers)
+        self.assertIn("  cancel-in-progress: true\n", workflow)
+        jobs = re.findall(r"(?m)^  ([a-z][a-z0-9_-]*):\n", workflow.split("\njobs:\n", 1)[1])
+        self.assertEqual(jobs, ["develop-health"])
+        gate = workflow.split("\njobs:\n", 1)[1]
+        self.assertIn(f"name: {develop_health.GATE_JOB}\n", gate)
         self.assertNotIn("needs:", gate)
         self.assertNotIn("write", gate)
         self.assertIn("develop_health.py gate", gate)
+        ci = (self.ROOT / ".github/workflows" / develop_health.PULL_REQUEST_WORKFLOW).read_text(encoding="utf-8")
+        self.assertNotIn(f"name: {develop_health.GATE_JOB}\n", ci)
 
     def test_reevaluation_runs_after_main_batches_with_rerun_permission_only(self):
         workflow = (self.ROOT / ".github/workflows/develop-health.yml").read_text(encoding="utf-8")

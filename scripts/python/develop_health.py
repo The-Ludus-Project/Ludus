@@ -22,6 +22,8 @@ import ci_scope
 
 BATCH_WORKFLOW = "batch-ci.yml"
 PULL_REQUEST_WORKFLOW = "ci.yml"
+# The gate runs alone so description edits and re-evaluation re-run one short job.
+GATE_WORKFLOW = "develop-health-gate.yml"
 GATE_JOB = "Develop health"
 # Batch caller job id -> the reusable workflow a fix PR dispatches for evidence.
 # Batch job names are "<caller id> / <reusable job name>".
@@ -290,12 +292,12 @@ def evaluate(client, health: Health, *, body: object, head_sha: str, branch: str
 def rerun_gate(client, pull: dict) -> str:
     number = pull.get("number")
     head_sha = pull.get("head", {}).get("sha")
-    listing = client.get(f"actions/workflows/{PULL_REQUEST_WORKFLOW}/runs?event=pull_request"
+    listing = client.get(f"actions/workflows/{GATE_WORKFLOW}/runs?event=pull_request"
                          f"&head_sha={batch_ci.validate_sha(head_sha)}&per_page=20")
     runs = [run for run in listing.get("workflow_runs", []) if isinstance(run, dict)
             and isinstance(run.get("id"), int) and run.get("head_sha") == head_sha]
     if not runs:
-        return f"#{number}: no {PULL_REQUEST_WORKFLOW} run for {head_sha}."
+        return f"#{number}: no {GATE_WORKFLOW} run for {head_sha}."
     run = max(runs, key=lambda run: run["id"])
     if run.get("status") != "completed":
         return f"#{number}: run {run['id']} is still in progress; re-run {GATE_JOB} after it completes."
