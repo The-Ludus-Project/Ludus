@@ -81,9 +81,15 @@ ludus render-graph migrate-pipelines graphs/Main/rasterize.lurender.json \
 The command writes only stdout (`--json` returns a `document` object). It does
 not replace files or convert imported assets automatically.
 
-In **Properties → Shaders** or the canvas node editor, add a row, choose its stage
-and set its shader ID. Completed edits automatically create a `.slang` template and register a program in the root
-`.lushader.json` for each new program name. The initial `Program` value
+In **Properties → Shaders** or **Edit Node** on the canvas, choose the new shader
+language and click **Add**, then set the row's stage and shader ID. LUSL
+(`.lusl`) is the default. Choose Slang (`.slang`) to create a Slang source in
+the same package. The Editor registers each new program in the root
+`.lushader.json`. Renaming a program keeps its source language. Template
+instances copy the source languages used by the template. For a scene ray
+pipeline with a custom payload, declare its layout in LUSL as described in the
+[shader language guide](../modules/tooling/shader-language.md#render-graph-programs).
+The initial `Program` value
 receives a unique name from the node and shader IDs. Program IDs belong to the root
 shader manifest and are shared across all imported graphs and configurations;
 graph-local node names do not create separate program namespaces. Generated names
@@ -126,8 +132,8 @@ authored build roots even when no node currently selects them; their programs su
 Remove an unwanted technique explicitly in **Source** before running cleanup.
 
 Unused program registrations are removed in one undoable draft edit, with the
-`.slang` sources that no remaining program uses and the helpers that only those
-sources include (for example a template's `hit_record.slang`). A file survives when
+`.lusl` and `.slang` sources that no remaining program uses, along with helpers
+that only those sources include (for example a template's `hit_record.slang`). A file survives when
 a remaining program registers it, a remaining graph or manifest field names it (a
 traversal source or ray payload, for example), or a surviving source could include
 it, directly or through other survivors. Builds resolve literal includes relative to

@@ -416,7 +416,9 @@ endfunction()
 # without the native preview), so the Renderer tab can show and copy them.
 function(ludus_editor_add_default_render_graph target)
     set(restir_template "${PROJECT_SOURCE_DIR}/modules/graphics/renderer/render_graphs/restir_di")
-    file(GLOB restir_template_shaders CONFIGURE_DEPENDS "${restir_template}/main_shaders/*.slang")
+    file(GLOB restir_template_shaders CONFIGURE_DEPENDS
+        "${restir_template}/main_shaders/*.slang" "${restir_template}/main_shaders/*.lusl"
+        "${restir_template}/main_shaders/*.luslh")
     qt_add_resources(${target} ludus_restir_configuration
         PREFIX "/render-graph/templates/restir-di" BASE "${restir_template}"
         FILES "${restir_template}/library.lurender.json" "${restir_template}/main.lushader.json.in"
@@ -426,7 +428,9 @@ function(ludus_editor_add_default_render_graph target)
             polygonal_light_sampling slice_sampling_luminaire rough_pair_slice steinberg_plt steinberg_physical_optics wave_tracing restir_gi rao_blackwell_mh guided_restir_fg_plus conditional_restir one_more_vertex_nee light_transformer)
         string(REPLACE "_" "-" template_identity "${template_directory}")
         set(visibility_template "${PROJECT_SOURCE_DIR}/modules/graphics/renderer/render_graphs/${template_directory}")
-        file(GLOB template_sources CONFIGURE_DEPENDS "${visibility_template}/main_shaders/*.slang")
+        file(GLOB template_sources CONFIGURE_DEPENDS
+            "${visibility_template}/main_shaders/*.slang" "${visibility_template}/main_shaders/*.lusl"
+            "${visibility_template}/main_shaders/*.luslh")
         if(template_directory STREQUAL "visibility_buffer")
             list(APPEND template_sources "${visibility_template}/resolve_library.lurender.json"
                 "${visibility_template}/resolve.lushader.json.in")
