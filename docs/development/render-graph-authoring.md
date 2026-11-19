@@ -6749,9 +6749,28 @@ horizon one at a time as normals varied, which drew stepped bands on vaults and 
 horizontal line across walls near eye height; the fixed directions' weights vary
 continuously with the normal.
 
+In Worlds wider than 32 m on any axis, one additional 1024 × 1024 square can
+refine the same 64 directions. Each local map covers 16 m across its projection
+(0.127 m per interior texel). The centre snaps to an 8 m world grid. Room-scale
+items up to 8 m across have priority in source-ID order. When the cook combines
+terrain and buildings into a larger mesh, a room-scale triangle can supply the
+anchor. The depth range still includes the full World, so the local map can see
+a ridge beyond the doorway. The receiver uses each direction's fine map inside
+its filter footprint and blends to the whole-World map at the edge. Only one
+neighbourhood receives this refinement per generation.
+
+`RenderGraph::GetSkyVisibilityReport()` returns the drawable generation's finest
+submitted level, counts at each level, anchor, world metres per texel, geometry
+revision and budget fallback. Direct and mesh-light shadows keep their reserved
+space. If the local square exhausts the texture budget, a sky-only atlas can
+fall back to 1024 × 1024. Camera changes and changes to Atmosphere radiance can
+use the same maps. A replacement that supplies separate scene-domain revisions
+can also retain a completed atlas across an environment-only change. Caster
+transforms, admission and masks require new visibility. During preparation or a
+rejected edit the previous drawable generation keeps its atlas.
+
 Openings narrower than the spacing between directions, about 25 degrees, can fall
-between them, and texel-sized geometry can leak, because the maps are coarse:
-126 texels across the scene bounds. Interiors receive no light that bounces off
+between them. Geometry smaller than a projected texel can leak at either level. Interiors receive no light that bounces off
 other surfaces, so rooms lit only through openings are darker than with the
 unoccluded sky; probe GI and baked charts provide that light where configured.
 Clustered forward profiles and the built-in Lit viewport do not apply sky

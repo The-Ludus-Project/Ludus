@@ -4914,25 +4914,24 @@ Status Renderer::CreateLitMaterial(MaterialProgram program,
                                    MaterialVersion& output,
                                    LightSelection& report) noexcept
 {
-    return createLitMaterial(program, description, output, report, nullptr, 0, 0, 0);
+    return createLitMaterial(program, description, output, report, nullptr);
 }
 Status Renderer::createLitMaterial(MaterialProgram program,
                                    const LitMaterialDescription& description,
                                    MaterialVersion& outMaterial,
                                    LightSelection& outSelection,
-                                   const ShadowRegion* directionalShadowsOrNull,
-                                   usize directionalShadowCount,
-                                   usize skyVisibilityCount,
-                                   uint32 shadowAtlasTexels) noexcept
+                                   const internal::DeferredShadowAtlas* deferredAtlasOrNull) noexcept
 {
     if (mState.Get() == nullptr || mState->LightingSetup != Status::Ready)
     {
         return Status::NotReady;
     }
+    const usize directionalShadowCount = deferredAtlasOrNull == nullptr ? 0 : deferredAtlasOrNull->DirectionalCount;
+    const usize skyVisibilityCount = deferredAtlasOrNull == nullptr ? 0 : deferredAtlasOrNull->SkyCount;
     const usize leadingShadowCount = directionalShadowCount + skyVisibilityCount;
     if (directionalShadowCount > SHADOW_REGION_CAPACITY || leadingShadowCount > SHADOW_REGION_CAPACITY ||
         (skyVisibilityCount != 0 && skyVisibilityCount != SKY_VISIBILITY_DIRECTION_COUNT) ||
-        (leadingShadowCount != 0 && (directionalShadowsOrNull == nullptr || shadowAtlasTexels == 0)))
+        (leadingShadowCount != 0 && (deferredAtlasOrNull == nullptr || deferredAtlasOrNull->ExtentTexels == 0)))
     {
         return Status::InvalidDescription;
     }
@@ -5357,12 +5356,28 @@ Status Renderer::createLitMaterial(MaterialProgram program,
                              static_cast<float32>(atlas->Height));
         }
     }
-    else
+    else if (deferredAtlasOrNull != nullptr)
     {
-        const float32 extent = static_cast<float32>(shadowAtlasTexels);
+        const float32 extent = static_cast<float32>(deferredAtlasOrNull->ExtentTexels);
         for (usize i = 0; i < leadingShadowCount; ++i)
         {
-            packShadowRegion(i, directionalShadowsOrNull[i], extent, extent);
+            packShadowRegion(i, deferredAtlasOrNull->Directional[i], extent, extent);
+        }
+        if (deferredAtlasOrNull->LocalSkyCount != 0)
+        {
+            // Sky projections are orthographic. Their unused homogeneous rows carry the local
+            // sphere and the signed UV translation between corresponding atlas squares.
+            constexpr usize HOMOGENEOUS_ROW = 3;
+            const usize row = directionalShadowCount * SHADOW_REGION_WORDS + HOMOGENEOUS_ROW;
+            const math::Vector3 centerWorld = deferredAtlasOrNull->SkyAnchorWorld;
+            parameters.ShadowData[row] = {centerWorld.X, centerWorld.Y, centerWorld.Z, -1};
+            const rhi::RasterRectangle coarse = deferredAtlasOrNull->Directional[directionalShadowCount].Interior;
+            const rhi::RasterRectangle local = deferredAtlasOrNull->Directional[leadingShadowCount].Interior;
+            parameters.ShadowData[row + SHADOW_REGION_WORDS] = {
+                (static_cast<float32>(local.X) - static_cast<float32>(coarse.X)) / extent,
+                (static_cast<float32>(local.Y) - static_cast<float32>(coarse.Y)) / extent,
+                0,
+                0};
         }
     }
     uint8* legacy = s.LitScratch->Legacy.GetData();
@@ -5802,7 +5817,8 @@ Status Renderer::prepareDeferredShadows(Snapshot snapshot,
             outDraw = draw;
             return Status::Ready;
         };
-        for (uint32 index = 0; index < inoutAtlas.DirectionalCount + inoutAtlas.SkyCount; ++index)
+        for (uint32 index = 0; index < inoutAtlas.DirectionalCount + inoutAtlas.SkyCount + inoutAtlas.LocalSkyCount;
+             ++index)
         {
             const ShadowRegion& directional = inoutAtlas.Directional[index];
             const Status status =
@@ -5892,7 +5908,7 @@ Status Renderer::drawDeferredShadows(PreparedView frameView, internal::DeferredS
         }
         inoutAtlas.Recording.IsCleared = true;
     }
-    const uint32 leadingCount = inoutAtlas.DirectionalCount + inoutAtlas.SkyCount;
+    const uint32 leadingCount = inoutAtlas.DirectionalCount + inoutAtlas.SkyCount + inoutAtlas.LocalSkyCount;
     const bool shouldDrawDirectional = inoutAtlas.Recording.DrawnDirectional < leadingCount;
     if (shouldDrawDirectional == false && inoutAtlas.Recording.NextFace >= inoutAtlas.Faces.GetSize())
     {

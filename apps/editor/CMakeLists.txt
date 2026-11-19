@@ -1458,6 +1458,7 @@ if(LUDUS_BUILD_TESTS AND NOT EMSCRIPTEN)
             "LUDUS_EDITOR_REFERENCE_TEST_COLD_TIMEOUT_SECONDS=${editor_reference_cold_timeout}")
         target_sources(ludus_editor_tests PRIVATE tests/viewport_performance_tests.cpp tests/render_graph_preview_tests.cpp tests/restir_benchmark_tests.cpp
             tests/raster_mesh_light_benchmark_tests.cpp tests/render_graph_capture_profile_tests.cpp
+            tests/large_world_sky_tests.cpp
             tests/render_graph_library_capture_tests.cpp)
         target_compile_definitions(ludus_editor_tests PRIVATE
             "LUDUS_EDITOR_RENDER_GRAPH_FIXTURE=\"${editor_renderer_static_RUNTIME_PACKAGE}\"")

@@ -84,15 +84,15 @@ inline constexpr foundation::uint32 DIRECTIONAL_SHADOW_TEXELS = 1024;
 /// MESH_LIGHT_SHADOW_ATLAS_TEXELS atlas with cube faces, so each one halves the space those faces can use.
 inline constexpr foundation::uint32 MAX_DIRECTIONAL_SHADOW_REGIONS = 2;
 
-/// DIRECTIONAL_SHADOW_TEXELS squares reserved ahead of cube faces: one per directional map, then one square that
-/// tiles the sky visibility maps (deferred_layout.h, SKY_VISIBILITY_DIRECTION_COUNT).
-inline constexpr foundation::uint32 MAX_RESERVED_SHADOW_SQUARES = MAX_DIRECTIONAL_SHADOW_REGIONS + 1;
+/// DIRECTIONAL_SHADOW_TEXELS squares reserved ahead of cube faces: one per directional map, then one square per sky
+/// level that tiles its visibility maps (deferred_layout.h, SKY_VISIBILITY_DIRECTION_COUNT).
+inline constexpr foundation::uint32 MAX_RESERVED_SHADOW_SQUARES = MAX_DIRECTIONAL_SHADOW_REGIONS + 2;
 /// Directional and sky visibility regions drawn before any cube face.
 inline constexpr foundation::uint32 MAX_LEADING_SHADOW_REGIONS =
-    MAX_DIRECTIONAL_SHADOW_REGIONS + SKY_VISIBILITY_DIRECTION_COUNT;
+    MAX_DIRECTIONAL_SHADOW_REGIONS + 2 * SKY_VISIBILITY_DIRECTION_COUNT;
 static_assert(SKY_VISIBILITY_SLOTS_PER_SIDE * SKY_VISIBILITY_SLOTS_PER_SIDE == SKY_VISIBILITY_DIRECTION_COUNT);
 static_assert(SKY_VISIBILITY_SLOTS_PER_SIDE * SKY_VISIBILITY_SLOT_TEXELS == DIRECTIONAL_SHADOW_TEXELS);
-static_assert(MAX_LEADING_SHADOW_REGIONS <= SHADOW_REGION_CAPACITY);
+static_assert(MAX_DIRECTIONAL_SHADOW_REGIONS + SKY_VISIBILITY_DIRECTION_COUNT <= SHADOW_REGION_CAPACITY);
 
 /// Reserved square index's interior, inside a one-texel gutter. Squares follow the Z-order of
 /// DIRECTIONAL_SHADOW_TEXELS squares from the atlas origin, the order AllocateRasterMeshLightShadowFaces reserves.
@@ -126,14 +126,19 @@ struct ShadowAtlasProgress final
 /// and triangle budgets require.
 struct DeferredShadowAtlas final
 {
-    /// Directional regions, brightest light first, followed by SkyCount sky visibility regions in direction order;
-    /// all are drawn before any mesh-light faces.
+    /// Directional regions, brightest light first, followed by coarse and optional local sky visibility regions in
+    /// matching direction order; all are drawn before any mesh-light faces.
     foundation::StaticArray<ShadowRegion, MAX_LEADING_SHADOW_REGIONS> Directional{};
     foundation::StaticArray<MeshLightShadowFaceDraw, MAX_LEADING_SHADOW_REGIONS> DirectionalDraws{};
     /// Leading Directional entries that map lights.
     foundation::uint32 DirectionalCount = 0;
     /// Sky visibility regions after them: zero or SKY_VISIBILITY_DIRECTION_COUNT.
     foundation::uint32 SkyCount = 0;
+    /// A second square covers a bounded neighbourhood, keeping each coarse map's full depth range.
+    foundation::uint32 LocalSkyCount = 0;
+    foundation::uint64 SkyRevision = 0;
+    bool HasLocalSkyBudgetFallback = false;
+    foundation::math::Vector3 SkyAnchorWorld{};
     foundation::uint32 ExtentTexels = 0;
     rhi::TextureHandle Texture{};
     rhi::TextureViewHandle Sampled{};
