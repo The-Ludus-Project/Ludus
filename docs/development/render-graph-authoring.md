@@ -6907,6 +6907,147 @@ where the earlier filter, clamped to the four-texel gutter, left nearly hard sha
 with RMS error 0.32–0.41. Geometry such as window
 glass that the scene draws as opaque also blocks mesh light in the shadow faces.
 
+#### Measuring a penumbra across two cube faces
+
+The macOS native CI job runs `tests/sdk_consumer/mesh_shadow/qualify.py`. It imports each
+rectangular-emitter scene into a World, saves and reopens it, and renders its authored camera
+in the Lit World graph view using its offscreen readback presentation. A standalone executable linked against the installed SDK
+renders the same assembled `.luscn`, camera matrix and cooked `rg2_clustered_Default.lurgrt`.
+Both use Metal and the default clustered deferred graph staged with tone mapping disabled.
+The measurement uses the raw linear export before display conversion. All distances below
+are metres. A shadowed pixel divided by the same pixel of the corresponding clear capture
+gives normalized direct visibility.
+
+The planar receiver lies at z = 0 and the emitter at z = 2. The square source is
+0.48 × 0.48. Rotating the equal-area 0.96 × 0.24 source exchanges its long and short
+axes. In every case the radiance is 65, the source faces −Z and the receiver is diffuse.
+The 160 × 160 image spans 1.56 m at the planar receiver. Each reported profile averages
+five parallel sweeps. The horizontal sweep crosses the +X/−Z cube boundary. The camera
+translation advances four pixels on that plane. Moving the camera changes the filter's
+pixel rotation while preserving the relative light, blocker and receiver positions.
+
+The physical control projects each rectangular blocker from the receiver onto the emitter
+and clips it to the emitter bounds. For two blockers it subtracts their common area once.
+A separate 48 × 48 midpoint integration intersects rays with the plates or the rotating
+box and weights visible emitter samples by both cosines and inverse squared distance.
+The disk control intersects rays at cube texel centres, compares each depth with the
+receiver plane, then averages the weighted outcomes. A synthetic two-tap check has one
+passing and one failing depth test while comparing their means would pass both.
+The single-mean PCSS control uses the same admitted blockers and disk samples, with
+one arithmetic mean blocker height. The physical integral uses the authored rectangle.
+
+On an Apple M5, the SDK reported one caster, five drawn faces and zero pending
+faces for each World. Its sole caster takes 512-texel faces in the 2048² atlas with a
+four-texel gutter. Each emitter fits one planar polygon record with a 0.271 m disk
+radius. The square's enclosing radius is 0.339 m and the elongated rectangle's is
+0.495 m. All measurements below use five-row mean visibility unless a single probe
+is identified. Full light and full shadow controls require normalized visibility
+above 0.95 and below 0.05. The gates allow two linear RGBA8 codes between routes,
+0.03 RMS visibility error against the per-tap disk model, and 0.06 absolute error
+in the mean adjacent-pixel step across the face boundary. The sampled geometric
+coverage must also agree with the clipped plate area to within 0.05. The latter includes
+RGBA8 rounding and the finite atlas depths.
+
+| Emitter and blocker height | Horizontal raster 10–90% interval | Horizontal geometric 10–90% width | Vertical raster / geometric 10–90% width |
+| --- | --- | ---: | ---: |
+| Square, z = 0.65 | 1.875–1.973 | 0.185 | 0.087 / 0.185 |
+| Square, z = 1 | 1.784–1.983 | 0.384 | 0.181 / 0.384 |
+| Long in X, z = 1 | 1.784–1.992 | 0.768 | 0.183 / 0.202 |
+| Long in Y, z = 1 | 1.785–1.992 | 0.192 | 0.183 / 0.768 |
+
+The square's exact full-shadow to full-light interval spans 1.864–2.096 at z = 0.65
+and 1.740–2.220 at z = 1. The raster transition finishes early at both depths.
+The equal-area disk changes little when the elongated source turns 90°. At the
+vertical probe for the long-X case, the blocker's other edge clips the emitter too.
+The table uses its two-dimensional clipped area.
+
+Across the cube boundary the lower band's mean visibility step is +0.009 for the
+square at z = 1, and −0.048 after translating the camera. Registering identical
+receiver positions across the images gives a mean absolute change of 0.009 and a
+maximum of 0.289. At z = 0.65 the step is +0.507, of which the independent disk
+model predicts +0.509. Moving the point-shadow edge by ±0.10 m with the cube seam
+fixed moves the steepest rise to x = 1.883 and 2.078. The sparse search can miss
+a blocker beyond its point shadow and return fully lit inside the physical
+penumbra. That produces a visible step even within one cube face.
+
+At the central overlap probe (x = 1.984875), disjoint half-emitter footprints
+cover the entire source. The raster and disk model both return fully lit there.
+The matched clear radiance is 60/255 on each route. The three blocker pairs give the following results.
+
+| Projected overlap | Raw shadow code / 255 | Raster visibility | Geometric visibility | Weighted visibility |
+| --- | ---: | ---: | ---: | ---: |
+| Disjoint | 60/255 | 1.000 | 0.000 | 0.000 |
+| Partial | 26/255 | 0.433 | 0.250 | 0.296 |
+| Coincident | 42/255 | 0.700 | 0.500 | 0.559 |
+
+Alone, the first blocker gives 1.000 at that probe against a weighted 0.559.
+The three second-blocker controls give 1.000, 0.433 and 0.700 against 0.441,
+0.504 and 0.559. The largest overlap error here is a missed occluder.
+
+For the depth sweep one plate stays at z = 0.80. The outer receiver bands
+measure each penumbra. The mixed band near y = −0.28 supplies the partial
+probes (weighted physical visibility between 0.02 and 0.98) for the error columns.
+Each pair uses the same blocker geometry as its two single-blocker controls.
+
+| Second z | Near-receiver width, raster / geometric | Near-emitter width, raster / geometric | Predicted split probes / partial probes in mixed band | RMS against weighted emitter, raster / single-mean PCSS |
+| ---: | ---: | ---: | ---: | ---: |
+| 0.88 | 0.124 / 0.256 | 0.151 / 0.302 | 0 / 156 | 0.201 / 0.201 |
+| 1.00 | 0.124 / 0.256 | 0.204 / 0.384 | 0 / 163 | 0.201 / 0.201 |
+| 1.20 | 0.124 / 0.256 | 0.337 / 0.576 | 16 / 236 | 0.175 / 0.177 |
+| 1.45 | 0.314 / 0.274 | 0.944 / 1.012 | 60 / 370 | 0.128 / 0.138 |
+
+Alone, the plate at z = 0.80 gives a raster width of 0.124 and a geometric width
+of 0.256. At z = 1.45 the second plate also affects that side of the receiver.
+The single-blocker widths on the near-emitter side equal the paired widths shown.
+The largest centre-band seam step in this series is +0.525 at z = 0.88, where
+both depths still pool into one layer. The independent disk model predicts +0.525.
+
+The rotating closed box has half-extents (0.24, 0.90, 0.14) and centre (0.93, 0, 1).
+As it turns about Y, the emitter centre crosses the plane of the box's positive
+local-Z face between 41° and 43°. The upper receiver slopes away as z = −0.24y.
+The table measures the outward shadow edge separately on each receiver face.
+The error change is the largest absolute change in raster visibility between poses
+after subtracting the weighted reference change at the same transition probe.
+
+| Box angle | Flat width, raster / weighted | Sloping width, raster / weighted | Largest error change from previous pose |
+| ---: | ---: | ---: | ---: |
+| 41° | 0.398 / 0.489 | 0.381 / 0.523 | — |
+| 43° | 0.352 / 0.548 | 0.396 / 0.580 | 0.616 |
+| 45° | 0.337 / 0.606 | 0.442 / 0.638 | 0.682 |
+| 47° | 0.317 / 0.655 | 0.421 / 0.702 | 0.606 |
+| 49° | 0.362 / 0.675 | 0.501 / 0.712 | 0.615 |
+
+Repeating 45° gives identical raw frames. Across the two rows adjoining the bend,
+the raster step exceeds the predicted physical change by up to 0.556 in absolute
+visibility, with RMS 0.111–0.135 across the five poses. The static control and
+moving samples show a repeatable but pose-sensitive penumbra. Across all 34 Worlds
+the routes matched byte for byte. The largest band RMS error against the per-tap
+disk model was 0.00595, and the largest mean step difference at the cube boundary
+was 0.0102. This bounds the measured step left unexplained by the per-face texel
+selection and disk filter at the sampled boundary.
+
+To repeat a capture, supply a fresh output directory and the executables from the macOS
+editor build and installed renderer consumer build. Use the Python environment with
+NumPy from the CI step.
+
+```sh
+build=out/build/macos-clang-development
+graph="$build/modules/graphics/renderer/ludus-graphs/ludus_renderer_render_tests/rg2_clustered_Default/rg2_clustered_Default.lurgrt"
+out/shadow-analysis/bin/python tests/sdk_consumer/mesh_shadow/qualify.py out/shadow-worlds "$graph" \
+  --editor "$build/apps/editor/ludus_editor_tests" --sdk out/renderer-sdk/mesh-shadow/ludus_sdk_mesh_shadow
+```
+
+The `mesh-shadow-metal` artifact contains `probes.csv.gz` with the raw scene-linear
+values, pixel and world coordinates, visibility, two independent references and the PCSS
+control for each route. The artifact also preserves the input Worlds, assembled scenes,
+cameras, raw frames and cooked graph. `measurements.json` records the input hashes, GPU, profiles,
+edge bounds, errors and static and moving-view comparisons. Omitting both executable
+arguments repeats the analysis on the saved captures. The fixture and its physical
+comparators follow the cases and primary references collected in
+[renderer issue #1435](https://github.com/The-Ludus-Project/Ludus/issues/1435).
+
+#### Mesh-light shadow performance
+
 Measured with the `[.raster-mesh-light-benchmark]` editor test on an Apple M5 at
 1600 x 1080, with the editor viewport's device budgets. Each build ran five times,
 interleaved, on a loaded machine. The test draws every pending face before it times

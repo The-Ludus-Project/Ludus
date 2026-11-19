@@ -1,0 +1,10 @@
+cmake_minimum_required(VERSION 3.29)
+project(LudusMeshShadowQualification LANGUAGES CXX)
+find_package(Ludus CONFIG REQUIRED COMPONENTS GraphicsRenderer Resources FoundationTime FoundationThreading)
+add_executable(ludus_sdk_mesh_shadow capture.cpp)
+target_compile_features(ludus_sdk_mesh_shadow PRIVATE cxx_std_23)
+set_target_properties(ludus_sdk_mesh_shadow PROPERTIES CXX_EXTENSIONS OFF)
+target_link_libraries(ludus_sdk_mesh_shadow PRIVATE Ludus::GraphicsRenderer Ludus::Resources Ludus::FoundationTime Ludus::FoundationThreading)
+target_compile_options(ludus_sdk_mesh_shadow PRIVATE
+    $<$<CXX_COMPILER_ID:Clang,AppleClang,GNU>:-Wall;-Wextra;-Wpedantic;-Werror;-fno-exceptions>)
+ludus_compile_renderer_shaders(TARGET ludus_sdk_mesh_shadow SHADERS renderer_composite)
