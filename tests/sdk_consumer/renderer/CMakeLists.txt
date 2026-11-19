@@ -25,7 +25,7 @@ if(EMSCRIPTEN)
     configure_file(../renderer-views.html renderer-views.html COPYONLY)
 endif()
 
-add_executable(ludus_sdk_renderer_overlays_consumer ../renderer_overlays.cpp)
+add_executable(ludus_sdk_renderer_overlays_consumer ../renderer_overlays.cpp ../overlay_reuse.cpp)
 target_link_libraries(ludus_sdk_renderer_overlays_consumer PRIVATE Ludus::GraphicsText Ludus::FoundationTime)
 target_compile_options(ludus_sdk_renderer_overlays_consumer PRIVATE -Wall -Wextra -Wpedantic -Werror -fno-exceptions)
 ludus_compile_renderer_shaders(TARGET ludus_sdk_renderer_overlays_consumer SHADERS
