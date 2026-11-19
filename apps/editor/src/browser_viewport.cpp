@@ -89,6 +89,16 @@ EM_JS(void, SyncViewportCanvas, (const char* selector, int32 x, int32 y, int32 w
     }
     canvas.dataset.frames = frameCount;
 });
+EM_JS(void, TraceDrawableScene, (const char* selector, const char* scene, int32 length), {
+    const HEX_RADIX = 16;
+    const screen = document.getElementById('screen');
+    if (screen?.dataset.measureWorldEdits !== 'true') return;
+    const canvas = document.querySelector(UTF8ToString(selector));
+    canvas?.dispatchEvent(new CustomEvent('ludusdrawablescene', {
+        bubbles: true, detail: {identity: Array.from(HEAPU8.subarray(scene, scene + length),
+            byte => byte.toString(HEX_RADIX).padStart(2, '0')).join(''), milliseconds: performance.now()},
+    }));
+});
 EM_JS(void, ReportViewportFailure, (const char* selector, const char* message), {
     const canvas = document.querySelector(UTF8ToString(selector));
     const text = UTF8ToString(message);
@@ -351,6 +361,7 @@ void BrowserViewport::service()
         mRequestedHeight = heightPhysical;
         mPreview->Resize(widthPhysical, heightPhysical);
     }
+    bool hasNewFrame = false;
     if (mCanPresent == true && mPreview->HasPendingFrame() == true)
     {
         graphics::renderer::ViewportFrame frame;
@@ -362,6 +373,7 @@ void BrowserViewport::service()
             mHasFrame = true;
             mHasPresentedImage = true;
             ++mPresentedFrames;
+            hasNewFrame = true;
             // The camera may have moved with the frame; the overlay follows it.
             mIsOverlayDirty = true;
         }
@@ -391,6 +403,11 @@ void BrowserViewport::service()
                        isOverlayShown == true ? 1 : 0,
                        mOverlaySizePhysical.width(),
                        mOverlaySizePhysical.height());
+    if (hasNewFrame == true && isFrameShown == true)
+    {
+        const QByteArray& identity = mPreview->GetBrowserCompletedSceneIdentity();
+        TraceDrawableScene(mSelector.constData(), identity.constData(), static_cast<int32>(identity.size()));
+    }
     updateOverlay(isOverlayShown);
 }
 } // namespace ludus::editor

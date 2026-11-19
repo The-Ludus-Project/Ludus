@@ -86,10 +86,34 @@
 #include <QVector>
 #include <QWidgetAction>
 
+#if defined(Q_OS_WASM)
+#    include <emscripten.h>
+#endif
+
 namespace ludus::editor
 {
 namespace
 {
+#if defined(Q_OS_WASM)
+// Opt-in browser test trace for the World extraction that actually entered the preview.
+// clang-format off
+EM_JS(void, TracePublishedWorldPlacement, (const char* scene, foundation::int32 length), {
+    const HEX_RADIX = 16;
+    const screen = document.getElementById('screen');
+    if (screen?.dataset.measureWorldEdits !== 'true') return;
+    screen.dispatchEvent(new CustomEvent('ludusworldplacement', {
+        bubbles: true, detail: {identity: Array.from(HEAPU8.subarray(scene, scene + length),
+            byte => byte.toString(HEX_RADIX).padStart(2, '0')).join(''), milliseconds: performance.now()},
+    }));
+});
+EM_JS(void, TraceWorldApplyAvailability, (foundation::int32 isEnabled), {
+    const screen = document.getElementById('screen');
+    if (screen?.dataset.measureWorldEdits !== 'true') return;
+    screen.dataset.worldApplyEnabled = isEnabled !== 0 ? 'true' : 'false';
+});
+// clang-format on
+#endif
+
 /// Room in a recovery envelope for its header line and SHA-256 hex digest line.
 constexpr foundation::int64 MAX_RECOVERY_HEADER_BYTES = 256;
 /// The entity list never shrinks below a few rows, and entities take more of the column than lights (parts of 5).
@@ -1370,6 +1394,9 @@ void WorldWorkspace::SetProject(const QString& root, foundation::uint64 epoch)
     Selected_.clear();
     mSelectedEntities.clear();
     Disk_.clear();
+#if defined(Q_OS_WASM)
+    mUnpublishedBrowserSave.clear();
+#endif
     SchemaDisk_.clear();
     Pending_ = false;
     Unsaved_ = false;
@@ -1527,6 +1554,9 @@ bool WorldWorkspace::Open(const QString& path)
     Render_->SetWorld(Root_, &Document_);
     SchemaDisk_ = foundation::Move(schema);
     Disk_ = isLegacy ? QByteArray() : bytes;
+#if defined(Q_OS_WASM)
+    mUnpublishedBrowserSave.clear();
+#endif
     Path_ = QFileInfo(destination).absoluteFilePath();
     Selected_.clear();
     mSelectedEntities.clear();
@@ -1575,6 +1605,9 @@ bool WorldWorkspace::Create(const QString& path)
     Render_->SetWorld(Root_, &Document_);
     SchemaDisk_ = foundation::Move(schema);
     Disk_.clear();
+#if defined(Q_OS_WASM)
+    mUnpublishedBrowserSave.clear();
+#endif
     Path_ = QFileInfo(path).absoluteFilePath();
     Selected_.clear();
     mSelectedEntities.clear();
@@ -1782,6 +1815,13 @@ void WorldWorkspace::RefreshScene()
     }
     // A placement-only edit is presented at once; its cook then validates it in the background.
     const PlacementPublication publication = Scene_->PublishPlacement(level, Document_);
+#if defined(Q_OS_WASM)
+    if (publication == PlacementPublication::Published || publication == PlacementPublication::Unchanged)
+    {
+        const QByteArray& identity = Scene_->GetPresentedScene().Identity;
+        TracePublishedWorldPlacement(identity.constData(), static_cast<foundation::int32>(identity.size()));
+    }
+#endif
     if (publication == PlacementPublication::Published)
     {
         mPlacementWorld = Document_.Encode();
@@ -1930,6 +1970,9 @@ void WorldWorkspace::SceneCompleted(bool accepted)
         Document_ = foundation::Move(candidate);
         SchemaDisk_ = ConversionSchema_;
         Disk_.clear();
+#if defined(Q_OS_WASM)
+        mUnpublishedBrowserSave.clear();
+#endif
         Path_ = conversion;
         Unsaved_ = true;
         Pending_ = false;
@@ -4255,6 +4298,9 @@ void WorldWorkspace::Changed(const QString& message)
     Attach_->setEnabled(mSelectedEntities.isEmpty() == false && Pending_ == false &&
                         mComponentMenu->actions().isEmpty() == false && isBusy == false);
     Apply_->setEnabled(Pending_ && isBusy == false);
+#if defined(Q_OS_WASM)
+    TraceWorldApplyAvailability(Apply_->isEnabled() == true ? 1 : 0);
+#endif
     Reset_->setEnabled(Pending_ && isBusy == false);
     updateCommitFooter();
     QPushButton* mapOrNull = findChild<QPushButton*>(QStringLiteral("worldMapMaterial"));
@@ -4895,7 +4941,11 @@ bool WorldWorkspace::Save()
                                "schema before retrying."));
         return false;
     }
-    if (Inside(Path_, Unsaved_ == false) == false ||
+    bool canRetryBrowserSave = false;
+#if defined(Q_OS_WASM)
+    canRetryBrowserSave = mUnpublishedBrowserSave.isEmpty() == false && IsBrowserFolderWritable(Path_) == true;
+#endif
+    if (Inside(Path_, Unsaved_ == false || canRetryBrowserSave == true) == false ||
         QFileInfo(Path_ + QStringLiteral(".ludus-editor-lock")).isSymLink())
     {
         Changed(QStringLiteral("The world location changed or already exists. Save was refused."));
@@ -4903,21 +4953,41 @@ bool WorldWorkspace::Save()
     }
     QLockFile lock(Path_ + QStringLiteral(".ludus-editor-lock"));
     QByteArray current;
-    if (lock.tryLock(0) == false ||
-        (Unsaved_ ? QFileInfo::exists(Path_)
-                  : (Read(Path_, current, WorldDocument::MAX_BYTES) == false || current != Disk_)))
+    const bool hasLock = lock.tryLock(0);
+    const bool hasCurrent = hasLock == true && (Unsaved_ == false || canRetryBrowserSave == true) &&
+                            Read(Path_, current, WorldDocument::MAX_BYTES) == true;
+    bool isPendingBrowserCopy = false;
+#if defined(Q_OS_WASM)
+    isPendingBrowserCopy = canRetryBrowserSave == true && hasCurrent == true && current == mUnpublishedBrowserSave;
+#endif
+    const bool isExpectedWorld =
+        isPendingBrowserCopy == true ||
+        (Unsaved_ == true ? QFileInfo::exists(Path_) == false : hasCurrent == true && current == Disk_);
+    if (hasLock == false || isExpectedWorld == false)
     {
         Changed(QStringLiteral(
             "The world changed on disk or is locked. Your edits remain open; resolve the conflict before saving."));
         return false;
     }
-    const auto bytes = Document_.Encode();
+    const QByteArray bytes = Document_.Encode();
     if (Replace(Path_, bytes) == false)
     {
-        Changed(QStringLiteral("Could not atomically save the world. Your edits remain open."));
+#if defined(Q_OS_WASM)
+        QByteArray session;
+        if (IsBrowserFolderWritable(Path_) == true && Read(Path_, session, WorldDocument::MAX_BYTES) == true &&
+            session == bytes)
+        {
+            mUnpublishedBrowserSave = bytes;
+        }
+#endif
+        Changed(QStringLiteral("Could not atomically save the world. Your edits remain open. Check write access "
+                               "and available space, then save again."));
         return false;
     }
     Disk_ = bytes;
+#if defined(Q_OS_WASM)
+    mUnpublishedBrowserSave.clear();
+#endif
     Unsaved_ = false;
     Document_.AcknowledgeSave();
     RecoveryFailed_ = false;

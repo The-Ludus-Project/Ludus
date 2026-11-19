@@ -110,3 +110,35 @@ The fixture exposes `data-state`, `data-stage`, `data-offscreen-frames` and
 `data-surface-acquisitions` on its status paragraph. This is a real-browser
 qualification fixture; it does not replace the Node provider semantics tests
 or establish that an imported World's shadow output is correct.
+
+## Full-authoring World edit qualification
+
+The viewport runner also exercises [the World authoring qualification](../../architecture/editor-browser-strategy.md#full-authoring-frontend-qualification).
+It imports the same redistributable triangle through SceneCook, uses its cooked
+mesh and material for 9 and 49 independently selectable placements, and opens
+a fresh copy of each World from Chromium's origin-private folder. WebGPU and
+WebGL 2 use the same camera, scene, browser window and pixel ratio. One WebGL 2
+run simulates ordinary startup without WebGPU. The other forces WebGL 2 using
+the editor's supported override. The seed project uses one plain World and
+changes its authoring data to construct the two sizes before the timed runs.
+
+Each report records the browser, viewport API, output size, editor startup
+payload, time to the editor-ready marker and time from Open World to matching
+pixels. The test picks the named origin marker and changes its X placement
+through Properties while checking every other placement. It measures the
+pointer event to the matching core-backed recovery checkpoint and the
+published extraction to the first ready browser frame carrying its identity.
+A screenshot checks the marker itself. Screenshot sampling adds browser and
+capture overhead and is reported separately. The test checks that an older
+accepted extraction does not draw after the latest one. Draw calls and upload
+bytes cover the instrumented browser graphics calls. Snapshot bytes, hardware
+memory traffic and CPU picking time need independent instrumentation. The
+accessibility-tree snapshot records browser-exposed roles for manual follow-up.
+
+The final edit survives a narrow and wide layout, a refusal targeted at the
+World file, a retry after write access returns, and a fresh open of the result.
+The test checks the saved bytes before retrying and the identity and transforms
+after reopening. Refusal and resize screenshots preserve the visible state and
+any repeated warnings. Set `LUDUS_QA_BROWSER` to the named Chromium-family
+executable under test and record the host, device and run conditions. A forced
+backend or simulation only establishes that particular execution path.
