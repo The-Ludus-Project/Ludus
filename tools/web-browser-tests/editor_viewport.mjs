@@ -5,6 +5,7 @@ import {mkdir, readFile, writeFile} from 'node:fs/promises';
 import {resolve, sep} from 'node:path';
 import {chromium} from 'playwright';
 import {PNG} from 'pngjs';
+import {qualifyWorldEdits} from './editor_world_edit.mjs';
 
 const root = resolve(process.argv[2] || '../../out/editor-pages');
 const output = resolve(process.argv[3] || '../../out/editor-viewport-qa');
@@ -49,7 +50,7 @@ async function click(page, x, y) {
   // Qt consumes input and relayouts its canvas on the event-loop/animation turn.
   await page.waitForTimeout(200);
 }
-async function open(page, query = '') {
+async function open(page, query = '', {beforeNewWorld, shouldCreateWorld = true} = {}) {
   page.on('pageerror', error => report.errors.push(error.message));
   await page.goto(base + '/' + query, {waitUntil: 'domcontentloaded'});
   await page.waitForFunction(() => document.body.dataset.editorState === 'ready', null, {timeout: 60000});
@@ -59,6 +60,8 @@ async function open(page, query = '') {
   await keymapChooser.waitFor({timeout: 30000});
   await page.keyboard.press('Enter', {delay: 50});
   await keymapChooser.waitFor({state: 'hidden', timeout: 10000});
+  await beforeNewWorld?.();
+  if (!shouldCreateWorld) return;
   // Fixed desktop acceptance geometry. Qt controls are canvas-drawn, without DOM locators.
   await click(page, 446, 195); // World tab.
   await click(page, 784, 297); // New World.
@@ -329,6 +332,7 @@ try {
   assert.equal(await unavailable.locator('body').getAttribute('data-editor-state'), 'ready');
   await unavailable.screenshot({path: resolve(output, 'unavailable.png')});
   report.cases.push('Missing WebGPU and WebGL 2 report both causes, also in the import failure, without a CPU rendering fallback');
+  await qualifyWorldEdits({browser, canvas, click, importScene, open, rendered, output, report});
   assert.deepEqual(report.errors, []);
   report.passed = true;
 } catch (error) {

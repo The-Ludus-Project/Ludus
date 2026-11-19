@@ -454,6 +454,10 @@ private:
     QString Selected_;
     QStringList mSelectedEntities;
     QByteArray Disk_;
+#if defined(Q_OS_WASM)
+    // A folder-backed rename can update MEMFS before its disk write fails.
+    QByteArray mUnpublishedBrowserSave;
+#endif
     QByteArray SchemaDisk_;
     foundation::uint64 Epoch_ = ~foundation::uint64{0};
     foundation::uint64 DocumentGeneration_ = 0;
