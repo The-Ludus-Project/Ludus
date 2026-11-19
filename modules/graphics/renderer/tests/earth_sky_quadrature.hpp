@@ -16,6 +16,8 @@ struct EarthSkyIntegral
     foundation::float64 ReturnFraction = 0;
     /// Number of view quadrature points with the solar ray occluded by solid Earth.
     foundation::usize ShadowSamples = 0;
+    /// Transmittance of the integrated view segment.
+    foundation::float64 Transmittance = 1;
 };
 
 /// Extinction per kilometre in one RGB channel (0..2) at an altitude in kilometres.
@@ -29,6 +31,24 @@ EarthSkyIntegral IntegrateEarthSky(foundation::float64 altitude,
                                    foundation::usize channel,
                                    foundation::usize viewSteps = 768,
                                    foundation::usize solarSteps = 384);
+
+/// Single scattering along the part of a ray inside the shell, from observerKilometres (planet-centred, kilometres)
+/// up to maximumKilometres along a unit direction. IntegrateEarthSky is this ray from (0, ground + altitude, 0).
+EarthSkyIntegral IntegrateEarthSkySegment(foundation::math::Vector3d observerKilometres,
+                                          foundation::math::Vector3d directionWorld,
+                                          foundation::math::Vector3d sunWorld,
+                                          foundation::usize channel,
+                                          foundation::float64 maximumKilometres,
+                                          foundation::usize viewSteps = 768,
+                                          foundation::usize solarSteps = 384);
+
+/// Transmittance from a planet-centred point (kilometres) toward the Sun to the top of the shell, written to
+/// outTransmittance. False, leaving it unchanged, when solid Earth blocks the Sun.
+bool ComputeEarthSolarTransmittance(foundation::math::Vector3d pointKilometres,
+                                    foundation::math::Vector3d sunWorld,
+                                    foundation::usize channel,
+                                    foundation::usize solarSteps,
+                                    foundation::float64& outTransmittance);
 
 /// Higher scattering orders in blue at ground level, horizontal view and overhead Sun, under the local
 /// isotropic approximation: 24 explicit orders over a dense sphere rule.

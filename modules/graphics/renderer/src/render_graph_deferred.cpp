@@ -53,6 +53,7 @@ struct ViewParameters final
     math::Vector4 AtmosphereSunWorld{};
     math::Vector4 AtmosphereIlluminance{};
     math::Vector4 AtmosphereCameraWorld{};
+    CloudLayerUniform AtmosphereCloudLayer{};
 };
 math::Matrix4 MakeTranslation(math::Vector3 offsetWorld) noexcept
 {
@@ -746,6 +747,10 @@ Status RenderGraphDeferredPass::Initialize(RenderGraphDeferredTargets& inoutTarg
                                             camera.CameraPosition.Y,
                                             camera.CameraPosition.Z,
                                             camera.OrthographicCamera == true ? 1.0F : 0.0F};
+        if (TryPackCloudLayer(atmosphere, camera, parameters.AtmosphereCloudLayer) == false)
+        {
+            return mStatus = Status::InvalidDescription;
+        }
     }
     status = rhi::CreateBuffer(inoutTargets.mProgramOrNull->mDevice,
                                {rhi::BufferRole::Uniform, sizeof(parameters)},

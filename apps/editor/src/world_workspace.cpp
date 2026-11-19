@@ -567,8 +567,15 @@ void ConfigureCelestialLightFields(QWidget& inoutGroup,
     QObject::connect(driverOrNull, &QComboBox::currentIndexChanged, roleOrNull, updateRows);
     updateRows();
 }
+/// Keep a Properties group tall enough for its visible rows. A form without a visible word-wrapped row has no
+/// height for width, so it reports -1 and its size hint gives the height instead.
+void FitInspectorGroupHeight(QWidget& inoutGroup, const QFormLayout& rows)
+{
+    const foundation::int32 height = rows.totalHeightForWidth(WORLD_PROPERTY_LAYOUT_WIDTH);
+    inoutGroup.setMinimumHeight(height >= 0 ? height : rows.totalSizeHint().height());
+}
 /// Show which Earth date and place drive the Atmosphere's night sky, and hide the Sun disk size while the
-/// linked Sun's Earth preset supplies its own.
+/// linked Sun's Earth preset supplies its own. The cloud layer's fields show only while the layer is ticked.
 void ConfigureAtmosphereFields(QWidget& inoutGroup,
                                QFormLayout& inoutRows,
                                const QMap<QString, QWidget*>& fields,
@@ -613,11 +620,36 @@ void ConfigureAtmosphereFields(QWidget& inoutGroup,
                          FormatInspectorNumber(observer.value(WORLD_CELESTIAL_LATITUDE).toDouble()),
                          FormatInspectorNumber(observer.value(WORLD_CELESTIAL_LONGITUDE).toDouble())));
         }
-        inoutGroup.setMinimumHeight(inoutRows.totalHeightForWidth(WORLD_PROPERTY_LAYOUT_WIDTH));
+        FitInspectorGroupHeight(inoutGroup, inoutRows);
     };
     QObject::connect(sunOrNull, &QComboBox::currentIndexChanged, sky, update);
     QObject::connect(moonOrNull, &QComboBox::currentIndexChanged, sky, update);
     update();
+    // The cloud layer's fields matter only while it is drawn.
+    QCheckBox* cloudsOrNull = qobject_cast<QCheckBox*>(fields.value(FieldKey(component, QStringLiteral("clouds"))));
+    if (cloudsOrNull == nullptr)
+    {
+        return;
+    }
+    QList<QWidget*> cloudRows;
+    const QString prefix = FieldKey(component, QStringLiteral("cloud"));
+    for (const QString& key : fields.keys())
+    {
+        QWidget* field = fields.value(key);
+        if (key.startsWith(prefix) == true && field != cloudsOrNull)
+        {
+            cloudRows.append(GetFormRowWidget(inoutRows, field));
+        }
+    }
+    const auto updateClouds = [&inoutGroup, &inoutRows, cloudRows, cloudsOrNull]() {
+        for (QWidget* row : cloudRows)
+        {
+            inoutRows.setRowVisible(row, cloudsOrNull->isChecked());
+        }
+        FitInspectorGroupHeight(inoutGroup, inoutRows);
+    };
+    QObject::connect(cloudsOrNull, &QCheckBox::toggled, cloudsOrNull, updateClouds);
+    updateClouds();
 }
 QString Display(const QJsonValue& value)
 {

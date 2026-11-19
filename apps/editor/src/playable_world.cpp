@@ -82,6 +82,18 @@ QJsonObject EncodeAtmosphere(const graphics::renderer::AtmosphereDescription& sk
         planets.append(QJsonObject{{"directionWorld"_L1, MakeVector(planet.DirectionWorld)},
                                    {"illuminance"_L1, MakeVector(planet.Illuminance)}});
     }
+    const graphics::renderer::CloudLayerDescription& clouds = sky.Clouds;
+    const QJsonObject cloudLayer{{"enabled"_L1, clouds.IsEnabled},
+                                 {"baseMetres"_L1, clouds.BaseHeightMetres},
+                                 {"thicknessMetres"_L1, clouds.ThicknessMetres},
+                                 {"sizeXMetres"_L1, clouds.SizeXMetres},
+                                 {"sizeZMetres"_L1, clouds.SizeZMetres},
+                                 {"edgeFadeMetres"_L1, clouds.EdgeFadeMetres},
+                                 {"density"_L1, clouds.Density},
+                                 {"extinctionPerMetre"_L1, clouds.ExtinctionPerMetre},
+                                 {"albedo"_L1, clouds.SingleScatteringAlbedo},
+                                 {"phaseAsymmetry"_L1, clouds.PhaseAsymmetry},
+                                 {"axisXWorld"_L1, MakeVector(clouds.AxisXWorld)}};
     return {{"enabled"_L1, sky.IsEnabled},
             {"anchorWorld"_L1, MakeVector(sky.SurfaceAnchorWorld)},
             {"upWorld"_L1, MakeVector(sky.SurfaceUpWorld)},
@@ -99,7 +111,8 @@ QJsonObject EncodeAtmosphere(const graphics::renderer::AtmosphereDescription& sk
             {"galacticNorthWorld"_L1, MakeVector(celestial.GalacticNorthWorld)},
             {"galacticCenterWorld"_L1, MakeVector(celestial.GalacticCenterWorld)},
             {"toSunAtMoonWorld"_L1, MakeVector(celestial.DirectionToSunAtMoonWorld)},
-            {"planets"_L1, planets}};
+            {"planets"_L1, planets},
+            {"clouds"_L1, cloudLayer}};
 }
 bool ExtractEntities(const WorldDocument& world, QJsonArray& outEntities, QJsonArray& outWarnings, QString& outError)
 {
