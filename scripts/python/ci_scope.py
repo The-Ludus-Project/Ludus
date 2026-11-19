@@ -46,6 +46,8 @@ INTEGRATION_JOBS = tuple(name for name in NATIVE_JOBS if name not in PULL_REQUES
 # Bounded GitHub run metadata read by a cancelled pull-request gate.
 MAX_RUN_METADATA_BYTES = 2 * 1024 * 1024
 GATE_JOB = "Ubuntu Clang"
+# A Batch-Fix evidence dispatch runs one native job; "all" (or empty) runs every job.
+ALL_EVIDENCE_JOBS = "all"
 
 
 def documentation_only(paths: list[str]) -> bool:
@@ -115,8 +117,16 @@ def validation_tier(event_name: str, event: dict, *, is_batch: bool = False) -> 
     return FULL_TIER
 
 
-def gate_failures(results: dict) -> list[str]:
+def gate_failures(results: dict, evidence_job: str = "") -> list[str]:
+    """Compare job results with the classified scope.
+
+    A non-empty evidence_job other than "all" names the one native job a scoped
+    evidence dispatch runs; every other native job must then be skipped.
+    """
     failures = []
+    is_scoped = evidence_job not in ("", ALL_EVIDENCE_JOBS)
+    if is_scoped and evidence_job not in NATIVE_JOBS:
+        return [f"Unknown evidence job {evidence_job!r}; choose one of: {', '.join(NATIVE_JOBS)}."]
     scope = results.get("changes", {})
     if scope.get("result") != "success":
         return ["Change classification did not succeed."]
@@ -132,7 +142,11 @@ def gate_failures(results: dict) -> list[str]:
     for name in NATIVE_JOBS:
         deferred = ((tier == INTEGRATION_TIER and name in INTEGRATION_JOBS)
                     or (tier != NIGHTLY_TIER and name in NIGHTLY_JOBS))
-        expected = "success" if required == "true" and not deferred else "skipped"
+        is_selected = not is_scoped or name == evidence_job
+        if is_selected and is_scoped and (deferred or required != "true"):
+            failures.append(f"Evidence job {name} does not run in the {tier} tier; dispatch with "
+                            "validation_tier=full (nightly for macos-analysis).")
+        expected = "success" if required == "true" and not deferred and is_selected else "skipped"
         actual = results.get(name, {}).get("result")
         if actual != expected:
             failures.append(f"{name}: expected {expected}, received {actual}.")
@@ -207,8 +221,8 @@ def find_superseding_run() -> dict | None:
         return None
 
 
-def run_gate(results: dict) -> int:
-    failures = gate_failures(results)
+def run_gate(results: dict, evidence_job: str = "") -> int:
+    failures = gate_failures(results, evidence_job)
     if not failures:
         print("Required CI gate passed for the classified change scope.")
         return 0
@@ -232,7 +246,7 @@ def main() -> int:
     parser.add_argument("command", choices=("classify", "gate"))
     args = parser.parse_args()
     if args.command == "gate":
-        return run_gate(json.loads(os.environ["RESULTS"]))
+        return run_gate(json.loads(os.environ["RESULTS"]), os.environ.get("EVIDENCE_JOB", ""))
     event_name = os.environ.get("GITHUB_EVENT_NAME", "")
     try:
         event = json.loads(Path(os.environ["GITHUB_EVENT_PATH"]).read_text(encoding="utf-8"))

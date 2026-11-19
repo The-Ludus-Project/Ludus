@@ -291,6 +291,25 @@ class WorkflowContractTests(unittest.TestCase):
                 text = (self.ROOT / ".github/workflows" / workflow).read_text(encoding="utf-8")
                 self.assertRegex(text.split("\njobs:\n", 1)[0], r"(?m)^  workflow_dispatch:")
 
+    def test_evidence_commands_run_only_the_failed_job_when_a_workflow_can(self):
+        def command(suite, job):
+            return develop_health.dispatch_command(suite, "codex/fix", job, self.ROOT)
+        full = "gh workflow run ci.yml --ref codex/fix -f validation_tier=full"
+        for job, job_id in (("ASan and UBSan (2/4)", "sanitizers"), ("Source formatting", "formatting"),
+                            ("Clang static analysis (1)", "analysis"), ("macOS ASan and UBSan", "macos-sanitizers"),
+                            ("Assertion policy (linux-clang-debug)", "assertion-policy")):
+            with self.subTest(job=job):
+                self.assertEqual(command("native", job), f"{full} -f evidence_job={job_id}")
+        # The gate and unknown names prove nothing alone, so they keep the full run.
+        for job in ("Ubuntu Clang", "Classify changes", "Renamed job"):
+            self.assertEqual(command("native", job), full)
+        self.assertEqual(command("windows", "MSVC host and D3D12 / Editor ASan"),
+                         "gh workflow run windows-direct3d12.yml --ref codex/fix -f editor_only=true")
+        self.assertEqual(command("windows", "Windows Direct3D 12 bring-up"),
+                         "gh workflow run windows-direct3d12.yml --ref codex/fix")
+        self.assertEqual(command("sdk", "Host tooling (ludus_tools) unit tests"),
+                         "gh workflow run project-sdk.yml --ref codex/fix")
+
     def test_gate_runs_alone_for_develop_pull_requests_and_reads_only(self):
         workflow = (self.ROOT / ".github/workflows" / develop_health.GATE_WORKFLOW).read_text(encoding="utf-8")
         triggers = workflow.split("\npermissions:", 1)[0]

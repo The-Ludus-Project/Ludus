@@ -41,6 +41,10 @@ BATCH_WORKFLOWS = {
 }
 # A documentation-only change can still break these suites.
 DOCUMENTATION_SUITES = frozenset({"wiki", "wiki-macos", "wiki-macos-intel"})
+# Windows lanes that windows-direct3d12.yml's editor_only dispatch runs by themselves.
+WINDOWS_EDITOR_JOBS = frozenset({"MSVC host and D3D12 / Editor", "MSVC host and D3D12 / Editor ASan"})
+WORKFLOW_DIRECTORY = Path(".github/workflows")
+EXPRESSION = re.compile(r"\$\{\{.*?\}\}")
 FAILED_CONCLUSIONS = frozenset({"failure", "timed_out", "cancelled", "startup_failure"})
 DECLARATION = re.compile(r"^[ \t]*Batch-Fix:[ \t]*(\S[^\r\n]*?)[ \t]*\r?$", re.MULTILINE)
 MAX_DECLARATIONS = 32
@@ -205,10 +209,44 @@ def parse_declarations(body: object) -> list[str]:
     return declared
 
 
-def dispatch_command(suite: str, branch: str) -> str:
+def native_job_id(workflow: str, job_name: str) -> str | None:
+    """Return the ci.yml native job id whose display name produces job_name, if exactly one does.
+
+    Matrix names such as "ASan and UBSan (${{ matrix.shard }}/...)" match any value
+    for each expression. The gate and other non-native jobs have no id.
+    """
+    jobs = workflow.split("\njobs:\n", 1)[-1]
+    found = []
+    for match in re.finditer(r"(?m)^  ([a-z][a-z0-9-]*):\n((?:    .*\n|\n)*)", jobs):
+        name = re.search(r"(?m)^    name: (.+)$", match.group(2))
+        if match.group(1) not in ci_scope.NATIVE_JOBS or name is None:
+            continue
+        pattern = ".+".join(re.escape(part) for part in EXPRESSION.split(name.group(1).strip()))
+        if re.fullmatch(pattern, job_name) is not None:
+            found.append(match.group(1))
+    return found[0] if len(found) == 1 else None
+
+
+def dispatch_command(suite: str, branch: str, job: str = "", root: Path | None = None) -> str:
+    """Return the dispatch that proves one failed batch job with the fewest runners.
+
+    A native job runs alone through ci.yml's evidence_job input; the Windows Editor
+    lanes run through editor_only. Anything else dispatches the whole workflow.
+    """
     workflow = BATCH_WORKFLOWS[suite]
-    tier = " -f validation_tier=full" if workflow == PULL_REQUEST_WORKFLOW else ""
-    return f"gh workflow run {workflow} --ref {branch}{tier}"
+    options = ""
+    if workflow == PULL_REQUEST_WORKFLOW:
+        options = " -f validation_tier=full"
+        try:
+            text = ((root or Path.cwd()) / WORKFLOW_DIRECTORY / workflow).read_text(encoding="utf-8")
+        except OSError:
+            text = ""
+        job_id = native_job_id(text, job) if job else None
+        if job_id is not None:
+            options += f" -f evidence_job={job_id}"
+    elif suite == "windows" and job in WINDOWS_EDITOR_JOBS:
+        options = " -f editor_only=true"
+    return f"gh workflow run {workflow} --ref {branch}{options}"
 
 
 def has_evidence(client, suite: str, job_name: str, head_sha: str) -> bool:
@@ -278,7 +316,7 @@ def evaluate(client, health: Health, *, body: object, head_sha: str, branch: str
         suite, job = split_batch_job(name)
         if not has_evidence(client, suite, job, head_sha):
             missing.append(f"- {name}: no successful `{job}` job on {head_sha}; run "
-                           f"`{dispatch_command(suite, branch)}`")
+                           f"`{dispatch_command(suite, branch, job)}`")
     if missing:
         return False, [header, "Prove each declared fix on this exact head commit, then re-run the "
                        f"{GATE_JOB} check:\n" + "\n".join(missing)]

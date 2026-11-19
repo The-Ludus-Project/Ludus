@@ -300,11 +300,21 @@ To submit a fix while develop is red:
    attempted batch candidate (`ci/last-batch-attempt`), so it exercises the fix
    on top of the code that failed.
 3. Dispatch the workflow that owns each declared job on the branch. The gate
-   reports the exact command, for example:
+   reports the exact command, which runs only the failed job where the workflow
+   can, for example:
 
    ```bash
-   gh workflow run ci.yml --ref <branch> -f validation_tier=full
+   gh workflow run ci.yml --ref <branch> -f validation_tier=full -f evidence_job=sanitizers
    ```
+
+   A full `ci.yml` dispatch occupies about 20 shared runners for over an hour,
+   which every other pull request then waits behind. The `evidence_job` input
+   runs **Classify changes**, the selected native job (every matrix shard) and a
+   gate named **Evidence gate (<job>)**. That gate requires every other native job
+   to be skipped. It never satisfies a declared `native / Ubuntu Clang`, which
+   still needs the full dispatch, as do names the gate cannot map to one native
+   job. Dispatch once per declared native job; scoped dispatches of different jobs
+   queue in separate groups. The Windows Editor lanes use `-f editor_only=true`.
 
    The prefix selects the workflow: `native` is `ci.yml`, `sdk` is
    `project-sdk.yml`, `wiki` is `wiki.yml`, `browser` is `webgpu-probe.yml`,

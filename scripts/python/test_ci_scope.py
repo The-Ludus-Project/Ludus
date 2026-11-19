@@ -492,6 +492,25 @@ class RequiredGateTests(unittest.TestCase):
 
     def test_all_native_successes_or_intentional_docs_skips_pass(self):
         self.assertEqual(ci_scope.gate_failures(self.results()), [])
+
+    def test_scoped_evidence_runs_exactly_the_selected_native_job(self):
+        results = self.results()
+        for name in ci_scope.NATIVE_JOBS:
+            if name not in ("sanitizers",):
+                results[name]["result"] = "skipped"
+        self.assertEqual(ci_scope.gate_failures(results, "sanitizers"), [])
+        self.assertEqual(ci_scope.gate_failures(self.results(), ci_scope.ALL_EVIDENCE_JOBS), [])
+        # Another native job that ran, or the selected job skipped, fails the scoped gate.
+        extra = dict(results, formatting={"result": "success"})
+        self.assertTrue(ci_scope.gate_failures(extra, "sanitizers"))
+        missing = dict(results, sanitizers={"result": "skipped"})
+        self.assertTrue(ci_scope.gate_failures(missing, "sanitizers"))
+        self.assertIn("Unknown evidence job", ci_scope.gate_failures(results, "Ubuntu Clang")[0])
+        # A job its tier defers proves nothing, even though every job was skipped.
+        nightly_only = self.results()
+        for name in ci_scope.NATIVE_JOBS:
+            nightly_only[name]["result"] = "skipped"
+        self.assertTrue(ci_scope.gate_failures(nightly_only, "macos-analysis"))
         self.assertEqual(ci_scope.gate_failures(self.results(False)), [])
 
     def test_failed_cancelled_or_skipped_native_jobs_fail_full_validation(self):
@@ -694,7 +713,8 @@ class CancelledRunTests(unittest.TestCase):
         self.assertIn("assert 'skipped' not in text.lower()", focused)
         self.assertIn("'VUID-' not in text", focused)
         gate = workflow.split("\n  linux:\n", 1)[1].split("\n    steps:", 1)[0]
-        self.assertIn("&& 'Focused Vulkan dispatch (not integration)' || 'Ubuntu Clang'", gate)
+        self.assertIn("&& 'Focused Vulkan dispatch (not integration)' || inputs.evidence_job", gate)
+        self.assertIn("|| 'Ubuntu Clang' }}", gate)
 
     def test_each_pull_request_has_one_run_per_workflow_and_a_push_supersedes_it(self):
         root = Path(__file__).resolve().parents[2] / ".github/workflows"
@@ -797,6 +817,25 @@ class PullRequestRunnerBudgetTests(unittest.TestCase):
                     self.assertEqual(path.name, "develop-health-gate.yml")
                     jobs = re.findall(r"(?m)^  ([a-z][a-z0-9_-]*):\n", path.read_text().split("\njobs:\n", 1)[1])
                     self.assertEqual(len(jobs), 1, jobs)
+
+    def test_evidence_dispatch_runs_one_native_job_under_its_own_gate_name(self):
+        workflow = self.ROOT.joinpath(".github/workflows/ci.yml").read_text()
+        dispatch = workflow.split("\n  workflow_dispatch:\n", 1)[1].split("\npermissions:", 1)[0]
+        # evidence_job is the last dispatch input; its options are every native job.
+        evidence = dispatch.split("      evidence_job:\n", 1)[1]
+        self.assertIn("        type: choice\n        default: all\n", evidence)
+        self.assertEqual(re.findall(r"(?m)^          - (\S+)$", evidence),
+                         [ci_scope.ALL_EVIDENCE_JOBS, *ci_scope.NATIVE_JOBS])
+        conditions = dict(re.findall(r"^  ([a-z][a-z0-9-]*):\n(?:    .*\n)*?    if: (.*)$", workflow, re.MULTILINE))
+        for name in ci_scope.NATIVE_JOBS:
+            with self.subTest(job=name):
+                self.assertIn(f"((inputs.evidence_job || 'all') == 'all' || inputs.evidence_job == '{name}')",
+                              conditions[name])
+        # A scoped gate is not full Ubuntu Clang evidence, and scoped dispatches queue apart.
+        self.assertIn("format('Evidence gate ({0})', inputs.evidence_job) || 'Ubuntu Clang' }}", workflow)
+        self.assertIn("          EVIDENCE_JOB: ${{ inputs.evidence_job }}\n"
+                      "          RESULTS: ${{ toJSON(needs) }}\n", workflow)
+        self.assertIn("format('-evidence-{0}', inputs.evidence_job)", workflow.split("\nconcurrency:\n", 1)[1].split("\n\n", 1)[0])
 
     def test_required_gate_reads_only_job_results_and_classification(self):
         workflow = self.ROOT.joinpath(".github/workflows/ci.yml").read_text()
