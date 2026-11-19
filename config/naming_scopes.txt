@@ -10,6 +10,8 @@ modules/content/procedural/environment
 modules/content/terrain
 modules/content/string_dictionary
 modules/content/string_dictionary_format
+modules/content/foliage_format
+modules/content/foliage_pages
 modules/foundation/identity
 modules/platform/include/ludus/platform/entropy.h
 modules/platform/src/entropy.cpp
