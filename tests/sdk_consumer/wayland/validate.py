@@ -61,7 +61,7 @@ def presented(trace, width, height):
 def sway(demo, directory, env):
     config = directory / "sway.conf"
     config.write_text("seat seat0 fallback true\n"
-                      "default_border none\nfor_window [app_id=\"ludus\"] floating enable\n"
+                      "default_floating_border none\nfor_window [app_id=\"ludus\"] floating enable\n"
                       "output HEADLESS-1 mode 1280x960 scale 1\n"
                       "output HEADLESS-2 mode 1920x1440 scale 1.5\n"
                       "output HEADLESS-3 mode 2560x1920 scale 2\n")
@@ -86,8 +86,8 @@ def sway(demo, directory, env):
             read = lambda: log.read_text(errors="replace")
             wait_for(lambda: presented(read(), 960, 640), game, "initial 960x640 presentation")
             stage = log.stat().st_size
-            command('[app_id="ludus"] resize set width 400 px height 300 px')
-            for index, (scale, width, height) in enumerate([(1, 400, 300), (1.5, 600, 450), (2, 800, 600)], 1):
+            command('[app_id="ludus"] resize set width 401 px height 301 px')
+            for index, (scale, width, height) in enumerate([(1, 401, 301), (1.5, 602, 452), (2, 802, 602)], 1):
                 if index > 1:
                     stage = log.stat().st_size
                     command(f'[app_id="ludus"] move container to output HEADLESS-{index}')
@@ -96,7 +96,7 @@ def sway(demo, directory, env):
                     with log.open("rb") as data:
                         data.seek(stage)
                         trace = data.read().decode(errors="replace")
-                    return (f"Wayland logical 400x300, backing {width}x{height}, scale {scale}" in trace
+                    return (f"Wayland logical 401x301, backing {width}x{height}, scale {scale}" in trace
                             and presented(trace, width, height))
                 wait_for(correct_frame, game, f"{scale}x backing pixels and Vulkan presentation")
                 after = log.stat().st_size
@@ -106,13 +106,13 @@ def sway(demo, directory, env):
                         data.seek(after)
                         return re.search(rb"wl_keyboard[@#]\d+\.key\([^\n]*, (\d+), 1\).*?wl_keyboard[@#]\d+\.key\([^\n]*, \1, 0\).*?wl_surface[@#]\d+\.commit\(", data.read(), re.S)
                 wait_for(input_and_frame, game, f"keyboard delivery and next present at {scale}x")
-                print(f"Sway HEADLESS-{index}: logical 400x300, presented {width}x{height}, Space delivered", flush=True)
+                print(f"Sway HEADLESS-{index}: logical 401x301, presented {width}x{height}, Space delivered", flush=True)
             command('[app_id="ludus"] kill')
             if game.wait(timeout=15) != 0:
                 raise RuntimeError("World Demo failed on Sway")
 
 
-def weston(demo, directory, env, rhi_tests):
+def weston(demo, directory, env, native_build):
     env = dict(env, WAYLAND_DISPLAY="wayland-integer")
     with running(["weston", "--backend=headless", "--renderer=pixman", "--idle-time=0",
                   "--no-config", "--width=1920", "--height=1440", "--scale=2",
@@ -120,6 +120,11 @@ def weston(demo, directory, env, rhi_tests):
         socket = Path(env["XDG_RUNTIME_DIR"]) / env["WAYLAND_DISPLAY"]
         wait_for(socket.is_socket, compositor, "Weston display")
         protocol_globals(env, directory / "weston-globals.txt", False)
+        with (directory / "platform-events.log").open("w") as output:
+            subprocess.run([native_build / "modules/platform/ludus_platform_wayland_tests"],
+                           env=dict(env, LUDUS_TEST_WAYLAND="1"), stdout=output, stderr=subprocess.STDOUT,
+                           check=True, timeout=30)
+        rhi_tests = native_build / "modules/graphics/rhi/ludus_graphics_rhi_tests"
         with (directory / "zero-extent.log").open("w") as output:
             subprocess.run([rhi_tests, "[wayland][resize]"], env=dict(env, LUDUS_TEST_WAYLAND="1"),
                            stdout=output, stderr=subprocess.STDOUT, check=True, timeout=60)
@@ -137,8 +142,7 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("demo", type=Path)
     parser.add_argument("directory", type=Path)
-    parser.add_argument("--rhi-tests", type=Path, default=Path(
-        "out/build/linux-clang-development/modules/graphics/rhi/ludus_graphics_rhi_tests"))
+    parser.add_argument("--native-build", type=Path, default=Path("out/build/linux-clang-development"))
     args = parser.parse_args()
     args.directory.mkdir(parents=True, exist_ok=True)
     with tempfile.TemporaryDirectory() as runtime:
@@ -146,4 +150,4 @@ if __name__ == "__main__":
         environment = dict(os.environ, XDG_RUNTIME_DIR=runtime, WLR_BACKENDS="headless",
                            WLR_RENDERER="pixman", WLR_HEADLESS_OUTPUTS="3", VK_DRIVER_FILES=str(driver))
         sway(args.demo.resolve(), args.directory.resolve(), environment)
-        weston(args.demo.resolve(), args.directory.resolve(), environment, args.rhi_tests.resolve())
+        weston(args.demo.resolve(), args.directory.resolve(), environment, args.native_build.resolve())

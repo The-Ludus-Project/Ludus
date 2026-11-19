@@ -123,10 +123,6 @@ static void onKeyboardModifiers(void* data,
                                 uint32_t group) noexcept;
 static void onKeyboardRepeatInfo(void* data, wl_keyboard* keyboard, int32_t rate, int32_t delay) noexcept;
 static void onXdgSurfaceConfigure(void* data, xdg_surface* xdgSurface, uint32_t serial) noexcept;
-static void StageConfigure(SurfaceScale& inoutScale,
-                           foundation::int32 width,
-                           foundation::int32 height,
-                           wl_array* statesOrNull) noexcept;
 static void onXdgToplevelClose(void* data, xdg_toplevel* xdgToplevel) noexcept;
 static void onXdgToplevelConfigureBounds(void* data, xdg_toplevel* xdgToplevel, int32_t width, int32_t height) noexcept;
 static void onXdgToplevelWmCapabilities(void* data, xdg_toplevel* xdgToplevel, wl_array* capabilities) noexcept;
@@ -643,11 +639,28 @@ UniquePtr<WindowWayland> CreateWindow(const Window::CreateInfo& info) noexcept
         return nullptr;
     }
     xdg_surface_add_listener(window->mXdgSurface.Get(), &gXdgSurfaceListener, window->mScale.Get());
+    // Thanks to the xdg-shell authors (Kristian Høgsberg, Rafael Antognolli, Jasper
+    // St. Pierre, Jonas Ådahl and contributors), wayland-protocols,
+    // stable/xdg-shell/xdg-shell.xml, xdg_toplevel.configure: "The states listed in
+    // the event specify how the width/height arguments should be interpreted, and
+    // possibly how it should be drawn." Every configure carries the complete state
+    // set, so a configure without the suspended state is the window becoming
+    // visible again. https://gitlab.freedesktop.org/wayland/wayland-protocols
     static constexpr xdg_toplevel_listener TOPLEVEL_LISTENER =
     {
         .configure =
-            [](void* data, xdg_toplevel*, foundation::int32 width, foundation::int32 height, wl_array* statesOrNull) {
-                StageConfigure(*static_cast<WindowWayland*>(data)->mScale, width, height, statesOrNull);
+            [](void* data,
+               xdg_toplevel*,
+               foundation::int32 width, // NOLINT(bugprone-easily-swappable-parameters): xdg_toplevel.configure ABI
+               foundation::int32 height,
+               wl_array* statesOrNull) {
+                if (statesOrNull != nullptr)
+                {
+                    SurfaceScale& scale = *static_cast<WindowWayland*>(data)->mScale;
+                    scale.PendingWidth = width;
+                    scale.PendingHeight = height;
+                    scale.PendingVisibility = ComputeToplevelVisibility(*statesOrNull);
+                }
             },
         .close = onXdgToplevelClose,
         .configure_bounds = onXdgToplevelConfigureBounds,
@@ -668,26 +681,10 @@ UniquePtr<WindowWayland> CreateWindow(const Window::CreateInfo& info) noexcept
 
 void onXdgSurfaceConfigure(void* data, [[maybe_unused]] xdg_surface* xdgSurface, uint32_t serial) noexcept
 {
-    static_cast<SurfaceScale*>(data)->Acknowledge();
+    SurfaceScale* surface = static_cast<SurfaceScale*>(data);
     xdg_surface_ack_configure(xdgSurface, serial);
-}
-
-void StageConfigure(SurfaceScale& inoutScale,
-                    foundation::int32 width,
-                    foundation::int32 height,
-                    wl_array* statesOrNull) noexcept
-{
-    // Thanks to the xdg-shell authors (Kristian Høgsberg, Rafael Antognolli, Jasper
-    // St. Pierre, Jonas Ådahl and contributors), wayland-protocols,
-    // stable/xdg-shell/xdg-shell.xml, xdg_toplevel.configure: "The states listed in
-    // the event specify how the width/height arguments should be interpreted, and
-    // possibly how it should be drawn." Every configure carries the complete state
-    // set, so a configure without the suspended state is the window becoming
-    // visible again. https://gitlab.freedesktop.org/wayland/wayland-protocols
-    if (statesOrNull != nullptr)
-    {
-        inoutScale.Configure(width, height, ComputeToplevelVisibility(*statesOrNull));
-    }
+    surface->Acknowledge();
+    surface->Publish();
 }
 
 void onXdgToplevelClose(void* data, [[maybe_unused]] xdg_toplevel* xdgToplevel) noexcept
@@ -833,10 +830,6 @@ bool WindowWayland::HandleEvent([[maybe_unused]] const Event& event) noexcept
             deliverReset(this, ludus::input::ResetReason::WindowClosed, empty);
             gFocusedWindow = nullptr;
         }
-    }
-    if (alive == true)
-    {
-        mScale->Publish();
     }
     return alive;
 }

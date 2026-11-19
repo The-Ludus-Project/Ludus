@@ -28,7 +28,8 @@ struct Output final
     uint32 Name;
     wl_output* Handle;
     int32 Scale = 1;
-    Array<wl_surface*> Surfaces;
+    int32 PendingScale = 1;
+    Array<SurfaceScale*> Surfaces;
 };
 struct ScaleRegistry final
 {
@@ -76,38 +77,50 @@ Output* FindOutput(wl_output* handle) noexcept
     }
     return nullptr;
 }
-void Leave(void*, wl_surface* surface, wl_output* handle) noexcept
+void ForgetSurface(Output& inoutOutput, const SurfaceScale* surface) noexcept
 {
-    Output* outputOrNull = FindOutput(handle);
-    if (outputOrNull != nullptr)
+    for (usize index = 0; index < inoutOutput.Surfaces.GetSize(); ++index)
     {
-        for (usize index = 0; index < outputOrNull->Surfaces.GetSize(); ++index)
+        if (inoutOutput.Surfaces[index] == surface)
         {
-            if (outputOrNull->Surfaces[index] == surface)
-            {
-                outputOrNull->Surfaces.RemoveAtSwap(index);
-                return;
-            }
+            inoutOutput.Surfaces.RemoveAtSwap(index);
+            return;
         }
     }
 }
 const wl_surface_listener SURFACE_LISTENER =
 {
     .enter =
-        [](void*, wl_surface* surface, wl_output* handle) {
+        [](void* data, wl_surface*, wl_output* handle) {
+            SurfaceScale* surface = static_cast<SurfaceScale*>(data);
             Output* outputOrNull = FindOutput(handle);
             if (outputOrNull != nullptr)
             {
                 if (outputOrNull->Surfaces.TryAdd(surface) == false)
                 {
                     LUDUS_LOG_ERROR(LOG_PLATFORM, "Insufficient memory to track a Wayland output; recreate the window");
+                    return;
                 }
+                surface->Publish();
             }
         },
-    .leave = Leave,
+    .leave =
+        [](void* data, wl_surface*, wl_output* handle) {
+            SurfaceScale* surface = static_cast<SurfaceScale*>(data);
+            Output* outputOrNull = FindOutput(handle);
+            if (outputOrNull != nullptr)
+            {
+                ForgetSurface(*outputOrNull, surface);
+                surface->Publish();
+            }
+        },
 #if defined(WL_SURFACE_PREFERRED_BUFFER_SCALE_SINCE_VERSION)
     .preferred_buffer_scale =
-        [](void* data, wl_surface*, int32 scale) { static_cast<SurfaceScale*>(data)->PreferredIntegerScale = scale; },
+        [](void* data, wl_surface*, int32 scale) {
+            SurfaceScale* surface = static_cast<SurfaceScale*>(data);
+            surface->PreferredIntegerScale = scale;
+            surface->Publish();
+        },
     .preferred_buffer_transform = [](void*, wl_surface*, uint32) {},
 #endif
 };
@@ -115,13 +128,24 @@ const wl_output_listener OUTPUT_LISTENER =
 {
     .geometry = [](void*, wl_output*, int32, int32, int32, int32, int32, const char*, const char*, int32) {},
     .mode = [](void*, wl_output*, uint32, int32, int32, int32) {},
-    .done = [](void*, wl_output*) {},
+    .done =
+        [](void*, wl_output* handle) {
+            Output* outputOrNull = FindOutput(handle);
+            if (outputOrNull != nullptr && outputOrNull->Scale != outputOrNull->PendingScale)
+            {
+                outputOrNull->Scale = outputOrNull->PendingScale;
+                for (SurfaceScale* surface : outputOrNull->Surfaces)
+                {
+                    surface->Publish();
+                }
+            }
+        },
     .scale =
         [](void*, wl_output* handle, int32 scale) {
             Output* outputOrNull = FindOutput(handle);
             if (outputOrNull != nullptr)
             {
-                outputOrNull->Scale = scale;
+                outputOrNull->PendingScale = scale;
             }
         },
 #if defined(WL_OUTPUT_NAME_SINCE_VERSION)
@@ -130,22 +154,22 @@ const wl_output_listener OUTPUT_LISTENER =
 #endif
 };
 
-int32 GetIntegerScale(wl_surface* surface, int32 preferred) noexcept
+int32 GetIntegerScale(const SurfaceScale& surface) noexcept
 {
-    if (wl_surface_get_version(surface) < WL_SURFACE_SET_BUFFER_SCALE_SINCE_VERSION)
+    if (wl_surface_get_version(surface.Snapshot.Surface) < WL_SURFACE_SET_BUFFER_SCALE_SINCE_VERSION)
     {
         return 1;
     }
-    if (preferred > 0)
+    if (surface.PreferredIntegerScale > 0)
     {
-        return preferred;
+        return surface.PreferredIntegerScale;
     }
     int32 scale = 1;
     for (const Output& output : GetScaleRegistry().Outputs)
     {
-        for (wl_surface* entered : output.Surfaces)
+        for (const SurfaceScale* entered : output.Surfaces)
         {
-            if (entered == surface && output.Scale > scale)
+            if (entered == &surface && output.Scale > scale)
             {
                 scale = output.Scale;
             }
@@ -207,7 +231,12 @@ void RemoveScaleGlobal(uint32 name) noexcept
         if (globals.Outputs[index].Name == name)
         {
             wl_output_destroy(globals.Outputs[index].Handle);
+            Array<SurfaceScale*> surfaces = Move(globals.Outputs[index].Surfaces);
             globals.Outputs.RemoveAtSwap(index);
+            for (SurfaceScale* surface : surfaces)
+            {
+                surface->Publish();
+            }
             return;
         }
     }
@@ -241,9 +270,12 @@ bool SurfaceScale::Attach() noexcept
     {
         static constexpr wp_fractional_scale_v1_listener LISTENER =
         {
-            .preferred_scale = [](void* data,
-                                  wp_fractional_scale_v1*,
-                                  uint32 scale) { static_cast<SurfaceScale*>(data)->FractionalScale = scale; },
+            .preferred_scale =
+                [](void* data, wp_fractional_scale_v1*, uint32 scale) {
+                    SurfaceScale* surface = static_cast<SurfaceScale*>(data);
+                    surface->FractionalScale = scale;
+                    surface->Publish();
+                },
         };
         ViewportOrNull = wp_viewporter_get_viewport(globals.ViewporterOrNull, Snapshot.Surface);
         FractionalOrNull =
@@ -258,7 +290,7 @@ SurfaceScale::~SurfaceScale() noexcept
 {
     for (Output& output : GetScaleRegistry().Outputs)
     {
-        Leave(nullptr, Snapshot.Surface, output.Handle);
+        ForgetSurface(output, this);
     }
 #if defined(LUDUS_WAYLAND_FRACTIONAL_SCALE)
     if (FractionalOrNull != nullptr)
@@ -270,12 +302,6 @@ SurfaceScale::~SurfaceScale() noexcept
         wp_viewport_destroy(ViewportOrNull);
     }
 #endif
-}
-void SurfaceScale::Configure(int32 width, int32 height, WindowVisibility visibility) noexcept
-{
-    PendingWidth = width;
-    PendingHeight = height;
-    PendingVisibility = visibility;
 }
 void SurfaceScale::Acknowledge() noexcept
 {
@@ -296,7 +322,7 @@ void SurfaceScale::Acknowledge() noexcept
 }
 void SurfaceScale::Publish() noexcept
 {
-    const int32 integerScale = GetIntegerScale(Snapshot.Surface, PreferredIntegerScale);
+    const int32 integerScale = GetIntegerScale(*this);
     const uint64 numerator =
         FractionalScale != 0 ? FractionalScale : static_cast<uint64>(integerScale) * SCALE_DENOMINATOR;
     const uint32 width = GetPixels(LogicalWidth, numerator);
@@ -320,9 +346,9 @@ void SurfaceScale::Publish() noexcept
                                         static_cast<int32>(LogicalHeight));
         }
     }
-    else
 #endif
-        if (wl_surface_get_version(Snapshot.Surface) >= WL_SURFACE_SET_BUFFER_SCALE_SINCE_VERSION)
+    if (ViewportOrNull == nullptr &&
+        wl_surface_get_version(Snapshot.Surface) >= WL_SURFACE_SET_BUFFER_SCALE_SINCE_VERSION)
     {
         wl_surface_set_buffer_scale(Snapshot.Surface, integerScale);
     }

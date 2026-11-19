@@ -20,7 +20,6 @@ struct SurfaceScale final
     ~SurfaceScale() noexcept;
     bool Attach() noexcept;
     void Publish() noexcept;
-    void Configure(foundation::int32 width, foundation::int32 height, WindowVisibility visibility) noexcept;
     void Acknowledge() noexcept;
 
     NativeWindowInfo& Snapshot;

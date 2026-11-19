@@ -73,7 +73,6 @@ Both cases are opt-in. The Linux **Development and SDK** batch runs the
 multiple-surface case under headless Weston with Lavapipe and Vulkan validation
 layers.
 
-
 The **project-sdk** workflow’s `wayland_scale` dispatch builds World Demo from
 its game sources against the installed Linux SDK. It resizes a floating window
 and moves it between 100%, 150% and 200% headless Sway outputs. The check
