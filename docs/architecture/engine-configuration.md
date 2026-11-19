@@ -254,6 +254,17 @@ Build `ludus_config`. It is also installed as `bin/ludus-config` in native SDKs.
 reads a bundle from stdin and emits its canonical, normalized layer on stdout.
 Errors use engine logging on stderr. It validates through the same core as runtime.
 
+The schema export lists settings in descriptor order. Each record exposes
+`allowed_sources` (the bitmask built by `SourceMask`, indexed by `Layer`),
+`group` (the schema-local application group ID), and the existing apply and
+persistence metadata. Numeric settings include inclusive descriptor `min` and
+`max`. Integer bounds use canonical decimal strings, including for 32-bit
+settings whose descriptor bounds can be wider than their value type. Real
+bounds are JSON numbers. Enum and string settings include `max_text_bytes`,
+which counts UTF-8 bytes without a terminator. Boolean settings have no bounds.
+Use native validation for the type range, Float32 rounding, preference
+eligibility, and cross-field constraints.
+
 ```toml
 # project.toml
 [host]

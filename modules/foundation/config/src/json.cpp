@@ -87,6 +87,40 @@ bool ValidIdentity(std::string_view identity) noexcept
     return identity.empty() == false && identity.size() <= MAX_IDENTITY_BYTES &&
            ValidateCString(identity) == StringStatus::Ok;
 }
+void WriteDescriptorBounds(parsing::JsonWriter& inoutWriter, const Descriptor& descriptor) noexcept
+{
+    Value minimum;
+    Value maximum;
+    switch (descriptor.Default.Kind)
+    {
+        case Type::Int32:
+        case Type::Int64:
+            minimum = Value::FromInt64(descriptor.MinSigned);
+            maximum = Value::FromInt64(descriptor.MaxSigned);
+            break;
+        case Type::Uint32:
+        case Type::Uint64:
+            minimum = Value::FromUint64(descriptor.MinUnsigned);
+            maximum = Value::FromUint64(descriptor.MaxUnsigned);
+            break;
+        case Type::Float32:
+        case Type::Float64:
+            minimum = Value::FromFloat64(descriptor.MinReal);
+            maximum = Value::FromFloat64(descriptor.MaxReal);
+            break;
+        case Type::Enum:
+        case Type::String:
+            inoutWriter.Raw(",\"max_text_bytes\":");
+            inoutWriter.Integer(descriptor.MaxTextBytes);
+            return;
+        case Type::Bool:
+            return;
+    }
+    inoutWriter.Raw(",\"min\":");
+    EncodeValue(inoutWriter, minimum);
+    inoutWriter.Raw(",\"max\":");
+    EncodeValue(inoutWriter, maximum);
+}
 } // namespace
 Status DecodeValue(parsing::JsonValue input, Type type, Value& output) noexcept
 {
@@ -361,7 +395,7 @@ Status WriteLayer(const Context& context,
 Status WriteSchema(const Context& context,
                    std::string_view schemaIdentity,
                    std::span<uint8> buffer,
-                   std::span<const uint8>& output) noexcept
+                   std::span<const uint8>& outOutput) noexcept
 {
     if (context.IsValid() == false || ValidIdentity(schemaIdentity) == false)
     {
@@ -370,14 +404,14 @@ Status WriteSchema(const Context& context,
     parsing::JsonWriter writer(buffer);
     Header(writer, schemaIdentity);
     writer.Raw(",\"settings\":[");
-    bool first = true;
-    for (const auto& descriptor : context.Schema())
+    bool isFirst = true;
+    for (const Descriptor& descriptor : context.Schema())
     {
-        if (first == false)
+        if (isFirst == false)
         {
             writer.Raw(",");
         }
-        first = false;
+        isFirst = false;
         writer.Raw("{\"key\":");
         writer.String(descriptor.Name);
         writer.Raw(",\"type\":");
@@ -394,20 +428,25 @@ Status WriteSchema(const Context& context,
         writer.Boolean(descriptor.Persistent);
         writer.Raw(",\"simulation\":");
         writer.Boolean(descriptor.Simulation);
+        writer.Raw(",\"allowed_sources\":");
+        writer.Integer(descriptor.AllowedSources);
+        writer.Raw(",\"group\":");
+        writer.Integer(descriptor.Group);
+        WriteDescriptorBounds(writer, descriptor);
         writer.Raw(",\"choices\":[");
-        bool firstChoice = true;
-        for (auto choice : descriptor.Choices)
+        bool isFirstChoice = true;
+        for (std::string_view choice : descriptor.Choices)
         {
-            if (firstChoice == false)
+            if (isFirstChoice == false)
             {
                 writer.Raw(",");
             }
-            firstChoice = false;
+            isFirstChoice = false;
             writer.String(choice);
         }
         writer.Raw("]}");
     }
     writer.Raw("]}");
-    return Finish(writer, output);
+    return Finish(writer, outOutput);
 }
 } // namespace ludus::foundation::config
