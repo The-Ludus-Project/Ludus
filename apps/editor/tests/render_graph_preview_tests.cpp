@@ -821,6 +821,9 @@ TEST_CASE("Native preview retains the presented frame across sparse encoder budg
     RenderGraphExtraction extraction;
     QString error;
     REQUIRE(MakeRenderGraphExtraction(scene, {}, 1, extraction, error) == true);
+    extraction.View.OrthographicCamera = true;
+    extraction.View.CameraPosition = {0, 0, -1};
+    extraction.View.CameraForward = {0, 0, 1};
     RenderGraphPreview preview = MakePreview();
     REQUIRE(preview.Attach(device.Device, device.Surface) == true);
     preview.SetExtraction(extraction);
@@ -846,9 +849,14 @@ TEST_CASE("Native preview retains the presented frame across sparse encoder budg
     CHECK(preview.GetImage() == previous);
     writeBudget(static_cast<qint64>(estimate));
     REQUIRE(preview.Load(package, {}, source) == RenderGraphPreviewLoad::Staged);
-    const bool hasPublished = TickUntil(preview, [&]() { return preview.GetPresentedGeneration() > 1; });
+    const bool hasSettled = TickUntil(preview, [&]() {
+        return preview.GetPresentedGeneration() > 1 ||
+               preview.GetReport().Candidate == renderer::RenderGraphCandidateState::Failed;
+    });
     INFO(preview.GetStatus().toStdString());
-    REQUIRE(hasPublished == true);
+    INFO(static_cast<unsigned>(preview.GetReport().CandidateFailureStage));
+    REQUIRE(hasSettled == true);
+    REQUIRE(preview.GetPresentedGeneration() > 1);
     CHECK(preview.GetStatus().contains(QStringLiteral("Reduce scene_points")) == false);
     preview.Detach();
 }
