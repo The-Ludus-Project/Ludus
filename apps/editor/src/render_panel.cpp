@@ -342,6 +342,7 @@ void RenderPanel::RequestPlayClose() noexcept
 #if defined(LUDUS_EDITOR_NATIVE_PREVIEW)
     if (mIsPlaying == true)
     {
+        Viewport_->SuspendPlayInput();
         static_cast<void>(mPlayOrNull->GetEndpoint().SendClose());
     }
 #endif
@@ -398,8 +399,12 @@ void RenderPanel::updatePlay()
         Viewport_->SetPlayInput(&mPlayOrNull->GetEndpoint());
         // The edit preview keeps its device but stops drawing frames nobody sees.
         Preview_.SetPresentationVisible(false);
-        setStatus(QStringLiteral("Playing in the viewport. Click it to give the game the keyboard; Shift+F1 "
-                                 "gives the keyboard back to the editor and Shift+F6 stops the game."),
+        const bool shouldCapturePointer = mPlayOrNull->GetEndpoint().ShouldForwardRelativePointer();
+        setStatus(shouldCapturePointer == true
+                      ? QStringLiteral("Click the Play viewport to capture the mouse. Shift+F1 releases it and "
+                                       "returns focus to the editor. Shift+F6 stops the game.")
+                      : QStringLiteral("Playing in the viewport. Click it to give the game the keyboard; Shift+F1 "
+                                       "gives the keyboard back to the editor and Shift+F6 stops the game."),
                   StatusKind::Notice);
         Q_EMIT PlayStateChanged();
         return;

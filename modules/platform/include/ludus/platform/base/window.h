@@ -2,6 +2,7 @@
 
 #include <ludus/foundation/base/core.h>      // LUDUS_INLINE + foundational vocabulary
 #include <ludus/foundation/base/pointer.hpp> // ludus::foundation::core::UniquePtr
+#include <ludus/input/relative_pointer_motion.h>
 #include <ludus/platform/config.h>
 #include <ludus/platform/keyboard_sink.h>
 #include <ludus/platform/native_window.h>
@@ -51,6 +52,10 @@ public:
         std::string_view CanvasSelector = "#canvas";
         ludus::foundation::uint32 FramebufferLimit = 4096;
         bool CaptureBrowserInput = true;
+        /// Request relative mouse input when hosted by a macOS editor.
+        /// Capture still requires an explicit click in the focused Play viewport. Defaults to keyboard-only.
+        /// A hosted window request with this flag fails on other platforms.
+        bool ShouldReceiveHostedRelativePointer = false;
     };
 
     struct Event final
@@ -63,6 +68,27 @@ public:
     /// Cocoa pumps the shared application queue and may deliver input to other windows.
     /// Create, pump, query and destroy Cocoa windows on the main thread; sinks must not destroy them during dispatch.
     virtual bool HandleEvent(const Event& event) noexcept = 0;
+
+    /// Try to capture relative motion on the focused native Cocoa window, on the main thread.
+    /// Call in response to an explicit player action. Returns false on unsupported backends or if
+    /// capture cannot be established. Repeated calls while captured succeed without changing state.
+    [[nodiscard]] virtual bool TryCaptureRelativePointer() noexcept
+    {
+        return false;
+    }
+
+    /// Release native relative capture and discard unread motion, on the window's owning thread.
+    /// Cocoa also releases on focus loss and close. Hosted capture belongs to the editor.
+    virtual void ReleaseRelativePointer() noexcept {}
+
+    /// Consume motion accumulated since the last take, on the window's owning thread.
+    /// Returns zero before capture, after focus reset or close, and on unsupported backends.
+    [[nodiscard]] LUDUS_INLINE input::RelativePointerMotion TakeRelativePointerMotion() noexcept
+    {
+        const input::RelativePointerMotion result = mRelativePointerMotion;
+        mRelativePointerMotion = {};
+        return result;
+    }
 
     /// @brief Browser snapshots/events are copied into caller-owned storage.
     ///
@@ -138,6 +164,7 @@ protected:
     std::string mName;
     NativeWindowInfo mNativeWindowInfo = {};
     KeyboardSink mKeyboardSink = {};
+    input::RelativePointerMotion mRelativePointerMotion = {};
     WindowVisibility mVisibility = WindowVisibility::Visible;
 };
 

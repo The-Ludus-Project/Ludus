@@ -2,8 +2,10 @@
 #include "internal/cocoa_keymap.hpp"
 
 #include <ludus/foundation/base/core.h>
+#include <ludus/foundation/logging/log.hpp>
 #include <ludus/input/keyboard_event.h>
 #include <ludus/platform/keyboard_sink.h>
+#include <ludus/platform/log_categories.h>
 #include <ludus/platform/native_window.h>
 
 #include <cmath>
@@ -48,6 +50,8 @@ class CocoaWindow;
 
 namespace ludus::platform::cocoa
 {
+using foundation::float32;
+using foundation::float64;
 using foundation::usize;
 namespace
 {
@@ -57,6 +61,8 @@ constexpr uint32 MAX_CONTENT_EXTENT = 16384;
 constexpr usize MAX_WINDOW_NAME_BYTES = 4096;
 constexpr usize MAX_EVENTS_PER_PUMP = 256;
 CocoaWindow* gWindows[MAX_WINDOWS] = {};
+// Core Graphics cursor association has one owner across native windows.
+CocoaWindow* gPointerOwnerOrNull = nullptr;
 bool gInitialized = false;
 bool gOwnsApplication = false;
 // A host such as Qt may dispatch AppKit events without entering PumpEvents.
@@ -110,6 +116,9 @@ public:
     ~CocoaWindow() noexcept override;
     bool Open() noexcept;
     bool HandleEvent(const Event&) noexcept override;
+    bool TryCaptureRelativePointer() noexcept override;
+    void ReleaseRelativePointer() noexcept override;
+    [[nodiscard]] bool ConsumePointerMotion(NSEvent* event) noexcept;
     void RefreshExtent() noexcept;
     void RefreshVisibility() noexcept;
     void FocusChanged(bool focused) noexcept;
@@ -126,6 +135,8 @@ private:
     NSWindow* mWindow = nil;
     LudusCocoaWindowDelegate* mDelegate = nil;
     KeyboardSink mSynchronizedSink{};
+    float64 mPointerCaptureBeganSeconds = 0;
+    bool mShouldRestoreMouseMoveEvents = false;
     bool mFocused = false;
     bool mClosed = false;
 };
@@ -170,6 +181,10 @@ void PumpEvents() noexcept
             if (event == nil)
             {
                 break;
+            }
+            if (gPointerOwnerOrNull != nullptr && gPointerOwnerOrNull->ConsumePointerMotion(event) == true)
+            {
+                continue;
             }
             if (event.type == NSEventTypeKeyDown || event.type == NSEventTypeKeyUp ||
                 event.type == NSEventTypeFlagsChanged)
@@ -447,6 +462,65 @@ void CocoaWindow::RefreshVisibility() noexcept
     }
 }
 
+bool CocoaWindow::TryCaptureRelativePointer() noexcept
+{
+    if (MainThread() == false || mClosed == true || mFocused == false || mWindow.keyWindow == NO || NSApp.active == NO)
+    {
+        return false;
+    }
+    if (gPointerOwnerOrNull == this)
+    {
+        return true;
+    }
+    // Thanks to Apple, CGAssociateMouseAndMouseCursorPosition, for relative input without cursor warps.
+    // https://developer.apple.com/documentation/coregraphics/cgassociatemouseandmousecursorposition(_:)
+    if (gPointerOwnerOrNull != nullptr || CGAssociateMouseAndMouseCursorPosition(false) != kCGErrorSuccess)
+    {
+        return false;
+    }
+    gPointerOwnerOrNull = this;
+    mShouldRestoreMouseMoveEvents = mWindow.acceptsMouseMovedEvents == YES;
+    mWindow.acceptsMouseMovedEvents = YES;
+    mPointerCaptureBeganSeconds = NSProcessInfo.processInfo.systemUptime;
+    [NSCursor hide];
+    return true;
+}
+
+void CocoaWindow::ReleaseRelativePointer() noexcept
+{
+    LUDUS_REQUIRE(MainThread(), "Cocoa pointer capture must be released on the main thread");
+    mRelativePointerMotion = {};
+    if (gPointerOwnerOrNull == this)
+    {
+        gPointerOwnerOrNull = nullptr;
+        if (CGAssociateMouseAndMouseCursorPosition(true) != kCGErrorSuccess)
+        {
+            LUDUS_LOG_TEXT(
+                LOG_PLATFORM,
+                Warning,
+                "Could not restore cursor association. Bring the game window to the foreground and recapture.");
+        }
+        [NSCursor unhide];
+        mWindow.acceptsMouseMovedEvents = mShouldRestoreMouseMoveEvents == true ? YES : NO;
+    }
+}
+
+bool CocoaWindow::ConsumePointerMotion(NSEvent* event) noexcept
+{
+    const NSEventType type = event.type;
+    if (type != NSEventTypeMouseMoved && type != NSEventTypeLeftMouseDragged && type != NSEventTypeRightMouseDragged &&
+        type != NSEventTypeOtherMouseDragged)
+    {
+        return false;
+    }
+    if (event.timestamp >= mPointerCaptureBeganSeconds)
+    {
+        mRelativePointerMotion.Horizontal += static_cast<float32>(event.deltaX);
+        mRelativePointerMotion.Vertical += static_cast<float32>(event.deltaY);
+    }
+    return true;
+}
+
 void CocoaWindow::Reset(input::ResetReason reason, bool focused) noexcept
 {
     const input::FocusBaseline baseline = CurrentBaseline(focused);
@@ -475,6 +549,10 @@ void CocoaWindow::FocusChanged(bool focused) noexcept
         return;
     }
     mFocused = focused;
+    if (focused == false)
+    {
+        ReleaseRelativePointer();
+    }
     Reset(focused ? input::ResetReason::FocusEntered : input::ResetReason::FocusLost, focused);
 }
 
@@ -484,6 +562,7 @@ void CocoaWindow::Closed() noexcept
     {
         mClosed = true;
         mFocused = false;
+        ReleaseRelativePointer();
         mNativeWindowInfo.CocoaWindow = nullptr;
         mNativeWindowInfo.CocoaView = nullptr;
         mNativeWindowInfo.Width = 0;

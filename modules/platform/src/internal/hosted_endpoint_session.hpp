@@ -140,6 +140,8 @@ public:
     HostedEndpointStatus SendVisibility(WindowVisibility visibility) noexcept;
     HostedEndpointStatus SendFocusEntered(const input::FocusBaseline& baseline) noexcept;
     HostedEndpointStatus SendFocusLost() noexcept;
+    [[nodiscard]] bool ShouldForwardRelativePointer() const noexcept;
+    HostedEndpointStatus SendRelativePointerMotion(const input::RelativePointerMotion& motion) noexcept;
     HostedEndpointStatus SendKey(input::Key key, input::KeyTransition transition, bool isRepeat) noexcept;
     HostedEndpointStatus SendClose() noexcept;
     HostedEndpointStatus SendRelease(uint32 generation, uint32 image) noexcept;
@@ -159,7 +161,7 @@ private:
     [[nodiscard]] bool enqueue(const Message& message) noexcept;
     [[nodiscard]] bool enqueueSynchronization(bool isOverflow) noexcept;
     [[nodiscard]] Message makeFocusMessage() const noexcept;
-    [[nodiscard]] HostedEndpointStatus send(const Message& message) noexcept;
+    [[nodiscard]] HostedEndpointStatus send(const Message& message, bool shouldResynchronizeOnOverflow = true) noexcept;
     void flush() noexcept;
     [[nodiscard]] bool flushDeferredReleases() noexcept;
 
@@ -168,6 +170,7 @@ private:
     uint32 mExpectedUserId = 0;
     MirroredWindowState mState = {};
     bool mIsFocused = false;
+    bool mShouldForwardRelativePointer = false;
     input::FocusBaseline mHeldKeys = {};
     bool mIsCloseRequested = false;
     bool mIsResynchronizationPending = false;

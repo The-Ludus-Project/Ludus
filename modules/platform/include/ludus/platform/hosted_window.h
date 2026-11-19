@@ -219,6 +219,16 @@ public:
     /// @return Ok; NotConnected (dropped); InvalidState without focus; InvalidArgument for
     /// an invalid key; Overflow.
     HostedEndpointStatus SendKey(input::Key key, input::KeyTransition transition, bool isRepeat) noexcept;
+    /// Whether the connected child opted into relative pointer motion on macOS.
+    [[nodiscard]] bool ShouldForwardRelativePointer() const noexcept;
+
+    /// Send one relative motion sample after the user explicitly captured the pointer.
+    /// Called on the endpoint thread while the opted-in child has focus.
+    /// @return Ok; InvalidArgument for out-of-range motion; InvalidState without an opted-in
+    /// focused child or after close; NotConnected if the channel fails while sending;
+    /// Overflow if dropped; Unavailable on other targets.
+    HostedEndpointStatus SendRelativePointerMotion(const input::RelativePointerMotion& motion) noexcept;
+
     /// @brief Ask the window to close, as clicking a native close button would.
     ///
     /// The window reports the close from its next HandleEvent(). Later Send calls

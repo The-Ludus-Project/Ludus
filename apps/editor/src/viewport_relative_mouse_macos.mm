@@ -4,6 +4,8 @@
 
 #include <ludus/foundation/logging/category.hpp>
 #include <ludus/foundation/logging/log.hpp>
+#include <ludus/input/relative_pointer_motion.h>
+#include <ludus/platform/hosted_window.h>
 
 #include <QByteArray>
 #include <QCoreApplication>
@@ -87,6 +89,21 @@ bool ViewportRelativeMouse::nativeEventFilter(const QByteArray& eventType, void*
     // Apple, "NSEvent.deltaX / deltaY" (AppKit) supplies fractional mouse/trackpad deltas:
     // https://developer.apple.com/documentation/appkit/nsevent/deltax
     // https://developer.apple.com/documentation/appkit/nsevent/deltay
+    const input::RelativePointerMotion motion
+    {
+        .Horizontal = static_cast<foundation::float32>(event.deltaX),
+        .Vertical = static_cast<foundation::float32>(event.deltaY),
+    };
+    if (mViewport.mHasPlayPointerCapture == true && mViewport.mPlayEndpointOrNull != nullptr)
+    {
+        const platform::HostedEndpointStatus status = mViewport.mPlayEndpointOrNull->SendRelativePointerMotion(motion);
+        if (status == platform::HostedEndpointStatus::NotConnected ||
+            status == platform::HostedEndpointStatus::InvalidState)
+        {
+            mViewport.sendPlayFocus(false);
+        }
+        return true;
+    }
     Qt::KeyboardModifiers modifiers = Qt::NoModifier;
     if ((event.modifierFlags & NSEventModifierFlagOption) != 0)
     {
@@ -97,10 +114,7 @@ bool ViewportRelativeMouse::nativeEventFilter(const QByteArray& eventType, void*
         modifiers |= Qt::ShiftModifier;
     }
     const Qt::MouseButtons buttons = QGuiApplication::mouseButtons() | Qt::RightButton;
-    static_cast<void>(mViewport.navigateMouse(static_cast<foundation::float32>(event.deltaX),
-                                              static_cast<foundation::float32>(event.deltaY),
-                                              buttons,
-                                              modifiers));
+    static_cast<void>(mViewport.navigateMouse(motion.Horizontal, motion.Vertical, buttons, modifiers));
     return true;
 }
 } // namespace ludus::editor

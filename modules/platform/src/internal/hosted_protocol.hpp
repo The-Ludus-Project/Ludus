@@ -120,10 +120,15 @@ enum class MessageKind : uint16
     RecordingAcknowledgement = 14,
     /// Window -> endpoint: one measured pass (HostedRecordingSample).
     RecordingSample = 15,
+    /// Endpoint -> window: one captured pointer motion sample.
+    RelativePointerMotion = 16,
 };
 
 /// Payload sizes; each kind has exactly one.
 inline constexpr usize HELLO_PAYLOAD_BYTES = 4 + 2 + 2 + TOKEN_BYTES;
+inline constexpr usize POINTER_HELLO_PAYLOAD_BYTES = HELLO_PAYLOAD_BYTES + sizeof(uint8);
+inline constexpr uint8 HELLO_FLAG_RELATIVE_POINTER = 1;
+inline constexpr usize POINTER_MOTION_PAYLOAD_BYTES = 2 * sizeof(uint32);
 inline constexpr usize WELCOME_PAYLOAD_BYTES =
     2 + 1 + 1 + 4 + 4 + 4 + RENDEZVOUS_NONCE_BYTES + (2 * HOSTED_ADAPTER_UUID_BYTES);
 inline constexpr usize REFUSED_PAYLOAD_BYTES = 1;
@@ -160,7 +165,7 @@ inline constexpr usize MAX_FRAME_PAYLOAD_BYTES = 255;
 /// Largest frame of any version; receive buffers hold at least this much.
 inline constexpr usize MAX_FRAME_BYTES = HEADER_BYTES + MAX_FRAME_PAYLOAD_BYTES;
 static_assert(RESET_PAYLOAD_BYTES <= MAX_PAYLOAD_BYTES && WELCOME_PAYLOAD_BYTES <= MAX_PAYLOAD_BYTES &&
-              HELLO_PAYLOAD_BYTES <= MAX_PAYLOAD_BYTES && IMAGES_PAYLOAD_BYTES <= MAX_PAYLOAD_BYTES &&
+              POINTER_HELLO_PAYLOAD_BYTES <= MAX_PAYLOAD_BYTES && IMAGES_PAYLOAD_BYTES <= MAX_PAYLOAD_BYTES &&
               RECORDING_ACKNOWLEDGEMENT_PAYLOAD_BYTES <= MAX_PAYLOAD_BYTES &&
               MAX_PAYLOAD_BYTES <= MAX_FRAME_PAYLOAD_BYTES);
 /// Largest encoded surface message (Images); the window keeps this much send room for its frames.
@@ -183,6 +188,8 @@ struct Message final
     uint16 KeyCount = 0;
     /// Hello.
     Token SessionToken = {};
+    /// Hello extension (optional for keyboard-only peers).
+    bool ShouldReceiveRelativePointer = false;
     /// Welcome and Resize.
     uint32 Width = 0;
     /// Welcome and Resize.
@@ -203,6 +210,7 @@ struct Message final
     input::KeyTransition Transition = input::KeyTransition::Down;
     /// Key.
     bool IsRepeat = false;
+    input::RelativePointerMotion PointerMotion = {};
     /// Welcome: the endpoint's Mach rendezvous nonce, or zero.
     RendezvousNonce Nonce = {};
     /// Welcome: DeviceUuid and DriverUuid name the consumer's adapter.
@@ -266,6 +274,7 @@ TryEncodeMessage(const Message& message, foundation::BorrowedView<uint8> outByte
 TryDecodeMessage(foundation::BorrowedView<const uint8> bytes, Message& outMessage, usize& outConsumed) noexcept;
 
 /// True when `scale` is finite, positive and at most MAX_SCALE.
+[[nodiscard]] bool IsValidPointerMotion(const input::RelativePointerMotion& motion) noexcept;
 [[nodiscard]] bool IsValidScale(float32 scale) noexcept;
 
 /// True when `message` carries a hosted surface generation: nonzero generation, a

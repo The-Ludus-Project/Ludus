@@ -1638,6 +1638,12 @@ if(LUDUS_BUILD_TESTS AND NOT EMSCRIPTEN)
     if(APPLE)
         target_sources(ludus_editor_tests PRIVATE tests/viewport_relative_mouse_tests.mm)
         target_link_libraries(ludus_editor_tests PRIVATE "-framework AppKit" "-framework CoreGraphics")
+        if(LUDUS_EDITOR_RENDER_PREVIEW AND TARGET ludus_rhi_hosted_producer)
+            add_test(NAME ludus_editor_cocoa_pointer_journey COMMAND ludus_editor_tests "[relative-pointer]")
+            set_tests_properties(ludus_editor_cocoa_pointer_journey PROPERTIES
+                LABELS "editor;integration;macos;input" TIMEOUT 60 RESOURCE_LOCK ludus_editor
+                ENVIRONMENT "QT_QPA_PLATFORM=cocoa" SKIP_RETURN_CODE 4)
+        endif()
     endif()
     # Catch2 reports assertion failures by throwing; test targets (only) re-enable
     # exceptions. Engine/app targets above stay exception-free (-fno-exceptions).

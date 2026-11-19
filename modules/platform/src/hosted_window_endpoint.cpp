@@ -101,6 +101,26 @@ HostedWindowEndpoint::~HostedWindowEndpoint() noexcept
     Stop();
 }
 
+bool HostedWindowEndpoint::ShouldForwardRelativePointer() const noexcept
+{
+#if defined(LUDUS_PLATFORM_HOSTED) && LUDUS_TARGET_OS == LUDUS_OS_MACOS
+    return mState.Get() != nullptr && mState->Session.ShouldForwardRelativePointer() == true;
+#else
+    return false;
+#endif
+}
+
+HostedEndpointStatus
+HostedWindowEndpoint::SendRelativePointerMotion([[maybe_unused]] const input::RelativePointerMotion& motion) noexcept
+{
+#if defined(LUDUS_PLATFORM_HOSTED) && LUDUS_TARGET_OS == LUDUS_OS_MACOS
+    return mState.Get() == nullptr ? HostedEndpointStatus::InvalidState
+                                   : mState->Session.SendRelativePointerMotion(motion);
+#else
+    return HostedEndpointStatus::Unavailable;
+#endif
+}
+
 void HostedWindowEndpoint::Stop() noexcept
 {
     mState.Reset();

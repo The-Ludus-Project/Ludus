@@ -198,6 +198,14 @@ See [GUI systems](editor-gui-systems.md#play-in-the-editor-viewport),
 [celestial sampling](game-world.md#earth-celestial-transforms), and
 [package verification](game-packaging-publishing.md#package-identity-and-verification).
 
+## Capture the mouse on macOS
+
+A standalone player can explicitly [capture relative pointer input](macos-platform.md#relative-pointer-input)
+through its Cocoa window. An [opted-in hosted player](editor-gui-systems.md#input-focus-and-capture)
+captures on a left click in the Play viewport. Shift+F1 returns focus and the
+pointer to the editor. Losing focus and stopping both release capture and clear
+held keys. Relative capture is currently available on macOS.
+
 ## Prepare a first-person World snapshot
 
 The native Editor can prepare a saved built-in World without opening a window or creating

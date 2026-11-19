@@ -106,19 +106,19 @@ private:
     bool mHasFailed = false;
 };
 
-uint32 GetScaleBits(float32 scale) noexcept
+uint32 GetFloatBits(float32 value) noexcept
 {
     static_assert(sizeof(float32) == sizeof(uint32));
     uint32 bits = 0;
-    std::memcpy(&bits, &scale, sizeof(bits));
+    std::memcpy(&bits, &value, sizeof(bits));
     return bits;
 }
 
-float32 GetScale(uint32 bits) noexcept
+float32 GetFloat(uint32 bits) noexcept
 {
-    float32 scale = 0.0F;
-    std::memcpy(&scale, &bits, sizeof(scale));
-    return scale;
+    float32 value = 0;
+    std::memcpy(&value, &bits, sizeof(value));
+    return value;
 }
 
 bool IsValidExtent(uint32 width, uint32 height) noexcept
@@ -466,6 +466,10 @@ bool TryEncodePayload(const Message& message, MessageWriter& inoutWriter) noexce
             inoutWriter.Write<uint16>(message.Version);
             inoutWriter.Write<uint16>(message.KeyCount);
             inoutWriter.WriteBytes(message.SessionToken.GetData(), message.SessionToken.GetSize());
+            if (message.ShouldReceiveRelativePointer == true)
+            {
+                inoutWriter.Write<uint8>(HELLO_FLAG_RELATIVE_POINTER);
+            }
             return true;
         case MessageKind::Welcome:
             if (IsValidExtent(message.Width, message.Height) == false || IsValidScale(message.Scale) == false ||
@@ -478,7 +482,7 @@ bool TryEncodePayload(const Message& message, MessageWriter& inoutWriter) noexce
             inoutWriter.Write<uint8>(message.HasConsumerAdapter == true ? WELCOME_FLAG_CONSUMER_ADAPTER : 0);
             inoutWriter.Write<uint32>(message.Width);
             inoutWriter.Write<uint32>(message.Height);
-            inoutWriter.Write<uint32>(GetScaleBits(message.Scale));
+            inoutWriter.Write<uint32>(GetFloatBits(message.Scale));
             inoutWriter.WriteBytes(message.Nonce.GetData(), message.Nonce.GetSize());
             if (message.HasConsumerAdapter == true)
             {
@@ -504,7 +508,7 @@ bool TryEncodePayload(const Message& message, MessageWriter& inoutWriter) noexce
             }
             inoutWriter.Write<uint32>(message.Width);
             inoutWriter.Write<uint32>(message.Height);
-            inoutWriter.Write<uint32>(GetScaleBits(message.Scale));
+            inoutWriter.Write<uint32>(GetFloatBits(message.Scale));
             return true;
         case MessageKind::Visibility:
             if (IsValidVisibility(static_cast<uint8>(message.Visibility)) == false)
@@ -530,6 +534,14 @@ bool TryEncodePayload(const Message& message, MessageWriter& inoutWriter) noexce
             inoutWriter.Write<uint16>(static_cast<uint16>(message.PhysicalKey));
             inoutWriter.Write<uint8>(static_cast<uint8>(message.Transition));
             inoutWriter.Write<uint8>(message.IsRepeat == true ? KEY_FLAG_REPEAT : 0);
+            return true;
+        case MessageKind::RelativePointerMotion:
+            if (IsValidPointerMotion(message.PointerMotion) == false)
+            {
+                return false;
+            }
+            inoutWriter.Write<uint32>(GetFloatBits(message.PointerMotion.Horizontal));
+            inoutWriter.Write<uint32>(GetFloatBits(message.PointerMotion.Vertical));
             return true;
         case MessageKind::Close:
             return true;
@@ -604,6 +616,8 @@ usize GetPayloadBytes(MessageKind kind) noexcept
             return RESET_PAYLOAD_BYTES;
         case MessageKind::Key:
             return KEY_PAYLOAD_BYTES;
+        case MessageKind::RelativePointerMotion:
+            return POINTER_MOTION_PAYLOAD_BYTES;
         case MessageKind::Close:
             return CLOSE_PAYLOAD_BYTES;
         case MessageKind::Images:
@@ -627,7 +641,7 @@ usize GetPayloadBytes(MessageKind kind) noexcept
 bool IsKnownKind(uint16 value) noexcept
 {
     return value >= static_cast<uint16>(MessageKind::Hello) &&
-           value <= static_cast<uint16>(MessageKind::RecordingSample);
+           value <= static_cast<uint16>(MessageKind::RelativePointerMotion);
 }
 
 bool TryDecodeHello(MessageReader& inoutReader, usize payloadSize, Message& inoutMessage) noexcept
@@ -643,7 +657,7 @@ bool TryDecodeHello(MessageReader& inoutReader, usize payloadSize, Message& inou
         // Another SDK's Hello: report the mismatch, ignore the rest of its payload.
         return inoutReader.HasFailed() == false;
     }
-    if (payloadSize != HELLO_PAYLOAD_BYTES)
+    if (payloadSize != HELLO_PAYLOAD_BYTES && payloadSize != POINTER_HELLO_PAYLOAD_BYTES)
     {
         return false;
     }
@@ -653,6 +667,14 @@ bool TryDecodeHello(MessageReader& inoutReader, usize payloadSize, Message& inou
         return false;
     }
     std::memcpy(inoutMessage.SessionToken.GetData(), tokenOrNull, TOKEN_BYTES);
+    if (payloadSize == POINTER_HELLO_PAYLOAD_BYTES)
+    {
+        if (inoutReader.Read<uint8>() != HELLO_FLAG_RELATIVE_POINTER)
+        {
+            return false;
+        }
+        inoutMessage.ShouldReceiveRelativePointer = true;
+    }
     return true;
 }
 
@@ -676,7 +698,7 @@ bool TryDecodePayload(MessageReader& inoutReader, usize payloadSize, Message& in
             const uint8 flags = inoutReader.Read<uint8>();
             inoutMessage.Width = inoutReader.Read<uint32>();
             inoutMessage.Height = inoutReader.Read<uint32>();
-            inoutMessage.Scale = GetScale(inoutReader.Read<uint32>());
+            inoutMessage.Scale = GetFloat(inoutReader.Read<uint32>());
             inoutMessage.Visibility = static_cast<WindowVisibility>(visibility);
             const uint8* nonceOrNull = inoutReader.ReadBytesOrNull(RENDEZVOUS_NONCE_BYTES);
             if (nonceOrNull == nullptr)
@@ -704,7 +726,7 @@ bool TryDecodePayload(MessageReader& inoutReader, usize payloadSize, Message& in
         case MessageKind::Resize:
             inoutMessage.Width = inoutReader.Read<uint32>();
             inoutMessage.Height = inoutReader.Read<uint32>();
-            inoutMessage.Scale = GetScale(inoutReader.Read<uint32>());
+            inoutMessage.Scale = GetFloat(inoutReader.Read<uint32>());
             return IsValidExtent(inoutMessage.Width, inoutMessage.Height) == true &&
                    IsValidScale(inoutMessage.Scale) == true;
         case MessageKind::Visibility: {
@@ -729,6 +751,10 @@ bool TryDecodePayload(MessageReader& inoutReader, usize payloadSize, Message& in
             return input::IsValidKey(inoutMessage.PhysicalKey) == true &&
                    transition <= static_cast<uint8>(input::KeyTransition::Up) && (flags & ~KEY_FLAG_REPEAT) == 0;
         }
+        case MessageKind::RelativePointerMotion:
+            inoutMessage.PointerMotion.Horizontal = GetFloat(inoutReader.Read<uint32>());
+            inoutMessage.PointerMotion.Vertical = GetFloat(inoutReader.Read<uint32>());
+            return IsValidPointerMotion(inoutMessage.PointerMotion);
         case MessageKind::Close:
             return true;
         case MessageKind::Images:
@@ -778,6 +804,14 @@ bool IsValidSocketPath(std::string_view path) noexcept
            path.find('\0') == std::string_view::npos;
 }
 } // namespace
+
+bool IsValidPointerMotion(const input::RelativePointerMotion& motion) noexcept
+{
+    // A single hardware motion event cannot plausibly cross this many native pointer units.
+    constexpr float32 MAX_POINTER_MOTION = 1048576;
+    return motion.Horizontal >= -MAX_POINTER_MOTION && motion.Horizontal <= MAX_POINTER_MOTION &&
+           motion.Vertical >= -MAX_POINTER_MOTION && motion.Vertical <= MAX_POINTER_MOTION;
+}
 
 bool IsValidScale(float32 scale) noexcept
 {
