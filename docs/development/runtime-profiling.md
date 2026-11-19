@@ -169,6 +169,113 @@ for workload evidence. On Mali, offline compiler estimates for the exact
 shader variant can help investigate register spills and pipeline cost, with
 application measurements from [Arm Performance Studio](https://developer.arm.com/tools-and-software/arm-performance-studio).
 
+### First-room macOS Release budget pilot
+
+Build the pilot from a prepared macOS checkout with a matching installed Release SDK.
+The fixture uses the World demo's first-room extraction at tick zero, its quad renderer,
+linear scene target, tone mapping and surface composite. The camera holds the authored
+view, doubles its orthographic span, then holds a 1.5× span reserved for validation.
+Each hold warms up for 300 presented frames and records the following 1,200 frames.
+The target is 60 Hz. Each hold must have all 1,200 completed GPU samples and a
+nearest-rank p95 at or below **12.5 ms**, leaving about 4.17 ms of frame headroom.
+Missing a hold or a timing makes the GPU verdict inconclusive. A completed hold
+over budget makes a fully sampled configuration a miss. Record present-return
+intervals separately. They include CPU scheduling and exclude display scanout.
+
+Use a 2× Retina display and keep the 480 × 320 point window on that display.
+The Metal drawable and intermediate targets scale together, with the compositor
+mapping to the same 960 × 640 backing area. Compare 960 × 640, 720 × 480 and
+480 × 320. Keep geometry fixed. If reducing the resolution changes authored-view
+p95 by at least 0.25 ms and 10%, fit the fixed-geometry intercept, internal pixel
+count and nonblack pixel count to the authored and wide views. Check absolute
+p95 prediction error and false under-budget decisions on the withheld view.
+
+```sh
+python3 tests/scenes/gpu_budget/package.py out/metal-budget
+app="$PWD/out/metal-budget/extracted/MetalBudget.app/Contents/MacOS/MetalBudget"
+for pair in full-timed half-timed medium-timed full-disabled; do
+    size=${pair%-*}
+    "$app" "$size" "${pair#*-}" >"out/metal-budget/$pair.bin" || exit 1
+    python3 tests/scenes/gpu_budget/analyze.py "out/metal-budget/$pair.bin" "$size" out/metal-budget/evidence || exit 1
+done
+python3 tests/scenes/gpu_budget/estimate.py out/metal-budget/evidence
+```
+
+The archive hash printed by the package command identifies the measured binary.
+Capture the matched Development comparisons using the native editor's
+`[.metal-budget-preview]` case with `LUDUS_EDITOR_PROFILING_CAPTURE` set to a
+new absolute JSON path, and a separate-window `ludus_world_demo --level
+apps/world_demo/levels/first-room.world.json --frames 1200 --frame-rate 60 --pacing-report`.
+The editor records its preview with Both, and the Development player advances
+simulation. The package freezes simulation to control the submitted geometry.
+
+#### Apple M5 first-room result
+
+The 8-core Apple M5 (Mac17,3, 16 GiB) on macOS 26.6 (25G72) passed at all three sizes. The app
+selected Metal on Apple M5. Both attached displays ran at 60 Hz with 2× backing.
+The package did not record which display contained the window. It ran with
+AC power and Low Power Mode off. macOS reported fair thermal state before and
+after each capture. Other desktop applications were active. Each run presented
+4,500 frames over approximately 82 seconds, including warm-up. Inputs and
+geometry stayed fixed across sizes. Each counted frame drew 60 visible quads in
+one instanced draw, then two full-screen indexed quads for tone mapping and
+presentation, for three draws and 124 triangles in total.
+
+| Internal and Metal drawable | GPU p95 in ms, authored / wide / held-out | Worst hold p95 present-return interval | Completed GPU samples | GPU verdict |
+| --- | --- | ---: | ---: | --- |
+| 960 × 640 | 1.772 / 1.401 / 1.397 | 17.033 ms | 3,600 / 3,600 | Pass |
+| 720 × 480 | 1.576 / 1.265 / 1.592 | 17.600 ms | 3,600 / 3,600 | Pass |
+| 480 × 320 | 1.228 / 1.188 / 1.190 | 17.382 ms | 3,600 / 3,600 | Pass |
+| 960 × 640, timer disabled | Unavailable in every hold | 17.495 ms | 0 / 3,600 | Inconclusive |
+
+The renderer owner can retain full resolution for this room on this device.
+Reducing to half resolution saved 0.544 ms (31%) at authored-view p95 with the
+same geometry. The [full-resolution image](gpu-budget-evidence/full.png) and
+[half-resolution image](gpu-budget-evidence/half.png) preserve room layout and
+colors. Diagonal edges have coarser steps in the smaller render. The full-size
+timed and disabled textures were byte-identical for each camera hold. The
+frame-loop owner can investigate scheduling and presentation if a p95
+present-return interval within 16.67 ms is required. Enabled and disabled
+pacing distributions overlap. This single run per setting does not isolate a
+causal instrumentation cost. The measurement owner should enable timing or
+collect a supported trace for a GPU verdict on a timing-unavailable run.
+
+Triangle count alone gives the same prediction across the three resolutions.
+The six training observations gave a fixed-geometry p95 estimate in ms of
+`1.105 + 0.262 × internal megapixels + 0.999 × nonblack megapixels`.
+The held-out errors at full, medium and half size were 0.108, 0.262 and
+0.015 ms. None of the three predictions falsely passed the budget. All three
+measured values were well below it, so this pilot leaves prediction accuracy
+near the threshold untested.
+
+The [measurement archive](gpu-budget-evidence/apple-m5-first-room.zip) contains
+the per-frame CSVs, all twelve display textures, quantiles, withheld estimates,
+environment and package manifest. Times are elapsed nanoseconds in the CSVs,
+and unavailable durations are blank. The extracted archive SHA-256 was
+`3407136f50d732043b19a5f04ec6df939987735c64c67fccb2e8f42403f19b2f`.
+The SDK used Clang 23.1.3, arm64 Release at engine base
+`9def10d461343b26e56560e0728508eaa1052770` with the bundled Cocoa startup
+fix. The archive also records the installed Platform library hash.
+
+The Development comparisons used the same first-room source. The native Cocoa editor
+opened the World through its adapter, showed the authored camera in Albedo shading,
+and recorded five seconds in Both mode. It completed 153 of 153 eligible frame
+timings (p50 1.211 ms, p95 4.371 ms, p99 5.572 ms), plus 306 physical pass samples.
+Submission timestamp intervals had p50 34.632 ms and p95 36.350 ms. The trace
+contains no compositor or scanout intervals. This comparison used Development
+editor objects from SDK manifest revision `62f86866e782009f6d20985bdd932b192078570a`
+and the pilot's capture fixture.
+
+The separate-window Development player ran the current World player sources against
+installed Clang 23 Development SDK `bba94d8774`, with a 60 Hz cap and the
+normal 960 × 640 point window. It presented 1,200 frames. A second 1,200-frame
+run confirmed the player window was onscreen after activation. Its 1,198 reported
+present-return intervals had p50 99.998 ms, p90 100.624 ms and p99 103.601 ms.
+The cadence is consistent with the player's 10 Hz occlusion policy. The report
+does not expose the per-frame visibility decision or standalone GPU durations.
+The player/platform owner can trace visibility and pacing policy selection on
+this desktop. Both play logs and the editor trace are in the measurement archive.
+
 ## Scheduled workflow
 
 [`.github/workflows/performance.yml`](../../.github/workflows/performance.yml)
