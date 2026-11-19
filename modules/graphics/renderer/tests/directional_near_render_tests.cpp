@@ -64,8 +64,16 @@ struct DeviceSession final
 TEST_CASE("Near directional shadows preserve the doorway across camera updates",
           "[render-graph][directional-near-replay][directional-shadows][gpu]")
 {
-    const bool isWholeSceneControl = GENERATE(false, true);
-    const bool shouldMeasure = std::getenv("LUDUS_MEASURE_DIRECTIONAL_REPLAY") != nullptr;
+    enum class ReplayMode
+    {
+        Near,
+        WholeScene,
+        Constrained
+    };
+    const ReplayMode mode = GENERATE(ReplayMode::Near, ReplayMode::WholeScene, ReplayMode::Constrained);
+    const bool isWholeSceneControl = mode != ReplayMode::Near;
+    const bool shouldMeasure =
+        std::getenv("LUDUS_MEASURE_DIRECTIONAL_REPLAY") != nullptr && mode != ReplayMode::Constrained;
     const char* capturePathOrNull = std::getenv("LUDUS_DIRECTIONAL_CAPTURE");
     std::ofstream capture;
     if (capturePathOrNull != nullptr && isWholeSceneControl == false)
@@ -76,6 +84,11 @@ TEST_CASE("Near directional shadows preserve the doorway across camera updates",
     DeviceSession session;
     rhi::DeviceDescription description;
     description.Required.PortableRaster = true;
+    if (mode == ReplayMode::Constrained)
+    {
+        // Fits the original 32 MiB attachments and the remaining fixture, but not the 40 MiB atlas.
+        description.Storage.ResourceBytes = uint64{38} * 1024 * 1024;
+    }
     description.EnableGpuTiming = shouldMeasure;
     rhi::DeviceHandle device;
     rhi::SurfaceHandle surface;
@@ -101,7 +114,7 @@ TEST_CASE("Near directional shadows preserve the doorway across camera updates",
     renderer::RenderGraphPrograms programs = package.GetPrograms(ludus::shaders::renderer_composite::Vertex(),
                                                                  ludus::shaders::renderer_composite::Fragment());
     REQUIRE(programs.HasDirectionalNearCascades == true);
-    programs.HasDirectionalNearCascades = isWholeSceneControl == false;
+    programs.HasDirectionalNearCascades = mode != ReplayMode::WholeScene;
     renderer::RenderGraph graph;
     REQUIRE(Wait(graph.Initialize(device, package.GetPlan(), programs, nullptr, WIDTH, HEIGHT),
                  [&] { return graph.Poll(); }) == Status::Ready);
@@ -224,6 +237,14 @@ TEST_CASE("Near directional shadows preserve the doorway across camera updates",
         render();
         const renderer::RenderGraphSceneResourceReport resources = graph.GetReport().Resources;
         REQUIRE(resources.DirectionalNearRegions == (isWholeSceneControl ? 0 : inputs.Lights.GetSize()));
+        if (revision == 1)
+        {
+            const renderer::SkyVisibilityReport sky = graph.GetSkyVisibilityReport();
+            CHECK(sky.WholeWorldMaps == renderer::SKY_VISIBILITY_DIRECTION_COUNT);
+            CHECK(sky.LocalMaps == renderer::SKY_VISIBILITY_DIRECTION_COUNT);
+            const uint64 expectedMiB = isWholeSceneControl == true ? 32 : 40;
+            CHECK(resources.DrawableShadowAttachmentBytes == expectedMiB * 1024 * 1024);
+        }
         for (const renderer::DirectionalLightShadowReport& source : resources.DrawableDirectionalShadows)
         {
             if (source.SourceId == 0)
@@ -325,6 +346,17 @@ TEST_CASE("Near directional shadows preserve the doorway across camera updates",
         }
         return pixels[center];
     };
+    if (mode == ReplayMode::Constrained)
+    {
+        sample(-1, 0, 0, false);
+        sample(0, 1, 0, false);
+        const renderer::SkyVisibilityReport sky = graph.GetSkyVisibilityReport();
+        CHECK(sky.WholeWorldMaps == renderer::SKY_VISIBILITY_DIRECTION_COUNT);
+        CHECK(sky.LocalMaps == renderer::SKY_VISIBILITY_DIRECTION_COUNT);
+        CHECK(sky.HasBudgetFallback == false);
+        CHECK(graph.GetReport().Resources.DrawableShadowAttachmentBytes == uint64{32} * 1024 * 1024);
+        return;
+    }
     for (const float32 eyeOffset : {0.F, 0.01F, -3.F, 0.F})
     {
         for (const float32 y : {-1.F, 0.F, 1.F})

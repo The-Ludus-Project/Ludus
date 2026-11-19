@@ -6,7 +6,7 @@
 #include <ludus/foundation/identity/uuid.hpp>
 #include <ludus/foundation/math/transform.hpp>
 
-#include <ludus/content/scene_format/limits.h>
+#include <ludus/content/scene_format/playable_world.h>
 
 #include "internal/document_history.h"
 #include "internal/light_switches.h"
@@ -37,12 +37,11 @@ class WorldDocument final
 {
 public:
     /// Most entities a World admits beside the objects of its imported scene.
-    static constexpr foundation::int32 MAX_AUTHORED_ENTITIES = 128;
+    static constexpr foundation::int32 MAX_AUTHORED_ENTITIES = content::scene_format::MAX_AUTHORED_WORLD_ENTITIES;
     /// Most entities one World admits; validation rejects a larger entity list. Every object of an
     /// import-profile scene (the cooked bundle's limit, e.g. Bistro's one object per material) fits
     /// beside the authored entities.
-    static constexpr foundation::int32 MAX_ENTITIES =
-        static_cast<foundation::int32>(content::scene_format::IMPORT_LIMITS.Objects) + MAX_AUTHORED_ENTITIES;
+    static constexpr foundation::int32 MAX_ENTITIES = content::scene_format::MAX_WORLD_ENTITIES;
     /// Encoded bytes the World budget reserves for each admitted entity.
     static constexpr foundation::int64 MAX_ENTITY_BYTES = 4096;
     /// Largest encoded World document, compact JSON with its terminator.

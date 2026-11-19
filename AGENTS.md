@@ -97,10 +97,16 @@ existing item that covers the work.
 - While the latest validated batch is red, the **Develop health** check admits
   only documentation-only changes and proven fixes. An agent fixing a failed
   batch job declares `Batch-Fix: <failed batch job>` in the PR description,
-  merges current `develop`, dispatches the job's workflow on its branch and
-  re-runs the check. Do not declare jobs the change does not fix, edit a job to
+  merges current `develop`, runs the dispatch command Develop health prints (it
+  runs only the failed job where the workflow can; never dispatch a full suite
+  to prove one job) and re-runs the check. Do not declare jobs the change does not fix, edit a job to
   manufacture evidence, or set `DEVELOP_HEALTH_WAIVER`; waivers are the
   maintainer's. See `docs/development/continuous-integration.md#develop-health`.
+- Batches run `main`'s workflow definitions against the candidate's sources, so a
+  workflow edit reaches batches only after promotion. Keep file lists, test lists
+  and other candidate data out of workflow YAML: upload by pattern and name tests
+  in candidate files (`tests/sdk_consumer/browser-suites.json`). See
+  `docs/development/continuous-integration.md#batch-workflow-definitions`.
 - Request a manual batch only when the maintainer needs earlier qualification;
   retry an unchanged failed candidate only after investigating the failure. See
   `docs/development/continuous-integration.md` for setup, promotion and recovery.

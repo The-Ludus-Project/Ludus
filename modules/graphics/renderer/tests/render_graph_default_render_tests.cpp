@@ -9,7 +9,7 @@
 #include "../src/internal/render_graph_upscale.h"
 #include "earth_sky_quadrature.hpp"
 #include "hair_card_coverage_fixture.h"
-#include "render_graph_gpu_fixture.h"
+#include "render_graph_readback_fixture.h"
 #include "renderer_composite.h"
 #include "rg2_forward_lit.h"
 #include "rg2_offscreen.h"
@@ -2977,53 +2977,6 @@ TEST_CASE("default deferred samples minified material textures at their mean", "
     CAPTURE(differingPixels);
     CHECK(maximumDifference <= MAX_CHANNEL_DIFFERENCE);
 }
-
-namespace
-{
-rhi::RasterStatus PollAtmosphereGraph(GraphGpuFixture& inoutFixture, rhi::RasterStatus status)
-{
-    timing::Deadline deadline;
-    REQUIRE(deadline.Arm(timing::Now(), timing::Seconds(60)) == timing::TimeStatus::Ok);
-    while (status == rhi::RasterStatus::Pending && deadline.IsExpired(timing::Now()) == false)
-    {
-        threading::SleepFor(timing::Milliseconds(1));
-        status = inoutFixture.Graph.Poll();
-    }
-    return status;
-}
-
-void ReadAtmosphereFrame(GraphGpuFixture& inoutFixture)
-{
-    rhi::SubmissionToken submission;
-    REQUIRE(inoutFixture.Graph.Render(inoutFixture.Surface, WIDTH, HEIGHT, submission) == rhi::RasterStatus::Ready);
-    rhi::TextureHandle texture;
-    rhi::TextureAspect aspect;
-    REQUIRE(inoutFixture.Graph.GetExportAllocation(0, texture, aspect) == rhi::RasterStatus::Ready);
-    REQUIRE(aspect == rhi::TextureAspect::Color);
-    rhi::ReadbackTicket readback;
-    constexpr usize ROW_BYTES = WIDTH * TEXEL_BYTES;
-    REQUIRE(rhi::RequestTextureReadback(inoutFixture.Device,
-                                        texture,
-                                        { .Width = WIDTH, .Height = HEIGHT },
-                                        ROW_BYTES,
-                                        readback) == rhi::RasterStatus::Pending);
-    rhi::RasterStatus status = rhi::GetStatus(inoutFixture.Device, readback);
-    timing::Deadline deadline;
-    REQUIRE(deadline.Arm(timing::Now(), timing::Seconds(60)) == timing::TimeStatus::Ok);
-    while (status == rhi::RasterStatus::Pending && deadline.IsExpired(timing::Now()) == false)
-    {
-        threading::SleepFor(timing::Milliseconds(1));
-        REQUIRE(rhi::PollLifetime(inoutFixture.Device) == rhi::RasterStatus::Ready);
-        status = rhi::GetStatus(inoutFixture.Device, readback);
-    }
-    REQUIRE(status == rhi::RasterStatus::Ready);
-    REQUIRE(rhi::CopyReadback(inoutFixture.Device,
-                              readback,
-                              inoutFixture.Pixels.GetData(),
-                              inoutFixture.Pixels.GetSize()) == rhi::RasterStatus::Ready);
-    REQUIRE(rhi::Release(inoutFixture.Device, readback) == rhi::RasterStatus::Ready);
-}
-} // namespace
 
 TEST_CASE("Clear-sky resolve matches scene-linear quadrature for sky and opaque transport",
           "[render-graph][atmosphere][gpu][reference-compute]")

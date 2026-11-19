@@ -7,12 +7,14 @@ namespace ludus::graphics::renderer
 struct ViewDescription;
 namespace internal
 {
+inline constexpr foundation::uint32 DIRECTIONAL_NEAR_TILE_TEXELS = DIRECTIONAL_SHADOW_TEXELS / 2;
 /// Fixed camera-space split, with a spherical guard containing the perspective slice during turns.
 /// Empty when the view cannot be covered at the declared texel density.
 struct DirectionalNearFootprint final
 {
     foundation::math::Vector3 CenterWorld{};
     bool IsSupported = false;
+    bool CanReserveTiles = false;
 };
 [[nodiscard]] DirectionalNearFootprint GetDirectionalNearFootprint(const ViewDescription& view) noexcept;
 /// Fit the reserved tile only when it improves on the whole-scene projection. Intersect the

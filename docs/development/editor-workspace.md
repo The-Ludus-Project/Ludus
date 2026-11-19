@@ -2555,6 +2555,150 @@ surface charts and how many receiver draws use the probe volume
 ([Baked lighting: probe GI and surface charts](render-graph-authoring.md#deferred-baked-probe-gi)).
 Browser and packaged game hosts continue to use their existing inputs.
 
+### Qualifying baked lighting in Lighting Room
+
+Open the `examples/lighting-room` project, then open
+`authoring/lighting.world.json` and choose the native **Lit** viewport. The
+white directional light delivers 2 lux to the horizontal red panel and grazes
+the vertical grey receiver. A separate blue point light can be switched during
+play. The black divider has a 20 cm opening. A 6 cm moving plane carries
+**GI Probe Receiver**. In the game press **Space** to visit the observation
+cameras, **L** to switch the blue light, and **Left** or **Right** to move
+the receiver along the path.
+
+The native editor computes selected-light diffuse irradiance into per-triangle
+charts and a 3 × 2 × 2 probe grid. The sample game's installed-SDK **Forward
+Lit** graph takes the geometry, materials and live lights compiled from the
+same World. Hosted Play and Release both run that game renderer. The game has
+a black environment, supplies no chart or probe atlas, and spends zero bytes on
+those two lighting payloads. The game's World digest also identifies the exact
+authoring input after relocation. An editor `.ludus-lighting` file belongs
+beside the saved World. Copying it into the game directory does not bind it.
+
+The measurements below use the Apple M5 GPU on macOS/Metal. Game values are
+read from the centre of the graph's linear RGBA8 export immediately after the
+measured submission. Divide each channel by 255 for scene-linear RGB. The
+native viewport measurements undo its sRGB transfer and PBR Neutral display
+transform.
+
+**Static receiver.** The selected light is tangent to the receiver. At the
+centroid of its first triangle, a 128 × 128 midpoint integration over the panel
+multiplies the incident 2 lux by the panel's decoded linear albedo, both surface
+cosines, cell area and inverse squared distance, divided by π. The blocker
+clips the panel-to-receiver segment. A separate depth-two bake uses 4,096
+samples per triangle and isolates the panel's matte lobe. The estimator checks
+each channel within 0.01 irradiance units plus 8% for sampling error. The
+native viewport uses its regular production bake and the authored dielectric. Subtracting
+blue from the other channels isolates the panel's colour response.
+
+| Panel variant | Independent diffuse irradiance | Depth-two chart irradiance | Native Lit scene-linear RGB | Hosted Play / Release RGB8 |
+| --- | --- | --- | --- | --- |
+| Saturated | .42253, .04242, .02091 | .44286, .04446, .02192 | .10425, .01227, .00697 | 0, 0, 0 |
+| Neutral | .42253, .42253, .42253 | .44286, .44286, .44286 | .10480, .10480, .10480 | 0, 0, 0 |
+| Blocker | 0, 0, 0 | 0, 0, 0 | 0, 0, 0 | 0, 0, 0 |
+| Saturated, blue light on | — | — | .13084, .09286, .27074 | 7, 20, 67 |
+
+The default Lit bake held 768 bytes of RGBA8 surface-chart texels and 19,456
+bytes of RGBA8 probe-atlas texels. Those are encoded payload sizes before GPU
+allocation padding. In hosted Play and Release the player supplied no baked
+texture bytes and reported zero chart draws and zero probe draws at every
+sample. The light switch still affected both profiles.
+
+**Moving receiver.** The sample follows the 1 m grid, 20 cm doorway, marked
+receiver path and visibility criteria from the native probe qualification. All
+positions below have z = 0 m. Irradiance is the red channel recovered from the
+head-on grey receiver by undoing its albedo and Fresnel transmission. The CPU
+atlas lookup and the viewport must agree within 0.02 + 3%. The independent
+panel transfer provides a separate one-bounce geometric reference.
+[Native Lit probe visibility qualification](../architecture/renderer-systems.md#native-lit-probe-visibility-qualification)
+
+| Position (x, y), metres | Native irradiance | One-bounce reference | Hosted Play / Release RGB8, selected light only |
+| --- | ---: | ---: | --- |
+| (.25, 1), lit side | .15452 | .19771 | 0, 0, 0 |
+| (.45, 1), near opening | .08635 | .16650 | 0, 0, 0 |
+| (.55, 1), past opening | .07099 | .09346 | 0, 0, 0 |
+| (.75, 1), dark side | 0 | 0 | 0, 0, 0 |
+| (.55, .75), behind closed divider | .01716 | 0 | 0, 0, 0 |
+| (1.25, 1), outside grid | 0 | 0 | 0, 0, 0 |
+
+The first point past the opening retains 76% of the reference, above the 50%
+criterion. The closed-side point exceeds the 0.01 leak threshold. The test
+reports the miss and checks the independent lookup against the sampled atlas.
+Outside the volume the native point-light shadow also blocks the blue light.
+The game's Forward Lit pass supplies no shadow maps and reads (1, 3, 11) when
+that light is switched on. The world has no environment contribution.
+
+**Rough dielectric.** Both cameras aim at the same patch between construction-grid
+lines. The selected directional light contributes 2.000 units of irradiance to
+the chart. Multiplying that value by decoded albedo, Schlick transmission and
+1/π gives .30734 diffuse radiance near the specular peak and .29148 from the
+oblique view. The measured residuals are .10390 and .00671. Counting the
+selected light's diffuse term a second time would add about .3 at both angles.
+
+| Light configuration and view | Native Lit scene-linear RGB | Hosted Play / Release RGB8 |
+| --- | --- | --- |
+| Selected only, near peak | .41124, .41124, .41124 | 104, 104, 104 |
+| Selected only, oblique | .29818, .29818, .29818 | 80, 80, 80 |
+| Both, near peak | .41626, .43157, .47966 | 106, 109, 123 |
+| Switchable only, near peak | .00697, .02187, .07329 | 2, 6, 19 |
+| Both off | 0, 0, 0 | 0, 0, 0 |
+
+The test reopens the saved native cache, checks its exact lighting key and
+rejects it after changing the panel. At each rough-patch view it also adds a
+missing source ID to the selected lights. With the previous chart stale and
+the replacement unable to bake, the editor reports realtime lighting and
+draws the same patch at .41124 and .31468 respectively. The .025 absolute
+per-channel tolerance covers the view-dependent Fresnel weighting and display
+quantization. The unselected blue light remains additive within two RGBA8
+codes in the game.
+
+**Release size and timings.** The verified archive was 3,992,471 bytes. Its
+14 entries expanded to 6,439,539 bytes, including the signed app, build
+manifest and notices. The app's World SHA-256 was
+`20f8c23b0dab68eb6fdca80f8435851e04296ef32386974fbe4c2d8a82a2ac02`
+in both game routes. The archive SHA-256 was
+`d1d0e0f4633e31d158b4bc9b0a3a004cc678985d830e16a6b95f01947f9fe498`.
+The package manifest records a clean source tree and matching SDK revision
+`67bc2cd07776359a400c80be3c1b08b36bd0fc42`.
+
+| macOS 26.6, Apple M5 | Game drawable | Entry to first submitted frame | Median GPU frame | GPU range across 17 observations |
+| --- | --- | ---: | ---: | ---: |
+| Hosted Play | 1280 × 872 | 398.5 ms | 1.422 ms | 0.395–4.696 ms |
+| First relocated launch | 1280 × 960 | 1,840.4 ms | 0.847 ms | 0.286–27.849 ms |
+| Second relocated launch | 1280 × 960 | 815.9 ms | 1.477 ms | 0.414–3.185 ms |
+
+Metal frame timestamps include the graph and presentation composite. They
+exclude CPU readback and display latency. The native editor took 1,802 ms
+from fixture start to sampling its first baked overview, with a 7.437 ms GPU
+frame at that observation. The native interval also includes the World bake
+and waiting for presentation. These measurements describe individual runs on
+this Mac.
+
+#### Reproduce the three routes
+
+From the engine root with the macOS toolchain and a matching installed SDK,
+build the Editor test target and prepare the sample with the SDK appropriate
+to each profile. Set `LUDUS_SDK_PREFIX` to the installed Release prefix for
+the commands below.
+
+```sh
+./scripts/ludus project repair examples/lighting-room --tools "$PWD" --sdk "$LUDUS_SDK_PREFIX" --profile macos-clang-release --no-web
+./scripts/ludus project package examples/lighting-room --profile macos-release --version 0.1.0 --sdk "$LUDUS_SDK_PREFIX"
+./scripts/ludus project package verify "$package_directory"
+ditto -x -k "$package_directory/game.zip" "$relocated_directory"
+player="$relocated_directory/lighting_room.app/Contents/MacOS/lighting_room"
+python3 examples/lighting-room/qualify.py "$player"
+python3 examples/lighting-room/qualify.py "$player"
+QT_QPA_PLATFORM=cocoa LUDUS_LIGHTING_ROOM_PLAYER="$player" \
+  out/build/macos-clang-development/apps/editor/ludus_editor_tests '[lighting-room],[.lighting-room-hosted]'
+```
+
+Use the package directory printed by the package command and an empty relocation
+directory. Each qualification launch uses a fresh working directory and clears
+SDK, loader and build hints. The hosted test connects the game to the editor's
+Play viewport and checks that the editor takes a GPU frame. Both the normal
+game controls and qualification mode update and present the same graph.
+
 ### Baking probe GI for moving objects
 
 Create a **GI Probe Volume** from **Add World Preset** in a default World.
@@ -3339,6 +3483,33 @@ The command exits with 0 when every candidate meets the bound, and with 1 if
 any exceeds it or an HDR capture is partial or failed. Both outcomes write JSON
 and an HTML report with each candidate's verdict. Input and usage errors, including
 a pair with no jointly sampled pixels, exit with 2.
+
+### Independent Linux Vulkan raster baseline
+
+The Linux Editor CI job captures the authored `Main/output` export of the
+`Default` configuration from the saved cube World. The native Editor capture
+uses the World's `preview.camera` and the viewport raster capture path. A
+standalone installed-SDK app reopens the same World, mesh and cooked graph
+after relocation. The app reads its inputs from its package directory.
+
+At 96 × 64 pixels an orthographic camera with an eight-metre vertical span
+covers eight pixels per metre. Relative to the camera, the cube extends from
+−2 to 0 metres horizontally and from 0 to 2 metres vertically. On the
+top-left-origin image its red face therefore covers columns 32–47 and rows
+16–31, inclusive. Every other pixel has the black clear colour. Pixel centres
+fall strictly inside or outside the silhouette. The graph writes flat colour
+at the exact RGBA8 endpoints with one sample per pixel.
+
+The full Linux Editor batch runs this check. To run it on a branch, dispatch
+the `ci` workflow with `validation_tier=full` and `evidence_job=editor`. Open the resulting
+`raster-baseline-vulkan` artifact. The `baseline.html` heatmaps
+and `baseline.json` metrics compare two fresh captures per host with the
+independent rectangle. The zero RMSE threshold requires exact decoded RGB
+repeatability. The negative control changes the saved tint from red to green
+and captures both hosts again. Its `deliberate-failure.html` heatmaps should
+highlight exactly the 256 cube pixels. Two channels change by one on each,
+giving a normalized RGB RMSE of 1/6. The artifact includes the PNGs, driver
+version, graph digest, export names and per-run adapter logs.
 
 ## S4 scene authoring
 

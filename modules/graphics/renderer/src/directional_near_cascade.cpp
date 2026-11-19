@@ -10,8 +10,7 @@ namespace ludus::graphics::renderer::internal
 using namespace foundation;
 namespace
 {
-constexpr uint32 TILE_TEXELS = DIRECTIONAL_SHADOW_TEXELS / 2;
-constexpr uint32 INTERIOR_TEXELS = TILE_TEXELS - 2;
+constexpr uint32 INTERIOR_TEXELS = DIRECTIONAL_NEAR_TILE_TEXELS - 2;
 constexpr float32 METRES_PER_TEXEL = 0.09375F;
 constexpr float32 RADIUS_METRES = INTERIOR_TEXELS * METRES_PER_TEXEL * 0.5F;
 // Snap in whole groups of texels. The slice fits even at the maximum centre displacement.
@@ -29,8 +28,8 @@ float32 SnapCenter(float32 metres) noexcept
 }
 rhi::RasterRectangle GetTile(uint32 slot) noexcept
 {
-    return {MESH_LIGHT_SHADOW_ATLAS_TEXELS - (1 + slot) * TILE_TEXELS + 1,
-            MESH_LIGHT_SHADOW_ATLAS_TEXELS - TILE_TEXELS + 1,
+    return {MESH_LIGHT_SHADOW_ATLAS_TEXELS - (1 + slot) * DIRECTIONAL_NEAR_TILE_TEXELS + 1,
+            MESH_LIGHT_SHADOW_ATLAS_TEXELS - DIRECTIONAL_NEAR_TILE_TEXELS + 1,
             INTERIOR_TEXELS,
             INTERIOR_TEXELS};
 }
@@ -139,8 +138,9 @@ bool HasDirectionalNearSpace(BorrowedView<const MeshLightShadowCaster> casters, 
         {
             const MeshLightShadowFaceOrigin origin = caster.FaceOrigins[face];
             if ((caster.FaceMask & (1U << face)) != 0 &&
-                origin.Y + caster.FaceTexels > MESH_LIGHT_SHADOW_ATLAS_TEXELS - TILE_TEXELS &&
-                origin.X + caster.FaceTexels > MESH_LIGHT_SHADOW_ATLAS_TEXELS - lightCount * TILE_TEXELS)
+                origin.Y + caster.FaceTexels > MESH_LIGHT_SHADOW_ATLAS_TEXELS - DIRECTIONAL_NEAR_TILE_TEXELS &&
+                origin.X + caster.FaceTexels >
+                    MESH_LIGHT_SHADOW_ATLAS_TEXELS - lightCount * DIRECTIONAL_NEAR_TILE_TEXELS)
             {
                 return false;
             }

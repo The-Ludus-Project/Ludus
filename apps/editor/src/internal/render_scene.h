@@ -189,13 +189,15 @@ struct RenderScene final
                                          RenderScene& output,
                                          QString& error,
                                          const QJsonObject& revisions);
-    // Combine schema-bound entities and imported geometry before renderer admission.
+    // Combine schema-bound entities and imported geometry before renderer admission. On success,
+    // encodedOrNull optionally receives the exact LUSCN payload that passed runtime decoding.
     [[nodiscard]] static bool Merge(const RenderScene& authored,
                                     const QByteArray& cooked,
                                     const QJsonObject& level,
                                     RenderScene& outScene,
                                     QString& outError,
-                                    const QJsonObject& revisions);
+                                    const QJsonObject& revisions,
+                                    QByteArray* encodedOrNull = nullptr);
     /// @brief Merge like Merge, reusing loaded, the LoadCooked result of the same cooked bytes, level and revisions.
     ///
     /// Without authored geometry or lights the result is loaded with the World's bindings adopted; otherwise the

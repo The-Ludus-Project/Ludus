@@ -114,6 +114,8 @@ static const LightingLayoutValue MESH_LIGHT_SHADOW_GUTTER_TEXELS = 4;
 static const LightingLayoutValue SKY_VISIBILITY_DIRECTION_COUNT = 64;
 /// Side of one sky visibility map slot in atlas texels, including a one-texel gutter on each edge.
 static const LightingLayoutValue SKY_VISIBILITY_SLOT_TEXELS = 128;
+/// Half width in world metres of the local sky maps. The receiver uses coarse coverage outside this neighbourhood.
+static const LightingLayoutValue SKY_VISIBILITY_LOCAL_RADIUS_METRES = 8;
 /// Sky visibility slots along each side of their reserved atlas square.
 static const LightingLayoutValue SKY_VISIBILITY_SLOTS_PER_SIDE = 8;
 /// Light index a sky visibility region stores in place of a light's: above every admitted light index, so a light's

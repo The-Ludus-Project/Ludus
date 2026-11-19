@@ -866,6 +866,7 @@ ludus_editor_add_objects(ludus_editor_application
     src/internal/world_earth_location.h src/world_earth_location.cpp
     src/internal/world_earth_time_field.h src/world_earth_time_field.cpp
     src/internal/world_earth_time_zone.h src/world_earth_time_zone.cpp
+    src/playable_world.cpp
     src/world_document.cpp
     src/world_probe_volume.cpp
     src/world_terrain.cpp
@@ -1309,6 +1310,7 @@ if(LUDUS_BUILD_TESTS AND NOT EMSCRIPTEN)
         tests/profiling_tests.cpp
         tests/viewport_trace_tests.cpp
         tests/import_report_tests.cpp
+        tests/playable_world_tests.cpp
         tests/world_workspace_tests.cpp
         tests/world_terrain_tests.cpp
         tests/world_aperture_tests.cpp
@@ -1439,7 +1441,7 @@ if(LUDUS_BUILD_TESTS AND NOT EMSCRIPTEN)
     endif()
     target_link_libraries(ludus_editor_tests PRIVATE Ludus::SceneCook Ludus::FoundationThreading ludus_stb_image)
     # The tests also replay committed migration manifests to produce version-2 World fixtures.
-    target_link_libraries(ludus_editor_tests PRIVATE Ludus::ContentIdentity)
+    target_link_libraries(ludus_editor_tests PRIVATE Ludus::ContentIdentity ludus_playable_snapshot)
     if(LUDUS_EDITOR_RENDER_PREVIEW AND NOT APPLE)
         target_link_libraries(ludus_editor_tests PRIVATE Ludus::FoundationTime)
     endif()
@@ -1459,14 +1461,28 @@ if(LUDUS_BUILD_TESTS AND NOT EMSCRIPTEN)
             "LUDUS_EDITOR_REFERENCE_TEST_COLD_TIMEOUT_SECONDS=${editor_reference_cold_timeout}")
         target_sources(ludus_editor_tests PRIVATE tests/viewport_performance_tests.cpp tests/render_graph_preview_tests.cpp tests/restir_benchmark_tests.cpp
             tests/raster_mesh_light_benchmark_tests.cpp tests/render_graph_capture_profile_tests.cpp
+            tests/large_world_sky_tests.cpp
             tests/render_graph_library_capture_tests.cpp)
         target_compile_definitions(ludus_editor_tests PRIVATE
             "LUDUS_EDITOR_RENDER_GRAPH_FIXTURE=\"${editor_renderer_static_RUNTIME_PACKAGE}\"")
+        if(TARGET ludus_light_transformer_preview_fixture)
+            add_dependencies(ludus_editor_tests ludus_light_transformer_preview_fixture)
+            set_property(SOURCE tests/render_graph_preview_tests.cpp APPEND PROPERTY COMPILE_DEFINITIONS
+                LUDUS_EDITOR_MODEL_PACKAGE="$<TARGET_PROPERTY:ludus_light_transformer_preview_fixture,GRAPH_PACKAGE>"
+                LUDUS_EDITOR_MODEL_ENCODER="$<TARGET_PROPERTY:ludus_light_transformer_preview_fixture,ENCODER_ASSET>"
+                LUDUS_EDITOR_MODEL_DECODER="$<TARGET_PROPERTY:ludus_light_transformer_preview_fixture,DECODER_ASSET>")
+        endif()
         set(editor_ray_source "${PROJECT_SOURCE_DIR}/tests/sdk_consumer/rg2/raytracing")
         set(editor_ray_staged "${CMAKE_CURRENT_BINARY_DIR}/render-graph-host/raytracing")
         ludus_stage_render_graph_inputs("${editor_ray_source}" "${editor_ray_staged}")
         # Exercise the canonical editable forward template through the World preview path.
         set(editor_forward_source "${PROJECT_SOURCE_DIR}/modules/graphics/renderer/render_graphs/forward_lit")
+        include("${PROJECT_SOURCE_DIR}/tests/sdk_consumer/patch_seam/graph.cmake")
+        ludus_compile_patch_seam_graph(ludus_editor_tests "${editor_forward_source}")
+        target_sources(ludus_editor_tests PRIVATE tests/patch_seam_viewport_tests.cpp)
+        target_compile_definitions(ludus_editor_tests PRIVATE
+            LUDUS_PATCH_SEAM_VERIFY="${PROJECT_SOURCE_DIR}/tests/sdk_consumer/patch_seam/verify.py"
+            LUDUS_PATCH_SEAM_PYTHON="${Python3_EXECUTABLE}")
         set(editor_forward_staged "${CMAKE_CURRENT_BINARY_DIR}/forward-lit-inputs")
         foreach(file main.lurender.json rasterize.lurender.json main_shaders/geometry.slang main_shaders/color.slang)
             configure_file("${editor_forward_source}/${file}" "${editor_forward_staged}/${file}" COPYONLY)
@@ -1572,7 +1588,9 @@ if(LUDUS_BUILD_TESTS AND NOT EMSCRIPTEN)
         endif()
     endif()
     if(APPLE AND LUDUS_EDITOR_RENDER_PREVIEW)
-        target_sources(ludus_editor_tests PRIVATE tests/render_native_tests.mm tests/viewport_native_navigation.mm)
+        target_sources(ludus_editor_tests PRIVATE tests/render_native_tests.mm tests/viewport_native_navigation.mm tests/lighting_room_tests.cpp)
+        target_include_directories(ludus_editor_tests PRIVATE "${PROJECT_SOURCE_DIR}/examples/lighting-room/src")
+        target_sources(ludus_editor_tests PRIVATE tests/mesh_shadow_world_tests.cpp)
         # Test-only GPU pixel oracle; no RHI private header enters editor production or the SDK.
         target_include_directories(ludus_editor_tests PRIVATE "${PROJECT_SOURCE_DIR}/modules/graphics/rhi/src")
         target_link_libraries(ludus_editor_tests PRIVATE "-framework Cocoa")
@@ -1640,7 +1658,7 @@ if(LUDUS_BUILD_TESTS AND NOT EMSCRIPTEN)
                 ENVIRONMENT "${editor_test_environment}" RESOURCE_LOCK ludus_editor)
         endforeach()
     endfunction()
-    set(editor_shard_filter "~[reference-compute]")
+    set(editor_shard_filter "~[reference-compute]~[patch-seam-capture]")
     if(WIN32)
         # This journey runs in ludus_editor_hosted_play with a native viewport.
         string(APPEND editor_shard_filter "~[native-hosted-frames]")
@@ -1649,6 +1667,9 @@ if(LUDUS_BUILD_TESTS AND NOT EMSCRIPTEN)
     if(LUDUS_EDITOR_RENDER_PREVIEW AND NOT WIN32)
         # Give each cold GPU capture its own deadline, independent of the editor shard's other tests.
         get_target_property(editor_reference_case_timeout Ludus::GraphicsRenderer LUDUS_REFERENCE_TEST_CASE_TIMEOUT_SECONDS)
+        add_test(NAME ludus_editor_patch_seam_capture COMMAND ludus_editor_tests "[patch-seam-capture]")
+        set_tests_properties(ludus_editor_patch_seam_capture PROPERTIES LABELS "editor;geometry;gpu"
+            ENVIRONMENT "${editor_test_environment}" TIMEOUT 300 SKIP_RETURN_CODE 4 RESOURCE_LOCK ludus_editor)
         add_test(NAME ludus_editor_reference_emissive_patches COMMAND ludus_editor_tests
             "[reference-compute][emissive-patches]" --durations yes)
         add_test(NAME ludus_editor_reference_oracle_parity COMMAND ludus_editor_tests

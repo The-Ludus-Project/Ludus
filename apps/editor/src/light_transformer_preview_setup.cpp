@@ -205,6 +205,14 @@ QString DescribeLightTransformerPreparationFailure(const renderer::LightTransfor
                 .arg(report.EmbeddingBufferBytes)
                 .arg(report.RequiredPacketBytes);
         case Issue::DeviceCapacity:
+            if (report.EstimatedWorkloadBytes > report.MaximumBufferBytes)
+            {
+                return QStringLiteral("The %1-point encoder requires %2 GPU buffer bytes. The budget is %3 bytes. "
+                                      "Reduce scene_points in light_transformer/model.json and preview again.")
+                    .arg(report.RequestedPoints)
+                    .arg(report.EstimatedWorkloadBytes)
+                    .arg(report.MaximumBufferBytes);
+            }
             return QStringLiteral(
                        "The %1-point model exceeds its %2-byte budget or an enabled device limit. Raise "
                        "maximum_buffer_bytes, reduce scene_points, or restart with larger device storage limits.")

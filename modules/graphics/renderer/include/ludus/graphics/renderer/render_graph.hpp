@@ -573,6 +573,28 @@ struct DirectionalLightShadowReport final
     DirectionalCascadeReport WholeScene{}; ///< Whole-scene map available throughout the view.
     DirectionalCascadeReport Near{};       ///< Fine projection used up to DIRECTIONAL_NEAR_END_METRES of forward depth.
 };
+/// Finest sky visibility coverage submitted for the drawable generation.
+enum class SkyVisibilityLevel : foundation::uint8
+{
+    None,       ///< No directions have been submitted.
+    WholeWorld, ///< Whole-World depth coverage is available.
+    Local,      ///< Bounded local maps supplement whole-World coverage.
+};
+/// Submitted sky-depth coverage of the currently drawable deferred scene generation.
+struct SkyVisibilityReport final
+{
+    /// Finest submitted level. Local coverage varies with the receiver and direction.
+    SkyVisibilityLevel FinestSubmittedLevel = SkyVisibilityLevel::None;
+    foundation::uint64 Revision = 0; ///< Scene revision that prepared these maps, preserved across camera-only updates.
+    foundation::uint32 WholeWorldMaps = 0; ///< Submitted whole-World direction maps.
+    foundation::uint32 LocalMaps = 0;      ///< Submitted maps in the bounded local neighbourhood.
+    foundation::math::Vector3
+        AnchorWorld{}; ///< Centre of the local neighbourhood in world metres, valid with local coverage.
+    foundation::float32 LocalMetresPerTexel = 0; ///< Local XY footprint, zero without allocated local maps.
+    foundation::float32 CoarseMetresPerTexel =
+        0;                          ///< Horizontal footprint of the first whole-World direction, in metres.
+    bool HasBudgetFallback = false; ///< Local refinement was requested but could not be admitted in the shadow atlas.
+};
 /// Device/context-local forward resource counters and the drawable scene's chart draw count.
 /// Camera-only updates preserve resource acquisition counters. Reuse compares complete copied content.
 struct RenderGraphSceneResourceReport final
@@ -612,10 +634,11 @@ struct RenderGraphSceneResourceReport final
     /// prepared deferred scene left without a map because two brighter ones hold them. They illuminate unshadowed;
     /// clear their raster shadow request to make that explicit.
     foundation::uint32 UnshadowedDirectionalLights = 0;
-    /// Sky visibility maps of the latest prepared deferred scene: SKY_VISIBILITY_DIRECTION_COUNT
+    /// Whole-World sky visibility maps of the latest prepared deferred scene: SKY_VISIBILITY_DIRECTION_COUNT
     /// (deferred_layout.h) orthographic depth maps from fixed upper-hemisphere directions, rendered once into the
     /// shadow atlas, or zero for a scene without geometry. The resolve integrates environment and Atmosphere sky
     /// light over those directions only where they see past the scene (render-graph-authoring.md, "Sky visibility").
+    /// GetSkyVisibilityReport reports both submitted levels of the currently drawable scene.
     foundation::uint32 SkyVisibilityMaps = 0;
     /// Directional map footprints and work in the drawable scene, in admission order.
     foundation::StaticArray<DirectionalLightShadowReport, MAX_DIRECTIONAL_SHADOW_LIGHTS> DrawableDirectionalShadows{};
@@ -1039,6 +1062,9 @@ public:
     /// How much of a World feature this graph draws, derived from its programs (see GetWorldFeatureSupport).
     /// NotRendered before Initialize succeeds.
     [[nodiscard]] WorldFeatureSupport GetWorldFeatureSupport(WorldFeature feature) const noexcept;
+    /// Inspect the current drawable sky atlas on the graph owner thread. An empty report precedes publication.
+    /// Counts advance on submission. Pending and failed replacement scenes preserve the current report.
+    [[nodiscard]] SkyVisibilityReport GetSkyVisibilityReport() const noexcept;
     /// Return the revision of the last Ready extraction, or zero when none exists.
     [[nodiscard]] foundation::uint64 GetDrawableSceneRevision() const noexcept;
     /// True when the last ray writer of any color target outputs individual samples or has an

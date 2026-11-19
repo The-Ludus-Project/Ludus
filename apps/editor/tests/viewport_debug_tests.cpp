@@ -1,4 +1,5 @@
 #include "design_tokens.h"
+#include "internal/controller.h"
 #include "internal/offscreen_frame_reader.h"
 #include "internal/preview_shading.h"
 #include "internal/preview_viewport.h"
@@ -7,8 +8,11 @@
 #include "internal/software_viewport.h"
 #include "internal/viewport_hud_text.h"
 #include "internal/viewport_pass_bars.h"
+#include "internal/viewport_reference_capture.h"
 #include "internal/viewport_size.h"
 #include "internal/viewport_statistics.h"
+#include "internal/world_workspace.h"
+#include "viewport_fixture.h"
 
 #include <ludus/foundation/math/geometry.hpp>
 #include <ludus/foundation/math/vector.hpp>
@@ -21,17 +25,22 @@
 #include <ludus/graphics/rhi/raster.h>
 #include <ludus/graphics/rhi/rhi.h>
 
+#include <QFileInfo>
 #include <QFont>
 #include <QFontMetricsF>
 #include <QImage>
 #include <QObject>
 #include <QPainter>
+#include <QPlainTextEdit>
+#include <QPushButton>
 #include <QRect>
 #include <QSet>
 #include <QSize>
 #include <QString>
 #include <QStringList>
+#include <QTemporaryDir>
 #include <QTest>
+#include <QTextStream>
 
 #include <catch2/catch_approx.hpp>
 #include <catch2/catch_test_macros.hpp>
@@ -39,6 +48,7 @@
 #include <algorithm>
 #include <cmath>
 #include <cstdlib>
+#include <cstring>
 #include <limits>
 
 using namespace ludus::editor;
@@ -934,3 +944,124 @@ TEST_CASE("Viewport HUD text lays label: value lines out as a two-column grid", 
     CHECK(hasValue == true);
     CHECK(hasMiddle == false);
 }
+
+#if defined(LUDUS_EDITOR_NATIVE_PREVIEW)
+TEST_CASE("World companion HDR survives save and reopen and illuminates its Lit viewport",
+          "[.environment-qualification]")
+{
+    // qualify.py prepares one receiver and its installed-SDK linear capture per invocation.
+    const QDir input(qEnvironmentVariable("LUDUS_ENVIRONMENT_FIXTURE"));
+    REQUIRE(input.exists(QStringLiteral("cooked.rgb")) == true);
+    const QByteArray cooked = tests::ReadTestFile(input.filePath(QStringLiteral("cooked.rgb")));
+    const QByteArray linear = tests::ReadTestFile(input.filePath(QStringLiteral("linear.rgb")));
+    constexpr int32 CAPTURE_EXTENT = 65;
+    REQUIRE(linear.size() == static_cast<qsizetype>(CAPTURE_EXTENT * CAPTURE_EXTENT * 3 * sizeof(float32)));
+    QTemporaryDir directory;
+    REQUIRE(directory.isValid() == true);
+    const QString root = QFileInfo(directory.path()).canonicalFilePath();
+    const QString path = QDir(root).filePath(QStringLiteral("main.world.json"));
+    ToolingPaths tools;
+    tools.ToolingRoot = QStringLiteral(LUDUS_EDITOR_PROJECT_ROOT);
+    for (const bool isReopened : {false, true})
+    {
+        WorldWorkspace world(tools, nullptr);
+        world.SetProject(root, 1);
+        if (isReopened == true)
+        {
+            REQUIRE(world.Open(path) == true);
+        }
+        else
+        {
+            REQUIRE(world.Create(path) == true);
+            QPlainTextEdit* panel = world.findChild<QPlainTextEdit*>(QStringLiteral("worldImportPreview"));
+            REQUIRE(panel != nullptr);
+            REQUIRE(world.PreviewImportScene(input.filePath(QStringLiteral("receiver.gltf")),
+                                             input.filePath(QStringLiteral("environment.hdr"))) == true);
+            REQUIRE(QTest::qWaitFor([panel] { return panel->isHidden() == false; }, PREVIEW_TIMEOUT_MILLISECONDS) ==
+                    true);
+            REQUIRE(panel->toPlainText().contains(QStringLiteral("environment.hdr")) == true);
+            REQUIRE(world.ConfirmImportPreview() == true);
+        }
+        REQUIRE(QTest::qWaitFor([&world] { return world.GetRenderPreview().Scene().Definition.Get() != nullptr; },
+                                PREVIEW_TIMEOUT_MILLISECONDS) == true);
+        const RenderScene& scene = world.GetRenderPreview().Scene();
+        const ludus::resources::SceneEnvironment& environment = scene.Definition->Environment;
+        QFile dimensions(input.filePath(QStringLiteral("dimensions.txt")));
+        REQUIRE(dimensions.open(QIODevice::ReadOnly) == true);
+        QTextStream sizeStream(&dimensions);
+        uint32 width = 0;
+        uint32 height = 0;
+        sizeStream >> width >> height;
+        REQUIRE(environment.Width == width);
+        REQUIRE(environment.Height == height);
+        REQUIRE(cooked.size() == static_cast<qsizetype>(environment.Pixels.GetSize() * 3 * sizeof(float32)));
+        QByteArray actual;
+        actual.reserve(cooked.size());
+        for (const math::Vector3 pixel : environment.Pixels)
+        {
+            const float32 rgb[]{pixel.X * environment.Rgb.X, pixel.Y * environment.Rgb.Y, pixel.Z * environment.Rgb.Z};
+            actual.append(reinterpret_cast<const char*>(rgb), sizeof(rgb));
+        }
+        REQUIRE((actual == cooked) == true);
+        {
+            RenderPreview& preview = world.GetRenderPreview();
+            // Supply the native device headlessly in place of the widget's Cocoa window.
+            QObject::disconnect(&preview, &RenderPreview::DeviceRequested, nullptr, nullptr);
+            REQUIRE(preview.GoToStartView() == true);
+            preview.SetPresentationVisible(true);
+            preview.Resize(CAPTURE_EXTENT, CAPTURE_EXTENT);
+            preview.SetShading(PreviewShading::Lit);
+            REQUIRE(preview.Start() == true);
+            REQUIRE(preview.AdmitOffscreenDevice() == true);
+            const QImage image = CaptureShading(preview, PreviewShading::Lit);
+            INFO(preview.Status().toStdString());
+            CAPTURE(preview.Frames(), image.width(), image.height());
+            REQUIRE(image.size() == QSize(CAPTURE_EXTENT, CAPTURE_EXTENT));
+            QFile probes(input.filePath(QStringLiteral("probes.txt")));
+            REQUIRE(probes.open(QIODevice::ReadOnly) == true);
+            QTextStream coordinates(&probes);
+            int32 count = 0;
+            coordinates >> count;
+            REQUIRE(count > 0);
+            for (int32 index = 0; index < count; ++index)
+            {
+                int32 x = 0;
+                int32 y = 0;
+                coordinates >> x >> y;
+                REQUIRE(coordinates.status() == QTextStream::Ok);
+                REQUIRE(x >= 0);
+                REQUIRE(x < CAPTURE_EXTENT);
+                REQUIRE(y >= 0);
+                REQUIRE(y < CAPTURE_EXTENT);
+                const qsizetype at = (y * CAPTURE_EXTENT + x) * 3;
+                const auto channel = [&linear](qsizetype offset) {
+                    float32 value = 0;
+                    std::memcpy(&value, linear.constData() + offset * sizeof(value), sizeof(value));
+                    return value;
+                };
+                const math::Vector3 expected =
+                    EncodeReferenceDisplayColor({channel(at), channel(at + 1), channel(at + 2)}, {});
+                const QColor observed = image.pixelColor(x, y);
+                CAPTURE(isReopened,
+                        x,
+                        y,
+                        observed.red(),
+                        observed.green(),
+                        observed.blue(),
+                        expected.X,
+                        expected.Y,
+                        expected.Z);
+                CHECK(std::abs(observed.redF() - expected.X) < 0.065F);
+                CHECK(std::abs(observed.greenF() - expected.Y) < 0.065F);
+                CHECK(std::abs(observed.blueF() - expected.Z) < 0.065F);
+            }
+            preview.Stop();
+        }
+        if (isReopened == false)
+        {
+            REQUIRE(world.Save() == true);
+            REQUIRE(QTest::qWaitFor([&world] { return world.Dirty() == false; }, PREVIEW_TIMEOUT_MILLISECONDS) == true);
+        }
+    }
+}
+#endif

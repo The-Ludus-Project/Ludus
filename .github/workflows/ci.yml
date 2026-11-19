@@ -7,7 +7,7 @@ on:
   schedule:
     - cron: '17 9 * * *'
   pull_request:
-    types: [opened, synchronize, reopened, ready_for_review, edited]
+    types: [opened, synchronize, reopened]
   workflow_call:
     inputs:
       batch_sha:
@@ -39,20 +39,42 @@ on:
         options:
           - full
           - nightly
+      evidence_job:
+        description: >-
+          Run only this native job (and Classify changes) to prove a Batch-Fix; all runs
+          every job. Develop health prints the value for each failed batch job.
+        type: choice
+        default: all
+        options:
+          - all
+          - macos-compile
+          - macos-sanitizers
+          - macos-analysis
+          - formatting
+          - debug-runtime
+          - development
+          - sanitizers
+          - filesystem-fuzz
+          - threading-races
+          - analysis
+          - editor
+          - assertion-policy
+          - pch
+          - build-budget
+          - scripting-qualification
 
 permissions:
   contents: read
 
 # Thanks to GitHub's "Concurrency" guidance: superseded PR checks can cancel.
 # https://docs.github.com/en/actions/concepts/workflows-and-actions/concurrency
-# Only a push (synchronize) supersedes the runs for earlier commits. Other PR
-# activity (opened, ready_for_review, edited, ...) can fire for the commit a
-# concurrent push run is validating, so it runs in a per-commit group that never
-# cancels. A cancelled duplicate would otherwise leave a cancelled or failed
-# required check on the head commit and block the PR.
+# Only a new or reopened head runs this workflow, so each PR has one group and a
+# push cancels the run for the previous commit. Description edits and marking a
+# draft ready change no file; Develop health owns the description
+# (docs/development/continuous-integration.md#pull-request-runner-budget).
 concurrency:
-  group: ci-${{ inputs.batch_sha || github.ref }}${{ github.event_name == 'pull_request' && github.event.action != 'synchronize' && format('-head-{0}', github.event.pull_request.head.sha) || '' }}${{ (inputs.sanitizer_experiment == 'shared' || inputs.sanitizer_experiment == 'rebuild') && format('-sanitizers-{0}', inputs.sanitizer_experiment) || '' }}
-  cancel-in-progress: ${{ github.event_name == 'pull_request' && github.event.action == 'synchronize' }}
+  group: ci-${{ inputs.batch_sha || github.ref }}${{ (inputs.sanitizer_experiment == 'shared' || inputs.sanitizer_experiment == 'rebuild') && format('-sanitizers-{0}', inputs.sanitizer_experiment) || '' }}${{ inputs.evidence_job && inputs.evidence_job != 'all' && format('-evidence-{0}', inputs.evidence_job) || '' }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 env:
   CI: "true"
@@ -69,18 +91,15 @@ jobs:
     if: github.event_name != 'workflow_dispatch' || (inputs.mcmc_vulkan_parity_only != true && inputs.sanitizer_experiment != 'rebuild' && inputs.sanitizer_experiment != 'shared')
     name: Classify changes
     runs-on: ubuntu-24.04
-    # Reading this workflow's runs finds an earlier run that already validates an
-    # edited or ready-for-review commit (docs/development/continuous-integration.md#superseded-pull-request-runs).
     permissions:
       contents: read
-      actions: read
       packages: read
     outputs:
       native_image: ${{ steps.image.outputs.image }}
       image_recipe_changed: ${{ steps.image.outputs.recipe_changed }}
+      camera_pilot: ${{ steps.scope.outputs.camera_pilot }}
       native_required: ${{ steps.scope.outputs.native_required }}
       validation_tier: ${{ steps.scope.outputs.validation_tier }}
-      validated_by: ${{ steps.scope.outputs.validated_by }}
     steps:
       - uses: actions/checkout@v4
         with:
@@ -91,35 +110,11 @@ jobs:
         id: scope
       - name: Find the native PR image for this revision
         id: image
-        if: steps.scope.outputs.validation_tier == 'integration' && steps.scope.outputs.native_required == 'true' && steps.scope.outputs.validated_by == ''
+        if: steps.scope.outputs.validation_tier == 'integration' && steps.scope.outputs.native_required == 'true'
         env:
           GH_TOKEN: ${{ github.token }}
           BASE_SHA: ${{ github.event.pull_request.base.sha }}
         run: bash .github/actions/native-image/image.sh resolve
-
-  develop-health:
-    # While develop's latest validated batch is red, admit only fixes proven on
-    # the PR head (docs/development/continuous-integration.md#develop-health).
-    # It reads completed batch runs, so it needs no coordinator state on main.
-    if: github.event_name == 'pull_request' && github.base_ref == 'develop'
-    name: Develop health
-    runs-on: ubuntu-24.04
-    timeout-minutes: 10
-    permissions:
-      contents: read
-      actions: read
-      pull-requests: read
-    steps:
-      - uses: actions/checkout@v4
-        with:
-          ref: ${{ inputs.batch_sha || github.sha }}
-          fetch-depth: 0
-          persist-credentials: false
-      - name: Admit only proven fixes while the latest batch is red
-        env:
-          GITHUB_TOKEN: ${{ github.token }}
-          DEVELOP_HEALTH_WAIVER: ${{ vars.DEVELOP_HEALTH_WAIVER }}
-        run: python3 scripts/python/develop_health.py gate
 
   mcmc-vulkan-parity:
     if: github.event_name == 'workflow_dispatch' && inputs.mcmc_vulkan_parity_only == true && inputs.sanitizer_experiment != 'rebuild' && inputs.sanitizer_experiment != 'shared'
@@ -192,7 +187,7 @@ jobs:
   # https://docs.github.com/en/actions/reference/workflows-and-actions/expressions#status-check-functions
   macos-compile:
     needs: [changes, macos-sanitizers]
-    if: ${{ !cancelled() && needs.changes.outputs.native_required == 'true' && needs.changes.outputs.validated_by == '' && needs.changes.outputs.validation_tier != 'integration' }}
+    if: ${{ !cancelled() && needs.changes.outputs.native_required == 'true' && needs.changes.outputs.validation_tier != 'integration' && ((inputs.evidence_job || 'all') == 'all' || inputs.evidence_job == 'macos-compile') }}
     name: macOS native backends and diagnostics
     runs-on: macos-15
     env:
@@ -286,19 +281,25 @@ jobs:
             -DLUDUS_SPIRV_CROSS="$PWD/out/shader-tools/spirv-cross/bin/spirv-cross"
           out/host-tools/venv/bin/cmake --build out/renderer-sdk --parallel "$CMAKE_BUILD_PARALLEL_LEVEL"
           out/renderer-sdk/ludus_sdk_renderer_consumer
+          out/host-tools/venv/bin/ctest --test-dir out/renderer-sdk -R "^installed_encoder$" --no-tests=error --output-on-failure
           out/renderer-sdk/ludus_sdk_renderer_views_consumer
           out/renderer-sdk/ludus_sdk_renderer_overlays_consumer
           out/renderer-sdk/ludus_sdk_renderer_materials_consumer
           out/renderer-sdk/ludus_sdk_renderer_lighting_consumer
           out/renderer-sdk/ludus_sdk_renderer_scaling_consumer
+          out/host-tools/venv/bin/ctest --test-dir out/renderer-sdk/environment --output-on-failure --no-tests=error -R '^ludus_sdk_environment$'
           out/host-tools/venv/bin/ctest --test-dir out/renderer-sdk --output-on-failure --no-tests=error -R "^ludus_sdk_hybrid_indirect_diffuse_consumer$"
           out/host-tools/venv/bin/ctest --test-dir out/renderer-sdk -V --no-tests=error -R "^ludus_sdk_ray_storage_"
+          out/host-tools/venv/bin/ctest --test-dir out/renderer-sdk --output-on-failure --no-tests=error -R "^ludus_sdk_patch_seam_(geometry|raster)$"
           out/renderer-sdk/ludus_sdk_render_graph_runtime_consumer
           out/renderer-sdk/ludus_sdk_render_graph_bilinear_consumer 2>&1 | tee out/bilinear-sdk-metal.log
           python3 -c 'from pathlib import Path; text=Path("out/bilinear-sdk-metal.log").read_text(); assert "bilinear passed" in text, text'
           mkdir -p out/rg4-evidence
           out/renderer-sdk/ludus_sdk_render_graph_pooling_consumer 2>&1 | tee out/rg4-evidence/metal.log
           python3 -c 'from pathlib import Path; text=Path("out/rg4-evidence/metal.log").read_text(); assert "pooling passed" in text, text'
+          out/host-tools/venv/bin/cmake --install out/renderer-sdk --component AuthoredPooling --prefix "$PWD/out/packaged-consumer"
+          set -o pipefail
+          out/packaged-consumer/bin/ludus_sdk_authored_pooling 2>&1 | tee out/rg4-evidence/authored-metal.log
           out/renderer-sdk/ludus_sdk_reference_capture out/reference.luhdr
           python3 scripts/reference-hdr out/reference.luhdr --pfm out/reference.pfm --manifest out/reference.json
           out/host-tools/venv/bin/ctest --test-dir out/renderer-sdk/reference-scene --output-on-failure
@@ -311,6 +312,14 @@ jobs:
           path = Path('examples/reference-scene/src/main.cpp')
           assert format_source(path.read_text(), path, 'out/host-tools/bin/clang-format') == path.read_text()
           PYFORMAT
+      - name: Upload cooked patch seam captures
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: patch-seam-metal
+          path: out/renderer-sdk/patch-seam/raster/
+          if-no-files-found: warn
+          retention-days: 14
       - name: Upload RG4 pooling evidence
         if: always()
         uses: actions/upload-artifact@v4
@@ -319,6 +328,23 @@ jobs:
           path: out/rg4-evidence/
           if-no-files-found: warn
           retention-days: 14
+      - name: Measure mesh-light cube seams on Metal
+        run: |
+          out/host-tools/venv/bin/python -m venv out/shadow-analysis
+          out/shadow-analysis/bin/python -m pip install numpy==2.5.5
+          build=out/build/macos-clang-development
+          graph="$build/modules/graphics/renderer/ludus-graphs/ludus_renderer_render_tests/rg2_clustered_Default/rg2_clustered_Default.lurgrt"
+          out/shadow-analysis/bin/python tests/sdk_consumer/mesh_shadow/qualify.py out/shadow-worlds "$graph" \
+            --editor "$build/apps/editor/ludus_editor_tests" --sdk out/renderer-sdk/mesh-shadow/ludus_sdk_mesh_shadow
+      - name: Preserve mesh-light shadow measurements
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: mesh-shadow-metal
+          path: |
+            out/shadow-worlds/
+            out/build/macos-clang-development/modules/graphics/renderer/ludus-graphs/ludus_renderer_render_tests/rg2_clustered_Default/rg2_clustered_Default.lurgrt
+          if-no-files-found: warn
       - name: Verify installed macOS game-project tooling
         run: |
           ./scripts/install-sdk macos-clang-development
@@ -355,6 +381,24 @@ jobs:
           PATH="$PWD/out/host-tools/venv/bin:$PWD/out/host-tools/bin:$PATH" PYTHONPATH=scripts/python out/host-tools/venv/bin/python -m unittest test_macos_release test_ludus_release test_ludus_itch_release -v
           out/host-tools/venv/bin/python tests/sdk_consumer/verify_macos_release.py --sdk "$PWD/out/install/macos-clang-release" --tools "$PWD" --cli "$PWD/out/project-tooling-venv/bin/ludus"
           LUDUS_SETUP_TEST_SDK="$PWD/out/install/macos-clang-development" LUDUS_RELEASE_TEST_SDK="$PWD/out/install/macos-clang-release" out/build/macos-clang-development/apps/editor/ludus_editor_tests '[.macos-release-journey]'
+      - name: Qualify Lighting Room in hosted Play and relocated Release
+        timeout-minutes: 10
+        env:
+          QT_QPA_PLATFORM: cocoa
+        run: |
+          export PATH="$PWD/out/host-tools/venv/bin:$PWD/out/host-tools/bin:$PATH"
+          sdk="$PWD/out/install/macos-clang-release"
+          sample=examples/lighting-room
+          ./scripts/ludus project repair "$sample" --tools "$PWD" --sdk "$sdk" --profile macos-clang-release --no-web
+          ./scripts/ludus --json project package "$sample" --profile macos-release --version 0.1.0 --sdk "$sdk" > "$RUNNER_TEMP/lighting-room-package.log"
+          package_dir=$(tail -n 1 "$RUNNER_TEMP/lighting-room-package.log" | jq -er '.package')
+          ./scripts/ludus project package verify "$package_dir"
+          relocated=$(mktemp -d "$RUNNER_TEMP/Lighting Room.XXXXXX")
+          ditto -x -k "$package_dir/game.zip" "$relocated"
+          export LUDUS_LIGHTING_ROOM_PLAYER="$relocated/lighting_room.app/Contents/MacOS/lighting_room"
+          python "$sample/qualify.py" "$LUDUS_LIGHTING_ROOM_PLAYER"
+          python "$sample/qualify.py" "$LUDUS_LIGHTING_ROOM_PLAYER"
+          out/build/macos-clang-development/apps/editor/ludus_editor_tests '[.lighting-room-hosted]'
       - name: Qualify relocated Behavior SDK and extracted macOS player
         run: out/host-tools/venv/bin/python tools/script-provider/verify_consumer.py out/install/macos-clang-development
       - name: Verify native Cocoa Editor project lifecycle
@@ -369,11 +413,18 @@ jobs:
           QT_QPA_PLATFORM: cocoa
         run: |
           LUDUS_SDK_PREFIX="$PWD/out/install/macos-clang-development" out/build/macos-clang-development/apps/editor/ludus_editor_tests '[.live-journey]'
+      - name: Verify HDR companion import and Lit World highlights against the installed SDK
+        run: |
+          out/host-tools/venv/bin/python tests/sdk_consumer/environment/qualify.py \
+            out/renderer-sdk/environment/ludus_sdk_environment --case world \
+            --editor out/build/macos-clang-development/apps/editor/ludus_editor_tests
       - name: Verify native World renderer and camera authoring
         timeout-minutes: 15
         env:
           QT_QPA_PLATFORM: cocoa
-        run: out/build/macos-clang-development/apps/editor/ludus_editor_tests '[.render-native],[.level-native]'
+        run: |
+          out/build/macos-clang-development/apps/editor/ludus_editor_tests '[.render-native],[.level-native]'
+          out/build/macos-clang-development/apps/editor/ludus_editor_tests '[.authored-pooling-viewport]'
 
       - name: Verify Play in the World viewport
         timeout-minutes: 15
@@ -535,7 +586,7 @@ jobs:
 
   macos-sanitizers:
     needs: changes
-    if: needs.changes.outputs.native_required == 'true' && needs.changes.outputs.validated_by == '' && needs.changes.outputs.validation_tier != 'integration'
+    if: needs.changes.outputs.native_required == 'true' && needs.changes.outputs.validation_tier != 'integration' && ((inputs.evidence_job || 'all') == 'all' || inputs.evidence_job == 'macos-sanitizers')
     name: macOS ASan and UBSan
     runs-on: macos-15
     env:
@@ -623,7 +674,7 @@ jobs:
 
   macos-analysis:
     needs: [changes, macos-compile]
-    if: ${{ !cancelled() && needs.changes.outputs.native_required == 'true' && needs.changes.outputs.validated_by == '' && needs.changes.outputs.validation_tier == 'nightly' }}
+    if: ${{ !cancelled() && needs.changes.outputs.native_required == 'true' && needs.changes.outputs.validation_tier == 'nightly' && ((inputs.evidence_job || 'all') == 'all' || inputs.evidence_job == 'macos-analysis') }}
     name: macOS analyzer baseline
     runs-on: macos-15
     env:
@@ -666,7 +717,7 @@ jobs:
 
   formatting:
     needs: changes
-    if: needs.changes.outputs.native_required == 'true' && needs.changes.outputs.validated_by == ''
+    if: needs.changes.outputs.native_required == 'true' && ((inputs.evidence_job || 'all') == 'all' || inputs.evidence_job == 'formatting')
     name: Source formatting
     runs-on: ubuntu-24.04
     steps:
@@ -773,7 +824,7 @@ jobs:
 
   debug-runtime:
     needs: changes
-    if: needs.changes.outputs.native_required == 'true' && needs.changes.outputs.validated_by == '' && needs.changes.outputs.validation_tier != 'integration'
+    if: needs.changes.outputs.native_required == 'true' && needs.changes.outputs.validation_tier != 'integration' && ((inputs.evidence_job || 'all') == 'all' || inputs.evidence_job == 'debug-runtime')
     name: Debug runtime and source debugger
     runs-on: ubuntu-24.04
     steps:
@@ -801,7 +852,7 @@ jobs:
 
   development:
     needs: changes
-    if: needs.changes.outputs.native_required == 'true' && needs.changes.outputs.validated_by == '' && needs.changes.outputs.validation_tier != 'integration'
+    if: needs.changes.outputs.native_required == 'true' && needs.changes.outputs.validation_tier != 'integration' && ((inputs.evidence_job || 'all') == 'all' || inputs.evidence_job == 'development')
     name: Development and SDK
     runs-on: ubuntu-24.04
     steps:
@@ -1066,13 +1117,16 @@ jobs:
             -DLUDUS_SPIRV_CROSS="$PWD/out/shader-tools/spirv-cross/bin/spirv-cross"
           out/host-tools/venv/bin/cmake --build out/renderer-sdk --parallel "$CMAKE_BUILD_PARALLEL_LEVEL"
           out/renderer-sdk/ludus_sdk_renderer_consumer
+          out/host-tools/venv/bin/ctest --test-dir out/renderer-sdk -R "^installed_encoder$" --no-tests=error --output-on-failure
           out/renderer-sdk/ludus_sdk_renderer_views_consumer
           out/renderer-sdk/ludus_sdk_renderer_overlays_consumer
           out/renderer-sdk/ludus_sdk_renderer_materials_consumer
           out/renderer-sdk/ludus_sdk_renderer_lighting_consumer
           out/renderer-sdk/ludus_sdk_renderer_scaling_consumer
+          out/host-tools/venv/bin/ctest --test-dir out/renderer-sdk/environment --output-on-failure --no-tests=error -R '^ludus_sdk_environment$'
           out/host-tools/venv/bin/ctest --test-dir out/renderer-sdk --output-on-failure --no-tests=error -R "^ludus_sdk_hybrid_indirect_diffuse_consumer$"
           VK_INSTANCE_LAYERS=VK_LAYER_KHRONOS_validation out/host-tools/venv/bin/ctest --test-dir out/renderer-sdk -V --no-tests=error -R "^ludus_sdk_ray_storage_"
+          out/host-tools/venv/bin/ctest --test-dir out/renderer-sdk --output-on-failure --no-tests=error -R "^ludus_sdk_patch_seam_(geometry|raster)$"
           VK_INSTANCE_LAYERS=VK_LAYER_KHRONOS_validation out/renderer-sdk/ludus_sdk_render_graph_runtime_consumer 2>&1 | tee out/rg3-sdk-vulkan-validation.log
           python3 -c 'from pathlib import Path; text=Path("out/rg3-sdk-vulkan-validation.log").read_text(); assert "Validation Error" not in text and "VUID-" not in text, text'
           VK_INSTANCE_LAYERS=VK_LAYER_KHRONOS_validation out/renderer-sdk/ludus_sdk_render_graph_bilinear_consumer 2>&1 | tee out/bilinear-sdk-vulkan-validation.log
@@ -1093,6 +1147,14 @@ jobs:
           path = Path('examples/reference-scene/src/main.cpp')
           assert format_source(path.read_text(), path, 'out/host-tools/bin/clang-format') == path.read_text()
           PYFORMAT
+      - name: Upload cooked patch seam captures
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: patch-seam-vulkan
+          path: out/renderer-sdk/patch-seam/raster/
+          if-no-files-found: warn
+          retention-days: 14
       - name: Upload RG4 pooling evidence
         if: always()
         uses: actions/upload-artifact@v4
@@ -1214,7 +1276,7 @@ jobs:
 
   sanitizers:
     needs: [changes, sanitizer-build]
-    if: ${{ !cancelled() && ((inputs.sanitizer_experiment == 'shared' && needs.sanitizer-build.result == 'success') || inputs.sanitizer_experiment == 'rebuild' || (needs.changes.outputs.native_required == 'true' && needs.changes.outputs.validated_by == '' && needs.changes.outputs.validation_tier != 'integration')) }}
+    if: ${{ !cancelled() && ((inputs.sanitizer_experiment == 'shared' && needs.sanitizer-build.result == 'success') || inputs.sanitizer_experiment == 'rebuild' || (needs.changes.outputs.native_required == 'true' && needs.changes.outputs.validation_tier != 'integration')) && ((inputs.evidence_job || 'all') == 'all' || inputs.evidence_job == 'sanitizers') }}
     # One serial suite took 95-100 min of a 2 h job, 83% of it in render-graph,
     # renderer and wave-graph cases on lavapipe. Split it round-robin across
     # runners instead of running cases concurrently on one: each case keeps a
@@ -1379,7 +1441,7 @@ jobs:
 
   scripting-qualification:
     needs: changes
-    if: needs.changes.outputs.native_required == 'true' && needs.changes.outputs.validated_by == '' && needs.changes.outputs.validation_tier != 'integration'
+    if: needs.changes.outputs.native_required == 'true' && needs.changes.outputs.validation_tier != 'integration' && ((inputs.evidence_job || 'all') == 'all' || inputs.evidence_job == 'scripting-qualification')
     name: S7 reference performance and release acceptance
     runs-on: ubuntu-24.04
     timeout-minutes: 45
@@ -1421,7 +1483,7 @@ jobs:
 
   filesystem-fuzz:
     needs: changes
-    if: needs.changes.outputs.native_required == 'true' && needs.changes.outputs.validated_by == '' && needs.changes.outputs.validation_tier != 'integration'
+    if: needs.changes.outputs.native_required == 'true' && needs.changes.outputs.validation_tier != 'integration' && ((inputs.evidence_job || 'all') == 'all' || inputs.evidence_job == 'filesystem-fuzz')
     name: Filesystem pack fuzzing
     runs-on: ubuntu-24.04
     timeout-minutes: 15
@@ -1454,7 +1516,7 @@ jobs:
 
   threading-races:
     needs: changes
-    if: needs.changes.outputs.native_required == 'true' && needs.changes.outputs.validated_by == '' && needs.changes.outputs.validation_tier != 'integration'
+    if: needs.changes.outputs.native_required == 'true' && needs.changes.outputs.validation_tier != 'integration' && ((inputs.evidence_job || 'all') == 'all' || inputs.evidence_job == 'threading-races')
     name: Threading race detection
     runs-on: ubuntu-24.04
     steps:
@@ -1492,7 +1554,7 @@ jobs:
     needs: changes
     # Runs on integration pull requests too: an analysis failure found only by the
     # batch blocks promotion of every change merged with it.
-    if: needs.changes.outputs.native_required == 'true' && needs.changes.outputs.validated_by == ''
+    if: needs.changes.outputs.native_required == 'true' && ((inputs.evidence_job || 'all') == 'all' || inputs.evidence_job == 'analysis')
     name: Clang static analysis (${{ matrix.shard }})
     strategy:
       fail-fast: false
@@ -1564,7 +1626,7 @@ jobs:
     # with warnings as errors, Editor analysis) and run only the generated-source
     # checks and the quick unit/Editor list, restoring but never saving the batch's
     # caches. Batches also run the remaining tests and journeys.
-    if: needs.changes.outputs.native_required == 'true' && needs.changes.outputs.validated_by == ''
+    if: needs.changes.outputs.native_required == 'true' && ((inputs.evidence_job || 'all') == 'all' || inputs.evidence_job == 'editor')
     name: Editor, shader worker and unit tests
     runs-on: ubuntu-24.04
     permissions:
@@ -1610,6 +1672,11 @@ jobs:
         run: out/host-tools/venv/bin/python tools/check_build_graph.py out/build/linux-clang-development --summary "$GITHUB_STEP_SUMMARY" --report out/build-graph/linux-clang-development.json
       - name: Build every default target with the Editor and shader worker
         run: out/host-tools/venv/bin/cmake --build --preset linux-clang-development
+      - name: Compare saved World raster captures on Linux Vulkan
+        if: needs.changes.outputs.validation_tier != 'integration'
+        uses: ./.github/actions/raster-baseline
+        with:
+          editor: out/build/linux-clang-development/apps/editor/ludus_editor_tests
       # Checked-in generated sources (such as the SDK .luslh headers) need tools only this
       # build produces, so integration pull requests check them here rather than in a batch.
       - name: Check checked-in generated sources
@@ -1623,6 +1690,10 @@ jobs:
         run: |
           out/host-tools/venv/bin/python scripts/python/pull_request_tests.py out/build/linux-clang-development --ctest out/host-tools/venv/bin/ctest
           out/host-tools/venv/bin/ctest --preset linux-clang-development --tests-from-file "$PWD/config/pull_request_tests.txt" --timeout 120 --output-on-failure --no-tests=error
+      - name: Run advisory RenderGraph camera pilot
+        if: needs.changes.outputs.validation_tier == 'integration' && needs.changes.outputs.camera_pilot == 'true'
+        continue-on-error: true
+        run: python3 scripts/python/camera_pilot.py
       - name: Verify unit and Editor tests and worker-on target detection
         if: needs.changes.outputs.validation_tier != 'integration'
         env:
@@ -1698,7 +1769,7 @@ jobs:
   # Debug runtime already runs the complete Debug assertion/build contracts.
   assertion-policy:
     needs: changes
-    if: needs.changes.outputs.native_required == 'true' && needs.changes.outputs.validated_by == '' && needs.changes.outputs.validation_tier != 'integration'
+    if: needs.changes.outputs.native_required == 'true' && needs.changes.outputs.validation_tier != 'integration' && ((inputs.evidence_job || 'all') == 'all' || inputs.evidence_job == 'assertion-policy')
     name: Assertion policy (${{ matrix.preset }})
     runs-on: ubuntu-24.04
     strategy:
@@ -1724,7 +1795,7 @@ jobs:
 
   pch:
     needs: changes
-    if: needs.changes.outputs.native_required == 'true' && needs.changes.outputs.validated_by == '' && needs.changes.outputs.validation_tier != 'integration'
+    if: needs.changes.outputs.native_required == 'true' && needs.changes.outputs.validation_tier != 'integration' && ((inputs.evidence_job || 'all') == 'all' || inputs.evidence_job == 'pch')
     name: PCH build (LUDUS_ENABLE_PCH=ON)
     runs-on: ubuntu-24.04
     steps:
@@ -1751,7 +1822,7 @@ jobs:
 
   build-budget:
     needs: changes
-    if: needs.changes.outputs.native_required == 'true' && needs.changes.outputs.validated_by == '' && needs.changes.outputs.validation_tier != 'integration'
+    if: needs.changes.outputs.native_required == 'true' && needs.changes.outputs.validation_tier != 'integration' && ((inputs.evidence_job || 'all') == 'all' || inputs.evidence_job == 'build-budget')
     name: Build-time budget
     runs-on: ubuntu-24.04
     env:
@@ -1795,7 +1866,7 @@ jobs:
     # https://docs.github.com/en/actions/how-tos/write-workflows/choose-when-workflows-run/control-jobs-with-conditions
     # A cancelled pull-request run passes only when a newer, uncancelled run of
     # this workflow covers the same head commit; that run's gate owns the result.
-    name: ${{ (inputs.sanitizer_experiment == 'rebuild' || inputs.sanitizer_experiment == 'shared') && 'Sanitizer experiment dispatch' || github.event_name == 'workflow_dispatch' && inputs.mcmc_vulkan_parity_only == true && 'Focused Vulkan dispatch (not integration)' || 'Ubuntu Clang' }}
+    name: ${{ (inputs.sanitizer_experiment == 'rebuild' || inputs.sanitizer_experiment == 'shared') && 'Sanitizer experiment dispatch' || github.event_name == 'workflow_dispatch' && inputs.mcmc_vulkan_parity_only == true && 'Focused Vulkan dispatch (not integration)' || inputs.evidence_job && inputs.evidence_job != 'all' && format('Evidence gate ({0})', inputs.evidence_job) || 'Ubuntu Clang' }}
     needs: [changes, macos-compile, macos-sanitizers, macos-analysis, formatting, debug-runtime, development, sanitizers, filesystem-fuzz, threading-races, analysis, editor, assertion-policy, pch, build-budget, scripting-qualification]
     if: always() && (github.event_name != 'workflow_dispatch' || (inputs.mcmc_vulkan_parity_only != true && inputs.sanitizer_experiment != 'rebuild' && inputs.sanitizer_experiment != 'shared'))
     runs-on: ubuntu-24.04
@@ -1809,6 +1880,7 @@ jobs:
           persist-credentials: false
       - name: Enforce validation for the classified change scope
         env:
+          EVIDENCE_JOB: ${{ inputs.evidence_job }}
           RESULTS: ${{ toJSON(needs) }}
           GITHUB_TOKEN: ${{ github.token }}
         run: python3 scripts/python/ci_scope.py gate

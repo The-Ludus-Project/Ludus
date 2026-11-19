@@ -132,6 +132,40 @@ TEST_CASE("Wayland surface and device lifecycle", "[rhi][wayland]")
 }
 
 #if defined(VK_USE_PLATFORM_WAYLAND_KHR)
+TEST_CASE("Wayland swapchain resumes after a zero-sized frame target", "[rhi][wayland][surface][resize]")
+{
+    if (std::getenv("LUDUS_TEST_WAYLAND") == nullptr)
+    {
+        SKIP("Set LUDUS_TEST_WAYLAND=1 to run with a Wayland compositor.");
+    }
+    platform::WindowManager& manager = GetWaylandWindowManager();
+    foundation::UniquePtr<platform::Window> window;
+    const ShutdownGuard guard;
+    REQUIRE(manager.CreateWindow({ .Name = "Wayland resume", .Width = 641, .Height = 481 }, window));
+    const platform::NativeWindowInfo native = window->GetNativeWindowInfo();
+    rhi::DeviceHandle device;
+    rhi::SurfaceHandle surface;
+    REQUIRE(rhi::CreateDevice({}, native, {}, device, surface) == rhi::DeviceStatus::Ready);
+    REQUIRE(rhi::SetFrameTarget(device, surface, { .Width = native.Width, .Height = native.Height }) ==
+            rhi::DeviceStatus::Ready);
+    REQUIRE(rhi::BeginFrame(device, surface) == rhi::DeviceStatus::Ready);
+    REQUIRE(rhi::EndFrame(device) == rhi::DeviceStatus::Ready);
+    REQUIRE(rhi::SetFrameTarget(device, surface, { .Width = 0, .Height = 0 }) == rhi::DeviceStatus::Ready);
+    CHECK(rhi::BeginFrame(device, surface) == rhi::DeviceStatus::Skipped);
+
+    REQUIRE(window->HandleEvent({}));
+    const platform::NativeWindowInfo restored = window->GetNativeWindowInfo();
+    REQUIRE(rhi::SetFrameTarget(device, surface, { .Width = restored.Width, .Height = restored.Height }) ==
+            rhi::DeviceStatus::Ready);
+    REQUIRE(rhi::BeginFrame(device, surface) == rhi::DeviceStatus::Ready);
+    rhi::FrameInfo frame;
+    REQUIRE(rhi::GetFrameInfo(device, surface, frame) == rhi::DeviceStatus::Ready);
+    CHECK(frame.Width == restored.Width);
+    CHECK(frame.Height == restored.Height);
+    REQUIRE(rhi::EndFrame(device) == rhi::DeviceStatus::Ready);
+    REQUIRE(rhi::DestroyDevice(device) == rhi::DeviceStatus::Ready);
+}
+
 TEST_CASE("R14b losing a Vulkan Wayland surface preserves the other swapchain", "[rhi][wayland][surface]")
 {
     if (std::getenv("LUDUS_TEST_WAYLAND") == nullptr)

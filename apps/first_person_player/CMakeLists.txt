@@ -4,6 +4,14 @@ target_include_directories(ludus_first_person_walking PUBLIC "${CMAKE_CURRENT_SO
 target_link_libraries(ludus_first_person_walking PUBLIC Ludus::PhysicsCollision)
 ludus_apply_project_defaults(ludus_first_person_walking)
 
+add_library(ludus_playable_snapshot STATIC playable_snapshot.cpp)
+target_include_directories(ludus_playable_snapshot PUBLIC "${CMAKE_CURRENT_SOURCE_DIR}")
+target_link_libraries(ludus_playable_snapshot
+    PUBLIC Ludus::GameplayCamera Ludus::FoundationParsingJson Ludus::Resources
+           "$<COMPILE_ONLY:Ludus::GraphicsRenderer>"
+    PRIVATE Ludus::SceneFormat Ludus::Content)
+ludus_apply_project_defaults(ludus_playable_snapshot)
+
 if(LUDUS_BUILD_TESTS)
     find_package(Catch2 3 REQUIRED CONFIG)
     add_executable(ludus_first_person_walking_tests tests/walking_controller_tests.cpp)

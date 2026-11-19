@@ -58,7 +58,9 @@ struct NativeWindowInfo final
     /// Hosted windows publish the scale their host sent with each resize. Win32 windows
     /// publish their monitor DPI over 96. Cocoa windows publish the AppKit backing scale
     /// on the main thread, including while minimized, and return to 1 on close.
-    /// Headless, Wayland and WebCanvas publish 1 here. For WebCanvas, use
+    /// Wayland publishes the preferred fractional scale with viewporter, otherwise the integer
+    /// buffer scale. Width and Height are the resulting backing pixels after pumping events.
+    /// Headless and WebCanvas publish 1 here. For WebCanvas, use
     /// `Window::GetBrowserState` to read the browser device pixel ratio and framebuffer extent.
     ludus::foundation::float32 Scale = 1.0F;
     /// @brief Hosted only: the window's surface channel, borrowed from the hosted window.

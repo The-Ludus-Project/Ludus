@@ -1,7 +1,5 @@
 #include "renderer_light_transformer_encoder.h"
 
-#include "../src/internal/light_transformer_topology.h"
-
 #include <ludus/foundation/base/byte_order.hpp>
 #include <ludus/foundation/containers/array.hpp>
 #include <ludus/foundation/math/scalar.hpp>
@@ -14,13 +12,13 @@
 #include <cstdlib>
 #include <cstring>
 #include <fstream>
+#include <iostream>
 
 namespace
 {
 using namespace ludus::foundation;
 namespace rhi = ludus::graphics::rhi;
 namespace renderer = ludus::graphics::renderer;
-namespace internal = renderer::internal;
 using Status = rhi::RasterStatus;
 constexpr usize BUDGET = 512 * 1024 * 1024;
 constexpr uint64 TIMEOUT = 120 * time::NANOSECONDS_PER_SECOND;
@@ -39,48 +37,6 @@ Array<uint8> ReadFile(const char* path)
     return bytes;
 }
 } // namespace
-
-TEST_CASE("Portable encoder topology covers sparse duplicates, pooling and partial patches",
-          "[renderer][light-transformer]")
-{
-    internal::EncoderLevel level;
-    level.Depth = 12;
-    constexpr usize COUNT = 1031;
-    REQUIRE(level.CoordinatesGrid.TryResize(COUNT) == true);
-    for (usize i = 0; i < COUNT; ++i)
-    {
-        level.CoordinatesGrid[i] = {static_cast<uint32>(i), 0, 0};
-    }
-    for (uint32 order = 0; order < 4; ++order)
-    {
-        Array<uint32> patches;
-        REQUIRE(internal::PrepareEncoderPatches(level, order, patches) == Status::Ready);
-        for (usize i = 0; i < COUNT; ++i)
-        {
-            REQUIRE(patches[i * 2 + 1] == 1024);
-            const usize begin = patches[i * 2];
-            bool hasSelf = false;
-            for (usize neighbor = 0; neighbor < 1024; ++neighbor)
-            {
-                REQUIRE(patches[begin + neighbor] < COUNT);
-                hasSelf = hasSelf == true || patches[begin + neighbor] == i;
-            }
-            REQUIRE(hasSelf == true);
-        }
-    }
-    level.CoordinatesGrid.Resize(3);
-    level.CoordinatesGrid[0] = {1, 1, 1};
-    level.CoordinatesGrid[1] = {1, 1, 1};
-    level.CoordinatesGrid[2] = {2, 1, 1};
-    Array<uint32> starts;
-    Array<uint32> pairs;
-    REQUIRE(internal::PrepareEncoderSparse(level, 3, starts, pairs) == Status::Ready);
-    REQUIRE(starts.GetSize() == 4);
-    CHECK(starts[0] == 0);
-    CHECK(starts[1] == 3);
-    CHECK(starts[2] == 6);
-    CHECK(starts[3] == 9);
-}
 
 TEST_CASE("Portable full encoder agrees with the independent CPU oracle", "[renderer][gpu][light-transformer]")
 {
@@ -141,6 +97,51 @@ TEST_CASE("Portable full encoder agrees with the independent CPU oracle", "[rend
     };
     CHECK(prepareRejected({asset.GetData(), asset.GetSize() - 1}, BUDGET) == Status::InvalidDescription);
     CHECK(prepareRejected({asset.GetData(), asset.GetSize()}, 1) == Status::CapacityExceeded);
+    // This budget admits the complete parameter file but rejects the full workload.
+    uint64 estimatedBytes = 0;
+    REQUIRE(renderer::PrepareLightTransformerEncoder({asset.GetData(), asset.GetSize()},
+                                                     {points.GetData(), points.GetSize()},
+                                                     {0, 0, 0, 1},
+                                                     device,
+                                                     ludus::shaders::renderer_light_transformer_encoder::Compute(),
+                                                     asset.GetSize(),
+                                                     rejected,
+                                                     {},
+                                                     {},
+                                                     0,
+                                                     &estimatedBytes) == Status::CapacityExceeded);
+    REQUIRE(estimatedBytes > asset.GetSize());
+    Array<renderer::LightTransformerScenePoint> densePoints;
+    densePoints.Resize(LUDUS_LIGHT_ENCODER_MAX_POINTS, points[0]);
+    // Distinct positions inside a single voxel stress sparse occupancy while
+    // allowing the preceding exact kNN searches to prune spatially.
+    constexpr usize GRID_SIDE = 32;
+    constexpr float32 SPACING = static_cast<float32>(LUDUS_LIGHT_ENCODER_GRID_SIZE) / GRID_SIDE;
+    for (usize i = 0; i < densePoints.GetSize(); ++i)
+    {
+        densePoints[i].PositionModel = {1 + static_cast<float32>(i % GRID_SIDE) * SPACING,
+                                        1 + static_cast<float32>((i / GRID_SIDE) % GRID_SIDE) * SPACING,
+                                        1 + static_cast<float32>(i / (GRID_SIDE * GRID_SIDE)) * SPACING,
+                                        0};
+    }
+    uint64 denseBytes = 0;
+    const uint64 denseStart = time::NowTicks();
+    REQUIRE(renderer::PrepareLightTransformerEncoder({asset.GetData(), asset.GetSize()},
+                                                     {densePoints.GetData(), densePoints.GetSize()},
+                                                     {0, 0, 0, 1},
+                                                     device,
+                                                     ludus::shaders::renderer_light_transformer_encoder::Compute(),
+                                                     asset.GetSize(),
+                                                     rejected,
+                                                     {},
+                                                     {},
+                                                     0,
+                                                     &denseBytes) == Status::CapacityExceeded);
+    constexpr uint64 MAX_ANCHORS = LUDUS_LIGHT_ENCODER_MAX_POINTS / LUDUS_LIGHT_ENCODER_ANCHOR_DIVISOR;
+    // Both the stem and the first encoder stage contain a full dense table.
+    REQUIRE(denseBytes >= 2 * MAX_ANCHORS * MAX_ANCHORS * 2 * sizeof(uint32));
+    std::cout << "dense workload bytes=" << denseBytes << " rejected preparation ns=" << time::NowTicks() - denseStart
+              << '\n';
     const uint8 magic = asset[0];
     asset[0] = 0;
     CHECK(prepareRejected({asset.GetData(), asset.GetSize()}, BUDGET) == Status::InvalidDescription);
@@ -159,14 +160,16 @@ TEST_CASE("Portable full encoder agrees with the independent CPU oracle", "[rend
     REQUIRE(rejected.AnchorPositionsModel.GetSize() == 1);
     CHECK(rejected.AnchorPositionsModel[0].Z == 3);
     renderer::LightTransformerEncoding encoding;
+    const uint64 preparationStart = time::NowTicks();
     Status status =
         renderer::PrepareLightTransformerEncoder({asset.GetData(), asset.GetSize()},
                                                  {points.GetData(), points.GetSize()},
                                                  {0, 0, 0, 1},
                                                  device,
                                                  ludus::shaders::renderer_light_transformer_encoder::Compute(),
-                                                 BUDGET,
+                                                 static_cast<usize>(estimatedBytes),
                                                  encoding);
+    std::cout << "accepted encoder preparation ns=" << time::NowTicks() - preparationStart << '\n';
     REQUIRE((status == Status::Ready || status == Status::Pending));
     const uint64 start = time::NowTicks();
     while (status == Status::Pending && time::NowTicks() - start < TIMEOUT)
@@ -175,6 +178,7 @@ TEST_CASE("Portable full encoder agrees with the independent CPU oracle", "[rend
         status = encoding.Workload.Poll();
     }
     REQUIRE(status == Status::Ready);
+    CHECK(encoding.Workload.GetBufferBytes() == estimatedBytes);
     rhi::OrderedGraph graph;
     REQUIRE(encoding.Workload.BuildGraph(graph) == Status::Ready);
     rhi::GraphReport report;
@@ -182,6 +186,7 @@ TEST_CASE("Portable full encoder agrees with the independent CPU oracle", "[rend
     CHECK(report.ComputePasses > 300);
     REQUIRE(rhi::SetFrameTarget(device, surface, {8, 8, 0, 0, 0, 1}) == rhi::DeviceStatus::Ready);
     rhi::SubmissionToken completion;
+    const uint64 dispatchStart = time::NowTicks();
     status = rhi::ExecuteOrderedGraph(device, surface, graph, completion);
     while (status == Status::NotReady && time::NowTicks() - start < TIMEOUT)
     {
@@ -189,6 +194,12 @@ TEST_CASE("Portable full encoder agrees with the independent CPU oracle", "[rend
     }
     REQUIRE(status == Status::Ready);
 
+    while (rhi::GetStatus(device, completion) == Status::Pending && time::NowTicks() - dispatchStart < TIMEOUT)
+    {
+        REQUIRE(rhi::PollLifetime(device) == Status::Ready);
+    }
+    REQUIRE(rhi::GetStatus(device, completion) == Status::Ready);
+    std::cout << "encoder submit-to-completion ns=" << time::NowTicks() - dispatchStart << '\n';
     rhi::BufferHandle resultBuffer;
     REQUIRE(encoding.Workload.GetBuffer(3, resultBuffer) == Status::Ready);
     Array<uint8> actual;

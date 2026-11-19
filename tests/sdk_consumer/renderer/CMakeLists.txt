@@ -5,6 +5,11 @@ set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_CXX_EXTENSIONS OFF)
 set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
 find_package(Ludus CONFIG REQUIRED COMPONENTS Resources GraphicsRenderer GraphicsText FoundationTime)
+if(APPLE OR CMAKE_SYSTEM_NAME STREQUAL "Linux")
+    enable_testing()
+    add_subdirectory(../light_transformer light-transformer)
+endif()
+
 add_executable(ludus_sdk_renderer_consumer ../renderer.cpp)
 target_link_libraries(ludus_sdk_renderer_consumer PRIVATE Ludus::Resources Ludus::GraphicsRenderer Ludus::FoundationTime)
 target_compile_options(ludus_sdk_renderer_consumer PRIVATE -Wall -Wextra -Wpedantic -Werror -fno-exceptions)
@@ -89,6 +94,10 @@ endif()
 # Build the real offline scene consumer through the same installed-SDK boundary.
 if(NOT EMSCRIPTEN AND LUDUS_SPIRV_CROSS)
     add_subdirectory("${CMAKE_CURRENT_SOURCE_DIR}/../../../examples/reference-scene" reference-scene)
+endif()
+
+if(APPLE AND NOT EMSCRIPTEN)
+    add_subdirectory(../mesh_shadow mesh-shadow)
 endif()
 
 # Installed authored/HDR declarations and recipe dependencies must compile together.
@@ -205,6 +214,39 @@ if(EMSCRIPTEN)
     configure_file(../render-graph-pooling.html render-graph-pooling.html COPYONLY)
 endif()
 
+# One saved viewport-relative document, cooked by the installed helper and carried inside the
+# standalone Metal consumer. The native World acceptance opens these same editable project inputs.
+if(APPLE AND NOT EMSCRIPTEN)
+    set(bilinear_project "${CMAKE_CURRENT_BINARY_DIR}/bilinear-project/graphs/Main")
+    set(bilinear_base "${CMAKE_CURRENT_SOURCE_DIR}/../rg2/offscreen")
+    foreach(file rasterize.lurender.json main_shaders/color.slang main_shaders/depth.slang main_shaders/geometry.slang)
+        configure_file("${bilinear_base}/${file}" "${bilinear_project}/${file}" COPYONLY)
+    endforeach()
+    # The Mac editor's compiled interface carries both target vertex layouts.
+    block()
+        set(RG2_TEST_PROFILES "[\"metal\", \"wgsl\"]")
+        configure_file("${bilinear_base}/main.lushader.json.in" "${bilinear_project}/main.lushader.json" @ONLY)
+    endblock()
+    configure_file(../rg2/authored_bilinear/main.lurender.json "${bilinear_project}/main.lurender.json" COPYONLY)
+    add_executable(ludus_sdk_authored_pooling ../authored_pooling.cpp)
+    target_link_libraries(ludus_sdk_authored_pooling PRIVATE Ludus::GraphicsRenderer Ludus::FoundationTime)
+    target_compile_options(ludus_sdk_authored_pooling PRIVATE -Wall -Wextra -Wpedantic -Werror -fno-exceptions)
+    ludus_compile_renderer_shaders(TARGET ludus_sdk_authored_pooling SHADERS renderer_composite)
+    ludus_compile_render_graph(TARGET ludus_sdk_authored_pooling NAME authored_bilinear
+        MANIFEST "${bilinear_project}/main.lushader.json" RUNTIME_PACKAGE)
+    add_custom_command(OUTPUT "${rg3_embedded}/authored_bilinear_bytes.h"
+        COMMAND "${CMAKE_COMMAND}" "-DINPUT=${authored_bilinear_RUNTIME_PACKAGE}"
+            "-DOUTPUT=${rg3_embedded}/authored_bilinear_bytes.h" -DNAME=AUTHORED_BILINEAR
+            -P "${CMAKE_CURRENT_SOURCE_DIR}/embed_bytes.cmake"
+        DEPENDS "${authored_bilinear_RUNTIME_PACKAGE}" "${CMAKE_CURRENT_SOURCE_DIR}/embed_bytes.cmake" VERBATIM)
+    target_sources(ludus_sdk_authored_pooling PRIVATE "${rg3_embedded}/authored_bilinear_bytes.h")
+    target_include_directories(ludus_sdk_authored_pooling PRIVATE "${rg3_embedded}")
+    set_target_properties(ludus_sdk_authored_pooling PROPERTIES INSTALL_RPATH "@executable_path/../lib")
+    ludus_install_denoiser_runtime(TARGET ludus_sdk_authored_pooling DESTINATION lib COMPONENT AuthoredPooling)
+    install(TARGETS ludus_sdk_authored_pooling RUNTIME DESTINATION bin COMPONENT AuthoredPooling)
+    add_test(NAME ludus_sdk_authored_pooling COMMAND ludus_sdk_authored_pooling)
+endif()
+
 # Managed bilinear pipelines: the consumer rewrites the cooked offscreen graph into a half-extent scene
 # pass and a BilinearUpscale pass, draws it without a program cache and then twice with one shared
 # cache, and requires one shared native upscale pipeline and byte-identical exports
@@ -277,6 +319,7 @@ if(NOT EMSCRIPTEN AND NOT WIN32)
     target_sources(ludus_sdk_hybrid_indirect_diffuse_consumer PRIVATE "${diffuse_embedded}")
     target_include_directories(ludus_sdk_hybrid_indirect_diffuse_consumer PRIVATE "${rg3_embedded}")
     enable_testing()
+    add_subdirectory(../patch_seam patch-seam)
     add_test(NAME ludus_sdk_hybrid_indirect_diffuse_consumer COMMAND ludus_sdk_hybrid_indirect_diffuse_consumer)
     set_tests_properties(ludus_sdk_hybrid_indirect_diffuse_consumer PROPERTIES SKIP_RETURN_CODE 77 TIMEOUT 210)
 endif()
@@ -319,4 +362,8 @@ if(NOT EMSCRIPTEN AND NOT WIN32)
             set_tests_properties(ludus_sdk_${name} PROPERTIES SKIP_RETURN_CODE 77)
         endif()
     endforeach()
+endif()
+
+if(NOT EMSCRIPTEN)
+    add_subdirectory(../environment environment)
 endif()

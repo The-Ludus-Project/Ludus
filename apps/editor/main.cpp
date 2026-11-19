@@ -10,6 +10,11 @@
 #include "internal/controller.h"
 #include "internal/editor_files.h"
 #include "internal/main_window.h"
+#include "internal/playable_world.h"
+
+#include <QCoreApplication>
+#include <QFileInfo>
+#include <QTextStream>
 #if defined(LUDUS_EDITOR_CRASH_CAPTURE)
 #    include "internal/crash_reporting.h"
 #endif
@@ -71,6 +76,38 @@ void ForwardQtMessage(QtMsgType type, const QMessageLogContext& /*context*/, con
 
 int main(int argc, char** argv)
 {
+    if (argc > 1 && std::string_view(argv[1]) == "--prepare-world")
+    {
+        QCoreApplication application(argc, argv);
+        const QStringList arguments = application.arguments();
+        constexpr qsizetype COMMAND_ARGUMENTS = 6;
+        constexpr qsizetype WORLD_ARGUMENT = 3;
+        constexpr qsizetype RENDERER_ARGUMENT = 4;
+        constexpr qsizetype DESTINATION_ARGUMENT = 5;
+        if (arguments.size() != COMMAND_ARGUMENTS)
+        {
+            QTextStream(stderr) << QStringLiteral(
+                "Usage: --prepare-world PROJECT_ROOT RELATIVE_WORLD raster OUTPUT.luplay\n");
+            return 2;
+        }
+        QString error;
+        QStringList warnings;
+        if (ludus::editor::PrepareSavedPlayableWorld(QFileInfo(arguments[2]).canonicalFilePath(),
+                                                     arguments[WORLD_ARGUMENT],
+                                                     arguments[RENDERER_ARGUMENT],
+                                                     arguments[DESTINATION_ARGUMENT],
+                                                     error,
+                                                     &warnings) == false)
+        {
+            QTextStream(stderr) << arguments[WORLD_ARGUMENT] << QStringLiteral(": ") << error << Qt::endl;
+            return 1;
+        }
+        for (const QString& warning : warnings)
+        {
+            QTextStream(stderr) << arguments[WORLD_ARGUMENT] << QStringLiteral(": ") << warning << Qt::endl;
+        }
+        return 0;
+    }
 #if defined(LUDUS_EDITOR_CRASH_CAPTURE)
     // Register before Cocoa/Qt platform initialization, including Finder/IDE launches.
     ludus::editor::InitializeEditorCrashReporting();

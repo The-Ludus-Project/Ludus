@@ -1,0 +1,13 @@
+cmake_minimum_required(VERSION 3.29)
+project(raster_baseline LANGUAGES CXX)
+
+find_package(Ludus CONFIG REQUIRED COMPONENTS GraphicsRenderer)
+find_package(Qt6 REQUIRED COMPONENTS Core Gui)
+add_executable(raster_capture capture.cpp)
+target_compile_features(raster_capture PRIVATE cxx_std_23)
+set_target_properties(raster_capture PROPERTIES CXX_EXTENSIONS OFF)
+target_compile_options(raster_capture PRIVATE -Wall -Wextra -Wpedantic -Werror -fno-exceptions)
+target_link_libraries(raster_capture PRIVATE Ludus::GraphicsRenderer Qt6::Core Qt6::Gui)
+ludus_compile_renderer_shaders(TARGET raster_capture SHADERS renderer_composite)
+install(TARGETS raster_capture RUNTIME DESTINATION .)
+ludus_install_denoiser_runtime(TARGET raster_capture DESTINATION .)

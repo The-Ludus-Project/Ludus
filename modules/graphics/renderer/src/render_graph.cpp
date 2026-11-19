@@ -3632,10 +3632,11 @@ Status RenderGraph::updateScene(BorrowedView<const RenderGraphMesh> meshes,
         return Status::InvalidDescription;
     }
     // A changed Atmosphere changes the ray scene's sky, Sun and haze, so the scene is prepared again.
-    const internal::DirectionalNearFootprint footprint =
+    internal::DirectionalNearFootprint footprint =
         state.Programs.HasDirectionalNearCascades == true && cameras.GetSize() == 1
             ? internal::GetDirectionalNearFootprint(cameras[0])
             : internal::DirectionalNearFootprint{};
+    footprint.CanReserveTiles = state.Programs.HasDirectionalNearCascades;
     const bool canReuse =
         state.Current.Get() != nullptr && state.Current->CoveragePolicy == policy &&
         (hasRevisions == true ? state.Current->Revisions == revisions
@@ -3857,7 +3858,20 @@ Status RenderGraph::updateScene(BorrowedView<const RenderGraphMesh> meshes,
         source.Inputs = sceneInputsOrNull != nullptr ? *sceneInputsOrNull : SceneShaderInputs{};
         source.HasMaterialInterface = sceneInputsOrNull != nullptr;
         source.SourceGeneration = sceneRevision;
-        const Status prepared = state.ForwardResources.Prepare(source, candidate->ForwardGeneration, footprint);
+        // The caller's separate domain identities permit an environment-only replacement to
+        // retain submitted visibility even as material bindings acquire the new sky.
+        const internal::ForwardSceneGeneration* matchingCastersOrNull = nullptr;
+        if (hasRevisions == true && state.Current.Get() != nullptr && state.Current->CoveragePolicy == policy)
+        {
+            RenderGraphSceneRevisions previous = state.Current->Revisions;
+            previous.Environment = revisions.Environment;
+            if (previous == revisions)
+            {
+                matchingCastersOrNull = state.Current->ForwardGeneration.Get();
+            }
+        }
+        const Status prepared =
+            state.ForwardResources.Prepare(source, candidate->ForwardGeneration, footprint, matchingCastersOrNull);
         if (IsAccepted(prepared) == false)
         {
             return prepared;
@@ -4326,6 +4340,43 @@ RenderGraphReport RenderGraph::GetReport() const noexcept
             report.Resources.SurfaceChartDraws = mState->Current->ForwardGeneration->GetSurfaceChartDrawCount();
             report.Resources.ProbeReceiverDraws = mState->Current->ForwardGeneration->GetProbeReceiverDrawCount();
         }
+    }
+    return report;
+}
+SkyVisibilityReport RenderGraph::GetSkyVisibilityReport() const noexcept
+{
+    SkyVisibilityReport report;
+    if (mState.Get() == nullptr || mState->Current.Get() == nullptr ||
+        mState->Current->ForwardGeneration.Get() == nullptr)
+    {
+        return report;
+    }
+    const internal::DeferredShadowAtlas* atlasOrNull = mState->Current->ForwardGeneration->GetShadowAtlasOrNull();
+    if (atlasOrNull == nullptr || atlasOrNull->SkyCount == 0)
+    {
+        return report;
+    }
+    const uint32 drawn = atlasOrNull->Submitted.DrawnDirectional;
+    const uint32 lightMaps = atlasOrNull->DirectionalCount + atlasOrNull->NearCount;
+    const uint32 skyMaps = drawn - math::Min(drawn, lightMaps);
+    report.WholeWorldMaps = math::Min(skyMaps, atlasOrNull->SkyCount);
+    report.LocalMaps = skyMaps - report.WholeWorldMaps;
+    if (report.WholeWorldMaps != 0)
+    {
+        report.FinestSubmittedLevel =
+            report.LocalMaps != 0 ? SkyVisibilityLevel::Local : SkyVisibilityLevel::WholeWorld;
+    }
+    report.Revision = atlasOrNull->SkyRevision;
+    report.AnchorWorld = atlasOrNull->SkyAnchorWorld;
+    report.HasBudgetFallback = atlasOrNull->HasLocalSkyBudgetFallback;
+    const ShadowRegion& coarse = atlasOrNull->Directional[lightMaps];
+    const math::Vector4 row = math::Transpose(coarse.WorldToClip).Columns[0];
+    report.CoarseMetresPerTexel =
+        2 / (math::Length(math::Vector3{row.X, row.Y, row.Z}) * static_cast<float32>(coarse.Interior.Width));
+    if (atlasOrNull->LocalSkyCount != 0)
+    {
+        report.LocalMetresPerTexel =
+            2 * static_cast<float32>(SKY_VISIBILITY_LOCAL_RADIUS_METRES) / static_cast<float32>(coarse.Interior.Width);
     }
     return report;
 }

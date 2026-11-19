@@ -99,6 +99,13 @@ inline constexpr BundleLimits IMPORT_LIMITS
     .BundleBytes = MAX_IMPORT_BUNDLE_BYTES,
 };
 
+/// Maximum number of source scene imports placed by one level.
+inline constexpr usize MAX_LEVEL_IMPORTS = 128;
+/// Maximum cooked closure: all admitted mesh, material and texture parts, one scene manifest
+/// and lighting part per import, plus the level.
+inline constexpr usize MAX_CLOSURE_RESOURCES =
+    usize{IMPORT_LIMITS.Meshes} + IMPORT_LIMITS.Materials + IMPORT_LIMITS.Textures + 2 * MAX_LEVEL_IMPORTS + 1;
+
 /// Largest assembled import-profile World bundle, including all placed imports.
 inline constexpr usize MAX_ASSEMBLED_BUNDLE_BYTES = usize{576} * 1024 * 1024;
 /// Largest combined RGBA8 texture payload in an assembled import-profile World.

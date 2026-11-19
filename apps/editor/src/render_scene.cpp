@@ -1918,6 +1918,7 @@ bool ComposeWorldScene(const RenderScene& authored,
                        const QByteArray& cooked,
                        const QJsonObject& level,
                        const RenderScene* loadedOrNull,
+                       QByteArray* encodedOrNull,
                        RenderScene& outScene,
                        QString& outError,
                        const QJsonObject& revisions)
@@ -1941,8 +1942,16 @@ bool ComposeWorldScene(const RenderScene& authored,
                 return false;
             }
             AdoptAuthoredScene(authored, candidate);
+            if (encodedOrNull != nullptr)
+            {
+                *encodedOrNull = cooked;
+            }
             output = foundation::Move(candidate);
             return true;
+        }
+        if (encodedOrNull != nullptr)
+        {
+            encodedOrNull->clear();
         }
         output = {};
         error.clear();
@@ -2177,6 +2186,10 @@ bool ComposeWorldScene(const RenderScene& authored,
         return false;
     }
     AdoptAuthoredScene(authored, candidate);
+    if (encodedOrNull != nullptr)
+    {
+        *encodedOrNull = foundation::Move(bytes);
+    }
     output = foundation::Move(candidate);
     return true;
 }
@@ -2186,9 +2199,10 @@ bool RenderScene::Merge(const RenderScene& authored,
                         const QJsonObject& level,
                         RenderScene& outScene,
                         QString& outError,
-                        const QJsonObject& revisions)
+                        const QJsonObject& revisions,
+                        QByteArray* encodedOrNull)
 {
-    return ComposeWorldScene(authored, cooked, level, nullptr, outScene, outError, revisions);
+    return ComposeWorldScene(authored, cooked, level, nullptr, encodedOrNull, outScene, outError, revisions);
 }
 bool RenderScene::MergeLoaded(const RenderScene& authored,
                               const QByteArray& cooked,
@@ -2198,7 +2212,7 @@ bool RenderScene::MergeLoaded(const RenderScene& authored,
                               QString& outError,
                               const QJsonObject& revisions)
 {
-    return ComposeWorldScene(authored, cooked, level, &loaded, outScene, outError, revisions);
+    return ComposeWorldScene(authored, cooked, level, &loaded, nullptr, outScene, outError, revisions);
 }
 uint64 ComputeEntitySourceId(const QString& entityKey)
 {

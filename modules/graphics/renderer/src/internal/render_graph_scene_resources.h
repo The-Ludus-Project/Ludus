@@ -2,16 +2,19 @@
 
 #include <ludus/foundation/base/pointer.hpp>
 #include <ludus/foundation/containers/borrowed_view.hpp>
+#include <ludus/foundation/memory/shared_ptr.hpp>
 #include <ludus/graphics/renderer/render_graph.hpp>
 
 #include "directional_near_cascade.h"
 
 namespace ludus::graphics::renderer::internal
 {
+struct ShadowTexture;
 struct PreparedShadowResources final
 {
     rhi::DeviceHandle Device{};
     DeferredShadowAtlas Atlas;
+    foundation::SharedPtr<ShadowTexture> Backing;
     rhi::RasterBindingResource LightWords{};
     foundation::uint32 NearTableWord = 0;
     ~PreparedShadowResources() noexcept;
@@ -85,7 +88,8 @@ public:
     /// Consume every input before returning. Failure preserves a null generation.
     [[nodiscard]] rhi::RasterStatus Prepare(const RenderGraphSceneDescription& scene,
                                             foundation::core::UniquePtr<ForwardSceneGeneration>& outGeneration,
-                                            const DirectionalNearFootprint& footprint = {}) noexcept;
+                                            const DirectionalNearFootprint& footprint = {},
+                                            const ForwardSceneGeneration* matchingCastersOrNull = nullptr) noexcept;
     void Reset() noexcept;
     [[nodiscard]] RenderGraphSceneResourceReport GetReport() const noexcept;
 

@@ -1298,5 +1298,54 @@ class ShaderBootstrapCacheTests(unittest.TestCase):
             self.assertFalse(check(binary.parent.parent, pin, "clang version 18.1.8"))
 
 
+
+class BatchWorkflowDefinitionTests(unittest.TestCase):
+    """Batches run main's workflow definitions against the develop candidate's sources.
+
+    A page or test that only the workflow names stays missing in every batch until
+    promotion, and the batch cannot promote while it fails: R14c added r14c.html
+    to the candidate's raster test and to develop's upload list, so every batch
+    failed on main's list. The candidate owns its consumer pages and test lists.
+    """
+
+    ROOT = Path(__file__).resolve().parents[2]
+
+    def test_web_sdk_consumer_uploads_use_patterns_not_page_lists(self):
+        workflow = (self.ROOT / ".github/workflows/webgpu-probe.yml").read_text()
+        paths = re.findall(r"(?m)^            (out/build/[a-z0-9-]+-web-sdk/\S+)$", workflow)
+        self.assertTrue(paths)
+        for path in paths:
+            with self.subTest(path=path):
+                self.assertRegex(path, r"/\*\.(?:html|js|wasm)$")
+
+    def test_candidate_names_every_sdk_consumer_browser_test_once(self):
+        suites = json.loads((self.ROOT / "tests/sdk_consumer/browser-suites.json").read_text())
+        listed = [test["script"] for tests in suites.values() for test in tests]
+        self.assertEqual(len(listed), len(set(listed)))
+        results = [test["results"] for tests in suites.values() for test in tests]
+        self.assertEqual(len(results), len(set(results)))
+        workflows = "".join(path.read_text() for path in (self.ROOT / ".github/workflows").glob("*.yml"))
+        for script in sorted((self.ROOT / "tests/sdk_consumer").glob("*-browser-test.mjs")):
+            with self.subTest(script=script.name):
+                # A workflow-named test changes only with main's definitions.
+                self.assertNotIn(f"tests/sdk_consumer/{script.name} out/build/", workflows)
+                if f"tests/sdk_consumer/{script.name}" not in workflows:
+                    self.assertIn(script.name, listed)
+        for script in listed:
+            self.assertTrue((self.ROOT / "tests/sdk_consumer" / script).is_file(), script)
+            self.assertNotIn(f"tests/sdk_consumer/{script}", workflows)
+
+    def test_renderer_matrix_runs_each_candidate_renderer_suite(self):
+        suites = json.loads((self.ROOT / "tests/sdk_consumer/browser-suites.json").read_text())
+        workflow = (self.ROOT / ".github/workflows/webgpu-probe.yml").read_text()
+        job = workflow.split("\n  renderer-browser:\n", 1)[1].split("\n\n  ", 1)[0]
+        matrix = re.search(r"(?m)^        suite: \[([^\]]*)\]$", job)
+        self.assertIsNotNone(matrix)
+        renderer = sorted(f"renderer-{name.strip()}" for name in matrix.group(1).split(","))
+        self.assertEqual(renderer, sorted(name for name in suites if name.startswith("renderer-")))
+        self.assertIn('run-browser-suite.mjs "renderer-${{ matrix.suite }}"', job)
+        self.assertIn("run-browser-suite.mjs raster out/raster-web-sdk-consumer", workflow)
+
+
 if __name__ == "__main__":
     unittest.main()

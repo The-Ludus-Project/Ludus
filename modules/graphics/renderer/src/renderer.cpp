@@ -4913,21 +4913,22 @@ Status Renderer::createLitMaterial(MaterialProgram program,
                                    const LitMaterialDescription& description,
                                    MaterialVersion& outMaterial,
                                    LightSelection& outSelection,
-                                   const internal::DeferredShadowAtlas* graphAtlasOrNull) noexcept
+                                   const internal::DeferredShadowAtlas* deferredAtlasOrNull) noexcept
 {
     if (mState.Get() == nullptr || mState->LightingSetup != Status::Ready)
     {
         return Status::NotReady;
     }
-    const usize directionalShadowCount = graphAtlasOrNull != nullptr ? graphAtlasOrNull->DirectionalCount : 0;
-    const usize nearShadowCount = graphAtlasOrNull != nullptr ? graphAtlasOrNull->NearCount : 0;
-    const usize skyVisibilityCount = graphAtlasOrNull != nullptr ? graphAtlasOrNull->SkyCount : 0;
+    const usize directionalShadowCount = deferredAtlasOrNull != nullptr ? deferredAtlasOrNull->DirectionalCount : 0;
+    const usize nearShadowCount = deferredAtlasOrNull != nullptr ? deferredAtlasOrNull->NearCount : 0;
+    const usize skyVisibilityCount = deferredAtlasOrNull != nullptr ? deferredAtlasOrNull->SkyCount : 0;
     const usize lightRegionCount = directionalShadowCount + nearShadowCount;
     const usize leadingShadowCount = directionalShadowCount + skyVisibilityCount;
     if (directionalShadowCount > SHADOW_REGION_CAPACITY ||
         lightRegionCount + skyVisibilityCount > SHADOW_REGION_CAPACITY ||
         (skyVisibilityCount != 0 && skyVisibilityCount != SKY_VISIBILITY_DIRECTION_COUNT) ||
-        (graphAtlasOrNull != nullptr && leadingShadowCount != 0 && graphAtlasOrNull->ExtentTexels == 0))
+        (deferredAtlasOrNull != nullptr && leadingShadowCount != 0 &&
+         (deferredAtlasOrNull->WidthTexels == 0 || deferredAtlasOrNull->HeightTexels == 0)))
     {
         return Status::InvalidDescription;
     }
@@ -5352,13 +5353,31 @@ Status Renderer::createLitMaterial(MaterialProgram program,
                              static_cast<float32>(atlas->Height));
         }
     }
-    else if (graphAtlasOrNull != nullptr)
+    else if (deferredAtlasOrNull != nullptr)
     {
-        const float32 extent = static_cast<float32>(graphAtlasOrNull->ExtentTexels);
+        const float32 width = static_cast<float32>(deferredAtlasOrNull->WidthTexels);
+        const float32 height = static_cast<float32>(deferredAtlasOrNull->HeightTexels);
         for (usize i = 0; i < leadingShadowCount; ++i)
         {
             const usize sourceIndex = i < directionalShadowCount ? i : i + nearShadowCount;
-            packShadowRegion(i, graphAtlasOrNull->Directional[sourceIndex], extent, extent);
+            packShadowRegion(i, deferredAtlasOrNull->Directional[sourceIndex], width, height);
+        }
+        if (deferredAtlasOrNull->LocalSkyCount != 0)
+        {
+            // Sky projections are orthographic. Their unused homogeneous rows carry the local
+            // sphere and the signed UV translation between corresponding atlas squares.
+            constexpr usize HOMOGENEOUS_ROW = 3;
+            const usize row = directionalShadowCount * SHADOW_REGION_WORDS + HOMOGENEOUS_ROW;
+            const math::Vector3 centerWorld = deferredAtlasOrNull->SkyAnchorWorld;
+            parameters.ShadowData[row] = {centerWorld.X, centerWorld.Y, centerWorld.Z, -1};
+            const rhi::RasterRectangle coarse = deferredAtlasOrNull->Directional[lightRegionCount].Interior;
+            const rhi::RasterRectangle local =
+                deferredAtlasOrNull->Directional[leadingShadowCount + nearShadowCount].Interior;
+            parameters.ShadowData[row + SHADOW_REGION_WORDS] = {
+                (static_cast<float32>(local.X) - static_cast<float32>(coarse.X)) / width,
+                (static_cast<float32>(local.Y) - static_cast<float32>(coarse.Y)) / height,
+                0,
+                0};
         }
     }
     uint8* legacy = s.LitScratch->Legacy.GetData();
@@ -5798,7 +5817,8 @@ Status Renderer::prepareDeferredShadows(Snapshot snapshot,
             outDraw = draw;
             return Status::Ready;
         };
-        for (uint32 index = 0; index < inoutAtlas.DirectionalCount + inoutAtlas.NearCount + inoutAtlas.SkyCount;
+        for (uint32 index = 0; index < inoutAtlas.DirectionalCount + inoutAtlas.NearCount + inoutAtlas.SkyCount +
+                                           inoutAtlas.LocalSkyCount;
              ++index)
         {
             const ShadowRegion& directional = inoutAtlas.Directional[index];
@@ -5889,7 +5909,8 @@ Status Renderer::drawDeferredShadows(PreparedView frameView, internal::DeferredS
         }
         inoutAtlas.Recording.IsCleared = true;
     }
-    const uint32 leadingCount = inoutAtlas.DirectionalCount + inoutAtlas.NearCount + inoutAtlas.SkyCount;
+    const uint32 leadingCount =
+        inoutAtlas.DirectionalCount + inoutAtlas.NearCount + inoutAtlas.SkyCount + inoutAtlas.LocalSkyCount;
     const bool shouldDrawDirectional = inoutAtlas.Recording.DrawnDirectional < leadingCount;
     if (shouldDrawDirectional == false && inoutAtlas.Recording.NextFace >= inoutAtlas.Faces.GetSize())
     {
