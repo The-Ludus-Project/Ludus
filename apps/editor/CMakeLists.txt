@@ -866,6 +866,7 @@ ludus_editor_add_objects(ludus_editor_application
     src/internal/world_earth_location.h src/world_earth_location.cpp
     src/internal/world_earth_time_field.h src/world_earth_time_field.cpp
     src/internal/world_earth_time_zone.h src/world_earth_time_zone.cpp
+    src/playable_world.cpp
     src/world_document.cpp
     src/world_probe_volume.cpp
     src/world_terrain.cpp
@@ -1309,6 +1310,7 @@ if(LUDUS_BUILD_TESTS AND NOT EMSCRIPTEN)
         tests/profiling_tests.cpp
         tests/viewport_trace_tests.cpp
         tests/import_report_tests.cpp
+        tests/playable_world_tests.cpp
         tests/world_workspace_tests.cpp
         tests/world_terrain_tests.cpp
         tests/world_aperture_tests.cpp
@@ -1439,7 +1441,7 @@ if(LUDUS_BUILD_TESTS AND NOT EMSCRIPTEN)
     endif()
     target_link_libraries(ludus_editor_tests PRIVATE Ludus::SceneCook Ludus::FoundationThreading ludus_stb_image)
     # The tests also replay committed migration manifests to produce version-2 World fixtures.
-    target_link_libraries(ludus_editor_tests PRIVATE Ludus::ContentIdentity)
+    target_link_libraries(ludus_editor_tests PRIVATE Ludus::ContentIdentity ludus_playable_snapshot)
     if(LUDUS_EDITOR_RENDER_PREVIEW AND NOT APPLE)
         target_link_libraries(ludus_editor_tests PRIVATE Ludus::FoundationTime)
     endif()

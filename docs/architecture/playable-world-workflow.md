@@ -198,6 +198,44 @@ See [GUI systems](editor-gui-systems.md#play-in-the-editor-viewport),
 [celestial sampling](game-world.md#earth-celestial-transforms), and
 [package verification](game-packaging-publishing.md#package-identity-and-verification).
 
+## Prepare a first-person World snapshot
+
+The native Editor can prepare a saved built-in World without opening a window or creating
+a GPU device. From the directory containing the Editor executable, run the following command.
+Use a trusted local project and an existing output directory.
+
+```sh
+./ludus_editor --prepare-world /path/to/project assets/sponza.world.json raster /path/to/output/walk.luplay
+```
+
+The World needs a First Person Player with a Transform. Each player entity contributes a
+spawn. Static Collider opts a visible mesh instance into collision. Preparation resolves
+the applied scene placement, authored lights and Atmosphere through the same extraction
+as the viewport. An invalid Atmosphere link or unresolved material blocks publication.
+The runtime profile selects engine Raster. The command prints component limitations and
+import approximations and records them under `warnings` in the manifest. A project-owned game schema requires its own adapter.
+
+The authoring entry point `PreparePlayableWorld` also accepts a frozen copy of an applied
+`WorldDocument`, including unsaved edits. SceneCook resolves the selected catalog revision,
+checks the cooked dependency closure and verifies the recorded local source inputs before
+publication. Restore or reimport an input if it moved or changed. Preparation consumes
+existing artifacts. A failed or cancelled candidate leaves the previous output usable.
+
+A version-1 `.luplay` file starts with a compact UTF-8 JSON manifest terminated by LF.
+The remaining bytes are the composed LUSCN payload, identified by `sceneSha256`.
+The manifest carries the applied World's digest, stable entity keys, spawn eye positions
+in metres, orientation quaternions (x, y, z, w), speeds in metres per second, light and
+Atmosphere inputs, and the logical asset IDs with their exact artifact keys. World identity
+uses the v2 document UUID, the v1 imported level UUID, or the project-relative path for a
+v1 World without a level. Object bindings follow the decoded LUSCN object order.
+`DecodePlayableSnapshot` reads the file in memory without Qt, an asset catalog, or raw sources.
+It replaces a previous runtime snapshot only after validating the new candidate.
+
+The redistributable acceptance fixture uses SceneCook's CC0 `gltf/maps` source. It checks a
+moved instance, mapped material textures, lighting, spawn identity and collider membership
+through the runtime decoder. The installed-SDK game and relocated Release qualification
+use the separate [cooked glTF acceptance issue](https://github.com/The-Ludus-Project/Ludus/issues/1399).
+
 ## Delivery and acceptance
 
 | Slice | Independent result and evidence |

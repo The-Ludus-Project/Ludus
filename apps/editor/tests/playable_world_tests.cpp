@@ -1,0 +1,184 @@
+#include "internal/builtin_world.h"
+#include "internal/playable_world.h"
+#include "internal/render_scene.h"
+#include "internal/world_document.h"
+#include "playable_snapshot.h"
+#include "scene_fixture.h"
+
+#include <QDir>
+#include <QFile>
+#include <QJsonDocument>
+#include <QTemporaryDir>
+
+#include <catch2/catch_test_macros.hpp>
+
+namespace ludus::editor::tests
+{
+namespace
+{
+using namespace Qt::StringLiterals;
+QByteArray ReadBytes(const QString& path)
+{
+    QFile file(path);
+    REQUIRE(file.open(QIODevice::ReadOnly) == true);
+    return file.readAll();
+}
+bool Decode(const QByteArray& bytes, first_person::PlayableSnapshot& outSnapshot)
+{
+    return first_person::DecodePlayableSnapshot(
+        {reinterpret_cast<const foundation::uint8*>(bytes.constData()), static_cast<foundation::usize>(bytes.size())},
+        outSnapshot);
+}
+} // namespace
+TEST_CASE("Playable World freezes an applied glTF placement and admits only a complete replacement",
+          "[world][playable-world]")
+{
+    QTemporaryDir temporary;
+    REQUIRE(temporary.isValid() == true);
+    const QString root = temporary.filePath("project"_L1);
+    const QString source = temporary.filePath("source"_L1);
+    const QString relative = QStringLiteral("room.world.json");
+    const QString output = temporary.filePath("room.luplay"_L1);
+    QString error;
+    WorldDocument world;
+    const auto prepare = [&] {
+        const bool isPrepared =
+            PreparePlayableWorld(root, relative, world, QStringLiteral("raster"), output, nullptr, error);
+        if (isPrepared == false)
+        {
+            WARN(error.toStdString());
+        }
+        return isPrepared;
+    };
+    REQUIRE(CopyTree(QStringLiteral(LUDUS_EDITOR_PROJECT_ROOT "/modules/content/scene_cook/tests/fixtures/gltf/maps"),
+                     source) == true);
+    REQUIRE(PrepareImportedLevel(root, QStringLiteral("scenes/import.lulevel"), source, error, "scene.gltf") == true);
+    const QJsonObject level =
+        QJsonDocument::fromJson(ReadBytes(QDir(root).filePath("scenes/import.lulevel"_L1))).object();
+    const QString objectId = level.value("objects"_L1).toArray().first().toObject().value("id"_L1).toString();
+    QByteArray schema;
+    REQUIRE(ReadBuiltInWorldAsset(QStringLiteral("world.schema.json"), schema, error) == true);
+    REQUIRE(world.LoadSchema(schema, error) == true);
+    REQUIRE(world.New(error) == true);
+    REQUIRE(world.ImportScene(level, error) == true);
+    REQUIRE(world.Attach(objectId, error, GetStaticColliderComponentId()) == true);
+    const QJsonObject entity = world.Entity(objectId);
+    QJsonObject placement = world.ScenePlacement(entity);
+    placement.insert("position"_L1, QJsonArray{2, 0, 1});
+    REQUIRE(world.Edit(objectId,
+                       entity.value("components"_L1).toObject(),
+                       entity.value("name"_L1).toString(),
+                       error,
+                       &placement) == true);
+    const foundation::identity::EntropySource entropy = platform::GetSystemEntropySource();
+    QString spawn;
+    QString sun;
+    QString sky;
+    REQUIRE(CreateWorldObject(world, entropy, QStringLiteral("First Person Player"), spawn, error) == true);
+    REQUIRE(CreateWorldObject(world, entropy, QStringLiteral("Directional Light"), sun, error) == true);
+    REQUIRE(CreateWorldObject(world, entropy, QStringLiteral("Atmosphere"), sky, error) == true);
+    const QJsonObject skyEntity = world.Entity(sky);
+    QJsonObject components = skyEntity.value("components"_L1).toObject();
+    QJsonObject atmosphere = components.value("atmosphere"_L1).toObject();
+    atmosphere.insert("sun"_L1, sun);
+    components.insert("atmosphere"_L1, atmosphere);
+    REQUIRE(world.Edit(sky, components, skyEntity.value("name"_L1).toString(), error) == true);
+    const QByteArray catalog = ReadBytes(QDir(root).filePath("assets/catalog.json"_L1));
+    REQUIRE(prepare() == true);
+    const QByteArray acceptedBytes = ReadBytes(output);
+    first_person::PlayableSnapshot accepted;
+    REQUIRE(Decode(acceptedBytes, accepted) == true);
+    REQUIRE(accepted.Spawns.GetSize() == 1);
+    const QByteArray spawnKey = spawn.toUtf8();
+    CHECK(accepted.Spawns[0].Entity == std::string_view(spawnKey.constData()));
+    CHECK(accepted.Spawns[0].Speed > 0);
+    REQUIRE(accepted.ColliderObjects.GetSize() == 1);
+    const resources::SceneObject& object = accepted.Scene.Objects[accepted.ColliderObjects[0]];
+    CHECK(object.Transform.Translation == foundation::math::Vector3{2, 0, 1});
+    REQUIRE(accepted.Scene.Lights.GetSize() >= 1);
+    const resources::SceneMaterial& material = accepted.Scene.Materials[object.Material];
+    CHECK(material.SurfaceTexture < accepted.Scene.Textures.GetSize());
+    CHECK(material.EmissionTexture < accepted.Scene.Textures.GetSize());
+    CHECK(accepted.Atmosphere.IsEnabled == true);
+    CHECK(accepted.Atmosphere.SunSourceId == ComputeEntitySourceId(sun));
+    REQUIRE(prepare() == true);
+    CHECK(ReadBytes(output) == acceptedBytes);
+    CHECK(ReadBytes(QDir(root).filePath("assets/catalog.json"_L1)) == catalog);
+    SECTION("failed runtime decode preserves the accepted generation")
+    {
+        REQUIRE(Decode(acceptedBytes.chopped(1), accepted) == false);
+        CHECK(accepted.Spawns[0].Entity == std::string_view(spawnKey.constData()));
+        QJsonObject header = QJsonDocument::fromJson(acceptedBytes.first(acceptedBytes.indexOf('\n'))).object();
+        QJsonArray objects = header.value("objects"_L1).toArray();
+        QJsonObject binding = objects.first().toObject();
+        binding.insert("entity"_L1, QStringLiteral("missing-entity"));
+        objects[0] = binding;
+        header.insert("objects"_L1, objects);
+        REQUIRE(Decode(QJsonDocument(header).toJson(QJsonDocument::Compact) +
+                           acceptedBytes.sliced(acceptedBytes.indexOf('\n')),
+                       accepted) == false);
+        REQUIRE(Decode(QByteArrayLiteral("{\"version\":2}\n"), accepted) == false);
+    }
+    SECTION("late cancellation preserves the accepted file")
+    {
+        struct Polls final
+        {
+            foundation::usize Count = 0;
+            foundation::usize CancelAt = 0;
+        } polls;
+        const content::scene_cook::Cancellation cancellation
+        {
+            .Requested =
+                [](void* context) noexcept {
+                    Polls& progress = *static_cast<Polls*>(context);
+                    ++progress.Count;
+                    return progress.Count == progress.CancelAt;
+                },
+            .ContextOrNull = &polls,
+        };
+        REQUIRE(PreparePlayableWorld(root, relative, world, QStringLiteral("raster"), output, &cancellation, error) ==
+                true);
+        polls.CancelAt = polls.Count;
+        polls.Count = 0;
+        REQUIRE(PreparePlayableWorld(root, relative, world, QStringLiteral("raster"), output, &cancellation, error) ==
+                false);
+        CHECK(error.contains("cancelled"_L1) == true);
+    }
+    SECTION("stale raw input names the repair and preserves the accepted file")
+    {
+        QFile file(QDir(source).filePath("scene.gltf"_L1));
+        REQUIRE(file.open(QIODevice::Append) == true);
+        REQUIRE(file.write(" ") == 1);
+        file.close();
+        REQUIRE(PreparePlayableWorld(root, relative, world, QStringLiteral("raster"), output, nullptr, error) == false);
+        CHECK(error.contains("scene.gltf"_L1) == true);
+    }
+    SECTION("deleted imported input retains the accepted file")
+    {
+        REQUIRE(QFile::remove(QDir(source).filePath("scene.gltf"_L1)) == true);
+        REQUIRE(PreparePlayableWorld(root, relative, world, QStringLiteral("raster"), output, nullptr, error) == false);
+        CHECK(error.contains("scene.gltf"_L1) == true);
+    }
+    SECTION("missing cooked dependency retains the accepted file")
+    {
+        const QJsonObject records = QJsonDocument::fromJson(catalog).object().value("resources"_L1).toObject();
+        const QString mesh = level.value("objects"_L1).toArray().first().toObject().value("mesh"_L1).toString();
+        REQUIRE(QFile::remove(QDir(root).filePath(records.value(mesh).toObject().value("path"_L1).toString())) == true);
+        REQUIRE(PreparePlayableWorld(root, relative, world, QStringLiteral("raster"), output, nullptr, error) == false);
+    }
+    SECTION("unassigned Sun identifies the Atmosphere and preserves the accepted file")
+    {
+        atmosphere.insert("sun"_L1, QString{});
+        components.insert("atmosphere"_L1, atmosphere);
+        REQUIRE(world.Edit(sky, components, skyEntity.value("name"_L1).toString(), error) == true);
+        REQUIRE(PreparePlayableWorld(root, relative, world, QStringLiteral("raster"), output, nullptr, error) == false);
+        CHECK(error.contains(sky) == true);
+    }
+    SECTION("unsupported renderer keeps the accepted file")
+    {
+        REQUIRE(PreparePlayableWorld(root, relative, world, QStringLiteral("reference"), output, nullptr, error) ==
+                false);
+    }
+    CHECK(ReadBytes(output) == acceptedBytes);
+}
+} // namespace ludus::editor::tests
