@@ -1,10 +1,13 @@
 # Sequencer, cinematics and controlled image sequences
 
-Status: design recorded November 2, 2026, against `ec0cd669`. The first SQ0
-runtime foundation is implemented under [runtime sampling](#runtime-sampling).
-Source/cooked sequence assets, durable binding resolution, the editor timeline,
-shot selection and the sequence capture runner remain proposed. Existing camera,
-geometry and capture facilities are identified under [integration](#integration-and-ownership).
+Status: design recorded November 2, 2026, against `ec0cd669`. SQ0 is
+implemented: the runtime sampler under [runtime sampling](#runtime-sampling),
+and source/cooked sequence assets, durable binding resolution and camera
+selection under [sequence assets and binding resolution](#sequence-assets-and-binding-resolution).
+The editor timeline, the scene adapter that builds a binding catalog from a
+World, parent composition and the sequence capture runner remain proposed.
+Existing camera, geometry and capture facilities are identified under
+[integration](#integration-and-ownership).
 
 The first deliverable is a repeatable camera traversal through an authored
 World, exported as numbered rendered images. Authors can also animate scene
@@ -117,6 +120,190 @@ The installed-SDK consumer also prepares and samples a camera through exported
 headers and the `GameplaySequencer` component. Renderer traversal, image export,
 parent composition, browser execution and UI acceptance are not established by
 these runtime tests.
+
+## Sequence assets and binding resolution
+
+SQ0 adds three pieces over the sampler. Each validates with the same
+GameplaySequencer rules, so a source document, a cooked asset and an in-memory
+definition cannot disagree about what is valid.
+
+| Piece | Owner | Contract |
+| --- | --- | --- |
+| Durable definition and resolution | `Ludus::GameplaySequencer`, `binding.hpp` | Borrowed `SequenceDefinition`, `TryValidateSequenceDefinition`, `TryPrepareSequencePlan` against a `SequenceSceneCatalog`, `TryEvaluateSequenceCameraSelection` |
+| Cooked layout | `Ludus::SequenceFormat` (`modules/content/sequence_format`) | Header-only LUSEQ v1 tags, field offsets, record widths and admission limits |
+| Source document and codecs | `Ludus::SequenceContent` (`modules/content/sequence_content`) | `.luseq.json` reader and canonical writer, deterministic cooker and validating decoder |
+
+### Definitions and validation
+
+A `SequenceDefinition` holds the World reference, timebase, playback range
+`[PlaybackStartTick, PlaybackEndTick)`, durable bindings, channel tracks and the
+camera selection. Bindings have a nonzero sequence-local `BindingId` and one of
+the [binding kinds](#assets-and-bindings). Each track has a nonzero `TrackId`,
+writes one `SequenceChannel` of one binding and may be disabled. Identities
+survive rename and reordering; labels are authoring data only.
+
+`TryValidateSequenceDefinition` needs no scene. It rejects:
+
+- duplicate binding or track identities, unknown kinds or channels, and fields
+  set for another binding kind;
+- a World-object binding without a World document, or a legacy binding without
+  a pinned World content digest;
+- an object channel on a camera binding, or the reverse;
+- a track without keys, or keys in a view that does not match its channel;
+- two enabled tracks writing one binding channel (`ConflictingWriter`, naming
+  both tracks; row order does not change the answer);
+- camera selection intervals that leave a gap, overlap, miss the playback range
+  or name a non-camera; selection is required exactly when a camera binding exists;
+- keys the sampler rejects. Each track is checked on its own, so the diagnostic
+  names the track that holds a duplicate time or a nonunit rotation.
+
+A new or fully disabled sequence is valid content, but it has nothing to prepare.
+
+### Resolution against one scene revision
+
+The scene adapter, not GameplaySequencer, reads the World. It describes the
+objects available in one scene revision as a `SequenceSceneCatalog`. Each
+`SequenceSceneTarget` carries its source-object UUID and subobject key, its
+version-1 legacy key or both, whether it accepts transform and visibility
+overrides, its frozen parent-local base values and its parent index.
+
+`TryPrepareSequencePlan` validates the definition and then:
+
+1. Rejects a different World document or pinned digest (`WorldMismatch`).
+2. Resolves each active binding: those written by an enabled track, plus cameras
+   named by the selection. An inactive binding with no target is not an error.
+3. Requires exactly one matching target (`MissingBinding`, `AmbiguousTarget`)
+   that accepts every enabled channel (`UnsupportedChannel`), with a valid base
+   transform and a parent chain that reaches a root (`ParentCycle`).
+4. Rejects two bindings that resolve to one target, such as a UUID and a legacy
+   key for the same entity (`DuplicateBinding`).
+5. Prepares a `PreparedSequence` whose object groups use the catalog's base
+   values, and publishes it with the active binding table and camera selection.
+
+Every failure fills a `SequenceDiagnostic` with the binding, track(s), interval
+or target involved, and preserves any accepted plan. The plan retains no pointer
+to the definition or catalog. Parent composition into world `Affine3` values
+and applying the overrides to a candidate extraction remain adapter work.
+
+`TryEvaluateSequenceCameraSelection` returns the camera and interval index at a
+time. Intervals are half-open, so a time exactly on a boundary selects the later
+interval: a cut on an exact frame boundary applies on that frame. Times outside
+the playback range return `OutOfRange`; the exclusive end is not an output time.
+
+### Sequence source document
+
+A `.luseq.json` document has this shape (abridged to one binding of each kind):
+
+```json
+{
+  "format": "ludus.sequence",
+  "version": 1,
+  "sequence": "8a2b4c6d-1e3f-4a5b-9c7d-2e4f6a8b0c1d",
+  "world": {
+    "document": "0b7e8c1d-2f43-4a96-9d51-6c2e4f8a1b3d",
+    "digest": "",
+    "path": "levels/corridor.world.json"
+  },
+  "ticks_per_second": 48000,
+  "playback": {"start": 0, "end": 192000},
+  "bindings": [
+    {
+      "id": 1,
+      "label": "Entrance camera",
+      "kind": "sequence-camera",
+      "camera": {
+        "position": [0.0, 1.5, 10.0],
+        "rotation": [0.0, 0.0, 0.0, 1.0],
+        "lens": {
+          "projection": "perspective-finite",
+          "vertical_fov_radians": 1.0,
+          "vertical_span": 14.0,
+          "minimum_visible_width": 0.0,
+          "near": 0.1,
+          "far": 200.0
+        },
+        "output": 1,
+        "revision": 1
+      }
+    },
+    {"id": 3, "label": "Crate", "kind": "world-object", "object": "5d1f0e7a-93c2-4b8e-a4f6-1e2d3c4b5a69", "subobject": 0}
+  ],
+  "tracks": [
+    {
+      "id": 10,
+      "label": "Approach",
+      "binding": 1,
+      "channel": "camera-position",
+      "enabled": true,
+      "keys": [
+        {"tick": 0, "interpolation": "linear", "value": [0.0, 1.5, 10.0]},
+        {"tick": 192000, "interpolation": "linear", "value": [0.0, 1.5, -10.0]}
+      ]
+    }
+  ],
+  "camera_selection": [
+    {"start": 0, "end": 192000, "camera": 1}
+  ]
+}
+```
+
+- `world.document` is the World's `AssetId`, or empty for a version-1 World.
+  `world.digest` is 64 lowercase hexadecimal digits pinning the saved World
+  resource, or empty. `world.path` is an editor locator and is not cooked.
+- Binding kinds are `sequence-camera`, `world-object` (`object`, `subobject`)
+  and `legacy-world-object` (`legacy_id`, following the
+  [version-1 World ID rule](object-handles-uuid.md)).
+- Channels are `translation`, `rotation`, `scale`, `visibility`,
+  `camera-position`, `camera-rotation` and `camera-lens`. Visibility keys are
+  `{"tick", "visible"}`; others are `{"tick", "interpolation", "value"}` with
+  `step` or `linear`. Vectors and quaternions are arrays; quaternions are
+  `(x, y, z, w)`. Distances are world units and angles are radians.
+
+The reader is strict: unknown or duplicate members, missing members, wrong types,
+unknown tags and uppercase or noncanonical UUIDs are errors. Float32 fields accept
+any finite number within float32 range and round to nearest. The writer emits
+schema order with two-space indentation and keeps each key and numeric array on
+one line, so equal documents produce equal bytes and reading the output
+reproduces the document. Float32 values are written as their exact float64
+expansion, so an authored `0.1` is saved as `0.10000000149011612`.
+
+### Cooked LUSEQ asset
+
+`TryCookSequence` writes the little-endian layout in
+`ludus/content/sequence_format/luseq.h`: a 120-byte header, then binding,
+track and camera-interval records, then each track's keys in track order.
+Fields are serialized one at a time from the explicit schema, never from host
+structs. Fields a binding kind does not use, unused legacy-key bytes and reserved
+words are zero, so cooking is canonical. Labels and the World path are not
+cooked; runtime diagnostics name identities instead.
+
+`TryDecodeSequence` rejects bad magic, unknown versions, nonzero reserved or
+unused fields, unknown tags, counts above the format limits, a key count that
+disagrees with the tracks, short payloads and trailing bytes, then validates
+the document like the source reader. Cooking a decoded document reproduces the
+input bytes. The format admits 256 bindings, 1,024 tracks, 256 camera intervals
+and 65,536 keys; `GetSequenceContentLimits` passes these to the sequencer.
+
+### SQ0 evidence
+
+`ludus_gameplay_sequencer_tests` covers UUID, legacy and camera resolution with
+catalog base values, conflicting and disabled writers, every definition shape
+error, selection gaps, overlaps and coverage, missing, ambiguous, unsupported
+and cyclic targets, World and digest mismatches, failed preparation preserving
+the accepted plan and track-order independence.
+
+`ludus_sequence_content_tests` reads a 4-second, 24 fps corridor fixture with
+two cameras cut at two seconds, a sliding and spinning crate and a legacy guard
+hidden at the cut. It checks canonical source and cooked round-trips, strict
+rejections, corrupt cooked bytes and output preservation. It then decodes the
+asset, resolves it against a catalog and samples `TryGetSequenceFrameTime`
+ordinals: exactly 96 frames, the cut on frame 48 and analytic first, middle and
+last camera positions; the terminal key is not a frame. `ludus_sequence_format_tests`
+pins the wire offsets.
+
+`SequenceContent` is an in-tree library, like `ContentIdentity`, whose legacy-ID
+rule it reuses. It is installed when the SQ1 runtime runner needs it, which keeps
+the cooked decoder beside the cooker rather than in `Resources` for now.
 
 ## Author workflow
 
@@ -543,17 +730,17 @@ Separate capability skips from passes in CI.
 | --- | --- |
 | FoundationMath / FoundationGeometry | Existing checked transforms, quaternion operations, prepared paths, scalar tracks, distance maps and transported frames; add general missing kernels here |
 | FoundationIdentity / Content identity | Existing durable IDs; resolve through source adapters and preserve the explicit legacy World route |
-| Proposed `ContentSequenceFormat` | Header-only Base-dependent cooked tags, versions, widths and limits; serialize fixed-width fields explicitly, never host structs/padding |
-| Proposed `ContentSequenceCook` | Source parsing, validation and preparation into deterministic cooked data; tools depend on runtime math/evaluation contracts, never the renderer |
-| Proposed `GameplaySequencer` | Typed immutable plan, binding/channel conflict checks and allocation-free absolute-time evaluation; depends on Foundation and GameplayCamera, not Qt, Platform, RHI or World component layouts |
+| `SequenceFormat` (SQ0) | Header-only Base-dependent cooked tags, versions, widths and limits; serialize fixed-width fields explicitly, never host structs/padding |
+| `SequenceContent` (SQ0) | Source parsing, canonical writing, validation, deterministic cooking and validating decoding; depends on runtime math/evaluation contracts, never the renderer |
+| `GameplaySequencer` (SQ0) | Typed immutable plan, binding resolution against an adapter catalog, binding/channel conflict checks and allocation-free absolute-time evaluation; depends on Foundation and GameplayCamera, not Qt, Platform, RHI or World component layouts |
 | Scene adapter | Resolve source objects and apply value packets to candidate render extraction; game-specific World access stays outside GameplaySequencer |
 | GraphicsRenderer | Existing `CameraSample` adapter, scene submission, GPU ownership and `RenderGraphCapture`; add the missing portable raster single-frame capture boundary |
 | Proposed `RuntimeSequenceCapture` | Freeze/preflight/frame state machine and manifests using Sequencer, Resources and Renderer; no editor dependency |
 | Editor / CLI | Document commands, sequence editing, job controls and filesystem/export adapters; both call the same runtime runner |
 
 SequenceFormat's wire records store identity bytes; typed UUID conversion belongs
-above that Base-only boundary. Runtime decoding belongs with Resources, not the
-cooker. Prepared storage has explicit owners; borrowed views cannot outlive a
+above that Base-only boundary. The decoder currently lives in SequenceContent
+beside the cooker, as GeometryContent's does; see the SQ0 evidence note. Prepared storage has explicit owners; borrowed views cannot outlive a
 plan/snapshot revision. Public APIs use Ludus types, bounded views and explicit
 status/output-preservation contracts, with `noexcept` on evaluation/service
 paths. Document each new public declaration with Doxygen when implemented.
@@ -578,7 +765,7 @@ or GPU behavior as browser support.
 
 | Phase | Deliverable | Required evidence |
 | --- | --- | --- |
-| SQ0: asset and sampler | Schema, bindings, preparation, Step/Linear TRS, quaternion rotation, visibility and camera/lens/cuts | Boundary/time overflow, duplicate keys, unit/finite checks, channel conflicts, parent composition, missing bindings, precision and output preservation; reordered seeks equal direct evaluation |
+| SQ0: asset and sampler (implemented; parent composition moves to the SQ2 adapter) | Schema, bindings, preparation, Step/Linear TRS, quaternion rotation, visibility and camera/lens/cuts | Boundary/time overflow, duplicate keys, unit/finite checks, channel conflicts, parent validation, missing bindings, precision and output preservation; reordered seeks equal direct evaluation |
 | SQ1: camera traversal capture | Camera-only sequence, independent raster images, runtime runner and SDK/CLI consumer | Exact frame count/times; no skipped frames under injected preparation/readback delay; source pinning; offscreen readback ownership; same ordinal in subset/full capture; reset evidence |
 | SQ2: editor and object tracks | Shared sequence commands, pilot/Set key, override extraction, animated object capture and complete UI failure paths | Properties-hidden edits, cancel/Undo, World save unchanged by playback, rejected edits preserving drafts, stale jobs, last drawable during pending/failure and correct new publication |
 | SQ3: generators and converged graphs | Path/distance timing, generation preview/transactions, graph capture profile and linear artifacts | Bounded path error, frame reset/seed repeatability, exact per-image counts, animated scene rebuild correctness, graph and raster profile distinction |
