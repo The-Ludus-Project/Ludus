@@ -6780,6 +6780,109 @@ machine, the lighting resolve took about 14 to 16 ms with sky visibility and 7 t
 10 ms without; per-pass GPU time in the viewport's statistics overlay shows the cost
 on a given machine.
 
+#### Large-World qualification
+
+The shutter fixture keeps an 18 km landscape, an opaque roof 2.5 m above the
+floor and a ridge at world Z = 60 m beyond the doorway. It tests six fixed floor probes,
+including a grazing doorway, exterior and local-map boundary. With direct Sun
+and Moon disabled, the renderer samples either a constant environment or the
+anisotropic Atmosphere. All receivers face +Y, so the projected solid angle of
+the below-horizon ground is zero. A camera walk of one metre in either direction
+has a predeclared tolerance of one linear RGBA8 code at the original floor point.
+
+Removing the offscreen ridge raises exterior visibility by 0.0235 in the local
+maps. The exact geometric rays predict 0.0273 at that point.
+
+The first oracle intersects the rectangles at the renderer's 64 directions.
+The second integrates 256 elevation-sine bands by 1,024 azimuths. Halving both
+dimensions changes visibility by less than 0.01 and diffuse by less than 1% of
+the roof-removed control. The coarse maps reported 1.000 visibility under a
+closed roof where both ray oracles returned zero. The local maps keep the same
+64 directions. Across all shutter states, probes and skies, the largest errors
+were as follows. Diffuse errors are fractions of the exposed-control luminance
+at the same receiver and solar phase.
+
+| Comparison | Absolute visibility error | Diffuse luminance error |
+| --- | ---: | ---: |
+| 64 exact directions against dense rays | 0.0303 | 5.44% |
+| Local maps against the 64 exact directions | 0.0315 | 5.84% |
+| Local maps against dense rays | 0.0380 | 5.61% |
+
+With the shutter open, the dense clear-sky oracle puts the covered probe at
+8.3% of its exposed diffuse and the doorway at 61.3%. The following values are
+scene-linear readbacks from the 96 × 64 renderer fixture, with solar azimuth
+aligned to the opening. Each cell gives the map result followed by the dense
+oracle.
+
+| Floor probe | Sky visibility | Uniform sky diffuse | Clear sky diffuse |
+| --- | ---: | ---: | ---: |
+| Under roof | 0.0078 / 0.0075 | 0.0039 / 0.0046 | 0.0081 / 0.0075 |
+| Doorway | 0.3804 / 0.4048 | 0.2314 / 0.2474 | 0.0805 / 0.0807 |
+| Outside | 0.8745 / 0.8445 | 0.5333 / 0.5161 | 0.1420 / 0.1357 |
+
+For the 0.35 m shutter opening, the solar azimuth sweep at −60°, −30°, 0°,
+30° and 60° gave a maximum angular diffuse error of 5.06% at 60° and a maximum
+production error of 4.90% at −30°. The uniform control's maximum production
+error was 3.01%. The angular error stayed within the 10% target, so the
+production direction set and number of per-pixel directions remain at 64.
+
+**Metal qualification.** On an Apple M5 with macOS 26.6, native Development,
+Clang 23.1.3, the editor saved and reloaded the World before rendering its
+default Raster graph. A separate CMake app linked the relocated SDK, cooked its
+installed default graph and bundled the graph, cooked Worlds and saved viewport
+camera. Both graphs disabled ToneMap to export linear RGBA8. All eight 128 × 128
+exports matched byte for byte across the two lighting views, two skies and open
+or removed roof. With the open shutter, both consumers measured clear-sky diffuse
+of 0.0081 under cover, 0.0617 in the doorway and 0.0929 outside in the saved
+perspective view. The SDK manifest records renderer revision
+`35df7a356cdb6dac7bc1519552cd2dfb5b05eb59`. The source and installed graph cooks both produced SHA-256
+`1dfdaaa2f15b88dab286a05c3790b00c2fad1dd33d85e09115c8b0756524e8a0`.
+Their graph generation is
+`d47cbf3a915ac25fedbcbc95381063d4e4621513b786e0400030f12f5726e104`.
+
+The timing app rendered the open World with the default final-colour resolve and
+Atmosphere at 512 × 512. Three launches per route alternated order. Each launch
+recorded the first frame, warmed eight frames and timed 41 further complete
+frames. Times below pool the 123 warmed samples per route. The coarse SDK was
+built from `bba94d877`, whose default sky shader and scene-resource code match
+the implementation base. Metal timestamps measure elapsed GPU time in ms.
+
+| GPU operation | Coarse median / p95 | Local median / p95 |
+| --- | ---: | ---: |
+| G-buffer | 0.120 / 0.382 | 0.122 / 0.480 |
+| Lighting resolve | 5.156 / 7.829 | 5.597 / 7.234 |
+| Complete frame | 5.229 / 8.050 | 5.663 / 7.374 |
+
+The warmed p95 difference was −0.676 ms, within the +3 ms cap. Across the three
+process starts, median graph initialization plus first extraction took 1,672 ms
+coarse and 168 ms local. Median first-frame CPU recording took 9.50 and
+7.12 ms, and first-frame GPU time took 14.74 and 21.00 ms, respectively.
+Pipeline cache state and host scheduling affect startup. The cold pass query
+batch omitted 6 and 70 operations, respectively. The independently timed
+complete frame includes all cold operations.
+
+| Allocation, MiB | Coarse | Local |
+| --- | ---: | ---: |
+| Shadow colour per generation | 4 | 16 |
+| Private depth backing per generation | 4 | 16 |
+| Whole-device tracked steady API allocations | 22.90 | 47.02 |
+| Whole-device steady logical resources | 22.78 | 46.79 |
+| Logical high-water through a caster replacement | 39.82 | 87.85 |
+
+The incremental shadow colour is 12 MiB per generation against the 16 MiB cap.
+The private depth backing also grows by 12 MiB and lives with the attachment.
+The logical high-water includes old and replacement generations. Metal exposes
+allocation sizes for these measurements. Physical residency is unavailable.
+
+To reproduce, run the renderer tests tagged `[large-world-sky]`. Run the
+editor test `[.large-world-sky-viewport]` with `LUDUS_SKY_GRAPH` pointing to
+the source-built linear default runtime and `LUDUS_SKY_CASES` pointing to an
+empty output directory. Configure `tests/sdk_consumer/large_world_sky` with
+`Ludus_DIR` from the relocated native Metal SDK and `LUDUS_SKY_CASES` set to
+that output directory. Run the bundled executable with `capture open` and
+`capture exposed` in separate output directories to compare the four exports
+per World, or `timing open` to record complete frames and physical pass times.
+
 ### Lighting views
 
 `ViewDescription::LightingView` makes the clustered deferred resolve draw one term

@@ -41,7 +41,9 @@ inline Panels MakePanels()
 inline float32 GetShutterTranslation(Shutter shutter)
 {
     if (shutter == Shutter::Narrow)
+    {
         return 0.35F;
+    }
     return shutter == Shutter::Closed ? 0 : 3;
 }
 

@@ -3827,7 +3827,9 @@ Status RenderGraph::updateScene(BorrowedView<const RenderGraphMesh> meshes,
             RenderGraphSceneRevisions previous = state.Current->Revisions;
             previous.Environment = revisions.Environment;
             if (previous == revisions)
+            {
                 matchingCastersOrNull = state.Current->ForwardGeneration.Get();
+            }
         }
         const Status prepared =
             state.ForwardResources.Prepare(source, candidate->ForwardGeneration, matchingCastersOrNull);
@@ -4306,18 +4308,24 @@ SkyVisibilityReport RenderGraph::GetSkyVisibilityReport() const noexcept
     SkyVisibilityReport report;
     if (mState.Get() == nullptr || mState->Current.Get() == nullptr ||
         mState->Current->ForwardGeneration.Get() == nullptr)
+    {
         return report;
+    }
     const internal::DeferredShadowAtlas* atlasOrNull = mState->Current->ForwardGeneration->GetShadowAtlasOrNull();
     if (atlasOrNull == nullptr || atlasOrNull->SkyCount == 0)
+    {
         return report;
+    }
     const uint32 drawn = atlasOrNull->Submitted.DrawnDirectional;
     const uint32 lightMaps = atlasOrNull->DirectionalCount;
     const uint32 skyMaps = drawn - math::Min(drawn, lightMaps);
     report.WholeWorldMaps = math::Min(skyMaps, atlasOrNull->SkyCount);
     report.LocalMaps = skyMaps - report.WholeWorldMaps;
     if (report.WholeWorldMaps != 0)
+    {
         report.FinestSubmittedLevel =
             report.LocalMaps != 0 ? SkyVisibilityLevel::Local : SkyVisibilityLevel::WholeWorld;
+    }
     report.Revision = atlasOrNull->SkyRevision;
     report.AnchorWorld = atlasOrNull->SkyAnchorWorld;
     report.HasBudgetFallback = atlasOrNull->HasLocalSkyBudgetFallback;
@@ -4326,8 +4334,10 @@ SkyVisibilityReport RenderGraph::GetSkyVisibilityReport() const noexcept
     report.CoarseMetresPerTexel =
         2 / (math::Length(math::Vector3{row.X, row.Y, row.Z}) * static_cast<float32>(coarse.Interior.Width));
     if (atlasOrNull->LocalSkyCount != 0)
+    {
         report.LocalMetresPerTexel =
             2 * static_cast<float32>(SKY_VISIBILITY_LOCAL_RADIUS_METRES) / static_cast<float32>(coarse.Interior.Width);
+    }
     return report;
 }
 uint64 RenderGraph::GetDrawableSceneRevision() const noexcept

@@ -286,6 +286,7 @@ if(TARGET ludus_rhi_render_tests AND NOT WIN32)
         set(renderer_test_raster_timeout_seconds 180)
     endif()
     set_source_files_properties(tests/render_graph_ray_tests.cpp tests/wave_tracing_parity_tests.cpp
+        tests/large_world_sky_tests.cpp tests/render_graph_default_render_tests.cpp
         tests/wave_tracing_graph_tests.cpp PROPERTIES COMPILE_DEFINITIONS
         "LUDUS_RENDERER_TEST_COLD_GPU_TIMEOUT_SECONDS=${renderer_test_cold_gpu_timeout_seconds}")
     set_source_files_properties(tests/reference_compute_tests.cpp tests/metropolis_parity_tests.cpp

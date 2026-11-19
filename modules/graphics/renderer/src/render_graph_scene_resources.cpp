@@ -124,7 +124,9 @@ Status BuildDirectionalShadowRegions(BorrowedView<const DirectLight> lights,
         }
     }
     for (uint32 index = 0; index < count; ++index)
+    {
         outAtlas.Directional[index] = regions[index];
+    }
     outAtlas.DirectionalCount = count;
     outAtlas.SkyCount = 0;
     outUnshadowed = unshadowed;
@@ -219,7 +221,9 @@ bool TryFindSkyAnchor(const MeshDescription& geometry,
             }
         }
         if (hasAnchor == false)
+        {
             return false;
+        }
     }
     const math::Vector3 centerWorld = anchorBounds.Min + (anchorBounds.Max - anchorBounds.Min) * 0.5F;
     const auto snap = [](float32 metres) noexcept {
@@ -1470,7 +1474,9 @@ Status ForwardSceneResources::Prepare(const RenderGraphSceneDescription& scene,
                 else
                 {
                     if (TryMakeShared(GetSystemAllocationDomain(), candidate.ShadowBacking) != OwnershipStatus::Ok)
+                    {
                         return Status::OutOfMemory;
+                    }
                     candidate.ShadowBacking->Device = owner.Device;
                     Status atlas = rhi::CreateTexture(owner.Device,
                                                       {atlasTexels, atlasTexels, rhi::RasterFormat::Rgba8Unorm, true},

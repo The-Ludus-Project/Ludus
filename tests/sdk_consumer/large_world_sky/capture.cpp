@@ -179,39 +179,53 @@ bool Capture(rhi::DeviceHandle device,
     {
         if (shouldMeasure == true &&
             (rhi::ArmGpuTiming(device) != Status::Ready || rhi::ArmGpuPassTimings(device) != Status::Ready))
+        {
             return false;
+        }
         rhi::SubmissionToken completion;
         const uint64 cpuStart = time::NowTicks();
         if (graph.Render(surface, extent, extent, completion) != Status::Ready)
+        {
             return false;
+        }
         const uint64 cpuNanoseconds = time::NowTicks() - cpuStart;
         if (WaitForReady(Status::Pending, [&] {
                 static_cast<void>(rhi::PollLifetime(device));
                 return rhi::GetStatus(device, completion);
             }) == false)
+        {
             return false;
+        }
         if (shouldMeasure == false)
+        {
             continue;
+        }
         rhi::GpuTiming timing;
         rhi::GpuPassTimings passes;
         if (rhi::GetGpuTiming(device, timing) != Status::Ready || timing.State != rhi::GpuTimingState::Available ||
             rhi::GetGpuPassTimings(device, passes) != Status::Ready || passes.State != rhi::GpuTimingState::Available)
+        {
             return false;
+        }
         std::cout << "frame," << frame << ',' << timing.DurationNanoseconds << ',' << cpuNanoseconds << ','
                   << passes.DroppedPasses << '\n';
         for (usize operation = 0; operation < passes.Count; ++operation)
         {
             const rhi::GpuPassTiming& pass = passes.Passes[operation];
             if (pass.Timing.State == rhi::GpuTimingState::Available)
+            {
                 std::cout << "pass," << frame << ',' << pass.Scope.Name.GetData() << ',' << pass.ScopePassIndex << ','
                           << pass.Timing.DurationNanoseconds << '\n';
+            }
         }
     }
     if (shouldMeasure == true)
     {
         rhi::AllocationTelemetry steady;
         if (rhi::GetAllocationTelemetry(device, steady) != Status::Ready || steady.ApiBytesAvailable == false)
+        {
             return false;
+        }
         items[items.GetSize() - 1].MeshToWorld.Translation.X += 1;
         rhi::AllocationTelemetry peak = steady;
         Status next = graph.Update({meshes.GetData(), meshes.GetSize()},
@@ -224,15 +238,21 @@ bool Capture(rhi::DeviceHandle device,
         const bool isReplaced = WaitForReady(next, [&] {
             rhi::AllocationTelemetry current;
             if (rhi::GetAllocationTelemetry(device, current) == Status::Ready && current.ApiBytes > peak.ApiBytes)
+            {
                 peak = current;
+            }
             return graph.Poll();
         });
         rhi::StorageUsage overlap;
         if (rhi::GetStorageUsage(device, overlap) != Status::Ready)
+        {
             return false;
+        }
         rhi::AllocationTelemetry published;
         if (isReplaced == false || rhi::GetAllocationTelemetry(device, published) != Status::Ready)
+        {
             return false;
+        }
         std::cout << "prepare_ns," << preparationNanoseconds << "\nsteady_bytes," << steady.ApiBytes
                   << "\nlogical_peak_bytes," << overlap.PeakResourceBytes << "\nlogical_steady_bytes,"
                   << steady.LogicalBytes << "\nreplacement_sample_bytes," << std::max(peak.ApiBytes, published.ApiBytes)
@@ -266,11 +286,15 @@ bool Capture(rhi::DeviceHandle device,
 int main(int count, char** arguments)
 {
     if (count != 3)
+    {
         return 2;
+    }
     const std::string_view mode(arguments[1]);
     const bool shouldMeasure = mode == "timing";
     if (shouldMeasure == false && mode != "capture")
+    {
         return 2;
+    }
     const std::string executable(arguments[0]);
     const std::string resources = executable.substr(0, executable.find_last_of('/') + 1) + "../Resources/";
     const std::string directory = resources + arguments[2];
@@ -296,13 +320,21 @@ int main(int count, char** arguments)
     bool isReady = rhi::GetDeviceInfo(device, info) == rhi::DeviceStatus::Ready &&
                    info.Startup.SelectedBackend == rhi::Backend::Metal;
     if (isReady == true && shouldMeasure == true)
+    {
         isReady = Capture(device, surface, extent, package, directory, rr::DeferredLightingView::Final, true, true);
+    }
     else if (isReady == true)
+    {
         for (bool hasAtmosphere : {false, true})
+        {
             for (rr::DeferredLightingView view :
                  {rr::DeferredLightingView::SkyVisibility, rr::DeferredLightingView::SkyDiffuse})
+            {
                 isReady =
                     isReady == true && Capture(device, surface, extent, package, directory, view, hasAtmosphere, false);
+            }
+        }
+    }
     rhi::MeasurementAdapter adapter;
     static_cast<void>(rhi::GetMeasurementAdapter(device, adapter));
     std::cout << adapter.Name << ", Metal" << '\n';

@@ -45,7 +45,9 @@ ReceiverPlanes MakeReceiverPlanes(const Panels& panels, Shutter shutter, math::V
     {
         math::Vector3d centerWorld = ToVector3d(panels[i].CenterWorld);
         if (i == SHUTTER_INDEX)
+        {
             centerWorld.X += static_cast<float64>(GetShutterTranslation(shutter));
+        }
         const math::Vector3d u = ToVector3d(panels[i].HalfUWorld);
         const math::Vector3d v = ToVector3d(panels[i].HalfVWorld);
         const math::Vector3d normalWorld = math::Cross(u, v);
@@ -62,14 +64,20 @@ bool CanSeeSky(const ReceiverPlanes& planes, uint32 count, math::Vector3d direct
         const ReceiverPlane& plane = planes[i];
         const float64 denominator = math::Dot(directionWorld, plane.NormalWorld);
         if (denominator == 0)
+        {
             continue;
+        }
         const float64 distance = plane.PlaneDistance / denominator;
         if (distance <= 0)
+        {
             continue;
+        }
         const math::Vector3d offsetWorld = plane.OffsetWorld + distance * directionWorld;
         if (math::Abs(math::Dot(offsetWorld, plane.HalfUWorld)) <= plane.USquared &&
             math::Abs(math::Dot(offsetWorld, plane.HalfVWorld)) <= plane.VSquared)
+        {
             return false;
+        }
     }
     return true;
 }
@@ -123,8 +131,10 @@ Integral Integrate(const Panels& panels,
         {
             visible += directionWorld.Y;
             if (tablesOrNull != nullptr)
+            {
                 radiance +=
                     directionWorld.Y * ComputeLuminance(tablesOrNull->SampleSky(directionWorld, {0, 1, 0}, sunWorld));
+            }
         }
     }
     const float64 visibility = visible / total;
@@ -155,7 +165,9 @@ TEST_CASE("large World sky rays distinguish angular sampling from geometric visi
               static_cast<const internal::AtmosphereSkyTables*>(&tables)})
         {
             if (tablesOrNull == nullptr && degrees != 0)
+            {
                 continue;
+            }
             for (uint32 i = 0; i < PROBE_COUNT; ++i)
             {
                 Integral roofRemoved;
@@ -170,7 +182,9 @@ TEST_CASE("large World sky rays distinguish angular sampling from geometric visi
                     const Integral half =
                         Integrate(panels, shutter, receiverWorld, DENSE_RESOLUTION / 2, tablesOrNull, sunWorld);
                     if (shutter == Shutter::RoofRemoved)
+                    {
                         roofRemoved = dense;
+                    }
                     CAPTURE(degrees,
                             i,
                             static_cast<int>(shutter),
@@ -185,9 +199,13 @@ TEST_CASE("large World sky rays distinguish angular sampling from geometric visi
                     CHECK(math::Abs(matched.Visibility - dense.Visibility) <= 0.10);
                     CHECK(math::Abs(matched.Diffuse - dense.Diffuse) <= 0.10 * roofRemoved.Diffuse);
                     if (shutter == Shutter::Open && i == 0)
+                    {
                         CHECK(dense.Diffuse <= 0.30 * roofRemoved.Diffuse);
+                    }
                     if (shutter == Shutter::Open && i == 1)
+                    {
                         CHECK(dense.Diffuse >= 0.40 * roofRemoved.Diffuse);
+                    }
                 }
             }
         }
@@ -200,7 +218,9 @@ TEST_CASE("default graph resolves large World skylight at fixed floor probes",
     const bool shouldConstrainStorage = GENERATE(false, true);
     rhi::StorageLimits limits;
     if (shouldConstrainStorage == true)
+    {
         limits.ResourceBytes = 15 * 1024 * 1024; // admits the 1024 square and rejects the 2048 square
+    }
     GraphGpuFixture fixture(limits);
     const core::UniquePtr<RenderGraphPackage> package =
         LoadPackage({LUDUS_RG3_CLUSTERED_DEFAULT_DIRECTORY, "rg2_clustered_Default.lurgrt"});
@@ -276,7 +296,9 @@ TEST_CASE("default graph resolves large World skylight at fixed floor probes",
         {
             const bool hasAtmosphere = degrees != UNIFORM_SKY;
             if (hasAtmosphere == true && degrees != 0 && shutter != Shutter::Narrow)
+            {
                 continue;
+            }
             const float64 azimuth = static_cast<float64>(degrees) * math::kPi / 180;
             camera.Atmosphere.DirectionToSunWorld = {horizontal * static_cast<float32>(std::sin(azimuth)),
                                                      SOLAR_SINE,
@@ -329,7 +351,9 @@ TEST_CASE("default graph resolves large World skylight at fixed floor probes",
                                                                           content,
                                                                           {1, content, content, 1, 1});
                     if (update == rhi::RasterStatus::Pending)
+                    {
                         CHECK(fixture.Graph.GetSkyVisibilityReport().Revision == previousSkyRevision);
+                    }
                     REQUIRE(PollAtmosphereGraph(fixture, update) == rhi::RasterStatus::Ready);
                     ReadAtmosphereFrame(fixture);
                     ReadAtmosphereFrame(fixture);
@@ -428,6 +452,52 @@ TEST_CASE("default graph resolves large World skylight at fixed floor probes",
     const StaticArray<uint8, PIXEL_BYTES> accepted = fixture.Pixels;
     ReadAtmosphereFrame(fixture);
     CHECK(std::equal(accepted.GetData(), accepted.GetData() + PIXEL_BYTES, fixture.Pixels.GetData()));
+    // Keep the receiver, shutter and local window fixed. The ridge is outside the camera
+    // and the local square but intersects sky rays before they reach the floor.
+    items[0].MeshIndex = 0;
+    constexpr uint32 RIDGE_INDEX = 1;
+    constexpr uint32 OUTSIDE_PROBE = 2;
+    camera.LightingView = DeferredLightingView::SkyVisibility;
+    const math::Vector3d outsideWorld{static_cast<float64>(PROBE_X[OUTSIDE_PROBE]),
+                                      0,
+                                      static_cast<float64>(PROBE_Z[OUTSIDE_PROBE])};
+    Panels withoutRidge = panels;
+    withoutRidge[RIDGE_INDEX].HalfUWorld = {};
+    const float64 oracleChange =
+        Integrate(withoutRidge, Shutter::RoofRemoved, outsideWorld, 0, nullptr, {}).Visibility -
+        Integrate(panels, Shutter::RoofRemoved, outsideWorld, 0, nullptr, {}).Visibility;
+    float64 withRidge = 0;
+    for (bool isRidgeExcluded : {false, true})
+    {
+        items[RIDGE_INDEX].IsIntentionallyExcluded = isRidgeExcluded;
+        RenderGraphReport ridgeReport;
+        REQUIRE(PollAtmosphereGraph(fixture,
+                                    fixture.Graph.Update({meshes.GetData(), PANEL_COUNT},
+                                                         {items.GetData(), PANEL_COUNT},
+                                                         {&camera, 1},
+                                                         ++revision,
+                                                         RenderGraphCoveragePolicy::RejectIncomplete,
+                                                         ridgeReport,
+                                                         &inputs,
+                                                         ++content)) == rhi::RasterStatus::Ready);
+        ReadAtmosphereFrame(fixture);
+        ReadAtmosphereFrame(fixture);
+        const math::Vector4 clip =
+            camera.WorldToClip * math::Vector4{PROBE_X[OUTSIDE_PROBE], 0, PROBE_Z[OUTSIDE_PROBE], 1};
+        const usize column = static_cast<usize>((0.5F + 0.5F * clip.X / clip.W) * static_cast<float32>(WIDTH));
+        const usize row = static_cast<usize>((0.5F - 0.5F * clip.Y / clip.W) * static_cast<float32>(HEIGHT));
+        const float64 value = static_cast<float64>(fixture.Pixels[GetPixel(column, row)]) / 255;
+        if (isRidgeExcluded == false)
+        {
+            withRidge = value;
+        }
+        else
+        {
+            CAPTURE(value, withRidge, oracleChange);
+            REQUIRE(oracleChange > 2.0 / 255);
+            CHECK(math::Abs(value - withRidge - oracleChange) <= 2.0 / 255);
+        }
+    }
 }
 } // namespace
 } // namespace ludus::graphics::renderer::testing

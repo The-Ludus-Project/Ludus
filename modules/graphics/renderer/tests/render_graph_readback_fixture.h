@@ -10,7 +10,9 @@ namespace ludus::graphics::renderer::testing
 inline rhi::RasterStatus PollAtmosphereGraph(GraphGpuFixture& inoutFixture, rhi::RasterStatus status)
 {
     foundation::time::Deadline deadline;
-    REQUIRE(deadline.Arm(foundation::time::Now(), foundation::time::Seconds(60)) == foundation::time::TimeStatus::Ok);
+    REQUIRE(deadline.Arm(foundation::time::Now(),
+                         foundation::time::Seconds(LUDUS_RENDERER_TEST_COLD_GPU_TIMEOUT_SECONDS)) ==
+            foundation::time::TimeStatus::Ok);
     while (status == rhi::RasterStatus::Pending && deadline.IsExpired(foundation::time::Now()) == false)
     {
         foundation::threading::SleepFor(foundation::time::Milliseconds(1));

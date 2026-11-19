@@ -41,18 +41,24 @@ void WriteRoom(const QDir& directory, renderer::testing::Shutter shutter)
     for (uint32 i = 0; i < PANEL_COUNT; ++i)
     {
         if (i == ROOF_INDEX && shutter == Shutter::RoofRemoved)
+        {
             continue;
+        }
         const Panel& panel = panels[i];
         math::Vector3 centerWorld = panel.CenterWorld;
         if (i == SHUTTER_INDEX)
+        {
             centerWorld.X += GetShutterTranslation(shutter);
+        }
         QJsonArray positions;
         const math::Vector3 u = panel.HalfUWorld;
         const math::Vector3 v = panel.HalfVWorld;
         for (const math::Vector3 point :
              {centerWorld - u - v, centerWorld + u - v, centerWorld + u + v, centerWorld - u + v})
+        {
             positions.append(
                 QJsonArray{static_cast<double>(point.X), static_cast<double>(point.Y), static_cast<double>(point.Z)});
+        }
         objects.append(QJsonObject{{QStringLiteral("name"), QStringLiteral("Panel %1").arg(i)},
                                    {QStringLiteral("material"), QStringLiteral("Matte")},
                                    {QStringLiteral("positions"), positions},
@@ -243,13 +249,16 @@ TEST_CASE("Saved shutter World presents default Raster skylight", "[.large-world
         const RenderScene scene = PrepareWorld(directory);
         usize diagnostic = 0;
         for (bool hasAtmosphere : {false, true})
+        {
             for (renderer::DeferredLightingView view :
                  {renderer::DeferredLightingView::SkyVisibility, renderer::DeferredLightingView::SkyDiffuse})
             {
                 const StaticArray<float64, 2> values =
                     CaptureWorld(scene, directory, runtime, device, surface, EXTENT, view, hasAtmosphere);
                 if (shutter == Shutter::RoofRemoved)
+                {
                     exposed[diagnostic] = values;
+                }
                 else
                 {
                     CAPTURE(hasAtmosphere, view, values[0], values[1], exposed[diagnostic][0], exposed[diagnostic][1]);
@@ -259,6 +268,7 @@ TEST_CASE("Saved shutter World presents default Raster skylight", "[.large-world
                 }
                 ++diagnostic;
             }
+        }
     }
     REQUIRE(rhi::DestroyDevice(device) == rhi::DeviceStatus::Ready);
     rhi::Shutdown();
