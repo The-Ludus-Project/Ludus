@@ -1010,7 +1010,8 @@ luslc format --root shaders --check main/shade.lusl main/common.luslh
     `specialization <template file:line> <Shade<CarPaint>> <generated name>`,
     `groupshared-clear <entry file:line> <variable file:line> <unpadded bytes>`,
     `binding <variable file:line> <name> <kind> <slot>` and
-    `vertex-input <entry file:line> <name> <location>`.
+    `vertex-input <entry file:line> <name> <location>`. Requests with defines
+    also report `configuration-read-mask <bits in --define order>`.
 - **`check`** reports diagnostics only.
 - **`lower`** writes the Slang module to `--output`, or to standard output.
   The output file is replaced atomically.
@@ -1435,7 +1436,20 @@ float32x3 ShadeMiss(in Ray ray)
 - **Build report.** `build-report.json` gains a `lusl` object, keyed by source,
   with each source's `specializations` (template location, name and generated
   name) and `groupshared_clears` (entry point, variable and unpadded bytes).
+  Configured sources also report `configuration_reads`, a map from macro name
+  to the selected integer value for each set bit in the preprocessor's read mask.
   Every build lowers again, so cache hits report them too.
+- **Configuration values.** An authored LUSL program in `.lushader.json` may
+  declare `"configuration_values": {"SHADOW_MODE": 2, "USE_SHADOWS": true}`.
+  Values are signed 32-bit integers or Booleans (passed as `0` or `1`).
+  Use the macro in the LUSL source, for example `#if SHADOW_MODE == 2`.
+  Programs sharing a source share one translation unit and must select the
+  same values. For multiple selections, declare distinct program records with
+  separate entry files and assign them through the graph's existing shader
+  program choices. Each linked stage keys its generated source and the macros
+  the preprocessor read. Editing an unread value reuses the cached stage.
+  Runtime parameters and graph options remain separate from these authored
+  compile-time inputs.
 - **Style setting.** The project-wide key is the CMake cache variable
   `LUDUS_LUSL_STYLE`, with the values `strict` (the default), `warn` and `off`.
   A game project sets it once, in its `CMakeLists.txt` before compiling graphs or
@@ -1472,9 +1486,10 @@ float32x3 ShadeMiss(in Ray ray)
     `ray_shader.luslh` for the Ray/Color profile, `scene_payload.luslh` (with
     `scene_shader.luslh`) for scene-interface techniques. Graph-owned typed storage belongs to a single ray job. Its contents persist
     across submissions until the graph replaces the storage.
-  - Configuration values do not reach LUSL programs from the render graph yet,
-    and render-graph builds emit no development bounds checks.
+  - Render-graph builds emit no development bounds checks.
 - **Evidence:**
+  - `rg2_bound_lusl` selects a color branch through a configuration macro.
+    Its GPU test compares every output byte with the equivalent Slang package.
   - `rg2_raytracing_lusl` is `rg2_raytracing` with its generation, miss and
     closest-hit callbacks ported to LUSL. A GPU test renders both packages and
     compares every pixel of three frames.

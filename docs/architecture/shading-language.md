@@ -9,8 +9,7 @@ render-graph programs with a ported shader (L1e-2). The
 [module guide](../modules/tooling/shader-language.md) describes their exact
 behavior and limits. Still open from L1:
 - reporting development bounds-check failures through the render graph;
-- the Metal loop code-generation measurement;
-- configuration values for render-graph programs.
+- the Metal loop code-generation measurement.
 
 L2 is implemented:
 - L2a: interfaces, conformance, extensions, struct constants and
@@ -952,8 +951,9 @@ atomics, barriers) and [1730](https://github.com/The-Ludus-Project/Ludus/issues/
   render-graph templates instantiate Slang files. New programs default to
   `.lusl`, with Slang still selectable, so the Editor does not keep making
   Slang after its templates migrate.
-- **Configuration values for render-graph programs**, still open from L1, close
-  before a template that reads configuration macros migrates.
+- **Configuration values for render-graph programs** are authored on LUSL
+  program records. The [module guide](../modules/tooling/shader-language.md#render-graph-programs)
+  describes the fields and stage cache behavior.
 
 Tracked in issues [1731](https://github.com/The-Ludus-Project/Ludus/issues/1731) (include roots and layout headers), [1732](https://github.com/The-Ludus-Project/Ludus/issues/1732)
 (Editor authoring) and [1733](https://github.com/The-Ludus-Project/Ludus/issues/1733) (configuration values). Library ownership
