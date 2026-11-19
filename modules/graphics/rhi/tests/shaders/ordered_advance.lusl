@@ -1,9 +1,0 @@
-// LUSL port of AdvanceCounter in ordered_compute.slang. The conformance graph
-// dispatches both versions in sequence and reads their combined result.
-RWStructuredBuffer<uint32> counter;
-
-[stage(compute), threads(1, 1, 1)]
-void AdvanceCounter()
-{
-    counter[0] = counter[0] + 1;
-}

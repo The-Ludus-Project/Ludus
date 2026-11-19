@@ -1003,11 +1003,10 @@ translator restores it as `noinline`. The existing merged-kernel check rejects
 intersection queries placed directly in the kernel. The native GPU fixture
 checks both the emitted annotation and identical query results.
 
-The Windows conformance lane builds the ordered dispatch's original Slang
-kernel and its LUSL port through the pinned DXIL toolchain, executes both on
-Direct3D 12 WARP, and verifies their shared counter through the subsequent
-indirect draw and buffer readback. The raster graph suite also checks that the
-ported bound graph contains signed DXIL and compares its pixels with Slang.
+The Windows source runtime's raster graph suite cooks the LUSL vertex, color,
+and depth callbacks in `rg2_bound_lusl` through the pinned DXIL toolchain.
+It checks the cooked color stages for signed DXIL and compares the graph's
+Direct3D 12 WARP pixels with the original Slang graph.
 
 ### L5d: migration waves
 
