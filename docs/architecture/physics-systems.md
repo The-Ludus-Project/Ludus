@@ -464,7 +464,9 @@ relative to a nearby pair/query origin before narrowing. Reject values outside
 the declared coordinate/size envelope; doubles alone do not make enormous shapes
 or tiny tolerances valid. Define the conversion from `float64` positions to
 pair-local `float32` values in one place, then establish the supported envelope
-with tests. Do not promise arbitrary planet-scale physics.
+with tests. Do not promise arbitrary planet-scale physics. The serial
+[rigid world](physics-rigid.md#precision-and-units) keeps body motion state in
+`float64` until a narrower solver representation is measured.
 
 One world has a fixed tick duration, initially 1/60 s as a tuning starting point.
 `Step` advances one tick, not a frame delta. The game owns accumulation, input
@@ -551,7 +553,10 @@ views, commands, `StepResult`, and event spans. Suggested vocabulary:
 `TryCreateCollider`, `TryAcquireReadView`, `RaycastClosest`,
 `CastConvexClosest` and `Overlap` now exist in the
 [collision world](physics-collision.md#geometry-store-and-collision-world);
-the rest are proposed contracts, not available SDK symbols. Use Ludus aliases,
+`TryCreateBody`, `TryEnqueueForce`, `TryEnqueueImpulse`,
+`TrySetKinematicTarget`, `Step` and `GetDiagnostics` now exist in the
+[rigid world](physics-rigid.md#phases-and-failures); `TryCreateConstraint` is a
+proposed contract, not an available SDK symbol. Use Ludus aliases,
 explicit includes, private implementations and Doxygen at every public
 declaration when implementing; do not expose allocating STL templates or heavy
 headers. Split validation, conversion, traversal and collection into named,
@@ -904,7 +909,7 @@ quality, including the serial path and debug-capture overhead.
 | --- | --- |
 | P0: backend feasibility | Closed without a qualified engine. Stock Jolt 5.6.0, ODE 0.16.6 and Box3D failed the allocation gate on macOS arm64, and six further engines failed the source screen. The outcome is the [selection revision](#selection-revision). The native/web matrix, SDK and replay evidence were not collected and move to the gates below |
 | P1: collision and query world | In progress: the [static triangle mesh and closest queries](physics-collision.md), sphere, box, capsule and convex hull shapes, the general GJK convex cast, the geometry store and collision world with identities, filters and read views, convex colliders, overlap, ray and cast queries in `Closest`, `Any` and `All` modes with completion, a dynamic collider hierarchy, stored query shapes, query debug extraction, and native and Wasm SDK consumers have landed, and Explore as Player sweeps against them with **Static Collider** as authored input. `PhysicsCollision`: shapes, identities, immutable cooking, geometry store, colliders, filters and protected ray, cast and overlap queries; brute-force correctness oracle; allocation injection at every creation path; failure contracts and query overlays; installed SDK consumer on native and Emscripten |
-| P2: rigid motion | `PhysicsRigid`: static/kinematic/dynamic integration, mass frames, forces/materials, convex and mesh contacts, the soft-constraint substep solver and selective CCD; stack/friction/spin/replay scenes; zero-growth active path; contact capacity rejected before any pose changes; headless stepping and plain-value state export; comparison with a pinned test-only engine on shared scenes |
+| P2: rigid motion | In progress: P2.1 has landed the [rigid world](physics-rigid.md) with static, kinematic and dynamic bodies, mass frames, the fixed tick with substeps, ordered commands, interpolation and plain-value state export, without contacts. `PhysicsRigid`: static/kinematic/dynamic integration, mass frames, forces/materials, convex and mesh contacts, the soft-constraint substep solver and selective CCD; stack/friction/spin/replay scenes; zero-growth active path; contact capacity rejected before any pose changes; headless stepping and plain-value state export; comparison with a pinned test-only engine on shared scenes |
 | P3: sensors and joints | Complete occupancy/events, distance/ball/hinge/slider, motor/break/sleep diagnostics; lifecycle, capacity and singularity regressions |
 | P4: engine integration | GameWorld binding, terrain revision/coverage installation, content cooking, inspector/recording, SDK and hot-reload boundaries; one sibling simulation built against the installed SDK |
 | P5: workload qualification | Representative performance and quality budgets, job/SIMD changes with evidence, supported target matrix and production failure behavior; a comparison solver sibling only if a workload exposes a baseline limit |
