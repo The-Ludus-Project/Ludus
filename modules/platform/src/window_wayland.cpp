@@ -27,6 +27,7 @@
 #include <ludus/platform/wayland/window.h>
 
 #include "internal/evdev_keymap.hpp"
+#include "internal/wayland_scale.hpp"
 
 namespace ludus::foundation::core
 {
@@ -220,7 +221,9 @@ WindowWayland::WindowWayland(CreateInfo&& info) noexcept
     : WindowBase(info.BaseCreateInfo), mSurface(std::move(info.Surface)), mXdgSurface(std::move(info.XdgSurface)),
       mXdgToplevel(std::move(info.XdgToplevel))
 {
-    mNativeWindowInfo = { .System = WindowSystem::Wayland, .Display = gDisplay.Get(), .Surface = mSurface.Get() };
+    mNativeWindowInfo.System = WindowSystem::Wayland;
+    mNativeWindowInfo.Display = gDisplay.Get();
+    mNativeWindowInfo.Surface = mSurface.Get();
 }
 
 WindowWayland::~WindowWayland() noexcept
@@ -326,10 +329,13 @@ void onGlobalRegistry([[maybe_unused]] void* data,
                       const char* interface,
                       uint32_t version) noexcept
 {
+    BindScaleGlobal(registry, name, interface, version);
     if (std::strcmp(interface, wl_compositor_interface.name) == 0)
     {
+        const uint32_t supportedVersion = static_cast<uint32_t>(wl_compositor_interface.version);
+        const uint32_t boundVersion = version < supportedVersion ? version : supportedVersion;
         wl_compositor* compositor =
-            static_cast<wl_compositor*>(wl_registry_bind(registry, name, &wl_compositor_interface, version));
+            static_cast<wl_compositor*>(wl_registry_bind(registry, name, &wl_compositor_interface, boundVersion));
         if (compositor == nullptr)
         {
             LUDUS_LOG_ERROR(LOG_PLATFORM, "Failed to bind Wayland compositor");
@@ -407,6 +413,7 @@ static void releaseKeyboard(ludus::input::ResetReason reason) noexcept
 
 void onGlobalRegistryRemove([[maybe_unused]] void* data, [[maybe_unused]] wl_registry* registry, uint32_t name) noexcept
 {
+    RemoveScaleGlobal(name);
     // If the selected seat's global is removed, cancel input and drop the seat.
     // A replacement seat (advertised later) starts from reset state.
     if (gSeatSelected && name == gSeatName)
@@ -626,25 +633,30 @@ UniquePtr<WindowWayland> CreateWindow(const Window::CreateInfo& info) noexcept
         LUDUS_LOG_ERROR(LOG_PLATFORM, "Failed to allocate Wayland window");
         return nullptr;
     }
-    xdg_surface_add_listener(window->mXdgSurface.Get(), &gXdgSurfaceListener, window);
+    UniquePtr<WindowWayland> owner(window);
+    window->mScale.Reset(new (std::nothrow) SurfaceScale(window->mNativeWindowInfo, window->mVisibility));
+    if (window->mScale.Get() == nullptr || window->mScale->Attach() == false)
+    {
+        LUDUS_LOG_ERROR(LOG_PLATFORM, "Could not attach Wayland scale listeners; recreate the window");
+        return nullptr;
+    }
+    xdg_surface_add_listener(window->mXdgSurface.Get(), &gXdgSurfaceListener, window->mScale.Get());
     xdg_toplevel_add_listener(window->mXdgToplevel.Get(), &gXdgToplevelListener, window);
 
     registerWindow(window);
 
     wl_surface_commit(window->mSurface.Get());
-    wl_display_roundtrip(gDisplay.Get());
-
-    return UniquePtr<WindowWayland>(window);
+    if (wl_display_roundtrip(gDisplay.Get()) < 0)
+    {
+        return nullptr;
+    }
+    window->mScale->Publish();
+    return owner;
 }
 
 void onXdgSurfaceConfigure(void* data, [[maybe_unused]] xdg_surface* xdgSurface, uint32_t serial) noexcept
 {
-    WindowWayland* window = static_cast<WindowWayland*>(data);
-    if (window == nullptr)
-    {
-        return;
-    }
-
+    static_cast<SurfaceScale*>(data)->Acknowledge();
     xdg_surface_ack_configure(xdgSurface, serial);
 }
 
@@ -666,7 +678,6 @@ void onXdgToplevelConfigure(void* data,
         return;
     }
 
-    window->SetClosed(false);
     // Thanks to the xdg-shell authors (Kristian Høgsberg, Rafael Antognolli, Jasper
     // St. Pierre, Jonas Ådahl and contributors), wayland-protocols,
     // stable/xdg-shell/xdg-shell.xml, xdg_toplevel.configure: "The states listed in
@@ -676,7 +687,9 @@ void onXdgToplevelConfigure(void* data,
     // visible again. https://gitlab.freedesktop.org/wayland/wayland-protocols
     if (statesOrNull != nullptr)
     {
-        window->SetVisibility(ComputeToplevelVisibility(*statesOrNull));
+        static_cast<SurfaceScale*>(
+            wl_surface_get_user_data(static_cast<wl_surface*>(window->GetNativeWindowInfo().Surface)))
+            ->Configure(width, height, ComputeToplevelVisibility(*statesOrNull));
     }
 }
 
@@ -823,6 +836,10 @@ bool WindowWayland::HandleEvent([[maybe_unused]] const Event& event) noexcept
             deliverReset(this, ludus::input::ResetReason::WindowClosed, empty);
             gFocusedWindow = nullptr;
         }
+    }
+    if (alive == true)
+    {
+        mScale->Publish();
     }
     return alive;
 }

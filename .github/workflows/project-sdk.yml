@@ -18,6 +18,11 @@ on:
         required: true
         type: string
   workflow_dispatch:
+    inputs:
+      wayland_scale:
+        description: Build the installed-SDK World Demo and qualify Wayland output scaling
+        type: boolean
+        default: false
 
 permissions:
   contents: read
@@ -34,7 +39,41 @@ concurrency:
   cancel-in-progress: ${{ github.event_name == 'pull_request' && github.event.action == 'synchronize' }}
 
 jobs:
+  wayland-scale:
+    if: github.event_name == 'workflow_dispatch' && inputs.wayland_scale
+    runs-on: ubuntu-24.04
+    timeout-minutes: 90
+    env:
+      CMAKE_BUILD_PARALLEL_LEVEL: '4'
+      CI: 'true'
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: ./.github/actions/native-setup
+        with:
+          preset: linux-clang-development
+          conan-cache-writer: 'false'
+          compiler-cache-writer: 'false'
+      - name: Build the SDK and standalone World Demo
+        run: |
+          ./scripts/install-sdk linux-clang-development
+          ./scripts/shader-probe bootstrap
+          ./scripts/bootstrap-spirv-cross
+          bash tests/sdk_consumer/wayland/build.sh "$RUNNER_TEMP/wayland-consumer"
+      - name: Exercise scaled Vulkan presentation and input
+        run: |
+          sudo apt-get install -y sway wtype weston wayland-utils mesa-vulkan-drivers
+          dbus-run-session -- python3 tests/sdk_consumer/wayland/validate.py \
+            "$RUNNER_TEMP/wayland-consumer/build/world_demo/ludus_world_demo" out/wayland-scale
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: installed-sdk-wayland-scale
+          path: out/wayland-scale
+
   host-tooling:
+    if: github.event_name != 'workflow_dispatch' || !inputs.wayland_scale
     name: Host tooling (ludus_tools) unit tests
     runs-on: ubuntu-24.04
     outputs:

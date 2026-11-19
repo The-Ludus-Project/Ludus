@@ -40,9 +40,9 @@ public:
     {
         /// Window title; Cocoa accepts valid UTF-8 of at most 4096 bytes and copies it at creation.
         std::string Name;
-        /// Requested content width; Cocoa interprets this in logical points (1..16384).
+        /// Requested content width; Wayland uses logical surface units and Cocoa uses points (1..16384).
         ludus::foundation::uint32 Width = 800;
-        /// Requested content height; Cocoa interprets this in logical points (1..16384).
+        /// Requested content height; Wayland uses logical surface units and Cocoa uses points (1..16384).
         ludus::foundation::uint32 Height = 600;
         /// @brief Browser only.
         ///
@@ -82,7 +82,7 @@ public:
         return false;
     }
 
-    /// Returns borrowed backend handles and current dimensions; Cocoa dimensions are backing pixels.
+    /// Returns borrowed backend handles and current dimensions; Cocoa and Wayland dimensions are backing pixels.
     /// Cocoa snapshots must be queried on the main thread and refreshed after pumping events.
     [[nodiscard]] LUDUS_INLINE NativeWindowInfo GetNativeWindowInfo() const noexcept
     {
