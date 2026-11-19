@@ -1,0 +1,22 @@
+{
+  "raster": [
+    {"title": "Test installed portable raster pixels, API selection and failures",
+     "script": "raster-browser-test.mjs", "results": "raster"},
+    {"title": "Check addressed-random GPU parity on WebGPU against the Wasm CPU reference",
+     "script": "random-parity-browser-test.mjs", "results": "random-parity"}
+  ],
+  "renderer-baseline": [
+    {"title": "Test installed L0/L1/L2/L3/L4 renderer against direct and cross-backend image oracles",
+     "script": "renderer-browser-test.mjs", "results": "renderer"},
+    {"title": "Activate an installed RG3 runtime generation on WebGPU and compare its exported pixels",
+     "script": "render-graph-runtime-browser-test.mjs", "results": "render-graph-runtime"}
+  ],
+  "renderer-scaling": [
+    {"title": "Verify L5 renderer scaling browser pixels",
+     "script": "renderer-scaling-browser-test.mjs", "results": "renderer-l5"}
+  ],
+  "renderer-pooling": [
+    {"title": "Measure RG4 transient pooling against the serial control on WebGPU",
+     "script": "render-graph-pooling-browser-test.mjs", "results": "render-graph-pooling"}
+  ]
+}
