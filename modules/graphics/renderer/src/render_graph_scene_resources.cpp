@@ -679,7 +679,7 @@ Status AllocateShadowResources(BorrowedView<const math::Vector4> words,
         constexpr usize MATRIX_ROWS = 4;
         const usize first = words.GetSize();
         if (extended.TryAddRange(words) == false ||
-            extended.TryResize(first + atlas.DirectionalCount * SHADOW_REGION_WORDS) == false)
+            extended.TryResize(first + usize{atlas.DirectionalCount} * SHADOW_REGION_WORDS) == false)
         {
             return Status::OutOfMemory;
         }
@@ -1058,16 +1058,11 @@ Status ForwardSceneGeneration::Poll() noexcept
         const MaterialProgram program = rhi::IsNull(description.Bake.Texture) == false ? owner.SurfaceChartProgram
                                         : rhi::IsNull(description.ProbeVolume.Texture) == false ? owner.ProbeProgram
                                                                                                 : owner.Program;
-        const Status status =
-            owner.RendererOrNull->createLitMaterial(program,
-                                                    description,
-                                                    state.Materials[state.PreparedMaterials],
-                                                    selection,
-                                                    state.ShadowResources->Atlas.Directional.GetData(),
-                                                    state.ShadowResources->Atlas.DirectionalCount,
-                                                    state.ShadowResources->Atlas.NearCount,
-                                                    state.ShadowResources->Atlas.SkyCount,
-                                                    state.ShadowResources->Atlas.ExtentTexels);
+        const Status status = owner.RendererOrNull->createLitMaterial(program,
+                                                                      description,
+                                                                      state.Materials[state.PreparedMaterials],
+                                                                      selection,
+                                                                      &state.ShadowResources->Atlas);
         if (IsAccepted(status) == false)
         {
             return status;
@@ -1546,12 +1541,12 @@ Status ForwardSceneResources::Prepare(const RenderGraphSceneDescription& scene,
             // the ordinary frame and both whole-scene maps before admitting camera-dependent work.
             rhi::DeviceInfo information;
             const usize requiredDraws =
-                SHADOW_FRAME_RESERVED_DRAWS + 2 * (1 + atlas.DirectionalCount) * candidate.Items.GetSize();
+                SHADOW_FRAME_RESERVED_DRAWS + 2 * (1 + usize{atlas.DirectionalCount}) * candidate.Items.GetSize();
             atlas.HasNearSpace =
                 atlas.DirectionalCount != 0 &&
                 rhi::GetDeviceInfo(owner.Device, information) == rhi::DeviceStatus::Ready &&
                 requiredDraws <= information.Profile.Raster.DrawsPerFrame &&
-                2 * atlas.DirectionalCount * casterTriangles <= MAX_MESH_LIGHT_SHADOW_TRIANGLES_PER_FRAME &&
+                2 * uint64{atlas.DirectionalCount} * casterTriangles <= MAX_MESH_LIGHT_SHADOW_TRIANGLES_PER_FRAME &&
                 HasDirectionalNearSpace(
                     {candidate.MeshLightShadowCasters.GetData(), candidate.MeshLightShadowCasters.GetSize()},
                     atlas.DirectionalCount);

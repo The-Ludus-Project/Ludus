@@ -78,6 +78,7 @@ namespace internal
 {
 class RenderGraphDeferredPass;
 class ForwardSceneGeneration;
+struct DeferredShadowAtlas;
 struct DeferredMaterialBindings;
 struct DeferredShadowAtlas;
 struct MeshLightShadowCaster;
@@ -894,11 +895,7 @@ private:
                                                       const LitMaterialDescription& description,
                                                       MaterialVersion& outMaterial,
                                                       LightSelection& outSelection,
-                                                      const ShadowRegion* directionalShadowsOrNull,
-                                                      foundation::usize directionalShadowCount,
-                                                      ludus::foundation::usize nearShadowCount,
-                                                      foundation::usize skyVisibilityCount,
-                                                      foundation::uint32 shadowAtlasTexels) noexcept;
+                                                      const internal::DeferredShadowAtlas* graphAtlasOrNull) noexcept;
     enum class DrawMode : foundation::uint8
     {
         Color,

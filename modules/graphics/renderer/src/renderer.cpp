@@ -4907,28 +4907,27 @@ Status Renderer::CreateLitMaterial(MaterialProgram program,
                                    MaterialVersion& output,
                                    LightSelection& report) noexcept
 {
-    return createLitMaterial(program, description, output, report, nullptr, 0, 0, 0, 0);
+    return createLitMaterial(program, description, output, report, nullptr);
 }
 Status Renderer::createLitMaterial(MaterialProgram program,
                                    const LitMaterialDescription& description,
                                    MaterialVersion& outMaterial,
                                    LightSelection& outSelection,
-                                   const ShadowRegion* directionalShadowsOrNull,
-                                   usize directionalShadowCount,
-                                   usize nearShadowCount,
-                                   usize skyVisibilityCount,
-                                   uint32 shadowAtlasTexels) noexcept
+                                   const internal::DeferredShadowAtlas* graphAtlasOrNull) noexcept
 {
     if (mState.Get() == nullptr || mState->LightingSetup != Status::Ready)
     {
         return Status::NotReady;
     }
+    const usize directionalShadowCount = graphAtlasOrNull != nullptr ? graphAtlasOrNull->DirectionalCount : 0;
+    const usize nearShadowCount = graphAtlasOrNull != nullptr ? graphAtlasOrNull->NearCount : 0;
+    const usize skyVisibilityCount = graphAtlasOrNull != nullptr ? graphAtlasOrNull->SkyCount : 0;
     const usize lightRegionCount = directionalShadowCount + nearShadowCount;
     const usize leadingShadowCount = directionalShadowCount + skyVisibilityCount;
     if (directionalShadowCount > SHADOW_REGION_CAPACITY ||
         lightRegionCount + skyVisibilityCount > SHADOW_REGION_CAPACITY ||
         (skyVisibilityCount != 0 && skyVisibilityCount != SKY_VISIBILITY_DIRECTION_COUNT) ||
-        (leadingShadowCount != 0 && (directionalShadowsOrNull == nullptr || shadowAtlasTexels == 0)))
+        (graphAtlasOrNull != nullptr && leadingShadowCount != 0 && graphAtlasOrNull->ExtentTexels == 0))
     {
         return Status::InvalidDescription;
     }
@@ -5353,13 +5352,13 @@ Status Renderer::createLitMaterial(MaterialProgram program,
                              static_cast<float32>(atlas->Height));
         }
     }
-    else
+    else if (graphAtlasOrNull != nullptr)
     {
-        const float32 extent = static_cast<float32>(shadowAtlasTexels);
+        const float32 extent = static_cast<float32>(graphAtlasOrNull->ExtentTexels);
         for (usize i = 0; i < leadingShadowCount; ++i)
         {
             const usize sourceIndex = i < directionalShadowCount ? i : i + nearShadowCount;
-            packShadowRegion(i, directionalShadowsOrNull[sourceIndex], extent, extent);
+            packShadowRegion(i, graphAtlasOrNull->Directional[sourceIndex], extent, extent);
         }
     }
     uint8* legacy = s.LitScratch->Legacy.GetData();
