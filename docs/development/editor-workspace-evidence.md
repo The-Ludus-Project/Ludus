@@ -476,10 +476,29 @@ On the macOS desktop, the Cocoa accessibility tree exposed the fixture's
 `music/theme` and `source/hit` rows and the original WAV path. The automated
 problem description included the failed dependency check, the candidate's
 100 frames at 44,100 Hz, the required loop end of frame 400, and the corrected
-file action. The desktop bridge repeatedly lost the app process when input was
-sent. The scoped Cocoa MainWindow replay also exceeded its 35-second deadline.
-VoiceOver speech, focus through the Cocoa file chooser, and an author's
-unassisted discovery time, wrong turns and assistance remain to be measured.
+file action. The desktop bridge lost contact with the Editor on input, and the
+scoped Cocoa MainWindow replay exceeded its 35-second deadline.
+
+### VoiceOver retry on November 19, 2026
+
+The Editor built from the #2026 implementation opened a fresh copy of the
+saved-loop fixture on macOS 26.6 with Qt 6.12.0. Selecting `source/hit` in
+Content made **Reimport selected** enabled. The native accessibility tree
+identified the `source/hit` cell as the focused UI element before VoiceOver
+was enabled.
+
+System Settings reported the VoiceOver 10 toggle on. The VoiceOver process
+was running, but the desktop bridge timed out when the Editor was queried for
+the next interaction. The Editor process was still alive and the disposable
+catalog still matched its pre-run bytes. No picker opening, picker focus
+transition or spoken announcement was observed.
+
+Crash reports from the earlier attempt explain several of its disconnects.
+The Editor received SIGSEGV in Qt's `QAccessibleTable::modelChange` during
+`QComboBox::clear` in `ProjectRenderingSettings::refresh`. The retry reached
+the Content table and timed out with the Editor still running. VoiceOver
+speech, native picker focus, and an author's unassisted discovery time, wrong
+turns and assistance remain pending.
 
 The local Editor built with render preview disabled. The full Editor test
 target hit existing Qt Quick include and unused-symbol errors in that
