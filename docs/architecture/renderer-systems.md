@@ -4939,6 +4939,8 @@ parent level, so an odd final row or column contributes with its fractional
 overlap. The discussion of texture minification in [Mehdi NS's texture filtering
 notes](https://mehdins.wordpress.com/2017/08/29/notes-on-anti-aliasing-texture-filtering-part-3/)
 prompted the review of this path against the offline texture cooker.
+The [normal-map minification benchmark](../development/benchmark-scenes.md#measure-normal-map-minification)
+compares the shipped packed-channel filter with an experimental slope-variance fit.
 
 Creation retains an exact texture view and rejects sRGB/data-format mismatch,
 attachments, unavailable resources and incompatible shader programs explicitly.
