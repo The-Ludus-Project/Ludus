@@ -3484,6 +3484,33 @@ any exceeds it or an HDR capture is partial or failed. Both outcomes write JSON
 and an HTML report with each candidate's verdict. Input and usage errors, including
 a pair with no jointly sampled pixels, exit with 2.
 
+### Independent Linux Vulkan raster baseline
+
+The Linux Editor CI job captures the authored `Main/output` export of the
+`Default` configuration from the saved cube World. The native Editor capture
+uses the World's `preview.camera` and the viewport raster capture path. A
+standalone installed-SDK app reopens the same World, mesh and cooked graph
+after relocation. The app reads its inputs from its package directory.
+
+At 96 × 64 pixels an orthographic camera with an eight-metre vertical span
+covers eight pixels per metre. Relative to the camera, the cube extends from
+−2 to 0 metres horizontally and from 0 to 2 metres vertically. On the
+top-left-origin image its red face therefore covers columns 32–47 and rows
+16–31, inclusive. Every other pixel has the black clear colour. Pixel centres
+fall strictly inside or outside the silhouette. The graph writes flat colour
+at the exact RGBA8 endpoints with one sample per pixel.
+
+The full Linux Editor batch runs this check. To run it on a branch, dispatch
+the `ci` workflow with `validation_tier=full` and `evidence_job=editor`. Open the resulting
+`raster-baseline-vulkan` artifact. The `baseline.html` heatmaps
+and `baseline.json` metrics compare two fresh captures per host with the
+independent rectangle. The zero RMSE threshold requires exact decoded RGB
+repeatability. The negative control changes the saved tint from red to green
+and captures both hosts again. Its `deliberate-failure.html` heatmaps should
+highlight exactly the 256 cube pixels. Two channels change by one on each,
+giving a normalized RGB RMSE of 1/6. The artifact includes the PNGs, driver
+version, graph digest, export names and per-run adapter logs.
+
 ## S4 scene authoring
 
 World owns the world-demo adapter as well as 3D scene placement. Its sample

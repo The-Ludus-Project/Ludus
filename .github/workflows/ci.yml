@@ -1667,6 +1667,11 @@ jobs:
         run: out/host-tools/venv/bin/python tools/check_build_graph.py out/build/linux-clang-development --summary "$GITHUB_STEP_SUMMARY" --report out/build-graph/linux-clang-development.json
       - name: Build every default target with the Editor and shader worker
         run: out/host-tools/venv/bin/cmake --build --preset linux-clang-development
+      - name: Compare saved World raster captures on Linux Vulkan
+        if: needs.changes.outputs.validation_tier != 'integration'
+        uses: ./.github/actions/raster-baseline
+        with:
+          editor: out/build/linux-clang-development/apps/editor/ludus_editor_tests
       # Checked-in generated sources (such as the SDK .luslh headers) need tools only this
       # build produces, so integration pull requests check them here rather than in a batch.
       - name: Check checked-in generated sources

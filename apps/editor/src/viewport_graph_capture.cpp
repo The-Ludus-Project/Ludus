@@ -334,7 +334,8 @@ bool ViewportGraphCapture::ReadGenerationIdentity(const ViewportRasterSource& so
 bool ViewportGraphCapture::FindExportResource(const QString& packagePath,
                                               const QString& exportId,
                                               uint32& outResource,
-                                              QString& outError)
+                                              QString& outError,
+                                              QString* outTargetOrNull)
 {
     QByteArray bytes;
     renderer::RenderGraphPackage* packageOrNull = new (std::nothrow) renderer::RenderGraphPackage;
@@ -374,6 +375,10 @@ bool ViewportGraphCapture::FindExportResource(const QString& packagePath,
             if (attachment.Aspect == QStringLiteral("texture") && index >= 0)
             {
                 outResource = catalogue.Targets[index].Resource;
+                if (outTargetOrNull != nullptr)
+                {
+                    *outTargetOrNull = catalogue.Targets[index].Name;
+                }
                 return true;
             }
         }
