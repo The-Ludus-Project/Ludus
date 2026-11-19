@@ -6009,6 +6009,7 @@ TEST_CASE("The native World viewport sweeps the orbital terminator at matched li
     WorldGraphView* graphViewOrNull = viewportOrNull->findChild<WorldGraphView*>();
     REQUIRE(graphViewOrNull != nullptr);
     StaticArray<QColor, orbital::ORBITAL_PROBE_COUNT> daylightSamples{};
+    QColor twilightLimb;
     for (const bool isTwilight : {false, true})
     {
         const math::Vector3 sunWorld = orbital::GetOrbitalSunDirection(isTwilight);
@@ -6035,7 +6036,8 @@ TEST_CASE("The native World viewport sweeps the orbital terminator at matched li
                 true);
         const QString fileName =
             isTwilight == true ? QStringLiteral("twilight.world.json") : QStringLiteral("day.world.json");
-        REQUIRE(world.Open(WriteBytes(project, fileName, document.Encode())) == true);
+        const QString worldPath = QFileInfo(WriteBytes(project, fileName, document.Encode())).canonicalFilePath();
+        REQUIRE(world.Open(worldPath) == true);
         world.ResumePreview();
         source.SetExposureMode(ViewportExposureMode::Graph);
         RenderGraphPreview* graphOrNull = workspace.GetPreviewOrNull();
@@ -6069,7 +6071,8 @@ TEST_CASE("The native World viewport sweeps the orbital terminator at matched li
                 renderer::ViewDescription presented;
                 constexpr float32 DIRECTION_TOLERANCE = 0.00002F;
                 if (graphOrNull->GetPresentedRevision() <= revision ||
-                    graphOrNull->TryGetPresentedView(presented) == false ||
+                    graphOrNull->TryGetPresentedView(presented) == false || presented.OrthographicCamera == true ||
+                    presented.Atmosphere.IsEnabled == false ||
                     presented.CameraPosition.Y != orbital::ORBIT_HEIGHT_METRES ||
                     math::Length(presented.CameraForward - forwardWorld) >= DIRECTION_TOLERANCE ||
                     math::Length(presented.Atmosphere.DirectionToSunWorld - sunWorld) >= DIRECTION_TOLERANCE)
@@ -6099,6 +6102,7 @@ TEST_CASE("The native World viewport sweeps the orbital terminator at matched li
             INFO(workspace.GetRenderProblem().toStdString());
             REQUIRE(hasMatchedFrame() == true);
             const QString path = project.filePath(fileName + QString::number(i) + QStringLiteral(".png"));
+            timer.restart();
             const bool hasStarted = viewportOrNull->SaveScreenshot(path, error);
             INFO(error.toStdString());
             REQUIRE(hasStarted == true);
@@ -6130,6 +6134,16 @@ TEST_CASE("The native World viewport sweeps the orbital terminator at matched li
                 // and exposure across the two authored Suns, allowing their diffuse twilight fill.
                 CHECK(center.red() < daylightSamples[i].red() / 2);
                 CHECK(center.blue() < daylightSamples[i].blue() / 2);
+                if (probe.Ray == orbital::OrbitalRay::AboveGroundTangent)
+                {
+                    twilightLimb = center;
+                }
+                else
+                {
+                    // A partially lit chord retains a red rim above the shadowed ground hit.
+                    REQUIRE(twilightLimb.isValid() == true);
+                    CHECK(twilightLimb.red() > center.red() + 8);
+                }
             }
         }
     }
