@@ -292,13 +292,16 @@ TEST_CASE("Near directional shadows preserve the doorway across camera updates",
         CHECK(pixels[center] == pixels[center + 2]);
         // Analytical ray/quad intersections in World metres, independent of either map.
         const math::Vector3 towardLightWorld = -lights[light].Direction;
-        const float32 wallDepth = towardLightWorld.X > 0 ? WALL_X / towardLightWorld.X : -1;
+        const math::Vector3 casterTranslation = items[1].MeshToWorld.Translation;
+        const float32 wallDepth = (WALL_X + casterTranslation.X) / towardLightWorld.X;
         const float32 hitHeight = wallDepth * towardLightWorld.Z;
-        const float32 roofX = WALL_TOP * towardLightWorld.X / towardLightWorld.Z;
-        const float32 relativeY = y - items[1].MeshToWorld.Translation.Y;
+        const float32 roofX =
+            (WALL_TOP + casterTranslation.Z) * towardLightWorld.X / towardLightWorld.Z - casterTranslation.X;
+        const float32 relativeY = y - casterTranslation.Y;
+        const bool isWallHit = wallDepth > 0 && hitHeight >= casterTranslation.Z &&
+                               hitHeight <= WALL_TOP + casterTranslation.Z && math::Abs(relativeY) > OPENING_HALF_WIDTH;
         const bool isBlocked = isCasterOpaque == true && math::Abs(relativeY) <= 4 &&
-                               ((wallDepth > 0 && hitHeight <= WALL_TOP && math::Abs(relativeY) > OPENING_HALF_WIDTH) ||
-                                (roofX >= 1.75F && roofX <= 2.25F));
+                               (isWallHit == true || (roofX >= 1.75F && roofX <= 2.25F));
         if (shouldMeasure == true)
         {
             rhi::AllocationTelemetry allocations;
@@ -455,6 +458,35 @@ TEST_CASE("Near directional shadows preserve the doorway across camera updates",
             }
         }
     }
+    // Move the doorway well beyond the camera's 400 m far plane. At a rise/run of 0.05
+    // a ray from the floor crosses the 1,500 m wall at 75 m, between its base and top.
+    constexpr float32 RIDGE_DISTANCE_METRES = 1500;
+    constexpr float32 RIDGE_BASE_METRES = 74;
+    lights[0].Direction.Z = -0.05F;
+    lights[1].Direction.Z = -0.05F;
+    for (float32 side : {1.F, -1.F})
+    {
+        const float32 wallPositionX = side * RIDGE_DISTANCE_METRES;
+        items[1].MeshToWorld.Translation = {wallPositionX - WALL_X, 0, RIDGE_BASE_METRES};
+        ++contentRevision;
+        for (usize light = 0; light < lights.GetSize(); ++light)
+        {
+            const uint8 wallVisibility = sample(-1, light, 0);
+            const uint8 openingVisibility = sample(0, light, 0);
+            if (shouldMeasure == true)
+            {
+                std::printf("ridge,%d,%.0f,%llu,%u,%u\n",
+                            int(isWholeSceneControl),
+                            double(wallPositionX),
+                            static_cast<unsigned long long>(lights[light].SourceId),
+                            unsigned(wallVisibility),
+                            unsigned(openingVisibility));
+            }
+        }
+    }
+    items[1].MeshToWorld.Translation = {};
+    lights[0].Direction.Z = -1;
+    lights[1].Direction.Z = -1;
     Array<math::Vector4> coverage;
     REQUIRE(coverage.TryResize(geometry.Casters.GetSize()) == true);
     meshes[1].Geometry.Colors = {coverage.GetData(), coverage.GetSize()};

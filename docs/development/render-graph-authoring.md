@@ -6717,8 +6717,9 @@ occupy all four squares, the near tiles use one extra 512-texel row. This
 raises the unpadded colour and depth total from 32 to 40 MiB per drawable
 generation. If the device dimensions, storage or draw budget cannot admit
 the near maps, the resolve uses whole-scene directional coverage. Local sky
-keeps its own allocation and fallback policy. It also uses whole-scene coverage for orthographic,
-multi-camera and perspective views outside the padded footprint. Recook a
+keeps its own allocation and fallback policy. Directional lights also use
+whole-scene coverage for orthographic, multi-camera and perspective views
+outside the padded footprint. Recook a
 clustered deferred package with format version 40 or later to enable the near
 maps. Earlier packages retain their original directional shadow behavior.
 
@@ -6755,7 +6756,13 @@ per source. Both the blocked and clear probes matched their exact endpoints
 roof across the opening, transparent and opaque masked geometry, moving the
 wall, editing the terrain, replacing the light direction, resize and camera
 updates with the scene inputs released. A CPU projection check keeps a
-1.5 km offscreen blocker inside the fitted light volume. On a second terrain
+1.5 km offscreen blocker inside the fitted light volume. The GPU replay also
+moves the wall to X = +1,500 m and −1,500 m, outside the 400 m camera far
+plane. With its base at 74 m and each light at a 0.05 rise/run, the ray toward
+the wall crosses it at 75 m. For each placement, the near map returned 0
+behind the wall and 255 through the opening. The opposite light returned 255
+at both probes. The whole-scene control returned 255 at all eight probes.
+On a second terrain
 with a 0.5 rise/run, a Sun at 0.55 rise/run grazed the slope through the
 open doorway. Both the Sun and Moon returned 255/255 at the clear probe in
 both modes, for zero measured false shadow there.
