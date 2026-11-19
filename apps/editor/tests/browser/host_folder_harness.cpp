@@ -124,19 +124,6 @@ EMSCRIPTEN_KEEPALIVE int32 HarnessSave(const char* path, const char* bytes, int3
     return rename(temporary, path) == 0 ? 0 : Failure();
 }
 
-/// Retry pending folder writes through the existing file, without rewriting it.
-EMSCRIPTEN_KEEPALIVE int32 HarnessFlush(const char* path)
-{
-    const int32 descriptor = open(path, O_RDONLY);
-    if (descriptor < 0)
-    {
-        return Failure();
-    }
-    const int32 result = fsync(descriptor) == 0 ? 0 : Failure();
-    close(descriptor);
-    return result;
-}
-
 EMSCRIPTEN_KEEPALIVE int32 HarnessRename(const char* source, const char* destination)
 {
     return rename(source, destination) == 0 ? 0 : Failure();

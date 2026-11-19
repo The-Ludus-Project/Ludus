@@ -548,15 +548,8 @@ addToLibrary({
 
     report(type, state, path, error) {
       console.warn(`Ludus host folder ${state.name}: ${type} ${path}: ${error}`);
-      const monitor = LudusHost.monitor;
-      if (monitor) {
-        // The caller may be suspended in a file syscall. Let its promise
-        // resume Wasm before Qt opens a dialog and starts handling input.
-        setTimeout(() => {
-          if (LudusHost.monitor === monitor) {
-            LudusHost.dispatch(monitor, type, {name: state.name, path, error});
-          }
-        }, 0);
+      if (LudusHost.monitor) {
+        LudusHost.dispatch(LudusHost.monitor, type, {name: state.name, path, error});
       }
     },
 
