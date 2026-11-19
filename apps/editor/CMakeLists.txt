@@ -1461,6 +1461,13 @@ if(LUDUS_BUILD_TESTS AND NOT EMSCRIPTEN)
             tests/render_graph_library_capture_tests.cpp)
         target_compile_definitions(ludus_editor_tests PRIVATE
             "LUDUS_EDITOR_RENDER_GRAPH_FIXTURE=\"${editor_renderer_static_RUNTIME_PACKAGE}\"")
+        if(TARGET ludus_light_transformer_preview_fixture)
+            add_dependencies(ludus_editor_tests ludus_light_transformer_preview_fixture)
+            set_property(SOURCE tests/render_graph_preview_tests.cpp APPEND PROPERTY COMPILE_DEFINITIONS
+                LUDUS_EDITOR_MODEL_PACKAGE="$<TARGET_PROPERTY:ludus_light_transformer_preview_fixture,GRAPH_PACKAGE>"
+                LUDUS_EDITOR_MODEL_ENCODER="$<TARGET_PROPERTY:ludus_light_transformer_preview_fixture,ENCODER_ASSET>"
+                LUDUS_EDITOR_MODEL_DECODER="$<TARGET_PROPERTY:ludus_light_transformer_preview_fixture,DECODER_ASSET>")
+        endif()
         set(editor_ray_source "${PROJECT_SOURCE_DIR}/tests/sdk_consumer/rg2/raytracing")
         set(editor_ray_staged "${CMAKE_CURRENT_BINARY_DIR}/render-graph-host/raytracing")
         ludus_stage_render_graph_inputs("${editor_ray_source}" "${editor_ray_staged}")

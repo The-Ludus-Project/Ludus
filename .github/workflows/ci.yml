@@ -281,6 +281,7 @@ jobs:
             -DLUDUS_SPIRV_CROSS="$PWD/out/shader-tools/spirv-cross/bin/spirv-cross"
           out/host-tools/venv/bin/cmake --build out/renderer-sdk --parallel "$CMAKE_BUILD_PARALLEL_LEVEL"
           out/renderer-sdk/ludus_sdk_renderer_consumer
+          out/host-tools/venv/bin/ctest --test-dir out/renderer-sdk -R "^installed_encoder$" --no-tests=error --output-on-failure
           out/renderer-sdk/ludus_sdk_renderer_views_consumer
           out/renderer-sdk/ludus_sdk_renderer_overlays_consumer
           out/renderer-sdk/ludus_sdk_renderer_materials_consumer
@@ -1094,6 +1095,7 @@ jobs:
             -DLUDUS_SPIRV_CROSS="$PWD/out/shader-tools/spirv-cross/bin/spirv-cross"
           out/host-tools/venv/bin/cmake --build out/renderer-sdk --parallel "$CMAKE_BUILD_PARALLEL_LEVEL"
           out/renderer-sdk/ludus_sdk_renderer_consumer
+          out/host-tools/venv/bin/ctest --test-dir out/renderer-sdk -R "^installed_encoder$" --no-tests=error --output-on-failure
           out/renderer-sdk/ludus_sdk_renderer_views_consumer
           out/renderer-sdk/ludus_sdk_renderer_overlays_consumer
           out/renderer-sdk/ludus_sdk_renderer_materials_consumer
