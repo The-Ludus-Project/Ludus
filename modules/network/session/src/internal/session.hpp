@@ -44,7 +44,7 @@ class SessionTransport
 public:
     virtual ~SessionTransport() = default;
     virtual TransportState Poll() noexcept = 0;
-    virtual BorrowedView<const char> GetPeerIdentity() const noexcept = 0;
+    [[nodiscard]] virtual BorrowedView<const char> GetPeerIdentity() const noexcept = 0;
     virtual TransportResult Receive(ReceivedFrame& outFrame) noexcept = 0;
     virtual TransportResult Send(Channel lane, BorrowedView<const uint8> bytes) noexcept = 0;
     virtual void Close() noexcept = 0;

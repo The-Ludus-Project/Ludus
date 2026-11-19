@@ -17,20 +17,23 @@ constexpr uint64 FIRST_EPOCH = 2;
 constexpr uint64 NEXT_EPOCH = 3;
 constexpr uint64 TICKET = 42;
 
+struct SimulatedLinks final
+{
+    LinkSimulator& Ingress;
+    LinkSimulator& Egress;
+};
+
 class SimulatedTransport final : public SessionTransport
 {
 public:
-    explicit SimulatedTransport(LinkSimulator& inoutIngress, LinkSimulator& inoutEgress) noexcept
-        : mIngress(inoutIngress), mEgress(inoutEgress)
-    {
-    }
+    explicit SimulatedTransport(SimulatedLinks links) noexcept : mLinks(links) {}
 
     TransportState Poll() noexcept override
     {
         return State;
     }
 
-    BorrowedView<const char> GetPeerIdentity() const noexcept override
+    [[nodiscard]] BorrowedView<const char> GetPeerIdentity() const noexcept override
     {
         return {"client", 6};
     }
@@ -41,7 +44,7 @@ public:
         {
             return TransportResult::WouldBlock;
         }
-        const LinkStatus status = mEgress.Send(NowUs, {bytes.GetDataOrNull(), bytes.GetSize()});
+        const LinkStatus status = mLinks.Egress.Send(NowUs, {bytes.GetDataOrNull(), bytes.GetSize()});
         if (status == LinkStatus::Ok || status == LinkStatus::Dropped)
         {
             return TransportResult::Ok;
@@ -51,7 +54,7 @@ public:
 
     TransportResult Receive(ReceivedFrame& outFrame) noexcept override
     {
-        const LinkStatus status = mIngress.Receive(NowUs, outFrame.Message);
+        const LinkStatus status = mLinks.Ingress.Receive(NowUs, outFrame.Message);
         if (status == LinkStatus::Empty)
         {
             return TransportResult::Empty;
@@ -75,8 +78,7 @@ public:
     uint64 NowUs = 0;
 
 private:
-    LinkSimulator& mIngress;
-    LinkSimulator& mEgress;
+    SimulatedLinks mLinks;
 };
 
 struct Application final
@@ -114,8 +116,8 @@ struct Peers final
 {
     LinkSimulator ToClient;
     LinkSimulator ToServer;
-    SimulatedTransport ClientTransport{ToClient, ToServer};
-    SimulatedTransport ServerTransport{ToServer, ToClient};
+    SimulatedTransport ClientTransport{{ .Ingress = ToClient, .Egress = ToServer }};
+    SimulatedTransport ServerTransport{{ .Ingress = ToServer, .Egress = ToClient }};
     Session Client{ClientTransport};
     Session Server{ServerTransport};
     Application ClientApplication;
