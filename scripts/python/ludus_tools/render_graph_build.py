@@ -154,6 +154,7 @@ class Snapshot:
         self.generated = set()
         self.language_tool = None
         self.language_reports = {}
+        self.executable_language_programs = {}
         self.total = 0
 
     def path(self, relative):
@@ -1172,6 +1173,9 @@ def prepare_sources(manifest, helper, *, root=None, ray_path_capture=False, capt
     if any(forward.is_deferred(technique) for technique in techniques.values()):
         selected_programs.add('DeferredLighting')
     programs = {identity: program for identity, program in programs.items() if identity in selected_programs}
+    # The Editor selects authored LUSL programs. Linking replaces ray callbacks with compute kernels.
+    snapshot.executable_language_programs = {identity: program for identity, program in programs.items()
+                                             if 'language_source' in program}
     require(not ray_path_capture or ray.TECHNIQUE in techniques, 'Capability', 'ray path capture',
             'ray path capture requires a RayTracingPipeline or scene ComputePipeline node')
     require(not capture_profile or ray.TECHNIQUE in techniques, 'Capability', 'capture profile',
