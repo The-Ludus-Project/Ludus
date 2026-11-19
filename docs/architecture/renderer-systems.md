@@ -316,8 +316,9 @@ upload, and nothing is built from the mesh on the CPU. The editor uses it for th
 viewport's selection.
 
 - **Mask pass.** The mesh is rasterized into an RGBA8 mask the size of the target, white where it covers
-  a pixel. There is no depth test, so another object in front does not hide the outline, and depth is
-  pinned inside the clip volume so only the camera plane and the frame sides clip.
+  a pixel. The mask uses all four clip coordinates from the image’s mesh-to-clip transform. The
+  rasterizer clips triangles against the same near, far and side planes as the image. Scene-depth testing
+  is disabled so the outline stays visible through other objects.
 - **Edge pass.** One quad over the mesh's projected bounds, padded by the casing width, samples the mask.
   Each pixel searches its neighbourhood, a square of radius `ceil(casing half width)` pixels capped at
   eight, for the nearest pixel whose coverage differs from its own, and turns that distance into
@@ -3743,6 +3744,56 @@ interpolation still fails validation; radiance and throughput retain their
 existing checks. Capture jobs reserve a bounded residency budget for their pinned
 versions and support cancellation, releasing submitted uses through completion.
 
+#### Successive diffuse bounces in a closed enclosure
+
+The `[diffuse-enclosure]` native renderer tests place a perspective camera inside
+a two-metre cube. Each face has the same typed Lambertian reflectance ρ and
+emits scene-linear RGB radiance E = (1, 0.5, 0.25) inward. The environment is
+black, the light list is empty, and the four-metre secondary range exceeds the
+cube diagonal. Every direction in the inward hemisphere sees another wall.
+Integrating a constant incident radiance against (ρ/π) cos θ therefore
+multiplies that radiance by ρ. Applying Kajiya's successive-scattering expansion
+gives the contributions E, Eρ, Eρ², … up to Eρᴰ. [James T. Kajiya, *The Rendering Equation*, §3](https://doi.org/10.1145/15922.15902)
+
+At depths 1, 2 and 4, the tests check emission (E), direct (Eρ), indirect
+(orders 2 through D) and total against these sums independently on the CPU and
+GPU. Matching seeds across depths gives paired estimates for the additional
+orders Eρ² and E(ρ³ + ρ⁴). Compensated Russian roulette starts at the second
+scattering event. Each backend must record terminations at depths 2 and 4.
+
+The infinite-depth solution is E/(1−ρ). Its difference from the finite-depth
+target is exactly Eρ^(D+1)/(1−ρ). The table gives this omitted radiance in
+multiples of E at a fixed 32 samples per pixel.
+
+| ρ | Depth 1 | Depth 2 | Depth 4 |
+| --- | ---: | ---: | ---: |
+| 1/2 | 1/2 | 1/4 | 1/16 |
+| 7/8 | 49/8 | 343/64 | 16807/4096 |
+
+To measure sampling uncertainty, each capture averages a 16 × 16 image for
+each of six seeds (40–45). At depth 4 the same seeds also run at 8 samples per
+pixel. The standard error is the sample standard deviation of the six image
+means divided by √6. CPU–GPU and depth comparisons use within-seed differences
+before computing that error. Each RGB channel must agree within six standard
+errors plus 0.0002 times its emission, capped at 0.03 times its emission to
+resolve the smallest fourth-order contribution. Run
+`ludus_renderer_render_tests "[diffuse-enclosure]"` to see the raw total mean,
+its residual from the finite-depth target, and its standard error. This
+comparison with a theoretical radiometric solution follows
+[James Arvo, Kenneth Torrance and Brian Smits, *A Framework for the Analysis of Error in Global Illumination Algorithms*](https://doi.org/10.1145/192161.192179).
+
+At depth 4, the following native run measured red-channel total radiance on
+the CPU oracle and Metal compute. Residual is the raw mean minus the finite-depth
+target (1.9375 or 3.896728515625). Each uncertainty is one across-seed standard
+error in scene-linear radiance units.
+
+| ρ | Samples/pixel | CPU residual ± SE | Metal residual ± SE |
+| --- | ---: | ---: | ---: |
+| 1/2 | 8 | −0.003455 ± 0.006804 | −0.003455 ± 0.006804 |
+| 1/2 | 32 | +0.006994 ± 0.004230 | +0.006994 ± 0.004230 |
+| 7/8 | 8 | −0.002439 ± 0.006190 | −0.002439 ± 0.006190 |
+| 7/8 | 32 | +0.008056 ± 0.001432 | +0.008056 ± 0.001432 |
+
 ### Hybrid and real-time transport
 
 Introduce effects in order: selected shadow visibility, then roughness-aware
@@ -4966,6 +5017,8 @@ parent level, so an odd final row or column contributes with its fractional
 overlap. The discussion of texture minification in [Mehdi NS's texture filtering
 notes](https://mehdins.wordpress.com/2017/08/29/notes-on-anti-aliasing-texture-filtering-part-3/)
 prompted the review of this path against the offline texture cooker.
+The [normal-map minification benchmark](../development/benchmark-scenes.md#measure-normal-map-minification)
+compares the shipped packed-channel filter with an experimental slope-variance fit.
 
 Creation retains an exact texture view and rejects sRGB/data-format mismatch,
 attachments, unavailable resources and incompatible shader programs explicitly.
@@ -5512,6 +5565,121 @@ The adopted departures are latitude/longitude prefilter storage, exact row solid
 angles, a flat CDF and the explicit finite RGB profile above. See
 [full static resource acceptance](../examples/reference-scene.md#full-static-sponza-and-suntemple-acceptance)
 for assets, commands and limitations.
+
+### Qualify HDR reflections in the native Lit renderer
+
+The installed-SDK consumer imports a one-plane glTF scene with a companion
+Radiance image. It draws the cooked material and camera into an RGBA16F target
+with the authored Lit recipe and no direct lights. Linear presentations at five
+known exposures recover both the highlights and dark values through RGBA8
+readback. The World check selects the same companion in the import preview,
+confirms the import, saves the World and opens it again. It compares every
+cooked RGB value and samples the Lit viewport before and after reopening.
+The viewport comparison applies its display transform to the SDK values and
+uses an absolute tolerance of 0.065 per display channel. The World's grid and
+colored coordinate axes also appear in this frame. The receiver centre is at
+(7, 4, 5) metres so these overlays clear the lighting probes.
+
+Run the synthetic checks with the native renderer SDK consumer build, then run
+the World check with the native Editor test executable. The standalone consumer
+also configures from `tests/sdk_consumer/environment` against an installed SDK.
+
+```bash
+ctest --test-dir out/renderer-sdk/environment -R '^ludus_sdk_environment$' --output-on-failure
+python3 tests/sdk_consumer/environment/qualify.py out/renderer-sdk/environment/ludus_sdk_environment \
+  --case world --editor out/build/macos-clang-development/apps/editor/ludus_editor_tests
+```
+
+**Perspective reflection.** Each feature occupies a cone about its normalized
+world direction in a 128 × 64 panorama. The background has RGB (0.125, 0.125,
+0.125). Three synthetic exposures of 1/16, 1/4 and 1 second pass through a
+quantized square-root response before RGBE encoding.
+
+| Direction in world space | Cone radius | Linear RGB |
+| --- | ---: | --- |
+| (+1, 0, 0), across the longitude seam | 11° | (4, 1, 0.25) |
+| (+1, 0, +0.55) | 10° | (0.25, 3, 0.5) |
+| (+1, 0, −0.55) | 10° | (0.5, 0.25, 2) |
+| (0, +1, 0), north pole | 17° | (2, 0.5, 3) |
+
+The eye is one metre from the white metallic plane, with a 90° vertical field
+of view. For each probe, intersect the eye ray with the plane and reflect the
+incident direction about the world normal. Average a 3 × 3 interior region
+around the projected point. Roughness 0.045, filtering and readback allow
+0.30 absolute error per channel against 0.96 times the source (0.22 at the
+pole). Both sides of the seam and the same world points reprojected after a
+90° camera roll must agree within 0.035. This exercises the reflection
+construction described by [Blinn and Newell](https://people.csail.mit.edu/ericchan/bib/pdf/p542-blinn.pdf)
+and the perspective dependency described by [Heidrich and Seidel](https://vccimaging.org/Publications/Heidrich1998VEM/Heidrich1998VEM.pdf).
+
+**Diffuse irradiance.** For unit direction (x, y, z), use RGB radiance
+(1, 1, 1) + 0.45(x, y, z) + 0.7(xy, yz, zx). The clamped-cosine convolution
+multiplies the constant, linear and quadratic bands by π, 2π/3 and π/4.
+Integrating the cooked texel centres with exact cell solid angles must agree
+within 0.015 after division by π. The raster comparison subtracts a black
+dielectric from a white dielectric to cancel the shared specular term, applies
+the 0.96 diffuse response and allows 0.048 per linear channel. It covers the six
+axis normals and six signed diagonals at 32 × 16 and 128 × 64, with a unit
+constant control. [Ramamoorthi and Hanrahan](https://www-graphics.stanford.edu/papers/envmap/envmap.pdf)
+
+**Glossy reflection.** Hold the 128 × 64 source fixed and keep just the seam
+patch. For mip levels 1 and 2 of 32- and 64-column maps, put the mirror
+direction at a mip texel centre. For a white conductor the two Lazarov fit terms
+sum to (1 − 0.55 × roughness), so division by this factor recovers the selected
+mip from the linear pixel. Compare it with the independent binary64 integral
+of incident radiance weighted by D(H) max(N·L, 0)/4 divided by the integral of
+that weight, with V=N. The absolute tolerances are 0.18 at 32 filter samples,
+0.085 at 256 samples and 0.012 for a constant source. On Metal the largest compact
+patch mip errors were 0.138 and 0.050 at the two sample counts. Doubling the
+reference grid from two to four subdivisions per source-texel dimension must
+change the normalized convolution by at most 0.012.
+
+At N·V of 1 and 0.30, also integrate the full single-scattering GGX BRDF with
+height-correlated Smith visibility and unit Fresnel. Doubling the half-vector
+quadrature resolution must change each channel by at most 0.035. The runner
+reports the ideal split-sum estimate minus direct integration and the observed
+raster minus direct integration separately. In particular, at 64 columns,
+roughness 1/6 and N·V = 0.30, the red-channel split-sum bias on Metal was
+about −0.60 for an integral of 3.53. This error is visible even with a well
+converged prefilter. The raster-to-split-sum tolerance is 0.18. The
+raster-to-direct tolerances are 0.32 and 0.65 for the grazing compact patch.
+[Kautz et al.](https://jankautz.com/publications/unifiedRW00.pdf)
+
+**Captured lighting.** To reproduce the measured-lighting case, obtain
+`proj4_materials.zip` from the [Illinois Image-Based Lighting project](https://courses.grainger.illinois.edu/cs498dh3/fa2014/projects/ibl/ComputationalPhotography_ProjectIBL.html).
+The preparation script verifies the archive digest. Install NumPy and Pillow
+in the preparation environment. The generated panorama and photographic inputs
+stay local.
+
+```bash
+python3 tests/sdk_consumer/environment/prepare_capture.py proj4_materials.zip out/ibl-capture
+python3 tests/sdk_consumer/environment/qualify.py out/renderer-sdk/environment/ludus_sdk_environment \
+  --case photograph --capture out/ibl-capture \
+  --editor out/build/macos-clang-development/apps/editor/ludus_editor_tests
+```
+
+The static chrome-ball exposures are 1/24, 1/60, 1/120, 1/205 and 1/553 second.
+Register the cropped spheres on a common disk, fit a smooth response per JPEG
+channel, combine reliable exposures in log radiance and reproject the reflection
+to latitude/longitude. A single scalar sets the largest channel to six. The
+green-channel reference uses the shortest exposure for the clipped highlight,
+1/120 for the overlap and the longest for the dark patch. Its scale is relative.
+The 25% ratio tolerance includes the measured JPEG response and registration
+error. The separate cook check compares the registered 2 × 2 box averages to
+within 0.000001. [Debevec and Malik](https://www.pauldebevec.com/Research/HDR/)
+
+| Green probe | Single-exposure ratio to overlap | RGBE source | Cooked | Metal mirror |
+| --- | ---: | ---: | ---: | ---: |
+| Bright, long exposure clipped | 26.062 | 0.937500 | 0.937500 | 0.815686 |
+| Unsaturated overlap | 1.000 | 0.041016 | 0.041260 | 0.040196 |
+| Dark, long exposure code 29 | 0.209 | 0.007507 | 0.007507 | 0.006863 |
+
+The angular sampling grid deliberately exceeds the cook limit to exercise one
+box reduction from 4352 × 512 to 2176 × 256. The source and cooked green peaks
+were both 6.0. Across the first and last 1/16 of longitude, the solid-angle
+weighted green integral changed from 0.07623653 to 0.07623609. The mirror
+probes use the native World's 64-column, 16-sample filter and allow 17% of the
+cooked green value plus 0.0002 for the material, filtering and readback.
 
 ### Authored input view and naming contract
 

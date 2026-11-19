@@ -27,6 +27,7 @@
 #include <ludus/platform/wayland/window.h>
 
 #include "internal/evdev_keymap.hpp"
+#include "internal/wayland_scale.hpp"
 
 namespace ludus::foundation::core
 {
@@ -122,8 +123,6 @@ static void onKeyboardModifiers(void* data,
                                 uint32_t group) noexcept;
 static void onKeyboardRepeatInfo(void* data, wl_keyboard* keyboard, int32_t rate, int32_t delay) noexcept;
 static void onXdgSurfaceConfigure(void* data, xdg_surface* xdgSurface, uint32_t serial) noexcept;
-static void
-onXdgToplevelConfigure(void* data, xdg_toplevel* xdgToplevel, int32_t width, int32_t height, wl_array* states) noexcept;
 static void onXdgToplevelClose(void* data, xdg_toplevel* xdgToplevel) noexcept;
 static void onXdgToplevelConfigureBounds(void* data, xdg_toplevel* xdgToplevel, int32_t width, int32_t height) noexcept;
 static void onXdgToplevelWmCapabilities(void* data, xdg_toplevel* xdgToplevel, wl_array* capabilities) noexcept;
@@ -165,14 +164,6 @@ static wl_keyboard_listener gKeyboardListener =
 };
 
 static xdg_surface_listener gXdgSurfaceListener = { .configure = onXdgSurfaceConfigure };
-static xdg_toplevel_listener gXdgToplevelListener =
-{
-    .configure = onXdgToplevelConfigure,
-    .close = onXdgToplevelClose,
-    .configure_bounds = onXdgToplevelConfigureBounds,
-    .wm_capabilities = onXdgToplevelWmCapabilities,
-};
-
 // Live-window registry for surface routing. The first backend attaches a single
 // gameplay window and selects one seat (deferred scope), but it tracks every
 // created window so enter/leave can safely route by surface.
@@ -220,7 +211,9 @@ WindowWayland::WindowWayland(CreateInfo&& info) noexcept
     : WindowBase(info.BaseCreateInfo), mSurface(std::move(info.Surface)), mXdgSurface(std::move(info.XdgSurface)),
       mXdgToplevel(std::move(info.XdgToplevel))
 {
-    mNativeWindowInfo = { .System = WindowSystem::Wayland, .Display = gDisplay.Get(), .Surface = mSurface.Get() };
+    mNativeWindowInfo.System = WindowSystem::Wayland;
+    mNativeWindowInfo.Display = gDisplay.Get();
+    mNativeWindowInfo.Surface = mSurface.Get();
 }
 
 WindowWayland::~WindowWayland() noexcept
@@ -326,10 +319,13 @@ void onGlobalRegistry([[maybe_unused]] void* data,
                       const char* interface,
                       uint32_t version) noexcept
 {
+    BindScaleGlobal(registry, name, interface, version);
     if (std::strcmp(interface, wl_compositor_interface.name) == 0)
     {
+        const uint32_t supportedVersion = static_cast<uint32_t>(wl_compositor_interface.version);
+        const uint32_t boundVersion = version < supportedVersion ? version : supportedVersion;
         wl_compositor* compositor =
-            static_cast<wl_compositor*>(wl_registry_bind(registry, name, &wl_compositor_interface, version));
+            static_cast<wl_compositor*>(wl_registry_bind(registry, name, &wl_compositor_interface, boundVersion));
         if (compositor == nullptr)
         {
             LUDUS_LOG_ERROR(LOG_PLATFORM, "Failed to bind Wayland compositor");
@@ -407,6 +403,7 @@ static void releaseKeyboard(ludus::input::ResetReason reason) noexcept
 
 void onGlobalRegistryRemove([[maybe_unused]] void* data, [[maybe_unused]] wl_registry* registry, uint32_t name) noexcept
 {
+    RemoveScaleGlobal(name);
     // If the selected seat's global is removed, cancel input and drop the seat.
     // A replacement seat (advertised later) starts from reset state.
     if (gSeatSelected && name == gSeatName)
@@ -578,6 +575,14 @@ void onXdgWmBasePing([[maybe_unused]] void* data, [[maybe_unused]] xdg_wm_base* 
 
 UniquePtr<WindowWayland> CreateWindow(const Window::CreateInfo& info) noexcept
 {
+    if (info.Width > INT32_MAX || info.Height > INT32_MAX)
+    {
+        LUDUS_LOG_ERROR(LOG_PLATFORM,
+                        "Wayland logical extent {}x{} exceeds the signed protocol range; request smaller dimensions",
+                        info.Width,
+                        info.Height);
+        return nullptr;
+    }
     WindowWayland::CreateInfo createInfo
     {
         .BaseCreateInfo = info,
@@ -620,53 +625,20 @@ UniquePtr<WindowWayland> CreateWindow(const Window::CreateInfo& info) noexcept
 
     // Engine code is exception-free (-fno-exceptions); use the non-throwing
     // new and null-check rather than relying on a bad_alloc exception.
-    WindowWayland* window = new (std::nothrow) WindowWayland(std::move(createInfo)); // TODO: custom allocator
-    if (window == nullptr)
+    UniquePtr<WindowWayland> window;
+    window.Reset(new (std::nothrow) WindowWayland(std::move(createInfo)));
+    if (window.Get() == nullptr)
     {
         LUDUS_LOG_ERROR(LOG_PLATFORM, "Failed to allocate Wayland window");
         return nullptr;
     }
-    xdg_surface_add_listener(window->mXdgSurface.Get(), &gXdgSurfaceListener, window);
-    xdg_toplevel_add_listener(window->mXdgToplevel.Get(), &gXdgToplevelListener, window);
-
-    registerWindow(window);
-
-    wl_surface_commit(window->mSurface.Get());
-    wl_display_roundtrip(gDisplay.Get());
-
-    return UniquePtr<WindowWayland>(window);
-}
-
-void onXdgSurfaceConfigure(void* data, [[maybe_unused]] xdg_surface* xdgSurface, uint32_t serial) noexcept
-{
-    WindowWayland* window = static_cast<WindowWayland*>(data);
-    if (window == nullptr)
+    window->mScale.Reset(new (std::nothrow) SurfaceScale(window->mNativeWindowInfo, window->mVisibility));
+    if (window->mScale.Get() == nullptr || window->mScale->Attach() == false)
     {
-        return;
+        LUDUS_LOG_ERROR(LOG_PLATFORM, "Could not attach Wayland scale listeners; recreate the window");
+        return nullptr;
     }
-
-    xdg_surface_ack_configure(xdgSurface, serial);
-}
-
-// Signature is dictated by the Wayland xdg_toplevel listener; the adjacent
-// width/height parameters cannot be reordered.
-// Signature is dictated by the Wayland xdg_toplevel listener; the adjacent
-// width/height parameters cannot be reordered. The suppression must sit on the
-// parameter lines themselves (a leading NOLINTNEXTLINE does not cover a
-// multi-line signature, since the diagnostic points at the parameters).
-void onXdgToplevelConfigure(void* data,
-                            [[maybe_unused]] xdg_toplevel* xdgToplevel,
-                            [[maybe_unused]] int32_t width, // NOLINT(bugprone-easily-swappable-parameters)
-                            [[maybe_unused]] int32_t height,
-                            wl_array* statesOrNull) noexcept
-{
-    WindowWayland* window = static_cast<WindowWayland*>(data);
-    if (window == nullptr)
-    {
-        return;
-    }
-
-    window->SetClosed(false);
+    xdg_surface_add_listener(window->mXdgSurface.Get(), &gXdgSurfaceListener, window->mScale.Get());
     // Thanks to the xdg-shell authors (Kristian Høgsberg, Rafael Antognolli, Jasper
     // St. Pierre, Jonas Ådahl and contributors), wayland-protocols,
     // stable/xdg-shell/xdg-shell.xml, xdg_toplevel.configure: "The states listed in
@@ -674,10 +646,45 @@ void onXdgToplevelConfigure(void* data,
     // possibly how it should be drawn." Every configure carries the complete state
     // set, so a configure without the suspended state is the window becoming
     // visible again. https://gitlab.freedesktop.org/wayland/wayland-protocols
-    if (statesOrNull != nullptr)
+    static constexpr xdg_toplevel_listener TOPLEVEL_LISTENER =
     {
-        window->SetVisibility(ComputeToplevelVisibility(*statesOrNull));
+        .configure =
+            [](void* data,
+               xdg_toplevel*,
+               foundation::int32 width, // NOLINT(bugprone-easily-swappable-parameters): xdg_toplevel.configure ABI
+               foundation::int32 height,
+               wl_array* statesOrNull) {
+                if (statesOrNull != nullptr)
+                {
+                    SurfaceScale& scale = *static_cast<WindowWayland*>(data)->mScale;
+                    scale.PendingWidth = width;
+                    scale.PendingHeight = height;
+                    scale.PendingVisibility = ComputeToplevelVisibility(*statesOrNull);
+                }
+            },
+        .close = onXdgToplevelClose,
+        .configure_bounds = onXdgToplevelConfigureBounds,
+        .wm_capabilities = onXdgToplevelWmCapabilities,
+    };
+    xdg_toplevel_add_listener(window->mXdgToplevel.Get(), &TOPLEVEL_LISTENER, window.Get());
+
+    registerWindow(window.Get());
+
+    wl_surface_commit(window->mSurface.Get());
+    if (wl_display_roundtrip(gDisplay.Get()) < 0)
+    {
+        return nullptr;
     }
+    window->mScale->Publish();
+    return window;
+}
+
+void onXdgSurfaceConfigure(void* data, [[maybe_unused]] xdg_surface* xdgSurface, uint32_t serial) noexcept
+{
+    SurfaceScale* surface = static_cast<SurfaceScale*>(data);
+    xdg_surface_ack_configure(xdgSurface, serial);
+    surface->Acknowledge();
+    surface->Publish();
 }
 
 void onXdgToplevelClose(void* data, [[maybe_unused]] xdg_toplevel* xdgToplevel) noexcept

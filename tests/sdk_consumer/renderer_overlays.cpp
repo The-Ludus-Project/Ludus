@@ -1,8 +1,11 @@
 #include "l2_scene.h"
+#include "overlay_reuse.h"
 #include "renderer_composite.h"
 #include "renderer_flat.h"
 #include "renderer_overlay.h"
 #include <ludus/foundation/base/config.h>
+#include <ludus/foundation/logging/log_format.hpp>
+#include <ludus/foundation/logging/log_system.hpp>
 #include <ludus/foundation/time/time.hpp>
 #include <ludus/graphics/renderer/renderer.hpp>
 #include <ludus/graphics/rhi/device.h>
@@ -28,6 +31,8 @@ rr::Mesh gMesh;
 rr::Snapshot gSnapshot;
 rr::PreparedView gView;
 rr::PreparedOverlay gOverlay;
+constexpr logging::LogCategory LOG_OVERLAYS{"OverlayFixture"};
+constexpr uint32 DISPLAY_FRAME_COUNT = 120;
 uint32 gStep = 0, gFrames = 0;
 bool gDone = false, gFailed = false;
 #if defined(LUDUS_PLATFORM_WEB)
@@ -60,11 +65,18 @@ void Publish(int32 state) noexcept
     static_cast<void>(rhi::GetDeviceInfo(gDevice, info));
     Report(state, gFrames, static_cast<int32>(info.Startup.SelectedBackend));
 }
-void Stop(bool failed) noexcept
+void Stop(bool isFailed) noexcept
 {
+    if (isFailed == true)
+    {
+        LUDUS_LOG_ERROR(LOG_OVERLAYS,
+                        "Overlay fixture failed at display step {} after {} display frames",
+                        gStep,
+                        gFrames);
+    }
     gDone = true;
-    gFailed = failed;
-    Publish(failed ? 2 : 1);
+    gFailed = isFailed;
+    Publish(isFailed ? 2 : 1);
 #if defined(LUDUS_PLATFORM_WEB)
     emscripten_cancel_main_loop();
 #endif
@@ -77,6 +89,7 @@ void Stop(bool failed) noexcept
     gOverlays.Reset();
     gRenderer.Reset();
     rhi::Shutdown();
+    static_cast<void>(logging::LogSystem::Shutdown());
 }
 bool Accepted(rhi::RasterStatus status) noexcept
 {
@@ -110,6 +123,15 @@ void Tick() noexcept
     if (device != rhi::DeviceStatus::Ready)
     {
         Stop(true);
+        return;
+    }
+    if (gFrames == DISPLAY_FRAME_COUNT)
+    {
+        const rhi::RasterStatus reuse = ludus::qa::AdvanceOverlayReuse(gDevice, gSurface, gOverlays);
+        if (Wait(reuse) == false)
+        {
+            Stop(false);
+        }
         return;
     }
     if (gStep == 0)
@@ -264,10 +286,6 @@ void Tick() noexcept
     {
         Publish(3);
     }
-    if (gFrames == 120)
-    {
-        Stop(false);
-    }
 }
 } // namespace
 int main()
@@ -288,14 +306,27 @@ int main()
     }
     window = gWindow->GetNativeWindowInfo();
 #endif
+    static_cast<void>(logging::LogSystem::Initialize(
+    {
+        .EnableFile = false,
+        .EnableDebugger = false,
+        .Directory = {},
+        .FlushIntervalMilliseconds = 0,
+    }));
     rhi::DeviceDescription description;
     description.Required.PortableRaster = true;
     description.Selection = Selection() == 1   ? rhi::BackendSelection::WebGPU
                             : Selection() == 2 ? rhi::BackendSelection::WebGL2
                                                : rhi::BackendSelection::Auto;
-    const auto started = rhi::CreateDevice({}, window, description, gDevice, gSurface);
+    rhi::StartupInfo startup;
+    const rhi::DeviceStatus started = rhi::CreateDevice({}, window, description, gDevice, gSurface, &startup);
     if (started != rhi::DeviceStatus::Ready && started != rhi::DeviceStatus::Pending)
     {
+        LUDUS_LOG_ERROR(LOG_OVERLAYS,
+                        "Device startup failed with status {}, error {}, requirement {}",
+                        static_cast<uint32>(started),
+                        static_cast<uint32>(startup.Error),
+                        static_cast<uint32>(startup.UnmetRequirement));
         Stop(true);
         return 1;
     }

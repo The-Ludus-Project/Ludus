@@ -54,11 +54,16 @@ public:
     /// @param frame Extraction to draw; copied into a renderer snapshot before return.
     /// @param width Drawable width in physical pixels; must equal the surface target width.
     /// @param height Drawable height in physical pixels; must equal the surface target height.
+    /// @param outReportOrNull Optional packet and visible-instance counts for an accepted view. Preserved on failure.
     /// @return Ready when the frame's view was accepted (it may still be Pending behind the
     /// last drawable view), NotReady when it was skipped (zero extent, setup or a retained
     /// snapshot slot) and the previous view stays, or a failure for a frame the builders or
     /// Renderer reject. Every outcome except a resize preserves the last drawable view.
-    [[nodiscard]] graphics::rhi::RasterStatus Update(const RenderFrame& frame, uint32 width, uint32 height) noexcept;
+    [[nodiscard]] graphics::rhi::RasterStatus
+    Update(const RenderFrame& frame,
+           uint32 width,
+           uint32 height,
+           graphics::renderer::ViewReport* outReportOrNull = nullptr) noexcept;
     /// Draw the latest drawable view and present it to the surface in one submission.
     /// Opens and ends the device frame itself; set the surface's frame target first.
     /// @param surface Surface of the device passed to Prepare, sized like the last Update.

@@ -238,65 +238,17 @@ jobs:
         with:
           name: renderer-web-sdk-consumer
           path: |
-            out/build/renderer-web-sdk/renderer.js
-            out/build/renderer-web-sdk/renderer.wasm
-            out/build/renderer-web-sdk/renderer.html
-            out/build/renderer-web-sdk/renderer-views.js
-            out/build/renderer-web-sdk/renderer-views.wasm
-            out/build/renderer-web-sdk/renderer-views.html
-            out/build/renderer-web-sdk/renderer-overlays.js
-            out/build/renderer-web-sdk/renderer-materials.js
-            out/build/renderer-web-sdk/renderer-overlays.wasm
-            out/build/renderer-web-sdk/renderer-materials.wasm
-            out/build/renderer-web-sdk/renderer-overlays.html
-            out/build/renderer-web-sdk/renderer-materials.html
-            out/build/renderer-web-sdk/renderer-lighting.js
-            out/build/renderer-web-sdk/renderer-lighting.wasm
-            out/build/renderer-web-sdk/renderer-lighting.html
-            out/build/renderer-web-sdk/renderer-scaling.js
-            out/build/renderer-web-sdk/renderer-scaling.wasm
-            out/build/renderer-web-sdk/renderer-scaling.html
-            out/build/renderer-web-sdk/render-graph-runtime.js
-            out/build/renderer-web-sdk/render-graph-runtime.wasm
-            out/build/renderer-web-sdk/render-graph-runtime.html
-            out/build/renderer-web-sdk/render-graph-pooling.js
-            out/build/renderer-web-sdk/render-graph-pooling.wasm
-            out/build/renderer-web-sdk/render-graph-pooling.html
-            out/build/renderer-web-sdk/render-graph-bilinear.js
-            out/build/renderer-web-sdk/render-graph-bilinear.wasm
-            out/build/renderer-web-sdk/render-graph-bilinear.html
+            out/build/renderer-web-sdk/*.html
+            out/build/renderer-web-sdk/*.js
+            out/build/renderer-web-sdk/*.wasm
           if-no-files-found: error
       - uses: actions/upload-artifact@v4
         with:
           name: raster-web-sdk-consumer
           path: |
-            out/build/raster-web-sdk/raster.js
-            out/build/raster-web-sdk/raster.wasm
-            out/build/raster-web-sdk/raster.html
-            out/build/raster-web-sdk/r6.js
-            out/build/raster-web-sdk/r6.wasm
-            out/build/raster-web-sdk/r6.html
-            out/build/raster-web-sdk/r8.js
-            out/build/raster-web-sdk/r8.wasm
-            out/build/raster-web-sdk/r8.html
-            out/build/raster-web-sdk/r9.js
-            out/build/raster-web-sdk/r9.wasm
-            out/build/raster-web-sdk/r9.html
-            out/build/raster-web-sdk/r10.js
-            out/build/raster-web-sdk/r10.wasm
-            out/build/raster-web-sdk/r10.html
-            out/build/raster-web-sdk/r11.js
-            out/build/raster-web-sdk/r11.wasm
-            out/build/raster-web-sdk/r11.html
-            out/build/raster-web-sdk/r18c.js
-            out/build/raster-web-sdk/r18c.wasm
-            out/build/raster-web-sdk/r18c.html
-            out/build/raster-web-sdk/r14c.js
-            out/build/raster-web-sdk/r14c.wasm
-            out/build/raster-web-sdk/r14c.html
-            out/build/raster-web-sdk/random_parity.js
-            out/build/raster-web-sdk/random_parity.wasm
-            out/build/raster-web-sdk/random_parity.html
+            out/build/raster-web-sdk/*.html
+            out/build/raster-web-sdk/*.js
+            out/build/raster-web-sdk/*.wasm
           if-no-files-found: error
       - uses: actions/upload-artifact@v4
         with:
@@ -606,10 +558,10 @@ jobs:
           python3 -m zipfile -e out/packages/ludus-web-smoke-release.zip out/browser-qa/extracted
           cd tools/web-browser-tests
           xvfb-run -a npm test
-      - name: Test installed portable raster pixels, API selection and failures
-        run: node tests/sdk_consumer/raster-browser-test.mjs out/raster-web-sdk-consumer out/browser-qa/results/raster
-      - name: Check addressed-random GPU parity on WebGPU against the Wasm CPU reference
-        run: node tests/sdk_consumer/random-parity-browser-test.mjs out/raster-web-sdk-consumer out/browser-qa/results/random-parity
+      # The candidate names its browser tests (tests/sdk_consumer/browser-suites.json):
+      # batches run main's definition of this workflow against candidate sources.
+      - name: Test installed raster and random-parity SDK consumers in Chromium
+        run: node tests/sdk_consumer/run-browser-suite.mjs raster out/raster-web-sdk-consumer out/browser-qa/results
       - name: Check fixed and follow camera pixels on WebGPU and WebGL
         run: |
           node apps/world_demo/tests/browser-test.mjs out/world-camera-web-release out/browser-qa/results/world-camera-webgpu
@@ -657,21 +609,8 @@ jobs:
         run: |
           npm ci
           npx playwright install --with-deps chromium
-      - name: Test installed L0/L1/L2/L3/L4 renderer against direct and cross-backend image oracles
-        if: matrix.suite == 'baseline'
-        run: node tests/sdk_consumer/renderer-browser-test.mjs out/renderer-web-sdk-consumer out/browser-qa/results/renderer
-      - name: Activate an installed RG3 runtime generation on WebGPU and compare its exported pixels
-        if: matrix.suite == 'baseline'
-        run: node tests/sdk_consumer/render-graph-runtime-browser-test.mjs out/renderer-web-sdk-consumer out/browser-qa/results/render-graph-runtime
-      - name: Share one managed bilinear upscale pipeline on WebGPU and compare exported pixels with the unshared pass
-        if: matrix.suite == 'baseline'
-        run: node tests/sdk_consumer/render-graph-bilinear-browser-test.mjs out/renderer-web-sdk-consumer out/browser-qa/results/render-graph-bilinear
-      - name: Verify L5 renderer scaling browser pixels
-        if: matrix.suite == 'scaling'
-        run: node tests/sdk_consumer/renderer-scaling-browser-test.mjs out/renderer-web-sdk-consumer out/browser-qa/results/renderer-l5
-      - name: Measure RG4 transient pooling against the serial control on WebGPU
-        if: matrix.suite == 'pooling'
-        run: node tests/sdk_consumer/render-graph-pooling-browser-test.mjs out/renderer-web-sdk-consumer out/browser-qa/results/render-graph-pooling
+      - name: Test installed renderer SDK consumers (${{ matrix.suite }}) in Chromium
+        run: node tests/sdk_consumer/run-browser-suite.mjs "renderer-${{ matrix.suite }}" out/renderer-web-sdk-consumer out/browser-qa/results
       - uses: actions/upload-artifact@v4
         if: always()
         with:

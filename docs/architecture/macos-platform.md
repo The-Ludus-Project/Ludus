@@ -72,6 +72,23 @@ responders normalize events too. Events already normalized by Ludus's pump are
 suppressed in that responder path, so native delivery remains exactly once.
 Callbacks ingest input only: they must not destroy a window during dispatch.
 
+## Relative pointer input
+
+For a standalone game, call `Window::TryCaptureRelativePointer()` in response to
+a player action while its Cocoa window is key. Capture hides the cursor, enables
+AppKit motion events and disconnects motion from the cursor position. Pump the
+window and call `TakeRelativePointerMotion()` alongside the physical keyboard
+snapshot for each simulation update. The take drains the sum of native motion
+since the last take. Right and down are positive. Apply game sensitivity to
+those values directly, independent of DPI and frame time.
+
+`ReleaseRelativePointer()` restores ordinary pointer behavior and discards unread
+motion. Giving another window focus, deactivating the app or closing the window
+also restores the cursor and clears both unread motion and held keys. A player
+must explicitly capture again. Native relative capture is available on Cocoa.
+For editor-hosted play, opt in through
+[`Window::CreateInfo`](editor-gui-systems.md#input-focus-and-capture).
+
 ## Validation
 
 Portable key mapping tests run on every host. Native integration tests opt in
@@ -88,6 +105,14 @@ multi-window routing, focus cancellation and orderly Quit. Keyboard fixtures
 post native NSEvents and explicitly drive focus delegate/application notifications,
 so they do not depend on macOS granting foreground activation to a test process.
 Resize, minimize, restore and close exercise actual AppKit lifecycle operations.
+The relative pointer journeys require foreground activation and exercise real
+cursor capture and focus changes, using posted native motion and keys. The
+editor journey also presents frames from a separate hosted child.
+
+```bash
+LUDUS_TEST_COCOA=1 out/host-tools/venv/bin/ctest --preset macos-clang-development \
+  -R 'ludus_(platform_cocoa_tests|editor_cocoa_pointer_journey)$' --output-on-failure
+```
 The same production
 backend is linked by applications and tests; only test targets enable C++
 exceptions. Objective-C exceptions are disabled for both.

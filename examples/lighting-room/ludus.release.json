@@ -1,0 +1,12 @@
+{
+  "profiles": {
+    "macos-release": {
+      "buildProfile": "release",
+      "entryPoint": "lighting_room.app/Contents/MacOS/lighting_room",
+      "installComponent": "GameRelease",
+      "target": "lighting_room",
+      "targetPlatform": "macos-arm64"
+    }
+  },
+  "schemaVersion": 1
+}

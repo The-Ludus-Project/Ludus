@@ -33,6 +33,14 @@ class ProjectShaderToolsTests(unittest.TestCase):
         manifest.write_text(source.read_text().replace('@RG2_TEST_PROFILES@', json.dumps(list(profiles))))
         return manifest
 
+    def test_cmake_renderer_and_graph_helpers_each_require_a_compiler(self):
+        cmake = self.project / "CMakeLists.txt"
+        for helper in ("ludus_compile_renderer_shaders", "ludus_compile_render_graph"):
+            with self.subTest(helper=helper):
+                cmake.write_text(f"{helper}(TARGET game)")
+                self.assertEqual(project_shader_tools(self.project, self.project, "macos-clang-release", False),
+                                 {"compiler"})
+
     def write_compiler(self):
         compiler = self.tools / 'out/shader-tools/slang/bin/slangc'
         compiler.parent.mkdir(parents=True, exist_ok=True)

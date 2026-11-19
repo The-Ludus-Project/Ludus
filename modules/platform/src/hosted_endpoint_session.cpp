@@ -290,6 +290,9 @@ void EndpointSession::receiveHello(foundation::time::Timestamp now) noexcept
         return;
     }
     mPhase = SessionPhase::Connected;
+#if LUDUS_TARGET_OS == LUDUS_OS_MACOS
+    mShouldForwardRelativePointer = hello.ShouldReceiveRelativePointer;
+#endif
     mPendingSize = 0;
     mIsResynchronizationPending = false;
     if (enqueueSynchronization(false) == false)
@@ -607,7 +610,7 @@ bool EndpointSession::enqueueSynchronization(bool isOverflow) noexcept
     return true;
 }
 
-HostedEndpointStatus EndpointSession::send(const Message& message) noexcept
+HostedEndpointStatus EndpointSession::send(const Message& message, bool shouldResynchronizeOnOverflow) noexcept
 {
     if (mPhase != SessionPhase::Connected)
     {
@@ -615,7 +618,7 @@ HostedEndpointStatus EndpointSession::send(const Message& message) noexcept
     }
     if (mIsResynchronizationPending == true || enqueue(message) == false)
     {
-        mIsResynchronizationPending = true;
+        mIsResynchronizationPending = mIsResynchronizationPending == true || shouldResynchronizeOnOverflow == true;
         return HostedEndpointStatus::Overflow;
     }
     flush();
@@ -773,6 +776,29 @@ HostedEndpointStatus EndpointSession::SendKey(input::Key key, input::KeyTransiti
     message.Transition = transition;
     message.IsRepeat = isRepeat;
     return send(message);
+}
+
+bool EndpointSession::ShouldForwardRelativePointer() const noexcept
+{
+    return mPhase == SessionPhase::Connected && mShouldForwardRelativePointer == true && mIsCloseRequested == false;
+}
+
+HostedEndpointStatus EndpointSession::SendRelativePointerMotion(const input::RelativePointerMotion& motion) noexcept
+{
+    if (IsValidPointerMotion(motion) == false)
+    {
+        return HostedEndpointStatus::InvalidArgument;
+    }
+    if (ShouldForwardRelativePointer() == false || mIsFocused == false)
+    {
+        return HostedEndpointStatus::InvalidState;
+    }
+    // Dropping a delta at saturation does not invalidate held keys. Leave the existing
+    // keyboard/focus resynchronization policy to the stateful messages.
+    Message message;
+    message.Kind = MessageKind::RelativePointerMotion;
+    message.PointerMotion = motion;
+    return send(message, false);
 }
 
 HostedEndpointStatus EndpointSession::SendClose() noexcept

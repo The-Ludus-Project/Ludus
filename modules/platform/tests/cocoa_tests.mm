@@ -15,6 +15,7 @@
 #include <catch2/catch_test_macros.hpp>
 
 #import <AppKit/AppKit.h>
+#import <CoreGraphics/CoreGraphics.h>
 
 using namespace ludus::foundation;
 using namespace ludus::platform;
@@ -385,5 +386,93 @@ TEST_CASE("Cocoa application deactivation cancels held input without release edg
         PostKey(Native(*window), NSEventTypeKeyUp, 0x0D);
         REQUIRE(window->HandleEvent({}));
         CHECK(probe.Count == 1);
+    }
+}
+
+TEST_CASE("Standalone Cocoa capture coexists with held movement and releases on focus loss and Stop",
+          "[cocoa][input][relative-pointer]")
+{
+    RequireLiveCocoa();
+    @autoreleasepool
+    {
+        Probe probe;
+        UniquePtr<Window> window = MakeWindow("Ludus standalone pointer journey");
+        window->AttachKeyboardSink(probe.Sink());
+        NSWindow* native = Native(*window);
+        [NSApp activateIgnoringOtherApps:YES];
+        [native makeKeyAndOrderFront:nil];
+        const float64 deadline = NSProcessInfo.processInfo.systemUptime + 5;
+        while ((NSApp.active == NO || native.keyWindow == NO) && NSProcessInfo.processInfo.systemUptime < deadline)
+        {
+            REQUIRE(window->HandleEvent({}));
+        }
+        REQUIRE(NSApp.active == YES);
+        REQUIRE(native.keyWindow == YES);
+        REQUIRE(window->HandleEvent({}));
+
+        const auto postMotion = [](int32 horizontal, int32 vertical, float64 timestamp) {
+            CGEventRef nativeEvent =
+                CGEventCreateMouseEvent(nullptr, kCGEventMouseMoved, CGPointZero, kCGMouseButtonLeft);
+            REQUIRE(nativeEvent != nullptr);
+            constexpr float64 NANOSECONDS_PER_SECOND = 1000000000;
+            CGEventSetTimestamp(nativeEvent, static_cast<CGEventTimestamp>(timestamp * NANOSECONDS_PER_SECOND));
+            CGEventSetIntegerValueField(nativeEvent, kCGMouseEventDeltaX, horizontal);
+            CGEventSetIntegerValueField(nativeEvent, kCGMouseEventDeltaY, vertical);
+            NSEvent* event = [NSEvent eventWithCGEvent:nativeEvent];
+            CFRelease(nativeEvent);
+            REQUIRE(event != nil);
+            [NSApp postEvent:event atStart:NO];
+        };
+        postMotion(5, 6, NSProcessInfo.processInfo.systemUptime);
+        REQUIRE(window->HandleEvent({}));
+        CHECK(window->TakeRelativePointerMotion().Horizontal == 0);
+
+        REQUIRE(window->TryCaptureRelativePointer());
+        REQUIRE(window->TryCaptureRelativePointer());
+        PostKey(native, NSEventTypeKeyDown, 0x0D);
+        postMotion(100, 100, NSProcessInfo.processInfo.systemUptime - 1);
+        postMotion(5, -6, NSProcessInfo.processInfo.systemUptime);
+        postMotion(-1, 4, NSProcessInfo.processInfo.systemUptime);
+        REQUIRE(window->HandleEvent({}));
+        REQUIRE(probe.Input.ConsumeStep(1) == ludus::input::StepStatus::Ok);
+        const usize forwardKey = ludus::input::KeyIndex(Key::KeyW);
+        CHECK(probe.Input.GetKeyboardSnapshot().Down[forwardKey]);
+        const ludus::input::RelativePointerMotion motion = window->TakeRelativePointerMotion();
+        CHECK(motion.Horizontal == 4);
+        CHECK(motion.Vertical == -2);
+        CHECK(window->TakeRelativePointerMotion().Horizontal == 0);
+
+        // A real key-window switch cancels capture and clears held input.
+        UniquePtr<Window> alternate = MakeWindow("Ludus focus target");
+        REQUIRE(window->HandleEvent({}));
+        REQUIRE(Native(*alternate).keyWindow == YES);
+        postMotion(5, 6, NSProcessInfo.processInfo.systemUptime);
+        REQUIRE(window->HandleEvent({}));
+        CHECK(window->TakeRelativePointerMotion().Horizontal == 0);
+        CHECK_FALSE(window->TryCaptureRelativePointer());
+        CHECK(probe.LastReset == ResetReason::FocusLost);
+        REQUIRE(probe.Input.ConsumeStep(2) == ludus::input::StepStatus::Ok);
+        CHECK_FALSE(probe.Input.GetKeyboardSnapshot().Down[forwardKey]);
+
+        [native makeKeyAndOrderFront:nil];
+        REQUIRE(window->HandleEvent({}));
+        REQUIRE(window->TryCaptureRelativePointer());
+        PostKey(native, NSEventTypeKeyDown, 0x0D);
+        REQUIRE(window->HandleEvent({}));
+        REQUIRE(probe.Input.ConsumeStep(3) == ludus::input::StepStatus::Ok);
+        REQUIRE(probe.Input.GetKeyboardSnapshot().Down[forwardKey]);
+        [native performClose:nil];
+        CHECK_FALSE(window->HandleEvent({}));
+        CHECK(probe.LastReset == ResetReason::WindowClosed);
+        REQUIRE(probe.Input.ConsumeStep(4) == ludus::input::StepStatus::Ok);
+        CHECK_FALSE(probe.Input.GetKeyboardSnapshot().Down[forwardKey]);
+        CHECK(window->TakeRelativePointerMotion().Horizontal == 0);
+        [Native(*alternate) makeKeyAndOrderFront:nil];
+        REQUIRE(alternate->HandleEvent({}));
+        REQUIRE(alternate->TryCaptureRelativePointer());
+        alternate->ReleaseRelativePointer();
+        postMotion(5, 6, NSProcessInfo.processInfo.systemUptime);
+        REQUIRE(alternate->HandleEvent({}));
+        CHECK(alternate->TakeRelativePointerMotion().Horizontal == 0);
     }
 }

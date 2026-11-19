@@ -6749,9 +6749,28 @@ horizon one at a time as normals varied, which drew stepped bands on vaults and 
 horizontal line across walls near eye height; the fixed directions' weights vary
 continuously with the normal.
 
+In Worlds wider than 32 m on any axis, one additional 1024 × 1024 square can
+refine the same 64 directions. Each local map covers 16 m across its projection
+(0.127 m per interior texel). The centre snaps to an 8 m world grid. Room-scale
+items up to 8 m across have priority in source-ID order. When the cook combines
+terrain and buildings into a larger mesh, a room-scale triangle can supply the
+anchor. The depth range still includes the full World, so the local map can see
+a ridge beyond the doorway. The receiver uses each direction's fine map inside
+its filter footprint and blends to the whole-World map at the edge. Only one
+neighbourhood receives this refinement per generation.
+
+`RenderGraph::GetSkyVisibilityReport()` returns the drawable generation's finest
+submitted level, counts at each level, anchor, world metres per texel, geometry
+revision and budget fallback. Direct and mesh-light shadows keep their reserved
+space. If the local square exhausts the texture budget, a sky-only atlas can
+fall back to 1024 × 1024. Camera changes and changes to Atmosphere radiance can
+use the same maps. A replacement that supplies separate scene-domain revisions
+can also retain a completed atlas across an environment-only change. Caster
+transforms, admission and masks require new visibility. During preparation or a
+rejected edit the previous drawable generation keeps its atlas.
+
 Openings narrower than the spacing between directions, about 25 degrees, can fall
-between them, and texel-sized geometry can leak, because the maps are coarse:
-126 texels across the scene bounds. Interiors receive no light that bounces off
+between them. Geometry smaller than a projected texel can leak at either level. Interiors receive no light that bounces off
 other surfaces, so rooms lit only through openings are darker than with the
 unoccluded sky; probe GI and baked charts provide that light where configured.
 Clustered forward profiles and the built-in Lit viewport do not apply sky
@@ -6760,6 +6779,109 @@ sky. In the measured Sponza view at 1200 × 900 on an Apple M5 under a heavily l
 machine, the lighting resolve took about 14 to 16 ms with sky visibility and 7 to
 10 ms without; per-pass GPU time in the viewport's statistics overlay shows the cost
 on a given machine.
+
+#### Large-World qualification
+
+The shutter fixture keeps an 18 km landscape, an opaque roof 2.5 m above the
+floor and a ridge at world Z = 60 m beyond the doorway. It tests six fixed floor probes,
+including a grazing doorway, exterior and local-map boundary. With direct Sun
+and Moon disabled, the renderer samples either a constant environment or the
+anisotropic Atmosphere. All receivers face +Y, so the projected solid angle of
+the below-horizon ground is zero. A camera walk of one metre in either direction
+has a predeclared tolerance of one linear RGBA8 code at the original floor point.
+
+Removing the offscreen ridge raises exterior visibility by 0.0235 in the local
+maps. The exact geometric rays predict 0.0273 at that point.
+
+The first oracle intersects the rectangles at the renderer's 64 directions.
+The second integrates 256 elevation-sine bands by 1,024 azimuths. Halving both
+dimensions changes visibility by less than 0.01 and diffuse by less than 1% of
+the roof-removed control. The coarse maps reported 1.000 visibility under a
+closed roof where both ray oracles returned zero. The local maps keep the same
+64 directions. Across all shutter states, probes and skies, the largest errors
+were as follows. Diffuse errors are fractions of the exposed-control luminance
+at the same receiver and solar phase.
+
+| Comparison | Absolute visibility error | Diffuse luminance error |
+| --- | ---: | ---: |
+| 64 exact directions against dense rays | 0.0303 | 5.44% |
+| Local maps against the 64 exact directions | 0.0315 | 5.84% |
+| Local maps against dense rays | 0.0380 | 5.61% |
+
+With the shutter open, the dense clear-sky oracle puts the covered probe at
+8.3% of its exposed diffuse and the doorway at 61.3%. The following values are
+scene-linear readbacks from the 96 × 64 renderer fixture, with solar azimuth
+aligned to the opening. Each cell gives the map result followed by the dense
+oracle.
+
+| Floor probe | Sky visibility | Uniform sky diffuse | Clear sky diffuse |
+| --- | ---: | ---: | ---: |
+| Under roof | 0.0078 / 0.0075 | 0.0039 / 0.0046 | 0.0081 / 0.0075 |
+| Doorway | 0.3804 / 0.4048 | 0.2314 / 0.2474 | 0.0805 / 0.0807 |
+| Outside | 0.8745 / 0.8445 | 0.5333 / 0.5161 | 0.1420 / 0.1357 |
+
+For the 0.35 m shutter opening, the solar azimuth sweep at −60°, −30°, 0°,
+30° and 60° gave a maximum angular diffuse error of 5.06% at 60° and a maximum
+production error of 4.90% at −30°. The uniform control's maximum production
+error was 3.01%. The angular error stayed within the 10% target, so the
+production direction set and number of per-pixel directions remain at 64.
+
+**Metal qualification.** On an Apple M5 with macOS 26.6, native Development,
+Clang 23.1.3, the editor saved and reloaded the World before rendering its
+default Raster graph. A separate CMake app linked the relocated SDK, cooked its
+installed default graph and bundled the graph, cooked Worlds and saved viewport
+camera. Both graphs disabled ToneMap to export linear RGBA8. All eight 128 × 128
+exports matched byte for byte across the two lighting views, two skies and open
+or removed roof. With the open shutter, both consumers measured clear-sky diffuse
+of 0.0081 under cover, 0.0617 in the doorway and 0.0929 outside in the saved
+perspective view. The SDK manifest records renderer revision
+`35df7a356cdb6dac7bc1519552cd2dfb5b05eb59`. The source and installed graph cooks both produced SHA-256
+`1dfdaaa2f15b88dab286a05c3790b00c2fad1dd33d85e09115c8b0756524e8a0`.
+Their graph generation is
+`d47cbf3a915ac25fedbcbc95381063d4e4621513b786e0400030f12f5726e104`.
+
+The timing app rendered the open World with the default final-colour resolve and
+Atmosphere at 512 × 512. Three launches per route alternated order. Each launch
+recorded the first frame, warmed eight frames and timed 41 further complete
+frames. Times below pool the 123 warmed samples per route. The coarse SDK was
+built from `bba94d877`, whose default sky shader and scene-resource code match
+the implementation base. Metal timestamps measure elapsed GPU time in ms.
+
+| GPU operation | Coarse median / p95 | Local median / p95 |
+| --- | ---: | ---: |
+| G-buffer | 0.120 / 0.382 | 0.122 / 0.480 |
+| Lighting resolve | 5.156 / 7.829 | 5.597 / 7.234 |
+| Complete frame | 5.229 / 8.050 | 5.663 / 7.374 |
+
+The warmed p95 difference was −0.676 ms, within the +3 ms cap. Across the three
+process starts, median graph initialization plus first extraction took 1,672 ms
+coarse and 168 ms local. Median first-frame CPU recording took 9.50 and
+7.12 ms, and first-frame GPU time took 14.74 and 21.00 ms, respectively.
+Pipeline cache state and host scheduling affect startup. The cold pass query
+batch omitted 6 and 70 operations, respectively. The independently timed
+complete frame includes all cold operations.
+
+| Allocation, MiB | Coarse | Local |
+| --- | ---: | ---: |
+| Shadow colour per generation | 4 | 16 |
+| Private depth backing per generation | 4 | 16 |
+| Whole-device tracked steady API allocations | 22.90 | 47.02 |
+| Whole-device steady logical resources | 22.78 | 46.79 |
+| Logical high-water through a caster replacement | 39.82 | 87.85 |
+
+The incremental shadow colour is 12 MiB per generation against the 16 MiB cap.
+The private depth backing also grows by 12 MiB and lives with the attachment.
+The logical high-water includes old and replacement generations. Metal exposes
+allocation sizes for these measurements. Physical residency is unavailable.
+
+To reproduce, run the renderer tests tagged `[large-world-sky]`. Run the
+editor test `[.large-world-sky-viewport]` with `LUDUS_SKY_GRAPH` pointing to
+the source-built linear default runtime and `LUDUS_SKY_CASES` pointing to an
+empty output directory. Configure `tests/sdk_consumer/large_world_sky` with
+`Ludus_DIR` from the relocated native Metal SDK and `LUDUS_SKY_CASES` set to
+that output directory. Run the bundled executable with `capture open` and
+`capture exposed` in separate output directories to compare the four exports
+per World, or `timing open` to record complete frames and physical pass times.
 
 ### Lighting views
 
@@ -6906,6 +7028,147 @@ measures visibility RMS error 0.063–0.088 against an exact backprojection orac
 where the earlier filter, clamped to the four-texel gutter, left nearly hard shadows
 with RMS error 0.32–0.41. Geometry such as window
 glass that the scene draws as opaque also blocks mesh light in the shadow faces.
+
+#### Measuring a penumbra across two cube faces
+
+The macOS native CI job runs `tests/sdk_consumer/mesh_shadow/qualify.py`. It imports each
+rectangular-emitter scene into a World, saves and reopens it, and renders its authored camera
+in the Lit World graph view using its offscreen readback presentation. A standalone executable linked against the installed SDK
+renders the same assembled `.luscn`, camera matrix and cooked `rg2_clustered_Default.lurgrt`.
+Both use Metal and the default clustered deferred graph staged with tone mapping disabled.
+The measurement uses the raw linear export before display conversion. All distances below
+are metres. A shadowed pixel divided by the same pixel of the corresponding clear capture
+gives normalized direct visibility.
+
+The planar receiver lies at z = 0 and the emitter at z = 2. The square source is
+0.48 × 0.48. Rotating the equal-area 0.96 × 0.24 source exchanges its long and short
+axes. In every case the radiance is 65, the source faces −Z and the receiver is diffuse.
+The 160 × 160 image spans 1.56 m at the planar receiver. Each reported profile averages
+five parallel sweeps. The horizontal sweep crosses the +X/−Z cube boundary. The camera
+translation advances four pixels on that plane. Moving the camera changes the filter's
+pixel rotation while preserving the relative light, blocker and receiver positions.
+
+The physical control projects each rectangular blocker from the receiver onto the emitter
+and clips it to the emitter bounds. For two blockers it subtracts their common area once.
+A separate 48 × 48 midpoint integration intersects rays with the plates or the rotating
+box and weights visible emitter samples by both cosines and inverse squared distance.
+The disk control intersects rays at cube texel centres, compares each depth with the
+receiver plane, then averages the weighted outcomes. A synthetic two-tap check has one
+passing and one failing depth test while comparing their means would pass both.
+The single-mean PCSS control uses the same admitted blockers and disk samples, with
+one arithmetic mean blocker height. The physical integral uses the authored rectangle.
+
+On an Apple M5, the SDK reported one caster, five drawn faces and zero pending
+faces for each World. Its sole caster takes 512-texel faces in the 2048² atlas with a
+four-texel gutter. Each emitter fits one planar polygon record with a 0.271 m disk
+radius. The square's enclosing radius is 0.339 m and the elongated rectangle's is
+0.495 m. All measurements below use five-row mean visibility unless a single probe
+is identified. Full light and full shadow controls require normalized visibility
+above 0.95 and below 0.05. The gates allow two linear RGBA8 codes between routes,
+0.03 RMS visibility error against the per-tap disk model, and 0.06 absolute error
+in the mean adjacent-pixel step across the face boundary. The sampled geometric
+coverage must also agree with the clipped plate area to within 0.05. The latter includes
+RGBA8 rounding and the finite atlas depths.
+
+| Emitter and blocker height | Horizontal raster 10–90% interval | Horizontal geometric 10–90% width | Vertical raster / geometric 10–90% width |
+| --- | --- | ---: | ---: |
+| Square, z = 0.65 | 1.875–1.973 | 0.185 | 0.087 / 0.185 |
+| Square, z = 1 | 1.784–1.983 | 0.384 | 0.181 / 0.384 |
+| Long in X, z = 1 | 1.784–1.992 | 0.768 | 0.183 / 0.202 |
+| Long in Y, z = 1 | 1.785–1.992 | 0.192 | 0.183 / 0.768 |
+
+The square's exact full-shadow to full-light interval spans 1.864–2.096 at z = 0.65
+and 1.740–2.220 at z = 1. The raster transition finishes early at both depths.
+The equal-area disk changes little when the elongated source turns 90°. At the
+vertical probe for the long-X case, the blocker's other edge clips the emitter too.
+The table uses its two-dimensional clipped area.
+
+Across the cube boundary the lower band's mean visibility step is +0.009 for the
+square at z = 1, and −0.048 after translating the camera. Registering identical
+receiver positions across the images gives a mean absolute change of 0.009 and a
+maximum of 0.289. At z = 0.65 the step is +0.507, of which the independent disk
+model predicts +0.509. Moving the point-shadow edge by ±0.10 m with the cube seam
+fixed moves the steepest rise to x = 1.883 and 2.078. The sparse search can miss
+a blocker beyond its point shadow and return fully lit inside the physical
+penumbra. That produces a visible step even within one cube face.
+
+At the central overlap probe (x = 1.984875), disjoint half-emitter footprints
+cover the entire source. The raster and disk model both return fully lit there.
+The matched clear radiance is 60/255 on each route. The three blocker pairs give the following results.
+
+| Projected overlap | Raw shadow code / 255 | Raster visibility | Geometric visibility | Weighted visibility |
+| --- | ---: | ---: | ---: | ---: |
+| Disjoint | 60/255 | 1.000 | 0.000 | 0.000 |
+| Partial | 26/255 | 0.433 | 0.250 | 0.296 |
+| Coincident | 42/255 | 0.700 | 0.500 | 0.559 |
+
+Alone, the first blocker gives 1.000 at that probe against a weighted 0.559.
+The three second-blocker controls give 1.000, 0.433 and 0.700 against 0.441,
+0.504 and 0.559. The largest overlap error here is a missed occluder.
+
+For the depth sweep one plate stays at z = 0.80. The outer receiver bands
+measure each penumbra. The mixed band near y = −0.28 supplies the partial
+probes (weighted physical visibility between 0.02 and 0.98) for the error columns.
+Each pair uses the same blocker geometry as its two single-blocker controls.
+
+| Second z | Near-receiver width, raster / geometric | Near-emitter width, raster / geometric | Predicted split probes / partial probes in mixed band | RMS against weighted emitter, raster / single-mean PCSS |
+| ---: | ---: | ---: | ---: | ---: |
+| 0.88 | 0.124 / 0.256 | 0.151 / 0.302 | 0 / 156 | 0.201 / 0.201 |
+| 1.00 | 0.124 / 0.256 | 0.204 / 0.384 | 0 / 163 | 0.201 / 0.201 |
+| 1.20 | 0.124 / 0.256 | 0.337 / 0.576 | 16 / 236 | 0.175 / 0.177 |
+| 1.45 | 0.314 / 0.274 | 0.944 / 1.012 | 60 / 370 | 0.128 / 0.138 |
+
+Alone, the plate at z = 0.80 gives a raster width of 0.124 and a geometric width
+of 0.256. At z = 1.45 the second plate also affects that side of the receiver.
+The single-blocker widths on the near-emitter side equal the paired widths shown.
+The largest centre-band seam step in this series is +0.525 at z = 0.88, where
+both depths still pool into one layer. The independent disk model predicts +0.525.
+
+The rotating closed box has half-extents (0.24, 0.90, 0.14) and centre (0.93, 0, 1).
+As it turns about Y, the emitter centre crosses the plane of the box's positive
+local-Z face between 41° and 43°. The upper receiver slopes away as z = −0.24y.
+The table measures the outward shadow edge separately on each receiver face.
+The error change is the largest absolute change in raster visibility between poses
+after subtracting the weighted reference change at the same transition probe.
+
+| Box angle | Flat width, raster / weighted | Sloping width, raster / weighted | Largest error change from previous pose |
+| ---: | ---: | ---: | ---: |
+| 41° | 0.398 / 0.489 | 0.381 / 0.523 | — |
+| 43° | 0.352 / 0.548 | 0.396 / 0.580 | 0.616 |
+| 45° | 0.337 / 0.606 | 0.442 / 0.638 | 0.682 |
+| 47° | 0.317 / 0.655 | 0.421 / 0.702 | 0.606 |
+| 49° | 0.362 / 0.675 | 0.501 / 0.712 | 0.615 |
+
+Repeating 45° gives identical raw frames. Across the two rows adjoining the bend,
+the raster step exceeds the predicted physical change by up to 0.556 in absolute
+visibility, with RMS 0.111–0.135 across the five poses. The static control and
+moving samples show a repeatable but pose-sensitive penumbra. Across all 34 Worlds
+the routes matched byte for byte. The largest band RMS error against the per-tap
+disk model was 0.00595, and the largest mean step difference at the cube boundary
+was 0.0102. This bounds the measured step left unexplained by the per-face texel
+selection and disk filter at the sampled boundary.
+
+To repeat a capture, supply a fresh output directory and the executables from the macOS
+editor build and installed renderer consumer build. Use the Python environment with
+NumPy from the CI step.
+
+```sh
+build=out/build/macos-clang-development
+graph="$build/modules/graphics/renderer/ludus-graphs/ludus_renderer_render_tests/rg2_clustered_Default/rg2_clustered_Default.lurgrt"
+out/shadow-analysis/bin/python tests/sdk_consumer/mesh_shadow/qualify.py out/shadow-worlds "$graph" \
+  --editor "$build/apps/editor/ludus_editor_tests" --sdk out/renderer-sdk/mesh-shadow/ludus_sdk_mesh_shadow
+```
+
+The `mesh-shadow-metal` artifact contains `probes.csv.gz` with the raw scene-linear
+values, pixel and world coordinates, visibility, two independent references and the PCSS
+control for each route. The artifact also preserves the input Worlds, assembled scenes,
+cameras, raw frames and cooked graph. `measurements.json` records the input hashes, GPU, profiles,
+edge bounds, errors and static and moving-view comparisons. Omitting both executable
+arguments repeats the analysis on the saved captures. The fixture and its physical
+comparators follow the cases and primary references collected in
+[renderer issue #1435](https://github.com/The-Ludus-Project/Ludus/issues/1435).
+
+#### Mesh-light shadow performance
 
 Measured with the `[.raster-mesh-light-benchmark]` editor test on an Apple M5 at
 1600 x 1080, with the editor viewport's device budgets. Each build ran five times,
@@ -9225,10 +9488,12 @@ image retained by the viewport after a pending or failed build.
 
 While dragging a wire, the hovered port and preview wire turn green for a
 compatible pre-check or red for a rejection. A nearby text hint gives the reason,
-including type, cycle or attachment-contract mismatches. Occupied inputs are
-checked as replacements. Drop commits through the existing document operation;
-rejection or Escape preserves the previous connection and history. Feedback
-itself never saves, builds shaders or creates GPU resources.
+including type, cycle or attachment-contract mismatches. For a valid drop on an
+occupied input, the hint names the current source, proposed source and destination.
+A dashed stroke follows the wire that will be removed, including its reroute
+points. Moving off the canvas clears the cue. Drop commits the replacement in
+one edit. Undo restores the previous connection and route. Rejection or Escape
+preserves the draft and history. Hovering never saves or starts a build.
 
 ### Add configurations and reuse node groups
 
@@ -9833,6 +10098,83 @@ rewrites one such offscreen `.lurgrt`:
 - all resources take a chosen extent, so a resize is a reload of a generation with
   another extent, as a re-cooked graph would be.
 
+### Qualify an authored bilinear intermediate on Metal
+
+The saved document in `tests/sdk_consumer/rg2/authored_bilinear` shares the
+offscreen fixture's raster subgraph, manifest and shader sources. The raster
+pass writes color and private depth to one half-resolution backing. The
+bilinear pass samples its color and writes a full-resolution export. The SDK
+consumer embeds the runtime package emitted by the installed graph compiler.
+The editor test saves the same document through the Renderer workspace.
+
+With the native Mac development SDK installed and the standalone
+`tests/sdk_consumer/renderer` CMake project configured in `out/renderer-sdk`
+against that SDK, run from the repository root:
+
+```sh
+cmake --build out/renderer-sdk --target ludus_sdk_authored_pooling
+cmake --install out/renderer-sdk --component AuthoredPooling --prefix "$PWD/out/packaged-consumer"
+out/packaged-consumer/bin/ludus_sdk_authored_pooling
+QT_QPA_PLATFORM=cocoa out/build/macos-clang-development/apps/editor/ludus_editor_tests '[.authored-pooling-viewport]'
+```
+
+The standalone executable runs the serial control first and keeps its complete
+RGBA8 exports. The pooled run must match every byte for the same camera,
+geometry, material and extent. Each mode captures six same-descriptor stages,
+six resizes alternating 95 × 127 and 127 × 95, and six replacements immediately
+after submitting another frame. Alternating the triangle color distinguishes
+a retained export from its replacement. The comparison covers 217,170 pixels
+(868,680 bytes) per mode.
+
+The consumer checks the actual attachment and export handles, both aspects of
+the scene backing, the intermediate's sampled state and the completion of its
+last use. It creates a private depth view of each exported backing and checks
+that no later acquisition reuses that backing. During replacement it holds a
+native read lease over staging, drains it before activation can publish, and
+keeps the old export's completed readback ticket across publication. It compares
+that ticket's full image with the original after rendering the replacement.
+The renderer's `[render-graph][bilinear][pool]` test controls completion of the
+submission containing both the producer and sampler. It checks the deferred
+allocation and subsequent reuse of the original intermediate.
+
+On November 18, 2026, the native Cocoa World viewport presented the saved
+project's `Main/upscale` output on an Apple M5 (8 GPU cores, macOS 26.6,
+build 25G72). Orbit changed the presented frame. Resizing changed both the
+graph target extent and the captured framebuffer. The editor used shared Metal
+textures throughout. The manifest carries both Metal and WGSL vertex layouts
+to match the Mac editor's compiled CPU interface. The run executed on Metal.
+
+A standalone consumer built against the Development SDK installed from
+`fd7a6d3eb` ran twice from outside the project directory. Both runs matched
+every export byte and gave these allocation results:
+
+| Mode | Created, reload / resize / in-flight | Reused, same phases | Deferred | Pending at replacement, of 6 | Idle backings |
+| --- | --- | --- | ---: | ---: | ---: |
+| SerialControl | 12 / 12 / 12 | 0 / 0 / 0 | 0 | 6 | 0 |
+| ExactPool | 8 / 7 / 6 | 4 / 5 / 6 | 0 | 6 | 2 |
+
+| Mode | Logical high-water bytes across runs | Sampled peak logical / Metal API bytes | Steady logical / API bytes | Idle logical / API bytes released by trim |
+| --- | ---: | ---: | ---: | ---: |
+| SerialControl | 243,216–243,660 | 242,748 / 393,772 | 121,652 / 197,164 | 0 / 0 |
+| ExactPool | 267,792 | 267,324 / 442,924 | 170,804 / 295,468 | 49,152 / 98,304 |
+
+The logical high-water mark includes overlap throughout the RHI storage epoch.
+The paired logical and API samples cover RHI buffers and textures. Steady is
+the final drawable generation before trim. The pool retained one 64 × 48 and
+one 48 × 64 backing. Metal reports allocation sizes including padding. Physical
+residency and allocator-block bytes were unavailable.
+
+| Mode | Mean CPU Stage (µs), run 1 / 2 | Mean CPU submit (µs), run 1 / 2 | Mean GPU frame (µs), run 1 / 2 |
+| --- | ---: | ---: | ---: |
+| SerialControl | 998 / 864 | 183 / 120 | 452 / 807 |
+| ExactPool | 567 / 644 | 89 / 99 | 164 / 167 |
+
+CPU Stage covers the 12 stages. CPU submit and GPU frame time cover the 18
+captured frames. Each process ran the serial control first. Timings describe
+these runs only. The acceptance checks use pixel equality, allocation identity
+and completion. A separate package built against the earlier installed SDK
+at `bba94d877` also passed on the M5 with the same creation and reuse counts.
+
 ### RG4a acceptance evidence
 
 What each fixture establishes:
@@ -9961,8 +10303,8 @@ Platform status:
 
 Unsupported or not established:
 
-- Pooling parity and retained memory for an authored sampled intermediate still
-  need a serial-control run.
+- Authored bilinear pixel parity and retained memory have been measured on Metal.
+  Equivalent authored-workload measurements on other backends remain open.
 - The depth-only compatibility RGBA8 image remains.
 - Physical heap aliasing, pass merging, parallel recording and async queues are
   separate RG4 slices with their own controls.
@@ -10890,6 +11232,49 @@ Every kernel shares one prepared program; only descriptors and dispatch records
 vary. Weight chunks stay below Vulkan's minimum storage-buffer range guarantee.
 The algorithm uses binary32 compute, four storage bindings and bounded shared
 memory, with no subgroup-width or floating-point atomic requirement.
+
+Sparse preparation counts the points in each occupied neighboring voxel before
+allocating pair storage. The encoder checks the total logical bytes for aligned
+weight chunks, dispatch records, topology and the activation arena against
+`maximum_buffer_bytes`. If the estimate exceeds that budget, the native Editor
+shows both byte counts and keeps the presented frame. Reduce `scene_points` and
+preview again. CPU scratch for sorting and row counts is measured independently
+of this GPU budget. Within budget, the encoder writes the original point index
+and kernel offset directly into the final topology buffer in stable order.
+
+Run `ludus_light_transformer_render_tests "[occupancy]"` for the matched-count
+append and two-pass comparison. It reports monotonic elapsed times, container
+allocations and peak live array capacity for one sparse table. The measurements
+exclude the input coordinates, allocator metadata, and other encoder stages.
+The full encoder test reports host-observed GPU submission-to-completion time.
+To exercise the public encoder against an installed native SDK, configure
+`tests/sdk_consumer/light_transformer` with the SDK and Catch2 on the CMake
+prefix path, build, and run CTest in that build directory. The consumer checks
+the generated weights against the independent CPU oracle and checks preservation
+of the caller’s encoding after budget rejection.
+
+The following macOS arm64 Development measurements use 256 anchors and seven
+runs per fixture. Times are medians in microseconds on a shared build host.
+Spread places one anchor every four voxels, concentrated places all anchors in
+one voxel, and adjacent distributes them equally among four consecutive voxels.
+
+| Occupancy | Kernel width | Pairs | Topology bytes | Peak CPU bytes, append / two-pass | Append µs | Count µs | Fill µs |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| Spread | 3 | 256 | 3,076 | 8,196 / 7,172 | 306 | 274 | 244 |
+| Spread | 5 | 256 | 3,076 | 8,196 / 7,172 | 1,245 | 1,402 | 1,516 |
+| Concentrated | 3 | 65,536 | 525,316 | 791,556 / 529,412 | 596 | 27 | 81 |
+| Concentrated | 5 | 65,536 | 525,316 | 791,556 / 529,412 | 1,035 | 25 | 31 |
+| Adjacent | 3 | 40,960 | 328,708 | 791,556 / 332,804 | 425 | 29 | 26 |
+| Adjacent | 5 | 57,344 | 459,780 | 791,556 / 463,876 | 1,237 | 41 | 47 |
+
+Each two-pass fixture allocated twice during counting and once during fill.
+Appending allocated eight times for spread input and sixteen times for either
+clustered input. Reusing counts gives exact allocation and checked admission.
+The second neighborhood lookup costs time on spread input. For clustered input,
+copying identical rows within each voxel reduces fill time. All six fixtures
+matched the previous row starts and pair words byte for byte. A 5,000-anchor
+single-voxel count described 25,000,000 pairs in 550 µs using 100,004 bytes of
+array storage, before allocating any of the 200,000,000 pair bytes.
 
 `LightTransformerEncoding::Workload` buffer 3 contains a packet prefix with its
 World-to-model transform, point-search tree, positions and 128-channel GPU latents.

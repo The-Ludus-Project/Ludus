@@ -6,7 +6,7 @@ name: Ludus Wiki
 # https://docs.github.com/en/pages/getting-started-with-github-pages/using-custom-workflows-with-github-pages
 on:
   pull_request:
-    types: [opened, synchronize, reopened, ready_for_review, edited]
+    types: [opened, synchronize, reopened]
   workflow_call:
     inputs:
       batch_sha:
@@ -28,14 +28,13 @@ permissions:
 
 # Thanks to GitHub's "Concurrency" guidance: superseded PR checks can cancel.
 # https://docs.github.com/en/actions/concepts/workflows-and-actions/concurrency
-# Only a push (synchronize) supersedes the runs for earlier commits. Other PR
-# activity (opened, ready_for_review, edited, ...) can fire for the commit a
-# concurrent push run is validating, so it runs in a per-commit group that never
-# cancels. A cancelled duplicate would otherwise leave a cancelled or failed
-# required check on the head commit and block the PR.
+# Only a new or reopened head runs this workflow, so each PR has one group and a
+# push cancels the run for the previous commit. Description edits and marking a
+# draft ready change no file; Develop health owns the description
+# (docs/development/continuous-integration.md#pull-request-runner-budget).
 concurrency:
-  group: wiki-${{ inputs.batch_sha || github.ref }}${{ github.event_name == 'pull_request' && github.event.action != 'synchronize' && format('-head-{0}', github.event.pull_request.head.sha) || '' }}${{ inputs.batch_macos_tools_runner && format('-{0}', inputs.batch_macos_tools_runner) || '' }}
-  cancel-in-progress: ${{ github.event_name == 'pull_request' && github.event.action == 'synchronize' }}
+  group: wiki-${{ inputs.batch_sha || github.ref }}${{ inputs.batch_macos_tools_runner && format('-{0}', inputs.batch_macos_tools_runner) || '' }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
   api-documentation:

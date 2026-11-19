@@ -332,8 +332,11 @@ private:
     [[nodiscard]] QString nodeAt(QPointF position) const;
     [[nodiscard]] QString portAt(QPointF position, bool& outIsOutput) const;
     [[nodiscard]] QString edgeAt(QPointF position, QString& outTo) const;
+    void clearLinkTarget();
+    void hideLinkFeedback();
     void cancelLink();
     void refreshFeedback();
+    [[nodiscard]] QString previewAdmittedLink(const QString& endpoint);
     void updateLinkFeedback(QPointF position);
     void fitBounds(const QRectF& bounds);
     /// Pin the minimap to the viewport's bottom-right corner, above the scene.
@@ -399,7 +402,9 @@ private:
     QGraphicsTextItem* mLinkHintOrNull = nullptr;
     QGraphicsEllipseItem* mLinkPortOrNull = nullptr;
     QString mLinkPortTooltip;
+    QGraphicsPathItem* mDisplacedWireOrNull = nullptr;
     QString mLinkEndpoint;
+    bool mIsLinkTargetOutput = false;
     QString mHoveredPort;
     /// Card under the pointer, empty over none; focuses its wires like a selection.
     QString mHoveredNode;

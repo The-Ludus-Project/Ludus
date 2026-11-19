@@ -4,6 +4,7 @@
 // path). Tests prove pending, failed and successful publication keep or replace the last
 // drawable view as documented, and that preview pixels equal the live path's pixels. Hosts
 // without a GPU adapter skip; this is not native Qt presentation evidence.
+#include "../../../tests/scenes/materials/normal_minification/sweep.h"
 #include "editor_default_graph.h"
 #include "editor_renderer_static.h"
 #include "internal/builtin_world.h"
@@ -175,13 +176,16 @@ struct DeviceFixture final
     rhi::DeviceHandle Device{};
     rhi::SurfaceHandle Surface{};
     bool IsAvailable = false;
-    explicit DeviceFixture(const rhi::StorageLimits& storage = {}, bool shouldRequestRay = false)
+    explicit DeviceFixture(const rhi::StorageLimits& storage = {},
+                           bool shouldRequestRay = false,
+                           bool shouldEnableGpuTiming = false)
     {
         rhi::Shutdown();
         rhi::DeviceDescription description;
         description.Required.PortableRaster = true;
         description.Preferred.RayQueries = shouldRequestRay;
         description.Storage = storage;
+        description.EnableGpuTiming = shouldEnableGpuTiming;
         rhi::StartupInfo failure;
         const rhi::DeviceStatus started =
             rhi::CreateDevice({}, { .Width = 1, .Height = 1 }, description, Device, Surface, &failure);
@@ -723,6 +727,88 @@ TEST_CASE("RG3b conventional views reuse the bounds published with each scene", 
     CHECK(unchanged.Min == publishedWorld.Min);
 }
 
+// Opt-in capture for the matched World and installed-SDK minification experiment.
+TEST_CASE("Capture normal minification through the World viewport", "[.normal-minification]")
+{
+    namespace study = ludus::qa::normal_minification;
+    QFile sceneFile(qEnvironmentVariable("LUDUS_MINIFICATION_SCENE"));
+    if (sceneFile.fileName().isEmpty() == true)
+    {
+        SKIP("Run the normal minification study with its cooked scenes and frame requests");
+    }
+    REQUIRE(sceneFile.open(QIODevice::ReadOnly) == true);
+    QFile requests(qEnvironmentVariable("LUDUS_MINIFICATION_REQUESTS"));
+    QFile frames(qEnvironmentVariable("LUDUS_MINIFICATION_FRAMES"));
+    REQUIRE(requests.open(QIODevice::ReadOnly) == true);
+    REQUIRE(frames.open(QIODevice::WriteOnly | QIODevice::Truncate) == true);
+    constexpr char LEVEL[] =
+        R"({"id":"minification","objects":[{"id":"strength-0"},{"id":"strength-1"},{"id":"strength-2"}]})";
+    RenderScene scene;
+    QString error;
+    REQUIRE(RenderScene::LoadCooked(sceneFile.readAll(), QJsonDocument::fromJson(LEVEL).object(), scene, error, {}) ==
+            true);
+    REQUIRE(scene.AuthoredLights.Count == 1);
+    scene.RasterUnshadowedLightIds.append(scene.AuthoredLights.Lights[0].SourceId);
+    rhi::StorageLimits storage;
+    storage.ResourcesPerKind = study::DEVICE_RESOURCES;
+    DeviceFixture device(storage, false, true);
+    REQUIRE(device.IsAvailable == true);
+    RenderPreview viewport;
+    viewport.Resize(study::EXTENT, study::EXTENT);
+    REQUIRE(viewport.SetScene(scene) == true);
+    RenderGraphPreview preview = MakePreview();
+    REQUIRE(preview.Attach(device.Device, device.Surface) == true);
+    preview.SetReferenceSize({study::EXTENT, study::EXTENT});
+    uint64 revision = 0;
+    math::Vector3 previousLightWorld{};
+    while (requests.atEnd() == false)
+    {
+        study::Frame frame;
+        REQUIRE(requests.read(reinterpret_cast<char*>(&frame), sizeof(frame)) == sizeof(frame));
+        renderer::ViewDescription camera;
+        REQUIRE(study::MakeView(frame, scene.Definition->VerticalFov, camera) == true);
+        ++revision;
+        if (revision == 1 || (frame.TowardsLightWorld == previousLightWorld) == false)
+        {
+            RenderScene illuminated = viewport.Scene();
+            illuminated.AuthoredLights.Lights[0].Direction = frame.TowardsLightWorld * -1.F;
+            RenderGraphExtraction extraction;
+            REQUIRE(MakeRenderGraphExtraction(illuminated, camera, revision, extraction, error) == true);
+            extraction.ContentRevision = revision;
+            preview.SetExtraction(extraction);
+            previousLightWorld = frame.TowardsLightWorld;
+        }
+        else
+        {
+            preview.SetCamera(camera, revision);
+        }
+        if (revision == 1)
+        {
+            const RenderGraphPreviewLoad loaded = preview.Load(qEnvironmentVariable("LUDUS_MINIFICATION_GRAPH"));
+            INFO(preview.GetStatus().toStdString());
+            REQUIRE(loaded == RenderGraphPreviewLoad::Staged);
+        }
+        const bool hasTimer = rhi::ArmGpuTiming(device.Device) == rhi::RasterStatus::Ready;
+        const bool hasPresented = TickUntil(preview, [&]() {
+            return preview.GetPresentedRevision() == revision || preview.WasExtractionRejected(revision) == true;
+        });
+        INFO(preview.GetDisplayStatus().toStdString());
+        REQUIRE(hasPresented == true);
+        REQUIRE(preview.GetPresentedRevision() == revision);
+        const InspectedTexture& output = preview.GetOutputTexture();
+        REQUIRE(output.IsValid() == true);
+        REQUIRE(output.Encoding == TexelEncoding::Rgba8Unorm);
+        REQUIRE(output.Width == study::EXTENT);
+        REQUIRE(output.Height == study::EXTENT);
+        const float64 nanoseconds = study::GetFrameNanoseconds(device.Device, hasTimer);
+        REQUIRE(frames.write(reinterpret_cast<const char*>(&nanoseconds), sizeof(nanoseconds)) == sizeof(nanoseconds));
+        REQUIRE(frames.write(output.Bytes) == output.Bytes.size());
+    }
+    REQUIRE(revision > 0);
+    REQUIRE(frames.flush() == true);
+    preview.Detach();
+}
+
 TEST_CASE("RG3b preview renders a cooked World through the editor camera", "[editor][render-graph][preview]")
 {
     DeviceFixture device;
@@ -773,6 +859,96 @@ TEST_CASE("RG3b preview renders a cooked World through the editor camera", "[edi
     CHECK(presented.WorldToClip == moved.WorldToClip);
     preview.Detach();
 }
+
+#if defined(LUDUS_EDITOR_MODEL_PACKAGE)
+TEST_CASE("Native preview retains the presented frame across sparse encoder budget rejection and recovery",
+          "[editor][render-graph][preview][encoder-budget]")
+{
+    DeviceFixture device;
+    if (device.IsAvailable == false)
+    {
+        SKIP("No GPU adapter on this host");
+    }
+    QTemporaryDir directory;
+    REQUIRE(directory.isValid() == true);
+    QDir root(directory.path());
+    REQUIRE(root.mkdir(QStringLiteral("light_transformer")) == true);
+    REQUIRE(root.cd(QStringLiteral("light_transformer")) == true);
+    const auto stageAsset = [&](const QString& source, const QString& name) {
+        const QString destination = root.filePath(name);
+        REQUIRE(QFile::copy(source, destination) == true);
+        QFile file(destination);
+        REQUIRE(file.open(QIODevice::ReadOnly) == true);
+        QCryptographicHash hash(QCryptographicHash::Sha256);
+        REQUIRE(hash.addData(&file) == true);
+        return QString::fromLatin1(hash.result().toHex());
+    };
+    constexpr qint64 MODEL_BUDGET = 512 * 1024 * 1024;
+    QJsonObject configuration{{QStringLiteral("version"), 1},
+                              {QStringLiteral("world_units_per_model_unit"), 256},
+                              {QStringLiteral("scene_points"), 128},
+                              {QStringLiteral("seed"), 1},
+                              {QStringLiteral("maximum_surface_preparation_bytes"), MODEL_BUDGET},
+                              {QStringLiteral("encoder_sha256"),
+                               stageAsset(QStringLiteral(LUDUS_EDITOR_MODEL_ENCODER), QStringLiteral("encoder.llte"))},
+                              {QStringLiteral("decoder_sha256"),
+                               stageAsset(QStringLiteral(LUDUS_EDITOR_MODEL_DECODER), QStringLiteral("decoder.lltd"))}};
+    const auto writeBudget = [&](qint64 budget) {
+        configuration.insert(QStringLiteral("maximum_buffer_bytes"), budget);
+        QFile file(root.filePath(QStringLiteral("model.json")));
+        REQUIRE(file.open(QIODevice::WriteOnly) == true);
+        const QByteArray bytes = QJsonDocument(configuration).toJson();
+        REQUIRE(file.write(bytes) == bytes.size());
+    };
+    RenderScene scene = MakeScene({1, 1, 1, 1});
+    scene.Lit = true;
+    PreviewSurface material;
+    material.Scattering.Model = ludus::content::scene_format::MaterialModel::Diffuse;
+    scene.Surfaces.append(material);
+    scene.Objects[0].Surface = 0;
+    RenderGraphExtraction extraction;
+    QString error;
+    REQUIRE(MakeRenderGraphExtraction(scene, {}, 1, extraction, error) == true);
+    extraction.View.OrthographicCamera = true;
+    extraction.View.CameraPosition = {0, 0, -1};
+    extraction.View.CameraForward = {0, 0, 1};
+    RenderGraphPreview preview = MakePreview();
+    REQUIRE(preview.Attach(device.Device, device.Surface) == true);
+    preview.SetExtraction(extraction);
+    REQUIRE(preview.Load(QStringLiteral(LUDUS_EDITOR_RENDER_GRAPH_FIXTURE)) == RenderGraphPreviewLoad::Staged);
+    REQUIRE(TickUntil(preview, [&]() { return preview.GetPresentedGeneration() == 1; }) == true);
+    const QImage previous = preview.GetImage();
+    REQUIRE(previous.isNull() == false);
+    const int64 budget = QFileInfo(QStringLiteral(LUDUS_EDITOR_MODEL_ENCODER)).size();
+    writeBudget(budget);
+    RenderGraphPreviewSource source;
+    source.ModelDirectory = directory.path();
+    const QString package = QStringLiteral(LUDUS_EDITOR_MODEL_PACKAGE);
+    REQUIRE(preview.Load(package, {}, source) == RenderGraphPreviewLoad::Staged);
+    const bool hasFailure =
+        TickUntil(preview, [&]() { return preview.GetStatus().contains(QStringLiteral("Reduce scene_points")); });
+    INFO(preview.GetStatus().toStdString());
+    REQUIRE(hasFailure == true);
+    const uint64 estimate = preview.GetReport().CandidateReport.Model.EstimatedWorkloadBytes;
+    REQUIRE(estimate > static_cast<uint64>(budget));
+    CHECK(preview.GetStatus().contains(QString::number(estimate)) == true);
+    CHECK(preview.GetStatus().contains(QString::number(budget)) == true);
+    CHECK(preview.GetPresentedGeneration() == 1);
+    CHECK(preview.GetImage() == previous);
+    writeBudget(static_cast<qint64>(estimate));
+    REQUIRE(preview.Load(package, {}, source) == RenderGraphPreviewLoad::Staged);
+    const bool hasSettled = TickUntil(preview, [&]() {
+        return preview.GetPresentedGeneration() > 1 ||
+               preview.GetReport().Candidate == renderer::RenderGraphCandidateState::Failed;
+    });
+    INFO(preview.GetStatus().toStdString());
+    INFO(static_cast<unsigned>(preview.GetReport().CandidateFailureStage));
+    REQUIRE(hasSettled == true);
+    REQUIRE(preview.GetPresentedGeneration() > 1);
+    CHECK(preview.GetStatus().contains(QStringLiteral("Reduce scene_points")) == false);
+    preview.Detach();
+}
+#endif
 
 TEST_CASE("RG3b preview publishes only complete frames and matches the live path", "[editor][render-graph][preview]")
 {
@@ -2306,6 +2482,18 @@ TEST_CASE("World viewport follows project shaders and keeps drawable output afte
     }
     const QImage lastGood = graphView->GetImage();
     const uint64 generation = workspace.GetPreviewOrNull()->GetPresentedGeneration();
+    // camera -> raster -> tonemap already supplies the displayed World. Dropping the tone-mapped
+    // color back on camera.target must leave that published generation drawable.
+    const uint64 beforeCycle = workspace.GetDocument().GetRevision();
+    QSignalSpy rejected(&workspace.GetCanvas(), &RenderGraphCanvas::LinkRejected);
+    REQUIRE(workspace.GetCanvas().RequestLink(QStringLiteral("tonemap.color"), QStringLiteral("camera.target"), true) ==
+            false);
+    REQUIRE(rejected.count() == 1);
+    CHECK(rejected.first().first().toString().contains(QStringLiteral("within-frame dependency cycle")) == true);
+    workspace.ServicePreview();
+    CHECK(workspace.GetDocument().GetRevision() == beforeCycle);
+    CHECK(workspace.GetPreviewOrNull()->GetPresentedGeneration() == generation);
+    CHECK(graphView->GetImage() == lastGood);
     const QString graphPath =
         QDir(workspace.GetDocument().GetPackageRoot()).filePath(workspace.GetDocument().GetRootGraph());
     const QByteArray graphBytes = workspace.GetDocument().GetSaved(workspace.GetDocument().GetRootGraph());
@@ -5225,6 +5413,131 @@ TEST_CASE("Graph GPU display snapshots retain consumers and bypass frame readbac
     preview.Detach();
     CHECK(reads.Held[1].Token == 0);
     CHECK(reads.Held[2].Token == 0);
+}
+
+TEST_CASE("A saved bilinear graph presents the selected World on Metal", "[.authored-pooling-viewport]")
+{
+    REQUIRE(PreviewViewport::GetPresentation() == ViewportPresentation::SharedDevice);
+    rhi::Shutdown();
+    QTemporaryDir project;
+    REQUIRE(project.isValid() == true);
+    const QString graphRoot = QDir(project.path()).filePath(QStringLiteral("graphs/Main"));
+    const QDir package(graphRoot);
+    REQUIRE(package.mkpath(QStringLiteral("main_shaders")) == true);
+    const QDir fixtures(QStringLiteral(LUDUS_EDITOR_PROJECT_ROOT "/tests/sdk_consumer/rg2"));
+    const QString rootGraph = QStringLiteral("main.lurender.json");
+    for (const QString& name : {rootGraph,
+                                QStringLiteral("rasterize.lurender.json"),
+                                QStringLiteral("main_shaders/geometry.slang"),
+                                QStringLiteral("main_shaders/color.slang"),
+                                QStringLiteral("main_shaders/depth.slang")})
+    {
+        REQUIRE(QFile::copy(fixtures.filePath(QStringLiteral("offscreen/") + name), package.filePath(name)) == true);
+    }
+    QFile manifest(fixtures.filePath(QStringLiteral("offscreen/main.lushader.json.in")));
+    REQUIRE(manifest.open(QIODevice::ReadOnly) == true);
+    WriteBytes(project,
+               QStringLiteral("graphs/Main/main.lushader.json"),
+               manifest.readAll().replace("@RG2_TEST_PROFILES@", "[\"metal\", \"wgsl\"]"));
+    QFile authored(fixtures.filePath(QStringLiteral("authored_bilinear/main.lurender.json")));
+    REQUIRE(authored.open(QIODevice::ReadOnly) == true);
+    const ToolingPaths tooling{QString::fromUtf8(LUDUS_TEST_PYTHON), {}, QStringLiteral(LUDUS_EDITOR_PROJECT_ROOT)};
+    RendererWorkspace renderer(tooling);
+    renderer.SetProject(project.path(), 1);
+    REQUIRE(renderer.IsBuiltIn() == false);
+    REQUIRE(renderer.GetDocument().SetText(rootGraph, authored.readAll()) == RenderGraphDocumentStatus::Ok);
+    REQUIRE(renderer.Save() == true);
+    renderer.SetBuildTools(QDir(QFileInfo(QStringLiteral(LUDUS_EDITOR_RENDER_GRAPH_FIXTURE)).absolutePath())
+                               .filePath(QStringLiteral("helper")),
+                           QStringLiteral(LUDUS_EDITOR_PROJECT_ROOT "/out/shader-tools/slang/bin/slangc"));
+
+    WorldWorkspace world(tooling, nullptr);
+    world.UseProjectGraph(renderer);
+    QObject::connect(&world, &WorldWorkspace::RenderPreviewChanged, &renderer, [&]() {
+        renderer.SetPreviewSource(&world.GetRenderPreview());
+    });
+    renderer.SetPreviewSource(&world.GetRenderPreview());
+    renderer.EnableWorldRendering();
+    world.SetProject(project.path(), 1);
+    world.resize(1000, 700);
+    world.show();
+    const std::string_view room = ludus::world_demo::ExampleLevel();
+    const QString path = WriteBytes(project,
+                                    QStringLiteral("room.world.json"),
+                                    QByteArray(room.data(), static_cast<qsizetype>(room.size())));
+    REQUIRE(world.Open(QFileInfo(path).canonicalFilePath()) == true);
+    world.ResumePreview();
+    RenderGraphPreview& graph = *renderer.GetPreviewOrNull();
+    QQuickWindow* windowOrNull = nullptr;
+    const auto waitFor = [&](const auto& isReady) {
+        QElapsedTimer timer;
+        timer.start();
+        while (isReady() == false && timer.elapsed() < PREVIEW_WAIT_MILLISECONDS)
+        {
+            QTest::qWait(1);
+            renderer.ServicePreview();
+            if (windowOrNull != nullptr)
+            {
+                static_cast<void>(windowOrNull->grabWindow());
+            }
+        }
+        return isReady();
+    };
+    REQUIRE(waitFor([&] {
+                for (QWindow* window : QGuiApplication::allWindows())
+                {
+                    if (window->objectName() == QStringLiteral("LudusGpuViewport") && window->isExposed() == true)
+                    {
+                        windowOrNull = static_cast<QQuickWindow*>(window);
+                        return true;
+                    }
+                }
+                return false;
+            }) == true);
+    PreviewViewport* viewportOrNull = world.findChild<PreviewViewport*>(QStringLiteral("worldViewport"));
+    REQUIRE(viewportOrNull != nullptr);
+    PreviewViewport& viewport = *viewportOrNull;
+    const bool hasPublished = waitFor([&] {
+        return world.GetRenderPreview().Scene().Objects.isEmpty() == false &&
+               renderer.GetLastResult().IsSuccessful == true && renderer.IsUsingDefaultRenderer() == false &&
+               graph.GetActivePackagePath() == renderer.GetRuntimePackagePath() && graph.HasGpuFrame() == true &&
+               graph.GetTargetCatalogue().Operations.size() >= 2 &&
+               graph.GetTargetCatalogue().Operations[1].Id == QStringLiteral("Main/upscale");
+    });
+    INFO(renderer.GetStatusText().toStdString());
+    INFO(renderer.GetRenderProblem().toStdString());
+    INFO(graph.GetStatus().toStdString());
+    INFO(graph.GetActivePackagePath().toStdString());
+    INFO(renderer.GetRuntimePackagePath().toStdString());
+    REQUIRE(hasPublished == true);
+    const uint64 authoredFrame = graph.GetDisplayFrames().GetLatestSerial();
+    REQUIRE(authoredFrame != 0);
+    REQUIRE(waitFor([&] { return viewport.GetPresentedGraphFrameSerial() >= authoredFrame; }) == true);
+    const QImage first = windowOrNull->grabWindow();
+    REQUIRE(first.isNull() == false);
+    const uint64 revision = graph.GetPresentedRevision();
+    const uint64 serial = viewport.GetPresentedGraphFrameSerial();
+    world.GetRenderPreview().Orbit(120, 40);
+    REQUIRE(waitFor([&] {
+                return graph.GetPresentedRevision() > revision && viewport.GetPresentedGraphFrameSerial() > serial;
+            }) == true);
+    CHECK(windowOrNull->grabWindow() != first);
+    const uint64 navigated = viewport.GetPresentedGraphFrameSerial();
+    const QSize previousTarget = graph.GetTargetSize();
+    world.resize(850, 600);
+    REQUIRE(waitFor([&] {
+                return viewport.GetPresentedGraphFrameSerial() > navigated && graph.GetTargetSize() != previousTarget &&
+                       windowOrNull->grabWindow().size() != first.size();
+            }) == true);
+    CHECK(graph.GetImage().isNull() == true);
+    CHECK(graph.GetStatistics().GetReadbackMilliseconds().GetAverage() == 0);
+    const QString capture = qEnvironmentVariable("LUDUS_EDITOR_WORLD_CAPTURE");
+    if (capture.isEmpty() == false)
+    {
+        REQUIRE(windowOrNull->grabWindow().save(capture) == true);
+    }
+    world.StopPreview();
+    renderer.SetPreviewSource(nullptr);
 }
 
 TEST_CASE("Live graph viewport presents GPU images through navigation and resize", "[.render-native][gpu-display]")

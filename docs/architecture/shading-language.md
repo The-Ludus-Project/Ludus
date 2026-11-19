@@ -41,7 +41,9 @@ L3 is in progress:
   constants, and scene-interface callbacks in LUSL whose query outcomes match
   their Slang originals on the GPU.
 
-L3 is complete; a GPU fixture for LUSL ray storage remains open.
+L3 ray storage has installed-SDK execution evidence on Metal (Apple M5).
+The [ray-storage fixture](../modules/tooling/shader-language.md#render-graph-programs)
+also targets SPIR-V. Execution on a Vulkan device with inline ray queries remains open.
 
 L4 is in progress:
 - L4a: the language server, `luslc lsp`: diagnostics on every change,
@@ -959,7 +961,7 @@ moves in wave 5.
 
 ### L5c: qualification before bulk migration
 
-- The ray-storage GPU and SDK fixture
+- Vulkan device execution of the ray-storage GPU and SDK fixture
   ([issue 1385](https://github.com/The-Ludus-Project/Ludus/issues/1385)).
 - Development bounds-check failures reported through the render graph.
 - The Metal loop code-generation and timing measurement for signed-overflow

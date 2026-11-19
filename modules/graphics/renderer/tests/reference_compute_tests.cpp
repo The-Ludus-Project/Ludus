@@ -1421,7 +1421,8 @@ TEST_CASE("GPU-compute reference preserves bounded white sRGB textures and verte
 // agreement is also judged on means rather than per pixel.
 namespace
 {
-constexpr usize RESAMPLED_SEED_COUNT = 6;
+constexpr usize REFERENCE_SEED_COUNT = 6;
+using SeedRadiances = StaticArray<math::Vector3, REFERENCE_SEED_COUNT>;
 // Seed-mean differences below this many combined standard errors, plus an absolute floor for AOVs that are zero or
 // nearly constant across seeds.
 constexpr float32 RESAMPLED_STANDARD_ERRORS = 5;
@@ -1430,10 +1431,10 @@ constexpr float32 RESAMPLED_ABSOLUTE_FLOOR = 2e-4F;
 /// One AOV's image mean per seed.
 struct SeedMeans final
 {
-    StaticArray<math::Vector3, RESAMPLED_SEED_COUNT> Emission{};
-    StaticArray<math::Vector3, RESAMPLED_SEED_COUNT> Direct{};
-    StaticArray<math::Vector3, RESAMPLED_SEED_COUNT> Indirect{};
-    StaticArray<math::Vector3, RESAMPLED_SEED_COUNT> Radiance{};
+    SeedRadiances Emission{};
+    SeedRadiances Direct{};
+    SeedRadiances Indirect{};
+    SeedRadiances Radiance{};
 };
 struct ImageMeans final
 {
@@ -1462,8 +1463,7 @@ ImageMeans MeasureImage(const Array<rr::ReferencePixel>& pixels)
 /// The largest per-channel z-score |mean_a - mean_b| / (combined standard error + floor) of two seed sets; symmetric
 /// in its arguments.
 // NOLINTBEGIN(bugprone-easily-swappable-parameters)
-float32 MeasureSeparation(const StaticArray<math::Vector3, RESAMPLED_SEED_COUNT>& a,
-                          const StaticArray<math::Vector3, RESAMPLED_SEED_COUNT>& b)
+float32 MeasureSeparation(const SeedRadiances& a, const SeedRadiances& b)
 // NOLINTEND(bugprone-easily-swappable-parameters)
 {
     float32 largest = 0;
@@ -1474,19 +1474,19 @@ float32 MeasureSeparation(const StaticArray<math::Vector3, RESAMPLED_SEED_COUNT>
         };
         float32 meanA = 0;
         float32 meanB = 0;
-        for (usize seed = 0; seed < RESAMPLED_SEED_COUNT; ++seed)
+        for (usize seed = 0; seed < REFERENCE_SEED_COUNT; ++seed)
         {
-            meanA += component(a[seed]) / RESAMPLED_SEED_COUNT;
-            meanB += component(b[seed]) / RESAMPLED_SEED_COUNT;
+            meanA += component(a[seed]) / REFERENCE_SEED_COUNT;
+            meanB += component(b[seed]) / REFERENCE_SEED_COUNT;
         }
         float32 varianceA = 0;
         float32 varianceB = 0;
-        for (usize seed = 0; seed < RESAMPLED_SEED_COUNT; ++seed)
+        for (usize seed = 0; seed < REFERENCE_SEED_COUNT; ++seed)
         {
-            varianceA += (component(a[seed]) - meanA) * (component(a[seed]) - meanA) / (RESAMPLED_SEED_COUNT - 1);
-            varianceB += (component(b[seed]) - meanB) * (component(b[seed]) - meanB) / (RESAMPLED_SEED_COUNT - 1);
+            varianceA += (component(a[seed]) - meanA) * (component(a[seed]) - meanA) / (REFERENCE_SEED_COUNT - 1);
+            varianceB += (component(b[seed]) - meanB) * (component(b[seed]) - meanB) / (REFERENCE_SEED_COUNT - 1);
         }
-        const float32 error = math::Sqrt((varianceA + varianceB) / RESAMPLED_SEED_COUNT);
+        const float32 error = math::Sqrt((varianceA + varianceB) / REFERENCE_SEED_COUNT);
         largest = math::Max(largest, math::Abs(meanA - meanB) / (error + RESAMPLED_ABSOLUTE_FLOOR));
     }
     return largest;
@@ -1531,10 +1531,14 @@ bool StartComputeDevice(rhi::DeviceHandle& outDevice, rhi::SurfaceHandle& outSur
     return true;
 }
 
+constexpr usize BOX_FACE_COUNT = 6;
+constexpr usize QUAD_CORNER_COUNT = 4;
+using QuadCorners = StaticArray<math::Vector3, QUAD_CORNER_COUNT>;
+
 /// One quad of a test room: its corners, material and emission sidedness.
 struct QuadItem final
 {
-    StaticArray<math::Vector3, 4> CornersWorld;
+    QuadCorners CornersWorld;
     math::Vector3 Emission{};
     bool IsEmissionTwoSided = true;
     /// Linear base color.
@@ -1562,11 +1566,10 @@ S BuildQuadSnapshot(rr::Renderer& inoutRenderer,
                     usize count,
                     rr::Snapshot& outSnapshot)
 {
-    constexpr usize MAXIMUM_QUADS = 4;
-    REQUIRE(count <= MAXIMUM_QUADS);
-    StaticArray<rr::Mesh, MAXIMUM_QUADS> meshes{};
-    StaticArray<rr::MaterialVersion, MAXIMUM_QUADS> materials{};
-    StaticArray<rr::SceneItem, MAXIMUM_QUADS> items{};
+    REQUIRE(count <= BOX_FACE_COUNT);
+    StaticArray<rr::Mesh, BOX_FACE_COUNT> meshes{};
+    StaticArray<rr::MaterialVersion, BOX_FACE_COUNT> materials{};
+    StaticArray<rr::SceneItem, BOX_FACE_COUNT> items{};
     for (usize i = 0; i < count; ++i)
     {
         const QuadItem& quad = quads[i];
@@ -1748,7 +1751,7 @@ void CheckResampledLightSampling(ResampledLightScene scene, uint32 maximumDepth)
          rr::ReferenceLightSampling::ResampledFormFactor}};
     constexpr StaticArray<uint32, MODE_COUNT> SAMPLER_VERSIONS{{1, 2, EXPECTED_FORM_FACTOR_SAMPLER_VERSION}};
     StaticArray<SeedMeans, MODE_COUNT> means{};
-    for (usize seed = 0; seed < RESAMPLED_SEED_COUNT; ++seed)
+    for (usize seed = 0; seed < REFERENCE_SEED_COUNT; ++seed)
     {
         capture.Seed = FIRST_SEED + seed;
         for (usize modeIndex = 0; modeIndex < MODE_COUNT; ++modeIndex)
@@ -3535,9 +3538,10 @@ TEST_CASE("An emitter seen through smooth glass keeps the Fresnel-transmitted ra
 
 namespace
 {
-/// Append the twelve outward-wound triangles of the axis-aligned box [minimum, maximum]. Each face is a quad
-/// c0..c3 with outward normal cross(c1 - c0, c3 - c0), split along its c0-c2 diagonal like BuildQuadSnapshot.
-void AppendMediumBox(math::Vector3 minimum, math::Vector3 maximum, Array<math::Vector3>& inoutCorners)
+using BoxFaces = StaticArray<QuadCorners, BOX_FACE_COUNT>;
+
+/// Counterclockwise about each outward normal.
+BoxFaces MakeBoxFaces(math::Vector3 minimum, math::Vector3 maximum)
 {
     const float32 x0 = minimum.X;
     const float32 y0 = minimum.Y;
@@ -3545,7 +3549,7 @@ void AppendMediumBox(math::Vector3 minimum, math::Vector3 maximum, Array<math::V
     const float32 x1 = maximum.X;
     const float32 y1 = maximum.Y;
     const float32 z1 = maximum.Z;
-    const StaticArray<StaticArray<math::Vector3, 4>, 6> faces{{
+    return {{
         {{{x0, y0, z0}, {x0, y1, z0}, {x1, y1, z0}, {x1, y0, z0}}},
         {{{x0, y0, z1}, {x1, y0, z1}, {x1, y1, z1}, {x0, y1, z1}}},
         {{{x0, y0, z0}, {x0, y0, z1}, {x0, y1, z1}, {x0, y1, z0}}},
@@ -3553,7 +3557,12 @@ void AppendMediumBox(math::Vector3 minimum, math::Vector3 maximum, Array<math::V
         {{{x0, y0, z0}, {x1, y0, z0}, {x1, y0, z1}, {x0, y0, z1}}},
         {{{x0, y1, z0}, {x0, y1, z1}, {x1, y1, z1}, {x1, y1, z0}}},
     }};
-    for (const StaticArray<math::Vector3, 4>& face : faces)
+}
+/// Append the twelve outward-wound triangles of the axis-aligned box [minimum, maximum]. Each face is a quad
+/// c0..c3 with outward normal cross(c1 - c0, c3 - c0), split along its c0-c2 diagonal like BuildQuadSnapshot.
+void AppendMediumBox(math::Vector3 minimum, math::Vector3 maximum, Array<math::Vector3>& inoutCorners)
+{
+    for (const QuadCorners& face : MakeBoxFaces(minimum, maximum))
     {
         for (const usize corner : {0, 1, 2, 0, 2, 3})
         {
@@ -4034,4 +4043,207 @@ TEST_CASE("Reference captures admit only closed bounded media on the supported t
         CHECK(info.CommittedSamples == 0);
         REQUIRE(traversal->Renderer.Release(handle) == S::Ready);
     }
+}
+
+namespace
+{
+constexpr math::Vector3 ENCLOSURE_EMISSION{1, 0.5F, 0.25F};
+constexpr SeedRadiances ZERO_RADIANCE{};
+
+void BuildDiffuseEnclosure(PairedSessions& inoutSessions, float32 reflectance)
+{
+    const BoxFaces faces = MakeBoxFaces({-1, -1, -1}, {1, 1, 1});
+    StaticArray<QuadItem, BOX_FACE_COUNT> walls{};
+    for (usize i = 0; i < walls.GetSize(); ++i)
+    {
+        QuadItem& wall = walls[i];
+        const QuadCorners& face = faces[i];
+        wall.CornersWorld = {{face[0], face[3], face[2], face[1]}};
+        wall.Emission = ENCLOSURE_EMISSION;
+        wall.IsEmissionTwoSided = false;
+        wall.BaseColor = {reflectance, reflectance, reflectance};
+        wall.Model = ludus::content::scene_format::MaterialModel::Diffuse;
+    }
+    for (Session* session : {&inoutSessions.Cpu, &inoutSessions.Gpu})
+    {
+        REQUIRE(session->Renderer.Release(session->Snapshot) == S::Ready);
+        REQUIRE(BuildQuadSnapshot(session->Renderer,
+                                  session->Program,
+                                  walls.GetData(),
+                                  walls.GetSize(),
+                                  session->Snapshot) == S::Ready);
+    }
+}
+
+// Thanks to James T. Kajiya, "The Rendering Equation", SIGGRAPH '86, section 3,
+// https://doi.org/10.1145/15922.15902. Every inward direction sees the same radiance
+// in this enclosure. Integrating rho/pi against cosine adds exactly rho times the previous order.
+float64 SumEnclosureOrders(float64 reflectance, uint32 depth)
+{
+    float64 sum = 1;
+    float64 term = 1;
+    for (uint32 order = 1; order <= depth; ++order)
+    {
+        term *= reflectance;
+        sum += term;
+    }
+    return sum;
+}
+
+struct EnclosureEstimate final
+{
+    float64 Mean;
+    float64 StandardError;
+};
+
+// Pair the observations by seed before estimating uncertainty, including for depth differences.
+// Thanks to Arvo, Torrance and Smits, "A Framework for the Analysis of Error in Global Illumination
+// Algorithms", SIGGRAPH '94, pp. 75-84, https://doi.org/10.1145/192161.192179, for comparing distinct errors
+// to a theoretical solution.
+EnclosureEstimate
+MeasureEnclosureChannel(const SeedRadiances& values, const SeedRadiances& baseline, float32 math::Vector3::* channel)
+{
+    const float64 emission = Widen(ENCLOSURE_EMISSION.*channel);
+    StaticArray<float64, REFERENCE_SEED_COUNT> observations{};
+    float64 mean = 0;
+    for (usize seed = 0; seed < observations.GetSize(); ++seed)
+    {
+        observations[seed] = (Widen(values[seed].*channel) - Widen(baseline[seed].*channel)) / emission;
+        mean += observations[seed] / REFERENCE_SEED_COUNT;
+    }
+    float64 squaredDeviations = 0;
+    for (const float64 observation : observations)
+    {
+        squaredDeviations += (observation - mean) * (observation - mean);
+    }
+    return {mean, math::Sqrt(squaredDeviations / (REFERENCE_SEED_COUNT * (REFERENCE_SEED_COUNT - 1)))};
+}
+
+void CheckEnclosureEstimate(const SeedRadiances& values,
+                            const SeedRadiances& baseline,
+                            const char* quantity,
+                            float64 expectedInEmissionUnits)
+{
+    for (float32 math::Vector3::* channel : {&math::Vector3::X, &math::Vector3::Y, &math::Vector3::Z})
+    {
+        const EnclosureEstimate estimate = MeasureEnclosureChannel(values, baseline, channel);
+        // Even the smallest fourth-order term is 0.5^4. Cap the tolerance to resolve a missing order.
+        constexpr float64 MAXIMUM_ERROR = 0.03;
+        constexpr float64 NUMERICAL_FLOOR = 0.0002;
+        const float64 tolerance = math::Min(MAXIMUM_ERROR, NUMERICAL_FLOOR + 6 * estimate.StandardError);
+        CAPTURE(quantity, ENCLOSURE_EMISSION.*channel, expectedInEmissionUnits, estimate.Mean, estimate.StandardError);
+        CHECK(math::Abs(estimate.Mean - expectedInEmissionUnits) <= tolerance);
+    }
+}
+
+SeedMeans CaptureEnclosureSeeds(Session& inoutSession,
+                                rhi::SurfaceHandle surface,
+                                rr::ReferenceCaptureDescription capture,
+                                rr::ReferenceTraversal traversal)
+{
+    SeedMeans result;
+    for (usize seed = 0; seed < REFERENCE_SEED_COUNT; ++seed)
+    {
+        capture.Seed = 40 + seed;
+        CAPTURE(capture.Seed, traversal);
+        rr::ReferenceCaptureInfo info;
+        Array<rr::ReferencePixel> pixels;
+        Capture(inoutSession, capture, surface, pixels, info);
+        REQUIRE(info.Traversal == traversal);
+        REQUIRE(info.InvalidContributions == 0);
+        REQUIRE(info.MinimumSamples == capture.TargetSamples);
+        REQUIRE(info.MaximumSamples == capture.TargetSamples);
+        CHECK((info.RouletteTerminations > 0) == (capture.MaxDepth >= capture.RouletteDepth));
+        RecordSeed(pixels, seed, result);
+    }
+    return result;
+}
+
+void CheckDiffuseEnclosure(float32 reflectance)
+{
+    rhi::Shutdown();
+    struct Guard final
+    {
+        ~Guard()
+        {
+            rhi::Shutdown();
+        }
+    } guard;
+    PairedSessions sessions;
+    if (const char* skipReasonOrNull = StartPairedSessions(sessions); skipReasonOrNull != nullptr)
+    {
+        SKIP(skipReasonOrNull);
+    }
+    const rhi::Backend backend = rhi::GetStartup().SelectedBackend;
+    const char* backendName = backend == rhi::Backend::Metal    ? "Metal"
+                              : backend == rhi::Backend::Vulkan ? "Vulkan"
+                                                                : "other RHI backend";
+    WARN("RT1 diffuse enclosure on " << backendName << " (RHI " << static_cast<uint32>(backend) << ")");
+    BuildDiffuseEnclosure(sessions, reflectance);
+    constexpr uint32 EXTENT = 16;
+    rr::ReferenceCaptureDescription capture = MakePerspectiveCapture({0, 0, -0.25F}, EXTENT, EXTENT);
+    capture.SecondaryDistance = 4; // Cube diameter is sqrt(12) metres.
+    capture.RouletteDepth = 2;
+    struct DepthCase final
+    {
+        uint32 Depth;
+        uint32 Samples;
+    };
+    constexpr DepthCase CASES[]{{1, 32}, {2, 32}, {4, 32}, {4, 8}};
+    SeedRadiances previousCpu{};
+    SeedRadiances previousGpu{};
+    uint32 previousDepth = 0;
+    for (const DepthCase& setting : CASES)
+    {
+        capture.TargetSamples = setting.Samples;
+        capture.MaxDepth = setting.Depth;
+        const float64 rho = Widen(reflectance);
+        const float64 total = SumEnclosureOrders(rho, setting.Depth);
+        const float64 tail = math::Pow(rho, setting.Depth + 1) / (1 - rho);
+        CAPTURE(reflectance, setting.Depth, setting.Samples, tail);
+        const SeedMeans cpu =
+            CaptureEnclosureSeeds(sessions.Cpu, sessions.Surface, capture, rr::ReferenceTraversal::CpuOracle);
+        const SeedMeans gpu =
+            CaptureEnclosureSeeds(sessions.Gpu, sessions.Surface, capture, rr::ReferenceTraversal::GpuCompute);
+        for (const SeedMeans* means : {&cpu, &gpu})
+        {
+            const bool isCpu = means == &cpu;
+            INFO((isCpu == true ? "CPU oracle" : "GPU compute"));
+            CheckEnclosureEstimate(means->Emission, ZERO_RADIANCE, "emission", 1);
+            CheckEnclosureEstimate(means->Direct, ZERO_RADIANCE, "direct", rho);
+            CheckEnclosureEstimate(means->Indirect, ZERO_RADIANCE, "indirect", total - 1 - rho);
+            CheckEnclosureEstimate(means->Radiance, ZERO_RADIANCE, "total", total);
+            const EnclosureEstimate red = MeasureEnclosureChannel(means->Radiance, ZERO_RADIANCE, &math::Vector3::X);
+            WARN((isCpu == true ? "CPU" : "GPU")
+                 << " rho=" << rho << " depth=" << setting.Depth << " spp=" << setting.Samples << " tail/E=" << tail
+                 << " red mean=" << red.Mean << " residual=" << (red.Mean - total) << " SE=" << red.StandardError);
+            if (previousDepth > 0 && previousDepth < setting.Depth)
+            {
+                CheckEnclosureEstimate(means->Radiance,
+                                       isCpu == true ? previousCpu : previousGpu,
+                                       "added orders",
+                                       total - SumEnclosureOrders(rho, previousDepth));
+            }
+        }
+        CheckEnclosureEstimate(cpu.Emission, gpu.Emission, "CPU minus GPU emission", 0);
+        CheckEnclosureEstimate(cpu.Direct, gpu.Direct, "CPU minus GPU direct", 0);
+        CheckEnclosureEstimate(cpu.Indirect, gpu.Indirect, "CPU minus GPU indirect", 0);
+        CheckEnclosureEstimate(cpu.Radiance, gpu.Radiance, "CPU minus GPU total", 0);
+        previousCpu = cpu.Radiance;
+        previousGpu = gpu.Radiance;
+        previousDepth = setting.Depth;
+    }
+}
+} // namespace
+
+TEST_CASE("RT1 diffuse enclosure resolves successive bounce orders at half reflectance",
+          "[renderer][gpu][reference-compute][diffuse-enclosure]")
+{
+    CheckDiffuseEnclosure(0.5F);
+}
+
+TEST_CASE("RT1 diffuse enclosure resolves successive bounce orders at high reflectance",
+          "[renderer][gpu][reference-compute][diffuse-enclosure]")
+{
+    CheckDiffuseEnclosure(0.875F);
 }

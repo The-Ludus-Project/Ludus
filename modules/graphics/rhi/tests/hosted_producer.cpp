@@ -8,6 +8,7 @@
 //
 // Usage: ludus_rhi_hosted_producer [render|record|forged]
 //   render  Render frames as described above.
+//   pointer  Render and report relative motion sampled while W is held.
 //   record  Render as above with GPU timing enabled, inside one named surface pass
 //           (HOSTED_TEST_PASS_NAME), and answer the editor's recording requests with
 //           a HostedGpuRecorder (the hosted recording acceptance).
@@ -24,8 +25,10 @@
 #include <ludus/graphics/rhi/hosted_recorder.h>
 #include <ludus/graphics/rhi/raster.h>
 #include <ludus/graphics/rhi/rhi.h>
+#include <ludus/input/keyboard_event.h>
 #include <ludus/platform/base/window.h>
 #include <ludus/platform/hosted_surface.h>
+#include <ludus/platform/keyboard_sink.h>
 #include <ludus/platform/native_window.h>
 
 #include "hosted_test_protocol.h"
@@ -42,6 +45,7 @@
 using namespace ludus::foundation;
 namespace rhi = ludus::graphics::rhi;
 namespace platform = ludus::platform;
+namespace input = ludus::input;
 namespace hosted_test = ludus::graphics::rhi::hosted_test;
 
 namespace
@@ -136,7 +140,40 @@ void EncodeRecordedPass(rhi::DeviceHandle device, const rhi::GpuScopeDescription
     static_cast<void>(rhi::BeginRasterPass(device, pass));
 }
 
-int32 RunRender(platform::Window& inoutWindow, bool shouldRecord)
+struct MovementProbe final
+{
+    hosted_test::ProducerStatistics& Statistics;
+    bool HasChanged = false;
+
+    [[nodiscard]] platform::KeyboardSink GetSink() noexcept
+    {
+        return
+        {
+            .OnRecord =
+                [](void* context, const input::KeyboardRecord& record) noexcept {
+                    MovementProbe& probe = *static_cast<MovementProbe*>(context);
+                    if (record.PhysicalKey == input::Key::KeyW)
+                    {
+                        probe.Statistics.IsMovementHeld = record.Transition == input::KeyTransition::Down;
+                        probe.HasChanged = true;
+                    }
+                },
+            .OnReset =
+                [](void* context, input::ResetReason reason, const input::FocusBaseline& baseline) noexcept {
+                    MovementProbe& probe = *static_cast<MovementProbe*>(context);
+                    if (reason == input::ResetReason::FocusLost && probe.Statistics.IsMovementHeld == true)
+                    {
+                        ++probe.Statistics.HeldMovementFocusLosses;
+                    }
+                    probe.Statistics.IsMovementHeld = baseline.Keys[input::KeyIndex(input::Key::KeyW)];
+                    probe.HasChanged = true;
+                },
+            .UserData = this,
+        };
+    }
+};
+
+int32 RunRender(platform::Window& inoutWindow, bool shouldRecord, bool shouldProbePointer)
 {
     rhi::DeviceHandle device;
     rhi::SurfaceHandle surface;
@@ -163,11 +200,35 @@ int32 RunRender(platform::Window& inoutWindow, bool shouldRecord)
         return EXIT_DEVICE;
     }
     hosted_test::ProducerStatistics statistics;
+    MovementProbe movement{statistics};
+    if (shouldProbePointer == true)
+    {
+        inoutWindow.AttachKeyboardSink(movement.GetSink());
+    }
     int32 exitCode = 0;
     const time::Timestamp start = time::Now();
     while (inoutWindow.HandleEvent({}) == true &&
            time::Now().Nanoseconds - start.Nanoseconds < RUN_DEADLINE_NANOSECONDS)
     {
+        if (shouldProbePointer == true)
+        {
+            const input::RelativePointerMotion motion = inoutWindow.TakeRelativePointerMotion();
+            if (statistics.IsMovementHeld == true && (motion.Horizontal != 0 || motion.Vertical != 0))
+            {
+                statistics.HorizontalLookWhileMoving += motion.Horizontal;
+                statistics.VerticalLookWhileMoving += motion.Vertical;
+                movement.HasChanged = true;
+            }
+            if (movement.HasChanged == true)
+            {
+                movement.HasChanged = false;
+                if (WriteStatistics(statistics) == false)
+                {
+                    exitCode = EXIT_STATISTICS;
+                    break;
+                }
+            }
+        }
         const platform::NativeWindowInfo info = inoutWindow.GetNativeWindowInfo();
         rhi::FrameTarget target;
         target.Width = info.Width;
@@ -215,6 +276,10 @@ int32 RunRender(platform::Window& inoutWindow, bool shouldRecord)
         }
         WaitForNextFrame();
     }
+    if (shouldProbePointer == true)
+    {
+        inoutWindow.DetachKeyboardSink();
+    }
     recorder.Detach();
     static_cast<void>(rhi::DestroyDevice(device));
     if (WriteStatistics(statistics) == false)
@@ -232,6 +297,7 @@ int main(int argumentCount, char** arguments)
     UniquePtr<platform::Window> window;
     platform::Window::CreateInfo info;
     info.Name = "hosted producer";
+    info.ShouldReceiveHostedRelativePointer = mode == "pointer";
     if (manager.Initialize({}) == false || manager.CreateWindow(info, window) == false ||
         window->GetNativeWindowInfo().System != platform::WindowSystem::Hosted)
     {
@@ -241,5 +307,5 @@ int main(int argumentCount, char** arguments)
     {
         return RunForged(*window);
     }
-    return RunRender(*window, mode == "record");
+    return RunRender(*window, mode == "record", info.ShouldReceiveHostedRelativePointer);
 }

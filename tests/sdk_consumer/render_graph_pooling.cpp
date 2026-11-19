@@ -1,9 +1,9 @@
 // RG4 exact-descriptor transient pooling evidence through the installed SDK, natively
 // (Metal, Vulkan) and in a browser (WebGPU). Two workloads, each run first with the
 // diagnostic serial control and then with the pooled path through RenderGraphActivation:
-//   export-only: the cooked offscreen generation, as every admitted cooked graph is;
+//   export-only: the original cooked offscreen fixture;
 //   scratch-2:   the same generation rewritten with two unexported scratch backings
-//                (render_graph_scratch.h), the only form a pooled transient can take today.
+//                (render_graph_scratch.h). The authored bilinear workload lives in authored_pooling.cpp.
 // A run reloads generations at the named extent, then alternates extents (each resize is a
 // reload of a generation with the other extent), then reloads without waiting so every
 // generation retires with its frame in flight, and finally times CPU Encode over many frames.

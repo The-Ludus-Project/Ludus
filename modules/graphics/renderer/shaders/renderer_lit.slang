@@ -609,17 +609,28 @@ float3 GetSkyVisibilityDirection(int region)
 // Fraction of positionWorld's neighbourhood that sees past the scene along a sky visibility region's direction,
 // bilinearly filtered over the four nearest texels' caster planes. Positions outside the map see the sky. Unlike a
 // light's lookup it allows no depth-buffer uncertainty: the normal offset already exceeds it.
-float SampleSkyVisibilityRegion(int region, in float3 positionWorld)
+float SampleSkyVisibilityRegion(int region,
+                                in float3 positionWorld,
+                                in float2 localClip,
+                                in float2 atlasOffsetUv,
+                                bool isLocal)
 {
     float4 p = float4(positionWorld, 1);
-    // Orthographic: the projection's last row is (0, 0, 0, 1).
-    float3 clip = float3(dot(material.ShadowData[region * SHADOW_REGION_WORDS], p),
-                         dot(material.ShadowData[region * SHADOW_REGION_WORDS + 1], p),
-                         dot(material.ShadowData[region * SHADOW_REGION_WORDS + 2], p));
-    if (abs(clip.x) > 1 || abs(clip.y) > 1 || clip.z < 0 || clip.z > 1)
-        return 1;
+    float4 rowX = material.ShadowData[region * SHADOW_REGION_WORDS];
+    float4 rowY = material.ShadowData[region * SHADOW_REGION_WORDS + 1];
+    float3 clip = float3(dot(rowX, p), dot(rowY, p), dot(material.ShadowData[region * SHADOW_REGION_WORDS + 2], p));
     float4 rect = material.ShadowData[region * SHADOW_REGION_WORDS + 4];
     float4 settings = material.ShadowData[region * SHADOW_REGION_WORDS + 5];
+    if (isLocal == true)
+    {
+        clip.xy = localClip;
+        rect += atlasOffsetUv.xyxy;
+        // The full terrain depth interval can be kilometres long. Allow half a packed depth code
+        // for rasterization and rounding, in addition to the local world-space normal offset.
+        settings.x = 0.5 / SHADOW_DEPTH_CODE_MAXIMUM;
+    }
+    if (abs(clip.x) > 1 || abs(clip.y) > 1 || clip.z < 0 || clip.z > 1)
+        return 1;
     float2 projectedUv = float2(clip.x * 0.5 + 0.5, 0.5 - clip.y * 0.5);
     float2 receiverTexel = lerp(rect.xy - settings.zw * 0.5, rect.zw + settings.zw * 0.5, projectedUv) / settings.zw;
     float2 lowerTexel = floor(receiverTexel - 0.5) + 0.5;
@@ -1041,6 +1052,16 @@ SkyVisibility EvaluateSkyVisibility(in float3 normalWorld, in float3 reflectionW
         2 / (max(length(material.ShadowData[first * SHADOW_REGION_WORDS].xyz), SKY_VISIBILITY_SCALE_EPSILON) *
              float(SKY_VISIBILITY_SLOT_TEXELS - 2));
     float3 positionWorld = input.PositionWorld + normalWorld * (SKY_VISIBILITY_NORMAL_OFFSET_TEXELS * texelWorld);
+    const int HOMOGENEOUS_ROW = 3;
+    float4 anchor = material.ShadowData[first * SHADOW_REGION_WORDS + HOMOGENEOUS_ROW];
+    float3 relativeWorld = input.PositionWorld - anchor.xyz;
+    float localTexelMetres = 2 * float(SKY_VISIBILITY_LOCAL_RADIUS_METRES) / float(SKY_VISIBILITY_SLOT_TEXELS - 2);
+    float3 localOffsetWorld = normalWorld * (SKY_VISIBILITY_NORMAL_OFFSET_TEXELS * localTexelMetres);
+    // Bound use of the local volume along the ray as well as across it. Inside it, each
+    // direction keeps its fine sample until the actual filter footprint approaches its tile edge.
+    float localRangeWeight =
+        anchor.w < 0 ? saturate(2 * float(SKY_VISIBILITY_LOCAL_RADIUS_METRES) - length(relativeWorld)) : 0;
+    float2 localAtlasOffsetUv = material.ShadowData[(first + 1) * SHADOW_REGION_WORDS + HOMOGENEOUS_ROW].xy;
     float alpha = max(roughness * roughness, SKY_VISIBILITY_SCALE_EPSILON);
     float exponent = clamp(2 / (alpha * alpha) - 2, 1, SKY_SPECULAR_LOBE_EXPONENT_MAXIMUM);
     float solidAngle = 2 * PI / float(SKY_VISIBILITY_DIRECTION_COUNT);
@@ -1059,7 +1080,28 @@ SkyVisibility EvaluateSkyVisibility(in float3 normalWorld, in float3 reflectionW
         // Directions behind both the surface and its reflection lobe change neither integral.
         if (cosine <= 0 && lobe <= 0)
             continue;
-        float visible = SampleSkyVisibilityRegion(region, positionWorld);
+        float localWeight = 0;
+        float2 localClip = 0;
+        if (localRangeWeight > 0)
+        {
+            float3 localPositionWorld = relativeWorld + localOffsetWorld;
+            localClip =
+                float2(dot(normalize(material.ShadowData[region * SHADOW_REGION_WORDS].xyz), localPositionWorld),
+                       dot(normalize(material.ShadowData[region * SHADOW_REGION_WORDS + 1].xyz), localPositionWorld)) /
+                float(SKY_VISIBILITY_LOCAL_RADIUS_METRES);
+            float edgeTexels =
+                (1 - max(abs(localClip.x), abs(localClip.y))) * (0.5 * float(SKY_VISIBILITY_SLOT_TEXELS - 2));
+            localWeight = localRangeWeight * saturate(edgeTexels - 1);
+        }
+        float visible = 0;
+        if (localWeight < 1)
+            visible += (1 - localWeight) * SampleSkyVisibilityRegion(region, positionWorld, 0, 0, false);
+        if (localWeight > 0)
+            visible += localWeight * SampleSkyVisibilityRegion(region,
+                                                               input.PositionWorld + localOffsetWorld,
+                                                               localClip,
+                                                               localAtlasOffsetUv,
+                                                               true);
         visibleCosine += visible * cosine;
         totalCosine += cosine;
 #    ifdef LUDUS_ATMOSPHERE_SURFACE

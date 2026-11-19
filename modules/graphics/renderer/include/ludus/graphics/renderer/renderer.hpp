@@ -888,16 +888,13 @@ private:
     friend class internal::RenderGraphDeferredPass;
     /// Allows the deferred scene generation to supply its directional shadow regions during material preparation.
     friend class internal::ForwardSceneGeneration;
-    /// directionalShadowsOrNull holds directionalShadowCount light regions followed by skyVisibilityCount sky
-    /// visibility regions (zero or SKY_VISIBILITY_DIRECTION_COUNT), all in one square atlas of shadowAtlasTexels.
-    [[nodiscard]] rhi::RasterStatus createLitMaterial(MaterialProgram program,
-                                                      const LitMaterialDescription& description,
-                                                      MaterialVersion& outMaterial,
-                                                      LightSelection& outSelection,
-                                                      const ShadowRegion* directionalShadowsOrNull,
-                                                      foundation::usize directionalShadowCount,
-                                                      foundation::usize skyVisibilityCount,
-                                                      foundation::uint32 shadowAtlasTexels) noexcept;
+    /// The optional prepared atlas supplies the deferred light and sky regions in their packed draw order.
+    [[nodiscard]] rhi::RasterStatus
+    createLitMaterial(MaterialProgram program,
+                      const LitMaterialDescription& description,
+                      MaterialVersion& outMaterial,
+                      LightSelection& outSelection,
+                      const internal::DeferredShadowAtlas* deferredAtlasOrNull) noexcept;
     enum class DrawMode : foundation::uint8
     {
         Color,

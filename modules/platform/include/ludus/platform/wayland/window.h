@@ -43,6 +43,7 @@ namespace ludus::platform::wayland
 using ludus::foundation::UniquePtr;
 
 class WindowWayland;
+struct SurfaceScale;
 
 bool InitializeWayland(const WindowManager::InitializeInfo& info) noexcept;
 UniquePtr<WindowWayland> CreateWindow(const Window::CreateInfo& info) noexcept;
@@ -99,6 +100,7 @@ private:
     UniquePtr<wl_surface> mSurface;
     UniquePtr<xdg_surface> mXdgSurface;
     UniquePtr<xdg_toplevel> mXdgToplevel;
+    UniquePtr<SurfaceScale> mScale;
     bool mIsClosed = false;
 };
 } // namespace ludus::platform::wayland

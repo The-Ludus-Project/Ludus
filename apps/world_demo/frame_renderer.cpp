@@ -115,7 +115,8 @@ rhi::RasterStatus FrameRenderer::prepareViewport(uint32 width, uint32 height) no
     return rhi::RasterStatus::Ready;
 }
 
-rhi::RasterStatus FrameRenderer::Update(const RenderFrame& frame, uint32 width, uint32 height) noexcept
+rhi::RasterStatus
+FrameRenderer::Update(const RenderFrame& frame, uint32 width, uint32 height, rr::ViewReport* outReportOrNull) noexcept
 {
     if (mStage != FrameRendererStage::Ready || width == 0 || height == 0)
     {
@@ -152,6 +153,10 @@ rhi::RasterStatus FrameRenderer::Update(const RenderFrame& frame, uint32 width, 
     mHasSnapshot = true;
     rr::ViewReport report;
     status = mViewport.Update(mSnapshot, view, report);
+    if (outReportOrNull != nullptr && IsAccepted(status) == true)
+    {
+        *outReportOrNull = report;
+    }
     if (status == rhi::RasterStatus::CapacityExceeded)
     {
         return rhi::RasterStatus::NotReady;

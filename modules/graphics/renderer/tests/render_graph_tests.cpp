@@ -11,6 +11,7 @@
 #include <ludus/graphics/renderer/render_graph_capture.hpp>
 #include <ludus/graphics/renderer/views.hpp>
 #include <ludus/graphics/rhi/device.h>
+#include <ludus/graphics/rhi/graph.h>
 
 #include <catch2/catch_test_macros.hpp>
 #include <catch2/generators/catch_generators.hpp>
@@ -1487,6 +1488,63 @@ UpdateGraph(GraphFixture& inoutFixture, renderer::RenderGraph& inoutGraph, uint6
     return report;
 }
 } // namespace
+
+TEST_CASE("bilinear intermediate reuse waits for the submission containing its last sampler",
+          "[render-graph][bilinear][pool]")
+{
+    GraphFixture fixture;
+    const BilinearGraphPlan plan{fixture, false};
+    renderer::RenderGraphAttachmentPool pool;
+    REQUIRE(pool.Initialize(fixture.Device) == rhi::RasterStatus::Ready);
+    const auto initialize = [&](renderer::RenderGraph& outGraph) {
+        return outGraph.Initialize(fixture.Device,
+                                   plan.Make(fixture),
+                                   fixture.MakePrograms(),
+                                   &pool,
+                                   BILINEAR_REFERENCE_WIDTH,
+                                   BILINEAR_REFERENCE_HEIGHT);
+    };
+    renderer::RenderGraph first;
+    REQUIRE(initialize(first) == rhi::RasterStatus::Ready);
+    REQUIRE(UpdateGraph(fixture, first, 1) == rhi::RasterStatus::Ready);
+    rhi::SubmissionToken completed;
+    REQUIRE(first.Render(fixture.Surface, BILINEAR_REFERENCE_WIDTH, BILINEAR_REFERENCE_HEIGHT, completed) ==
+            rhi::RasterStatus::Ready);
+    rhi::reference::Completed = rhi::reference::Submitted;
+    rhi::TextureHandle intermediate;
+    rhi::TextureAspect aspect{};
+    REQUIRE(first.GetResourceAllocation(plan.Passes[1].SourceColor, intermediate, aspect) == rhi::RasterStatus::Ready);
+    rhi::SubmissionToken pending;
+    REQUIRE(first.Render(fixture.Surface, BILINEAR_REFERENCE_WIDTH, BILINEAR_REFERENCE_HEIGHT, pending) ==
+            rhi::RasterStatus::Ready);
+    rhi::RasterTextureState sampled;
+    REQUIRE(rhi::GetTextureState(fixture.Device, intermediate, sampled) == rhi::RasterStatus::Ready);
+    CHECK((sampled.Use == rhi::RasterTextureUse::SampledFragment || sampled.Use == rhi::RasterTextureUse::SampledBoth));
+    REQUIRE(rhi::GetStatus(fixture.Device, sampled.Dependency) == rhi::RasterStatus::Pending);
+    first.Reset();
+    REQUIRE(pool.GetReport().IdleAllocations == 1);
+
+    renderer::RenderGraph replacement;
+    REQUIRE(initialize(replacement) == rhi::RasterStatus::Ready);
+    CHECK(replacement.GetAllocationReport().CreatedAllocations == 2);
+    CHECK(replacement.GetAllocationReport().ReusedAllocations == 0);
+    REQUIRE(pool.GetReport().DeferredAcquisitions == 1);
+    rhi::reference::Completed = rhi::reference::Submitted;
+    REQUIRE(rhi::GetStatus(fixture.Device, pending) == rhi::RasterStatus::Ready);
+    // Keep the replacement live. The only idle backing belongs to the first graph.
+    renderer::RenderGraph later;
+    REQUIRE(initialize(later) == rhi::RasterStatus::Ready);
+    CHECK(later.GetAllocationReport().CreatedAllocations == 1);
+    CHECK(later.GetAllocationReport().ReusedAllocations == 1);
+    REQUIRE(UpdateGraph(fixture, later, 2) == rhi::RasterStatus::Ready);
+    rhi::SubmissionToken last;
+    REQUIRE(later.Render(fixture.Surface, BILINEAR_REFERENCE_WIDTH, BILINEAR_REFERENCE_HEIGHT, last) ==
+            rhi::RasterStatus::Ready);
+    rhi::reference::Completed = rhi::reference::Submitted;
+    rhi::TextureHandle rebound;
+    REQUIRE(later.GetResourceAllocation(plan.Passes[1].SourceColor, rebound, aspect) == rhi::RasterStatus::Ready);
+    CHECK(rebound == intermediate);
+}
 
 TEST_CASE("bilinear graphs sharing a program cache prepare one upscale pipeline per target",
           "[render-graph][bilinear][managed-pipeline]")

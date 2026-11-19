@@ -404,6 +404,9 @@ struct EditorSceneRequest final
     std::string_view Expected;
     /// Optional stage reports.
     const EditorSceneProgress* ProgressOrNull = nullptr;
+    /// During preparation, verify each imported manifest's recorded local source inputs against its
+    /// cooked digests. Enable only for trusted, local authoring projects. Release consumers use cooked assets.
+    bool ShouldVerifySourceInputs = false;
 };
 
 /// Result of OperateEditorScene.

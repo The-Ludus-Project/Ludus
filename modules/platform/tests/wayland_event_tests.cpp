@@ -12,6 +12,8 @@
 #include <wayland-client.h>
 #include <xdg-shell-client-protocol.h>
 
+#include "../src/internal/wayland_scale.hpp"
+
 namespace timing = ludus::foundation::time;
 
 namespace
@@ -115,4 +117,30 @@ TEST_CASE("Toplevel configure states map the suspended state to Occluded", "[pla
 #endif
 
     wl_array_release(&states);
+}
+
+TEST_CASE("Wayland configure applies size and visibility together and retains client-chosen axes",
+          "[platform][wayland]")
+{
+    using ludus::platform::WindowVisibility;
+    ludus::platform::NativeWindowInfo snapshot{ .Width = 641, .Height = 481 };
+    WindowVisibility visibility = WindowVisibility::Visible;
+    ludus::platform::wayland::SurfaceScale scale(snapshot, visibility);
+    scale.PendingWidth = 0;
+    scale.PendingHeight = 501;
+    scale.PendingVisibility = WindowVisibility::Occluded;
+    CHECK(scale.LogicalHeight == 481);
+    CHECK(visibility == WindowVisibility::Visible);
+    scale.Acknowledge();
+    CHECK(scale.LogicalWidth == 641);
+    CHECK(scale.LogicalHeight == 501);
+    CHECK(visibility == WindowVisibility::Occluded);
+
+    scale.PendingWidth = 711;
+    scale.PendingHeight = 0;
+    scale.PendingVisibility = WindowVisibility::Visible;
+    scale.Acknowledge();
+    CHECK(scale.LogicalWidth == 711);
+    CHECK(scale.LogicalHeight == 501);
+    CHECK(visibility == WindowVisibility::Visible);
 }

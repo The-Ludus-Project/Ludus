@@ -6,7 +6,7 @@ name: project-sdk
 
 on:
   pull_request:
-    types: [opened, synchronize, reopened, ready_for_review, edited]
+    types: [opened, synchronize, reopened]
   workflow_call:
     inputs:
       batch_sha:
@@ -18,23 +18,64 @@ on:
         required: true
         type: string
   workflow_dispatch:
+    inputs:
+      wayland_scale:
+        description: Build the installed-SDK World Demo and qualify Wayland output scaling
+        type: boolean
+        default: false
 
 permissions:
   contents: read
 
 # Thanks to GitHub's "Concurrency" guidance: superseded PR checks can cancel.
 # https://docs.github.com/en/actions/concepts/workflows-and-actions/concurrency
-# Only a push (synchronize) supersedes the runs for earlier commits. Other PR
-# activity (opened, ready_for_review, edited, ...) can fire for the commit a
-# concurrent push run is validating, so it runs in a per-commit group that never
-# cancels. A cancelled duplicate would otherwise leave a cancelled or failed
-# required check on the head commit and block the PR.
+# Only a new or reopened head runs this workflow, so each PR has one group and a
+# push cancels the run for the previous commit. Description edits and marking a
+# draft ready change no file; Develop health owns the description
+# (docs/development/continuous-integration.md#pull-request-runner-budget).
 concurrency:
-  group: project-sdk-${{ inputs.batch_sha || github.ref }}${{ github.event_name == 'pull_request' && github.event.action != 'synchronize' && format('-head-{0}', github.event.pull_request.head.sha) || '' }}
-  cancel-in-progress: ${{ github.event_name == 'pull_request' && github.event.action == 'synchronize' }}
+  group: project-sdk-${{ inputs.batch_sha || github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
+  wayland-scale:
+    if: github.event_name == 'workflow_dispatch' && inputs.wayland_scale
+    runs-on: ubuntu-24.04
+    timeout-minutes: 90
+    env:
+      CMAKE_BUILD_PARALLEL_LEVEL: '4'
+      CI: 'true'
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.batch_sha || github.sha }}
+          persist-credentials: false
+      - uses: ./.github/actions/native-setup
+        with:
+          preset: linux-clang-development
+          conan-cache-writer: 'false'
+          compiler-cache-writer: 'false'
+      - name: Build the SDK and standalone World Demo
+        run: |
+          ./scripts/install-sdk linux-clang-development
+          ./scripts/shader-probe bootstrap
+          ./scripts/bootstrap-spirv-cross
+          bash tests/sdk_consumer/wayland/build.sh "$RUNNER_TEMP/wayland-consumer"
+      - name: Install compositor and input tools
+        run: sudo apt-get install -y --no-install-recommends sway wtype weston wayland-utils mesa-vulkan-drivers
+      - name: Exercise scaled Vulkan presentation and input
+        timeout-minutes: 10
+        run: |
+          dbus-run-session -- python3 tests/sdk_consumer/wayland/validate.py \
+            "$RUNNER_TEMP/wayland-consumer/build/world_demo/ludus_world_demo" out/wayland-scale
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: installed-sdk-wayland-scale
+          path: out/wayland-scale
+
   host-tooling:
+    if: github.event_name != 'workflow_dispatch' || !inputs.wayland_scale
     name: Host tooling (ludus_tools) unit tests
     runs-on: ubuntu-24.04
     outputs:

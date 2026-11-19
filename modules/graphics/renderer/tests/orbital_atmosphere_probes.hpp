@@ -15,7 +15,7 @@ inline constexpr foundation::float32 ORBIT_HEIGHT_METRES =
     static_cast<foundation::float32>(ORBIT_ALTITUDE_KILOMETRES * 1000);
 inline constexpr foundation::float32 ORBIT_VERTICAL_FOV_RADIANS = 0.01F;
 
-enum class OrbitalRay
+enum class OrbitalRay : foundation::uint8
 {
     Miss,
     OuterChord,

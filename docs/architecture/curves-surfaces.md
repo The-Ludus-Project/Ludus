@@ -730,6 +730,79 @@ achieved error. LOD hysteresis and morphing belong in rendering and must preserv
 shared edges throughout transitions. Multi-camera rendering selects a declared
 common worst-case mesh or separate meshes; collision never changes with a camera.
 
+### Cooked bicubic seam and silhouette regression
+
+The native installed-SDK tests `ludus_sdk_patch_seam_geometry` and
+`ludus_sdk_patch_seam_raster` cook two bicubic patches to LUGEO, load the
+surface, and tessellate it at absolute position tolerances of 0.035 and 0.006
+asset units. The geometry test compares every shared vertex in canonical order,
+including its binary32 position bits. It also measures each patch's edge level
+before joining the patches. The finer interior forces the flat neighbor to take
+16 or 32 edge intervals in the unequal-refinement fixture. Reversing declaration
+order retains the same shared samples and the crease's separate shading normals.
+
+The coplanar control changes parameter speed by a factor of two. A second
+control adds a cross-edge slope of `16t(t−½)(t−1)` with opposite signs at the
+quarter points. Exact partials, oriented normal angles and scalar triple
+products distinguish these cases along the seam. The straight-boundary bulge
+has height `16u(1−u)v(1−v)`. Its corners miss the center by one asset unit.
+The two joined meshes use 288 and 2,112 triangles respectively. A one-triangle
+cap produces an explicit budget failure.
+
+The World viewport test `ludus_editor_patch_seam_capture` and the SDK capture
+use the same cameras, meshes and forward raster graph. The diagnostic fragment
+writes the interpolated normal's x component, conventional depth rounded to
+16 bits, and a coverage mask. Readback uses a top-left origin, physical pixel
+centers at `(i+½,j+½)`, one sample per pixel, both triangle faces and a strict
+less-than depth test. The numerical test runs without a GPU. The image test
+checks the indexed triangles at nine columns spanning the join, as well as
+adjacent rows along the visible seam. For the parabolic cylinders it solves
+the ray–surface quadratic, clips each root to its patch and depth range, and
+takes the nearest hit. Each verified frame has a viewable grayscale normal image
+(`.pgm`) beside its packed depth and coverage readback (`.rgba`). The native
+batch runs publish these files in the `patch-seam-metal` and `patch-seam-vulkan`
+artifacts, grouped by fixture and tolerance. Rays just inside and outside the
+analytic tangent check the silhouette independently of which row the rasterizer
+covers.
+
+The table gives the largest center-column displacement in physical pixels over
+four perspective views in the native Metal SDK capture. The mixed surface joins
+a 1.35-unit-wide, nearly flat patch to a 0.65-unit-wide, strongly curved one.
+The mixed cost lists the large and small patches separately.
+
+| Surface | Position tolerance | Triangles | 96 × 96 | 192 × 192 |
+| --- | ---: | ---: | ---: | ---: |
+| Smooth parabola | 0.035 | 8 + 8 | 0.718 | 0.626 |
+| Smooth parabola | 0.006 | 16 + 16 | 0.282 | 0.626 |
+| Mixed curvature | 0.035 | 2 + 8 | 0.419 | 0.838 |
+| Mixed curvature | 0.006 | 8 + 16 | 0.419 | 0.263 |
+
+Both fixed profiles serve the two tested extents within this workload's
+one-pixel silhouette and 32-triangle budgets. At 192 × 192 in the unscaled
+positive-direction view, the coarse mixed patches span projected bounding-box
+diagonals of 181 and 105 pixels. Their tessellated silhouette displacements
+are 0 and 0.433 pixels respectively. Turning the camera reverses their extent
+ranking. Interior depth is a separate observable. Under the close grazing
+camera the coarse mixed surface's largest sampled depth error is 0.02082 on
+the conventional [0,1] scale, falling to 0.00238 with the finer profile.
+
+For nonuniform scale, the fixture bounds screen displacement by multiplying
+the certified model error (plus a binary32 source allowance) by maximum affine
+stretch and the perspective projection's maximum derivative over a box enclosing
+the analytic patch and its triangles. At 192 × 192 the close camera on the fine
+mixed surface gives 0.429 pixels of measured matched-parameter deviation on
+the large patch. Using its center depth gives 0.269 pixels, while the positive-W
+hull bound gives 2.962 pixels. These model-to-screen measurements include
+projected points outside the framebuffer. A hull crossing the near plane is
+outside this bound's domain. The fixture records projected and raster results
+separately for every supported camera.
+
+The fixtures draw on Max and Clifford's observation that smooth shading can
+hide patch creases, Kajiya's direct intersection comparison, Moreton's shared
+boundary criterion, and Abi-Ezzi and Shirman's treatment of perspective
+magnification. The issue links the publications and the associated controls.
+[Cooked patch seam regression and references](https://github.com/The-Ludus-Project/Ludus/issues/1407)
+
 ## Editing, cache invalidation and publication
 
 Tools keep stable author IDs for points, spans, patches and edges. Array indices

@@ -38,7 +38,10 @@ class WindowHosted final : public WindowBase, public HostedSurfaceChannel, publi
 {
 public:
     WindowHosted(const CreateInfo& info, SocketDescriptor&& connection, const Token& token) noexcept
-        : WindowBase(info), mConnection(foundation::Move(connection)), mToken(token)
+        : WindowBase(info), mConnection(foundation::Move(connection)),
+          mShouldReceiveRelativePointer(LUDUS_TARGET_OS == LUDUS_OS_MACOS &&
+                                        info.ShouldReceiveHostedRelativePointer == true),
+          mToken(token)
     {
         mNativeWindowInfo.System = WindowSystem::Hosted;
         mNativeWindowInfo.HostedSurfaceOrNull = this;
@@ -201,6 +204,17 @@ private:
                 return true;
             case MessageKind::Key:
                 applyKey(message);
+                return true;
+            case MessageKind::RelativePointerMotion:
+                if (mShouldReceiveRelativePointer == false)
+                {
+                    return false;
+                }
+                if (mIsFocused == true)
+                {
+                    mRelativePointerMotion.Horizontal += message.PointerMotion.Horizontal;
+                    mRelativePointerMotion.Vertical += message.PointerMotion.Vertical;
+                }
                 return true;
             case MessageKind::Close:
                 closeWindow();
@@ -716,6 +730,7 @@ public:
 private:
     void applyReset(input::ResetReason reason, const input::FocusBaseline& baseline) noexcept
     {
+        mRelativePointerMotion = {};
         if (reason == input::ResetReason::FocusEntered)
         {
             mIsFocused = true;
@@ -792,6 +807,7 @@ private:
         mIsClosed = true;
         mIsFocused = false;
         mHeldKeys = {};
+        mRelativePointerMotion = {};
         mConnection.Reset();
 #if LUDUS_TARGET_OS == LUDUS_OS_WINDOWS
         for (HostedSurfaceImages& retained : mPendingCopies)
@@ -807,6 +823,7 @@ private:
 
 private:
     SocketDescriptor mConnection;
+    bool mShouldReceiveRelativePointer = false;
 #if LUDUS_TARGET_OS == LUDUS_OS_WINDOWS
     static constexpr usize MAX_PENDING_COPIES = MAX_QUEUED_RELEASES / HOSTED_SURFACE_IMAGE_COUNT;
     foundation::StaticArray<HostedSurfaceImages, MAX_PENDING_COPIES> mPendingCopies{};
@@ -889,13 +906,14 @@ bool Initialize() noexcept
     return true;
 }
 
-bool TrySendHello(NativeStream descriptor, const Token& token) noexcept
+bool TrySendHello(NativeStream descriptor, const Token& token, bool shouldReceiveRelativePointer) noexcept
 {
     Message hello;
     hello.Kind = MessageKind::Hello;
     hello.Version = PROTOCOL_VERSION;
     hello.KeyCount = static_cast<uint16>(input::KEY_COUNT);
     hello.SessionToken = token;
+    hello.ShouldReceiveRelativePointer = shouldReceiveRelativePointer;
     foundation::StaticArray<uint8, MAX_MESSAGE_BYTES> bytes{};
     usize size = 0;
     usize sent = 0;
@@ -927,6 +945,12 @@ foundation::UniquePtr<Window> OpenWindow(SocketDescriptor&& connection,
 
 foundation::UniquePtr<Window> CreateWindow(const Window::CreateInfo& info) noexcept
 {
+    if (LUDUS_TARGET_OS != LUDUS_OS_MACOS && info.ShouldReceiveHostedRelativePointer == true)
+    {
+        LUDUS_LOG_ERROR(LOG_PLATFORM,
+                        "Hosted relative pointer input requires macOS. Disable it to launch with keyboard input.");
+        return nullptr;
+    }
     Token token{};
     SocketPath socketPath;
     if (TryReadAddress(token, socketPath) == false)
@@ -965,7 +989,7 @@ foundation::UniquePtr<Window> CreateWindow(const Window::CreateInfo& info) noexc
         return nullptr;
     }
 #endif
-    if (TrySendHello(connection.Get(), token) == false)
+    if (TrySendHello(connection.Get(), token, info.ShouldReceiveHostedRelativePointer) == false)
     {
         LUDUS_LOG_ERROR(LOG_PLATFORM, "Cannot send the hosted-window handshake");
         return nullptr;

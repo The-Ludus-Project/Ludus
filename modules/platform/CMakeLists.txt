@@ -158,30 +158,28 @@ elseif(LUDUS_PLATFORM_ENABLE_WAYLAND)
 
     set(LUDUS_PLATFORM_GENERATED_DIR "${CMAKE_CURRENT_BINARY_DIR}/generated")
     set(LUDUS_PLATFORM_WAYLAND_GENERATED_DIR "${LUDUS_PLATFORM_GENERATED_DIR}/wayland")
-    set(LUDUS_PLATFORM_XDG_SHELL_XML "${WAYLAND_PROTOCOLS_PKGDATADIR}/stable/xdg-shell/xdg-shell.xml")
-    set(LUDUS_PLATFORM_XDG_SHELL_HEADER "${LUDUS_PLATFORM_WAYLAND_GENERATED_DIR}/xdg-shell-client-protocol.h")
-    set(LUDUS_PLATFORM_XDG_SHELL_CODE "${LUDUS_PLATFORM_WAYLAND_GENERATED_DIR}/xdg-shell-protocol.cpp")
-
-    add_custom_command(
-        OUTPUT
-            "${LUDUS_PLATFORM_XDG_SHELL_HEADER}"
-            "${LUDUS_PLATFORM_XDG_SHELL_CODE}"
-        COMMAND "${CMAKE_COMMAND}" -E make_directory "${LUDUS_PLATFORM_WAYLAND_GENERATED_DIR}"
-        COMMAND "${WAYLAND_SCANNER_EXECUTABLE}" client-header "${LUDUS_PLATFORM_XDG_SHELL_XML}" "${LUDUS_PLATFORM_XDG_SHELL_HEADER}"
-        COMMAND "${WAYLAND_SCANNER_EXECUTABLE}" private-code "${LUDUS_PLATFORM_XDG_SHELL_XML}" "${LUDUS_PLATFORM_XDG_SHELL_CODE}"
-        DEPENDS
-            "${LUDUS_PLATFORM_XDG_SHELL_XML}"
-        VERBATIM
-    )
-
-    add_custom_target(
-        ludus_platform_wayland_protocols
-        DEPENDS
-            "${LUDUS_PLATFORM_XDG_SHELL_HEADER}"
-            "${LUDUS_PLATFORM_XDG_SHELL_CODE}"
-    )
-
-    target_sources(ludus_platform PRIVATE src/window_wayland.cpp)
+    set(wayland_protocols stable/xdg-shell/xdg-shell)
+    set(fractional_protocol staging/fractional-scale/fractional-scale-v1)
+    if(EXISTS "${WAYLAND_PROTOCOLS_PKGDATADIR}/${fractional_protocol}.xml")
+        list(APPEND wayland_protocols stable/viewporter/viewporter "${fractional_protocol}")
+        target_compile_definitions(ludus_platform PRIVATE LUDUS_WAYLAND_FRACTIONAL_SCALE=1)
+    endif()
+    foreach(protocol IN LISTS wayland_protocols)
+        get_filename_component(name "${protocol}" NAME)
+        set(xml "${WAYLAND_PROTOCOLS_PKGDATADIR}/${protocol}.xml")
+        set(header "${LUDUS_PLATFORM_WAYLAND_GENERATED_DIR}/${name}-client-protocol.h")
+        set(code "${LUDUS_PLATFORM_WAYLAND_GENERATED_DIR}/${name}-protocol.cpp")
+        add_custom_command(
+            OUTPUT "${header}" "${code}"
+            COMMAND "${CMAKE_COMMAND}" -E make_directory "${LUDUS_PLATFORM_WAYLAND_GENERATED_DIR}"
+            COMMAND "${WAYLAND_SCANNER_EXECUTABLE}" client-header "${xml}" "${header}"
+            COMMAND "${WAYLAND_SCANNER_EXECUTABLE}" private-code "${xml}" "${code}"
+            DEPENDS "${xml}"
+            VERBATIM)
+        list(APPEND wayland_generated "${header}" "${code}")
+    endforeach()
+    add_custom_target(ludus_platform_wayland_protocols DEPENDS ${wayland_generated})
+    target_sources(ludus_platform PRIVATE src/window_wayland.cpp src/wayland_scale.cpp)
     target_include_directories(ludus_platform PRIVATE "${LUDUS_PLATFORM_WAYLAND_GENERATED_DIR}")
     add_dependencies(ludus_platform ludus_platform_wayland_protocols)
     target_link_libraries(ludus_platform PRIVATE PkgConfig::WAYLAND_CLIENT)
