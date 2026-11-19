@@ -62,6 +62,9 @@ bool Application::Start(rhi::BackendSelection selection, const char* levelBytes,
     mPresentedFrames = 0;
     mPacedPresentedFrames = 0;
     mPresentReturn = {};
+    mFirstWorldActivation = {};
+    mFirstRendererReady = {};
+    mInitialLoadRequestDuration = {};
     mPacing.Reset();
     mHadFocus = false;
     if (mInput.IsValid() == false)
@@ -125,8 +128,11 @@ bool Application::Start(rhi::BackendSelection selection, const char* levelBytes,
     {
         LUDUS_LOG_WARN(logging::LOG_CORE, "Hosted GPU recorder could not attach; editor recordings are unavailable");
     }
-    if (mSession.RequestLoad(levelBytes != nullptr ? std::string_view(levelBytes, levelSize) : ExampleLevel()).Error !=
-        LevelError::None)
+    const foundation::time::Timestamp loadStart = foundation::time::Now();
+    const std::string_view level = levelBytes != nullptr ? std::string_view(levelBytes, levelSize) : ExampleLevel();
+    const LevelResult load = mSession.RequestLoad(level);
+    (void)foundation::time::TryElapsed(loadStart, foundation::time::Now(), mInitialLoadRequestDuration);
+    if (load.Error != LevelError::None)
     {
         Shutdown();
         mState = AppState::Failed;
@@ -296,6 +302,10 @@ AppState Application::Frame() noexcept
     // Pacing restarts too: a slow activation frame is not judged against the loading schedule.
     if (mSession.Activate() == true)
     {
+        if (mFirstWorldActivation.Nanoseconds == 0)
+        {
+            mFirstWorldActivation = foundation::time::Now();
+        }
         mPacing.Reset();
     }
     rhi::DeviceInfo device;
@@ -323,17 +333,21 @@ Application::playFrame(const rhi::StartupInfo& startup, bool isWindowVisible, fo
 {
     mSelectedBackend = startup.SelectedBackend;
     const rhi::RasterStatus prepared = mFrameRenderer.Prepare(mDevice);
-    if (mIsRendererReady == false && prepared == rhi::RasterStatus::Ready &&
-        mSelectedBackend == rhi::Backend::Direct3D12)
+    if (mIsRendererReady == false && prepared == rhi::RasterStatus::Ready)
     {
-        rhi::MeasurementAdapter adapter;
-        if (rhi::GetMeasurementAdapter(mDevice, adapter) == rhi::RasterStatus::Ready && adapter.SoftwareKnown == true)
+        mFirstRendererReady = foundation::time::Now();
+        if (mSelectedBackend == rhi::Backend::Direct3D12)
         {
-            const std::string_view kind = adapter.Software == true ? "software" : "hardware";
-            LUDUS_LOG_INFO(foundation::logging::LOG_CORE,
-                           "World renderer: Direct3D 12 {} adapter '{}'",
-                           kind,
-                           adapter.Name);
+            rhi::MeasurementAdapter adapter;
+            if (rhi::GetMeasurementAdapter(mDevice, adapter) == rhi::RasterStatus::Ready &&
+                adapter.SoftwareKnown == true)
+            {
+                const std::string_view kind = adapter.Software == true ? "software" : "hardware";
+                LUDUS_LOG_INFO(foundation::logging::LOG_CORE,
+                               "World renderer: Direct3D 12 {} adapter '{}'",
+                               kind,
+                               adapter.Name);
+            }
         }
     }
     mIsRendererReady = prepared == rhi::RasterStatus::Ready;

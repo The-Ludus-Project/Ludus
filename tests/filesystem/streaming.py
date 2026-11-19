@@ -1,24 +1,32 @@
 """Deterministic FS-R2 fixtures and repeated real-SDK streaming measurements.
 
-Fixture workload families are synthetic, not captured gameplay traces. All byte
-validation happens in the native harness. No runtime backend is replaced here.
+Generate synthetic fixtures or capture a packed World startup for replay.
+The native harness compares all delivered bytes with independent references.
 """
 import argparse
 import hashlib
 import itertools
 import json
+import os
 from pathlib import Path
 import platform
 import random
+import re
+import shutil
 import subprocess
 import statistics
 import sys
 import time
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "scripts/python"))
-from pack_builder import StableSource, build_stream, source_paths
+from pack_builder import StableSource, build_stream, portable_path, source_paths
 
 SEED = 16302
+STARTUP_REPORT = re.compile(
+    r"FS-R2 startup: open_start_ns=(\d+) read_start_ns=(\d+) read_end_ns=(\d+) "
+    r"validation_end_ns=(\d+) world_ready_ns=(\d+) renderer_ready_ns=(\d+) present_ns=(\d+) "
+    r"load_request_ns=(\d+) quad_ready_ns=(\d+) offset=(\d+) bytes=(\d+) entry=([^\r\n]+)"
+)
 
 
 def word_hash(value):
@@ -92,6 +100,66 @@ def file_hash(path):
     return digest.hexdigest()
 
 
+def capture_startup(args):
+    portable_path(args.entry)
+    binary = args.world_demo.resolve(strict=True)
+    pack = args.pack.resolve(strict=True)
+    source = args.loose.resolve(strict=True) / args.entry
+    binary_hash, pack_hash, source_hash = map(file_hash, (binary, pack, source))
+    # Use a new corpus so a failed capture cannot overwrite prior evidence.
+    args.directory.mkdir(parents=True)
+    replay_pack = args.directory / args.layout
+    shutil.copyfile(pack, replay_pack)
+    reference = args.directory / "loose" / args.entry
+    reference.parent.mkdir(parents=True)
+    shutil.copyfile(source, reference)
+    if file_hash(replay_pack) != pack_hash or file_hash(reference) != source_hash:
+        raise ValueError("pack or independent reference changed during capture setup")
+
+    command = [str(binary), "--startup-report", "--frames", "1", "--level-pack", str(pack), args.entry]
+    reference_size = reference.stat().st_size
+    if reference_size == 0:
+        raise ValueError("World startup requires a nonempty reference asset")
+    timing_names = ("open_start_ns", "read_start_ns", "read_end_ns", "validation_end_ns",
+                    "world_ready_ns", "renderer_ready_ns", "present_ns", "load_request_ns", "quad_ready_ns")
+    with (args.directory / "startup-runs.jsonl").open("w", buffering=1) as runs:
+        for repetition in range(args.repetitions):
+            completed = subprocess.run(command, text=True, capture_output=True, timeout=45)
+            record = dict(repetition=repetition, status=completed.returncode, command=command,
+                          stdout=completed.stdout, stderr=completed.stderr)
+            if hasattr(os, "getloadavg"):
+                record["host_load_average_after"] = os.getloadavg()
+            matches = STARTUP_REPORT.findall(completed.stdout + "\n" + completed.stderr)
+            if completed.returncode != 0 or len(matches) != 1:
+                runs.write(json.dumps(record) + "\n")
+                raise RuntimeError("native World startup failed or emitted no unique report; see startup-runs.jsonl")
+            report = matches[0]
+            timings = dict(zip(timing_names, map(int, report[:len(timing_names)]), strict=True))
+            record["timings"] = timings
+            offset, size = map(int, report[-3:-1])
+            record["request"] = {"entry": report[-1], "offset": offset, "bytes": size}
+            runs.write(json.dumps(record) + "\n")
+            read_stages = [timings[name] for name in timing_names[:4]]
+            ready_stages = [timings[name] for name in ("world_ready_ns", "renderer_ready_ns")]
+            if (offset != 0 or size != reference_size or report[-1] != args.entry
+                    or read_stages != sorted(read_stages)
+                    or not all(read_stages[-1] <= ready <= timings["present_ns"] for ready in ready_stages)):
+                raise ValueError("World report did not match the captured whole-entry route or startup milestone order")
+
+    if (binary_hash, pack_hash, source_hash) != tuple(map(file_hash, (binary, pack, source))):
+        raise ValueError("startup input or game build changed while capturing")
+    trace = args.directory / "startup.trace"
+    trace.write_text(f"fs-r2 2 1 1\n{args.entry}\n0 0 {offset} {size} 0 0\n", encoding="utf-8", newline="\n")
+    manifest = {"schema": 1, "kind": "native-world-demo-startup",
+                "source_commit": subprocess.check_output(["git", "rev-parse", "HEAD"], text=True).strip(),
+                "game_binary_sha256": binary_hash, "files": {args.entry: source_hash},
+                args.layout: {"bytes": replay_pack.stat().st_size, "sha256": pack_hash},
+                "traces": {"startup": file_hash(trace)},
+                "startup_runs_sha256": file_hash(args.directory / "startup-runs.jsonl")}
+    (args.directory / "manifest.json").write_text(json.dumps(manifest, indent=2) + "\n")
+    print(f"{args.repetitions} windowed startup runs and replay corpus saved to {args.directory}")
+
+
 def environment():
     result = {"platform": platform.platform(), "machine": platform.machine(), "python": sys.version,
               "frame_impact": "NOT MEASURED: standalone byte-delivery harness",
@@ -125,6 +193,8 @@ def measure(args):
             raise ValueError(f"fixture hash mismatch: {name}")
     args.output.mkdir(parents=True, exist_ok=True)
     metadata = environment()
+    if hasattr(os, "getloadavg"):
+        metadata["host_load_average_before"] = os.getloadavg()
     metadata.update(manifest_sha256=file_hash(manifest_path), binary_sha256=file_hash(args.benchmark),
                     cache_method=args.cache, compiler=args.compiler_description, storage=args.storage_description,
                     repetitions=args.repetitions, order_seed=SEED, poll_us=args.poll_us,
@@ -181,6 +251,14 @@ def main():
     build = subparsers.add_parser("generate")
     build.add_argument("directory", type=Path)
     build.add_argument("--count", type=int, default=256)
+    capture = subparsers.add_parser("capture-world-startup")
+    capture.add_argument("directory", type=Path)
+    capture.add_argument("--world-demo", type=Path, required=True)
+    capture.add_argument("--pack", type=Path, required=True)
+    capture.add_argument("--loose", type=Path, required=True, help="original directory used to build the pack")
+    capture.add_argument("--entry", required=True)
+    capture.add_argument("--layout", choices=("raw.pack", "lz4.pack"), default="lz4.pack")
+    capture.add_argument("--repetitions", type=int, choices=range(1, 31), default=5)
     run = subparsers.add_parser("measure")
     run.add_argument("directory", type=Path)
     run.add_argument("--benchmark", type=Path, required=True)
@@ -200,6 +278,8 @@ def main():
     args = parser.parse_args()
     if args.operation == "generate":
         generate(args.directory, args.count)
+    elif args.operation == "capture-world-startup":
+        capture_startup(args)
     else:
         if not 1 <= args.repetitions <= 30 or not 1 <= args.poll_us <= 1_000_000:
             parser.error("repetitions must be 1..30 and poll-us 1..1000000")
