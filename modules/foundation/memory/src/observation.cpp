@@ -11,8 +11,9 @@ namespace
 constinit thread_local bool isInsideObservation = false;
 }
 
-Observation::Observation(usize slots, usize events, AllocationSiteId siteCount, ReadMetadata readMetadata) noexcept
-    : mSlots(slots), mEventLimit(events), mSiteCount(siteCount), mReadMetadata(readMetadata)
+Observation::Observation(const ObservationConfig& config, ReadMetadata readMetadata) noexcept
+    : mSlots(config.LiveSlots), mEventLimit(config.EventLimit), mSiteCount(config.SiteCount),
+      mReadMetadata(readMetadata)
 {
 }
 

@@ -46,6 +46,13 @@ struct ActivityEvent
     ActivityKind Kind;
 };
 
+struct ObservationConfig
+{
+    usize LiveSlots;
+    usize EventLimit;
+    AllocationSiteId SiteCount;
+};
+
 // Private FoundationMemory/Profiling seam. Only the coordinator attaches a
 // route, after joining whole operations on every selected domain.
 class Observation final
@@ -53,7 +60,7 @@ class Observation final
 public:
     using ReadMetadata = ActivityMetadata (*)() noexcept;
 
-    Observation(usize slots, usize events, AllocationSiteId siteCount, ReadMetadata readMetadata) noexcept;
+    Observation(const ObservationConfig& config, ReadMetadata readMetadata) noexcept;
 
     static void Attach(const AllocationDomain& domain, AllocationDomainId id, Observation& inoutObservation) noexcept;
     static void Detach(const AllocationDomain& domain) noexcept;

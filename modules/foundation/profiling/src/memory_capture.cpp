@@ -18,10 +18,11 @@ using internal::CapturedDomain;
 using internal::SiteDefinition;
 using internal::SiteText;
 using memory_internal::Observation;
+using memory_internal::ObservationConfig;
 
 struct ActivitySession
 {
-    ActivitySession(usize slots, usize events, AllocationSiteId siteCount, MemoryCaptureId capture) noexcept;
+    ActivitySession(const ObservationConfig& config, MemoryCaptureId capture) noexcept;
 
     Observation Recorder;
     MemoryCaptureId Capture;
@@ -40,12 +41,9 @@ memory_internal::ActivityMetadata ReadActivityMetadata() noexcept
     return {NowTicks(), threading::GetCallingThreadId().Value};
 }
 
-ActivitySession::ActivitySession(usize slots,
-                                 usize events,
-                                 AllocationSiteId siteCount,
-                                 MemoryCaptureId capture) noexcept
-    : Recorder(slots, events, siteCount, ReadActivityMetadata), Capture(capture), Slots(slots), EventLimit(events),
-      SiteCount(siteCount)
+ActivitySession::ActivitySession(const ObservationConfig& config, MemoryCaptureId capture) noexcept
+    : Recorder(config, ReadActivityMetadata), Capture(capture), Slots(config.LiveSlots), EventLimit(config.EventLimit),
+      SiteCount(config.SiteCount)
 {
 }
 
@@ -152,13 +150,11 @@ MemoryCaptureStatus BeginMemoryCapture(const MemoryActivityConfig& config, Memor
     {
         return MemoryCaptureStatus::InvalidInput;
     }
+    const ObservationConfig recorderConfig = { .LiveSlots = slots, .EventLimit = events, .SiteCount = gSiteCount };
     constexpr MemoryCaptureId LAST_CAPTURE_ID = static_cast<MemoryCaptureId>(-1);
-    if (gLastCapture == LAST_CAPTURE_ID || TryCreateOwned(memory_internal::GetCaptureStorageDomain(),
-                                                          gSession,
-                                                          slots,
-                                                          events,
-                                                          gSiteCount,
-                                                          gLastCapture + 1) != OwnershipStatus::Ok)
+    if (gLastCapture == LAST_CAPTURE_ID ||
+        TryCreateOwned(memory_internal::GetCaptureStorageDomain(), gSession, recorderConfig, gLastCapture + 1) !=
+            OwnershipStatus::Ok)
     {
         return MemoryCaptureStatus::StorageExhausted;
     }
