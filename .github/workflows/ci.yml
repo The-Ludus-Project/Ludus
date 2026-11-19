@@ -297,6 +297,9 @@ jobs:
           mkdir -p out/rg4-evidence
           out/renderer-sdk/ludus_sdk_render_graph_pooling_consumer 2>&1 | tee out/rg4-evidence/metal.log
           python3 -c 'from pathlib import Path; text=Path("out/rg4-evidence/metal.log").read_text(); assert "pooling passed" in text, text'
+          out/host-tools/venv/bin/cmake --install out/renderer-sdk --component AuthoredPooling --prefix "$PWD/out/packaged-consumer"
+          set -o pipefail
+          out/packaged-consumer/bin/ludus_sdk_authored_pooling 2>&1 | tee out/rg4-evidence/authored-metal.log
           out/renderer-sdk/ludus_sdk_reference_capture out/reference.luhdr
           python3 scripts/reference-hdr out/reference.luhdr --pfm out/reference.pfm --manifest out/reference.json
           out/host-tools/venv/bin/ctest --test-dir out/renderer-sdk/reference-scene --output-on-failure
@@ -419,7 +422,9 @@ jobs:
         timeout-minutes: 15
         env:
           QT_QPA_PLATFORM: cocoa
-        run: out/build/macos-clang-development/apps/editor/ludus_editor_tests '[.render-native],[.level-native]'
+        run: |
+          out/build/macos-clang-development/apps/editor/ludus_editor_tests '[.render-native],[.level-native]'
+          out/build/macos-clang-development/apps/editor/ludus_editor_tests '[.authored-pooling-viewport]'
 
       - name: Verify Play in the World viewport
         timeout-minutes: 15

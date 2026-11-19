@@ -214,6 +214,39 @@ if(EMSCRIPTEN)
     configure_file(../render-graph-pooling.html render-graph-pooling.html COPYONLY)
 endif()
 
+# One saved viewport-relative document, cooked by the installed helper and carried inside the
+# standalone Metal consumer. The native World acceptance opens these same editable project inputs.
+if(APPLE AND NOT EMSCRIPTEN)
+    set(bilinear_project "${CMAKE_CURRENT_BINARY_DIR}/bilinear-project/graphs/Main")
+    set(bilinear_base "${CMAKE_CURRENT_SOURCE_DIR}/../rg2/offscreen")
+    foreach(file rasterize.lurender.json main_shaders/color.slang main_shaders/depth.slang main_shaders/geometry.slang)
+        configure_file("${bilinear_base}/${file}" "${bilinear_project}/${file}" COPYONLY)
+    endforeach()
+    # The Mac editor's compiled interface carries both target vertex layouts.
+    block()
+        set(RG2_TEST_PROFILES "[\"metal\", \"wgsl\"]")
+        configure_file("${bilinear_base}/main.lushader.json.in" "${bilinear_project}/main.lushader.json" @ONLY)
+    endblock()
+    configure_file(../rg2/authored_bilinear/main.lurender.json "${bilinear_project}/main.lurender.json" COPYONLY)
+    add_executable(ludus_sdk_authored_pooling ../authored_pooling.cpp)
+    target_link_libraries(ludus_sdk_authored_pooling PRIVATE Ludus::GraphicsRenderer Ludus::FoundationTime)
+    target_compile_options(ludus_sdk_authored_pooling PRIVATE -Wall -Wextra -Wpedantic -Werror -fno-exceptions)
+    ludus_compile_renderer_shaders(TARGET ludus_sdk_authored_pooling SHADERS renderer_composite)
+    ludus_compile_render_graph(TARGET ludus_sdk_authored_pooling NAME authored_bilinear
+        MANIFEST "${bilinear_project}/main.lushader.json" RUNTIME_PACKAGE)
+    add_custom_command(OUTPUT "${rg3_embedded}/authored_bilinear_bytes.h"
+        COMMAND "${CMAKE_COMMAND}" "-DINPUT=${authored_bilinear_RUNTIME_PACKAGE}"
+            "-DOUTPUT=${rg3_embedded}/authored_bilinear_bytes.h" -DNAME=AUTHORED_BILINEAR
+            -P "${CMAKE_CURRENT_SOURCE_DIR}/embed_bytes.cmake"
+        DEPENDS "${authored_bilinear_RUNTIME_PACKAGE}" "${CMAKE_CURRENT_SOURCE_DIR}/embed_bytes.cmake" VERBATIM)
+    target_sources(ludus_sdk_authored_pooling PRIVATE "${rg3_embedded}/authored_bilinear_bytes.h")
+    target_include_directories(ludus_sdk_authored_pooling PRIVATE "${rg3_embedded}")
+    set_target_properties(ludus_sdk_authored_pooling PROPERTIES INSTALL_RPATH "@executable_path/../lib")
+    ludus_install_denoiser_runtime(TARGET ludus_sdk_authored_pooling DESTINATION lib COMPONENT AuthoredPooling)
+    install(TARGETS ludus_sdk_authored_pooling RUNTIME DESTINATION bin COMPONENT AuthoredPooling)
+    add_test(NAME ludus_sdk_authored_pooling COMMAND ludus_sdk_authored_pooling)
+endif()
+
 # Managed bilinear pipelines: the consumer rewrites the cooked offscreen graph into a half-extent scene
 # pass and a BilinearUpscale pass, draws it without a program cache and then twice with one shared
 # cache, and requires one shared native upscale pipeline and byte-identical exports

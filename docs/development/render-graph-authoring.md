@@ -10098,6 +10098,83 @@ rewrites one such offscreen `.lurgrt`:
 - all resources take a chosen extent, so a resize is a reload of a generation with
   another extent, as a re-cooked graph would be.
 
+### Qualify an authored bilinear intermediate on Metal
+
+The saved document in `tests/sdk_consumer/rg2/authored_bilinear` shares the
+offscreen fixture's raster subgraph, manifest and shader sources. The raster
+pass writes color and private depth to one half-resolution backing. The
+bilinear pass samples its color and writes a full-resolution export. The SDK
+consumer embeds the runtime package emitted by the installed graph compiler.
+The editor test saves the same document through the Renderer workspace.
+
+With the native Mac development SDK installed and the standalone
+`tests/sdk_consumer/renderer` CMake project configured in `out/renderer-sdk`
+against that SDK, run from the repository root:
+
+```sh
+cmake --build out/renderer-sdk --target ludus_sdk_authored_pooling
+cmake --install out/renderer-sdk --component AuthoredPooling --prefix "$PWD/out/packaged-consumer"
+out/packaged-consumer/bin/ludus_sdk_authored_pooling
+QT_QPA_PLATFORM=cocoa out/build/macos-clang-development/apps/editor/ludus_editor_tests '[.authored-pooling-viewport]'
+```
+
+The standalone executable runs the serial control first and keeps its complete
+RGBA8 exports. The pooled run must match every byte for the same camera,
+geometry, material and extent. Each mode captures six same-descriptor stages,
+six resizes alternating 95 × 127 and 127 × 95, and six replacements immediately
+after submitting another frame. Alternating the triangle color distinguishes
+a retained export from its replacement. The comparison covers 217,170 pixels
+(868,680 bytes) per mode.
+
+The consumer checks the actual attachment and export handles, both aspects of
+the scene backing, the intermediate's sampled state and the completion of its
+last use. It creates a private depth view of each exported backing and checks
+that no later acquisition reuses that backing. During replacement it holds a
+native read lease over staging, drains it before activation can publish, and
+keeps the old export's completed readback ticket across publication. It compares
+that ticket's full image with the original after rendering the replacement.
+The renderer's `[render-graph][bilinear][pool]` test controls completion of the
+submission containing both the producer and sampler. It checks the deferred
+allocation and subsequent reuse of the original intermediate.
+
+On November 18, 2026, the native Cocoa World viewport presented the saved
+project's `Main/upscale` output on an Apple M5 (8 GPU cores, macOS 26.6,
+build 25G72). Orbit changed the presented frame. Resizing changed both the
+graph target extent and the captured framebuffer. The editor used shared Metal
+textures throughout. The manifest carries both Metal and WGSL vertex layouts
+to match the Mac editor's compiled CPU interface. The run executed on Metal.
+
+A standalone consumer built against the Development SDK installed from
+`fd7a6d3eb` ran twice from outside the project directory. Both runs matched
+every export byte and gave these allocation results:
+
+| Mode | Created, reload / resize / in-flight | Reused, same phases | Deferred | Pending at replacement, of 6 | Idle backings |
+| --- | --- | --- | ---: | ---: | ---: |
+| SerialControl | 12 / 12 / 12 | 0 / 0 / 0 | 0 | 6 | 0 |
+| ExactPool | 8 / 7 / 6 | 4 / 5 / 6 | 0 | 6 | 2 |
+
+| Mode | Logical high-water bytes across runs | Sampled peak logical / Metal API bytes | Steady logical / API bytes | Idle logical / API bytes released by trim |
+| --- | ---: | ---: | ---: | ---: |
+| SerialControl | 243,216–243,660 | 242,748 / 393,772 | 121,652 / 197,164 | 0 / 0 |
+| ExactPool | 267,792 | 267,324 / 442,924 | 170,804 / 295,468 | 49,152 / 98,304 |
+
+The logical high-water mark includes overlap throughout the RHI storage epoch.
+The paired logical and API samples cover RHI buffers and textures. Steady is
+the final drawable generation before trim. The pool retained one 64 × 48 and
+one 48 × 64 backing. Metal reports allocation sizes including padding. Physical
+residency and allocator-block bytes were unavailable.
+
+| Mode | Mean CPU Stage (µs), run 1 / 2 | Mean CPU submit (µs), run 1 / 2 | Mean GPU frame (µs), run 1 / 2 |
+| --- | ---: | ---: | ---: |
+| SerialControl | 998 / 864 | 183 / 120 | 452 / 807 |
+| ExactPool | 567 / 644 | 89 / 99 | 164 / 167 |
+
+CPU Stage covers the 12 stages. CPU submit and GPU frame time cover the 18
+captured frames. Each process ran the serial control first. Timings describe
+these runs only. The acceptance checks use pixel equality, allocation identity
+and completion. A separate package built against the earlier installed SDK
+at `bba94d877` also passed on the M5 with the same creation and reuse counts.
+
 ### RG4a acceptance evidence
 
 What each fixture establishes:
@@ -10226,8 +10303,8 @@ Platform status:
 
 Unsupported or not established:
 
-- Pooling parity and retained memory for an authored sampled intermediate still
-  need a serial-control run.
+- Authored bilinear pixel parity and retained memory have been measured on Metal.
+  Equivalent authored-workload measurements on other backends remain open.
 - The depth-only compatibility RGBA8 image remains.
 - Physical heap aliasing, pass merging, parallel recording and async queues are
   separate RG4 slices with their own controls.
