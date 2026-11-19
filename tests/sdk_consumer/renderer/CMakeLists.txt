@@ -280,3 +280,8 @@ if(NOT EMSCRIPTEN AND NOT WIN32)
     add_test(NAME ludus_sdk_hybrid_indirect_diffuse_consumer COMMAND ludus_sdk_hybrid_indirect_diffuse_consumer)
     set_tests_properties(ludus_sdk_hybrid_indirect_diffuse_consumer PROPERTIES SKIP_RETURN_CODE 77 TIMEOUT 210)
 endif()
+
+if(APPLE OR CMAKE_SYSTEM_NAME STREQUAL "Linux")
+    enable_testing()
+    add_subdirectory(../light_transformer light-transformer)
+endif()

@@ -216,6 +216,8 @@ struct Program final
     Array<uint32> WeightBuffers;
     Array<uint32> Topology;
     Array<Tensor> Tensors;
+    usize ArenaBytes = 0;
+    uint64 EstimatedWorkloadBytes = 0;
     usize NextLayer = 0;
     Status Result = Status::Ready;
     uint32 PacketScalars = 0;
@@ -475,9 +477,80 @@ Status PreparePacket(BorrowedView<const math::Vector3> anchorsModel,
     }
     return inoutProgram.Result;
 }
+struct WorkloadLimits final
+{
+    usize MaximumBytes;
+    usize DestinationBytes;
+    usize DispatchStride;
+    usize MaximumStorageRange;
+};
+constexpr usize STEM_TABLE = LUDUS_LIGHT_ENCODER_LEVELS;
+constexpr usize TABLE_COUNT = STEM_TABLE + 1;
+Status FinalizeSparseTopology(const WorkloadLimits& limits,
+                              const StaticArray<internal::EncoderLevel, LUDUS_LIGHT_ENCODER_LEVELS>& levels,
+                              const StaticArray<internal::EncoderSparseRows, TABLE_COUNT>& rows,
+                              Program& inoutProgram) noexcept
+{
+    // Convolution instructions temporarily identify their table by index. Resolve
+    // those indices only after sizing the entire workload, including arena reuse.
+    inoutProgram.ArenaBytes = usize{inoutProgram.AllocateArena()} * sizeof(float32);
+    uint64 topologyWords = inoutProgram.Topology.GetSize();
+    StaticArray<uint32, TABLE_COUNT> offsets{};
+    for (usize table = 0; table < TABLE_COUNT; ++table)
+    {
+        if (TryIntegerCast(topologyWords, offsets[table]) == false)
+        {
+            return Status::CapacityExceeded;
+        }
+        topologyWords += uint64{rows[table].Starts.GetLast()} * internal::SPARSE_PAIR_WORDS;
+    }
+    const uint64 topologyBytes = topologyWords * WORD_BYTES;
+    const uint64 dispatchBytes = uint64{limits.DispatchStride} * inoutProgram.Instructions.GetSize();
+    const uint64 arenaBytes = math::Max(limits.DestinationBytes, inoutProgram.ArenaBytes);
+    uint64 requiredBytes = dispatchBytes + topologyBytes;
+    if (TryAdd(requiredBytes, arenaBytes, requiredBytes) == false)
+    {
+        return Status::CapacityExceeded;
+    }
+    for (const Array<float32>& chunk : inoutProgram.Parameters.Chunks)
+    {
+        if (TryAdd(requiredBytes, uint64{chunk.GetSize()} * sizeof(float32), requiredBytes) == false)
+        {
+            return Status::CapacityExceeded;
+        }
+    }
+    inoutProgram.EstimatedWorkloadBytes = requiredBytes;
+    if (requiredBytes > limits.MaximumBytes || topologyBytes > limits.MaximumStorageRange ||
+        dispatchBytes > limits.MaximumStorageRange || arenaBytes > limits.MaximumStorageRange ||
+        (limits.DestinationBytes != 0 && inoutProgram.ArenaBytes > limits.DestinationBytes))
+    {
+        return Status::CapacityExceeded;
+    }
+    if (inoutProgram.Topology.TryResize(static_cast<usize>(topologyWords)) == false)
+    {
+        return Status::OutOfMemory;
+    }
+    for (usize table = 0; table < TABLE_COUNT; ++table)
+    {
+        const usize words = usize{rows[table].Starts.GetLast()} * internal::SPARSE_PAIR_WORDS;
+        internal::FillEncoderSparse(levels[table == STEM_TABLE ? 0 : table],
+                                    rows[table],
+                                    {inoutProgram.Topology.GetData() + offsets[table], words});
+    }
+    for (Instruction& instruction : inoutProgram.Instructions)
+    {
+        if (instruction[LUDUS_LIGHT_ENCODER_DISPATCH_KIND] == LUDUS_LIGHT_ENCODER_CONVOLUTION)
+        {
+            uint32& table = instruction[LUDUS_LIGHT_ENCODER_DISPATCH_PAIRS];
+            table = offsets[table];
+        }
+    }
+    return Status::Ready;
+}
 Status BuildProgram(BorrowedView<const LightTransformerScenePoint> points,
                     math::Vector4 worldToModel,
                     BorrowedView<const float32> decoderWeights,
+                    const WorkloadLimits& limits,
                     Program& inoutProgram,
                     Array<math::Vector3>& outAnchorsModel) noexcept
 {
@@ -589,20 +662,26 @@ Status BuildProgram(BorrowedView<const LightTransformerScenePoint> points,
     {
         return status;
     }
-    StaticArray<uint32, LUDUS_LIGHT_ENCODER_LEVELS> sparseStarts{};
-    StaticArray<uint32, LUDUS_LIGHT_ENCODER_LEVELS> sparsePairs{};
+    StaticArray<internal::EncoderSparseRows, TABLE_COUNT> rows;
+    StaticArray<uint32, TABLE_COUNT> sparseStarts{};
     StaticArray<StaticArray<uint32, LUDUS_LIGHT_ENCODER_ORDERS>, LUDUS_LIGHT_ENCODER_LEVELS> patchOffsets{};
-    for (usize stage = 0; stage < levels.GetSize(); ++stage)
+    for (usize table = 0; table < TABLE_COUNT; ++table)
     {
-        Array<uint32> starts;
-        Array<uint32> pairs;
-        status = internal::PrepareEncoderSparse(levels[stage], CPE_KERNEL_SIZE, starts, pairs);
+        const bool isStem = table == STEM_TABLE;
+        const usize stage = isStem == true ? 0 : table;
+        status = internal::CountEncoderSparse(levels[stage],
+                                              isStem == true ? STEM_KERNEL_SIZE : CPE_KERNEL_SIZE,
+                                              rows[table]);
         if (status != Status::Ready)
         {
             return status;
         }
-        sparseStarts[stage] = inoutProgram.AppendTopology({starts.GetData(), starts.GetSize()});
-        sparsePairs[stage] = inoutProgram.AppendTopology({pairs.GetData(), pairs.GetSize()});
+        const Array<uint32>& starts = rows[table].Starts;
+        sparseStarts[table] = inoutProgram.AppendTopology({starts.GetData(), starts.GetSize()});
+        if (isStem == true)
+        {
+            continue;
+        }
         for (uint32 order = 0; order < LUDUS_LIGHT_ENCODER_ORDERS; ++order)
         {
             Array<uint32> patches;
@@ -614,15 +693,6 @@ Status BuildProgram(BorrowedView<const LightTransformerScenePoint> points,
             patchOffsets[stage][order] = inoutProgram.AppendTopology({patches.GetData(), patches.GetSize()});
         }
     }
-    Array<uint32> stemStarts;
-    Array<uint32> stemPairs;
-    status = internal::PrepareEncoderSparse(levels[0], STEM_KERNEL_SIZE, stemStarts, stemPairs);
-    if (status != Status::Ready)
-    {
-        return status;
-    }
-    const uint32 stemStart = inoutProgram.AppendTopology({stemStarts.GetData(), stemStarts.GetSize()});
-    const uint32 stemPair = inoutProgram.AppendTopology({stemPairs.GetData(), stemPairs.GetSize()});
     current = inoutProgram.Add(
         LUDUS_LIGHT_ENCODER_CONVOLUTION,
         count,
@@ -631,8 +701,8 @@ Status BuildProgram(BorrowedView<const LightTransformerScenePoint> points,
         current,
         inoutProgram.TakeLayer(LUDUS_LIGHT_ENCODER_CONVOLUTION, DIMENSION, DIMENSION, STEM_KERNEL_SIZE),
         LUDUS_LIGHT_ENCODER_GELU,
-        stemStart,
-        stemPair,
+        sparseStarts[STEM_TABLE],
+        STEM_TABLE,
         NO_TENSOR,
         STEM_KERNEL_SIZE * STEM_KERNEL_SIZE * STEM_KERNEL_SIZE);
     StaticArray<uint32, LUDUS_LIGHT_ENCODER_LEVELS> retained{};
@@ -664,7 +734,7 @@ Status BuildProgram(BorrowedView<const LightTransformerScenePoint> points,
                                               channels,
                                               {
                                                   .SparseStarts = sparseStarts[stage],
-                                                  .SparsePairs = sparsePairs[stage],
+                                                  .SparsePairs = static_cast<uint32>(stage),
                                                   .Patches = patchOffsets[stage][block % LUDUS_LIGHT_ENCODER_ORDERS],
                                               });
         }
@@ -696,7 +766,7 @@ Status BuildProgram(BorrowedView<const LightTransformerScenePoint> points,
                                               channels,
                                               {
                                                   .SparseStarts = sparseStarts[stage],
-                                                  .SparsePairs = sparsePairs[stage],
+                                                  .SparsePairs = static_cast<uint32>(stage),
                                                   .Patches = patchOffsets[stage][block],
                                               });
         }
@@ -745,6 +815,11 @@ Status BuildProgram(BorrowedView<const LightTransformerScenePoint> points,
     {
         return Status::OutOfMemory;
     }
+    status = FinalizeSparseTopology(limits, levels, rows, inoutProgram);
+    if (status != Status::Ready)
+    {
+        return status;
+    }
     outAnchorsModel = Move(positionsModel);
     return Status::Ready;
 }
@@ -758,8 +833,13 @@ Status PrepareLightTransformerEncoder(BorrowedView<const uint8> encoderAsset,
                                       LightTransformerEncoding& outEncoding,
                                       BorrowedView<const float32> decoderWeights,
                                       rhi::BufferHandle destination,
-                                      usize destinationBytes) noexcept
+                                      usize destinationBytes,
+                                      uint64* outEstimatedWorkloadBytesOrNull) noexcept
 {
+    if (outEstimatedWorkloadBytesOrNull != nullptr)
+    {
+        *outEstimatedWorkloadBytesOrNull = 0;
+    }
     if (points.IsValid() == false || points.GetSize() < LUDUS_LIGHT_ENCODER_MIN_POINTS ||
         points.GetSize() > LUDUS_LIGHT_ENCODER_MAX_POINTS || math::IsFinite(worldToModel) == false ||
         worldToModel.W <= 0 || outEncoding.Workload.GetBufferBytes() != 0 ||
@@ -801,15 +881,24 @@ Status PrepareLightTransformerEncoder(BorrowedView<const uint8> encoderAsset,
         return status;
     }
     LightTransformerEncoding candidate;
-    status = BuildProgram(points, worldToModel, decoderWeights, program, candidate.AnchorPositionsModel);
+    const usize dispatchBytes = DISPATCH_WORDS * sizeof(uint32);
+    const usize dispatchAlignment = math::Max(capabilities.StorageOffsetAlignment, dispatchBytes);
+    const usize dispatchStride = (dispatchBytes + dispatchAlignment - 1) / dispatchAlignment * dispatchAlignment;
+    status = BuildProgram(points,
+                          worldToModel,
+                          decoderWeights,
+                          {maximumBufferBytes, destinationBytes, dispatchStride, capabilities.MaxStorageRange},
+                          program,
+                          candidate.AnchorPositionsModel);
+    if (outEstimatedWorkloadBytesOrNull != nullptr)
+    {
+        *outEstimatedWorkloadBytesOrNull = program.EstimatedWorkloadBytes;
+    }
     if (status != Status::Ready)
     {
         return status;
     }
-    const usize arenaBytes = usize{program.AllocateArena()} * sizeof(float32);
-    const usize dispatchBytes = DISPATCH_WORDS * sizeof(uint32);
-    const usize dispatchAlignment = math::Max(capabilities.StorageOffsetAlignment, dispatchBytes);
-    const usize dispatchStride = (dispatchBytes + dispatchAlignment - 1) / dispatchAlignment * dispatchAlignment;
+    const usize arenaBytes = program.ArenaBytes;
     Array<uint8> dispatchData;
     Array<rhi::ComputeWorkloadBuffer> buffers;
     Array<rhi::ComputeWorkloadKernel> kernels;
@@ -822,10 +911,6 @@ Status PrepareLightTransformerEncoder(BorrowedView<const uint8> encoderAsset,
         return Status::OutOfMemory;
     }
     candidate.PacketBytes = usize{program.PacketScalars} * sizeof(float32);
-    if (destination != rhi::BufferHandle{} && arenaBytes > destinationBytes)
-    {
-        return Status::CapacityExceeded;
-    }
     buffers[0] = {dispatchData.GetSize(), {dispatchData.GetData(), dispatchData.GetSize()}, true};
     buffers[2] = {program.Topology.GetSize() * sizeof(uint32),
                   GetBytes(BorrowedView<const uint32>{program.Topology.GetData(), program.Topology.GetSize()}),

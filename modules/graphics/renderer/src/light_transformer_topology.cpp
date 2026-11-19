@@ -1,10 +1,13 @@
 #include "internal/light_transformer_topology.h"
 
+#include <ludus/foundation/base/checked_integer.hpp>
 #include <ludus/foundation/containers/sort.hpp>
 #include <ludus/foundation/geometry/point_search.hpp>
 #include <ludus/foundation/geometry/status.hpp>
 #include <ludus/foundation/math/queries.hpp>
 #include <ludus/foundation/math/scalar.hpp>
+
+#include <cstring>
 
 // Thanks to Bing Xu et al., "A Generalizable Light Transport 3D Embedding for
 // Global Illumination", SIGGRAPH 2026, section 3.3, https://arxiv.org/abs/2510.18189,
@@ -256,73 +259,135 @@ Status PrepareEncoderLevels(BorrowedView<const math::Vector3> anchorsModel,
     }
     return Status::Ready;
 }
-Status PrepareEncoderSparse(const EncoderLevel& level,
-                            uint32 kernel,
-                            Array<uint32>& outStarts,
-                            Array<uint32>& outPairs) noexcept
+namespace
 {
-    Array<OrderedPoint> order;
-    if (order.TryResize(level.CoordinatesGrid.GetSize()) == false || outStarts.TryResize(order.GetSize() + 1) == false)
-    {
-        return Status::OutOfMemory;
-    }
-    for (usize i = 0; i < order.GetSize(); ++i)
-    {
-        order[i] = {EncodeMorton(level.CoordinatesGrid[i]), static_cast<uint32>(i)};
-    }
-    Sort(order.GetData(), order.GetSize(), HasLowerOrder);
+template <typename Visitor>
+void VisitSparseRuns(const EncoderSparseRows& rows, EncoderGrid coordinateGrid, const Visitor& visit) noexcept
+{
+    const Array<SparseOrderedPoint>& order = rows.Order;
+    const uint32 kernel = rows.Kernel;
     const int32 radius = static_cast<int32>(kernel / 2);
     constexpr int32 MAX_GRID_COORDINATE = (int32{1} << LUDUS_LIGHT_ENCODER_COORDINATE_BITS) - 1;
-    for (usize i = 0; i < order.GetSize(); ++i)
+    for (uint32 x = 0; x < kernel; ++x)
     {
-        outStarts[i] = static_cast<uint32>(outPairs.GetSize() / 2);
-        const EncoderGrid coordinateGrid = level.CoordinatesGrid[i];
-        for (uint32 x = 0; x < kernel; ++x)
+        for (uint32 y = 0; y < kernel; ++y)
         {
-            for (uint32 y = 0; y < kernel; ++y)
+            for (uint32 z = 0; z < kernel; ++z)
             {
-                for (uint32 z = 0; z < kernel; ++z)
+                const int32 neighborX = static_cast<int32>(coordinateGrid.X) + static_cast<int32>(x) - radius;
+                const int32 neighborY = static_cast<int32>(coordinateGrid.Y) + static_cast<int32>(y) - radius;
+                const int32 neighborZ = static_cast<int32>(coordinateGrid.Z) + static_cast<int32>(z) - radius;
+                if (neighborX < 0 || neighborY < 0 || neighborZ < 0 || neighborX > MAX_GRID_COORDINATE ||
+                    neighborY > MAX_GRID_COORDINATE || neighborZ > MAX_GRID_COORDINATE)
                 {
-                    const int32 neighborX = static_cast<int32>(coordinateGrid.X) + static_cast<int32>(x) - radius;
-                    const int32 neighborY = static_cast<int32>(coordinateGrid.Y) + static_cast<int32>(y) - radius;
-                    const int32 neighborZ = static_cast<int32>(coordinateGrid.Z) + static_cast<int32>(z) - radius;
-                    if (neighborX < 0 || neighborY < 0 || neighborZ < 0 || neighborX > MAX_GRID_COORDINATE ||
-                        neighborY > MAX_GRID_COORDINATE || neighborZ > MAX_GRID_COORDINATE)
+                    continue;
+                }
+                const uint64 code = EncodeMorton(
+                    {static_cast<uint32>(neighborX), static_cast<uint32>(neighborY), static_cast<uint32>(neighborZ)});
+                usize lower = 0;
+                usize upper = order.GetSize();
+                while (lower < upper)
+                {
+                    const usize middle = lower + (upper - lower) / 2;
+                    if (order[middle].Code < code)
                     {
-                        continue;
+                        lower = middle + 1;
                     }
-                    const uint64 code = EncodeMorton({static_cast<uint32>(neighborX),
-                                                      static_cast<uint32>(neighborY),
-                                                      static_cast<uint32>(neighborZ)});
-                    usize lower = 0;
-                    usize upper = order.GetSize();
-                    while (lower < upper)
+                    else
                     {
-                        const usize middle = lower + (upper - lower) / 2;
-                        if (order[middle].Code < code)
-                        {
-                            lower = middle + 1;
-                        }
-                        else
-                        {
-                            upper = middle;
-                        }
+                        upper = middle;
                     }
-                    while (lower < order.GetSize() && order[lower].Code == code)
-                    {
-                        if (outPairs.TryAdd(order[lower].Index) == false ||
-                            outPairs.TryAdd((x * kernel + y) * kernel + z) == false)
-                        {
-                            return Status::OutOfMemory;
-                        }
-                        ++lower;
-                    }
+                }
+                if (lower < order.GetSize() && order[lower].Code == code)
+                {
+                    visit(lower, order[lower].End, (x * kernel + y) * kernel + z);
                 }
             }
         }
     }
-    outStarts[order.GetSize()] = static_cast<uint32>(outPairs.GetSize() / 2);
+}
+} // namespace
+Status CountEncoderSparse(const EncoderLevel& level, uint32 kernel, EncoderSparseRows& outRows) noexcept
+{
+    const usize count = level.CoordinatesGrid.GetSize();
+    constexpr usize MAX_ANCHORS = LUDUS_LIGHT_ENCODER_MAX_POINTS / LUDUS_LIGHT_ENCODER_ANCHOR_DIVISOR;
+    if (count > MAX_ANCHORS)
+    {
+        return Status::CapacityExceeded;
+    }
+    outRows.Kernel = kernel;
+    if (outRows.Order.TryResize(count) == false || outRows.Starts.TryResize(count + 1) == false)
+    {
+        return Status::OutOfMemory;
+    }
+    for (usize i = 0; i < count; ++i)
+    {
+        outRows.Order[i] = {EncodeMorton(level.CoordinatesGrid[i]), static_cast<uint32>(i), 0};
+    }
+    Sort(outRows.Order.GetData(), count, [](const SparseOrderedPoint& left, const SparseOrderedPoint& right) {
+        return left.Code < right.Code || (left.Code == right.Code && left.Index < right.Index);
+    });
+    uint32 end = static_cast<uint32>(count);
+    for (usize remaining = count; remaining > 0; --remaining)
+    {
+        if (remaining < count && outRows.Order[remaining].Code != outRows.Order[remaining - 1].Code)
+        {
+            end = static_cast<uint32>(remaining);
+        }
+        outRows.Order[remaining - 1].End = end;
+    }
+    // Rows in one occupied voxel have identical counts. Look up each neighboring
+    // run once per voxel, then scatter its count into original point order.
+    for (usize begin = 0; begin < count;)
+    {
+        const SparseOrderedPoint& first = outRows.Order[begin];
+        uint32 neighbors = 0;
+        VisitSparseRuns(outRows, level.CoordinatesGrid[first.Index], [&](usize lower, usize upper, uint32) {
+            neighbors += static_cast<uint32>(upper - lower);
+        });
+        for (usize i = begin; i < first.End; ++i)
+        {
+            outRows.Starts[outRows.Order[i].Index + 1] = neighbors;
+        }
+        begin = first.End;
+    }
+    outRows.Starts[0] = 0;
+    for (usize i = 0; i < count; ++i)
+    {
+        if (TryAdd(outRows.Starts[i], outRows.Starts[i + 1], outRows.Starts[i + 1]) == false)
+        {
+            return Status::CapacityExceeded;
+        }
+    }
     return Status::Ready;
+}
+void FillEncoderSparse(const EncoderLevel& level, const EncoderSparseRows& rows, BorrowedView<uint32> pairs) noexcept
+{
+    LUDUS_ASSERT(pairs.GetSize() == usize{rows.Starts.GetLast()} * SPARSE_PAIR_WORDS);
+    for (usize begin = 0; begin < rows.Order.GetSize();)
+    {
+        const SparseOrderedPoint& first = rows.Order[begin];
+        const usize start = usize{rows.Starts[first.Index]} * SPARSE_PAIR_WORDS;
+        usize cursor = start;
+        VisitSparseRuns(rows, level.CoordinatesGrid[first.Index], [&](usize lower, usize upper, uint32 offset) {
+            for (usize index = lower; index < upper; ++index)
+            {
+                pairs[cursor++] = rows.Order[index].Index;
+                pairs[cursor++] = offset;
+            }
+        });
+        LUDUS_ASSERT(cursor == usize{rows.Starts[first.Index + 1]} * SPARSE_PAIR_WORDS);
+        // Every output in this voxel has the same ordered (input, offset) list.
+        // Duplicate rows still occupy their own disjoint slices in shader storage.
+        for (usize duplicate = begin + 1; duplicate < first.End; ++duplicate)
+        {
+            const usize destination = usize{rows.Starts[rows.Order[duplicate].Index]} * SPARSE_PAIR_WORDS;
+            std::memcpy(pairs.GetDataOrNull() + destination,
+                        pairs.GetDataOrNull() + start,
+                        (cursor - start) * sizeof(uint32));
+        }
+        begin = first.End;
+    }
 }
 Status PrepareEncoderPatches(const EncoderLevel& level, uint32 orderIndex, Array<uint32>& outPatches) noexcept
 {

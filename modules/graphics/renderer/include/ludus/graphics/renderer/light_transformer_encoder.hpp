@@ -39,8 +39,9 @@ struct LightTransformerPreparationReport final
     foundation::usize MaximumBufferBytes = 0;       ///< Authored model GPU buffer budget.
     foundation::usize MaximumSurfacePreparationBytes = 0; ///< Independent logical surface scene/scratch budget.
     foundation::uint64 MaximumSamplingAttempts = 0;       ///< Work limit for masked surface proposals.
-    foundation::usize EmbeddingBufferBytes = 0; ///< Authored embedding capacity when EmbeddingCapacity rejects.
-    foundation::usize RequiredPacketBytes = 0;  ///< Required defined model packet bytes when EmbeddingCapacity rejects.
+    foundation::usize EmbeddingBufferBytes = 0;    ///< Authored embedding capacity when EmbeddingCapacity rejects.
+    foundation::uint64 EstimatedWorkloadBytes = 0; ///< Logical GPU buffer bytes computed before sparse pair allocation.
+    foundation::usize RequiredPacketBytes = 0; ///< Required defined model packet bytes when EmbeddingCapacity rejects.
 };
 /// Borrowed trained-model setup for the executable Light Transformer graph template.
 /// Initialize consumes/copies assets. Shader artifacts survive through graph Poll.
@@ -96,6 +97,8 @@ struct LightTransformerEncoding final
 /// @param decoderWeights Optional canonical decoder parameters, copied into the packet for the graph template.
 /// Empty keeps the standalone encoder packet.
 /// @param destination Optional borrowed graph-owned storage; kept alive through workload Reset.
+/// @param outEstimatedWorkloadBytesOrNull Optional logical GPU byte total, zero until full topology and tensor sizing
+/// succeeds.
 /// @param destinationBytes Usable destination capacity, zero when no destination is supplied.
 /// @return Ready/Pending; malformed assets/features return InvalidDescription; bounded memory/dispatch
 /// exhaustion returns CapacityExceeded; allocation/backend failures remain explicit.
@@ -110,7 +113,8 @@ PrepareLightTransformerEncoder(foundation::BorrowedView<const foundation::uint8>
                                LightTransformerEncoding& outEncoding,
                                foundation::BorrowedView<const foundation::float32> decoderWeights = {},
                                rhi::BufferHandle destination = {},
-                               foundation::usize destinationBytes = 0) noexcept;
+                               foundation::usize destinationBytes = 0,
+                               foundation::uint64* outEstimatedWorkloadBytesOrNull = nullptr) noexcept;
 /// Prepare queries against an encoder's GPU packet without reading latents back.
 /// @param weights Canonical decoder parameters; copied and required finite.
 /// @param encoding Successfully prepared encoder, kept alive until the query workload resets.

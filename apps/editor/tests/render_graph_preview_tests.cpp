@@ -772,6 +772,88 @@ TEST_CASE("RG3b preview renders a cooked World through the editor camera", "[edi
     preview.Detach();
 }
 
+#if defined(LUDUS_EDITOR_MODEL_PACKAGE)
+TEST_CASE("Native preview retains the presented frame across sparse encoder budget rejection and recovery",
+          "[editor][render-graph][preview][encoder-budget]")
+{
+    DeviceFixture device;
+    if (device.IsAvailable == false)
+    {
+        SKIP("No GPU adapter on this host");
+    }
+    QTemporaryDir directory;
+    REQUIRE(directory.isValid() == true);
+    QDir root(directory.path());
+    REQUIRE(root.mkdir(QStringLiteral("light_transformer")) == true);
+    REQUIRE(root.cd(QStringLiteral("light_transformer")) == true);
+    const auto stageAsset = [&](const QString& source, const QString& name) {
+        const QString destination = root.filePath(name);
+        REQUIRE(QFile::copy(source, destination) == true);
+        QFile file(destination);
+        REQUIRE(file.open(QIODevice::ReadOnly) == true);
+        QCryptographicHash hash(QCryptographicHash::Sha256);
+        REQUIRE(hash.addData(&file) == true);
+        return QString::fromLatin1(hash.result().toHex());
+    };
+    constexpr int64 MODEL_BUDGET = 512 * 1024 * 1024;
+    QJsonObject configuration{{QStringLiteral("version"), 1},
+                              {QStringLiteral("world_units_per_model_unit"), 256},
+                              {QStringLiteral("scene_points"), 128},
+                              {QStringLiteral("seed"), 1},
+                              {QStringLiteral("maximum_surface_preparation_bytes"), MODEL_BUDGET},
+                              {QStringLiteral("encoder_sha256"),
+                               stageAsset(QStringLiteral(LUDUS_EDITOR_MODEL_ENCODER), QStringLiteral("encoder.llte"))},
+                              {QStringLiteral("decoder_sha256"),
+                               stageAsset(QStringLiteral(LUDUS_EDITOR_MODEL_DECODER), QStringLiteral("decoder.lltd"))}};
+    const auto writeBudget = [&](int64 budget) {
+        configuration.insert(QStringLiteral("maximum_buffer_bytes"), budget);
+        QFile file(root.filePath(QStringLiteral("model.json")));
+        REQUIRE(file.open(QIODevice::WriteOnly) == true);
+        const QByteArray bytes = QJsonDocument(configuration).toJson();
+        REQUIRE(file.write(bytes) == bytes.size());
+    };
+    RenderScene scene = MakeScene({1, 1, 1, 1});
+    scene.Lit = true;
+    PreviewSurface material;
+    material.Scattering.Model = ludus::content::scene_format::MaterialModel::Diffuse;
+    scene.Surfaces.append(material);
+    scene.Objects[0].Surface = 0;
+    RenderGraphExtraction extraction;
+    QString error;
+    REQUIRE(MakeRenderGraphExtraction(scene, {}, 1, extraction, error) == true);
+    RenderGraphPreview preview = MakePreview();
+    REQUIRE(preview.Attach(device.Device, device.Surface) == true);
+    preview.SetExtraction(extraction);
+    REQUIRE(preview.Load(QStringLiteral(LUDUS_EDITOR_RENDER_GRAPH_FIXTURE)) == RenderGraphPreviewLoad::Staged);
+    REQUIRE(TickUntil(preview, [&]() { return preview.GetPresentedGeneration() == 1; }) == true);
+    const QImage previous = preview.GetImage();
+    REQUIRE(previous.isNull() == false);
+    const int64 budget = QFileInfo(QStringLiteral(LUDUS_EDITOR_MODEL_ENCODER)).size();
+    writeBudget(budget);
+    RenderGraphPreviewSource source;
+    source.ModelDirectory = directory.path();
+    const QString package = QStringLiteral(LUDUS_EDITOR_MODEL_PACKAGE);
+    REQUIRE(preview.Load(package, {}, source) == RenderGraphPreviewLoad::Staged);
+    const bool hasFailure =
+        TickUntil(preview, [&]() { return preview.GetStatus().contains(QStringLiteral("Reduce scene_points")); });
+    INFO(preview.GetStatus().toStdString());
+    REQUIRE(hasFailure == true);
+    const uint64 estimate = preview.GetReport().CandidateReport.Model.EstimatedWorkloadBytes;
+    REQUIRE(estimate > static_cast<uint64>(budget));
+    CHECK(preview.GetStatus().contains(QString::number(estimate)) == true);
+    CHECK(preview.GetStatus().contains(QString::number(budget)) == true);
+    CHECK(preview.GetPresentedGeneration() == 1);
+    CHECK(preview.GetImage() == previous);
+    writeBudget(static_cast<int64>(estimate));
+    REQUIRE(preview.Load(package, {}, source) == RenderGraphPreviewLoad::Staged);
+    const bool hasPublished = TickUntil(preview, [&]() { return preview.GetPresentedGeneration() > 1; });
+    INFO(preview.GetStatus().toStdString());
+    REQUIRE(hasPublished == true);
+    CHECK(preview.GetStatus().contains(QStringLiteral("Reduce scene_points")) == false);
+    preview.Detach();
+}
+#endif
+
 TEST_CASE("RG3b preview publishes only complete frames and matches the live path", "[editor][render-graph][preview]")
 {
     DeviceFixture device;

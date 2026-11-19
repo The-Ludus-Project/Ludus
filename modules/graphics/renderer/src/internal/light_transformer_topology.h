@@ -41,10 +41,24 @@ struct EncoderNeighborSources final
 [[nodiscard]] rhi::RasterStatus
 PrepareEncoderLevels(foundation::BorrowedView<const foundation::math::Vector3> anchorsModel,
                      foundation::StaticArray<EncoderLevel, LUDUS_LIGHT_ENCODER_LEVELS>& outLevels) noexcept;
-[[nodiscard]] rhi::RasterStatus PrepareEncoderSparse(const EncoderLevel& level,
-                                                     foundation::uint32 kernel,
-                                                     foundation::Array<foundation::uint32>& outStarts,
-                                                     foundation::Array<foundation::uint32>& outPairs) noexcept;
+struct SparseOrderedPoint final
+{
+    foundation::uint64 Code;
+    foundation::uint32 Index;
+    foundation::uint32 End;
+};
+inline constexpr foundation::usize SPARSE_PAIR_WORDS = 2;
+struct EncoderSparseRows final
+{
+    foundation::Array<SparseOrderedPoint> Order;
+    foundation::Array<foundation::uint32> Starts;
+    foundation::uint32 Kernel = 0;
+};
+[[nodiscard]] rhi::RasterStatus
+CountEncoderSparse(const EncoderLevel& level, foundation::uint32 kernel, EncoderSparseRows& outRows) noexcept;
+void FillEncoderSparse(const EncoderLevel& level,
+                       const EncoderSparseRows& rows,
+                       foundation::BorrowedView<foundation::uint32> pairs) noexcept;
 [[nodiscard]] rhi::RasterStatus PrepareEncoderPatches(const EncoderLevel& level,
                                                       foundation::uint32 order,
                                                       foundation::Array<foundation::uint32>& outPatches) noexcept;

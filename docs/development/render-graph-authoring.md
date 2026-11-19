@@ -10891,6 +10891,49 @@ vary. Weight chunks stay below Vulkan's minimum storage-buffer range guarantee.
 The algorithm uses binary32 compute, four storage bindings and bounded shared
 memory, with no subgroup-width or floating-point atomic requirement.
 
+Sparse preparation counts the points in each occupied neighboring voxel before
+allocating pair storage. The encoder checks the total logical bytes for aligned
+weight chunks, dispatch records, topology and the activation arena against
+`maximum_buffer_bytes`. If the estimate exceeds that budget, the native Editor
+shows both byte counts and keeps the presented frame. Reduce `scene_points` and
+preview again. CPU scratch for sorting and row counts is measured independently
+of this GPU budget. Within budget, the encoder writes the original point index
+and kernel offset directly into the final topology buffer in stable order.
+
+Run `ludus_light_transformer_render_tests "[occupancy]"` for the matched-count
+append and two-pass comparison. It reports monotonic elapsed times, container
+allocations and peak live array capacity for one sparse table. The measurements
+exclude the input coordinates, allocator metadata, and other encoder stages.
+The full encoder test reports host-observed GPU submission-to-completion time.
+To exercise the public encoder against an installed native SDK, configure
+`tests/sdk_consumer/light_transformer` with the SDK and Catch2 on the CMake
+prefix path, build, and run CTest in that build directory. The consumer checks
+the generated weights against the independent CPU oracle and checks preservation
+of the caller’s encoding after budget rejection.
+
+The following macOS arm64 Development measurements use 256 anchors and seven
+runs per fixture. Times are medians in microseconds on a shared build host.
+Spread places one anchor every four voxels, concentrated places all anchors in
+one voxel, and adjacent distributes them equally among four consecutive voxels.
+
+| Occupancy | Kernel width | Pairs | Topology bytes | Peak CPU bytes, append / two-pass | Append µs | Count µs | Fill µs |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| Spread | 3 | 256 | 3,076 | 8,196 / 7,172 | 306 | 274 | 244 |
+| Spread | 5 | 256 | 3,076 | 8,196 / 7,172 | 1,245 | 1,402 | 1,516 |
+| Concentrated | 3 | 65,536 | 525,316 | 791,556 / 529,412 | 596 | 27 | 81 |
+| Concentrated | 5 | 65,536 | 525,316 | 791,556 / 529,412 | 1,035 | 25 | 31 |
+| Adjacent | 3 | 40,960 | 328,708 | 791,556 / 332,804 | 425 | 29 | 26 |
+| Adjacent | 5 | 57,344 | 459,780 | 791,556 / 463,876 | 1,237 | 41 | 47 |
+
+Each two-pass fixture allocated twice during counting and once during fill.
+Appending allocated eight times for spread input and sixteen times for either
+clustered input. Reusing counts gives exact allocation and checked admission.
+The second neighborhood lookup costs time on spread input. For clustered input,
+copying identical rows within each voxel reduces fill time. All six fixtures
+matched the previous row starts and pair words byte for byte. A 5,000-anchor
+single-voxel count described 25,000,000 pairs in 550 µs using 100,004 bytes of
+array storage, before allocating any of the 200,000,000 pair bytes.
+
 `LightTransformerEncoding::Workload` buffer 3 contains a packet prefix with its
 World-to-model transform, point-search tree, positions and 128-channel GPU latents.
 `PacketBytes` excludes scratch. Optional decoder parameters make that packet

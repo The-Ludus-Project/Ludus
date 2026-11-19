@@ -1880,7 +1880,7 @@ if(TARGET ludus_rhi_render_tests)
             "${PROJECT_SOURCE_DIR}/modules/content/render_graph_format/include/ludus/content/render_graph_format/detail/light_transformer_layout.h"
         COMMENT "Preparing independent Light Transformer decoder fixture" VERBATIM)
     add_custom_target(ludus_light_transformer_fixture DEPENDS "${light_transformer_fixture}")
-    add_executable(ludus_light_transformer_render_tests tests/light_transformer_render_tests.cpp tests/light_transformer_encoder_tests.cpp tests/light_transformer_graph_tests.cpp)
+    add_executable(ludus_light_transformer_render_tests tests/light_transformer_render_tests.cpp tests/light_transformer_encoder_tests.cpp tests/light_transformer_sparse_tests.cpp tests/light_transformer_graph_tests.cpp)
     set(encoder_fixture "${CMAKE_CURRENT_BINARY_DIR}/light-transformer-encoder.fixture")
     set(encoder_asset "${CMAKE_CURRENT_BINARY_DIR}/light-transformer-encoder.llte")
     set(decoder_asset "${CMAKE_CURRENT_BINARY_DIR}/light-transformer-decoder.lltd")
@@ -1899,6 +1899,9 @@ if(TARGET ludus_rhi_render_tests)
     ludus_stage_render_graph_fixture("${CMAKE_CURRENT_SOURCE_DIR}/render_graphs/light_transformer" "${light_transformer_staged}")
     ludus_compile_render_graph(TARGET ludus_light_transformer_render_tests NAME light_transformer_graph
         MANIFEST "${light_transformer_staged}/main.lushader.json" RUNTIME_PACKAGE)
+    add_custom_target(ludus_light_transformer_preview_fixture DEPENDS "${light_transformer_graph_RUNTIME_PACKAGE}" "${encoder_asset}" "${decoder_asset}")
+    set_target_properties(ludus_light_transformer_preview_fixture PROPERTIES
+        ENCODER_ASSET "${encoder_asset}" DECODER_ASSET "${decoder_asset}" GRAPH_PACKAGE "${light_transformer_graph_RUNTIME_PACKAGE}")
     cmake_path(GET light_transformer_graph_RUNTIME_PACKAGE PARENT_PATH light_transformer_package_directory)
     target_compile_definitions(ludus_light_transformer_render_tests PRIVATE
         "LUDUS_LIGHT_TRANSFORMER_ENCODER_ASSET=\"${encoder_asset}\""

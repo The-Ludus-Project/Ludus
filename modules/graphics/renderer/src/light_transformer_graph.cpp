@@ -157,7 +157,10 @@ Status LightTransformerGraph::Prepare(const RenderGraphSceneDescription& scene,
                                             mShader,
                                             mMaximumBufferBytes,
                                             outEncoding,
-                                            {mDecoder.GetData(), mDecoder.GetSize()});
+                                            {mDecoder.GetData(), mDecoder.GetSize()},
+                                            {},
+                                            0,
+                                            &outReport.EstimatedWorkloadBytes);
     if (status != Status::Ready)
     {
         outReport.Issue = status == Status::InvalidDescription ? Issue::ModelAsset : Issue::DeviceCapacity;
