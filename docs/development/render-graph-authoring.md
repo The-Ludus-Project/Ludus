@@ -6698,22 +6698,39 @@ maps are evaluated without analytic shadows in this profile. The forward
 clustered profile shades with the same comparison, without the reconstruction
 allowance because it interpolates exact receiver positions.
 
-The atlas is prepared with the scene. The renderer draws the directional maps
-before the first lighting resolve that has enough draw budget. Until then each
-light uses full visibility. Camera-only edits reuse it. Changes to scene geometry or lighting
-prepare a replacement, and failed preparation retains the previous drawable
-generation. The directional slots share the mesh-light atlas when the scene
-has both kinds of casters; each one takes a quarter of the 2048 × 2048 atlas, as do
-the [sky visibility](#sky-visibility) maps, so with two directional maps one quarter is
-left for mesh-light cube faces. The whole-scene fit keeps the shadow stable as the
-camera moves. In large scenes, each texel covers more ground, so nearby edges
-can appear coarse. Recook existing clustered deferred shader packages to use
-the corrected directional shadow comparison.
+The default clustered deferred graph also fits a camera-centred near map for
+each admitted directional light when its whole-scene texels exceed the near
+density. Each near tile has a 510 × 510 interior at 0.09375 metres per texel.
+Rotation leaves its square fixed in the light basis. Translation moves its
+centre in multiples of 32 texels (3 metres). The padded footprint contains all
+four perspective corners at 12 metres of forward depth, including the maximum
+snap displacement. The light-space depth interval intersects the extruded
+receiver column with the complete scene bounds so an offscreen ridge or roof
+can cast into the view. The near map uses two packed depth codes of bias plus
+the usual receiver uncertainty and slope adjustment. From 10 to 12 metres of
+forward depth the resolve smoothly blends the two visibility values. Beyond
+12 metres it samples the whole-scene map.
 
-The proposed
-[large-world visibility design](../architecture/renderer-systems.md#large-world-raster-visibility)
-defines near directional cascades and the skylight qualification for Worlds
-with both room-sized casters and kilometre-scale terrain.
+The two near slots share the existing 2048 × 2048 atlas with the whole-scene
+maps, sky visibility and mesh-light faces. Mesh-light allocation takes priority.
+When the available slots or draw budget cannot hold the near maps, the resolve
+uses whole-scene coverage. It also uses whole-scene coverage for orthographic,
+multi-camera and perspective views outside the padded footprint. Recook a
+clustered deferred package with format version 40 or later to enable the near
+maps. Earlier packages retain their original directional shadow behavior.
+
+A camera update within a snapped footprint reuses the atlas. Crossing a snap
+boundary stages a replacement atlas and caster packets from the retained scene
+snapshot. The old camera and its bindings remain drawable until the candidate
+is ready. As with scene updates, the renderer fills the new atlas under its
+per-frame draw and triangle budgets. The resource report exposes source IDs,
+whole and near transforms, interior rectangles, texel sizes, comparison bias,
+packet and triangle counts, prepared near-region count, mesh-face occupancy
+and unpadded attachment bytes. A zero-sized near rectangle identifies a
+whole-scene fallback for that light.
+
+The [large-world visibility design](../architecture/renderer-systems.md#large-world-raster-visibility)
+describes the doorway and terrain qualification route.
 
 ### Sky visibility
 

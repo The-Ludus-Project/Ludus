@@ -9,7 +9,7 @@
 #include <ludus/foundation/math/matrix.hpp>
 #include <ludus/foundation/math/vector.hpp>
 #include <ludus/graphics/renderer/deferred_layout.h>
-#include <ludus/graphics/renderer/lighting.hpp>
+#include <ludus/graphics/renderer/render_graph.hpp>
 #include <ludus/graphics/rhi/graph.h>
 #include <ludus/graphics/rhi/raster.h>
 
@@ -19,6 +19,12 @@
 // projection with them.
 namespace ludus::graphics::renderer::internal
 {
+/// Fullscreen and auxiliary draw allowance shared by shadow admission and submission.
+inline constexpr foundation::usize SHADOW_FRAME_RESERVED_DRAWS = 16;
+/// Most triangles the shadow faces drawn in one frame submit; a face over the budget is drawn alone. A face submits
+/// every triangle of each mesh its frustum and caster range reach, so a scene of large meshes (Bistro: about half a
+/// million triangles per face) completes its faces over many frames instead of stalling a few.
+inline constexpr foundation::uint64 MAX_MESH_LIGHT_SHADOW_TRIANGLES_PER_FRAME = 4000000;
 /// Atlas texel origin of one face slot.
 struct MeshLightShadowFaceOrigin final
 {
@@ -82,14 +88,14 @@ inline constexpr foundation::uint32 DIRECTIONAL_SHADOW_TEXELS = 1024;
 /// Directional lights given a map in one prepared scene, brightest first: an Atmosphere's Sun and Moon. Further
 /// eligible directional lights illuminate unshadowed and are counted in the report. The squares share the
 /// MESH_LIGHT_SHADOW_ATLAS_TEXELS atlas with cube faces, so each one halves the space those faces can use.
-inline constexpr foundation::uint32 MAX_DIRECTIONAL_SHADOW_REGIONS = 2;
+inline constexpr foundation::uint32 MAX_DIRECTIONAL_SHADOW_REGIONS = MAX_DIRECTIONAL_SHADOW_LIGHTS;
 
 /// DIRECTIONAL_SHADOW_TEXELS squares reserved ahead of cube faces: one per directional map, then one square that
 /// tiles the sky visibility maps (deferred_layout.h, SKY_VISIBILITY_DIRECTION_COUNT).
 inline constexpr foundation::uint32 MAX_RESERVED_SHADOW_SQUARES = MAX_DIRECTIONAL_SHADOW_REGIONS + 1;
 /// Directional and sky visibility regions drawn before any cube face.
 inline constexpr foundation::uint32 MAX_LEADING_SHADOW_REGIONS =
-    MAX_DIRECTIONAL_SHADOW_REGIONS + SKY_VISIBILITY_DIRECTION_COUNT;
+    2 * MAX_DIRECTIONAL_SHADOW_REGIONS + SKY_VISIBILITY_DIRECTION_COUNT;
 static_assert(SKY_VISIBILITY_SLOTS_PER_SIDE * SKY_VISIBILITY_SLOTS_PER_SIDE == SKY_VISIBILITY_DIRECTION_COUNT);
 static_assert(SKY_VISIBILITY_SLOTS_PER_SIDE * SKY_VISIBILITY_SLOT_TEXELS == DIRECTIONAL_SHADOW_TEXELS);
 static_assert(MAX_LEADING_SHADOW_REGIONS <= SHADOW_REGION_CAPACITY);
@@ -132,6 +138,10 @@ struct DeferredShadowAtlas final
     foundation::StaticArray<MeshLightShadowFaceDraw, MAX_LEADING_SHADOW_REGIONS> DirectionalDraws{};
     /// Leading Directional entries that map lights.
     foundation::uint32 DirectionalCount = 0;
+    /// Whole-scene regions come first, then their admitted near regions, then the sky regions.
+    foundation::uint32 NearCount = 0;
+    /// True when near regions can be fitted without overlapping any mesh-light face.
+    bool HasNearSpace = false;
     /// Sky visibility regions after them: zero or SKY_VISIBILITY_DIRECTION_COUNT.
     foundation::uint32 SkyCount = 0;
     foundation::uint32 ExtentTexels = 0;

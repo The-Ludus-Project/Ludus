@@ -896,6 +896,7 @@ private:
                                                       LightSelection& outSelection,
                                                       const ShadowRegion* directionalShadowsOrNull,
                                                       foundation::usize directionalShadowCount,
+                                                      ludus::foundation::usize nearShadowCount,
                                                       foundation::usize skyVisibilityCount,
                                                       foundation::uint32 shadowAtlasTexels) noexcept;
     enum class DrawMode : foundation::uint8

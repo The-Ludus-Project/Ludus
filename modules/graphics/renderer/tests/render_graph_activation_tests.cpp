@@ -2148,6 +2148,7 @@ TEST_CASE("deferred runtime roles are complete per target and require the mesh-l
                                  format::RASTER_TONE_MAPPING_PACKAGE_VERSION,
                                  // Bounded records without the opaque G-buffer role.
                                  format::RASTER_MESH_LIGHT_BOUND_PACKAGE_VERSION,
+                                 format::SCENE_WORK_ITEMS_PACKAGE_VERSION,
                                  format::PACKAGE_VERSION})
     {
         const Array<uint8> bytes = makeDeferred(version, format::ABSENT);
@@ -2161,6 +2162,7 @@ TEST_CASE("deferred runtime roles are complete per target and require the mesh-l
         if (isSupported == true)
         {
             const renderer::RenderGraphPrograms programs = package->GetPrograms({}, {});
+            CHECK(programs.HasDirectionalNearCascades == (version >= format::DIRECTIONAL_NEAR_PACKAGE_VERSION));
             // Version 30 packages draw every material through the masked G-buffer fragment.
             const bool hasOpaqueGBuffer = version >= format::OPAQUE_GBUFFER_PACKAGE_VERSION;
             CHECK(programs.DeferredOpaqueGBufferFragment.Artifact.Wgsl.empty() == (hasOpaqueGBuffer == false));

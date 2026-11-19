@@ -202,6 +202,7 @@ DeferredRadiance ResolveDeferredRadiance(in DeferredVarying value, bool shouldSe
     float4 positionHomogeneousWorld = TransformClipToWorld(positionHomogeneousClip);
     Varying input = (Varying)0;
     input.PositionClip = value.PositionClip;
+    input.ForwardDepthMetres = 1 / positionHomogeneousWorld.w;
     input.PositionWorld = positionHomogeneousWorld.xyz / positionHomogeneousWorld.w;
     // The world position is a rational function of the stored depth, so its derivative says how far one
     // rounding of that depth moves it. Conventional depth near one with a small near plane moves it by

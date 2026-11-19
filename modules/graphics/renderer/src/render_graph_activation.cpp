@@ -185,6 +185,7 @@ struct RenderGraphPackage::State final
     bool CanHaveDeferredProbeGBuffer = false;
     bool CanHaveDeferredSurfaceChartGBuffer = false;
     bool CanHaveClusteredForward = false;
+    bool CanHaveDirectionalNearCascades = false;
     bool CanHaveClusteredDeferred = false;
     bool HasExplicitAccumulation = false;
     bool HasExplicitToneMapping = false;
@@ -982,7 +983,8 @@ RenderGraphPackageStatus RenderGraphPackage::decode(BorrowedView<const uint8> by
     const uint32 magic = reader.ReadWord();
     const uint32 version = reader.ReadWord();
     if (magic != expectedMagic ||
-        (version != format::SCENE_WORK_ITEMS_PACKAGE_VERSION && version != format::WORLD_FEATURE_PACKAGE_VERSION &&
+        (version != format::DIRECTIONAL_NEAR_PACKAGE_VERSION && version != format::SCENE_WORK_ITEMS_PACKAGE_VERSION &&
+         version != format::WORLD_FEATURE_PACKAGE_VERSION &&
          version != format::DEFERRED_SURFACE_CHART_GBUFFER_PACKAGE_VERSION &&
          version != format::DEFERRED_PROBE_GBUFFER_PACKAGE_VERSION && version != format::RECIPE_KEY_PACKAGE_VERSION &&
          version != format::FORWARD_SURFACE_CHART_PACKAGE_VERSION &&
@@ -1009,6 +1011,7 @@ RenderGraphPackageStatus RenderGraphPackage::decode(BorrowedView<const uint8> by
     }
     candidate->IsRayPathCapture = expectedMagic == format::RAY_PATH_CAPTURE_PACKAGE_MAGIC;
     candidate->IsCaptureProfile = expectedMagic == format::CAPTURE_PROFILE_PACKAGE_MAGIC;
+    candidate->CanHaveDirectionalNearCascades = version >= format::DIRECTIONAL_NEAR_PACKAGE_VERSION;
     candidate->HasRelativeSizes = version >= format::VIEW_PACKAGE_VERSION;
     candidate->HasSceneData = version >= format::SCENE_PACKAGE_VERSION;
     candidate->HasPersistentBuffers = version >= format::ORDERED_PACKAGE_VERSION;
@@ -1367,6 +1370,8 @@ RenderGraphPrograms RenderGraphPackage::GetPrograms(const rhi::RasterShaderDescr
     {
         result.HasClusteredDeferred = result.HasClusteredDeferred == true || view.IsPresent == true;
     }
+    result.HasDirectionalNearCascades =
+        result.HasClusteredDeferred == true && state.CanHaveDirectionalNearCascades == true;
     for (usize pass = 0; pass < state.Header.PassCount; ++pass)
     {
         result.HasVisibilityBuffer =

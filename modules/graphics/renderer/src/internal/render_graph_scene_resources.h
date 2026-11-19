@@ -4,10 +4,19 @@
 #include <ludus/foundation/containers/borrowed_view.hpp>
 #include <ludus/graphics/renderer/render_graph.hpp>
 
-#include "raster_mesh_light_shadows.h"
+#include "directional_near_cascade.h"
 
 namespace ludus::graphics::renderer::internal
 {
+struct PreparedShadowResources final
+{
+    rhi::DeviceHandle Device{};
+    DeferredShadowAtlas Atlas;
+    rhi::RasterBindingResource LightWords{};
+    foundation::uint32 NearTableWord = 0;
+    ~PreparedShadowResources() noexcept;
+    [[nodiscard]] rhi::RasterStatus Poll() noexcept;
+};
 class ForwardSceneResources;
 /// One unpublished/active scene generation. Owns material incarnations and cache pins;
 /// all submitted resources remain retained by Renderer/RHI after logical release.
@@ -40,6 +49,14 @@ public:
     [[nodiscard]] rhi::TextureViewHandle GetShadowAtlasView() const noexcept;
     /// The shadow atlas the frame encoder draws faces into; null without shadowed lights.
     [[nodiscard]] DeferredShadowAtlas* GetShadowAtlasOrNull() noexcept;
+    void DescribeDrawableShadows(RenderGraphSceneResourceReport& inoutReport) const noexcept;
+    [[nodiscard]] const PreparedShadowResources& GetShadowResources() const noexcept;
+    [[nodiscard]] rhi::RasterStatus
+    PrepareCameraShadows(const DirectionalNearFootprint& footprint,
+                         foundation::core::UniquePtr<PreparedShadowResources>& outReplacement) const noexcept;
+    void CommitCameraShadows(foundation::core::UniquePtr<PreparedShadowResources>& inoutReplacement) noexcept;
+    /// Whether the admitted camera slice would use exactly the currently prepared near projections.
+    [[nodiscard]] bool CanReuseDirectionalNearCascades(const DirectionalNearFootprint& footprint) const noexcept;
     /// Mesh-light faces that have yet to be submitted.
     [[nodiscard]] foundation::uint32 GetPendingMeshLightShadowFaces() const noexcept;
 
@@ -66,9 +83,9 @@ public:
                                                MaterialProgram surfaceChartProgram = {},
                                                MaterialProgram probeProgram = {}) noexcept;
     /// Consume every input before returning. Failure preserves a null generation.
-    [[nodiscard]] rhi::RasterStatus
-    Prepare(const RenderGraphSceneDescription& scene,
-            foundation::core::UniquePtr<ForwardSceneGeneration>& outGeneration) noexcept;
+    [[nodiscard]] rhi::RasterStatus Prepare(const RenderGraphSceneDescription& scene,
+                                            foundation::core::UniquePtr<ForwardSceneGeneration>& outGeneration,
+                                            const DirectionalNearFootprint& footprint = {}) noexcept;
     void Reset() noexcept;
     [[nodiscard]] RenderGraphSceneResourceReport GetReport() const noexcept;
 
