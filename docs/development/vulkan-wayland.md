@@ -34,6 +34,22 @@ have no presentation connection; the smoke app skips `ConnectWindow` for them.
 For swapchains that share a device, use the
 [multiple-surface device API](fullscreen-rendering.md#multiple-surfaces-per-device-r14b).
 
+## Drawable size and scale
+
+Supply the initial window size in logical surface units. After each event pump,
+read `GetNativeWindowInfo()` and pass its `Width` and `Height` directly to
+`SetFrameTarget`. They already include the backing scale. Moving the window to
+another output can recreate its swapchain even when the logical size stays the
+same. A zero dimension in an xdg configure leaves that logical axis up to the
+client. A suspended configure changes visibility and retains the logical size.
+
+With both fractional-scale-v1 and viewporter, the backend rounds each scaled
+dimension to the nearest pixel and maps the buffer back to the logical viewport.
+Without either extension it uses the compositor’s preferred integer buffer scale,
+or the largest integer scale among the outputs the surface currently occupies.
+Before an output advertises a scale, or on a surface too old for buffer scaling,
+the integer scale is one.
+
 ## Verification
 
 The normal test suite checks connection before initialization. Compiling the RHI
@@ -56,3 +72,10 @@ primary swapchain still presents, and a replacement starts with fresh counters.
 Both cases are opt-in. The Linux **Development and SDK** batch runs the
 multiple-surface case under headless Weston with Lavapipe and Vulkan validation
 layers.
+
+The **project-sdk** workflow’s `wayland_scale` dispatch builds World Demo from
+its game sources against the installed Linux SDK. It resizes a floating window
+and moves it between 100%, 150% and 200% headless Sway outputs. The check
+compares the Platform snapshot with buffers attached by Mesa’s Vulkan driver,
+sends Space to the focused window, and checks subsequent presentation. A
+separate Weston run exercises the integer-only protocol path at 200%.
