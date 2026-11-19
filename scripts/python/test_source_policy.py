@@ -467,6 +467,46 @@ target_sources(example PRIVATE extra.cpp)
             # Head-specific checking still rejects actual PR violations.
             self.assertTrue(check(root, head, head=git("rev-parse", "HEAD")))
 
+    def test_moved_debt_is_not_authored_however_the_diff_aligns(self):
+        # A batch diff spanning several pull requests can align an untouched line as added
+        # when a block moves past it. Only lines the change wrote count (authored_lines.py).
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+
+            def git(*arguments):
+                return subprocess.run(
+                    ["git", *arguments],
+                    cwd=root,
+                    check=True,
+                    text=True,
+                    capture_output=True,
+                ).stdout.strip()
+
+            git("init", "-q")
+            git("config", "user.name", "Policy test")
+            git("config", "user.email", "policy@example.invalid")
+            (root / "modules").mkdir()
+            source = root / "modules/a.cpp"
+            legacy = "const auto* imported = internal::NativeDeviceRequest();\n"
+            block = "".join(f"Status initialized{i} = InitializeOwnerSlot({i});\n" for i in range(4))
+            source.write_text(legacy + block)
+            git("add", ".")
+            git("commit", "-qm", "base")
+            base = git("rev-parse", "HEAD")
+            moved = block + legacy
+            source.write_text(moved)
+            git("commit", "-qam", "move the legacy line below the block")
+            head = git("rev-parse", "HEAD")
+            # The line diff reports the untouched legacy line as added.
+            self.assertIn(5, added_lines(legacy + block, moved))
+            self.assertFalse(check(root, base, head=head))
+            self.assertFalse(check(root, base))
+            # A violation the change writes is still reported, in a commit and in the work tree.
+            source.write_text(moved + "auto added = NativeDeviceRequestCount();\n")
+            self.assertEqual([failure.split(":")[1] for failure in check(root, base)], ["6"])
+            git("commit", "-qam", "add a line")
+            self.assertEqual(len(check(root, base, head=git("rev-parse", "HEAD"))), 1)
+
 
 @unittest.skipUnless(CLANG_FORMAT, f"requires pinned {engine.pinned_llvm_tool(ROOT, 'clang-format')}")
 class ChangedFormattingTests(unittest.TestCase):
