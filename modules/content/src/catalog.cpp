@@ -71,11 +71,11 @@ bool ValidPath(std::string_view value) noexcept
 }
 namespace
 {
-constexpr std::string_view RESOURCE_ARRAY_FIELD = "resources";
+constexpr char RESOURCE_ARRAY_FIELD[] = "resources";
 constexpr usize DECIMAL_RADIX = 10;
 constexpr usize MAX_INDEX_DIGITS = 20; // Maximum decimal width of a uint64.
 static_assert(sizeof(usize) <= sizeof(uint64));
-static_assert(RESOURCE_ARRAY_FIELD.size() + MAX_INDEX_DIGITS + sizeof("[].path") <= sizeof(Diagnostic::Field));
+static_assert(sizeof(RESOURCE_ARRAY_FIELD) - 1 + MAX_INDEX_DIGITS + sizeof("[].path") <= sizeof(Diagnostic::Field));
 
 char* CopyDiagnosticField(char* destination, std::string_view field) noexcept
 {
@@ -217,12 +217,12 @@ Status Catalog::Read(std::string_view json, Diagnostic& outDiagnostic) noexcept
     {
         return FailCatalog(Status::Invalid, "version", outDiagnostic);
     }
-    const JsonValue resources = root.Get(RESOURCE_ARRAY_FIELD.data());
+    const JsonValue resources = root.Get(RESOURCE_ARRAY_FIELD);
     if (resources.Value == nullptr)
     {
         return FailCatalog(Status::Invalid, RESOURCE_ARRAY_FIELD, outDiagnostic);
     }
-    if (root.Fields({"version", RESOURCE_ARRAY_FIELD.data()}) == false)
+    if (root.Fields({"version", RESOURCE_ARRAY_FIELD}) == false)
     {
         return FailCatalog(Status::Invalid, "$", outDiagnostic);
     }
