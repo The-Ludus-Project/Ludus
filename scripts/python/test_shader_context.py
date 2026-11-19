@@ -7,6 +7,7 @@ from unittest.mock import patch
 import os
 from pathlib import Path
 import queue
+import shutil
 import subprocess
 import tempfile
 import threading
@@ -197,6 +198,41 @@ class ShaderContextTests(unittest.TestCase):
         files = {entry['file'] for entry in payload['navigation_sources']}
         self.assertIn(source, files)
         self.assertEqual(payload['contexts'][0]['programs'], ['Color'])
+
+    @unittest.skipIf(os.name == 'nt', 'the stand-in luslc is a POSIX script')
+    def test_linked_ray_callback_keeps_its_authored_context_and_typed_storage(self):
+        from test_render_graph_ray import ROOT, stage_helper
+        fixtures = ROOT / 'tests/sdk_consumer/rg2'
+        fixture = fixtures / 'ray_storage_bindings'
+        root = self.root / 'storage'
+        shaders = root / 'main_shaders'
+        shaders.mkdir(parents=True)
+        for stage in ('geometry', 'color', 'depth'):
+            shutil.copy(fixtures / 'scene_ray/main_shaders' / (stage + '.slang'), shaders)
+        for name in ('surface.slang', 'storage.lusl'):
+            shutil.copy(fixture / name, shaders)
+        shutil.copy(fixture / 'main.lurender.json', root)
+        manifest = root / 'main.lushader.json'
+        manifest.write_text((fixture / 'main.lushader.json.in').read_text().replace(
+            '@storage_language@', 'lusl').replace('@RG2_TEST_PROFILES@', '["metal"]'))
+        helper = stage_helper(self.root / 'ray-helpers')
+        luslc = self.root / 'luslc'
+        luslc.write_text(FAKE_LUSLC.format(python=__import__('sys').executable))
+        luslc.chmod(0o755)
+        with patch.dict(os.environ, {'LUDUS_LUSLC': str(luslc)}):
+            payload = export_context(manifest, self.output, 'main_shaders/storage.lusl', helper=helper)
+            self.assertEqual(payload['contexts'], [{'id': 'Generate', 'stage': 'ray_generation', 'programs': ['Generate']}])
+            directory = Path(payload['server_arguments'][2])
+            header = (directory / '_ludus_graph/graph_schemas.luslh').read_text()
+            self.assertIn('StructuredBuffer<ProbeRecord> Reference;', header)
+            self.assertIn('RWStructuredBuffer<ProbeRecord> Written;', header)
+            self.assertIn('float32x2 First;\n        float32x2 Second;', header)
+            value = json.loads(manifest.read_text())
+            bindings = next(p['bindings'] for p in value['programs'] if p['id'] == 'Generate')
+            bindings[1]['slot'] = bindings[0]['slot']
+            manifest.write_text(json.dumps(value))
+            with self.assertRaisesRegex(ToolingError, 'duplicate or colliding storage binding'):
+                export_context(manifest, self.output, 'main_shaders/storage.lusl', helper=helper)
 
     def test_context_cleanup_only_removes_previous_owned_contexts(self):
         first = self.export()

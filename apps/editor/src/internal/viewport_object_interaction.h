@@ -228,7 +228,7 @@ private:
     [[nodiscard]] QRectF resolveFrame(const QRectF& framePixel) const;
     /// Pixel position of a clip-space point whose w is positive, in the frame of the last describe.
     [[nodiscard]] QPointF convertClipToPixel(const foundation::math::Vector4& clip) const;
-    /// Clip a segment to the camera's near side and the frame's sides and convert it to pixels.
+    /// Clip a segment to the homogeneous view volume and project its surviving endpoints into frame pixels.
     /// False for a segment that cannot be seen; outLinePixel is then unchanged.
     [[nodiscard]] bool projectSegment(const SilhouetteSegment& segment, QLineF& outLinePixel) const;
     /// Append the silhouette of object, or its bounding box when its mesh is too large for adjacency, to the overlay.

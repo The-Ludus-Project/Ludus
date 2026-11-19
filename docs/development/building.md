@@ -1065,6 +1065,16 @@ CI uses the PR's actual base commit and includes standalone examples, tests and
 shader includes. It reads the exact PR head tree rather than attributing newer
 main changes in GitHub's synthetic merge to the PR (`--head <commit>`). Local
 checks without that option include uncommitted and untracked source changes.
+
+A changed line is one the diff adds and `git blame -M` attributes to a commit
+after the base. A block moved within a file keeps its original commit, so an
+untouched line is never reported because a diff aligned it as added. The batch
+compares `main` with a candidate that holds many pull requests, and the same
+attribution lets it check exactly the lines those pull requests wrote.
+`--tidy-changed` selects its lines the same way. Git recognizes a moved block of
+at least 20 alphanumeric characters; a shorter line moved on its own still
+counts as changed.
+
 The gate rejects newly introduced inferred variable types
 except unspellable lambdas or explained iterator/dependent types, checks Slang
 function/member/out names and coordinate member labels, requires Slang enums to

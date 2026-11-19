@@ -1391,7 +1391,7 @@ if(LUDUS_BUILD_TESTS AND NOT EMSCRIPTEN)
     # Keep the small software rasterizer only as an independent test oracle.
     target_sources(ludus_editor_tests PRIVATE src/software_viewport.cpp)
     set_target_properties(ludus_editor_tests PROPERTIES AUTOMOC ON)
-    target_include_directories(ludus_editor_tests PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/src" "${PROJECT_SOURCE_DIR}/modules/audio/tests")
+    target_include_directories(ludus_editor_tests PRIVATE "${PROJECT_SOURCE_DIR}/tests/support" "${CMAKE_CURRENT_SOURCE_DIR}/src" "${PROJECT_SOURCE_DIR}/modules/audio/tests")
     target_compile_definitions(ludus_editor_tests PRIVATE QT_NO_KEYWORDS QT_NO_CAST_FROM_ASCII
         "LUDUS_EDITOR_SOURCE_DIR=\"${CMAKE_CURRENT_SOURCE_DIR}\""
         "LUDUS_EDITOR_PROJECT_ROOT=\"${PROJECT_SOURCE_DIR}\""

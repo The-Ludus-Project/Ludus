@@ -15,6 +15,7 @@ import re
 import subprocess
 from pathlib import Path
 
+from authored_lines import authored_lines, to_ranges
 from source_policy import is_test_source
 
 CPP_SUFFIXES = {".cpp", ".cc", ".cxx", ".h", ".hpp", ".mm"}
@@ -50,10 +51,17 @@ def changed_lines(root: Path, base: str) -> dict[str, list[list[int]]]:
          *CHANGED_ROOTS],
         cwd=root, text=True, capture_output=True, check=True,
     ).stdout
-    return {
-        name: ranges for name, ranges in parse_changed_lines(diff).items()
-        if Path(name).suffix in CPP_SUFFIXES
-    }
+    changed = {}
+    for name, ranges in parse_changed_lines(diff).items():
+        if Path(name).suffix not in CPP_SUFFIXES:
+            continue
+        # A line the diff adds counts only if this change wrote it: a moved block keeps its
+        # origin, whatever the diff aligns (authored_lines.py).
+        added = {line for first, last in ranges for line in range(first, last + 1)}
+        authored = to_ranges(added & authored_lines(root, merge_base, name))
+        if authored:
+            changed[name] = authored
+    return changed
 
 
 def line_filter(root: Path, changed: dict[str, list[list[int]]]) -> str:
