@@ -8,6 +8,7 @@ find_package(Ludus CONFIG REQUIRED COMPONENTS Resources GraphicsRenderer Graphic
 if(APPLE OR CMAKE_SYSTEM_NAME STREQUAL "Linux")
     enable_testing()
     add_subdirectory(../light_transformer light-transformer)
+    add_subdirectory(../lusl_layout lusl-layout)
 endif()
 
 add_executable(ludus_sdk_renderer_consumer ../renderer.cpp)

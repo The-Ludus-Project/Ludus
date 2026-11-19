@@ -115,7 +115,7 @@ Macro expansion follows Dave Prosser's
 | --- | --- | --- |
 | `MAX_FILE_TOKENS` | 1,048,576 | Tokens lexed from one file or configuration value |
 | `MAX_OUTPUT_TOKENS` | 1,048,576 | Tokens in one translation unit |
-| `MAX_INCLUDE_DIRECTORIES` | 8 | `PreprocessRequest::IncludeDirectories` |
+| `MAX_INCLUDE_DIRECTORIES` | 16 | `PreprocessRequest::IncludeDirectories` |
 | `MAX_INCLUDE_DEPTH` | 32 | Include nesting, counting the root |
 | `MAX_CONDITIONAL_DEPTH` | 64 | `#if` nesting |
 | `MAX_CONDITION_NESTING` | 64 | Nesting inside one condition |
@@ -814,8 +814,10 @@ ludus_compile_shader(TARGET my_game NAME composite
   generated header carries the reflected binding table the RHI layout needs.
 - `cmake/shaders/lower_lusl.py` lowers it with `luslc` (the build tree's target
   or the SDK's `bin/luslc`), and the generated module is compiled like a Slang
-  source. `INCLUDES` below the source's directory become LUSL include
-  directories. A depfile lists every file the lowering may read.
+  source. `INCLUDES` accepts shared roots outside the source directory. LUSL
+  searches beside the file naming the include, then in the source directory,
+  then in the supplied roots in order. A depfile tracks the original files
+  behind the lowering snapshot.
 - `<NAME>_slots.h` is generated beside `<NAME>.h`. Host code binds by these
   constants, never by a literal:
 
@@ -831,6 +833,15 @@ ludus_compile_shader(TARGET my_game NAME composite
 - **Evidence:** a GPU test composites `rg2_bound` with the LUSL composite and
   with `renderer_composite.slang`, compares every pixel, and checks the slot
   constants against the reflected bindings.
+
+Renderer recipes can include `point_search_layout.luslh`,
+`scene_shader_layout.luslh`, `renderer_gpu_preview_layout.luslh`, and
+`renderer_reference_layout.luslh`. These headers expose shared layout macros
+from the corresponding C++ headers. After changing an owner, run
+`python3 cmake/shaders/generate_lusl_layouts.py` and commit the regenerated
+headers. The generated-source check rejects drift. The preview layout exposes
+the host header's default workgroup dimensions. The SDK ships the same
+headers alongside its renderer recipes.
 
 - **Evidence:** `tests/shared_memory_tests.cpp` holds golden and diagnostic tests, and the target
   tests compile each construct for SPIR-V, ray-query SPIR-V, WGSL and Metal.

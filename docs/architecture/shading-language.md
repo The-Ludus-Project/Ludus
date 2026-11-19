@@ -934,15 +934,15 @@ atomics, barriers) and [1730](https://github.com/The-Ludus-Project/Ludus/issues/
 
 ### L5b: shared libraries and build paths
 
-- **Includes outside the source directory.** `ludus_compile_shader` rejects a
-  LUSL include directory outside the source's directory, but renderer recipes
-  include nine roots (FoundationMath, FoundationGeometry, SceneFormat,
-  RenderGraphFormat, RHI and renderer headers). The LUSL path accepts the same
-  include roots as the Slang path.
-- **Host/shader layout headers.** Slang includes C++ layout headers such as
-  `renderer_gpu_preview_layout.h` and `scene_shader_layout.h`. Each gets a
-  LUSL-readable form generated from its C++ owner, so the constants keep one
-  owner.
+- **Includes outside the source directory.** Standalone LUSL accepts the
+  renderer's shared include roots (FoundationMath, FoundationGeometry,
+  SceneFormat, RenderGraphFormat, RHI and renderer headers).
+- **Host/shader layout headers.** The LUSL headers for GPU preview, reference
+  rendering, the scene shader interface and point search derive their macros
+  from the corresponding C++ owners. The same qualification recipe builds in
+  the source tree and installed SDK. See the
+  [standalone shader workflow](../modules/tooling/shader-language.md#resources-and-bindings)
+  for regeneration.
 - **Ownership of shared libraries.** L3c generates `.luslh` declarations from
   Slang reflection. When a library such as `math.slang` becomes LUSL, its
   `.lusl` source is the owner, its Slang consumers include the generated

@@ -1,7 +1,6 @@
 """Tests of the ludus_compile_shader LUSL lowering helper (cmake/shaders/lower_lusl.py)."""
 
 import importlib.util
-import sys
 import tempfile
 import unittest
 from pathlib import Path
@@ -44,8 +43,29 @@ class LowerLuslTests(unittest.TestCase):
             (root / 'shaders' / 'helpers.slang').write_text('')
             (root / 'sdk' / 'math.luslh').write_text('')
             (root / 'shaders' / 'unused.luslh').write_text('')
-            self.assertEqual(lower_lusl.collect(root, 'shaders/main.lusl', ['sdk']),
+            snapshot = root / 'snapshot'
+            directories, files = lower_lusl.stage_snapshot(root, 'shaders/main.lusl', ['sdk'], snapshot)
+            self.assertEqual(directories, ['sdk'])
+            self.assertEqual(sorted(files),
                              ['sdk/math.luslh', 'shaders/common.luslh', 'shaders/helpers.slang', 'shaders/main.lusl'])
+
+    def test_external_roots_keep_order_and_remap_the_emitted_slang_include(self):
+        with tempfile.TemporaryDirectory() as directory:
+            base = Path(directory).resolve()
+            source, first, second, output = (base / name for name in ('shaders', 'first root', 'second', 'build'))
+            for folder in (source, first, second, output):
+                folder.mkdir()
+            (source / 'main.lusl').write_text('#include "library.luslh"\n')
+            (first / 'library.luslh').write_text('extern slang "implementation.slang" {};\n')
+            (first / 'implementation.slang').write_text('// shared implementation\n')
+            (second / 'library.luslh').write_text('// shadowed library\n')
+            snapshot = base / 'snapshot'
+            directories, files = lower_lusl.stage_snapshot(source, 'main.lusl', [first, second], snapshot)
+            self.assertEqual([files[f'{root}/library.luslh'].parent for root in directories], [first, second])
+            logical_include = f'{directories[0]}/implementation.slang'
+            self.assertEqual((snapshot / logical_include).read_text(), '// shared implementation\n')
+            self.assertEqual(lower_lusl.remap_slang_includes(f'#include "{logical_include}"\n', files, output),
+                             '#include "../first root/implementation.slang"\n')
 
 
 if __name__ == '__main__':
