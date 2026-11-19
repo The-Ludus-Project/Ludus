@@ -34,8 +34,8 @@ per analysis shard with warm caches. Without a develop cache, PR compiles start
 from the newest batch on `main`, so while batches fail and `main` stays behind
 `develop` they take longer; measured PR Editor jobs took 27-38 minutes when
 `main` was 60 commits behind. Editing the description or marking a draft ready
-reuses the run that already compiled the same commit
-([superseded pull-request runs](#superseded-pull-request-runs)).
+runs only **Develop health**; a push cancels the previous commit's runs
+([pull-request runner budget](#pull-request-runner-budget)).
 
 From 2026-10-19 to 2026-11-08 integration PRs compiled nothing. Between 2026-10-27
 and 2026-11-08, 2 of about 38 batches that ran their suites passed: build-graph,
@@ -281,8 +281,9 @@ A red batch closes `develop` to everything except proven fixes. Without this,
 later changes merge while the batch is already failing, and new breakage hides
 behind the existing failure until the batch can no longer be repaired in one step.
 
-The **Develop health** job in `ci.yml` runs on every pull request targeting
-`develop`. It reads completed `Batched integration and promotion` runs on `main`,
+The **Develop health** job in `develop-health-gate.yml` runs on every pull
+request targeting `develop`, alone in its workflow (see
+[pull-request runner budget](#pull-request-runner-budget)). It reads completed `Batched integration and promotion` runs on `main`,
 newest first, and uses the latest *validated* batch: one whose suites ran. Ticks
 that captured nothing, failed captures and cancelled runs are skipped, except a
 batch [stopped early](#stop-a-failed-batch-early) by **Cancel failed batch**: it is
@@ -314,11 +315,21 @@ To submit a fix while develop is red:
    attempted batch candidate (`ci/last-batch-attempt`), so it exercises the fix
    on top of the code that failed.
 3. Dispatch the workflow that owns each declared job on the branch. The gate
-   reports the exact command, for example:
+   reports the exact command, which runs only the failed job where the workflow
+   can, for example:
 
    ```bash
-   gh workflow run ci.yml --ref <branch> -f validation_tier=full
+   gh workflow run ci.yml --ref <branch> -f validation_tier=full -f evidence_job=sanitizers
    ```
+
+   A full `ci.yml` dispatch occupies about 20 shared runners for over an hour,
+   which every other pull request then waits behind. The `evidence_job` input
+   runs **Classify changes**, the selected native job (every matrix shard) and a
+   gate named **Evidence gate (<job>)**. That gate requires every other native job
+   to be skipped. It never satisfies a declared `native / Ubuntu Clang`, which
+   still needs the full dispatch, as do names the gate cannot map to one native
+   job. Dispatch once per declared native job; scoped dispatches of different jobs
+   queue in separate groups. The Windows Editor lanes use `-f editor_only=true`.
 
    The prefix selects the workflow: `native` is `ci.yml`, `sdk` is
    `project-sdk.yml`, `wiki` is `wiki.yml`, `browser` is `webgpu-probe.yml`,
@@ -327,7 +338,7 @@ To submit a fix while develop is red:
    `windows-direct3d12.yml` and `recovery` is `filesystem-recovery.yml`.
    Branch dispatches never deploy the wiki or promote.
 4. When each declared job has succeeded on the PR's exact head commit, re-run
-   the **Develop health** check. Editing the description starts a new run.
+   the **Develop health** check. Editing the description re-runs only that check.
 
 Evidence runs the branch's own workflow definitions. Review workflow edits in a
 fix PR: a changed job cannot prove itself. Batches run `main`'s definitions, so a
@@ -338,8 +349,10 @@ in this repository, since fork dispatches do not run here.
 `develop-health.yml` re-runs the gate on open `develop` pull requests after a
 batch completes, when that batch is red or turned develop green. It skips ticks
 that validated nothing and green-after-green results. A pull request whose latest
-`ci.yml` run is still in progress is listed in that job's summary; re-run its gate
-after the run completes. `workflow_run` uses the default branch's definition, so
+gate run is still in progress is listed in that job's summary; re-run its gate
+after the run completes. Until this change reaches `main`, the re-evaluation runs
+`main`'s script, which looks for the gate in `ci.yml` and reports that a pull
+request's run has none; push, or re-run **Develop health** by hand, instead. `workflow_run` uses the default branch's definition, so
 automatic re-evaluation starts once this workflow reaches `main`. Until then,
 dispatch **Develop health re-evaluation** on `develop` to re-check every open PR.
 
@@ -480,35 +493,36 @@ uncached build budgets, browser backends and documentation tooling on both macOS
 architectures. The independent public API check still enforces the shrink-only
 legacy baseline against the captured main SHA.
 
-### Superseded pull-request runs
+### Pull-request runner budget
 
-GitHub evaluates every check run with a required name on the PR head commit, one
-per workflow run, so a cancelled duplicate blocks merging even when another run
-of the same commit passed. Several PR activities can fire for one commit at
-once; for example, pushing and marking a draft ready produce `synchronize`,
-`ready_for_review` and often `edited` in the same second. `ci`, `Ludus Wiki` and
-`project-sdk` therefore cancel in-progress runs only for `synchronize`, which
-always carries a new head. Its runs share one group per PR and supersede runs for
-earlier commits. Every other activity revalidates the head in a group named for
-that commit that never cancels an in-progress run. GitHub keeps at most one run
-pending per group and cancels an older pending run, which has created no checks.
-A same-commit duplicate therefore waits and runs completely rather than leaving a
-blocked check. A later push does not cancel such a run for an earlier commit.
+Every pull-request job waits for the same pool of GitHub-hosted runners as every
+other open pull request, the develop compiler cache and the batch, whose suites
+alone occupy about 22 Linux and Windows runners at their peak. The pool, not the
+work, sets pull-request latency: on 2026-11-19, with about eight agent pull
+requests open and no batch running, one pull request's jobs ran for 11 minutes
+and waited 60 minutes for runners. Activity that changes no file therefore must
+not start compile jobs, and a superseded commit must stop using runners.
 
-An `edited` (other than retargeting) or `ready_for_review` run of `ci` does not
-repeat the native compile and analysis. Editing re-runs the workflow so that
-**Develop health** re-reads `Batch-Fix:` declarations; the commit and base are
-unchanged. **Classify changes** reads this workflow's runs with a read-only
-`actions` token. It selects the newest earlier, uncancelled pull-request run for
-the same PR, base branch and head commit, which may still be in progress, and
-reports it as `validated_by`. Every native job then skips, and the `Ubuntu Clang`
-gate waits for that run. It passes only when that run's `Ubuntu Clang` gate passed
-and every other job except **Develop health** succeeded or was skipped. **Develop
-health** runs again for the new description. A cancelled, unreadable or
-unfinished (after 300 minutes) owner fails the gate; re-run the owner, then this
-run. If the lookup fails or no earlier run exists, the run compiles as usual.
-Retargeting, pushes, reopening and documentation-only changes never reuse a run.
-Before this rule, one push plus a description edit cost two 30-minute compiles.
+- `ci`, `Ludus Wiki` and `project-sdk` run only for `opened`, `synchronize` and
+  `reopened`. Each pull request has one concurrency group per workflow, and a
+  newer run cancels the previous one, including the opening run when a push
+  follows it.
+- Editing the description or marking a draft ready changes no file and runs only
+  `develop-health-gate.yml`, whose single **Develop health** job re-reads the
+  `Batch-Fix:` declarations. Draft pull requests already run every check.
+- Retargeting a pull request does not re-run its checks. Push or close and reopen
+  it to validate against the new base.
+
+`PullRequestRunnerBudgetTests` in `scripts/python/test_ci_scope.py` rejects any
+other workflow that runs for description edits, ready-for-review, labels,
+assignments or review requests, and any multi-job workflow that does. The
+change-scope tests require each pull-request workflow's single cancelling group.
+
+Before this rule, the workflows above ran for `edited` and `ready_for_review` in
+groups named for the head commit that never cancelled. Each description edit
+queued another run whose required gate held a runner while it waited up to 300
+minutes for the earlier run, and a push left the opening run compiling a
+superseded commit to completion.
 
 The `Ubuntu Clang` gate still runs after cancellation. If a dependency was
 cancelled, it reads this workflow's runs with the job's read-only `actions`
@@ -518,7 +532,8 @@ gate, which owns the result. Otherwise, or if the lookup fails, the gate fails
 and asks for a rerun. Classification failures, failed jobs and unexpected skips
 never consult other runs. Merge-group, scheduled, manual and batch runs never
 treat cancellation as success. Other workflows' required checks are ordinary
-jobs; the per-commit group prevents them from being cancelled by duplicates.
+jobs. A same-commit cancellation now needs a push and a reopen of one commit at
+the same moment; re-run the cancelled run if it happens.
 
 To recover a PR blocked by a cancelled or failed check left before this rule,
 rerun that cancelled workflow run; its new attempt replaces the check in the
