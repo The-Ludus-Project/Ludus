@@ -392,6 +392,11 @@ add_subdirectory(modules/content/world_restore)
 add_subdirectory(modules/content/procedural/environment)
 # Headless terrain fields, drainage, wetness and material rules (T1); Foundation-only, native and web.
 add_subdirectory(modules/content/terrain)
+# LUWTH climate contract, its headless cooker and the deterministic fixed-tick weather runtime;
+# Foundation-only, native and web (docs/modules/gameplay/weather.md).
+add_subdirectory(modules/content/weather_format)
+add_subdirectory(modules/content/weather)
+add_subdirectory(modules/gameplay/weather)
 # Scene cooker (pbrt-reference-v1). The library builds for every target; its
 # file I/O reports Unsupported where Ludus::Content has no native file access,
 # and the ludus-cook CLI plus golden tests are native-host only (Linux, macOS, Windows).
@@ -434,6 +439,7 @@ if(EMSCRIPTEN)
         add_subdirectory(tools/web-localization-probe)
         add_subdirectory(tools/web-fluid-probe)
         add_subdirectory(tools/web-collision-probe)
+        add_subdirectory(tools/web-weather-probe)
         add_subdirectory(tools/web-observability-probe)
     endif()
     if(LUDUS_BUILD_SMOKE_APP)
