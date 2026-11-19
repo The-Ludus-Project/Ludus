@@ -1,0 +1,37 @@
+#pragma once
+
+#include <ludus/foundation/containers/array.hpp>
+#include <ludus/foundation/containers/borrowed_view.hpp>
+#include <ludus/foundation/parsing/json.hpp>
+#include <ludus/gameplay/camera/camera.hpp>
+#include <ludus/graphics/renderer/atmosphere.hpp>
+#include <ludus/runtime/resources/scene.h>
+
+#include <string_view>
+
+namespace ludus::first_person
+{
+/// Spawn identity borrows the snapshot's manifest. Position is the eye in metres.
+struct PlayerSpawn final
+{
+    std::string_view Entity;
+    gameplay::camera::CameraPose Pose;
+    foundation::float32 Speed = 0;
+};
+
+/// CPU-owned runtime content, independent of the editor, source files and asset cooker.
+/// Object records in Manifest are indexed in Scene.Objects order. Collider indices select that table.
+struct PlayableSnapshot final
+{
+    foundation::parsing::JsonDocument Manifest;
+    resources::SceneDefinition Scene;
+    graphics::renderer::AtmosphereDescription Atmosphere;
+    foundation::Array<PlayerSpawn> Spawns;
+    foundation::Array<foundation::usize> ColliderObjects;
+};
+
+/// Decode one complete .luplay file. Views in the result borrow its owned manifest, never bytes.
+/// Failure (including a version, digest, reference or admission error) preserves outSnapshot.
+[[nodiscard]] bool DecodePlayableSnapshot(foundation::BorrowedView<const foundation::uint8> bytes,
+                                          PlayableSnapshot& outSnapshot) noexcept;
+} // namespace ludus::first_person

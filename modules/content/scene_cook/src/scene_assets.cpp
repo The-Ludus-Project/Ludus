@@ -54,17 +54,12 @@ constexpr std::string_view OBJECTS_PATH = "assets/objects/";
 constexpr usize MAX_CATALOG_RESOURCES = 4096;
 // A level places at most the version 5 import profile's objects.
 constexpr usize MAX_LEVEL_OBJECTS = format::IMPORT_LIMITS.Objects;
-constexpr usize MAX_LEVEL_IMPORTS = 128;
 constexpr usize MAX_NAME_CODE_POINTS = 128;
 constexpr usize MAX_DEPENDENCY_DEPTH = 8;
 // A scene manifest depends on every texture, material and mesh part of its version 5
 // bundle and on its lighting part.
 constexpr usize MAX_ARTIFACT_DEPENDENCIES =
     usize{format::IMPORT_LIMITS.Meshes} + format::IMPORT_LIMITS.Materials + format::IMPORT_LIMITS.Textures + 1;
-// Every mesh, material and texture an assembled version 5 bundle admits, plus a scene
-// manifest and lighting part per level import and the level itself.
-constexpr usize MAX_CLOSURE_RESOURCES = usize{format::IMPORT_LIMITS.Meshes} + format::IMPORT_LIMITS.Materials +
-                                        format::IMPORT_LIMITS.Textures + 2 * MAX_LEVEL_IMPORTS + 1;
 static_assert(MAX_ASSET_BYTES >= format::IMPORT_LIMITS.BundleBytes, "an artifact holds any single-source cook");
 static_assert(MAX_RESIDENT_CLOSURE_BYTES > format::MAX_ASSEMBLED_BUNDLE_BYTES, "closures also carry encoded metadata");
 constexpr usize MAX_LOCK_IDENTITY_BYTES = 4096;
@@ -1301,7 +1296,8 @@ ReadMaterialDefinition(const JsonTree& tree, JsonIndex node, MaterialDefinition&
         return inoutFailure.FailInvalid("Invalid camera");
     }
     const JsonIndex imports = tree.GetMember(level, "imports");
-    bool areImportsValid = tree.GetKind(imports) == JsonKind::Array && tree.GetCount(imports) <= MAX_LEVEL_IMPORTS;
+    bool areImportsValid =
+        tree.GetKind(imports) == JsonKind::Array && tree.GetCount(imports) <= format::MAX_LEVEL_IMPORTS;
     for (usize i = 0; areImportsValid == true && i < tree.GetCount(imports); ++i)
     {
         areImportsValid = IsResourceId(tree, tree.GetItem(imports, i), "scene");
@@ -1492,7 +1488,7 @@ public:
         {
             return mFailure.FailOutOfMemory();
         }
-        if (mSelectedIds.GetSize() > MAX_CLOSURE_RESOURCES)
+        if (mSelectedIds.GetSize() > format::MAX_CLOSURE_RESOURCES)
         {
             return mFailure.FailInvalid("Scene closure exceeds its resource limit");
         }
@@ -6129,10 +6125,57 @@ void ReportStage(const EditorSceneRequest& request, std::string_view stage) noex
     return true;
 }
 
+[[nodiscard]] bool VerifyPlayableImport(const Document& manifest,
+                                        std::string_view importId,
+                                        const AssetOptions& options,
+                                        Failure& inoutFailure) noexcept
+{
+    const JsonIndex originNode = manifest.Tree.GetMember(manifest.Root, "source_origin");
+    const std::string_view origin = originNode == NO_JSON_NODE ? std::string_view{} : manifest.Tree.GetText(originNode);
+    const JsonIndex inputs = manifest.Tree.GetMember(manifest.Root, "inputs");
+    if (GetRootLength(origin) == 0 || inputs == NO_JSON_NODE || manifest.Tree.GetKind(inputs) != JsonKind::Object ||
+        manifest.Tree.GetCount(inputs) == 0)
+    {
+        return inoutFailure.Fail(AssetErrorCode::InvalidScene,
+                                 {"Reimport ", importId, " from its local source to record the input identities."});
+    }
+    if (DoesPathExist(origin) == false)
+    {
+        return inoutFailure.Fail(AssetErrorCode::Conflict, {"Restore or reimport ", importId, " from ", origin});
+    }
+    String directory;
+    const std::string_view source =
+        ResolveDirectory(origin, directory) == Status::Ok ? directory.GetView() : GetParent(origin);
+    for (usize index = 0; index < manifest.Tree.GetCount(inputs); ++index)
+    {
+        if (IsCancelled(options) == true)
+        {
+            return inoutFailure.Fail(AssetErrorCode::InstallCancelled, "World preparation cancelled");
+        }
+        String inputPath;
+        HexDigest digest;
+        const std::string_view name = manifest.Tree.GetKey(inputs, index);
+        if (ResolveSourceInput(source, name, inputPath, inoutFailure) == false)
+        {
+            return false;
+        }
+        if (HashSourceInput(inputPath.GetView(), digest, inoutFailure) == false ||
+            manifest.Tree.IsString(manifest.Tree.GetValue(inputs, index), digest.View()) == false)
+        {
+            inoutFailure.Replace(AssetErrorCode::Conflict,
+                                 {"Restore or reimport the missing or changed source ", name, " for ", importId});
+            return false;
+        }
+    }
+    return true;
+}
+
 /// Sorted, de-duplicated manifest approximations of every imported scene.
 [[nodiscard]] bool CollectWarnings(std::string_view root,
                                    const Document& level,
                                    const Document& catalog,
+                                   const EditorSceneRequest& request,
+                                   const AssetOptions& options,
                                    JsonTree& inoutTree,
                                    JsonIndex& outWarnings,
                                    Failure& inoutFailure) noexcept
@@ -6152,6 +6195,12 @@ void ReportStage(const EditorSceneRequest& request, std::string_view stage) noex
         Document manifest;
         if (ResolveInside(root, catalog.Tree.GetText(path), native, inoutFailure) == false ||
             LoadDocument(native.GetView(), MAX_METADATA_BYTES, manifest, inoutFailure) == false)
+        {
+            return false;
+        }
+        if (request.ShouldVerifySourceInputs == true &&
+            VerifyPlayableImport(manifest, level.Tree.GetText(level.Tree.GetItem(imports, i)), options, inoutFailure) ==
+                false)
         {
             return false;
         }
@@ -6491,7 +6540,7 @@ void ReportStage(const EditorSceneRequest& request, std::string_view stage) noex
     tree.SetMember(response, "resident_bytes", AddPythonNumber(tree, total.GetResult()));
     const Document* catalog = currentOrNull;
     JsonIndex warnings = NO_JSON_NODE;
-    if (CollectWarnings(root, level, *catalog, tree, warnings, inoutFailure) == false)
+    if (CollectWarnings(root, level, *catalog, request, options, tree, warnings, inoutFailure) == false)
     {
         return false;
     }
