@@ -434,3 +434,55 @@ limitation. Local UBSan evidence and reference/native ASan CI are separate gates
 current CI qualification is recorded by the associated pull request checks.
 Browser file/render parity and moderated sessions with the five audiences and
 content disciplines remain separate acceptance work.
+
+
+## S3 content lifecycle acceptance
+
+[Ludus issue #1270](https://github.com/The-Ludus-Project/Ludus/issues/1270)
+uses the [Content browser workflow](editor-workspace.md#s3-content-browser).
+The fixtures retain the real native worker, dependency validation, immutable
+artifact publication and GUI-owned completion path.
+
+| Fixture | What to verify |
+| --- | --- |
+| Two-file import queue | While `source/good` and `source/bad` run, select a span in an editable code document and type during delivery. Watch focus, selection, dock and document geometry, and the activity label when Configure starts. Find `source/bad` in Content, repair the file in place and retry the same row. Compare both published files with their exports and confirm the failure clears. |
+| Saved music loop | Reimport `source/hit` with a 100-frame WAV at 44,100 Hz, then use **Choose corrected file** with a 600-frame WAV at the same rate. Check that rejection preserves the active bytes, the corrected export publishes under the original ID, and activating `music/theme` in Audio shows source `source/hit` and the saved loop from frame 10 to frame 400. |
+| Cancellation, stale results and scale | Run the existing `[content]` fixtures over cancellation before publication, project/operation identity, and the 100,000-row search/selection and long-list thumbnail baselines. |
+
+Run `ludus_editor_tests "[content-lifecycle]"` for the two MainWindow journeys
+and `ludus_editor_tests "[content]"` for the broader set. The automated picker
+uses the Qt widget dialog to replay keyboard activation on test runners. The
+native screen-reader journey uses the Cocoa file chooser.
+
+Local environment for the native checks was macOS 26.6 (25G72), arm64, Qt
+6.12.0 and Clang 23.1.3. The Cocoa accessibility ownership suite passed its
+180 assertions with desktop access.
+
+The focused MainWindow cases passed 182 assertions. The combined Content and
+activity-chip run passed 25 cases and 853 assertions. These runs used the
+offscreen platform with the real native ContentJobs worker. The two import
+completions kept keyboard input in the code document, and the activity chip
+showed **Starting** when the Configure job took priority. Both recovery paths
+preserved their stable IDs. The saved-loop case also verified repair-picker
+cancellation, focus returning to the Content table, and reopening the saved
+definition with its original source ID and loop values.
+
+The cooperative scheduler passed 20 cases and 647 assertions. The 100,000-row
+synthetic projection populated in 13.8 ms, filtered in 40.1 ms at p50 and
+90.7 ms at p95, and looked up a stable ID in 16.9 µs in one local run. The
+long-list thumbnail case also passed. The audio catalog admits 4,096 entries.
+
+On the macOS desktop, the Cocoa accessibility tree exposed the fixture's
+`music/theme` and `source/hit` rows and the original WAV path. The automated
+problem description included the failed dependency check, the candidate's
+100 frames at 44,100 Hz, the required loop end of frame 400, and the corrected
+file action. The desktop bridge repeatedly lost the app process when input was
+sent. The scoped Cocoa MainWindow replay also exceeded its 35-second deadline.
+VoiceOver speech, focus through the Cocoa file chooser, and an author's
+unassisted discovery time, wrong turns and assistance remain to be measured.
+
+The local Editor built with render preview disabled. The full Editor test
+target hit existing Qt Quick include and unused-symbol errors in that
+configuration. The focused binary used the MainWindow, Content and
+activity-chip objects and production libraries from the same build
+configuration.
