@@ -123,6 +123,14 @@ class GitComparisonTests(unittest.TestCase):
     def pull_request(self, head, base=None, base_ref="develop"):
         return {"pull_request": {"base": {"sha": base or self.base, "ref": base_ref}, "head": {"sha": head}}}
 
+    def test_camera_pilot_routes_header_only_and_unrelated_documentation_diffs(self):
+        self.write("modules/graphics/renderer/include/ludus/graphics/renderer/render_graph.hpp", "camera")
+        header = self.commit()
+        self.write("docs/index.md", "Unrelated documentation")
+        docs = self.commit()
+        self.assertTrue(ci_scope.classify("pull_request", self.pull_request(header), self.root)[2])
+        self.assertFalse(ci_scope.classify("pull_request", self.pull_request(docs, header), self.root)[2])
+
     def test_documentation_only_pr_is_exempt(self):
         self.write("docs/index.md", "Updated docs")
         head = self.commit()
@@ -198,7 +206,7 @@ class GitComparisonTests(unittest.TestCase):
                 )
                 # Pushes and other activity without an earlier run of the same commit compile.
                 self.assertEqual(output.read_text(),
-                                 f"native_required={required}\nvalidation_tier={tier}\nvalidated_by=\n")
+                                 f"camera_pilot=false\nnative_required={required}\nvalidation_tier={tier}\nvalidated_by=\n")
                 self.assertIn(f"Native validation required: {required}. Validation tier: {tier}.", summary.read_text())
 
 
@@ -441,7 +449,7 @@ class RequiredGateTests(unittest.TestCase):
             results[name]["result"] = "success"
         self.assertEqual(ci_scope.gate_failures(results), [])
 
-    def test_integration_editor_compiles_without_tests_or_cache_writes(self):
+    def test_integration_editor_runs_bounded_checks_without_cache_writes(self):
         workflow = (Path(__file__).resolve().parents[2] / ".github/workflows/ci.yml").read_text()
         editor = workflow.split("\n  editor:\n", 1)[1].split("\n  # Debug runtime", 1)[0]
         self.assertIn("compiler-cache-writer: ${{ needs.changes.outputs.validation_tier == 'integration' "
@@ -459,11 +467,18 @@ class RequiredGateTests(unittest.TestCase):
         # And the checked list of sub-second unit and Editor tests the build already produced
         # (docs/development/continuous-integration.md#quick-pull-request-tests).
         quick_tests = "Run quick unit and Editor tests"
-        self.assertIn(quick_tests, [title for title, _ in steps])
+        camera_pilot = "Run advisory RenderGraph camera pilot"
+        titles = [title for title, _ in steps]
+        self.assertIn(quick_tests, titles)
+        self.assertIn(camera_pilot, titles)
         for title, body in steps:
             with self.subTest(step=title):
                 runs_tests = "ctest" in body or "ludus_editor_tests" in body or "upload-artifact" in title
-                if title == generated_sources:
+                if title == camera_pilot:
+                    self.assertIn("validation_tier == 'integration' && needs.changes.outputs.camera_pilot == 'true'", body)
+                    self.assertIn("continue-on-error: true", body)
+                    self.assertIn("python3 scripts/python/camera_pilot.py", body)
+                elif title == generated_sources:
                     self.assertNotIn(guard, body)
                     self.assertIn("--label-regex '^generated-source$'", body)
                 elif title == quick_tests:
