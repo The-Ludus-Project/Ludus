@@ -1,0 +1,7 @@
+/out/
+/CMakeUserPresets.json
+/.ludus/
+/.vscode/
+.DS_Store
+
+/assets/.scene-writer.lock

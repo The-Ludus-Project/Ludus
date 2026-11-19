@@ -123,6 +123,14 @@ class GitComparisonTests(unittest.TestCase):
     def pull_request(self, head, base=None, base_ref="develop"):
         return {"pull_request": {"base": {"sha": base or self.base, "ref": base_ref}, "head": {"sha": head}}}
 
+    def test_camera_pilot_routes_header_only_and_unrelated_documentation_diffs(self):
+        self.write("modules/graphics/renderer/include/ludus/graphics/renderer/render_graph.hpp", "camera")
+        header = self.commit()
+        self.write("docs/index.md", "Unrelated documentation")
+        docs = self.commit()
+        self.assertTrue(ci_scope.classify("pull_request", self.pull_request(header), self.root)[2])
+        self.assertFalse(ci_scope.classify("pull_request", self.pull_request(docs, header), self.root)[2])
+
     def test_documentation_only_pr_is_exempt(self):
         self.write("docs/index.md", "Updated docs")
         head = self.commit()
@@ -196,9 +204,8 @@ class GitComparisonTests(unittest.TestCase):
                          # Model this invocation explicitly, even inside a batch runner.
                          "LUDUS_CI_BATCH_SHA": batch_sha},
                 )
-                # Pushes and other activity without an earlier run of the same commit compile.
                 self.assertEqual(output.read_text(),
-                                 f"native_required={required}\nvalidation_tier={tier}\nvalidated_by=\n")
+                                 f"camera_pilot=false\nnative_required={required}\nvalidation_tier={tier}\n")
                 self.assertIn(f"Native validation required: {required}. Validation tier: {tier}.", summary.read_text())
 
 
@@ -441,7 +448,7 @@ class RequiredGateTests(unittest.TestCase):
             results[name]["result"] = "success"
         self.assertEqual(ci_scope.gate_failures(results), [])
 
-    def test_integration_editor_compiles_without_tests_or_cache_writes(self):
+    def test_integration_editor_runs_bounded_checks_without_cache_writes(self):
         workflow = (Path(__file__).resolve().parents[2] / ".github/workflows/ci.yml").read_text()
         editor = workflow.split("\n  editor:\n", 1)[1].split("\n  # Debug runtime", 1)[0]
         self.assertIn("compiler-cache-writer: ${{ needs.changes.outputs.validation_tier == 'integration' "
@@ -459,11 +466,18 @@ class RequiredGateTests(unittest.TestCase):
         # And the checked list of sub-second unit and Editor tests the build already produced
         # (docs/development/continuous-integration.md#quick-pull-request-tests).
         quick_tests = "Run quick unit and Editor tests"
-        self.assertIn(quick_tests, [title for title, _ in steps])
+        camera_pilot = "Run advisory RenderGraph camera pilot"
+        titles = [title for title, _ in steps]
+        self.assertIn(quick_tests, titles)
+        self.assertIn(camera_pilot, titles)
         for title, body in steps:
             with self.subTest(step=title):
                 runs_tests = "ctest" in body or "ludus_editor_tests" in body or "upload-artifact" in title
-                if title == generated_sources:
+                if title == camera_pilot:
+                    self.assertIn("validation_tier == 'integration' && needs.changes.outputs.camera_pilot == 'true'", body)
+                    self.assertIn("continue-on-error: true", body)
+                    self.assertIn("python3 scripts/python/camera_pilot.py", body)
+                elif title == generated_sources:
                     self.assertNotIn(guard, body)
                     self.assertIn("--label-regex '^generated-source$'", body)
                 elif title == quick_tests:
@@ -508,6 +522,25 @@ class RequiredGateTests(unittest.TestCase):
 
     def test_all_native_successes_or_intentional_docs_skips_pass(self):
         self.assertEqual(ci_scope.gate_failures(self.results()), [])
+
+    def test_scoped_evidence_runs_exactly_the_selected_native_job(self):
+        results = self.results()
+        for name in ci_scope.NATIVE_JOBS:
+            if name not in ("sanitizers",):
+                results[name]["result"] = "skipped"
+        self.assertEqual(ci_scope.gate_failures(results, "sanitizers"), [])
+        self.assertEqual(ci_scope.gate_failures(self.results(), ci_scope.ALL_EVIDENCE_JOBS), [])
+        # Another native job that ran, or the selected job skipped, fails the scoped gate.
+        extra = dict(results, formatting={"result": "success"})
+        self.assertTrue(ci_scope.gate_failures(extra, "sanitizers"))
+        missing = dict(results, sanitizers={"result": "skipped"})
+        self.assertTrue(ci_scope.gate_failures(missing, "sanitizers"))
+        self.assertIn("Unknown evidence job", ci_scope.gate_failures(results, "Ubuntu Clang")[0])
+        # A job its tier defers proves nothing, even though every job was skipped.
+        nightly_only = self.results()
+        for name in ci_scope.NATIVE_JOBS:
+            nightly_only[name]["result"] = "skipped"
+        self.assertTrue(ci_scope.gate_failures(nightly_only, "macos-analysis"))
         self.assertEqual(ci_scope.gate_failures(self.results(False)), [])
 
     def test_failed_cancelled_or_skipped_native_jobs_fail_full_validation(self):
@@ -521,17 +554,13 @@ class RequiredGateTests(unittest.TestCase):
                     results[name]["result"] = status
                     self.assertTrue(ci_scope.gate_failures(results))
 
-    def test_nightly_requires_every_native_job_and_retargeting_runs_cheap_checks(self):
+    def test_nightly_requires_every_native_job(self):
         results = self.results(tier=ci_scope.NIGHTLY_TIER)
         self.assertEqual(ci_scope.gate_failures(results), [])
         for name in ci_scope.NATIVE_JOBS:
             results[name]["result"] = "skipped"
             self.assertTrue(ci_scope.gate_failures(results), name)
             results[name]["result"] = "success"
-        root = Path(__file__).resolve().parents[2] / ".github/workflows"
-        for name in ("ci.yml", "wiki.yml", "project-sdk.yml"):
-            triggers = root.joinpath(name).read_text().split("\npermissions:", 1)[0]
-            self.assertRegex(triggers, r"types: \[[^\]\n]*edited")
 
     def test_missing_invalid_or_retired_tier_cannot_skip_batch_jobs(self):
         for tier in (None, "", "Full", "fast", "pull-request"):
@@ -719,27 +748,18 @@ class CancelledRunTests(unittest.TestCase):
         self.assertIn("assert 'skipped' not in text.lower()", focused)
         self.assertIn("'VUID-' not in text", focused)
         gate = workflow.split("\n  linux:\n", 1)[1].split("\n    steps:", 1)[0]
-        self.assertIn("&& 'Focused Vulkan dispatch (not integration)' || 'Ubuntu Clang'", gate)
+        self.assertIn("&& 'Focused Vulkan dispatch (not integration)' || inputs.evidence_job", gate)
+        self.assertIn("|| 'Ubuntu Clang' }}", gate)
 
-    def test_only_pushes_cancel_required_pull_request_workflows(self):
+    def test_each_pull_request_has_one_run_per_workflow_and_a_push_supersedes_it(self):
         root = Path(__file__).resolve().parents[2] / ".github/workflows"
         for name, prefix in (("ci.yml", "ci"), ("wiki.yml", "wiki"), ("project-sdk.yml", "project-sdk")):
             workflow = root.joinpath(name).read_text()
             with self.subTest(workflow=name):
-                # Same-commit activity keeps full validation in its own non-cancelling group.
-                self.assertRegex(workflow.split("\npermissions:", 1)[0],
-                                 r"types: \[[^\]\n]*synchronize[^\]\n]*ready_for_review")
-                self.assertIn(
-                    "\nconcurrency:\n"
-                    f"  group: {prefix}-${{{{ inputs.batch_sha || github.ref }}}}"
-                    "${{ github.event_name == 'pull_request' && github.event.action != 'synchronize' && "
-                    "format('-head-{0}', github.event.pull_request.head.sha) || '' }}",
-                    workflow)
-                self.assertIn(
-                    "\n  cancel-in-progress: ${{ github.event_name == 'pull_request' && "
-                    "github.event.action == 'synchronize' }}\n",
-                    workflow)
-
+                self.assertIn("  pull_request:\n    types: [opened, synchronize, reopened]\n", workflow)
+                self.assertIn(f"\nconcurrency:\n  group: {prefix}-${{{{ inputs.batch_sha || github.ref }}}}", workflow)
+                self.assertNotIn("head.sha", workflow.split("\nconcurrency:\n", 1)[1].split("\n\n", 1)[0])
+                self.assertIn("\n  cancel-in-progress: ${{ github.event_name == 'pull_request' }}\n", workflow)
 
 class DevelopCompilerCacheTests(unittest.TestCase):
     """Develop's cache warmer must compile exactly like the pull-request Editor job."""
@@ -807,197 +827,61 @@ class DevelopCompilerCacheTests(unittest.TestCase):
             self.assertNotIn(f"name: {name}\n", warm)
 
 
-class RevalidationTests(unittest.TestCase):
-    """An edit or ready-for-review of an unchanged commit reuses the run that compiled it."""
+class PullRequestRunnerBudgetTests(unittest.TestCase):
+    """Pull-request activity that changes no file must not occupy shared runners.
 
-    SHA = "c0ffee00" + "0" * 32
-    CURRENT = {"id": 900, "workflow_id": 7, "event": "pull_request", "head_sha": SHA, "conclusion": None}
-    ENVIRONMENT = {"GITHUB_EVENT_NAME": "pull_request", "GITHUB_RUN_ID": "900",
-                   "GITHUB_REPOSITORY": "The-Ludus-Project/Ludus", "GITHUB_TOKEN": "token"}
+    Every pull-request workflow competes for the organization's hosted runners
+    with every other pull request and the batch. Description edits and marking a
+    draft ready used to re-run each compile workflow for an unchanged commit.
+    """
 
-    @staticmethod
-    def event(action="edited", changes=None, number=1080, base_ref="develop"):
-        return {"action": action, "changes": {"body": {"from": "old"}} if changes is None else changes,
-                "pull_request": {"number": number, "base": {"ref": base_ref}}}
+    ROOT = Path(__file__).resolve().parents[2]
+    FILELESS_ACTIONS = ("edited", "ready_for_review", "labeled", "unlabeled", "assigned", "review_requested")
 
-    def run_of(self, run_id, conclusion="success", number=1080, base_ref="develop", **overrides):
-        return {**self.CURRENT, "id": run_id, "conclusion": conclusion,
-                "pull_requests": [{"number": number, "base": {"ref": base_ref}}], **overrides}
+    def test_only_the_single_job_develop_health_gate_runs_for_fileless_activity(self):
+        for path in sorted((self.ROOT / ".github/workflows").glob("*.yml")):
+            triggers = path.read_text().split("\njobs:\n", 1)[0]
+            match = re.search(r"(?m)^  pull_request(?:_target)?:\n((?:    .*\n)*)", triggers)
+            if match is None:
+                continue
+            types = re.search(r"(?m)^    types: \[([^\]]*)\]$", match.group(1))
+            # GitHub's default activity types are opened, synchronize and reopened.
+            actions = {value.strip() for value in types.group(1).split(",")} if types else set()
+            with self.subTest(workflow=path.name):
+                if actions & set(self.FILELESS_ACTIONS):
+                    self.assertEqual(path.name, "develop-health-gate.yml")
+                    jobs = re.findall(r"(?m)^  ([a-z][a-z0-9_-]*):\n", path.read_text().split("\njobs:\n", 1)[1])
+                    self.assertEqual(len(jobs), 1, jobs)
 
-    def test_only_edits_without_retargeting_and_ready_for_review_reuse_validation(self):
-        self.assertTrue(ci_scope.revalidates_unchanged_change(self.event()))
-        self.assertTrue(ci_scope.revalidates_unchanged_change(self.event(changes={"title": {"from": "x"}})))
-        self.assertTrue(ci_scope.revalidates_unchanged_change(self.event("ready_for_review", changes={})))
-        for event in (self.event(changes={"base": {"ref": {"from": "main"}}}),
-                      {"action": "edited", "pull_request": {}},
-                      self.event("synchronize"), self.event("opened"), self.event("reopened"), {}):
-            with self.subTest(event=event):
-                self.assertFalse(ci_scope.revalidates_unchanged_change(event))
-
-    def test_newest_earlier_uncancelled_run_of_the_same_pull_request_and_base_owns_validation(self):
-        runs = [self.run_of(700), self.run_of(800, conclusion=None), self.run_of(850, conclusion="cancelled"),
-                self.run_of(860, number=99), self.run_of(870, base_ref="main"),
-                self.run_of(880, head_sha="d" * 40), self.run_of(890, workflow_id=8),
-                self.run_of(895, event="merge_group"), self.run_of(901), self.CURRENT]
-        self.assertEqual(ci_scope.validating_run(self.CURRENT, runs, 1080, "develop")["id"], 800)
-        self.assertIsNone(ci_scope.validating_run(self.CURRENT, runs[2:], 1080, "develop"))
-        self.assertIsNone(ci_scope.validating_run(self.CURRENT, [dict(self.run_of(700), pull_requests=[])],
-                                                  1080, "develop"))
-
-    def test_lookup_reuses_only_pull_request_runs_and_fails_toward_compiling(self):
-        listing = {"workflow_runs": [self.run_of(800), self.CURRENT]}
-
-        def read(path):
-            return dict(self.CURRENT) if path == "actions/runs/900" else listing
-
-        with mock.patch.dict(os.environ, self.ENVIRONMENT, clear=True), \
-                mock.patch.object(ci_scope, "read_github", side_effect=read) as reader:
-            self.assertEqual(ci_scope.find_validating_run(self.event()), 800)
-            self.assertIn(f"head_sha={self.SHA}&event=pull_request", reader.call_args_list[1].args[0])
-            # Pushes, retargeting and malformed events never consult GitHub.
-            reader.reset_mock()
-            for event in (self.event("synchronize"), self.event(changes={"base": {}}),
-                          self.event(number="1080"), {"action": "edited", "changes": {}}):
-                self.assertIsNone(ci_scope.find_validating_run(event))
-            reader.assert_not_called()
-        for overrides in ({"LUDUS_CI_BATCH_SHA": self.SHA}, {"GITHUB_EVENT_NAME": "schedule"},
-                          {"GITHUB_RUN_ID": "not-a-run"}):
-            with self.subTest(overrides=overrides), \
-                    mock.patch.dict(os.environ, {**self.ENVIRONMENT, **overrides}, clear=True), \
-                    mock.patch.object(ci_scope, "read_github", side_effect=read):
-                self.assertIsNone(ci_scope.find_validating_run(self.event()))
-        for error in (urllib.error.URLError("offline"), ValueError("bounded"), KeyError("GITHUB_TOKEN")):
-            with self.subTest(error=error), mock.patch.dict(os.environ, self.ENVIRONMENT, clear=True), \
-                    mock.patch.object(ci_scope, "read_github", side_effect=error):
-                self.assertIsNone(ci_scope.find_validating_run(self.event()))
-
-    @staticmethod
-    def reused_results(owner="800"):
-        results = RequiredGateTests().results(tier=ci_scope.INTEGRATION_TIER)
-        results["changes"]["outputs"]["validated_by"] = owner
-        for name in ci_scope.NATIVE_JOBS:
-            results[name]["result"] = "skipped"
-        return results
-
-    def test_reusing_gate_requires_every_native_job_skipped_and_a_valid_owner(self):
-        self.assertEqual(ci_scope.gate_failures(self.reused_results()), [])
-        self.assertEqual(ci_scope.validating_run_id(self.reused_results()), 800)
-        for status in ("success", "failure", "cancelled"):
-            results = self.reused_results()
-            results["editor"]["result"] = status
-            self.assertTrue(ci_scope.gate_failures(results), status)
-        for owner in ("0", "-1", "800; rm", "abc", " 800"):
-            with self.subTest(owner=owner):
-                self.assertTrue(ci_scope.gate_failures(self.reused_results(owner)))
-        results = self.reused_results()
-        results["changes"]["outputs"]["native_required"] = "false"
-        self.assertTrue(ci_scope.gate_failures(results))
-        # An empty output keeps ordinary validation, including from older classifiers.
-        results = RequiredGateTests().results(tier=ci_scope.INTEGRATION_TIER)
-        results["changes"]["outputs"]["validated_by"] = ""
-        self.assertEqual(ci_scope.gate_failures(results), [])
-        self.assertIsNone(ci_scope.validating_run_id(results))
-
-    @staticmethod
-    def jobs(**conclusions):
-        names = {"Classify changes": "success", "Develop health": "success", "Source formatting": "success",
-                 "Editor, shader worker and unit tests": "success", "Debug runtime": "skipped",
-                 ci_scope.GATE_JOB: "success", **conclusions}
-        jobs = [{"name": name, "conclusion": conclusion} for name, conclusion in names.items()]
-        return {"total_count": len(jobs), "jobs": jobs}
-
-    def wait(self, responses, clock=None):
-        sleeper = mock.Mock()
-        times = iter(clock or [0] * 100)
-        with mock.patch.object(ci_scope, "read_github", side_effect=responses) as reader:
-            failures = ci_scope.validating_run_failures(800, sleep=sleeper, clock=lambda: next(times))
-        return failures, reader, sleeper
-
-    def test_gate_waits_for_the_owner_and_reports_exactly_its_native_outcome(self):
-        failures, reader, sleeper = self.wait([{"status": "in_progress"}, {"status": "queued"},
-                                               {"status": "completed", "conclusion": "success"}, self.jobs()])
-        self.assertEqual(failures, [])
-        self.assertEqual(sleeper.call_count, 2)
-        sleeper.assert_called_with(ci_scope.VALIDATING_RUN_POLL_SECONDS)
-        self.assertEqual(reader.call_args_list[-1].args[0], "actions/runs/800/jobs?filter=latest&per_page=100")
-        # The edit re-evaluates Develop health, so the old description's verdict is ignored.
-        failures, _, _ = self.wait([{"status": "completed", "conclusion": "failure"},
-                                    self.jobs(**{"Develop health": "failure"})])
-        self.assertEqual(failures, [])
-        for jobs in (self.jobs(**{"Editor, shader worker and unit tests": "failure"}),
-                     self.jobs(**{ci_scope.GATE_JOB: "failure"}),
-                     self.jobs(**{ci_scope.GATE_JOB: "skipped"}),
-                     self.jobs(**{"Source formatting": "timed_out"}),
-                     self.jobs(**{"Source formatting": None})):
-            with self.subTest(jobs=jobs):
-                failures, _, _ = self.wait([{"status": "completed", "conclusion": "failure"}, jobs])
-                self.assertTrue(failures)
-        missing_gate = self.jobs()
-        missing_gate["jobs"] = [job for job in missing_gate["jobs"] if job["name"] != ci_scope.GATE_JOB]
-        missing_gate["total_count"] = len(missing_gate["jobs"])
-        self.assertTrue(self.wait([{"status": "completed", "conclusion": "success"}, missing_gate])[0])
-
-    def test_cancelled_incomplete_slow_or_unreadable_owner_fails_closed(self):
-        failures, reader, _ = self.wait([{"status": "completed", "conclusion": "cancelled"}])
-        self.assertIn("was cancelled", failures[0])
-        self.assertEqual(reader.call_count, 1)
-        truncated = self.jobs()
-        truncated["total_count"] += 1
-        for listing in (truncated, {"total_count": 0, "jobs": []}, {"jobs": None}):
-            with self.subTest(listing=listing):
-                self.assertTrue(self.wait([{"status": "completed", "conclusion": "success"}, listing])[0])
-        deadline = ci_scope.VALIDATING_RUN_WAIT_SECONDS
-        failures, _, sleeper = self.wait([{"status": "in_progress"}] * 3, clock=[0, 1, deadline])
-        self.assertIn("did not complete in time", failures[0])
-        self.assertEqual(sleeper.call_count, 1)
-        errors = [urllib.error.URLError("offline")] * ci_scope.MAX_CONSECUTIVE_LOOKUP_FAILURES
-        failures, _, _ = self.wait(errors)
-        self.assertIn("Could not read run 800", failures[0])
-        # Transient lookup failures are retried.
-        failures, _, _ = self.wait([urllib.error.URLError("offline"), ValueError("bounded"),
-                                    {"status": "completed", "conclusion": "success"}, self.jobs()])
-        self.assertEqual(failures, [])
-        failures, _, _ = self.wait([{"status": "completed", "conclusion": "success"},
-                                    urllib.error.URLError("offline")])
-        self.assertIn("Could not read the jobs of run 800", failures[0])
-
-    def test_run_gate_consults_the_owner_only_for_valid_reusing_results(self):
-        with mock.patch.object(ci_scope, "validating_run_failures", return_value=[]) as owner, \
-                mock.patch("sys.stdout"):
-            self.assertEqual(ci_scope.run_gate(self.reused_results()), 0)
-        owner.assert_called_once_with(800)
-        with mock.patch.object(ci_scope, "validating_run_failures", return_value=["owner failed"]), \
-                mock.patch.object(ci_scope, "find_superseding_run") as lookup, mock.patch("sys.stderr"):
-            self.assertEqual(ci_scope.run_gate(self.reused_results()), 1)
-        lookup.assert_not_called()
-        results = self.reused_results()
-        results["editor"]["result"] = "success"
-        with mock.patch.object(ci_scope, "validating_run_failures") as owner, mock.patch("sys.stderr"):
-            self.assertEqual(ci_scope.run_gate(results), 1)
-        owner.assert_not_called()
-
-    def test_workflow_skips_every_native_job_when_an_earlier_run_validates_the_commit(self):
-        root = Path(__file__).resolve().parents[2]
-        workflow = root.joinpath(".github/workflows/ci.yml").read_text()
+    def test_evidence_dispatch_runs_one_native_job_under_its_own_gate_name(self):
+        workflow = self.ROOT.joinpath(".github/workflows/ci.yml").read_text()
+        dispatch = workflow.split("\n  workflow_dispatch:\n", 1)[1].split("\npermissions:", 1)[0]
+        # evidence_job is the last dispatch input; its options are every native job.
+        evidence = dispatch.split("      evidence_job:\n", 1)[1]
+        self.assertIn("        type: choice\n        default: all\n", evidence)
+        self.assertEqual(re.findall(r"(?m)^          - (\S+)$", evidence),
+                         [ci_scope.ALL_EVIDENCE_JOBS, *ci_scope.NATIVE_JOBS])
         conditions = dict(re.findall(r"^  ([a-z][a-z0-9-]*):\n(?:    .*\n)*?    if: (.*)$", workflow, re.MULTILINE))
         for name in ci_scope.NATIVE_JOBS:
             with self.subTest(job=name):
-                self.assertIn("needs.changes.outputs.validated_by == ''", conditions[name])
-        changes = workflow.split("\n  changes:\n", 1)[1].split("\n  develop-health:\n", 1)[0]
-        self.assertIn("    permissions:\n      contents: read\n      actions: read\n", changes)
-        self.assertIn("      validated_by: ${{ steps.scope.outputs.validated_by }}\n", changes)
-        # The batch's ci.yml caller grants the read the classifier now requests.
-        batch = root.joinpath(".github/workflows/batch-ci.yml").read_text()
-        caller = re.search(r"(?m)^  [a-z][a-z0-9-]*:\n((?:    .*\n)*?)    uses: \./\.github/workflows/ci\.yml$", batch)
-        self.assertIsNotNone(caller)
-        self.assertIn("    permissions:\n      contents: read\n      actions: read\n", caller.group(1))
-        action = root.joinpath(".github/actions/change-scope/action.yml").read_text()
-        self.assertIn("      env:\n        GITHUB_TOKEN: ${{ github.token }}\n"
-                      "      run: python3 scripts/python/ci_scope.py classify\n", action)
-        self.assertIn("value: ${{ steps.classify.outputs.validated_by }}", action)
-        self.assertIn(f"name: {ci_scope.DEVELOP_HEALTH_JOB}\n", workflow)
-        self.assertIn(f"|| '{ci_scope.GATE_JOB}' }}}}\n", workflow)
+                self.assertIn(f"((inputs.evidence_job || 'all') == 'all' || inputs.evidence_job == '{name}')",
+                              conditions[name])
+        # A scoped gate is not full Ubuntu Clang evidence, and scoped dispatches queue apart.
+        self.assertIn("format('Evidence gate ({0})', inputs.evidence_job) || 'Ubuntu Clang' }}", workflow)
+        self.assertIn("          EVIDENCE_JOB: ${{ inputs.evidence_job }}\n"
+                      "          RESULTS: ${{ toJSON(needs) }}\n", workflow)
+        self.assertIn("format('-evidence-{0}', inputs.evidence_job)", workflow.split("\nconcurrency:\n", 1)[1].split("\n\n", 1)[0])
 
+    def test_required_gate_reads_only_job_results_and_classification(self):
+        workflow = self.ROOT.joinpath(".github/workflows/ci.yml").read_text()
+        self.assertNotIn("validated_by", workflow)
+        self.assertNotIn("name: Develop health\n", workflow)
+        self.assertIn(f"|| '{ci_scope.GATE_JOB}' }}}}\n", workflow)
+        changes = workflow.split("\n  changes:\n", 1)[1].split("\n\n  ", 1)[0]
+        self.assertIn("    permissions:\n      contents: read\n      packages: read\n", changes)
+        action = self.ROOT.joinpath(".github/actions/change-scope/action.yml").read_text()
+        self.assertNotIn("validated_by", action)
+        self.assertNotIn("GITHUB_TOKEN", action)
 
 if __name__ == "__main__":
     unittest.main()

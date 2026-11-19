@@ -9225,10 +9225,12 @@ image retained by the viewport after a pending or failed build.
 
 While dragging a wire, the hovered port and preview wire turn green for a
 compatible pre-check or red for a rejection. A nearby text hint gives the reason,
-including type, cycle or attachment-contract mismatches. Occupied inputs are
-checked as replacements. Drop commits through the existing document operation;
-rejection or Escape preserves the previous connection and history. Feedback
-itself never saves, builds shaders or creates GPU resources.
+including type, cycle or attachment-contract mismatches. For a valid drop on an
+occupied input, the hint names the current source, proposed source and destination.
+A dashed stroke follows the wire that will be removed, including its reroute
+points. Moving off the canvas clears the cue. Drop commits the replacement in
+one edit. Undo restores the previous connection and route. Rejection or Escape
+preserves the draft and history. Hovering never saves or starts a build.
 
 ### Add configurations and reuse node groups
 

@@ -257,7 +257,7 @@ bool Initialize([[maybe_unused]] const WindowManager::InitializeInfo& info) noex
         }
         if (gOwnsApplication)
         {
-            // A bundled game already has the regular policy. AppKit can return NO for that no-op.
+            // A bundled GUI app already starts Regular. AppKit may return NO for that no-op.
             if (application.activationPolicy != NSApplicationActivationPolicyRegular &&
                 [application setActivationPolicy:NSApplicationActivationPolicyRegular] == false)
             {

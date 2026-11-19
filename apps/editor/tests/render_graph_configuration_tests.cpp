@@ -18,6 +18,10 @@
 #include <QDir>
 #include <QElapsedTimer>
 #include <QFile>
+#include <QGraphicsPathItem>
+#include <QGraphicsScene>
+#include <QGraphicsTextItem>
+#include <QImage>
 #include <QJsonArray>
 #include <QJsonDocument>
 #include <QLabel>
@@ -561,6 +565,212 @@ TEST_CASE("canvas replaces an occupied input atomically and preserves rejected c
     CHECK(canvas.RequestLink(QStringLiteral("raster.color"), QStringLiteral("camera.target"), true) == false);
     CHECK(document.GetRevision() == beforeRejection);
     CHECK(document.GetDraft(ROOT_GRAPH) == replacement);
+}
+
+TEST_CASE("occupied-input preview follows the admitted routed wire through cycle repair and validation",
+          "[editor][render-graph][canvas-editing][wire-preview]")
+{
+    QTemporaryDir project;
+    const QString package = MakePackage(project);
+    const QString forward = QStringLiteral("forward.lurender.json");
+    const QByteArray forwardingGraph = QByteArrayLiteral(R"({
+        "version":1,"id":"Forward","default":"Default","configurations":[{
+        "id":"Default","inputs":[{"id":"color","type":"ColorTexture"}],
+        "outputs":[{"id":"color","type":"ColorTexture","source":"input.color","required":false}],
+        "nodes":[],"edges":[]}]})");
+    QFile child(QDir(package).filePath(forward));
+    REQUIRE(child.open(QIODevice::WriteOnly));
+    REQUIRE(child.write(forwardingGraph) == forwardingGraph.size());
+    child.close();
+    RendererWorkspace workspace({QString::fromUtf8(LUDUS_TEST_PYTHON), {}, QStringLiteral(LUDUS_EDITOR_PROJECT_ROOT)});
+    workspace.SetProject(project.path(), 1);
+    REQUIRE(workspace.OpenGraph(QDir(package).filePath(ROOT_GRAPH)));
+    workspace.SetLivePreview(false);
+    RenderGraphDocument& document = workspace.GetDocument();
+    RenderGraphCanvas& canvas = workspace.GetCanvas();
+    QJsonObject graph;
+    REQUIRE(document.GetGraph(ROOT_GRAPH, graph));
+    QJsonObject record = GetConfiguration(document, ROOT_GRAPH, DEFAULT_CONFIGURATION);
+    QJsonArray nodes = record.value(QStringLiteral("nodes")).toArray();
+    for (const QString& id : {QStringLiteral("first"), QStringLiteral("second"), QStringLiteral("third")})
+    {
+        nodes.append(QJsonObject{{QStringLiteral("id"), id},
+                                 {QStringLiteral("kind"), QStringLiteral("Subgraph")},
+                                 {QStringLiteral("asset"), forward},
+                                 {QStringLiteral("configuration"), DEFAULT_CONFIGURATION}});
+    }
+    record.insert(QStringLiteral("nodes"), nodes);
+    const QString previous = QStringLiteral("raster.color");
+    const QString proposed = QStringLiteral("third.color");
+    const QString destination = QStringLiteral("first.color");
+    QJsonArray edges = record.value(QStringLiteral("edges")).toArray();
+    const auto appendEdge = [&](const QString& from, const QString& to) {
+        edges.append(QJsonObject{{QStringLiteral("from"), from}, {QStringLiteral("to"), to}});
+    };
+    REQUIRE(edges.last().toObject().value(QStringLiteral("to")).toString() == QStringLiteral("output.texture"));
+    edges.removeLast();
+    appendEdge(previous, destination);
+    appendEdge(destination, QStringLiteral("output.texture"));
+    appendEdge(destination, QStringLiteral("second.color"));
+    appendEdge(QStringLiteral("second.color"), proposed);
+    record.insert(QStringLiteral("edges"), edges);
+    graph.insert(QStringLiteral("configurations"), QJsonArray{record});
+    REQUIRE(document.SetText(ROOT_GRAPH, EncodeCanonicalJson(graph)) == RenderGraphDocumentStatus::Ok);
+    REQUIRE(document.MoveNodes(ROOT_GRAPH,
+                               DEFAULT_CONFIGURATION,
+                               {{QStringLiteral("raster"), 0, 0},
+                                {QStringLiteral("color"), 0, -160},
+                                {QStringLiteral("camera"), 520, -160},
+                                {QStringLiteral("third"), 0, 230},
+                                {QStringLiteral("first"), 520, 0},
+                                {QStringLiteral("second"), 520, 230}}) == RenderGraphDocumentStatus::Ok);
+    const QJsonObject route{
+        {QStringLiteral("from"), previous},
+        {QStringLiteral("to"), destination},
+        {QStringLiteral("points"), QJsonArray{QJsonObject{{QStringLiteral("x"), 340}, {QStringLiteral("y"), 185}}}}};
+    const QJsonObject nearbyRoute{
+        {QStringLiteral("from"), QStringLiteral("color.texture")},
+        {QStringLiteral("to"), QStringLiteral("camera.target")},
+        {QStringLiteral("points"), QJsonArray{QJsonObject{{QStringLiteral("x"), 350}, {QStringLiteral("y"), 172}}}}};
+    REQUIRE(document.ReplaceWireRoutes(ROOT_GRAPH, DEFAULT_CONFIGURATION, {route, nearbyRoute}) ==
+            RenderGraphDocumentStatus::Ok);
+    REQUIRE(workspace.Save());
+    canvas.ShowConfiguration(ROOT_GRAPH, DEFAULT_CONFIGURATION);
+    QWidget* properties = workspace.findChild<QWidget*>(QStringLiteral("renderGraphProperties"));
+    REQUIRE(properties != nullptr);
+    workspace.resize(1450, 850);
+    workspace.show();
+    properties->hide();
+    QCoreApplication::processEvents();
+    canvas.ResetZoom();
+    canvas.centerOn(360, 145);
+    const auto port = [&](const QString& endpoint, bool isOutput) {
+        return canvas.mapFromScene(canvas.GetPortPosition(endpoint, isOutput));
+    };
+    const auto hover = [&](const QString& from, const QString& to) {
+        REQUIRE(canvas.viewport()->rect().contains(port(from, true)));
+        REQUIRE(canvas.viewport()->rect().contains(port(to, false)));
+        QTest::mousePress(canvas.viewport(), Qt::LeftButton, Qt::NoModifier, port(from, true));
+        QTest::mouseMove(canvas.viewport(), port(to, false));
+    };
+    const auto hint = [&]() -> QString {
+        for (QGraphicsItem* item : canvas.scene()->items())
+        {
+            if (item->isVisible() == true && item->data(0).toString() == QStringLiteral("#link-feedback"))
+            {
+                return static_cast<QGraphicsTextItem*>(item)->toPlainText();
+            }
+        }
+        return {};
+    };
+    const auto marker = [&]() -> QGraphicsPathItem* {
+        for (QGraphicsItem* item : canvas.scene()->items())
+        {
+            QGraphicsPathItem* pathOrNull = qgraphicsitem_cast<QGraphicsPathItem*>(item);
+            if (pathOrNull != nullptr && pathOrNull->pen().style() == Qt::DashLine && pathOrNull->pen().isCosmetic())
+            {
+                return pathOrNull;
+            }
+        }
+        return nullptr;
+    };
+    const QString capture = qEnvironmentVariable("LUDUS_EDITOR_WIRE_PREVIEW_CAPTURE");
+    const auto capturePreview = [&](const QString& name) {
+        if (capture.isEmpty() == true)
+        {
+            return;
+        }
+        REQUIRE(QDir().mkpath(capture) == true);
+        QGraphicsPathItem* stroke = marker();
+        REQUIRE(stroke != nullptr);
+        for (const bool isMarked : {false, true})
+        {
+            stroke->setVisible(isMarked);
+            const QString variant = isMarked == true ? QStringLiteral("-marked") : QStringLiteral("-labels");
+            const QString path = QDir(capture).filePath(name + variant);
+            const QImage image = workspace.grab().toImage();
+            REQUIRE(image.save(path + QStringLiteral(".png")));
+            REQUIRE(image.convertToFormat(QImage::Format_Grayscale8).save(path + QStringLiteral("-monochrome.png")));
+        }
+    };
+    const uint64 beforeCycle = document.GetRevision();
+    hover(proposed, destination);
+    CHECK(hint().contains(QStringLiteral("within-frame dependency cycle")));
+    CHECK(marker() == nullptr);
+    QTest::mouseRelease(canvas.viewport(), Qt::LeftButton, Qt::NoModifier, port(destination, false));
+    CHECK(document.GetRevision() == beforeCycle);
+    CHECK(document.GetDraft(ROOT_GRAPH) == document.GetSaved(ROOT_GRAPH));
+    // Replace second -> third from the canvas, breaking first -> second -> third.
+    hover(previous, proposed);
+    capturePreview(QStringLiteral("repair"));
+    QTest::mouseRelease(canvas.viewport(), Qt::LeftButton, Qt::NoModifier, port(proposed, false));
+    const QByteArray repaired = document.GetDraft(ROOT_GRAPH);
+    REQUIRE(document.GetRevision() == beforeCycle + 1);
+    const uint64 beforeHover = document.GetRevision();
+    for (const bool shouldLeave : {true, false})
+    {
+        hover(proposed, destination);
+        REQUIRE(hint() ==
+                QStringLiteral("Replace source at first.color\nCurrent: raster.color\nProposed: third.color"));
+        REQUIRE(marker() != nullptr);
+        CHECK(marker()->path().pointAtPercent(0) == canvas.GetPortPosition(previous, true));
+        CHECK(marker()->path().pointAtPercent(1) == canvas.GetPortPosition(destination, false));
+        CHECK(marker()->path().elementCount() > 4); // Both cubic segments of the authored route.
+        if (shouldLeave == true)
+        {
+            QEvent departure(QEvent::Leave);
+            QApplication::sendEvent(canvas.viewport(), &departure);
+            CHECK(marker() == nullptr);
+            CHECK(hint().isEmpty() == true);
+            QTest::keyClick(&canvas, Qt::Key_Escape);
+        }
+        else
+        {
+            // An output and input on the forwarding card share the same endpoint spelling.
+            QTest::mouseMove(canvas.viewport(), port(destination, true));
+            CHECK(hint().contains(QStringLiteral("this is an output")));
+            CHECK(marker() == nullptr);
+            QTest::mouseMove(canvas.viewport(), port(destination, false));
+            REQUIRE(marker() != nullptr);
+            QTest::keyClick(&canvas, Qt::Key_Escape);
+        }
+        QTest::mouseRelease(canvas.viewport(), Qt::LeftButton, Qt::NoModifier, port(destination, false));
+        CHECK(marker() == nullptr);
+        CHECK(hint().isEmpty());
+        CHECK(document.GetRevision() == beforeHover);
+        CHECK(document.GetDraft(ROOT_GRAPH) == repaired);
+        CHECK(workspace.IsJobActive() == false);
+    }
+    hover(proposed, destination);
+    capturePreview(QStringLiteral("replacement"));
+    QTest::mouseRelease(canvas.viewport(), Qt::LeftButton, Qt::NoModifier, port(destination, false));
+    REQUIRE(GetInputConnections(document, destination).first().toObject().value(QStringLiteral("from")).toString() ==
+            proposed);
+    workspace.Undo();
+    CHECK(document.GetDraft(ROOT_GRAPH) == repaired);
+    workspace.Redo();
+    REQUIRE(workspace.Save());
+    if (capture.isEmpty() == false)
+    {
+        for (const QString& file : {ROOT_GRAPH, forward, QStringLiteral("rasterize.lurender.json")})
+        {
+            REQUIRE(QFile::copy(QDir(package).filePath(file), QDir(capture).filePath(file)));
+        }
+    }
+    QSignalSpy finished(&workspace, &RendererWorkspace::JobFinished);
+    REQUIRE(workspace.Validate());
+    REQUIRE(finished.wait(30000));
+    INFO(workspace.GetLastResult().Message.toStdString());
+    REQUIRE(workspace.GetLastResult().IsSuccessful);
+    const QJsonObject root = workspace.GetLastResult()
+                                 .Payload.value(QStringLiteral("plan"))
+                                 .toObject()
+                                 .value(QStringLiteral("roots"))
+                                 .toArray()
+                                 .first()
+                                 .toObject();
+    CHECK(root.value(QStringLiteral("resource")).toString() == QStringLiteral("Main/color"));
+    CHECK(root.value(QStringLiteral("version")).toInt() == 1);
 }
 
 TEST_CASE("canvas wire and port menus disconnect and reconnect without the inspector",

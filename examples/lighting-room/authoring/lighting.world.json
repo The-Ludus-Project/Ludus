@@ -1,0 +1,267 @@
+{
+  "version": 1,
+  "schema": "ludus.world.default.v1",
+  "entities": [
+    {
+      "id": "bounce-panel",
+      "name": "Bounce Panel",
+      "components": {
+        "transform": {
+          "x": -0.5,
+          "y": 0,
+          "z": 1,
+          "rx": 0,
+          "ry": 0,
+          "rz": 0,
+          "sx": 1.8,
+          "sy": 1,
+          "sz": 1.6
+        },
+        "renderable": {
+          "mesh": "mesh.plane",
+          "texture": "",
+          "visible": true,
+          "r": 0.8,
+          "g": 0.08,
+          "b": 0.04
+        }
+      }
+    },
+    {
+      "id": "bounce-receiver",
+      "name": "Bounce Receiver",
+      "components": {
+        "transform": {
+          "x": -0.5,
+          "y": 0.55,
+          "z": 0,
+          "rx": 90,
+          "ry": 0,
+          "rz": 0,
+          "sx": 0.24,
+          "sy": 1,
+          "sz": 0.24
+        },
+        "renderable": {
+          "mesh": "mesh.plane",
+          "texture": "",
+          "visible": true,
+          "r": 0.7,
+          "g": 0.7,
+          "b": 0.7
+        }
+      }
+    },
+    {
+      "id": "bounce-blocker",
+      "name": "Bounce Blocker",
+      "components": {
+        "transform": {
+          "x": -0.5,
+          "y": 0.4,
+          "z": 0.16,
+          "rx": 90,
+          "ry": 0,
+          "rz": 0,
+          "sx": 1.9,
+          "sy": 1,
+          "sz": 0.85
+        },
+        "renderable": {
+          "mesh": "mesh.plane",
+          "texture": "",
+          "visible": false,
+          "r": 0,
+          "g": 0,
+          "b": 0
+        }
+      }
+    },
+    {
+      "id": "door-lower",
+      "name": "Door Lower",
+      "components": {
+        "transform": {
+          "x": 0.5,
+          "y": 0.45,
+          "z": 0,
+          "rx": 0,
+          "ry": 0,
+          "rz": 90,
+          "sx": 0.9,
+          "sy": 1,
+          "sz": 6
+        },
+        "renderable": {
+          "mesh": "mesh.plane",
+          "texture": "",
+          "visible": true,
+          "r": 0,
+          "g": 0,
+          "b": 0
+        }
+      }
+    },
+    {
+      "id": "door-upper",
+      "name": "Door Upper",
+      "components": {
+        "transform": {
+          "x": 0.5,
+          "y": 2.05,
+          "z": 0,
+          "rx": 0,
+          "ry": 0,
+          "rz": 90,
+          "sx": 1.9,
+          "sy": 1,
+          "sz": 6
+        },
+        "renderable": {
+          "mesh": "mesh.plane",
+          "texture": "",
+          "visible": true,
+          "r": 0,
+          "g": 0,
+          "b": 0
+        }
+      }
+    },
+    {
+      "id": "moving-receiver",
+      "name": "Moving Receiver",
+      "components": {
+        "transform": {
+          "x": 0.25,
+          "y": 1,
+          "z": 0,
+          "rx": 90,
+          "ry": 0,
+          "rz": 0,
+          "sx": 0.06,
+          "sy": 1,
+          "sz": 0.06
+        },
+        "renderable": {
+          "mesh": "mesh.plane",
+          "texture": "",
+          "visible": true,
+          "r": 0.7,
+          "g": 0.7,
+          "b": 0.7
+        },
+        "giProbeReceiver": {}
+      }
+    },
+    {
+      "id": "rough-dielectric",
+      "name": "Rough Dielectric",
+      "components": {
+        "transform": {
+          "x": -2.3,
+          "y": 0,
+          "z": -0.5,
+          "rx": 0,
+          "ry": 0,
+          "rz": 0,
+          "sx": 0.65,
+          "sy": 1,
+          "sz": 0.65
+        },
+        "renderable": {
+          "mesh": "mesh.plane",
+          "texture": "",
+          "visible": true,
+          "r": 0.5,
+          "g": 0.5,
+          "b": 0.5
+        }
+      }
+    },
+    {
+      "id": "always-on",
+      "name": "Always On",
+      "components": {
+        "transform": {
+          "x": 0,
+          "y": 3,
+          "z": 0,
+          "rx": -90,
+          "ry": 0,
+          "rz": 0,
+          "sx": 1,
+          "sy": 1,
+          "sz": 1
+        },
+        "light": {
+          "kind": "directional",
+          "enabled": true,
+          "r": 1,
+          "g": 1,
+          "b": 1,
+          "intensity": 2,
+          "range": 10,
+          "innerAngle": 25,
+          "outerAngle": 30,
+          "staticTransform": true,
+          "bakeAlwaysOn": true
+        }
+      }
+    },
+    {
+      "id": "switchable",
+      "name": "Switchable",
+      "components": {
+        "transform": {
+          "x": -1.2,
+          "y": 1.4,
+          "z": 1,
+          "rx": 0,
+          "ry": 0,
+          "rz": 0,
+          "sx": 1,
+          "sy": 1,
+          "sz": 1
+        },
+        "light": {
+          "kind": "point",
+          "enabled": true,
+          "r": 0.1,
+          "g": 0.3,
+          "b": 1,
+          "intensity": 4,
+          "range": 10,
+          "innerAngle": 25,
+          "outerAngle": 30,
+          "staticTransform": false,
+          "bakeAlwaysOn": false
+        }
+      }
+    },
+    {
+      "id": "probe-volume",
+      "name": "Probe Volume",
+      "components": {
+        "transform": {
+          "x": -1,
+          "y": 0.5,
+          "z": -0.5,
+          "rx": 0,
+          "ry": 0,
+          "rz": 0,
+          "sx": 1,
+          "sy": 1,
+          "sz": 1
+        },
+        "giProbeVolume": {
+          "enabled": true,
+          "layout": "counts",
+          "spacing": 1,
+          "countX": 3,
+          "countY": 2,
+          "countZ": 2
+        }
+      }
+    }
+  ]
+}
