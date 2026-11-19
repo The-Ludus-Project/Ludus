@@ -294,9 +294,39 @@ and the [itch.io HTML5 hosting guide](https://itch.io/docs/creators/html5).
   errors during startup. The browser also requested an unshipped site favicon
   and received HTTP 404. Fullscreen attempts in the automated local tab were
   denied and showed the in-page fallback message while preserving the score.
-- Hosted qualification remains pending. The [Color Rally itch.io draft](https://alegruz.itch.io/color-rally)
-  was saved unpublished with the controls and access information. Edge denied
-  the automated file attachment because local-file access for the extension
-  was disabled. Hosted artifact identity, iframe policy, HTTPS/isolation,
-  WebGPU adapter and experimental flag state, gameplay, and fullscreen still
-  require evidence from the uploaded ZIP.
+#### Hosted itch.io draft
+
+- Uploaded the original 148,699-byte `game.zip` to the unpublished
+  [Color Rally draft](https://alegruz.itch.io/color-rally) as its browser-playable
+  file. The original ZIP downloaded from itch.io matched the local file byte
+  for byte and had the same SHA-256 above.
+- On Edge 157.0.4341.60 arm64 (macOS 26.6, build 25G72, Apple M5), the
+  `edge://version` command line showed an empty flag-switch section and no GPU
+  override. DevTools in the game frame reported Apple, `metal-3`, and
+  `isFallbackAdapter: false` for the WebGPU adapter.
+- The runtime requests for `index.js` and `index.wasm` both returned HTTP 200.
+  The response types were `text/javascript; charset=utf-8` and
+  `application/wasm`, and both response hashes matched the archive. The
+  served `index.html` returned 200 and began with all 2,539 original HTML
+  bytes, verified by SHA-256. itch.io appended 87 bytes referencing its
+  `htmlgame.js` script.
+- The parent was `https://alegruz.itch.io` and the game frame was
+  `https://html-classic.itch.zone`, so the origins differ. The iframe had no
+  `sandbox` attribute and the game response had no Content-Security-Policy,
+  Permissions-Policy, COEP or COOP header. Both contexts reported
+  `isSecureContext: true` and `crossOriginIsolated: false`.
+  The iframe had `allowfullscreen` and its `allow` value was
+  `autoplay; fullscreen *; geolocation; microphone; camera; midi; monetization; xr-spatial-tracking; gamepad; gyroscope; accelerometer; xr; cross-origin-isolated; web-share`.
+  The game frame reported `document.fullscreenEnabled: true`. These are
+  observed host settings. The game did not exercise the other delegated
+  features.
+- From a fresh visit, the host page showed the controls and build requirements
+  before play. After **Run game**, keyboard navigation reached **Controls
+  and access**. Enter opened it, then Enter on **Start** focused the canvas.
+  Space changed the score from zero to one and showed a blue frame. The
+  640 × 540 embed had scrolling and itch.io's **Enter fullscreen** enabled.
+  That button entered fullscreen and Escape returned to the page with
+  score one. The host logged an unsupported screen-orientation lock during
+  fullscreen, but entry and exit worked. The game canvas's own **Fullscreen**
+  request was denied and showed its in-page fallback. The draft's access note
+  directs players to the verified itch.io control. The ZIP remained the same.
