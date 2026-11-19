@@ -165,6 +165,7 @@ for content changes. Module/sample/tool READMEs link to these owners.
 - [Ludus Shading Language (LUSL)](architecture/shading-language.md)
 - [Ludus Strings Architecture](architecture/strings.md)
 - [macOS Platform backend](architecture/macos-platform.md)
+- [Mobile application lifecycle and surfaces](architecture/mobile-application-lifecycle.md)
 - [Module startup and shutdown architecture](architecture/module-lifecycle.md)
 - [Multiplatform editor GUI systems](architecture/editor-gui-systems.md)
 - [Networking architecture](architecture/networking.md)
@@ -195,6 +196,7 @@ for content changes. Module/sample/tool READMEs link to these owners.
 - [Terrain generation architecture](architecture/terrain-generation.md)
 - [Terrain systems architecture](architecture/terrain.md)
 - [Threading architecture](architecture/threading.md)
+- [Touch input contract](architecture/touch-input.md)
 - [Windows and Direct3D 12 backend](architecture/windows-direct3d12.md)
 - [World environment architecture](architecture/world-environment.md)
 
