@@ -134,6 +134,35 @@ history into `develop` through an integration PR using a merge commit. Squashing
 or rebasing that PR discards the ancestry link; promotion rejects a candidate
 that diverges from `main`, even when the files contain the same repair.
 
+### Batch workflow definitions
+
+Because a batch runs `main`'s workflow files against the candidate's sources, any
+data a workflow file holds about the candidate is one promotion behind. A test
+or page that only develop's workflow names is missing from every batch, and the
+batch cannot promote while it fails. On 2026-11-19, R14c added `r14c.html` to the
+candidate's raster browser test and to develop's `webgpu-probe.yml` upload list.
+Every batch then failed **Packaged browser tests (software GPU)**, because `main`'s
+list did not upload the page; recovery needed the workflow landed on `main` as
+described above.
+
+Keep candidate data in candidate files and let the workflow refer to it by
+pattern or by a candidate-side runner:
+
+- `webgpu-probe.yml` uploads each installed web SDK consumer directory as
+  `*.html`, `*.js` and `*.wasm`, so a new consumer page needs no workflow edit.
+- `tests/sdk_consumer/browser-suites.json` lists the browser tests of each
+  suite, and `tests/sdk_consumer/run-browser-suite.mjs <suite> <artifacts>
+  <results>` runs them all, reporting every failure. Add a browser test to a
+  suite there; the workflow names only the suite. A new renderer suite also
+  needs a matrix entry, which takes effect after promotion.
+- `BatchWorkflowDefinitionTests` in `scripts/python/test_ci.py` rejects listed
+  consumer files in uploads, a consumer browser test named in a workflow, and a
+  renderer matrix that differs from the candidate's suites.
+
+A workflow change that the candidate's sources depend on still reaches batches
+only after promotion. Land it in a `develop` change before the sources that need
+it, or keep both working with either definition.
+
 Only one batch is active. New `develop` commits do not cancel it or change its input.
 Concurrent scheduler ticks coalesce into at most one pending run. A tick captured
 before `main` advanced records no attempt and skips, letting the next tick use the
