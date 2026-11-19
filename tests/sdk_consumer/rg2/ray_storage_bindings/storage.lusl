@@ -1,0 +1,24 @@
+#include "scene_payload.luslh"
+#include "graph_schemas.luslh"
+
+static const float32 SECOND_FIELD_BASE = 8.0;
+static const float32 SECOND_LANE_BASE = 4.0;
+
+float32x3 GenerateRay(in SceneContext scene, in RayLaunch launch, inout RayQueryContext inoutQueries)
+{
+    uint32 index = launch.PositionPixel.y * launch.ExtentPixel.x + launch.PositionPixel.x;
+    if (launch.SampleIndex == 0)
+    {
+        ScenePayload payload = 0;
+        TraceAndShade(scene, inout inoutQueries, launch.CameraRay, inout payload);
+        float32 value = float32(index + 1);
+        ProbeRecord record = void;
+        record.First = float32x2(value, value + SECOND_LANE_BASE);
+        record.Second = record.First + SECOND_FIELD_BASE;
+        Written[index] = record;
+        return payload.Radiance;
+    }
+    ProbeRecord neighbor = Written[index ^ 1];
+    ProbeRecord reference = Reference[index];
+    return float32x3(neighbor.Second.y, neighbor.First.y, neighbor.Second.x) + reference.First.x;
+}

@@ -1088,7 +1088,7 @@ TEST_CASE("local smoke test: licensed staircase imports with readable limits", "
     REQUIRE(ImportPbrtBestEffort(entry.string(), {}, result, error) == true);
     ludus::resources::SceneDefinition decoded;
     REQUIRE(DecodesAtRuntime(result, decoded) == true);
-    CHECK(result.Summary.CookedMaterials <= ludus::content::scene_format::MAX_MATERIALS);
+    CHECK(result.Summary.CookedMaterials <= ludus::content::scene_format::IMPORT_LIMITS.Materials);
     CHECK(result.Summary.SourcePlacements >= 775);
     CHECK(result.Summary.DroppedPlacements == 0);
     CHECK(result.Summary.Errors == 0);

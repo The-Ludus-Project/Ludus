@@ -523,39 +523,67 @@ bool ViewportObjectInteraction::project(math::Vector3 positionWorld, QPointF& ou
 }
 bool ViewportObjectInteraction::projectSegment(const SilhouetteSegment& segment, QLineF& outLinePixel) const
 {
-    math::Vector4 first = segment.FirstClip;
-    math::Vector4 second = segment.SecondClip;
-    if (math::IsFinite(first) == false || math::IsFinite(second) == false)
+    const math::Vector4& firstClip = segment.FirstClip;
+    const math::Vector4& secondClip = segment.SecondClip;
+    if (math::IsFinite(firstClip) == false || math::IsFinite(secondClip) == false)
     {
         return false;
     }
-    const bool isFirstBehind = first.W <= PROJECTION_EPSILON;
-    const bool isSecondBehind = second.W <= PROJECTION_EPSILON;
-    if (isFirstBehind == true && isSecondBehind == true)
+
+    // Thanks to Blinn and Newell, "Clipping Using Homogeneous Coordinates", SIGGRAPH '78, pp. 245–251,
+    // https://doi.org/10.1145/800248.807398. Intersect the edge with the viewport's six half-spaces before
+    // dividing by W. Ludus uses zero-to-one reverse depth, so the near boundary is W - Z = 0.
+    float64 enter = 0;
+    float64 leave = 1;
+    const auto clipToPlane = [&](float64 firstDistance, float64 secondDistance) noexcept {
+        if (firstDistance < 0 && secondDistance < 0)
+        {
+            return false;
+        }
+        if ((firstDistance < 0) != (secondDistance < 0))
+        {
+            const float64 fraction = firstDistance / (firstDistance - secondDistance);
+            if (firstDistance < 0)
+            {
+                enter = math::Max(enter, fraction);
+            }
+            else
+            {
+                leave = math::Min(leave, fraction);
+            }
+        }
+        return enter <= leave;
+    };
+    const float64 firstW = static_cast<float64>(firstClip.W);
+    const float64 secondW = static_cast<float64>(secondClip.W);
+    const math::Vector3d first{static_cast<float64>(firstClip.X),
+                               static_cast<float64>(firstClip.Y),
+                               static_cast<float64>(firstClip.Z)};
+    const math::Vector3d second{static_cast<float64>(secondClip.X),
+                                static_cast<float64>(secondClip.Y),
+                                static_cast<float64>(secondClip.Z)};
+    if (clipToPlane(firstW - first.Z, secondW - second.Z) == false || clipToPlane(first.Z, second.Z) == false ||
+        clipToPlane(firstW + first.X, secondW + second.X) == false ||
+        clipToPlane(firstW - first.X, secondW - second.X) == false ||
+        clipToPlane(firstW + first.Y, secondW + second.Y) == false ||
+        clipToPlane(firstW - first.Y, secondW - second.Y) == false)
     {
         return false;
     }
-    // Keep the part of a segment crossing the camera plane that lies in front of it.
-    if (isFirstBehind == true || isSecondBehind == true)
-    {
-        math::Vector4& behind = isFirstBehind == true ? first : second;
-        const math::Vector4& front = isFirstBehind == true ? second : first;
-        const float32 fraction = (PROJECTION_EPSILON - behind.W) / (front.W - behind.W);
-        behind = {behind.X + (front.X - behind.X) * fraction,
-                  behind.Y + (front.Y - behind.Y) * fraction,
-                  behind.Z + (front.Z - behind.Z) * fraction,
-                  PROJECTION_EPSILON};
-    }
-    // A segment wholly beyond one side of the frame has nothing to draw.
-    const bool isLeftOfFrame = first.X < -first.W && second.X < -second.W;
-    const bool isRightOfFrame = first.X > first.W && second.X > second.W;
-    const bool isBelowFrame = first.Y < -first.W && second.Y < -second.W;
-    const bool isAboveFrame = first.Y > first.W && second.Y > second.W;
-    if (isLeftOfFrame == true || isRightOfFrame == true || isBelowFrame == true || isAboveFrame == true)
+    const auto interpolateClip = [&](float64 fraction) noexcept -> math::Vector4 {
+        const math::Vector3d point = first * (1 - fraction) + second * fraction;
+        return {static_cast<float32>(point.X),
+                static_cast<float32>(point.Y),
+                static_cast<float32>(point.Z),
+                static_cast<float32>((1 - fraction) * firstW + fraction * secondW)};
+    };
+    const math::Vector4 clippedFirst = enter == 0 ? firstClip : interpolateClip(enter);
+    const math::Vector4 clippedSecond = leave == 1 ? secondClip : interpolateClip(leave);
+    if (clippedFirst.W <= 0 || clippedSecond.W <= 0)
     {
         return false;
     }
-    outLinePixel = QLineF(convertClipToPixel(first), convertClipToPixel(second));
+    outLinePixel = QLineF(convertClipToPixel(clippedFirst), convertClipToPixel(clippedSecond));
     return true;
 }
 bool ViewportObjectInteraction::refreshSilhouette(int32 meshIndex)

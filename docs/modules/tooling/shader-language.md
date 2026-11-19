@@ -1470,9 +1470,8 @@ float32x3 ShadeMiss(in Ray ray)
 - **Current limits:**
   - Ray callbacks use the [ray callback declarations](#sdk-declarations):
     `ray_shader.luslh` for the Ray/Color profile, `scene_payload.luslh` (with
-    `scene_shader.luslh`) for scene-interface techniques. Ray storage
-    declarations are checked by build-tool tests; no GPU fixture reads them
-    from LUSL yet.
+    `scene_shader.luslh`) for scene-interface techniques. Graph-owned typed storage belongs to a single ray job. Its contents persist
+    across submissions until the graph replaces the storage.
   - Configuration values do not reach LUSL programs from the render graph yet,
     and render-graph builds emit no development bounds checks.
 - **Evidence:**
@@ -1498,6 +1497,21 @@ float32x3 ShadeMiss(in Ray ray)
     declarations. A GPU test renders a room with nested blocks through both
     packages; every pixel encodes exact hit, secondary-hit and visibility
     outcomes, and the images are identical.
+  - The installed-SDK `ray_storage_lusl` and `ray_storage_slang` fixtures use the
+    same two-by-two graph and storage schema. The Editor's shader-assistance
+    test opens the authored generation callback and checks its generated
+    read-only and writable declarations. Both cooks check target reflection
+    for slots 6 and 7, field offsets 0 and 8, and a 16-byte record stride.
+    The runtime consumer activates each cooked package. The first submission
+    writes four records, one per pixel. After it completes, each pixel reads
+    its neighbor's record and the zero-initialized read-only buffer. The four
+    raw RGB sums and sample counts must match independent host expectations.
+    On Apple M5 both Metal packages matched. Redirecting one field read in the
+    lowered LUSL module also cooked successfully and changed pixel zero from
+    `(14, 6, 10)` to `(6, 6, 10)`, which the consumer rejected. Run
+    `ctest --test-dir out/renderer-sdk -V -R '^ludus_sdk_ray_storage_'` after
+    building the native renderer SDK consumers. Vulkan execution requires a
+    device with inline ray queries and remains pending.
   - `rg2_bound_lusl` is the L3 acceptance graph. It is the raster graph
     `rg2_bound` with its vertex, color and depth callbacks ported to LUSL,
     reading `graph_schemas.luslh`. A GPU test renders both packages with two

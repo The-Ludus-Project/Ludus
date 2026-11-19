@@ -316,8 +316,9 @@ upload, and nothing is built from the mesh on the CPU. The editor uses it for th
 viewport's selection.
 
 - **Mask pass.** The mesh is rasterized into an RGBA8 mask the size of the target, white where it covers
-  a pixel. There is no depth test, so another object in front does not hide the outline, and depth is
-  pinned inside the clip volume so only the camera plane and the frame sides clip.
+  a pixel. The mask uses all four clip coordinates from the image’s mesh-to-clip transform. The
+  rasterizer clips triangles against the same near, far and side planes as the image. Scene-depth testing
+  is disabled so the outline stays visible through other objects.
 - **Edge pass.** One quad over the mesh's projected bounds, padded by the casing width, samples the mask.
   Each pixel searches its neighbourhood, a square of radius `ceil(casing half width)` pixels capped at
   eight, for the nearest pixel whose coverage differs from its own, and turns that distance into
@@ -3716,6 +3717,56 @@ interpolation still fails validation; radiance and throughput retain their
 existing checks. Capture jobs reserve a bounded residency budget for their pinned
 versions and support cancellation, releasing submitted uses through completion.
 
+#### Successive diffuse bounces in a closed enclosure
+
+The `[diffuse-enclosure]` native renderer tests place a perspective camera inside
+a two-metre cube. Each face has the same typed Lambertian reflectance ρ and
+emits scene-linear RGB radiance E = (1, 0.5, 0.25) inward. The environment is
+black, the light list is empty, and the four-metre secondary range exceeds the
+cube diagonal. Every direction in the inward hemisphere sees another wall.
+Integrating a constant incident radiance against (ρ/π) cos θ therefore
+multiplies that radiance by ρ. Applying Kajiya's successive-scattering expansion
+gives the contributions E, Eρ, Eρ², … up to Eρᴰ. [James T. Kajiya, *The Rendering Equation*, §3](https://doi.org/10.1145/15922.15902)
+
+At depths 1, 2 and 4, the tests check emission (E), direct (Eρ), indirect
+(orders 2 through D) and total against these sums independently on the CPU and
+GPU. Matching seeds across depths gives paired estimates for the additional
+orders Eρ² and E(ρ³ + ρ⁴). Compensated Russian roulette starts at the second
+scattering event. Each backend must record terminations at depths 2 and 4.
+
+The infinite-depth solution is E/(1−ρ). Its difference from the finite-depth
+target is exactly Eρ^(D+1)/(1−ρ). The table gives this omitted radiance in
+multiples of E at a fixed 32 samples per pixel.
+
+| ρ | Depth 1 | Depth 2 | Depth 4 |
+| --- | ---: | ---: | ---: |
+| 1/2 | 1/2 | 1/4 | 1/16 |
+| 7/8 | 49/8 | 343/64 | 16807/4096 |
+
+To measure sampling uncertainty, each capture averages a 16 × 16 image for
+each of six seeds (40–45). At depth 4 the same seeds also run at 8 samples per
+pixel. The standard error is the sample standard deviation of the six image
+means divided by √6. CPU–GPU and depth comparisons use within-seed differences
+before computing that error. Each RGB channel must agree within six standard
+errors plus 0.0002 times its emission, capped at 0.03 times its emission to
+resolve the smallest fourth-order contribution. Run
+`ludus_renderer_render_tests "[diffuse-enclosure]"` to see the raw total mean,
+its residual from the finite-depth target, and its standard error. This
+comparison with a theoretical radiometric solution follows
+[James Arvo, Kenneth Torrance and Brian Smits, *A Framework for the Analysis of Error in Global Illumination Algorithms*](https://doi.org/10.1145/192161.192179).
+
+At depth 4, the following native run measured red-channel total radiance on
+the CPU oracle and Metal compute. Residual is the raw mean minus the finite-depth
+target (1.9375 or 3.896728515625). Each uncertainty is one across-seed standard
+error in scene-linear radiance units.
+
+| ρ | Samples/pixel | CPU residual ± SE | Metal residual ± SE |
+| --- | ---: | ---: | ---: |
+| 1/2 | 8 | −0.003455 ± 0.006804 | −0.003455 ± 0.006804 |
+| 1/2 | 32 | +0.006994 ± 0.004230 | +0.006994 ± 0.004230 |
+| 7/8 | 8 | −0.002439 ± 0.006190 | −0.002439 ± 0.006190 |
+| 7/8 | 32 | +0.008056 ± 0.001432 | +0.008056 ± 0.001432 |
+
 ### Hybrid and real-time transport
 
 Introduce effects in order: selected shadow visibility, then roughness-aware
@@ -4939,6 +4990,8 @@ parent level, so an odd final row or column contributes with its fractional
 overlap. The discussion of texture minification in [Mehdi NS's texture filtering
 notes](https://mehdins.wordpress.com/2017/08/29/notes-on-anti-aliasing-texture-filtering-part-3/)
 prompted the review of this path against the offline texture cooker.
+The [normal-map minification benchmark](../development/benchmark-scenes.md#measure-normal-map-minification)
+compares the shipped packed-channel filter with an experimental slope-variance fit.
 
 Creation retains an exact texture view and rejects sRGB/data-format mismatch,
 attachments, unavailable resources and incompatible shader programs explicitly.
