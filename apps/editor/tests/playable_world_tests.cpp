@@ -5,11 +5,15 @@
 #include "playable_snapshot.h"
 #include "scene_fixture.h"
 
+#include <ludus/content/scene_format/playable_world.h>
+
+#include <QCryptographicHash>
 #include <QDir>
 #include <QFile>
 #include <QJsonDocument>
 #include <QTemporaryDir>
 
+#include <catch2/catch_approx.hpp>
 #include <catch2/catch_test_macros.hpp>
 
 namespace ludus::editor::tests
@@ -75,6 +79,16 @@ TEST_CASE("Playable World freezes an applied glTF placement and admits only a co
     QString sun;
     QString sky;
     REQUIRE(CreateWorldObject(world, entropy, QStringLiteral("First Person Player"), spawn, error) == true);
+    const QJsonObject player = world.Entity(spawn);
+    QJsonObject playerComponents = player.value("components"_L1).toObject();
+    QJsonObject spawnTransform = playerComponents.value("transform"_L1).toObject();
+    spawnTransform.insert("y"_L1, 2);
+    spawnTransform.insert("ry"_L1, 90);
+    playerComponents.insert("transform"_L1, spawnTransform);
+    REQUIRE(world.Edit(spawn, playerComponents, player.value("name"_L1).toString(), error) == true);
+    gameplay::camera::CameraSample expectedCamera;
+    foundation::float32 expectedSpeed = 0;
+    REQUIRE(ReadWorldFirstPersonPlayer(world, spawn, expectedCamera, expectedSpeed, error) == true);
     REQUIRE(CreateWorldObject(world, entropy, QStringLiteral("Directional Light"), sun, error) == true);
     REQUIRE(CreateWorldObject(world, entropy, QStringLiteral("Atmosphere"), sky, error) == true);
     const QJsonObject skyEntity = world.Entity(sky);
@@ -91,7 +105,13 @@ TEST_CASE("Playable World freezes an applied glTF placement and admits only a co
     REQUIRE(accepted.Spawns.GetSize() == 1);
     const QByteArray spawnKey = spawn.toUtf8();
     CHECK(accepted.Spawns[0].Entity == std::string_view(spawnKey.constData()));
-    CHECK(accepted.Spawns[0].Speed > 0);
+    CHECK(accepted.Spawns[0].Pose.Position == expectedCamera.Pose.Position);
+    CHECK(accepted.Spawns[0].Pose.Orientation.Y == Catch::Approx(expectedCamera.Pose.Orientation.Y));
+    CHECK(accepted.Spawns[0].Pose.Orientation.W == Catch::Approx(expectedCamera.Pose.Orientation.W));
+    CHECK(accepted.Spawns[0].Speed == expectedSpeed);
+    std::string_view worldDigest;
+    REQUIRE(accepted.Manifest.Root().Get("worldSha256").String(worldDigest) == true);
+    CHECK(worldDigest == QCryptographicHash::hash(world.Encode(), QCryptographicHash::Sha256).toHex().toStdString());
     REQUIRE(accepted.ColliderObjects.GetSize() == 1);
     const resources::SceneObject& object = accepted.Scene.Objects[accepted.ColliderObjects[0]];
     CHECK(object.Transform.Translation == foundation::math::Vector3{2, 0, 1});
@@ -106,6 +126,10 @@ TEST_CASE("Playable World freezes an applied glTF placement and admits only a co
     CHECK(ReadBytes(QDir(root).filePath("assets/catalog.json"_L1)) == catalog);
     SECTION("failed runtime decode preserves the accepted generation")
     {
+        const QByteArray oversizedManifest(static_cast<qsizetype>(content::scene_format::MAX_PLAYABLE_MANIFEST_BYTES) +
+                                               1,
+                                           ' ');
+        REQUIRE(Decode(oversizedManifest + '\n', accepted) == false);
         REQUIRE(Decode(acceptedBytes.chopped(1), accepted) == false);
         CHECK(accepted.Spawns[0].Entity == std::string_view(spawnKey.constData()));
         QJsonObject header = QJsonDocument::fromJson(acceptedBytes.first(acceptedBytes.indexOf('\n'))).object();
