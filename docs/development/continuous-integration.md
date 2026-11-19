@@ -1045,6 +1045,35 @@ The offscreen blocker test for raster shadows and RT1 also stays in that set.
 Its hybrid shadow comparison uses `[native-ray-queries]` and runs in the full GPU
 suite and on macOS, where it skips only if the required device is unavailable.
 
+### CTest timeout headroom
+
+A CTest `TIMEOUT` bounds a whole test process, so a Catch2 executable that gains
+cases can approach its deadline unnoticed until a batch fails on it. The batch
+CTest runs (Linux Debug, Development, the four ASan/UBSan shards and the Editor
+unit/Editor suite; the macOS native and ASan/UBSan suites) write
+`ctest --output-junit` reports. A following **Report CTest timeout headroom** step
+runs `scripts/python/ctest_headroom.py`, even after a failed test step. It compares
+each test's measured time with its `TIMEOUT` property from
+`ctest --show-only=json-v1`, or with the build tree's default (1500 seconds, from
+`DartConfiguration.tcl`) for a test without one. A test above 75% of its timeout
+gets a `::warning` annotation that names the elapsed time, timeout and fraction.
+The job summary tabulates the ten tests closest to their timeouts.
+
+The check only warns: missing reports, an unavailable listing and tests without a
+timeout never fail the job. When a warning appears, split the suite into
+separately registered CTest entries (by tag or shard), or raise its `TIMEOUT`
+with the measured durations in the pull request. Run it locally after any CTest
+invocation:
+
+```bash
+ctest --preset linux-clang-asan-ubsan --output-junit "$PWD/out/tests.xml"
+python3 scripts/python/ctest_headroom.py out/build/linux-clang-asan-ubsan --junit "$PWD/out/tests.xml"
+```
+
+Give `--output-junit` an absolute path: CTest resolves a relative one against the
+build tree. The scheduled batch runs the workflow definitions on `main`, so the
+annotations appear in batches after the first promotion that includes the step.
+
 ## Scheduled runtime profiling
 
 The separate `performance` workflow runs runtime profiling scenarios nightly on

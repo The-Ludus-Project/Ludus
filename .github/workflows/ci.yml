@@ -242,6 +242,12 @@ jobs:
           name: macos-native-tests
           path: ${{ runner.temp }}/macos-native-tests.xml
           if-no-files-found: warn
+      - name: Report CTest timeout headroom
+        if: always()
+        run: >-
+          python3 scripts/python/ctest_headroom.py out/build/macos-clang-development --ctest out/host-tools/venv/bin/ctest
+          --junit "$RUNNER_TEMP/macos-native-tests.xml"
+          --title "macOS native tests: CTest timeout headroom"
       - name: Test native Debug helper and explicit assertion decisions
         run: |
           ./init.sh --cli --preset macos-clang-debug --preset-only --locked --with-tests --no-system-install
@@ -627,9 +633,9 @@ jobs:
         env:
           LUDUS_TEST_COCOA: "1"
         run: |
-          out/host-tools/venv/bin/ctest --preset macos-clang-asan-ubsan --label-regex sanitizer-control --output-on-failure --no-tests=error
-          out/host-tools/venv/bin/ctest --preset macos-clang-asan-ubsan --tests-regex '^ludus_((platform_cocoa(_keymap)?|filesystem(_fault|_namespace_fault|_pack_fault|_async_fault|_persistence_fault|_watch_fault)?|foundation_threading|content(_save_fault)?|audio(_device|_content)?|rhi_(metal|lifecycle))_tests|rhi_render_pixels)$' --no-tests=error
-          out/host-tools/venv/bin/ctest --preset macos-clang-asan-ubsan --label-regex '^(editor|loader|session|reload|protocol)$' --no-tests=error
+          out/host-tools/venv/bin/ctest --preset macos-clang-asan-ubsan --label-regex sanitizer-control --output-on-failure --no-tests=error --output-junit "$RUNNER_TEMP/macos-sanitizer-controls.xml"
+          out/host-tools/venv/bin/ctest --preset macos-clang-asan-ubsan --tests-regex '^ludus_((platform_cocoa(_keymap)?|filesystem(_fault|_namespace_fault|_pack_fault|_async_fault|_persistence_fault|_watch_fault)?|foundation_threading|content(_save_fault)?|audio(_device|_content)?|rhi_(metal|lifecycle))_tests|rhi_render_pixels)$' --no-tests=error --output-junit "$RUNNER_TEMP/macos-sanitizer-native.xml"
+          out/host-tools/venv/bin/ctest --preset macos-clang-asan-ubsan --label-regex '^(editor|loader|session|reload|protocol)$' --no-tests=error --output-junit "$RUNNER_TEMP/macos-sanitizer-editor.xml"
           QT_QPA_PLATFORM=cocoa out/build/macos-clang-asan-ubsan/apps/editor/ludus_editor_tests '[.render-native],[.level-native]'
 
       - name: Preserve macOS sanitizer control diagnostics
@@ -642,7 +648,13 @@ jobs:
           retention-days: 14
 
       - name: Qualify production Behavior provider with macOS sanitizers
-        run: out/host-tools/venv/bin/ctest --preset macos-clang-asan-ubsan --tests-regex '^ludus_behavior_' --output-on-failure --no-tests=error
+        run: out/host-tools/venv/bin/ctest --preset macos-clang-asan-ubsan --tests-regex '^ludus_behavior_' --output-on-failure --no-tests=error --output-junit "$RUNNER_TEMP/macos-sanitizer-behavior.xml"
+      - name: Report CTest timeout headroom
+        if: always()
+        run: >-
+          python3 scripts/python/ctest_headroom.py out/build/macos-clang-asan-ubsan --ctest out/host-tools/venv/bin/ctest
+          --junit "$RUNNER_TEMP/macos-sanitizer-controls.xml" --junit "$RUNNER_TEMP/macos-sanitizer-native.xml" --junit "$RUNNER_TEMP/macos-sanitizer-editor.xml" --junit "$RUNNER_TEMP/macos-sanitizer-behavior.xml"
+          --title "macOS ASan and UBSan: CTest timeout headroom"
       - uses: actions/upload-artifact@v4
         with:
           name: behavior-s6-macos-sanitizer-evidence
@@ -787,7 +799,7 @@ jobs:
         timeout-minutes: 10
         run: xvfb-run -a env LUDUS_TEST_GUI=1 python3 -m unittest discover -s scripts/python -p 'test_init*.py' -v
       - name: Test CI initialization and analysis contracts
-        run: PYTHONPATH=scripts/python python3 -m unittest test_ci test_batch_ci test_develop_health test_kanban_dependencies test_quality test_windows_qualification test_ray_reference test_runtime_profile test_pull_request_tests -v
+        run: PYTHONPATH=scripts/python python3 -m unittest test_ci test_batch_ci test_develop_health test_kanban_dependencies test_quality test_windows_qualification test_ray_reference test_runtime_profile test_pull_request_tests test_ctest_headroom -v
       - name: Live reload tooling tests
         run: |
           python3 -m unittest discover -s scripts/python -p 'test_play*.py' -v
@@ -840,7 +852,13 @@ jobs:
       - name: Build Debug with native gameplay fixtures
         run: ./scripts/build linux-clang-debug
       - name: Test Debug including mandatory GDB and persistent supervisor journeys
-        run: out/host-tools/venv/bin/ctest --preset linux-clang-debug --no-tests=error
+        run: out/host-tools/venv/bin/ctest --preset linux-clang-debug --no-tests=error --output-junit "$RUNNER_TEMP/debug-tests.xml"
+      - name: Report CTest timeout headroom
+        if: always()
+        run: >-
+          python3 scripts/python/ctest_headroom.py out/build/linux-clang-debug --ctest out/host-tools/venv/bin/ctest
+          --junit "$RUNNER_TEMP/debug-tests.xml"
+          --title "Debug runtime: CTest timeout headroom"
       - name: Preserve native debugger and supervisor diagnostics
         if: always()
         uses: actions/upload-artifact@v4
@@ -915,7 +933,13 @@ jobs:
           path: out/build/linux-clang-development/tools/script-provider/safety-evidence.json
           if-no-files-found: error
       - name: Test Development
-        run: out/host-tools/venv/bin/ctest --preset linux-clang-development --no-tests=error
+        run: out/host-tools/venv/bin/ctest --preset linux-clang-development --no-tests=error --output-junit "$RUNNER_TEMP/development-tests.xml"
+      - name: Report CTest timeout headroom
+        if: always()
+        run: >-
+          python3 scripts/python/ctest_headroom.py out/build/linux-clang-development --ctest out/host-tools/venv/bin/ctest
+          --junit "$RUNNER_TEMP/development-tests.xml"
+          --title "Development: CTest timeout headroom"
       - name: Measure bounded filesystem reads and native syscall overhead
         run: |
           out/host-tools/venv/bin/cmake --preset linux-clang-development -DLUDUS_BUILD_FILESYSTEM_BENCHMARK=ON
@@ -1421,7 +1445,7 @@ jobs:
         if: matrix.shard == 1
         env:
           LUDUS_RELOAD_METRICS: ${{ runner.temp }}/live-reload-asan-ubsan.jsonl
-        run: out/host-tools/venv/bin/ctest --preset linux-clang-asan-ubsan --tests-regex '^ludus_game_host_reload_tests$' --no-tests=error
+        run: out/host-tools/venv/bin/ctest --preset linux-clang-asan-ubsan --tests-regex '^ludus_game_host_reload_tests$' --no-tests=error --output-junit "$RUNNER_TEMP/sanitizer-reload-tests.xml"
       # Thanks to Kitware, "ctest(1)", --tests-information Start,End,Stride:
       # every shard takes each SANITIZER_SHARDS-th test from its own start.
       # https://cmake.org/cmake/help/latest/manual/ctest.1.html#cmdoption-ctest-I
@@ -1430,6 +1454,13 @@ jobs:
           out/host-tools/venv/bin/ctest --preset linux-clang-asan-ubsan --no-tests=error
           --tests-information "$SANITIZER_SHARD,,$SANITIZER_SHARDS"
           --exclude-regex '^ludus_game_host_reload_tests$'
+          --output-junit "$RUNNER_TEMP/sanitizer-tests.xml"
+      - name: Report CTest timeout headroom
+        if: always()
+        run: >-
+          python3 scripts/python/ctest_headroom.py out/build/linux-clang-asan-ubsan --ctest out/host-tools/venv/bin/ctest
+          --junit "$RUNNER_TEMP/sanitizer-reload-tests.xml" --junit "$RUNNER_TEMP/sanitizer-tests.xml"
+          --title "ASan and UBSan ($SANITIZER_SHARD/$SANITIZER_SHARDS): CTest timeout headroom"
       - name: Upload sanitizer reload measurements
         if: always() && matrix.shard == 1
         uses: actions/upload-artifact@v4
@@ -1701,8 +1732,14 @@ jobs:
         env:
           QT_QPA_PLATFORM: offscreen
         run: |
-          out/host-tools/venv/bin/ctest --preset linux-clang-development --label-regex '^(unit|editor)$' --label-exclude '^generated-source$' --exclude-from-file "$PWD/config/pull_request_tests.txt" --no-tests=error
+          out/host-tools/venv/bin/ctest --preset linux-clang-development --label-regex '^(unit|editor)$' --label-exclude '^generated-source$' --exclude-from-file "$PWD/config/pull_request_tests.txt" --no-tests=error --output-junit "$RUNNER_TEMP/editor-tests.xml"
           out/host-tools/venv/bin/ctest --preset linux-clang-development --tests-regex '^ludus_target_detection$' --output-on-failure --no-tests=error
+      - name: Report CTest timeout headroom
+        if: always() && needs.changes.outputs.validation_tier != 'integration'
+        run: >-
+          python3 scripts/python/ctest_headroom.py out/build/linux-clang-development --ctest out/host-tools/venv/bin/ctest
+          --junit "$RUNNER_TEMP/editor-tests.xml"
+          --title "Unit and Editor tests: CTest timeout headroom"
       # Play in the viewport on Linux: Qt's own Vulkan device on an Xvfb display,
       # with Mesa's lavapipe for both the editor and the game, imports the game's
       # exported memory. The journey plays the World-demo game in the World viewport.
