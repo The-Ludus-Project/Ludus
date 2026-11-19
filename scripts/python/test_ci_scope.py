@@ -467,6 +467,9 @@ class RequiredGateTests(unittest.TestCase):
         # (docs/development/continuous-integration.md#quick-pull-request-tests).
         quick_tests = "Run quick unit and Editor tests"
         camera_pilot = "Run advisory RenderGraph camera pilot"
+        # Reads the batch suite's JUnit report even after a failure; never a test or a gate
+        # (docs/development/continuous-integration.md#ctest-timeout-headroom).
+        headroom = "Report CTest timeout headroom"
         titles = [title for title, _ in steps]
         self.assertIn(quick_tests, titles)
         self.assertIn(camera_pilot, titles)
@@ -477,6 +480,9 @@ class RequiredGateTests(unittest.TestCase):
                     self.assertIn("validation_tier == 'integration' && needs.changes.outputs.camera_pilot == 'true'", body)
                     self.assertIn("continue-on-error: true", body)
                     self.assertIn("python3 scripts/python/camera_pilot.py", body)
+                elif title == headroom:
+                    self.assertIn("        if: always() && needs.changes.outputs.validation_tier != 'integration'\n", body)
+                    self.assertIn("scripts/python/ctest_headroom.py", body)
                 elif title == generated_sources:
                     self.assertNotIn(guard, body)
                     self.assertIn("--label-regex '^generated-source$'", body)
