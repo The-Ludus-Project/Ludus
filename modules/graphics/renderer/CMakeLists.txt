@@ -258,14 +258,23 @@ if(LUDUS_BUILD_THREADING_BENCHMARK AND NOT EMSCRIPTEN)
     ludus_apply_project_defaults(ludus_static_lighting_benchmark)
 endif()
 if(LUDUS_BUILD_TESTS AND NOT EMSCRIPTEN)
+    # Software-adapter shader preparation belongs to correctness qualification.
+    # Sanitizer allocation interception also affects the driver's compiler;
+    # give that cold work room without changing warm-frame or numerical checks.
+    set(renderer_test_cold_gpu_timeout_seconds 120)
     # The monolithic reference kernel takes 111 s even with Mesa's bounded-JIT CI profile.
     # Share the cold capture and per-case budgets with the editor's reference tests.
     set(renderer_test_reference_cold_gpu_timeout_seconds 180)
     set(renderer_test_case_timeout_seconds 300)
     if(LUDUS_ENABLE_ASAN OR LUDUS_ENABLE_UBSAN)
+        set(renderer_test_cold_gpu_timeout_seconds 300)
         set(renderer_test_reference_cold_gpu_timeout_seconds 300)
         set(renderer_test_case_timeout_seconds 600)
     endif()
+    set_source_files_properties(tests/render_graph_ray_tests.cpp tests/wave_tracing_parity_tests.cpp
+        tests/large_world_sky_tests.cpp tests/render_graph_default_render_tests.cpp
+        tests/wave_tracing_graph_tests.cpp PROPERTIES COMPILE_DEFINITIONS
+        "LUDUS_RENDERER_TEST_COLD_GPU_TIMEOUT_SECONDS=${renderer_test_cold_gpu_timeout_seconds}")
     set_target_properties(ludus_graphics_renderer PROPERTIES
         LUDUS_REFERENCE_TEST_COLD_TIMEOUT_SECONDS "${renderer_test_reference_cold_gpu_timeout_seconds}"
         LUDUS_REFERENCE_TEST_CASE_TIMEOUT_SECONDS "${renderer_test_case_timeout_seconds}")
@@ -273,22 +282,13 @@ endif()
 # The Windows raster closure uses ludus_render_graph_dxil_tests below.
 # The complete renderer oracle suite also needs translated reference kernels.
 if(TARGET ludus_rhi_render_tests AND NOT WIN32)
-    # Software-adapter shader preparation belongs to correctness qualification.
-    # Sanitizer allocation interception also affects the driver's compiler;
-    # give that cold work room without changing warm-frame or numerical checks.
-    set(renderer_test_cold_gpu_timeout_seconds 120)
     # The four-pass authored wave graph spends more than 120 s in cold lavapipe LLVM compilation.
     set(renderer_test_scene_cold_gpu_timeout_seconds 300)
     set(renderer_test_template_timeout_seconds 600)
     set(renderer_test_raster_timeout_seconds 60)
     if(LUDUS_ENABLE_ASAN OR LUDUS_ENABLE_UBSAN)
-        set(renderer_test_cold_gpu_timeout_seconds 300)
         set(renderer_test_raster_timeout_seconds 180)
     endif()
-    set_source_files_properties(tests/render_graph_ray_tests.cpp tests/wave_tracing_parity_tests.cpp
-        tests/large_world_sky_tests.cpp tests/render_graph_default_render_tests.cpp
-        tests/wave_tracing_graph_tests.cpp PROPERTIES COMPILE_DEFINITIONS
-        "LUDUS_RENDERER_TEST_COLD_GPU_TIMEOUT_SECONDS=${renderer_test_cold_gpu_timeout_seconds}")
     set_source_files_properties(tests/reference_compute_tests.cpp tests/metropolis_parity_tests.cpp
         tests/hybrid_shadow_tests.cpp tests/hybrid_area_shadow_tests.cpp tests/hybrid_reflection_tests.cpp tests/hybrid_indirect_diffuse_tests.cpp
         PROPERTIES COMPILE_DEFINITIONS
