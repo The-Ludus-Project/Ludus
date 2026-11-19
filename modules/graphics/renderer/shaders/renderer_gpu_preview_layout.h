@@ -2,6 +2,7 @@
 
 #ifdef __cplusplus
 #    include <ludus/content/scene_format/material.h>
+#    include <ludus/foundation/base/types.h>
 #    include <ludus/graphics/renderer/lighting_layout.h>
 #    include <ludus/graphics/renderer/scene_shader_layout.h>
 #else
@@ -232,8 +233,9 @@
 // One optional LUSL line follows the failure count words. Old kernels write only the counts.
 #define LUDUS_GRAPH_FAILURE_BOUNDS_LINE_WORD LUDUS_SCENE_FAILURE_REASON_COUNT
 #define LUDUS_GRAPH_FAILURE_WORDS (LUDUS_GRAPH_FAILURE_BOUNDS_LINE_WORD + 1)
-#define LUDUS_GRAPH_FAILURE_WORD_BYTES 4
-#define LUDUS_GRAPH_FAILURE_BYTES (LUDUS_GRAPH_FAILURE_WORDS * LUDUS_GRAPH_FAILURE_WORD_BYTES)
+#ifdef __cplusplus
+#    define LUDUS_GRAPH_FAILURE_BYTES (LUDUS_GRAPH_FAILURE_WORDS * sizeof(::ludus::foundation::uint32))
+#endif
 
 // World-feature tables (graphics::renderer::WorldFeature; docs/development/render-graph-authoring.md#world-features).
 // The renderer binds each read-only float4 table only to a scene compute kernel whose reflection keeps its slot, which

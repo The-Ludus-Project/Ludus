@@ -53,7 +53,7 @@ static_assert(ToCode(RenderGraphFailureReason::PhotonCapacity) == LUDUS_SCENE_FA
 static_assert(ToCode(RenderGraphFailureReason::PhotonDispatch) == LUDUS_SCENE_FAILURE_PHOTON_DISPATCH);
 static_assert(MAX_RENDER_GRAPH_FAILURE_REASONS == LUDUS_SCENE_FAILURE_REASON_COUNT);
 static_assert(ToCode(RenderGraphFailureReason::LuslBounds) == LUDUS_SCENE_FAILURE_LUSL_BOUNDS);
-static_assert(LUDUS_GRAPH_FAILURE_BYTES == LUDUS_GRAPH_FAILURE_WORDS * sizeof(uint32));
+static_assert(LUDUS_GRAPH_FAILURE_WORDS == MAX_RENDER_GRAPH_FAILURE_REASONS + 1);
 
 const char* DescribeRenderGraphFailureReason(uint32 reason) noexcept
 {
