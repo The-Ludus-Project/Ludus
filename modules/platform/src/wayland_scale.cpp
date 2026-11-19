@@ -30,17 +30,44 @@ struct Output final
     int32 Scale = 1;
     Array<wl_surface*> Surfaces;
 };
-Array<Output> gOutputs;
+struct ScaleRegistry final
+{
+    Array<Output> Outputs;
 #if defined(LUDUS_WAYLAND_FRACTIONAL_SCALE)
-wp_viewporter* gViewporterOrNull = nullptr;
-wp_fractional_scale_manager_v1* gFractionalManagerOrNull = nullptr;
-uint32 gViewporterName = 0;
-uint32 gFractionalManagerName = 0;
+    wp_viewporter* ViewporterOrNull = nullptr;
+    wp_fractional_scale_manager_v1* FractionalManagerOrNull = nullptr;
+    uint32 ViewporterName = 0;
+    uint32 FractionalManagerName = 0;
 #endif
+
+    ~ScaleRegistry() noexcept
+    {
+        for (Output& output : Outputs)
+        {
+            wl_output_destroy(output.Handle);
+        }
+#if defined(LUDUS_WAYLAND_FRACTIONAL_SCALE)
+        if (ViewporterOrNull != nullptr)
+        {
+            wp_viewporter_destroy(ViewporterOrNull);
+        }
+        if (FractionalManagerOrNull != nullptr)
+        {
+            wp_fractional_scale_manager_v1_destroy(FractionalManagerOrNull);
+        }
+#endif
+    }
+};
+ScaleRegistry& GetScaleRegistry() noexcept
+{
+    // First bound after display initialization, so proxies die before disconnect.
+    static ScaleRegistry registry;
+    return registry;
+}
 
 Output* FindOutput(wl_output* handle) noexcept
 {
-    for (Output& output : gOutputs)
+    for (Output& output : GetScaleRegistry().Outputs)
     {
         if (output.Handle == handle)
         {
@@ -71,7 +98,10 @@ const wl_surface_listener SURFACE_LISTENER =
             Output* outputOrNull = FindOutput(handle);
             if (outputOrNull != nullptr)
             {
-                outputOrNull->Surfaces.Add(surface);
+                if (outputOrNull->Surfaces.TryAdd(surface) == false)
+                {
+                    LUDUS_LOG_ERROR(LOG_PLATFORM, "Insufficient memory to track a Wayland output; recreate the window");
+                }
             }
         },
     .leave = Leave,
@@ -94,6 +124,10 @@ const wl_output_listener OUTPUT_LISTENER =
                 outputOrNull->Scale = scale;
             }
         },
+#if defined(WL_OUTPUT_NAME_SINCE_VERSION)
+    .name = nullptr,
+    .description = nullptr,
+#endif
 };
 
 int32 GetIntegerScale(wl_surface* surface, int32 preferred) noexcept
@@ -107,7 +141,7 @@ int32 GetIntegerScale(wl_surface* surface, int32 preferred) noexcept
         return preferred;
     }
     int32 scale = 1;
-    for (const Output& output : gOutputs)
+    for (const Output& output : GetScaleRegistry().Outputs)
     {
         for (wl_surface* entered : output.Surfaces)
         {
@@ -131,6 +165,7 @@ uint32 GetPixels(uint32 logical, uint64 numerator) noexcept
 
 void BindScaleGlobal(wl_registry* registry, uint32 name, const char* interface, uint32 version) noexcept
 {
+    ScaleRegistry& globals = GetScaleRegistry();
     if (std::strcmp(interface, wl_output_interface.name) == 0)
     {
         // Version 2 delivers scale and done; later output events are unnecessary.
@@ -138,47 +173,54 @@ void BindScaleGlobal(wl_registry* registry, uint32 name, const char* interface, 
             static_cast<wl_output*>(wl_registry_bind(registry, name, &wl_output_interface, version < 2 ? version : 2));
         if (handleOrNull != nullptr)
         {
-            gOutputs.Add(Output{ .Name = name, .Handle = handleOrNull, .Surfaces = {} });
+            if (globals.Outputs.TryAdd(Output{ .Name = name, .Handle = handleOrNull, .Surfaces = {} }) == false)
+            {
+                wl_output_destroy(handleOrNull);
+                LUDUS_LOG_ERROR(LOG_PLATFORM, "Insufficient memory to track display scale; reconnect to Wayland");
+                return;
+            }
             wl_output_add_listener(handleOrNull, &OUTPUT_LISTENER, nullptr);
         }
     }
 #if defined(LUDUS_WAYLAND_FRACTIONAL_SCALE)
-    else if (gViewporterOrNull == nullptr && std::strcmp(interface, wp_viewporter_interface.name) == 0)
+    else if (globals.ViewporterOrNull == nullptr && std::strcmp(interface, wp_viewporter_interface.name) == 0)
     {
-        gViewporterOrNull = static_cast<wp_viewporter*>(wl_registry_bind(registry, name, &wp_viewporter_interface, 1));
-        gViewporterName = name;
+        globals.ViewporterOrNull =
+            static_cast<wp_viewporter*>(wl_registry_bind(registry, name, &wp_viewporter_interface, 1));
+        globals.ViewporterName = name;
     }
-    else if (gFractionalManagerOrNull == nullptr &&
+    else if (globals.FractionalManagerOrNull == nullptr &&
              std::strcmp(interface, wp_fractional_scale_manager_v1_interface.name) == 0)
     {
-        gFractionalManagerOrNull = static_cast<wp_fractional_scale_manager_v1*>(
+        globals.FractionalManagerOrNull = static_cast<wp_fractional_scale_manager_v1*>(
             wl_registry_bind(registry, name, &wp_fractional_scale_manager_v1_interface, 1));
-        gFractionalManagerName = name;
+        globals.FractionalManagerName = name;
     }
 #endif
 }
 
 void RemoveScaleGlobal(uint32 name) noexcept
 {
-    for (usize index = 0; index < gOutputs.GetSize(); ++index)
+    ScaleRegistry& globals = GetScaleRegistry();
+    for (usize index = 0; index < globals.Outputs.GetSize(); ++index)
     {
-        if (gOutputs[index].Name == name)
+        if (globals.Outputs[index].Name == name)
         {
-            wl_output_destroy(gOutputs[index].Handle);
-            gOutputs.RemoveAtSwap(index);
+            wl_output_destroy(globals.Outputs[index].Handle);
+            globals.Outputs.RemoveAtSwap(index);
             return;
         }
     }
 #if defined(LUDUS_WAYLAND_FRACTIONAL_SCALE)
-    if (gViewporterOrNull != nullptr && name == gViewporterName)
+    if (globals.ViewporterOrNull != nullptr && name == globals.ViewporterName)
     {
-        wp_viewporter_destroy(gViewporterOrNull);
-        gViewporterOrNull = nullptr;
+        wp_viewporter_destroy(globals.ViewporterOrNull);
+        globals.ViewporterOrNull = nullptr;
     }
-    if (gFractionalManagerOrNull != nullptr && name == gFractionalManagerName)
+    if (globals.FractionalManagerOrNull != nullptr && name == globals.FractionalManagerName)
     {
-        wp_fractional_scale_manager_v1_destroy(gFractionalManagerOrNull);
-        gFractionalManagerOrNull = nullptr;
+        wp_fractional_scale_manager_v1_destroy(globals.FractionalManagerOrNull);
+        globals.FractionalManagerOrNull = nullptr;
     }
 #endif
 }
@@ -194,7 +236,8 @@ bool SurfaceScale::Attach() noexcept
         return false;
     }
 #if defined(LUDUS_WAYLAND_FRACTIONAL_SCALE)
-    if (gViewporterOrNull != nullptr && gFractionalManagerOrNull != nullptr)
+    const ScaleRegistry& globals = GetScaleRegistry();
+    if (globals.ViewporterOrNull != nullptr && globals.FractionalManagerOrNull != nullptr)
     {
         static constexpr wp_fractional_scale_v1_listener LISTENER =
         {
@@ -202,9 +245,9 @@ bool SurfaceScale::Attach() noexcept
                                   wp_fractional_scale_v1*,
                                   uint32 scale) { static_cast<SurfaceScale*>(data)->FractionalScale = scale; },
         };
-        ViewportOrNull = wp_viewporter_get_viewport(gViewporterOrNull, Snapshot.Surface);
+        ViewportOrNull = wp_viewporter_get_viewport(globals.ViewporterOrNull, Snapshot.Surface);
         FractionalOrNull =
-            wp_fractional_scale_manager_v1_get_fractional_scale(gFractionalManagerOrNull, Snapshot.Surface);
+            wp_fractional_scale_manager_v1_get_fractional_scale(globals.FractionalManagerOrNull, Snapshot.Surface);
         return ViewportOrNull != nullptr && FractionalOrNull != nullptr &&
                wp_fractional_scale_v1_add_listener(FractionalOrNull, &LISTENER, this) == 0;
     }
@@ -213,7 +256,7 @@ bool SurfaceScale::Attach() noexcept
 }
 SurfaceScale::~SurfaceScale() noexcept
 {
-    for (Output& output : gOutputs)
+    for (Output& output : GetScaleRegistry().Outputs)
     {
         Leave(nullptr, Snapshot.Surface, output.Handle);
     }
@@ -236,6 +279,11 @@ void SurfaceScale::Configure(int32 width, int32 height, WindowVisibility visibil
 }
 void SurfaceScale::Acknowledge() noexcept
 {
+    if ((PendingWidth > 0 && static_cast<uint32>(PendingWidth) != LogicalWidth) ||
+        (PendingHeight > 0 && static_cast<uint32>(PendingHeight) != LogicalHeight))
+    {
+        HasPublished = false;
+    }
     if (PendingWidth > 0)
     {
         LogicalWidth = static_cast<uint32>(PendingWidth);

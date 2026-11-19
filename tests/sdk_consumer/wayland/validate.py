@@ -51,8 +51,11 @@ def presented(trace, width, height):
     buffers = re.findall(
         rf"create_buffer\(new id (wl_buffer[@#]\d+), \d+, {width}, {height},", trace
     )
-    return any(re.search(r"\.attach\(" + re.escape(buffer) + r",[^\n]*\n.*?\.commit\(",
-                         trace, re.S) for buffer in buffers)
+    for buffer in buffers:
+        attach = re.search(r"(wl_surface[@#]\d+)\.attach\(" + re.escape(buffer) + r",", trace)
+        if attach and attach[1] + ".commit(" in trace[attach.end():]:
+            return True
+    return False
 
 
 def sway(demo, directory, env):
@@ -93,15 +96,15 @@ def sway(demo, directory, env):
                     with log.open("rb") as data:
                         data.seek(stage)
                         trace = data.read().decode(errors="replace")
-                    return (f"Wayland logical 400x300, backing {width}x{height}" in trace
+                    return (f"Wayland logical 400x300, backing {width}x{height}, scale {scale}" in trace
                             and presented(trace, width, height))
                 wait_for(correct_frame, game, f"{scale}x backing pixels and Vulkan presentation")
                 after = log.stat().st_size
-                subprocess.run(["wtype", "-P", "space", "-s", "150", "-p", "space"], env=env, check=True)
+                subprocess.run(["wtype", "-s", "500", "-P", "space", "-s", "150", "-p", "space"], env=env, check=True)
                 def input_and_frame():
                     with log.open("rb") as data:
                         data.seek(after)
-                        return re.search(rb"wl_keyboard[@#]\d+\.key\([^\n]*, 57, 1\).*?wl_surface[@#]\d+\.commit\(", data.read(), re.S)
+                        return re.search(rb"wl_keyboard[@#]\d+\.key\([^\n]*, (\d+), 1\).*?wl_keyboard[@#]\d+\.key\([^\n]*, \1, 0\).*?wl_surface[@#]\d+\.commit\(", data.read(), re.S)
                 wait_for(input_and_frame, game, f"keyboard delivery and next present at {scale}x")
                 print(f"Sway HEADLESS-{index}: logical 400x300, presented {width}x{height}, Space delivered", flush=True)
             command('[app_id="ludus"] kill')
@@ -109,7 +112,7 @@ def sway(demo, directory, env):
                 raise RuntimeError("World Demo failed on Sway")
 
 
-def weston(demo, directory, env):
+def weston(demo, directory, env, rhi_tests):
     env = dict(env, WAYLAND_DISPLAY="wayland-integer")
     with running(["weston", "--backend=headless", "--renderer=pixman", "--idle-time=0",
                   "--no-config", "--width=1920", "--height=1440", "--scale=2",
@@ -117,6 +120,9 @@ def weston(demo, directory, env):
         socket = Path(env["XDG_RUNTIME_DIR"]) / env["WAYLAND_DISPLAY"]
         wait_for(socket.is_socket, compositor, "Weston display")
         protocol_globals(env, directory / "weston-globals.txt", False)
+        with (directory / "zero-extent.log").open("w") as output:
+            subprocess.run([rhi_tests, "[wayland][resize]"], env=dict(env, LUDUS_TEST_WAYLAND="1"),
+                           stdout=output, stderr=subprocess.STDOUT, check=True, timeout=60)
         log = directory / "world-weston.log"
         with running([str(demo), "--frames", "30"], dict(env, WAYLAND_DEBUG="client"), log) as game:
             if game.wait(timeout=90) != 0:
@@ -131,6 +137,8 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("demo", type=Path)
     parser.add_argument("directory", type=Path)
+    parser.add_argument("--rhi-tests", type=Path, default=Path(
+        "out/build/linux-clang-development/modules/graphics/rhi/ludus_graphics_rhi_tests"))
     args = parser.parse_args()
     args.directory.mkdir(parents=True, exist_ok=True)
     with tempfile.TemporaryDirectory() as runtime:
@@ -138,4 +146,4 @@ if __name__ == "__main__":
         environment = dict(os.environ, XDG_RUNTIME_DIR=runtime, WLR_BACKENDS="headless",
                            WLR_RENDERER="pixman", WLR_HEADLESS_OUTPUTS="3", VK_DRIVER_FILES=str(driver))
         sway(args.demo.resolve(), args.directory.resolve(), environment)
-        weston(args.demo.resolve(), args.directory.resolve(), environment)
+        weston(args.demo.resolve(), args.directory.resolve(), environment, args.rhi_tests.resolve())

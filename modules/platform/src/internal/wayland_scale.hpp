@@ -3,9 +3,6 @@
 #include <ludus/platform/base/window.h>
 
 struct wl_registry;
-struct wl_array;
-struct xdg_surface;
-struct xdg_toplevel;
 struct wp_fractional_scale_v1;
 struct wp_viewport;
 
