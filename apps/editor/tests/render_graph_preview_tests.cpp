@@ -2304,6 +2304,18 @@ TEST_CASE("World viewport follows project shaders and keeps drawable output afte
     }
     const QImage lastGood = graphView->GetImage();
     const uint64 generation = workspace.GetPreviewOrNull()->GetPresentedGeneration();
+    // camera -> raster -> tonemap already supplies the displayed World. Dropping the tone-mapped
+    // color back on camera.target must leave that published generation drawable.
+    const uint64 beforeCycle = workspace.GetDocument().GetRevision();
+    QSignalSpy rejected(&workspace.GetCanvas(), &RenderGraphCanvas::LinkRejected);
+    REQUIRE(workspace.GetCanvas().RequestLink(QStringLiteral("tonemap.color"), QStringLiteral("camera.target"), true) ==
+            false);
+    REQUIRE(rejected.count() == 1);
+    CHECK(rejected.first().first().toString().contains(QStringLiteral("within-frame dependency cycle")) == true);
+    workspace.ServicePreview();
+    CHECK(workspace.GetDocument().GetRevision() == beforeCycle);
+    CHECK(workspace.GetPreviewOrNull()->GetPresentedGeneration() == generation);
+    CHECK(graphView->GetImage() == lastGood);
     const QString graphPath =
         QDir(workspace.GetDocument().GetPackageRoot()).filePath(workspace.GetDocument().GetRootGraph());
     const QByteArray graphBytes = workspace.GetDocument().GetSaved(workspace.GetDocument().GetRootGraph());
