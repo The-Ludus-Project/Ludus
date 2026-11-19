@@ -6,8 +6,10 @@
 #include <ludus/foundation/containers/static_array.hpp>
 #include <ludus/foundation/math/geometry.hpp>
 #include <ludus/foundation/math/matrix.hpp>
+#include <ludus/foundation/math/projection.hpp>
 #include <ludus/foundation/math/scalar.hpp>
 #include <ludus/graphics/renderer/deferred_layout.h>
+#include <ludus/graphics/renderer/renderer.hpp>
 
 #include <catch2/catch_approx.hpp>
 #include <catch2/catch_test_macros.hpp>
@@ -606,6 +608,34 @@ TEST_CASE("directional near texels stay world anchored and include distant upstr
             }
         }
         previous = near;
+    }
+    // Sweep the angle between the fixed light and the view from parallel to perpendicular.
+    // The near footprint still covers the slice's corners and the World probe keeps its light coordinates.
+    renderer::ViewDescription camera;
+    camera.CameraPosition = {0, 1, 0};
+    math::Matrix4 perspective;
+    REQUIRE(math::TryPerspectiveReverseZ(0.6F, 1.5F, 0.01F, 400, perspective) == math::MathStatus::Success);
+    renderer::ShadowRegion reference;
+    for (uint32 angle = 0; angle <= 90; angle += 15)
+    {
+        const float32 radians = math::DegreesToRadians(static_cast<float32>(angle));
+        const math::Vector3 direction =
+            directionWorld * math::Cos(radians) + math::Vector3{0, 0, 1} * math::Sin(radians);
+        math::Matrix4 worldToView;
+        REQUIRE(math::TryLookAt(camera.CameraPosition, camera.CameraPosition + direction, {0, 1, 0}, worldToView) ==
+                math::MathStatus::Success);
+        camera.WorldToClip = perspective * worldToView;
+        renderer::ShadowRegion fitted;
+        REQUIRE(internal::TryFitDirectionalNearCascade(whole,
+                                                       boundsWorld,
+                                                       internal::GetDirectionalNearFootprint(camera),
+                                                       1,
+                                                       fitted) == true);
+        if (angle == 0)
+        {
+            reference = fitted;
+        }
+        CHECK(fitted.WorldToClip == reference.WorldToClip);
     }
     internal::MeshLightShadowCaster caster;
     caster.FaceMask = 1;

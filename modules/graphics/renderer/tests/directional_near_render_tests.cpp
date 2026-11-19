@@ -40,6 +40,17 @@ Status Wait(Status status, Poll poll)
     }
     return status;
 }
+// Intersect the rays at adjacent light-map texel centres with the flat receiver, z=0.
+math::Vector2 ProjectTexelOntoGround(const renderer::DirectionalCascadeReport& map, math::Vector3 lightWorld)
+{
+    const math::Matrix4 rows = math::Transpose(map.WorldToClip);
+    const auto project = [&](math::Vector4 row, float32 metres) {
+        math::Vector3 axis;
+        REQUIRE(math::TryNormalize({row.X, row.Y, row.Z}, axis) == math::MathStatus::Success);
+        return metres * math::Length(axis - lightWorld * (axis.Z / lightWorld.Z));
+    };
+    return {project(rows.Columns[0], map.MetresPerTexel.X), project(rows.Columns[1], map.MetresPerTexel.Y)};
+}
 struct DeviceSession final
 {
     ~DeviceSession()
@@ -50,7 +61,7 @@ struct DeviceSession final
 } // namespace
 
 TEST_CASE("Near directional shadows preserve the doorway across camera updates",
-          "[directional-near-replay][directional-shadows][gpu]")
+          "[render-graph][directional-near-replay][directional-shadows][gpu]")
 {
     const bool isWholeSceneControl = GENERATE(false, true);
     const bool shouldMeasure = std::getenv("LUDUS_MEASURE_DIRECTIONAL_REPLAY") != nullptr;
@@ -217,6 +228,26 @@ TEST_CASE("Near directional shadows preserve the doorway across camera updates",
             if (source.SourceId == 0)
             {
                 continue;
+            }
+            if (shouldMeasure == true && source.SourceId == lights[light].SourceId)
+            {
+                const math::Vector3 directionWorld = lights[light].Direction;
+                const math::Vector2 whole = ProjectTexelOntoGround(source.WholeScene, directionWorld);
+                const math::Vector2 near = source.Near.Interior.Width == 0
+                                               ? math::Vector2{}
+                                               : ProjectTexelOntoGround(source.Near, directionWorld);
+                std::printf("footprint,%d,%llu,%llu,%.7f,%.7f,%.7f,%.7f,%u,%u,%llu,%llu\n",
+                            int(isWholeSceneControl),
+                            static_cast<unsigned long long>(revision),
+                            static_cast<unsigned long long>(source.SourceId),
+                            double(near.X),
+                            double(near.Y),
+                            double(whole.X),
+                            double(whole.Y),
+                            source.Near.Draws,
+                            source.WholeScene.Draws,
+                            static_cast<unsigned long long>(source.Near.Triangles),
+                            static_cast<unsigned long long>(source.WholeScene.Triangles));
             }
             if (isWholeSceneControl == true)
             {

@@ -6732,6 +6732,76 @@ whole-scene fallback for that light.
 The [large-world visibility design](../architecture/renderer-systems.md#large-world-raster-visibility)
 describes the doorway and terrain qualification route.
 
+#### Doorway replay on Metal
+
+At renderer revision `19482cae2`, the arm64 Development build on an Apple M5
+running macOS 26.6 rendered the same 96 × 64 scene-linear shadow coverage
+through the Raster World viewport and a relocated SDK consumer. Both graph
+cooks produced package SHA-256
+`535c25cfdf0406b89bccc39afc8980663d45076d1b24a0bbc30312c14b77cad4`.
+All 589,824 RGBA8 bytes across the first 24 frames matched, including camera
+turns and cuts. The capture SHA-256 was
+`eec6021447b5c47e1ddce863c785c377690ab960422cb199ec9f286ee71bb2e5`.
+
+The fixture keeps an 18 km square ground mesh in every draw and caster set.
+Two wall segments leave a one-metre opening under a roof. Independent ray
+intersections with the wall and roof determine the expected floor visibility.
+With both lights at 45°, the near region submitted two draws and 24 triangles
+per source. Both the blocked and clear probes matched their exact endpoints
+(0 and 255). The replay also exercises a Sun with a 0.05 rise/run, a thin
+roof across the opening, transparent and opaque masked geometry, moving the
+wall, editing the terrain, replacing the light direction, resize and camera
+updates with the scene inputs released. A CPU projection check keeps a
+1.5 km offscreen blocker inside the fitted light volume.
+
+| Incident light | Near footprint on horizontal ground (m) | Whole-scene footprint on horizontal ground (m) |
+| --- | ---: | ---: |
+| 45° Sun | 0.13258 × 0.09375 | 17.66430 × 17.64706 |
+| Grazing Sun (0.05 rise/run) | 1.87734 × 0.09375 | 18.36278 × 17.64706 |
+
+These values project adjacent texel rays onto the ground. They explain why a
+0.09375 m light-plane texel still covers almost two metres along the ground at
+the grazing angle. Across three camera poses the sampled 50% doorway edge
+landed at 0.4875 m, versus the geometric 0.5 m. Measured drift was zero at
+0.025 m probe spacing. With the whole-scene control the blocked receiver read
+255. During a split crossing the cascade returned 0, 3, 144 and 255 at camera
+horizontal distances of 9, 10, 11 and 12 m (eye height 2 m). It returned 255
+at 16 m. The fully visible probe stayed at 255. The blend therefore restores
+the coarse map's full visibility error at and beyond the far edge of the overlap.
+
+| Relocated SDK, two lights, 64 warm frames | Whole-scene control median / p95 (ms) | Near cascades median / p95 (ms) |
+| --- | ---: | ---: |
+| Camera update through ready, including polling | 1.852 / 3.109 | 1.885 / 6.085 |
+| GPU frame | 0.614 / 2.031 | 0.627 / 2.150 |
+| GPU deferred lighting resolve | 0.585 / 1.631 | 0.597 / 1.689 |
+| Headless submit through GPU completion | 1.814 / 4.447 | 2.232 / 7.321 |
+
+The warm camera reused all shadow maps and submitted zero shadow draws.
+Added GPU p95 was 0.119 ms on this workload. On the first scene update,
+staging took 6.973 ms with cascades and 5.887 ms for the control. First-frame
+GPU time including the atlas fill was 10.182 and 9.501 ms respectively.
+Submit-through-completion was 30.401 and 16.910 ms. The headless measurement
+excludes display refresh and scanout.
+
+Both modes used 33,554,432 unpadded shadow attachment bytes per drawable
+generation and zero mesh-light face texels. The final steady API allocation
+for all measured renderer resources was 37,624,744 bytes with cascades and
+37,624,552 bytes for the control. Sampling at staging and after submission
+observed peaks of 71,307,504 and 37,624,744 bytes respectively. Recentering
+holds the replacement and old atlas at once. These counts include Metal's
+reported allocation sizes and differ from physical residency.
+
+Run `[directional-near-replay]` in the renderer pixel suite, or configure
+`tests/sdk_consumer/directional_near` with the relocated SDK and Catch2 in
+`CMAKE_PREFIX_PATH` to build `ludus_directional_near_replay`. The consumer
+stages the SDK's default graph with tone mapping disabled. Set
+`LUDUS_MEASURE_DIRECTIONAL_REPLAY=1` for per-frame measurements and
+`LUDUS_DIRECTIONAL_CAPTURE` to a file for the 24 raw frames. In
+`ludus_editor_tests`, run `[.directional-near-world]` with
+`LUDUS_DIRECTIONAL_GRAPH` pointing to the linear package and
+`LUDUS_DIRECTIONAL_CAPTURE` pointing to a second file. Compare the files
+byte for byte.
+
 ### Sky visibility
 
 Without occlusion, environment and Atmosphere sky light reach every surface,
