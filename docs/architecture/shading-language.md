@@ -928,6 +928,14 @@ remain: buffer lengths have no direct Metal spelling, and `extern slang` atomics
 spelling; both programs compile through ray-query SPIR-V as their Slang originals do. See the
 [module guide](../modules/tooling/shader-language.md#resources-and-bindings).
 
+**L5a textures, arrays and intrinsics.** The
+[module guide](../modules/tooling/shader-language.md#resources-and-bindings)
+defines coordinate widths, sampler types, and slot allocation for the new
+texture shapes and named binding arrays. Fixed arrays use constant descriptor
+indices and the native binding-array profile. The Metal readback fixture
+compares LUSL and Slang with the same textures and checks the result against the
+authored texels and depth comparisons.
+
 Generic structs (`LUSL0304`) and `dynamic` dispatch are not needed by any
 current file and stay deferred. Tracked in issues [1729](https://github.com/The-Ludus-Project/Ludus/issues/1729) (resource queries,
 atomics, barriers) and [1730](https://github.com/The-Ludus-Project/Ludus/issues/1730) (texture kinds, binding arrays, intrinsics).

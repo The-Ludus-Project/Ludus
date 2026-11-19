@@ -29,6 +29,13 @@ class LowerLuslTests(unittest.TestCase):
         self.assertIn('inline constexpr foundation::uint32 INPUT_POSITION_UV = 0;', header)
         self.assertLess(header.index('IMAGE = 0'), header.index('IMAGE_SAMPLER = 1'))
 
+    def test_slot_header_reports_descriptor_array_count(self):
+        header = lower_lusl.slot_header('sample', 'binding\tmain.lusl:1\timages\tTextureCube\t0\t2\n'
+                                                  'binding\tmain.lusl:2\tsampler\tSamplerState\t2\n')
+        self.assertIn('TextureCube `images` (2 descriptors).', header)
+        self.assertIn('IMAGES = 0;', header)
+        self.assertIn('SAMPLER = 2;', header)
+
     def test_conflicting_vertex_input_locations_fail(self):
         with self.assertRaises(SystemExit):
             lower_lusl.slot_header('composite', 'vertex-input\tmain.lusl:1\tuv\t0\n'

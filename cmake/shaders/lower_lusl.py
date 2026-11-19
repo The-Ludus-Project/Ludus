@@ -62,8 +62,8 @@ def slot_header(name, report):
     slots, locations = {}, {}
     for line in report.splitlines():
         fields = line.split('\t')
-        if fields[0] == 'binding' and len(fields) == 5:
-            slots[constant_name(fields[2])] = (int(fields[4]), fields[2], fields[3])
+        if fields[0] == 'binding' and len(fields) in (5, 6):
+            slots[constant_name(fields[2])] = (int(fields[4]), fields[2], fields[3], int(fields[5]) if len(fields) == 6 else 1)
         elif fields[0] == 'vertex-input' and len(fields) == 4:
             constant = constant_name(fields[2])
             location = int(fields[3])
@@ -76,8 +76,9 @@ def slot_header(name, report):
              f'/// Binding slots and vertex input locations of the LUSL shader {name}, assigned in',
              '/// declaration order (docs/architecture/shading-language.md#resources-and-bindings).',
              f'namespace ludus::shaders::{name}::slots', '{']
-    for constant, (slot, variable, kind) in sorted(slots.items(), key=lambda item: item[1][0]):
-        lines += [f'/// Group-zero slot of the {kind} `{variable}`.',
+    for constant, (slot, variable, kind, count) in sorted(slots.items(), key=lambda item: item[1][0]):
+        span = f' ({count} descriptors)' if count > 1 else ''
+        lines += [f'/// Group-zero slot of the {kind} `{variable}`{span}.',
                   f'inline constexpr foundation::uint32 {constant} = {slot};']
     lines += ['}', '', f'namespace ludus::shaders::{name}::locations', '{']
     for constant, (location, attribute) in sorted(locations.items(), key=lambda item: item[1][0]):
