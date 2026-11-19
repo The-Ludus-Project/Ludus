@@ -6737,14 +6737,14 @@ describes the doorway and terrain qualification route.
 
 #### Doorway replay on Metal
 
-At renderer revision `19482cae2`, the arm64 Development build on an Apple M5
+At renderer revision `6203b7168`, the arm64 Development build on an Apple M5
 running macOS 26.6 rendered the same 96 × 64 scene-linear shadow coverage
 through the Raster World viewport and a relocated SDK consumer. Both graph
 cooks produced package SHA-256
-`535c25cfdf0406b89bccc39afc8980663d45076d1b24a0bbc30312c14b77cad4`.
+`d0737aaf8e01f971ecdb9eaf459ae367fa01068bd67ac59507b3ebabb1ddf6b6`.
 All 589,824 RGBA8 bytes across the first 24 frames matched, including camera
 turns and cuts. The capture SHA-256 was
-`eec6021447b5c47e1ddce863c785c377690ab960422cb199ec9f286ee71bb2e5`.
+`88a9d2aa8dd4f913b2ed93362873b6daae3d0e6083143cc19df5a28b598a26b2`.
 
 The fixture keeps an 18 km square ground mesh in every draw and caster set.
 Two wall segments leave a one-metre opening under a roof. Independent ray
@@ -6802,30 +6802,33 @@ using Matplotlib and the measured SDK replay log.
 
 | Relocated SDK, two lights, 64 warm frames | Whole-scene control median / p95 (ms) | Near cascades median / p95 (ms) |
 | --- | ---: | ---: |
-| Camera update through ready, including polling | 1.852 / 3.109 | 1.885 / 6.085 |
-| GPU frame | 0.614 / 2.031 | 0.627 / 2.150 |
-| GPU deferred lighting resolve | 0.585 / 1.631 | 0.597 / 1.689 |
-| Headless submit through GPU completion | 1.814 / 4.447 | 2.232 / 7.321 |
+| Camera update through ready, including polling | 1.768 / 2.285 | 1.882 / 2.374 |
+| GPU frame | 0.454 / 3.801 | 0.490 / 3.423 |
+| GPU deferred lighting resolve | 0.373 / 1.483 | 0.466 / 1.645 |
+| Headless submit through GPU completion | 1.781 / 4.675 | 1.808 / 4.626 |
 
 The warm camera reused all shadow maps and submitted zero shadow draws.
-Added GPU p95 was 0.119 ms on this workload. On the first scene update,
-staging took 6.973 ms with cascades and 5.887 ms for the control. First-frame
-GPU time including the atlas fill was 10.182 and 9.501 ms respectively.
-Submit-through-completion was 30.401 and 16.910 ms. The headless measurement
+GPU p95 was 0.378 ms lower in this 64-frame sample. On the first scene update,
+staging took 1.215 ms with cascades and 1.527 ms for the control. First-frame
+GPU time including the atlas fill was 11.707 and 7.060 ms respectively.
+Submit-through-completion was 16.391 and 14.120 ms. The headless measurement
 excludes display refresh and scanout.
 
 A separate visible Metal run drove the same 96 × 64 graph in the production
 Qt Quick World viewport, with two warmup frames and 64 measured intervals.
 Each interval ended at the first `QQuickWindow::frameSwapped` for the next
-graph image serial. Median / p95 intervals were 16.557 / 18.665 ms with
-cascades and 16.629 / 18.499 ms with the whole-scene control. These measure
+graph image serial. Median / p95 intervals were 16.681 / 18.838 ms with
+cascades and 16.954 / 19.727 ms with the whole-scene control. These measure
 the application's presentation cadence. Panel scanout occurs later.
 
-Both modes used 33,554,432 unpadded shadow attachment bytes per drawable
-generation and zero mesh-light face texels. The final steady API allocation
-for all measured renderer resources was 37,624,744 bytes with cascades and
-37,624,552 bytes for the control. Sampling at staging and after submission
-observed peaks of 71,307,504 and 37,624,744 bytes respectively. Recentering
+Both modes retained all 64 whole-World and all 64 local sky maps, with zero
+mesh-light face texels. The unpadded attachments occupied 41,943,040 bytes per
+drawable generation with near cascades and 33,554,432 with the control.
+A third run capped renderer resources at 38 MiB. Both lights then used their
+whole-scene maps and both sky levels remained available. The final steady API
+allocation for all measured renderer resources was 46,178,688 bytes with
+cascades and 37,658,816 bytes for the control. Sampling at staging and after
+submission observed peaks of 88,379,632 and 37,659,008 bytes respectively. Recentering
 holds the replacement and old atlas at once. These counts include Metal's
 reported allocation sizes and differ from physical residency.
 
