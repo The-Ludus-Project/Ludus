@@ -5178,25 +5178,23 @@ RenderPreview& WorldWorkspace::GetRenderPreview() noexcept
 {
     return mShownRenderPreviewOrNull != nullptr ? *mShownRenderPreviewOrNull : Render_->Preview();
 }
-bool WorldWorkspace::BeginPlayInViewport(QString& outAddress, QString& outReason)
+PlayViewportStartResult WorldWorkspace::beginPlayInViewport()
 {
     if (Document_.Loaded() == true && Document_.HasBuiltInSchema() == true && Render_->isHidden() == true &&
         Scene_->PreviewRunning() == true)
     {
-        return Render_->BeginPlayOn(Scene_->GetViewport(), Scene_->GetRenderPreview(), outAddress, outReason);
+        return Render_->BeginPlayOn(Scene_->GetViewport(), Scene_->GetRenderPreview());
     }
     // The bound viewport hosts other Worlds, including the World Demo adapter.
     if (Document_.Loaded() == false || Document_.SceneLevel().isEmpty() == false || Render_->isHidden() == true)
     {
-        outReason = QStringLiteral("Play in the viewport needs this World shown in the World viewport.");
-        return false;
+        return { .Reason = QStringLiteral("Play in the viewport needs this World shown in the World viewport.") };
     }
     if (Render_->Preview().Running() == false)
     {
-        outReason = QStringLiteral("Play in the viewport needs the World viewport running; it is paused.");
-        return false;
+        return { .Reason = QStringLiteral("Play in the viewport needs the World viewport running; it is paused.") };
     }
-    return Render_->BeginPlay(outAddress, outReason);
+    return Render_->BeginPlay();
 }
 PlayMode WorldWorkspace::GetPlayMode() const noexcept
 {
@@ -5217,14 +5215,13 @@ PlayWindow WorldWorkspace::PreparePlay(PlayMode mode, QString& outAddress)
     {
         return PlayWindow::SeparateWindow;
     }
-    QString address;
-    QString reason;
-    if (BeginPlayInViewport(address, reason) == false)
+    PlayViewportStartResult started = beginPlayInViewport();
+    if (started.Address.isEmpty() == true)
     {
-        showPlayUnavailable(reason);
+        showPlayUnavailable(started.Reason);
         return PlayWindow::Unavailable;
     }
-    outAddress = foundation::Move(address);
+    outAddress = foundation::Move(started.Address);
     return PlayWindow::InViewport;
 }
 // NOLINTNEXTLINE(bugprone-easily-swappable-parameters)
