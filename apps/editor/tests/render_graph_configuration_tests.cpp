@@ -30,6 +30,7 @@
 #include <QPixmap>
 #include <QPlainTextEdit>
 #include <QPushButton>
+#include <QScreen>
 #include <QScrollArea>
 #include <QScrollBar>
 #include <QSignalSpy>
@@ -638,9 +639,19 @@ TEST_CASE("occupied-input preview follows the admitted routed wire through cycle
     canvas.ShowConfiguration(ROOT_GRAPH, DEFAULT_CONFIGURATION);
     QWidget* properties = workspace.findChild<QWidget*>(QStringLiteral("renderGraphProperties"));
     REQUIRE(properties != nullptr);
-    workspace.resize(1450, 850);
+    QWidget* outline = workspace.findChild<QWidget*>(QStringLiteral("renderGraphTree"));
+    REQUIRE(outline != nullptr);
+    // The drags below span about 700 scene units at 1:1. A desktop platform shrinks a
+    // window larger than its screen after show (a hosted Windows runner has a
+    // 1024-pixel desktop), so request a size the screen can hold and give the outline's
+    // width to the canvas, which then fits the ports with Properties hidden.
+    const QSize requestedSize(1450, 850);
+    workspace.resize(workspace.screen() != nullptr
+                         ? requestedSize.boundedTo(workspace.screen()->availableGeometry().size())
+                         : requestedSize);
     workspace.show();
     properties->hide();
+    outline->hide();
     QCoreApplication::processEvents();
     canvas.ResetZoom();
     canvas.centerOn(360, 145);
@@ -648,6 +659,15 @@ TEST_CASE("occupied-input preview follows the admitted routed wire through cycle
         return canvas.mapFromScene(canvas.GetPortPosition(endpoint, isOutput));
     };
     const auto hover = [&](const QString& from, const QString& to) {
+        // A late desktop layout change can still shrink the view; re-frame only a drag that
+        // left it, so the hint and nearby route keep the framing the checks were written for.
+        if (canvas.viewport()->rect().contains(port(from, true)) == false ||
+            canvas.viewport()->rect().contains(port(to, false)) == false)
+        {
+            canvas.centerOn((canvas.GetPortPosition(from, true) + canvas.GetPortPosition(to, false)) / 2);
+        }
+        INFO("viewport " << canvas.viewport()->width() << "x" << canvas.viewport()->height() << ", window "
+                         << workspace.width() << "x" << workspace.height());
         REQUIRE(canvas.viewport()->rect().contains(port(from, true)));
         REQUIRE(canvas.viewport()->rect().contains(port(to, false)));
         QTest::mousePress(canvas.viewport(), Qt::LeftButton, Qt::NoModifier, port(from, true));
@@ -727,6 +747,7 @@ TEST_CASE("occupied-input preview follows the admitted routed wire through cycle
         else
         {
             // An output and input on the forwarding card share the same endpoint spelling.
+            REQUIRE(canvas.viewport()->rect().contains(port(destination, true)));
             QTest::mouseMove(canvas.viewport(), port(destination, true));
             CHECK(hint().contains(QStringLiteral("this is an output")));
             CHECK(marker() == nullptr);
