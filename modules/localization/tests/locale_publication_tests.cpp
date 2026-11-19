@@ -24,7 +24,7 @@ namespace release = localization_release_fixture;
 namespace corpus = localization_corpus;
 namespace threading = ludus::foundation::threading;
 
-constexpr usize STORAGE_BUDGET = 1024 * 1024;
+constexpr usize STORAGE_BUDGET = usize{1024} * 1024;
 constexpr std::string_view UI_DOMAIN = "game/ui";
 constexpr std::string_view RELEASE_DOMAIN = "test/l1";
 constexpr std::string_view UI_DOMAINS[] = {UI_DOMAIN};
