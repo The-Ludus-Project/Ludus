@@ -103,7 +103,7 @@ EM_JS(void, TracePublishedWorldPlacement, (const char* scene, foundation::int32 
     if (screen?.dataset.measureWorldEdits !== 'true') return;
     screen.dispatchEvent(new CustomEvent('ludusworldplacement', {
         bubbles: true, detail: {identity: Array.from(HEAPU8.subarray(scene, scene + length),
-            byte => byte.toString(HEX_RADIX).padStart(2, '0')).join(''), milliseconds: performance.now()},
+            byte => byte.toString(HEX_RADIX).padStart(2, '0')).join(""), milliseconds: performance.now()},
     }));
 });
 EM_JS(void, TraceAcceptedWorldEdit, (), {

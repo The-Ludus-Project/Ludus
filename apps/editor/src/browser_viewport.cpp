@@ -96,7 +96,7 @@ EM_JS(void, TraceDrawableScene, (const char* selector, const char* scene, int32 
     const canvas = document.querySelector(UTF8ToString(selector));
     canvas?.dispatchEvent(new CustomEvent('ludusdrawablescene', {
         bubbles: true, detail: {identity: Array.from(HEAPU8.subarray(scene, scene + length),
-            byte => byte.toString(HEX_RADIX).padStart(2, '0')).join(''), milliseconds: performance.now()},
+            byte => byte.toString(HEX_RADIX).padStart(2, '0')).join(""), milliseconds: performance.now()},
     }));
 });
 EM_JS(void, ReportViewportFailure, (const char* selector, const char* message), {
