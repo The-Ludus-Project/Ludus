@@ -46,6 +46,7 @@
 #include <QMouseEvent>
 #include <QNativeGestureEvent>
 #include <QPaintEvent>
+#include <QPainter>
 #include <QPainterPath>
 #include <QPalette>
 #include <QPen>
@@ -182,6 +183,16 @@ QColor GetLabelColour()
 {
     return GetCanvasColour(design::ThemeColour::TextHud);
 }
+
+class LinkHintItem final : public QGraphicsTextItem
+{
+protected:
+    void paint(QPainter* painter, const QStyleOptionGraphicsItem* option, QWidget* widgetOrNull) override
+    {
+        painter->fillRect(boundingRect(), GetNodeBackground());
+        QGraphicsTextItem::paint(painter, option, widgetOrNull);
+    }
+};
 
 /// Split a node name where a reader would: before a capital that follows a lower-case letter or digit
 /// ("ComputeRayTracing" reads as Compute, Ray, Tracing) and after an underscore, hyphen or space.
@@ -1983,6 +1994,31 @@ void RenderGraphCanvas::refreshFeedback()
     updateSemanticZoom(true);
 }
 
+// Thanks to Horowitz, Blinn and Heer, Declarative Dragging (UIST '26, §4):
+// show the admitted edit before release. https://declarative-dragging.github.io/D2.pdf
+QString RenderGraphCanvas::previewAdmittedLink(const QString& endpoint)
+{
+    for (const EdgeView* edge : std::as_const(mEdges))
+    {
+        if (edge->To != endpoint)
+        {
+            continue;
+        }
+        if (edge->From == mLinkFrom)
+        {
+            return QStringLiteral("Already connected: %1 → %2.").arg(mLinkFrom, endpoint);
+        }
+        QPen marker(GetLabelColour(), FOCUSED_EDGE_WIDTH, Qt::DashLine);
+        marker.setCosmetic(true);
+        mDisplacedWireOrNull = mScene->addPath(edge->Path->path(), marker);
+        // Above ordinary wires, below the cards and the candidate connection.
+        mDisplacedWireOrNull->setZValue(-0.5);
+        mDisplacedWireOrNull->setAcceptedMouseButtons(Qt::NoButton);
+        return QStringLiteral("Replace source at %1\nCurrent: %2\nProposed: %3").arg(endpoint, edge->From, mLinkFrom);
+    }
+    return QStringLiteral("Compatible: %1 → %2. Drop to connect.").arg(mLinkFrom, endpoint);
+}
+
 void RenderGraphCanvas::updateLinkFeedback(QPointF position)
 {
     const auto positionHint = [this, position]() {
@@ -2000,31 +2036,27 @@ void RenderGraphCanvas::updateLinkFeedback(QPointF position)
     };
     bool isOutput = false;
     const QString endpoint = portAt(position, isOutput);
-    if (endpoint == mLinkEndpoint && mLinkHintOrNull != nullptr)
+    if (endpoint == mLinkEndpoint && isOutput == mIsLinkTargetOutput && mLinkHintOrNull != nullptr &&
+        mLinkHintOrNull->isVisible() == true)
     {
         positionHint();
         return;
     }
+    clearLinkTarget();
     mLinkEndpoint = endpoint;
-    if (mLinkPortOrNull != nullptr)
-    {
-        mLinkPortOrNull->setPen(QPen(GetNodeBorder(), 1));
-        mLinkPortOrNull->setToolTip(mLinkPortTooltip);
-        mLinkPortOrNull = nullptr;
-    }
+    mIsLinkTargetOutput = isOutput;
     QString message = QStringLiteral(
         "Drop on an input port to connect or replace its source, or on empty canvas to add a connected node.");
     QColor color = GetEdgeColour();
-    if (endpoint.isEmpty() == false && endpoint != mLinkFrom)
+    if (endpoint.isEmpty() == false && (endpoint != mLinkFrom || isOutput == false))
     {
         const RenderGraphLinkCheck check =
             isOutput == true ? RenderGraphLinkCheck{QStringLiteral("Port"),
                                                     QStringLiteral("Links end at an input; this is an output.")}
                              : CheckRenderGraphLink(mDocument, mFile, mConfiguration, mLinkFrom, endpoint, true);
         color = (check.IsLegal() == true ? GetLinkAcceptColour() : GetLinkRejectColour());
-        message = check.IsLegal() == true
-                      ? QStringLiteral("Compatible: %1 → %2. Drop to connect or replace.").arg(mLinkFrom, endpoint)
-                      : check.Code + QStringLiteral(": ") + check.Reason;
+        message =
+            check.IsLegal() == true ? previewAdmittedLink(endpoint) : check.Code + QStringLiteral(": ") + check.Reason;
         NodeView* viewOrNull = mNodes.value(GetEndpointNode(endpoint), nullptr);
         if (viewOrNull != nullptr)
         {
@@ -2040,13 +2072,15 @@ void RenderGraphCanvas::updateLinkFeedback(QPointF position)
     }
     if (mLinkHintOrNull != nullptr)
     {
-        mLinkHintOrNull->setHtml(QStringLiteral("<p style=\"background-color:%1; color:%2;\">%3</p>")
-                                     .arg(GetNodeBackground().name(), color.name(), message.toHtmlEscaped()));
+        mLinkHintOrNull->setDefaultTextColor(GetLabelColour());
+        mLinkHintOrNull->setPlainText(message);
+        mLinkHintOrNull->show();
         positionHint();
     }
     if (mLinkPreviewOrNull != nullptr)
     {
         mLinkPreviewOrNull->setPen(QPen(color, 2));
+        mLinkPreviewOrNull->show();
     }
 }
 
@@ -3087,21 +3121,38 @@ QString RenderGraphCanvas::edgeAt(QPointF position, QString& outTo) const
     return {};
 }
 
-void RenderGraphCanvas::cancelLink()
+void RenderGraphCanvas::clearLinkTarget()
 {
+    delete mDisplacedWireOrNull;
+    mDisplacedWireOrNull = nullptr;
+    mLinkEndpoint.clear();
     if (mLinkPortOrNull != nullptr)
     {
         mLinkPortOrNull->setPen(QPen(GetNodeBorder(), 1));
         mLinkPortOrNull->setToolTip(mLinkPortTooltip);
         mLinkPortOrNull = nullptr;
     }
+}
+
+void RenderGraphCanvas::hideLinkFeedback()
+{
+    if (mLinkPreviewOrNull != nullptr)
+    {
+        clearLinkTarget();
+        mLinkHintOrNull->hide();
+        mLinkPreviewOrNull->hide();
+    }
+}
+
+void RenderGraphCanvas::cancelLink()
+{
+    clearLinkTarget();
     if (mLinkHintOrNull != nullptr)
     {
         delete mLinkHintOrNull;
         mLinkHintOrNull = nullptr;
     }
     mLinkFrom.clear();
-    mLinkEndpoint.clear();
     if (mLinkPreviewOrNull != nullptr)
     {
         mScene->removeItem(mLinkPreviewOrNull);
@@ -3273,7 +3324,7 @@ void RenderGraphCanvas::mousePressEvent(QMouseEvent* event)
         mLinkFrom = port;
         mLinkPreviewOrNull =
             mScene->addPath(MakeCurve(position, position), QPen(GetSelectionColour(), 2, Qt::DashLine));
-        mLinkHintOrNull = new QGraphicsTextItem;
+        mLinkHintOrNull = new LinkHintItem;
         mScene->addItem(mLinkHintOrNull);
         mLinkHintOrNull->setData(0, QStringLiteral("#link-feedback"));
         mLinkHintOrNull->setTextWidth(LINK_HINT_WIDTH);
@@ -3393,6 +3444,12 @@ void RenderGraphCanvas::mouseMoveEvent(QMouseEvent* event)
     const QPointF position = mapToScene(event->position().toPoint());
     if (mLinkPreviewOrNull != nullptr)
     {
+        if (viewport()->rect().contains(event->position().toPoint()) == false)
+        {
+            hideLinkFeedback();
+            event->accept();
+            return;
+        }
         mLinkPreviewOrNull->setPath(MakeCurve(GetPortPosition(mLinkFrom, true), position));
         updateLinkFeedback(position);
         event->accept();
@@ -3462,6 +3519,11 @@ void RenderGraphCanvas::mouseReleaseEvent(QMouseEvent* event)
         const QString from = mLinkFrom;
         cancelLink();
         const QPoint point = event->position().toPoint();
+        if (viewport()->rect().contains(point) == false)
+        {
+            event->accept();
+            return;
+        }
         const QPointF position = mapToScene(point);
         bool isOutput = false;
         const QString to = portAt(position, isOutput);
@@ -3471,6 +3533,10 @@ void RenderGraphCanvas::mouseReleaseEvent(QMouseEvent* event)
         {
             // A plain click on an output offers nodes that accept it, placed a column gap to the right.
             Q_EMIT ConnectQuickAddRequested(from, GetPortPosition(from, true) + QPointF(QUICK_ADD_PORT_GAP, 0));
+        }
+        else if (to.isEmpty() == false && isOutput == true)
+        {
+            Q_EMIT LinkRejected(QStringLiteral("Links end at an input; this is an output."));
         }
         else if (to.isEmpty() == false)
         {
@@ -3705,6 +3771,7 @@ bool RenderGraphCanvas::viewportEvent(QEvent* event)
 {
     if (event->type() == QEvent::Leave)
     {
+        hideLinkFeedback();
         mHoveredPort.clear();
         mHoveredNode.clear();
         updateConnectionHighlight();

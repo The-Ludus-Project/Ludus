@@ -86,7 +86,8 @@ existing item that covers the work.
   and report the task branch and worktree path for review.
 - Integration pull requests run source/tooling, installed host-tooling and public
   documentation checks. Changes that require native validation also run the Linux
-  Editor and shader-worker build and Clang static analysis. The batch coordinator
+  Editor and shader-worker build, its quick unit and Editor tests
+  (`config/pull_request_tests.txt`) and Clang static analysis. The batch coordinator
   captures one `develop` commit every 30 minutes and runs the full native,
   sanitizer, editor, browser and SDK suites once for the combined changes. Only
   the promotion workflow advances `main`, to exactly the validated commit, with
@@ -96,8 +97,9 @@ existing item that covers the work.
 - While the latest validated batch is red, the **Develop health** check admits
   only documentation-only changes and proven fixes. An agent fixing a failed
   batch job declares `Batch-Fix: <failed batch job>` in the PR description,
-  merges current `develop`, dispatches the job's workflow on its branch and
-  re-runs the check. Do not declare jobs the change does not fix, edit a job to
+  merges current `develop`, runs the dispatch command Develop health prints (it
+  runs only the failed job where the workflow can; never dispatch a full suite
+  to prove one job) and re-runs the check. Do not declare jobs the change does not fix, edit a job to
   manufacture evidence, or set `DEVELOP_HEALTH_WAIVER`; waivers are the
   maintainer's. See `docs/development/continuous-integration.md#develop-health`.
 - Request a manual batch only when the maintainer needs earlier qualification;

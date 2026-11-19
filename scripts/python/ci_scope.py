@@ -9,7 +9,6 @@ from pathlib import Path, PurePosixPath
 import re
 import subprocess
 import sys
-import time
 import urllib.error
 import urllib.request
 
@@ -46,20 +45,9 @@ PULL_REQUEST_JOBS = ("formatting", "analysis", "editor")
 INTEGRATION_JOBS = tuple(name for name in NATIVE_JOBS if name not in PULL_REQUEST_JOBS)
 # Bounded GitHub run metadata read by a cancelled pull-request gate.
 MAX_RUN_METADATA_BYTES = 2 * 1024 * 1024
-# Pull-request activity that changes neither the head commit nor, for edits, the
-# base: an earlier run of this workflow already validates the same change. Edits
-# re-run the workflow for Develop health's Batch-Fix declarations; a compile of the
-# unchanged commit would only duplicate the earlier run's 30-minute native jobs.
-REVALIDATED_ACTIONS = frozenset({"edited", "ready_for_review"})
 GATE_JOB = "Ubuntu Clang"
-# Develop health reads the PR description, so a description edit re-evaluates it in
-# the edit's own run; the earlier run's verdict on the old description is not reused.
-DEVELOP_HEALTH_JOB = "Develop health"
-VALIDATING_RUN_POLL_SECONDS = 60
-# Below the gate job's 360-minute default timeout, so the gate reports its own failure.
-VALIDATING_RUN_WAIT_SECONDS = 300 * 60
-MAX_CONSECUTIVE_LOOKUP_FAILURES = 5
-RUN_ID = re.compile(r"[1-9][0-9]{0,19}")
+# A Batch-Fix evidence dispatch runs one native job; "all" (or empty) runs every job.
+ALL_EVIDENCE_JOBS = "all"
 
 
 def documentation_only(paths: list[str]) -> bool:
@@ -98,14 +86,42 @@ def changed_paths(event_name: str, event: dict, root: Path) -> list[str]:
     return [os.fsdecode(path) for path in result.stdout.split(b"\0") if path]
 
 
-def classify(event_name: str, event: dict, root: Path) -> tuple[bool, str]:
+# Camera admission, view construction, capture, and the fixtures that exercise them.
+CAMERA_PATHS = frozenset({
+    "modules/graphics/renderer/include/ludus/graphics/renderer/render_graph.hpp",
+    "modules/graphics/renderer/include/ludus/graphics/renderer/renderer.hpp",
+    "modules/graphics/renderer/src/render_graph.cpp",
+    "modules/graphics/renderer/src/render_graph_capture.cpp",
+    "modules/graphics/renderer/src/renderer.cpp",
+    "modules/graphics/renderer/src/views.cpp",
+    "modules/graphics/renderer/tests/render_graph_tests.cpp",
+    "apps/editor/tests/render_graph_preview_tests.cpp",
+    "scripts/python/camera_pilot.py",
+    "scripts/python/test_camera_pilot.py",
+})
+CAMERA_EDITOR_STEMS = frozenset({
+    "render_graph_preview", "render_preview", "render_scene", "viewport_raster_capture",
+})
+
+
+def camera_pilot_matches(paths: list[str]) -> bool:
+    for path in paths:
+        if path in CAMERA_PATHS:
+            return True
+        if path.startswith("apps/editor/src/") and PurePosixPath(path).stem in CAMERA_EDITOR_STEMS:
+            return True
+    return False
+
+
+def classify(event_name: str, event: dict, root: Path) -> tuple[bool, str, bool]:
     try:
         paths = changed_paths(event_name, event, root)
     except (KeyError, TypeError, ValueError, OSError, subprocess.SubprocessError):
-        return True, "Comparison unavailable or event requires full validation."
+        return True, "Comparison unavailable or event requires full validation.", event_name == "pull_request"
     if documentation_only(paths):
-        return False, f"All {len(paths)} changed paths are documentation or documentation tooling."
-    return True, "Engine, tooling, policy, unknown paths, or an empty diff require full validation."
+        return False, f"All {len(paths)} changed paths are documentation or documentation tooling.", False
+    reason = "Engine, tooling, policy, unknown paths, or an empty diff require full validation."
+    return True, reason, camera_pilot_matches(paths)
 
 
 def validation_tier(event_name: str, event: dict, *, is_batch: bool = False) -> str:
@@ -129,8 +145,16 @@ def validation_tier(event_name: str, event: dict, *, is_batch: bool = False) -> 
     return FULL_TIER
 
 
-def gate_failures(results: dict) -> list[str]:
+def gate_failures(results: dict, evidence_job: str = "") -> list[str]:
+    """Compare job results with the classified scope.
+
+    A non-empty evidence_job other than "all" names the one native job a scoped
+    evidence dispatch runs; every other native job must then be skipped.
+    """
     failures = []
+    is_scoped = evidence_job not in ("", ALL_EVIDENCE_JOBS)
+    if is_scoped and evidence_job not in NATIVE_JOBS:
+        return [f"Unknown evidence job {evidence_job!r}; choose one of: {', '.join(NATIVE_JOBS)}."]
     scope = results.get("changes", {})
     if scope.get("result") != "success":
         return ["Change classification did not succeed."]
@@ -141,25 +165,20 @@ def gate_failures(results: dict) -> list[str]:
     tier = outputs.get("validation_tier")
     if tier not in TIERS:
         return ["Change classification did not report a valid validation_tier output."]
-    validated_by = outputs.get("validated_by") or ""
-    if validated_by and (RUN_ID.fullmatch(validated_by) is None or required != "true"):
-        return ["Change classification did not report a valid validated_by output."]
     if set(results) != {"changes", *NATIVE_JOBS}:
         failures.append("Required native job inventory is incomplete or unexpected.")
     for name in NATIVE_JOBS:
         deferred = ((tier == INTEGRATION_TIER and name in INTEGRATION_JOBS)
                     or (tier != NIGHTLY_TIER and name in NIGHTLY_JOBS))
-        expected = "success" if required == "true" and not deferred and not validated_by else "skipped"
+        is_selected = not is_scoped or name == evidence_job
+        if is_selected and is_scoped and (deferred or required != "true"):
+            failures.append(f"Evidence job {name} does not run in the {tier} tier; dispatch with "
+                            "validation_tier=full (nightly for macos-analysis).")
+        expected = "success" if required == "true" and not deferred and is_selected else "skipped"
         actual = results.get(name, {}).get("result")
         if actual != expected:
             failures.append(f"{name}: expected {expected}, received {actual}.")
     return failures
-
-
-def validating_run_id(results: dict) -> int | None:
-    """Return the earlier run that owns native validation for this run, if any."""
-    value = results.get("changes", {}).get("outputs", {}).get("validated_by") or ""
-    return int(value) if RUN_ID.fullmatch(value) else None
 
 
 def has_cancelled_dependency(results: dict) -> bool:
@@ -230,118 +249,8 @@ def find_superseding_run() -> dict | None:
         return None
 
 
-def revalidates_unchanged_change(event: dict) -> bool:
-    """Whether this pull-request activity keeps the head commit and the base branch."""
-    action = event.get("action")
-    if action not in REVALIDATED_ACTIONS:
-        return False
-    # Retargeting is an edit with a base change: its diff and merge result differ.
-    changes = event.get("changes")
-    return action != "edited" or (isinstance(changes, dict) and "base" not in changes)
-
-
-def validating_run(current: dict, runs: list, number: int, base_ref: str) -> dict | None:
-    """Return the newest earlier, uncancelled run of this workflow, PR, base and head commit.
-
-    The selected run may still be in progress; the gate waits for it. It may itself
-    be a revalidation that waits for an older run, so the oldest run that compiled
-    decides every revalidation's result.
-    """
-    def same_pull_request(run: dict) -> bool:
-        entries = run.get("pull_requests")
-        return isinstance(entries, list) and any(
-            isinstance(entry, dict) and entry.get("number") == number
-            and isinstance(entry.get("base"), dict) and entry["base"].get("ref") == base_ref
-            for entry in entries)
-
-    candidates = [run for run in runs
-                  if isinstance(run, dict) and isinstance(run.get("id"), int) and run["id"] < current["id"]
-                  and run.get("workflow_id") == current["workflow_id"]
-                  and run.get("event") == "pull_request"
-                  and run.get("head_sha") == current["head_sha"]
-                  and run.get("conclusion") != "cancelled"
-                  and same_pull_request(run)]
-    return max(candidates, key=lambda run: run["id"], default=None)
-
-
-def find_validating_run(event: dict) -> int | None:
-    """Find an earlier run that already validates this unchanged change; any failure finds none."""
-    try:
-        if not revalidates_unchanged_change(event):
-            return None
-        pull_request = event["pull_request"]
-        number = pull_request["number"]
-        base_ref = pull_request["base"]["ref"]
-        if not isinstance(number, int) or not isinstance(base_ref, str):
-            return None
-        found = read_same_commit_runs()
-        if found is None:
-            return None
-        run = validating_run(*found, number, base_ref)
-        return run["id"] if run is not None else None
-    except (AttributeError, KeyError, TypeError, ValueError, OSError, urllib.error.URLError):
-        return None
-
-
-def validating_run_failures(run_id: int, *, sleep=time.sleep, clock=time.monotonic) -> list[str]:
-    """Wait for the run that owns native validation and require its gate to have passed.
-
-    Every job except Develop health, which this run re-evaluates for the edited
-    description, must have succeeded or been skipped. Lookup failures and a
-    cancelled owner fail closed; re-run this workflow once the owner can report.
-    """
-    location = f"run {run_id}"
-    deadline = clock() + VALIDATING_RUN_WAIT_SECONDS
-    lookup_failures = 0
-    while True:
-        try:
-            run = read_github(f"actions/runs/{run_id}")
-            lookup_failures = 0
-            if run.get("status") == "completed":
-                break
-        except (KeyError, TypeError, ValueError, OSError, urllib.error.URLError) as error:
-            lookup_failures += 1
-            if lookup_failures >= MAX_CONSECUTIVE_LOOKUP_FAILURES:
-                return [f"Could not read {location}, which owns native validation for this commit ({error}); "
-                        "re-run this workflow."]
-        if clock() >= deadline:
-            return [f"{location}, which owns native validation for this commit, did not complete in time; "
-                    "re-run this workflow after it completes."]
-        sleep(VALIDATING_RUN_POLL_SECONDS)
-    if run.get("conclusion") == "cancelled":
-        return [f"{location}, which owned native validation for this commit, was cancelled; "
-                "re-run that run or push a new commit."]
-    try:
-        listing = read_github(f"actions/runs/{run_id}/jobs?filter=latest&per_page=100")
-    except (KeyError, TypeError, ValueError, OSError, urllib.error.URLError) as error:
-        return [f"Could not read the jobs of {location} ({error}); re-run this workflow."]
-    jobs = listing.get("jobs")
-    if not isinstance(jobs, list) or listing.get("total_count") != len(jobs) or not jobs:
-        return [f"The job listing of {location} is incomplete; re-run this workflow."]
-    failures = []
-    gates = [job for job in jobs if isinstance(job, dict) and job.get("name") == GATE_JOB]
-    if len(gates) != 1 or gates[0].get("conclusion") != "success":
-        failures.append(f"{location}: the {GATE_JOB} gate did not pass.")
-    for job in jobs:
-        name = job.get("name") if isinstance(job, dict) else None
-        conclusion = job.get("conclusion") if isinstance(job, dict) else None
-        if name != DEVELOP_HEALTH_JOB and conclusion not in {"success", "skipped"}:
-            failures.append(f"{location}: {name} concluded {conclusion}.")
-    return failures
-
-
-def run_gate(results: dict) -> int:
-    failures = gate_failures(results)
-    owner = validating_run_id(results)
-    if not failures and owner is not None:
-        # An edit or ready-for-review of an unchanged commit reuses the earlier run's
-        # native validation and reports exactly its outcome on this run's gate.
-        failures = validating_run_failures(owner)
-        if not failures:
-            print(f"Required CI gate passed: run {owner} validated this unchanged commit and base.")
-            return 0
-        print("\n".join(failures), file=sys.stderr)
-        return 1
+def run_gate(results: dict, evidence_job: str = "") -> int:
+    failures = gate_failures(results, evidence_job)
     if not failures:
         print("Required CI gate passed for the classified change scope.")
         return 0
@@ -365,27 +274,24 @@ def main() -> int:
     parser.add_argument("command", choices=("classify", "gate"))
     args = parser.parse_args()
     if args.command == "gate":
-        return run_gate(json.loads(os.environ["RESULTS"]))
+        return run_gate(json.loads(os.environ["RESULTS"]), os.environ.get("EVIDENCE_JOB", ""))
     event_name = os.environ.get("GITHUB_EVENT_NAME", "")
     try:
         event = json.loads(Path(os.environ["GITHUB_EVENT_PATH"]).read_text(encoding="utf-8"))
-        required, reason = classify(event_name, event, Path.cwd())
+        required, reason, camera = classify(event_name, event, Path.cwd())
         tier = validation_tier(event_name, event, is_batch=bool(os.environ.get("LUDUS_CI_BATCH_SHA")))
-        # Documentation-only runs compile nothing, so they have nothing to reuse.
-        owner = find_validating_run(event) if required and event_name == "pull_request" else None
     except (OSError, ValueError, KeyError):
-        required, reason = True, "Event metadata unavailable; full validation required."
+        required, reason, camera = True, "Event metadata unavailable; full validation required.", True
         tier = FULL_TIER
-        owner = None
     value = "true" if required else "false"
     with Path(os.environ["GITHUB_OUTPUT"]).open("a", encoding="utf-8") as output:
+        output.write(f"camera_pilot={str(camera).lower()}\n")
         output.write(f"native_required={value}\n")
         output.write(f"validation_tier={tier}\n")
-        output.write(f"validated_by={owner if owner is not None else ''}\n")
     message = f"Native validation required: {value}. Validation tier: {tier}. {reason}"
-    if owner is not None:
-        message += (f" Native jobs are skipped: run {owner} already validates this unchanged commit and base,"
-                    " and the gate reports its result.")
+    if tier == INTEGRATION_TIER:
+        message += (" Camera pilot selected." if camera else
+                    " Camera pilot outside scope (0 test runner-minutes).")
     print(message)
     if os.environ.get("GITHUB_STEP_SUMMARY"):
         with Path(os.environ["GITHUB_STEP_SUMMARY"]).open("a", encoding="utf-8") as summary:

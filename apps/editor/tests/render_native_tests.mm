@@ -16,6 +16,7 @@
 #include "internal/viewport_reference_capture.h"
 #include "internal/world_surface_bake.h"
 #include "internal/world_workspace.h"
+#include "probe_qualification.h"
 #include "renderer_composite.h"
 #include "renderer_flat.h"
 #include <QQuickWindow>
@@ -1721,6 +1722,16 @@ QImage ReadProbeFrame(RenderPreview& inoutPreview, rr::ViewDescription& outView)
     return image;
 }
 } // namespace
+
+namespace ludus::editor::testing
+{
+foundation::float32 ReadPositiveZProbeIrradiance(const WorldProbeAtlas& atlas,
+                                                 const graphics::renderer::GiProbeGrid& grid,
+                                                 foundation::math::Vector3 positionWorld)
+{
+    return EvaluateProbeLookup(atlas, grid, positionWorld, ProbeVisibility::DepthMap, {}).Irradiance;
+}
+} // namespace ludus::editor::testing
 
 TEST_CASE("Native Lit probe GI visibility qualification around thin and diagonal walls and a doorway",
           "[.render-native][lighting][probe-gi]")

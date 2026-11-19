@@ -1391,7 +1391,7 @@ if(LUDUS_BUILD_TESTS AND NOT EMSCRIPTEN)
     # Keep the small software rasterizer only as an independent test oracle.
     target_sources(ludus_editor_tests PRIVATE src/software_viewport.cpp)
     set_target_properties(ludus_editor_tests PROPERTIES AUTOMOC ON)
-    target_include_directories(ludus_editor_tests PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/src" "${PROJECT_SOURCE_DIR}/modules/audio/tests")
+    target_include_directories(ludus_editor_tests PRIVATE "${PROJECT_SOURCE_DIR}/tests/support" "${CMAKE_CURRENT_SOURCE_DIR}/src" "${PROJECT_SOURCE_DIR}/modules/audio/tests")
     target_compile_definitions(ludus_editor_tests PRIVATE QT_NO_KEYWORDS QT_NO_CAST_FROM_ASCII
         "LUDUS_EDITOR_SOURCE_DIR=\"${CMAKE_CURRENT_SOURCE_DIR}\""
         "LUDUS_EDITOR_PROJECT_ROOT=\"${PROJECT_SOURCE_DIR}\""
@@ -1571,8 +1571,9 @@ if(LUDUS_BUILD_TESTS AND NOT EMSCRIPTEN)
         endif()
     endif()
     if(APPLE AND LUDUS_EDITOR_RENDER_PREVIEW)
-        target_sources(ludus_editor_tests PRIVATE tests/render_native_tests.mm tests/viewport_native_navigation.mm
-            tests/mesh_shadow_world_tests.cpp)
+        target_sources(ludus_editor_tests PRIVATE tests/render_native_tests.mm tests/viewport_native_navigation.mm tests/lighting_room_tests.cpp)
+        target_include_directories(ludus_editor_tests PRIVATE "${PROJECT_SOURCE_DIR}/examples/lighting-room/src")
+        target_sources(ludus_editor_tests PRIVATE tests/mesh_shadow_world_tests.cpp)
         # Test-only GPU pixel oracle; no RHI private header enters editor production or the SDK.
         target_include_directories(ludus_editor_tests PRIVATE "${PROJECT_SOURCE_DIR}/modules/graphics/rhi/src")
         target_link_libraries(ludus_editor_tests PRIVATE "-framework Cocoa")
