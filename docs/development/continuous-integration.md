@@ -54,6 +54,21 @@ expands an integration PR into a full run; dispatch a batch on `main` when
 earlier platform qualification is needed. A pull request targeting any other
 branch runs the full tier. No workflow triggers on `push` or `merge_group`.
 
+The advisory RenderGraph camera pilot runs three named Catch2 tests from the existing Linux Editor
+build when a PR touches camera admission, raster capture or their pilot fixtures. The classification
+summary identifies unrelated changes. The Editor job summary maps the expected graph outcomes
+(finite conventional and finite reverse-Z admitted, infinite far rejected) and the Editor capture
+failure to their test IDs, local commands and observed results. The two reverse-Z graph outcomes
+share a single Catch2 test. A missing required test makes the pilot incomplete. The capture fixture
+can explicitly skip when it cannot acquire an offscreen adapter. Its summary records that capability
+reason. Run `python3 scripts/python/camera_pilot.py` from the repository root after the Linux Editor
+build to reproduce the selection. The report includes incremental Linux runner time for the selected
+tests. For a historical comparison, pass `--unfiltered` followed by the renderer and Editor Catch2
+XML files from the full suite on the same build. Use `--before-repair` on the failing batch.
+The table flags each in-scope failure the selection missed. Review other failed case IDs for scope
+and add each relevant ID with `--in-scope 'test name'`. The [pilot issue](https://github.com/The-Ludus-Project/Ludus/issues/1420) tracks the
+historical replay, the unfiltered comparison and the decision on requiring the check.
+
 The combined batch owns native compilation, unit tests, full analysis,
 sanitizers, browser builds, SDK qualification, editor journeys and build budgets.
 Its **Editor, shader worker and unit tests** job prepares
