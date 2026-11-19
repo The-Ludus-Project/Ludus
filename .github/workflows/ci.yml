@@ -354,6 +354,24 @@ jobs:
           PATH="$PWD/out/host-tools/venv/bin:$PWD/out/host-tools/bin:$PATH" PYTHONPATH=scripts/python out/host-tools/venv/bin/python -m unittest test_macos_release test_ludus_release test_ludus_itch_release -v
           out/host-tools/venv/bin/python tests/sdk_consumer/verify_macos_release.py --sdk "$PWD/out/install/macos-clang-release" --tools "$PWD" --cli "$PWD/out/project-tooling-venv/bin/ludus"
           LUDUS_SETUP_TEST_SDK="$PWD/out/install/macos-clang-development" LUDUS_RELEASE_TEST_SDK="$PWD/out/install/macos-clang-release" out/build/macos-clang-development/apps/editor/ludus_editor_tests '[.macos-release-journey]'
+      - name: Qualify Lighting Room in hosted Play and relocated Release
+        timeout-minutes: 10
+        env:
+          QT_QPA_PLATFORM: cocoa
+        run: |
+          export PATH="$PWD/out/host-tools/venv/bin:$PWD/out/host-tools/bin:$PATH"
+          sdk="$PWD/out/install/macos-clang-release"
+          sample=examples/lighting-room
+          ./scripts/ludus project repair "$sample" --tools "$PWD" --sdk "$sdk" --profile macos-clang-release --no-web
+          ./scripts/ludus --json project package "$sample" --profile macos-release --version 0.1.0 --sdk "$sdk" > "$RUNNER_TEMP/lighting-room-package.json"
+          package_dir=$(jq -er '.package' "$RUNNER_TEMP/lighting-room-package.json")
+          ./scripts/ludus project package verify "$package_dir"
+          relocated=$(mktemp -d "$RUNNER_TEMP/Lighting Room.XXXXXX")
+          ditto -x -k "$package_dir/game.zip" "$relocated"
+          export LUDUS_LIGHTING_ROOM_PLAYER="$relocated/lighting_room.app/Contents/MacOS/lighting_room"
+          python "$sample/qualify.py" "$LUDUS_LIGHTING_ROOM_PLAYER"
+          python "$sample/qualify.py" "$LUDUS_LIGHTING_ROOM_PLAYER"
+          out/build/macos-clang-development/apps/editor/ludus_editor_tests '[.lighting-room-hosted]'
       - name: Qualify relocated Behavior SDK and extracted macOS player
         run: out/host-tools/venv/bin/python tools/script-provider/verify_consumer.py out/install/macos-clang-development
       - name: Verify native Cocoa Editor project lifecycle
