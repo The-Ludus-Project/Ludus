@@ -96,7 +96,8 @@ def export_language_context(manifest, output, source, *, helper, context=None, r
     `_ludus_ray` and the generated `_ludus_graph/graph_schemas.luslh`). The context's URI is the
     staged source; prefix and suffix are empty.
     """
-    snapshot, value, schemas, programs, _, _, _, _, _, _, _ = build.prepare_sources(manifest, helper, root=root)
+    snapshot, value, schemas, *_ = build.prepare_sources(manifest, helper, root=root)
+    programs = snapshot.executable_language_programs
     snapshot.path(source)
     output = Path(output).resolve()
     build.require(not snapshot.root.is_relative_to(output) and not output.is_relative_to(snapshot.root),
@@ -109,7 +110,7 @@ def export_language_context(manifest, output, source, *, helper, context=None, r
     build.require(any(item['id'] == selected for item in candidates), 'Source', selected, 'context no longer includes this source')
     files = language._collect(snapshot, Path(helper).resolve(), build, source)
     include_directories = [language.SDK_DIRECTORY]
-    header = language.schema_header(source, programs, schemas, build)
+    header = language.schema_header(source, {p['id']: p for p in value['programs']}, schemas, build)
     if header is not None:
         files[language.GRAPH_DIRECTORY + '/' + language.SCHEMA_HEADER] = header
         include_directories.append(language.GRAPH_DIRECTORY)

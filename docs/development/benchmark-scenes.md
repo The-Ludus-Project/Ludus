@@ -180,6 +180,151 @@ image mismatches between controls. A future visibility resolve still needs its
 own derivative, coverage and raw linear output checks.
 [Qualification issue #1409](https://github.com/The-Ludus-Project/Ludus/issues/1409).
 
+## Measure normal-map minification
+
+The fixture in `tests/scenes/materials/normal_minification` measures how a subpixel
+normal field changes a metallic GGX highlight. It uses the production ForwardLit
+material decoder and lighting function. All three graphs shade an opaque white
+plane at authored perceptual roughness 0.25, metallic 1 and unit directional
+illuminance. Each cooked scene contains three bindings of the same packed surface
+texture with normal strengths 0, 1 and 2.
+
+The baseline samples the packed mip normally. The experimental graph stores
+the mean tangent slopes and the mean squared slope length in a companion sRGB8
+image. For this white test material the base-color slot is available to carry
+that image. Both the cooker and raster uploader filter it in linear light. The
+stored slopes come from the quantized base normals. For strength `s`, the fit
+points the normal along the scaled mean slope and uses
+`roughness_eff = (roughness^4 + s² × variance)^(1/4)`, clamped to 1.
+A trace variance at or below 0.003 is within the fixture's moment quantization
+tolerance. Constant normals and zero strength use the decoded material directly.
+The packed B and A channels still multiply perceptual roughness and metallic.
+A general material would need separate storage for moments and albedo.
+
+The reference graph runs on the original 64×64 tile. It loads mip-zero texels
+at 16×16 stratified positions in each projected pixel and shades each one before
+averaging radiance. Every graph exports the upper 24 bits of the achromatic
+scene-linear float into an RGBA8 target. Both hosts read the exported bytes
+before display conversion. The cooker case uses an 8192×64 source with adjusted
+UVs and the same original texel density. The import report must show reduction
+to 4096×32. Both routes use raster mip sampling after upload.
+
+### Reproduce the comparison
+
+From a native checkout with an installed renderer SDK, its shader tools, a built
+`ludus-cook` and `ludus_editor_tests`, and Python with NumPy 2, run the following.
+Set `SDK`, `COOKER`, `EDITOR_TESTS` and `SLANGC` to their absolute paths. Select
+the matching native graph profile with `--profile` (Metal shown). The generator
+also includes the WGSL target used by the editor’s compiled interface.
+
+```sh
+suite=tests/scenes/materials/normal_minification
+study=out/normal-minification
+python3 "$suite/fixture.py" "$study" --profile metal --cooker "$COOKER"
+for method in baseline candidate reference
+do
+  ./scripts/ludus render-graph build "$study/$method/main.lushader.json" \
+    "$study/build-$method" --helper "$SDK/lib/cmake/Ludus/shaders" --compiler "$SLANGC" \
+    --runtime-package "$study/$method.lurgrt"
+done
+cmake -S "$suite" -B "$study/consumer" -DCMAKE_PREFIX_PATH="$SDK" -DLUDUS_SLANG_COMPILER="$SLANGC"
+cmake --build "$study/consumer"
+python3 "$suite/study.py" sdk "$study" "$study/consumer/minification_capture"
+python3 "$suite/study.py" world "$study" "$EDITOR_TESTS" --compare-hosts
+```
+
+Each host writes raw frames and a `report.json` under its output directory. Use
+`--pattern wave` on both commands for a shorter distance and strength comparison.
+The sweep crosses one mip transition in sixteenth-octave steps at phases 0.125
+and 0.625 texels. Energy is the sum in the central 16×16 pixels. Width is the
+radiance-weighted RMS radius. Position is reported both as the centroid and as
+the mean location of equally bright peak pixels. Angular profiles measure the
+central four pixels as a light moves from −54° to +54° in 3° steps at view/light
+azimuths 0°, 45° and 90°. The report includes the full profiles, RMS width,
+trapezoidal integral and maximum shoulder error between 18° and 42° on either side.
+
+### Apple M5 Metal results
+
+On macOS 26.6, both hosts produced byte-identical RGBA exports for all 10,875
+matched frames. The native World viewport loaded each cooked scene and presented
+its graph revision before raw readback. The standalone app linked the installed
+macOS SDK built at `c8b3337c`. Its decoder also verified that the complete packed
+mip-zero RGBA images matched the authored normals, roughness and metallic bytes
+in all eleven cases.
+
+At 64×64 the periodic-wave whole-frame device medians were as follows, in
+microseconds. Each cell uses 432 timed frames after the first three requests.
+The device interval covers the graph draw and excludes CPU readback and display.
+At this size a one-microsecond difference does not establish a production cost.
+
+| Host | Runtime shipped | Runtime slope fit | Cooker shipped | Cooker slope fit | 256-sample reference |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| World viewport | 50.04 | 51.40 | 49.88 | 51.42 | 728.69 |
+| Installed SDK | 50.62 | 51.54 | 50.40 | 51.13 | 730.50 |
+
+For the periodic X-normal wave at strength 1, the following are the worst errors
+over both subtexel phases. Blend error is the largest absolute error between
+integer LODs. Adjacent excess is the largest change in the signed error between
+successive frames. Energy uses summed scene-linear radiance. Peak, centroid and
+width errors use pixels.
+
+| Filtering route and shader | Energy blend / adjacent | Peak blend / adjacent | Centroid blend / adjacent | Width blend / adjacent |
+| --- | ---: | ---: | ---: | ---: |
+| Runtime mips, shipped | 2038.83 / 1222.57 | 14 / 28 | 4.07 / 5.96 | 1.78 / 1.59 |
+| Runtime mips, slope fit | 250.88 / 92.84 | 15 / 28 | 1.41 / 1.40 | 0.51 / 0.50 |
+| Cooker reduction, shipped | 2038.83 / 1222.57 | 15 / 28 | 4.03 / 4.95 | 1.70 / 1.57 |
+| Cooker reduction, slope fit | 250.88 / 92.84 | 15 / 28 | 1.35 / 1.34 | 0.50 / 0.45 |
+
+At phase 0.125 and a footprint of 2.83 original texels per pixel, the central
+four pixels gave radiance 4.6440 shipped, 1.0883 fitted and 0.0768 resolved.
+At exactly two texels per pixel the corresponding values were 0.1309, 0.3845
+and 0.0794. The fit overshot the baseline at that phase of the transition.
+
+At strength 2 the worst runtime energy blend error fell from 1233.38 to 72.51.
+The cooker route gave the same two values. The brightest pixel still jumped
+between competing peaks. At strength 0 the candidate reproduced the baseline
+at each measured footprint. It also reproduced the baseline for the flat and
+uniformly tilted controls. At azimuth 0° the supersampled flat and tilted peaks
+fell at −9° and +6°. The varying pattern with matched tilt retained its +6° peak.
+Its fitted centroid was 4.98° against 5.16°, and its RMS width was 18.96°
+against 18.63°. Its angular integral was 1.07 against 0.09.
+
+The equal-moment tiles matched within 0.005 mean slope and 0.002 per covariance
+entry after normal packing. Their radial fourth moments were 0.00103 and 0.00434.
+At azimuth 0° their fitted peaks both fell at −9°, with widths 16.58° and
+16.78°. The supersampled peaks were −30° and −9°, with widths 21.16° and 21.56°.
+The maximum difference between the two shoulder profiles was 0.106 in the fit
+and 10.47 in resolved radiance. Rounding leaves a small difference in the
+stored summaries even at a footprint covering the full tile.
+
+Rotating the principal covariance axis by 90° exchanged the resolved X/Y widths
+of 27.58° and 20.21°. At 45° both tiles gave 25.15°. The scalar fit gave
+20.13°–20.14° across all three azimuths. The eight-direction isotropic control
+gave resolved widths of 27.71°–27.84° and a fitted width of 20.14°. The rotated
+case therefore requires directional information as well as total variance.
+
+Reversing which slope received the smoother roughness kept both marginal
+distributions fixed. At azimuth 0° the resolved peaks moved from −36° to +21°
+and differed by up to 106.14 in radiance at the same light angle. Both the
+shipped mip and the fit produced identical profiles for the two assignments
+on both routes. The worst fitted shoulder errors were 117.08 and 120.58.
+Normal moments alone cannot recover this normal–roughness correlation.
+
+Keep the fit experimental. It reduced energy and width error during minification,
+but the resolved lobe shape, orientation and joint response would need richer
+information. This planar benchmark isolates texture normals from geometric
+curvature, glints and mixtures of different materials.
+
+The analytic height gradients and resolve-first reference follow Blinn. The
+adjacent-frame comparison follows Becker and Max's reflected-intensity criterion.
+The paired distributions test prescribed normal densities, directional filtering
+and joint reflectance filtering. [Blinn (1978)](https://ohiostate.pressbooks.pub/app/uploads/sites/45/2017/09/blinn-bump.pdf),
+[Becker and Max (1993)](https://people.csail.mit.edu/ericchan/bib/pdf/p183-becker.pdf),
+[Kautz et al. (2001)](https://vccimaging.org/Publications/Kautz2001RBS/Kautz2001RBS.pdf),
+[Han et al. (2007)](https://www.cs.columbia.edu/cg/normalmap/),
+[Baker (2005)](https://renderwonk.com/publications/i3d2005-tutorial/),
+[Lagarde (2017)](https://openproblems.realtimerendering.com/s2017/02-PhysicallyBasedMaterialWhereAreWe.pdf#page=31).
+
 ## Measure raster hair on the character bust
 
 Compare the [raster hair-card lobe](../architecture/renderer-systems.md#raster-hair-cards)

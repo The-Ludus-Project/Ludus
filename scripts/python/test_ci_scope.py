@@ -13,6 +13,7 @@ import urllib.error
 from unittest import mock
 
 import ci_scope
+import pull_request_tests
 
 
 class DocumentationScopeTests(unittest.TestCase):
@@ -463,16 +464,32 @@ class RequiredGateTests(unittest.TestCase):
         # The one test step integration runs: quick generated-file comparisons on the built tree
         # (docs/development/continuous-integration.md#generated-sources).
         generated_sources = "Check checked-in generated sources"
+        # And the checked list of sub-second unit and Editor tests the build already produced
+        # (docs/development/continuous-integration.md#quick-pull-request-tests).
+        quick_tests = "Run quick unit and Editor tests"
+        camera_pilot = "Run advisory RenderGraph camera pilot"
+        titles = [title for title, _ in steps]
+        self.assertIn(quick_tests, titles)
+        self.assertIn(camera_pilot, titles)
         for title, body in steps:
             with self.subTest(step=title):
                 runs_tests = "ctest" in body or "ludus_editor_tests" in body or "upload-artifact" in title
-                if title == "Run advisory RenderGraph camera pilot":
+                if title == camera_pilot:
                     self.assertIn("validation_tier == 'integration' && needs.changes.outputs.camera_pilot == 'true'", body)
                     self.assertIn("continue-on-error: true", body)
                     self.assertIn("python3 scripts/python/camera_pilot.py", body)
                 elif title == generated_sources:
                     self.assertNotIn(guard, body)
                     self.assertIn("--label-regex '^generated-source$'", body)
+                elif title == quick_tests:
+                    self.assertNotIn(guard, body)
+                    self.assertIn("scripts/python/pull_request_tests.py out/build/linux-clang-development", body)
+                    # CTest reads the list after changing into the build tree, so the path is absolute.
+                    self.assertIn('--tests-from-file "$PWD/config/pull_request_tests.txt"', body)
+                    self.assertIn(f"--timeout {pull_request_tests.MAX_TIMEOUT_SECONDS} ", body)
+                    self.assertIn("QT_QPA_PLATFORM: offscreen", body)
+                    # The list is checked before it runs, so a renamed test fails instead of vanishing.
+                    self.assertLess(body.index("pull_request_tests.py"), body.index("--tests-from-file"))
                 elif title in compile_only or title.startswith(("actions/checkout", "./.github/actions/native-setup")):
                     self.assertNotIn(guard, body)
                 else:
@@ -567,9 +584,14 @@ class RequiredGateTests(unittest.TestCase):
                      and "cmake --build" in line)
         self.assertEqual(build, "run: out/host-tools/venv/bin/cmake --build --preset linux-clang-development")
         # Generated-source checks also carry unit; their own step runs them, so the batch skips them here.
-        self.assertIn("--label-regex '^(unit|editor)$' --label-exclude '^generated-source$' --no-tests=error", editor)
+        self.assertIn("--label-regex '^(unit|editor)$' --label-exclude '^generated-source$' "
+                      '--exclude-from-file "$PWD/config/pull_request_tests.txt" --no-tests=error', editor)
         self.assertIn("--tests-regex '^ludus_target_detection$' --output-on-failure --no-tests=error", editor)
         self.assertEqual(editor.count("--label-regex '^(unit|editor)$'"), 1, 'Tests carrying both labels must run once.')
+        # The quick tests every pull request runs are excluded here, so the batch runs each once.
+        batch_run = next(line for line in editor.splitlines() if "--label-regex '^(unit|editor)$'" in line)
+        self.assertIn('--exclude-from-file "$PWD/config/pull_request_tests.txt"', batch_run)
+        self.assertEqual(editor.count('--tests-from-file "$PWD/config/pull_request_tests.txt"'), 1)
         self.assertEqual(editor.count('--label-regex'), 2, 'Only the generated-source step adds a label run.')
         self.assertIn('QT_QPA_PLATFORM: offscreen', editor)
         self.assertIn("'[.script-journey]'", editor)

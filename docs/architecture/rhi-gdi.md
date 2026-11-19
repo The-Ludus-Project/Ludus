@@ -1069,7 +1069,10 @@ it hosts only its primary surface. R14c is implemented on Metal, Vulkan, Direct3
 [multiple-owner contract](../development/fullscreen-rendering.md#multiple-device-owners-r14c):
 the facade keeps per-owner registries, frames, completion ordinals, transfer
 rings, preparation workers and loss, and every backend gives each owner its own
-device state, device and queue. Vulkan owners share one instance and host an
+device state and queue. Each Vulkan, WebGPU and WebGL 2 owner has its own device
+or context. Direct3D 12 devices are per-adapter singletons, so Direct3D 12 owners
+on one adapter share one device and its removal, and Metal owners may share one
+`MTLDevice`. Vulkan owners share one instance and host an
 adopted native device only alone. In the browser each owner binds its own WebGPU
 device or WebGL 2 context and canvas, so WebGPU and WebGL 2 owners can run side
 by side.

@@ -292,9 +292,16 @@ TEST_CASE("R14c device owners keep isolated resources, frames and native identit
     REQUIRE(rhi::GetNativeDeviceInfo(secondLease, secondNative) == rhi::RasterStatus::Ready);
     CHECK(firstNative.Identity.Api == secondNative.Identity.Api);
     CHECK(firstNative.Identity.CommandQueue != secondNative.Identity.CommandQueue);
-    if (firstNative.Identity.Api != rhi::Backend::Metal)
+    // Thanks to Microsoft, "D3D12CreateDevice function", Remarks: Direct3D 12 devices are
+    // singletons per adapter, so both owners on this adapter hold the process's one device.
+    // https://learn.microsoft.com/windows/win32/api/d3d12/nf-d3d12-d3d12createdevice
+    if (firstNative.Identity.Api == rhi::Backend::Direct3D12)
     {
-        // Metal owners may share one MTLDevice; Vulkan and Direct3D 12 create a device per owner.
+        CHECK(firstNative.Identity.Device == secondNative.Identity.Device);
+    }
+    else if (firstNative.Identity.Api != rhi::Backend::Metal)
+    {
+        // Metal owners may share one MTLDevice; Vulkan creates a device per owner.
         CHECK(firstNative.Identity.Device != secondNative.Identity.Device);
     }
     REQUIRE(rhi::ReleaseNativeDevice(firstLease) == rhi::RasterStatus::Ready);
@@ -334,25 +341,34 @@ TEST_CASE("R14c device owners select catalog adapters independently up to capaci
     OwnerCleanup owners;
     rhi::AdapterCatalog catalog;
     REQUIRE(rhi::GetAdapterCatalog(catalog) == rhi::AdapterStatus::Ready);
-    usize selected = catalog.Count;
-    for (usize i = 0; i < catalog.Count && selected == catalog.Count; ++i)
+    // The automatic owner's adapter honours the host's adapter class (a test lane may require
+    // WARP or hardware); the explicit owner then requests that catalog entry by identity.
+    rhi::SurfaceHandle automaticSurface;
+    if (CreateOwner(SMALL_EXTENT, SMALL_EXTENT, {}, owners.Devices[1], automaticSurface) == false)
     {
-        if (catalog.Adapters[i].HasBackendBaseline == true)
+        SKIP("No Metal adapter on this host");
+    }
+    rhi::DeviceInfo info;
+    REQUIRE(rhi::GetDeviceInfo(owners.Devices[1], info) == rhi::DeviceStatus::Ready);
+    usize selected = catalog.Count;
+    for (usize i = 0; i < catalog.Count; ++i)
+    {
+        // Reported with the lookup below when the automatic adapter is missing from the catalog.
+        UNSCOPED_INFO("Catalog adapter " << i << ": " << catalog.Adapters[i].Name.GetData() << ", kind "
+                                         << static_cast<uint32>(catalog.Adapters[i].Kind) << ", baseline "
+                                         << catalog.Adapters[i].HasBackendBaseline);
+        if (catalog.Adapters[i].Identity == info.Adapter.Identity)
         {
             selected = i;
         }
     }
-    if (selected == catalog.Count)
-    {
-        SKIP("No adapter meets the backend baseline");
-    }
+    INFO("Automatic adapter: " << info.Adapter.Name.GetData());
+    REQUIRE(selected < catalog.Count);
+    CHECK(catalog.Adapters[selected].HasBackendBaseline == true);
     rhi::DeviceDescription chosen;
     chosen.Adapter = catalog.Adapters[selected].Identity;
     rhi::SurfaceHandle chosenSurface;
     REQUIRE(CreateOwner(SMALL_EXTENT, SMALL_EXTENT, chosen, owners.Devices[0], chosenSurface) == true);
-    rhi::SurfaceHandle automaticSurface;
-    REQUIRE(CreateOwner(SMALL_EXTENT, SMALL_EXTENT, {}, owners.Devices[1], automaticSurface) == true);
-    rhi::DeviceInfo info;
     REQUIRE(rhi::GetDeviceInfo(owners.Devices[0], info) == rhi::DeviceStatus::Ready);
     CHECK(info.Adapter.Identity == catalog.Adapters[selected].Identity);
     CHECK(info.Description.Adapter == catalog.Adapters[selected].Identity);
