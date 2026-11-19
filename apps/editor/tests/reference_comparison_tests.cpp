@@ -543,11 +543,11 @@ TEST_CASE("Saved World raster export from the authored camera", "[.sdk-raster-ba
     REQUIRE(information.Startup.SelectedBackend == rhi::Backend::Vulkan);
     ViewportRasterSource source;
     source.PackagePath = package;
-    source.OutputTarget = QStringLiteral("Main/color");
     REQUIRE(ViewportGraphCapture::FindExportResource(package,
                                                      QStringLiteral("Main/output"),
                                                      source.OutputResource,
-                                                     error) == true);
+                                                     error,
+                                                     &source.OutputTarget) == true);
     ViewportRasterCapture capture;
     const QSize requested(96, 64);
     QSize extent;

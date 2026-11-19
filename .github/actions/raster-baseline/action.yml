@@ -1,0 +1,43 @@
+name: Linux Vulkan raster baseline
+description: Compare an installed SDK app and the Editor with the analytical image.
+inputs:
+  editor:
+    description: Built Linux Editor test executable.
+    required: true
+runs:
+  using: composite
+  steps:
+    - name: Compare saved World raster captures on Linux Vulkan
+      shell: bash
+      env:
+        EDITOR_TESTS: ${{ inputs.editor }}
+      run: |
+        set -euo pipefail
+        build=out/build/linux-clang-development
+        tools="$PWD/out/host-tools/venv/bin"
+        fixture=tests/sdk_consumer/raster_baseline
+        scratch="$(mktemp -d "$RUNNER_TEMP/raster-baseline.XXXXXX")"
+        "$tools/cmake" --install "$build" --prefix "$scratch/sdk"
+        "$tools/python" scripts/python/engine.py bundle-sdk-dependencies linux-clang-development --prefix "$scratch/sdk"
+        mv "$scratch/sdk" "$scratch/relocated-sdk"
+        cp -R "$fixture" "$scratch/consumer"
+        "$tools/cmake" -S "$scratch/consumer" -B "$scratch/build" -G Ninja \
+          -DCMAKE_PREFIX_PATH="$scratch/relocated-sdk" -DCMAKE_BUILD_TYPE=RelWithDebInfo \
+          -DCMAKE_CXX_COMPILER="$PWD/out/host-tools/bin/clang++" -DCMAKE_MAKE_PROGRAM="$tools/ninja" \
+          -DLUDUS_SLANG_COMPILER="$PWD/out/shader-tools/slang/bin/slangc" \
+          -DLUDUS_SPIRV_VALIDATOR="$PWD/out/shader-tools/spirv-tools/usr/bin/spirv-val"
+        "$tools/cmake" --build "$scratch/build"
+        "$tools/cmake" --install "$scratch/build" --prefix "$scratch/package"
+        "$tools/python" -m pip install numpy Pillow
+        driver="$(dpkg-query -L mesa-vulkan-drivers | awk '/\/lvp_icd(\.[[:alnum:]_]+)?\.json$/ {print}')"
+        test -r "$driver"
+        "$tools/python" "$fixture/verify.py" --editor "$EDITOR_TESTS" \
+          --graph "$build/apps/editor/ludus-graphs/ludus_editor_application/editor_renderer_static/editor_renderer_static.lurgrt" \
+          --executable "$scratch/package/raster_capture" --driver "$driver" --evidence out/raster-baseline
+    - name: Retain raster baseline images, comparisons and capture logs
+      if: always()
+      uses: actions/upload-artifact@v4
+      with:
+        name: raster-baseline-vulkan
+        path: out/raster-baseline/
+        retention-days: 14

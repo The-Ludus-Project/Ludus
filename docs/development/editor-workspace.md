@@ -3356,7 +3356,9 @@ top-left-origin image its red face therefore covers columns 32–47 and rows
 fall strictly inside or outside the silhouette. The graph writes flat colour
 at the exact RGBA8 endpoints with one sample per pixel.
 
-Open the CI artifact `raster-baseline-vulkan`. The `baseline.html` heatmaps
+The full Linux Editor batch runs this check. To run it on a branch, dispatch
+the `ci` workflow with `validation_tier=raster-baseline`. Open the resulting
+`raster-baseline-vulkan` artifact. The `baseline.html` heatmaps
 and `baseline.json` metrics compare two fresh captures per host with the
 independent rectangle. The zero RMSE threshold requires exact decoded RGB
 repeatability. The negative control changes the saved tint from red to green

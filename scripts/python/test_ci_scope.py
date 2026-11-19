@@ -698,7 +698,7 @@ class CancelledRunTests(unittest.TestCase):
         workflow = (Path(__file__).resolve().parents[2] / ".github/workflows/ci.yml").read_text()
         gate = workflow.split("\n  linux:\n", 1)[1]
         header = gate.split("\n    steps:", 1)[0]
-        self.assertIn("    if: always() && (github.event_name != 'workflow_dispatch' || (inputs.mcmc_vulkan_parity_only != true && inputs.sanitizer_experiment != 'rebuild' && inputs.sanitizer_experiment != 'shared'))\n", header)
+        self.assertIn("    if: always() && (github.event_name != 'workflow_dispatch' || (inputs.mcmc_vulkan_parity_only != true && inputs.sanitizer_experiment != 'rebuild' && inputs.sanitizer_experiment != 'shared' && inputs.validation_tier != 'raster-baseline'))\n", header)
         self.assertIn("    permissions:\n      contents: read\n      actions: read", header)
         self.assertIn("          GITHUB_TOKEN: ${{ github.token }}\n        run: python3 scripts/python/ci_scope.py gate",
                       gate)
@@ -708,6 +708,9 @@ class CancelledRunTests(unittest.TestCase):
         changes = workflow.split("\n  changes:\n", 1)[1].split("\n  mcmc-vulkan-parity:\n", 1)[0]
         self.assertIn("if: github.event_name != 'workflow_dispatch' || (inputs.mcmc_vulkan_parity_only != true", changes)
         focused = workflow.split("\n  mcmc-vulkan-parity:\n", 1)[1].split("\n  macos-compile:\n", 1)[0]
+        raster = changes.split("\n  raster-baseline:\n", 1)[1]
+        self.assertIn("if: github.event_name == 'workflow_dispatch' && inputs.validation_tier == 'raster-baseline'", raster)
+        self.assertIn("uses: ./.github/actions/raster-baseline", raster)
         self.assertIn("if: github.event_name == 'workflow_dispatch' && inputs.mcmc_vulkan_parity_only == true", focused)
         self.assertIn("ref: ${{ inputs.batch_sha || github.sha }}", focused)
         self.assertIn("Acquire::Retries=3", focused)
