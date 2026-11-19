@@ -912,9 +912,10 @@ that can enter the pool when both aspects stay internal.
 Hans-Kristian Arntzen's [“Render graphs and Vulkan — a deep dive,” August 2017, “Render target aliasing”](https://themaister.net/blog/2017/08/15/render-graphs-and-vulkan-a-deep-dive/#render-target-aliasing)
 describes reusing an image within a frame when logical lifetimes do not overlap.
 Ludus's current pool returns a backing when its graph releases it and checks
-submission completion before reuse. An authored sampled intermediate gives a
-workload for measuring that path with the serial control. See
-[RG4 usage, evidence and limits](../development/render-graph-authoring.md#pool-transient-attachments-rg4).
+submission completion before reuse. The
+[authored bilinear Metal qualification](../development/render-graph-authoring.md#qualify-an-authored-bilinear-intermediate-on-metal)
+compares the full exported image with the serial control and records the cost
+of retaining those intermediate backings across generations.
 
 ### Logical resource uses and submitted work
 
