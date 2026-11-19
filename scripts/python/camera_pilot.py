@@ -36,10 +36,47 @@ def outcome(root, name, adapter_optional):
     return "Passed"
 
 
+def compare_unfiltered(focused, reports, extra_cases=()):
+    """Compare individual in-scope failures even when both invocations are red."""
+    observed = ET.Element("Cases")
+    for path in reports:
+        root = ET.parse(path).getroot()
+        if root.tag != "Catch2TestRun":
+            raise ValueError(f"Expected Catch2 XML in {path}")
+        observed.extend(root.findall("TestCase"))
+
+    rows = ["", "| Catch2 ID | Focused | Unfiltered | Comparison |", "|---|---|---|---|"]
+    agrees = True
+    for name in dict.fromkeys((*focused, *extra_cases)):
+        selected = focused.get(name, "Outside selection")
+        full = outcome(observed, name, name in (CAPTURE, OLD_CAPTURE))
+        if full == "Failed" and selected != "Failed":
+            comparison = "Selection miss"
+        elif selected != full or full.startswith("Incomplete"):
+            comparison = "Review disagreement"
+        else:
+            comparison = "Agrees"
+        agrees &= comparison == "Agrees"
+        rows.append(f"| {name} | {selected} | {full} | {comparison} |")
+    for case in observed.findall("TestCase"):
+        name = case.get("name")
+        result = case.find("OverallResult")
+        if name not in focused and name not in extra_cases and result is not None and result.get("success") == "false":
+            rows.append(f"| {name} | Outside selection | Failed | Review scope |")
+            agrees = False
+    return rows, agrees
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--before-repair", action="store_true", help="select the #1326 Editor fixture")
+    parser.add_argument("--unfiltered", type=Path, nargs="+", metavar="CATCH_XML",
+                        help="compare with per-case Catch2 reports from the unfiltered run on this build")
+    parser.add_argument("--in-scope", action="append", default=[], metavar="TEST_ID",
+                        help="include another independently identified in-scope case in the comparison")
     args = parser.parse_args()
+    if args.in_scope and not args.unfiltered:
+        parser.error("--in-scope requires --unfiltered")
     capture = OLD_CAPTURE if args.before_repair else CAPTURE
     inventory = [
         ("Finite conventional depth", "admit", RENDERER, CONVENTIONAL),
@@ -71,6 +108,14 @@ def main():
     seconds = time.monotonic() - start
     rows.extend(["", f"Focused execution: {seconds:.3f} s ({seconds / 60:.4f} Linux runner-minutes)."])
     complete = all(s == "Passed" or s.startswith("Inapplicable") for s in results.values())
+    if args.unfiltered:
+        try:
+            comparison, agrees = compare_unfiltered(results, args.unfiltered, args.in_scope)
+            rows.extend(comparison)
+            complete = complete and agrees
+        except (OSError, ET.ParseError, ValueError) as error:
+            rows.append(f"Incomplete unfiltered comparison ({error})")
+            complete = False
     rows.append("Pilot result: " + ("complete" if complete else "failed or incomplete"))
     summary = "\n".join(rows) + "\n"
     print(summary)

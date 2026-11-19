@@ -5,6 +5,7 @@ import os
 from pathlib import Path
 import subprocess
 import sys
+import tempfile
 import unittest
 from unittest.mock import patch
 import xml.etree.ElementTree as ET
@@ -45,6 +46,21 @@ class CameraPilotTests(unittest.TestCase):
         code, report = self.report(skip=pilot.CAPTURE)
         self.assertEqual(code, 0)
         self.assertIn(f"Inapplicable ({pilot.ADAPTER_SKIP})", report)
+
+    def test_unfiltered_failure_missed_even_when_selected_capture_also_fails(self):
+        root = ET.Element("Catch2TestRun")
+        for name in (pilot.REVERSE, pilot.CAPTURE, "Additional camera regression"):
+            case = ET.SubElement(root, "TestCase", name=name)
+            ET.SubElement(case, "OverallResult", success="false")
+        with tempfile.TemporaryDirectory() as directory:
+            report = Path(directory) / "unfiltered.xml"
+            ET.ElementTree(root).write(report)
+            rows, agrees = pilot.compare_unfiltered(
+                {pilot.REVERSE: "Passed", pilot.CAPTURE: "Failed"}, [report], ["Additional camera regression"])
+        self.assertFalse(agrees)
+        self.assertIn(f"| {pilot.REVERSE} | Passed | Failed | Selection miss |", rows)
+        self.assertIn("| Additional camera regression | Outside selection | Failed | Selection miss |", rows)
+        self.assertIn(f"| {pilot.CAPTURE} | Failed | Failed | Agrees |", rows)
 
     def test_missing_case_and_failure_both_remain_visible(self):
         code, report = self.report(omit=pilot.CONVENTIONAL, fail=pilot.CAPTURE)
