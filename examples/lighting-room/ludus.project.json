@@ -1,0 +1,25 @@
+{
+  "version": 2,
+  "name": "Lighting Room",
+  "provider": "cmake",
+  "source_dir": ".",
+  "preset": "macos-clang-development",
+  "target": "lighting_room",
+  "run": {
+    "cwd": ".",
+    "args": []
+  },
+  "engine": {
+    "version": "0.1.0",
+    "components": [
+      "GraphicsRenderer",
+      "Platform",
+      "FoundationTime"
+    ],
+    "features": []
+  },
+  "template": {
+    "id": "minimal",
+    "version": 7
+  }
+}
