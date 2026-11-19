@@ -4,6 +4,7 @@
 // path). Tests prove pending, failed and successful publication keep or replace the last
 // drawable view as documented, and that preview pixels equal the live path's pixels. Hosts
 // without a GPU adapter skip; this is not native Qt presentation evidence.
+#include "../../../tests/scenes/materials/normal_minification/sweep.h"
 #include "editor_default_graph.h"
 #include "editor_renderer_static.h"
 #include "internal/builtin_world.h"
@@ -173,13 +174,16 @@ struct DeviceFixture final
     rhi::DeviceHandle Device{};
     rhi::SurfaceHandle Surface{};
     bool IsAvailable = false;
-    explicit DeviceFixture(const rhi::StorageLimits& storage = {}, bool shouldRequestRay = false)
+    explicit DeviceFixture(const rhi::StorageLimits& storage = {},
+                           bool shouldRequestRay = false,
+                           bool shouldEnableGpuTiming = false)
     {
         rhi::Shutdown();
         rhi::DeviceDescription description;
         description.Required.PortableRaster = true;
         description.Preferred.RayQueries = shouldRequestRay;
         description.Storage = storage;
+        description.EnableGpuTiming = shouldEnableGpuTiming;
         rhi::StartupInfo failure;
         const rhi::DeviceStatus started =
             rhi::CreateDevice({}, { .Width = 1, .Height = 1 }, description, Device, Surface, &failure);
@@ -719,6 +723,88 @@ TEST_CASE("RG3b conventional views reuse the bounds published with each scene", 
     math::Aabb3 unchanged = publishedWorld;
     CHECK(viewport.TryGetSceneBounds(unchanged) == false);
     CHECK(unchanged.Min == publishedWorld.Min);
+}
+
+// Opt-in capture for the matched World and installed-SDK minification experiment.
+TEST_CASE("Capture normal minification through the World viewport", "[.normal-minification]")
+{
+    namespace study = ludus::qa::normal_minification;
+    QFile sceneFile(qEnvironmentVariable("LUDUS_MINIFICATION_SCENE"));
+    if (sceneFile.fileName().isEmpty() == true)
+    {
+        SKIP("Run the normal minification study with its cooked scenes and frame requests");
+    }
+    REQUIRE(sceneFile.open(QIODevice::ReadOnly) == true);
+    QFile requests(qEnvironmentVariable("LUDUS_MINIFICATION_REQUESTS"));
+    QFile frames(qEnvironmentVariable("LUDUS_MINIFICATION_FRAMES"));
+    REQUIRE(requests.open(QIODevice::ReadOnly) == true);
+    REQUIRE(frames.open(QIODevice::WriteOnly | QIODevice::Truncate) == true);
+    constexpr char LEVEL[] =
+        R"({"id":"minification","objects":[{"id":"strength-0"},{"id":"strength-1"},{"id":"strength-2"}]})";
+    RenderScene scene;
+    QString error;
+    REQUIRE(RenderScene::LoadCooked(sceneFile.readAll(), QJsonDocument::fromJson(LEVEL).object(), scene, error, {}) ==
+            true);
+    REQUIRE(scene.AuthoredLights.Count == 1);
+    scene.RasterUnshadowedLightIds.append(scene.AuthoredLights.Lights[0].SourceId);
+    rhi::StorageLimits storage;
+    storage.ResourcesPerKind = study::DEVICE_RESOURCES;
+    DeviceFixture device(storage, false, true);
+    REQUIRE(device.IsAvailable == true);
+    RenderPreview viewport;
+    viewport.Resize(study::EXTENT, study::EXTENT);
+    REQUIRE(viewport.SetScene(scene) == true);
+    RenderGraphPreview preview = MakePreview();
+    REQUIRE(preview.Attach(device.Device, device.Surface) == true);
+    preview.SetReferenceSize({study::EXTENT, study::EXTENT});
+    uint64 revision = 0;
+    math::Vector3 previousLightWorld{};
+    while (requests.atEnd() == false)
+    {
+        study::Frame frame;
+        REQUIRE(requests.read(reinterpret_cast<char*>(&frame), sizeof(frame)) == sizeof(frame));
+        renderer::ViewDescription camera;
+        REQUIRE(study::MakeView(frame, scene.Definition->VerticalFov, camera) == true);
+        ++revision;
+        if (revision == 1 || (frame.TowardsLightWorld == previousLightWorld) == false)
+        {
+            RenderScene illuminated = viewport.Scene();
+            illuminated.AuthoredLights.Lights[0].Direction = frame.TowardsLightWorld * -1.F;
+            RenderGraphExtraction extraction;
+            REQUIRE(MakeRenderGraphExtraction(illuminated, camera, revision, extraction, error) == true);
+            extraction.ContentRevision = revision;
+            preview.SetExtraction(extraction);
+            previousLightWorld = frame.TowardsLightWorld;
+        }
+        else
+        {
+            preview.SetCamera(camera, revision);
+        }
+        if (revision == 1)
+        {
+            const RenderGraphPreviewLoad loaded = preview.Load(qEnvironmentVariable("LUDUS_MINIFICATION_GRAPH"));
+            INFO(preview.GetStatus().toStdString());
+            REQUIRE(loaded == RenderGraphPreviewLoad::Staged);
+        }
+        const bool hasTimer = rhi::ArmGpuTiming(device.Device) == rhi::RasterStatus::Ready;
+        const bool hasPresented = TickUntil(preview, [&]() {
+            return preview.GetPresentedRevision() == revision || preview.WasExtractionRejected(revision) == true;
+        });
+        INFO(preview.GetDisplayStatus().toStdString());
+        REQUIRE(hasPresented == true);
+        REQUIRE(preview.GetPresentedRevision() == revision);
+        const InspectedTexture& output = preview.GetOutputTexture();
+        REQUIRE(output.IsValid() == true);
+        REQUIRE(output.Encoding == TexelEncoding::Rgba8Unorm);
+        REQUIRE(output.Width == study::EXTENT);
+        REQUIRE(output.Height == study::EXTENT);
+        const float64 nanoseconds = study::GetFrameNanoseconds(device.Device, hasTimer);
+        REQUIRE(frames.write(reinterpret_cast<const char*>(&nanoseconds), sizeof(nanoseconds)) == sizeof(nanoseconds));
+        REQUIRE(frames.write(output.Bytes) == output.Bytes.size());
+    }
+    REQUIRE(revision > 0);
+    REQUIRE(frames.flush() == true);
+    preview.Detach();
 }
 
 TEST_CASE("RG3b preview renders a cooked World through the editor camera", "[editor][render-graph][preview]")

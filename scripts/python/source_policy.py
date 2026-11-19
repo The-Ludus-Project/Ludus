@@ -8,6 +8,7 @@ import re
 import subprocess
 from pathlib import Path
 
+from authored_lines import authored_lines
 from formatting import TOKENS, format_source
 from naming_rules import (
     abbreviation_findings,
@@ -209,6 +210,10 @@ def magic_numbers(code: str) -> list[int]:
 
 
 def added_lines(before: str, after: str) -> set[int]:
+    """Lines of ``after`` that differ from ``before`` by line alignment.
+
+    The git-driven gate keeps only those authored_lines also attributes to the change.
+    """
     lines = set()
     for operation, _, _, start, end in difflib.SequenceMatcher(
         None, before.splitlines(), after.splitlines(), autojunk=False
@@ -598,7 +603,14 @@ def check(
             ["git", "show", f"{base}:{name}"], cwd=root, text=True, capture_output=True
         )
         before = previous.stdout if previous.returncode == 0 else ""
-        for line, message in violations(name, source, added_lines(before, source)):
+        changed = added_lines(before, source)
+        found = violations(name, source, changed)
+        if found:
+            # A line the diff adds counts only if this change wrote it: a moved block keeps
+            # its origin, whatever the diff aligns (authored_lines.py). Blame runs only here,
+            # so a clean change costs nothing extra.
+            found = violations(name, source, changed & authored_lines(root, base, name, head))
+        for line, message in found:
             failures.append(f"{name}:{line}: {message}")
     return failures
 
