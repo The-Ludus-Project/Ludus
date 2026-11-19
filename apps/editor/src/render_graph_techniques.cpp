@@ -3,7 +3,6 @@
 #include "internal/render_graph_shader_creation.h"
 
 #include <QDir>
-#include <QFileInfo>
 #include <QJsonDocument>
 #include <QLatin1StringView>
 
@@ -250,8 +249,7 @@ PrepareRenderGraphTechniques(RenderGraphSnapshot& inoutSnapshot, const QString& 
                 const QString kind = node.value(QStringLiteral("kind")).toString();
                 if (kind == QStringLiteral("Subgraph"))
                 {
-                    const QString asset = QDir::cleanPath(
-                        QDir(QFileInfo(file).path()).filePath(node.value(QStringLiteral("asset")).toString()));
+                    const QString asset = QDir::cleanPath(node.value(QStringLiteral("asset")).toString());
                     if (inoutSnapshot.Files.contains(asset) == true && files.contains(asset) == false)
                     {
                         files.append(asset);

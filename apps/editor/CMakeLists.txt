@@ -427,6 +427,10 @@ function(ludus_editor_add_default_render_graph target)
         string(REPLACE "_" "-" template_identity "${template_directory}")
         set(visibility_template "${PROJECT_SOURCE_DIR}/modules/graphics/renderer/render_graphs/${template_directory}")
         file(GLOB template_sources CONFIGURE_DEPENDS "${visibility_template}/main_shaders/*.slang")
+        if(template_directory STREQUAL "visibility_buffer")
+            list(APPEND template_sources "${visibility_template}/resolve_library.lurender.json"
+                "${visibility_template}/resolve.lushader.json.in")
+        endif()
         if(template_directory STREQUAL "light_transformer")
             list(APPEND template_sources "${visibility_template}/light_transformer/model.json")
         endif()
@@ -1771,6 +1775,21 @@ if(LUDUS_BUILD_TESTS AND NOT EMSCRIPTEN)
     # The combined canvas suite exceeds 180 s on macOS, including ASan; keep every case
     # under its existing hang deadline without accumulating all cases into that deadline.
     ludus_add_editor_test_shards(ludus_render_graph_configuration_tests 2 "${graph_configuration_timeout}" "editor;render-graph")
+    if(LUDUS_SLANG_COMPILER AND LUDUS_SPIRV_CROSS AND (APPLE OR LUDUS_SPIRV_VALIDATOR))
+        set(opaque_resolve_validator_arguments)
+        if(LUDUS_SPIRV_VALIDATOR)
+            list(APPEND opaque_resolve_validator_arguments --validator "${LUDUS_SPIRV_VALIDATOR}")
+        endif()
+        add_test(NAME ludus_editor_opaque_resolve_cook
+            COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/tests/cook_canvas_opaque_resolve.py"
+                "$<TARGET_FILE:ludus_render_graph_configuration_tests>" "${PROJECT_SOURCE_DIR}/scripts/python"
+                --helper "${editor_test_render_graph_helper}" --compiler "${LUDUS_SLANG_COMPILER}"
+                --spirv-cross "${LUDUS_SPIRV_CROSS}"
+                ${opaque_resolve_validator_arguments})
+        set_tests_properties(ludus_editor_opaque_resolve_cook PROPERTIES LABELS "editor;render-graph"
+            TIMEOUT "${graph_configuration_timeout}" ENVIRONMENT "${editor_test_environment}")
+    endif()
+
 
     add_executable(ludus_render_graph_live_build_tests tests/render_graph_live_build_tests.cpp)
     set_target_properties(ludus_render_graph_live_build_tests PROPERTIES AUTOMOC ON)

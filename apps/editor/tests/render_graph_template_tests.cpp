@@ -890,6 +890,10 @@ TEST_CASE("Visibility configurations apply from the canvas and preserve authored
     {
         identity = QStringLiteral("visibility-buffer");
     }
+    SECTION("opaque material resolve")
+    {
+        identity = QStringLiteral("opaque-material-resolve");
+    }
     SECTION("visibility and secondary rays")
     {
         identity = QStringLiteral("visibility-secondary-rays");
@@ -900,7 +904,8 @@ TEST_CASE("Visibility configurations apply from the canvas and preserve authored
     }
     const bool hasSecondaryRays = identity == QStringLiteral("visibility-secondary-rays");
     const bool hasTiledLighting = identity == QStringLiteral("tiled-vbuffer-nee");
-    const bool hasRays = hasSecondaryRays == true || hasTiledLighting == true;
+    const bool hasOpaqueResolve = identity == QStringLiteral("opaque-material-resolve");
+    const bool hasShadedOutput = identity != QStringLiteral("visibility-buffer");
     QTemporaryDir project;
     QWidget properties;
     RendererWorkspace workspace({FindTemplatePython(), {}, QStringLiteral(LUDUS_EDITOR_PROJECT_ROOT)});
@@ -912,10 +917,14 @@ TEST_CASE("Visibility configurations apply from the canvas and preserve authored
     properties.hide();
     workspace.show();
     const QJsonObject originalRoot = QJsonDocument::fromJson(workspace.GetDocument().GetDraft(ROOT_GRAPH)).object();
-    REQUIRE(workspace.CreateSubgraph(QStringLiteral("VisibilityLibrary")) == true);
-    REQUIRE(workspace.CreateConfiguration(QStringLiteral("Visibility")) == true);
+    if (hasOpaqueResolve == false)
+    {
+        REQUIRE(workspace.CreateSubgraph(QStringLiteral("VisibilityLibrary")) == true);
+        REQUIRE(workspace.CreateConfiguration(QStringLiteral("Visibility")) == true);
+    }
     RenderGraphDocument& document = workspace.GetDocument();
-    const QString library = QStringLiteral("VisibilityLibrary.lurender.json");
+    const QString library = hasOpaqueResolve == true ? QStringLiteral("Visibility.lurender.json")
+                                                     : QStringLiteral("VisibilityLibrary.lurender.json");
     const QString manifest = QStringLiteral("main.lushader.json");
     const QByteArray beforeLibrary = document.GetDraft(library);
     const QByteArray beforeManifest = document.GetDraft(manifest);
@@ -940,7 +949,15 @@ TEST_CASE("Visibility configurations apply from the canvas and preserve authored
             QLineEdit* nameOrNull =
                 dialogOrNull->findChild<QLineEdit*>(QStringLiteral("renderGraphTemplateConfiguration"));
             REQUIRE(nameOrNull != nullptr);
-            CHECK(nameOrNull->text() == QStringLiteral("Visibility"));
+            if (identity == QStringLiteral("opaque-material-resolve"))
+            {
+                CHECK(nameOrNull->text() == QStringLiteral("OpaqueMaterialResolve"));
+                nameOrNull->setText(QStringLiteral("Visibility"));
+            }
+            else
+            {
+                CHECK(nameOrNull->text() == QStringLiteral("Visibility"));
+            }
             QDialogButtonBox* buttonsOrNull = dialogOrNull->findChild<QDialogButtonBox*>();
             REQUIRE(buttonsOrNull != nullptr);
             buttonsOrNull->button(QDialogButtonBox::Apply)->click();
@@ -955,7 +972,21 @@ TEST_CASE("Visibility configurations apply from the canvas and preserve authored
     QApplication::sendEvent(canvas.viewport(), &context);
     CHECK(inspector->isVisible() == false);
     CHECK(canvas.GetConfiguration() == QStringLiteral("Visibility"));
-    REQUIRE(document.GetDraft(library).contains("VisibilityGeometry") == true);
+    if (hasOpaqueResolve == true)
+    {
+        CHECK(document.GetDraft(ROOT_GRAPH).contains("Visibility.lurender.json") == true);
+        const QString producerFile = QStringLiteral("visibility_buffer/library.lurender.json");
+        CHECK(document.GetDraft(library).contains(producerFile.toUtf8()) == true);
+        CHECK(document.GetDraft(library).contains("VisibilityResolveOpaqueMaterial") == true);
+        CHECK(document.GetDraft(library).contains("TriangleLoop") == true);
+        CHECK(document.GetDraft(producerFile).contains("VisibilityGeometry") == true);
+        CHECK(document.GetDraft(QStringLiteral("opaque_material_resolve/main_shaders/resolve.slang"))
+                  .contains("LoadVisibilitySurface") == true);
+    }
+    else
+    {
+        REQUIRE(document.GetDraft(library).contains("VisibilityGeometry") == true);
+    }
     CHECK(document.GetDraft(library).contains("VisibilitySecondaryGenerate") == hasSecondaryRays);
     CHECK(document.GetDraft(library).contains("TiledNeeShade") == hasTiledLighting);
     // The tiles, prefix and shade callbacks arrive with the table header they include.
@@ -991,7 +1022,7 @@ TEST_CASE("Visibility configurations apply from the canvas and preserve authored
     CHECK(document.GetDraft(library) == afterLibrary);
     CHECK(document.GetDraft(manifest) == afterManifest);
 
-    // Wire the selected reusable configuration through the parent's existing raster node.
+    // Route the parent's existing raster connections through the selected configuration.
     QJsonObject root;
     REQUIRE(document.GetGraph(ROOT_GRAPH, root) == true);
     QJsonArray configurations = root.value(QStringLiteral("configurations")).toArray();
@@ -1002,12 +1033,22 @@ TEST_CASE("Visibility configurations apply from the canvas and preserve authored
         QJsonObject node = value.toObject();
         if (node.value(QStringLiteral("kind")) == QStringLiteral("Subgraph"))
         {
-            if (node.value(QStringLiteral("id")) != QStringLiteral("raster"))
+            const QString selectedNode =
+                hasOpaqueResolve == true ? QStringLiteral("Visibility") : QStringLiteral("raster");
+            if (node.value(QStringLiteral("id")) != selectedNode)
             {
                 continue;
             }
-            node.insert(QStringLiteral("asset"), library);
-            node.insert(QStringLiteral("configuration"), QStringLiteral("Visibility"));
+            if (hasOpaqueResolve == true)
+            {
+                // Wire the node that Apply inserted, retaining its asset and configuration.
+                node.insert(QStringLiteral("id"), QStringLiteral("raster"));
+            }
+            else
+            {
+                node.insert(QStringLiteral("asset"), library);
+                node.insert(QStringLiteral("configuration"), QStringLiteral("Visibility"));
+            }
         }
         nodes.append(node);
     }
@@ -1015,12 +1056,12 @@ TEST_CASE("Visibility configurations apply from the canvas and preserve authored
     for (const QJsonValueConstRef value : parent.value(QStringLiteral("edges")).toArray())
     {
         QJsonObject edge = value.toObject();
-        if ((hasRays == true && edge.value(QStringLiteral("to")) == QStringLiteral("raster.depth")) ||
+        if ((hasShadedOutput == true && edge.value(QStringLiteral("to")) == QStringLiteral("raster.depth")) ||
             edge.value(QStringLiteral("to")) == QStringLiteral("raster.bakedLighting"))
         {
             continue;
         }
-        if (hasRays == false)
+        if (hasShadedOutput == false)
         {
             if (edge.value(QStringLiteral("to")) == QStringLiteral("raster.color"))
                 edge.insert(QStringLiteral("to"), QStringLiteral("raster.visibility"));
@@ -1170,6 +1211,15 @@ TEST_CASE("Visibility imports reuse compatible shader records and number around 
         REQUIRE(document.SetText(QStringLiteral("visibility_secondary_rays/main_shaders/payload.slang"),
                                  QByteArray("struct ScenePayload { float3 Changed; };\n")) ==
                 RenderGraphDocumentStatus::Ok);
+        // The compute resolve uses the scene interface without reading the authored ray payload.
+        RenderGraphTemplateBudgetIncrease budget;
+        budget.ApprovedPrograms = 64;
+        REQUIRE(document.ApplyConfigurationTemplate(ROOT_GRAPH,
+                                                    QStringLiteral("Resolve"),
+                                                    QStringLiteral("opaque-material-resolve"),
+                                                    error,
+                                                    {},
+                                                    &budget) == RenderGraphDocumentStatus::Ok);
     }
     // A shared payload without the fields every ray callback needs is not a name collision.
     const QByteArray beforeRoot = document.GetDraft(ROOT_GRAPH);
@@ -1184,6 +1234,36 @@ TEST_CASE("Visibility imports reuse compatible shader records and number around 
     CHECK(document.GetDraft(QStringLiteral("main.lushader.json")) == beforeManifest);
     CHECK(document.GetDraft(shader) == beforeShader);
     CHECK(document.GetFiles() == beforeFiles);
+}
+
+TEST_CASE("Opaque resolve keeps an edited visibility producer when inserted again",
+          "[editor][render-graph][visibility-configuration]")
+{
+    QTemporaryDir project;
+    RendererWorkspace workspace({});
+    workspace.SetProject(project.path(), 1);
+    RenderGraphDocument& document = workspace.GetDocument();
+    tests::SetTemplateAuthoringProfiles(document);
+    const QString identity = QStringLiteral("opaque-material-resolve");
+    const QString producer = QStringLiteral("visibility_buffer/library.lurender.json");
+    QString error;
+    REQUIRE(document.ApplyConfigurationTemplate(ROOT_GRAPH, QStringLiteral("First"), identity, error) ==
+            RenderGraphDocumentStatus::Ok);
+    QJsonObject edited;
+    REQUIRE(document.GetGraph(producer, edited) == true);
+    edited.insert(QStringLiteral("id"), QStringLiteral("MyVisibilityLibrary"));
+    const QByteArray authored = EncodeCanonicalJson(edited);
+    REQUIRE(document.SetText(producer, authored) == RenderGraphDocumentStatus::Ok);
+    RenderGraphTemplateBudgetIncrease budget;
+    budget.ApprovedPrograms = 64;
+    REQUIRE(document.ApplyConfigurationTemplate(ROOT_GRAPH, QStringLiteral("Second"), identity, error, {}, &budget) ==
+            RenderGraphDocumentStatus::Ok);
+    CHECK(document.GetDraft(producer) == authored);
+    CHECK(document.GetDraft(QStringLiteral("First.lurender.json")).contains(producer.toUtf8()) == true);
+    const QString secondProducer = QStringLiteral("visibility_buffer_2/library.lurender.json");
+    CHECK(document.GetDraft(QStringLiteral("Second.lurender.json")).contains(secondProducer.toUtf8()) == true);
+    CHECK(document.GetDraft(secondProducer).contains("Visibility2Geometry") == true);
+    CHECK(document.GetDraft(QStringLiteral("main.lushader.json")).contains("Visibility2Geometry") == true);
 }
 
 TEST_CASE("Visibility import coexists with an authored ray configuration at default budgets",
@@ -1436,6 +1516,7 @@ TEST_CASE("Template program budget approval is bounded and transactional", "[edi
 {
     const QString identity = GENERATE(QStringLiteral("restir-di"),
                                       QStringLiteral("visibility-buffer"),
+                                      QStringLiteral("opaque-material-resolve"),
                                       QStringLiteral("visibility-secondary-rays"));
     QTemporaryDir project;
     RendererWorkspace workspace({});

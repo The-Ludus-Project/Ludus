@@ -521,6 +521,16 @@
     },
     {
       "kind": "snippet",
+      "identity": "opaque-material-resolve",
+      "label": "Opaque material resolve",
+      "category": "visibility",
+      "defaultConfiguration": "OpaqueMaterialResolve",
+      "requirements": ["compute-ray-tracing"],
+      "keywords": ["vbuffer", "visibility", "material", "compute"],
+      "description": "Shade opaque static surfaces from visibility and depth. Connect scene, view and color. Exports shaded color, visibility and depth. Requires Metal or Vulkan compute."
+    },
+    {
+      "kind": "snippet",
       "identity": "visibility-secondary-rays",
       "label": "Visibility + secondary rays",
       "category": "visibility",
