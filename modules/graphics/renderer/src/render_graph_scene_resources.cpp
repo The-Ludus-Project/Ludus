@@ -14,6 +14,7 @@
 #include <ludus/foundation/math/queries.hpp>
 #include <ludus/foundation/math/scalar.hpp>
 #include <ludus/foundation/math/transform.hpp>
+#include <ludus/foundation/memory/shared_ptr.hpp>
 #include <ludus/graphics/renderer/environment.hpp>
 #include <ludus/graphics/renderer/lighting.hpp>
 #include <ludus/graphics/renderer/texture_mip_chain.hpp>
@@ -69,7 +70,7 @@ Status BuildDirectionalShadowRegions(BorrowedView<const DirectLight> lights,
                                      DeferredShadowAtlas& outAtlas,
                                      uint32& outUnshadowed) noexcept
 {
-    StaticArray<ShadowRegion, MAX_LEADING_SHADOW_REGIONS> regions{};
+    StaticArray<ShadowRegion, MAX_DIRECTIONAL_SHADOW_REGIONS> regions{};
     uint32 count = 0;
     uint32 unshadowed = 0;
     if (math::IsEmpty(boundsWorld) == false)
@@ -122,7 +123,10 @@ Status BuildDirectionalShadowRegions(BorrowedView<const DirectLight> lights,
             }
         }
     }
-    outAtlas.Directional = regions;
+    for (uint32 index = 0; index < count; ++index)
+    {
+        outAtlas.Directional[index] = regions[index];
+    }
     outAtlas.DirectionalCount = count;
     outAtlas.SkyCount = 0;
     outUnshadowed = unshadowed;
@@ -160,6 +164,75 @@ Status BuildSkyVisibilityRegions(const math::Aabb3& boundsWorld, DeferredShadowA
     }
     inoutAtlas.SkyCount = SKY_VISIBILITY_DIRECTION_COUNT;
     return Status::Ready;
+}
+// Narrow only the projected XY window. The depth row and caster submission still include remote terrain.
+void BuildLocalSkyVisibilityRegions(DeferredShadowAtlas& inoutAtlas) noexcept
+{
+    const rhi::RasterRectangle square = GetDirectionalShadowInterior(inoutAtlas.DirectionalCount + 1);
+    for (uint32 direction = 0; direction < inoutAtlas.SkyCount; ++direction)
+    {
+        const uint32 index = inoutAtlas.DirectionalCount + direction;
+        ShadowRegion& region = inoutAtlas.Directional[index + inoutAtlas.SkyCount];
+        region = inoutAtlas.Directional[index];
+        region.Interior = GetSkyVisibilityInterior(square, direction);
+        math::Matrix4 rows = math::Transpose(region.WorldToClip);
+        for (usize axis = 0; axis < 2; ++axis)
+        {
+            const math::Vector4 row = rows.Columns[axis];
+            const math::Vector3 basis{row.X, row.Y, row.Z};
+            const math::Vector3 scaled = basis / (math::Length(basis) * SKY_VISIBILITY_LOCAL_RADIUS_METRES);
+            rows.Columns[axis] = {scaled.X, scaled.Y, scaled.Z, -math::Dot(scaled, inoutAtlas.SkyAnchorWorld)};
+        }
+        region.WorldToClip = math::Transpose(rows);
+    }
+    inoutAtlas.LocalSkyCount = inoutAtlas.SkyCount;
+}
+bool HasRoomScaleBounds(const math::Aabb3& boundsWorld) noexcept
+{
+    const math::Vector3 sizeWorld = boundsWorld.Max - boundsWorld.Min;
+    return math::Max(sizeWorld.X, math::Max(sizeWorld.Y, sizeWorld.Z)) <= SKY_VISIBILITY_LOCAL_RADIUS_METRES;
+}
+// A cook may merge the room and surrounding terrain into a single material mesh. In that
+// case choose the first room-scale triangle in index order, using its bounds in world metres.
+bool TryFindSkyAnchor(const MeshDescription& geometry,
+                      const math::Affine3& meshToWorld,
+                      const math::Aabb3& boundsWorld,
+                      math::Vector3& outAnchorWorld) noexcept
+{
+    constexpr float32 CELL_METRES = SKY_VISIBILITY_LOCAL_RADIUS_METRES;
+    math::Aabb3 anchorBounds = boundsWorld;
+    if (HasRoomScaleBounds(boundsWorld) == false)
+    {
+        bool hasAnchor = false;
+        for (usize first = 0; first + TRIANGLE_CORNER_COUNT <= geometry.IndexCount; first += TRIANGLE_CORNER_COUNT)
+        {
+            math::Aabb3 triangleWorld = math::EmptyAabb3();
+            for (usize corner = 0; corner < TRIANGLE_CORNER_COUNT; ++corner)
+            {
+                const math::Vector3 pointWorld =
+                    math::TransformPoint(meshToWorld, geometry.Positions[geometry.Indices[first + corner]]);
+                triangleWorld = math::Merge(triangleWorld, {pointWorld, pointWorld});
+            }
+            if (HasRoomScaleBounds(triangleWorld) == true)
+            {
+                anchorBounds = triangleWorld;
+                hasAnchor = true;
+                break;
+            }
+        }
+        if (hasAnchor == false)
+        {
+            return false;
+        }
+    }
+    const math::Vector3 centerWorld = anchorBounds.Min + (anchorBounds.Max - anchorBounds.Min) * 0.5F;
+    const auto snap = [](float32 metres) noexcept {
+        return static_cast<float32>(
+                   math::Floor(static_cast<float64>(metres) / static_cast<float64>(CELL_METRES) + 0.5)) *
+               CELL_METRES;
+    };
+    outAnchorWorld = {snap(centerWorld.X), snap(centerWorld.Y), snap(centerWorld.Z)};
+    return true;
 }
 enum MeshKeyPart : uint8
 {
@@ -583,6 +656,17 @@ struct ForwardSceneResources::State final
         return Status::CapacityExceeded;
     }
 };
+// Only a completed map is shared. Each generation owns its view, material bindings and
+// caster packets, while the device texture stays alive through the last drawable generation.
+struct ShadowTexture final
+{
+    rhi::DeviceHandle Device{};
+    rhi::TextureHandle Texture{};
+    ~ShadowTexture() noexcept
+    {
+        static_cast<void>(rhi::Destroy(Device, Texture));
+    }
+};
 struct ForwardSceneGeneration::State final
 {
     ForwardSceneResources::State* OwnerOrNull = nullptr;
@@ -603,10 +687,14 @@ struct ForwardSceneGeneration::State final
     Array<MeshLightShadowCaster> MeshLightShadowCasters;
     /// Shared directional and mesh-light atlas. It exists only when at least one projection is needed.
     DeferredShadowAtlas Shadows;
+    SharedPtr<ShadowTexture> ShadowBacking;
     /// Eligible directional lights beyond MAX_DIRECTIONAL_SHADOW_REGIONS, which illuminate unshadowed.
     uint32 UnshadowedDirectionalLights = 0;
     LightClusterDescription Clusters;
     math::Aabb3 BoundsWorld = math::EmptyAabb3();
+    uint64 SkyAnchorSourceId = 0;
+    bool HasSkyAnchor = false;
+    bool HasRoomScaleItem = false;
     EnvironmentMap Environment;
     usize PreparedMaterials = 0;
     bool HasEnvironment = false;
@@ -618,7 +706,6 @@ struct ForwardSceneGeneration::State final
         }
         static_cast<void>(rhi::Destroy(OwnerOrNull->Device, MeshLightBuffer));
         static_cast<void>(rhi::Destroy(OwnerOrNull->Device, Shadows.Sampled));
-        static_cast<void>(rhi::Destroy(OwnerOrNull->Device, Shadows.Texture));
         if (Shadows.Packets.IsEmpty() == false)
         {
             static_cast<void>(rhi::Destroy(OwnerOrNull->Device, Shadows.Instances));
@@ -870,10 +957,7 @@ Status ForwardSceneGeneration::Poll() noexcept
                                                                       description,
                                                                       state.Materials[state.PreparedMaterials],
                                                                       selection,
-                                                                      state.Shadows.Directional.GetData(),
-                                                                      state.Shadows.DirectionalCount,
-                                                                      state.Shadows.SkyCount,
-                                                                      state.Shadows.ExtentTexels);
+                                                                      &state.Shadows);
         if (IsAccepted(status) == false)
         {
             return status;
@@ -894,7 +978,8 @@ Status ForwardSceneGeneration::Poll() noexcept
     return Status::Ready;
 }
 Status ForwardSceneResources::Prepare(const RenderGraphSceneDescription& scene,
-                                      core::UniquePtr<ForwardSceneGeneration>& outGeneration) noexcept
+                                      core::UniquePtr<ForwardSceneGeneration>& outGeneration,
+                                      const ForwardSceneGeneration* matchingCastersOrNull) noexcept
 {
     if (mState.Get() == nullptr || outGeneration.Get() != nullptr)
     {
@@ -1171,6 +1256,18 @@ Status ForwardSceneResources::Prepare(const RenderGraphSceneDescription& scene,
                     return Status::InvalidDescription;
                 }
                 candidate.BoundsWorld = math::Merge(candidate.BoundsWorld, boundsWorld);
+                const bool isRoomScaleItem = HasRoomScaleBounds(boundsWorld);
+                const bool hasAnchorPriority =
+                    candidate.HasSkyAnchor == false ||
+                    (isRoomScaleItem == true && candidate.HasRoomScaleItem == false) ||
+                    (isRoomScaleItem == candidate.HasRoomScaleItem && item.SourceId < candidate.SkyAnchorSourceId);
+                if (owner.HasMeshLights == true && hasAnchorPriority == true &&
+                    TryFindSkyAnchor(geometry, item.MeshToWorld, boundsWorld, candidate.Shadows.SkyAnchorWorld) == true)
+                {
+                    candidate.SkyAnchorSourceId = item.SourceId;
+                    candidate.HasSkyAnchor = true;
+                    candidate.HasRoomScaleItem = isRoomScaleItem;
+                }
             }
             if (owner.HasMeshLights == true)
             {
@@ -1285,8 +1382,7 @@ Status ForwardSceneResources::Prepare(const RenderGraphSceneDescription& scene,
             {
                 return sky;
             }
-            const uint32 reservedSquares =
-                candidate.Shadows.DirectionalCount + (candidate.Shadows.SkyCount != 0 ? 1U : 0U);
+            uint32 reservedSquares = candidate.Shadows.DirectionalCount + (candidate.Shadows.SkyCount != 0 ? 1U : 0U);
             // Casters come first: they tag each record, and the grid lists each caster's records together.
             if (candidate.MeshLightCount != 0)
             {
@@ -1300,6 +1396,21 @@ Status ForwardSceneResources::Prepare(const RenderGraphSceneDescription& scene,
                     return casters;
                 }
             }
+            const math::Vector3 sizeWorld = candidate.BoundsWorld.Max - candidate.BoundsWorld.Min;
+            constexpr float32 LOCAL_DIAMETER_METRES = 2 * SKY_VISIBILITY_LOCAL_RADIUS_METRES;
+            // Require a useful gain and preserve the last square for mesh-light casters.
+            const bool shouldRefineSky =
+                candidate.HasSkyAnchor == true &&
+                math::Max(sizeWorld.X, math::Max(sizeWorld.Y, sizeWorld.Z)) > 2 * LOCAL_DIAMETER_METRES;
+            if (shouldRefineSky == true && (reservedSquares + 1 < MAX_RESERVED_SHADOW_SQUARES ||
+                                            candidate.MeshLightShadowCasters.IsEmpty() == true))
+            {
+                BuildLocalSkyVisibilityRegions(candidate.Shadows);
+                ++reservedSquares;
+            }
+            candidate.Shadows.SkyRevision = scene.SourceGeneration;
+            candidate.Shadows.HasLocalSkyBudgetFallback =
+                shouldRefineSky == true && candidate.Shadows.LocalSkyCount == 0;
             const Status grid = AppendRasterMeshLightGrid(candidate.MeshLightWords,
                                                           candidate.MeshLightCount,
                                                           candidate.BoundsWorld,
@@ -1343,14 +1454,55 @@ Status ForwardSceneResources::Prepare(const RenderGraphSceneDescription& scene,
                                                ? GetReservedShadowAtlasTexels(reservedSquares)
                                                : MESH_LIGHT_SHADOW_ATLAS_TEXELS;
                 candidate.Shadows.ExtentTexels = atlasTexels;
-                const Status atlas = rhi::CreateTexture(owner.Device,
-                                                        {atlasTexels, atlasTexels, rhi::RasterFormat::Rgba8Unorm, true},
-                                                        {},
-                                                        candidate.Shadows.Texture);
-                if (IsAccepted(atlas) == false)
+                const ForwardSceneGeneration::State* previousOrNull =
+                    matchingCastersOrNull == nullptr ? nullptr : matchingCastersOrNull->mState.Get();
+                const DeferredShadowAtlas* oldAtlasOrNull =
+                    previousOrNull == nullptr ? nullptr : &previousOrNull->Shadows;
+                const bool canReuse = oldAtlasOrNull != nullptr && oldAtlasOrNull->ExtentTexels == atlasTexels &&
+                                      oldAtlasOrNull->LocalSkyCount == candidate.Shadows.LocalSkyCount &&
+                                      oldAtlasOrNull->Submitted.IsCleared == true &&
+                                      oldAtlasOrNull->Submitted.DrawnDirectional == oldAtlasOrNull->DirectionalCount +
+                                                                                        oldAtlasOrNull->SkyCount +
+                                                                                        oldAtlasOrNull->LocalSkyCount &&
+                                      oldAtlasOrNull->Submitted.NextFace == oldAtlasOrNull->Faces.GetSize();
+                if (canReuse == true)
                 {
-                    return atlas;
+                    candidate.ShadowBacking = previousOrNull->ShadowBacking;
+                    candidate.Shadows.Submitted = oldAtlasOrNull->Submitted;
+                    candidate.Shadows.SkyRevision = oldAtlasOrNull->SkyRevision;
                 }
+                else
+                {
+                    if (TryMakeShared(GetSystemAllocationDomain(), candidate.ShadowBacking) != OwnershipStatus::Ok)
+                    {
+                        return Status::OutOfMemory;
+                    }
+                    candidate.ShadowBacking->Device = owner.Device;
+                    Status atlas = rhi::CreateTexture(owner.Device,
+                                                      {atlasTexels, atlasTexels, rhi::RasterFormat::Rgba8Unorm, true},
+                                                      {},
+                                                      candidate.ShadowBacking->Texture);
+                    if ((atlas == Status::OutOfMemory || atlas == Status::CapacityExceeded) &&
+                        candidate.Shadows.LocalSkyCount != 0 && reservedSquares == 2 &&
+                        candidate.MeshLightShadowCasters.IsEmpty() == true)
+                    {
+                        candidate.Shadows.LocalSkyCount = 0;
+                        candidate.Shadows.HasLocalSkyBudgetFallback = true;
+                        candidate.Shadows.ExtentTexels = GetReservedShadowAtlasTexels(1);
+                        atlas = rhi::CreateTexture(owner.Device,
+                                                   {candidate.Shadows.ExtentTexels,
+                                                    candidate.Shadows.ExtentTexels,
+                                                    rhi::RasterFormat::Rgba8Unorm,
+                                                    true},
+                                                   {},
+                                                   candidate.ShadowBacking->Texture);
+                    }
+                    if (IsAccepted(atlas) == false)
+                    {
+                        return atlas;
+                    }
+                }
+                candidate.Shadows.Texture = candidate.ShadowBacking->Texture;
             }
         }
         const usize byteCount = candidate.MeshLightWords.GetSize() * sizeof(math::Vector4);

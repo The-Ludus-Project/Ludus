@@ -66,9 +66,9 @@ public:
                                                MaterialProgram surfaceChartProgram = {},
                                                MaterialProgram probeProgram = {}) noexcept;
     /// Consume every input before returning. Failure preserves a null generation.
-    [[nodiscard]] rhi::RasterStatus
-    Prepare(const RenderGraphSceneDescription& scene,
-            foundation::core::UniquePtr<ForwardSceneGeneration>& outGeneration) noexcept;
+    [[nodiscard]] rhi::RasterStatus Prepare(const RenderGraphSceneDescription& scene,
+                                            foundation::core::UniquePtr<ForwardSceneGeneration>& outGeneration,
+                                            const ForwardSceneGeneration* matchingCastersOrNull = nullptr) noexcept;
     void Reset() noexcept;
     [[nodiscard]] RenderGraphSceneResourceReport GetReport() const noexcept;
 
