@@ -50,7 +50,9 @@ def project_shader_tools(project: Path, source: Path, profile: str, has_web_sdk:
 
     required = set()
     cmake_files = [source / "CMakeLists.txt", *(source / "cmake").glob("*.cmake")]
-    if any("ludus_compile_shader" in file.read_text() for file in cmake_files):
+    shader_helpers = ("ludus_compile_shader", "ludus_compile_renderer_shaders", "ludus_compile_render_graph")
+    cmake_sources = (file.read_text() for file in cmake_files)
+    if any(helper in text for text in cmake_sources for helper in shader_helpers):
         required.add("compiler")
         if profile.startswith("windows-msvc-"):
             required.add("dxc")

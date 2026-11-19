@@ -1,0 +1,2 @@
+Lighting Room and its authored geometry are part of Ludus and use the repository license.
+See licenses/Ludus/ for the engine and dependency notices.
