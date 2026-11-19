@@ -299,7 +299,7 @@ if(TARGET ludus_rhi_render_tests AND NOT WIN32)
     target_sources(ludus_renderer_render_tests PRIVATE tests/wave_tracing_parity_tests.cpp)
     target_sources(ludus_renderer_render_tests PRIVATE tests/viewport_antialiasing_coverage_tests.cpp
         "$<TARGET_OBJECTS:ludus_renderer_earth_sky_quadrature>")
-    target_include_directories(ludus_renderer_render_tests PRIVATE ../rhi/src "${PROJECT_SOURCE_DIR}/tests/sdk_consumer")
+    target_include_directories(ludus_renderer_render_tests PRIVATE "${PROJECT_SOURCE_DIR}/tests/support" ../rhi/src "${PROJECT_SOURCE_DIR}/tests/sdk_consumer")
     target_link_libraries(ludus_renderer_render_tests PRIVATE ludus_renderer_test_oracles Ludus::FoundationThreading Ludus::GraphicsRenderer Ludus::GraphicsText Ludus::FoundationMath Ludus::FoundationTime Catch2::Catch2WithMain)
     ludus_apply_project_defaults(ludus_renderer_render_tests)
     ludus_enable_test_exceptions(ludus_renderer_render_tests)

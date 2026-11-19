@@ -1,8 +1,10 @@
 #include "internal/readback.h"
 #include "renderer_selection_mask.h"
 #include "renderer_selection_outline.h"
+#include "selection_outline_fixture.hpp"
 #include <catch2/catch_test_macros.hpp>
 #include <cmath>
+#include <ludus/foundation/containers/array.hpp>
 #include <ludus/foundation/containers/borrowed_view.hpp>
 #include <ludus/foundation/math/matrix.hpp>
 #include <ludus/foundation/math/vector.hpp>
@@ -64,13 +66,13 @@ rr::SelectionOutlineView MakeView(float32 translationClipX)
     return view;
 }
 
-bool Start(Scene& inoutScene)
+bool Start(Scene& inoutScene, uint32 width = TARGET_WIDTH, uint32 height = TARGET_HEIGHT)
 {
     rhi::DeviceDescription description;
     description.Required.PortableRaster = true;
     rhi::StartupInfo failure;
     const rhi::DeviceStatus started = rhi::CreateDevice({},
-                                                        { .Width = TARGET_WIDTH, .Height = TARGET_HEIGHT },
+                                                        { .Width = width, .Height = height },
                                                         description,
                                                         inoutScene.Device,
                                                         inoutScene.Surface,
@@ -100,6 +102,20 @@ bool Start(Scene& inoutScene)
     return true;
 }
 
+void SetMesh(rr::SelectionOutlineRenderer& inoutOutline,
+             BorrowedView<const Vector3> positions,
+             BorrowedView<const uint32> indices)
+{
+    const rhi::RasterStatus status = inoutOutline.SetMesh(positions, indices);
+    REQUIRE((status == rhi::RasterStatus::Ready || status == rhi::RasterStatus::Pending));
+    bool isReady = false;
+    for (usize i = 0; i < POLL_LIMIT && isReady == false; ++i)
+    {
+        isReady = inoutOutline.GetMeshStatus() == rhi::RasterStatus::Ready;
+    }
+    REQUIRE(isReady);
+}
+
 /// An axis-aligned rectangle with the given clip-space bounds.
 void SetRectangleMesh(rr::SelectionOutlineRenderer& inoutOutline,
                       float32 minX,
@@ -109,15 +125,7 @@ void SetRectangleMesh(rr::SelectionOutlineRenderer& inoutOutline,
 {
     const Vector3 positions[] = {{minX, minY, 0}, {maxX, minY, 0}, {maxX, maxY, 0}, {minX, maxY, 0}};
     const uint32 indices[] = {0, 1, 2, 0, 2, 3};
-    const rhi::RasterStatus status =
-        inoutOutline.SetMesh(BorrowedView<const Vector3>(positions), BorrowedView<const uint32>(indices));
-    REQUIRE((status == rhi::RasterStatus::Ready || status == rhi::RasterStatus::Pending));
-    bool isReady = false;
-    for (usize i = 0; i < POLL_LIMIT && isReady == false; ++i)
-    {
-        isReady = inoutOutline.GetMeshStatus() == rhi::RasterStatus::Ready;
-    }
-    REQUIRE(isReady);
+    SetMesh(inoutOutline, positions, indices);
 }
 
 /// A centred square, half of the target wide and high in clip space.
@@ -145,9 +153,7 @@ rhi::RasterStatus PrepareReady(rr::SelectionOutlineRenderer& inoutOutline,
     return rhi::RasterStatus::Pending;
 }
 
-void DrawFrame(Scene& inoutScene,
-               const rr::PreparedSelectionOutline& prepared,
-               uint8 (&outImage)[TARGET_WIDTH * TARGET_HEIGHT * BYTES_PER_PIXEL])
+void DrawFrame(Scene& inoutScene, const rr::PreparedSelectionOutline& prepared, BorrowedView<uint8> outImage)
 {
     REQUIRE(rhi::BeginFrame(inoutScene.Device, inoutScene.Surface) == rhi::DeviceStatus::Ready);
     const rhi::RasterPassDescription clear;
@@ -155,7 +161,7 @@ void DrawFrame(Scene& inoutScene,
     REQUIRE(inoutScene.Outline.Draw(prepared, clear) == rhi::RasterStatus::Ready);
     rhi::SubmissionToken completion;
     REQUIRE(rhi::EndFrame(inoutScene.Device, completion) == rhi::RasterStatus::Ready);
-    REQUIRE(rhi::backend::ReadHeadlessPixels(outImage));
+    REQUIRE(rhi::backend::ReadHeadlessPixels({outImage.GetDataOrNull(), outImage.GetSize()}));
 }
 
 bool IsNear(const uint8 (&image)[TARGET_WIDTH * TARGET_HEIGHT * BYTES_PER_PIXEL],
@@ -363,4 +369,42 @@ TEST_CASE("Selection outline strokes an RGBA8 attachment texture the same way as
     REQUIRE(rhi::Release(scene.Device, ticket) == rhi::RasterStatus::Ready);
     REQUIRE(scene.Outline.Release(prepared) == rhi::RasterStatus::Ready);
     REQUIRE(rhi::Destroy(scene.Device, texture) == rhi::RasterStatus::Ready);
+}
+
+TEST_CASE("Native outline clips a perspective contour at the near, eye and side planes",
+          "[renderer][selection-outline][outline-clipping][gpu]")
+{
+    namespace fixture = ludus::test_support::outline;
+    for (int32 width : fixture::WIDTHS_PIXELS)
+    {
+        ShutdownGuard guard;
+        Scene scene;
+        if (Start(scene, static_cast<uint32>(width), fixture::HEIGHT_PIXELS) == false)
+        {
+            SKIP("No Metal adapter on this host");
+        }
+        SetMesh(scene.Outline, fixture::POSITIONS_MESH, fixture::INDICES);
+        Array<uint8> image;
+        REQUIRE(image.TryResize(static_cast<usize>(width) * fixture::HEIGHT_PIXELS * BYTES_PER_PIXEL) == true);
+        for (const fixture::Placement& placement : fixture::PLACEMENTS)
+        {
+            rr::SelectionOutlineView view = MakeView(0);
+            view.Width = static_cast<uint32>(width);
+            view.Height = fixture::HEIGHT_PIXELS;
+            view.MeshToClip = fixture::MakeMeshToClip(placement, width);
+            rr::PreparedSelectionOutline prepared;
+            REQUIRE(PrepareReady(scene.Outline, view, prepared) == rhi::RasterStatus::Ready);
+            DrawFrame(scene, prepared, image);
+            fixture::CheckImage(placement, width, [&](int32 x, int32 y) {
+                const usize offset = static_cast<usize>(y * width + x) * BYTES_PER_PIXEL;
+                if (image[offset] == FULL)
+                {
+                    return fixture::Mark::Stroke;
+                }
+                return image[offset] == 0 && image[offset + 1] == 0 && image[offset + 2] == 0 ? fixture::Mark::Clear
+                                                                                              : fixture::Mark::Casing;
+            });
+            REQUIRE(scene.Outline.Release(prepared) == rhi::RasterStatus::Ready);
+        }
+    }
 }

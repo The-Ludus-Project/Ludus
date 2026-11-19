@@ -1625,7 +1625,19 @@ A multiple selection, unapplied inspector fields or a running scene operation
 other than a background placement validation disables transform handles. Axis handles viewed directly end-on are hidden;
 orbit to expose them.
 
-The outline has two implementations that mark the same silhouette.
+As the selection crosses the near plane or a side of the viewport, its visible mesh edges
+keep their projected positions. An object wholly behind the eye contributes no outline.
+The GPU strokes the boundary of the clipped mask, including a cut through a triangle.
+The CPU fallback clips the mesh’s original silhouette segments before projecting their
+endpoints into pixels.
+
+The captures below show the same tetrahedron in six positions at two viewport sizes.
+The CPU overlay uses selection amber. The Metal test uses red for the stroke and blue
+for its casing so the readback can distinguish them. Across both sizes, all 50 sampled
+points on surviving mesh edges were within 0.65 pixels of a stroke pixel shared by
+both paths. Both behind-eye frames were empty at each size.
+
+![CPU and Metal outline captures at 232×160 and 256×160 for fully visible, near-plane, eye-plane, behind-eye, near-and-right, and right-plane placements](images/selection-outline-clipping.png)
 
 **GPU outline.** While the native shared-device viewport shows a GPU frame of the project
 render graph, the selected mesh is rasterized into a mask and a screen-space pass strokes
