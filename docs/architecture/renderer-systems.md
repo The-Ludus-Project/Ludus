@@ -5486,6 +5486,116 @@ angles, a flat CDF and the explicit finite RGB profile above. See
 [full static resource acceptance](../examples/reference-scene.md#full-static-sponza-and-suntemple-acceptance)
 for assets, commands and limitations.
 
+### Qualify HDR reflections in the native Lit renderer
+
+The installed-SDK consumer imports a one-plane glTF scene with a companion
+Radiance image. It draws the cooked material and camera into an RGBA16F target
+with the authored Lit recipe and no direct lights. Linear presentations at five
+known exposures recover both the highlights and dark values through RGBA8
+readback. The World check selects the same companion in the import preview,
+confirms the import, saves the World and opens it again. It compares every
+cooked RGB value and samples the Lit viewport before and after reopening.
+The viewport comparison applies its display transform to the SDK values and
+uses an absolute tolerance of 0.065 per display channel.
+
+Run the synthetic checks with the native renderer SDK consumer build, then run
+the World check with the native Editor test executable. The standalone consumer
+also configures from `tests/sdk_consumer/environment` against an installed SDK.
+
+```bash
+ctest --test-dir out/renderer-sdk/environment -R '^ludus_sdk_environment$' --output-on-failure
+python3 tests/sdk_consumer/environment/qualify.py out/renderer-sdk/environment/ludus_sdk_environment \
+  --case world --editor out/build/macos-clang-development/apps/editor/ludus_editor_tests
+```
+
+**Perspective reflection.** Each feature occupies a cone about its normalized
+world direction in a 128 × 64 panorama. The background has RGB (0.125, 0.125,
+0.125). Three synthetic exposures of 1/16, 1/4 and 1 second pass through a
+quantized square-root response before RGBE encoding.
+
+| Direction in world space | Cone radius | Linear RGB |
+| --- | ---: | --- |
+| (+1, 0, 0), across the longitude seam | 11° | (4, 1, 0.25) |
+| (+1, 0, +0.55) | 10° | (0.25, 3, 0.5) |
+| (+1, 0, −0.55) | 10° | (0.5, 0.25, 2) |
+| (0, +1, 0), north pole | 17° | (2, 0.5, 3) |
+
+The eye is one metre from the white metallic plane, with a 90° vertical field
+of view. For each probe, intersect the eye ray with the plane and reflect the
+incident direction about the world normal. Average a 3 × 3 interior region
+around the projected point. Roughness 0.045, filtering and readback allow
+0.30 absolute error per channel against 0.96 times the source (0.22 at the
+pole). Both sides of the seam and the same world points reprojected after a
+90° camera roll must agree within 0.035. This exercises the reflection
+construction described by [Blinn and Newell](https://people.csail.mit.edu/ericchan/bib/pdf/p542-blinn.pdf)
+and the perspective dependency described by [Heidrich and Seidel](https://vccimaging.org/Publications/Heidrich1998VEM/Heidrich1998VEM.pdf).
+
+**Diffuse irradiance.** For unit direction (x, y, z), use RGB radiance
+(1, 1, 1) + 0.45(x, y, z) + 0.7(xy, yz, zx). The clamped-cosine convolution
+multiplies the constant, linear and quadratic bands by π, 2π/3 and π/4.
+Integrating the cooked texel centres with exact cell solid angles must agree
+within 0.015 after division by π. The raster comparison subtracts a black
+dielectric from a white dielectric to cancel the shared specular term, applies
+the 0.96 diffuse response and allows 0.048 per linear channel. It covers the six
+axis normals and six signed diagonals at 32 × 16 and 128 × 64, with a unit
+constant control. [Ramamoorthi and Hanrahan](https://www-graphics.stanford.edu/papers/envmap/envmap.pdf)
+
+**Glossy reflection.** Hold the 128 × 64 source fixed and keep just the seam
+patch. For mip levels 1 and 2 of 32- and 64-column maps, put the mirror
+direction at a mip texel centre. For a white conductor the two Lazarov fit terms
+sum to (1 − 0.55 × roughness), so division by this factor recovers the selected
+mip from the linear pixel. Compare it with the independent binary64 integral
+of incident radiance weighted by D(H) max(N·L, 0)/4 divided by the integral of
+that weight, with V=N. The absolute tolerances are 0.18 at 32 filter samples,
+0.085 at 256 samples and 0.012 for a constant source.
+
+At N·V of 1 and 0.30, also integrate the full single-scattering GGX BRDF with
+height-correlated Smith visibility and unit Fresnel. Doubling the half-vector
+quadrature resolution must change each channel by at most 0.035. The runner
+reports the ideal split-sum estimate minus direct integration and the observed
+raster minus direct integration separately. In particular, at 64 columns,
+roughness 1/6 and N·V = 0.30, the red-channel split-sum bias on Metal was
+about −0.59 for an integral of 3.53. This error is visible even with a well
+converged prefilter. The raster-to-split-sum tolerance is 0.18. The
+raster-to-direct tolerances are 0.32 and 0.65 for the grazing compact patch.
+[Kautz et al.](https://jankautz.com/publications/unifiedRW00.pdf)
+
+**Captured lighting.** To reproduce the measured-lighting case, obtain
+`proj4_materials.zip` from the [Illinois Image-Based Lighting project](https://courses.grainger.illinois.edu/cs498dh3/fa2014/projects/ibl/ComputationalPhotography_ProjectIBL.html).
+The preparation script verifies the archive digest. Install NumPy and Pillow
+in the preparation environment. The generated panorama and photographic inputs
+stay local.
+
+```bash
+python3 tests/sdk_consumer/environment/prepare_capture.py proj4_materials.zip out/ibl-capture
+python3 tests/sdk_consumer/environment/qualify.py out/renderer-sdk/environment/ludus_sdk_environment \
+  --case photograph --capture out/ibl-capture \
+  --editor out/build/macos-clang-development/apps/editor/ludus_editor_tests
+```
+
+The static chrome-ball exposures are 1/24, 1/60, 1/120, 1/205 and 1/553 second.
+Register the cropped spheres on a common disk, fit a smooth response per JPEG
+channel, combine reliable exposures in log radiance and reproject the reflection
+to latitude/longitude. A single scalar sets the largest channel to six. The
+green-channel reference uses the shortest exposure for the clipped highlight,
+1/120 for the overlap and the longest for the dark patch. Its scale is relative.
+The 25% ratio tolerance includes the measured JPEG response and registration
+error. The separate cook check compares the registered 2 × 2 box averages to
+within 0.000001. [Debevec and Malik](https://www.pauldebevec.com/Research/HDR/)
+
+| Green probe | Single-exposure ratio to overlap | RGBE source | Cooked | Metal mirror |
+| --- | ---: | ---: | ---: | ---: |
+| Bright, long exposure clipped | 26.062 | 0.937500 | 0.937500 | 0.815686 |
+| Unsaturated overlap | 1.000 | 0.041016 | 0.041260 | 0.040196 |
+| Dark, long exposure code 29 | 0.209 | 0.007507 | 0.007507 | 0.006863 |
+
+The angular sampling grid deliberately exceeds the cook limit to exercise one
+box reduction from 4352 × 512 to 2176 × 256. The source and cooked green peaks
+were both 6.0. Across the first and last 1/16 of longitude, the solid-angle
+weighted green integral changed from 0.07623653 to 0.07623609. The mirror
+probes use the native World's 64-column, 16-sample filter and allow 17% of the
+cooked green value plus 0.0002 for the material, filtering and readback.
+
 ### Authored input view and naming contract
 
 `MeshDescription::Tangents`, `Colors` and `MaterialTexcoords1` use Foundation's
