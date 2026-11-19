@@ -1610,6 +1610,37 @@ jobs:
         run: out/host-tools/venv/bin/python tools/check_build_graph.py out/build/linux-clang-development --summary "$GITHUB_STEP_SUMMARY" --report out/build-graph/linux-clang-development.json
       - name: Build every default target with the Editor and shader worker
         run: out/host-tools/venv/bin/cmake --build --preset linux-clang-development
+      - name: Compare saved World raster captures on Linux Vulkan
+        run: |
+          set -euo pipefail
+          build=out/build/linux-clang-development
+          tools="$PWD/out/host-tools/venv/bin"
+          fixture=tests/sdk_consumer/raster_baseline
+          scratch="$(mktemp -d "$RUNNER_TEMP/raster-baseline.XXXXXX")"
+          "$tools/cmake" --install "$build" --prefix "$scratch/sdk"
+          "$tools/python" scripts/python/engine.py bundle-sdk-dependencies linux-clang-development --prefix "$scratch/sdk"
+          mv "$scratch/sdk" "$scratch/relocated-sdk"
+          cp -R "$fixture" "$scratch/consumer"
+          "$tools/cmake" -S "$scratch/consumer" -B "$scratch/build" -G Ninja \
+            -DCMAKE_PREFIX_PATH="$scratch/relocated-sdk" -DCMAKE_BUILD_TYPE=RelWithDebInfo \
+            -DCMAKE_CXX_COMPILER="$PWD/out/host-tools/bin/clang++" -DCMAKE_MAKE_PROGRAM="$tools/ninja" \
+            -DLUDUS_SLANG_COMPILER="$PWD/out/shader-tools/slang/bin/slangc" \
+            -DLUDUS_SPIRV_VALIDATOR="$PWD/out/shader-tools/spirv-tools/usr/bin/spirv-val"
+          "$tools/cmake" --build "$scratch/build"
+          "$tools/cmake" --install "$scratch/build" --prefix "$scratch/package"
+          "$tools/python" -m pip install numpy Pillow
+          driver="$(dpkg-query -L mesa-vulkan-drivers | awk '/\/lvp_icd(\.[[:alnum:]_]+)?\.json$/ {print}')"
+          test -r "$driver"
+          "$tools/python" "$fixture/verify.py" --editor "$build/apps/editor/ludus_editor_tests" \
+            --graph "$build/apps/editor/ludus-graphs/ludus_editor_application/editor_renderer_static/editor_renderer_static.lurgrt" \
+            --executable "$scratch/package/raster_capture" --driver "$driver" --evidence out/raster-baseline
+      - name: Retain raster baseline images, comparisons and capture logs
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: raster-baseline-vulkan
+          path: out/raster-baseline/
+          retention-days: 14
       # Checked-in generated sources (such as the SDK .luslh headers) need tools only this
       # build produces, so integration pull requests check them here rather than in a batch.
       - name: Check checked-in generated sources

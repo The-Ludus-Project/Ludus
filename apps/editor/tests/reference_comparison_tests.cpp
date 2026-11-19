@@ -1,6 +1,7 @@
 #include "internal/reference_comparison.h"
 #include "internal/render_scene.h"
 #include "internal/texture_inspection.h"
+#include "internal/viewport_graph_capture.h"
 #include "internal/viewport_raster_capture.h"
 #include "internal/viewport_reference_capture.h"
 #include "viewport_fixture.h"
@@ -518,4 +519,63 @@ TEST_CASE("Display comparison uses supplied sRGB values and masks missing graph 
     CHECK(comparison.ComparedPixels == 1);
     CHECK(comparison.MeanAbsoluteError == 0);
     CHECK(difference.pixelColor(0, 0).red() == 64);
+}
+
+TEST_CASE("Saved World raster export from the authored camera", "[.sdk-raster-baseline]")
+{
+    const QString root = QDir::currentPath();
+    const QString package = QDir(root).filePath(QStringLiteral("graph.lurgrt"));
+    WorldDocument world;
+    QString error;
+    REQUIRE(world.LoadSchema(tests::ReadTestFile(root + QStringLiteral("/authoring/world.schema.json")), error) ==
+            true);
+    REQUIRE(world.Load(tests::ReadTestFile(root + QStringLiteral("/cube.world.json")), error) == true);
+    RenderScene scene;
+    REQUIRE(RenderScene::Load(root, world, scene, error) == true);
+    REQUIRE(scene.Cameras.size() == 1);
+    REQUIRE(scene.Objects.size() == 1);
+
+    DeviceFixture device;
+    INFO("The saved World milestone requires an available portable Vulkan raster device.");
+    REQUIRE(device.IsAvailable == true);
+    rhi::DeviceInfo information;
+    REQUIRE(rhi::GetDeviceInfo(device.Device, information) == rhi::DeviceStatus::Ready);
+    REQUIRE(information.Startup.SelectedBackend == rhi::Backend::Vulkan);
+    ViewportRasterSource source;
+    source.PackagePath = package;
+    source.OutputTarget = QStringLiteral("Main/color");
+    REQUIRE(ViewportGraphCapture::FindExportResource(package,
+                                                     QStringLiteral("Main/output"),
+                                                     source.OutputResource,
+                                                     error) == true);
+    ViewportRasterCapture capture;
+    const QSize requested(96, 64);
+    QSize extent;
+    REQUIRE(capture.Load(device.Device, device.Surface, source, requested, extent, error) == true);
+    REQUIRE(extent == requested);
+    renderer::ViewDescription view;
+    REQUIRE(scene.View(
+                {
+                    .Camera = 0,
+                    .Width = static_cast<uint32>(extent.width()),
+                    .Height = static_cast<uint32>(extent.height()),
+                    .ShouldUseConventionalDepth = true,
+                },
+                view,
+                error) == true);
+    REQUIRE(capture.Begin(scene, view, error) == true);
+    QElapsedTimer timer;
+    timer.start();
+    while (capture.Service() == ViewportRasterPhase::Rendering && timer.elapsed() < CAPTURE_TIMEOUT_MILLISECONDS)
+    {
+        QThread::msleep(1);
+    }
+    INFO(capture.GetError().toStdString());
+    REQUIRE(capture.GetPhase() == ViewportRasterPhase::Complete);
+    REQUIRE(capture.GetRenderedPackagePath() == package);
+    REQUIRE(capture.GetTexture().Encoding == TexelEncoding::Rgba8Unorm);
+    REQUIRE(capture.GetImage().size() == extent);
+    REQUIRE(capture.GetImage().save(QStringLiteral("capture.png")) == true);
+    qInfo() << "Editor Vulkan raster Main/output resource" << source.OutputResource << "adapter"
+            << information.Adapter.Name.GetData();
 }
