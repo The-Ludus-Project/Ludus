@@ -398,6 +398,11 @@ void EnableDebugLayer() noexcept
 #endif
 }
 
+// Thanks to Microsoft, "D3D12CreateDevice function", Remarks: Direct3D 12 devices are
+// singletons per adapter, and creating one on an adapter that already has a device in the
+// process returns that device. R14c owners on one adapter therefore each hold a reference to
+// one shared device (and share its removal); their queues, fences and registries stay separate.
+// https://learn.microsoft.com/windows/win32/api/d3d12/nf-d3d12-d3d12createdevice
 [[nodiscard]] bool CreateDeviceOn(IDXGIAdapter1* adapter) noexcept
 {
     ID3D12Device* deviceOrNull = nullptr;
@@ -490,12 +495,27 @@ void DescribeD3D12Adapter(const DXGI_ADAPTER_DESC1& description,
     DXGI_ADAPTER_DESC1 description{};
     if (FAILED(found) == true || adapter.Get() == nullptr || FAILED(adapter->GetDesc1(&description)) == true)
     {
+        LUDUS_LOG_ERROR(LOG_RHI, "Direct3D 12: the requested adapter is gone; list the adapters again");
         return false;
     }
     const bool isSoftware = (description.Flags & DXGI_ADAPTER_FLAG_SOFTWARE) != 0;
-    if ((shouldUseWarp == true && isSoftware == false) || (isHardwareRequired == true && isSoftware == true) ||
-        CreateDeviceOn(adapter.Get()) == false)
+    if (shouldUseWarp == true && isSoftware == false)
     {
+        LUDUS_LOG_ERROR(LOG_RHI,
+                        "Direct3D 12: the requested adapter is hardware, but LUDUS_TEST_REQUIRE_WARP requires WARP; "
+                        "request a software adapter or clear the variable");
+        return false;
+    }
+    if (isHardwareRequired == true && isSoftware == true)
+    {
+        LUDUS_LOG_ERROR(LOG_RHI,
+                        "Direct3D 12: the requested adapter is software, but LUDUS_TEST_REQUIRE_HARDWARE requires "
+                        "hardware; request a hardware adapter or clear the variable");
+        return false;
+    }
+    if (CreateDeviceOn(adapter.Get()) == false)
+    {
+        LUDUS_LOG_ERROR(LOG_RHI, "Direct3D 12: the requested adapter has no feature level 11.0 device");
         return false;
     }
     GetDirect3D12().Adapter = Move(adapter);

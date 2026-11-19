@@ -426,7 +426,7 @@ presenting.
 
 On Metal, Vulkan, Direct3D 12, WebGPU and WebGL 2, one process can own up to
 `MAX_DEVICE_OWNERS` devices at once. Each `CreateDevice` call starts an independent owner. An owner
-has its own native device and command queue, startup and loss state, resource
+has its own command queue, native device (except as the backend notes below say), startup and loss state, resource
 registries, ordered graphs, transfer rings, pipeline-preparation worker,
 submission ordinals and surfaces. Every native owner can select its own catalog adapter. All owners are used from the one
 owner thread. Frames of different owners are independent: one device can hold an
@@ -449,7 +449,8 @@ of a destroyed owner stay stale after a new owner takes its place. A
 native-interop lease or read names its owner, so it resolves without a device
 handle, even after its device was destroyed while a foreign consumer finished.
 A loss, failure or `DestroyDevice` on one owner retires only that owner's
-resources and completion state. The other owners keep rendering. A view, window,
+resources and completion state. The other owners keep rendering, except that a
+Direct3D 12 device removal reaches every owner sharing that device (see below). A view, window,
 canvas or hosted target holds one presentation layer, so `CreateDevice` and
 `CreateSurface` return `InvalidDescription` for a target that a live surface of
 any owner already borrows; destroying that owner releases it.
@@ -479,8 +480,14 @@ Backend notes:
   with `CreateNativeDevice` brings its source's instance, so Vulkan hosts it only
   as the sole owner: `CreateNativeDevice` returns `InvalidState` while another
   owner is live, and `CreateDevice` returns `InvalidState` while it lives.
-- **Direct3D 12.** Each owner creates its own DXGI factory, device, direct queue
-  and fence. Enabling the debug layer after a device exists removes that device,
+- **Direct3D 12.** Each owner creates its own DXGI factory, direct queue and
+  fence. Direct3D 12 devices are singletons per adapter: creating a device on an
+  adapter that already has one in the process returns that device. Owners on one
+  adapter therefore share one `ID3D12Device`, and their native-interop leases
+  name the same device with different queues; owners on different adapters have
+  different devices. The shared device's removal (a driver reset, or
+  `ID3D12Device5::RemoveDevice`) reaches every owner on that adapter, and each of
+  them must be recreated. Enabling the debug layer after a device exists removes that device,
   so in Debug and Development builds the layer is enabled only by an owner that
   starts while no other owner holds a device. Once enabled it stays enabled for
   the process, so later owners use it too. The optional PIX event runtime is
