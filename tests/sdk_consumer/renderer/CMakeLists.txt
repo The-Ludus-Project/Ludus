@@ -320,3 +320,7 @@ if(NOT EMSCRIPTEN AND NOT WIN32)
         endif()
     endforeach()
 endif()
+
+if(NOT EMSCRIPTEN)
+    add_subdirectory(../environment environment)
+endif()

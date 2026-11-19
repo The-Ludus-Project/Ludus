@@ -292,6 +292,7 @@ jobs:
           out/renderer-sdk/ludus_sdk_renderer_materials_consumer
           out/renderer-sdk/ludus_sdk_renderer_lighting_consumer
           out/renderer-sdk/ludus_sdk_renderer_scaling_consumer
+          out/host-tools/venv/bin/ctest --test-dir out/renderer-sdk/environment --output-on-failure --no-tests=error -R '^ludus_sdk_environment$'
           out/host-tools/venv/bin/ctest --test-dir out/renderer-sdk --output-on-failure --no-tests=error -R "^ludus_sdk_hybrid_indirect_diffuse_consumer$"
           out/host-tools/venv/bin/ctest --test-dir out/renderer-sdk -V --no-tests=error -R "^ludus_sdk_ray_storage_"
           out/renderer-sdk/ludus_sdk_render_graph_runtime_consumer
@@ -370,6 +371,11 @@ jobs:
           QT_QPA_PLATFORM: cocoa
         run: |
           LUDUS_SDK_PREFIX="$PWD/out/install/macos-clang-development" out/build/macos-clang-development/apps/editor/ludus_editor_tests '[.live-journey]'
+      - name: Verify HDR companion import and Lit World highlights against the installed SDK
+        run: |
+          out/host-tools/venv/bin/python tests/sdk_consumer/environment/qualify.py \
+            out/renderer-sdk/environment/ludus_sdk_environment --case world \
+            --editor out/build/macos-clang-development/apps/editor/ludus_editor_tests
       - name: Verify native World renderer and camera authoring
         timeout-minutes: 15
         env:
@@ -1072,6 +1078,7 @@ jobs:
           out/renderer-sdk/ludus_sdk_renderer_materials_consumer
           out/renderer-sdk/ludus_sdk_renderer_lighting_consumer
           out/renderer-sdk/ludus_sdk_renderer_scaling_consumer
+          out/host-tools/venv/bin/ctest --test-dir out/renderer-sdk/environment --output-on-failure --no-tests=error -R '^ludus_sdk_environment$'
           out/host-tools/venv/bin/ctest --test-dir out/renderer-sdk --output-on-failure --no-tests=error -R "^ludus_sdk_hybrid_indirect_diffuse_consumer$"
           VK_INSTANCE_LAYERS=VK_LAYER_KHRONOS_validation out/host-tools/venv/bin/ctest --test-dir out/renderer-sdk -V --no-tests=error -R "^ludus_sdk_ray_storage_"
           VK_INSTANCE_LAYERS=VK_LAYER_KHRONOS_validation out/renderer-sdk/ludus_sdk_render_graph_runtime_consumer 2>&1 | tee out/rg3-sdk-vulkan-validation.log
