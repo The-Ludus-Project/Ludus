@@ -150,6 +150,7 @@ struct Varying
     // How far PositionWorld may lie from the surface along the view ray, in metres. The resolve rebuilds the
     // position from the depth buffer and fills this from that buffer's precision; interpolated positions leave zero.
     float3 PositionUncertaintyWorld : TEXCOORD11;
+    float ForwardDepthMetres : TEXCOORD12;
 #endif
 #ifdef LUDUS_DEBUG_VIEW
     // Last member, so ordinary shadow fragments still match the earlier varying locations.
@@ -381,6 +382,7 @@ struct ShadowLookup
     float ReceiverDepth;
     float2 UncertaintyTexel;
     float UncertaintyDepth;
+    bool IsNearCascade;
 };
 // The depth the caster stored at sampleUv has at the receiver's location, and the tolerance its comparison allows.
 float ProjectShadowCaster(in ShadowLookup lookup, float2 sampleUv, out float outTolerance, out float outStored)
@@ -399,7 +401,16 @@ float ProjectShadowCaster(in ShadowLookup lookup, float2 sampleUv, out float out
     // The displaced receiver changes its own depth and where it meets the caster's plane. Allow both,
     // or a surface lit at a grazing angle shadows itself wherever the depth buffer rounds unfavourably.
     outTolerance = lookup.Settings.x + lookup.UncertaintyDepth + dot(abs(slope), lookup.UncertaintyTexel);
-    return outStored + dot(slope, lookup.ReceiverTexel - centerTexel);
+    float2 offsetTexels = lookup.ReceiverTexel - centerTexel;
+    if (lookup.IsNearCascade == true)
+    {
+        // Each signed square-root slope rounded to an 8-bit code. Bound its squared endpoint
+        // error before extrapolating the caster plane to the receiver.
+        float halfStep = 0.5 / SHADOW_SLOPE_CODE_RADIUS;
+        float2 slopeError = halfStep * (2 * sqrt(abs(slope)) + halfStep);
+        outTolerance += dot(abs(offsetTexels), slopeError);
+    }
+    return outStored + dot(slope, offsetTexels);
 }
 // Visibility of the receiver against the four map texels nearest sampleTexel, bilinearly weighted.
 float CompareShadowTexels(in ShadowLookup lookup, float2 sampleTexel)
@@ -474,18 +485,27 @@ float FilterDirectionalPenumbra(in ShadowLookup lookup, float diskTangent, float
         visible += CompareShadowTexels(lookup, lookup.ReceiverTexel + GetDirectionalPenumbraTap(tap) * radiusTexels);
     return visible / float(DIRECTIONAL_PENUMBRA_TAP_COUNT);
 }
+// Nonnegative indices address material regions. A negative index encodes the near table word offset.
+float4 ReadShadowWord(int region, int word)
+{
+#ifdef LUDUS_DEFERRED_MESH_LIGHTS
+    if (region < 0)
+        return meshLightWords[uint(-region) + uint(word)];
+#endif
+    return material.ShadowData[region * SHADOW_REGION_WORDS + word];
+}
 // Visibility of positionWorld in shadow region region, bilinearly filtered over its four nearest texels, or over a
 // directional light's penumbra when its disk has a positive angular radius.
 // outIsInside is false, and the result one, when the position falls outside the region's projection.
 float SampleShadowRegion(int region, int light, float3 positionWorld, Varying input, out bool outIsInside)
 {
     outIsInside = false;
-    float4 settings = material.ShadowData[region * SHADOW_REGION_WORDS + 5];
+    float4 settings = ReadShadowWord(region, 5);
     float4 p = float4(positionWorld, 1);
-    float4 clip = float4(dot(material.ShadowData[region * SHADOW_REGION_WORDS], p),
-                         dot(material.ShadowData[region * SHADOW_REGION_WORDS + 1], p),
-                         dot(material.ShadowData[region * SHADOW_REGION_WORDS + 2], p),
-                         dot(material.ShadowData[region * SHADOW_REGION_WORDS + 3], p));
+    float4 clip = float4(dot(ReadShadowWord(region, 0), p),
+                         dot(ReadShadowWord(region, 1), p),
+                         dot(ReadShadowWord(region, 2), p),
+                         dot(ReadShadowWord(region, 3), p));
     if (clip.w <= 1e-6)
         return 1;
     float3 ndc = clip.xyz / clip.w;
@@ -493,8 +513,9 @@ float SampleShadowRegion(int region, int light, float3 positionWorld, Varying in
         return 1;
     outIsInside = true;
     ShadowLookup lookup;
-    lookup.Rectangle = material.ShadowData[region * SHADOW_REGION_WORDS + 4];
+    lookup.Rectangle = ReadShadowWord(region, 4);
     lookup.Settings = settings;
+    lookup.IsNearCascade = region < 0;
     float4 rect = lookup.Rectangle;
     float2 projectedUv = float2(ndc.x * 0.5 + 0.5, 0.5 - ndc.y * 0.5);
     // Every region is drawn with its interior as the viewport, so the projection maps clip edges to viewport
@@ -507,11 +528,10 @@ float SampleShadowRegion(int region, int light, float3 positionWorld, Varying in
 #ifdef LUDUS_DEFERRED_MESH_LIGHTS
     // A receiver rebuilt from depth may sit off its surface by PositionUncertaintyWorld. Express that
     // displacement in map texels and light depth, so each tap can allow for it below.
-    float3 uncertaintyClip =
-        float3(dot(material.ShadowData[region * SHADOW_REGION_WORDS].xyz, input.PositionUncertaintyWorld),
-               dot(material.ShadowData[region * SHADOW_REGION_WORDS + 1].xyz, input.PositionUncertaintyWorld),
-               dot(material.ShadowData[region * SHADOW_REGION_WORDS + 2].xyz, input.PositionUncertaintyWorld)) /
-        clip.w;
+    float3 uncertaintyClip = float3(dot(ReadShadowWord(region, 0).xyz, input.PositionUncertaintyWorld),
+                                    dot(ReadShadowWord(region, 1).xyz, input.PositionUncertaintyWorld),
+                                    dot(ReadShadowWord(region, 2).xyz, input.PositionUncertaintyWorld)) /
+                             clip.w;
     lookup.UncertaintyTexel = abs(uncertaintyClip.xy) * texelsPerNdc;
     lookup.UncertaintyDepth = abs(uncertaintyClip.z);
 #else
@@ -522,15 +542,13 @@ float SampleShadowRegion(int region, int light, float3 positionWorld, Varying in
     float diskTangent = material.Lights[light * 4 + 3].z;
     // Only an orthographic directional region has a disk: its projection's last row is (0, 0, 0, 1).
     if (diskTangent > 0 && material.Lights[light * 4].w == 0 &&
-        dot(material.ShadowData[region * SHADOW_REGION_WORDS + 3].xyz,
-            material.ShadowData[region * SHADOW_REGION_WORDS + 3].xyz) == 0)
+        dot(ReadShadowWord(region, 3).xyz, ReadShadowWord(region, 3).xyz) == 0)
     {
         // Orthographic rows are the light basis scaled by NDC units per metre: a depth difference spans
         // 1 / |depth row| metres, and one metre across spans |row| NDC units.
-        float metresPerDepth = 1 / length(material.ShadowData[region * SHADOW_REGION_WORDS + 2].xyz);
+        float metresPerDepth = 1 / length(ReadShadowWord(region, 2).xyz);
         float2 texelsPerMetre =
-            texelsPerNdc * float2(length(material.ShadowData[region * SHADOW_REGION_WORDS].xyz),
-                                  length(material.ShadowData[region * SHADOW_REGION_WORDS + 1].xyz));
+            texelsPerNdc * float2(length(ReadShadowWord(region, 0).xyz), length(ReadShadowWord(region, 1).xyz));
         return FilterDirectionalPenumbra(lookup, diskTangent, metresPerDepth * texelsPerMetre);
     }
     return CompareShadowTexels(lookup, lookup.ReceiverTexel);
@@ -560,6 +578,28 @@ float ComputeShadowCoverage(int light, Varying input, out int outCoverage)
         hasLocalShadowCoverage = hasLocalShadowCoverage || material.Lights[light * 4].w >= 1;
         outCoverage = SHADOW_COVERAGE_OUTSIDE;
         bool isInside;
+#ifdef LUDUS_DEFERRED_MESH_LIGHTS
+        int nearTable = int(deferredView.LightingView.w);
+        if (nearTable > 0 && input.ForwardDepthMetres < DIRECTIONAL_NEAR_END_METRES)
+        {
+            int nearRegion = -(nearTable + region * int(SHADOW_REGION_WORDS));
+            if (ReadShadowWord(nearRegion, 5).z > 0)
+            {
+                float nearVisibility = SampleShadowRegion(nearRegion, light, input.PositionWorld, input, isInside);
+                if (isInside == true)
+                {
+                    outCoverage = SHADOW_COVERAGE_INSIDE;
+                    float blend = smoothstep(float(DIRECTIONAL_NEAR_BLEND_METRES),
+                                             float(DIRECTIONAL_NEAR_END_METRES),
+                                             input.ForwardDepthMetres);
+                    if (blend <= 0)
+                        return nearVisibility;
+                    float farVisibility = SampleShadowRegion(region, light, input.PositionWorld, input, isInside);
+                    return isInside == true ? lerp(nearVisibility, farVisibility, blend) : nearVisibility;
+                }
+            }
+        }
+#endif
         float visible = SampleShadowRegion(region, light, input.PositionWorld, input, isInside);
         if (isInside == true)
         {

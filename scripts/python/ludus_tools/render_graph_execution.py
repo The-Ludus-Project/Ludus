@@ -342,7 +342,7 @@ CAPTURE_PROFILE_PACKAGE_MAGIC = 0x4352554C
 # Version 38 admits the World-feature scene resource bits: the linked ray kernel reads the Atmosphere sky or the
 # aerial perspective table.
 # Version 39 appends the buffer-only scene dispatch work item count to each pass.
-PACKAGE_VERSION = 39
+PACKAGE_VERSION = 40
 # render_graph_format::DisplayCurve codes, by index; zero (Reinhard) also marks a pass without a ToneMap.
 DISPLAY_CURVE_CODES = ('Reinhard', 'PbrNeutral')
 # Version 25 scene resource word: the linked ray kernel reads the renderer's LTC table.
@@ -830,7 +830,7 @@ def _emit_runtime(path, destination, *, configuration='Default', name='DefaultGr
     if contents.get('recipe_keys'):
         lines.append('    result.RecipeKeys = {RECIPE_KEYS.GetData(), RECIPE_KEYS.GetSize()};')
     if contents.get('clustered_deferred', False):
-        lines.append('    result.HasClusteredDeferred = true;')
+        lines.extend(('    result.HasClusteredDeferred = true;', '    result.HasDirectionalNearCascades = true;'))
     if contents.get('clustered_forward', False):
         lines.append('    result.HasClusteredForward = true;')
     if contents.get('light_transformer', False):

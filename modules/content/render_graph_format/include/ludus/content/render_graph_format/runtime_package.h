@@ -151,8 +151,10 @@ inline constexpr foundation::uint32 SCENE_RESOURCE_ATMOSPHERE_SKY = 8U;
 inline constexpr foundation::uint32 SCENE_RESOURCE_AERIAL_PERSPECTIVE = 16U;
 /// First generation carrying each pass's buffer-only scene dispatch work item count.
 inline constexpr foundation::uint32 SCENE_WORK_ITEMS_PACKAGE_VERSION = 39;
+/// First package whose deferred resolve blends a stabilized near directional region with its whole-scene region.
+inline constexpr foundation::uint32 DIRECTIONAL_NEAR_PACKAGE_VERSION = 40;
 /// Current runtime generation layout version.
-inline constexpr foundation::uint32 PACKAGE_VERSION = SCENE_WORK_ITEMS_PACKAGE_VERSION;
+inline constexpr foundation::uint32 PACKAGE_VERSION = DIRECTIONAL_NEAR_PACKAGE_VERSION;
 /// First package carrying explicit OIDN denoising quality per ray pass.
 inline constexpr foundation::uint32 DENOISING_PACKAGE_VERSION = 16;
 /// First package carrying the renderer-owned bilinear image operation.

@@ -1,3 +1,4 @@
+#include "../src/internal/directional_near_cascade.h"
 #include "../src/internal/raster_mesh_light_grid.h"
 #include "../src/internal/raster_mesh_light_shadows.h"
 #include "../src/internal/raster_mesh_lights.h"
@@ -5,8 +6,10 @@
 #include <ludus/foundation/containers/static_array.hpp>
 #include <ludus/foundation/math/geometry.hpp>
 #include <ludus/foundation/math/matrix.hpp>
+#include <ludus/foundation/math/projection.hpp>
 #include <ludus/foundation/math/scalar.hpp>
 #include <ludus/graphics/renderer/deferred_layout.h>
+#include <ludus/graphics/renderer/renderer.hpp>
 
 #include <catch2/catch_approx.hpp>
 #include <catch2/catch_test_macros.hpp>
@@ -568,4 +571,80 @@ TEST_CASE("mesh-light grid cells list each caster's records together", "[mesh-ar
     {
         CHECK(words[listed[entry - 1] + CASTER_CORNER].W <= words[listed[entry] + CASTER_CORNER].W);
     }
+}
+
+TEST_CASE("directional near texels stay world anchored and include distant upstream casters",
+          "[directional-near][directional-shadows]")
+{
+    const math::Aabb3 boundsWorld{{-9000, -8, -9000}, {9000, 120, 9000}};
+    renderer::ShadowRegion whole;
+    whole.Interior = internal::GetDirectionalShadowInterior(0);
+    const math::Vector3 directionWorld{1, -.05F, 0};
+    REQUIRE(
+        renderer::BuildDirectionalShadowMatrix(boundsWorld, directionWorld, whole.Interior.Width, whole.WorldToClip) ==
+        rhi::RasterStatus::Ready);
+    renderer::ShadowRegion previous;
+    const math::Vector3 receiverWorld{0, 0, 0};
+    const math::Vector3 ridgeWorld = receiverWorld - directionWorld * 1500;
+    for (int step = 0; step <= 100; ++step)
+    {
+        const float32 x = static_cast<float32>(step) * .07F;
+        renderer::ShadowRegion near;
+        REQUIRE(internal::TryFitDirectionalNearCascade(whole, boundsWorld, {{0, 1, x}, true}, 1, near) == true);
+        const math::Vector4 projected = near.WorldToClip * math::Vector4{ridgeWorld.X, ridgeWorld.Y, ridgeWorld.Z, 1};
+        CHECK(math::Abs(projected.X) < 1);
+        CHECK(math::Abs(projected.Y) < 1);
+        CHECK(projected.Z >= 0);
+        CHECK(projected.Z <= 1);
+        if (step != 0)
+        {
+            const math::Vector4 oldPoint = previous.WorldToClip * math::Vector4{0, 0, 0, 1};
+            const math::Vector4 newPoint = near.WorldToClip * math::Vector4{0, 0, 0, 1};
+            for (float32 delta : {oldPoint.X - newPoint.X, oldPoint.Y - newPoint.Y})
+            {
+                const float32 texels = delta * 0.5F * static_cast<float32>(near.Interior.Width);
+                CHECK(math::Abs(texels - static_cast<float32>(math::Floor(static_cast<float64>(texels) + 0.5))) <
+                      .001F);
+            }
+        }
+        previous = near;
+    }
+    // Sweep the angle between the fixed light and the view from parallel to perpendicular.
+    // The near footprint still covers the slice's corners and the World probe keeps its light coordinates.
+    renderer::ViewDescription camera;
+    camera.CameraPosition = {0, 1, 0};
+    math::Matrix4 perspective;
+    REQUIRE(math::TryPerspectiveReverseZ(0.6F, 1.5F, 0.01F, 400, perspective) == math::MathStatus::Success);
+    renderer::ShadowRegion reference;
+    for (uint32 angle = 0; angle <= 90; angle += 15)
+    {
+        const float32 radians = math::DegreesToRadians(static_cast<float32>(angle));
+        const math::Vector3 direction =
+            directionWorld * math::Cos(radians) + math::Vector3{0, 0, 1} * math::Sin(radians);
+        math::Matrix4 worldToView;
+        REQUIRE(math::TryLookAt(camera.CameraPosition, camera.CameraPosition + direction, {0, 1, 0}, worldToView) ==
+                math::MathStatus::Success);
+        camera.WorldToClip = perspective * worldToView;
+        renderer::ShadowRegion fitted;
+        REQUIRE(internal::TryFitDirectionalNearCascade(whole,
+                                                       boundsWorld,
+                                                       internal::GetDirectionalNearFootprint(camera),
+                                                       1,
+                                                       fitted) == true);
+        if (angle == 0)
+        {
+            reference = fitted;
+        }
+        CHECK(fitted.WorldToClip == reference.WorldToClip);
+    }
+    internal::MeshLightShadowCaster caster;
+    caster.FaceMask = 1;
+    caster.FaceTexels = 512;
+    caster.FaceOrigins[0] = {1024, 1536};
+    CHECK(internal::HasDirectionalNearSpace({&caster, 1}, 1) == true);
+    CHECK(internal::HasDirectionalNearSpace({&caster, 1}, 2) == false);
+    caster.FaceOrigins[0] = {1536, 1536};
+    CHECK(internal::HasDirectionalNearSpace({&caster, 1}, 1) == false);
+    renderer::ShadowRegion near;
+    REQUIRE(internal::TryFitDirectionalNearCascade(whole, boundsWorld, {}, 0, near) == false);
 }

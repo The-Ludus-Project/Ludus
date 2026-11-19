@@ -2164,8 +2164,10 @@ the shipped fit, filtering and scene resource reports.
 
 ### Stabilized directional cascades
 
-Add one stabilized near cascade for each admitted directional light and retain
-its existing whole-scene map for far receivers and fallback. Keep light
+The default clustered deferred graph can fit one stabilized near cascade for each
+admitted directional light and retain its whole-scene map for far receivers and
+fallback. The [Metal doorway replay](../development/render-graph-authoring.md#doorway-replay-on-metal)
+records the measured near and whole-scene footprints and split error. Keep light
 selection and shadow eligibility tied to the light's source identity. Sun and
 Moon each get independent visibility when both are admitted. The default graph
 owns cascade selection, atlas allocation and lifetime. World extraction and

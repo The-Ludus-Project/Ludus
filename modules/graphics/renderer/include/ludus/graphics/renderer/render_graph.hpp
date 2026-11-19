@@ -212,6 +212,8 @@ struct RenderGraphPrograms final
     // Keep partial aggregate callers warning-clean when this optional field is omitted.
     // NOLINTNEXTLINE(readability-redundant-member-init)
     foundation::BorrowedView<const RenderGraphRecipeKey> RecipeKeys{};
+    /// Deferred resolve understands the near-region index in the fourth light word. Older packages leave this false.
+    bool HasDirectionalNearCascades = false;
 };
 /// How much of a World feature a graph with these programs draws. The clustered deferred resolve composes every
 /// feature (Supported). Otherwise a ray kernel draws a feature as the documented approximation (Approximated) exactly
@@ -549,6 +551,28 @@ struct RenderGraphSceneRevisions final
     /// Compare domain identities; this does not compare source bytes or validate caller promises.
     [[nodiscard]] LUDUS_INLINE bool operator==(const RenderGraphSceneRevisions&) const noexcept = default;
 };
+/// Maximum whole-scene directional maps admitted for a single generation (Sun and Moon).
+inline constexpr foundation::usize MAX_DIRECTIONAL_SHADOW_LIGHTS = 2;
+/// Coverage and recorded caster work for a directional map in the drawable generation.
+struct DirectionalCascadeReport final
+{
+    /// World metres per interior texel along the light projection X and Y axes. Zero when absent.
+    foundation::math::Vector2 MetresPerTexel{};
+    /// Conventional light transform. Clip XY in [-1,1] and Z in [0,1] bound the fitted caster column.
+    foundation::math::Matrix4 WorldToClip{};
+    /// Gutter-excluded atlas rectangle in pixels. Zero width means the map is absent.
+    rhi::RasterRectangle Interior{};
+    foundation::float32 Bias = 0;     ///< Receiver tolerance in normalized light depth.
+    foundation::uint32 Draws = 0;     ///< Prepared caster packets.
+    foundation::uint64 Triangles = 0; ///< Instanced caster triangles submitted when filling the map.
+};
+/// Coverage of a drawable directional source. A missing near region selects WholeScene at every depth.
+struct DirectionalLightShadowReport final
+{
+    foundation::uint64 SourceId = 0;       ///< Stable World light identity, or zero in an unused report entry.
+    DirectionalCascadeReport WholeScene{}; ///< Whole-scene map available throughout the view.
+    DirectionalCascadeReport Near{};       ///< Fine projection used up to DIRECTIONAL_NEAR_END_METRES of forward depth.
+};
 /// Finest sky visibility coverage submitted for the drawable generation.
 enum class SkyVisibilityLevel : foundation::uint8
 {
@@ -604,6 +628,8 @@ struct RenderGraphSceneResourceReport final
     /// Directional lights given a shadow map in the latest prepared deferred scene, brightest first, at most two:
     /// enough for an Atmosphere's Sun and Moon.
     foundation::uint32 DirectionalShadowLights = 0;
+    /// Number of additional stabilized near regions admitted for this candidate. Zero means whole-scene coverage.
+    foundation::uint32 DirectionalNearRegions = 0;
     /// Eligible directional lights (raster shadows requested, positive intensity, nonblack color) of the latest
     /// prepared deferred scene left without a map because two brighter ones hold them. They illuminate unshadowed;
     /// clear their raster shadow request to make that explicit.
@@ -614,6 +640,14 @@ struct RenderGraphSceneResourceReport final
     /// light over those directions only where they see past the scene (render-graph-authoring.md, "Sky visibility").
     /// GetSkyVisibilityReport reports both submitted levels of the currently drawable scene.
     foundation::uint32 SkyVisibilityMaps = 0;
+    /// Directional map footprints and work in the drawable scene, in admission order.
+    foundation::StaticArray<DirectionalLightShadowReport, MAX_DIRECTIONAL_SHADOW_LIGHTS> DrawableDirectionalShadows{};
+    /// Combined unpadded RGBA8 and private depth bytes of the drawable generation's shadow atlas.
+    foundation::uint64 DrawableShadowAttachmentBytes = 0;
+    /// Texels occupied by allocated mesh-light face slots, including their gutters, in the drawable atlas.
+    foundation::uint64 DrawableMeshLightFaceTexels = 0;
+    /// Cumulative near projections prepared on a cache miss (including a replacement scene).
+    foundation::uint64 PreparedDirectionalNearRegions = 0;
 };
 /// Summary of the latest candidate, separately from the last rendered image.
 struct RenderGraphReport final

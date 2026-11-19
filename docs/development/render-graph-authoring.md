@@ -6698,22 +6698,162 @@ maps are evaluated without analytic shadows in this profile. The forward
 clustered profile shades with the same comparison, without the reconstruction
 allowance because it interpolates exact receiver positions.
 
-The atlas is prepared with the scene. The renderer draws the directional maps
-before the first lighting resolve that has enough draw budget. Until then each
-light uses full visibility. Camera-only edits reuse it. Changes to scene geometry or lighting
-prepare a replacement, and failed preparation retains the previous drawable
-generation. The directional slots share the mesh-light atlas when the scene
-has both kinds of casters; each one takes a quarter of the 2048 × 2048 atlas, as do
-the [sky visibility](#sky-visibility) maps, so with two directional maps one quarter is
-left for mesh-light cube faces. The whole-scene fit keeps the shadow stable as the
-camera moves. In large scenes, each texel covers more ground, so nearby edges
-can appear coarse. Recook existing clustered deferred shader packages to use
-the corrected directional shadow comparison.
+The default clustered deferred graph also fits a camera-centred near map for
+each admitted directional light when its whole-scene texels exceed the near
+density. Each near tile has a 510 × 510 interior at 0.09375 metres per texel.
+Rotation leaves its square fixed in the light basis. Translation moves its
+centre in multiples of 32 texels (3 metres). The padded footprint contains all
+four perspective corners at 12 metres of forward depth, including the maximum
+snap displacement. The light-space depth interval intersects the extruded
+receiver column with the complete scene bounds so an offscreen ridge or roof
+can cast into the view. The near map uses two packed depth codes of bias plus
+the usual receiver uncertainty and slope adjustment. From 10 to 12 metres of
+forward depth the resolve smoothly blends the two visibility values. Beyond
+12 metres it samples the whole-scene map.
 
-The proposed
-[large-world visibility design](../architecture/renderer-systems.md#large-world-raster-visibility)
-defines near directional cascades and the skylight qualification for Worlds
-with both room-sized casters and kilometre-scale terrain.
+The two near slots use free tiles in the 2048 × 2048 atlas. Mesh-light faces
+retain their assigned space. When two directional maps and both sky levels
+occupy all four squares, the near tiles use one extra 512-texel row. This
+raises the unpadded colour and depth total from 32 to 40 MiB per drawable
+generation. If the device dimensions, storage or draw budget cannot admit
+the near maps, the resolve uses whole-scene directional coverage. Local sky
+keeps its own allocation and fallback policy. Directional lights also use
+whole-scene coverage for orthographic, multi-camera and perspective views
+outside the padded footprint. Recook a
+clustered deferred package with format version 40 or later to enable the near
+maps. Earlier packages retain their original directional shadow behavior.
+
+A camera update within a snapped footprint reuses the atlas. Crossing a snap
+boundary stages a replacement atlas and caster packets from the retained scene
+snapshot. The old camera and its bindings remain drawable until the candidate
+is ready. As with scene updates, the renderer fills the new atlas under its
+per-frame draw and triangle budgets. The resource report exposes source IDs,
+whole and near transforms, interior rectangles, texel sizes, comparison bias,
+packet and triangle counts, prepared near-region count, mesh-face occupancy
+and unpadded attachment bytes. A zero-sized near rectangle identifies a
+whole-scene fallback for that light.
+
+The [large-world visibility design](../architecture/renderer-systems.md#large-world-raster-visibility)
+describes the doorway and terrain qualification route.
+
+#### Doorway replay on Metal
+
+At renderer revision `6203b7168`, the arm64 Development build on an Apple M5
+running macOS 26.6 rendered the same 96 × 64 scene-linear shadow coverage
+through the Raster World viewport and a relocated SDK consumer. Both graph
+cooks produced package SHA-256
+`d0737aaf8e01f971ecdb9eaf459ae367fa01068bd67ac59507b3ebabb1ddf6b6`.
+All 589,824 RGBA8 bytes across the first 24 frames matched, including camera
+turns and cuts. The capture SHA-256 was
+`88a9d2aa8dd4f913b2ed93362873b6daae3d0e6083143cc19df5a28b598a26b2`.
+
+The fixture keeps an 18 km square ground mesh in every draw and caster set.
+Two wall segments leave a one-metre opening under a roof. Independent ray
+intersections with the wall and roof determine the expected floor visibility.
+With both lights at 45°, the near region submitted two draws and 24 triangles
+per source. Both the blocked and clear probes matched their exact endpoints
+(0 and 255). The replay also exercises a Sun with a 0.05 rise/run, a thin
+roof across the opening, transparent and opaque masked geometry, moving the
+wall, editing the terrain, replacing the light direction, resize and camera
+updates with the scene inputs released. A CPU projection check keeps a
+1.5 km offscreen blocker inside the fitted light volume. The GPU replay also
+moves the wall to X = +1,500 m and −1,500 m, outside the 400 m camera far
+plane. With its base at 74 m and each light at a 0.05 rise/run, the ray toward
+the wall crosses it at 75 m. For each placement, the near map returned 0
+behind the wall and 255 through the opening. The opposite light returned 255
+at both probes. The whole-scene control returned 255 at all eight probes.
+On a second terrain
+with a 0.5 rise/run, a Sun at 0.55 rise/run grazed the slope through the
+open doorway. Both the Sun and Moon returned 255/255 at the clear probe in
+both modes, for zero measured false shadow there.
+
+| Incident light | Near footprint on horizontal ground (m) | Whole-scene footprint on horizontal ground (m) |
+| --- | ---: | ---: |
+| 45° Sun | 0.13258 × 0.09375 | 17.66430 × 17.64706 |
+| Grazing Sun (0.05 rise/run) | 1.87734 × 0.09375 | 18.36278 × 17.64706 |
+
+These values project adjacent texel rays onto the ground. They explain why a
+0.09375 m light-plane texel still covers almost two metres along the ground at
+the grazing angle. Across three camera poses the sampled 50% doorway edge
+landed at 0.4875 m, versus the geometric 0.5 m. Measured drift was zero at
+0.025 m probe spacing. With the whole-scene control the blocked receiver read
+255. During a split crossing the cascade returned 0, 3, 144 and 255 at camera
+horizontal distances of 9, 10, 11 and 12 m (eye height 2 m). It returned 255
+at 16 m. The fully visible probe stayed at 255. The blend therefore restores
+the coarse map's full visibility error at and beyond the far edge of the overlap.
+
+![Projected shadow texel size in both receiver directions and measured doorway visibility through the split](../assets/renderer/directional-near-split.png)
+
+The upper panel projects the two measured ground-plane texel dimensions into
+receiver pixels using the local perspective derivative at the sampled pixel.
+The camera looks obliquely across the floor. At 9 m horizontal distance, one
+near texel spans 4.62 pixels across the view and 0.71 along it. In the
+overlap, at 10 m horizontal distance, the two maps contributing to the blend
+span 4.18 × 0.58 and 556.76 × 109.94 pixels respectively. At 12 m the
+whole-scene footprint alone spans 467.45 × 77.49 pixels and the blocked wall
+probe is fully lit. At 16 m it still spans 353.77 × 44.39 pixels. These are
+local sampling rates at the probe. A large whole-scene texel extends beyond
+the region where the derivative is approximately constant.
+
+Over the ten outward and return poses, one blocked Sun probe and one clear
+Moon probe per pose give 20 absolute visibility errors. Median, p95 and
+maximum were 0, 1 and 1 for the near policy and 0.5, 1 and 1 for the
+whole-scene control. The dotted curve moves the same smooth blend to
+14–16 m offline, holding both projections, caster packets and measured
+near-only and whole-only visibility fixed. The narrow replay frustum fits
+the existing near tile at that distance. This delays the error on this route
+and still approaches full error at 16 m. Wider views need a separate
+coverage check before changing the default split. Reproduce the figure
+with `python tests/sdk_consumer/directional_near/plot_split.py replay.log split.png`
+using Matplotlib and the measured SDK replay log.
+
+| Relocated SDK, two lights, 64 warm frames | Whole-scene control median / p95 (ms) | Near cascades median / p95 (ms) |
+| --- | ---: | ---: |
+| Camera update through ready, including polling | 1.768 / 2.285 | 1.882 / 2.374 |
+| GPU frame | 0.454 / 3.801 | 0.490 / 3.423 |
+| GPU deferred lighting resolve | 0.373 / 1.483 | 0.466 / 1.645 |
+| Headless submit through GPU completion | 1.781 / 4.675 | 1.808 / 4.626 |
+
+The warm camera reused all shadow maps and submitted zero shadow draws.
+GPU p95 was 0.378 ms lower in this 64-frame sample. On the first scene update,
+staging took 1.215 ms with cascades and 1.527 ms for the control. First-frame
+GPU time including the atlas fill was 11.707 and 7.060 ms respectively.
+Submit-through-completion was 16.391 and 14.120 ms. The headless measurement
+excludes display refresh and scanout.
+
+A separate visible Metal run drove the same 96 × 64 graph in the production
+Qt Quick World viewport, with two warmup frames and 64 measured intervals.
+Each interval ended at the first `QQuickWindow::frameSwapped` for the next
+graph image serial. Median / p95 intervals were 16.681 / 18.838 ms with
+cascades and 16.954 / 19.727 ms with the whole-scene control. These measure
+the application's presentation cadence. Panel scanout occurs later.
+
+Both modes retained all 64 whole-World and all 64 local sky maps, with zero
+mesh-light face texels. The unpadded attachments occupied 41,943,040 bytes per
+drawable generation with near cascades and 33,554,432 with the control.
+A third run capped renderer resources at 38 MiB. Both lights then used their
+whole-scene maps and both sky levels remained available. The final steady API
+allocation for all measured renderer resources was 46,178,688 bytes with
+cascades and 37,658,816 bytes for the control. Sampling at staging and after
+submission observed peaks of 88,379,632 and 37,659,008 bytes respectively. Recentering
+holds the replacement and old atlas at once. These counts include Metal's
+reported allocation sizes and differ from physical residency.
+
+Run `[directional-near-replay]` in the renderer pixel suite, or configure
+`tests/sdk_consumer/directional_near` with the relocated SDK and Catch2 in
+`CMAKE_PREFIX_PATH` to build `ludus_directional_near_replay`. The consumer
+stages the SDK's default graph with tone mapping disabled. Set
+`LUDUS_MEASURE_DIRECTIONAL_REPLAY=1` for per-frame measurements and
+`LUDUS_DIRECTIONAL_CAPTURE` to a file for the 24 raw frames. In
+`ludus_editor_tests`, run `[.directional-near-world]` with
+`LUDUS_DIRECTIONAL_GRAPH` pointing to the linear package and
+`LUDUS_DIRECTIONAL_CAPTURE` pointing to a second file. Compare the files
+byte for byte. On a native desktop, run `[.directional-near-pacing]` with
+the same graph to record the visible frame swaps. For the matched control,
+use a copy of the linear package with its little-endian version word at
+byte offset 4 set to 39. Versions 39 and 40 have identical record layouts.
+The older version disables the near regions while preserving the compiled
+shaders, export size and World.
 
 ### Sky visibility
 

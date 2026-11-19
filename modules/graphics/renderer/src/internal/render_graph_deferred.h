@@ -152,6 +152,7 @@ struct DeferredResolveLights final
     foundation::uint32 AtmosphereSunIndex = 0;
     /// The light ViewDescription::LightingView isolates.
     foundation::uint32 LightingViewLightIndex = 0;
+    foundation::uint32 NearTableWord = 0; ///< Zero or the first per-light near record in the scene storage buffer.
 };
 /// Per-view camera uniform and common light bindings; owns no mutable scene data. The operation's
 /// ToneMap exposure and curve, when nonzero, are applied by the lighting resolve before RGBA8 output. A view with skin

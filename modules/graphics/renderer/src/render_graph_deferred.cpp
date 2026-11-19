@@ -718,7 +718,7 @@ Status RenderGraphDeferredPass::Initialize(RenderGraphDeferredTargets& inoutTarg
     parameters.LightingView = {static_cast<float32>(camera.LightingView),
                                static_cast<float32>(lights.LightingViewLightIndex),
                                shouldShowWorkLight == true ? 1.0F : 0.0F,
-                               0};
+                               static_cast<float32>(lights.NearTableWord)};
     if (atmosphere.IsEnabled == true && atmosphere.ShouldLightScene == true)
     {
         constexpr float64 METRES_PER_KILOMETRE = LUDUS_ATMOSPHERE_METRES_PER_KILOMETRE;

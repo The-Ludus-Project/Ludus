@@ -121,6 +121,10 @@ static const LightingLayoutValue SKY_VISIBILITY_SLOTS_PER_SIDE = 8;
 /// Light index a sky visibility region stores in place of a light's: above every admitted light index, so a light's
 /// shadow lookup never reads one, and the first of SKY_VISIBILITY_DIRECTION_COUNT trailing regions carries it.
 static const LightingLayoutValue SKY_VISIBILITY_REGION_TAG = 255;
+/// Forward view distance in metres at which the near and whole-scene maps begin blending.
+static const LightingLayoutValue DIRECTIONAL_NEAR_BLEND_METRES = 10;
+/// Forward view distance in metres beyond which the resolve samples only the whole-scene map.
+static const LightingLayoutValue DIRECTIONAL_NEAR_END_METRES = 12;
 /// Lighting views the clustered deferred resolve can draw in place of its final colour (DeferredLightingView).
 /// Ordinary radiance of every term.
 static const LightingLayoutValue DEFERRED_LIGHTING_VIEW_FINAL = 0;

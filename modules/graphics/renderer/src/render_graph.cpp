@@ -1162,6 +1162,7 @@ struct RenderGraph::State final
         StaticArray<core::UniquePtr<internal::RenderGraphDeferredPass>, format::MAX_PASSES> DeferredPasses{};
         StaticArray<bool, format::MAX_PASSES> HasRayCamera{};
         StaticArray<ViewDescription, format::MAX_CAMERAS> Cameras{};
+        core::UniquePtr<internal::PreparedShadowResources> Shadows;
         uint64 Revision = 0;
         ~CameraUpdate() noexcept
         {
@@ -1186,7 +1187,8 @@ struct RenderGraph::State final
                                PreparedView view,
                                const ViewDescription& camera,
                                const internal::ForwardSceneGeneration& lighting,
-                               const format::Pass& operation) noexcept
+                               const format::Pass& operation,
+                               const internal::PreparedShadowResources* replacementOrNull = nullptr) noexcept
     {
         if (inoutPass.Get() == nullptr)
         {
@@ -1196,20 +1198,23 @@ struct RenderGraph::State final
                 return Status::OutOfMemory;
             }
             inoutPass = core::UniquePtr<internal::RenderGraphDeferredPass>{allocationOrNull};
+            const internal::PreparedShadowResources& shadows =
+                replacementOrNull != nullptr ? *replacementOrNull : lighting.GetShadowResources();
             const Status status = inoutPass->Initialize(
                 inoutTargets,
                 GetContext(format::Technique::ColorAndDepth),
                 view,
                 camera,
-                lighting.GetMeshLights(),
+                shadows.LightWords,
                 lighting.GetMeshLightCount(),
                 lighting.GetMeshLightGridWord(),
-                lighting.HasShadowAtlas(),
-                lighting.GetShadowAtlasView(),
+                rhi::IsNull(shadows.Atlas.Texture) == false,
+                shadows.Atlas.Sampled,
                 operation,
                 {
                     .AtmosphereSunIndex = lighting.FindDirectionalLightIndex(camera.Atmosphere.SunSourceId),
                     .LightingViewLightIndex = lighting.FindLightIndex(camera.LightingViewSourceId),
+                    .NearTableWord = shadows.NearTableWord,
                 });
             if (IsAccepted(status) == false)
             {
@@ -1237,7 +1242,9 @@ struct RenderGraph::State final
         }
         return true;
     }
-    Status PrepareCameras(BorrowedView<const ViewDescription> cameras, uint64 revision) noexcept
+    Status PrepareCameras(BorrowedView<const ViewDescription> cameras,
+                          uint64 revision,
+                          const internal::DirectionalNearFootprint& footprint) noexcept
     {
         LUDUS_PROFILE_SCOPE(RenderGraphPrepareCameras);
         CameraUpdate* allocationOrNull = new (std::nothrow) CameraUpdate;
@@ -1248,6 +1255,14 @@ struct RenderGraph::State final
         }
         candidate->OwnerOrNull = this;
         candidate->SourceOrNull = Current.Get();
+        if (Current->ForwardGeneration.Get() != nullptr)
+        {
+            const Status shadows = Current->ForwardGeneration->PrepareCameraShadows(footprint, candidate->Shadows);
+            if (IsAccepted(shadows) == false)
+            {
+                return shadows;
+            }
+        }
         candidate->Revision = revision;
         for (usize i = 0; i < cameras.GetSize(); ++i)
         {
@@ -1305,12 +1320,27 @@ struct RenderGraph::State final
             if (status == Status::Ready && Programs.HasClusteredDeferred == true &&
                 Passes[i].Program == format::Technique::ColorAndDepth)
             {
-                status = PrepareDeferredView(update.DeferredPasses[i],
-                                             *Current->DeferredTargets[i],
-                                             update.Views[i],
-                                             update.Cameras[Passes[i].Camera],
-                                             *Current->ForwardGeneration,
-                                             Passes[i]);
+                if (update.Shadows.Get() != nullptr)
+                {
+                    status = update.Shadows->Poll();
+                    if (status == Status::Ready)
+                    {
+                        status = GetContext(Passes[i].Program)
+                                     .prepareDeferredShadows(Current->Snapshots[i],
+                                                             Current->ForwardGeneration->GetMeshLightShadowCasters(),
+                                                             update.Shadows->Atlas);
+                    }
+                }
+                if (status == Status::Ready)
+                {
+                    status = PrepareDeferredView(update.DeferredPasses[i],
+                                                 *Current->DeferredTargets[i],
+                                                 update.Views[i],
+                                                 update.Cameras[Passes[i].Camera],
+                                                 *Current->ForwardGeneration,
+                                                 Passes[i],
+                                                 update.Shadows.Get());
+                }
             }
             if (status != Status::Ready)
             {
@@ -1344,6 +1374,10 @@ struct RenderGraph::State final
                 Current->Views[i] = update.Views[i];
                 update.Views[i] = {};
             }
+        }
+        if (update.Shadows.Get() != nullptr)
+        {
+            Current->ForwardGeneration->CommitCameraShadows(update.Shadows);
         }
         Current->Cameras = update.Cameras;
         Current->Revision = update.Revision;
@@ -3598,6 +3632,11 @@ Status RenderGraph::updateScene(BorrowedView<const RenderGraphMesh> meshes,
         return Status::InvalidDescription;
     }
     // A changed Atmosphere changes the ray scene's sky, Sun and haze, so the scene is prepared again.
+    internal::DirectionalNearFootprint footprint =
+        state.Programs.HasDirectionalNearCascades == true && cameras.GetSize() == 1
+            ? internal::GetDirectionalNearFootprint(cameras[0])
+            : internal::DirectionalNearFootprint{};
+    footprint.CanReserveTiles = state.Programs.HasDirectionalNearCascades;
     const bool canReuse =
         state.Current.Get() != nullptr && state.Current->CoveragePolicy == policy &&
         (hasRevisions == true ? state.Current->Revisions == revisions
@@ -3610,7 +3649,7 @@ Status RenderGraph::updateScene(BorrowedView<const RenderGraphMesh> meshes,
             return Status::NotReady;
         }
         state.Step = RenderGraphFailureStage::ScenePreparation;
-        const Status prepared = state.PrepareCameras(cameras, sceneRevision);
+        const Status prepared = state.PrepareCameras(cameras, sceneRevision, footprint);
         if (prepared != Status::IdentityExhausted || meshes.IsEmpty() == true)
         {
             if (IsAccepted(prepared) == true)
@@ -3832,7 +3871,7 @@ Status RenderGraph::updateScene(BorrowedView<const RenderGraphMesh> meshes,
             }
         }
         const Status prepared =
-            state.ForwardResources.Prepare(source, candidate->ForwardGeneration, matchingCastersOrNull);
+            state.ForwardResources.Prepare(source, candidate->ForwardGeneration, footprint, matchingCastersOrNull);
         if (IsAccepted(prepared) == false)
         {
             return prepared;
@@ -4296,6 +4335,7 @@ RenderGraphReport RenderGraph::GetReport() const noexcept
         report.Resources = mState->ForwardResources.GetReport();
         if (mState->Current.Get() != nullptr && mState->Current->ForwardGeneration.Get() != nullptr)
         {
+            mState->Current->ForwardGeneration->DescribeDrawableShadows(report.Resources);
             report.PendingMeshLightShadowFaces = mState->Current->ForwardGeneration->GetPendingMeshLightShadowFaces();
             report.Resources.SurfaceChartDraws = mState->Current->ForwardGeneration->GetSurfaceChartDrawCount();
             report.Resources.ProbeReceiverDraws = mState->Current->ForwardGeneration->GetProbeReceiverDrawCount();
@@ -4317,7 +4357,7 @@ SkyVisibilityReport RenderGraph::GetSkyVisibilityReport() const noexcept
         return report;
     }
     const uint32 drawn = atlasOrNull->Submitted.DrawnDirectional;
-    const uint32 lightMaps = atlasOrNull->DirectionalCount;
+    const uint32 lightMaps = atlasOrNull->DirectionalCount + atlasOrNull->NearCount;
     const uint32 skyMaps = drawn - math::Min(drawn, lightMaps);
     report.WholeWorldMaps = math::Min(skyMaps, atlasOrNull->SkyCount);
     report.LocalMaps = skyMaps - report.WholeWorldMaps;

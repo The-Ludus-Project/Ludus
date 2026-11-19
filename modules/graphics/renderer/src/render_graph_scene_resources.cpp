@@ -18,6 +18,7 @@
 #include <ludus/graphics/renderer/environment.hpp>
 #include <ludus/graphics/renderer/lighting.hpp>
 #include <ludus/graphics/renderer/texture_mip_chain.hpp>
+#include <ludus/graphics/rhi/device.h>
 
 #include <cstring>
 #include <new>
@@ -160,7 +161,7 @@ Status BuildSkyVisibilityRegions(const math::Aabb3& boundsWorld, DeferredShadowA
     }
     for (uint32 direction = 0; direction < SKY_VISIBILITY_DIRECTION_COUNT; ++direction)
     {
-        inoutAtlas.Directional[inoutAtlas.DirectionalCount + direction] = regions[direction];
+        inoutAtlas.Directional[inoutAtlas.DirectionalCount + inoutAtlas.NearCount + direction] = regions[direction];
     }
     inoutAtlas.SkyCount = SKY_VISIBILITY_DIRECTION_COUNT;
     return Status::Ready;
@@ -171,7 +172,7 @@ void BuildLocalSkyVisibilityRegions(DeferredShadowAtlas& inoutAtlas) noexcept
     const rhi::RasterRectangle square = GetDirectionalShadowInterior(inoutAtlas.DirectionalCount + 1);
     for (uint32 direction = 0; direction < inoutAtlas.SkyCount; ++direction)
     {
-        const uint32 index = inoutAtlas.DirectionalCount + direction;
+        const uint32 index = inoutAtlas.DirectionalCount + inoutAtlas.NearCount + direction;
         ShadowRegion& region = inoutAtlas.Directional[index + inoutAtlas.SkyCount];
         region = inoutAtlas.Directional[index];
         region.Interior = GetSkyVisibilityInterior(square, direction);
@@ -680,14 +681,14 @@ struct ForwardSceneGeneration::State final
     usize SurfaceChartDraws = 0;
     usize ProbeReceiverDraws = 0;
     Array<math::Vector4> MeshLightWords;
-    rhi::BufferHandle MeshLightBuffer{};
+
     uint32 MeshLightCount = 0;
     uint32 MeshLightGridWord = 0;
     /// Shadow casters with allocated atlas faces; empty without a culling grid.
     Array<MeshLightShadowCaster> MeshLightShadowCasters;
     /// Shared directional and mesh-light atlas. It exists only when at least one projection is needed.
-    DeferredShadowAtlas Shadows;
-    SharedPtr<ShadowTexture> ShadowBacking;
+    core::UniquePtr<PreparedShadowResources> ShadowResources;
+    uint64 OccupiedMeshLightTexels = 0;
     /// Eligible directional lights beyond MAX_DIRECTIONAL_SHADOW_REGIONS, which illuminate unshadowed.
     uint32 UnshadowedDirectionalLights = 0;
     LightClusterDescription Clusters;
@@ -703,12 +704,6 @@ struct ForwardSceneGeneration::State final
         if (OwnerOrNull == nullptr)
         {
             return;
-        }
-        static_cast<void>(rhi::Destroy(OwnerOrNull->Device, MeshLightBuffer));
-        static_cast<void>(rhi::Destroy(OwnerOrNull->Device, Shadows.Sampled));
-        if (Shadows.Packets.IsEmpty() == false)
-        {
-            static_cast<void>(rhi::Destroy(OwnerOrNull->Device, Shadows.Instances));
         }
         for (MaterialVersion& material : Materials)
         {
@@ -727,6 +722,218 @@ struct ForwardSceneGeneration::State final
         }
     }
 };
+namespace
+{
+void FitNearRegions(const math::Aabb3& boundsWorld,
+                    const DirectionalNearFootprint& footprint,
+                    DeferredShadowAtlas& inoutAtlas) noexcept
+{
+    inoutAtlas.NearCount = 0;
+    for (uint32 index = 0; inoutAtlas.HasNearSpace == true && index < inoutAtlas.DirectionalCount; ++index)
+    {
+        if (TryFitDirectionalNearCascade(inoutAtlas.Directional[index],
+                                         boundsWorld,
+                                         footprint,
+                                         index,
+                                         inoutAtlas.Directional[inoutAtlas.DirectionalCount + inoutAtlas.NearCount]) ==
+            true)
+        {
+            if (inoutAtlas.HeightTexels > inoutAtlas.WidthTexels)
+            {
+                inoutAtlas.Directional[inoutAtlas.DirectionalCount + inoutAtlas.NearCount].Interior.Y +=
+                    DIRECTIONAL_NEAR_TILE_TEXELS;
+            }
+            ++inoutAtlas.NearCount;
+        }
+    }
+}
+enum class AtlasFallback : uint8
+{
+    RetainDimensions,
+    DropNearRow,
+    DropNearRowOrLocalSky
+};
+Status AllocateShadowResources(BorrowedView<const math::Vector4> words,
+                               PreparedShadowResources& inoutResources,
+                               AtlasFallback fallback = AtlasFallback::RetainDimensions) noexcept
+{
+    DeferredShadowAtlas& atlas = inoutResources.Atlas;
+    if (atlas.WidthTexels != 0)
+    {
+        if (inoutResources.Backing.Get() == nullptr)
+        {
+            if (TryMakeShared(GetSystemAllocationDomain(), inoutResources.Backing) != OwnershipStatus::Ok)
+            {
+                return Status::OutOfMemory;
+            }
+            inoutResources.Backing->Device = inoutResources.Device;
+            const auto allocate = [&]() {
+                return rhi::CreateTexture(inoutResources.Device,
+                                          {atlas.WidthTexels, atlas.HeightTexels, rhi::RasterFormat::Rgba8Unorm, true},
+                                          {},
+                                          inoutResources.Backing->Texture);
+            };
+            Status status = allocate();
+            if (fallback != AtlasFallback::RetainDimensions &&
+                (status == Status::OutOfMemory || status == Status::CapacityExceeded))
+            {
+                if (atlas.HeightTexels > atlas.WidthTexels)
+                {
+                    for (uint32 index = 0; index < atlas.SkyCount + atlas.LocalSkyCount; ++index)
+                    {
+                        atlas.Directional[atlas.DirectionalCount + index] =
+                            atlas.Directional[atlas.DirectionalCount + atlas.NearCount + index];
+                    }
+                    atlas.NearCount = 0;
+                    atlas.HasNearSpace = false;
+                    atlas.HeightTexels = atlas.WidthTexels;
+                    status = allocate();
+                }
+                else if (atlas.LocalSkyCount != 0 && atlas.DirectionalCount == 0 &&
+                         fallback == AtlasFallback::DropNearRowOrLocalSky)
+                {
+                    atlas.LocalSkyCount = 0;
+                    atlas.HasLocalSkyBudgetFallback = true;
+                    atlas.WidthTexels = GetReservedShadowAtlasTexels(1);
+                    atlas.HeightTexels = atlas.WidthTexels;
+                    status = allocate();
+                }
+            }
+            if (IsAccepted(status) == false)
+            {
+                return status;
+            }
+        }
+        atlas.Texture = inoutResources.Backing->Texture;
+    }
+    Array<math::Vector4> extended;
+    if (atlas.NearCount != 0)
+    {
+        // A fixed record per whole-scene region. An absent near map leaves its viewport width zero.
+        // The resolve and the camera transaction bind this table and its atlas together.
+        constexpr usize MATRIX_ROWS = 4;
+        const usize first = words.GetSize();
+        if (extended.TryAddRange(words) == false ||
+            extended.TryResize(first + usize{atlas.DirectionalCount} * SHADOW_REGION_WORDS) == false)
+        {
+            return Status::OutOfMemory;
+        }
+        inoutResources.NearTableWord = static_cast<uint32>(first);
+        const float32 scaleX = 1 / static_cast<float32>(atlas.WidthTexels);
+        const float32 scaleY = 1 / static_cast<float32>(atlas.HeightTexels);
+        for (uint32 index = 0; index < atlas.NearCount; ++index)
+        {
+            const ShadowRegion& near = atlas.Directional[atlas.DirectionalCount + index];
+            usize light = 0;
+            while (atlas.Directional[light].Light.SourceId != near.Light.SourceId)
+            {
+                ++light;
+            }
+            const usize base = first + light * SHADOW_REGION_WORDS;
+            const math::Matrix4 rows = math::Transpose(near.WorldToClip);
+            for (usize row = 0; row < MATRIX_ROWS; ++row)
+            {
+                extended[base + row] = rows.Columns[row];
+            }
+            const rhi::RasterRectangle tile = near.Interior;
+            extended[base + MATRIX_ROWS] = {(static_cast<float32>(tile.X) + 0.5F) * scaleX,
+                                            (static_cast<float32>(tile.Y) + 0.5F) * scaleY,
+                                            (static_cast<float32>(tile.X + tile.Width) - 0.5F) * scaleX,
+                                            (static_cast<float32>(tile.Y + tile.Height) - 0.5F) * scaleY};
+            extended[base + MATRIX_ROWS + 1] = {near.Bias, 0, scaleX, scaleY};
+        }
+        words = {extended.GetData(), extended.GetSize()};
+    }
+    rhi::RasterBindingResource& binding = inoutResources.LightWords;
+    binding.Binding = DEFERRED_MESH_LIGHT_BINDING;
+    binding.Size = words.GetSize() * sizeof(math::Vector4);
+    return rhi::CreateBuffer(inoutResources.Device,
+                             {rhi::BufferRole::Storage, binding.Size},
+                             {reinterpret_cast<const uint8*>(words.GetDataOrNull()), binding.Size},
+                             binding.Buffer);
+}
+} // namespace
+PreparedShadowResources::~PreparedShadowResources() noexcept
+{
+    static_cast<void>(rhi::Destroy(Device, LightWords.Buffer));
+    static_cast<void>(rhi::Destroy(Device, Atlas.Instances));
+    static_cast<void>(rhi::Destroy(Device, Atlas.Sampled));
+    // Backing retires the shared texture after the last generation releases its view.
+}
+Status PreparedShadowResources::Poll() noexcept
+{
+    Status status =
+        LightWords.Buffer == rhi::BufferHandle{} ? Status::Ready : rhi::GetStatus(Device, LightWords.Buffer);
+    if (status == Status::Ready && rhi::IsNull(Atlas.Texture) == false)
+    {
+        status = rhi::GetStatus(Device, Atlas.Texture);
+        if (status == Status::Ready && Atlas.HasSampled == false)
+        {
+            status = rhi::CreateTextureView(Device, Atlas.Texture, Atlas.Sampled);
+            Atlas.HasSampled = IsAccepted(status);
+        }
+        if (status == Status::Ready)
+        {
+            status = rhi::GetStatus(Device, Atlas.Sampled);
+        }
+    }
+    return status;
+}
+const PreparedShadowResources& ForwardSceneGeneration::GetShadowResources() const noexcept
+{
+    return *mState->ShadowResources;
+}
+Status
+ForwardSceneGeneration::PrepareCameraShadows(const DirectionalNearFootprint& footprint,
+                                             core::UniquePtr<PreparedShadowResources>& outReplacement) const noexcept
+{
+    if (CanReuseDirectionalNearCascades(footprint) == true)
+    {
+        return Status::Ready;
+    }
+    core::UniquePtr<PreparedShadowResources> candidate;
+    candidate.Reset(new (std::nothrow) PreparedShadowResources);
+    if (candidate.Get() == nullptr)
+    {
+        return Status::OutOfMemory;
+    }
+    const DeferredShadowAtlas& old = mState->ShadowResources->Atlas;
+    candidate->Device = mState->OwnerOrNull->Device;
+    DeferredShadowAtlas& atlas = candidate->Atlas;
+    atlas.DirectionalCount = old.DirectionalCount;
+    atlas.HasNearSpace = old.HasNearSpace;
+    atlas.WidthTexels = old.WidthTexels;
+    atlas.HeightTexels = old.HeightTexels;
+    atlas.LocalSkyCount = old.LocalSkyCount;
+    atlas.SkyRevision = old.SkyRevision;
+    atlas.SkyAnchorWorld = old.SkyAnchorWorld;
+    atlas.HasLocalSkyBudgetFallback = old.HasLocalSkyBudgetFallback;
+    for (uint32 index = 0; index < old.DirectionalCount; ++index)
+    {
+        atlas.Directional[index] = old.Directional[index];
+    }
+    FitNearRegions(mState->BoundsWorld, footprint, atlas);
+    atlas.SkyCount = old.SkyCount;
+    for (uint32 index = 0; index < old.SkyCount + old.LocalSkyCount; ++index)
+    {
+        atlas.Directional[atlas.DirectionalCount + atlas.NearCount + index] =
+            old.Directional[old.DirectionalCount + old.NearCount + index];
+    }
+    const Status status =
+        AllocateShadowResources({mState->MeshLightWords.GetData(), mState->MeshLightWords.GetSize()}, *candidate);
+    if (IsAccepted(status) == true)
+    {
+        outReplacement.Swap(candidate);
+    }
+    return status;
+}
+void ForwardSceneGeneration::CommitCameraShadows(core::UniquePtr<PreparedShadowResources>& inoutReplacement) noexcept
+{
+    mState->ShadowResources.Swap(inoutReplacement);
+    RenderGraphSceneResourceReport& report = mState->OwnerOrNull->Report;
+    report.DirectionalNearRegions = mState->ShadowResources->Atlas.NearCount;
+    report.PreparedDirectionalNearRegions += report.DirectionalNearRegions;
+}
 ForwardSceneGeneration::ForwardSceneGeneration() noexcept = default;
 ForwardSceneGeneration::~ForwardSceneGeneration() noexcept = default;
 ForwardSceneResources::ForwardSceneResources() noexcept = default;
@@ -779,12 +986,7 @@ rhi::RasterBindingResource ForwardSceneGeneration::GetMeshLights() const noexcep
     {
         return {};
     }
-    return
-    {
-        .Binding = DEFERRED_MESH_LIGHT_BINDING,
-        .Buffer = mState->MeshLightBuffer,
-        .Size = mState->MeshLightWords.GetSize() * sizeof(math::Vector4),
-    };
+    return mState->ShadowResources->LightWords;
 }
 uint32 ForwardSceneGeneration::GetMeshLightCount() const noexcept
 {
@@ -848,15 +1050,79 @@ usize ForwardSceneGeneration::GetProbeReceiverDrawCount() const noexcept
 }
 rhi::TextureViewHandle ForwardSceneGeneration::GetShadowAtlasView() const noexcept
 {
-    return mState.Get() == nullptr ? rhi::TextureViewHandle{} : mState->Shadows.Sampled;
+    return mState.Get() == nullptr ? rhi::TextureViewHandle{} : mState->ShadowResources->Atlas.Sampled;
 }
 bool ForwardSceneGeneration::HasShadowAtlas() const noexcept
 {
-    return mState.Get() != nullptr && rhi::IsNull(mState->Shadows.Texture) == false;
+    return mState.Get() != nullptr && rhi::IsNull(mState->ShadowResources->Atlas.Texture) == false;
 }
 DeferredShadowAtlas* ForwardSceneGeneration::GetShadowAtlasOrNull() noexcept
 {
-    return HasShadowAtlas() == true ? &mState->Shadows : nullptr;
+    return HasShadowAtlas() == true ? &mState->ShadowResources->Atlas : nullptr;
+}
+void ForwardSceneGeneration::DescribeDrawableShadows(RenderGraphSceneResourceReport& inoutReport) const noexcept
+{
+    const DeferredShadowAtlas& atlas = mState->ShadowResources->Atlas;
+    constexpr uint32 ATTACHMENT_BYTES_PER_TEXEL = 2 * sizeof(uint32);
+    inoutReport.DrawableShadowAttachmentBytes =
+        uint64{atlas.WidthTexels} * atlas.HeightTexels * ATTACHMENT_BYTES_PER_TEXEL;
+    inoutReport.DrawableMeshLightFaceTexels = mState->OccupiedMeshLightTexels;
+    const auto describe = [&](uint32 index) {
+        const ShadowRegion& region = atlas.Directional[index];
+        const math::Matrix4 rows = math::Transpose(region.WorldToClip);
+        const auto scale = [](math::Vector4 row, uint32 extent) {
+            return 2 / (math::Length(math::Vector3{row.X, row.Y, row.Z}) * static_cast<float32>(extent));
+        };
+        const MeshLightShadowFaceDraw& draw = atlas.DirectionalDraws[index];
+        return DirectionalCascadeReport{
+            {scale(rows.Columns[0], region.Interior.Width), scale(rows.Columns[1], region.Interior.Height)},
+            region.WorldToClip,
+            region.Interior,
+            region.Bias,
+            draw.PacketCount,
+            draw.Triangles};
+    };
+    for (uint32 index = 0; index < atlas.DirectionalCount; ++index)
+    {
+        DirectionalLightShadowReport& light = inoutReport.DrawableDirectionalShadows[index];
+        light.SourceId = atlas.Directional[index].Light.SourceId;
+        light.WholeScene = describe(index);
+        for (uint32 near = atlas.DirectionalCount; near < atlas.DirectionalCount + atlas.NearCount; ++near)
+        {
+            if (atlas.Directional[near].Light.SourceId == light.SourceId)
+            {
+                light.Near = describe(near);
+            }
+        }
+    }
+}
+bool ForwardSceneGeneration::CanReuseDirectionalNearCascades(const DirectionalNearFootprint& footprint) const noexcept
+{
+    const DeferredShadowAtlas& atlas = mState->ShadowResources->Atlas;
+    if (atlas.HasNearSpace == false)
+    {
+        return true;
+    }
+    uint32 count = 0;
+    for (uint32 index = 0; index < atlas.DirectionalCount; ++index)
+    {
+        ShadowRegion region;
+        if (TryFitDirectionalNearCascade(atlas.Directional[index], mState->BoundsWorld, footprint, index, region) ==
+            true)
+        {
+            if (count >= atlas.NearCount)
+            {
+                return false;
+            }
+            const ShadowRegion& cached = atlas.Directional[atlas.DirectionalCount + count];
+            if (region.Light.SourceId != cached.Light.SourceId || region.WorldToClip != cached.WorldToClip)
+            {
+                return false;
+            }
+            ++count;
+        }
+    }
+    return count == atlas.NearCount;
 }
 uint32 ForwardSceneGeneration::GetPendingMeshLightShadowFaces() const noexcept
 {
@@ -864,7 +1130,7 @@ uint32 ForwardSceneGeneration::GetPendingMeshLightShadowFaces() const noexcept
     {
         return 0;
     }
-    const DeferredShadowAtlas& atlas = mState->Shadows;
+    const DeferredShadowAtlas& atlas = mState->ShadowResources->Atlas;
     if (atlas.HasPackets == false)
     {
         uint32 faces = 0;
@@ -887,30 +1153,10 @@ Status ForwardSceneGeneration::Poll() noexcept
     }
     State& state = *mState;
     ForwardSceneResources::State& owner = *state.OwnerOrNull;
-    if (owner.HasMeshLights == true)
+    const Status shadowStatus = state.ShadowResources->Poll();
+    if (shadowStatus != Status::Ready)
     {
-        const Status status = rhi::GetStatus(owner.Device, state.MeshLightBuffer);
-        if (status != Status::Ready)
-        {
-            return status;
-        }
-    }
-    if (rhi::IsNull(state.Shadows.Texture) == false)
-    {
-        Status status = rhi::GetStatus(owner.Device, state.Shadows.Texture);
-        if (status == Status::Ready && state.Shadows.HasSampled == false)
-        {
-            status = rhi::CreateTextureView(owner.Device, state.Shadows.Texture, state.Shadows.Sampled);
-            state.Shadows.HasSampled = IsAccepted(status);
-        }
-        if (status == Status::Ready)
-        {
-            status = rhi::GetStatus(owner.Device, state.Shadows.Sampled);
-        }
-        if (status != Status::Ready)
-        {
-            return status;
-        }
+        return shadowStatus;
     }
     for (const usize index : state.MeshPins)
     {
@@ -957,7 +1203,7 @@ Status ForwardSceneGeneration::Poll() noexcept
                                                                       description,
                                                                       state.Materials[state.PreparedMaterials],
                                                                       selection,
-                                                                      &state.Shadows);
+                                                                      &state.ShadowResources->Atlas);
         if (IsAccepted(status) == false)
         {
             return status;
@@ -979,6 +1225,7 @@ Status ForwardSceneGeneration::Poll() noexcept
 }
 Status ForwardSceneResources::Prepare(const RenderGraphSceneDescription& scene,
                                       core::UniquePtr<ForwardSceneGeneration>& outGeneration,
+                                      const DirectionalNearFootprint& footprint,
                                       const ForwardSceneGeneration* matchingCastersOrNull) noexcept
 {
     if (mState.Get() == nullptr || outGeneration.Get() != nullptr)
@@ -999,6 +1246,12 @@ Status ForwardSceneResources::Prepare(const RenderGraphSceneDescription& scene,
     }
     ForwardSceneGeneration::State& candidate = *generation->mState;
     candidate.OwnerOrNull = &owner;
+    candidate.ShadowResources.Reset(new (std::nothrow) PreparedShadowResources);
+    if (candidate.ShadowResources.Get() == nullptr)
+    {
+        return Status::OutOfMemory;
+    }
+    candidate.ShadowResources->Device = owner.Device;
     if (scene.HasMaterialInterface == false || scene.Inputs.Materials.IsValid() == false ||
         scene.Inputs.Lights.IsValid() == false || scene.Inputs.EnvironmentPixels.IsValid() == false ||
         scene.Inputs.Materials.GetSize() > format::MAX_ITEMS || IsSceneRadianceValid(scene.Inputs.Environment) == false)
@@ -1110,6 +1363,7 @@ Status ForwardSceneResources::Prepare(const RenderGraphSceneDescription& scene,
         }
         static_cast<void>(candidate.TexturePins.TryAdd(probeTexture));
     }
+    uint64 casterTriangles = 0;
     for (usize itemIndex = 0; itemIndex < scene.Items.GetSize(); ++itemIndex)
     {
         const RenderGraphItem& item = scene.Items[itemIndex];
@@ -1262,7 +1516,10 @@ Status ForwardSceneResources::Prepare(const RenderGraphSceneDescription& scene,
                     (isRoomScaleItem == true && candidate.HasRoomScaleItem == false) ||
                     (isRoomScaleItem == candidate.HasRoomScaleItem && item.SourceId < candidate.SkyAnchorSourceId);
                 if (owner.HasMeshLights == true && hasAnchorPriority == true &&
-                    TryFindSkyAnchor(geometry, item.MeshToWorld, boundsWorld, candidate.Shadows.SkyAnchorWorld) == true)
+                    TryFindSkyAnchor(geometry,
+                                     item.MeshToWorld,
+                                     boundsWorld,
+                                     candidate.ShadowResources->Atlas.SkyAnchorWorld) == true)
                 {
                     candidate.SkyAnchorSourceId = item.SourceId;
                     candidate.HasSkyAnchor = true;
@@ -1352,6 +1609,7 @@ Status ForwardSceneResources::Prepare(const RenderGraphSceneDescription& scene,
                 description.ProbeVolume.IrradianceScale = probeVolume.IrradianceScale;
                 ++candidate.ProbeReceiverDraws;
             }
+            casterTriangles += geometry.IndexCount / TRIANGLE_CORNER_COUNT;
             static_cast<void>(candidate.Items.TryAdd(drawing));
             static_cast<void>(candidate.Descriptions.TryAdd(description));
         }
@@ -1371,18 +1629,14 @@ Status ForwardSceneResources::Prepare(const RenderGraphSceneDescription& scene,
             const Status directional =
                 BuildDirectionalShadowRegions({candidate.Lights.GetData(), candidate.Lights.GetSize()},
                                               candidate.BoundsWorld,
-                                              candidate.Shadows,
+                                              candidate.ShadowResources->Atlas,
                                               candidate.UnshadowedDirectionalLights);
             if (directional != Status::Ready)
             {
                 return directional;
             }
-            const Status sky = BuildSkyVisibilityRegions(candidate.BoundsWorld, candidate.Shadows);
-            if (sky != Status::Ready)
-            {
-                return sky;
-            }
-            uint32 reservedSquares = candidate.Shadows.DirectionalCount + (candidate.Shadows.SkyCount != 0 ? 1U : 0U);
+            DeferredShadowAtlas& atlas = candidate.ShadowResources->Atlas;
+            uint32 reservedSquares = atlas.DirectionalCount + (math::IsEmpty(candidate.BoundsWorld) == false ? 1U : 0U);
             // Casters come first: they tag each record, and the grid lists each caster's records together.
             if (candidate.MeshLightCount != 0)
             {
@@ -1402,15 +1656,14 @@ Status ForwardSceneResources::Prepare(const RenderGraphSceneDescription& scene,
             const bool shouldRefineSky =
                 candidate.HasSkyAnchor == true &&
                 math::Max(sizeWorld.X, math::Max(sizeWorld.Y, sizeWorld.Z)) > 2 * LOCAL_DIAMETER_METRES;
-            if (shouldRefineSky == true && (reservedSquares + 1 < MAX_RESERVED_SHADOW_SQUARES ||
-                                            candidate.MeshLightShadowCasters.IsEmpty() == true))
+            const bool canRefineSky = shouldRefineSky == true && (reservedSquares + 1 < MAX_RESERVED_SHADOW_SQUARES ||
+                                                                  candidate.MeshLightShadowCasters.IsEmpty() == true);
+            if (canRefineSky == true)
             {
-                BuildLocalSkyVisibilityRegions(candidate.Shadows);
                 ++reservedSquares;
             }
-            candidate.Shadows.SkyRevision = scene.SourceGeneration;
-            candidate.Shadows.HasLocalSkyBudgetFallback =
-                shouldRefineSky == true && candidate.Shadows.LocalSkyCount == 0;
+            atlas.SkyRevision = scene.SourceGeneration;
+            atlas.HasLocalSkyBudgetFallback = shouldRefineSky == true && canRefineSky == false;
             const Status grid = AppendRasterMeshLightGrid(candidate.MeshLightWords,
                                                           candidate.MeshLightCount,
                                                           candidate.BoundsWorld,
@@ -1433,6 +1686,14 @@ Status ForwardSceneResources::Prepare(const RenderGraphSceneDescription& scene,
                 {
                     return Status::OutOfMemory;
                 }
+                for (const MeshLightShadowCaster& caster : candidate.MeshLightShadowCasters)
+                {
+                    for (uint32 face = 0; face < MESH_LIGHT_SHADOW_FACE_COUNT; ++face)
+                    {
+                        candidate.OccupiedMeshLightTexels +=
+                            ((caster.FaceMask >> face) & 1U) * uint64{caster.FaceTexels} * caster.FaceTexels;
+                    }
+                }
                 uint32 tableWord = 0;
                 const Status table = AppendRasterMeshLightShadowTable(
                     candidate.MeshLightWords,
@@ -1446,71 +1707,73 @@ Status ForwardSceneResources::Prepare(const RenderGraphSceneDescription& scene,
                 candidate.MeshLightWords[candidate.MeshLightGridWord + MESH_LIGHT_GRID_CULL_WORD].Y =
                     static_cast<float32>(tableWord);
             }
+            // Each snapshot item can require one packet per source in both cascades. Leave room for
+            // the ordinary frame and both whole-scene maps before admitting camera-dependent work.
+            rhi::DeviceInfo information;
+            const usize requiredDraws =
+                SHADOW_FRAME_RESERVED_DRAWS + 2 * (1 + usize{atlas.DirectionalCount}) * candidate.Items.GetSize();
+            atlas.HasNearSpace =
+                footprint.CanReserveTiles == true && atlas.DirectionalCount != 0 &&
+                rhi::GetDeviceInfo(owner.Device, information) == rhi::DeviceStatus::Ready &&
+                requiredDraws <= information.Profile.Raster.DrawsPerFrame &&
+                2 * uint64{atlas.DirectionalCount} * casterTriangles <= MAX_MESH_LIGHT_SHADOW_TRIANGLES_PER_FRAME &&
+                HasDirectionalNearSpace(
+                    {candidate.MeshLightShadowCasters.GetData(), candidate.MeshLightShadowCasters.GetSize()},
+                    atlas.DirectionalCount);
             if (reservedSquares != 0 || candidate.MeshLightShadowCasters.IsEmpty() == false)
             {
-                // One packed-depth colour attachment and its private depth. Scenes without mesh-light casters need
-                // only their reserved squares.
-                const uint32 atlasTexels = candidate.MeshLightShadowCasters.IsEmpty() == true
-                                               ? GetReservedShadowAtlasTexels(reservedSquares)
-                                               : MESH_LIGHT_SHADOW_ATLAS_TEXELS;
-                candidate.Shadows.ExtentTexels = atlasTexels;
-                const ForwardSceneGeneration::State* previousOrNull =
-                    matchingCastersOrNull == nullptr ? nullptr : matchingCastersOrNull->mState.Get();
-                const DeferredShadowAtlas* oldAtlasOrNull =
-                    previousOrNull == nullptr ? nullptr : &previousOrNull->Shadows;
-                const bool canReuse = oldAtlasOrNull != nullptr && oldAtlasOrNull->ExtentTexels == atlasTexels &&
-                                      oldAtlasOrNull->LocalSkyCount == candidate.Shadows.LocalSkyCount &&
-                                      oldAtlasOrNull->Submitted.IsCleared == true &&
-                                      oldAtlasOrNull->Submitted.DrawnDirectional == oldAtlasOrNull->DirectionalCount +
-                                                                                        oldAtlasOrNull->SkyCount +
-                                                                                        oldAtlasOrNull->LocalSkyCount &&
-                                      oldAtlasOrNull->Submitted.NextFace == oldAtlasOrNull->Faces.GetSize();
-                if (canReuse == true)
+                atlas.WidthTexels = candidate.MeshLightShadowCasters.IsEmpty() == true
+                                        ? GetReservedShadowAtlasTexels(reservedSquares)
+                                        : MESH_LIGHT_SHADOW_ATLAS_TEXELS;
+                atlas.HeightTexels = atlas.WidthTexels;
+                if (reservedSquares == MAX_RESERVED_SHADOW_SQUARES && atlas.HasNearSpace == true)
                 {
-                    candidate.ShadowBacking = previousOrNull->ShadowBacking;
-                    candidate.Shadows.Submitted = oldAtlasOrNull->Submitted;
-                    candidate.Shadows.SkyRevision = oldAtlasOrNull->SkyRevision;
-                }
-                else
-                {
-                    if (TryMakeShared(GetSystemAllocationDomain(), candidate.ShadowBacking) != OwnershipStatus::Ok)
+                    // The local sky occupies the fourth square. An extra half-tile row preserves both policies.
+                    const uint32 height = atlas.HeightTexels + DIRECTIONAL_NEAR_TILE_TEXELS;
+                    const rhi::FormatCapabilities& format =
+                        information.Profile.Formats[static_cast<usize>(rhi::RasterFormat::Rgba8Unorm)];
+                    atlas.HasNearSpace = height <= information.Profile.Raster.MaxTextureDimension2D &&
+                                         height <= format.MaxAttachmentDimension2D &&
+                                         height <= format.MaxSampledDimension2D;
+                    if (atlas.HasNearSpace == true)
                     {
-                        return Status::OutOfMemory;
-                    }
-                    candidate.ShadowBacking->Device = owner.Device;
-                    Status atlas = rhi::CreateTexture(owner.Device,
-                                                      {atlasTexels, atlasTexels, rhi::RasterFormat::Rgba8Unorm, true},
-                                                      {},
-                                                      candidate.ShadowBacking->Texture);
-                    if ((atlas == Status::OutOfMemory || atlas == Status::CapacityExceeded) &&
-                        candidate.Shadows.LocalSkyCount != 0 && reservedSquares == 2 &&
-                        candidate.MeshLightShadowCasters.IsEmpty() == true)
-                    {
-                        candidate.Shadows.LocalSkyCount = 0;
-                        candidate.Shadows.HasLocalSkyBudgetFallback = true;
-                        candidate.Shadows.ExtentTexels = GetReservedShadowAtlasTexels(1);
-                        atlas = rhi::CreateTexture(owner.Device,
-                                                   {candidate.Shadows.ExtentTexels,
-                                                    candidate.Shadows.ExtentTexels,
-                                                    rhi::RasterFormat::Rgba8Unorm,
-                                                    true},
-                                                   {},
-                                                   candidate.ShadowBacking->Texture);
-                    }
-                    if (IsAccepted(atlas) == false)
-                    {
-                        return atlas;
+                        atlas.HeightTexels = height;
                     }
                 }
-                candidate.Shadows.Texture = candidate.ShadowBacking->Texture;
+            }
+            FitNearRegions(candidate.BoundsWorld, footprint, atlas);
+            const Status sky = BuildSkyVisibilityRegions(candidate.BoundsWorld, atlas);
+            if (sky != Status::Ready)
+            {
+                return sky;
+            }
+            if (canRefineSky == true)
+            {
+                BuildLocalSkyVisibilityRegions(atlas);
+            }
+            if (matchingCastersOrNull != nullptr &&
+                matchingCastersOrNull->CanReuseDirectionalNearCascades(footprint) == true)
+            {
+                const PreparedShadowResources& previous = matchingCastersOrNull->GetShadowResources();
+                const DeferredShadowAtlas& old = previous.Atlas;
+                if (old.WidthTexels == atlas.WidthTexels && old.HeightTexels == atlas.HeightTexels &&
+                    old.NearCount == atlas.NearCount && old.LocalSkyCount == atlas.LocalSkyCount &&
+                    old.Submitted.IsCleared == true &&
+                    old.Submitted.DrawnDirectional ==
+                        old.DirectionalCount + old.NearCount + old.SkyCount + old.LocalSkyCount &&
+                    old.Submitted.NextFace == old.Faces.GetSize())
+                {
+                    candidate.ShadowResources->Backing = previous.Backing;
+                    atlas.Submitted = old.Submitted;
+                    atlas.SkyRevision = old.SkyRevision;
+                }
             }
         }
-        const usize byteCount = candidate.MeshLightWords.GetSize() * sizeof(math::Vector4);
-        const Status status =
-            rhi::CreateBuffer(owner.Device,
-                              {rhi::BufferRole::Storage, byteCount},
-                              {reinterpret_cast<const uint8*>(candidate.MeshLightWords.GetData()), byteCount},
-                              candidate.MeshLightBuffer);
+        const Status status = AllocateShadowResources(
+            {candidate.MeshLightWords.GetData(), candidate.MeshLightWords.GetSize()},
+            *candidate.ShadowResources,
+            candidate.MeshLightShadowCasters.IsEmpty() == true ? AtlasFallback::DropNearRowOrLocalSky
+                                                               : AtlasFallback::DropNearRow);
         if (IsAccepted(status) == false)
         {
             return status;
@@ -1524,10 +1787,14 @@ Status ForwardSceneResources::Prepare(const RenderGraphSceneDescription& scene,
         owner.Report.UnshadowedMeshLights = shadows.UnshadowedRecords;
         owner.Report.MeshLightShadowFaces = shadows.Faces;
         owner.Report.DirectionalShadowLightSourceId =
-            candidate.Shadows.DirectionalCount == 0 ? 0 : candidate.Shadows.Directional[0].Light.SourceId;
-        owner.Report.DirectionalShadowLights = candidate.Shadows.DirectionalCount;
+            candidate.ShadowResources->Atlas.DirectionalCount == 0
+                ? 0
+                : candidate.ShadowResources->Atlas.Directional[0].Light.SourceId;
+        owner.Report.DirectionalShadowLights = candidate.ShadowResources->Atlas.DirectionalCount;
+        owner.Report.PreparedDirectionalNearRegions += candidate.ShadowResources->Atlas.NearCount;
+        owner.Report.DirectionalNearRegions = candidate.ShadowResources->Atlas.NearCount;
         owner.Report.UnshadowedDirectionalLights = candidate.UnshadowedDirectionalLights;
-        owner.Report.SkyVisibilityMaps = candidate.Shadows.SkyCount;
+        owner.Report.SkyVisibilityMaps = candidate.ShadowResources->Atlas.SkyCount;
     }
     if (owner.IsClustered == true && math::IsEmpty(candidate.BoundsWorld) == false)
     {

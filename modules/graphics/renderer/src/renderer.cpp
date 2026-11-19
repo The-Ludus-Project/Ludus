@@ -84,15 +84,8 @@ namespace
 {
 using internal::Access;
 constexpr usize NO_MATERIAL = ~usize{0}, NO_SHADOW = ~usize{0};
-/// Draws kept free for a frame's fullscreen lighting, tone-mapping and display passes when mesh-light shadow faces
-/// share its budget.
-constexpr usize MESH_LIGHT_SHADOW_RESERVED_DRAWS = 16;
 /// Most shadow faces, each a raster pass, drawn in one frame.
 constexpr uint32 MAX_MESH_LIGHT_SHADOW_FACES_PER_FRAME = 64;
-/// Most triangles the shadow faces drawn in one frame submit; a face over the budget is drawn alone. A face submits
-/// every triangle of each mesh its frustum and caster range reach, so a scene of large meshes (Bistro: about half a
-/// million triangles per face) completes its faces over many frames instead of stalling a few.
-constexpr uint64 MAX_MESH_LIGHT_SHADOW_TRIANGLES_PER_FRAME = 4000000;
 constexpr uint64 TRIANGLE_INDEX_COUNT = 3;
 /// Rows of an instance's mesh-to-clip transform, and of its mesh-to-world affine rows.
 constexpr usize CLIP_ROW_COUNT = 4;
@@ -4926,12 +4919,16 @@ Status Renderer::createLitMaterial(MaterialProgram program,
     {
         return Status::NotReady;
     }
-    const usize directionalShadowCount = deferredAtlasOrNull == nullptr ? 0 : deferredAtlasOrNull->DirectionalCount;
-    const usize skyVisibilityCount = deferredAtlasOrNull == nullptr ? 0 : deferredAtlasOrNull->SkyCount;
+    const usize directionalShadowCount = deferredAtlasOrNull != nullptr ? deferredAtlasOrNull->DirectionalCount : 0;
+    const usize nearShadowCount = deferredAtlasOrNull != nullptr ? deferredAtlasOrNull->NearCount : 0;
+    const usize skyVisibilityCount = deferredAtlasOrNull != nullptr ? deferredAtlasOrNull->SkyCount : 0;
+    const usize lightRegionCount = directionalShadowCount + nearShadowCount;
     const usize leadingShadowCount = directionalShadowCount + skyVisibilityCount;
-    if (directionalShadowCount > SHADOW_REGION_CAPACITY || leadingShadowCount > SHADOW_REGION_CAPACITY ||
+    if (directionalShadowCount > SHADOW_REGION_CAPACITY ||
+        lightRegionCount + skyVisibilityCount > SHADOW_REGION_CAPACITY ||
         (skyVisibilityCount != 0 && skyVisibilityCount != SKY_VISIBILITY_DIRECTION_COUNT) ||
-        (leadingShadowCount != 0 && (deferredAtlasOrNull == nullptr || deferredAtlasOrNull->ExtentTexels == 0)))
+        (deferredAtlasOrNull != nullptr && leadingShadowCount != 0 &&
+         (deferredAtlasOrNull->WidthTexels == 0 || deferredAtlasOrNull->HeightTexels == 0)))
     {
         return Status::InvalidDescription;
     }
@@ -5358,10 +5355,12 @@ Status Renderer::createLitMaterial(MaterialProgram program,
     }
     else if (deferredAtlasOrNull != nullptr)
     {
-        const float32 extent = static_cast<float32>(deferredAtlasOrNull->ExtentTexels);
+        const float32 width = static_cast<float32>(deferredAtlasOrNull->WidthTexels);
+        const float32 height = static_cast<float32>(deferredAtlasOrNull->HeightTexels);
         for (usize i = 0; i < leadingShadowCount; ++i)
         {
-            packShadowRegion(i, deferredAtlasOrNull->Directional[i], extent, extent);
+            const usize sourceIndex = i < directionalShadowCount ? i : i + nearShadowCount;
+            packShadowRegion(i, deferredAtlasOrNull->Directional[sourceIndex], width, height);
         }
         if (deferredAtlasOrNull->LocalSkyCount != 0)
         {
@@ -5371,11 +5370,12 @@ Status Renderer::createLitMaterial(MaterialProgram program,
             const usize row = directionalShadowCount * SHADOW_REGION_WORDS + HOMOGENEOUS_ROW;
             const math::Vector3 centerWorld = deferredAtlasOrNull->SkyAnchorWorld;
             parameters.ShadowData[row] = {centerWorld.X, centerWorld.Y, centerWorld.Z, -1};
-            const rhi::RasterRectangle coarse = deferredAtlasOrNull->Directional[directionalShadowCount].Interior;
-            const rhi::RasterRectangle local = deferredAtlasOrNull->Directional[leadingShadowCount].Interior;
+            const rhi::RasterRectangle coarse = deferredAtlasOrNull->Directional[lightRegionCount].Interior;
+            const rhi::RasterRectangle local =
+                deferredAtlasOrNull->Directional[leadingShadowCount + nearShadowCount].Interior;
             parameters.ShadowData[row + SHADOW_REGION_WORDS] = {
-                (static_cast<float32>(local.X) - static_cast<float32>(coarse.X)) / extent,
-                (static_cast<float32>(local.Y) - static_cast<float32>(coarse.Y)) / extent,
+                (static_cast<float32>(local.X) - static_cast<float32>(coarse.X)) / width,
+                (static_cast<float32>(local.Y) - static_cast<float32>(coarse.Y)) / height,
                 0,
                 0};
         }
@@ -5817,7 +5817,8 @@ Status Renderer::prepareDeferredShadows(Snapshot snapshot,
             outDraw = draw;
             return Status::Ready;
         };
-        for (uint32 index = 0; index < inoutAtlas.DirectionalCount + inoutAtlas.SkyCount + inoutAtlas.LocalSkyCount;
+        for (uint32 index = 0; index < inoutAtlas.DirectionalCount + inoutAtlas.NearCount + inoutAtlas.SkyCount +
+                                           inoutAtlas.LocalSkyCount;
              ++index)
         {
             const ShadowRegion& directional = inoutAtlas.Directional[index];
@@ -5908,7 +5909,8 @@ Status Renderer::drawDeferredShadows(PreparedView frameView, internal::DeferredS
         }
         inoutAtlas.Recording.IsCleared = true;
     }
-    const uint32 leadingCount = inoutAtlas.DirectionalCount + inoutAtlas.SkyCount + inoutAtlas.LocalSkyCount;
+    const uint32 leadingCount =
+        inoutAtlas.DirectionalCount + inoutAtlas.NearCount + inoutAtlas.SkyCount + inoutAtlas.LocalSkyCount;
     const bool shouldDrawDirectional = inoutAtlas.Recording.DrawnDirectional < leadingCount;
     if (shouldDrawDirectional == false && inoutAtlas.Recording.NextFace >= inoutAtlas.Faces.GetSize())
     {
@@ -5920,10 +5922,10 @@ Status Renderer::drawDeferredShadows(PreparedView frameView, internal::DeferredS
         return Status::NotReady;
     }
     // The frame view's G-buffer and overlay passes each draw at most its packets, plus the fullscreen passes.
-    const usize frameDraws = 2 * viewOrNull->DrawCount + MESH_LIGHT_SHADOW_RESERVED_DRAWS;
+    const usize frameDraws = 2 * viewOrNull->DrawCount + internal::SHADOW_FRAME_RESERVED_DRAWS;
     const usize drawLimit = deviceInfo.Profile.Raster.DrawsPerFrame;
     usize budget = drawLimit > frameDraws ? drawLimit - frameDraws : 0;
-    uint64 triangleBudget = MAX_MESH_LIGHT_SHADOW_TRIANGLES_PER_FRAME;
+    uint64 triangleBudget = internal::MAX_MESH_LIGHT_SHADOW_TRIANGLES_PER_FRAME;
     const auto drawFace = [&](const internal::MeshLightShadowFaceDraw& draw) noexcept -> Status {
         if (draw.PacketCount == 0)
         {
