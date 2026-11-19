@@ -74,6 +74,9 @@ void OpenBrowserFolder(QWidget* owner, BrowserFolderIntent intent, const std::fu
 void ReopenBrowserProjectFolder(QWidget* owner, const std::function<void(const QString&)>& loaded);
 /// Whether `path` lies in a folder opened from disk whose saves are written back to it.
 [[nodiscard]] bool IsBrowserFolderWritable(const QString& path);
+/// Wait for queued writes on the writable folder containing an existing file.
+/// Returns true if the queue is flushed, including when an earlier flush already completed it.
+[[nodiscard]] bool FlushBrowserFolderWrites(const QString& path);
 // Starts a browser download, which cannot confirm the user's destination/save.
 [[nodiscard]] bool DownloadEditorDocument(QWidget* owner, const QString& path);
 [[nodiscard]] bool DownloadEditorProject(QWidget* owner, const QString& descriptor);
