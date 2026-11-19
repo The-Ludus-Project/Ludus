@@ -37,8 +37,10 @@
 #include "internal/viewport_trace.h"
 #include "internal/world_demo_adapter.h"
 #include "internal/world_graph_view.h"
+#include "internal/world_lighting_coverage.h"
 #include "internal/world_lights_panel.h"
 #include "internal/world_workspace.h"
+#include "orbital_atmosphere_probes.hpp"
 #include "renderer_composite.h"
 #include "scene_fixture.h"
 
@@ -6288,4 +6290,176 @@ TEST_CASE("The selected World viewport renders its authored Atmosphere entity",
     world.StopPreview();
     rendererWorkspace.SetPreviewSource(nullptr);
     rhi::Shutdown();
+}
+
+TEST_CASE("The native World viewport sweeps the orbital terminator at matched limb directions",
+          "[editor][render-graph][world-graph][atmosphere][orbital-limb]")
+{
+    namespace orbital = ludus::graphics::renderer::testing;
+    constexpr float32 SUN_ILLUMINANCE_LUX = 8;
+    rhi::Shutdown();
+    QTemporaryDir project;
+    REQUIRE(project.isValid() == true);
+    QByteArray schema;
+    QString error;
+    REQUIRE(ReadBuiltInWorldAsset(QStringLiteral("world.schema.json"), schema, error) == true);
+    const identity::EntropySource entropy = ludus::platform::GetSystemEntropySource();
+    RendererWorkspace workspace({});
+    WorldWorkspace world;
+    world.UseProjectGraph(workspace);
+    RenderPreview& source = world.GetRenderPreview();
+    workspace.SetPreviewSource(&source);
+    QObject::connect(&world, &WorldWorkspace::RenderPreviewChanged, &workspace, [&]() {
+        workspace.SetPreviewSource(&source);
+    });
+    workspace.EnableWorldRendering();
+    workspace.SetProject(project.path(), 1);
+    world.SetProject(project.path(), 1);
+    world.resize(1000, 700);
+    world.show();
+    PreviewViewport* viewportOrNull = world.findChild<PreviewViewport*>(QStringLiteral("worldViewport"));
+    REQUIRE(viewportOrNull != nullptr);
+    WorldGraphView* graphViewOrNull = viewportOrNull->findChild<WorldGraphView*>();
+    REQUIRE(graphViewOrNull != nullptr);
+    StaticArray<QColor, orbital::ORBITAL_PROBE_COUNT> daylightSamples{};
+    QColor twilightLimb;
+    for (const bool isTwilight : {false, true})
+    {
+        const math::Vector3 sunWorld = orbital::GetOrbitalSunDirection(isTwilight);
+        WorldDocument document;
+        REQUIRE(document.LoadSchema(schema, error) == true);
+        REQUIRE(document.New(error) == true);
+        QString sunId;
+        const WorldSunPlacement placement
+        {
+            .RotationDegrees = ComputeWorldLightRotationDegrees(-sunWorld),
+            .IlluminanceLux = SUN_ILLUMINANCE_LUX,
+        };
+        REQUIRE(CreateWorldSun(document, entropy, placement, sunId, error) == true);
+        QString atmosphereId;
+        REQUIRE(CreateWorldObject(document, entropy, QStringLiteral("Atmosphere"), atmosphereId, error) == true);
+        const QJsonObject entity = document.Entity(atmosphereId);
+        QJsonObject components = entity.value(QStringLiteral("components")).toObject();
+        const QString component = GetWorldAtmosphereComponentId();
+        QJsonObject atmosphere = components.value(component).toObject();
+        atmosphere.insert(QStringLiteral("sun"), sunId);
+        atmosphere.insert(QStringLiteral("stars"), false);
+        components.insert(component, atmosphere);
+        REQUIRE(document.Edit(atmosphereId, components, entity.value(QStringLiteral("name")).toString(), error) ==
+                true);
+        const QString fileName =
+            isTwilight == true ? QStringLiteral("twilight.world.json") : QStringLiteral("day.world.json");
+        const QString worldPath = QFileInfo(WriteBytes(project, fileName, document.Encode())).canonicalFilePath();
+        REQUIRE(world.Open(worldPath) == true);
+        world.ResumePreview();
+        source.SetExposureMode(ViewportExposureMode::Graph);
+        RenderGraphPreview* graphOrNull = workspace.GetPreviewOrNull();
+        REQUIRE(graphOrNull != nullptr);
+        for (usize i = 0; i < orbital::ORBITAL_PROBE_COUNT; ++i)
+        {
+            const orbital::OrbitalProbe& probe = orbital::ORBITAL_PROBES[i];
+            const float64 tangentAltitude = probe.TangentAltitudeKilometres;
+            const math::Vector3d directionWorld = orbital::GetOrbitalProbeDirection(tangentAltitude);
+            const math::Vector3 forwardWorld{0,
+                                             static_cast<float32>(directionWorld.Y),
+                                             static_cast<float32>(directionWorld.Z)};
+            math::Quaternion orientation;
+            REQUIRE(math::TryRotationBetween({0, 0, -1}, forwardWorld, orientation) == math::MathStatus::Success);
+            QJsonObject navigation = source.Navigation();
+            navigation.insert(QStringLiteral("camera"), QString{});
+            navigation.insert(QStringLiteral("eyeX"), 0);
+            navigation.insert(QStringLiteral("eyeY"), static_cast<float64>(orbital::ORBIT_HEIGHT_METRES));
+            navigation.insert(QStringLiteral("eyeZ"), 0);
+            navigation.insert(QStringLiteral("rotationX"), static_cast<float64>(orientation.X));
+            navigation.insert(QStringLiteral("rotationY"), static_cast<float64>(orientation.Y));
+            navigation.insert(QStringLiteral("rotationZ"), static_cast<float64>(orientation.Z));
+            navigation.insert(QStringLiteral("rotationW"), static_cast<float64>(orientation.W));
+            navigation.insert(QStringLiteral("fov"), static_cast<float64>(orbital::ORBIT_VERTICAL_FOV_RADIANS));
+            const uint64 revision = graphOrNull->GetPresentedRevision();
+            source.RestoreNavigation(navigation);
+            QElapsedTimer timer;
+            timer.start();
+            constexpr int32 TIMEOUT_MILLISECONDS = LUDUS_EDITOR_REFERENCE_TEST_COLD_TIMEOUT_SECONDS * 1000;
+            const auto hasMatchedFrame = [&]() {
+                renderer::ViewDescription presented;
+                constexpr float32 DIRECTION_TOLERANCE = 0.00002F;
+                if (graphOrNull->GetPresentedRevision() <= revision ||
+                    graphOrNull->TryGetPresentedView(presented) == false || presented.OrthographicCamera == true ||
+                    presented.Atmosphere.IsEnabled == false ||
+                    presented.CameraPosition.Y != orbital::ORBIT_HEIGHT_METRES ||
+                    math::Length(presented.CameraForward - forwardWorld) >= DIRECTION_TOLERANCE ||
+                    math::Length(presented.Atmosphere.DirectionToSunWorld - sunWorld) >= DIRECTION_TOLERANCE)
+                {
+                    return false;
+                }
+                if (graphOrNull->HasGpuFrame() == true)
+                {
+                    return viewportOrNull->GetPresentedGraphFrameSerial() ==
+                           graphOrNull->GetDisplayFrames().GetLatestSerial();
+                }
+                return graphViewOrNull->GetImage().isNull() == false &&
+                       graphViewOrNull->GetImage().cacheKey() == graphOrNull->GetImage().cacheKey();
+            };
+            while (hasMatchedFrame() == false && timer.elapsed() < TIMEOUT_MILLISECONDS)
+            {
+                QTest::qWait(1);
+                workspace.ServicePreview();
+            }
+            CAPTURE(isTwilight,
+                    tangentAltitude,
+                    revision,
+                    graphOrNull->GetPresentedRevision(),
+                    viewportOrNull->GetPresentedGraphFrameSerial(),
+                    graphOrNull->GetDisplayFrames().GetLatestSerial());
+            INFO(graphOrNull->GetStatus().toStdString());
+            INFO(workspace.GetRenderProblem().toStdString());
+            REQUIRE(hasMatchedFrame() == true);
+            const QString path = project.filePath(fileName + QString::number(i) + QStringLiteral(".png"));
+            timer.restart();
+            const bool hasStarted = viewportOrNull->SaveScreenshot(path, error);
+            INFO(error.toStdString());
+            REQUIRE(hasStarted == true);
+            while (viewportOrNull->IsTakingScreenshot() == true && timer.elapsed() < TIMEOUT_MILLISECONDS)
+            {
+                QTest::qWait(1);
+            }
+            INFO(viewportOrNull->GetScreenshotError().toStdString());
+            const QImage image(path);
+            REQUIRE(image.isNull() == false);
+            const QColor center = image.pixelColor(image.width() / 2, image.height() / 2);
+            CAPTURE(center.red(), center.green(), center.blue());
+            if (probe.Ray == orbital::OrbitalRay::Miss || probe.Ray == orbital::OrbitalRay::OuterChord)
+            {
+                // Space and the tenuous outer chord quantize to black at this fixed exposure.
+                CHECK(center.red() <= 2);
+                CHECK(center.green() <= 2);
+                CHECK(center.blue() <= 2);
+            }
+            else if (isTwilight == false)
+            {
+                CHECK(center.red() > 32);
+                CHECK(center.blue() > 32);
+                daylightSamples[i] = center;
+            }
+            else
+            {
+                // The normal World also includes higher scattering orders. Compare the same camera
+                // and exposure across the two authored Suns, allowing their diffuse twilight fill.
+                CHECK(center.red() < daylightSamples[i].red() / 2);
+                CHECK(center.blue() < daylightSamples[i].blue() / 2);
+                if (probe.Ray == orbital::OrbitalRay::AboveGroundTangent)
+                {
+                    twilightLimb = center;
+                }
+                else
+                {
+                    // A partially lit chord retains a red rim above the shadowed ground hit.
+                    REQUIRE(twilightLimb.isValid() == true);
+                    CHECK(twilightLimb.red() > center.red() + 8);
+                }
+            }
+        }
+    }
+    world.StopPreview();
+    workspace.SetPreviewSource(nullptr);
 }

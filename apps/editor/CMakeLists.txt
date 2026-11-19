@@ -1456,7 +1456,8 @@ if(LUDUS_BUILD_TESTS AND NOT EMSCRIPTEN)
         target_sources(ludus_editor_tests PRIVATE tests/viewport_reference_capture_tests.cpp
             tests/reference_comparison_tests.cpp)
         get_target_property(editor_reference_cold_timeout Ludus::GraphicsRenderer LUDUS_REFERENCE_TEST_COLD_TIMEOUT_SECONDS)
-        set_source_files_properties(tests/viewport_reference_capture_tests.cpp PROPERTIES COMPILE_DEFINITIONS
+        target_include_directories(ludus_editor_tests PRIVATE "${PROJECT_SOURCE_DIR}/modules/graphics/renderer/tests")
+        set_source_files_properties(tests/viewport_reference_capture_tests.cpp tests/render_graph_preview_tests.cpp PROPERTIES COMPILE_DEFINITIONS
             "LUDUS_EDITOR_REFERENCE_TEST_COLD_TIMEOUT_SECONDS=${editor_reference_cold_timeout}")
         target_sources(ludus_editor_tests PRIVATE tests/viewport_performance_tests.cpp tests/render_graph_preview_tests.cpp tests/restir_benchmark_tests.cpp
             tests/raster_mesh_light_benchmark_tests.cpp tests/render_graph_capture_profile_tests.cpp

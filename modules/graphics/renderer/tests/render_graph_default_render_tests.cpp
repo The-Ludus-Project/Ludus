@@ -9,6 +9,7 @@
 #include "../src/internal/render_graph_upscale.h"
 #include "earth_sky_quadrature.hpp"
 #include "hair_card_coverage_fixture.h"
+#include "orbital_atmosphere_probes.hpp"
 #include "render_graph_readback_fixture.h"
 #include "renderer_composite.h"
 #include "rg2_forward_lit.h"
@@ -2978,6 +2979,44 @@ TEST_CASE("default deferred samples minified material textures at their mean", "
     CHECK(maximumDifference <= MAX_CHANNEL_DIFFERENCE);
 }
 
+namespace
+{
+void SetOrbitalCamera(renderer::ViewDescription& inoutCamera,
+                      math::Vector3 directionWorld,
+                      math::Vector3 upWorld,
+                      float32 fieldOfView,
+                      bool shouldCenterOnPixel = false)
+{
+    constexpr float32 TARGET_OFFSET_METRES = 10000;
+    constexpr float32 NEAR_METRES = 1000;
+    constexpr float32 FAR_METRES = 2000000;
+    math::Matrix4 worldToView;
+    math::Matrix4 viewToClip;
+    REQUIRE(math::TryLookAt(inoutCamera.CameraPosition,
+                            inoutCamera.CameraPosition + directionWorld * TARGET_OFFSET_METRES,
+                            upWorld,
+                            worldToView) == math::MathStatus::Success);
+    REQUIRE(math::TryPerspectiveReverseZ(fieldOfView,
+                                         static_cast<float32>(WIDTH) / HEIGHT,
+                                         NEAR_METRES,
+                                         FAR_METRES,
+                                         viewToClip) == math::MathStatus::Success);
+    for (math::Vector4& column : viewToClip.Columns)
+    {
+        column.Z = column.W - column.Z;
+    }
+    if (shouldCenterOnPixel == true)
+    {
+        // Align the optical axis with the central pixel centre of the even-sized export.
+        viewToClip.Columns[2].X = -1.0F / WIDTH;
+        viewToClip.Columns[2].Y = 1.0F / HEIGHT;
+    }
+    inoutCamera.CameraForward = directionWorld;
+    inoutCamera.WorldToClip = viewToClip * worldToView;
+}
+
+} // namespace
+
 TEST_CASE("Clear-sky resolve matches scene-linear quadrature for sky and opaque transport",
           "[render-graph][atmosphere][gpu][reference-compute]")
 {
@@ -3305,6 +3344,101 @@ TEST_CASE("default deferred sky visibility hides a blocked sunset horizon from A
     CHECK(blocked < open * BLOCKED_FRACTION_LIMIT);
 }
 
+TEST_CASE("Orbital limb single scattering matches independent Earth shell quadrature",
+          "[render-graph][atmosphere][gpu][reference-compute][orbital-limb]")
+{
+    GraphGpuFixture fixture;
+    rhi::DeviceInfo deviceInfo;
+    REQUIRE(rhi::GetDeviceInfo(fixture.Device, deviceInfo) == rhi::DeviceStatus::Ready);
+    INFO("Native backend " << static_cast<uint32>(deviceInfo.Startup.SelectedBackend) << ", adapter "
+                           << deviceInfo.Adapter.Name.GetData());
+    const core::UniquePtr<renderer::RenderGraphPackage> package =
+        LoadPackage({LUDUS_RG3_CLUSTERED_DEFAULT_DIRECTORY, "rg2_clustered_Default.lurgrt"});
+    const renderer::RenderGraphPrograms programs =
+        package->GetPrograms(shaders::renderer_composite::Vertex(), shaders::renderer_composite::Fragment());
+    REQUIRE(PollAtmosphereGraph(
+                fixture,
+                fixture.Graph.Initialize(fixture.Device, package->GetPlan(), programs, nullptr, WIDTH, HEIGHT)) ==
+            rhi::RasterStatus::Ready);
+    renderer::ViewDescription& camera = fixture.Cameras[0];
+    camera.CameraPosition = {0, ORBIT_HEIGHT_METRES, 0};
+    camera.OrthographicCamera = false;
+    camera.Atmosphere.IsEnabled = true;
+    camera.Atmosphere.Celestial.IsEnabled = true;
+    camera.Atmosphere.ShouldLightScene = false;
+    const renderer::SceneShaderInputs inputs;
+    uint64 revision = 0;
+    constexpr usize VIEW_STEPS = 1536;
+    constexpr usize SUN_STEPS = 384;
+    constexpr usize RGB_CHANNELS = 3;
+    constexpr float64 READBACK_STEP = 1.0 / 255;
+    const usize pixel = GetPixel(WIDTH / 2, HEIGHT / 2);
+    for (const bool isTwilight : {false, true})
+    {
+        const math::Vector3 sunWorld = GetOrbitalSunDirection(isTwilight);
+        const math::Vector3d solarVectorWorld{static_cast<float64>(sunWorld.X),
+                                              static_cast<float64>(sunWorld.Y),
+                                              static_cast<float64>(sunWorld.Z)};
+        const math::Vector3d sunDirectionWorld = solarVectorWorld * (1 / math::Length(solarVectorWorld));
+        camera.Atmosphere.DirectionToSunWorld = sunWorld;
+        for (const OrbitalProbe& probe : ORBITAL_PROBES)
+        {
+            const math::Vector3d rayWorld = GetOrbitalProbeDirection(probe.TangentAltitudeKilometres);
+            SetOrbitalCamera(camera,
+                             {0, static_cast<float32>(rayWorld.Y), static_cast<float32>(rayWorld.Z)},
+                             {0, 1, 0},
+                             ORBIT_VERTICAL_FOV_RADIANS,
+                             true);
+            const float32 illuminance = isTwilight == true ? probe.TwilightIlluminance : probe.DayIlluminance;
+            camera.Atmosphere.SolarIlluminance = {illuminance, illuminance, illuminance};
+            renderer::RenderGraphReport report;
+            REQUIRE(PollAtmosphereGraph(fixture,
+                                        fixture.Graph.Update({},
+                                                             {},
+                                                             {&camera, 1},
+                                                             ++revision,
+                                                             renderer::RenderGraphCoveragePolicy::RejectIncomplete,
+                                                             report,
+                                                             &inputs)) == rhi::RasterStatus::Ready);
+            ReadAtmosphereFrame(fixture);
+            for (usize channel = 0; channel < RGB_CHANNELS; ++channel)
+            {
+                const EarthSkyIntegral integral = IntegrateEarthSky(ORBIT_ALTITUDE_KILOMETRES,
+                                                                    rayWorld,
+                                                                    sunDirectionWorld,
+                                                                    channel,
+                                                                    VIEW_STEPS,
+                                                                    SUN_STEPS);
+                const float64 expected = integral.Radiance * static_cast<float64>(illuminance);
+                const float64 actual = fixture.Pixels[pixel + channel] * READBACK_STEP;
+                const float64 absoluteError = math::Abs(actual - expected);
+                CAPTURE(isTwilight, probe.TangentAltitudeKilometres, channel, expected, actual, absoluteError);
+                if (isTwilight == true && probe.Ray == OrbitalRay::AboveGroundTangent)
+                {
+                    REQUIRE(integral.ShadowSamples > 0);
+                    REQUIRE(integral.ShadowSamples < VIEW_STEPS);
+                }
+                if (probe.Ray == OrbitalRay::Miss || (isTwilight == true && probe.Ray == OrbitalRay::GroundHit))
+                {
+                    REQUIRE(expected == 0);
+                    INFO("Relative error undefined for zero reference radiance");
+                    CHECK(actual == 0);
+                }
+                else
+                {
+                    REQUIRE(expected > 0);
+                    const float64 relativeError = absoluteError / expected;
+                    CAPTURE(relativeError);
+                    // Unmapped linear UNORM8 export, nearest code (half a code of quantization).
+                    // Allow the orbital shader's 64-step integration and transmittance LUT interpolation.
+                    CHECK(expected < 1);
+                    CHECK(absoluteError <= 0.5 * READBACK_STEP + 0.04 * expected);
+                }
+            }
+        }
+    }
+}
+
 TEST_CASE("Celestial boundary composes through ground and orbital atmosphere rays",
           "[render-graph][atmosphere][gpu][reference-compute]")
 {
@@ -3369,9 +3503,8 @@ TEST_CASE("Celestial boundary composes through ground and orbital atmosphere ray
     CHECK(fixture.Pixels[center + BLUE_CHANNEL] == 0);
 
     camera.OrthographicCamera = false;
-    constexpr float32 ORBIT_HEIGHT_METRES = 500000;
-    constexpr float64 GROUND_KILOMETRES = 6360;
-    constexpr float64 TOP_KILOMETRES = 6460;
+    constexpr float64 GROUND_KILOMETRES = EARTH_GROUND_RADIUS_KILOMETRES;
+    constexpr float64 TOP_KILOMETRES = EARTH_TOP_RADIUS_KILOMETRES;
     constexpr float64 ORBIT_RADIUS_KILOMETRES = GROUND_KILOMETRES + static_cast<float64>(ORBIT_HEIGHT_METRES) / 1000;
     camera.CameraPosition = {0, ORBIT_HEIGHT_METRES, 0};
     const auto makeOrbitRay = [&](float64 impactKilometres, float32 fieldOfView) {
@@ -3380,25 +3513,7 @@ TEST_CASE("Celestial boundary composes through ground and orbital atmosphere ray
             -static_cast<float32>(std::sqrt(1 - impactKilometres * impactKilometres /
                                                     (ORBIT_RADIUS_KILOMETRES * ORBIT_RADIUS_KILOMETRES))),
             0};
-        constexpr float32 TARGET_OFFSET_METRES = 10000;
-        constexpr float32 NEAR_METRES = 1000;
-        constexpr float32 FAR_METRES = 2000000;
-        math::Matrix4 worldToView;
-        math::Matrix4 viewToClip;
-        REQUIRE(math::TryLookAt(camera.CameraPosition,
-                                camera.CameraPosition + directionWorld * TARGET_OFFSET_METRES,
-                                {0, 0, 1},
-                                worldToView) == math::MathStatus::Success);
-        REQUIRE(math::TryPerspectiveReverseZ(fieldOfView,
-                                             static_cast<float32>(WIDTH) / HEIGHT,
-                                             NEAR_METRES,
-                                             FAR_METRES,
-                                             viewToClip) == math::MathStatus::Success);
-        for (math::Vector4& column : viewToClip.Columns)
-        {
-            column.Z = column.W - column.Z;
-        }
-        camera.WorldToClip = viewToClip * worldToView;
+        SetOrbitalCamera(camera, directionWorld, {0, 0, 1}, fieldOfView);
         pointAtMoon(directionWorld);
     };
     constexpr float32 ORACLE_FIELD_OF_VIEW = 0.01F;
@@ -3508,7 +3623,6 @@ TEST_CASE("The resolved solar disk darkens toward its limb and preserves authore
                 fixture.Graph.Initialize(fixture.Device, package->GetPlan(), programs, nullptr, WIDTH, HEIGHT)) ==
             rhi::RasterStatus::Ready);
 
-    constexpr float32 ORBIT_HEIGHT_METRES = 500000;
     constexpr float32 NEAR_METRES = 1000;
     constexpr float32 FAR_METRES = 2000000;
     constexpr float64 AVERAGE_RADIANCE = 0.4;
