@@ -11,6 +11,8 @@
 #include <QTextStream>
 #include <QThread>
 
+#include <limits>
+
 namespace
 {
 using namespace ludus::editor;
@@ -18,6 +20,7 @@ using namespace ludus::foundation;
 namespace renderer = ludus::graphics::renderer;
 namespace rhi = ludus::graphics::rhi;
 namespace cook = ludus::content::scene_cook;
+constexpr int64 VIEWPORT_TIMEOUT_MILLISECONDS = 120000;
 
 void WriteFile(const QString& path, const QByteArray& bytes)
 {
@@ -91,7 +94,7 @@ void CaptureWorld(const QDir& directory,
     view.WorldGrid.IsVisible = false;
     QByteArray projection;
     QTextStream stream(&projection);
-    stream.setRealNumberPrecision(9);
+    stream.setRealNumberPrecision(std::numeric_limits<float32>::max_digits10);
     for (const math::Vector4 column : view.WorldToClip.Columns)
     {
         stream << column.X << ' ' << column.Y << ' ' << column.Z << ' ' << column.W << '\n';
@@ -115,7 +118,8 @@ void CaptureWorld(const QDir& directory,
     REQUIRE(preview.Load(runtime) == RenderGraphPreviewLoad::Staged);
     QElapsedTimer timer;
     timer.start();
-    while ((preview.GetPresentedRevision() != 1 || preview.HasPendingWork() == true) && timer.elapsed() < 120000)
+    while ((preview.GetPresentedRevision() != 1 || preview.HasPendingWork() == true) &&
+           timer.elapsed() < VIEWPORT_TIMEOUT_MILLISECONDS)
     {
         preview.Tick();
         REQUIRE(preview.GetReport().Candidate != renderer::RenderGraphCandidateState::Failed);

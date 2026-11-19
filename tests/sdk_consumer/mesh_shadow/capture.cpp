@@ -25,11 +25,18 @@ namespace rhi = ludus::graphics::rhi;
 namespace res = ludus::resources;
 using Status = rhi::RasterStatus;
 
+constexpr time::Duration GPU_TIMEOUT = time::Seconds(30);
+constexpr usize RGBA8_BYTES_PER_PIXEL = 4;
+constexpr uint32 ONE_SIDED_PANEL_FACE_COUNT = 5;
+constexpr uint32 MAX_CAPTURE_EXTENT = 512;
+constexpr uint32 VIEWPORT_MIN_BINDINGS = 11;
+constexpr int ARGUMENT_COUNT = 3;
+
 template <typename Poll>
 bool WaitForReady(Status status, Poll poll)
 {
     const uint64 start = time::NowTicks();
-    while (status == Status::Pending && time::NowTicks() - start < time::Seconds(30).Nanoseconds)
+    while (status == Status::Pending && time::NowTicks() - start < GPU_TIMEOUT.Nanoseconds)
     {
         threading::YieldThread();
         status = poll();
@@ -93,7 +100,7 @@ bool Draw(rhi::DeviceHandle device, rhi::SurfaceHandle surface, uint32 extent, c
             const res::SceneTexture& texture = scene.Textures[source.Texture];
             material.ColorTexture = {texture.Pixels.GetData(),
                                      texture.Pixels.GetSize(),
-                                     usize{texture.Width} * 4,
+                                     usize{texture.Width} * RGBA8_BYTES_PER_PIXEL,
                                      texture.Width,
                                      texture.Height,
                                      rhi::RasterFormat::Rgba8Srgb};
@@ -159,11 +166,11 @@ bool Draw(rhi::DeviceHandle device, rhi::SurfaceHandle surface, uint32 extent, c
             return false;
         }
         report = graph.GetReport();
-    } while (report.PendingMeshLightShadowFaces > 0 && time::NowTicks() - start < time::Seconds(30).Nanoseconds);
+    } while (report.PendingMeshLightShadowFaces > 0 && time::NowTicks() - start < GPU_TIMEOUT.Nanoseconds);
     std::cout << report.Resources.MeshLightShadowCasters << " casters, " << report.Resources.MeshLightShadowFaces
               << " faces, " << report.PendingMeshLightShadowFaces << " pending\n";
     if (report.PendingMeshLightShadowFaces != 0 || report.Resources.MeshLightShadowCasters != 1 ||
-        report.Resources.MeshLightShadowFaces != 5)
+        report.Resources.MeshLightShadowFaces != ONE_SIDED_PANEL_FACE_COUNT)
     {
         return false;
     }
@@ -174,7 +181,7 @@ bool Draw(rhi::DeviceHandle device, rhi::SurfaceHandle surface, uint32 extent, c
         return false;
     }
     rhi::ReadbackTicket ticket;
-    const usize pitch = usize{extent} * 4;
+    const usize pitch = usize{extent} * RGBA8_BYTES_PER_PIXEL;
     Array<uint8> pixels(pitch * extent);
     if (WaitForReady(rhi::RequestTextureReadback(device, texture, { .Width = extent, .Height = extent }, pitch, ticket),
                      [&] { return rhi::GetStatus(device, ticket); }) == false ||
@@ -191,14 +198,14 @@ bool Draw(rhi::DeviceHandle device, rhi::SurfaceHandle surface, uint32 extent, c
 } // namespace
 int main(int count, char** arguments)
 {
-    if (count != 3)
+    if (count != ARGUMENT_COUNT)
     {
         return 2;
     }
     const std::string_view dimension(arguments[2]);
     uint32 extent = 0;
     const std::from_chars_result parsed = std::from_chars(dimension.begin(), dimension.end(), extent);
-    if (parsed.ec != std::errc{} || parsed.ptr != dimension.end() || extent == 0 || extent > 512)
+    if (parsed.ec != std::errc{} || parsed.ptr != dimension.end() || extent == 0 || extent > MAX_CAPTURE_EXTENT)
     {
         return 2;
     }
@@ -206,7 +213,7 @@ int main(int count, char** arguments)
     rr::RenderGraphPackage package;
     rhi::DeviceDescription description;
     description.Required.PortableRaster = true;
-    description.RequiredProfile.Raster.MinBindings = 11;
+    description.RequiredProfile.Raster.MinBindings = VIEWPORT_MIN_BINDINGS;
     rhi::DeviceHandle device;
     rhi::SurfaceHandle surface;
     if (ReadBytes(arguments[1], ludus::content::render_graph_format::MAX_PACKAGE_BYTES, bytes) == false ||
