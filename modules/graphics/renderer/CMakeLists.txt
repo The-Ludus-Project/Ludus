@@ -469,8 +469,13 @@ if(TARGET ludus_rhi_render_tests AND NOT WIN32)
     # Keep transport/math parity in named cases: the polygon kernel alone needed 169 s
     # to compile and execute on the CI software Vulkan adapter. A shared 60 s deadline
     # hid which kernel stalled and could never qualify the complete pixel suite.
+    # The render-graph frame cases run as their own test: together with the direct renderer
+    # cases they reached 181.9 s of the 180 s sanitizer deadline (batch 44615321098, ASan 4/4).
+    set(renderer_pixel_exclusions "~[reference-compute]~[polygon-sampling]~[metropolis]~[steinberg-physical-optics]")
     add_test(NAME ludus_renderer_pixels COMMAND ludus_renderer_render_tests
-        "~[reference-compute]~[polygon-sampling]~[metropolis]~[steinberg-physical-optics]" --durations yes)
+        "${renderer_pixel_exclusions}~[render-graph]" --durations yes)
+    add_test(NAME ludus_renderer_graph_pixels COMMAND ludus_renderer_render_tests
+        "[render-graph]${renderer_pixel_exclusions}" --durations yes)
     # Catch2's installed discovery helpers also ship with the Conan package, whose
     # generated Catch2_DIR points at CMakeDeps instead of that installation.
     set(catch_discovery_hints "${Catch2_DIR}")
@@ -506,7 +511,7 @@ if(TARGET ludus_rhi_render_tests AND NOT WIN32)
         "[metropolis]" --durations yes)
     add_test(NAME ludus_renderer_physical_optics_parity COMMAND ludus_renderer_render_tests
         "[steinberg-physical-optics]" --durations yes)
-    set_tests_properties(ludus_renderer_pixels
+    set_tests_properties(ludus_renderer_pixels ludus_renderer_graph_pixels
         PROPERTIES LABELS "renderer;gpu" TIMEOUT ${renderer_test_raster_timeout_seconds})
     set_tests_properties(ludus_renderer_physical_optics_parity
         PROPERTIES LABELS "renderer;gpu" TIMEOUT 60)
@@ -515,7 +520,7 @@ if(TARGET ludus_rhi_render_tests AND NOT WIN32)
     set_tests_properties(ludus_renderer_metropolis_parity
         PROPERTIES LABELS "renderer;gpu" TIMEOUT ${renderer_test_case_timeout_seconds})
     if(APPLE)
-        set_property(TEST ludus_renderer_pixels ludus_renderer_polygon_sampling_parity
+        set_property(TEST ludus_renderer_pixels ludus_renderer_graph_pixels ludus_renderer_polygon_sampling_parity
             ludus_renderer_metropolis_parity ludus_renderer_physical_optics_parity APPEND PROPERTY LABELS macos)
     endif()
 endif()
