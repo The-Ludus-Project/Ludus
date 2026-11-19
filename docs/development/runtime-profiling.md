@@ -169,6 +169,46 @@ for workload evidence. On Mali, offline compiler estimates for the exact
 shader variant can help investigate register spills and pipeline cost, with
 application measurements from [Arm Performance Studio](https://developer.arm.com/tools-and-software/arm-performance-studio).
 
+### First-room macOS Release budget pilot
+
+Build the pilot from a prepared macOS checkout with a matching installed Release SDK.
+The fixture uses the World demo's first-room extraction at tick zero, its quad renderer,
+linear scene target, tone mapping and surface composite. The camera holds the authored
+view, doubles its orthographic span, then holds a 1.5× span reserved for validation.
+Each hold warms up for 300 presented frames and records the following 1,200 frames.
+The target is 60 Hz. Each hold must have all 1,200 completed GPU samples and a
+nearest-rank p95 at or below **12.5 ms**, leaving about 4.17 ms of frame headroom.
+Missing a hold or a timing makes the GPU verdict inconclusive. A completed hold
+over budget makes a fully sampled configuration a miss. Record present-return
+intervals separately. They include CPU scheduling and exclude display scanout.
+
+Use a 2× Retina display and keep the 480 × 320 point window on that display.
+The Metal drawable and intermediate targets scale together, with the compositor
+mapping to the same 960 × 640 backing area. Compare 960 × 640, 720 × 480 and
+480 × 320. Keep geometry fixed. If reducing the resolution changes authored-view
+p95 by at least 0.25 ms and 10%, fit the fixed-geometry intercept, internal pixel
+count and nonblack pixel count to the authored and wide views. Check absolute
+p95 prediction error and false under-budget decisions on the withheld view.
+
+```sh
+python3 tests/scenes/gpu_budget/package.py out/metal-budget
+app="$PWD/out/metal-budget/extracted/MetalBudget.app/Contents/MacOS/MetalBudget"
+for pair in full-timed half-timed medium-timed full-disabled; do
+    size=${pair%-*}
+    "$app" "$size" "${pair#*-}" >"out/metal-budget/$pair.bin" || exit 1
+    python3 tests/scenes/gpu_budget/analyze.py "out/metal-budget/$pair.bin" "$size" out/metal-budget/evidence || exit 1
+done
+python3 tests/scenes/gpu_budget/estimate.py out/metal-budget/evidence
+```
+
+The archive hash printed by the package command identifies the measured binary.
+Capture the matched Development comparisons using the native editor's
+`[.metal-budget-preview]` case with `LUDUS_EDITOR_PROFILING_CAPTURE` set to a
+new absolute JSON path, and a separate-window `ludus_world_demo --level
+apps/world_demo/levels/first-room.world.json --frames 1200 --frame-rate 60 --pacing-report`.
+The editor records its preview with Both, and the Development player advances
+simulation. The package freezes simulation to control the submitted geometry.
+
 ## Scheduled workflow
 
 [`.github/workflows/performance.yml`](../../.github/workflows/performance.yml)

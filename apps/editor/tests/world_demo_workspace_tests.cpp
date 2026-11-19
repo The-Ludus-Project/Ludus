@@ -1,10 +1,13 @@
 #include "entropy_fixture.h"
 #include "internal/editor_identity.h"
 #include "internal/preview_shading.h"
+#include "internal/profiling_controller.h"
 #include "internal/render_panel.h"
 #include "internal/render_scene.h"
 #include "internal/world_demo_adapter.h"
 #include "internal/world_workspace.h"
+#include <QElapsedTimer>
+#include <ludus/foundation/base/config.h>
 
 #include <QAction>
 #include <QComboBox>
@@ -304,3 +307,33 @@ TEST_CASE("World demo entity IDs keep the legacy prefix and fail without entropy
     // `entity-` and the first 24 characters of the UUID text fit the sample's 32-byte name field.
     CHECK(id == QStringLiteral("entity-") + QLatin1String(fixture::FIXED_UUID_TEXT).left(24));
 }
+
+#if LUDUS_PROFILING_ENABLED && defined(LUDUS_EDITOR_GPU_PREVIEW)
+TEST_CASE("Record the first-room authored camera for the Metal budget pilot", "[.metal-budget-preview]")
+{
+    const QString capture = qEnvironmentVariable("LUDUS_EDITOR_PROFILING_CAPTURE");
+    REQUIRE(capture.isEmpty() == false);
+    QTemporaryDir directory;
+    WorldWorkspace workspace;
+    workspace.SetProject(directory.path(), 1);
+    REQUIRE(workspace.Open(WorldFile(directory)));
+    workspace.resize(960, 640);
+    workspace.show();
+    RenderPreview& preview = workspace.GetRenderPreview();
+    REQUIRE(QTest::qWaitFor([&] { return preview.FrameAvailable(); }, 30000));
+    REQUIRE(preview.GetShading() == PreviewShading::Albedo);
+    ProfilingController controller(&preview);
+    REQUIRE(controller.Start(ProfilingMode::Both, capture));
+    QElapsedTimer timer;
+    timer.start();
+    while (timer.elapsed() < 5000)
+    {
+        preview.Tick();
+        QTest::qWait(16);
+    }
+    controller.Stop();
+    REQUIRE(QTest::qWaitFor([&] { return controller.GetState() != ProfilingState::Finalizing; }, 10000));
+    INFO(controller.GetStatus().toStdString());
+    REQUIRE(controller.GetState() == ProfilingState::Complete);
+}
+#endif
