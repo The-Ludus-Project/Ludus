@@ -1470,10 +1470,10 @@ RendererWorkspace::RendererWorkspace(const ToolingPaths& tooling, QWidget* paren
             mPreviewSourceOrNull->PrepareGpuProfileFrame();
         }
     });
-    connect(mPreviewOrNull, &RenderGraphPreview::SubmissionRecorded, this, [this]() {
+    connect(mPreviewOrNull, &RenderGraphPreview::SubmissionRecorded, this, [this](const QByteArray& runtimeIdentity) {
         if (mPreviewSourceOrNull != nullptr)
         {
-            mPreviewSourceOrNull->NotifyGpuProfileSubmission();
+            mPreviewSourceOrNull->NotifyGpuProfileSubmission(runtimeIdentity);
         }
     });
     connect(mPreviewOrNull, &RenderGraphPreview::FramePresented, this, [this]() {
