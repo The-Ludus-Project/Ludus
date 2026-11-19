@@ -20,6 +20,8 @@
 #include <QString>
 #include <QVector>
 
+#include <span>
+
 class QThreadPool;
 
 namespace ludus::editor
@@ -68,6 +70,9 @@ struct ContentThumbnailResult final
     qreal DevicePixelRatio = 1.0;
 };
 
+/// Check the exact cooked texture header and payload extent without rendering.
+[[nodiscard]] bool IsValidCookedTexture(std::span<const foundation::uint8> bytes) noexcept;
+
 /// Read a cooked texture artifact (a 12 byte width, height and byte count header followed by RGBA8 texels, see
 /// SceneFormat's TextureRecord) and box-filter it to fit a side by side square, over a checkerboard where it is
 /// translucent. Reads only the texel rows it samples. Returns false with a reason when the file is missing, short or
@@ -98,7 +103,9 @@ public:
 
     /// The cached thumbnail of id at key, or a null pixmap when it is missing, stale or failed.
     [[nodiscard]] QPixmap Find(const QString& id, const QString& key);
-    /// Whether generating id at key failed; the browser then draws the type icon.
+    /// Last ready thumbnail for id, usable while its replacement is pending or failed.
+    [[nodiscard]] QPixmap FindLastDrawable(const QString& id);
+    /// Whether generating id at key failed.
     [[nodiscard]] bool HasFailed(const QString& id, const QString& key) const;
     /// Queue generation unless id at key is cached, failed, queued or running.
     void Request(const ContentThumbnailRequest& request);
@@ -127,7 +134,7 @@ private:
     {
         QString Key;
         QPixmap Pixmap;
-        bool HasFailed = false;
+        QString FailedKey;
     };
     struct Results;
 

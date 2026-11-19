@@ -3680,9 +3680,20 @@ The **Content** work area projects the saved audio `content/catalog.json` and
 the cooked scene asset catalog `assets/catalog.json` into one table of names,
 types, operation status and paths. Textures, materials, meshes, scenes,
 lighting and licences appear beside audio sources, sounds, music and cooked
-geometry; a material shows its source material name. A file watcher refreshes
-the list a quarter of a second after either catalog changes, so a recook from
-the command line appears without pressing **Refresh**.
+geometry. A material shows its source material name. The native Editor polls
+the cooked catalog and registered cooked textures, so a command-line recook
+appears without pressing **Refresh**. Audio catalog notifications keep their
+quarter-second debounce.
+
+If cooked change hints overflow, Content rescans its registrations before
+validating the published catalog. An observation error keeps recovery pending
+and names the affected path. Restore a readable cooked file there to let the
+next scan finish. The catalog worker checks preview artifact sizes and digests,
+texture records, and material dependency keys. On failure, the browser keeps
+the last valid list and previews and tells you which artifact to recook or
+restore. The browser watches up to 1,023 cooked texture paths per project.
+Catalog changes still trigger validation when that registration budget is full,
+and **Refresh** rechecks the current catalog and its preview artifacts.
 
 Search is live and case-insensitive. Every space-separated word must appear in
 the name, resource ID, type name or path, so `brick wall` finds the material
@@ -3739,7 +3750,7 @@ do not block project changes; their cancelled/stale results are discarded.
 acknowledged. Cancellation wins before publication begins; a late request cannot
 undo a catalog commit. The UI then waits for the actual success or failure.
 Quit cancels and asynchronously drains owned work without blocking the GUI.
-Polling exists only during an active job. Workers never call model/widget APIs
+Job completion polling exists only during an active job. Workers never call model/widget APIs
 or capture a window pointer. Browser controls explain their desktop requirement.
 Native support follows the [host prerequisites](#prerequisites-optional-editor-setup).
 Browser import and persistence still need acceptance.
@@ -3764,11 +3775,13 @@ base colour texture, roughness, metalness and emission. Every other type shows
 its typed icon. Thumbnails are requested only by rows the view actually paints,
 generated on a private pool of two worker threads (one request per event loop
 turn on the browser), and kept in a 16 MiB cache keyed by resource ID and
-artifact key. A recook changes the key, so the old thumbnail is never shown and
-an unchanged asset is never redrawn. The waiting queue holds at most 256
-requests and drops the oldest first, because those rows have scrolled away.
-Failures are cached per key and the row keeps its icon. Texture decoding reads
-only the texel rows it samples and admits SceneFormat's 4096 texel limit.
+artifact key. A recook changes the keys of the affected materials. The list
+keeps their last drawable thumbnails while replacements are prepared and
+reuses the cached thumbnail for each unchanged asset. The waiting queue holds
+at most 256 requests and drops the oldest first, because those rows have
+scrolled away. Failures are cached per key. A row without a previous thumbnail
+shows its type icon. Thumbnail rendering reads only the texel rows it samples
+and admits SceneFormat's 4096 texel limit.
 
 Imports queue: **Import** while another import runs adds the file to the queue,
 and its row appears at once as *Queued*. The running import reports its stage
@@ -3790,8 +3803,10 @@ late-cancel semantics, ID selection across filtering, unchanged-role updates,
 stale operation/project results, GUI-owned completion and shutdown, search
 terms and type chips, texture and material thumbnails, thumbnail cache keys,
 failures and queue limits, scene catalog listing, queued import progress, and
-failure and retry. CI runs
-those fixtures under Clang 18 analysis and ASan/UBSan.
+failure and retry. The native `ludus_editor_cooked_content_recovery_tests` test
+also forces lost hints and a full failed rescan in one cooked project. It
+compares the settled material thumbnails to a fresh validated catalog read
+and checks the unrelated preview identity and a held file reader across repair.
 
 ## The project descriptor (version 1)
 
