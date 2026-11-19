@@ -7128,10 +7128,12 @@ unit disk) reaches height `z` above the disk's plane in the direction
 Every tap is such a direction, looked up on whichever cube face holds it, so the
 search and the filter cross face seams and widen with the light rather than stopping
 at the face gutter. The resolve offsets the receiver by 1.5 shadow texels along its
-normal and searches thirteen taps: the receiver's own direction, then four rings of
-three taps whose lateral widths lie an octave apart below that of the near plane, at
-most twice the receiver's distance. A receiver within half a ring's width of an
-occluder's hard shadow therefore always finds it. A found occluder counts only if it
+normal and starts the blocker search in the receiver's own direction. Four wide rings
+of three taps search lateral widths up to an octave apart, starting at the near
+plane's width capped at twice the receiver's distance. Two compact rings sample at
+half and a quarter of the disk radius when those widths span at least one texel
+and lie within the search range. They can find disjoint blockers on either side of
+a clear centre texel that the wide rings miss. A found occluder counts only if it
 lies between the disk's plane and the receiver and, seen from the receiver,
 backprojects onto the disk; the emitters behind the plane hide nothing. When it finds
 any, the resolve filters twelve light points at the blockers' mean inverse height.
@@ -7160,8 +7162,8 @@ unshadowed emitter. The grid lists a caster's records together, so one lookup se
 a run of them. Occluders nearer than a caster's near distance are ignored: half its
 offset in front of one-sided emitters, and its radius when it encloses its members.
 The penumbra remains an estimate from one point per caster: the disk is round, the
-blockers' heights come from thirteen taps, and occluders nearer the light's plane
-than about half its radius filter too narrowly. Under a 0.8 m square of 4.4 nits with
+blockers' heights come from at most nineteen taps of the nearest stored depths,
+and occluders nearer the light's plane than about half its radius filter too narrowly. Under a 0.8 m square of 4.4 nits with
 blockers 0.22 m and 0.47 m in front of its caster, the
 [RT2 area-light fixture](../architecture/renderer-systems.md#partial-area-light-shadows)
 measures visibility RMS error 0.063–0.088 against an exact backprojection oracle,
@@ -7202,8 +7204,9 @@ On an Apple M5, the SDK reported one caster, five drawn faces and zero pending
 faces for each World. Its sole caster takes 512-texel faces in the 2048² atlas with a
 four-texel gutter. Each emitter fits one planar polygon record with a 0.271 m disk
 radius. The square's enclosing radius is 0.339 m and the elongated rectangle's is
-0.495 m. All measurements below use five-row mean visibility unless a single probe
-is identified. Full light and full shadow controls require normalized visibility
+0.495 m. The original qualification measurements below predate the compact
+search rings. They use five-row mean visibility unless a single probe is identified.
+Full light and full shadow controls require normalized visibility
 above 0.95 and below 0.05. The gates allow two linear RGBA8 codes between routes,
 0.03 RMS visibility error against the per-tap disk model, and 0.06 absolute error
 in the mean adjacent-pixel step across the face boundary. The sampled geometric
@@ -7233,8 +7236,8 @@ a blocker beyond its point shadow and return fully lit inside the physical
 penumbra. That produces a visible step even within one cube face.
 
 At the central overlap probe (x = 1.984875), disjoint half-emitter footprints
-cover the entire source. The raster and disk model both return fully lit there.
-The matched clear radiance is 60/255 on each route. The three blocker pairs give the following results.
+cover the entire source. The original raster and disk model both returned fully lit there.
+The matched clear radiance was 60/255 on each route. The three blocker pairs gave the following results.
 
 | Projected overlap | Raw shadow code / 255 | Raster visibility | Geometric visibility | Weighted visibility |
 | --- | ---: | ---: | ---: | ---: |
@@ -7243,8 +7246,15 @@ The matched clear radiance is 60/255 on each route. The three blocker pairs give
 | Coincident | 42/255 | 0.700 | 0.500 | 0.559 |
 
 Alone, the first blocker gives 1.000 at that probe against a weighted 0.559.
-The three second-blocker controls give 1.000, 0.433 and 0.700 against 0.441,
-0.504 and 0.559. The largest overlap error here is a missed occluder.
+The three second-blocker controls gave 1.000, 0.433 and 0.700 against 0.441,
+0.504 and 0.559. The largest overlap error here was a missed occluder.
+
+The current qualification requires visibility below 0.05 at pixel (80, 80)
+in `overlap-0` on both Metal routes. At the same pixel, the partially overlapping
+and coincident pairs and the single-blocker controls must agree with their weighted
+references within 0.15 absolute visibility. This tolerance accounts for estimating
+a rectangular source with a finite set of disk samples and for the atlas storing
+only the nearest depth in each texel.
 
 For the depth sweep one plate stays at z = 0.80. The outer receiver bands
 measure each penumbra. The mixed band near y = −0.28 supplies the partial
