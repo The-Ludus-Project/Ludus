@@ -2,6 +2,7 @@
 #include "internal/render_preview.h"
 
 #include <ludus/foundation/base/config.h>
+#include <ludus/foundation/math/scalar.hpp>
 #include <ludus/foundation/profiling/integration.hpp>
 #include <ludus/foundation/profiling/profiling.hpp>
 #include <ludus/foundation/profiling/trace_system.hpp>
@@ -26,6 +27,18 @@ constexpr uint64 FINALIZE_NANOSECONDS = 2'000'000'000;
 constexpr uint64 MAX_RECORDING_NANOSECONDS = 30'000'000'000;
 constexpr usize CPU_CAPTURE_CHUNKS = 64;
 constexpr uint64 STATUS_REFRESH_NANOSECONDS = 250'000'000;
+
+/// Appended to a hosted recording's status once the game reports no per-pass counters.
+[[nodiscard]] QString DescribeHostedFrameTimingOnly()
+{
+    return QStringLiteral(" Per-pass counters unavailable on the game's device; frame timing only.");
+}
+
+/// True once the game acknowledged Start without per-pass counters on its device.
+[[nodiscard]] bool IsHostedFrameTimingOnly(const HostedProducerRecord& producer) noexcept
+{
+    return producer.StartFrame != 0 && producer.IsPassTimingSupported == false;
+}
 } // namespace
 
 /// Serializes and saves on a worker; its owned bytes survive an unsuccessful write.
@@ -587,7 +600,8 @@ void ProfilingController::acceptPassBatch(uint64 frameId,
         {
             .SubmissionTicks = submissionTicks,
             .CollectionTicks = time::NowTicks(),
-            .DurationNanoseconds = static_cast<uint64>(duration + 0.5),
+            // Round to the nearest nanosecond; the duration is nonnegative and below the limit above.
+            .DurationNanoseconds = static_cast<uint64>(math::Floor(duration + 0.5)),
             .FrameId = frameId,
             .DeviceSession = deviceSession,
             .PassName = {},
@@ -688,6 +702,10 @@ void ProfilingController::finishExport()
                                                 "its frame and skip counts are unknown.")
                                : QStringLiteral(" Incomplete: the game did not acknowledge Stop in time.");
             }
+            if (IsHostedFrameTimingOnly(mHostedProducer) == true)
+            {
+                mStatus += DescribeHostedFrameTimingOnly();
+            }
         }
         mStatus += QStringLiteral(" Trace: %1").arg(mLastPath);
     }
@@ -698,6 +716,9 @@ void ProfilingController::finishExport()
         {
             mStatus = mHostedProducer.IsDisconnected == true
                           ? QStringLiteral("The game disconnected before it delivered a GPU sample; nothing was saved.")
+                      : IsHostedFrameTimingOnly(mHostedProducer) == true
+                          ? QStringLiteral("The game delivered no GPU sample; nothing was saved. Its device has no "
+                                           "per-pass counters and resolved no frame timing before Stop.")
                           : QStringLiteral("The game delivered no GPU sample; nothing was saved. Its passes must run "
                                            "inside named GPU scopes.");
         }
@@ -747,9 +768,12 @@ QString ProfilingController::GetStatus() const
 {
     if (mState == ProfilingState::Recording && mIsStopping == false && mIsHosted == true)
     {
-        return mStatus + QStringLiteral(" Elapsed %1 s; %2 GPU samples from the game.")
-                             .arg((time::NowTicks() - mStartedTicks) / time::NANOSECONDS_PER_SECOND)
-                             .arg(mHosted.GetSampleCount());
+        const QString timing =
+            IsHostedFrameTimingOnly(mHosted.GetProducer()) == true ? DescribeHostedFrameTimingOnly() : QString();
+        return mStatus + timing +
+               QStringLiteral(" Elapsed %1 s; %2 GPU samples from the game.")
+                   .arg((time::NowTicks() - mStartedTicks) / time::NANOSECONDS_PER_SECOND)
+                   .arg(mHosted.GetSampleCount());
     }
     if (mState == ProfilingState::Recording && mIsStopping == false)
     {

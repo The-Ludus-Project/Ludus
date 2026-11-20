@@ -61,8 +61,6 @@ constexpr int32 TIMEOUT_MILLISECONDS = 20000;
 constexpr int32 POLL_MILLISECONDS = 10;
 /// Frames the viewport presents in each phase of the GPU case.
 constexpr uint64 PRESENTED_FRAMES = 4;
-/// Preview frames that arm and resolve per-pass timestamps before the device's support is known.
-constexpr uint64 PASS_PROBE_FRAMES = 4;
 constexpr int32 VIEWPORT_WIDTH = 320;
 constexpr int32 VIEWPORT_HEIGHT = 240;
 /// One 8-bit code of Qt's swapchain rounding on top of the producer's own tolerance.
@@ -436,7 +434,13 @@ TEST_CASE("A hosted game's GPU recording names its producer across a disconnect 
     CHECK(firstProducer.value(QStringLiteral("startRequestEditorTicks")).toString().toULongLong() <=
           firstProducer.value(QStringLiteral("startReceivedEditorTicks")).toString().toULongLong());
     CHECK(firstProducer.value(QStringLiteral("startAcknowledgedGameTicks")).toString().toULongLong() != 0);
-    CHECK(QJsonDocument(firstTrace).toJson().contains(hosted_test::HOSTED_TEST_PASS_NAME.data()) == true);
+    // A device without per-pass counters records whole frames, which name no pass.
+    CHECK(QJsonDocument(firstTrace).toJson().contains(hosted_test::HOSTED_TEST_PASS_NAME.data()) ==
+          started.IsPassTimingSupported);
+    CHECK(firstTrace.value(QStringLiteral("ludusGpuTiming"))
+              .toObject()
+              .value(QStringLiteral("passTimingSupported"))
+              .toBool() == started.IsPassTimingSupported);
     int32 others = 0;
     CHECK(CountSamplesOfRecording(firstTrace, started.Recording, others) >= 1);
     CHECK(others == 0);
@@ -665,19 +669,18 @@ TEST_CASE("A GPU recording of the World-demo game in the World viewport names it
     REQUIRE(workspace.Open(path));
     RenderPreview& preview = workspace.GetRenderPreview();
     REQUIRE(AwaitCondition([&preview]() { return preview.Running() == true && preview.Frames() >= 2; }));
-    // The statistics overlay arms per-pass timestamps; a device without them, such as the hosted
-    // runners' Apple Paravirtual device, records frame timing only and never reports these passes.
+    // The statistics overlay arms per-pass timestamps on the editor's device. A device without
+    // them, such as the hosted runners' Apple Paravirtual device, records frame timing only; the
+    // game on the same GPU must report the same answer for its own device.
     preview.SetStatisticsVisible(true);
+    // Preview frames that arm and resolve per-pass timestamps before the device's support is known.
+    constexpr uint64 PASS_PROBE_FRAMES = 4;
     const uint64 probeFrame = preview.Frames();
     REQUIRE(AwaitCondition([&preview, probeFrame]() {
         return preview.CanProfileGpuPasses() == true || preview.Frames() >= probeFrame + PASS_PROBE_FRAMES;
     }));
     const bool canTimePasses = preview.CanProfileGpuPasses();
     preview.SetStatisticsVisible(false);
-    if (canTimePasses == false)
-    {
-        SKIP("This GPU device has no per-pass timestamp counters, so a hosted recording has no viewport passes");
-    }
     PreviewViewport* viewport =
         static_cast<PreviewViewport*>(workspace.findChild<QWidget*>(QStringLiteral("worldViewport")));
     REQUIRE(viewport != nullptr);
@@ -708,15 +711,22 @@ TEST_CASE("A GPU recording of the World-demo game in the World viewport names it
     };
     const QString tracePath = traces.filePath(QStringLiteral("world-demo.json"));
     REQUIRE(controller.Start(ProfilingMode::Gpu, tracePath) == true);
-    // Several measured frames, each with every viewport pass.
-    REQUIRE(AwaitCondition([&]() {
-        return controller.GetRecordedSampleCount() >= static_cast<usize>(expectedPasses.size()) * PRESENTED_FRAMES;
-    }));
+    // The game's Start acknowledgement says whether its device times passes or whole frames.
+    REQUIRE(AwaitCondition([&controller]() { return controller.GetHostedProducer().StartFrame != 0; }));
     const HostedProducerRecord started = controller.GetHostedProducer();
-    REQUIRE(started.StartFrame != 0);
     CHECK(started.ProducerName.toStdString() == ludus::world_demo::HOSTED_PRODUCER_NAME);
+    INFO("Editor device per-pass counters: " << canTimePasses << "; game device: " << started.IsPassTimingSupported);
+    CHECK(started.IsPassTimingSupported == canTimePasses);
+    const QString frameTimingOnly =
+        QStringLiteral("Per-pass counters unavailable on the game's device; frame timing only.");
+    CHECK(controller.GetStatus().contains(frameTimingOnly) == (started.IsPassTimingSupported == false));
+    // Several measured frames, each with every viewport pass, or one whole-frame sample each.
+    const usize samplesPerFrame = started.IsPassTimingSupported == true ? static_cast<usize>(expectedPasses.size()) : 1;
+    REQUIRE(
+        AwaitCondition([&]() { return controller.GetRecordedSampleCount() >= samplesPerFrame * PRESENTED_FRAMES; }));
     controller.Stop();
     REQUIRE(AwaitCondition([&controller]() { return controller.GetState() == ProfilingState::Complete; }));
+    CHECK(controller.GetStatus().contains(frameTimingOnly) == (started.IsPassTimingSupported == false));
 
     const QJsonObject trace = ReadRecordedTrace(tracePath);
     REQUIRE(trace.isEmpty() == false);
@@ -732,14 +742,28 @@ TEST_CASE("A GPU recording of the World-demo game in the World viewport names it
     CHECK(producer.value(QStringLiteral("stopFrame")).toString().toULongLong() >= started.StartFrame);
     CHECK(producer.value(QStringLiteral("measuredFrames")).toString().toULongLong() >= 1);
     CHECK(producer.value(QStringLiteral("deliveredSamples")).toString().toULongLong() >=
-          static_cast<uint64>(expectedPasses.size()));
+          static_cast<uint64>(samplesPerFrame));
     CHECK(producer.value(QStringLiteral("rejectedSamples")).toString() == QStringLiteral("0"));
+    CHECK(producer.value(QStringLiteral("passTimingSupported")).toBool() == started.IsPassTimingSupported);
+    const QJsonObject timing = trace.value(QStringLiteral("ludusGpuTiming")).toObject();
+    CHECK(timing.value(QStringLiteral("passTimingSupported")).toBool() == started.IsPassTimingSupported);
     int32 others = 0;
-    CHECK(CountSamplesOfRecording(trace, started.Recording, others) >= expectedPasses.size());
+    CHECK(CountSamplesOfRecording(trace, started.Recording, others) >= static_cast<int32>(samplesPerFrame));
     CHECK(others == 0);
     const QSet<QString> recordedPasses = CollectPassNamesOfRecording(trace, started.Recording);
     INFO("Recorded passes: " << QStringList(recordedPasses.values()).join(QStringLiteral(", ")).toStdString());
-    CHECK(recordedPasses.contains(expectedPasses) == true);
+    if (started.IsPassTimingSupported == true)
+    {
+        CHECK(recordedPasses.contains(expectedPasses) == true);
+        CHECK(timing.value(QStringLiteral("frameSampleCount")).toInt() == 0);
+    }
+    else
+    {
+        // Without per-pass counters every sample is a whole frame that names no pass.
+        CHECK(recordedPasses == QSet<QString>{QString()});
+        CHECK(timing.value(QStringLiteral("passSampleCount")).toInt() == 0);
+        CHECK(timing.value(QStringLiteral("frameSampleCount")).toInt() >= static_cast<int32>(PRESENTED_FRAMES));
+    }
 
     // Recording leaves Play untouched: Stop still closes the game normally.
     workspace.RequestPlayClose();

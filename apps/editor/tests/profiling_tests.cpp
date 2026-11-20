@@ -110,10 +110,13 @@ public:
     {
         mSinkOrNull = sinkOrNull;
     }
+    /// Answer `request`; a successful Start reports per-pass counters unless
+    /// `isPassTimingSupported` is false, as from a device without them.
     void Acknowledge(const ludus::platform::HostedRecordingRequest& request,
                      ludus::platform::HostedRecordingResult result,
                      uint64 frame,
-                     const ludus::platform::HostedRecordingCoverage& coverage = {})
+                     const ludus::platform::HostedRecordingCoverage& coverage = {},
+                     bool isPassTimingSupported = true)
     {
         REQUIRE(mSinkOrNull != nullptr);
         ludus::platform::HostedRecordingEvent event;
@@ -125,6 +128,9 @@ public:
         event.Acknowledgement.Frame = frame;
         event.Acknowledgement.Ticks = frame * 1000;
         event.Acknowledgement.Coverage = coverage;
+        event.Acknowledgement.IsPassTimingSupported =
+            isPassTimingSupported == true && request.Kind == ludus::platform::HostedRecordingRequestKind::Start &&
+            result == ludus::platform::HostedRecordingResult::Ok;
         std::memcpy(event.Acknowledgement.ProducerName.GetData(), "scripted game", 13);
         mSinkOrNull->AcceptRecordingEvent(event);
     }
@@ -144,6 +150,23 @@ public:
         sample.ScopeIdentity = 9;
         sample.LogicalPassCount = 1;
         std::memcpy(sample.Name.GetData(), "Game/Surface", 12);
+        mSinkOrNull->AcceptRecordingEvent(event);
+    }
+    /// Send one whole-frame sample, as a device without per-pass counters does.
+    // Recording then frame, as in HostedRecordingSample.
+    // NOLINTNEXTLINE(bugprone-easily-swappable-parameters)
+    void SendFrameSample(uint64 recording, uint64 frame)
+    {
+        REQUIRE(mSinkOrNull != nullptr);
+        ludus::platform::HostedRecordingEvent event;
+        event.Kind = ludus::platform::HostedRecordingEventKind::Sample;
+        ludus::platform::HostedRecordingSample& sample = event.Sample;
+        sample.Recording = recording;
+        sample.Frame = frame;
+        sample.SubmissionTicks = frame * 1000;
+        sample.CollectionTicks = frame * 1000 + 10;
+        sample.DurationNanoseconds = 700;
+        sample.IsFrame = true;
         mSinkOrNull->AcceptRecordingEvent(event);
     }
     void Disconnect()
@@ -636,6 +659,13 @@ TEST_CASE("a hosted recording keeps the game's identity across a disconnect and 
     CHECK(first.value(QStringLiteral("ludusGpuTiming")).toObject().value(QStringLiteral("sampleCount")).toInt() == 2);
     CHECK(QJsonDocument(first).toJson().contains("hosted game scripted game (pid 4321)") == true);
     CHECK(QJsonDocument(first).toJson().contains("Game/Surface") == true);
+    // The game's device reported per-pass counters, and the trace says so.
+    CHECK(producer.value(QStringLiteral("passTimingSupported")).toBool() == true);
+    CHECK(first.value(QStringLiteral("ludusGpuTiming"))
+              .toObject()
+              .value(QStringLiteral("passTimingSupported"))
+              .toBool() == true);
+    CHECK(controller.GetStatus().contains(QStringLiteral("Per-pass counters unavailable")) == false);
 
     // Reconnected: the next recording refuses the earlier recording's delayed samples even
     // though the new game process numbers its frames from one again.
@@ -671,6 +701,54 @@ TEST_CASE("a hosted recording keeps the game's identity across a disconnect and 
           3);
 }
 
+TEST_CASE("a hosted recording on a game device without per-pass counters records frame timing only",
+          "[profiling][editor][hosted]")
+{
+    namespace platform = ludus::platform;
+    QTemporaryDir directory;
+    RenderPreview preview;
+    ProfilingController controller(&preview);
+    ScriptedRecordingTarget game;
+    REQUIRE(controller.SetHostedTarget(&game, &game) == true);
+    const QString path = directory.filePath(QStringLiteral("frames.json"));
+    REQUIRE(controller.Start(ProfilingMode::Gpu, path) == true);
+    REQUIRE(game.Requests.size() == 1);
+    const platform::HostedRecordingRequest start = game.Requests[0];
+    const QString frameTimingOnly =
+        QStringLiteral("Per-pass counters unavailable on the game's device; frame timing only.");
+    // Before the game answers, nothing is claimed either way.
+    CHECK(controller.GetStatus().contains(frameTimingOnly) == false);
+    game.Acknowledge(start, platform::HostedRecordingResult::Ok, 2, {}, false);
+    CHECK(controller.GetHostedProducer().IsPassTimingSupported == false);
+    CHECK(controller.GetStatus().contains(frameTimingOnly) == true);
+    // Only the announced kind is admitted: whole frames, not a pass the device cannot time.
+    game.SendFrameSample(start.Recording, 2);
+    game.SendSample(start.Recording, 2);
+    game.SendFrameSample(start.Recording, 3);
+    CHECK(controller.GetRecordedSampleCount() == 2);
+    controller.Stop();
+    REQUIRE(game.Requests.size() == 2);
+    game.Acknowledge(game.Requests[1],
+                     platform::HostedRecordingResult::Ok,
+                     3,
+                     { .SubmittedFrames = 2, .MeasuredFrames = 2, .DeliveredSamples = 2 });
+    REQUIRE(AwaitState(controller, ProfilingState::Complete) == true);
+    CHECK(controller.GetStatus().contains(frameTimingOnly) == true);
+    const QJsonObject trace = ReadTrace(path);
+    REQUIRE(trace.isEmpty() == false);
+    const QJsonObject timing = trace.value(QStringLiteral("ludusGpuTiming")).toObject();
+    CHECK(timing.value(QStringLiteral("passTimingSupported")).toBool() == false);
+    CHECK(timing.value(QStringLiteral("frameSampleCount")).toInt() == 2);
+    CHECK(timing.value(QStringLiteral("passSampleCount")).toInt() == 0);
+    const QJsonObject producer = trace.value(QStringLiteral("ludusHostedProducer")).toObject();
+    CHECK(producer.value(QStringLiteral("passTimingSupported")).toBool() == false);
+    CHECK(producer.value(QStringLiteral("sampleKind")).toString().contains(QStringLiteral("no per-pass counters")) ==
+          true);
+    CHECK(producer.value(QStringLiteral("rejectedSamples")).toString() == QStringLiteral("1"));
+    CHECK(producer.value(QStringLiteral("complete")).toBool() == true);
+    CHECK(QJsonDocument(trace).toJson().contains("Game/Surface") == false);
+}
+
 TEST_CASE("a hosted game without a recorder fails the recording with its reason", "[profiling][editor][hosted]")
 {
     namespace platform = ludus::platform;
@@ -683,7 +761,7 @@ TEST_CASE("a hosted game without a recorder fails the recording with its reason"
     REQUIRE(game.Requests.size() == 1);
     game.Acknowledge(game.Requests[0], platform::HostedRecordingResult::Unsupported, 0);
     REQUIRE(AwaitState(controller, ProfilingState::Failed) == true);
-    CHECK(controller.GetStatus().contains(QStringLiteral("cannot record GPU passes")) == true);
+    CHECK(controller.GetStatus().contains(QStringLiteral("cannot record GPU timing")) == true);
     CHECK(controller.HasUnsavedSnapshot() == false);
     CHECK(QFileInfo::exists(directory.filePath(QStringLiteral("refused.json"))) == false);
     // A game that goes away takes the target with it; the editor viewport is targeted again.
