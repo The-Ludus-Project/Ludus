@@ -122,8 +122,11 @@ struct AudioMixReport final
 class AudioMixOwner final
 {
 public:
+    /// An uninitialized owner; call Initialize before Apply or Service.
     AudioMixOwner() noexcept = default;
+    /// Not copyable: the owner borrows one context and session and tracks one in-flight publication.
     AudioMixOwner(const AudioMixOwner&) = delete;
+    /// Not copy-assignable, for the same single-ownership reason as the deleted copy constructor.
     AudioMixOwner& operator=(const AudioMixOwner&) = delete;
 
     /// @brief Bind the mix settings, validate `buses` against the session and publish the context's active mix.
@@ -164,10 +167,11 @@ public:
     }
 
 private:
+    /// One retained mix: the volumes handed to the renderer and the context generation they came from.
     struct Snapshot final
     {
-        AudioMixOptions Options{};
-        uint64 Generation = 0;
+        AudioMixOptions Options{}; ///< Volumes copied out of the context at publication.
+        uint64 Generation = 0;     ///< AUDIO_MIX_GROUP generation those volumes were committed under.
     };
     [[nodiscard]] MixStatus readCandidate(AudioMixOptions& outOptions) const noexcept;
     [[nodiscard]] MixStatus checkPublication(uint32 records) const noexcept;
