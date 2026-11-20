@@ -94,11 +94,12 @@ public:
     /// @param outIsTruncated Set to true when bytes of `value` were dropped, otherwise false.
     void AssignTruncatedUtf8(Utf8View value, bool& outIsTruncated) noexcept
     {
-        const std::string_view bytes = value.GetView();
+        std::string_view kept = value.GetView();
         const usize size = FindPrecedingUtf8Boundary(value, Capacity);
-        const StringStatus status = detail::AssignBounded(mBytes, mSize, Capacity, bytes.substr(0, size));
+        outIsTruncated = size < kept.size();
+        kept.remove_suffix(kept.size() - size);
+        const StringStatus status = detail::AssignBounded(mBytes, mSize, Capacity, kept);
         static_cast<void>(status);
-        outIsTruncated = size < bytes.size();
     }
     /// @brief Removes `count` bytes starting at byte `offset` and closes the gap, as String::TryErase.
     /// @return Ok; OutOfRange when the range extends beyond GetSize(), leaving the value unchanged.

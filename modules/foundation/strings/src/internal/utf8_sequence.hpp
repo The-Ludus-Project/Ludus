@@ -118,6 +118,7 @@ struct Utf8Sequence final
 }
 
 /// Decodes the well-formed sequence of `length` bytes at `bytes[offset]`.
+// NOLINTNEXTLINE(bugprone-easily-swappable-parameters): (offset, length) as returned by ScanUtf8Sequence.
 [[nodiscard]] constexpr uint32 DecodeUtf8Sequence(std::string_view bytes, usize offset, usize length) noexcept
 {
     const uint32 lead = static_cast<uint8>(bytes[offset]);

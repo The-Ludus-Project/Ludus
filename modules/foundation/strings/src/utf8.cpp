@@ -63,7 +63,7 @@ StringStatus TrySliceUtf8(Utf8View text, usize offset, usize size, Utf8View& out
     {
         return StringStatus::SplitsCodePoint;
     }
-    outSlice.mView = bytes.substr(offset, size);
+    outSlice.mView = {bytes.data() + offset, size};
     return StringStatus::Ok;
 }
 StringStatus
@@ -97,7 +97,7 @@ TryRepairUtf8(std::string_view bytes, usize maximumBytes, String& outText, usize
     {
         const detail::Utf8Sequence sequence = detail::ScanUtf8Sequence(bytes, i);
         const std::string_view piece =
-            sequence.IsWellFormed == true ? bytes.substr(i, sequence.Length) : REPLACEMENT_CHARACTER;
+            sequence.IsWellFormed == true ? std::string_view{bytes.data() + i, sequence.Length} : REPLACEMENT_CHARACTER;
         // Capacity is reserved, so appending cannot fail.
         const StringStatus appended = repaired.TryAppend(piece);
         LUDUS_ASSERT(appended == StringStatus::Ok);

@@ -1521,7 +1521,9 @@ TEST_CASE("display repair replaces maximal ill-formed subparts and respects byte
         // The input may borrow the output.
         REQUIRE(output.TryAppend("\xC3") == StringStatus::Ok);
         REQUIRE(TryRepairUtf8(output.GetView(), 64, output, replacements) == StringStatus::Ok);
-        REQUIRE(output.GetView() == std::string(30, 'x') + one + one);
+        std::string twice(30, 'x');
+        twice += two;
+        REQUIRE(output.GetView() == twice);
         REQUIRE(replacements == 1);
         REQUIRE(heap.Allocations == 2);
     }

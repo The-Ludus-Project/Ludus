@@ -7,6 +7,8 @@
 // Thanks to the Unicode Consortium, The Unicode Standard 17.0, section 3.9 "Unicode Encoding
 // Forms", definitions D91 (UTF-16) and D92 (UTF-8), for surrogate-pair composition and the
 // well-formed sequences converted here (https://www.unicode.org/versions/Unicode17.0.0/core-spec/chapter-3/).
+// Every conversion reports a count and an error offset, two distinctly named usize outputs.
+// NOLINTBEGIN(bugprone-easily-swappable-parameters)
 namespace ludus::foundation
 {
 namespace
@@ -213,3 +215,4 @@ StringStatus ConvertUtf16ToUtf8(std::wstring_view units,
 }
 #endif
 } // namespace ludus::foundation
+// NOLINTEND(bugprone-easily-swappable-parameters)
