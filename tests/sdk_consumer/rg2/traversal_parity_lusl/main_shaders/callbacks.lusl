@@ -22,6 +22,9 @@ float32 EncodeIdentity(in SceneQuery status, in SurfaceHit hit)
 
 float32x3 GenerateRay(in SceneContext scene, in RayLaunch launch, inout RayQueryContext inoutQueries)
 {
+    // The only positive component always wins, regardless of the draw.
+    if (SampleSceneWeightedIndex(inout inoutQueries, float32x3(0.0, 2.0, 0.0)) != 1)
+        FailSceneQuery(inout inoutQueries, SCENE_FAILURE_AUTHORED_FIRST);
     ScenePayload payload = 0;
     TraceAndShade(scene, inout inoutQueries, MakeCameraRay(launch, SUBPIXEL_SAMPLE), inout payload);
     return payload.Radiance;
