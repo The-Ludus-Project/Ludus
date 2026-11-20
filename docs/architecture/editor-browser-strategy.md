@@ -133,6 +133,15 @@ sent a batch by its starting length, so a nested event loop that emptied the
 queue first ended Qt's event loop and froze the editor. The editor's Qt build
 backports the upstream reentrant sender (see
 [Ludus changes to Qt](../development/browser-editor.md#ludus-changes-to-qt)).
+A queued key also reaches Qt after the browser has applied it: with a text
+field focused, Qt's hidden input element has already moved its caret or taken
+the text, so typing right after a save landed out of order. While a host-folder
+call is suspended, `browser/suspended_input.js` therefore cancels trusted
+`keydown`/`keyup` events before Qt or the input element sees them, then
+dispatches equivalent events in order once the call resumes. Qt types text from
+`keydown`, and a dispatched event has no browser default action. IME
+composition keys and the copy, cut and paste shortcuts stay with the browser.
+`apps/editor/tests/browser_suspended_input_tests.cjs` covers the hold.
 Renames across mounts fail with `EXDEV`, which Qt turns into copies. Symbolic
 links cannot be created in a folder mount. The overrides reproduce Emscripten
 4.0.23's `__syscall_openat` and `__syscall_renameat` over the public FS API and

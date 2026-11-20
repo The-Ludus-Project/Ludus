@@ -302,7 +302,8 @@ def test_host_folder(sdk: Path, web_lock: dict) -> None:
     harness = output / "host_folder_harness.mjs"
     run([sdk / "upstream/emscripten/em++", "-std=c++23", "-O1", "-fno-exceptions", "-Werror",
          f"-I{ROOT / 'modules/foundation/base/include'}", ROOT / HOST_FOLDER_HARNESS, "-o", harness,
-         "-sASYNCIFY", "-lembind", f"--js-library={ROOT / 'apps/editor/browser/host_folder.js'}",
+         "-sASYNCIFY", "-lembind", f"--js-library={ROOT / 'apps/editor/browser/suspended_input.js'}",
+         f"--js-library={ROOT / 'apps/editor/browser/host_folder.js'}",
          "-sMODULARIZE", "-sEXPORT_ES6", "-sENVIRONMENT=node", "-sALLOW_MEMORY_GROWTH", "-sASSERTIONS=1",
          "-sEXPORTED_RUNTIME_METHODS=ccall,HEAPU8", "-sEXPORTED_FUNCTIONS=_malloc,_free"], env=env)
     node = env.get("EMSDK_NODE")
