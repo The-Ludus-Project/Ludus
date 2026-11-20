@@ -139,8 +139,8 @@ TEST_CASE("Workspace panels recover without changing project state and share Pla
 "source_dir":".","preset":"linux-clang-debug","target":"app","run":{"cwd":".","args":[]}})json");
     REQUIRE(descriptor.write(bytes) == bytes.size());
     descriptor.close();
-    auto* game = window.findChild<QToolBar*>(QStringLiteral("gameToolbar"));
-    auto* session = window.findChild<QToolBar*>(QStringLiteral("sessionToolbar"));
+    QToolBar* game = window.findChild<QToolBar*>(QStringLiteral("gameToolbar"));
+    QToolBar* session = window.findChild<QToolBar*>(QStringLiteral("sessionToolbar"));
     REQUIRE(game != nullptr);
     REQUIRE(session != nullptr);
     for (const auto& name : {QStringLiteral("play.start"), QStringLiteral("play.reload")})
