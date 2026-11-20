@@ -12,8 +12,11 @@
 #include <QDir>
 #include <QDockWidget>
 #include <QList>
+#include <QRect>
 #include <QSignalSpy>
+#include <QSize>
 #include <QStatusBar>
+#include <QTabBar>
 #include <QTemporaryDir>
 #include <QTest>
 #include <QToolButton>
@@ -26,6 +29,9 @@ constexpr int BURST_UPDATES = 50;
 /// Extra milliseconds that let a pending change land after its interval.
 constexpr int SETTLE_MILLISECONDS = 50;
 constexpr double HALF_DONE = 0.5;
+/// The MacBook Air's usable window, and a narrower one.
+constexpr QSize MACBOOK_AIR_WINDOW_SIZE(1470, 920);
+constexpr QSize NARROW_WINDOW_SIZE(1180, 760);
 } // namespace
 
 TEST_CASE("Activity labels follow priority and say nothing when idle", "[editor][activity]")
@@ -64,8 +70,12 @@ TEST_CASE("Activity chip shows a dot or a bar, hides when idle and opens the Err
     QToolButton* warnings = bar.findChild<QToolButton*>(QStringLiteral("statusWarnings"));
     REQUIRE(problems != nullptr);
     REQUIRE(warnings != nullptr);
-    CHECK(problems->text() == QStringLiteral("2 Problems"));
-    CHECK(warnings->text() == QStringLiteral("1 Warning"));
+    // Compact counts: the icon says which, the number how many; words stay in the name and tooltip.
+    CHECK(problems->text() == QStringLiteral("2"));
+    CHECK(warnings->text() == QStringLiteral("1"));
+    CHECK(problems->accessibleName() == QStringLiteral("2 Problems"));
+    CHECK(warnings->accessibleName() == QStringLiteral("1 Warning"));
+    CHECK(problems->toolTip().startsWith(QStringLiteral("2 Problems")) == true);
     QSignalSpy requests(&bar, &StatusActivityBar::ProblemsRequested);
     problems->click();
     warnings->click();
@@ -113,11 +123,55 @@ TEST_CASE("Main window status bar counts problems and opens the Error List", "[e
     entries.append(warning);
     list->ReplaceEntries(ErrorListProducer::Build, entries);
     bar->Flush();
-    CHECK(bar->findChild<QToolButton*>(QStringLiteral("statusProblems"))->text() == QStringLiteral("1 Problem"));
-    CHECK(bar->findChild<QToolButton*>(QStringLiteral("statusWarnings"))->text() == QStringLiteral("1 Warning"));
+    CHECK(bar->findChild<QToolButton*>(QStringLiteral("statusProblems"))->accessibleName() ==
+          QStringLiteral("1 Problem"));
+    CHECK(bar->findChild<QToolButton*>(QStringLiteral("statusWarnings"))->accessibleName() ==
+          QStringLiteral("1 Warning"));
     QDockWidget* dock = window.findChild<QDockWidget*>(QStringLiteral("errorListDock"));
     REQUIRE(dock != nullptr);
     dock->hide();
     bar->findChild<QToolButton*>(QStringLiteral("statusProblems"))->click();
     CHECK(dock->isHidden() == false);
+}
+
+TEST_CASE("Status bar counts and toolbar labels stay whole at a MacBook Air width and narrower",
+          "[editor][activity][shell][layout]")
+{
+    QTemporaryDir settings;
+    EditorController controller(ToolingPaths{}, nullptr, QDir(settings.path()).filePath(QStringLiteral("recent.json")));
+    MainWindow window(&controller, nullptr, QDir(settings.path()).filePath(QStringLiteral("workspace.json")));
+    window.show();
+    for (const QSize size : {MACBOOK_AIR_WINDOW_SIZE, NARROW_WINDOW_SIZE})
+    {
+        INFO(size.width());
+        window.resize(size);
+        QApplication::processEvents();
+        QApplication::processEvents();
+        StatusActivityBar* bar = window.findChild<StatusActivityBar*>(QStringLiteral("statusActivityBar"));
+        REQUIRE(bar != nullptr);
+        // The permanent widgets keep their whole width inside the window; the status line gives way first.
+        const QRect barRect(bar->mapTo(&window, QPoint(0, 0)), bar->size());
+        CHECK(window.rect().contains(barRect) == true);
+        for (QToolButton* button : bar->findChildren<QToolButton*>())
+        {
+            INFO(button->objectName().toStdString());
+            CHECK(button->width() >= button->sizeHint().width());
+            CHECK(button->width() >= button->minimumWidth());
+        }
+        // Every main-window dock tab shows its whole label or only its icon; none is cut mid-word.
+        for (QTabBar* tabs : window.findChildren<QTabBar*>(Qt::FindDirectChildrenOnly))
+        {
+            if (tabs->isVisible() == false)
+            {
+                continue;
+            }
+            CHECK(tabs->elideMode() == Qt::ElideRight);
+            int width = 0;
+            for (int index = 0; index < tabs->count(); ++index)
+            {
+                width += tabs->tabRect(index).width();
+            }
+            CHECK(width <= tabs->width());
+        }
+    }
 }

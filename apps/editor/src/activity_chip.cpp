@@ -2,11 +2,13 @@
 #include "design_tokens.h"
 #include "internal/editor_icons.h"
 
+#include <QFontMetrics>
 #include <QHBoxLayout>
 #include <QLabel>
 #include <QPainter>
 #include <QPalette>
 #include <QSize>
+#include <QSizePolicy>
 #include <QToolButton>
 
 #include <algorithm>
@@ -22,6 +24,8 @@ constexpr int BAR_HEIGHT = 4;
 constexpr int CHIP_SPACING = design::SPACING_SMALL;
 constexpr int GROUP_SPACING = design::SPACING_MEDIUM;
 constexpr int STATUS_ICON_SIZE = 14;
+/// Space on each side of a count button's icon and number.
+constexpr int COUNT_BUTTON_PADDING = design::SPACING_EXTRA_SMALL;
 constexpr qreal HALF = 0.5;
 
 /// A static dot, or a bar filled to a fraction. It never animates.
@@ -81,6 +85,22 @@ QToolButton* MakeCountButton(QWidget* parent, const QString& name, EditorIcon ic
     button->setIconSize(QSize(STATUS_ICON_SIZE, STATUS_ICON_SIZE));
     button->setToolTip(QStringLiteral("Show the Error List"));
     return button;
+}
+
+/// Show count compactly, as the bare number beside the button's icon, so the status bar's right edge never clips
+/// it; the accessible name and tooltip say it in words ("2 Problems").
+void ShowCount(QToolButton& inoutButton, foundation::int32 count, const QString& singular, const QString& plural)
+{
+    const QString words = FormatProblemCount(count, singular, plural);
+    inoutButton.setText(QString::number(count));
+    inoutButton.setAccessibleName(words);
+    inoutButton.setToolTip(QStringLiteral("%1. Show the Error List").arg(words));
+    // The button is never narrower than its icon, gap and number in its own font, whatever the platform style
+    // measures, so a narrow window shortens the status line instead.
+    const QFontMetrics metrics(inoutButton.font());
+    const int contentWidth =
+        STATUS_ICON_SIZE + CHIP_SPACING + metrics.horizontalAdvance(inoutButton.text()) + 2 * COUNT_BUTTON_PADDING;
+    inoutButton.setMinimumWidth(std::max(inoutButton.sizeHint().width(), contentWidth));
 }
 } // namespace
 
@@ -148,8 +168,10 @@ StatusActivityBar::StatusActivityBar(QWidget* parentOrNull)
     mTimer.setTimerType(Qt::PreciseTimer);
     connect(&mTimer, &QTimer::timeout, this, &StatusActivityBar::applyPending);
     mPendingLabel.clear();
-    mProblems->setText(FormatProblemCount(0, QStringLiteral("Problem"), QStringLiteral("Problems")));
-    mWarnings->setText(FormatProblemCount(0, QStringLiteral("Warning"), QStringLiteral("Warnings")));
+    // The bar keeps its own width: the status line beside it gives way first.
+    setSizePolicy(QSizePolicy::Fixed, QSizePolicy::Preferred);
+    ShowCount(*mProblems, 0, QStringLiteral("Problem"), QStringLiteral("Problems"));
+    ShowCount(*mWarnings, 0, QStringLiteral("Warning"), QStringLiteral("Warnings"));
 }
 
 void StatusActivityBar::SetActivity(const QString& label, double progressOrNegative)
@@ -211,7 +233,7 @@ void StatusActivityBar::applyPending()
     mShownProgress = mPendingProgress;
     static_cast<ActivityMarker*>(mMarker)->SetProgress(mPendingProgress);
     mActivityGroup->setVisible(mPendingLabel.isEmpty() == false);
-    mProblems->setText(FormatProblemCount(mPendingErrors, QStringLiteral("Problem"), QStringLiteral("Problems")));
-    mWarnings->setText(FormatProblemCount(mPendingWarnings, QStringLiteral("Warning"), QStringLiteral("Warnings")));
+    ShowCount(*mProblems, mPendingErrors, QStringLiteral("Problem"), QStringLiteral("Problems"));
+    ShowCount(*mWarnings, mPendingWarnings, QStringLiteral("Warning"), QStringLiteral("Warnings"));
 }
 } // namespace ludus::editor
