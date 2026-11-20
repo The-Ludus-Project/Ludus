@@ -2700,7 +2700,13 @@ PreviewCamera MakeRotateFixtureCamera(float32 yawDegrees, float32 pitchDegrees)
     return view;
 }
 
-math::Vector3 MakeRotateFixtureProbe(qsizetype axis, float32 arcDegrees, const QRectF& frame)
+enum class RotateFixtureAxis : ludus::foundation::uint8
+{
+    X = 0,
+    Z = 2,
+};
+
+math::Vector3 MakeRotateFixtureProbe(RotateFixtureAxis axis, float32 arcDegrees, const QRectF& frame)
 {
     // Construct a probe fixed in the asymmetric mesh's coordinates. For the X arc, its scaled
     // coordinates are in YZ. For the Z arc, apply inverse Y and X so the point is in XY just before Rz.
@@ -2710,7 +2716,7 @@ math::Vector3 MakeRotateFixtureProbe(qsizetype axis, float32 arcDegrees, const Q
     const float32 cosine = math::Cos(angle) * radiusWorld;
     const float32 sine = math::Sin(angle) * radiusWorld;
     math::Vector3 scaledProbeMesh{0, cosine, sine};
-    if (axis == 2)
+    if (axis == RotateFixtureAxis::Z)
     {
         const math::Vector3 undoneY =
             math::Rotate(MakeAxisRotation({0, 1, 0}, -NESTED_ROTATE_EULER_DEGREES.Y), {cosine, sine, 0});
@@ -2721,14 +2727,14 @@ math::Vector3 MakeRotateFixtureProbe(qsizetype axis, float32 arcDegrees, const Q
             scaledProbeMesh.Z / NESTED_ROTATE_SCALE.Z};
 }
 
-QString WriteNestedRotateWorld(QTemporaryDir& inoutDirectory, const QString& path)
+QString WriteNestedRotateWorld(const QTemporaryDir& directory, const QString& path)
 {
-    const QString external = inoutDirectory.filePath(QStringLiteral("external"));
+    const QString external = directory.filePath(QStringLiteral("external"));
     const QString levelPath = QStringLiteral("scenes/nested.lulevel");
     QString error;
     REQUIRE(tests::CreateFixtureSource(external) == true);
-    REQUIRE(tests::PrepareImportedLevel(inoutDirectory.path(), levelPath, external, error) == true);
-    QJsonObject level = QJsonDocument::fromJson(Read(inoutDirectory.filePath(levelPath))).object();
+    REQUIRE(tests::PrepareImportedLevel(directory.path(), levelPath, external, error) == true);
+    QJsonObject level = QJsonDocument::fromJson(Read(directory.filePath(levelPath))).object();
     QJsonArray objects = level.value(QStringLiteral("objects")).toArray();
     REQUIRE(objects.size() == 1);
     QJsonObject child = objects[0].toObject();
@@ -2819,7 +2825,7 @@ TEST_CASE("Nested World rotate rings follow projected mesh motion and preserve p
     // https://doi.org/10.1145/800248.807394, for judging nested rotation by agreement with hand motion.
     // Thanks to Nielson and Olsen, Direct Manipulation Techniques for 3D Objects Using 2D Locator Devices
     // (I3D '86), for exercising the loss of precision when the 3D motion projects to almost no screen motion.
-    enum class GestureEnd
+    enum class GestureEnd : ludus::foundation::uint8
     {
         Commit,
         Escape,
@@ -2831,18 +2837,18 @@ TEST_CASE("Nested World rotate rings follow projected mesh motion and preserve p
         float32 YawDegrees;
         float32 PitchDegrees;
         float32 ArcDegrees;
-        qsizetype Axis;
+        RotateFixtureAxis Axis;
         bool IsPositive;
         GestureEnd End;
     };
     const QList<RotateGesture> gestures{
-        {"first view X positive", 27, 22, 135, 0, true, GestureEnd::Commit},
-        {"first view Z negative", 27, 22, 39, 2, false, GestureEnd::Commit},
-        {"second view X negative", -32, -25, 45, 0, false, GestureEnd::Commit},
-        {"second view Z positive", -32, -25, 50, 2, true, GestureEnd::Commit},
-        {"five degrees before edge-on", 85, 0, 45, 2, true, GestureEnd::Commit},
-        {"five degrees past edge-on with Escape", 95, 0, 45, 2, false, GestureEnd::Escape},
-        {"edge-on at the collapsed Z tangent", 90, 0, 90, 2, false, GestureEnd::Collapsed},
+        {"first view X positive", 27, 22, 135, RotateFixtureAxis::X, true, GestureEnd::Commit},
+        {"first view Z negative", 27, 22, 39, RotateFixtureAxis::Z, false, GestureEnd::Commit},
+        {"second view X negative", -32, -25, 45, RotateFixtureAxis::X, false, GestureEnd::Commit},
+        {"second view Z positive", -32, -25, 50, RotateFixtureAxis::Z, true, GestureEnd::Commit},
+        {"five degrees before edge-on", 85, 0, 45, RotateFixtureAxis::Z, true, GestureEnd::Commit},
+        {"five degrees past edge-on with Escape", 95, 0, 45, RotateFixtureAxis::Z, false, GestureEnd::Escape},
+        {"edge-on at the collapsed Z tangent", 90, 0, 90, RotateFixtureAxis::Z, false, GestureEnd::Collapsed},
     };
     for (const RotateGesture& gesture : gestures)
     {
@@ -2885,7 +2891,7 @@ TEST_CASE("Nested World rotate rings follow projected mesh motion and preserve p
             const math::Vector3 probeMesh = MakeRotateFixtureProbe(gesture.Axis, gesture.ArcDegrees, frame);
             const auto projectAuthored = [&](float32 deltaDegrees) {
                 math::Vector3 eulerDegrees = NESTED_ROTATE_EULER_DEGREES;
-                (gesture.Axis == 0 ? eulerDegrees.X : eulerDegrees.Z) += deltaDegrees;
+                (gesture.Axis == RotateFixtureAxis::X ? eulerDegrees.X : eulerDegrees.Z) += deltaDegrees;
                 return ProjectRotateFixturePoint(TransformRotateFixturePointToWorld(probeMesh, eulerDegrees),
                                                  view.Sample,
                                                  frame);
@@ -2897,7 +2903,8 @@ TEST_CASE("Nested World rotate rings follow projected mesh motion and preserve p
             const ludus::foundation::usize cursorBefore = history.GetCursor();
             const ludus::foundation::usize countBefore = history.GetCount();
             REQUIRE(interaction.Hover(pressPixel, frame) == true);
-            REQUIRE(interaction.GetHoveredAxis() == gesture.Axis);
+            const ludus::foundation::int32 axis = static_cast<ludus::foundation::int32>(gesture.Axis);
+            REQUIRE(interaction.GetHoveredAxis() == axis);
             REQUIRE(interaction.Press(pressPixel, frame) == true);
 
             constexpr float64 DRAG_PIXELS = 6;
@@ -2925,7 +2932,7 @@ TEST_CASE("Nested World rotate rings follow projected mesh motion and preserve p
             CHECK(history.GetCursor() == cursorBefore);
             ViewportObjectOverlay overlay;
             interaction.BuildOverlay(frame, overlay);
-            const QString axisName = gesture.Axis == 0 ? QStringLiteral("X") : QStringLiteral("Z");
+            const QString axisName = gesture.Axis == RotateFixtureAxis::X ? QStringLiteral("X") : QStringLiteral("Z");
             const QString sign = gesture.IsPositive == true ? QStringLiteral(" +") : QStringLiteral(" -");
             INFO(overlay.ReadoutText.toStdString());
             REQUIRE(overlay.ReadoutText.startsWith(axisName + sign) == true);
@@ -2970,9 +2977,9 @@ TEST_CASE("Nested World rotate rings follow projected mesh motion and preserve p
                 workspace.Document().ScenePlacement(workspace.Document().Entity(childId));
             const QString rotationKey = QStringLiteral("rotation");
             QJsonArray rotation = acceptedPlacement.value(rotationKey).toArray();
-            const float64 value = rotation[gesture.Axis].toDouble();
+            const float64 value = rotation[axis].toDouble();
             const QJsonArray initialRotation = initialPlacement.value(rotationKey).toArray();
-            const float64 change = value - initialRotation[gesture.Axis].toDouble();
+            const float64 change = value - initialRotation[axis].toDouble();
             CHECK(change * dragSign > 0);
             CHECK(math::IsFinite(change) == true);
             CHECK(math::Abs(change) <= MAXIMUM_SMALL_DRAG_DEGREES);
@@ -2980,7 +2987,7 @@ TEST_CASE("Nested World rotate rings follow projected mesh motion and preserve p
             constexpr float64 CANDIDATE_PIXEL_TOLERANCE = 0.005;
             const QPointF expectedCandidatePixel = projectAuthored(static_cast<float32>(change));
             CHECK(QLineF(candidatePixel, expectedCandidatePixel).length() < CANDIDATE_PIXEL_TOLERANCE);
-            rotation[gesture.Axis] = initialRotation[gesture.Axis];
+            rotation[axis] = initialRotation[axis];
             QJsonObject restoredPlacement = acceptedPlacement;
             restoredPlacement.insert(rotationKey, rotation);
             CHECK(restoredPlacement == initialPlacement);
