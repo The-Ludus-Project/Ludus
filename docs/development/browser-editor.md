@@ -71,6 +71,26 @@ Static analysis still uses Clang 23. `web_build.analysis_commands` enables
 is already the default in the newer SDK compiler; this is required to parse
 Emscripten's `val.h`. The language mode remains C++23 and diagnostics remain errors.
 
+### Ludus changes to Qt
+
+The build applies `QT_SOURCE_CHANGES` from `scripts/python/editor_web.py` to the
+extracted Qt source before building it, and ships the resulting diff as
+`licenses/Qt-source-changes.diff` beside `NOTICE.txt`. Each change replaces one
+exact excerpt. A source that matches neither the pinned excerpt nor the change
+stops the build; delete `out/editor-tools/src/qtbase` and rerun `--bootstrap` to
+restore the pinned source. Changing the list rebuilds Qt.
+
+The one change backports qtbase commit
+[3a217d2592](https://code.qt.io/cgit/qt/qtbase.git/commit/?id=3a217d2592)
+from Qt 6.11.0: the suspend/resume control reads the queue of browser events
+before sending each one. In Qt 6.10.3 a nested `processEvents()` (Qt's posted-event
+wakeup runs one) could empty the batch that its caller was sending. The caller
+then read past the end of the queue, and the JavaScript `TypeError` ("reading
+'index'") ended Qt's event loop. The editor stopped drawing and responding to
+input. Browser events form batches while host-folder file calls
+suspend the editor, so projects opened from disk hit it often. Remove the
+change when the Qt pin includes it.
+
 ## Project folders on disk
 
 **File → Open Project...** opens a project folder from your computer in place.
