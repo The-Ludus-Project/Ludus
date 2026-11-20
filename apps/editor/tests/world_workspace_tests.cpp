@@ -2755,7 +2755,7 @@ QString WriteNestedRotateWorld(const QTemporaryDir& directory, const QString& pa
                             static_cast<float64>(NESTED_ROTATE_POSITION_PARENT.Y),
                             static_cast<float64>(NESTED_ROTATE_POSITION_PARENT.Z)});
     QJsonObject parent = child;
-    parent.remove(QStringLiteral("parent"));
+    parent.insert(QStringLiteral("parent"), QStringLiteral(""));
     parent.insert(QStringLiteral("id"), parentId);
     parent.insert(QStringLiteral("name"), QStringLiteral("Rotate Fixture Parent"));
     parent.insert(QStringLiteral("transform"),
@@ -2776,8 +2776,9 @@ QString WriteNestedRotateWorld(const QTemporaryDir& directory, const QString& pa
     level.insert(QStringLiteral("objects"), objects);
 
     WorldDocument document = Document();
+    const bool isImported = document.ImportScene(level, error);
     INFO(error.toStdString());
-    REQUIRE(document.ImportScene(level, error) == true);
+    REQUIRE(isImported == true);
     const QJsonObject entity = document.Entity(childId);
     QJsonObject components = entity.value(QStringLiteral("components")).toObject();
     QJsonObject transform = components.value(QStringLiteral("transform")).toObject();
