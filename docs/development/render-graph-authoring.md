@@ -1352,10 +1352,10 @@ queries)`) therefore see the same values at each pixel. Decorrelate them with on
 of two patterns:
 
 - **Explicit dimension ranges.** Give each pass a disjoint, documented range and
-  draw with the address overloads `SampleSceneRandom(launch, dimension)` and
+  draw with `SampleUniformFloat01(launch, dimension)` and
   `SelectLight(scene, launch, dimension)`. For example, a primary pass draws its
   subpixel jitter from `[0, 2)`, and a shading pass draws its light selection and
-  light sample from `[2, 6)`. These overloads do not advance or reset
+  light sample from `[2, 6)`. These calls do not advance or reset
   `RayQueryContext`. Use this pattern when each pass needs a fixed number of draws.
 - **Pass-scoped addresses.** Address draws with `(pixel, GetGraphPassIndex())`, as
   `SampleReuseRandom` in the ReSTIR DI template's
@@ -4722,7 +4722,8 @@ wrappers include it automatically. Authors do not read private packed buffers.
 | TraceClosest / TestVisibility | Closest or occlusion query with explicit miss/surface/failure status |
 | FindVisibleLineIntervals / ClearLineVisibility | Visible parts of a world-space segment from a receiver, as sorted parameter intervals; see [Find the visible parts of a segment](#find-the-visible-parts-of-a-segment) |
 | SpawnSurfaceRay | Error-bound origin offset for a unit world direction and explicit maximum distance |
-| SampleSceneRandom / MakeCameraRay | Automatic invocation-stream draw or explicit random dimension / chosen subpixel camera ray |
+| SampleUniformFloat01 / SampleSceneRandom | Uniform draw at an explicit pixel sample dimension / next draw from the invocation stream |
+| MakeCameraRay | Camera ray through a chosen subpixel position |
 | RequireSceneBsdf | Check the assigned scene materials against a pass’s transport or fixed-dimension reflection requirements and report a repairable failure. The renderer decides from each material's declared capabilities, not its model name |
 | EvaluateStandardBsdf / SampleStandardBsdf | Optional existing scattering-model primitives; no integrator or MIS |
 | SampleStandardBsdfTransport / ComputeStandardBsdfCosine | Continuation with complete weight and specular/transmission flags / matching light cosine, zero for glass |
@@ -5232,10 +5233,11 @@ The stream admits dimensions zero through FoundationMath's
 `RANDOM_MAX_DIMENSION`, inclusive. Exhaustion latches `HasFailed` and returns
 zero/no sample; the renderer rejects that invocation's result. Scheduling other
 pixels does not change the stream. Changing the callback's draw order does.
-The existing `SampleSceneRandom(launch, dimension)` and
-`SelectLight(scene, launch, dimension)` overloads remain available for explicitly
-addressed algorithms. They do not advance the automatic stream and can address
-the same draws; use one addressing strategy or reserve disjoint dimensions when
+`SampleUniformFloat01(launch, dimension)` returns a uniform pseudorandom float in
+`[0, 1)` keyed by the launch seed, linear pixel index, progressive sample index
+and explicit dimension. Both it and `SelectLight(scene, launch, dimension)` leave
+the automatic stream at its current dimension. For image launches, explicit and
+automatic draws can use the same addresses, so reserve disjoint dimensions when
 combining them.
 
 The default distribution is uniform over analytic sources, emitting instance/slot
