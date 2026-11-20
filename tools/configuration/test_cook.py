@@ -21,6 +21,41 @@ class NativeTests(unittest.TestCase):
         bundle["values"][0]["value"] = "18446744073709551616"
         self.assertNotEqual(subprocess.run([VALIDATOR, "--validate"], input=json.dumps(bundle).encode(), capture_output=True).returncode, 0)
 
+    def test_explicit_schema_selection(self):
+        schema = json.loads(subprocess.check_output([VALIDATOR, "--schema-id", "ludus.audio.v1", "--schema"]))
+        self.assertEqual(schema["schema"], "ludus.audio.v1")
+        keys = {setting["key"] for setting in schema["settings"]}
+        self.assertIn("audio.volume.master", keys)
+        self.assertIn("audio.session.sample_rate", keys)
+        bundle = {"version": 1, "schema": "ludus.audio.v1", "layer": "preference", "values": [
+            {"key": "audio.volume.music", "type": "float32", "value": 0.5, "source": "test", "line": 0}]}
+        audio = [VALIDATOR, "--schema-id", "ludus.audio.v1", "--validate", "preference"]
+        result = subprocess.run(audio, input=json.dumps(bundle).encode(), capture_output=True)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(json.loads(result.stdout), bundle)
+        # A bundle for one schema never validates against another.
+        host = subprocess.run([VALIDATOR, "--validate", "preference"], input=json.dumps(bundle).encode(),
+                              capture_output=True)
+        self.assertNotEqual(host.returncode, 0)
+        unknown = subprocess.run([VALIDATOR, "--schema-id", "ludus.audio.v0", "--schema"], capture_output=True)
+        self.assertEqual(unknown.returncode, 2)
+        self.assertIn(b"ludus.audio.v1", unknown.stderr)
+        self.assertEqual(subprocess.run([VALIDATOR, "--schema-id"], capture_output=True).returncode, 2)
+
+    @unittest.skipIf(sys.version_info < (3, 11), "optional TOML tool requires Python 3.11+")
+    def test_toml_for_a_selected_schema(self):
+        with tempfile.TemporaryDirectory() as directory:
+            source = Path(directory) / "player.toml"
+            source.write_text("[audio.volume]\nmaster = 0.75\n", encoding="utf-8")
+            bundle = json.loads(cook.cook(source, Path(VALIDATOR), "preference", "ludus.audio.v1"))
+            self.assertEqual(bundle["schema"], "ludus.audio.v1")
+            self.assertEqual(bundle["values"][0]["key"], "audio.volume.master")
+            self.assertEqual(bundle["values"][0]["value"], 0.75)
+            with self.assertRaises(ValueError):
+                cook.cook(source, Path(VALIDATOR), "preference")
+            with self.assertRaises(ValueError):
+                cook.cook(source, Path(VALIDATOR), "preference", "ludus.unknown.v1")
+
     @unittest.skipIf(sys.version_info < (3, 11), "optional TOML tool requires Python 3.11+")
     def test_toml_and_native_validation(self):
         with tempfile.TemporaryDirectory() as directory:

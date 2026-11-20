@@ -237,6 +237,11 @@ explicitly requested to restart. Browser suspension resets game clock debt and
 follows backend suspend/resume; do not promise sample position continuity without
 backend evidence. User bus gains remain separate from context-owned attenuation.
 
+User volume preferences belong to the `ludus.audio.v1` configuration schema. The
+game maps the master, music and effects roles to its buses. `AudioMixOwner` applies
+edits live and reports them only after the renderer acknowledges the batch. See
+[Audio configuration](engine-configuration.md#audio-configuration).
+
 ## Dynamic music extension
 
 Dynamic definitions use a separate version 2 schema; v1 readers reject them.
