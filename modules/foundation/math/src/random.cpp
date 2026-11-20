@@ -4,6 +4,8 @@
 
 #include <ludus/foundation/math/random.hpp>
 
+#include "internal/random_mix.hpp"
+
 namespace ludus::foundation::math
 {
 uint32 RandomStream::NextUInt32() noexcept
@@ -37,6 +39,23 @@ MathStatus RandomStream::TryNextBounded(uint32 bound, uint32& out) noexcept
             return MathStatus::Success;
         }
     }
+}
+
+MathStatus TryMakeRandomStream(uint64 rootSeed, RandomOwner owner, RandomStream& outStream) noexcept
+{
+    if (owner.Domain == 0u)
+    {
+        return MathStatus::InvalidArgument;
+    }
+    const uint64 domainKey = internal::DeriveDomainKey(rootSeed, owner.Domain);
+    RandomStream stream;
+    // A uint32 selector never exceeds the PCG selector limit; the check keeps the failure contract explicit.
+    if (stream.TryReseed(internal::Mix64(domainKey + owner.Scope), owner.Domain) == false)
+    {
+        return MathStatus::InvalidArgument;
+    }
+    outStream = stream;
+    return MathStatus::Success;
 }
 
 float32 RandomStream::NextFloat01() noexcept
