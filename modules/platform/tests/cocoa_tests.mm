@@ -482,3 +482,5 @@ TEST_CASE("Standalone Cocoa capture coexists with held movement and releases on 
         CHECK(alternate->TakeRelativePointerMotion().Horizontal == 0);
     }
 }
+
+// Temporary: PR 2054 evidence that the macOS Objective-C++ analysis analyzes a changed .mm.
