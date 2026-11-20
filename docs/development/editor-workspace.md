@@ -2598,11 +2598,12 @@ blue from the other channels isolates the panel's colour response.
 | Blocker | 0, 0, 0 | 0, 0, 0 | 0, 0, 0 | 0, 0, 0 |
 | Saturated, blue light on | — | — | .13084, .09286, .27074 | 7, 20, 67 |
 
-The default Lit bake held 768 bytes of RGBA8 surface-chart texels and 19,456
-bytes of RGBA8 probe-atlas texels. Those are encoded payload sizes before GPU
+The original 8 × 8 nearest-depth qualification of this scene held 768 bytes
+of RGBA8 surface-chart texels and 19,456 bytes of RGBA8 probe-atlas texels. Those are encoded payload sizes before GPU
 allocation padding. In hosted Play and Release the player supplied no baked
 texture bytes and reported zero chart draws and zero probe draws at every
-sample. The light switch still affected both profiles.
+sample. The light switch still affected both profiles. The filtered 16 × 16 bake
+uses 77,824 bytes for the same probe grid and retains the 768 chart bytes.
 
 **Moving receiver.** The sample follows the 1 m grid, 20 cm doorway, marked
 receiver path and visibility criteria from the native probe qualification. All
@@ -2754,17 +2755,16 @@ realtime lighting and the authored environment. Save the World to keep the
 volume and receiver settings. Save again after the bake is ready to retain the
 atlas alongside the charts. If an older cache contains only charts, the native
 editor prepares the missing atlas in the background. A cache saved with the
-earlier 4 × 4 visibility faces is also rebaked in the background; save again
-to keep the new atlas.
+earlier 4 × 4 or 8 × 8 nearest-depth faces is also rebaked in the background.
+Save again to keep the new 16 × 16 atlas.
 
 Probe visibility is directional and coarse. Keep the volume's probe planes
 more than 1.6 % of the spacing from floors, ceilings and walls: a probe that
 touches geometry is ignored, and a receiver whose eight neighbours are all
-ignored gets no baked bounce. Receivers within about 5 % of the spacing of a
-wall can still pick up bounce from the far side, and so can receivers just
-past an opening. Move a GI Probe Receiver along both sides of a wall
-and through any doorway while checking the Lit viewport. Each move rebakes,
-which takes about half a second for a small volume. If bounce crosses a
+ignored gets no baked bounce. The filtered depth test reduces leaks along
+thin walls and doorways, and sub-texel openings can lose some bounce. Move
+a GI Probe Receiver along both sides of a wall and through any doorway
+while checking the Lit viewport. Each move rebakes the volume. If bounce crosses a
 closed wall or disappears in the opening, adjust the volume's position or
 spacing, let it rebake, and repeat the same movement. Use the result that
 preserves bounce through the opening while keeping the closed wall dark where

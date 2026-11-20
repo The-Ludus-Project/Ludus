@@ -130,10 +130,6 @@ ProbeVolumeBake::Accumulate(const ReferenceJob& job, ReferenceCaptureInfo& inout
     const math::Vector3 positionWorld = ComputeProbePosition(mGrid, probeIndex);
     if (sampleIndex < LUDUS_GI_PROBE_VISIBILITY_TEXELS)
     {
-        // Inspired by Majercik, Guertin, Nowrouzezahrai and McGuire, "Dynamic Diffuse Global
-        // Illumination with Ray-Traced Irradiance Fields", JCGT 8(2), 2019, section 5.
-        // https://jcgt.org/published/0008/02/01/ . Thanks to the authors. This offline
-        // prototype stores nearest axial depth instead of filtered distance moments.
         const math::Vector3 directionWorld = ComputeVisibilityDirection(sampleIndex);
         const float32 axial =
             math::Max(math::Abs(directionWorld.X), math::Max(math::Abs(directionWorld.Y), math::Abs(directionWorld.Z)));
@@ -211,10 +207,23 @@ rhi::RasterStatus ProbeVolumeBake::Encode() noexcept
             mPixels[offset + ALPHA_CHANNEL] = probe.IsValid == true ? static_cast<uint8>(UNORM_BYTE_MAX) : 0;
             offset += PIXEL_BYTES;
         }
-        for (const uint8 depth : probe.Depth)
+        for (usize face = 0; face < LUDUS_GI_PROBE_VISIBILITY_TEXELS; face += LUDUS_GI_PROBE_FACE_TEXELS)
         {
-            mPixels[offset] = depth;
-            offset += PIXEL_BYTES;
+            constexpr usize LAST_TEXEL = LUDUS_GI_PROBE_FACE_WIDTH - 1;
+            for (usize row = 0; row < LUDUS_GI_PROBE_FACE_WIDTH; ++row)
+            {
+                const usize top = face + row * LUDUS_GI_PROBE_FACE_WIDTH;
+                const usize bottom = face + math::Min(row + 1, LAST_TEXEL) * LUDUS_GI_PROBE_FACE_WIDTH;
+                for (usize column = 0; column < LUDUS_GI_PROBE_FACE_WIDTH; ++column)
+                {
+                    const usize right = math::Min(column + 1, LAST_TEXEL);
+                    mPixels[offset] = probe.Depth[top + column];
+                    mPixels[offset + 1] = probe.Depth[top + right];
+                    mPixels[offset + BLUE_CHANNEL] = probe.Depth[bottom + column];
+                    mPixels[offset + ALPHA_CHANNEL] = probe.Depth[bottom + right];
+                    offset += PIXEL_BYTES;
+                }
+            }
         }
     }
     return Status::Ready;
