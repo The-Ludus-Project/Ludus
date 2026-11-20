@@ -104,7 +104,10 @@ async function observeEditor(page) {
       trace.drawable.push({...event.detail, canvas: event.target.id, frame: Number(event.target.dataset.frames)});
     });
     addEventListener('DOMContentLoaded', () => {
-      document.querySelector('#screen').dataset.measureWorldEdits = 'true';
+      // A new tab's about:blank document also runs this script; only the editor page has a screen.
+      const screen = document.querySelector('#screen');
+      if (screen === null) return;
+      screen.dataset.measureWorldEdits = 'true';
       const observer = new MutationObserver(records => {
         for (const record of records) {
           if (record.attributeName === 'data-editor-state' && document.body.dataset.editorState === 'ready') {
@@ -213,6 +216,25 @@ async function readMarker(page, surface, predicate) {
   assert.fail('The viewport did not draw the requested placement marker' + (diagnostic ? ': ' + diagnostic : ''));
 }
 
+// Where a timed-out wait stopped: the latest published and drawn extractions, the
+// viewport canvases, and whether Qt's event loop still runs. Qt 6.10's private
+// suspend/resume control holds the browser events that Qt has not sent yet; a
+// control with neither a waiting event loop nor sent events no longer runs.
+async function describeStall(page) {
+  return page.evaluate(() => {
+    const control = window.qaEditor?.qtSuspendResumeControl;
+    return {
+      revisions: window.qaWorld.revisions.slice(-6),
+      drawable: window.qaWorld.drawable.slice(-6),
+      viewports: [...document.querySelectorAll('.ludus-gpu-viewport')].map(canvas => ({
+        id: canvas.id, display: canvas.style.display, frames: canvas.dataset.frames, api: canvas.dataset.api,
+      })),
+      qtEvents: control ? {isWaiting: control.resume != null, unsent: control.pendingEvents?.length} : null,
+      status: document.querySelector('#screen')?.dataset.viewportPrompt,
+    };
+  });
+}
+
 async function replaceField(page, x) {
   await page.mouse.click(1280, 429);
   await page.keyboard.press('Home');
@@ -274,6 +296,14 @@ export async function qualifyWorldEdits({browser, canvas, click, importScene, op
       placementCount, authoredUniqueMeshBytes: 3 * 3 * 4 + 3 * 4, edits: []};
     qualification.samples.push(sample);
     try {
+      async function waitForRendered(page, step) {
+        try {
+          await rendered(page);
+        } catch (error) {
+          sample.stalledWait = {step, ...await describeStall(page)};
+          throw error;
+        }
+      }
       async function configurePage(page) {
         await observeEditor(page);
         if (shouldSimulateMissingWebGpu) {
@@ -294,7 +324,7 @@ export async function qualifyWorldEdits({browser, canvas, click, importScene, op
         await click(page, 100, 301); // Select the Worlds group.
         await page.keyboard.press('ArrowRight'); // Expand it if the project restored it collapsed.
         await page.mouse.dblclick(101, 322, {delay: 50});
-        await rendered(page);
+        await waitForRendered(page, 'open saved World');
         assert.equal(await canvas(page).getAttribute('data-api'), api);
         return {page, opening};
       }
@@ -303,7 +333,7 @@ export async function qualifyWorldEdits({browser, canvas, click, importScene, op
       await configurePage(seed);
       await open(seed, query, {beforeNewWorld: () => mountProject(seed, true)});
       await importScene(seed);
-      await rendered(seed);
+      await waitForRendered(seed, 'import seed scene');
       await click(seed, 142, 157); // Save the seed World.
       await waitForSavedPlacement(seed, null, 0);
       const world = JSON.parse(await readSavedWorld(seed));
@@ -364,9 +394,14 @@ export async function qualifyWorldEdits({browser, canvas, click, importScene, op
           'Apply must precede core publication and its recovery checkpoint');
         assert.ok(checkpoint.revision?.identity && checkpoint.revision.milliseconds >= input,
           'The checkpoint must identify the extraction accepted after this input');
-        await page.waitForFunction(revision => window.qaWorld.drawable.some(frame =>
-          frame.identity === revision.identity && frame.milliseconds >= revision.milliseconds),
-        checkpoint.revision, {timeout: timeLimit});
+        try {
+          await page.waitForFunction(revision => window.qaWorld.drawable.some(frame =>
+            frame.identity === revision.identity && frame.milliseconds >= revision.milliseconds),
+          checkpoint.revision, {timeout: timeLimit});
+        } catch (error) {
+          sample.stalledEdit = {x, revision: checkpoint.revision, ...await describeStall(page)};
+          throw error;
+        }
         const drawable = await page.evaluate(checkpoint => window.qaWorld.drawable.find(frame =>
           frame.identity === checkpoint.revision.identity && frame.milliseconds >= checkpoint.revision.milliseconds),
         checkpoint);

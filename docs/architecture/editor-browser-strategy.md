@@ -128,6 +128,11 @@ thread); and reading a file in an editor-level event loop before each use
 Limits and coupling: a nested Wasm call made while another call is suspended
 cannot wait for disk and fails with `EIO` (Qt queues its own events during the
 suspension, so this needs a JavaScript callback that calls Wasm directly).
+Qt sends those queued events as one batch when the call resumes. Qt 6.10.3
+sent a batch by its starting length, so a nested event loop that emptied the
+queue first ended Qt's event loop and froze the editor. The editor's Qt build
+backports the upstream reentrant sender (see
+[Ludus changes to Qt](../development/browser-editor.md#ludus-changes-to-qt)).
 Renames across mounts fail with `EXDEV`, which Qt turns into copies. Symbolic
 links cannot be created in a folder mount. The overrides reproduce Emscripten
 4.0.23's `__syscall_openat` and `__syscall_renameat` over the public FS API and
