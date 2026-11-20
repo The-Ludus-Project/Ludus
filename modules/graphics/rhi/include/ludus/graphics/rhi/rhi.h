@@ -185,16 +185,21 @@ struct FrameTarget final
 [[nodiscard]] FrameStatus BeginFrameStatus() noexcept;
 [[nodiscard]] FrameStatus EndFrameStatus() noexcept;
 
-/// Native synchronous compatibility startup; browser returns false. Use Start/GetStartup there.
-/// @pre Do not mix the synchronous and asynchronous lifecycle entry points.
+/// Native synchronous compatibility startup.
+/// @deprecated Use Start and GetStartup to start and poll the session.
 [[nodiscard]] bool Initialize(const ApplicationInfo& appInfo) noexcept;
+/// @deprecated Pass the window to Start.
 [[nodiscard]] bool ConnectWindow(const WindowInfo& windowInfo) noexcept;
+/// @deprecated Poll GetStartup until the session is ready.
 [[nodiscard]] bool InitializeRendering() noexcept;
+/// @deprecated Use Shutdown to retire the session.
 void ShutdownRendering() noexcept;
 /// Idempotent; invalidates callbacks and ordinary RHI handles before native cleanup.
 /// Native interop device/read leases defer physical cleanup until consumer GPU completion
 /// and final lease release. Startup remains Busy while that retirement is pending.
 void Shutdown() noexcept;
+/// @deprecated Use BeginFrameStatus to acquire and open the frame.
 [[nodiscard]] bool BeginFrame() noexcept;
+/// @deprecated Use EndFrameStatus to finish and present the frame.
 [[nodiscard]] bool EndFrame() noexcept;
 } // namespace ludus::graphics::rhi
