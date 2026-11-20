@@ -788,6 +788,7 @@ BatchResult AudioSystem::TrySubmitBatch(std::span<const Command> commands) noexc
         ++s.RejectedCommands;
         return result;
     }
+    s.PublishedCommands += scratchCount;
 
     // Commit group admission charges now that publication succeeded.
     for (uint32 g = 0; g < s.GroupCount; ++g)
@@ -811,6 +812,7 @@ BatchResult AudioSystem::TrySubmitBatch(std::span<const Command> commands) noexc
 
     result.Result = Status::Ok;
     result.Voices = std::span<const VoiceHandle>(s.LastBatchVoices, s.LastBatchVoiceCount);
+    result.Sequence = s.PublishedCommands;
     return result;
 }
 
@@ -906,6 +908,7 @@ Status AudioSystem::PlayStream(StreamHandle stream,
         v.InUse = false;
         return Status::QueueFull;
     }
+    ++s.PublishedCommands;
     instance.Played = true;
     outVoice = s.MakeVoiceHandle(slot);
     return Status::Ok;
@@ -1124,6 +1127,20 @@ void AudioSystem::GetSystemSnapshot(SystemSnapshot& out) const noexcept
     mImpl->FillSnapshot(out);
 }
 
+uint32 AudioSystem::GetCommandRoom() const noexcept
+{
+    if (mImpl.Get() == nullptr || mImpl->State != SystemState::Ready)
+    {
+        return 0;
+    }
+    return mImpl->CommandRing.FreeSlots();
+}
+
+uint64 AudioSystem::GetAppliedSequence() const noexcept
+{
+    return mImpl.Get() == nullptr ? 0 : mImpl->AppliedCommands.load(std::memory_order_acquire);
+}
+
 // ===========================================================================
 // Offline rendering
 // ===========================================================================
@@ -1287,6 +1304,7 @@ Status AudioSystem::AcquireModifier(std::span<const ModifierValue> values,
             m.InUse = false;
             return Status::QueueFull;
         }
+        ++s.PublishedCommands;
     }
     outModifier = ModifierHandle{s.Session, slot, m.Generation.Value};
     return Status::Ok;
@@ -1320,6 +1338,7 @@ Status AudioSystem::UpdateModifier(ModifierHandle modifier, float32 weight) noex
         {
             return Status::QueueFull;
         }
+        ++mImpl->PublishedCommands;
     }
     m.Weight = weight;
     m.TargetWeight = weight;
@@ -1349,6 +1368,7 @@ Status AudioSystem::ReleaseModifier(ModifierHandle modifier) noexcept
         {
             return Status::QueueFull;
         }
+        ++mImpl->PublishedCommands;
     }
     // Fade the weight to zero and retire the slot. Removing one instance never
     // removes another (each has its own slot/generation). A1/A3 apply the final

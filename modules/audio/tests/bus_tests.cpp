@@ -184,3 +184,39 @@ TEST_CASE("Bus meters report post-gain levels and clip counts", "[audio][bus]")
     sys.GetSystemSnapshot(snap);
     REQUIRE(snap.PreClipFrames > 0);
 }
+
+TEST_CASE("The applied sequence acknowledges a user-gain batch after its control boundary", "[audio][bus]")
+{
+    AudioSystem sys;
+    const Tree tree(1.0F, 1.0F);
+    InitWithTree(sys, tree);
+    REQUIRE(sys.GetCommandRoom() == COMMAND_QUEUE_CAPACITY);
+    REQUIRE(sys.GetAppliedSequence() == 0);
+
+    Command gain{};
+    gain.Kind = CommandKind::SetBusUserGain;
+    gain.BusIndex = 1;
+    gain.BusGain = 0.25F;
+    const BatchResult accepted = sys.TrySubmitBatch({&gain, 1});
+    REQUIRE(IsOk(accepted.Result));
+    CHECK(accepted.Sequence == 1);
+    CHECK(sys.GetCommandRoom() == COMMAND_QUEUE_CAPACITY - 1);
+    // Queued, not yet applied: the renderer has not reached a control boundary.
+    CHECK(sys.GetAppliedSequence() < accepted.Sequence);
+
+    gain.BusIndex = 7;
+    const BatchResult rejected = sys.TrySubmitBatch({&gain, 1});
+    CHECK(rejected.Result == Status::InvalidArgument);
+    CHECK(rejected.Sequence == 0);
+
+    Array<float32> out(static_cast<usize>(CONTROL_QUANTUM_FRAMES) * 2);
+    REQUIRE(IsOk(sys.RenderOffline(std::span<float32>(out.data(), out.size()),
+                                   ChannelLayout::Stereo,
+                                   BufferLayout::Interleaved,
+                                   CONTROL_QUANTUM_FRAMES)));
+    CHECK(sys.GetAppliedSequence() >= accepted.Sequence);
+    CHECK(sys.GetCommandRoom() == COMMAND_QUEUE_CAPACITY);
+    BusMeter meter{};
+    REQUIRE(IsOk(sys.GetBusMeter(1, meter)));
+    CHECK(meter.TargetGain == 0.25F);
+}

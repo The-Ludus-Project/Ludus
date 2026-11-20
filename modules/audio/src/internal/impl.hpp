@@ -71,6 +71,8 @@ struct AudioSystem::Impl final
     std::atomic<bool> DeviceStopped{false};
     std::atomic<uint32> PublishedStopAll{1};
     std::atomic<uint64> PublishedFrame{0};
+    /// Command records the renderer has applied at a control boundary, published after bus gains are recomputed.
+    std::atomic<uint64> AppliedCommands{0};
     struct RenderRecord final
     {
         uint32 Slot = 0;
@@ -153,6 +155,7 @@ struct AudioSystem::Impl final
     uint32 MeterWindowFrames = 1024;
 
     SpscRing<QueuedCommand, COMMAND_QUEUE_CAPACITY> CommandRing;
+    uint64 PublishedCommands = 0; ///< Owner-side records published to CommandRing; FIFO order matches renderer counts.
     SpscRing<internal::SnapshotRecord, 4> SnapshotRing;
 
     VoiceHandle LastBatchVoices[MAX_BATCH_RECORDS]{};

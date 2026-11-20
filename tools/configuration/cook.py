@@ -37,7 +37,7 @@ def flatten(table: dict, prefix: str = "", depth: int = 0) -> dict:
     return values
 
 
-def cook(source: Path, validator: Path, layer: str) -> bytes:
+def cook(source: Path, validator: Path, layer: str, schema_id: str | None = None) -> bytes:
     try:
         import tomllib
     except ImportError as error:
@@ -46,7 +46,10 @@ def cook(source: Path, validator: Path, layer: str) -> bytes:
         data = stream.read(MAX_BYTES + 1)
     if len(data) > MAX_BYTES:
         raise ValueError("source exceeds 256 KiB")
-    schema_run = subprocess.run([str(validator), "--schema"], capture_output=True, check=True, timeout=15)
+    selection = ["--schema-id", schema_id] if schema_id else []
+    schema_run = subprocess.run([str(validator), *selection, "--schema"], capture_output=True, timeout=15)
+    if schema_run.returncode:
+        raise ValueError(schema_run.stderr.decode("utf-8", errors="replace").strip() or "schema export failed")
     schema = json.loads(schema_run.stdout)
     descriptors = {setting["key"]: setting for setting in schema["settings"]}
     values = flatten(tomllib.loads(data.decode("utf-8")))
@@ -75,7 +78,8 @@ def cook(source: Path, validator: Path, layer: str) -> bytes:
     encoded = json.dumps(bundle, ensure_ascii=False, allow_nan=False, separators=(",", ":")).encode("utf-8")
     if len(encoded) > MAX_BYTES:
         raise ValueError("bundle exceeds 256 KiB")
-    validated = subprocess.run([str(validator), "--validate", layer], input=encoded, capture_output=True, timeout=15)
+    validated = subprocess.run([str(validator), *selection, "--validate", layer], input=encoded, capture_output=True,
+                               timeout=15)
     if validated.returncode:
         raise ValueError(validated.stderr.decode("utf-8", errors="replace").strip() or "engine validation failed")
     return validated.stdout
@@ -87,12 +91,13 @@ def main() -> int:
     parser.add_argument("output", type=Path)
     parser.add_argument("--validator", required=True, type=Path, help="path to ludus-config from the matching SDK")
     parser.add_argument("--layer", choices=("project", "preference"), default="project")
+    parser.add_argument("--schema-id", help="engine schema identity, such as ludus.audio.v1 (default: GameHost)")
     args = parser.parse_args()
     temporary = None
     try:
         if args.output.resolve() == args.source.resolve() or args.output.is_symlink():
             raise ValueError("output must be a separate regular file")
-        result = cook(args.source, args.validator.resolve(), args.layer)
+        result = cook(args.source, args.validator.resolve(), args.layer, args.schema_id)
         with tempfile.NamedTemporaryFile(dir=args.output.parent, prefix=f".{args.output.name}.", delete=False) as stream:
             temporary = Path(stream.name)
             stream.write(result)
