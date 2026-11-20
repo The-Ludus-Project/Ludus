@@ -1347,5 +1347,42 @@ class BatchWorkflowDefinitionTests(unittest.TestCase):
         self.assertIn("run-browser-suite.mjs raster out/raster-web-sdk-consumer", workflow)
 
 
+class MacosAnalysisOrderTests(unittest.TestCase):
+    """The macOS job analyzes the development build before its long test steps.
+
+    Batch 44661689378 reached its two-second Metal analysis after 51 minutes of
+    tests, so a clang-tidy error failed the batch nearly an hour later than needed.
+    """
+
+    ROOT = Path(__file__).resolve().parents[2]
+
+    def macos_steps(self) -> list[tuple[str, str]]:
+        lines = (self.ROOT / ".github/workflows/ci.yml").read_text(encoding="utf-8").splitlines()
+        start = lines.index("  macos-compile:")
+        end = next(i for i in range(start + 1, len(lines)) if re.match(r"^  [A-Za-z0-9_-]+:\s*$", lines[i]))
+        steps: list[list[str]] = []
+        for line in lines[start:end]:
+            if line.startswith("      - "):
+                steps.append([])
+            if steps:
+                steps[-1].append(line)
+        named = []
+        for step in steps:
+            name = next((m.group(1) for line in step if (m := re.match(r"\s+(?:- )?name: (.*)", line))), "")
+            named.append((name.strip(), "\n".join(step)))
+        return named
+
+    def test_development_analysis_precedes_the_first_test_step(self):
+        steps = self.macos_steps()
+        first_test = next(i for i, (_, body) in enumerate(steps) if "ctest " in body)
+        # Analyze steps that read only the development build; the Debug helper's analysis
+        # follows the step that configures macos-clang-debug.
+        analyses = [(i, name) for i, (name, body) in enumerate(steps) if name.startswith("Analyze ")
+                    and "macos-clang-debug" not in body]
+        self.assertGreaterEqual(len(analyses), 6)
+        late = [name for i, name in analyses if i > first_test]
+        self.assertEqual(late, [], "run development-build analysis before the macOS test steps")
+
+
 if __name__ == "__main__":
     unittest.main()
