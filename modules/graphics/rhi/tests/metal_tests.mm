@@ -714,12 +714,11 @@ TEST_CASE("Metal keeps discard-only surface depth in tile memory", "[rhi][macos]
         .VertexCount = 3,
     };
 
-    usize memorylessBytes = 0;
-    usize privateBytes = 0;
     REQUIRE(rhi::BeginFrame(device, surface) == rhi::DeviceStatus::Ready);
-    CHECK(rhi::backend::GetMetalSurfaceDepthAllocations(memorylessBytes, privateBytes) == hasMemorylessSupport);
-    CHECK(memorylessBytes == 0);
-    CHECK((privateBytes == 0) == hasMemorylessSupport);
+    rhi::backend::MetalSurfaceDepthAllocations allocations = rhi::backend::GetMetalSurfaceDepthAllocations();
+    CHECK(allocations.HasMemorylessTexture == hasMemorylessSupport);
+    CHECK(allocations.MemorylessBytes == 0);
+    CHECK((allocations.PrivateBytes == 0) == hasMemorylessSupport);
     rhi::RasterPassDescription pass;
     REQUIRE(rhi::BeginRasterPass(device, pass) == rhi::RasterStatus::Ready);
     REQUIRE(rhi::DrawIndexed(device, draw) == rhi::RasterStatus::Ready);
@@ -738,9 +737,10 @@ TEST_CASE("Metal keeps discard-only surface depth in tile memory", "[rhi][macos]
     pass.ClearDepth = 0;
     pass.DepthStore = rhi::RasterStore::Store;
     REQUIRE(rhi::BeginRasterPass(device, pass) == rhi::RasterStatus::Ready);
-    CHECK(rhi::backend::GetMetalSurfaceDepthAllocations(memorylessBytes, privateBytes) == hasMemorylessSupport);
-    CAPTURE(memorylessBytes, privateBytes);
-    CHECK(privateBytes > 0);
+    allocations = rhi::backend::GetMetalSurfaceDepthAllocations();
+    CHECK(allocations.HasMemorylessTexture == hasMemorylessSupport);
+    CAPTURE(allocations.MemorylessBytes, allocations.PrivateBytes);
+    CHECK(allocations.PrivateBytes > 0);
     pass.ColorLoad = rhi::RasterLoad::Load;
     pass.DepthLoad = rhi::RasterLoad::Load;
     pass.DepthStore = rhi::RasterStore::Discard;
@@ -758,8 +758,9 @@ TEST_CASE("Metal keeps discard-only surface depth in tile memory", "[rhi][macos]
     REQUIRE(rhi::SetFrameTarget(device, surface, { .Width = WIDTH + 1, .Height = HEIGHT }) == rhi::DeviceStatus::Ready);
     REQUIRE(rhi::BeginFrame(device, surface) == rhi::DeviceStatus::Ready);
     CHECK(rhi::GetFrameInfo().Width == WIDTH + 1);
-    CHECK(rhi::backend::GetMetalSurfaceDepthAllocations(memorylessBytes, privateBytes) == hasMemorylessSupport);
-    CHECK(memorylessBytes == 0);
-    CHECK((privateBytes == 0) == hasMemorylessSupport);
+    allocations = rhi::backend::GetMetalSurfaceDepthAllocations();
+    CHECK(allocations.HasMemorylessTexture == hasMemorylessSupport);
+    CHECK(allocations.MemorylessBytes == 0);
+    CHECK((allocations.PrivateBytes == 0) == hasMemorylessSupport);
     REQUIRE(rhi::EndFrame(device) == rhi::DeviceStatus::Ready);
 }
