@@ -576,6 +576,23 @@ jobs:
           name: behavior-s6-macos-native-evidence
           path: out/build/macos-clang-development/tools/script-provider/safety-evidence.json
           if-no-files-found: error
+      # A native crash with no stderr, such as a system-library trap (SIGTRAP), leaves only a
+      # macOS crash report. Keep the reports of a failed job's test processes.
+      - name: Preserve macOS crash reports
+        if: failure()
+        run: |
+          mkdir -p "$RUNNER_TEMP/crash-reports"
+          find "$HOME/Library/Logs/DiagnosticReports" -maxdepth 1 -type f \( -name '*.ips' -o -name '*.crash' \) \
+            -exec cp {} "$RUNNER_TEMP/crash-reports/" \; 2>/dev/null || true
+          ls "$RUNNER_TEMP/crash-reports"
+      - name: Upload macOS crash reports
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: macos-native-crash-reports
+          path: ${{ runner.temp }}/crash-reports/
+          if-no-files-found: ignore
+          retention-days: 14
       - name: Report compiler cache
         if: always()
         run: if command -v ccache >/dev/null 2>&1; then ccache --show-stats >> "$GITHUB_STEP_SUMMARY"; fi
@@ -670,6 +687,23 @@ jobs:
           out/host-tools/venv/bin/cmake --build out/build/macos-diagnostics-sanitized --target ludus_diagnostic_startup_child ludus_assert_decision_child
           out/host-tools/venv/bin/ctest --test-dir out/build/macos-diagnostics-sanitized --label-regex diagnostic-startup --output-on-failure --no-tests=error
 
+      # A native crash with no stderr, such as a system-library trap (SIGTRAP), leaves only a
+      # macOS crash report. Keep the reports of a failed job's test processes.
+      - name: Preserve macOS crash reports
+        if: failure()
+        run: |
+          mkdir -p "$RUNNER_TEMP/crash-reports"
+          find "$HOME/Library/Logs/DiagnosticReports" -maxdepth 1 -type f \( -name '*.ips' -o -name '*.crash' \) \
+            -exec cp {} "$RUNNER_TEMP/crash-reports/" \; 2>/dev/null || true
+          ls "$RUNNER_TEMP/crash-reports"
+      - name: Upload macOS crash reports
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: macos-sanitizer-crash-reports
+          path: ${{ runner.temp }}/crash-reports/
+          if-no-files-found: ignore
+          retention-days: 14
       - name: Report compiler cache
         if: always()
         run: if command -v ccache >/dev/null 2>&1; then ccache --show-stats >> "$GITHUB_STEP_SUMMARY"; fi
