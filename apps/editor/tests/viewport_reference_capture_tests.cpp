@@ -38,7 +38,6 @@
 #include <QCheckBox>
 #include <QComboBox>
 #include <QCoreApplication>
-#include <QDeadlineTimer>
 #include <QElapsedTimer>
 #include <QFile>
 #include <QFileInfo>
@@ -923,13 +922,12 @@ TEST_CASE("RT1 preset and manual captures preserve their accepted HDR settings",
     REQUIRE(window.StartCapture() == true);
     // GPU progress can advance before the image readback is available to Save.
     Array<renderer::ReferencePixel> partialPixels;
-    const QDeadlineTimer deadline(GPU_CAPTURE_TIMEOUT_MILLISECONDS);
     REQUIRE(QTest::qWaitFor(
                 [&window, &partialPixels, &error]() {
                     return window.GetCapture().CopyPixels(partialPixels, error) == true &&
                            partialPixels.IsEmpty() == false && partialPixels[0].Samples > 0;
                 },
-                deadline) == true);
+                static_cast<int32>(GPU_CAPTURE_TIMEOUT_MILLISECONDS)) == true);
     REQUIRE(window.GetCapture().GetPhase() == ViewportReferencePhase::Tracing);
     const QString partialPath = root.filePath(QStringLiteral("partial.luhdr"));
     REQUIRE(window.SaveCapture(partialPath, error) == true);
