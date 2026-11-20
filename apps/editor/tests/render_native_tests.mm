@@ -1527,7 +1527,7 @@ bool IsSegmentBlocked(math::Vector3 fromWorld, math::Vector3 toWorld, const Prob
     }
     return false;
 }
-float32 ComputeMomentVisibility(const ProbeFootprint& depths, const ProbeFootprint& weights, float32 biasedDistance)
+float32 ComputeMomentVisibility(const ProbeFootprint& depths, float32 biasedDistance, const ProbeFootprint& weights)
 {
     float32 mean = 0;
     float32 secondMoment = 0;
@@ -1541,7 +1541,7 @@ float32 ComputeMomentVisibility(const ProbeFootprint& depths, const ProbeFootpri
     return delta <= 0 ? 1.F : variance / (variance + delta * delta);
 }
 
-float32 ComputeVisibleCoverage(const ProbeFootprint& depths, const ProbeFootprint& weights, float32 biasedDistance)
+float32 ComputeVisibleCoverage(const ProbeFootprint& depths, float32 biasedDistance, const ProbeFootprint& weights)
 {
     float32 coverage = 0;
     for (usize tap = 0; tap < PROBE_FOOTPRINT_TAPS; ++tap)
@@ -1596,9 +1596,9 @@ float32 ComputeDepthMapProbeVisibility(const WorldProbeAtlas& atlas,
     const float32 biasedDistance = distanceInCells - PROBE_DEPTH_BIAS_CELLS;
     if (visibility == ProbeVisibility::DistanceMoments)
     {
-        return ComputeMomentVisibility(depths, weights, biasedDistance);
+        return ComputeMomentVisibility(depths, biasedDistance, weights);
     }
-    const float32 coverage = ComputeVisibleCoverage(depths, weights, biasedDistance);
+    const float32 coverage = ComputeVisibleCoverage(depths, biasedDistance, weights);
     constexpr float32 MIN_COVERAGE = LUDUS_GI_PROBE_MIN_VISIBLE_COVERAGE;
     return math::Clamp((coverage - MIN_COVERAGE) / (1 - MIN_COVERAGE), 0.F, 1.F);
 }
@@ -1712,7 +1712,7 @@ QVector<float64> BakeReferenceIrradiance(const RenderScene& scene,
         for (uint32 i = 0; i < PROBE_PATH_RECEIVERS; ++i)
         {
             const usize offset =
-                (usize{i * stride} * PROBE_TEXELS + PROBE_POSITIVE_Z_FACE) * ludus::content::scene_format::TEXEL_BYTES;
+                (usize{i} * stride * PROBE_TEXELS + PROBE_POSITIVE_Z_FACE) * ludus::content::scene_format::TEXEL_BYTES;
             REQUIRE(atlas.Pixels[offset + PROBE_ALPHA_CHANNEL] == static_cast<uint8>(UNORM_BYTE_MAX));
             sums[static_cast<qsizetype>(i)] += static_cast<float64>(atlas.Pixels[offset]) /
                                                static_cast<float64>(UNORM_BYTE_MAX) *
@@ -1818,12 +1818,12 @@ TEST_CASE("Equal probe depth moments lose the visible fraction of the footprint"
     const float32 biasedDistance = RECEIVER_DISTANCE - RECEIVER_BIAS;
     constexpr float32 MOMENT_VISIBILITY = .8F;
     constexpr float32 MOMENT_TOLERANCE = 1e-5F;
-    CHECK(math::Abs(ComputeMomentVisibility(pairedDepths, weights, biasedDistance) - MOMENT_VISIBILITY) <
+    CHECK(math::Abs(ComputeMomentVisibility(pairedDepths, biasedDistance, weights) - MOMENT_VISIBILITY) <
           MOMENT_TOLERANCE);
-    CHECK(math::Abs(ComputeMomentVisibility(spreadDepths, weights, biasedDistance) - MOMENT_VISIBILITY) <
+    CHECK(math::Abs(ComputeMomentVisibility(spreadDepths, biasedDistance, weights) - MOMENT_VISIBILITY) <
           MOMENT_TOLERANCE);
-    CHECK(ComputeVisibleCoverage(pairedDepths, weights, biasedDistance) == .5F);
-    CHECK(ComputeVisibleCoverage(spreadDepths, weights, biasedDistance) == TAP_WEIGHT);
+    CHECK(ComputeVisibleCoverage(pairedDepths, biasedDistance, weights) == .5F);
+    CHECK(ComputeVisibleCoverage(spreadDepths, biasedDistance, weights) == TAP_WEIGHT);
 }
 
 TEST_CASE("Native Lit probe GI visibility qualification around thin and diagonal walls and a doorway",
@@ -1837,7 +1837,7 @@ TEST_CASE("Native Lit probe GI visibility qualification around thin and diagonal
         uint32 PathAxis;
     };
     // Paths cross the studied cell at its centre height unless they test a wall's near field.
-    enum : uint32
+    enum : uint8
     {
         AXIS_CONTROL,
         AXIS_NEAR_FIELD,

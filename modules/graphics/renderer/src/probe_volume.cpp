@@ -207,13 +207,15 @@ rhi::RasterStatus ProbeVolumeBake::Encode() noexcept
             mPixels[offset + ALPHA_CHANNEL] = probe.IsValid == true ? static_cast<uint8>(UNORM_BYTE_MAX) : 0;
             offset += PIXEL_BYTES;
         }
-        for (usize face = 0; face < LUDUS_GI_PROBE_VISIBILITY_TEXELS; face += LUDUS_GI_PROBE_FACE_TEXELS)
+        constexpr usize FACE_TEXELS = static_cast<usize>(LUDUS_GI_PROBE_FACE_TEXELS);
+        constexpr usize LAST_TEXEL = LUDUS_GI_PROBE_FACE_WIDTH - 1;
+        for (usize face = 0; face < LUDUS_GI_PROBE_FACES; ++face)
         {
-            constexpr usize LAST_TEXEL = LUDUS_GI_PROBE_FACE_WIDTH - 1;
+            const usize faceOffset = face * FACE_TEXELS;
             for (usize row = 0; row < LUDUS_GI_PROBE_FACE_WIDTH; ++row)
             {
-                const usize top = face + row * LUDUS_GI_PROBE_FACE_WIDTH;
-                const usize bottom = face + math::Min(row + 1, LAST_TEXEL) * LUDUS_GI_PROBE_FACE_WIDTH;
+                const usize top = faceOffset + row * LUDUS_GI_PROBE_FACE_WIDTH;
+                const usize bottom = faceOffset + math::Min(row + 1, LAST_TEXEL) * LUDUS_GI_PROBE_FACE_WIDTH;
                 for (usize column = 0; column < LUDUS_GI_PROBE_FACE_WIDTH; ++column)
                 {
                     const usize right = math::Min(column + 1, LAST_TEXEL);
