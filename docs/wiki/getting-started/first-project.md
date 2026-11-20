@@ -33,8 +33,8 @@ next Configure establishes a build tree at the final location.
 
 ## 3. Build and run
 
-Review **Project settings**, then choose **Build and Run**. The selected
-executable runs in its own window. For scene placement and viewport navigation,
+Review **Project settings**, then choose **Launch** (**Build → Build and
+Launch**). The selected executable runs in its own window. For scene placement and viewport navigation,
 open a World with the [World authoring walkthrough](../../development/editor-workspace.md#try-a-3d-authoring-workflow).
 
 ## 4. Close and reopen

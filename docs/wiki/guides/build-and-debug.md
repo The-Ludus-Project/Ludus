@@ -11,11 +11,17 @@ saved source directory, CMake preset and executable target. Save settings before
 launching an operation that requires a clean project.
 
 - **Configure** prepares the selected game build tree.
-- **Build** compiles the selected target.
-- **Build and Run** builds, then launches that result.
-- **Build and Debug in RAD** uses the optional prepared RAD debugger.
-- **Build and Play** launches the supported GameHost integration.
+- **Build Game** compiles the selected target. Nothing starts.
+- **Launch** (**Build → Build and Launch**) builds, then starts that result as
+  its own program, the way players run it.
+- **Debug** (**Build → Build and Debug in RAD**) uses the optional prepared RAD
+  debugger.
+- **Live Play** (**Play → Build and Start Live Play**) builds a reloadable module
+  and plays it in the supported GameHost session, where you can pause, step,
+  inspect and reload code.
 - **Stop** cancels/stops owned work and waits for cleanup.
+- **Compile Shaders** compiles the render graph's shaders only; it does not build
+  game code.
 
 A failed build does not launch an older binary. Read **Output** and the operation
 status; an accepted request alone is not completion.

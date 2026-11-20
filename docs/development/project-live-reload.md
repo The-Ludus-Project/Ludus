@@ -57,7 +57,7 @@ link only the small GameApi contract and receive explicit host services.
 
 Use `macos-clang-debug` or `macos-clang-development` in a version-2 project
 and select the corresponding SDK through the shared project setup workflow.
-The Editor enables Build and Play, manual Build and Reload, and opt-in source
+The Editor enables Live Play, manual Build and Reload, and opt-in source
 watching for those profiles. Release and browser profiles do not enable native
 live play. Project loading remains read-only; initialize/repair explicitly.
 
@@ -139,7 +139,8 @@ protocol directly load, reload and retire DLLs. In the MSVC Ninja lane,
 
 ## Play and change code
 
-Open the saved project, then choose **Play → Build and Play**. The build publishes
+Open the saved project, then choose **Live Play** on the toolbar (**Play →
+Build and Start Live Play**). The build publishes
 a new immutable generation containing the module, matching host, debug information (embedded ELF DWARF or
 detached Mach-O DWARF) and verified manifest. It validates SDK identity, symbols, hashes
 and declared source inputs before launching code.
@@ -197,7 +198,7 @@ render a shader effect.
 ## Recover and debug
 
 Pause/Step/Resume operate on the host's simulation clock, with no catch-up after
-a pause. The Game toolbar's **Fast-forward (4×)** batches four fixed
+a pause. The Live Play Session toolbar's **Fast-forward (4×)** batches four fixed
 updates per presentation iteration. Each update still receives the regular
 fixed `DeltaSeconds` and the host increments `ElapsedSeconds` by the same
 amount between advancing updates. The host presents the last update's render
