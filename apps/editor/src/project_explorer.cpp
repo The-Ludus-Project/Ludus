@@ -34,6 +34,8 @@ constexpr foundation::int32 KIND_ROLE = Qt::UserRole;
 constexpr foundation::int32 PATH_ROLE = Qt::UserRole + 1;
 /// The file's path relative to the project root, as the search matches and the tooltip shows it.
 constexpr foundation::int32 RELATIVE_PATH_ROLE = Qt::UserRole + 2;
+/// The short file-type name ("Slang", "manifest") that tells apart two rows that share a name and a folder.
+constexpr foundation::int32 FILE_TYPE_ROLE = Qt::UserRole + 3;
 /// Side of the icon-only Add and Refresh buttons beside the search field, in pixels.
 constexpr int TOP_ROW_BUTTON_PIXELS = design::SPACING_EXTRA_LARGE;
 /// Side of the icons on those buttons, in pixels.
@@ -42,6 +44,29 @@ constexpr QLatin1StringView WORLD_SUFFIX{".world.json"};
 constexpr QLatin1StringView RENDER_GRAPH_SUFFIX{".lurender.json"};
 constexpr QLatin1StringView SHADER_MANIFEST_SUFFIX{".lushader.json"};
 constexpr QLatin1StringView SHADER_SOURCE_SUFFIX{".slang"};
+constexpr QLatin1StringView LUAU_SCRIPT_SUFFIX{".luau"};
+constexpr QLatin1StringView LUA_SCRIPT_SUFFIX{".lua"};
+constexpr QLatin1StringView SEQUENCE_SUFFIX{".luseq.json"};
+
+/// A file suffix every explorer row leaves out, and the type name that replaces it where two rows need telling
+/// apart.
+struct KnownSuffix final
+{
+    QLatin1StringView Suffix;
+    QLatin1StringView TypeName;
+};
+
+/// Every document suffix the explorer lists. Rows show only the name: the group and the icon already say what kind
+/// of file a row is, and the tooltip keeps the whole file name.
+constexpr KnownSuffix KNOWN_SUFFIXES[]{
+    { .Suffix = WORLD_SUFFIX, .TypeName = QLatin1StringView("World") },
+    { .Suffix = RENDER_GRAPH_SUFFIX, .TypeName = QLatin1StringView("render graph") },
+    { .Suffix = SHADER_MANIFEST_SUFFIX, .TypeName = QLatin1StringView("manifest") },
+    { .Suffix = SHADER_SOURCE_SUFFIX, .TypeName = QLatin1StringView("Slang") },
+    { .Suffix = SEQUENCE_SUFFIX, .TypeName = QLatin1StringView("sequence") },
+    { .Suffix = LUAU_SCRIPT_SUFFIX, .TypeName = QLatin1StringView("Luau") },
+    { .Suffix = LUA_SCRIPT_SUFFIX, .TypeName = QLatin1StringView("Lua") },
+};
 
 [[nodiscard]] EditorIcon GetKindIcon(ProjectItemKind kind)
 {
@@ -81,14 +106,14 @@ struct PendingFolder final
     foundation::int32 Depth;
 };
 
-/// What a file's group already says about it, so its row can leave it out.
-[[nodiscard]] QLatin1StringView GetKnownSuffix(const QString& fileName)
+/// What a file's group and icon already say about it, so its row can leave it out.
+[[nodiscard]] KnownSuffix GetKnownSuffix(const QString& fileName)
 {
-    for (const QLatin1StringView suffix : {WORLD_SUFFIX, RENDER_GRAPH_SUFFIX, SHADER_MANIFEST_SUFFIX})
+    for (const KnownSuffix& known : KNOWN_SUFFIXES)
     {
-        if (fileName.endsWith(suffix) == true)
+        if (fileName.endsWith(known.Suffix, Qt::CaseInsensitive) == true)
         {
-            return suffix;
+            return known;
         }
     }
     return {};
@@ -113,7 +138,8 @@ void SortRowsByName(QTreeWidgetItem& inoutGroup)
 }
 
 /// Give every row of group whose name another row shares the folder that tells them apart: the folder's own name
-/// when that is enough, else its whole path from the project folder.
+/// when that is enough, else its whole path from the project folder. Rows in the same folder ("sky.slang" beside
+/// "sky.lushader.json") are told apart by their file type instead.
 void QualifySharedNames(QTreeWidgetItem& inoutGroup)
 {
     QHash<QString, QList<QTreeWidgetItem*>> rowsByName;
@@ -134,12 +160,25 @@ void QualifySharedNames(QTreeWidgetItem& inoutGroup)
             folderNames.append(QFileInfo(GetRelativeFolder(row->data(0, RELATIVE_PATH_ROLE).toString())).fileName());
         }
         const bool isFolderNameEnough = QSet<QString>(folderNames.cbegin(), folderNames.cend()).size() == rows.size();
+        QStringList qualifiers;
         for (qsizetype index = 0; index < rows.size(); ++index)
         {
             const QString folder = GetRelativeFolder(rows.at(index)->data(0, RELATIVE_PATH_ROLE).toString());
-            const QString qualifier = folder.isEmpty() == true     ? QStringLiteral("project folder")
-                                      : isFolderNameEnough == true ? folderNames.at(index)
-                                                                   : QDir::toNativeSeparators(folder);
+            qualifiers.append(folder.isEmpty() == true     ? QStringLiteral("project folder")
+                              : isFolderNameEnough == true ? folderNames.at(index)
+                                                           : QDir::toNativeSeparators(folder));
+        }
+        const QSet<QString> distinctFolders(qualifiers.cbegin(), qualifiers.cend());
+        const bool isFolderEnough = distinctFolders.size() == rows.size();
+        const bool isOneFolder = distinctFolders.size() == 1;
+        for (qsizetype index = 0; index < rows.size(); ++index)
+        {
+            QString qualifier = qualifiers.at(index);
+            if (isFolderEnough == false)
+            {
+                const QString type = rows.at(index)->data(0, FILE_TYPE_ROLE).toString();
+                qualifier = isOneFolder == true ? type : qualifier + QStringLiteral(", ") + type;
+            }
             rows.at(index)->setData(0, DOCUMENT_QUALIFIER_ROLE, qualifier);
         }
     }
@@ -357,9 +396,8 @@ void ProjectExplorer::scan(const ScanFolders& folders)
                 parentOrNull = folders.Shaders;
                 kind = ProjectItemKind::Shader;
             }
-            else if (name.endsWith(QLatin1StringView(".luau")) == true ||
-                     name.endsWith(QLatin1StringView(".lua")) == true ||
-                     name.endsWith(QLatin1StringView(".luseq.json")) == true)
+            else if (name.endsWith(LUAU_SCRIPT_SUFFIX) == true || name.endsWith(LUA_SCRIPT_SUFFIX) == true ||
+                     name.endsWith(SEQUENCE_SUFFIX) == true)
             {
                 parentOrNull = folders.Scripts;
                 kind = ProjectItemKind::Scripts;
@@ -374,11 +412,13 @@ void ProjectExplorer::scan(const ScanFolders& folders)
                 break;
             }
             ++files;
-            // The group and the icon already say what kind of file it is, so the row shows only its name.
+            // The group and the icon already say what kind of file it is, so every row shows only its name.
             const QString relativePath = root.relativeFilePath(entry.filePath());
+            const KnownSuffix known = GetKnownSuffix(name);
             QTreeWidgetItem* item =
-                addItem(parentOrNull, RemoveKnownSuffix(name, QString(GetKnownSuffix(name))), kind, entry.filePath());
+                addItem(parentOrNull, RemoveKnownSuffix(name, QString(known.Suffix)), kind, entry.filePath());
             item->setData(0, RELATIVE_PATH_ROLE, relativePath);
+            item->setData(0, FILE_TYPE_ROLE, QString(known.TypeName));
             item->setToolTip(0, QDir::toNativeSeparators(relativePath));
             item->setData(0, Qt::AccessibleDescriptionRole, QDir::toNativeSeparators(relativePath));
         }
