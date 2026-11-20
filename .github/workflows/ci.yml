@@ -133,9 +133,7 @@ jobs:
           preset: linux-clang-development
       - name: Prepare Vulkan and the pinned shader tools
         run: |
-          apt_options=(-o Acquire::http::Timeout=30 -o Acquire::https::Timeout=30 -o Acquire::Retries=3)
-          timeout --signal=TERM --kill-after=30s 5m sudo apt-get "${apt_options[@]}" update -qq
-          timeout --signal=TERM --kill-after=30s 10m sudo apt-get "${apt_options[@]}" install -y -qq libvulkan1 mesa-vulkan-drivers vulkan-tools vulkan-validationlayers
+          bash .github/actions/apt-install/apt-install.sh libvulkan1 mesa-vulkan-drivers vulkan-tools vulkan-validationlayers
           ./scripts/shader-probe bootstrap
           ./scripts/bootstrap-spirv-cross
       - name: Build CPU oracle, GPU parity and both template configurations
@@ -778,8 +776,7 @@ jobs:
           # Reusable definitions stay on main; the captured candidate owns its tool pin.
           llvm_major="$(python3 -c 'import json; print(int(json.load(open("config/tool_versions.json"))["minimum"]["clang"].split(".")[0]))')"
           if [[ -f scripts/python/llvm_apt_source.py ]]; then python3 scripts/python/llvm_apt_source.py; fi
-          sudo apt-get update -qq
-          sudo apt-get install -y -qq "clang-format-$llvm_major" "clang-tidy-$llvm_major" python3-venv python3-tk xvfb xauth liblz4-1
+          bash .github/actions/apt-install/apt-install.sh "clang-format-$llvm_major" "clang-tidy-$llvm_major" python3-venv python3-tk xvfb xauth liblz4-1
           echo "LUDUS_CI_LLVM_MAJOR=$llvm_major" >> "$GITHUB_ENV"
       - name: Install pinned CMake and Ninja for live project setup tests
         run: |
@@ -994,8 +991,7 @@ jobs:
               done
             done
           } | tee out/filesystem-benchmark/measurements.txt
-          sudo apt-get update -qq
-          sudo apt-get install -y strace
+          bash .github/actions/apt-install/apt-install.sh strace
           for layout in loose raw.pack lz4.pack; do
             corpus=out/filesystem-benchmark
             if [ "$layout" = loose ]; then corpus="$corpus/loose"; fi
@@ -1051,7 +1047,7 @@ jobs:
           fi
       - name: Verify installed shader toolchain and generated backend contracts
         run: |
-          sudo apt-get install -y -qq libvulkan1 mesa-vulkan-drivers vulkan-validationlayers weston
+          bash .github/actions/apt-install/apt-install.sh libvulkan1 mesa-vulkan-drivers vulkan-validationlayers weston
           ./scripts/shader-probe bootstrap
           ./scripts/bootstrap-spirv-cross
           python3 tests/sdk_consumer/verify_shader_build.py \
@@ -1244,7 +1240,7 @@ jobs:
           out/host-tools/venv/bin/ctest --test-dir out/reference-scene-sanitized --output-on-failure
       - name: Build and test the independent Cornell box tutorial (Vulkan)
         run: |
-          sudo apt-get install -y -qq libvulkan1 mesa-vulkan-drivers
+          bash .github/actions/apt-install/apt-install.sh libvulkan1 mesa-vulkan-drivers
           export PATH="$PWD/out/host-tools/bin:$PWD/out/host-tools/venv/bin:$PATH"
           export LUDUS_SDK_PREFIX="$PWD/out/install/linux-clang-development"
           export LUDUS_SLANG_COMPILER="$PWD/out/shader-tools/slang/bin/slangc"
@@ -1791,8 +1787,7 @@ jobs:
       - name: Verify Play in the World viewport on Vulkan
         if: needs.changes.outputs.validation_tier != 'integration'
         run: |
-          apt_options=(-o Acquire::http::Timeout=30 -o Acquire::https::Timeout=30 -o Acquire::Retries=3)
-          timeout --signal=TERM --kill-after=30s 10m sudo apt-get "${apt_options[@]}" install -y -qq xvfb xauth
+          bash .github/actions/apt-install/apt-install.sh xvfb xauth
           out/host-tools/venv/bin/cmake --preset linux-clang-development -DLUDUS_BUILD_WORLD_DEMO=ON
           out/host-tools/venv/bin/cmake --build --preset linux-clang-development \
             --target ludus_editor_tests ludus_world_demo ludus_rhi_hosted_producer

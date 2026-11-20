@@ -357,6 +357,9 @@ class ToolchainBootstrapTests(unittest.TestCase):
                         (checkout / "config").mkdir()
                         (checkout / "config/tool_versions.json").write_text(json.dumps(
                             {"minimum": {"clang": f"{major}.1.3"}}))
+                        installer = checkout / ".github/actions/apt-install/apt-install.sh"
+                        installer.parent.mkdir(parents=True)
+                        shutil.copy2(root / ".github/actions/apt-install/apt-install.sh", installer)
                         binaries = checkout / "bin"
                         binaries.mkdir()
                         (binaries / "python3").symlink_to(sys.executable)
@@ -376,7 +379,9 @@ class ToolchainBootstrapTests(unittest.TestCase):
                         subprocess.run(["/bin/bash", "-e", "-c", script], cwd=checkout, env=environment,
                                        check=True, capture_output=True, text=True)
                         commands = log.read_text().splitlines()
-                        installed = next(line.split() for line in commands if line.startswith("apt-get install "))
+                        # The bounded installer downloads first, then installs the cached archives.
+                        installed = next(line.split() for line in commands
+                                         if "apt-get install --no-download " in line)
                         for package in packages:
                             self.assertIn(f"{package}-{major}", installed)
                             self.assertNotIn(f"{package}-{23 if major == 18 else 18}", installed)
@@ -1382,6 +1387,32 @@ class MacosAnalysisOrderTests(unittest.TestCase):
         self.assertGreaterEqual(len(analyses), 6)
         late = [name for i, name in analyses if i > first_test]
         self.assertEqual(late, [], "run development-build analysis before the macOS test steps")
+
+
+class BoundedAptInstallTests(unittest.TestCase):
+    """Workflow package installs go through the bounded, retrying installer.
+
+    A stalled mirror held the required host-tooling check of #2059 for 37 minutes
+    inside a direct apt-get install; without a job timeout it would have waited 6 hours.
+    """
+
+    ROOT = Path(__file__).resolve().parents[2]
+    INSTALLER = ".github/actions/apt-install/apt-install.sh"
+
+    def test_workflows_do_not_call_apt_get_directly(self):
+        direct = re.compile(r"\bapt-get\b[^\n]*\b(?:install|update)\b")
+        offending = []
+        for path in sorted((self.ROOT / ".github/workflows").glob("*.yml")):
+            for number, line in enumerate(path.read_text(encoding="utf-8").splitlines(), start=1):
+                if direct.search(line) is not None:
+                    offending.append(f"{path.name}:{number}: {line.strip()}")
+        self.assertEqual(offending, [], f"install packages with bash {self.INSTALLER} <packages>")
+
+    def test_installer_bounds_every_network_attempt(self):
+        text = (self.ROOT / self.INSTALLER).read_text(encoding="utf-8")
+        self.assertIn("timeout --signal=TERM --kill-after=30s", text)
+        self.assertIn("install --download-only", text)
+        self.assertIn("apt-get install --no-download", text)
 
 
 if __name__ == "__main__":

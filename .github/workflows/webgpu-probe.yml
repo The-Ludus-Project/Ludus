@@ -144,8 +144,7 @@ jobs:
         run: |
           llvm_major="$(python3 -c 'import json; print(int(json.load(open("config/tool_versions.json"))["minimum"]["clang"].split(".")[0]))')"
           if [[ -f scripts/python/llvm_apt_source.py ]]; then python3 scripts/python/llvm_apt_source.py; fi
-          sudo apt-get update -qq
-          sudo apt-get install -y -qq "clang-$llvm_major" "clang-format-$llvm_major" "clang-tidy-$llvm_major" python3-venv
+          bash .github/actions/apt-install/apt-install.sh "clang-$llvm_major" "clang-format-$llvm_major" "clang-tidy-$llvm_major" python3-venv
           python3 - <<'PY'
           import hashlib
           import json
@@ -444,8 +443,7 @@ jobs:
         run: |
           llvm_major="$(python3 -c 'import json; print(int(json.load(open("config/tool_versions.json"))["minimum"]["clang"].split(".")[0]))')"
           if [[ -f scripts/python/llvm_apt_source.py ]]; then python3 scripts/python/llvm_apt_source.py; fi
-          sudo apt-get update -qq
-          sudo apt-get install -y -qq "clang-$llvm_major" "clang-format-$llvm_major" "clang-tidy-$llvm_major" python3-venv
+          bash .github/actions/apt-install/apt-install.sh "clang-$llvm_major" "clang-format-$llvm_major" "clang-tidy-$llvm_major" python3-venv
           python3 - <<'PY'
           import hashlib
           import json
