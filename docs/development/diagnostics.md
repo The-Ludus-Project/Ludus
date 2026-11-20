@@ -129,6 +129,9 @@ out/host-tools/venv/bin/ctest --test-dir out/build/linux-clang-release-assert-te
 
 ### macOS Editor crash reporting
 
+See the [crash and incident reporting roadmap](../architecture/engineering-quality.md#crash-and-incident-reporting-roadmap)
+for Sentry rollout and planned coverage.
+
 Native macOS editor builds enable `LUDUS_EDITOR_CRASH_CAPTURE` by default. The
 editor registers with an external Crashpad handler **before QApplication starts**,
 so direct executable, Finder, IDE and `scripts/editor` launches share capture.
