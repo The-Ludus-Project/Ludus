@@ -100,6 +100,8 @@ jobs:
       camera_pilot: ${{ steps.scope.outputs.camera_pilot }}
       native_required: ${{ steps.scope.outputs.native_required }}
       validation_tier: ${{ steps.scope.outputs.validation_tier }}
+      objcxx_changed: ${{ steps.scope.outputs.objcxx_changed }}
+      objcxx_editor: ${{ steps.scope.outputs.objcxx_editor }}
     steps:
       - uses: actions/checkout@v4
         with:
@@ -683,6 +685,37 @@ jobs:
         with:
           path: out/ccache
           key: ${{ steps.setup.outputs.compiler-cache-key }}
+
+  # The analysis job reads the Linux compile database, which has no Cocoa or Metal
+  # sources. An integration PR that changes a .mm source analyzes it here with the
+  # batch's full clang-tidy policy; every other PR skips this job without a runner
+  # (docs/development/continuous-integration.md#platform-only-sources).
+  macos-objcxx-analysis:
+    needs: changes
+    if: needs.changes.outputs.native_required == 'true' && needs.changes.outputs.validation_tier == 'integration' && needs.changes.outputs.objcxx_changed == 'true'
+    name: macOS Objective-C++ analysis
+    runs-on: macos-15
+    timeout-minutes: 60
+    env:
+      CMAKE_BUILD_PARALLEL_LEVEL: "3"
+      LUDUS_TIDY_JOBS: "3"
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.batch_sha || github.sha }}
+          fetch-depth: 0
+          persist-credentials: false
+      # Restores the batch's dependency and compiler caches; this job saves neither.
+      - uses: ./.github/actions/macos-setup
+        with:
+          preset: macos-clang-development
+          cache-variant: native
+          editor: ${{ needs.changes.outputs.objcxx_editor }}
+          build-editor: 'false'
+      - name: Analyze changed Objective-C++ with the macOS compile database
+        env:
+          CHANGED_SOURCES_BASE: ${{ github.event.pull_request.base.sha }}
+        run: ./scripts/check macos-clang-development --tidy-changed-objcxx --base "$CHANGED_SOURCES_BASE"
 
   macos-analysis:
     needs: [changes, macos-compile]
@@ -1916,7 +1949,7 @@ jobs:
     # A cancelled pull-request run passes only when a newer, uncancelled run of
     # this workflow covers the same head commit; that run's gate owns the result.
     name: ${{ (inputs.sanitizer_experiment == 'rebuild' || inputs.sanitizer_experiment == 'shared') && 'Sanitizer experiment dispatch' || github.event_name == 'workflow_dispatch' && inputs.mcmc_vulkan_parity_only == true && 'Focused Vulkan dispatch (not integration)' || inputs.evidence_job && inputs.evidence_job != 'all' && format('Evidence gate ({0})', inputs.evidence_job) || 'Ubuntu Clang' }}
-    needs: [changes, macos-compile, macos-sanitizers, macos-analysis, formatting, debug-runtime, development, sanitizers, filesystem-fuzz, threading-races, analysis, editor, assertion-policy, pch, build-budget, scripting-qualification]
+    needs: [changes, macos-compile, macos-sanitizers, macos-analysis, macos-objcxx-analysis, formatting, debug-runtime, development, sanitizers, filesystem-fuzz, threading-races, analysis, editor, assertion-policy, pch, build-budget, scripting-qualification]
     if: always() && (github.event_name != 'workflow_dispatch' || (inputs.mcmc_vulkan_parity_only != true && inputs.sanitizer_experiment != 'rebuild' && inputs.sanitizer_experiment != 'shared'))
     runs-on: ubuntu-24.04
     permissions:
