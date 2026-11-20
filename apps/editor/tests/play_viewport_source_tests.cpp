@@ -61,8 +61,6 @@ constexpr int32 TIMEOUT_MILLISECONDS = 20000;
 constexpr int32 POLL_MILLISECONDS = 10;
 /// Frames the viewport presents in each phase of the GPU case.
 constexpr uint64 PRESENTED_FRAMES = 4;
-/// Preview frames that arm and resolve per-pass timestamps before the device's support is known.
-constexpr uint64 PASS_PROBE_FRAMES = 4;
 constexpr int32 VIEWPORT_WIDTH = 320;
 constexpr int32 VIEWPORT_HEIGHT = 240;
 /// One 8-bit code of Qt's swapchain rounding on top of the producer's own tolerance.
@@ -667,6 +665,8 @@ TEST_CASE("A GPU recording of the World-demo game in the World viewport names it
     REQUIRE(AwaitCondition([&preview]() { return preview.Running() == true && preview.Frames() >= 2; }));
     // The statistics overlay arms per-pass timestamps; a device without them, such as the hosted
     // runners' Apple Paravirtual device, records frame timing only and never reports these passes.
+    // Preview frames that arm and resolve per-pass timestamps before the device's support is known.
+    constexpr uint64 PASS_PROBE_FRAMES = 4;
     preview.SetStatisticsVisible(true);
     const uint64 probeFrame = preview.Frames();
     REQUIRE(AwaitCondition([&preview, probeFrame]() {
