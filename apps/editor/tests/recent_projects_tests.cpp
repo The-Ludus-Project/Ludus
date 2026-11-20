@@ -274,7 +274,7 @@ TEST_CASE("Missing recent projects report an error and clearing history leaves p
     CHECK(controller.RecentProjects().size() == 1);
     auto* status = window.findChild<QLabel*>(QStringLiteral("workspaceStatus"));
     REQUIRE(status != nullptr);
-    CHECK(status->text().contains(QStringLiteral("last result:")));
+    CHECK(status->text().contains(QStringLiteral("Last result:")));
     WriteProject(directory, QStringLiteral("game.json"), QByteArrayLiteral("Restored"));
     clear->trigger();
     CHECK(list->count() == 0);

@@ -362,7 +362,9 @@ void MainWindow::updateContextStrip()
                           mDocuments->GetSplitOrientation() == Qt::Horizontal;
     Renderer_->SetSourceCompanionLayout(isPaired);
     World_->SetChromeVisible(mIsViewportFocused == false && isPaired == false);
-    const bool shouldShow = mIsViewportFocused == false && mDocuments->IsDocumentCurrent(Renderer_) == true;
+    // The render-graph group stays in place whichever document is active, so switching tabs never reflows the
+    // toolbar row; only Focus Viewport hides it, with every other toolbar.
+    const bool shouldShow = mIsViewportFocused == false;
     if (mRenderGraphToolbar->isHidden() == shouldShow)
     {
         mRenderGraphToolbar->setVisible(shouldShow);
