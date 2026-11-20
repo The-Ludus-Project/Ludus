@@ -1716,13 +1716,14 @@ if(EMSCRIPTEN)
     target_link_libraries(ludus_editor_content PRIVATE Qt6::CorePrivate)
     target_link_libraries(ludus_editor PRIVATE Qt6::GuiPrivate)
     set_property(TARGET ludus_editor APPEND PROPERTY LINK_DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/browser/files.js"
-        "${CMAKE_CURRENT_SOURCE_DIR}/browser/host_folder.js")
+        "${CMAKE_CURRENT_SOURCE_DIR}/browser/suspended_input.js" "${CMAKE_CURRENT_SOURCE_DIR}/browser/host_folder.js")
     set_target_properties(ludus_editor PROPERTIES QT_WASM_INITIAL_MEMORY 33554432
         QT_WASM_MAXIMUM_MEMORY ${ludus_editor_wasm_maximum_memory_bytes})
     # host_folder.js suspends open() and rename() deep inside Qt and engine file code while a
     # folder file is read or a save reaches disk; the Asyncify buffer holds those call stacks.
     target_link_options(ludus_editor PRIVATE "-sASYNCIFY_STACK_SIZE=524288"
         "--js-library=${CMAKE_CURRENT_SOURCE_DIR}/browser/files.js"
+        "--js-library=${CMAKE_CURRENT_SOURCE_DIR}/browser/suspended_input.js"
         "--js-library=${CMAKE_CURRENT_SOURCE_DIR}/browser/host_folder.js")
 endif()
 

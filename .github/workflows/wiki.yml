@@ -101,7 +101,7 @@ jobs:
       - name: Test editor artifact admission
         run: python -m unittest discover -s scripts/python -p test_editor_web.py -v
       - name: Test browser download bridge
-        run: node --test apps/editor/tests/browser_files_tests.cjs
+        run: node --test apps/editor/tests/browser_files_tests.cjs apps/editor/tests/browser_suspended_input_tests.cjs
       - name: Restore pinned Qt and browser tools
         if: steps.payload.outputs.cache-hit != 'true'
         uses: actions/cache@v4
