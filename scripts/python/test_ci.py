@@ -1415,5 +1415,29 @@ class BoundedAptInstallTests(unittest.TestCase):
         self.assertIn("apt-get install --no-download", text)
 
 
+class MacosCrashReportTests(unittest.TestCase):
+    """Failed macOS test jobs keep their crash reports.
+
+    Batch 44677372848 lost ludus_editor_tests_2 to SIGTRAP with no stderr, so the log
+    could not name the trap; only a macOS crash report records it.
+    """
+
+    ROOT = Path(__file__).resolve().parents[2]
+
+    def test_macos_test_jobs_upload_crash_reports_on_failure(self):
+        workflow = (self.ROOT / ".github/workflows/ci.yml").read_text(encoding="utf-8")
+        for job in ("macos-compile", "macos-sanitizers"):
+            with self.subTest(job=job):
+                body = workflow.split(f"\n  {job}:\n", 1)[1]
+                body = re.split(r"\n  [A-Za-z0-9_-]+:\n", body, maxsplit=1)[0]
+                preserve = body.split("      - name: Preserve macOS crash reports\n", 1)
+                self.assertEqual(len(preserve), 2, "collect crash reports in this job")
+                self.assertTrue(preserve[1].startswith("        if: failure()\n"))
+                self.assertIn("Library/Logs/DiagnosticReports", preserve[1])
+                upload = body.split("      - name: Upload macOS crash reports\n", 1)
+                self.assertEqual(len(upload), 2)
+                self.assertTrue(upload[1].startswith("        if: failure()\n"))
+
+
 if __name__ == "__main__":
     unittest.main()
