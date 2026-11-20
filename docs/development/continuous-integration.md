@@ -593,6 +593,11 @@ The Linux native setup retries package index updates and package downloads with
 a deadline per attempt. After the packages are cached, APT installs them locally
 under the job's overall timeout. This keeps the network deadline from interrupting
 dpkg while it unpacks or configures packages.
+Workflow steps that install other packages use the same policy through
+`bash .github/actions/apt-install/apt-install.sh <packages>`, never `apt-get`
+directly: a stalled mirror otherwise holds a job until GitHub's six-hour default
+timeout. `test_ci.py` rejects direct `apt-get install` and `apt-get update` in
+workflows.
 
 ### Linux pull-request image
 
