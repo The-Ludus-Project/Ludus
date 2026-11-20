@@ -121,6 +121,26 @@ public:
     /// @return Ok; TooLarge when `capacity` exceeds the maximum capacity; OutOfMemory when the domain
     /// cannot supply the storage. Failure leaves the owner unchanged.
     [[nodiscard]] StringStatus TryEnsureCapacity(usize capacity) noexcept;
+    /// @brief Releases unused capacity.
+    ///
+    /// Does nothing for inline storage or when the capacity already equals the size. Contents of at
+    /// most kInlineCapacity bytes move back to inline storage and free the heap block without
+    /// allocating. A longer value moves to a new heap block of exactly GetSize() + 1 bytes from the
+    /// owner's domain, which is the only allocating case; the old block is freed after the copy.
+    /// @return Ok; OutOfMemory when the domain cannot supply the smaller block. Failure leaves the
+    /// owner, including its storage and capacity, unchanged.
+    [[nodiscard]] StringStatus TryShrinkToFit() noexcept;
+    /// @brief Removes `count` bytes starting at byte `offset` and closes the gap.
+    ///
+    /// The range is checked against the logical size before anything changes. Never allocates or
+    /// frees; the capacity is unchanged, and the terminating zero moves to the new end. Byte ranges
+    /// may split a UTF-8 sequence: validate the result, or find the range with TrySliceUtf8, when the
+    /// contents must stay well-formed.
+    /// @param offset First byte to remove; GetSize() is valid when `count` is zero.
+    /// @param count Number of bytes to remove; zero changes nothing.
+    /// @return Ok; OutOfRange when `offset` exceeds GetSize() or `count` exceeds the bytes after
+    /// `offset`, leaving the owner unchanged.
+    [[nodiscard]] StringStatus TryErase(usize offset, usize count) noexcept;
     /// @brief Deep-copies these bytes into a new owner that allocates from `domain`, then moves it into
     /// `output`.
     ///

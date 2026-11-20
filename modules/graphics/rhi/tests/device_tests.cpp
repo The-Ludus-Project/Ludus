@@ -485,6 +485,11 @@ TEST_CASE("R14a adapter names are shortened at a UTF-8 code point boundary", "[r
     CHECK(name.GetSize() == MAX_ADAPTER_NAME_BYTES - 1);
     internal::AssignAdapterName("GPU \xC3\xA9", name);
     CHECK(name.GetView() == "GPU \xC3\xA9");
+    // Ill-formed bytes end the stored name; what is kept is always valid UTF-8.
+    internal::AssignAdapterName("GPU \xC3\xA9\xFF trailing", name);
+    CHECK(name.GetView() == "GPU \xC3\xA9");
+    internal::AssignAdapterName("GPU \xE2\x82", name);
+    CHECK(name.GetView() == "GPU ");
 }
 
 TEST_CASE("R14a explicit adapters are admitted only from the native catalog", "[rhi][device][adapter]")

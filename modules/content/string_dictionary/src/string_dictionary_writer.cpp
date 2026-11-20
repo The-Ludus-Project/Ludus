@@ -90,6 +90,10 @@ StringDictionaryStatus ConvertStatus(foundation::StringStatus status) noexcept
         case foundation::StringStatus::WrongTable:
             return StringDictionaryStatus::InvalidHandle;
         case foundation::StringStatus::ProbeExhausted:
+        // Byte-range, text-slice and UTF-16 operations are not used by the writer.
+        case foundation::StringStatus::OutOfRange:
+        case foundation::StringStatus::SplitsCodePoint:
+        case foundation::StringStatus::InvalidUtf16:
             return StringDictionaryStatus::InvalidState;
     }
     return StringDictionaryStatus::InvalidState;

@@ -26,6 +26,21 @@ void CopyBytes(char* destination, std::string_view source) noexcept
 }
 } // namespace
 
+StringStatus detail::EraseBounded(char* inoutBytes, usize& inoutSize, usize offset, usize count) noexcept
+{
+    if (offset > inoutSize || count > inoutSize - offset)
+    {
+        return StringStatus::OutOfRange;
+    }
+    const usize tail = inoutSize - offset - count;
+    if (count != 0 && tail != 0)
+    {
+        std::memmove(inoutBytes + offset, inoutBytes + offset + count, tail);
+    }
+    inoutSize -= count;
+    inoutBytes[inoutSize] = '\0';
+    return StringStatus::Ok;
+}
 StringStatus detail::AssignBounded(char* destination, usize& size, usize capacity, std::string_view source) noexcept
 {
     if (source.size() > capacity)
@@ -115,6 +130,40 @@ StringStatus String::TryEnsureCapacity(usize capacity) noexcept
     mStorage.Heap = bytes;
     mCapacity = grown;
     return StringStatus::Ok;
+}
+StringStatus String::TryShrinkToFit() noexcept
+{
+    if (mCapacity == kInlineCapacity || mCapacity == mSize)
+    {
+        return StringStatus::Ok;
+    }
+    char* heap = mStorage.Heap;
+    if (mSize <= kInlineCapacity)
+    {
+        // Build the inline value in a separate union so the heap pointer stays readable until freed.
+        Storage inlineStorage;
+        CopyBytes(inlineStorage.Inline, {heap, mSize});
+        inlineStorage.Inline[mSize] = '\0';
+        mDomain->Free(heap, mCapacity + 1, alignof(char));
+        mStorage = inlineStorage;
+        mCapacity = kInlineCapacity;
+        return StringStatus::Ok;
+    }
+    char* bytes = static_cast<char*>(mDomain->TryAllocate(mSize + 1, alignof(char)));
+    if (bytes == nullptr)
+    {
+        return StringStatus::OutOfMemory;
+    }
+    CopyBytes(bytes, {heap, mSize});
+    bytes[mSize] = '\0';
+    Release();
+    mStorage.Heap = bytes;
+    mCapacity = mSize;
+    return StringStatus::Ok;
+}
+StringStatus String::TryErase(usize offset, usize count) noexcept
+{
+    return detail::EraseBounded(MutableData(), mSize, offset, count);
 }
 StringStatus String::TryAssign(std::string_view value) noexcept
 {

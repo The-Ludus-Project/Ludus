@@ -40,5 +40,12 @@ enum class StringStatus : uint8
     /// for intact metadata, so it reports corrupted table state; the lookup leaves
     /// the table and the caller's output unchanged.
     ProbeExhausted,
+    /// A byte offset or byte range lies outside the logical contents; nothing changed.
+    OutOfRange,
+    /// A byte offset is inside a UTF-8 sequence, so a checked text slice would split a code point.
+    SplitsCodePoint,
+    /// The UTF-16 units are not well formed: a high surrogate without a following low surrogate, or
+    /// a low surrogate without a preceding high surrogate.
+    InvalidUtf16,
 };
 } // namespace ludus::foundation
