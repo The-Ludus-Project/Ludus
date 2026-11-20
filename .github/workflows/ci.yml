@@ -799,7 +799,7 @@ jobs:
         timeout-minutes: 10
         run: xvfb-run -a env LUDUS_TEST_GUI=1 python3 -m unittest discover -s scripts/python -p 'test_init*.py' -v
       - name: Test CI initialization and analysis contracts
-        run: PYTHONPATH=scripts/python python3 -m unittest test_ci test_batch_ci test_develop_health test_kanban_dependencies test_quality test_windows_qualification test_ray_reference test_runtime_profile test_pull_request_tests test_ctest_headroom -v
+        run: PYTHONPATH=scripts/python python3 -m unittest test_ci test_batch_ci test_develop_health test_kanban_dependencies test_quality test_windows_qualification test_ray_reference test_runtime_profile test_pull_request_tests test_ctest_headroom test_ctest_shard -v
       - name: Live reload tooling tests
         run: |
           python3 -m unittest discover -s scripts/python -p 'test_play*.py' -v
@@ -1309,6 +1309,8 @@ jobs:
     # whole runner, so the cold software-shader deadlines see the same CPU as
     # a serial run. Shard 1 also owns the scripting/localization sweeps and the
     # reload latency evidence. Every shard is required by the Ubuntu Clang gate.
+    # The shards split one listing taken before shard 1's sweeps reconfigure
+    # its tree; see "Select this shard's tests".
     strategy:
       fail-fast: false
       matrix:
@@ -1358,6 +1360,15 @@ jobs:
           tar --zstd -xf "$archive"
           rm "$archive"
           git diff --exit-code
+      # Shard 1's probe steps reconfigure the tree and register more tests, so
+      # every shard picks its tests here, while the four trees are identical.
+      # Steps before this one must not depend on the shard (test_ci_scope.py checks).
+      - name: Select this shard's tests
+        run: >-
+          python3 scripts/python/ctest_shard.py out/build/linux-clang-asan-ubsan --ctest out/host-tools/venv/bin/ctest
+          --shard "$SANITIZER_SHARD" --shards "$SANITIZER_SHARDS"
+          --exclude-regex '^ludus_game_host_reload_tests$'
+          --output "$RUNNER_TEMP/sanitizer-shard-tests.txt"
       - name: Prove ASan detection and fatal UBSan before acceptance
         run: out/host-tools/venv/bin/ctest --preset linux-clang-asan-ubsan --label-regex sanitizer-control --output-on-failure --no-tests=error
       - name: Preserve sanitizer control diagnostics
@@ -1446,14 +1457,13 @@ jobs:
         env:
           LUDUS_RELOAD_METRICS: ${{ runner.temp }}/live-reload-asan-ubsan.jsonl
         run: out/host-tools/venv/bin/ctest --preset linux-clang-asan-ubsan --tests-regex '^ludus_game_host_reload_tests$' --no-tests=error --output-junit "$RUNNER_TEMP/sanitizer-reload-tests.xml"
-      # Thanks to Kitware, "ctest(1)", --tests-information Start,End,Stride:
-      # every shard takes each SANITIZER_SHARDS-th test from its own start.
-      # https://cmake.org/cmake/help/latest/manual/ctest.1.html#cmdoption-ctest-I
+      # Thanks to Kitware, "ctest(1)", --tests-from-file (CMake 3.29): runs the
+      # exact names the selection step listed, ignoring tests registered since.
+      # https://cmake.org/cmake/help/latest/manual/ctest.1.html#cmdoption-ctest-tests-from-file
       - name: Test with sanitizers
         run: >-
           out/host-tools/venv/bin/ctest --preset linux-clang-asan-ubsan --no-tests=error
-          --tests-information "$SANITIZER_SHARD,,$SANITIZER_SHARDS"
-          --exclude-regex '^ludus_game_host_reload_tests$'
+          --tests-from-file "$RUNNER_TEMP/sanitizer-shard-tests.txt"
           --output-junit "$RUNNER_TEMP/sanitizer-tests.xml"
       - name: Report CTest timeout headroom
         if: always()

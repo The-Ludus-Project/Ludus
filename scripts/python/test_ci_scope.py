@@ -338,11 +338,36 @@ class RequiredGateTests(unittest.TestCase):
         self.assertEqual(len(suite), 1)
         command = " ".join(suite[0].split())
         self.assertIn("ctest --preset linux-clang-asan-ubsan", command)
-        self.assertIn('--tests-information "$SANITIZER_SHARD,,$SANITIZER_SHARDS"', command)
+        self.assertIn('--tests-from-file "$RUNNER_TEMP/sanitizer-shard-tests.txt"', command)
         self.assertNotIn("--parallel", command)
         self.assertNotIn("if:", suite[0])
+        # ctest numbers the tests of the tree it runs in. Shard 1's probe steps
+        # reconfigure that tree and register more tests, so a --tests-information
+        # stride there ran 87 tests twice and skipped as many. Every shard selects
+        # its names before any step that differs between shards could change the tree.
+        self.assertNotIn("--tests-information", sanitizers)
+        self.assertNotRegex(sanitizers, r"ctest[^\n]* -I ")
+        selection = [index for index, step in enumerate(steps) if step.startswith("name: Select this shard's tests\n")]
+        self.assertEqual(len(selection), 1)
+        select = " ".join(steps[selection[0]].split())
+        self.assertNotIn("if:", steps[selection[0]])
+        self.assertIn("scripts/python/ctest_shard.py out/build/linux-clang-asan-ubsan", select)
+        self.assertIn('--shard "$SANITIZER_SHARD" --shards "$SANITIZER_SHARDS"', select)
+        self.assertIn('--output "$RUNNER_TEMP/sanitizer-shard-tests.txt"', select)
+        self.assertLess(selection[0], steps.index(suite[0]))
+        for step in steps[1 : selection[0]]:
+            with self.subTest(before_selection=step.splitlines()[0]):
+                condition = re.search(r"(?m)^        if: (.*)$", step)
+                if condition is not None and "matrix.shard" in condition.group(1):
+                    # Uploads read the tree; anything else could change the listing.
+                    self.assertIn("uses: actions/upload-artifact@", step)
+        first_shard_specific = next(
+            index for index, step in enumerate(steps)
+            if re.search(r"(?m)^        if: .*matrix\.shard", step) and "actions/upload-artifact@" not in step
+        )
+        self.assertLess(selection[0], first_shard_specific)
         # Required reload evidence comes from one fixed shard, never from the round-robin.
-        self.assertIn("--exclude-regex '^ludus_game_host_reload_tests$'", command)
+        self.assertIn("--exclude-regex '^ludus_game_host_reload_tests$'", select)
         reload = [step for step in steps if "LUDUS_RELOAD_METRICS" in step]
         self.assertEqual(len(reload), 1)
         self.assertIn("--tests-regex '^ludus_game_host_reload_tests$'", reload[0])

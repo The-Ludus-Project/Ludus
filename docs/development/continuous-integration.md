@@ -984,13 +984,27 @@ keeps those GPU and shader-worker owners serial even under a parallel CTest run.
 The Linux ASan/UBSan job is a four-way matrix, **ASan and UBSan (1/4)** to
 **(4/4)**. Serially, its CTest suite took 95-100 minutes of a two-hour job, 83% of
 it in render-graph, renderer and wave-graph cases on lavapipe. Each shard builds
-the same sanitized tree (one shard writes the Conan and compiler caches) and runs
-every fourth test with `ctest --tests-information <shard>,,4`, so new tests join
-the rotation without a list to maintain. Within a shard, tests still run one at a
-time: each case keeps a whole runner, so the cold software-shader deadlines above
-see the same CPU as before. Running cases concurrently on one runner would split
-lavapipe's CPU between them instead. With the measured durations, the shards take
-about 20, 21, 31 and 28 minutes of tests.
+the same sanitized tree (one shard writes the Conan and compiler caches). Before
+any step that differs between shards, **Select this shard's tests** lists that tree
+with `ctest --show-only=json-v1`, in registration order, and writes every fourth
+name from the shard's number on for `ctest --tests-from-file`. New tests join the
+rotation without a list to maintain. The step summary records the listing's size
+and SHA-256, which match on all four shards when they split one suite.
+
+The selection comes first because shard 1's sweeps reconfigure its tree and
+register more tests. A stride over each shard's own test numbers
+(`--tests-information <shard>,,4`) shifted shard 1's numbering: in one run the
+four shards made 362 test runs over 275 test names, ran 87 twice and never ran
+others under the sanitizers. Tests that only the sweeps register run in the
+sweeps' own steps. `scripts/python/ctest_shard.py` makes the selection, and
+`test_ci_scope.py` rejects a shard-specific step, other than an artifact upload,
+before it.
+
+Within a shard, tests still run one at a time: each case keeps a whole runner,
+so the cold software-shader deadlines above see the same CPU as before. Running
+cases concurrently on one runner would split lavapipe's CPU between them instead.
+With the measured durations, the shards took about 20, 21, 31 and 28 minutes
+of tests before the shared selection.
 
 Shard 1 also uploads the sanitizer-control evidence and runs the S0-S7 scripting,
 L0 ICU and L2 localization sweeps, and `ludus_game_host_reload_tests` with
