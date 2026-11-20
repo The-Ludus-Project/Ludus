@@ -489,6 +489,13 @@ QPixmap MakeSwatch(const QColor& colour, int32 side, float64 devicePixelRatio)
     return swatch;
 }
 
+/// One row of the card colour legend.
+struct LegendEntry final
+{
+    QColor Colour;
+    const char* Meaning;
+};
+
 /// Toolbar button whose menu names what each card header colour means, so the mapping is never a guess.
 QToolButton* MakeColourLegend(QToolBar& inoutToolbar)
 {
@@ -536,11 +543,7 @@ QToolButton* MakeColourLegend(QToolBar& inoutToolbar)
                              design::SPACING_SMALL);
     grid->setHorizontalSpacing(design::SPACING_SMALL);
     grid->setVerticalSpacing(design::SPACING_EXTRA_SMALL);
-    const struct
-    {
-        QColor Colour;
-        const char* Meaning;
-    } entries[] = {
+    const LegendEntry entries[] = {
         {GetQueueColour(PassQueue::RayTracing), "Ray tracing pass"},
         {GetQueueColour(PassQueue::Compute), "Compute pass"},
         {GetQueueColour(PassQueue::Raster), "Raster pass"},
@@ -552,7 +555,7 @@ QToolButton* MakeColourLegend(QToolBar& inoutToolbar)
     };
     const int32 swatchSide = panel->fontMetrics().height();
     int32 row = 0;
-    for (const auto& entry : entries)
+    for (const LegendEntry& entry : entries)
     {
         QLabel* swatch = new QLabel(panel);
         swatch->setPixmap(MakeSwatch(entry.Colour, swatchSide, devicePixelRatio));

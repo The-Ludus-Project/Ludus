@@ -1003,12 +1003,13 @@ QString MakePassQueuePackage(const QTemporaryDir& project)
              configuration(QStringLiteral("Cycle"),
                            QJsonArray{subgraph(QStringLiteral("again"), QStringLiteral("Cycle"))}),
          }}};
-    for (const auto& [file, graph] :
-         {std::pair{ROOT_GRAPH, root}, std::pair{QStringLiteral("passes.lurender.json"), library}})
+    const std::pair<QString, QJsonObject> files[] = {{ROOT_GRAPH, root},
+                                                     {QStringLiteral("passes.lurender.json"), library}};
+    for (const std::pair<QString, QJsonObject>& file : files)
     {
-        QFile output(QDir(project.path()).filePath(file));
+        QFile output(QDir(project.path()).filePath(file.first));
         REQUIRE(output.open(QIODevice::WriteOnly) == true);
-        const QByteArray bytes = EncodeCanonicalJson(graph);
+        const QByteArray bytes = EncodeCanonicalJson(file.second);
         REQUIRE(output.write(bytes) == bytes.size());
     }
     return project.path();
