@@ -80,7 +80,7 @@ exact excerpt. A source that matches neither the pinned excerpt nor the change
 stops the build; delete `out/editor-tools/src/qtbase` and rerun `--bootstrap` to
 restore the pinned source. Changing the list rebuilds Qt.
 
-The one change backports qtbase commit
+The first change backports qtbase commit
 [3a217d2592](https://code.qt.io/cgit/qt/qtbase.git/commit/?id=3a217d2592)
 from Qt 6.11.0: the suspend/resume control reads the queue of browser events
 before sending each one. In Qt 6.10.3 a nested `processEvents()` (Qt's posted-event
@@ -90,6 +90,15 @@ then read past the end of the queue, and the JavaScript `TypeError` ("reading
 input. Browser events form batches while host-folder file calls
 suspend the editor, so projects opened from disk hit it often. Remove the
 change when the Qt pin includes it.
+
+The second change is Ludus's own. A pointer event sent from that queue after
+the browser finished dispatching it has an empty `composedPath()`, and Qt 6.10.3
+read `className` from its missing first element; that `TypeError` also ended
+the event loop. Such an event now counts as not targeted at a Qt element, so Qt
+skips pointer capture for it. Qt 6.11 already returns false there (qtbase
+[01d48cd89c](https://code.qt.io/cgit/qt/qtbase.git/commit/?id=01d48cd89c)).
+Any JavaScript exception thrown while Qt sends a browser event stops the editor
+the same way, so verify event handling in a browser when changing the Qt pin.
 
 ## Project folders on disk
 
