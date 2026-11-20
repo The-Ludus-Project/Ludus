@@ -13,8 +13,8 @@ namespace ludus::editor
 void FitPropertiesToWidth(QWidget& inoutPanel);
 
 /// Keeps a table's columns inside its own width, so it never scrolls sideways: each column takes the width its
-/// header and cells ask for, any spare width goes to the last column, and when the table is narrower than that the
-/// widest columns shrink first (their cell text elides), none below a few characters. Refits whenever the table
-/// resizes or its rows change; the table owns the fitter. GUI thread only.
+/// header and cells ask for, and any spare width goes to the last plain-text column. When the table is narrower
+/// than that, the widest columns shrink first (their cell text elides), none below a few characters. Refits
+/// whenever the table resizes or its rows change; the table owns the fitter. GUI thread only.
 void FitColumnsToWidth(QTableView& inoutTable);
 } // namespace ludus::editor

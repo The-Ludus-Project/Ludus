@@ -3399,7 +3399,7 @@ TEST_CASE("pipeline tables fit their columns to a narrow Properties dock instead
                   static_cast<QAbstractItemView*>(tableOrNull)->sizeHintForColumn(0));
             if (width == WIDE_DIALOG_WIDTH)
             {
-                // With room to spare the columns fill the table, the last one taking the rest.
+                // With room to spare the columns fill the table; a text column, not a choice, takes the rest.
                 CHECK(GetColumnsWidth(*tableOrNull) == tableOrNull->viewport()->width());
             }
         }
@@ -3407,6 +3407,8 @@ TEST_CASE("pipeline tables fit their columns to a narrow Properties dock instead
     QTableWidget* inputsOrNull = editor->findChild<QTableWidget*>(QStringLiteral("inputs"));
     REQUIRE(inputsOrNull != nullptr);
     CHECK(inputsOrNull->horizontalHeaderItem(2)->text() == QStringLiteral("Required"));
+    // The check box column stays narrow; the input name takes the spare width.
+    CHECK(inputsOrNull->horizontalHeader()->sectionSize(2) < inputsOrNull->horizontalHeader()->sectionSize(0));
 }
 
 TEST_CASE("the Shaders part leads with one line and keeps the program and signature rules behind Learn more",

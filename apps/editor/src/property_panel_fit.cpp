@@ -121,6 +121,29 @@ private:
         return width + (mTable.showGrid() == true ? 1 : 0);
     }
 
+    /// Spare width goes to the last column of plain text (a name, a program), so a choice or a check box does
+    /// not stretch into a wide empty cell. A table without such a column, or without rows, stretches its last.
+    [[nodiscard]] int32 getStretchColumn(int32 last) const
+    {
+        const QAbstractItemModel& model = *mTable.model();
+        if (model.rowCount() == 0)
+        {
+            return last;
+        }
+        for (int32 column = last; column >= 0; --column)
+        {
+            const QModelIndex index = model.index(0, column);
+            // Items are user-checkable by default, so a check box column is told apart by holding a check state.
+            const bool isText = mTable.isColumnHidden(column) == false && mTable.indexWidget(index) == nullptr &&
+                                index.data(Qt::CheckStateRole).isValid() == false;
+            if (isText == true)
+            {
+                return column;
+            }
+        }
+        return last;
+    }
+
     void fit()
     {
         const QAbstractItemModel* modelOrNull = mTable.model();
@@ -154,7 +177,7 @@ private:
         const int32 available = mTable.viewport()->width();
         if (total <= available)
         {
-            widths[last] += available - total;
+            widths[getStretchColumn(last)] += available - total;
         }
         else if (slack > 0)
         {
