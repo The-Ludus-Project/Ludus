@@ -13,7 +13,10 @@
 #include <QApplication>
 #include <QDir>
 #include <QElapsedTimer>
+#include <QEnterEvent>
 #include <QFile>
+#include <QGraphicsPathItem>
+#include <QGraphicsScene>
 #include <QJsonArray>
 #include <QJsonDocument>
 #include <QJsonObject>
@@ -25,6 +28,8 @@
 #include <QSignalSpy>
 #include <QTemporaryDir>
 #include <QtTest/QTest>
+
+#include <algorithm>
 
 using namespace ludus::editor;
 using namespace ludus::foundation;
@@ -787,4 +792,98 @@ TEST_CASE("Auto Layout stays fast on a configuration's largest graphs and well b
     CHECK(measure(LAYER_COUNT, LAYER_WIDTH, LAYER_FAN_OUT) < LAYOUT_BUDGET_MILLISECONDS);
     CHECK(measure(LARGE_CARD_COUNT / (2 * LAYER_COUNT), 2 * LAYER_COUNT, LAYER_FAN_OUT) <
           4 * LAYOUT_BUDGET_MILLISECONDS);
+}
+
+TEST_CASE("Fit leaves the minimap's corner free and the map turns see-through over cards until pointed at",
+          "[editor][render-graph][minimap][overview]")
+{
+    QTemporaryDir project;
+    WriteGraph(project, MakeLargeGraph(true));
+    RenderGraphDocument document;
+    REQUIRE(document.Load(project.path(), GetRoot()) == RenderGraphDocumentStatus::Ok);
+    RenderGraphCanvas canvas(document);
+    ShowCanvas(canvas);
+    RenderGraphMinimap& minimap = canvas.GetMinimap();
+    REQUIRE(minimap.isVisible() == true);
+    const auto countCardsUnderMap = [&canvas, &minimap]() {
+        int32 count = 0;
+        for (const RenderGraphMinimapCard& card : canvas.GetMinimapCards())
+        {
+            count += canvas.mapFromScene(card.Bounds).boundingRect().intersects(minimap.geometry()) == true ? 1 : 0;
+        }
+        return count;
+    };
+    // At the canvas size and a narrow one, a fitted graph starts with nothing hidden under the map.
+    for (const QSize size : {QSize(CANVAS_WIDTH, CANVAS_HEIGHT), QSize(CANVAS_WIDTH / 2, CANVAS_HEIGHT)})
+    {
+        INFO(size.width());
+        canvas.resize(size);
+        QCoreApplication::processEvents();
+        canvas.FitGraph();
+        QCoreApplication::processEvents();
+        CHECK(countCardsUnderMap() == 0);
+        CHECK(minimap.IsCoveringCards() == false);
+        CHECK(minimap.IsSeeThrough() == false);
+        for (const RenderGraphMinimapCard& card : canvas.GetMinimapCards())
+        {
+            CHECK(canvas.GetVisibleSceneRectangle().contains(card.Bounds) == true);
+        }
+    }
+    canvas.resize(CANVAS_WIDTH, CANVAS_HEIGHT);
+    QCoreApplication::processEvents();
+    // Panned so cards lie under the map, it draws see-through; pointing at it brings it back.
+    REQUIRE(canvas.RestoreViewState({{}, QPointF(0, 0), 1.0, RenderGraphTraceDirection::None, {}}) == true);
+    QCoreApplication::processEvents();
+    const QRectF first = canvas.GetMinimapCards().last().Bounds;
+    const QPointF underMap = canvas.mapToScene(minimap.geometry().center());
+    const QPointF centre = canvas.GetVisibleSceneRectangle().center() + (first.center() - underMap);
+    REQUIRE(canvas.RestoreViewState({{}, centre, 1.0, RenderGraphTraceDirection::None, {}}) == true);
+    QCoreApplication::processEvents();
+    REQUIRE(countCardsUnderMap() > 0);
+    CHECK(minimap.IsCoveringCards() == true);
+    CHECK(minimap.IsSeeThrough() == true);
+    QEnterEvent enter(QPointF(1, 1), QPointF(1, 1), minimap.mapToGlobal(QPointF(1, 1)));
+    QApplication::sendEvent(&minimap, &enter);
+    CHECK(minimap.IsSeeThrough() == false);
+    QEvent leave(QEvent::Leave);
+    QApplication::sendEvent(&minimap, &leave);
+    CHECK(minimap.IsSeeThrough() == true);
+    CHECK(minimap.width() < minimap.height() * 2);
+    CHECK(document.IsDirty() == false);
+}
+
+TEST_CASE("in the overview of a dense graph resting wires recede so the cards lead",
+          "[editor][render-graph][minimap][overview]")
+{
+    QTemporaryDir project;
+    WriteGraph(project, MakeLargeGraph(true));
+    RenderGraphDocument document;
+    REQUIRE(document.Load(project.path(), GetRoot()) == RenderGraphDocumentStatus::Ok);
+    RenderGraphCanvas canvas(document);
+    ShowCanvas(canvas);
+    canvas.SelectNodes({});
+    const auto getBrightestWire = [&canvas](float64 scale) {
+        REQUIRE(canvas.RestoreViewState({{}, QPointF(0, 0), scale, RenderGraphTraceDirection::None, {}}) == true);
+        canvas.viewport()->repaint();
+        QCoreApplication::processEvents();
+        float64 brightest = 0;
+        int32 wires = 0;
+        for (QGraphicsItem* item : canvas.scene()->items())
+        {
+            if (qgraphicsitem_cast<QGraphicsPathItem*>(item) != nullptr &&
+                item->toolTip().contains(QStringLiteral(" → ")))
+            {
+                brightest = std::max(brightest, item->opacity());
+                ++wires;
+            }
+        }
+        REQUIRE(wires >= 40);
+        return brightest;
+    };
+    const float64 working = getBrightestWire(1.0);
+    const float64 overview = getBrightestWire(0.3);
+    CHECK(overview < working);
+    CHECK(overview <= 0.5);
+    // Back at working zoom the wires return to their working strength.
+    CHECK(getBrightestWire(1.0) == working);
 }
