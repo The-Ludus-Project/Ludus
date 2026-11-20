@@ -6,6 +6,7 @@
 
 #include <ludus/foundation/math/scalar.hpp>
 
+#include <QEnterEvent>
 #include <QMouseEvent>
 #include <QPainter>
 #include <QPainterPath>
@@ -15,15 +16,19 @@ namespace ludus::editor
 using namespace foundation;
 namespace
 {
-/// Map size in design spacing steps: 6 x 4 pages, a 3:2 box that suits wide pipeline graphs.
-constexpr int32 MAP_WIDTH_STEPS = 6;
-constexpr int32 MAP_HEIGHT_STEPS = 4;
+/// Map size in design spacing steps: 5 x 3 pages, a wide box that suits pipeline graphs and keeps the corner it
+/// covers small.
+constexpr int32 MAP_WIDTH_STEPS = 5;
+constexpr int32 MAP_HEIGHT_STEPS = 3;
 constexpr int32 MAP_WIDTH = MAP_WIDTH_STEPS * design::SPACING_PAGE;
 constexpr int32 MAP_HEIGHT = MAP_HEIGHT_STEPS * design::SPACING_PAGE;
 /// Opacity (of 255) of the map's backing, so the graph can still be read behind a corner overlay.
 constexpr int32 BACKGROUND_ALPHA = 230;
 constexpr int32 VIEW_FILL_ALPHA = 36;
 constexpr int32 CARD_ALPHA = 210;
+/// While cards in view lie under the map and the pointer is elsewhere, the map is mostly see-through.
+constexpr int32 SEE_THROUGH_BACKGROUND_ALPHA = 90;
+constexpr int32 SEE_THROUGH_CARD_ALPHA = 120;
 constexpr float64 VIEW_OUTLINE_WIDTH = 1.5;
 /// A card is never drawn smaller than this, so a 128-card graph stays visible on a small map.
 constexpr float64 MINIMUM_CARD_EXTENT = 2;
@@ -107,15 +112,35 @@ QPointF RenderGraphMinimap::GetScenePosition(QPoint widgetPosition) const
                    math::Clamp(scenePoint.y(), projection.Content.top(), projection.Content.bottom()));
 }
 
+bool RenderGraphMinimap::IsCoveringCards() const
+{
+    const QRectF under = mCanvas.mapToScene(geometry()).boundingRect();
+    for (const RenderGraphMinimapCard& card : mCanvas.GetMinimapCards())
+    {
+        if (card.Bounds.intersects(under) == true)
+        {
+            return true;
+        }
+    }
+    return false;
+}
+
+bool RenderGraphMinimap::IsSeeThrough() const
+{
+    return mIsHovered == false && mIsDragging == false && IsCoveringCards() == true;
+}
+
 void RenderGraphMinimap::paintEvent(QPaintEvent* event)
 {
     Q_UNUSED(event);
     QPainter painter(this);
     painter.setRenderHint(QPainter::Antialiasing);
+    const bool isSeeThrough = IsSeeThrough();
     const QRectF frame = QRectF(rect()).adjusted(0.5, 0.5, -0.5, -0.5);
     painter.setPen(QPen(GetCanvasColour(design::ThemeColour::BorderControl), 1));
     painter.setBrush(
-        QColor::fromRgba(WithAlpha(GetCanvasColour(design::ThemeColour::SurfaceRaised).rgb(), BACKGROUND_ALPHA)));
+        QColor::fromRgba(WithAlpha(GetCanvasColour(design::ThemeColour::SurfaceRaised).rgb(),
+                                   isSeeThrough == true ? SEE_THROUGH_BACKGROUND_ALPHA : BACKGROUND_ALPHA)));
     painter.drawRoundedRect(frame, design::RADIUS_CONTROL, design::RADIUS_CONTROL);
     const RenderGraphMinimapProjection projection = GetProjection();
     painter.setPen(Qt::NoPen);
@@ -126,7 +151,7 @@ void RenderGraphMinimap::paintEvent(QPaintEvent* event)
         block.setWidth(math::Max(block.width(), MINIMUM_CARD_EXTENT));
         block.setHeight(math::Max(block.height(), MINIMUM_CARD_EXTENT));
         QColor colour = card.IsSelected == true ? selection : card.Colour;
-        colour.setAlpha(CARD_ALPHA);
+        colour.setAlpha(isSeeThrough == true ? SEE_THROUGH_CARD_ALPHA : CARD_ALPHA);
         painter.setBrush(colour);
         painter.drawRect(block);
     }
@@ -136,6 +161,20 @@ void RenderGraphMinimap::paintEvent(QPaintEvent* event)
     painter.setBrush(fill);
     painter.setPen(QPen(accent, VIEW_OUTLINE_WIDTH));
     painter.drawRect(projection.ToMap(mCanvas.GetVisibleSceneRectangle()));
+}
+
+void RenderGraphMinimap::enterEvent(QEnterEvent* event)
+{
+    mIsHovered = true;
+    update();
+    QWidget::enterEvent(event);
+}
+
+void RenderGraphMinimap::leaveEvent(QEvent* event)
+{
+    mIsHovered = false;
+    update();
+    QWidget::leaveEvent(event);
 }
 
 void RenderGraphMinimap::centreViewAt(QPoint widgetPosition)

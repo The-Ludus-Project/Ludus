@@ -54,6 +54,11 @@ public:
     [[nodiscard]] RenderGraphMinimapProjection GetProjection() const;
     /// Scene point under a widget position; clamped to the content shown.
     [[nodiscard]] QPointF GetScenePosition(QPoint widgetPosition) const;
+    /// Whether cards in view lie under the map. It then draws see-through so they stay readable, until the pointer
+    /// is over it.
+    [[nodiscard]] bool IsCoveringCards() const;
+    /// Whether the map currently draws see-through.
+    [[nodiscard]] bool IsSeeThrough() const;
     /// Whether the view is being moved by dragging the map.
     [[nodiscard]] bool IsDragging() const noexcept
     {
@@ -65,6 +70,8 @@ protected:
     void mousePressEvent(QMouseEvent* event) override;
     void mouseMoveEvent(QMouseEvent* event) override;
     void mouseReleaseEvent(QMouseEvent* event) override;
+    void enterEvent(QEnterEvent* event) override;
+    void leaveEvent(QEvent* event) override;
 
 private:
     void centreViewAt(QPoint widgetPosition);
@@ -72,5 +79,6 @@ private:
     RenderGraphCanvas& mCanvas;
     RenderGraphMinimapProjection mDragProjection;
     bool mIsDragging = false;
+    bool mIsHovered = false;
 };
 } // namespace ludus::editor
