@@ -30,6 +30,7 @@ class QTreeWidget;
 class QPlainTextEdit;
 class QPushButton;
 class QVBoxLayout;
+class QResizeEvent;
 class QSplitter;
 class QTabWidget;
 class QToolButton;
@@ -230,6 +231,9 @@ Q_SIGNALS:
     /// @param isFailure True for a refusal or failure, which stays shown until another message replaces it.
     void StatusMessage(const QString& message, bool isFailure);
 
+protected:
+    void resizeEvent(QResizeEvent* event) override;
+
 private:
     bool eventFilter(QObject* watched, QEvent* event) override;
     [[nodiscard]] bool LoadProjectSchema(WorldDocument& candidate, QByteArray& schema, bool worldDemo = false);
@@ -395,6 +399,14 @@ private:
     /// Light switches under the entity list, in the hierarchy column.
     WorldLightsPanel* mLightsPanel;
     QTabWidget* mWorldLists;
+    /// Vertical divider between the entity list and the Lights / Materials tabs.
+    QSplitter* mHierarchySectionsOrNull = nullptr;
+    /// True once the user has dragged that divider; automatic sizing then leaves it alone.
+    bool mHasUserMovedHierarchySections = false;
+    /// Size the entity list to its rows and give leftover height to Lights / Materials.
+    void updateHierarchySectionSizes();
+    /// Height the entity section needs for its search row and visible rows.
+    [[nodiscard]] foundation::int32 entitySectionContentHeight() const;
     WorldMaterialsPanel* mMaterialsPanel;
     QPointer<WorldMaterialDocument> mMaterialDocumentOrNull;
     /// Splitter sizes captured when the chrome was hidden, restored when it is shown.
