@@ -757,7 +757,7 @@ endif()
 if(TARGET ludus_renderer_render_tests)
     add_executable(ludus_wave_graph_tests tests/wave_tracing_graph_tests.cpp tests/wave_scene_graph_tests.cpp)
     target_link_libraries(ludus_wave_graph_tests PRIVATE Ludus::FoundationThreading Ludus::GraphicsRenderer Ludus::Resources Ludus::Content
-        Ludus::FoundationFilesystem Ludus::FoundationTime Catch2::Catch2WithMain)
+        Ludus::FoundationStrings Ludus::FoundationFilesystem Ludus::FoundationTime Catch2::Catch2WithMain)
     ludus_apply_project_defaults(ludus_wave_graph_tests)
     ludus_enable_test_exceptions(ludus_wave_graph_tests)
     ludus_compile_renderer_shaders(TARGET ludus_wave_graph_tests SHADERS renderer_composite)

@@ -309,16 +309,16 @@ rhi::RasterStatus EscapeWaveOrigin(const ReferenceSceneData& scene,
         }
         segment.NearWorld = distanceWorld;
         segment.FarWorld = math::Min(cone.FarWorld, distanceWorld + cone.NearWorld);
-        WaveInteractionRegion region;
-        const rhi::RasterStatus status = FindWaveInteractionRegion(scene, segment, region);
-        if (status == rhi::RasterStatus::Ready && region.TriangleCount == 0)
+        bool hasHit = false;
+        const rhi::RasterStatus status = TestWaveInteraction(scene, segment, hasHit);
+        if (status != rhi::RasterStatus::Ready)
         {
-            outEscape.DistanceWorld = distanceWorld;
             return status;
         }
-        if (status != rhi::RasterStatus::Ready && status != rhi::RasterStatus::CapacityExceeded)
+        if (hasHit == false)
         {
-            return status;
+            outEscape.DistanceWorld = distanceWorld;
+            return rhi::RasterStatus::Ready;
         }
         if (distanceWorld >= maximumBallisticWorld)
         {
