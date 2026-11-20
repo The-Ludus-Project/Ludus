@@ -1346,9 +1346,10 @@ WorldWorkspace::WorldWorkspace(const ToolingPaths& tooling, QWidget* parent)
                           .arg(targets.size())
                     : QStringLiteral("Component added with project defaults."));
     });
-    connect(Apply_, &QPushButton::clicked, this, [this]() { (void)Apply(); });
+    connect(Apply_, &QPushButton::clicked, this, [this]() { requestApply(); });
     connect(Reset_, &QPushButton::clicked, this, [this]() {
         DraftTimer_.stop();
+        mIsApplyQueued = false;
         Pending_ = false;
         PreviewDraft();
         Render();
@@ -1384,6 +1385,7 @@ void WorldWorkspace::SetProject(const QString& root, foundation::uint64 epoch)
     }
     DraftTimer_.stop();
     DraftPreview_ = false;
+    mIsApplyQueued = false;
     StopPreview();
     Render_->Preview().RestoreNavigation({});
     Scene_->RestoreNavigation({});
@@ -1924,6 +1926,13 @@ void WorldWorkspace::SceneCompleted(bool accepted)
         else
         {
             Changed();
+        }
+        if (mIsApplyQueued == true)
+        {
+            // Apply reads the fields now, so the edit holds what was typed after the click too, and
+            // a refused draft reports its field here.
+            mIsApplyQueued = false;
+            static_cast<void>(Apply());
         }
         return;
     }
@@ -4304,7 +4313,8 @@ void WorldWorkspace::Changed(const QString& message)
     mAddObjectButton->menu()->menuAction()->setVisible(hasPresets);
     Attach_->setEnabled(mSelectedEntities.isEmpty() == false && Pending_ == false &&
                         mComponentMenu->actions().isEmpty() == false && isBusy == false);
-    Apply_->setEnabled(Pending_ && isBusy == false);
+    // A draft preview only shows the fields; Apply clicked during it waits for it (requestApply).
+    Apply_->setEnabled(Pending_ && (isBusy == false || DraftPreview_ == true));
 #if defined(Q_OS_WASM)
     TraceWorldApplyAvailability(Apply_->isEnabled() == true ? 1 : 0);
 #endif
@@ -4839,6 +4849,16 @@ bool WorldWorkspace::SelectEntity(const QString& id)
     }
     Changed();
     return true;
+}
+void WorldWorkspace::requestApply()
+{
+    if (DraftPreview_ == true && Pending_ == true && SceneBusy() == true)
+    {
+        mIsApplyQueued = true;
+        Changed(QStringLiteral("Applying when the preview of these fields finishes…"));
+        return;
+    }
+    static_cast<void>(Apply());
 }
 bool WorldWorkspace::Apply()
 {

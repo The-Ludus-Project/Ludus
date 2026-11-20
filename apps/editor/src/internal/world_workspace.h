@@ -416,6 +416,10 @@ private:
     QSplitter* Split_ = nullptr;
     QTimer DraftTimer_;
     bool DraftPreview_ = false;
+    /// Apply was clicked while the draft preview assembled; it runs when that preview finishes.
+    bool mIsApplyQueued = false;
+    /// The Apply button: apply now, or once a running draft preview finishes.
+    void requestApply();
     QPushButton* Import_ = nullptr;
     QPushButton* CancelScene_ = nullptr;
     /// Dry-run preview of a pending import, with confirm and discard actions.

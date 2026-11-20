@@ -1267,6 +1267,49 @@ TEST_CASE("Renderer preview follows the viewport the World shows", "[editor][wor
     world->StopPreview();
 }
 
+TEST_CASE("World Apply clicked while the draft preview assembles applies after that preview",
+          "[editor][world][unified]")
+{
+    QTemporaryDir directory;
+    static_cast<void>(Fixture(directory));
+    ToolingPaths tools;
+    tools.ToolingRoot = QStringLiteral(LUDUS_EDITOR_PROJECT_ROOT);
+    QString prepareError;
+    const QString external = QDir(directory.path()).filePath(QStringLiteral("external"));
+    REQUIRE(ludus::editor::tests::CreateFixtureSource(external));
+    REQUIRE(ludus::editor::tests::PrepareImportedLevel(directory.path(),
+                                                       QStringLiteral("scenes/room.lulevel"),
+                                                       external,
+                                                       prepareError));
+    INFO(prepareError.toStdString());
+    const QString levelPath =
+        QDir(QFileInfo(directory.path()).canonicalFilePath()).filePath(QStringLiteral("scenes/room.lulevel"));
+    WorldWorkspace workspace(tools, nullptr);
+    workspace.SetProject(directory.path(), 1);
+    REQUIRE(workspace.Open(levelPath));
+    LevelWorkspace* sceneOrNull = workspace.findChild<LevelWorkspace*>();
+    REQUIRE(sceneOrNull != nullptr);
+    constexpr ludus::foundation::int32 OPERATION_TIMEOUT_MILLISECONDS = 15000;
+    REQUIRE(QTest::qWaitFor([&workspace]() { return workspace.CanSave(); }, OPERATION_TIMEOUT_MILLISECONDS));
+    QTreeWidget* entitiesOrNull = workspace.findChild<QTreeWidget*>(QStringLiteral("worldEntities"));
+    QPushButton* applyOrNull = workspace.findChild<QPushButton*>(QStringLiteral("worldApply"));
+    REQUIRE(entitiesOrNull != nullptr);
+    REQUIRE(applyOrNull != nullptr);
+    entitiesOrNull->setCurrentItem(entitiesOrNull->topLevelItem(0), 0, QItemSelectionModel::ClearAndSelect);
+    const QJsonObject before = workspace.Document().Draft();
+    Type(Field(workspace, QStringLiteral("transform/x")), QStringLiteral("0.25"));
+    // Shortly after typing, the draft preview assembles the fields as a scene operation.
+    REQUIRE(QTest::qWaitFor([sceneOrNull]() { return sceneOrNull->Busy(); }, OPERATION_TIMEOUT_MILLISECONDS));
+    // A click there used to reach a disabled button and was lost.
+    REQUIRE(applyOrNull->isEnabled());
+    applyOrNull->click();
+    CHECK(workspace.Document().Draft() == before);
+    REQUIRE(QTest::qWaitFor([&workspace, &before]() { return workspace.Document().Draft() != before; },
+                            OPERATION_TIMEOUT_MILLISECONDS));
+    CHECK(Field(workspace, QStringLiteral("transform/x"))->text() == QStringLiteral("0.25"));
+    REQUIRE(QTest::qWaitFor([&workspace]() { return workspace.CanSave(); }, OPERATION_TIMEOUT_MILLISECONDS));
+    CHECK(applyOrNull->isEnabled() == false);
+}
 TEST_CASE("Converted cooked levels edit placement and gameplay in World and survive reopening",
           "[editor][world][unified]")
 {
