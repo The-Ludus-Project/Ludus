@@ -366,7 +366,7 @@ TEST_CASE("Maximum manifest decode measures and enforces peak requested bytes", 
     const usize exactBudget = peakBytes;
     CHECK(manifest.Read(input.String(), error, peakBytes, 0) == IdentityRecordStatus::Limit);
     CHECK(peakBytes == 0);
-    CHECK(error.Message.View().ends_with("$") == true);
+    CHECK(error.Message.View().ends_with('$') == true);
     CHECK(manifest.Read(input.String(), error, peakBytes, exactBudget - 1) == IdentityRecordStatus::Limit);
     CHECK(peakBytes < exactBudget);
     CHECK(error.Message.View().ends_with("$.documents") == true);
