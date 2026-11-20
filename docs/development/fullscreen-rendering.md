@@ -455,7 +455,7 @@ canvas or hosted target holds one presentation layer, so `CreateDevice` and
 `CreateSurface` return `InvalidDescription` for a target that a live surface of
 any owner already borrows; destroying that owner releases it.
 
-The device-less compatibility facade (`Start`, `BeginFrame()`, `CreateShader`
+The device-less compatibility facade (`Start`, `BeginFrameStatus`, `CreateShader`
 without a device, and so on) addresses the first owner slot. That slot holds the
 device created while no other device was live, so a single-device program
 behaves as before. A facade session from `Start` or `Initialize` runs only while
