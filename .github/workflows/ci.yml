@@ -217,6 +217,75 @@ jobs:
             -DLUDUS_BUILD_BEHAVIOR=ON -DLUDUS_BUILD_BEHAVIOR_ACCEPTANCE=ON -DLUDUS_WARNINGS_AS_ERRORS=ON \
             -DLUDUS_BUILD_WORLD_DEMO=ON -DLUDUS_BUILD_SHADER_WORKER=ON -DLUDUS_EDITOR_CRASH_CAPTURE_TESTS=ON
           out/host-tools/venv/bin/cmake --build --preset macos-clang-development
+      # Static analysis needs only the compile database and generated headers. Run it before the
+      # long test steps so an analyzer failure fails the batch in minutes, not after the suites.
+      - name: Analyze Cocoa Objective-C++ production and test sources
+        run: |
+          out/host-tools/bin/clang-tidy -p out/build/macos-clang-development --warnings-as-errors='*' modules/platform/src/window_cocoa.mm
+          out/host-tools/bin/clang-tidy -p out/build/macos-clang-development --warnings-as-errors='*' modules/platform/tests/cocoa_tests.mm
+      - name: Analyze Metal production and rendering tests
+        run: |
+          out/host-tools/bin/clang-tidy -p out/build/macos-clang-development --warnings-as-errors='*' modules/graphics/rhi/src/rhi_metal.mm
+          out/host-tools/bin/clang-tidy -p out/build/macos-clang-development --warnings-as-errors='*' modules/graphics/rhi/tests/metal_tests.mm
+          out/host-tools/bin/clang-tidy -p out/build/macos-clang-development --warnings-as-errors='*' modules/graphics/rhi/tests/render_tests.cpp
+      - name: Analyze native Editor production and regression sources
+        run: |
+          ./scripts/check macos-clang-development --tidy-sources \
+            apps/editor/src/controller_play.cpp apps/editor/src/workspace.cpp \
+            apps/editor/src/main_window.cpp apps/editor/src/main_window_layout.cpp \
+            apps/editor/src/recent_projects.cpp apps/editor/tests/controller_tests.cpp \
+            apps/editor/src/world_demo_adapter.cpp \
+            apps/editor/src/world_document.cpp apps/editor/src/world_workspace.cpp \
+            apps/editor/src/render_scene.cpp apps/editor/src/render_preview.cpp \
+            apps/editor/src/editor_camera_controller.cpp apps/editor/src/viewport_navigation.cpp \
+            apps/editor/tests/viewport_navigation_tests.cpp \
+            apps/editor/src/preview_viewport.cpp apps/editor/src/qt_viewport_device_metal.mm \
+            apps/editor/src/level_workspace.cpp apps/editor/tests/level_workspace_tests.cpp \
+            apps/editor/src/render_load_job.cpp apps/editor/src/render_panel.cpp \
+            apps/editor/tests/render_authoring_tests.cpp \
+            apps/editor/tests/world_workspace_tests.cpp \
+            apps/editor/tests/world_demo_workspace_tests.cpp apps/editor/tests/render_native_tests.mm \
+            apps/editor/tests/macos_journey_tests.cpp apps/editor/tests/live_journey_tests.cpp
+
+      - name: Analyze native filesystem production and test sources
+        run: |
+          out/host-tools/bin/clang-tidy -p out/build/macos-clang-development --warnings-as-errors='*' modules/foundation/filesystem/src/posix.cpp
+          out/host-tools/bin/clang-tidy -p out/build/macos-clang-development --warnings-as-errors='*' modules/foundation/filesystem/tests/file_tests.cpp
+          out/host-tools/bin/clang-tidy -p out/build/macos-clang-development --warnings-as-errors='*' modules/foundation/filesystem/tests/posix_fault_tests.cpp
+          out/host-tools/bin/clang-tidy -p out/build/macos-clang-development --warnings-as-errors='*' modules/foundation/filesystem/src/namespace.cpp
+          out/host-tools/bin/clang-tidy -p out/build/macos-clang-development --warnings-as-errors='*' modules/foundation/filesystem/tests/namespace_tests.cpp
+          out/host-tools/bin/clang-tidy -p out/build/macos-clang-development --warnings-as-errors='*' modules/foundation/filesystem/tests/namespace_fault_tests.cpp
+          out/host-tools/bin/clang-tidy -p out/build/macos-clang-development --warnings-as-errors='*' modules/foundation/filesystem/src/async.cpp
+          out/host-tools/bin/clang-tidy -p out/build/macos-clang-development --warnings-as-errors='*' modules/foundation/filesystem/src/async_posix.cpp
+          out/host-tools/bin/clang-tidy -p out/build/macos-clang-development --warnings-as-errors='*' modules/foundation/filesystem/tests/async_tests.cpp
+          out/host-tools/bin/clang-tidy -p out/build/macos-clang-development --warnings-as-errors='*' modules/foundation/filesystem/tests/async_fault_tests.cpp
+          out/host-tools/bin/clang-tidy -p out/build/macos-clang-development --warnings-as-errors='*' modules/foundation/filesystem/src/persistence_posix.cpp
+          out/host-tools/bin/clang-tidy -p out/build/macos-clang-development --warnings-as-errors='*' modules/foundation/filesystem/src/watch.cpp
+          out/host-tools/bin/clang-tidy -p out/build/macos-clang-development --warnings-as-errors='*' --extra-arg=-DLUDUS_FILESYSTEM_PERSISTENCE_FAULT_TESTING=1 modules/foundation/filesystem/src/persistence_posix.cpp
+          out/host-tools/bin/clang-tidy -p out/build/macos-clang-development --warnings-as-errors='*' --extra-arg=-DLUDUS_FILESYSTEM_WATCH_FAULT_TESTING=1 modules/foundation/filesystem/src/watch.cpp
+          out/host-tools/bin/clang-tidy -p out/build/macos-clang-development --warnings-as-errors='*' modules/foundation/filesystem/tests/persistence_tests.cpp
+          out/host-tools/bin/clang-tidy -p out/build/macos-clang-development --warnings-as-errors='*' modules/foundation/filesystem/tests/watch_tests.cpp
+          out/host-tools/bin/clang-tidy -p out/build/macos-clang-development --warnings-as-errors='*' modules/foundation/filesystem/tests/persistence_fault_tests.cpp
+          out/host-tools/bin/clang-tidy -p out/build/macos-clang-development --warnings-as-errors='*' modules/foundation/filesystem/tests/watch_fault_tests.cpp
+          out/host-tools/bin/clang-tidy -p out/build/macos-clang-development --warnings-as-errors='*' modules/foundation/filesystem/src/pack.cpp
+          out/host-tools/bin/clang-tidy -p out/build/macos-clang-development --warnings-as-errors='*' modules/foundation/filesystem/src/pack_codec.cpp
+          out/host-tools/bin/clang-tidy -p out/build/macos-clang-development --warnings-as-errors='*' modules/foundation/filesystem/tests/pack_tests.cpp
+          out/host-tools/bin/clang-tidy -p out/build/macos-clang-development --warnings-as-errors='*' modules/foundation/filesystem/tests/pack_fault_tests.cpp
+          out/host-tools/bin/clang-tidy -p out/build/macos-clang-development --warnings-as-errors='*' modules/content/tests/native_reads_tests.cpp
+      - name: Analyze Content native persistence and tests
+        run: |
+          out/host-tools/bin/clang-tidy -p out/build/macos-clang-development --warnings-as-errors='*' modules/content/src/files.cpp
+          out/host-tools/bin/clang-tidy -p out/build/macos-clang-development --warnings-as-errors='*' --extra-arg=-DLUDUS_CONTENT_SAVE_FAULT_TESTING=1 modules/content/src/files.cpp
+          out/host-tools/bin/clang-tidy -p out/build/macos-clang-development --warnings-as-errors='*' modules/content/tests/content_tests.cpp
+          out/host-tools/bin/clang-tidy -p out/build/macos-clang-development --warnings-as-errors='*' modules/content/tests/native_saves_tests.cpp
+          out/host-tools/bin/clang-tidy -p out/build/macos-clang-development --warnings-as-errors='*' modules/content/tests/save_fault_tests.cpp
+      - name: Analyze native Audio workers, device adapter and regressions
+        run: |
+          out/host-tools/bin/clang-tidy -p out/build/macos-clang-development --warnings-as-errors='*' modules/audio/src/device.cpp
+          out/host-tools/bin/clang-tidy -p out/build/macos-clang-development --warnings-as-errors='*' modules/audio/tests/device_tests.cpp
+          out/host-tools/bin/clang-tidy -p out/build/macos-clang-development --warnings-as-errors='*' modules/audio/tests/stream_tests.cpp
+          out/host-tools/bin/clang-tidy -p out/build/macos-clang-development --warnings-as-errors='*' modules/audio/content/src/loader.cpp
+          out/host-tools/bin/clang-tidy -p out/build/macos-clang-development --warnings-as-errors='*' modules/audio/content/tests/content_tests.cpp
       - name: Qualify production Behavior provider on macOS
         run: |
           out/host-tools/venv/bin/ctest --preset macos-clang-development --tests-regex '^ludus_behavior_' --output-on-failure --no-tests=error
@@ -264,15 +333,6 @@ jobs:
           out/host-tools/bin/clang-tidy -p out/build/macos-clang-development --warnings-as-errors='*' tools/diagnostics/src/session.cpp
           out/host-tools/bin/clang-tidy -p out/build/macos-clang-debug --warnings-as-errors='*' tools/diagnostics/tests/diagnostic_startup_child.cpp
           out/host-tools/bin/clang-tidy -p out/build/macos-clang-debug --warnings-as-errors='*' tools/diagnostics/tests/assert_decision_child.cpp
-      - name: Analyze Cocoa Objective-C++ production and test sources
-        run: |
-          out/host-tools/bin/clang-tidy -p out/build/macos-clang-development --warnings-as-errors='*' modules/platform/src/window_cocoa.mm
-          out/host-tools/bin/clang-tidy -p out/build/macos-clang-development --warnings-as-errors='*' modules/platform/tests/cocoa_tests.mm
-      - name: Analyze Metal production and rendering tests
-        run: |
-          out/host-tools/bin/clang-tidy -p out/build/macos-clang-development --warnings-as-errors='*' modules/graphics/rhi/src/rhi_metal.mm
-          out/host-tools/bin/clang-tidy -p out/build/macos-clang-development --warnings-as-errors='*' modules/graphics/rhi/tests/metal_tests.mm
-          out/host-tools/bin/clang-tidy -p out/build/macos-clang-development --warnings-as-errors='*' modules/graphics/rhi/tests/render_tests.cpp
       - name: Verify installed Metal shader helper
         run: |
           out/host-tools/venv/bin/cmake --install out/build/macos-clang-development
@@ -440,25 +500,6 @@ jobs:
           QT_QPA_PLATFORM: cocoa
         run: out/build/macos-clang-development/apps/editor/ludus_editor_tests '[.play-native]'
 
-      - name: Analyze native Editor production and regression sources
-        run: |
-          ./scripts/check macos-clang-development --tidy-sources \
-            apps/editor/src/controller_play.cpp apps/editor/src/workspace.cpp \
-            apps/editor/src/main_window.cpp apps/editor/src/main_window_layout.cpp \
-            apps/editor/src/recent_projects.cpp apps/editor/tests/controller_tests.cpp \
-            apps/editor/src/world_demo_adapter.cpp \
-            apps/editor/src/world_document.cpp apps/editor/src/world_workspace.cpp \
-            apps/editor/src/render_scene.cpp apps/editor/src/render_preview.cpp \
-            apps/editor/src/editor_camera_controller.cpp apps/editor/src/viewport_navigation.cpp \
-            apps/editor/tests/viewport_navigation_tests.cpp \
-            apps/editor/src/preview_viewport.cpp apps/editor/src/qt_viewport_device_metal.mm \
-            apps/editor/src/level_workspace.cpp apps/editor/tests/level_workspace_tests.cpp \
-            apps/editor/src/render_load_job.cpp apps/editor/src/render_panel.cpp \
-            apps/editor/tests/render_authoring_tests.cpp \
-            apps/editor/tests/world_workspace_tests.cpp \
-            apps/editor/tests/world_demo_workspace_tests.cpp apps/editor/tests/render_native_tests.mm \
-            apps/editor/tests/macos_journey_tests.cpp apps/editor/tests/live_journey_tests.cpp
-
       - name: Verify installed macOS diagnostic helper
         run: |
           out/host-tools/venv/bin/python tools/diagnostics/tests/startup_tests.py "$PWD/out/install/macos-clang-development/bin/ludus_diagnostic_helper" "$PWD/out/build/macos-clang-development/tools/diagnostics/ludus_diagnostic_startup_child" 0
@@ -505,45 +546,6 @@ jobs:
           out/build/macos-clang-development/apps/world_demo/ludus_world_demo --frames 3
           out/host-tools/bin/clang-tidy -p out/build/macos-clang-development --warnings-as-errors='*' modules/foundation/base/src/parse_number.cpp
           out/host-tools/bin/clang-tidy -p out/build/macos-clang-development --warnings-as-errors='*' modules/foundation/base/tests/parse_number_tests.cpp
-      - name: Analyze native filesystem production and test sources
-        run: |
-          out/host-tools/bin/clang-tidy -p out/build/macos-clang-development --warnings-as-errors='*' modules/foundation/filesystem/src/posix.cpp
-          out/host-tools/bin/clang-tidy -p out/build/macos-clang-development --warnings-as-errors='*' modules/foundation/filesystem/tests/file_tests.cpp
-          out/host-tools/bin/clang-tidy -p out/build/macos-clang-development --warnings-as-errors='*' modules/foundation/filesystem/tests/posix_fault_tests.cpp
-          out/host-tools/bin/clang-tidy -p out/build/macos-clang-development --warnings-as-errors='*' modules/foundation/filesystem/src/namespace.cpp
-          out/host-tools/bin/clang-tidy -p out/build/macos-clang-development --warnings-as-errors='*' modules/foundation/filesystem/tests/namespace_tests.cpp
-          out/host-tools/bin/clang-tidy -p out/build/macos-clang-development --warnings-as-errors='*' modules/foundation/filesystem/tests/namespace_fault_tests.cpp
-          out/host-tools/bin/clang-tidy -p out/build/macos-clang-development --warnings-as-errors='*' modules/foundation/filesystem/src/async.cpp
-          out/host-tools/bin/clang-tidy -p out/build/macos-clang-development --warnings-as-errors='*' modules/foundation/filesystem/src/async_posix.cpp
-          out/host-tools/bin/clang-tidy -p out/build/macos-clang-development --warnings-as-errors='*' modules/foundation/filesystem/tests/async_tests.cpp
-          out/host-tools/bin/clang-tidy -p out/build/macos-clang-development --warnings-as-errors='*' modules/foundation/filesystem/tests/async_fault_tests.cpp
-          out/host-tools/bin/clang-tidy -p out/build/macos-clang-development --warnings-as-errors='*' modules/foundation/filesystem/src/persistence_posix.cpp
-          out/host-tools/bin/clang-tidy -p out/build/macos-clang-development --warnings-as-errors='*' modules/foundation/filesystem/src/watch.cpp
-          out/host-tools/bin/clang-tidy -p out/build/macos-clang-development --warnings-as-errors='*' --extra-arg=-DLUDUS_FILESYSTEM_PERSISTENCE_FAULT_TESTING=1 modules/foundation/filesystem/src/persistence_posix.cpp
-          out/host-tools/bin/clang-tidy -p out/build/macos-clang-development --warnings-as-errors='*' --extra-arg=-DLUDUS_FILESYSTEM_WATCH_FAULT_TESTING=1 modules/foundation/filesystem/src/watch.cpp
-          out/host-tools/bin/clang-tidy -p out/build/macos-clang-development --warnings-as-errors='*' modules/foundation/filesystem/tests/persistence_tests.cpp
-          out/host-tools/bin/clang-tidy -p out/build/macos-clang-development --warnings-as-errors='*' modules/foundation/filesystem/tests/watch_tests.cpp
-          out/host-tools/bin/clang-tidy -p out/build/macos-clang-development --warnings-as-errors='*' modules/foundation/filesystem/tests/persistence_fault_tests.cpp
-          out/host-tools/bin/clang-tidy -p out/build/macos-clang-development --warnings-as-errors='*' modules/foundation/filesystem/tests/watch_fault_tests.cpp
-          out/host-tools/bin/clang-tidy -p out/build/macos-clang-development --warnings-as-errors='*' modules/foundation/filesystem/src/pack.cpp
-          out/host-tools/bin/clang-tidy -p out/build/macos-clang-development --warnings-as-errors='*' modules/foundation/filesystem/src/pack_codec.cpp
-          out/host-tools/bin/clang-tidy -p out/build/macos-clang-development --warnings-as-errors='*' modules/foundation/filesystem/tests/pack_tests.cpp
-          out/host-tools/bin/clang-tidy -p out/build/macos-clang-development --warnings-as-errors='*' modules/foundation/filesystem/tests/pack_fault_tests.cpp
-          out/host-tools/bin/clang-tidy -p out/build/macos-clang-development --warnings-as-errors='*' modules/content/tests/native_reads_tests.cpp
-      - name: Analyze Content native persistence and tests
-        run: |
-          out/host-tools/bin/clang-tidy -p out/build/macos-clang-development --warnings-as-errors='*' modules/content/src/files.cpp
-          out/host-tools/bin/clang-tidy -p out/build/macos-clang-development --warnings-as-errors='*' --extra-arg=-DLUDUS_CONTENT_SAVE_FAULT_TESTING=1 modules/content/src/files.cpp
-          out/host-tools/bin/clang-tidy -p out/build/macos-clang-development --warnings-as-errors='*' modules/content/tests/content_tests.cpp
-          out/host-tools/bin/clang-tidy -p out/build/macos-clang-development --warnings-as-errors='*' modules/content/tests/native_saves_tests.cpp
-          out/host-tools/bin/clang-tidy -p out/build/macos-clang-development --warnings-as-errors='*' modules/content/tests/save_fault_tests.cpp
-      - name: Analyze native Audio workers, device adapter and regressions
-        run: |
-          out/host-tools/bin/clang-tidy -p out/build/macos-clang-development --warnings-as-errors='*' modules/audio/src/device.cpp
-          out/host-tools/bin/clang-tidy -p out/build/macos-clang-development --warnings-as-errors='*' modules/audio/tests/device_tests.cpp
-          out/host-tools/bin/clang-tidy -p out/build/macos-clang-development --warnings-as-errors='*' modules/audio/tests/stream_tests.cpp
-          out/host-tools/bin/clang-tidy -p out/build/macos-clang-development --warnings-as-errors='*' modules/audio/content/src/loader.cpp
-          out/host-tools/bin/clang-tidy -p out/build/macos-clang-development --warnings-as-errors='*' modules/audio/content/tests/content_tests.cpp
       - name: Validate installed Audio SDK and native workers
         run: |
           out/host-tools/venv/bin/cmake -S tests/sdk_consumer/audio -B out/sdk-audio-consumer -G Ninja \

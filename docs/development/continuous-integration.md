@@ -661,6 +661,9 @@ the compiled objects. Compare setup plus build time when evaluating changes to
 this sequence. The **macOS native backends and diagnostics** job uploads JUnit
 results from its native CTest suite, including individual case times on test
 failures.
+It runs its clang-tidy steps for the development build directly after the build,
+before any test step: they take seconds, while the native suites take most of an
+hour, so an analyzer finding fails the batch early. `test_ci.py` keeps that order.
 
 #### Native viewport scheduling acceptance
 
