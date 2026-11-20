@@ -702,6 +702,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
         with:
+          ref: ${{ inputs.batch_sha || github.sha }}
           fetch-depth: 0
           persist-credentials: false
       # Restores the batch's dependency and compiler caches; this job saves neither.
