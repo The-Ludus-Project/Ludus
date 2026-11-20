@@ -136,12 +136,13 @@ backports the upstream reentrant sender (see
 A queued key also reaches Qt after the browser has applied it: with a text
 field focused, Qt's hidden input element has already moved its caret or taken
 the text, so typing right after a save landed out of order. While a host-folder
-call is suspended, `browser/suspended_input.js` therefore cancels trusted
-`keydown`/`keyup` events before Qt or the input element sees them, then
-dispatches equivalent events in order once the call resumes. Qt types text from
-`keydown`, and a dispatched event has no browser default action. IME
-composition keys and the copy, cut and paste shortcuts stay with the browser.
-`apps/editor/tests/browser_suspended_input_tests.cjs` covers the hold.
+call is suspended, `browser/suspended_input.js` therefore cancels the browser
+default of trusted `keydown`/`keyup` events in the capture phase. The events
+still reach Qt's queue in their place among pointer and other input, and Qt
+types text from `keydown` itself. Holding keys back and dispatching them later
+would let a queued click overtake them. IME composition keys and the copy, cut
+and paste shortcuts keep their default.
+`apps/editor/tests/browser_suspended_input_tests.cjs` covers the cancellation.
 Renames across mounts fail with `EXDEV`, which Qt turns into copies. Symbolic
 links cannot be created in a folder mount. The overrides reproduce Emscripten
 4.0.23's `__syscall_openat` and `__syscall_renameat` over the public FS API and
