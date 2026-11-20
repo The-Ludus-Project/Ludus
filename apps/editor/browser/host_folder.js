@@ -726,7 +726,7 @@ addToLibrary({
 
     // Keep the instance suspended until `pending` settles with an errno (0 for success), then
     // resume it through `resume`. An unexpected rejection resumes with EIO rather than never.
-    // Keyboard input that arrives meanwhile is held and dispatched in order afterwards.
+    // Keys pressed meanwhile reach Qt's queue without their browser default (suspended_input.js).
     suspend(pending, resume) {
       LudusSuspendedInput.begin();
       pending.catch(error => {
