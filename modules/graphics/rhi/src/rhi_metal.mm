@@ -1086,12 +1086,16 @@ ResourceStatus Draw(usize slot) noexcept
     return ResourceStatus::Ready;
 }
 #if defined(LUDUS_RHI_TEST_READBACK)
-bool GetMetalSurfaceDepthAllocations(usize& outMemorylessBytes, usize& outPrivateBytes) noexcept
+MetalSurfaceDepthAllocations GetMetalSurfaceDepthAllocations() noexcept
 {
     const MetalSurface& surface = GetActiveSurface();
-    outMemorylessBytes = surface.MemorylessDepthOrNull.allocatedSize;
-    outPrivateBytes = surface.PrivateDepthOrNull.allocatedSize;
-    return surface.MemorylessDepthOrNull.storageMode == MTLStorageModeMemoryless;
+    const MetalSurfaceDepthAllocations allocations
+    {
+        .MemorylessBytes = surface.MemorylessDepthOrNull.allocatedSize,
+        .PrivateBytes = surface.PrivateDepthOrNull.allocatedSize,
+        .HasMemorylessTexture = surface.MemorylessDepthOrNull.storageMode == MTLStorageModeMemoryless,
+    };
+    return allocations;
 }
 bool ReadHeadlessPixels(std::span<uint8> pixels) noexcept
 {

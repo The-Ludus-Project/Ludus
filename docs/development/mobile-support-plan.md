@@ -108,6 +108,14 @@ and negotiate the actual Galaxy's features. If current presentation-retirement
 extensions are unavailable, implement and validate an alternative retirement
 contract or report a blocker; do not remove safety checks to get a frame.
 
+Use Vulkan FIFO as the first Android presentation baseline. Request three
+swapchain images when the surface limits and RHI capacity allow it. Record the
+surface limits, requested and returned image counts, and selected present mode
+when creating or recreating the swapchain. Run the lifecycle fixture with the
+baseline and any supported fallback image count. Thanks to Samsung Galaxy
+GameDev's [Vulkan Usage Recommendations](https://developer.samsung.com/galaxy-gamedev/resources/articles/usage.html),
+“Swapchains,” for the FIFO baseline and image-count tradeoff.
+
 Both: supply static game-host startup/shutdown, bounded ordinary diagnostics and
 an independent assertion emergency path. Surface destruction does not imply
 the game world is destroyed. Stop presentation when no usable drawable exists;
@@ -168,6 +176,26 @@ device), reporting p50/p95/p99 frame times, memory growth, thermal conditions an
 audio/input interruptions. The protocol is an acceptance proposal, not a claim
 these powerful devices represent low-end phones. Do not mandate desktop compute,
 ray or optional RHI features on the mobile minimum profile.
+
+For the Galaxy run, measure actual display intervals from the game's surface
+using [SurfaceFlinger timing](https://developer.android.com/games/optimize/vitals/slow-session)
+or supported [Vulkan presentation timing](https://developer.android.com/games/develop/vulkan/frame-pacing-extensions).
+Record CPU/GPU work timings alongside the display intervals. On the same package,
+scene replay and refresh setting, compare two- and three-image FIFO requests
+when both are supported and yield different actual image counts. Report
+frame-interval tails, missed target intervals and memory cost. If the comparison
+is unavailable, record why. Where available, use Samsung's
+[GPUWatch](https://developer.samsung.com/galaxy-gamedev/gpuwatch.html) in a
+separate diagnostic run so the overlay is absent from the budget measurements.
+
+Record [Android thermal status or headroom](https://developer.android.com/games/optimize/adpf/thermal)
+where available, including the initial state and changes during the run. Mark
+unavailable telemetry explicitly and retain a fixed-quality run. Revisit
+[Android Frame Pacing](https://developer.android.com/games/sdk/frame-pacing)
+if display intervals miss the budget while frame work fits it. Consider app-owned
+quality or frame-rate adaptation if repeatable thermal throttling causes the
+packaged scene to miss the sustained budget. Compare any candidate against the
+baseline in the standalone Release app.
 
 Build warning-clean target libraries and an installed-SDK consumer in Debug,
 Development and Release. Run reference format/tidy, portable unit tests and

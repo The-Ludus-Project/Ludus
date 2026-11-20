@@ -104,7 +104,10 @@ async function observeEditor(page) {
       trace.drawable.push({...event.detail, canvas: event.target.id, frame: Number(event.target.dataset.frames)});
     });
     addEventListener('DOMContentLoaded', () => {
-      document.querySelector('#screen').dataset.measureWorldEdits = 'true';
+      // A new tab's about:blank document also runs this script; only the editor page has a screen.
+      const screen = document.querySelector('#screen');
+      if (screen === null) return;
+      screen.dataset.measureWorldEdits = 'true';
       const observer = new MutationObserver(records => {
         for (const record of records) {
           if (record.attributeName === 'data-editor-state' && document.body.dataset.editorState === 'ready') {
@@ -211,6 +214,25 @@ async function readMarker(page, surface, predicate) {
   } while (Date.now() < deadline);
   const diagnostic = await page.locator('#screen').getAttribute('data-viewport-error');
   assert.fail('The viewport did not draw the requested placement marker' + (diagnostic ? ': ' + diagnostic : ''));
+}
+
+// Where a failed step stopped: the latest published and drawn extractions, the
+// viewport canvases, and whether Qt's event loop still runs. Qt 6.10's private
+// suspend/resume control holds the browser events that Qt has not sent yet; a
+// control with neither a waiting event loop nor sent events no longer runs.
+async function describeStall(page) {
+  return page.evaluate(() => {
+    const control = window.qaEditor?.qtSuspendResumeControl;
+    return {
+      revisions: window.qaWorld.revisions.slice(-6),
+      drawable: window.qaWorld.drawable.slice(-6),
+      viewports: [...document.querySelectorAll('.ludus-gpu-viewport')].map(canvas => ({
+        id: canvas.id, display: canvas.style.display, frames: canvas.dataset.frames, api: canvas.dataset.api,
+      })),
+      qtEvents: control ? {isWaiting: control.resume != null, unsent: control.pendingEvents?.length} : null,
+      status: document.querySelector('#screen')?.dataset.viewportPrompt,
+    };
+  });
 }
 
 async function replaceField(page, x) {
@@ -468,7 +490,10 @@ export async function qualifyWorldEdits({browser, canvas, click, importScene, op
       sample.recovery.reopened = true;
     } catch (error) {
       const active = context.pages().at(-1);
-      if (active && !active.isClosed()) await active.screenshot({path: resolve(output, `qualification-failure-${api}-${placementCount}.png`)});
+      if (active && !active.isClosed()) {
+        await active.screenshot({path: resolve(output, `qualification-failure-${api}-${placementCount}.png`)});
+        sample.failureState = await describeStall(active).catch(reason => ({unavailable: String(reason)}));
+      }
       throw error;
     } finally {
       await context.close();

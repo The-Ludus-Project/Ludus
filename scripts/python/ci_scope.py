@@ -43,6 +43,12 @@ TIERS = frozenset({FULL_TIER, INTEGRATION_TIER, NIGHTLY_TIER})
 # later batch. Tests, sanitizers and the other compiled variants run once per batch.
 PULL_REQUEST_JOBS = ("formatting", "analysis", "editor")
 INTEGRATION_JOBS = tuple(name for name in NATIVE_JOBS if name not in PULL_REQUEST_JOBS)
+# Changed Objective-C++ is absent from the Linux compile database the analysis job reads,
+# so an integration PR that changes a .mm source also runs this one macOS job; every
+# other PR skips it (docs/development/continuous-integration.md#platform-only-sources).
+OBJCXX_JOB = "macos-objcxx-analysis"
+OBJCXX_SUFFIX = ".mm"
+EDITOR_ROOT = "apps/editor/"
 # Bounded GitHub run metadata read by a cancelled pull-request gate.
 MAX_RUN_METADATA_BYTES = 2 * 1024 * 1024
 GATE_JOB = "Ubuntu Clang"
@@ -113,6 +119,25 @@ def camera_pilot_matches(paths: list[str]) -> bool:
     return False
 
 
+def objcxx_changes(paths: list[str], root: Path) -> tuple[bool, bool]:
+    """Whether the checkout holds a changed .mm source, and whether one is an Editor source.
+
+    Deleted sources leave nothing to analyze, so only paths present in the checkout count.
+    """
+    present = [path for path in paths if PurePosixPath(path).suffix == OBJCXX_SUFFIX and (root / path).is_file()]
+    return bool(present), any(path.startswith(EDITOR_ROOT) for path in present)
+
+
+def classify_objcxx(event_name: str, event: dict, root: Path) -> tuple[bool, bool]:
+    """Route the macOS Objective-C++ job; an unavailable comparison runs it rather than skip it."""
+    if event_name != "pull_request":
+        return False, False
+    try:
+        return objcxx_changes(changed_paths(event_name, event, root), root)
+    except (KeyError, TypeError, ValueError, OSError, subprocess.SubprocessError):
+        return True, True
+
+
 def classify(event_name: str, event: dict, root: Path) -> tuple[bool, str, bool]:
     try:
         paths = changed_paths(event_name, event, root)
@@ -165,8 +190,17 @@ def gate_failures(results: dict, evidence_job: str = "") -> list[str]:
     tier = outputs.get("validation_tier")
     if tier not in TIERS:
         return ["Change classification did not report a valid validation_tier output."]
-    if set(results) != {"changes", *NATIVE_JOBS}:
+    objcxx = outputs.get("objcxx_changed")
+    if objcxx not in {"true", "false"}:
+        return ["Change classification did not report a valid objcxx_changed output."]
+    if set(results) != {"changes", *NATIVE_JOBS, OBJCXX_JOB}:
         failures.append("Required native job inventory is incomplete or unexpected.")
+    # Batches and full-tier PRs analyze Objective-C++ in the macOS native jobs instead.
+    expected = ("success" if required == "true" and tier == INTEGRATION_TIER and objcxx == "true" and not is_scoped
+                else "skipped")
+    actual = results.get(OBJCXX_JOB, {}).get("result")
+    if actual != expected:
+        failures.append(f"{OBJCXX_JOB}: expected {expected}, received {actual}.")
     for name in NATIVE_JOBS:
         deferred = ((tier == INTEGRATION_TIER and name in INTEGRATION_JOBS)
                     or (tier != NIGHTLY_TIER and name in NIGHTLY_JOBS))
@@ -280,18 +314,27 @@ def main() -> int:
         event = json.loads(Path(os.environ["GITHUB_EVENT_PATH"]).read_text(encoding="utf-8"))
         required, reason, camera = classify(event_name, event, Path.cwd())
         tier = validation_tier(event_name, event, is_batch=bool(os.environ.get("LUDUS_CI_BATCH_SHA")))
+        objcxx, objcxx_editor = classify_objcxx(event_name, event, Path.cwd())
     except (OSError, ValueError, KeyError):
         required, reason, camera = True, "Event metadata unavailable; full validation required.", True
         tier = FULL_TIER
+        objcxx, objcxx_editor = False, False
+    # Only integration PRs run the macOS Objective-C++ job; the gate expects it skipped elsewhere.
+    objcxx = objcxx and required and tier == INTEGRATION_TIER
+    objcxx_editor = objcxx_editor and objcxx
     value = "true" if required else "false"
     with Path(os.environ["GITHUB_OUTPUT"]).open("a", encoding="utf-8") as output:
         output.write(f"camera_pilot={str(camera).lower()}\n")
         output.write(f"native_required={value}\n")
         output.write(f"validation_tier={tier}\n")
+        output.write(f"objcxx_changed={str(objcxx).lower()}\n")
+        output.write(f"objcxx_editor={str(objcxx_editor).lower()}\n")
     message = f"Native validation required: {value}. Validation tier: {tier}. {reason}"
     if tier == INTEGRATION_TIER:
         message += (" Camera pilot selected." if camera else
                     " Camera pilot outside scope (0 test runner-minutes).")
+        message += (" Changed Objective-C++: macOS Objective-C++ analysis selected." if objcxx else
+                    " No changed Objective-C++: macOS Objective-C++ analysis skipped (0 macOS runner-minutes).")
     print(message)
     if os.environ.get("GITHUB_STEP_SUMMARY"):
         with Path(os.environ["GITHUB_STEP_SUMMARY"]).open("a", encoding="utf-8") as summary:

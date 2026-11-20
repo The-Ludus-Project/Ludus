@@ -128,6 +128,21 @@ thread); and reading a file in an editor-level event loop before each use
 Limits and coupling: a nested Wasm call made while another call is suspended
 cannot wait for disk and fails with `EIO` (Qt queues its own events during the
 suspension, so this needs a JavaScript callback that calls Wasm directly).
+Qt sends those queued events as one batch when the call resumes. Qt 6.10.3
+sent a batch by its starting length, so a nested event loop that emptied the
+queue first ended Qt's event loop and froze the editor. The editor's Qt build
+backports the upstream reentrant sender (see
+[Ludus changes to Qt](../development/browser-editor.md#ludus-changes-to-qt)).
+A queued key also reaches Qt after the browser has applied it: with a text
+field focused, Qt's hidden input element has already moved its caret or taken
+the text, so typing right after a save landed out of order. While a host-folder
+call is suspended, `browser/suspended_input.js` therefore cancels the browser
+default of trusted `keydown`/`keyup` events in the capture phase. The events
+still reach Qt's queue in their place among pointer and other input, and Qt
+types text from `keydown` itself. Holding keys back and dispatching them later
+would let a queued click overtake them. IME composition keys and the copy, cut
+and paste shortcuts keep their default.
+`apps/editor/tests/browser_suspended_input_tests.cjs` covers the cancellation.
 Renames across mounts fail with `EXDEV`, which Qt turns into copies. Symbolic
 links cannot be created in a folder mount. The overrides reproduce Emscripten
 4.0.23's `__syscall_openat` and `__syscall_renameat` over the public FS API and

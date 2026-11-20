@@ -14,7 +14,7 @@ import struct
 import subprocess
 import sys
 import tarfile
-import urllib.error
+import time
 import urllib.request
 import zipfile
 
@@ -43,26 +43,64 @@ def require(condition: bool, message: str) -> None:
         raise RuntimeError(message)
 
 
-def fetch(name: str, pin: dict, archive: Path) -> None:
-    """Download a pinned archive unless the verified copy is already present."""
+# The Ubuntu archive publishes each package at the same pool path on every mirror.
+# security.ubuntu.com intermittently answers hosted CI runners with 403, so pinned
+# packages fall back to other official mirrors; the SHA-256 pin decides acceptance.
+UBUNTU_POOL = "/ubuntu/pool/"
+UBUNTU_POOL_MIRRORS = (
+    "http://azure.archive.ubuntu.com",
+    "https://mirrors.edge.kernel.org",
+    "http://archive.ubuntu.com",
+)
+LAUNCHPAD_FILES = "https://launchpad.net/ubuntu/+archive/primary/+files/"
+DOWNLOAD_ATTEMPTS = 2
+RETRY_DELAY_SECONDS = 5
+DOWNLOAD_TIMEOUT_SECONDS = 120
+
+
+def download_sources(pin: dict) -> list[str]:
+    """Return the pinned URL, preceded by a release API asset and followed by package mirrors."""
+    url = pin["url"]
+    sources = [pin["release_asset_api"]] if "release_asset_api" in pin else []
+    sources.append(url)
+    if UBUNTU_POOL in url:
+        path = url[url.index(UBUNTU_POOL):]
+        sources += [mirror + path for mirror in UBUNTU_POOL_MIRRORS if not url.startswith(mirror + UBUNTU_POOL)]
+        sources.append(LAUNCHPAD_FILES + url.rsplit("/", 1)[1])
+    return sources
+
+
+def fetch(name: str, pin: dict, archive: Path, *, sleep=time.sleep) -> None:
+    """Download a pinned archive unless the verified copy is already present.
+
+    Each source is tried twice; a source that fails or serves different bytes
+    yields to the next. Only a copy matching the pinned SHA-256 is kept.
+    """
     if archive.exists() and digest(archive) == pin["sha256"]:
         return
     temporary = archive.with_suffix(".download")
-    urls = (pin["release_asset_api"], pin["url"]) if "release_asset_api" in pin else (pin["url"],)
+    failures = []
     try:
-        for url in urls:
-            request = urllib.request.Request(url, headers={"Accept": "application/octet-stream"})
-            try:
-                with urllib.request.urlopen(request, timeout=120) as response, temporary.open("wb") as output:
-                    shutil.copyfileobj(response, output)
-            except urllib.error.URLError as error:
-                if url == pin["url"]:
-                    raise RuntimeError(f"Download {name} from {url} failed: {error}") from error
-                print(f"Download {name} from {url} failed: {error}. Trying the release URL.", flush=True)
-            else:
-                break
-        require(digest(temporary) == pin["sha256"], f"Integrity failure: {name}")
-        temporary.replace(archive)
+        for url in download_sources(pin):
+            for attempt in range(DOWNLOAD_ATTEMPTS):
+                if attempt > 0:
+                    sleep(RETRY_DELAY_SECONDS)
+                request = urllib.request.Request(url, headers={"Accept": "application/octet-stream"})
+                try:
+                    with urllib.request.urlopen(request, timeout=DOWNLOAD_TIMEOUT_SECONDS) as response, \
+                            temporary.open("wb") as output:
+                        shutil.copyfileobj(response, output)
+                except OSError as error:
+                    failures.append(f"{url}: {error}")
+                    print(f"Download {name} from {url} failed: {error}.", flush=True)
+                    continue
+                if digest(temporary) != pin["sha256"]:
+                    failures.append(f"{url}: integrity failure")
+                    print(f"Download {name} from {url} does not match the pinned SHA-256.", flush=True)
+                    break
+                temporary.replace(archive)
+                return
+        raise RuntimeError(f"Download {name} failed from every source:\n  " + "\n  ".join(failures))
     finally:
         temporary.unlink(missing_ok=True)
 

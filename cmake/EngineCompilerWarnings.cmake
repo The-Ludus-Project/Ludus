@@ -10,6 +10,10 @@ function(ludus_configure_project_warnings target_name)
         -Wundef
         -Wnull-dereference
         -Wdouble-promotion
+        # Implicit floating-point to integer conversions. MSVC /W4 reports them as C4244, an
+        # error under /WX, and the Windows lane runs only in batch validation; this flag lets
+        # Linux/macOS pull request builds reject them first. GCC accepts the same spelling.
+        -Wfloat-conversion
         -Wimplicit-fallthrough
         -Woverloaded-virtual
         -Wnon-virtual-dtor
