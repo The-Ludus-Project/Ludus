@@ -65,6 +65,23 @@ QT_SOURCE_CHANGES = (
                        "        ++count;\n"
                        "    }\n",
     },
+    {
+        # Ludus change. A browser event that waited in the queue above while the instance was
+        # suspended is sent after its dispatch ended, when DOM Event.composedPath() returns an
+        # empty array. Qt 6.10.3 then reads className from undefined, and that JavaScript
+        # TypeError also unwinds Qt's event loop. Such an event is no longer a pointer-capture
+        # target, so it reports false, as Qt 6.11's comparison of composedPath()[0] with the
+        # window element does (qtbase 01d48cd89c).
+        # https://dom.spec.whatwg.org/#dom-event-composedpath
+        "path": "src/plugins/platforms/wasm/qwasmevent.cpp",
+        "original": "    emscripten::val path = webEvent.call<emscripten::val>(\"composedPath\");\n"
+                    "    QString topElementClassName = QString::fromEcmaString(path[0][\"className\"]);\n",
+        "replacement": "    emscripten::val path = webEvent.call<emscripten::val>(\"composedPath\");\n"
+                       "    // Ludus: an event sent after its dispatch ended has an empty path.\n"
+                       "    if (path[\"length\"].as<int>() == 0)\n"
+                       "        return false;\n"
+                       "    QString topElementClassName = QString::fromEcmaString(path[0][\"className\"]);\n",
+    },
 )
 
 

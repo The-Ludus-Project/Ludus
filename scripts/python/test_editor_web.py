@@ -145,6 +145,13 @@ class QtSourceChangeTests(unittest.TestCase):
         self.assertIn('while (pendingEvents["length"].as<int>() > 0)', text)
         self.assertNotIn("while (count-- > 0)", text)
 
+    def test_dispatched_event_path_is_not_read(self):
+        apply_qt_source_changes(self.source)
+        text = (self.source / "src/plugins/platforms/wasm/qwasmevent.cpp").read_text()
+        # A queued event sent after its dispatch ended has an empty composedPath().
+        guard = text.index('if (path["length"].as<int>() == 0)')
+        self.assertLess(guard, text.index('path[0]["className"]'))
+
     def test_unknown_source_is_refused_unchanged(self):
         change = QT_SOURCE_CHANGES[0]
         path = self.source / change["path"]
