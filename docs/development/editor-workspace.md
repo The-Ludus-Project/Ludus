@@ -1577,7 +1577,9 @@ active, the handle under the pointer thickens and lightens and the cursor become
 an open hand; while a handle is dragged the cursor is a closed hand, that handle
 stays highlighted and the other axes fade towards the viewport colour. The half of
 a rotation ring behind the pivot is dimmer, so the ring reads as a loop around the
-object. Hover is tracked only while no mouse button is down, costs one handle
+object. A ring segment shorter than one logical pixel cannot start a rotation.
+Start on another part of an edge-on ring or orbit the view. Hover is
+tracked only while no mouse button is down, costs one handle
 projection per mouse move, and is cleared when the pointer leaves the viewport. The
 silhouette previews the candidate throughout a drag. Release applies one
 validated World edit and refreshes the shaded scene; **Undo** restores the entire
