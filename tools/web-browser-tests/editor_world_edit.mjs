@@ -216,7 +216,7 @@ async function readMarker(page, surface, predicate) {
   assert.fail('The viewport did not draw the requested placement marker' + (diagnostic ? ': ' + diagnostic : ''));
 }
 
-// Where a timed-out wait stopped: the latest published and drawn extractions, the
+// Where a failed step stopped: the latest published and drawn extractions, the
 // viewport canvases, and whether Qt's event loop still runs. Qt 6.10's private
 // suspend/resume control holds the browser events that Qt has not sent yet; a
 // control with neither a waiting event loop nor sent events no longer runs.
@@ -296,14 +296,6 @@ export async function qualifyWorldEdits({browser, canvas, click, importScene, op
       placementCount, authoredUniqueMeshBytes: 3 * 3 * 4 + 3 * 4, edits: []};
     qualification.samples.push(sample);
     try {
-      async function waitForRendered(page, step) {
-        try {
-          await rendered(page);
-        } catch (error) {
-          sample.stalledWait = {step, ...await describeStall(page)};
-          throw error;
-        }
-      }
       async function configurePage(page) {
         await observeEditor(page);
         if (shouldSimulateMissingWebGpu) {
@@ -324,7 +316,7 @@ export async function qualifyWorldEdits({browser, canvas, click, importScene, op
         await click(page, 100, 301); // Select the Worlds group.
         await page.keyboard.press('ArrowRight'); // Expand it if the project restored it collapsed.
         await page.mouse.dblclick(101, 322, {delay: 50});
-        await waitForRendered(page, 'open saved World');
+        await rendered(page);
         assert.equal(await canvas(page).getAttribute('data-api'), api);
         return {page, opening};
       }
@@ -333,7 +325,7 @@ export async function qualifyWorldEdits({browser, canvas, click, importScene, op
       await configurePage(seed);
       await open(seed, query, {beforeNewWorld: () => mountProject(seed, true)});
       await importScene(seed);
-      await waitForRendered(seed, 'import seed scene');
+      await rendered(seed);
       await click(seed, 142, 157); // Save the seed World.
       await waitForSavedPlacement(seed, null, 0);
       const world = JSON.parse(await readSavedWorld(seed));
@@ -394,14 +386,9 @@ export async function qualifyWorldEdits({browser, canvas, click, importScene, op
           'Apply must precede core publication and its recovery checkpoint');
         assert.ok(checkpoint.revision?.identity && checkpoint.revision.milliseconds >= input,
           'The checkpoint must identify the extraction accepted after this input');
-        try {
-          await page.waitForFunction(revision => window.qaWorld.drawable.some(frame =>
-            frame.identity === revision.identity && frame.milliseconds >= revision.milliseconds),
-          checkpoint.revision, {timeout: timeLimit});
-        } catch (error) {
-          sample.stalledEdit = {x, revision: checkpoint.revision, ...await describeStall(page)};
-          throw error;
-        }
+        await page.waitForFunction(revision => window.qaWorld.drawable.some(frame =>
+          frame.identity === revision.identity && frame.milliseconds >= revision.milliseconds),
+        checkpoint.revision, {timeout: timeLimit});
         const drawable = await page.evaluate(checkpoint => window.qaWorld.drawable.find(frame =>
           frame.identity === checkpoint.revision.identity && frame.milliseconds >= checkpoint.revision.milliseconds),
         checkpoint);
@@ -503,7 +490,10 @@ export async function qualifyWorldEdits({browser, canvas, click, importScene, op
       sample.recovery.reopened = true;
     } catch (error) {
       const active = context.pages().at(-1);
-      if (active && !active.isClosed()) await active.screenshot({path: resolve(output, `qualification-failure-${api}-${placementCount}.png`)});
+      if (active && !active.isClosed()) {
+        await active.screenshot({path: resolve(output, `qualification-failure-${api}-${placementCount}.png`)});
+        sample.failureState = await describeStall(active).catch(reason => ({unavailable: String(reason)}));
+      }
       throw error;
     } finally {
       await context.close();

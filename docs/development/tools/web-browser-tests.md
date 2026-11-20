@@ -144,10 +144,9 @@ any repeated warnings. Set `LUDUS_QA_BROWSER` to the named Chromium-family
 executable under test and record the host, device and run conditions. A forced
 backend or simulation only establishes that particular execution path.
 
-A timed-out wait records `stalledWait` (opening or importing a World) or
-`stalledEdit` (a placement that never drew) in the sample. It holds the latest
-published and drawn extraction identities, the viewport canvases and
-`qtEvents`, read from Qt 6.10's private suspend/resume control. If its
+A failed step records `failureState` in its sample: the latest published and
+drawn extraction identities, the viewport canvases and `qtEvents`, read from
+Qt 6.10's private suspend/resume control. If its
 `isWaiting` stays false while `unsent` browser events remain, Qt's event loop
 has stopped, rather than the renderer. The run fails on any page error, including the Qt
 `TypeError` that once stopped that loop (see
