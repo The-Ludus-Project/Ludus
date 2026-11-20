@@ -25,7 +25,9 @@ Editor and shader worker and warnings as errors, checks the
 and analyzes the Editor document sources, without running its other tests or
 journeys. Both **Clang static analysis**
 shards analyze every translation unit, and shard 0 checks changed lines with the
-naming and magic-number rules. These jobs restore Conan and compiler caches
+naming and magic-number rules. A change to an Objective-C++ (`.mm`) source also
+runs **macOS Objective-C++ analysis**, because the Linux compile database has no
+Cocoa or Metal sources ([platform-only sources](#platform-only-sources)). These jobs restore Conan and compiler caches
 without saving their own, so they cannot evict a shared baseline. The Editor job
 restores the cache that [develop compiler cache](#develop-compiler-cache) saves
 for the latest `develop` commit, and falls back to the batch's cache on `main`.
@@ -454,7 +456,9 @@ and owning API/wiki tools. Unknown paths, mixed changes, malformed metadata and
 missing comparisons require native routing. Rename detection is disabled so a
 move into docs does not hide an engine change. The `Ubuntu Clang` gate checks the
 complete job inventory and requires exactly the successes/skips selected by the
-tier. Missing outputs or failed/cancelled dependencies fail the gate; the only
+tier. It requires **macOS Objective-C++ analysis** to succeed exactly when an
+integration PR changes a present `.mm` source (`objcxx_changed`), and to be
+skipped otherwise. Missing outputs or failed/cancelled dependencies fail the gate; the only
 exception is a superseded pull-request run, described below.
 
 ### Generated sources
@@ -907,6 +911,44 @@ missing log, launch failure or omitted result fails even if the process returns
 zero. Independent commands still report findings. CI always uploads each shard's
 available evidence with 14-day retention; a missing artifact fails the upload.
 These are Q0 inventory/control records, not the proposed Q2 full run schema.
+
+### Platform-only sources
+
+Pull-request analysis reads the Linux compile database. A changed translation
+unit that Linux does not compile, such as Cocoa and Metal Objective-C++ (`.mm`)
+or a Direct3D 12 source, is absent from it. `--tidy-changed` now names each such
+file instead of dropping it: it prints the file and, under GitHub Actions, emits
+a `::warning` annotation on it that names the job that analyzes it.
+
+Changed Objective-C++ is analyzed before it reaches a batch. When an integration
+PR adds, modifies or renames a `.mm` source, change routing sets `objcxx_changed`
+and the **macOS Objective-C++ analysis** job runs on one `macos-15` runner:
+
+```bash
+./scripts/check macos-clang-development --tidy-changed-objcxx --base origin/develop
+```
+
+The job prepares the `macos-clang-development` preset with the batch's restored
+dependency and compiler caches and saves neither. It prepares Qt only when a
+changed source is under `apps/editor/`. The command builds the object of each
+changed `.mm` source that the preset compiles, so its generated headers exist,
+then runs clang-tidy on it with the repository `.clang-tidy` policy and warnings
+as errors. This is the policy that the batch's Cocoa, Metal and Editor analysis
+steps apply. It analyzes the whole file, including lines moved by the change,
+and it analyzes changed `.mm` sources that those steps do not list. Because the
+whole file is analyzed, a change to such an unlisted file must also fix the file's
+existing findings. A changed
+`.mm` file that the preset does not compile, such as an SDK consumer, is reported
+and not analyzed. Every other PR skips the job: it uses no macOS runner, and the
+`Ubuntu Clang` gate requires the skip. Batches and full-tier PRs analyze
+Objective-C++ in the macOS native jobs instead.
+
+The 2026-11-19 batch failure that prompted this check came from a Cocoa test that
+the Linux analysis could not see. Its lambda had adjacent `int32` and `float64`
+parameters, which `bugprone-easily-swappable-parameters` rejects. The check does
+not cover changed lines' naming rules in `.mm` sources (`source_policy.py`
+still applies) or Apple-only `.cpp` sources such as `hosted_mach.cpp`. Those
+remain analyzed only in macOS batch jobs.
 
 ### GPU correctness test boundaries
 

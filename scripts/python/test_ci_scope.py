@@ -175,6 +175,33 @@ class GitComparisonTests(unittest.TestCase):
         head = self.commit()
         self.assertTrue(ci_scope.classify("pull_request", self.pull_request(head), self.root)[0])
 
+    def test_objective_cxx_routing_counts_present_mm_sources_and_editor_ones(self):
+        self.write("modules/platform/tests/cocoa_tests.mm", "Original Cocoa")
+        self.write("apps/editor/src/crash_capture_macos.mm", "Original Editor")
+        self.base = self.commit()
+        self.assertEqual(ci_scope.classify_objcxx("pull_request", self.pull_request(self.commit_engine()), self.root),
+                         (False, False))
+        self.write("modules/platform/tests/cocoa_tests.mm", "Changed Cocoa")
+        engine_only = self.commit()
+        self.assertEqual(ci_scope.classify_objcxx("pull_request", self.pull_request(engine_only), self.root),
+                         (True, False))
+        self.write("apps/editor/src/crash_capture_macos.mm", "Changed Editor")
+        editor = self.commit()
+        self.assertEqual(ci_scope.classify_objcxx("pull_request", self.pull_request(editor), self.root), (True, True))
+        # Deleting a source leaves nothing to analyze.
+        self.git("rm", "-q", "modules/platform/tests/cocoa_tests.mm", "apps/editor/src/crash_capture_macos.mm")
+        deleted = self.commit()
+        self.assertEqual(ci_scope.classify_objcxx("pull_request", self.pull_request(deleted, editor), self.root),
+                         (False, False))
+        # Only pull requests route the job; an unavailable comparison runs it rather than skip it.
+        self.assertEqual(ci_scope.classify_objcxx("workflow_dispatch", {}, self.root), (False, False))
+        self.assertEqual(ci_scope.classify_objcxx("pull_request", self.pull_request(editor, "a" * 40), self.root),
+                         (True, True))
+
+    def commit_engine(self):
+        self.write("modules/engine.cpp", "Changed engine only")
+        return self.commit()
+
     def test_empty_diff_and_missing_history_require_native_validation(self):
         self.assertTrue(ci_scope.classify("pull_request", self.pull_request(self.base), self.root)[0])
         self.assertTrue(ci_scope.classify("pull_request", self.pull_request(self.base, "a" * 40), self.root)[0])
@@ -205,8 +232,22 @@ class GitComparisonTests(unittest.TestCase):
                          "LUDUS_CI_BATCH_SHA": batch_sha},
                 )
                 self.assertEqual(output.read_text(),
-                                 f"camera_pilot=false\nnative_required={required}\nvalidation_tier={tier}\n")
+                                 f"camera_pilot=false\nnative_required={required}\nvalidation_tier={tier}\n"
+                                 "objcxx_changed=false\nobjcxx_editor=false\n")
                 self.assertIn(f"Native validation required: {required}. Validation tier: {tier}.", summary.read_text())
+        # An integration PR changing Objective-C++ selects the macOS job; a full-tier PR leaves it to the batch.
+        self.write("modules/platform/src/window_cocoa.mm", "Changed Cocoa")
+        head = self.commit()
+        for base_ref, selected in (("develop", "true"), ("main", "false")):
+            with self.subTest(base_ref=base_ref):
+                event.write_text(json.dumps(self.pull_request(head, base_ref=base_ref)), encoding="utf-8")
+                output.unlink(missing_ok=True)
+                subprocess.run(
+                    [sys.executable, ci_scope.__file__, "classify"], cwd=self.root, check=True, capture_output=True,
+                    env={**os.environ, "GITHUB_EVENT_NAME": "pull_request", "GITHUB_EVENT_PATH": str(event),
+                         "GITHUB_OUTPUT": str(output), "GITHUB_STEP_SUMMARY": str(summary), "LUDUS_CI_BATCH_SHA": ""},
+                )
+                self.assertIn(f"objcxx_changed={selected}\nobjcxx_editor=false\n", output.read_text())
 
 
 class RequiredGateTests(unittest.TestCase):
@@ -216,11 +257,48 @@ class RequiredGateTests(unittest.TestCase):
         dependencies = re.search(r"needs: \[([^\]]+)\]", gate)
         self.assertIsNotNone(dependencies)
         self.assertCountEqual([name.strip() for name in dependencies.group(1).split(",")],
-                              ["changes", *ci_scope.NATIVE_JOBS])
+                              ["changes", *ci_scope.NATIVE_JOBS, ci_scope.OBJCXX_JOB])
         # A missing workflow job must not silently remove validation while the
         # Python gate still expects it, including docs-only routing.
         jobs = set(re.findall(r"^  ([a-z][a-z0-9-]*):$", workflow, re.MULTILINE))
         self.assertTrue(set(ci_scope.NATIVE_JOBS) <= jobs)
+        self.assertIn(ci_scope.OBJCXX_JOB, jobs)
+
+    def test_objective_cxx_job_runs_only_for_integration_prs_that_change_mm_sources(self):
+        workflow = (Path(__file__).resolve().parents[2] / ".github/workflows/ci.yml").read_text()
+        job = workflow.split(f"\n  {ci_scope.OBJCXX_JOB}:\n", 1)[1].split("\n  macos-analysis:\n", 1)[0]
+        self.assertIn("    needs: changes\n", job)
+        self.assertIn("    if: needs.changes.outputs.native_required == 'true' && needs.changes.outputs.validation_tier"
+                      " == 'integration' && needs.changes.outputs.objcxx_changed == 'true'\n", job)
+        self.assertIn("    runs-on: macos-15\n", job)
+        self.assertIn("editor: ${{ needs.changes.outputs.objcxx_editor }}", job)
+        self.assertIn("./scripts/check macos-clang-development --tidy-changed-objcxx --base", job)
+        self.assertNotIn("actions/cache/save", job)
+        for output in ("objcxx_changed", "objcxx_editor"):
+            self.assertIn(f"      {output}: ${{{{ steps.scope.outputs.{output} }}}}\n", workflow)
+
+    def test_objective_cxx_job_is_required_exactly_when_selected(self):
+        for tier in sorted(ci_scope.TIERS):
+            for required in (True, False):
+                for objcxx in ("true", "false"):
+                    with self.subTest(tier=tier, required=required, objcxx=objcxx):
+                        results = self.results(required, tier, objcxx=objcxx)
+                        self.assertEqual(ci_scope.gate_failures(results), [])
+                        expected = results[ci_scope.OBJCXX_JOB]["result"]
+                        self.assertEqual(expected == "success",
+                                         required and tier == ci_scope.INTEGRATION_TIER and objcxx == "true")
+                        for status in ("success", "failure", "cancelled", "skipped"):
+                            if status != expected:
+                                results[ci_scope.OBJCXX_JOB]["result"] = status
+                                self.assertIn(f"{ci_scope.OBJCXX_JOB}: expected {expected}",
+                                              " ".join(ci_scope.gate_failures(results)))
+        for value in (None, "", "True", "yes"):
+            results = self.results(tier=ci_scope.INTEGRATION_TIER)
+            results["changes"]["outputs"]["objcxx_changed"] = value
+            self.assertTrue(ci_scope.gate_failures(results))
+        results = self.results(tier=ci_scope.INTEGRATION_TIER)
+        del results[ci_scope.OBJCXX_JOB]
+        self.assertTrue(ci_scope.gate_failures(results))
 
     def test_native_builds_do_not_wait_for_source_policy(self):
         # A source-policy failure must not skip every compile in a batch: the
@@ -540,15 +618,18 @@ class RequiredGateTests(unittest.TestCase):
         self.assertEqual(json.loads(runners.group(2)),
                          ["ubuntu-24.04", "macos-15", "macos-15-intel"])
 
-    def results(self, native_required=True, tier=ci_scope.FULL_TIER):
+    def results(self, native_required=True, tier=ci_scope.FULL_TIER, objcxx="false"):
         def expected(name):
             deferred = ((tier == ci_scope.INTEGRATION_TIER and name in ci_scope.INTEGRATION_JOBS)
                         or (tier != ci_scope.NIGHTLY_TIER and name in ci_scope.NIGHTLY_JOBS))
             return "success" if native_required and not deferred else "skipped"
+        selected = native_required and tier == ci_scope.INTEGRATION_TIER and objcxx == "true"
         return {
             "changes": {"result": "success", "outputs": {
-                "native_required": "true" if native_required else "false", "validation_tier": tier}},
+                "native_required": "true" if native_required else "false", "validation_tier": tier,
+                "objcxx_changed": objcxx}},
             **{name: {"result": expected(name)} for name in ci_scope.NATIVE_JOBS},
+            ci_scope.OBJCXX_JOB: {"result": "success" if selected else "skipped"},
         }
 
     def test_all_native_successes_or_intentional_docs_skips_pass(self):

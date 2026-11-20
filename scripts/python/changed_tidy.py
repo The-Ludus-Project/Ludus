@@ -6,6 +6,10 @@ are the changed first-party sources found in the configured compile database;
 changed headers are checked through every changed source that includes them.
 A header changed without any changed includer is not analyzed here; the lexical
 source_policy.py gate still covers it.
+
+A changed translation unit that the configured build does not compile (Cocoa and
+Metal Objective-C++ in the Linux database, for example) cannot be analyzed here;
+uncompiled_sources names it so the caller can report it instead of dropping it.
 """
 
 from __future__ import annotations
@@ -20,6 +24,7 @@ from source_policy import is_test_source
 
 CPP_SUFFIXES = {".cpp", ".cc", ".cxx", ".h", ".hpp", ".mm"}
 TRANSLATION_UNIT_SUFFIXES = {".cpp", ".cc", ".cxx", ".mm"}
+OBJECTIVE_CXX_SUFFIX = ".mm"
 CHANGED_ROOTS = ("modules", "apps", "examples", "tests", "tools")
 HUNK = re.compile(r"^@@ -\d+(?:,\d+)? \+(\d+)(?:,(\d+))? @@", re.MULTILINE)
 
@@ -42,10 +47,28 @@ def parse_changed_lines(diff: str) -> dict[str, list[list[int]]]:
     return changed
 
 
-def changed_lines(root: Path, base: str) -> dict[str, list[list[int]]]:
-    merge_base = subprocess.run(
+def merge_base_of(root: Path, base: str) -> str:
+    return subprocess.run(
         ["git", "merge-base", base, "HEAD"], cwd=root, text=True, capture_output=True, check=True
     ).stdout.strip()
+
+
+def changed_translation_units(root: Path, base: str, suffixes: frozenset[str]) -> list[str]:
+    """Changed (added, copied, modified or renamed) first-party sources with ``suffixes``.
+
+    Unlike changed_lines, a file counts even if every changed line was moved: a whole-file
+    analysis (the batch's full clang-tidy configuration) diagnoses the file, not its lines.
+    """
+    names = subprocess.run(
+        ["git", "diff", "--name-only", "-z", "--no-renames", "--diff-filter=ACMR", merge_base_of(root, base),
+         "--", *CHANGED_ROOTS],
+        cwd=root, capture_output=True, check=True,
+    ).stdout.decode("utf-8").split("\0")
+    return sorted(name for name in names if name and Path(name).suffix in suffixes)
+
+
+def changed_lines(root: Path, base: str) -> dict[str, list[list[int]]]:
+    merge_base = merge_base_of(root, base)
     diff = subprocess.run(
         ["git", "diff", "--unified=0", "--no-color", "--diff-filter=ACMR", merge_base, "--",
          *CHANGED_ROOTS],
@@ -100,3 +123,16 @@ def plan(root: Path, entries: list[dict], changed: dict[str, list[list[int]]]) -
         policy = "config/clang-tidy-changed-tests.yml" if is_test_source(relative) else "config/clang-tidy-changed.yml"
         selected.append((entry, root / policy))
     return selected
+
+
+def uncompiled_sources(root: Path, entries: list[dict], names: list[str] | dict) -> list[str]:
+    """Changed translation units (repository-relative) that no compile entry builds.
+
+    These are silently absent from a plan; callers report them, because another
+    platform's build (for example the macOS jobs for Objective-C++) analyzes them.
+    """
+    compiled = {Path(entry["file"]).resolve() for entry in entries}
+    return sorted(
+        name for name in names
+        if Path(name).suffix in TRANSLATION_UNIT_SUFFIXES and (root / name).resolve() not in compiled
+    )

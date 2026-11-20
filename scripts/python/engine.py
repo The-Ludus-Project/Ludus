@@ -2265,9 +2265,41 @@ def run_analysis_commands(root: Path, commands: Sequence[Sequence[object]], *,
         raise EngineError(f"Static analysis failed for {failures} translation unit(s). {details}")
 
 
+# The pull-request job that analyzes changed Objective-C++ with the macOS compile database
+# (docs/development/continuous-integration.md#platform-only-sources).
+OBJECTIVE_CXX_JOB_NAME = "macOS Objective-C++ analysis"
+
+
+def report_uncompiled_sources(names: Sequence[str], preset: str, *, is_objcxx_analysis: bool = False) -> None:
+    """Name changed translation units this preset cannot analyze; annotate them on GitHub Actions.
+
+    ``is_objcxx_analysis`` marks the macOS Objective-C++ analysis itself, whose uncompiled
+    sources are SDK consumers or optional targets rather than another platform's sources.
+    """
+    from changed_tidy import OBJECTIVE_CXX_SUFFIX
+
+    if not names:
+        return
+    print(f"Changed translation units not compiled by {preset} (not analyzed here):")
+    for name in names:
+        if is_objcxx_analysis:
+            where = "only the build that configures it compiles and analyzes it"
+        elif Path(name).suffix == OBJECTIVE_CXX_SUFFIX:
+            where = (f"Objective-C++ is analyzed by the '{OBJECTIVE_CXX_JOB_NAME}' pull-request job "
+                     "and the macOS batch jobs")
+        else:
+            where = "only a batch job for its platform compiles and analyzes it"
+        message = f"{name} is not compiled by preset {preset}, so this analysis skipped it; {where}."
+        print(f"  {message}")
+        if os.environ.get("GITHUB_ACTIONS") == "true":
+            # Thanks to GitHub, "Workflow commands for GitHub Actions", "Setting a warning message":
+            # https://docs.github.com/en/actions/reference/workflows-and-actions/workflow-commands#setting-a-warning-message
+            print(f"::warning file={name},title=Not analyzed by {preset}::{message}", flush=True)
+
+
 def run_tidy_changed(root: Path, preset: str, base: str) -> None:
     """Changed-line naming, magic-number and implicit-bool analysis (changed_tidy.py)."""
-    from changed_tidy import changed_lines, plan, write_line_filter_response
+    from changed_tidy import changed_lines, plan, uncompiled_sources, write_line_filter_response
 
     versions = load_tool_versions(root)
     clang_tidy = find_system_tool(root, "clang-tidy", versions)
@@ -2283,6 +2315,7 @@ def run_tidy_changed(root: Path, preset: str, base: str) -> None:
     except ValueError as exc:
         raise EngineError(str(exc)) from exc
     selected = plan(root, entries, changed)
+    report_uncompiled_sources(uncompiled_sources(root, entries, changed), preset)
     if not selected:
         print("Changed-line analysis: no changed source is compiled by this preset; source_policy.py still applies.")
         return
@@ -2298,6 +2331,42 @@ def run_tidy_changed(root: Path, preset: str, base: str) -> None:
                          f"@{filter_path}", f"--header-filter={header_filter}", entry["file"]])
     print(f"Changed-line analysis: {len(changed)} changed files, {len(commands)} translation units", flush=True)
     run_analysis_commands(root, commands, directory=directory)
+
+
+def run_tidy_changed_objcxx(root: Path, preset: str, base: str) -> None:
+    """Full-configuration clang-tidy on changed Objective-C++ sources this preset compiles.
+
+    The pull-request analysis uses the Linux compile database, which has no Cocoa or Metal
+    sources. On a macOS preset this analyzes each changed ``.mm`` translation unit with the
+    project policy, as the macOS batch jobs do, after building its object so generated headers
+    exist. Changed ``.mm`` files the preset does not compile are reported, not failed.
+    """
+    from changed_tidy import OBJECTIVE_CXX_SUFFIX, changed_translation_units, uncompiled_sources
+
+    changed = changed_translation_units(root, base, frozenset({OBJECTIVE_CXX_SUFFIX}))
+    if not changed:
+        print(f"Objective-C++ analysis: no Objective-C++ source changed since {base}.")
+        return
+    build_dir = build_dir_for_preset(root, preset)
+    if not (build_dir / "compile_commands.json").is_file():
+        cmake_configure(root, preset)
+    try:
+        entries = compilation_entries(build_dir)
+    except ValueError as exc:
+        raise EngineError(str(exc)) from exc
+    skipped = uncompiled_sources(root, entries, changed)
+    report_uncompiled_sources(skipped, preset, is_objcxx_analysis=True)
+    selected = [name for name in changed if name not in skipped]
+    if not selected:
+        print(f"Objective-C++ analysis: no changed Objective-C++ source is compiled by {preset}.")
+        return
+    # Ninja's "source^" names the object built from that source; building it first creates
+    # the generated headers the source includes without building unrelated targets.
+    # Thanks to the Ninja project, "The Ninja build system", "Running Ninja" (the ^ suffix):
+    # https://ninja-build.org/manual.html#_running_ninja
+    targets = [argument for name in selected for argument in ("--target", f"{(root / name).resolve()}^")]
+    cmake_build(root, preset, targets)
+    run_tidy_sources(root, preset, selected)
 
 
 def run_include_cleaner(root: Path, preset: str) -> None:
@@ -2382,9 +2451,10 @@ def command_check(args: argparse.Namespace) -> int:
     inventory_only = getattr(args, "inventory", False)
     tidy_changed = getattr(args, "tidy_changed", False)
     tidy_sources = getattr(args, "tidy_sources", None) or []
+    tidy_changed_objcxx = getattr(args, "tidy_changed_objcxx", False)
     format_changed = getattr(args, "format_changed", False)
     explicit = (args.format or args.tidy or include_cleaner or analyzer or tooling or inventory_only
-                or tidy_changed or format_changed or bool(tidy_sources))
+                or tidy_changed or format_changed or bool(tidy_sources) or tidy_changed_objcxx)
     run_all = args.all or not explicit
 
     if args.format or run_all:
@@ -2417,6 +2487,9 @@ def command_check(args: argparse.Namespace) -> int:
     if tidy_changed:
         ensure_bootstrap_for_preset(root, args.preset)
         run_tidy_changed(root, args.preset, getattr(args, "base", None) or "origin/develop")
+    if tidy_changed_objcxx:
+        ensure_bootstrap_for_preset(root, args.preset)
+        run_tidy_changed_objcxx(root, args.preset, getattr(args, "base", None) or "origin/develop")
     if tooling:
         from tooling_quality import check
         try:
@@ -3249,13 +3322,21 @@ def make_parser() -> argparse.ArgumentParser:
         help="run naming, magic-number and implicit-bool clang-tidy rules on lines changed since --base",
     )
     check_parser.add_argument(
+        "--tidy-changed-objcxx",
+        action="store_true",
+        dest="tidy_changed_objcxx",
+        help="run the full clang-tidy configuration on Objective-C++ (.mm) sources changed since --base "
+             "that a macOS preset compiles",
+    )
+    check_parser.add_argument(
         "--format-changed",
         action="store_true",
         dest="format_changed",
         help="format-check C++/Slang sources changed since --base, as CI's source policy does",
     )
     check_parser.add_argument(
-        "--base", help="comparison ref for --tidy-changed and --format-changed (default: origin/develop)"
+        "--base",
+        help="comparison ref for --tidy-changed, --tidy-changed-objcxx and --format-changed (default: origin/develop)"
     )
     check_parser.add_argument("--analyzer", action="store_true", help="run advisory stable LLVM analyzer rules on the complete configured inventory")
     check_parser.add_argument("--tooling", action="store_true", help="check Python and workflows with prepared pinned Ruff/actionlint")

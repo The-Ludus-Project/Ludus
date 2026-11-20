@@ -181,8 +181,11 @@ engine code. Discuss such cases in the PR before adding them.
 - Local `init.sh` installs the staged auto-formatting hook; existing checkouts
   can enable it with `./scripts/install-hooks`.
 - Static analysis must pass: `./scripts/check --tidy` against the project
-  `.clang-tidy`. Use the pinned `clang-format` / `clang-tidy` (23); other local
-  versions format differently or report checks that the pinned version lacks.
+  `.clang-tidy`. Pull-request analysis uses the Linux build. A changed `.mm`
+  source runs the **macOS Objective-C++ analysis** job; on a Mac, run
+  `./scripts/check macos-clang-development --tidy-changed-objcxx` first. Use
+  the pinned `clang-format` / `clang-tidy` (23); other local versions format
+  differently or report checks that the pinned version lacks.
 - `#pragma once` is the header-guard convention across the repo.
 
 ### Naming
