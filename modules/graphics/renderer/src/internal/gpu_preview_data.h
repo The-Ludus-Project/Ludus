@@ -7,6 +7,7 @@
 #include "render_graph_storage.h"
 
 #include <ludus/foundation/base/pointer.hpp>
+#include <ludus/foundation/base/types.h>
 #include <ludus/foundation/containers/static_array.hpp>
 #include <ludus/foundation/math/matrix.hpp>
 #include <ludus/foundation/math/scalar.hpp>
@@ -24,6 +25,8 @@ inline constexpr usize GPU_PREVIEW_RETAINED_SCENE_COUNT = 3;
 inline constexpr usize GPU_PREVIEW_JOB_COUNT =
     content::render_graph_format::MAX_RAY_PASSES * (GPU_PREVIEW_RETAINED_SCENE_COUNT + 1);
 inline constexpr usize GPU_GRAPH_BUFFER_COUNT = 2;
+inline constexpr foundation::usize GRAPH_FAILURE_BYTES = LUDUS_GRAPH_FAILURE_WORDS * sizeof(foundation::uint32);
+static_assert(sizeof(foundation::uint32) == LUDUS_GRAPH_FAILURE_WORD_BYTES);
 /// Every compute binding of one job: the frozen ABI, visibility textures, structured storage, the
 /// ray path capture buffer of a diagnostic capture-variant kernel, the aerial perspective table, the LTC table, the
 /// failure summary and, last, the Atmosphere sky.

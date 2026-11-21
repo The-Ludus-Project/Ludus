@@ -10,6 +10,7 @@
 
 #include <cstring>
 
+#include "gpu_preview_data.h"
 #include "gpu_preview_graph.h"
 #include "gpu_preview_ray.h"
 #include "ltc_table_data.h"
@@ -688,7 +689,7 @@ usize MakeGpuComputeBindings(
                 binding = {slot, job.Data, job.WorldTables.AtmosphereSkyOffset, job.WorldTables.AtmosphereSkyBytes};
                 break;
             case LUDUS_GRAPH_FAILURE_BINDING:
-                binding = {slot, failures, 0, LUDUS_GRAPH_FAILURE_BYTES};
+                binding = {slot, failures, 0, internal::GRAPH_FAILURE_BYTES};
                 break;
             default:
                 return 0;

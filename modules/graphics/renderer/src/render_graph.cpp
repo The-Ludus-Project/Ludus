@@ -3,6 +3,7 @@
 
 #include "../shaders/renderer_gpu_preview_layout.h"
 #include "internal/gpu_denoiser.h"
+#include "internal/gpu_preview_data.h"
 #include "internal/light_transformer_graph.h"
 #include "internal/ltc_table_data.h"
 #include "internal/render_graph_deferred.h"
@@ -2235,7 +2236,7 @@ Status RenderGraph::PollRayFailures(uint32 pass, RenderGraphRayFailures& outFail
         return found;
     }
     const Status requested =
-        rhi::RequestBufferReadback(state.Device, failures, 0, LUDUS_GRAPH_FAILURE_BYTES, state.FailureReadback);
+        rhi::RequestBufferReadback(state.Device, failures, 0, internal::GRAPH_FAILURE_BYTES, state.FailureReadback);
     if (requested != Status::Pending && requested != Status::Ready)
     {
         return requested;

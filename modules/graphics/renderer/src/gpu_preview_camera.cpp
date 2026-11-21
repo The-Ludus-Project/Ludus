@@ -36,9 +36,9 @@ struct GpuPreviewCameraUpdate::State final
 };
 Status CreateGpuFailureSummary(rhi::DeviceHandle device, rhi::BufferHandle& outBuffer) noexcept
 {
-    static constexpr StaticArray<uint8, LUDUS_GRAPH_FAILURE_BYTES> ZEROS{};
+    static constexpr StaticArray<uint8, GRAPH_FAILURE_BYTES> ZEROS{};
     return rhi::CreateBuffer(device,
-                             {rhi::BufferRole::Storage, LUDUS_GRAPH_FAILURE_BYTES},
+                             {rhi::BufferRole::Storage, GRAPH_FAILURE_BYTES},
                              {ZEROS.GetData(), ZEROS.GetSize()},
                              outBuffer);
 }
