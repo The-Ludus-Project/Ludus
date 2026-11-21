@@ -114,6 +114,9 @@ bool IsAccepted(Status status) noexcept
 }
 } // namespace
 
+// The shaders read the layer as this many float4 rows (renderer_cloud_layer.slang).
+static_assert(sizeof(CloudLayerUniform) == LUDUS_CLOUD_LAYER_UNIFORM_ROWS * sizeof(math::Vector4));
+
 struct AtmosphereViewUniform final
 {
     StaticArray<math::Vector4, CLIP_ROWS> ClipToEyeRows{};
@@ -131,6 +134,7 @@ struct AtmosphereViewUniform final
     math::Vector4 GalacticCenterWorld{};
     StaticArray<math::Vector4, ATMOSPHERE_PLANET_CAPACITY> PlanetDirectionsWorld{};
     StaticArray<math::Vector4, ATMOSPHERE_PLANET_CAPACITY> PlanetIlluminance{};
+    CloudLayerUniform CloudLayer{};
 };
 
 namespace
@@ -147,6 +151,23 @@ bool TryMakeOrbitalRayTransform(const ViewDescription& camera, math::Matrix4& ou
     constexpr usize TRANSLATION_COLUMN = CLIP_ROWS - 1;
     directionToClip.Columns[TRANSLATION_COLUMN] = {0, 0, 1, 0};
     return math::TryInverse(directionToClip, outClipToEye) == math::MathStatus::Success;
+}
+
+bool IsCloudLayerValid(const CloudLayerDescription& clouds) noexcept
+{
+    const auto isNonnegative = [](float32 value) noexcept { return math::IsFinite(value) == true && value >= 0; };
+    const auto isSize = [](float32 value) noexcept {
+        return math::IsFinite(value) == true && value > 0 && value <= CloudLayerDescription::MAX_SIZE_METRES;
+    };
+    const float64 top = static_cast<float64>(clouds.BaseHeightMetres) + static_cast<float64>(clouds.ThicknessMetres);
+    return isNonnegative(clouds.BaseHeightMetres) == true && math::IsFinite(clouds.ThicknessMetres) == true &&
+           clouds.ThicknessMetres > 0 && top < GetAtmosphereTopAltitude() && isSize(clouds.SizeXMetres) == true &&
+           isSize(clouds.SizeZMetres) == true && isNonnegative(clouds.EdgeFadeMetres) == true &&
+           isNonnegative(clouds.Density) == true && isNonnegative(clouds.ExtinctionPerMetre) == true &&
+           isNonnegative(clouds.SingleScatteringAlbedo) == true && clouds.SingleScatteringAlbedo <= 1 &&
+           math::IsFinite(clouds.PhaseAsymmetry) == true &&
+           math::Abs(clouds.PhaseAsymmetry) <= CloudLayerDescription::MAX_PHASE_ASYMMETRY &&
+           math::IsFinite(clouds.AxisXWorld) == true;
 }
 
 bool TryPackNightSky(const CelestialBackgroundDescription& celestial, AtmosphereViewUniform& inoutUniform) noexcept
@@ -239,6 +260,67 @@ bool TryPackCelestial(const CelestialBackgroundDescription& celestial, Atmospher
     return true;
 }
 } // namespace
+
+bool TryPackCloudLayer(const AtmosphereDescription& atmosphere,
+                       const ViewDescription& camera,
+                       CloudLayerUniform& outUniform) noexcept
+{
+    const CloudLayerDescription& clouds = atmosphere.Clouds;
+    if (clouds.IsEnabled == false)
+    {
+        outUniform = {};
+        return true;
+    }
+    math::Vector3 upWorld;
+    if (IsCloudLayerValid(clouds) == false ||
+        math::TryNormalize(atmosphere.SurfaceUpWorld, upWorld) != math::MathStatus::Success)
+    {
+        return false;
+    }
+    math::Vector3 axisXWorld;
+    if (math::TryNormalize(clouds.AxisXWorld - upWorld * math::Dot(clouds.AxisXWorld, upWorld), axisXWorld) !=
+        math::MathStatus::Success)
+    {
+        return false;
+    }
+    float64 altitudeMetres = 0;
+    math::Vector3 radialUpWorld;
+    if (TryResolveObserver(atmosphere, camera.CameraPosition, altitudeMetres, radialUpWorld) == false)
+    {
+        return false;
+    }
+    if (camera.OrthographicCamera == true || altitudeMetres < 0 || altitudeMetres > GetAtmosphereTopAltitude())
+    {
+        outUniform = {};
+        return true;
+    }
+    const math::Vector3 axisZWorld = math::Cross(axisXWorld, upWorld);
+    const auto toDouble = [](math::Vector3 value) noexcept {
+        return math::Vector3d{static_cast<float64>(value.X),
+                              static_cast<float64>(value.Y),
+                              static_cast<float64>(value.Z)};
+    };
+    const math::Vector3d offsetWorld = toDouble(camera.CameraPosition) - toDouble(atmosphere.SurfaceAnchorWorld);
+    const float32 halfSizeX = clouds.SizeXMetres * 0.5F;
+    const float32 halfSizeZ = clouds.SizeZMetres * 0.5F;
+    const float32 extinction = clouds.Density * clouds.ExtinctionPerMetre;
+    CloudLayerUniform uniform;
+    uniform.AxisXWorld = {axisXWorld.X, axisXWorld.Y, axisXWorld.Z, 1};
+    uniform.UpWorld = {upWorld.X, upWorld.Y, upWorld.Z, clouds.BaseHeightMetres};
+    uniform.AxisZWorld = {axisZWorld.X, axisZWorld.Y, axisZWorld.Z, clouds.BaseHeightMetres + clouds.ThicknessMetres};
+    uniform.CameraLocal = {static_cast<float32>(math::Dot(offsetWorld, toDouble(axisXWorld))),
+                           static_cast<float32>(math::Dot(offsetWorld, toDouble(upWorld))),
+                           static_cast<float32>(math::Dot(offsetWorld, toDouble(axisZWorld))),
+                           math::Min(clouds.EdgeFadeMetres, math::Min(halfSizeX, halfSizeZ))};
+    uniform.Medium = {halfSizeX, halfSizeZ, extinction, extinction * clouds.SingleScatteringAlbedo};
+    uniform.Phase = {clouds.PhaseAsymmetry, 0, 0, 0};
+    if (math::IsFinite(uniform.Medium) == false || math::IsFinite(uniform.CameraLocal) == false)
+    {
+        return false;
+    }
+    outUniform = uniform;
+    return true;
+}
 
 struct AtmosphereSkyTable final
 {
@@ -606,6 +688,11 @@ Status RenderGraphAtmosphereView::Prepare(RenderGraphAtmosphereProgram& inoutPro
         }
         uniform.CameraForwardWorld = {forwardWorld.X, forwardWorld.Y, forwardWorld.Z, diskScale};
         uniform.Lighting.X = atmosphere.ShouldLightScene == true ? 1.0F : 0.0F;
+        // Orbital views draw the shell from outside, where the flat slab is not defined.
+        if (TryPackCloudLayer(atmosphere, camera, uniform.CloudLayer) == false)
+        {
+            return Status::InvalidDescription;
+        }
         uniform.Output = {static_cast<float32>(width),
                           static_cast<float32>(height),
                           exposure,
