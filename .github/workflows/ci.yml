@@ -180,14 +180,17 @@ jobs:
   # Thanks to GitHub Actions runner-images, macOS 14 deprecation announcement #13518:
   # https://github.com/actions/runner-images/issues/13518
   # Keep arm64 native coverage on macOS 15; SDKs still declare a 14.0 deployment floor.
-  # Hosted ARM capacity can expire queued jobs before a runner acquires them.
-  # Admit one long native ARM lane at a time: sanitizers, SDK/native acceptance,
-  # then the nightly analyzer. A preceding failure must not suppress evidence.
+  # Native/SDK acceptance, the longest and most often failing ARM job, runs beside
+  # the sanitizers so its failures report without waiting for them. Hosted ARM
+  # capacity can still expire a queued job; batch-runner-retry.yml re-runs such a
+  # job after the batch completes, when it asks for one runner alone. The nightly
+  # analyzer waits for the shorter sanitizer lane, so this workflow holds at most
+  # two ARM runners. A preceding failure must not suppress the analyzer's evidence.
   # Thanks to GitHub, "Evaluate expressions in workflows and actions", status checks:
   # https://docs.github.com/en/actions/reference/workflows-and-actions/expressions#status-check-functions
   macos-compile:
-    needs: [changes, macos-sanitizers]
-    if: ${{ !cancelled() && needs.changes.outputs.native_required == 'true' && needs.changes.outputs.validation_tier != 'integration' && ((inputs.evidence_job || 'all') == 'all' || inputs.evidence_job == 'macos-compile') }}
+    needs: changes
+    if: needs.changes.outputs.native_required == 'true' && needs.changes.outputs.validation_tier != 'integration' && ((inputs.evidence_job || 'all') == 'all' || inputs.evidence_job == 'macos-compile')
     name: macOS native backends and diagnostics
     runs-on: macos-15
     env:
@@ -752,7 +755,7 @@ jobs:
         run: ./scripts/check macos-clang-development --tidy-changed-objcxx --base "$CHANGED_SOURCES_BASE"
 
   macos-analysis:
-    needs: [changes, macos-compile]
+    needs: [changes, macos-sanitizers]
     if: ${{ !cancelled() && needs.changes.outputs.native_required == 'true' && needs.changes.outputs.validation_tier == 'nightly' && ((inputs.evidence_job || 'all') == 'all' || inputs.evidence_job == 'macos-analysis') }}
     name: macOS analyzer baseline
     runs-on: macos-15
