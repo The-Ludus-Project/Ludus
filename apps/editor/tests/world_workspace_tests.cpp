@@ -5514,9 +5514,10 @@ TEST_CASE("Undo republishes the saved Light Court Sun after its live inspector p
     REQUIRE(directory.isValid() == true);
     const QDir root(QFileInfo(directory.path()).canonicalFilePath());
     const QString worldPath = root.filePath(QStringLiteral("light-court.world.json"));
-    REQUIRE(
-        QFile::copy(QStringLiteral(LUDUS_EDITOR_PROJECT_ROOT "/examples/light-court/authoring/light-court.world.json"),
-                    worldPath) == true);
+    const QDir sample(QStringLiteral(LUDUS_EDITOR_PROJECT_ROOT "/examples/light-court"));
+    REQUIRE(QFile::copy(sample.filePath(QStringLiteral("authoring/light-court.world.json")), worldPath) == true);
+    REQUIRE(ludus::editor::tests::CopyTree(sample.filePath(QStringLiteral("assets")),
+                                           root.filePath(QStringLiteral("assets"))) == true);
     WorldWorkspace workspace;
     if (PreviewViewport::CanPresent() == true)
     {
