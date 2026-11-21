@@ -129,11 +129,15 @@ then drains work and releases its storage through the existing lifetime fence.
 
 Initially implement one consumer with ordinary native functions. Extract the
 common executor after environment scatter and modular assemblies demonstrate
-the same contracts. The following target layout is proposed:
+the same contracts. P1 has started that extraction: the domain-agnostic digest,
+validated cache and trace are in `Ludus::ProceduralCore`, while the coordinator
+that stages and publishes candidates stays with scatter until modular assembly
+shares it ([P1](#p1-staged-scatter-generation)). The following target layout is
+proposed:
 
 | Location and target | Responsibility and dependency boundary |
 | --- | --- |
-| `modules/content/procedural/core`, `Ludus::ProceduralCore` | Recipe IDs, stage plans, bounded views, execution, diagnostics and provenance; Foundation dependencies only |
+| `modules/content/procedural/core`, `Ludus::ProceduralCore` | Recipe IDs, stage plans, bounded views, execution, diagnostics and provenance; Foundation and the Content SHA-256 digest only |
 | `modules/content/procedural/spatial`, `Ludus::ProceduralSpatial` | Reusable sampled fields, spatial indices, candidates and socket assembly; Core and Math |
 | `modules/content/procedural/environment` | Terrain provider adapters, biome plans, ecology, scatter and regional road products; terrain keeps its own generation/cooking contract |
 | `modules/content/procedural/architecture` | Parcels, building/interior plans and module assembly |
@@ -908,3 +912,93 @@ cosmetic samples do not. The randomness architecture owns these event rules
 ([milestone 1](randomness.md#milestone-1-procedural-placement)). Deferred to P1
 and later: the recipe codec, provenance, caching, author overrides, cross-layer
 occupancy and checkpoint persistence of tombstones and ordinals.
+
+### P1: staged scatter generation
+
+P1 begins with room scatter as the first consumer of a staged, cached and
+explained generation request. Modular assembly, requests for a single output,
+a persistent cache store, override conflict repair in the Editor and World Demo
+consumption of the accepted manifest follow as separate changes under the same
+acceptance gate. Locks entering thinning before constraints are solved, and the
+comparison of serial and bounded-worker preparation, also follow.
+
+**Modules.** `Ludus::ProceduralCore` (`modules/content/procedural/core`) holds
+the parts no domain owns: canonical little-endian byte encoding
+(`GenerationByteWriter`, `GenerationByteReader`), content digests
+(`GenerationDigest`, the Content module's SHA-256), the validated product cache
+and a bounded stage trace. It depends on Foundation and Content only and builds
+for native and browser targets. `Ludus::ProceduralEnvironment` adds
+`scatter_generation.h`. Its `ScatterGenerationCoordinator` stages scatter
+candidates and owns the accepted manifest.
+
+**Scopes and stages.** A request (`ScatterGenerationInput`) carries the world
+seed, the scatter domains and one or more scopes in ascending room order. Each
+scope is a room's recipe plus its author locks. Every layer of a scope is one
+pure stage. Its cache key is the digest of the generation version, operator ID,
+scatter layout version, product schema, seed, domain IDs, room, the layer's own
+fields and variants, the region and the keep-outs. Other layers and locks are
+not in the key. A scale edit therefore reruns only its layer, a lock changes no
+product, and an edit in one room leaves every other room's products cached. A
+layer product is a placement count followed by fixed 24-byte placement records,
+written field by field in little-endian order.
+
+**Cache.** `GenerationCacheStore` stores opaque bytes by key.
+`MemoryGenerationCacheStore` is the in-process store with fixed entry and byte
+budgets; it refuses a write over budget rather than evicting. Each entry carries
+its framing version, key, schema, payload length and payload digest, and every
+hit verifies all of them. The scatter stage then decodes the payload and checks
+the room, layer, candidate, variant and scale ranges, plus strict canonical
+order. An entry that fails either check is removed and rebuilt, and the trace
+names the miss as `Corrupt`. A refused or failed store write never changes a
+result.
+
+**Trace.** Each layer evaluation records its scope, stage, key, output digest,
+whether it was a cache hit, executed or failed, the cache outcome that names
+every miss, and whether the product was stored. The trace is bounded and counts
+the records it drops; it never changes generation.
+
+**Candidates and publication.** `TryStage` builds a candidate manifest of layer
+products with their keys and output digests, plus a manifest digest over them.
+Staging never changes the accepted manifest. `TryPublish` accepts a candidate
+only when its status is `Success` and it was staged against the current accepted
+revision. A candidate staged against an older revision is `StaleCandidate`. One
+with an unsatisfied lock is `ConstraintFailed`, and any failed candidate is
+`NotReady`. `Reject` discards a candidate. Every failure leaves the accepted
+manifest and revision unchanged.
+
+**Locks.** In this slice, a lock is an accepted placement the author protects.
+The candidate must contain the same identity with exactly the same values. Locks
+do not yet alter thinning. An unsatisfied lock becomes a `ScatterLockConflict`
+that names the lock. A missing placement also carries the reason for its
+removal; a changed one carries the generated values.
+
+**Explanations.** `TryCompareScatterManifests` compares an accepted manifest with
+a candidate by persistent placement identity. It reports Removed, Changed and
+Added entries. For a removed placement it reports the first responsible stage
+and the input or rule that excluded it: a removed scope or layer, a candidate
+index or cell outside the recipe, a position outside the region, the first
+keep-out that contains it, or the first higher-priority eligible candidate that
+conflicts with it in canonical order. The kernel's `TryExplainScatterCandidate`
+re-evaluates one candidate by the same rule `TryGenerateScatter` applies, so an
+accepted explanation is exactly a generated placement. Removing a keep-out-edit
+neighbour can admit a candidate that thinning rejected before; such a placement
+is reported as Added. Hähnlein, Bernstein and Schulz's
+[*DeCAD*](https://obikate.github.io/papers/decad.pdf) (UIST 2024, sections
+4.1-4.3 and 6.1) traces a difference between two model versions to the
+operation that produced it. Ludus adapts that idea: it uses persistent placement
+identities and re-evaluates the deterministic kernel rather than reading an
+edit history.
+
+**Acceptance so far.** The kernel tests check every candidate of the golden
+recipe: its explanation agrees with generation, and every rule occurs. The
+coordinator tests use a fixed-seed fixture with two independently keyed rooms.
+A keep-out edit in one room, with a protected placement, removes exactly the
+known placements. Each removal is explained by the eligibility stage and the
+edited keep-out. The protected placement and the unaffected room keep their
+identities and values, the unaffected room is a cache hit, and the candidate
+equals a clean cook of the same inputs with an empty cache. Rejecting the
+candidate preserves the accepted manifest. Further tests cover precise
+invalidation per layer, seed and lock edits; lock conflicts by keep-out, value
+and removed layer; stale candidates; corrupt and mis-shaped cache entries
+rebuilt to the same manifest; a store that refuses every write; and invalid
+requests that stage and publish nothing.

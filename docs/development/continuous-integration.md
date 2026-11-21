@@ -230,6 +230,40 @@ merge to `develop`. For qualification time, use the capture step completion and
 the promotion completion or the first failed required job. Report time spent
 collecting diagnostics after a rejection separately.
 
+### Read the batch outcome report
+
+From the coordinator's **Summary**, follow **Batch outcome reports** and open
+the entry titled `Batch RUN_ID · attempt ATTEMPT`. The reporting workflow
+runs after the attempt completes, including after an early stop. If a run was
+cancelled before the capture job started, find it by run ID and attempt in the
+[Batch outcome reports](https://github.com/The-Ludus-Project/Ludus/actions/workflows/batch-outcome.yml)
+workflow list.
+
+The report reads attempt-specific Actions job metadata and the trusted
+coordinator logs. It shows the candidate and base, the validation or promotion
+outcome, and a separate documentation publication result. Promotion timing
+uses the successful push step's completion. The latest completed validation
+jobs and the longest recorded runtimes show where to look for delays.
+Submission time uses the workflow's creation timestamp for the first attempt.
+A partial rerun can reuse an earlier capture. Elapsed time measured from that
+capture can span multiple attempts, and rerun submission time is unknown.
+
+For an early stop, the first failure's completion time records when the signal
+was available in Actions metadata. The watcher records when its poll first saw
+that job's failure. The stop log records when GitHub CLI confirmed that it
+submitted the cancellation request. The report reconstructs results and running
+jobs at that point from job timestamps, and labels queue state from the last
+watcher poll. Artifacts are linked at run scope. Missing timestamps and expired
+logs can leave individual fields unknown. Historical bot dispatches used the
+same actor for the protected-develop wake and stale-request handoff, so the
+actor alone cannot distinguish those triggers.
+
+Replay the three historical runs and the rerun fixtures with
+`PYTHONPATH=scripts/python python3 -m unittest test_batch_outcome`. After the
+reporting workflow reaches `main`, compare the next promoted and rejected
+attempts with their Actions job timelines, including documentation publication
+on promotion and the watcher and cancellation logs on rejection.
+
 ### Stop a failed batch early
 
 Any failed suite job rejects the candidate, so the batch's remaining jobs only add

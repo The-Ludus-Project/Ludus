@@ -128,6 +128,18 @@
     "source": "renderer_reference.slang",
     "compute": "ReduceMain"
   },
+  "renderer_reference_repeat_closest": {
+    "source": "renderer_reference_repeat_closest.slang",
+    "compute": "TraceMain"
+  },
+  "renderer_reference_repeat_visibility": {
+    "source": "renderer_reference_repeat_visibility.slang",
+    "compute": "TraceMain"
+  },
+  "renderer_reference_permuted": {
+    "source": "renderer_reference_permuted.slang",
+    "compute": "TraceMain"
+  },
   "renderer_authored": {
     "source": "renderer_authored.slang",
     "vertex": "VertexMain",

@@ -36,6 +36,7 @@ void Run(JobState& state)
         result.Status = imported.Status;
         result.Message = imported.Message;
         result.CandidatePath = imported.CandidatePath;
+        result.ReplacementGuidance = imported.ReplacementGuidance;
     }
     else if (state.Gate.Cancelled())
     {

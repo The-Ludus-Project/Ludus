@@ -3804,7 +3804,13 @@ dependency checks and publication implementation. Import validates saved loops
 and matching sample rates, captures catalog/dependency digests, and rechecks
 consulted inputs before publication. It never rewrites authored Sound or Music
 settings. Errors name the failing stage or dependency and retain the last valid
-catalog/list. Refresh explicitly retries a failed catalog read.
+catalog/list. When a replacement is shorter than a saved loop, the failure names
+the source ID, the candidate's frame count and sample rate, and the loop's required
+end frame. Use **Choose corrected file** from the problem panel or failed row to
+pick another export for the same ID. Cancelling the picker keeps the failure
+available and the old source active. When keyboard focus is in Content, the Editor
+requests a screen-reader announcement of the rejection and repair guidance on
+Qt 6.8 or later.
 
 The copied source is published to an immutable `sources/<key>.wav` or `.flac`
 file. The SHA-256 key includes source bytes, format, importer version and native
@@ -3871,9 +3877,11 @@ column shows the stage and percentage over a thin progress bar, and the strip
 under the list shows
 "Importing 2 of 3", the resource ID, the stage and the overall fraction across
 the batch. A failed import keeps its row with *Failed:* and the worker's reason,
-the problem panel names the resource and offers **Retry import**, and the
-**Retry import** button and the row's context menu retry the same file and ID
-(the context menu can also dismiss the failure). Cancel stops the running
+the problem panel names the resource and offers a repair. **Retry import** repeats
+the same file and ID after an in-place fix. **Choose corrected file** opens another
+export when dependency validation found a saved loop that the candidate cannot
+cover. The row's context menu also offers the repair and can dismiss the failure.
+Cancel stops the running
 import and drops the queue. Cooking scene assets stays in the C++ engine; the
 browser only reads its published catalog and artifacts.
 
@@ -3883,10 +3891,14 @@ late-cancel semantics, ID selection across filtering, unchanged-role updates,
 stale operation/project results, GUI-owned completion and shutdown, search
 terms and type chips, texture and material thumbnails, thumbnail cache keys,
 failures and queue limits, scene catalog listing, queued import progress, and
-failure and retry. The native `ludus_editor_cooked_content_recovery_tests` test
-also forces lost hints and a full failed rescan in one cooked project. It
-compares the settled material thumbnails to a fresh validated catalog read
-and checks the unrelated preview identity and a held file reader across repair.
+failure and retry. See the
+[S3 acceptance evidence](editor-workspace-evidence.md#s3-content-lifecycle-acceptance)
+for the MainWindow and native accessibility journeys.
+
+The native `ludus_editor_cooked_content_recovery_tests` test forces lost hints
+and a full failed rescan in one cooked project. It compares the settled material
+thumbnails to a fresh validated catalog read and checks the unrelated preview
+identity and a held file reader across repair.
 
 ## The project descriptor (version 1)
 
