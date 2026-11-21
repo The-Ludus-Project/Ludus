@@ -13,14 +13,21 @@ math::Vector3d ConvertVector(math::Vector3 value) noexcept
 {
     return {static_cast<float64>(value.X), static_cast<float64>(value.Y), static_cast<float64>(value.Z)};
 }
+enum class WaveRegionWalk : uint8
+{
+    Locate,
+    Gather,
+    Probe,
+};
 struct RegionAxialBounds final
 {
     float64 NearestWorld;
     float64 NearestFarWorld;
+    bool HasHit = false;
 };
 rhi::RasterStatus WalkRegion(const ReferenceSceneData& scene,
                              const math::EllipticalCone& cone,
-                             bool shouldGather,
+                             WaveRegionWalk mode,
                              RegionAxialBounds& inoutBounds,
                              WaveInteractionRegion& inoutRegion) noexcept
 {
@@ -41,7 +48,7 @@ rhi::RasterStatus WalkRegion(const ReferenceSceneData& scene,
         const ReferenceBvhNode& node = scene.Nodes[nodeIndex];
         bool canIntersect = false;
         math::EllipticalCone clipped = cone;
-        if (shouldGather == false)
+        if (mode == WaveRegionWalk::Locate)
         {
             clipped.FarWorld = inoutBounds.NearestWorld;
         }
@@ -90,12 +97,17 @@ rhi::RasterStatus WalkRegion(const ReferenceSceneData& scene,
             {
                 continue;
             }
+            if (mode == WaveRegionWalk::Probe)
+            {
+                inoutBounds.HasHit = true;
+                return rhi::RasterStatus::Ready;
+            }
             if (intersection.NearWorld < inoutBounds.NearestWorld)
             {
                 inoutBounds.NearestWorld = intersection.NearWorld;
                 inoutBounds.NearestFarWorld = intersection.FarWorld;
             }
-            if (shouldGather == true)
+            if (mode == WaveRegionWalk::Gather)
             {
                 if (inoutRegion.TriangleCount == LUDUS_WAVE_REGION_TRIANGLES)
                 {
@@ -108,6 +120,25 @@ rhi::RasterStatus WalkRegion(const ReferenceSceneData& scene,
     return rhi::RasterStatus::Ready;
 }
 } // namespace
+
+rhi::RasterStatus
+TestWaveInteraction(const ReferenceSceneData& scene, const math::EllipticalCone& cone, bool& outHasHit) noexcept
+{
+    bool canIntersect = false;
+    if (math::TryTestEllipticalConeBounds(cone, cone.OriginWorld, cone.OriginWorld, canIntersect) == false)
+    {
+        return rhi::RasterStatus::InvalidDescription;
+    }
+    RegionAxialBounds bounds{ .NearestWorld = cone.FarWorld, .NearestFarWorld = cone.FarWorld };
+    WaveInteractionRegion unusedRegion;
+    const rhi::RasterStatus status = WalkRegion(scene, cone, WaveRegionWalk::Probe, bounds, unusedRegion);
+    if (status == rhi::RasterStatus::Ready)
+    {
+        outHasHit = bounds.HasHit;
+    }
+    return status;
+}
+
 rhi::RasterStatus FindWaveInteractionRegion(const ReferenceSceneData& scene,
                                             const math::EllipticalCone& cone,
                                             WaveInteractionRegion& outRegion) noexcept
@@ -120,7 +151,7 @@ rhi::RasterStatus FindWaveInteractionRegion(const ReferenceSceneData& scene,
     WaveInteractionRegion candidate;
     candidate.Frustum = cone;
     RegionAxialBounds bounds{ .NearestWorld = cone.FarWorld, .NearestFarWorld = cone.FarWorld };
-    rhi::RasterStatus status = WalkRegion(scene, cone, false, bounds, candidate);
+    rhi::RasterStatus status = WalkRegion(scene, cone, WaveRegionWalk::Locate, bounds, candidate);
     if (status != rhi::RasterStatus::Ready)
     {
         return status;
@@ -132,7 +163,7 @@ rhi::RasterStatus FindWaveInteractionRegion(const ReferenceSceneData& scene,
     {
         candidate.Frustum.FarWorld = bounds.NearestFarWorld;
     }
-    status = WalkRegion(scene, candidate.Frustum, true, bounds, candidate);
+    status = WalkRegion(scene, candidate.Frustum, WaveRegionWalk::Gather, bounds, candidate);
     if (status == rhi::RasterStatus::Ready)
     {
         Sort(candidate.Triangles.GetData(), candidate.TriangleCount, [](uint32 first, uint32 second) noexcept {

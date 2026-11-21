@@ -105,6 +105,27 @@ change the game-owned level schema. A game binding validates that a level's audi
 key names the required sound/music kind. Numeric resource indices are resolved
 on the cold path and never persisted as authored identity.
 
+### Transactional catalog reads
+
+`Catalog::Read` validates a bounded candidate and publishes it in resource ID
+order. A failed read preserves the previous entries and their borrows. Entry
+strings are copied into the candidate, so the input bytes can be released after
+the call.
+
+For schema and entry validation, `Diagnostic::Field` identifies where to look.
+For example, `version` identifies a missing or unsupported version, and
+`resources[3].path` identifies the path in the fourth authored record. A shape
+error can identify the containing object as `$` or `resources[3]`. These paths
+have no source byte offset and use `parsing::UNKNOWN_BYTE_OFFSET`. Syntax
+failures use the JSON parser's byte offset when available. A record count limit
+or failure to allocate the candidate points to `resources`.
+
+The encoded input is capped at `MAX_DOCUMENT_BYTES`. Candidate storage is one
+allocation of `count * sizeof(Resource)`, bounded by `MAX_RESOURCES`. The
+separately bounded JSON workspace overlaps both the candidate and the previous
+entries until publication. The catalog's allocation domain can measure all
+three as requested bytes. See [P2 measurement and failure evidence](parsing.md#p2-catalog-read-evidence).
+
 ## Definition validation
 
 Readers reject duplicate keys/IDs, unknown fields or versions, wrong kinds,

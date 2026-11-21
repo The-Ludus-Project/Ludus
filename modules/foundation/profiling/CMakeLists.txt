@@ -38,7 +38,8 @@ else()
     configure_file("${PROJECT_SOURCE_DIR}/cmake/profiling_config.hpp.in" "${profiling_config}" @ONLY NEWLINE_STYLE UNIX)
 endif()
 
-target_sources(ludus_foundation_profiling PRIVATE src/clock.cpp)
+target_sources(ludus_foundation_profiling PRIVATE
+    src/clock.cpp src/memory_capture.cpp src/export_memory.cpp src/internal/memory_capture.hpp)
 
 if(EMSCRIPTEN AND NOT LUDUS_PROFILING_ENABLED)
     target_sources(ludus_foundation_profiling PRIVATE src/profiling_disabled.cpp)
@@ -68,6 +69,7 @@ target_sources(
             include/ludus/foundation/profiling/perfetto_export.hpp
             include/ludus/foundation/profiling/integration.hpp
             include/ludus/foundation/profiling/memory_gauges.hpp
+            include/ludus/foundation/profiling/memory_capture.hpp
             "${LUDUS_FOUNDATION_PROFILING_GENERATED_INCLUDE_DIR}/ludus/foundation/profiling/profiling_config.hpp"
 )
 
@@ -77,6 +79,7 @@ target_include_directories(
     ludus_foundation_profiling
     PRIVATE
         src
+        "${CMAKE_CURRENT_SOURCE_DIR}/../memory/src"
 )
 
 # Dependency direction (AGENTS.md): FoundationProfiling may use FoundationTime/Base
@@ -90,9 +93,10 @@ target_link_libraries(
     PUBLIC
         Ludus::FoundationBase
         Ludus::FoundationContainers
+        Ludus::FoundationMemory
     PRIVATE
         Ludus::FoundationStrings
-        Ludus::FoundationMemory
+        Ludus::FoundationThreading
         Ludus::FoundationTime
 )
 

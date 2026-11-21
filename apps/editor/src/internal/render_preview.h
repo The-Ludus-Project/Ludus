@@ -184,7 +184,7 @@ public:
     [[nodiscard]] bool HasGpuPassProfilingPending(foundation::uint64 throughTicks = ~foundation::uint64{
                                                       0}) const noexcept;
     void PrepareGpuProfileFrame() noexcept;
-    void NotifyGpuProfileSubmission() noexcept;
+    void NotifyGpuProfileSubmission(const QByteArray& runtimeIdentity = {}) noexcept;
     /// Next successful submission identity shared by CPU viewport spans and GPU samples.
     [[nodiscard]] LUDUS_INLINE foundation::uint64 GetNextProfileFrameId() const noexcept
     {
@@ -477,7 +477,9 @@ Q_SIGNALS:
     void BuiltInViewFailed(const QString& error);
     /// Rate-limited notification that GetStatistics changed while the overlay is visible.
     void StatisticsChanged();
-    void GpuProfileSubmission();
+    void GpuProfileSubmission(foundation::uint64 frameId,
+                              foundation::uint64 deviceSession,
+                              const QByteArray& runtimeIdentity);
     /// Direct GUI-thread notification; batch is borrowed only for the signal delivery.
     void GpuPassProfileBatch(foundation::uint64 frameId,
                              foundation::uint64 deviceSession,

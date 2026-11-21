@@ -16,6 +16,7 @@
 #include <QAction>
 #include <QByteArray>
 #include <QComboBox>
+#include <QCryptographicHash>
 #include <QDockWidget>
 #include <QElapsedTimer>
 #include <QFile>
@@ -541,11 +542,19 @@ TEST_CASE("delegated project graph Stats and GPU recording share the viewport sa
     WorldGraphView view(workspace, nullptr);
     view.resize(320, 180);
     view.show();
+    REQUIRE(workspace.GetPreviewOrNull() != nullptr);
+    QElapsedTimer timer;
+    timer.start();
+    while (workspace.GetPreviewOrNull()->GetImage().isNull() == true && timer.elapsed() < 10000)
+    {
+        workspace.ServicePreview();
+        QTest::qWait(1);
+    }
+    REQUIRE(workspace.GetPreviewOrNull()->GetImage().isNull() == false);
     const QString path = directory.filePath(QStringLiteral("graph.json"));
     REQUIRE(controller.Start(ProfilingMode::Both, path) == true);
     CHECK(controller.SetPreviewSource(&initialPreview) == false);
-    QElapsedTimer timer;
-    timer.start();
+    timer.restart();
     while (timer.elapsed() < 1000)
     {
         preview.Look(1, 0);
@@ -565,6 +574,16 @@ TEST_CASE("delegated project graph Stats and GPU recording share the viewport sa
     CHECK(QJsonDocument(trace).toJson().contains("Frame to Qt paint complete") == true);
     CHECK(trace.value(QStringLiteral("ludusViewportTiming")).toObject().value(QStringLiteral("droppedSpans")).toInt() ==
           0);
+    const QJsonArray graphFrames = trace.value(QStringLiteral("ludusGpuGraphFrames")).toArray();
+    REQUIRE(graphFrames.isEmpty() == false);
+    QFile cookedPackage(workspace.GetPreviewOrNull()->GetActivePackagePath());
+    REQUIRE(cookedPackage.open(QIODevice::ReadOnly) == true);
+    const QByteArray cookedIdentity =
+        QCryptographicHash::hash(cookedPackage.readAll(), QCryptographicHash::Sha256).toHex();
+    for (const QJsonValue& frameValue : graphFrames)
+    {
+        CHECK(frameValue.toObject().value(QStringLiteral("runtime_sha256")).toString().toLatin1() == cookedIdentity);
+    }
     bool hasMatchedGpuFrame = false;
     for (const QJsonValue& wallValue : trace.value(QStringLiteral("traceEvents")).toArray())
     {
@@ -603,7 +622,6 @@ TEST_CASE("delegated project graph Stats and GPU recording share the viewport sa
             0);
         CHECK(QJsonDocument(trace).toJson().contains("GPU/Pass/Main/raster/draw") == true);
     }
-    REQUIRE(workspace.GetPreviewOrNull() != nullptr);
     CHECK(workspace.GetPreviewOrNull()->GetImage().isNull() == false);
     CHECK(preview.GetStatistics().GpuState == ViewportGpuTimeState::Available);
     CHECK(preview.GetStatistics().GpuMilliseconds.GetCount() > 0);

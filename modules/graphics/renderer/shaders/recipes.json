@@ -11,6 +11,10 @@
     "source": "renderer_light_transformer_decoder.slang",
     "compute": "ComputeMain"
   },
+  "renderer_lusl_layout_probe": {
+    "source": "renderer_lusl_layout_probe.lusl",
+    "compute": "ComputeMain"
+  },
   "renderer_point_neighbors": {
     "source": "renderer_point_neighbors.slang",
     "compute": "ComputeMain"
@@ -123,6 +127,18 @@
   "renderer_reference_reduce": {
     "source": "renderer_reference.slang",
     "compute": "ReduceMain"
+  },
+  "renderer_reference_repeat_closest": {
+    "source": "renderer_reference_repeat_closest.slang",
+    "compute": "TraceMain"
+  },
+  "renderer_reference_repeat_visibility": {
+    "source": "renderer_reference_repeat_visibility.slang",
+    "compute": "TraceMain"
+  },
+  "renderer_reference_permuted": {
+    "source": "renderer_reference_permuted.slang",
+    "compute": "TraceMain"
   },
   "renderer_authored": {
     "source": "renderer_authored.slang",
