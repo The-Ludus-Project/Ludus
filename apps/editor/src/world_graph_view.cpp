@@ -152,7 +152,6 @@ WorldGraphView::WorldGraphView(RendererWorkspace& inoutWorkspace, QWidget* paren
                        "configurations authored in the project's graph."));
     mStatistics->setObjectName(QStringLiteral("worldGraphStatisticsOverlay"));
     mStatistics->setTextFormat(Qt::PlainText);
-    mStatistics->setAttribute(Qt::WA_TransparentForMouseEvents);
     mStatistics->move(STATISTICS_MARGIN_PIXEL, STATISTICS_MARGIN_PIXEL);
     mStatistics->hide();
     mStatisticsTimer.setInterval(STATISTICS_REFRESH_MILLISECONDS);
@@ -425,11 +424,18 @@ void WorldGraphView::SetStatisticsVisible(bool isVisible)
     {
         mStatisticsTimer.stop();
         mStatistics->clear();
+        mFullStatisticsText.clear();
     }
+    updatePointerTransparency();
+}
+
+void WorldGraphView::updatePointerTransparency()
+{
+    setAttribute(Qt::WA_TransparentForMouseEvents, HasStatusLink() == false && mStatistics->isVisible() == false);
 }
 QString WorldGraphView::GetStatisticsText() const
 {
-    return mStatistics->text();
+    return mFullStatisticsText;
 }
 void WorldGraphView::refreshStatistics()
 {
@@ -440,9 +446,12 @@ void WorldGraphView::refreshStatistics()
     const RenderPreview* sourceOrNull = mWorkspace.GetPreviewSourceOrNull();
     const ViewportStatistics deviceStatistics =
         sourceOrNull != nullptr ? sourceOrNull->GetStatistics() : ViewportStatistics{};
-    mStatistics->setText(
-        FormatGraphViewportStatistics(mPreview.GetStatistics(), deviceStatistics, foundation::time::Now().Nanoseconds));
-    mStatistics->adjustSize();
+    const foundation::uint64 nowNanoseconds = foundation::time::Now().Nanoseconds;
+    mFullStatisticsText = FormatGraphViewportStatistics(mPreview.GetStatistics(), deviceStatistics, nowNanoseconds);
+    mStatistics->SetStatisticsText(
+        FormatCompactGraphViewportStatistics(mPreview.GetStatistics(), deviceStatistics, nowNanoseconds),
+        mFullStatisticsText,
+        FormatGraphViewportStatisticsSummary(mPreview.GetStatistics(), nowNanoseconds));
     mStatistics->raise();
     Q_EMIT StatisticsChanged();
 }
@@ -732,9 +741,10 @@ void WorldGraphView::refreshStatus()
         }
         text += QStringLiteral("Engine default renderer fallback.");
     }
-    // The view lets pointer input through to the viewport that navigates; only while the chip is shown does it take
-    // presses, and a press outside the chip is ignored so it still reaches the viewport.
-    setAttribute(Qt::WA_TransparentForMouseEvents, HasStatusLink() == false);
+    // The view lets pointer input through to the viewport that navigates; only while the chip or
+    // the statistics overlay can be clicked does it take presses, and a press outside those
+    // widgets is ignored so it still reaches the viewport.
+    updatePointerTransparency();
     mStatus->setText(text);
     mStatus->setToolTip(fullText);
     mStatus->setVisible(text.isEmpty() == false);
