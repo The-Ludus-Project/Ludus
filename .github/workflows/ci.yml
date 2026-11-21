@@ -503,7 +503,7 @@ jobs:
       - name: Prepare pinned tooling quality checks
         run: ./scripts/setup-quality-tools
       - name: Test tooling checks and editor preset boundaries
-        run: PYTHONPATH=scripts/python python3 -m unittest test_quality_tools test_editor_setup -v
+        run: PYTHONPATH=scripts/python python3 -m unittest test_quality_tools test_editor_setup test_mobile_probe -v
       - name: Test render-graph build, staging and template tooling
         # Every suite, so new ones join; compiler cases skip here and run in the macOS batch job.
         run: PYTHONPATH=scripts/python python3 -m unittest discover -s scripts/python -p 'test_render_graph*.py' -v

@@ -7,6 +7,15 @@ set(LUDUS_ENGINE_EXPORT_NAMESPACE "Ludus::")
 set(LUDUS_ENGINE_PACKAGE_NAME "Ludus")
 
 project(${LUDUS_ENGINE_PROJECT_NAME} VERSION 0.1.0 LANGUAGES CXX)
+
+# The ios-* and android-* presets build only the M0 toolchain probes while
+# FoundationBase rejects those targets (docs/development/mobile-support-plan.md).
+option(LUDUS_MOBILE_PROBE_ONLY "Configure only the mobile toolchain probes" OFF)
+if(LUDUS_MOBILE_PROBE_ONLY)
+    include(CTest)
+    add_subdirectory(tools/mobile-probe)
+    return()
+endif()
 if(CMAKE_SYSTEM_NAME STREQUAL "Darwin")
     # Enable in the common parent scope for both Platform and GraphicsRhi.
     enable_language(OBJCXX)

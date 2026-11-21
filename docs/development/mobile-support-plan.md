@@ -372,6 +372,66 @@ implementation change. M6 adds signed distribution, clean install/upgrade,
 symbolication and store compliance; development installation is not distribution
 acceptance. Deferred features remain visible after a platform is admitted.
 
+## Running the M0 probes
+
+After the maintainer installs Xcode and the Android SDK and NDK, one command per
+platform produces the sanitized records that the M0 acceptance needs:
+
+```bash
+./scripts/mobile-probe all
+```
+
+Run one probe with `apple-toolchain`, `apple-signing`, `android-toolchain`,
+`android-signing` or `devices` instead of `all`. Each writes
+`out/mobile-probes/<probe>.json` (ignored by Git). The record keeps versions,
+statuses and yes/no answers only. Serial numbers, signing identity names, team IDs,
+device identifiers and machine paths never reach it: values are collected from a
+fixed list of fields, rewritten, and the probe refuses to write a record that
+still holds a private token. Review a record before linking it from the tracker.
+
+- **Exit status.** `0` passed, `1` failed (a compile, link or alignment check
+  failed; the record names the step), `3` not-installed (Xcode, an SDK, the NDK,
+  `adb` or the pinned Clang is missing, with what to install), `4` blocked (the
+  tools work, but signing material or a connected device is missing).
+- **Compiler.** The probes use the pinned upstream Clang (`out/host-tools`, then
+  Homebrew `llvm@23`, or `--clang` / `LUDUS_MOBILE_CLANG`) and reject another
+  major. They compile `tools/mobile-probe/probe_cxx23.cpp` (it includes the real
+  Band 0 headers), `probe_objcxx_arc.mm` (ARC, UIKit required) and
+  `probe_jni.cpp` with the engine warning set, `-Werror` and `-fno-exceptions`.
+  Apple builds use `-target` with the device and simulator SDKs and link with
+  Xcode's `ld`. Android builds use the NDK sysroot and its libc++ headers with the
+  pinned Clang (option A) and again with the NDK's own Clang for comparison,
+  linking with 16 KB `max-page-size` and reading the `LOAD` alignment with
+  `llvm-readelf -l`.
+- **Provisional levels.** `--ios-minimum` (default 17.0) and `--android-api`
+  (default 29) only select what to compile for. Each record says whether the value
+  was a default. Record the chosen minimums under Target profiles after the probes.
+- **Devices.** Connect each device by cable and trust the Mac. The probe reads
+  Apple devices with `devicectl` and Android devices with `adb`, and labels them
+  `apple-1`, `android-1` and so on.
+
+The mobile presets build the probes while FoundationBase still rejects iOS and
+Android. List them with the selected CMake:
+
+```bash
+cmake --list-presets=configure
+cmake --list-presets=build
+cmake --list-presets=test
+```
+
+Configure with `cmake --preset ios-clang-development`, or one of the other names
+in Target profiles. Toolchain files live in
+`config/cmake/ios.cmake` and `config/cmake/android.cmake`. Without the SDK or NDK,
+configure stops with a message that names what to install. Target test presets run
+binaries only through `scripts/mobile-device-runner`
+(`CMAKE_CROSSCOMPILING_EMULATOR`), which exits with an error until
+`LUDUS_MOBILE_DEVICE` selects a device: an `adb` serial for Android devices or
+emulators, a booted simulator UDID for `ios-simulator-clang-development`. Android
+device presets refuse an emulator and the reverse. A bare executable cannot run on
+an iPhone or iPad, so `ios-clang-*` tests refuse to run until the M1 app bundle
+exists. Both toolchain files and the Android runner path have not run against a real
+SDK, NDK or device yet; the first run on the maintainer Mac is the evidence.
+
 ## Milestone tracker
 
 Update a cell when its gate is met; link the implementation PR and evidence.
