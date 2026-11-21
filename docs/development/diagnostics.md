@@ -246,6 +246,30 @@ does not upload source files. Service processing/symbol quotas still apply.
 Verify that a real Sentry event shows a caller stack with source lines before
 declaring a distributed build fully qualified.
 
+#### Prepare a macOS Editor tester package in CI
+
+Run **macOS Editor distribution** manually on `main` after batch promotion. It
+builds the Apple silicon Development Editor and stages the Qt libraries and crash
+handler. The run publishes a downloadable Actions artifact only after Sentry
+processes the executable and dSYM. The workflow checks the UUID and DWARF line
+information for each executable architecture after app deployment and signing.
+A missing credential, mismatched symbol or failed upload stops the run before
+the app archive is published. See [Sentry debug-file uploads][sentry-debug-files].
+
+In the GitHub `macos-editor-distribution` environment, allow deployments from
+`main` only. Set the `LUDUS_EDITOR_SENTRY_DSN` variable to the public DSN for the
+team's `ludus-editor` project and the `SENTRY_AUTH_TOKEN` secret to a Sentry
+organization token with debug-file upload access.
+
+The Actions artifact contains the ad-hoc-signed app for second-Mac
+qualification. Keep the exact package and the debug files available from the
+private Sentry project's **Debug Files** in team storage for as long as the
+build is supported. Sentry can expire inactive debug files. Confirm a consented
+crash from the tester package shows first-party files and lines in Sentry before
+qualifying distribution. Qt source lines require debug files for the shipped Qt.
+
+[sentry-debug-files]: https://docs.sentry.io/cli/dif/
+
 #### Distribute and validate normal launches
 
 Preserve the bundled handler and `Contents/Resources/crash-reporting-licenses/`.
