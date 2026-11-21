@@ -390,6 +390,33 @@ def group_profiles(plans, technique, build):
     return result
 
 
+def report_bounds_failures(wrapper, selected_sources, snapshot, *, namespaced):
+    """Map each lowered module's private latch back to a LUSL line after invocation."""
+    sources = sorted(selected_sources)
+    cases = []
+    for index, source in enumerate(sources):
+        report = snapshot.language_reports.get(source.removesuffix('.slang'), {})
+        if not report.get('bounds_checks'):
+            continue
+        variable = report['failure_variable']
+        if namespaced:
+            variable = f'GraphSource{index}::{variable}'
+        cases.append(f'    switch ({variable}) {{\n')
+        for site in report['bounds_checks']:
+            cases.append(f'    case {site["code"]}u: return ReportGraphBoundsFailure({site["line"]}u);\n')
+        cases.append('    default: break;\n    }\n')
+    if not cases:
+        return wrapper
+    # Leave the renderer's forward declaration unchanged. The wrapper catches
+    # failures after all callbacks, including legacy and ordered dispatch.
+    wrapper = wrapper.replace('float3 EvaluateGraphRay(uint pixel)\n{',
+                              'float3 EvaluateGraphRayUnchecked(uint pixel)\n{', 1)
+    return ('#define LUDUS_GRAPH_BOUNDS_CHECKS 1\n' + wrapper +
+            '\nfloat3 EvaluateGraphRay(uint pixel)\n{\n'
+            '    float3 radiance = EvaluateGraphRayUnchecked(pixel);\n' +
+            ''.join(cases) + '    return radiance;\n}\n')
+
+
 def expand_programs(programs, technique, snapshot, helper, build, variants=None, persistent=False, schemas=None,
                     compute_identity=COMPUTE_ID, native_ray_queries=True, ray_path_capture=False,
                     native_ray_pipeline=False, workgroup=None, scene_dispatch=False):
@@ -489,6 +516,10 @@ static const float RAY_DIRECTION_SQUARED_TOLERANCE = 0.00001;
                       'native ray stages, ordered ray passes and persistent buffers require the scene callback interface')
         wrapper = persistent_wrapper(programs, technique, variants, snapshot, build, compute_recipe, compatibility,
                                      native_ray_queries, native_ray_pipeline, persistent, storage_source)
+    selected_sources = ({programs[identity]['source'] for variant in variants for identity in callback_programs(variant)}
+                        if persistent or native_ray_pipeline else {program['source'] for program in selected.values()})
+    wrapper = report_bounds_failures(wrapper, selected_sources, snapshot,
+                                     namespaced=persistent or native_ray_pipeline)
     if scene_dispatch:
         wrapper = '#define LUDUS_GRAPH_BUFFER_DISPATCH 1\n' + wrapper
     workgroup = list(workgroup or DEFAULT_WORKGROUP_SIZE)

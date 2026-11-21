@@ -52,7 +52,8 @@ static_assert(ToCode(RenderGraphFailureReason::PhotonCamera) == LUDUS_SCENE_FAIL
 static_assert(ToCode(RenderGraphFailureReason::PhotonCapacity) == LUDUS_SCENE_FAILURE_PHOTON_CAPACITY);
 static_assert(ToCode(RenderGraphFailureReason::PhotonDispatch) == LUDUS_SCENE_FAILURE_PHOTON_DISPATCH);
 static_assert(MAX_RENDER_GRAPH_FAILURE_REASONS == LUDUS_SCENE_FAILURE_REASON_COUNT);
-static_assert(LUDUS_GRAPH_FAILURE_BYTES == MAX_RENDER_GRAPH_FAILURE_REASONS * sizeof(uint32));
+static_assert(ToCode(RenderGraphFailureReason::LuslBounds) == LUDUS_SCENE_FAILURE_LUSL_BOUNDS);
+static_assert(LUDUS_GRAPH_FAILURE_WORDS == MAX_RENDER_GRAPH_FAILURE_REASONS + 1);
 
 const char* DescribeRenderGraphFailureReason(uint32 reason) noexcept
 {
@@ -107,6 +108,8 @@ const char* DescribeRenderGraphFailureReason(uint32 reason) noexcept
         case RenderGraphFailureReason::PrimaryMaterial:
             return "This transport template does not support coated-diffuse internal random walks. Select a "
                    "renderer supporting coatings, or explicitly author a diffuse or conductor material.";
+        case RenderGraphFailureReason::LuslBounds:
+            return "A LUSL index exceeded the array, vector or matrix bounds. Check the index at the reported line.";
         case RenderGraphFailureReason::FixedDimensionMaterial:
             return "This pass requires continuous reflection with a fixed three-value sampler. Select a graph "
                    "that supports the assigned material, or assign diffuse, rough conductor, their Mix or a "

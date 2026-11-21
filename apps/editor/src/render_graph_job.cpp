@@ -1,5 +1,6 @@
 #include "internal/render_graph_job.h"
 
+#include <ludus/foundation/base/config.h>
 #include <ludus/foundation/profiling/profiling.hpp>
 
 #include <QDir>
@@ -209,6 +210,12 @@ bool RenderGraphJob::Start(const ToolingPaths& tooling, const RenderGraphJobRequ
                           QStringLiteral("render-graph"),
                           request.Action};
     arguments += request.Arguments;
+#    if defined(LUDUS_BUILD_DEBUG) || defined(LUDUS_BUILD_DEVELOPMENT)
+    if (request.Action == QStringLiteral("build"))
+    {
+        arguments.append(QStringLiteral("--bounds-checks"));
+    }
+#    endif
     mProcessRequestedTicks = 0;
     if (request.EditTrace.Lifetime.Capture != 0 && request.Action == QStringLiteral("build"))
     {

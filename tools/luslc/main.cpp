@@ -51,9 +51,9 @@ const std::string_view USAGE =
     "                    [--define NAME=VALUE]...\n"
     "SOURCE, FILE and --include-directory are '/'-separated paths relative to --root (default: the\n"
     "current directory). --max-specializations is the specialization budget, 1 to 256 (default 256).\n"
-    "--report writes specializations, groupshared clears, bindings, vertex inputs and configuration reads of the\n"
-    "lowered module. lsp serves the Language Server Protocol on standard input and output; without\n"
-    "--root it uses the client's workspace root.\n";
+    "--report writes specializations, groupshared clears, bindings, vertex inputs, configuration reads and\n"
+    "bounds-check sites. lsp serves the Language Server Protocol on standard input and output.\n"
+    "Without --root it uses the client's workspace root.\n";
 
 struct Options final
 {
@@ -294,8 +294,9 @@ AppendLocation(const Snapshot& snapshot, const language::SourceLocation& locatio
 /// The build report of a lowered module, one tab-separated record per line:
 /// `specialization <template location> <name> <generated name>`,
 /// `groupshared-clear <entry location> <variable location> <unpadded bytes>`,
-/// `binding <variable location> <name> <kind> <slot> [<count>]` and
-/// `vertex-input <entry location> <name> <location>`.
+/// `binding <variable location> <name> <kind> <slot> [<count>]`,
+/// `vertex-input <entry location> <name> <location>` and
+/// `bounds-check <index location> <failure code>`.
 /// Configured requests also report `configuration-read-mask <bits in --define order>`.
 [[nodiscard]] bool
 ComposeReport(const Snapshot& snapshot, const language::LoweringResult& result, Array<char>& outText) noexcept
@@ -355,6 +356,17 @@ ComposeReport(const Snapshot& snapshot, const language::LoweringResult& result, 
             AppendLocation(snapshot, record.Entry, outText) == false || AppendText("\t", outText) == false ||
             AppendText(record.Name.GetView(), outText) == false || AppendText("\t", outText) == false ||
             AppendText(location.GetView(), outText) == false || AppendText("\n", outText) == false)
+        {
+            return false;
+        }
+    }
+    for (const language::BoundsCheckSite& site : result.BoundsChecks)
+    {
+        Line code;
+        code.AppendUnsigned(site.FailureCode);
+        if (AppendText("bounds-check\t", outText) == false ||
+            AppendLocation(snapshot, site.Location, outText) == false || AppendText("\t", outText) == false ||
+            AppendText(code.GetView(), outText) == false || AppendText("\n", outText) == false)
         {
             return false;
         }
