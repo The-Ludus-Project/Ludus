@@ -3677,6 +3677,9 @@ authors tuning a hidden epsilon.
 
 ### Progressive reference integrator
 
+The [renderer sampling architecture](renderer-sampling.md) defines sample
+pattern ownership and the proposal boundary shared with authored shaders.
+
 Jakub Boksansky and Adam Marrs's “The Reference Path Tracer” (*Ray Tracing Gems II*,
 chapter 14, especially 14.3.1–14.3.7) supports integrating an inspectable reference
 into the existing renderer. Thanks to them: retain their staged primary-ray/AOV

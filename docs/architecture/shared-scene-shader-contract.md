@@ -29,6 +29,8 @@ Closest-hit can inspect materials, sample lights, issue visibility queries and
 write a continuation into the user's payload. The user chooses the estimator,
 BSDF, MIS weights, throughput, termination and bounce count. Standard BSDF and
 light-sampling routines are optional primitives, not mandatory shading policy.
+Templates can expose a project-owned draw and matching probability evaluator
+through the proposed [renderer sampling contract](renderer-sampling.md#project-authored-proposals).
 
 The initial target is `camera -> x0 -> light` plus
 `camera -> x0 -> x1 -> light`: direct illumination and one intermediate surface
