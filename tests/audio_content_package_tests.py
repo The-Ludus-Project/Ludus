@@ -5,12 +5,14 @@ from pathlib import Path
 import subprocess
 import sys
 import tempfile
+import wave
 import unittest
 from unittest.mock import patch
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "examples/audio-content"))
 from generate_fixtures import generate
+from generate_transition_fixture import generate as generate_score
 loader = importlib.machinery.SourceFileLoader("package_audio", str(ROOT / "scripts/package-audio-content"))
 spec = importlib.util.spec_from_loader(loader.name, loader)
 pack = importlib.util.module_from_spec(spec)
@@ -19,6 +21,49 @@ VALIDATOR = sys.argv.pop(1)
 
 
 class PackageTests(unittest.TestCase):
+    def test_dynamic_dependencies_and_capacity_preserve_last_good_package(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            content = Path(temporary) / "content"
+            output = Path(temporary) / "release"
+            generate_score(content)
+            # Add a resident stinger and a third source; only the stinger references it.
+            bank = Path(temporary) / "bank"
+            generate(bank)
+            catalog = json.loads((content / "catalog.json").read_text())
+            for item in json.loads((bank / "catalog.json").read_text())["resources"]:
+                if item["id"] in ("source/impact", "sound/impact"):
+                    (content / item["path"]).write_bytes((bank / item["path"]).read_bytes())
+                    catalog["resources"].append(item)
+            (content / "catalog.json").write_text(json.dumps(catalog))
+            path = content / "journey.json"
+            score = json.loads(path.read_text())
+            score["max_stingers"] = 1
+            score["stingers"] = [{"id": "win", "sound": "sound/impact", "quantize": "bar"}]
+            path.write_text(json.dumps(score))
+            published = pack.package(VALIDATOR, content, output, ["music/journey"])
+            self.assertTrue((published / "impact.wav").is_file())
+            self.assertTrue((published / "arrive.wav").is_file())
+            last_good = (output / "current.json").read_bytes()
+            layers = score["sections"][0]["layers"]
+            layers.append(layers[0])  # five streams including the prepared destination
+            path.write_text(json.dumps(score))
+            with self.assertRaises(subprocess.CalledProcessError):
+                pack.package(VALIDATOR, content, output, ["music/journey"])
+            layers.pop()
+            # Two stems in one section must have equal lengths and sample rates.
+            layers[1]["source"] = "source/arrive"
+            path.write_text(json.dumps(score))
+            source = content / "arrive.wav"
+            with wave.open(str(source), "rb") as original:
+                samples = original.readframes(original.getnframes())
+            for rate, data in ((44100, samples), (48000, samples[:-4])):
+                with self.subTest(rate=rate), wave.open(str(source), "wb") as changed:
+                    changed.setparams((2, 2, rate, 0, "NONE", "not compressed"))
+                    changed.writeframes(data)
+                with self.assertRaises(subprocess.CalledProcessError):
+                    pack.package(VALIDATOR, content, output, ["music/journey"])
+            self.assertEqual(last_good, (output / "current.json").read_bytes())
+
     def test_closure_reproducibility_and_last_good(self):
         with tempfile.TemporaryDirectory() as temporary:
             content = Path(temporary) / "content"

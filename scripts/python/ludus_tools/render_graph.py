@@ -824,7 +824,7 @@ def _operation_resource_uses(operation):
         writes = use['access'] == 'ReadWrite'
         yield use['resource'], use['input_version'], use['output_version'] if writes else None, True if writes else None
     for use in operation.get('persistent_buffers', ()):
-        yield use['resource'], use['input_version'], use['output_version'], True
+        yield use['resource'], use['input_version'], use['output_version'], True if use['output_version'] is not None else None
     for field in ('visibility', 'visibility_depth', 'source_color'):
         if field in operation:
             use = operation[field]
@@ -971,7 +971,7 @@ class _Compiler:
                               f"requires {expected_dimensions}. Choose Match color target in Invocation, or set dimensions to {expected_dimensions}."),
                              field='invocation.dimensions', expected='ColorTarget' if target.get('view_scale') else expected_dimensions,
                              actual=dimensions, repair='Choose Match color target in Invocation → Launch size.')
-                visibility_reads = {}
+                texture_reads = {}
                 if 'visibility' in inputs:
                     for aspect in ('visibility', 'visibility_depth'):
                         source_value = inputs[aspect]
@@ -979,7 +979,18 @@ class _Compiler:
                         _require(source_value.defined and resource['extent'] == target['extent'] and
                                  resource.get('view_scale') == target.get('view_scale') and resource['samples'] == 1,
                                  'AttachmentMismatch', where, 'visibility/depth must be initialized and match the ray extent')
-                        visibility_reads[aspect] = {'resource': source_value.resource, 'input_version': source_value.version}
+                        texture_reads[aspect] = {'resource': source_value.resource, 'input_version': source_value.version}
+                if 'source_color' in inputs:
+                    source_value = inputs['source_color']
+                    resource = self.resources[source_value.resource]
+                    _require(source_value.defined and source_value.resource != inputs['color'].resource and
+                             resource['format'] == 'RGBA8Unorm' and resource['samples'] == 1 and
+                             not resource['presentation'], 'AttachmentMismatch', where,
+                             'scene compute color input requires a defined, separate, offscreen RGBA8Unorm texture',
+                             port=input_mapping['source_color'], direction='input',
+                             repair='Connect the color output of an upstream scene compute or ray pass.')
+                    texture_reads['source_color'] = {'resource': source_value.resource,
+                                                        'input_version': source_value.version}
                 structured = [port['id'] for port in authored_pipeline['inputs'] if port['type'] == 'Buffer' and
                               'stride' in self.resources[inputs['buffer:' + port['id']].resource]]
                 _require(not is_compute or not structured, 'Capability', where,
@@ -995,17 +1006,20 @@ class _Compiler:
                     resource = self.resources[inputs[identity].resource]
                     if 'stride' in resource:
                         continue
-                    _require('shader_struct' not in resource or is_compute, 'Capability', where,
-                             'buffers sized from a shader struct require a scene ComputePipeline',
+                    output = next((row for row in authored_pipeline['outputs'] if row['target'] == input_mapping[identity]), None)
+                    _require(output is not None or 'shader_struct' in resource, 'Capability', where,
+                             'raw persistent Buffer inputs require a paired Load/Store output',
                              port=port['id'], direction='input',
-                             repair='Connect the buffer to a scene ComputePipeline or select Fixed bytes.')
-                    output = next((port for port in authored_pipeline['outputs'] if port['target'] == input_mapping[identity]), None)
-                    _require(output is not None, 'Capability', where, 'each persistent Buffer input requires a paired Load/Store Buffer output')
-                    written = self.write(inputs[identity], {identity + '_load': 'Load', identity + '_store': 'Store'},
-                                         identity, where, ())
-                    buffer_uses.append({'resource': written.resource, 'slot': slot,
-                                        'input_version': inputs[identity].version, 'output_version': written.version})
-                    buffer_outputs[output['id']] = written
+                             repair='Add a paired Writable Resource or choose From shader struct for read-only access.')
+                    source = inputs[identity]
+                    version = None
+                    if output is not None:
+                        written = self.write(source, {identity + '_load': 'Load', identity + '_store': 'Store'},
+                                             identity, where, ())
+                        version = written.version
+                        buffer_outputs[output['id']] = written
+                    buffer_uses.append({'resource': source.resource, 'slot': slot,
+                                        'input_version': source.version, 'output_version': version})
                 _require(len({use['resource'] for use in buffer_uses}) == len(buffer_uses), 'MultipleWriters', where,
                          'one physical buffer cannot occupy both buffer inputs of a pass')
                 attachments = {}
@@ -1022,7 +1036,7 @@ class _Compiler:
                     launch = {'work_items': work_items}
                 storage = {}
                 storage_outputs = {}
-                for name in sorted(set(inputs) - {'scene', 'view', 'color', 'visibility', 'visibility_depth'}):
+                for name in sorted(set(inputs) - {'scene', 'view', 'color', 'visibility', 'visibility_depth', 'source_color'}):
                     buffer = inputs[name]
                     if 'stride' not in self.resources[buffer.resource]:
                         continue
@@ -1047,7 +1061,7 @@ class _Compiler:
                     'asset_configuration': config['id'], 'vertex_layout': 'RendererStatic', 'material': 'DefaultOpaque',
                     'scene': inputs['scene'].origin, 'scene_data': inputs['scene'].scene_data, **launch,
                     'dependencies': sorted({v.producer for v in inputs.values() if v.producer}), 'pipeline': authored_pipeline,
-                    'persistent_buffers': buffer_uses, 'buffers': storage, **visibility_reads,
+                    'persistent_buffers': buffer_uses, 'buffers': storage, **texture_reads,
                     'attachments': attachments})
                 if is_compute:
                     # Only the offline plan names the source; the numeric pass record stays RayTracing (design D1).
@@ -1427,6 +1441,9 @@ def dump_plan(plan):
                 lines.append(f"    launch: {entry['dimensions']}; color target: {entry['attachments']['color']['resource']}")
             if 'source_kind' in entry:
                 lines.append(f"    source: {entry['source_kind']} (scene compute pass in the ray sequence)")
+            if 'source_color' in entry:
+                source = entry['source_color']
+                lines.append(f"    sampled color: {source['resource']}@{source['input_version']}")
         for name, use in entry.get('buffers', {}).items():
             lines.append(f"    {name}: {use['resource']}@{use['input_version']} -> @{use['output_version']} ({use['access']})")
         for aspect, attachment in entry.get("attachments", {}).items():

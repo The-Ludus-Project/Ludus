@@ -6,30 +6,169 @@ MAX_STRIDE = 4096
 MAX_ELEMENTS = 16 * 1024 * 1024
 
 
-def validate_persistent_struct_links(plans, programs, closures, build):
-    """Link each use to the same package-local Slang declaration."""
+def link_persistent_structs(plans, programs, closures, build):
+    """Resolve named shader arguments from pass-local port declarations."""
+    variants, signatures = {}, {}
     for plan in plans:
-        resources = plan['resources']
         for operation in plan['passes']:
+            if operation['kind'] != 'RayTracing':
+                continue
+            resources = plan['resources']
+            pipeline = operation['pipeline']
+            variant = build.ray.get_callback_variant(pipeline)
+            program_id = variant[0]
+            program = programs.get(program_id, {})
+            is_named = program.get('graph_resources', False)
+            ports = [port for port in pipeline['inputs'] if port['type'] == 'Buffer']
+            fields = []
             for use in operation.get('persistent_buffers', []):
                 record = resources[use['resource']].get('shader_struct')
-                if record is None:
-                    continue
-                program = next(shader['program'] for shader in operation['pipeline']['shaders']
-                               if shader['stage'] == 'compute')
-                source = record['source']
-                if program in programs and (programs[program]['source'] == source or source not in closures[program]):
-                    raise build.ToolingError('RenderGraphBuildShaderInterface',
-                                             f"{use['resource']}: include '{source}' from scene compute program "
-                                             f"'{program}'. Select the shared file that declares the struct in Buffer sizing.",
-                                             location={'source': programs[program]['source'], 'program': program,
-                                                       'line': 1, 'column': 1})
-                build.name(record['type'], 'buffer struct type')
+                is_writable = use['output_version'] is not None
+                build.require(is_writable or is_named, 'ShaderInterface', operation['id'],
+                              f"set graph_resources on '{program_id}' to use a read-only Buffer port")
+                if record is not None and program:
+                    source = record['source']
+                    if source == program['source'] or (not is_named and source not in closures[program_id]):
+                        raise build.ToolingError(
+                            'RenderGraphBuildShaderInterface',
+                            f"{use['resource']}: include '{source}' from program '{program_id}'. Select the shared file "
+                            "that declares the struct in Buffer sizing.",
+                            location={'source': program['source'], 'program': program_id, 'line': 1, 'column': 1})
+                    build.name(record['type'], 'buffer struct type')
+                if is_named:
+                    port = ports[use['slot']]['id']
+                    field = port[0].upper() + port[1:]
+                    build.name(field, f"shader member for Buffer port '{port}'")
+                    build.require(all(previous['field'] != field for previous in fields),
+                                  'ShaderInterface', operation['id'],
+                                  f"Buffer ports map to the same shader member '{field}'. Rename one port.")
+                    fields.append({'field': field, 'slot': use['slot'], 'record': record,
+                                   'writable': is_writable})
+            if not is_named:
+                continue
+            build.require(fields, 'ShaderInterface', operation['id'],
+                          "connect a Buffer port or remove graph_resources from the shader program")
+            ordered = sorted(fields, key=lambda field: field['field'])
+            signature = [(field['field'], field['writable'], field['record'] and
+                          (field['record']['source'], field['record']['type'])) for field in ordered]
+            key = (program['source'], program['function'])
+            build.require(signatures.setdefault(key, signature) == signature,
+                          'ShaderInterface', operation['id'],
+                          'reused shader function has different named Buffer fields; use matching ports or another function')
+            build.require(variants.setdefault(variant, ordered) == ordered, 'ShaderInterface', operation['id'],
+                          'reused callback variant has different Buffer slots or capacities; use matching ports or another program')
+    return variants
+
+
+def record_view_name(field):
+    record = field['record']
+    if record is None:
+        return 'RWStructuredBuffer<uint4>'
+    return 'Graph' + ('Writable' if field['writable'] else 'ReadOnly') + record['type'] + 'View'
+
+
+def emit_record_layout(shape, expression, address, loads, stores, depth, build, view):
+    """Generate scalar accesses at the reflected offsets, including fixed arrays."""
+    kind = shape['kind']
+    if kind == 'struct':
+        for field in shape['fields']:
+            offset = field.get('binding', {}).get('offset')
+            build.require(type(offset) is int and offset >= 0 and offset % 4 == 0, 'ShaderInterface', view,
+                          'named Buffer fields need word-aligned storage offsets')
+            emit_record_layout(field['type'], expression + '.' + field['name'], f'{address} + {offset // 4}u',
+                               loads, stores, depth, build, view)
+        return
+    if kind == 'array':
+        index = f'element{depth}'
+        count = shape['elementCount']
+        stride = shape.get('uniformStride')
+        build.require(type(count) is int and count > 0 and type(stride) is int and stride > 0 and stride % 4 == 0,
+                      'ShaderInterface', view,
+                      'named Buffer arrays need fixed capacity and word-aligned elements')
+        loop = f'for (uint {index} = 0; {index} < {count}u; ++{index}) {{'
+        loads.append(loop)
+        stores.append(loop)
+        emit_record_layout(shape['elementType'], f'{expression}[{index}]', f'{address} + {index} * {stride // 4}u',
+                           loads, stores, depth + 1, build, view)
+        loads.append('}')
+        stores.append('}')
+        return
+    scalar = (shape['elementType'] if kind == 'vector' else shape).get('scalarType')
+    cast = {'float32': 'asfloat', 'int32': 'asint', 'uint32': 'asuint'}.get(scalar)
+    build.require(kind in ('scalar', 'vector') and cast is not None, 'ShaderInterface', view,
+                  'named Buffer record fields must use 32-bit float, int, uint, vectors, structs or fixed arrays')
+    for component in range(shape['elementCount'] if kind == 'vector' else 1):
+        field = f'{expression}[{component}]' if kind == 'vector' else expression
+        word = f'({address} + {component}u)'
+        bound = f'Words[{word} / 4u][{word} % 4u]'
+        loads.append(f'{field} = {cast}({bound});')
+        stores.append(f'{bound} = asuint({field});')
+
+
+def record_view_argument(field):
+    handle = f'GraphBuffer{field["slot"]}'
+    return (f'{record_view_name(field)}({handle}, {field["record"]["count"]}u)'
+            if field['record'] else handle)
+
+
+def collect_record_views(contracts, build):
+    views = {}
+    for fields in contracts:
+        for field in fields:
+            record = field['record']
+            if record is None:
+                continue
+            view = record_view_name(field)
+            key = (record['source'], record['type'], field['writable'])
+            build.require(views.setdefault(view, key) == key, 'ShaderInterface', view,
+                          'include one shared Slang declaration per Buffer record type')
+    return views
+
+
+def record_view_definition(view, type_name, is_writable, *, loads=None, stores=None):
+    """Describe the view for source assistance, or define it for an executable build."""
+    getter = f'{type_name} record; {" ".join(loads)} return record;' if loads is not None else f'return ({type_name})0;'
+    setter = ''
+    if is_writable:
+        code = f'{type_name} record = newValue; ' + ' '.join(stores) if stores is not None else ''
+        setter = f'set {{ {code} }}'
+    return f"""
+struct {view}
+{{
+    private RWStructuredBuffer<uint4> Words;
+    private uint Count;
+    __init(RWStructuredBuffer<uint4> words, uint count) {{ Words = words; Count = count; }}
+    uint GetCount() {{ return Count; }}
+    __subscript(uint index) -> {type_name}
+    {{
+        get {{ {getter} }}
+        {setter}
+    }}
+}};
+"""
+
+
+def define_record_views(program, layouts, build):
+    wrapper = program['ray_wrapper']
+    for view, (source, type_name, is_writable) in program['named_record_views'].items():
+        stride, shape = layouts[(source, type_name)]
+        build.require(stride % 4 == 0, 'ShaderInterface', view, 'named Buffer record stride must be word-aligned')
+        address = f'(index * {stride // 4}u)'
+        loads, stores = [], []
+        emit_record_layout(shape, 'record', address, loads, stores, 0, build, view)
+        # A reflected scalar is accessed as one scalar on both native targets, even
+        # when adjacent records share one uint4. Padding remains untouched.
+        declaration = record_view_definition(view, type_name, is_writable)
+        build.require(wrapper.count(declaration) == 1, 'ShaderInterface', view,
+                      'linked shader is missing its generated Buffer view declaration')
+        wrapper = wrapper.replace(declaration,
+                                  record_view_definition(view, type_name, is_writable, loads=loads, stores=stores), 1)
+    return wrapper
 
 
 def size_persistent_structs(plans, snapshot, stage, compiler, cancel, build):
     """Use the same SPIR-V storage layout that the ordered Metal/Vulkan shaders use."""
-    strides, layouts = {}, []
+    records, layouts = {}, []
     for plan in plans:
         instances = {context['instance']: context for context in plan['activity']}
         for identity, resource in plan['resources'].items():
@@ -38,10 +177,10 @@ def size_persistent_structs(plans, snapshot, stage, compiler, cancel, build):
                 continue
             source, type_name = record['source'], record['type']
             key = (source, type_name)
-            if key not in strides:
-                directory = stage / ('buffer-layout-' + str(len(strides)))
-                strides[key] = reflect_stride(source, type_name, snapshot, directory, compiler, cancel, build)
-            stride = strides[key]
+            if key not in records:
+                directory = stage / ('buffer-layout-' + str(len(records)))
+                records[key] = reflect_record(source, type_name, snapshot, directory, compiler, cancel, build)
+            stride, _ = records[key]
             bytes_total = stride * record['count']
             word_bytes = build.ray.BUFFER_WORD_BYTES
             capacity = ((bytes_total + word_bytes - 1) // word_bytes) * word_bytes
@@ -54,10 +193,10 @@ def size_persistent_structs(plans, snapshot, stage, compiler, cancel, build):
             context = instances[prefix]
             layouts.append({'node': node, 'graph': context['source'], 'configuration': context['configuration'],
                             'stride': stride, 'bytes': capacity})
-    return layouts
+    return layouts, records
 
 
-def reflect_stride(source, type_name, snapshot, directory, compiler, cancel, build):
+def reflect_record(source, type_name, snapshot, directory, compiler, cancel, build):
     # Thanks to the Slang team, Using the Reflection API (Types and Layouts),
     # https://shader-slang.org/slang/user-guide/reflection.html.
     # Slang reflects the stride of a fixed array of T in a storage-buffer record.
@@ -106,7 +245,7 @@ def reflect_stride(source, type_name, snapshot, directory, compiler, cancel, bui
                   0 < stride <= build.ray.MAX_BUFFER_BYTES,
                   'ShaderInterface', f'{source}::{type_name}',
                   'expected a sized storage struct. Select a struct with value fields that fits the buffer limit.')
-    return stride
+    return stride, element
 
 
 def validate_node(node, where, graph):

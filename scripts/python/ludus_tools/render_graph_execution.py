@@ -167,6 +167,9 @@ def lower_plan(package, configuration):
                                  'BytesPerPixel': value.get('bytes_per_pixel', 0)})
     pass_records = []
     color_defined = {r: False for r in resources}
+    has_color_input = any(operation['kind'] == 'RayTracing' and 'source_color' in operation
+                          for operation in operations)
+    ray_colors = {}
     for operation in operations:
         if operation['kind'] == 'Upscale':
             build.require(operation.get('algorithm') in ('bilinear', 'metalfx-spatial'), 'Capability', operation['id'], 'unsupported upscaler')
@@ -208,8 +211,17 @@ def lower_plan(package, configuration):
                                   'Configuration', operation['id'],
                                   'visibility/depth must come from the immediately preceding opaque Clear/Store raster using the same view')
             color = operation['attachments'].get('color')
+            sampled_color = operation.get('source_color')
+            if sampled_color is not None:
+                source = sampled_color['resource']
+                build.require(ray_colors.get(source) == sampled_color['input_version'],
+                              'Capability', operation['id'],
+                              'scene compute color input must read the current color output of an earlier ordered ray or scene compute pass')
+            if color is not None:
+                ray_colors[color['resource']] = color['output_version']
             recipes = [recipe for recipe in package.get('recipes', []) if recipe['technique'] == ray.TECHNIQUE and
                        recipe.get('visibility_buffer', False) == ('visibility' in operation) and
+                       recipe.get('color_input', False) == has_color_input and
                        recipe.get('native_ray_queries', True) == ray.requires_native_queries(plan)]
             variants = recipes[0].get('ray_programs', [list(ray.get_callback_variant(operation['pipeline']))]) if recipes else [list(ray.get_callback_variant(operation['pipeline']))]
             variant = list(ray.get_callback_variant(operation['pipeline']))
@@ -226,7 +238,8 @@ def lower_plan(package, configuration):
                 'Visibility': resources.index(operation['visibility']['resource']) if 'visibility' in operation else ABSENT,
                 'VisibilityDepth': resources.index(operation['visibility_depth']['resource']) if 'visibility_depth' in operation else ABSENT,
                 'AccumulationSamples': operation.get('accumulation', {}).get('samples', 0),
-                'ToneMappingExposure': float(operation.get('tone_mapping', {}).get('exposure', 0))})
+                'ToneMappingExposure': float(operation.get('tone_mapping', {}).get('exposure', 0)),
+                'SourceColor': resources.index(sampled_color['resource']) if sampled_color is not None else ABSENT})
             continue
         choices = [r for r in package['recipes'] if r['technique'] == operation['technique'] and
                    ('pipeline' not in operation or all(r['state'][key] == value
@@ -349,7 +362,8 @@ CAPTURE_PROFILE_PACKAGE_MAGIC = 0x4352554C
 # Version 38 admits the World-feature scene resource bits: the linked ray kernel reads the Atmosphere sky or the
 # aerial perspective table.
 # Version 39 appends the buffer-only scene dispatch work item count to each pass.
-PACKAGE_VERSION = 40
+# Version 41 allows a scene compute pass to sample an earlier pass through SourceColor.
+PACKAGE_VERSION = 41
 # render_graph_format::DisplayCurve codes, by index; zero (Reinhard) also marks a pass without a ToneMap.
 DISPLAY_CURVE_CODES = ('Reinhard', 'PbrNeutral')
 # Version 25 scene resource word: the linked ray kernel reads the renderer's LTC table.
@@ -492,10 +506,12 @@ def _runtime_contents(path, configuration):
                   'use an explicitly authored --renderer-static build manifest')
     plan, resources, passes, cameras = lower_plan(package, configuration)
     has_visibility = any(p.get('Visibility', ABSENT) != ABSENT for p in passes)
+    has_color_input = any(p['Program'] == 'RayTracing' and p['SourceColor'] != ABSENT for p in passes)
     selected_techniques = set(plan['techniques'])
     ray_recipes = [recipe for recipe in package['recipes'] if ray.TECHNIQUE in selected_techniques and
                    recipe['technique'] == ray.TECHNIQUE and
                    recipe.get('visibility_buffer', False) == has_visibility and
+                   recipe.get('color_input', False) == has_color_input and
                    recipe.get('native_ray_queries', True) == ray.requires_native_queries(plan)]
     stages = {}
     roles = program_roles(package)

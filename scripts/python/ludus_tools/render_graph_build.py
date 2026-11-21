@@ -307,12 +307,18 @@ def validate_manifest(value):
             f'increase budgets.programs to at least {program_count} or reuse existing programs')
     for program in value['programs']:
         keys(program, ('id', 'stage', 'source', 'function', 'input', 'output', 'bindings'), 'program',
-             ('capture_warmup_setting', 'light_transformer', 'configuration_values'))
+             ('capture_warmup_setting', 'light_transformer', 'configuration_values', 'graph_resources'))
         if 'capture_warmup_setting' in program:
             setting = next((item for item in value.get('settings', [])
                             if item['id'] == program['capture_warmup_setting']), None)
             require(program['stage'] == ray.COMPUTE_STAGE and setting is not None and setting['type'] == 'UInt32',
                     'Schema', 'capture_warmup_setting', 'name an existing UInt32 graph setting on a scene compute program')
+        if 'graph_resources' in program:
+            require(type(program['graph_resources']) is bool and
+                    (program['graph_resources'] is False or
+                     (program['stage'] in (ray.COMPUTE_STAGE, 'ray_generation') and program['output'] == 'Radiance' and
+                      type(program['source']) is str and program['source'].endswith('.slang'))),
+                    'Schema', program['id'], 'graph_resources requires a Slang scene compute or radiance ray-generation program')
         if 'light_transformer' in program:
             require(type(program['light_transformer']) is bool and
                     (program['light_transformer'] is False or program['stage'] == ray.COMPUTE_STAGE),
@@ -1112,7 +1118,7 @@ def prepare_sources(manifest, helper, *, root=None, ray_path_capture=False, capt
         require(snapshot.load(label) == data, 'Stale', label, 'graph changed while capturing sources')
     plans = [graph.compile_graph(graph_path, root=snapshot.root, configuration=c['id'])
              for c in library.assets[graph_path]['configurations']]
-    buffers.validate_persistent_struct_links(plans, programs, closures, sys.modules[__name__])
+    named_resources = buffers.link_persistent_structs(plans, programs, closures, sys.modules[__name__])
     for plan in plans:
         require(all(digest(snapshot.files[d['source']]) == d['sha256'] for d in plan['dependencies']),
                 'Stale', plan['configuration'], 'graph changed during plan compilation')
@@ -1203,6 +1209,8 @@ def prepare_sources(manifest, helper, *, root=None, ray_path_capture=False, capt
             technique = deepcopy(techniques[ray.TECHNIQUE])
             if 'scene_interface' in technique:
                 technique['scene_interface']['visibility_buffer'] = profile['visibility_buffer']
+                if profile['color_input']:
+                    technique['scene_interface']['color_input'] = True
                 # The capture profile links the larger capture budget into every wrapper of this build.
                 if capture_profile:
                     interface = technique['scene_interface']
@@ -1211,9 +1219,12 @@ def prepare_sources(manifest, helper, *, root=None, ray_path_capture=False, capt
             expanded = ray.expand_programs(authored_programs, technique, snapshot, helper, sys.modules[__name__],
                                           profile['variants'], profile['persistent'], schemas, profile['compute'],
                                           profile['native_ray_queries'], ray_path_capture, workgroup=profile['workgroup'],
-                                          scene_dispatch=profile['scene_dispatch'])
+                                          scene_dispatch=profile['scene_dispatch'], named_resources=named_resources)
             linked_programs.update(expanded)
             if profile['native_pipeline']:
+                require(not any(variant in named_resources for variant in profile['variants']),
+                        'Capability', 'RayTracing',
+                        'named buffers require compute scene traversal; select Compute in the ray Invocation settings')
                 require('metal' in value['profiles'], 'Capability', 'RayTracing',
                         'hardware ray-stage invocation requires the native Metal backend; select Compute explicitly on other backends')
                 profile['native_compute'] = profile['compute'] + 'NativeStages'
@@ -1331,8 +1342,11 @@ def build_package(manifest, output, *, helper, compiler, validator=None, spirv_c
         cache.mkdir(exist_ok=True); generations.mkdir(exist_ok=True)
         with tempfile.TemporaryDirectory(prefix='.rg1-', dir=output) as stage:
             stage = Path(stage)
-            shader_buffer_layouts = buffers.size_persistent_structs(
+            shader_buffer_layouts, record_layouts = buffers.size_persistent_structs(
                 plans, snapshot, stage, tool_paths['tool/slangc'], cancel, sys.modules[__name__])
+            for program in programs.values():
+                if program.get('named_record_views'):
+                    program['ray_wrapper'] = buffers.define_record_views(program, record_layouts, sys.modules[__name__])
             compiled, entries, hits, misses = {}, {}, 0, 0
             pending, pending_keys = [], set()
             # Report-only attribution: miss, local cache hit, or reuse of a key this build already resolved.
@@ -1426,6 +1440,8 @@ def build_package(manifest, output, *, helper, compiler, validator=None, spirv_c
                                     for identity in ray.callback_programs(variant))
                                 for variant in profile['variants']]
                             record['visibility_buffer'] = profile['visibility_buffer']
+                            if profile['color_input']:
+                                record['color_input'] = True
                             if ray_path_capture:
                                 record['ray_path_capture'] = True
                             if capture_profile:

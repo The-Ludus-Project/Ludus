@@ -3946,6 +3946,67 @@ TEST_CASE("Earth lights share one World date, time and location that starts at t
     workspace.StopPreview();
 }
 
+TEST_CASE("The Atmosphere's cloud layer fields show when enabled and reach the renderer", "[editor][world][atmosphere]")
+{
+    QTemporaryDir directory;
+    const QString root = QFileInfo(directory.path()).canonicalFilePath();
+    WorldWorkspace workspace;
+    workspace.SetProject(root, 1);
+    REQUIRE(workspace.Create(QDir(root).filePath(QStringLiteral("clouds.world.json"))) == true);
+    QAction* sunActionOrNull = workspace.findChild<QAction*>(QStringLiteral("worldCreateSun"));
+    QAction* atmosphereActionOrNull = workspace.findChild<QAction*>(QStringLiteral("worldCreateAtmosphere"));
+    REQUIRE(sunActionOrNull != nullptr);
+    REQUIRE(atmosphereActionOrNull != nullptr);
+    sunActionOrNull->trigger();
+    const QString sunId = workspace.Document().GetEntityKey(
+        workspace.Document().Draft().value(QStringLiteral("entities")).toArray().last().toObject());
+    atmosphereActionOrNull->trigger();
+    const QString atmosphereId = workspace.Document().GetEntityKey(
+        workspace.Document().Draft().value(QStringLiteral("entities")).toArray().last().toObject());
+    REQUIRE(workspace.SelectEntity(atmosphereId) == true);
+    QComboBox* atmosphereSunOrNull = workspace.findChild<QComboBox*>(QStringLiteral("worldField:atmosphere/sun"));
+    REQUIRE(atmosphereSunOrNull != nullptr);
+    atmosphereSunOrNull->setCurrentIndex(atmosphereSunOrNull->findData(sunId));
+    REQUIRE(workspace.Apply() == true);
+    RenderScene scene;
+    QString error;
+    REQUIRE(RenderScene::Load(root, workspace.Document(), scene, error) == true);
+    REQUIRE(scene.Atmosphere.IsEnabled == true);
+    CHECK(scene.Atmosphere.Clouds.IsEnabled == false);
+    const QJsonObject beforeClouds = workspace.Document().Draft();
+
+    // The layer's fields stay hidden until the layer is ticked.
+    QCheckBox* cloudsOrNull = workspace.findChild<QCheckBox*>(QStringLiteral("worldField:atmosphere/clouds"));
+    QLineEdit* baseOrNull = workspace.findChild<QLineEdit*>(QStringLiteral("worldField:atmosphere/cloudBase"));
+    QLineEdit* extinctionOrNull =
+        workspace.findChild<QLineEdit*>(QStringLiteral("worldField:atmosphere/cloudExtinction"));
+    REQUIRE(cloudsOrNull != nullptr);
+    REQUIRE(baseOrNull != nullptr);
+    REQUIRE(extinctionOrNull != nullptr);
+    CHECK(cloudsOrNull->isVisibleTo(&workspace) == true);
+    CHECK(baseOrNull->isVisibleTo(&workspace) == false);
+    cloudsOrNull->setChecked(true);
+    CHECK(baseOrNull->isVisibleTo(&workspace) == true);
+    CHECK(extinctionOrNull->isVisibleTo(&workspace) == true);
+    baseOrNull->setText(QStringLiteral("2500"));
+    extinctionOrNull->setText(QStringLiteral("0.002"));
+    REQUIRE(workspace.Apply() == true);
+    REQUIRE(RenderScene::Load(root, workspace.Document(), scene, error) == true);
+    const ludus::graphics::renderer::CloudLayerDescription& clouds = scene.Atmosphere.Clouds;
+    CHECK(clouds.IsEnabled == true);
+    CHECK(clouds.BaseHeightMetres == Catch::Approx(2500));
+    CHECK(clouds.ExtinctionPerMetre == Catch::Approx(0.002));
+    CHECK(clouds.ThicknessMetres == ludus::graphics::renderer::CloudLayerDescription::DEFAULT_THICKNESS_METRES);
+    CHECK(clouds.AxisXWorld.X == Catch::Approx(1));
+
+    // Undo restores the clear sky in one step.
+    workspace.Undo();
+    CHECK(workspace.Document().Draft() == beforeClouds);
+    REQUIRE(RenderScene::Load(root, workspace.Document(), scene, error) == true);
+    CHECK(scene.Atmosphere.Clouds.IsEnabled == false);
+    workspace.StopPreview();
+}
+
 TEST_CASE("Older Worlds keep per-light Earth observers until an Earth light edit makes them shared",
           "[editor][world][celestial]")
 {

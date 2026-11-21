@@ -191,13 +191,88 @@ bool ValidateAddressedIncidentSampling(SceneContext scene, RayLaunch launch, Ray
     IncidentLightSample absent = SampleIncidentLight(scene, lightCount, receiver, launch, exhaustedStart, queries);
     return absent.HasSample == false && queries.HasFailed == false;
 }
+// Sample above the fixture, where no triangle hit is needed to define the connection.
+bool ValidateWorldPositionLightSampling(SceneContext scene, RayLaunch launch, RayQueryContext queries)
+{
+    const float3 positionWorld = float3(0, 0, 2);
+    SurfaceHit shadingHit = (SurfaceHit)0;
+    shadingHit.PositionWorld = positionWorld;
+    RayQueryContext positionQueries = queries;
+    RayQueryContext surfaceQueries = queries;
+    SceneLightSample positionSample =
+        SampleLight(scene, positionWorld, launch, 0, 1, LightSelectionPolicy::Uniform, positionQueries);
+    SceneLightSample surfaceSample =
+        SampleLight(scene, shadingHit, launch, 0, 1, LightSelectionPolicy::Uniform, surfaceQueries);
+    if (positionQueries.HasFailed == true || surfaceQueries.HasFailed == true ||
+        positionQueries.NextRandomDimension != queries.NextRandomDimension ||
+        positionQueries.SurfaceQueries != queries.SurfaceQueries ||
+        positionQueries.VisibilityQueries != queries.VisibilityQueries)
+        return false;
+    if (GetLightCount(scene) == 0)
+        return positionSample.Selection.HasSample == false && positionSample.Incident.HasSample == false;
+    if (positionSample.Selection.HasSample == false || surfaceSample.Selection.HasSample == false ||
+        positionSample.Selection.LightIndex != surfaceSample.Selection.LightIndex ||
+        positionSample.Selection.SelectionPmf != surfaceSample.Selection.SelectionPmf)
+        return false;
+    IncidentLightSample incident = positionSample.Incident;
+    IncidentLightSample surfaceIncident = surfaceSample.Incident;
+    if (incident.HasSample == false || surfaceIncident.HasSample == false ||
+        incident.Measure != surfaceIncident.Measure ||
+        incident.HasFiniteEndpoint != surfaceIncident.HasFiniteEndpoint ||
+        incident.ConditionalProbability != surfaceIncident.ConditionalProbability ||
+        any(incident.DirectionWorld != surfaceIncident.DirectionWorld) ||
+        any(incident.IncidentCoefficient != surfaceIncident.IncidentCoefficient))
+        return false;
+    if (incident.HasFiniteEndpoint == false)
+        return true;
+    const float CONNECTION_RELATIVE_TOLERANCE = 0.0001;
+    float3 offsetWorld = incident.PositionWorld - positionWorld;
+    return incident.DistanceWorld > 0 && length(offsetWorld - incident.DirectionWorld * incident.DistanceWorld) <=
+                                             CONNECTION_RELATIVE_TOLERANCE * incident.DistanceWorld;
+}
+bool ValidateWorldOriginVisibility(SceneContext scene, RayQueryContext queries)
+{
+    const float CONNECTION_DISTANCE_WORLD = 2;
+    Ray ray;
+    ray.OriginWorld = float3(0, 0, CONNECTION_DISTANCE_WORLD);
+    ray.DirectionWorld = float3(0, 0, -1);
+    ray.MinDistanceWorld = 0;
+    ray.MaxDistanceWorld = asfloat(asuint(CONNECTION_DISTANCE_WORLD) - 1);
+    RayQueryContext closestQueries = queries;
+    SurfaceHit hit;
+    SceneQuery expected = TraceClosest(scene, closestQueries, ray, hit);
+    if (expected == SceneQuery::Failure)
+        return false;
+
+    IncidentLightSample incident = (IncidentLightSample)0;
+    incident.TriangleIndex = SCENE_INVALID_INDEX;
+    incident.PositionWorld = float3(0);
+    incident.HasSample = true;
+    incident.HasFiniteEndpoint = true;
+    // The finite connection must be rebuilt from the origin, even when the sample points elsewhere.
+    incident.DirectionWorld = -ray.DirectionWorld;
+    RayQueryContext visibilityQueries = queries;
+    visibilityQueries.MaximumVisibilityQueries = visibilityQueries.VisibilityQueries + 1;
+    SceneQuery visibility = TestVisibility(scene, visibilityQueries, ray.OriginWorld, incident);
+    if (visibility != expected || visibilityQueries.HasFailed == true ||
+        visibilityQueries.VisibilityQueries != queries.VisibilityQueries + 1 ||
+        visibilityQueries.SurfaceQueries != queries.SurfaceQueries)
+        return false;
+    SceneQuery exhausted = TestVisibility(scene, visibilityQueries, ray.OriginWorld, incident);
+    return exhausted == SceneQuery::Failure && visibilityQueries.HasFailed == true &&
+           visibilityQueries.FailureReason == LUDUS_SCENE_FAILURE_VISIBILITY_BUDGET &&
+           visibilityQueries.VisibilityQueries == queries.VisibilityQueries + 1;
+}
 float3 GenerateRay(SceneContext scene, RayLaunch launch, inout RayQueryContext queries)
 {
     ScenePayload payload = (ScenePayload)0;
     if (ValidateSceneRandomLimits(scene, launch, queries) == false ||
         ValidateSceneIntegerSampling(launch, queries) == false ||
         ValidateSceneWeightedSampling(launch, queries) == false ||
-        ValidateAddressedIncidentSampling(scene, launch, queries) == false)
+        ValidateAddressedIncidentSampling(scene, launch, queries) == false ||
+        ValidateWorldPositionLightSampling(scene, launch, queries) == false)
+        FailSceneQuery(queries, LUDUS_SCENE_FAILURE_AUTHORED_FIRST);
+    if (all(launch.PositionPixel == launch.ExtentPixel / 2) && ValidateWorldOriginVisibility(scene, queries) == false)
         FailSceneQuery(queries, LUDUS_SCENE_FAILURE_AUTHORED_FIRST);
     // Check automatic initialization against the independently addressed public API.
     float first = SampleSceneRandom(queries);

@@ -508,6 +508,169 @@ target_sources(example PRIVATE extra.cpp)
             self.assertEqual(len(check(root, base, head=git("rev-parse", "HEAD"))), 1)
 
 
+class PlatformOnlyWarningTests(unittest.TestCase):
+    """Warnings that only batch-only MSVC and Emscripten builds report, from batch failures."""
+
+    def diagnose(self, text, path="tests/example/source.cpp", changed=None):
+        lines = set(range(1, text.count("\n") + 2)) if changed is None else changed
+        return [(line, message) for line, message in violations(path, text, lines)
+                if "preprocessor branch" in message or "C4127" in message]
+
+    def test_constants_used_only_under_a_branch_are_declared_there(self):
+        # Batch 44900782876: the web build rejected a native-only tick limit.
+        source = """namespace
+{
+constexpr int64 TIME_LIMIT_SECONDS = 20;
+}
+int Run()
+{
+#if defined(LUDUS_PLATFORM_WEB)
+    return 0;
+#else
+    return Tick(TIME_LIMIT_SECONDS);
+#endif
+}
+"""
+        findings = self.diagnose(source)
+        self.assertEqual(len(findings), 1, findings)
+        self.assertEqual(findings[0][0], 3)
+        self.assertIn("TIME_LIMIT_SECONDS is used only under a preprocessor branch", findings[0][1])
+        moved = source.replace("constexpr int64 TIME_LIMIT_SECONDS = 20;\n",
+                               "#if !defined(LUDUS_PLATFORM_WEB)\nconstexpr int64 TIME_LIMIT_SECONDS = 20;\n#endif\n")
+        self.assertEqual(self.diagnose(moved), [])
+
+    def test_uses_in_every_branch_or_complementary_blocks_are_unconditional(self):
+        source = """static void Run(State& state)
+{
+}
+void Start()
+{
+#if !defined(COOPERATIVE)
+    Run(gState);
+#endif
+}
+void Finish()
+{
+#if defined(COOPERATIVE)
+    Run(gState);
+#else
+    Wait(gState);
+#endif
+}
+"""
+        self.assertEqual(self.diagnose(source), [])
+        self.assertEqual(len(self.diagnose(source.replace("#if defined(COOPERATIVE)", "#if defined(OTHER)"))), 1)
+        everywhere = """constexpr int32 LIMIT = 4;
+int32 Read()
+{
+#if defined(A)
+    return LIMIT;
+#elif defined(B)
+    return LIMIT + 1;
+#else
+    return LIMIT - 1;
+#endif
+}
+"""
+        self.assertEqual(self.diagnose(everywhere), [])
+
+    def test_static_and_anonymous_functions_are_checked_in_main_files_only(self):
+        source = """namespace
+{
+void SetControlVisible(Widget& widget)
+{
+    widget.Show();
+}
+}
+void Use(Widget& widget)
+{
+#if defined(LUDUS_EDITOR_NATIVE_PREVIEW)
+    SetControlVisible(widget);
+#endif
+}
+"""
+        def functions(path="tests/example/source.cpp", text=source):
+            return [line for line, message in self.diagnose(text, path) if "SetControlVisible" in message]
+
+        self.assertEqual(functions(), [3])
+        self.assertEqual(functions("tests/example/source.h"), [])
+        self.assertEqual(functions(text=source.replace("namespace\n{\n", "namespace detail\n{\n")), [])
+        self.assertEqual(functions(text=source.replace("void SetControlVisible", "static void SetControlVisible")
+                                   .replace("namespace\n{\n", "namespace detail\n{\n")), [3])
+
+    def test_parameters_are_discarded_in_branches_that_do_not_read_them(self):
+        # Batch 41110487152: the browser editor never read isSignature.
+        source = """void Assistance::Request(bool isSignature)
+{
+#if !defined(Q_OS_WASM)
+    mIsSignature = isSignature;
+#endif
+}
+"""
+        findings = self.diagnose(source, "apps/example/source.h")
+        self.assertEqual(len(findings), 1, findings)
+        self.assertIn("discard it in the other branches with static_cast<void>(isSignature)", findings[0][1])
+        discarded = source.replace("#endif", "#else\n    static_cast<void>(isSignature);\n#endif")
+        self.assertEqual(self.diagnose(discarded, "apps/example/source.h"), [])
+        unnamed = "void Request(const Options&, [[maybe_unused]] bool isSignature)\n{\n#if defined(A)\n    Use(isSignature);\n#endif\n}\n"
+        self.assertEqual(self.diagnose(unnamed), [])
+
+    def test_a_branch_that_stops_the_build_compiles_no_configuration(self):
+        source = """bool Initialize(const Info& info) noexcept
+{
+#if defined(A)
+    return a::Initialize(info);
+#elif defined(B)
+    return b::Initialize(info);
+#else
+#    error "No platform backend"
+#endif
+}
+"""
+        self.assertEqual(self.diagnose(source), [])
+        self.assertEqual(len(self.diagnose(source.replace('#else\n#    error "No platform backend"\n', ""))), 1)
+
+    def test_conditional_uses_report_when_the_declaration_or_a_use_changed(self):
+        source = """constexpr int32 POLL_MILLISECONDS = 4;
+void Wait()
+{
+#if !defined(Q_OS_WASM)
+    Sleep(POLL_MILLISECONDS);
+#endif
+}
+"""
+        self.assertEqual(len(self.diagnose(source, changed={1})), 1)
+        self.assertEqual(len(self.diagnose(source, changed={5})), 1)
+        self.assertEqual(self.diagnose(source, changed={3}), [])
+
+    def test_waivers_and_maybe_unused_accept_a_deliberate_conditional_use(self):
+        source = """constexpr int32 LIMIT = 4; // ludus-style: conditional-use only the probe build reads it
+[[maybe_unused]] constexpr int32 OTHER = 4;
+int32 Read()
+{
+#if defined(PROBE)
+    return LIMIT + OTHER;
+#endif
+}
+"""
+        self.assertEqual(self.diagnose(source), [])
+
+    def test_conditions_naming_only_constants_use_if_constexpr(self):
+        # Batch 44900782876: MSVC C4127 in world_demo's --startup-report check.
+        for condition in ("LUDUS_COMPILED_LOG_LEVEL > LUDUS_LOG_LEVEL_INFO", "LUDUS_ENABLE_ASSERTS == 0",
+                          "!(MAXIMUM_ITEMS < 4)", "base::MAXIMUM_ITEMS != 0"):
+            with self.subTest(condition=condition):
+                findings = self.diagnose(f"void F()\n{{\n    if ({condition})\n    {{\n    }}\n}}\n")
+                self.assertEqual(len(findings), 1, findings)
+                self.assertIn("use if constexpr", findings[0][1])
+        for condition in ("constexpr (LUDUS_ENABLE_ASSERTS == 0)", "(count < MAXIMUM_ITEMS)", "(LUDUS_UNLIKELY(value))",
+                          "(Mode::Fast == MODE)", "(true)", "(item.IsReady())"):
+            with self.subTest(condition=condition):
+                self.assertEqual(self.diagnose(f"void F()\n{{\n    if {condition}\n    {{\n    }}\n}}\n"), [])
+        waived = "void F()\n{\n    if (A_FLAG) // ludus-style: constant-condition a runtime-patched flag\n    {\n    }\n}\n"
+        self.assertEqual(self.diagnose(waived), [])
+
+
 @unittest.skipUnless(CLANG_FORMAT, f"requires pinned {engine.pinned_llvm_tool(ROOT, 'clang-format')}")
 class ChangedFormattingTests(unittest.TestCase):
     """Local ``./scripts/check --format-changed`` must agree with CI's source policy."""

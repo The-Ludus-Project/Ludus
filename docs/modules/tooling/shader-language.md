@@ -1234,11 +1234,12 @@ wrapper includes `scene_shader.slang` before any callback:
   `IncidentLightMeasure` and `LightSelectionPolicy`;
 - `Ray`, the scene `RayLaunch` (with the camera and sampling state),
   `SceneContext`, `RayQueryContext`, `SurfaceHit`, `MaterialSample`,
-  `LightInfo`, `SelectedLight`, `LightSample`, `IncidentLightSample` and
-  `SceneInfo`;
+  `LightInfo`, `SelectedLight`, `LightSample`, `IncidentLightSample`,
+  `SceneLightSample` and `SceneInfo`;
 - the public operations, from `TraceClosest`, `TestVisibility`,
   `MakeCameraRay` and `SpawnSurfaceRay` to `EvaluateMaterial`, `SelectLight`,
-  `SampleIncidentLight`, `SampleUniformFloat01` for explicit dimensions,
+  `SampleIncidentLight`, both `SampleLight` overloads,
+  `SampleUniformFloat01` for explicit dimensions,
   `SampleSceneRandom` for automatic draws and the vector overloads of
   `SampleSceneWeightedIndex`;
 - the failure reasons as LUSL constants (`SCENE_FAILURE_AUTHORED_FIRST`, ...).

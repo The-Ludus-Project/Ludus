@@ -61,6 +61,7 @@ modules/foundation/math/tests/random_checkpoint_tests.cpp
 modules/foundation/geometry
 modules/gameplay/sequencer
 modules/animation
+modules/physics/rigid
 modules/foundation/memory/include/ludus/foundation/memory/shared_ptr.hpp
 modules/foundation/memory/include/ludus/foundation/memory/detail/shared_controller.hpp
 modules/foundation/memory/src/shared_controller.cpp

@@ -174,6 +174,7 @@ for content changes. Module/sample/tool READMEs link to these owners.
 - [Object handles and persistent UUID architecture](architecture/object-handles-uuid.md)
 - [Physics and fluid simulation for Drift](architecture/physics-fluid-simulation.md)
 - [Physics collision module](architecture/physics-collision.md)
+- [Physics rigid module](architecture/physics-rigid.md)
 - [Physics systems architecture](architecture/physics-systems.md)
 - [Platform detection](architecture/platform-detection.md)
 - [Primitive types and numeric boundaries](architecture/primitive-types.md)
