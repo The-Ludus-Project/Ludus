@@ -1201,6 +1201,25 @@ parameter names: `MakeRandomAddress(scope = id.xy, event = 0, dimension = 1)`.
 A target test calls every declaration and compiles the module for SPIR-V, WGSL
 and Metal.
 
+Use `NearlyEqual(first, second, absoluteTolerance, relativeTolerance)` for
+scalars. Pass zero for the relative tolerance when the comparison has a fixed
+unit-based threshold. The three-argument `NearlyEqual` overload compares
+`float32x3` positions by Euclidean distance in world units. Both overloads
+reject non-finite operands and negative or non-finite tolerances.
+
+```c
+#include "math.luslh"
+
+bool AreEdgeEndpointsNear(in float32x3 firstWorld,
+                          in float32x3 secondWorld,
+                          in float32 toleranceWorld)
+{
+    return NearlyEqual(firstWorld, secondWorld, toleranceWorld);
+}
+```
+
+Slang shaders call the same overloads via `#include "math.slang"`.
+
 `ray_shader.luslh` declares the ray callback types `Ray`, `RayLaunch` and
 `RayHit` for [render-graph programs](#render-graph-programs). The ray wrapper
 defines them before it includes a callback, so the header uses a path-less

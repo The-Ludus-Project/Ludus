@@ -48,6 +48,59 @@ bool IsInfBits(float value)
 {
     return (asuint(value) & FLOAT_MAGNITUDE_BITS) == FLOAT_EXPONENT_BITS;
 }
+
+/// Compare finite scalars using the larger of the absolute tolerance and the relative tolerance times the
+/// larger operand magnitude. Both tolerances must be finite and nonnegative. Arithmetic uses binary32.
+bool NearlyEqual(float first, float second, float absoluteTolerance, float relativeTolerance)
+{
+    if (IsFiniteBits(first) == false || IsFiniteBits(second) == false || IsFiniteBits(absoluteTolerance) == false ||
+        IsFiniteBits(relativeTolerance) == false || absoluteTolerance < 0 || relativeTolerance < 0)
+    {
+        return false;
+    }
+
+    float difference = abs(first - second);
+    float scale = max(abs(first), abs(second));
+    if (IsFiniteBits(difference) == false)
+    {
+        // A finite absolute tolerance cannot cover an overflowing difference.
+        // Halve the operands before subtraction so both sides can be compared in range.
+        if (relativeTolerance >= 2)
+        {
+            return true;
+        }
+        float halfDifference = abs(ldexp(first, -1) - ldexp(second, -1));
+        float halfScale = ldexp(scale, -1);
+        return halfDifference <= relativeTolerance * halfScale;
+    }
+    return difference <= max(absoluteTolerance, relativeTolerance * scale);
+}
+
+/// Compare finite positions by Euclidean distance. The nonnegative, finite tolerance uses world units.
+/// A zero tolerance requires coincident positions.
+bool NearlyEqual(float3 firstWorld, float3 secondWorld, float toleranceWorld)
+{
+    if (IsFiniteBits(firstWorld) == false || IsFiniteBits(secondWorld) == false ||
+        IsFiniteBits(toleranceWorld) == false || toleranceWorld < 0)
+    {
+        return false;
+    }
+
+    float3 differenceWorld = abs(firstWorld - secondWorld);
+    if (any(differenceWorld > toleranceWorld))
+    {
+        return false;
+    }
+    if (toleranceWorld == 0)
+    {
+        return true;
+    }
+
+    // Scale before squaring to keep the distance test in range for large and small tolerances.
+    float3 normalizedDifference = differenceWorld / toleranceWorld;
+    return dot(normalizedDifference, normalizedDifference) <= 1;
+}
+
 float3 NormalizeOrZero(float3 v)
 {
     float s = dot(v, v);
