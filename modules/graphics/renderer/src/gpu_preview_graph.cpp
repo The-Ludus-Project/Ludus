@@ -1,4 +1,5 @@
 #include "internal/gpu_preview_graph.h"
+#include "internal/gpu_preview_data.h"
 #include "internal/ltc_table_data.h"
 #include <ludus/foundation/containers/borrowed_view.hpp>
 
@@ -428,7 +429,7 @@ Status AppendGpuGraph(rhi::DeviceHandle device,
         computeUses[computeUseCount++] = {next,
                                           rhi::GraphAccessMode::StorageReadWrite,
                                           0,
-                                          LUDUS_GRAPH_FAILURE_BYTES,
+                                          GRAPH_FAILURE_BYTES,
                                           rhi::RasterVisibility::Compute};
     }
     const uint32 dispatchWidth = isBufferDispatch == true ? GetSceneWorkRowWidth(job.WorkItemCount) : job.Width;

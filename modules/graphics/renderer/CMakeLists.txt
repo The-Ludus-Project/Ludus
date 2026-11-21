@@ -692,7 +692,8 @@ if(LUDUS_BUILD_TESTS AND WIN32 AND CMAKE_HOST_WIN32 AND LUDUS_DXC_DIRECTORY AND 
     target_link_libraries(ludus_render_graph_dxil_tests PRIVATE Ludus::ShaderDevelopment Ludus::FoundationTime)
     target_compile_definitions(ludus_render_graph_dxil_tests PRIVATE
         LUDUS_RG2_SURFACE_PACKAGE="${rg2_surface_RUNTIME_PACKAGE}"
-        LUDUS_RG2_BOUND_PACKAGE="${rg2_bound_RUNTIME_PACKAGE}")
+        LUDUS_RG2_BOUND_PACKAGE="${rg2_bound_RUNTIME_PACKAGE}"
+        LUDUS_RG2_BOUND_LUSL_PACKAGE="${rg2_bound_lusl_RUNTIME_PACKAGE}")
     # WARP compiles each case's clustered deferred, mesh-light and shadow pipelines cold. The whole
     # suite grew from 270 s to over 600 s unsanitized as default-graph cases were added, so CTest runs
     # it as Catch2 shards (declaration order, contiguous), each with its own deadline; a shard that
@@ -860,6 +861,18 @@ if(TARGET ludus_renderer_render_tests)
     cmake_path(GET rg2_lusl_semantics_RUNTIME_PACKAGE PARENT_PATH lusl_semantics_package_directory)
     target_compile_definitions(ludus_render_graph_ray_tests PRIVATE
         LUDUS_RG3_LUSL_SEMANTICS_DIRECTORY="${lusl_semantics_package_directory}")
+    if(LUDUS_BUILD_FLAVOR MATCHES "^(Debug|Development)$")
+        set(lusl_bounds_staged "${CMAKE_CURRENT_BINARY_DIR}/rg2-inputs/lusl_bounds")
+        ludus_stage_render_graph_fixture("${PROJECT_SOURCE_DIR}/tests/sdk_consumer/rg2/lusl_semantics"
+            "${lusl_bounds_staged}" miss.lusl)
+        configure_file("${CMAKE_CURRENT_SOURCE_DIR}/tests/lusl_bounds_miss.lusl"
+            "${lusl_bounds_staged}/main_shaders/miss.lusl" COPYONLY)
+        ludus_compile_render_graph(TARGET ludus_render_graph_ray_tests NAME rg2_lusl_bounds
+            MANIFEST "${lusl_bounds_staged}/main.lushader.json" RUNTIME_PACKAGE)
+        cmake_path(GET rg2_lusl_bounds_RUNTIME_PACKAGE PARENT_PATH lusl_bounds_package_directory)
+        target_compile_definitions(ludus_render_graph_ray_tests PRIVATE
+            LUDUS_RG3_LUSL_BOUNDS_DIRECTORY="${lusl_bounds_package_directory}")
+    endif()
     # The L2 material permutation, written with Slang interfaces and with LUSL concepts; the test
     # compares their pixels.
     foreach(permutation IN ITEMS material_permutation material_permutation_lusl)
@@ -988,6 +1001,13 @@ if(TARGET ludus_renderer_render_tests)
     cmake_path(GET rg2_traversal_parity_lusl_RUNTIME_PACKAGE PARENT_PATH traversal_parity_lusl_directory)
     target_compile_definitions(ludus_render_graph_ray_tests PRIVATE
         "LUDUS_RG3_TRAVERSAL_PARITY_LUSL_DIRECTORY=\"${traversal_parity_lusl_directory}\"")
+    if(APPLE)
+        ludus_compile_render_graph(TARGET ludus_render_graph_ray_tests NAME rg2_traversal_parity_lusl_native
+            MANIFEST "${traversal_parity_lusl_staged}/main.lushader.json" CONFIGURATION Native RUNTIME_PACKAGE)
+        cmake_path(GET rg2_traversal_parity_lusl_native_RUNTIME_PACKAGE PARENT_PATH traversal_parity_lusl_native_directory)
+        target_compile_definitions(ludus_render_graph_ray_tests PRIVATE
+            LUDUS_RG3_TRAVERSAL_PARITY_LUSL_NATIVE_DIRECTORY="${traversal_parity_lusl_native_directory}")
+    endif()
     # One package per traversal strategy over the same callbacks; the GPU test compares their images.
     set(traversal_parity_source "${PROJECT_SOURCE_DIR}/tests/sdk_consumer/rg2/traversal_parity")
     set(traversal_parity_staged "${CMAKE_CURRENT_BINARY_DIR}/rg2-inputs/traversal_parity")

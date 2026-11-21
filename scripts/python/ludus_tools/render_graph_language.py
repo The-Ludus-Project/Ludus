@@ -35,6 +35,7 @@ SCHEMA_HEADER = 'graph_schemas.luslh'
 RASTER_STAGES = ('vertex', 'fragment')
 # Ray callbacks read their manifest bindings as structured buffers (render_graph_buffers.declarations).
 RAY_STAGES = ('ray_generation', 'miss', 'closest_hit')
+FAILURE_CODE_VARIABLE = '_luslFailureCode'
 # Schema field types (render_graph_build SHAPES and STORAGE_SHAPES) as LUSL types.
 LANGUAGE_TYPES = {'Float32': 'float32', 'Float2': 'float32x2', 'Float3': 'float32x3', 'Float4': 'float32x4',
                   **{prefix + suffix: spelling + ('' if suffix == '32' else 'x' + suffix)
@@ -196,7 +197,7 @@ def configuration_reads(snapshot, closure):
 
 
 def _parse_report(text, build, source, configuration=None):
-    """Read the configuration mask, specializations and groupshared clears from luslc.
+    """Read the configuration mask, specializations, groupshared clears and bounds checks.
 
     Graph program bindings come from the wrapper, so standalone layout records are skipped.
     """
@@ -216,6 +217,15 @@ def _parse_report(text, build, source, configuration=None):
             report['specializations'].append({'template': fields[1], 'name': fields[2], 'generated': fields[3]})
         elif fields[0] == 'groupshared-clear' and len(fields) == 4 and fields[3].isdigit():
             report['groupshared_clears'].append({'entry': fields[1], 'variable': fields[2], 'bytes': int(fields[3])})
+        elif fields[0] == 'bounds-check' and len(fields) == 3:
+            path, separator, source_line = fields[1].rpartition(':')
+            build.require(bool(separator and path and source_line.isdecimal() and fields[2].isdecimal()),
+                          'Tools', source, 'luslc wrote a malformed bounds-check location')
+            sites = report.setdefault('bounds_checks', [])
+            code = int(fields[2])
+            build.require(code == len(sites) + 1 and 0 < int(source_line) <= 0xffffffff,
+                          'Tools', source, 'luslc wrote an invalid bounds-check code or line')
+            sites.append({'code': code, 'source': path, 'line': int(source_line)})
         else:
             build.fail('Tools', source, f'luslc wrote an unknown report line: {line[:200]}')
     if configuration:
@@ -226,7 +236,7 @@ def _parse_report(text, build, source, configuration=None):
     return report
 
 
-def _lower(files, build, tool, source, style, specialization_budget, include_directories, configuration):
+def _lower(files, build, tool, source, style, specialization_budget, include_directories, configuration, bounds_checks):
     with tempfile.TemporaryDirectory(prefix='ludus-lusl-') as directory:
         root = Path(directory) / 'source'
         for relative, data in files.items():
@@ -241,6 +251,8 @@ def _lower(files, build, tool, source, style, specialization_budget, include_dir
         command += ['--style', style, '--output', str(output), '--report', str(report)]
         if specialization_budget is not None:
             command += ['--max-specializations', str(specialization_budget)]
+        if bounds_checks:
+            command.append('--bounds-checks')
         command.append(source)
         try:
             result = subprocess.run(command, capture_output=True, text=True, timeout=TIMEOUT_SECONDS, check=False)
@@ -252,14 +264,14 @@ def _lower(files, build, tool, source, style, specialization_budget, include_dir
 
 
 def lower_sources(snapshot, programs, helper, build, *, luslc=None, style='strict', specialization_budget=None,
-                  schemas=None):
+                  schemas=None, bounds_checks=False):
     """Lower every `.lusl` program source once and point its programs at the generated module.
 
     Each program keeps its authored path as `language_source`. `specialization_budget` is the
     manifest's budgets.specializations, or None for the engine limit per source. `schemas` are the
     manifest schemas, from which each source with raster programs gets its `graph_schemas.luslh`
-    below `_ludus_graph`. Returns the
-    luslc that ran, for the build's tool identity, and the report of each lowered source; the
+    below `_ludus_graph`. Enable `bounds_checks` to collect and report runtime check sites
+    for ray programs. Returns the luslc that ran and the report of each lowered source; the
     tool is None and the reports empty when no program is written in LUSL.
     """
     configurations = snapshot.language_configurations
@@ -281,7 +293,7 @@ def lower_sources(snapshot, programs, helper, build, *, luslc=None, style='stric
                   'LUSL program sources need luslc: build with an SDK that installs bin/luslc, '
                   'or set LUDUS_LUSLC to its path')
     reports = {}
-    for source in sources:
+    for index, source in enumerate(sources):
         generated = source + GENERATED_SUFFIX
         build.require(generated not in snapshot.files, 'Source', generated,
                       'the generated module of ' + source + ' would replace an authored file; rename one of them')
@@ -291,8 +303,22 @@ def lower_sources(snapshot, programs, helper, build, *, luslc=None, style='stric
         if header is not None:
             files[posixpath.join(GRAPH_DIRECTORY, SCHEMA_HEADER)] = header
             include_directories.append(GRAPH_DIRECTORY)
+        # Ray invocations have a diagnostic buffer; raster stages have no failure channel.
+        checks = bounds_checks and any(p['source'] == source and p.get('stage') in (*RAY_STAGES, 'compute')
+                                      for p in programs.values())
         data, reports[source] = _lower(files, build, tool, source, style, specialization_budget,
-                                       include_directories, configurations[source])
+                                       include_directories, configurations[source], checks)
+        if reports[source].get('bounds_checks'):
+            # Several lowered modules can be included in one global Slang scope.
+            # Rename only compiler-reserved instrumentation identifiers in that module.
+            names = sorted(set(re.findall(rb'\b(?:_luslFailureCode|_luslCheckIndex[0-9]+)\b', data)))
+            prefixes = []
+            for name in names:
+                renamed = name + b'GraphModule' + str(index).encode('ascii')
+                prefixes.append(b'#define ' + name + b' ' + renamed + b'\n')
+                if name == FAILURE_CODE_VARIABLE.encode('ascii'):
+                    reports[source]['failure_variable'] = renamed.decode('ascii')
+            data = b''.join(prefixes) + data + b'\n' + b''.join(b'#undef ' + name + b'\n' for name in names)
         snapshot.capture(generated, data, generated=True)
     if specialization_budget is not None:
         total = sum(len(report['specializations']) for report in reports.values())

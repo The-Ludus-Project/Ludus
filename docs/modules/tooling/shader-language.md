@@ -984,9 +984,14 @@ array, vector or matrix goes through a generated `_luslCheckIndexN`:
 
 The first failure is kept; zero means no check failed. `EmitResult::BoundsChecks`
 maps each failure code to its index expression. Constant indices are checked by
-the checker in every build, and release builds emit no checks. Reporting the
-latched code through the render graph's invocation failure arrives with the
-render-graph integration in L1e.
+the checker in every build, and release builds emit no checks. Debug and Development graph builds enable these checks for LUSL ray callbacks
+and scene compute passes. For a standalone graph build, pass `--bounds-checks`
+to `ludus_tools render-graph build`. A latched callback failure marks the ray
+invocation as failed even if the clamped access returned a valid color. The
+ray-pass summary reports the highest mapped LUSL line among the failures in
+that history. Use that line to check the index and its declared extent in the
+pass's LUSL sources. The mapping follows the original source, including macro
+use sites. Raster callbacks have no invocation failure channel.
 
 ### Line mapping
 
