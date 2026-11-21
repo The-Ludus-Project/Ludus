@@ -3,6 +3,7 @@
 #include <ludus/foundation/base/core.h>
 #include <ludus/foundation/base/pointer.hpp>
 #include <ludus/foundation/logging/log_format.hpp>
+#include <ludus/foundation/strings/utf16.hpp>
 #include <ludus/input/keyboard_event.h>
 #include <ludus/platform/base/window.h>
 #include <ludus/platform/keyboard_sink.h>
@@ -10,6 +11,7 @@
 #include <ludus/platform/native_window.h>
 
 #include <new>
+#include <span>
 
 #if !defined(LUDUS_PLATFORM_WINDOWS)
 #    error "The Win32 window backend requires Windows"
@@ -127,19 +129,20 @@ Win32Window::~Win32Window() noexcept
 bool Win32Window::Open() noexcept
 {
     wchar_t title[MAX_WINDOW_NAME_UNITS]{};
-    if (mName.empty() == false)
+    usize titleUnits = 0;
+    usize errorOffset = 0;
+    // Reserve the last unit for the terminator, which the zero-initialized array already holds.
+    const foundation::StringStatus converted =
+        foundation::ConvertUtf8ToUtf16(mName,
+                                       std::span<wchar_t>(title, MAX_WINDOW_NAME_UNITS - 1),
+                                       titleUnits,
+                                       errorOffset);
+    if (converted != foundation::StringStatus::Ok)
     {
-        const int32 units = MultiByteToWideChar(CP_UTF8,
-                                                MB_ERR_INVALID_CHARS,
-                                                mName.data(),
-                                                static_cast<int32>(mName.size()),
-                                                title,
-                                                static_cast<int32>(MAX_WINDOW_NAME_UNITS - 1));
-        if (units <= 0)
-        {
-            LUDUS_LOG_ERROR(LOG_PLATFORM, "Win32: window title is not valid UTF-8");
-            return false;
-        }
+        LUDUS_LOG_ERROR(LOG_PLATFORM,
+                        "Win32: window title is not valid UTF-8 at byte {}; pass a well-formed UTF-8 title",
+                        errorOffset);
+        return false;
     }
     const HINSTANCE instance = GetModuleHandleW(nullptr);
     mWindowOrNull = CreateWindowExW(WINDOW_EXTENDED_STYLE,
