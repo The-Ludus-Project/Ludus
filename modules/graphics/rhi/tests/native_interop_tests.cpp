@@ -332,7 +332,7 @@ TEST_CASE("Shutdown retains native image device and source until consumer comple
     DeviceHandle replacement;
     SurfaceHandle target;
     CHECK(CreateDevice({}, {}, {}, replacement, target) == DeviceStatus::InvalidState);
-    CHECK_FALSE(Initialize({}));
+    CHECK(Start({}, {}) == StartStatus::Busy);
     reference::NativePending = true;
     CHECK(ReleaseNativeTextureRead(session.Reads[0]) == RasterStatus::Pending);
     CHECK(reference::Destroys[static_cast<usize>(internal::RasterKind::Texture)] == 0);

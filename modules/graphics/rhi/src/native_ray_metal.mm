@@ -1,5 +1,7 @@
 #include "internal/native_ray_metal.h"
 
+#include <ludus/foundation/base/core.h>
+
 // Thanks to Apple, “Discover ray tracing with Metal”, WWDC20 session 10012,
 // https://developer.apple.com/videos/play/wwdc2020/10012/ and “Get to know Metal function
 // pointers”, session 10013, https://developer.apple.com/videos/play/wwdc2020/10013/.
@@ -25,7 +27,7 @@ bool LoadMetalRayFunctions(id<MTLLibrary> library, MetalRayFunctions& outFunctio
     {
         return false;
     }
-    outFunctions = candidate;
+    outFunctions = foundation::Move(candidate);
     return true;
 }
 bool CreateMetalRayPipeline(id<MTLComputePipelineState> pipeline,
@@ -50,7 +52,7 @@ bool CreateMetalRayPipeline(id<MTLComputePipelineState> pipeline,
         }
         [candidate.StagesOrNull setFunction:handleOrNull atIndex:index];
     }
-    outPipeline = candidate;
+    outPipeline = foundation::Move(candidate);
     return true;
 }
 MetalRayIntersectionTable CreateMetalRayIntersections(id<MTLComputePipelineState> pipeline,

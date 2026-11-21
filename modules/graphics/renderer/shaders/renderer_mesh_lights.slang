@@ -310,13 +310,11 @@ static const float3 MESH_LIGHT_SHADOW_RIGHT[MESH_LIGHT_SHADOW_FACE_COUNT] =
     {float3(0, 0, 1), float3(0, 0, -1), float3(-1, 0, 0), float3(-1, 0, 0), float3(-1, 0, 0), float3(1, 0, 0)};
 static const float3 MESH_LIGHT_SHADOW_UP[MESH_LIGHT_SHADOW_FACE_COUNT] =
     {float3(0, 1, 0), float3(0, 1, 0), float3(0, 0, -1), float3(0, 0, 1), float3(0, 1, 0), float3(0, 1, 0)};
-// Blocker search taps: the receiver's own direction, then rings of lateral widths an octave apart below the widest, the
-// near plane's, each with taps evenly spaced in angle, so a receiver within half a ring's width of an occluder's hard
-// shadow always finds it. Filter taps: light points over the whole disk at the blockers' width, once per height layer.
-static const uint MESH_LIGHT_SHADOW_SEARCH_RING_COUNT = 4;
+// Search the receiver direction, then wide rings for blockers near the light and compact rings for
+// narrow projections near the receiver direction. Filter the disk once per discovered height layer.
+static const uint MESH_LIGHT_SHADOW_WIDE_RING_COUNT = 4;
+static const uint MESH_LIGHT_SHADOW_COMPACT_RING_COUNT = 2;
 static const uint MESH_LIGHT_SHADOW_SEARCH_RING_TAP_COUNT = 3;
-static const uint MESH_LIGHT_SHADOW_SEARCH_TAP_COUNT =
-    1 + MESH_LIGHT_SHADOW_SEARCH_RING_COUNT * MESH_LIGHT_SHADOW_SEARCH_RING_TAP_COUNT;
 static const uint MESH_LIGHT_SHADOW_FILTER_TAP_COUNT = 12;
 // Largest lateral width over the receiver's distance, about the tangent of a tap's angle from the receiver's direction
 // (63 degrees): an occluder nearer the light's plane than about half its radius is searched and filtered as if it lay
@@ -497,7 +495,7 @@ float ComputeMeshLightShadowVisibility(uint tableWord,
     float searchLateral = min(lightRadius * (height / view.NearMeters - 1), widestLateral);
     // The rings span at most an octave each; rings narrower than a texel would only repeat the receiver's own tap.
     float ringOctaves =
-        min(log2(max(searchLateral / (texelSpread * distance), 1)) / MESH_LIGHT_SHADOW_SEARCH_RING_COUNT, 1);
+        min(log2(max(searchLateral / (texelSpread * distance), 1)) / MESH_LIGHT_SHADOW_WIDE_RING_COUNT, 1);
     float inverseHeightSum = 0;
     float blockerCount = 0;
     float nearestInverseHeight = 0;
@@ -515,12 +513,23 @@ float ComputeMeshLightShadowVisibility(uint tableWord,
     float2 spokeTurn = float2(cos(2 * PI / MESH_LIGHT_SHADOW_SEARCH_RING_TAP_COUNT),
                               sin(2 * PI / MESH_LIGHT_SHADOW_SEARCH_RING_TAP_COUNT));
     float2 ringDirection = rotationDirection;
-    uint ringCount =
-        searchLateral > MESH_LIGHT_SHADOW_NARROW_TEXELS * texelMeters ? MESH_LIGHT_SHADOW_SEARCH_RING_COUNT : 0;
+    uint ringCount = searchLateral > MESH_LIGHT_SHADOW_NARROW_TEXELS * texelMeters
+                         ? MESH_LIGHT_SHADOW_WIDE_RING_COUNT + MESH_LIGHT_SHADOW_COMPACT_RING_COUNT
+                         : 0;
     for (uint ring = 0; ring < ringCount; ++ring)
     {
-        float lateral = searchLateral * exp2(-(float(ring) + noise.y) * ringOctaves);
+        bool isWideRing = ring < MESH_LIGHT_SHADOW_WIDE_RING_COUNT;
+        // A clear centre texel and wide spokes can pass on either side of disjoint blocker projections.
+        // Probe at half and quarter of the disk radius to find the missing depths before declaring full light.
+        float lateral = isWideRing == true
+                            ? searchLateral * exp2(-(float(ring) + noise.y) * ringOctaves)
+                            : lightRadius * exp2(float(MESH_LIGHT_SHADOW_WIDE_RING_COUNT) - float(ring) - 1);
         float2 spokeDirection = ringDirection;
+        ringDirection = TurnMeshLightShadowTap(ringDirection, goldenTurn);
+        if (isWideRing == false && (lateral < texelMeters || lateral >= searchLateral))
+        {
+            continue;
+        }
         for (uint spoke = 0; spoke < MESH_LIGHT_SHADOW_SEARCH_RING_TAP_COUNT; ++spoke)
         {
             float3 directionWorld =
@@ -549,7 +558,6 @@ float ComputeMeshLightShadowVisibility(uint tableWord,
             nearestInverseHeight = max(nearestInverseHeight, inverseHeight);
             farthestInverseHeight = min(farthestInverseHeight, inverseHeight);
         }
-        ringDirection = TurnMeshLightShadowTap(ringDirection, goldenTurn);
     }
     if (blockerCount == 0)
     {

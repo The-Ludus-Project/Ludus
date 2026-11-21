@@ -1,0 +1,9 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+script_dir="$(CDPATH= cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
+python="python3"
+if [ -x "${script_dir}/../out/host-tools/venv/bin/python" ]; then
+    python="${script_dir}/../out/host-tools/venv/bin/python"
+fi
+exec "${python}" "${script_dir}/python/mobile_probe.py" "$@"

@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import argparse
+import difflib
 import hashlib
 import json
 import os
@@ -25,6 +26,63 @@ TREE_SITTER_GRAMMAR_NOTICES = tuple(f"tree-sitter-{language}.txt" for language i
                                     ("c", "cpp", "slang", "luau", "json", "cmake", "markdown"))
 PLAYER_PAYLOAD = tuple(f"players/{sample}/{name}" for sample in PLAYERS
                        for name in ("index.html", "player.js", "game.js", "game.wasm"))
+QT_SOURCE_CHANGES_NOTICE = "Qt-source-changes.diff"
+# Ludus's changes to the pinned Qt source, applied to the extracted archive before Qt is
+# built. Each replaces one exact, unique excerpt; the shipped notice carries their diff.
+QT_SOURCE_CHANGES = (
+    {
+        # Backport of qtbase commit 3a217d2592, "wasm: Make suspendresumecontrol event handling
+        # reentrant", by Even Oscar Andersen (The Qt Company), first released in Qt 6.11.0. Thanks
+        # to its author and reviewer. Qt 6.10.3 sends a snapshot count of the native event queue, but
+        # QEventDispatcherWasm::onWakeup() runs a nested processEvents() that can send the rest of
+        # that snapshot first. The outer loop then shifts undefined from the empty queue, and the
+        # JavaScript TypeError unwinds Qt's event loop: the editor stops processing events. Events
+        # queue behind each host-folder Asyncify suspension (browser/host_folder.js), so a
+        # project opened from disk makes such batches common. The 6.10.3 `return count;` that
+        # follows is kept and now returns the number of events sent, as Qt 6.11 does.
+        # https://code.qt.io/cgit/qt/qtbase.git/commit/?id=3a217d2592
+        "path": "src/corelib/platform/wasm/qwasmsuspendresumecontrol.cpp",
+        "original": "    int count = pendingEvents[\"length\"].as<int>();\n"
+                    "    if (count == 0)\n"
+                    "        return false;\n"
+                    "    while (count-- > 0) {\n"
+                    "        // Grab one event (handler and arg), and call it\n"
+                    "        emscripten::val event = pendingEvents.call<val>(\"shift\");\n"
+                    "        auto it = m_eventHandlers.find(event[\"index\"].as<int>());\n"
+                    "        Q_ASSERT(it != m_eventHandlers.end());\n"
+                    "        it->second(event[\"arg\"]);\n"
+                    "    }\n",
+        "replacement": "    if (pendingEvents[\"length\"].as<int>() == 0)\n"
+                       "        return 0;\n"
+                       "\n"
+                       "    int count = 0;\n"
+                       "    while (pendingEvents[\"length\"].as<int>() > 0) { // Make sure it is reentrant\n"
+                       "        // Grab one event (handler and arg), and call it\n"
+                       "        emscripten::val event = pendingEvents.call<val>(\"shift\");\n"
+                       "        auto it = m_eventHandlers.find(event[\"index\"].as<int>());\n"
+                       "        Q_ASSERT(it != m_eventHandlers.end());\n"
+                       "        it->second(event[\"arg\"]);\n"
+                       "        ++count;\n"
+                       "    }\n",
+    },
+    {
+        # Ludus change. A browser event that waited in the queue above while the instance was
+        # suspended is sent after its dispatch ended, when DOM Event.composedPath() returns an
+        # empty array. Qt 6.10.3 then reads className from undefined, and that JavaScript
+        # TypeError also unwinds Qt's event loop. Such an event is no longer a pointer-capture
+        # target, so it reports false, as Qt 6.11's comparison of composedPath()[0] with the
+        # window element does (qtbase 01d48cd89c).
+        # https://dom.spec.whatwg.org/#dom-event-composedpath
+        "path": "src/plugins/platforms/wasm/qwasmevent.cpp",
+        "original": "    emscripten::val path = webEvent.call<emscripten::val>(\"composedPath\");\n"
+                    "    QString topElementClassName = QString::fromEcmaString(path[0][\"className\"]);\n",
+        "replacement": "    emscripten::val path = webEvent.call<emscripten::val>(\"composedPath\");\n"
+                       "    // Ludus: an event sent after its dispatch ended has an empty path.\n"
+                       "    if (path[\"length\"].as<int>() == 0)\n"
+                       "        return false;\n"
+                       "    QString topElementClassName = QString::fromEcmaString(path[0][\"className\"]);\n",
+    },
+)
 
 
 def run(argv, *, env=None, cwd=ROOT):
@@ -48,6 +106,39 @@ def extract(archive: Path, destination: Path):
     destination.mkdir(parents=True, exist_ok=True)
     with tarfile.open(archive) as source:
         source.extractall(destination, filter="data")
+
+
+def get_qt_source_changes_digest() -> str:
+    """Identity of QT_SOURCE_CHANGES for the Qt build stamp."""
+    return hashlib.sha256(json.dumps(QT_SOURCE_CHANGES, sort_keys=True).encode()).hexdigest()
+
+
+def apply_qt_source_changes(source: Path) -> None:
+    """Apply QT_SOURCE_CHANGES to an extracted Qt source; an applied change is left as it is."""
+    for change in QT_SOURCE_CHANGES:
+        path = source / change["path"]
+        text = path.read_bytes()
+        original = change["original"].encode()
+        replacement = change["replacement"].encode()
+        if text.count(replacement) == 1 and original not in text:
+            continue
+        if text.count(original) != 1:
+            raise ValueError(f"Qt source {path} matches neither the pinned Qt nor Ludus's change. Delete "
+                             f"{source} and rerun scripts/build-web-editor --bootstrap to restore the pinned source.")
+        path.write_bytes(text.replace(original, replacement))
+
+
+def describe_qt_source_changes(source: Path) -> str:
+    """Unified diff from the pinned Qt archive to the changed source that is built and shipped."""
+    lines = []
+    for change in QT_SOURCE_CHANGES:
+        changed = (source / change["path"]).read_text(encoding="utf-8")
+        if changed.count(change["replacement"]) != 1:
+            raise ValueError("Qt source does not contain Ludus's change: " + change["path"])
+        pinned = changed.replace(change["replacement"], change["original"])
+        lines.extend(difflib.unified_diff(pinned.splitlines(keepends=True), changed.splitlines(keepends=True),
+                                          "a/" + change["path"], "b/" + change["path"]))
+    return "".join(lines)
 
 
 def prepare_sdk(lock, tools: Path):
@@ -112,7 +203,7 @@ def validate_package(site: Path):
         raise ValueError("Editor JavaScript does not name the staged wasm module.")
     if manifest.get("single_threaded") is not True:
         raise ValueError("Pages editor must not require shared memory.")
-    for name in ("Ludus.txt", "Qt-LGPL-3.0.txt", "Emscripten.txt", "miniaudio.txt", "yyjson.txt", "tree-sitter.txt", *TREE_SITTER_GRAMMAR_NOTICES, "Luau.txt", "Luau-lua.txt", "emdawnwebgpu.txt", "webgpu-native.txt"):
+    for name in ("Ludus.txt", "Qt-LGPL-3.0.txt", QT_SOURCE_CHANGES_NOTICE, "Emscripten.txt", "miniaudio.txt", "yyjson.txt", "tree-sitter.txt", *TREE_SITTER_GRAMMAR_NOTICES, "Luau.txt", "Luau-lua.txt", "emdawnwebgpu.txt", "webgpu-native.txt"):
         if not (site / "licenses" / name).is_file():
             raise ValueError("Missing editor license: " + name)
     print("Editor package: verified assets, hashes, single-threaded wasm memory and notices.")
@@ -143,6 +234,7 @@ def package(build: Path, source: Path, sdk: Path, qt_lock: dict, web_lock: dict)
     shutil.copyfile(source / "LICENSES/LGPL-3.0-only.txt", licenses / "Qt-LGPL-3.0.txt")
     for path in (source / "LICENSES").glob("*.txt"):
         shutil.copyfile(path, licenses / ("Qt-" + path.name))
+    (licenses / QT_SOURCE_CHANGES_NOTICE).write_text(describe_qt_source_changes(source), encoding="utf-8")
     third_party = source / "src/3rdparty"
     notices = set()
     for path in third_party.rglob("*"):
@@ -184,6 +276,7 @@ def package(build: Path, source: Path, sdk: Path, qt_lock: dict, web_lock: dict)
     notice = f"""Ludus Editor browser preview
 Ludus sources and rebuild instructions: https://github.com/The-Ludus-Project/Ludus/tree/{commit}
 Qt source base: {qt_lock['qtbase_archive']}
+Ludus changes to that Qt source: licenses/{QT_SOURCE_CHANGES_NOTICE}
 Qt is statically linked under LGPL-3.0; license texts and third-party notices
 are included in licenses/. Rebuild scripts compile Qt from source; users may
 modify or replace Qt and rebuild this open-source application.
@@ -209,7 +302,8 @@ def test_host_folder(sdk: Path, web_lock: dict) -> None:
     harness = output / "host_folder_harness.mjs"
     run([sdk / "upstream/emscripten/em++", "-std=c++23", "-O1", "-fno-exceptions", "-Werror",
          f"-I{ROOT / 'modules/foundation/base/include'}", ROOT / HOST_FOLDER_HARNESS, "-o", harness,
-         "-sASYNCIFY", "-lembind", f"--js-library={ROOT / 'apps/editor/browser/host_folder.js'}",
+         "-sASYNCIFY", "-lembind", f"--js-library={ROOT / 'apps/editor/browser/suspended_input.js'}",
+         f"--js-library={ROOT / 'apps/editor/browser/host_folder.js'}",
          "-sMODULARIZE", "-sEXPORT_ES6", "-sENVIRONMENT=node", "-sALLOW_MEMORY_GROWTH", "-sASSERTIONS=1",
          "-sEXPORTED_RUNTIME_METHODS=ccall,HEAPU8", "-sEXPORTED_FUNCTIONS=_malloc,_free"], env=env)
     node = env.get("EMSDK_NODE")
@@ -274,6 +368,7 @@ def main() -> int:
             raise ValueError("Missing editor prerequisite; run scripts/build-web-editor --bootstrap: " + str(path))
     if f'QT_REPO_MODULE_VERSION "{qt_lock["qt"]}"' not in (source / ".cmake.conf").read_text():
         raise ValueError("Qt source version differs from the pinned editor toolchain.")
+    apply_qt_source_changes(source)
     env = sdk_environment(sdk, web_lock)
     if args.bootstrap:
         if not (ROOT / "out/host-tools/bin/clang++").is_file():
@@ -282,7 +377,8 @@ def main() -> int:
         run([sys.executable, ROOT / "scripts/script-provider", "bootstrap"])
         run([sys.executable, ROOT / "scripts/shader-probe", "bootstrap"])
         run([sys.executable, ROOT / "scripts/bootstrap-spirv-cross"])
-    identity = {"qt": qt_lock, "web": web_lock, "qt_network": True}
+    identity = {"qt": qt_lock, "web": web_lock, "qt_network": True,
+                "qt_source_changes": get_qt_source_changes_digest()}
     stamp = prefix / "ludus-build.json"
     if args.rebuild_qt or not stamp.exists() or json.loads(stamp.read_text()) != identity:
         qt_build(cmake, ninja, source, build, prefix, host, env)

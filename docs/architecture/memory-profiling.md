@@ -235,8 +235,9 @@ Ownership counters are independent of the CPU profiler's
 silently disable Memory accounting. The SDK owns any memory-capture capability
 switch, and public ownership/byte ABI stays consistent across its consumers.
 
-The proposed control vocabulary is intentionally small; these names are future
-contracts, not existing declarations:
+The full design uses the control vocabulary below. See
+[Run an Activity capture](#run-an-activity-capture) for the current Activity
+controls and sink-based export.
 
 ```cpp
 MemoryCaptureStatus BeginMemoryCapture(const MemoryCaptureConfig& config,
@@ -508,6 +509,61 @@ contract correctness, not browser frame-time performance. Native and web
 acceptance measurements use their actual deployment configurations. No row
 claims that these proposed integrations have been implemented or validated.
 
+## Run an Activity capture
+
+Include `ludus/foundation/profiling/memory_capture.hpp` and link
+`Ludus::FoundationProfiling`. Register a domain once with
+`TryRegisterAllocationDomain` and register an allocation site with
+`RegisterMemorySite`. Pass that ID to `AllocationDomain::TryAllocateAtSite`
+at the call site. Ordinary allocations through a selected domain are also
+recorded with an unknown site. Frees inherit the observed origin, including
+when another thread releases the block. The site registry copies the caller's
+UTF-8 definitions and assigns stable process-local IDs. Register new sites
+before opening a capture.
+
+At the application coordinator, stop admission and wait for all whole
+operations on the selected domains to finish. Call `BeginMemoryCapture` with
+their registered IDs, then resume producers through synchronization.
+Repeat that safe point for `EndMemoryCapture`. Both calls sample counters
+at the boundary. The owner serializes all control and site registration
+calls and ends the capture before teardown. Activity always carries an
+unproven initial ownership baseline. Frees of older blocks contribute
+traffic with an unknown origin.
+
+The recorder preallocates up to 8,192 table slots and 16,384 journal records
+before attaching. The table holds at most half as many observed live blocks
+as slots. Lower logical limits exercise loss within the same reservation. The artifact
+reports that reservation as tooling bytes. Journal or
+table loss stops detailed Activity publication and retains the recorded
+prefix. Reentry marks the loss onset unknown. Detail loss does not stop the
+selected domain counters or change backend results. End returns
+`Incomplete` when it seals reduced history or invalid counter samples.
+The capture ID still names an exportable artifact.
+
+Call `ExportMemoryCapture` with a sink that appends each borrowed chunk to
+the destination. Check the sink's open, close and commit results separately.
+A failed export can be retried from the same sealed capture. Release it with
+`ReleaseMemoryCapture` before starting a new session.
+
+Run `python3 tools/memory-report/report.py capture.json` for a traffic table,
+or add `--json` for a machine-readable report. The validator checks the seal,
+operation and lifetime identities, intervals, loss bounds, and reconciliation
+against valid quiescent counters. Site totals after loss describe observed
+events only. Full Activity describes the recording interval without proving
+the origin of earlier allocations. The journal-order peak follows observation
+order and can differ from the domain high-water counter when operations overlap.
+
+### Installed SDK workload
+
+Build and install the `macos-clang-development` SDK. Configure
+`tests/sdk_consumer/memory_activity` as a separate CMake project using the
+installed SDK prefix, the pinned compiler and the macOS SDK flags from that
+preset. Build it, then run `ctest --test-dir <consumer-build> -V`. The workload
+links installed targets, writes sealed JSON to `artifacts/` in the consumer
+build tree, and runs the offline validator against independent expectations.
+It covers a same-live-bytes burst, restart, remote free, sink retry, journal
+and table exhaustion, a baseline-unknown free, and rejection of corrupt artifacts.
+
 ## Validation and delivery
 
 The reference implementation must pass repository warning/format/tidy, public
@@ -554,7 +610,7 @@ instead of concealing it; change architecture only on representative evidence.
 | --- | --- |
 | 0 | Repair owned-pointer move/deleter behavior and trace slab alignment/lifecycle before dependent migrations. The aliased Array resize prerequisite is already implemented. Establish current allocation/footprint baselines. **Implemented:** owner repair by [smart pointer](smart-pointers.md#delivery-slices-and-validation) slice 1; trace repair and baselines in [memory phase 0](../development/memory-phase-0.md). |
 | 1 | Extend the existing system-backed AllocationDomain boundary with checked counters/registry; explicit Array migration; coverage manifest and quiescent gauge export. **Implemented:** [memory phase 1](../development/memory-phase-1.md), including the measured single-domain contention cost. |
-| 2 | One activity recorder, site definitions, fixed table/journal, safe-point begin/end, artifact validator and traffic reports |
+| 2 | [Bounded Activity recorder](#run-an-activity-capture), site definitions, safe-point begin/end, artifact validation and traffic reports |
 | 3 | Proven-domain persistent table, exact checkpoints and survivor differences; shared validation table; independent restart/loss tests |
 | 4 | Resource/arena/GPU/process providers and owner-lifetime reports for demonstrated consumers |
 | Conditional | Safe stack sampling, streaming journal, live attachment, or measured table sharding; each needs a separate consumer and proof |
