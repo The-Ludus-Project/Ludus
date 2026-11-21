@@ -22,6 +22,7 @@
 #include "rg2_restir_di.h"
 #include "rg2_ris_projected_solid_angle_template.h"
 #include "rg2_salesin_jarosz_lines_template.h"
+#include "rg2_scene_color_input.h"
 #include "rg2_scene_compute.h"
 #include "rg2_scene_ray.h"
 #include "rg2_scene_work_items.h"
@@ -1687,6 +1688,61 @@ TEST_CASE("A buffer-only scene dispatch can trace more rays than there are pixel
         REQUIRE(fixture.Pixels[pixel] == 0);
         REQUIRE(fixture.Pixels[pixel + 1] == GREEN);
         REQUIRE(fixture.Pixels[pixel + 2] == 0);
+    }
+}
+
+TEST_CASE("Scene compute reads the color texture written by a ray pass",
+          "[render-graph][gpu][compute-ray-tracing][sampled-color]")
+{
+    GraphGpuFixture fixture{false, false};
+    const core::UniquePtr<renderer::RenderGraphPackage> package =
+        LoadPackage({LUDUS_RG3_SCENE_COLOR_INPUT_DIRECTORY, "rg2_scene_color_input.lurgrt"});
+    const renderer::RenderGraphPrograms decoded =
+        package->GetPrograms(shaders::renderer_composite::Vertex(), shaders::renderer_composite::Fragment());
+    const renderer::RenderGraphPrograms compiled =
+        packages::rg2_scene_color_input::MakePrograms(shaders::renderer_composite::Vertex(),
+                                                      shaders::renderer_composite::Fragment());
+    CheckSameStage(decoded.RayCompute, compiled.RayCompute);
+    const renderer::RenderGraphPlan plan = package->GetPlan();
+    REQUIRE(plan.Passes.GetSize() == 2);
+    REQUIRE(plan.Passes[0].Color == plan.Passes[1].SourceColor);
+    REQUIRE(plan.Passes[1].SourceColor != plan.Passes[1].Color);
+    REQUIRE(plan.Passes[1].VisibilityDepth == format::ABSENT);
+
+    const auto finish = [&fixture](rhi::RasterStatus status) {
+        const uint64 beginning = time::NowTicks();
+        while (status == rhi::RasterStatus::Pending && time::NowTicks() - beginning < FIRST_SAMPLE_TIMEOUT_NANOSECONDS)
+        {
+            threading::SleepFor(COMPLETION_POLL_INTERVAL);
+            status = fixture.Graph.Poll();
+        }
+        CAPTURE(fixture.Graph.GetLastFailureStage());
+        REQUIRE(status == rhi::RasterStatus::Ready);
+    };
+    finish(fixture.Graph.Initialize(fixture.Device, plan, decoded));
+    REQUIRE(fixture.Graph.SetRayTileCount(2) == rhi::RasterStatus::Unsupported);
+    fixture.Cameras[0].OrthographicCamera = true;
+    renderer::RenderGraphReport report;
+    finish(fixture.Graph.Update({fixture.Meshes.GetData(), fixture.Meshes.GetSize()},
+                                {fixture.Items.GetData(), fixture.Items.GetSize()},
+                                {fixture.Cameras.GetData(), fixture.Cameras.GetSize()},
+                                1,
+                                renderer::RenderGraphCoveragePolicy::RejectIncomplete,
+                                report,
+                                nullptr,
+                                1));
+
+    ReadGraphFrame(fixture, plan.Passes[1].Color);
+    constexpr usize CHANNEL_COUNT = 4;
+    constexpr uint8 FULL_CHANNEL = 255;
+    REQUIRE(fixture.Pixels.GetSize() == WIDTH * HEIGHT * CHANNEL_COUNT);
+    for (usize pixel = 0; pixel < WIDTH * HEIGHT; ++pixel)
+    {
+        const bool isEvenColumn = pixel % WIDTH % 2 == 0;
+        const usize offset = pixel * CHANNEL_COUNT;
+        REQUIRE(fixture.Pixels[offset] == 0);
+        REQUIRE(fixture.Pixels[offset + 1] == (isEvenColumn == true ? 0 : FULL_CHANNEL));
+        REQUIRE(fixture.Pixels[offset + 2] == (isEvenColumn == true ? FULL_CHANNEL : 0));
     }
 }
 

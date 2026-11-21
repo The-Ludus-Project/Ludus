@@ -658,6 +658,10 @@ usize MakeGpuComputeBindings(
                 }
                 break;
             }
+            case LUDUS_GRAPH_COLOR_INPUT_BINDING:
+                binding.Texture =
+                    rhi::IsNull(job.ColorInput) == true ? state.DefaultColorInputView : job.ColorInputView;
+                break;
             case LUDUS_GRAPH_VISIBILITY_BINDING:
                 binding.Texture = job.VisibilityView;
                 break;
@@ -771,6 +775,34 @@ Status PollGpuJob(rhi::DeviceHandle device, GpuPreviewState& inoutState, GpuPrev
             if (sceneStatus != Status::Ready)
             {
                 return Accepted(sceneStatus) == true ? Status::Pending : (inoutJob.Setup = sceneStatus);
+            }
+        }
+        if (rhi::IsNull(inoutJob.ColorInput) == false && inoutJob.ComputeBindingsCreated == false)
+        {
+            Status ready = Status::Ready;
+            if (inoutJob.HasColorInputView == false)
+            {
+                rhi::TextureDescription description;
+                ready = rhi::GetTextureDescription(device, inoutJob.ColorInput, description);
+                if (ready == Status::Ready &&
+                    (description.Format != rhi::RasterFormat::Rgba8Unorm || description.SampleCount != 1 ||
+                     description.Dimension != rhi::TextureDimension::D2 || description.Attachment == false))
+                {
+                    return inoutJob.Setup = Status::InvalidDescription;
+                }
+                if (ready == Status::Ready)
+                {
+                    ready = rhi::CreateTextureView(device, inoutJob.ColorInput, inoutJob.ColorInputView);
+                    inoutJob.HasColorInputView = Accepted(ready);
+                }
+            }
+            if (ready == Status::Ready)
+            {
+                ready = rhi::GetStatus(device, inoutJob.ColorInputView);
+            }
+            if (ready != Status::Ready)
+            {
+                return Accepted(ready) == true ? Status::Pending : (inoutJob.Setup = ready);
             }
         }
         if (inoutJob.ComputeBindingsCreated == false &&
@@ -987,6 +1019,7 @@ void Renderer::State::DropGpuPreview(usize slot) noexcept
     job.Storage.Reset();
     static_cast<void>(rhi::Destroy(Device, job.VisibilityView));
     static_cast<void>(rhi::Destroy(Device, job.VisibilityDepthView));
+    static_cast<void>(rhi::Destroy(Device, job.ColorInputView));
     job.VisibilityTexture = {};
     static_cast<void>(rhi::Destroy(Device, job.ImageBindings));
     static_cast<void>(rhi::Destroy(Device, job.NativeScene));
@@ -1075,6 +1108,8 @@ void Renderer::State::ClearGpuPreview() noexcept
     static_cast<void>(rhi::Destroy(Device, state.Quad));
     static_cast<void>(rhi::Destroy(Device, state.Indices));
     static_cast<void>(rhi::Destroy(Device, state.LtcTable));
+    static_cast<void>(rhi::Destroy(Device, state.DefaultColorInputView));
+    static_cast<void>(rhi::Destroy(Device, state.DefaultColorInput));
     GpuPreview.Reset();
 }
 Status Renderer::EnableGpuPreview(const rhi::RasterShaderDescription& compute,
@@ -1135,6 +1170,7 @@ Status Renderer::EnableGpuPreview(const rhi::RasterShaderDescription& compute,
         peel(LUDUS_GRAPH_FAILURE_BINDING, rhi::RasterBindingKind::StorageReadWrite, sizeof(uint32));
     const rhi::RasterBinding* ltcTableBindingOrNull =
         peel(LUDUS_GRAPH_LTC_TABLE_BINDING, rhi::RasterBindingKind::StorageRead, LUDUS_GPU_PREVIEW_VECTOR_BYTES);
+    const bool hasColorInput = peel(LUDUS_GRAPH_COLOR_INPUT_BINDING, rhi::RasterBindingKind::Texture2D, 0) != nullptr;
     const rhi::RasterBinding* aerialBindingOrNull = peel(LUDUS_GRAPH_AERIAL_PERSPECTIVE_BINDING,
                                                          rhi::RasterBindingKind::StorageRead,
                                                          LUDUS_GPU_PREVIEW_VECTOR_BYTES);
@@ -1174,7 +1210,9 @@ Status Renderer::EnableGpuPreview(const rhi::RasterShaderDescription& compute,
     const usize storageBindingCount = baseBindingCount + options.StorageBuffers.GetSize();
     const bool hasPersistentBuffers = options.StorageBuffers.IsEmpty() == true &&
                                       bufferBindingCount == baseBindingCount + internal::GPU_GRAPH_BUFFER_COUNT;
-    if (options.StorageBuffers.IsValid() == false || options.StorageBuffers.GetSize() > format::MAX_STORAGE_BUFFERS ||
+    if ((hasColorInput == true &&
+         (hasPersistentBuffers == false || hasVisibilityBuffer == true || options.NativeRayStagesOrNull != nullptr)) ||
+        options.StorageBuffers.IsValid() == false || options.StorageBuffers.GetSize() > format::MAX_STORAGE_BUFFERS ||
         (hasPersistentBuffers == false && bufferBindingCount != storageBindingCount) || compute.WorkgroupSize[0] == 0 ||
         compute.WorkgroupSize[1] == 0 || compute.WorkgroupSize[2] != 1)
     {
@@ -1278,11 +1316,13 @@ Status Renderer::EnableGpuPreview(const rhi::RasterShaderDescription& compute,
         state->ComputeBindings[i] = compute.Bindings[i];
     }
     state->HasVisibilityBuffer = hasVisibilityBuffer;
+    state->HasColorInput = hasColorInput;
     state->HasRayPathCapture = captureBindingOrNull != nullptr;
     state->HasLtcTable = ltcTableBindingOrNull != nullptr;
     state->HasFailureSummary = failureBindingOrNull != nullptr;
-    if (state->HasLtcTable == true &&
-        options.GpuByteBudget - internal::GPU_PREVIEW_QUAD_BYTES < sizeof(internal::LTC_TABLE))
+    const usize colorInputBytes = hasColorInput == true ? sizeof(uint32) : 0;
+    const usize ltcBytes = state->HasLtcTable == true ? sizeof(internal::LTC_TABLE) : 0;
+    if (options.GpuByteBudget - internal::GPU_PREVIEW_QUAD_BYTES < ltcBytes + colorInputBytes)
     {
         return Status::CapacityExceeded;
     }
@@ -1507,11 +1547,41 @@ Status Renderer::PollGpuPreview() noexcept
                 {
                     status = rhi::GetStatus(mState->Device, state.LtcTable);
                 }
+                if (status == Status::Ready && state.HasColorInput == true)
+                {
+                    if (rhi::IsNull(state.DefaultColorInput) == true)
+                    {
+                        constexpr uint8 BLACK_RGBA[]{0, 0, 0, 0};
+                        rhi::TextureDescription description;
+                        description.Width = 1;
+                        description.Height = 1;
+                        status = rhi::CreateTexture(mState->Device,
+                                                    description,
+                                                    {{BLACK_RGBA, sizeof(BLACK_RGBA)}, sizeof(BLACK_RGBA)},
+                                                    state.DefaultColorInput);
+                    }
+                    if (status == Status::Ready)
+                    {
+                        status = rhi::GetStatus(mState->Device, state.DefaultColorInput);
+                    }
+                    if (status == Status::Ready && state.HasDefaultColorInputView == false)
+                    {
+                        status = rhi::CreateTextureView(mState->Device,
+                                                        state.DefaultColorInput,
+                                                        state.DefaultColorInputView);
+                        state.HasDefaultColorInputView = Accepted(status);
+                    }
+                    if (status == Status::Ready)
+                    {
+                        status = rhi::GetStatus(mState->Device, state.DefaultColorInputView);
+                    }
+                }
                 if (status == Status::Ready)
                 {
                     static_assert(sizeof(corners) + sizeof(indices) == internal::GPU_PREVIEW_QUAD_BYTES);
                     state.GpuBytes = internal::GPU_PREVIEW_QUAD_BYTES +
-                                     (state.HasLtcTable == true ? sizeof(internal::LTC_TABLE) : 0);
+                                     (state.HasLtcTable == true ? sizeof(internal::LTC_TABLE) : 0) +
+                                     (state.HasColorInput == true ? sizeof(uint32) : 0);
                     state.Setup = Status::Ready;
                     return status;
                 }
@@ -1581,6 +1651,13 @@ Status Renderer::BeginGpuPreview(Snapshot snapshot,
     internal::GpuPreviewState& state = *mState->GpuPreview;
     const uint32 workItemCount = invocationOrNull != nullptr ? invocationOrNull->WorkItemCount : 0;
     const bool isBufferDispatch = workItemCount != 0;
+    const rhi::TextureHandle colorInput =
+        invocationOrNull != nullptr ? invocationOrNull->ColorInput : rhi::TextureHandle{};
+    if (invocationOrNull != nullptr && rhi::IsNull(colorInput) == false &&
+        (state.HasColorInput == false || isBufferDispatch == true || invocationOrNull->HasNativeRayInvocation == true))
+    {
+        return Status::InvalidDescription;
+    }
     if (isBufferDispatch == true &&
         (workItemCount > content::render_graph_format::MAX_SCENE_WORK_ITEMS || description.Width != 1 ||
          description.Height != 1 || state.HasPersistentBuffers == false || state.HasVisibilityBuffer == true ||
@@ -1980,6 +2057,7 @@ Status Renderer::BeginGpuPreview(Snapshot snapshot,
     job.Width = description.Width;
     job.Height = description.Height;
     job.WorkItemCount = workItemCount;
+    job.ColorInput = colorInput;
     if (isBufferDispatch == true)
     {
         uniform.Sampling[2] |= LUDUS_GPU_PREVIEW_SCENE_WORK_FLAG;

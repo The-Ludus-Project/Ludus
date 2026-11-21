@@ -1368,7 +1368,7 @@ The node accepts the same ports as a Ray Tracing Pipeline node:
 - exactly one Scene input and one View input;
 - exactly one writable RGBA8Unorm ColorTexture with **Clear**/**Store**;
 - up to two writable **Buffer** resources with **Load**/**Store**, bound as `GraphBuffer0/1`;
-- optionally the read-only visibility color and depth input pair.
+- optionally one [sampled color input](#read-a-color-texture-from-an-earlier-pass) or the read-only visibility color and depth pair.
 
 `StructuredBuffer` inputs are rejected: connect a `Buffer` node instead. Set
 `invocation.dimensions` to `"ColorTarget"`, or to the exact `[width, height, 1]` of
@@ -1541,6 +1541,34 @@ The [mixed sequence fixture](../../tests/sdk_consumer/rg2/compute_mixed/main.lur
 has a scene compute primary pass that records per-pixel hits in a Buffer, followed
 by a ray pass that resolves them. `ludus_render_graph_ray_tests` renders both on
 native ray hardware.
+
+### Read a color texture from an earlier pass
+
+To read an intermediate color image in a scene **ComputePipeline**, add one
+**ColorTexture** under **Read Inputs**. Connect it to an earlier scene compute or
+ray pass's color output. For example, connect `utd.diffraction` to the
+`diffraction` input on `shade`. Keep a separate writable color target for
+`shade`. The source must be an offscreen, single-sample RGBA8Unorm texture
+written earlier in the same ordered sequence.
+
+**Build Graph** binds the connected texture as `Texture2D<float4> GraphColorInput`.
+The authored port name is used on the graph. Use the generated name in Slang
+without a shader-manifest binding or descriptor annotation. For equal source
+and destination extents, load the texel corresponding to the launch pixel.
+
+```slang
+float3 diffraction = GraphColorInput.Load(int3(launch.PositionPixel, 0)).rgb;
+```
+
+The load returns the stored normalized color, including any color processing
+applied before the wire. Query `GetDimensions` and bound coordinates against
+the source extent if the targets differ. The renderer orders the producer's
+color write before the consumer's read on Metal and Vulkan.
+
+Use Compute invocation for RayTracingPipeline nodes in this sequence. Scene
+visibility/depth inputs and tiled frame capture require a separate configuration
+or whole-frame capture, respectively. Rebuild the package with an SDK that
+supports runtime generation 41.
 
 <a id="select-emitters-per-screen-tile"></a>
 

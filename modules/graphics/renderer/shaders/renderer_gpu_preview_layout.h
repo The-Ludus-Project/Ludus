@@ -254,11 +254,15 @@
 #define LUDUS_AERIAL_PERSPECTIVE_MAX_METRES 32000.0
 // Atmosphere sky, read by EvaluateEnvironment: one header word (x = width, y = height, as exact floats; zero width
 // keeps the World environment), then width * height RGB radiance texels in EnvironmentDescription's latitude/longitude
-// layout. The binding follows the failure summary and is a kernel's last binding.
+// layout. The binding follows the failure summary.
 #define LUDUS_GRAPH_ATMOSPHERE_SKY_BINDING 15
+
 #define LUDUS_ATMOSPHERE_SKY_HEADER_WORDS 1
 #define LUDUS_ATMOSPHERE_SKY_TABLE_WIDTH 512
 #define LUDUS_ATMOSPHERE_SKY_TABLE_HEIGHT 256
 #define LUDUS_GRAPH_WORLD_TABLE_ALIGNMENT_BYTES 256
 // Renderer-owned World-feature tables one kernel may bind: the aerial perspective and Atmosphere sky tables.
 #define LUDUS_GRAPH_WORLD_TABLE_BINDING_COUNT 2
+
+// Read-only color from an earlier ordered scene pass. Only compute sequences use this slot.
+#define LUDUS_GRAPH_COLOR_INPUT_BINDING 12

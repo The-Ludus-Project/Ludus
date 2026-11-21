@@ -1202,8 +1202,9 @@ public:
     /// between frames at a sample boundary; the count applies to later scenes of this instance too.
     /// @param tileCount Bands per sample, from one (whole-image dispatches) to MAX_RENDER_GRAPH_RAY_TILES.
     /// @return Ready when set; InvalidDescription for a count out of range; Unsupported for more than one band
-    /// when RenderGraphPrograms::HasRayTiles is false; InvalidState when uninitialized, not Ready, in a frame or
-    /// between the bands of a sample. Failure leaves the graph unchanged.
+    /// when RenderGraphPrograms::HasRayTiles is false or the plan contains a buffer-only dispatch or sampled
+    /// scene color input; InvalidState when uninitialized, not Ready, in a frame or between the bands of a sample.
+    /// Failure leaves the graph unchanged.
     [[nodiscard]] rhi::RasterStatus SetRayTileCount(foundation::uint32 tileCount) noexcept;
     /// Select how later frames record the drawable scene. Direct is always admitted. OrderedGraph checks the
     /// cooked plan against the pilot profile here; its scene-dependent admission (packets, draw and resource

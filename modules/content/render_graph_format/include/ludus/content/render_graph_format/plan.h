@@ -267,8 +267,8 @@ struct Pass final
     /// sRGB encoding: after the optional linear RGB mean of a ray pass, or inside the lighting resolve
     /// of a clustered deferred ColorAndDepth pass. Other techniques require zero.
     foundation::float32 ToneMappingExposure = 0;
-    /// Offscreen initialized RGBA8 source for image operations; ABSENT for scene techniques.
-    /// Color is a distinct output allocation; Program selects reconstruction and color interpretation.
+    /// Offscreen initialized RGBA8 source for image operations, or an earlier ordered scene pass's
+    /// color output sampled by scene compute. Color is a distinct output allocation. ABSENT when unused.
     foundation::uint32 SourceColor = ABSENT;
     /// Zero bypasses denoising; otherwise ProcessingQuality selects OIDN RT HDR filtering
     /// after accumulation and before display conversion. Requires an enabled native OIDN profile.
