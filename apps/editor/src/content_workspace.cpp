@@ -51,7 +51,10 @@ constexpr int ROW_PROGRESS_HEIGHT = 3;
 constexpr int PROGRESS_STEPS = 1000;
 /// Quiet period after a catalog folder changes before the list refreshes, so one import's several writes refresh once.
 constexpr int WATCH_DELAY_MILLISECONDS = 250;
+#if !defined(Q_OS_WASM)
+/// Poll interval of the cooked-output watch; the browser editor has no file watcher.
 constexpr int COOKED_WATCH_INTERVAL_MILLISECONDS = 100;
+#endif
 
 [[nodiscard]] QString GetStageText(ContentImportStage stage)
 {
