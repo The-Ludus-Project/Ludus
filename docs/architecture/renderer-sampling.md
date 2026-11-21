@@ -72,6 +72,20 @@ starts a new accumulation and invalidates history that depends on the old
 proposal or pattern. Record the proposal, parameters or table revision,
 pattern, dimension schema, and seed with benchmark captures.
 
+### Stratify a pixel at four samples
+
+For a box-filtered pixel, divide its unit square into four equal quadrants.
+Use the sample ordinal to choose the quadrant and the existing pair of
+camera-jitter dimensions to jitter inside it. With coordinates `u, v` in
+`[0, 1)`, sample ordinal 2 selects the quadrant with origin `(0, 0.5)`
+and produces `(u / 2, 0.5 + v / 2)` in real arithmetic. The implementation
+keeps rounded coordinates below the quadrant's upper edges. The mean of
+one draw per quadrant estimates the same pixel average as four independent
+whole-pixel draws.
+Keep the BSDF and emitter draws at their original addresses. The four-sample
+comparison can then isolate how the camera pattern affects the error of an
+oblique silhouette or high-contrast edge.
+
 ## Distribution library
 
 | Family | Engine library contract |
@@ -93,6 +107,12 @@ already specifies a normal-pair baseline and the numerical expectations for
 transcendental mappings. The
 [weighted selection contract](randomness.md#weighted-selection-and-authored-gameplay-policies)
 owns the general prepared-selector requirements.
+
+For example, a graph that needs two normal perturbations can request one
+normal pair from two reserved unit coordinates. With standard normal
+outputs `z0, z1`, `mean + standardDeviation * z0` sets the first
+perturbation's location and spread. The caller owns the two dimensions and
+can replay the draw without a cached spare carried between invocations.
 
 Stratification, scrambled Sobol, and blue noise are sample-pattern families.
 A renderer profile can use those coordinates with an admitted distribution
@@ -156,6 +176,29 @@ is the existing graph consumer. [Bitterli et al., *Spatiotemporal reservoir resa
 ray tracing with dynamic direct lighting*, SIGGRAPH 2020](https://research.nvidia.com/publication/2020-07_spatiotemporal-reservoir-resampling-real-time-ray-tracing-dynamic-direct)
 is the reference for that distinction.
 
+#### Weight ReSTIR's initial light candidates
+
+Consider an initial RIS pass with two discrete lights, A and B. At the
+current receiver the target values are 1 and 3. The project chooses each
+candidate from a weighted categorical proposal with masses `1/4` and
+`3/4`. The candidate provider reports its selected light's mass. The pass
+divides the target by that mass and sends the resulting weight to the
+reservoir.
+
+| Candidate | Source PMF | Target value | Candidate weight |
+| --- | --- | --- | --- |
+| A | `1/4` | `1` | `1 / (1/4) = 4` |
+| B | `3/4` | `3` | `3 / (3/4) = 4` |
+
+If the stream draws A then B and the reservoir selects B, the total weight
+is 8, the candidate count is 2, and the integration multiplier for B is
+`8 / (2 × 3) = 4/3`. A uniform source proposal would instead report `1/2`
+for either light and give candidate weights 2 and 6. In a ReSTIR pass that
+also samples points on an emitter, include the emitter-point PDF with the
+light PMF in the measure used by its estimator. This example ends at
+initialization. Temporal and spatial passes consume the reservoir under
+their own reuse contracts.
+
 ## Project-authored proposals
 
 Offer a named role in a working graph, starting with the continuation
@@ -164,12 +207,6 @@ The generated project contains `main_shaders/continuation_proposal.slang` with
 its default binding. The shading shader includes this file. To replace the
 proposal, the author adds a project shader that supplies the draw and
 probability functions, then binds the new type in the included file.
-
-```slang
-// main_shaders/continuation_proposal.slang
-#include "my_guided_proposal.slang"
-typealias ContinuationProposal = MyGuidedProposal;
-```
 
 For this slot, the generic requires static methods with these roles.
 
@@ -200,6 +237,57 @@ same draw and PDF contract through fixed-signature functions in a project
 in the Editor, CLI, and installed SDK. Surface selectable implementations
 through the same editor contract as other typed shader extensions.
 [LUSL template rules](../modules/tooling/shader-language.md#interfaces-and-templates).
+
+### Substitute cosine-weighted continuation
+
+For a purely diffuse reflective test scene, compare a uniform hemisphere
+proposal with a cosine-weighted one. Put the following implementation in
+`main_shaders/cosine_hemisphere_proposal.slang`. The template supplies
+`DirectionProposal`, `ShadingPoint`, and FoundationMath's `PI`.
+
+```slang
+struct CosineHemisphereProposal : DirectionProposal
+{
+    static bool TrySampleDirection(ShadingPoint shadingPoint,
+                                   float3 coordinates,
+                                   out float3 outDirectionWorld)
+    {
+        float3 normalWorld = shadingPoint.ShadingNormalWorld;
+        float3 referenceWorld = abs(normalWorld.z) > 0.5 ? float3(1, 0, 0) : float3(0, 0, 1);
+        float3 tangentWorld = normalize(cross(referenceWorld, normalWorld));
+        float3 bitangentWorld = cross(normalWorld, tangentWorld);
+        float radius = sqrt(coordinates.x);
+        float azimuth = 2 * PI * coordinates.y;
+        float cosine = sqrt(1 - coordinates.x);
+        outDirectionWorld = tangentWorld * (radius * cos(azimuth)) +
+                            bitangentWorld * (radius * sin(azimuth)) +
+                            normalWorld * cosine;
+        return true;
+    }
+
+    static float EvaluatePdfSolidAngle(ShadingPoint shadingPoint, float3 directionWorld)
+    {
+        return max(0, dot(shadingPoint.ShadingNormalWorld, directionWorld)) / PI;
+    }
+};
+```
+
+Bind the new type in `main_shaders/continuation_proposal.slang`.
+
+```slang
+#include "cosine_hemisphere_proposal.slang"
+typealias ContinuationProposal = CosineHemisphereProposal;
+```
+
+The draw uses the first two coordinates in the reserved block and the
+receiver's unit shading normal. On a light-sampled MIS path, evaluating the
+same proposal at a direction with cosine `0.5` returns `1 / (2π)` per
+steradian. The ordinary uniform hemisphere proposal has that PDF at every
+direction in its support. For an analytic control with integrand
+`cos(θ)` on the hemisphere, the cosine proposal yields a constant
+contribution of `π` per draw in exact arithmetic. Uniform draws have
+contributions `2π cos(θ)` with the same mean. This gives the custom proposal
+a reference for its draw and PDF before measuring full-graph variance.
 
 ## Delivery and acceptance
 
