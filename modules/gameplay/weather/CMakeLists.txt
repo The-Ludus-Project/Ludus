@@ -39,6 +39,7 @@ if(LUDUS_BUILD_TESTS)
     add_executable(ludus_gameplay_weather_tests
         tests/weather_simulation_tests.cpp
         tests/weather_state_tests.cpp
+        tests/weather_session_tests.cpp
         tests/weather_golden_tests.cpp
     )
     target_link_libraries(ludus_gameplay_weather_tests

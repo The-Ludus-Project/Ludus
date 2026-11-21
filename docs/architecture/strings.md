@@ -186,8 +186,11 @@ Use bounded tails; vectorized code must never read beyond an input range or
 depend on an owning string's spare capacity.
 
 Core byte storage uses `char` to interoperate with current Ludus APIs. Explicit
-adapters accept C++23 `char8_t` literals without relying on pointer aliasing or
-making every caller choose between competing UTF-8 owner types. Native UTF-16
+adapters accept C++23 `char8_t` literals without making every caller choose
+between competing UTF-8 owner types. `GetByteView` borrows `char8_t` units as
+bytes, which C++ permits because `char` may examine any object's bytes. The
+reverse direction copies (`TryCopyToUtf8Units`), because reading `char`
+storage through a `char8_t` pointer would rely on aliasing C++ does not allow. Native UTF-16
 conversion belongs at the OS boundary, with error offsets and checked output
 sizes. A future opaque native-path type may preserve OS paths that cannot be
 represented by the engine's UTF-8 content grammar; do not change that grammar
@@ -999,6 +1002,32 @@ The initial LP64 `String` is 48 bytes; its layout is a baseline, not a stable AB
 or a claim that 23 inline bytes wins every workload. The system allocator remains
 unchanged for existing containers. Domains are immutable and must outlive owners.
 
+Bounded text and mutable storage operations complete the initial edit surface.
+`String::TryShrinkToFit` returns a value of at most 23 bytes to inline storage
+without allocating and otherwise moves it to an exact-size block, failing with
+the old storage intact. `String::TryErase` and `StaticString::TryErase` remove a
+checked byte range in place and return `OutOfRange` without changing anything.
+`StaticString::AssignTruncatedUtf8` is the named display truncation: it takes a
+`Utf8View`, keeps whole scalars and reports whether bytes were dropped.
+`TrySliceUtf8` borrows a range whose ends must be code point boundaries
+(`SplitsCodePoint` otherwise), and `FindPrecedingUtf8Boundary` chooses one.
+`TryRepairUtf8` is the explicit display repair. It replaces each maximal
+subpart of an ill-formed sequence with U+FFFD, as the Unicode Standard 17.0,
+section 3.9 recommends. It reports the replacement count, enforces a caller
+byte limit (`CapacityExceeded`) and stages its output so failure and
+self-borrowed input leave the destination unchanged.
+`utf16.hpp` provides strict, nonallocating UTF-8/UTF-16 conversion and
+measurement for OS boundaries. It reports the first ill-formed byte or unpaired
+surrogate offset (`InvalidUtf8`, `InvalidUtf16`) and writes nothing unless the
+whole conversion fits the output span; Windows also gets `wchar_t` overloads.
+The first consumers are the Win32 window title (which now reports the bad byte
+offset), RHI adapter names (`AssignTruncatedUtf8` replaces a private
+continuation-byte loop and drops ill-formed tails) and the shared test
+filesystem helpers (`char8_t` adapters replace `reinterpret_cast`s). Tests cover
+allocation failure, inline/heap transitions, every slice range of a mixed
+string, Unicode's maximal-subpart example, every two-byte repair input, all
+scalars through UTF-16 and back, and every unpaired-surrogate form.
+
 The file logger's base and active paths share an immutable allocation until
 rotation; replacement allocation fails explicitly before closing the old file.
 Its formatting scratch and filesystem adapter still use their existing APIs.
@@ -1161,10 +1190,10 @@ not a new build, sanitizer run, or performance result.
 | --- | --- | --- |
 | Cooked dictionaries | Implemented as LUSTR v1; see [cooked dictionary format, writer and reader](#cooked-dictionary-format-writer-and-reader). Remaining: adoption by the content consumer below | [Cooked dictionaries and persistence](#cooked-dictionaries-and-persistence) |
 | Content and symbol consumers | Pair the dictionary with a real indexed-content reader/cooker and retained snapshot; define safe reload retirement and compatibility. The [2026-10-16 survey](#dictionary-adoption-survey) found no qualifying format; start when one of its triggers exists. Bind literals during setup, cache IDs in an actual repeated-name consumer, and validate any generated closed symbol schema for collisions | [Migration phases](#migration-phases) and [literal descriptors](#literal-descriptors) |
-| Mutable and bounded storage | Add explicit shrinking, checked byte-range erase, and named display truncation where required by the initial consumers; enforce their byte limits. Insert/replace and mutable write reservations still require a concrete consumer | [Mutable string storage](#mutable-string-storage) |
-| Text and formatting boundaries | Checked UTF-8 slicing, explicit display repair, counted `char8_t` adapters, strict native UTF-16 conversion at OS boundaries, and exception-free builder/bounded formatting adapters | [Bytes and Unicode](#bytes-and-unicode) and [bounded strings and construction](#bounded-strings-and-construction) |
+| Mutable and bounded storage | Shrinking, checked byte-range erase and named UTF-8 display truncation are implemented; see [implementation status](#implementation-status). Insert/replace and mutable write reservations still require a concrete consumer | [Mutable string storage](#mutable-string-storage) |
+| Text and formatting boundaries | Checked UTF-8 slicing, explicit display repair, counted `char8_t` adapters and strict UTF-16 conversion are implemented and adopted by the Win32 window title. Remaining: migrate the other Win32 `MultiByteToWideChar`/`WideCharToMultiByte` call sites when they are next touched, and exception-free builder/bounded formatting adapters | [Bytes and Unicode](#bytes-and-unicode) and [bounded strings and construction](#bounded-strings-and-construction) |
 | Table completion | Explicit symbol-grammar adapters. Checked table-local `StringIndex` resolution, reservation for known content counts and bounded lookup probing are implemented; see [implementation status](#implementation-status) | [Interned names and indexed strings](#interned-names-and-indexed-strings) |
-| Diagnostics and validation | Counted debugger previews; add reader/cooker and boundary tests with their implementation. Constant-time footprint/probe/retention snapshots are implemented Every public FoundationStrings header carries Doxygen contracts, and table-token exhaustion and differential table operation sequences are tested; see [implementation status](#implementation-status) | [Debugging and observation](#debugging-and-observation) and [required correctness evidence](#required-correctness-evidence) |
+| Diagnostics and validation | Counted debugger previews; add reader/cooker and boundary tests with their implementation. Constant-time footprint/probe/retention snapshots are implemented. Every public FoundationStrings header carries Doxygen contracts, and table-token exhaustion and differential table operation sequences are tested; see [implementation status](#implementation-status) | [Debugging and observation](#debugging-and-observation) and [required correctness evidence](#required-correctness-evidence) |
 
 [Static localization catalogs](../../modules/localization/README.md) already
 use shared immutable storage, deterministic offset-based cooking, validation,

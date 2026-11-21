@@ -317,6 +317,140 @@ bool TryQuantizePosition(float64 metres, int64 minimum, int64 maximum, int64& ou
 {
     return format::TryQuantizeWeatherCode(metres, format::LENGTH_CODES_PER_METRE, minimum, maximum, outCode);
 }
+
+/// Carry a copy of the state forward to targetTick without events. Only pending commands and override
+/// phase ends change the state; schedules depend on the tick alone. Jumping to the tick before each such
+/// change and stepping it is therefore exact, and costs O(commands + phase changes) for any distance.
+void ProjectState(const Climate& climate, uint64 targetTick, WeatherSimulationState& inoutState) noexcept
+{
+    // A collector without storage drops every event; the projected copy is discarded with them.
+    EventCollector discarded({}, inoutState.NextEventOrdinal);
+    while (inoutState.Tick < targetTick)
+    {
+        uint64 nextChange = targetTick;
+        if (inoutState.PendingCommands.IsEmpty() == false && inoutState.PendingCommands[0].ApplyTick < nextChange)
+        {
+            nextChange = inoutState.PendingCommands[0].ApplyTick;
+        }
+        for (const WeatherOverrideState& active : inoutState.ActiveOverrides)
+        {
+            const bool isIndefinite = active.Phase == WeatherOverridePhase::Hold && active.PhaseTicks == 0;
+            const uint64 phaseEnd = active.PhaseStartTick + active.PhaseTicks;
+            if (isIndefinite == false && phaseEnd < nextChange)
+            {
+                nextChange = phaseEnd;
+            }
+        }
+        inoutState.Tick = nextChange - 1;
+        StepTick(climate, inoutState, discarded);
+    }
+}
+
+/// Resolve the weather of a state at a World position; the shared body of TrySample and TryPreview.
+WeatherSimulationStatus SampleState(const Climate& climate,
+                                    const WeatherSimulationState& state,
+                                    float64 positionXWorld,
+                                    float64 positionZWorld,
+                                    WeatherSample& outSample) noexcept
+{
+    const format::WeatherBoundsWorld& domain = climate.GetHeader().DomainWorld;
+    int64 x = 0;
+    int64 z = 0;
+    if (TryQuantizePosition(positionXWorld, domain.MinimumX, domain.MaximumX, x) == false ||
+        TryQuantizePosition(positionZWorld, domain.MinimumZ, domain.MaximumZ, z) == false)
+    {
+        return WeatherSimulationStatus::OutsideDomain;
+    }
+    const uint64 tick = state.Tick;
+    WeatherSample sample;
+    sample.Tick = tick;
+
+    // Regional weights: each region in resolution order claims its coverage of the weight still available,
+    // and the default region takes the remainder, so the weights sum to exactly FRACTION_ONE.
+    foundation::StaticArray<int64, format::WEATHER_CHANNEL_COUNT> scheduleSums{};
+    int32 remaining = format::FRACTION_ONE;
+    const auto addSchedule = [&climate, tick, &scheduleSums](uint32 scheduleIndex, int32 weight) noexcept {
+        const WeatherChannelCodes values = internal::EvaluateSchedule(climate, scheduleIndex, tick);
+        for (usize i = 0; i < format::WEATHER_CHANNEL_COUNT; ++i)
+        {
+            scheduleSums[i] += int64{weight} * values.Values[i];
+        }
+    };
+    for (const format::WeatherRegionRecord& region : climate.GetRegions())
+    {
+        const int32 coverage = internal::ComputeFeatheredCoverage(region.BoundsWorld, region.FeatherMillimetres, x, z);
+        const int32 weight = internal::MultiplyFractions(coverage, remaining);
+        if (weight == 0)
+        {
+            continue;
+        }
+        remaining -= weight;
+        addSchedule(region.ScheduleIndex, weight);
+        LUDUS_REQUIRE(sample.RegionWeights.TryAdd({ .RegionId = region.Id, .Weight = weight }) == true);
+    }
+    if (remaining != 0)
+    {
+        addSchedule(climate.GetHeader().DefaultScheduleIndex, remaining);
+        LUDUS_REQUIRE(sample.RegionWeights.TryAdd({ .RegionId = DEFAULT_WEATHER_REGION_ID, .Weight = remaining }) ==
+                      true);
+    }
+    WeatherChannelCodes underlying;
+    for (usize i = 0; i < format::WEATHER_CHANNEL_COUNT; ++i)
+    {
+        underlying.Values[i] = static_cast<int32>(internal::DivideRounded(scheduleSums[i], format::FRACTION_ONE));
+    }
+
+    // Overrides in resolution order claim, per channel, their weight of what higher overrides left;
+    // the running schedule fills the residual.
+    foundation::FixedArray<const WeatherOverrideState*, MAX_ACTIVE_WEATHER_OVERRIDES> ordered;
+    for (const WeatherOverrideState& active : state.ActiveOverrides)
+    {
+        LUDUS_REQUIRE(ordered.TryAdd(&active) == true);
+    }
+    foundation::Sort(ordered.GetData(),
+                     ordered.GetSize(),
+                     [](const WeatherOverrideState* left, const WeatherOverrideState* right) {
+                         return internal::IsOverrideBefore(*left, *right);
+                     });
+    foundation::StaticArray<int64, format::WEATHER_CHANNEL_COUNT> overrideSums{};
+    foundation::StaticArray<int32, format::WEATHER_CHANNEL_COUNT> residual{};
+    for (int32& value : residual)
+    {
+        value = format::FRACTION_ONE;
+    }
+    for (const WeatherOverrideState* active : ordered)
+    {
+        const int32 coverage =
+            active->IsGlobal == true
+                ? format::FRACTION_ONE
+                : internal::ComputeFeatheredCoverage(active->FootprintWorld, active->FootprintFeatherMillimetres, x, z);
+        const int32 weight = internal::MultiplyFractions(coverage, internal::EvaluateOverrideWeight(*active, tick));
+        if (weight == 0)
+        {
+            continue;
+        }
+        LUDUS_REQUIRE(sample.Overrides.TryAdd({ .OverrideId = active->OverrideId, .Weight = weight }) == true);
+        const WeatherChannelCodes source = internal::EvaluateOverrideSource(*active, tick);
+        for (usize i = 0; i < format::WEATHER_CHANNEL_COUNT; ++i)
+        {
+            const uint32 group = static_cast<uint32>(format::GetWeatherChannelGroup(static_cast<WeatherChannel>(i)));
+            if ((active->ChannelGroups & group) == 0)
+            {
+                continue;
+            }
+            const int32 channelWeight = internal::MultiplyFractions(weight, residual[i]);
+            overrideSums[i] += int64{channelWeight} * source.Values[i];
+            residual[i] -= channelWeight;
+        }
+    }
+    for (usize i = 0; i < format::WEATHER_CHANNEL_COUNT; ++i)
+    {
+        const int64 sum = overrideSums[i] + int64{residual[i]} * underlying.Values[i];
+        sample.Channels.Values[i] = static_cast<int32>(internal::DivideRounded(sum, format::FRACTION_ONE));
+    }
+    outSample = foundation::Move(sample);
+    return WeatherSimulationStatus::Success;
+}
 } // namespace
 
 WeatherConditions ConvertWeatherChannels(const format::WeatherChannelCodes& channels) noexcept
@@ -462,103 +596,36 @@ WeatherSimulation::TrySample(float64 positionXWorld, float64 positionZWorld, Wea
     {
         return WeatherSimulationStatus::InvalidArgument;
     }
-    const format::WeatherBoundsWorld& domain = mClimate.GetHeader().DomainWorld;
-    int64 x = 0;
-    int64 z = 0;
-    if (TryQuantizePosition(positionXWorld, domain.MinimumX, domain.MaximumX, x) == false ||
-        TryQuantizePosition(positionZWorld, domain.MinimumZ, domain.MaximumZ, z) == false)
-    {
-        return WeatherSimulationStatus::OutsideDomain;
-    }
-    const uint64 tick = mState.Tick;
-    WeatherSample sample;
-    sample.Tick = tick;
+    return SampleState(mClimate, mState, positionXWorld, positionZWorld, outSample);
+}
 
-    // Regional weights: each region in resolution order claims its coverage of the weight still available,
-    // and the default region takes the remainder, so the weights sum to exactly FRACTION_ONE.
-    foundation::StaticArray<int64, format::WEATHER_CHANNEL_COUNT> scheduleSums{};
-    int32 remaining = format::FRACTION_ONE;
-    const auto addSchedule = [this, tick, &scheduleSums](uint32 scheduleIndex, int32 weight) noexcept {
-        const WeatherChannelCodes values = internal::EvaluateSchedule(mClimate, scheduleIndex, tick);
-        for (usize i = 0; i < format::WEATHER_CHANNEL_COUNT; ++i)
+// NOLINTBEGIN(bugprone-easily-swappable-parameters): a World X/Z coordinate pair in axis order.
+WeatherSimulationStatus WeatherSimulation::TryPreview(WeatherPreviewMode mode,
+                                                      uint64 previewTick,
+                                                      float64 positionXWorld,
+                                                      float64 positionZWorld,
+                                                      WeatherSample& outSample) const noexcept
+// NOLINTEND(bugprone-easily-swappable-parameters)
+{
+    if (IsMounted() == false || (mode != WeatherPreviewMode::Authored && mode != WeatherPreviewMode::Projected))
+    {
+        return WeatherSimulationStatus::InvalidArgument;
+    }
+    WeatherSimulationState state;
+    if (mode == WeatherPreviewMode::Authored)
+    {
+        state.Tick = previewTick;
+    }
+    else
+    {
+        if (previewTick < mState.Tick)
         {
-            scheduleSums[i] += int64{weight} * values.Values[i];
+            return WeatherSimulationStatus::PreviewInPast;
         }
-    };
-    for (const format::WeatherRegionRecord& region : mClimate.GetRegions())
-    {
-        const int32 coverage = internal::ComputeFeatheredCoverage(region.BoundsWorld, region.FeatherMillimetres, x, z);
-        const int32 weight = internal::MultiplyFractions(coverage, remaining);
-        if (weight == 0)
-        {
-            continue;
-        }
-        remaining -= weight;
-        addSchedule(region.ScheduleIndex, weight);
-        LUDUS_REQUIRE(sample.RegionWeights.TryAdd({ .RegionId = region.Id, .Weight = weight }) == true);
+        state = mState;
+        ProjectState(mClimate, previewTick, state);
     }
-    if (remaining != 0)
-    {
-        addSchedule(mClimate.GetHeader().DefaultScheduleIndex, remaining);
-        LUDUS_REQUIRE(sample.RegionWeights.TryAdd({ .RegionId = DEFAULT_WEATHER_REGION_ID, .Weight = remaining }) ==
-                      true);
-    }
-    WeatherChannelCodes underlying;
-    for (usize i = 0; i < format::WEATHER_CHANNEL_COUNT; ++i)
-    {
-        underlying.Values[i] = static_cast<int32>(internal::DivideRounded(scheduleSums[i], format::FRACTION_ONE));
-    }
-
-    // Overrides in resolution order claim, per channel, their weight of what higher overrides left;
-    // the running schedule fills the residual.
-    foundation::FixedArray<const WeatherOverrideState*, MAX_ACTIVE_WEATHER_OVERRIDES> ordered;
-    for (const WeatherOverrideState& active : mState.ActiveOverrides)
-    {
-        LUDUS_REQUIRE(ordered.TryAdd(&active) == true);
-    }
-    foundation::Sort(ordered.GetData(),
-                     ordered.GetSize(),
-                     [](const WeatherOverrideState* left, const WeatherOverrideState* right) {
-                         return internal::IsOverrideBefore(*left, *right);
-                     });
-    foundation::StaticArray<int64, format::WEATHER_CHANNEL_COUNT> overrideSums{};
-    foundation::StaticArray<int32, format::WEATHER_CHANNEL_COUNT> residual{};
-    for (int32& value : residual)
-    {
-        value = format::FRACTION_ONE;
-    }
-    for (const WeatherOverrideState* active : ordered)
-    {
-        const int32 coverage =
-            active->IsGlobal == true
-                ? format::FRACTION_ONE
-                : internal::ComputeFeatheredCoverage(active->FootprintWorld, active->FootprintFeatherMillimetres, x, z);
-        const int32 weight = internal::MultiplyFractions(coverage, internal::EvaluateOverrideWeight(*active, tick));
-        if (weight == 0)
-        {
-            continue;
-        }
-        LUDUS_REQUIRE(sample.Overrides.TryAdd({ .OverrideId = active->OverrideId, .Weight = weight }) == true);
-        const WeatherChannelCodes source = internal::EvaluateOverrideSource(*active, tick);
-        for (usize i = 0; i < format::WEATHER_CHANNEL_COUNT; ++i)
-        {
-            const uint32 group = static_cast<uint32>(format::GetWeatherChannelGroup(static_cast<WeatherChannel>(i)));
-            if ((active->ChannelGroups & group) == 0)
-            {
-                continue;
-            }
-            const int32 channelWeight = internal::MultiplyFractions(weight, residual[i]);
-            overrideSums[i] += int64{channelWeight} * source.Values[i];
-            residual[i] -= channelWeight;
-        }
-    }
-    for (usize i = 0; i < format::WEATHER_CHANNEL_COUNT; ++i)
-    {
-        const int64 sum = overrideSums[i] + int64{residual[i]} * underlying.Values[i];
-        sample.Channels.Values[i] = static_cast<int32>(internal::DivideRounded(sum, format::FRACTION_ONE));
-    }
-    outSample = foundation::Move(sample);
-    return WeatherSimulationStatus::Success;
+    return SampleState(mClimate, state, positionXWorld, positionZWorld, outSample);
 }
 
 void WeatherSimulation::ResetToAuthoredBaseline() noexcept

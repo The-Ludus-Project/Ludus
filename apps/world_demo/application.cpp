@@ -19,6 +19,10 @@ using input::Key;
 /// Initial size of the world reference window, in logical pixels.
 constexpr uint32 WINDOW_WIDTH = 960;
 constexpr uint32 WINDOW_HEIGHT = 640;
+/// Interface actions that become flow requests: P pauses or resumes, N steps one paused tick, R restarts.
+constexpr input::ActionId PAUSE_ACTION = 3;
+constexpr input::ActionId STEP_ACTION = 4;
+constexpr input::ActionId RESTART_ACTION = 5;
 void Record(void* context, const input::KeyboardRecord& record) noexcept
 {
     (void)static_cast<input::InputSystem*>(context)->Ingest(record);
@@ -88,9 +92,9 @@ bool Application::Start(rhi::BackendSelection selection, const char* levelBytes,
             .PhysicalKey = Key::KeyS,
         },
         { .Action = 2, .PhysicalKey = Key::Space },
-        { .Action = 3, .PhysicalKey = Key::KeyP },
-        { .Action = 4, .PhysicalKey = Key::KeyN },
-        { .Action = 5, .PhysicalKey = Key::KeyR },
+        { .Action = PAUSE_ACTION, .PhysicalKey = Key::KeyP },
+        { .Action = STEP_ACTION, .PhysicalKey = Key::KeyN },
+        { .Action = RESTART_ACTION, .PhysicalKey = Key::KeyR },
     };
     if (mInput.ReplaceBindings({bindings}) != input::BindingStatus::Ok)
     {
@@ -128,11 +132,35 @@ bool Application::Start(rhi::BackendSelection selection, const char* levelBytes,
     {
         LUDUS_LOG_WARN(logging::LOG_CORE, "Hosted GPU recorder could not attach; editor recordings are unavailable");
     }
+    // The game flow owns progression: Boot reports its services ready, then the first room loads through
+    // Preparing. The provided bytes stay alive with the caller for the application's lifetime.
+    LevelReference level{ .Source = LevelSource::Provided };
+    if (levelBytes != nullptr)
+    {
+        mSession.SetProvidedLevel(std::string_view(levelBytes, levelSize));
+    }
+    else if (TryMakeBuiltinLevelReference(EXAMPLE_LEVEL_ID, level) == false)
+    {
+        Shutdown();
+        mState = AppState::Failed;
+        return false;
+    }
+    uint64 servicesToken = 0;
+    uint64 loadToken = 0;
+    if (mSession.RequestFlow({ .Kind = FlowRequestKind::ServicesReady }, servicesToken) != Status::Success ||
+        mSession.ProcessFlowBoundary() != Status::Success)
+    {
+        Shutdown();
+        mState = AppState::Failed;
+        return false;
+    }
+    // The initial load request is the Load boundary: its preflight parses the level and starts the candidate.
     const foundation::time::Timestamp loadStart = foundation::time::Now();
-    const std::string_view level = levelBytes != nullptr ? std::string_view(levelBytes, levelSize) : ExampleLevel();
-    const LevelResult load = mSession.RequestLoad(level);
+    const bool isLoadStarted =
+        mSession.RequestFlow({ .Kind = FlowRequestKind::Load, .Level = level }, loadToken) == Status::Success &&
+        mSession.ProcessFlowBoundary() == Status::Success && mSession.GetFlowState() == FlowState::Preparing;
     (void)foundation::time::TryElapsed(loadStart, foundation::time::Now(), mInitialLoadRequestDuration);
-    if (load.Error != LevelError::None)
+    if (isLoadStarted == false)
     {
         Shutdown();
         mState = AppState::Failed;
@@ -140,6 +168,50 @@ bool Application::Start(rhi::BackendSelection selection, const char* levelBytes,
     }
     mState = AppState::Loading;
     return true;
+}
+void Application::requestFlow(FlowRequestKind kind) noexcept
+{
+    FlowRequest request{ .Kind = kind };
+    if (kind == FlowRequestKind::Load && TryMakeBuiltinLevelReference(EXAMPLE_LEVEL_ID, request.Level) == false)
+    {
+        return;
+    }
+    uint64 token = 0;
+    if (mSession.RequestFlow(request, token) != Status::Success)
+    {
+        LUDUS_LOG_WARN(logging::LOG_CORE, "Flow request {} was not admitted", static_cast<uint32>(kind));
+    }
+}
+void Application::processFlowBoundary() noexcept
+{
+    const uint64 changes = mSession.GetFlow().GetChangeCount();
+    if (mSession.ProcessFlowBoundary() != Status::Success)
+    {
+        LUDUS_LOG_ERROR(logging::LOG_CORE,
+                        "Flow boundary failed in state {}",
+                        static_cast<uint32>(mSession.GetFlowState()));
+        return;
+    }
+    if (mSession.GetFlow().GetChangeCount() == changes)
+    {
+        return;
+    }
+    const FlowChange& change = mSession.GetFlow().GetLastChange();
+    // Activation restarts pacing: a slow activation frame is not judged against the loading schedule.
+    if (change.Cause == FlowRequestKind::CandidateReady)
+    {
+        if (mFirstWorldActivation.Nanoseconds == 0)
+        {
+            mFirstWorldActivation = foundation::time::Now();
+        }
+        mPacing.Reset();
+    }
+    if (change.From == FlowState::Preparing && change.Cause == FlowRequestKind::CandidateFailed)
+    {
+        LUDUS_LOG_ERROR(logging::LOG_CORE,
+                        "Level candidate failed; flow returned to state {}",
+                        static_cast<uint32>(change.To));
+    }
 }
 void Application::Shutdown() noexcept
 {
@@ -299,15 +371,7 @@ AppState Application::Frame() noexcept
         LUDUS_LOG_ERROR(logging::LOG_CORE, "Level candidate failed; active world preserved");
     }
     // Session replacement resets the driver, so the replacement starts from a zero-elapsed baseline.
-    // Pacing restarts too: a slow activation frame is not judged against the loading schedule.
-    if (mSession.Activate() == true)
-    {
-        if (mFirstWorldActivation.Nanoseconds == 0)
-        {
-            mFirstWorldActivation = foundation::time::Now();
-        }
-        mPacing.Reset();
-    }
+    processFlowBoundary();
     rhi::DeviceInfo device;
     const rhi::DeviceStatus deviceStatus = rhi::GetDeviceInfo(mDevice, device);
     if (deviceStatus == rhi::DeviceStatus::Pending)
@@ -390,18 +454,21 @@ Application::playFrame(const rhi::StartupInfo& startup, bool isWindowVisible, fo
     {
         (void)mInput.GetAction(index, actions[index]);
     }
-    // UI owns these frame edges before the gameplay bridge samples its actions.
-    if (actions[3].Pressed && mSession.Driver.GetMode() != Mode::Faulted)
+    // UI owns these frame edges before the gameplay bridge samples its actions. They become typed flow requests,
+    // applied at the boundary below so a pause holds this frame's ticks.
+    const FlowState flowState = mSession.GetFlowState();
+    if (actions[PAUSE_ACTION].Pressed && (flowState == FlowState::Playing || flowState == FlowState::Paused))
     {
-        mSession.Driver.SetMode(mSession.Driver.GetMode() == Mode::Playing ? Mode::Paused : Mode::Playing);
+        requestFlow(flowState == FlowState::Playing ? FlowRequestKind::Pause : FlowRequestKind::Resume);
     }
-    if (actions[4].Pressed && mSession.Driver.GetMode() == Mode::Paused)
+    if (actions[RESTART_ACTION].Pressed)
     {
-        (void)mSession.Driver.Step(mSession.World());
+        requestFlow(FlowRequestKind::Load);
     }
-    if (actions[5].Pressed)
+    processFlowBoundary();
+    if (actions[STEP_ACTION].Pressed && mSession.GetFlowPolicy().CanStep == true)
     {
-        (void)mSession.RequestLoad(ExampleLevel());
+        (void)mSession.StepFlow();
     }
     TickInput input
     {
@@ -445,10 +512,9 @@ Application::playFrame(const rhi::StartupInfo& startup, bool isWindowVisible, fo
                        static_cast<uint32>(event.Kind));
     }
     mSession.World().ConsumeOutbox();
-    if (mSession.World().GetNextLevel().View().empty() == false && mSession.GetLoadStage() == LoadStage::Empty)
-    {
-        (void)mSession.RequestLoad(BuiltinLevel(mSession.World().GetNextLevel().View()));
-    }
+    // The reference game posts no addressed commands; consuming keeps their reserved outcome capacity free.
+    mSession.World().ConsumeCommandOutcomes();
+    mSession.ConsumeRetiredCommandOutcomes();
     if (render(window) == false)
     {
         Shutdown();
