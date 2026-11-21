@@ -164,17 +164,22 @@ bool ValidateEdges(const MusicScore& score) noexcept
     }
     return true;
 }
-bool MultiplyDivide(uint64 value, uint64 multiplier, uint64 divisor, uint64& outWhole, uint64& outRemainder) noexcept
+struct DivisionResult final
+{
+    uint64 Whole = 0;
+    uint64 Remainder = 0;
+};
+bool MultiplyDivide(uint64 value, uint64 multiplier, uint64 divisor, DivisionResult& outResult) noexcept
 {
     uint64 fraction = 0;
     uint64 whole = 0;
     if (TryMultiply(value / divisor, multiplier, whole) == false ||
         TryMultiply(value % divisor, multiplier, fraction) == false ||
-        TryAdd(whole, fraction / divisor, outWhole) == false)
+        TryAdd(whole, fraction / divisor, outResult.Whole) == false)
     {
         return false;
     }
-    outRemainder = fraction % divisor;
+    outResult.Remainder = fraction % divisor;
     return true;
 }
 } // namespace
@@ -307,12 +312,12 @@ bool QuantizeMusicFrame(const MusicScore& score,
     period /= common;
     divisor /= common;
     uint64 index = 0;
-    uint64 remainder = 0;
+    DivisionResult division;
     uint64 offset = 0;
-    if (MultiplyDivide(requestedFrame - origin - 1, divisor, period, index, remainder) == false ||
-        TryAdd(index, uint64{1}, index) == false ||
-        MultiplyDivide(index, period, divisor, offset, remainder) == false ||
-        TryAdd(offset, uint64{remainder != 0}, offset) == false)
+    if (MultiplyDivide(requestedFrame - origin - 1, divisor, period, division) == false ||
+        TryAdd(division.Whole, uint64{1}, index) == false ||
+        MultiplyDivide(index, period, divisor, division) == false ||
+        TryAdd(division.Whole, uint64{division.Remainder != 0}, offset) == false)
     {
         return false;
     }

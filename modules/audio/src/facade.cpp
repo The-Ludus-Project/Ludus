@@ -986,10 +986,7 @@ Status AudioSystem::PlayStreamGroup(std::span<const StreamHandle> streams,
     }
     return result;
 }
-Status AudioSystem::SetStreamGroupGains(VoiceHandle voice,
-                                        std::span<const float32> gains,
-                                        uint64 frame,
-                                        uint32 rampFrames) noexcept
+Status AudioSystem::SetStreamGroupGains(VoiceHandle voice, std::span<const float32> gains, StreamRamp ramp) noexcept
 {
     if (mImpl.Get() == nullptr)
     {
@@ -1004,8 +1001,8 @@ Status AudioSystem::SetStreamGroupGains(VoiceHandle voice,
     }
     const internal::StreamData& group = *owner.Streams[owner.Voices[slot].StreamSlotIndex].Data;
     if (gains.empty() == true || gains.size() != group.MemberCount ||
-        (frame > owner.RenderFrame &&
-         frame - owner.RenderFrame > uint64{MAX_SCHEDULE_HORIZON_SECONDS} * owner.SampleRate))
+        (ramp.StartFrame > owner.RenderFrame &&
+         ramp.StartFrame - owner.RenderFrame > uint64{MAX_SCHEDULE_HORIZON_SECONDS} * owner.SampleRate))
     {
         return Status::InvalidArgument;
     }
@@ -1015,8 +1012,8 @@ Status AudioSystem::SetStreamGroupGains(VoiceHandle voice,
     command.VoiceSlotIndex = slot;
     command.VoiceGeneration = voice.Generation;
     command.HasLayerGains = true;
-    command.StartFrame = frame;
-    command.LayerRamp = rampFrames;
+    command.StartFrame = ramp.StartFrame;
+    command.LayerRamp = ramp.DurationFrames;
     for (usize i = 0; i < gains.size(); ++i)
     {
         if (foundation::math::IsFinite(gains[i]) == false || gains[i] < 0 || gains[i] > 1)
@@ -1030,8 +1027,7 @@ Status AudioSystem::SetStreamGroupGains(VoiceHandle voice,
 Status AudioSystem::ScheduleStreamGroup(std::span<const StreamHandle> streams,
                                         std::span<const float32> gains,
                                         VoiceHandle outgoing,
-                                        uint64 frame,
-                                        uint32 fadeFrames,
+                                        StreamRamp ramp,
                                         VoiceHandle& outVoice) noexcept
 {
     if (mImpl.Get() == nullptr)
@@ -1042,8 +1038,8 @@ Status AudioSystem::ScheduleStreamGroup(std::span<const StreamHandle> streams,
     if (result == Status::Ok)
     {
         internal::StreamData& first = *mImpl->Streams[streams.front().Slot].Data;
-        first.CrossfadeFrames = fadeFrames;
-        result = ScheduleStreamTransition(streams.front(), outgoing, frame, outVoice);
+        first.CrossfadeFrames = ramp.DurationFrames;
+        result = ScheduleStreamTransition(streams.front(), outgoing, ramp.StartFrame, outVoice);
         if (result != Status::Ok)
         {
             first.CrossfadeFrames = 0;

@@ -162,10 +162,11 @@ TEST_CASE("Warm music group admission, cue revision and rendering allocate nothi
     Status fill = Status::Ok;
     for (usize i = 0; i <= COMMAND_QUEUE_CAPACITY && fill == Status::Ok; ++i)
     {
-        fill = system.SetStreamGroupGains(outgoing, gains, 0, 0);
+        fill = system.SetStreamGroupGains(outgoing, gains, {});
     }
     VoiceHandle rejected = outgoing;
-    const Status full = system.ScheduleStreamGroup(incoming, gains, outgoing, 1024, 32, rejected);
+    const Status full =
+        system.ScheduleStreamGroup(incoming, gains, outgoing, { .StartFrame = 1024, .DurationFrames = 32 }, rejected);
     SystemSnapshot snapshot;
     system.GetSystemSnapshot(snapshot);
     Status drain = Status::Ok;
@@ -174,10 +175,15 @@ TEST_CASE("Warm music group admission, cue revision and rendering allocate nothi
         drain = system.RenderOffline(samples, ChannelLayout::Stereo, BufferLayout::Interleaved, CONTROL_QUANTUM_FRAMES);
         system.GetSystemSnapshot(snapshot);
     }
-    const uint64 revisedFrame = snapshot.RenderFrame + CONTROL_QUANTUM_FRAMES * 2;
-    const Status schedule = system.ScheduleStreamGroup(incoming, gains, outgoing, revisedFrame + 512, 32, candidate);
+    const uint64 revisedFrame = snapshot.RenderFrame + uint64{CONTROL_QUANTUM_FRAMES} * 2;
+    const Status schedule = system.ScheduleStreamGroup(incoming,
+                                                       gains,
+                                                       outgoing,
+                                                       { .StartFrame = revisedFrame + 512, .DurationFrames = 32 },
+                                                       candidate);
     const Status revise = system.ReviseStreamTransition(candidate, revisedFrame);
-    const Status intensity = system.SetStreamGroupGains(candidate, gains, revisedFrame + 256, 128);
+    const Status intensity =
+        system.SetStreamGroupGains(candidate, gains, { .StartFrame = revisedFrame + 256, .DurationFrames = 128 });
     for (usize i = 0; i < 8; ++i)
     {
         (void)system.RenderOffline(samples, ChannelLayout::Stereo, BufferLayout::Interleaved, CONTROL_QUANTUM_FRAMES);

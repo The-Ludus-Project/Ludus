@@ -159,7 +159,7 @@ bool MusicDirector::quantize(MusicBoundary boundary, uint64 requested, uint64& o
                               ludus::foundation::math::Max(requested, next),
                               outFrame) == true;
 }
-Status MusicDirector::SelectState(std::string_view state, uint64 requestedFrame) noexcept
+Status MusicDirector::SelectState(std::string_view state, MusicCueTime cue) noexcept
 {
     if (mTransport.Active.IsValid() == false)
     {
@@ -214,7 +214,7 @@ Status MusicDirector::SelectState(std::string_view state, uint64 requestedFrame)
         return Status::InvalidArgument;
     }
     uint64 frame = 0;
-    if (quantize(mScore.Transitions[edge].Quantize, requestedFrame, frame) == false)
+    if (quantize(mScore.Transitions[edge].Quantize, cue.RequestedFrame, frame) == false)
     {
         return Status::NotReady;
     }
@@ -242,7 +242,7 @@ Status MusicDirector::SelectState(std::string_view state, uint64 requestedFrame)
     mTransport.HasPlan = true;
     mCandidate = candidate;
     mEdge = edge;
-    mTransport.RequestedFrame = requestedFrame;
+    mTransport.RequestedFrame = cue.RequestedFrame;
     mTransport.BoundaryFrame = frame;
     return mPreparedCount > 0 ? submit() : Status::Ok;
 }
@@ -265,12 +265,12 @@ Status MusicDirector::submit() noexcept
         return Status::NotReady;
     }
     const LayerGains gains = ComputeGains(mScore.Sections[mCandidate], mIntensity, mScore.Gain);
-    const Status result = mAudio.ScheduleStreamGroup(std::span(mPrepared).first(mPreparedCount),
-                                                     std::span(gains).first(mPreparedCount),
-                                                     mTransport.Active,
-                                                     mTransport.BoundaryFrame,
-                                                     mScore.Transitions[mEdge].FadeFrames,
-                                                     mTransport.Incoming);
+    const Status result = mAudio.ScheduleStreamGroup(
+        std::span(mPrepared).first(mPreparedCount),
+        std::span(gains).first(mPreparedCount),
+        mTransport.Active,
+        { .StartFrame = mTransport.BoundaryFrame, .DurationFrames = mScore.Transitions[mEdge].FadeFrames },
+        mTransport.Incoming);
     if (result == Status::Ok)
     {
         retirePrepared();
@@ -342,7 +342,7 @@ Status MusicDirector::Service() noexcept
     }
     return Status::Ok;
 }
-Status MusicDirector::SetIntensity(float32 intensity, uint64 requestedFrame) noexcept
+Status MusicDirector::SetIntensity(float32 intensity, MusicCueTime cue) noexcept
 {
     if (foundation::math::IsFinite(intensity) == false || intensity < 0 || intensity > 1)
     {
@@ -353,7 +353,7 @@ Status MusicDirector::SetIntensity(float32 intensity, uint64 requestedFrame) noe
         return Status::NotReady;
     }
     uint64 frame = 0;
-    if (quantize(MusicBoundary::Beat, requestedFrame, frame) == false)
+    if (quantize(MusicBoundary::Beat, cue.RequestedFrame, frame) == false)
     {
         return Status::NotReady;
     }
@@ -361,15 +361,14 @@ Status MusicDirector::SetIntensity(float32 intensity, uint64 requestedFrame) noe
     const LayerGains gains = ComputeGains(section, intensity, mScore.Gain);
     const Status result = mAudio.SetStreamGroupGains(mTransport.Active,
                                                      std::span(gains).first(section.LayerCount),
-                                                     frame,
-                                                     mScore.LayerRampFrames);
+                                                     { .StartFrame = frame, .DurationFrames = mScore.LayerRampFrames });
     if (result == Status::Ok)
     {
         mIntensity = intensity;
     }
     return result;
 }
-Status MusicDirector::PlayStinger(std::string_view id, Lease sound, uint32 variation, uint64 requestedFrame) noexcept
+Status MusicDirector::PlayStinger(std::string_view id, Lease sound, uint32 variation, MusicCueTime cue) noexcept
 {
     Sound definition;
     app::EventDescriptor event;
@@ -392,7 +391,7 @@ Status MusicDirector::PlayStinger(std::string_view id, Lease sound, uint32 varia
         play.Rate = event.Rate;
         play.Priority = event.Priority;
         play.Gain = event.DefaultGain * mScore.Gain;
-        if (quantize(accent.Quantize, requestedFrame, play.StartFrame) == false)
+        if (quantize(accent.Quantize, cue.RequestedFrame, play.StartFrame) == false)
         {
             return Status::NotReady;
         }

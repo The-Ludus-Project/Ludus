@@ -127,8 +127,11 @@ TEST_CASE("Native callback acknowledges a streamed group transition", "[audio][m
     SystemSnapshot snapshot;
     system.GetSystemSnapshot(snapshot);
     const uint64 boundary = snapshot.RenderFrame + system.GetSampleRate() / 4 + 1;
-    REQUIRE(system.ScheduleStreamGroup(incoming, gains, active, boundary, CONTROL_QUANTUM_FRAMES, candidate) ==
-            Status::Ok);
+    REQUIRE(system.ScheduleStreamGroup(incoming,
+                                       gains,
+                                       active,
+                                       { .StartFrame = boundary, .DurationFrames = CONTROL_QUANTUM_FRAMES },
+                                       candidate) == Status::Ok);
     const uint64 revised = boundary + CONTROL_QUANTUM_FRAMES;
     REQUIRE(system.ReviseStreamTransition(candidate, revised) == Status::Ok);
     for (uint32 i = 0; i < 2000; ++i)

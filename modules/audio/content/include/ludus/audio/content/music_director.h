@@ -3,6 +3,12 @@
 
 namespace ludus::audio::content
 {
+/// Gameplay prediction expressed on the current audio session clock.
+struct MusicCueTime final
+{
+    uint64 RequestedFrame = 0; ///< Earliest eligible sample frame for this action.
+};
+
 /// Control-owner view of the current section and single pending transition.
 struct MusicTransport final
 {
@@ -37,15 +43,14 @@ public:
     /// Select an authored state for an absolute gameplay frame. Repeating the pending
     /// destination edits the boundary until sealed. A different pending destination returns NotReady.
     /// Editing a sealed plan returns TooLate. Queue and capacity failures preserve current playback.
-    [[nodiscard]] Status SelectState(std::string_view state, uint64 requestedFrame) noexcept;
+    [[nodiscard]] Status SelectState(std::string_view state, MusicCueTime cue) noexcept;
     /// Cancel the pending transition before it seals. A sealed transition returns TooLate.
     [[nodiscard]] Status CancelTransition() noexcept;
     /// Quantize intensity on the current section's beat grid and ramp over the authored duration.
-    [[nodiscard]] Status SetIntensity(float32 intensity, uint64 requestedFrame) noexcept;
+    [[nodiscard]] Status SetIntensity(float32 intensity, MusicCueTime cue) noexcept;
     /// Start the declared resident accent on its boundary using an already acquired sound lease.
     /// Reject excess simultaneous stingers before playback. variation selects an authored clip.
-    [[nodiscard]] Status
-    PlayStinger(std::string_view id, Lease sound, uint32 variation, uint64 requestedFrame) noexcept;
+    [[nodiscard]] Status PlayStinger(std::string_view id, Lease sound, uint32 variation, MusicCueTime cue) noexcept;
     /// Observe acknowledged transitions and publish a prepared plan as it enters the horizon.
     /// Retry QueueFull on a later service tick. NotReady reports an ended or cancelled candidate.
     [[nodiscard]] Status Service() noexcept;

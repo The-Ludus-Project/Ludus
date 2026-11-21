@@ -20,12 +20,12 @@ constexpr uint32 INITIAL_FRAME = BEAT_FRAMES;
 constexpr uint32 REPLACEMENT_FRAME = BEAT_FRAMES * 2;
 constexpr uint32 LAST_FRAME = REPLACEMENT_FRAME + BEAT_FRAMES;
 constexpr uint32 DISTANT_FRAME = BEAT_FRAMES * 5;
-constexpr uint32 CHANNEL_COUNT = 2;
+constexpr usize CHANNEL_COUNT = 2;
 constexpr uint32 REGULAR_BLOCK = 512;
 constexpr uint32 IRREGULAR_BLOCK = 173;
 constexpr float32 MARKER_THRESHOLD = 0.1F;
 
-enum class Operation
+enum class Operation : uint8
 {
     Reference,
     Replace,
@@ -126,7 +126,7 @@ bool Capture(std::string_view root, Operation operation, uint32 block, Array<flo
     }
     if (operation == Operation::Distant)
     {
-        if (director.SelectState("arrived", DISTANT_FRAME - 1) != Status::Pending ||
+        if (director.SelectState("arrived", { .RequestedFrame = DISTANT_FRAME - 1 }) != Status::Pending ||
             director.GetTransport().Incoming.IsValid() == true || renderThrough(last) == false ||
             director.GetTransport().AppliedFrame != DISTANT_FRAME)
         {
@@ -154,9 +154,9 @@ bool Capture(std::string_view root, Operation operation, uint32 block, Array<flo
             std::fprintf(stderr, "Accent acquisition failed at %s\n", diagnostic.Field);
             return false;
         }
-        const Status intensity = director.SetIntensity(1, INITIAL_FRAME - 1);
-        const Status first = director.PlayStinger("accent", accent, 0, REPLACEMENT_FRAME - 1);
-        const Status repeated = director.PlayStinger("accent", accent, 0, REPLACEMENT_FRAME - 1);
+        const Status intensity = director.SetIntensity(1, { .RequestedFrame = INITIAL_FRAME - 1 });
+        const Status first = director.PlayStinger("accent", accent, 0, { .RequestedFrame = REPLACEMENT_FRAME - 1 });
+        const Status repeated = director.PlayStinger("accent", accent, 0, { .RequestedFrame = REPLACEMENT_FRAME - 1 });
         if (intensity != Status::Ok || first != Status::Ok || repeated != Status::VoiceCapacity)
         {
             std::fprintf(stderr,
@@ -195,7 +195,7 @@ bool Capture(std::string_view root, Operation operation, uint32 block, Array<flo
     {
         return renderThrough(LAST_FRAME);
     }
-    if (director.SelectState("arrived", INITIAL_FRAME - 1) != Status::Ok)
+    if (director.SelectState("arrived", { .RequestedFrame = INITIAL_FRAME - 1 }) != Status::Ok)
     {
         return false;
     }
@@ -206,8 +206,9 @@ bool Capture(std::string_view root, Operation operation, uint32 block, Array<flo
         return false;
     }
     const uint32 revisionFrame = operation == Operation::Cancel ? 0 : static_cast<uint32>(changedBoundary);
-    const Status result = operation == Operation::Cancel ? director.CancelTransition()
-                                                         : director.SelectState("arrived", INITIAL_FRAME + 1);
+    const Status result = operation == Operation::Cancel
+                              ? director.CancelTransition()
+                              : director.SelectState("arrived", { .RequestedFrame = INITIAL_FRAME + 1 });
     const content::MusicTransport acknowledgement = director.GetTransport();
     if (operation != Operation::Cancel &&
         acknowledgement.BoundaryFrame != (operation == Operation::Late ? firstBoundary : changedBoundary))

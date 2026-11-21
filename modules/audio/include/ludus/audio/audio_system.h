@@ -27,6 +27,13 @@ namespace ludus::audio
 {
 class AudioDebugSnapshotSink; // opt-in trace, declared in audio_debug.h
 
+/// Timing of a stream-group gain change or crossfade on the audio session clock.
+struct StreamRamp final
+{
+    uint64 StartFrame = 0;     ///< Absolute session frame at which the ramp begins.
+    uint32 DurationFrames = 0; ///< Session frames from start to target gain. Zero applies it immediately.
+};
+
 /// @brief Result of submitting a batch: the aggregate acceptance status plus the voice handles assigned to each
 /// Play record in submission order.
 ///
@@ -162,17 +169,16 @@ public:
     /// queued edits supersede an unapplied edit. A ramp advances in consumed group frames.
     /// Call on the control owner. Queue rejection preserves the pending edit.
     [[nodiscard]] Status
-    SetStreamGroupGains(VoiceHandle voice, std::span<const float32> gains, uint64 frame, uint32 rampFrames) noexcept;
+    SetStreamGroupGains(VoiceHandle voice, std::span<const float32> gains, StreamRamp ramp) noexcept;
 
     /// Schedule an entire prepared group as the replacement for outgoing, on its bus and
-    /// priority. fadeFrames sets the linear crossfade length in session frames. A zero
+    /// priority. The ramp duration sets the linear crossfade length in session frames. A zero
     /// duration cuts at the accepted frame. Failure preserves outVoice and leaves all incoming streams available for
     /// retry.
     [[nodiscard]] Status ScheduleStreamGroup(std::span<const StreamHandle> streams,
                                              std::span<const float32> gains,
                                              VoiceHandle outgoing,
-                                             uint64 frame,
-                                             uint32 fadeFrames,
+                                             StreamRamp ramp,
                                              VoiceHandle& outVoice) noexcept;
 
     /// Admit a prepared incoming stream for a hard cut from a live outgoing stream on its
