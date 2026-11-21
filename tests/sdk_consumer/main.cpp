@@ -43,6 +43,7 @@ int ExerciseInstalledTime() noexcept;
 int ExerciseInstalledIdentity() noexcept;
 bool ExerciseInstalledFluid() noexcept;
 bool ExerciseInstalledCollision() noexcept;
+bool ExerciseInstalledRigid() noexcept;
 bool ExerciseInstalledCurves() noexcept;
 bool ExerciseInstalledGeometry() noexcept;
 bool ExerciseInstalledCamera() noexcept;
@@ -297,6 +298,10 @@ int main()
     if (ExerciseInstalledCollision() == false)
     {
         return 14;
+    }
+    if (ExerciseInstalledRigid() == false)
+    {
+        return 110;
     }
     if (ExerciseInstalledStrings() == false)
     {

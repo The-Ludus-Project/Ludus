@@ -344,6 +344,8 @@ add_subdirectory(modules/animation)
 add_subdirectory(modules/physics/fluid)
 # PhysicsCollision depends on Base, Containers, Identity and Math only and builds for native and web.
 add_subdirectory(modules/physics/collision)
+# PhysicsRigid adds bodies and the fixed tick over PhysicsCollision and builds for native and web.
+add_subdirectory(modules/physics/rigid)
 add_subdirectory(modules/foundation/time)
 add_subdirectory(modules/network/session)
 add_subdirectory(modules/foundation/logging)
@@ -606,7 +608,7 @@ write_basic_package_version_file(
 # Public exported components (one per installed Ludus:: module target).
 foreach(_component
     FoundationBase FoundationMemory FoundationHash FoundationIdentity FoundationStrings FoundationContainers FoundationThreading FoundationFilesystem FoundationParsing FoundationParsingJson FoundationMath FoundationGeometry FoundationTime FoundationLogging ShaderCompilerClient ShaderLanguage
-    FoundationProfiling FoundationThreadingProfiling FoundationReflection FoundationSerialization FoundationConfig FoundationConfigJson RuntimeConfiguration GamePropertyBinding NetworkCore Input Audio Content ProceduralCore ProceduralEnvironment SceneFormat GeometryFormat GeometryContent RenderGraphFormat SceneSource SequenceFormat StringDictionaryFormat StringDictionary StringDictionaryWriter FoliageFormat FoliagePages AudioContent Resources GameplayWorld GameplayCamera GameplaySequencer Animation GameApi PhysicsFluid PhysicsCollision Ui Localization)
+    FoundationProfiling FoundationThreadingProfiling FoundationReflection FoundationSerialization FoundationConfig FoundationConfigJson RuntimeConfiguration GamePropertyBinding NetworkCore Input Audio Content ProceduralCore ProceduralEnvironment SceneFormat GeometryFormat GeometryContent RenderGraphFormat SceneSource SequenceFormat StringDictionaryFormat StringDictionary StringDictionaryWriter FoliageFormat FoliagePages AudioContent Resources GameplayWorld GameplayCamera GameplaySequencer Animation GameApi PhysicsFluid PhysicsCollision PhysicsRigid Ui Localization)
     ludus_sdk_register_component(${_component})
     ludus_sdk_register_feature(${_component})
 endforeach()
