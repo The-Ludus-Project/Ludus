@@ -38,13 +38,20 @@ bool ExerciseInstalledStrings() noexcept
     NameId id;
     NameId duplicate;
     std::string_view resolved;
+    StringTableSnapshot snapshot;
     if (CreateTable({}, GetSystemAllocationDomain(), table) != StringStatus::Ok ||
+        table.TryReserve(1, bounded.GetSize()) != StringStatus::Ok ||
         table.TryIntern(bounded.GetView(), id) != StringStatus::Ok ||
-        table.TryIntern("player", duplicate) != StringStatus::Ok || id != duplicate)
+        table.TryIntern("player", duplicate) != StringStatus::Ok || id != duplicate ||
+        table.TryCaptureSnapshot(snapshot) != StringStatus::Ok || snapshot.EntryCount != 2 ||
+        snapshot.DuplicateAdmissions != 1 || snapshot.SpellingBytes != bounded.GetSize())
     {
         return false;
     }
     FrozenStringTable frozen;
+    StringTableSnapshot frozenSnapshot;
     return table.TryFreeze(frozen) == StringStatus::Ok && frozen.TryResolve(id, resolved) == StringStatus::Ok &&
-           resolved == "player" && frozen.TryFind("player", duplicate) == StringStatus::Ok && duplicate == id;
+           resolved == "player" && frozen.TryFind("player", duplicate) == StringStatus::Ok && duplicate == id &&
+           frozen.TryResolveIndex(id.Index, resolved) == StringStatus::Ok && resolved == "player" &&
+           frozen.TryCaptureSnapshot(frozenSnapshot) == StringStatus::Ok && frozenSnapshot == snapshot;
 }
