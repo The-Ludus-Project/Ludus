@@ -663,6 +663,21 @@ TEST_CASE("A GPU recording of the World-demo game in the World viewport names it
     REQUIRE(workspace.Open(path));
     RenderPreview& preview = workspace.GetRenderPreview();
     REQUIRE(AwaitCondition([&preview]() { return preview.Running() == true && preview.Frames() >= 2; }));
+    // The statistics overlay arms per-pass timestamps; a device without them, such as the hosted
+    // runners' Apple Paravirtual device, records frame timing only and never reports these passes.
+    // Preview frames that arm and resolve per-pass timestamps before the device's support is known.
+    constexpr uint64 PASS_PROBE_FRAMES = 4;
+    preview.SetStatisticsVisible(true);
+    const uint64 probeFrame = preview.Frames();
+    REQUIRE(AwaitCondition([&preview, probeFrame]() {
+        return preview.CanProfileGpuPasses() == true || preview.Frames() >= probeFrame + PASS_PROBE_FRAMES;
+    }));
+    const bool canTimePasses = preview.CanProfileGpuPasses();
+    preview.SetStatisticsVisible(false);
+    if (canTimePasses == false)
+    {
+        SKIP("This GPU device has no per-pass timestamp counters, so a hosted recording has no viewport passes");
+    }
     PreviewViewport* viewport =
         static_cast<PreviewViewport*>(workspace.findChild<QWidget*>(QStringLiteral("worldViewport")));
     REQUIRE(viewport != nullptr);

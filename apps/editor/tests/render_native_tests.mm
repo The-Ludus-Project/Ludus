@@ -1645,7 +1645,7 @@ QVector<float64> BakeReferenceIrradiance(const RenderScene& scene,
         for (uint32 i = 0; i < PROBE_PATH_RECEIVERS; ++i)
         {
             const usize offset =
-                (usize{i * stride} * PROBE_TEXELS + PROBE_POSITIVE_Z_FACE) * ludus::content::scene_format::TEXEL_BYTES;
+                (usize{i} * stride * PROBE_TEXELS + PROBE_POSITIVE_Z_FACE) * ludus::content::scene_format::TEXEL_BYTES;
             REQUIRE(atlas.Pixels[offset + PROBE_ALPHA_CHANNEL] == static_cast<uint8>(UNORM_BYTE_MAX));
             sums[static_cast<qsizetype>(i)] += static_cast<float64>(atlas.Pixels[offset]) /
                                                static_cast<float64>(UNORM_BYTE_MAX) *
@@ -1744,7 +1744,7 @@ TEST_CASE("Native Lit probe GI visibility qualification around thin and diagonal
         uint32 PathAxis;
     };
     // Paths cross the studied cell at its centre height unless they test a wall's near field.
-    enum : uint32
+    enum : uint8
     {
         AXIS_CONTROL,
         AXIS_NEAR_FIELD,
