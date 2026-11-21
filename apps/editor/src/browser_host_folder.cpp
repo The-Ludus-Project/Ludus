@@ -10,6 +10,7 @@
 #include <ludus/foundation/base/types.h>
 
 #include <QByteArray>
+#include <QFile>
 #include <QJsonArray>
 #include <QJsonDocument>
 #include <QJsonObject>
@@ -23,6 +24,7 @@
 
 #include <QtCore/private/qstdweb_p.h>
 #include <emscripten/val.h>
+#include <unistd.h>
 
 extern "C" void LudusHostPickFolder(emscripten::EM_VAL target, ludus::foundation::int32 intent, const char* options);
 extern "C" void LudusHostReopenFolder(emscripten::EM_VAL target, const char* options);
@@ -62,14 +64,16 @@ struct FolderMonitor
     emscripten::val Target = emscripten::val::undefined();
     QSharedPointer<qstdweb::EventCallback> ReadFailed;
     QSharedPointer<qstdweb::EventCallback> WriteFailed;
+    QPointer<QMessageBox> WriteWarning;
 };
 FolderMonitor* MonitorOrNull = nullptr;
 
-void ShowMessage(QWidget* owner, QMessageBox::Icon icon, const QString& message)
+QMessageBox* ShowMessage(QWidget* owner, QMessageBox::Icon icon, const QString& message)
 {
     QMessageBox* dialog = new QMessageBox(icon, QStringLiteral("Browser folders"), message, QMessageBox::Ok, owner);
     dialog->setAttribute(Qt::WA_DeleteOnClose);
     dialog->open();
+    return dialog;
 }
 
 QByteArray EncodeOptions()
@@ -119,10 +123,19 @@ void EnsureMonitor(QWidget* owner)
         return [kind](const emscripten::val& event) {
             if (MonitorOrNull != nullptr && MonitorOrNull->Owner.isNull() == false)
             {
-                ShowMessage(
-                    MonitorOrNull->Owner,
-                    QMessageBox::Warning,
-                    DescribeBrowserFolderFailure(ReadFailure(event["detail"], kind), BrowserFolderIntent::Project));
+                const QString message =
+                    DescribeBrowserFolderFailure(ReadFailure(event["detail"], kind), BrowserFolderIntent::Project);
+                const bool isWrite = kind == QStringLiteral("write");
+                if (isWrite == true && MonitorOrNull->WriteWarning.isNull() == false &&
+                    MonitorOrNull->WriteWarning->text() == message)
+                {
+                    return;
+                }
+                QMessageBox* dialog = ShowMessage(MonitorOrNull->Owner, QMessageBox::Warning, message);
+                if (isWrite == true)
+                {
+                    MonitorOrNull->WriteWarning = dialog;
+                }
             }
         };
     };
@@ -279,6 +292,17 @@ bool IsBrowserFolderWritable(const QString& path)
 {
     const QByteArray bytes = path.toUtf8();
     return path.isEmpty() == false && LudusHostIsWritable(bytes.constData()) != 0;
+}
+
+bool FlushBrowserFolderWrites(const QString& path)
+{
+    if (IsBrowserFolderWritable(path) == false)
+    {
+        return false;
+    }
+    QFile file(path);
+    // Emscripten's fd_sync waits for the mounted folder's existing write queue.
+    return file.open(QIODevice::ReadOnly) == true && fsync(file.handle()) == 0;
 }
 
 void ReopenBrowserProjectFolder(QWidget* owner, const std::function<void(const QString&)>& loaded)

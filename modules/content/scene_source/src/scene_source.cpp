@@ -1201,15 +1201,18 @@ ReadMaterial(JsonValue value, const JsonPath& path, Failure& inoutFailure, Sourc
 [[nodiscard]] bool IsPlanarStrictlyConvex(const Array<math::Vector3d>& positions,
                                           std::span<const uint32> corners) noexcept
 {
-    // Newell's method: the area-weighted normal of a planar polygon of either winding.
+    // Thanks to Eric Arnebäck, "Computing the Area of a Convex Polygon",
+    // https://erkaman.github.io/posts/area_convex_polygon.html, for the oriented fan derivation.
+    // Keep the first corner as the origin of the 3D sum to avoid cancellation far from the World origin.
+    const math::Vector3d originWorld = positions[corners[0]];
     math::Vector3d normal{};
     float64 longestEdge = 0.0;
     for (usize i = 0; i < corners.size(); ++i)
     {
-        const math::Vector3d current = positions[corners[i]];
-        const math::Vector3d next = positions[corners[(i + 1) % corners.size()]];
-        normal = normal + math::Cross(current, next);
-        longestEdge = math::Max(longestEdge, math::Length(next - current));
+        const math::Vector3d currentWorld = positions[corners[i]];
+        const math::Vector3d nextWorld = positions[corners[(i + 1) % corners.size()]];
+        normal = normal + math::Cross(currentWorld - originWorld, nextWorld - originWorld);
+        longestEdge = math::Max(longestEdge, math::Length(nextWorld - currentWorld));
     }
     const float64 normalLength = math::Length(normal);
     if (normalLength <= 0.0 || longestEdge <= 0.0)
@@ -1217,10 +1220,9 @@ ReadMaterial(JsonValue value, const JsonPath& path, Failure& inoutFailure, Sourc
         return false;
     }
     const math::Vector3d unitNormal = normal * (1.0 / normalLength);
-    const math::Vector3d origin = positions[corners[0]];
     for (const uint32 corner : corners)
     {
-        if (math::Abs(math::Dot(positions[corner] - origin, unitNormal)) > PLANARITY_TOLERANCE * longestEdge)
+        if (math::Abs(math::Dot(positions[corner] - originWorld, unitNormal)) > PLANARITY_TOLERANCE * longestEdge)
         {
             return false;
         }

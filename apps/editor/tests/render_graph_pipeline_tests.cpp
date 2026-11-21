@@ -547,7 +547,7 @@ TEST_CASE("pipeline shader creation rejects conflicts without partial drafts",
     RenderGraphDocumentStatus expected = RenderGraphDocumentStatus::InvalidEdit;
     SECTION("case insensitive filename conflict")
     {
-        QFile file(QDir(package).filePath(QStringLiteral("shader_kernel.slang")));
+        QFile file(QDir(package).filePath(QStringLiteral("shader_kernel.lusl")));
         REQUIRE(file.open(QIODevice::WriteOnly) == true);
         REQUIRE(file.write("// user source\n") > 0);
         file.close();
@@ -593,7 +593,7 @@ TEST_CASE("pipeline shader creation rejects conflicts without partial drafts",
     }
     SECTION("file appears on disk after load")
     {
-        QFile file(QDir(package).filePath(QStringLiteral("shader_Kernel.slang")));
+        QFile file(QDir(package).filePath(QStringLiteral("shader_Kernel.lusl")));
         REQUIRE(file.open(QIODevice::WriteOnly) == true);
         REQUIRE(file.write("// external source\n") > 0);
         expected = RenderGraphDocumentStatus::Conflict;
@@ -681,7 +681,7 @@ TEST_CASE("pipeline shader creation reuses programs and preserves edited sources
                                          {QStringLiteral("program"), QStringLiteral("NewFragment")}}};
     node.insert(QStringLiteral("shaders"), shaders);
     REQUIRE(document.ApplyPipeline(ROOT_GRAPH, DEFAULT_CONFIGURATION, node) == RenderGraphDocumentStatus::Ok);
-    const QString source = QStringLiteral("shader_NewVertex.slang");
+    const QString source = QStringLiteral("shader_NewVertex.lusl");
     REQUIRE(document.SetText(source, QByteArray("// authored replacement\n")) == RenderGraphDocumentStatus::Ok);
     const QByteArray manifest = document.GetDraft(QStringLiteral("main.lushader.json"));
     // Reuse the registered programs on a different pipeline without creating files.
@@ -1408,7 +1408,7 @@ TEST_CASE("shader renames and stage changes preserve one source per assignment",
                                    {QStringLiteral("program"), QStringLiteral("Program")}}};
     node.insert(QStringLiteral("shaders"), shaders);
     REQUIRE(document.ApplyPipeline(ROOT_GRAPH, DEFAULT_CONFIGURATION, node) == RenderGraphDocumentStatus::Ok);
-    const QString originalSource = QStringLiteral("shader_Shader_trace_shader.slang");
+    const QString originalSource = QStringLiteral("shader_Shader_trace_shader.lusl");
     REQUIRE(document.GetFiles().contains(originalSource) == true);
     QStringList saved;
     REQUIRE(document.Save(saved) == RenderGraphDocumentStatus::Ok);
@@ -1420,7 +1420,7 @@ TEST_CASE("shader renames and stage changes preserve one source per assignment",
     shaders.replace(0, shader);
     node.insert(QStringLiteral("shaders"), shaders);
     REQUIRE(document.ApplyPipeline(ROOT_GRAPH, DEFAULT_CONFIGURATION, node) == RenderGraphDocumentStatus::Ok);
-    const QString renamedSource = QStringLiteral("shader_Shader_trace_raygen.slang");
+    const QString renamedSource = QStringLiteral("shader_Shader_trace_raygen.lusl");
     CHECK(document.GetFiles().contains(originalSource) == false);
     CHECK(document.GetDraft(renamedSource) == authored);
     CHECK(document.GetFiles().size() == initialFiles + 1);
@@ -1451,7 +1451,7 @@ TEST_CASE("shader renames and stage changes preserve one source per assignment",
     node.insert(QStringLiteral("shaders"), shaders);
     REQUIRE(document.ApplyPipeline(ROOT_GRAPH, DEFAULT_CONFIGURATION, node) == RenderGraphDocumentStatus::Ok);
     CHECK(document.GetFiles().contains(renamedSource) == false);
-    CHECK(document.GetDraft(QStringLiteral("shader_SkyMiss.slang")) == authored);
+    CHECK(document.GetDraft(QStringLiteral("shader_SkyMiss.lusl")) == authored);
     REQUIRE(document.Save(saved) == RenderGraphDocumentStatus::Ok);
     RenderGraphDocument reloaded;
     REQUIRE(reloaded.Load(package, ROOT_GRAPH) == RenderGraphDocumentStatus::Ok);
@@ -1478,7 +1478,7 @@ TEST_CASE("shader edits reclaim only untouched unused generated sources",
     }
     node.insert(QStringLiteral("shaders"), shaders);
     REQUIRE(document.ApplyPipeline(ROOT_GRAPH, DEFAULT_CONFIGURATION, node) == RenderGraphDocumentStatus::Ok);
-    const QString retained = QStringLiteral("shader_Shader_trace_authored.slang");
+    const QString retained = QStringLiteral("shader_Shader_trace_authored.lusl");
     REQUIRE(document.SetText(retained, QByteArray("// custom work must survive\n")) == RenderGraphDocumentStatus::Ok);
     const QJsonArray assigned = GetConfiguration(document, ROOT_GRAPH, DEFAULT_CONFIGURATION)
                                     .value(QStringLiteral("nodes"))
@@ -1491,7 +1491,7 @@ TEST_CASE("shader edits reclaim only untouched unused generated sources",
     const QStringList before = document.GetFiles();
     REQUIRE(document.ApplyPipeline(ROOT_GRAPH, DEFAULT_CONFIGURATION, node) == RenderGraphDocumentStatus::Ok);
     CHECK(document.GetFiles().size() == before.size() - 1);
-    CHECK(document.GetFiles().contains(QStringLiteral("shader_Shader_trace_unused.slang")) == false);
+    CHECK(document.GetFiles().contains(QStringLiteral("shader_Shader_trace_unused.lusl")) == false);
     CHECK(document.GetDraft(retained) == QByteArray("// custom work must survive\n"));
     REQUIRE(document.Undo() == true);
     CHECK(document.GetFiles() == before);
@@ -1535,12 +1535,12 @@ TEST_CASE("shared shader renames update all assignments and protect stages and e
             GetConfiguration(document, ROOT_GRAPH, DEFAULT_CONFIGURATION).value(QStringLiteral("nodes")).toArray();
         CHECK(nodes.at(nodes.size() - 2).toObject().value(QStringLiteral("shaders")) == QJsonArray{shader});
         CHECK(nodes.last().toObject().value(QStringLiteral("shaders")) == QJsonArray{shader});
-        CHECK(document.GetFiles().contains(QStringLiteral("shader_CameraRay.slang")) == false);
-        CHECK(document.GetFiles().contains(QStringLiteral("shader_RenamedRay.slang")) == true);
+        CHECK(document.GetFiles().contains(QStringLiteral("shader_CameraRay.lusl")) == false);
+        CHECK(document.GetFiles().contains(QStringLiteral("shader_RenamedRay.lusl")) == true);
     }
     SECTION("external destination")
     {
-        QFile external(QDir(package).filePath(QStringLiteral("shader_RenamedRay.slang")));
+        QFile external(QDir(package).filePath(QStringLiteral("shader_RenamedRay.lusl")));
         REQUIRE(external.open(QIODevice::WriteOnly) == true);
         REQUIRE(external.write("// external file\n") > 0);
         external.close();
@@ -1552,12 +1552,12 @@ TEST_CASE("shared shader renames update all assignments and protect stages and e
         QStringList saved;
         REQUIRE(document.Save(saved) == RenderGraphDocumentStatus::Ok);
         REQUIRE(document.ApplyPipeline(ROOT_GRAPH, DEFAULT_CONFIGURATION, node) == RenderGraphDocumentStatus::Ok);
-        QFile external(QDir(package).filePath(QStringLiteral("shader_CameraRay.slang")));
+        QFile external(QDir(package).filePath(QStringLiteral("shader_CameraRay.lusl")));
         REQUIRE(external.open(QIODevice::WriteOnly) == true);
         REQUIRE(external.write("// changed in external editor\n") > 0);
         external.close();
         CHECK(document.Save(saved) == RenderGraphDocumentStatus::Conflict);
-        CHECK(QFileInfo::exists(QDir(package).filePath(QStringLiteral("shader_RenamedRay.slang"))) == false);
+        CHECK(QFileInfo::exists(QDir(package).filePath(QStringLiteral("shader_RenamedRay.lusl"))) == false);
     }
 }
 
@@ -1566,7 +1566,14 @@ TEST_CASE("renaming a registered shader updates techniques and local include ref
 {
     QTemporaryDir project;
     RenderGraphDocument document;
-    REQUIRE(document.Load(MakePackage(project), ROOT_GRAPH) == RenderGraphDocumentStatus::Ok);
+    const QDir package(MakePackage(project));
+    const QString luslHeader = QStringLiteral("main_shaders/interop.luslh");
+    const QByteArray luslBytes = QByteArrayLiteral("extern slang \"geometry.slang\" {}\n");
+    QFile interop(package.filePath(luslHeader));
+    REQUIRE(interop.open(QIODevice::WriteOnly) == true);
+    REQUIRE(interop.write(luslBytes) == luslBytes.size());
+    interop.close();
+    REQUIRE(document.Load(package.path(), ROOT_GRAPH) == RenderGraphDocumentStatus::Ok);
     const QString original = QStringLiteral("main_shaders/geometry.slang");
     const QByteArray source = document.GetDraft(original);
     const QString consumer = QStringLiteral("main_shaders/color.slang");
@@ -1592,7 +1599,9 @@ TEST_CASE("renaming a registered shader updates techniques and local include ref
     CHECK(document.GetDraft(QStringLiteral("main_shaders/shader_CustomGeometry.slang")) == source);
     CHECK(document.GetDraft(consumer) ==
           QByteArray("#include \"shader_CustomGeometry.slang\"\n// keep this comment\n"));
+    CHECK(document.GetDraft(luslHeader) == QByteArrayLiteral("extern slang \"shader_CustomGeometry.slang\" {}\n"));
     REQUIRE(document.Undo() == true);
+    CHECK(document.GetDraft(luslHeader) == luslBytes);
     CHECK(document.GetDraft(original) == source);
     CHECK(document.GetDraft(consumer).contains("geometry.slang") == true);
 }
@@ -2077,7 +2086,7 @@ TEST_CASE("new ray shaders expose scene materials without manifest edits",
         if (stage == QStringLiteral("ray_generation"))
         {
             CHECK(program.value(QStringLiteral("output")) == QStringLiteral("Radiance"));
-            CHECK(text.contains("TraceAndShade(scene, queries, launch.CameraRay, payload)") == true);
+            CHECK(text.contains("TraceAndShade(scene, inout inoutQueries, launch.CameraRay, inout payload)") == true);
         }
     }
     SECTION("other ray stages remain authoring drafts")
@@ -2650,7 +2659,7 @@ TEST_CASE("generic compute drafts round-trip unchanged through editing and save"
     const QJsonObject program = GetProgram(document, programName);
     CHECK(program.value(QStringLiteral("output")).toString().isEmpty() == true);
     const QByteArray source = document.GetDraft(program.value(QStringLiteral("source")).toString());
-    CHECK(source.contains("[shader(\"compute\")]") == true);
+    CHECK(source.contains("[stage(compute), threads(1, 1, 1)]") == true);
     CHECK(source.contains("SceneContext") == false);
     CHECK(GetRayTechnique(document).isEmpty() == true);
     QStringList files;
@@ -2728,9 +2737,10 @@ TEST_CASE("scene compute shaders use the scene-aware stub, technique and interfa
     CHECK(program.value(QStringLiteral("bindings")).toArray().isEmpty() == true);
     const QString sourceFile = program.value(QStringLiteral("source")).toString();
     const QByteArray source = document.GetDraft(sourceFile);
-    CHECK(source.contains("float3 ShaderMain(SceneContext scene, RayLaunch launch, inout RayQueryContext queries)") ==
+    CHECK(source.contains(
+              "float32x3 ShaderMain(SceneContext scene, RayLaunch launch, inout RayQueryContext inoutQueries)") ==
           true);
-    CHECK(source.contains("TraceClosest(scene, queries, launch.CameraRay, hit)") == true);
+    CHECK(source.contains("TraceClosest(scene, inout inoutQueries, launch.CameraRay, out hit)") == true);
     CHECK(source.contains("TraceAndShade(") == false);
     const QByteArray manifest = document.GetDraft(QStringLiteral("main.lushader.json"));
     const QString description = DescribeShaderInterface(manifest, sourceFile);
@@ -3109,9 +3119,9 @@ TEST_CASE("generated shader row renames avoid programs in other graph scopes",
     assignShader(LIBRARY, QStringLiteral("ColorAndDepth"), node, QStringLiteral("kernel"), QStringLiteral("Program"));
     assignShader(ROOT_GRAPH, DEFAULT_CONFIGURATION, node, QStringLiteral("shader"), QStringLiteral("Program"));
     const QByteArray imported = document.GetDraft(LIBRARY);
-    const QByteArray sharedSource = document.GetDraft(QStringLiteral("shader_Shader_work_kernel.slang"));
+    const QByteArray sharedSource = document.GetDraft(QStringLiteral("shader_Shader_work_kernel.lusl"));
     const QByteArray authored("// preserve authored source through a generated rename\n");
-    REQUIRE(document.SetText(QStringLiteral("shader_Shader_work_shader.slang"), authored) ==
+    REQUIRE(document.SetText(QStringLiteral("shader_Shader_work_shader.lusl"), authored) ==
             RenderGraphDocumentStatus::Ok);
     assignShader(ROOT_GRAPH,
                  DEFAULT_CONFIGURATION,
@@ -3119,8 +3129,8 @@ TEST_CASE("generated shader row renames avoid programs in other graph scopes",
                  QStringLiteral("kernel"),
                  QStringLiteral("Shader_work_shader"));
     CHECK(document.GetDraft(LIBRARY) == imported);
-    CHECK(document.GetDraft(QStringLiteral("shader_Shader_work_kernel.slang")) == sharedSource);
-    CHECK(document.GetDraft(QStringLiteral("shader_Shader_work_kernel_2.slang")) == authored);
+    CHECK(document.GetDraft(QStringLiteral("shader_Shader_work_kernel.lusl")) == sharedSource);
+    CHECK(document.GetDraft(QStringLiteral("shader_Shader_work_kernel_2.lusl")) == authored);
     CHECK(GetNode(document, QStringLiteral("work"))
               .value(QStringLiteral("shaders"))
               .toArray()
@@ -3129,9 +3139,9 @@ TEST_CASE("generated shader row renames avoid programs in other graph scopes",
               .value(QStringLiteral("program"))
               .toString() == QStringLiteral("Shader_work_kernel_2"));
     REQUIRE(document.Undo() == true);
-    CHECK(document.GetDraft(QStringLiteral("shader_Shader_work_shader.slang")) == authored);
+    CHECK(document.GetDraft(QStringLiteral("shader_Shader_work_shader.lusl")) == authored);
     REQUIRE(document.Redo() == true);
-    CHECK(document.GetDraft(QStringLiteral("shader_Shader_work_kernel_2.slang")) == authored);
+    CHECK(document.GetDraft(QStringLiteral("shader_Shader_work_kernel_2.lusl")) == authored);
 }
 
 TEST_CASE("program assignment failure names the shared manifest and offers a working repair",
@@ -3170,7 +3180,7 @@ TEST_CASE("generated program names skip external source conflicts without overwr
     RenderGraphDocument document;
     REQUIRE(document.Load(package, ROOT_GRAPH) == RenderGraphDocumentStatus::Ok);
     const QByteArray external("// external source\n");
-    QFile source(QDir(package).filePath(QStringLiteral("shader_Shader_work_kernel.slang")));
+    QFile source(QDir(package).filePath(QStringLiteral("shader_Shader_work_kernel.lusl")));
     REQUIRE(source.open(QIODevice::WriteOnly) == true);
     REQUIRE(source.write(external) == external.size());
     source.close();
@@ -3181,7 +3191,7 @@ TEST_CASE("generated program names skip external source conflicts without overwr
                                        {QStringLiteral("stage"), QStringLiteral("compute")},
                                        {QStringLiteral("program"), QStringLiteral("Program")}}});
     REQUIRE(document.ApplyPipeline(ROOT_GRAPH, DEFAULT_CONFIGURATION, node) == RenderGraphDocumentStatus::Ok);
-    CHECK(document.GetFiles().contains(QStringLiteral("shader_Shader_work_kernel_2.slang")) == true);
+    CHECK(document.GetFiles().contains(QStringLiteral("shader_Shader_work_kernel_2.lusl")) == true);
     REQUIRE(source.open(QIODevice::ReadOnly) == true);
     CHECK(source.readAll() == external);
 }

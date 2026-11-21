@@ -10,7 +10,7 @@
 /// One addressed draw of the counter-based random generator.
 @declare RandomAddress
 
-@declare ComputeErrorFunction IsFiniteBits NormalizeOrZero HasPositiveComponent ComputeArctangent
+@declare ComputeErrorFunction IsFiniteBits IsNanBits IsInfBits NormalizeOrZero HasPositiveComponent ComputeArctangent
 @declare ComputeStandardNormalQuantile DecodeSrgb MultiplyWide MakeRandomAddress IsRandomAddressInRange
 @declare Philox4x32 PackRandomCounter SampleRandomUInt32 RandomFloat01 SampleRandomFloat01
 @declare TrySampleRandomBounded ApplyNormalWorld

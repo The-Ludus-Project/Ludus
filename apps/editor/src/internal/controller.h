@@ -164,13 +164,15 @@ public:
     {
         return ProjectHistory_.Revision();
     }
-    void Save();
-    void Reload();
+    ResultCode Save();
+    bool Reload();
     void Configure();
     void Build();
     /// Build and run the configured target. hostedWindowAddress, when set, is the game's
     /// hosted-window channel: the game then opens in the editor's viewport (Play in the viewport).
     void BuildRun(const QString& hostedWindowAddress = {});
+    [[nodiscard]] bool CanPlayWorld() const;
+    void PlayWorld(const ToolLaunch& launch);
     void BuildDebug(const QString& debugger = {}, bool setup = false);
     void CheckProjectSetup();
     /// Mark the current project's setup incomplete after a trusted rendering job detects missing tools.

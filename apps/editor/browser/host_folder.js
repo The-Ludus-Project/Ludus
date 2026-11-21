@@ -30,7 +30,7 @@ if (ASYNCIFY != 1) {
 }
 
 addToLibrary({
-  $LudusHost__deps: ['$FS', '$MEMFS', '$PATH', '$SYSCALLS', '$Asyncify'],
+  $LudusHost__deps: ['$FS', '$MEMFS', '$PATH', '$SYSCALLS', '$Asyncify', '$LudusSuspendedInput'],
   $LudusHost__postset: `
     // The page asks before leaving while saves are still reaching the folder.
     globalThis.ludusHostPendingWrites = () => LudusHost.countPendingWrites();
@@ -312,7 +312,8 @@ addToLibrary({
       },
       // fsync() and directory fsync() reach here through Emscripten's fd_sync.
       syncfs(mount, populate, callback) {
-        LudusHost.flush(mount.opts.state).then(errno => callback(errno ? new FS.ErrnoError(errno) : null));
+        LudusHost.suspend(LudusHost.flush(mount.opts.state),
+                          errno => callback(errno ? new FS.ErrnoError(errno) : null));
       },
     },
 
@@ -548,8 +549,15 @@ addToLibrary({
 
     report(type, state, path, error) {
       console.warn(`Ludus host folder ${state.name}: ${type} ${path}: ${error}`);
-      if (LudusHost.monitor) {
-        LudusHost.dispatch(LudusHost.monitor, type, {name: state.name, path, error});
+      const monitor = LudusHost.monitor;
+      if (monitor) {
+        // The caller may be suspended in a file syscall. Let its promise
+        // resume Wasm before Qt opens a dialog and starts handling input.
+        setTimeout(() => {
+          if (LudusHost.monitor === monitor) {
+            LudusHost.dispatch(monitor, type, {name: state.name, path, error});
+          }
+        }, 0);
       }
     },
 
@@ -715,6 +723,24 @@ addToLibrary({
     canSleep() {
       return !Asyncify.currData;
     },
+
+    // Keep the instance suspended until `pending` settles with an errno (0 for success), then
+    // resume it through `resume`. An unexpected rejection resumes with EIO rather than never.
+    // Keys and Qt-window clicks meanwhile reach Qt's queue without their browser default
+    // (suspended_input.js).
+    suspend(pending, resume) {
+      LudusSuspendedInput.begin();
+      pending.catch(error => {
+        console.error('Ludus host folder: a suspended file call failed', error);
+        return {{{ cDefs.EIO }}};
+      }).then(value => {
+        try {
+          resume(value);
+        } finally {
+          LudusSuspendedInput.end();
+        }
+      });
+    },
   },
 
   // open() reads a host file's bytes the first time it is opened.
@@ -740,9 +766,8 @@ addToLibrary({
       }
     }
     return Asyncify.handleSleep(wakeUp => {
-      LudusHost.materialize(node, LudusHost.relativePath(node) ?? resolved).then(errno => {
-        wakeUp(errno ? -errno : LudusHost.openAt(dirfd, path, flags, varargs));
-      });
+      LudusHost.suspend(LudusHost.materialize(node, LudusHost.relativePath(node) ?? resolved),
+                        errno => wakeUp(errno ? -errno : LudusHost.openAt(dirfd, path, flags, varargs)));
     });
   },
 
@@ -772,7 +797,7 @@ addToLibrary({
       }
     }
     return Asyncify.handleSleep(wakeUp => {
-      LudusHost.flush(state).then(errno => wakeUp(errno ? -errno : 0));
+      LudusHost.suspend(LudusHost.flush(state), errno => wakeUp(errno ? -errno : 0));
     });
   },
 

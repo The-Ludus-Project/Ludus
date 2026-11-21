@@ -91,6 +91,8 @@ nav:
       - Build and initialize: development/building.md
       - Port a new platform: development/platform-porting.md
       - Mobile support plan: development/mobile-support-plan.md
+      - Mobile application lifecycle and surfaces: architecture/mobile-application-lifecycle.md
+      - Touch input contract: architecture/touch-input.md
       - Native debugging: development/debugging.md
       - Diagnostics: development/diagnostics.md
       - Behavior contracts and cooking: architecture/behavior-s4.md
@@ -103,6 +105,7 @@ nav:
       - Save, validate and build render graphs: development/render-graph-authoring.md
       - Render graph authoring proposal: architecture/render-graph-authoring.md
       - Shared scene shader contract proposal: architecture/shared-scene-shader-contract.md
+      - Renderer sampling architecture: architecture/renderer-sampling.md
       - Ludus Shading Language (LUSL) proposal: architecture/shading-language.md
       - Render graph frame capture proposal: architecture/render-graph-frame-capture.md
       - Sequencer and cinematic capture proposal: architecture/sequencer-cinematics.md

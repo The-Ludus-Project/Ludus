@@ -1,0 +1,225 @@
+{
+  "version": 6,
+  "configurePresets": [
+    {
+      "name": "mobile-clang-base",
+      "hidden": true,
+      "generator": "Ninja",
+      "binaryDir": "${sourceDir}/out/build/${presetName}",
+      "installDir": "${sourceDir}/out/install/${presetName}",
+      "environment": {
+        "PATH": "${sourceDir}/out/host-tools/bin:${sourceDir}/out/host-tools/venv/bin:$penv{PATH}"
+      },
+      "cacheVariables": {
+        "CMAKE_C_COMPILER": "${sourceDir}/out/host-tools/bin/clang",
+        "CMAKE_CXX_COMPILER": "${sourceDir}/out/host-tools/bin/clang++",
+        "CMAKE_MAKE_PROGRAM": "${sourceDir}/out/host-tools/venv/bin/ninja",
+        "CMAKE_EXPORT_COMPILE_COMMANDS": "ON",
+        "LUDUS_MOBILE_PROBE_ONLY": "ON",
+        "LUDUS_BUILD_TESTS": "ON",
+        "LUDUS_WARNINGS_AS_ERRORS": "ON",
+        "LUDUS_HOST_TOOLS_PREFIX": "${sourceDir}/out/host-tools"
+      }
+    },
+    {
+      "name": "ios-clang-base",
+      "hidden": true,
+      "inherits": "mobile-clang-base",
+      "toolchainFile": "${sourceDir}/config/cmake/ios.cmake",
+      "condition": {
+        "type": "equals",
+        "lhs": "${hostSystemName}",
+        "rhs": "Darwin"
+      },
+      "cacheVariables": {
+        "CMAKE_OBJCXX_COMPILER": "${sourceDir}/out/host-tools/bin/clang++",
+        "LUDUS_IOS_SDK": "iphoneos",
+        "LUDUS_IOS_DEPLOYMENT_TARGET": "17.0"
+      }
+    },
+    {
+      "name": "android-clang-base",
+      "hidden": true,
+      "inherits": "mobile-clang-base",
+      "toolchainFile": "${sourceDir}/config/cmake/android.cmake",
+      "condition": {
+        "type": "inList",
+        "string": "${hostSystemName}",
+        "list": [
+          "Darwin",
+          "Linux"
+        ]
+      },
+      "cacheVariables": {
+        "LUDUS_ANDROID_API": "29",
+        "LUDUS_ANDROID_EMULATOR": "OFF"
+      }
+    },
+    {
+      "name": "ios-clang-debug",
+      "displayName": "iOS device Clang Debug",
+      "inherits": "ios-clang-base",
+      "cacheVariables": {
+        "CMAKE_BUILD_TYPE": "Debug",
+        "LUDUS_BUILD_FLAVOR": "Debug"
+      }
+    },
+    {
+      "name": "ios-clang-development",
+      "displayName": "iOS device Clang Development",
+      "inherits": "ios-clang-base",
+      "cacheVariables": {
+        "CMAKE_BUILD_TYPE": "RelWithDebInfo",
+        "LUDUS_BUILD_FLAVOR": "Development"
+      }
+    },
+    {
+      "name": "ios-clang-release",
+      "displayName": "iOS device Clang Release",
+      "inherits": "ios-clang-base",
+      "cacheVariables": {
+        "CMAKE_BUILD_TYPE": "Release",
+        "LUDUS_BUILD_FLAVOR": "Release"
+      }
+    },
+    {
+      "name": "ios-simulator-clang-development",
+      "displayName": "iOS Simulator Clang Development",
+      "inherits": "ios-clang-base",
+      "cacheVariables": {
+        "CMAKE_BUILD_TYPE": "RelWithDebInfo",
+        "LUDUS_BUILD_FLAVOR": "Development",
+        "LUDUS_IOS_SDK": "iphonesimulator"
+      }
+    },
+    {
+      "name": "android-clang-debug",
+      "displayName": "Android ARM64 Clang Debug",
+      "inherits": "android-clang-base",
+      "cacheVariables": {
+        "CMAKE_BUILD_TYPE": "Debug",
+        "LUDUS_BUILD_FLAVOR": "Debug"
+      }
+    },
+    {
+      "name": "android-clang-development",
+      "displayName": "Android ARM64 Clang Development",
+      "inherits": "android-clang-base",
+      "cacheVariables": {
+        "CMAKE_BUILD_TYPE": "RelWithDebInfo",
+        "LUDUS_BUILD_FLAVOR": "Development"
+      }
+    },
+    {
+      "name": "android-clang-release",
+      "displayName": "Android ARM64 Clang Release",
+      "inherits": "android-clang-base",
+      "cacheVariables": {
+        "CMAKE_BUILD_TYPE": "Release",
+        "LUDUS_BUILD_FLAVOR": "Release"
+      }
+    },
+    {
+      "name": "android-emulator-clang-development",
+      "displayName": "Android Emulator ARM64 Clang Development",
+      "inherits": "android-clang-base",
+      "cacheVariables": {
+        "CMAKE_BUILD_TYPE": "RelWithDebInfo",
+        "LUDUS_BUILD_FLAVOR": "Development",
+        "LUDUS_ANDROID_EMULATOR": "ON"
+      }
+    }
+  ],
+  "buildPresets": [
+    {
+      "name": "ios-clang-debug",
+      "configurePreset": "ios-clang-debug"
+    },
+    {
+      "name": "ios-clang-development",
+      "configurePreset": "ios-clang-development"
+    },
+    {
+      "name": "ios-clang-release",
+      "configurePreset": "ios-clang-release"
+    },
+    {
+      "name": "ios-simulator-clang-development",
+      "configurePreset": "ios-simulator-clang-development"
+    },
+    {
+      "name": "android-clang-debug",
+      "configurePreset": "android-clang-debug"
+    },
+    {
+      "name": "android-clang-development",
+      "configurePreset": "android-clang-development"
+    },
+    {
+      "name": "android-clang-release",
+      "configurePreset": "android-clang-release"
+    },
+    {
+      "name": "android-emulator-clang-development",
+      "configurePreset": "android-emulator-clang-development"
+    }
+  ],
+  "testPresets": [
+    {
+      "name": "ios-clang-debug",
+      "configurePreset": "ios-clang-debug",
+      "output": {
+        "outputOnFailure": true
+      }
+    },
+    {
+      "name": "ios-clang-development",
+      "configurePreset": "ios-clang-development",
+      "output": {
+        "outputOnFailure": true
+      }
+    },
+    {
+      "name": "ios-clang-release",
+      "configurePreset": "ios-clang-release",
+      "output": {
+        "outputOnFailure": true
+      }
+    },
+    {
+      "name": "ios-simulator-clang-development",
+      "configurePreset": "ios-simulator-clang-development",
+      "output": {
+        "outputOnFailure": true
+      }
+    },
+    {
+      "name": "android-clang-debug",
+      "configurePreset": "android-clang-debug",
+      "output": {
+        "outputOnFailure": true
+      }
+    },
+    {
+      "name": "android-clang-development",
+      "configurePreset": "android-clang-development",
+      "output": {
+        "outputOnFailure": true
+      }
+    },
+    {
+      "name": "android-clang-release",
+      "configurePreset": "android-clang-release",
+      "output": {
+        "outputOnFailure": true
+      }
+    },
+    {
+      "name": "android-emulator-clang-development",
+      "configurePreset": "android-emulator-clang-development",
+      "output": {
+        "outputOnFailure": true
+      }
+    }
+  ]
+}

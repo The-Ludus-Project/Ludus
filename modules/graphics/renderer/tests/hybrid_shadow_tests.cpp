@@ -1070,7 +1070,7 @@ using TimingSamples = StaticArray<float64, TIMING_SAMPLE_COUNT>;
 
 void ReportShadowTimings(std::string_view phase, TimingSamples& inoutSamples)
 {
-    Sort(inoutSamples.GetData(), inoutSamples.GetSize(), [](uint64 left, uint64 right) noexcept {
+    Sort(inoutSamples.GetData(), inoutSamples.GetSize(), [](float64 left, float64 right) noexcept {
         return left < right;
     });
     constexpr usize TAIL_INDEX =

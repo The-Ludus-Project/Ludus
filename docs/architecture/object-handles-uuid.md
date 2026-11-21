@@ -860,6 +860,21 @@ The reader rejects:
 - any UUID that is not a nonnil version-4 value;
 - any UUID that appears twice anywhere in the manifest.
 
+The reader accepts at most 1 MiB of JSON, 64 documents and 128 objects per
+document. It copies paths and legacy IDs into two owned tables and releases
+the parser before checking UUID uniqueness across the manifest. It replaces
+the accepted manifest only after all checks pass. Diagnostics name zero-based
+paths such as `$.documents[0].objects[1].legacy_id` or report a zero-based byte
+offset when the strict parser supplies one.
+
+Each decode has a 15 MiB requested-heap budget. The peak is the larger of
+parser workspace plus the two candidate tables, and the candidate tables plus
+the UUID index. It excludes the caller's input, stack storage, allocator
+overhead and the previously accepted manifest. The identity regression suite
+checks a fixture at all three input limits against allocation-domain counters
+and verifies that an exact budget succeeds and a one-byte-short budget
+preserves the accepted manifest.
+
 Legacy IDs follow the Editor's World ID rule (1–64 ASCII letters, digits, `_`,
 `-`, `.` or `:`). The world-demo sample's IDs, including the Editor's truncated
 `entity-` and `settings-` forms, are a subset.

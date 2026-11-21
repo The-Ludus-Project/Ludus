@@ -110,3 +110,48 @@ The fixture exposes `data-state`, `data-stage`, `data-offscreen-frames` and
 `data-surface-acquisitions` on its status paragraph. This is a real-browser
 qualification fixture; it does not replace the Node provider semantics tests
 or establish that an imported World's shadow output is correct.
+
+## Full-authoring World edit qualification
+
+The viewport runner also exercises [the World authoring qualification](../../architecture/editor-browser-strategy.md#full-authoring-frontend-qualification).
+It imports the same redistributable triangle through SceneCook, uses its cooked
+mesh and material for 9 and 49 independently selectable placements, and opens
+a fresh copy of each World from Chromium's origin-private folder. WebGPU and
+WebGL 2 use the same camera, scene, browser window and pixel ratio. One WebGL 2
+run simulates ordinary startup without WebGPU. The other forces WebGL 2 using
+the editor's supported override. The seed project uses one plain World and
+changes its authoring data to construct the two sizes before the timed runs.
+
+Each report records the browser, viewport API, output size, editor startup
+payload, time to the editor-ready marker and time from Open World to matching
+pixels. The test picks the named origin marker and changes its X placement
+through Properties while checking every other placement. It measures the
+pointer event to publication of the validated World draft, which the matching
+recovery checkpoint corroborates. It then measures from core acceptance to
+the first ready browser frame carrying the published extraction identity.
+A screenshot checks the marker itself. Screenshot sampling adds browser and
+capture overhead and is reported separately. The test checks that an older
+accepted extraction does not draw after the latest one. It types that latest
+edit while it holds the earlier edit's recovery checkpoint write open, so the
+editor is suspended in a folder call and Qt queues the click and keys.
+`typedDuringFolderWrite` records the unsent Qt events and the focused element;
+the edit must still apply exactly. Draw calls and upload
+bytes cover the instrumented browser graphics calls. Snapshot bytes, hardware
+memory traffic and CPU picking time need independent instrumentation. The
+accessibility-tree snapshot records browser-exposed roles for manual follow-up.
+
+The final edit survives a narrow and wide layout, a refusal targeted at the
+World file, a retry after write access returns, and a fresh open of the result.
+The test checks the saved bytes before retrying and the identity and transforms
+after reopening. Refusal and resize screenshots preserve the visible state and
+any repeated warnings. Set `LUDUS_QA_BROWSER` to the named Chromium-family
+executable under test and record the host, device and run conditions. A forced
+backend or simulation only establishes that particular execution path.
+
+A failed step records `failureState` in its sample: the latest published and
+drawn extraction identities, the viewport canvases and `qtEvents`, read from
+Qt 6.10's private suspend/resume control. If its
+`isWaiting` stays false while `unsent` browser events remain, Qt's event loop
+has stopped, rather than the renderer. The run fails on any page error, including the Qt
+`TypeError` that once stopped that loop (see
+[Ludus changes to Qt](../browser-editor.md#ludus-changes-to-qt)).

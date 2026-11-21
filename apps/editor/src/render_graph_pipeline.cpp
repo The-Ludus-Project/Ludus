@@ -34,6 +34,7 @@
 #include <QTableWidget>
 #include <QToolButton>
 #include <QVBoxLayout>
+#include <QVariant>
 
 namespace ludus::editor
 {
@@ -404,7 +405,7 @@ RenderGraphPipelineEditor::RenderGraphPipelineEditor(const QJsonObject& node, QW
     mError->setWordWrap(true);
     layout->addWidget(mError);
     QLabel* hint = new QLabel(
-        QStringLiteral("New shaders create .slang sources automatically. "
+        QStringLiteral("Choose the language for new shaders. LUSL (.lusl) is the default. "
                        "Renaming moves its source; stage edits reuse it. Edit sources in Source; Save writes files."),
         mShaders->parentWidget());
     hint->setObjectName(QStringLiteral("renderGraphShadersHelp"));
@@ -693,7 +694,7 @@ RenderGraphPipelineEditor::createTable(const QString& name, const QStringList& f
                                    ? QStringLiteral("No read inputs. Add one to read a texture or buffer.")
                                : name == QStringLiteral("outputs")
                                    ? QStringLiteral("No writable resources. Add one to write a texture or buffer.")
-                                   : QStringLiteral("No shaders. Add one to create its .slang source."),
+                                   : QStringLiteral("No shaders. Add one to create its source."),
                                panel);
     empty->setObjectName(QStringLiteral("renderGraphEmpty_") + name);
     empty->setWordWrap(true);
@@ -707,6 +708,15 @@ RenderGraphPipelineEditor::createTable(const QString& name, const QStringList& f
     add->setObjectName(QStringLiteral("renderGraphAdd_") + name);
     remove->setObjectName(QStringLiteral("renderGraphRemove_") + name);
     const QString kind = mNode.value(QStringLiteral("kind")).toString();
+    if (name == QStringLiteral("shaders"))
+    {
+        QComboBox* language = new QComboBox(panel);
+        language->setObjectName(QStringLiteral("renderGraphNewShaderLanguage"));
+        language->setAccessibleName(QStringLiteral("New shader language"));
+        language->addItem(QStringLiteral("LUSL (.lusl)"), QVariant::fromValue(RenderGraphShaderLanguage::Lusl));
+        language->addItem(QStringLiteral("Slang (.slang)"), QVariant::fromValue(RenderGraphShaderLanguage::Slang));
+        buttons->addWidget(language);
+    }
     connect(add, &QPushButton::clicked, this, [this, table, defaults, fields, name, kind, connectResourceType]() {
         const int32 maximum = name == QStringLiteral("shaders") ? MAX_SHADERS : MAX_PORTS;
         if (table->rowCount() >= maximum)
@@ -1306,6 +1316,9 @@ void RenderGraphPipelineEditor::publishEdit()
     // Adding or removing a Scene input changes a ComputePipeline's execution profile.
     candidate = ApplyComputeProfile(mNode, candidate);
     mNode = candidate;
-    Q_EMIT Edited(candidate);
+    const QComboBox* language =
+        mShaders->parentWidget()->findChild<QComboBox*>(QStringLiteral("renderGraphNewShaderLanguage"));
+    LUDUS_REQUIRE(language != nullptr);
+    Q_EMIT Edited(candidate, language->currentData().value<RenderGraphShaderLanguage>());
 }
 } // namespace ludus::editor

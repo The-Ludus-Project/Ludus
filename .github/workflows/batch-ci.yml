@@ -155,10 +155,13 @@ jobs:
       batch_base_sha: ${{ needs.snapshot.outputs.base_sha }}
 
   threading:
-    # Admit the remaining macOS workflows in order so their short ARM jobs
-    # cannot expire behind the native qualification chain.
-    # A failed predecessor still permits independent evidence; cancellation does not.
-    needs: [snapshot, native]
+    # The short macOS workflows (threading, then installed host tooling, then ARM
+    # documentation tools) run in order beside native, which holds at most two ARM
+    # runners, so the batch asks for at most three. Waiting for native added their
+    # minutes after the longest job; batch-runner-retry.yml re-runs a job that
+    # finds no runner. A failed predecessor still permits independent evidence;
+    # cancellation does not.
+    needs: [snapshot]
     if: ${{ !cancelled() && needs.snapshot.outputs.should_run == 'true' }}
     uses: ./.github/workflows/threading-platforms.yml
     with:

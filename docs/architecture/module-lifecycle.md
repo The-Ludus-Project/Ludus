@@ -12,7 +12,13 @@ all engine services have already adopted these contracts.
 The first implementation uses caller-owned spans and dense IDs. All four callback
 slots are required; synchronous adapters return Ready or Stopped immediately.
 Validation checks capacity, names, IDs, hooks, and provider order before calling
-any hook. Polling consumes a callback budget and yields immediately on Pending.
+any hook. It names self, repeated, misordered and cyclic provider edges
+separately; a bounded search over the unused journal distinguishes a cycle from
+a misordered plan without allocating. Callbacks report a domain-qualified error.
+The runner's `Report` keeps the primary outcome and first failure (node,
+operation, error) apart from the cleanup outcome (Pending, Complete or Blocked)
+and its own failure, with attempted, stopped and remaining counts, and exposes
+the retained journal. Polling consumes a callback budget and yields immediately on Pending.
 Only RequestStop is callable from another thread; records and all other operations
 belong to the owner thread. Recursive progress and duplicate Begin are rejected.
 The runner generation identifies attempts in diagnostics; modules remain
@@ -26,7 +32,9 @@ stop facade to this application will require a Stopping UI state and owner-loop
 pumping first. Stopped means the facade's documented retirement contract; this
 change adds no GPU-fence or worker-join guarantees to existing backends.
 
-The tests use fake modules to cover every partial failure, pending start/stop,
+The tests use fake modules to cover every partial failure, exact provider
+availability at every callback of a diamond plan for each failing node and
+start boundary, structured primary and cleanup results, pending start/stop,
 late success with cancellation, provider retention, explicit deadline quarantine,
 first-failure preservation, reentry, restart, and invalid plans. Existing browser
 semantics tests exercise real app adapters and cancelled RHI/pipeline starts.
@@ -467,7 +475,7 @@ include/build-budget gates.
 
 | Step | Deliverable and acceptance |
 | --- | --- |
-| 1 | Private synchronous runner, authored plan validator, attempted journal, structured primary/cleanup results. Fake modules prove failed-attempt cleanup and exact provider availability. |
+| 1 | Private synchronous runner, authored plan validator, attempted journal, structured primary/cleanup results. Fake modules prove failed-attempt cleanup and exact provider availability. Implemented in the smoke runner; cross-scope (Ready ancestor) providers and their scope checks arrive with nested scopes. |
 | 2 | Pending start/stop, stop latch, generation-aware durable completion, explicit progress pump. Deterministic delayed-completion tests prove cancellation and lifetime retention. |
 | 3 | Adapt smoke's window/RHI/renderer ownership. Native and browser readiness/failure behavior remains explicit; capture failure diagnostics before module reset. |
 | 4 | Apply to a second actual host/session and native audio when useful. Retain GameHost's existing reload transaction and cleanup-unknown behavior. |

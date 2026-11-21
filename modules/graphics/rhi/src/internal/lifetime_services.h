@@ -657,10 +657,7 @@ SubmitCommands(DeviceHandle device, SurfaceHandle surface, CommandBatch& batch, 
     if (begun != DeviceStatus::Ready)
     {
         backend::RasterDiscardSubmission();
-        return begun == DeviceStatus::Skipped         ? RasterStatus::NotReady
-               : begun == DeviceStatus::InvalidHandle ? RasterStatus::InvalidHandle
-               : begun == DeviceStatus::DeviceLost    ? RasterStatus::DeviceLost
-                                                      : RasterStatus::Failed;
+        return ToRasterStatus(begun);
     }
     const auto current = Admission(device, false);
     if (current != RasterStatus::Ready)

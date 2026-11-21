@@ -64,6 +64,9 @@ constexpr int32 CPU_ORACLE_INDEX = static_cast<int32>(renderer::ReferenceTravers
 constexpr int32 NATIVE_QUERIES_INDEX = static_cast<int32>(renderer::ReferenceTraversal::NativeQueries);
 constexpr int32 GPU_COMPUTE_INDEX = static_cast<int32>(renderer::ReferenceTraversal::GpuCompute);
 constexpr float64 MILLISECONDS_PER_SECOND = 1000;
+constexpr int32 QUICK_INSPECTION_SAMPLES = 16;
+constexpr int32 DETAILED_COMPARISON_SAMPLES = 128;
+constexpr int32 CUSTOM_SAMPLE_PRESET_INDEX = 2;
 /// The settings column beside the image, in logical pixels: room for the "Long side" label and a field that shows
 /// "Native ray queries" whole.
 constexpr int32 SETTINGS_COLUMN_WIDTH = 288;
@@ -188,6 +191,7 @@ void UpdateReferenceTraversalAvailability(QComboBox& inoutChoice,
 
 ReferenceCaptureWindow::ReferenceCaptureWindow(RenderPreview* preview, QWidget* parentOrNull)
     : QWidget(parentOrNull, Qt::Window), mPreview(preview), mLongSide(new QSpinBox(this)), mSamples(new QSpinBox(this)),
+      mSamplePreset(new QComboBox(this)), mSamplePresetDescription(new QLabel(this)), mGraphSamples(new QSpinBox(this)),
       mMaxDepth(new QSpinBox(this)), mTraversal(new QComboBox(this)),
       mCenterRays(new QCheckBox(QStringLiteral("Trace pixel centres"), this)),
       mCompare(new QCheckBox(QStringLiteral("Compare with the render graph"), this)),
@@ -211,9 +215,22 @@ ReferenceCaptureWindow::ReferenceCaptureWindow(RenderPreview* preview, QWidget* 
                                          "A comparison uses the render graph's output extent for this size."));
     mSamples->setObjectName(QStringLiteral("referenceSamples"));
     mSamples->setRange(1, static_cast<int32>(MAXIMUM_REFERENCE_SAMPLES));
-    mSamples->setValue(static_cast<int32>(ViewportReferenceSettings{}.Samples));
+    mSamples->setValue(QUICK_INSPECTION_SAMPLES);
+    mSamples->setSuffix(QStringLiteral(" spp"));
     mSamples->setToolTip(QStringLiteral("Samples per pixel at completion. Noise falls with the square root "
                                         "of the sample count."));
+    // Thanks to Gregory J. Ward, Making Global Illumination User-Friendly (RT '95, §§4–5), for
+    // mapping qualitative choices to explicit settings. Here the presets only set the RT1 sample budget.
+    // https://radsite.lbl.gov/radiance/papers/erw95.1/paper.pdf
+    mSamplePreset->setObjectName(QStringLiteral("referenceSamplePreset"));
+    mSamplePreset->addItem(QStringLiteral("Quick inspection"), QUICK_INSPECTION_SAMPLES);
+    mSamplePreset->addItem(QStringLiteral("Detailed comparison"), DETAILED_COMPARISON_SAMPLES);
+    mSamplePreset->addItem(QStringLiteral("Custom"), 0);
+    mSamplePresetDescription->setWordWrap(true);
+    mSamplePresetDescription->setProperty("visualRole", QStringLiteral("secondary"));
+    mGraphSamples->setObjectName(QStringLiteral("referenceGraphSamples"));
+    mGraphSamples->setRange(1, static_cast<int32>(MAXIMUM_REFERENCE_SAMPLES));
+    mGraphSamples->setValue(static_cast<int32>(ViewportReferenceSettings{}.Samples));
     mMaxDepth->setObjectName(QStringLiteral("referenceMaxDepth"));
     mMaxDepth->setRange(1, static_cast<int32>(MAXIMUM_REFERENCE_DEPTH));
     mMaxDepth->setValue(static_cast<int32>(ViewportReferenceSettings{}.MaxDepth));
@@ -260,7 +277,11 @@ ReferenceCaptureWindow::ReferenceCaptureWindow(RenderPreview* preview, QWidget* 
     form->addRow(QString(), mGraph);
     form->addRow(QString(), mGraphProblem);
     form->addRow(QStringLiteral("Long side"), mLongSide);
+    form->addRow(QStringLiteral("Sample preset"), mSamplePreset);
+    form->addRow(mSamplePresetDescription);
     form->addRow(QStringLiteral("Samples"), mSamples);
+    form->addRow(QStringLiteral("Samples"), mGraphSamples);
+    form->setRowVisible(mGraphSamples, false);
     form->addRow(QStringLiteral("Max depth"), mMaxDepth);
     form->addRow(QStringLiteral("Traversal"), mTraversal);
     form->addRow(mCenterRays);
@@ -366,7 +387,39 @@ ReferenceCaptureWindow::ReferenceCaptureWindow(RenderPreview* preview, QWidget* 
             updateStatus();
         });
     }
-    connect(mSource, &QComboBox::currentIndexChanged, this, [this]() {
+    const auto applySamplePreset = [this](int32 index) {
+        const int32 samples = mSamplePreset->itemData(index).toInt();
+        if (samples > 0)
+        {
+            const QSignalBlocker blocker(mSamples);
+            mSamples->setValue(samples);
+        }
+        switch (samples)
+        {
+            case QUICK_INSPECTION_SAMPLES:
+                mSamplePresetDescription->setText(
+                    QStringLiteral("Shorter wait for broad lighting and material checks."));
+                break;
+            case DETAILED_COMPARISON_SAMPLES:
+                mSamplePresetDescription->setText(
+                    QStringLiteral("Longer wait for less noise in subtle lighting comparisons."));
+                break;
+            default:
+                mSamplePresetDescription->setText(QStringLiteral("Enter your own samples per pixel."));
+                break;
+        }
+    };
+    connect(mSamplePreset, &QComboBox::currentIndexChanged, this, applySamplePreset);
+    connect(mSamples, &QSpinBox::valueChanged, this, [this]() {
+        mSamplePreset->setCurrentIndex(CUSTOM_SAMPLE_PRESET_INDEX);
+    });
+    applySamplePreset(mSamplePreset->currentIndex());
+    connect(mSource, &QComboBox::currentIndexChanged, this, [this, form]() {
+        const bool isReference = isGraphSource() == false;
+        form->setRowVisible(mSamplePreset, isReference);
+        form->setRowVisible(mSamplePresetDescription, isReference);
+        form->setRowVisible(mSamples, isReference);
+        form->setRowVisible(mGraphSamples, isReference == false);
         requestCaptureProfile();
         updateControls();
         updateStatus();
@@ -882,13 +935,17 @@ bool ReferenceCaptureWindow::startRasterCapture(const QSize& requestedSize, QSiz
     return true;
 #else
     static_cast<void>(requestedSize);
+    static_cast<void>(samples);
     static_cast<void>(outExtent);
     outError = QStringLiteral("Comparison needs the native editor's project render graph viewport.");
     return false;
 #endif
 }
 
-bool ReferenceCaptureWindow::startGraphCapture(const QSize& requestedSize, QSize& outExtent, QString& outError)
+bool ReferenceCaptureWindow::startGraphCapture(const QSize& requestedSize,
+                                               uint32 samples,
+                                               QSize& outExtent,
+                                               QString& outError)
 {
 #if defined(LUDUS_EDITOR_NATIVE_PREVIEW)
     mRasterSource = GetViewportRasterSource(*mProjectGraph);
@@ -955,7 +1012,7 @@ bool ReferenceCaptureWindow::startGraphCapture(const QSize& requestedSize, QSize
                            mRasterSource,
                            profilePath,
                            requestedSize,
-                           static_cast<uint32>(mSamples->value()),
+                           samples,
                            extent,
                            outError) == false)
     {
@@ -981,6 +1038,7 @@ bool ReferenceCaptureWindow::startGraphCapture(const QSize& requestedSize, QSize
     return true;
 #else
     static_cast<void>(requestedSize);
+    static_cast<void>(samples);
     static_cast<void>(outExtent);
     outError = QStringLiteral("Graph capture needs the native editor's project render graph viewport.");
     return false;
@@ -993,7 +1051,8 @@ bool ReferenceCaptureWindow::startGraphSource()
         ComputeReferenceExtent(mPreview->GetDrawableSize(), static_cast<uint32>(mLongSide->value()));
     QSize extent;
     QString error;
-    if (mIsComparisonAvailable == false || startGraphCapture(requestedExtent, extent, error) == false)
+    const uint32 samples = static_cast<uint32>(mGraphSamples->value());
+    if (mIsComparisonAvailable == false || startGraphCapture(requestedExtent, samples, extent, error) == false)
     {
         releaseCaptures();
         mMessage = error.isEmpty() == true ? QStringLiteral("Graph capture needs the viewport's project render graph.")
@@ -1005,8 +1064,8 @@ bool ReferenceCaptureWindow::startGraphSource()
     mMessage = QStringLiteral("Render graph capture, %1 × %2, %3 requested samples/pixel.")
                    .arg(extent.width())
                    .arg(extent.height())
-                   .arg(mSamples->value());
-    mProgressTarget = mSamples->value();
+                   .arg(samples);
+    mProgressTarget = static_cast<int32>(samples);
 #if defined(LUDUS_EDITOR_NATIVE_PREVIEW)
     const renderer::RenderGraphCaptureInfo info = mGraphCapture.GetInfo();
     if (info.WarmupSamples != 0)
@@ -1082,7 +1141,7 @@ bool ReferenceCaptureWindow::StartCapture()
     {
 #if defined(LUDUS_EDITOR_NATIVE_PREVIEW)
         QString graphError;
-        mIsGraphComparison = startGraphCapture(requestedExtent, extent, graphError);
+        mIsGraphComparison = startGraphCapture(requestedExtent, settings.Samples, extent, graphError);
         mGraphFallbackReason = mIsGraphComparison == true ? QString{} : graphError;
         if (mIsGraphComparison == false && startRasterCapture(requestedExtent, extent, error) == false)
 #else
@@ -1131,7 +1190,7 @@ bool ReferenceCaptureWindow::StartCapture()
     hasToneMap = mProjectGraph.isNull() == false && mProjectGraph->GetRasterToneMappingExposure() > 0;
 #endif
     mMessage += DescribeDisplay(exposureView, mDisplay, hasToneMap);
-    mProgressTarget = mSamples->value();
+    mProgressTarget = static_cast<int32>(settings.Samples);
     mProgressSamples = 0;
     mCaptureTimer.start();
     mRefreshTimer.start();
@@ -1455,11 +1514,11 @@ void ReferenceCaptureWindow::updateControls()
     mGraphProblem->setVisible(isReference == false && canCaptureGraph == false);
     mStopButton->setEnabled(isRunning == true);
     mSaveButton->setEnabled(hasSamples == true);
-    for (QWidget* setting :
-         {static_cast<QWidget*>(mSource), static_cast<QWidget*>(mLongSide), static_cast<QWidget*>(mSamples)})
-    {
-        setting->setEnabled(isRunning == false);
-    }
+    mSource->setEnabled(isRunning == false);
+    mLongSide->setEnabled(isRunning == false);
+    mSamples->setEnabled(isRunning == false);
+    mSamplePreset->setEnabled(isRunning == false);
+    mGraphSamples->setEnabled(isRunning == false);
     // Depth, traversal, centre rays and comparison describe the RT1 reference; a graph capture runs the graph as
     // authored.
     mMaxDepth->setEnabled(isRunning == false && isReference == true);
