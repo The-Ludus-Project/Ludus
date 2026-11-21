@@ -3,24 +3,10 @@
 #include <ludus/foundation/base/checked_integer.hpp>
 
 #include "internal/addressed_random.hpp"
+#include "internal/random_mix.hpp"
 
 namespace ludus::foundation::math
 {
-namespace
-{
-// With thanks to Sebastiano Vigna, "splitmix64.c" (2015, public domain):
-// https://prng.di.unimi.it/splitmix64.c
-// We adapt only its finalizer to mix identifiers, not the stateful generator;
-// this permutation supplies neither entropy nor secrecy. The domain-seed
-// formula is Ludus's own contract (docs/architecture/randomness.md).
-uint64 Mix64(uint64 value) noexcept
-{
-    value = (value ^ (value >> 30u)) * 0xbf58476d1ce4e5b9ULL;
-    value = (value ^ (value >> 27u)) * 0x94d049bb133111ebULL;
-    return value ^ (value >> 31u);
-}
-} // namespace
-
 namespace internal
 {
 RandomBlock Philox4x32(RandomBlock counter, RandomKey key) noexcept
@@ -68,7 +54,7 @@ MathStatus TryMakeRandomKey(uint64 rootSeed, uint32 domainId, RandomKey& out) no
     {
         return MathStatus::InvalidArgument;
     }
-    out.Value = Mix64(rootSeed + (static_cast<uint64>(domainId) + 1u) * 0x9e3779b97f4a7c15ULL);
+    out.Value = internal::DeriveDomainKey(rootSeed, domainId);
     return MathStatus::Success;
 }
 

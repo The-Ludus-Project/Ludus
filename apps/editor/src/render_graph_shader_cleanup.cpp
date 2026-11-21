@@ -167,21 +167,46 @@ bool GetTrackedIncludes(const RenderGraphSnapshot& snapshot, const QString& file
 {
     static const QRegularExpression INCLUDES(QStringLiteral("^\\s*#\\s*include\\b([^\\n]*)"),
                                              QRegularExpression::MultilineOption);
+    static const QRegularExpression EXTERN_SLANG(
+        QStringLiteral("\\bextern[ \\t\\r\\n]+slang[ \\t\\r\\n]*\"([^\"\\n]+)\""));
     static const QRegularExpression QUOTED(QStringLiteral("^\\s*\"([^\"]+)\"\\s*$"));
     outIncludes.clear();
+    const bool isLusl = IsLuslShaderSource(file);
+    const QString text = QString::fromUtf8(snapshot.Files.value(file));
     bool isTracked = true;
-    QRegularExpressionMatchIterator matches = INCLUDES.globalMatch(QString::fromUtf8(snapshot.Files.value(file)));
-    while (matches.hasNext() == true)
-    {
-        const QRegularExpressionMatch match = QUOTED.match(matches.next().captured(1));
-        const QString include = match.hasMatch() == true ? ResolveSourcePath(file, match.captured(1)) : QString();
-        if (include.isEmpty() == true || snapshot.Files.contains(include) == false)
+    const auto track = [&snapshot, &file, &outIncludes, &isTracked, isLusl](const QString& name) {
+        const QString relative = ResolveSourcePath(file, name);
+        if (relative.isEmpty() == false && snapshot.Files.contains(relative) == true)
         {
-            isTracked = false;
+            outIncludes.append(relative);
+        }
+        else if (isLusl == true && snapshot.Files.contains(name) == true)
+        {
+            outIncludes.append(name);
         }
         else
         {
-            outIncludes.append(include);
+            // These headers are generated or supplied by the SDK and cannot depend on project files.
+            const bool isProvidedHeader =
+                isLusl == true &&
+                (name == QStringLiteral("graph_schemas.luslh") || name == QStringLiteral("ray_shader.luslh") ||
+                 name == QStringLiteral("scene_shader.luslh") || name == QStringLiteral("scene_payload.luslh") ||
+                 name == QStringLiteral("math.luslh"));
+            isTracked = isTracked && isProvidedHeader == true;
+        }
+    };
+    QRegularExpressionMatchIterator matches = INCLUDES.globalMatch(text);
+    while (matches.hasNext() == true)
+    {
+        const QRegularExpressionMatch match = QUOTED.match(matches.next().captured(1));
+        track(match.hasMatch() == true ? match.captured(1) : QString());
+    }
+    if (isLusl == true)
+    {
+        matches = EXTERN_SLANG.globalMatch(text);
+        while (matches.hasNext() == true)
+        {
+            track(matches.next().captured(1));
         }
     }
     return isTracked;
@@ -318,7 +343,7 @@ RenderGraphDocumentStatus PruneShaderPrograms(RenderGraphSnapshot& inoutSnapshot
          file != candidate.Files.constEnd();
          ++file)
     {
-        if (file.key().endsWith(QStringLiteral(".slang")) == true &&
+        if (IsRenderGraphShaderSource(file.key()) == true &&
             GetTrackedIncludes(candidate, file.key(), includes[file.key()]) == false)
         {
             untracked.insert(file.key());
@@ -331,7 +356,7 @@ RenderGraphDocumentStatus PruneShaderPrograms(RenderGraphSnapshot& inoutSnapshot
     while (pending.isEmpty() == false)
     {
         const QString source = pending.takeFirst();
-        if (source.endsWith(QStringLiteral(".slang")) == false || candidate.Files.contains(source) == false ||
+        if (IsRenderGraphShaderSource(source) == false || candidate.Files.contains(source) == false ||
             namedFiles.contains(source) == true || removable.contains(source) == true)
         {
             continue;

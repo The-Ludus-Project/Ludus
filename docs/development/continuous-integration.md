@@ -180,7 +180,8 @@ That job now has one command step:
 out/host-tools/venv/bin/python scripts/python/ci_checks.py scripts/ci/macos_native.py
 ```
 
-`scripts/ci/macos_native.py` lists the job's checks in order, as `Check` records
+`scripts/ci/macos_native.py` (and `scripts/ci/macos_reference.py` for the macOS GPU
+reference oracle job) lists the job's checks in order, as `Check` records
 with an id, a title, the bash commands, the checks each one needs, environment
 and an optional timeout. `scripts/python/ci_checks.py` runs them from the
 candidate:
@@ -228,6 +229,40 @@ committer date to capture separately. The latter approximates the wait after a
 merge to `develop`. For qualification time, use the capture step completion and
 the promotion completion or the first failed required job. Report time spent
 collecting diagnostics after a rejection separately.
+
+### Read the batch outcome report
+
+From the coordinator's **Summary**, follow **Batch outcome reports** and open
+the entry titled `Batch RUN_ID · attempt ATTEMPT`. The reporting workflow
+runs after the attempt completes, including after an early stop. If a run was
+cancelled before the capture job started, find it by run ID and attempt in the
+[Batch outcome reports](https://github.com/The-Ludus-Project/Ludus/actions/workflows/batch-outcome.yml)
+workflow list.
+
+The report reads attempt-specific Actions job metadata and the trusted
+coordinator logs. It shows the candidate and base, the validation or promotion
+outcome, and a separate documentation publication result. Promotion timing
+uses the successful push step's completion. The latest completed validation
+jobs and the longest recorded runtimes show where to look for delays.
+Submission time uses the workflow's creation timestamp for the first attempt.
+A partial rerun can reuse an earlier capture. Elapsed time measured from that
+capture can span multiple attempts, and rerun submission time is unknown.
+
+For an early stop, the first failure's completion time records when the signal
+was available in Actions metadata. The watcher records when its poll first saw
+that job's failure. The stop log records when GitHub CLI confirmed that it
+submitted the cancellation request. The report reconstructs results and running
+jobs at that point from job timestamps, and labels queue state from the last
+watcher poll. Artifacts are linked at run scope. Missing timestamps and expired
+logs can leave individual fields unknown. Historical bot dispatches used the
+same actor for the protected-develop wake and stale-request handoff, so the
+actor alone cannot distinguish those triggers.
+
+Replay the three historical runs and the rerun fixtures with
+`PYTHONPATH=scripts/python python3 -m unittest test_batch_outcome`. After the
+reporting workflow reaches `main`, compare the next promoted and rejected
+attempts with their Actions job timelines, including documentation publication
+on promotion and the watcher and cancellation logs on rejection.
 
 ### Stop a failed batch early
 
@@ -681,20 +716,27 @@ not establish macOS 14 runtime qualification. See GitHub's
 Native/SDK acceptance and the sanitizers start together. Strictly ordered, the
 native job, which fails most often, reported about 45 minutes after the sanitizers
 and made macOS the slowest path in the batch. The nightly analyzer starts after the
-sanitizers, so `ci.yml` holds at most two ARM runners. It uses an explicit status
+sanitizers. The CPU/GPU reference oracle cases (`ludus_renderer_reference: …`) run in
+their own **macOS GPU reference oracle** job beside them: in one job they were 30 of
+its 89 minutes, one at a time on one GPU (batch 44859003421). That job configures the
+same tree, restores the native job's compiler cache without saving it, and builds
+only `ludus_renderer_render_tests`, so `ci.yml` holds at most three ARM runners. A new
+native job reaches batches only after promotion, so `ci_scope.py` lists it in
+`PENDING_PROMOTION_JOBS` until `main` defines it; a test reports when to remove it.
+The nightly analyzer uses an explicit status
 condition so a sanitizer failure does not suppress its evidence; cancelling the
 workflow still stops it. All required results remain part of the promotion gate.
 Hosted ARM capacity can still run out; see
-[retry jobs that found no runner](#retry-jobs-that-found-no-runner). The batch also admits ARM-owning workflows in order:
-native, macOS threading, installed host tooling, then ARM documentation tools. This
-prevents short ARM jobs from expiring behind native work in a different reusable
-workflow. The Linux wiki call, Intel documentation tools and Windows threading
+[retry jobs that found no runner](#retry-jobs-that-found-no-runner). The short ARM-owning workflows run in order beside
+native: macOS threading, installed host tooling, then ARM documentation tools, so
+the batch holds at most three ARM runners. They used to wait for native, which put
+their ten minutes after the longest job (batch 44859003421 ended at 147 minutes,
+136 of them on the macOS chain). The Linux wiki call, Intel documentation tools and Windows threading
 start at candidate capture alongside the browser, Windows and recovery
 workflows. The Linux call builds and verifies the public API
 and the browser editor, checks sample playback and uploads the Pages artifact.
 Promotion waits for all three wiki calls and both threading checks. Only the
 post-promotion job deploys the candidate wiki.
-The ARM sequence can increase total batch duration.
 
 #### Retry jobs that found no runner
 

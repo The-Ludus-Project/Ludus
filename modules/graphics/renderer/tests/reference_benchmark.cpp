@@ -1,28 +1,47 @@
 // Reference capture timing on a cooked LUSCN scene (for example `ludus-cook cook`
-// output for staircase2). Each run begins a fresh capture, so setup includes the
-// CPU BVH build, scene packing and upload; the first-sample and completion times
-// are reported separately, with the device time of the transport dispatches, which
-// other processes' CPU load does not inflate. The radiance checksum identifies the converged image,
-// so traversal changes that must not alter results can be compared bit for bit.
+// output for staircase2) or on a generated Cornell tile room. Each run begins a fresh capture, so setup
+// includes the CPU BVH build, scene packing and upload; the first-sample and completion times are reported
+// separately, with the device time of the transport dispatches, which other processes' CPU load does not
+// inflate. The radiance checksum identifies the converged image, so traversal changes that must not alter
+// results can be compared bit for bit.
 // When LUDUS_REFERENCE_BENCHMARK_OUTPUT names a directory, the last run's linear
 // radiance is published there as reference-{gpu,cpu}.rgb32f (float32 RGB rows).
 //
-// usage: ludus_reference_benchmark SCENE_DIRECTORY [WIDTH HEIGHT SAMPLES DEPTH {gpu|cpu} RUNS [WAVELENGTH_NANOMETERS]]
+// usage: ludus_reference_benchmark SCENE [WIDTH HEIGHT SAMPLES DEPTH {gpu|cpu} RUNS [WAVELENGTH_NANOMETERS]]
+//
+// SCENE is a cooked scene directory or cornell:ARRANGEMENT[:TILES]. The Cornell room has fixed geometry, two
+// diffuse blocks and one ceiling light. Its five walls are split into TILES x TILES quads (5 or 10, default 10);
+// every quad is its own object with one of five reference materials: 0 diffuse, 1 metallic-roughness, 2
+// conductor, 3 coated diffuse and 4 thin dielectric. ARRANGEMENT assigns them to the wall quads: `single` makes
+// every wall diffuse; `striped`, `interleaved` and `shuffled` put each material on a fifth of every wall, in
+// vertical stripes, so that neighbouring quads always differ, and in a fixed random order; `only-N` puts
+// material N on every wall.
+//
+// LUDUS_REFERENCE_BENCHMARK_KERNELS selects GPU transport kernels from reference, repeat-closest,
+// repeat-visibility and permuted, separated by commas (default reference). Each kernel gets its own renderer on
+// one device. Runs alternate the kernel order, so slow drift on a loaded machine affects every kernel alike.
+// Every kernel must reproduce the first kernel's checksum and query counts; see the wavefront hit-shading
+// qualification in docs/architecture/renderer-systems.md.
 #include "renderer_authored.h"
 #include "renderer_authored_shadow.h"
 #include "renderer_composite.h"
 #include "renderer_flat.h"
 #include "renderer_output.h"
 #include "renderer_reference.h"
+#include "renderer_reference_permuted.h"
 #include "renderer_reference_reduce.h"
+#include "renderer_reference_repeat_closest.h"
+#include "renderer_reference_repeat_visibility.h"
 #include "renderer_shadow.h"
 
 #include <ludus/content/content.h>
 #include <ludus/foundation/base/parse_number.hpp>
 #include <ludus/foundation/containers/array.hpp>
 #include <ludus/foundation/containers/sort.hpp>
+#include <ludus/foundation/containers/static_array.hpp>
 #include <ludus/foundation/filesystem/persistence.hpp>
 #include <ludus/foundation/math/projection.hpp>
+#include <ludus/foundation/math/scalar.hpp>
 #include <ludus/foundation/time/time.hpp>
 #include <ludus/graphics/renderer/renderer.hpp>
 #include <ludus/graphics/rhi/device.h>
@@ -33,6 +52,7 @@
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <string_view>
 
 using namespace ludus::foundation;
 namespace rr = ludus::graphics::renderer;
@@ -111,6 +131,423 @@ template <typename Handle>
         return false;
     }
     inoutValue = static_cast<uint32>(value);
+    return true;
+}
+
+// --- Generated Cornell tile room -----------------------------------------------------------------------
+// The same quads, in the same object order, for every arrangement, so the BVH, the diffuse blocks and the light
+// are identical and only the materials of the wall quads change. Every arrangement except only-N puts each
+// material on the same number of quads of every wall.
+constexpr std::string_view CORNELL_PREFIX = "cornell:";
+constexpr uint32 CORNELL_MATERIALS = 5;
+constexpr uint32 DEFAULT_CORNELL_TILES = 2 * CORNELL_MATERIALS;
+// 5 walls x 10^2 + 40 block quads + the light fit the RHI default of 1024 draws per frame.
+constexpr uint32 MAX_CORNELL_TILES = 2 * CORNELL_MATERIALS;
+constexpr uint32 CORNELL_BLOCK_TILES = 2;
+constexpr uint32 CORNELL_LIGHT_MATERIAL = CORNELL_MATERIALS;
+constexpr uint32 CORNELL_INTERLEAVED_ROW_STEP = 2; // Coprime with the material count: every neighbour differs.
+constexpr float32 CORNELL_REFLECTANCE = .7F;
+constexpr float32 CORNELL_METALLIC_ROUGHNESS = .5F;
+constexpr float32 CORNELL_GLOSSY_ALPHA = .09F; // Perceptual roughness 0.3.
+constexpr float32 CORNELL_COATING_ETA = 1.5F;
+constexpr float32 CORNELL_THIN_DIELECTRIC_ETA = 1.5F;
+constexpr math::Vector3 CORNELL_GOLD_ETA{.143F, .374F, 1.442F};
+constexpr math::Vector3 CORNELL_GOLD_K{3.983F, 2.385F, 1.603F};
+constexpr math::Vector3 CORNELL_LIGHT_RADIANCE{12, 12, 12};
+constexpr float32 CORNELL_LIGHT_HALF_WIDTH = .25F;
+constexpr float32 CORNELL_LIGHT_HEIGHT = .999F;
+constexpr math::Vector3 CORNELL_EYE{0, 0, 3.4F};
+constexpr math::Vector3 CORNELL_TARGET{0, 0, -1};
+constexpr float32 CORNELL_VERTICAL_FOV_DEGREES = 48.88791F; // As tests/scenes/cornell_box/cornell-box.luscene.json.
+constexpr uint64 CORNELL_SHUFFLE_SEED = 0x9e3779b97f4a7c15;
+// SplitMix64's finalizer (Guy L. Steele Jr., Doug Lea and Christine H. Flood, "Fast Splittable Pseudorandom
+// Number Generators", OOPSLA 2014, https://doi.org/10.1145/2660193.2660195).
+constexpr uint64 SPLITMIX_FIRST_MULTIPLIER = 0xbf58476d1ce4e5b9;
+constexpr uint64 SPLITMIX_SECOND_MULTIPLIER = 0x94d049bb133111eb;
+constexpr uint32 SPLITMIX_FIRST_SHIFT = 30;
+constexpr uint32 SPLITMIX_SECOND_SHIFT = 27;
+constexpr uint32 SPLITMIX_THIRD_SHIFT = 31;
+constexpr usize QUAD_CORNERS = 4;
+constexpr usize CORNELL_WALL_COUNT = 5;
+constexpr usize CORNELL_BLOCK_COUNT = 2;
+constexpr usize BLOCK_FACES = 5;
+
+enum class CornellArrangement : uint8
+{
+    Single,      ///< Diffuse walls: the single-material control (the same as only-0).
+    Striped,     ///< Each wall in vertical stripes, one per material.
+    Interleaved, ///< Neighbouring quads of a wall always differ in material.
+    Shuffled,    ///< Each wall's striped assignment in a fixed random order.
+    Only,        ///< One chosen material on every wall.
+};
+
+/// The wall assignment and subdivision of one generated room.
+struct CornellLayout final
+{
+    CornellArrangement Arrangement = CornellArrangement::Single;
+    uint32 OnlyMaterial = 0; ///< Material of every wall quad for CornellArrangement::Only.
+    uint32 Tiles = DEFAULT_CORNELL_TILES;
+};
+/// Row and column of one quad on its face.
+struct CornellTile final
+{
+    uint32 Row = 0;
+    uint32 Column = 0;
+};
+
+struct CornellFace final
+{
+    math::Vector3 OriginWorld;
+    math::Vector3 EdgeUWorld;
+    math::Vector3 EdgeVWorld;
+    math::Vector3 NormalWorld; ///< Unit; Cross(EdgeU, EdgeV) points the same way.
+};
+
+// Five walls of [-1, 1]^3, open towards the camera on +z, each facing into the room.
+constexpr StaticArray<CornellFace, CORNELL_WALL_COUNT> CORNELL_WALLS{{
+    {{-1, -1, 1}, {2, 0, 0}, {0, 0, -2}, {0, 1, 0}}, // floor
+    {{-1, 1, -1}, {2, 0, 0}, {0, 0, 2}, {0, -1, 0}}, // ceiling
+    {{-1, -1, -1}, {2, 0, 0}, {0, 2, 0}, {0, 0, 1}}, // back
+    {{-1, -1, 1}, {0, 0, -2}, {0, 2, 0}, {1, 0, 0}}, // left
+    {{1, -1, -1}, {0, 0, 2}, {0, 2, 0}, {-1, 0, 0}}, // right
+}};
+
+struct CornellBlock final
+{
+    math::Vector3 CenterWorld;
+    math::Vector3 HalfExtentWorld;
+};
+constexpr StaticArray<CornellBlock, CORNELL_BLOCK_COUNT> CORNELL_BLOCKS{{
+    {{-.35F, -.4F, -.35F}, {.28F, .6F, .28F}},
+    {{.4F, -.7F, .25F}, {.28F, .3F, .28F}},
+}};
+
+[[nodiscard]] uint64 MixSplit(uint64 value) noexcept
+{
+    value = (value ^ (value >> SPLITMIX_FIRST_SHIFT)) * SPLITMIX_FIRST_MULTIPLIER;
+    value = (value ^ (value >> SPLITMIX_SECOND_SHIFT)) * SPLITMIX_SECOND_MULTIPLIER;
+    return value ^ (value >> SPLITMIX_THIRD_SHIFT);
+}
+
+[[nodiscard]] bool
+AddCornellQuad(const CornellFace& face, uint32 material, resources::SceneDefinition& inoutScene) noexcept
+{
+    resources::SceneObject object;
+    object.Mesh = 0;
+    object.Material = material;
+    object.SourceId = inoutScene.Objects.GetSize() + 1;
+    object.Transform.Columns[0] = face.EdgeUWorld;
+    object.Transform.Columns[1] = face.EdgeVWorld;
+    object.Transform.Columns[2] = face.NormalWorld;
+    object.Transform.Translation = face.OriginWorld;
+    return inoutScene.Objects.TryAdd(object);
+}
+
+// The material of one wall quad; Shuffled starts from Striped and is permuted per wall afterwards.
+[[nodiscard]] uint32 GetCornellMaterial(const CornellLayout& layout, CornellTile tile) noexcept
+{
+    switch (layout.Arrangement)
+    {
+        case CornellArrangement::Single:
+            return 0;
+        case CornellArrangement::Only:
+            return layout.OnlyMaterial;
+        case CornellArrangement::Interleaved:
+            return (tile.Column + CORNELL_INTERLEAVED_ROW_STEP * tile.Row) % CORNELL_MATERIALS;
+        case CornellArrangement::Striped:
+        case CornellArrangement::Shuffled:
+            break;
+    }
+    return tile.Column * CORNELL_MATERIALS / layout.Tiles;
+}
+
+// Splits a face into tiles x tiles quads in row-major order.
+[[nodiscard]] bool
+AddCornellTiles(const CornellFace& face, const CornellLayout& layout, resources::SceneDefinition& inoutScene) noexcept
+{
+    const float32 scale = 1.0F / float32(layout.Tiles);
+    for (uint32 row = 0; row < layout.Tiles; ++row)
+    {
+        for (uint32 column = 0; column < layout.Tiles; ++column)
+        {
+            const CornellFace tile{face.OriginWorld + face.EdgeUWorld * (float32(column) * scale) +
+                                       face.EdgeVWorld * (float32(row) * scale),
+                                   face.EdgeUWorld * scale,
+                                   face.EdgeVWorld * scale,
+                                   face.NormalWorld};
+            if (AddCornellQuad(tile, GetCornellMaterial(layout, {row, column}), inoutScene) == false)
+            {
+                return false;
+            }
+        }
+    }
+    return true;
+}
+
+[[nodiscard]] bool AddCornellBlock(const CornellBlock& block, resources::SceneDefinition& inoutScene) noexcept
+{
+    const math::Vector3 low = block.CenterWorld - block.HalfExtentWorld;
+    const math::Vector3 high = block.CenterWorld + block.HalfExtentWorld;
+    const math::Vector3 size = high - low;
+    const StaticArray<CornellFace, BLOCK_FACES> faces{{
+        {{low.X, high.Y, high.Z}, {size.X, 0, 0}, {0, 0, -size.Z}, {0, 1, 0}}, // top
+        {{low.X, low.Y, high.Z}, {size.X, 0, 0}, {0, size.Y, 0}, {0, 0, 1}},   // front
+        {{high.X, low.Y, low.Z}, {-size.X, 0, 0}, {0, size.Y, 0}, {0, 0, -1}}, // back
+        {{high.X, low.Y, high.Z}, {0, 0, -size.Z}, {0, size.Y, 0}, {1, 0, 0}}, // right
+        {{low.X, low.Y, low.Z}, {0, 0, size.Z}, {0, size.Y, 0}, {-1, 0, 0}},   // left
+    }};
+    for (const CornellFace& face : faces)
+    {
+        // The blocks stay diffuse in every arrangement.
+        if (AddCornellTiles(face, {CornellArrangement::Single, 0, CORNELL_BLOCK_TILES}, inoutScene) == false)
+        {
+            return false;
+        }
+    }
+    return true;
+}
+
+[[nodiscard]] resources::SceneMaterial MakeCornellMaterial(uint32 index) noexcept
+{
+    namespace format = ludus::content::scene_format;
+    resources::SceneMaterial material;
+    material.HasSourceMaterial = true;
+    material.Reflectance = {CORNELL_REFLECTANCE, CORNELL_REFLECTANCE, CORNELL_REFLECTANCE};
+    material.Roughness = 1;
+    material.Scattering = {};
+    switch (index)
+    {
+        case 0:
+            material.Scattering.Model = format::MaterialModel::Diffuse;
+            break;
+        case 1:
+            material.Scattering.Model = format::MaterialModel::MetallicRoughness;
+            material.Roughness = CORNELL_METALLIC_ROUGHNESS;
+            break;
+        case 2:
+            material.Scattering.Model = format::MaterialModel::Conductor;
+            material.Scattering.Eta = {{CORNELL_GOLD_ETA.X, CORNELL_GOLD_ETA.Y, CORNELL_GOLD_ETA.Z}};
+            material.Scattering.K = {{CORNELL_GOLD_K.X, CORNELL_GOLD_K.Y, CORNELL_GOLD_K.Z}};
+            material.Scattering.AlphaU = CORNELL_GLOSSY_ALPHA;
+            material.Scattering.AlphaV = CORNELL_GLOSSY_ALPHA;
+            break;
+        case 3:
+            material.Scattering.Model = format::MaterialModel::CoatedDiffuse;
+            material.Scattering.AlphaU = CORNELL_GLOSSY_ALPHA;
+            material.Scattering.AlphaV = CORNELL_GLOSSY_ALPHA;
+            material.Scattering.CoatingEta = CORNELL_COATING_ETA;
+            break;
+        case 4:
+            material.Scattering.Model = format::MaterialModel::ThinDielectric;
+            material.Scattering.Eta = {
+                {CORNELL_THIN_DIELECTRIC_ETA, CORNELL_THIN_DIELECTRIC_ETA, CORNELL_THIN_DIELECTRIC_ETA}};
+            material.Scattering.AlphaU = format::MIN_MATERIAL_ALPHA;
+            material.Scattering.AlphaV = format::MIN_MATERIAL_ALPHA;
+            break;
+        default:
+            material.Scattering.Model = format::MaterialModel::Diffuse;
+            material.Reflectance = {};
+            material.Emission = CORNELL_LIGHT_RADIANCE;
+            material.IsEmissionTwoSided = false;
+            break;
+    }
+    return material;
+}
+
+// Parses ARRANGEMENT[:TILES] after the cornell: prefix; TILES is a multiple of the material count.
+[[nodiscard]] bool ParseCornell(std::string_view text, CornellLayout& outLayout) noexcept
+{
+    const usize separator = text.find(':');
+    const std::string_view name = text.substr(0, separator);
+    uint32 tiles = DEFAULT_CORNELL_TILES;
+    if (separator != std::string_view::npos)
+    {
+        const std::string_view count = text.substr(separator + 1);
+        uint64 value = 0;
+        if (ParseUint64(count.data(), count.size(), value) != NumberParseStatus::Success || value == 0 ||
+            value > MAX_CORNELL_TILES || value % CORNELL_MATERIALS != 0)
+        {
+            return false;
+        }
+        tiles = static_cast<uint32>(value);
+    }
+    constexpr std::string_view ONLY_PREFIX = "only-";
+    uint32 only = 0;
+    CornellArrangement arrangement = CornellArrangement::Single;
+    if (name == "single")
+    {
+        arrangement = CornellArrangement::Single;
+    }
+    else if (name == "striped")
+    {
+        arrangement = CornellArrangement::Striped;
+    }
+    else if (name == "interleaved")
+    {
+        arrangement = CornellArrangement::Interleaved;
+    }
+    else if (name == "shuffled")
+    {
+        arrangement = CornellArrangement::Shuffled;
+    }
+    else if (name.size() == ONLY_PREFIX.size() + 1 && name.starts_with(ONLY_PREFIX) == true && name.back() >= '0' &&
+             name.back() < char('0' + CORNELL_MATERIALS))
+    {
+        arrangement = CornellArrangement::Only;
+        only = static_cast<uint32>(name.back() - '0');
+    }
+    else
+    {
+        return false;
+    }
+    outLayout = {arrangement, only, tiles};
+    return true;
+}
+
+[[nodiscard]] bool MakeCornellScene(const CornellLayout& layout, resources::SceneDefinition& outScene) noexcept
+{
+    resources::SceneDefinition scene;
+    resources::SceneMesh quad;
+    constexpr StaticArray<math::Vector3, QUAD_CORNERS> QUAD_POSITIONS{{{0, 0, 0}, {1, 0, 0}, {1, 1, 0}, {0, 1, 0}}};
+    constexpr StaticArray<uint32, 2 * TRIANGLE_CORNERS> QUAD_INDICES{{0, 1, 2, 0, 2, 3}};
+    for (const math::Vector3& corner : QUAD_POSITIONS)
+    {
+        if (quad.Positions.TryAdd(corner) == false || quad.Normals.TryAdd({0, 0, 1}) == false ||
+            quad.Texcoords.TryAdd({corner.X, corner.Y}) == false)
+        {
+            return false;
+        }
+    }
+    for (const uint32 index : QUAD_INDICES)
+    {
+        if (quad.Indices.TryAdd(index) == false)
+        {
+            return false;
+        }
+    }
+    if (scene.Meshes.TryAdd(Move(quad)) == false)
+    {
+        return false;
+    }
+    for (uint32 i = 0; i <= CORNELL_LIGHT_MATERIAL; ++i)
+    {
+        if (scene.Materials.TryAdd(MakeCornellMaterial(i)) == false)
+        {
+            return false;
+        }
+    }
+    const usize wallQuads = usize(layout.Tiles) * layout.Tiles;
+    uint64 state = CORNELL_SHUFFLE_SEED;
+    for (const CornellFace& wall : CORNELL_WALLS)
+    {
+        const usize first = scene.Objects.GetSize();
+        if (AddCornellTiles(wall, layout, scene) == false)
+        {
+            return false;
+        }
+        if (layout.Arrangement == CornellArrangement::Shuffled)
+        {
+            // Fisher-Yates within the wall keeps each material's quad count on every wall.
+            for (usize i = wallQuads - 1; i > 0; --i)
+            {
+                state = MixSplit(state + CORNELL_SHUFFLE_SEED);
+                const usize other = static_cast<usize>(state % (i + 1));
+                const uint32 swapped = scene.Objects[first + i].Material;
+                scene.Objects[first + i].Material = scene.Objects[first + other].Material;
+                scene.Objects[first + other].Material = swapped;
+            }
+        }
+    }
+    for (const CornellBlock& block : CORNELL_BLOCKS)
+    {
+        if (AddCornellBlock(block, scene) == false)
+        {
+            return false;
+        }
+    }
+    const CornellFace light{{-CORNELL_LIGHT_HALF_WIDTH, CORNELL_LIGHT_HEIGHT, -CORNELL_LIGHT_HALF_WIDTH},
+                            {2 * CORNELL_LIGHT_HALF_WIDTH, 0, 0},
+                            {0, 0, 2 * CORNELL_LIGHT_HALF_WIDTH},
+                            {0, -1, 0}};
+    if (AddCornellQuad(light, CORNELL_LIGHT_MATERIAL, scene) == false)
+    {
+        return false;
+    }
+    scene.Eye = CORNELL_EYE;
+    scene.Target = CORNELL_TARGET;
+    scene.Up = {0, 1, 0};
+    scene.VerticalFov = math::DegreesToRadians(CORNELL_VERTICAL_FOV_DEGREES);
+    outScene = Move(scene);
+    return true;
+}
+
+// --- Transport kernels ----------------------------------------------------------------------------------
+enum class TransportKernel : uint8
+{
+    Reference,        ///< The production renderer_reference recipe.
+    RepeatClosest,    ///< Every closest-hit query traced twice.
+    RepeatVisibility, ///< Every visibility query traced twice.
+    Permuted,         ///< Threads take pixels in a fixed pseudorandom order.
+};
+constexpr usize TRANSPORT_KERNELS = 4;
+constexpr StaticArray<const char*, TRANSPORT_KERNELS> TRANSPORT_KERNEL_NAMES{
+    {"reference", "repeat-closest", "repeat-visibility", "permuted"}};
+
+[[nodiscard]] rhi::RasterShaderDescription GetTraceKernel(TransportKernel kernel) noexcept
+{
+    switch (kernel)
+    {
+        case TransportKernel::RepeatClosest:
+            return shaders::renderer_reference_repeat_closest::Compute();
+        case TransportKernel::RepeatVisibility:
+            return shaders::renderer_reference_repeat_visibility::Compute();
+        case TransportKernel::Permuted:
+            return shaders::renderer_reference_permuted::Compute();
+        case TransportKernel::Reference:
+            break;
+    }
+    return shaders::renderer_reference::Compute();
+}
+
+// Parses a comma-separated list of distinct kernel names.
+[[nodiscard]] bool ParseKernels(std::string_view text, Array<TransportKernel>& outKernels) noexcept
+{
+    Array<TransportKernel> kernels;
+    while (text.empty() == false)
+    {
+        const usize separator = text.find(',');
+        const std::string_view name = text.substr(0, separator);
+        bool isKnown = false;
+        for (usize i = 0; i < TRANSPORT_KERNELS; ++i)
+        {
+            if (name == TRANSPORT_KERNEL_NAMES[i])
+            {
+                const TransportKernel kernel = static_cast<TransportKernel>(i);
+                for (const TransportKernel existing : kernels)
+                {
+                    if (existing == kernel)
+                    {
+                        return false;
+                    }
+                }
+                if (kernels.TryAdd(kernel) == false)
+                {
+                    return false;
+                }
+                isKnown = true;
+            }
+        }
+        if (isKnown == false)
+        {
+            return false;
+        }
+        text = separator == std::string_view::npos ? std::string_view{} : text.substr(separator + 1);
+    }
+    if (kernels.IsEmpty() == true)
+    {
+        return false;
+    }
+    outKernels = Move(kernels);
     return true;
 }
 
@@ -262,27 +699,56 @@ struct RunResult final
     Array<math::Vector3> Radiance;
     float64 TransportMilliseconds = 0;
     uint32 TimedDispatches = 0;
+    float64 ReductionMilliseconds = 0;
+    uint32 TimedReductions = 0;
+    uint64 DroppedPasses = 0;
 };
 // The ordered graph scopes each pass by name; see rhi::GpuPassTimings.
 constexpr const char* TRANSPORT_PASS_NAME = "Reference compute transport";
-// Adds a completed timing batch's transport passes, then arms the next batch.
+constexpr const char* REDUCTION_PASS_NAME = "Reference compute reduction";
+// Adds a completed timing batch's reference passes, then arms the next batch.
 void CollectTransportTimings(rhi::DeviceHandle device, RunResult& inoutResult) noexcept
 {
     rhi::GpuPassTimings timings;
     if (rhi::GetGpuPassTimings(device, timings) == Status::Ready && timings.State == rhi::GpuTimingState::Available)
     {
+        inoutResult.DroppedPasses += timings.DroppedPasses;
         for (usize i = 0; i < timings.Count; ++i)
         {
             const rhi::GpuPassTiming& pass = timings.Passes[i];
-            if (pass.Timing.State == rhi::GpuTimingState::Available &&
-                std::strcmp(pass.Scope.Name.GetData(), TRANSPORT_PASS_NAME) == 0)
+            if (pass.Timing.State != rhi::GpuTimingState::Available)
             {
-                inoutResult.TransportMilliseconds += pass.Timing.DurationNanoseconds / NANOSECONDS_PER_MILLISECOND;
+                continue;
+            }
+            const float64 milliseconds = pass.Timing.DurationNanoseconds / NANOSECONDS_PER_MILLISECOND;
+            if (std::strcmp(pass.Scope.Name.GetData(), TRANSPORT_PASS_NAME) == 0)
+            {
+                inoutResult.TransportMilliseconds += milliseconds;
                 ++inoutResult.TimedDispatches;
+            }
+            else if (std::strcmp(pass.Scope.Name.GetData(), REDUCTION_PASS_NAME) == 0)
+            {
+                inoutResult.ReductionMilliseconds += milliseconds;
+                ++inoutResult.TimedReductions;
             }
         }
     }
     if (timings.State != rhi::GpuTimingState::Armed && timings.State != rhi::GpuTimingState::Pending)
+    {
+        static_cast<void>(rhi::ArmGpuPassTimings(device));
+    }
+}
+// Waits for a batch still pending from the previous capture and discards it, so its passes are not counted
+// against the next capture, which may use another kernel.
+void DiscardPendingTimings(rhi::DeviceHandle device) noexcept
+{
+    const uint64 start = time::NowTicks();
+    rhi::GpuPassTimings timings;
+    while (rhi::GetGpuPassTimings(device, timings) == Status::Ready && timings.State == rhi::GpuTimingState::Pending &&
+           time::NowTicks() - start < TIMEOUT)
+    {
+    }
+    if (timings.State != rhi::GpuTimingState::Armed)
     {
         static_cast<void>(rhi::ArmGpuPassTimings(device));
     }
@@ -295,6 +761,7 @@ void CollectTransportTimings(rhi::DeviceHandle device, RunResult& inoutResult) n
                               rhi::SurfaceHandle surface,
                               RunResult& outResult) noexcept
 {
+    DiscardPendingTimings(device);
     const uint64 start = time::NowTicks();
     rr::ReferenceCapture capture;
     Status status = inoutRenderer.BeginReferenceCapture(snapshot, description, capture);
@@ -358,6 +825,85 @@ void CollectTransportTimings(rhi::DeviceHandle device, RunResult& inoutResult) n
     outResult.MeanLuminance = luminance / float64(pixels.GetSize());
     return inoutRenderer.Release(capture) == Status::Ready;
 }
+// Prepares one renderer with the given trace kernel and installs the scene into it.
+[[nodiscard]] const char* PrepareRenderer(rr::Renderer& inoutRenderer,
+                                          rhi::DeviceHandle device,
+                                          const resources::SceneDefinition& scene,
+                                          bool isCpu,
+                                          TransportKernel kernel,
+                                          rr::MaterialProgram& outProgram,
+                                          rr::Snapshot& outSnapshot,
+                                          usize& outTriangles) noexcept
+{
+    const rr::ReferenceRenderingOptions options{isCpu == true ? rr::ReferenceTraversal::CpuOracle
+                                                              : rr::ReferenceTraversal::GpuCompute,
+                                                CPU_BUDGET,
+                                                0,
+                                                CPU_TILE_PIXELS,
+                                                isCpu == true ? usize{0} : GPU_BUDGET};
+    rr::Limits limits;
+    limits.Meshes = static_cast<uint32>(scene.Meshes.GetSize());
+    limits.Materials = static_cast<uint32>(scene.Materials.GetSize());
+    limits.Objects = static_cast<uint32>(scene.Objects.GetSize());
+    if (inoutRenderer.Initialize(device,
+                                 shaders::renderer_flat::Vertex(),
+                                 shaders::renderer_flat::Fragment(),
+                                 limits) != Status::Ready)
+    {
+        return "renderer initialization";
+    }
+    if ((isCpu == true ? inoutRenderer.EnableReferenceRendering({}, options)
+                       : inoutRenderer.EnableReferenceRendering(GetTraceKernel(kernel),
+                                                                shaders::renderer_reference_reduce::Compute(),
+                                                                options)) != Status::Ready)
+    {
+        return "reference rendering";
+    }
+    if (inoutRenderer.InitializeViews(shaders::renderer_composite::Vertex(), shaders::renderer_composite::Fragment()) !=
+            Status::Ready ||
+        inoutRenderer.InitializeLighting(shaders::renderer_output::Vertex(),
+                                         shaders::renderer_output::Fragment(),
+                                         shaders::renderer_shadow::Fragment()) != Status::Ready ||
+        Wait(inoutRenderer,
+             outProgram,
+             inoutRenderer.PrewarmLitProgram(shaders::renderer_authored::Vertex(),
+                                             shaders::renderer_authored::Fragment(),
+                                             shaders::renderer_authored_shadow::Fragment(),
+                                             outProgram)) != Status::Ready)
+    {
+        return "lighting programs";
+    }
+    if (LoadScene(scene, inoutRenderer, device, outProgram, outSnapshot, outTriangles) == false)
+    {
+        return "scene installation";
+    }
+    return nullptr;
+}
+
+[[nodiscard]] float64 GetMedian(Array<float64>& inoutValues) noexcept
+{
+    if (inoutValues.IsEmpty() == true)
+    {
+        return 0;
+    }
+    Sort(inoutValues.GetData(), inoutValues.GetSize(), [](float64 left, float64 right) noexcept {
+        return left < right;
+    });
+    return inoutValues[inoutValues.GetSize() / 2];
+}
+
+// Per-kernel measurements over every run, in run order.
+struct KernelMeasurements final
+{
+    Array<float64> FirstSampleMilliseconds;
+    Array<float64> TotalMilliseconds;
+    Array<float64> TransportPerDispatchMilliseconds;
+    Array<float64> ReductionPerDispatchMilliseconds;
+    uint64 TimedDispatches = 0;
+    uint64 TimedReductions = 0;
+    uint64 DroppedPasses = 0;
+};
+
 } // namespace
 
 int main(int argc, char** argv)
@@ -372,6 +918,9 @@ int main(int argc, char** argv)
     uint32 runs = DEFAULT_RUNS;
     uint32 wavelengthNanometers = 0;
     const bool isCpu = argc > TRAVERSAL_ARGUMENT && std::strcmp(argv[TRAVERSAL_ARGUMENT], "cpu") == 0;
+    Array<TransportKernel> kernels;
+    const char* kernelsOrNull = std::getenv("LUDUS_REFERENCE_BENCHMARK_KERNELS");
+    const bool hasKernels = ParseKernels(kernelsOrNull != nullptr ? kernelsOrNull : TRANSPORT_KERNEL_NAMES[0], kernels);
     if (argc < 2 || argc > ARGUMENT_COUNT ||
         ParseArgument(argc, argv, WIDTH_ARGUMENT, MAX_EXTENT, description.Width) == false ||
         ParseArgument(argc, argv, HEIGHT_ARGUMENT, MAX_EXTENT, description.Height) == false ||
@@ -379,21 +928,41 @@ int main(int argc, char** argv)
         ParseArgument(argc, argv, DEPTH_ARGUMENT, MAX_DEPTH, description.MaxDepth) == false ||
         ParseArgument(argc, argv, RUNS_ARGUMENT, MAX_RUNS, runs) == false ||
         ParseArgument(argc, argv, WAVELENGTH_ARGUMENT, MAX_WAVELENGTH_NANOMETERS, wavelengthNanometers) == false ||
-        (argc > TRAVERSAL_ARGUMENT && isCpu == false && std::strcmp(argv[TRAVERSAL_ARGUMENT], "gpu") != 0))
+        (argc > TRAVERSAL_ARGUMENT && isCpu == false && std::strcmp(argv[TRAVERSAL_ARGUMENT], "gpu") != 0) ||
+        hasKernels == false || (isCpu == true && kernels.GetSize() != 1))
     {
-        std::fprintf(stderr,
-                     "usage: %s SCENE_DIRECTORY [WIDTH HEIGHT SAMPLES DEPTH {gpu|cpu} RUNS [WAVELENGTH_NANOMETERS]]\n",
-                     argc > 0 ? argv[0] : "ludus_reference_benchmark");
+        std::fprintf(
+            stderr,
+            "usage: %s {SCENE_DIRECTORY|cornell:ARRANGEMENT[:TILES]} [WIDTH HEIGHT SAMPLES DEPTH {gpu|cpu} RUNS "
+            "[WAVELENGTH_NANOMETERS]]\n"
+            "LUDUS_REFERENCE_BENCHMARK_KERNELS: distinct comma-separated GPU kernels from reference, "
+            "repeat-closest, repeat-visibility and permuted\n",
+            argc > 0 ? argv[0] : "ludus_reference_benchmark");
         return 1;
     }
     description.OpticalWavelengthWorld = static_cast<float32>(wavelengthNanometers) * METRES_PER_NANOMETRE;
-    ludus::content::Bytes bundle;
     resources::SceneDefinition scene;
-    if (ludus::content::ReadFile(argv[1], "scene.luscn", SCENE_BYTES, bundle) != ludus::content::Status::Ok ||
-        resources::SceneDefinition::Decode(bundle.Data().data(), bundle.Data().size(), scene) != resources::Status::Ok)
+    const std::string_view sceneName = argv[1];
+    if (sceneName.starts_with(CORNELL_PREFIX) == true)
     {
-        std::fprintf(stderr, "could not read %s/scene.luscn\n", argv[1]);
-        return 2;
+        CornellLayout layout;
+        if (ParseCornell(sceneName.substr(CORNELL_PREFIX.size()), layout) == false ||
+            MakeCornellScene(layout, scene) == false)
+        {
+            std::fprintf(stderr, "could not generate %s\n", argv[1]);
+            return 2;
+        }
+    }
+    else
+    {
+        ludus::content::Bytes bundle;
+        if (ludus::content::ReadFile(argv[1], "scene.luscn", SCENE_BYTES, bundle) != ludus::content::Status::Ok ||
+            resources::SceneDefinition::Decode(bundle.Data().data(), bundle.Data().size(), scene) !=
+                resources::Status::Ok)
+        {
+            std::fprintf(stderr, "could not read %s/scene.luscn\n", argv[1]);
+            return 2;
+        }
     }
     math::Matrix4 view;
     math::Matrix4 projection;
@@ -462,55 +1031,22 @@ int main(int argc, char** argv)
     } shutdown;
     int exitCode = 0;
     {
-        rr::Renderer renderer;
-        const rr::ReferenceRenderingOptions options{isCpu == true ? rr::ReferenceTraversal::CpuOracle
-                                                                  : rr::ReferenceTraversal::GpuCompute,
-                                                    CPU_BUDGET,
-                                                    0,
-                                                    CPU_TILE_PIXELS,
-                                                    isCpu == true ? usize{0} : GPU_BUDGET};
-        rr::MaterialProgram program;
-        rr::Snapshot snapshot;
-        rr::Limits limits;
-        limits.Meshes = static_cast<uint32>(scene.Meshes.GetSize());
-        limits.Materials = static_cast<uint32>(scene.Materials.GetSize());
-        limits.Objects = static_cast<uint32>(scene.Objects.GetSize());
+        StaticArray<rr::Renderer, TRANSPORT_KERNELS> renderers;
+        StaticArray<rr::MaterialProgram, TRANSPORT_KERNELS> programs;
+        StaticArray<rr::Snapshot, TRANSPORT_KERNELS> snapshots;
         usize triangles = 0;
-        const char* failureOrNull = nullptr;
-        if (renderer.Initialize(device, shaders::renderer_flat::Vertex(), shaders::renderer_flat::Fragment(), limits) !=
-            Status::Ready)
+        for (usize k = 0; k < kernels.GetSize(); ++k)
         {
-            failureOrNull = "renderer initialization";
-        }
-        else if ((isCpu == true ? renderer.EnableReferenceRendering({}, options)
-                                : renderer.EnableReferenceRendering(shaders::renderer_reference::Compute(),
-                                                                    shaders::renderer_reference_reduce::Compute(),
-                                                                    options)) != Status::Ready)
-        {
-            failureOrNull = "reference rendering";
-        }
-        else if (renderer.InitializeViews(shaders::renderer_composite::Vertex(),
-                                          shaders::renderer_composite::Fragment()) != Status::Ready ||
-                 renderer.InitializeLighting(shaders::renderer_output::Vertex(),
-                                             shaders::renderer_output::Fragment(),
-                                             shaders::renderer_shadow::Fragment()) != Status::Ready ||
-                 Wait(renderer,
-                      program,
-                      renderer.PrewarmLitProgram(shaders::renderer_authored::Vertex(),
-                                                 shaders::renderer_authored::Fragment(),
-                                                 shaders::renderer_authored_shadow::Fragment(),
-                                                 program)) != Status::Ready)
-        {
-            failureOrNull = "lighting programs";
-        }
-        else if (LoadScene(scene, renderer, device, program, snapshot, triangles) == false)
-        {
-            failureOrNull = "scene installation";
-        }
-        if (failureOrNull != nullptr)
-        {
-            std::fprintf(stderr, "setup failed: %s\n", failureOrNull);
-            return 5;
+            const char* failureOrNull =
+                PrepareRenderer(renderers[k], device, scene, isCpu, kernels[k], programs[k], snapshots[k], triangles);
+            if (failureOrNull != nullptr)
+            {
+                std::fprintf(stderr,
+                             "setup failed for %s: %s\n",
+                             TRANSPORT_KERNEL_NAMES[usize(kernels[k])],
+                             failureOrNull);
+                return 5;
+            }
         }
         std::printf("scene %s: %zu objects, %zu triangles; %ux%u, %u spp, depth %u, %s\n",
                     argv[1],
@@ -559,41 +1095,91 @@ int main(int argc, char** argv)
                     authoredLights.GetSize(),
                     scene.Environment.Width,
                     scene.Environment.Height);
-        Array<float64> totals;
+        StaticArray<KernelMeasurements, TRANSPORT_KERNELS> measurements;
+        RunResult baseline; // The first kernel's first run; every later capture must reproduce it.
+        bool hasBaseline = false;
         RunResult result; // The last run's radiance is published below.
-        for (uint32 run = 0; run < runs; ++run)
+        for (uint32 run = 0; run < runs && exitCode == 0; ++run)
         {
-            result = RunResult{};
-            if (RunCapture(renderer, device, snapshot, description, surface, result) == false ||
-                result.Info.InvalidContributions != 0 || totals.TryAdd(result.TotalMilliseconds) == false)
+            for (usize step = 0; step < kernels.GetSize() && exitCode == 0; ++step)
             {
-                std::fprintf(stderr,
-                             "capture %u failed: pixel %u depth %u sample %u reason %u, invalid %llu\n",
-                             run,
-                             result.Info.FailurePixel,
-                             result.Info.FailureDepth,
-                             result.Info.FailureSample,
-                             static_cast<uint32>(result.Info.Failure),
-                             static_cast<unsigned long long>(result.Info.InvalidContributions));
-                exitCode = 6;
-                break;
+                // Reverse the order on odd runs: A B C, C B A, A B C, ...
+                const usize k = run % 2 == 0 ? step : kernels.GetSize() - 1 - step;
+                const char* name = TRANSPORT_KERNEL_NAMES[usize(kernels[k])];
+                result = RunResult{};
+                if (RunCapture(renderers[k], device, snapshots[k], description, surface, result) == false ||
+                    result.Info.InvalidContributions != 0)
+                {
+                    std::fprintf(stderr,
+                                 "%s capture %u failed: pixel %u depth %u sample %u reason %u, invalid %llu\n",
+                                 name,
+                                 run,
+                                 result.Info.FailurePixel,
+                                 result.Info.FailureDepth,
+                                 result.Info.FailureSample,
+                                 static_cast<uint32>(result.Info.Failure),
+                                 static_cast<unsigned long long>(result.Info.InvalidContributions));
+                    exitCode = 6;
+                    break;
+                }
+                if (hasBaseline == false && k == 0)
+                {
+                    baseline.Checksum = result.Checksum;
+                    baseline.Info = result.Info;
+                    hasBaseline = true;
+                }
+                if (hasBaseline == true && (result.Checksum != baseline.Checksum ||
+                                            result.Info.ClosestQueries != baseline.Info.ClosestQueries ||
+                                            result.Info.VisibilityQueries != baseline.Info.VisibilityQueries ||
+                                            result.Info.MinimumSamples != baseline.Info.MinimumSamples))
+                {
+                    std::fprintf(stderr,
+                                 "%s run %u differs from %s: checksum %016llx, %llu closest, %llu visibility\n",
+                                 name,
+                                 run,
+                                 TRANSPORT_KERNEL_NAMES[usize(kernels[0])],
+                                 static_cast<unsigned long long>(result.Checksum),
+                                 static_cast<unsigned long long>(result.Info.ClosestQueries),
+                                 static_cast<unsigned long long>(result.Info.VisibilityQueries));
+                    exitCode = 8;
+                    break;
+                }
+                KernelMeasurements& kernel = measurements[k];
+                const float64 transportPerDispatch =
+                    result.TimedDispatches == 0 ? 0 : result.TransportMilliseconds / result.TimedDispatches;
+                const float64 reductionPerDispatch =
+                    result.TimedReductions == 0 ? 0 : result.ReductionMilliseconds / result.TimedReductions;
+                if (kernel.FirstSampleMilliseconds.TryAdd(result.FirstSampleMilliseconds) == false ||
+                    kernel.TotalMilliseconds.TryAdd(result.TotalMilliseconds) == false ||
+                    kernel.TransportPerDispatchMilliseconds.TryAdd(transportPerDispatch) == false ||
+                    kernel.ReductionPerDispatchMilliseconds.TryAdd(reductionPerDispatch) == false)
+                {
+                    exitCode = 6;
+                    break;
+                }
+                kernel.TimedDispatches += result.TimedDispatches;
+                kernel.TimedReductions += result.TimedReductions;
+                kernel.DroppedPasses += result.DroppedPasses;
+                const float64 queries = float64(result.Info.ClosestQueries + result.Info.VisibilityQueries);
+                std::printf("%s run %u: %u-%u spp, first sample %.1f ms, total %.1f ms, GPU transport %.1f ms in %u "
+                            "timed dispatches (%.3f ms each; reduction %.3f ms), %.2f Mqueries/s (%llu closest, %llu "
+                            "visibility), mean luminance %.6f, checksum %016llx\n",
+                            name,
+                            run,
+                            result.Info.MinimumSamples,
+                            result.Info.MaximumSamples,
+                            result.FirstSampleMilliseconds,
+                            result.TotalMilliseconds,
+                            result.TransportMilliseconds,
+                            result.TimedDispatches,
+                            transportPerDispatch,
+                            reductionPerDispatch,
+                            queries / (result.TotalMilliseconds * RAYS_PER_MEGARAY_MILLISECOND),
+                            static_cast<unsigned long long>(result.Info.ClosestQueries),
+                            static_cast<unsigned long long>(result.Info.VisibilityQueries),
+                            result.MeanLuminance,
+                            static_cast<unsigned long long>(result.Checksum));
             }
-            const float64 queries = float64(result.Info.ClosestQueries + result.Info.VisibilityQueries);
-            std::printf("run %u: %u-%u spp, first sample %.1f ms, total %.1f ms, GPU transport %.1f ms in %u timed "
-                        "dispatches, %.2f Mqueries/s (%llu closest, %llu visibility), mean luminance %.6f, checksum "
-                        "%016llx\n",
-                        run,
-                        result.Info.MinimumSamples,
-                        result.Info.MaximumSamples,
-                        result.FirstSampleMilliseconds,
-                        result.TotalMilliseconds,
-                        result.TransportMilliseconds,
-                        result.TimedDispatches,
-                        queries / (result.TotalMilliseconds * RAYS_PER_MEGARAY_MILLISECOND),
-                        static_cast<unsigned long long>(result.Info.ClosestQueries),
-                        static_cast<unsigned long long>(result.Info.VisibilityQueries),
-                        result.MeanLuminance,
-                        static_cast<unsigned long long>(result.Checksum));
         }
         const char* outputOrNull = std::getenv("LUDUS_REFERENCE_BENCHMARK_OUTPUT");
         if (exitCode == 0 && outputOrNull != nullptr)
@@ -610,12 +1196,49 @@ int main(int argc, char** argv)
                 exitCode = 7;
             }
         }
-        if (totals.IsEmpty() == false)
+        // Each sample is one transport dispatch, so the per-dispatch median scales to the whole capture even
+        // when the timing batches cover only some dispatches.
+        const float64 samples = float64(description.TargetSamples);
+        Array<float64> referencePerDispatch;
+        for (const float64 value : measurements[0].TransportPerDispatchMilliseconds)
         {
-            Sort(totals.GetData(), totals.GetSize(), [](float64 left, float64 right) noexcept { return left < right; });
-            std::printf("median total %.1f ms over %zu runs\n", totals[totals.GetSize() / 2], totals.GetSize());
+            static_cast<void>(referencePerDispatch.TryAdd(value));
         }
-        static_cast<void>(renderer.Release(snapshot));
+        for (usize k = 0; k < kernels.GetSize(); ++k)
+        {
+            KernelMeasurements& kernel = measurements[k];
+            const usize count = kernel.TotalMilliseconds.GetSize();
+            if (count == 0)
+            {
+                continue;
+            }
+            // Paired per-run difference from the first kernel, whose runs sit next to this kernel's.
+            Array<float64> differences;
+            for (usize i = 0; i < count && i < referencePerDispatch.GetSize(); ++i)
+            {
+                static_cast<void>(
+                    differences.TryAdd(kernel.TransportPerDispatchMilliseconds[i] - referencePerDispatch[i]));
+            }
+            const float64 transport = GetMedian(kernel.TransportPerDispatchMilliseconds);
+            std::printf("%s median over %zu runs: total %.1f ms, first sample %.1f ms, transport %.3f ms per dispatch "
+                        "(%.1f ms per capture), paired difference %+.3f ms per dispatch, reduction %.3f ms; timed "
+                        "%llu of %llu dispatches, %llu dropped passes\n",
+                        TRANSPORT_KERNEL_NAMES[usize(kernels[k])],
+                        count,
+                        GetMedian(kernel.TotalMilliseconds),
+                        GetMedian(kernel.FirstSampleMilliseconds),
+                        transport,
+                        transport * samples,
+                        GetMedian(differences),
+                        GetMedian(kernel.ReductionPerDispatchMilliseconds),
+                        static_cast<unsigned long long>(kernel.TimedDispatches),
+                        static_cast<unsigned long long>(count) * description.TargetSamples,
+                        static_cast<unsigned long long>(kernel.DroppedPasses));
+        }
+        for (usize k = 0; k < kernels.GetSize(); ++k)
+        {
+            static_cast<void>(renderers[k].Release(snapshots[k]));
+        }
     }
     return exitCode;
 }

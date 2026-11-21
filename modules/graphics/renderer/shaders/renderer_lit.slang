@@ -749,22 +749,32 @@ float4 ReadGiProbeTexel(int probe, int texel)
     return bakeTexture.Load(int3(index % LUDUS_GI_PROBE_ATLAS_WIDTH, index / LUDUS_GI_PROBE_ATLAS_WIDTH, 0));
 }
 
-bool IsGiProbeVisible(int probe, in float3 offsetWorldInCells)
+// Thanks to Majercik, Guertin, Nowrouzezahrai and McGuire, "Dynamic Diffuse Global
+// Illumination with Ray-Traced Irradiance Fields", JCGT 8(2), 2019, section 5,
+// https://jcgt.org/published/0008/02/01/, for visibility-aware probe weighting.
+// Compare each stored axial distance before filtering to preserve depth discontinuities.
+float ComputeGiProbeVisibility(int probe, in float3 offsetWorldInCells)
 {
     float3 magnitude = abs(offsetWorldInCells);
     int axis = magnitude.x >= magnitude.y && magnitude.x >= magnitude.z ? 0 : (magnitude.y >= magnitude.z ? 1 : 2);
     float distanceInCells = magnitude[axis];
     if (distanceInCells == 0)
-        return true;
+        return 1;
+    static const int AXIS_COUNT = 3;
     int face = 2 * axis + (offsetWorldInCells[axis] < 0 ? 1 : 0);
-    float2 directionUv = float2(offsetWorldInCells[(axis + 1) % 3], offsetWorldInCells[(axis + 2) % 3]);
-    int2 texel = min(int2((directionUv / distanceInCells * 0.5 + 0.5) * LUDUS_GI_PROBE_FACE_WIDTH),
-                     LUDUS_GI_PROBE_FACE_WIDTH - 1);
+    float2 directionUv =
+        float2(offsetWorldInCells[(axis + 1) % AXIS_COUNT], offsetWorldInCells[(axis + 2) % AXIS_COUNT]);
+    float2 footprintTexel = clamp((directionUv / distanceInCells * 0.5 + 0.5) * LUDUS_GI_PROBE_FACE_WIDTH - 0.5,
+                                  0,
+                                  LUDUS_GI_PROBE_FACE_WIDTH - 1);
+    int2 texel = int2(footprintTexel);
+    float2 fraction = footprintTexel - float2(texel);
     int faceTexel = face * LUDUS_GI_PROBE_FACE_TEXELS + texel.y * LUDUS_GI_PROBE_FACE_WIDTH + texel.x;
-    float depthInCells = ReadGiProbeTexel(probe, LUDUS_GI_PROBE_FACES + faceTexel).x * LUDUS_GI_PROBE_DEPTH_CELLS;
-    // In cell units, covers UNORM quantization and avoids rejecting a receiver on the recorded surface.
-    static const float DEPTH_BIAS_CELLS = 0.03125;
-    return distanceInCells <= depthInCells + DEPTH_BIAS_CELLS;
+    float4 depthsInCells = ReadGiProbeTexel(probe, LUDUS_GI_PROBE_FACES + faceTexel) * LUDUS_GI_PROBE_DEPTH_CELLS;
+    float4 visibleTaps = step(distanceInCells - LUDUS_GI_PROBE_DEPTH_BIAS_CELLS, depthsInCells);
+    float2 rows = lerp(visibleTaps.xz, visibleTaps.yw, fraction.x);
+    float coverage = lerp(rows.x, rows.y, fraction.y);
+    return saturate((coverage - LUDUS_GI_PROBE_MIN_VISIBLE_COVERAGE) / (1 - LUDUS_GI_PROBE_MIN_VISIBLE_COVERAGE));
 }
 
 float3 EvaluateGiProbeIrradiance(in float3 positionWorld, in float3 normalWorld)
@@ -788,16 +798,18 @@ float3 EvaluateGiProbeIrradiance(in float3 positionWorld, in float3 normalWorld)
                 int probe = cell.x + counts.x * (cell.y + counts.y * cell.z);
                 float3 weights = lerp(1 - fraction, fraction, float3(offset));
                 float weight = weights.x * weights.y * weights.z;
-                if (weight > 0 && IsGiProbeVisible(probe, positionInGrid - cell))
+                if (weight <= 0)
+                    continue;
+                float4 irradianceX = ReadGiProbeTexel(probe, faces.x);
+                if (irradianceX.a == 0)
+                    continue;
+                weight *= ComputeGiProbeVisibility(probe, positionInGrid - cell);
+                if (weight > 0)
                 {
-                    float4 irradianceX = ReadGiProbeTexel(probe, faces.x);
-                    if (irradianceX.a > 0)
-                    {
-                        sum += weight * (irradianceX.rgb * cosineSquared.x +
-                                         ReadGiProbeTexel(probe, faces.y).rgb * cosineSquared.y +
-                                         ReadGiProbeTexel(probe, faces.z).rgb * cosineSquared.z);
-                        totalWeight += weight;
-                    }
+                    sum += weight *
+                           (irradianceX.rgb * cosineSquared.x + ReadGiProbeTexel(probe, faces.y).rgb * cosineSquared.y +
+                            ReadGiProbeTexel(probe, faces.z).rgb * cosineSquared.z);
+                    totalWeight += weight;
                 }
             }
     return totalWeight > 0 ? sum * (material.BakeUv.w / totalWeight) : float3(0);

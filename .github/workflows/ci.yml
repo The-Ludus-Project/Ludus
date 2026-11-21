@@ -48,6 +48,7 @@ on:
         options:
           - all
           - macos-compile
+          - macos-reference
           - macos-sanitizers
           - macos-analysis
           - formatting
@@ -285,6 +286,55 @@ jobs:
           path: out/ccache
           key: ${{ steps.setup.outputs.compiler-cache-key }}
 
+  # The CPU/GPU reference oracle cases, 30 minutes of the native job, run here beside it.
+  # Together with the native job and the sanitizers this holds three ARM runners; the
+  # batch's short macOS chain adds at most one (batch-ci.yml).
+  macos-reference:
+    needs: changes
+    if: needs.changes.outputs.native_required == 'true' && needs.changes.outputs.validation_tier != 'integration' && ((inputs.evidence_job || 'all') == 'all' || inputs.evidence_job == 'macos-reference')
+    name: macOS GPU reference oracle
+    runs-on: macos-15
+    env:
+      CMAKE_BUILD_PARALLEL_LEVEL: "3"
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.batch_sha || github.sha }}
+          persist-credentials: false
+      - uses: ./.github/actions/macos-setup
+        id: setup
+        with:
+          preset: macos-clang-development
+          cache-variant: native
+          build-editor: 'false'
+      # Commands live in scripts/ci/macos_reference.py (see the macos-compile job). This job
+      # restores the native job's compiler cache and never saves it.
+      - name: Run macOS GPU reference checks
+        id: checks
+        run: out/host-tools/venv/bin/python scripts/python/ci_checks.py scripts/ci/macos_reference.py
+      - name: Preserve per-test reference timings
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: macos-reference-tests
+          path: ${{ runner.temp }}/macos-reference-tests.xml
+          if-no-files-found: warn
+      - name: Preserve macOS crash reports
+        if: failure()
+        run: |
+          mkdir -p "$RUNNER_TEMP/crash-reports"
+          find "$HOME/Library/Logs/DiagnosticReports" -maxdepth 1 -type f \( -name '*.ips' -o -name '*.crash' \) \
+            -exec cp {} "$RUNNER_TEMP/crash-reports/" \; 2>/dev/null || true
+          ls "$RUNNER_TEMP/crash-reports"
+      - name: Upload macOS crash reports
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: macos-reference-crash-reports
+          path: ${{ runner.temp }}/crash-reports/
+          if-no-files-found: ignore
+          retention-days: 14
+
   macos-sanitizers:
     needs: changes
     if: needs.changes.outputs.native_required == 'true' && needs.changes.outputs.validation_tier != 'integration' && ((inputs.evidence_job || 'all') == 'all' || inputs.evidence_job == 'macos-sanitizers')
@@ -503,7 +553,7 @@ jobs:
       - name: Prepare pinned tooling quality checks
         run: ./scripts/setup-quality-tools
       - name: Test tooling checks and editor preset boundaries
-        run: PYTHONPATH=scripts/python python3 -m unittest test_quality_tools test_editor_setup -v
+        run: PYTHONPATH=scripts/python python3 -m unittest test_quality_tools test_editor_setup test_mobile_probe -v
       - name: Test render-graph build, staging and template tooling
         # Every suite, so new ones join; compiler cases skip here and run in the macOS batch job.
         run: PYTHONPATH=scripts/python python3 -m unittest discover -s scripts/python -p 'test_render_graph*.py' -v
@@ -541,7 +591,7 @@ jobs:
         timeout-minutes: 10
         run: xvfb-run -a env LUDUS_TEST_GUI=1 python3 -m unittest discover -s scripts/python -p 'test_init*.py' -v
       - name: Test CI initialization and analysis contracts
-        run: PYTHONPATH=scripts/python python3 -m unittest test_ci test_batch_ci test_develop_health test_kanban_dependencies test_quality test_windows_qualification test_ray_reference test_runtime_profile test_pull_request_tests test_ctest_headroom test_ctest_shard test_ci_checks -v
+        run: python3 scripts/python/ci_tooling_suite.py
       - name: Live reload tooling tests
         run: |
           python3 -m unittest discover -s scripts/python -p 'test_play*.py' -v
@@ -887,6 +937,7 @@ jobs:
           out/host-tools/venv/bin/ctest --test-dir out/renderer-sdk -R "^installed_encoder$" --no-tests=error --output-on-failure
           out/renderer-sdk/ludus_sdk_renderer_views_consumer
           out/renderer-sdk/ludus_sdk_renderer_overlays_consumer
+          out/renderer-sdk/ludus_sdk_ui_render_consumer
           out/renderer-sdk/ludus_sdk_renderer_materials_consumer
           out/renderer-sdk/ludus_sdk_renderer_lighting_consumer
           out/renderer-sdk/ludus_sdk_renderer_scaling_consumer
@@ -1656,7 +1707,7 @@ jobs:
     # A cancelled pull-request run passes only when a newer, uncancelled run of
     # this workflow covers the same head commit; that run's gate owns the result.
     name: ${{ (inputs.sanitizer_experiment == 'rebuild' || inputs.sanitizer_experiment == 'shared') && 'Sanitizer experiment dispatch' || github.event_name == 'workflow_dispatch' && inputs.mcmc_vulkan_parity_only == true && 'Focused Vulkan dispatch (not integration)' || inputs.evidence_job && inputs.evidence_job != 'all' && format('Evidence gate ({0})', inputs.evidence_job) || 'Ubuntu Clang' }}
-    needs: [changes, macos-compile, macos-sanitizers, macos-analysis, macos-objcxx-analysis, formatting, debug-runtime, development, sanitizers, filesystem-fuzz, threading-races, analysis, editor, assertion-policy, pch, build-budget, scripting-qualification]
+    needs: [changes, macos-compile, macos-reference, macos-sanitizers, macos-analysis, macos-objcxx-analysis, formatting, debug-runtime, development, sanitizers, filesystem-fuzz, threading-races, analysis, editor, assertion-policy, pch, build-budget, scripting-qualification]
     if: always() && (github.event_name != 'workflow_dispatch' || (inputs.mcmc_vulkan_parity_only != true && inputs.sanitizer_experiment != 'rebuild' && inputs.sanitizer_experiment != 'shared'))
     runs-on: ubuntu-24.04
     permissions:

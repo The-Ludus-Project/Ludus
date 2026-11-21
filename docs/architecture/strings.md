@@ -202,14 +202,16 @@ flowchart BT
     Strings[FoundationStrings] --> Base
     Strings --> Memory
     Strings --> Hash
+    Strings --> Containers[FoundationContainers]
     Text[Text and future Unicode algorithms] --> Strings
     Content[Content dictionaries] --> Strings
     Tools[Editor and tools] --> Strings
 ```
 
 These are relevant dependencies, not an exhaustive graph of existing modules.
-`FoundationStrings` may privately use `FoundationContainers` after Memory's
-allocation seam and required container prerequisites land. Hash accepts bytes
+`FoundationStrings` publicly uses `FoundationContainers` for the fixed
+`StaticArray` probe histogram in its table snapshot; Containers never depends
+on Strings. Hash accepts bytes
 and never depends on Strings. Logging and profiling adapters remain separate
 from Strings so intern-table allocation cannot recursively log or profile itself.
 FoundationBase diagnostics continue using their existing bounded byte path.
@@ -1010,8 +1012,26 @@ count tests exercise saturation without attempting 2^64 copies. A reduced-width
 token issuer shows that exhaustion never wraps, and a private seam moves the
 process issuer to its last token so `CreateTable` reports `TokenExhausted` with
 its output preserved and every byte released, without 2^32 creations.
+Issue #1305 completed the table surface an initial consumer needs.
+`TryResolveIndex` resolves a token-free `StringIndex` on the mutable (locked)
+and frozen (lock-free) owners, checking it against the entry count; temporaries
+are deleted overloads. `TryReserve(entryCount, spellingBytes)` grows the entry
+directory and lookup array to their exact final capacity and, when the current
+page is too small, adds one page of exactly `spellingBytes + entryCount` bytes.
+It checks the whole growth sequence's peak before allocating, so a budget equal
+to that peak succeeds and one byte less returns `CapacityExceeded` with no
+allocation attempt; reserved insertions then allocate nothing.
+`TryCaptureSnapshot` copies a `StringTableSnapshot` in constant time without
+allocating: insertion updates its counters in constant time, and rehashing,
+which already visits every entry, rebuilds the eight-bucket probe-distance
+histogram. Its byte fields sum to the bytes the creation domain holds, and the
+peak includes the moments when replaced and replacement arrays coexist. Tests
+compare every snapshot with the fault heap's live and peak bytes and with a full
+recount of the lookup array, including during the differential sequences.
+
 Deterministic differential sequences compare `TryIntern`, `TryFind`,
-`TryResolve`, `TryFreeze` and frozen lookups with an STL reference model. They mix
+`TryResolve`, `TryResolveIndex`, `TryFreeze` and frozen lookups with an STL
+reference model. They mix
 duplicates, empty, long and maximum-length spellings, embedded-zero, invalid
 UTF-8 and oversized rejections, trusted, keyed, opaque-byte and forced-collision
 tables, several rehashes, entry and byte limits, and allocation failures at
@@ -1143,8 +1163,8 @@ not a new build, sanitizer run, or performance result.
 | Content and symbol consumers | Pair the dictionary with a real indexed-content reader/cooker and retained snapshot; define safe reload retirement and compatibility. The [2026-10-16 survey](#dictionary-adoption-survey) found no qualifying format; start when one of its triggers exists. Bind literals during setup, cache IDs in an actual repeated-name consumer, and validate any generated closed symbol schema for collisions | [Migration phases](#migration-phases) and [literal descriptors](#literal-descriptors) |
 | Mutable and bounded storage | Add explicit shrinking, checked byte-range erase, and named display truncation where required by the initial consumers; enforce their byte limits. Insert/replace and mutable write reservations still require a concrete consumer | [Mutable string storage](#mutable-string-storage) |
 | Text and formatting boundaries | Checked UTF-8 slicing, explicit display repair, counted `char8_t` adapters, strict native UTF-16 conversion at OS boundaries, and exception-free builder/bounded formatting adapters | [Bytes and Unicode](#bytes-and-unicode) and [bounded strings and construction](#bounded-strings-and-construction) |
-| Table completion | Checked resolution from table-local `StringIndex`, reservation for known content counts, and explicit symbol-grammar adapters. Current public resolution accepts `NameId`. Bounded lookup probing is implemented; see [implementation status](#implementation-status) | [Interned names and indexed strings](#interned-names-and-indexed-strings) |
-| Diagnostics and validation | Counted debugger previews and opt-in footprint/probe/retention snapshots; add reader/cooker and boundary tests with their implementation. Every public FoundationStrings header carries Doxygen contracts, and table-token exhaustion and differential table operation sequences are tested; see [implementation status](#implementation-status) | [Debugging and observation](#debugging-and-observation) and [required correctness evidence](#required-correctness-evidence) |
+| Table completion | Explicit symbol-grammar adapters. Checked table-local `StringIndex` resolution, reservation for known content counts and bounded lookup probing are implemented; see [implementation status](#implementation-status) | [Interned names and indexed strings](#interned-names-and-indexed-strings) |
+| Diagnostics and validation | Counted debugger previews; add reader/cooker and boundary tests with their implementation. Constant-time footprint/probe/retention snapshots are implemented Every public FoundationStrings header carries Doxygen contracts, and table-token exhaustion and differential table operation sequences are tested; see [implementation status](#implementation-status) | [Debugging and observation](#debugging-and-observation) and [required correctness evidence](#required-correctness-evidence) |
 
 [Static localization catalogs](../../modules/localization/README.md) already
 use shared immutable storage, deterministic offset-based cooking, validation,

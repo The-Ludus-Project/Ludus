@@ -6,10 +6,20 @@ modules/content/scene_format
 modules/content/scene_source
 modules/tooling/shader_language
 modules/content/identity_records
+apps/smoke/internal/lifecycle.h
+apps/smoke/lifecycle.cpp
+apps/smoke/tests/lifecycle_tests.cpp
+modules/content/procedural/core
 modules/content/procedural/environment
 modules/content/terrain
+modules/content/weather
+modules/content/weather_format
+modules/gameplay/weather
+tools/web-weather-probe
 modules/content/string_dictionary
 modules/content/string_dictionary_format
+modules/content/foliage_format
+modules/content/foliage_pages
 modules/foundation/identity
 modules/platform/include/ludus/platform/entropy.h
 modules/platform/src/entropy.cpp
@@ -42,6 +52,10 @@ modules/graphics/renderer/src/internal/ltc_table_data.h
 modules/graphics/renderer/tests/ltc_table_tests.cpp
 modules/foundation/math/include/ludus/foundation/math/random_domains.hpp
 modules/foundation/math/tests/random_domains_tests.cpp
+modules/foundation/math/include/ludus/foundation/math/random_checkpoint.hpp
+modules/foundation/math/src/random_checkpoint.cpp
+modules/foundation/math/src/internal/random_mix.hpp
+modules/foundation/math/tests/random_checkpoint_tests.cpp
 modules/foundation/geometry
 modules/gameplay/sequencer
 modules/animation
@@ -111,3 +125,4 @@ apps/editor/src/internal/geometry_document.h
 apps/editor/src/geometry_document.cpp
 apps/editor/tests/geometry_document_tests.cpp
 apps/editor/tests/geometry_preview_tests.cpp
+modules/graphics/ui_render

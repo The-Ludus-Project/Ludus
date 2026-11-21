@@ -1,8 +1,9 @@
 # Mobile support implementation plan
 
 Status: proposed implementation sequence, 2026-10-12. No mobile deployment is
-qualified by this plan. The baseline audit is `850e48e`; recheck it before each
-implementation slice. Maintain this page as the mobile milestone owner and use
+qualified by this plan. The original baseline audit is `850e48e`; the M0 record
+below rechecked it against `develop` at `b6c7a6d8c` on 2026-11-19. Recheck it
+before each implementation slice. Maintain this page as the mobile milestone owner and use
 the [platform porting checklist](platform-porting.md) for subsystem coverage and
 evidence. Existing API comments and module designs remain contract owners.
 
@@ -30,11 +31,12 @@ requirement. Include interpreted behavior and cooked content in later gates.
 
 | Area | Observed baseline | Port action |
 | --- | --- | --- |
-| Target identity | Foundation recognizes Android/iOS; `config/behavior_profiles.json` marks both pending | Preserve detection; admit profiles only with build and runtime evidence |
-| FoundationBase | Its CMake guard accepts Linux/Darwin or Emscripten with Clang | Add explicit mobile assertion/emergency/debugger boundaries and compiler qualification |
-| Platform | Cocoa is selected only for Darwin; other native targets can reach the null path | Add explicit UIKit and Android selections; mobile shipping configuration must reject an accidental null backend |
+| Target identity | Foundation recognizes Android/iOS; `config/behavior_profiles.json` marks both `pending-engine-backend` with compiler major 23 | Preserve detection; admit profiles only with build and runtime evidence |
+| FoundationBase | Its CMake guard accepts Linux, Darwin, Windows or Emscripten with Clang (or MSVC on Windows) and rejects `CMAKE_SYSTEM_NAME` `iOS` and `Android` | Add explicit mobile assertion/emergency/debugger boundaries and compiler qualification |
+| Platform | Cocoa is selected only for `Darwin`; `iOS` and `Android` fall through to the headless backend | Add explicit UIKit and Android selections; mobile shipping configuration must reject an accidental null backend |
 | Metal | RHI's broad `APPLE` branch links AppKit and calls the Cocoa configuration helper | Separate macOS from iOS build selection and native view ownership; reuse portable Metal resource code only after audit |
-| Vulkan | Presentation accepts Wayland descriptors; current retirement uses maintenance1 features | Add Android surface ownership and device feature negotiation; establish safe retirement before presenting |
+| Vulkan | Presentation creates only Wayland surfaces and fails without `VK_EXT_swapchain_maintenance1`, which it needs for safe retirement | Add Android surface ownership and device feature negotiation; establish safe retirement before presenting |
+| Dependencies | Conan requires volk on every OS except `Macos` (so an iOS graph would pull it) and has profiles only for Linux, macOS and Windows | Add iOS/Android Conan profiles and target-correct requirements; see the [dependency inventory](#dependency-inventory) |
 | Filesystem | Native storage/persistence selection accepts Linux/Darwin; mobile selects unsupported implementations | Add bundle/APK asset sources and writable sandbox mounts, including background reads and persistence |
 | Runtime/tooling | Packaging accepts Linux, macOS and web; native game host contains shared-module loading | Add static mobile host and separate mobile packaging/SDK profiles |
 | Input/audio | Existing keyboard reduction and private audio integration offer reuse candidates | Add bounded touch vocabulary and verify mobile audio sessions, interruptions and routes |
@@ -69,28 +71,174 @@ gate across required devices. Avoid treating a triangle as full engine support.
 
 - [ ] Record real device/OS identities and available graphics capabilities;
   select minimum deployment OS/API levels after probes, not from device names.
+  The [device inventory probe](#acceptance-probes) defines what to record.
 - [ ] Pin mobile toolchain/dependency versions and qualify C++23 support.
-  The upstream Clang 18 rule must not silently become AppleClang/NDK support.
-  Propose a reviewed toolchain-policy update with SDK/compiler/linker evidence;
-  retain reference Clang 18 format/tidy checks and existing native/browser gates.
-- [ ] Separate macOS host cookers/shader tools from target libraries; never run
-  an ARM64 mobile executable as a build-time tool. Audit Conan profiles, imported
-  libraries, Objective-C++ flags, third-party licenses and SDK export closure.
-- [ ] Define bounded events for activation, suspension, memory pressure,
+  The upstream LLVM 23 rule ([ADR 0025](../decisions/0025-llvm-toolchain-pin.md))
+  must not silently become AppleClang/NDK support. The
+  [toolchain policy proposal](#toolchain-policy-proposal) awaits probe evidence;
+  reference LLVM 23 format/tidy checks and existing native/browser gates remain.
+- [x] Separate macOS host cookers/shader tools from target libraries; never run
+  an ARM64 mobile executable as a build-time tool. Conan profiles, imported
+  libraries, Objective-C++ flags and licenses are audited in the
+  [dependency inventory](#dependency-inventory); SDK export closure is an M5 check.
+- [x] Define bounded events for activation, suspension, memory pressure,
   drawable availability, resize/insets and surface generation. Specify callback
-  thread, ordering, ownership, overflow and explicit failure behavior.
-- [ ] Specify touch IDs, begin/move/end/cancel, coordinate units/conversion,
+  thread, ordering, ownership, overflow and explicit failure behavior:
+  [mobile application lifecycle and surfaces](../architecture/mobile-application-lifecycle.md).
+- [x] Specify touch IDs, begin/move/end/cancel, coordinate units/conversion,
   multitouch capacity and focus cancellation in Input's owning contract. Keep
-  UI safe areas and physical drawable pixels distinct.
-- [ ] Agree frame scheduling, monotonic clock behavior and resume delta policy.
-  Suspension must not produce a giant simulation step or busy render loop.
+  UI safe areas and physical drawable pixels distinct:
+  [touch input contract](../architecture/touch-input.md).
+- [x] Agree frame scheduling, monotonic clock behavior and resume delta policy.
+  Suspension must not produce a giant simulation step or busy render loop:
+  [frame scheduling and time](../architecture/mobile-application-lifecycle.md#frame-scheduling-and-time).
 - [ ] Create independently selectable configure/build/test profiles for Apple
   devices and Android ARM64. Test execution needs a device runner and must never
   accidentally execute target binaries on the Mac. Simulator/emulator profiles
-  are optional and independently named/qualified.
+  are optional and independently named/qualified. The
+  [target profiles](#target-profiles) fix names and rules; presets come with the probes.
 
 Exit: both SDK probes compile/link on their real target toolchains; proposed
 toolchain policy, contracts and checklist rows have owners and concrete blockers.
+
+## M0 record
+
+Audited `develop` at `b6c7a6d8c` on 2026-11-19 for
+[#1229](https://github.com/The-Ludus-Project/Ludus/issues/1229). The contracts
+are frozen in their owners; the probes, presets and the toolchain decision are
+still open, and so is the M0 exit gate.
+
+### Target profiles
+
+| Profile | Target triple | SDK / sysroot | Compiler and linker | Test runner | Status |
+| --- | --- | --- | --- | --- | --- |
+| iOS device (required) | `arm64-apple-ios<minimum>` | Xcode `iphoneos` SDK | Pinned Clang 23 and Xcode `ld` (proposed) | Physical device through `devicectl` | proposed |
+| iOS Simulator (optional) | `arm64-apple-ios<minimum>-simulator` | Xcode `iphonesimulator` SDK | Same as device | Simulator | proposed; never replaces device evidence |
+| Android device (required) | `aarch64-linux-android<api>` | NDK sysroot | Pinned Clang/LLD 23 (proposed) | Physical device through `adb` | proposed |
+| Android emulator (optional) | `aarch64-linux-android<api>` | NDK sysroot | Same as device | ARM64 emulator image, also the 16 KB page-size check | proposed |
+
+- **Preset names** follow `<platform>-clang-<flavor>`: `ios-clang-debug`,
+  `ios-clang-development`, `ios-clang-release`, `ios-simulator-clang-development`,
+  `android-clang-debug`, `android-clang-development`, `android-clang-release`
+  and `android-emulator-clang-development`. Each has its own configure, build
+  and test preset and its own build tree.
+- **Minimum OS/API.** Choose the lowest version that the pinned SDK supports,
+  every required device runs, and that provides each API the contracts use,
+  with probe evidence. Device names do not decide it. Record the choice here.
+- **Host tools.** Shader compilers, cookers and packaging tools are built and
+  run from a separate macOS host tree and reached through an explicit host-tools
+  prefix. Target trees never build or run them.
+- **Test execution.** Target test presets set `CMAKE_CROSSCOMPILING_EMULATOR`
+  to a device runner. With no device selected, the runner exits with an explicit
+  error. CTest never runs a target binary on the Mac. Portable reducer tests
+  also run in the existing host presets.
+- **Packaging.** Native code builds with Ninja through the Ludus presets. On
+  Apple, the `.app` bundle is assembled and code-signed outside the Xcode
+  generator. On Android, Gradle packages the prebuilt `.so` files and the Java
+  shell as `jniLibs`, so AGP's NDK toolchain never compiles engine code.
+
+### Toolchain policy proposal
+
+**Recommended (option A): one LLVM major.** Compile every target C, C++ and
+Objective-C++ source with the pinned upstream Clang 23 against the vendor
+sysroot: `-target` with `-isysroot` from Xcode for Apple, and `--target` with
+`--sysroot` from the NDK for Android. Link Android with LLD 23 and Apple with
+Xcode's `ld`, as macOS builds already do. Reasons:
+
+- ADR 0025 pins one major for compilation, format, tidy and sanitizers.
+  `config/behavior_profiles.json` already declares compiler major 23 for both
+  `Android` and `iOS`.
+- The Cocoa backend already requires the pinned upstream Clang for
+  Objective-C++. A UIKit host would use the same flags (`-fobjc-arc`,
+  `-fno-objc-exceptions`).
+- Warning, exception (`-fno-exceptions`) and tidy behavior stay identical to
+  the qualified desktop builds.
+
+Risks the probes must settle:
+
+- The NDK's libc++ headers match the NDK's own Clang, not Clang 23. Building
+  Ludus TUs that use C++23 language features and the ADR 0003 allowlist
+  against those headers must succeed warning-clean.
+- Upstream Clang must accept the current iOS SDK headers, including Objective-C
+  module maps, and Xcode's linker must accept its objects.
+- Sanitizer runtimes for the mobile targets come from the vendor toolchains,
+  not from Homebrew LLVM. Their availability is an M5 finding.
+
+**Fallback (option B), per platform:** use the vendor compiler (AppleClang from
+Xcode, or the NDK's Clang) for that platform only. This requires an ADR 0025
+amendment that names the exact compiler version, a separate Behavior profile
+compiler major, and its own C++23 qualification. Format and tidy stay on the
+pinned LLVM 23 in either case. Choose option B only when option A fails a probe,
+and record that failure.
+
+Pins to add once the probes pass: `config/apple_toolchain.json` (Xcode version
+and build, iOS SDK, minimum OS) and `config/android_toolchain.json` (command-line
+tools, platform, build-tools, NDK revision, AGP, Gradle, JDK and GameActivity).
+CI and setup read them in the same way they read `tool_versions.json`.
+
+### Dependency inventory
+
+| Dependency | Pin owner | License | Role | iOS action | Android action |
+| --- | --- | --- | --- | --- | --- |
+| FreeType 2.14.3 | Conan (`conanfile.py`) | FreeType License (FTL) or GPLv2 | Target library (text) | Conan iOS profile, static | Conan Android profile, static |
+| HarfBuzz 14.5.1 | Local recipe `third_party/harfbuzz` | MIT | Target library (text) | Same | Same |
+| volk 1.4.357.0 | Conan | MIT | Vulkan loader for the target | **Exclude**: today only `Macos` is excluded | Keep; load `libvulkan.so` |
+| Vulkan Memory Allocator 3.5.0 | `config/vulkan_memory_allocator.json` | MIT | Target library (Vulkan RHI) | Not used | Keep |
+| miniaudio 0.11.23 | `third_party/miniaudio/SOURCE-LOCK.json` | MIT-0 | Target library (audio) | Core Audio backend; audio-session ownership in M4 | AAudio backend; route lifecycle in M4 |
+| yyjson 0.10.0, stb_image 2.30, MikkTSpace, xxHash | `third_party/*` | MIT; MIT or public domain; zlib; BSD-2-Clause | Portable target code | Compile with target flags | Compile with target flags |
+| Luau | `config/luau_toolchain.json` | MIT | Optional Behavior interpreter | Interpreter only; iOS allows no JIT, and none is used | Interpreter |
+| ICU 78.3 | `config/icu_toolchain.json` | Unicode License v3 | Localization probe | Outside the mobile closure until localization selects it | Same |
+| Catch2 3.4.0 | Conan (test only) | BSL-1.0 | Tests | Host tests; device test binaries in M5 | Same |
+| Slang, DXC, SPIRV-Tools, SPIRV-Cross, WGSL validator | `config/shader_toolchain.json`, `config/spirv_cross_toolchain.json` | Various permissive | **Host tools only** | Cook Metal variants on the host | Cook SPIR-V variants on the host |
+| Qt, tree-sitter, Crashpad, OIDN, D3D12 Agility | Editor/host configuration | Various | Editor or Windows only | Excluded | Excluded |
+| GameActivity (Android Games SDK) | **New**: `config/android_toolchain.json` | Apache-2.0 | Target host shell | n/a | Pin the AAR and prefab version; M1 |
+| Android Frame Pacing (Swappy) | Candidate only | Apache-2.0 | Optional pacing | n/a | Decide in M2; not adopted |
+
+Licenses come from each pin owner's record or vendored license file. Recheck
+them before an SDK export (M5) and a distribution (M6).
+
+### Acceptance probes
+
+The [#1229](https://github.com/The-Ludus-Project/Ludus/issues/1229) acceptance
+needs these probes. Each one writes a sanitized record with no serial numbers,
+signing identities, team IDs or machine paths. The record is linked from the
+tracker below; raw output stays private.
+
+- **Apple toolchain:** Xcode version and build, `iphoneos` and `iphonesimulator`
+  SDK versions, and the pinned Clang version. Compile and link, warning-clean
+  with `-fno-exceptions`, a C++23 FoundationBase-style TU and an ARC
+  Objective-C++ TU for both device and simulator. Record the linker version and
+  which libc++ headers and runtime were used.
+- **Apple signing:** whether a development signing identity and team exist.
+  Record only yes or no, never a name or ID. Whether a development
+  provisioning profile can sign the probe app.
+- **Android toolchain:** versions of command-line tools, platform, build-tools,
+  NDK, AGP, Gradle and JDK. Compile and link the same C++23 TU plus a JNI TU with
+  option A, and also with the NDK's Clang for comparison. Confirm 16 KB `LOAD`
+  segment alignment with `llvm-readelf -l`.
+- **Android signing:** whether a debug keystore exists. Release signing belongs
+  to M6.
+- **Devices:** marketing name, model identifier, OS version and build, and page
+  size. For Android, the Vulkan API version and whether
+  `VK_KHR_android_surface` and `VK_EXT_swapchain_maintenance1` are present, read
+  from `adb shell cmd gpu vkjson` where the OS provides it, otherwise from the
+  M1 probe app. The Galaxy's exact model number resolves the open "Galaxy Flip V"
+  question in the [goal](#goal-and-initial-scope). On-device probes in M1 and M3
+  record Metal GPU family, the simultaneous-touch limit and whether
+  `steady_clock` advances while the device sleeps.
+
+### Open blockers
+
+| Blocker | Owner | Next action |
+| --- | --- | --- |
+| The maintainer Mac has no Xcode, iOS SDK or `devicectl` (only Command Line Tools) | Maintainer | Install Xcode and select it with `xcode-select`; then run the Apple probes |
+| No Android SDK, NDK or `adb` on the maintainer Mac | Maintainer | Install command-line tools, NDK and platform-tools; then run the Android probes |
+| Device signing material | Maintainer | Create an Apple development team identity and an Android debug keystore locally; keep them out of the repository |
+| FoundationBase rejects `iOS` and `Android` | Both tracks | Add explicit target runtime boundaries in M1 |
+| Platform falls back to headless on `iOS` and `Android` | Both tracks | Add UIKit and Android selections that reject a silent null backend in M1 |
+| RHI's `APPLE` branch links AppKit | Apple track | Separate macOS and iOS selection in M2 |
+| Conan pulls volk on iOS and lacks mobile profiles | Shared | Add profiles and target-correct requirements with the probes |
+| Vulkan retirement needs `VK_EXT_swapchain_maintenance1` | Android track | Read it from the Galaxy inventory; define an alternative in M2 if it is missing |
 
 ## M1 and M2: boot and present independently
 
@@ -224,6 +372,66 @@ implementation change. M6 adds signed distribution, clean install/upgrade,
 symbolication and store compliance; development installation is not distribution
 acceptance. Deferred features remain visible after a platform is admitted.
 
+## Running the M0 probes
+
+After the maintainer installs Xcode and the Android SDK and NDK, one command per
+platform produces the sanitized records that the M0 acceptance needs:
+
+```bash
+./scripts/mobile-probe all
+```
+
+Run one probe with `apple-toolchain`, `apple-signing`, `android-toolchain`,
+`android-signing` or `devices` instead of `all`. Each writes
+`out/mobile-probes/<probe>.json` (ignored by Git). The record keeps versions,
+statuses and yes/no answers only. Serial numbers, signing identity names, team IDs,
+device identifiers and machine paths never reach it: values are collected from a
+fixed list of fields, rewritten, and the probe refuses to write a record that
+still holds a private token. Review a record before linking it from the tracker.
+
+- **Exit status.** `0` passed, `1` failed (a compile, link or alignment check
+  failed; the record names the step), `3` not-installed (Xcode, an SDK, the NDK,
+  `adb` or the pinned Clang is missing, with what to install), `4` blocked (the
+  tools work, but signing material or a connected device is missing).
+- **Compiler.** The probes use the pinned upstream Clang (`out/host-tools`, then
+  Homebrew `llvm@23`, or `--clang` / `LUDUS_MOBILE_CLANG`) and reject another
+  major. They compile `tools/mobile-probe/probe_cxx23.cpp` (it includes the real
+  Band 0 headers), `probe_objcxx_arc.mm` (ARC, UIKit required) and
+  `probe_jni.cpp` with the engine warning set, `-Werror` and `-fno-exceptions`.
+  Apple builds use `-target` with the device and simulator SDKs and link with
+  Xcode's `ld`. Android builds use the NDK sysroot and its libc++ headers with the
+  pinned Clang (option A) and again with the NDK's own Clang for comparison,
+  linking with 16 KB `max-page-size` and reading the `LOAD` alignment with
+  `llvm-readelf -l`.
+- **Provisional levels.** `--ios-minimum` (default 17.0) and `--android-api`
+  (default 29) only select what to compile for. Each record says whether the value
+  was a default. Record the chosen minimums under Target profiles after the probes.
+- **Devices.** Connect each device by cable and trust the Mac. The probe reads
+  Apple devices with `devicectl` and Android devices with `adb`, and labels them
+  `apple-1`, `android-1` and so on.
+
+The mobile presets build the probes while FoundationBase still rejects iOS and
+Android. List them with the selected CMake:
+
+```bash
+cmake --list-presets=configure
+cmake --list-presets=build
+cmake --list-presets=test
+```
+
+Configure with `cmake --preset ios-clang-development`, or one of the other names
+in Target profiles. Toolchain files live in
+`config/cmake/ios.cmake` and `config/cmake/android.cmake`. Without the SDK or NDK,
+configure stops with a message that names what to install. Target test presets run
+binaries only through `scripts/mobile-device-runner`
+(`CMAKE_CROSSCOMPILING_EMULATOR`), which exits with an error until
+`LUDUS_MOBILE_DEVICE` selects a device: an `adb` serial for Android devices or
+emulators, a booted simulator UDID for `ios-simulator-clang-development`. Android
+device presets refuse an emulator and the reverse. A bare executable cannot run on
+an iPhone or iPad, so `ios-clang-*` tests refuse to run until the M1 app bundle
+exists. Both toolchain files and the Android runner path have not run against a real
+SDK, NDK or device yet; the first run on the maintainer Mac is the evidence.
+
 ## Milestone tracker
 
 Update a cell when its gate is met; link the implementation PR and evidence.
@@ -232,7 +440,7 @@ Device/tool versions and logs belong in evidence, not speculative completion dat
 
 | Gate | Shared | iPhone 16 Pro | iPad Pro M4 | Galaxy Flip |
 | --- | --- | --- | --- | --- |
-| M0 | not started | not started | not started | not started |
+| M0 | in progress: contracts frozen; probes blocked on SDK installs ([#1229](https://github.com/The-Ludus-Project/Ludus/issues/1229)) | blocked: no Xcode on the maintainer Mac | blocked: no Xcode on the maintainer Mac | blocked: no Android SDK/NDK on the maintainer Mac |
 | M1 | not started | not started | not started | not started |
 | M2 | not started | not started | not started | not started |
 | M3 | not started | not started | not started | not started |
@@ -251,14 +459,14 @@ record format. `reuse candidate` still requires target compilation and testing.
 | Subsystem | Workstream owner | Apple status | Android status | Next action / gate |
 | --- | --- | --- | --- | --- |
 | Target identity | Shared | reuse candidate | reuse candidate | Real SDK/ABI probes, M0 |
-| Toolchain/dependencies | Shared with both tracks | needs port | needs port | Pin/qualify compilers, libraries and host cookers, M0 |
+| Toolchain/dependencies | Shared with both tracks | needs port | needs port | Run the [acceptance probes](#acceptance-probes) and settle the [toolchain proposal](#toolchain-policy-proposal), M0 |
 | FoundationBase runtime | Both platform tracks | needs port | needs port | Replace rejection with explicit target runtime, M1 |
 | Memory/containers | Shared | unreviewed | unreviewed | Alignment/allocation/atomics tests, M1/M4 |
-| Time/threading | Shared | unreviewed | unreviewed | Target clock/jobs and suspend policy, M1/M4 |
+| Time/threading | Shared | unreviewed | unreviewed | Suspend/resume policy in the [lifecycle contract](../architecture/mobile-application-lifecycle.md#frame-scheduling-and-time); target clock/jobs, M1/M4 |
 | Logging/profiling | Both platform tracks | unreviewed | unreviewed | Device sinks and emergency diagnostics, M1 |
 | Filesystem | Shared contract, both adapters | needs port | needs port | Bundle/package mounts and durable saves, M3 |
-| Platform/host | Both platform tracks | needs port | needs port | UIKit/GameActivity and lifecycle, M1/M2 |
-| Input | Shared reducer, both adapters | needs port | needs port | Bounded touch and cancellation, M3 |
+| Platform/host | Both platform tracks | needs port | needs port | Implement the [lifecycle contract](../architecture/mobile-application-lifecycle.md) in UIKit/GameActivity, M1/M2 |
+| Input | Shared reducer, both adapters | needs port | needs port | Implement the [touch contract](../architecture/touch-input.md), M3 |
 | RHI | Both platform tracks | needs port | needs port | Remove AppKit coupling/add Android surface, M2 |
 | Renderer/graph | Shared | reuse candidate | reuse candidate | Mobile variants and same scene, M3/M5 |
 | Text/localization/UI | Shared with both tracks | unreviewed | unreviewed | Scale/insets and target dependencies, M3/M4 |

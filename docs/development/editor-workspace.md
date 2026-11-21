@@ -311,16 +311,23 @@ Version-1 descriptors retain their original Linux preset contract.
 
 Qt 6.12.0's Cocoa accessibility bridge incorrectly deletes a table's accessibility
 identity when releasing a synthetic row, column or cell that borrows it. This can
-crash a screen reader or UI inspector while reading selected cells. The editor
+crash a screen reader or UI inspector while reading selected cells. Releasing a
+native row also deleted the cell interfaces that an accessibility client had read,
+although the Qt item-view table still cached them. The next row insertion or
+removal, such as an editor selector rebuilding its items with `clear()`, then
+crashed with a null dereference in `QAccessibleTable::modelChange`. The editor
 installs a process-local ownership correction before creating its widgets: real
-elements retain Qt's cleanup, while synthetic elements never delete borrowed
-identities. Other Qt versions are unchanged, and the system Qt installation is
+elements retain Qt's cleanup for interfaces they own, while synthetic elements
+never delete borrowed identities and native cells never delete interfaces that
+their item-view table owns; the table releases those on model changes and
+destruction. Other Qt versions are unchanged, and the system Qt installation is
 not modified. An unexpected native layout fails startup with a diagnostic rather
 than applying the correction blindly. Thanks to The Qt Company for the
 [Cocoa accessibility implementation](https://github.com/qt/qtbase/blob/v6.12.0/src/plugins/platforms/cocoa/qcocoaaccessibilityelement.mm)
 used to identify the ownership error. The macOS `ludus_editor_accessibility_tests`
 exercise native selection, deselection, model resets and widget destruction for
-tables, lists and trees; they require the Cocoa platform plugin.
+tables, lists and trees, and rebuild a combo box after a client reads its items;
+they require the Cocoa platform plugin.
 
 Live Play and native reload support macOS Debug/Development profiles with
 validated Mach-O UUIDs and immutable detached DWARF symbols. Build and Play,
@@ -1031,6 +1038,38 @@ See the [GPU timing contract](../architecture/profiling-final.md#basic-gpu-timin
 and [graphics-debugging plan](../architecture/graphics-debugging.md#perfetto-recording-in-the-editor)
 for pass timing, clock calibration and later process targets.
 
+### Find the authored operation for a GPU timing sample
+
+Keep the original Editor Perfetto JSON export and the
+`.lurgrt.resources.json` sidecar from the cooked World graph. Each recorded
+World graph frame carries the SHA-256 of the cooked package submitted on that
+frame. Keep the sidecar for each revision you want to inspect after recooking.
+
+From the source checkout, export a report for an inclusive frame range:
+
+```sh
+python3 scripts/python/render_graph_timing_lookup.py --editor-trace trace.json \
+    --plan world.lurgrt.resources.json --first-frame 12 --last-frame 19
+```
+
+Use a row's frame, device session, scope identity and scope pass index to find
+the measurement in the trace. For the reverse lookup, add
+`--operation Main/West/draw` using the qualified operation ID from the saved
+plan. Cooked raster and upscale operations carry scope mappings. Both members
+of a measured merged scope resolve to the same group-wide
+duration when the plan carries the member list. A group-wide duration only
+supports conclusions about the whole group. A frame whose operation was culled
+has no matching scope. A skipped measurement or missing recorded plan shows
+an unavailable state. If a saved sidecar predates scope mappings, recook the
+original build generation and check that the cooked package SHA-256 is the same.
+Supply additional saved revisions with repeated `--plan`.
+
+For the Metal [installed-SDK skylight fixture](render-graph-authoring.md#sky-visibility),
+save the standard output of `skylight timing open` and pass it with
+`--sdk-timing` in place of `--editor-trace`. Use the sidecar for the exact
+cooked package staged in the app. GPU duration and the SDK fixture's CPU
+preparation time appear in distinct fields, both in nanoseconds.
+
 ### Trace a shader edit to its first paint
 
 Start a CPU or Both recording, change a graph shader, and build a preview. For
@@ -1255,8 +1294,10 @@ There are no separate Scene or 3D Levels authoring tabs.
    an exact value. The slider edits the same draft as typing, so
    **Apply Changes** and **Reset Fields** treat both alike. Position, rotation,
    scale and colour channels keep their compact rows: drag an axis letter to
-   change one of those. The default World's Transform also reads as one
-   Position, Rotation and Scale row each rather than nine separate rows.
+   change one of those. Hold Shift for fine steps or Control (Command on macOS)
+   for coarse steps. You can switch sensitivity during the drag and the current
+   value stays put until you move the pointer. The default World's Transform
+   reads as one Position, Rotation and Scale row each.
 4. Use **Apply Changes** to validate all fields as one edit. Invalid text stays
    visible and the applied document stays intact. **Reset Fields** restores the
    last applied values. Selection and structural commands wait for Apply/Reset.
@@ -1582,7 +1623,9 @@ active, the handle under the pointer thickens and lightens and the cursor become
 an open hand; while a handle is dragged the cursor is a closed hand, that handle
 stays highlighted and the other axes fade towards the viewport colour. The half of
 a rotation ring behind the pivot is dimmer, so the ring reads as a loop around the
-object. Hover is tracked only while no mouse button is down, costs one handle
+object. A ring segment shorter than one logical pixel cannot start a rotation.
+Start on another part of an edge-on ring or orbit the view. Hover is
+tracked only while no mouse button is down, costs one handle
 projection per mouse move, and is cleared when the pointer leaves the viewport. The
 silhouette previews the candidate throughout a drag. Release applies one
 validated World edit and refreshes the shaded scene; **Undo** restores the entire
@@ -2603,11 +2646,12 @@ blue from the other channels isolates the panel's colour response.
 | Blocker | 0, 0, 0 | 0, 0, 0 | 0, 0, 0 | 0, 0, 0 |
 | Saturated, blue light on | — | — | .13084, .09286, .27074 | 7, 20, 67 |
 
-The default Lit bake held 768 bytes of RGBA8 surface-chart texels and 19,456
-bytes of RGBA8 probe-atlas texels. Those are encoded payload sizes before GPU
+The original 8 × 8 nearest-depth qualification of this scene held 768 bytes
+of RGBA8 surface-chart texels and 19,456 bytes of RGBA8 probe-atlas texels. Those are encoded payload sizes before GPU
 allocation padding. In hosted Play and Release the player supplied no baked
 texture bytes and reported zero chart draws and zero probe draws at every
-sample. The light switch still affected both profiles.
+sample. The light switch still affected both profiles. The filtered 16 × 16 bake
+uses 77,824 bytes for the same probe grid and retains the 768 chart bytes.
 
 **Moving receiver.** The sample follows the 1 m grid, 20 cm doorway, marked
 receiver path and visibility criteria from the native probe qualification. All
@@ -2759,17 +2803,16 @@ realtime lighting and the authored environment. Save the World to keep the
 volume and receiver settings. Save again after the bake is ready to retain the
 atlas alongside the charts. If an older cache contains only charts, the native
 editor prepares the missing atlas in the background. A cache saved with the
-earlier 4 × 4 visibility faces is also rebaked in the background; save again
-to keep the new atlas.
+earlier 4 × 4 or 8 × 8 nearest-depth faces is also rebaked in the background.
+Save again to keep the new 16 × 16 atlas.
 
 Probe visibility is directional and coarse. Keep the volume's probe planes
 more than 1.6 % of the spacing from floors, ceilings and walls: a probe that
 touches geometry is ignored, and a receiver whose eight neighbours are all
-ignored gets no baked bounce. Receivers within about 5 % of the spacing of a
-wall can still pick up bounce from the far side, and so can receivers just
-past an opening. Move a GI Probe Receiver along both sides of a wall
-and through any doorway while checking the Lit viewport. Each move rebakes,
-which takes about half a second for a small volume. If bounce crosses a
+ignored gets no baked bounce. The filtered depth test reduces leaks along
+thin walls and doorways, and sub-texel openings can lose some bounce. Move
+a GI Probe Receiver along both sides of a wall and through any doorway
+while checking the Lit viewport. Each move rebakes the volume. If bounce crosses a
 closed wall or disappears in the opening, adjust the volume's position or
 spacing, let it rebake, and repeat the same movement. Use the result that
 preserves bounce through the opening while keeping the closed wall dark where
@@ -3148,10 +3191,19 @@ the [reference capture](#reference-capture-of-the-viewport) instead.
 viewport's current camera. Its **Source** is **RT1 reference** by default, which
 path-traces the camera with the renderer's RT1 progressive reference integrator.
 Use the result as ground truth for the raster image. Set the image's long side
-(the short side follows the viewport's aspect), the samples per pixel, the maximum
-scattering depth and the traversal, then choose **Capture viewport**. The
-**Render graph** source captures the viewport's own graph instead; see
-[Capture the render graph](#capture-the-render-graph).
+(the short side follows the viewport's aspect), the maximum scattering depth and
+the traversal. Then choose a **Sample preset** and select **Capture viewport**.
+
+- **Quick inspection** is the default at 16 samples per pixel. Use it to check
+  broad lighting and material changes with a shorter wait.
+- **Detailed comparison** traces 128 samples per pixel to reduce noise when
+  comparing subtle lighting changes, including small regions lit indirectly.
+- **Custom** keeps the displayed sample count and lets you enter your own. Editing
+  **Samples** also selects **Custom**.
+
+**Samples** shows the target in samples per pixel before capture. A preset changes
+only the next RT1 sample target. The **Render graph** source has its own sample
+control. See [Capture the render graph](#capture-the-render-graph).
 
 The settings, the capture buttons, progress and status sit in one column at the
 window's leading edge; the Reference, Render graph and Difference images take the
@@ -3165,8 +3217,10 @@ navigation or edits do not change it; capture again to include them. The window
 shows the image as it fills in, the minimum samples reached per pixel, the number
 of analytic lights and the elapsed time. **Stop** discards the capture. **Save…**
 writes the linear `LUHDR01` capture and, beside it, a PNG with the same base name.
-A capture saved before it finishes is marked partial and keeps exact per-pixel
-sample counts. Convert the HDR file with
+To keep an in-progress result, choose **Save…** while the capture is still
+running, before choosing **Stop**. The HDR records the requested target and marks
+the file partial with the exact per-pixel sample counts in the saved image.
+Convert the HDR file with
 [`scripts/reference-hdr`](../architecture/renderer-systems.md#reference-workflow-and-frozen-profile).
 The PNG and the window show the reference the way the viewport displays its
 output when the capture starts. When a ToneMap draws that output, they use its
@@ -3685,9 +3739,20 @@ The **Content** work area projects the saved audio `content/catalog.json` and
 the cooked scene asset catalog `assets/catalog.json` into one table of names,
 types, operation status and paths. Textures, materials, meshes, scenes,
 lighting and licences appear beside audio sources, sounds, music and cooked
-geometry; a material shows its source material name. A file watcher refreshes
-the list a quarter of a second after either catalog changes, so a recook from
-the command line appears without pressing **Refresh**.
+geometry. A material shows its source material name. The native Editor polls
+the cooked catalog and registered cooked textures, so a command-line recook
+appears without pressing **Refresh**. Audio catalog notifications keep their
+quarter-second debounce.
+
+If cooked change hints overflow, Content rescans its registrations before
+validating the published catalog. An observation error keeps recovery pending
+and names the affected path. Restore a readable cooked file there to let the
+next scan finish. The catalog worker checks preview artifact sizes and digests,
+texture records, and material dependency keys. On failure, the browser keeps
+the last valid list and previews and tells you which artifact to recook or
+restore. The browser watches up to 1,023 cooked texture paths per project.
+Catalog changes still trigger validation when that registration budget is full,
+and **Refresh** rechecks the current catalog and its preview artifacts.
 
 Search is live and case-insensitive. Every space-separated word must appear in
 the name, resource ID, type name or path, so `brick wall` finds the material
@@ -3718,7 +3783,13 @@ dependency checks and publication implementation. Import validates saved loops
 and matching sample rates, captures catalog/dependency digests, and rechecks
 consulted inputs before publication. It never rewrites authored Sound or Music
 settings. Errors name the failing stage or dependency and retain the last valid
-catalog/list. Refresh explicitly retries a failed catalog read.
+catalog/list. When a replacement is shorter than a saved loop, the failure names
+the source ID, the candidate's frame count and sample rate, and the loop's required
+end frame. Use **Choose corrected file** from the problem panel or failed row to
+pick another export for the same ID. Cancelling the picker keeps the failure
+available and the old source active. When keyboard focus is in Content, the Editor
+requests a screen-reader announcement of the rejection and repair guidance on
+Qt 6.8 or later.
 
 The copied source is published to an immutable `sources/<key>.wav` or `.flac`
 file. The SHA-256 key includes source bytes, format, importer version and native
@@ -3744,7 +3815,7 @@ do not block project changes; their cancelled/stale results are discarded.
 acknowledged. Cancellation wins before publication begins; a late request cannot
 undo a catalog commit. The UI then waits for the actual success or failure.
 Quit cancels and asynchronously drains owned work without blocking the GUI.
-Polling exists only during an active job. Workers never call model/widget APIs
+Job completion polling exists only during an active job. Workers never call model/widget APIs
 or capture a window pointer. Browser controls explain their desktop requirement.
 Native support follows the [host prerequisites](#prerequisites-optional-editor-setup).
 Browser import and persistence still need acceptance.
@@ -3769,11 +3840,13 @@ base colour texture, roughness, metalness and emission. Every other type shows
 its typed icon. Thumbnails are requested only by rows the view actually paints,
 generated on a private pool of two worker threads (one request per event loop
 turn on the browser), and kept in a 16 MiB cache keyed by resource ID and
-artifact key. A recook changes the key, so the old thumbnail is never shown and
-an unchanged asset is never redrawn. The waiting queue holds at most 256
-requests and drops the oldest first, because those rows have scrolled away.
-Failures are cached per key and the row keeps its icon. Texture decoding reads
-only the texel rows it samples and admits SceneFormat's 4096 texel limit.
+artifact key. A recook changes the keys of the affected materials. The list
+keeps their last drawable thumbnails while replacements are prepared and
+reuses the cached thumbnail for each unchanged asset. The waiting queue holds
+at most 256 requests and drops the oldest first, because those rows have
+scrolled away. Failures are cached per key. A row without a previous thumbnail
+shows its type icon. Thumbnail rendering reads only the texel rows it samples
+and admits SceneFormat's 4096 texel limit.
 
 Imports queue: **Import** while another import runs adds the file to the queue,
 and its row appears at once as *Queued*. The running import reports its stage
@@ -3783,9 +3856,11 @@ column shows the stage and percentage over a thin progress bar, and the strip
 under the list shows
 "Importing 2 of 3", the resource ID, the stage and the overall fraction across
 the batch. A failed import keeps its row with *Failed:* and the worker's reason,
-the problem panel names the resource and offers **Retry import**, and the
-**Retry import** button and the row's context menu retry the same file and ID
-(the context menu can also dismiss the failure). Cancel stops the running
+the problem panel names the resource and offers a repair. **Retry import** repeats
+the same file and ID after an in-place fix. **Choose corrected file** opens another
+export when dependency validation found a saved loop that the candidate cannot
+cover. The row's context menu also offers the repair and can dismiss the failure.
+Cancel stops the running
 import and drops the queue. Cooking scene assets stays in the C++ engine; the
 browser only reads its published catalog and artifacts.
 
@@ -3795,8 +3870,14 @@ late-cancel semantics, ID selection across filtering, unchanged-role updates,
 stale operation/project results, GUI-owned completion and shutdown, search
 terms and type chips, texture and material thumbnails, thumbnail cache keys,
 failures and queue limits, scene catalog listing, queued import progress, and
-failure and retry. CI runs
-those fixtures under Clang 18 analysis and ASan/UBSan.
+failure and retry. See the
+[S3 acceptance evidence](editor-workspace-evidence.md#s3-content-lifecycle-acceptance)
+for the MainWindow and native accessibility journeys.
+
+The native `ludus_editor_cooked_content_recovery_tests` test forces lost hints
+and a full failed rescan in one cooked project. It compares the settled material
+thumbnails to a fresh validated catalog read and checks the unrelated preview
+identity and a held file reader across repair.
 
 ## The project descriptor (version 1)
 
@@ -3881,14 +3962,21 @@ World recovery remains with the existing [World recovery owner](#save-recovery-a
 
 Save validates the whole draft, takes a short cooperative lock in an ignored
 `.ludus/` directory beside the descriptor, checks the on-disk bytes still match
-the digest recorded at Open/last Save, then writes atomically with `QSaveFile`
-(direct-write fallback disabled). A short/failed write, commit failure, or disk
-conflict **retains the old saved file and your dirty draft** and reports the
-error; it never silently overwrites. If the file changed on disk you get a
-Conflict and an explicit Reload (with discard confirmation).
+the digest recorded at Open or the last Save, then writes atomically with
+`QSaveFile`. A failed save leaves the dirty draft and undo history available.
 
-Open/Reload/Close on a dirty document offer Save / Discard / Cancel; a failed
-Save aborts that action.
+When the descriptor changes on disk, Project Settings opens a read-only
+comparison. Each changed field shows the saved baseline, the disk value at the
+time of inspection, and the pending draft. The comparison marks fields that
+changed on both sides and explains when the disk values cannot be read or
+validated. **Cancel** keeps the draft and undo history. **Reload** reads and
+validates the latest disk revision before replacing the draft. If validation
+fails, the editor explains the failure and keeps the draft and undo history.
+Both choices leave the descriptor bytes on disk as they are.
+
+Opening or closing a dirty project offers Save, Discard, and Cancel. A failed
+Save aborts the action. Reload from the menu asks before discarding a dirty
+draft.
 
 ## Build / run semantics
 

@@ -1,9 +1,112 @@
-"""Bounded graph-owned structured storage for the native triangle ray profile."""
+"""Graph-owned structured storage and shader-derived persistent buffer sizes."""
 
 MAX_BUFFERS = 2
 FIRST_SLOT = 6
 MAX_STRIDE = 4096
 MAX_ELEMENTS = 16 * 1024 * 1024
+
+
+def validate_persistent_struct_links(plans, programs, closures, build):
+    """Link each use to the same package-local Slang declaration."""
+    for plan in plans:
+        resources = plan['resources']
+        for operation in plan['passes']:
+            for use in operation.get('persistent_buffers', []):
+                record = resources[use['resource']].get('shader_struct')
+                if record is None:
+                    continue
+                program = next(shader['program'] for shader in operation['pipeline']['shaders']
+                               if shader['stage'] == 'compute')
+                source = record['source']
+                if program in programs and (programs[program]['source'] == source or source not in closures[program]):
+                    raise build.ToolingError('RenderGraphBuildShaderInterface',
+                                             f"{use['resource']}: include '{source}' from scene compute program "
+                                             f"'{program}'. Select the shared file that declares the struct in Buffer sizing.",
+                                             location={'source': programs[program]['source'], 'program': program,
+                                                       'line': 1, 'column': 1})
+                build.name(record['type'], 'buffer struct type')
+
+
+def size_persistent_structs(plans, snapshot, stage, compiler, cancel, build):
+    """Use the same SPIR-V storage layout that the ordered Metal/Vulkan shaders use."""
+    strides, layouts = {}, []
+    for plan in plans:
+        instances = {context['instance']: context for context in plan['activity']}
+        for identity, resource in plan['resources'].items():
+            record = resource.get('shader_struct')
+            if record is None:
+                continue
+            source, type_name = record['source'], record['type']
+            key = (source, type_name)
+            if key not in strides:
+                directory = stage / ('buffer-layout-' + str(len(strides)))
+                strides[key] = reflect_stride(source, type_name, snapshot, directory, compiler, cancel, build)
+            stride = strides[key]
+            bytes_total = stride * record['count']
+            word_bytes = build.ray.BUFFER_WORD_BYTES
+            capacity = ((bytes_total + word_bytes - 1) // word_bytes) * word_bytes
+            build.require(0 < capacity <= build.ray.MAX_BUFFER_BYTES, 'Capacity', identity,
+                          f'{record["count"]} × {stride} bytes exceeds the persistent buffer limit. '
+                          'Reduce the element capacity or the shader struct size.')
+            resource['extent'][0] = capacity
+            resource['shader_struct'] = {**record, 'stride': stride}
+            prefix, node = identity.rsplit('/', 1)
+            context = instances[prefix]
+            layouts.append({'node': node, 'graph': context['source'], 'configuration': context['configuration'],
+                            'stride': stride, 'bytes': capacity})
+    return layouts
+
+
+def reflect_stride(source, type_name, snapshot, directory, compiler, cancel, build):
+    # Thanks to the Slang team, Using the Reflection API (Types and Layouts),
+    # https://shader-slang.org/slang/user-guide/reflection.html.
+    # Slang reflects the stride of a fixed array of T in a storage-buffer record.
+    # This includes the tail alignment that the last reflected field alone omits.
+    closure = snapshot.shader_closure(source)
+    authored = directory / 'source'
+    if build.os.name == 'nt':
+        build.require_paths_within_windows_limit(source, [authored / relative for relative in closure])
+    for relative in closure:
+        path = authored / relative
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_bytes(snapshot.files[relative])
+    # Keep the generated root outside the package-relative namespace.
+    wrapper = directory / 'layout_probe.slang'
+    wrapper.write_text(
+        f'#include "source/{source}"\n'
+        f'struct LudusLayoutProbe {{ {type_name} Elements[2]; }};\n'
+        'RWStructuredBuffer<LudusLayoutProbe> LudusLayoutRecords;\n'
+        'RWStructuredBuffer<uint2> LudusLayoutResult;\n'
+        '[numthreads(1, 1, 1)]\n'
+        'void LudusLayoutMain()\n'
+        '{ uint count; uint stride; LudusLayoutRecords.GetDimensions(count, stride);\n'
+        '  LudusLayoutResult[0] = uint2(count, stride); }\n',
+        encoding='utf-8')
+    reflection = directory / 'reflection.json'
+    depfile = directory / 'layout.d'
+    command = [str(compiler), str(wrapper), '-target', 'spirv', '-profile', 'spirv_1_3',
+               '-entry', 'LudusLayoutMain', '-stage', 'compute', '-o', str(directory / 'layout.spv'),
+               '-reflection-json', str(reflection), '-depfile', str(depfile)]
+    try:
+        build.run_stage(command, cancel, describe_output=lambda message: message.replace(str(directory) + '/', ''),
+                        where=f'{source}::{type_name}')
+    except build.ToolingError as error:
+        if error.code == 'RenderGraphBuildShader':
+            error.location = {'source': source, 'line': 1, 'column': 1}
+        raise
+    build.verify_shader_dependencies(depfile, closure, authored, wrapper, f'{source}::{type_name}')
+    data = build.document(build.read(reflection), source)
+    parameters = data.get('parameters', [])
+    probe = next((parameter['type'] for parameter in parameters if parameter['name'] == 'LudusLayoutRecords'), {})
+    fields = probe.get('resultType', {}).get('fields', [])
+    array = fields[0]['type'] if fields and fields[0]['name'] == 'Elements' else {}
+    element = array.get('elementType', {})
+    stride = array.get('uniformStride')
+    build.require(element.get('kind') == 'struct' and type(stride) is int and
+                  0 < stride <= build.ray.MAX_BUFFER_BYTES,
+                  'ShaderInterface', f'{source}::{type_name}',
+                  'expected a sized storage struct. Select a struct with value fields that fits the buffer limit.')
+    return stride
 
 
 def validate_node(node, where, graph):

@@ -15,6 +15,7 @@
 #include <ludus/foundation/containers/static_array.hpp>
 #include <ludus/foundation/filesystem/filesystem.hpp>
 #include <ludus/foundation/math/scalar.hpp>
+#include <ludus/foundation/strings/string.hpp>
 #include <ludus/foundation/threading/thread.hpp>
 #include <ludus/foundation/time/time.hpp>
 #include <ludus/graphics/renderer/render_graph_activation.hpp>
@@ -373,6 +374,31 @@ TEST_CASE("Scene wave graph diffracts beyond a half screen from the current Worl
 {
     CheckSceneWaveGraph(2);
 }
+
+#if defined(LUDUS_PLATFORM_MACOS)
+TEST_CASE("Scene wave graph reaches an unobstructed receiver without Metal multiply-add contraction",
+          "[renderer][gpu][wave-tracing][graph][reference-compute]")
+{
+    // Keep the production safe-math policy and vary contraction only for this capture's compute shader.
+    String uncontractedSource;
+    WaveDevice device;
+    CreateWaveDevice(device);
+    rhi::ShaderDescription& shader = device.Programs.RayCompute.Artifact;
+    REQUIRE(shader.Msl.empty() == false);
+    REQUIRE(uncontractedSource.TryAppend("#pragma METAL fp contract(off)\n") == StringStatus::Ok);
+    REQUIRE(uncontractedSource.TryAppend(shader.Msl) == StringStatus::Ok);
+    shader.Msl = uncontractedSource.GetView();
+
+    Array<math::Vector3> pixels;
+    CaptureSceneWavePass(device, 0, nullptr, WAVE_PASS, pixels, REPEATED_CAPTURE_EXTENT, REPEATED_CAPTURE_EXTENT);
+    for (usize index = 0; index < pixels.GetSize(); ++index)
+    {
+        CAPTURE(index);
+        CHECK(math::IsFinite(pixels[index].X) == true);
+        CHECK(pixels[index].X > 0);
+    }
+}
+#endif
 
 TEST_CASE("Scene wave graph repeats its wave and closure-program exports bit for bit",
           "[renderer][gpu][wave-tracing][graph][program]")
