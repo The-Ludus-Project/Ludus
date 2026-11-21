@@ -685,16 +685,16 @@ sanitizers, so `ci.yml` holds at most two ARM runners. It uses an explicit statu
 condition so a sanitizer failure does not suppress its evidence; cancelling the
 workflow still stops it. All required results remain part of the promotion gate.
 Hosted ARM capacity can still run out; see
-[retry jobs that found no runner](#retry-jobs-that-found-no-runner). The batch also admits ARM-owning workflows in order:
-native, macOS threading, installed host tooling, then ARM documentation tools. This
-prevents short ARM jobs from expiring behind native work in a different reusable
-workflow. The Linux wiki call, Intel documentation tools and Windows threading
+[retry jobs that found no runner](#retry-jobs-that-found-no-runner). The short ARM-owning workflows run in order beside
+native: macOS threading, installed host tooling, then ARM documentation tools, so
+the batch holds at most three ARM runners. They used to wait for native, which put
+their ten minutes after the longest job (batch 44859003421 ended at 147 minutes,
+136 of them on the macOS chain). The Linux wiki call, Intel documentation tools and Windows threading
 start at candidate capture alongside the browser, Windows and recovery
 workflows. The Linux call builds and verifies the public API
 and the browser editor, checks sample playback and uploads the Pages artifact.
 Promotion waits for all three wiki calls and both threading checks. Only the
 post-promotion job deploys the candidate wiki.
-The ARM sequence can increase total batch duration.
 
 #### Retry jobs that found no runner
 
