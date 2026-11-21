@@ -1152,11 +1152,12 @@ wrapper includes `scene_shader.slang` before any callback:
   `IncidentLightMeasure` and `LightSelectionPolicy`;
 - `Ray`, the scene `RayLaunch` (with the camera and sampling state),
   `SceneContext`, `RayQueryContext`, `SurfaceHit`, `MaterialSample`,
-  `LightInfo`, `SelectedLight`, `LightSample`, `IncidentLightSample` and
-  `SceneInfo`;
+  `LightInfo`, `SelectedLight`, `LightSample`, `IncidentLightSample`,
+  `SceneLightSample` and `SceneInfo`;
 - the public operations, from `TraceClosest`, `TestVisibility`,
   `MakeCameraRay` and `SpawnSurfaceRay` to `EvaluateMaterial`, `SelectLight`,
-  `SampleIncidentLight` and every `SampleSceneRandom` overload;
+  `SampleIncidentLight`, both `SampleLight` overloads and every
+  `SampleSceneRandom` overload;
 - the failure reasons as LUSL constants (`SCENE_FAILURE_AUTHORED_FIRST`, ...).
 
 It includes `math.luslh`. A scene-interface program includes

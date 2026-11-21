@@ -217,6 +217,11 @@ extern slang
         uint32 LightCount;
         uint32 EmitterCount;
     };
+    struct SceneLightSample
+    {
+        SelectedLight Selection;
+        IncidentLightSample Incident;
+    };
 
     void FailSceneQuery(inout RayQueryContext queries, in uint32 reason);
     Ray MakeCameraRay(in RayLaunch launch, in float32x2 samplePixel);
@@ -224,8 +229,16 @@ extern slang
     SceneQuery TraceClosest(in SceneContext scene, inout RayQueryContext queries, in Ray ray, out SurfaceHit outHit);
     SceneQuery TestVisibility(in SceneContext scene,
                               inout RayQueryContext queries,
+                              in float32x3 originWorld,
+                              in IncidentLightSample light);
+    SceneQuery TestVisibility(in SceneContext scene,
+                              inout RayQueryContext queries,
                               in SurfaceHit receiver,
                               in IncidentLightSample light);
+    SceneQuery TestVisibility(in SceneContext scene,
+                              inout RayQueryContext queries,
+                              in float32x3 originWorld,
+                              in LightSample light);
     SceneQuery TestVisibility(in SceneContext scene,
                               inout RayQueryContext queries,
                               in SurfaceHit receiver,
@@ -260,6 +273,21 @@ extern slang
                                             in uint32 firstDimension,
                                             inout RayQueryContext inoutQueries);
     SurfaceHit GetSurfaceHit(in SceneContext scene, in uint32 triangleIndex, in float32x2 barycentric);
+    SceneLightSample SampleLight(in SceneContext scene,
+                                 in float32x3 positionWorld,
+                                 in RayLaunch launch,
+                                 in uint32 selectionDimension,
+                                 in uint32 incidentDimension,
+                                 in LightSelectionPolicy policy,
+                                 inout RayQueryContext inoutQueries);
+    SceneLightSample SampleLight(in SceneContext scene,
+                                 in SurfaceHit shadingHit,
+                                 in RayLaunch launch,
+                                 in uint32 selectionDimension,
+                                 in uint32 incidentDimension,
+                                 in LightSelectionPolicy policy,
+                                 inout RayQueryContext inoutQueries);
+    static const uint32 SCENE_INCIDENT_LIGHT_DIMENSION_COUNT;
     float32 EvaluateLightPdfSolidAngle(in SceneContext scene,
                                        in float32x3 receiverPositionWorld,
                                        in SurfaceHit endpoint);

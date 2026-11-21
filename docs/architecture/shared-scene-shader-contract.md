@@ -256,10 +256,11 @@ For continuous sources Li contains no extra inverse-square factor; the solid-ang
 PDF conversion accounts for geometry. For delta point/spot samples the coefficient
 does include inverse-square attenuation. Do not multiply either case twice.
 
-TestVisibility traces only an occlusion segment: it never invokes authored hit or
-miss shading and never adds radiance. Offset the receiver robustly and the mesh
-endpoint toward the receiver using error bounds; exclude only the numerical end
-point, not the emitter instance. Other triangles of the same emitter can occlude.
+`TestVisibility` traces an occlusion segment without invoking authored shading.
+With a `SurfaceHit`, it offsets the ray origin using that triangle's error bound.
+With a world-space ray origin, it starts at that point. For a mesh
+light it offsets the endpoint toward the ray origin and excludes the numerical
+endpoint from the segment. Other triangles of the same emitter can occlude.
 An infinite endpoint traces to a conservative scene exit distance; this shadow
 range is not the camera far plane. Surface secondary rays have their own explicit
 maximum range. Finite transport cutoffs are reported as such, not exact infinity.
