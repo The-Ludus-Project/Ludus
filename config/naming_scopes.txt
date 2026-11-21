@@ -9,6 +9,7 @@ modules/content/identity_records
 apps/smoke/internal/lifecycle.h
 apps/smoke/lifecycle.cpp
 apps/smoke/tests/lifecycle_tests.cpp
+modules/content/procedural/core
 modules/content/procedural/environment
 modules/content/terrain
 modules/content/weather

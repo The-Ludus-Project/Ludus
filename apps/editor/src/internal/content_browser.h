@@ -184,6 +184,7 @@ struct ContentResult final
     content::Status Status = content::Status::Invalid;
     QString Message;
     QString CandidatePath;
+    QString ReplacementGuidance;
     QVector<ContentRow> Rows;
     content::Digest CatalogDigest;
     /// Whether content/catalog.json exists; imports compare-and-swap against CatalogDigest only then.
@@ -273,15 +274,20 @@ Q_SIGNALS:
 
 protected:
     bool event(QEvent* event) override;
+    bool eventFilter(QObject* watched, QEvent* event) override;
 
 private:
     struct QueuedImport final
     {
         QString File;
         QString Id;
+        bool ShouldChooseReplacement = false;
     };
 
     void RenderActions();
+    void activateResource(const QModelIndex& index);
+    void chooseImportFile(const QString& id);
+    [[nodiscard]] QString getRetryLabel(const QString& id) const;
     void showProblem(const ContentResult& result);
     void hideProblem();
     void RestoreSelection();
