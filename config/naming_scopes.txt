@@ -18,6 +18,8 @@ modules/gameplay/weather
 tools/web-weather-probe
 modules/content/string_dictionary
 modules/content/string_dictionary_format
+modules/content/sequence_format
+modules/content/sequence_content
 modules/content/foliage_format
 modules/content/foliage_pages
 modules/foundation/identity
