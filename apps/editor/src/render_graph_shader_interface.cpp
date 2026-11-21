@@ -116,6 +116,12 @@ DescribeRayInterface(const QJsonObject& program, const QJsonArray& techniques, c
                       "// Scene materials enabled.\n"
                       "// Closest-hit material access: MaterialSample material = EvaluateMaterial(scene, hit);\n"
                       "// Author lighting and bounce policy in your callbacks."));
+        if (isLaunch == true)
+        {
+            lines.append(QStringLiteral(
+                "// Independent storage texture binds RWTexture2D<float4> GraphStorageTexture.\n"
+                "// PositionPixel and ExtentPixel describe the dispatch. Query GetDimensions for the texture size."));
+        }
         QString trailingParameters = isLaunch == true ? QString{} : QStringLiteral(",\n    inout ScenePayload payload");
         if (program.value(QStringLiteral("graph_resources")).toBool() == true)
         {

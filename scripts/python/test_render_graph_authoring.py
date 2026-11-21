@@ -343,12 +343,14 @@ def parse_runtime(data):
     offset += 64
     result = {'magic': magic, 'version': version, 'interface': interface, 'generation': generation,
               'resources': [take(9 if version >= 11 else 8 if version >= 4 else 6) for _ in range(resources)], 'cameras': [take(1) for _ in range(cameras)],
-              'passes': [take(22 if version >= 39 else 21 if version >= 29 else 20 if version >= 18 else 19 if version >= 16 else 18 if version >= 15 else 17 if version >= 14 else 16 if version >= 13 else 15 if version >= 10 else 13 if version >= 9 else 10 if version >= 5 else 9) for _ in range(passes)], 'uniform_values': values,
+              'passes': [take(24 if version >= 42 else 22 if version >= 39 else 21 if version >= 29 else 20 if version >= 18 else 19 if version >= 16 else 18 if version >= 15 else 17 if version >= 14 else 16 if version >= 13 else 15 if version >= 10 else 13 if version >= 9 else 10 if version >= 5 else 9) for _ in range(passes)], 'uniform_values': values,
               'bindings': [take(5) for _ in range(bindings)], 'blocks': [take(3) for _ in range(blocks)],
               'fields': [take(5) for _ in range(fields)], 'stages': []}
     for _ in range(stages):
         role, target, inputs, entry_bytes, artifact_bytes, block_count = take(6)
-        workgroup = take(3) if version >= 21 and role in (8, 11, execution.PERSISTENT_RAY_STAGE_ROLE) else (64, 1, 1)
+        has_workgroup = ((version >= 21 and role in (8, 11, execution.PERSISTENT_RAY_STAGE_ROLE)) or
+                         (version >= 42 and role == execution.NATIVE_RAY_STAGE_ROLE))
+        workgroup = take(3) if has_workgroup else (64, 1, 1)
         stage_inputs = [take(2) for _ in range(inputs)]
         names = []
         for _ in range(block_count):

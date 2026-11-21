@@ -361,6 +361,10 @@ TEST_CASE("ray launch sizing derives from color by default and preserves explici
     legacyMode->setCurrentIndex(1);
     CHECK(legacyApplied.value(QStringLiteral("invocation")).toObject().value(QStringLiteral("dimensions")).toArray() ==
           QJsonArray{96, 64, 1});
+    legacyMode->setCurrentText(QStringLiteral("Independent storage texture"));
+    const QJsonObject storageLaunch = legacyApplied.value(QStringLiteral("invocation")).toObject();
+    CHECK(storageLaunch.value(QStringLiteral("dimensions")).toArray() == QJsonArray{96, 64, 1});
+    CHECK(storageLaunch.value(QStringLiteral("storage_texture")).toBool() == true);
 }
 
 TEST_CASE("pipeline nodes edit custom interfaces with connection-safe undo and save",

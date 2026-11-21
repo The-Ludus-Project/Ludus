@@ -154,8 +154,10 @@ bool RasterMetalBindings(NSArray<id<MTLBinding>>* bindings,
             else if (internal::StorageTextureBinding(entry.Kind) == true && binding.type == MTLBindingTypeTexture)
             {
                 // Metal storage textures carry no texel format; the layout's format binds the view.
-                found = ((id<MTLTextureBinding>)binding).textureType == MTLTextureType2D &&
-                        binding.access == MTLBindingAccessWriteOnly &&
+                const MTLBindingAccess access = entry.Kind == RasterBindingKind::StorageTexture2DReadWrite
+                                                    ? MTLBindingAccessReadWrite
+                                                    : MTLBindingAccessWriteOnly;
+                found = ((id<MTLTextureBinding>)binding).textureType == MTLTextureType2D && binding.access == access &&
                         ((id<MTLTextureBinding>)binding).arrayLength == 1;
             }
         }
@@ -936,6 +938,14 @@ RasterStatus RasterCreateShader(usize slot,
 }
 RasterStatus RasterCreateLayout(usize slot, const internal::RasterLayout& info, uint32) noexcept
 {
+    for (usize index = 0; index < info.Count; ++index)
+    {
+        if (info.Entries[index].Kind == RasterBindingKind::StorageTexture2DReadWrite &&
+            GetMetal().Device.readWriteTextureSupport < MTLReadWriteTextureTier2)
+        {
+            return RasterStatus::Unsupported;
+        }
+    }
     GetRasterMetal().Layouts[slot] = info;
     return RasterStatus::Ready;
 }

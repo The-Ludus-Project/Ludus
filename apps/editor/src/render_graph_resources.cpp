@@ -418,15 +418,18 @@ void CollectProblems(const ResourceContext& context,
                                "Connect both targets to the same RenderSize, or use matching fixed sizes.")
                     .arg(where, DescribeTexture(colorPort, color), DescribeTexture(depthPort, depth)));
         }
-        const QJsonArray launch =
-            node.value(QStringLiteral("invocation")).toObject().value(QStringLiteral("dimensions")).toArray();
-        if (UsesRayLaunch(node) == true && color.ViewPolicy.isEmpty() == false &&
+        const QJsonObject invocation = node.value(QStringLiteral("invocation")).toObject();
+        const QJsonArray launch = invocation.value(QStringLiteral("dimensions")).toArray();
+        const bool hasImageLaunch =
+            UsesRayLaunch(node) == true && invocation.value(QStringLiteral("storage_texture")).toBool() == false;
+        if (hasImageLaunch == true && color.ViewPolicy.isEmpty() == false &&
             launch.size() == RAY_LAUNCH_DIMENSION_COUNT)
         {
-            inoutProblems.append(where +
-                                 QStringLiteral(": view-relative color requires Match color target in Invocation."));
+            inoutProblems.append(
+                where + QStringLiteral(": choose Match color target for image returns to a view-relative target, "
+                                       "or Independent storage texture for shader-owned writes."));
         }
-        if (UsesRayLaunch(node) == true && HasKnownExtent(color.Extent) == true &&
+        if (hasImageLaunch == true && HasKnownExtent(color.Extent) == true &&
             launch.size() == RAY_LAUNCH_DIMENSION_COUNT &&
             launch != QJsonArray{color.Extent.at(0), color.Extent.at(1), 1})
         {

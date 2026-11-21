@@ -194,7 +194,8 @@ enum class GraphAccessMode : ludus::foundation::uint8
     /// Indirect argument range read by a raster draw (every command of the packet) or by an
     /// indirect compute dispatch (R12a); requires a StorageIndirect buffer.
     Indirect,
-    /// Write-only shader storage of a complete Storage texture in a fragment or compute pass.
+    /// Shader writes to a complete Storage texture in a fragment or compute pass.
+    /// A read/write storage binding can load texels from the same texture in compute.
     /// Texels the shader does not write keep the preceding version, so the use reads that
     /// defined version and writes the next one in place, like StorageReadWrite. Offset and
     /// Size are zero; the texture cannot also be an attachment or sampled in the same pass.

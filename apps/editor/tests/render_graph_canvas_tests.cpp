@@ -2146,23 +2146,30 @@ TEST_CASE("scene compute nodes are authored on the canvas with Properties hidden
         modeOrNull->setCurrentIndex(1);
         CHECK(workspace.GetDocument().GetRevision() == revision + 2);
         CHECK(workspace.GetDocument().GetDraft(GetRootGraph()).contains("ColorTarget") == false);
+        modeOrNull->setCurrentText(QStringLiteral("Independent storage texture"));
+        CHECK(workspace.GetDocument().GetRevision() == revision + 3);
+        CHECK(workspace.GetDocument().GetDraft(GetRootGraph()).contains("storage_texture") == true);
         QGroupBox* advancedOrNull = dialogOrNull->findChild<QGroupBox*>(QStringLiteral("renderGraphComputeAdvanced"));
         REQUIRE(advancedOrNull != nullptr);
         CHECK(advancedOrNull->isChecked() == false);
         advancedOrNull->setChecked(true);
-        CHECK(workspace.GetDocument().GetRevision() == revision + 3);
+        CHECK(workspace.GetDocument().GetRevision() == revision + 4);
         CHECK(workspace.GetDocument().GetDraft(GetRootGraph()).contains("group_size") == true);
         dialogOrNull->accept();
     });
     const QJsonObject edited = getNode();
     CHECK(edited.value(QStringLiteral("invocation")).toObject().value(QStringLiteral("dimensions")).isArray() == true);
+    CHECK(edited.value(QStringLiteral("invocation")).toObject().value(QStringLiteral("storage_texture")).toBool() ==
+          true);
     CHECK(edited.value(QStringLiteral("state")).toObject() ==
           QJsonObject{{QStringLiteral("group_size"), QJsonArray{64, 1, 1}}});
-    CHECK(workspace.GetDocument().GetRevision() == revision + 3);
+    CHECK(workspace.GetDocument().GetRevision() == revision + 4);
+    workspace.Undo();
     workspace.Undo();
     workspace.Undo();
     workspace.Undo();
     CHECK(workspace.GetDocument().GetDraft(GetRootGraph()) == generic);
+    workspace.Redo();
     workspace.Redo();
     workspace.Redo();
     workspace.Redo();

@@ -1192,7 +1192,8 @@ public:
     /// @param pass Plan pass index of a ray pass.
     /// @param outBuffer Receives the borrowed buffer; unchanged on failure.
     /// @return Ready after the current scene and camera produce a completed frame; NotReady while they have none.
-    /// InvalidDescription for a pass that is not a ray pass. Outputs are preserved on failure.
+    /// InvalidDescription for a pass that is not a ray pass, or Unsupported for an independent buffer or
+    /// storage texture dispatch. Outputs are preserved on failure.
     [[nodiscard]] rhi::RasterStatus GetAccumulation(foundation::uint32 pass,
                                                     rhi::BufferHandle& outBuffer) const noexcept;
     /// Split every ray sample into tileCount row bands, rendering one band per Render, for a graph instance
@@ -1202,8 +1203,9 @@ public:
     /// between frames at a sample boundary; the count applies to later scenes of this instance too.
     /// @param tileCount Bands per sample, from one (whole-image dispatches) to MAX_RENDER_GRAPH_RAY_TILES.
     /// @return Ready when set; InvalidDescription for a count out of range; Unsupported for more than one band
-    /// when RenderGraphPrograms::HasRayTiles is false or the plan contains a buffer-only dispatch or sampled
-    /// scene color input; InvalidState when uninitialized, not Ready, in a frame or between the bands of a sample.
+    /// when RenderGraphPrograms::HasRayTiles is false or the plan contains an independent buffer or storage texture
+    /// dispatch or a sampled scene color input; InvalidState when uninitialized, not Ready, in a frame or between
+    /// the bands of a sample.
     /// Failure leaves the graph unchanged.
     [[nodiscard]] rhi::RasterStatus SetRayTileCount(foundation::uint32 tileCount) noexcept;
     /// Select how later frames record the drawable scene. Direct is always admitted. OrderedGraph checks the

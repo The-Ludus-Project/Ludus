@@ -266,3 +266,5 @@
 
 // Read-only color from an earlier ordered scene pass. Only compute sequences use this slot.
 #define LUDUS_GRAPH_COLOR_INPUT_BINDING 12
+// An independent storage dispatch cannot use the diagnostic ray path capture.
+#define LUDUS_GRAPH_STORAGE_TEXTURE_BINDING LUDUS_RAY_PATH_CAPTURE_BINDING

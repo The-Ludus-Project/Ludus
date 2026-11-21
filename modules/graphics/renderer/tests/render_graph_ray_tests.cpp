@@ -1011,7 +1011,8 @@ TEST_CASE("Legacy software ray packages require recooking", "[render-graph][ray-
         usize end = stage + format::STAGE_FIELD_COUNT * WORD_BYTES;
         if (role == static_cast<uint32>(format::StageRole::RayCompute) ||
             role == static_cast<uint32>(format::StageRole::SceneRayCompute) ||
-            role == static_cast<uint32>(format::StageRole::PersistentRayCompute))
+            role == static_cast<uint32>(format::StageRole::PersistentRayCompute) ||
+            role == format::NATIVE_RAY_STAGE_ROLE)
         {
             bytes.RemoveRange(end, end + format::RAY_WORKGROUP_DIMENSIONS * WORD_BYTES);
         }
@@ -1691,7 +1692,7 @@ TEST_CASE("A buffer-only scene dispatch can trace more rays than there are pixel
     }
 }
 
-TEST_CASE("Scene compute reads the color texture written by a ray pass",
+TEST_CASE("A fixed ray launch reads and writes a view-sized texture before scene compute samples it",
           "[render-graph][gpu][compute-ray-tracing][sampled-color]")
 {
     GraphGpuFixture fixture{false, false};
@@ -1708,6 +1709,9 @@ TEST_CASE("Scene compute reads the color texture written by a ray pass",
     REQUIRE(plan.Passes[0].Color == plan.Passes[1].SourceColor);
     REQUIRE(plan.Passes[1].SourceColor != plan.Passes[1].Color);
     REQUIRE(plan.Passes[1].VisibilityDepth == format::ABSENT);
+    constexpr uint32 DISPATCH_SIDE = 8;
+    REQUIRE(plan.Passes[0].StorageLaunchWidth == DISPATCH_SIDE);
+    REQUIRE(plan.Passes[0].StorageLaunchHeight == DISPATCH_SIDE);
 
     const auto finish = [&fixture](rhi::RasterStatus status) {
         const uint64 beginning = time::NowTicks();
@@ -1719,7 +1723,7 @@ TEST_CASE("Scene compute reads the color texture written by a ray pass",
         CAPTURE(fixture.Graph.GetLastFailureStage());
         REQUIRE(status == rhi::RasterStatus::Ready);
     };
-    finish(fixture.Graph.Initialize(fixture.Device, plan, decoded));
+    finish(fixture.Graph.Initialize(fixture.Device, plan, decoded, nullptr, WIDTH, HEIGHT));
     REQUIRE(fixture.Graph.SetRayTileCount(2) == rhi::RasterStatus::Unsupported);
     fixture.Cameras[0].OrthographicCamera = true;
     renderer::RenderGraphReport report;
@@ -1744,6 +1748,23 @@ TEST_CASE("Scene compute reads the color texture written by a ray pass",
         REQUIRE(fixture.Pixels[offset + 1] == (isEvenColumn == true ? 0 : FULL_CHANNEL));
         REQUIRE(fixture.Pixels[offset + 2] == (isEvenColumn == true ? FULL_CHANNEL : 0));
     }
+    constexpr uint32 RESIZED_TEXTURE_WIDTH = WIDTH + 5;
+    constexpr uint32 RESIZED_TEXTURE_HEIGHT = HEIGHT + 3;
+    REQUIRE(fixture.Graph.Resize(RESIZED_TEXTURE_WIDTH, RESIZED_TEXTURE_HEIGHT) == rhi::RasterStatus::Pending);
+    finish(fixture.Graph.Update({fixture.Meshes.GetData(), fixture.Meshes.GetSize()},
+                                {fixture.Items.GetData(), fixture.Items.GetSize()},
+                                {fixture.Cameras.GetData(), fixture.Cameras.GetSize()},
+                                2,
+                                renderer::RenderGraphCoveragePolicy::RejectIncomplete,
+                                report,
+                                nullptr,
+                                2));
+    format::Resource texture;
+    REQUIRE(fixture.Graph.GetResourceDescription(plan.Passes[0].Color, texture) == true);
+    CHECK(texture.Width == RESIZED_TEXTURE_WIDTH);
+    CHECK(texture.Height == RESIZED_TEXTURE_HEIGHT);
+    ReadGraphFrame(fixture, plan.Passes[1].Color);
+    CHECK(fixture.Pixels[(WIDTH * HEIGHT - 1) * CHANNEL_COUNT + 1] == FULL_CHANNEL);
 }
 
 TEST_CASE("A scene compute pass traces the World and feeds Accumulate and ToneMap",

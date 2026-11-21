@@ -7,6 +7,10 @@
 #include <ludus/graphics/rhi/graph.h>
 namespace ludus::graphics::renderer::internal
 {
+[[nodiscard]] rhi::RasterStatus CreateGpuGraphStorageTexture(rhi::DeviceHandle device,
+                                                             foundation::uint32 width,
+                                                             foundation::uint32 height,
+                                                             rhi::TextureHandle& outTexture) noexcept;
 [[nodiscard]] rhi::RasterStatus BuildGpuGraph(rhi::DeviceHandle device,
                                               const GpuPreviewState& state,
                                               const GpuPreviewRecord& job,

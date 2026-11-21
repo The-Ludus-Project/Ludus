@@ -68,8 +68,10 @@ def legalize(code, document, layout, storage_bindings=None):
     slots = {'Parameters': 0, 'sceneWords': 1, 'accumulation': 2, 'colors': 3, 'textureWords': 4,
              'rayScene': 5, 'GraphBuffer0': 6, 'GraphBuffer1': 7,
              'GraphVisibility': 8, 'GraphVisibilityDepth': 9, 'rayPathCapture': 10, 'graphFailures': 14,
+             'GraphColorInput': 12,
              'NativeRayFunctions': abi['LUDUS_METAL_RAY_FUNCTION_TABLE_BINDING'],
              'NativeRayIntersections': abi['LUDUS_METAL_RAY_INTERSECTION_TABLE_BINDING']}
+    slots['GraphStorageTexture'] = slots['rayPathCapture']
     storage_bindings = storage_bindings or {}
     _require(type(storage_bindings) is dict and len(storage_bindings) <= 2 and
              len(set(storage_bindings.values())) == len(storage_bindings), 'invalid private storage slots')

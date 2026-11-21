@@ -219,7 +219,7 @@ RasterStatus CreateComputePipeline(DeviceHandle device,
              layout->Layout.Entries[i].Kind != RasterBindingKind::RayScene &&
              layout->Layout.Entries[i].Kind != RasterBindingKind::Texture2D &&
              layout->Layout.Entries[i].Kind != RasterBindingKind::TextureDepth2D &&
-             layout->Layout.Entries[i].Kind != RasterBindingKind::StorageTexture2D))
+             StorageTextureBinding(layout->Layout.Entries[i].Kind) == false))
         {
             return RasterStatus::InvalidDescription;
         }

@@ -75,8 +75,12 @@ struct GpuPreviewGraphInvocation final
     foundation::uint32 WorkItemCount = 0;
     /// Earlier ordered scene pass's single-sample RGBA8 color texture. The graph must retain it through
     /// job release and submitted completion. Null selects the renderer's black fallback when the compute
-    /// layout includes a sampled color binding. Buffer-only launches and native ray jobs require null.
+    /// layout includes a sampled color binding. Buffer-only launches require null.
     rhi::TextureHandle ColorInput{};
+    /// Optional initialized RGBA8Unorm storage view's allocation for a shader-owned output.
+    /// Its extent is independent of the invocation extent. Retain it through job release
+    /// and submitted completion. A null handle selects the existing image or buffer path.
+    rhi::TextureHandle StorageTexture{};
 };
 namespace internal
 {
