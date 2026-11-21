@@ -106,7 +106,12 @@ bool HasEditorCrashUploadConsent(const QSettings& settings, const QString& dsn)
 
 void InitializeEditorCrashReporting() noexcept
 {
-    QSettings settings(SETTINGS_ORGANIZATION, SETTINGS_APPLICATION);
+    const QSettings settings(SETTINGS_ORGANIZATION, SETTINGS_APPLICATION);
+    InitializeEditorCrashReporting(settings);
+}
+
+void InitializeEditorCrashReporting(const QSettings& settings) noexcept
+{
     activeDsn = ReadDsn(settings);
     const QString endpoint = MakeSentryMinidumpUrl(activeDsn);
     const bool canUpload = endpoint.isEmpty() == false && HasEditorCrashUploadConsent(settings, activeDsn) == true;
@@ -166,13 +171,16 @@ void ShowEditorCrashReporting(QWidget* parentOrNull)
     dialog.setWindowTitle(QStringLiteral("Crash Reporting"));
     dialog.setMinimumWidth(DIALOG_WIDTH_PIXELS);
     QFormLayout* form = new QFormLayout(&dialog);
+    form->setFieldGrowthPolicy(QFormLayout::AllNonFixedFieldsGrow);
     QLabel* explanation = new QLabel(
         QStringLiteral(
-            "Crash reports are saved on this Mac. If you enable submission, the separate crash handler sends "
-            "pending and future reports to the Ludus team's Sentry project, including after an offline session. "
-            "Capture can include child processes launched from this editor. Reports include thread stacks, "
-            "some process memory, loaded modules, OS details and build identity. "
-            "Memory may contain paths or research data. Project files, screenshots and session logs are not attached."),
+            "Crash reports are saved on this Mac. If you opt in, the crash handler sends pending and future reports "
+            "through Sentry so the maintainers of the selected project can diagnose crashes, including fatal "
+            "assertions. The default destination is the Ludus team's Sentry project. Uploads can resume after an "
+            "offline session. Reports include thread stacks, some process memory, loaded modules, OS details and "
+            "build identity. Memory may contain paths or research data. Reports can include child processes launched "
+            "from the Editor. Project files, screenshots and session logs are not attached. You can turn off uploads "
+            "here at any time."),
         &dialog);
     explanation->setWordWrap(true);
     form->addRow(explanation);
@@ -180,11 +188,13 @@ void ShowEditorCrashReporting(QWidget* parentOrNull)
     dsn->setObjectName(QStringLiteral("crashReportingDsn"));
     dsn->setMaxLength(MAX_DSN_CHARACTERS);
     dsn->setPlaceholderText(QStringLiteral("https://public-key@host/project-id"));
+    dsn->setCursorPosition(0);
     form->addRow(QStringLiteral("Sentry project DSN"), dsn);
     QCheckBox* consent = new QCheckBox(QStringLiteral("Automatically send crash reports"), &dialog);
     consent->setObjectName(QStringLiteral("crashReportingConsent"));
     consent->setChecked(HasEditorCrashUploadConsent(settings, activeDsn));
     form->addRow(consent);
+    QObject::connect(dsn, &QLineEdit::textChanged, consent, [consent]() { consent->setChecked(false); });
     foundation::usize pending = 0;
     foundation::usize uploaded = 0;
     const QByteArray database = GetCrashDatabasePath().toUtf8();
@@ -243,6 +253,7 @@ void ShowEditorCrashReporting(QWidget* parentOrNull)
         }
         dialog.accept();
     });
+    consent->setFocus();
     dialog.exec();
 }
 

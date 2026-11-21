@@ -148,15 +148,23 @@ handler saves the minidump and handles optional HTTPS submission. Ludus never
 calls normal logging, a symbolizer, UI or network code on the failing thread.
 Linux and browser editors do not build this adapter.
 
-#### Configure the team's Sentry destination
+#### Choose a Sentry destination
 
-The maintainer creates a Sentry organization and **Native/C++** project, then
-copies the project DSN from its settings. This is a public ingestion credential:
-**never substitute an auth/API token**. Sentry's free Developer plan can be used
-within its current quotas; paid features are not required for ingestion.
-Submitting labmates do not need dashboard accounts.
+New native macOS Editor build directories default to the private Ludus team's
+Sentry project. Uploads are off until the user opts in. A fresh user sees the
+choice on first launch and can change it under **Help > Crash Reporting**.
+Submitting users do not need Sentry accounts.
 
-After normal editor setup, configure the destination for the distributed app:
+An existing CMake build directory keeps its cached destination. To use the
+Ludus team default there, reconfigure with `-DLUDUS_EDITOR_SENTRY_DSN=team` and
+rebuild the Editor. An explicit destination saved in **Help > Crash Reporting**
+takes precedence over the build default.
+
+Maintainers building a different distribution can select their own Native/C++
+project with the public ingestion DSN from its settings. Keep authorization
+tokens in the symbol-upload tooling.
+
+After normal Editor setup, configure and build the distribution with its DSN.
 
 ```sh
 out/host-tools/venv/bin/cmake --preset macos-clang-development \
@@ -165,7 +173,8 @@ out/host-tools/venv/bin/cmake --preset macos-clang-development \
 out/host-tools/venv/bin/cmake --build --preset macos-clang-development --target ludus_editor
 ```
 
-Replace the example DSN. Without one, capture still works locally.
+Replace the example DSN. Pass `-DLUDUS_EDITOR_SENTRY_DSN=` to build with local
+capture and no default destination.
 **Help > Crash Reporting** can also configure a local installation without
 rebuilding, show pending/uploaded counts and open local reports/logs. Production
 accepts HTTPS DSNs with no password, query or fragment. A destination change
@@ -176,10 +185,12 @@ Previously unconfigured reports stay in the `unconfigured` folder and are not
 automatically migrated.
 
 On first launch with a configured destination, a dialog offers **Automatically
-send crash reports**. Saving with that box selected consents to pending and future
-submission; Cancel leaves submission off. Preferences persist across ordinary
-launches. Turning submission off pauses uploads without deleting pending reports;
-an already in-flight request may finish.
+send crash reports**. The box starts unchecked for a destination without prior
+approval. Saving with it selected consents to pending and future submission,
+including minidumps from fatal assertions that crash the Editor. Cancel leaves
+submission off for a new destination. Editing the destination clears the
+checkbox so the user can make a new choice. Turning submission off pauses uploads
+without deleting pending reports. An already in-flight request may finish.
 
 #### Evidence, privacy and storage
 
