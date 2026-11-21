@@ -133,11 +133,7 @@ function(ludus_compile_shader)
         set(lusl_includes)
         foreach(path IN LISTS SH_INCLUDES)
             get_filename_component(path "${path}" ABSOLUTE BASE_DIR "${CMAKE_CURRENT_SOURCE_DIR}")
-            file(RELATIVE_PATH relative "${lusl_root}" "${path}")
-            if(relative MATCHES "^\\.\\.")
-                message(FATAL_ERROR "ludus_compile_shader: LUSL include ${path} must be below ${lusl_root}")
-            endif()
-            list(APPEND lusl_includes --include-directory "${relative}")
+            list(APPEND lusl_includes --include-directory "${path}")
         endforeach()
         set(lowered "${output}/${SH_NAME}.lusl.slang")
         add_custom_command(
@@ -147,7 +143,7 @@ function(ludus_compile_shader)
                     --luslc "${luslc}" --root "${lusl_root}" --source "${lusl_name}" --name "${SH_NAME}"
                     --output "${lowered}" --slots "${output}/${SH_NAME}_slots.h" --depfile "${output}/lusl.d"
                     ${lusl_includes}
-            DEPENDS "${source}" "${CMAKE_CURRENT_FUNCTION_LIST_DIR}/shaders/lower_lusl.py" ${luslc_depends}
+            DEPENDS "${source}" "${CMAKE_CURRENT_FUNCTION_LIST_DIR}/shaders/lower_lusl.py" ${luslc_depends} ${SH_DEPENDS}
             DEPFILE "${output}/lusl.d"
             VERBATIM
         )

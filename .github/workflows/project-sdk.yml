@@ -62,7 +62,7 @@ jobs:
           ./scripts/bootstrap-spirv-cross
           bash tests/sdk_consumer/wayland/build.sh "$RUNNER_TEMP/wayland-consumer"
       - name: Install compositor and input tools
-        run: sudo apt-get install -y --no-install-recommends sway wtype weston wayland-utils mesa-vulkan-drivers
+        run: bash .github/actions/apt-install/apt-install.sh --no-install-recommends sway wtype weston wayland-utils mesa-vulkan-drivers
       - name: Exercise scaled Vulkan presentation and input
         timeout-minutes: 10
         run: |
@@ -106,8 +106,7 @@ jobs:
         run: |
           llvm_major="$(python3 -c 'import json; print(int(json.load(open("config/tool_versions.json"))["minimum"]["clang"].split(".")[0]))')"
           if [[ -f scripts/python/llvm_apt_source.py ]]; then python3 scripts/python/llvm_apt_source.py; fi
-          sudo apt-get update -qq
-          sudo apt-get install -y -qq "clang-$llvm_major" binutils
+          bash .github/actions/apt-install/apt-install.sh "clang-$llvm_major" binutils
       - name: Prove the installed CLI runs with no checkout/Qt on the path
         if: steps.scope.outputs.native_required == 'true'
         run: |

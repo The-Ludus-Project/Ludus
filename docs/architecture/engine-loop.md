@@ -156,9 +156,11 @@ Every frame entry point reaches the GPU through one RHI choke point,
    `Renderer::CreateSnapshot` or `ReplaceSnapshot` and `PrepareView` accept them.
 2. **Target.** `rhi::SetFrameTarget(device, surface, …)` records the extent, and
    a resize, for the next frame.
-3. **Open.** `RasterViewport::Render` calls `rhi::BeginFrame(device, surface)`.
-   The backend waits on the frame-in-flight fence (two frames), harvests
-   timing, acquires the swapchain image and begins the surface pass.
+3. **Open.** `RasterViewport::Render` opens the frame through its
+   [frame producer](#7-frame-bookkeeping-is-repeated-above-the-rhi), which
+   calls `rhi::BeginFrame(device, surface)`. The backend waits on the
+   frame-in-flight fence (two frames), harvests timing, acquires the swapchain
+   image and begins the surface pass.
 4. **Record.** `Renderer::DrawView` draws into scene colour, followed by optional
    overlays, tone-map and encode, and the composite to the surface.
 5. **Close.** `rhi::EndFrame(device, token)` reserves the submission, runs the
@@ -425,10 +427,14 @@ same bookkeeping:
   [render_graph.cpp](../../modules/graphics/renderer/src/render_graph.cpp),
   `render_preview.cpp`, `preview_gpu_generation.cpp`).
 - **`DeviceStatus` to `RasterStatus` mapping**, written four times: the two
-  renderer files above, the editor render preview and
-  [lifetime_services.h](../../modules/graphics/rhi/src/internal/lifetime_services.h).
+  renderer files above and the frame-opening paths of `SubmitCommands` and
+  `ExecuteOrderedGraph` in
+  [lifetime_services.h](../../modules/graphics/rhi/src/internal/lifetime_services.h)
+  and [ordered_graph.h](../../modules/graphics/rhi/src/internal/ordered_graph.h).
   The RHI exposes three frame status enums (`FrameStatus`, `DeviceStatus`,
-  `RasterStatus`), so every layer translates.
+  `RasterStatus`), so every layer translates. The editor render preview's
+  `DeviceStatus` switch turns browser admission failures into user text; it is
+  not a `RasterStatus` mapping.
 
 The RHI allows one open frame per device, and every submission opens a frame on
 a surface slot. Vulkan and Metal reject an offscreen-only frame target, so
@@ -454,6 +460,55 @@ into real translation units with narrow state, following the existing
 [renderer decomposition priority](editor-gui-systems.md#implementation-boundaries-and-refactoring).
 Consider an offscreen-only frame on Vulkan and Metal before adding more
 standalone submissions.
+
+**Progress (2026-11-19, [#1789](https://github.com/The-Ludus-Project/Ludus/issues/1789)).**
+[frame_producer.h](../../modules/graphics/rhi/include/ludus/graphics/rhi/frame_producer.h)
+provides the helper in three parts:
+
+- `rhi::ToRasterStatus` is the one `DeviceStatus` to `RasterStatus`
+  translation. The two renderer copies and both RHI submission paths use it.
+- `rhi::FrameRecording` owns one open frame: the surface it was acquired on,
+  the first recording failure and the retry of a close that could not reserve
+  its submission. A single-output producer, such as `RenderGraph` or a shadow
+  producer, uses it directly.
+- `rhi::FrameProducer` adds the two output slots: generation leases, the
+  latest producer token per slot and publication of a slot only after a fully
+  successful frame.
+
+`RasterViewport` is the reference adoption. The remaining entry points adopt
+the helper one per change: `RenderGraph`, the GPU preview job, the editor
+render preview's retry, the editor shadow producer and the editor graph display
+frames. The header documents ownership, lifetime, thread affinity and failure
+behaviour.
+
+**Decision: offscreen-only frames on Vulkan and Metal (2026-11-19).** Vulkan
+and Metal gain an offscreen-only frame (`FrameTarget::ShouldPresentToSurface =
+false`) before any further standalone submission is added. Until then, the
+existing standalone submissions keep sharing the surface frame. The reasons:
+
+- Both backends reject the target with `Unsupported` in `SetTarget`
+  ([rhi_vulkan.cpp](../../modules/graphics/rhi/src/rhi_vulkan.cpp),
+  [rhi_metal.mm](../../modules/graphics/rhi/src/rhi_metal.mm)). Direct3D 12,
+  WebGPU and WebGL 2 accept it under the contract on `FrameTarget` in
+  [rhi.h](../../modules/graphics/rhi/include/ludus/graphics/rhi/rhi.h).
+- On a surface frame, a standalone shadow, copy or compute submission waits on
+  a frame-in-flight fence, then acquires and presents a surface image. It takes
+  one of the two frames in flight from the view. A zero-size target, such as a
+  minimized Vulkan window's, returns `Skipped`, so that work cannot progress
+  while the window is hidden.
+- Today's standalone submissions run against headless surfaces, which keeps
+  that cost small: the Editor's (8×8 when sharing Qt's device, 1×1 offscreen)
+  and the reference-scene example's 8×8 device. An application presenting to a
+  window has no such surface.
+- The browser editor already records its shadow frame offscreen and then
+  restores the presenting target, so `preview_gpu_generation.cpp` keeps a
+  browser-only path.
+
+The backend change is separate RHI work, outside #1789. It is complete when
+`portable_transfer_conformance_tests` no longer falls back to a presenting
+target on Vulkan and Metal. The frame producer helper then chooses the
+offscreen frame for standalone submissions on every backend, and the
+browser-only shadow path is removed.
 
 #### 8. Two pacing policies over one pacer
 

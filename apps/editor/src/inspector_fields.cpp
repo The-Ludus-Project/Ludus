@@ -37,7 +37,7 @@ namespace
 {
 constexpr float64 FINE_FACTOR = 0.1;
 constexpr float64 COARSE_FACTOR = 10;
-/// Decimals kept after a drag, so repeated dragging never accumulates floating-point noise.
+/// Round the displayed value to hide floating-point noise without discarding movement from the drag.
 constexpr int32 SCRUB_DECIMALS = 6;
 /// Room for the longest shortest-float32 text, such as "-1.17549435e-38", with headroom.
 constexpr usize FLOAT32_TEXT_CAPACITY = 32;
@@ -383,7 +383,7 @@ QWidget* MakeSliderRow(QLineEdit& inoutField, const SliderMapping& mapping, QWid
     return row;
 }
 
-float64 ComputeScrubbedValue(float64 startValue,
+float64 ComputeScrubbedValue(float64 previousValue,
                              int32 deltaPixels,
                              const ScrubSettings& settings,
                              Qt::KeyboardModifiers modifiers)
@@ -397,13 +397,12 @@ float64 ComputeScrubbedValue(float64 startValue,
     {
         step *= COARSE_FACTOR;
     }
-    float64 value = startValue + static_cast<float64>(deltaPixels) * step;
+    float64 value = previousValue + static_cast<float64>(deltaPixels) * step;
     if (settings.Maximum > settings.Minimum)
     {
         value = math::Clamp(value, settings.Minimum, settings.Maximum);
     }
-    const float64 scale = std::pow(10.0, static_cast<float64>(SCRUB_DECIMALS));
-    return std::round(value * scale) / scale;
+    return value;
 }
 
 float64 GetScrubStep(const QString& unit, float64 minimum, float64 maximum)
@@ -819,18 +818,21 @@ void ScrubLabel::mousePressEvent(QMouseEvent* event)
         return;
     }
     bool isNumber = false;
-    mStartValue = mField.text().toDouble(&isNumber);
+    mScrubValue = mField.text().toDouble(&isNumber);
     if (isNumber == false)
     {
         mField.setFocus();
         return;
     }
-    mStartX = event->globalPosition().toPoint().x();
+    mPreviousPointerX = event->globalPosition().toPoint().x();
     mIsScrubbing = true;
     mHasMoved = false;
     event->accept();
 }
 
+// Thanks to Baku Hashimoto and Jun Kato, “Tweeq: Parameter-Tuning GUI Widgets by/for Creative Professionals”
+// (UIST ’25, §4.2.1, https://doi.org/10.1145/3746059.3747723), for sensitivity changes within a single drag.
+// Ludus uses its existing keyboard modifiers to set sensitivity.
 void ScrubLabel::mouseMoveEvent(QMouseEvent* event)
 {
     if (mIsScrubbing == false)
@@ -838,13 +840,19 @@ void ScrubLabel::mouseMoveEvent(QMouseEvent* event)
         QLabel::mouseMoveEvent(event);
         return;
     }
-    const int32 delta = event->globalPosition().toPoint().x() - mStartX;
-    if (delta == 0 && mHasMoved == false)
+    const int32 pointerX = event->globalPosition().toPoint().x();
+    const int32 delta = pointerX - mPreviousPointerX;
+    if (delta == 0)
     {
+        event->accept();
         return;
     }
     mHasMoved = true;
-    const float64 value = ComputeScrubbedValue(mStartValue, delta, mSettings, event->modifiers());
+    mPreviousPointerX = pointerX;
+    // Keep the clamped, unrounded value so fine motion accumulates and reversing at a bound responds immediately.
+    mScrubValue = ComputeScrubbedValue(mScrubValue, delta, mSettings, event->modifiers());
+    const float64 scale = std::pow(10.0, static_cast<float64>(SCRUB_DECIMALS));
+    const float64 value = std::round(mScrubValue * scale) / scale;
     // A compact vector row keeps its short numbers while dragging, so the row never jumps to stacked fields.
     const QString text =
         IsCompactNumberField(mField) == true ? FormatCompactInspectorNumber(value) : FormatInspectorNumber(value);

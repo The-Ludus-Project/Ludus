@@ -129,7 +129,10 @@ providers; no arrow permits a link cycle or a worker to mutate the world.
 The [T0 in-tree implementation](../modules/content/terrain.md#canonical-tiled-terrain)
 extends the existing Foundation-only `Ludus::ContentTerrain` target. It accepts
 bounded elevation fields and reads or writes raw height payloads with caller-owned
-revision metadata. Queries operate on one all-solid tile at a time.
+revision metadata. Queries operate on one all-solid tile at a time. Its
+[versioned page cooking](../modules/content/terrain.md#versioned-page-cooking)
+writes the first T1 manifest and height pages through the header-only
+`Ludus::TerrainFormat` contract.
 
 Promote adapters only when reuse justifies a module. Large cooker/erosion
 implementations can later split into a tools target without changing runtime

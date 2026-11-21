@@ -3,6 +3,7 @@
 #include "internal/record_json.h"
 
 #include <ludus/foundation/containers/sort.hpp>
+#include <ludus/foundation/containers/static_array.hpp>
 #include <ludus/foundation/parsing/json.hpp>
 
 namespace ludus::content::identity_records
@@ -42,40 +43,169 @@ constexpr usize ESCAPED_BYTES_PER_BYTE = 6;
     return path.size() <= MAX_RESOURCE_PATH_BYTES && ValidPath(path) == true;
 }
 
-/// Reject any UUID that appears twice among documents and objects.
+constexpr usize NO_INDEX = ~usize{0};
+constexpr usize DIAGNOSTIC_LOCATION_BYTES = 80;
+
+struct ManifestLocation final
+{
+    usize Document = NO_INDEX;
+    usize Object = NO_INDEX;
+};
+
+[[nodiscard]] IdentityRecordStatus FailManifest(IdentityRecordError& outError,
+                                                IdentityRecordStatus status,
+                                                std::string_view reason,
+                                                ManifestLocation location = {},
+                                                std::string_view member = {}) noexcept
+{
+    foundation::StaticArray<uint8, DIAGNOSTIC_LOCATION_BYTES> storage;
+    foundation::parsing::JsonWriter writer({storage.GetData(), storage.GetSize()});
+    writer.Raw("$");
+    if (location.Document != NO_INDEX)
+    {
+        writer.Raw(".documents[");
+        writer.Integer(location.Document);
+        writer.Raw("]");
+    }
+    if (location.Object != NO_INDEX)
+    {
+        writer.Raw(".objects[");
+        writer.Integer(location.Object);
+        writer.Raw("]");
+    }
+    if (member.empty() == false)
+    {
+        writer.Raw(".");
+        writer.Raw(member);
+    }
+    std::span<const uint8> bytes;
+    if (writer.Finish(bytes) != foundation::parsing::ParseStatus::Ok)
+    {
+        return Fail(outError, status, reason);
+    }
+    return Fail(outError, status, reason, {reinterpret_cast<const char*>(bytes.data()), bytes.size() - 1});
+}
+
+[[nodiscard]] IdentityRecordStatus FailManifestParse(IdentityRecordError& outError,
+                                                     const foundation::parsing::ParseError& error) noexcept
+{
+    using foundation::parsing::ParseStatus;
+    const IdentityRecordStatus status = error.Status == ParseStatus::OutOfMemory     ? IdentityRecordStatus::OutOfMemory
+                                        : error.Status == ParseStatus::LimitExceeded ? IdentityRecordStatus::Limit
+                                                                                     : IdentityRecordStatus::Malformed;
+    const std::string_view reason = status == IdentityRecordStatus::OutOfMemory ? "cannot allocate the manifest parser"
+                                    : status == IdentityRecordStatus::Limit
+                                        ? "manifest exceeds a parser limit; reduce input size or nesting"
+                                        : "manifest is not valid strict JSON";
+    if (error.Offset == foundation::parsing::UNKNOWN_BYTE_OFFSET)
+    {
+        return FailManifest(outError, status, reason);
+    }
+    foundation::StaticArray<uint8, DIAGNOSTIC_LOCATION_BYTES> storage;
+    foundation::parsing::JsonWriter writer({storage.GetData(), storage.GetSize()});
+    writer.Raw("byte ");
+    writer.Integer(error.Offset);
+    std::span<const uint8> bytes;
+    if (writer.Finish(bytes) != ParseStatus::Ok)
+    {
+        return Fail(outError, status, reason);
+    }
+    return Fail(outError, status, reason, {reinterpret_cast<const char*>(bytes.data()), bytes.size() - 1});
+}
+
+struct ManifestIdentity final
+{
+    Uuid Identity;
+    ManifestLocation Location;
+};
+
+struct ManifestDecodeMemory final
+{
+    usize Budget;
+    usize Live;
+    usize& Peak;
+
+    /// Reserve each empty table once, with no growth overlap.
+    template <typename Record>
+    [[nodiscard]] IdentityRecordStatus
+    Reserve(foundation::Array<Record>& inoutTable, usize count, IdentityRecordError& outError) noexcept
+    {
+        if (count > (Budget - Live) / sizeof(Record))
+        {
+            return FailManifest(outError,
+                                IdentityRecordStatus::Limit,
+                                "decode budget exceeded; reduce manifest size",
+                                {},
+                                "documents");
+        }
+        if (inoutTable.TryEnsureCapacity(count) == false)
+        {
+            return FailManifest(outError,
+                                IdentityRecordStatus::OutOfMemory,
+                                "cannot allocate manifest table",
+                                {},
+                                "documents");
+        }
+        Live += inoutTable.GetCapacity() * sizeof(Record);
+        if (Live > Peak)
+        {
+            Peak = Live;
+        }
+        return IdentityRecordStatus::Success;
+    }
+};
+
 [[nodiscard]] IdentityRecordStatus CheckUniqueIdentities(const foundation::Array<MigrationDocument>& documents,
                                                          const foundation::Array<MigrationObject>& objects,
+                                                         ManifestDecodeMemory& inoutMemory,
                                                          IdentityRecordError& outError) noexcept
 {
-    foundation::Array<Uuid> values;
-    if (values.TryEnsureCapacity(documents.GetSize() + objects.GetSize()) == false)
+    foundation::Array<ManifestIdentity> values;
+    const IdentityRecordStatus reserved =
+        inoutMemory.Reserve(values, documents.GetSize() + objects.GetSize(), outError);
+    if (reserved != IdentityRecordStatus::Success)
     {
-        return Fail(outError, IdentityRecordStatus::OutOfMemory, "cannot allocate the identity index");
+        return reserved;
     }
-    for (const MigrationDocument& document : documents)
+    for (usize i = 0; i < documents.GetSize(); ++i)
     {
-        // Capacity was reserved above, so these additions cannot fail.
-        [[maybe_unused]] const bool isAdded = values.TryAdd(document.Document.Value);
+        const MigrationDocument& document = documents[i];
+        [[maybe_unused]] const bool isAdded = values.TryAdd(ManifestIdentity{document.Document.Value, {i, NO_INDEX}});
         LUDUS_ASSERT(isAdded == true);
+        for (usize j = 0; j < document.ObjectCount; ++j)
+        {
+            const MigrationObject& object = objects[document.FirstObject + j];
+            [[maybe_unused]] const bool isObjectAdded = values.TryAdd(ManifestIdentity{object.Object.Value, {i, j}});
+            LUDUS_ASSERT(isObjectAdded == true);
+        }
     }
-    for (const MigrationObject& object : objects)
-    {
-        [[maybe_unused]] const bool isAdded = values.TryAdd(object.Object.Value);
-        LUDUS_ASSERT(isAdded == true);
-    }
-    foundation::Sort(values.GetData(), values.GetSize(), IsUuidLess);
+    foundation::Sort(values.GetData(),
+                     values.GetSize(),
+                     [](const ManifestIdentity& left, const ManifestIdentity& right) {
+                         if (left.Identity != right.Identity)
+                         {
+                             return IsUuidLess(left.Identity, right.Identity);
+                         }
+                         if (left.Location.Document != right.Location.Document)
+                         {
+                             return left.Location.Document < right.Location.Document;
+                         }
+                         if (left.Location.Object == NO_INDEX || right.Location.Object == NO_INDEX)
+                         {
+                             return left.Location.Object == NO_INDEX && right.Location.Object != NO_INDEX;
+                         }
+                         return left.Location.Object < right.Location.Object;
+                     });
     for (usize i = 1; i < values.GetSize(); ++i)
     {
-        if (values[i] == values[i - 1])
+        if (values[i].Identity == values[i - 1].Identity)
         {
-            char text[foundation::identity::UUID_TEXT_BUFFER_BYTES];
-            const bool isFormatted = foundation::identity::FormatUuid(values[i], text, sizeof(text)) ==
-                                     foundation::identity::UuidStatus::Success;
-            return Fail(outError,
-                        IdentityRecordStatus::DuplicateIdentity,
-                        "UUID repeated in the manifest",
-                        isFormatted == true ? std::string_view(text, foundation::identity::UUID_TEXT_LENGTH)
-                                            : std::string_view{});
+            const ManifestLocation location = values[i].Location;
+            return FailManifest(outError,
+                                IdentityRecordStatus::DuplicateIdentity,
+                                "UUID repeats an earlier identity in the manifest",
+                                location,
+                                location.Object == NO_INDEX ? "document" : "object");
         }
     }
     return IdentityRecordStatus::Success;
@@ -321,108 +451,204 @@ const MigrationObject* MigrationManifest::FindObject(const MigrationDocument& do
 
 IdentityRecordStatus MigrationManifest::Read(std::string_view json, IdentityRecordError& outError) noexcept
 {
+    usize peakBytes = 0;
+    return Read(json, outError, peakBytes);
+}
+
+IdentityRecordStatus MigrationManifest::Read(std::string_view json,
+                                             IdentityRecordError& outError,
+                                             usize& outPeakBytes,
+                                             usize maxDecodeBytes) noexcept
+{
     outError = {};
-    if (json.size() > MAX_MANIFEST_BYTES)
-    {
-        return Fail(outError, IdentityRecordStatus::Limit, "manifest is too large");
-    }
+    outPeakBytes = 0;
+    const usize budget = maxDecodeBytes < MAX_MANIFEST_DECODE_BYTES ? maxDecodeBytes : MAX_MANIFEST_DECODE_BYTES;
+    foundation::parsing::JsonLimits limits = internal::MakeLimits(MAX_MANIFEST_BYTES);
+    limits.MaxWorkspaceBytes = budget;
     foundation::parsing::JsonDocument document;
     foundation::parsing::ParseError parseError;
-    if (document.Read(json, parseError, internal::MakeLimits(MAX_MANIFEST_BYTES)) !=
-        foundation::parsing::ParseStatus::Ok)
+    const foundation::parsing::ParseStatus parsed = document.Read(json, parseError, limits);
+    const usize workspaceBytes = document.WorkspaceBytes();
+    outPeakBytes = workspaceBytes;
+    if (parsed != foundation::parsing::ParseStatus::Ok)
     {
-        return Fail(outError, IdentityRecordStatus::Malformed, "manifest is not valid JSON");
+        return FailManifestParse(outError, parseError);
     }
+
     const JsonValue root = document.Root();
-    std::string_view format;
-    uint64 version = 0;
-    if (root.Object() == false || root.Fields({"format", "version", "documents"}) == false ||
-        root.Get("format").String(format) == false || root.Get("version").Integer(version) == false)
+    if (root.Object() == false)
     {
-        return Fail(outError, IdentityRecordStatus::Malformed, "manifest root must have format, version and documents");
+        return FailManifest(outError, IdentityRecordStatus::Malformed, "expected a manifest object");
     }
-    if (format != MIGRATION_MANIFEST_FORMAT || version != MIGRATION_MANIFEST_VERSION)
+    std::string_view format;
+    if (root.Get("format").String(format) == false)
     {
-        return Fail(outError, IdentityRecordStatus::UnsupportedVersion, "unsupported manifest format or version");
+        return FailManifest(outError,
+                            IdentityRecordStatus::Malformed,
+                            "expected the manifest format string",
+                            {},
+                            "format");
+    }
+    uint64 version = 0;
+    if (root.Get("version").Integer(version) == false)
+    {
+        return FailManifest(outError,
+                            IdentityRecordStatus::Malformed,
+                            "expected the manifest version integer",
+                            {},
+                            "version");
     }
     const JsonValue documents = root.Get("documents");
     if (documents.Array() == false)
     {
-        return Fail(outError, IdentityRecordStatus::Malformed, "documents must be an array");
+        return FailManifest(outError, IdentityRecordStatus::Malformed, "expected a documents array", {}, "documents");
+    }
+    if (root.Fields({"format", "version", "documents"}) == false)
+    {
+        return FailManifest(outError, IdentityRecordStatus::Malformed, "unexpected manifest member");
+    }
+    if (format != MIGRATION_MANIFEST_FORMAT)
+    {
+        return FailManifest(outError,
+                            IdentityRecordStatus::UnsupportedVersion,
+                            "unsupported manifest format",
+                            {},
+                            "format");
+    }
+    if (version != MIGRATION_MANIFEST_VERSION)
+    {
+        return FailManifest(outError,
+                            IdentityRecordStatus::UnsupportedVersion,
+                            "unsupported manifest version",
+                            {},
+                            "version");
     }
     if (documents.Count() > MAX_MANIFEST_DOCUMENTS)
     {
-        return Fail(outError, IdentityRecordStatus::Limit, "manifest has too many documents");
+        return FailManifest(outError, IdentityRecordStatus::Limit, "manifest has too many documents", {}, "documents");
+    }
+
+    // Count before reserving so every table has exactly one allocation and no growth overlap.
+    usize objectCount = 0;
+    for (usize i = 0; i < documents.Count(); ++i)
+    {
+        const JsonValue entry = documents.At(i);
+        if (entry.Object() == false)
+        {
+            return FailManifest(outError, IdentityRecordStatus::Malformed, "expected a document object", {i});
+        }
+        const JsonValue objects = entry.Get("objects");
+        if (objects.Array() == false)
+        {
+            return FailManifest(outError, IdentityRecordStatus::Malformed, "expected an objects array", {i}, "objects");
+        }
+        if (objects.Count() > MAX_DOCUMENT_OBJECTS)
+        {
+            return FailManifest(outError, IdentityRecordStatus::Limit, "document has too many objects", {i}, "objects");
+        }
+        objectCount += objects.Count();
     }
     foundation::Array<MigrationDocument> candidateDocuments;
     foundation::Array<MigrationObject> candidateObjects;
-    if (candidateDocuments.TryEnsureCapacity(documents.Count()) == false)
+    ManifestDecodeMemory memory{budget, workspaceBytes, outPeakBytes};
+    IdentityRecordStatus reserved = memory.Reserve(candidateDocuments, documents.Count(), outError);
+    if (reserved != IdentityRecordStatus::Success)
     {
-        return Fail(outError, IdentityRecordStatus::OutOfMemory, "cannot allocate the document table");
+        return reserved;
     }
+    reserved = memory.Reserve(candidateObjects, objectCount, outError);
+    if (reserved != IdentityRecordStatus::Success)
+    {
+        return reserved;
+    }
+
     for (usize i = 0; i < documents.Count(); ++i)
     {
         const JsonValue entry = documents.At(i);
         const JsonValue objects = entry.Get("objects");
         std::string_view path;
         MigrationDocument record;
-        if (entry.Object() == false || entry.Fields({"path", "document", "objects"}) == false ||
-            entry.Get("path").String(path) == false || objects.Array() == false)
+        if (entry.Get("path").String(path) == false)
         {
-            return Fail(outError, IdentityRecordStatus::Malformed, "document must have path, document and objects");
+            return FailManifest(outError,
+                                IdentityRecordStatus::Malformed,
+                                "expected a document path string",
+                                {i},
+                                "path");
         }
         if (IsValidDocumentPath(path) == false || record.Path.Set(path) == false)
         {
-            return Fail(outError, IdentityRecordStatus::InvalidLegacyId, "invalid document path", path);
+            return FailManifest(outError, IdentityRecordStatus::InvalidLegacyId, "invalid document path", {i}, "path");
         }
         if (i > 0 && IsLess(candidateDocuments[i - 1].Path.View(), path) == false)
         {
-            return Fail(outError,
-                        IdentityRecordStatus::InvalidLegacyId,
-                        "documents must be sorted by unique path",
-                        path);
+            return FailManifest(outError,
+                                IdentityRecordStatus::InvalidLegacyId,
+                                "documents must be sorted by unique path",
+                                {i},
+                                "path");
         }
-        if (internal::TryReadIdentity(entry.Get("document"), record.Document.Value) == false)
+        const JsonValue documentIdentity = entry.Get("document");
+        if (documentIdentity.Valid() == false)
         {
-            return Fail(outError,
-                        IdentityRecordStatus::InvalidIdentity,
-                        "document UUID must be a nonnil version-4 UUID",
-                        path);
+            return FailManifest(outError, IdentityRecordStatus::Malformed, "missing document UUID", {i}, "document");
         }
-        if (objects.Count() > MAX_DOCUMENT_OBJECTS)
+        if (entry.Fields({"path", "document", "objects"}) == false)
         {
-            return Fail(outError, IdentityRecordStatus::Limit, "document has too many objects", path);
+            return FailManifest(outError, IdentityRecordStatus::Malformed, "unexpected document member", {i});
+        }
+        if (internal::TryReadIdentity(documentIdentity, record.Document.Value) == false)
+        {
+            return FailManifest(outError,
+                                IdentityRecordStatus::InvalidIdentity,
+                                "expected a nonnil version-4 UUID",
+                                {i},
+                                "document");
         }
         record.FirstObject = candidateObjects.GetSize();
         record.ObjectCount = objects.Count();
-        if (candidateObjects.TryEnsureCapacity(record.FirstObject + record.ObjectCount) == false)
-        {
-            return Fail(outError, IdentityRecordStatus::OutOfMemory, "cannot allocate the object table");
-        }
         for (usize j = 0; j < objects.Count(); ++j)
         {
             const JsonValue item = objects.At(j);
             std::string_view legacyId;
             MigrationObject object;
-            if (item.Object() == false || item.Fields({"legacy_id", "object"}) == false ||
-                item.Get("legacy_id").String(legacyId) == false)
+            if (item.Object() == false)
             {
-                return Fail(outError, IdentityRecordStatus::Malformed, "object must have legacy_id and object", path);
+                return FailManifest(outError, IdentityRecordStatus::Malformed, "expected an object entry", {i, j});
+            }
+            if (item.Get("legacy_id").String(legacyId) == false)
+            {
+                return FailManifest(outError,
+                                    IdentityRecordStatus::Malformed,
+                                    "expected a legacy ID string",
+                                    {i, j},
+                                    "legacy_id");
             }
             if (IsLegacyId(legacyId) == false || object.LegacyId.Set(legacyId) == false ||
                 (j > 0 && IsLess(candidateObjects[record.FirstObject + j - 1].LegacyId.View(), legacyId) == false))
             {
-                return Fail(outError,
-                            IdentityRecordStatus::InvalidLegacyId,
-                            "legacy IDs must be valid, unique and sorted",
-                            legacyId);
+                return FailManifest(outError,
+                                    IdentityRecordStatus::InvalidLegacyId,
+                                    "legacy IDs must be valid, unique and sorted",
+                                    {i, j},
+                                    "legacy_id");
             }
-            if (internal::TryReadIdentity(item.Get("object"), object.Object.Value) == false)
+            const JsonValue objectIdentity = item.Get("object");
+            if (objectIdentity.Valid() == false)
             {
-                return Fail(outError,
-                            IdentityRecordStatus::InvalidIdentity,
-                            "object UUID must be a nonnil version-4 UUID",
-                            legacyId);
+                return FailManifest(outError, IdentityRecordStatus::Malformed, "missing object UUID", {i, j}, "object");
+            }
+            if (item.Fields({"legacy_id", "object"}) == false)
+            {
+                return FailManifest(outError, IdentityRecordStatus::Malformed, "unexpected object member", {i, j});
+            }
+            if (internal::TryReadIdentity(objectIdentity, object.Object.Value) == false)
+            {
+                return FailManifest(outError,
+                                    IdentityRecordStatus::InvalidIdentity,
+                                    "expected a nonnil version-4 UUID",
+                                    {i, j},
+                                    "object");
             }
             [[maybe_unused]] const bool isAdded = candidateObjects.TryAdd(object);
             LUDUS_ASSERT(isAdded == true);
@@ -430,7 +656,10 @@ IdentityRecordStatus MigrationManifest::Read(std::string_view json, IdentityReco
         [[maybe_unused]] const bool isAdded = candidateDocuments.TryAdd(record);
         LUDUS_ASSERT(isAdded == true);
     }
-    const IdentityRecordStatus unique = CheckUniqueIdentities(candidateDocuments, candidateObjects, outError);
+
+    document.Release();
+    memory.Live -= workspaceBytes;
+    const IdentityRecordStatus unique = CheckUniqueIdentities(candidateDocuments, candidateObjects, memory, outError);
     if (unique != IdentityRecordStatus::Success)
     {
         return unique;

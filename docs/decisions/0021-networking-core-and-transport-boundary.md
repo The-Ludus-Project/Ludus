@@ -2,7 +2,8 @@
 
 ## Status
 
-Accepted for the portable core. Backend adoption remains a gated spike.
+Accepted for the portable core. The native GNS adapter is an opt-in N2
+qualification target. Shipping backend adoption remains a separate decision.
 
 ## Context
 
@@ -24,8 +25,9 @@ replication ownership as specified in [networking architecture](../architecture/
 A future secure congestion-controlled backend supplies reliable Control/Bulk and
 unreliable Input/Snapshot lanes. GNS and WebTransport are candidates, with pinning,
 exception/dependency audit and real endpoint/browser interop gates before adoption.
-No production transport, authentication or replication is implied by this ADR's
-initial implementation.
+The N2 qualification pins GNS v1.6.1 for authenticated direct UDP. See
+[native transport qualification](../architecture/networking.md#native-transport-qualification)
+for the private trust-store bridge, dependency and two-endpoint acceptance.
 
 ## Consequences
 

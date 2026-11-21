@@ -84,6 +84,9 @@ public:
                         const QString& workspaceSettingsFile = {});
     ~MainWindow() override;
 
+    /// Whether the accepted window close should relaunch the Editor.
+    [[nodiscard]] bool ShouldRestart() const noexcept;
+
     /// Central document well; documents open, close and regroup through it.
     [[nodiscard]] DocumentWell& GetDocumentWell() noexcept
     {
@@ -120,12 +123,14 @@ private:
     {
         Run,
         Play,
-        Debug
+        Debug,
+        BuiltInWorld,
     };
     void launchAfterPreview(LaunchAction action,
                             const QString& debugger = {},
                             bool shouldSetUpDebugger = false,
-                            const QString& hostedWindowAddress = {});
+                            const QString& hostedWindowAddress = {},
+                            const ToolLaunch& worldLaunch = {});
     /// Stop: a game playing in the viewport first gets a window close, then the supervisor's stop.
     void stopRun();
     void BuildUi();
@@ -234,6 +239,7 @@ private:
     void showUndoFeedback(const QString& text);
     void CommitProjectFields();
     [[nodiscard]] bool SaveProjectSettings();
+    void reloadProject(bool hasConfirmedProjectDiscard);
 #if defined(Q_OS_WASM)
     [[nodiscard]] bool downloadBrowserProject();
 #endif
@@ -259,6 +265,7 @@ private:
     EditorController* Controller_ = nullptr;
     bool Rendering_ = false;
     bool CloseConfirmed_ = false;
+    bool mShouldRestart = false;
     QObject* LastEditedField_ = nullptr;
     QMetaObject::Connection FocusUndoConnection_;
     QMetaObject::Connection FocusRedoConnection_;

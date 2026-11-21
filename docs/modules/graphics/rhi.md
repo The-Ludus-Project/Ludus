@@ -179,6 +179,46 @@ Implementation files formatting VkResult use the private
 `internal/vulkan_diagnostics.h` adapter. Ordinary diagnostics use `LUDUS_LOG_*`;
 Foundation and public headers gain no Vulkan dependency from formatting.
 
+### Check Vulkan API usage for performance advisories
+
+Arm's [PerfDoc](https://github.com/ARM-software/perfdoc#perfdoc) moved to the
+Khronos validation layer. Its [best-practices checks](https://github.com/KhronosGroup/Vulkan-ValidationLayers/blob/main/docs/best_practices.md)
+flag Vulkan API usage worth investigating during development. The Arm checks
+can flag attachment usage on desktop Vulkan. Quantify any proposed change on
+the target GPU with validation disabled.
+
+Install a Khronos validation layer that supports
+[`validate_best_practices` and `validate_best_practices_arm`](https://github.com/KhronosGroup/Vulkan-ValidationLayers/blob/main/layers/vk_layer_settings.txt).
+From the checkout root, run the [windowed World demo](#follow-a-vulkan-frame-on-linux)
+with these per-launch settings.
+
+```bash
+mkdir -p out
+cat > out/vulkan-best-practices-settings.txt <<'EOF'
+khronos_validation.validate_best_practices = true
+khronos_validation.validate_best_practices_arm = true
+EOF
+VK_INSTANCE_LAYERS=VK_LAYER_KHRONOS_validation \
+  VK_LAYER_SETTINGS_PATH="$PWD/out/vulkan-best-practices-settings.txt" \
+  out/build/linux-clang-development/apps/world_demo/ludus_world_demo --frames 3 \
+  > out/world-demo-vulkan-best-practices.log 2>&1
+```
+
+Confirm the run still presents three frames and inspect the log for validation
+errors and best-practices message IDs. If the log is quiet, confirm the layer
+loads with `VK_LOADER_DEBUG=layer` and check that its installed version supports
+both settings. Record the layer version, driver and workload with any advisory.
+Keep the normal core and synchronization checks for correctness. For an
+attachment load/store change, use the
+[RHI attachment lifetime trial](../../architecture/rhi-gdi.md#attachment-lifetime-and-pass-groups)
+to compare output, GPU time and attachment traffic where available.
+
+Apply the same launch settings to a standalone Linux SDK consumer to inspect
+its own Vulkan calls. To investigate hosted Play, reproduce the saved workload
+in the game process and compare with a separate-window run. The editor
+[graphics debugging workflow](../../architecture/graphics-debugging.md#editor-hosted-game-and-sdk-workflow)
+identifies the rendering process and capture boundary.
+
 ## Capability negotiation
 
 `GetStartup().Capabilities` reports effective limits of the current fullscreen

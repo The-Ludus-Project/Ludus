@@ -165,6 +165,54 @@ A workflow change that the candidate's sources depend on still reaches batches
 only after promotion. Land it in a `develop` change before the sources that need
 it, or keep both working with either definition.
 
+#### Batch job check plans
+
+A job whose commands live in workflow YAML has two problems in a batch. Its
+commands change only after a promotion, and its first failed step skips every
+later step, so a batch reports one failure per job. Until 2026-11-20 the
+**macOS native backends and diagnostics** job did this: each batch reached one
+more step, and failures in steps that had not run for weeks queued behind the
+last one.
+
+That job now has one command step:
+
+```bash
+out/host-tools/venv/bin/python scripts/python/ci_checks.py scripts/ci/macos_native.py
+```
+
+`scripts/ci/macos_native.py` (and `scripts/ci/macos_reference.py` for the macOS GPU
+reference oracle job) lists the job's checks in order, as `Check` records
+with an id, a title, the bash commands, the checks each one needs, environment
+and an optional timeout. `scripts/python/ci_checks.py` runs them from the
+candidate:
+
+- Each check runs in its own log group with the `bash -eo pipefail` shell that
+  workflow `run:` steps use, in a process group its timeout stops completely.
+- A check runs when every check it needs succeeded; a failure skips only its
+  dependents, so later independent checks still run.
+- Each check's result is a step output named by its id (`steps.checks.outputs.build`),
+  and the job summary lists every result. The job fails once, at the end, if any
+  check failed.
+
+Add or change a macOS native command in the plan, not in `ci.yml`; the change
+takes effect in the next batch. Give it the narrowest `needs`: most checks need
+`build`, installed-SDK checks need `sdk-install`, and consumer checks need the
+check that builds their consumer. Plans see only environment variables, never
+`${{ }}` expressions; use `$GITHUB_WORKSPACE` and similar names in `env` values.
+Artifact uploads and caches stay in the workflow and read the check outputs.
+
+Run one check locally with `--only` (its needs are assumed to have succeeded), or
+list the plan with `--list`:
+
+```bash
+out/host-tools/venv/bin/python scripts/python/ci_checks.py scripts/ci/macos_native.py --only cocoa-analysis
+```
+
+`BatchJobCheckPlanTests` in `scripts/python/test_ci.py` rejects other command
+steps in that job and checks that every check follows the build;
+`scripts/python/test_ci_checks.py` covers the runner. Changing the runner step
+itself still needs a promotion.
+
 Only one batch is active. New `develop` commits do not cancel it or change its input.
 Concurrent scheduler ticks coalesce into at most one pending run. A tick captured
 before `main` advanced records no attempt and skips, letting the next tick use the
@@ -189,7 +237,9 @@ diagnostics. The **Watch for failed suites** job runs trusted `main` code beside
 suites and polls the run's jobs every minute. When a suite job (`native / ...`,
 `windows / ...` and so on) fails, times out or fails to start, the jobs still
 running get 30 minutes from that first failure to report (`STOP_GRACE_SECONDS` in
-`scripts/python/batch_ci.py`). Then **Cancel failed batch** cancels the run, so the
+`scripts/python/batch_ci.py`). The native **Ubuntu Clang** aggregate gate does not
+start that period by itself: every real failure it reports is a failed job of its
+own, and a job that only found no runner is [retried](#retry-jobs-that-found-no-runner). Then **Cancel failed batch** cancels the run, so the
 next tick can validate a candidate containing the fix instead of waiting for the
 longest sanitizer and macOS jobs. In measured batches, deterministic failures
 appeared within 3-13 minutes and every job except the sanitizers and macOS native
@@ -593,6 +643,11 @@ The Linux native setup retries package index updates and package downloads with
 a deadline per attempt. After the packages are cached, APT installs them locally
 under the job's overall timeout. This keeps the network deadline from interrupting
 dpkg while it unpacks or configures packages.
+Workflow steps that install other packages use the same policy through
+`bash .github/actions/apt-install/apt-install.sh <packages>`, never `apt-get`
+directly: a stalled mirror otherwise holds a job until GitHub's six-hour default
+timeout. `test_ci.py` rejects direct `apt-get install` and `apt-get update` in
+workflows.
 
 ### Linux pull-request image
 
@@ -624,23 +679,54 @@ Native jobs use `macos-15` arm64. Host and documentation tooling separately chec
 not establish macOS 14 runtime qualification. See GitHub's
 [macOS 14 deprecation notice](https://github.com/actions/runner-images/issues/13518).
 
-The long ARM jobs run in order: sanitizers, native/SDK acceptance, then the nightly
-analyzer. This limits simultaneous runner demand after hosted ARM capacity left
-parallel jobs unacquired until GitHub cancelled them. Later jobs use an explicit
-status condition so a test failure does not suppress independent evidence;
-cancelling the workflow still stops the chain. All required results remain part
-of the promotion gate. The batch also admits ARM-owning workflows in order:
-native, macOS threading, installed host tooling, then ARM documentation tools. This
-prevents short ARM jobs from expiring behind native work in a different reusable
-workflow. The Linux wiki call, Intel documentation tools and Windows threading
+Native/SDK acceptance and the sanitizers start together. Strictly ordered, the
+native job, which fails most often, reported about 45 minutes after the sanitizers
+and made macOS the slowest path in the batch. The nightly analyzer starts after the
+sanitizers. The CPU/GPU reference oracle cases (`ludus_renderer_reference: …`) run in
+their own **macOS GPU reference oracle** job beside them: in one job they were 30 of
+its 89 minutes, one at a time on one GPU (batch 44859003421). That job configures the
+same tree, restores the native job's compiler cache without saving it, and builds
+only `ludus_renderer_render_tests`, so `ci.yml` holds at most three ARM runners. A new
+native job reaches batches only after promotion, so `ci_scope.py` lists it in
+`PENDING_PROMOTION_JOBS` until `main` defines it; a test reports when to remove it.
+The nightly analyzer uses an explicit status
+condition so a sanitizer failure does not suppress its evidence; cancelling the
+workflow still stops it. All required results remain part of the promotion gate.
+Hosted ARM capacity can still run out; see
+[retry jobs that found no runner](#retry-jobs-that-found-no-runner). The short ARM-owning workflows run in order beside
+native: macOS threading, installed host tooling, then ARM documentation tools, so
+the batch holds at most three ARM runners. They used to wait for native, which put
+their ten minutes after the longest job (batch 44859003421 ended at 147 minutes,
+136 of them on the macOS chain). The Linux wiki call, Intel documentation tools and Windows threading
 start at candidate capture alongside the browser, Windows and recovery
 workflows. The Linux call builds and verifies the public API
 and the browser editor, checks sample playback and uploads the Pages artifact.
 Promotion waits for all three wiki calls and both threading checks. Only the
 post-promotion job deploys the candidate wiki.
-The ARM sequence can increase total batch duration. A platform-wide shortage
-can still require retrying a job whose annotations show that it failed to acquire
-a runner.
+
+#### Retry jobs that found no runner
+
+When no hosted runner accepts a queued job, GitHub cancels it with the annotation
+"The job was not acquired by Runner of type hosted even after multiple attempts".
+On 2026-11-02 this cancelled native, sanitizer, analyzer and macOS documentation
+jobs that were queued together. `.github/workflows/batch-runner-retry.yml` runs
+trusted `main` code after a batch run completes without success. It re-runs only
+a job that was cancelled without a runner and carries that annotation, with the
+jobs that depend on it; the others keep their results. GitHub re-runs jobs only in
+a completed run, so the retried job asks for one runner after everything else has
+finished.
+
+The retry waits five minutes, re-runs one job per round and stops after two
+rounds (`MAX_ACQUISITION_RETRIES` in `scripts/python/batch_ci.py`), so an outage
+cannot hold the promotion slot indefinitely. It does not retry when another job
+failed, when **Cancel failed batch** stopped the run, or when a newer batch is
+already validating a later `develop` commit. The native **Ubuntu Clang** gate
+fails whenever a job it reads did not succeed, so neither the retry nor the
+[early stop](#stop-a-failed-batch-early) treats that aggregate failure alone as
+rejecting the candidate. When both rounds find no runner, **Retry jobs that found
+no runner** fails with a capacity error; dispatch the coordinator with **retry**
+once capacity returns. Like every coordinator edit, the retry starts only after
+it reaches `main`.
 
 In a timing replay of [batch 43134442495](https://github.com/The-Ludus-Project/Ludus/actions/runs/43134442495),
 early Linux wiki alone brings capture-to-promotion from 2h 38m 11s to 2h 22m 35s.

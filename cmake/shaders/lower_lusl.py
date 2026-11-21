@@ -11,6 +11,7 @@ import argparse
 import os
 import posixpath
 import re
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -28,27 +29,66 @@ def fail(message):
     raise SystemExit(1)
 
 
-def collect(root, source, include_directories):
-    """Every existing file below `root` that LUSL may read for `source`, resolved as the
-    preprocessor resolves names: beside the naming file, from the root, then below each include
-    directory."""
-    found = set()
+def stage_snapshot(root, source, include_directories, snapshot):
+    """Mount the source directory and each external include root in one private luslc snapshot.
+
+    Preserve the original source-root fallback and caller-supplied search order, even when
+    the SDK and project are on different drives. Only copy files named by the shader.
+    """
+    root = root.resolve()
+    namespace = '_ludus_shared'
+    while (root / namespace).exists():
+        namespace += '_'
+    mounts = {'.': root}
+    directories = []
+    for include in include_directories:
+        directory = (root / include).resolve()
+        if directory == root:
+            continue
+        if directory.is_relative_to(root):
+            logical = directory.relative_to(root).as_posix()
+        else:
+            logical = f'{namespace}/{len(mounts)}'
+            mounts[logical] = directory
+        directories.append(logical)
+
+    files = {}
     pending = [source]
     while pending:
-        relative = posixpath.normpath(pending.pop())
-        if relative in found or relative.startswith('../') or posixpath.isabs(relative):
+        logical = posixpath.normpath(pending.pop())
+        if logical in files or logical in ('.', '..') or logical.startswith(('../', '/')):
             continue
-        path = root / relative
-        if not path.is_file():
+        mount = '.'
+        if logical.startswith(namespace + '/'):
+            mount = '/'.join(logical.split('/')[:2])
+            if mount not in mounts or logical == mount:
+                continue
+        physical = (mounts[mount] / posixpath.relpath(logical, mount)).resolve()
+        if not physical.is_relative_to(mounts[mount]) or not physical.is_file():
             continue
-        found.add(relative)
-        if not relative.endswith(LANGUAGE_FILES):
-            continue
-        directory = posixpath.dirname(relative)
-        for name in NAMED_PATH.findall(path.read_text(encoding='utf-8', errors='replace')):
-            pending += [posixpath.join(directory, name), name]
-            pending += [posixpath.join(include, name) for include in include_directories]
-    return sorted(found)
+        files[logical] = physical
+        staged = snapshot / logical
+        staged.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copyfile(physical, staged)
+        if logical.endswith(LANGUAGE_FILES):
+            for name in NAMED_PATH.findall(staged.read_text(encoding='utf-8', errors='replace')):
+                if not posixpath.isabs(name) and not re.search(r'[:\\\x00-\x1f\x7f]', name):
+                    pending += [posixpath.join(posixpath.dirname(logical), name), name]
+                    pending += [posixpath.join(include, name) for include in directories]
+    return directories, files
+
+
+def remap_slang_includes(generated, files, output_directory):
+    """Point emitted extern Slang includes at the original files, beyond the temp snapshot."""
+    def remap(match):
+        physical = files[posixpath.normpath(match[1])]
+        try:
+            relative = os.path.relpath(physical, output_directory)
+        except ValueError:  # Windows paths on different drives.
+            relative = physical.as_posix()
+        return f'#include "{Path(relative).as_posix()}"'
+
+    return re.sub(r'^#include "([^"\n]+)"$', remap, generated, flags=re.MULTILINE)
 
 
 def constant_name(name):
@@ -62,8 +102,8 @@ def slot_header(name, report):
     slots, locations = {}, {}
     for line in report.splitlines():
         fields = line.split('\t')
-        if fields[0] == 'binding' and len(fields) == 5:
-            slots[constant_name(fields[2])] = (int(fields[4]), fields[2], fields[3])
+        if fields[0] == 'binding' and len(fields) in (5, 6):
+            slots[constant_name(fields[2])] = (int(fields[4]), fields[2], fields[3], int(fields[5]) if len(fields) == 6 else 1)
         elif fields[0] == 'vertex-input' and len(fields) == 4:
             constant = constant_name(fields[2])
             location = int(fields[3])
@@ -76,8 +116,9 @@ def slot_header(name, report):
              f'/// Binding slots and vertex input locations of the LUSL shader {name}, assigned in',
              '/// declaration order (docs/architecture/shading-language.md#resources-and-bindings).',
              f'namespace ludus::shaders::{name}::slots', '{']
-    for constant, (slot, variable, kind) in sorted(slots.items(), key=lambda item: item[1][0]):
-        lines += [f'/// Group-zero slot of the {kind} `{variable}`.',
+    for constant, (slot, variable, kind, count) in sorted(slots.items(), key=lambda item: item[1][0]):
+        span = f' ({count} descriptors)' if count > 1 else ''
+        lines += [f'/// Group-zero slot of the {kind} `{variable}`{span}.',
                   f'inline constexpr foundation::uint32 {constant} = {slot};']
     lines += ['}', '', f'namespace ludus::shaders::{name}::locations', '{']
     for constant, (location, attribute) in sorted(locations.items(), key=lambda item: item[1][0]):
@@ -95,6 +136,10 @@ def publish(path, text):
     os.replace(temporary, path)
 
 
+def depfile_path(path):
+    return path.as_posix().replace('$', '$$').replace('#', r'\#').replace(' ', r'\ ')
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     for key in ('luslc', 'root', 'source', 'output', 'slots', 'depfile', 'name'):
@@ -104,13 +149,15 @@ def main():
     args = parser.parse_args()
     if IDENTIFIER.match(args.name) is None:
         fail(f"'{args.name}' is not a shader name")
-    root = Path(args.root).resolve()
+    root = Path(args.root)
     with tempfile.TemporaryDirectory(prefix='ludus-lusl-') as directory:
         report = Path(directory) / 'report.txt'
         output = Path(directory) / 'generated.slang'
-        command = [args.luslc, 'lower', '--root', str(root), '--style', args.style,
+        snapshot = Path(directory) / 'snapshot'
+        directories, files = stage_snapshot(root, args.source, args.include_directory, snapshot)
+        command = [args.luslc, 'lower', '--root', str(snapshot), '--style', args.style,
                    '--output', str(output), '--report', str(report)]
-        for include in args.include_directory:
+        for include in directories:
             command += ['--include-directory', include]
         command.append(args.source)
         try:
@@ -121,13 +168,12 @@ def main():
             sys.stderr.write(result.stderr)
             raise SystemExit(1)
         sys.stderr.write(result.stderr)
-        generated = output.read_text(encoding='utf-8')
+        generated = remap_slang_includes(output.read_text(encoding='utf-8'), files, Path(args.output).parent)
         slots = slot_header(args.name, report.read_text(encoding='utf-8'))
     publish(Path(args.slots), slots)
-    inputs = ' '.join(str(root / relative).replace(' ', '\\ ') for relative in
-                      collect(root, args.source, args.include_directory))
+    inputs = ' '.join(depfile_path(path) for path in sorted(set(files.values())))
     # Ninja reads one target per depfile: the generated module, written last.
-    publish(Path(args.depfile), str(Path(args.output)).replace(' ', '\\ ') + f': {inputs}\n')
+    publish(Path(args.depfile), depfile_path(Path(args.output)) + f': {inputs}\n')
     publish(Path(args.output), generated)
     return 0
 

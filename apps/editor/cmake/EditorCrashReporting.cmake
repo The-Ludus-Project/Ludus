@@ -9,6 +9,8 @@ function(ludus_editor_add_crash_capture)
     file(READ "${CMAKE_CURRENT_FUNCTION_LIST_DIR}/../../../config/editor_crash_reporting.json" pin)
     string(JSON source_url GET "${pin}" source_url)
     string(JSON source_sha256 GET "${pin}" source_sha256)
+    string(JSON team_sentry_dsn GET "${pin}" team_sentry_dsn)
+    set(editor_team_sentry_dsn "${team_sentry_dsn}" PARENT_SCOPE)
     FetchContent_Declare(ludus_crashpad_source URL "${source_url}"
         URL_HASH "SHA256=${source_sha256}" DOWNLOAD_EXTRACT_TIMESTAMP TRUE)
     FetchContent_GetProperties(ludus_crashpad_source)

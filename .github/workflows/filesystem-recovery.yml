@@ -40,8 +40,7 @@ jobs:
           out/host-tools/venv/bin/cmake --build --preset linux-clang-development --target ludus_filesystem_recovery_probe --parallel 2
       - name: Prepare replay tools
         run: |
-          sudo apt-get update -qq
-          sudo apt-get install -y xfsprogs e2fsprogs dmsetup build-essential
+          bash .github/actions/apt-install/apt-install.sh xfsprogs e2fsprogs dmsetup build-essential
           sudo modprobe dm-log-writes
           git clone https://github.com/josefbacik/log-writes.git out/replay-log-source
           git -C out/replay-log-source checkout --detach 7b70d8a6863c5de30933d42a7672d35d01d2dc6c

@@ -87,6 +87,40 @@ bool ValidIdentity(std::string_view identity) noexcept
     return identity.empty() == false && identity.size() <= MAX_IDENTITY_BYTES &&
            ValidateCString(identity) == StringStatus::Ok;
 }
+void WriteDescriptorBounds(parsing::JsonWriter& inoutWriter, const Descriptor& descriptor) noexcept
+{
+    Value minimum;
+    Value maximum;
+    switch (descriptor.Default.Kind)
+    {
+        case Type::Int32:
+        case Type::Int64:
+            minimum = Value::FromInt64(descriptor.MinSigned);
+            maximum = Value::FromInt64(descriptor.MaxSigned);
+            break;
+        case Type::Uint32:
+        case Type::Uint64:
+            minimum = Value::FromUint64(descriptor.MinUnsigned);
+            maximum = Value::FromUint64(descriptor.MaxUnsigned);
+            break;
+        case Type::Float32:
+        case Type::Float64:
+            minimum = Value::FromFloat64(descriptor.MinReal);
+            maximum = Value::FromFloat64(descriptor.MaxReal);
+            break;
+        case Type::Enum:
+        case Type::String:
+            inoutWriter.Raw(",\"max_text_bytes\":");
+            inoutWriter.Integer(descriptor.MaxTextBytes);
+            return;
+        case Type::Bool:
+            return;
+    }
+    inoutWriter.Raw(",\"min\":");
+    EncodeValue(inoutWriter, minimum);
+    inoutWriter.Raw(",\"max\":");
+    EncodeValue(inoutWriter, maximum);
+}
 } // namespace
 Status DecodeValue(parsing::JsonValue input, Type type, Value& output) noexcept
 {
@@ -230,31 +264,47 @@ Status PrepareJson(Context& context,
         error.ByteOffset = parseError.Offset;
         return status;
     }
-    const auto root = document.Root();
+    return PrepareJsonLayer(context, document.Root(), expectedLayer, schemaIdentity, expectedRevision, domain, error);
+}
+Status PrepareJsonLayer(Context& inoutContext,
+                        parsing::JsonValue root,
+                        Layer expectedLayer,
+                        std::string_view schemaIdentity,
+                        uint64 expectedRevision,
+                        const AllocationDomain& domain,
+                        Diagnostic& outDiagnostic) noexcept
+{
+    outDiagnostic = {};
+    if (inoutContext.IsValid() == false || ValidIdentity(schemaIdentity) == false ||
+        static_cast<usize>(expectedLayer) >= LAYER_COUNT)
+    {
+        return Fail(outDiagnostic, Status::InvalidState);
+    }
     uint64 version{};
-    std::string_view identity, layer;
-    const auto values = root.Get("values");
+    std::string_view identity;
+    std::string_view layer;
+    const parsing::JsonValue values = root.Get("values");
     if (root.Fields({"version", "schema", "layer", "values"}) == false ||
         root.Get("version").Integer(version) == false || version != 1 || root.Get("schema").String(identity) == false ||
         identity != schemaIdentity || root.Get("layer").String(layer) == false || layer != LayerName(expectedLayer) ||
-        values.Array() == false || values.Count() > context.Schema().size())
+        values.Array() == false || values.Count() > inoutContext.Schema().size())
     {
-        return Fail(error, Status::InvalidBundle);
+        return Fail(outDiagnostic, Status::InvalidBundle);
     }
     const usize count = values.Count();
     if (count == 0)
     {
-        return context.Prepare(expectedLayer, {}, true, expectedRevision, error);
+        return inoutContext.Prepare(expectedLayer, {}, true, expectedRevision, outDiagnostic);
     }
     usize bytes{};
     if (TryMultiply(count, sizeof(Assignment), bytes) == false)
     {
-        return Fail(error, Status::LimitExceeded);
+        return Fail(outDiagnostic, Status::LimitExceeded);
     }
-    auto* assignments = static_cast<Assignment*>(domain.TryAllocate(bytes, alignof(Assignment)));
-    if (assignments == nullptr)
+    Assignment* assignmentsOrNull = static_cast<Assignment*>(domain.TryAllocate(bytes, alignof(Assignment)));
+    if (assignmentsOrNull == nullptr)
     {
-        return Fail(error, Status::OutOfMemory);
+        return Fail(outDiagnostic, Status::OutOfMemory);
     }
     struct Cleanup final
     {
@@ -269,46 +319,47 @@ Status PrepareJson(Context& context,
             }
             Domain.Free(Data, Count * sizeof(Assignment), alignof(Assignment));
         }
-    } cleanup{domain, assignments, count};
+    } cleanup{domain, assignmentsOrNull, count};
     for (usize i = 0; i < count; ++i)
     {
-        new (assignments + i) Assignment{};
+        new (assignmentsOrNull + i) Assignment{};
     }
     for (usize i = 0; i < count; ++i)
     {
-        const auto record = values.At(i);
-        auto& assignment = assignments[i];
-        std::string_view type, source;
+        const parsing::JsonValue record = values.At(i);
+        Assignment& assignment = assignmentsOrNull[i];
+        std::string_view type;
+        std::string_view source;
         if (record.Fields({"key", "type", "value", "source", "line"}) == false ||
             record.Get("key").String(assignment.Name) == false || record.Get("type").String(type) == false ||
             record.Get("source").String(source) == false || source.size() > MAX_ORIGIN_SOURCE_BYTES ||
             ValidateCString(source) != StringStatus::Ok || assignment.From.Source.TryAssign(source) != StringStatus::Ok)
         {
-            return Fail(error, Status::InvalidBundle, assignment.Name, i);
+            return Fail(outDiagnostic, Status::InvalidBundle, assignment.Name, i);
         }
         Binding binding;
-        const auto bound = context.Bind(assignment.Name, binding);
+        const Status bound = inoutContext.Bind(assignment.Name, binding);
         if (bound != Status::Ok)
         {
-            return Fail(error, bound, assignment.Name, i);
+            return Fail(outDiagnostic, bound, assignment.Name, i);
         }
-        const Type kind = context.Schema()[binding.Index].Default.Kind;
+        const Type kind = inoutContext.Schema()[binding.Index].Default.Kind;
         if (type != TypeName(kind))
         {
-            return Fail(error, Status::InvalidValue, assignment.Name, i);
+            return Fail(outDiagnostic, Status::InvalidValue, assignment.Name, i);
         }
         uint64 line{};
         if (record.Get("line").Integer(line) == false || TryIntegerCast(line, assignment.From.Line) == false)
         {
-            return Fail(error, Status::InvalidBundle, assignment.Name, i);
+            return Fail(outDiagnostic, Status::InvalidBundle, assignment.Name, i);
         }
-        const auto decoded = DecodeValue(record.Get("value"), kind, assignment.Data);
+        const Status decoded = DecodeValue(record.Get("value"), kind, assignment.Data);
         if (decoded != Status::Ok)
         {
-            return Fail(error, decoded, assignment.Name, i);
+            return Fail(outDiagnostic, decoded, assignment.Name, i);
         }
     }
-    return context.Prepare(expectedLayer, {assignments, count}, true, expectedRevision, error);
+    return inoutContext.Prepare(expectedLayer, {assignmentsOrNull, count}, true, expectedRevision, outDiagnostic);
 }
 Status WriteLayer(const Context& context,
                   Layer layer,
@@ -361,7 +412,7 @@ Status WriteLayer(const Context& context,
 Status WriteSchema(const Context& context,
                    std::string_view schemaIdentity,
                    std::span<uint8> buffer,
-                   std::span<const uint8>& output) noexcept
+                   std::span<const uint8>& outOutput) noexcept
 {
     if (context.IsValid() == false || ValidIdentity(schemaIdentity) == false)
     {
@@ -370,14 +421,14 @@ Status WriteSchema(const Context& context,
     parsing::JsonWriter writer(buffer);
     Header(writer, schemaIdentity);
     writer.Raw(",\"settings\":[");
-    bool first = true;
-    for (const auto& descriptor : context.Schema())
+    bool isFirst = true;
+    for (const Descriptor& descriptor : context.Schema())
     {
-        if (first == false)
+        if (isFirst == false)
         {
             writer.Raw(",");
         }
-        first = false;
+        isFirst = false;
         writer.Raw("{\"key\":");
         writer.String(descriptor.Name);
         writer.Raw(",\"type\":");
@@ -394,20 +445,25 @@ Status WriteSchema(const Context& context,
         writer.Boolean(descriptor.Persistent);
         writer.Raw(",\"simulation\":");
         writer.Boolean(descriptor.Simulation);
+        writer.Raw(",\"allowed_sources\":");
+        writer.Integer(descriptor.AllowedSources);
+        writer.Raw(",\"group\":");
+        writer.Integer(descriptor.Group);
+        WriteDescriptorBounds(writer, descriptor);
         writer.Raw(",\"choices\":[");
-        bool firstChoice = true;
-        for (auto choice : descriptor.Choices)
+        bool isFirstChoice = true;
+        for (std::string_view choice : descriptor.Choices)
         {
-            if (firstChoice == false)
+            if (isFirstChoice == false)
             {
                 writer.Raw(",");
             }
-            firstChoice = false;
+            isFirstChoice = false;
             writer.String(choice);
         }
         writer.Raw("]}");
     }
     writer.Raw("]}");
-    return Finish(writer, output);
+    return Finish(writer, outOutput);
 }
 } // namespace ludus::foundation::config

@@ -11,6 +11,10 @@
     "source": "renderer_light_transformer_decoder.slang",
     "compute": "ComputeMain"
   },
+  "renderer_lusl_layout_probe": {
+    "source": "renderer_lusl_layout_probe.lusl",
+    "compute": "ComputeMain"
+  },
   "renderer_point_neighbors": {
     "source": "renderer_point_neighbors.slang",
     "compute": "ComputeMain"
