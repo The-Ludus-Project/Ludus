@@ -765,6 +765,32 @@ bool ReadAtmosphereLight(const QJsonObject& entity,
     return true;
 }
 
+/// Read the Atmosphere component's cloud layer fields. A World saved before they existed keeps the schema defaults,
+/// with the layer off. The layer's frame follows the Atmosphere entity's rotation.
+void ExtractWorldCloudLayer(const QJsonObject& properties,
+                            const math::TransformTRS& placement,
+                            rr::CloudLayerDescription& outClouds)
+{
+    using Clouds = rr::CloudLayerDescription;
+    const auto read = [&properties](const char* key, float32 fallback) {
+        return static_cast<float32>(properties.value(QLatin1StringView(key)).toDouble(static_cast<float64>(fallback)));
+    };
+    outClouds =
+    {
+        .IsEnabled = properties.value(QStringLiteral("clouds")).toBool(false),
+        .BaseHeightMetres = read("cloudBase", Clouds::DEFAULT_BASE_HEIGHT_METRES),
+        .ThicknessMetres = read("cloudThickness", Clouds::DEFAULT_THICKNESS_METRES),
+        .SizeXMetres = read("cloudSizeX", Clouds::DEFAULT_SIZE_METRES),
+        .SizeZMetres = read("cloudSizeZ", Clouds::DEFAULT_SIZE_METRES),
+        .EdgeFadeMetres = read("cloudEdgeFade", Clouds::DEFAULT_EDGE_FADE_METRES),
+        .Density = read("cloudDensity", 1),
+        .ExtinctionPerMetre = read("cloudExtinction", Clouds::DEFAULT_EXTINCTION_PER_METRE),
+        .SingleScatteringAlbedo = read("cloudAlbedo", Clouds::DEFAULT_SINGLE_SCATTERING_ALBEDO),
+        .PhaseAsymmetry = read("cloudForwardScattering", Clouds::DEFAULT_PHASE_ASYMMETRY),
+        .AxisXWorld = math::Rotate(placement.Rotation, {1, 0, 0}),
+    };
+}
+
 void ExtractWorldAtmosphere(const WorldDocument& world, const QJsonObject& transformBinding, RenderScene& inoutScene)
 {
     if (world.HasBuiltInSchema() == false)
@@ -824,6 +850,7 @@ void ExtractWorldAtmosphere(const WorldDocument& world, const QJsonObject& trans
         .SunSourceId = sunSourceId,
         .ShouldLightScene = true,
     };
+    ExtractWorldCloudLayer(properties, placement, inoutScene.Atmosphere.Clouds);
     rr::CelestialBackgroundDescription& celestial = inoutScene.Atmosphere.Celestial;
     celestial.IsEnabled = true;
     celestial.StarRadiance = properties.value(QStringLiteral("stars")).toBool(true) == true ? 1.0F : 0.0F;
