@@ -4,5 +4,9 @@
 float32x4 PSMain(in RasterVarying value)
 {
     // Per-draw material values arrive through the generated binding, not a shader permutation.
+#if LUDUS_USE_MATERIAL_TINT
     return float32x4(material.Tint * material.Gain, 1.0);
+#else
+    return float32x4(material.Tint.bgr * material.Gain, 1.0);
+#endif
 }

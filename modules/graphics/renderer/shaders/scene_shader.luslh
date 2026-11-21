@@ -272,7 +272,7 @@ extern slang
                                                in float32x3 receiverPositionWorld,
                                                in SurfaceHit endpoint);
     float32 EvaluateIncidentEnvironmentPdfSolidAngle(in SceneContext scene);
-    float32 SampleSceneRandom(in RayLaunch launch, in uint32 dimension);
+    float32 SampleUniformFloat01(in RayLaunch launch, in uint32 dimension);
     float32 SampleSceneRandom(inout RayQueryContext queries);
     uint32 SampleSceneRandom(inout RayQueryContext queries, in uint32 minimumInclusive, in uint32 maximumExclusive);
     RandomAddress PixelRandomAddress(in uint32 pixel, in uint32 sample, in uint32 dimension);

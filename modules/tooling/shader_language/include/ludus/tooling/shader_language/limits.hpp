@@ -15,8 +15,8 @@ namespace ludus::tooling::shader_language
 inline constexpr foundation::usize MAX_FILE_TOKENS = foundation::usize{1} << 20;
 /// Most tokens in one preprocessed translation unit.
 inline constexpr foundation::usize MAX_OUTPUT_TOKENS = foundation::usize{1} << 20;
-/// Most PreprocessRequest::IncludeDirectories.
-inline constexpr foundation::usize MAX_INCLUDE_DIRECTORIES = 8;
+/// Most PreprocessRequest::IncludeDirectories, including the renderer shared library roots.
+inline constexpr foundation::usize MAX_INCLUDE_DIRECTORIES = 16;
 /// Deepest `#include` nesting; the root file is depth one.
 inline constexpr foundation::usize MAX_INCLUDE_DEPTH = 32;
 /// Deepest nesting of `#if` groups in one translation unit.
@@ -55,8 +55,8 @@ inline constexpr foundation::usize MAX_TEMPLATE_PARAMETERS = 8;
 inline constexpr foundation::usize MAX_SPECIALIZATIONS = 256;
 /// Deepest nesting of concept applications while a constraint is evaluated.
 inline constexpr foundation::usize MAX_CONSTRAINT_DEPTH = 32;
-/// Resource bindings of one translation unit. The RHI admits fewer per pipeline layout
-/// (graphics::rhi::RASTER_BINDING_COUNT); pipeline creation enforces that limit.
+/// Resource register slots of one translation unit, including each array element.
+/// The RHI enforces its own binding and descriptor limits when creating pipeline layouts.
 inline constexpr foundation::usize MAX_BINDINGS = 64;
 /// Vertex input attributes, stage-interface varyings or color targets of one entry point.
 inline constexpr foundation::usize MAX_STAGE_LOCATIONS = 32;

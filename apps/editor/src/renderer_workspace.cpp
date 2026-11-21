@@ -1470,10 +1470,10 @@ RendererWorkspace::RendererWorkspace(const ToolingPaths& tooling, QWidget* paren
             mPreviewSourceOrNull->PrepareGpuProfileFrame();
         }
     });
-    connect(mPreviewOrNull, &RenderGraphPreview::SubmissionRecorded, this, [this]() {
+    connect(mPreviewOrNull, &RenderGraphPreview::SubmissionRecorded, this, [this](const QByteArray& runtimeIdentity) {
         if (mPreviewSourceOrNull != nullptr)
         {
-            mPreviewSourceOrNull->NotifyGpuProfileSubmission();
+            mPreviewSourceOrNull->NotifyGpuProfileSubmission(runtimeIdentity);
         }
     });
     connect(mPreviewOrNull, &RenderGraphPreview::FramePresented, this, [this]() {
@@ -1608,7 +1608,7 @@ RendererWorkspace::RendererWorkspace(const ToolingPaths& tooling, QWidget* paren
     mSourceEditDebounce.setSingleShot(true);
     mSourceEditDebounce.setInterval(SOURCE_EDIT_DEBOUNCE_MILLISECONDS);
     connect(mSourceController, &CodeDocumentController::TextAccepted, this, [this]() {
-        if (mSourceFile->currentText().endsWith(QStringLiteral(".slang")) == true)
+        if (IsRenderGraphShaderSource(mSourceFile->currentText()) == true)
         {
             queueGraphEditTrace(RenderGraphSource::Draft);
         }
@@ -1742,11 +1742,11 @@ bool RendererWorkspace::ShowSourceView()
         {
             mSourceFile->setCurrentText(shaders.first());
         }
-        else if (mSourceFile->currentText().endsWith(QStringLiteral(".slang")) == false)
+        else if (IsRenderGraphShaderSource(mSourceFile->currentText()) == false)
         {
             for (int32 index = 0; index < mSourceFile->count(); ++index)
             {
-                if (mSourceFile->itemText(index).endsWith(QStringLiteral(".slang")) == true)
+                if (IsRenderGraphShaderSource(mSourceFile->itemText(index)) == true)
                 {
                     mSourceFile->setCurrentIndex(index);
                     break;
@@ -3729,6 +3729,11 @@ void RendererWorkspace::populateNodeFields(QFormLayout& outFields, QWidget& inou
     }
     populateNodeNameFields(outFields, inoutParent);
     outFields.addRow(QStringLiteral("Kind"), new QLabel(node.value(QStringLiteral("kind")).toString(), &inoutParent));
+    if (node.value(QStringLiteral("kind")).toString() == QStringLiteral("Buffer") &&
+        node.contains(QStringLiteral("bytes_per_pixel")) == false)
+    {
+        populateBufferSizing(node, outFields, inoutParent);
+    }
     if (node.value(QStringLiteral("kind")).toString() == QStringLiteral("Upscale"))
     {
         QLabel* availability = new QLabel(GetUpscaleAvailabilityMessage(node), &inoutParent);
@@ -3783,29 +3788,33 @@ void RendererWorkspace::populateNodeFields(QFormLayout& outFields, QWidget& inou
                         });
             }
         }
-        connect(editor, &RenderGraphPipelineEditor::Edited, this, [this, editor](const QJsonObject& candidate) {
-            QString error;
-            const bool hasChangedProfile = IsSceneComputeNode(selectedNode()) != IsSceneComputeNode(candidate);
-            const RenderGraphDocumentStatus status =
-                mDocument.ReplaceNode(mSelectedFile, mSelectedConfiguration, candidate, &error);
-            if (status != RenderGraphDocumentStatus::Ok)
-            {
-                mStatus->setText(error);
-                renderInspector();
-                Q_EMIT NodeFieldsChanged(nullptr);
-                Q_EMIT NodeOperationFailed(error);
-                return;
-            }
-            if (hasChangedProfile == true)
-            {
-                // A Scene input changes the State and Invocation controls, so rebuild both surfaces.
-                documentEdited(status);
-                return;
-            }
-            editor->SetShaderAssignments(selectedNode().value(QStringLiteral("shaders")).toArray());
-            // Refresh the other surface while retaining the controls that submitted this edit.
-            documentEdited(status, mInspector->isAncestorOf(editor) == false, editor);
-        });
+        connect(
+            editor,
+            &RenderGraphPipelineEditor::Edited,
+            this,
+            [this, editor](const QJsonObject& candidate, RenderGraphShaderLanguage newShaderLanguage) {
+                QString error;
+                const bool hasChangedProfile = IsSceneComputeNode(selectedNode()) != IsSceneComputeNode(candidate);
+                const RenderGraphDocumentStatus status =
+                    mDocument.ReplaceNode(mSelectedFile, mSelectedConfiguration, candidate, &error, newShaderLanguage);
+                if (status != RenderGraphDocumentStatus::Ok)
+                {
+                    mStatus->setText(error);
+                    renderInspector();
+                    Q_EMIT NodeFieldsChanged(nullptr);
+                    Q_EMIT NodeOperationFailed(error);
+                    return;
+                }
+                if (hasChangedProfile == true)
+                {
+                    // A Scene input changes the State and Invocation controls, so rebuild both surfaces.
+                    documentEdited(status);
+                    return;
+                }
+                editor->SetShaderAssignments(selectedNode().value(QStringLiteral("shaders")).toArray());
+                // Refresh the other surface while retaining the controls that submitted this edit.
+                documentEdited(status, mInspector->isAncestorOf(editor) == false, editor);
+            });
         connect(editor, &RenderGraphPipelineEditor::ShaderOpenRequested, this, [this, editor](const QString& shaderId) {
             openNodeShader(shaderId, editor);
         });
@@ -3869,6 +3878,7 @@ void RendererWorkspace::populateNodeFields(QFormLayout& outFields, QWidget& inou
         const QString name = field.key();
         if (name == QStringLiteral("id") || name == QStringLiteral("kind") || name == QStringLiteral("enabled") ||
             name == QStringLiteral("overrides") || name == QStringLiteral("options") ||
+            name == QStringLiteral("shader_struct") ||
             (name == QStringLiteral("scale") &&
              node.value(QStringLiteral("kind")).toString() == QStringLiteral("RenderSize")) ||
             IsPipelineNode(node.value(QStringLiteral("kind")).toString()) == true)
@@ -4130,6 +4140,158 @@ void RendererWorkspace::populateNodeFields(QFormLayout& outFields, QWidget& inou
             });
             outFields.addRow(name, line);
         }
+    }
+}
+
+void RendererWorkspace::populateBufferSizing(const QJsonObject& node, QFormLayout& outFields, QWidget& inoutParent)
+{
+    const QJsonObject record = node.value(QStringLiteral("shader_struct")).toObject();
+    if (record.isEmpty() == false)
+    {
+        const QString linkedStruct = QStringLiteral("%1 × %2\n%3")
+                                         .arg(record.value(QStringLiteral("count")).toInteger())
+                                         .arg(record.value(QStringLiteral("type")).toString(),
+                                              record.value(QStringLiteral("source")).toString());
+        QLabel* sizing = new QLabel(&inoutParent);
+        sizing->setObjectName(QStringLiteral("renderGraphBufferStructLayout"));
+        sizing->setTextFormat(Qt::PlainText);
+        sizing->setTextInteractionFlags(Qt::TextSelectableByMouse);
+        sizing->setWordWrap(true);
+        const auto refresh = [this,
+                              sizing,
+                              linkedStruct,
+                              file = mSelectedFile,
+                              configuration = mSelectedConfiguration,
+                              identity = mSelectedNode]() {
+            sizing->setText(linkedStruct + QStringLiteral("\nBuild Graph resolves the byte capacity."));
+            if (mHasResult == false || mLastResult.IsSuccessful == false ||
+                mLastResult.Request.InputIdentity.isEmpty() == true ||
+                mLastResult.Request.InputIdentity != getBuildIdentity(RenderGraphSource::Draft))
+            {
+                return;
+            }
+            const QJsonArray layouts = mLastResult.Payload.value(QStringLiteral("build"))
+                                           .toObject()
+                                           .value(QStringLiteral("shader_buffer_layouts"))
+                                           .toArray();
+            for (const QJsonValueConstRef value : layouts)
+            {
+                const QJsonObject layout = value.toObject();
+                if (layout.value(QStringLiteral("graph")).toString() == file &&
+                    layout.value(QStringLiteral("configuration")).toString() == configuration &&
+                    layout.value(QStringLiteral("node")).toString() == identity)
+                {
+                    sizing->setText(linkedStruct + QStringLiteral("\n%L1 bytes per element · %L2 bytes allocated")
+                                                       .arg(layout.value(QStringLiteral("stride")).toInteger())
+                                                       .arg(layout.value(QStringLiteral("bytes")).toInteger()));
+                    return;
+                }
+            }
+        };
+        connect(this, &RendererWorkspace::JobFinished, sizing, refresh);
+        refresh();
+        outFields.addRow(QStringLiteral("Shader struct"), sizing);
+    }
+    QPushButton* edit = new QPushButton(record.isEmpty() == true ? QStringLiteral("From shader struct…")
+                                                                 : QStringLiteral("Edit buffer sizing…"),
+                                        &inoutParent);
+    edit->setObjectName(QStringLiteral("renderGraphEditBufferSizing"));
+    QWidget* parent = &inoutParent;
+    connect(edit, &QPushButton::clicked, this, [this, parent]() { editBufferSizing(*parent); });
+    outFields.addRow(edit);
+}
+
+void RendererWorkspace::editBufferSizing(QWidget& inoutParent)
+{
+    namespace format = content::render_graph_format;
+    const QJsonObject node = selectedNode();
+    const QJsonObject record = node.value(QStringLiteral("shader_struct")).toObject();
+    QDialog dialog(&inoutParent);
+    dialog.setWindowTitle(QStringLiteral("Buffer sizing"));
+    QFormLayout fields(&dialog);
+    QComboBox* mode = new QComboBox(&dialog);
+    mode->setObjectName(QStringLiteral("renderGraphBufferSizingMode"));
+    mode->addItems({QStringLiteral("Fixed bytes"), QStringLiteral("From shader struct")});
+    mode->setCurrentIndex(1);
+    fields.addRow(QStringLiteral("Sizing"), mode);
+    QComboBox* source = new QComboBox(&dialog);
+    source->setObjectName(QStringLiteral("renderGraphBufferStructSource"));
+    for (const QString& file : mDocument.GetFiles())
+    {
+        if (file.endsWith(QStringLiteral(".slang")) == true)
+        {
+            source->addItem(file);
+        }
+    }
+    const QString previousSource = record.value(QStringLiteral("source")).toString();
+    source->setCurrentIndex(source->findText(previousSource));
+    source->setPlaceholderText(QStringLiteral("Select a shared Slang file"));
+    fields.addRow(QStringLiteral("Source file"), source);
+    QLineEdit* type = new QLineEdit(record.value(QStringLiteral("type")).toString(), &dialog);
+    type->setObjectName(QStringLiteral("renderGraphBufferStructType"));
+    type->setPlaceholderText(QStringLiteral("EdgeTable"));
+    fields.addRow(QStringLiteral("Struct name"), type);
+    QSpinBox* count = new QSpinBox(&dialog);
+    count->setObjectName(QStringLiteral("renderGraphBufferStructCount"));
+    count->setRange(1, format::MAX_RAY_BUFFER_BYTES);
+    count->setValue(record.value(QStringLiteral("count")).toInt(1));
+    fields.addRow(QStringLiteral("Element capacity"), count);
+    QSpinBox* bytes = new QSpinBox(&dialog);
+    bytes->setObjectName(QStringLiteral("renderGraphFixedBufferBytes"));
+    bytes->setRange(format::RAY_BUFFER_WORD_BYTES, format::MAX_RAY_BUFFER_BYTES);
+    bytes->setSingleStep(format::RAY_BUFFER_WORD_BYTES);
+    bytes->setValue(node.value(QStringLiteral("bytes")).toInt(format::RAY_BUFFER_WORD_BYTES));
+    fields.addRow(QStringLiteral("Capacity (bytes)"), bytes);
+    QLabel* hint = new QLabel(&dialog);
+    hint->setWordWrap(true);
+    fields.addRow(hint);
+    QDialogButtonBox* buttons = new QDialogButtonBox(QDialogButtonBox::Apply | QDialogButtonBox::Cancel, &dialog);
+    fields.addRow(buttons);
+    QPushButton* apply = buttons->button(QDialogButtonBox::Apply);
+    connect(apply, &QPushButton::clicked, &dialog, &QDialog::accept);
+    connect(buttons, &QDialogButtonBox::rejected, &dialog, &QDialog::reject);
+    const QRegularExpression identifier(
+        QStringLiteral("\\A[A-Za-z][A-Za-z0-9_]{0,%1}\\z").arg(RenderGraphDocument::MAX_IDENTIFIER_LENGTH - 1));
+    const auto refresh = [&fields, mode, source, type, count, bytes, hint, apply, &identifier]() {
+        const bool isFromStruct = mode->currentIndex() == 1;
+        fields.setRowVisible(source, isFromStruct);
+        fields.setRowVisible(type, isFromStruct);
+        fields.setRowVisible(count, isFromStruct);
+        fields.setRowVisible(bytes, isFromStruct == false);
+        hint->setText(isFromStruct == true
+                          ? QStringLiteral("Include the same file from each connected scene compute shader. "
+                                           "Build Graph reads the struct layout and sizes the allocation.")
+                          : QStringLiteral("Enter a capacity in whole 16-byte buffer words."));
+        apply->setEnabled(isFromStruct == true
+                              ? source->currentIndex() >= 0 && identifier.match(type->text()).hasMatch() == true
+                              : bytes->value() % format::RAY_BUFFER_WORD_BYTES == 0);
+    };
+    connect(mode, &QComboBox::currentIndexChanged, &dialog, refresh);
+    connect(source, &QComboBox::currentIndexChanged, &dialog, refresh);
+    connect(type, &QLineEdit::textChanged, &dialog, refresh);
+    connect(bytes, &QSpinBox::valueChanged, &dialog, refresh);
+    refresh();
+    if (dialog.exec() != QDialog::Accepted)
+    {
+        return;
+    }
+    QJsonObject candidate = node;
+    if (mode->currentIndex() == 1)
+    {
+        candidate.remove(QStringLiteral("bytes"));
+        candidate.insert(QStringLiteral("shader_struct"),
+                         QJsonObject{{QStringLiteral("source"), source->currentText()},
+                                     {QStringLiteral("type"), type->text()},
+                                     {QStringLiteral("count"), count->value()}});
+    }
+    else
+    {
+        candidate.remove(QStringLiteral("shader_struct"));
+        candidate.insert(QStringLiteral("bytes"), bytes->value());
+    }
+    if (candidate != node)
+    {
+        documentEdited(mDocument.ReplaceNode(mSelectedFile, mSelectedConfiguration, candidate));
     }
 }
 

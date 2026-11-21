@@ -35,6 +35,7 @@ int ExerciseInstalledAsync() noexcept;
 int ExerciseInstalledPersistence() noexcept;
 bool ExerciseInstalledStrings() noexcept;
 bool ExerciseInstalledStringDictionary() noexcept;
+bool ExerciseInstalledFoliagePages() noexcept;
 bool ExerciseInstalledParsing() noexcept;
 bool ExerciseInstalledConfiguration() noexcept;
 bool ExerciseInstalledReflection() noexcept;
@@ -305,6 +306,10 @@ int main()
     {
         return 13;
     }
+    if (ExerciseInstalledFoliagePages() == false)
+    {
+        return 109;
+    }
     if (PrimitiveContract() == false)
     {
         return 8;
@@ -331,7 +336,8 @@ int main()
         return threadingResult;
     }
     // Verify the lifecycle API and static link without requiring a GPU adapter on CI.
-    static_assert(noexcept(ludus::graphics::rhi::Initialize({})));
+    static_assert(noexcept(ludus::graphics::rhi::BeginFrameStatus()));
+    static_assert(noexcept(ludus::graphics::rhi::EndFrameStatus()));
     static_assert(noexcept(ludus::graphics::rhi::SetFrameTarget({})));
     static_assert(noexcept(ludus::graphics::rhi::GetStartup()));
     static_assert(noexcept(ludus::graphics::rhi::Start({}, {})));
@@ -362,7 +368,9 @@ int main()
     {
         return 2;
     }
-    if (ludus::graphics::rhi::SetFrameTarget({}) != ludus::graphics::rhi::FrameStatus::NotReady)
+    if (ludus::graphics::rhi::SetFrameTarget({}) != ludus::graphics::rhi::FrameStatus::NotReady ||
+        ludus::graphics::rhi::BeginFrameStatus() != ludus::graphics::rhi::FrameStatus::NotReady ||
+        ludus::graphics::rhi::EndFrameStatus() != ludus::graphics::rhi::FrameStatus::NotReady)
     {
         return 5;
     }

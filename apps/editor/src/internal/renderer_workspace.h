@@ -531,6 +531,8 @@ private:
     void renderTree(bool shouldRefreshInspector = true, QWidget* editOriginOrNull = nullptr);
     void renderInspector();
     void populateNodeFields(QFormLayout& outFields, QWidget& inoutParent);
+    void editBufferSizing(QWidget& inoutParent);
+    void populateBufferSizing(const QJsonObject& node, QFormLayout& outFields, QWidget& inoutParent);
     void populateNodeNameFields(QFormLayout& outFields, QWidget& inoutParent, QDialog* closeOnRenameOrNull = nullptr);
     [[nodiscard]] bool renameSelectedNode(const QString& name, QString& outError);
     void promptRenameNode();

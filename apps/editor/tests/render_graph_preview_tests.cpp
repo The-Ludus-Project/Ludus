@@ -2340,10 +2340,19 @@ TEST_CASE("Graph viewport Stats toggle is visible and persists with navigation",
     statistics->click();
     CHECK(source.IsStatisticsVisible() == true);
     CHECK(overlay->isHidden() == false);
-    CHECK(overlay->testAttribute(Qt::WA_TransparentForMouseEvents) == true);
+    CHECK(overlay->testAttribute(Qt::WA_TransparentForMouseEvents) == false);
     CHECK(viewport.GetStatisticsText().contains(QStringLiteral("Updates:")) == true);
     // Output readback has a row only once a readback has been measured.
     CHECK(viewport.GetStatisticsText().contains(QStringLiteral("Editor CPU per frame:")) == true);
+    const QString expanded = overlay->text();
+    CHECK(expanded.startsWith(QStringLiteral("▾ Stats")) == true);
+    QTest::mouseClick(overlay, Qt::LeftButton);
+    CHECK(overlay->text().startsWith(QStringLiteral("▸ ")) == true);
+    CHECK(overlay->text().size() < expanded.size());
+    // The clipboard and status queries still return the full timing text.
+    CHECK(viewport.GetStatisticsText().contains(QStringLiteral("Editor CPU per frame:")) == true);
+    QTest::mouseClick(overlay, Qt::LeftButton);
+    CHECK(overlay->text() == expanded);
     const QJsonObject navigation = source.Navigation();
     statistics->click();
     CHECK(overlay->isHidden() == true);

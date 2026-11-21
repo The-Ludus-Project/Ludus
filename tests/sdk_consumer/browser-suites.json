@@ -8,6 +8,8 @@
   "renderer-baseline": [
     {"title": "Test installed L0/L1/L2/L3/L4 renderer against direct and cross-backend image oracles",
      "script": "renderer-browser-test.mjs", "results": "renderer"},
+    {"title": "Qualify U1 UiRender paint and hit clipping on WebGPU and WebGL 2 at two scales and after a resize",
+     "script": "ui-render-browser-test.mjs", "results": "ui-render"},
     {"title": "Activate an installed RG3 runtime generation on WebGPU and compare its exported pixels",
      "script": "render-graph-runtime-browser-test.mjs", "results": "render-graph-runtime"},
     {"title": "Share one managed bilinear upscale pipeline on WebGPU and compare exported pixels with the unshared pass",

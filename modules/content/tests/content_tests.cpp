@@ -1,9 +1,14 @@
 #include <algorithm>
 #include <catch2/catch_test_macros.hpp>
 #include <filesystem>
+#include <initializer_list>
 #include <ludus/content/content.h>
 #include <ludus/content/limits.h>
 #include <ludus/foundation/base/config.h>
+#include <ludus/foundation/memory/allocation_domain.hpp>
+#include <ludus/foundation/memory/allocation_statistics.hpp>
+#include <ludus/foundation/parsing/json.hpp>
+#include <ludus/foundation/parsing/parsing.hpp>
 namespace ludus::content
 {
 struct JsonValue;
@@ -11,6 +16,7 @@ struct JsonValue;
 #include <ludus/content/json.h>
 #include <random>
 #include <string>
+#include <string_view>
 #include <type_traits>
 
 using namespace ludus::content;
@@ -71,6 +77,239 @@ TEST_CASE("Catalog preserves identity and rejects malformed replacements")
         REQUIRE(catalog.Find("sound/hit") != nullptr);
     }
 }
+namespace
+{
+constexpr std::string_view ORIGINAL_CATALOG =
+    R"({"version":1,"resources":[{"id":"audio/original","kind":"audio-source","path":"original.wav"}]})";
+constexpr std::string_view REPLACEMENT_CATALOG =
+    R"({"version":2,"resources":[{"id":"mesh/replacement","kind":"mesh","path":"mesh.json"},{"id":"geometry/replacement","kind":"cooked-geometry","path":"curve\u002elugeo"}]})";
+
+struct CatalogAllocator final
+{
+    usize Attempts = 0;
+    usize FailOnAttempt = 0;
+
+    static void* Allocate(void* context, usize bytes, usize alignment) noexcept
+    {
+        CatalogAllocator& allocator = *static_cast<CatalogAllocator*>(context);
+        ++allocator.Attempts;
+        if (allocator.Attempts == allocator.FailOnAttempt)
+        {
+            return nullptr;
+        }
+        return GetSystemAllocationDomain().TryAllocate(bytes, alignment);
+    }
+
+    static void Free(void*, void* pointer, usize bytes, usize alignment) noexcept
+    {
+        GetSystemAllocationDomain().Free(pointer, bytes, alignment);
+    }
+};
+
+std::string MakeCatalog(usize count)
+{
+    std::string json = R"({"version":1,"resources":[)";
+    const usize indexWidth = std::to_string(MAX_RESOURCES).size();
+    for (usize index = 0; index < count; ++index)
+    {
+        if (index != 0)
+        {
+            json += ',';
+        }
+        json += R"({"id":"audio/item-)";
+        const std::string indexText = std::to_string(index);
+        json.append(indexWidth - indexText.size(), '0');
+        json += indexText;
+        json += R"(","kind":"audio-source","path":"audio/item.wav"})";
+    }
+    json += "]}";
+    return json;
+}
+} // namespace
+
+TEST_CASE("Catalog reports semantic paths and preserves the complete previous catalog", "[content][catalog]")
+{
+    CatalogAllocator allocator;
+    const AllocationDomain domain(&allocator, CatalogAllocator::Allocate, CatalogAllocator::Free);
+    Catalog catalog(domain);
+    Diagnostic diagnostic;
+    REQUIRE(catalog.Read(ORIGINAL_CATALOG, diagnostic) == Status::Ok);
+    const Resource* previous = catalog.Find("audio/original");
+    REQUIRE(previous != nullptr);
+    Bytes original;
+    REQUIRE(catalog.Write(original) == Status::Ok);
+
+    struct RejectedCatalog final
+    {
+        std::string_view Json;
+        Status Result;
+        std::string_view Field;
+    };
+    const std::initializer_list<RejectedCatalog> rejections = {
+        {R"([])", Status::Invalid, "$"},
+        {R"({"resources":[]})", Status::Invalid, "version"},
+        {R"({"version":3,"resources":[]})", Status::Invalid, "version"},
+        {R"({"version":1})", Status::Invalid, "resources"},
+        {R"({"version":1,"resources":{}})", Status::Limit, "resources"},
+        {R"({"version":1,"resources":[],"extra":0})", Status::Invalid, "$"},
+        {R"({"version":1,"resources":[null]})", Status::Invalid, "resources[0]"},
+        {R"({"version":1,"resources":[{"kind":"mesh","path":"mesh.json"}]})", Status::Invalid, "resources[0].id"},
+        {R"({"version":1,"resources":[{"id":"mesh/a","kind":"mesh","path":17}]})",
+         Status::Invalid,
+         "resources[0].path"},
+        {R"({"version":1,"resources":[{"id":"mesh/a","kind":"cooked-geometry","path":"a.lugeo"}]})",
+         Status::Invalid,
+         "resources[0].kind"},
+        {R"({"version":1,"resources":[{"id":"mesh/a","kind":"mesh","path":"mesh.json","extra":0}]})",
+         Status::Invalid,
+         "resources[0]"},
+        {R"({"version":1,"resources":[{"id":"mesh/a","kind":"mesh","path":"a.json"},{"id":"mesh/a","kind":"mesh","path":"b.json"}]})",
+         Status::Invalid,
+         "resources[1].id"},
+    };
+    for (const RejectedCatalog& rejected : rejections)
+    {
+        CAPTURE(rejected.Json);
+        CHECK(catalog.Read(rejected.Json, diagnostic) == rejected.Result);
+        CHECK(diagnostic.Result == rejected.Result);
+        CHECK(std::string_view(diagnostic.Field) == rejected.Field);
+        CHECK(diagnostic.Offset == ludus::foundation::parsing::UNKNOWN_BYTE_OFFSET);
+        CHECK(catalog.Entries().data() == previous);
+        CHECK(GetAllocationStatistics(domain).LiveRequestedBytes == sizeof(Resource));
+    }
+
+    // A bad field after several valid entries reports the authored index,
+    // even though successful publication would sort those entries by ID.
+    std::string lateFailure = MakeCatalog(11);
+    const usize lastPath = lateFailure.rfind("audio/item.wav");
+    REQUIRE(lastPath != std::string::npos);
+    lateFailure.replace(lastPath, std::string_view("audio/item.wav").size(), "../item.wav");
+    CHECK(catalog.Read(lateFailure, diagnostic) == Status::Invalid);
+    CHECK(std::string_view(diagnostic.Field) == "resources[10].path");
+    CHECK(GetAllocationStatistics(domain).LiveRequestedBytes == sizeof(Resource));
+
+    CHECK(catalog.Read(R"({"version":1,"resources":[?]})", diagnostic) == Status::Invalid);
+    CHECK(std::string_view(diagnostic.Field).empty());
+    CHECK(diagnostic.Offset == std::string_view(R"({"version":1,"resources":[)").size());
+
+    CHECK(catalog.Read(MakeCatalog(MAX_RESOURCES + 1), diagnostic) == Status::Limit);
+    CHECK(std::string_view(diagnostic.Field) == "resources");
+    CHECK(catalog.Entries().data() == previous);
+    CHECK(GetAllocationStatistics(domain).LiveRequestedBytes == sizeof(Resource));
+    Bytes after;
+    REQUIRE(catalog.Write(after) == Status::Ok);
+    CHECK(after.String() == original.String());
+}
+
+TEST_CASE("Catalog allocation failures leave the live entries intact and allow retry", "[content][catalog]")
+{
+    CatalogAllocator allocator;
+    const AllocationDomain domain(&allocator, CatalogAllocator::Allocate, CatalogAllocator::Free);
+    {
+        Catalog catalog(domain);
+        Diagnostic diagnostic;
+        REQUIRE(catalog.Read(ORIGINAL_CATALOG, diagnostic) == Status::Ok);
+        const Resource* previous = catalog.Find("audio/original");
+        REQUIRE(previous != nullptr);
+        const usize originalBytes = GetAllocationStatistics(domain).LiveRequestedBytes;
+        const usize workspaceAttempt = 1;
+        const usize candidateAttempt = 2;
+        for (const usize attempt : {workspaceAttempt, candidateAttempt})
+        {
+            CAPTURE(attempt);
+            allocator.Attempts = 0;
+            allocator.FailOnAttempt = attempt;
+            CHECK(catalog.Read(REPLACEMENT_CATALOG, diagnostic) == Status::OutOfMemory);
+            CHECK(diagnostic.Result == Status::OutOfMemory);
+            CHECK(std::string_view(diagnostic.Field) == (attempt == workspaceAttempt ? "" : "resources"));
+            CHECK(allocator.Attempts == attempt);
+            REQUIRE(catalog.Entries().size() == 1);
+            REQUIRE(catalog.Find("audio/original") == previous);
+            CHECK(previous->Id.View() == "audio/original");
+            CHECK(previous->Type == Kind::AudioSource);
+            CHECK(previous->Path.View() == "original.wav");
+            CHECK(catalog.Find("mesh/replacement") == nullptr);
+            const AllocationStatistics statistics = GetAllocationStatistics(domain);
+            CHECK(statistics.LiveRequestedBytes == originalBytes);
+            CHECK(statistics.LiveBlocks == 1);
+            CHECK(statistics.Validity == AccountingValidity::Valid);
+        }
+
+        allocator.FailOnAttempt = 0;
+        {
+            std::string source(REPLACEMENT_CATALOG);
+            REQUIRE(catalog.Read(source, diagnostic) == Status::Ok);
+            source.assign(source.size(), 'x');
+        }
+        CHECK(diagnostic.Result == Status::Ok);
+        CHECK(std::string_view(diagnostic.Field).empty());
+        CHECK(catalog.Find("audio/original") == nullptr);
+        REQUIRE(catalog.Entries().size() == 2);
+        CHECK(catalog.Entries()[0].Id.View() == "geometry/replacement");
+        CHECK(catalog.Entries()[0].Path.View() == "curve.lugeo");
+        CHECK(catalog.Entries()[0].Type == Kind::CookedGeometry);
+        CHECK(GetAllocationStatistics(domain).FailureCount == 2);
+        CHECK(GetAllocationStatistics(domain).LiveRequestedBytes == 2 * sizeof(Resource));
+
+        Catalog moved(Move(catalog));
+        CHECK(catalog.Entries().empty());
+        CHECK(moved.Entries().size() == 2);
+        Catalog replacement;
+        replacement = Move(moved);
+        CHECK(moved.Entries().empty());
+        REQUIRE(replacement.Read(R"({"version":1,"resources":[]})", diagnostic) == Status::Ok);
+        CHECK(replacement.Entries().empty());
+    }
+    CHECK(GetAllocationStatistics(domain).LiveRequestedBytes == 0);
+    CHECK(GetAllocationStatistics(domain).Validity == AccountingValidity::Valid);
+}
+
+TEST_CASE("Catalog measures peak requested bytes for a bounded replacement", "[content][catalog]")
+{
+    usize count = 2;
+    bool shouldPadInput = false;
+    SECTION("small authored fixture")
+    {
+        count = 2;
+    }
+    SECTION("at both the record and encoded byte limits")
+    {
+        count = MAX_RESOURCES;
+        shouldPadInput = true;
+    }
+    std::string input = count == MAX_RESOURCES ? MakeCatalog(count) : std::string(REPLACEMENT_CATALOG);
+    if (shouldPadInput == true)
+    {
+        REQUIRE(input.size() <= MAX_DOCUMENT_BYTES);
+        input.resize(MAX_DOCUMENT_BYTES, ' ');
+    }
+
+    CatalogAllocator allocator;
+    const AllocationDomain domain(&allocator, CatalogAllocator::Allocate, CatalogAllocator::Free);
+    Catalog catalog(domain);
+    Resource previous;
+    REQUIRE(previous.Id.Set("audio/original") == true);
+    REQUIRE(previous.Path.Set("original.wav") == true);
+    REQUIRE(catalog.Put(previous) == Status::Ok);
+    const AllocationStatistics before = GetAllocationStatistics(domain);
+
+    Diagnostic diagnostic;
+    REQUIRE(catalog.Read(input, diagnostic) == Status::Ok);
+    const AllocationStatistics after = GetAllocationStatistics(domain);
+    const usize candidateBytes = count * sizeof(Resource);
+    REQUIRE(after.AllocationCount - before.AllocationCount == 2);
+    REQUIRE(after.LiveRequestedBytes == candidateBytes);
+    REQUIRE(after.PeakRequestedBytes > before.LiveRequestedBytes + candidateBytes);
+    CHECK(after.PeakRequestedBytes == before.LiveRequestedBytes + after.AllocatedBytes - before.AllocatedBytes);
+    const usize readPeakBytes = after.PeakRequestedBytes - before.LiveRequestedBytes;
+    const usize workspaceBytes = readPeakBytes - candidateBytes;
+    CAPTURE(count, input.size(), candidateBytes, workspaceBytes, readPeakBytes, after.PeakRequestedBytes);
+    CHECK(catalog.Entries().size() == count);
+    CHECK(after.LiveBlocks == 1);
+    CHECK(after.Validity == AccountingValidity::Valid);
+    CHECK(workspaceBytes <= ludus::foundation::parsing::JsonLimits{}.MaxWorkspaceBytes);
+}
+
 TEST_CASE("SHA256 matches published empty and abc vectors")
 {
     const Digest empty = Hash({});

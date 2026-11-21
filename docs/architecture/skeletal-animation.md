@@ -1032,6 +1032,131 @@ A0 limits:
   modifiers (A3 and A4).
 - Clips, sampling and time stamps begin in A1.
 
+### A1 reference sampler and playback
+
+A1 adds uncompressed reference clips, clip players, timeline events and root
+trajectories to `Ludus::Animation` (`clip.hpp` and `clip_player.hpp`). It keeps
+A0's rules: every fallible operation returns `AnimationStatus` and is
+`noexcept`, preparation allocates fallibly, and sampling, activation, advances
+and seeks never allocate.
+
+Use it in this order:
+
+1. Fill a `ClipPackage` and call `TryPrepareClip` with the skeleton its tracks
+   name. The package holds the duration, the sample rate and count, the wrap
+   mode, one parent-local track per animated joint (sample-major), events and an
+   optional extracted root trajectory.
+2. Call `TryActivateClipPlayer` with an instance identity, an activation
+   identity, a start time and a signed rate.
+3. Each simulation tick, call `TryAdvanceClipPlayer` with the step and a
+   caller-owned `ClipEvent` buffer. Deliver the returned events, then hand
+   `RootDelta` to the game motor.
+4. Only when the character is visible, call `TrySampleClip` at the player's
+   `GetTimeSeconds` to write the local pose. Then run A0 forward kinematics.
+5. Use `TrySeekClipPlayer` to scrub, which delivers no events or root motion,
+   or to traverse an interval intentionally. A traverse lands exactly on its
+   target and completes a clamped clip only when the target is the endpoint. On
+   a loop, a seek to the duration under either policy enters the next cycle.
+
+**Clip timeline.** The duration is an authored asset value, separate from the
+sample count. Sample `i` is at `i / SampleRateHertz` seconds. The last sample may
+lie before the duration, where a cook dropped a duplicated loop endpoint. In that
+gap a looping clip interpolates towards sample 0 and a clamped clip holds its
+last sample. A static pose can use one sample with a positive control duration.
+`TryPrepareClip` rejects these inputs:
+
+- A zero authoring identity, or a duration, rate or sample count that is
+  nonfinite, nonpositive or beyond `MAX_CLIP_DURATION_SECONDS` or
+  `MAX_CLIP_SAMPLE_RATE_HERTZ`. A last sample later than the duration, or view
+  sizes that do not match the counts, are also rejected. These return
+  `InvalidArgument`.
+- A zero-duration clip that loops or has events (`InvalidArgument`).
+- A track joint ID that the skeleton lacks or that two tracks share
+  (`InvalidJointId`). Pose samples follow A0's local-value rules.
+- An event with a zero or duplicated ID, a time outside `[0, duration]` or out
+  of nondecreasing order (`InvalidArgument`).
+- A trajectory whose first sample is not the identity, or a planar trajectory
+  with a Y translation or a non-yaw rotation (`InvalidTransform`). When the last
+  sample lies on the duration, `RootEnd` must equal it.
+- Track, sample or event counts above `ClipLimits` (`BudgetExceeded`).
+
+**Reference sampler.** `TrySampleClip` interpolates translation and scale
+linearly and rotation with FoundationMath `SlerpShortest`. Untracked joints
+receive their skeleton rest value. It computes and validates every joint before
+writing, then increments the pose revision once. It reads only the clip, so
+skipping it cannot change control state.
+
+**Player state.** A `ClipPlayer` stores the clip fingerprint, the instance and
+activation identities, the `float64` cycle-local time, the signed `int64` cycle,
+the rate, the previous interval boundary and the completion latch. It owns no
+allocation and holds no clip reference. A player rejects a clip with a different
+fingerprint (`IncompatibleClip`). The fingerprint is XXH3-128 over the clip
+content and the skeleton compatibility identity, excluding the authoring
+identity, so an identical recook keeps players valid.
+
+**Events.** An advance covers `rate * deltaSeconds` of timeline:
+
+- Forward traversal delivers events in `(old, new]`. Reverse traversal delivers
+  events marked reversible in `[new, old)`.
+- A loop crossing splits into per-cycle intervals, delivered in order. Each
+  `ClipEvent` carries instance, activation, cycle and event identity, so a
+  loop-start event uses the new cycle and a replayed crossing is recognizable.
+- A looping clip stores an event authored at the duration as a loop-start event
+  at zero, so the two aliases cannot both fire. Activation is not a traversal and
+  fires no time-zero event.
+- A clamped clip stops at the endpoint it reaches. It fires its endpoint event
+  once, latches completion and reports `HasCompleted` on that step only. Later
+  advances succeed without motion; a seek clears the latch.
+
+Events are counted before any is written. When they do not fit the buffer, the
+advance returns `EventCapacityExceeded` without moving the cursor, so no crossing
+is lost. Full cycles are counted arithmetically, and an event-free loop crosses
+any number of cycles in constant time. A traversal of more than
+`MAX_CLIP_TRAVERSAL_CYCLES` (2^52) cycles, or a step whose timeline delta is not
+finite, returns `OutOfRange`.
+
+**Root motion.** `RootDelta` is a request to the game motor, in the
+character-local frame at the start of the interval:
+`inverse(R(old)) * RootEnd^cycles * R(new)`. It is composed in `float64` with
+repeated squaring for many cycles and rounded once. Positions are never
+subtracted across a wrap. A planar trajectory's delta is planar exactly. The
+delta depends only on the traversed timeline interval, so motion the motor
+rejected is never requested again. The cooked visual pose excludes the
+trajectory, so the skeleton cannot re-add it. Apply an accepted delta with
+`TryComposeRootTransforms`.
+
+The fixtures in `modules/animation/tests` cover these cases:
+
+- Each rejection class, endpoint canonicalization and fingerprint identity.
+- Sampler interpolation, untracked joints, both endpoint-gap policies and
+  rejected times or skeletons that leave the pose unchanged.
+- Forward and reverse half-open intervals, exact endpoints and the once-only
+  completion latch. A 1,001-cycle wrap delivers 4,003 ordered events, or is
+  rejected unchanged with one slot fewer. A billion event-free cycles and
+  overflow rejection are also covered.
+- Scrub and traverse seeks, pause, rate changes, stop and a mismatched clip.
+- A visible and an invisible player in lockstep across direction changes,
+  with identical state, events and root deltas.
+- A square walk whose two-cycle delta is `(1, 0, 1)`, not `(0, 0, 2)`. Per-tick
+  deltas compose to the whole-interval delta, and reverse playback requests the
+  inverse motion.
+- A motor that blocks at a wall: each request covers one tick, the visual root
+  never passes the wall, and the first unblocked request is one tick of motion.
+
+`ludus_animation_allocation_tests` fails each clip preparation allocation in
+turn, and verifies that sampling, activation, advances and seeks allocate
+nothing.
+
+A1 limits:
+
+- Clips are in-memory reference packages. Compression, a serialized format and
+  default-pose binding policies come with the ACL cooker (A2).
+- One player drives one clip. Blends, layers, sync groups and marker-based phase
+  matching come with A3. Event overflow always rejects the step; a cosmetic
+  drop-with-counter policy needs a project setting first.
+- The trajectory is cooked input. Extraction from a motion-root joint belongs
+  to the cook pipeline. Motion warping and distance matching come later.
+
 ## Research venues and adoption policy
 
 Follow production experience and research together. The priorities below are

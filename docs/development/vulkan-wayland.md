@@ -13,23 +13,23 @@ without the Wayland macro or Wayland extension requests.
 
 ## Window connection
 
-1. Call `graphics::rhi::Initialize` to load Vulkan and create the instance.
-   Wayland builds enable both `VK_KHR_surface` and `VK_KHR_wayland_surface`.
-2. Create a platform window and obtain `window->GetNativeWindowInfo()`.
+1. Create a platform window and obtain `window->GetNativeWindowInfo()`.
    This descriptor contains borrowed, typed native handles and a window-system
    tag. It requires neither Vulkan headers nor Wayland client headers.
-3. Pass the descriptor to `graphics::rhi::ConnectWindow`. The RHI creates the
-   surface, selects a GPU with graphics and presentation support, and requests
-   one queue from each selected family (one total when the family is shared).
-   The device must support `VK_KHR_swapchain` and swapchain maintenance1 for
-   safe presentation retirement.
+2. Pass the descriptor to `graphics::rhi::Start` and check the session state
+   and error with `graphics::rhi::GetStartup`. Vulkan startup loads the
+   Wayland surface extensions, creates the surface, selects a GPU with graphics
+   and presentation support, and requests one queue from each selected family
+   (one total when the family is shared). The device must support
+   `VK_KHR_swapchain` and swapchain maintenance1 for safe presentation retirement.
+3. When the session is ready, use `SetFrameTarget` and check the results of
+   `BeginFrameStatus` and `EndFrameStatus`. Only end frames that opened successfully.
 4. Call `graphics::rhi::Shutdown` before destroying the window or its display.
    Shutdown destroys the device, surface, and instance, then finalizes Volk.
 
-Lifecycle calls must be serialized. Connecting the same window again succeeds;
-connecting a different window while one is connected returns false. A failed
-connection releases its temporary surface and can be retried. Headless windows
-have no presentation connection; the smoke app skips `ConnectWindow` for them.
+Run lifecycle calls on the main thread. To retry a failed session or switch its
+primary window, call `Shutdown` before starting again. A headless window uses
+the same startup API with a headless descriptor.
 
 For swapchains that share a device, use the
 [multiple-surface device API](fullscreen-rendering.md#multiple-surfaces-per-device-r14b).
@@ -52,7 +52,7 @@ the integer scale is one.
 
 ## Verification
 
-The normal test suite checks connection before initialization. Compiling the RHI
+The normal test suite checks frame status before startup. Compiling the RHI
 test with its public header before Volk checks native-handle type compatibility;
 linking the Wayland build also checks the platform-specific Volk symbols.
 
@@ -64,8 +64,8 @@ lifecycle test (also supported with `linux-clang-asan-ubsan`):
 LUDUS_TEST_WAYLAND=1 out/build/linux-clang-debug/modules/graphics/rhi/ludus_graphics_rhi_tests '[wayland]'
 ```
 
-The facade case checks repeated connection, invalid handles, shutdown and
-reinitialization. The multiple-surface case presents to two windows and injects
+The facade case checks invalid window descriptors, duplicate starts,
+idempotent shutdown and restart. The multiple-surface case presents to two windows and injects
 `VK_ERROR_SURFACE_LOST_KHR` at acquisition and presentation, in separate
 runs. It checks that the lost surface retains its completion counts, the
 primary swapchain still presents, and a replacement starts with fresh counters.

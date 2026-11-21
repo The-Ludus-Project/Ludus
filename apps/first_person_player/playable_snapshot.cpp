@@ -180,6 +180,18 @@ bool ReadBindings(JsonValue root, PlayableSnapshot& inoutSnapshot) noexcept
         {
             return false;
         }
+        const JsonValue rasterShadows = entity.Get("light").Get("rasterShadows");
+        if (rasterShadows.Valid() == true)
+        {
+            bool shouldCastRasterShadows = true;
+            uint64 sourceId = 0;
+            if (rasterShadows.Boolean(shouldCastRasterShadows) == false ||
+                ReadSourceId(entity.Get("lightSourceId"), sourceId) == false ||
+                (shouldCastRasterShadows == false && inoutSnapshot.RasterUnshadowedLightIds.TryAdd(sourceId) == false))
+            {
+                return false;
+            }
+        }
         const JsonValue value = entity.Get("spawn");
         if (value.Valid() == true)
         {
@@ -212,8 +224,7 @@ bool ReadBindings(JsonValue root, PlayableSnapshot& inoutSnapshot) noexcept
 } // namespace
 bool DecodePlayableSnapshot(BorrowedView<const uint8> bytes, PlayableSnapshot& outSnapshot) noexcept
 {
-    if (bytes.IsValid() == false || bytes.IsEmpty() == true ||
-        bytes.GetSize() > format::MAX_PLAYABLE_MANIFEST_BYTES + 1 + format::MAX_ASSEMBLED_BUNDLE_BYTES)
+    if (bytes.IsValid() == false || bytes.IsEmpty() == true || bytes.GetSize() > MAX_PLAYABLE_SNAPSHOT_BYTES)
     {
         return false;
     }

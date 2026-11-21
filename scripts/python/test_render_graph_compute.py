@@ -312,6 +312,60 @@ class NativeSceneComputeTests(unittest.TestCase):
                           r'[^\n]*\n)*)default:', wrapper)
         return re.findall(r'case (\d+):', match[1]) if match else None
 
+    def test_ordered_buffer_capacity_tracks_shared_slang_struct(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            source = Path(temporary) / 'source'
+            shutil.copytree(SCENE_COMPUTE, source)
+            graph_path = source / 'main.lurender.json'
+            document = json.loads(graph_path.read_text())
+            configuration = next(item for item in document['configurations'] if item['id'] == 'WorkItems')
+            buffer = next(node for node in configuration['nodes'] if node['id'] == 'hits')
+            header = 'main_shaders/edge_table.slang'
+            buffer['shader_struct'] = {'source': header, 'type': 'EdgeTable', 'count': 1}
+            graph_path.write_bytes(graph.canonical_asset(document))
+            pending = graph.compile_graph(graph_path, configuration='WorkItems')
+            self.assertIn('size resolved by Build Graph', graph.dump_plan(pending))
+            manifest = source / 'main.lushader.json'
+            manifest.write_text((source / 'main.lushader.json.in').read_text().replace(
+                '@RG2_TEST_PROFILES@', '["metal"]'))
+            shader = source / 'main_shaders/work_items.slang'
+            original = shader.read_text()
+            options = dict(helper=os.environ['LUDUS_RG1_HELPER'], compiler=os.environ['LUDUS_RG1_SLANG'],
+                           spirv_cross=os.environ['LUDUS_RG1_CROSS'])
+            output = Path(temporary) / 'build'
+            with self.assertRaisesRegex(ToolingError, "include 'main_shaders/edge_table.slang'"):
+                build.build_package(manifest, output, **options)
+            shader.write_text('#include "edge_table.slang"\n' + original)
+            for count in (256, 16):
+                (source / header).write_text(
+                    '#pragma once\nstruct EdgeRecord { float4 BeginWorldAndLength; float4 EndWorldAndCumulativeLength; };\n'
+                    f'struct EdgeTable {{ uint4 Header; EdgeRecord Edges[{count}]; }};\n')
+                built = build.build_package(manifest, output, **options)
+                package = Path(built['package'])
+                descriptor = json.loads((package / 'package.json').read_text())
+                plan = next(plan for plan in descriptor['plans'] if plan['configuration'] == 'WorkItems')
+                resource = plan['resources']['Main/hits']
+                expected = 16 + count * 32
+                self.assertEqual(expected, resource['shader_struct']['stride'])
+                self.assertEqual([expected, 1], resource['extent'])
+                self.assertEqual([0, 0], [entry['persistent_buffers'][0]['slot'] for entry in plan['passes']
+                                          if entry['kind'] == 'RayTracing'])
+                _, resources, _, _ = execution.lower_plan(descriptor, 'WorkItems')
+                self.assertIn(expected, [entry['Width'] for entry in resources if entry['Kind'] == 'Buffer'])
+                self.assertIn({'node': 'hits', 'graph': 'main.lurender.json', 'configuration': 'WorkItems',
+                               'stride': expected, 'bytes': expected}, built['shader_buffer_layouts'])
+            buffer['shader_struct']['count'] = 3
+            graph_path.write_bytes(graph.canonical_asset(document))
+            (source / header).write_text('struct EdgeTable { uint Count; };\n')
+            built = build.build_package(manifest, output, **options)
+            self.assertIn({'node': 'hits', 'graph': 'main.lurender.json', 'configuration': 'WorkItems',
+                           'stride': 4, 'bytes': 16}, built['shader_buffer_layouts'])
+            accepted_pointer = (output / 'current.json').read_bytes()
+            (source / header).write_text('struct RenamedEdgeTable { uint4 Header; };\n')
+            with self.assertRaisesRegex(ToolingError, 'EdgeTable'):
+                build.build_package(manifest, output, **options)
+            self.assertEqual(accepted_pointer, (output / 'current.json').read_bytes())
+
     def test_mixed_sequence_can_select_triangle_loop_for_one_kernel(self):
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)

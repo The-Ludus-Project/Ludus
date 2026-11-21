@@ -67,7 +67,9 @@ ContentImportResult ImportAudioSource(const ContentImportSource& source,
         }
         return gate.Cancelled();
     };
-    const auto failed = [](CS status, const QString& message) { return ContentImportResult{status, message, {}}; };
+    const auto failed = [](CS status, const QString& message) {
+        return ContentImportResult{ .Status = status, .Message = message };
+    };
     if (cancelled())
     {
         return failed(CS::Cancelled, QStringLiteral("Import cancelled before publication."));
@@ -223,8 +225,23 @@ ContentImportResult ImportAudioSource(const ContentImportSource& source,
         }
         if (references && loop.Enabled && loop.End > info.Frames)
         {
-            return failed(CS::Invalid,
-                          QStringLiteral("Reimport would invalidate the saved loop in ") + Text(dependent.Id.View()));
+            const QString activeSourceNote =
+                existing == nullptr ? QString() : QStringLiteral(" The active source stays in use.");
+            return
+            {
+                .Status = CS::Invalid,
+                .Message = QStringLiteral("Dependency validation failed for %1. The replacement has %2 frames at "
+                                          "%3 Hz. The saved loop in %4 ends at frame %5.%6")
+                               .arg(Text(idView))
+                               .arg(info.Frames)
+                               .arg(info.SampleRate)
+                               .arg(Text(dependent.Id.View()))
+                               .arg(loop.End)
+                               .arg(activeSourceNote),
+                .ReplacementGuidance =
+                    QStringLiteral("Choose a replacement with at least %1 frames to keep the saved loop.")
+                        .arg(loop.End),
+            };
         }
     }
     // Version/profile participates in the artifact key; no importer settings

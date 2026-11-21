@@ -1,0 +1,42 @@
+{
+  "run": {
+    "id": 43303086030,
+    "run_attempt": 1,
+    "status": "completed",
+    "head_branch": "main",
+    "path": ".github/workflows/batch-ci.yml",
+    "head_repository": {
+      "full_name": "The-Ludus-Project/Ludus"
+    },
+    "event": "workflow_dispatch",
+    "actor": {
+      "login": "github-actions[bot]",
+      "type": "Bot"
+    },
+    "conclusion": "cancelled",
+    "created_at": "2026-11-12T20:43:13Z",
+    "run_started_at": "2026-11-12T20:43:13Z"
+  },
+  "commit": {},
+  "artifacts": [],
+  "logs": {
+    "131506719541": "2026-11-12T21:31:07.7689361Z ##[notice]main advanced before this scheduler started; next tick will retry. Validation and promotion were skipped; main is unchanged."
+  },
+  "jobs": [
+    {"id": 131506719541, "run_attempt": 1, "name": "Capture develop candidate", "started_at": "2026-11-12T21:31:02Z", "completed_at": "2026-11-12T21:31:10Z", "conclusion": "success", "steps": [{"name": "Capture exact commit, or report why no batch runs", "started_at": "2026-11-12T21:31:07Z", "completed_at": "2026-11-12T21:31:07Z", "conclusion": "success"}]},
+    {"id": 131506840901, "run_attempt": 1, "name": "Mark run as not validated", "started_at": "2026-11-12T21:31:11Z", "completed_at": "2026-11-12T21:31:26Z", "conclusion": "cancelled", "steps": [{"name": "Set up job"}]},
+    {"id": 131506843175, "run_attempt": 1, "name": "wiki", "started_at": "2026-11-12T21:31:10Z", "completed_at": "2026-11-12T21:31:10Z", "conclusion": "skipped"},
+    {"id": 131506844050, "run_attempt": 1, "name": "recovery", "started_at": "2026-11-12T21:31:10Z", "completed_at": "2026-11-12T21:31:10Z", "conclusion": "skipped"},
+    {"id": 131506844067, "run_attempt": 1, "name": "native", "started_at": "2026-11-12T21:31:10Z", "completed_at": "2026-11-12T21:31:10Z", "conclusion": "skipped"},
+    {"id": 131506844124, "run_attempt": 1, "name": "Watch for failed suites", "started_at": "2026-11-12T21:31:10Z", "completed_at": "2026-11-12T21:31:10Z", "conclusion": "skipped"},
+    {"id": 131506844161, "run_attempt": 1, "name": "windows", "started_at": "2026-11-12T21:31:10Z", "completed_at": "2026-11-12T21:31:10Z", "conclusion": "skipped"},
+    {"id": 131506844446, "run_attempt": 1, "name": "wiki-macos", "started_at": "2026-11-12T21:31:10Z", "completed_at": "2026-11-12T21:31:10Z", "conclusion": "skipped"},
+    {"id": 131506844503, "run_attempt": 1, "name": "browser", "started_at": "2026-11-12T21:31:10Z", "completed_at": "2026-11-12T21:31:10Z", "conclusion": "skipped"},
+    {"id": 131506844871, "run_attempt": 1, "name": "threading", "started_at": "2026-11-12T21:31:10Z", "completed_at": "2026-11-12T21:31:10Z", "conclusion": "skipped"},
+    {"id": 131506844895, "run_attempt": 1, "name": "Cancel failed batch", "started_at": "2026-11-12T21:31:10Z", "completed_at": "2026-11-12T21:31:10Z", "conclusion": "skipped"},
+    {"id": 131506845163, "run_attempt": 1, "name": "sdk", "started_at": "2026-11-12T21:31:10Z", "completed_at": "2026-11-12T21:31:10Z", "conclusion": "skipped"},
+    {"id": 131506845699, "run_attempt": 1, "name": "Publish promoted documentation", "started_at": "2026-11-12T21:31:10Z", "completed_at": "2026-11-12T21:31:10Z", "conclusion": "skipped"},
+    {"id": 131506845929, "run_attempt": 1, "name": "Prune superseded caches", "started_at": "2026-11-12T21:31:10Z", "completed_at": "2026-11-12T21:31:10Z", "conclusion": "skipped"},
+    {"id": 131506846487, "run_attempt": 1, "name": "Promote validated candidate", "started_at": "2026-11-12T21:31:10Z", "completed_at": "2026-11-12T21:31:10Z", "conclusion": "skipped"}
+  ]
+}

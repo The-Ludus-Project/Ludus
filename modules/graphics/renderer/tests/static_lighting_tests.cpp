@@ -240,7 +240,18 @@ TEST_CASE("Static GI probes capture colored bounce and the wall between two room
     CHECK(atlas.Pixels[FLOOR_FACE * PIXEL_BYTES] > 0);
     CHECK(atlas.Pixels[FLOOR_FACE * PIXEL_BYTES + 1] == 0);
     CHECK(atlas.Pixels[(LUDUS_GI_PROBE_TEXELS + FLOOR_FACE) * PIXEL_BYTES] == 0);
-    CHECK(atlas.Pixels[POSITIVE_X_CENTRAL_DEPTH * PIXEL_BYTES] == 64);
+    constexpr uint8 WALL_DEPTH = 64;
+    for (usize channel = 0; channel < PIXEL_BYTES; ++channel)
+    {
+        CHECK(atlas.Pixels[POSITIVE_X_CENTRAL_DEPTH * PIXEL_BYTES + channel] == WALL_DEPTH);
+    }
+    constexpr uint32 PREVIOUS_FACE_WIDTH = 8;
+    constexpr uint32 PREVIOUS_ATLAS_WIDTH = 256;
+    constexpr uint32 PREVIOUS_PROBE_TEXELS = LUDUS_GI_PROBE_FACES * (1 + PREVIOUS_FACE_WIDTH * PREVIOUS_FACE_WIDTH);
+    constexpr uint32 PROBE_COUNT = 8;
+    constexpr uint32 PREVIOUS_ATLAS_HEIGHT =
+        (PROBE_COUNT * PREVIOUS_PROBE_TEXELS + PREVIOUS_ATLAS_WIDTH - 1) / PREVIOUS_ATLAS_WIDTH;
+    CHECK(rr::HasGiProbeAtlasExtent(description.ProbeGrid, PREVIOUS_ATLAS_WIDTH, PREVIOUS_ATLAS_HEIGHT) == false);
 
     threading::JobSystem jobs;
     REQUIRE(jobs.Initialize({ .WorkerCount = 2 }) == threading::JobStatus::Ok);

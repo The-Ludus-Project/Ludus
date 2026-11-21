@@ -125,7 +125,7 @@ QVariant ContentCatalogModel::decoration(const ContentRow& row) const
 {
     const QIcon typeIcon = GetEditorIcon(GetContentTypeIcon(row.Type));
     if (mThumbnailsOrNull == nullptr || HasContentThumbnail(row.Type) == false || row.Key.isEmpty() == true ||
-        IsInsideRoot(mRoot, row.Path) == false)
+        mRoot.isEmpty() == true)
     {
         return typeIcon;
     }
@@ -134,9 +134,11 @@ QVariant ContentCatalogModel::decoration(const ContentRow& row) const
     {
         return thumbnail;
     }
-    if (mThumbnailsOrNull->HasFailed(row.Id, row.Key) == true)
+    const QPixmap previous = mThumbnailsOrNull->FindLastDrawable(row.Id);
+    const QVariant fallback = previous.isNull() == true ? QVariant(typeIcon) : QVariant(previous);
+    if (mThumbnailsOrNull->HasFailed(row.Id, row.Key) == true || IsInsideRoot(mRoot, row.Path) == false)
     {
-        return typeIcon;
+        return fallback;
     }
     // Only rows a view paints ask for a decoration, so only visible rows queue work.
     ContentThumbnailRequest request;
@@ -157,7 +159,7 @@ QVariant ContentCatalogModel::decoration(const ContentRow& row) const
         }
     }
     mThumbnailsOrNull->Request(request);
-    return typeIcon;
+    return fallback;
 }
 QVariant ContentCatalogModel::headerData(int section, Qt::Orientation orientation, int role) const
 {
@@ -187,11 +189,11 @@ void ContentCatalogModel::SetRows(QVector<ContentRow> rows)
     }
     if (sameIds)
     {
-        for (qsizetype row = 0; row < rows.size(); ++row)
+        Rows_.swap(rows);
+        for (qsizetype row = 0; row < Rows_.size(); ++row)
         {
             if (Rows_[row] != rows[row])
             {
-                Rows_[row] = rows[row];
                 Q_EMIT dataChanged(index(static_cast<int>(row), 0),
                                    index(static_cast<int>(row), CONTENT_COLUMN_COUNT - 1));
             }

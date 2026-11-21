@@ -976,17 +976,21 @@ private:
             }
         }
         const uint32 token = getNode(callee).Token;
-        if (kind == CallKind::Intrinsic && (spell(token) == "ddx" || spell(token) == "ddy"))
+        if (kind == CallKind::Intrinsic && (spell(token) == "ddx" || spell(token) == "ddy" || spell(token) == "fwidth"))
         {
             requireUniformFlow(token);
             reportDivergentDerivative(token, NO_TOKEN, "compute the derivative before the branch");
         }
-        else if (kind == CallKind::ResourceMethod && spell(token) == "Sample")
+        else if (kind == CallKind::ResourceMethod &&
+                 (spell(token) == "Sample" || spell(token) == "SampleCmp" || spell(token) == "Gather"))
         {
             requireUniformFlow(token);
-            reportDivergentDerivative(token,
-                                      NO_TOKEN,
-                                      "move the call before the branch, or use 'SampleLevel' with an explicit level");
+            reportDivergentDerivative(
+                token,
+                NO_TOKEN,
+                spell(token) == "Sample"
+                    ? "move the call before the branch, or use 'SampleLevel' with an explicit level"
+                    : "move the call before the branch");
         }
         else if (function != NO_SYMBOL && function < mSummaries.GetSize())
         {

@@ -60,6 +60,7 @@
 // https://learn.microsoft.com/windows/win32/direct3d12/using-descriptors-directly-in-the-root-signature
 namespace ludus::graphics::rhi::backend
 {
+static void ReleaseFrameResources() noexcept;
 namespace
 {
 using namespace foundation;
@@ -264,7 +265,7 @@ void LogFailure(const char* operation, HRESULT result) noexcept
     }
     else
     {
-        ShutdownRendering();
+        ReleaseFrameResources();
     }
     return FrameStatus::Failed;
 }
@@ -1324,6 +1325,9 @@ static bool InitializeDevice(const platform::HostedSurfaceChannel* channelOrNull
     InitializeCompute();
     return true;
 }
+static bool ConnectPrimarySurface(const WindowInfo& window) noexcept;
+static bool InitializeFrameResources() noexcept;
+
 StartupError Start(const ApplicationInfo&, const WindowInfo& window, uint32 token, BackendSelection) noexcept
 {
     if (IsValidWindow(window) == false)
@@ -1337,11 +1341,11 @@ StartupError Start(const ApplicationInfo&, const WindowInfo& window, uint32 toke
                : GetDirect3D12().Device.Get() == nullptr ? StartupError::AdapterUnavailable
                                                          : StartupError::DeviceUnavailable;
     }
-    if (ConnectWindow(window) == false)
+    if (ConnectPrimarySurface(window) == false)
     {
         return StartupError::SurfaceUnavailable;
     }
-    if (InitializeRendering() == false)
+    if (InitializeFrameResources() == false)
     {
         return StartupError::RenderingUnavailable;
     }
@@ -1350,18 +1354,14 @@ StartupError Start(const ApplicationInfo&, const WindowInfo& window, uint32 toke
                        { .MaxFrameDimension2D = MAX_DIMENSION, .MaxUniformBufferSize = MAX_UNIFORM_BYTES });
     return StartupError::None;
 }
-bool Initialize(const ApplicationInfo&) noexcept
-{
-    return InitializeDevice(nullptr);
-}
-bool ConnectWindow(const WindowInfo& window) noexcept
+static bool ConnectPrimarySurface(const WindowInfo& window) noexcept
 {
     if (GetDirect3D12().Device.Get() == nullptr || GetDirect3D12().IsConnected == true ||
         IsValidWindow(window) == false || window.Width > MAX_DIMENSION || window.Height > MAX_DIMENSION)
     {
         return false;
     }
-    // The legacy and owned startup paths connect only the primary surface.
+    // Startup connects only the primary surface.
     GetDirect3D12().ActiveSurface = 0;
     if (ConnectSurface(window) == false)
     {
@@ -1370,12 +1370,12 @@ bool ConnectWindow(const WindowInfo& window) noexcept
     GetDirect3D12().IsConnected = true;
     return true;
 }
-bool InitializeRendering() noexcept
+static bool InitializeFrameResources() noexcept
 {
     GetDirect3D12().IsRendering = GetDirect3D12().Commands.Get() != nullptr && GetDirect3D12().IsConnected == true;
     return GetDirect3D12().IsRendering;
 }
-void ShutdownRendering() noexcept
+static void ReleaseFrameResources() noexcept
 {
     const bool isDrained = WaitForIdle();
     DiscardRecording();
@@ -1393,7 +1393,7 @@ void ShutdownRendering() noexcept
 }
 void NativeInteropDetachSurface() noexcept
 {
-    ShutdownRendering();
+    ReleaseFrameResources();
     ReleaseCreatedSurfaces();
     ReleaseActiveSurface();
     GetDirect3D12().IsConnected = false;
@@ -1664,14 +1664,6 @@ FrameStatus End() noexcept
         static_cast<void>(LoseActiveSurface());
     }
     return FrameStatus::Ready;
-}
-bool BeginFrame() noexcept
-{
-    return Begin() == FrameStatus::Ready;
-}
-bool EndFrame() noexcept
-{
-    return End() == FrameStatus::Ready;
 }
 ResourceStatus CreateShader(usize slot, const ShaderDescription& description, uint32) noexcept
 {

@@ -47,6 +47,43 @@ struct StringTableTestAccess final
             state.Slots[i] = StringIndex::INVALID_VALUE;
         }
         state.Slots[7] = 0;
+        state.ProbeDistanceCounts = {};
+        state.ProbeDistanceCounts[0] = 1;
+        state.MaxProbeDistance = 0;
+    }
+    static usize PageHeaderBytes() noexcept
+    {
+        return sizeof(StringTable::State::Page);
+    }
+    // Independently recomputes every occupied slot's distance from its entry's
+    // home slot by walking the whole lookup array.
+    static void RecomputeProbeDistances(const StringTable& table, StringTableSnapshot& outSnapshot) noexcept
+    {
+        const StringTable::State& state = *table.mState;
+        outSnapshot.ProbeDistanceCounts = {};
+        outSnapshot.MaxProbeDistance = 0;
+        const usize mask = state.SlotCapacity - 1;
+        for (usize slot = 0; slot < state.SlotCapacity; ++slot)
+        {
+            const uint32 index = state.Slots[slot];
+            if (index == StringIndex::INVALID_VALUE)
+            {
+                continue;
+            }
+            const usize distance = (slot - static_cast<usize>(state.Entries[index].Hash)) & mask;
+            usize bucket = STRING_TABLE_PROBE_BUCKET_COUNT - 1;
+            for (usize candidate = 0; candidate + 1 < STRING_TABLE_PROBE_BUCKET_COUNT; ++candidate)
+            {
+                if (distance < (usize{1} << candidate))
+                {
+                    bucket = candidate;
+                    break;
+                }
+            }
+            ++outSnapshot.ProbeDistanceCounts[bucket];
+            outSnapshot.MaxProbeDistance =
+                distance > outSnapshot.MaxProbeDistance ? distance : outSnapshot.MaxProbeDistance;
+        }
     }
     static uint32 Count(const StringTable& table) noexcept
     {
@@ -643,6 +680,339 @@ TEST_CASE("creation and table byte budgets account for every allocation", "[stri
     REQUIRE_FALSE(heap.BadFree);
 }
 
+namespace
+{
+template <typename Lookup>
+concept TemporaryIndexView = requires(std::string_view& outView) { Lookup{}.TryResolveIndex(StringIndex{}, outView); };
+static_assert(TemporaryIndexView<StringTable> == false && TemporaryIndexView<FrozenStringTable> == false);
+static_assert(std::is_trivially_copyable_v<StringTableSnapshot>);
+
+// Checks the snapshot's byte identities against the heap's own record of the
+// table's live allocations, and its probe histogram against a full recount.
+StringTableSnapshot CheckSnapshotAccounting(const StringTable& table, const FaultHeap& heap)
+{
+    StringTableSnapshot snapshot;
+    const usize attempts = heap.Attempts;
+    REQUIRE(table.TryCaptureSnapshot(snapshot) == StringStatus::Ok);
+    REQUIRE(heap.Attempts == attempts);
+    REQUIRE(snapshot.AllocatedBytes == heap.LiveBytes);
+    REQUIRE(snapshot.AllocatedBytes ==
+            snapshot.StateBytes + snapshot.EntryBytes + snapshot.LookupBytes + snapshot.PageBytes);
+    REQUIRE(snapshot.PageBytes == snapshot.SpellingBytes + snapshot.TerminatorBytes + snapshot.PageSlackBytes +
+                                      snapshot.PageCount * StringTableTestAccess::PageHeaderBytes());
+    REQUIRE(snapshot.TerminatorBytes == snapshot.EntryCount);
+    REQUIRE(snapshot.EntryCount == StringTableTestAccess::Count(table));
+    REQUIRE(snapshot.EntryCount <= snapshot.EntryCapacity);
+    REQUIRE(snapshot.EntryCount <= snapshot.LookupSlotCount - snapshot.LookupSlotCount / 4);
+    REQUIRE(snapshot.LookupSlotCount == StringTableTestAccess::SlotCapacity(table));
+    REQUIRE(snapshot.AllocatedBytes <= snapshot.PeakAllocatedBytes);
+    REQUIRE(snapshot.PeakAllocatedBytes <= snapshot.MaxAllocatedBytes);
+    StringTableSnapshot recount;
+    StringTableTestAccess::RecomputeProbeDistances(table, recount);
+    REQUIRE(snapshot.ProbeDistanceCounts == recount.ProbeDistanceCounts);
+    REQUIRE(snapshot.MaxProbeDistance == recount.MaxProbeDistance);
+    usize histogramEntries = 0;
+    for (const uint32 entries : snapshot.ProbeDistanceCounts)
+    {
+        histogramEntries += entries;
+    }
+    REQUIRE(histogramEntries == snapshot.EntryCount);
+    return snapshot;
+}
+} // namespace
+
+TEST_CASE("table-local indices resolve only entries of their owner and keep views stable", "[strings][intern]")
+{
+    FaultHeap heap;
+    {
+        const StringTable empty;
+        std::string_view preserved = "preserved";
+        REQUIRE(empty.TryResolveIndex(StringIndex{0}, preserved) == StringStatus::InvalidHandle);
+        StringTableSnapshot untouched;
+        untouched.EntryCount = 3;
+        REQUIRE(empty.TryCaptureSnapshot(untouched) == StringStatus::InvalidHandle);
+        REQUIRE(untouched.EntryCount == 3);
+
+        StringTable table;
+        REQUIRE(CreateTable({}, heap.Domain, table) == StringStatus::Ok);
+        REQUIRE(table.TryResolveIndex(StringIndex{0}, preserved) == StringStatus::Ok);
+        REQUIRE(preserved.empty());
+        REQUIRE(preserved.data()[0] == '\0');
+        NameId player;
+        REQUIRE(table.TryIntern("player", player) == StringStatus::Ok);
+        std::string_view stable;
+        REQUIRE(table.TryResolveIndex(player.Index, stable) == StringStatus::Ok);
+        REQUIRE(stable == "player");
+        preserved = "preserved";
+        REQUIRE(table.TryResolveIndex(StringIndex{}, preserved) == StringStatus::InvalidHandle);
+        REQUIRE(table.TryResolveIndex(StringIndex{2}, preserved) == StringStatus::InvalidHandle);
+        REQUIRE(table.TryResolveIndex(StringIndex{StringIndex::INVALID_VALUE - 1}, preserved) ==
+                StringStatus::InvalidHandle);
+        REQUIRE(preserved == "preserved");
+
+        // Growth of the directory, lookup array and pages never moves a spelling.
+        for (usize i = 0; i < 400; ++i)
+        {
+            NameId id;
+            REQUIRE(table.TryIntern(std::to_string(i) + std::string(100, 'y'), id) == StringStatus::Ok);
+        }
+        std::string_view after;
+        REQUIRE(table.TryResolveIndex(player.Index, after) == StringStatus::Ok);
+        REQUIRE(after.data() == stable.data());
+
+        // The index carries no token: an in-range index of another table names
+        // this table's entry, so records must keep their owning table.
+        StringTable other;
+        REQUIRE(CreateTable({}, heap.Domain, other) == StringStatus::Ok);
+        NameId enemy;
+        REQUIRE(other.TryIntern("enemy", enemy) == StringStatus::Ok);
+        REQUIRE(enemy.Index == player.Index);
+        std::string_view foreign;
+        REQUIRE(table.TryResolveIndex(enemy.Index, foreign) == StringStatus::Ok);
+        REQUIRE(foreign == "player");
+        REQUIRE(table.TryResolve(enemy, foreign) == StringStatus::WrongTable);
+
+        FrozenStringTable frozen;
+        preserved = "preserved";
+        REQUIRE(frozen.TryResolveIndex(StringIndex{0}, preserved) == StringStatus::InvalidHandle);
+        REQUIRE(frozen.TryCaptureSnapshot(untouched) == StringStatus::InvalidHandle);
+        REQUIRE(untouched.EntryCount == 3);
+        REQUIRE(table.TryFreeze(frozen) == StringStatus::Ok);
+        REQUIRE(table.TryResolveIndex(player.Index, preserved) == StringStatus::InvalidHandle);
+        REQUIRE(preserved == "preserved");
+        const usize attempts = heap.Attempts;
+        REQUIRE(frozen.TryResolveIndex(player.Index, after) == StringStatus::Ok);
+        REQUIRE(after.data() == stable.data());
+        REQUIRE(frozen.TryResolveIndex(StringIndex{402}, preserved) == StringStatus::InvalidHandle);
+        REQUIRE(frozen.TryResolveIndex(StringIndex{}, preserved) == StringStatus::InvalidHandle);
+        REQUIRE(preserved == "preserved");
+        REQUIRE(heap.Attempts == attempts);
+    }
+    REQUIRE(heap.LiveBytes == 0);
+    REQUIRE_FALSE(heap.BadFree);
+}
+
+TEST_CASE("reservations let known content intern without allocating", "[strings][allocation]")
+{
+    constexpr uint32 NAME_COUNT = 500;
+    FaultHeap heap;
+    {
+        StringTable empty;
+        REQUIRE(empty.TryReserve(1, 1) == StringStatus::InvalidHandle);
+
+        StringTable table;
+        StringTableConfig config;
+        config.MaxEntries = NAME_COUNT + 2;
+        REQUIRE(CreateTable(config, heap.Domain, table) == StringStatus::Ok);
+        NameId first;
+        REQUIRE(table.TryIntern("first", first) == StringStatus::Ok);
+        const StringTableSnapshot before = CheckSnapshotAccounting(table, heap);
+        usize attempts = heap.Attempts;
+        REQUIRE(table.TryReserve(0, 0) == StringStatus::Ok);
+        REQUIRE(table.TryReserve(0, 1) == StringStatus::InvalidArgument);
+        REQUIRE(table.TryReserve(NAME_COUNT + 1, 0) == StringStatus::CapacityExceeded);
+        REQUIRE(table.TryReserve(1, static_cast<usize>(-1)) == StringStatus::TooLarge);
+        REQUIRE(heap.Attempts == attempts);
+        REQUIRE(CheckSnapshotAccounting(table, heap) == before);
+
+        Array<std::string> names;
+        usize spellingBytes = 0;
+        for (uint32 i = 0; i < NAME_COUNT; ++i)
+        {
+            // Lengths vary so each spelling must pack exactly into the reserved page.
+            REQUIRE(names.TryAdd(std::to_string(i) + std::string(i % 197, 'n')) == true);
+            spellingBytes += names[i].size();
+        }
+        REQUIRE(table.TryReserve(NAME_COUNT, spellingBytes) == StringStatus::Ok);
+        const StringTableSnapshot reserved = CheckSnapshotAccounting(table, heap);
+        REQUIRE(reserved.EntryCapacity == NAME_COUNT + 2);
+        REQUIRE(reserved.PageCount == before.PageCount + 1);
+        REQUIRE(reserved.PageSlackBytes == before.PageSlackBytes + spellingBytes + NAME_COUNT);
+        // An already satisfied reservation allocates nothing.
+        attempts = heap.Attempts;
+        REQUIRE(table.TryReserve(NAME_COUNT, spellingBytes) == StringStatus::Ok);
+        REQUIRE(table.TryReserve(1, 1) == StringStatus::Ok);
+        for (const std::string& name : names)
+        {
+            NameId id;
+            REQUIRE(table.TryIntern(name, id) == StringStatus::Ok);
+            REQUIRE(table.TryIntern(name, id) == StringStatus::Ok);
+        }
+        REQUIRE(heap.Attempts == attempts);
+        const StringTableSnapshot filled = CheckSnapshotAccounting(table, heap);
+        REQUIRE(filled.EntryCount == NAME_COUNT + 2);
+        REQUIRE(filled.PageCount == reserved.PageCount);
+        REQUIRE(filled.AllocatedBytes == reserved.AllocatedBytes);
+        REQUIRE(filled.PageSlackBytes == before.PageSlackBytes);
+        REQUIRE(filled.SpellingBytes == before.SpellingBytes + spellingBytes);
+        REQUIRE(filled.DuplicateAdmissions == before.DuplicateAdmissions + NAME_COUNT);
+        REQUIRE(table.TryReserve(1, 0) == StringStatus::CapacityExceeded);
+    }
+    REQUIRE(heap.LiveBytes == 0);
+    REQUIRE_FALSE(heap.BadFree);
+}
+
+TEST_CASE("reservation budgets are exact at the growth peak and failures change nothing", "[strings][allocation]")
+{
+    constexpr uint32 NAME_COUNT = 1000;
+    struct ReservationCase final
+    {
+        const char* Name;
+        usize SpellingBytes;
+        bool ShouldAddPage;
+    };
+    // Small payloads fit the current page, so the peak is the moment the old
+    // and replacement lookup arrays coexist; large payloads end at the page.
+    const ReservationCase cases[]{
+        {"fits current page", 2000, false},
+        {"needs a reserved page", 40000, true},
+    };
+    for (const ReservationCase& reservation : cases)
+    {
+        CAPTURE(reservation.Name);
+        FaultHeap reference;
+        usize peak = 0;
+        {
+            StringTable table;
+            REQUIRE(CreateTable({}, reference.Domain, table) == StringStatus::Ok);
+            const StringTableSnapshot before = CheckSnapshotAccounting(table, reference);
+            REQUIRE(table.TryReserve(NAME_COUNT, reservation.SpellingBytes) == StringStatus::Ok);
+            const StringTableSnapshot after = CheckSnapshotAccounting(table, reference);
+            REQUIRE((after.PageCount == before.PageCount + 1) == reservation.ShouldAddPage);
+            // The old lookup array is still part of before.AllocatedBytes while
+            // its replacement is allocated.
+            const usize lookupPeak = before.AllocatedBytes - before.EntryBytes + after.EntryBytes + after.LookupBytes;
+            REQUIRE((lookupPeak > after.AllocatedBytes) == (reservation.ShouldAddPage == false));
+            peak = reservation.ShouldAddPage == true ? after.AllocatedBytes : lookupPeak;
+            REQUIRE(after.PeakAllocatedBytes == peak);
+            REQUIRE(reference.PeakBytes == peak);
+        }
+        for (usize budget = peak - 1; budget <= peak; ++budget)
+        {
+            CAPTURE(budget);
+            FaultHeap heap;
+            StringTableConfig config;
+            config.MaxAllocatedBytes = budget;
+            StringTable table;
+            REQUIRE(CreateTable(config, heap.Domain, table) == StringStatus::Ok);
+            const StringTableSnapshot before = CheckSnapshotAccounting(table, heap);
+            const usize attempts = heap.Attempts;
+            const StringStatus status = table.TryReserve(NAME_COUNT, reservation.SpellingBytes);
+            if (budget < peak)
+            {
+                REQUIRE(status == StringStatus::CapacityExceeded);
+                REQUIRE(heap.Attempts == attempts);
+                REQUIRE(CheckSnapshotAccounting(table, heap) == before);
+            }
+            else
+            {
+                REQUIRE(status == StringStatus::Ok);
+                const StringTableSnapshot after = CheckSnapshotAccounting(table, heap);
+                REQUIRE(after.PeakAllocatedBytes == budget);
+                REQUIRE(heap.PeakBytes == budget);
+            }
+        }
+        // A domain failure at each growth step keeps every entry and the budget.
+        for (usize failure = 1; failure <= 3; ++failure)
+        {
+            CAPTURE(failure);
+            FaultHeap heap;
+            StringTable table;
+            REQUIRE(CreateTable({}, heap.Domain, table) == StringStatus::Ok);
+            NameId player;
+            REQUIRE(table.TryIntern("player", player) == StringStatus::Ok);
+            std::string_view stable;
+            REQUIRE(table.TryResolve(player, stable) == StringStatus::Ok);
+            heap.FailAt = heap.Attempts + failure;
+            const StringStatus status = table.TryReserve(NAME_COUNT, reservation.SpellingBytes);
+            const bool hasFailed = heap.Attempts == heap.FailAt;
+            heap.FailAt = 0;
+            REQUIRE(status == (hasFailed == true ? StringStatus::OutOfMemory : StringStatus::Ok));
+            const StringTableSnapshot after = CheckSnapshotAccounting(table, heap);
+            REQUIRE(after.EntryCount == 2);
+            std::string_view resolved;
+            REQUIRE(table.TryResolve(player, resolved) == StringStatus::Ok);
+            REQUIRE(resolved.data() == stable.data());
+            NameId found;
+            REQUIRE(table.TryFind("player", found) == StringStatus::Ok);
+            REQUIRE(found == player);
+            REQUIRE(table.TryReserve(NAME_COUNT, reservation.SpellingBytes) == StringStatus::Ok);
+        }
+    }
+}
+
+TEST_CASE("snapshots report exact footprint, duplicates and probe distances without allocating", "[strings][intern]")
+{
+    FaultHeap heap;
+    {
+        StringTable table;
+        REQUIRE(CreateTable({}, heap.Domain, table) == StringStatus::Ok);
+        const StringTableSnapshot created = CheckSnapshotAccounting(table, heap);
+        REQUIRE(created.EntryCount == 1);
+        REQUIRE(created.SpellingBytes == 0);
+        REQUIRE(created.PageCount == 1);
+        REQUIRE(created.DuplicateAdmissions == 0);
+        REQUIRE(created.MaxEntries == StringTableConfig{}.MaxEntries);
+        REQUIRE(created.MaxAllocatedBytes == StringTableConfig{}.MaxAllocatedBytes);
+        REQUIRE(created.ProbeDistanceCounts[0] == 1);
+
+        // A constant hash places the n-th entry n slots from the shared home slot.
+        StringTableTestAccess::ForceCollisions(table);
+        constexpr usize COLLIDING_NAME_COUNT = 70;
+        usize spellingBytes = 0;
+        for (usize i = 1; i <= COLLIDING_NAME_COUNT; ++i)
+        {
+            const std::string name = "c" + std::to_string(i);
+            spellingBytes += name.size();
+            NameId id;
+            REQUIRE(table.TryIntern(name, id) == StringStatus::Ok);
+            REQUIRE(table.TryIntern(name, id) == StringStatus::Ok);
+            CheckSnapshotAccounting(table, heap);
+        }
+        // Lookups never change the counters.
+        NameId found;
+        REQUIRE(table.TryFind("c1", found) == StringStatus::Ok);
+        REQUIRE(table.TryFind("absent", found) == StringStatus::NotFound);
+        const StringTableSnapshot collided = CheckSnapshotAccounting(table, heap);
+        REQUIRE(collided.EntryCount == COLLIDING_NAME_COUNT + 1);
+        REQUIRE(collided.SpellingBytes == spellingBytes);
+        REQUIRE(collided.DuplicateAdmissions == COLLIDING_NAME_COUNT);
+        REQUIRE(collided.MaxProbeDistance == COLLIDING_NAME_COUNT);
+        const StaticArray<uint32, STRING_TABLE_PROBE_BUCKET_COUNT> expected{1, 1, 2, 4, 8, 16, 32, 7};
+        REQUIRE(collided.ProbeDistanceCounts == expected);
+        REQUIRE(collided.PeakAllocatedBytes > collided.AllocatedBytes);
+
+        // Freezing transfers the counters unchanged; concurrent frozen
+        // snapshots take no lock and allocate nothing.
+        FrozenStringTable frozen;
+        REQUIRE(table.TryFreeze(frozen) == StringStatus::Ok);
+        const usize attempts = heap.Attempts;
+        std::atomic<bool> isGood{true};
+        threading::Thread threads[4];
+        for (threading::Thread& thread : threads)
+        {
+            REQUIRE(thread.Start([&]() {
+                for (usize i = 0; i < 200; ++i)
+                {
+                    StringTableSnapshot snapshot;
+                    if (frozen.TryCaptureSnapshot(snapshot) != StringStatus::Ok || (snapshot == collided) == false)
+                    {
+                        isGood = false;
+                    }
+                }
+            }) == threading::ThreadStatus::Ok);
+        }
+        for (threading::Thread& thread : threads)
+        {
+            REQUIRE(thread.Join() == threading::ThreadStatus::Ok);
+        }
+        REQUIRE(isGood.load() == true);
+        REQUIRE(heap.Attempts == attempts);
+    }
+    REQUIRE(heap.LiveBytes == 0);
+    REQUIRE_FALSE(heap.BadFree);
+}
+
 TEST_CASE("tables serialize mutations and frozen reads need no allocations", "[strings][threads]")
 {
     FaultHeap heap;
@@ -1039,6 +1409,23 @@ void CheckResolve(const Lookup& lookup, const ReferenceTable& reference, NameId 
     REQUIRE(resolved.data() == reference.Views[id.Index.Value]);
     REQUIRE(resolved.data()[resolved.size()] == '\0');
 }
+// The token-free index form checks only the entry range of the lookup's own table.
+template <typename Lookup>
+void CheckResolveIndex(const Lookup& lookup, const ReferenceTable& reference, StringIndex index)
+{
+    std::string_view resolved = SENTINEL_VIEW;
+    const bool isInRange = index.Value < reference.Spellings.GetSize();
+    REQUIRE(lookup.TryResolveIndex(index, resolved) ==
+            (isInRange == true ? StringStatus::Ok : StringStatus::InvalidHandle));
+    if (isInRange == false)
+    {
+        REQUIRE(resolved.data() == SENTINEL_VIEW.data());
+        REQUIRE(resolved.size() == SENTINEL_VIEW.size());
+        return;
+    }
+    REQUIRE(resolved == reference.Spellings[index.Value]);
+    REQUIRE(resolved.data() == reference.Views[index.Value]);
+}
 void CheckIntern(StringTable& inoutTable,
                  const FaultHeap& heap,
                  const DifferentialScenario& scenario,
@@ -1168,12 +1555,23 @@ DifferentialCoverage RunDifferentialSequence(const DifferentialScenario& scenari
                 StringStatus expected = StringStatus::Ok;
                 const NameId id = MakeResolveCase(random, reference, tokens, expected);
                 CheckResolve(table, reference, id, expected);
+                CheckResolveIndex(table, reference, id.Index);
                 coverage.WrongTable += expected == StringStatus::WrongTable ? 1 : 0;
                 REQUIRE(heap.Attempts == attempts);
             }
             REQUIRE(StringTableTestAccess::Count(table) == reference.Spellings.GetSize());
             REQUIRE(StringTableTestAccess::Allocated(table) == heap.LiveBytes);
             REQUIRE(heap.PeakBytes <= config.MaxAllocatedBytes);
+            // Snapshot counters agree with the heap, the model and a full recount.
+            const StringTableSnapshot snapshot = CheckSnapshotAccounting(table, heap);
+            REQUIRE(snapshot.DuplicateAdmissions == coverage.Duplicates);
+            REQUIRE(snapshot.PeakAllocatedBytes == heap.PeakBytes);
+            usize spellingBytes = 0;
+            for (const std::string& stored : reference.Spellings)
+            {
+                spellingBytes += stored.size();
+            }
+            REQUIRE(snapshot.SpellingBytes == spellingBytes);
             const usize capacity = StringTableTestAccess::SlotCapacity(table);
             if (capacity != slotCapacity)
             {
@@ -1207,10 +1605,15 @@ DifferentialCoverage RunDifferentialSequence(const DifferentialScenario& scenari
             CheckFind(frozen, config, reference, tokens.Table, spelling);
         }
         const uint32 count = static_cast<uint32>(reference.Spellings.GetSize());
-        for (uint32 index = 0; index < count; ++index)
+        for (uint32 index = 0; index <= count; ++index)
         {
-            CheckResolve(frozen, reference, NameId{tokens.Table, StringIndex{index}}, StringStatus::Ok);
+            if (index < count)
+            {
+                CheckResolve(frozen, reference, NameId{tokens.Table, StringIndex{index}}, StringStatus::Ok);
+            }
+            CheckResolveIndex(frozen, reference, StringIndex{index});
         }
+        CheckResolveIndex(frozen, reference, StringIndex{});
         CheckResolve(frozen, reference, NameId{tokens.Table, StringIndex{count}}, StringStatus::InvalidHandle);
         CheckResolve(frozen, reference, NameId{tokens.Other, StringIndex{0}}, StringStatus::WrongTable);
         CheckResolve(occupied, reference, NameId{tokens.Table, StringIndex{0}}, StringStatus::WrongTable);

@@ -1,9 +1,12 @@
 #include "streaming_benchmark.hpp"
 
 #include <ludus/foundation/base/core.h>
+#include <ludus/foundation/base/pointer.hpp>
 #include <ludus/foundation/containers/array.hpp>
 #include <ludus/foundation/containers/static_array.hpp>
 #include <ludus/foundation/filesystem/async.hpp>
+#include <ludus/foundation/filesystem/filesystem.hpp>
+#include <ludus/foundation/filesystem/namespace.hpp>
 #include <ludus/foundation/filesystem/pack.hpp>
 #include <ludus/foundation/threading/thread.hpp>
 #include <ludus/foundation/time/time.hpp>
@@ -43,7 +46,14 @@ constexpr usize LARGE_BYTES = usize{2} * 1024 * 1024;
 constexpr usize MAX_READ_BYTES = usize{1024} * 1024;
 constexpr usize WINDOW_COUNT = 16;
 constexpr usize MAX_REQUEST_COUNT = 4096;
+constexpr uint64 SYNTHETIC_TRACE_VERSION = 1;
+constexpr uint64 CAPTURED_TRACE_VERSION = 2;
 constexpr uint64 RUN_TIMEOUT_NS = uint64{60} * 1000 * 1000 * 1000;
+struct CapturedFile final
+{
+    VirtualPath Key;
+    Array<uint8> ReferenceBytes;
+};
 struct Request final
 {
     uint64 Release = 0;
@@ -148,17 +158,42 @@ bool ReadNumber(std::ifstream& inoutStream, uint64 maximum, uint64& outValue)
     std::string token;
     return static_cast<bool>(inoutStream >> token) == true && ParseUnsigned(token, maximum, outValue) == true;
 }
-bool ReadTraceFile(const char* path, Array<Request>& outRequests)
+bool ReadTraceFile(const char* tracePath, Array<Request>& outRequests, Array<CapturedFile>& outCapturedFiles)
 {
-    std::ifstream stream(path);
+    std::ifstream stream(tracePath);
     std::string magic;
     uint64 version = 0;
     uint64 count = 0;
-    if (static_cast<bool>(stream >> magic) == false || magic != "fs-r2" || ReadNumber(stream, 1, version) == false ||
-        version != 1 || ReadNumber(stream, MAX_REQUEST_COUNT, count) == false || count == 0)
+    if (static_cast<bool>(stream >> magic) == false || magic != "fs-r2" ||
+        ReadNumber(stream, CAPTURED_TRACE_VERSION, version) == false || version < SYNTHETIC_TRACE_VERSION ||
+        ReadNumber(stream, MAX_REQUEST_COUNT, count) == false || count == 0)
     {
         return false;
     }
+    if (version == CAPTURED_TRACE_VERSION)
+    {
+        uint64 fileCount = 0;
+        if (ReadNumber(stream, FILE_COUNT, fileCount) == false || fileCount == 0 || stream.get() != '\n')
+        {
+            return false;
+        }
+        outCapturedFiles.Resize(static_cast<usize>(fileCount));
+        for (CapturedFile& file : outCapturedFiles)
+        {
+            StaticArray<char, MAX_PATH_BYTES + 1> pathBytes;
+            stream.getline(pathBytes.GetData(), static_cast<std::streamsize>(pathBytes.GetSize()));
+            if (stream.good() == false)
+            {
+                return false;
+            }
+            const std::string_view path(pathBytes.GetData(), static_cast<usize>(stream.gcount() - 1));
+            if (file.Key.Set(Root::Assets, path).Succeeded() == false)
+            {
+                return false;
+            }
+        }
+    }
+    const usize fileCount = outCapturedFiles.IsEmpty() == true ? FILE_COUNT : outCapturedFiles.GetSize();
     outRequests.Resize(static_cast<usize>(count));
     uint64 previous = 0;
     for (Request& request : outRequests)
@@ -168,14 +203,15 @@ bool ReadTraceFile(const char* path, Array<Request>& outRequests)
         uint64 priority = 0;
         uint64 cancel = 0;
         if (ReadNumber(stream, RUN_TIMEOUT_NS / 2, request.Release) == false ||
-            ReadNumber(stream, FILE_COUNT - 1, fileIndex) == false ||
+            ReadNumber(stream, fileCount - 1, fileIndex) == false ||
             ReadNumber(stream, LARGE_BYTES, request.Offset) == false ||
             ReadNumber(stream, MAX_READ_BYTES, length) == false || length == 0 ||
             ReadNumber(stream, 0x7fffffff, priority) == false || ReadNumber(stream, 1, cancel) == false)
         {
             return false;
         }
-        const uint64 fileBytes = fileIndex < SMALL_FILE_COUNT ? SMALL_BYTES : LARGE_BYTES;
+        const uint64 fileBytes =
+            outCapturedFiles.IsEmpty() == true && fileIndex < SMALL_FILE_COUNT ? SMALL_BYTES : LARGE_BYTES;
         if (request.Release < previous || request.Offset > fileBytes || length > fileBytes - request.Offset)
         {
             return false;
@@ -204,8 +240,29 @@ uint8 ComputeByte(usize fileIndex, uint64 position)
     word ^= word >> 16;
     return static_cast<uint8>(word >> ((position % 4) * 8));
 }
-bool Validate(const Request& request, std::span<const uint8> bytes)
+bool ReadReferenceBytes(const Provider& provider, CapturedFile& inoutFile)
 {
+    ProviderFile* fileOrNull = nullptr;
+    if (provider.OpenRead(inoutFile.Key.Path(), fileOrNull).Succeeded() == false)
+    {
+        return false;
+    }
+    const core::UniquePtr<ProviderFile> file(fileOrNull);
+    const uint64 size = file->Size();
+    if (size == 0 || size > LARGE_BYTES || inoutFile.ReferenceBytes.TryResize(static_cast<usize>(size)) == false)
+    {
+        return false;
+    }
+    const ReadResult result = file->ReadAt(0, {inoutFile.ReferenceBytes.GetData(), inoutFile.ReferenceBytes.GetSize()});
+    return result.Outcome.Succeeded() == true && result.BytesRead == size;
+}
+bool Validate(const Request& request, std::span<const uint8> bytes, std::span<const CapturedFile> capturedFiles)
+{
+    if (capturedFiles.empty() == false)
+    {
+        const Array<uint8>& reference = capturedFiles[request.FileIndex].ReferenceBytes;
+        return std::equal(bytes.begin(), bytes.end(), reference.GetData() + request.Offset);
+    }
     for (usize index = 0; index < request.Length; ++index)
     {
         if (bytes[index] != ComputeByte(request.FileIndex, request.Offset + index))
@@ -237,8 +294,11 @@ void PrintDistribution(const char* name, Array<uint64> values)
 } // namespace
 int RunStreamingBenchmark(int argumentCount, char** arguments)
 {
-    // --stream ROOT LAYOUT WORKERS TRACE POLL_US CONTENTION OPEN_MODE TRACE_CAPACITY CACHE
-    if (argumentCount != 12 || std::string_view(arguments[1]) != "--stream")
+    // --stream ROOT LAYOUT WORKERS TRACE POLL_US CONTENTION OPEN_MODE TRACE_CAPACITY v1 CACHE [REFERENCE_ROOT]
+    constexpr int STREAM_ARGUMENT_COUNT = 12;
+    const bool hasReferenceRoot = argumentCount == STREAM_ARGUMENT_COUNT + 1;
+    if ((argumentCount != STREAM_ARGUMENT_COUNT && hasReferenceRoot == false) ||
+        std::string_view(arguments[1]) != "--stream")
     {
         return 20;
     }
@@ -253,7 +313,7 @@ int RunStreamingBenchmark(int argumentCount, char** arguments)
     {
         return 21;
     }
-    // The last argument records the driver-controlled pass identity. A warm pass
+    // The cache argument records the driver-controlled pass identity. A warm pass
     // explicitly reads its trace before timing; uncontrolled makes no cold claim.
     // argument 10 is a required reserved schema token for future trace formats.
     if (std::string_view(arguments[10]) != "v1")
@@ -268,7 +328,8 @@ int RunStreamingBenchmark(int argumentCount, char** arguments)
         return 21;
     }
     Array<Request> requests;
-    if (ReadTraceFile(arguments[5], requests) == false)
+    Array<CapturedFile> capturedFiles;
+    if (ReadTraceFile(arguments[5], requests, capturedFiles) == false)
     {
         return 22;
     }
@@ -293,6 +354,41 @@ int RunStreamingBenchmark(int argumentCount, char** arguments)
     else
     {
         return 23;
+    }
+    if (capturedFiles.IsEmpty() == true && hasReferenceRoot == true)
+    {
+        return 24;
+    }
+    if (capturedFiles.IsEmpty() == false)
+    {
+        ProviderHandle referenceStorage;
+        const std::string referenceRoot =
+            hasReferenceRoot == true ? arguments[STREAM_ARGUMENT_COUNT] : std::string(arguments[2]) + "/loose";
+        if ((layout == "loose" && hasReferenceRoot == false) ||
+            CreateDirectoryProvider(referenceRoot, referenceStorage).Succeeded() == false)
+        {
+            return 24;
+        }
+        const Provider* referenceOrNull = referenceStorage.Get();
+        if (referenceOrNull == nullptr)
+        {
+            return 24;
+        }
+        for (CapturedFile& file : capturedFiles)
+        {
+            if (ReadReferenceBytes(*referenceOrNull, file) == false)
+            {
+                return 24;
+            }
+        }
+        for (const Request& request : requests)
+        {
+            const usize size = capturedFiles[request.FileIndex].ReferenceBytes.GetSize();
+            if (request.Offset > size || request.Length > size - request.Offset)
+            {
+                return 24;
+            }
+        }
     }
     const Mount mount{Root::Assets, {}, 0, 1, provider};
     MountSnapshot snapshot;
@@ -322,7 +418,9 @@ int RunStreamingBenchmark(int argumentCount, char** arguments)
                       fileIndex < SMALL_FILE_COUNT ? "small" : "large",
                       fileIndex < SMALL_FILE_COUNT ? fileIndex : fileIndex - SMALL_FILE_COUNT);
         VirtualPath path;
-        if (path.Set(Root::Assets, name.GetData()).Succeeded() == false)
+        const std::string_view filePath =
+            capturedFiles.IsEmpty() == true ? std::string_view(name.GetData()) : capturedFiles[fileIndex].Key.Path();
+        if (path.Set(Root::Assets, filePath).Succeeded() == false)
         {
             return 24;
         }
@@ -338,6 +436,7 @@ int RunStreamingBenchmark(int argumentCount, char** arguments)
         }
     }
     const uint64 openNanoseconds = AsyncNow() - openStart;
+    const std::span<const CapturedFile> referenceFiles{capturedFiles.GetData(), capturedFiles.GetSize()};
     Array<uint8> buffers(WINDOW_COUNT * MAX_READ_BYTES);
     Array<Sample> samples(requests.GetSize());
     Array<Slot> slots(WINDOW_COUNT);
@@ -347,7 +446,7 @@ int RunStreamingBenchmark(int argumentCount, char** arguments)
         {
             const ReadResult result = files[request.FileIndex].ReadAt(request.Offset, {buffers.data(), request.Length});
             if (result.Outcome.Succeeded() == false || result.BytesRead != request.Length ||
-                Validate(request, {buffers.data(), request.Length}) == false)
+                Validate(request, {buffers.data(), request.Length}, referenceFiles) == false)
             {
                 return 25;
             }
@@ -412,7 +511,7 @@ int RunStreamingBenchmark(int argumentCount, char** arguments)
                 sample.Completion = sample.Service;
                 const uint64 validationStart = AsyncNow();
                 if (result.Outcome.Succeeded() == false || result.BytesRead != request.Length ||
-                    Validate(request, {buffers.data(), request.Length}) == false)
+                    Validate(request, {buffers.data(), request.Length}, referenceFiles) == false)
                 {
                     SetBenchmarkAllocationTracking(false);
                     return 28;
@@ -477,7 +576,8 @@ int RunStreamingBenchmark(int argumentCount, char** arguments)
                 const uint64 validationStart = AsyncNow();
                 if (completion.Disposition != ReadDisposition::Read || completion.Read.Outcome.Succeeded() == false ||
                     completion.Read.BytesRead != request.Length ||
-                    Validate(request, {buffers.data() + slot * MAX_READ_BYTES, request.Length}) == false)
+                    Validate(request, {buffers.data() + slot * MAX_READ_BYTES, request.Length}, referenceFiles) ==
+                        false)
                 {
                     SetBenchmarkAllocationTracking(false);
                     return 32;

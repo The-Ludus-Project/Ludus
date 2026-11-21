@@ -185,16 +185,8 @@ struct FrameTarget final
 [[nodiscard]] FrameStatus BeginFrameStatus() noexcept;
 [[nodiscard]] FrameStatus EndFrameStatus() noexcept;
 
-/// Native synchronous compatibility startup; browser returns false. Use Start/GetStartup there.
-/// @pre Do not mix the synchronous and asynchronous lifecycle entry points.
-[[nodiscard]] bool Initialize(const ApplicationInfo& appInfo) noexcept;
-[[nodiscard]] bool ConnectWindow(const WindowInfo& windowInfo) noexcept;
-[[nodiscard]] bool InitializeRendering() noexcept;
-void ShutdownRendering() noexcept;
 /// Idempotent; invalidates callbacks and ordinary RHI handles before native cleanup.
 /// Native interop device/read leases defer physical cleanup until consumer GPU completion
 /// and final lease release. Startup remains Busy while that retirement is pending.
 void Shutdown() noexcept;
-[[nodiscard]] bool BeginFrame() noexcept;
-[[nodiscard]] bool EndFrame() noexcept;
 } // namespace ludus::graphics::rhi

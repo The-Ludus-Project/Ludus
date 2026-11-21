@@ -1,0 +1,10 @@
+// Generated from point_search_layout.h by generate_lusl_layouts.py. Edit the owner.
+#pragma once
+
+#define LUDUS_MAX_POINT_NEIGHBORS 64
+#define LUDUS_POINT_SEARCH_STACK_SIZE 32
+#define LUDUS_MAX_POINT_SEARCH_COORDINATE 1000000
+#define LUDUS_POINT_SEARCH_NODE_WORDS 2
+#define LUDUS_POINT_SEARCH_NODE_BYTES 32
+#define LUDUS_ABSENT_POINT_NODE 0xffffffff
+#define LUDUS_POINT_SEARCH_GROUP_SIZE 64

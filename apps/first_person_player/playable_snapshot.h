@@ -1,5 +1,6 @@
 #pragma once
 
+#include <ludus/content/scene_format/playable_world.h>
 #include <ludus/foundation/containers/array.hpp>
 #include <ludus/foundation/containers/borrowed_view.hpp>
 #include <ludus/foundation/parsing/json.hpp>
@@ -11,6 +12,10 @@
 
 namespace ludus::first_person
 {
+/// Encoded admission bound including the manifest terminator and the scene payload.
+inline constexpr foundation::usize MAX_PLAYABLE_SNAPSHOT_BYTES =
+    content::scene_format::MAX_PLAYABLE_MANIFEST_BYTES + 1 + content::scene_format::MAX_ASSEMBLED_BUNDLE_BYTES;
+
 /// Spawn identity borrows the snapshot's manifest. Position is the eye in metres.
 struct PlayerSpawn final
 {
@@ -28,6 +33,8 @@ struct PlayableSnapshot final
     graphics::renderer::AtmosphereDescription Atmosphere;
     foundation::Array<PlayerSpawn> Spawns;
     foundation::Array<foundation::usize> ColliderObjects;
+    /// Analytic sources whose authored light component disables raster shadow casting.
+    foundation::Array<foundation::uint64> RasterUnshadowedLightIds;
 };
 
 /// Decode one complete .luplay file. Views in the result borrow its owned manifest, never bytes.

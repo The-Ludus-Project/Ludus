@@ -4,7 +4,7 @@ bool ValidateSceneRandomLimits(SceneContext scene, RayLaunch launch, RayQueryCon
     RayQueryContext uniformQueries = queries;
     uniformQueries.NextRandomDimension = RANDOM_MAX_DIMENSION;
     float last = SampleSceneRandom(uniformQueries);
-    if (last != SampleSceneRandom(launch, RANDOM_MAX_DIMENSION) || uniformQueries.HasFailed == true)
+    if (last != SampleUniformFloat01(launch, RANDOM_MAX_DIMENSION) || uniformQueries.HasFailed == true)
         return false;
     float exhausted = SampleSceneRandom(uniformQueries);
     if (exhausted != 0 || uniformQueries.HasFailed == false ||
@@ -151,14 +151,14 @@ float3 GenerateRay(SceneContext scene, RayLaunch launch, inout RayQueryContext q
         FailSceneQuery(queries, LUDUS_SCENE_FAILURE_AUTHORED_FIRST);
     // Check automatic initialization against the independently addressed public API.
     float first = SampleSceneRandom(queries);
-    if (first != SampleSceneRandom(launch, 0))
+    if (first != SampleUniformFloat01(launch, 0))
         FailSceneQuery(queries, LUDUS_SCENE_FAILURE_AUTHORED_FIRST);
-    payload.ExpectedMissRandom = SampleSceneRandom(launch, 1);
+    payload.ExpectedMissRandom = SampleUniformFloat01(launch, 1);
     payload.ExpectedLightIndex = SelectLight(scene, launch, 1).LightIndex;
     uint shapeDimension = GetLightCount(scene) > 0 ? 2 : 1;
-    payload.ExpectedRandom = float3(SampleSceneRandom(launch, shapeDimension),
-                                    SampleSceneRandom(launch, shapeDimension + 1),
-                                    SampleSceneRandom(launch, shapeDimension + 2));
+    payload.ExpectedRandom = float3(SampleUniformFloat01(launch, shapeDimension),
+                                    SampleUniformFloat01(launch, shapeDimension + 1),
+                                    SampleUniformFloat01(launch, shapeDimension + 2));
     uint expectedIntegerOffset;
     const uint INTEGER_RANGE_MINIMUM = 5;
     const uint INTEGER_RANGE_WIDTH = 7;

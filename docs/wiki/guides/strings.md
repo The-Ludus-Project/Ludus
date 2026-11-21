@@ -166,6 +166,37 @@ require all concurrent operations to finish first. Successful freeze consumes
 the mutable owner without allocation or changing IDs; frozen lookups do not
 acquire its mutation mutex. Keep the frozen owner alive for every view and job.
 
+### Reserve known content and inspect a table
+
+When a loader knows how many distinct spellings it will add and their total
+byte length, reserve them first so the insertions themselves cannot allocate:
+
+```cpp
+// 120 names totalling 2400 payload bytes; terminators are added for you.
+StringStatus status = table.TryReserve(120, 2400);
+```
+
+The reservation grows the entry directory and lookup array to their exact
+final size and adds one page of exactly `2400 + 120` bytes when the current page
+cannot hold them. Its budget check covers the growth peak, when an old and a
+replacement array briefly coexist, before anything is allocated:
+`CapacityExceeded` allocates nothing. After `OutOfMemory`, completed steps may
+remain, but no entry, ID or view changes. Duplicates consume no reservation.
+
+Compact records that store a `StringIndex` beside their known owner resolve it
+with `TryResolveIndex(index, view)`. The index has no table token, so it is
+checked only against that table's entry count; an in-range index from another
+table resolves to this table's spelling. Keep the owner with the record and use
+`NameId` wherever ownership is not otherwise known.
+
+`TryCaptureSnapshot(snapshot)` copies a `StringTableSnapshot` in constant time
+without allocating: entry count and capacity, spelling, terminator, page,
+slack, entry-directory, lookup and state bytes, current and peak allocated
+bytes against the budget, duplicate admissions and a power-of-two histogram of
+lookup probe distances. `AllocatedBytes` is exactly what the creation domain
+holds for the table. A frozen table reports the counters it had when frozen,
+without locking. Snapshots contain counters only, never spellings.
+
 A `NameLiteral` precomputes a fingerprint and retains spelling; it is not an
 interned ID. Binding remains explicit, and its source storage must survive until
 binding. Exact byte comparison handles collisions in every build flavor.

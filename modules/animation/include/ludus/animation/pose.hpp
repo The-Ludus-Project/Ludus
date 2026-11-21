@@ -11,6 +11,8 @@
 
 namespace ludus::animation
 {
+class Clip;
+
 namespace detail
 {
 struct LocalPoseStorage;
@@ -57,6 +59,8 @@ public:
 
 private:
     friend AnimationStatus TryPrepareLocalPose(const Skeleton& skeleton, LocalPose& outPose) noexcept;
+    friend AnimationStatus
+    TrySampleClip(const Clip& clip, foundation::float64 sampleTimeSeconds, LocalPose& inoutPose) noexcept;
     foundation::UniquePtr<detail::LocalPoseStorage> mStorage;
 };
 

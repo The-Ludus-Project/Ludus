@@ -1,3 +1,5 @@
+#include "work_item_record.slang"
+
 // Each invocation traces a different ray. The resolve reads both rows of work assigned to its pixel.
 static const float3 MISS_ORIGIN_WORLD = float3(2, 0, 0);
 static const float3 RAY_DIRECTION_WORLD = float3(0, 0, 1);
@@ -20,7 +22,9 @@ float3 TraceWorkItems(SceneContext scene, RayLaunch launch, inout RayQueryContex
     ray.MaxDistanceWorld = 1;
     SurfaceHit hit;
     SceneQuery result = TraceClosest(scene, queries, ray, hit);
-    GraphBuffer0[index] = uint4(index + 1, uint(result), launch.WorkItemCount, hit.SourceId.x);
+    WorkItemRecord record;
+    record.Fields = uint4(index + 1, uint(result), launch.WorkItemCount, hit.SourceId.x);
+    GraphBuffer0[index] = record.Fields;
     return float3(0);
 }
 

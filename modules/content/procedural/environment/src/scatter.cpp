@@ -54,6 +54,8 @@ struct Candidate final
     int32 LatticeX = 0;
     int32 LatticeY = 0;
     bool IsEligible = false;
+    bool IsInsideRegion = false;
+    usize KeepOut = 0;
     uint32 Priority = 0;
     uint32 Variant = 0;
     uint32 ExclusionRadius = 0;
@@ -200,10 +202,12 @@ struct LayerCellBounds final
     // Validation keeps cells within int16 and the cell size within uint16, so positions fit int32.
     candidate.LatticeX = static_cast<int32>(static_cast<int64>(identity.CellX) * layer.CellSize + offsetX);
     candidate.LatticeY = static_cast<int32>(static_cast<int64>(identity.CellY) * layer.CellSize + offsetY);
-    candidate.IsEligible = Contains(recipe.Region, candidate.LatticeX, candidate.LatticeY);
+    candidate.IsInsideRegion = Contains(recipe.Region, candidate.LatticeX, candidate.LatticeY);
+    candidate.IsEligible = candidate.IsInsideRegion;
     for (usize i = 0; i < recipe.KeepOuts.GetSize() && candidate.IsEligible == true; ++i)
     {
         candidate.IsEligible = Contains(recipe.KeepOuts[i], candidate.LatticeX, candidate.LatticeY) == false;
+        candidate.KeepOut = i;
     }
     if (candidate.IsEligible == true)
     {
@@ -247,7 +251,8 @@ struct LayerCellBounds final
                                              ScatterCellRange layerCells,
                                              ScatterIdentity identity,
                                              const Candidate& candidate,
-                                             bool& outIsAccepted) noexcept
+                                             bool& outIsAccepted,
+                                             ScatterIdentity& outOutranking) noexcept
 {
     // Cells outside the layer's cells lie wholly outside the region, so their candidates are never eligible.
     const int32 firstX = identity.CellX - SCATTER_NEIGHBOR_CELLS < layerCells.MinimumX
@@ -286,6 +291,7 @@ struct LayerCellBounds final
                     AreConflicting(neighbor, candidate) == true)
                 {
                     outIsAccepted = false;
+                    outOutranking = neighborIdentity;
                     return ScatterStatus::Success;
                 }
             }
@@ -441,7 +447,16 @@ ScatterStatus TryGenerateScatter(const ScatterRecipe& recipe,
                     continue;
                 }
                 bool isAccepted = false;
-                status = DecideAcceptance(recipe, keys, layer, bounds, layerCells, identity, candidate, isAccepted);
+                ScatterIdentity outranking;
+                status = DecideAcceptance(recipe,
+                                          keys,
+                                          layer,
+                                          bounds,
+                                          layerCells,
+                                          identity,
+                                          candidate,
+                                          isAccepted,
+                                          outranking);
                 if (status != ScatterStatus::Success)
                 {
                     return status;
@@ -475,6 +490,76 @@ ScatterStatus TryGenerateScatter(const ScatterRecipe& recipe,
         }
     }
     outCount = count;
+    return ScatterStatus::Success;
+}
+
+ScatterStatus TryExplainScatterCandidate(const ScatterRecipe& recipe,
+                                         const ScatterKeys& keys,
+                                         usize layerIndex,
+                                         ScatterIdentity identity,
+                                         ScatterDecision& outDecision) noexcept
+{
+    ScatterCellRange layerCells;
+    const ScatterStatus cellStatus = TryGetScatterCells(recipe, layerIndex, layerCells);
+    if (cellStatus != ScatterStatus::Success)
+    {
+        return cellStatus;
+    }
+    const ScatterLayer& layer = recipe.Layers[layerIndex];
+    if (identity.Room != recipe.Room || identity.Layer != layer.Id)
+    {
+        return ScatterStatus::InvalidRecipe;
+    }
+    ScatterDecision decision;
+    if (identity.Candidate >= layer.CandidatesPerCell)
+    {
+        decision.Stage = ScatterDecisionStage::Recipe;
+        decision.Rule = ScatterDecisionRule::CandidateIndex;
+        outDecision = decision;
+        return ScatterStatus::Success;
+    }
+    if (identity.CellX < layerCells.MinimumX || identity.CellX >= layerCells.MaximumX ||
+        identity.CellY < layerCells.MinimumY || identity.CellY >= layerCells.MaximumY)
+    {
+        decision.Stage = ScatterDecisionStage::Recipe;
+        decision.Rule = ScatterDecisionRule::CellOutsideRegion;
+        outDecision = decision;
+        return ScatterStatus::Success;
+    }
+    LayerBounds bounds;
+    if (Prepare(layer, bounds) == false)
+    {
+        return ScatterStatus::InvalidRecipe;
+    }
+    Candidate candidate;
+    ScatterStatus status = EvaluateCandidate(recipe, keys, layer, bounds, identity, candidate);
+    if (status != ScatterStatus::Success)
+    {
+        return status;
+    }
+    if (candidate.IsEligible == false)
+    {
+        decision.Stage = ScatterDecisionStage::Eligibility;
+        decision.Rule =
+            candidate.IsInsideRegion == true ? ScatterDecisionRule::KeepOut : ScatterDecisionRule::OutsideRegion;
+        decision.KeepOut = candidate.IsInsideRegion == true ? candidate.KeepOut : 0;
+        outDecision = decision;
+        return ScatterStatus::Success;
+    }
+    bool isAccepted = false;
+    ScatterIdentity outranking;
+    status = DecideAcceptance(recipe, keys, layer, bounds, layerCells, identity, candidate, isAccepted, outranking);
+    if (status != ScatterStatus::Success)
+    {
+        return status;
+    }
+    if (isAccepted == false)
+    {
+        decision.Stage = ScatterDecisionStage::Thinning;
+        decision.Rule = ScatterDecisionRule::Conflict;
+        decision.Outranking = outranking;
+    }
+    outDecision = decision;
     return ScatterStatus::Success;
 }
 } // namespace ludus::content::procedural
