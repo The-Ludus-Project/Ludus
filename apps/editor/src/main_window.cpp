@@ -801,7 +801,13 @@ void MainWindow::BuildMenus()
 #if defined(LUDUS_EDITOR_CRASH_CAPTURE)
     QAction* crashReporting = helpMenu->addAction(QStringLiteral("Crash &Reporting..."));
     crashReporting->setObjectName(QStringLiteral("help.crashReporting"));
-    connect(crashReporting, &QAction::triggered, this, [this]() { ShowEditorCrashReporting(this); });
+    connect(crashReporting, &QAction::triggered, this, [this]() {
+        if (ShowEditorCrashReporting(this) == true)
+        {
+            mShouldRestart = true;
+            close();
+        }
+    });
 #endif
     auto* shortcuts = helpMenu->addAction(QStringLiteral("Keyboard Shortcuts..."));
     shortcuts->setObjectName(QStringLiteral("keyboardShortcutsAction"));
@@ -2284,6 +2290,11 @@ void MainWindow::OnPackageRelease()
     dialog->open();
 }
 
+bool MainWindow::ShouldRestart() const noexcept
+{
+    return mShouldRestart;
+}
+
 void MainWindow::closeEvent(QCloseEvent* event)
 {
     ProfilingController& profiling = mProfilingPanel->GetController();
@@ -2293,6 +2304,7 @@ void MainWindow::closeEvent(QCloseEvent* event)
     }
     if (profiling.GetState() == ProfilingState::Finalizing || profiling.HasUnsavedSnapshot() == true)
     {
+        mShouldRestart = false;
         showToolWindow(mProfilingDock);
         statusBar()->showMessage(QStringLiteral("Finish saving or discard the profiling recording, then close again."));
         event->ignore();
@@ -2300,8 +2312,10 @@ void MainWindow::closeEvent(QCloseEvent* event)
     }
     if (AudioClosing_ == false)
     {
-        if (ConfirmProjectChange(QStringLiteral("quitting")) == false)
+        if (ConfirmProjectChange(mShouldRestart == true ? QStringLiteral("restarting") : QStringLiteral("quitting")) ==
+            false)
         {
+            mShouldRestart = false;
             event->ignore();
             return;
         }
@@ -2309,6 +2323,7 @@ void MainWindow::closeEvent(QCloseEvent* event)
              World_->ConfirmDiscard() == false || Renderer_->ConfirmDiscard() == false) ||
             Configuration_->ConfirmDiscard() == false || mCodeArea->ConfirmDiscardAll() == false)
         {
+            mShouldRestart = false;
             event->ignore();
             return;
         }
@@ -2325,6 +2340,7 @@ void MainWindow::closeEvent(QCloseEvent* event)
                 QMessageBox::Close | QMessageBox::Cancel);
             if (choice != QMessageBox::Close)
             {
+                mShouldRestart = false;
                 event->ignore();
                 return;
             }

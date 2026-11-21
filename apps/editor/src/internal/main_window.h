@@ -84,6 +84,9 @@ public:
                         const QString& workspaceSettingsFile = {});
     ~MainWindow() override;
 
+    /// Whether the accepted window close should relaunch the Editor.
+    [[nodiscard]] bool ShouldRestart() const noexcept;
+
     /// Central document well; documents open, close and regroup through it.
     [[nodiscard]] DocumentWell& GetDocumentWell() noexcept
     {
@@ -262,6 +265,7 @@ private:
     EditorController* Controller_ = nullptr;
     bool Rendering_ = false;
     bool CloseConfirmed_ = false;
+    bool mShouldRestart = false;
     QObject* LastEditedField_ = nullptr;
     QMetaObject::Connection FocusUndoConnection_;
     QMetaObject::Connection FocusRedoConnection_;
