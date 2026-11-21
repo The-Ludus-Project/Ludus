@@ -60,12 +60,21 @@ option(LUDUS_BUILD_SCRIPT_INTERACTION "Build the experimental S1 native/Luau hea
 # subdirectory (see apps/editor/CMakeLists.txt), never globally. See
 # .kiro/specs/editor-workspace/{requirements,design}.md (E01/E02).
 option(LUDUS_BUILD_EDITOR "Build the optional Qt editor workspace (apps/editor)" OFF)
+option(LUDUS_BUILD_NETWORK_NATIVE_PROBE "Build the private N2 GameNetworkingSockets transport qualification" OFF)
 option(LUDUS_BUILD_WEB_PROBES "Build browser feasibility probes" ON)
 include(EngineInitOptions)
 include(EngineEditorOptions)
 if(LUDUS_BUILD_BEHAVIOR)
     include(LudusBehaviorProfile)
     ludus_behavior_admit_profile("${PROJECT_SOURCE_DIR}/config/behavior_profiles.json" LUDUS_BEHAVIOR_TARGET_PROFILE)
+endif()
+if(LUDUS_BUILD_NETWORK_NATIVE_PROBE AND
+        (NOT CMAKE_SYSTEM_NAME MATCHES "^(Darwin|Linux)$" OR LUDUS_SHADER_WORKER_ONLY))
+    message(FATAL_ERROR "The N2 network transport probe needs a native Linux or macOS engine build")
+endif()
+if(LUDUS_BUILD_NETWORK_NATIVE_PROBE)
+    # GNS exports C compile features to its adapter and test consumers.
+    enable_language(C)
 endif()
 if(EMSCRIPTEN)
     # Native Catch2 test targets are not browser executables.
@@ -327,6 +336,7 @@ add_subdirectory(modules/physics/fluid)
 # PhysicsCollision depends on Base, Containers, Identity and Math only and builds for native and web.
 add_subdirectory(modules/physics/collision)
 add_subdirectory(modules/foundation/time)
+add_subdirectory(modules/network/session)
 add_subdirectory(modules/foundation/logging)
 add_subdirectory(modules/foundation/profiling)
 add_subdirectory(tools/memory-bench)
