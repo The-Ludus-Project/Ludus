@@ -32,7 +32,6 @@
 
 #include <bit>
 #include <limits>
-#include <span>
 #include <string_view>
 
 #include <QBuffer>
@@ -251,7 +250,7 @@ public:
             return;
         }
         uint8* const destination = reinterpret_cast<uint8*>(mBlock.data()) + mWritten;
-        static_cast<void>(foundation::TryWriteLittleEndian(value, std::span<uint8>(destination, sizeof(uint32))));
+        static_cast<void>(foundation::TryWriteLittleEndian(value, {destination, sizeof(uint32)}));
         mWritten += sizeof(uint32);
     }
     /// Encode one IEEE binary32 word.

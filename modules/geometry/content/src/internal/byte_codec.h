@@ -9,6 +9,7 @@
 
 #include <ludus/foundation/base/byte_order.hpp>
 #include <ludus/foundation/base/core.h>
+#include <ludus/foundation/containers/span_compatibility.hpp>
 
 #include <ludus/foundation/containers/array.hpp>
 #include <ludus/foundation/math/scalar.hpp>
@@ -143,7 +144,7 @@ public:
     [[nodiscard]] bool ReadUint32(uint32& outValue) noexcept
     {
         uint32 value = 0;
-        if (core::TryReadLittleEndian<uint32>(mBytes.subspan(mOffset), value) == false)
+        if (core::TryReadLittleEndian<uint32>(MakeBorrowedView(mBytes.subspan(mOffset)), value) == false)
         {
             return false;
         }
@@ -154,7 +155,7 @@ public:
     [[nodiscard]] bool ReadUint64(uint64& outValue) noexcept
     {
         uint64 value = 0;
-        if (core::TryReadLittleEndian<uint64>(mBytes.subspan(mOffset), value) == false)
+        if (core::TryReadLittleEndian<uint64>(MakeBorrowedView(mBytes.subspan(mOffset)), value) == false)
         {
             return false;
         }

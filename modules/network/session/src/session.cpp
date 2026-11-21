@@ -1,6 +1,7 @@
 #include "internal/session.hpp"
 
 #include <ludus/foundation/base/byte_order.hpp>
+#include <ludus/foundation/containers/span_compatibility.hpp>
 
 #include <cstring>
 #include <span>
@@ -39,10 +40,13 @@ bool AreSettingsValid(const SessionSettings& settings) noexcept
 
 bool WriteCompatibility(const SessionSettings& settings, uint16 messageBytes, std::span<uint8> destination) noexcept
 {
-    return TryWriteLittleEndian(settings.ProtocolVersion, destination) == true &&
-           TryWriteLittleEndian(settings.SchemaFingerprint, destination.subspan(SCHEMA_OFFSET)) == true &&
-           TryWriteLittleEndian(settings.ContentFingerprint, destination.subspan(CONTENT_OFFSET)) == true &&
-           TryWriteLittleEndian(messageBytes, destination.subspan(MESSAGE_BYTES_OFFSET)) == true;
+    return TryWriteLittleEndian(settings.ProtocolVersion, ludus::foundation::MakeBorrowedView(destination)) == true &&
+           TryWriteLittleEndian(settings.SchemaFingerprint,
+                                ludus::foundation::MakeBorrowedView(destination.subspan(SCHEMA_OFFSET))) == true &&
+           TryWriteLittleEndian(settings.ContentFingerprint,
+                                ludus::foundation::MakeBorrowedView(destination.subspan(CONTENT_OFFSET))) == true &&
+           TryWriteLittleEndian(messageBytes,
+                                ludus::foundation::MakeBorrowedView(destination.subspan(MESSAGE_BYTES_OFFSET))) == true;
 }
 
 bool ReadCompatibility(const SessionSettings& settings, std::span<const uint8> source, uint16& outMessageBytes) noexcept
@@ -55,10 +59,11 @@ bool ReadCompatibility(const SessionSettings& settings, std::span<const uint8> s
     uint64 schema = 0;
     uint64 content = 0;
     uint16 messageBytes = 0;
-    if (TryReadLittleEndian(source, protocol) == false ||
-        TryReadLittleEndian(source.subspan(SCHEMA_OFFSET), schema) == false ||
-        TryReadLittleEndian(source.subspan(CONTENT_OFFSET), content) == false ||
-        TryReadLittleEndian(source.subspan(MESSAGE_BYTES_OFFSET), messageBytes) == false ||
+    if (TryReadLittleEndian(ludus::foundation::MakeBorrowedView(source), protocol) == false ||
+        TryReadLittleEndian(ludus::foundation::MakeBorrowedView(source.subspan(SCHEMA_OFFSET)), schema) == false ||
+        TryReadLittleEndian(ludus::foundation::MakeBorrowedView(source.subspan(CONTENT_OFFSET)), content) == false ||
+        TryReadLittleEndian(ludus::foundation::MakeBorrowedView(source.subspan(MESSAGE_BYTES_OFFSET)), messageBytes) ==
+            false ||
         protocol != settings.ProtocolVersion || schema != settings.SchemaFingerprint ||
         content != settings.ContentFingerprint || messageBytes < MESSAGE_HEADER_BYTES ||
         messageBytes > MAX_MESSAGE_BYTES)

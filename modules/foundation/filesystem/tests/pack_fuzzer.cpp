@@ -1,4 +1,5 @@
 #include <ludus/foundation/base/byte_order.hpp>
+#include <ludus/foundation/containers/span_compatibility.hpp>
 #include <ludus/foundation/filesystem/pack.hpp>
 
 #include "internal/pack_codec.hpp"
@@ -76,13 +77,14 @@ extern "C" int LLVMFuzzerTestOneInput(const uint8* data, usize size)
     if (size >= 80)
     {
         uint64 indexSize = 0;
-        if (TryReadLittleEndian(bytes.subspan(40), indexSize) && indexSize <= size - 80)
+        if (TryReadLittleEndian(MakeBorrowedView(bytes.subspan(40)), indexSize) && indexSize <= size - 80)
         {
             (void)TryWriteLittleEndian(internal::Crc32(bytes.subspan(80, static_cast<usize>(indexSize))),
-                                       std::span(repaired, size).subspan(64, 4));
+                                       MakeBorrowedView(std::span(repaired, size).subspan(64, 4)));
         }
-        (void)TryWriteLittleEndian(uint32{0}, std::span(repaired, size).subspan(68, 4));
-        (void)TryWriteLittleEndian(internal::Crc32(bytes.first(80)), std::span(repaired, size).subspan(68, 4));
+        (void)TryWriteLittleEndian(uint32{0}, MakeBorrowedView(std::span(repaired, size).subspan(68, 4)));
+        (void)TryWriteLittleEndian(internal::Crc32(bytes.first(80)),
+                                   MakeBorrowedView(std::span(repaired, size).subspan(68, 4)));
     }
     uint8 decoded[65536];
     const usize outputSize = size >= 2 ? (static_cast<usize>(data[0]) | (static_cast<usize>(data[1]) << 8)) : 0;
@@ -100,7 +102,7 @@ extern "C" int LLVMFuzzerTestOneInput(const uint8* data, usize size)
     {
         std::string_view key = "compressed";
         uint32 pathSize = 0;
-        if (size >= 112 && TryReadLittleEndian(bytes.subspan(80), pathSize) && pathSize <= size - 112)
+        if (size >= 112 && TryReadLittleEndian(MakeBorrowedView(bytes.subspan(80)), pathSize) && pathSize <= size - 112)
         {
             key = {reinterpret_cast<const char*>(repaired + 112), pathSize};
         }

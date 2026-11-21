@@ -1,9 +1,8 @@
 #include <ludus/content/foliage_pages/foliage_pages.h>
 
+#include <ludus/foundation/base/borrowed_view.hpp>
 #include <ludus/foundation/base/byte_order.hpp>
 #include <ludus/foundation/base/checked_integer.hpp>
-
-#include <span>
 
 // LUFOL follows the LUSTR precedent (modules/content/string_dictionary): a
 // tightly packed little-endian blob with derived field offsets, validated in
@@ -52,7 +51,7 @@ template <typename ValueType>
 ValueType ReadField(const uint8* bytes, usize offset) noexcept
 {
     ValueType value{};
-    const std::span<const uint8> field{bytes + offset, sizeof(ValueType)};
+    const foundation::BorrowedView<const uint8> field{bytes + offset, sizeof(ValueType)};
     [[maybe_unused]] const bool isRead = foundation::TryReadLittleEndian(field, value);
     LUDUS_ASSERT(isRead == true);
     return value;
@@ -61,7 +60,7 @@ ValueType ReadField(const uint8* bytes, usize offset) noexcept
 template <typename ValueType>
 void WriteField(uint8* bytes, usize offset, ValueType value) noexcept
 {
-    const std::span<uint8> field{bytes + offset, sizeof(ValueType)};
+    const foundation::BorrowedView<uint8> field{bytes + offset, sizeof(ValueType)};
     [[maybe_unused]] const bool isWritten = foundation::TryWriteLittleEndian(value, field);
     LUDUS_ASSERT(isWritten == true);
 }

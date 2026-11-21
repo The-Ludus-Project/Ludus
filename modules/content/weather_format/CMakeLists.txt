@@ -8,6 +8,8 @@ set_target_properties(ludus_weather_format PROPERTIES EXPORT_NAME WeatherFormat)
 target_sources(ludus_weather_format INTERFACE FILE_SET public_headers TYPE HEADERS BASE_DIRS include
     FILES include/ludus/content/weather_format/weather_format.h)
 target_link_libraries(ludus_weather_format INTERFACE Ludus::FoundationBase)
+install(TARGETS ludus_weather_format EXPORT LudusTargets
+    FILE_SET public_headers DESTINATION "${CMAKE_INSTALL_INCLUDEDIR}")
 
 if(LUDUS_BUILD_TESTS)
     find_package(Catch2 3 REQUIRED CONFIG)

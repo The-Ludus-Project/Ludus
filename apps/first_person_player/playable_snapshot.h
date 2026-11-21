@@ -5,6 +5,7 @@
 #include <ludus/foundation/containers/borrowed_view.hpp>
 #include <ludus/foundation/parsing/json.hpp>
 #include <ludus/gameplay/camera/camera.hpp>
+#include <ludus/gameplay/weather/climate.h>
 #include <ludus/graphics/renderer/atmosphere.hpp>
 #include <ludus/runtime/resources/scene.h>
 
@@ -35,6 +36,8 @@ struct PlayableSnapshot final
     foundation::Array<foundation::usize> ColliderObjects;
     /// Analytic sources whose authored light component disables raster shadow casting.
     foundation::Array<foundation::uint64> RasterUnshadowedLightIds;
+    /// The World's validated cooked climate; empty when the World authors no climate.
+    gameplay::weather::Climate Climate;
 };
 
 /// Decode one complete .luplay file. Views in the result borrow its owned manifest, never bytes.

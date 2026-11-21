@@ -4,6 +4,7 @@
 #include "internal/world_document.h"
 #include "playable_snapshot.h"
 #include "scene_fixture.h"
+#include "world_climate_fixture.h"
 
 #include <ludus/content/scene_format/playable_world.h>
 #include <ludus/graphics/renderer/atmosphere.hpp>
@@ -148,6 +149,44 @@ TEST_CASE("Playable World freezes an applied glTF placement and admits only a co
     REQUIRE(prepare() == true);
     CHECK(ReadBytes(output) == acceptedBytes);
     CHECK(ReadBytes(QDir(root).filePath("assets/catalog.json"_L1)) == catalog);
+    CHECK(accepted.Manifest.Root().Get("climate").Null() == true);
+    CHECK(accepted.Climate.IsEmpty() == true);
+    SECTION("the World climate reaches Play as its cooked bytes")
+    {
+        REQUIRE(world.SetClimate(MakeGoldenWorldClimate(), error) == true);
+        foundation::Array<foundation::uint8> cooked;
+        REQUIRE(TryCookWorldClimate(world.Draft().value(WORLD_CLIMATE), cooked, error) == true);
+        gameplay::weather::Climate expected;
+        REQUIRE(gameplay::weather::TryLoadClimate({cooked.GetData(), cooked.GetSize()}, expected) ==
+                content::weather_format::WeatherFormatStatus::Success);
+        REQUIRE(prepare() == true);
+        const QByteArray withClimate = ReadBytes(output);
+        first_person::PlayableSnapshot played;
+        REQUIRE(Decode(withClimate, played) == true);
+        REQUIRE(played.Climate.IsEmpty() == false);
+        CHECK(played.Climate.GetFingerprint() == expected.GetFingerprint());
+        // A tampered climate byte fails the digest and preserves the accepted generation.
+        const QByteArray bytesKey = QByteArrayLiteral("\"bytes\":\"");
+        const qsizetype climateAt = withClimate.indexOf(bytesKey);
+        REQUIRE(climateAt > 0);
+        QByteArray tampered = withClimate;
+        const qsizetype digit = climateAt + bytesKey.size();
+        tampered[digit] = tampered[digit] == '0' ? '1' : '0';
+        CHECK(Decode(tampered, played) == false);
+        CHECK(played.Climate.GetFingerprint() == expected.GetFingerprint());
+        // An invalid climate never reaches Play: preparation names the record to repair.
+        QJsonObject invalid = MakeGoldenWorldClimate();
+        QJsonArray regions = invalid.value("regions"_L1).toArray();
+        QJsonObject ridge = regions[1].toObject();
+        ridge.insert("feather"_L1, -1.0);
+        regions[1] = ridge;
+        invalid.insert("regions"_L1, regions);
+        CHECK(world.SetClimate(invalid, error) == false);
+        CHECK(error.contains(u"Region “Ridge”"_s) == true);
+        // Removing the climate prepares the original package again, byte for byte.
+        REQUIRE(world.SetClimate(QJsonValue::Undefined, error) == true);
+        REQUIRE(prepare() == true);
+    }
     SECTION("failed runtime decode preserves the accepted generation")
     {
         const QByteArray oversizedManifest(static_cast<qsizetype>(content::scene_format::MAX_PLAYABLE_MANIFEST_BYTES) +

@@ -19,7 +19,6 @@
 
 #include <iostream>
 #include <ludus/foundation/base/diagnostic_output.hpp>
-#include <span>
 #include <sys/socket.h>
 #include <unistd.h>
 
@@ -36,6 +35,7 @@ int ExerciseInstalledPersistence() noexcept;
 bool ExerciseInstalledStrings() noexcept;
 bool ExerciseInstalledStringDictionary() noexcept;
 bool ExerciseInstalledFoliagePages() noexcept;
+bool ExerciseInstalledWeather() noexcept;
 bool ExerciseInstalledParsing() noexcept;
 bool ExerciseInstalledConfiguration() noexcept;
 bool ExerciseInstalledReflection() noexcept;
@@ -208,6 +208,9 @@ static_assert(LUDUS_ENABLE_ASSERTS == EXPECTED_ASSERTS);
 static_assert(LUDUS_BREAK_ON_CHECK == EXPECTED_CHECK_BREAK);
 int PolicyWithoutNdebug();
 
+/// Exit code when the installed weather targets do not reproduce the golden corpus.
+constexpr int WEATHER_FAILURE = 111;
+
 constexpr bool PrimitiveContract(ludus::foundation::usize increment = 1) noexcept
 {
     using namespace ludus::foundation;
@@ -226,8 +229,8 @@ constexpr bool PrimitiveContract(ludus::foundation::usize increment = 1) noexcep
            TryMultiply(-int64{9223372036854775807} - 1, static_cast<int64>(increment) + 1, signedProduct) == false &&
            signedProduct == 42 && TryIntegerCast(int32{-1}, length) == false && length == 42 &&
            TryWriteLittleEndian(word, bytes) && bytes[0] == increment && bytes[3] == 0x12 &&
-           TryReadLittleEndian(bytes, length) && length == word &&
-           TryReadBigEndian(std::span<const uint8>{bytes, 3}, length) == false && length == word;
+           TryReadLittleEndian(bytes, length) && length == word && TryReadBigEndian({bytes, 3}, length) == false &&
+           length == word;
 }
 static_assert(PrimitiveContract());
 
@@ -314,6 +317,10 @@ int main()
     if (ExerciseInstalledFoliagePages() == false)
     {
         return 109;
+    }
+    if (ExerciseInstalledWeather() == false)
+    {
+        return WEATHER_FAILURE;
     }
     if (PrimitiveContract() == false)
     {

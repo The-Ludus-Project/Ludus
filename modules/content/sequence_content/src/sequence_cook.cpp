@@ -6,6 +6,7 @@
 #include <ludus/content/sequence_format/luseq.h>
 #include <ludus/foundation/base/byte_order.hpp>
 #include <ludus/foundation/base/checked_integer.hpp>
+#include <ludus/foundation/containers/span_compatibility.hpp>
 
 #include <bit>
 
@@ -197,13 +198,15 @@ public:
     void Uint32(usize offset, uint32 value) noexcept
     {
         [[maybe_unused]] const bool isWritten =
-            foundation::TryWriteLittleEndian(value, mRecord.subspan(offset, sizeof(uint32)));
+            foundation::TryWriteLittleEndian(value,
+                                             foundation::MakeBorrowedView(mRecord.subspan(offset, sizeof(uint32))));
         LUDUS_ASSERT(isWritten == true);
     }
     void Uint64(usize offset, uint64 value) noexcept
     {
         [[maybe_unused]] const bool isWritten =
-            foundation::TryWriteLittleEndian(value, mRecord.subspan(offset, sizeof(uint64)));
+            foundation::TryWriteLittleEndian(value,
+                                             foundation::MakeBorrowedView(mRecord.subspan(offset, sizeof(uint64))));
         LUDUS_ASSERT(isWritten == true);
     }
     void Float32(usize offset, foundation::float32 value) noexcept
@@ -263,7 +266,8 @@ public:
     {
         uint32 value = 0;
         [[maybe_unused]] const bool isRead =
-            foundation::TryReadLittleEndian(mRecord.subspan(offset, sizeof(uint32)), value);
+            foundation::TryReadLittleEndian(foundation::MakeBorrowedView(mRecord.subspan(offset, sizeof(uint32))),
+                                            value);
         LUDUS_ASSERT(isRead == true);
         return value;
     }
@@ -271,7 +275,8 @@ public:
     {
         uint64 value = 0;
         [[maybe_unused]] const bool isRead =
-            foundation::TryReadLittleEndian(mRecord.subspan(offset, sizeof(uint64)), value);
+            foundation::TryReadLittleEndian(foundation::MakeBorrowedView(mRecord.subspan(offset, sizeof(uint64))),
+                                            value);
         LUDUS_ASSERT(isRead == true);
         return value;
     }

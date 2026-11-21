@@ -5,20 +5,20 @@
 #include <ludus/foundation/containers/array.hpp>
 #include <ludus/foundation/hash/hash.hpp>
 
-// Golden weather route shared by ludus_gameplay_weather_tests and tools/web-weather-probe, so native and
-// browser builds check one digest. The corpus is exception-free engine-style code; Catch2 stays in the tests.
+// Golden weather route shared by ludus_gameplay_weather_tests, tools/web-weather-probe, the Editor tests and the
+// installed SDK consumer, so every build checks one digest. Exception-free; Catch2 stays in the tests.
 namespace ludus::gameplay::weather::testing
 {
 /// Digest of the golden route, recorded from the native reference build. A change to resolution rules,
 /// codes or the corpus itself changes it; update it only with an explained behavior change.
 inline constexpr foundation::Fingerprint128 EXPECTED_WEATHER_GOLDEN_DIGEST
 {
-    .Low = 0x722899d47af1ffedULL,
-    .High = 0x39d7ef70aadec0b1ULL,
+    .Low = 0xecc6a6256703d0a2ULL,
+    .High = 0x578b8f944f01617cULL,
 };
 
-/// Fixed tick rate of the corpus climate.
-inline constexpr foundation::uint32 GOLDEN_TICKS_PER_SECOND = 30;
+/// Fixed tick rate of the corpus climate: Play's PLAYABLE_WORLD_TICKS_PER_SECOND, so a World climate can cook to it.
+inline constexpr foundation::uint32 GOLDEN_TICKS_PER_SECOND = 60;
 /// Ticks the golden route runs.
 inline constexpr foundation::uint32 GOLDEN_ROUTE_TICKS = 200;
 

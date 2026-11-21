@@ -35,18 +35,18 @@ ProviderHandle Pack(std::span<const uint8> bytes = pack_fixture::kPack)
 template <typename T>
 void Set(Array<uint8>& bytes, usize at, T value)
 {
-    REQUIRE(TryWriteLittleEndian(value, MakeSpan(bytes).subspan(at)));
+    REQUIRE(TryWriteLittleEndian(value, MakeBorrowedView(MakeSpan(bytes).subspan(at))));
 }
 uint64 Get64(std::span<const uint8> bytes, usize at)
 {
     uint64 value = 0;
-    REQUIRE(TryReadLittleEndian(bytes.subspan(at), value));
+    REQUIRE(TryReadLittleEndian(MakeBorrowedView(bytes.subspan(at)), value));
     return value;
 }
 uint32 Get32(std::span<const uint8> bytes, usize at)
 {
     uint32 value = 0;
-    REQUIRE(TryReadLittleEndian(bytes.subspan(at), value));
+    REQUIRE(TryReadLittleEndian(MakeBorrowedView(bytes.subspan(at)), value));
     return value;
 }
 void Seal(Array<uint8>& bytes)

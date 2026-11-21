@@ -39,11 +39,11 @@ def make_fixture(path):
                galacticCenterWorld=[0, 0, -1], toSunAtMoonWorld=zero,
                planets=[dict(directionWorld=[0, 1, 0], illuminance=zero)] * 8)
     digest = hashlib.sha256(scene).hexdigest()
-    header = dict(version=1, renderer="raster", world="room", source="room.world.json", worldSha256=digest,
+    header = dict(version=2, renderer="raster", world="room", source="room.world.json", worldSha256=digest,
                   sceneSha256=digest, entities=[dict(id="room"), dict(id="start", spawn=dict(
                       eyeWorld=[0, 1.601, 0], orientation=[0, 0, 0, 1], speed=4))],
                   objects=[dict(entity="room", sourceId=str(i), staticCollider=True) for i in (1, 2)],
-                  artifacts=[], warnings=[], earthObserver={}, atmosphere=sky)
+                  artifacts=[], warnings=[], earthObserver={}, atmosphere=sky, climate=None)
     path.write_bytes(json.dumps(header).encode() + b"\n" + scene)
 
 

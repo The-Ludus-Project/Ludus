@@ -4,12 +4,12 @@
 #    include <ludus/foundation/base/types.h>
 
 #    include <ludus/content/scene_format/material.h>
+#    include <ludus/foundation/base/borrowed_view.hpp>
 #    include <ludus/foundation/base/byte_order.hpp>
 #    include <ludus/foundation/containers/static_array.hpp>
 
 #    include <cstddef>
 #    include <cstring>
-#    include <span>
 #    include <type_traits>
 #else
 #    include "material.h"
@@ -433,7 +433,7 @@ inline void EncodeMaterialProgram(const MaterialProgram& program, MaterialProgra
     const auto word = [&outBytes, &offset](foundation::uint32 value) noexcept {
         static_cast<void>(foundation::core::TryWriteLittleEndian<foundation::uint32>(
             value,
-            std::span<foundation::uint8>(outBytes.GetData() + offset, sizeof(foundation::uint32))));
+            {outBytes.GetData() + offset, sizeof(foundation::uint32)}));
         offset += sizeof(foundation::uint32);
     };
     const auto scalar = [&word](foundation::float32 value) noexcept {
@@ -496,13 +496,14 @@ inline void EncodeMaterialProgram(const MaterialProgram& program, MaterialProgra
 }
 
 /// Decode a record written by EncodeMaterialProgram and validate it completely.
-/// @param bytes Exactly MATERIAL_PROGRAM_BYTES record bytes.
+/// @param bytes A valid view of exactly MATERIAL_PROGRAM_BYTES record bytes.
 /// @param outProgram Replaced on success; unchanged on failure.
-/// @return False for a wrong size, a non-finite or out-of-range field, or any program IsMaterialProgramValid rejects.
-[[nodiscard]] inline bool DecodeMaterialProgram(std::span<const foundation::uint8> bytes,
+/// @return False for an invalid view, a wrong size, a non-finite or out-of-range field, or any program
+/// IsMaterialProgramValid rejects.
+[[nodiscard]] inline bool DecodeMaterialProgram(foundation::BorrowedView<const foundation::uint8> bytes,
                                                 MaterialProgram& outProgram) noexcept
 {
-    if (bytes.size() != MATERIAL_PROGRAM_BYTES)
+    if (bytes.IsValid() == false || bytes.GetSize() != MATERIAL_PROGRAM_BYTES)
     {
         return false;
     }
@@ -510,7 +511,8 @@ inline void EncodeMaterialProgram(const MaterialProgram& program, MaterialProgra
     const auto word = [&bytes, &offset]() noexcept {
         foundation::uint32 value = 0;
         static_cast<void>(
-            foundation::core::TryReadLittleEndian<foundation::uint32>(bytes.subspan(offset, sizeof(value)), value));
+            foundation::core::TryReadLittleEndian<foundation::uint32>({bytes.GetDataOrNull() + offset, sizeof(value)},
+                                                                      value));
         offset += sizeof(value);
         return value;
     };

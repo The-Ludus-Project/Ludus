@@ -872,6 +872,7 @@ ludus_editor_add_objects(ludus_editor_application
     src/world_materials_panel.cpp
     src/builtin_world.cpp
     src/internal/world_celestial_light.h src/world_celestial_light.cpp
+    src/internal/world_climate.h src/world_climate.cpp
     src/internal/world_earth_location.h src/world_earth_location.cpp
     src/internal/world_earth_time_field.h src/world_earth_time_field.cpp
     src/internal/world_earth_time_zone.h src/world_earth_time_zone.cpp
@@ -982,6 +983,8 @@ target_link_libraries(ludus_editor_application
         # Scene source apertures import as editable World aperture entities.
         Ludus::SceneSource
         Ludus::ContentTerrain
+        # A World's authored climate is validated and cooked by the engine cooker.
+        Ludus::ContentWeather
         Ludus::FoundationThreading
         ludus_stb_image
         # World documents share the version-2 record constants with their owner (object handles stage 3).
@@ -1354,6 +1357,7 @@ if(LUDUS_BUILD_TESTS AND NOT EMSCRIPTEN)
         tests/render_authoring_tests.cpp
         tests/world_lighting_switch_tests.cpp
         tests/world_light_switch_tests.cpp
+        tests/world_climate_tests.cpp
         tests/world_properties_layout_tests.cpp
         tests/world_start_view_tests.cpp
         tests/viewport_debug_tests.cpp
@@ -1468,6 +1472,9 @@ if(LUDUS_BUILD_TESTS AND NOT EMSCRIPTEN)
             Ludus::GraphicsRenderer
             Ludus::Resources
             Ludus::FoundationParsingJson
+            # World climates must cook to the golden weather corpus climate.
+            ludus_weather_golden_corpus
+            Ludus::GameplayWeather
             Catch2::Catch2)
     ludus_apply_project_defaults(ludus_editor_tests)
     target_link_libraries(ludus_editor_tests PRIVATE Ludus::Platform)

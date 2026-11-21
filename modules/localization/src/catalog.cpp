@@ -1,6 +1,7 @@
 #include <ludus/localization/catalog.hpp>
 
 #include <ludus/foundation/base/byte_order.hpp>
+#include <ludus/foundation/containers/span_compatibility.hpp>
 #include <ludus/foundation/strings/utf8.hpp>
 
 #include "internal/catalog_access.hpp"
@@ -58,7 +59,9 @@ std::atomic<uint64> gNextToken{1};
 uint32 ReadWord(std::span<const uint8> bytes, usize offset) noexcept
 {
     uint32 value{};
-    static_cast<void>(foundation::TryReadLittleEndian(bytes.subspan(offset, 4), value));
+    static_cast<void>(
+        foundation::TryReadLittleEndian(ludus::foundation::MakeBorrowedView(bytes.subspan(offset, sizeof(value))),
+                                        value));
     return value;
 }
 

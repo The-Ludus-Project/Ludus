@@ -174,7 +174,7 @@ void PutUint32(std::string& inoutBytes, const WordEdit& edit)
     const usize offset = edit.Offset;
     const uint32 value = edit.Value;
     foundation::uint8 encoded[sizeof(uint32)]{};
-    REQUIRE(foundation::TryWriteLittleEndian(value, std::span<foundation::uint8>(encoded)) == true);
+    REQUIRE(foundation::TryWriteLittleEndian(value, encoded) == true);
     for (usize index = 0; index < sizeof(uint32); ++index)
     {
         inoutBytes[offset + index] = static_cast<char>(encoded[index]);

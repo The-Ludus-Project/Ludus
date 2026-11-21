@@ -2,6 +2,7 @@
 #include "design_tokens.h"
 
 #include <ludus/foundation/base/byte_order.hpp>
+#include <ludus/foundation/containers/span_compatibility.hpp>
 
 #include <ludus/content/scene_cook/limits.h>
 #include <ludus/content/scene_format/limits.h>
@@ -92,9 +93,11 @@ constexpr int ALPHA = 3;
         return false;
     }
     format::TextureRecord record;
-    if (foundation::TryReadLittleEndian(header, record.Width) == false ||
-        foundation::TryReadLittleEndian(header.subspan(sizeof(uint32)), record.Height) == false ||
-        foundation::TryReadLittleEndian(header.subspan(2 * sizeof(uint32)), record.ByteCount) == false ||
+    if (foundation::TryReadLittleEndian(ludus::foundation::MakeBorrowedView(header), record.Width) == false ||
+        foundation::TryReadLittleEndian(ludus::foundation::MakeBorrowedView(header.subspan(sizeof(uint32))),
+                                        record.Height) == false ||
+        foundation::TryReadLittleEndian(ludus::foundation::MakeBorrowedView(header.subspan(2 * sizeof(uint32))),
+                                        record.ByteCount) == false ||
         record.Width == 0 || record.Height == 0 || record.Width > format::MAX_TEXTURE_DIMENSION ||
         record.Height > format::MAX_TEXTURE_DIMENSION || record.ByteCount > format::MAX_TEXTURE_BYTES ||
         uint64{record.ByteCount} != uint64{record.Width} * record.Height * format::TEXEL_BYTES ||

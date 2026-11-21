@@ -42,7 +42,7 @@ template <typename ValueType>
 void append(QByteArray& outBytes, ValueType value)
 {
     std::array<uint8, sizeof(ValueType)> bytes{};
-    REQUIRE(foundation::TryWriteLittleEndian(value, std::span<uint8>(bytes)) == true);
+    REQUIRE(foundation::TryWriteLittleEndian(value, {bytes.data(), bytes.size()}) == true);
     outBytes.append(reinterpret_cast<const char*>(bytes.data()), static_cast<qsizetype>(bytes.size()));
 }
 
