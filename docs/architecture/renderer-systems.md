@@ -2648,7 +2648,8 @@ Record any intentionally mixed approximation in the capture's rendering profile.
 
 Scene shaders enumerate analytic lights, mesh emitters and the environment through
 `GetLightCount` and `GetLightInfo`. For direct lighting, `SampleLight` selects one
-catalog source and samples its incident light. The chosen kind owns its draws.
+catalog source and samples its incident light at `shadingHit`, the current
+surface hit. The chosen kind owns its draws.
 The result carries the source PMF and the conditional probability separately.
 For a BSDF ray, `EvaluateLightAlongRay` returns emitted radiance and the two
 probability terms under the same selection policy, whether the ray hits a mesh

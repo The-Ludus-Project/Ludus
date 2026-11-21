@@ -1410,10 +1410,11 @@ IncidentLightSample SampleIncidentLight(SceneContext scene,
                                PixelRandomAddress(pixel, launch.SampleIndex, firstDimension),
                                inoutQueries);
 }
-/// Select and sample one scene light. Selection and incident addresses are independent.
+/// Select and sample one scene light for the surface hit being shaded.
+/// Selection and incident addresses are independent.
 /// Uses the chosen kind's default incident proposal and does not trace visibility.
 SceneLightSample SampleLight(SceneContext scene,
-                             SurfaceHit receiver,
+                             SurfaceHit shadingHit,
                              RayLaunch launch,
                              uint selectionDimension,
                              uint incidentDimension,
@@ -1445,8 +1446,12 @@ SceneLightSample SampleLight(SceneContext scene,
     else
         result.Selection = SelectLight(scene, launch, selectionDimension);
     if (result.Selection.HasSample == true)
-        result.Incident =
-            SampleIncidentLight(scene, result.Selection.LightIndex, receiver, launch, incidentDimension, inoutQueries);
+        result.Incident = SampleIncidentLight(scene,
+                                              result.Selection.LightIndex,
+                                              shadingHit,
+                                              launch,
+                                              incidentDimension,
+                                              inoutQueries);
     return result;
 }
 /// Draw a pseudorandom float in [0,1), advancing the renderer-owned invocation stream.

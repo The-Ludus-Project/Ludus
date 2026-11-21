@@ -4706,7 +4706,7 @@ wrappers include it automatically. Authors do not read private packed buffers.
 | GetEmitterBounds | Precomputed emitter bounding sphere, geometric-normal cone and emission sidedness, for one weight per emitter without a triangle loop |
 | IsSurfaceCovered | Fixed-mip sampled-endpoint alpha coverage, using the same inclusive cutoff as closest-hit traversal, with no ray query; keep uncovered area samples as zero events |
 | GetSurfaceHit | Surface endpoint from triangle/barycentrics, without tracing; IncomingRay and DistanceWorld are zero |
-| SampleLight | Select a catalog source and sample it with the default incident proposal. Returns the selection PMF and conditional probability separately. |
+| SampleLight | Select a catalog source and sample its incident light at `shadingHit`, the surface hit being shaded. Returns the selection PMF and conditional probability separately. |
 | EvaluateLightAlongRay | Return the radiance and matching continuous light proposal for a traced mesh hit or environment miss, using the same selection policy as SampleLight. |
 | SelectLight / EvaluateLightSelectionPmf | Default uniform source selection and its discrete probability. SelectLight(scene, queries) uses the invocation stream. |
 | SelectLightByMeshPower / EvaluateMeshPowerLightSelectionPmf | Addressed catalog selection and its matching PMF. Mesh lights split their uniform category share by power, with uniform fallback. |
@@ -5246,11 +5246,12 @@ black texels and back-side one-sided samples remain zero-contribution events.
 The initial environment proposal is uniform sphere, including HDR maps.
 
 The Compute ray tracing template uses `SampleLight` with independent addresses
-for source selection and the conditional incident proposal.
+for source selection and the conditional incident proposal. Pass the current
+`SurfaceHit` from `TraceClosest` or `GetSurfaceHit` as `shadingHit`.
 
 ```slang
 SceneLightSample light = SampleLight(
-    scene, receiver, launch, LIGHT_SELECTION_DIMENSION, INCIDENT_DIMENSION_FIRST,
+    scene, shadingHit, launch, LIGHT_SELECTION_DIMENSION, INCIDENT_DIMENSION_FIRST,
     LightSelectionPolicy::Uniform, queries);
 if (light.Incident.HasSample == false)
     return float3(0);
