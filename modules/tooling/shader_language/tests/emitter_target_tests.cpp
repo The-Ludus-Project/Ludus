@@ -455,6 +455,8 @@ void Main(in uint32x3 dispatchThread : DispatchThreadId)
     total += float32(Philox4x32(PackRandomCounter(address, 0), dispatchThread.xy).x) +
              float32(SampleRandomUInt32(dispatchThread.xy, address)) + normal.x + float32(bounded);
     if (IsFiniteBits(total) == true && IsFiniteBits(normal) == true && HasPositiveComponent(normal) == true &&
+        NearlyEqual(total, normal.x, 0.5, 0.125) == false &&
+        NearlyEqual(normal, float32x3(1.0, 0.0, 0.0), 0.25) == true &&
         isBounded == true && IsRandomAddressInRange(address) == true)
     {
         result = total;
