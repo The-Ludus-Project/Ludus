@@ -116,6 +116,7 @@ bool IsAccepted(Status status) noexcept
 
 // The shaders read the layer as this many float4 rows (renderer_cloud_layer.slang).
 static_assert(sizeof(CloudLayerUniform) == LUDUS_CLOUD_LAYER_UNIFORM_ROWS * sizeof(math::Vector4));
+static_assert(sizeof(AuroraLayerUniform) == LUDUS_AURORA_LAYER_UNIFORM_ROWS * sizeof(math::Vector4));
 
 struct AtmosphereViewUniform final
 {

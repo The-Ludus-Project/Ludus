@@ -12,6 +12,16 @@ struct AuroraLayerParameters
     float4 AxisZWorld; // xyz: tangent Z; w: periodic animation phase in radians.
 };
 
+static const uint AURORA_LAYER_UNIFORM_ROWS = LUDUS_AURORA_LAYER_UNIFORM_ROWS;
+
+AuroraLayerParameters UnpackAuroraLayer(in float4 rows[AURORA_LAYER_UNIFORM_ROWS])
+{
+    AuroraLayerParameters aurora;
+    aurora.AxisXWorld = rows[0];
+    aurora.AxisZWorld = rows[1];
+    return aurora;
+}
+
 static const float AURORA_BASE_KILOMETRES = SHELL_HEIGHT;
 static const float AURORA_TOP_KILOMETRES = 300;
 static const float AURORA_HALF_LENGTH_KILOMETRES = 950;

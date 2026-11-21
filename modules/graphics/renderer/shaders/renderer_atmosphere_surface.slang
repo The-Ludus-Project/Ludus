@@ -189,7 +189,7 @@ void IntegrateAtmosphereViewSegment(in float3 positionWorld, out float3 outTrans
 {
     IntegrateClearAtmosphereViewSegment(positionWorld, outTransmittance, outInscattered);
     CloudLayerParameters cloud = UnpackCloudLayer(deferredView.AtmosphereCloudLayer);
-    AuroraLayerParameters aurora = deferredView.AtmosphereAuroraLayer;
+    AuroraLayerParameters aurora = UnpackAuroraLayer(deferredView.AtmosphereAuroraLayer);
     if (cloud.AxisXWorld.w <= 0 && aurora.AxisXWorld.w <= 0)
     {
         return;

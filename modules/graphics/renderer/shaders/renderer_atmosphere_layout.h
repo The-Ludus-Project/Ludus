@@ -1,5 +1,8 @@
 #pragma once
 
+// Float4 rows for the aurora layer in both atmosphere view uniforms.
+#define LUDUS_AURORA_LAYER_UNIFORM_ROWS 2
+
 // A0 Earth shell dimensions in kilometres, from Hillaire's SetupEarthAtmosphere.
 #define LUDUS_ATMOSPHERE_GROUND_KILOMETRES 6360.0
 #define LUDUS_ATMOSPHERE_HEIGHT_KILOMETRES 100.0
