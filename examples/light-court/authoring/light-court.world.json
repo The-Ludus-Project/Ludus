@@ -1,0 +1,259 @@
+{
+  "version": 1,
+  "schema": "ludus.world.starter.v1",
+  "entities": [
+    {
+      "id": "preview.camera",
+      "name": "Courtyard Camera",
+      "components": {
+        "transform": {
+          "x": -2.2,
+          "y": 4.0,
+          "z": 11.5,
+          "rx": -12.4,
+          "ry": -11.3,
+          "rz": 0,
+          "sx": 1,
+          "sy": 1,
+          "sz": 1
+        },
+        "camera": {
+          "projection": "perspective",
+          "fov": 35,
+          "span": 8,
+          "near": 0.1,
+          "far": 120,
+          "follow": ""
+        }
+      }
+    },
+    {
+      "id": "light.sun",
+      "name": "Sun",
+      "components": {
+        "transform": {
+          "x": -3.5,
+          "y": 5,
+          "z": 3.5,
+          "rx": -34,
+          "ry": -47,
+          "rz": 0,
+          "sx": 1,
+          "sy": 1,
+          "sz": 1
+        },
+        "light": {
+          "kind": "directional",
+          "enabled": true,
+          "r": 1,
+          "g": 0.86,
+          "b": 0.69,
+          "intensity": 8,
+          "range": 10,
+          "innerAngle": 25,
+          "outerAngle": 30
+        }
+      }
+    },
+    {
+      "id": "ground",
+      "name": "Slate Ground",
+      "components": {
+        "transform": {
+          "x": 0,
+          "y": -0.16,
+          "z": 0,
+          "rx": 0,
+          "ry": 0,
+          "rz": 0,
+          "sx": 45,
+          "sy": 0.3,
+          "sz": 45
+        },
+        "renderable": {
+          "mesh": "mesh.cube",
+          "texture": "",
+          "visible": true,
+          "r": 0.105,
+          "g": 0.117,
+          "b": 0.128
+        }
+      }
+    },
+    {
+      "id": "court.step",
+      "name": "Lower Step",
+      "components": {
+        "transform": {
+          "x": 0,
+          "y": 0.09,
+          "z": 0.36,
+          "rx": 0,
+          "ry": 0,
+          "rz": 0,
+          "sx": 6.9,
+          "sy": 0.18,
+          "sz": 4.4
+        },
+        "renderable": {
+          "mesh": "mesh.cube",
+          "texture": "",
+          "visible": true,
+          "r": 0.68,
+          "g": 0.54,
+          "b": 0.38
+        }
+      }
+    },
+    {
+      "id": "court.platform",
+      "name": "Upper Platform",
+      "components": {
+        "transform": {
+          "x": 0,
+          "y": 0.26,
+          "z": 0.09,
+          "rx": 0,
+          "ry": 0,
+          "rz": 0,
+          "sx": 6.9,
+          "sy": 0.16,
+          "sz": 3.86
+        },
+        "renderable": {
+          "mesh": "mesh.cube",
+          "texture": "",
+          "visible": true,
+          "r": 0.68,
+          "g": 0.54,
+          "b": 0.38
+        }
+      }
+    },
+    {
+      "id": "court.wall.low",
+      "name": "Low Concrete Wall",
+      "components": {
+        "transform": {
+          "x": -0.4,
+          "y": 0.86,
+          "z": -1.45,
+          "rx": 0,
+          "ry": 0,
+          "rz": 0,
+          "sx": 6.1,
+          "sy": 1.04,
+          "sz": 0.48
+        },
+        "renderable": {
+          "mesh": "mesh.cube",
+          "texture": "",
+          "visible": true,
+          "r": 0.68,
+          "g": 0.54,
+          "b": 0.38
+        }
+      }
+    },
+    {
+      "id": "court.wall.tall",
+      "name": "Tall Concrete Wall",
+      "components": {
+        "transform": {
+          "x": 2.92,
+          "y": 2.22,
+          "z": -0.66,
+          "rx": 0,
+          "ry": 0,
+          "rz": 0,
+          "sx": 1.06,
+          "sy": 3.76,
+          "sz": 2.06
+        },
+        "renderable": {
+          "mesh": "mesh.cube",
+          "texture": "",
+          "visible": true,
+          "r": 0.68,
+          "g": 0.54,
+          "b": 0.38
+        }
+      }
+    },
+    {
+      "id": "court.enamel",
+      "name": "Blue-Green Enamel",
+      "components": {
+        "transform": {
+          "x": 2.35,
+          "y": 1.23,
+          "z": -0.96,
+          "rx": 0,
+          "ry": 0,
+          "rz": 0,
+          "sx": 0.08,
+          "sy": 1.44,
+          "sz": 1.16
+        },
+        "renderable": {
+          "mesh": "mesh.cube",
+          "texture": "",
+          "visible": true,
+          "r": 0.025,
+          "g": 0.18,
+          "b": 0.16
+        }
+      }
+    },
+    {
+      "id": "court.copper",
+      "name": "Copper Plate",
+      "components": {
+        "transform": {
+          "x": 1.87,
+          "y": 0.43,
+          "z": -0.88,
+          "rx": 0,
+          "ry": 0,
+          "rz": 0,
+          "sx": 1.04,
+          "sy": 0.18,
+          "sz": 1.34
+        },
+        "renderable": {
+          "mesh": "mesh.cube",
+          "texture": "",
+          "visible": true,
+          "r": 0.56,
+          "g": 0.22,
+          "b": 0.09
+        }
+      }
+    },
+    {
+      "id": "court.sphere",
+      "name": "Graphite Sphere",
+      "components": {
+        "transform": {
+          "x": -1.56,
+          "y": 0.72,
+          "z": 0.57,
+          "rx": 0,
+          "ry": 0,
+          "rz": 0,
+          "sx": 0.76,
+          "sy": 0.76,
+          "sz": 0.76
+        },
+        "renderable": {
+          "mesh": "mesh.sphere",
+          "texture": "",
+          "visible": true,
+          "r": 0.075,
+          "g": 0.08,
+          "b": 0.086
+        }
+      }
+    }
+  ]
+}
