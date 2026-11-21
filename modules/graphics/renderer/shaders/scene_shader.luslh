@@ -304,4 +304,9 @@ extern slang
     float32 SampleSceneRandom(inout RayQueryContext queries);
     uint32 SampleSceneRandom(inout RayQueryContext queries, in uint32 minimumInclusive, in uint32 maximumExclusive);
     RandomAddress PixelRandomAddress(in uint32 pixel, in uint32 sample, in uint32 dimension);
+    /// Draw a weighted component index from finite, nonnegative weights.
+    /// Returns SCENE_INVALID_INDEX and latches a failure if the draw or weights are invalid.
+    uint32 SampleSceneWeightedIndex(inout RayQueryContext queries, in float32x2 weights);
+    uint32 SampleSceneWeightedIndex(inout RayQueryContext queries, in float32x3 weights);
+    uint32 SampleSceneWeightedIndex(inout RayQueryContext queries, in float32x4 weights);
 };

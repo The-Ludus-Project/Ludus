@@ -266,7 +266,9 @@ ordinals and a harvested flag of 0 or 1. Any rejection leaves the session
 unchanged and names the cause through `RandomCheckpointStatus`. On success it
 replaces the seed and tombstone store together and discards the active world and
 any load in progress; the next `RequestLoad` regenerates the room from the restored
-state. A harvested placement becomes due to regrow on the first tick, exactly as
+state. The discarded world's addressed commands are retired as on activation
+([addressed commands](#addressed-commands-and-session-flow)); a restore returns
+`CapacityExceeded`, unchanged, while unconsumed retired outcomes leave no room. A harvested placement becomes due to regrow on the first tick, exactly as
 when re-entering its room, and draws the same variant as the uninterrupted
 session. `Prepare` rejects a tombstone whose variant lies outside its layer or
 whose ordinal is zero with `InvalidConfiguration` and keeps no placements.
@@ -349,6 +351,58 @@ and BeginTick sorts one bounded result batch by request ID. Superseded and destr
 entities reject delayed results. Reservations persist until their matching result
 or cancellation acknowledgement is consumed. This sample provides no worker pool.
 
+### Addressed commands and session flow
+
+These are the [Gameplay G1](../architecture/gameplay-foundations.md#debugging-performance-and-acceptance)
+contracts: typed addressed commands, cancellation scopes and a small session
+state machine. They are game-owned code in this application, not engine API.
+
+`PostDamage` admits a typed `DamageCommand` addressed to an active entity at an
+idle boundary and returns a token. The next BeginTick captures every admitted
+command. Gameplay delivers the batch after player and enemy combat and before
+exit triggers, in admission tick, producer and sequence order. A command admitted
+during delivery waits for the next tick, so delivery never drains recursively.
+Each token receives exactly one `CommandOutcome`: `Applied`, `StaleTarget`,
+`MissingCapability`, `Cancelled` or `Superseded`. Outcomes publish only when their
+tick commits, accumulate across catch-up ticks until `ConsumeCommandOutcomes`, and
+a faulted tick publishes none. Admission reserves the eventual outcome: pending,
+captured and unconsumed outcomes share `MAX_ADDRESSED_COMMANDS` (16), and a full
+world rejects admission with `CapacityExceeded`. A paused world holds its
+commands until a tick runs. `GetReplayHash` returns zero while commands await a tick.
+
+`OpenCommandScope` returns a generation-checked cancellation token, optionally
+owned by an entity (at most `MAX_COMMAND_SCOPES`, 8, open). A command carries its
+scope from admission, and delivery revalidates it. Cancelling or closing the scope,
+or queuing its owner's destruction, resolves the command as `Cancelled`, even
+after its batch was captured. Closing retires the generation, so an old token never
+aliases a reused slot. `Session::Activate` retires the replaced world's commands:
+unconsumed outcomes move to `GetRetiredCommandOutcomes`, and every unresolved
+command is `Superseded`. Activation waits instead of dropping outcomes when that
+list is full.
+
+The game drives the session through typed `FlowRequest` values and one
+`ProcessFlowBoundary` per frame between ticks; `PollLoad` advances the candidate.
+The states are Boot, Frontend, Preparing, Faulted, Shutdown and the Session
+superstate's Playing, Paused and Result. A boundary captures the admitted requests
+and observes a ready or failed candidate, an authoritative fault and a reached
+level outcome. It applies at most one transition: Quit first, then Fault, a
+candidate result, Leave, Load, Complete/Continue, Pause/Resume and ServicesReady,
+with ties going to the earlier request. Every request receives one
+`FlowRequestResult`: `Applied`, `Rejected` (no transition from this state),
+`Superseded` or `PreflightFailed`. Requests made during a boundary wait for the
+next one. A Load preflight parses its source and reserves the next load's
+cancellation scope before any exit action runs, so an unknown room leaves the
+state unchanged. Preparing owns its load: leaving it for any reason other than
+activation or candidate failure cancels the load exactly once
+(`GetCancelledLoads`). A failed candidate returns to the retained Playing,
+Paused, Result or Faulted state, and to Frontend for an initial load. A retained
+session is held while its replacement prepares. Each state's `FlowPolicy`
+(simulation, input route, step) drives the tick driver. P, N and R become Pause or
+Resume, `StepFlow` and Load requests; Quit has a reserved request slot. Tools
+and the headless runner keep the direct `RequestLoad`, `PollLoad` and `Activate`
+calls and leave the flow in Boot. Observers poll `GetLastChange`; scoped
+`FlowChanged` subscriptions and gameplay-produced commands are later work.
+
 Ludus profiling scopes measure ticks, Intent, Motion, Gameplay, Commit and render
 extraction. A 64-record tick trace ring stores consumed input, phase/status and
 queue counts.
@@ -407,7 +461,11 @@ contract describes coverage, disconnection and the export.
 
 Native tests cover identity retirement, stale/foreign handles, sparse removal,
 compiled and JSON definitions, canonical round trips, candidate ownership,
-input/catch-up/pause, commands, combat/contacts, completions and replay. The
+input/catch-up/pause, commands, combat/contacts, completions and replay.
+`ludus_world_session_flow_tests` covers the G1 contracts: command ordering under
+different frame partitions, queue bounds, cancellation after capture, once-only
+outcomes through faults and replacement, pause and step, failed replacement and
+cancelled loads. The
 follow-camera regression drives the real tick and extraction paths with an
 uneven schedule, including a 52 ms interval within the catch-up budget. It
 checks both the player's draw and camera against the constant-velocity trajectory

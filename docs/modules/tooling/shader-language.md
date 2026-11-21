@@ -984,9 +984,14 @@ array, vector or matrix goes through a generated `_luslCheckIndexN`:
 
 The first failure is kept; zero means no check failed. `EmitResult::BoundsChecks`
 maps each failure code to its index expression. Constant indices are checked by
-the checker in every build, and release builds emit no checks. Reporting the
-latched code through the render graph's invocation failure arrives with the
-render-graph integration in L1e.
+the checker in every build, and release builds emit no checks. Debug and Development graph builds enable these checks for LUSL ray callbacks
+and scene compute passes. For a standalone graph build, pass `--bounds-checks`
+to `ludus_tools render-graph build`. A latched callback failure marks the ray
+invocation as failed even if the clamped access returned a valid color. The
+ray-pass summary reports the highest mapped LUSL line among the failures in
+that history. Use that line to check the index and its declared extent in the
+pass's LUSL sources. The mapping follows the original source, including macro
+use sites. Raster callbacks have no invocation failure channel.
 
 ### Line mapping
 
@@ -1196,6 +1201,25 @@ parameter names: `MakeRandomAddress(scope = id.xy, event = 0, dimension = 1)`.
 A target test calls every declaration and compiles the module for SPIR-V, WGSL
 and Metal.
 
+Use `NearlyEqual(first, second, absoluteTolerance, relativeTolerance)` for
+scalars. Pass zero for the relative tolerance when the comparison has a fixed
+unit-based threshold. The three-argument `NearlyEqual` overload compares
+`float32x3` positions by Euclidean distance in world units. Both overloads
+reject non-finite operands and negative or non-finite tolerances.
+
+```c
+#include "math.luslh"
+
+bool AreEdgeEndpointsNear(in float32x3 firstWorld,
+                          in float32x3 secondWorld,
+                          in float32 toleranceWorld)
+{
+    return NearlyEqual(firstWorld, secondWorld, toleranceWorld);
+}
+```
+
+Slang shaders call the same overloads via `#include "math.slang"`.
+
 `ray_shader.luslh` declares the ray callback types `Ray`, `RayLaunch` and
 `RayHit` for [render-graph programs](#render-graph-programs). The ray wrapper
 defines them before it includes a callback, so the header uses a path-less
@@ -1215,8 +1239,9 @@ wrapper includes `scene_shader.slang` before any callback:
 - the public operations, from `TraceClosest`, `TestVisibility`,
   `MakeCameraRay` and `SpawnSurfaceRay` to `EvaluateMaterial`, `SelectLight`,
   `SampleIncidentLight`, both `SampleLight` overloads,
-  `SampleUniformFloat01` for explicit dimensions and
-  `SampleSceneRandom` for automatic draws;
+  `SampleUniformFloat01` for explicit dimensions,
+  `SampleSceneRandom` for automatic draws and the vector overloads of
+  `SampleSceneWeightedIndex`;
 - the failure reasons as LUSL constants (`SCENE_FAILURE_AUTHORED_FIRST`, ...).
 
 It includes `math.luslh`. A scene-interface program includes

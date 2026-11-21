@@ -1547,6 +1547,40 @@ uint SampleSceneRandom(inout RayQueryContext queries, uint minimumInclusive, uin
     }
     return minimumInclusive + offset;
 }
+/// Draw a zero-based index with probability proportional to its finite, nonnegative weight.
+/// Weights can be normalized or unnormalized. Zero weights have no interval.
+/// The helper draws once from the invocation stream, then validates the weights.
+/// Invalid weights or a zero total latch an invalid-argument failure. Any failure
+/// returns SCENE_INVALID_INDEX. Stream exhaustion preserves the random failure reason.
+uint SampleSceneWeightedIndex<let WeightCount : int>(inout RayQueryContext queries, in float weights[WeightCount])
+{
+    const float randomValue = SampleSceneRandom(queries);
+    if (queries.HasFailed == true)
+        return SCENE_INVALID_INDEX;
+
+    uint index;
+    if (TrySampleWeightedIndex(weights, randomValue, index) == false)
+    {
+        FailSceneQuery(queries, LUDUS_SCENE_FAILURE_INVALID_ARGUMENT);
+        return SCENE_INVALID_INDEX;
+    }
+    return index;
+}
+/// Draw a weighted index from two vector components using the array overload's stream and failure contract.
+uint SampleSceneWeightedIndex(inout RayQueryContext queries, in float2 weights)
+{
+    return SampleSceneWeightedIndex(queries, float[2](weights.x, weights.y));
+}
+/// Draw a weighted index from three vector components using the array overload's stream and failure contract.
+uint SampleSceneWeightedIndex(inout RayQueryContext queries, in float3 weights)
+{
+    return SampleSceneWeightedIndex(queries, float[3](weights.x, weights.y, weights.z));
+}
+/// Draw a weighted index from four vector components using the array overload's stream and failure contract.
+uint SampleSceneWeightedIndex(inout RayQueryContext queries, in float4 weights)
+{
+    return SampleSceneWeightedIndex(queries, float[4](weights.x, weights.y, weights.z, weights.w));
+}
 /// True for dielectric (glass) materials, solid or thin. Both are smooth, delta interfaces that scatter on either side
 /// of their surface. SampleStandardBsdfTransport returns IsSpecular samples for them and ComputeStandardBsdfCosine
 /// returns zero, so no light sample reaches them; EvaluateStandardBsdf and the direction-only SampleStandardBsdf keep

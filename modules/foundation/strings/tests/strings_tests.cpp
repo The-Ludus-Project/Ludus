@@ -7,6 +7,7 @@
 #include <ludus/foundation/strings/static_string.hpp>
 #include <ludus/foundation/strings/string.hpp>
 #include <ludus/foundation/strings/string_table.hpp>
+#include <ludus/foundation/strings/utf16.hpp>
 #include <ludus/foundation/strings/utf8.hpp>
 #include <ludus/foundation/threading/thread.hpp>
 
@@ -1675,3 +1676,403 @@ TEST_CASE("table operation sequences match a reference model", "[strings][intern
         REQUIRE((coverage.CapacityExceeded > 0) == isLimited);
     }
 }
+
+TEST_CASE("unique strings shrink and erase checked byte ranges without changing failed owners", "[strings][allocation]")
+{
+    FaultHeap heap;
+    {
+        String value(heap.Domain);
+        REQUIRE(value.TryAssign("short") == StringStatus::Ok);
+        REQUIRE(value.TryShrinkToFit() == StringStatus::Ok);
+        REQUIRE(value.GetCapacity() == String::kInlineCapacity);
+        REQUIRE(heap.Attempts == 0);
+
+        const std::string longText = std::string(40, 'a') + std::string("\0z", 2);
+        REQUIRE(value.TryEnsureCapacity(100) == StringStatus::Ok);
+        REQUIRE(value.TryAssign(longText) == StringStatus::Ok);
+        REQUIRE(heap.LiveBytes == 101);
+        const char* pointer = value.GetData();
+        heap.FailAt = heap.Attempts + 1;
+        REQUIRE(value.TryShrinkToFit() == StringStatus::OutOfMemory);
+        REQUIRE(value.GetView() == longText);
+        REQUIRE(value.GetData() == pointer);
+        REQUIRE(value.GetCapacity() == 100);
+        heap.FailAt = 0;
+        REQUIRE(value.TryShrinkToFit() == StringStatus::Ok);
+        REQUIRE(value.GetCapacity() == longText.size());
+        REQUIRE(value.GetView() == longText);
+        REQUIRE(value.GetData()[value.GetSize()] == '\0');
+        REQUIRE(heap.LiveBytes == longText.size() + 1);
+        const usize attempts = heap.Attempts;
+        REQUIRE(value.TryShrinkToFit() == StringStatus::Ok);
+        REQUIRE(heap.Attempts == attempts);
+
+        REQUIRE(value.TryErase(value.GetSize() + 1, 0) == StringStatus::OutOfRange);
+        REQUIRE(value.TryErase(2, value.GetSize() - 1) == StringStatus::OutOfRange);
+        REQUIRE(value.TryErase(0, static_cast<usize>(-1)) == StringStatus::OutOfRange);
+        REQUIRE(value.GetView() == longText);
+        REQUIRE(value.TryErase(value.GetSize(), 0) == StringStatus::Ok);
+        REQUIRE(value.TryErase(1, 0) == StringStatus::Ok);
+        REQUIRE(value.GetView() == longText);
+        // Erase keeps the embedded zero and moves the terminator to the new end.
+        REQUIRE(value.TryErase(2, 36) == StringStatus::Ok);
+        REQUIRE(value.GetView() == std::string_view("aaaa\0z", 6));
+        REQUIRE(value.GetData()[value.GetSize()] == '\0');
+        REQUIRE(value.GetCapacity() == longText.size());
+        // A value that fits inline returns there without a new allocation.
+        REQUIRE(value.TryShrinkToFit() == StringStatus::Ok);
+        REQUIRE(heap.Attempts == attempts);
+        REQUIRE(value.GetCapacity() == String::kInlineCapacity);
+        REQUIRE(value.GetView() == std::string_view("aaaa\0z", 6));
+        REQUIRE(heap.LiveBytes == 0);
+        REQUIRE(value.TryErase(0, value.GetSize()) == StringStatus::Ok);
+        REQUIRE(value.IsEmpty());
+        REQUIRE(value.GetData()[0] == '\0');
+    }
+    REQUIRE(heap.LiveBytes == 0);
+    REQUIRE(heap.Allocations == heap.Frees);
+    REQUIRE_FALSE(heap.BadFree);
+}
+
+TEST_CASE("bounded strings erase ranges and truncate only at code point boundaries", "[strings][utf8]")
+{
+    StaticString<8> value;
+    REQUIRE(value.TryAssign("abcdefgh") == StringStatus::Ok);
+    REQUIRE(value.TryErase(7, 2) == StringStatus::OutOfRange);
+    REQUIRE(value.TryErase(9, 0) == StringStatus::OutOfRange);
+    REQUIRE(value.GetView() == "abcdefgh");
+    REQUIRE(value.TryErase(1, 3) == StringStatus::Ok);
+    REQUIRE(value.GetView() == "aefgh");
+    REQUIRE(value.GetData()[5] == '\0');
+
+    Utf8View text;
+    usize errorOffset = 0;
+    // "ab", U+00E9 (2 bytes), U+20AC (3 bytes), U+1F600 (4 bytes).
+    const std::string_view mixed = "ab\xC3\xA9\xE2\x82\xAC\xF0\x9F\x98\x80";
+    REQUIRE(ValidateUtf8(mixed, text, errorOffset) == StringStatus::Ok);
+    bool isTruncated = false;
+    StaticString<6> shortName;
+    shortName.AssignTruncatedUtf8(text, isTruncated);
+    REQUIRE(isTruncated);
+    REQUIRE(shortName.GetView() == "ab\xC3\xA9");
+    StaticString<7> exactName;
+    exactName.AssignTruncatedUtf8(text, isTruncated);
+    REQUIRE(isTruncated);
+    REQUIRE(exactName.GetView() == "ab\xC3\xA9\xE2\x82\xAC");
+    StaticString<11> wholeName;
+    wholeName.AssignTruncatedUtf8(text, isTruncated);
+    REQUIRE_FALSE(isTruncated);
+    REQUIRE(wholeName.GetView() == mixed);
+    StaticString<0> none;
+    none.AssignTruncatedUtf8(text, isTruncated);
+    REQUIRE(isTruncated);
+    REQUIRE(none.IsEmpty());
+    // The input may borrow the destination's own bytes.
+    StaticString<11> self;
+    REQUIRE(self.TryAssign(mixed) == StringStatus::Ok);
+    REQUIRE(ValidateUtf8(self.GetView().substr(2), text, errorOffset) == StringStatus::Ok);
+    self.AssignTruncatedUtf8(text, isTruncated);
+    REQUIRE_FALSE(isTruncated);
+    REQUIRE(self.GetView() == mixed.substr(2));
+    // Every capacity keeps a well-formed prefix.
+    for (usize limit = 0; limit <= mixed.size(); ++limit)
+    {
+        REQUIRE(ValidateUtf8(mixed, text, errorOffset) == StringStatus::Ok);
+        const usize boundary = FindPrecedingUtf8Boundary(text, limit);
+        REQUIRE(boundary <= limit);
+        Utf8View prefix;
+        REQUIRE(ValidateUtf8(mixed.substr(0, boundary), prefix, errorOffset) == StringStatus::Ok);
+        REQUIRE((limit - boundary) < 4);
+    }
+}
+
+TEST_CASE("checked UTF-8 slices start and end on code point boundaries", "[strings][utf8]")
+{
+    const std::string_view mixed = "ab\xC3\xA9\xE2\x82\xAC\xF0\x9F\x98\x80";
+    Utf8View text;
+    usize errorOffset = 0;
+    REQUIRE(ValidateUtf8(mixed, text, errorOffset) == StringStatus::Ok);
+    const usize boundaries[]{0, 1, 2, 4, 7, 11};
+    const auto isBoundary = [&](usize offset) {
+        for (const usize boundary : boundaries)
+        {
+            if (boundary == offset)
+            {
+                return true;
+            }
+        }
+        return false;
+    };
+    Utf8View sentinel;
+    REQUIRE(ValidateUtf8("sentinel", sentinel, errorOffset) == StringStatus::Ok);
+    for (usize offset = 0; offset <= mixed.size() + 1; ++offset)
+    {
+        REQUIRE(FindPrecedingUtf8Boundary(text, offset) <= offset);
+        REQUIRE(isBoundary(FindPrecedingUtf8Boundary(text, offset)));
+        for (usize size = 0; size <= mixed.size() + 1; ++size)
+        {
+            Utf8View slice = sentinel;
+            const StringStatus status = TrySliceUtf8(text, offset, size, slice);
+            CAPTURE(offset, size);
+            if (offset > mixed.size() || size > mixed.size() - offset)
+            {
+                REQUIRE(status == StringStatus::OutOfRange);
+                REQUIRE(slice.GetView() == "sentinel");
+            }
+            else if (isBoundary(offset) == false || isBoundary(offset + size) == false)
+            {
+                REQUIRE(status == StringStatus::SplitsCodePoint);
+                REQUIRE(slice.GetView() == "sentinel");
+            }
+            else
+            {
+                REQUIRE(status == StringStatus::Ok);
+                REQUIRE(slice.GetView().data() == mixed.data() + offset);
+                REQUIRE(slice.GetView() == mixed.substr(offset, size));
+                Utf8View revalidated;
+                REQUIRE(ValidateUtf8(slice.GetView(), revalidated, errorOffset) == StringStatus::Ok);
+            }
+        }
+    }
+    REQUIRE(TrySliceUtf8(text, 1, static_cast<usize>(-1), sentinel) == StringStatus::OutOfRange);
+}
+
+TEST_CASE("display repair replaces maximal ill-formed subparts and respects byte limits", "[strings][utf8][allocation]")
+{
+    constexpr std::string_view REPLACEMENT = "\xEF\xBF\xBD";
+    struct RepairCase final
+    {
+        std::string_view Input;
+        std::string Expected;
+        usize Replacements;
+    };
+    // The first row is the Unicode Standard's example of substituting maximal subparts.
+    const std::string table38 = std::string("a") + std::string(REPLACEMENT) + std::string(REPLACEMENT) +
+                                std::string(REPLACEMENT) + "b" + std::string(REPLACEMENT) + "c" +
+                                std::string(REPLACEMENT) + std::string(REPLACEMENT) + "d";
+    const std::string one(REPLACEMENT);
+    const std::string two = one + one;
+    const std::string three = two + one;
+    const std::string four = three + one;
+    const RepairCase cases[]{
+        {"\x61\xF1\x80\x80\xE1\x80\xC2\x62\x80\x63\x80\xBF\x64", table38, 6},
+        {"", "", 0},
+        {"plain", "plain", 0},
+        {std::string_view("a\0b", 3), std::string("a\0b", 3), 0},
+        {"\xC0\x80", two, 2},
+        {"\xE0\x80\x80", three, 3},
+        {"\xED\xA0\x80", three, 3},
+        {"\xF4\x90\x80\x80", four, 4},
+        {"\xF5", one, 1},
+        {"\xE1\x80", one, 1},
+        {"\xF0\x9F\x98", one, 1},
+        {"\xE1x\x80", one + "x" + one, 2},
+        {"\xC3\xA9\xFF\xC3\xA9", "\xC3\xA9" + one + "\xC3\xA9", 1},
+    };
+    for (const RepairCase& repairCase : cases)
+    {
+        String repaired;
+        usize replacements = 99;
+        REQUIRE(TryRepairUtf8(repairCase.Input, 64, repaired, replacements) == StringStatus::Ok);
+        CAPTURE(repairCase.Input);
+        REQUIRE(repaired.GetView() == repairCase.Expected);
+        REQUIRE(replacements == repairCase.Replacements);
+        Utf8View text;
+        usize errorOffset = 0;
+        REQUIRE(ValidateUtf8(repaired.GetView(), text, errorOffset) == StringStatus::Ok);
+    }
+    // Well-formed input is copied unchanged and malformed input always becomes well-formed.
+    for (uint32 pair = 0; pair <= 0xFFFF; ++pair)
+    {
+        const char bytes[]{static_cast<char>(pair >> 8), static_cast<char>(pair & 0xFF)};
+        const std::string_view input(bytes, 2);
+        String repaired;
+        usize replacements = 0;
+        Utf8View text;
+        usize errorOffset = 0;
+        const bool isValid = ValidateUtf8(input, text, errorOffset) == StringStatus::Ok;
+        if (TryRepairUtf8(input, 8, repaired, replacements) != StringStatus::Ok || (replacements == 0) != isValid ||
+            (isValid == true && repaired.GetView() != input) ||
+            ValidateUtf8(repaired.GetView(), text, errorOffset) != StringStatus::Ok)
+        {
+            FAIL("repair of two bytes " << pair);
+        }
+    }
+
+    FaultHeap heap;
+    {
+        String output(heap.Domain);
+        REQUIRE(output.TryAssign("kept") == StringStatus::Ok);
+        usize replacements = 99;
+        const std::string_view malformed = "name\xFF";
+        // The limit counts repaired bytes: 4 + 3.
+        REQUIRE(TryRepairUtf8(malformed, 6, output, replacements) == StringStatus::CapacityExceeded);
+        REQUIRE(output.GetView() == "kept");
+        REQUIRE(replacements == 99);
+        REQUIRE(TryRepairUtf8(malformed, 7, output, replacements) == StringStatus::Ok);
+        REQUIRE(output.GetView() == "name\xEF\xBF\xBD");
+        REQUIRE(replacements == 1);
+        const std::string longMalformed = std::string(30, 'x') + "\x80";
+        heap.FailAt = heap.Attempts + 1;
+        REQUIRE(TryRepairUtf8(longMalformed, 64, output, replacements) == StringStatus::OutOfMemory);
+        REQUIRE(output.GetView() == "name\xEF\xBF\xBD");
+        REQUIRE(replacements == 1);
+        heap.FailAt = 0;
+        REQUIRE(TryRepairUtf8(longMalformed, 64, output, replacements) == StringStatus::Ok);
+        REQUIRE(&output.GetDomain() == &heap.Domain);
+        REQUIRE(output.GetView() == std::string(30, 'x') + one);
+        // The input may borrow the output.
+        REQUIRE(output.TryAppend("\xC3") == StringStatus::Ok);
+        REQUIRE(TryRepairUtf8(output.GetView(), 64, output, replacements) == StringStatus::Ok);
+        std::string twice(30, 'x');
+        twice += two;
+        REQUIRE(output.GetView() == twice);
+        REQUIRE(replacements == 1);
+        REQUIRE(heap.Allocations == 2);
+    }
+    REQUIRE(heap.LiveBytes == 0);
+    REQUIRE_FALSE(heap.BadFree);
+}
+
+TEST_CASE("strict UTF-16 conversion reports malformed input and leaves outputs unchanged", "[strings][utf8]")
+{
+    const std::string_view mixed = "ab\xC3\xA9\xE2\x82\xAC\xF0\x9F\x98\x80";
+    const std::u16string_view wide = u"abé€\U0001F600";
+    char16_t units[8]{};
+    usize unitCount = 0;
+    usize errorOffset = 99;
+    REQUIRE(MeasureUtf8AsUtf16(mixed, unitCount, errorOffset) == StringStatus::Ok);
+    REQUIRE(unitCount == 6);
+    REQUIRE(errorOffset == 0);
+    REQUIRE(ConvertUtf8ToUtf16(mixed, units, unitCount, errorOffset) == StringStatus::Ok);
+    REQUIRE(std::u16string_view(units, unitCount) == wide);
+    char bytes[16]{};
+    usize byteCount = 0;
+    REQUIRE(MeasureUtf16AsUtf8(wide, byteCount, errorOffset) == StringStatus::Ok);
+    REQUIRE(byteCount == mixed.size());
+    REQUIRE(ConvertUtf16ToUtf8(wide, bytes, byteCount, errorOffset) == StringStatus::Ok);
+    REQUIRE(std::string_view(bytes, byteCount) == mixed);
+
+    // Capacity failures write nothing and keep the previous counts.
+    char16_t smallUnits[5]{u'x', u'x', u'x', u'x', u'x'};
+    unitCount = 77;
+    REQUIRE(ConvertUtf8ToUtf16(mixed, smallUnits, unitCount, errorOffset) == StringStatus::CapacityExceeded);
+    REQUIRE(unitCount == 77);
+    REQUIRE(std::u16string_view(smallUnits, 5) == u"xxxxx");
+    char smallBytes[10]{'x', 'x', 'x', 'x', 'x', 'x', 'x', 'x', 'x', 'x'};
+    byteCount = 77;
+    REQUIRE(ConvertUtf16ToUtf8(wide, smallBytes, byteCount, errorOffset) == StringStatus::CapacityExceeded);
+    REQUIRE(byteCount == 77);
+    REQUIRE(std::string_view(smallBytes, 10) == "xxxxxxxxxx");
+
+    // Malformed UTF-8 reports the first ill-formed byte and writes nothing.
+    REQUIRE(ConvertUtf8ToUtf16("ok\xC3\xA9\xED\xA0\x80", units, unitCount, errorOffset) == StringStatus::InvalidUtf8);
+    REQUIRE(errorOffset == 4);
+    REQUIRE(unitCount == 77);
+    REQUIRE(std::u16string_view(units, 6) == wide);
+    REQUIRE(MeasureUtf8AsUtf16("\xE1\x80", unitCount, errorOffset) == StringStatus::InvalidUtf8);
+    REQUIRE(errorOffset == 0);
+    REQUIRE(unitCount == 77);
+    // Unpaired surrogates report their unit offset.
+    const char16_t loneHigh[]{u'a', 0xD83D};
+    const char16_t loneLow[]{u'a', u'b', 0xDE00, u'c'};
+    const char16_t highThenText[]{0xD83D, u'x'};
+    const char16_t reversed[]{0xDE00, 0xD83D};
+    struct SurrogateCase final
+    {
+        std::u16string_view Units;
+        usize Offset;
+    };
+    const SurrogateCase surrogates[]{
+        {{loneHigh, 2}, 1},
+        {{loneLow, 4}, 2},
+        {{highThenText, 2}, 0},
+        {{reversed, 2}, 0},
+    };
+    for (const SurrogateCase& surrogate : surrogates)
+    {
+        errorOffset = 99;
+        REQUIRE(ConvertUtf16ToUtf8(surrogate.Units, bytes, byteCount, errorOffset) == StringStatus::InvalidUtf16);
+        REQUIRE(errorOffset == surrogate.Offset);
+        REQUIRE(byteCount == 77);
+        REQUIRE(std::string_view(bytes, mixed.size()) == mixed);
+    }
+    // Embedded U+0000 is a scalar like any other.
+    REQUIRE(ConvertUtf8ToUtf16(std::string_view("a\0b", 3), units, unitCount, errorOffset) == StringStatus::Ok);
+    REQUIRE(std::u16string_view(units, unitCount) == std::u16string_view(u"a\0b", 3));
+
+    // Every scalar round-trips; the expected UTF-16 is computed independently of the converter.
+    for (uint32 scalar = 0; scalar <= 0x10FFFF; ++scalar)
+    {
+        if (scalar >= 0xD800 && scalar <= 0xDFFF)
+        {
+            continue;
+        }
+        char16_t expected[2]{};
+        usize expectedUnits = 1;
+        if (scalar < 0x10000)
+        {
+            expected[0] = static_cast<char16_t>(scalar);
+        }
+        else
+        {
+            expectedUnits = 2;
+            expected[0] = static_cast<char16_t>(0xD800 + ((scalar - 0x10000) >> 10));
+            expected[1] = static_cast<char16_t>(0xDC00 + ((scalar - 0x10000) & 0x3FF));
+        }
+        char encoded[4]{};
+        usize encodedSize = 0;
+        char16_t converted[2]{};
+        usize convertedUnits = 0;
+        if (ConvertUtf16ToUtf8({expected, expectedUnits}, encoded, encodedSize, errorOffset) != StringStatus::Ok ||
+            ConvertUtf8ToUtf16({encoded, encodedSize}, converted, convertedUnits, errorOffset) != StringStatus::Ok ||
+            std::u16string_view(converted, convertedUnits) != std::u16string_view(expected, expectedUnits))
+        {
+            FAIL("UTF-16 round trip of scalar " << scalar);
+        }
+        Utf8View text;
+        if (ValidateUtf8({encoded, encodedSize}, text, errorOffset) != StringStatus::Ok)
+        {
+            FAIL("UTF-16 conversion produced ill-formed UTF-8 for scalar " << scalar);
+        }
+    }
+}
+
+TEST_CASE("char8_t adapters borrow units as bytes and copy bytes into units", "[strings][utf8]")
+{
+    const std::string_view bytes = GetByteView(u8"café");
+    REQUIRE(bytes == "caf\xC3\xA9");
+    REQUIRE(GetByteView(std::u8string_view(u8"a\0b", 3)) == std::string_view("a\0b", 3));
+    char8_t units[5]{u8'x', u8'x', u8'x', u8'x', u8'x'};
+    usize unitCount = 9;
+    REQUIRE(TryCopyToUtf8Units("too long", units, unitCount) == StringStatus::CapacityExceeded);
+    REQUIRE(unitCount == 9);
+    REQUIRE(std::u8string_view(units, 5) == u8"xxxxx");
+    REQUIRE(TryCopyToUtf8Units(bytes, units, unitCount) == StringStatus::Ok);
+    REQUIRE(unitCount == 5);
+    REQUIRE(std::u8string_view(units, unitCount) == u8"café");
+}
+
+#if defined(LUDUS_PLATFORM_WINDOWS)
+TEST_CASE("Windows wide-character conversion matches the UTF-16 conversion", "[strings][utf8]")
+{
+    const std::string_view mixed = "ab\xC3\xA9\xE2\x82\xAC\xF0\x9F\x98\x80";
+    wchar_t units[8]{};
+    usize unitCount = 0;
+    usize errorOffset = 99;
+    REQUIRE(ConvertUtf8ToUtf16(mixed, units, unitCount, errorOffset) == StringStatus::Ok);
+    REQUIRE(std::wstring_view(units, unitCount) == L"abé€\U0001F600");
+    char bytes[16]{};
+    usize byteCount = 0;
+    REQUIRE(MeasureUtf16AsUtf8(std::wstring_view(units, unitCount), byteCount, errorOffset) == StringStatus::Ok);
+    REQUIRE(byteCount == mixed.size());
+    REQUIRE(ConvertUtf16ToUtf8(std::wstring_view(units, unitCount), bytes, byteCount, errorOffset) == StringStatus::Ok);
+    REQUIRE(std::string_view(bytes, byteCount) == mixed);
+    const wchar_t loneHigh[]{L'a', static_cast<wchar_t>(0xD83D)};
+    byteCount = 77;
+    REQUIRE(ConvertUtf16ToUtf8(std::wstring_view(loneHigh, 2), bytes, byteCount, errorOffset) ==
+            StringStatus::InvalidUtf16);
+    REQUIRE(errorOffset == 1);
+    REQUIRE(byteCount == 77);
+}
+#endif

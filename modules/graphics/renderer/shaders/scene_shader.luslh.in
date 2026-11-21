@@ -52,4 +52,7 @@
 @declare EvaluateLightPdfSolidAngle EvaluateEnvironmentPdfSolidAngle EvaluateLightSelectionPmf
 @declare GetSurfaceLightIndex GetEnvironmentLightIndex EvaluateIncidentLightPdfSolidAngle
 @declare EvaluateIncidentEnvironmentPdfSolidAngle SampleUniformFloat01 SampleSceneRandom PixelRandomAddress
+/// Draw a weighted component index from finite, nonnegative weights.
+/// Returns SCENE_INVALID_INDEX and latches a failure if the draw or weights are invalid.
+@declare SampleSceneWeightedIndex
 @end

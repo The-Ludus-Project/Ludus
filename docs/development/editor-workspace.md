@@ -2552,6 +2552,27 @@ sky disks. **Sun Disk Radius** sets the disk for a linked Sun with an authored
 direction; its default matches the real Sun. Properties hide it while the
 linked Sun uses an Earth preset, which sets its own size. Direct lights use the renderer's existing directional shadow path.
 
+To add clouds, select the Atmosphere and tick **Properties → Atmosphere →
+Cloud layer**, then apply the edit. Properties then shows the layer's fields.
+The layer is one flat, horizontal slab centred on the Atmosphere entity and
+turned with its rotation: **Cloud base** and **Cloud thickness** set its
+height range above the entity's ground plane, **Cloud size X** and **Cloud
+size Z** its footprint along the entity's local axes, and **Cloud edge fade**
+how gradually it thins out at the sides. **Cloud extinction** is the
+fraction of light removed per metre at **Cloud density** one; a density of
+zero draws the clear sky. **Cloud albedo** is the scattered fraction of that
+light, and **Cloud forward scattering** brightens the cloud around the Sun.
+The linked Sun lights the cloud through the air, so a sunset reddens it.
+Distant clouds take on the same haze as distant ground. Look up from below
+the base or toward the slab from outside its footprint.
+
+The cloud layer is a controlled prototype in the default clustered deferred
+raster graph, drawn for perspective cameras inside the atmosphere. It casts no
+shadow on the ground, does not change the sky's light on surfaces, and has no
+multiple scattering, so thick clouds look darker than real ones. Orthographic
+views, ray-traced configurations and RT1 reference captures leave it out.
+[Cloud transport contract](../architecture/world-environment.md#controlled-cloud-layer)
+
 A perspective camera above the atmosphere can see the illuminated limb and
 the celestial background. The ground uses a dark boundary. Below ground or
 outside the supported sky range, the graph uses its ordinary background.

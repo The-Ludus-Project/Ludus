@@ -3,6 +3,7 @@
 
 #include "../shaders/renderer_atmosphere_layout.h"
 #include "../src/internal/atmosphere_sky_tables.h"
+#include "../src/internal/render_graph_atmosphere.h"
 #include "earth_sky_quadrature.hpp"
 
 #include <ludus/foundation/containers/array.hpp>
@@ -10,6 +11,7 @@
 #include <ludus/foundation/math/scalar.hpp>
 #include <ludus/foundation/math/vector.hpp>
 #include <ludus/graphics/renderer/atmosphere.hpp>
+#include <ludus/graphics/renderer/renderer.hpp>
 #include <ludus/graphics/renderer/tone_mapping.hpp>
 
 #include <catch2/catch_test_macros.hpp>
@@ -350,4 +352,81 @@ TEST_CASE("Atmosphere meter reads daylight, darkness and invalid inputs", "[atmo
     CHECK(renderer::MeterAtmosphereIlluminance(invalid, preserved) ==
           renderer::AtmosphereEnvironmentStatus::InvalidDescription);
     CHECK(preserved == SENTINEL);
+}
+
+TEST_CASE("Cloud layer packing validates its fields and places the eye in the layer frame", "[atmosphere][cloud-layer]")
+{
+    renderer::AtmosphereDescription atmosphere;
+    atmosphere.IsEnabled = true;
+    atmosphere.SurfaceAnchorWorld = {100, 0, -50};
+    atmosphere.Clouds.IsEnabled = true;
+    // A quarter turn about up: the layer's +X is world -Z, so its +Z (X cross Y) is world +X.
+    atmosphere.Clouds.AxisXWorld = {0, 0.25F, -2};
+    renderer::ViewDescription camera;
+    camera.CameraPosition = {130, 2, -70};
+    renderer::internal::CloudLayerUniform uniform;
+    REQUIRE(renderer::internal::TryPackCloudLayer(atmosphere, camera, uniform) == true);
+    CHECK(uniform.AxisXWorld.Z == -1);
+    CHECK(uniform.AxisXWorld.W == 1);
+    CHECK(uniform.AxisZWorld.X == 1);
+    CHECK(uniform.CameraLocal.X == 20);
+    CHECK(uniform.CameraLocal.Y == 2);
+    CHECK(uniform.CameraLocal.Z == 30);
+    const renderer::CloudLayerDescription& clouds = atmosphere.Clouds;
+    CHECK(uniform.UpWorld.W == clouds.BaseHeightMetres);
+    CHECK(uniform.AxisZWorld.W == clouds.BaseHeightMetres + clouds.ThicknessMetres);
+    CHECK(uniform.CameraLocal.W == clouds.EdgeFadeMetres);
+    CHECK(uniform.Medium.X == clouds.SizeXMetres / 2);
+    CHECK(uniform.Medium.Z == clouds.ExtinctionPerMetre);
+    CHECK(uniform.Medium.W == clouds.ExtinctionPerMetre * clouds.SingleScatteringAlbedo);
+    CHECK(uniform.Phase.X == clouds.PhaseAsymmetry);
+
+    // An edge fade wider than half the footprint is limited to it.
+    atmosphere.Clouds.EdgeFadeMetres = renderer::CloudLayerDescription::MAX_SIZE_METRES;
+    REQUIRE(renderer::internal::TryPackCloudLayer(atmosphere, camera, uniform) == true);
+    CHECK(uniform.CameraLocal.W == clouds.SizeXMetres / 2);
+
+    // Orthographic views, a disabled layer and an eye above the shell omit the layer without failing.
+    renderer::internal::CloudLayerUniform omitted;
+    omitted.AxisXWorld.W = 1;
+    camera.OrthographicCamera = true;
+    REQUIRE(renderer::internal::TryPackCloudLayer(atmosphere, camera, omitted) == true);
+    CHECK(omitted.AxisXWorld.W == 0);
+    camera.OrthographicCamera = false;
+    omitted.AxisXWorld.W = 1;
+    camera.CameraPosition.Y = static_cast<float32>(renderer::GetAtmosphereTopAltitude() * 2);
+    REQUIRE(renderer::internal::TryPackCloudLayer(atmosphere, camera, omitted) == true);
+    CHECK(omitted.AxisXWorld.W == 0);
+
+    // Invalid fields fail and keep the previous uniform.
+    const renderer::internal::CloudLayerUniform previous = uniform;
+    const auto reject = [&](renderer::CloudLayerDescription invalid) {
+        renderer::AtmosphereDescription candidate = atmosphere;
+        candidate.Clouds = invalid;
+        renderer::internal::CloudLayerUniform output = previous;
+        CHECK(renderer::internal::TryPackCloudLayer(candidate, camera, output) == false);
+        CHECK(output.AxisXWorld == previous.AxisXWorld);
+        CHECK(output.Medium == previous.Medium);
+    };
+    renderer::CloudLayerDescription invalid = atmosphere.Clouds;
+    invalid.ThicknessMetres = 0;
+    reject(invalid);
+    invalid = atmosphere.Clouds;
+    invalid.BaseHeightMetres = static_cast<float32>(renderer::GetAtmosphereTopAltitude());
+    reject(invalid);
+    invalid = atmosphere.Clouds;
+    invalid.SizeZMetres = renderer::CloudLayerDescription::MAX_SIZE_METRES * 2;
+    reject(invalid);
+    invalid = atmosphere.Clouds;
+    invalid.Density = -1;
+    reject(invalid);
+    invalid = atmosphere.Clouds;
+    invalid.SingleScatteringAlbedo = 2;
+    reject(invalid);
+    invalid = atmosphere.Clouds;
+    invalid.PhaseAsymmetry = 1;
+    reject(invalid);
+    invalid = atmosphere.Clouds;
+    invalid.AxisXWorld = {0, 3, 0};
+    reject(invalid);
 }

@@ -2529,13 +2529,16 @@ void RenderGraphPreview::pollFailures()
         worst = state.Failures[index].TotalPixels > state.Failures[worst].TotalPixels ? index : worst;
     }
     const renderer::RenderGraphRayFailures& summary = state.Failures[worst];
-    const QString text =
-        summary.TotalPixels == 0
-            ? QString{}
-            : QStringLiteral("%1 pixels of ray pass %2 failed (the failure colour). %3")
-                  .arg(QLocale().toString(static_cast<qulonglong>(summary.TotalPixels)))
-                  .arg(state.Active.RayPasses[worst])
-                  .arg(QString::fromUtf8(renderer::DescribeRenderGraphFailureReason(summary.MainReason)));
+    QString text = summary.TotalPixels == 0
+                       ? QString{}
+                       : QStringLiteral("%1 pixels of ray pass %2 failed (the failure colour). %3")
+                             .arg(QLocale().toString(static_cast<qulonglong>(summary.TotalPixels)))
+                             .arg(state.Active.RayPasses[worst])
+                             .arg(QString::fromUtf8(renderer::DescribeRenderGraphFailureReason(summary.MainReason)));
+    if (summary.LuslBoundsLine != 0)
+    {
+        text += QStringLiteral(" LUSL index out of bounds at line %1.").arg(summary.LuslBoundsLine);
+    }
     if (text != mFailureText)
     {
         mFailureText = text;

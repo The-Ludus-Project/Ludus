@@ -3718,3 +3718,429 @@ TEST_CASE("The resolved solar disk darkens toward its limb and preserves authore
         CHECK(math::Abs(measuredIlluminance / authoredIlluminance - 1) <= ILLUMINANCE_RELATIVE_TOLERANCE);
     }
 }
+
+namespace
+{
+// Cloud layer fixtures (CloudLayerDescription). The Atmosphere anchors at the world origin with +Y up and +X as the
+// layer's X axis, so the layer frame is the world frame.
+constexpr float64 CLOUD_METRES_PER_KILOMETRE = 1000;
+constexpr float32 CLOUD_BASE_METRES = 1000;
+constexpr float32 CLOUD_THICKNESS_METRES = 500;
+constexpr float32 CLOUD_SIZE_METRES = 40000;
+constexpr float32 CLOUD_HALF_SIZE_METRES = CLOUD_SIZE_METRES / 2;
+constexpr float32 CLOUD_CAMERA_HEIGHT_METRES = 2;
+
+/// Aim the central pixel's centre along directionWorld, as SetOrbitalCamera does, with a near plane short enough
+/// for surfaces a few hundred metres away and a far plane beyond the layer.
+void SetCloudCamera(renderer::ViewDescription& inoutCamera, math::Vector3 directionWorld, math::Vector3 upWorld)
+{
+    constexpr float32 TARGET_OFFSET_METRES = 1000;
+    constexpr float32 NEAR_METRES = 1;
+    constexpr float32 FAR_METRES = 200000;
+    constexpr float32 FIELD_OF_VIEW_RADIANS = 0.05F;
+    math::Matrix4 worldToView;
+    math::Matrix4 viewToClip;
+    REQUIRE(math::TryLookAt(inoutCamera.CameraPosition,
+                            inoutCamera.CameraPosition + directionWorld * TARGET_OFFSET_METRES,
+                            upWorld,
+                            worldToView) == math::MathStatus::Success);
+    REQUIRE(math::TryPerspectiveReverseZ(FIELD_OF_VIEW_RADIANS,
+                                         static_cast<float32>(WIDTH) / HEIGHT,
+                                         NEAR_METRES,
+                                         FAR_METRES,
+                                         viewToClip) == math::MathStatus::Success);
+    for (math::Vector4& column : viewToClip.Columns)
+    {
+        column.Z = column.W - column.Z;
+    }
+    viewToClip.Columns[2].X = -1.0F / WIDTH;
+    viewToClip.Columns[2].Y = 1.0F / HEIGHT;
+    inoutCamera.OrthographicCamera = false;
+    inoutCamera.Depth = renderer::DepthConvention::Conventional;
+    inoutCamera.InfiniteFar = false;
+    inoutCamera.CameraForward = directionWorld;
+    inoutCamera.WorldToClip = viewToClip * worldToView;
+}
+
+float64 GetCloudAxis(const math::Vector3d& value, usize axis)
+{
+    return axis == 0 ? value.X : (axis == 1 ? value.Y : value.Z);
+}
+
+/// Distances in metres along a reference ray.
+struct CloudInterval final
+{
+    float64 Near = 0;
+    float64 Far = 0;
+};
+
+/// Clip origin + t * direction, t in [0, maximumMetres], to the box [minimum, maximum] in metres.
+bool ClipCloudReference(const math::Vector3d& originWorld,
+                        const math::Vector3d& directionWorld,
+                        const math::Vector3d& minimumWorld,
+                        const math::Vector3d& maximumWorld,
+                        float64 maximumMetres,
+                        CloudInterval& outInterval)
+{
+    constexpr usize AXIS_COUNT = 3;
+    constexpr float64 PARALLEL_EPSILON = 1e-12;
+    float64 near = 0;
+    float64 far = maximumMetres;
+    for (usize axis = 0; axis < AXIS_COUNT; ++axis)
+    {
+        const float64 origin = GetCloudAxis(originWorld, axis);
+        const float64 direction = GetCloudAxis(directionWorld, axis);
+        const float64 minimum = GetCloudAxis(minimumWorld, axis);
+        const float64 maximum = GetCloudAxis(maximumWorld, axis);
+        if (math::Abs(direction) < PARALLEL_EPSILON)
+        {
+            if (origin < minimum || origin > maximum)
+            {
+                return false;
+            }
+            continue;
+        }
+        const float64 first = (minimum - origin) / direction;
+        const float64 second = (maximum - origin) / direction;
+        near = math::Max(near, math::Min(first, second));
+        far = math::Min(far, math::Max(first, second));
+    }
+    outInterval = {near, far};
+    return near < far;
+}
+
+struct CloudReference final
+{
+    /// Radiance scattered toward the camera at the layer's entry, per unit top-of-atmosphere illuminance.
+    float64 Radiance = 0;
+    float64 Transmittance = 1;
+    float64 EntryMetres = 0;
+    bool IsHit = false;
+};
+
+/// Independent binary64 single scattering of the Sun through a homogeneous slab with sharp sides: a dense midpoint
+/// rule along the view ray, the slab's exact path toward the Sun, and the air's transmittance and the Earth's shadow
+/// from the clear-sky quadrature at each point.
+CloudReference IntegrateCloudReference(const renderer::CloudLayerDescription& clouds,
+                                       math::Vector3d eyeWorld,
+                                       math::Vector3d directionWorld,
+                                       math::Vector3d sunWorld,
+                                       usize channel)
+{
+    constexpr usize VIEW_STEPS = 4096;
+    constexpr usize SOLAR_STEPS = 256;
+    constexpr float64 UNBOUNDED_METRES = 1e7;
+    const float64 halfX = static_cast<float64>(clouds.SizeXMetres) * 0.5;
+    const float64 halfZ = static_cast<float64>(clouds.SizeZMetres) * 0.5;
+    const float64 base = static_cast<float64>(clouds.BaseHeightMetres);
+    const math::Vector3d minimumWorld{-halfX, base, -halfZ};
+    const math::Vector3d maximumWorld{halfX, base + static_cast<float64>(clouds.ThicknessMetres), halfZ};
+    CloudReference result;
+    CloudInterval view;
+    if (ClipCloudReference(eyeWorld, directionWorld, minimumWorld, maximumWorld, UNBOUNDED_METRES, view) == false)
+    {
+        return result;
+    }
+    const float64 near = view.Near;
+    const float64 far = view.Far;
+    const float64 extinction = static_cast<float64>(clouds.Density) * static_cast<float64>(clouds.ExtinctionPerMetre);
+    const float64 scattering = extinction * static_cast<float64>(clouds.SingleScatteringAlbedo);
+    const float64 asymmetry = static_cast<float64>(clouds.PhaseAsymmetry);
+    const float64 phaseBase = 1 + asymmetry * asymmetry - 2 * asymmetry * math::Dot(directionWorld, sunWorld);
+    const float64 phase = (1 - asymmetry * asymmetry) / (4 * math::kPi * phaseBase * std::sqrt(phaseBase));
+    const float64 step = (far - near) / static_cast<float64>(VIEW_STEPS);
+    for (usize sample = 0; sample < VIEW_STEPS; ++sample)
+    {
+        const float64 distance = near + (static_cast<float64>(sample) + 0.5) * step;
+        const math::Vector3d pointWorld = eyeWorld + directionWorld * distance;
+        CloudInterval sun;
+        REQUIRE(ClipCloudReference(pointWorld, sunWorld, minimumWorld, maximumWorld, UNBOUNDED_METRES, sun) == true);
+        const math::Vector3d pointKilometres{pointWorld.X / CLOUD_METRES_PER_KILOMETRE,
+                                             EARTH_GROUND_RADIUS_KILOMETRES + pointWorld.Y / CLOUD_METRES_PER_KILOMETRE,
+                                             pointWorld.Z / CLOUD_METRES_PER_KILOMETRE};
+        float64 airTransmittance = 0;
+        if (ComputeEarthSolarTransmittance(pointKilometres, sunWorld, channel, SOLAR_STEPS, airTransmittance) == true)
+        {
+            result.Radiance += std::exp(-extinction * (distance - near)) * scattering * phase * airTransmittance *
+                               std::exp(-extinction * sun.Far) * step;
+        }
+    }
+    result.Transmittance = std::exp(-extinction * (far - near));
+    result.EntryMetres = near;
+    result.IsHit = true;
+    return result;
+}
+
+math::Vector3d ToDouble(math::Vector3 value)
+{
+    return {static_cast<float64>(value.X), static_cast<float64>(value.Y), static_cast<float64>(value.Z)};
+}
+
+renderer::CloudLayerDescription MakeCloudLayer(float32 extinctionPerMetre)
+{
+    renderer::CloudLayerDescription clouds;
+    clouds.IsEnabled = true;
+    clouds.BaseHeightMetres = CLOUD_BASE_METRES;
+    clouds.ThicknessMetres = CLOUD_THICKNESS_METRES;
+    clouds.SizeXMetres = CLOUD_SIZE_METRES;
+    clouds.SizeZMetres = CLOUD_SIZE_METRES;
+    clouds.EdgeFadeMetres = 0;
+    clouds.Density = 1;
+    clouds.ExtinctionPerMetre = extinctionPerMetre;
+    return clouds;
+}
+} // namespace
+
+TEST_CASE("Cloud layer composes analytic transmittance and single scattering with the clear sky",
+          "[render-graph][atmosphere][cloud-layer][gpu][reference-compute]")
+{
+    GraphGpuFixture fixture;
+    rhi::DeviceInfo deviceInfo;
+    REQUIRE(rhi::GetDeviceInfo(fixture.Device, deviceInfo) == rhi::DeviceStatus::Ready);
+    INFO("Native backend " << static_cast<uint32>(deviceInfo.Startup.SelectedBackend) << ", adapter "
+                           << deviceInfo.Adapter.Name.GetData());
+    const core::UniquePtr<renderer::RenderGraphPackage> package =
+        LoadPackage({LUDUS_RG3_CLUSTERED_DEFAULT_DIRECTORY, "rg2_clustered_Default.lurgrt"});
+    const renderer::RenderGraphPrograms programs =
+        package->GetPrograms(shaders::renderer_composite::Vertex(), shaders::renderer_composite::Fragment());
+    REQUIRE(PollAtmosphereGraph(
+                fixture,
+                fixture.Graph.Initialize(fixture.Device, package->GetPlan(), programs, nullptr, WIDTH, HEIGHT)) ==
+            rhi::RasterStatus::Ready);
+    struct CloudProbe final
+    {
+        const char* Name;
+        math::Vector3 EyeWorld;
+        math::Vector3 TargetWorld;
+        float32 ExtinctionPerMetre;
+    };
+    constexpr float32 CLOUD_MIDDLE_METRES = CLOUD_BASE_METRES + CLOUD_THICKNESS_METRES / 2;
+    constexpr float32 NEAR_HORIZON_METRES = 30000;
+    constexpr float32 FAR_HORIZON_METRES = 60000;
+    constexpr StaticArray<CloudProbe, 4> PROBES{{
+        {"zenith", {0, CLOUD_CAMERA_HEIGHT_METRES, 0}, {0, CLOUD_MIDDLE_METRES, 0}, 0.001F},
+        {"oblique", {0, CLOUD_CAMERA_HEIGHT_METRES, 0}, {0, CLOUD_MIDDLE_METRES, -CLOUD_MIDDLE_METRES}, 0.001F},
+        {"horizon at 30 km",
+         {0, CLOUD_CAMERA_HEIGHT_METRES, CLOUD_HALF_SIZE_METRES + NEAR_HORIZON_METRES},
+         {0, CLOUD_MIDDLE_METRES, 0},
+         0.0002F},
+        {"horizon at 60 km",
+         {0, CLOUD_CAMERA_HEIGHT_METRES, CLOUD_HALF_SIZE_METRES + FAR_HORIZON_METRES},
+         {0, CLOUD_MIDDLE_METRES, 0},
+         0.0002F},
+    }};
+    constexpr float32 DAY_SUN_COMPONENT = 0.70710678F;
+    constexpr float32 SUNSET_ELEVATION_SINE = 0.1F;
+    const StaticArray<math::Vector3, 2> suns{
+        {{DAY_SUN_COMPONENT, DAY_SUN_COMPONENT, 0},
+         {std::sqrt(1 - SUNSET_ELEVATION_SINE * SUNSET_ELEVATION_SINE), SUNSET_ELEVATION_SINE, 0}}};
+    // The sunset Sun is brighter so that its dim, reddened probes stay well above the readback's quantization.
+    constexpr StaticArray<float32, 2> SOLAR_ILLUMINANCE{{8, 24}};
+    constexpr usize RGB_CHANNELS = 3;
+    constexpr float64 READBACK_STEP = 1.0 / 255;
+    constexpr usize AIR_STEPS = 2048;
+    constexpr usize AIR_SOLAR_STEPS = 256;
+    renderer::ViewDescription& camera = fixture.Cameras[0];
+    camera.Atmosphere.IsEnabled = true;
+    camera.Atmosphere.ShouldLightScene = false;
+    const renderer::SceneShaderInputs inputs;
+    uint64 revision = 0;
+    const auto update = [&]() {
+        renderer::RenderGraphReport report;
+        return PollAtmosphereGraph(fixture,
+                                   fixture.Graph.Update({},
+                                                        {},
+                                                        {&camera, 1},
+                                                        ++revision,
+                                                        renderer::RenderGraphCoveragePolicy::RejectIncomplete,
+                                                        report,
+                                                        &inputs));
+    };
+    const usize pixel = GetPixel(WIDTH / 2, HEIGHT / 2);
+    for (const CloudProbe& probe : PROBES)
+    {
+        for (usize sunIndex = 0; sunIndex < suns.GetSize(); ++sunIndex)
+        {
+            const math::Vector3 sunWorld = suns[sunIndex];
+            camera.CameraPosition = probe.EyeWorld;
+            math::Vector3 directionWorld;
+            REQUIRE(math::TryNormalize(probe.TargetWorld - probe.EyeWorld, directionWorld) ==
+                    math::MathStatus::Success);
+            SetCloudCamera(camera,
+                           directionWorld,
+                           math::Abs(directionWorld.Y) > 0.9F ? math::Vector3{0, 0, -1} : math::Vector3{0, 1, 0});
+            const float32 solarIlluminance = SOLAR_ILLUMINANCE[sunIndex];
+            camera.Atmosphere.DirectionToSunWorld = sunWorld;
+            camera.Atmosphere.SolarIlluminance = {solarIlluminance, solarIlluminance, solarIlluminance};
+            camera.Atmosphere.Clouds = {};
+            REQUIRE(update() == rhi::RasterStatus::Ready);
+            ReadAtmosphereFrame(fixture);
+            const StaticArray<uint8, PIXEL_BYTES> clear = fixture.Pixels;
+
+            // An empty layer reproduces the clear sky exactly.
+            camera.Atmosphere.Clouds = MakeCloudLayer(probe.ExtinctionPerMetre);
+            camera.Atmosphere.Clouds.Density = 0;
+            REQUIRE(update() == rhi::RasterStatus::Ready);
+            ReadAtmosphereFrame(fixture);
+            CHECK(fixture.Pixels == clear);
+
+            for (const float32 albedo : {0.0F, 0.99F})
+            {
+                camera.Atmosphere.Clouds = MakeCloudLayer(probe.ExtinctionPerMetre);
+                camera.Atmosphere.Clouds.SingleScatteringAlbedo = albedo;
+                REQUIRE(update() == rhi::RasterStatus::Ready);
+                ReadAtmosphereFrame(fixture);
+                const math::Vector3d eyeWorld = ToDouble(probe.EyeWorld);
+                const math::Vector3d rayWorld = ToDouble(directionWorld) * (1 / math::Length(ToDouble(directionWorld)));
+                const math::Vector3d sunDirectionWorld = ToDouble(sunWorld) * (1 / math::Length(ToDouble(sunWorld)));
+                const math::Vector3d eyeKilometres{eyeWorld.X / CLOUD_METRES_PER_KILOMETRE,
+                                                   EARTH_GROUND_RADIUS_KILOMETRES +
+                                                       eyeWorld.Y / CLOUD_METRES_PER_KILOMETRE,
+                                                   eyeWorld.Z / CLOUD_METRES_PER_KILOMETRE};
+                for (usize channel = 0; channel < RGB_CHANNELS; ++channel)
+                {
+                    const CloudReference cloud = IntegrateCloudReference(camera.Atmosphere.Clouds,
+                                                                         eyeWorld,
+                                                                         rayWorld,
+                                                                         sunDirectionWorld,
+                                                                         channel);
+                    REQUIRE(cloud.IsHit == true);
+                    const EarthSkyIntegral air =
+                        IntegrateEarthSkySegment(eyeKilometres,
+                                                 rayWorld,
+                                                 sunDirectionWorld,
+                                                 channel,
+                                                 cloud.EntryMetres / CLOUD_METRES_PER_KILOMETRE,
+                                                 AIR_STEPS,
+                                                 AIR_SOLAR_STEPS);
+                    const float64 illuminance = static_cast<float64>(solarIlluminance);
+                    const float64 clearRadiance = clear[pixel + channel] * READBACK_STEP;
+                    const float64 airRadiance = illuminance * air.Radiance;
+                    const float64 cloudRadiance = illuminance * cloud.Radiance;
+                    const float64 expected = airRadiance + air.Transmittance * cloudRadiance +
+                                             cloud.Transmittance * math::Max(clearRadiance - airRadiance, 0.0);
+                    const float64 actual = fixture.Pixels[pixel + channel] * READBACK_STEP;
+                    const float64 absoluteError = math::Abs(actual - expected);
+                    CAPTURE(probe.Name,
+                            sunIndex,
+                            albedo,
+                            channel,
+                            clearRadiance,
+                            airRadiance,
+                            air.Transmittance,
+                            cloudRadiance,
+                            cloud.Transmittance,
+                            expected,
+                            actual,
+                            absoluteError);
+                    REQUIRE(expected < 1);
+                    // Half a code of rounding in each of the two readbacks, plus the shader's 32 view steps, the
+                    // transmittance table's interpolation and its 16-step air segment in front of the layer.
+                    CHECK(absoluteError <= READBACK_STEP + 0.03 * expected);
+                }
+            }
+        }
+    }
+    // Invalid layer fields reject the update and keep the drawable scene.
+    const uint64 drawableRevision = fixture.Graph.GetDrawableSceneRevision();
+    camera.Atmosphere.Clouds.ThicknessMetres = 0;
+    CHECK(update() == rhi::RasterStatus::InvalidDescription);
+    CHECK(fixture.Graph.GetDrawableSceneRevision() == drawableRevision);
+    camera.Atmosphere.Clouds = MakeCloudLayer(1);
+    camera.Atmosphere.Clouds.PhaseAsymmetry = 1;
+    CHECK(update() == rhi::RasterStatus::InvalidDescription);
+    camera.Atmosphere.Clouds = MakeCloudLayer(1);
+    camera.Atmosphere.Clouds.AxisXWorld = {0, 1, 0};
+    CHECK(update() == rhi::RasterStatus::InvalidDescription);
+}
+
+TEST_CASE("Cloud layer attenuates opaque surfaces from its entry to their depth",
+          "[render-graph][atmosphere][cloud-layer][gpu][reference-compute]")
+{
+    GraphGpuFixture fixture;
+    const core::UniquePtr<renderer::RenderGraphPackage> package =
+        LoadPackage({LUDUS_RG3_CLUSTERED_DEFAULT_DIRECTORY, "rg2_clustered_Default.lurgrt"});
+    const renderer::RenderGraphPrograms programs =
+        package->GetPrograms(shaders::renderer_composite::Vertex(), shaders::renderer_composite::Fragment());
+    REQUIRE(PollAtmosphereGraph(
+                fixture,
+                fixture.Graph.Initialize(fixture.Device, package->GetPlan(), programs, nullptr, WIDTH, HEIGHT)) ==
+            rhi::RasterStatus::Ready);
+    // A large emissive triangle facing the camera; without sunlight the air and the cloud only attenuate it.
+    constexpr float32 TRIANGLE_HALF_SIZE_METRES = 50;
+    fixture.Positions = {{{-TRIANGLE_HALF_SIZE_METRES, -TRIANGLE_HALF_SIZE_METRES, 0},
+                          {TRIANGLE_HALF_SIZE_METRES, -TRIANGLE_HALF_SIZE_METRES, 0},
+                          {0, TRIANGLE_HALF_SIZE_METRES, 0}}};
+    const StaticArray<math::Vector3, VERTEX_COUNT> normals{{{0, 0, 1}, {0, 0, 1}, {0, 0, 1}}};
+    fixture.Meshes[0].Geometry.Normals = normals.GetData();
+    const uint32 materialIndex = 0;
+    fixture.Meshes[0].MaterialBindings = {&materialIndex, 1};
+    renderer::SceneShaderMaterial material;
+    material.BaseColor = {};
+    material.Emission = {0.5F, 0.25F, 0.75F};
+    material.ShouldRegisterRasterMeshLight = false;
+    renderer::SceneShaderInputs inputs;
+    inputs.Materials = {&material, 1};
+    // Inside the layer's height range, 500 m outside its +Z side, looking at it.
+    constexpr float32 EYE_HEIGHT_METRES = CLOUD_BASE_METRES + CLOUD_THICKNESS_METRES / 2;
+    constexpr float32 OUTSIDE_METRES = 500;
+    renderer::ViewDescription& camera = fixture.Cameras[0];
+    camera.CameraPosition = {0, EYE_HEIGHT_METRES, CLOUD_HALF_SIZE_METRES + OUTSIDE_METRES};
+    SetCloudCamera(camera, {0, 0, -1}, {0, 1, 0});
+    camera.Atmosphere.IsEnabled = true;
+    camera.Atmosphere.ShouldLightScene = true;
+    camera.Atmosphere.SolarIlluminance = {};
+    camera.Atmosphere.DirectionToSunWorld = {0, 1, 0};
+    uint64 revision = 0;
+    uint64 contentRevision = 1;
+    const auto update = [&]() {
+        renderer::RenderGraphReport report;
+        return PollAtmosphereGraph(fixture,
+                                   fixture.Graph.Update({fixture.Meshes.GetData(), fixture.Meshes.GetSize()},
+                                                        {fixture.Items.GetData(), fixture.Items.GetSize()},
+                                                        {&camera, 1},
+                                                        ++revision,
+                                                        renderer::RenderGraphCoveragePolicy::RejectIncomplete,
+                                                        report,
+                                                        &inputs,
+                                                        contentRevision));
+    };
+    const usize pixel = GetPixel(WIDTH / 2, HEIGHT / 2);
+    constexpr usize RGB_CHANNELS = 3;
+    // Half the light survives 500 m of cloud.
+    constexpr float64 INSIDE_METRES = 500;
+    const float32 extinction = static_cast<float32>(std::log(2.0) / INSIDE_METRES);
+    constexpr float32 NEAR_SURFACE_METRES = 300;
+    constexpr float32 INSIDE_SURFACE_METRES = OUTSIDE_METRES + static_cast<float32>(INSIDE_METRES);
+    for (const float32 surfaceDistance : {NEAR_SURFACE_METRES, INSIDE_SURFACE_METRES})
+    {
+        fixture.Items[0].MeshToWorld.Translation = {0, EYE_HEIGHT_METRES, camera.CameraPosition.Z - surfaceDistance};
+        ++contentRevision;
+        camera.Atmosphere.Clouds = {};
+        REQUIRE(update() == rhi::RasterStatus::Ready);
+        ReadAtmosphereFrame(fixture);
+        const StaticArray<uint8, PIXEL_BYTES> clear = fixture.Pixels;
+        REQUIRE(clear[pixel] > 0);
+        camera.Atmosphere.Clouds = MakeCloudLayer(extinction);
+        REQUIRE(update() == rhi::RasterStatus::Ready);
+        ReadAtmosphereFrame(fixture);
+        const float64 cloudTransmittance =
+            surfaceDistance > OUTSIDE_METRES
+                ? std::exp(-static_cast<float64>(extinction) * static_cast<float64>(surfaceDistance - OUTSIDE_METRES))
+                : 1;
+        for (usize channel = 0; channel < RGB_CHANNELS; ++channel)
+        {
+            CAPTURE(surfaceDistance, channel, clear[pixel + channel], fixture.Pixels[pixel + channel]);
+            if (cloudTransmittance == 1)
+            {
+                CHECK(fixture.Pixels[pixel + channel] == clear[pixel + channel]);
+            }
+            else
+            {
+                // One code: rounding of the two readbacks.
+                CHECK(math::Abs(static_cast<float64>(fixture.Pixels[pixel + channel]) -
+                                static_cast<float64>(clear[pixel + channel]) * cloudTransmittance) <= 1);
+            }
+        }
+    }
+}

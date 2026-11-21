@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import contextlib
+import gc
 import io
 import os
 import subprocess
@@ -285,6 +286,23 @@ class SetupLogTests(unittest.TestCase):
         self.assertEqual(lines, [window_line, "Ludus Setup window (progress): test", "child output"])
 
 
+class EditorCommandTests(unittest.TestCase):
+    class FakeEngine:
+        @staticmethod
+        def venv_python(root):
+            return root / "out/host-tools/venv/bin/python"
+
+    def test_only_setup_that_builds_the_editor_offers_to_run_it(self):
+        root = Path("/checkout")
+        built = resolved("--with-editor", "--no-system-install")
+        command = init_window.editor_command(built, root, self.FakeEngine)
+        self.assertEqual(command, [str(root / "out/host-tools/venv/bin/python"),
+                                   str(root / "scripts/python/editor_launch.py"), "--preset", built.preset])
+        configured = resolved("--with-editor", "--configure-editor-only", "--no-system-install")
+        self.assertIsNone(init_window.editor_command(configured, root, self.FakeEngine))
+        self.assertIsNone(init_window.editor_command(resolved("--no-system-install"), root, self.FakeEngine))
+
+
 @unittest.skipIf(os.name == "nt", "POSIX process tree")
 class ProcessTreeTests(unittest.TestCase):
     def test_cancel_reaches_grandchildren(self):
@@ -487,6 +505,98 @@ class WindowTests(unittest.TestCase):
             if window.process is not None and window.process.stdout is not None:
                 window.process.stdout.close()
             window.window.destroy()
+
+    def drive_editor_window(self, editor_script, *arguments):
+        """Finish a passing setup, take Enter's action to run a fake editor and wait for setup to close or report."""
+        import tkinter as tk
+        from tkinter import ttk
+        directory = tempfile.TemporaryDirectory()
+        self.addCleanup(directory.cleanup)
+        editor_log = Path(directory.name) / "editor.log"
+        steps = [init_progress.Step("system", "Installing system prerequisites"),
+                 init_progress.Step("conan", "Conan install (all native presets)"),
+                 init_progress.Step("editor_build", "Building the editor")]
+        window = init_window.SetupWindow(
+            tk, ttk, steps=steps, command=[sys.executable, "-c", FAKE_RUNNER, "pass"], title="test", log_path=None,
+            cwd=engine.repo_root(), environment=init_window.child_environment(),
+            editor_command=[sys.executable, "-c", editor_script, *arguments], editor_log_path=editor_log)
+        observed = {}
+        try:
+            window.start()
+            deadline = time.monotonic() + 20
+            while window.finished_at is None and time.monotonic() < deadline:
+                window.window.update()
+                time.sleep(0.02)
+            window.window.update()
+            observed["editor_button"] = (window.editor_button.winfo_ismapped(),
+                                         str(window.editor_button.cget("text")))
+            observed["hint"] = str(window.footer.hint.cget("text"))
+            # Enter's handler, called directly: a key event needs keyboard focus, which a test window may lack.
+            # A shorter wait for the launcher keeps the test quick; the fake editor outlives it.
+            with patch.object(init_window, "EDITOR_START_CHECK_MILLISECONDS", 300):
+                window.activate_default()
+            window.window.update()
+            observed["starting"] = (window.status.get(), str(window.editor_button.cget("state")))
+            deadline = time.monotonic() + 10
+            while (window.is_editor_started is False and window.editor_process is not None
+                   and time.monotonic() < deadline):
+                window.window.update()
+                time.sleep(0.02)
+            window.window.update()
+            observed["note"] = window.note.get()
+            observed["note_visible"] = window.note_label.winfo_ismapped()
+            observed["editor_state"] = str(window.editor_button.cget("state"))
+            observed["is_editor_started"] = window.is_editor_started
+            observed["is_editor_running"] = window.editor_process is not None
+        finally:
+            if window.editor_process is not None and window.editor_process.poll() is None:
+                window.editor_process.kill()
+                window.editor_process.wait()
+            for timer in window.timers.values():
+                try:
+                    window.window.after_cancel(timer)
+                except tk.TclError:
+                    pass
+            if window.process is not None and window.process.stdout is not None:
+                window.process.stdout.close()
+            # Release, never destroy, the shared root as SetupWindow.run does, and finalize this
+            # window's Tk variables here on the Tk thread: Tk objects collected later, on another
+            # thread or after their interpreter was deleted, crash the following window tests.
+            init_window.init_theme.release_root(window.window)
+            del window
+            gc.collect()
+        return observed, editor_log
+
+    def test_run_editor_starts_the_built_editor_and_closes_setup(self):
+        directory = tempfile.TemporaryDirectory()
+        self.addCleanup(directory.cleanup)
+        marker = Path(directory.name) / "ran"
+        script = ("import os, pathlib, sys, time; "
+                  "pathlib.Path(sys.argv[1]).write_text(os.environ.get('LUDUS_INIT_PROGRESS', 'unset')); "
+                  "print('+ ludus_editor', flush=True); time.sleep(10)")
+        observed, editor_log = self.drive_editor_window(script, str(marker))
+        self.assertEqual(observed["editor_button"], (True, init_window.RUN_EDITOR_LABEL))
+        self.assertEqual(observed["hint"], init_window.SUCCESS_EDITOR_HINT)
+        self.assertEqual(observed["starting"], (init_window.STARTING_EDITOR_STATUS, "disabled"))
+        self.assertTrue(observed["is_editor_started"])
+        # The editor never sees setup's progress protocol, and its output lands in the editor log.
+        self.assertEqual(marker.read_text(encoding="utf-8"), "unset")
+        self.assertIn("+ ludus_editor", editor_log.read_text(encoding="utf-8"))
+        self.assertFalse(observed["note_visible"])
+
+    def test_run_editor_failure_stays_open_with_the_launcher_fix(self):
+        script = ("import sys; "
+                  "print('The editor is not built for this preset. Prepare it explicitly, then retry:'); "
+                  "print('  ./init.sh --cli --with-editor linux-clang-development'); sys.exit(1)")
+        observed, editor_log = self.drive_editor_window(script)
+        self.assertFalse(observed["is_editor_started"])
+        self.assertFalse(observed["is_editor_running"])
+        self.assertTrue(observed["note_visible"])
+        self.assertIn("exit code 1", observed["note"])
+        self.assertIn("./init.sh --cli --with-editor linux-clang-development", observed["note"])
+        self.assertIn(str(editor_log), observed["note"])
+        # The button is ready again once the fix is applied.
+        self.assertEqual(observed["editor_state"], "normal")
 
     def test_cancel_stops_the_runner(self):
         code, window, observed = self.run_window("hang", action=lambda window: window.cancel())

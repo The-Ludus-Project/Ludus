@@ -216,6 +216,81 @@ extension must provide matched frozen inputs and the same declared integral
 under the [paired CPU/GPU contract](renderer-systems.md#cpu-and-gpu-reference-implementation-requirement).
 Use raw scene-linear comparisons before temporal or display filtering.
 
+### Controlled cloud layer
+
+The first cloud profile ([#1319](https://github.com/The-Ludus-Project/Ludus/issues/1319))
+is one bounded, homogeneous slab owned by the World's Atmosphere entity. It
+qualifies the layer's integration and composition before weather, shape or
+lighting work builds on it. The editor workflow is in
+[Add a clear-sky atmosphere](../development/editor-workspace.md#add-a-clear-sky-atmosphere).
+
+- **Inputs and units.** `AtmosphereDescription::Clouds`
+  (`CloudLayerDescription`) uses the Atmosphere's local frame. The origin is
+  the surface anchor, +Y is the anchor's up and +X is the entity's local X,
+  made perpendicular to up. The slab is flat in that tangent frame. It covers
+  |x| ≤ X size / 2, |z| ≤ Z size / 2 and base ≤ y ≤ base + thickness, all in
+  metres. Density is a dimensionless multiplier of the profile extinction in
+  inverse metres. The medium is grey: a single-scattering albedo in [0, 1]
+  and a Henyey–Greenstein phase function in inverse steradians, with
+  asymmetry |g| ≤ 0.99. Its cosine is between the view direction and the
+  direction toward the Sun, the Atmosphere's forward convention. Within the
+  edge fade of each side, density falls smoothly to zero; the base and top
+  are sharp. Sizes are limited to 200 km, where the flat slab is still within
+  about 0.8 km of the ground sphere. The top must stay below the shell. The
+  renderer rejects invalid fields with `InvalidDescription` and keeps the
+  last drawable view.
+- **Transport.** The slab's part of a view ray is clipped to its box and to
+  the first opaque surface or the ground. Thirty-two uniform midpoint steps
+  integrate single scattering of the Atmosphere's Sun. Each step uses the
+  homogeneous-step rule above, so a constant density has exact transmittance.
+  The source at a step is scattering × phase × the Sun's illuminance. The Sun
+  reaches the point through the clear air, read from the transmittance table
+  at the point's spherical altitude and zero in the planet's shadow. It is
+  also attenuated by the slab's exact box path toward the Sun, at that step's
+  density.
+- **Composition.** With `C` the clear-sky result of the whole ray and
+  `(L_air, T_air)` the clear air from the camera to the slab's entry, the
+  pixel is `L_air + T_air * L_cloud + T_cloud * (C − L_air)`. The air inside
+  and behind the slab stays in `C` behind the cloud, so the air is counted once.
+  Zero density reproduces `C` exactly. The sky draw uses the sky-view
+  table's `C` and a 16-step air segment to the entry. The deferred resolve
+  keeps the segment affine in surface radiance. It applies the same rule to
+  the existing camera-to-surface aerial perspective, also in the skin
+  resolve. All of this happens before exposure and tone mapping. Frostbite's
+  cloud and aerial-perspective composition, §5.9.1 of Hillaire's course notes
+  cited in the renderer, is the design reference.
+- **Limits.** Perspective cameras inside the shell only. Orthographic and
+  orbital views, forward and ray-traced graphs, and RT1 reference captures
+  omit the layer. Ray graphs do not report it as a World feature yet. The
+  layer casts no shadows, leaves sky lighting and the specular environment
+  unchanged, and has no skylight or multiple scattering, so optically thick
+  clouds are darker than real ones. These items follow the remaining
+  #1319 controls and [#1708](https://github.com/The-Ludus-Project/Ludus/issues/1708).
+
+The `[cloud-layer]` renderer tests draw the default clustered deferred graph.
+They compare the central pixel's linear RGBA8 export with a binary64
+reference and repeat each probe under day and sunset Suns. The probes look at
+the zenith, obliquely, and toward the slab near the horizon from 30 km and
+60 km outside its footprint. The reference integrates the slab with 4096 view
+steps, exact box paths toward the Sun, and the clear-sky quadrature's air
+transmittance and Earth shadow. It composes the measured clear pixel with the
+rule above. The tolerance is one readback code plus 3% of the expected
+radiance. That covers half a code of rounding in each readback, the 32 shader
+steps, table interpolation and the 16-step air segment. A zero-density layer
+must match the clear frame byte for byte. A pure absorber isolates the
+transmittance `exp(−σd)`. An emissive surface seen without sunlight is
+unchanged in front of the slab. A surface 500 m inside it is attenuated by
+exactly `exp(−σ · 500 m)`.
+
+On Apple M5 Metal, the worst probe error was 0.0026, below one readback code.
+The tests' 96 × 64 export cannot show cost, so it was measured separately at
+1920 × 1080 over 40 frames alternating clear and clouded skies in one process.
+A slab that fills the view adds about 10–15 ms of frame GPU time; GPU clocks
+vary between runs. A 60° view toward the slab near the horizon from 30 km
+adds about 1 ms. Cutting the view steps from 32 to 8 recovered only part of
+the full-view cost; the rest is not yet attributed. A disabled layer costs
+one uniform branch. The traversal measurement in #1319 owns any cheaper path.
+
 ## Rain, wetness and authoring
 
 Sample a bounded world-space shelter mask at receivers. The initial fixture
@@ -277,7 +352,7 @@ physical WebGPU hardware before making browser performance claims.
 
 | Slice | Delivery gate |
 | --- | --- |
-| [Shared climate and weather](https://github.com/The-Ludus-Project/Ludus/issues/1704) | One default region and one feathered override. Compare per-tick golden samples/events across chunked stepping, pause, replay, save/load, iteration-order changes, and distinct view locations. Qualify Editor preview and SDK packaged play. The [runtime and its golden corpus](../modules/gameplay/weather.md#determinism-evidence) are in place; Editor, Play controls and SDK play remain. |
+| [Shared climate and weather](https://github.com/The-Ludus-Project/Ludus/issues/1704) | One default region and one feathered override. Compare per-tick golden samples/events across chunked stepping, pause, replay, save/load, iteration-order changes, and distinct view locations. Qualify Editor preview and SDK packaged play. The [runtime](../modules/gameplay/weather.md#determinism-evidence) and its [pause, step, preview and reset semantics](../modules/gameplay/weather.md#pause-step-preview-and-reset) are in place; Editor authoring, Play wiring and SDK play remain. |
 | [Analytic World wind](https://github.com/The-Ludus-Project/Ludus/issues/1705) | Match sampled speed and direction at ground and cloud heights, calm, bounded falloff, and uninterrupted phase after clock restore and rebasing. Qualify two consumers using a cloud tracer marker and a ground receiver. |
 | Cloud prototype | Reuse [#1319](https://github.com/The-Ludus-Project/Ludus/issues/1319) and its analytic and scene-linear controls. |
 | [Weather-driven clouds](https://github.com/The-Ludus-Project/Ludus/issues/1706) | One authored coverage/type map, stable advection and accepted snapshots tied to World revisions. Verify clipping, horizon, day/night, clear recovery and profile fallback. |

@@ -5309,6 +5309,23 @@ Stream exhaustion or bounded-mapping failure also latches `HasFailed` and return
 zero, which must not be used as a sample after failure. Float draws, integer draws
 and automatic light selection share the same invocation stream.
 
+Pass a fixed-size float array or a `float2`, `float3`, or `float4` to
+`SampleSceneWeightedIndex` to choose an index by weight.
+
+```slang
+const uint index = SampleSceneWeightedIndex(queries, float3(2, 0, 6));
+```
+
+Each index has probability proportional to its weight, so the example selects
+index 0 one quarter of the time and index 2 three quarters of the time. Weights
+may be normalized or unnormalized. Float precision limits how small a weight
+can be relative to the total and still occupy an interval. The helper uses a
+linear scan and spends one dimension from the same invocation stream. Negative
+or nonfinite weights and a zero total latch an invalid-argument failure. On
+failure the helper returns `SCENE_INVALID_INDEX`. LUSL provides the vector
+overloads through `scene_shader.luslh` using `float32x2`, `float32x3`, and
+`float32x4`.
+
 The stream admits dimensions zero through FoundationMath's
 `RANDOM_MAX_DIMENSION`, inclusive. Exhaustion latches `HasFailed` and returns
 zero/no sample; the renderer rejects that invocation's result. Scheduling other

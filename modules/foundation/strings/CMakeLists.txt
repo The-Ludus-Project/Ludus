@@ -6,6 +6,7 @@ target_sources(ludus_foundation_strings
         src/string.cpp
         src/shared_string.cpp
         src/utf8.cpp
+        src/utf16.cpp
         src/string_table.cpp
     PUBLIC FILE_SET public_headers TYPE HEADERS BASE_DIRS include FILES
         include/ludus/foundation/strings/status.hpp
@@ -13,6 +14,7 @@ target_sources(ludus_foundation_strings
         include/ludus/foundation/strings/string.hpp
         include/ludus/foundation/strings/shared_string.hpp
         include/ludus/foundation/strings/utf8.hpp
+        include/ludus/foundation/strings/utf16.hpp
         include/ludus/foundation/strings/string_table.hpp
 )
 target_link_libraries(ludus_foundation_strings PUBLIC Ludus::FoundationBase Ludus::FoundationContainers Ludus::FoundationMemory Ludus::FoundationHash)
