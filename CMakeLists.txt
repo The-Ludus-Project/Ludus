@@ -383,6 +383,9 @@ add_subdirectory(modules/content/scene_source)
 # LUSTR cooked string dictionary contract, validating reader and deterministic writer.
 add_subdirectory(modules/content/string_dictionary_format)
 add_subdirectory(modules/content/string_dictionary)
+# LUFOL cooked foliage placement page contract, encoder and validating reader (foliage F0).
+add_subdirectory(modules/content/foliage_format)
+add_subdirectory(modules/content/foliage_pages)
 # Versioned UUID authoring records and the one-time World ID migration manifest.
 add_subdirectory(modules/content/identity_records)
 # Stage-4 two-pass World restore; bridges ContentIdentity and GameplayWorld.
@@ -568,7 +571,7 @@ write_basic_package_version_file(
 # Public exported components (one per installed Ludus:: module target).
 foreach(_component
     FoundationBase FoundationMemory FoundationHash FoundationIdentity FoundationStrings FoundationContainers FoundationThreading FoundationFilesystem FoundationParsing FoundationParsingJson FoundationMath FoundationGeometry FoundationTime FoundationLogging ShaderCompilerClient ShaderLanguage
-    FoundationProfiling FoundationThreadingProfiling FoundationReflection FoundationSerialization FoundationConfig FoundationConfigJson RuntimeConfiguration GamePropertyBinding NetworkCore Input Audio Content ProceduralEnvironment SceneFormat GeometryFormat GeometryContent RenderGraphFormat SceneSource StringDictionaryFormat StringDictionary StringDictionaryWriter AudioContent Resources GameplayWorld GameplayCamera GameplaySequencer Animation GameApi PhysicsFluid PhysicsCollision Ui Localization)
+    FoundationProfiling FoundationThreadingProfiling FoundationReflection FoundationSerialization FoundationConfig FoundationConfigJson RuntimeConfiguration GamePropertyBinding NetworkCore Input Audio Content ProceduralEnvironment SceneFormat GeometryFormat GeometryContent RenderGraphFormat SceneSource StringDictionaryFormat StringDictionary StringDictionaryWriter FoliageFormat FoliagePages AudioContent Resources GameplayWorld GameplayCamera GameplaySequencer Animation GameApi PhysicsFluid PhysicsCollision Ui Localization)
     ludus_sdk_register_component(${_component})
     ludus_sdk_register_feature(${_component})
 endforeach()

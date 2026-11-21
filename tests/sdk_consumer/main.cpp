@@ -35,6 +35,7 @@ int ExerciseInstalledAsync() noexcept;
 int ExerciseInstalledPersistence() noexcept;
 bool ExerciseInstalledStrings() noexcept;
 bool ExerciseInstalledStringDictionary() noexcept;
+bool ExerciseInstalledFoliagePages() noexcept;
 bool ExerciseInstalledParsing() noexcept;
 bool ExerciseInstalledConfiguration() noexcept;
 bool ExerciseInstalledReflection() noexcept;
@@ -304,6 +305,10 @@ int main()
     if (ExerciseInstalledStringDictionary() == false)
     {
         return 13;
+    }
+    if (ExerciseInstalledFoliagePages() == false)
+    {
+        return 109;
     }
     if (PrimitiveContract() == false)
     {
