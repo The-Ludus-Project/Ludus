@@ -17,6 +17,15 @@ namespace
 {
 std::atomic<bool> gTrackAllocs{false};
 std::atomic<ludus::foundation::uint64> gAllocCount{0};
+std::atomic<ludus::foundation::uint64> gFreeCount{0};
+void FreeTracked(void* pointerOrNull) noexcept
+{
+    if (pointerOrNull != nullptr && gTrackAllocs.load(std::memory_order_relaxed) == true)
+    {
+        gFreeCount.fetch_add(1, std::memory_order_relaxed);
+    }
+    std::free(pointerOrNull);
+}
 } // namespace
 
 // libc++ names the replaceable allocation functions' parameters with reserved
@@ -52,19 +61,19 @@ void* operator new[](std::size_t size)
 
 void operator delete(void* p) noexcept
 {
-    std::free(p);
+    FreeTracked(p);
 }
 void operator delete(void* p, std::size_t) noexcept
 {
-    std::free(p);
+    FreeTracked(p);
 }
 void operator delete[](void* p) noexcept
 {
-    std::free(p);
+    FreeTracked(p);
 }
 void operator delete[](void* p, std::size_t) noexcept
 {
-    std::free(p);
+    FreeTracked(p);
 }
 // NOLINTEND(readability-inconsistent-declaration-parameter-name)
 
@@ -95,6 +104,7 @@ TEST_CASE("Warm submit + render performs no allocation or free", "[audio][alloc]
     sys.Service();
 
     // Now measure a steady run of submit + render + service.
+    gFreeCount.store(0, std::memory_order_relaxed);
     gAllocCount.store(0, std::memory_order_relaxed);
     gTrackAllocs.store(true, std::memory_order_relaxed);
     for (int i = 0; i < 64; ++i)
@@ -111,6 +121,7 @@ TEST_CASE("Warm submit + render performs no allocation or free", "[audio][alloc]
     gTrackAllocs.store(false, std::memory_order_relaxed);
 
     REQUIRE(gAllocCount.load(std::memory_order_relaxed) == 0);
+    REQUIRE(gFreeCount.load(std::memory_order_relaxed) == 0);
 }
 
 TEST_CASE("Warm music group admission, cue revision and rendering allocate nothing", "[audio][alloc][music]")
@@ -142,14 +153,31 @@ TEST_CASE("Warm music group admission, cue revision and rendering allocate nothi
     const float32 gains[] = {0.5F, 0};
     const StreamHandle duplicate[] = {initial[0], initial[0]};
     REQUIRE(system.PlayStreamGroup(duplicate, gains, 0, PRIORITY_MAX, outgoing) == Status::InvalidArgument);
+    gFreeCount.store(0);
     gAllocCount.store(0);
     gTrackAllocs.store(true);
     const Status start = system.PlayStreamGroup(initial, gains, 0, PRIORITY_MAX, outgoing);
     const Status render =
         system.RenderOffline(samples, ChannelLayout::Stereo, BufferLayout::Interleaved, CONTROL_QUANTUM_FRAMES);
-    const Status schedule = system.ScheduleStreamGroup(incoming, gains, outgoing, 1024, 32, candidate);
-    const Status revise = system.ReviseStreamTransition(candidate, 512);
-    const Status intensity = system.SetStreamGroupGains(candidate, gains, 768, 128);
+    Status fill = Status::Ok;
+    for (usize i = 0; i <= COMMAND_QUEUE_CAPACITY && fill == Status::Ok; ++i)
+    {
+        fill = system.SetStreamGroupGains(outgoing, gains, 0, 0);
+    }
+    VoiceHandle rejected = outgoing;
+    const Status full = system.ScheduleStreamGroup(incoming, gains, outgoing, 1024, 32, rejected);
+    SystemSnapshot snapshot;
+    system.GetSystemSnapshot(snapshot);
+    Status drain = Status::Ok;
+    while (snapshot.QueueDepth != 0 && drain == Status::Ok)
+    {
+        drain = system.RenderOffline(samples, ChannelLayout::Stereo, BufferLayout::Interleaved, CONTROL_QUANTUM_FRAMES);
+        system.GetSystemSnapshot(snapshot);
+    }
+    const uint64 revisedFrame = snapshot.RenderFrame + CONTROL_QUANTUM_FRAMES * 2;
+    const Status schedule = system.ScheduleStreamGroup(incoming, gains, outgoing, revisedFrame + 512, 32, candidate);
+    const Status revise = system.ReviseStreamTransition(candidate, revisedFrame);
+    const Status intensity = system.SetStreamGroupGains(candidate, gains, revisedFrame + 256, 128);
     for (usize i = 0; i < 8; ++i)
     {
         (void)system.RenderOffline(samples, ChannelLayout::Stereo, BufferLayout::Interleaved, CONTROL_QUANTUM_FRAMES);
@@ -157,6 +185,11 @@ TEST_CASE("Warm music group admission, cue revision and rendering allocate nothi
     }
     gTrackAllocs.store(false);
     REQUIRE(gAllocCount.load() == 0);
+    REQUIRE(gFreeCount.load() == 0);
+    REQUIRE(fill == Status::QueueFull);
+    REQUIRE(full == Status::QueueFull);
+    REQUIRE(rejected == outgoing);
+    REQUIRE(drain == Status::Ok);
     REQUIRE(start == Status::Ok);
     REQUIRE(render == Status::Ok);
     REQUIRE(schedule == Status::Ok);
@@ -164,6 +197,6 @@ TEST_CASE("Warm music group admission, cue revision and rendering allocate nothi
     REQUIRE(intensity == Status::Ok);
     VoiceInfo info;
     REQUIRE(system.GetVoiceInfo(candidate, info) == Status::Ok);
-    REQUIRE(info.StartFrame == 512);
+    REQUIRE(info.StartFrame == revisedFrame);
     REQUIRE(info.CursorFrame > 0);
 }

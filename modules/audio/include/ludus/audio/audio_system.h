@@ -151,7 +151,7 @@ public:
 
     /// Start aligned looping streams as one voice. Gains are per-layer linear amplitudes.
     /// All handles must be distinct, unplayed and compatible. The group advances only when
-    /// every member has data. Call on the control owner and retire each stream after use.
+    /// every member has data. Failure preserves outVoice. Call on the control owner and retire each stream after use.
     [[nodiscard]] Status PlayStreamGroup(std::span<const StreamHandle> streams,
                                          std::span<const float32> gains,
                                          uint32 busIndex,
@@ -166,7 +166,8 @@ public:
 
     /// Schedule an entire prepared group as the replacement for outgoing, on its bus and
     /// priority. fadeFrames sets the linear crossfade length in session frames. A zero
-    /// duration cuts at the accepted frame. Failure leaves all streams available for retry.
+    /// duration cuts at the accepted frame. Failure preserves outVoice and leaves all incoming streams available for
+    /// retry.
     [[nodiscard]] Status ScheduleStreamGroup(std::span<const StreamHandle> streams,
                                              std::span<const float32> gains,
                                              VoiceHandle outgoing,

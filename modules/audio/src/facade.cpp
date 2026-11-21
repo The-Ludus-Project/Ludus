@@ -976,7 +976,12 @@ Status AudioSystem::PlayStreamGroup(std::span<const StreamHandle> streams,
     Status result = mImpl->ConfigureStreamGroup(streams, gains);
     if (result == Status::Ok)
     {
-        result = PlayStream(streams.front(), busIndex, priority, 1, outVoice);
+        VoiceHandle admitted;
+        result = PlayStream(streams.front(), busIndex, priority, 1, admitted);
+        if (result == Status::Ok)
+        {
+            outVoice = admitted;
+        }
         mImpl->FinishStreamGroup(streams, result);
     }
     return result;
@@ -1093,8 +1098,13 @@ Status AudioSystem::ScheduleStreamTransition(StreamHandle incoming,
         return Status::InvalidArgument;
     }
     data.TransitionFrame.store(frame - held, std::memory_order_relaxed);
-    const Status result = PlayStream(incoming, previous.BusIndex, previous.Priority, previous.Gain, outVoice);
-    if (result != Status::Ok)
+    VoiceHandle admitted;
+    const Status result = PlayStream(incoming, previous.BusIndex, previous.Priority, previous.Gain, admitted);
+    if (result == Status::Ok)
+    {
+        outVoice = admitted;
+    }
+    else
     {
         data.Outgoing = {};
         data.TransitionFrame.store(0, std::memory_order_relaxed);
