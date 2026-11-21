@@ -1617,8 +1617,9 @@ Status Renderer::PollGpuPreview() noexcept
                 {
                     if (rhi::IsNull(state.DefaultStorageTexture) == true)
                     {
-                        status =
-                            internal::CreateGpuGraphStorageTexture(mState->Device, 1, 1, state.DefaultStorageTexture);
+                        status = internal::CreateGpuGraphStorageTexture(mState->Device,
+                                                                        { .Width = 1, .Height = 1 },
+                                                                        state.DefaultStorageTexture);
                     }
                     if (status == Status::Ready)
                     {

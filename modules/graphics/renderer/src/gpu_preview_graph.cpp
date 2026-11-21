@@ -565,8 +565,7 @@ Status AppendGpuGraph(rhi::DeviceHandle device,
 }
 } // namespace
 Status CreateGpuGraphStorageTexture(rhi::DeviceHandle device,
-                                    uint32 width,
-                                    uint32 height,
+                                    GraphStorageTextureSize size,
                                     rhi::TextureHandle& outTexture) noexcept
 {
     rhi::RasterCapabilities capabilities;
@@ -575,9 +574,10 @@ Status CreateGpuGraphStorageTexture(rhi::DeviceHandle device,
     {
         return ready;
     }
-    const usize rowBytes = usize(width) * LUDUS_GRAPH_TEXTURE_CHANNELS;
+    const usize rowBytes = usize(size.Width) * LUDUS_GRAPH_TEXTURE_CHANNELS;
     usize bytes = 0;
-    if (foundation::TryMultiply(rowBytes, usize(height), bytes) == false || bytes > capabilities.MaxTextureUploadBytes)
+    if (foundation::TryMultiply(rowBytes, usize(size.Height), bytes) == false ||
+        bytes > capabilities.MaxTextureUploadBytes)
     {
         return Status::CapacityExceeded;
     }
@@ -587,8 +587,8 @@ Status CreateGpuGraphStorageTexture(rhi::DeviceHandle device,
         return Status::OutOfMemory;
     }
     rhi::TextureDescription description;
-    description.Width = width;
-    description.Height = height;
+    description.Width = size.Width;
+    description.Height = size.Height;
     description.IsStorage = true;
     description.AsyncUpload = true;
     return rhi::CreateTexture(device, description, {{zeros.GetData(), bytes}, rowBytes}, outTexture);

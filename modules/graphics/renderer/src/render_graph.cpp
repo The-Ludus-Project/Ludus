@@ -3081,11 +3081,11 @@ Status RenderGraph::Initialize(rhi::DeviceHandle device,
             }
             continue;
         }
-        status = isStorageTarget == true ? internal::CreateGpuGraphStorageTexture(device,
-                                                                                  resource.Width,
-                                                                                  resource.Height,
-                                                                                  candidate->Textures[i])
-                                         : rhi::CreateTexture(device, description, {}, candidate->Textures[i]);
+        status = isStorageTarget == true
+                     ? internal::CreateGpuGraphStorageTexture(device,
+                                                              { .Width = resource.Width, .Height = resource.Height },
+                                                              candidate->Textures[i])
+                     : rhi::CreateTexture(device, description, {}, candidate->Textures[i]);
         if (IsAccepted(status) == false)
         {
             return status;
@@ -3198,8 +3198,10 @@ Status RenderGraph::Resize(uint32 referenceWidth, uint32 referenceHeight) noexce
         {
             allocated = isStorageTarget == true
                             ? internal::CreateGpuGraphStorageTexture(state.Device,
-                                                                     resources[i].Width,
-                                                                     resources[i].Height,
+                                                                     {
+                                                                         .Width = description.Width,
+                                                                         .Height = description.Height,
+                                                                     },
                                                                      candidate->Textures[i])
                             : rhi::CreateTexture(state.Device, description, {}, candidate->Textures[i]);
             state.Allocation.CreatedAllocations += IsAccepted(allocated) == true ? 1 : 0;

@@ -7,9 +7,14 @@
 #include <ludus/graphics/rhi/graph.h>
 namespace ludus::graphics::renderer::internal
 {
+struct GraphStorageTextureSize final
+{
+    foundation::uint32 Width;
+    foundation::uint32 Height;
+};
+
 [[nodiscard]] rhi::RasterStatus CreateGpuGraphStorageTexture(rhi::DeviceHandle device,
-                                                             foundation::uint32 width,
-                                                             foundation::uint32 height,
+                                                             GraphStorageTextureSize size,
                                                              rhi::TextureHandle& outTexture) noexcept;
 [[nodiscard]] rhi::RasterStatus BuildGpuGraph(rhi::DeviceHandle device,
                                               const GpuPreviewState& state,
