@@ -17,9 +17,10 @@ with sRGB encoding. The editor build was `02313ecae`.
    location. Keep `art/`, `assets/`, and `authoring/` together. The project
    includes the imported meshes and material slots.
 2. Open the copy's `ludus.project.json` from **File → Open Project**.
-3. In **Project Explorer → Worlds**, open **light-court**. The viewport opens at
-   the saved perspective. If you navigated away, choose **View → Go to start view**
-   in the viewport toolbar. Select **Lit** if the toolbar shows **Solid**.
+3. In **Project Explorer → Worlds**, open **light-court** for the default late-afternoon
+   setup. The viewport opens at the saved perspective. If you navigated away,
+   choose **View → Go to start view** in the viewport toolbar. Select **Lit** if
+   the toolbar shows **Solid**.
 
 The sample is an editor authoring project. Its CMake target lists the sample
 data for tools that read the project.
@@ -75,3 +76,23 @@ To capture bounce light and material reflections at the same camera, open
 
 See the [World authoring guide](../development/editor-workspace.md#try-a-3d-authoring-workflow)
 for camera controls, preview modes and save behavior.
+
+## Compare late afternoon and blue hour
+
+Open **light-court-blue-hour** in **Project Explorer → Worlds** to use the same
+camera after sunset. The Sun sits 2.6 degrees below the horizon and the fuller
+Moon sits higher in the frame. A warm strip concealed beneath the copper plate
+lights the floor near the enamel. Switch the **Area light** in the World's
+**Lights** list to see what it contributes. The source is the
+[step light scene](../../examples/light-court/art/step-light.luscene.json).
+
+| Late afternoon (default) | Blue hour |
+| --- | --- |
+| ![Warm side light with a long sphere shadow on the steps](images/light-court.png) | ![The same courtyard at blue hour, with a fuller Moon and warm light pooling under the copper plate](images/light-court-blue-hour.png) |
+
+Both RT1 frames use the same camera and sampling settings. The blue-hour PNG
+uses a cooler sky tint and an exposure multiplier of 56 to keep the steps
+readable in the dimmer light. In the viewport's **Exposure** menu, **Physical
+camera** at EV100 −6.07 gives that multiplier with zero compensation. RT1
+samples the light from the strip's surface. The default raster graph uses an
+area-light approximation.

@@ -13,7 +13,9 @@ add_custom_target(light_court SOURCES
     art/enamel-surface.png
     art/graphite-normal.png
     art/graphite-surface.png
+    art/step-light.luscene.json
     art/LICENSE.txt
     assets/catalog.json
     authoring/light-court.world.json
+    authoring/light-court-blue-hour.world.json
 )
