@@ -356,9 +356,11 @@ class RequiredGateTests(unittest.TestCase):
         self.assertRegex(root.joinpath("webgpu-probe.yml").read_text(), r"(?m)^  schedule:\n    - cron: '[^']+'$")
         workflow = root.joinpath("ci.yml").read_text()
         macos_compile = workflow.split("\n  macos-compile:\n", 1)[1].split("\n  macos-sanitizers:\n", 1)[0]
-        inventory = macos_compile.split("--inventory", 1)
-        self.assertEqual(len(inventory), 2)
-        self.assertNotIn("continue-on-error", inventory[0].rsplit("- name:", 1)[1])
+        # The macOS native job runs its check plan; a failed check fails the job.
+        plan = (root.parent.parent / "scripts/ci/macos_native.py").read_text()
+        self.assertEqual(plan.count("--inventory"), 1)
+        self.assertIn("scripts/python/ci_checks.py scripts/ci/macos_native.py", macos_compile)
+        self.assertNotIn("continue-on-error", macos_compile)
         self.assertNotIn("--inventory", workflow.split("\n  macos-analysis:\n", 1)[1].split("\n  formatting:\n", 1)[0])
 
     def test_builds_and_tidy_use_the_runner_core_counts(self):
