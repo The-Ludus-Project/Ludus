@@ -256,6 +256,7 @@ enum class RenderGraphFailureReason : foundation::uint8
     WaveConnection,             ///< The optical wavelength or finite connection is outside the paraxial profile.
     WavePropagationCapacity,    ///< An optical connection exceeds the admitted number of successive regions.
     FixedDimensionMaterial,     ///< An assigned surface lacks continuous reflection with a fixed sample dimension.
+    LuslBounds,                 ///< A development LUSL callback indexed outside its declared bounds.
 };
 /// First failure reason an authored shader may report with FailSceneQuery.
 inline constexpr foundation::uint32 RENDER_GRAPH_FAILURE_AUTHORED_FIRST = 32;
@@ -275,6 +276,8 @@ struct RenderGraphRayFailures final
     foundation::uint64 TotalPixels = 0;
     /// The reason with the most pixels; meaningful when TotalPixels is nonzero.
     foundation::uint32 MainReason = 0;
+    /// Highest authored line reported by a checked LUSL invocation in this history, or zero if none.
+    foundation::uint32 LuslBoundsLine = 0;
 };
 /// Ray work of one sample of a RenderGraph's current scene, from which a frame capture sizes its tiles.
 struct RenderGraphRayWorkload final

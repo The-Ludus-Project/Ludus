@@ -1,0 +1,13 @@
+// Development fixture. The orthographic camera's ray selects an invalid
+// index. The clamped color is valid, so only the LUSL latch fails the ray.
+#include "ray_shader.luslh"
+
+static const uint32 TAP_COUNT = 2;
+static const uint32 INVALID_TAP = TAP_COUNT;
+
+float32x3 ShadeMiss(in Ray ray)
+{
+    float32 taps[TAP_COUNT] = 0;
+    uint32 tap = ray.MaxDistanceWorld > 0.0 ? INVALID_TAP : 0;
+    return float32x3(taps[tap]);
+}
