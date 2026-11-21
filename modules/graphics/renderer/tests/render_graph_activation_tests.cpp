@@ -1005,9 +1005,16 @@ TEST_CASE("A graph without clustered deferred programs draws a World with an Atm
     fixture.Cameras[0].Atmosphere.ShouldLightScene = false;
     REQUIRE(fixture.Update(report, 4) == rhi::RasterStatus::Ready);
     CHECK(report.UnrenderedWorldFeatures == renderer::GetWorldFeatureBit(renderer::WorldFeature::AtmosphereSky));
+    fixture.Cameras[0].Atmosphere.Aurora.IsEnabled = true;
+    REQUIRE(fixture.Update(report, 5) == rhi::RasterStatus::Ready);
+    CHECK(report.UnrenderedWorldFeatures == (renderer::GetWorldFeatureBit(renderer::WorldFeature::AtmosphereSky) |
+                                             renderer::GetWorldFeatureBit(renderer::WorldFeature::Aurora)));
+    fixture.Cameras[0].Atmosphere.Aurora.EmissionPerMetre = 0;
+    REQUIRE(fixture.Update(report, 6) == rhi::RasterStatus::Ready);
+    CHECK(report.UnrenderedWorldFeatures == renderer::GetWorldFeatureBit(renderer::WorldFeature::AtmosphereSky));
     // Turning the Atmosphere off clears the report on the next accepted extraction.
     fixture.Cameras[0].Atmosphere.IsEnabled = false;
-    REQUIRE(fixture.Update(report, 5) == rhi::RasterStatus::Ready);
+    REQUIRE(fixture.Update(report, 7) == rhi::RasterStatus::Ready);
     CHECK(report.UnrenderedWorldFeatures == 0);
 }
 

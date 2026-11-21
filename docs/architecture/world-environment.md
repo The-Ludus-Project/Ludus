@@ -291,6 +291,44 @@ adds about 1 ms. Cutting the view steps from 32 to 8 recovered only part of
 the full-view cost; the rest is not yet attributed. A disabled layer costs
 one uniform branch. The traversal measurement in #1319 owns any cheaper path.
 
+### Auroral curtains
+
+`AtmosphereDescription::Aurora` is an opt-in emission field for the native
+clustered deferred renderer. Three animated curtains extend between 100 and
+300 km above the Earth sphere. The Atmosphere entity sets the tangent frame.
+The curtains run along its local X axis, with their centres toward local +Z.
+They fade at their ends and have a sharp green lower edge, fine vertical shafts,
+and a fainter red upper trail. Their position and brightness vary with the
+120-second animation time independently of the Sun and the celestial background.
+The authored brightness scale is scene-linear nits per metre.
+
+The renderer clips the ray to the emitting shell, each ribbon's bounds and the
+first opaque hit. The planet blocks rays that hit the ground before reaching
+the emitting shell. The ribbon profile is the product of a procedural
+footprint and an altitude-dependent emission profile, following Lawlor and
+Genetti's [Interactive Volume Rendering Aurora on the GPU](https://lawlor.cs.uaf.edu/~olawlor/papers/2010/aurora/lawlor_aurora_2010.pdf).
+The height and colour choices follow the observed green and red oxygen emission
+ranges described by [NASA](https://science.nasa.gov/sun/auroras/). The renderer
+skips empty intervals using a conservative upper bound on the footprint's
+slope, then integrates the remaining intervals with bounded midpoint steps.
+
+The clear-air model ends at the aurora's base, so every visible sample along a
+ray shares the same camera-to-top transmittance. The view integral multiplies
+that transmittance by the sum of emission per metre times segment length. A
+constant emitter in vacuum would therefore add its emission per metre times
+visible length. The cloud pass attenuates the aurora behind it. The sky and
+opaque surface resolves add the result before exposure. Zero emission skips
+the layer entirely.
+
+This profile draws the curtains from perspective views inside the clear-air
+shell. For opaque geometry beyond the shell, use `ShouldLightScene` to enable
+the finite-distance resolve. Forward and ray graphs report the missing World
+feature. Orthographic, orbital and RT1 reference views omit the curtains.
+Aurora contributes to camera rays only. Environment lighting, exposure
+metering and reflections use the existing sky and lighting inputs.
+[#1932](https://github.com/The-Ludus-Project/Ludus/issues/1932)
+tracks the sampling and target-resolution qualification.
+
 ## Rain, wetness and authoring
 
 Sample a bounded world-space shelter mask at receivers. The initial fixture

@@ -8,6 +8,7 @@
 #include <ludus/foundation/containers/static_array.hpp>
 #include <ludus/foundation/math/quaternion.hpp>
 #include <ludus/foundation/math/scalar.hpp>
+#include <ludus/graphics/renderer/atmosphere.hpp>
 
 namespace ludus::first_person
 {
@@ -107,6 +108,19 @@ bool ReadCloudLayer(JsonValue clouds, graphics::renderer::CloudLayerDescription&
            ReadVector(clouds.Get("axisXWorld"), outClouds.AxisXWorld) == true;
 }
 
+bool ReadAuroraLayer(JsonValue aurora, graphics::renderer::AuroraLayerDescription& outAurora) noexcept
+{
+    if (aurora.Valid() == false)
+    {
+        outAurora = {};
+        return true;
+    }
+    return aurora.Get("enabled").Boolean(outAurora.IsEnabled) == true &&
+           ReadScalar(aurora.Get("emissionPerMetre"), outAurora.EmissionPerMetre) == true &&
+           ReadScalar(aurora.Get("timeSeconds"), outAurora.TimeSeconds) == true &&
+           ReadVector(aurora.Get("axisXWorld"), outAurora.AxisXWorld) == true;
+}
+
 bool ReadAtmosphere(JsonValue sky, graphics::renderer::AtmosphereDescription& outSky) noexcept
 {
     graphics::renderer::CelestialBackgroundDescription& celestial = outSky.Celestial;
@@ -140,7 +154,8 @@ bool ReadAtmosphere(JsonValue sky, graphics::renderer::AtmosphereDescription& ou
            ReadVector(sky.Get("galacticNorthWorld"), celestial.GalacticNorthWorld) == true &&
            ReadVector(sky.Get("galacticCenterWorld"), celestial.GalacticCenterWorld) == true &&
            ReadVector(sky.Get("toSunAtMoonWorld"), celestial.DirectionToSunAtMoonWorld) == true &&
-           ReadCloudLayer(sky.Get("clouds"), outSky.Clouds) == true;
+           ReadCloudLayer(sky.Get("clouds"), outSky.Clouds) == true &&
+           ReadAuroraLayer(sky.Get("aurora"), outSky.Aurora) == true;
 }
 
 bool ReadSpawn(JsonValue value, std::string_view key, PlayerSpawn& outSpawn) noexcept

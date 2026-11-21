@@ -6,6 +6,7 @@
 #include "scene_fixture.h"
 
 #include <ludus/content/scene_format/playable_world.h>
+#include <ludus/graphics/renderer/atmosphere.hpp>
 
 #include <QCryptographicHash>
 #include <QDir>
@@ -105,6 +106,9 @@ TEST_CASE("Playable World freezes an applied glTF placement and admits only a co
     constexpr foundation::float64 CLOUD_BASE_METRES = 2500;
     atmosphere.insert("clouds"_L1, true);
     atmosphere.insert("cloudBase"_L1, CLOUD_BASE_METRES);
+    constexpr foundation::float64 AURORA_TIME_SECONDS = 19.5;
+    atmosphere.insert("aurora"_L1, true);
+    atmosphere.insert("auroraTime"_L1, AURORA_TIME_SECONDS);
     components.insert("atmosphere"_L1, atmosphere);
     REQUIRE(world.Edit(sky, components, skyEntity.value("name"_L1).toString(), error) == true);
     const QByteArray catalog = ReadBytes(QDir(root).filePath("assets/catalog.json"_L1));
@@ -137,6 +141,10 @@ TEST_CASE("Playable World freezes an applied glTF placement and admits only a co
     CHECK(static_cast<foundation::float64>(accepted.Atmosphere.Clouds.BaseHeightMetres) == CLOUD_BASE_METRES);
     CHECK(accepted.Atmosphere.Clouds.ExtinctionPerMetre ==
           graphics::renderer::CloudLayerDescription::DEFAULT_EXTINCTION_PER_METRE);
+    CHECK(accepted.Atmosphere.Aurora.IsEnabled == true);
+    CHECK(static_cast<foundation::float64>(accepted.Atmosphere.Aurora.TimeSeconds) == AURORA_TIME_SECONDS);
+    CHECK(accepted.Atmosphere.Aurora.EmissionPerMetre ==
+          graphics::renderer::AuroraLayerDescription::DEFAULT_EMISSION_PER_METRE);
     REQUIRE(prepare() == true);
     CHECK(ReadBytes(output) == acceptedBytes);
     CHECK(ReadBytes(QDir(root).filePath("assets/catalog.json"_L1)) == catalog);

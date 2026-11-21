@@ -3946,7 +3946,7 @@ TEST_CASE("Earth lights share one World date, time and location that starts at t
     workspace.StopPreview();
 }
 
-TEST_CASE("The Atmosphere's cloud layer fields show when enabled and reach the renderer", "[editor][world][atmosphere]")
+TEST_CASE("The Atmosphere shows enabled layer fields and extracts their settings", "[editor][world][atmosphere]")
 {
     QTemporaryDir directory;
     const QString root = QFileInfo(directory.path()).canonicalFilePath();
@@ -3973,7 +3973,8 @@ TEST_CASE("The Atmosphere's cloud layer fields show when enabled and reach the r
     REQUIRE(RenderScene::Load(root, workspace.Document(), scene, error) == true);
     REQUIRE(scene.Atmosphere.IsEnabled == true);
     CHECK(scene.Atmosphere.Clouds.IsEnabled == false);
-    const QJsonObject beforeClouds = workspace.Document().Draft();
+    CHECK(scene.Atmosphere.Aurora.IsEnabled == false);
+    const QJsonObject beforeLayers = workspace.Document().Draft();
 
     // The layer's fields stay hidden until the layer is ticked.
     QCheckBox* cloudsOrNull = workspace.findChild<QCheckBox*>(QStringLiteral("worldField:atmosphere/clouds"));
@@ -3990,6 +3991,14 @@ TEST_CASE("The Atmosphere's cloud layer fields show when enabled and reach the r
     CHECK(extinctionOrNull->isVisibleTo(&workspace) == true);
     baseOrNull->setText(QStringLiteral("2500"));
     extinctionOrNull->setText(QStringLiteral("0.002"));
+    QCheckBox* auroraOrNull = workspace.findChild<QCheckBox*>(QStringLiteral("worldField:atmosphere/aurora"));
+    QLineEdit* auroraTimeOrNull = workspace.findChild<QLineEdit*>(QStringLiteral("worldField:atmosphere/auroraTime"));
+    REQUIRE(auroraOrNull != nullptr);
+    REQUIRE(auroraTimeOrNull != nullptr);
+    CHECK(auroraTimeOrNull->isVisibleTo(&workspace) == false);
+    auroraOrNull->setChecked(true);
+    CHECK(auroraTimeOrNull->isVisibleTo(&workspace) == true);
+    auroraTimeOrNull->setText(QStringLiteral("23"));
     REQUIRE(workspace.Apply() == true);
     REQUIRE(RenderScene::Load(root, workspace.Document(), scene, error) == true);
     const ludus::graphics::renderer::CloudLayerDescription& clouds = scene.Atmosphere.Clouds;
@@ -3998,12 +4007,15 @@ TEST_CASE("The Atmosphere's cloud layer fields show when enabled and reach the r
     CHECK(clouds.ExtinctionPerMetre == Catch::Approx(0.002));
     CHECK(clouds.ThicknessMetres == ludus::graphics::renderer::CloudLayerDescription::DEFAULT_THICKNESS_METRES);
     CHECK(clouds.AxisXWorld.X == Catch::Approx(1));
+    CHECK(scene.Atmosphere.Aurora.IsEnabled == true);
+    CHECK(scene.Atmosphere.Aurora.TimeSeconds == 23);
 
     // Undo restores the clear sky in one step.
     workspace.Undo();
-    CHECK(workspace.Document().Draft() == beforeClouds);
+    CHECK(workspace.Document().Draft() == beforeLayers);
     REQUIRE(RenderScene::Load(root, workspace.Document(), scene, error) == true);
     CHECK(scene.Atmosphere.Clouds.IsEnabled == false);
+    CHECK(scene.Atmosphere.Aurora.IsEnabled == false);
     workspace.StopPreview();
 }
 

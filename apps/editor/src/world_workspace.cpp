@@ -625,31 +625,34 @@ void ConfigureAtmosphereFields(QWidget& inoutGroup,
     QObject::connect(sunOrNull, &QComboBox::currentIndexChanged, sky, update);
     QObject::connect(moonOrNull, &QComboBox::currentIndexChanged, sky, update);
     update();
-    // The cloud layer's fields matter only while it is drawn.
-    QCheckBox* cloudsOrNull = qobject_cast<QCheckBox*>(fields.value(FieldKey(component, QStringLiteral("clouds"))));
-    if (cloudsOrNull == nullptr)
-    {
-        return;
-    }
-    QList<QWidget*> cloudRows;
-    const QString prefix = FieldKey(component, QStringLiteral("cloud"));
-    for (const QString& key : fields.keys())
-    {
-        QWidget* field = fields.value(key);
-        if (key.startsWith(prefix) == true && field != cloudsOrNull)
+    const auto connectLayerFields = [&](const QString& toggle, const QString& propertyPrefix) {
+        QCheckBox* enabledOrNull = qobject_cast<QCheckBox*>(fields.value(FieldKey(component, toggle)));
+        if (enabledOrNull == nullptr)
         {
-            cloudRows.append(GetFormRowWidget(inoutRows, field));
+            return;
         }
-    }
-    const auto updateClouds = [&inoutGroup, &inoutRows, cloudRows, cloudsOrNull]() {
-        for (QWidget* row : cloudRows)
+        QList<QWidget*> layerRows;
+        const QString prefix = FieldKey(component, propertyPrefix);
+        for (const QString& key : fields.keys())
         {
-            inoutRows.setRowVisible(row, cloudsOrNull->isChecked());
+            QWidget* field = fields.value(key);
+            if (key.startsWith(prefix) == true && field != enabledOrNull)
+            {
+                layerRows.append(GetFormRowWidget(inoutRows, field));
+            }
         }
-        FitInspectorGroupHeight(inoutGroup, inoutRows);
+        const auto updateLayer = [&inoutGroup, &inoutRows, layerRows, enabledOrNull]() {
+            for (QWidget* row : layerRows)
+            {
+                inoutRows.setRowVisible(row, enabledOrNull->isChecked());
+            }
+            FitInspectorGroupHeight(inoutGroup, inoutRows);
+        };
+        QObject::connect(enabledOrNull, &QCheckBox::toggled, enabledOrNull, updateLayer);
+        updateLayer();
     };
-    QObject::connect(cloudsOrNull, &QCheckBox::toggled, cloudsOrNull, updateClouds);
-    updateClouds();
+    connectLayerFields(QStringLiteral("clouds"), QStringLiteral("cloud"));
+    connectLayerFields(QStringLiteral("aurora"), QStringLiteral("aurora"));
 }
 QString Display(const QJsonValue& value)
 {

@@ -109,6 +109,27 @@ struct CloudLayerDescription final
     foundation::math::Vector3 AxisXWorld{1, 0, 0};
 };
 
+/// Procedural auroral curtains anchored to the Earth atmosphere's surface frame.
+struct AuroraLayerDescription final
+{
+    /// Peak emission scale in scene-linear nits per metre for an ordinary display of northern lights.
+    static constexpr foundation::float32 DEFAULT_EMISSION_PER_METRE = 0.0000005F;
+    /// Largest admitted emission scale in nits per metre.
+    static constexpr foundation::float32 MAXIMUM_EMISSION_PER_METRE = 0.001F;
+    /// Duration of one seamless animation loop in seconds.
+    static constexpr foundation::float32 LOOP_SECONDS = 120;
+
+    /// False skips the layer and ignores its other settings.
+    bool IsEnabled = false;
+    /// Finite peak emission scale between zero and MAXIMUM_EMISSION_PER_METRE. Zero skips the layer.
+    foundation::float32 EmissionPerMetre = DEFAULT_EMISSION_PER_METRE;
+    /// Frozen animation time in seconds, in [0, LOOP_SECONDS]. Supply times from the app's simulation clock.
+    foundation::float32 TimeSeconds = 0;
+    /// Finite nonzero tangent X direction. The curtains run along X, toward the side X cross SurfaceUpWorld.
+    /// Its part perpendicular to SurfaceUpWorld must be nonzero.
+    foundation::math::Vector3 AxisXWorld{1, 0, 0};
+};
+
 /// Spherical Earth atmosphere resolved from one World entity and directional light.
 struct AtmosphereDescription final
 {
@@ -137,6 +158,10 @@ struct AtmosphereDescription final
     /// sky and in front of opaque surfaces. Orthographic and orbital views, ray kernels and reference captures omit
     /// it, and it casts no shadow on surfaces yet.
     CloudLayerDescription Clouds{};
+    /// Optional view-ray emission between 100 and 300 km above the sphere. Applies to perspective cameras
+    /// inside the clear-air shell on the native atmospheric deferred renderer. ShouldLightScene enables depth
+    /// clipping at opaque surfaces beyond the emission base. Surface lighting and reference captures omit it.
+    AuroraLayerDescription Aurora{};
 };
 /// Compute the signed altitude in metres above an Earth clear-sky surface.
 /// Invalid anchor, up or eye coordinates preserve outAltitudeMetres.

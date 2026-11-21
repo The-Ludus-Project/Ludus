@@ -10,6 +10,7 @@
 #include <ludus/content/scene_cook/scene_assets.h>
 
 #include <ludus/content/scene_format/playable_world.h>
+#include <ludus/graphics/renderer/atmosphere.hpp>
 
 #include <QCryptographicHash>
 #include <QDir>
@@ -94,6 +95,11 @@ QJsonObject EncodeAtmosphere(const graphics::renderer::AtmosphereDescription& sk
                                  {"albedo"_L1, clouds.SingleScatteringAlbedo},
                                  {"phaseAsymmetry"_L1, clouds.PhaseAsymmetry},
                                  {"axisXWorld"_L1, MakeVector(clouds.AxisXWorld)}};
+    const graphics::renderer::AuroraLayerDescription& aurora = sky.Aurora;
+    const QJsonObject auroraLayer{{"enabled"_L1, aurora.IsEnabled},
+                                  {"emissionPerMetre"_L1, aurora.EmissionPerMetre},
+                                  {"timeSeconds"_L1, aurora.TimeSeconds},
+                                  {"axisXWorld"_L1, MakeVector(aurora.AxisXWorld)}};
     return {{"enabled"_L1, sky.IsEnabled},
             {"anchorWorld"_L1, MakeVector(sky.SurfaceAnchorWorld)},
             {"upWorld"_L1, MakeVector(sky.SurfaceUpWorld)},
@@ -112,7 +118,8 @@ QJsonObject EncodeAtmosphere(const graphics::renderer::AtmosphereDescription& sk
             {"galacticCenterWorld"_L1, MakeVector(celestial.GalacticCenterWorld)},
             {"toSunAtMoonWorld"_L1, MakeVector(celestial.DirectionToSunAtMoonWorld)},
             {"planets"_L1, planets},
-            {"clouds"_L1, cloudLayer}};
+            {"clouds"_L1, cloudLayer},
+            {"aurora"_L1, auroraLayer}};
 }
 bool ExtractEntities(const WorldDocument& world, QJsonArray& outEntities, QJsonArray& outWarnings, QString& outError)
 {

@@ -4,6 +4,7 @@
 
 #include "renderer_atmosphere_celestial.slang"
 #include "renderer_atmosphere_transport.slang"
+#include "renderer_aurora_layer.slang"
 #include "renderer_cloud_layer.slang"
 
 struct AtmosphereViewParameters
@@ -24,6 +25,7 @@ struct AtmosphereViewParameters
     float4 PlanetDirectionsWorld[ATMOSPHERE_PLANET_CAPACITY];
     float4 PlanetIlluminance[ATMOSPHERE_PLANET_CAPACITY];
     float4 CloudLayer[CLOUD_LAYER_UNIFORM_ROWS];
+    AuroraLayerParameters AuroraLayer;
 };
 LUDUS_SHADER_BINDING(0)
 ConstantBuffer<AtmosphereViewParameters> atmosphereView LUDUS_SHADER_UNIFORM_REGISTER(0);
@@ -282,6 +284,15 @@ float3 ComposeSkyCloudLayer(in float3 directionWorld, in float3 clearRadiance)
     }
     AtmosphereBackgroundTransport transport = EvaluateAtmosphereBackground(directionWorld);
     float3 radiance = transport.Radiance * atmosphereView.SolarIlluminance.xyz + transport.Transmittance * boundary;
+    if (atmosphereView.AuroraLayer.AxisXWorld.w > 0)
+    {
+        const float UNBOUNDED_AURORA_RAY = 2 * (GROUND_RADIUS + AURORA_TOP_KILOMETRES);
+        radiance += transport.Transmittance * IntegrateAuroraLayer(atmosphereView.AuroraLayer,
+                                                                   atmosphereView.RadialUpWorld.xyz,
+                                                                   directionWorld,
+                                                                   atmosphereView.RadialUpWorld.w,
+                                                                   UNBOUNDED_AURORA_RAY);
+    }
     if (atmosphereView.CloudLayer[0].w > 0)
     {
         radiance = ComposeSkyCloudLayer(directionWorld, radiance);

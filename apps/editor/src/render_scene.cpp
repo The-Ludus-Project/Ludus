@@ -851,6 +851,14 @@ void ExtractWorldAtmosphere(const WorldDocument& world, const QJsonObject& trans
         .ShouldLightScene = true,
     };
     ExtractWorldCloudLayer(properties, placement, inoutScene.Atmosphere.Clouds);
+    inoutScene.Atmosphere.Aurora =
+    {
+        .IsEnabled = properties.value(QStringLiteral("aurora")).toBool(false),
+        .EmissionPerMetre = static_cast<float32>(properties.value(QStringLiteral("auroraEmission"))
+                                                     .toDouble(rr::AuroraLayerDescription::DEFAULT_EMISSION_PER_METRE)),
+        .TimeSeconds = static_cast<float32>(properties.value(QStringLiteral("auroraTime")).toDouble()),
+        .AxisXWorld = math::Rotate(placement.Rotation, {1, 0, 0}),
+    };
     rr::CelestialBackgroundDescription& celestial = inoutScene.Atmosphere.Celestial;
     celestial.IsEnabled = true;
     celestial.StarRadiance = properties.value(QStringLiteral("stars")).toBool(true) == true ? 1.0F : 0.0F;

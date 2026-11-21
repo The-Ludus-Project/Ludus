@@ -2640,10 +2640,12 @@ void RendererWorkspace::refreshWorldFeatureDetail()
     const int row = std::max(mWorldFeatures->currentRow(), 0);
     const renderer::WorldFeatureDescription description =
         renderer::DescribeWorldFeature(static_cast<renderer::WorldFeature>(row));
-    mWorldFeatureDetail->setText(QStringLiteral("%1: call %2. %3")
-                                     .arg(QString::fromUtf8(description.Name),
-                                          QString::fromUtf8(description.Function),
-                                          QString::fromUtf8(description.Callback)));
+    const QString name = QString::fromUtf8(description.Name);
+    const QString help = QString::fromUtf8(description.Callback);
+    mWorldFeatureDetail->setText(
+        *description.Function == '\0'
+            ? QStringLiteral("%1. %2").arg(name, help)
+            : QStringLiteral("%1: call %2. %3").arg(name, QString::fromUtf8(description.Function), help));
 }
 void RendererWorkspace::RevealWorldFeatures()
 {
