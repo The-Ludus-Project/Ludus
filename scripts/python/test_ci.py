@@ -1466,5 +1466,35 @@ class BatchJobCheckPlanTests(unittest.TestCase):
                 reaches.add(check.id)
 
 
+class MacosReferencePlanTests(unittest.TestCase):
+    """The CPU/GPU reference oracle cases run in their own macOS job, exactly once."""
+
+    ROOT = Path(__file__).resolve().parents[2]
+    PREFIX = "'^ludus_renderer_reference: '"
+
+    def test_reference_cases_move_from_the_native_plan_to_the_reference_plan(self):
+        native = {check.id: check for check in load_macos_native_plan()}
+        reference = {check.id: check for check in
+                     ci_checks.load_plan(self.ROOT / "scripts/ci/macos_reference.py")}
+        self.assertIn(f"--exclude-regex {self.PREFIX}", native["native-tests"].run)
+        self.assertIn(f"--tests-regex {self.PREFIX}", reference["reference-tests"].run)
+        self.assertEqual(list(reference)[0], "build")
+        self.assertIn("--target ludus_renderer_render_tests", reference["build"].run)
+        # Same configure as the native job, so both use one compiler cache.
+        configure = native["build"].run.split("out/host-tools/venv/bin/cmake --build", 1)[0]
+        self.assertTrue(reference["build"].run.startswith(configure))
+
+    def test_reference_job_runs_its_plan_and_never_saves_the_shared_cache(self):
+        workflow = (self.ROOT / ".github/workflows/ci.yml").read_text(encoding="utf-8")
+        job = re.split(r"\n  [A-Za-z0-9_-]+:\n", workflow.split("\n  macos-reference:\n", 1)[1], maxsplit=1)[0]
+        self.assertIn("scripts/python/ci_checks.py scripts/ci/macos_reference.py", job)
+        self.assertIn("cache-variant: native", job)
+        self.assertNotIn("actions/cache/save", job)
+        gate = re.split(r"\n  [A-Za-z0-9_-]+:\n", workflow.split("\n  linux:\n", 1)[1], maxsplit=1)[0]
+        needs = re.search(r"(?m)^    needs: \[(.*)\]$", gate)
+        self.assertIsNotNone(needs)
+        self.assertIn("macos-reference", [name.strip() for name in needs.group(1).split(",")])
+
+
 if __name__ == "__main__":
     unittest.main()

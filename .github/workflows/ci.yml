@@ -48,6 +48,7 @@ on:
         options:
           - all
           - macos-compile
+          - macos-reference
           - macos-sanitizers
           - macos-analysis
           - formatting
@@ -284,6 +285,55 @@ jobs:
         with:
           path: out/ccache
           key: ${{ steps.setup.outputs.compiler-cache-key }}
+
+  # The CPU/GPU reference oracle cases, 30 minutes of the native job, run here beside it.
+  # Together with the native job and the sanitizers this holds three ARM runners; the
+  # batch's short macOS chain adds at most one (batch-ci.yml).
+  macos-reference:
+    needs: changes
+    if: needs.changes.outputs.native_required == 'true' && needs.changes.outputs.validation_tier != 'integration' && ((inputs.evidence_job || 'all') == 'all' || inputs.evidence_job == 'macos-reference')
+    name: macOS GPU reference oracle
+    runs-on: macos-15
+    env:
+      CMAKE_BUILD_PARALLEL_LEVEL: "3"
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.batch_sha || github.sha }}
+          persist-credentials: false
+      - uses: ./.github/actions/macos-setup
+        id: setup
+        with:
+          preset: macos-clang-development
+          cache-variant: native
+          build-editor: 'false'
+      # Commands live in scripts/ci/macos_reference.py (see the macos-compile job). This job
+      # restores the native job's compiler cache and never saves it.
+      - name: Run macOS GPU reference checks
+        id: checks
+        run: out/host-tools/venv/bin/python scripts/python/ci_checks.py scripts/ci/macos_reference.py
+      - name: Preserve per-test reference timings
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: macos-reference-tests
+          path: ${{ runner.temp }}/macos-reference-tests.xml
+          if-no-files-found: warn
+      - name: Preserve macOS crash reports
+        if: failure()
+        run: |
+          mkdir -p "$RUNNER_TEMP/crash-reports"
+          find "$HOME/Library/Logs/DiagnosticReports" -maxdepth 1 -type f \( -name '*.ips' -o -name '*.crash' \) \
+            -exec cp {} "$RUNNER_TEMP/crash-reports/" \; 2>/dev/null || true
+          ls "$RUNNER_TEMP/crash-reports"
+      - name: Upload macOS crash reports
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: macos-reference-crash-reports
+          path: ${{ runner.temp }}/crash-reports/
+          if-no-files-found: ignore
+          retention-days: 14
 
   macos-sanitizers:
     needs: changes
@@ -1656,7 +1706,7 @@ jobs:
     # A cancelled pull-request run passes only when a newer, uncancelled run of
     # this workflow covers the same head commit; that run's gate owns the result.
     name: ${{ (inputs.sanitizer_experiment == 'rebuild' || inputs.sanitizer_experiment == 'shared') && 'Sanitizer experiment dispatch' || github.event_name == 'workflow_dispatch' && inputs.mcmc_vulkan_parity_only == true && 'Focused Vulkan dispatch (not integration)' || inputs.evidence_job && inputs.evidence_job != 'all' && format('Evidence gate ({0})', inputs.evidence_job) || 'Ubuntu Clang' }}
-    needs: [changes, macos-compile, macos-sanitizers, macos-analysis, macos-objcxx-analysis, formatting, debug-runtime, development, sanitizers, filesystem-fuzz, threading-races, analysis, editor, assertion-policy, pch, build-budget, scripting-qualification]
+    needs: [changes, macos-compile, macos-reference, macos-sanitizers, macos-analysis, macos-objcxx-analysis, formatting, debug-runtime, development, sanitizers, filesystem-fuzz, threading-races, analysis, editor, assertion-policy, pch, build-budget, scripting-qualification]
     if: always() && (github.event_name != 'workflow_dispatch' || (inputs.mcmc_vulkan_parity_only != true && inputs.sanitizer_experiment != 'rebuild' && inputs.sanitizer_experiment != 'shared'))
     runs-on: ubuntu-24.04
     permissions:
