@@ -7,15 +7,21 @@ namespace ludus::gameplay::sequencer
 /// Result of sequence preparation or sampling. Failure preserves the requested output.
 enum class SequenceStatus : foundation::uint8
 {
-    Success,          ///< A complete validated result was published.
-    InvalidArgument,  ///< An invalid view, time, rate, base value or enum was supplied.
-    InvalidKeys,      ///< Keys are unordered, nonfinite, nonunit or outside the channel's domain.
-    DuplicateBinding, ///< More than one track group names the same binding; combine its channels.
-    BudgetExceeded,   ///< The requested track/key/storage payload exceeds the supplied limits.
-    OutOfMemory,      ///< A fallible preparation allocation failed.
-    OutOfRange,       ///< Checked time arithmetic or a sampled value is not representable.
-    Unprepared,       ///< The sequence has no accepted prepared revision.
-    MissingBinding,   ///< No track of the requested kind has that binding identity.
+    Success,            ///< A complete validated result was published.
+    InvalidArgument,    ///< An invalid view, time, rate, base value or enum was supplied.
+    InvalidKeys,        ///< Keys are unordered, nonfinite, nonunit or outside the channel's domain.
+    DuplicateBinding,   ///< Groups, bindings or tracks share one identity, or two bindings name one target.
+    BudgetExceeded,     ///< The requested track/key/storage payload exceeds the supplied limits.
+    OutOfMemory,        ///< A fallible preparation allocation failed.
+    OutOfRange,         ///< Checked time arithmetic or a sampled value is not representable.
+    Unprepared,         ///< The sequence has no accepted prepared revision.
+    MissingBinding,     ///< No track of the requested kind has that binding identity, or no scene target matches it.
+    ConflictingWriter,  ///< Two enabled tracks write the same binding channel; the diagnostic names both tracks.
+    InvalidSelection,   ///< Camera selection intervals leave a gap, overlap, miss the range or name a non-camera.
+    AmbiguousTarget,    ///< More than one scene target matches one durable binding identity.
+    UnsupportedChannel, ///< The bound scene target cannot accept the channel (for example no writable transform).
+    ParentCycle,        ///< The bound target's parent chain loops instead of reaching a root.
+    WorldMismatch,      ///< The scene's World identity or pinned content digest differs from the sequence's.
 };
 
 /// Positive rational frames per second; neither component may be zero.

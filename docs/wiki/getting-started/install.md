@@ -51,8 +51,8 @@ the selection window starts no setup actions. Tests are optional here; engine
 contributors have additional validation steps in the building guide.
 
 **Checkpoint:** the progress window shows **Ludus is ready** and reports the
-prepared editor. If it shows **Setup failed**, fix the reported error, then
-choose **Retry**. Merely closing the selection window does not mean setup
+prepared editor. Choose **Run editor** to open it now. If it shows
+**Setup failed**, fix the reported error, then choose **Retry**. Merely closing the selection window does not mean setup
 succeeded. See [Building Ludus](../../development/building.md) for the progress
 window's controls.
 
@@ -69,6 +69,9 @@ If you manage system packages yourself, install the required toolchain and Qt,
 then add `--no-system-install` to that command.
 
 ## 3. Launch the editor
+
+**Run editor** in the progress window starts the editor right after setup. To
+launch it again later, run:
 
 ```bash
 # Linux

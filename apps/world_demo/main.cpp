@@ -223,6 +223,18 @@ namespace
 ludus::world_demo::Application gApplication;
 // The browser status element receives the placement digest as two 32-bit halves.
 constexpr ludus::foundation::uint32 DIGEST_HIGH_SHIFT = 32;
+// The status mode follows the game flow: a held world that is loading its replacement is not paused for the player.
+ludus::world_demo::Mode GetPresentedMode(const ludus::world_demo::Session& session) noexcept
+{
+    using ludus::world_demo::FlowState;
+    using ludus::world_demo::Mode;
+    const FlowState state = session.GetFlowState();
+    if (state == FlowState::Faulted || session.Driver.GetMode() == Mode::Faulted)
+    {
+        return Mode::Faulted;
+    }
+    return state == FlowState::Paused ? Mode::Paused : Mode::Playing;
+}
 // clang-format off
 EM_JS(bool, FollowCameraRequested, (), {
     return new URLSearchParams(location.search).get('camera') === 'follow';
@@ -247,7 +259,7 @@ void Frame() noexcept
     // The placement digest lets the browser harness compare the room's scatter with the native fixture.
     const ludus::foundation::uint64 digest = session.World().GetPlacementDigest();
     Present(static_cast<ludus::foundation::uint32>(state),
-            static_cast<ludus::foundation::uint32>(session.Driver.GetMode()),
+            static_cast<ludus::foundation::uint32>(GetPresentedMode(session)),
             static_cast<ludus::foundation::uint32>(gApplication.GetSelectedBackend()),
             static_cast<ludus::foundation::uint32>(session.World().GetTick()),
             transform != nullptr ? transform->Current.X : 0,

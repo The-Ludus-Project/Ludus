@@ -782,7 +782,7 @@ the first game's minimum requirements or establish AAA-scale readiness.
 | Stage | Deliverable and exit criteria |
 | --- | --- |
 | G0 | Preserve existing world demo; document store roster, phase descriptors and completed-state inspection. |
-| G1 | Typed addressed messages, cancellation scopes and minimal session FSM; prove ordering, queue bounds, pause/step and failed replacement behavior. |
+| G1 | Typed addressed messages, cancellation scopes and minimal session FSM; prove ordering, queue bounds, pause/step and failed replacement behavior. Implemented in the [world reference](../examples/world-demo.md#addressed-commands-and-session-flow); `FlowChanged` subscriptions and gameplay-produced messages remain open. |
 | G2 | Native agent actions, reservations, cadence and indexed wakeup; run the same scenario at varied presentation rates and serial execution. |
 | G3 | Two streamable cells with dependency validation, persistent references and safe unload; test teleport, late completion, migration and retained render/job leases. |
 | G4 | Native/provider behavior integration using the existing scripting stages; prove command outcomes, fault containment, cancellation and generation retirement. |
