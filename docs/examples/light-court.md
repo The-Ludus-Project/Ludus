@@ -4,13 +4,12 @@ Open a small courtyard, rotate its Sun and watch the shadow move. Light Court
 is a standalone authoring sample for the [desktop editor](../wiki/getting-started/install.md)
 with [rendered World preview enabled](../development/editor-workspace.md#enable-the-rendered-authoring-surface).
 
-![Light Court rendered by RT1. A diagonal shadow crosses the concrete steps. Fine grain is visible on the tall wall, and the satin copper plate reflects warm light beside the blue-green enamel panel.](images/light-court.png)
+![Light Court rendered by RT1 from a low three-quarter view. Warm sunlight grazes the tall concrete wall and casts a long shadow from the graphite sphere. A small Moon hangs in the clear blue sky.](images/light-court.png)
 
 The image is a 1440 × 960 [RT1 reference capture](../development/editor-workspace.md#reference-capture-of-the-viewport)
 from the saved start view on macOS Metal. GPU compute traced 1,024 samples per
 pixel to depth eight with seed 1. The PNG uses exposure 1 and Khronos PBR Neutral
-with sRGB encoding. The editor build was `3b78b5239` with the World undo
-correction from this sample.
+with sRGB encoding. The editor build was `02313ecae`.
 
 ## Open the sample
 
@@ -24,6 +23,17 @@ correction from this sample.
 
 The sample is an editor authoring project. Its CMake target lists the sample
 data for tools that read the project.
+
+## Read the lighting setup
+
+The low three-quarter start view shows the two steps, the sphere's contact
+shadow, and the copper plate below the enamel panel. The Sun sits
+23 degrees above the horizon and lights the courtyard from the left. The linked
+**Earth clear sky** Atmosphere supplies the cool sky light and warms the direct
+sunlight. The linked **Moon** sits high in the left of the frame and contributes
+very little direct light. Both lights use editable Transform rotations. See
+[set up a clear-sky atmosphere](../development/editor-workspace.md#add-a-clear-sky-atmosphere)
+for the Sun and Moon bindings.
 
 ## Inspect the materials
 
@@ -55,8 +65,9 @@ To capture bounce light and material reflections at the same camera, open
 **Reference…** in the viewport toolbar and select **RT1 reference** as the **Source**.
 
 1. Select **Sun** in the World hierarchy. In **Properties → Transform**, change
-   **Rotation Y** from `128` to `75` degrees. Watch the shadow swing across the
-   platform as the viewport previews the valid draft.
+   **Rotation Y** from `-100` to `75` degrees. Watch the shadow swing and the
+   warm light move to the other side of the courtyard as the viewport previews
+   the draft.
 2. Choose **Apply Changes**, then **Edit → Undo**. The Sun and shadow return to
    their starting positions.
 3. Choose **Edit → Redo** and **File → Save**. Reopen the World and select **Sun**
