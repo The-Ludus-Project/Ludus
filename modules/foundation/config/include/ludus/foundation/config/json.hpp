@@ -31,6 +31,18 @@ void EncodeValue(parsing::JsonWriter& writer, const Value& value) noexcept;
                                  uint64 expectedRevision,
                                  const AllocationDomain& domain,
                                  Diagnostic& error) noexcept;
+/// @brief Prepares one cooked layer embedded in an already parsed JSON document.
+/// The caller bounds the enclosing document and keeps it alive for the call. The same schema, rank,
+/// record and revision checks apply as in PrepareJson. Success leaves a prepared replacement for
+/// Commit. Failure publishes nothing. @p domain supplies temporary storage and @p outDiagnostic reports
+/// layer or record errors without document byte offsets.
+[[nodiscard]] Status PrepareJsonLayer(Context& inoutContext,
+                                      parsing::JsonValue root,
+                                      Layer expectedLayer,
+                                      std::string_view schemaIdentity,
+                                      uint64 expectedRevision,
+                                      const AllocationDomain& domain,
+                                      Diagnostic& outDiagnostic) noexcept;
 /// @brief Sparse explicit assignments only (including explicit values equal to defaults).
 ///
 /// Output view is preserved on failure; caller buffer may contain a partial prefix.

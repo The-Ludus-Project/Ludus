@@ -89,7 +89,8 @@ int main(int argc, char** argv)
     } shutdown;
     if (argc < 2 || argc > 3)
     {
-        LUDUS_LOG_ERROR(kConfigurationLog, "Usage: ludus-config --schema | --validate [project|preference]");
+        LUDUS_LOG_ERROR(kConfigurationLog,
+                        "Usage: ludus-config --schema | --validate [engine|project|profile|device|quality|preference]");
         return 2;
     }
     Context context;
@@ -112,14 +113,21 @@ int main(int argc, char** argv)
         Layer layer = Layer::Project;
         if (argc == 3)
         {
-            if (std::string_view(argv[2]) == "preference")
+            const std::string_view name = argv[2];
+            constexpr usize LAST_FILE_LAYER = static_cast<usize>(Layer::Preference);
+            usize index = 0;
+            while (index <= LAST_FILE_LAYER && LayerName(static_cast<Layer>(index)) != name)
             {
-                layer = Layer::Preference;
+                ++index;
             }
-            else if (std::string_view(argv[2]) != "project")
+            if (index > LAST_FILE_LAYER)
             {
+                LUDUS_LOG_ERROR(kConfigurationLog,
+                                "Unknown file layer '{}'; use engine, project, profile, device, quality or preference",
+                                name);
                 return 2;
             }
+            layer = static_cast<Layer>(index);
         }
         usize size = 0;
         while (size < sizeof(bytes))
