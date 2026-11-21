@@ -520,13 +520,17 @@ class RequiredGateTests(unittest.TestCase):
                                        workflow, re.MULTILINE))
         conditions = dict(re.findall(r"^  ([a-z][a-z0-9-]*):\n(?:    .*\n)*?    if: (.*)$",
                                      workflow, re.MULTILINE))
-        # These are all reusable workflows with ARM jobs. Follow the dependency
-        # chain once to ensure none can queue behind an active ARM predecessor.
+        # These are all reusable workflows with ARM jobs. Native (at most two ARM runners)
+        # starts at capture beside the short chain, which runs one workflow at a time, so
+        # the batch asks for at most three ARM runners and no short job waits for native.
         self.assertEqual(dependencies["native"], "snapshot")
-        for previous, current in (("native", "threading"), ("threading", "sdk"), ("sdk", "wiki-macos")):
+        self.assertEqual(dependencies["threading"], "[snapshot]")
+        for previous, current in (("threading", "sdk"), ("sdk", "wiki-macos")):
             with self.subTest(workflow=current):
                 self.assertEqual(dependencies[current], f"[snapshot, {previous}]")
-                self.assertEqual(conditions[current],
+        for name in ("threading", "sdk", "wiki-macos"):
+            with self.subTest(workflow=name):
+                self.assertEqual(conditions[name],
                                  "${{ !cancelled() && needs.snapshot.outputs.should_run == 'true' }}")
         # Other platforms retain parallel qualification, and promotion still
         # requires every result, including a failed earlier ARM workflow.

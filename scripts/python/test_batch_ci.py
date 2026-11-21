@@ -628,6 +628,10 @@ class WorkflowContractTests(unittest.TestCase):
         self.assertIn("    needs: snapshot\n", batch["wiki"])
         self.assertIn("    needs: snapshot\n", batch["wiki-macos-intel"])
         self.assertIn("    needs: [snapshot, sdk]\n", batch["wiki-macos"])
+        # The short ARM workflows run in order beside native, not after it: native holds at
+        # most two ARM runners, so the batch asks for at most three.
+        self.assertIn("    needs: [snapshot]\n", batch["threading"])
+        self.assertIn("    needs: [snapshot, threading]\n", batch["sdk"])
         self.assertNotIn("batch_macos_tools_runner", batch["wiki"])
         self.assertIn("      batch_macos_tools_runner: macos-15\n", batch["wiki-macos"])
         self.assertIn("      batch_macos_tools_runner: macos-15-intel\n", batch["wiki-macos-intel"])
