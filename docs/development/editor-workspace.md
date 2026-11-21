@@ -3896,14 +3896,21 @@ World recovery remains with the existing [World recovery owner](#save-recovery-a
 
 Save validates the whole draft, takes a short cooperative lock in an ignored
 `.ludus/` directory beside the descriptor, checks the on-disk bytes still match
-the digest recorded at Open/last Save, then writes atomically with `QSaveFile`
-(direct-write fallback disabled). A short/failed write, commit failure, or disk
-conflict **retains the old saved file and your dirty draft** and reports the
-error; it never silently overwrites. If the file changed on disk you get a
-Conflict and an explicit Reload (with discard confirmation).
+the digest recorded at Open or the last Save, then writes atomically with
+`QSaveFile`. A failed save leaves the dirty draft and undo history available.
 
-Open/Reload/Close on a dirty document offer Save / Discard / Cancel; a failed
-Save aborts that action.
+When the descriptor changes on disk, Project Settings opens a read-only
+comparison. Each changed field shows the saved baseline, the disk value at the
+time of inspection, and the pending draft. The comparison marks fields that
+changed on both sides and explains when the disk values cannot be read or
+validated. **Cancel** keeps the draft and undo history. **Reload** reads and
+validates the latest disk revision before replacing the draft. If validation
+fails, the editor explains the failure and keeps the draft and undo history.
+Both choices leave the descriptor bytes on disk as they are.
+
+Opening or closing a dirty project offers Save, Discard, and Cancel. A failed
+Save aborts the action. Reload from the menu asks before discarding a dirty
+draft.
 
 ## Build / run semantics
 

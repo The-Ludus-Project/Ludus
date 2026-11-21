@@ -164,8 +164,8 @@ public:
     {
         return ProjectHistory_.Revision();
     }
-    void Save();
-    void Reload();
+    ResultCode Save();
+    bool Reload();
     void Configure();
     void Build();
     /// Build and run the configured target. hostedWindowAddress, when set, is the game's

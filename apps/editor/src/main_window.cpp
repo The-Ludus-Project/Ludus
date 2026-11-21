@@ -20,6 +20,7 @@
 #include "internal/project_creation_dialog.h"
 #include "internal/project_explorer.h"
 #include "internal/project_rendering_settings.h"
+#include "internal/project_save_conflict_dialog.h"
 #include "internal/project_setup_dialog.h"
 #include "internal/recent_project_delegate.h"
 #include "internal/renderer_workspace.h"
@@ -1088,7 +1089,19 @@ bool MainWindow::SaveProjectSettings()
         StatusLabel_->setText(QStringLiteral("The renderer could not be saved. Resolution edits remain in its draft."));
         return false;
     }
-    Controller_->Save();
+    const ResultCode result = Controller_->Save();
+    if (result == ResultCode::Conflict)
+    {
+        const foundation::uint64 epoch = state.ProjectEpoch;
+        const foundation::uint64 revision = Controller_->ProjectRevision();
+        const LoadOutcome disk = Controller_->Store().Load(state.DescriptorPath);
+        if (ConfirmProjectConflictReload(*this, state.Saved, disk, state.Draft) == true &&
+            state.ProjectEpoch == epoch && Controller_->ProjectRevision() == revision)
+        {
+            reloadProject(true);
+        }
+        return false;
+    }
 #if defined(Q_OS_WASM)
     if (Controller_->State().Dirty() == false)
     {
@@ -1099,6 +1112,11 @@ bool MainWindow::SaveProjectSettings()
 }
 
 void MainWindow::OnReloadRequested()
+{
+    reloadProject(false);
+}
+
+void MainWindow::reloadProject(bool hasConfirmedProjectDiscard)
 {
     if (Content_->Importing())
     {
@@ -1111,7 +1129,7 @@ void MainWindow::OnReloadRequested()
         return;
     }
     Audio_->StopPreview();
-    if (Controller_->State().Dirty())
+    if (hasConfirmedProjectDiscard == false && Controller_->State().Dirty() == true)
     {
         const auto choice = QMessageBox::question(this,
                                                   QStringLiteral("Unsaved changes"),
@@ -1122,7 +1140,16 @@ void MainWindow::OnReloadRequested()
             return;
         }
     }
-    Controller_->Reload();
+    if (Controller_->Reload() == false && hasConfirmedProjectDiscard == true)
+    {
+        const QString detail = Controller_->State().Result.Message.toHtmlEscaped();
+        QMessageBox::warning(
+            this,
+            QStringLiteral("Project reload failed"),
+            QStringLiteral("<p>Your draft and undo history are still available.</p>"
+                           "<p>%1</p><p>Repair or restore the descriptor on disk, then retry Reload.</p>")
+                .arg(detail));
+    }
 }
 
 void MainWindow::OnCopyJobDetails()
