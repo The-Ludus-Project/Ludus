@@ -179,6 +179,8 @@ struct RenderGraphPackage::State final
     bool HasNativeRayQueries = false;
     bool HasIndependentPrograms = false;
     bool HasVisibilityFields = false;
+    bool CanHaveSceneColorInput = false;
+    bool HasSceneColorInput = false;
     bool HasPersistentBuffers = false;
     bool HasForwardStages = false;
     bool CanHaveForwardSurfaceCharts = false;
@@ -216,7 +218,7 @@ struct RenderGraphPackage::State final
     /// Stage binding requirements derived from the uniform records, one table per role.
     static constexpr usize STAGE_BINDING_CAPACITY =
         LUDUS_GRAPH_VISIBILITY_BINDING_COUNT + format::MAX_STORAGE_BUFFERS + LUDUS_GRAPH_LTC_TABLE_BINDING_COUNT +
-        LUDUS_GRAPH_FAILURE_BINDING_COUNT + LUDUS_GRAPH_WORLD_TABLE_BINDING_COUNT;
+        LUDUS_GRAPH_FAILURE_BINDING_COUNT + LUDUS_GRAPH_WORLD_TABLE_BINDING_COUNT + 1;
     // RasterBinding initializes Visibility to Both, including every nested array element.
     // NOLINTNEXTLINE(bugprone-invalid-enum-default-initialization)
     StaticArray<StaticArray<rhi::RasterBinding, STAGE_BINDING_CAPACITY>, format::STAGE_ROLE_COUNT> Bindings{};
@@ -723,9 +725,7 @@ void RenderGraphPackage::State::DeriveBindings() noexcept
 }
 RenderGraphPackageStatus RenderGraphPackage::State::AppendSceneResourceBindings() noexcept
 {
-    // The generated header's reflected compute bindings end with the aerial perspective table, the LTC table, the
-    // failure summary and the Atmosphere sky; a package carries the frozen ABI, so the decoder appends the slots its
-    // scene resource word names to each compute role it carries, in slot order.
+    // Reconstruct the reflected compute bindings in slot order from the scene resource word and pass records.
     bool hasVisibilityBuffer = false;
     for (usize i = 0; i < Header.PassCount; ++i)
     {
@@ -775,7 +775,8 @@ RenderGraphPackageStatus RenderGraphPackage::State::AppendSceneResourceBindings(
         const usize appended =
             (HasLtcTable == true && isNativeStages == false ? LUDUS_GRAPH_LTC_TABLE_BINDING_COUNT : 0) +
             (HasFailureSummary == true ? LUDUS_GRAPH_FAILURE_BINDING_COUNT : 0) +
-            (hasAerialPerspective == true ? 1 : 0) + (hasAtmosphereSky == true ? 1 : 0);
+            (hasAerialPerspective == true ? 1 : 0) + (hasAtmosphereSky == true ? 1 : 0) +
+            (HasSceneColorInput == true && isNativeStages == false ? 1 : 0);
         if (Bindings[role].GetSize() - BindingCounts[role] < appended)
         {
             return RenderGraphPackageStatus::CapacityExceeded;
@@ -786,6 +787,13 @@ RenderGraphPackageStatus RenderGraphPackage::State::AppendSceneResourceBindings(
                                                      rhi::RasterBindingKind::StorageRead,
                                                      rhi::RasterVisibility::Compute,
                                                      LUDUS_GPU_PREVIEW_VECTOR_BYTES};
+        }
+        if (HasSceneColorInput == true && isNativeStages == false)
+        {
+            Bindings[role][BindingCounts[role]++] = {LUDUS_GRAPH_COLOR_INPUT_BINDING,
+                                                     rhi::RasterBindingKind::Texture2D,
+                                                     rhi::RasterVisibility::Compute,
+                                                     0};
         }
         if (HasLtcTable == true && isNativeStages == false)
         {
@@ -911,12 +919,17 @@ RenderGraphPackageStatus RenderGraphPackage::State::DecodeRecords(ByteReader& in
                                             (pass.Traversal == format::RayTraversal::NativeQuery ||
                                              pass.Traversal == format::RayTraversal::HardwarePipeline));
         const bool isUpscale = format::IsImageTechnique(static_cast<format::Technique>(program)) == true;
+        HasSceneColorInput =
+            HasSceneColorInput == true ||
+            (program == static_cast<uint32>(format::Technique::RayTracing) && pass.SourceColor != format::ABSENT);
         if (pass.DenoisingQuality > static_cast<uint32>(format::ProcessingQuality::High) ||
             (isUpscale == true && (HasBilinearUpscale == false || pass.SceneData != 0)) ||
             (program > static_cast<uint32>(format::Technique::BilinearUpscale) && HasMetalFxSpatialUpscale == false) ||
-            (isUpscale == false && pass.SourceColor != format::ABSENT) || program > MAX_TECHNIQUE ||
-            (HasIndependentPrograms == false && program >= format::LEGACY_TECHNIQUE_COUNT) || colorLoad > MAX_LOAD ||
-            depthLoad > MAX_LOAD || colorStore > MAX_STORE || depthStore > MAX_STORE ||
+            (isUpscale == false && pass.SourceColor != format::ABSENT &&
+             (CanHaveSceneColorInput == false || program != static_cast<uint32>(format::Technique::RayTracing) ||
+              pass.WorkItemCount != 0)) ||
+            program > MAX_TECHNIQUE || (HasIndependentPrograms == false && program >= format::LEGACY_TECHNIQUE_COUNT) ||
+            colorLoad > MAX_LOAD || depthLoad > MAX_LOAD || colorStore > MAX_STORE || depthStore > MAX_STORE ||
             pass.AccumulationSamples > format::MAX_ACCUMULATION_SAMPLES ||
             (program != static_cast<uint32>(format::Technique::RayTracing) &&
              (pass.AccumulationSamples != 0 || pass.DenoisingQuality != 0 ||
@@ -983,8 +996,8 @@ RenderGraphPackageStatus RenderGraphPackage::decode(BorrowedView<const uint8> by
     const uint32 magic = reader.ReadWord();
     const uint32 version = reader.ReadWord();
     if (magic != expectedMagic ||
-        (version != format::DIRECTIONAL_NEAR_PACKAGE_VERSION && version != format::SCENE_WORK_ITEMS_PACKAGE_VERSION &&
-         version != format::WORLD_FEATURE_PACKAGE_VERSION &&
+        (version != format::SCENE_COLOR_INPUT_PACKAGE_VERSION && version != format::DIRECTIONAL_NEAR_PACKAGE_VERSION &&
+         version != format::SCENE_WORK_ITEMS_PACKAGE_VERSION && version != format::WORLD_FEATURE_PACKAGE_VERSION &&
          version != format::DEFERRED_SURFACE_CHART_GBUFFER_PACKAGE_VERSION &&
          version != format::DEFERRED_PROBE_GBUFFER_PACKAGE_VERSION && version != format::RECIPE_KEY_PACKAGE_VERSION &&
          version != format::FORWARD_SURFACE_CHART_PACKAGE_VERSION &&
@@ -1024,6 +1037,7 @@ RenderGraphPackageStatus RenderGraphPackage::decode(BorrowedView<const uint8> by
     candidate->CanHaveClusteredDeferred = version >= format::RASTER_MESH_LIGHT_BOUND_PACKAGE_VERSION;
     candidate->HasRayTiles = version >= format::TILED_RAY_PACKAGE_VERSION;
     candidate->HasSceneWorkItems = version >= format::SCENE_WORK_ITEMS_PACKAGE_VERSION;
+    candidate->CanHaveSceneColorInput = version >= format::SCENE_COLOR_INPUT_PACKAGE_VERSION;
     candidate->CanHaveClusteredForward = version >= format::CLUSTERED_FORWARD_PACKAGE_VERSION;
     candidate->HasExplicitAccumulation = version >= format::ACCUMULATION_PACKAGE_VERSION;
     candidate->HasExplicitToneMapping = version >= format::TONE_MAPPING_PACKAGE_VERSION;
@@ -1283,7 +1297,7 @@ RenderGraphPackageStatus RenderGraphPackage::decode(BorrowedView<const uint8> by
     }
     candidate->DeriveBindings();
     if (candidate->HasLtcTable == true || candidate->HasFailureSummary == true || candidate->HasAtmosphereSky == true ||
-        candidate->HasAerialPerspective == true)
+        candidate->HasAerialPerspective == true || candidate->HasSceneColorInput == true)
     {
         status = candidate->AppendSceneResourceBindings();
         if (status != RenderGraphPackageStatus::Ready)

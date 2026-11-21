@@ -106,9 +106,12 @@ DescribeRayInterface(const QJsonObject& program, const QJsonArray& techniques, c
     {
         lines.append(
             stage == QStringLiteral("compute")
-                ? QStringLiteral("// Scene compute pass: one invocation per launch pixel in the ordered ray sequence.\n"
-                                 "// Trace with TraceClosest or TestVisibility; return linear radiance.\n"
-                                 "// There are no hit or miss callbacks: TraceAndShade latches queries.HasFailed.")
+                ? QStringLiteral(
+                      "// Scene compute pass: one invocation per launch pixel in the ordered ray sequence.\n"
+                      "// Trace with TraceClosest or TestVisibility; return linear radiance.\n"
+                      "// There are no hit or miss callbacks: TraceAndShade latches queries.HasFailed.\n"
+                      "// A read-only ColorTexture from an earlier scene pass binds GraphColorInput.\n"
+                      "// Read with GraphColorInput.Load(int3(launch.PositionPixel, 0)) at matching extents.")
                 : QStringLiteral(
                       "// Scene materials enabled.\n"
                       "// Closest-hit material access: MaterialSample material = EvaluateMaterial(scene, hit);\n"
