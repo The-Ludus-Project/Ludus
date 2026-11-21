@@ -799,8 +799,11 @@ if(TARGET ludus_renderer_render_tests)
         MANIFEST "${mh_graph_staged}/main.lushader.json" CONFIGURATION JumpRestore RUNTIME_PACKAGE)
     cmake_path(GET jump_restore_graph_RUNTIME_PACKAGE PARENT_PATH jump_restore_graph_directory)
     target_compile_definitions(ludus_metropolis_graph_tests PRIVATE LUDUS_JR_TEMPLATE_DIRECTORY="${jump_restore_graph_directory}")
-    add_test(NAME ludus_metropolis_graph_pixels COMMAND ludus_metropolis_graph_tests)
-    set_tests_properties(ludus_metropolis_graph_pixels PROPERTIES LABELS "renderer;gpu" TIMEOUT 180)
+    # One cold MH and Jump Restore capture: 163 s, then over 180 s, under ASan on lavapipe
+    # (batches 44798972441, 44830871804). Use the renderer's sanitizer-aware case budget.
+    add_test(NAME ludus_metropolis_graph_pixels COMMAND ludus_metropolis_graph_tests --durations yes)
+    set_tests_properties(ludus_metropolis_graph_pixels PROPERTIES LABELS "renderer;gpu"
+        TIMEOUT ${renderer_test_case_timeout_seconds})
     add_executable(ludus_render_graph_ray_tests tests/render_graph_ray_tests.cpp)
     target_link_libraries(ludus_render_graph_ray_tests PRIVATE ludus_renderer_test_oracles Ludus::FoundationThreading Ludus::GraphicsRenderer
         Ludus::FoundationFilesystem Ludus::FoundationTime Ludus::SceneSource Catch2::Catch2WithMain)
