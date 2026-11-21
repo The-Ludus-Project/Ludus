@@ -39,6 +39,8 @@ constexpr uint32 SAVE_TICK = 50;
 // Chunk sizes sum to the comparison interval, so every route samples the same ticks.
 constexpr uint32 COMPARISON_INTERVAL = 25;
 constexpr usize POSITION_COUNT = 6;
+// A projected scrub looks this far ahead, past the next pending command and phase change.
+constexpr uint64 PREVIEW_LEAD_TICKS = 37;
 constexpr usize COMMAND_COUNT = 6;
 constexpr usize CHUNK_PATTERN_COUNT = 3;
 
@@ -271,6 +273,24 @@ bool TryRecordCheckpoint(const WeatherSimulation& simulation, uint32 interval, D
             return false;
         }
         inoutDigest.WriteSample(sample);
+        // Scrub previews: the live state projected ahead, and the authored climate at an earlier tick.
+        WeatherSample projected;
+        WeatherSample authored;
+        if (simulation.TryPreview(WeatherPreviewMode::Projected,
+                                  simulation.GetTick() + PREVIEW_LEAD_TICKS,
+                                  position.XWorld,
+                                  position.ZWorld,
+                                  projected) != WeatherSimulationStatus::Success ||
+            simulation.TryPreview(WeatherPreviewMode::Authored,
+                                  simulation.GetTick() / 2,
+                                  position.XWorld,
+                                  position.ZWorld,
+                                  authored) != WeatherSimulationStatus::Success)
+        {
+            return false;
+        }
+        inoutDigest.WriteSample(projected);
+        inoutDigest.WriteSample(authored);
     }
     return true;
 }

@@ -140,6 +140,36 @@ revision, and leaves the state unchanged. Repair it by calling
 `ResetToAuthoredBaseline` or by loading a save that matches the mounted
 climate. Malformed saves fail with `InvalidState`.
 
+## Pause, step, preview and reset
+
+The session's fixed ticks are the weather clock, so the session's controls
+drive it without a separate weather state:
+
+| Control | Call | Effect |
+| --- | --- | --- |
+| **Pause** | Stop calling `TryAdvance` | Frames keep rendering. Any number of views can sample the paused tick in any order, and nothing changes. |
+| **Step** | `TryAdvance(1, ...)` | Advances exactly one tick, with that tick's events and the next ordinals. |
+| **Preview** (scrub) | `TryPreview` | Evaluates another tick without changing the simulation, its saved state or its event ordinals, and emits no events. |
+| **Reset** | `ResetToAuthoredBaseline` | Returns to tick zero, with no overrides or pending commands and ordinal zero. Replaying the same commands reproduces the same event addresses. |
+
+`TryPreview` has two modes:
+
+- **Authored** evaluates the climate alone at any tick, including earlier
+  ticks: schedules and regions, without overrides or pending commands.
+- **Projected** carries the live state forward to a tick at or after the
+  current one. It applies pending commands and override phase changes, so it
+  shows what the session will see then if no further commands arrive. Only
+  commands and phase ends change the state, so the projection jumps between
+  them. Its cost does not depend on how far ahead the preview is. A projected
+  tick before the current one returns `PreviewInPast`; use an authored preview
+  instead.
+
+A weather preview is separate from a sky scrub, which overrides only the
+celestial instant ([#1606](https://github.com/The-Ludus-Project/Ludus/issues/1606)).
+Each stays independently inspectable. Camera position never enters the
+resolution: views inside and outside a region boundary each sample their own
+position, and samples at the same position agree whichever view asks.
+
 ## Determinism evidence
 
 All authoritative arithmetic is integer fixed point. The only floating-point
@@ -157,7 +187,8 @@ gives identical bytes. It then compares these runs:
 - reordered authoring and submission order.
 
 Samples are taken at six positions, including the region feather, the overlap
-and a domain corner. All runs must produce identical events, samples and final
+and a domain corner. Each sample comes with a projected preview 37 ticks ahead
+and an authored preview at half the current tick. All runs must produce identical events, samples and final
 state, and the digest must equal the one recorded from the native reference
 build. `ludus_gameplay_weather_tests` checks it natively. The browser presets
 build `tools/web-weather-probe`, and `./scripts/test web-emscripten-development`
@@ -165,11 +196,12 @@ runs the same corpus under Node as `ludus_web_weather_corpus`.
 
 ## Not yet covered
 
-This slice provides the authoritative runtime. Still to come under
-[#1704](https://github.com/The-Ludus-Project/Ludus/issues/1704): session pause,
-step, preview scrub and reset controls in Play; Editor authoring and inspection
-through one World transaction; and mounting the same cooked files in installed
-SDK play. Seasonal schedule selection, altitude profiles, accumulated surface
+The runtime and its session control semantics are in place. Still to come
+under [#1704](https://github.com/The-Ludus-Project/Ludus/issues/1704): Editor
+authoring and inspection through one World transaction; driving the weather
+from the Play session's controls, which the built-in player gains with the
+session clock of [#1606](https://github.com/The-Ludus-Project/Ludus/issues/1606);
+and mounting the same cooked files in installed SDK play. Seasonal schedule selection, altitude profiles, accumulated surface
 wetness ([#1707](https://github.com/The-Ludus-Project/Ludus/issues/1707)) and
 the shared wind provider
 ([#1705](https://github.com/The-Ludus-Project/Ludus/issues/1705)) are separate
