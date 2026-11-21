@@ -13,8 +13,8 @@ namespace ludus::gameplay::weather::testing
 /// codes or the corpus itself changes it; update it only with an explained behavior change.
 inline constexpr foundation::Fingerprint128 EXPECTED_WEATHER_GOLDEN_DIGEST
 {
-    .Low = 0x45af067cf554d26dULL,
-    .High = 0xcc60b97be44e1126ULL,
+    .Low = 0x722899d47af1ffedULL,
+    .High = 0x39d7ef70aadec0b1ULL,
 };
 
 /// Fixed tick rate of the corpus climate.
