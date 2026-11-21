@@ -194,6 +194,8 @@ struct LevelResult final
 /// @return false when the inputs are out of range or the result exceeds MAX_SCATTER_LATTICE_MAGNITUDE.
 [[nodiscard]] bool TryScaleToLattice(float32 metres, uint32 unitsPerMetre, int32& outLattice) noexcept;
 [[nodiscard]] bool WriteLevel(const Level& level, foundation::core::Array<char>& output) noexcept;
+/// Built-in room ExampleLevel returns.
+inline constexpr std::string_view EXAMPLE_LEVEL_ID = "first-room";
 [[nodiscard]] std::string_view ExampleLevel() noexcept;
 [[nodiscard]] std::string_view BuiltinLevel(std::string_view id) noexcept;
 } // namespace ludus::world_demo
