@@ -366,7 +366,9 @@ while it plays saves a trace of the game's own passes:
 `Viewport/Scene`, `Viewport/Composite` and `Viewport/Present`. Its process is
 named after the game and its process ID. A standalone window pays nothing for
 this: it has no recorder and no timing queries. The recorder owns pass timing
-while it records, and the game never arms it. The
+while it records, and the game never arms it. On a device without per-pass
+timestamp counters the trace holds whole-frame durations instead, and the status
+says frame timing only. The
 [Hosted recording](../architecture/editor-gui-systems.md#hosted-recording)
 contract describes coverage, disconnection and the export.
 
