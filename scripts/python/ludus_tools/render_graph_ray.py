@@ -390,9 +390,36 @@ def group_profiles(plans, technique, build):
     return result
 
 
+def report_bounds_failures(wrapper, selected_sources, snapshot, *, namespaced):
+    """Map each lowered module's private latch back to a LUSL line after invocation."""
+    sources = sorted(selected_sources)
+    cases = []
+    for index, source in enumerate(sources):
+        report = snapshot.language_reports.get(source.removesuffix('.slang'), {})
+        if not report.get('bounds_checks'):
+            continue
+        variable = report['failure_variable']
+        if namespaced:
+            variable = f'GraphSource{index}::{variable}'
+        cases.append(f'    switch ({variable}) {{\n')
+        for site in report['bounds_checks']:
+            cases.append(f'    case {site["code"]}u: return ReportGraphBoundsFailure({site["line"]}u);\n')
+        cases.append('    default: break;\n    }\n')
+    if not cases:
+        return wrapper
+    # Leave the renderer's forward declaration unchanged. The wrapper catches
+    # failures after all callbacks, including legacy and ordered dispatch.
+    wrapper = wrapper.replace('float3 EvaluateGraphRay(uint pixel)\n{',
+                              'float3 EvaluateGraphRayUnchecked(uint pixel)\n{', 1)
+    return ('#define LUDUS_GRAPH_BOUNDS_CHECKS 1\n' + wrapper +
+            '\nfloat3 EvaluateGraphRay(uint pixel)\n{\n'
+            '    float3 radiance = EvaluateGraphRayUnchecked(pixel);\n' +
+            ''.join(cases) + '    return radiance;\n}\n')
+
+
 def expand_programs(programs, technique, snapshot, helper, build, variants=None, persistent=False, schemas=None,
                     compute_identity=COMPUTE_ID, native_ray_queries=True, ray_path_capture=False,
-                    native_ray_pipeline=False, workgroup=None, scene_dispatch=False):
+                    native_ray_pipeline=False, workgroup=None, scene_dispatch=False, named_resources=None):
     """Capture the engine kernel and all three functions in one linked compute entry.
 
     ray_path_capture links the diagnostic LUDUS_RAY_PATH_CAPTURE variant of the same
@@ -484,11 +511,18 @@ static const float RAY_DIRECTION_SQUARED_TOLERANCE = 0.00001;
     build.require(not native_ray_pipeline or not technique.get('scene_interface', {}).get('polygonal_light_sampling', False),
                   'Capability', TECHNIQUE, 'native ray stages cannot bind the LTC table of polygonal_light_sampling; '
                   'use a scene compute pass')
+    named_resources = {variant: named_resources[variant] for variant in (variants or [])
+                       if named_resources and variant in named_resources}
+    named_record_views = buffers.collect_record_views(named_resources.values(), build)
     if persistent or native_ray_pipeline:
         build.require(technique.get('scene_interface') is not None, 'Capability', TECHNIQUE,
                       'native ray stages, ordered ray passes and persistent buffers require the scene callback interface')
         wrapper = persistent_wrapper(programs, technique, variants, snapshot, build, compute_recipe, compatibility,
-                                     native_ray_queries, native_ray_pipeline, persistent, storage_source)
+                                     native_ray_queries, native_ray_pipeline, persistent, storage_source, named_resources, named_record_views)
+    selected_sources = ({programs[identity]['source'] for variant in variants for identity in callback_programs(variant)}
+                        if persistent or native_ray_pipeline else {program['source'] for program in selected.values()})
+    wrapper = report_bounds_failures(wrapper, selected_sources, snapshot,
+                                     namespaced=persistent or native_ray_pipeline)
     if scene_dispatch:
         wrapper = '#define LUDUS_GRAPH_BUFFER_DISPATCH 1\n' + wrapper
     workgroup = list(workgroup or DEFAULT_WORKGROUP_SIZE)
@@ -505,6 +539,8 @@ static const float RAY_DIRECTION_SQUARED_TOLERANCE = 0.00001;
               if program['stage'] not in (*STAGES, COMPUTE_STAGE)}
     result[compute_identity] = {'id': compute_identity, 'stage': 'compute', 'source': selected['ray_generation']['source'],
                           'function': 'rgEntry', 'input': '', 'output': '', 'bindings': [], 'ray_wrapper': wrapper, 'ray_workgroup': workgroup, 'native_ray_queries': native_ray_queries, 'software_ray_queries': not native_ray_queries, 'native_ray_profile': True, 'persistent_ray_profile': persistent, 'storage_bindings': storage, 'storage_schemas': {binding['schema']: schemas[binding['schema']] for binding in storage}, 'visibility_buffer': technique.get('scene_interface', {}).get('visibility_buffer', False), 'ltc_table': technique.get('scene_interface', {}).get('polygonal_light_sampling', False)}
+    if named_record_views:
+        result[compute_identity]['named_record_views'] = named_record_views
     if compatibility['sources']:
         result[compute_identity]['source_overrides'] = compatibility['sources']
     if native_ray_pipeline:
@@ -827,7 +863,8 @@ def validate_payload(data, budget, build):
 
 
 def persistent_wrapper(programs, technique, variants, snapshot, build, recipe, compatibility=None,
-                       native_ray_queries=True, native_ray_pipeline=False, has_persistent_buffers=True, storage_source=""):
+                       native_ray_queries=True, native_ray_pipeline=False, has_persistent_buffers=True, storage_source="",
+                       named_resources=None, named_record_views=None):
     """Namespace each unique authored source and dispatch its callbacks by pass index."""
     interface = technique['scene_interface']
     sources = sorted({programs[identity]['source'] for variant in variants for identity in callback_programs(variant)})
@@ -879,10 +916,25 @@ def persistent_wrapper(programs, technique, variants, snapshot, build, recipe, c
     # Shared type/helper includes are global and captured before entry-source namespaces.
     # Includes are compiler-resolved from the same immutable source snapshot.
     dependencies = {path for source in sources for path in snapshot.shader_closure(source)} - set(sources)
+    for source, _, _ in (named_record_views or {}).values():
+        build.require(source not in sources, 'ShaderInterface', source,
+                      'move the Buffer record declaration into a shared Slang header')
+        snapshot.shader_closure(source)
+        dependencies.add(source)
     for dependency in sorted(dependencies - {interface.get('payload')} - set((compatibility or {}).get('sources', {}))):
         prefix += '#include "' + dependency + '"\n'
+    for view, (_, type_name, is_writable) in (named_record_views or {}).items():
+        prefix += buffers.record_view_definition(view, type_name, is_writable)
+    source_contexts = {}
+    for variant, fields in (named_resources or {}).items():
+        program = programs[variant[0]]
+        function = program['function']
+        context = (f'struct {function}Resources {{\n' + ''.join(
+            f'    {buffers.record_view_name(field)} {field["field"]};\n' for field in fields) + '};\n')
+        source_contexts.setdefault(program['source'], {})[function] = context
     for index, source in enumerate(sources):
-        prefix += f'namespace GraphSource{index} {{\n#include "{source}"\n}}\n'
+        declarations = ''.join(source_contexts.get(source, {}).values())
+        prefix += f'namespace GraphSource{index} {{\n{declarations}#include "{source}"\n}}\n'
     variant_callbacks = []
     for index, variant in enumerate(variants):
         variant_selected = {stage: dict(programs[identity], function=f'GraphSource{sources.index(programs[identity]["source"])}::' + programs[identity]['function'])
@@ -899,6 +951,12 @@ def persistent_wrapper(programs, technique, variants, snapshot, build, recipe, c
             if stage not in variant_callbacks[index]:
                 continue  # A scene compute pass has no hit or miss callback; default: latches HasFailed.
             function = variant_callbacks[index][stage]
+            fields = (named_resources or {}).get(variant) if stage == 'ray_generation' else None
+            if fields:
+                values = ', '.join(buffers.record_view_argument(field) for field in fields)
+                result += (f'case {index}: {{ {function}Resources resources = {{ {values} }}; '
+                           f'return {function}({arguments}, resources); }}\n')
+                continue
             result += f'case {index}: ' + ('return ' if returns else '') + function + '(' + arguments + ');'
             result += ('\n' if returns else ' break;\n')
         return result + ('default: graphFailureReason = LUDUS_SCENE_FAILURE_INVALID_ARGUMENT; return float3(-1); }' if returns

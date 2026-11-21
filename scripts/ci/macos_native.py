@@ -303,6 +303,7 @@ out/host-tools/bin/clang-tidy -p out/build/macos-clang-development --warnings-as
   -DCMAKE_BUILD_TYPE=RelWithDebInfo
 out/host-tools/venv/bin/cmake --build out/sdk-audio-consumer
 out/sdk-audio-consumer/ludus_audio_consumer
+out/host-tools/venv/bin/ctest --test-dir out/sdk-audio-consumer -R "^audio_transition_timing$" --output-on-failure --no-tests=error
 out/host-tools/bin/clang-tidy -p out/sdk-audio-consumer --warnings-as-errors='*' tests/sdk_consumer/audio.cpp
 """),
     Check('persistence-sdk', 'Validate installed persistence and watcher SDK', needs=('sdk-install',),

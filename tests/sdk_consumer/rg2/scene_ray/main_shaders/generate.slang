@@ -84,6 +84,55 @@ bool ValidateSceneIntegerSampling(RayLaunch launch, RayQueryContext queries)
         return false;
     return true;
 }
+bool ValidateSceneWeightedSampling(RayLaunch launch, RayQueryContext queries)
+{
+    const uint DRAW_COUNT = 8;
+    const uint WEIGHT_COUNT = 6;
+    const float weights[WEIGHT_COUNT] = {0, 2, 0, 6, 0, 0};
+    const float4 normalizedWeights = float4(0, 0.25f, 0, 0.75f);
+    RayQueryContext arrayQueries = queries;
+    RayQueryContext vectorQueries = queries;
+    for (uint dimension = 0; dimension < DRAW_COUNT; ++dimension)
+    {
+        const uint expectedIndex = SampleUniformFloat01(launch, dimension) < 0.25f ? 1 : 3;
+        if (SampleSceneWeightedIndex(arrayQueries, weights) != expectedIndex ||
+            SampleSceneWeightedIndex(vectorQueries, normalizedWeights) != expectedIndex ||
+            arrayQueries.HasFailed == true || vectorQueries.HasFailed == true ||
+            arrayQueries.NextRandomDimension != dimension + 1 || vectorQueries.NextRandomDimension != dimension + 1)
+            return false;
+    }
+
+    // Max+max overflows an unscaled sum. Smallest+smallest can flush on some shader backends.
+    const float largest = asfloat(0x7f7fffffu);
+    const float smallest = asfloat(1u);
+    const uint expectedIndex = SampleUniformFloat01(launch, 0) < 0.5f ? 0 : 1;
+    RayQueryContext largeQueries = queries;
+    RayQueryContext smallQueries = queries;
+    if (SampleSceneWeightedIndex(largeQueries, float2(largest, largest)) != expectedIndex ||
+        SampleSceneWeightedIndex(smallQueries, float2(smallest, smallest)) != expectedIndex)
+        return false;
+
+    const uint INVALID_COUNT = 4;
+    const float3 invalidWeights[INVALID_COUNT] = {
+        float3(0),
+        float3(1, -1, 0),
+        float3(1, asfloat(0x7f800000u), 0),
+        float3(1, asfloat(0x7fc00000u), 0),
+    };
+    for (uint index = 0; index < INVALID_COUNT; ++index)
+    {
+        RayQueryContext invalidQueries = queries;
+        if (SampleSceneWeightedIndex(invalidQueries, invalidWeights[index]) != SCENE_INVALID_INDEX ||
+            invalidQueries.HasFailed == false || invalidQueries.FailureReason != LUDUS_SCENE_FAILURE_INVALID_ARGUMENT ||
+            invalidQueries.NextRandomDimension != 1)
+            return false;
+    }
+    RayQueryContext lastQueries = queries;
+    lastQueries.NextRandomDimension = RANDOM_MAX_DIMENSION;
+    return SampleSceneWeightedIndex(lastQueries, float3(0, 1, 0)) == 1 &&
+           SampleSceneWeightedIndex(lastQueries, float3(0, 1, 0)) == SCENE_INVALID_INDEX &&
+           lastQueries.HasFailed == true && lastQueries.FailureReason == LUDUS_SCENE_FAILURE_RANDOM_EXHAUSTED;
+}
 // The mixed-light fixture binds directional, point, spot, mesh and environment sources.
 bool ValidateAddressedIncidentSampling(SceneContext scene, RayLaunch launch, RayQueryContext queries)
 {
@@ -147,6 +196,7 @@ float3 GenerateRay(SceneContext scene, RayLaunch launch, inout RayQueryContext q
     ScenePayload payload = (ScenePayload)0;
     if (ValidateSceneRandomLimits(scene, launch, queries) == false ||
         ValidateSceneIntegerSampling(launch, queries) == false ||
+        ValidateSceneWeightedSampling(launch, queries) == false ||
         ValidateAddressedIncidentSampling(scene, launch, queries) == false)
         FailSceneQuery(queries, LUDUS_SCENE_FAILURE_AUTHORED_FIRST);
     // Check automatic initialization against the independently addressed public API.

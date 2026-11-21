@@ -96,6 +96,7 @@ TEST_CASE("Render graphs built for the dxil profile cook signed DXIL stages", "[
 {
     CheckPackage(LUDUS_RG2_SURFACE_PACKAGE);
     CheckPackage(LUDUS_RG2_BOUND_PACKAGE);
+    CheckPackage(LUDUS_RG2_BOUND_LUSL_PACKAGE);
     // The compiled headers carry the same plans; their programs need the composite stages.
     CHECK(packages::rg2_surface::MakePlan().Passes.GetSize() != 0);
     CHECK(packages::rg2_bound::MakePlan().Passes.GetSize() != 0);

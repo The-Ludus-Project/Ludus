@@ -44,6 +44,7 @@ int ExerciseInstalledTime() noexcept;
 int ExerciseInstalledIdentity() noexcept;
 bool ExerciseInstalledFluid() noexcept;
 bool ExerciseInstalledCollision() noexcept;
+bool ExerciseInstalledRigid() noexcept;
 bool ExerciseInstalledCurves() noexcept;
 bool ExerciseInstalledGeometry() noexcept;
 bool ExerciseInstalledCamera() noexcept;
@@ -209,7 +210,7 @@ static_assert(LUDUS_BREAK_ON_CHECK == EXPECTED_CHECK_BREAK);
 int PolicyWithoutNdebug();
 
 /// Exit code when the installed weather targets do not reproduce the golden corpus.
-constexpr int WEATHER_FAILURE = 110;
+constexpr int WEATHER_FAILURE = 111;
 
 constexpr bool PrimitiveContract(ludus::foundation::usize increment = 1) noexcept
 {
@@ -301,6 +302,10 @@ int main()
     if (ExerciseInstalledCollision() == false)
     {
         return 14;
+    }
+    if (ExerciseInstalledRigid() == false)
+    {
+        return 110;
     }
     if (ExerciseInstalledStrings() == false)
     {

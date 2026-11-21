@@ -1,3 +1,4 @@
+#include "../src/internal/stream.hpp"
 #include "wav_fixture.h"
 #include <catch2/catch_test_macros.hpp>
 #include <cmath>
@@ -98,4 +99,38 @@ TEST_CASE("Source metadata and direct loop conversion reject invalid bounds", "[
     stream.SourceLoopEnd = 4410;
     stream.Looping = false;
     REQUIRE(system.PrepareStream(wav, stream, source) == Status::InvalidArgument);
+}
+
+TEST_CASE("A held stem freezes every group cursor and a muted stem resumes in sync", "[audio][stream][music]")
+{
+    using namespace ludus::audio::internal;
+    StreamData leader;
+    StreamData muted;
+    leader.Rate = DEFAULT_SAMPLE_RATE;
+    leader.Members[0] = &leader;
+    leader.Members[1] = &muted;
+    leader.MemberCount = 2;
+    leader.Gains[0] = 1;
+    leader.Gains[1] = 0;
+    leader.Chunks[0].Frames = 8;
+    muted.Chunks[0].Frames = 8;
+    leader.Chunks[0].Samples[0] = 0.25F;
+    muted.Chunks[0].Samples[0] = 0.75F;
+    leader.Written.store(1);
+    float32 output[8]{};
+    REQUIRE(leader.RenderGroup(output, {4, 1, false}, 0).Frames == 0);
+    REQUIRE(leader.Offset == 0);
+    REQUIRE(muted.Offset == 0);
+    muted.Written.store(1);
+    REQUIRE(leader.RenderGroup(output, {4, 1, false}, 4).Frames == 4);
+    REQUIRE(leader.Offset == 4);
+    REQUIRE(muted.Offset == 4);
+    REQUIRE(output[0] > 0);
+    REQUIRE(output[0] <= 0.25F);
+    muted.Chunks[0].Error = true;
+    const StreamResult failed = leader.RenderGroup(output, {1, 1, false}, 8);
+    REQUIRE(failed.Error);
+    REQUIRE(failed.Terminal);
+    REQUIRE(leader.Offset == 4);
+    REQUIRE(muted.Offset == 4);
 }

@@ -9,18 +9,23 @@ RENDERER_SHADERS = Path('modules/graphics/renderer/shaders')
 RENDERER_HEADERS = Path('modules/graphics/renderer/include/ludus/graphics/renderer')
 GEOMETRY_HEADERS = Path('modules/foundation/geometry/include/ludus/foundation/geometry/detail')
 OWNERS = (
-    (RENDERER_SHADERS / 'renderer_gpu_preview_layout.h', ()),
+    (RENDERER_SHADERS / 'renderer_gpu_preview_layout.h', ('scene_shader_layout.luslh',)),
     (RENDERER_SHADERS / 'renderer_reference_layout.h', ('renderer_gpu_preview_layout.luslh',)),
     (RENDERER_HEADERS / 'scene_shader_layout.h', ()),
     (GEOMETRY_HEADERS / 'point_search_layout.h', ()),
 )
-# The preview owner includes these for its C++ and Slang consumers. Its layout
-# macros do not use their declarations.
+# The preview owner includes the scene failure reason count for C++ and Slang.
+# The generated view includes its LUSL counterpart through OWNERS.
 PREVIEW_DECLARATIONS = re.compile(
     r'#ifdef __cplusplus\n'
     r'# *include <ludus/content/scene_format/material\.h>\n'
     r'# *include <ludus/graphics/renderer/lighting_layout\.h>\n'
-    r'#else\n# *include "lighting_layout\.h"\n# *include "material\.h"\n#endif\n'
+    r'# *include <ludus/graphics/renderer/scene_shader_layout\.h>\n'
+    r'#else\n'
+    r'# *include "lighting_layout\.h"\n'
+    r'# *include "material\.h"\n'
+    r'# *include "scene_shader_layout\.h"\n'
+    r'#endif\n'
 )
 # Native Slang variants can override their workgroup shape. The generated LUSL
 # view publishes the owner's defaults.

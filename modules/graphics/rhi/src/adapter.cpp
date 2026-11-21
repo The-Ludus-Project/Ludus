@@ -3,17 +3,13 @@
 
 #include <ludus/foundation/base/core.h>
 #include <ludus/foundation/containers/static_array.hpp>
+#include <ludus/foundation/strings/utf8.hpp>
 
 namespace ludus::graphics::rhi
 {
 namespace
 {
-using foundation::uint8;
 using foundation::usize;
-
-/// UTF-8 continuation bytes have the bit pattern 10xxxxxx.
-constexpr uint8 UTF8_CONTINUATION_MASK = 0xC0;
-constexpr uint8 UTF8_CONTINUATION_BITS = 0x80;
 
 /// Explicit adapter request of one owner slot (R14c); each owner may select its own adapter.
 struct AdapterRequest final
@@ -55,18 +51,18 @@ const AdapterIdentity* GetRequestedAdapterOrNull() noexcept
 
 void AssignAdapterName(std::string_view reported, AdapterName& outName) noexcept
 {
-    usize size = reported.size() < MAX_ADAPTER_NAME_BYTES ? reported.size() : MAX_ADAPTER_NAME_BYTES;
-    if (size < reported.size())
+    foundation::Utf8View name;
+    usize errorOffset = 0;
+    if (foundation::ValidateUtf8(reported, name, errorOffset) != foundation::StringStatus::Ok)
     {
-        // Step back over continuation bytes so the kept prefix ends on a code point boundary.
-        while (size > 0 && (static_cast<uint8>(reported[size]) & UTF8_CONTINUATION_MASK) == UTF8_CONTINUATION_BITS)
-        {
-            --size;
-        }
+        // Keep the well-formed prefix; the bytes before the first ill-formed sequence are valid UTF-8.
+        const foundation::StringStatus status =
+            foundation::ValidateUtf8(reported.substr(0, errorOffset), name, errorOffset);
+        LUDUS_ASSERT(status == foundation::StringStatus::Ok);
+        static_cast<void>(status);
     }
-    const foundation::StringStatus status = outName.TryAssign(reported.substr(0, size));
-    LUDUS_ASSERT(status == foundation::StringStatus::Ok);
-    static_cast<void>(status);
+    bool isTruncated = false;
+    outName.AssignTruncatedUtf8(name, isTruncated);
 }
 
 AdapterInfo* ReserveCatalogEntryOrNull(AdapterCatalog& inoutCatalog) noexcept

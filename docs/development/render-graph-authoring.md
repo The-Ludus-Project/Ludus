@@ -1301,6 +1301,49 @@ Wire the Buffer into the
 producer and the producer's updated output into the consumer, with the same
 paired **Load**/**Store** resource as for a fixed-byte Buffer.
 
+### Access an ordered Buffer by port name
+
+Enable `"graph_resources": true` on the compute or ray-generation program in the
+graph's shader manifest. Add a final `<FunctionName>Resources resources`
+parameter to that program's function. **Shader API** shows the signature. The
+editor's shader completion uses the generated members for the connected pass.
+For a port named `edges` and a function named `BuildEdges`:
+
+```slang
+float3 BuildEdges(SceneContext scene, RayLaunch launch, inout RayQueryContext queries,
+                  BuildEdgesResources resources)
+{
+    uint index = launch.WorkItemIndex;
+    if (index < resources.Edges.GetCount() && index < GetSceneInfo(scene).TriangleCount)
+    {
+        TriangleData triangle = GetTriangle(scene, index);
+        Edge edge;
+        edge.BeginWorld = triangle.Position0World;
+        edge.EndWorld = triangle.Position1World;
+        resources.Edges[index] = edge;
+    }
+    return float3(0);
+}
+```
+
+This example writes the first side of each processed triangle. Put `Edge` in
+`edge.slang` with `float3 BeginWorld` and `float3 EndWorld`, then choose that
+file and type in **From shader struct…** and set the element capacity. Configure
+the producer with **Work items** and an `edges` **Writable Resource**. Connect
+its output to an `edges` **Read Input** on the consumer. The graph includes
+`edge.slang` in both shaders. The consumer reads
+`Edge edge = resources.Edges[index];` through a read-only view. Check the index against the populated edge count as well as the
+allocation capacity returned by `GetCount()`.
+
+The member name capitalizes the port's first letter and preserves the remaining
+spelling. Use Slang identifiers for port names. Named views support 32-bit
+float, signed integer and unsigned integer fields, their vectors, nested
+records and fixed arrays. They load and store whole records using the reflected
+storage layout. Fixed-byte Buffer ports use `uint4` elements and a paired
+Writable Resource. A reused function requires matching named fields, types and
+access. The same callback variant also shares one slot and capacity mapping.
+Use ordered scene compute or **Compute** invocation on a Ray Tracing Pipeline.
+
 ### Author scene compute passes
 
 A **ComputePipeline** with a **Scene** input is a *scene compute pass*. It accepts
@@ -5308,6 +5351,23 @@ Empty/reversed ranges latch `HasFailed`, return zero and consume no dimension.
 Stream exhaustion or bounded-mapping failure also latches `HasFailed` and returns
 zero, which must not be used as a sample after failure. Float draws, integer draws
 and automatic light selection share the same invocation stream.
+
+Pass a fixed-size float array or a `float2`, `float3`, or `float4` to
+`SampleSceneWeightedIndex` to choose an index by weight.
+
+```slang
+const uint index = SampleSceneWeightedIndex(queries, float3(2, 0, 6));
+```
+
+Each index has probability proportional to its weight, so the example selects
+index 0 one quarter of the time and index 2 three quarters of the time. Weights
+may be normalized or unnormalized. Float precision limits how small a weight
+can be relative to the total and still occupy an interval. The helper uses a
+linear scan and spends one dimension from the same invocation stream. Negative
+or nonfinite weights and a zero total latch an invalid-argument failure. On
+failure the helper returns `SCENE_INVALID_INDEX`. LUSL provides the vector
+overloads through `scene_shader.luslh` using `float32x2`, `float32x3`, and
+`float32x4`.
 
 The stream admits dimensions zero through FoundationMath's
 `RANDOM_MAX_DIMENSION`, inclusive. Exhaustion latches `HasFailed` and returns

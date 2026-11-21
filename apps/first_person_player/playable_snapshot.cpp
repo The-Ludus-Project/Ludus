@@ -144,6 +144,27 @@ bool ReadVector(JsonValue value, math::Vector3& outValue) noexcept
            ReadScalar(value.At(1), outValue.Y) == true && ReadScalar(value.At(2), outValue.Z) == true;
 }
 
+/// A snapshot written before the cloud layer existed has no "clouds" object and keeps the layer off.
+bool ReadCloudLayer(JsonValue clouds, graphics::renderer::CloudLayerDescription& outClouds) noexcept
+{
+    if (clouds.Valid() == false)
+    {
+        outClouds = {};
+        return true;
+    }
+    return clouds.Get("enabled").Boolean(outClouds.IsEnabled) == true &&
+           ReadScalar(clouds.Get("baseMetres"), outClouds.BaseHeightMetres) == true &&
+           ReadScalar(clouds.Get("thicknessMetres"), outClouds.ThicknessMetres) == true &&
+           ReadScalar(clouds.Get("sizeXMetres"), outClouds.SizeXMetres) == true &&
+           ReadScalar(clouds.Get("sizeZMetres"), outClouds.SizeZMetres) == true &&
+           ReadScalar(clouds.Get("edgeFadeMetres"), outClouds.EdgeFadeMetres) == true &&
+           ReadScalar(clouds.Get("density"), outClouds.Density) == true &&
+           ReadScalar(clouds.Get("extinctionPerMetre"), outClouds.ExtinctionPerMetre) == true &&
+           ReadScalar(clouds.Get("albedo"), outClouds.SingleScatteringAlbedo) == true &&
+           ReadScalar(clouds.Get("phaseAsymmetry"), outClouds.PhaseAsymmetry) == true &&
+           ReadVector(clouds.Get("axisXWorld"), outClouds.AxisXWorld) == true;
+}
+
 bool ReadAtmosphere(JsonValue sky, graphics::renderer::AtmosphereDescription& outSky) noexcept
 {
     graphics::renderer::CelestialBackgroundDescription& celestial = outSky.Celestial;
@@ -176,7 +197,8 @@ bool ReadAtmosphere(JsonValue sky, graphics::renderer::AtmosphereDescription& ou
            ReadScalar(sky.Get("milkyWayRadiance"), celestial.MilkyWayRadiance) == true &&
            ReadVector(sky.Get("galacticNorthWorld"), celestial.GalacticNorthWorld) == true &&
            ReadVector(sky.Get("galacticCenterWorld"), celestial.GalacticCenterWorld) == true &&
-           ReadVector(sky.Get("toSunAtMoonWorld"), celestial.DirectionToSunAtMoonWorld) == true;
+           ReadVector(sky.Get("toSunAtMoonWorld"), celestial.DirectionToSunAtMoonWorld) == true &&
+           ReadCloudLayer(sky.Get("clouds"), outSky.Clouds) == true;
 }
 
 bool ReadSpawn(JsonValue value, std::string_view key, PlayerSpawn& outSpawn) noexcept

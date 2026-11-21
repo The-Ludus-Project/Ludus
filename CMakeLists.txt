@@ -344,6 +344,8 @@ add_subdirectory(modules/animation)
 add_subdirectory(modules/physics/fluid)
 # PhysicsCollision depends on Base, Containers, Identity and Math only and builds for native and web.
 add_subdirectory(modules/physics/collision)
+# PhysicsRigid adds bodies and the fixed tick over PhysicsCollision and builds for native and web.
+add_subdirectory(modules/physics/rigid)
 add_subdirectory(modules/foundation/time)
 add_subdirectory(modules/network/session)
 add_subdirectory(modules/foundation/logging)
@@ -407,6 +409,10 @@ add_subdirectory(modules/content/foliage_format)
 add_subdirectory(modules/content/foliage_pages)
 # Versioned UUID authoring records and the one-time World ID migration manifest.
 add_subdirectory(modules/content/identity_records)
+# LUSEQ cooked sequence format contract shared by the sequence cooker and decoder.
+add_subdirectory(modules/content/sequence_format)
+# .luseq.json source document, LUSEQ cooker and decoder over GameplaySequencer.
+add_subdirectory(modules/content/sequence_content)
 # Stage-4 two-pass World restore; bridges ContentIdentity and GameplayWorld.
 add_subdirectory(modules/content/world_restore)
 # Procedural generation digests, validated stage cache and traces (P1); Foundation-only, native and web.
@@ -602,7 +608,7 @@ write_basic_package_version_file(
 # Public exported components (one per installed Ludus:: module target).
 foreach(_component
     FoundationBase FoundationMemory FoundationHash FoundationIdentity FoundationStrings FoundationContainers FoundationThreading FoundationFilesystem FoundationParsing FoundationParsingJson FoundationMath FoundationGeometry FoundationTime FoundationLogging ShaderCompilerClient ShaderLanguage
-    FoundationProfiling FoundationThreadingProfiling FoundationReflection FoundationSerialization FoundationConfig FoundationConfigJson RuntimeConfiguration GamePropertyBinding NetworkCore Input Audio Content ProceduralCore ProceduralEnvironment SceneFormat GeometryFormat GeometryContent RenderGraphFormat SceneSource StringDictionaryFormat StringDictionary StringDictionaryWriter FoliageFormat FoliagePages WeatherFormat ContentWeather GameplayWeather AudioContent Resources GameplayWorld GameplayCamera GameplaySequencer Animation GameApi PhysicsFluid PhysicsCollision Ui Localization)
+    FoundationProfiling FoundationThreadingProfiling FoundationReflection FoundationSerialization FoundationConfig FoundationConfigJson RuntimeConfiguration GamePropertyBinding NetworkCore Input Audio Content ProceduralCore ProceduralEnvironment SceneFormat GeometryFormat GeometryContent RenderGraphFormat SceneSource SequenceFormat StringDictionaryFormat StringDictionary StringDictionaryWriter FoliageFormat FoliagePages WeatherFormat ContentWeather GameplayWeather AudioContent Resources GameplayWorld GameplayCamera GameplaySequencer Animation GameApi PhysicsFluid PhysicsCollision PhysicsRigid Ui Localization)
     ludus_sdk_register_component(${_component})
     ludus_sdk_register_feature(${_component})
 endforeach()
