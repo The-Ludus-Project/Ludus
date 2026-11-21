@@ -3549,9 +3549,16 @@ reach the translated MSL, so shared code whose bits must match the CPU oracle, w
 FoundationMath builds without contraction, keeps the product in its own
 translated statement. `TryMutateMetropolisPrimary` gives its step a second use
 for this, and the `ludus_renderer_metropolis_parity` case checks the bits.
-Turning contraction off for every compute library instead made 2,816 of 4,096
-pixels of the 64 x 64 wave capture exceed `WavePropagationCapacity`, so the wave
-connection's region stepping depends on contraction
+With contraction disabled on an Apple M5, the unobstructed 64 x 64 wave
+capture could latch `WavePropagationCapacity` before reaching the propagation
+loop. Separating the statuses showed the light-source escape exhausting its
+attempts even though the first probe segment was clear. The C++ oracle and
+Slang now use a hit-only BVH walk for escape probes. That walk stops at the
+first intersection and leaves region gathering to the propagation loop, where
+the triangle IDs are needed to build the transmission mask.
+The Metal regression prepends `#pragma METAL fp contract(off)` to the test's
+cooked compute shader and requires a complete capture with finite, positive
+radiance at every pixel
 ([#1546](https://github.com/The-Ludus-Project/Ludus/issues/1546)).
 
 Three GPU-transport cases (`L6 depth 4`, one-more-vertex HGS and conditional ReSTIR
