@@ -190,9 +190,11 @@ void InitializeEditorCrashReporting(const QSettings& settings) noexcept
     }
 }
 
-void ShowEditorCrashReporting(QWidget* parentOrNull)
+bool ShowEditorCrashReporting(QWidget* parentOrNull)
 {
     QSettings settings(SETTINGS_ORGANIZATION, SETTINGS_APPLICATION);
+    const QString savedDsn = ReadDsn(settings);
+    bool shouldOfferRestart = false;
     QDialog dialog(parentOrNull);
     dialog.setObjectName(QStringLiteral("crashReportingDialog"));
     dialog.setWindowTitle(QStringLiteral("Crash Reporting"));
@@ -211,7 +213,7 @@ void ShowEditorCrashReporting(QWidget* parentOrNull)
         &dialog);
     explanation->setWordWrap(true);
     form->addRow(explanation);
-    QLineEdit* dsn = new QLineEdit(ReadDsn(settings), &dialog);
+    QLineEdit* dsn = new QLineEdit(savedDsn, &dialog);
     dsn->setObjectName(QStringLiteral("crashReportingDsn"));
     dsn->setMaxLength(MAX_DSN_CHARACTERS);
     dsn->setPlaceholderText(QStringLiteral("https://public-key@host/project-id"));
@@ -219,7 +221,7 @@ void ShowEditorCrashReporting(QWidget* parentOrNull)
     form->addRow(QStringLiteral("Sentry project DSN"), dsn);
     QCheckBox* consent = new QCheckBox(QStringLiteral("Automatically send crash reports"), &dialog);
     consent->setObjectName(QStringLiteral("crashReportingConsent"));
-    consent->setChecked(HasEditorCrashUploadConsent(settings, activeDsn));
+    consent->setChecked(HasEditorCrashUploadConsent(settings, savedDsn));
     form->addRow(consent);
     QObject::connect(dsn, &QLineEdit::textChanged, consent, [consent]() { consent->setChecked(false); });
     foundation::usize pending = 0;
@@ -230,6 +232,8 @@ void ShowEditorCrashReporting(QWidget* parentOrNull)
     status->setWordWrap(true);
     status->setObjectName(QStringLiteral("crashReportingStatus"));
     status->setText(captureProblem.isEmpty() == false ? captureProblem
+                    : savedDsn != activeDsn
+                        ? QStringLiteral("Restart the Editor to apply the saved destination. Uploads are paused.")
                     : hasCounts == true ? QStringLiteral("Local capture active. Pending: %1; uploaded: %2.")
                                               .arg(static_cast<foundation::uint64>(pending))
                                               .arg(static_cast<foundation::uint64>(uploaded))
@@ -258,18 +262,28 @@ void ShowEditorCrashReporting(QWidget* parentOrNull)
             status->setText(problem);
             return;
         }
-        if (selectedDsn != activeDsn)
-        {
-            QMessageBox::information(
-                &dialog,
-                QStringLiteral("Restart required"),
-                QStringLiteral(
-                    "Restart the editor to use the new reporting destination. Submission is disabled until then."));
-        }
+        shouldOfferRestart = selectedDsn != activeDsn;
         dialog.accept();
     });
     consent->setFocus();
     dialog.exec();
+    if (shouldOfferRestart == false)
+    {
+        return false;
+    }
+
+    QMessageBox restart(QMessageBox::Information,
+                        QStringLiteral("Restart Editor?"),
+                        QStringLiteral("Restart the Editor to apply the new crash reporting destination. "
+                                       "Uploads are paused until then."),
+                        QMessageBox::NoButton,
+                        parentOrNull);
+    QPushButton* restartNow = restart.addButton(QStringLiteral("Restart Now"), QMessageBox::AcceptRole);
+    QPushButton* later = restart.addButton(QStringLiteral("Later"), QMessageBox::RejectRole);
+    restart.setDefaultButton(later);
+    restart.setEscapeButton(later);
+    restart.exec();
+    return restart.clickedButton() == restartNow;
 }
 
 void PresentEditorCrashReportingNotice(QWidget* parentOrNull)

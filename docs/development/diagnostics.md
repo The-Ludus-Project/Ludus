@@ -178,8 +178,10 @@ capture and no default destination.
 **Help > Crash Reporting** can also configure a local installation without
 rebuilding, show pending/uploaded counts and open local reports/logs. Production
 accepts HTTPS DSNs with no password, query or fragment. A destination change
-pauses this database immediately and takes effect after restart. Restart all
-open editor instances after changing destinations or defaults. Destinations use
+pauses uploads immediately and takes effect after restart. Choose **Restart Now**
+to reopen the Editor after its normal save and close checks, or choose **Later**
+to keep working and apply the destination at the next launch. Restart all open
+Editor instances after changing destinations or defaults. Destinations use
 separate databases: old reports are never silently sent to a new project.
 Previously unconfigured reports stay in the `unconfigured` folder and are not
 automatically migrated.

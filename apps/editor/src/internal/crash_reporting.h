@@ -14,8 +14,8 @@ namespace ludus::editor
 void InitializeEditorCrashReporting() noexcept;
 /// Initialize capture from an explicit settings store so subprocess fixtures can isolate native preferences.
 void InitializeEditorCrashReporting(const QSettings& settings) noexcept;
-/// Open private crash preferences and report counts; no report is sent without the user's consent.
-void ShowEditorCrashReporting(QWidget* parentOrNull);
+/// Open crash preferences and return true if the user requests an Editor restart after saving.
+[[nodiscard]] bool ShowEditorCrashReporting(QWidget* parentOrNull);
 /// Present consent once per configured destination, or report a startup failure, after the window is shown.
 void PresentEditorCrashReportingNotice(QWidget* parentOrNull);
 /// Local bounded log directory, available even if crash-handler startup failed.
