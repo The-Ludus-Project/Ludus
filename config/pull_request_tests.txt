@@ -19,6 +19,7 @@ ludus_content_identity_tests
 ludus_content_save_fault_tests
 ludus_content_terrain_tests
 ludus_content_tests
+ludus_content_weather_tests
 ludus_content_world_restore_tests
 ludus_document_well_tests
 ludus_editor_geometry_tests
@@ -46,6 +47,7 @@ ludus_game_host_protocol_tests
 ludus_game_host_timing_tests
 ludus_gameplay_camera_tests
 ludus_gameplay_sequencer_tests
+ludus_gameplay_weather_tests
 ludus_gameplay_world_tests
 ludus_gaussian_tests
 ludus_geometry_alloc_tests
@@ -96,6 +98,7 @@ ludus_threading_profiling_tests
 ludus_threading_startup_tests
 ludus_ui_allocation_tests
 ludus_ui_tests
+ludus_weather_format_tests
 ludus_world_camera_view_tests
 ludus_world_demo_allocation_tests
 ludus_world_demo_pacing_tests

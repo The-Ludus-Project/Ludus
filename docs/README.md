@@ -101,6 +101,7 @@ for content changes. Module/sample/tool READMEs link to these owners.
 - [Localization: catalogs, release cooking and formatting](modules/localization.md)
 - [Ludus::FoundationGeometry](modules/foundation/geometry.md)
 - [Ludus::FoundationMath](modules/foundation/math.md)
+- [Regional climate and deterministic weather](modules/gameplay/weather.md)
 - [ShaderLanguage: the LUSL front end](modules/tooling/shader-language.md)
 - [Tiled terrain and generation kernels](modules/content/terrain.md)
 - [Unicode: pinned ICU4C host service](modules/foundation/unicode.md)
