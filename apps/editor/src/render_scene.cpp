@@ -854,8 +854,9 @@ void ExtractWorldAtmosphere(const WorldDocument& world, const QJsonObject& trans
     inoutScene.Atmosphere.Aurora =
     {
         .IsEnabled = properties.value(QStringLiteral("aurora")).toBool(false),
-        .EmissionPerMetre = static_cast<float32>(properties.value(QStringLiteral("auroraEmission"))
-                                                     .toDouble(rr::AuroraLayerDescription::DEFAULT_EMISSION_PER_METRE)),
+        .EmissionPerMetre = static_cast<float32>(
+            properties.value(QStringLiteral("auroraEmission"))
+                .toDouble(static_cast<float64>(rr::AuroraLayerDescription::DEFAULT_EMISSION_PER_METRE))),
         .TimeSeconds = static_cast<float32>(properties.value(QStringLiteral("auroraTime")).toDouble()),
         .AxisXWorld = math::Rotate(placement.Rotation, {1, 0, 0}),
     };
