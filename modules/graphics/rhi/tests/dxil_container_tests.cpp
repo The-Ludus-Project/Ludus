@@ -77,9 +77,8 @@ void AppendCode(Array<uint8>& inoutBytes, std::string_view code)
 
 void WriteUint32(Array<uint8>& inoutBytes, usize offset, uint32 value)
 {
-    REQUIRE(ludus::foundation::core::TryWriteLittleEndian(
-                value,
-                std::span<uint8>{inoutBytes.GetData() + offset, sizeof(uint32)}) == true);
+    REQUIRE(ludus::foundation::core::TryWriteLittleEndian(value, {inoutBytes.GetData() + offset, sizeof(uint32)}) ==
+            true);
 }
 
 Array<uint8> MakeProgramPart(uint32 kind)
@@ -218,7 +217,7 @@ TEST_CASE("DXIL container rejects malformed or ambiguous parts", "[rhi][dxil]")
     Array<uint8> oversized = MakeContainer({});
     uint32 programOffset = 0;
     REQUIRE(ludus::foundation::core::TryReadLittleEndian(
-                std::span<const uint8>{oversized.GetData() + DXIL_CONTAINER_HEADER_BYTES, sizeof(uint32)},
+                {oversized.GetData() + DXIL_CONTAINER_HEADER_BYTES, sizeof(uint32)},
                 programOffset) == true);
     WriteUint32(oversized, programOffset + sizeof(uint32), static_cast<uint32>(oversized.GetSize()));
     CHECK(HasDxilEntry(View(oversized), ShaderStage::Vertex, "vertexMain") == false);

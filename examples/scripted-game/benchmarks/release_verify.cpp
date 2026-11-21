@@ -94,8 +94,9 @@ int main()
     const auto view = std::span<const uint8>(bytes, written);
     ludus::runtime::behavior::Record record;
     ludus::sample::State state;
-    if (TryReadLittleEndian(view, tick) == false || TryReadLittleEndian(view.subspan(8), applied) == false ||
-        tick != 2 || applied != 1 ||
+    if (TryReadLittleEndian({view.data(), view.size()}, tick) == false ||
+        TryReadLittleEndian({view.data() + sizeof(tick), sizeof(applied)}, applied) == false || tick != 2 ||
+        applied != 1 ||
         ludus::runtime::behavior::DecodeState(ludus::sample::SCHEMA, view.subspan(32), record) == false ||
         ludus::sample::TryReadState(record, state) == false || state.Interactions != 2 || state.OpenRequested == false)
     {

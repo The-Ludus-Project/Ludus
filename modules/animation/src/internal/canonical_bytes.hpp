@@ -6,6 +6,7 @@
 #include <ludus/foundation/base/core.h>
 
 #include <ludus/foundation/base/byte_order.hpp>
+#include <ludus/foundation/containers/span_compatibility.hpp>
 
 #include <bit>
 #include <span>
@@ -27,14 +28,16 @@ public:
 
     void WriteUint32(foundation::uint32 value) noexcept
     {
-        [[maybe_unused]] const bool isWritten = foundation::TryWriteLittleEndian(value, mBytes.subspan(mOffset));
+        [[maybe_unused]] const bool isWritten =
+            foundation::TryWriteLittleEndian(value, ludus::foundation::MakeBorrowedView(mBytes.subspan(mOffset)));
         LUDUS_ASSERT(isWritten == true);
         mOffset += sizeof(foundation::uint32);
     }
 
     void WriteUint64(foundation::uint64 value) noexcept
     {
-        [[maybe_unused]] const bool isWritten = foundation::TryWriteLittleEndian(value, mBytes.subspan(mOffset));
+        [[maybe_unused]] const bool isWritten =
+            foundation::TryWriteLittleEndian(value, ludus::foundation::MakeBorrowedView(mBytes.subspan(mOffset)));
         LUDUS_ASSERT(isWritten == true);
         mOffset += sizeof(foundation::uint64);
     }

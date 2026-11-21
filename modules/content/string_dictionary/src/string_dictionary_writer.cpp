@@ -4,6 +4,7 @@
 #include <ludus/foundation/base/checked_integer.hpp>
 #include <ludus/foundation/base/core.h>
 #include <ludus/foundation/containers/sort.hpp>
+#include <ludus/foundation/containers/span_compatibility.hpp>
 
 #include <cstring>
 #include <new>
@@ -108,7 +109,8 @@ void WriteWord(std::span<uint8> destination, usize offset, usize value) noexcept
     // Callers pass values bounded by the format limits, all below 2^32.
     LUDUS_ASSERT(value <= usize{0xffffffffU});
     [[maybe_unused]] const bool isWritten =
-        foundation::TryWriteLittleEndian(static_cast<uint32>(value), destination.subspan(offset));
+        foundation::TryWriteLittleEndian(static_cast<uint32>(value),
+                                         ludus::foundation::MakeBorrowedView(destination.subspan(offset)));
     LUDUS_ASSERT(isWritten == true);
 }
 } // namespace

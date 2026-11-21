@@ -1,5 +1,6 @@
 #include <ludus/foundation/base/byte_order.hpp>
 #include <ludus/foundation/containers/array.hpp>
+#include <ludus/foundation/containers/span_compatibility.hpp>
 #include <ludus/foundation/containers/static_array.hpp>
 #include <ludus/foundation/threading/thread.hpp>
 #include <ludus/localization/catalog.hpp>
@@ -62,13 +63,13 @@ struct FaultHeap final
 uint32 Word(std::span<const uint8> bytes, usize offset)
 {
     uint32 value{};
-    REQUIRE(TryReadLittleEndian(bytes.subspan(offset), value));
+    REQUIRE(TryReadLittleEndian(ludus::foundation::MakeBorrowedView(bytes.subspan(offset)), value));
     return value;
 }
 
 void Write(std::span<uint8> bytes, usize offset, uint32 value)
 {
-    REQUIRE(TryWriteLittleEndian(value, bytes.subspan(offset)));
+    REQUIRE(TryWriteLittleEndian(value, ludus::foundation::MakeBorrowedView(bytes.subspan(offset))));
 }
 
 Catalog Load(std::span<const uint8> bytes)

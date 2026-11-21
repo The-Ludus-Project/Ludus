@@ -7,6 +7,7 @@
 #include <ludus/foundation/base/checked_integer.hpp>
 #include <ludus/foundation/containers/borrowed_view.hpp>
 #include <ludus/foundation/containers/sort.hpp>
+#include <ludus/foundation/containers/span_compatibility.hpp>
 #include <ludus/foundation/containers/static_array.hpp>
 #include <ludus/foundation/math/addressed_random.hpp>
 #include <ludus/foundation/math/random_checkpoint.hpp>
@@ -1875,7 +1876,8 @@ public:
     template <foundation::core::UnsignedInteger ValueType>
     void Write(ValueType value) noexcept
     {
-        const bool isWritten = foundation::core::TryWriteLittleEndian(value, mBytes.subspan(mOffset));
+        const bool isWritten =
+            foundation::core::TryWriteLittleEndian(value, ludus::foundation::MakeBorrowedView(mBytes.subspan(mOffset)));
         LUDUS_ASSERT(isWritten == true);
         static_cast<void>(isWritten);
         mOffset += sizeof(ValueType);
@@ -1893,7 +1895,8 @@ public:
     template <foundation::core::UnsignedInteger ValueType>
     [[nodiscard]] bool TryRead(ValueType& outValue) noexcept
     {
-        if (foundation::core::TryReadLittleEndian(mBytes.subspan(mOffset), outValue) == false)
+        if (foundation::core::TryReadLittleEndian(ludus::foundation::MakeBorrowedView(mBytes.subspan(mOffset)),
+                                                  outValue) == false)
         {
             return false;
         }

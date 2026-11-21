@@ -9383,7 +9383,7 @@ void ReadAccumulation(const renderer::RenderGraph& graph,
 uint32 ReadFileUint32(const Array<uint8>& bytes, usize offset)
 {
     uint32 value = 0;
-    REQUIRE(TryReadLittleEndian(std::span<const uint8>{bytes.GetData() + offset, sizeof(uint32)}, value) == true);
+    REQUIRE(TryReadLittleEndian({bytes.GetData() + offset, sizeof(uint32)}, value) == true);
     return value;
 }
 } // namespace

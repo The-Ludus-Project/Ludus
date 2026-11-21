@@ -493,7 +493,7 @@ struct WeatherByteWriter final
     constexpr void WriteUnsigned(ValueType value) noexcept
     {
         if (HasFailed == true || Bytes.size() - Offset < sizeof(ValueType) ||
-            foundation::TryWriteLittleEndian(value, Bytes.subspan(Offset)) == false)
+            foundation::TryWriteLittleEndian(value, {Bytes.data() + Offset, Bytes.size() - Offset}) == false)
         {
             HasFailed = true;
             return;
@@ -530,7 +530,7 @@ struct WeatherByteReader final
     {
         ValueType value = 0;
         if (HasFailed == true || Bytes.size() - Offset < sizeof(ValueType) ||
-            foundation::TryReadLittleEndian(Bytes.subspan(Offset), value) == false)
+            foundation::TryReadLittleEndian({Bytes.data() + Offset, Bytes.size() - Offset}, value) == false)
         {
             HasFailed = true;
             return 0;
