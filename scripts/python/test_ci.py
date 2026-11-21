@@ -1352,16 +1352,26 @@ class BatchWorkflowDefinitionTests(unittest.TestCase):
             self.assertTrue((self.ROOT / "tests/sdk_consumer" / script).is_file(), script)
             self.assertNotIn(f"tests/sdk_consumer/{script}", workflows)
 
-    def test_renderer_matrix_runs_each_candidate_renderer_suite(self):
+    def test_one_browser_job_runs_every_candidate_renderer_suite(self):
+        # The packaged tests and the renderer suites share one job and one runner; the job
+        # names only the 'renderer-*' prefix, so a new suite in browser-suites.json needs
+        # no workflow change (and no promotion).
         suites = json.loads((self.ROOT / "tests/sdk_consumer/browser-suites.json").read_text())
         workflow = (self.ROOT / ".github/workflows/webgpu-probe.yml").read_text()
-        job = workflow.split("\n  renderer-browser:\n", 1)[1].split("\n\n  ", 1)[0]
-        matrix = re.search(r"(?m)^        suite: \[([^\]]*)\]$", job)
-        self.assertIsNotNone(matrix)
-        renderer = sorted(f"renderer-{name.strip()}" for name in matrix.group(1).split(","))
-        self.assertEqual(renderer, sorted(name for name in suites if name.startswith("renderer-")))
-        self.assertIn('run-browser-suite.mjs "renderer-${{ matrix.suite }}"', job)
-        self.assertIn("run-browser-suite.mjs raster out/raster-web-sdk-consumer", workflow)
+        self.assertNotIn("\n  renderer-browser:\n", workflow)
+        self.assertNotIn("matrix.suite", workflow)
+        job = workflow.split("\n  browser-software-gpu:\n", 1)[1]
+        self.assertIn("run-browser-suite.mjs 'renderer-*' out/renderer-web-sdk-consumer", job)
+        self.assertIn("run-browser-suite.mjs raster out/raster-web-sdk-consumer", job)
+        self.assertTrue(any(name.startswith("renderer-") for name in suites))
+        # Each test step still runs after an earlier one fails, once the runner installed.
+        steps = re.split(r"\n      - ", job.split("\n    steps:\n", 1)[1])
+        tests = [step for step in steps if step.startswith("name: Test") or step.startswith("name: Check")
+                 or step.startswith("name: Qualify")]
+        self.assertGreaterEqual(len(tests), 6)
+        for step in tests:
+            with self.subTest(step=step.splitlines()[0]):
+                self.assertIn("if: ${{ !cancelled() && steps.runner.outcome == 'success' }}", step)
 
 
 class MacosAnalysisOrderTests(unittest.TestCase):
