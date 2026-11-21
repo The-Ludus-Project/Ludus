@@ -16,6 +16,7 @@ target_sources(ludus_graphics_rhi
         src/adapter.cpp
         src/device.cpp
         src/dxil_container.cpp
+        src/frame_producer.cpp
         src/gpu_scope.cpp
         src/gpu_pass_timing_buffer.cpp
         src/graphics_capture.cpp
@@ -29,7 +30,7 @@ target_sources(ludus_graphics_rhi
         FILE_SET public_headers
         TYPE HEADERS
         BASE_DIRS include
-        FILES include/ludus/graphics/rhi/adapter.h include/ludus/graphics/rhi/compute_cache.hpp include/ludus/graphics/rhi/compute_workload.hpp include/ludus/graphics/rhi/spatial_upscale.h include/ludus/graphics/rhi/native_compute.h include/ludus/graphics/rhi/gpu_scope.h include/ludus/graphics/rhi/graphics_capture.h include/ludus/graphics/rhi/native_interop.h include/ludus/graphics/rhi/hosted_recorder.h include/ludus/graphics/rhi/hosted_surface.h include/ludus/graphics/rhi/measurement.h include/ludus/graphics/rhi/ray.h include/ludus/graphics/rhi/profile.h include/ludus/graphics/rhi/compute.h include/ludus/graphics/rhi/graph.h include/ludus/graphics/rhi/lifetime.h include/ludus/graphics/rhi/pipeline_preparation.h include/ludus/graphics/rhi/rhi.h include/ludus/graphics/rhi/render.h include/ludus/graphics/rhi/device.h include/ludus/graphics/rhi/raster.h
+        FILES include/ludus/graphics/rhi/adapter.h include/ludus/graphics/rhi/compute_cache.hpp include/ludus/graphics/rhi/compute_workload.hpp include/ludus/graphics/rhi/frame_producer.h include/ludus/graphics/rhi/spatial_upscale.h include/ludus/graphics/rhi/native_compute.h include/ludus/graphics/rhi/gpu_scope.h include/ludus/graphics/rhi/graphics_capture.h include/ludus/graphics/rhi/native_interop.h include/ludus/graphics/rhi/hosted_recorder.h include/ludus/graphics/rhi/hosted_surface.h include/ludus/graphics/rhi/measurement.h include/ludus/graphics/rhi/ray.h include/ludus/graphics/rhi/profile.h include/ludus/graphics/rhi/compute.h include/ludus/graphics/rhi/graph.h include/ludus/graphics/rhi/lifetime.h include/ludus/graphics/rhi/pipeline_preparation.h include/ludus/graphics/rhi/rhi.h include/ludus/graphics/rhi/render.h include/ludus/graphics/rhi/device.h include/ludus/graphics/rhi/raster.h
 )
 
 target_link_libraries(ludus_graphics_rhi
@@ -156,6 +157,7 @@ if(LUDUS_BUILD_TESTS)
         tests/gpu_scope_tests.cpp
         tests/graphics_capture_tests.cpp
         tests/device_tests.cpp
+        tests/frame_producer_tests.cpp
         tests/profile_tests.cpp
         tests/raster_tests.cpp
         tests/binding_tests.cpp
@@ -354,6 +356,9 @@ if(LUDUS_BUILD_TESTS AND NOT EMSCRIPTEN AND NOT WIN32 AND LUDUS_SLANG_COMPILER A
     ludus_apply_project_defaults(ludus_rhi_r8_consumer)
     ludus_compile_shader(TARGET ludus_rhi_r8_consumer NAME raster RASTER
         SOURCE "${PROJECT_SOURCE_DIR}/tests/sdk_consumer/shaders/raster.slang" VERTEX vertexMain FRAGMENT fragmentMain)
+    include("${PROJECT_SOURCE_DIR}/tests/sdk_consumer/mip_streaming.cmake")
+    ludus_add_mip_streaming_consumer(ludus_rhi_mip_streaming_consumer)
+    ludus_apply_project_defaults(ludus_rhi_mip_streaming_consumer)
     add_executable(ludus_rhi_r11_consumer "${PROJECT_SOURCE_DIR}/tests/sdk_consumer/r11.cpp")
     target_link_libraries(ludus_rhi_r11_consumer PRIVATE Ludus::GraphicsRhi Ludus::FoundationTime)
     ludus_apply_project_defaults(ludus_rhi_r11_consumer)

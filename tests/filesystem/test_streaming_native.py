@@ -1,11 +1,12 @@
 """Real-SDK negative tests: interior corruption, malformed traces, cancellation and accounting."""
+import io
 import json
 import os
 from pathlib import Path
 import subprocess
 import tempfile
 import unittest
-from streaming import make_bytes
+from streaming import build_stream, make_bytes
 
 
 class NativeStreamingTests(unittest.TestCase):
@@ -22,10 +23,12 @@ class NativeStreamingTests(unittest.TestCase):
         self.trace = self.root / "fixture.trace"
         self.trace.write_text("fs-r2 1 16\n" + "0 1 0 4096 0 0\n" * 16)
 
-    def run_benchmark(self, workers=1, tracing=0, open_mode="shared"):
-        return subprocess.run([self.binary, "--stream", str(self.root), "loose", str(workers), str(self.trace),
-                               "1000", "0", open_mode, str(tracing), "v1", "uncontrolled"],
-                              capture_output=True, text=True, timeout=20)
+    def run_benchmark(self, workers=1, tracing=0, open_mode="shared", layout="loose", reference=None):
+        command = [self.binary, "--stream", str(self.root), layout, str(workers), str(self.trace),
+                   "1000", "0", open_mode, str(tracing), "v1", "uncontrolled"]
+        if reference is not None:
+            command.append(str(reference))
+        return subprocess.run(command, capture_output=True, text=True, timeout=20)
 
     def test_sync_and_async_full_validation_and_trace_accounting(self):
         for workers in (0, 1, 4):
@@ -40,6 +43,46 @@ class NativeStreamingTests(unittest.TestCase):
                 if workers:
                     self.assertEqual(result["trace_records"] + result["dropped_traces"], 16)
                     self.assertGreaterEqual(result["delivery"]["p50_ns"], 0)
+
+    def test_captured_pack_uses_independent_reference_and_exact_ranges(self):
+        entry = "World Rooms/first room.json"
+        data = b"actual pack input bytes"
+        reference = self.root / "loose" / entry
+        reference.parent.mkdir(parents=True)
+        reference.write_bytes(data)
+        with (self.root / "lz4.pack").open("wb") as pack:
+            build_stream([entry], lambda _: io.BytesIO(data), pack)
+        self.trace.write_text(f"fs-r2 2 2 1\n{entry}\n0 0 2 8 0 0\n0 0 1 6 0 0\n")
+        for workers in (0, 1, 4):
+            result = self.run_benchmark(workers, tracing=4, layout="lz4.pack")
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertEqual(json.loads(result.stdout)["bytes"], 14)
+
+        reference.write_bytes(data[:4] + b"X" + data[5:])
+        for workers in (0, 1):
+            result = self.run_benchmark(workers, layout="lz4.pack")
+            self.assertIn(result.returncode, (28, 32))
+
+        self.trace.write_text(f"fs-r2 2 1 1\n{entry}\n0 0 {len(data)} 1 0 0\n")
+        self.assertEqual(self.run_benchmark(layout="lz4.pack").returncode, 24)
+
+    def test_captured_loose_requires_a_separate_reference(self):
+        entry = "source.wav"
+        data = b"native read source"
+        asset = self.root / entry
+        asset.write_bytes(data)
+        reference = self.root / "reference"
+        reference.mkdir()
+        (reference / entry).write_bytes(data)
+        self.trace.write_text(f"fs-r2 2 2 1\n{entry}\n0 0 1 7 0 0\n0 0 7 5 0 0\n")
+        self.assertEqual(self.run_benchmark().returncode, 24)
+        for workers in (0, 1, 4):
+            completed = self.run_benchmark(workers, tracing=4, reference=reference)
+            self.assertEqual(completed.returncode, 0, completed.stderr)
+            self.assertEqual(json.loads(completed.stdout)["bytes"], 12)
+        asset.write_bytes(data[:4] + b"X" + data[5:])
+        for workers in (0, 1):
+            self.assertIn(self.run_benchmark(workers, reference=reference).returncode, (28, 32))
 
     def test_interior_corruption_is_rejected(self):
         data = bytearray(self.asset.read_bytes())

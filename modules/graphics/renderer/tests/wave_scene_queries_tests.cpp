@@ -93,6 +93,9 @@ TEST_CASE("Wave region exhaustion and malformed input preserve the accepted regi
     math::EllipticalCone cone;
     cone.RadiusWorld = 1;
     cone.FarWorld = 10;
+    bool hasHit = false;
+    REQUIRE(internal::TestWaveInteraction(scene, cone, hasHit) == rhi::RasterStatus::Ready);
+    CHECK(hasHit == true);
     internal::WaveInteractionRegion accepted;
     accepted.TriangleCount = 1;
     accepted.Triangles[0] = 123;
@@ -100,6 +103,8 @@ TEST_CASE("Wave region exhaustion and malformed input preserve the accepted regi
     CHECK(accepted.TriangleCount == 1);
     CHECK(accepted.Triangles[0] == 123);
     cone.MinorToMajor = 0;
+    CHECK(internal::TestWaveInteraction(scene, cone, hasHit) == rhi::RasterStatus::InvalidDescription);
+    CHECK(hasHit == true);
     CHECK(internal::FindWaveInteractionRegion(scene, cone, accepted) == rhi::RasterStatus::InvalidDescription);
     CHECK(accepted.Triangles[0] == 123);
 }

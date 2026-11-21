@@ -13,6 +13,7 @@
 #include <ludus/foundation/memory/allocation_statistics.hpp>
 
 #include "internal/accounting.hpp"
+#include "internal/observation.hpp"
 
 #include <atomic>
 #include <new>
@@ -32,6 +33,7 @@ void SystemFree(void*, void* pointer, usize, usize alignment) noexcept
 }
 
 constinit AllocationDomain gSystemDomain{nullptr, SystemAllocate, SystemFree};
+constinit AllocationDomain gCaptureStorageDomain{nullptr, SystemAllocate, SystemFree};
 constinit AllocationDomain gContainerDomain{nullptr, SystemAllocate, SystemFree};
 
 constexpr usize NAME_STORAGE_BYTES = MAX_ALLOCATION_DOMAIN_NAME_BYTES + 1;
@@ -150,6 +152,11 @@ constexpr AllocationCoverageExclusion EXCLUSIONS[EXCLUSION_COUNT] = {
     },
 };
 } // namespace
+
+const AllocationDomain& memory_internal::GetCaptureStorageDomain() noexcept
+{
+    return gCaptureStorageDomain;
+}
 
 const AllocationDomain& GetSystemAllocationDomain() noexcept
 {

@@ -156,25 +156,77 @@ def schema_header(source, programs, schemas, build):
     return '\n'.join(lines).encode('utf-8')
 
 
-def _parse_report(text, build, source):
-    """The records luslc wrote with --report: tab-separated `specialization` and
-    `groupshared-clear` lines. Graph programs receive their bindings, so `binding` and
-    `vertex-input` lines of standalone shaders are not kept."""
+CONFIGURATION_NAME = re.compile(r'[A-Za-z_][A-Za-z0-9_]{0,62}\Z')
+MIN_CONFIGURATION_INTEGER = -(1 << 31)
+MAX_CONFIGURATION_INTEGER = (1 << 31) - 1
+
+
+def configuration_values(program, build):
+    """Validate authored scalar values and serialize them in stable name order."""
+    if 'configuration_values' not in program:
+        return {}
+    values = program['configuration_values']
+    where = program['id']
+    build.require(is_language_source(program['source']) and type(values) is dict, 'Configuration', where,
+                  'configuration_values must be an object on a LUSL program')
+    for name, value in values.items():
+        build.require(type(name) is str and CONFIGURATION_NAME.fullmatch(name) is not None, 'Configuration', where,
+                      f'invalid configuration macro name {name!r}; use a shader identifier of up to 63 characters')
+        build.require(type(value) is bool or type(value) is int and
+                      MIN_CONFIGURATION_INTEGER <= value <= MAX_CONFIGURATION_INTEGER, 'Configuration', where,
+                      f'{name} must be a Boolean or a signed 32-bit integer')
+    return {name: int(values[name]) for name in sorted(values)}
+
+
+def configuration_arguments(configuration):
+    """Build luslc arguments from normalized scalar values."""
+    return [argument for name, value in configuration.items() for argument in ('--define', f'{name}={value}')]
+
+
+def configuration_reads(snapshot, closure):
+    """Collect the selected values read by the lowered modules linked into this stage."""
+    reads = {}
+    for relative in closure:
+        if relative.endswith(GENERATED_SUFFIX):
+            source = relative.removesuffix(GENERATED_SUFFIX)
+            values = snapshot.language_reports.get(source, {}).get('configuration_reads')
+            if values:
+                reads[source] = values
+    return reads
+
+
+def _parse_report(text, build, source, configuration=None):
+    """Read the configuration mask, specializations and groupshared clears from luslc.
+
+    Graph program bindings come from the wrapper, so standalone layout records are skipped.
+    """
+    configuration = configuration or {}
     report = {'specializations': [], 'groupshared_clears': []}
+    mask = None
     for line in text.splitlines():
         fields = line.split('\t')
         if fields[0] in ('binding', 'vertex-input'):
             continue
-        if fields[0] == 'specialization' and len(fields) == 4:
+        if fields[0] == 'configuration-read-mask':
+            build.require(mask is None and len(fields) == 2 and len(fields[1]) == len(configuration) and
+                          set(fields[1]) <= {'0', '1'}, 'Tools', source,
+                          'invalid luslc configuration read mask; use luslc from the matching Ludus SDK')
+            mask = fields[1]
+        elif fields[0] == 'specialization' and len(fields) == 4:
             report['specializations'].append({'template': fields[1], 'name': fields[2], 'generated': fields[3]})
         elif fields[0] == 'groupshared-clear' and len(fields) == 4 and fields[3].isdigit():
             report['groupshared_clears'].append({'entry': fields[1], 'variable': fields[2], 'bytes': int(fields[3])})
         else:
             build.fail('Tools', source, f'luslc wrote an unknown report line: {line[:200]}')
+    if configuration:
+        build.require(mask is not None, 'Tools', source,
+                      'luslc did not report configuration reads; use luslc from the matching Ludus SDK')
+        report['configuration_reads'] = {name: value for (name, value), bit in zip(configuration.items(), mask)
+                                         if bit == '1'}
     return report
 
 
-def _lower(files, build, tool, source, style, specialization_budget, include_directories):
+def _lower(files, build, tool, source, style, specialization_budget, include_directories, configuration):
     with tempfile.TemporaryDirectory(prefix='ludus-lusl-') as directory:
         root = Path(directory) / 'source'
         for relative, data in files.items():
@@ -183,7 +235,7 @@ def _lower(files, build, tool, source, style, specialization_budget, include_dir
             target.write_bytes(data)
         output = Path(directory) / 'generated.slang'
         report = Path(directory) / 'report.txt'
-        command = [str(tool), 'lower', '--root', str(root)]
+        command = [str(tool), 'lower', '--root', str(root), *configuration_arguments(configuration)]
         for include_directory in include_directories:
             command += ['--include-directory', include_directory]
         command += ['--style', style, '--output', str(output), '--report', str(report)]
@@ -196,7 +248,7 @@ def _lower(files, build, tool, source, style, specialization_budget, include_dir
             build.fail('Tools', source, f'luslc could not run: {error}')
         build.require(result.returncode == 0, 'Source', source,
                       result.stderr.strip() or f'luslc failed with exit code {result.returncode}')
-        return output.read_bytes(), _parse_report(report.read_text(encoding='utf-8'), build, source)
+        return output.read_bytes(), _parse_report(report.read_text(encoding='utf-8'), build, source, configuration)
 
 
 def lower_sources(snapshot, programs, helper, build, *, luslc=None, style='strict', specialization_budget=None,
@@ -210,7 +262,16 @@ def lower_sources(snapshot, programs, helper, build, *, luslc=None, style='stric
     luslc that ran, for the build's tool identity, and the report of each lowered source; the
     tool is None and the reports empty when no program is written in LUSL.
     """
-    sources = sorted({program['source'] for program in programs.values() if is_language_source(program['source'])})
+    configurations = snapshot.language_configurations
+    for program in programs.values():
+        values = configuration_values(program, build)
+        source = program['source']
+        if is_language_source(source):
+            previous = configurations.setdefault(source, values)
+            build.require(values == previous, 'Configuration', source,
+                          'programs sharing a LUSL source must select the same configuration_values; '
+                          'use a separate entry file for a different selection')
+    sources = sorted(configurations)
     if not sources:
         return None, {}
     build.require(style in STYLES, 'Configuration', 'lusl_style',
@@ -230,7 +291,8 @@ def lower_sources(snapshot, programs, helper, build, *, luslc=None, style='stric
         if header is not None:
             files[posixpath.join(GRAPH_DIRECTORY, SCHEMA_HEADER)] = header
             include_directories.append(GRAPH_DIRECTORY)
-        data, reports[source] = _lower(files, build, tool, source, style, specialization_budget, include_directories)
+        data, reports[source] = _lower(files, build, tool, source, style, specialization_budget,
+                                       include_directories, configurations[source])
         snapshot.capture(generated, data, generated=True)
     if specialization_budget is not None:
         total = sum(len(report['specializations']) for report in reports.values())
@@ -241,6 +303,7 @@ def lower_sources(snapshot, programs, helper, build, *, luslc=None, style='stric
                       f'templates by interfaces only so they lower to one Slang generic ({largest} has the most)')
     for program in programs.values():
         if is_language_source(program['source']):
+            program.pop('configuration_values', None)
             program['language_source'] = program['source']
             program['source'] = program['source'] + GENERATED_SUFFIX
     return tool, reports

@@ -1,0 +1,33 @@
+static const uint32 IMAGE_COUNT = 2;
+static const float32 GATHER_WEIGHT = 0.25;
+static const uint32 SECOND_IMAGE = IMAGE_COUNT - 1;
+Texture2D<float32x4> images[IMAGE_COUNT];
+Texture3D<float32x4> volume;
+TextureCube<float32x4> cube;
+Texture2DArray<float32x4> layers;
+DepthTexture2D depthImage;
+SamplerState colorSampler;
+SamplerComparisonState depthSampler;
+
+struct Readback
+{
+    float32x4 Samples;
+    float32x4 Comparison;
+};
+[stage(fragment)]
+Readback Main()
+{
+    float32x4 gathered = images[SECOND_IMAGE].Gather(colorSampler, float32x2(0.5));
+    float32 arrayValue = images[0].SampleLevel(colorSampler, float32x2(0.5), 0).x;
+    float32 volumeValue = volume.SampleLevel(colorSampler, float32x3(0.5), 0).x;
+    float32 cubeValue = cube.SampleLevel(colorSampler, float32x3(1, 0, 0), 0).x;
+    float32 layerValue = layers.SampleLevel(colorSampler, float32x3(0.5, 0.5, 1), 0).x;
+    float32 passes = depthImage.SampleCmp(depthSampler, float32x2(0.5), 0.5);
+    float32 fails = depthImage.SampleCmp(depthSampler, float32x2(0.5), 1);
+    Readback output =
+    {
+        .Samples = float32x4(arrayValue, volumeValue, cubeValue, layerValue),
+        .Comparison = float32x4(dot(gathered, float32x4(GATHER_WEIGHT)), passes, fails, 1),
+    };
+    return output;
+}

@@ -123,6 +123,7 @@ bool CanStartJob(const WorkspaceState& state, ActionKind kind)
         case ActionKind::BuildDebug:
             return state.Dirty() == false && (state.Saved.Preset == QStringLiteral("linux-clang-debug") ||
                                               state.Saved.Preset == QStringLiteral("linux-clang-development"));
+        case ActionKind::PlayWorld:
         case ActionKind::Build:
         case ActionKind::BuildRun:
             // Build/BuildRun require a clean saved document; unsaved edits must be

@@ -59,12 +59,15 @@ bool IsSceneComputeProgram(const QJsonObject& program)
 QByteArray MakeSource(QJsonObject& inoutProgram, const QJsonArray& schemas)
 {
     const QString stage = inoutProgram.value(QStringLiteral("stage")).toString();
+    const bool isLusl = inoutProgram.value(QStringLiteral("source"))
+                            .toString()
+                            .endsWith(GetShaderSourceSuffix(RenderGraphShaderLanguage::Lusl));
     if ((IsSceneRayStage(stage) == true &&
          (inoutProgram.value(QStringLiteral("output")).toString() == QStringLiteral("Radiance") ||
           inoutProgram.value(QStringLiteral("output")).toString() == QStringLiteral("ScenePayload"))) ||
         IsSceneComputeProgram(inoutProgram) == true)
     {
-        return MakeSceneRaySource(inoutProgram);
+        return MakeSceneRaySource(inoutProgram, isLusl);
     }
     QString source = QStringLiteral("// Edit this shader, then Save to publish it to the project.\n");
     QString input;
@@ -79,52 +82,62 @@ QByteArray MakeSource(QJsonObject& inoutProgram, const QJsonArray& schemas)
         {
             return {};
         }
-        source += QStringLiteral("// Interface types are supplied by the shader manifest.\n");
+        source += isLusl == true ? QStringLiteral("#include \"graph_schemas.luslh\"\n\n")
+                                 : QStringLiteral("// Interface types are supplied by the shader manifest.\n");
         if (stage == QStringLiteral("vertex"))
         {
-            source += QStringLiteral("%1 ShaderMain(%2 input)\n{\n    %1 result = (%1)0;\n"
-                                     "    // TODO: transform the input into clip space.\n    return result;\n}\n")
-                          .arg(output, input);
+            source +=
+                QStringLiteral("%1 ShaderMain(%2 input)\n{\n    %1 result = %3;\n"
+                               "    // TODO: transform the input into clip space.\n    return result;\n}\n")
+                    .arg(output, input, isLusl == true ? QStringLiteral("0") : QStringLiteral("(%1)0").arg(output));
         }
         else
         {
-            source += QStringLiteral("float4 ShaderMain(%1 input)\n{\n    return float4(1, 1, 1, 1);\n}\n").arg(input);
+            const QString color = isLusl == true ? QStringLiteral("float32x4") : QStringLiteral("float4");
+            source += QStringLiteral("%1 ShaderMain(%2 input)\n{\n    return %1(1, 1, 1, 1);\n}\n").arg(color, input);
         }
     }
     else if (stage == QStringLiteral("ray_generation"))
     {
         input = QStringLiteral("RayLaunch");
         output = QStringLiteral("Ray");
+        if (isLusl == true)
+        {
+            source += QStringLiteral("#include \"ray_shader.luslh\"\n\n");
+        }
         source += QStringLiteral("Ray ShaderMain(RayLaunch launch)\n{\n    return launch.CameraRay;\n}\n");
     }
     else if (stage == QStringLiteral("miss") || stage == QStringLiteral("closest_hit"))
     {
         input = stage == QStringLiteral("miss") ? QStringLiteral("Ray") : QStringLiteral("RayHit");
         output = QStringLiteral("Color");
-        source += QStringLiteral("float3 ShaderMain(%1 input)\n{\n    return float3(1, 1, 1);\n}\n").arg(input);
+        if (isLusl == true)
+        {
+            source += QStringLiteral("#include \"ray_shader.luslh\"\n\n");
+        }
+        const QString color = isLusl == true ? QStringLiteral("float32x3") : QStringLiteral("float3");
+        source += QStringLiteral("%1 ShaderMain(%2 input)\n{\n    return %1(1, 1, 1);\n}\n").arg(color, input);
     }
     else
     {
         source += QStringLiteral("// Authoring draft: the current graph build profile does not execute this stage.\n");
         if (stage == QStringLiteral("compute"))
         {
-            source += QStringLiteral("[shader(\"compute\")]\n[numthreads(1, 1, 1)]\nvoid ShaderMain()\n{\n"
-                                     "    // TODO: implement the compute kernel.\n}\n");
+            source += isLusl == true ? QStringLiteral("[stage(compute), threads(1, 1, 1)]\n")
+                                     : QStringLiteral("[shader(\"compute\")]\n[numthreads(1, 1, 1)]\n");
+            source += QStringLiteral("void ShaderMain()\n{\n    // TODO: implement the compute kernel.\n}\n");
         }
-        else if (stage == QStringLiteral("ray_generation") || stage == QStringLiteral("intersection"))
+        else if (isLusl == false && stage == QStringLiteral("intersection"))
         {
             source += QStringLiteral("[shader(\"%1\")]\nvoid ShaderMain()\n{\n    // TODO: implement this stage.\n}\n")
-                          .arg(stage == QStringLiteral("ray_generation") ? QStringLiteral("raygeneration") : stage);
+                          .arg(stage);
         }
-        else if (stage == QStringLiteral("miss") || stage == QStringLiteral("closest_hit") ||
-                 stage == QStringLiteral("any_hit") || stage == QStringLiteral("callable"))
+        else if (isLusl == false && (stage == QStringLiteral("any_hit") || stage == QStringLiteral("callable")))
         {
-            const QString annotation = stage == QStringLiteral("closest_hit") ? QStringLiteral("closesthit")
-                                       : stage == QStringLiteral("any_hit")   ? QStringLiteral("anyhit")
-                                                                              : stage;
+            const QString annotation = stage == QStringLiteral("any_hit") ? QStringLiteral("anyhit") : stage;
             source += QStringLiteral("struct ShaderPayload\n{\n    float4 Color;\n};\n");
             QString arguments = QStringLiteral("inout ShaderPayload inoutPayload");
-            if (stage == QStringLiteral("closest_hit") || stage == QStringLiteral("any_hit"))
+            if (stage == QStringLiteral("any_hit"))
             {
                 source += QStringLiteral("struct ShaderAttributes\n{\n    float2 Barycentrics;\n};\n");
                 arguments += QStringLiteral(", ShaderAttributes attributes");
@@ -294,29 +307,41 @@ bool HasSourceConflict(const RenderGraphSnapshot& snapshot,
            (destination.exists() == true || destination.isSymLink() == true);
 }
 
+QString MakeGeneratedSourcePath(const QString& name, const QString& suffix, const QString& previousSource = {})
+{
+    const QString directory = QFileInfo(previousSource).path();
+    return QDir::cleanPath(QDir(directory).filePath(QStringLiteral("shader_") + name + suffix));
+}
+
+QString GetProgramSourceSuffix(const QString& source)
+{
+    return source.endsWith(GetShaderSourceSuffix(RenderGraphShaderLanguage::Lusl))
+               ? GetShaderSourceSuffix(RenderGraphShaderLanguage::Lusl)
+               : GetShaderSourceSuffix(RenderGraphShaderLanguage::Slang);
+}
+
 QString MakeAvailableGeneratedName(const QJsonObject& node,
                                    const QString& identity,
                                    const QJsonArray& programs,
                                    const RenderGraphSnapshot& snapshot,
                                    const RenderGraphSnapshot& originalSnapshot,
                                    const QString& packageRoot,
+                                   const QString& suffix,
                                    const QString& previous = {},
                                    const QString& previousSource = {})
 {
-    const QString directory = previousSource.isEmpty() == true ? QString() : QFileInfo(previousSource).path();
     const QString base = MakeGeneratedName(node, identity);
     QString name = base;
-    for (qsizetype suffix = 2;
-         name != previous && (FindProgram(programs, name) >= 0 ||
-                              HasSourceConflict(snapshot,
-                                                QDir::cleanPath(QDir(directory).filePath(
-                                                    QStringLiteral("shader_") + name + QStringLiteral(".slang"))),
-                                                previousSource,
-                                                packageRoot,
-                                                originalSnapshot) == true);
-         ++suffix)
+    for (qsizetype index = 2;
+         name != previous &&
+         (FindProgram(programs, name) >= 0 || HasSourceConflict(snapshot,
+                                                                MakeGeneratedSourcePath(name, suffix, previousSource),
+                                                                previousSource,
+                                                                packageRoot,
+                                                                originalSnapshot) == true);
+         ++index)
     {
-        name = base + QLatin1Char('_') + QString::number(suffix);
+        name = base + QLatin1Char('_') + QString::number(index);
     }
     return name;
 }
@@ -338,6 +363,8 @@ RenderGraphDocumentStatus ReconcileShader(RenderGraphSnapshot& inoutSnapshot,
         return RenderGraphDocumentStatus::Ok;
     }
     QJsonObject program = inoutPrograms.at(index).toObject();
+    const QString source = program.value(QStringLiteral("source")).toString();
+    const QString suffix = GetProgramSourceSuffix(source);
     QString name = inoutShader.value(QStringLiteral("program")).toString();
     if (name == QStringLiteral("Program"))
     {
@@ -355,15 +382,15 @@ RenderGraphDocumentStatus ReconcileShader(RenderGraphSnapshot& inoutSnapshot,
                                           inoutSnapshot,
                                           originalSnapshot,
                                           packageRoot,
+                                          suffix,
                                           previous,
-                                          program.value(QStringLiteral("source")).toString());
+                                          source);
     }
     // Selecting an existing different program is an assignment, never an overwrite.
     if (name != previous && FindProgram(inoutPrograms, name) >= 0)
     {
         return RenderGraphDocumentStatus::Ok;
     }
-    const QString source = program.value(QStringLiteral("source")).toString();
     if (inoutSnapshot.Files.contains(source) == false)
     {
         return ReportShaderFailure(
@@ -450,8 +477,7 @@ RenderGraphDocumentStatus ReconcileShader(RenderGraphSnapshot& inoutSnapshot,
                     "Program name '%1' is invalid. Use 1–63 ASCII letters, digits or '_', starting with a letter.")
                     .arg(name));
         }
-        const QString destination = QDir::cleanPath(
-            QDir(QFileInfo(source).path()).filePath(QStringLiteral("shader_") + name + QStringLiteral(".slang")));
+        const QString destination = MakeGeneratedSourcePath(name, suffix, source);
         if (HasSourceConflict(inoutSnapshot, destination, source, packageRoot, originalSnapshot) == true)
         {
             return ReportShaderFailure(RenderGraphDocumentStatus::Conflict,
@@ -495,25 +521,37 @@ RenderGraphDocumentStatus ReconcileShader(RenderGraphSnapshot& inoutSnapshot,
         static const QRegularExpression INCLUDE_EXPRESSION(
             QStringLiteral("(^[ \t]*#[ \t]*include[ \t]*\")([^\"]+)(\")"),
             QRegularExpression::MultilineOption);
+        static const QRegularExpression LUSL_SOURCE_REFERENCE(
+            QStringLiteral(
+                R"pattern((^[ \t]*#[ \t]*include[ \t]*|\bextern[ \t\r\n]+slang[ \t\r\n]*)"([^"\n]+)")pattern"),
+            QRegularExpression::MultilineOption);
         for (QMap<QString, QByteArray>::iterator file = inoutSnapshot.Files.begin(); file != inoutSnapshot.Files.end();
              ++file)
         {
-            if (file.key().endsWith(QStringLiteral(".slang")) == false)
+            if (IsRenderGraphShaderSource(file.key()) == false)
             {
                 continue;
             }
             const QString text = QString::fromUtf8(file.value());
             QString replaced;
             qsizetype offset = 0;
-            QRegularExpressionMatchIterator matches = INCLUDE_EXPRESSION.globalMatch(text);
+            const bool isLusl = IsLuslShaderSource(file.key());
+            const QRegularExpression& expression = isLusl == true ? LUSL_SOURCE_REFERENCE : INCLUDE_EXPRESSION;
+            QRegularExpressionMatchIterator matches = expression.globalMatch(text);
             while (matches.hasNext() == true)
             {
                 const QRegularExpressionMatch match = matches.next();
                 const QDir directory(QFileInfo(file.key()).path());
-                if (QDir::cleanPath(directory.filePath(match.captured(2))) == source)
+                const QString relative = QDir::cleanPath(directory.filePath(match.captured(2)));
+                const bool isLocalReference = relative == source;
+                const bool isRootReference = isLusl == true && QDir::cleanPath(match.captured(2)) == source &&
+                                             inoutSnapshot.Files.contains(relative) == false;
+                if (isLocalReference == true || isRootReference == true)
                 {
                     replaced += text.mid(offset, match.capturedStart(2) - offset);
-                    replaced += directory.relativeFilePath(QFileInfo(destination).absoluteFilePath());
+                    replaced += isLocalReference == true
+                                    ? directory.relativeFilePath(QFileInfo(destination).absoluteFilePath())
+                                    : destination;
                     offset = match.capturedEnd(2);
                 }
             }
@@ -548,8 +586,10 @@ RenderGraphDocumentStatus PreparePipelineShaders(RenderGraphSnapshot& inoutSnaps
                                                  const QJsonObject& previousNode,
                                                  const QString& manifestFile,
                                                  const QString& packageRoot,
+                                                 RenderGraphShaderLanguage newShaderLanguage,
                                                  QString* outErrorOrNull)
 {
+    const QString newSourceSuffix = GetShaderSourceSuffix(newShaderLanguage);
     const RenderGraphSnapshot originalSnapshot = inoutSnapshot;
     const QJsonArray originalShaders = inoutNode.value(QStringLiteral("shaders")).toArray();
     if (originalShaders.isEmpty() == true && previousNode.value(QStringLiteral("shaders")).toArray().isEmpty() == true)
@@ -633,14 +673,14 @@ RenderGraphDocumentStatus PreparePipelineShaders(RenderGraphSnapshot& inoutSnaps
              file != inoutSnapshot.Files.constEnd();
              ++file)
         {
-            if (file.key() != source && file.key().endsWith(QStringLiteral(".slang")) == true &&
+            if (file.key() != source && IsRenderGraphShaderSource(file.key()) == true &&
                 file.value().contains(QFileInfo(source).fileName().toUtf8()) == true)
             {
                 isSharedSource = true;
             }
         }
         if (isSharedSource == false && name.startsWith(prefix) == true && references.contains(name) == false &&
-            source == QStringLiteral("shader_") + name + QStringLiteral(".slang") &&
+            source == MakeGeneratedSourcePath(name, GetProgramSourceSuffix(source)) &&
             program.value(QStringLiteral("function")).toString() == QStringLiteral("ShaderMain") &&
             program.value(QStringLiteral("bindings")).toArray().isEmpty() == true &&
             inoutSnapshot.Files.value(source) ==
@@ -714,8 +754,13 @@ RenderGraphDocumentStatus PreparePipelineShaders(RenderGraphSnapshot& inoutSnaps
         QString name = shader.value(QStringLiteral("program")).toString();
         if (name == QStringLiteral("Program"))
         {
-            name =
-                MakeAvailableGeneratedName(inoutNode, identity, programs, inoutSnapshot, originalSnapshot, packageRoot);
+            name = MakeAvailableGeneratedName(inoutNode,
+                                              identity,
+                                              programs,
+                                              inoutSnapshot,
+                                              originalSnapshot,
+                                              packageRoot,
+                                              newSourceSuffix);
         }
         if (IsIdentifier(name) == false)
         {
@@ -768,7 +813,7 @@ RenderGraphDocumentStatus PreparePipelineShaders(RenderGraphSnapshot& inoutSnaps
         if (hasProgram == false)
         {
             // Keep new files beside the root manifest, without creating directories.
-            const QString sourceFile = QStringLiteral("shader_") + name + QStringLiteral(".slang");
+            const QString sourceFile = MakeGeneratedSourcePath(name, newSourceSuffix);
             if (HasSourceConflict(inoutSnapshot, sourceFile, QString(), packageRoot, originalSnapshot) == true)
             {
                 return ReportShaderFailure(

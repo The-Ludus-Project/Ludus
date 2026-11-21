@@ -455,6 +455,7 @@ void Main(in uint32x3 dispatchThread : DispatchThreadId)
     total += float32(Philox4x32(PackRandomCounter(address, 0), dispatchThread.xy).x) +
              float32(SampleRandomUInt32(dispatchThread.xy, address)) + normal.x + float32(bounded);
     if (IsFiniteBits(total) == true && IsFiniteBits(normal) == true && HasPositiveComponent(normal) == true &&
+        IsNanBits(total) == false && IsInfBits(total) == false &&
         isBounded == true && IsRandomAddressInRange(address) == true)
     {
         result = total;
@@ -1103,4 +1104,52 @@ void Main(in uint32x3 dispatchThread : DispatchThreadId)
     REQUIRE(CompileLanguage(slang, files, options, release) == compiler::Status::Ready);
     CHECK(ReadSpirvDebugView(release.Artifact, "main.lusl").HasDebugInfo == false);
     CHECK(release.Artifact.GetSize() == before.Artifact.GetSize());
+}
+
+TEST_CASE("LUSL L5a texture methods and intrinsics compile with pinned Slang", "[shader-language][targets]")
+{
+    compiler::Compiler& slang = GetCompiler();
+    Files files;
+    files.Add(std::string(ROOT), R"(Texture3D<float32x4> volume;
+TextureCube<float32x4> cube;
+Texture2DArray<float32x4> layers;
+DepthTexture2D depthImage;
+SamplerState filtering;
+SamplerComparisonState comparison;
+struct Varying
+{
+    float32x4 PositionClip : ClipPosition;
+    float32x2 Uv;
+};
+[stage(fragment)]
+float32x4 Main(in Varying input)
+{
+    float32x2 uv = input.Uv;
+    float32x3 coordinate = float32x3(uv, 1);
+    float32x4 color = volume.SampleLevel(filtering, coordinate, 0) +
+                      volume.Load(int32x4(0)) +
+                      cube.SampleLevel(filtering, coordinate, 0) +
+                      layers.SampleLevel(filtering, coordinate, 0) +
+                      layers.Load(int32x4(0)) +
+                      layers.Gather(filtering, coordinate);
+    float32 shadow = depthImage.SampleCmp(comparison, uv, 0.5);
+    float32x3 facing = faceforward(color.xyz, coordinate, color.xyz);
+    float32x3 bent = refract(coordinate, facing, 0.5);
+    float32x3 adjusted = select(bent >= float32x3(0), tanh(bent), float32x3(sign(bent)));
+    float32 area = determinant(float32x2x2(color.xy, color.zw));
+    uint32 size = volume.GetDimensions().z + layers.GetDimensions().z + cube.GetDimensions().y +
+                  depthImage.GetDimensions().x;
+    float32x3 width = fwidth(adjusted);
+    clip(adjusted);
+    return float32x4(width, fma(area, color.x, shadow) + float32(size));
+}
+)");
+    (void)LowerInto(files, false);
+    for (const compiler::Target target : {compiler::Target::Spirv, compiler::Target::Wgsl, compiler::Target::Metal})
+    {
+        std::string diagnostics;
+        const compiler::Status status = CompileFor(slang, files, target, diagnostics, ENTRY, compiler::Stage::Fragment);
+        INFO("target " << static_cast<int>(target) << '\n' << diagnostics);
+        CHECK(status == compiler::Status::Ready);
+    }
 }

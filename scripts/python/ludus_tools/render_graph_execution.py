@@ -106,6 +106,11 @@ def lowered_resources(plan):
     return sorted(name for name, value in plan['resources'].items() if 'stride' not in value)
 
 
+def runtime_operations(plan):
+    """Return authored operations in cooked pass-record order."""
+    return [operation for operation in plan['passes'] if operation['kind'] in ('Raster', 'RayTracing', 'Upscale')]
+
+
 def lower_plan(package, configuration):
     roles = program_roles(package)
     plans = [p for p in package['plans'] if p['configuration'] == configuration]
@@ -113,7 +118,7 @@ def lower_plan(package, configuration):
     plan = plans[0]
     resources = lowered_resources(plan)
     rasters = [p for p in plan['passes'] if p['kind'] in ('Raster', 'RayTracing')]
-    operations = [p for p in plan['passes'] if p['kind'] in ('Raster', 'RayTracing', 'Upscale')]
+    operations = runtime_operations(plan)
     cameras = sorted({p['view'] for p in rasters if 'view' in p})
     build.require(sum(p['kind'] == 'RayTracing' for p in rasters) <= MAX_RAY_PASSES, 'Capacity', configuration,
                   f'at most {MAX_RAY_PASSES} triangle ray passes are admitted per configuration')
@@ -734,7 +739,7 @@ def _emit_runtime(path, destination, *, configuration='Default', name='DefaultGr
              f'inline constexpr foundation::usize UNIFORM_BINDING_COUNT = {len(contents["bindings"])};',
              f'inline constexpr foundation::usize UNIFORM_BLOCK_COUNT = {len(contents["blocks"])};',
              f'inline constexpr foundation::usize UNIFORM_FIELD_COUNT = {len(contents["fields"])};']
-    pass_names = [p['id'] for p in plan['passes'] if p['kind'] in ('Raster', 'RayTracing', 'Upscale')]
+    pass_names = [operation['id'] for operation in runtime_operations(plan)]
     for label in pass_names:
         build.require(0 < len(label.encode('utf-8')) <= MAX_PASS_NAME_BYTES and '\0' not in label,
                       'Capacity', label, 'pass debug name exceeds the runtime UTF-8 bound')
@@ -1005,9 +1010,7 @@ def encode_runtime_package(contents, *, magic=PACKAGE_MAGIC):
         digest = bytes.fromhex(entry['key'])
         build.require(len(digest) == IDENTITY_BYTES, 'Package', entry['key'], 'recipe key is not a SHA-256 digest')
         data += u32(PROGRAM_CODES[entry['program']], TARGET_CODES[entry['profile']]) + digest
-    for operation in contents['plan']['passes']:
-        if operation['kind'] not in ('Raster', 'RayTracing', 'Upscale'):
-            continue
+    for operation in runtime_operations(contents['plan']):
         label = operation['id'].encode('utf-8')
         build.require(0 < len(label) <= MAX_PASS_NAME_BYTES and b'\0' not in label,
                       'Capacity', operation['id'], 'pass debug name exceeds the runtime UTF-8 bound')
@@ -1053,6 +1056,15 @@ def encode_resource_names(contents, *, runtime_identity=""):
                 'operations': operations, 'cameras': cameras}
     if runtime_identity:
         document['runtime_sha256'] = runtime_identity
+        # RenderGraph scopes each cooked pass by its one-based ordinal. A scope
+        # can contain several native measurements (each has a scope pass index).
+        # Ray execution can encode other authored operations inside its leading scope.
+        # This sidecar has no per-native-operation mapping for that ordered graph.
+        document['gpu_scopes'] = [
+            {'scope_identity': index, 'operations': [operation['id']]}
+            for index, operation in enumerate(runtime_operations(plan), start=1)
+            if operation['kind'] in ('Raster', 'Upscale')
+        ]
     return (json.dumps(document, indent=2, sort_keys=True) + '\n').encode()
 
 

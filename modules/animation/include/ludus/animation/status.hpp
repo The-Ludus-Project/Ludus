@@ -12,16 +12,19 @@ namespace ludus::animation
 /// See "Implementation and acceptance" in docs/architecture/skeletal-animation.md.
 enum class AnimationStatus : foundation::uint8
 {
-    Success,              ///< A complete validated result was published.
-    InvalidArgument,      ///< An invalid view, limit, identity, unit, index or unprepared input was supplied.
-    InvalidHierarchy,     ///< Joints are not one depth-first, parent-before-child tree with matching subtree ends.
-    InvalidJointId,       ///< A joint identity is zero, duplicated or absent from the skeleton.
-    InvalidTransform,     ///< A translation/rotation/matrix is nonfinite, nonunit or not invertible.
-    UnsupportedScale,     ///< A joint scale is outside the strictly positive supported domain.
-    IncompatibleSkeleton, ///< A pose or binding was prepared for a different skeleton compatibility identity.
-    BudgetExceeded,       ///< The requested joint or palette count exceeds the supplied limits.
-    OutOfMemory,          ///< A fallible preparation allocation failed.
-    OutOfRange,           ///< Composition produced a nonfinite (unrepresentable) component transform.
-    NotEvaluated,         ///< A component pose has no published evaluation to read.
+    Success,               ///< A complete validated result was published.
+    InvalidArgument,       ///< An invalid view, limit, identity, unit, index or unprepared input was supplied.
+    InvalidHierarchy,      ///< Joints are not one depth-first, parent-before-child tree with matching subtree ends.
+    InvalidJointId,        ///< A joint identity is zero, duplicated or absent from the skeleton.
+    InvalidTransform,      ///< A translation/rotation/matrix is nonfinite, nonunit or not invertible.
+    UnsupportedScale,      ///< A joint scale is outside the strictly positive supported domain.
+    IncompatibleSkeleton,  ///< A pose or binding was prepared for a different skeleton compatibility identity.
+    BudgetExceeded,        ///< A joint, palette, track, sample or event count exceeds the supplied limits.
+    OutOfMemory,           ///< A fallible preparation allocation failed.
+    OutOfRange,            ///< A transform, root delta or timeline position is not representable.
+    NotEvaluated,          ///< A component pose has no published evaluation to read.
+    IncompatibleClip,      ///< A player was activated with a different clip generation.
+    EventCapacityExceeded, ///< A traversal's events do not fit the caller's buffer; the cursor did not advance.
+    NotActive,             ///< A clip player has no current activation.
 };
 } // namespace ludus::animation

@@ -2629,6 +2629,398 @@ TEST_CASE("World viewport interaction shares hierarchy selection inspector valid
     CHECK(workspace.findChild<QLineEdit*>(QStringLiteral("worldEntityName")) == nullptr);
     CHECK(workspace.Document().Draft() == accepted);
 }
+namespace
+{
+namespace math = ludus::foundation::math;
+namespace camera = ludus::gameplay::camera;
+using ludus::foundation::float32;
+using ludus::foundation::float64;
+
+constexpr math::Vector3 NESTED_ROTATE_POSITION_PARENT{2, 3, 4};
+constexpr math::Vector3 NESTED_ROTATE_PARENT_POSITION_WORLD{-2, 1, 3};
+constexpr math::Vector3 NESTED_ROTATE_SCALE{1.4F, 0.8F, 1.1F};
+constexpr math::Vector3 NESTED_ROTATE_EULER_DEGREES{19, -24, 31};
+constexpr float32 PARENT_ROTATION_DEGREES = 90;
+constexpr float32 ROTATE_RING_RADIUS_PIXELS = 80;
+constexpr float32 ROTATE_TEST_VERTICAL_SPAN = 6;
+constexpr float32 ROTATE_TEST_CAMERA_DISTANCE_WORLD = 10;
+constexpr int WORLD_ROTATE_TIMEOUT_MILLISECONDS = 15000;
+
+math::Quaternion MakeAxisRotation(math::Vector3 axis, float32 degrees)
+{
+    math::Quaternion rotation;
+    REQUIRE(math::TryFromAxisAngle(axis, math::DegreesToRadians(degrees), rotation) == math::MathStatus::Success);
+    return rotation;
+}
+
+math::Vector3 TransformRotateFixturePointToWorld(math::Vector3 pointMesh, math::Vector3 eulerDegrees)
+{
+    // Apply the documented scale, X, Y, Z, translation and parent transform in sequence.
+    // The imported child basis is identity. No gizmo axes or placement-composition code are used here.
+    const math::Vector3 scaledMesh{pointMesh.X * NESTED_ROTATE_SCALE.X,
+                                   pointMesh.Y * NESTED_ROTATE_SCALE.Y,
+                                   pointMesh.Z * NESTED_ROTATE_SCALE.Z};
+    const math::Vector3 rotatedX = math::Rotate(MakeAxisRotation({1, 0, 0}, eulerDegrees.X), scaledMesh);
+    const math::Vector3 rotatedXY = math::Rotate(MakeAxisRotation({0, 1, 0}, eulerDegrees.Y), rotatedX);
+    const math::Vector3 rotatedXYZ = math::Rotate(MakeAxisRotation({0, 0, 1}, eulerDegrees.Z), rotatedXY);
+    return math::Rotate(MakeAxisRotation({0, 1, 0}, PARENT_ROTATION_DEGREES),
+                        rotatedXYZ + NESTED_ROTATE_POSITION_PARENT) +
+           NESTED_ROTATE_PARENT_POSITION_WORLD;
+}
+
+QPointF
+ProjectRotateFixturePoint(math::Vector3 pointWorld, const camera::CameraSample& cameraSample, const QRectF& frame)
+{
+    const math::Vector3 relativeWorld = pointWorld - math::Vector3{static_cast<float32>(cameraSample.Pose.Position.X),
+                                                                   static_cast<float32>(cameraSample.Pose.Position.Y),
+                                                                   static_cast<float32>(cameraSample.Pose.Position.Z)};
+    const float64 pixelsPerMetre = frame.height() / static_cast<float64>(cameraSample.Lens.VerticalSpan);
+    const math::Vector3 rightWorld = math::Rotate(cameraSample.Pose.Orientation, {1, 0, 0});
+    const math::Vector3 upWorld = math::Rotate(cameraSample.Pose.Orientation, {0, 1, 0});
+    return frame.center() + QPointF(static_cast<float64>(math::Dot(relativeWorld, rightWorld)),
+                                    -static_cast<float64>(math::Dot(relativeWorld, upWorld))) *
+                                pixelsPerMetre;
+}
+
+PreviewCamera MakeRotateFixtureCamera(float32 yawDegrees, float32 pitchDegrees)
+{
+    const math::Vector3 pivotWorld = TransformRotateFixturePointToWorld({}, NESTED_ROTATE_EULER_DEGREES);
+    const math::Quaternion yawFrameToWorld = MakeAxisRotation({0, 1, 0}, PARENT_ROTATION_DEGREES) *
+                                             MakeAxisRotation({0, 0, 1}, NESTED_ROTATE_EULER_DEGREES.Z);
+    PreviewCamera view;
+    view.Id = QStringLiteral("nested-rotation-camera");
+    view.Sample.Lens.VerticalSpan = ROTATE_TEST_VERTICAL_SPAN;
+    view.Sample.Pose.Orientation =
+        yawFrameToWorld * MakeAxisRotation({0, 1, 0}, yawDegrees) * MakeAxisRotation({1, 0, 0}, pitchDegrees);
+    const math::Vector3 eyeWorld =
+        pivotWorld + math::Rotate(view.Sample.Pose.Orientation, {0, 0, ROTATE_TEST_CAMERA_DISTANCE_WORLD});
+    view.Sample.Pose.Position = {static_cast<float64>(eyeWorld.X),
+                                 static_cast<float64>(eyeWorld.Y),
+                                 static_cast<float64>(eyeWorld.Z)};
+    return view;
+}
+
+enum class RotateFixtureAxis : ludus::foundation::uint8
+{
+    X = 0,
+    Z = 2,
+};
+
+math::Vector3 MakeRotateFixtureProbe(RotateFixtureAxis axis, float32 arcDegrees, const QRectF& frame)
+{
+    // Construct a probe fixed in the asymmetric mesh's coordinates. For the X arc, its scaled
+    // coordinates are in YZ. For the Z arc, apply inverse Y and X so the point is in XY just before Rz.
+    const float32 radiusWorld =
+        ROTATE_RING_RADIUS_PIXELS * ROTATE_TEST_VERTICAL_SPAN / static_cast<float32>(frame.height());
+    const float32 angle = math::DegreesToRadians(arcDegrees);
+    const float32 cosine = math::Cos(angle) * radiusWorld;
+    const float32 sine = math::Sin(angle) * radiusWorld;
+    math::Vector3 scaledProbeMesh{0, cosine, sine};
+    if (axis == RotateFixtureAxis::Z)
+    {
+        const math::Vector3 undoneY =
+            math::Rotate(MakeAxisRotation({0, 1, 0}, -NESTED_ROTATE_EULER_DEGREES.Y), {cosine, sine, 0});
+        scaledProbeMesh = math::Rotate(MakeAxisRotation({1, 0, 0}, -NESTED_ROTATE_EULER_DEGREES.X), undoneY);
+    }
+    return {scaledProbeMesh.X / NESTED_ROTATE_SCALE.X,
+            scaledProbeMesh.Y / NESTED_ROTATE_SCALE.Y,
+            scaledProbeMesh.Z / NESTED_ROTATE_SCALE.Z};
+}
+
+QString WriteNestedRotateWorld(const QTemporaryDir& directory, const QString& path)
+{
+    const QString external = directory.filePath(QStringLiteral("external"));
+    const QString levelPath = QStringLiteral("scenes/nested.lulevel");
+    QString error;
+    REQUIRE(tests::CreateFixtureSource(external) == true);
+    REQUIRE(tests::PrepareImportedLevel(directory.path(), levelPath, external, error) == true);
+    QJsonObject level = QJsonDocument::fromJson(Read(directory.filePath(levelPath))).object();
+    QJsonArray objects = level.value(QStringLiteral("objects")).toArray();
+    REQUIRE(objects.size() == 1);
+    QJsonObject child = objects[0].toObject();
+    const QString childId = child.value(QStringLiteral("id")).toString();
+    const QString parentId = QStringLiteral("b8517f65-8127-4bf4-99c2-e53b1a6d9701");
+    child.insert(QStringLiteral("parent"), parentId);
+    child.insert(QStringLiteral("transform"),
+                 QJsonArray{1,
+                            0,
+                            0,
+                            0,
+                            1,
+                            0,
+                            0,
+                            0,
+                            1,
+                            static_cast<float64>(NESTED_ROTATE_POSITION_PARENT.X),
+                            static_cast<float64>(NESTED_ROTATE_POSITION_PARENT.Y),
+                            static_cast<float64>(NESTED_ROTATE_POSITION_PARENT.Z)});
+    QJsonObject parent = child;
+    parent.insert(QStringLiteral("parent"), QStringLiteral(""));
+    parent.insert(QStringLiteral("id"), parentId);
+    parent.insert(QStringLiteral("name"), QStringLiteral("Rotate Fixture Parent"));
+    parent.insert(QStringLiteral("transform"),
+                  QJsonArray{0,
+                             0,
+                             -1,
+                             0,
+                             1,
+                             0,
+                             1,
+                             0,
+                             0,
+                             static_cast<float64>(NESTED_ROTATE_PARENT_POSITION_WORLD.X),
+                             static_cast<float64>(NESTED_ROTATE_PARENT_POSITION_WORLD.Y),
+                             static_cast<float64>(NESTED_ROTATE_PARENT_POSITION_WORLD.Z)});
+    objects[0] = child;
+    objects.append(parent);
+    level.insert(QStringLiteral("objects"), objects);
+
+    WorldDocument document = Document();
+    const bool isImported = document.ImportScene(level, error);
+    INFO(error.toStdString());
+    REQUIRE(isImported == true);
+    const QJsonObject entity = document.Entity(childId);
+    QJsonObject components = entity.value(QStringLiteral("components")).toObject();
+    QJsonObject transform = components.value(QStringLiteral("transform")).toObject();
+    transform.insert(QStringLiteral("rx"), static_cast<float64>(NESTED_ROTATE_EULER_DEGREES.X));
+    transform.insert(QStringLiteral("ry"), static_cast<float64>(NESTED_ROTATE_EULER_DEGREES.Y));
+    transform.insert(QStringLiteral("rz"), static_cast<float64>(NESTED_ROTATE_EULER_DEGREES.Z));
+    transform.insert(QStringLiteral("sx"), static_cast<float64>(NESTED_ROTATE_SCALE.X));
+    transform.insert(QStringLiteral("sy"), static_cast<float64>(NESTED_ROTATE_SCALE.Y));
+    transform.insert(QStringLiteral("sz"), static_cast<float64>(NESTED_ROTATE_SCALE.Z));
+    components.insert(QStringLiteral("transform"), transform);
+    REQUIRE(document.Edit(childId, components, entity.value(QStringLiteral("name")).toString(), error) == true);
+    Write(path, document.Encode());
+    return childId;
+}
+
+math::Affine3 FindRotateFixtureTransform(const RenderScene& scene, const QString& childId)
+{
+    for (const PreviewObject& object : scene.Objects)
+    {
+        if (object.Id == childId)
+        {
+            return object.Transform;
+        }
+    }
+    FAIL("Nested child did not reach the viewport scene");
+    return {};
+}
+
+void CheckRotateFixtureTransforms(const math::Affine3& actual, const math::Affine3& expected)
+{
+    // The gizmo composes in float32, and the cook composes the hierarchy in float64 before narrowing.
+    constexpr float32 COOK_ROUNDING_TOLERANCE = 0.00001F;
+    CHECK(math::Length(actual.Translation - expected.Translation) < COOK_ROUNDING_TOLERANCE);
+    for (ludus::foundation::int32 axis = 0; axis < ViewportObjectInteraction::AXIS_COUNT; ++axis)
+    {
+        CHECK(math::Length(actual.Columns[axis] - expected.Columns[axis]) < COOK_ROUNDING_TOLERANCE);
+    }
+}
+} // namespace
+
+TEST_CASE("Nested World rotate rings follow projected mesh motion and preserve placement history",
+          "[editor][world][object-interaction][gizmo][nested-rotate]")
+{
+    // Thanks to Britton, Lipscomb and Pique, Making Nested Rotations Convenient for the User (SIGGRAPH '78),
+    // https://doi.org/10.1145/800248.807394, for judging nested rotation by agreement with hand motion.
+    // Thanks to Nielson and Olsen, Direct Manipulation Techniques for 3D Objects Using 2D Locator Devices
+    // (I3D '86), for exercising the loss of precision when the 3D motion projects to almost no screen motion.
+    enum class GestureEnd : ludus::foundation::uint8
+    {
+        Commit,
+        Escape,
+        Collapsed,
+    };
+    struct RotateGesture final
+    {
+        const char* Name;
+        float32 YawDegrees;
+        float32 PitchDegrees;
+        float32 ArcDegrees;
+        RotateFixtureAxis Axis;
+        bool IsPositive;
+        GestureEnd End;
+    };
+    const QList<RotateGesture> gestures{
+        {"first view X positive", 27, 22, 135, RotateFixtureAxis::X, true, GestureEnd::Commit},
+        {"first view Z negative", 27, 22, 39, RotateFixtureAxis::Z, false, GestureEnd::Commit},
+        {"second view X negative", -32, -25, 45, RotateFixtureAxis::X, false, GestureEnd::Commit},
+        {"second view Z positive", -32, -25, 50, RotateFixtureAxis::Z, true, GestureEnd::Commit},
+        {"five degrees before edge-on", 85, 0, 45, RotateFixtureAxis::Z, true, GestureEnd::Commit},
+        {"five degrees past edge-on with Escape", 95, 0, 45, RotateFixtureAxis::Z, false, GestureEnd::Escape},
+        {"edge-on at the collapsed Z tangent", 90, 0, 90, RotateFixtureAxis::Z, false, GestureEnd::Collapsed},
+    };
+    for (const RotateGesture& gesture : gestures)
+    {
+        DYNAMIC_SECTION(gesture.Name)
+        {
+            QTemporaryDir directory;
+            const QString path = Fixture(directory);
+            const QString childId = WriteNestedRotateWorld(directory, path);
+            WorldWorkspace workspace;
+            workspace.SetProject(directory.path(), 1);
+            REQUIRE(workspace.Open(path) == true);
+            REQUIRE(QTest::qWaitFor([&workspace]() { return workspace.CanSave(); },
+                                    WORLD_ROTATE_TIMEOUT_MILLISECONDS) == true);
+            LevelWorkspace* levelOrNull = workspace.findChild<LevelWorkspace*>();
+            REQUIRE(levelOrNull != nullptr);
+            QWidget* propertiesOrNull = workspace.findChild<QWidget*>(QStringLiteral("worldProperties"));
+            REQUIRE(propertiesOrNull != nullptr);
+            propertiesOrNull->hide();
+            REQUIRE(propertiesOrNull->isHidden() == true);
+
+            const QRectF frame{0, 0, 800, 600};
+            const PreviewCamera view = MakeRotateFixtureCamera(gesture.YawDegrees, gesture.PitchDegrees);
+            RenderPreview& preview = levelOrNull->GetRenderPreview();
+            RenderScene scene = preview.Scene();
+            const math::Affine3 original = FindRotateFixtureTransform(scene, childId);
+            scene.Identity += QByteArrayLiteral("-nested-rotation-camera");
+            scene.Cameras = {view};
+            ConfigureInteractionPreview(preview, scene);
+            REQUIRE(workspace.SelectEntity(childId) == true);
+
+            PreviewViewport& viewport = levelOrNull->GetViewport();
+            ViewportObjectInteraction& interaction = viewport.GetObjectInteraction();
+            interaction.SetActive(true);
+            interaction.ClearPresentedView();
+            interaction.SetImageSize({});
+            interaction.SetGpuOutlineEnabled(true);
+            interaction.SetTool(ViewportObjectInteraction::Tool::Rotate);
+            QSignalSpy committed(&interaction, &ViewportObjectInteraction::PlacementCommitted);
+
+            const math::Vector3 probeMesh = MakeRotateFixtureProbe(gesture.Axis, gesture.ArcDegrees, frame);
+            const auto projectAuthored = [&](float32 deltaDegrees) {
+                math::Vector3 eulerDegrees = NESTED_ROTATE_EULER_DEGREES;
+                (gesture.Axis == RotateFixtureAxis::X ? eulerDegrees.X : eulerDegrees.Z) += deltaDegrees;
+                return ProjectRotateFixturePoint(TransformRotateFixturePointToWorld(probeMesh, eulerDegrees),
+                                                 view.Sample,
+                                                 frame);
+            };
+            const QPointF pressPixel = projectAuthored(0);
+            const QPointF positiveTangentPixel = projectAuthored(1) - projectAuthored(-1);
+            const QJsonObject before = workspace.Document().Draft();
+            const WorldDocument::History& history = workspace.Document().GetHistory();
+            const ludus::foundation::usize cursorBefore = history.GetCursor();
+            const ludus::foundation::usize countBefore = history.GetCount();
+            REQUIRE(interaction.Hover(pressPixel, frame) == true);
+            const ludus::foundation::int32 axis = static_cast<ludus::foundation::int32>(gesture.Axis);
+            REQUIRE(interaction.GetHoveredAxis() == axis);
+            REQUIRE(interaction.Press(pressPixel, frame) == true);
+
+            constexpr float64 DRAG_PIXELS = 6;
+            const float64 tangentLengthPixels = QLineF(QPointF{}, positiveTangentPixel).length();
+            if (gesture.End == GestureEnd::Collapsed)
+            {
+                constexpr float64 COLLAPSED_TANGENT_TOLERANCE_PIXELS = 0.01;
+                REQUIRE(tangentLengthPixels < COLLAPSED_TANGENT_TOLERANCE_PIXELS);
+                CHECK(interaction.IsDragging() == false);
+                static_cast<void>(interaction.Move(pressPixel + QPointF(0, DRAG_PIXELS), false));
+                CHECK(interaction.Release() == false);
+                CHECK(committed.count() == 0);
+                CHECK(workspace.Document().Draft() == before);
+                CHECK(history.GetCursor() == cursorBefore);
+                CHECK(history.GetCount() == countBefore);
+                return;
+            }
+
+            REQUIRE(tangentLengthPixels > 1);
+            const float64 dragSign = gesture.IsPositive == true ? 1 : -1;
+            const QPointF motionPixel = positiveTangentPixel * (dragSign * DRAG_PIXELS / tangentLengthPixels);
+            REQUIRE(interaction.IsDragging() == true);
+            REQUIRE(interaction.Move(pressPixel + motionPixel, false) == true);
+            CHECK(workspace.Document().Draft() == before);
+            CHECK(history.GetCursor() == cursorBefore);
+            ViewportObjectOverlay overlay;
+            interaction.BuildOverlay(frame, overlay);
+            const QString axisName = gesture.Axis == RotateFixtureAxis::X ? QStringLiteral("X") : QStringLiteral("Z");
+            const QString sign = gesture.IsPositive == true ? QStringLiteral(" +") : QStringLiteral(" -");
+            INFO(overlay.ReadoutText.toStdString());
+            REQUIRE(overlay.ReadoutText.startsWith(axisName + sign) == true);
+            bool isReadoutNumeric = false;
+            const float64 readoutDegrees = overlay.ReadoutText.mid(2).chopped(1).toDouble(&isReadoutNumeric);
+            REQUIRE(isReadoutNumeric == true);
+            constexpr float64 MAXIMUM_SMALL_DRAG_DEGREES = 6;
+            CHECK(math::IsFinite(readoutDegrees) == true);
+            CHECK(math::Abs(readoutDegrees) <= MAXIMUM_SMALL_DRAG_DEGREES);
+
+            SelectionOutlineRequest outline;
+            REQUIRE(interaction.TryGetGpuOutlineRequest(outline) == true);
+            const math::Affine3 candidate = outline.MeshToWorld;
+            const QPointF candidatePixel =
+                ProjectRotateFixturePoint(math::TransformPoint(candidate, probeMesh), view.Sample, frame);
+            CHECK(QPointF::dotProduct(candidatePixel - pressPixel, motionPixel) > 0);
+            CHECK(candidate.Translation == original.Translation);
+
+            if (gesture.End == GestureEnd::Escape)
+            {
+                QTest::keyClick(&viewport, Qt::Key_Escape);
+                REQUIRE(interaction.IsDragging() == false);
+                CHECK(interaction.Release() == false);
+                CHECK(committed.count() == 0);
+                CHECK(workspace.Document().Draft() == before);
+                CHECK(history.GetCount() == countBefore);
+                CHECK(history.GetCursor() == cursorBefore);
+                interaction.BuildOverlay(frame, overlay);
+                CHECK(overlay.ReadoutText.isEmpty() == true);
+                REQUIRE(interaction.TryGetGpuOutlineRequest(outline) == true);
+                CheckRotateFixtureTransforms(outline.MeshToWorld, original);
+                return;
+            }
+
+            const QJsonObject initialPlacement =
+                workspace.Document().ScenePlacement(workspace.Document().Entity(childId));
+            REQUIRE(interaction.Release() == true);
+            REQUIRE(committed.count() == 1);
+            CHECK(history.GetCursor() == cursorBefore + 1);
+            CHECK(history.GetCount() == countBefore + 1);
+            const QJsonObject acceptedPlacement =
+                workspace.Document().ScenePlacement(workspace.Document().Entity(childId));
+            const QString rotationKey = QStringLiteral("rotation");
+            QJsonArray rotation = acceptedPlacement.value(rotationKey).toArray();
+            const float64 value = rotation[axis].toDouble();
+            const QJsonArray initialRotation = initialPlacement.value(rotationKey).toArray();
+            const float64 change = value - initialRotation[axis].toDouble();
+            CHECK(change * dragSign > 0);
+            CHECK(math::IsFinite(change) == true);
+            CHECK(math::Abs(change) <= MAXIMUM_SMALL_DRAG_DEGREES);
+            CHECK(change == Catch::Approx(readoutDegrees).margin(0.051));
+            constexpr float64 CANDIDATE_PIXEL_TOLERANCE = 0.005;
+            const QPointF expectedCandidatePixel = projectAuthored(static_cast<float32>(change));
+            CHECK(QLineF(candidatePixel, expectedCandidatePixel).length() < CANDIDATE_PIXEL_TOLERANCE);
+            rotation[axis] = initialRotation[axis];
+            QJsonObject restoredPlacement = acceptedPlacement;
+            restoredPlacement.insert(rotationKey, rotation);
+            CHECK(restoredPlacement == initialPlacement);
+            REQUIRE(QTest::qWaitFor([&workspace]() { return workspace.CanSave(); },
+                                    WORLD_ROTATE_TIMEOUT_MILLISECONDS) == true);
+            CheckRotateFixtureTransforms(FindRotateFixtureTransform(levelOrNull->PreviewScene(), childId), candidate);
+
+            REQUIRE(workspace.Save() == true);
+            REQUIRE(QTest::qWaitFor([&workspace]() { return workspace.CanSave() && workspace.Dirty() == false; },
+                                    WORLD_ROTATE_TIMEOUT_MILLISECONDS) == true);
+            WorldWorkspace reopened;
+            reopened.SetProject(directory.path(), 2);
+            REQUIRE(reopened.Open(path) == true);
+            REQUIRE(QTest::qWaitFor([&reopened]() { return reopened.CanSave(); }, WORLD_ROTATE_TIMEOUT_MILLISECONDS) ==
+                    true);
+            CHECK(reopened.Document().ScenePlacement(reopened.Document().Entity(childId)) == acceptedPlacement);
+            const LevelWorkspace* reopenedLevelOrNull = reopened.findChild<LevelWorkspace*>();
+            REQUIRE(reopenedLevelOrNull != nullptr);
+            CheckRotateFixtureTransforms(FindRotateFixtureTransform(reopenedLevelOrNull->PreviewScene(), childId),
+                                         candidate);
+
+            REQUIRE(workspace.CanUndo() == true);
+            workspace.Undo();
+            CHECK(workspace.Document().Draft() == before);
+            CHECK(history.GetCursor() == cursorBefore);
+            REQUIRE(QTest::qWaitFor([&workspace]() { return workspace.CanSave(); },
+                                    WORLD_ROTATE_TIMEOUT_MILLISECONDS) == true);
+            CheckRotateFixtureTransforms(FindRotateFixtureTransform(levelOrNull->PreviewScene(), childId), original);
+        }
+    }
+}
+
 TEST_CASE("World viewport mouse events select objects while Alt keeps camera navigation",
           "[editor][world][object-interaction]")
 {

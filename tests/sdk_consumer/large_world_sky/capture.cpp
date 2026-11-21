@@ -4,6 +4,7 @@
 #include <ludus/content/render_graph_format/runtime_package.h>
 #include <ludus/content/scene_format/limits.h>
 #include <ludus/foundation/containers/array.hpp>
+#include <ludus/foundation/containers/static_array.hpp>
 #include <ludus/foundation/threading/thread.hpp>
 #include <ludus/foundation/time/time.hpp>
 #include <ludus/graphics/renderer/render_graph.hpp>
@@ -19,6 +20,8 @@
 #include <iostream>
 #include <string>
 #include <string_view>
+
+#include <CommonCrypto/CommonDigest.h>
 
 namespace
 {
@@ -64,6 +67,20 @@ bool ReadBytes(const std::string& path, usize limit, Array<uint8>& outBytes)
     stream.seekg(0);
     stream.read(reinterpret_cast<char*>(outBytes.GetData()), length);
     return stream.good();
+}
+
+void WriteTimingPlanIdentity(const Array<uint8>& bytes)
+{
+    constexpr char HEX_DIGITS[] = "0123456789abcdef";
+    constexpr uint32 HEX_RADIX = 16;
+    StaticArray<uint8, CC_SHA256_DIGEST_LENGTH> digest;
+    CC_SHA256(bytes.GetData(), static_cast<CC_LONG>(bytes.GetSize()), digest.GetData());
+    std::cout << "plan_sha256,";
+    for (uint8 byte : digest)
+    {
+        std::cout << HEX_DIGITS[byte / HEX_RADIX] << HEX_DIGITS[byte % HEX_RADIX];
+    }
+    std::cout << '\n';
 }
 
 bool Capture(rhi::DeviceHandle device,
@@ -212,11 +229,22 @@ bool Capture(rhi::DeviceHandle device,
         for (usize operation = 0; operation < passes.Count; ++operation)
         {
             const rhi::GpuPassTiming& pass = passes.Passes[operation];
-            if (pass.Timing.State == rhi::GpuTimingState::Available)
+            constexpr float64 MAX_DURATION_NANOSECONDS = 60'000'000'000;
+            const float64 duration = pass.Timing.DurationNanoseconds;
+            const bool isAvailable = pass.Timing.State == rhi::GpuTimingState::Available && duration >= 0 &&
+                                     duration < MAX_DURATION_NANOSECONDS;
+            if (isAvailable == true)
             {
                 std::cout << "pass," << frame << ',' << pass.Scope.Name.GetData() << ',' << pass.ScopePassIndex << ','
-                          << pass.Timing.DurationNanoseconds << '\n';
+                          << duration << '\n';
             }
+            std::cout << "scope," << frame << ',' << pass.Scope.Identity << ',' << pass.ScopePassIndex << ','
+                      << pass.Scope.LogicalPassCount << ',' << pass.Scope.Name.GetData() << ',';
+            if (isAvailable == true)
+            {
+                std::cout << static_cast<uint64>(duration + 0.5);
+            }
+            std::cout << '\n';
         }
     }
     if (shouldMeasure == true)
@@ -321,6 +349,7 @@ int main(int count, char** arguments)
                    info.Startup.SelectedBackend == rhi::Backend::Metal;
     if (isReady == true && shouldMeasure == true)
     {
+        WriteTimingPlanIdentity(bytes);
         isReady = Capture(device, surface, extent, package, directory, rr::DeferredLightingView::Final, true, true);
     }
     else if (isReady == true)

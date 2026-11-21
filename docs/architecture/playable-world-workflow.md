@@ -244,6 +244,42 @@ moved instance, mapped material textures, lighting, spawn identity and collider 
 through the runtime decoder. The installed-SDK game and relocated Release qualification
 use the separate [cooked glTF acceptance issue](https://github.com/The-Ludus-Project/Ludus/issues/1399).
 
+## Play a saved World on macOS
+
+Add a **First Person Player** and mark the floor and walls that should block
+movement with **Static Collider**. Save the World, select the spawn in the
+hierarchy, and choose **Play saved World**. Play uses the sole spawn automatically
+when the World has one. Save changes before starting another session.
+
+The Editor prepares a private runtime snapshot and starts its bundled first-person
+player through the supervised launch path. The game opens in the chosen viewport
+or in its own window. Both use the same Qt-free player with the engine Raster
+graph, including supported material maps, analytic lights, shadows and static
+Atmosphere. A project using this built-in path can launch with the Editor and
+its tools alone.
+
+Use **WASD** to walk and **Space** to jump. In a separate window, **Enter**
+captures the mouse and **Escape** releases it. In an editor-hosted viewport,
+click to capture the pointer and use **Shift+F1** to return it to the Editor.
+**Stop** releases input and closes the game. If viewport hosting is unavailable,
+the Editor offers **Play in a separate window**. If preparation or launch
+fails, **Output** names the content or spawn to repair.
+
+To run a previously prepared snapshot directly, use the spawn entity key from
+its manifest.
+
+```sh
+./ludus_first_person_player /path/to/walk.luplay SPAWN_ENTITY_KEY
+```
+
+The macOS desktop fixture exercises the native player with an authored textured
+wall, a floor collider, directional shadows and static Atmosphere. It verifies
+presented frames, a blocked walk, an unobstructed strafe, jump and look.
+
+```sh
+python3 apps/first_person_player/tests/native_fixture.py /path/to/ludus_first_person_player
+```
+
 ## Delivery and acceptance
 
 | Slice | Independent result and evidence |

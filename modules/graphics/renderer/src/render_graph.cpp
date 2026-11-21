@@ -23,6 +23,7 @@
 #include <ludus/foundation/math/scalar.hpp>
 #include <ludus/foundation/profiling/profiling.hpp>
 #include <ludus/graphics/rhi/device.h>
+#include <ludus/graphics/rhi/frame_producer.h>
 #include <ludus/graphics/rhi/gpu_scope.h>
 #include <ludus/graphics/rhi/lifetime.h>
 
@@ -95,44 +96,13 @@ bool IsCompatible(format::Technique technique, const RenderGraphItem& item, cons
            ((item.Coverage == RenderGraphMaterial::Opaque && IsMaskedTechnique(technique) == false) ||
             (item.Coverage == RenderGraphMaterial::Masked && IsMaskedTechnique(technique) == true));
 }
-Status MapDeviceStatus(rhi::DeviceStatus status) noexcept
-{
-    switch (status)
-    {
-        case rhi::DeviceStatus::Ready:
-            return Status::Ready;
-        case rhi::DeviceStatus::Pending:
-        case rhi::DeviceStatus::Skipped:
-        case rhi::DeviceStatus::NotReady:
-            return Status::NotReady;
-        case rhi::DeviceStatus::InvalidHandle:
-            return Status::InvalidHandle;
-        case rhi::DeviceStatus::InvalidState:
-            return Status::InvalidState;
-        case rhi::DeviceStatus::InvalidDescription:
-            return Status::InvalidDescription;
-        case rhi::DeviceStatus::Unsupported:
-            return Status::Unsupported;
-        case rhi::DeviceStatus::Failed:
-            return Status::Failed;
-        case rhi::DeviceStatus::DeviceLost:
-            return Status::DeviceLost;
-        case rhi::DeviceStatus::IdentityExhausted:
-            return Status::IdentityExhausted;
-        case rhi::DeviceStatus::SurfaceLost:
-            return Status::Failed;
-        case rhi::DeviceStatus::CapacityExceeded:
-            return Status::CapacityExceeded;
-    }
-    return Status::InvalidDescription;
-}
 Status CheckDevice(rhi::DeviceHandle device) noexcept
 {
     rhi::DeviceInfo information;
     const rhi::DeviceStatus status = rhi::GetDeviceInfo(device, information);
     if (status != rhi::DeviceStatus::Ready)
     {
-        return MapDeviceStatus(status);
+        return rhi::ToRasterStatus(status);
     }
     return information.FrameOpen == true ? Status::InvalidState : Status::Ready;
 }
@@ -1776,7 +1746,7 @@ struct RenderGraph::State final
         const rhi::DeviceStatus acquired = rhi::GetFrameInfo(Device, surface, information);
         if (acquired != rhi::DeviceStatus::Ready)
         {
-            RecordingStatus = MapDeviceStatus(acquired);
+            RecordingStatus = rhi::ToRasterStatus(acquired);
             return RecordingStatus;
         }
         for (usize resource = 0; resource < Header.ResourceCount; ++resource)
@@ -1928,7 +1898,7 @@ struct RenderGraph::State final
         const rhi::DeviceStatus queried = rhi::GetDeviceInfo(Device, information);
         if (queried != rhi::DeviceStatus::Ready)
         {
-            return MapDeviceStatus(queried);
+            return rhi::ToRasterStatus(queried);
         }
         inoutReport.DrawLimit = information.Profile.Storage.DrawsPerPlan;
         inoutReport.ResourceLimit = information.Profile.Storage.ResourcesPerGraph;
@@ -4562,7 +4532,7 @@ Status RenderGraph::Render(rhi::SurfaceHandle surface,
     const rhi::DeviceStatus started = rhi::BeginFrame(state.Device, surface);
     if (started != rhi::DeviceStatus::Ready)
     {
-        return MapDeviceStatus(started);
+        return rhi::ToRasterStatus(started);
     }
     state.HasOpenFrame = true;
     static_cast<void>(state.EncodePasses(surface));
@@ -4579,7 +4549,7 @@ Status RenderGraph::Encode(rhi::SurfaceHandle surface) noexcept
     const rhi::DeviceStatus owner = rhi::GetDeviceInfo(state.Device, information);
     if (owner != rhi::DeviceStatus::Ready)
     {
-        return MapDeviceStatus(owner);
+        return rhi::ToRasterStatus(owner);
     }
     if (information.FrameOpen == false)
     {

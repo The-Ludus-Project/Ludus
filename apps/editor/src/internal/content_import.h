@@ -19,7 +19,8 @@ struct ContentImportResult final
 {
     content::Status Status = content::Status::Invalid;
     QString Message;
-    QString CandidatePath;
+    QString CandidatePath{};
+    QString ReplacementGuidance{};
 };
 
 // Cold synchronous adapter; invoke on a native worker or the browser's sole

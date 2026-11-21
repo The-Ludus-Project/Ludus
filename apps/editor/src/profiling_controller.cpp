@@ -49,6 +49,7 @@ public:
     Array<uint8> Bytes;
     profile::GpuTraceCoverage Coverage;
     ViewportTraceSnapshot ViewportSnapshot;
+    QJsonArray GraphFrames;
     HostedProducerRecord HostedProducer;
     bool IsHosted = false;
     QString Destination;
@@ -88,7 +89,8 @@ protected:
             Error = QStringLiteral("No trace data was recorded, or serialization failed.");
             return;
         }
-        if (ShouldSerialize == true && (ViewportSnapshot.StartedTicks != 0 || IsHosted == true))
+        if (ShouldSerialize == true &&
+            (ViewportSnapshot.StartedTicks != 0 || IsHosted == true || GraphFrames.isEmpty() == false))
         {
             const QByteArray original(reinterpret_cast<const char*>(Bytes.GetData()),
                                       static_cast<qsizetype>(Bytes.GetSize()));
@@ -100,6 +102,10 @@ protected:
             if (IsHosted == true)
             {
                 AppendHostedProducerTrace(trace, HostedProducer);
+            }
+            if (GraphFrames.isEmpty() == false)
+            {
+                trace.insert(QStringLiteral("ludusGpuGraphFrames"), GraphFrames);
             }
             const QByteArray serialized = QJsonDocument(trace).toJson(QJsonDocument::Compact);
             if (Bytes.TryResize(static_cast<usize>(serialized.size())) == false)
@@ -287,12 +293,24 @@ void ProfilingController::connectPreview()
             this,
             &ProfilingController::acceptPassBatch,
             Qt::DirectConnection);
-    connect(mPreviewOrNull, &RenderPreview::GpuProfileSubmission, this, [this]() {
-        if (mState == ProfilingState::Recording && mIsStopping == false && mMode != ProfilingMode::Cpu)
-        {
-            ++mCoverage.EligibleFrames;
-        }
-    });
+    connect(mPreviewOrNull,
+            &RenderPreview::GpuProfileSubmission,
+            this,
+            [this](uint64 frameId, uint64 deviceSession, const QByteArray& runtimeIdentity) {
+                if (mState == ProfilingState::Recording && mIsStopping == false && mMode != ProfilingMode::Cpu)
+                {
+                    ++mCoverage.EligibleFrames;
+                    if (runtimeIdentity.isEmpty() == false && deviceSession == mDeviceSession &&
+                        mGraphFrames.size() < static_cast<qsizetype>(MAX_GPU_SAMPLES))
+                    {
+                        mGraphFrames.append(QJsonObject{
+                            {QStringLiteral("frameId"), static_cast<qint64>(frameId)},
+                            {QStringLiteral("deviceSession"), static_cast<qint64>(deviceSession)},
+                            {QStringLiteral("runtime_sha256"), QString::fromLatin1(runtimeIdentity)},
+                        });
+                    }
+                }
+            });
     connect(mPreviewOrNull, &RenderPreview::DeviceStopping, this, [this]() {
         if (mState == ProfilingState::Recording && mMode != ProfilingMode::Cpu)
         {
@@ -649,6 +667,7 @@ void ProfilingController::beginExport()
     mJobOrNull->Samples = Move(mSamples);
     mJobOrNull->Coverage = mCoverage;
     mJobOrNull->ViewportSnapshot = Move(mViewportSnapshot);
+    mJobOrNull->GraphFrames.swap(mGraphFrames);
     mJobOrNull->Destination = mDestination;
     mJobOrNull->ShouldIncludeCpu = mMode != ProfilingMode::Gpu;
     connect(mJobOrNull, &QThread::finished, this, &ProfilingController::finishExport);

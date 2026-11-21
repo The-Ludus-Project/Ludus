@@ -9,6 +9,7 @@
 // Usage:
 //   game_host --module <abs-path> [--control-fd N] [--max-frames N]
 //             [--project-id HEX] [--game-id HEX] [--headless]
+//             [--config FILE | --startup-config FILE] [--preferences FILE]
 //
 // This executable intentionally links no Qt. The editor supervises it over the
 // protocol; it never embeds the editor.
@@ -21,6 +22,8 @@
 #include <ludus/foundation/filesystem/filesystem.hpp>
 #include <ludus/foundation/logging/log_format.hpp>
 #include <ludus/foundation/logging/log_system.hpp>
+#include <ludus/foundation/memory/allocation_domain.hpp>
+#include <ludus/foundation/parsing/json.hpp>
 #include <ludus/runtime/configuration/host_options.hpp>
 
 #include <cerrno>
@@ -40,12 +43,15 @@
 
 namespace
 {
+namespace foundation_config = ludus::foundation::config;
+namespace parsing = ludus::foundation::parsing;
+using ludus::foundation::AllocationDomain;
 using ludus::foundation::int32;
 using ludus::foundation::uint64;
 using ludus::foundation::uint8;
 using ludus::foundation::usize;
 constexpr ludus::foundation::logging::LogCategory kConfigurationLog{"Configuration"};
-/// Smallest and largest authored configuration file the host reads, in bytes.
+/// Smallest and largest authored gameplay document the host reads, in bytes.
 constexpr uint64 MIN_AUTHORED_FILE_BYTES = 20;
 constexpr uint64 MAX_AUTHORED_FILE_BYTES = 262144;
 /// Largest control descriptor accepted from the command line: it must fit an int.
@@ -73,7 +79,9 @@ struct AuthoredBytes final
     {
         delete[] Data;
     }
-    [[nodiscard]] bool Read(const char* path) noexcept
+    [[nodiscard]] bool Read(const char* path,
+                            usize minimumBytes = MIN_AUTHORED_FILE_BYTES,
+                            usize maximumBytes = MAX_AUTHORED_FILE_BYTES) noexcept
     {
 #if LUDUS_TARGET_OS == LUDUS_OS_WINDOWS
         namespace filesystem = ludus::foundation::filesystem;
@@ -86,7 +94,7 @@ struct AuthoredBytes final
         filesystem::Directory directory;
         filesystem::File file;
         if (directory.Open(root).Succeeded() == false || directory.OpenRead(leaf, file).Succeeded() == false ||
-            file.Size() < MIN_AUTHORED_FILE_BYTES || file.Size() > MAX_AUTHORED_FILE_BYTES)
+            file.Size() < minimumBytes || file.Size() > maximumBytes)
         {
             return false;
         }
@@ -99,7 +107,7 @@ struct AuthoredBytes final
         const filesystem::ReadResult read = file.ReadAt(0, {Data, Size});
         return read.Outcome.Succeeded() == true && read.BytesRead == Size;
 #else
-        const int fd = ::open(path, O_RDONLY | O_CLOEXEC | O_NOFOLLOW);
+        const int fd = ::open(path, O_RDONLY | O_CLOEXEC | O_NOFOLLOW | O_NONBLOCK);
         if (fd < 0)
         {
             return false;
@@ -114,8 +122,7 @@ struct AuthoredBytes final
         } closeFd{fd};
         struct stat info = {};
         if (::fstat(fd, &info) != 0 || S_ISREG(info.st_mode) == false ||
-            info.st_size < static_cast<off_t>(MIN_AUTHORED_FILE_BYTES) ||
-            info.st_size > static_cast<off_t>(MAX_AUTHORED_FILE_BYTES))
+            info.st_size < static_cast<off_t>(minimumBytes) || info.st_size > static_cast<off_t>(maximumBytes))
         {
             return false;
         }
@@ -144,6 +151,156 @@ struct AuthoredBytes final
 #endif
     }
 };
+
+[[nodiscard]] bool ReadConfigurationFile(const char* path, AuthoredBytes& outBytes) noexcept
+{
+    if (outBytes.Read(path, 1, foundation_config::MAX_BUNDLE_BYTES) == true)
+    {
+        return true;
+    }
+    LUDUS_LOG_ERROR(kConfigurationLog,
+                    "Cannot read configuration '{}'; supply a regular cooked file no larger than {} bytes",
+                    path,
+                    foundation_config::MAX_BUNDLE_BYTES);
+    return false;
+}
+
+[[nodiscard]] bool CommitConfigurationLayer(foundation_config::Context& inoutSettings,
+                                            foundation_config::Status status,
+                                            const char* path,
+                                            foundation_config::Layer layer,
+                                            foundation_config::Diagnostic& inoutDiagnostic) noexcept
+{
+    if (status == foundation_config::Status::Ok)
+    {
+        status = inoutSettings.Commit(inoutSettings.Revision(), inoutDiagnostic);
+    }
+    if (status == foundation_config::Status::Ok)
+    {
+        return true;
+    }
+    if (inoutDiagnostic.ByteOffset != foundation_config::UNKNOWN_BYTE_OFFSET)
+    {
+        LUDUS_LOG_ERROR(kConfigurationLog,
+                        "Configuration {} in '{}' at byte {}; recook the {} layer with the matching SDK",
+                        foundation_config::StatusName(status),
+                        path,
+                        inoutDiagnostic.ByteOffset,
+                        foundation_config::LayerName(layer));
+    }
+    else
+    {
+        LUDUS_LOG_ERROR(kConfigurationLog,
+                        "Configuration {} in '{}' at key '{}' record {}; recook the {} layer with the matching SDK",
+                        foundation_config::StatusName(status),
+                        path,
+                        inoutDiagnostic.Key.GetView(),
+                        inoutDiagnostic.Record,
+                        foundation_config::LayerName(layer));
+    }
+    return false;
+}
+
+[[nodiscard]] bool LoadConfigurationLayer(foundation_config::Context& inoutSettings,
+                                          const char* pathOrNull,
+                                          foundation_config::Layer layer,
+                                          const AllocationDomain& domain) noexcept
+{
+    if (pathOrNull == nullptr)
+    {
+        return true;
+    }
+    AuthoredBytes bytes;
+    if (ReadConfigurationFile(pathOrNull, bytes) == false)
+    {
+        return false;
+    }
+    foundation_config::Diagnostic diagnostic;
+    const foundation_config::Status status =
+        foundation_config::PrepareJson(inoutSettings,
+                                       {reinterpret_cast<const char*>(bytes.Data), bytes.Size},
+                                       layer,
+                                       ludus::runtime::configuration::HOST_SCHEMA,
+                                       inoutSettings.Revision(),
+                                       domain,
+                                       diagnostic);
+    return CommitConfigurationLayer(inoutSettings, status, pathOrNull, layer, diagnostic);
+}
+
+[[nodiscard]] bool LoadStartupConfiguration(foundation_config::Context& inoutSettings,
+                                            const char* path,
+                                            const AllocationDomain& domain) noexcept
+{
+    AuthoredBytes bytes;
+    if (ReadConfigurationFile(path, bytes) == false)
+    {
+        return false;
+    }
+    constexpr uint64 STARTUP_VERSION = 1;
+    constexpr usize STARTUP_JSON_DEPTH = 6;
+    constexpr usize FIRST_STARTUP_LAYER = static_cast<usize>(foundation_config::Layer::Engine);
+    constexpr usize LAST_STARTUP_LAYER = static_cast<usize>(foundation_config::Layer::Quality);
+    parsing::JsonLimits limits;
+    limits.MaxInputBytes = foundation_config::MAX_BUNDLE_BYTES;
+    limits.MaxDepth = STARTUP_JSON_DEPTH;
+    parsing::JsonDocument document(domain);
+    parsing::ParseError parseError;
+    const parsing::ParseStatus parsed =
+        document.Read({reinterpret_cast<const char*>(bytes.Data), bytes.Size}, parseError, limits);
+    if (parsed != parsing::ParseStatus::Ok)
+    {
+        LUDUS_LOG_ERROR(kConfigurationLog,
+                        "Cannot parse startup configuration '{}' at byte {}; recook the manifest",
+                        path,
+                        parseError.Offset);
+        return false;
+    }
+    const parsing::JsonValue root = document.Root();
+    const parsing::JsonValue layers = root.Get("layers");
+    uint64 version = 0;
+    if (root.Fields({"version", "layers"}) == false || root.Get("version").Integer(version) == false ||
+        version != STARTUP_VERSION || layers.Object() == false)
+    {
+        LUDUS_LOG_ERROR(kConfigurationLog,
+                        "Invalid startup configuration '{}'; recook the manifest with the matching SDK",
+                        path);
+        return false;
+    }
+
+    usize layerCount = 0;
+    for (usize index = FIRST_STARTUP_LAYER; index <= LAST_STARTUP_LAYER; ++index)
+    {
+        const foundation_config::Layer layer = static_cast<foundation_config::Layer>(index);
+        const parsing::JsonValue value = layers.Get(foundation_config::LayerName(layer));
+        if (value.Valid() == false)
+        {
+            continue;
+        }
+        ++layerCount;
+        foundation_config::Diagnostic diagnostic;
+        const foundation_config::Status status =
+            foundation_config::PrepareJsonLayer(inoutSettings,
+                                                value,
+                                                layer,
+                                                ludus::runtime::configuration::HOST_SCHEMA,
+                                                inoutSettings.Revision(),
+                                                domain,
+                                                diagnostic);
+        if (CommitConfigurationLayer(inoutSettings, status, path, layer, diagnostic) == false)
+        {
+            return false;
+        }
+    }
+    if (layerCount != layers.MemberCount())
+    {
+        LUDUS_LOG_ERROR(
+            kConfigurationLog,
+            "Unsupported rank in startup configuration '{}'; recook the manifest and supply preferences separately",
+            path);
+        return false;
+    }
+    return true;
+}
 
 [[nodiscard]] bool ParseU64(std::string_view text, uint64& out) noexcept
 {
@@ -226,18 +383,19 @@ ludus::runtime::game_host::RunMain(ludus::foundation::int32 argc, const char* co
     AuthoredBytes authored;
     // Parse selected files once, then apply explicit CLI values at Launch rank.
     // Context is cold startup state; Run receives ordinary HostConfig options.
-    namespace cfg = ludus::foundation::config;
-    cfg::Context settings;
-    cfg::Diagnostic diagnostic;
-    const auto& domain = ludus::foundation::GetSystemAllocationDomain();
-    if (settings.Initialize(ludus::runtime::configuration::HostSchema(), domain, diagnostic) != cfg::Status::Ok)
+    foundation_config::Context settings;
+    foundation_config::Diagnostic diagnostic;
+    const AllocationDomain& domain = ludus::foundation::GetSystemAllocationDomain();
+    if (settings.Initialize(ludus::runtime::configuration::HostSchema(), domain, diagnostic) !=
+        foundation_config::Status::Ok)
     {
         return static_cast<int>(RunResult::Internal);
     }
-    const char* configurationPath = nullptr;
-    const char* preferencePath = nullptr;
-    bool explicitFrames = false;
-    bool explicitHeadless = false;
+    const char* configurationPathOrNull = nullptr;
+    const char* startupPathOrNull = nullptr;
+    const char* preferencePathOrNull = nullptr;
+    bool hasExplicitFrames = false;
+    bool hasExplicitHeadless = false;
     bool inspect = false;
     for (int i = 1; i < argc; ++i)
     {
@@ -280,7 +438,7 @@ ludus::runtime::game_host::RunMain(ludus::foundation::int32 argc, const char* co
                 return static_cast<int>(ludus::runtime::game_host::RunResult::BadArguments);
             }
             config.MaxFrames = frames;
-            explicitFrames = true;
+            hasExplicitFrames = true;
         }
         else if (arg == "--project-id")
         {
@@ -328,20 +486,23 @@ ludus::runtime::game_host::RunMain(ludus::foundation::int32 argc, const char* co
         {
             config.AwaitLoad = true;
         }
-        else if (arg == "--config" || arg == "--preferences")
+        else if (arg == "--config" || arg == "--preferences" || arg == "--startup-config")
         {
-            const char*& path = arg == "--config" ? configurationPath : preferencePath;
+            const char*& pathOrNull = arg == "--config"        ? configurationPathOrNull
+                                      : arg == "--preferences" ? preferencePathOrNull
+                                                               : startupPathOrNull;
             std::string_view value;
-            if (path != nullptr || nextValue(value) == false || value.empty())
+            if (pathOrNull != nullptr || nextValue(value) == false || value.empty())
             {
+                LUDUS_LOG_ERROR(kConfigurationLog, "Supply {} once with a cooked file path", arg);
                 return static_cast<int>(RunResult::BadArguments);
             }
-            path = argv[i];
+            pathOrNull = argv[i];
         }
         else if (arg == "--headless")
         {
             config.Mode = ludus::runtime::game_host::Presentation::Headless;
-            explicitHeadless = true;
+            hasExplicitHeadless = true;
         }
         else if (arg == "--identity")
         {
@@ -389,74 +550,44 @@ ludus::runtime::game_host::RunMain(ludus::foundation::int32 argc, const char* co
         return static_cast<int>(result);
     }
 
-    const auto loadSettings = [&](const char* path, cfg::Layer layer) noexcept -> bool {
-        if (path == nullptr)
-        {
-            return true;
-        }
-        AuthoredBytes bytes;
-        if (bytes.Read(path) == false)
-        {
-            LUDUS_LOG_ERROR(kConfigurationLog, "Cannot read bounded configuration file '{}'", path);
-            return false;
-        }
-        auto status = cfg::PrepareJson(settings,
-                                       {reinterpret_cast<const char*>(bytes.Data), bytes.Size},
-                                       layer,
-                                       ludus::runtime::configuration::HOST_SCHEMA,
-                                       settings.Revision(),
-                                       domain,
-                                       diagnostic);
-        if (status == cfg::Status::Ok)
-        {
-            status = settings.Commit(settings.Revision(), diagnostic);
-        }
-        if (status != cfg::Status::Ok)
-        {
-            if (diagnostic.ByteOffset != cfg::UNKNOWN_BYTE_OFFSET)
-            {
-                LUDUS_LOG_ERROR(kConfigurationLog,
-                                "Configuration {} in '{}' at byte {}",
-                                cfg::StatusName(status),
-                                path,
-                                diagnostic.ByteOffset);
-            }
-            else
-            {
-                LUDUS_LOG_ERROR(kConfigurationLog,
-                                "Configuration {} in '{}' at key '{}' record {}",
-                                cfg::StatusName(status),
-                                path,
-                                diagnostic.Key.GetView(),
-                                diagnostic.Record);
-            }
-        }
-        return status == cfg::Status::Ok;
-    };
-    if (loadSettings(configurationPath, cfg::Layer::Project) == false ||
-        loadSettings(preferencePath, cfg::Layer::Preference) == false)
+    if (startupPathOrNull != nullptr && configurationPathOrNull != nullptr)
+    {
+        LUDUS_LOG_ERROR(kConfigurationLog,
+                        "Choose either --config for a project layer or --startup-config for a cooked manifest");
+        return static_cast<int>(RunResult::BadArguments);
+    }
+    if ((startupPathOrNull != nullptr && LoadStartupConfiguration(settings, startupPathOrNull, domain) == false) ||
+        LoadConfigurationLayer(settings, configurationPathOrNull, foundation_config::Layer::Project, domain) == false ||
+        LoadConfigurationLayer(settings, preferencePathOrNull, foundation_config::Layer::Preference, domain) == false)
     {
         return static_cast<int>(RunResult::BadArguments);
     }
-    cfg::Assignment launch[2]{};
+    foundation_config::Assignment launch[2]{};
     usize launchCount = 0;
-    if (explicitFrames)
+    if (hasExplicitFrames == true)
     {
-        launch[launchCount++] = { .Name = "host.max_frames", .Data = cfg::Value::FromUint64(config.MaxFrames) };
+        launch[launchCount++] =
+        {
+            .Name = "host.max_frames",
+            .Data = foundation_config::Value::FromUint64(config.MaxFrames),
+        };
     }
-    if (explicitHeadless)
+    if (hasExplicitHeadless == true)
     {
-        launch[launchCount++] = { .Name = "host.headless", .Data = cfg::Value::FromBool(true) };
+        launch[launchCount++] = { .Name = "host.headless", .Data = foundation_config::Value::FromBool(true) };
     }
-    if (settings.Prepare(cfg::Layer::Launch, {launch, launchCount}, true, settings.Revision(), diagnostic) !=
-            cfg::Status::Ok ||
-        settings.Commit(settings.Revision(), diagnostic) != cfg::Status::Ok)
+    if (settings.Prepare(foundation_config::Layer::Launch,
+                         {launch, launchCount},
+                         true,
+                         settings.Revision(),
+                         diagnostic) != foundation_config::Status::Ok ||
+        settings.Commit(settings.Revision(), diagnostic) != foundation_config::Status::Ok)
     {
         return static_cast<int>(RunResult::BadArguments);
     }
     ludus::runtime::configuration::HostOptions options;
-    if (ludus::runtime::configuration::ReadHostOptions(settings, options) != cfg::Status::Ok ||
-        settings.SealStartup() != cfg::Status::Ok)
+    if (ludus::runtime::configuration::ReadHostOptions(settings, options) != foundation_config::Status::Ok ||
+        settings.SealStartup() != foundation_config::Status::Ok)
     {
         return static_cast<int>(RunResult::Internal);
     }

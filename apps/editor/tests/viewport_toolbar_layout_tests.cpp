@@ -1,3 +1,4 @@
+#include "internal/orientation_widget.h"
 #include "internal/preview_viewport.h"
 #include "internal/render_preview.h"
 #include "internal/renderer_workspace.h"
@@ -232,4 +233,73 @@ TEST_CASE("A fitted combo box grows and shrinks with its current choice", "[edit
     FitComboBoxToCurrentText(comboBox);
     comboBox.setCurrentIndex(0);
     CHECK(comboBox.minimumWidth() == shortWidth);
+}
+
+TEST_CASE("The viewport overflow menu stays inside the viewport and clear of the axis gizmo",
+          "[editor][viewport][toolbar][layout]")
+{
+    QWidget viewport;
+    viewport.setGeometry(100, 100, 420, 480);
+    viewport.show();
+    QTest::qWait(SETTLE_MILLISECONDS);
+    QMenu menu(&viewport);
+    for (const QString& label : {QStringLiteral("Edit Terrain..."),
+                                 QStringLiteral("Frame all"),
+                                 QStringLiteral("Exposure"),
+                                 QStringLiteral("Work Light"),
+                                 QStringLiteral("Force raster"),
+                                 QStringLiteral("Stats"),
+                                 QStringLiteral("Reference..."),
+                                 QStringLiteral("Navigation help")})
+    {
+        menu.addAction(label);
+    }
+    const QRect buttonGlobal(viewport.mapToGlobal(QPoint(viewport.width() - 24, 0)), QSize(24, 24));
+    const QRect frame(0, 24, viewport.width(), viewport.height() - 24);
+    const QRect gizmo =
+        GetOrientationWidgetRect(static_cast<qreal>(frame.width())).toRect().translated(frame.topLeft());
+    const QRect gizmoGlobal(viewport.mapToGlobal(gizmo.topLeft()), gizmo.size());
+    PlaceViewportOverflowMenu(menu, viewport, buttonGlobal, gizmoGlobal);
+    const QRect bounds(viewport.mapToGlobal(QPoint()), viewport.size());
+    const QRect menuGlobal(menu.pos(), menu.sizeHint());
+    CHECK(bounds.contains(menuGlobal) == true);
+    CHECK(menuGlobal.intersects(gizmoGlobal) == false);
+}
+
+TEST_CASE("A narrow viewport toolbar overflow menu stays inside the viewport", "[editor][viewport][toolbar][layout]")
+{
+    QTemporaryDir project;
+    REQUIRE(project.isValid() == true);
+    RendererWorkspace workspace({});
+    RenderPreview source;
+    PreviewViewport viewport(&source, static_cast<QWidget*>(nullptr), false);
+    viewport.SetTerrainActions();
+    viewport.UseProjectGraph(workspace);
+    workspace.SetPreviewSource(&source);
+    workspace.SetProject(project.path(), 1);
+    viewport.GetEditTerrainAction().setVisible(true);
+    viewport.resize(NARROW_WIDTH, VIEWPORT_HEIGHT);
+    viewport.show();
+    QTest::qWait(SETTLE_MILLISECONDS);
+    QToolBar* toolbar = viewport.findChild<QToolBar*>(QStringLiteral("viewportControls"));
+    REQUIRE(toolbar != nullptr);
+    QToolButton* chevron = toolbar->findChild<QToolButton*>(QStringLiteral("qt_toolbar_ext_button"));
+    REQUIRE(chevron != nullptr);
+    REQUIRE(chevron->isVisible() == true);
+    QMenu* menu = chevron->menu();
+    REQUIRE(menu != nullptr);
+    const QSignalSpy menuShown(menu, &QMenu::aboutToShow);
+    QRect menuGlobal;
+    QTimer closeMenu;
+    closeMenu.setSingleShot(true);
+    QObject::connect(&closeMenu, &QTimer::timeout, menu, [menu, &menuGlobal]() {
+        menuGlobal = QRect(menu->mapToGlobal(QPoint()), menu->size());
+        menu->close();
+    });
+    closeMenu.start(SETTLE_MILLISECONDS);
+    chevron->showMenu();
+    REQUIRE(menuShown.size() == 1);
+    const QRect bounds(viewport.mapToGlobal(QPoint()), viewport.size());
+    CHECK(bounds.contains(menuGlobal) == true);
+    CHECK(menuGlobal.intersects(viewport.GetOrientationWidgetGlobalRect()) == false);
 }

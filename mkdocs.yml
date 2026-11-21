@@ -91,6 +91,8 @@ nav:
       - Build and initialize: development/building.md
       - Port a new platform: development/platform-porting.md
       - Mobile support plan: development/mobile-support-plan.md
+      - Mobile application lifecycle and surfaces: architecture/mobile-application-lifecycle.md
+      - Touch input contract: architecture/touch-input.md
       - Native debugging: development/debugging.md
       - Diagnostics: development/diagnostics.md
       - Behavior contracts and cooking: architecture/behavior-s4.md

@@ -36,6 +36,7 @@ void Run(JobState& state)
         result.Status = imported.Status;
         result.Message = imported.Message;
         result.CandidatePath = imported.CandidatePath;
+        result.ReplacementGuidance = imported.ReplacementGuidance;
     }
     else if (state.Gate.Cancelled())
     {
@@ -80,8 +81,18 @@ void Run(JobState& state)
         if (request.AssetRoot.isEmpty() == false && state.Gate.Cancelled() == false &&
             (result.Status == content::Status::Ok || result.Status == content::Status::NotFound))
         {
-            (void)ReadSceneAssetRows(request.AssetRoot, assetRows, result.AssetProblem);
-            if (state.Gate.Cancelled())
+            QString assetProblem;
+            const content::Status assetStatus = ReadSceneAssetRows(request.AssetRoot, assetRows, assetProblem);
+            if (assetStatus != content::Status::Ok)
+            {
+                result.Status = assetStatus;
+                result.Message =
+                    assetProblem + QStringLiteral(" Last valid content retained; recook or restore the artifact, "
+                                                  "then refresh.");
+                state.Done.store(true, std::memory_order_release);
+                return;
+            }
+            if (state.Gate.Cancelled() == true)
             {
                 result.Status = content::Status::Cancelled;
             }
@@ -95,10 +106,6 @@ void Run(JobState& state)
         {
             result.Message =
                 QStringLiteral("%1 resources · select an ID to inspect or reimport.").arg(result.Rows.size());
-            if (result.AssetProblem.isEmpty() == false)
-            {
-                result.Message += QStringLiteral(" Scene assets are not listed: ") + result.AssetProblem;
-            }
         }
         else
         {

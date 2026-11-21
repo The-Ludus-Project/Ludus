@@ -1,7 +1,7 @@
 # Ludus Parsing Architecture
 
 **Status:** P1 implementation added with the bounded parsing foundation and
-JSON extraction. Later milestones remain proposed.
+JSON extraction. P2 is implemented for Content catalogs. Later milestones remain proposed.
 
 **Implementation baseline:** `55501b0` (2026-10-04). The original architecture
 and Gems review were drafted against `52e29ce`; the implementation uses the
@@ -827,7 +827,7 @@ latency and runtime loading budgets with the actual consumer.
 | --- | --- | --- |
 | P0: Contract and baseline | Inventory current readers, accepted grammar/numbers, allocation coverage, corpus, timing and memory | Documented compatibility matrix and measured baseline; no parser rewrite |
 | P1: Bounded JSON foundation (implemented) | Common errors/limits/cursors, current backend facade, compatibility adapter, better admission/error handling | Existing Content tests plus budget/OOM/encoding tests, clean native/web build and SDK consumer; unchanged schema behavior |
-| P2: Domain integration | Transactional owned decoding and richer paths in selected readers | One real catalog/audio consumer, old-output preservation, source lifetime and candidate budget evidence |
+| P2: Domain integration (implemented for catalogs) | Transactional owned decoding and richer paths in selected readers | One real catalog/audio consumer, old-output preservation, source lifetime and candidate budget evidence |
 | P3: Authoring diagnostics | Revision snapshots, exact provenance where supported, source edits; recovery/CST only if needed | Stale results discarded, accurate locations, lossless edits, strict Apply/Cook gate, measured latency |
 | P4: Domain resource reader, measured language or cooker | One consumer's resource-format profile, required DSL, or binary output/reader | Format/grammar fixtures or text/cooked typed equivalence, fuzzing, corruption and decoded-size limits; measured whole-pipeline benefit for cooking |
 | P5: Optional optimization | SIMD, generated lexer/parser, streaming, incremental parsing, or schema codegen | Equivalent validation and ownership, repeatable material gain, maintained native/web and tooling support |
@@ -914,3 +914,33 @@ OOM, pool reuse/growth, move ownership, invalid-root isolation, Unicode scalar
 boundaries, canonical output, and deterministic byte mutations. The installed
 SDK consumer and browser smoke target exercise the new exports and codec link
 closure. Performance claims still require measured workload baselines.
+
+## P2 catalog read evidence
+
+Content uses a single allocation domain for both the JSON workspace and typed
+catalog entries. The workspace remains live through candidate validation and
+publication. The previous entries also remain live until commit. On failure,
+the workspace and candidate are released and the previous entries remain usable.
+
+The catalog regression suite starts with a populated catalog. It rejects
+invalid syntax and a bad path after valid entries, checks the complete prior
+serialization and entry address, and injects allocation failure at the
+workspace and candidate boundaries. It checks live block counts after cleanup,
+retries successfully, and verifies new entry strings survive destruction of the
+input. See the [catalog contract](content-resources.md#transactional-catalog-reads).
+
+The `Catalog measures peak requested bytes for a bounded replacement` test
+measures a single read in an isolated domain with one previous entry already
+resident. The table records macOS arm64 Development results with Clang 23.1.3.
+Every row requests two new allocations. The numbers exclude external input
+storage, stack memory, and allocator overhead.
+
+| Input bytes | Records | Candidate bytes | JSON workspace bytes | Peak added by read | Peak including previous entry |
+| ---: | ---: | ---: | ---: | ---: | ---: |
+| 167 | 2 | 2,384 | 2,427 | 4,811 | 6,003 |
+| 1,048,576 | 4,096 | 4,882,432 | 13,631,744 | 18,514,176 | 18,515,368 |
+
+The final row pads the record-limit fixture with legal JSON whitespace to the
+encoded byte limit. The candidate is 1,192 bytes per entry on this host,
+including field storage and alignment. After publication, only the candidate
+allocation remains live in the domain.

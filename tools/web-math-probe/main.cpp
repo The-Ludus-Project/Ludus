@@ -22,6 +22,7 @@
 #include <ludus/foundation/math/transform.hpp>
 
 #include "enclosure_oracle.hpp"
+#include "foliage_pages_golden.h"
 #include "scatter_golden.h"
 
 #include <cmath>
@@ -187,6 +188,29 @@ int main()
         Check(isInitialized == true && digest.Status == ludus::content::procedural::ScatterStatus::Success &&
                   digest.Count == golden::PLACEMENT_COUNT && digest.Value == golden::PLACEMENT_DIGEST,
               "procedural scatter golden v1");
+    }
+
+    // LUFOL foliage page set golden bytes: the same fixture and pinned digest as the native FoliagePages
+    // tests, so native and wasm encoders produce identical bytes and the wasm reader accepts them.
+    {
+        namespace foliage = ludus::content::foliage_pages;
+        static ludus::foundation::core::uint8 pageBytes[foliage::golden::ENCODED_BYTES];
+        ludus::foundation::core::usize written = 0;
+        foliage::FoliagePageDiagnostic diagnostic;
+        const foliage::FoliagePageStatus encoded =
+            foliage::WriteFoliagePageSet(foliage::golden::MakeDescription(),
+                                         {},
+                                         ludus::foundation::BorrowedView<ludus::foundation::core::uint8>(pageBytes),
+                                         written,
+                                         diagnostic);
+        const ludus::foundation::BorrowedView<const ludus::foundation::core::uint8> view(pageBytes, written);
+        foliage::FoliagePageSetView pages;
+        const foliage::FoliagePageStatus read =
+            foliage::ReadFoliagePageSet(view, foliage::golden::BINDING, {}, pages, diagnostic);
+        Check(encoded == foliage::FoliagePageStatus::Ok && written == foliage::golden::ENCODED_BYTES &&
+                  foliage::golden::ComputeDigest(view) == foliage::golden::ENCODED_DIGEST &&
+                  read == foliage::FoliagePageStatus::Ok,
+              "foliage page set golden v1");
     }
 
     std::printf("LUDUS_WEB_MATH_RESULT failures=%d\n", gFail);

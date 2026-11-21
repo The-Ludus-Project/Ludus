@@ -55,8 +55,8 @@ python3 tools/configuration/cook.py project.toml project.config.json \
 TOML cooking requires Python 3.11+; the ordinary host tools retain Python 3.10+
 support. The cooker validates against the actual runtime schema before publishing.
 
-GameHost accepts explicit `--config`, `--preferences` and supported command-line
-overrides. An explicit CLI override wins over the corresponding preference and
+GameHost accepts a cooked startup manifest or an explicit `--config` file,
+plus `--preferences` and supported command-line overrides. An explicit CLI override wins over the corresponding preference and
 project value. Use the schema/validator rather than guessing a JSON payload.
 
 The sections below define layers, transactions, source explanations, diagnostics
@@ -152,7 +152,9 @@ Ranks are fixed and independent of load order. V1 stores at most one assignment
 per key per rank. Named profile/device selection and same-rank file composition
 must happen outside the context with an explicit manifest; there is no include,
 glob, environment substitution, guessed platform path, or hidden current-directory
-search. GameHost accepts only explicit Project and Preference files today.
+search. GameHost loads the cooked startup selection in rank order. A legacy
+standalone Project file and a cooked startup selection are alternative inputs.
+An explicit Preference file and Launch options can override either input.
 
 Every supplied value is validated, including values masked by higher ranks.
 `Prepare(..., replace=true)` replaces an entire layer; a patch changes only named
@@ -250,9 +252,21 @@ to a surprising configuration.
 ## Tools and Editor workflow
 
 Build `ludus_config`. It is also installed as `bin/ludus-config` in native SDKs.
-`--schema` emits the actual host descriptors; `--validate [project|preference]`
-reads a bundle from stdin and emits its canonical, normalized layer on stdout.
+`--schema` emits the actual host descriptors. `--validate` reads a bundle from
+stdin and emits its canonical layer on stdout. Choose `engine`, `project`
+(the default), `profile`, `device`, `quality`, or `preference`.
 Errors use engine logging on stderr. It validates through the same core as runtime.
+
+The schema export lists settings in descriptor order. Each record exposes
+`allowed_sources` (the bitmask built by `SourceMask`, indexed by `Layer`),
+`group` (the schema-local application group ID), and the existing apply and
+persistence metadata. Numeric settings include inclusive descriptor `min` and
+`max`. Integer bounds use canonical decimal strings, including for 32-bit
+settings whose descriptor bounds can be wider than their value type. Real
+bounds are JSON numbers. Enum and string settings include `max_text_bytes`,
+which counts UTF-8 bytes without a terminator. Boolean settings have no bounds.
+Use native validation for the type range, Float32 rounding, preference
+eligibility, and cross-field constraints.
 
 ```toml
 # project.toml
@@ -275,6 +289,60 @@ validation and engine builds keep the repository's existing Python minimum. The
 cooker accepts strict scalar types, rejects unknown keys/arrays/dates/nonfinite
 numbers, invokes the native validator, and atomically replaces the output only
 after validation. It never changes CMake/toolchain/project descriptors.
+
+### Cook a named startup selection
+
+Keep the startup manifest in the project owner's source tree alongside the
+explicit TOML files it names. This `startup.toml` selects a preview profile.
+
+```toml
+version = 1
+engine = ["config/base.toml"]
+project = ["config/game.toml", "config/game-window.toml"]
+
+[profiles.preview]
+files = ["config/preview.toml"]
+devices = ["portable"]
+qualities = ["low"]
+
+[devices]
+portable = ["config/portable.toml"]
+
+[qualities]
+low = ["config/low.toml"]
+```
+
+```sh
+python3 tools/configuration/cook.py startup.toml startup.config.json \
+  --validator out/build/linux-clang-development/tools/configuration/ludus-config \
+  --profile preview --device portable --quality low
+out/build/linux-clang-development/apps/game_host/ludus_game_host \
+  --module /absolute/path/game.so --startup-config startup.config.json \
+  --preferences player.config.json --max-frames 20
+```
+
+Select one profile. A device and quality preset are optional. If specified, each
+must be declared and listed by that profile. Omitted selections contribute no
+layer. `engine` and `project` are optional file lists. Each profile requires a
+`files` list and may omit either compatibility list when it permits no choices
+of that kind. Selection names are case sensitive and use 1–64 ASCII letters,
+digits, hyphens or underscores, starting with a letter or digit.
+
+Paths are explicit, relative to the manifest directory, and use forward slashes
+without dot or parent components. Each list accepts up to 32 distinct `.toml`
+paths. The manifest, each source and the cooked startup file each have a 256 KiB
+limit. Only selected source contents are read. To compose a rank, assign each
+setting in at most one of its files. The cooker reports both sources for a duplicate.
+The same setting can appear in different ranks. The cooker validates every
+selected rank through the native validator, including assignments that higher
+ranks override, and replaces the destination only on success.
+
+The cooked version-1 file contains a `layers` object keyed by rank. Each entry
+is a canonical version-1 layer bundle with its original schema identity and
+source paths. GameHost applies Engine, Project, Profile, Device and Quality in
+that order regardless of the JSON member order. Preference and Launch retain
+their higher ranks. Pass one of `--startup-config` and `--config`. Keep player
+preferences in the separate `--preferences` file.
 
 The Editor's Configuration tab is a standalone offline workspace. It loads
 explicit cooked Project/Preference files, displays shared defaults/types/help/

@@ -991,8 +991,14 @@ TEST_CASE("shader rows create registered sources through Properties and canvas c
         REQUIRE(addShader != nullptr);
         QTableWidget* shaders = editor->findChild<QTableWidget*>(QStringLiteral("shaders"));
         REQUIRE(shaders != nullptr);
+        QComboBox* language = editor->findChild<QComboBox*>(QStringLiteral("renderGraphNewShaderLanguage"));
+        REQUIRE(language != nullptr);
+        CHECK(language->currentText() == QStringLiteral("LUSL (.lusl)"));
         addShader->click();
         REQUIRE(workspace.GetSelectedShaderSources().size() == 1);
+        const QString originalLusl = workspace.GetSelectedShaderSources().first();
+        CHECK(originalLusl.endsWith(QStringLiteral(".lusl")) == true);
+        const QByteArray luslBytes = workspace.GetDocument().GetDraft(originalLusl);
         CHECK(shaders->item(0, 2)->text() != QStringLiteral("Program"));
         shaders->setCurrentCell(0, 2);
         QLineEdit* programNameOrNull = editor->findChild<QLineEdit*>(QStringLiteral("renderGraphProgramName"));
@@ -1001,8 +1007,21 @@ TEST_CASE("shader rows create registered sources through Properties and canvas c
         CHECK(programNameOrNull->text() == shaders->item(0, 2)->text());
         shaders->item(0, 0)->setText(QStringLiteral("raygen"));
         const QStringList firstSources = workspace.GetSelectedShaderSources();
+        REQUIRE(firstSources.size() == 1);
+        CHECK(firstSources.first() != originalLusl);
+        CHECK(firstSources.first().endsWith(QStringLiteral(".lusl")) == true);
+        CHECK(workspace.GetDocument().GetDraft(firstSources.first()) == luslBytes);
+        language->setCurrentText(QStringLiteral("Slang (.slang)"));
         addShader->click();
+        REQUIRE(workspace.GetSelectedShaderSources().size() == 2);
+        const QString originalSlang = workspace.GetSelectedShaderSources().last();
+        CHECK(originalSlang.endsWith(QStringLiteral(".slang")) == true);
+        const QByteArray slangBytes = workspace.GetDocument().GetDraft(originalSlang);
         shaders->item(1, 0)->setText(QStringLiteral("closestHit"));
+        const QString renamedSlang = workspace.GetSelectedShaderSources().last();
+        CHECK(renamedSlang != originalSlang);
+        CHECK(renamedSlang.endsWith(QStringLiteral(".slang")) == true);
+        CHECK(workspace.GetDocument().GetDraft(renamedSlang) == slangBytes);
         QComboBox* stage = qobject_cast<QComboBox*>(shaders->cellWidget(1, 1));
         REQUIRE(stage != nullptr);
         const QStringList beforeStageChange = workspace.GetDocument().GetFiles();
@@ -1033,25 +1052,83 @@ TEST_CASE("shader rows create registered sources through Properties and canvas c
         CHECK(workspace.GetDocument().GetFiles() == beforeStageChange);
         CHECK(selector->findText(sources.last()) >= 0);
         CHECK(workspace.GetDocument().GetDraft(sources.last()).contains("RayLaunch") == true);
+        workspace.Undo();
+        CHECK(workspace.GetDocument().GetDraft(originalSlang) == slangBytes);
+        CHECK(workspace.GetDocument().GetFiles().contains(renamedSlang) == false);
+        workspace.Undo();
+        CHECK(workspace.GetSelectedShaderSources() == firstSources);
+        workspace.Undo();
+        CHECK(workspace.GetDocument().GetDraft(originalLusl) == luslBytes);
+        CHECK(workspace.GetDocument().GetFiles().contains(firstSources.first()) == false);
+        workspace.Undo();
+        CHECK(workspace.GetSelectedShaderSources().isEmpty() == true);
+        workspace.Redo();
+        workspace.Redo();
+        workspace.Redo();
+        workspace.Redo();
         workspace.Redo();
         workspace.Redo();
         workspace.Redo();
         CHECK(workspace.GetSelectedShaderSources() == sources);
         CHECK(workspace.GetDocument().GetFiles() == beforeStageChange);
         // Undo/Redo rebuilds the field controls; use the currently displayed editor.
-        QWidget* ownerOrNull = QApplication::activeModalWidget();
-        if (ownerOrNull == nullptr)
-        {
-            ownerOrNull = &workspace;
-        }
-        RenderGraphPipelineEditor* currentEditorOrNull = nullptr;
-        for (RenderGraphPipelineEditor* candidate : ownerOrNull->findChildren<RenderGraphPipelineEditor*>())
-        {
-            if (candidate->isHidden() == false)
+        const auto getCurrentEditor = [&workspace]() -> RenderGraphPipelineEditor* {
+            QWidget* ownerOrNull = QApplication::activeModalWidget();
+            if (ownerOrNull == nullptr)
             {
-                currentEditorOrNull = candidate;
+                ownerOrNull = &workspace;
             }
+            for (RenderGraphPipelineEditor* candidate : ownerOrNull->findChildren<RenderGraphPipelineEditor*>())
+            {
+                if (candidate->isHidden() == false)
+                {
+                    return candidate;
+                }
+            }
+            return nullptr;
+        };
+        REQUIRE(workspace.Save() == true);
+        const QDir savedPackage(package);
+        for (const QString& source : sources)
+        {
+            CHECK(ReadFile(savedPackage.filePath(source)) == workspace.GetDocument().GetDraft(source));
         }
+        RenderGraphPipelineEditor* currentEditorOrNull = getCurrentEditor();
+        REQUIRE(currentEditorOrNull != nullptr);
+        QTableWidget* currentTable = currentEditorOrNull->findChild<QTableWidget*>(QStringLiteral("shaders"));
+        QPushButton* removeShader =
+            currentEditorOrNull->findChild<QPushButton*>(QStringLiteral("renderGraphRemove_shaders"));
+        REQUIRE(currentTable != nullptr);
+        REQUIRE(removeShader != nullptr);
+        // Removing untouched rows reclaims both source files and manifest registrations.
+        currentTable->setCurrentCell(1, 0);
+        removeShader->click();
+        REQUIRE(workspace.GetSelectedShaderSources() == firstSources);
+        currentTable->setCurrentCell(0, 0);
+        removeShader->click();
+        REQUIRE(workspace.GetSelectedShaderSources().isEmpty() == true);
+        for (const QString& source : sources)
+        {
+            CHECK(workspace.GetDocument().GetFiles().contains(source) == false);
+            CHECK(QFileInfo::exists(savedPackage.filePath(source)) == true);
+        }
+        REQUIRE(workspace.Save() == true);
+        for (const QString& source : sources)
+        {
+            CHECK(QFileInfo::exists(savedPackage.filePath(source)) == false);
+        }
+        workspace.Undo();
+        CHECK(workspace.GetSelectedShaderSources() == firstSources);
+        workspace.Undo();
+        CHECK(workspace.GetSelectedShaderSources() == sources);
+        REQUIRE(workspace.Save() == true);
+        for (const QString& source : sources)
+        {
+            CHECK(ReadFile(savedPackage.filePath(source)) == workspace.GetDocument().GetDraft(source));
+        }
+        CHECK(QFileInfo::exists(savedPackage.filePath(originalLusl)) == false);
+        CHECK(QFileInfo::exists(savedPackage.filePath(originalSlang)) == false);
+        currentEditorOrNull = getCurrentEditor();
         REQUIRE(currentEditorOrNull != nullptr);
         QPushButton* completeShader =
             currentEditorOrNull->findChild<QPushButton*>(QStringLiteral("renderGraphAdd_shaders"));

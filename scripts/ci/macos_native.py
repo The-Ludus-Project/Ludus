@@ -101,8 +101,9 @@ out/host-tools/bin/clang-tidy -p out/build/macos-clang-development --warnings-as
     Check('setup-contracts', 'Test macOS setup contracts', needs=('build',),
           run=r"""PYTHONPATH=scripts/python python3 -m unittest test_macos_setup test_init_launcher test_init_ui test_rhi_measurements test_metal_shaders test_raster_shaders test_texture_cooker test_macos_editor test_editor_tool test_process_ownership test_play_probe test_play_session test_play_build test_play_documents test_play_assets -v
 """),
+    # The CPU/GPU reference oracle cases run in the macos-reference job (scripts/ci/macos_reference.py).
     Check('native-tests', 'Test native Cocoa, Metal, filesystem, threading, Content and Audio', needs=('build',), env={'LUDUS_TEST_COCOA': '1'},
-          run=r"""out/host-tools/venv/bin/ctest --preset macos-clang-development --label-regex 'platform|macos|filesystem|threading|content|audio|build-contract|diagnostic-startup|editor|loader|session|reload|protocol|acceptance|shader' --no-tests=error --output-junit "$RUNNER_TEMP/macos-native-tests.xml"
+          run=r"""out/host-tools/venv/bin/ctest --preset macos-clang-development --label-regex 'platform|macos|filesystem|threading|content|audio|build-contract|diagnostic-startup|editor|loader|session|reload|protocol|acceptance|shader' --exclude-regex '^ludus_renderer_reference: ' --no-tests=error --output-junit "$RUNNER_TEMP/macos-native-tests.xml"
 """),
     Check('timeout-headroom', 'Report CTest timeout headroom', needs=('build',),
           run=r"""python3 scripts/python/ctest_headroom.py out/build/macos-clang-development --ctest out/host-tools/venv/bin/ctest --junit "$RUNNER_TEMP/macos-native-tests.xml" --title "macOS native tests: CTest timeout headroom"
@@ -142,6 +143,7 @@ out/renderer-sdk/ludus_sdk_renderer_consumer
 out/host-tools/venv/bin/ctest --test-dir out/renderer-sdk -R "^installed_encoder$" --no-tests=error --output-on-failure
 out/renderer-sdk/ludus_sdk_renderer_views_consumer
 out/renderer-sdk/ludus_sdk_renderer_overlays_consumer
+out/renderer-sdk/ludus_sdk_ui_render_consumer
 out/renderer-sdk/ludus_sdk_renderer_materials_consumer
 out/renderer-sdk/ludus_sdk_renderer_lighting_consumer
 out/renderer-sdk/ludus_sdk_renderer_scaling_consumer

@@ -1470,10 +1470,10 @@ RendererWorkspace::RendererWorkspace(const ToolingPaths& tooling, QWidget* paren
             mPreviewSourceOrNull->PrepareGpuProfileFrame();
         }
     });
-    connect(mPreviewOrNull, &RenderGraphPreview::SubmissionRecorded, this, [this]() {
+    connect(mPreviewOrNull, &RenderGraphPreview::SubmissionRecorded, this, [this](const QByteArray& runtimeIdentity) {
         if (mPreviewSourceOrNull != nullptr)
         {
-            mPreviewSourceOrNull->NotifyGpuProfileSubmission();
+            mPreviewSourceOrNull->NotifyGpuProfileSubmission(runtimeIdentity);
         }
     });
     connect(mPreviewOrNull, &RenderGraphPreview::FramePresented, this, [this]() {
@@ -1608,7 +1608,7 @@ RendererWorkspace::RendererWorkspace(const ToolingPaths& tooling, QWidget* paren
     mSourceEditDebounce.setSingleShot(true);
     mSourceEditDebounce.setInterval(SOURCE_EDIT_DEBOUNCE_MILLISECONDS);
     connect(mSourceController, &CodeDocumentController::TextAccepted, this, [this]() {
-        if (mSourceFile->currentText().endsWith(QStringLiteral(".slang")) == true)
+        if (IsRenderGraphShaderSource(mSourceFile->currentText()) == true)
         {
             queueGraphEditTrace(RenderGraphSource::Draft);
         }
@@ -1742,11 +1742,11 @@ bool RendererWorkspace::ShowSourceView()
         {
             mSourceFile->setCurrentText(shaders.first());
         }
-        else if (mSourceFile->currentText().endsWith(QStringLiteral(".slang")) == false)
+        else if (IsRenderGraphShaderSource(mSourceFile->currentText()) == false)
         {
             for (int32 index = 0; index < mSourceFile->count(); ++index)
             {
-                if (mSourceFile->itemText(index).endsWith(QStringLiteral(".slang")) == true)
+                if (IsRenderGraphShaderSource(mSourceFile->itemText(index)) == true)
                 {
                     mSourceFile->setCurrentIndex(index);
                     break;
@@ -3788,29 +3788,33 @@ void RendererWorkspace::populateNodeFields(QFormLayout& outFields, QWidget& inou
                         });
             }
         }
-        connect(editor, &RenderGraphPipelineEditor::Edited, this, [this, editor](const QJsonObject& candidate) {
-            QString error;
-            const bool hasChangedProfile = IsSceneComputeNode(selectedNode()) != IsSceneComputeNode(candidate);
-            const RenderGraphDocumentStatus status =
-                mDocument.ReplaceNode(mSelectedFile, mSelectedConfiguration, candidate, &error);
-            if (status != RenderGraphDocumentStatus::Ok)
-            {
-                mStatus->setText(error);
-                renderInspector();
-                Q_EMIT NodeFieldsChanged(nullptr);
-                Q_EMIT NodeOperationFailed(error);
-                return;
-            }
-            if (hasChangedProfile == true)
-            {
-                // A Scene input changes the State and Invocation controls, so rebuild both surfaces.
-                documentEdited(status);
-                return;
-            }
-            editor->SetShaderAssignments(selectedNode().value(QStringLiteral("shaders")).toArray());
-            // Refresh the other surface while retaining the controls that submitted this edit.
-            documentEdited(status, mInspector->isAncestorOf(editor) == false, editor);
-        });
+        connect(
+            editor,
+            &RenderGraphPipelineEditor::Edited,
+            this,
+            [this, editor](const QJsonObject& candidate, RenderGraphShaderLanguage newShaderLanguage) {
+                QString error;
+                const bool hasChangedProfile = IsSceneComputeNode(selectedNode()) != IsSceneComputeNode(candidate);
+                const RenderGraphDocumentStatus status =
+                    mDocument.ReplaceNode(mSelectedFile, mSelectedConfiguration, candidate, &error, newShaderLanguage);
+                if (status != RenderGraphDocumentStatus::Ok)
+                {
+                    mStatus->setText(error);
+                    renderInspector();
+                    Q_EMIT NodeFieldsChanged(nullptr);
+                    Q_EMIT NodeOperationFailed(error);
+                    return;
+                }
+                if (hasChangedProfile == true)
+                {
+                    // A Scene input changes the State and Invocation controls, so rebuild both surfaces.
+                    documentEdited(status);
+                    return;
+                }
+                editor->SetShaderAssignments(selectedNode().value(QStringLiteral("shaders")).toArray());
+                // Refresh the other surface while retaining the controls that submitted this edit.
+                documentEdited(status, mInspector->isAncestorOf(editor) == false, editor);
+            });
         connect(editor, &RenderGraphPipelineEditor::ShaderOpenRequested, this, [this, editor](const QString& shaderId) {
             openNodeShader(shaderId, editor);
         });

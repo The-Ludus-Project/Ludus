@@ -278,6 +278,88 @@ TEST_CASE("A hosted game's frames appear in the viewport and return to the game"
 #endif
 }
 
+#if defined(LUDUS_FIRST_PERSON_PLAYER) && defined(Q_OS_MACOS)
+TEST_CASE("The cooked World player publishes Metal frames and stops through the hosted window",
+          "[editor][play][viewport][gpu][native-hosted-first-person]")
+{
+    if (IsSharedDisplay() == false)
+    {
+        SKIP("Run with the Cocoa desktop and shared GPU viewport.");
+    }
+    rhi::Shutdown();
+    RenderPreview preview;
+    PreviewViewport viewport(&preview);
+    viewport.resize(VIEWPORT_WIDTH, VIEWPORT_HEIGHT);
+    viewport.show();
+    REQUIRE(QTest::qWaitForWindowExposed(&viewport) == true);
+    RenderScene scene;
+    scene.Identity = QByteArrayLiteral("first-person-host");
+    scene.AssetsIdentity = scene.Identity;
+    PreviewMesh mesh;
+    mesh.Positions = {{-1, -1, 0}, {1, -1, 0}, {0, 1, 0}};
+    mesh.Uvs = {{0, 0}, {1, 0}, {.5F, 1}};
+    mesh.Indices = {0, 1, 2};
+    scene.Meshes.append(mesh);
+    scene.Objects.append(PreviewObject{});
+    REQUIRE(preview.SetScene(scene) == true);
+    REQUIRE(preview.Start() == true);
+    REQUIRE(AwaitCondition([&viewport] { return viewport.PresentedFrames() != 0; }));
+    REQUIRE(viewport.CanImportHostedImages() == true);
+
+    rhi::NativeDeviceLease lease;
+    REQUIRE(preview.PinDevice(lease) == rhi::RasterStatus::Ready);
+    rhi::NativeDeviceInfo device;
+    REQUIRE(rhi::GetNativeDeviceInfo(lease, device) == rhi::RasterStatus::Ready);
+    REQUIRE(rhi::ReleaseNativeDevice(lease) == rhi::RasterStatus::Ready);
+    PlayViewportSource play;
+    REQUIRE(play.Start(SOCKET_PARENT, device.Identity, VIEWPORT_WIDTH, VIEWPORT_HEIGHT, 1.0F) == true);
+    QProcess game;
+    QProcessEnvironment environment = QProcessEnvironment::systemEnvironment();
+    environment.insert(QString::fromLatin1(ludus::platform::HOSTED_WINDOW_ENVIRONMENT_VARIABLE),
+                       play.GetChannelAddress());
+    game.setProcessEnvironment(environment);
+
+    game.start(QStringLiteral(LUDUS_FIRST_PERSON_PLAYER),
+               {QStringLiteral(LUDUS_FIRST_PERSON_FIXTURE), QStringLiteral("absent")});
+    REQUIRE(AwaitCondition([&game] { return game.state() == QProcess::NotRunning; }));
+    REQUIRE(game.exitCode() != 0);
+    CHECK(&viewport.GetFrameSource() == &preview);
+    CHECK(play.GetTakenFrames() == 0);
+
+    game.start(QStringLiteral(LUDUS_FIRST_PERSON_PLAYER),
+               {QStringLiteral(LUDUS_FIRST_PERSON_FIXTURE), QStringLiteral("start")});
+    REQUIRE(game.waitForStarted() == true);
+    const bool hasGameFrame = AwaitCondition(
+        [&play, &game] { return play.GetState() == PlaySourceState::Playing || game.state() == QProcess::NotRunning; });
+    const QByteArray startupOutput = game.readAllStandardOutput() + game.readAllStandardError();
+    INFO(startupOutput.toStdString());
+    REQUIRE(hasGameFrame == true);
+    REQUIRE(play.GetState() == PlaySourceState::Playing);
+    CHECK(play.GetEndpoint().ShouldForwardRelativePointer() == true);
+    viewport.SetFrameSource(&play);
+    const uint64 before = viewport.PresentedFrames();
+    const bool hasPresented = AwaitCondition([&] {
+        return viewport.PresentedFrames() >= before + PRESENTED_FRAMES || game.state() == QProcess::NotRunning;
+    });
+    const QByteArray frameOutput = game.readAllStandardOutput() + game.readAllStandardError();
+    INFO(frameOutput.toStdString());
+    REQUIRE(hasPresented == true);
+    REQUIRE(viewport.PresentedFrames() >= before + PRESENTED_FRAMES);
+    CHECK(play.GetTakenFrames() > ludus::platform::HOSTED_SURFACE_IMAGE_COUNT);
+    constexpr int32 RESIZE_PIXELS = 48;
+    viewport.resize(VIEWPORT_WIDTH + RESIZE_PIXELS, VIEWPORT_HEIGHT + RESIZE_PIXELS);
+    const uint64 resized = viewport.PresentedFrames();
+    REQUIRE(AwaitCondition([&] { return viewport.PresentedFrames() >= resized + PRESENTED_FRAMES; }));
+    viewport.SetFrameSource(nullptr);
+    play.Stop();
+    REQUIRE(game.waitForFinished(TIMEOUT_MILLISECONDS) == true);
+    CHECK(game.exitStatus() == QProcess::NormalExit);
+    CHECK(game.exitCode() == 0);
+    CHECK(&viewport.GetFrameSource() == &preview);
+    preview.Stop();
+}
+#endif
+
 #if (defined(LUDUS_HOSTED_PRODUCER) || defined(LUDUS_WORLD_DEMO_PLAYER)) && LUDUS_PROFILING_ENABLED
 namespace
 {

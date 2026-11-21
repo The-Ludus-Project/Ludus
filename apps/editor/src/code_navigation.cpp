@@ -14,7 +14,6 @@
 #include <QLabel>
 #include <QLineEdit>
 #include <QListWidget>
-#include <QPlainTextEdit>
 #include <QScreen>
 #include <QTextBlock>
 #include <QTextDocument>
@@ -41,6 +40,25 @@ int32 ClampOffset(const QString& text, int32 offset)
         --result;
     }
     return result;
+}
+
+CodeLanguage LanguageForInspectedSource(const CodeEditor& editor, const QString& file)
+{
+    if (file.isEmpty() == false)
+    {
+        const QByteArray fileName = file.toUtf8();
+        const CodeLanguage classified = CodeLanguageRegistry::Get().ClassifyFileName(
+            BorrowedView<const char>(fileName.constData(), static_cast<usize>(fileName.size())));
+        if (classified != CodeLanguage::PlainText)
+        {
+            return classified;
+        }
+    }
+    if (editor.GetLanguage() != CodeLanguage::PlainText)
+    {
+        return editor.GetLanguage();
+    }
+    return CodeLanguage::Slang;
 }
 } // namespace
 
@@ -412,29 +430,24 @@ bool CodeNavigation::Navigate(const CodeNavigationTarget& target)
     {
         Dismiss();
         QDialog dialog(&mEditor);
-        dialog.setWindowTitle(QStringLiteral("Shader definition — read-only captured context"));
+        // Read-only is already in the location label; the title names the window once.
+        dialog.setWindowTitle(QStringLiteral("Shader definition"));
         dialog.resize(INSPECT_WIDTH, INSPECT_HEIGHT);
         QVBoxLayout* layout = new QVBoxLayout(&dialog);
         QLabel* label = new QLabel(destination.Label, &dialog);
         label->setTextFormat(Qt::PlainText);
         label->setWordWrap(true);
         layout->addWidget(label);
-        QPlainTextEdit* source = new QPlainTextEdit(&dialog);
+        CodeEditor* source = new CodeEditor(&dialog);
         source->setObjectName(QStringLiteral("codeNavigationReadOnly"));
+        source->SetLanguage(LanguageForInspectedSource(mEditor, destination.File));
         source->setReadOnly(true);
         source->setFont(mEditor.font());
         source->setPlainText(destination.Text);
         QTextCursor cursor(source->document());
         cursor.setPosition(destination.Start);
         cursor.setPosition(destination.End, QTextCursor::KeepAnchor);
-        if (CodeEditor* editorOrNull = qobject_cast<CodeEditor*>(source); editorOrNull != nullptr)
-        {
-            editorOrNull->RevealTextCursor(cursor);
-        }
-        else
-        {
-            source->setTextCursor(cursor);
-        }
+        source->RevealTextCursor(cursor);
         source->centerCursor();
         layout->addWidget(source, 1);
         QDialogButtonBox* close = new QDialogButtonBox(QDialogButtonBox::Close, &dialog);

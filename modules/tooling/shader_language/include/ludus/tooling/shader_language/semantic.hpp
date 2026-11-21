@@ -64,6 +64,11 @@ enum class ResourceKind : foundation::uint8
     ConstantBuffer,     ///< `ConstantBuffer<S>`: uniform values of a struct.
     StructuredBuffer,   ///< `StructuredBuffer<T>`: read by index.
     RWStructuredBuffer, ///< `RWStructuredBuffer<T>`: read and written by index.
+    Texture3D,          ///< `Texture3D<T>`: sampled or loaded volume.
+    TextureCube,        ///< `TextureCube<T>`: sampled by direction.
+    Texture2DArray,     ///< `Texture2DArray<T>`: sampled or loaded by layer.
+    DepthTexture2D,     ///< `DepthTexture2D`: depth texture for comparison sampling.
+    ComparisonSampler,  ///< `SamplerComparisonState`: comparison state for SampleCmp.
 };
 
 /// The pipeline stage an entry point runs in.

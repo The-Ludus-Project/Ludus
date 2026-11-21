@@ -17,6 +17,7 @@ class QAction;
 
 namespace ludus::editor
 {
+class HudGridLabel;
 class ViewportObjectInteraction;
 class RendererWorkspace;
 class RenderGraphPreview;
@@ -118,6 +119,8 @@ private:
     void refreshFrame();
     void refreshStatus();
     void refreshStatistics();
+    /// Take pointer input only while the status chip or statistics overlay can be clicked.
+    void updatePointerTransparency();
     bool mHasProblemChip = false;
     bool mHasFeatureLink = false;
     RendererWorkspace& mWorkspace;
@@ -129,8 +132,9 @@ private:
     RenderPreview* mSourceOrNull = nullptr;
     /// Source IDs and names the lighting entries were built from.
     QString mLightingTargetsKey;
-    QLabel* mStatistics;
+    HudGridLabel* mStatistics;
     QTimer mStatisticsTimer;
+    QString mFullStatisticsText;
     bool mIsStatisticsVisible = false;
     QImage mImage;
     ViewportPaintTrace mPaintTrace;

@@ -356,13 +356,16 @@ def watch_decision(jobs: list[dict], now: datetime, grace_seconds: float = STOP_
     return "stop" if (now - first).total_seconds() >= grace_seconds else "wait"
 
 
-def list_run_jobs(client: GitHub, run_id: int) -> list[dict]:
+def list_run_jobs(client: GitHub, run_id: int, *, attempt: int | None = None) -> list[dict]:
     # Thanks to GitHub, "REST API endpoints for workflow jobs", List jobs for a
     # workflow run: filter=latest reports each job's most recent attempt.
     # https://docs.github.com/en/rest/actions/workflow-jobs#list-jobs-for-a-workflow-run
+    run_path = f"actions/runs/{int(run_id)}"
+    endpoint = (f"{run_path}/jobs?filter=latest&" if attempt is None
+                else f"{run_path}/attempts/{int(attempt)}/jobs?")
     jobs: list[dict] = []
     for page in range(1, MAX_JOB_PAGES + 1):
-        listing = client.request(f"actions/runs/{int(run_id)}/jobs?filter=latest&per_page=100&page={page}")
+        listing = client.request(f"{endpoint}per_page=100&page={page}")
         entries = listing.get("jobs") if isinstance(listing, dict) else None
         if not isinstance(entries, list):
             raise BatchError(f"Run {run_id} returned no job listing.")
@@ -385,6 +388,7 @@ def watch(client: GitHub, run_id: int, *, clock=None, sleep=time.sleep,
     started = clock()
     errors = 0
     failed: list[str] = []
+    observed_failures: set[int] = set()
     while (clock() - started).total_seconds() < limit_seconds:
         try:
             jobs = list_run_jobs(client, run_id)
@@ -395,8 +399,21 @@ def watch(client: GitHub, run_id: int, *, clock=None, sleep=time.sleep,
                 return False, failed
         else:
             errors = 0
-            failed = sorted({job["name"] for job in failed_suite_jobs(jobs)})
-            decision = watch_decision(jobs, clock(), grace_seconds)
+            failures = failed_suite_jobs(jobs)
+            failed = sorted({job["name"] for job in failures})
+            observed_at = clock()
+            decision = watch_decision(jobs, observed_at, grace_seconds)
+            for job in failures:
+                job_id = job.get("id")
+                if isinstance(job_id, int) and job_id not in observed_failures:
+                    observed_failures.add(job_id)
+                    print(f"Batch report observed failure {job_id} at {observed_at.isoformat()}", flush=True)
+            if decision == "stop":
+                for job in jobs:
+                    job_id = job.get("id")
+                    if (isinstance(job_id, int) and is_suite_job(job.get("name"))
+                            and job.get("status") in {"queued", "waiting", "pending", "requested"}):
+                        print(f"Batch report observed queued job {job_id}", flush=True)
             if decision != "wait":
                 return decision == "stop", failed
         sleep(interval_seconds)

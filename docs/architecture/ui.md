@@ -1,7 +1,10 @@
 # Runtime UI architecture
 
-Status: U0 implemented in `Ludus::Ui`. U1-U4 below are a delivery plan,
-not implemented capabilities. Sandbox consumes U0 through the installed SDK.
+Status: U0 implemented in `Ludus::Ui`. U1 is in progress: the
+[render adapter](#u1-render-adapter) (`Ludus::UiRender`) and its clip/hit
+qualification are implemented; UiText, atlas exhaustion and device loss remain.
+U2-U4 below are a delivery plan, not implemented capabilities. Sandbox consumes
+U0 through the installed SDK.
 
 ## Decision and current constraints
 
@@ -83,7 +86,7 @@ Ludus::Ui -> FoundationBase (public)
                   |
        layout snapshot + paint commands + action result
           /                         \
-Platform/DOM semantic adapter      render adapter -> RHI
+Platform/DOM semantic adapter      Ludus::UiRender -> Renderer overlays -> RHI
           |                         |
  text composition events      future UiText -> Ludus::Text
 ```
@@ -186,15 +189,69 @@ text-shaping callback or use synchronous GPU queries on the UI path.
 
 The Sandbox's six-command fullscreen uniform adapter is deliberately bounded.
 It proves U0 on the current renderer, but per-fragment rectangle loops scale with
-screen area and are not the eventual general UI renderer. U1 replaces this
-adapter with indexed quads/scissors once the RHI supports them.
+screen area and are not the eventual general UI renderer. U1's
+[render adapter](#u1-render-adapter) replaces it with scissored overlay quads.
+
+## U1 render adapter
+
+`Ludus::UiRender` (`ludus/graphics/ui_render/ui_render.hpp`) converts committed
+`PaintCommand` values into the renderer's existing `OverlayList`. The list and
+`OverlayRenderer` already own the indexed quad upload, R8 coverage sampling,
+scissor and bounded versioning (see
+[renderer overlays](renderer-systems.md#implemented-l2-mutable-versions-and-overlays)),
+so UiRender adds no pipeline, shader or GPU resource of its own and Ui still
+links no renderer code.
+
+A `SurfaceMapping` names one uniform scale, the physical position of the logical
+origin (safe-area insets) and the framebuffer extent. Physical point *p* maps to
+logical (*p* - origin) / scale, computed in float64 and rounded once to float32.
+`MapPhysicalToLogical` is that mapping; adapters use it for every pointer
+`Event`. A physical pixel is painted for a command exactly when its centre maps
+inside the command's half-open `Bounds`, with the right and bottom edges summed
+in float32 as Ui hit testing sums them. `TryComputePhysicalRectangle` corrects
+its float64 estimate against the float32 mapping, so a pixel-centre tie (logical
+34.25 at scale 2 lands on physical 68.5) resolves the same way for paint and
+routing. Painted coverage and the activatable region therefore agree pixel for
+pixel at integer and fractional scales; GPU tie-breaking rules never decide an
+edge because every quad edge lies on a pixel boundary.
+
+Each command carries its effective clip (`PaintCommand::Clip`, the same clip hit
+testing uses). Its quad is the snapped clipped bounds, and its scissor is the
+snapped clip. Bounds never exceed the clip in real arithmetic; if float32
+rounding of the clipped right/bottom edge would leave a painted pixel outside the
+snapped clip, the scissor grows to include it rather than diverging from routing.
+Commands that cover no pixel centre are culled. Adjacent commands with the same
+clip merge into one draw; translucent order is never changed. Text and image
+commands in later milestones will share this scissor contract.
+
+`AppendPaint` validates the mapping and every command, then checks the list's
+remaining vertices (six per quad) and runs, before appending anything. Every
+failure leaves the list and report unchanged and does not count as a dropped
+overlay command. `PaintReport` records commands read, quads, culled commands and
+new runs; these are the batching counters U1 acceptance measures. The overlay
+list's bounds (512 quads, 256 runs per prepared version) are the current limit;
+a document needing more must split across prepared versions or wait for a
+measured larger list.
+
+Qualification lives in two places. The CPU tests in
+`modules/graphics/ui_render/tests` check the pixel-centre rule over 1260 edge,
+scale and origin combinations, and route a press at every pixel of the
+clip/hit document at scales 1, 1.5 and 2 and after a resize. The installed-SDK
+fixture `tests/sdk_consumer/ui_render.cpp` renders that document offscreen
+through `OverlayRenderer`, reads the RGBA8 target back, and requires every
+pixel's colour and routed press to match the snapped paint list, plus explicit
+probes inside the clip, on its half-open edge, in the overflow and in the
+sibling that follows the scissor change. Native CI runs it on the Linux
+(Vulkan) and macOS (Metal) SDK jobs; the browser suite runs it on WebGPU and
+WebGL 2 and requires byte-identical readbacks across both. Results and pending
+evidence are in [UI validation](ui-validation.md#u1-render-adapter).
 
 ## Delivery sequence and acceptance
 
 | Milestone | Deliverable | Acceptance |
 | --- | --- | --- |
 | U0 (this change) | CPU document layout, clipped rect paint, button routing/focus, SDK export, shared Sandbox HUD | Debug/Development and ASan/UBSan tests; format/tidy; installed native/web consumer; transactional failure/capture regressions; actual browser pixels |
-| U1 | RHI quad/index/texture/scissor capabilities; UiRender and UiText adapters, atlas uploads | Vulkan/WebGPU/WebGL 2 pixel parity; shaping fixtures, atlas exhaustion/device loss; no GPU work in Ui; batching/overdraw measurements |
+| U1 (UiRender implemented) | RHI quad/index/texture/scissor capabilities; UiRender and UiText adapters, atlas uploads | Vulkan/WebGPU/WebGL 2 pixel parity; shaping fixtures, atlas exhaustion/device loss; no GPU work in Ui; batching/overdraw measurements |
 | U2 | Semantic names/values, native accessibility, text edit/IME, modal scopes, controller direction navigation, scrolling | Screen reader/keyboard/controller journeys; composition/bidi/grapheme tests; focus restore and cancellation under removal/reload |
 | U3 | Versioned authoring documents, shared themes/variants, localization, atomic hot reload, inspector | Bounds/ID/source diagnostics; rejected reload preserves live UI; portrait/ultrawide/DPI/safe-area/text-expansion matrix; no user-code callbacks in validation |
 | U4 | Virtualized lists, explicit dirty revisions, selective cache/animation | Representative large-menu captures; frame cost p50/p95 and memory before/after; invalidation regressions; reduced-motion support |

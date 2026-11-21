@@ -1,4 +1,4 @@
-# Localization: catalogs, release cooking and formatting
+# Localization: catalogs, formatting and locale publication
 
 `Ludus::Localization` builds on native and Emscripten. It delivers exact authored
 identities, offline translation validation, immutable catalog leases and a
@@ -20,10 +20,10 @@ Phase L2 formats messages with arguments through typed, schema-validated calls
 and the pinned ICU4C backend in the opt-in [`Ludus::Unicode`](foundation/unicode.md)
 owner; see [formatting](#formatting-messages-with-arguments). Builds without
 `LUDUS_BUILD_UNICODE` keep the same API, never link ICU and report
-`BackendUnavailable`. Locale negotiation, schema-preserving language switches,
-consumer presentation caches (`LocalizedText`) and Text paragraph integration
-remain later phases. UTF-8 validity does not imply font coverage, bidi or
-rendering.
+`BackendUnavailable` for dynamic preparation. Phase L3 publishes
+[the locale catalogs and prepared visible text together](#publish-a-locale-and-its-visible-text).
+Applications select an effective locale and own acquisition and layout. Text
+paragraph integration remains L4.
 
 ## Author and cook
 
@@ -127,11 +127,10 @@ allocator-tested contract, not a throughput benchmark.
 
 Each successful load has a fresh token, including identical files. Rebind after
 replacement; cross-catalog handles fail with `WrongCatalog` and preserve the
-result. Old leases retain their token and text. This deliberately conservative
-first phase does **not** implement the full design's schema-compatible binding
-reuse, context manager or visible-view language-switch transaction. An application
-can prepare a candidate, bind all its visible labels, and swap its own state at a
-safe UI boundary. Catalog copies are the lifetime mechanism, not a global service.
+result. Old leases retain their token and text. The
+[publication owner](#publish-a-locale-and-its-visible-text) binds each new
+catalog using the same exact descriptors and keeps old presentation leases
+alive for in-flight readers.
 
 Borrowed strings are counted views and are not NUL-terminated. Keep at least one
 lease alive through consumption. Public view-producing operations reject temporary
@@ -325,9 +324,9 @@ through FoundationBase's emergency path.
 A context owns mutable ICU formatters and UTF-16 scratch. It is neither reentrant
 nor shareable: one thread uses it at a time, and a worker prepares its own. There
 is no implicit global or thread-local cache. Destroy every context before
-`ShutdownUnicodeHost`. Retained presentation (`LocalizedText`, argument revisions
-and cached results) is consumer-owned and remains later work, as do date, money
-and other typed formatters.
+`ShutdownUnicodeHost`. The L3 publication owner caches the complete text for a
+supplied visible-input revision. Applications own the input values and choose
+when to prepare another revision.
 
 **Measured cost (diagnostics, not budgets).** `ludus_localization_format_probe`
 measures the nested Arabic select/plural message on macOS arm64 Development
@@ -338,6 +337,97 @@ count 3; a static record 0. Peak ICU heap was about 48 KB. Wall times varied by
 an order of magnitude between runs (for example reformat 3–5 µs, preparation
 8–31 µs), so they are not estimates. Each run also prints a digest of every
 corpus status and output byte; native and wasm32 print the same value.
+
+## Publish a locale and its visible text
+
+Use one `LocalizationContext` per session or local player. Call its methods on
+one owner thread. Choose an effective locale and the complete required domain
+set from your manifest. Verify the package sizes and digests against the release
+completion manifest before submitting bytes. Acquisition can finish in any order.
+An asynchronous adapter delivers completions to the owner with their request
+and release identities. Route completions only to still-live owners.
+
+```cpp
+#include <ludus/foundation/containers/span_compatibility.hpp>
+#include <ludus/localization/locale_publication.hpp>
+#include "bindings/game/ui.hpp" // generated
+
+using namespace ludus::localization;
+using ludus::foundation::GetSystemAllocationDomain;
+using ludus::foundation::MakeBorrowedView;
+
+// Keep this owner for the session, with a requested-byte capacity chosen by the app.
+LocalizationContext localization(localizationBudgetBytes, GetSystemAllocationDomain());
+const std::string_view domains[] = {"game/ui"};
+LocaleRequest request{};
+const Status requested = localization.RequestLocaleChange(
+    {"fr-FR", domains, verifiedReleaseRevision, preferenceRevision}, request);
+// On Ok, start acquisition. In the owner's completion handler, pass the
+// revision that the adapter actually verified and the borrowed byte span.
+const Status loaded = localization.SubmitCatalog(
+    request, completedReleaseRevision, "game/ui", MakeBorrowedView(verifiedPackageBytes));
+
+// Once all domains have loaded, describe the complete visible screen.
+const ArgumentValue count[] = {MakeCountArgument("count", itemCount)};
+const VisibleMessage messages[] = {
+    {game::l10n::ui::kMenuPlay, {}},
+    {game::l10n::ui::kInventoryItemCount, count},
+};
+LocalizationSnapshot candidate;
+const Status prepared = localization.PrepareCandidateView(request, visibleRevision, messages, candidate);
+// On Ok, build any required application layout/resources from candidate.GetText.
+// At the frame boundary, once the layout for this exact candidate is ready:
+const Status committed = localization.CommitLocaleChange(
+    request, candidate, {.View = currentVisibleRevision, .Preferences = currentPreferenceRevision});
+// On Ok, present the matching application layout in this frame.
+LocalizationSnapshot frame;
+if (localization.AcquireSnapshot(frame) == Status::Ok)
+{
+    ResolvedText label;
+    if (frame.GetText(0, label) == Status::Ok)
+    {
+        // label.Text and label.ProviderLocale borrow from frame's retained storage.
+    }
+}
+```
+
+`PollLocaleChange` reports `LoadingCatalogs`, `WaitingForView`, `Ready` for
+complete candidate text, then `Published` after commit. A missing package can
+be reported with `FailCatalogAcquisition`. A bad package or a required entry
+that fails binding or formatting moves the request to `Failed`. Cancel a
+pending request with `CancelLocaleChange` on a required layout failure. Keep
+drawing the last published frame throughout. At
+startup the application can show an invariant settings surface until it has a
+published frame. Each accepted request supersedes its predecessor. A delayed
+completion cannot write into a superseding request or another context.
+
+Change the visible revision when the input set, any argument or a layout input
+changes. Prepare a fresh candidate view before attempting to commit again.
+Commit checks the current visible and preference revisions and the exact preview
+used by the application, even if a preview was rebuilt at the same revision.
+`PrepareActiveView` builds a hidden view from the active catalogs. Check
+`IsCurrent` and the view's own input revision before showing it. Immutable
+snapshots can outlive publication and be handed to readers with synchronization.
+A snapshot's upstream allocation domain must live until the last snapshot is freed.
+
+The context holds up to 32 distinct resident domains per generation and 256
+entries per view. Static entries borrow cooked text. Dynamic entries use one
+prepared formatter per used domain during view preparation and store its
+complete UTF-8 output and provider provenance. Reusing the view reads that text
+without formatting. Dynamic preparation requires the running Unicode host.
+Preparation is synchronous on the owner and bounded by the supplied visible set.
+A release with unchanged schemas can use the same transaction for a same-locale
+reload. Replacement catalogs for active domains must match the profile,
+source locale, exact keys and argument declarations. The owner binds fresh handles
+for the new generation. Start a compatible game/content context for schema changes.
+
+The configured requested-byte budget includes active, candidate, retained and
+preparation allocations charged to the context's domain. `GetResidentBytes`
+shows the current charge. Old readers can keep bytes charged after commit or
+cancellation. On `BudgetExceeded`, release unneeded leases or retry with a
+smaller domain or view set. An upstream allocation refusal returns `OutOfMemory`.
+The application's acquisition buffers, layout memory, the fixed budget control
+block, allocator overhead and ICU's private allocations have their own accounting.
 
 ## Cooked wire format, v1
 
@@ -468,6 +558,14 @@ denies each ICU allocation of host initialization, preparation and the first
 format in a fresh process and requires every point to terminate through the
 emergency path (207 of 207 natively). Without the option, the tests check the
 `BackendUnavailable` path instead.
+
+The L3 headless cases use these production-cooked packages through
+`LocalizationContext`. They cover cancelled and superseded completions, exact
+old-plus-candidate budget admission, reader retirement, same-frame publication
+across domains, visible-input changes during preparation, hidden-view refresh,
+same-locale reload with schema validation and independent player contexts. The
+ICU-enabled case checks the new view's provider-locale plural output before
+and after commit.
 
 ```sh
 python3 -m unittest discover -s scripts/python -p test_localization.py -v

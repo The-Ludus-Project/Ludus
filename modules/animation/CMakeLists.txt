@@ -1,7 +1,10 @@
-add_library(ludus_animation STATIC src/skeleton.cpp src/pose.cpp src/skin_binding.cpp src/inspection.cpp)
+add_library(ludus_animation STATIC src/skeleton.cpp src/pose.cpp src/skin_binding.cpp src/inspection.cpp src/clip.cpp
+    src/clip_player.cpp src/root_math.cpp)
 add_library(Ludus::Animation ALIAS ludus_animation)
 set_target_properties(ludus_animation PROPERTIES EXPORT_NAME Animation)
 target_sources(ludus_animation PUBLIC FILE_SET public_headers TYPE HEADERS BASE_DIRS include FILES
+    include/ludus/animation/clip.hpp
+    include/ludus/animation/clip_player.hpp
     include/ludus/animation/inspection.hpp
     include/ludus/animation/pose.hpp
     include/ludus/animation/skeleton.hpp
@@ -16,7 +19,7 @@ install(TARGETS ludus_animation EXPORT LudusTargets ARCHIVE DESTINATION "${CMAKE
 if(LUDUS_BUILD_TESTS)
     find_package(Catch2 3 REQUIRED CONFIG)
     add_executable(ludus_animation_tests tests/skeleton_tests.cpp tests/pose_tests.cpp tests/skin_binding_tests.cpp
-        tests/inspection_tests.cpp)
+        tests/inspection_tests.cpp tests/clip_tests.cpp tests/clip_player_tests.cpp tests/root_motion_tests.cpp)
     target_link_libraries(ludus_animation_tests PRIVATE Ludus::Animation Catch2::Catch2WithMain)
     target_compile_options(ludus_animation_tests PRIVATE $<$<CXX_COMPILER_ID:Clang,AppleClang,GNU>:-ffp-contract=off>)
     ludus_apply_project_defaults(ludus_animation_tests)

@@ -33,6 +33,16 @@ struct StringTable::State final
     uint32* Slots{};
     usize SlotCapacity{};
     Page* Pages{};
+    // Diagnostic counters behind TryCaptureSnapshot, maintained in O(1) per
+    // insertion; rehashing rebuilds the probe histogram.
+    usize PeakAllocated{sizeof(State)};
+    usize PageCount{};
+    usize PageBytes{};
+    usize PageCapacityBytes{};
+    usize PageUsedBytes{};
+    uint64 DuplicateAdmissions{};
+    usize MaxProbeDistance{};
+    StaticArray<uint32, STRING_TABLE_PROBE_BUCKET_COUNT> ProbeDistanceCounts{};
     mutable std::mutex Mutex;
     // Private seam for collision tests, inaccessible through the installed API.
     uint64 (*HashOverride)(std::string_view) noexcept {};
@@ -46,10 +56,19 @@ struct StringTable::State final
     [[nodiscard]] StringStatus FindSlot(std::string_view value, uint64 hash, usize& outSlot) const noexcept;
     [[nodiscard]] StringStatus Find(std::string_view value, NameId& outId) const noexcept;
     [[nodiscard]] StringStatus Resolve(NameId id, std::string_view& outSpelling) const noexcept;
+    [[nodiscard]] StringStatus ResolveIndex(StringIndex index, std::string_view& outSpelling) const noexcept;
     [[nodiscard]] StringStatus Intern(std::string_view value, NameId& outId) noexcept;
+    [[nodiscard]] StringStatus Reserve(uint32 entryCount, usize spellingBytes) noexcept;
+    void CaptureSnapshot(StringTableSnapshot& outSnapshot) const noexcept;
     [[nodiscard]] StringStatus EnsureEntries() noexcept;
     [[nodiscard]] StringStatus EnsureSlots() noexcept;
     [[nodiscard]] StringStatus EnsurePage(usize bytes) noexcept;
+    // Replace the entry directory or lookup array with exactly `capacity`
+    // elements; the lookup replacement rehashes and rebuilds the probe histogram.
+    [[nodiscard]] StringStatus GrowEntries(usize capacity) noexcept;
+    [[nodiscard]] StringStatus GrowSlots(usize capacity) noexcept;
+    [[nodiscard]] StringStatus AddPage(usize capacity) noexcept;
+    void RecordProbeDistance(usize distance) noexcept;
     [[nodiscard]] void* Allocate(usize bytes, usize alignment) noexcept;
     void Free(void* pointer, usize bytes, usize alignment) noexcept;
     static void Destroy(State* state) noexcept;

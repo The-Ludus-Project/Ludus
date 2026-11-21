@@ -6,6 +6,8 @@ target_sources(ludus_foundation_memory
         src/accounting.cpp
         src/allocation_domain.cpp
         src/shared_controller.cpp
+        src/observation.cpp
+        src/internal/observation.hpp
         src/internal/accounting.hpp
     PUBLIC FILE_SET public_headers TYPE HEADERS BASE_DIRS include FILES
         include/ludus/foundation/memory/allocation_domain.hpp

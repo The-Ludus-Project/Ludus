@@ -6,6 +6,7 @@
 #include <QAbstractItemView>
 #include <QAccessible>
 #include <QApplication>
+#include <QComboBox>
 #include <QGuiApplication>
 #include <QItemSelectionModel>
 #include <QListWidget>
@@ -29,6 +30,7 @@ using namespace ludus::foundation;
 constexpr int32 ROW_COUNT = 3;
 constexpr int32 COLUMN_COUNT = 3;
 constexpr int32 RESET_COUNT = 3;
+constexpr int32 REFRESH_COUNT = 3;
 
 void CheckNativeSelection(QAbstractItemView& inoutWidget, usize expectedCount)
 {
@@ -85,7 +87,7 @@ TEST_CASE("Cocoa accessibility preserves selected cells and borrowed table ident
                 }
             }
             table.selectAll();
-            CheckNativeSelection(table, ROW_COUNT * COLUMN_COUNT);
+            CheckNativeSelection(table, static_cast<usize>(ROW_COUNT) * static_cast<usize>(COLUMN_COUNT));
             table.clearSelection();
             CheckNativeSelection(table, 0);
             table.selectRow(1);
@@ -120,5 +122,67 @@ TEST_CASE("Cocoa accessibility preserves selected cells and borrowed table ident
         CheckNativeSelection(tree, COLUMN_COUNT);
         tree.clear();
         CheckNativeSelection(tree, 0);
+    }
+}
+
+TEST_CASE("Cocoa accessibility keeps table-owned cells until their table releases them",
+          "[editor][accessibility][native]")
+{
+    if (QGuiApplication::platformName() != QStringLiteral("cocoa"))
+    {
+        SKIP("The native Cocoa bridge is required");
+    }
+    REQUIRE(ludus::editor::InstallQtAccessibilityOwnershipFix() == true);
+    QAccessible::setActive(true);
+
+    // Editor selectors rebuild their items with clear() and addItem() on refresh. Each
+    // step drains its own pool, as the editor's run loop does between events, so the
+    // native rows that Cocoa replaces on a model change are really released.
+    QComboBox combo;
+    QAccessibleInterface* listOrNull = nullptr;
+    @autoreleasepool
+    {
+        for (int32 row = 0; row < ROW_COUNT; ++row)
+        {
+            combo.addItem(QString::number(row));
+        }
+        combo.show();
+        QApplication::processEvents();
+        listOrNull = QAccessible::queryAccessibleInterface(combo.view());
+    }
+    REQUIRE(listOrNull != nullptr);
+    QAccessibleTableInterface* tableOrNull = listOrNull->tableInterface();
+    REQUIRE(tableOrNull != nullptr);
+    QAccessibleTableInterface& table = *tableOrNull;
+    for (int32 refresh = 0; refresh < REFRESH_COUNT; ++refresh)
+    {
+        INFO("refresh " << refresh);
+        QAccessible::Id cellIdentity = 0;
+        @autoreleasepool
+        {
+            QAccessibleInterface* cellOrNull = table.cellAt(0, 0);
+            REQUIRE(cellOrNull != nullptr);
+            cellIdentity = QAccessible::uniqueId(cellOrNull);
+            // A native client reading the item replaces the row's placeholder with a real cell element.
+            id native = [NSClassFromString(@"QMacAccessibilityElement") elementWithId:cellIdentity];
+            REQUIRE(native != nil);
+            // Inserting a row rebuilds the native table model; the old rows are released with the pool.
+            combo.addItem(QString::number(ROW_COUNT));
+        }
+        // The Qt table still caches the cell, so releasing native rows must not delete it.
+        QAccessibleInterface* cachedCellOrNull = QAccessible::accessibleInterface(cellIdentity);
+        REQUIRE(cachedCellOrNull != nullptr);
+        CHECK(cachedCellOrNull == table.cellAt(0, 0));
+        @autoreleasepool
+        {
+            // Qt 6.12.0 dereferences every cached cell while removing rows.
+            combo.clear();
+            CHECK(QAccessible::accessibleInterface(cellIdentity) == nullptr);
+            for (int32 row = 0; row < ROW_COUNT; ++row)
+            {
+                combo.addItem(QString::number(row));
+            }
+            QApplication::processEvents();
+        }
     }
 }

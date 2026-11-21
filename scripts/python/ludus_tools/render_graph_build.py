@@ -154,6 +154,7 @@ class Snapshot:
         self.generated = set()
         self.language_tool = None
         self.language_reports = {}
+        self.language_configurations = {}
         self.executable_language_programs = {}
         self.total = 0
 
@@ -306,7 +307,7 @@ def validate_manifest(value):
             f'increase budgets.programs to at least {program_count} or reuse existing programs')
     for program in value['programs']:
         keys(program, ('id', 'stage', 'source', 'function', 'input', 'output', 'bindings'), 'program',
-             ('capture_warmup_setting', 'light_transformer', 'graph_resources'))
+             ('capture_warmup_setting', 'light_transformer', 'configuration_values', 'graph_resources'))
         if 'capture_warmup_setting' in program:
             setting = next((item for item in value.get('settings', [])
                             if item['id'] == program['capture_warmup_setting']), None)
@@ -1348,13 +1349,14 @@ def build_package(manifest, output, *, helper, compiler, validator=None, spirv_c
             # Report-only attribution: miss, local cache hit, or reuse of a key this build already resolved.
             requests, loaded_keys, compile_seconds = {}, set(), {}
             for pid, program in sorted(programs.items()):
+                closure = closures[pid]
+                configuration_reads = language.configuration_reads(snapshot, closure)
                 for target in sorted(value['profiles']):
                     if program.get('native_ray_pipeline') and target != 'metal':
                         continue
                     if program.get('native_ray_profile') and target not in ('metal', 'spirv'):
                         continue
                     checkpoint(cancel)
-                    closure = closures[pid]
                     used = {program['input'], *(b['schema'] for b in program['bindings'])}
                     if program['stage'] == 'vertex':
                         used.add(program['output'])
@@ -1366,6 +1368,8 @@ def build_package(manifest, output, *, helper, compiler, validator=None, spirv_c
                                           and not (target in ('metal', 'wgsl', 'dxil') and k == 'tool/spirv-val')
                                           and not (target != 'dxil' and k in ('tool/dxcompiler.dll', 'tool/dxil.dll'))
                                           and not (target != 'glsl' and not (program.get('native_ray_queries') or program.get('software_ray_queries')) and ('spirv-cross' in k or k.endswith('spirv_cross_toolchain.json')))}}
+                    if configuration_reads:
+                        key_data['lusl_configuration_reads'] = configuration_reads
                     key = identity(key_data)
                     entries[(pid, target)] = key
                     if key in pending_keys:

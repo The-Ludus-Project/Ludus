@@ -102,8 +102,15 @@ struct ResourceSpelling final
 };
 
 /// Every resource type name.
+/// The Slang team's Special Types reference describes depth textures and comparison samplers:
+/// https://docs.shader-slang.org/en/stable/external/slang/docs/language-reference/types-special.html
 inline constexpr ResourceSpelling RESOURCE_SPELLINGS[] = {
     { .Name = "Texture2D", .Kind = ResourceKind::Texture2D, .HasElement = true },
+    { .Name = "Texture3D", .Kind = ResourceKind::Texture3D, .HasElement = true },
+    { .Name = "TextureCube", .Kind = ResourceKind::TextureCube, .HasElement = true },
+    { .Name = "Texture2DArray", .Kind = ResourceKind::Texture2DArray, .HasElement = true },
+    { .Name = "DepthTexture2D", .Kind = ResourceKind::DepthTexture2D, .HasElement = false },
+    { .Name = "SamplerComparisonState", .Kind = ResourceKind::ComparisonSampler, .HasElement = false },
     { .Name = "RWTexture2D", .Kind = ResourceKind::RWTexture2D, .HasElement = true },
     { .Name = "SamplerState", .Kind = ResourceKind::Sampler, .HasElement = false },
     { .Name = "ConstantBuffer", .Kind = ResourceKind::ConstantBuffer, .HasElement = true },
@@ -116,6 +123,33 @@ inline constexpr ResourceSpelling RESOURCE_SPELLINGS[] = {
 
 /// The LUSL (and Slang) name of a resource kind, such as `Texture2D`.
 [[nodiscard]] std::string_view GetResourceName(ResourceKind kind) noexcept;
+
+/// Number of coordinates for sampling a color texture, or zero for other resources.
+[[nodiscard]] constexpr foundation::uint32 GetTextureSampleWidth(ResourceKind kind) noexcept
+{
+    constexpr foundation::uint32 VOLUME_COORDINATES = 3;
+    switch (kind)
+    {
+        case ResourceKind::Texture2D:
+            return 2;
+        case ResourceKind::Texture3D:
+        case ResourceKind::TextureCube:
+        case ResourceKind::Texture2DArray:
+            return VOLUME_COORDINATES;
+        default:
+            return 0;
+    }
+}
+
+/// Number of components in a level-zero texture size, or zero for other resources.
+[[nodiscard]] constexpr foundation::uint32 GetTextureSizeWidth(ResourceKind kind) noexcept
+{
+    if (kind == ResourceKind::RWTexture2D || kind == ResourceKind::TextureCube || kind == ResourceKind::DepthTexture2D)
+    {
+        return 2;
+    }
+    return GetTextureSampleWidth(kind);
+}
 
 /// True for resources that shaders write: RWTexture2D and RWStructuredBuffer.
 [[nodiscard]] constexpr bool IsWritableResource(ResourceKind kind) noexcept
