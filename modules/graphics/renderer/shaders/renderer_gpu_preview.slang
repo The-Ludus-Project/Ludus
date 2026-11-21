@@ -300,6 +300,14 @@ void CountGraphFailure(uint reason)
 {
     graphFailures[min(reason, uint(LUDUS_SCENE_FAILURE_REASON_COUNT - 1))].add(1u);
 }
+#    if defined(LUDUS_GRAPH_BOUNDS_CHECKS)
+float3 ReportGraphBoundsFailure(uint line)
+{
+    graphFailures[LUDUS_GRAPH_FAILURE_BOUNDS_LINE_WORD].max(line);
+    graphFailureReason = LUDUS_SCENE_FAILURE_LUSL_BOUNDS;
+    return float3(-1);
+}
+#    endif
 #    define LUDUS_COUNT_GRAPH_FAILURE(reason) CountGraphFailure(reason)
 #else
 #    define LUDUS_COUNT_GRAPH_FAILURE(reason)

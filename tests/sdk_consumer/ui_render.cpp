@@ -52,7 +52,10 @@ constexpr float64 PIXEL_CENTER = 0.5;
 constexpr uint8 UNORM_MAX = 255;
 /// Opaque solid fills have exact UNorm values; allow one byte for backend blend rounding.
 constexpr int32 BYTE_TOLERANCE = 1;
+#if !defined(LUDUS_PLATFORM_WEB)
+/// Native runs tick until the fixture finishes or this many seconds pass; the browser's main loop has no limit.
 constexpr int64 TIME_LIMIT_SECONDS = 20;
+#endif
 using Pixels = core::StaticArray<uint8, MAX_IMAGE_BYTES>;
 
 // The document matches modules/graphics/ui_render/tests/ui_render_tests.cpp: button A overflows

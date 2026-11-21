@@ -330,13 +330,18 @@ int main(int argc, char** argv)
         }
         else if (flag == "--startup-report")
         {
-            if (LUDUS_COMPILED_LOG_LEVEL > LUDUS_LOG_LEVEL_INFO)
+            // The build's log level is a constant; `if constexpr` with an else keeps MSVC's
+            // constant-condition (C4127) and unreachable-code (C4702) warnings quiet.
+            if constexpr (LUDUS_COMPILED_LOG_LEVEL > LUDUS_LOG_LEVEL_INFO)
             {
                 LUDUS_LOG_ERROR(ludus::foundation::logging::LOG_CORE,
                                 "--startup-report requires a build that includes info logging.");
                 return 1;
             }
-            isStartupReported = true;
+            else
+            {
+                isStartupReported = true;
+            }
         }
         else if (flag == "--pacing-report")
         {

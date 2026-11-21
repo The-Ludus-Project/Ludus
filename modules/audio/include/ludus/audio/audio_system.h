@@ -27,6 +27,13 @@ namespace ludus::audio
 {
 class AudioDebugSnapshotSink; // opt-in trace, declared in audio_debug.h
 
+/// Timing of a stream-group gain change or crossfade on the audio session clock.
+struct StreamRamp final
+{
+    uint64 StartFrame = 0;     ///< Absolute session frame at which the ramp begins.
+    uint32 DurationFrames = 0; ///< Session frames from start to target gain. Zero applies it immediately.
+};
+
 /// @brief Result of submitting a batch: the aggregate acceptance status plus the voice handles assigned to each
 /// Play record in submission order.
 ///
@@ -154,6 +161,44 @@ public:
     // NOLINTNEXTLINE(bugprone-easily-swappable-parameters): accepted public shape.
     [[nodiscard]] Status
     PlayStream(StreamHandle stream, uint32 busIndex, uint8 priority, float32 gain, VoiceHandle& outVoice) noexcept;
+
+    /// Start aligned looping streams as one voice. Gains are per-layer linear amplitudes.
+    /// All handles must be distinct, unplayed and compatible. The group advances only when
+    /// every member has data. Failure preserves outVoice. Call on the control owner and retire each stream after use.
+    [[nodiscard]] Status PlayStreamGroup(std::span<const StreamHandle> streams,
+                                         std::span<const float32> gains,
+                                         uint32 busIndex,
+                                         uint8 priority,
+                                         VoiceHandle& outVoice) noexcept;
+
+    /// Queue new linear gains for a stream group at an absolute session frame. Later
+    /// queued edits supersede an unapplied edit. A ramp advances in consumed group frames.
+    /// Call on the control owner. Queue rejection preserves the pending edit.
+    [[nodiscard]] Status
+    SetStreamGroupGains(VoiceHandle voice, std::span<const float32> gains, StreamRamp ramp) noexcept;
+
+    /// Schedule an entire prepared group as the replacement for outgoing, on its bus and
+    /// priority. The ramp duration sets the linear crossfade length in session frames. A zero
+    /// duration cuts at the accepted frame. Failure preserves outVoice and leaves all incoming streams available for
+    /// retry.
+    [[nodiscard]] Status ScheduleStreamGroup(std::span<const StreamHandle> streams,
+                                             std::span<const float32> gains,
+                                             VoiceHandle outgoing,
+                                             StreamRamp ramp,
+                                             VoiceHandle& outVoice) noexcept;
+
+    /// Admit a prepared incoming stream for a hard cut from a live outgoing stream on its
+    /// bus, with its priority and gain. The sole control owner supplies an absolute session
+    /// frame. One incoming plan may claim an outgoing voice. The renderer seals the plan at
+    /// the beginning of the control quantum containing the transition. Query the incoming
+    /// voice for the applied start frame. Capacity or validation failure preserves playback.
+    [[nodiscard]] Status
+    ScheduleStreamTransition(StreamHandle incoming, VoiceHandle outgoing, uint64 frame, VoiceHandle& outVoice) noexcept;
+
+    /// Edit an admitted transition on the control owner. Zero cancels it before sealing.
+    /// TooLate means the renderer has sealed it. A successfully cancelled
+    /// incoming stream retires through the usual voice/stream lifecycle.
+    [[nodiscard]] Status ReviseStreamTransition(VoiceHandle incoming, uint64 frame) noexcept;
 
     // --- Cancellation (always available; design section 4) --------------
     /// @brief Stop uses a per-slot generation mailbox independent of normal queue room.

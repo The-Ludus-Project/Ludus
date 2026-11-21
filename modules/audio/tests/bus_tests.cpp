@@ -220,3 +220,46 @@ TEST_CASE("The applied sequence acknowledges a user-gain batch after its control
     REQUIRE(IsOk(sys.GetBusMeter(1, meter)));
     CHECK(meter.TargetGain == 0.25F);
 }
+
+TEST_CASE("Every renderer command publication advances the acknowledgement sequence",
+          "[audio][bus][native-audio-worker]")
+{
+    // A publication path that skipped the owner count would let the applied count overtake a batch's ticket.
+    AudioSystem sys;
+    const Tree tree(1.0F, 1.0F);
+    InitWithTree(sys, tree);
+    constexpr usize LAYERS = 2;
+    constexpr uint16 STEREO = 2;
+    const Array<uint8> wave = test::MakeSineWav(DEFAULT_SAMPLE_RATE, STEREO, 8192);
+    StreamDescriptor descriptor;
+    descriptor.Looping = true;
+    StreamHandle layers[LAYERS];
+    for (StreamHandle& layer : layers)
+    {
+        REQUIRE(IsOk(sys.PrepareStream(std::span<const uint8>(wave.data(), wave.size()), descriptor, layer)));
+    }
+    const float32 gains[LAYERS] = {0.5F, 0.25F};
+    VoiceHandle music{};
+    REQUIRE(IsOk(sys.PlayStreamGroup(layers, gains, 1, PRIORITY_MAX, music)));
+    REQUIRE(IsOk(sys.SetStreamGroupGains(music, gains, {})));
+    Command gain{};
+    gain.Kind = CommandKind::SetBusUserGain;
+    gain.BusIndex = 1;
+    gain.BusGain = 0.5F;
+    const BatchResult accepted = sys.TrySubmitBatch({&gain, 1});
+    REQUIRE(IsOk(accepted.Result));
+
+    Array<float32> out(static_cast<usize>(CONTROL_QUANTUM_FRAMES) * 2);
+    SystemSnapshot snapshot{};
+    sys.GetSystemSnapshot(snapshot);
+    for (uint32 boundary = 0; boundary < 8 && snapshot.QueueDepth != 0; ++boundary)
+    {
+        REQUIRE(IsOk(sys.RenderOffline(std::span<float32>(out.data(), out.size()),
+                                       ChannelLayout::Stereo,
+                                       BufferLayout::Interleaved,
+                                       CONTROL_QUANTUM_FRAMES)));
+        sys.GetSystemSnapshot(snapshot);
+    }
+    REQUIRE(snapshot.QueueDepth == 0);
+    CHECK(sys.GetAppliedSequence() == accepted.Sequence);
+}

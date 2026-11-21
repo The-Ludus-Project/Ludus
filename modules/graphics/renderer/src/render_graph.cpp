@@ -3,6 +3,7 @@
 
 #include "../shaders/renderer_gpu_preview_layout.h"
 #include "internal/gpu_denoiser.h"
+#include "internal/gpu_preview_data.h"
 #include "internal/light_transformer_graph.h"
 #include "internal/ltc_table_data.h"
 #include "internal/render_graph_deferred.h"
@@ -2197,11 +2198,11 @@ Status RenderGraph::PollRayFailures(uint32 pass, RenderGraphRayFailures& outFail
         {
             return Status::Pending;
         }
-        StaticArray<uint32, MAX_RENDER_GRAPH_FAILURE_REASONS> pixels{};
+        StaticArray<uint32, LUDUS_GRAPH_FAILURE_WORDS> words{};
         const Status copied = status == Status::Ready ? rhi::CopyReadback(state.Device,
                                                                           state.FailureReadback,
-                                                                          reinterpret_cast<uint8*>(pixels.GetData()),
-                                                                          sizeof(pixels))
+                                                                          reinterpret_cast<uint8*>(words.GetData()),
+                                                                          sizeof(words))
                                                       : status;
         state.ReleaseFailureReadback();
         if (copied != Status::Ready)
@@ -2209,11 +2210,12 @@ Status RenderGraph::PollRayFailures(uint32 pass, RenderGraphRayFailures& outFail
             return copied;
         }
         RenderGraphRayFailures result;
-        result.Pixels = pixels;
+        result.LuslBoundsLine = words[LUDUS_GRAPH_FAILURE_BOUNDS_LINE_WORD];
         for (uint32 reason = 0; reason < MAX_RENDER_GRAPH_FAILURE_REASONS; ++reason)
         {
-            result.TotalPixels += pixels[reason];
-            result.MainReason = pixels[reason] > pixels[result.MainReason] ? reason : result.MainReason;
+            result.Pixels[reason] = words[reason];
+            result.TotalPixels += words[reason];
+            result.MainReason = words[reason] > words[result.MainReason] ? reason : result.MainReason;
         }
         outFailures = result;
         return Status::Ready;
@@ -2234,7 +2236,7 @@ Status RenderGraph::PollRayFailures(uint32 pass, RenderGraphRayFailures& outFail
         return found;
     }
     const Status requested =
-        rhi::RequestBufferReadback(state.Device, failures, 0, LUDUS_GRAPH_FAILURE_BYTES, state.FailureReadback);
+        rhi::RequestBufferReadback(state.Device, failures, 0, internal::GRAPH_FAILURE_BYTES, state.FailureReadback);
     if (requested != Status::Pending && requested != Status::Ready)
     {
         return requested;

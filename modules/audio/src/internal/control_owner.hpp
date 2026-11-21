@@ -1,4 +1,5 @@
 #pragma once
+#include <ludus/foundation/containers/static_array.hpp>
 
 // The control owner's private runtime state and renderer, per
 // .kiro/specs/audio/design.md sections 3-11. This aggregates the SPSC command
@@ -76,6 +77,9 @@ struct QueuedCommand final
     float32 Peak = 0.0F;
     StreamData* Stream = nullptr;
     // Update payload.
+    ludus::foundation::StaticArray<float32, STREAM_CAPACITY> LayerGains{};
+    uint32 LayerRamp = 0;
+    bool HasLayerGains = false;
     bool SetGain = false;
     bool SetRate = false;
     bool SetPriority = false;

@@ -935,7 +935,6 @@ bool ReferenceCaptureWindow::startRasterCapture(const QSize& requestedSize, QSiz
     return true;
 #else
     static_cast<void>(requestedSize);
-    static_cast<void>(samples);
     static_cast<void>(outExtent);
     outError = QStringLiteral("Comparison needs the native editor's project render graph viewport.");
     return false;
