@@ -260,7 +260,7 @@ Status Context::TrySetDocument(std::span<const Element> elements, Viewport viewp
         buffer.Boxes[index] = {element.Id, bounds, clip, element.SemanticRole, visible, enabled};
         if (visible && element.Fill.A > 0)
         {
-            buffer.Paint[buffer.PaintCount++] = {element.Id, painted, element.Fill};
+            buffer.Paint[buffer.PaintCount++] = {element.Id, painted, element.Fill, clip};
         }
     }
     buffer.Count = elements.size();

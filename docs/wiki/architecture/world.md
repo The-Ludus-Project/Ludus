@@ -10,6 +10,7 @@ shared by the wiki and offline readers.
 - [level data](../../architecture/level-data.md)
 - [frame/tick policy](../../architecture/frame-update.md)
 - [World environment, climate and weather](../../architecture/world-environment.md)
+- [Regional climate and deterministic weather](../../modules/gameplay/weather.md)
 - [sequencer, cinematic tracks and controlled image capture proposal](../../architecture/sequencer-cinematics.md)
 - [the reference application](../../examples/world-demo.md)
 - [gameplay foundation extension](../../architecture/gameplay-foundations.md)

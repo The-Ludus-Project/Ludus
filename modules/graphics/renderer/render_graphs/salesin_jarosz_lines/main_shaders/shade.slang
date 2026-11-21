@@ -180,9 +180,9 @@ float3 SampleBsdfStrategy(SceneContext scene,
                           bool isLineWeighted,
                           inout RayQueryContext queries)
 {
-    float3 directionSample = float3(SampleSceneRandom(launch, SHADE_BSDF_DIMENSION_FIRST),
-                                    SampleSceneRandom(launch, SHADE_BSDF_DIMENSION_FIRST + 1),
-                                    SampleSceneRandom(launch, SHADE_BSDF_DIMENSION_FIRST + 2));
+    float3 directionSample = float3(SampleUniformFloat01(launch, SHADE_BSDF_DIMENSION_FIRST),
+                                    SampleUniformFloat01(launch, SHADE_BSDF_DIMENSION_FIRST + 1),
+                                    SampleUniformFloat01(launch, SHADE_BSDF_DIMENSION_FIRST + 2));
     float3 sampledDirectionWorld =
         SampleStandardBsdf(shadingPoint.Material, shadingPoint.ViewDirectionWorld, directionSample);
     float sampledLengthSquared = dot(sampledDirectionWorld, sampledDirectionWorld);

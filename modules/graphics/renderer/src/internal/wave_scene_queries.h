@@ -12,6 +12,9 @@ struct WaveInteractionRegion final
     StaticArray<uint32, LUDUS_WAVE_REGION_TRIANGLES> Triangles;
     uint32 TriangleCount = 0;
 };
+/// Test whether any triangle intersects the cone. Ready publishes the hit flag; failure preserves it.
+[[nodiscard]] rhi::RasterStatus
+TestWaveInteraction(const ReferenceSceneData& scene, const math::EllipticalCone& cone, bool& outHasHit) noexcept;
 /// Two BVH walks: locate nearest axial interaction, then gather all intersections in its 2-major-radius slab.
 /// Ready includes an empty scene/miss. Invalid input, malformed hierarchy or capacity exhaustion fail without
 /// changing outRegion. All triangle IDs are sorted; shared edges and overlapping geometry are retained.

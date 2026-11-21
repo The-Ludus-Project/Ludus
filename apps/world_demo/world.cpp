@@ -3,10 +3,13 @@
 #include "internal/room_catalog.h"
 
 #include <ludus/content/procedural/environment/scatter.h>
+#include <ludus/foundation/base/byte_order.hpp>
 #include <ludus/foundation/base/checked_integer.hpp>
 #include <ludus/foundation/containers/borrowed_view.hpp>
 #include <ludus/foundation/containers/sort.hpp>
+#include <ludus/foundation/containers/static_array.hpp>
 #include <ludus/foundation/math/addressed_random.hpp>
+#include <ludus/foundation/math/random_checkpoint.hpp>
 #include <ludus/foundation/math/scalar.hpp>
 #include <ludus/foundation/profiling/profiling.hpp>
 
@@ -398,6 +401,15 @@ Status GameWorld::prepareScatter(WorldSeed worldSeed, foundation::BorrowedView<c
         {
             if (mPlacements[index].Scope == tombstone.Scope)
             {
+                // A restored checkpoint may carry a tombstone this content cannot draw; reject it, keep no placement.
+                if (tombstone.Variant >= mLevel.Scatter.Layers[mPlacements[index].Layer].VariantCount ||
+                    tombstone.RegrowOrdinal == 0)
+                {
+                    mPlacements.Clear();
+                    mPlacementStates.Clear();
+                    mPlacementDigest = 0;
+                    return Status::InvalidConfiguration;
+                }
                 mPlacementStates[index].Variant = tombstone.Variant;
                 mPlacementStates[index].RegrowOrdinal = tombstone.RegrowOrdinal;
                 mPlacementStates[index].IsHarvested = tombstone.IsHarvested;
@@ -1823,5 +1835,223 @@ void Session::CancelLoad() noexcept
 {
     mCandidate = GameWorld{};
     mStage = LoadStage::Cancelled;
+}
+namespace
+{
+using foundation::math::RandomCheckpointStatus;
+using foundation::math::RandomEventRecord;
+constexpr usize SESSION_ENVELOPE_BYTES = SESSION_CHECKPOINT_ENVELOPE_FIELDS * sizeof(uint32);
+/// FNV-1a fold of one word into a content identity, byte by byte from the least significant.
+constexpr uint64 FoldIdentity(uint64 hash, uint64 value) noexcept
+{
+    for (usize byte = 0; byte < sizeof(uint64); ++byte)
+    {
+        hash = (hash ^ ((value >> (byte * BITS_PER_BYTE)) & BYTE_MASK)) * FNV_PRIME;
+    }
+    return hash;
+}
+constexpr uint64 ComputeCheckpointContentIdentity() noexcept
+{
+    uint64 hash = FNV_OFFSET_BASIS;
+    hash = FoldIdentity(hash, SESSION_CHECKPOINT_VERSION);
+    hash = FoldIdentity(hash, procedural::SCATTER_LAYOUT_VERSION);
+    hash = FoldIdentity(hash, RANDOM_DOMAIN_SCATTER_REGROW);
+    hash = FoldIdentity(hash, REGROW_VARIANT_DIMENSION);
+    for (const foundation::math::RandomDomain& domain : RANDOM_DOMAINS)
+    {
+        hash = FoldIdentity(hash, domain.Id);
+    }
+    for (const RoomCatalogEntry& room : ROOM_CATALOG)
+    {
+        hash = FoldIdentity(hash, room.Room);
+    }
+    return hash;
+}
+/// Sequential little-endian writer over a destination the caller has already sized.
+class CheckpointWriter final
+{
+public:
+    explicit CheckpointWriter(std::span<uint8> bytes) noexcept : mBytes(bytes) {}
+    template <foundation::core::UnsignedInteger ValueType>
+    void Write(ValueType value) noexcept
+    {
+        const bool isWritten = foundation::core::TryWriteLittleEndian(value, mBytes.subspan(mOffset));
+        LUDUS_ASSERT(isWritten == true);
+        static_cast<void>(isWritten);
+        mOffset += sizeof(ValueType);
+    }
+
+private:
+    std::span<uint8> mBytes;
+    usize mOffset = 0;
+};
+/// Sequential little-endian reader; a failed read consumes nothing.
+class CheckpointReader final
+{
+public:
+    explicit CheckpointReader(std::span<const uint8> bytes) noexcept : mBytes(bytes) {}
+    template <foundation::core::UnsignedInteger ValueType>
+    [[nodiscard]] bool TryRead(ValueType& outValue) noexcept
+    {
+        if (foundation::core::TryReadLittleEndian(mBytes.subspan(mOffset), outValue) == false)
+        {
+            return false;
+        }
+        mOffset += sizeof(ValueType);
+        return true;
+    }
+    [[nodiscard]] usize GetRemaining() const noexcept
+    {
+        return mBytes.size() - mOffset;
+    }
+
+private:
+    std::span<const uint8> mBytes;
+    usize mOffset = 0;
+};
+} // namespace
+uint64 Session::GetCheckpointContentIdentity() noexcept
+{
+    return ComputeCheckpointContentIdentity();
+}
+RandomCheckpointStatus Session::TrySaveCheckpoint(std::span<uint8> destination, usize& outWritten) noexcept
+{
+    recordTombstones();
+    foundation::core::StaticArray<RandomEventRecord, MAX_SESSION_TOMBSTONES> counters{};
+    for (usize i = 0; i < mTombstoneCount; ++i)
+    {
+        counters[i] = RandomEventRecord
+        {
+            .Owner = { .Domain = RANDOM_DOMAIN_SCATTER_REGROW, .Scope = mTombstones[i].Scope },
+            .NextEvent = mTombstones[i].RegrowOrdinal,
+        };
+    }
+    const foundation::math::RandomCheckpoint random
+    {
+        .RootSeed = Seed.Value,
+        .ContentIdentity = GetCheckpointContentIdentity(),
+        .Streams = {},
+        .Events = {counters.data(), mTombstoneCount},
+        .Identities = {},
+    };
+    usize randomBytes = 0;
+    const RandomCheckpointStatus measured = foundation::math::TryMeasureRandomCheckpoint(random, randomBytes);
+    if (measured != RandomCheckpointStatus::Success)
+    {
+        return measured;
+    }
+    const usize total =
+        SESSION_ENVELOPE_BYTES + randomBytes + sizeof(uint32) + mTombstoneCount * SESSION_TOMBSTONE_OVERRIDE_BYTES;
+    LUDUS_ASSERT(total <= MAX_SESSION_CHECKPOINT_BYTES);
+    if (destination.size() < total)
+    {
+        return RandomCheckpointStatus::CapacityExceeded;
+    }
+    CheckpointWriter envelope(destination.first(SESSION_ENVELOPE_BYTES));
+    envelope.Write(SESSION_CHECKPOINT_MAGIC);
+    envelope.Write(SESSION_CHECKPOINT_VERSION);
+    envelope.Write(static_cast<uint32>(total));
+    usize written = 0;
+    const RandomCheckpointStatus status =
+        foundation::math::TryWriteRandomCheckpoint(random,
+                                                   destination.subspan(SESSION_ENVELOPE_BYTES, randomBytes),
+                                                   written);
+    LUDUS_ASSERT(status == RandomCheckpointStatus::Success && written == randomBytes);
+    static_cast<void>(status);
+    CheckpointWriter overrides(destination.subspan(SESSION_ENVELOPE_BYTES + randomBytes));
+    overrides.Write(static_cast<uint32>(mTombstoneCount));
+    for (usize i = 0; i < mTombstoneCount; ++i)
+    {
+        overrides.Write(mTombstones[i].Scope);
+        overrides.Write(mTombstones[i].Variant);
+        overrides.Write(static_cast<uint8>(mTombstones[i].IsHarvested == true ? 1u : 0u));
+    }
+    outWritten = total;
+    return RandomCheckpointStatus::Success;
+}
+RandomCheckpointStatus Session::TryRestoreCheckpoint(std::span<const uint8> source) noexcept
+{
+    CheckpointReader envelope(source);
+    uint32 magic = 0;
+    uint32 version = 0;
+    uint32 total = 0;
+    if (envelope.TryRead(magic) == false || magic != SESSION_CHECKPOINT_MAGIC || envelope.TryRead(version) == false)
+    {
+        return RandomCheckpointStatus::Malformed;
+    }
+    if (version != SESSION_CHECKPOINT_VERSION)
+    {
+        return RandomCheckpointStatus::UnsupportedFormat;
+    }
+    if (envelope.TryRead(total) == false || total < SESSION_ENVELOPE_BYTES || total > source.size())
+    {
+        return RandomCheckpointStatus::Malformed;
+    }
+    const std::span<const uint8> body = source.subspan(SESSION_ENVELOPE_BYTES, total - SESSION_ENVELOPE_BYTES);
+    foundation::core::StaticArray<RandomEventRecord, MAX_SESSION_TOMBSTONES> counters{};
+    const foundation::math::RandomCheckpointStorage storage
+    {
+        .Streams = {},
+        .Events = {counters.data(), counters.size()},
+        .Identities = {},
+    };
+    foundation::math::RandomCheckpointContents contents;
+    const RandomCheckpointStatus status =
+        foundation::math::TryReadRandomCheckpoint(body, GetCheckpointContentIdentity(), storage, contents);
+    if (status != RandomCheckpointStatus::Success)
+    {
+        return status;
+    }
+    CheckpointReader overrides(body.subspan(contents.ByteCount));
+    uint32 overrideCount = 0;
+    if (overrides.TryRead(overrideCount) == false ||
+        overrides.GetRemaining() != static_cast<usize>(overrideCount) * SESSION_TOMBSTONE_OVERRIDE_BYTES)
+    {
+        return RandomCheckpointStatus::Malformed;
+    }
+    if (overrideCount != contents.EventCount)
+    {
+        return RandomCheckpointStatus::OwnerMismatch;
+    }
+    // Stage every tombstone; the reader already rejected repeated counter owners, so scopes are unique.
+    foundation::core::StaticArray<Tombstone, MAX_SESSION_TOMBSTONES> staged{};
+    for (usize i = 0; i < contents.EventCount; ++i)
+    {
+        uint64 scope = 0;
+        uint8 variant = 0;
+        uint8 harvested = 0;
+        const bool isRead = overrides.TryRead(scope) == true && overrides.TryRead(variant) == true &&
+                            overrides.TryRead(harvested) == true;
+        LUDUS_ASSERT(isRead == true);
+        static_cast<void>(isRead);
+        const RandomEventRecord& counter = counters[i];
+        if (counter.Owner.Domain != RANDOM_DOMAIN_SCATTER_REGROW || counter.Owner.Scope != scope)
+        {
+            return RandomCheckpointStatus::OwnerMismatch;
+        }
+        if (counter.NextEvent == 0 || harvested > 1u)
+        {
+            return RandomCheckpointStatus::InvalidRecord;
+        }
+        staged[i] = Tombstone
+        {
+            .Scope = scope,
+            .RegrowOrdinal = counter.NextEvent,
+            .Variant = variant,
+            .IsHarvested = harvested == 1u,
+        };
+    }
+    // Commit the reload: the restored state replaces the session's, and no stale world is recorded over it.
+    for (usize i = 0; i < contents.EventCount; ++i)
+    {
+        mTombstones[i] = staged[i];
+    }
+    mTombstoneCount = contents.EventCount;
+    Seed = WorldSeed{ .Value = contents.RootSeed };
+    mActive = GameWorld{};
+    mCandidate = GameWorld{};
+    mStage = LoadStage::Empty;
+    Driver.Reset();
+    return RandomCheckpointStatus::Success;
 }
 } // namespace ludus::world_demo

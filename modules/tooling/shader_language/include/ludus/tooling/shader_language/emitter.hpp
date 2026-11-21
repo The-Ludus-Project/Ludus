@@ -95,6 +95,8 @@ struct BindingRecord final
     ResourceKind Kind = ResourceKind::Texture2D;
     /// Binding slot in group zero, assigned in declaration order.
     foundation::uint32 Slot = 0;
+    /// Descriptor count at Slot. An array reserves this many consecutive native registers.
+    foundation::uint32 Count = 1;
 };
 
 /// @brief One vertex input attribute and its assigned location.

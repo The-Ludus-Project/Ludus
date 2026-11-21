@@ -54,6 +54,7 @@
 #include <QString>
 #include <QTabWidget>
 #include <QTemporaryDir>
+#include <QTest>
 #include <QThread>
 #include <QtEndian>
 
@@ -84,6 +85,9 @@ constexpr uint64 TEST_SERVICE_BUDGET_NANOSECONDS = 50'000'000;
 constexpr usize LUHDR_HEADER_BYTES = 256;
 /// Byte offset of the LUHDR01 flags word, and its centre-ray bit (scripts/reference-hdr).
 constexpr usize LUHDR_FLAGS_OFFSET = 44;
+constexpr usize LUHDR_TARGET_SAMPLES_OFFSET = 32;
+constexpr usize LUHDR_SAMPLE_COUNT_OFFSET = 12;
+constexpr uint32 LUHDR_PARTIAL_FLAG = 32;
 constexpr uint32 LUHDR_CENTER_RAYS_FLAG = 2;
 constexpr usize LUHDR_PIXEL_BYTES = 16;
 
@@ -796,6 +800,160 @@ TEST_CASE("Reference capture window offers the render graph source only with a p
     CHECK(window.findChild<QCheckBox*>(QStringLiteral("referenceCompare"))->isEnabled() == false);
 }
 
+TEST_CASE("RT1 sample presets edit only the next reference target", "[editor][reference-capture]")
+{
+    ReferenceCaptureWindow window(nullptr);
+    QComboBox* presetOrNull = window.findChild<QComboBox*>(QStringLiteral("referenceSamplePreset"));
+    QComboBox* sourceOrNull = window.findChild<QComboBox*>(QStringLiteral("referenceSource"));
+    QSpinBox* samplesOrNull = window.findChild<QSpinBox*>(QStringLiteral("referenceSamples"));
+    QSpinBox* graphSamplesOrNull = window.findChild<QSpinBox*>(QStringLiteral("referenceGraphSamples"));
+    QSpinBox* longSideOrNull = window.findChild<QSpinBox*>(QStringLiteral("referenceLongSide"));
+    QSpinBox* depthOrNull = window.findChild<QSpinBox*>(QStringLiteral("referenceMaxDepth"));
+    QComboBox* traversalOrNull = window.findChild<QComboBox*>(QStringLiteral("referenceTraversal"));
+    QCheckBox* centerRaysOrNull = window.findChild<QCheckBox*>(QStringLiteral("referenceCenterRays"));
+    REQUIRE(presetOrNull != nullptr);
+    REQUIRE(sourceOrNull != nullptr);
+    REQUIRE(samplesOrNull != nullptr);
+    REQUIRE(graphSamplesOrNull != nullptr);
+    REQUIRE(longSideOrNull != nullptr);
+    REQUIRE(depthOrNull != nullptr);
+    REQUIRE(traversalOrNull != nullptr);
+    REQUIRE(centerRaysOrNull != nullptr);
+    longSideOrNull->setValue(TEST_LONG_SIDE);
+    depthOrNull->setValue(TEST_DEPTH);
+    SelectTraversal(window, renderer::ReferenceTraversal::CpuOracle);
+    centerRaysOrNull->setChecked(true);
+
+    CHECK(presetOrNull->currentText() == QStringLiteral("Quick inspection"));
+    CHECK(samplesOrNull->value() == presetOrNull->currentData().toInt());
+    const int32 quickSamples = samplesOrNull->value();
+    presetOrNull->setCurrentText(QStringLiteral("Detailed comparison"));
+    CHECK(presetOrNull->currentText() == QStringLiteral("Detailed comparison"));
+    CHECK(samplesOrNull->value() == presetOrNull->currentData().toInt());
+    CHECK(samplesOrNull->value() > quickSamples);
+    const int32 detailedSamples = samplesOrNull->value();
+    presetOrNull->setCurrentText(QStringLiteral("Custom"));
+    CHECK(samplesOrNull->value() == detailedSamples);
+    CHECK(longSideOrNull->value() == TEST_LONG_SIDE);
+    CHECK(depthOrNull->value() == TEST_DEPTH);
+    CHECK(traversalOrNull->currentIndex() == static_cast<int32>(renderer::ReferenceTraversal::CpuOracle));
+    CHECK(centerRaysOrNull->isChecked() == true);
+
+    presetOrNull->setCurrentText(QStringLiteral("Quick inspection"));
+    samplesOrNull->setValue(TEST_SAMPLES);
+    CHECK(presetOrNull->currentText() == QStringLiteral("Custom"));
+    CHECK(samplesOrNull->value() == TEST_SAMPLES);
+    sourceOrNull->setCurrentIndex(CAPTURE_SOURCE_GRAPH_INDEX);
+    CHECK(presetOrNull->isHidden() == true);
+    CHECK(samplesOrNull->isHidden() == true);
+    CHECK(graphSamplesOrNull->isHidden() == false);
+    CHECK(graphSamplesOrNull->value() == ViewportReferenceSettings{}.Samples);
+    graphSamplesOrNull->setValue(1);
+    sourceOrNull->setCurrentIndex(CAPTURE_SOURCE_REFERENCE_INDEX);
+    CHECK(presetOrNull->isHidden() == false);
+    CHECK(presetOrNull->currentText() == QStringLiteral("Custom"));
+    CHECK(samplesOrNull->value() == TEST_SAMPLES);
+    CHECK(graphSamplesOrNull->value() == 1);
+}
+
+TEST_CASE("RT1 preset and manual captures preserve their accepted HDR settings",
+          "[editor][reference-capture][reference-compute][sample-presets]")
+{
+    rhi::Shutdown();
+    QTemporaryDir root;
+    REQUIRE(root.isValid() == true);
+    RenderScene scene;
+    tests::MakeLitScene(root.path(), scene);
+    RenderPreview preview;
+    REQUIRE(preview.SetScene(scene) == true);
+    preview.Resize(TEST_LONG_SIDE, TEST_LONG_SIDE);
+    REQUIRE(preview.Start() == true);
+    if (preview.AdmitOffscreenDevice() == false)
+    {
+        SKIP("no offscreen viewport GPU adapter");
+    }
+    ReferenceCaptureWindow window(&preview);
+    QComboBox* presetOrNull = window.findChild<QComboBox*>(QStringLiteral("referenceSamplePreset"));
+    QSpinBox* samplesOrNull = window.findChild<QSpinBox*>(QStringLiteral("referenceSamples"));
+    QSpinBox* longSideOrNull = window.findChild<QSpinBox*>(QStringLiteral("referenceLongSide"));
+    QSpinBox* depthOrNull = window.findChild<QSpinBox*>(QStringLiteral("referenceMaxDepth"));
+    REQUIRE(presetOrNull != nullptr);
+    REQUIRE(samplesOrNull != nullptr);
+    REQUIRE(longSideOrNull != nullptr);
+    REQUIRE(depthOrNull != nullptr);
+    longSideOrNull->setValue(TEST_LONG_SIDE);
+    depthOrNull->setValue(TEST_DEPTH);
+    const uint32 quickSamples = static_cast<uint32>(samplesOrNull->value());
+
+    QSignalSpy finished(&window, &ReferenceCaptureWindow::CaptureFinished);
+    REQUIRE(window.StartCapture() == true);
+    CHECK(presetOrNull->isEnabled() == false);
+    REQUIRE(WaitForCapture(window, finished) == true);
+    renderer::ReferenceCaptureInfo information;
+    REQUIRE(window.GetCapture().GetInfo(information) == true);
+    CHECK(information.Complete == true);
+    CHECK(information.TargetSamples == quickSamples);
+    CHECK(information.MinimumSamples == quickSamples);
+    CHECK(information.MaximumSamples == quickSamples);
+    CHECK(information.MaxDepth == TEST_DEPTH);
+    CHECK(information.Width == TEST_LONG_SIDE);
+    CHECK(information.Height == TEST_LONG_SIDE);
+
+    // Change the next capture before saving the completed one.
+    presetOrNull->setCurrentText(QStringLiteral("Detailed comparison"));
+    CHECK(samplesOrNull->value() > static_cast<int32>(quickSamples));
+    QString error;
+    const QString presetPath = root.filePath(QStringLiteral("preset.luhdr"));
+    REQUIRE(window.SaveCapture(presetPath, error) == true);
+    const QByteArray presetHdr = tests::ReadTestFile(presetPath);
+    REQUIRE(presetHdr.size() > static_cast<qsizetype>(LUHDR_HEADER_BYTES));
+    CHECK(qFromLittleEndian<uint32>(presetHdr.constData() + LUHDR_TARGET_SAMPLES_OFFSET) == quickSamples);
+
+    samplesOrNull->setValue(static_cast<int32>(quickSamples));
+    REQUIRE(presetOrNull->currentText() == QStringLiteral("Custom"));
+    REQUIRE(window.StartCapture() == true);
+    REQUIRE(WaitForCapture(window, finished) == true);
+    const QString manualPath = root.filePath(QStringLiteral("manual.luhdr"));
+    REQUIRE(window.SaveCapture(manualPath, error) == true);
+    CHECK(tests::ReadTestFile(manualPath) == presetHdr);
+
+    const uint32 partialTarget = static_cast<uint32>(samplesOrNull->maximum());
+    samplesOrNull->setValue(static_cast<int32>(partialTarget));
+    REQUIRE(window.StartCapture() == true);
+    // GPU progress can advance before the image readback is available to Save.
+    Array<renderer::ReferencePixel> partialPixels;
+    REQUIRE(QTest::qWaitFor(
+                [&window, &partialPixels, &error]() {
+                    return window.GetCapture().CopyPixels(partialPixels, error) == true &&
+                           partialPixels.IsEmpty() == false && partialPixels[0].Samples > 0;
+                },
+                static_cast<int32>(GPU_CAPTURE_TIMEOUT_MILLISECONDS)) == true);
+    REQUIRE(window.GetCapture().GetPhase() == ViewportReferencePhase::Tracing);
+    const QString partialPath = root.filePath(QStringLiteral("partial.luhdr"));
+    REQUIRE(window.SaveCapture(partialPath, error) == true);
+    const QByteArray partialHdr = tests::ReadTestFile(partialPath);
+    const qsizetype pixelCount = static_cast<qsizetype>(TEST_LONG_SIDE) * TEST_LONG_SIDE;
+    REQUIRE(partialPixels.GetSize() == static_cast<usize>(pixelCount));
+    REQUIRE(partialHdr.size() == static_cast<qsizetype>(LUHDR_HEADER_BYTES + pixelCount * LUHDR_PIXEL_BYTES));
+    CHECK(qFromLittleEndian<uint32>(partialHdr.constData() + LUHDR_TARGET_SAMPLES_OFFSET) == partialTarget);
+    CHECK((qFromLittleEndian<uint32>(partialHdr.constData() + LUHDR_FLAGS_OFFSET) & LUHDR_PARTIAL_FLAG) != 0);
+    for (qsizetype index = 0; index < pixelCount; ++index)
+    {
+        const uint32 count = qFromLittleEndian<uint32>(partialHdr.constData() + LUHDR_HEADER_BYTES +
+                                                       index * LUHDR_PIXEL_BYTES + LUHDR_SAMPLE_COUNT_OFFSET);
+        REQUIRE(count == partialPixels[static_cast<usize>(index)].Samples);
+        REQUIRE(count < partialTarget);
+    }
+    REQUIRE(QImage(ViewportReferenceCapture::GetDisplayImagePath(partialPath)).isNull() == false);
+
+    window.StopCapture();
+    presetOrNull->setCurrentText(QStringLiteral("Quick inspection"));
+    CHECK(samplesOrNull->value() == static_cast<int32>(quickSamples));
+    CHECK(window.GetCapture().GetPhase() == ViewportReferencePhase::Idle);
+    CHECK(window.SaveCapture(root.filePath(QStringLiteral("stopped.luhdr")), error) == false);
+    CHECK(tests::ReadTestFile(partialPath) == partialHdr);
+}
+
 TEST_CASE("Capture progress hides when idle, moves without a fraction before samples and fills once they are known",
           "[editor][reference-capture]")
 {
@@ -1035,6 +1193,11 @@ TEST_CASE("Supplied World completes reference capture with all reference modes",
     constexpr int64 SUPPLIED_CAPTURE_TIMEOUT_MILLISECONDS = 600000;
     REQUIRE(preview.Start() == true);
     REQUIRE(preview.AdmitOffscreenDevice() == true);
+#if defined(__APPLE__)
+    rhi::DeviceInfo deviceInfo;
+    REQUIRE(rhi::GetDeviceInfo(preview.GetDevice(), deviceInfo) == rhi::DeviceStatus::Ready);
+    REQUIRE(deviceInfo.Startup.SelectedBackend == rhi::Backend::Metal);
+#endif
     // LUDUS_REFERENCE_TEST_GRAPH keeps a supplied runtime graph resident while the window renders
     // RT1 and its Force raster comparison on the same device.
     const QString graphPath = qEnvironmentVariable("LUDUS_REFERENCE_TEST_GRAPH");
@@ -1112,6 +1275,10 @@ TEST_CASE("Supplied World completes reference capture with all reference modes",
         graphOrNull->Detach();
         return;
     }
+    const QString requestedSeed = qEnvironmentVariable("LUDUS_REFERENCE_TEST_SEED");
+    bool isValidSeed = false;
+    const uint64 seed = requestedSeed.toULongLong(&isValidSeed);
+    REQUIRE((requestedSeed.isEmpty() == true || isValidSeed == true));
     const QString selectedTraversal = qEnvironmentVariable("LUDUS_REFERENCE_TEST_TRAVERSAL");
     constexpr usize TRAVERSAL_COUNT = 3;
     bool isValidTraversal = false;
@@ -1132,9 +1299,17 @@ TEST_CASE("Supplied World completes reference capture with all reference modes",
         settings.Samples = requestedSamples > 0 ? static_cast<uint32>(requestedSamples) : DEFAULT_SUPPLIED_SAMPLES;
         settings.MaxDepth = requestedDepth > 0 ? static_cast<uint32>(requestedDepth) : DEFAULT_SUPPLIED_DEPTH;
         settings.Traversal = traversal;
+        if (isValidSeed == true)
+        {
+            settings.Seed = seed;
+        }
         ViewportReferenceCapture capture;
+        QElapsedTimer captureTimer;
+        captureTimer.start();
         REQUIRE(capture.Start(preview.GetDevice(), preview.GetSurface(), scene, view, extent, settings, error) == true);
         const ViewportReferencePhase phase = RunToEnd(capture, SUPPLIED_CAPTURE_TIMEOUT_MILLISECONDS);
+        const int64 elapsedMilliseconds = captureTimer.elapsed();
+        CAPTURE(elapsedMilliseconds);
         INFO(capture.GetError().toStdString());
         renderer::ReferenceCaptureInfo information;
         REQUIRE(capture.GetInfo(information) == true);

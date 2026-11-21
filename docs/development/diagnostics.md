@@ -129,6 +129,9 @@ out/host-tools/venv/bin/ctest --test-dir out/build/linux-clang-release-assert-te
 
 ### macOS Editor crash reporting
 
+See the [crash and incident reporting roadmap](../architecture/engineering-quality.md#crash-and-incident-reporting-roadmap)
+for Sentry rollout and planned coverage.
+
 Native macOS editor builds enable `LUDUS_EDITOR_CRASH_CAPTURE` by default. The
 editor registers with an external Crashpad handler **before QApplication starts**,
 so direct executable, Finder, IDE and `scripts/editor` launches share capture.
@@ -145,15 +148,23 @@ handler saves the minidump and handles optional HTTPS submission. Ludus never
 calls normal logging, a symbolizer, UI or network code on the failing thread.
 Linux and browser editors do not build this adapter.
 
-#### Configure the team's Sentry destination
+#### Choose a Sentry destination
 
-The maintainer creates a Sentry organization and **Native/C++** project, then
-copies the project DSN from its settings. This is a public ingestion credential:
-**never substitute an auth/API token**. Sentry's free Developer plan can be used
-within its current quotas; paid features are not required for ingestion.
-Submitting labmates do not need dashboard accounts.
+New native macOS Editor build directories default to the private Ludus team's
+Sentry project. Uploads are off until the user opts in. A fresh user sees the
+choice on first launch and can change it under **Help > Crash Reporting**.
+Submitting users do not need Sentry accounts.
 
-After normal editor setup, configure the destination for the distributed app:
+An existing CMake build directory keeps its cached destination. To use the
+Ludus team default there, reconfigure with `-DLUDUS_EDITOR_SENTRY_DSN=team` and
+rebuild the Editor. An explicit destination saved in **Help > Crash Reporting**
+takes precedence over the build default.
+
+Maintainers building a different distribution can select their own Native/C++
+project with the public ingestion DSN from its settings. Keep authorization
+tokens in the symbol-upload tooling.
+
+After normal Editor setup, configure and build the distribution with its DSN.
 
 ```sh
 out/host-tools/venv/bin/cmake --preset macos-clang-development \
@@ -162,21 +173,29 @@ out/host-tools/venv/bin/cmake --preset macos-clang-development \
 out/host-tools/venv/bin/cmake --build --preset macos-clang-development --target ludus_editor
 ```
 
-Replace the example DSN. Without one, capture still works locally.
+Replace the example DSN. Pass `-DLUDUS_EDITOR_SENTRY_DSN=` to build with local
+capture and no default destination.
 **Help > Crash Reporting** can also configure a local installation without
 rebuilding, show pending/uploaded counts and open local reports/logs. Production
 accepts HTTPS DSNs with no password, query or fragment. A destination change
-pauses this database immediately and takes effect after restart. Restart all
-open editor instances after changing destinations or defaults. Destinations use
+pauses uploads immediately and takes effect after restart. Choose **Restart Now**
+to reopen the Editor after its normal save and close checks, or choose **Later**
+to keep working and apply the destination at the next launch. Restart all open
+Editor instances after changing destinations or defaults. Destinations use
 separate databases: old reports are never silently sent to a new project.
 Previously unconfigured reports stay in the `unconfigured` folder and are not
 automatically migrated.
 
-On first launch with a configured destination, a dialog offers **Automatically
-send crash reports**. Saving with that box selected consents to pending and future
-submission; Cancel leaves submission off. Preferences persist across ordinary
-launches. Turning submission off pauses uploads without deleting pending reports;
-an already in-flight request may finish.
+On first launch with a destination that has no prior approval, choose **Send
+Crash Reports** or **Keep Reports on This Mac**. Keeping reports local is the
+default. Closing the prompt also leaves uploads off. Choosing **Send Crash
+Reports** enables pending and future uploads immediately, including minidumps
+from fatal assertions that crash the Editor.
+
+In **Help > Crash Reporting**, editing the destination clears the automatic
+upload checkbox so the user can make a new choice. Turning uploads off pauses
+submission without deleting pending reports. An already in-flight request may
+finish.
 
 #### Evidence, privacy and storage
 
@@ -226,6 +245,30 @@ local credentials or CI secrets, never in preferences/source control. The exampl
 does not upload source files. Service processing/symbol quotas still apply.
 Verify that a real Sentry event shows a caller stack with source lines before
 declaring a distributed build fully qualified.
+
+#### Prepare a macOS Editor tester package in CI
+
+Run **macOS Editor distribution** manually on `main` after batch promotion. It
+builds the Apple silicon Development Editor and stages the Qt libraries and crash
+handler. The run publishes a downloadable Actions artifact only after Sentry
+processes the executable and dSYM. The workflow checks the UUID and DWARF line
+information for each executable architecture after app deployment and signing.
+A missing credential, mismatched symbol or failed upload stops the run before
+the app archive is published. See [Sentry debug-file uploads][sentry-debug-files].
+
+In the GitHub `macos-editor-distribution` environment, allow deployments from
+`main` only. Set the `LUDUS_EDITOR_SENTRY_DSN` variable to the public DSN for the
+team's `ludus-editor` project and the `SENTRY_AUTH_TOKEN` secret to a Sentry
+organization token with debug-file upload access.
+
+The Actions artifact contains the ad-hoc-signed app for second-Mac
+qualification. Keep the exact package and the debug files available from the
+private Sentry project's **Debug Files** in team storage for as long as the
+build is supported. Sentry can expire inactive debug files. Confirm a consented
+crash from the tester package shows first-party files and lines in Sentry before
+qualifying distribution. Qt source lines require debug files for the shipped Qt.
+
+[sentry-debug-files]: https://docs.sentry.io/cli/dif/
 
 #### Distribute and validate normal launches
 
