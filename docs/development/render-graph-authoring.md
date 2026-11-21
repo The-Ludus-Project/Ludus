@@ -4719,7 +4719,7 @@ wrappers include it automatically. Authors do not read private packed buffers.
 | SelectEmissiveTriangle / EvaluateEmissiveTriangleSelectionPmf | [Power-weighted emissive triangle](#select-emissive-triangles-by-power) at an explicit dimension / that selection's probability for a triangle |
 | EvaluateEnvironment | Background radiance along a world direction: the Atmosphere's sky when the World has one that lights the scene, otherwise the World environment. See [World features](#world-features) |
 | ApplyAerialPerspective | Haze between a ray origin and a visible surface point: the surface radiance attenuated by the air plus the sky light it scatters. See [World features](#world-features) |
-| TraceClosest / TestVisibility | Closest or occlusion query with explicit miss/surface/failure status |
+| TraceClosest / TestVisibility | Closest or occlusion query with explicit miss/surface/failure status. `TestVisibility` accepts a `SurfaceHit` or a caller-offset world-space origin. |
 | FindVisibleLineIntervals / ClearLineVisibility | Visible parts of a world-space segment from a receiver, as sorted parameter intervals; see [Find the visible parts of a segment](#find-the-visible-parts-of-a-segment) |
 | SpawnSurfaceRay | Error-bound origin offset for a unit world direction and explicit maximum distance |
 | SampleSceneRandom / MakeCameraRay | Automatic invocation-stream draw or explicit random dimension / chosen subpixel camera ray |
@@ -5262,9 +5262,16 @@ float probability = light.Selection.SelectionPmf * light.Incident.ConditionalPro
 If you have a world-space point in metres, pass `positionWorld` in place of
 `shadingHit`. Both overloads are available in Slang and through
 `scene_shader.luslh`. Given the same position and random addresses, they return
-the same proposal. For a point sampled on an edge, construct the shadow ray
-with the origin and self-intersection rule for your edge model. The
-`SurfaceHit` form of `TestVisibility` uses the hit's triangle to offset the ray.
+the same proposal.
+
+For an edge, sample at the original `positionWorld` and compute the shadow-ray
+origin with your edge offset. Pass that final origin in metres to
+`TestVisibility(scene, queries, originWorld, light.Incident)`. This overload
+uses the supplied origin directly. It connects to the sampled endpoint for a
+finite light, including the usual mesh endpoint offset, and uses the sampled
+direction for an infinite light. `SceneQuery::Miss` means the connection is
+clear. The overload uses the same visibility query budget as the surface form
+and is available in Slang and LUSL.
 
 Reserve `SCENE_INCIDENT_LIGHT_DIMENSION_COUNT` slots for the default incident
 proposal. Mesh lights read all three slots and the environment reads the last
@@ -5273,9 +5280,9 @@ advances the invocation stream. If a needed address is exhausted, it latches the
 invocation failure. A source index outside the catalog returns no sample.
 
 Use the probability product after checking `light.Incident.HasSample`. At a
-surface hit, pass `shadingHit` and `light.Incident` to `TestVisibility` to trace
-the connection. The incident
-probability is a density per steradian for `IncidentLightMeasure::SolidAngle` and
+surface hit, pass `shadingHit` and `light.Incident` to `TestVisibility` to apply the
+triangle's origin offset. The incident probability is a density per steradian
+for `IncidentLightMeasure::SolidAngle` and
 a mass for `IncidentLightMeasure::Discrete`. Analytic delta samples have
 conditional mass one and zero competing solid-angle density. For MIS after a
 BSDF sample, pass the trace result, original receiver position and same

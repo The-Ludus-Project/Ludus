@@ -1028,9 +1028,13 @@ LightSample SampleIncidentLight(SceneContext scene, SelectedLight selected, Surf
     result.HasSample = incident.HasSample;
     return result;
 }
-/// Trace visibility to a conditional incident sample using the invocation's query budget.
+/// Trace visibility from the supplied world-space ray origin in metres to an incident light sample.
+/// Pass the final origin, including any offset needed for the originating geometry. For a finite light,
+/// aim at the sampled endpoint and offset a mesh endpoint toward the origin. For an infinite light, use
+/// the sampled direction and the scene's shadow range. Uses the invocation's visibility query budget.
+/// Returns Miss for a clear connection, Surface for an occluder, or Failure with queries.HasFailed latched.
 SceneQuery
-TestVisibility(SceneContext scene, inout RayQueryContext queries, SurfaceHit receiver, IncidentLightSample light)
+TestVisibility(SceneContext scene, inout RayQueryContext queries, float3 originWorld, IncidentLightSample light)
 {
     if (queries.HasFailed == true)
         return SceneQuery::Failure;
@@ -1045,12 +1049,16 @@ TestVisibility(SceneContext scene, inout RayQueryContext queries, SurfaceHit rec
         return SceneQuery::Failure;
     }
     queries.VisibilityQueries += 1;
-    Ray shadow = SpawnSurfaceRay(receiver, light.DirectionWorld, 0);
+    Ray shadow;
+    shadow.OriginWorld = originWorld;
+    shadow.MinDistanceWorld = 0;
+    shadow.DirectionWorld = light.DirectionWorld;
+    shadow.MaxDistanceWorld = 0;
     if (light.HasFiniteEndpoint == true)
     {
         float3 endpointWorld = light.PositionWorld;
         if (light.TriangleIndex != SCENE_INVALID_INDEX)
-            endpointWorld = OffsetPositionWorld(endpointWorld, light.TriangleIndex, -light.DirectionWorld);
+            endpointWorld = OffsetPositionWorld(endpointWorld, light.TriangleIndex, originWorld - endpointWorld);
         float3 offsetWorld = endpointWorld - shadow.OriginWorld;
         shadow.DirectionWorld = NormalizeOrZero(offsetWorld);
         shadow.MaxDistanceWorld = length(offsetWorld);
@@ -1081,8 +1089,15 @@ TestVisibility(SceneContext scene, inout RayQueryContext queries, SurfaceHit rec
     }
     return hit.Triangle == SCENE_INVALID_INDEX ? SceneQuery::Miss : SceneQuery::Surface;
 }
-/// Trace visibility to a sample returned by the legacy explicit-coordinate overload.
-SceneQuery TestVisibility(SceneContext scene, inout RayQueryContext queries, SurfaceHit receiver, LightSample light)
+/// Trace visibility from a surface hit, offsetting the ray origin using the hit's triangle.
+SceneQuery
+TestVisibility(SceneContext scene, inout RayQueryContext queries, SurfaceHit receiver, IncidentLightSample light)
+{
+    return TestVisibility(scene, queries, SpawnSurfaceRay(receiver, light.DirectionWorld, 0).OriginWorld, light);
+}
+/// Trace visibility from a caller-offset world-space origin to a legacy explicit-coordinate light sample.
+/// Uses the same endpoint handling, query budget and result codes as the incident sample overload.
+SceneQuery TestVisibility(SceneContext scene, inout RayQueryContext queries, float3 originWorld, LightSample light)
 {
     IncidentLightSample incident = (IncidentLightSample)0;
     incident.TriangleIndex = light.TriangleIndex;
@@ -1090,7 +1105,12 @@ SceneQuery TestVisibility(SceneContext scene, inout RayQueryContext queries, Sur
     incident.PositionWorld = light.PositionWorld;
     incident.HasFiniteEndpoint = light.HasFiniteEndpoint;
     incident.HasSample = light.HasSample;
-    return TestVisibility(scene, queries, receiver, incident);
+    return TestVisibility(scene, queries, originWorld, incident);
+}
+/// Trace visibility to a legacy explicit-coordinate sample, offsetting the origin using the hit's triangle.
+SceneQuery TestVisibility(SceneContext scene, inout RayQueryContext queries, SurfaceHit receiver, LightSample light)
+{
+    return TestVisibility(scene, queries, SpawnSurfaceRay(receiver, light.DirectionWorld, 0).OriginWorld, light);
 }
 /// A world-space segment whose visibility from a receiver is queried, usually a chord of an emitter
 /// triangle. TriangleIndex is the packed index of the triangle that carries the segment, which is

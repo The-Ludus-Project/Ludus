@@ -229,8 +229,16 @@ extern slang
     SceneQuery TraceClosest(in SceneContext scene, inout RayQueryContext queries, in Ray ray, out SurfaceHit outHit);
     SceneQuery TestVisibility(in SceneContext scene,
                               inout RayQueryContext queries,
+                              in float32x3 originWorld,
+                              in IncidentLightSample light);
+    SceneQuery TestVisibility(in SceneContext scene,
+                              inout RayQueryContext queries,
                               in SurfaceHit receiver,
                               in IncidentLightSample light);
+    SceneQuery TestVisibility(in SceneContext scene,
+                              inout RayQueryContext queries,
+                              in float32x3 originWorld,
+                              in LightSample light);
     SceneQuery TestVisibility(in SceneContext scene,
                               inout RayQueryContext queries,
                               in SurfaceHit receiver,

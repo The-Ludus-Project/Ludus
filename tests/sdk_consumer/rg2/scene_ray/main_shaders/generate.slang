@@ -181,6 +181,39 @@ bool ValidateWorldPositionLightSampling(SceneContext scene, RayLaunch launch, Ra
     return incident.DistanceWorld > 0 && length(offsetWorld - incident.DirectionWorld * incident.DistanceWorld) <=
                                              CONNECTION_RELATIVE_TOLERANCE * incident.DistanceWorld;
 }
+bool ValidateWorldOriginVisibility(SceneContext scene, RayQueryContext queries)
+{
+    const float CONNECTION_DISTANCE_WORLD = 2;
+    Ray ray;
+    ray.OriginWorld = float3(0, 0, CONNECTION_DISTANCE_WORLD);
+    ray.DirectionWorld = float3(0, 0, -1);
+    ray.MinDistanceWorld = 0;
+    ray.MaxDistanceWorld = asfloat(asuint(CONNECTION_DISTANCE_WORLD) - 1);
+    RayQueryContext closestQueries = queries;
+    SurfaceHit hit;
+    SceneQuery expected = TraceClosest(scene, closestQueries, ray, hit);
+    if (expected == SceneQuery::Failure)
+        return false;
+
+    IncidentLightSample incident = (IncidentLightSample)0;
+    incident.TriangleIndex = SCENE_INVALID_INDEX;
+    incident.PositionWorld = float3(0);
+    incident.HasSample = true;
+    incident.HasFiniteEndpoint = true;
+    // The finite connection must be rebuilt from the origin, even when the sample points elsewhere.
+    incident.DirectionWorld = -ray.DirectionWorld;
+    RayQueryContext visibilityQueries = queries;
+    visibilityQueries.MaximumVisibilityQueries = visibilityQueries.VisibilityQueries + 1;
+    SceneQuery visibility = TestVisibility(scene, visibilityQueries, ray.OriginWorld, incident);
+    if (visibility != expected || visibilityQueries.HasFailed == true ||
+        visibilityQueries.VisibilityQueries != queries.VisibilityQueries + 1 ||
+        visibilityQueries.SurfaceQueries != queries.SurfaceQueries)
+        return false;
+    SceneQuery exhausted = TestVisibility(scene, visibilityQueries, ray.OriginWorld, incident);
+    return exhausted == SceneQuery::Failure && visibilityQueries.HasFailed == true &&
+           visibilityQueries.FailureReason == LUDUS_SCENE_FAILURE_VISIBILITY_BUDGET &&
+           visibilityQueries.VisibilityQueries == queries.VisibilityQueries + 1;
+}
 float3 GenerateRay(SceneContext scene, RayLaunch launch, inout RayQueryContext queries)
 {
     ScenePayload payload = (ScenePayload)0;
@@ -188,6 +221,8 @@ float3 GenerateRay(SceneContext scene, RayLaunch launch, inout RayQueryContext q
         ValidateSceneIntegerSampling(launch, queries) == false ||
         ValidateAddressedIncidentSampling(scene, launch, queries) == false ||
         ValidateWorldPositionLightSampling(scene, launch, queries) == false)
+        FailSceneQuery(queries, LUDUS_SCENE_FAILURE_AUTHORED_FIRST);
+    if (all(launch.PositionPixel == launch.ExtentPixel / 2) && ValidateWorldOriginVisibility(scene, queries) == false)
         FailSceneQuery(queries, LUDUS_SCENE_FAILURE_AUTHORED_FIRST);
     // Check automatic initialization against the independently addressed public API.
     float first = SampleSceneRandom(queries);
