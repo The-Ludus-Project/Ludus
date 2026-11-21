@@ -48,6 +48,10 @@ modules/graphics/renderer/src/internal/ltc_table_data.h
 modules/graphics/renderer/tests/ltc_table_tests.cpp
 modules/foundation/math/include/ludus/foundation/math/random_domains.hpp
 modules/foundation/math/tests/random_domains_tests.cpp
+modules/foundation/math/include/ludus/foundation/math/random_checkpoint.hpp
+modules/foundation/math/src/random_checkpoint.cpp
+modules/foundation/math/src/internal/random_mix.hpp
+modules/foundation/math/tests/random_checkpoint_tests.cpp
 modules/foundation/geometry
 modules/gameplay/sequencer
 modules/animation
