@@ -21,9 +21,9 @@ static const float OMV_MAXIMUM_DISTANCE_WORLD = 3.402823466e38;
 
 float3 SampleOmvRandom3(RayLaunch launch, uint firstDimension)
 {
-    return float3(SampleSceneRandom(launch, firstDimension),
-                  SampleSceneRandom(launch, firstDimension + 1),
-                  SampleSceneRandom(launch, firstDimension + 2));
+    return float3(SampleUniformFloat01(launch, firstDimension),
+                  SampleUniformFloat01(launch, firstDimension + 1),
+                  SampleUniformFloat01(launch, firstDimension + 2));
 }
 
 bool TryLoadOmvMaterial(SceneContext scene,
@@ -48,7 +48,7 @@ bool TrySampleOmvEmitter(SceneContext scene, RayLaunch launch, out SurfaceHit ou
     uint count = GetEmitterCount(scene);
     if (count == 0)
         return false;
-    uint emitterIndex = min(uint(SampleSceneRandom(launch, OMV_EMITTER_DIMENSION) * count), count - 1);
+    uint emitterIndex = min(uint(SampleUniformFloat01(launch, OMV_EMITTER_DIMENSION) * count), count - 1);
     float4 emitter = GetEmitter(scene, emitterIndex);
     float3 random = SampleOmvRandom3(launch, OMV_EMITTER_SHAPE_DIMENSION);
     float targetArea = random.x * emitter.z;
@@ -169,8 +169,8 @@ OmvTransport EvaluateOmvTransport(SceneContext scene, RayLaunch launch, inout Ra
                                                              : LUDUS_SCENE_FAILURE_GEOMETRY_SAMPLING_LIGHTS);
         return result;
     }
-    float2 jitterPixel =
-        float2(SampleSceneRandom(launch, OMV_CAMERA_DIMENSION), SampleSceneRandom(launch, OMV_CAMERA_DIMENSION + 1));
+    float2 jitterPixel = float2(SampleUniformFloat01(launch, OMV_CAMERA_DIMENSION),
+                                SampleUniformFloat01(launch, OMV_CAMERA_DIMENSION + 1));
     Ray cameraRay = MakeCameraRay(launch, jitterPixel);
     GeometrySamplingContext context;
     SceneQuery status = TraceClosest(scene, queries, cameraRay, context.Receiver);
