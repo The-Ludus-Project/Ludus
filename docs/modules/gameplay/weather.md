@@ -3,8 +3,7 @@
 Three Foundation-only modules implement the climate and weather slice of the
 [World environment architecture](../../architecture/world-environment.md#authored-climate-and-resolved-weather)
 ([#1704](https://github.com/The-Ludus-Project/Ludus/issues/1704)). They build
-for native and browser targets and are in-tree until the installed SDK play
-fixture mounts cooked climates.
+for native and browser targets and are installed in the SDK.
 
 | Target | Headers | Role |
 | --- | --- | --- |
@@ -140,6 +139,53 @@ revision, and leaves the state unchanged. Repair it by calling
 `ResetToAuthoredBaseline` or by loading a save that matches the mounted
 climate. Malformed saves fail with `InvalidState`.
 
+## Author a World climate
+
+A built-in World stores its climate in the optional root member `climate`. A
+World without it has no weather, and older Worlds keep their bytes. The Editor
+validates the member with `TryCookClimate` on load and on every edit, so a
+saved World always cooks for Play. It reports the first failing preset, schedule
+entry or region by name, with its repair. Durations are in Play's fixed ticks
+(`PLAYABLE_WORLD_TICKS_PER_SECOND`, 60 per second).
+
+```json
+"climate": {
+  "version": 1, "id": 1, "revision": 3,
+  "domain": { "minimumX": -2000, "minimumZ": -2000, "maximumX": 2000, "maximumZ": 2000 },
+  "defaultSchedule": 10,
+  "presets": [{ "id": 1, "revision": 2, "name": "Clear", "temperature": 22.5, "humidity": 0.35,
+                "groundWind": [2, 0, -1], "cloudWind": [4, 0.25, 2], "cloudCoverage": 0.1,
+                "cloudType": 0.9, "cloudDensity": 0.6, "fogExtinction": 0.00035,
+                "fogScaleHeight": 160, "precipitation": 0 }],
+  "schedules": [{ "id": 10, "name": "Lowlands", "loopStart": 0,
+                  "entries": [{ "preset": 1, "hold": 2400, "blend": 600 }] }],
+  "regions": [{ "id": 7, "name": "Valley", "priority": 1, "schedule": 10,
+                "bounds": { "minimumX": -800, "minimumZ": -500, "maximumX": 600, "maximumZ": 700 },
+                "feather": 200 }]
+}
+```
+
+The members and their units follow the cooker's source fields. Names are Editor
+labels and are not cooked. `WorldDocument::SetClimate` replaces or removes the
+member in one undoable **Edit Climate** step and maintains the revisions: an
+unchanged commit adds no history, the climate revision rises with each change,
+and each preset's revision rises when its values change.
+
+**Play.** Preparing a World for Play cooks its climate into the `.luplay`
+manifest (version 2): `climate` is `null`, or the LUWTH `bytes` as lowercase hex
+with their `sha256`. `DecodePlayableSnapshot` checks the digest and admits the
+bytes with `TryLoadClimate`. The first-person player then mounts them at Play's
+tick rate and reports the weather at the spawn. Advancing the weather with the
+session's ticks arrives with the Play session clock of
+[#1606](https://github.com/The-Ludus-Project/Ludus/issues/1606).
+
+**Installed SDK.** `Ludus::WeatherFormat`, `Ludus::ContentWeather` and
+`Ludus::GameplayWeather` are SDK components. The installed consumer
+(`tests/sdk_consumer/weather.cpp`) runs the golden corpus against them. An
+Editor test cooks the corpus climate spelled as a World member and checks that
+it produces the corpus bytes. The installed SDK therefore mounts the same
+cooked input that Editor Play packages.
+
 ## Pause, step, preview and reset
 
 The session's fixed ticks are the weather clock, so the session's controls
@@ -175,7 +221,7 @@ position, and samples at the same position agree whichever view asks.
 All authoritative arithmetic is integer fixed point. The only floating-point
 steps are quantizing authored values and sample positions, done as separate
 binary64 operations that no target can fuse. The golden corpus
-(`modules/gameplay/weather/tests/weather_golden_corpus.cpp`) runs a
+(`tests/sdk_consumer/weather_golden_corpus.cpp`) runs a
 200-tick route. Its climate has a feathered valley region overlapping a
 higher-priority ridge region, plus an interrupted local storm, a pending release,
 a rejected release, a temperature-only override and a rejected interruption.
@@ -196,12 +242,13 @@ runs the same corpus under Node as `ludus_web_weather_corpus`.
 
 ## Not yet covered
 
-The runtime and its session control semantics are in place. Still to come
-under [#1704](https://github.com/The-Ludus-Project/Ludus/issues/1704): Editor
-authoring and inspection through one World transaction; driving the weather
+The runtime, its session control semantics, the World climate member, Play
+packaging and the installed SDK components are in place. Still to come under
+[#1704](https://github.com/The-Ludus-Project/Ludus/issues/1704): the
+**Environment** World tool, for editing presets, schedules and regions with a
+region overlay, a preview time and a position inspector; and driving the weather
 from the Play session's controls, which the built-in player gains with the
-session clock of [#1606](https://github.com/The-Ludus-Project/Ludus/issues/1606);
-and mounting the same cooked files in installed SDK play. Seasonal schedule selection, altitude profiles, accumulated surface
+session clock of [#1606](https://github.com/The-Ludus-Project/Ludus/issues/1606). Seasonal schedule selection, altitude profiles, accumulated surface
 wetness ([#1707](https://github.com/The-Ludus-Project/Ludus/issues/1707)) and
 the shared wind provider
 ([#1705](https://github.com/The-Ludus-Project/Ludus/issues/1705)) are separate

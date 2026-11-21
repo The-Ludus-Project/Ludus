@@ -229,11 +229,13 @@ checks the cooked dependency closure and verifies the recorded local source inpu
 publication. Restore or reimport an input if it moved or changed. Preparation consumes
 existing artifacts. A failed or cancelled candidate leaves the previous output usable.
 
-A version-1 `.luplay` file starts with a compact UTF-8 JSON manifest terminated by LF.
+A version-2 `.luplay` file starts with a compact UTF-8 JSON manifest terminated by LF.
 The remaining bytes are the composed LUSCN payload, identified by `sceneSha256`.
 The manifest carries the applied World's digest, stable entity keys, spawn eye positions
 in metres, orientation quaternions (x, y, z, w), speeds in metres per second, light and
-Atmosphere inputs, and the logical asset IDs with their exact artifact keys. World identity
+Atmosphere inputs, the World's [cooked climate](../modules/gameplay/weather.md#author-a-world-climate)
+(`climate`: `null`, or LUWTH `bytes` as lowercase hex with their `sha256`), and the logical
+asset IDs with their exact artifact keys. World identity
 uses the v2 document UUID, the v1 imported level UUID, or the project-relative path for a
 v1 World without a level. Object bindings follow the decoded LUSCN object order.
 `DecodePlayableSnapshot` reads the file in memory without Qt, an asset catalog, or raw sources.

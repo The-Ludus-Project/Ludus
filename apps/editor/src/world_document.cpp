@@ -5,6 +5,7 @@
 #include "internal/material_inspection.h"
 #include "internal/world_aperture.h"
 #include "internal/world_celestial_light.h"
+#include "internal/world_climate.h"
 #include "internal/world_material_creation.h"
 #include "internal/world_probe_volume.h"
 #include "internal/world_terrain.h"
@@ -918,14 +919,16 @@ bool WorldDocument::Validate(const QJsonObject& candidate, QString& error) const
                                                                         QStringLiteral("schema"),
                                                                         QStringLiteral("document"),
                                                                         QStringLiteral("entities"),
-                                                                        QString(WORLD_EARTH_OBSERVER)}
+                                                                        QString(WORLD_EARTH_OBSERVER),
+                                                                        QString(WORLD_CLIMATE)}
                                                           : QStringList{QStringLiteral("version"),
                                                                         QStringLiteral("schema"),
                                                                         QStringLiteral("entities"),
                                                                         QStringLiteral("scene"),
                                                                         QStringLiteral("disabled_lights"),
                                                                         QStringLiteral("shared_coatings"),
-                                                                        QString(WORLD_EARTH_OBSERVER)};
+                                                                        QString(WORLD_EARTH_OBSERVER),
+                                                                        QString(WORLD_CLIMATE)};
     if (HasSchema() == false || (hasScopedIds == false && hasUuidRecords == false) ||
         Fields(candidate, rootFields) == false ||
         candidate.value(QStringLiteral("schema")) != Schema_.value(QStringLiteral("id")) ||
@@ -955,6 +958,22 @@ bool WorldDocument::Validate(const QJsonObject& candidate, QString& error) const
         return Fail(error,
                     QStringLiteral("The World's Earth date, time and location must be numbers within the Earth "
                                    "preset ranges. Set them on an Earth Sun or Earth Moon light."));
+    }
+    const QJsonValue climate = candidate.value(WORLD_CLIMATE);
+    if (climate.isUndefined() == false)
+    {
+        if (mIsBuiltInSchema == false)
+        {
+            return Fail(error,
+                        QStringLiteral("Regional climate needs the built-in World schema. Remove the climate member or "
+                                       "use the default World authoring contract."));
+        }
+        foundation::Array<foundation::uint8> cooked;
+        QString climateError;
+        if (TryCookWorldClimate(climate, cooked, climateError) == false)
+        {
+            return Fail(error, QStringLiteral("World climate: %1").arg(climateError));
+        }
     }
     const QJsonValue sharedCoatings = candidate.value(QStringLiteral("shared_coatings"));
     if (sharedCoatings.isUndefined() == false)
@@ -2146,6 +2165,23 @@ bool WorldDocument::SetLightSwitches(const LightSwitchSet& switches,
         candidate.insert(QStringLiteral("disabled_lights"), entries);
     }
     return commit(candidate, outError, "Switch Lights");
+}
+bool WorldDocument::SetClimate(const QJsonValue& climate, QString& outError)
+{
+    QJsonObject candidate = Draft_;
+    if (climate.isUndefined() == true)
+    {
+        candidate.remove(WORLD_CLIMATE);
+    }
+    else if (climate.isObject() == false)
+    {
+        return Fail(outError, QStringLiteral("World climate: choose a climate object or remove the climate."));
+    }
+    else
+    {
+        candidate.insert(WORLD_CLIMATE, ReviseWorldClimate(Draft_.value(WORLD_CLIMATE), climate.toObject()));
+    }
+    return commit(candidate, outError, "Edit Climate");
 }
 QJsonObject WorldDocument::ScenePlacement(const QJsonObject& entity) const
 {

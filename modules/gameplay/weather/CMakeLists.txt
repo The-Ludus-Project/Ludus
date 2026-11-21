@@ -2,8 +2,7 @@
 # climates, resolves schedules, feathered regions and overrides at World
 # positions with integer codes, emits addressed events and saves its state.
 # Foundation-only, so native and browser builds produce identical results
-# (docs/modules/gameplay/weather.md). In-tree until the installed SDK play
-# fixture mounts cooked climates (#1704).
+# (docs/modules/gameplay/weather.md). Installed in the SDK.
 add_library(ludus_gameplay_weather STATIC
     src/climate.cpp
     src/weather_resolve.cpp
@@ -11,6 +10,7 @@ add_library(ludus_gameplay_weather STATIC
     src/weather_state_codec.cpp
 )
 add_library(Ludus::GameplayWeather ALIAS ludus_gameplay_weather)
+set_target_properties(ludus_gameplay_weather PROPERTIES EXPORT_NAME GameplayWeather)
 target_sources(ludus_gameplay_weather PUBLIC FILE_SET public_headers TYPE HEADERS BASE_DIRS include
     FILES
         include/ludus/gameplay/weather/climate.h
@@ -24,12 +24,16 @@ ludus_apply_project_defaults(ludus_gameplay_weather)
 target_compile_options(ludus_gameplay_weather PRIVATE
     $<$<CXX_COMPILER_ID:Clang,AppleClang,GNU>:-ffp-contract=off>
     $<$<CXX_COMPILER_ID:MSVC>:/fp:precise>)
+install(TARGETS ludus_gameplay_weather EXPORT LudusTargets
+    ARCHIVE DESTINATION "${CMAKE_INSTALL_LIBDIR}"
+    FILE_SET public_headers DESTINATION "${CMAKE_INSTALL_INCLUDEDIR}")
 
-# The golden corpus is shared with tools/web-weather-probe, so the native test and the
-# browser run under Node check the same digest.
+# The golden corpus lives with the installed SDK consumer, which runs it against the installed
+# targets. The native test, tools/web-weather-probe and the Editor share this in-tree copy, so
+# every build checks the same digest.
 if(LUDUS_BUILD_TESTS OR LUDUS_BUILD_WEB_PROBES)
-    add_library(ludus_weather_golden_corpus OBJECT tests/weather_golden_corpus.cpp)
-    target_include_directories(ludus_weather_golden_corpus PUBLIC tests)
+    add_library(ludus_weather_golden_corpus OBJECT "${PROJECT_SOURCE_DIR}/tests/sdk_consumer/weather_golden_corpus.cpp")
+    target_include_directories(ludus_weather_golden_corpus PUBLIC "${PROJECT_SOURCE_DIR}/tests/sdk_consumer")
     target_link_libraries(ludus_weather_golden_corpus PUBLIC Ludus::ContentWeather Ludus::GameplayWeather)
     ludus_apply_project_defaults(ludus_weather_golden_corpus)
 endif()

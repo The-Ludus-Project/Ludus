@@ -7,6 +7,7 @@
 #include <ludus/foundation/threading/thread.hpp>
 #include <ludus/foundation/time/time.hpp>
 #include <ludus/gameplay/camera/control.hpp>
+#include <ludus/gameplay/weather/weather_simulation.h>
 #include <ludus/platform/base/window.h>
 
 #include <signal.h>
@@ -313,6 +314,41 @@ const char* DescribeCollisionRepair(WalkingController::StartStatus status) noexc
     return "";
 }
 
+/// Mount the World's cooked climate at Play's fixed tick rate and report the weather at the spawn. A World
+/// without a climate needs nothing. The climate was admitted by the same loader rules as the Editor's cooker.
+bool MountWeather(const PlayableSnapshot& snapshot,
+                  const PlayerSpawn& spawn,
+                  gameplay::weather::WeatherSimulation& outWeather) noexcept
+{
+    namespace weather = gameplay::weather;
+    if (snapshot.Climate.IsEmpty() == true)
+    {
+        return true;
+    }
+    weather::WeatherSample sample;
+    if (weather::WeatherSimulation::TryMount(snapshot.Climate,
+                                             content::scene_format::PLAYABLE_WORLD_TICKS_PER_SECOND,
+                                             0,
+                                             outWeather) != weather::WeatherSimulationStatus::Success ||
+        outWeather.TrySample(spawn.Pose.Position.X, spawn.Pose.Position.Z, sample) !=
+            weather::WeatherSimulationStatus::Success)
+    {
+        LUDUS_LOG_ERROR(LOG_PLAYER,
+                        "Cannot mount the World climate at spawn {}. Move the spawn inside the climate domain and "
+                        "prepare the World again.",
+                        spawn.Entity);
+        return false;
+    }
+    const weather::WeatherConditions conditions = weather::ConvertWeatherChannels(sample.Channels);
+    LUDUS_LOG_INFO(LOG_PLAYER,
+                   "Weather at spawn: {} C, {} mm/h precipitation, {} cloud coverage.",
+                   conditions.TemperatureCelsius,
+                   conditions.PrecipitationMillimetresPerHour,
+                   conditions.CloudCoverage);
+    return true;
+}
+
+// NOLINTNEXTLINE(bugprone-easily-swappable-parameters): the command line's .luplay path, then the spawn entity.
 bool Run(std::string_view path, std::string_view entity, bool shouldVerifyFixture) noexcept
 {
     PlayableSnapshot snapshot;
@@ -332,6 +368,11 @@ bool Run(std::string_view path, std::string_view entity, bool shouldVerifyFixtur
         if (status != WalkingController::StartStatus::Ready)
         {
             LUDUS_LOG_ERROR(LOG_PLAYER, "Cannot start at spawn {}. {}", entity, DescribeCollisionRepair(status));
+            return false;
+        }
+        gameplay::weather::WeatherSimulation weather;
+        if (MountWeather(snapshot, spawn, weather) == false)
+        {
             return false;
         }
         if (gShouldStop != 0)
