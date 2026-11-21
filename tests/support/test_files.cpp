@@ -1,5 +1,7 @@
 #include "test_files.hpp"
 
+#include <ludus/foundation/strings/utf8.hpp>
+
 #include <filesystem>
 #include <fstream>
 #include <random>
@@ -36,12 +38,18 @@ constexpr std::string_view HEX_DIGITS = "0123456789abcdef";
 [[nodiscard]] fs::path MakePath(std::string_view text)
 {
     // Interpret the text as UTF-8 on every host, including Windows, where a char path is ANSI.
-    return fs::path(std::u8string_view(reinterpret_cast<const char8_t*>(text.data()), text.size()));
+    // char storage cannot be read through char8_t, so copy the bytes into UTF-8 units.
+    std::u8string units(text.size(), u8'\0');
+    usize unitCount = 0;
+    const foundation::StringStatus status = foundation::TryCopyToUtf8Units(text, units, unitCount);
+    LUDUS_ASSERT(status == foundation::StringStatus::Ok);
+    static_cast<void>(status);
+    return fs::path(foundation::Move(units));
 }
 
 [[nodiscard]] std::string_view GetView(const std::u8string& text) noexcept
 {
-    return {reinterpret_cast<const char*>(text.data()), text.size()};
+    return foundation::GetByteView(text);
 }
 
 [[nodiscard]] bool AssignText(std::string_view text, foundation::String& outText) noexcept

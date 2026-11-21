@@ -3,6 +3,7 @@
 #include <ludus/foundation/base/types.h>
 
 #include <ludus/foundation/strings/status.hpp>
+#include <ludus/foundation/strings/utf8.hpp>
 
 #include <string_view>
 
@@ -14,6 +15,7 @@ namespace detail
 AssignBounded(char* destination, usize& size, usize capacity, std::string_view source) noexcept;
 [[nodiscard]] StringStatus
 AppendBounded(char* destination, usize& size, usize capacity, std::string_view source) noexcept;
+[[nodiscard]] StringStatus EraseBounded(char* inoutBytes, usize& inoutSize, usize offset, usize count) noexcept;
 } // namespace detail
 
 /// @brief Fixed-capacity inline bytes; Capacity excludes the extra terminator.
@@ -80,6 +82,30 @@ public:
     [[nodiscard]] StringStatus TryAppend(std::string_view value) noexcept
     {
         return detail::AppendBounded(mBytes, mSize, Capacity, value);
+    }
+    /// @brief Display assignment: copies the longest prefix of `value` that fits and ends on a UTF-8
+    /// code point boundary, overlap-safe.
+    ///
+    /// The only truncating assignment, named so that shortened text is a visible decision. Because the
+    /// cut never splits a sequence of the validated input, the stored bytes stay well-formed UTF-8.
+    /// Never fails; truncation keeps whole scalars and may leave up to three bytes of capacity unused.
+    /// Not a grapheme or display-width operation: a combining mark can be separated from its base.
+    /// @param value Validated text to copy; it may borrow this object's own bytes.
+    /// @param outIsTruncated Set to true when bytes of `value` were dropped, otherwise false.
+    void AssignTruncatedUtf8(Utf8View value, bool& outIsTruncated) noexcept
+    {
+        std::string_view kept = value.GetView();
+        const usize size = FindPrecedingUtf8Boundary(value, Capacity);
+        outIsTruncated = size < kept.size();
+        kept.remove_suffix(kept.size() - size);
+        const StringStatus status = detail::AssignBounded(mBytes, mSize, Capacity, kept);
+        static_cast<void>(status);
+    }
+    /// @brief Removes `count` bytes starting at byte `offset` and closes the gap, as String::TryErase.
+    /// @return Ok; OutOfRange when the range extends beyond GetSize(), leaving the value unchanged.
+    [[nodiscard]] StringStatus TryErase(usize offset, usize count) noexcept
+    {
+        return detail::EraseBounded(mBytes, mSize, offset, count);
     }
     /// Sets the size to zero and writes the terminating zero at the start.
     void Clear() noexcept
