@@ -55,8 +55,9 @@ struct OrientationLayout final
 TryHitOrientationHandle(const OrientationLayout& layout, QPointF pointPixel, EditorAxisView& outView) noexcept;
 
 /// Paint the axes, a translucent disc behind them, and a ring on the handle of the current axis view
-/// when the camera looks exactly along an axis.
+/// when the camera looks exactly along an axis. hoveredViewOrNull paints a quiet halo on that handle.
 void PaintOrientationWidget(QPainter& inoutPainter,
                             const OrientationLayout& layout,
-                            const gameplay::camera::CameraSample& sample);
+                            const gameplay::camera::CameraSample& sample,
+                            const EditorAxisView* hoveredViewOrNull = nullptr);
 } // namespace ludus::editor

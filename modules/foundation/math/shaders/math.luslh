@@ -25,6 +25,8 @@ extern slang "math.slang"
     float32 ComputeErrorFunction(in float32 value);
     bool IsFiniteBits(in float32 value);
     bool IsFiniteBits(in float32x3 value);
+    bool IsNanBits(in float32 value);
+    bool IsInfBits(in float32 value);
     float32x3 NormalizeOrZero(in float32x3 v);
     bool HasPositiveComponent(in float32x3 v);
     float32 ComputeArctangent(in float32 x);

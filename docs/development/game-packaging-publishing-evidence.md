@@ -219,3 +219,114 @@ real pin on Linux x64, macOS arm64 and macOS Intel, runs only `butler version`
 with a clean environment, and verifies repeated installation preserves the
 existing executable. No login, live push or upload-transport qualification is
 part of these checks.
+
+## R5 independent browser release
+
+[Issue #1276](https://github.com/The-Ludus-Project/Ludus/issues/1276) uses
+Color Rally, a small generated CMake game linked to the installed browser
+SDK's public Platform and GraphicsRhi targets. The game explicitly requests
+WebGPU, renders the canvas through RHI, and increments the score and changes
+the presented color when the player presses Space. Its HTML exposes the
+controls and platform requirements before loading the game.
+
+### Generate and package Color Rally
+
+From the Ludus checkout, use a prepared `web-emscripten-release` build and
+install its SDK. Use a new project destination and keep the game worktree
+clean so the package records its source revision.
+
+```bash
+source out/host-tools/emsdk/emsdk_env.sh
+export PATH="$PWD/out/host-tools/venv/bin:$PATH"
+cmake --install out/build/web-emscripten-release
+export LUDUS_SDK_PREFIX="$PWD/out/install/web-emscripten-release"
+fixture=tests/sdk_consumer/hosted_release
+project=out/r5-game
+./scripts/ludus project create "$project" --name R5Game --engine 0.1.0 \
+    --components FoundationBase,GraphicsRhi,Platform
+cp "$fixture/main.cpp" "$project/src/main.cpp"
+cp "$fixture/index.html" "$fixture/browser.cmake" "$fixture/CMakeUserPresets.json" "$project/"
+printf '\ninclude(browser.cmake)\n' >> "$project/CMakeLists.txt"
+./scripts/ludus project release init "$project" --platform web
+git -C "$project" init
+git -C "$project" add -f CMakeUserPresets.json
+git -C "$project" add .
+git -C "$project" commit -m "Create independent Color Rally browser release"
+./scripts/ludus project package "$project" --profile web-release --version 0.1.0 \
+    --sdk "$LUDUS_SDK_PREFIX"
+```
+
+Run the [browser Release verifier](editor-game-releases.md)
+against the printed package directory, then extract its `game.zip` into an empty
+directory and serve only that directory over HTTP on localhost. From a fresh
+visit, use the keyboard to open **Controls and access**, activate **Start**,
+wait for the score, and press Space. Observe a score of one and a blue canvas.
+In the browser Network panel, check the runtime requests for `index.js` and
+`index.wasm`, including their paths, status and content types.
+
+Keep the SHA-256 from the Release verifier and upload those ZIP bytes directly
+to an authorized itch.io draft as the browser-playable file. In the actual
+draft embed, repeat the fresh-visit controls and gameplay checks, including
+user-triggered fullscreen and return to the page. Record parent and game origin
+and whether they match, the iframe's `sandbox`, `allow` and `allowfullscreen`,
+and relevant response restrictions. In both DevTools frame contexts record
+`isSecureContext` and `crossOriginIsolated`. Retain the browser, hardware,
+WebGPU adapter, flag state, network and gameplay results with the package
+digest. Omit private draft tokens, cookies and credentials from the evidence.
+See the [HTML iframe sandbox specification](https://html.spec.whatwg.org/multipage/iframe-embed-object.html#attr-iframe-sandbox)
+and the [itch.io HTML5 hosting guide](https://itch.io/docs/creators/html5).
+
+### Color Rally 0.1.0 evidence, 2026-11-19
+
+- Producer SDK: Ludus 0.1.0, `wasm32-unknown-emscripten` Release, engine
+  revision `b6c7a6d8ce14e7dcaf7df1da6bf5e42c3b27301f`, Emscripten 4.0.23.
+  The generated game worktree recorded clean revision
+  `9a1889dd11d379b08f6edf4aa5915f664280ecd4`.
+- `game.zip` (148,699 bytes) SHA-256
+  `63d3f723f1defd8fac4018b2b87931a915203e47cb28c34033b1d39c0b32e4ad`.
+  The Release verifier and a separate extraction into an empty directory passed.
+  The extracted JavaScript and Wasm SHA-256s matched the CMake build outputs.
+- Clean extraction, Edge 157.0.4341.60, macOS 26.6 arm64: Tab and Enter opened
+  **Controls and access** before startup. Enter on **Start** focused the canvas,
+  the game displayed score zero, and Space displayed score one with a blue
+  canvas. Both `/color-rally/index.js` and `/color-rally/index.wasm` returned
+  HTTP 200 from the extraction directory. Edge reported no console warnings or
+  errors during startup. The browser also requested an unshipped site favicon
+  and received HTTP 404. Fullscreen attempts in the automated local tab were
+  denied and showed the in-page fallback message while preserving the score.
+#### Hosted itch.io draft
+
+- Uploaded the original 148,699-byte `game.zip` to the unpublished
+  [Color Rally draft](https://alegruz.itch.io/color-rally) as its browser-playable
+  file. The original ZIP downloaded from itch.io matched the local file byte
+  for byte and had the same SHA-256 above.
+- On Edge 157.0.4341.60 arm64 (macOS 26.6, build 25G72, Apple M5), the
+  `edge://version` command line showed an empty flag-switch section and no GPU
+  override. DevTools in the game frame reported Apple, `metal-3`, and
+  `isFallbackAdapter: false` for the WebGPU adapter.
+- The runtime requests for `index.js` and `index.wasm` both returned HTTP 200.
+  The response types were `text/javascript; charset=utf-8` and
+  `application/wasm`, and both response hashes matched the archive. The
+  served `index.html` returned 200 and began with all 2,539 original HTML
+  bytes, verified by SHA-256. itch.io appended 87 bytes referencing its
+  `htmlgame.js` script.
+- The parent was `https://alegruz.itch.io` and the game frame was
+  `https://html-classic.itch.zone`, so the origins differ. The iframe had no
+  `sandbox` attribute and the game response had no Content-Security-Policy,
+  Permissions-Policy, COEP or COOP header. Both contexts reported
+  `isSecureContext: true` and `crossOriginIsolated: false`.
+  The iframe had `allowfullscreen` and its `allow` value was
+  `autoplay; fullscreen *; geolocation; microphone; camera; midi; monetization; xr-spatial-tracking; gamepad; gyroscope; accelerometer; xr; cross-origin-isolated; web-share`.
+  The game frame reported `document.fullscreenEnabled: true`. These are
+  observed host settings. The game did not exercise the other delegated
+  features.
+- From a fresh visit, the host page showed the controls and build requirements
+  before play. After **Run game**, keyboard navigation reached **Controls
+  and access**. Enter opened it, then Enter on **Start** focused the canvas.
+  Space changed the score from zero to one and showed a blue frame. The
+  640 × 540 embed had scrolling and itch.io's **Enter fullscreen** enabled.
+  That button entered fullscreen and Escape returned to the page with
+  score one. The host logged an unsupported screen-orientation lock during
+  fullscreen, but entry and exit worked. The game canvas's own **Fullscreen**
+  request was denied and showed its in-page fallback. The draft's access note
+  directs players to the verified itch.io control. The ZIP remained the same.

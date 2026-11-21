@@ -2,6 +2,7 @@
 #include "frame_pacing.h"
 #include "frame_renderer.h"
 #include "world.h"
+#include <ludus/foundation/base/compiler.h>
 #include <ludus/foundation/base/pointer.hpp>
 #include <ludus/graphics/rhi/device.h>
 #include <ludus/graphics/rhi/hosted_recorder.h>
@@ -63,6 +64,26 @@ public:
     {
         return mPresentReturn;
     }
+    /// First activation of a built World, on the same clock as presentation.
+    [[nodiscard]] LUDUS_INLINE foundation::time::Timestamp GetFirstWorldActivation() const noexcept
+    {
+        return mFirstWorldActivation;
+    }
+    /// First successful renderer preparation on this run.
+    [[nodiscard]] LUDUS_INLINE foundation::time::Timestamp GetFirstRendererReady() const noexcept
+    {
+        return mFirstRendererReady;
+    }
+    /// Initial Session load request, including World text decode and validation.
+    [[nodiscard]] LUDUS_INLINE foundation::time::Duration GetInitialLoadRequestDuration() const noexcept
+    {
+        return mInitialLoadRequestDuration;
+    }
+    /// Unit-quad upload submission through the renderer's first Ready poll.
+    [[nodiscard]] LUDUS_INLINE foundation::time::Duration GetQuadReadyDuration() const noexcept
+    {
+        return mFrameRenderer.GetQuadReadyDuration();
+    }
     /// Backend chosen by the device; meaningful once the device has reported Ready.
     [[nodiscard]] graphics::rhi::Backend GetSelectedBackend() const noexcept
     {
@@ -88,6 +109,9 @@ private:
     bool mIsRendererReady = false;
     LoopPacing mPacing;
     foundation::time::Timestamp mPresentReturn;
+    foundation::time::Timestamp mFirstWorldActivation;
+    foundation::time::Timestamp mFirstRendererReady;
+    foundation::time::Duration mInitialLoadRequestDuration;
     uint64 mPresentedFrames = 0;
     uint64 mPacedPresentedFrames = 0;
     uint64 mInputFrame = 0;

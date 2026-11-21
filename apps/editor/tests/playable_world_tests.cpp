@@ -90,6 +90,12 @@ TEST_CASE("Playable World freezes an applied glTF placement and admits only a co
     foundation::float32 expectedSpeed = 0;
     REQUIRE(ReadWorldFirstPersonPlayer(world, spawn, expectedCamera, expectedSpeed, error) == true);
     REQUIRE(CreateWorldObject(world, entropy, QStringLiteral("Directional Light"), sun, error) == true);
+    const QJsonObject sunEntity = world.Entity(sun);
+    QJsonObject sunComponents = sunEntity.value("components"_L1).toObject();
+    QJsonObject sunLight = sunComponents.value("light"_L1).toObject();
+    sunLight.insert(WORLD_RASTER_SHADOWS, false);
+    sunComponents.insert("light"_L1, sunLight);
+    REQUIRE(world.Edit(sun, sunComponents, sunEntity.value("name"_L1).toString(), error) == true);
     REQUIRE(CreateWorldObject(world, entropy, QStringLiteral("Atmosphere"), sky, error) == true);
     const QJsonObject skyEntity = world.Entity(sky);
     QJsonObject components = skyEntity.value("components"_L1).toObject();
@@ -125,6 +131,8 @@ TEST_CASE("Playable World freezes an applied glTF placement and admits only a co
     CHECK(material.EmissionTexture < accepted.Scene.Textures.GetSize());
     CHECK(accepted.Atmosphere.IsEnabled == true);
     CHECK(accepted.Atmosphere.SunSourceId == ComputeEntitySourceId(sun));
+    REQUIRE(accepted.RasterUnshadowedLightIds.GetSize() == 1);
+    CHECK(accepted.RasterUnshadowedLightIds[0] == accepted.Atmosphere.SunSourceId);
     CHECK(accepted.Atmosphere.Clouds.IsEnabled == true);
     CHECK(static_cast<foundation::float64>(accepted.Atmosphere.Clouds.BaseHeightMetres) == CLOUD_BASE_METRES);
     CHECK(accepted.Atmosphere.Clouds.ExtinctionPerMetre ==

@@ -27,7 +27,7 @@ remain authoritative. Line references drift; symbol names are the stable anchors
   (uniform), `SampleIncidentLight`, `EvaluateLightPdfSolidAngle`,
   `EvaluateEnvironmentPdfSolidAngle`, `EvaluateEmission`, `EvaluateMaterial`,
   `EvaluateStandardBsdf`, `SampleStandardBsdf`, `SpawnSurfaceRay` and the
-  explicit-address `SampleSceneRandom` overloads (`scene_shader.slang`).
+  explicit-address helper `SampleUniformFloat01` (`scene_shader.slang`).
 - **Packed BVH.** `PackGpuScene` (`gpu_preview_services.h`) writes the
   `ReferenceBvhNode` array at `Offsets.x` (three `float4` words per node: lower
   bound and one child index, upper bound and the other, triangle range) and `Order`
@@ -794,8 +794,8 @@ masked-scene parity test under both strategies (see D5).
 
 `RANDOM_MAX_DIMENSION = 0xffff` (FoundationMath `math.slang`, mirrored by C++
 `RandomMaxDimension`). `TryAdvanceSceneRandomDimension` fails only above it,
-and the explicit-address `SampleSceneRandom` overloads require dimensions no
-greater than it. D8b uses dimensions 0-14, so the layout stands unchanged.
+and `SampleUniformFloat01` requires a dimension at or below it. D8b uses
+dimensions 0-14, so the layout stands unchanged.
 
 ### 4.6 Line query cost
 

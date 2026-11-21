@@ -2,7 +2,8 @@
 # (docs/architecture/terrain-generation.md#ordered-pipeline): the addressed
 # gradient-noise elevation recipe, derived slope/drainage/wetness fields and
 # material rules with bounded patch palettes, and the T2 river channel network
-# and carving (terrain_rivers.h). Foundation-only, so it builds for
+# and carving (terrain_rivers.h), and versioned page cooking into the Ludus::TerrainFormat
+# manifest and page pack (terrain_cook.h). Foundation-only, so it builds for
 # native and browser targets. In-tree only until an SDK consumer needs it.
 add_library(ludus_content_terrain STATIC
     src/terrain_tile.cpp
@@ -11,6 +12,7 @@ add_library(ludus_content_terrain STATIC
     src/terrain_fields.cpp
     src/terrain_materials.cpp
     src/terrain_rivers.cpp
+    src/terrain_cook.cpp
 )
 add_library(Ludus::ContentTerrain ALIAS ludus_content_terrain)
 target_sources(ludus_content_terrain PUBLIC FILE_SET public_headers TYPE HEADERS BASE_DIRS include
@@ -21,9 +23,11 @@ target_sources(ludus_content_terrain PUBLIC FILE_SET public_headers TYPE HEADERS
         include/ludus/content/terrain/terrain_fields.h
         include/ludus/content/terrain/terrain_materials.h
         include/ludus/content/terrain/terrain_rivers.h
+        include/ludus/content/terrain/terrain_cook.h
 )
 target_link_libraries(ludus_content_terrain
-    PUBLIC Ludus::FoundationBase Ludus::FoundationContainers Ludus::FoundationMath)
+    PUBLIC Ludus::FoundationBase Ludus::FoundationContainers Ludus::FoundationMath Ludus::FoundationHash
+    PRIVATE Ludus::TerrainFormat)
 ludus_apply_project_defaults(ludus_content_terrain)
 # Keep the canonical decode reproducible and opposite ray edge functions antisymmetric.
 set_property(SOURCE src/terrain_tile.cpp src/terrain_surface.cpp APPEND PROPERTY COMPILE_OPTIONS
@@ -38,9 +42,10 @@ if(LUDUS_BUILD_TESTS)
         tests/terrain_fields_tests.cpp
         tests/terrain_materials_tests.cpp
         tests/terrain_rivers_tests.cpp
+        tests/terrain_cook_tests.cpp
     )
     target_link_libraries(ludus_content_terrain_tests
-        PRIVATE Ludus::ContentTerrain Catch2::Catch2WithMain)
+        PRIVATE Ludus::ContentTerrain Ludus::TerrainFormat Catch2::Catch2WithMain)
     ludus_apply_project_defaults(ludus_content_terrain_tests)
     ludus_enable_test_exceptions(ludus_content_terrain_tests)
     add_test(NAME ludus_content_terrain_tests COMMAND ludus_content_terrain_tests)

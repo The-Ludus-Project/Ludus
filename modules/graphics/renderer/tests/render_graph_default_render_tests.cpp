@@ -681,8 +681,11 @@ TEST_CASE("default clustered deferred adds the baked probe volume to GI Probe Re
         for (uint32 texel = 0; texel < PROBE_TEXELS; ++texel)
         {
             const usize offset = (usize{probe} * PROBE_TEXELS + texel) * TEXEL_BYTES;
-            atlasPixels[offset] = 255;
-            atlasPixels[offset + 3] = texel < AMBIENT_CUBE_TEXELS ? 255 : 0;
+            constexpr uint8 FULL_UNORM = 255;
+            atlasPixels[offset] = FULL_UNORM;
+            atlasPixels[offset + 1] = texel < AMBIENT_CUBE_TEXELS ? 0 : FULL_UNORM;
+            atlasPixels[offset + 2] = texel < AMBIENT_CUBE_TEXELS ? 0 : FULL_UNORM;
+            atlasPixels[offset + TEXEL_BYTES - 1] = FULL_UNORM;
         }
     }
     inputs.ProbeVolume.Grid = grid;

@@ -196,8 +196,10 @@ Complete the initial architecture through the following owner-backed slices.
 The scalar implementation above is the starting point; each remaining slice
 needs a real consumer and acceptance evidence before it is considered complete.
 
-1. Add a real string/container consumer with owned fallible candidates, semantic
-   owner validation, diagnostic paths, and a measured memory budget.
+1. The [World identity migration manifest](object-handles-uuid.md#stage-3-uuid-authoring-records)
+   is the owned string and container consumer. Its production reader stages
+   both tables, validates the owner invariants, and reports diagnostic paths
+   and peak requested heap bytes before publishing a replacement.
 2. Add schema history and migrations around a real durable-save consumer. Specify
    and fixture-test exact binary framing, fixed scalar widths, byte order, kind
    tags, limits, and approved retired-field handling before declaring a format.

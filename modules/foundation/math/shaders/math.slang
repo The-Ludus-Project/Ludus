@@ -38,6 +38,16 @@ bool IsFiniteBits(float3 value)
 {
     return IsFiniteBits(value.x) == true && IsFiniteBits(value.y) == true && IsFiniteBits(value.z) == true;
 }
+// Strip the sign bit before comparing the IEEE binary32 infinity and NaN encodings.
+static const uint FLOAT_MAGNITUDE_BITS = 0x7fffffffu;
+bool IsNanBits(float value)
+{
+    return (asuint(value) & FLOAT_MAGNITUDE_BITS) > FLOAT_EXPONENT_BITS;
+}
+bool IsInfBits(float value)
+{
+    return (asuint(value) & FLOAT_MAGNITUDE_BITS) == FLOAT_EXPONENT_BITS;
+}
 float3 NormalizeOrZero(float3 v)
 {
     float s = dot(v, v);

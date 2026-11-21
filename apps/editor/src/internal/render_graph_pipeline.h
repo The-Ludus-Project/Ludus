@@ -4,6 +4,7 @@
 
 #include "internal/render_graph_pipeline_node.h"
 #include "internal/render_graph_scene_query_budgets.h"
+#include "internal/render_graph_shader_language.h"
 
 #include <QJsonArray>
 #include <QJsonObject>
@@ -44,8 +45,8 @@ public:
     void AddSceneQueryBudgets(const RenderGraphSceneQueryBudgets& budgets);
 
 Q_SIGNALS:
-    /// A completed edit proposes the complete node; the document may reject unsafe port changes.
-    void Edited(const QJsonObject& node);
+    /// A completed edit proposes the node and its current selection for new program sources.
+    void Edited(const QJsonObject& node, RenderGraphShaderLanguage newShaderLanguage);
     /// Double-clicking a shader part requests its current source by assignment ID; no draft edit is made.
     void ShaderOpenRequested(const QString& shaderId);
     /// A completed budget edit proposes the shared technique's limits; no node fields change.

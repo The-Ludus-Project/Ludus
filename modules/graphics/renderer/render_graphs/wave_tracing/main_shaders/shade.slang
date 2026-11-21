@@ -138,9 +138,9 @@ float3 TraceOpticalSurfacePath(SceneContext scene, RayLaunch launch, inout RayQu
         }
         if (mode == 2 || depth + 1 == WT_PATH_VERTICES)
             break;
-        float3 samples = float3(SampleSceneRandom(launch, dimension + WAVE_CONTINUATION_FIRST),
-                                SampleSceneRandom(launch, dimension + WAVE_CONTINUATION_FIRST + 1),
-                                SampleSceneRandom(launch, dimension + WAVE_CONTINUATION_FIRST + 2));
+        float3 samples = float3(SampleUniformFloat01(launch, dimension + WAVE_CONTINUATION_FIRST),
+                                SampleUniformFloat01(launch, dimension + WAVE_CONTINUATION_FIRST + 1),
+                                SampleUniformFloat01(launch, dimension + WAVE_CONTINUATION_FIRST + 2));
         StandardBsdfTransportSample continuation =
             SampleStandardBsdfTransport(material, viewWorld, samples, MakeWaveMaterialRandom(launch, depth));
         // Refraction must also leave through the geometric back side.

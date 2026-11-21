@@ -1,3 +1,5 @@
+#include "../../../modules/graphics/renderer/shaders/probe_volume_layout.h"
+
 #include "editor_default_graph.h"
 #include "hybrid_diffuse_scene.h"
 #include "internal/graph_display_frames.h"
@@ -41,6 +43,7 @@
 
 #include <QApplication>
 #include <QComboBox>
+#include <QDataStream>
 #include <QDir>
 #include <QElapsedTimer>
 #include <QFile>
@@ -1094,6 +1097,39 @@ TEST_CASE("Native Lit probe GI follows a receiver and rejects bounce through a w
     CHECK(extraction.ShaderInputs.ProbeVolume.Grid.Spacing == litRoom.ProbeGrid.Spacing);
     reopened.Poll(litRoom);
     CHECK(reopened.GetReady() == saved);
+    // Use the real cache prefix and the legacy atlas extent to exercise the saved-cache admission path.
+    QFile cache(worldPath + QStringLiteral(".ludus-lighting"));
+    REQUIRE(cache.open(QIODevice::ReadWrite) == true);
+    constexpr qint64 ATLAS_HEADER_BYTES = sizeof(uint32) + sizeof(uint32) + sizeof(float32);
+    const qint64 atlasStart = cache.size() - saved->ProbeAtlas.Pixels.size() - ATLAS_HEADER_BYTES;
+    REQUIRE(cache.resize(atlasStart) == true);
+    REQUIRE(cache.seek(atlasStart) == true);
+    QDataStream stream(&cache);
+    stream.setByteOrder(QDataStream::LittleEndian);
+    stream.setFloatingPointPrecision(QDataStream::SinglePrecision);
+    constexpr uint32 LEGACY_ATLAS_WIDTH = 256;
+    constexpr uint32 LEGACY_FACE_WIDTH = 8;
+    constexpr uint32 LEGACY_PROBE_TEXELS = LUDUS_GI_PROBE_FACES * (1 + LEGACY_FACE_WIDTH * LEGACY_FACE_WIDTH);
+    const ludus::graphics::renderer::GiProbeGrid& grid = litRoom.ProbeGrid;
+    const uint32 probeCount = grid.Counts[0] * grid.Counts[1] * grid.Counts[2];
+    const uint32 legacyHeight = (probeCount * LEGACY_PROBE_TEXELS + LEGACY_ATLAS_WIDTH - 1) / LEGACY_ATLAS_WIDTH;
+    stream << LEGACY_ATLAS_WIDTH << legacyHeight << saved->ProbeAtlas.IrradianceScale;
+    const QByteArray legacyPixels(static_cast<qsizetype>(legacyHeight) * LEGACY_ATLAS_WIDTH *
+                                      ludus::content::scene_format::TEXEL_BYTES,
+                                  '\0');
+    REQUIRE(stream.writeRawData(legacyPixels.constData(), legacyPixels.size()) == legacyPixels.size());
+    cache.close();
+    WorldSurfaceBakeState legacy;
+    legacy.SetWorldPath(worldPath);
+    legacy.SetScene(litRoom);
+    CHECK(legacy.GetReady().isNull() == true);
+    REQUIRE(QTest::qWaitFor(
+                [&legacy, &litRoom]() {
+                    legacy.Poll(litRoom);
+                    return legacy.GetReady().isNull() == false;
+                },
+                BAKE_DEADLINE_MILLISECONDS) == true);
+    CHECK(legacy.GetReady()->ProbeAtlas.Pixels == saved->ProbeAtlas.Pixels);
     // Keep the receiver and geometry in place; move only the volume away from them.
     ludus::graphics::renderer::GiProbeGrid movedGrid = litRoom.ProbeGrid;
     constexpr float32 MOVED_GRID_ORIGIN_X_METRES = 10;
@@ -1141,7 +1177,7 @@ enum class ProbeDivider : uint8
 enum class ProbeVisibility : uint8
 {
     DepthMap,
-    SeamAwareDepthMap,
+    DistanceMoments,
     Exact,
 };
 struct ProbeQuad final
@@ -1159,6 +1195,8 @@ struct ProbeLookup final
 {
     float32 Irradiance = 0;
     uint32 AdmittedProbes = 0;
+    float32 FalseAdmission = 0;
+    float32 FalseRejection = 0;
 };
 constexpr float32 PROBE_ROOM_HALF_WIDTH_METRES = 3;
 constexpr float32 PROBE_WALL_HEIGHT_METRES = 3;
@@ -1178,15 +1216,15 @@ constexpr float32 PROBE_PATH_STEP_METRES = .1F;
 constexpr uint32 PROBE_REFERENCE_SEEDS = 16;
 constexpr uint32 PROBE_REFERENCE_WORKERS = 4;
 constexpr int32 PROBE_BAKE_DEADLINE_MILLISECONDS = 30000;
-// probe_volume_layout.h: six ambient-cube texels, then six square depth faces. The reference bake checks the
-// resulting atlas height, so a layout change fails here rather than misreading texels.
-constexpr uint32 PROBE_FACES = 6;
-constexpr uint32 PROBE_FACE_WIDTH = 8;
-constexpr uint32 PROBE_FACE_TEXELS = PROBE_FACE_WIDTH * PROBE_FACE_WIDTH;
-constexpr uint32 PROBE_TEXELS = PROBE_FACES + PROBE_FACES * PROBE_FACE_TEXELS;
-constexpr uint32 PROBE_ATLAS_WIDTH = 256;
-constexpr uint32 PROBE_DEPTH_CELLS = 2;
-constexpr float32 PROBE_DEPTH_BIAS_CELLS = .03125F;
+constexpr uint32 PROBE_FACES = LUDUS_GI_PROBE_FACES;
+constexpr uint32 PROBE_FACE_WIDTH = LUDUS_GI_PROBE_FACE_WIDTH;
+constexpr uint32 PROBE_FACE_TEXELS = LUDUS_GI_PROBE_FACE_TEXELS;
+constexpr uint32 PROBE_TEXELS = LUDUS_GI_PROBE_TEXELS;
+constexpr uint32 PROBE_ATLAS_WIDTH = LUDUS_GI_PROBE_ATLAS_WIDTH;
+constexpr uint32 PROBE_DEPTH_CELLS = LUDUS_GI_PROBE_DEPTH_CELLS;
+constexpr float32 PROBE_DEPTH_BIAS_CELLS = LUDUS_GI_PROBE_DEPTH_BIAS_CELLS;
+constexpr usize PROBE_FOOTPRINT_TAPS = 4;
+using ProbeFootprint = StaticArray<float32, PROBE_FOOTPRINT_TAPS>;
 constexpr uint32 PROBE_POSITIVE_Z_FACE = 4;
 constexpr usize PROBE_ALPHA_CHANNEL = 3;
 constexpr float32 UNORM_BYTE_MAX = 255;
@@ -1489,58 +1527,80 @@ bool IsSegmentBlocked(math::Vector3 fromWorld, math::Vector3 toWorld, const Prob
     }
     return false;
 }
-// CPU twin of renderer_lit.slang IsGiProbeVisible: one nearest texel of the dominant axis's depth face.
-bool IsFaceProbeVisible(const WorldProbeAtlas& atlas, uint32 probe, math::Vector3 offsetInCells, uint32 axis)
+float32 ComputeMomentVisibility(const ProbeFootprint& depths, float32 biasedDistance, const ProbeFootprint& weights)
 {
-    const float32 distanceInCells = math::Abs(GetComponent(offsetInCells, axis));
-    const uint32 face = 2 * axis + (GetComponent(offsetInCells, axis) < 0 ? 1 : 0);
-    // A neighbouring face reads its clamped edge texel.
-    const float32 u = math::Clamp(GetComponent(offsetInCells, (axis + 1) % 3) / distanceInCells, -1.F, 1.F);
-    const float32 v = math::Clamp(GetComponent(offsetInCells, (axis + 2) % 3) / distanceInCells, -1.F, 1.F);
-    const uint32 column =
-        math::Min(static_cast<uint32>((u * .5F + .5F) * static_cast<float32>(PROBE_FACE_WIDTH)), PROBE_FACE_WIDTH - 1);
-    const uint32 row =
-        math::Min(static_cast<uint32>((v * .5F + .5F) * static_cast<float32>(PROBE_FACE_WIDTH)), PROBE_FACE_WIDTH - 1);
-    const float32 depthInCells =
-        ReadProbeUnorm(atlas, probe, PROBE_FACES + face * PROBE_FACE_TEXELS + row * PROBE_FACE_WIDTH + column, 0) *
-        PROBE_DEPTH_CELLS;
-    return distanceInCells <= depthInCells + PROBE_DEPTH_BIAS_CELLS;
+    float32 mean = 0;
+    float32 secondMoment = 0;
+    for (usize tap = 0; tap < PROBE_FOOTPRINT_TAPS; ++tap)
+    {
+        mean += weights[tap] * depths[tap];
+        secondMoment += weights[tap] * depths[tap] * depths[tap];
+    }
+    const float32 delta = biasedDistance - mean;
+    const float32 variance = math::Max(0.F, secondMoment - mean * mean);
+    return delta <= 0 ? 1.F : variance / (variance + delta * delta);
 }
-// CPU twin of renderer_lit.slang IsGiProbeVisible: one nearest texel of the dominant axis's depth face. The
-// seam-aware variant also requires each face whose axis is within one edge texel of dominant to admit the probe.
-bool IsDepthMapProbeVisible(const WorldProbeAtlas& atlas,
-                            uint32 probe,
-                            math::Vector3 offsetInCells,
-                            bool shouldCheckSeams)
+
+float32 ComputeVisibleCoverage(const ProbeFootprint& depths, float32 biasedDistance, const ProbeFootprint& weights)
 {
-    const math::Vector3 magnitude = {math::Abs(offsetInCells.X),
-                                     math::Abs(offsetInCells.Y),
-                                     math::Abs(offsetInCells.Z)};
+    float32 coverage = 0;
+    for (usize tap = 0; tap < PROBE_FOOTPRINT_TAPS; ++tap)
+    {
+        if (biasedDistance <= depths[tap])
+        {
+            coverage += weights[tap];
+        }
+    }
+    return coverage;
+}
+
+// CPU twin of renderer_lit.slang. The moment comparator uses identical raw depths and footprint weights.
+float32 ComputeDepthMapProbeVisibility(const WorldProbeAtlas& atlas,
+                                       uint32 probe,
+                                       math::Vector3 offsetWorldInCells,
+                                       ProbeVisibility visibility)
+{
+    const math::Vector3 magnitude = {math::Abs(offsetWorldInCells.X),
+                                     math::Abs(offsetWorldInCells.Y),
+                                     math::Abs(offsetWorldInCells.Z)};
     const uint32 axis =
         magnitude.X >= magnitude.Y && magnitude.X >= magnitude.Z ? 0 : (magnitude.Y >= magnitude.Z ? 1 : 2);
     const float32 distanceInCells = GetComponent(magnitude, axis);
     if (distanceInCells == 0)
     {
-        return true;
+        return 1;
     }
-    if (IsFaceProbeVisible(atlas, probe, offsetInCells, axis) == false)
+    const auto computeFootprintCoordinate = [&](uint32 directionAxis) {
+        const float32 direction = GetComponent(offsetWorldInCells, directionAxis) / distanceInCells;
+        return math::Clamp((direction * .5F + .5F) * PROBE_FACE_WIDTH - .5F,
+                           0.F,
+                           static_cast<float32>(PROBE_FACE_WIDTH - 1));
+    };
+    const float32 u = computeFootprintCoordinate((axis + 1) % rr::GI_PROBE_DIMENSIONS);
+    const float32 v = computeFootprintCoordinate((axis + 2) % rr::GI_PROBE_DIMENSIONS);
+    const uint32 column = static_cast<uint32>(u);
+    const uint32 row = static_cast<uint32>(v);
+    const float32 columnFraction = u - static_cast<float32>(column);
+    const float32 rowFraction = v - static_cast<float32>(row);
+    const uint32 face = 2 * axis + (GetComponent(offsetWorldInCells, axis) < 0 ? 1 : 0);
+    const uint32 texel = PROBE_FACES + face * PROBE_FACE_TEXELS + row * PROBE_FACE_WIDTH + column;
+    ProbeFootprint depths;
+    for (usize tap = 0; tap < PROBE_FOOTPRINT_TAPS; ++tap)
     {
-        return false;
+        depths[tap] = ReadProbeUnorm(atlas, probe, texel, tap) * PROBE_DEPTH_CELLS;
     }
-    if (shouldCheckSeams == false)
+    const ProbeFootprint weights{(1 - columnFraction) * (1 - rowFraction),
+                                 columnFraction * (1 - rowFraction),
+                                 (1 - columnFraction) * rowFraction,
+                                 columnFraction * rowFraction};
+    const float32 biasedDistance = distanceInCells - PROBE_DEPTH_BIAS_CELLS;
+    if (visibility == ProbeVisibility::DistanceMoments)
     {
-        return true;
+        return ComputeMomentVisibility(depths, biasedDistance, weights);
     }
-    const float32 seamInCells = distanceInCells * (1 - 2.F / static_cast<float32>(PROBE_FACE_WIDTH));
-    for (uint32 other = 0; other < rr::GI_PROBE_DIMENSIONS; ++other)
-    {
-        if (other != axis && GetComponent(magnitude, other) >= seamInCells &&
-            IsFaceProbeVisible(atlas, probe, offsetInCells, other) == false)
-        {
-            return false;
-        }
-    }
-    return true;
+    const float32 coverage = ComputeVisibleCoverage(depths, biasedDistance, weights);
+    constexpr float32 MIN_COVERAGE = LUDUS_GI_PROBE_MIN_VISIBLE_COVERAGE;
+    return math::Clamp((coverage - MIN_COVERAGE) / (1 - MIN_COVERAGE), 0.F, 1.F);
 }
 // CPU twin of renderer_lit.slang EvaluateGiProbeIrradiance for a +Z normal, with either the baked depth test or an
 // exact probe-to-receiver segment test. Both keep the same trilinear weights, validity flags and renormalization.
@@ -1584,17 +1644,24 @@ ProbeLookup EvaluateProbeLookup(const WorldProbeAtlas& atlas,
         {
             continue;
         }
-        const bool isVisible =
+        const bool isBlocked = IsSegmentBlocked(grid.OriginWorld + cellInGrid * grid.Spacing, positionWorld, occluders);
+        const float32 visibilityWeight =
             visibility == ProbeVisibility::Exact
-                ? IsSegmentBlocked(grid.OriginWorld + cellInGrid * grid.Spacing, positionWorld, occluders) == false
-                : IsDepthMapProbeVisible(atlas,
-                                         probe,
-                                         positionInGrid - cellInGrid,
-                                         visibility == ProbeVisibility::SeamAwareDepthMap);
-        if (isVisible == true)
+                ? (isBlocked == true ? 0.F : 1.F)
+                : ComputeDepthMapProbeVisibility(atlas, probe, positionInGrid - cellInGrid, visibility);
+        const float32 visibleWeight = weight * visibilityWeight;
+        if (isBlocked == true)
         {
-            sum += weight * ReadProbeUnorm(atlas, probe, PROBE_POSITIVE_Z_FACE, 0);
-            totalWeight += weight;
+            lookup.FalseAdmission += visibleWeight;
+        }
+        else
+        {
+            lookup.FalseRejection += weight - visibleWeight;
+        }
+        if (visibleWeight > 0)
+        {
+            sum += visibleWeight * ReadProbeUnorm(atlas, probe, PROBE_POSITIVE_Z_FACE, 0);
+            totalWeight += visibleWeight;
             ++lookup.AdmittedProbes;
         }
     }
@@ -1645,7 +1712,7 @@ QVector<float64> BakeReferenceIrradiance(const RenderScene& scene,
         for (uint32 i = 0; i < PROBE_PATH_RECEIVERS; ++i)
         {
             const usize offset =
-                (usize{i * stride} * PROBE_TEXELS + PROBE_POSITIVE_Z_FACE) * ludus::content::scene_format::TEXEL_BYTES;
+                (usize{i} * stride * PROBE_TEXELS + PROBE_POSITIVE_Z_FACE) * ludus::content::scene_format::TEXEL_BYTES;
             REQUIRE(atlas.Pixels[offset + PROBE_ALPHA_CHANNEL] == static_cast<uint8>(UNORM_BYTE_MAX));
             sums[static_cast<qsizetype>(i)] += static_cast<float64>(atlas.Pixels[offset]) /
                                                static_cast<float64>(UNORM_BYTE_MAX) *
@@ -1688,7 +1755,7 @@ struct ProbeReceiverResult final
     float64 Reference = 0;
     float32 Native = 0;
     float32 DepthMap = 0;
-    float32 SeamAware = 0;
+    float32 DistanceMoments = 0;
     float32 Exact = 0;
     uint32 MinimumAdmitted = 0;
 };
@@ -1705,9 +1772,14 @@ ProbeLookup AverageProbeLookup(const WorldProbeAtlas& atlas,
     {
         const ProbeLookup lookup = EvaluateProbeLookup(atlas, grid, pointWorld, visibility, occluders);
         average.Irradiance += lookup.Irradiance;
+        average.FalseAdmission += lookup.FalseAdmission;
+        average.FalseRejection += lookup.FalseRejection;
         average.AdmittedProbes = math::Min(average.AdmittedProbes, lookup.AdmittedProbes);
     }
-    average.Irradiance /= static_cast<float32>(pointsWorld.size());
+    const float32 pixelCount = static_cast<float32>(pointsWorld.size());
+    average.Irradiance /= pixelCount;
+    average.FalseAdmission /= pixelCount;
+    average.FalseRejection /= pixelCount;
     return average;
 }
 QImage ReadProbeFrame(RenderPreview& inoutPreview, rr::ViewDescription& outView)
@@ -1733,6 +1805,27 @@ foundation::float32 ReadPositiveZProbeIrradiance(const WorldProbeAtlas& atlas,
 }
 } // namespace ludus::editor::testing
 
+TEST_CASE("Equal probe depth moments lose the visible fraction of the footprint", "[probe-gi]")
+{
+    constexpr float32 TAP_WEIGHT = 1.F / PROBE_FOOTPRINT_TAPS;
+    constexpr float32 RECEIVER_DISTANCE = 2.5F;
+    constexpr float32 RECEIVER_BIAS = 0;
+    const ProbeFootprint weights{TAP_WEIGHT, TAP_WEIGHT, TAP_WEIGHT, TAP_WEIGHT};
+    constexpr float32 PAIRED_FAR_DEPTH = 3;
+    const ProbeFootprint pairedDepths{1, 1, PAIRED_FAR_DEPTH, PAIRED_FAR_DEPTH};
+    const float32 rootTwo = math::Sqrt(2.F);
+    const ProbeFootprint spreadDepths{2 - rootTwo, 2, 2, 2 + rootTwo};
+    const float32 biasedDistance = RECEIVER_DISTANCE - RECEIVER_BIAS;
+    constexpr float32 MOMENT_VISIBILITY = .8F;
+    constexpr float32 MOMENT_TOLERANCE = 1e-5F;
+    CHECK(math::Abs(ComputeMomentVisibility(pairedDepths, biasedDistance, weights) - MOMENT_VISIBILITY) <
+          MOMENT_TOLERANCE);
+    CHECK(math::Abs(ComputeMomentVisibility(spreadDepths, biasedDistance, weights) - MOMENT_VISIBILITY) <
+          MOMENT_TOLERANCE);
+    CHECK(ComputeVisibleCoverage(pairedDepths, biasedDistance, weights) == .5F);
+    CHECK(ComputeVisibleCoverage(spreadDepths, biasedDistance, weights) == TAP_WEIGHT);
+}
+
 TEST_CASE("Native Lit probe GI visibility qualification around thin and diagonal walls and a doorway",
           "[.render-native][lighting][probe-gi]")
 {
@@ -1744,7 +1837,7 @@ TEST_CASE("Native Lit probe GI visibility qualification around thin and diagonal
         uint32 PathAxis;
     };
     // Paths cross the studied cell at its centre height unless they test a wall's near field.
-    enum : uint32
+    enum : uint8
     {
         AXIS_CONTROL,
         AXIS_NEAR_FIELD,
@@ -1768,7 +1861,7 @@ TEST_CASE("Native Lit probe GI visibility qualification around thin and diagonal
     StaticArray<QVector<ProbeReceiverResult>, CASE_COUNT> results;
     StaticArray<WorldProbeAtlas, CASE_COUNT> atlases;
     QString bakeTimes;
-    QString table = QStringLiteral("case\tx\ty\tz\treference\tnative\tdepth map\tseam aware\texact\tadmitted\n");
+    QString table = QStringLiteral("case\tx\ty\tz\treference\tnative\tdepth map\tdistance moments\texact\tadmitted\n");
     for (uint32 caseIndex = 0; caseIndex < CASE_COUNT; ++caseIndex)
     {
         const QualificationCase& qualification = cases[caseIndex];
@@ -1822,12 +1915,12 @@ TEST_CASE("Native Lit probe GI visibility qualification around thin and diagonal
                                                          ProbeVisibility::Exact,
                                                          occluders);
             result.DepthMap = depthMap.Irradiance;
-            result.SeamAware = AverageProbeLookup(atlases[caseIndex],
-                                                  scene.ProbeGrid,
-                                                  measurement.PixelsWorld,
-                                                  ProbeVisibility::SeamAwareDepthMap,
-                                                  occluders)
-                                   .Irradiance;
+            result.DistanceMoments = AverageProbeLookup(atlases[caseIndex],
+                                                        scene.ProbeGrid,
+                                                        measurement.PixelsWorld,
+                                                        ProbeVisibility::DistanceMoments,
+                                                        occluders)
+                                         .Irradiance;
             result.Exact = exact.Irradiance;
             result.MinimumAdmitted = depthMap.AdmittedProbes;
             results[caseIndex].append(result);
@@ -1839,7 +1932,7 @@ TEST_CASE("Native Lit probe GI visibility qualification around thin and diagonal
                          .arg(result.Reference, 0, 'f', 4)
                          .arg(static_cast<float64>(result.Native), 0, 'f', 4)
                          .arg(static_cast<float64>(result.DepthMap), 0, 'f', 4)
-                         .arg(static_cast<float64>(result.SeamAware), 0, 'f', 4)
+                         .arg(static_cast<float64>(result.DistanceMoments), 0, 'f', 4)
                          .arg(static_cast<float64>(result.Exact), 0, 'f', 4)
                          .arg(depthMap.AdmittedProbes)
                          .arg(exact.AdmittedProbes);
@@ -1900,9 +1993,8 @@ TEST_CASE("Native Lit probe GI visibility qualification around thin and diagonal
             CHECK(static_cast<float64>(result.Native) <= result.Reference * LIT_INTERPOLATION_RANGE);
         }
     }
-    // Documented near-field limit: a receiver within 5 cm of an axis-aligned wall can still admit a lit probe
-    // whose dominant face texel crosses the wall elsewhere. Exceeding this bound is a regression.
-    constexpr float32 NEAR_FIELD_LEAK_BOUND = .2F;
+    // Keep the measured 5 cm near-field leak well below the 8 x 8 baseline (0.157).
+    constexpr float32 NEAR_FIELD_LEAK_BOUND = .04F;
     for (const ProbeReceiverResult& result : results[AXIS_NEAR_FIELD])
     {
         CAPTURE(result.PositionWorld.Y, result.Native);
@@ -1914,6 +2006,10 @@ TEST_CASE("Native Lit probe GI visibility qualification around thin and diagonal
     const ProbeReceiverResult& pastOpening = results[DOORWAY][PAST_OPENING];
     CAPTURE(pastOpening.Native, pastOpening.Reference);
     CHECK(static_cast<float64>(pastOpening.Native) >= RETAINED_FRACTION * pastOpening.Reference);
+    constexpr qsizetype DARK_SIDE = PAST_OPENING + 1;
+    const ProbeReceiverResult& darkSide = results[DOORWAY][DARK_SIDE];
+    CAPTURE(darkSide.Native, darkSide.Reference);
+    CHECK(static_cast<float64>(darkSide.Native) <= darkSide.Reference + LEAK_TOLERANCE);
     // Probe layers on the floor and ceiling invalidate every probe. Receivers then fall back to live lighting
     // with no probe contribution rather than a stale or undefined one.
     const WorldProbeAtlas& embedded = atlases[EMBEDDED];
@@ -1972,6 +2068,93 @@ TEST_CASE("Native Lit probe GI visibility qualification around thin and diagonal
                         .arg(static_cast<float64>(model.Irradiance), 0, 'f', 4);
     }
     WARN(movement.toStdString());
+
+    // Cross the projected doorway edge laterally. Report errors against independent segments
+    // before renormalization, so bright and dark probes cannot cancel each other's mistakes.
+    constexpr float32 DOORWAY_SWEEP_X_METRES = .65F;
+    constexpr float32 EDGE_SWEEP_START_Y_METRES = .91F;
+    constexpr float32 EDGE_SWEEP_STEP_METRES = .02F;
+    const ProbeOccluders doorway = MakeProbeOccluders(ProbeDivider::Doorway);
+    QString sweep = QStringLiteral("y\tnative\texact\tfalse admission\tfalse rejection\t"
+                                   "moment false admission\tmoment false rejection\n");
+    for (uint32 i = 0; i < PROBE_PATH_RECEIVERS; ++i)
+    {
+        const float32 y = EDGE_SWEEP_START_Y_METRES + static_cast<float32>(i) * EDGE_SWEEP_STEP_METRES;
+        const math::Vector3 receiverWorld = {DOORWAY_SWEEP_X_METRES, y, 0};
+        const RenderScene scene =
+            MakeProbeQualificationScene(ProbeDivider::Doorway,
+                                        {receiverWorld},
+                                        QByteArrayLiteral("gi-probe-edge/") + QByteArray::number(i));
+        REQUIRE(preview.SetScene(scene) == true);
+        REQUIRE(WaitForProbeBake(preview, scene) == true);
+        rr::ViewDescription view;
+        const QImage image = ReadProbeFrame(preview, view);
+        const ProbeReceiverMeasurement measurement =
+            MeasureProbeReceiver(image, view, receiverWorld, scene.Definition->Eye);
+        const WorldProbeAtlas& atlas = preview.GetSurfaceBake()->ProbeAtlas;
+        const ProbeLookup filtered =
+            AverageProbeLookup(atlas, scene.ProbeGrid, measurement.PixelsWorld, ProbeVisibility::DepthMap, doorway);
+        const ProbeLookup exact =
+            AverageProbeLookup(atlas, scene.ProbeGrid, measurement.PixelsWorld, ProbeVisibility::Exact, doorway);
+        const ProbeLookup moments = AverageProbeLookup(atlas,
+                                                       scene.ProbeGrid,
+                                                       measurement.PixelsWorld,
+                                                       ProbeVisibility::DistanceMoments,
+                                                       doorway);
+        CAPTURE(y, measurement.Irradiance, filtered.Irradiance);
+        CHECK(math::Abs(measurement.Irradiance - filtered.Irradiance) <=
+              NATIVE_ABSOLUTE_TOLERANCE + NATIVE_RELATIVE_TOLERANCE * filtered.Irradiance);
+        sweep += QStringLiteral("%1\t%2\t%3\t%4\t%5\t%6\t%7\n")
+                     .arg(static_cast<float64>(y), 0, 'f', 2)
+                     .arg(static_cast<float64>(measurement.Irradiance), 0, 'f', 4)
+                     .arg(static_cast<float64>(exact.Irradiance), 0, 'f', 4)
+                     .arg(static_cast<float64>(filtered.FalseAdmission), 0, 'f', 4)
+                     .arg(static_cast<float64>(filtered.FalseRejection), 0, 'f', 4)
+                     .arg(static_cast<float64>(moments.FalseAdmission), 0, 'f', 4)
+                     .arg(static_cast<float64>(moments.FalseRejection), 0, 'f', 4);
+    }
+    WARN(sweep.toStdString());
+
+    // Keep the 1 m transport reference fixed and replace only the probe grid used by the lookup.
+    // Use exact segments for both grids to isolate the irradiance interpolation.
+    QVector<math::Vector3> litReceiversWorld;
+    for (const ProbeReceiverResult& result : results[AXIS_CONTROL])
+    {
+        if (result.Reference > DARK_REFERENCE)
+        {
+            litReceiversWorld.append(result.PositionWorld);
+        }
+    }
+    RenderScene finerGrid = MakeProbeQualificationScene(ProbeDivider::AxisWall,
+                                                        litReceiversWorld,
+                                                        QByteArrayLiteral("gi-probe-finer-grid"));
+    finerGrid.ProbeGrid.Spacing = .5F;
+    constexpr float32 FINER_GRID_OFFSET_X_METRES = -.25F;
+    finerGrid.ProbeGrid.OriginWorld.X += FINER_GRID_OFFSET_X_METRES;
+    constexpr uint32 FINER_X_COUNT = 5;
+    constexpr uint32 FINER_LAYER_COUNT = 3;
+    finerGrid.ProbeGrid.Counts = {FINER_X_COUNT, FINER_LAYER_COUNT, FINER_LAYER_COUNT};
+    REQUIRE(preview.SetScene(finerGrid) == true);
+    REQUIRE(WaitForProbeBake(preview, finerGrid) == true);
+    const ProbeOccluders wall = MakeProbeOccluders(ProbeDivider::AxisWall);
+    QString spacing = QStringLiteral("x\ttransport reference\t1 m exact\t0.5 m offset exact\n");
+    for (qsizetype i = 0; i < litReceiversWorld.size(); ++i)
+    {
+        const math::Vector3 receiverWorld = litReceiversWorld[i];
+        const ProbeLookup coarse =
+            EvaluateProbeLookup(atlases[AXIS_CONTROL], qualificationGrid, receiverWorld, ProbeVisibility::Exact, wall);
+        const ProbeLookup finer = EvaluateProbeLookup(preview.GetSurfaceBake()->ProbeAtlas,
+                                                      finerGrid.ProbeGrid,
+                                                      receiverWorld,
+                                                      ProbeVisibility::Exact,
+                                                      wall);
+        spacing += QStringLiteral("%1\t%2\t%3\t%4\n")
+                       .arg(static_cast<float64>(receiverWorld.X), 0, 'f', 2)
+                       .arg(results[AXIS_CONTROL][i].Reference, 0, 'f', 4)
+                       .arg(static_cast<float64>(coarse.Irradiance), 0, 'f', 4)
+                       .arg(static_cast<float64>(finer.Irradiance), 0, 'f', 4);
+    }
+    WARN(spacing.toStdString());
 
     // GPU frame cost with one receiver covering most of the view, against the same frame with the volume moved
     // away so every lookup returns before reading probes. The preview draws on demand, so small orbits drive frames.
