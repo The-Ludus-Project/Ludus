@@ -183,7 +183,10 @@ def _validate_node(node, where):
     elif kind == "Camera":
         fields |= {"active", "role", "target_type"}
     elif kind == "Buffer":
-        fields |= ({"bytes_per_pixel", "extent"} if "bytes_per_pixel" in node else {"bytes"})
+        if "shader_struct" in node:
+            fields.add("shader_struct")
+        else:
+            fields |= ({"bytes_per_pixel", "extent"} if "bytes_per_pixel" in node else {"bytes"})
     elif kind == "Target":
         fields |= {"type", "format", "extent", "samples", "imported", "initialized", "presentation"}
     elif kind == "Raster":
@@ -216,7 +219,20 @@ def _validate_node(node, where):
         _require(node["role"] != "Presentation" or node["target_type"] == "ColorTexture",
                  "TypeMismatch", where, "a presentation camera requires a color target")
     elif kind == "Buffer":
-        if 'bytes_per_pixel' in node:
+        if 'shader_struct' in node:
+            record = node['shader_struct']
+            _keys(record, ('source', 'type', 'count'), where)
+            source = record['source']
+            _require(type(source) is str and source.endswith('.slang') and
+                     not any(character in source for character in ('\\', ':', '"', '\0', '\n', '\r')),
+                     'Source', where, 'select a package-relative Slang file for the buffer struct')
+            relative = Path(source)
+            _require(not relative.is_absolute() and '..' not in relative.parts and relative.as_posix() == source,
+                     'Source', where, 'the struct file must be inside the graph package')
+            name = _identifier(record['type'], where)
+            _require('-' not in name, 'Schema', where, 'enter a Slang struct identifier')
+            _integer(record['count'], 1, ray.MAX_BUFFER_BYTES, where)
+        elif 'bytes_per_pixel' in node:
             _integer(node['bytes_per_pixel'], ray.BUFFER_WORD_BYTES, ray.MAX_BUFFER_PIXEL_BYTES, where)
             _require(node['bytes_per_pixel'] % ray.BUFFER_WORD_BYTES == 0 and node['extent'] == 'RenderSize',
                      'Capacity', where, 'pixel buffers require RenderSize and a stride multiple of 16')
@@ -279,7 +295,7 @@ def _validate_document(value, where):
             _require(value['version'] == 2 or (node.get('kind') not in sizes.KINDS and node.get('extent') != 'RenderSize'),
                      'Version', location, 'shared render sizes require document version 2')
             _validate_node(node, location + "/" + str(node.get("id", "node"))
-                           if node.get("kind") in (*pipeline.KINDS, *sizes.KINDS, 'StructuredBuffer', 'Upscale') else location)
+                           if node.get("kind") in (*pipeline.KINDS, *sizes.KINDS, 'Buffer', 'StructuredBuffer', 'Upscale') else location)
             _require(node["id"] not in nodes, "DuplicateIdentity", location, node["id"])
             nodes.add(node["id"])
         for edge in config["edges"]:
@@ -808,7 +824,7 @@ def _operation_resource_uses(operation):
         writes = use['access'] == 'ReadWrite'
         yield use['resource'], use['input_version'], use['output_version'] if writes else None, True if writes else None
     for use in operation.get('persistent_buffers', ()):
-        yield use['resource'], use['input_version'], use['output_version'], True
+        yield use['resource'], use['input_version'], use['output_version'], True if use['output_version'] is not None else None
     for field in ('visibility', 'visibility_depth', 'source_color'):
         if field in operation:
             use = operation[field]
@@ -901,6 +917,8 @@ class _Compiler:
                              'pixel buffer exceeds storage capacity; reduce the connected RenderSize scale')
                 self.resources[where] = {'type': 'Buffer', 'format': 'Bytes', 'extent': [capacity, 1],
                                          'samples': 1, 'imported': False, 'initialized': True, 'presentation': False}
+                if 'shader_struct' in node:
+                    self.resources[where]['shader_struct'] = node['shader_struct']
                 if 'bytes_per_pixel' in node:
                     self.resources[where]['bytes_per_pixel'] = node['bytes_per_pixel']
                     if inputs['size'].scale:
@@ -974,15 +992,23 @@ class _Compiler:
                 buffer_outputs = {}
                 for slot, port in enumerate(port for port in authored_pipeline['inputs'] if port['type'] == 'Buffer'):
                     identity = 'buffer:' + port['id']
-                    if 'stride' in self.resources[inputs[identity].resource]:
+                    resource = self.resources[inputs[identity].resource]
+                    if 'stride' in resource:
                         continue
-                    output = next((port for port in authored_pipeline['outputs'] if port['target'] == input_mapping[identity]), None)
-                    _require(output is not None, 'Capability', where, 'each persistent Buffer input requires a paired Load/Store Buffer output')
-                    written = self.write(inputs[identity], {identity + '_load': 'Load', identity + '_store': 'Store'},
-                                         identity, where, ())
-                    buffer_uses.append({'resource': written.resource, 'slot': slot,
-                                        'input_version': inputs[identity].version, 'output_version': written.version})
-                    buffer_outputs[output['id']] = written
+                    output = next((row for row in authored_pipeline['outputs'] if row['target'] == input_mapping[identity]), None)
+                    _require(output is not None or 'shader_struct' in resource, 'Capability', where,
+                             'raw persistent Buffer inputs require a paired Load/Store output',
+                             port=port['id'], direction='input',
+                             repair='Add a paired Writable Resource or choose From shader struct for read-only access.')
+                    source = inputs[identity]
+                    version = None
+                    if output is not None:
+                        written = self.write(source, {identity + '_load': 'Load', identity + '_store': 'Store'},
+                                             identity, where, ())
+                        version = written.version
+                        buffer_outputs[output['id']] = written
+                    buffer_uses.append({'resource': source.resource, 'slot': slot,
+                                        'input_version': source.version, 'output_version': version})
                 _require(len({use['resource'] for use in buffer_uses}) == len(buffer_uses), 'MultipleWriters', where,
                          'one physical buffer cannot occupy both buffer inputs of a pass')
                 attachments = {}
@@ -1417,6 +1443,12 @@ def dump_plan(plan):
     for root in plan["roots"]:
         lines.append(f"Root {root['id']}: {root['kind']} {root['resource']}@{root['version']}")
     lines.extend(_dump_resource_uses(plan))
+    for identity, resource in plan['resources'].items():
+        if 'shader_struct' in resource:
+            record = resource['shader_struct']
+            size = (f"{record['stride']} bytes per element, {resource['extent'][0]} bytes allocated"
+                    if 'stride' in record else 'size resolved by Build Graph')
+            lines.append(f"{identity}: {record['count']} × {record['type']} from {record['source']} ({size})")
     lines.append("Authored techniques: " + ", ".join(plan["techniques"]))
     lines.append("Pending: " + ", ".join(plan["checks_pending"]))
     return "\n".join(lines)

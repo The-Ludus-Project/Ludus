@@ -113,6 +113,14 @@ DescribeRayInterface(const QJsonObject& program, const QJsonArray& techniques, c
                       "// Scene materials enabled.\n"
                       "// Closest-hit material access: MaterialSample material = EvaluateMaterial(scene, hit);\n"
                       "// Author lighting and bounce policy in your callbacks."));
+        QString trailingParameters = isLaunch == true ? QString{} : QStringLiteral(",\n    inout ScenePayload payload");
+        if (program.value(QStringLiteral("graph_resources")).toBool() == true)
+        {
+            trailingParameters = QStringLiteral(",\n    %1Resources resources").arg(function);
+            lines.append(
+                QStringLiteral("// Buffer ports supply named resources. A port named edges is resources.Edges.\n"
+                               "// The connected Buffer supplies the record type. A Writable Resource allows writes."));
+        }
         lines.append(
             QStringLiteral("%1 %2(\n    SceneContext scene,\n    %3 %4,\n    inout RayQueryContext queries%5);")
                 .arg(isLaunch == true ? QStringLiteral("float3") : QStringLiteral("void"),
@@ -121,7 +129,7 @@ DescribeRayInterface(const QJsonObject& program, const QJsonArray& techniques, c
                      isLaunch == true                  ? QStringLiteral("launch")
                      : stage == QStringLiteral("miss") ? QStringLiteral("ray")
                                                        : QStringLiteral("hit"),
-                     isLaunch == true ? QString{} : QStringLiteral(",\n    inout ScenePayload payload")));
+                     trailingParameters));
     }
     else
     {

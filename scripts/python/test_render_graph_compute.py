@@ -9,7 +9,7 @@ import tempfile
 import unittest
 
 from ludus_tools import render_graph as graph, render_graph_build as build, render_graph_ray as ray
-from ludus_tools import render_graph_compute as compute, render_graph_execution as execution
+from ludus_tools import render_graph_compute as compute, render_graph_execution as execution, shader_context
 from ludus_tools.errors import ToolingError
 from test_render_graph_ray import find_ray_compute
 
@@ -311,6 +311,148 @@ class NativeSceneComputeTests(unittest.TestCase):
         match = re.search(r'switch \(GetGraphPassIndex\(\)\) \{\n((?:case \d+: [^\n]*' + re.escape(callback_arguments) +
                           r'[^\n]*\n)*)default:', wrapper)
         return re.findall(r'case (\d+):', match[1]) if match else None
+
+    def test_ordered_buffer_capacity_tracks_shared_slang_struct(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            source = Path(temporary) / 'source'
+            shutil.copytree(SCENE_COMPUTE, source)
+            graph_path = source / 'main.lurender.json'
+            document = json.loads(graph_path.read_text())
+            configuration = next(item for item in document['configurations'] if item['id'] == 'WorkItems')
+            buffer = next(node for node in configuration['nodes'] if node['id'] == 'hits')
+            header = 'main_shaders/edge_table.slang'
+            buffer['shader_struct'] = {'source': header, 'type': 'EdgeTable', 'count': 1}
+            graph_path.write_bytes(graph.canonical_asset(document))
+            pending = graph.compile_graph(graph_path, configuration='WorkItems')
+            self.assertIn('size resolved by Build Graph', graph.dump_plan(pending))
+            manifest = source / 'main.lushader.json'
+            manifest.write_text((source / 'main.lushader.json.in').read_text().replace(
+                '@RG2_TEST_PROFILES@', '["metal"]'))
+            shader = source / 'main_shaders/work_items.slang'
+            original = shader.read_text()
+            options = dict(helper=os.environ['LUDUS_RG1_HELPER'], compiler=os.environ['LUDUS_RG1_SLANG'],
+                           spirv_cross=os.environ['LUDUS_RG1_CROSS'])
+            output = Path(temporary) / 'build'
+            with self.assertRaisesRegex(ToolingError, "include 'main_shaders/edge_table.slang'"):
+                build.build_package(manifest, output, **options)
+            shader.write_text('#include "edge_table.slang"\n' + original)
+            for count in (256, 16):
+                (source / header).write_text(
+                    '#pragma once\nstruct EdgeRecord { float4 BeginWorldAndLength; float4 EndWorldAndCumulativeLength; };\n'
+                    f'struct EdgeTable {{ uint4 Header; EdgeRecord Edges[{count}]; }};\n')
+                built = build.build_package(manifest, output, **options)
+                package = Path(built['package'])
+                descriptor = json.loads((package / 'package.json').read_text())
+                plan = next(plan for plan in descriptor['plans'] if plan['configuration'] == 'WorkItems')
+                resource = plan['resources']['Main/hits']
+                expected = 16 + count * 32
+                self.assertEqual(expected, resource['shader_struct']['stride'])
+                self.assertEqual([expected, 1], resource['extent'])
+                self.assertEqual([0, 0], [entry['persistent_buffers'][0]['slot'] for entry in plan['passes']
+                                          if entry['kind'] == 'RayTracing'])
+                _, resources, _, _ = execution.lower_plan(descriptor, 'WorkItems')
+                self.assertIn(expected, [entry['Width'] for entry in resources if entry['Kind'] == 'Buffer'])
+                self.assertIn({'node': 'hits', 'graph': 'main.lurender.json', 'configuration': 'WorkItems',
+                               'stride': expected, 'bytes': expected}, built['shader_buffer_layouts'])
+            buffer['shader_struct']['count'] = 3
+            graph_path.write_bytes(graph.canonical_asset(document))
+            (source / header).write_text('struct EdgeTable { uint Count; };\n')
+            built = build.build_package(manifest, output, **options)
+            self.assertIn({'node': 'hits', 'graph': 'main.lurender.json', 'configuration': 'WorkItems',
+                           'stride': 4, 'bytes': 16}, built['shader_buffer_layouts'])
+            accepted_pointer = (output / 'current.json').read_bytes()
+            (source / header).write_text('struct RenamedEdgeTable { uint4 Header; };\n')
+            with self.assertRaisesRegex(ToolingError, 'EdgeTable'):
+                build.build_package(manifest, output, **options)
+            self.assertEqual(accepted_pointer, (output / 'current.json').read_bytes())
+
+    def test_named_edge_records_cross_compute_and_ray_passes(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            source = root / 'source'
+            shutil.copytree(COMPUTE_MIXED, source)
+            graph_path = source / 'main.lurender.json'
+            document = json.loads(graph_path.read_text())
+            configuration = document['configurations'][0]
+            nodes = {node['id']: node for node in configuration['nodes']}
+            nodes['hits'].pop('bytes')
+            nodes['hits']['shader_struct'] = {'source': 'main_shaders/edge.slang', 'type': 'Edge', 'count': 16}
+            for identity in ('primary', 'shade'):
+                next(port for port in nodes[identity]['inputs'] if port['id'] == 'hits')['id'] = 'edges'
+                if identity == 'primary':
+                    next(port for port in nodes[identity]['outputs'] if port['id'] == 'hits')['target'] = 'edges'
+                else:
+                    nodes[identity]['outputs'] = [port for port in nodes[identity]['outputs'] if port['id'] != 'hits']
+            nodes['primary']['inputs'] = [port for port in nodes['primary']['inputs']
+                                           if port['type'] in ('Scene', 'Buffer')]
+            nodes['primary']['outputs'] = [port for port in nodes['primary']['outputs'] if port['type'] == 'Buffer']
+            nodes['primary']['invocation'] = {'work_items': 16, 'traversal': 'ComputeBvh'}
+            configuration['edges'] = [edge for edge in configuration['edges']
+                                      if edge['to'] not in ('primary.view', 'primary.color')]
+            for edge in configuration['edges']:
+                if edge['to'] in ('primary.hits', 'shade.hits'):
+                    edge['to'] = edge['to'].replace('.hits', '.edges')
+                if edge['from'] == 'primary.color':
+                    edge['from'] = 'color.texture'
+            configuration['nodes'].append({'id': 'scratch', 'kind': 'Buffer', 'bytes': 16})
+            nodes['shade']['inputs'].insert(0, {'id': 'scratch', 'type': 'Buffer', 'required': True})
+            nodes['shade']['outputs'].append({'id': 'scratch', 'type': 'Buffer', 'target': 'scratch',
+                                              'format': 'Bytes', 'load': 'Load', 'store': 'Store'})
+            configuration['edges'].append({'from': 'scratch.buffer', 'to': 'shade.scratch'})
+            graph_path.write_bytes(graph.canonical_asset(document))
+            manifest_path = source / 'main.lushader.json'
+            validator = os.environ.get('LUDUS_RG1_VALIDATOR')
+            profiles = ['metal', 'spirv'] if validator else ['metal']
+            manifest = json.loads((source / 'main.lushader.json.in').read_text().replace(
+                '@RG2_TEST_PROFILES@', json.dumps(profiles)))
+            for program in manifest['programs']:
+                if program['id'] in ('Primary', 'Shade'):
+                    program['graph_resources'] = True
+            manifest_path.write_text(json.dumps(manifest))
+            shaders = source / 'main_shaders'
+            (shaders / 'edge.slang').write_text(
+                '#pragma once\nstruct Edge { float3 BeginWorld; float3 EndWorld; };\n')
+            (shaders / 'primary.slang').write_text(
+                'float3 TracePrimary(SceneContext scene, RayLaunch launch, inout RayQueryContext queries, '
+                'TracePrimaryResources resources) {\n'
+                '    uint index = launch.WorkItemIndex;\n'
+                '    if (index >= resources.Edges.GetCount()) return float3(0);\n'
+                '    Edge edge; edge.BeginWorld = float3(index); edge.EndWorld = float3(index + 1);\n'
+                '    resources.Edges[index] = edge; return float3(0);\n}\n')
+            consumer = (
+                'float3 ShadeRecordedHit(SceneContext scene, RayLaunch launch, inout RayQueryContext queries, '
+                'ShadeRecordedHitResources resources) {\n'
+                '    Edge edge = resources.Edges[0];\n'
+                '    return edge.EndWorld - edge.BeginWorld;\n}\n')
+            shade = shaders / 'shade.slang'
+            shade.write_text(consumer)
+            options = dict(helper=os.environ['LUDUS_RG1_HELPER'], compiler=os.environ['LUDUS_RG1_SLANG'],
+                           spirv_cross=os.environ['LUDUS_RG1_CROSS'], validator=validator)
+            context = shader_context.export_context(manifest_path, root / 'editor', 'main_shaders/shade.slang',
+                                                    helper=options['helper'])
+            self.assertIn('GraphReadOnlyEdgeView Edges;', context['prefix'])
+            output = root / 'build'
+            built = build.build_package(manifest_path, output, **options)
+            package = Path(built['package'])
+            _, wrapper = find_ray_compute(package, 'main_shaders/primary.slang')
+            self.assertIn('#include "main_shaders/edge.slang"', wrapper)
+            self.assertIn('GraphWritableEdgeView Edges;', wrapper)
+            self.assertIn('GraphReadOnlyEdgeView Edges;', wrapper)
+            self.assertIn('GraphWritableEdgeView(GraphBuffer0, 16u)', wrapper)
+            self.assertIn('GraphReadOnlyEdgeView(GraphBuffer1, 16u)', wrapper)
+            self.assertIn('index * 8u', wrapper)
+            execution.cook_runtime(str(package), root / 'named.lurgrt')
+            nodes['shade']['inputs'].append(nodes['shade']['inputs'].pop(0))
+            graph_path.write_bytes(graph.canonical_asset(document))
+            rebuilt = build.build_package(manifest_path, output, **options)
+            _, reordered = find_ray_compute(Path(rebuilt['package']), 'main_shaders/primary.slang')
+            self.assertIn('GraphReadOnlyEdgeView(GraphBuffer0, 16u)', reordered)
+            self.assertEqual(consumer, shade.read_text())
+            accepted = (output / 'current.json').read_bytes()
+            shade.write_text(consumer.replace('return edge.EndWorld', 'resources.Edges[0] = edge; return edge.EndWorld'))
+            with self.assertRaisesRegex(ToolingError, 'set|l-value|assign'):
+                build.build_package(manifest_path, output, **options)
+            self.assertEqual(accepted, (output / 'current.json').read_bytes())
 
     def test_mixed_sequence_can_select_triangle_loop_for_one_kernel(self):
         with tempfile.TemporaryDirectory() as temporary:
