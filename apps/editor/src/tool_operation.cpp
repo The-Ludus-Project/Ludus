@@ -12,6 +12,8 @@ const char* ToolOperationName(ToolOperation op) noexcept
             return "build";
         case ToolOperation::BuildDebug:
             return "build_debug";
+        case ToolOperation::PlayWorld:
+            return "play_world";
         case ToolOperation::BuildRun:
             return "build_run";
         case ToolOperation::ProjectCheck:

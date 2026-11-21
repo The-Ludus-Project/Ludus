@@ -39,6 +39,8 @@ using int64 = std::int64_t;
 
 /// Native unsigned size/index type; matches sizeof and container sizes, not a wire format.
 using usize = std::size_t;
+/// Unsigned representation of a native pointer, for platform identity and hashing.
+using uintptr = std::uintptr_t;
 /// Native signed pointer-difference type; width follows the target ABI.
 using isize = std::ptrdiff_t;
 
@@ -71,5 +73,6 @@ using core::uint16;
 using core::uint32;
 using core::uint64;
 using core::uint8;
+using core::uintptr;
 using core::usize;
 } // namespace ludus::foundation

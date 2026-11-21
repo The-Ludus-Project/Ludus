@@ -21,11 +21,22 @@ struct WaveInteractionRegion
     uint Triangles[LUDUS_WAVE_REGION_TRIANGLES];
     uint TriangleCount;
 };
+enum WaveRegionWalk : uint
+{
+    Locate,
+    Gather,
+    Probe,
+};
+struct WaveRegionBounds
+{
+    float NearestWorld;
+    float NearestFarWorld;
+    bool HasHit;
+};
 WaveQuery WalkWaveRegion(SceneContext scene,
                          EllipticalCone cone,
-                         bool shouldGather,
-                         inout float inoutNearestWorld,
-                         inout float inoutNearestFarWorld,
+                         WaveRegionWalk mode,
+                         inout WaveRegionBounds inoutBounds,
                          inout WaveInteractionRegion inoutRegion)
 {
     uint nodeCount = GetGeometryHierarchyNodeCount(scene);
@@ -41,8 +52,8 @@ WaveQuery WalkWaveRegion(SceneContext scene,
         if (nodeIndex >= nodeCount || node.IsValid == false)
             return WaveQuery::Invalid;
         EllipticalCone clipped = cone;
-        if (shouldGather == false)
-            clipped.FarWorld = inoutNearestWorld;
+        if (mode == WaveRegionWalk::Locate)
+            clipped.FarWorld = inoutBounds.NearestWorld;
         bool canIntersect;
         if (TryTestEllipticalConeBounds(clipped, node.MinimumWorld, node.MaximumWorld, canIntersect) == false)
             return WaveQuery::Invalid;
@@ -71,12 +82,17 @@ WaveQuery WalkWaveRegion(SceneContext scene,
                 return WaveQuery::Invalid;
             if (intersection.IsHit == false)
                 continue;
-            if (intersection.NearWorld < inoutNearestWorld)
+            if (mode == WaveRegionWalk::Probe)
             {
-                inoutNearestWorld = intersection.NearWorld;
-                inoutNearestFarWorld = intersection.FarWorld;
+                inoutBounds.HasHit = true;
+                return WaveQuery::Ready;
             }
-            if (shouldGather == true)
+            if (intersection.NearWorld < inoutBounds.NearestWorld)
+            {
+                inoutBounds.NearestWorld = intersection.NearWorld;
+                inoutBounds.NearestFarWorld = intersection.FarWorld;
+            }
+            if (mode == WaveRegionWalk::Gather)
             {
                 if (inoutRegion.TriangleCount == LUDUS_WAVE_REGION_TRIANGLES)
                     return WaveQuery::Capacity;
@@ -86,6 +102,18 @@ WaveQuery WalkWaveRegion(SceneContext scene,
     }
     return WaveQuery::Ready;
 }
+/// The escape loop needs an intersection flag. The probe walk stops before building an interaction region.
+[noinline] WaveQuery TestWaveInteraction(SceneContext scene, EllipticalCone cone, out bool outHasHit)
+{
+    outHasHit = false;
+    if (IsValidEllipticalCone(cone) == false)
+        return WaveQuery::Invalid;
+    WaveRegionBounds bounds = {cone.FarWorld, cone.FarWorld, false};
+    WaveInteractionRegion unusedRegion;
+    WaveQuery status = WalkWaveRegion(scene, cone, WaveRegionWalk::Probe, bounds, unusedRegion);
+    outHasHit = bounds.HasHit;
+    return status;
+}
 /// Ready includes misses. Failure never publishes a partial region. Sorted IDs provide deterministic parity.
 [noinline] WaveQuery
 FindWaveInteractionRegion(SceneContext scene, EllipticalCone cone, inout WaveInteractionRegion inoutRegion)
@@ -94,16 +122,16 @@ FindWaveInteractionRegion(SceneContext scene, EllipticalCone cone, inout WaveInt
         return WaveQuery::Invalid;
     WaveInteractionRegion candidate = (WaveInteractionRegion)0;
     candidate.Frustum = cone;
-    float nearestWorld = cone.FarWorld;
-    float nearestFarWorld = cone.FarWorld;
-    WaveQuery status = WalkWaveRegion(scene, cone, false, nearestWorld, nearestFarWorld, candidate);
+    WaveRegionBounds bounds = {cone.FarWorld, cone.FarWorld, false};
+    WaveQuery status = WalkWaveRegion(scene, cone, WaveRegionWalk::Locate, bounds, candidate);
     if (status != WaveQuery::Ready)
         return status;
-    candidate.Frustum.NearWorld = nearestWorld;
-    candidate.Frustum.FarWorld = min(cone.FarWorld, nearestWorld + 2 * (cone.RadiusWorld + cone.Slope * nearestWorld));
-    if (cone.RadiusWorld + cone.Slope * nearestWorld == 0)
-        candidate.Frustum.FarWorld = nearestFarWorld;
-    status = WalkWaveRegion(scene, candidate.Frustum, true, nearestWorld, nearestFarWorld, candidate);
+    candidate.Frustum.NearWorld = bounds.NearestWorld;
+    float radiusWorld = cone.RadiusWorld + cone.Slope * bounds.NearestWorld;
+    candidate.Frustum.FarWorld = min(cone.FarWorld, bounds.NearestWorld + 2 * radiusWorld);
+    if (radiusWorld == 0)
+        candidate.Frustum.FarWorld = bounds.NearestFarWorld;
+    status = WalkWaveRegion(scene, candidate.Frustum, WaveRegionWalk::Gather, bounds, candidate);
     if (status != WaveQuery::Ready)
         return status;
     // Insertion sort is bounded by the region, never by total scene size.

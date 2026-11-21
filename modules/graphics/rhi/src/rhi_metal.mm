@@ -73,6 +73,7 @@
 // calling thread rather than mutating the facade from Metal callback threads.
 namespace ludus::graphics::rhi::backend
 {
+static void ReleaseFrameResources() noexcept;
 void RasterFrameExtent() noexcept;
 void TimingBegin() noexcept;
 void TimingEnd() noexcept;
@@ -220,7 +221,7 @@ bool CheckCommand(id<MTLCommandBuffer> command) noexcept
     }
     else
     {
-        ShutdownRendering();
+        ReleaseFrameResources();
     }
     return false;
 }
@@ -275,7 +276,7 @@ FrameStatus FrameFailure() noexcept
     }
     else
     {
-        ShutdownRendering();
+        ReleaseFrameResources();
     }
     return FrameStatus::Failed;
 }
@@ -562,7 +563,11 @@ bool Supports(BackendSelection selection) noexcept
 {
     return selection == BackendSelection::Auto;
 }
-StartupError Start(const ApplicationInfo& app, const WindowInfo& window, uint32 token, BackendSelection) noexcept
+static bool InitializeDevice() noexcept;
+static bool ConnectPrimarySurface(const WindowInfo& window) noexcept;
+static bool InitializeFrameResources() noexcept;
+
+StartupError Start(const ApplicationInfo&, const WindowInfo& window, uint32 token, BackendSelection) noexcept
 {
     @autoreleasepool
     {
@@ -571,15 +576,15 @@ StartupError Start(const ApplicationInfo& app, const WindowInfo& window, uint32 
             return StartupError::InvalidWindow;
         }
         GetMetal().Token = token;
-        if (backend::Initialize(app) == false)
+        if (InitializeDevice() == false)
         {
             return GetMetal().Device == nil ? StartupError::AdapterUnavailable : StartupError::DeviceUnavailable;
         }
-        if (ConnectWindow(window) == false)
+        if (ConnectPrimarySurface(window) == false)
         {
             return StartupError::SurfaceUnavailable;
         }
-        if (InitializeRendering() == false)
+        if (InitializeFrameResources() == false)
         {
             return StartupError::RenderingUnavailable;
         }
@@ -587,7 +592,7 @@ StartupError Start(const ApplicationInfo& app, const WindowInfo& window, uint32 
         return StartupError::None;
     }
 }
-bool Initialize(const ApplicationInfo&) noexcept
+static bool InitializeDevice() noexcept
 {
     @autoreleasepool
     {
@@ -632,7 +637,7 @@ bool Initialize(const ApplicationInfo&) noexcept
         return GetMetal().Queue != nil;
     }
 }
-bool ConnectWindow(const WindowInfo& window) noexcept
+static bool ConnectPrimarySurface(const WindowInfo& window) noexcept
 {
     @autoreleasepool
     {
@@ -651,12 +656,12 @@ bool ConnectWindow(const WindowInfo& window) noexcept
         return true;
     }
 }
-bool InitializeRendering() noexcept
+static bool InitializeFrameResources() noexcept
 {
     GetMetal().IsRendering = GetMetal().Queue != nil && GetMetal().IsConnected;
     return GetMetal().IsRendering;
 }
-void ShutdownRendering() noexcept
+static void ReleaseFrameResources() noexcept
 {
     @autoreleasepool
     {
@@ -688,7 +693,7 @@ void Shutdown() noexcept
 {
     @autoreleasepool
     {
-        ShutdownRendering();
+        ReleaseFrameResources();
         DisconnectSurfaces();
         GetMetal().Queue = nil;
         GetMetal().Device = nil;
@@ -954,14 +959,6 @@ FrameStatus End() noexcept
         return FrameStatus::Ready;
     }
 }
-bool BeginFrame() noexcept
-{
-    return Begin() == FrameStatus::Ready;
-}
-bool EndFrame() noexcept
-{
-    return End() == FrameStatus::Ready;
-}
 ResourceStatus CreateShader(usize slot, const ShaderDescription& description, uint32) noexcept
 {
     @autoreleasepool
@@ -1086,12 +1083,16 @@ ResourceStatus Draw(usize slot) noexcept
     return ResourceStatus::Ready;
 }
 #if defined(LUDUS_RHI_TEST_READBACK)
-bool GetMetalSurfaceDepthAllocations(usize& outMemorylessBytes, usize& outPrivateBytes) noexcept
+MetalSurfaceDepthAllocations GetMetalSurfaceDepthAllocations() noexcept
 {
     const MetalSurface& surface = GetActiveSurface();
-    outMemorylessBytes = surface.MemorylessDepthOrNull.allocatedSize;
-    outPrivateBytes = surface.PrivateDepthOrNull.allocatedSize;
-    return surface.MemorylessDepthOrNull.storageMode == MTLStorageModeMemoryless;
+    const MetalSurfaceDepthAllocations allocations
+    {
+        .MemorylessBytes = surface.MemorylessDepthOrNull.allocatedSize,
+        .PrivateBytes = surface.PrivateDepthOrNull.allocatedSize,
+        .HasMemorylessTexture = surface.MemorylessDepthOrNull.storageMode == MTLStorageModeMemoryless,
+    };
+    return allocations;
 }
 bool ReadHeadlessPixels(std::span<uint8> pixels) noexcept
 {

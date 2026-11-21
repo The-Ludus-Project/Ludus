@@ -1,11 +1,11 @@
 # Ludus product and art direction
 
-**Selected direction (October 7, 2026): Quiet Studio with the Ludus Block
-identity.** The approved logo is a mint, extruded capital **L** on a rounded
-charcoal tile. Its clear silhouette, solid construction and restrained depth
-set the visual direction for the editor, default project icon, documentation
-and eventual website. It does not prescribe the art style of games made with
-Ludus.
+This guide owns Ludus's visual identity, sample art direction, editor
+presentation and wiki home. The shipped direction is **Quiet Studio with the
+Ludus Block**, selected October 7, 2026. **Light & Form** is the proposed next
+direction. It extends Quiet Studio's interaction principles and the approved
+mint Block into a shared first experience for the engine, editor and wiki.
+Games built with Ludus choose their own visual identity.
 
 The artwork is wired into the editor's Qt resources, Welcome and recent-project
 views, macOS app bundle, wiki branding and browser editor package. The production
@@ -30,6 +30,157 @@ This promise constrains implementation: one command and capability policy across
 menus/buttons/shortcuts, one shared project backend across editor/CLI, explicit
 save/discard/cancel, truthful progress, and verified publication. Automation must
 reduce decisions without hiding failures or silently changing engine identity.
+
+## Light and Form
+
+The first creative task is to open a World, move its light and see the result.
+The wiki shows the authored scene and offers a route into it. The editor gives
+the scene the largest useful area and puts the controls for the selected object
+within reach. The engine sample ships the inputs needed to reproduce the image.
+
+| Surface | What works today | What to change |
+| --- | --- | --- |
+| Engine samples | The [Cornell box](../examples/cornell-box.md) makes material, geometry and lighting changes easy to compare. The [staircase2 image](../examples/reference-scene.md) records a reproducible offline reference capture. | Add an original, editable sample whose composition and lighting explain what a creator can do in the editor. |
+| Editor | Docking, document ownership, predictable save and undo, and a stable viewport give users control. The documented [World workspace capture](../development/images/editor-workspace-vs-1920.png) also shows how empty panes and several control rows compete with the viewport. The browser first run can present a keymap dialog before the sample. | Give World a useful initial camera, clear primary actions and compact tool groups. Open the browser sample before asking about optional preferences. |
+| Wiki | [The home page](../wiki/index.md) gives readers direct task links and search. Its eight equal cards and two side navigation columns give newcomers several choices of similar visual weight. | Give the home page one statement of purpose, one real Ludus image and two clear starting routes. Keep search prominent for returning readers. |
+
+### Light Court showcase sample
+
+![Light Court concept with an L-shaped concrete wall, a blue-green enamel panel, a copper plate and a graphite sphere. Raking sunlight crosses the wall and platform.](../development/images/light-court-concept.jpg)
+
+*Light Court visual target, generated with OpenAI ImageGen. This illustration
+communicates composition, materials and lighting for an authored Ludus World.*
+
+Build a small courtyard with a stepped plinth, a tall concrete wall and a low
+run of concrete that reads as an open L. The eye should travel from the lit
+edge of the wall to the blue-green panel at its inside corner. Use a copper
+plate below the panel and a single graphite sphere across the platform to make
+the scale and material differences easy to read. The asymmetrical massing and
+one strong diagonal shadow should remain recognizable at thumbnail size.
+
+| Art decision | Target |
+| --- | --- |
+| Camera | A fixed, slightly elevated three-quarter opening view with the full L, the steps and the shadow in frame. Compose for a landscape viewport and check the crop at narrower widths. |
+| Materials | Warm matte concrete is the largest area. The enamel is a smaller, deeper blue-green surface, the copper a warm metallic highlight, and the sphere a dark matte reference. Keep surface texture subordinate to the silhouette. |
+| Lighting | Use an authored, low-angle directional light with a clear cast shadow and readable dark planes. If the chosen profile needs fill, use an explicit supported light in the saved World. |
+| Color pipeline | Author material factors in linear space, encode base-color textures as sRGB, and use the selected renderer profile's documented display transform. Record that profile and the camera with the published capture. |
+
+Use project-owned assets, ordinary meshes and the standard raster path. Give
+the key light the name **Sun** and open the World at the authored camera. The
+starter task is **Select Sun. Rotate it. Watch the shadow move.** Saving,
+undoing and reopening follow the existing World workflow. The sample should
+also read with selection cleared so the team can capture a clean image from the
+same project. See [World renderer and camera preview](../development/editor-workspace.md#world-renderer-and-camera-preview)
+and [lighting a World](../development/editor-workspace.md#lighting-a-world-that-renders-black).
+
+Use the approved Block as the identity reference for any further Ludus-owned
+showcase art. Start with readable masses, a clear focal point and a small number
+of materials whose interaction with light can be seen. Captions for public
+showcase images name the scene and capture path and link to the authored sample.
+Concept art and offline reference captures keep their own labels and contexts.
+
+### Editor presentation and first run
+
+- **Start Page.** Lead with **New Project** and **Open Project** on desktop.
+  Put recent projects nearby and give sample projects a clear entry point.
+  In the browser demo, open the shipped sample with the default keymap and
+  make the keymap change discoverable in Options. Use short labels that state
+  what happens. Distinguish editing a World from playing a shipped browser
+  build, and surface how to keep edits at the point of export or departure.
+- **World workspace.** Group scene hierarchy and asset navigation so each has
+  a clear job and the canvas dominates the default layout. Keep current view
+  mode, framing and frequently used authoring commands close to the viewport.
+  Keep camera diagnostics and capture tools in predictable menus or panels.
+  Preserve panel recovery, keyboard access and the native layout conventions.
+- **Properties and render graph.** Show the selected object or node at the top,
+  keep labels aligned, and group fields by component or concern. Selection
+  should be apparent even when keyboard focus is in a field. Keep graph port
+  colors paired with type labels or shapes and retain the canvas routes for
+  inspecting fields, editing connections and resolving rejected edits.
+- **Feedback.** When a document is empty, offer the action that puts content
+  there. For a failed edit, show the cause and repair where the action occurred.
+  Keep diagnostics available as text. Show pending and failed viewport
+  preparation separately from the last drawable frame.
+
+The [workspace guide](../development/editor-workspace.md#workspace-layout),
+[render graph authoring guide](../development/render-graph-authoring.md) and
+[browser editor guide](../wiki/guides/browser-editor.md) own the commands,
+supported actions and platform boundaries. Ship a browser Light Court route
+when the supported browser renderer path reproduces that workflow. Until then,
+the browser route opens a qualified sample such as Cornell Box.
+
+### Wiki home
+
+Use **Build your first world in Ludus** as the opening headline. Identify
+Ludus as a C++ game engine and editor and name the first thing the visitor can
+do. Pair that text with one useful landscape capture that shows the authored
+scene at a recognizable size. Keep the headline, actions and caption in HTML
+text so they remain readable on narrow screens and with images disabled.
+
+Use **Install the editor** as the primary action and **Try the browser preview**
+as a second path. Below the introduction, group the routes for creating a
+project, editing a sample and exploring the SDK. Keep search and the documentation
+index within reach. Preserve guide, architecture and API routes and use the
+home-page layout only for the home page. The same Markdown and local image
+must read offline. [Wiki development and publication](../development/wiki.md)
+owns build, navigation and publication.
+
+### Proposed appearance
+
+Use near-neutral editor chrome so authored color reads cleanly. Use the
+existing Block artwork and restrained mint or teal accents to identify Ludus.
+Keep high-contrast appearance available and the viewport surround dark in
+both appearances. Switching chrome appearance leaves authored colors, lights,
+exposure and the view transform independent of the theme.
+
+| Role | Dark appearance | Light appearance |
+| --- | --- | --- |
+| Workspace / panel / raised | `#171b1f` / `#20252a` / `#282e34` | `#f7f5f0` / `#ffffff` / `#eae7df` |
+| Main text / secondary text | `#f0f2f1` / `#b4bdc0` | `#1d2428` / `#4f5d60` |
+| Control edge / quiet divider | `#737f85` / `#3b444a` | `#778481` / `#d7d4cb` |
+| Action fill / text on action | `#57d2c1` / `#142024` | `#09665a` / `#ffffff` |
+| Selected row | `#284741` | `#ddefe9` |
+| Viewport surround / selection stroke | `#0b0f12` / `#ffd25a` | `#0b0f12` / `#ffd25a` |
+
+Reserve quiet dividers for decorative grouping and use the control edge where
+the outline identifies an interactive control. Use an explicit focus outline
+that remains visible over selected and hovered surfaces. Keep the viewport's
+dark casing around the amber selection stroke, particularly over bright geometry.
+Pair warning, error, success and progress colors with words or symbols. A mint
+action uses the brand color. Successful completion has its own signal.
+
+Use system sans-serif throughout. Let the landing headline use display scale
+and the editor use its compact typographic roles. Use monospace or tabular
+figures where paths, code or measurements benefit. Keep controls flat and use
+the existing shape and spacing scale. Reserve dimensional shading for the mark
+and authored imagery.
+
+The colors above are proposed sRGB targets. Dark text on mint measures 9.0:1
+and white on the light-theme teal measures 6.9:1. Confirm at least 4.5:1 for normal
+text and 3:1 for large text and essential non-text contrast, including rendered
+hover, selected and focus combinations. The approved [design tokens](../../config/design-tokens.json)
+own the shipped values, contrast pairs and high-contrast variants. Extend that
+source for shared color roles across Qt, setup, browser and wiki. The W3C
+explains the thresholds for [text contrast](https://www.w3.org/WAI/WCAG22/Understanding/contrast-minimum.html)
+and [non-text contrast](https://www.w3.org/WAI/WCAG22/Understanding/non-text-contrast.html).
+
+### Implementation and review
+
+1. **Author Light Court.** Use the ordinary desktop World preview to verify
+   camera, materials and authored light. Rotate Sun, undo, save and reopen.
+   Record the engine revision, renderer profile, capture settings and asset
+   provenance. Publish a clean, reproducible engine capture for the next step.
+2. **Improve the first session.** Start at a useful sample on the browser
+   preview, defer the optional keymap choice and test the advertised edit,
+   playback and export paths on their supported profiles. Verify viewport
+   priority and useful empty states at 900 × 740 and 1280 × 800 on desktop.
+   Exercise keyboard-only navigation and visible focus, light and dark chrome,
+   high contrast and layout recovery. Confirm that pending and failed preparation
+   retain the last drawable view and a ready replacement displays correctly.
+3. **Update the wiki home.** Use the real engine image and verify both starting
+   links, search and the sample walkthrough. Test narrow reflow without text
+   clipping or overflow, both appearances, and the offline bundle. Record where
+   first-time readers hesitate and whether they can reach their intended task.
 
 ## Ludus Block identity
 

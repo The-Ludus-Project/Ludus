@@ -8,7 +8,9 @@ import tempfile
 import unittest
 from unittest.mock import patch
 
-from editor_web import PAYLOAD, PLAYER_PAYLOAD, PLAYERS, TREE_SITTER_GRAMMAR_NOTICES, download, extract, validate_package
+from editor_web import (PAYLOAD, PLAYER_PAYLOAD, PLAYERS, QT_SOURCE_CHANGES, QT_SOURCE_CHANGES_NOTICE,
+                        TREE_SITTER_GRAMMAR_NOTICES, apply_qt_source_changes, describe_qt_source_changes, download,
+                        extract, validate_package)
 
 
 class EditorPackageTests(unittest.TestCase):
@@ -25,7 +27,7 @@ class EditorPackageTests(unittest.TestCase):
             (self.site / "players" / sample / "game.wasm").write_bytes(b"\0asm\x01\0\0\0\x05\x06\x01\x01\x80\x04\x80\x20")
             (self.site / "players" / sample / "game.js").write_text("game.wasm")
         (self.site / "licenses").mkdir()
-        for name in ("Ludus.txt", "Qt-LGPL-3.0.txt", "Emscripten.txt", "miniaudio.txt", "yyjson.txt", "tree-sitter.txt", *TREE_SITTER_GRAMMAR_NOTICES, "Luau.txt", "Luau-lua.txt", "emdawnwebgpu.txt", "webgpu-native.txt"):
+        for name in ("Ludus.txt", "Qt-LGPL-3.0.txt", QT_SOURCE_CHANGES_NOTICE, "Emscripten.txt", "miniaudio.txt", "yyjson.txt", "tree-sitter.txt", *TREE_SITTER_GRAMMAR_NOTICES, "Luau.txt", "Luau-lua.txt", "emdawnwebgpu.txt", "webgpu-native.txt"):
             (self.site / "licenses" / name).write_text("notice")
         self.manifest()
 
@@ -80,6 +82,11 @@ class EditorPackageTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "Missing editor license"):
             validate_package(self.site)
 
+    def test_qt_source_changes_cannot_be_omitted(self):
+        (self.site / "licenses" / QT_SOURCE_CHANGES_NOTICE).unlink()
+        with self.assertRaisesRegex(ValueError, "Missing editor license: " + QT_SOURCE_CHANGES_NOTICE):
+            validate_package(self.site)
+
     def test_grammar_license_cannot_be_omitted(self):
         (self.site / "licenses/tree-sitter-luau.txt").unlink()
         with self.assertRaisesRegex(ValueError, "Missing editor license: tree-sitter-luau.txt"):
@@ -109,6 +116,62 @@ class EditorPackageTests(unittest.TestCase):
             extract(archive, self.site / "extract")
         self.assertFalse((self.site / "escaped").exists())
 
+
+class QtSourceChangeTests(unittest.TestCase):
+    """The Qt source the browser editor builds and ships, relative to the pinned archive."""
+
+    def setUp(self):
+        self.directory = tempfile.TemporaryDirectory()
+        self.addCleanup(self.directory.cleanup)
+        self.source = Path(self.directory.name)
+        self.pinned = {}
+        for change in QT_SOURCE_CHANGES:
+            path = self.source / change["path"]
+            path.parent.mkdir(parents=True, exist_ok=True)
+            self.pinned[change["path"]] = "// before\n" + change["original"] + "// after\n"
+            path.write_text(self.pinned[change["path"]])
+
+    def test_change_applies_once_and_is_idempotent(self):
+        apply_qt_source_changes(self.source)
+        apply_qt_source_changes(self.source)
+        for change in QT_SOURCE_CHANGES:
+            text = (self.source / change["path"]).read_text()
+            self.assertEqual(text, "// before\n" + change["replacement"] + "// after\n")
+
+    def test_reentrant_event_queue_is_backported(self):
+        apply_qt_source_changes(self.source)
+        text = (self.source / "src/corelib/platform/wasm/qwasmsuspendresumecontrol.cpp").read_text()
+        # A nested event loop may empty the queue: the length is read before each event.
+        self.assertIn('while (pendingEvents["length"].as<int>() > 0)', text)
+        self.assertNotIn("while (count-- > 0)", text)
+
+    def test_dispatched_event_path_is_not_read(self):
+        apply_qt_source_changes(self.source)
+        text = (self.source / "src/plugins/platforms/wasm/qwasmevent.cpp").read_text()
+        # A queued event sent after its dispatch ended has an empty composedPath().
+        guard = text.index('if (path["length"].as<int>() == 0)')
+        self.assertLess(guard, text.index('path[0]["className"]'))
+
+    def test_unknown_source_is_refused_unchanged(self):
+        change = QT_SOURCE_CHANGES[0]
+        path = self.source / change["path"]
+        path.write_text("// a different Qt\n")
+        with self.assertRaisesRegex(ValueError, "matches neither the pinned Qt nor Ludus's change"):
+            apply_qt_source_changes(self.source)
+        self.assertEqual(path.read_text(), "// a different Qt\n")
+
+    def test_shipped_diff_restores_the_pinned_source(self):
+        apply_qt_source_changes(self.source)
+        diff = describe_qt_source_changes(self.source)
+        # Each test file fits in one hunk, so its two sides are the pinned and the built source.
+        for change, section in zip(QT_SOURCE_CHANGES, diff.split("--- a/")[1:]):
+            header, _, body = section.partition("\n@@")
+            self.assertEqual(header, change["path"] + "\n+++ b/" + change["path"])
+            lines = body.splitlines(keepends=True)[1:]
+            pinned = "".join(line[1:] for line in lines if line[0] in " -")
+            built = "".join(line[1:] for line in lines if line[0] in " +")
+            self.assertEqual(pinned, self.pinned[change["path"]])
+            self.assertEqual(built, (self.source / change["path"]).read_text())
 
 if __name__ == "__main__":
     unittest.main()

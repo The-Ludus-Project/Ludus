@@ -9,8 +9,7 @@ render-graph programs with a ported shader (L1e-2). The
 [module guide](../modules/tooling/shader-language.md) describes their exact
 behavior and limits. Still open from L1:
 - reporting development bounds-check failures through the render graph;
-- the Metal loop code-generation measurement;
-- configuration values for render-graph programs.
+- the Metal loop code-generation measurement.
 
 L2 is implemented:
 - L2a: interfaces, conformance, extensions, struct constants and
@@ -928,21 +927,29 @@ remain: buffer lengths have no direct Metal spelling, and `extern slang` atomics
 spelling; both programs compile through ray-query SPIR-V as their Slang originals do. See the
 [module guide](../modules/tooling/shader-language.md#resources-and-bindings).
 
+**L5a textures, arrays and intrinsics.** The
+[module guide](../modules/tooling/shader-language.md#resources-and-bindings)
+defines coordinate widths, sampler types, and slot allocation for the new
+texture shapes and named binding arrays. Fixed arrays use constant descriptor
+indices and the native binding-array profile. The Metal readback fixture
+compares LUSL and Slang with the same textures and checks the result against the
+authored texels and depth comparisons.
+
 Generic structs (`LUSL0304`) and `dynamic` dispatch are not needed by any
 current file and stay deferred. Tracked in issues [1729](https://github.com/The-Ludus-Project/Ludus/issues/1729) (resource queries,
 atomics, barriers) and [1730](https://github.com/The-Ludus-Project/Ludus/issues/1730) (texture kinds, binding arrays, intrinsics).
 
 ### L5b: shared libraries and build paths
 
-- **Includes outside the source directory.** `ludus_compile_shader` rejects a
-  LUSL include directory outside the source's directory, but renderer recipes
-  include nine roots (FoundationMath, FoundationGeometry, SceneFormat,
-  RenderGraphFormat, RHI and renderer headers). The LUSL path accepts the same
-  include roots as the Slang path.
-- **Host/shader layout headers.** Slang includes C++ layout headers such as
-  `renderer_gpu_preview_layout.h` and `scene_shader_layout.h`. Each gets a
-  LUSL-readable form generated from its C++ owner, so the constants keep one
-  owner.
+- **Includes outside the source directory.** Standalone LUSL accepts the
+  renderer's shared include roots (FoundationMath, FoundationGeometry,
+  SceneFormat, RenderGraphFormat, RHI and renderer headers).
+- **Host/shader layout headers.** The LUSL headers for GPU preview, reference
+  rendering, the scene shader interface and point search derive their macros
+  from the corresponding C++ owners. The same qualification recipe builds in
+  the source tree and installed SDK. See the
+  [standalone shader workflow](../modules/tooling/shader-language.md#resources-and-bindings)
+  for regeneration.
 - **Ownership of shared libraries.** L3c generates `.luslh` declarations from
   Slang reflection. When a library such as `math.slang` becomes LUSL, its
   `.lusl` source is the owner, its Slang consumers include the generated
@@ -952,8 +959,9 @@ atomics, barriers) and [1730](https://github.com/The-Ludus-Project/Ludus/issues/
   render-graph templates instantiate Slang files. New programs default to
   `.lusl`, with Slang still selectable, so the Editor does not keep making
   Slang after its templates migrate.
-- **Configuration values for render-graph programs**, still open from L1, close
-  before a template that reads configuration macros migrates.
+- **Configuration values for render-graph programs** are authored on LUSL
+  program records. The [module guide](../modules/tooling/shader-language.md#render-graph-programs)
+  describes the fields and stage cache behavior.
 
 Tracked in issues [1731](https://github.com/The-Ludus-Project/Ludus/issues/1731) (include roots and layout headers), [1732](https://github.com/The-Ludus-Project/Ludus/issues/1732)
 (Editor authoring) and [1733](https://github.com/The-Ludus-Project/Ludus/issues/1733) (configuration values). Library ownership

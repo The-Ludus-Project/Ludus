@@ -231,6 +231,14 @@ The caller owns the stream and its logical call order; save/restore
 hard worst-case iteration bound — do not call it from a deadline-bounded
 infrastructure callback. This is not a cryptographic generator.
 
+`TryMakeRandomStream(rootSeed, RandomOwner{domain, scope}, stream)` seeds a
+stream with the named domain/scope setup convention instead of an ad hoc seed.
+`random_checkpoint.hpp` encodes `RandomState` as its explicit 20-byte
+little-endian payload and writes, validates and atomically restores whole
+random checkpoints with their contract versions, content identity, event
+counters and identity allocators; see the
+[wiki randomness guide](../../wiki/guides/randomness.md#write-and-restore-a-checkpoint).
+
 ## Cubic curves and bicubic patches
 
 Include `cubic.hpp` or `patch.hpp` explicitly. `CubicBezier1/2/3` have four
