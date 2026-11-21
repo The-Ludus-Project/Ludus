@@ -2,7 +2,11 @@ cmake_minimum_required(VERSION 3.29)
 project(LightCourt LANGUAGES NONE)
 
 add_custom_target(light_court SOURCES
-    art/light-court.luscene.json
+    art/light-court.gltf
+    art/light-court.bin
+    art/graphite-normal.png
+    art/graphite-surface.png
+    art/LICENSE.txt
     assets/catalog.json
     authoring/light-court.world.json
 )

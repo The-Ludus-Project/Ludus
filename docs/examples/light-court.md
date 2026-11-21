@@ -4,7 +4,7 @@ Open a small courtyard, rotate its Sun and watch the shadow move. Light Court
 is a standalone authoring sample for the [desktop editor](../wiki/getting-started/install.md)
 with [rendered World preview enabled](../development/editor-workspace.md#enable-the-rendered-authoring-surface).
 
-![Light Court rendered by RT1. A diagonal shadow crosses the concrete steps, and a warm reflection from the copper plate lights the wall beside the blue-green panel.](images/light-court.png)
+![Light Court rendered by RT1. The graphite sphere has a soft highlight, a diagonal shadow crosses the concrete steps, and a warm reflection from the copper plate lights the wall beside the blue-green panel.](images/light-court.png)
 
 The image is a 1440 × 960 [RT1 reference capture](../development/editor-workspace.md#reference-capture-of-the-viewport)
 from the saved start view on macOS Metal. GPU compute traced 1,024 samples per
@@ -27,21 +27,25 @@ data for tools that read the project.
 
 ## Inspect the materials
 
-The [Light Court scene source](../../examples/light-court/art/light-court.luscene.json)
-contains the original geometry and five metallic-roughness materials. In the
-World's **Materials** tab, inspect the imported slots. Concrete uses roughness
-0.86, the blue-green enamel uses 0.22, and satin copper uses metallic 1 and
-roughness 0.34. The shipped catalog and blobs under `assets/` are the Editor
-import of this source. See the [Ludus scene source format](../architecture/scene-source-format.md#material)
-for the material fields and the [World import workflow](../development/editor-workspace.md#scene-start-view)
-for how an import sets the camera.
+The [Light Court glTF](../../examples/light-court/art/light-court.gltf) contains
+the original geometry and five metallic-roughness materials. In the World's
+**Materials** tab, inspect the imported slots. Concrete uses roughness 0.86, the
+blue-green enamel uses 0.22, and satin copper uses metallic 1 and roughness 0.34.
+The graphite ceramic sphere uses smooth vertex normals, a tangent-space normal
+map for fine grain, and a roughness map that varies the sheen across the glaze.
+The mesh, materials and maps are original to Light Court and ship under the
+[sample license](../../examples/light-court/art/LICENSE.txt). The catalog and
+blobs under `assets/` are the Editor import of this source. See [inspect imported
+materials](../development/editor-workspace.md#browse-a-worlds-material-resources) for how
+to find the surfaces that use each slot.
 
 ## Rotate the Sun
 
 The interactive viewport uses raster rendering so the shadow responds as you
-edit. To capture bounce light and material reflections at the same camera, open
-**Reference…** in the viewport toolbar and select **RT1 reference** as the
-**Source**.
+edit. The [raster capture](images/light-court-raster.png) shows the same start
+view at 1440 × 960 with the default editor graph on Metal and the grid hidden.
+To capture bounce light and material reflections at the same camera, open
+**Reference…** in the viewport toolbar and select **RT1 reference** as the **Source**.
 
 1. Select **Sun** in the World hierarchy. In **Properties → Transform**, change
    **Rotation Y** from `128` to `75` degrees. Watch the shadow swing across the
