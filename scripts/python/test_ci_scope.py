@@ -277,6 +277,20 @@ class RequiredGateTests(unittest.TestCase):
         for output in ("objcxx_changed", "objcxx_editor"):
             self.assertIn(f"      {output}: ${{{{ steps.scope.outputs.{output} }}}}\n", workflow)
 
+    def test_main_workflow_without_the_objective_cxx_job_still_gates_the_batch(self):
+        # Batch 44859003421 ran main's ci.yml, which predates the Objective-C++ job: every suite
+        # passed, but the candidate's gate rejected the missing objcxx_changed output.
+        for tier in (ci_scope.FULL_TIER, ci_scope.NIGHTLY_TIER):
+            with self.subTest(tier=tier):
+                results = self.results(True, tier)
+                del results[ci_scope.OBJCXX_JOB]
+                del results["changes"]["outputs"]["objcxx_changed"]
+                self.assertEqual(ci_scope.gate_failures(results), [])
+                results["macos-compile"]["result"] = "failure"
+                self.assertIn("macos-compile: expected success", " ".join(ci_scope.gate_failures(results)))
+                del results["macos-compile"]
+                self.assertIn("inventory", " ".join(ci_scope.gate_failures(results)))
+
     def test_objective_cxx_job_is_required_exactly_when_selected(self):
         for tier in sorted(ci_scope.TIERS):
             for required in (True, False):

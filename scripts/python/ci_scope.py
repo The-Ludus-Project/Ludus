@@ -191,16 +191,25 @@ def gate_failures(results: dict, evidence_job: str = "") -> list[str]:
     if tier not in TIERS:
         return ["Change classification did not report a valid validation_tier output."]
     objcxx = outputs.get("objcxx_changed")
-    if objcxx not in {"true", "false"}:
+    # Batches run main's workflow with this candidate script. A workflow from before the
+    # Objective-C++ job wires neither its output nor its result; the batch analyzes .mm
+    # sources in the macOS native job, so there is nothing more to check.
+    has_objcxx_job = OBJCXX_JOB in results
+    if objcxx is None and has_objcxx_job == False:
+        expected_jobs = {"changes", *NATIVE_JOBS}
+    elif objcxx not in {"true", "false"}:
         return ["Change classification did not report a valid objcxx_changed output."]
-    if set(results) != {"changes", *NATIVE_JOBS, OBJCXX_JOB}:
+    else:
+        expected_jobs = {"changes", *NATIVE_JOBS, OBJCXX_JOB}
+    if set(results) != expected_jobs:
         failures.append("Required native job inventory is incomplete or unexpected.")
-    # Batches and full-tier PRs analyze Objective-C++ in the macOS native jobs instead.
-    expected = ("success" if required == "true" and tier == INTEGRATION_TIER and objcxx == "true" and not is_scoped
-                else "skipped")
-    actual = results.get(OBJCXX_JOB, {}).get("result")
-    if actual != expected:
-        failures.append(f"{OBJCXX_JOB}: expected {expected}, received {actual}.")
+    if objcxx is not None:
+        # Batches and full-tier PRs analyze Objective-C++ in the macOS native jobs instead.
+        expected = ("success" if required == "true" and tier == INTEGRATION_TIER and objcxx == "true"
+                    and not is_scoped else "skipped")
+        actual = results.get(OBJCXX_JOB, {}).get("result")
+        if actual != expected:
+            failures.append(f"{OBJCXX_JOB}: expected {expected}, received {actual}.")
     for name in NATIVE_JOBS:
         deferred = ((tier == INTEGRATION_TIER and name in INTEGRATION_JOBS)
                     or (tier != NIGHTLY_TIER and name in NIGHTLY_JOBS))
