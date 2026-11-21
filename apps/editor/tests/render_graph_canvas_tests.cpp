@@ -21,6 +21,7 @@
 #include <QContextMenuEvent>
 #include <QCoreApplication>
 #include <QDialog>
+#include <QDialogButtonBox>
 #include <QDir>
 #include <QDoubleSpinBox>
 #include <QFile>
@@ -1614,6 +1615,36 @@ TEST_CASE("persistent buffer capacity edits share canvas and Properties history"
         CHECK(workspace.GetDocument().GetDraft(GetRootGraph()).contains("98304") == false);
         workspace.Redo();
         CHECK(workspace.GetDocument().GetDraft(GetRootGraph()).contains("98304") == true);
+        QPushButton* editOrNull = inoutFields.findChild<QPushButton*>(QStringLiteral("renderGraphEditBufferSizing"));
+        REQUIRE(editOrNull != nullptr);
+        QTimer::singleShot(0, &inoutFields, []() {
+            QDialog* sizingOrNull = qobject_cast<QDialog*>(QApplication::activeModalWidget());
+            REQUIRE(sizingOrNull != nullptr);
+            QDialogButtonBox* buttonsOrNull = sizingOrNull->findChild<QDialogButtonBox*>();
+            REQUIRE(buttonsOrNull != nullptr);
+            QPushButton* applyOrNull = buttonsOrNull->button(QDialogButtonBox::Apply);
+            REQUIRE(applyOrNull != nullptr);
+            CHECK(applyOrNull->isEnabled() == false);
+            sizingOrNull->findChild<QComboBox*>(QStringLiteral("renderGraphBufferStructSource"))
+                ->setCurrentText(QStringLiteral("main_shaders/color.slang"));
+            sizingOrNull->findChild<QLineEdit*>(QStringLiteral("renderGraphBufferStructType"))
+                ->setText(QStringLiteral("EdgeTable"));
+            sizingOrNull->findChild<QSpinBox*>(QStringLiteral("renderGraphBufferStructCount"))->setValue(256);
+            REQUIRE(applyOrNull->isEnabled() == true);
+            applyOrNull->click();
+        });
+        editOrNull->click();
+        const QString key = QStringLiteral("shader_struct");
+        const QString identity = QStringLiteral("buffer");
+        const QJsonObject record = FindNode(workspace.GetDocument(), identity).value(key).toObject();
+        CHECK(record.value(QStringLiteral("source")).toString() == QStringLiteral("main_shaders/color.slang"));
+        CHECK(record.value(QStringLiteral("type")).toString() == QStringLiteral("EdgeTable"));
+        CHECK(record.value(QStringLiteral("count")).toInt() == 256);
+        CHECK(FindNode(workspace.GetDocument(), identity).contains(QStringLiteral("bytes")) == false);
+        workspace.Undo();
+        CHECK(FindNode(workspace.GetDocument(), identity).contains(key) == false);
+        workspace.Redo();
+        CHECK(FindNode(workspace.GetDocument(), identity).value(key).toObject() == record);
         REQUIRE(workspace.Save() == true);
     };
     QWidget* properties = workspace.findChild<QWidget*>(QStringLiteral("renderGraphProperties"));
