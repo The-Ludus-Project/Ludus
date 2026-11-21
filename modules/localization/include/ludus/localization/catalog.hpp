@@ -34,10 +34,10 @@ enum class Status : uint8
     Invalid,                ///< Malformed bytes, an invalid handle or a key outside the ID grammar.
     Unsupported,            ///< A package version, record width or profile this reader does not implement.
     Limit,                  ///< A size or count exceeds the documented ceiling.
-    OutOfMemory,            ///< The allocation domain could not provide the catalog copy.
+    OutOfMemory,            ///< The allocation domain could not provide the requested storage.
     NotFound,               ///< The domain or key is absent from this catalog.
     WrongCatalog,           ///< The binding belongs to another prepared catalog.
-    TokenExhausted,         ///< The process-local catalog token space is exhausted.
+    TokenExhausted,         ///< The process-local catalog or request token space is exhausted.
     SchemaMismatch,         ///< The key exists, but its argument schema differs from the descriptor.
     RequiresArguments,      ///< The message has arguments; it must be formatted, not resolved statically.
     InvalidArguments,       ///< Format: an argument is missing, duplicate, undeclared, of the wrong kind or invalid.
@@ -46,6 +46,10 @@ enum class Status : uint8
     BackendUnavailable,     ///< No running Unicode host, or a build without LUDUS_BUILD_UNICODE.
     LinguisticDataMismatch, ///< The package was cooked with different ICU/CLDR/Unicode data than the runtime's.
     BackendFailure,         ///< ICU rejected a pattern or format that cooking had accepted.
+    BudgetExceeded, ///< The context budget cannot accommodate the requested allocation alongside retained state.
+    NotReady,       ///< The catalogs or current visible presentation have yet to be prepared.
+    Cancelled,      ///< The current request was cancelled by its owner.
+    StaleRequest,   ///< The request or completion identity does not match the current transaction.
 };
 
 /// Bounded failure report of PrepareCatalog.

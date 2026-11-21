@@ -468,6 +468,50 @@ class RealProcessTests(unittest.TestCase):
         return {"protocol": 1, "job": job, "operation": operation,
                 "project": str(self.project), "expected_sha256": digest}
 
+    @unittest.skipUnless(sys.platform == "darwin", "Built-in World Play uses Metal")
+    def test_builtin_world_launch_reports_child_failure_and_drains_stop(self) -> None:
+        digest = self.write_project()
+        editor = self.root / "prepare.py"
+        editor.write_text("#!/usr/bin/env python3\n"
+                          "import os, sys\n"
+                          "from pathlib import Path\n"
+                          "assert sys.argv[1] == '--prepare-world' and sys.argv[3] == 'room.world.json'\n"
+                          "assert 'LUDUS_HOSTED_WINDOW' not in os.environ\n"
+                          "Path(sys.argv[5]).write_bytes(b'cooked world')\n")
+        editor.chmod(0o755)
+        for should_stop in (False, True):
+            with self.subTest(should_stop=should_stop):
+                ready = self.root / "ready"
+                runtime = self.make_runtime(
+                    "import os, signal, sys, time\n"
+                    "from pathlib import Path\n"
+                    "assert Path(sys.argv[1]).read_bytes() == b'cooked world'\n"
+                    "assert sys.argv[2] == 'start'\n"
+                    "assert os.environ['LUDUS_HOSTED_WINDOW'].endswith('/tmp/fixture-window')\n"
+                    + ("def stop(*unused): sys.exit(0)\n"
+                       "signal.signal(signal.SIGTERM, stop)\n"
+                       f"Path({str(ready)!r}).touch()\n"
+                       "while True: time.sleep(.02)\n" if should_stop else "sys.exit(7)\n"))
+                context = self.context(runtime)
+                context.editor_executable = editor
+                context.builtin_player = runtime
+                client = self.client(context)
+                request = {**self.request("play_world", digest), "world": "room.world.json", "spawn": "start",
+                           "hosted_window": "1:" + "0f" * 32 + ":/tmp/fixture-window"}
+                client.send(request)
+                if should_stop:
+                    deadline = time.monotonic() + 10
+                    while not ready.exists() and time.monotonic() < deadline:
+                        time.sleep(.02)
+                    self.assertTrue(ready.exists())
+                    client.send({"protocol": 1, "job": request["job"], "type": "cancel"})
+                events = client.events()
+                self.assertTrue(any(event["type"] == "runtime_started" for event in events))
+                result = events[-1]
+                self.assertTrue(result["cleanup_confirmed"], result)
+                self.assertEqual(result["code"], "Cancelled" if should_stop else "RuntimeFailed")
+                self.assertEqual(result["exit_code"], 0 if should_stop else 7)
+
     # --- configure --------------------------------------------------------- #
     def test_configure_discovers_targets_and_succeeds(self) -> None:
         digest = self.write_project()

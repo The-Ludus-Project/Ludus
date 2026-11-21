@@ -11,6 +11,17 @@ namespace
 {
 constexpr usize RhiProviders[]{0};
 constexpr usize RendererProviders[]{1};
+/// Lifecycle error domain of every smoke adapter: values are rhi::StartupError codes.
+constexpr uint32 STARTUP_ERROR_DOMAIN = 1;
+[[nodiscard]] lifecycle::ErrorCode MakeStartupError(rhi::StartupError error) noexcept
+{
+    return { .Domain = STARTUP_ERROR_DOMAIN, .Value = static_cast<uint32>(error) };
+}
+[[nodiscard]] rhi::StartupError GetStartupError(const lifecycle::Failure& failure) noexcept
+{
+    LUDUS_REQUIRE(failure.Error.Domain == STARTUP_ERROR_DOMAIN);
+    return static_cast<rhi::StartupError>(failure.Error.Value);
+}
 /// Initial size of the demo window, in logical pixels.
 constexpr uint32 WINDOW_WIDTH = 800;
 constexpr uint32 WINDOW_HEIGHT = 600;
@@ -21,7 +32,7 @@ Application::Application() noexcept : mLifecycle(mNodes, mRecords, mJournal)
     {
         .Id = 0,
         .Name = "Window",
-        .Context = this,
+        .ContextOrNull = this,
         .Providers = {},
         .BeginStart = StartWindow,
         .PollStart = StartWindow,
@@ -32,7 +43,7 @@ Application::Application() noexcept : mLifecycle(mNodes, mRecords, mJournal)
     {
         .Id = 1,
         .Name = "RHI",
-        .Context = this,
+        .ContextOrNull = this,
         .Providers = RhiProviders,
         .BeginStart = StartRhi,
         .PollStart = PollRhi,
@@ -43,7 +54,7 @@ Application::Application() noexcept : mLifecycle(mNodes, mRecords, mJournal)
     {
         .Id = 2,
         .Name = "Renderer",
-        .Context = this,
+        .ContextOrNull = this,
         .Providers = RendererProviders,
         .BeginStart = PrepareRenderer,
         .PollStart = PrepareRenderer,
@@ -72,7 +83,7 @@ lifecycle::StartResult Application::StartWindow(void* context) noexcept
         return
         {
             .Status = lifecycle::StartStatus::Failed,
-            .Error = static_cast<uint32>(rhi::StartupError::InvalidWindow),
+            .Error = MakeStartupError(rhi::StartupError::InvalidWindow),
         };
     }
     return {};
@@ -88,7 +99,7 @@ lifecycle::StartResult Application::StartRhi(void* context) noexcept
     {
         return PollRhi(context);
     }
-    return { .Status = lifecycle::StartStatus::Failed, .Error = static_cast<uint32>(rhi::GetStartup().Error) };
+    return { .Status = lifecycle::StartStatus::Failed, .Error = MakeStartupError(rhi::GetStartup().Error) };
 }
 lifecycle::StartResult Application::PollRhi(void*) noexcept
 {
@@ -101,7 +112,7 @@ lifecycle::StartResult Application::PollRhi(void*) noexcept
     {
         return { .Status = lifecycle::StartStatus::Pending, .WaitReason = 1 };
     }
-    return { .Status = lifecycle::StartStatus::Failed, .Error = static_cast<uint32>(startup.Error) };
+    return { .Status = lifecycle::StartStatus::Failed, .Error = MakeStartupError(startup.Error) };
 }
 lifecycle::StartResult Application::PrepareRenderer(void*) noexcept
 {
@@ -115,7 +126,7 @@ lifecycle::StartResult Application::PrepareRenderer(void*) noexcept
         return
         {
             .Status = lifecycle::StartStatus::Failed,
-            .Error = static_cast<uint32>(rhi::StartupError::RenderingUnavailable),
+            .Error = MakeStartupError(rhi::StartupError::RenderingUnavailable),
         };
     }
     return {};
@@ -158,7 +169,7 @@ void Application::Fail(State state, rhi::StartupError error, usize nodeId) noexc
     const auto startup = rhi::GetStartup();
     mWebGpuError = startup.WebGpu.Error;
     mWebGl2Error = startup.WebGL2.Error;
-    (void)mLifecycle.ReportFailure(nodeId, static_cast<uint32>(error));
+    (void)mLifecycle.ReportFailure(nodeId, MakeStartupError(error));
     Shutdown();
     mState = state;
     mError = error;
@@ -183,7 +194,7 @@ bool Application::Start(rhi::BackendSelection selection) noexcept
     (void)mLifecycle.Advance(NodeCount);
     if (mLifecycle.GetOutcome() == lifecycle::Outcome::StartFailed)
     {
-        Fail(State::Failed, static_cast<rhi::StartupError>(mLifecycle.GetFailure().Error));
+        Fail(State::Failed, GetStartupError(mLifecycle.GetFailure()));
         return false;
     }
     mState = State::Loading;
@@ -210,7 +221,7 @@ State Application::Tick() noexcept
         const auto state = mLifecycle.Advance(NodeCount);
         if (mLifecycle.GetOutcome() == lifecycle::Outcome::StartFailed)
         {
-            const auto error = static_cast<rhi::StartupError>(mLifecycle.GetFailure().Error);
+            const rhi::StartupError error = GetStartupError(mLifecycle.GetFailure());
             Fail(error == rhi::StartupError::DeviceLost ? State::DeviceLost : State::Failed, error);
             return mState;
         }

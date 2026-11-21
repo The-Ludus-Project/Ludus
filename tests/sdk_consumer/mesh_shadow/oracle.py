@@ -10,6 +10,9 @@ FACE_SIZE = 512
 GUTTER = 4
 TANGENT = FACE_SIZE / (FACE_SIZE - 2 * GUTTER)
 GOLDEN = math.pi * (3 - math.sqrt(5))
+WIDE_SEARCH_RINGS = 4
+COMPACT_SEARCH_RADII = (0.5, 0.25)
+SEARCH_SPOKES = 3
 
 
 def receiver(case, columns, rows):
@@ -165,12 +168,24 @@ def tap_visibility(case, points, normals, columns, rows):
     jitter = noise(rows, columns)
     widest = 2 * np.linalg.norm(delta, axis=-1)
     widths = np.minimum(radius * (height / ((LIGHT_Z - origin[2]) / 2) - 1), widest)
-    octave = np.minimum(1, np.log2(np.maximum(widths / texel, 1)) / 4)
+    octave = np.minimum(
+        1, np.log2(np.maximum(widths / texel, 1)) / WIDE_SEARCH_RINGS
+    )
+    wide_widths = [
+        widths * 2 ** (-(ring + jitter) * octave) for ring in range(WIDE_SEARCH_RINGS)
+    ]
+    compact_widths = [
+        np.full_like(widths, radius * scale) for scale in COMPACT_SEARCH_RADII
+    ]
     searches = [delta]
-    for ring in range(4):
-        width = widths * 2 ** (-(ring + jitter) * octave)
-        for spoke in range(3):
-            theta = angle + ring * GOLDEN + spoke * 2 * math.pi / 3
+    active = [np.ones_like(widths, dtype=bool)]
+    for ring, width in enumerate(wide_widths + compact_widths):
+        enabled = widths > 2 * texel
+        if ring >= WIDE_SEARCH_RINGS:
+            enabled &= (width >= texel) & (width < widths)
+        for spoke in range(SEARCH_SPOKES):
+            theta = angle + ring * GOLDEN + spoke * 2 * math.pi / SEARCH_SPOKES
+            active.append(enabled)
             searches.append(
                 delta
                 + np.stack(
@@ -188,7 +203,7 @@ def tap_visibility(case, points, normals, columns, rows):
         + (positions - delta[:, None, :])
         * (height[:, None] / np.maximum(height[:, None] - heights, 1e-9))[..., None]
     )
-    admitted = (heights > 0) & (heights < height[:, None])
+    admitted = np.stack(active, axis=1) & (heights > 0) & (heights < height[:, None])
     admitted[:, 1:] &= (projected[:, 1:] ** 2).sum(axis=-1) <= radius**2
     count = admitted.sum(axis=1)
     safe = np.where(admitted, heights, 1)

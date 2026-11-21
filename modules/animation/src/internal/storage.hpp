@@ -5,6 +5,7 @@
 
 #include <ludus/foundation/base/types.h>
 
+#include <ludus/animation/clip.hpp>
 #include <ludus/animation/skeleton.hpp>
 #include <ludus/animation/status.hpp>
 #include <ludus/foundation/containers/array.hpp>
@@ -52,6 +53,35 @@ struct SkinBindingStorage final
     foundation::Array<foundation::uint32> JointIndices;
     foundation::Array<foundation::math::Affine3> InverseBinds;
     foundation::Fingerprint128 Compatibility{};
+};
+
+/// Track index of a skeleton joint that no clip track animates.
+inline constexpr foundation::uint32 NO_CLIP_TRACK = 0xFFFFFFFFU;
+
+struct ClipStorage final
+{
+    /// Per skeleton joint: the track animating it, or NO_CLIP_TRACK.
+    foundation::Array<foundation::uint32> JointTracks;
+    /// Per skeleton joint: the rest value written for untracked joints.
+    foundation::Array<foundation::math::TransformTRS> RestPose;
+    foundation::Array<foundation::uint64> TrackJointIds;
+    foundation::Array<foundation::math::TransformTRS> Samples;
+    foundation::Array<ClipEventRecord> Events;
+    foundation::Array<RootTransform> RootSamples;
+    RootTransform RootEnd{};
+    RootTransform RootReferenceOffset{};
+    foundation::Fingerprint128 SkeletonCompatibility{};
+    foundation::Fingerprint128 Fingerprint{};
+    ClipIdentity Identity{};
+    foundation::float64 DurationSeconds = 0;
+    foundation::float64 SampleRateHertz = 0;
+    /// Time of the last sample, (SampleCount - 1) / SampleRateHertz.
+    foundation::float64 LastSampleTimeSeconds = 0;
+    foundation::uint32 SampleCount = 0;
+    ClipWrapMode WrapMode = ClipWrapMode::Clamp;
+    RootMotionMode RootMode = RootMotionMode::None;
+    /// Whether the last sample lies before the duration, leaving an interpolated endpoint gap.
+    bool HasEndpointGap = false;
 };
 
 /// Validate a parent-local joint value: finite translation, rotation within

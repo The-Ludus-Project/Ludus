@@ -737,3 +737,19 @@ TEST_CASE("Quit keeps a reserved slot and wins from every state", "[world-demo][
     REQUIRE(loading.GetCancelledLoads() == 1);
     REQUIRE(loading.GetLoadStage() == LoadStage::Cancelled);
 }
+
+TEST_CASE("Restoring a checkpoint retires the discarded world's commands once", "[world-demo][g1]")
+{
+    Session session;
+    StartPlaying(session);
+    ludus::foundation::core::StaticArray<uint8, MAX_SESSION_CHECKPOINT_BYTES> checkpoint{};
+    usize written = 0;
+    REQUIRE(session.TrySaveCheckpoint({checkpoint.data(), checkpoint.size()}, written) ==
+            foundation::math::RandomCheckpointStatus::Success);
+    const uint64 pending = PostDamage(session.World(), session.World().FindAuthored("player-start"), 1);
+    REQUIRE(session.TryRestoreCheckpoint({checkpoint.data(), written}) ==
+            foundation::math::RandomCheckpointStatus::Success);
+    REQUIRE_FALSE(session.World().IsBuilt());
+    REQUIRE(session.GetRetiredCommandOutcomes().GetSize() == 1);
+    REQUIRE(FindOutcome(session.GetRetiredCommandOutcomes(), pending).Result == CommandResult::Superseded);
+}

@@ -185,6 +185,9 @@ try {
   assert.equal(await readFile(join(folder, 'ludus.project.json'), 'utf8'), '{"version": 3}\n');
   assert.equal((await readText(root + '/ludus.project.json')).toString(), '{"version": 4}\n', 'the session keeps the edit');
   failWrites = null;
+  assert.equal(await call('HarnessFlush', 'number', ['string'], [root + '/ludus.project.json']), 0);
+  assert.equal(await readFile(join(folder, 'ludus.project.json'), 'utf8'), '{"version": 4}\n',
+    'flushing the existing session copy publishes its pending bytes');
   assert.equal(await save('HarnessSave', root + '/ludus.project.json', '{"version": 5}\n'), 0);
   assert.equal(await readFile(join(folder, 'ludus.project.json'), 'utf8'), '{"version": 5}\n');
 

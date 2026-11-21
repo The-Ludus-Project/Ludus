@@ -10,6 +10,12 @@ outputs:
   validation_tier:
     description: Whether this run is the cheap integration tier, full batch tier, or standalone nightly tier.
     value: ${{ steps.classify.outputs.validation_tier }}
+  objcxx_changed:
+    description: Whether an integration PR changes an Objective-C++ (.mm) source the macOS job analyzes.
+    value: ${{ steps.classify.outputs.objcxx_changed }}
+  objcxx_editor:
+    description: Whether one of those changed Objective-C++ sources belongs to the Editor (needs Qt).
+    value: ${{ steps.classify.outputs.objcxx_editor }}
 runs:
   using: composite
   steps:
@@ -27,6 +33,8 @@ runs:
       env:
         NATIVE_REQUIRED: ${{ steps.classify.outputs.native_required }}
         VALIDATION_TIER: ${{ steps.classify.outputs.validation_tier }}
+        OBJCXX_CHANGED: ${{ steps.classify.outputs.objcxx_changed }}
+        OBJCXX_EDITOR: ${{ steps.classify.outputs.objcxx_editor }}
       run: |
         case "$NATIVE_REQUIRED" in
           true|false) ;;
@@ -36,3 +44,9 @@ runs:
           full|integration|nightly) ;;
           *) echo 'Missing or invalid CI validation tier.' >&2; exit 1 ;;
         esac
+        for value in "$OBJCXX_CHANGED" "$OBJCXX_EDITOR"; do
+          case "$value" in
+            true|false) ;;
+            *) echo 'Missing or invalid Objective-C++ routing output.' >&2; exit 1 ;;
+          esac
+        done

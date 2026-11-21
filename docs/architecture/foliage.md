@@ -102,6 +102,61 @@ separate limits for encoded bytes, decoded data, concurrent generations,
 temporary cook memory and per-frame uploads. Derive the GPU instance stream
 from the decoded records and evolve its layout independently of the disk format.
 
+### LUFOL page sets
+
+`Ludus::FoliageFormat` owns the version 1 wire contract and its admission
+limits in `lufol.h` and `limits.h`. `Ludus::FoliagePages` encodes page sets
+for the cooker and validates and reads them for runtime consumers. Both
+targets depend only on Foundation modules. The cook adapter that produces
+these records and their publication are later F0 and F1 work.
+
+A page set is one terrain domain's pages, tightly packed in little-endian
+order:
+
+| Part | Contents |
+| --- | --- |
+| Header (104 bytes) | Magic `LUFOL01`, format and generator versions, domain schema, page size, nonzero domain ID, terrain sample origin, terrain revision, table counts and a 32-byte input digest |
+| Layers (8 bytes each) | Layer ID, slots per cell and cell size, ID ascending |
+| Species (20 bytes each) | Nonzero persistent key, placement-affecting revision and variant count, key ascending |
+| Pages (56 bytes each) | Page address, contiguous placement run and conservative bounds, in (Z, X) order |
+| Placements (32 bytes each) | Layer, slot, cell, in-cell root offset, root height, yaw, scale, up direction, species and variant |
+
+Domain schema 1 measures horizontal positions in lattice units of 1/256
+terrain sample spacing from the domain origin. A root is
+`cell * CellSize + offset`, and each offset is below its layer's cell size,
+so every root lies in its own cell. Each layer's cell size divides the page
+size. A page owns the half-open square `[page * PageSize, (page + 1) *
+PageSize)` on each axis, so a cell and its roots belong to exactly one page.
+Placements in a page are strictly increasing by (layer, cell Z, cell X, slot),
+which rejects duplicate keys. Root heights are 1/1024 m fixed point, yaw is
+1/65,536 turn and scale is 1/4096 fixed point and nonzero. The up direction
+stores X and Z in 1/32,767 units; zero is vertical. Page bounds must contain
+every root, and an empty page stores zero bounds.
+
+Version 1 is canonical: equal cook results produce equal bytes, and any page
+set the reader accepts re-encodes to the same bytes. The species table holds
+keys and placement revisions, not meshes or materials. A material-only edit
+therefore leaves the page bytes unchanged. The input digest is the cache key
+for seeds, rules, species revisions and masks across the halo. The reader
+binds a page set to the expected domain ID and terrain revision and reports
+`RevisionMismatch` for any other.
+
+The encoder validates the whole description before it writes any byte, so a
+rejected description leaves the output unchanged. The reader checks the byte
+limit before reading any field. It then checks every header field, count,
+reference, ordering and ownership rule, and it binds a zero-copy view only on
+success. A failed read leaves the caller's previous view unchanged. Each
+failure reports a status, the violated rule, the record index and, for reads,
+the byte offset to repair. `FoliagePageLimits` lets a profile lower the
+encoded-byte ceiling and the layer, species, page, placement and per-page
+placement counts. It cannot raise them above the format limits. Concurrent
+generations, temporary cook memory and per-frame uploads keep their own
+owners.
+
+The golden fixture in `modules/content/foliage_pages/tests` pins the encoded
+bytes. The WebAssembly math probe encodes and reads the same fixture, so
+native and browser builds must produce identical bytes.
+
 Key reuse by the generator and format versions, seed, domain, layer, page
 address, rule and placement-affecting species revisions, and terrain and mask
 inputs across the full halo. The manifest binds the page set to a coherent

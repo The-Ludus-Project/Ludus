@@ -25,6 +25,10 @@ constexpr qreal HIT_SLOP_PIXEL = 2;
 constexpr int NEGATIVE_FILL_ALPHA = 110;
 constexpr int DISC_BACKGROUND_ALPHA = 70;
 constexpr int OUTLINE_ALPHA = 150;
+/// Opacity of the hover halo, of 255. Quiet so the handle itself stays the signal, not a loud disc.
+constexpr int HOVER_FILL_ALPHA = 56;
+/// Extra radius of the hover halo around a handle, in logical pixels.
+constexpr qreal HOVER_GROWTH_PIXEL = design::SPACING_EXTRA_SMALL * 0.75;
 constexpr qreal LETTER_POINT_SIZE = 8.5;
 constexpr QRgb LETTER_COLOUR = design::GetThemeArgb(design::ThemeColour::SurfaceViewport, true);
 constexpr QRgb RING_COLOUR = design::GetThemeArgb(design::ThemeColour::TextHud, true);
@@ -111,7 +115,8 @@ bool TryHitOrientationHandle(const OrientationLayout& layout, QPointF pointPixel
 
 void PaintOrientationWidget(QPainter& inoutPainter,
                             const OrientationLayout& layout,
-                            const gameplay::camera::CameraSample& sample)
+                            const gameplay::camera::CameraSample& sample,
+                            const EditorAxisView* hoveredViewOrNull)
 {
     inoutPainter.save();
     inoutPainter.setRenderHint(QPainter::Antialiasing);
@@ -129,6 +134,16 @@ void PaintOrientationWidget(QPainter& inoutPainter,
     font.setPointSizeF(LETTER_POINT_SIZE);
     for (const OrientationHandle& handle : layout.Handles)
     {
+        const bool isHovered = hoveredViewOrNull != nullptr && handle.View == *hoveredViewOrNull;
+        if (isHovered == true)
+        {
+            QColor hover = QColor::fromRgb(handle.Colour);
+            hover.setAlpha(HOVER_FILL_ALPHA);
+            inoutPainter.setPen(Qt::NoPen);
+            inoutPainter.setBrush(hover);
+            const qreal hoverRadius = handle.RadiusPixel + HOVER_GROWTH_PIXEL;
+            inoutPainter.drawEllipse(handle.CentrePixel, hoverRadius, hoverRadius);
+        }
         QColor colour = QColor::fromRgb(handle.Colour);
         if (handle.IsPositive == true)
         {

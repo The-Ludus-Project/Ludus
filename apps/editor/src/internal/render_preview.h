@@ -31,6 +31,7 @@
 
 #include <walking_controller.h>
 
+#include <QByteArray>
 #include <QElapsedTimer>
 #include <QJsonObject>
 #include <QObject>
@@ -183,7 +184,7 @@ public:
     [[nodiscard]] bool HasGpuPassProfilingPending(foundation::uint64 throughTicks = ~foundation::uint64{
                                                       0}) const noexcept;
     void PrepareGpuProfileFrame() noexcept;
-    void NotifyGpuProfileSubmission() noexcept;
+    void NotifyGpuProfileSubmission(const QByteArray& runtimeIdentity = {}) noexcept;
     /// Next successful submission identity shared by CPU viewport spans and GPU samples.
     [[nodiscard]] LUDUS_INLINE foundation::uint64 GetNextProfileFrameId() const noexcept
     {
@@ -444,6 +445,13 @@ public:
     {
         return mHasPendingFrame;
     }
+#if defined(LUDUS_EDITOR_BROWSER_PREVIEW)
+    /// Identity captured at recording, for the completed frame just taken by the browser viewport.
+    [[nodiscard]] LUDUS_INLINE const QByteArray& GetBrowserCompletedSceneIdentity() const noexcept
+    {
+        return mBrowserCompletedSceneIdentity;
+    }
+#endif
 Q_SIGNALS:
     /// Drawable reference changed, in physical pixels before the preview rendering cap.
     /// Emitted on the GUI thread even when no device or rendered frame is ready.
@@ -469,7 +477,9 @@ Q_SIGNALS:
     void BuiltInViewFailed(const QString& error);
     /// Rate-limited notification that GetStatistics changed while the overlay is visible.
     void StatisticsChanged();
-    void GpuProfileSubmission();
+    void GpuProfileSubmission(foundation::uint64 frameId,
+                              foundation::uint64 deviceSession,
+                              const QByteArray& runtimeIdentity);
     /// Direct GUI-thread notification; batch is borrowed only for the signal delivery.
     void GpuPassProfileBatch(foundation::uint64 frameId,
                              foundation::uint64 deviceSession,
@@ -571,6 +581,11 @@ private:
     graphics::renderer::ViewportFrame mPendingFrame;
     graphics::renderer::ViewportImage mPendingImage;
     graphics::rhi::SubmissionToken mProducer;
+#if defined(LUDUS_EDITOR_BROWSER_PREVIEW)
+    QByteArray mBrowserPreparedSceneIdentity;
+    QByteArray mBrowserSubmittedSceneIdentity;
+    QByteArray mBrowserCompletedSceneIdentity;
+#endif
     bool mHasPendingFrame = false;
     bool mHasFrame = false;
     bool mIsPresentationVisible = true;

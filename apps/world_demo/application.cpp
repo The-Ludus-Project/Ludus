@@ -66,6 +66,9 @@ bool Application::Start(rhi::BackendSelection selection, const char* levelBytes,
     mPresentedFrames = 0;
     mPacedPresentedFrames = 0;
     mPresentReturn = {};
+    mFirstWorldActivation = {};
+    mFirstRendererReady = {};
+    mInitialLoadRequestDuration = {};
     mPacing.Reset();
     mHadFocus = false;
     if (mInput.IsValid() == false)
@@ -145,9 +148,19 @@ bool Application::Start(rhi::BackendSelection selection, const char* levelBytes,
     uint64 servicesToken = 0;
     uint64 loadToken = 0;
     if (mSession.RequestFlow({ .Kind = FlowRequestKind::ServicesReady }, servicesToken) != Status::Success ||
-        mSession.ProcessFlowBoundary() != Status::Success ||
-        mSession.RequestFlow({ .Kind = FlowRequestKind::Load, .Level = level }, loadToken) != Status::Success ||
-        mSession.ProcessFlowBoundary() != Status::Success || mSession.GetFlowState() != FlowState::Preparing)
+        mSession.ProcessFlowBoundary() != Status::Success)
+    {
+        Shutdown();
+        mState = AppState::Failed;
+        return false;
+    }
+    // The initial load request is the Load boundary: its preflight parses the level and starts the candidate.
+    const foundation::time::Timestamp loadStart = foundation::time::Now();
+    const bool isLoadStarted =
+        mSession.RequestFlow({ .Kind = FlowRequestKind::Load, .Level = level }, loadToken) == Status::Success &&
+        mSession.ProcessFlowBoundary() == Status::Success && mSession.GetFlowState() == FlowState::Preparing;
+    (void)foundation::time::TryElapsed(loadStart, foundation::time::Now(), mInitialLoadRequestDuration);
+    if (isLoadStarted == false)
     {
         Shutdown();
         mState = AppState::Failed;
@@ -187,6 +200,10 @@ void Application::processFlowBoundary() noexcept
     // Activation restarts pacing: a slow activation frame is not judged against the loading schedule.
     if (change.Cause == FlowRequestKind::CandidateReady)
     {
+        if (mFirstWorldActivation.Nanoseconds == 0)
+        {
+            mFirstWorldActivation = foundation::time::Now();
+        }
         mPacing.Reset();
     }
     if (change.From == FlowState::Preparing && change.Cause == FlowRequestKind::CandidateFailed)
@@ -380,17 +397,21 @@ Application::playFrame(const rhi::StartupInfo& startup, bool isWindowVisible, fo
 {
     mSelectedBackend = startup.SelectedBackend;
     const rhi::RasterStatus prepared = mFrameRenderer.Prepare(mDevice);
-    if (mIsRendererReady == false && prepared == rhi::RasterStatus::Ready &&
-        mSelectedBackend == rhi::Backend::Direct3D12)
+    if (mIsRendererReady == false && prepared == rhi::RasterStatus::Ready)
     {
-        rhi::MeasurementAdapter adapter;
-        if (rhi::GetMeasurementAdapter(mDevice, adapter) == rhi::RasterStatus::Ready && adapter.SoftwareKnown == true)
+        mFirstRendererReady = foundation::time::Now();
+        if (mSelectedBackend == rhi::Backend::Direct3D12)
         {
-            const std::string_view kind = adapter.Software == true ? "software" : "hardware";
-            LUDUS_LOG_INFO(foundation::logging::LOG_CORE,
-                           "World renderer: Direct3D 12 {} adapter '{}'",
-                           kind,
-                           adapter.Name);
+            rhi::MeasurementAdapter adapter;
+            if (rhi::GetMeasurementAdapter(mDevice, adapter) == rhi::RasterStatus::Ready &&
+                adapter.SoftwareKnown == true)
+            {
+                const std::string_view kind = adapter.Software == true ? "software" : "hardware";
+                LUDUS_LOG_INFO(foundation::logging::LOG_CORE,
+                               "World renderer: Direct3D 12 {} adapter '{}'",
+                               kind,
+                               adapter.Name);
+            }
         }
     }
     mIsRendererReady = prepared == rhi::RasterStatus::Ready;

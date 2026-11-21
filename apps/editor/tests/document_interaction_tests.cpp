@@ -12,11 +12,15 @@
 #include <QApplication>
 #include <QComboBox>
 #include <QContextMenuEvent>
+#include <QDialog>
+#include <QDialogButtonBox>
+#include <QDockWidget>
 #include <QFile>
 #include <QLineEdit>
 #include <QListWidget>
 #include <QMenu>
 #include <QMessageBox>
+#include <QPlainTextEdit>
 #include <QPushButton>
 #include <QTabWidget>
 #include <QTemporaryDir>
@@ -111,6 +115,189 @@ TEST_CASE("Project history survives Save, conflicts and failed replacement", "[e
     CHECK(controller.CanUndoProject());
 }
 
+TEST_CASE("Project Settings inspects external saves before choosing recovery", "[editor][document][widget]")
+{
+    QTemporaryDir directory;
+    EditorController controller(MissingTools());
+    MainWindow window(&controller, nullptr, directory.filePath(QStringLiteral("workspace.ini")));
+    const QString path = Project(directory);
+    controller.OpenProject(path);
+    ShowReady(window, controller);
+    QLineEdit* nameOrNull = window.findChild<QLineEdit*>(QStringLiteral("projectName"));
+    REQUIRE(nameOrNull != nullptr);
+    nameOrNull->setFocus();
+    nameOrNull->selectAll();
+    QTest::keyClicks(nameOrNull, QStringLiteral("my draft"));
+    REQUIRE(controller.State().Draft.Name == QStringLiteral("my draft"));
+    REQUIRE(controller.CanUndoProject() == true);
+
+    QByteArray inspectedBytes = controller.Store().Load(path).Bytes;
+    inspectedBytes.replace("\"demo\"", "\"external one\"");
+    inspectedBytes.replace("\"old\"", "\"new argument\"");
+    bool hasValidInspection = true;
+    bool shouldCancel = false;
+    bool shouldReloadInvalid = false;
+    QByteArray latestBytes = inspectedBytes;
+    latestBytes.replace("\"external one\"", "\"external two\"");
+
+    SECTION("Cancel keeps a draft and its undo history")
+    {
+        shouldCancel = true;
+        latestBytes = inspectedBytes;
+    }
+    SECTION("Reload reads a newer revision than the inspected one") {}
+    SECTION("Reload retries validation when the inspected bytes are invalid")
+    {
+        hasValidInspection = false;
+        inspectedBytes = QByteArrayLiteral("invalid descriptor");
+    }
+    SECTION("Reload rejects a second change to invalid bytes and keeps the draft")
+    {
+        shouldReloadInvalid = true;
+        latestBytes = QByteArrayLiteral("invalid second revision");
+    }
+
+    const auto writeBytes = [&path](const QByteArray& bytes) {
+        QFile file(path);
+        REQUIRE(file.open(QIODevice::WriteOnly | QIODevice::Truncate) == true);
+        REQUIRE(file.write(bytes) == bytes.size());
+    };
+    writeBytes(inspectedBytes);
+    for (QDockWidget* dock : window.findChildren<QDockWidget*>())
+    {
+        if (dock->windowTitle() == QStringLiteral("Error List"))
+        {
+            dock->hide();
+        }
+    }
+
+    bool hasAttemptedCommit = false;
+    ProjectStore::FaultHooks hooks;
+    hooks.FailCommit = [&hasAttemptedCommit]() {
+        hasAttemptedCommit = true;
+        return false;
+    };
+    controller.Store().SetFaultHooks(hooks);
+
+    bool hasOpenedInspection = false;
+    bool hasShownReloadError = false;
+    QTimer::singleShot(0, &window, [&]() {
+        QDialog* dialogOrNull = qobject_cast<QDialog*>(QApplication::activeModalWidget());
+        REQUIRE(dialogOrNull != nullptr);
+        CHECK(dialogOrNull->objectName() == QStringLiteral("projectSaveConflict"));
+        hasOpenedInspection = true;
+        QPlainTextEdit* fieldsOrNull =
+            dialogOrNull->findChild<QPlainTextEdit*>(QStringLiteral("projectSaveConflictFields"));
+        REQUIRE(fieldsOrNull != nullptr);
+        CHECK(fieldsOrNull->isReadOnly() == true);
+        const QString fields = fieldsOrNull->toPlainText();
+        CHECK(fields.contains(QStringLiteral("Saved baseline  \"demo\"")) == true);
+        CHECK(fields.contains(QStringLiteral("Pending draft   \"my draft\"")) == true);
+        if (hasValidInspection == true)
+        {
+            CHECK(fields.contains(QStringLiteral("name (changed on disk and in draft)")) == true);
+            CHECK(fields.contains(QStringLiteral("On disk         \"external one\"")) == true);
+            CHECK(fields.contains(QStringLiteral("run.args")) == true);
+            CHECK(fields.contains(QStringLiteral("On disk         [\"new argument\"]")) == true);
+            CHECK(fields.contains(QStringLiteral("source_dir")) == false);
+        }
+        else
+        {
+            CHECK(fields.contains(QStringLiteral("On disk         (unavailable)")) == true);
+        }
+        CHECK(controller.Store().Load(path).Bytes == inspectedBytes);
+        QDialogButtonBox* buttonsOrNull = dialogOrNull->findChild<QDialogButtonBox*>();
+        REQUIRE(buttonsOrNull != nullptr);
+        QPushButton* cancelOrNull = buttonsOrNull->button(QDialogButtonBox::Cancel);
+        REQUIRE(cancelOrNull != nullptr);
+        CHECK(cancelOrNull->isDefault() == true);
+        if (shouldCancel == true)
+        {
+            cancelOrNull->click();
+            return;
+        }
+
+        writeBytes(latestBytes);
+        if (shouldReloadInvalid == true)
+        {
+            QTimer::singleShot(0, &window, [&hasShownReloadError]() {
+                QMessageBox* warningOrNull = qobject_cast<QMessageBox*>(QApplication::activeModalWidget());
+                REQUIRE(warningOrNull != nullptr);
+                CHECK(warningOrNull->text().contains(QStringLiteral("Repair or restore the descriptor")) == true);
+                CHECK(warningOrNull->text().contains(QStringLiteral("undo history")) == true);
+                hasShownReloadError = true;
+                warningOrNull->accept();
+            });
+        }
+        QPushButton* reloadOrNull = dialogOrNull->findChild<QPushButton*>(QStringLiteral("projectSaveConflictReload"));
+        REQUIRE(reloadOrNull != nullptr);
+        reloadOrNull->click();
+    });
+
+    QAction* save = Action(window, "document.save");
+    REQUIRE(save->isEnabled() == true);
+    save->trigger();
+    CHECK(hasOpenedInspection == true);
+    CHECK(hasAttemptedCommit == false);
+    CHECK(hasShownReloadError == shouldReloadInvalid);
+    CHECK(controller.Store().Load(path).Bytes == latestBytes);
+
+    if (shouldCancel == true || shouldReloadInvalid == true)
+    {
+        CHECK(controller.State().Dirty() == true);
+        CHECK(controller.State().Saved.Name == QStringLiteral("demo"));
+        CHECK(controller.State().Draft.Name == QStringLiteral("my draft"));
+        REQUIRE(controller.CanUndoProject() == true);
+        controller.UndoProjectEdit();
+        CHECK(controller.State().Draft.Name == QStringLiteral("demo"));
+        controller.RedoProjectEdit();
+        CHECK(controller.State().Draft.Name == QStringLiteral("my draft"));
+    }
+    else
+    {
+        CHECK(controller.State().Dirty() == false);
+        CHECK(controller.State().Saved.Name == QStringLiteral("external two"));
+        CHECK(controller.State().Draft.Name == QStringLiteral("external two"));
+        CHECK(controller.CanUndoProject() == false);
+    }
+}
+
+TEST_CASE("Project Settings Undo restores an unsaved value after exploring an alternative",
+          "[editor][document][widget]")
+{
+    QTemporaryDir directory;
+    EditorController controller(MissingTools());
+    MainWindow window(&controller, nullptr, directory.filePath(QStringLiteral("workspace.ini")));
+    const QString path = Project(directory);
+    controller.OpenProject(path);
+    ShowReady(window, controller);
+    const QByteArray savedBytes = controller.Store().Load(path).Bytes;
+    QLineEdit* nameOrNull = window.findChild<QLineEdit*>(QStringLiteral("projectName"));
+    REQUIRE(nameOrNull != nullptr);
+    nameOrNull->setFocus();
+    nameOrNull->selectAll();
+    QTest::keyClicks(nameOrNull, QStringLiteral("first draft"));
+    REQUIRE(controller.State().Draft.Name == QStringLiteral("first draft"));
+
+    // Leave the field to establish a separate project history entry.
+    QTest::keyClick(nameOrNull, Qt::Key_Tab);
+    REQUIRE(nameOrNull->hasFocus() == false);
+    nameOrNull->setFocus();
+    nameOrNull->selectAll();
+    QTest::keyClicks(nameOrNull, QStringLiteral("alternate draft"));
+    REQUIRE(controller.State().Draft.Name == QStringLiteral("alternate draft"));
+
+    QTest::keyClick(nameOrNull, Qt::Key_Tab);
+    REQUIRE(nameOrNull->hasFocus() == false);
+    QAction* undo = Action(window, "document.undo");
+    REQUIRE(undo->isEnabled() == true);
+    undo->trigger();
+    CHECK(nameOrNull->text() == QStringLiteral("first draft"));
+    CHECK(controller.State().Draft.Name == QStringLiteral("first draft"));
+    CHECK(controller.State().Dirty() == true);
+    CHECK(controller.Store().Load(path).Bytes == savedBytes);
+}
+
 TEST_CASE("Save acknowledges the captured project snapshot when another edit arrives", "[editor][document]")
 {
     QTemporaryDir directory;
@@ -146,11 +333,13 @@ TEST_CASE("Invalid saves and rejected loads keep drafts and history; accepted id
     EditorController controller(MissingTools());
     const auto path = Project(directory);
     controller.OpenProject(path);
+    const QByteArray savedBytes = controller.Store().Load(path).Bytes;
     auto draft = controller.State().Draft;
     draft.Name.clear();
     controller.EditDraft(draft);
     controller.Save();
     CHECK(controller.State().Result.Code == ResultCode::InvalidProject);
+    CHECK(controller.Store().Load(path).Bytes == savedBytes);
     CHECK(controller.State().Draft.Name.isEmpty());
     controller.OpenProject(directory.filePath(QStringLiteral("missing.json")));
     CHECK(controller.CanUndoProject());

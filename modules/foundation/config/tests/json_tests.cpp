@@ -143,3 +143,151 @@ TEST_CASE("Config writer rejects layers exceeding the loader budget even with a 
     CHECK(WriteLayer(context, Layer::Preference, "big.v1", large, output) == Status::LimitExceeded);
     CHECK(output.data() == marker);
 }
+
+TEST_CASE("Exported configuration schema matches native descriptor validation")
+{
+    constexpr int64 MIN_SIGNED = -9223372036854775807LL - 1;
+    constexpr int64 MAX_SIGNED = 9223372036854775807LL;
+    constexpr uint64 MAX_UNSIGNED = ~uint64{0};
+    constexpr uint64 MIN_UNSIGNED = MAX_UNSIGNED - 2;
+    constexpr uint32 SOURCES = SourceMask(Layer::Project) | SourceMask(Layer::Launch);
+    constexpr uint32 GROUP = 5;
+    constexpr uint32 MAX_TEXT_BYTES = 3;
+    Value text;
+    REQUIRE(Value::FromText(Type::String, "", text) == Status::Ok);
+    const Descriptor schema[]{
+        {
+            .Name = "signed",
+            .Default = Value::FromInt64(0),
+            .Help = {},
+            .Units = {},
+            .Choices = {},
+            .MinSigned = MIN_SIGNED,
+            .MaxSigned = MAX_SIGNED,
+        },
+        {
+            .Name = "unsigned",
+            .Default = Value::FromUint64(MAX_UNSIGNED),
+            .Help = {},
+            .Units = {},
+            .Choices = {},
+            .MinUnsigned = MIN_UNSIGNED,
+            .MaxUnsigned = MAX_UNSIGNED,
+        },
+        {
+            .Name = "text",
+            .Default = text,
+            .Help = {},
+            .Units = {},
+            .Choices = {},
+            .AllowedSources = SOURCES,
+            .Group = GROUP,
+            .MaxTextBytes = MAX_TEXT_BYTES,
+        },
+        {
+            .Name = "real",
+            .Default = Value::FromFloat32(0),
+            .Help = {},
+            .Units = {},
+            .Choices = {},
+            .MinReal = -0.5,
+            .MaxReal = 0.5,
+        },
+        { .Name = "flag", .Default = Value::FromBool(false), .Help = {}, .Units = {}, .Choices = {} },
+    };
+    Context context;
+    Diagnostic error;
+    REQUIRE(context.Initialize(schema, GetSystemAllocationDomain(), error) == Status::Ok);
+    constexpr usize SCHEMA_BUFFER_BYTES = 4096;
+    uint8 buffer[SCHEMA_BUFFER_BYTES]{};
+    std::span<const uint8> output;
+    REQUIRE(WriteSchema(context, "bounds.v1", buffer, output) == Status::Ok);
+    parsing::JsonDocument document;
+    parsing::ParseError parseError;
+    REQUIRE(document.Read({reinterpret_cast<const char*>(output.data()), output.size()}, parseError) ==
+            parsing::ParseStatus::Ok);
+    const parsing::JsonValue settings = document.Root().Get("settings");
+    REQUIRE(settings.Array());
+    REQUIRE(settings.Count() == context.Schema().size());
+    for (usize index = 0; index < settings.Count(); ++index)
+    {
+        const Descriptor& descriptor = schema[index];
+        const parsing::JsonValue setting = settings.At(index);
+        std::string_view name;
+        REQUIRE(setting.Get("key").String(name));
+        CHECK(name == descriptor.Name);
+        uint64 sourceMask = 0;
+        uint64 group = 0;
+        REQUIRE(setting.Get("allowed_sources").Integer(sourceMask));
+        REQUIRE(setting.Get("group").Integer(group));
+        CHECK(sourceMask == descriptor.AllowedSources);
+        CHECK(group == descriptor.Group);
+    }
+
+    const struct BoundCase
+    {
+        usize SettingIndex;
+        const char* Field;
+        std::string_view Decimal;
+        Value Expected;
+    } bounds[]{
+        {0, "min", "-9223372036854775808", Value::FromInt64(MIN_SIGNED)},
+        {0, "max", "9223372036854775807", Value::FromInt64(MAX_SIGNED)},
+        {1, "min", "18446744073709551613", Value::FromUint64(MIN_UNSIGNED)},
+        {1, "max", "18446744073709551615", Value::FromUint64(MAX_UNSIGNED)},
+    };
+    const uint64 revision = context.Revision();
+    for (const BoundCase& bound : bounds)
+    {
+        const Descriptor& descriptor = schema[bound.SettingIndex];
+        const parsing::JsonValue node = settings.At(bound.SettingIndex).Get(bound.Field);
+        std::string_view decimal;
+        REQUIRE(node.String(decimal));
+        CHECK(decimal == bound.Decimal);
+        Assignment edit{ .Name = descriptor.Name, .From = {} };
+        REQUIRE(DecodeValue(node, descriptor.Default.Kind, edit.Data) == Status::Ok);
+        CHECK(edit.Data == bound.Expected);
+        REQUIRE(context.Prepare(Layer::Project, {&edit, 1}, false, revision, error) == Status::Ok);
+        context.Discard();
+    }
+
+    const Assignment belowUnsigned
+    {
+        .Name = "unsigned",
+        .Data = Value::FromUint64(MIN_UNSIGNED - 1),
+        .From = {},
+    };
+    CHECK(context.Prepare(Layer::Project, {&belowUnsigned, 1}, false, revision, error) == Status::InvalidValue);
+
+    const parsing::JsonValue textSetting = settings.At(2);
+    uint64 textLimit = 0;
+    REQUIRE(textSetting.Get("max_text_bytes").Integer(textLimit));
+    CHECK(textLimit == MAX_TEXT_BYTES);
+    CHECK(textSetting.Get("min").Valid() == false);
+    Assignment textEdit{ .Name = "text", .From = {} };
+    REQUIRE(Value::FromText(Type::String, "éx", textEdit.Data) == Status::Ok);
+    REQUIRE(context.Prepare(Layer::Project, {&textEdit, 1}, false, revision, error) == Status::Ok);
+    context.Discard();
+    CHECK(context.Prepare(Layer::Engine, {&textEdit, 1}, false, revision, error) == Status::InvalidSource);
+    REQUIRE(Value::FromText(Type::String, "éxx", textEdit.Data) == Status::Ok);
+    CHECK(context.Prepare(Layer::Project, {&textEdit, 1}, false, revision, error) == Status::InvalidValue);
+
+    const parsing::JsonValue real = settings.At(3);
+    float64 minimum = 0;
+    float64 maximum = 0;
+    REQUIRE(real.Get("min").Number(minimum));
+    REQUIRE(real.Get("max").Number(maximum));
+    CHECK(minimum == schema[3].MinReal);
+    CHECK(maximum == schema[3].MaxReal);
+    CHECK(real.Get("max_text_bytes").Valid() == false);
+    const parsing::JsonValue flag = settings.At(4);
+    CHECK(flag.Get("min").Valid() == false);
+    CHECK(flag.Get("max").Valid() == false);
+    CHECK(flag.Get("max_text_bytes").Valid() == false);
+
+    uint8 tiny[1]{};
+    const std::span<const uint8> preserved = output;
+    CHECK(WriteSchema(context, "bounds.v1", tiny, output) == Status::LimitExceeded);
+    CHECK(output.data() == preserved.data());
+    CHECK(output.size() == preserved.size());
+}
