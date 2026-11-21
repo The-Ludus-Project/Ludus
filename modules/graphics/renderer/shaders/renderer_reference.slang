@@ -355,6 +355,40 @@ bool IsBvhCandidateAccepted(uint triangle, float2 barycentric)
     float v = barycentric.y;
     return IsOpaque(GetInstance(triangle), GetTexcoordUv(triangle, u, v), GetVertexAlpha(triangle, u, v));
 }
+// Diagnostic kernels of the wavefront hit-shading qualification (renderer-systems.md, "Qualify wavefront hit
+// shading") define these before including this file; the renderer_reference recipe defines none of them.
+// A repeated traversal traces the same query again after the original and must return the same hit; the extra
+// device time attributes traversal cost without changing paths. A permuted kernel assigns pixels to threads in a
+// fixed pseudorandom order; every pixel still traces and commits its own addressed sample.
+#ifndef LUDUS_REFERENCE_REPEATED_CLOSEST_TRAVERSALS
+#    define LUDUS_REFERENCE_REPEATED_CLOSEST_TRAVERSALS 0
+#endif
+#ifndef LUDUS_REFERENCE_REPEATED_VISIBILITY_TRAVERSALS
+#    define LUDUS_REFERENCE_REPEATED_VISIBILITY_TRAVERSALS 0
+#endif
+#ifndef LUDUS_REFERENCE_PERMUTED_PIXELS
+#    define LUDUS_REFERENCE_PERMUTED_PIXELS 0
+#endif
+// The image width is below 2^31, so this shift yields zero, which the compiler cannot prove. Mixing it into a
+// repeated query keeps the query identical while preventing the compiler from merging it with the original.
+static const uint OPAQUE_ZERO_SHIFT = 31;
+BvhHit RepeatTraversals(BvhRay query, bool isVisibility, BvhHit traced)
+{
+    uint repeats = isVisibility == true ? LUDUS_REFERENCE_REPEATED_VISIBILITY_TRAVERSALS
+                                        : LUDUS_REFERENCE_REPEATED_CLOSEST_TRAVERSALS;
+    uint opaqueZero = Dimensions.x >> OPAQUE_ZERO_SHIFT;
+    for (uint repeat = 0; repeat < repeats; ++repeat)
+    {
+        BvhRay repeated = query;
+        repeated.MaximumDistanceWorld = asfloat(asuint(query.MaximumDistanceWorld) ^ ((repeat + 1) * opaqueZero));
+        BvhHit again = TraceBvh(repeated, isVisibility);
+        // A disagreement fails the capture as a traversal failure instead of passing unnoticed.
+        if (again.Triangle != traced.Triangle || asuint(again.DistanceWorld) != asuint(traced.DistanceWorld) ||
+            again.HasExceededStack != traced.HasExceededStack)
+            traced.HasExceededStack = true;
+    }
+    return traced;
+}
 Hit TraceScene(Ray ray, bool isVisibility)
 {
     BvhRay query;
@@ -363,6 +397,9 @@ Hit TraceScene(Ray ray, bool isVisibility)
     query.MinimumDistanceWorld = ray.MinimumDistanceWorld;
     query.MaximumDistanceWorld = ray.MaximumDistanceWorld;
     BvhHit traced = TraceBvh(query, isVisibility);
+#if LUDUS_REFERENCE_REPEATED_CLOSEST_TRAVERSALS > 0 || LUDUS_REFERENCE_REPEATED_VISIBILITY_TRAVERSALS > 0
+    traced = RepeatTraversals(query, isVisibility, traced);
+#endif
     Hit result;
     result.Triangle = traced.Triangle;
     result.DistanceWorld = traced.DistanceWorld;
@@ -2315,6 +2352,29 @@ bool IsValidSum(float3 sum, float3 compensation)
     return IsFiniteVector(sum) && IsFiniteVector(compensation) && all(sum >= 0);
 }
 
+#if LUDUS_REFERENCE_PERMUTED_PIXELS != 0
+// Odd multipliers and a half-width xorshift are bijections modulo a power of two (constants from Chris
+// Wellons's "Prospecting for Hash Functions", 2018, https://nullprogram.com/blog/2018/07/31/). Cycle walking
+// restricts the bijection to [0, count): every orbit through an index below count returns to the range.
+static const uint PERMUTATION_FIRST_MULTIPLIER = 0x7feb352d;
+static const uint PERMUTATION_SECOND_MULTIPLIER = 0x846ca68b;
+static const uint WORD_BITS = 32;
+uint PermutePixel(uint index, uint count)
+{
+    uint bits = firstbithigh(max(count - 1, 1u)) + 1;
+    uint mask = bits >= WORD_BITS ? 0xffffffff : (1u << bits) - 1;
+    uint shift = (bits + 1) / 2;
+    uint value = index;
+    do
+    {
+        value = (value * PERMUTATION_FIRST_MULTIPLIER) & mask;
+        value ^= value >> shift;
+        value = (value * PERMUTATION_SECOND_MULTIPLIER) & mask;
+    } while (value >= count);
+    return value;
+}
+#endif
+
 // One sample for every pixel still at the image's minimum committed count. A pixel
 // commits its own sample only when every AOV sum stays finite; a failed pixel keeps
 // its previous sums and retries the same addressed sample on a later dispatch.
@@ -2324,6 +2384,9 @@ LUDUS_REFERENCE_COMPUTE_ENTRY void TraceMain(uint3 positionPixel : SV_DispatchTh
         return;
     uint pixel = positionPixel.y * Dimensions.x + positionPixel.x;
     uint pixels = Dimensions.x * Dimensions.y;
+#if LUDUS_REFERENCE_PERMUTED_PIXELS != 0
+    pixel = PermutePixel(pixel, pixels);
+#endif
     uint sumIndex = pixel * LUDUS_REFERENCE_SUM_WORDS;
     uint compensationIndex = pixels * LUDUS_REFERENCE_SUM_WORDS + sumIndex;
     float4 emission = accumulation[sumIndex];
