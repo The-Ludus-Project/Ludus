@@ -165,6 +165,53 @@ A workflow change that the candidate's sources depend on still reaches batches
 only after promotion. Land it in a `develop` change before the sources that need
 it, or keep both working with either definition.
 
+#### Batch job check plans
+
+A job whose commands live in workflow YAML has two problems in a batch. Its
+commands change only after a promotion, and its first failed step skips every
+later step, so a batch reports one failure per job. Until 2026-11-20 the
+**macOS native backends and diagnostics** job did this: each batch reached one
+more step, and failures in steps that had not run for weeks queued behind the
+last one.
+
+That job now has one command step:
+
+```bash
+out/host-tools/venv/bin/python scripts/python/ci_checks.py scripts/ci/macos_native.py
+```
+
+`scripts/ci/macos_native.py` lists the job's checks in order, as `Check` records
+with an id, a title, the bash commands, the checks each one needs, environment
+and an optional timeout. `scripts/python/ci_checks.py` runs them from the
+candidate:
+
+- Each check runs in its own log group with the `bash -eo pipefail` shell that
+  workflow `run:` steps use, in a process group its timeout stops completely.
+- A check runs when every check it needs succeeded; a failure skips only its
+  dependents, so later independent checks still run.
+- Each check's result is a step output named by its id (`steps.checks.outputs.build`),
+  and the job summary lists every result. The job fails once, at the end, if any
+  check failed.
+
+Add or change a macOS native command in the plan, not in `ci.yml`; the change
+takes effect in the next batch. Give it the narrowest `needs`: most checks need
+`build`, installed-SDK checks need `sdk-install`, and consumer checks need the
+check that builds their consumer. Plans see only environment variables, never
+`${{ }}` expressions; use `$GITHUB_WORKSPACE` and similar names in `env` values.
+Artifact uploads and caches stay in the workflow and read the check outputs.
+
+Run one check locally with `--only` (its needs are assumed to have succeeded), or
+list the plan with `--list`:
+
+```bash
+out/host-tools/venv/bin/python scripts/python/ci_checks.py scripts/ci/macos_native.py --only cocoa-analysis
+```
+
+`BatchJobCheckPlanTests` in `scripts/python/test_ci.py` rejects other command
+steps in that job and checks that every check follows the build;
+`scripts/python/test_ci_checks.py` covers the runner. Changing the runner step
+itself still needs a promotion.
+
 Only one batch is active. New `develop` commits do not cancel it or change its input.
 Concurrent scheduler ticks coalesce into at most one pending run. A tick captured
 before `main` advanced records no attempt and skips, letting the next tick use the
