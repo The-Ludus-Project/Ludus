@@ -35,6 +35,7 @@ enum class ToolOperation : foundation::uint8
     Configure,
     Build,
     BuildRun,
+    PlayWorld,
     BuildDebug,
     ProjectCheck,
     ProjectSetup,
@@ -125,7 +126,11 @@ struct ToolLaunch
     QString ReleaseProfile;
     QString ReleaseVersion;
     QString ReleaseSdk;
-    /// BuildRun only: the game's hosted-window channel address (Play in the editor viewport).
+    QString EditorExecutable;
+    QString BuiltInPlayer;
+    QString WorldPath;
+    QString SpawnEntity;
+    /// BuildRun and PlayWorld: the game's hosted-window channel address (Play in the editor viewport).
     /// Empty launches the game in its own window. Sent only to the adapter, never logged.
     QString HostedWindowAddress;
     uint64 Job = 0; // 16-hex-encoded on the wire

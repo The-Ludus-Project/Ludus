@@ -598,6 +598,20 @@ void EditorController::BuildRun(const QString& hostedWindowAddress)
     }
 }
 
+bool EditorController::CanPlayWorld() const
+{
+    return Tool_.Active() == false && Play_.Active() == false && GenerationJob_ == false &&
+           PlayState_.Phase == PlayPhase::Stopped && CanStartJob(State_, ActionKind::PlayWorld);
+}
+
+void EditorController::PlayWorld(const ToolLaunch& launch)
+{
+    if (CanPlayWorld() == true)
+    {
+        StartJob(ActionKind::PlayWorld, ToolOperation::PlayWorld, launch);
+    }
+}
+
 void EditorController::BuildDebug(const QString& debugger, bool setup)
 {
     if (Caps().CanBuildDebug == false)

@@ -237,6 +237,11 @@ Availability, interruption, malformed/disconnected peers and cancellation are
 covered by the native protocol tests. See the
 [native shader-worker contract](../development/render-graph-authoring.md#native-shader-worker-and-live-development-builds).
 
+The macOS first-person player registers its supervisor's stop signal with
+`sigaction` and `sigemptyset`. The signal handler only stores a stop flag in a
+`volatile sig_atomic_t`. The application's owner thread releases input and
+retires its renderer and device on exit.
+
 ### Platform hosted-window channel boundary
 
 Platform's hosted window and its editor endpoint
