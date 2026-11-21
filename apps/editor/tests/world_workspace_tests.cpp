@@ -43,6 +43,7 @@
 #include <QPointF>
 #include <cmath>
 #include <ludus/foundation/base/compiler.h>
+#include <ludus/gameplay/world/celestial_transform.hpp>
 
 #include "internal/workspace_style.h"
 #include <QAction>
@@ -7858,11 +7859,23 @@ TEST_CASE("Atmosphere entities retain their Sun across deletion, undo and reopen
     CHECK(scene.Atmosphere.Celestial.MilkyWayRadiance > 0);
     CHECK(scene.Atmosphere.Celestial.Planets[0].Illuminance.X > 0);
     const math::Vector3 midnightCenterWorld = scene.Atmosphere.Celestial.GalacticCenterWorld;
+    const QByteArray authoredWorld = reopened.Encode();
+    RenderScene sampled = scene;
+    REQUIRE(sampled.TrySampleEarthTime(0, error) == true);
+    CHECK(sampled.Atmosphere.Celestial.GalacticCenterWorld != midnightCenterWorld);
+    CHECK(reopened.Encode() == authoredWorld);
+    CHECK(scene.Atmosphere.Celestial.GalacticCenterWorld == midnightCenterWorld);
+    const float64 invalidTime = ludus::gameplay::world::MAX_EARTH_CELESTIAL_DAYS + 1;
+    CHECK(sampled.TrySampleEarthTime(invalidTime, error) == false);
+
     earthMoon.insert(QString(WORLD_CELESTIAL_TIME), 0);
     moonComponents.insert(lightComponent, earthMoon);
     REQUIRE(reopened.Edit(moonId, moonComponents, moonName, error) == true);
     REQUIRE(RenderScene::Load(directory.path(), reopened, scene, error) == true);
     CHECK(scene.Atmosphere.Celestial.GalacticCenterWorld != midnightCenterWorld);
+    CHECK(sampled.Atmosphere.Celestial.GalacticCenterWorld == scene.Atmosphere.Celestial.GalacticCenterWorld);
+    CHECK(sampled.Atmosphere.Celestial.DirectionToMoonWorld == scene.Atmosphere.Celestial.DirectionToMoonWorld);
+    CHECK(sampled.Atmosphere.Celestial.LunarPeakRadiance == scene.Atmosphere.Celestial.LunarPeakRadiance);
     values.insert(QStringLiteral("stars"), false);
     components.insert(atmosphereComponent, values);
     REQUIRE(reopened.Edit(atmosphereId, components, atmosphere.value(QStringLiteral("name")).toString(), error) ==

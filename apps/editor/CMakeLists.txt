@@ -1008,6 +1008,9 @@ if(EMSCRIPTEN)
 endif()
 if(LUDUS_EDITOR_RENDER_PREVIEW AND NOT EMSCRIPTEN)
     target_compile_definitions(ludus_editor_application PUBLIC LUDUS_EDITOR_NATIVE_PREVIEW=1 LUDUS_EDITOR_GPU_PREVIEW=1)
+    target_sources(ludus_editor_application PRIVATE
+        src/celestial_time_lapse_window.cpp
+        src/internal/celestial_time_lapse_window.h)
     target_link_libraries(ludus_editor_application PUBLIC ludus_editor_texture_display Ludus::GraphicsRhi Qt6::Quick)
     if(WIN32)
         ludus_configure_win32_target(ludus_editor_application)

@@ -30,6 +30,7 @@ class QTabWidget;
 namespace ludus::editor
 {
 class CapturedImageView;
+class CelestialTimeLapseWindow;
 class GraphComparisonWindow;
 class RenderGraphCaptureProfile;
 class RenderGraphLibraryCapture;
@@ -216,6 +217,11 @@ private:
     ViewportDisplayTransform mDisplay{};
 #if defined(LUDUS_EDITOR_NATIVE_PREVIEW)
     void openGraphComparison();
+    void openTimeLapse();
+    [[nodiscard]] bool
+    resolveGraphSource(ViewportRasterSource& outSource, QString& outProfilePath, QString& outError) const;
+    QPointer<CelestialTimeLapseWindow> mTimeLapse;
+    QPushButton* mTimeLapseButtonOrNull = nullptr;
     QPointer<GraphComparisonWindow> mGraphComparison;
     QPushButton* mCompareGraphsOrNull = nullptr;
     QPointer<RendererWorkspace> mProjectWorkspace;
