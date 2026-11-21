@@ -4160,7 +4160,7 @@ TEST_CASE("Auroral curtains animate, attenuate and respect opaque depth in the d
 
     renderer::ViewDescription& camera = fixture.Cameras[0];
     constexpr float32 EYE_HEIGHT_METRES = 2;
-    constexpr float32 LOOK_SLOPE = 0.39F;
+    constexpr float32 LOOK_SLOPE = 0.32F;
     camera.CameraPosition = {0, EYE_HEIGHT_METRES, 0};
     math::Vector3 directionWorld;
     REQUIRE(math::TryNormalize(math::Vector3{0, LOOK_SLOPE, -1}, directionWorld) == math::MathStatus::Success);
@@ -4170,7 +4170,8 @@ TEST_CASE("Auroral curtains animate, attenuate and respect opaque depth in the d
     camera.Atmosphere.DirectionToSunWorld = {0, -1, 0};
     renderer::AuroraLayerDescription& aurora = camera.Atmosphere.Aurora;
     aurora.AxisXWorld = {-1, 0, 0};
-    const float32 emission = aurora.EmissionPerMetre;
+    // Keep the narrower green band above quantization in the linear RGBA8 readback.
+    constexpr float32 EMISSION_PER_METRE = 0.000005F;
     const StaticArray<math::Vector3, VERTEX_COUNT> normals{{{0, 0, 1}, {0, 0, 1}, {0, 0, 1}}};
     fixture.Meshes[0].Geometry.Normals = normals.GetData();
     const uint32 materialIndex = 0;
@@ -4209,7 +4210,7 @@ TEST_CASE("Auroral curtains animate, attenuate and respect opaque depth in the d
     capture(false);
     CHECK(fixture.Pixels == clear);
 
-    aurora.EmissionPerMetre = emission;
+    aurora.EmissionPerMetre = EMISSION_PER_METRE;
     capture(false);
     const StaticArray<uint8, PIXEL_BYTES> first = fixture.Pixels;
     const usize middle = GetPixel(WIDTH / 2, HEIGHT / 2);

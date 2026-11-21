@@ -26,15 +26,19 @@ static const float AURORA_BASE_KILOMETRES = SHELL_HEIGHT;
 static const float AURORA_TOP_KILOMETRES = 300;
 static const float AURORA_HALF_LENGTH_KILOMETRES = 950;
 static const float AURORA_END_FADE_KILOMETRES = 220;
-static const float AURORA_WIDE_FOLD_KILOMETRES = 53;
-static const float AURORA_NARROW_FOLD_KILOMETRES = 19;
+static const float AURORA_ARC_BEND_KILOMETRES = 145;
+static const float AURORA_WIDE_FOLD_KILOMETRES = 96;
+static const float AURORA_NARROW_FOLD_KILOMETRES = 34;
 static const float AURORA_WIDE_FOLD_SCALE_KILOMETRES = 147;
-static const float AURORA_NARROW_FOLD_SCALE_KILOMETRES = 46;
-static const uint AURORA_RIBBON_COUNT = 3;
+static const float AURORA_NARROW_FOLD_SCALE_KILOMETRES = 57;
+static const float AURORA_RIPPLE_KILOMETRES = 12;
+static const float AURORA_RIPPLE_SCALE_KILOMETRES = 21;
+static const float AURORA_RIPPLE_PHASE_RATE = 3;
+static const uint AURORA_RIBBON_COUNT = 2;
 static const float AURORA_FIRST_RIBBON_KILOMETRES = 320;
-static const float AURORA_RIBBON_SEPARATION_KILOMETRES = 330;
-static const float AURORA_FIRST_HALF_WIDTH_KILOMETRES = 13;
-static const float AURORA_WIDTH_INCREASE_KILOMETRES = 3;
+static const float AURORA_RIBBON_SEPARATION_KILOMETRES = 225;
+static const float AURORA_FIRST_HALF_WIDTH_KILOMETRES = 9;
+static const float AURORA_WIDTH_INCREASE_KILOMETRES = 4;
 static const float AURORA_RIBBON_PHASE_OFFSET = 1.71;
 
 // Positive sphere intersection for an eye at or below the emitting layer. Near the zenith
@@ -63,38 +67,84 @@ bool ClipAuroraAxis(float eye, float direction, float minimum, float maximum, in
 
 float GetAuroraRibbonOffset(float x, float phase)
 {
-    return AURORA_WIDE_FOLD_KILOMETRES * sin(x / AURORA_WIDE_FOLD_SCALE_KILOMETRES + phase) +
-           AURORA_NARROW_FOLD_KILOMETRES * sin(x / AURORA_NARROW_FOLD_SCALE_KILOMETRES - 2 * phase);
+    float arc = x / AURORA_HALF_LENGTH_KILOMETRES;
+    float broadFold = sin(x / AURORA_WIDE_FOLD_SCALE_KILOMETRES + phase);
+    float ripple = (0.5 + 0.5 * broadFold) * sin(x / AURORA_RIPPLE_SCALE_KILOMETRES + AURORA_RIPPLE_PHASE_RATE * phase);
+    return AURORA_ARC_BEND_KILOMETRES * arc * arc + AURORA_WIDE_FOLD_KILOMETRES * broadFold +
+           AURORA_NARROW_FOLD_KILOMETRES * sin(x / AURORA_NARROW_FOLD_SCALE_KILOMETRES - 2 * phase) +
+           AURORA_RIPPLE_KILOMETRES * ripple;
 }
 
-float3 EvaluateAuroraEmission(in float2 pointAurora, float altitude, float offset, float halfWidth, float phase)
+float SampleAuroraRayBrightness(float coordinate, uint ribbon)
 {
-    const float GREEN_FADE_START_KILOMETRES = 120;
-    const float GREEN_FADE_END_KILOMETRES = 235;
-    const float LOWER_EDGE_FADE_KILOMETRES = 11;
-    const float RED_START_KILOMETRES = 165;
-    const float RED_PEAK_KILOMETRES = 234;
-    const float FIRST_RAY_SCALE_KILOMETRES = 5.7;
-    const float SECOND_RAY_SCALE_KILOMETRES = 2.3;
-    const float RAY_TILT_KILOMETRES_PER_KILOMETRE = 0.059;
-    const float RAY_BASE_BRIGHTNESS = 0.16;
-    const float RED_RELATIVE_EMISSION = 0.27;
-    const float3 GREEN_EMISSION_RGB = float3(0.14, 1, 0.35);
-    const float3 RED_EMISSION_RGB = float3(1, 0.055, 0.23);
-    float crossRibbon = saturate(1 - abs(offset) / halfWidth);
-    float feather = smoothstep(0, 1, crossRibbon);
+    const uint CELLS_PER_BLOCK = 4;
+    uint cell = asuint(int(floor(coordinate)));
+    uint lane = cell % CELLS_PER_BLOCK;
+    uint nextLane = (lane + 1) % CELLS_PER_BLOCK;
+    uint2 key = uint2(ribbon, 0);
+    uint4 samples = Philox4x32(uint4(cell / CELLS_PER_BLOCK, 0, 0, 0), key);
+    float lower = RandomFloat01(samples[lane]);
+    if (nextLane == 0)
+    {
+        samples = Philox4x32(uint4((cell + 1) / CELLS_PER_BLOCK, 0, 0, 0), key);
+    }
+    return lerp(lower, RandomFloat01(samples[nextLane]), smoothstep(0, 1, frac(coordinate)));
+}
+
+// Thanks to NOAA Space Weather Prediction Center, Aurora Tutorial, "Shapes and
+// Morphology of the Aurora" and "Colors of the Aurora."
+// https://www.spaceweather.gov/content/aurora-tutorial
+// Use smooth surges along a folded arc with clustered vertical rays and
+// predominantly green emission. Give the weaker red emission a broader altitude profile.
+float3
+EvaluateAuroraEmission(in float2 pointAurora, float altitude, float offset, float halfWidth, float phase, uint ribbon)
+{
+    const float ACTIVITY_SCALE_KILOMETRES = 89;
+    const float SURGE_SCALE_KILOMETRES = 37;
+    const float ACTIVITY_WEIGHT = 0.52;
+    const float RAY_SCALE_KILOMETRES = 4.8;
+    const float RAY_DRIFT_KILOMETRES = 23;
+    const float RAY_TILT_KILOMETRES_PER_KILOMETRE = 0.065;
+    const float RAY_BACKGROUND = 0.18;
+    const float SECONDARY_RIBBON_BRIGHTNESS = 0.32;
+    const float GREEN_LOWER_EDGE_KILOMETRES = 7;
+    const float GREEN_PEAK_KILOMETRES = 108;
+    const float GREEN_CORE_TOP_KILOMETRES = 136;
+    const float GREEN_TAIL_LOW_TOP_KILOMETRES = 166;
+    const float GREEN_TAIL_HIGH_TOP_KILOMETRES = 214;
+    const float GREEN_TAIL_SHARE = 0.22;
+    const float DEPOSITION_LIFT_KILOMETRES = 5;
+    const float RED_START_KILOMETRES = 171;
+    const float RED_PEAK_KILOMETRES = 233;
+    const float RED_RELATIVE_EMISSION = 0.055;
+    const float3 GREEN_EMISSION_RGB = float3(0.26, 1, 0.43);
+    const float3 RED_EMISSION_RGB = float3(1, 0.07, 0.19);
+
+    float feather = smoothstep(0, 1, saturate(1 - abs(offset) / halfWidth));
     float alongRibbon = 1 - smoothstep(AURORA_HALF_LENGTH_KILOMETRES - AURORA_END_FADE_KILOMETRES,
                                        AURORA_HALF_LENGTH_KILOMETRES,
                                        abs(pointAurora.x));
-    float ray = pointAurora.x + RAY_TILT_KILOMETRES_PER_KILOMETRE * (altitude - AURORA_BASE_KILOMETRES);
-    float shafts = (0.5 + 0.5 * sin(ray / FIRST_RAY_SCALE_KILOMETRES - phase)) *
-                   (0.5 + 0.5 * sin(ray / SECOND_RAY_SCALE_KILOMETRES + 2 * phase));
-    float green = smoothstep(AURORA_BASE_KILOMETRES, AURORA_BASE_KILOMETRES + LOWER_EDGE_FADE_KILOMETRES, altitude) *
-                  (1 - smoothstep(GREEN_FADE_START_KILOMETRES, GREEN_FADE_END_KILOMETRES, altitude));
+    float broad = 0.5 + 0.5 * sin(pointAurora.x / ACTIVITY_SCALE_KILOMETRES + phase);
+    float surge = 0.5 + 0.5 * sin(pointAurora.x / SURGE_SCALE_KILOMETRES - 2 * phase);
+    float activity = lerp(broad, surge, ACTIVITY_WEIGHT);
+    float activePatch = smoothstep(0, 1, activity);
+    float ray = pointAurora.x + RAY_TILT_KILOMETRES_PER_KILOMETRE * (altitude - AURORA_BASE_KILOMETRES) +
+                RAY_DRIFT_KILOMETRES * sin(phase);
+    float shafts = SampleAuroraRayBrightness(ray / RAY_SCALE_KILOMETRES, ribbon);
+    float brightness = lerp(RAY_BACKGROUND, 1, activePatch * shafts);
+    float depositionAltitude = altitude - DEPOSITION_LIFT_KILOMETRES * (1 - activePatch);
+    float lowerEdge =
+        smoothstep(AURORA_BASE_KILOMETRES, AURORA_BASE_KILOMETRES + GREEN_LOWER_EDGE_KILOMETRES, depositionAltitude);
+    float core = 1 - smoothstep(GREEN_PEAK_KILOMETRES, GREEN_CORE_TOP_KILOMETRES, depositionAltitude);
+    float tail = 1 - smoothstep(GREEN_PEAK_KILOMETRES,
+                                lerp(GREEN_TAIL_LOW_TOP_KILOMETRES, GREEN_TAIL_HIGH_TOP_KILOMETRES, activePatch),
+                                depositionAltitude);
+    float green = lowerEdge * lerp(core, tail, GREEN_TAIL_SHARE);
     float red = smoothstep(RED_START_KILOMETRES, RED_PEAK_KILOMETRES, altitude) *
-                (1 - smoothstep(RED_PEAK_KILOMETRES, AURORA_TOP_KILOMETRES, altitude));
+                (1 - smoothstep(RED_PEAK_KILOMETRES, AURORA_TOP_KILOMETRES, altitude)) * activePatch * activePatch;
+    float ribbonBrightness = ribbon == 0 ? 1 : SECONDARY_RIBBON_BRIGHTNESS * activePatch;
     return (GREEN_EMISSION_RGB * green + RED_EMISSION_RGB * (RED_RELATIVE_EMISSION * red)) *
-           (feather * alongRibbon * lerp(RAY_BASE_BRIGHTNESS, 1, shafts));
+           (feather * alongRibbon * brightness * ribbonBrightness);
 }
 
 float3 IntegrateAuroraLayer(in AuroraLayerParameters aurora,
@@ -128,8 +178,11 @@ float3 IntegrateAuroraLayer(in AuroraLayerParameters aurora,
         return 0;
     }
 
-    const float MAXIMUM_RIBBON_SLOPE = AURORA_WIDE_FOLD_KILOMETRES / AURORA_WIDE_FOLD_SCALE_KILOMETRES +
-                                       AURORA_NARROW_FOLD_KILOMETRES / AURORA_NARROW_FOLD_SCALE_KILOMETRES;
+    const float MAXIMUM_RIBBON_SLOPE =
+        2 * AURORA_ARC_BEND_KILOMETRES / AURORA_HALF_LENGTH_KILOMETRES +
+        AURORA_WIDE_FOLD_KILOMETRES / AURORA_WIDE_FOLD_SCALE_KILOMETRES +
+        AURORA_NARROW_FOLD_KILOMETRES / AURORA_NARROW_FOLD_SCALE_KILOMETRES +
+        AURORA_RIPPLE_KILOMETRES * (1 / AURORA_RIPPLE_SCALE_KILOMETRES + 0.5 / AURORA_WIDE_FOLD_SCALE_KILOMETRES);
     const float MAXIMUM_STEP_KILOMETRES = 4;
     const float MINIMUM_STEP_KILOMETRES = 1;
     const float RAY_STRUCTURE_STEP_KILOMETRES = 2;
@@ -141,9 +194,14 @@ float3 IntegrateAuroraLayer(in AuroraLayerParameters aurora,
     {
         float center = AURORA_FIRST_RIBBON_KILOMETRES + float(ribbon) * AURORA_RIBBON_SEPARATION_KILOMETRES;
         float halfWidth = AURORA_FIRST_HALF_WIDTH_KILOMETRES + float(ribbon) * AURORA_WIDTH_INCREASE_KILOMETRES;
-        float extent = AURORA_WIDE_FOLD_KILOMETRES + AURORA_NARROW_FOLD_KILOMETRES + halfWidth;
+        float extent =
+            AURORA_WIDE_FOLD_KILOMETRES + AURORA_NARROW_FOLD_KILOMETRES + AURORA_RIPPLE_KILOMETRES + halfWidth;
         float2 ribbonRange = range;
-        if (ClipAuroraAxis(eyeAurora.y, directionAurora.y, center - extent, center + extent, ribbonRange) == false)
+        if (ClipAuroraAxis(eyeAurora.y,
+                           directionAurora.y,
+                           center - extent,
+                           center + extent + AURORA_ARC_BEND_KILOMETRES,
+                           ribbonRange) == false)
         {
             continue;
         }
@@ -172,7 +230,11 @@ float3 IntegrateAuroraLayer(in AuroraLayerParameters aurora,
             pointAurora = eyeAurora + directionAurora * midpoint;
             offset = pointAurora.y - center - GetAuroraRibbonOffset(pointAurora.x, phase);
             float altitude = length(radius * upWorld + directionWorld * midpoint) - GROUND_RADIUS;
-            emission += EvaluateAuroraEmission(pointAurora, altitude, offset, halfWidth, phase) * (next - distance);
+            if (abs(offset) < halfWidth)
+            {
+                emission +=
+                    EvaluateAuroraEmission(pointAurora, altitude, offset, halfWidth, phase, ribbon) * (next - distance);
+            }
             distance = next;
         }
     }

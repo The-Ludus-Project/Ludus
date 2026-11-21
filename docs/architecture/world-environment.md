@@ -294,13 +294,14 @@ one uniform branch. The traversal measurement in #1319 owns any cheaper path.
 ### Auroral curtains
 
 `AtmosphereDescription::Aurora` is an opt-in emission field for the native
-clustered deferred renderer. Three animated curtains extend between 100 and
-300 km above the Earth sphere. The Atmosphere entity sets the tangent frame.
-The curtains run along its local X axis, with their centres toward local +Z.
-They fade at their ends and have a sharp green lower edge, fine vertical shafts,
-and a fainter red upper trail. Their position and brightness vary with the
-120-second animation time independently of the Sun and the celestial background.
-The authored brightness scale is scene-linear nits per metre.
+clustered deferred renderer. A folded arc and a fainter companion extend
+between 100 and 300 km above the Earth sphere. The Atmosphere entity sets the
+tangent frame. The arcs run along its local X axis with their centres toward
+local +Z. Bright patches move along the arcs, clustering rays above a sharp
+green lower edge. Only the more active patches show a faint red upper trail.
+The shape and brightness vary over a 120-second loop independently of the Sun
+and celestial background. The authored brightness scale is scene-linear nits
+per metre.
 
 The renderer clips the ray to the emitting shell, each ribbon's bounds and the
 first opaque hit. The planet blocks rays that hit the ground before reaching
@@ -308,8 +309,9 @@ the emitting shell. The ribbon profile is the product of a procedural
 footprint and an altitude-dependent emission profile, following Lawlor and
 Genetti's [Interactive Volume Rendering Aurora on the GPU](https://lawlor.cs.uaf.edu/~olawlor/papers/2010/aurora/lawlor_aurora_2010.pdf).
 The height and colour choices follow the observed green and red oxygen emission
-ranges described by [NASA](https://science.nasa.gov/sun/auroras/). The renderer
-skips empty intervals using a conservative upper bound on the footprint's
+ranges described by [NASA](https://science.nasa.gov/sun/auroras/). The moving
+folds follow [NOAA's aurora observations](https://www.spaceweather.gov/content/aurora-tutorial).
+The renderer skips empty intervals using a conservative upper bound on the footprint's
 slope, then integrates the remaining intervals with bounded midpoint steps.
 
 The clear-air model ends at the aurora's base, so every visible sample along a
