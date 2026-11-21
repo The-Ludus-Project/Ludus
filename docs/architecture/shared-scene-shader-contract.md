@@ -349,6 +349,13 @@ move its ray directions a sizeable fraction of a pixel off the raster projection
 triangle. The renderer packs one eye-relative matrix for the graph kernels, the
 GPU preview and RT1 alike; RT1's CPU oracle builds the same ray.
 
+Use `TryMakeCameraRayFromWorldPosition(launch, positionWorld, ray)` to reconstruct
+a camera ray through a known position in world metres. It uses the same near and
+far clip distances as `MakeCameraRay`, with an eye origin for perspective cameras
+and a near-plane origin for orthographic cameras. Positions outside the image
+are valid. The helper returns false and clears the output if the projection is
+undefined or the position is at or behind a perspective camera.
+
 RayQueryContext is a separate invocation-local mutable context initialized once
 by the generated wrapper. It carries query counters and the failure latch;
 every query and callback forwards that same context by inout reference. Scene
