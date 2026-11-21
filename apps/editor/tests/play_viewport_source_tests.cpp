@@ -672,9 +672,9 @@ TEST_CASE("A GPU recording of the World-demo game in the World viewport names it
     // The statistics overlay arms per-pass timestamps on the editor's device. A device without
     // them, such as the hosted runners' Apple Paravirtual device, records frame timing only; the
     // game on the same GPU must report the same answer for its own device.
-    preview.SetStatisticsVisible(true);
     // Preview frames that arm and resolve per-pass timestamps before the device's support is known.
     constexpr uint64 PASS_PROBE_FRAMES = 4;
+    preview.SetStatisticsVisible(true);
     const uint64 probeFrame = preview.Frames();
     REQUIRE(AwaitCondition([&preview, probeFrame]() {
         return preview.CanProfileGpuPasses() == true || preview.Frames() >= probeFrame + PASS_PROBE_FRAMES;
