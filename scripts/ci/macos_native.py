@@ -142,6 +142,7 @@ out/renderer-sdk/ludus_sdk_renderer_consumer
 out/host-tools/venv/bin/ctest --test-dir out/renderer-sdk -R "^installed_encoder$" --no-tests=error --output-on-failure
 out/renderer-sdk/ludus_sdk_renderer_views_consumer
 out/renderer-sdk/ludus_sdk_renderer_overlays_consumer
+out/renderer-sdk/ludus_sdk_ui_render_consumer
 out/renderer-sdk/ludus_sdk_renderer_materials_consumer
 out/renderer-sdk/ludus_sdk_renderer_lighting_consumer
 out/renderer-sdk/ludus_sdk_renderer_scaling_consumer
