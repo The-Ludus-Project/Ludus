@@ -146,7 +146,14 @@ After **Initialize**, a progress window runs setup and shows:
 - the outcome: *Ludus is ready* with the runner's summary, or *Setup failed
   during: step* with the failed step marked, the error, the output's last lines
   and, for a recognised cause, a plain-language fix. **Retry** reruns the same
-  choices after a failure or cancellation.
+  choices after a failure or cancellation;
+- **Run editor**, after a successful setup that built the editor (Enter chooses
+  it). It starts the editor through `./scripts/editor --preset <preset>` and
+  closes setup; the editor keeps running and writes its output to
+  `out/init/editor.log`. If the launcher fails, for example because the editor
+  build is missing, the window stays open with the launcher's last lines, which
+  name the preparation command. Setup that only configures the editor
+  (`--configure-editor-only`) offers just **Close**.
 
 Both windows stay inside the area the menu bar and Dock (or taskbar) leave
 free, read on macOS from the menu bar's screen (`[NSScreen screens]` first

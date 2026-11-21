@@ -62,6 +62,19 @@ enum class WeatherSimulationStatus : uint8
     InvalidState,
     /// Storage for saved state could not be allocated.
     AllocationFailed,
+    /// A projected preview names a tick before the current tick. Use an authored preview for earlier ticks.
+    PreviewInPast,
+};
+
+/// How TryPreview evaluates a preview tick. Neither mode changes the live simulation.
+enum class WeatherPreviewMode : uint8
+{
+    /// The authored schedules and regions at any tick, without overrides or pending commands: what the climate
+    /// alone produces then.
+    Authored,
+    /// The live state carried forward to a tick at or after the current one, applying pending commands and
+    /// override phase changes on the way: what the session will see then if no further commands arrive.
+    Projected,
 };
 
 /// What an override command does at its apply tick.
@@ -352,6 +365,22 @@ public:
     /// @return OutsideDomain for a nonfinite position or one outside the climate domain.
     [[nodiscard]] WeatherSimulationStatus
     TrySample(float64 positionXWorld, float64 positionZWorld, WeatherSample& outSample) const noexcept;
+
+    /// Resolve the weather at a World position for a preview tick, as a scrub control does, without changing
+    /// the simulation, its event ordinal or its saved state. Previews emit no events, so replays and saves
+    /// are unaffected. A projected preview costs O(pending commands + override phase changes) regardless of
+    /// the distance to the preview tick.
+    /// @param mode Authored schedules only, or the live state projected forward.
+    /// @param previewTick Tick to evaluate; for Projected, at or after GetTick().
+    /// @param positionXWorld World X in metres.
+    /// @param positionZWorld World Z in metres.
+    /// @param outSample Written only on Success; its Tick is previewTick.
+    /// @return PreviewInPast for a projected tick before GetTick(); OutsideDomain as for TrySample.
+    [[nodiscard]] WeatherSimulationStatus TryPreview(WeatherPreviewMode mode,
+                                                     uint64 previewTick,
+                                                     float64 positionXWorld,
+                                                     float64 positionZWorld,
+                                                     WeatherSample& outSample) const noexcept;
 
     /// Return to the authored baseline: tick zero, no overrides or pending commands, event ordinal zero.
     /// This is the reset path for an incompatible save.
