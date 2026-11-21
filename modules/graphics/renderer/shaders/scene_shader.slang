@@ -1855,13 +1855,12 @@ SceneInfo GetSceneInfo(SceneContext scene)
     result.EmitterCount = GetEmitterCount(scene);
     return result;
 }
-Ray MakeCameraRay(RayLaunch launch, float2 samplePixel)
+Ray MakeCameraRayAtClipPosition(RayLaunch launch, float2 positionClip)
 {
-    float2 positionUv = (float2(launch.PositionPixel) + samplePixel) / float2(launch.ExtentPixel);
     CameraRaySegment camera = MakeCameraRaySegment(launch.CameraClipToEye,
                                                    launch.CameraPositionWorld,
                                                    launch.IsOrthographic,
-                                                   float2(positionUv.x * 2 - 1, 1 - positionUv.y * 2),
+                                                   positionClip,
                                                    0);
     Ray ray;
     ray.OriginWorld = camera.OriginWorld;
@@ -1869,6 +1868,42 @@ Ray MakeCameraRay(RayLaunch launch, float2 samplePixel)
     ray.MinDistanceWorld = camera.MinDistanceWorld;
     ray.MaxDistanceWorld = camera.MaxDistanceWorld;
     return ray;
+}
+
+Ray MakeCameraRay(RayLaunch launch, float2 samplePixel)
+{
+    float2 positionUv = (float2(launch.PositionPixel) + samplePixel) / float2(launch.ExtentPixel);
+    return MakeCameraRayAtClipPosition(launch, float2(positionUv.x * 2 - 1, 1 - positionUv.y * 2));
+}
+
+/// Build the camera ray through positionWorld (in metres) using the launch's camera and clip distances.
+/// Accepts positions outside the image. Returns false and clears outRay if the projection is undefined
+/// or if the position is at or behind a perspective camera.
+bool TryMakeCameraRayFromWorldPosition(RayLaunch launch, float3 positionWorld, out Ray outRay)
+{
+    outRay = (Ray)0;
+    float3 positionEye = positionWorld - launch.CameraPositionWorld;
+    float4x4 columnsClipToEye = transpose(launch.CameraClipToEye);
+    // Eliminate the homogeneous eye-space scale using positionEye, then solve for clip x/w and y/w.
+    float3 horizontalEye = columnsClipToEye[0].xyz - positionEye * columnsClipToEye[0].w;
+    float3 verticalEye = columnsClipToEye[1].xyz - positionEye * columnsClipToEye[1].w;
+    float3 depthEye = columnsClipToEye[2].xyz - positionEye * columnsClipToEye[2].w;
+    float3 offsetEye = positionEye * columnsClipToEye[3].w - columnsClipToEye[3].xyz;
+    float3 horizontalNormalEye = cross(verticalEye, depthEye);
+    float determinant = dot(horizontalEye, horizontalNormalEye);
+    if (determinant == 0 || isfinite(determinant) == false)
+        return false;
+
+    float2 positionClip =
+        float2(dot(offsetEye, horizontalNormalEye), dot(horizontalEye, cross(offsetEye, depthEye))) / determinant;
+    if (all(isfinite(positionClip)) == false)
+        return false;
+
+    Ray ray = MakeCameraRayAtClipPosition(launch, positionClip);
+    if (IsSceneRayValid(ray) == false || (launch.IsOrthographic == false && dot(positionEye, ray.DirectionWorld) <= 0))
+        return false;
+    outRay = ray;
+    return true;
 }
 
 float4 SampleMaterialTexture(SceneContext scene, SurfaceHit hit, float2 texcoordUv, uint mapIndex)
