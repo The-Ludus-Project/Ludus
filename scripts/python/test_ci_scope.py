@@ -1014,5 +1014,42 @@ class PullRequestRunnerBudgetTests(unittest.TestCase):
         self.assertNotIn("validated_by", action)
         self.assertNotIn("GITHUB_TOKEN", action)
 
+class PendingPromotionJobTests(unittest.TestCase):
+    """A native job added on develop may be absent from main's ci.yml until promotion."""
+
+    ROOT = Path(__file__).resolve().parents[2]
+
+    def results(self):
+        return RequiredGateTests().results(True, ci_scope.FULL_TIER)
+
+    def test_main_without_a_pending_job_passes_and_a_present_job_is_still_checked(self):
+        for name in ci_scope.PENDING_PROMOTION_JOBS:
+            with self.subTest(job=name):
+                results = self.results()
+                self.assertEqual(ci_scope.gate_failures(results), [])
+                del results[name]
+                self.assertEqual(ci_scope.gate_failures(results), [])
+                for status in ("failure", "cancelled", "skipped"):
+                    results = self.results()
+                    results[name]["result"] = status
+                    self.assertIn(f"{name}: expected success", " ".join(ci_scope.gate_failures(results)))
+
+    def test_only_pending_jobs_may_be_absent(self):
+        results = self.results()
+        del results["macos-compile"]
+        self.assertIn("inventory", " ".join(ci_scope.gate_failures(results)))
+
+    def test_pending_jobs_exist_on_develop_and_are_removed_once_main_has_them(self):
+        workflow = (self.ROOT / ".github/workflows/ci.yml").read_text(encoding="utf-8")
+        for name in ci_scope.PENDING_PROMOTION_JOBS:
+            self.assertIn(f"\n  {name}:\n", workflow)
+        shown = subprocess.run(["git", "show", "origin/main:.github/workflows/ci.yml"], cwd=self.ROOT,
+                               capture_output=True, text=True, check=False)
+        if shown.returncode != 0:
+            self.skipTest("origin/main is not available in this checkout")
+        promoted = [name for name in ci_scope.PENDING_PROMOTION_JOBS if f"\n  {name}:\n" in shown.stdout]
+        self.assertEqual(promoted, [], "main defines these jobs now; remove them from PENDING_PROMOTION_JOBS")
+
+
 if __name__ == "__main__":
     unittest.main()

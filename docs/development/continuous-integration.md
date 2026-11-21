@@ -180,7 +180,8 @@ That job now has one command step:
 out/host-tools/venv/bin/python scripts/python/ci_checks.py scripts/ci/macos_native.py
 ```
 
-`scripts/ci/macos_native.py` lists the job's checks in order, as `Check` records
+`scripts/ci/macos_native.py` (and `scripts/ci/macos_reference.py` for the macOS GPU
+reference oracle job) lists the job's checks in order, as `Check` records
 with an id, a title, the bash commands, the checks each one needs, environment
 and an optional timeout. `scripts/python/ci_checks.py` runs them from the
 candidate:
@@ -681,7 +682,14 @@ not establish macOS 14 runtime qualification. See GitHub's
 Native/SDK acceptance and the sanitizers start together. Strictly ordered, the
 native job, which fails most often, reported about 45 minutes after the sanitizers
 and made macOS the slowest path in the batch. The nightly analyzer starts after the
-sanitizers, so `ci.yml` holds at most two ARM runners. It uses an explicit status
+sanitizers. The CPU/GPU reference oracle cases (`ludus_renderer_reference: …`) run in
+their own **macOS GPU reference oracle** job beside them: in one job they were 30 of
+its 89 minutes, one at a time on one GPU (batch 44859003421). That job configures the
+same tree, restores the native job's compiler cache without saving it, and builds
+only `ludus_renderer_render_tests`, so `ci.yml` holds at most three ARM runners. A new
+native job reaches batches only after promotion, so `ci_scope.py` lists it in
+`PENDING_PROMOTION_JOBS` until `main` defines it; a test reports when to remove it.
+The nightly analyzer uses an explicit status
 condition so a sanitizer failure does not suppress its evidence; cancelling the
 workflow still stops it. All required results remain part of the promotion gate.
 Hosted ARM capacity can still run out; see
