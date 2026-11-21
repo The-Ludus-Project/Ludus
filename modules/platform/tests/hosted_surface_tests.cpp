@@ -409,7 +409,10 @@ TEST_CASE("The hosted codec rejects invalid surface references and generations",
 TEST_CASE("A window of an earlier protocol version is refused as incompatible", "[platform][hosted][surface]")
 {
     const ludus::foundation::uint16 version =
-        GENERATE(ludus::foundation::uint16{1}, ludus::foundation::uint16{2}, ludus::foundation::uint16{3});
+        GENERATE(ludus::foundation::uint16{1},
+                 ludus::foundation::uint16{2},
+                 ludus::foundation::uint16{3},
+                 static_cast<ludus::foundation::uint16>(hosted::PROTOCOL_VERSION - 1));
     const hosted::Token token = MakeToken(2);
     hosted::EndpointSession session;
     session.Configure(token, hosted::GetCurrentUserId(), MakeInitialState());
@@ -825,7 +828,7 @@ void StartRecording(SurfacePair& inoutPair, uint64 recording, uint64 request, ui
 }
 } // namespace
 
-TEST_CASE("Hosted recording messages round-trip through the version-4 codec", "[platform][hosted][recording]")
+TEST_CASE("Hosted recording messages round-trip through the recording codec", "[platform][hosted][recording]")
 {
     ludus::foundation::StaticArray<uint8, hosted::MAX_MESSAGE_BYTES> bytes{};
     usize size = 0;
@@ -869,6 +872,7 @@ TEST_CASE("Hosted recording messages round-trip through the version-4 codec", "[
     CHECK(decoded.RecordingAcknowledgement.Coverage.SkippedFrames == 4);
     CHECK(decoded.RecordingAcknowledgement.Coverage.UnresolvedBatches == 1);
     CHECK(std::strcmp(decoded.RecordingAcknowledgement.ProducerName.GetData(), "game \xc3\xa9") == 0);
+    CHECK_FALSE(decoded.RecordingAcknowledgement.IsPassTimingSupported);
 
     hosted::Message sample;
     sample.Kind = hosted::MessageKind::RecordingSample;
@@ -907,6 +911,103 @@ TEST_CASE("Hosted recording messages round-trip through the version-4 codec", "[
     CHECK_FALSE(hosted::IsValidRecordingSample(invalid));
     CHECK_FALSE(hosted::IsValidRecordingRequest(MakeRequest(HostedRecordingRequestKind::Start, 0, 1)));
     CHECK_FALSE(hosted::IsValidRecordingRequest(MakeRequest(HostedRecordingRequestKind::Start, 1, 0)));
+}
+
+TEST_CASE("A Start acknowledgement carries whether the game's device has per-pass counters",
+          "[platform][hosted][recording]")
+{
+    ludus::foundation::StaticArray<uint8, hosted::MAX_MESSAGE_BYTES> bytes{};
+    usize size = 0;
+    usize consumed = 0;
+    hosted::Message message;
+    message.Kind = hosted::MessageKind::RecordingAcknowledgement;
+    HostedRecordingAcknowledgement& sent = message.RecordingAcknowledgement;
+    sent.Kind = HostedRecordingRequestKind::Start;
+    sent.Result = HostedRecordingResult::Ok;
+    sent.Recording = 4;
+    sent.Request = 11;
+    sent.Frame = 30;
+    sent.Ticks = 77;
+    for (const bool isPassTimingSupported : {true, false})
+    {
+        sent.IsPassTimingSupported = isPassTimingSupported;
+        REQUIRE(hosted::TryEncodeMessage(message, {bytes.GetData(), bytes.GetSize()}, size));
+        CHECK(size == hosted::HEADER_BYTES + hosted::RECORDING_ACKNOWLEDGEMENT_PAYLOAD_BYTES);
+        hosted::Message decoded;
+        REQUIRE(hosted::TryDecodeMessage({bytes.GetData(), size}, decoded, consumed) == hosted::DecodeStatus::Ok);
+        CHECK(decoded.RecordingAcknowledgement.IsPassTimingSupported == isPassTimingSupported);
+        CHECK(decoded.RecordingAcknowledgement.Frame == 30);
+    }
+    // The flags byte follows kind, result and name length; unknown flags are a violation.
+    sent.IsPassTimingSupported = true;
+    REQUIRE(hosted::TryEncodeMessage(message, {bytes.GetData(), bytes.GetSize()}, size));
+    constexpr usize FLAGS_OFFSET = hosted::HEADER_BYTES + 3;
+    CHECK(bytes[FLAGS_OFFSET] == hosted::ACKNOWLEDGEMENT_FLAG_PASS_TIMING);
+    ludus::foundation::StaticArray<uint8, hosted::MAX_MESSAGE_BYTES> unknown = bytes;
+    unknown[FLAGS_OFFSET] = static_cast<uint8>(hosted::ACKNOWLEDGEMENT_FLAG_PASS_TIMING << 1);
+    hosted::Message decoded;
+    CHECK(hosted::TryDecodeMessage({unknown.GetData(), size}, decoded, consumed) == hosted::DecodeStatus::Malformed);
+    // Only a successful Start may claim per-pass counters.
+    HostedRecordingAcknowledgement invalid = sent;
+    invalid.Result = HostedRecordingResult::Unsupported;
+    CHECK_FALSE(hosted::IsValidRecordingAcknowledgement(invalid));
+    invalid = sent;
+    invalid.Kind = HostedRecordingRequestKind::Stop;
+    CHECK_FALSE(hosted::IsValidRecordingAcknowledgement(invalid));
+    message.RecordingAcknowledgement = invalid;
+    CHECK_FALSE(hosted::TryEncodeMessage(message, {bytes.GetData(), bytes.GetSize()}, size));
+}
+
+TEST_CASE("A whole-frame recording sample names no pass", "[platform][hosted][recording]")
+{
+    HostedRecordingSample frame;
+    frame.Recording = 4;
+    frame.Frame = 31;
+    frame.SubmissionTicks = 100;
+    frame.CollectionTicks = 150;
+    frame.DurationNanoseconds = 16'000'000;
+    frame.IsFrame = true;
+    REQUIRE(hosted::IsValidRecordingSample(frame));
+    ludus::foundation::StaticArray<uint8, hosted::MAX_MESSAGE_BYTES> bytes{};
+    usize size = 0;
+    usize consumed = 0;
+    hosted::Message message;
+    message.Kind = hosted::MessageKind::RecordingSample;
+    message.RecordingSample = frame;
+    REQUIRE(hosted::TryEncodeMessage(message, {bytes.GetData(), bytes.GetSize()}, size));
+    hosted::Message decoded;
+    REQUIRE(hosted::TryDecodeMessage({bytes.GetData(), size}, decoded, consumed) == hosted::DecodeStatus::Ok);
+    CHECK(decoded.RecordingSample.IsFrame);
+    CHECK(decoded.RecordingSample.ScopeIdentity == 0);
+    CHECK(decoded.RecordingSample.Name[0] == '\0');
+    CHECK(decoded.RecordingSample.DurationNanoseconds == 16'000'000);
+    // A pass sample is still not a frame.
+    message.RecordingSample = MakeSample(4, 31);
+    REQUIRE(hosted::TryEncodeMessage(message, {bytes.GetData(), bytes.GetSize()}, size));
+    REQUIRE(hosted::TryDecodeMessage({bytes.GetData(), size}, decoded, consumed) == hosted::DecodeStatus::Ok);
+    CHECK_FALSE(decoded.RecordingSample.IsFrame);
+    // A frame carries none of a pass's fields.
+    HostedRecordingSample invalid = frame;
+    invalid.ScopeIdentity = 9;
+    CHECK_FALSE(hosted::IsValidRecordingSample(invalid));
+    invalid = frame;
+    CopyName("Scene/Opaque", invalid.Name);
+    CHECK_FALSE(hosted::IsValidRecordingSample(invalid));
+    invalid = frame;
+    invalid.ScopePassIndex = 1;
+    CHECK_FALSE(hosted::IsValidRecordingSample(invalid));
+    invalid = frame;
+    invalid.Kind = HostedPassKind::Compute;
+    CHECK_FALSE(hosted::IsValidRecordingSample(invalid));
+    invalid = frame;
+    invalid.HasCpuInterval = true;
+    invalid.StartTicks = 1;
+    invalid.EndTicks = 2;
+    CHECK_FALSE(hosted::IsValidRecordingSample(invalid));
+    // A frame still needs its recording and frame.
+    invalid = frame;
+    invalid.Frame = 0;
+    CHECK_FALSE(hosted::IsValidRecordingSample(invalid));
 }
 
 TEST_CASE("A window without a recorder answers recording requests itself", "[platform][hosted][recording]")

@@ -913,7 +913,12 @@ The game measures its own passes, so it must render through a
 `rhi::HostedGpuRecorder` with GPU timing enabled and name its passes with
 `GpuScope`. The [World-demo game](../examples/world-demo.md#record-gpu-passes-from-the-editor)
 does both, so Play it and record **GPU** to see its viewport passes. A game
-without a recorder fails the recording with that reason.
+without a recorder fails the recording with that reason. When the game's device
+has no per-pass timestamp counters (for example a virtual machine's Apple
+Paravirtual device), the recording still runs: the status says
+**Per-pass counters unavailable on the game's device; frame timing only**, and
+the trace holds one whole-frame duration per measured frame, with
+`passTimingSupported` false.
 **CPU** still records the editor; **Both** is refused while a game plays. The
 saved trace belongs to the game: Perfetto names its GPU process after the game
 and its process ID, and `ludusHostedProducer` in the JSON lists the recorded

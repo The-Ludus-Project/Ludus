@@ -25,7 +25,9 @@ Editor and shader worker and warnings as errors, checks the
 and analyzes the Editor document sources, without running its other tests or
 journeys. Both **Clang static analysis**
 shards analyze every translation unit, and shard 0 checks changed lines with the
-naming and magic-number rules. These jobs restore Conan and compiler caches
+naming and magic-number rules. A change to an Objective-C++ (`.mm`) source also
+runs **macOS Objective-C++ analysis**, because the Linux compile database has no
+Cocoa or Metal sources ([platform-only sources](#platform-only-sources)). These jobs restore Conan and compiler caches
 without saving their own, so they cannot evict a shared baseline. The Editor job
 restores the cache that [develop compiler cache](#develop-compiler-cache) saves
 for the latest `develop` commit, and falls back to the batch's cache on `main`.
@@ -163,6 +165,53 @@ A workflow change that the candidate's sources depend on still reaches batches
 only after promotion. Land it in a `develop` change before the sources that need
 it, or keep both working with either definition.
 
+#### Batch job check plans
+
+A job whose commands live in workflow YAML has two problems in a batch. Its
+commands change only after a promotion, and its first failed step skips every
+later step, so a batch reports one failure per job. Until 2026-11-20 the
+**macOS native backends and diagnostics** job did this: each batch reached one
+more step, and failures in steps that had not run for weeks queued behind the
+last one.
+
+That job now has one command step:
+
+```bash
+out/host-tools/venv/bin/python scripts/python/ci_checks.py scripts/ci/macos_native.py
+```
+
+`scripts/ci/macos_native.py` lists the job's checks in order, as `Check` records
+with an id, a title, the bash commands, the checks each one needs, environment
+and an optional timeout. `scripts/python/ci_checks.py` runs them from the
+candidate:
+
+- Each check runs in its own log group with the `bash -eo pipefail` shell that
+  workflow `run:` steps use, in a process group its timeout stops completely.
+- A check runs when every check it needs succeeded; a failure skips only its
+  dependents, so later independent checks still run.
+- Each check's result is a step output named by its id (`steps.checks.outputs.build`),
+  and the job summary lists every result. The job fails once, at the end, if any
+  check failed.
+
+Add or change a macOS native command in the plan, not in `ci.yml`; the change
+takes effect in the next batch. Give it the narrowest `needs`: most checks need
+`build`, installed-SDK checks need `sdk-install`, and consumer checks need the
+check that builds their consumer. Plans see only environment variables, never
+`${{ }}` expressions; use `$GITHUB_WORKSPACE` and similar names in `env` values.
+Artifact uploads and caches stay in the workflow and read the check outputs.
+
+Run one check locally with `--only` (its needs are assumed to have succeeded), or
+list the plan with `--list`:
+
+```bash
+out/host-tools/venv/bin/python scripts/python/ci_checks.py scripts/ci/macos_native.py --only cocoa-analysis
+```
+
+`BatchJobCheckPlanTests` in `scripts/python/test_ci.py` rejects other command
+steps in that job and checks that every check follows the build;
+`scripts/python/test_ci_checks.py` covers the runner. Changing the runner step
+itself still needs a promotion.
+
 Only one batch is active. New `develop` commits do not cancel it or change its input.
 Concurrent scheduler ticks coalesce into at most one pending run. A tick captured
 before `main` advanced records no attempt and skips, letting the next tick use the
@@ -187,7 +236,9 @@ diagnostics. The **Watch for failed suites** job runs trusted `main` code beside
 suites and polls the run's jobs every minute. When a suite job (`native / ...`,
 `windows / ...` and so on) fails, times out or fails to start, the jobs still
 running get 30 minutes from that first failure to report (`STOP_GRACE_SECONDS` in
-`scripts/python/batch_ci.py`). Then **Cancel failed batch** cancels the run, so the
+`scripts/python/batch_ci.py`). The native **Ubuntu Clang** aggregate gate does not
+start that period by itself: every real failure it reports is a failed job of its
+own, and a job that only found no runner is [retried](#retry-jobs-that-found-no-runner). Then **Cancel failed batch** cancels the run, so the
 next tick can validate a candidate containing the fix instead of waiting for the
 longest sanitizer and macOS jobs. In measured batches, deterministic failures
 appeared within 3-13 minutes and every job except the sanitizers and macOS native
@@ -454,7 +505,9 @@ and owning API/wiki tools. Unknown paths, mixed changes, malformed metadata and
 missing comparisons require native routing. Rename detection is disabled so a
 move into docs does not hide an engine change. The `Ubuntu Clang` gate checks the
 complete job inventory and requires exactly the successes/skips selected by the
-tier. Missing outputs or failed/cancelled dependencies fail the gate; the only
+tier. It requires **macOS Objective-C++ analysis** to succeed exactly when an
+integration PR changes a present `.mm` source (`objcxx_changed`), and to be
+skipped otherwise. Missing outputs or failed/cancelled dependencies fail the gate; the only
 exception is a superseded pull-request run, described below.
 
 ### Generated sources
@@ -589,6 +642,11 @@ The Linux native setup retries package index updates and package downloads with
 a deadline per attempt. After the packages are cached, APT installs them locally
 under the job's overall timeout. This keeps the network deadline from interrupting
 dpkg while it unpacks or configures packages.
+Workflow steps that install other packages use the same policy through
+`bash .github/actions/apt-install/apt-install.sh <packages>`, never `apt-get`
+directly: a stalled mirror otherwise holds a job until GitHub's six-hour default
+timeout. `test_ci.py` rejects direct `apt-get install` and `apt-get update` in
+workflows.
 
 ### Linux pull-request image
 
@@ -620,12 +678,14 @@ Native jobs use `macos-15` arm64. Host and documentation tooling separately chec
 not establish macOS 14 runtime qualification. See GitHub's
 [macOS 14 deprecation notice](https://github.com/actions/runner-images/issues/13518).
 
-The long ARM jobs run in order: sanitizers, native/SDK acceptance, then the nightly
-analyzer. This limits simultaneous runner demand after hosted ARM capacity left
-parallel jobs unacquired until GitHub cancelled them. Later jobs use an explicit
-status condition so a test failure does not suppress independent evidence;
-cancelling the workflow still stops the chain. All required results remain part
-of the promotion gate. The batch also admits ARM-owning workflows in order:
+Native/SDK acceptance and the sanitizers start together. Strictly ordered, the
+native job, which fails most often, reported about 45 minutes after the sanitizers
+and made macOS the slowest path in the batch. The nightly analyzer starts after the
+sanitizers, so `ci.yml` holds at most two ARM runners. It uses an explicit status
+condition so a sanitizer failure does not suppress its evidence; cancelling the
+workflow still stops it. All required results remain part of the promotion gate.
+Hosted ARM capacity can still run out; see
+[retry jobs that found no runner](#retry-jobs-that-found-no-runner). The batch also admits ARM-owning workflows in order:
 native, macOS threading, installed host tooling, then ARM documentation tools. This
 prevents short ARM jobs from expiring behind native work in a different reusable
 workflow. The Linux wiki call, Intel documentation tools and Windows threading
@@ -634,9 +694,31 @@ workflows. The Linux call builds and verifies the public API
 and the browser editor, checks sample playback and uploads the Pages artifact.
 Promotion waits for all three wiki calls and both threading checks. Only the
 post-promotion job deploys the candidate wiki.
-The ARM sequence can increase total batch duration. A platform-wide shortage
-can still require retrying a job whose annotations show that it failed to acquire
-a runner.
+The ARM sequence can increase total batch duration.
+
+#### Retry jobs that found no runner
+
+When no hosted runner accepts a queued job, GitHub cancels it with the annotation
+"The job was not acquired by Runner of type hosted even after multiple attempts".
+On 2026-11-02 this cancelled native, sanitizer, analyzer and macOS documentation
+jobs that were queued together. `.github/workflows/batch-runner-retry.yml` runs
+trusted `main` code after a batch run completes without success. It re-runs only
+a job that was cancelled without a runner and carries that annotation, with the
+jobs that depend on it; the others keep their results. GitHub re-runs jobs only in
+a completed run, so the retried job asks for one runner after everything else has
+finished.
+
+The retry waits five minutes, re-runs one job per round and stops after two
+rounds (`MAX_ACQUISITION_RETRIES` in `scripts/python/batch_ci.py`), so an outage
+cannot hold the promotion slot indefinitely. It does not retry when another job
+failed, when **Cancel failed batch** stopped the run, or when a newer batch is
+already validating a later `develop` commit. The native **Ubuntu Clang** gate
+fails whenever a job it reads did not succeed, so neither the retry nor the
+[early stop](#stop-a-failed-batch-early) treats that aggregate failure alone as
+rejecting the candidate. When both rounds find no runner, **Retry jobs that found
+no runner** fails with a capacity error; dispatch the coordinator with **retry**
+once capacity returns. Like every coordinator edit, the retry starts only after
+it reaches `main`.
 
 In a timing replay of [batch 43134442495](https://github.com/The-Ludus-Project/Ludus/actions/runs/43134442495),
 early Linux wiki alone brings capture-to-promotion from 2h 38m 11s to 2h 22m 35s.
@@ -657,6 +739,9 @@ the compiled objects. Compare setup plus build time when evaluating changes to
 this sequence. The **macOS native backends and diagnostics** job uploads JUnit
 results from its native CTest suite, including individual case times on test
 failures.
+It runs its clang-tidy steps for the development build directly after the build,
+before any test step: they take seconds, while the native suites take most of an
+hour, so an analyzer finding fails the batch early. `test_ci.py` keeps that order.
 
 #### Native viewport scheduling acceptance
 
@@ -908,6 +993,44 @@ zero. Independent commands still report findings. CI always uploads each shard's
 available evidence with 14-day retention; a missing artifact fails the upload.
 These are Q0 inventory/control records, not the proposed Q2 full run schema.
 
+### Platform-only sources
+
+Pull-request analysis reads the Linux compile database. A changed translation
+unit that Linux does not compile, such as Cocoa and Metal Objective-C++ (`.mm`)
+or a Direct3D 12 source, is absent from it. `--tidy-changed` now names each such
+file instead of dropping it: it prints the file and, under GitHub Actions, emits
+a `::warning` annotation on it that names the job that analyzes it.
+
+Changed Objective-C++ is analyzed before it reaches a batch. When an integration
+PR adds, modifies or renames a `.mm` source, change routing sets `objcxx_changed`
+and the **macOS Objective-C++ analysis** job runs on one `macos-15` runner:
+
+```bash
+./scripts/check macos-clang-development --tidy-changed-objcxx --base origin/develop
+```
+
+The job prepares the `macos-clang-development` preset with the batch's restored
+dependency and compiler caches and saves neither. It prepares Qt only when a
+changed source is under `apps/editor/`. The command builds the object of each
+changed `.mm` source that the preset compiles, so its generated headers exist,
+then runs clang-tidy on it with the repository `.clang-tidy` policy and warnings
+as errors. This is the policy that the batch's Cocoa, Metal and Editor analysis
+steps apply. It analyzes the whole file, including lines moved by the change,
+and it analyzes changed `.mm` sources that those steps do not list. Because the
+whole file is analyzed, a change to such an unlisted file must also fix the file's
+existing findings. A changed
+`.mm` file that the preset does not compile, such as an SDK consumer, is reported
+and not analyzed. Every other PR skips the job: it uses no macOS runner, and the
+`Ubuntu Clang` gate requires the skip. Batches and full-tier PRs analyze
+Objective-C++ in the macOS native jobs instead.
+
+The 2026-11-19 batch failure that prompted this check came from a Cocoa test that
+the Linux analysis could not see. Its lambda had adjacent `int32` and `float64`
+parameters, which `bugprone-easily-swappable-parameters` rejects. The check does
+not cover changed lines' naming rules in `.mm` sources (`source_policy.py`
+still applies) or Apple-only `.cpp` sources such as `hosted_mach.cpp`. Those
+remain analyzed only in macOS batch jobs.
+
 ### GPU correctness test boundaries
 
 Ordinary raster checks keep their short CTest boundary. GPU reference-compute,
@@ -984,13 +1107,27 @@ keeps those GPU and shader-worker owners serial even under a parallel CTest run.
 The Linux ASan/UBSan job is a four-way matrix, **ASan and UBSan (1/4)** to
 **(4/4)**. Serially, its CTest suite took 95-100 minutes of a two-hour job, 83% of
 it in render-graph, renderer and wave-graph cases on lavapipe. Each shard builds
-the same sanitized tree (one shard writes the Conan and compiler caches) and runs
-every fourth test with `ctest --tests-information <shard>,,4`, so new tests join
-the rotation without a list to maintain. Within a shard, tests still run one at a
-time: each case keeps a whole runner, so the cold software-shader deadlines above
-see the same CPU as before. Running cases concurrently on one runner would split
-lavapipe's CPU between them instead. With the measured durations, the shards take
-about 20, 21, 31 and 28 minutes of tests.
+the same sanitized tree (one shard writes the Conan and compiler caches). Before
+any step that differs between shards, **Select this shard's tests** lists that tree
+with `ctest --show-only=json-v1`, in registration order, and writes every fourth
+name from the shard's number on for `ctest --tests-from-file`. New tests join the
+rotation without a list to maintain. The step summary records the listing's size
+and SHA-256, which match on all four shards when they split one suite.
+
+The selection comes first because shard 1's sweeps reconfigure its tree and
+register more tests. A stride over each shard's own test numbers
+(`--tests-information <shard>,,4`) shifted shard 1's numbering: in one run the
+four shards made 362 test runs over 275 test names, ran 87 twice and never ran
+others under the sanitizers. Tests that only the sweeps register run in the
+sweeps' own steps. `scripts/python/ctest_shard.py` makes the selection, and
+`test_ci_scope.py` rejects a shard-specific step, other than an artifact upload,
+before it.
+
+Within a shard, tests still run one at a time: each case keeps a whole runner,
+so the cold software-shader deadlines above see the same CPU as before. Running
+cases concurrently on one runner would split lavapipe's CPU between them instead.
+With the measured durations, the shards took about 20, 21, 31 and 28 minutes
+of tests before the shared selection.
 
 Shard 1 also uploads the sanitizer-control evidence and runs the S0-S7 scripting,
 L0 ICU and L2 localization sweeps, and `ludus_game_host_reload_tests` with
@@ -1044,6 +1181,35 @@ use `[render-graph-metalfx]` and remain in the full GPU and macOS suites.
 The offscreen blocker test for raster shadows and RT1 also stays in that set.
 Its hybrid shadow comparison uses `[native-ray-queries]` and runs in the full GPU
 suite and on macOS, where it skips only if the required device is unavailable.
+
+### CTest timeout headroom
+
+A CTest `TIMEOUT` bounds a whole test process, so a Catch2 executable that gains
+cases can approach its deadline unnoticed until a batch fails on it. The batch
+CTest runs (Linux Debug, Development, the four ASan/UBSan shards and the Editor
+unit/Editor suite; the macOS native and ASan/UBSan suites) write
+`ctest --output-junit` reports. A following **Report CTest timeout headroom** step
+runs `scripts/python/ctest_headroom.py`, even after a failed test step. It compares
+each test's measured time with its `TIMEOUT` property from
+`ctest --show-only=json-v1`, or with the build tree's default (1500 seconds, from
+`DartConfiguration.tcl`) for a test without one. A test above 75% of its timeout
+gets a `::warning` annotation that names the elapsed time, timeout and fraction.
+The job summary tabulates the ten tests closest to their timeouts.
+
+The check only warns: missing reports, an unavailable listing and tests without a
+timeout never fail the job. When a warning appears, split the suite into
+separately registered CTest entries (by tag or shard), or raise its `TIMEOUT`
+with the measured durations in the pull request. Run it locally after any CTest
+invocation:
+
+```bash
+ctest --preset linux-clang-asan-ubsan --output-junit "$PWD/out/tests.xml"
+python3 scripts/python/ctest_headroom.py out/build/linux-clang-asan-ubsan --junit "$PWD/out/tests.xml"
+```
+
+Give `--output-junit` an absolute path: CTest resolves a relative one against the
+build tree. The scheduled batch runs the workflow definitions on `main`, so the
+annotations appear in batches after the first promotion that includes the step.
 
 ## Scheduled runtime profiling
 

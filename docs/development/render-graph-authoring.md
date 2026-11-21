@@ -5698,12 +5698,14 @@ RasterizeGraph (ClusteredDeferred) → ToneMap → Export / Present
 {"id": "tonemap", "kind": "ToneMap", "exposure": 1, "curve": "PbrNeutral"}
 ```
 
-**Curve** selects the display curve: `Reinhard` (per-channel `x / (1 + x)`, the
-default when the field is absent) or `PbrNeutral` ([Khronos PBR Neutral](https://github.com/KhronosGroup/ToneMapping),
-which keeps hue and saturation, leaves colours below about 0.76 almost unchanged
-and compresses highlights toward white). PbrNeutral matches the Editor's raster
-viewport and reference comparison. Both curves apply to ray and raster output,
-including after OIDN denoising.
+**Curve** selects the display curve. `Reinhard` applies `x / (1 + x)` to each
+channel independently, which can shift hue as bright channels compress by
+different amounts. Omit `curve` to use Reinhard. `PbrNeutral` subtracts a common
+offset from the channels, then compresses bright peaks and blends them toward
+white. The engine's default clustered deferred graph selects `PbrNeutral`
+explicitly.
+Both curves apply to ray and raster output, including after OIDN denoising.
+[Khronos PBR Neutral](https://github.com/KhronosGroup/ToneMapping/tree/main/PBR_Neutral)
 
 **Exposure multiplier** is a finite linear multiplier from 0.01 to 64; one leaves
 exposure unchanged, two doubles it, and 0.5 halves it. Edit it in Properties or
@@ -5711,6 +5713,19 @@ through the canvas's **Edit Node** action. Both use the same validation, undo,
 redo and Save operations. The canvas displays the exposure and curve.
 The conversion applies exposure to linear RGB, then the curve, then encodes sRGB. Connect Accumulate before ToneMap so averaging
 uses linear radiance. Accumulating already mapped colors is rejected.
+
+Choose the curve early using a representative view of the saved World. Make
+two saved graph configurations that differ only in the curve. Give both the
+same authored exposure, output and extent. In
+[Compare graphs…](editor-workspace.md#compare-several-render-graphs), add both
+saved configurations and choose **Display frame** for raster output. The run
+freezes the World and camera. Inspect both PNGs for shadow detail, midtone
+contrast and the colour and detail of bright surfaces. If brightness dominates
+the comparison, match a neutral mid-grey patch with the exposure multipliers
+and repeat. Save the chosen curve and exposure in the graph so consumers of
+its cooked package can reproduce those settings. Check the app's presented
+image separately when it uses a different rendering path or exposure override.
+[Promit, *Games Look Bad, Part 1: HDR and Tone Mapping*](https://ventspace.wordpress.com/2017/10/20/games-look-bad-part-1-hdr-and-tone-mapping/)
 
 Bypass ToneMap without rewiring by [disabling it](#disable-a-node), or by
 connecting its input's source directly to its consumer. An unused draft does not
@@ -7515,7 +7530,7 @@ Root execution configurations cannot contain unbound interface inputs.
 | Raster | `mode`, `vertex_layout: RendererStatic`, `material` (`DefaultOpaque` or `DefaultMasked`), `depth_load`, `depth_store`; also `color_load`, `color_store` for ColorAndDepth | Inputs Scene/View/DepthTexture, plus ColorTexture for ColorAndDepth; outputs written depth/color versions |
 | Accumulate | `samples` (1..4096); optional `enabled` ([disable a node](#disable-a-node)) | Required `color: ColorTexture` input and written `color: ColorTexture` output; [linear ray mean](#accumulate-ray-samples-explicitly) |
 | Denoise | `quality` (`Fast`, `Balanced` or `High`); optional `enabled` ([disable a node](#disable-a-node)) | Required `color: ColorTexture` input and written `color: ColorTexture` output; [OIDN filtering](#denoise-ray-output-with-oidn) |
-| ToneMap | `exposure` (0.01..64 linear multiplier); optional `enabled` ([disable a node](#disable-a-node)) | Required `color: ColorTexture` input and written `color: ColorTexture` output; [Reinhard and sRGB conversion](#tone-map-ray-output-explicitly) |
+| ToneMap | `exposure` (0.01..64 linear multiplier); optional `curve` (`Reinhard` by default, or `PbrNeutral`) and `enabled` ([disable a node](#disable-a-node)) | Required `color: ColorTexture` input and written `color: ColorTexture` output; [exposure, display curve and sRGB encoding](#tone-map-ray-output-explicitly) |
 | Subgraph | `asset`, `configuration` | Selected asset interface defines its input/output ports |
 | Export | `type`; optional `enabled` ([disable a node](#switch-between-exported-routes)) | Input `texture` matching ColorTexture or DepthTexture; external output root when enabled |
 | Present | None | Input `color: ColorTexture`; root for the written version of an imported presentation target |

@@ -175,6 +175,33 @@ class GitComparisonTests(unittest.TestCase):
         head = self.commit()
         self.assertTrue(ci_scope.classify("pull_request", self.pull_request(head), self.root)[0])
 
+    def test_objective_cxx_routing_counts_present_mm_sources_and_editor_ones(self):
+        self.write("modules/platform/tests/cocoa_tests.mm", "Original Cocoa")
+        self.write("apps/editor/src/crash_capture_macos.mm", "Original Editor")
+        self.base = self.commit()
+        self.assertEqual(ci_scope.classify_objcxx("pull_request", self.pull_request(self.commit_engine()), self.root),
+                         (False, False))
+        self.write("modules/platform/tests/cocoa_tests.mm", "Changed Cocoa")
+        engine_only = self.commit()
+        self.assertEqual(ci_scope.classify_objcxx("pull_request", self.pull_request(engine_only), self.root),
+                         (True, False))
+        self.write("apps/editor/src/crash_capture_macos.mm", "Changed Editor")
+        editor = self.commit()
+        self.assertEqual(ci_scope.classify_objcxx("pull_request", self.pull_request(editor), self.root), (True, True))
+        # Deleting a source leaves nothing to analyze.
+        self.git("rm", "-q", "modules/platform/tests/cocoa_tests.mm", "apps/editor/src/crash_capture_macos.mm")
+        deleted = self.commit()
+        self.assertEqual(ci_scope.classify_objcxx("pull_request", self.pull_request(deleted, editor), self.root),
+                         (False, False))
+        # Only pull requests route the job; an unavailable comparison runs it rather than skip it.
+        self.assertEqual(ci_scope.classify_objcxx("workflow_dispatch", {}, self.root), (False, False))
+        self.assertEqual(ci_scope.classify_objcxx("pull_request", self.pull_request(editor, "a" * 40), self.root),
+                         (True, True))
+
+    def commit_engine(self):
+        self.write("modules/engine.cpp", "Changed engine only")
+        return self.commit()
+
     def test_empty_diff_and_missing_history_require_native_validation(self):
         self.assertTrue(ci_scope.classify("pull_request", self.pull_request(self.base), self.root)[0])
         self.assertTrue(ci_scope.classify("pull_request", self.pull_request(self.base, "a" * 40), self.root)[0])
@@ -205,8 +232,22 @@ class GitComparisonTests(unittest.TestCase):
                          "LUDUS_CI_BATCH_SHA": batch_sha},
                 )
                 self.assertEqual(output.read_text(),
-                                 f"camera_pilot=false\nnative_required={required}\nvalidation_tier={tier}\n")
+                                 f"camera_pilot=false\nnative_required={required}\nvalidation_tier={tier}\n"
+                                 "objcxx_changed=false\nobjcxx_editor=false\n")
                 self.assertIn(f"Native validation required: {required}. Validation tier: {tier}.", summary.read_text())
+        # An integration PR changing Objective-C++ selects the macOS job; a full-tier PR leaves it to the batch.
+        self.write("modules/platform/src/window_cocoa.mm", "Changed Cocoa")
+        head = self.commit()
+        for base_ref, selected in (("develop", "true"), ("main", "false")):
+            with self.subTest(base_ref=base_ref):
+                event.write_text(json.dumps(self.pull_request(head, base_ref=base_ref)), encoding="utf-8")
+                output.unlink(missing_ok=True)
+                subprocess.run(
+                    [sys.executable, ci_scope.__file__, "classify"], cwd=self.root, check=True, capture_output=True,
+                    env={**os.environ, "GITHUB_EVENT_NAME": "pull_request", "GITHUB_EVENT_PATH": str(event),
+                         "GITHUB_OUTPUT": str(output), "GITHUB_STEP_SUMMARY": str(summary), "LUDUS_CI_BATCH_SHA": ""},
+                )
+                self.assertIn(f"objcxx_changed={selected}\nobjcxx_editor=false\n", output.read_text())
 
 
 class RequiredGateTests(unittest.TestCase):
@@ -216,11 +257,48 @@ class RequiredGateTests(unittest.TestCase):
         dependencies = re.search(r"needs: \[([^\]]+)\]", gate)
         self.assertIsNotNone(dependencies)
         self.assertCountEqual([name.strip() for name in dependencies.group(1).split(",")],
-                              ["changes", *ci_scope.NATIVE_JOBS])
+                              ["changes", *ci_scope.NATIVE_JOBS, ci_scope.OBJCXX_JOB])
         # A missing workflow job must not silently remove validation while the
         # Python gate still expects it, including docs-only routing.
         jobs = set(re.findall(r"^  ([a-z][a-z0-9-]*):$", workflow, re.MULTILINE))
         self.assertTrue(set(ci_scope.NATIVE_JOBS) <= jobs)
+        self.assertIn(ci_scope.OBJCXX_JOB, jobs)
+
+    def test_objective_cxx_job_runs_only_for_integration_prs_that_change_mm_sources(self):
+        workflow = (Path(__file__).resolve().parents[2] / ".github/workflows/ci.yml").read_text()
+        job = workflow.split(f"\n  {ci_scope.OBJCXX_JOB}:\n", 1)[1].split("\n  macos-analysis:\n", 1)[0]
+        self.assertIn("    needs: changes\n", job)
+        self.assertIn("    if: needs.changes.outputs.native_required == 'true' && needs.changes.outputs.validation_tier"
+                      " == 'integration' && needs.changes.outputs.objcxx_changed == 'true'\n", job)
+        self.assertIn("    runs-on: macos-15\n", job)
+        self.assertIn("editor: ${{ needs.changes.outputs.objcxx_editor }}", job)
+        self.assertIn("./scripts/check macos-clang-development --tidy-changed-objcxx --base", job)
+        self.assertNotIn("actions/cache/save", job)
+        for output in ("objcxx_changed", "objcxx_editor"):
+            self.assertIn(f"      {output}: ${{{{ steps.scope.outputs.{output} }}}}\n", workflow)
+
+    def test_objective_cxx_job_is_required_exactly_when_selected(self):
+        for tier in sorted(ci_scope.TIERS):
+            for required in (True, False):
+                for objcxx in ("true", "false"):
+                    with self.subTest(tier=tier, required=required, objcxx=objcxx):
+                        results = self.results(required, tier, objcxx=objcxx)
+                        self.assertEqual(ci_scope.gate_failures(results), [])
+                        expected = results[ci_scope.OBJCXX_JOB]["result"]
+                        self.assertEqual(expected == "success",
+                                         required and tier == ci_scope.INTEGRATION_TIER and objcxx == "true")
+                        for status in ("success", "failure", "cancelled", "skipped"):
+                            if status != expected:
+                                results[ci_scope.OBJCXX_JOB]["result"] = status
+                                self.assertIn(f"{ci_scope.OBJCXX_JOB}: expected {expected}",
+                                              " ".join(ci_scope.gate_failures(results)))
+        for value in (None, "", "True", "yes"):
+            results = self.results(tier=ci_scope.INTEGRATION_TIER)
+            results["changes"]["outputs"]["objcxx_changed"] = value
+            self.assertTrue(ci_scope.gate_failures(results))
+        results = self.results(tier=ci_scope.INTEGRATION_TIER)
+        del results[ci_scope.OBJCXX_JOB]
+        self.assertTrue(ci_scope.gate_failures(results))
 
     def test_native_builds_do_not_wait_for_source_policy(self):
         # A source-policy failure must not skip every compile in a batch: the
@@ -228,10 +306,10 @@ class RequiredGateTests(unittest.TestCase):
         # source/tooling job to succeed before promotion.
         workflow = (Path(__file__).resolve().parents[2] / ".github/workflows/ci.yml").read_text()
         dependencies = dict(re.findall(r"^  ([a-z][a-z0-9-]*):\n(?:    .*\n)*?    needs: (.*)$", workflow, re.MULTILINE))
-        # Capacity admission serializes long ARM jobs without depending on formatting
-        # or inheriting the previous lane's success requirement.
-        serial = {"macos-compile": "[changes, macos-sanitizers]",
-                  "macos-analysis": "[changes, macos-compile]"}
+        # Native acceptance runs beside the sanitizers; the nightly analyzer waits for
+        # the sanitizer lane so at most two ARM runners are held, without depending on
+        # formatting or inheriting the previous lane's success requirement.
+        serial = {"macos-analysis": "[changes, macos-sanitizers]"}
         for name in ci_scope.NATIVE_JOBS:
             with self.subTest(job=name):
                 self.assertEqual(dependencies.get(name),
@@ -278,9 +356,11 @@ class RequiredGateTests(unittest.TestCase):
         self.assertRegex(root.joinpath("webgpu-probe.yml").read_text(), r"(?m)^  schedule:\n    - cron: '[^']+'$")
         workflow = root.joinpath("ci.yml").read_text()
         macos_compile = workflow.split("\n  macos-compile:\n", 1)[1].split("\n  macos-sanitizers:\n", 1)[0]
-        inventory = macos_compile.split("--inventory", 1)
-        self.assertEqual(len(inventory), 2)
-        self.assertNotIn("continue-on-error", inventory[0].rsplit("- name:", 1)[1])
+        # The macOS native job runs its check plan; a failed check fails the job.
+        plan = (root.parent.parent / "scripts/ci/macos_native.py").read_text()
+        self.assertEqual(plan.count("--inventory"), 1)
+        self.assertIn("scripts/python/ci_checks.py scripts/ci/macos_native.py", macos_compile)
+        self.assertNotIn("continue-on-error", macos_compile)
         self.assertNotIn("--inventory", workflow.split("\n  macos-analysis:\n", 1)[1].split("\n  formatting:\n", 1)[0])
 
     def test_builds_and_tidy_use_the_runner_core_counts(self):
@@ -338,11 +418,36 @@ class RequiredGateTests(unittest.TestCase):
         self.assertEqual(len(suite), 1)
         command = " ".join(suite[0].split())
         self.assertIn("ctest --preset linux-clang-asan-ubsan", command)
-        self.assertIn('--tests-information "$SANITIZER_SHARD,,$SANITIZER_SHARDS"', command)
+        self.assertIn('--tests-from-file "$RUNNER_TEMP/sanitizer-shard-tests.txt"', command)
         self.assertNotIn("--parallel", command)
         self.assertNotIn("if:", suite[0])
+        # ctest numbers the tests of the tree it runs in. Shard 1's probe steps
+        # reconfigure that tree and register more tests, so a --tests-information
+        # stride there ran 87 tests twice and skipped as many. Every shard selects
+        # its names before any step that differs between shards could change the tree.
+        self.assertNotIn("--tests-information", sanitizers)
+        self.assertNotRegex(sanitizers, r"ctest[^\n]* -I ")
+        selection = [index for index, step in enumerate(steps) if step.startswith("name: Select this shard's tests\n")]
+        self.assertEqual(len(selection), 1)
+        select = " ".join(steps[selection[0]].split())
+        self.assertNotIn("if:", steps[selection[0]])
+        self.assertIn("scripts/python/ctest_shard.py out/build/linux-clang-asan-ubsan", select)
+        self.assertIn('--shard "$SANITIZER_SHARD" --shards "$SANITIZER_SHARDS"', select)
+        self.assertIn('--output "$RUNNER_TEMP/sanitizer-shard-tests.txt"', select)
+        self.assertLess(selection[0], steps.index(suite[0]))
+        for step in steps[1 : selection[0]]:
+            with self.subTest(before_selection=step.splitlines()[0]):
+                condition = re.search(r"(?m)^        if: (.*)$", step)
+                if condition is not None and "matrix.shard" in condition.group(1):
+                    # Uploads read the tree; anything else could change the listing.
+                    self.assertIn("uses: actions/upload-artifact@", step)
+        first_shard_specific = next(
+            index for index, step in enumerate(steps)
+            if re.search(r"(?m)^        if: .*matrix\.shard", step) and "actions/upload-artifact@" not in step
+        )
+        self.assertLess(selection[0], first_shard_specific)
         # Required reload evidence comes from one fixed shard, never from the round-robin.
-        self.assertIn("--exclude-regex '^ludus_game_host_reload_tests$'", command)
+        self.assertIn("--exclude-regex '^ludus_game_host_reload_tests$'", select)
         reload = [step for step in steps if "LUDUS_RELOAD_METRICS" in step]
         self.assertEqual(len(reload), 1)
         self.assertIn("--tests-regex '^ludus_game_host_reload_tests$'", reload[0])
@@ -467,6 +572,9 @@ class RequiredGateTests(unittest.TestCase):
         # (docs/development/continuous-integration.md#quick-pull-request-tests).
         quick_tests = "Run quick unit and Editor tests"
         camera_pilot = "Run advisory RenderGraph camera pilot"
+        # Reads the batch suite's JUnit report even after a failure; never a test or a gate
+        # (docs/development/continuous-integration.md#ctest-timeout-headroom).
+        headroom = "Report CTest timeout headroom"
         titles = [title for title, _ in steps]
         self.assertIn(quick_tests, titles)
         self.assertIn(camera_pilot, titles)
@@ -477,6 +585,9 @@ class RequiredGateTests(unittest.TestCase):
                     self.assertIn("validation_tier == 'integration' && needs.changes.outputs.camera_pilot == 'true'", body)
                     self.assertIn("continue-on-error: true", body)
                     self.assertIn("python3 scripts/python/camera_pilot.py", body)
+                elif title == headroom:
+                    self.assertIn("        if: always() && needs.changes.outputs.validation_tier != 'integration'\n", body)
+                    self.assertIn("scripts/python/ctest_headroom.py", body)
                 elif title == generated_sources:
                     self.assertNotIn(guard, body)
                     self.assertIn("--label-regex '^generated-source$'", body)
@@ -509,15 +620,18 @@ class RequiredGateTests(unittest.TestCase):
         self.assertEqual(json.loads(runners.group(2)),
                          ["ubuntu-24.04", "macos-15", "macos-15-intel"])
 
-    def results(self, native_required=True, tier=ci_scope.FULL_TIER):
+    def results(self, native_required=True, tier=ci_scope.FULL_TIER, objcxx="false"):
         def expected(name):
             deferred = ((tier == ci_scope.INTEGRATION_TIER and name in ci_scope.INTEGRATION_JOBS)
                         or (tier != ci_scope.NIGHTLY_TIER and name in ci_scope.NIGHTLY_JOBS))
             return "success" if native_required and not deferred else "skipped"
+        selected = native_required and tier == ci_scope.INTEGRATION_TIER and objcxx == "true"
         return {
             "changes": {"result": "success", "outputs": {
-                "native_required": "true" if native_required else "false", "validation_tier": tier}},
+                "native_required": "true" if native_required else "false", "validation_tier": tier,
+                "objcxx_changed": objcxx}},
             **{name: {"result": expected(name)} for name in ci_scope.NATIVE_JOBS},
+            ci_scope.OBJCXX_JOB: {"result": "success" if selected else "skipped"},
         }
 
     def test_all_native_successes_or_intentional_docs_skips_pass(self):
@@ -739,9 +853,8 @@ class CancelledRunTests(unittest.TestCase):
         focused = workflow.split("\n  mcmc-vulkan-parity:\n", 1)[1].split("\n  macos-compile:\n", 1)[0]
         self.assertIn("if: github.event_name == 'workflow_dispatch' && inputs.mcmc_vulkan_parity_only == true", focused)
         self.assertIn("ref: ${{ inputs.batch_sha || github.sha }}", focused)
-        self.assertIn("Acquire::Retries=3", focused)
-        self.assertIn('timeout --signal=TERM --kill-after=30s 5m sudo apt-get "${apt_options[@]}" update -qq', focused)
-        self.assertIn('timeout --signal=TERM --kill-after=30s 10m sudo apt-get "${apt_options[@]}" install', focused)
+        # The shared installer bounds and retries each download (test_ci.BoundedAptInstallTests).
+        self.assertIn("bash .github/actions/apt-install/apt-install.sh libvulkan1", focused)
         self.assertIn("VK_INSTANCE_LAYERS: VK_LAYER_KHRONOS_validation", focused)
         self.assertIn("set -euo pipefail", focused)
         self.assertIn("--target ludus_metropolis_tests ludus_renderer_render_tests ludus_metropolis_graph_tests", focused)

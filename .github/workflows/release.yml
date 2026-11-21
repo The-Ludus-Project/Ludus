@@ -77,7 +77,7 @@ jobs:
           tag_rev="$(git rev-list -n1 "$tag" 2>/dev/null || true)"
           if [ -z "$tag_rev" ]; then echo "tag $tag does not exist"; exit 1; fi
       - name: Install Wayland development packages
-        run: sudo apt-get update -qq && sudo apt-get install -y -qq libwayland-dev wayland-protocols
+        run: bash .github/actions/apt-install/apt-install.sh libwayland-dev wayland-protocols
       - name: Prepare toolchain and dependencies
         run: ./init.sh --preset-only ${{ matrix.flavor }}
       - name: Build + install the SDK candidate for this flavor

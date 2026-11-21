@@ -341,6 +341,8 @@ if(NOT EMSCRIPTEN AND NOT WIN32)
         Ludus::FoundationTime Ludus::FoundationThreading Ludus::FoundationLogging)
     target_compile_options(ludus_sdk_ray_storage_consumer PRIVATE -Wall -Wextra -Wpedantic -Werror -fno-exceptions)
     ludus_compile_renderer_shaders(TARGET ludus_sdk_ray_storage_consumer SHADERS renderer_composite)
+    # The layout and sensitivity checks run the SDK's Python verifier.
+    find_package(Python3 3.10 REQUIRED COMPONENTS Interpreter)
     set(storage_source "${CMAKE_CURRENT_SOURCE_DIR}/../rg2/ray_storage_bindings")
     foreach(storage_language lusl slang)
         set(name ray_storage_${storage_language})
@@ -365,13 +367,13 @@ if(NOT EMSCRIPTEN AND NOT WIN32)
                 "PYTHONPATH=${Ludus_DIR}/render_graph" "${Python3_EXECUTABLE}" -O "${verifier}" sensitivity
                 "${staged}/main.lushader.json" "${Ludus_DIR}/shaders" "${LUDUS_SLANG_COMPILER}"
                 "${LUDUS_SPIRV_CROSS}" "$<TARGET_FILE:ludus_sdk_ray_storage_consumer>")
-            set_tests_properties(ludus_sdk_ray_storage_sensitivity PROPERTIES TIMEOUT 240)
+            # Without native ray queries (the hosted runners' Apple Paravirtual device) the
+            # consumer reports 77, and the check skips with it.
+            set_tests_properties(ludus_sdk_ray_storage_sensitivity PROPERTIES TIMEOUT 240 SKIP_RETURN_CODE 77)
         endif()
         add_test(NAME ludus_sdk_${name} COMMAND ludus_sdk_ray_storage_consumer "${package_directory}" "${name}.lurgrt")
-        set_tests_properties(ludus_sdk_${name} PROPERTIES TIMEOUT 210)
-        if(NOT APPLE)
-            set_tests_properties(ludus_sdk_${name} PROPERTIES SKIP_RETURN_CODE 77)
-        endif()
+        # An adapter without native ray queries, including Apple's Paravirtual device, skips with 77.
+        set_tests_properties(ludus_sdk_${name} PROPERTIES TIMEOUT 210 SKIP_RETURN_CODE 77)
     endforeach()
 endif()
 

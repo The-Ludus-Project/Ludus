@@ -128,6 +128,21 @@ thread); and reading a file in an editor-level event loop before each use
 Limits and coupling: a nested Wasm call made while another call is suspended
 cannot wait for disk and fails with `EIO` (Qt queues its own events during the
 suspension, so this needs a JavaScript callback that calls Wasm directly).
+Qt sends those queued events as one batch when the call resumes. Qt 6.10.3
+sent a batch by its starting length, so a nested event loop that emptied the
+queue first ended Qt's event loop and froze the editor. The editor's Qt build
+backports the upstream reentrant sender (see
+[Ludus changes to Qt](../development/browser-editor.md#ludus-changes-to-qt)).
+A queued key also reaches Qt after the browser has applied it: with a text
+field focused, Qt's hidden input element has already moved its caret or taken
+the text, so typing right after a save landed out of order. While a host-folder
+call is suspended, `browser/suspended_input.js` therefore cancels the browser
+default of trusted `keydown`/`keyup` events in the capture phase. The events
+still reach Qt's queue in their place among pointer and other input, and Qt
+types text from `keydown` itself. Holding keys back and dispatching them later
+would let a queued click overtake them. IME composition keys and the copy, cut
+and paste shortcuts keep their default.
+`apps/editor/tests/browser_suspended_input_tests.cjs` covers the cancellation.
 Renames across mounts fail with `EXDEV`, which Qt turns into copies. Symbolic
 links cannot be created in a folder mount. The overrides reproduce Emscripten
 4.0.23's `__syscall_openat` and `__syscall_renameat` over the public FS API and
@@ -212,3 +227,48 @@ If a hard task needs fragile Qt-private changes, that is evidence for the DOM
 alternative. Do not build both browser presentations indefinitely or require a
 DOM rewrite before extracting the shared authoring core. A browser scene editor
 still needs its own viewport and host-service implementation whichever UI wins.
+
+### World placement and save recovery comparison
+
+Reuse the [browser viewport runner and World fixture](../development/tools/web-browser-tests.md#full-authoring-world-edit-qualification)
+when admitting a frontend. Report the frontend and build, browser version,
+device, pixel ratio, viewport path and whether startup required a forced
+backend. Record which step a candidate cannot reach. Qt/Wasm is the available
+frontend for this fixture. A DOM authoring candidate needs the same core-backed
+World commands, viewport and persistence before it can enter the comparison.
+
+Use equivalent fresh copies and the same wording for first-use trials. Ask the
+participant to open the project, move the named placement to the requested
+position, recover from the controlled save refusal, then reopen and verify the
+edit. Keep failure timing and available help fixed. When two frontends can
+perform the task, have each participant use both and alternate frontend and
+placement order across participants. Record completion, time, wrong turns,
+assistance, the last meaningful action, the message and the first attempted
+repair. After the attempt, ask what they expected that action to do and which
+visible clue informed their choice. Include a paired trial with a brief
+unrelated task after the refusal. On return record the first recovery action,
+time to resume, any repeated edit and how the participant identifies the
+pending value, saved value and available repair.
+
+For the layout trial, enter a valid value before narrowing and widening the
+same session across the declared breakpoint or down to the supported minimum
+width. Record both widths, whether selection and the value survive, which
+keyboard actions reach Apply or Reset, and whether focus remains visible.
+Check IME composition, keyboard selection and clipboard, RTL or non-Latin input,
+and screen-reader traversal of the inspector, hierarchy and tabular controls
+on the declared browsers. Record any missing semantic role and its effect on
+the task. Verify that the viewport and selection are usable on the ordinary
+WebGL 2 fallback where supported.
+
+Administer the same six-item raw NASA-TLX after each run, with the task named
+and a 0–100 scale in steps of five. Explain that higher Performance scores
+mean worse perceived performance. Preserve per-item results and use an
+unweighted mean if reporting a total. After both runs, give participants up
+to two minutes per frontend to sketch or describe where the edit lived at
+failure and after recovery. Ask what UI cue informed that account and which
+frontend made recovery easier to understand. Compare their account against
+the working draft, saved bytes and reopened result. Record protocol departures
+and treat a small pilot as descriptive. Link one design decision to an
+observed action and the participant's explanation. Record a plausible
+alternative interpretation and the observation that would distinguish them.
+See the [issue's protocol and references](https://github.com/The-Ludus-Project/Ludus/issues/1272).
