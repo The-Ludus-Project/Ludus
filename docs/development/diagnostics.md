@@ -184,13 +184,16 @@ separate databases: old reports are never silently sent to a new project.
 Previously unconfigured reports stay in the `unconfigured` folder and are not
 automatically migrated.
 
-On first launch with a configured destination, a dialog offers **Automatically
-send crash reports**. The box starts unchecked for a destination without prior
-approval. Saving with it selected consents to pending and future submission,
-including minidumps from fatal assertions that crash the Editor. Cancel leaves
-submission off for a new destination. Editing the destination clears the
-checkbox so the user can make a new choice. Turning submission off pauses uploads
-without deleting pending reports. An already in-flight request may finish.
+On first launch with a destination that has no prior approval, choose **Send
+Crash Reports** or **Keep Reports on This Mac**. Keeping reports local is the
+default. Closing the prompt also leaves uploads off. Choosing **Send Crash
+Reports** enables pending and future uploads immediately, including minidumps
+from fatal assertions that crash the Editor.
+
+In **Help > Crash Reporting**, editing the destination clears the automatic
+upload checkbox so the user can make a new choice. Turning uploads off pauses
+submission without deleting pending reports. An already in-flight request may
+finish.
 
 #### Evidence, privacy and storage
 
