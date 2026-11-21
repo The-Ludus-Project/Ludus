@@ -1,4 +1,5 @@
 #include "internal/gpu_preview_graph.h"
+#include "internal/gpu_preview_data.h"
 #include "internal/ltc_table_data.h"
 #include <ludus/foundation/containers/borrowed_view.hpp>
 
@@ -47,6 +48,7 @@ struct GpuGraphResources final
     {
         rhi::TextureHandle Handle{};
         rhi::GraphVersion Version{};
+        bool IsWritten = false;
     };
     struct SceneEntry final
     {
@@ -54,7 +56,7 @@ struct GpuGraphResources final
         rhi::GraphVersion Version{};
     };
     StaticArray<BufferEntry, GRAPH_SEQUENCE_RESOURCE_COUNT> Buffers{};
-    StaticArray<TextureEntry, content::render_graph_format::MAX_RAY_PASSES> Textures{};
+    StaticArray<TextureEntry, content::render_graph_format::MAX_RAY_PASSES + 1> Textures{};
     StaticArray<SceneEntry, content::render_graph_format::MAX_RAY_PASSES> Scenes{};
     usize BufferCount = 0;
     usize TextureCount = 0;
@@ -169,10 +171,13 @@ struct GpuGraphResources final
         }
         for (usize index = 0; index < TextureCount; ++index)
         {
-            const Status status = rhi::AddGraphRoot(device, graph, Textures[index].Version, rhi::GraphRoot::Export);
-            if (status != Status::Ready)
+            if (Textures[index].IsWritten == true)
             {
-                return status;
+                const Status status = rhi::AddGraphRoot(device, graph, Textures[index].Version, rhi::GraphRoot::Export);
+                if (status != Status::Ready)
+                {
+                    return status;
+                }
             }
         }
         return Status::Ready;
@@ -184,6 +189,7 @@ struct GpuGraphResources final
             if (Textures[index].Handle == texture)
             {
                 Textures[index].Version = version;
+                Textures[index].IsWritten = true;
                 return;
             }
         }
@@ -287,7 +293,7 @@ Status AppendGpuGraph(rhi::DeviceHandle device,
     // summary.
     StaticArray<rhi::GraphUse,
                 LUDUS_GRAPH_COMPUTE_BINDING_COUNT + 1 + LUDUS_GRAPH_LTC_TABLE_BINDING_COUNT +
-                    LUDUS_GRAPH_FAILURE_BINDING_COUNT + RAY_SCENE_USE_COUNT>
+                    LUDUS_GRAPH_FAILURE_BINDING_COUNT + RAY_SCENE_USE_COUNT + 1>
         computeUses{{{versions[0], rhi::GraphAccessMode::StorageRead, 0, job.DataBytes, rhi::RasterVisibility::Compute},
                      {versions[1],
                       rhi::GraphAccessMode::Uniform,
@@ -346,6 +352,18 @@ Status AppendGpuGraph(rhi::DeviceHandle device,
                                           0,
                                           0,
                                           rhi::RasterVisibility::Compute};
+    }
+    if (state.HasColorInput == true)
+    {
+        const rhi::TextureHandle colorInput =
+            rhi::IsNull(job.ColorInput) == true ? state.DefaultColorInput : job.ColorInput;
+        rhi::GraphVersion sampled;
+        status = inoutResources.ImportTexture(device, graph, colorInput, sampled);
+        if (status != Status::Ready)
+        {
+            return status;
+        }
+        computeUses[computeUseCount++] = {sampled, rhi::GraphAccessMode::Sampled, 0, 0, rhi::RasterVisibility::Compute};
     }
     if (state.HasRayPathCapture == true)
     {
@@ -428,7 +446,7 @@ Status AppendGpuGraph(rhi::DeviceHandle device,
         computeUses[computeUseCount++] = {next,
                                           rhi::GraphAccessMode::StorageReadWrite,
                                           0,
-                                          LUDUS_GRAPH_FAILURE_BYTES,
+                                          GRAPH_FAILURE_BYTES,
                                           rhi::RasterVisibility::Compute};
     }
     const uint32 dispatchWidth = isBufferDispatch == true ? GetSceneWorkRowWidth(job.WorkItemCount) : job.Width;

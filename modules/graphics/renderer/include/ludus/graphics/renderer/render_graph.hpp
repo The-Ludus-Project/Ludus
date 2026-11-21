@@ -256,6 +256,7 @@ enum class RenderGraphFailureReason : foundation::uint8
     WaveConnection,             ///< The optical wavelength or finite connection is outside the paraxial profile.
     WavePropagationCapacity,    ///< An optical connection exceeds the admitted number of successive regions.
     FixedDimensionMaterial,     ///< An assigned surface lacks continuous reflection with a fixed sample dimension.
+    LuslBounds,                 ///< A development LUSL callback indexed outside its declared bounds.
 };
 /// First failure reason an authored shader may report with FailSceneQuery.
 inline constexpr foundation::uint32 RENDER_GRAPH_FAILURE_AUTHORED_FIRST = 32;
@@ -275,6 +276,8 @@ struct RenderGraphRayFailures final
     foundation::uint64 TotalPixels = 0;
     /// The reason with the most pixels; meaningful when TotalPixels is nonzero.
     foundation::uint32 MainReason = 0;
+    /// Highest authored line reported by a checked LUSL invocation in this history, or zero if none.
+    foundation::uint32 LuslBoundsLine = 0;
 };
 /// Ray work of one sample of a RenderGraph's current scene, from which a frame capture sizes its tiles.
 struct RenderGraphRayWorkload final
@@ -1199,8 +1202,9 @@ public:
     /// between frames at a sample boundary; the count applies to later scenes of this instance too.
     /// @param tileCount Bands per sample, from one (whole-image dispatches) to MAX_RENDER_GRAPH_RAY_TILES.
     /// @return Ready when set; InvalidDescription for a count out of range; Unsupported for more than one band
-    /// when RenderGraphPrograms::HasRayTiles is false; InvalidState when uninitialized, not Ready, in a frame or
-    /// between the bands of a sample. Failure leaves the graph unchanged.
+    /// when RenderGraphPrograms::HasRayTiles is false or the plan contains a buffer-only dispatch or sampled
+    /// scene color input; InvalidState when uninitialized, not Ready, in a frame or between the bands of a sample.
+    /// Failure leaves the graph unchanged.
     [[nodiscard]] rhi::RasterStatus SetRayTileCount(foundation::uint32 tileCount) noexcept;
     /// Select how later frames record the drawable scene. Direct is always admitted. OrderedGraph checks the
     /// cooked plan against the pilot profile here; its scene-dependent admission (packets, draw and resource

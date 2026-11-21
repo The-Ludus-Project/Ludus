@@ -18,6 +18,8 @@ modules/gameplay/weather
 tools/web-weather-probe
 modules/content/string_dictionary
 modules/content/string_dictionary_format
+modules/content/sequence_format
+modules/content/sequence_content
 modules/content/foliage_format
 modules/content/foliage_pages
 modules/foundation/identity
@@ -59,6 +61,7 @@ modules/foundation/math/tests/random_checkpoint_tests.cpp
 modules/foundation/geometry
 modules/gameplay/sequencer
 modules/animation
+modules/physics/rigid
 modules/foundation/memory/include/ludus/foundation/memory/shared_ptr.hpp
 modules/foundation/memory/include/ludus/foundation/memory/detail/shared_controller.hpp
 modules/foundation/memory/src/shared_controller.cpp

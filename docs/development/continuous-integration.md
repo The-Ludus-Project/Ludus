@@ -155,11 +155,15 @@ pattern or by a candidate-side runner:
 - `tests/sdk_consumer/browser-suites.json` lists the browser tests of each
   suite, and `tests/sdk_consumer/run-browser-suite.mjs <suite> <artifacts>
   <results>` runs them all, reporting every failure. Add a browser test to a
-  suite there; the workflow names only the suite. A new renderer suite also
-  needs a matrix entry, which takes effect after promotion.
+  suite there; the workflow names only the suite, or a prefix such as
+  `'renderer-*'` that runs every matching suite. A new renderer suite therefore
+  needs no workflow change. The packaged tests and every renderer suite run in
+  one **Packaged browser tests (software GPU)** job: as four jobs they each ran
+  2-7 minutes but held a runner and repeated setup, while pull requests waited
+  for runners behind the batch.
 - `BatchWorkflowDefinitionTests` in `scripts/python/test_ci.py` rejects listed
   consumer files in uploads, a consumer browser test named in a workflow, and a
-  renderer matrix that differs from the candidate's suites.
+  browser job that does not run every candidate renderer suite.
 
 A workflow change that the candidate's sources depend on still reaches batches
 only after promotion. Land it in a `develop` change before the sources that need
@@ -1072,6 +1076,43 @@ parameters, which `bugprone-easily-swappable-parameters` rejects. The check does
 not cover changed lines' naming rules in `.mm` sources (`source_policy.py`
 still applies) or Apple-only `.cpp` sources such as `hosted_mach.cpp`. Those
 remain analyzed only in macOS batch jobs.
+
+### Platform-only warnings
+
+Pull requests compile on Linux. The MSVC and Emscripten builds run only in
+batch validation, so a warning that only they report reaches `develop` and
+fails the next batch. From October to November 2026 at least 15 such build
+errors had one of two causes, and the checks below catch them before review:
+
+- **A symbol used only inside an `#if` branch.** A build that compiles another
+  branch reports it as unused (`-Wunused-const-variable`, `-Wunused-function`,
+  `-Wunused-parameter`, MSVC C4100). `source_policy.py` reports an
+  internal-linkage constant or function, or a parameter, whose every use sits
+  in a preprocessor branch that does not enclose its declaration. It checks
+  each combination of the conditions around those uses, so uses in every arm
+  of an `#if`/`#else`, or in separate blocks under complementary conditions,
+  count as unconditional. An arm that stops the build with `#error` selects no
+  configuration. Declare the symbol under the same condition as its uses, or
+  discard a parameter in the other arms with `static_cast<void>(name)`.
+- **Constant conditions and unreachable code.** MSVC reports a run-time `if`
+  or `while` whose condition is constant as C4127, and unreachable code as
+  C4702. `source_policy.py` reports a condition that names only UPPER_CASE
+  constants; use `if constexpr`, with an `else` when the true arm returns, so
+  that the code after it stays reachable. Clang and AppleClang builds also
+  enable `-Wunreachable-code` and `-Wunreachable-code-loop-increment`
+  (`cmake/EngineCompilerWarnings.cmake`), which reject unreachable code that
+  Clang can see. MSVC also follows calls that it inlines, such as one to a
+  function that never returns, so declare such functions `[[noreturn]]`.
+
+Both source rules apply to changed lines; a conditional use is reported at
+its declaration when the declaration or any use changed. They do not
+evaluate the preprocessor: a branch counts as selectable even if no supported
+build selects it, as in a file that only Linux compiles. For such a deliberate
+case, append `// ludus-style: conditional-use <reason>` or
+`// ludus-style: constant-condition <reason>` to the reported line, or mark
+the declaration `[[maybe_unused]]`. Neither rule covers unused locals, private
+fields, or code that compiles only in another build, such as a stale name in
+a browser-only `#else` branch. Those still need the browser or MSVC build.
 
 ### GPU correctness test boundaries
 

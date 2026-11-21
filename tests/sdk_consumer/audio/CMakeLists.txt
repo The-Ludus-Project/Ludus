@@ -10,3 +10,8 @@ target_link_libraries(ludus_audio_consumer PRIVATE Ludus::AudioContent)
 target_compile_definitions(ludus_audio_consumer PRIVATE LUDUS_SDK_AUDIO_STANDALONE=1)
 target_compile_options(ludus_audio_consumer PRIVATE -Wall -Wextra -Wpedantic -Werror -fno-exceptions)
 ludus_apply_app_policy(ludus_audio_consumer)
+
+if(CMAKE_SYSTEM_NAME MATCHES "^(Linux|Darwin)$")
+    enable_testing()
+    add_subdirectory("${CMAKE_CURRENT_SOURCE_DIR}/../../../examples/audio-content" audio-content)
+endif()

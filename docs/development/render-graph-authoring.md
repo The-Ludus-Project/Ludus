@@ -1301,6 +1301,49 @@ Wire the Buffer into the
 producer and the producer's updated output into the consumer, with the same
 paired **Load**/**Store** resource as for a fixed-byte Buffer.
 
+### Access an ordered Buffer by port name
+
+Enable `"graph_resources": true` on the compute or ray-generation program in the
+graph's shader manifest. Add a final `<FunctionName>Resources resources`
+parameter to that program's function. **Shader API** shows the signature. The
+editor's shader completion uses the generated members for the connected pass.
+For a port named `edges` and a function named `BuildEdges`:
+
+```slang
+float3 BuildEdges(SceneContext scene, RayLaunch launch, inout RayQueryContext queries,
+                  BuildEdgesResources resources)
+{
+    uint index = launch.WorkItemIndex;
+    if (index < resources.Edges.GetCount() && index < GetSceneInfo(scene).TriangleCount)
+    {
+        TriangleData triangle = GetTriangle(scene, index);
+        Edge edge;
+        edge.BeginWorld = triangle.Position0World;
+        edge.EndWorld = triangle.Position1World;
+        resources.Edges[index] = edge;
+    }
+    return float3(0);
+}
+```
+
+This example writes the first side of each processed triangle. Put `Edge` in
+`edge.slang` with `float3 BeginWorld` and `float3 EndWorld`, then choose that
+file and type in **From shader struct…** and set the element capacity. Configure
+the producer with **Work items** and an `edges` **Writable Resource**. Connect
+its output to an `edges` **Read Input** on the consumer. The graph includes
+`edge.slang` in both shaders. The consumer reads
+`Edge edge = resources.Edges[index];` through a read-only view. Check the index against the populated edge count as well as the
+allocation capacity returned by `GetCount()`.
+
+The member name capitalizes the port's first letter and preserves the remaining
+spelling. Use Slang identifiers for port names. Named views support 32-bit
+float, signed integer and unsigned integer fields, their vectors, nested
+records and fixed arrays. They load and store whole records using the reflected
+storage layout. Fixed-byte Buffer ports use `uint4` elements and a paired
+Writable Resource. A reused function requires matching named fields, types and
+access. The same callback variant also shares one slot and capacity mapping.
+Use ordered scene compute or **Compute** invocation on a Ray Tracing Pipeline.
+
 ### Author scene compute passes
 
 A **ComputePipeline** with a **Scene** input is a *scene compute pass*. It accepts
@@ -1325,7 +1368,7 @@ The node accepts the same ports as a Ray Tracing Pipeline node:
 - exactly one Scene input and one View input;
 - exactly one writable RGBA8Unorm ColorTexture with **Clear**/**Store**;
 - up to two writable **Buffer** resources with **Load**/**Store**, bound as `GraphBuffer0/1`;
-- optionally the read-only visibility color and depth input pair.
+- optionally one [sampled color input](#read-a-color-texture-from-an-earlier-pass) or the read-only visibility color and depth pair.
 
 `StructuredBuffer` inputs are rejected: connect a `Buffer` node instead. Set
 `invocation.dimensions` to `"ColorTarget"`, or to the exact `[width, height, 1]` of
@@ -1498,6 +1541,34 @@ The [mixed sequence fixture](../../tests/sdk_consumer/rg2/compute_mixed/main.lur
 has a scene compute primary pass that records per-pixel hits in a Buffer, followed
 by a ray pass that resolves them. `ludus_render_graph_ray_tests` renders both on
 native ray hardware.
+
+### Read a color texture from an earlier pass
+
+To read an intermediate color image in a scene **ComputePipeline**, add one
+**ColorTexture** under **Read Inputs**. Connect it to an earlier scene compute or
+ray pass's color output. For example, connect `utd.diffraction` to the
+`diffraction` input on `shade`. Keep a separate writable color target for
+`shade`. The source must be an offscreen, single-sample RGBA8Unorm texture
+written earlier in the same ordered sequence.
+
+**Build Graph** binds the connected texture as `Texture2D<float4> GraphColorInput`.
+The authored port name is used on the graph. Use the generated name in Slang
+without a shader-manifest binding or descriptor annotation. For equal source
+and destination extents, load the texel corresponding to the launch pixel.
+
+```slang
+float3 diffraction = GraphColorInput.Load(int3(launch.PositionPixel, 0)).rgb;
+```
+
+The load returns the stored normalized color, including any color processing
+applied before the wire. Query `GetDimensions` and bound coordinates against
+the source extent if the targets differ. The renderer orders the producer's
+color write before the consumer's read on Metal and Vulkan.
+
+Use Compute invocation for RayTracingPipeline nodes in this sequence. Scene
+visibility/depth inputs and tiled frame capture require a separate configuration
+or whole-frame capture, respectively. Rebuild the package with an SDK that
+supports runtime generation 41.
 
 <a id="select-emitters-per-screen-tile"></a>
 
@@ -4786,7 +4857,7 @@ wrappers include it automatically. Authors do not read private packed buffers.
 | GetEmitterBounds | Precomputed emitter bounding sphere, geometric-normal cone and emission sidedness, for one weight per emitter without a triangle loop |
 | IsSurfaceCovered | Fixed-mip sampled-endpoint alpha coverage, using the same inclusive cutoff as closest-hit traversal, with no ray query; keep uncovered area samples as zero events |
 | GetSurfaceHit | Surface endpoint from triangle/barycentrics, without tracing; IncomingRay and DistanceWorld are zero |
-| SampleLight | Select a catalog source and sample it with the default incident proposal. Returns the selection PMF and conditional probability separately. |
+| SampleLight | Select a catalog source and sample its incident light at a world-space position or a `SurfaceHit`. Returns the selection PMF and conditional probability separately. |
 | EvaluateLightAlongRay | Return the radiance and matching continuous light proposal for a traced mesh hit or environment miss, using the same selection policy as SampleLight. |
 | SelectLight / EvaluateLightSelectionPmf | Default uniform source selection and its discrete probability. SelectLight(scene, queries) uses the invocation stream. |
 | SelectLightByMeshPower / EvaluateMeshPowerLightSelectionPmf | Addressed catalog selection and its matching PMF. Mesh lights split their uniform category share by power, with uniform fallback. |
@@ -4799,7 +4870,7 @@ wrappers include it automatically. Authors do not read private packed buffers.
 | SelectEmissiveTriangle / EvaluateEmissiveTriangleSelectionPmf | [Power-weighted emissive triangle](#select-emissive-triangles-by-power) at an explicit dimension / that selection's probability for a triangle |
 | EvaluateEnvironment | Background radiance along a world direction: the Atmosphere's sky when the World has one that lights the scene, otherwise the World environment. See [World features](#world-features) |
 | ApplyAerialPerspective | Haze between a ray origin and a visible surface point: the surface radiance attenuated by the air plus the sky light it scatters. See [World features](#world-features) |
-| TraceClosest / TestVisibility | Closest or occlusion query with explicit miss/surface/failure status |
+| TraceClosest / TestVisibility | Closest or occlusion query with explicit miss/surface/failure status. `TestVisibility` accepts a `SurfaceHit` or a world-space ray origin. |
 | FindVisibleLineIntervals / ClearLineVisibility | Visible parts of a world-space segment from a receiver, as sorted parameter intervals; see [Find the visible parts of a segment](#find-the-visible-parts-of-a-segment) |
 | SpawnSurfaceRay | Error-bound origin offset for a unit world direction and explicit maximum distance |
 | SampleUniformFloat01 / SampleSceneRandom | Uniform draw at an explicit pixel sample dimension / next draw from the invocation stream |
@@ -5309,6 +5380,23 @@ Stream exhaustion or bounded-mapping failure also latches `HasFailed` and return
 zero, which must not be used as a sample after failure. Float draws, integer draws
 and automatic light selection share the same invocation stream.
 
+Pass a fixed-size float array or a `float2`, `float3`, or `float4` to
+`SampleSceneWeightedIndex` to choose an index by weight.
+
+```slang
+const uint index = SampleSceneWeightedIndex(queries, float3(2, 0, 6));
+```
+
+Each index has probability proportional to its weight, so the example selects
+index 0 one quarter of the time and index 2 three quarters of the time. Weights
+may be normalized or unnormalized. Float precision limits how small a weight
+can be relative to the total and still occupy an interval. The helper uses a
+linear scan and spends one dimension from the same invocation stream. Negative
+or nonfinite weights and a zero total latch an invalid-argument failure. On
+failure the helper returns `SCENE_INVALID_INDEX`. LUSL provides the vector
+overloads through `scene_shader.luslh` using `float32x2`, `float32x3`, and
+`float32x4`.
+
 The stream admits dimensions zero through FoundationMath's
 `RANDOM_MAX_DIMENSION`, inclusive. Exhaustion latches `HasFailed` and returns
 zero/no sample; the renderer rejects that invocation's result. Scheduling other
@@ -5327,18 +5415,26 @@ its source selection probability. Emission maps are sampled at the actual UV;
 black texels and back-side one-sided samples remain zero-contribution events.
 The initial environment proposal is uniform sphere, including HDR maps.
 
-The Compute ray tracing template uses `SampleLight` with independent addresses
-for source selection and the conditional incident proposal.
+`SampleLight` uses independent addresses for source selection and the conditional
+incident proposal. For a world-space point in metres, such as a point on an edge,
+pass `pointWorld` directly to both `SampleLight` and `TestVisibility`.
 
 ```slang
 SceneLightSample light = SampleLight(
-    scene, receiver, launch, LIGHT_SELECTION_DIMENSION, INCIDENT_DIMENSION_FIRST,
+    scene, pointWorld, launch, LIGHT_SELECTION_DIMENSION, INCIDENT_DIMENSION_FIRST,
     LightSelectionPolicy::Uniform, queries);
 if (light.Incident.HasSample == false)
     return float3(0);
 
+SceneQuery visibility = TestVisibility(scene, queries, pointWorld, light.Incident);
 float probability = light.Selection.SelectionPmf * light.Incident.ConditionalProbability;
 ```
+
+The visibility ray starts at `pointWorld`. It connects to the sampled endpoint
+for a finite light, including the usual mesh endpoint offset, and uses the
+sampled direction for an infinite light. `SceneQuery::Miss` means the connection
+is clear. Both forms use the visibility query budget and are available in Slang
+and LUSL.
 
 Reserve `SCENE_INCIDENT_LIGHT_DIMENSION_COUNT` slots for the default incident
 proposal. Mesh lights read all three slots and the environment reads the last
@@ -5346,10 +5442,13 @@ two. Directional, point and spot lights read none. The addressed sampler never
 advances the invocation stream. If a needed address is exhausted, it latches the
 invocation failure. A source index outside the catalog returns no sample.
 
-Use the probability product after checking `incident.HasSample` and use
-`TestVisibility` with the incident result to trace its connection. The incident
-probability is a density per steradian for `IncidentLightMeasure::SolidAngle` and
-a mass for `IncidentLightMeasure::Discrete`. Analytic delta samples have
+The Compute ray tracing template passes a `SurfaceHit` from `GetSurfaceHit` to
+both operations. A hit from `TraceClosest` works too. `SampleLight` uses the
+hit's position and `TestVisibility` applies the triangle's origin offset.
+
+The incident probability is a density per steradian for
+`IncidentLightMeasure::SolidAngle` and a mass for `IncidentLightMeasure::Discrete`.
+Analytic delta samples have
 conditional mass one and zero competing solid-angle density. For MIS after a
 BSDF sample, pass the trace result, original receiver position and same
 selection policy to `EvaluateLightAlongRay`. Multiply its source PMF by its

@@ -3,9 +3,11 @@
 #ifdef __cplusplus
 #    include <ludus/content/scene_format/material.h>
 #    include <ludus/graphics/renderer/lighting_layout.h>
+#    include <ludus/graphics/renderer/scene_shader_layout.h>
 #else
 #    include "lighting_layout.h"
 #    include "material.h"
+#    include "scene_shader_layout.h"
 #endif
 
 // Private packed-scene ABI, shared verbatim by host packing and Slang admission.
@@ -225,7 +227,13 @@
 // binds it after the LTC table and before the Atmosphere sky; the native preview and reference kernels do not.
 #define LUDUS_GRAPH_FAILURE_BINDING 14
 #define LUDUS_GRAPH_FAILURE_BINDING_COUNT 1
-#define LUDUS_GRAPH_FAILURE_BYTES 256
+// The diagnostic wrapper owns this scene failure reason; authored callbacks use their own range.
+#define LUDUS_SCENE_FAILURE_LUSL_BOUNDS 28
+// One optional LUSL line follows the failure count words. Old kernels write only the counts.
+#define LUDUS_GRAPH_FAILURE_BOUNDS_LINE_WORD LUDUS_SCENE_FAILURE_REASON_COUNT
+#define LUDUS_GRAPH_FAILURE_WORDS (LUDUS_GRAPH_FAILURE_BOUNDS_LINE_WORD + 1)
+#define LUDUS_GRAPH_FAILURE_WORD_BYTES 4
+#define LUDUS_GRAPH_FAILURE_BYTES (LUDUS_GRAPH_FAILURE_WORDS * LUDUS_GRAPH_FAILURE_WORD_BYTES)
 
 // World-feature tables (graphics::renderer::WorldFeature; docs/development/render-graph-authoring.md#world-features).
 // The renderer binds each read-only float4 table only to a scene compute kernel whose reflection keeps its slot, which
@@ -246,11 +254,15 @@
 #define LUDUS_AERIAL_PERSPECTIVE_MAX_METRES 32000.0
 // Atmosphere sky, read by EvaluateEnvironment: one header word (x = width, y = height, as exact floats; zero width
 // keeps the World environment), then width * height RGB radiance texels in EnvironmentDescription's latitude/longitude
-// layout. The binding follows the failure summary and is a kernel's last binding.
+// layout. The binding follows the failure summary.
 #define LUDUS_GRAPH_ATMOSPHERE_SKY_BINDING 15
+
 #define LUDUS_ATMOSPHERE_SKY_HEADER_WORDS 1
 #define LUDUS_ATMOSPHERE_SKY_TABLE_WIDTH 512
 #define LUDUS_ATMOSPHERE_SKY_TABLE_HEIGHT 256
 #define LUDUS_GRAPH_WORLD_TABLE_ALIGNMENT_BYTES 256
 // Renderer-owned World-feature tables one kernel may bind: the aerial perspective and Atmosphere sky tables.
 #define LUDUS_GRAPH_WORLD_TABLE_BINDING_COUNT 2
+
+// Read-only color from an earlier ordered scene pass. Only compute sequences use this slot.
+#define LUDUS_GRAPH_COLOR_INPUT_BINDING 12

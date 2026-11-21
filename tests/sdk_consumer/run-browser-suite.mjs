@@ -8,6 +8,8 @@
 // docs/development/continuous-integration.md#batch-workflow-definitions.
 //
 // Usage: node run-browser-suite.mjs <suite> <consumer artifact directory> <results directory>
+// <suite> may end in '*' to run every suite whose name starts with the rest, in file
+// order ('renderer-*'), so a new suite needs no workflow change.
 // Every test runs even after a failure; the exit status is non-zero if any failed.
 import {readFile} from 'node:fs/promises';
 import {spawnSync} from 'node:child_process';
@@ -16,8 +18,11 @@ import {fileURLToPath} from 'node:url';
 
 const [suite, artifacts, results] = process.argv.slice(2);
 const suites = JSON.parse(await readFile(new URL('./browser-suites.json', import.meta.url), 'utf8'));
-const tests = Object.hasOwn(suites, suite) ? suites[suite] : null;
-if (!Array.isArray(tests) || tests.length === 0 || artifacts === undefined || results === undefined) {
+const names = typeof suite === 'string' && suite.endsWith('*')
+  ? Object.keys(suites).filter(name => name.startsWith(suite.slice(0, -1)))
+  : (Object.hasOwn(suites, suite) ? [suite] : []);
+const tests = names.flatMap(name => suites[name]);
+if (names.length === 0 || tests.length === 0 || artifacts === undefined || results === undefined) {
   console.error(`Usage: run-browser-suite.mjs <suite> <artifacts> <results>; suites: ${Object.keys(suites).join(', ')}`);
   process.exit(2);
 }

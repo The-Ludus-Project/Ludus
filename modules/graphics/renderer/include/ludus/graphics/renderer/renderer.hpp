@@ -73,6 +73,10 @@ struct GpuPreviewGraphInvocation final
     /// Positive logical invocation count for a compatible buffer-only graph kernel. Requires a 1x1 private
     /// scratch extent in BeginGpuPreview and graph storage bindings. Zero selects the image launch.
     foundation::uint32 WorkItemCount = 0;
+    /// Earlier ordered scene pass's single-sample RGBA8 color texture. The graph must retain it through
+    /// job release and submitted completion. Null selects the renderer's black fallback when the compute
+    /// layout includes a sampled color binding. Buffer-only launches and native ray jobs require null.
+    rhi::TextureHandle ColorInput{};
 };
 namespace internal
 {

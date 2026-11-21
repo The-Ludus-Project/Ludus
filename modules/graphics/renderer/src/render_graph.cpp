@@ -3,6 +3,7 @@
 
 #include "../shaders/renderer_gpu_preview_layout.h"
 #include "internal/gpu_denoiser.h"
+#include "internal/gpu_preview_data.h"
 #include "internal/light_transformer_graph.h"
 #include "internal/ltc_table_data.h"
 #include "internal/render_graph_deferred.h"
@@ -62,7 +63,7 @@ constexpr usize FORWARD_MATERIAL_PROGRAM_COUNT = 3;
 /// renderer-owned tables.
 constexpr usize RAY_COMPUTE_BINDING_CAPACITY = LUDUS_GRAPH_VISIBILITY_BINDING_COUNT + format::MAX_STORAGE_BUFFERS + 1 +
                                                LUDUS_GRAPH_LTC_TABLE_BINDING_COUNT + LUDUS_GRAPH_FAILURE_BINDING_COUNT +
-                                               LUDUS_GRAPH_WORLD_TABLE_BINDING_COUNT;
+                                               LUDUS_GRAPH_WORLD_TABLE_BINDING_COUNT + 1;
 constexpr usize MAX_COMPONENTS = 4;
 /// Largest packed uniform bytes of one technique: every slot at its largest block.
 constexpr usize MAX_TECHNIQUE_UNIFORM_BYTES = format::UNIFORM_SLOT_COUNT * format::MAX_UNIFORM_BLOCK_BYTES;
@@ -419,6 +420,7 @@ Status ValidatePlan(const RenderGraphPlan& plan) noexcept
     bool isVisibilitySequence = false;
     StaticArray<bool, format::MAX_RESOURCES> colorDefined{};
     StaticArray<bool, format::MAX_RESOURCES> depthDefined{};
+    StaticArray<bool, format::MAX_RESOURCES> hasRayColor{};
     StaticArray<bool, format::MAX_CAMERAS> hasCameraRoute{};
     StaticArray<bool, format::TECHNIQUE_COUNT> isUsed{};
     for (usize i = 0; i < plan.Resources.GetSize(); ++i)
@@ -523,7 +525,7 @@ Status ValidatePlan(const RenderGraphPlan& plan) noexcept
             hasEndedRaySequence = rayPassCount != 0;
             continue;
         }
-        if (pass.SourceColor != format::ABSENT)
+        if (pass.SourceColor != format::ABSENT && pass.Program != format::Technique::RayTracing)
         {
             return Status::InvalidDescription;
         }
@@ -590,8 +592,9 @@ Status ValidatePlan(const RenderGraphPlan& plan) noexcept
                     pass.DepthLoad != format::Load::Discard || pass.DepthStore != format::Store::Discard ||
                     (pass.Buffer0 == format::ABSENT && pass.Buffer1 == format::ABSENT) ||
                     pass.Visibility != format::ABSENT || pass.VisibilityDepth != format::ABSENT ||
-                    pass.Traversal == format::RayTraversal::HardwarePipeline || pass.AccumulationSamples != 0 ||
-                    pass.ToneMappingExposure != 0 || pass.DenoisingQuality != 0 || isVisibilitySequence == true)
+                    pass.SourceColor != format::ABSENT || pass.Traversal == format::RayTraversal::HardwarePipeline ||
+                    pass.AccumulationSamples != 0 || pass.ToneMappingExposure != 0 || pass.DenoisingQuality != 0 ||
+                    isVisibilitySequence == true)
                 {
                     return Status::Unsupported;
                 }
@@ -604,6 +607,12 @@ Status ValidatePlan(const RenderGraphPlan& plan) noexcept
                 pass.DepthStore != format::Store::Discard)
             {
                 return Status::Unsupported;
+            }
+            if (pass.SourceColor != format::ABSENT &&
+                (pass.SourceColor >= plan.Resources.GetSize() || pass.SourceColor == pass.Color ||
+                 hasRayColor[pass.SourceColor] == false || pass.Visibility != format::ABSENT))
+            {
+                return Status::InvalidDescription;
             }
             if ((pass.Visibility == format::ABSENT) != (pass.VisibilityDepth == format::ABSENT))
             {
@@ -656,6 +665,7 @@ Status ValidatePlan(const RenderGraphPlan& plan) noexcept
             }
             colorDefined[pass.Color] = true;
             depthDefined[pass.Color] = false;
+            hasRayColor[pass.Color] = true;
             continue;
         }
         hasEndedRaySequence = rayPassCount != 0;
@@ -1633,6 +1643,11 @@ struct RenderGraph::State final
                                                          Passes[i].Traversal == format::RayTraversal::HardwarePipeline};
                     invocation.ToneMappingCurve = GetToneCurve(pass);
                     invocation.WorkItemCount = pass.WorkItemCount;
+                    if (pass.SourceColor != format::ABSENT)
+                    {
+                        invocation.ColorInput = Resizing.Get() != nullptr ? Resizing->Textures[pass.SourceColor]
+                                                                          : Textures[pass.SourceColor];
+                    }
                     const Status created = inoutScene.RayPasses[i].Initialize(
                         context,
                         inoutScene.Snapshots[i],
@@ -2130,7 +2145,9 @@ Status RenderGraph::SetRayTileCount(uint32 tileCount) noexcept
         }
         for (usize pass = 0; pass < state.Header.PassCount; ++pass)
         {
-            if (state.Passes[pass].WorkItemCount != 0)
+            const format::Pass& operation = state.Passes[pass];
+            if (operation.WorkItemCount != 0 ||
+                (operation.Program == format::Technique::RayTracing && operation.SourceColor != format::ABSENT))
             {
                 return Status::Unsupported;
             }
@@ -2197,11 +2214,11 @@ Status RenderGraph::PollRayFailures(uint32 pass, RenderGraphRayFailures& outFail
         {
             return Status::Pending;
         }
-        StaticArray<uint32, MAX_RENDER_GRAPH_FAILURE_REASONS> pixels{};
+        StaticArray<uint32, LUDUS_GRAPH_FAILURE_WORDS> words{};
         const Status copied = status == Status::Ready ? rhi::CopyReadback(state.Device,
                                                                           state.FailureReadback,
-                                                                          reinterpret_cast<uint8*>(pixels.GetData()),
-                                                                          sizeof(pixels))
+                                                                          reinterpret_cast<uint8*>(words.GetData()),
+                                                                          sizeof(words))
                                                       : status;
         state.ReleaseFailureReadback();
         if (copied != Status::Ready)
@@ -2209,11 +2226,12 @@ Status RenderGraph::PollRayFailures(uint32 pass, RenderGraphRayFailures& outFail
             return copied;
         }
         RenderGraphRayFailures result;
-        result.Pixels = pixels;
+        result.LuslBoundsLine = words[LUDUS_GRAPH_FAILURE_BOUNDS_LINE_WORD];
         for (uint32 reason = 0; reason < MAX_RENDER_GRAPH_FAILURE_REASONS; ++reason)
         {
-            result.TotalPixels += pixels[reason];
-            result.MainReason = pixels[reason] > pixels[result.MainReason] ? reason : result.MainReason;
+            result.Pixels[reason] = words[reason];
+            result.TotalPixels += words[reason];
+            result.MainReason = words[reason] > words[result.MainReason] ? reason : result.MainReason;
         }
         outFailures = result;
         return Status::Ready;
@@ -2234,7 +2252,7 @@ Status RenderGraph::PollRayFailures(uint32 pass, RenderGraphRayFailures& outFail
         return found;
     }
     const Status requested =
-        rhi::RequestBufferReadback(state.Device, failures, 0, LUDUS_GRAPH_FAILURE_BYTES, state.FailureReadback);
+        rhi::RequestBufferReadback(state.Device, failures, 0, internal::GRAPH_FAILURE_BYTES, state.FailureReadback);
     if (requested != Status::Pending && requested != Status::Ready)
     {
         return requested;
@@ -2687,9 +2705,14 @@ Status RenderGraph::Initialize(rhi::DeviceHandle device,
         }
     }
     bool hasVisibility = false;
+    bool hasColorInput = false;
+    bool hasNativeRayStages = false;
     for (usize index = 0; index < plan.Passes.GetSize(); ++index)
     {
         const format::Pass& pass = plan.Passes[index];
+        hasColorInput = hasColorInput == true ||
+                        (pass.Program == format::Technique::RayTracing && pass.SourceColor != format::ABSENT);
+        hasNativeRayStages = hasNativeRayStages == true || pass.Traversal == format::RayTraversal::HardwarePipeline;
         // ValidatePlan pairs later sequence passes with the first pass's raster producer.
         if (pass.Visibility != format::ABSENT && plan.Passes[index - 1].Program != format::Technique::RayTracing)
         {
@@ -2705,6 +2728,8 @@ Status RenderGraph::Initialize(rhi::DeviceHandle device,
         }
     }
     if (hasVisibility != programs.HasVisibilityBuffer ||
+        (hasColorInput == true &&
+         (hasVisibility == true || hasNativeRayStages == true || programs.HasPersistentRayBuffers == false)) ||
         (hasVisibility == true && programs.HasSceneShaderInterface == false))
     {
         return Status::InvalidDescription;
@@ -2728,6 +2753,7 @@ Status RenderGraph::Initialize(rhi::DeviceHandle device,
     bool hasFailureBinding = false;
     bool hasLtcBinding = false;
     bool hasAerialBinding = false;
+    bool hasColorInputBinding = false;
     if (peelBinding(LUDUS_GRAPH_ATMOSPHERE_SKY_BINDING,
                     rhi::RasterBindingKind::StorageRead,
                     LUDUS_GPU_PREVIEW_VECTOR_BYTES,
@@ -2740,6 +2766,9 @@ Status RenderGraph::Initialize(rhi::DeviceHandle device,
                     rhi::RasterBindingKind::StorageRead,
                     LUDUS_GPU_PREVIEW_VECTOR_BYTES,
                     hasLtcBinding) == false ||
+        peelBinding(LUDUS_GRAPH_COLOR_INPUT_BINDING, rhi::RasterBindingKind::Texture2D, 0, hasColorInputBinding) ==
+            false ||
+        hasColorInputBinding != hasColorInput ||
         peelBinding(LUDUS_GRAPH_AERIAL_PERSPECTIVE_BINDING,
                     rhi::RasterBindingKind::StorageRead,
                     LUDUS_GPU_PREVIEW_VECTOR_BYTES,
@@ -4116,6 +4145,11 @@ Status RenderGraph::updateScene(BorrowedView<const RenderGraphMesh> meshes,
             hasSceneSource == true ? &sceneSource : nullptr};
         invocation.ToneMappingCurve = GetToneCurve(operation);
         invocation.WorkItemCount = operation.WorkItemCount;
+        if (operation.SourceColor != format::ABSENT)
+        {
+            invocation.ColorInput = state.Resizing.Get() != nullptr ? state.Resizing->Textures[operation.SourceColor]
+                                                                    : state.Textures[operation.SourceColor];
+        }
         const bool isBufferDispatch = operation.WorkItemCount != 0;
         const Status created = candidate->RayPasses[pass].Initialize(
             state.GetContext(operation.Program),

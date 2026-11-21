@@ -542,7 +542,146 @@ Status GameWorld::QueueDestroy(EntityId entity) noexcept
         return Status::CapacityExceeded;
     }
     mCommands[mCommandCount++] = { .Kind = CommandKind::Destroy, .Entity = entity };
-    return mRegistry.MarkPendingDestroy(entity);
+    const Status status = mRegistry.MarkPendingDestroy(entity);
+    if (status == Status::Success)
+    {
+        // Pending destruction immediately removes the entity's activity, including commands its scopes guard.
+        (void)mCommandScopes.CancelOwnedBy(entity);
+    }
+    return status;
+}
+Status GameWorld::PostDamage(EntityId target, DamageCommand command, CancellationToken scope, uint64& outToken) noexcept
+{
+    if (IsBuilt() == false || mPhase != Phase::Idle)
+    {
+        return Status::InvalidPhase;
+    }
+    if (target.World != mRegistry.GetWorld() || mRegistry.IsActive(target) == false)
+    {
+        return Status::InvalidEntity;
+    }
+    if (command.Amount == 0 || command.Amount > MAX_DAMAGE_AMOUNT)
+    {
+        return Status::InvalidConfiguration;
+    }
+    if (scope != CancellationToken{} && mCommandScopes.IsOpen(scope) == false)
+    {
+        return Status::InvalidConfiguration;
+    }
+    // Each admitted command reserves its eventual outcome slot until the outcome is consumed.
+    if (GetRetiringCommandCount() >= MAX_ADDRESSED_COMMANDS)
+    {
+        return Status::CapacityExceeded;
+    }
+    return mDamageMailbox.Admit(target, scope, MessageProducer::Session, mTick, command, outToken);
+}
+Status GameWorld::OpenCommandScope(EntityId owner, CancellationToken& outToken) noexcept
+{
+    if (IsBuilt() == false || mPhase != Phase::Idle)
+    {
+        return Status::InvalidPhase;
+    }
+    if (owner != EntityId{} && mRegistry.IsActive(owner) == false)
+    {
+        return Status::InvalidEntity;
+    }
+    return mCommandScopes.Open(owner, outToken);
+}
+bool GameWorld::CancelCommandScope(CancellationToken token) noexcept
+{
+    return mCommandScopes.Cancel(token);
+}
+Status GameWorld::CloseCommandScope(CancellationToken token) noexcept
+{
+    return mCommandScopes.Close(token);
+}
+Status GameWorld::RetireCommands(foundation::BorrowedView<CommandOutcome> outOutcomes) noexcept
+{
+    if (outOutcomes.GetSize() < GetRetiringCommandCount())
+    {
+        return Status::CapacityExceeded;
+    }
+    usize count = 0;
+    for (usize index = 0; index < mCommandOutcomeCount; ++index)
+    {
+        outOutcomes[count++] = mCommandOutcomes[index];
+    }
+    // A captured batch survives only a faulted tick, whose staged outcomes were never published.
+    for (const DamageMailbox::Message& message : mDamageMailbox.GetCaptured())
+    {
+        outOutcomes[count++] =
+        {
+            .Token = message.Token,
+            .Target = message.Target,
+            .Result = CommandResult::Superseded,
+            .Tick = mTick,
+        };
+    }
+    for (const DamageMailbox::Message& message : mDamageMailbox.GetPending())
+    {
+        outOutcomes[count++] =
+        {
+            .Token = message.Token,
+            .Target = message.Target,
+            .Result = CommandResult::Superseded,
+            .Tick = mTick,
+        };
+    }
+    mCommandOutcomeCount = 0;
+    mStagedCommandOutcomeCount = 0;
+    mDamageMailbox.Clear();
+    return Status::Success;
+}
+Status GameWorld::deliverCommands() noexcept
+{
+    mStagedCommandOutcomeCount = 0;
+    for (const DamageMailbox::Message& message : mDamageMailbox.GetCaptured())
+    {
+        CommandResult result = CommandResult::Applied;
+        if (mCommandScopes.IsCancelled(message.Scope) == true)
+        {
+            result = CommandResult::Cancelled;
+        }
+        else if (mRegistry.IsActive(message.Target) == false)
+        {
+            result = CommandResult::StaleTarget;
+        }
+        else if (mHealth.Find(message.Target) == nullptr)
+        {
+            result = CommandResult::MissingCapability;
+        }
+        else
+        {
+            // Damage queues destruction at zero health; a destroyed target takes no further hits.
+            for (uint32 hit = 0; hit < message.Value.Amount && mRegistry.IsActive(message.Target) == true; ++hit)
+            {
+                const Status status = Damage(message.Target);
+                if (status != Status::Success)
+                {
+                    return status;
+                }
+            }
+        }
+        mStagedCommandOutcomes[mStagedCommandOutcomeCount++] =
+        {
+            .Token = message.Token,
+            .Target = message.Target,
+            .Result = result,
+            .Tick = mTick + 1,
+        };
+    }
+    return Status::Success;
+}
+void GameWorld::publishCommandOutcomes() noexcept
+{
+    // Admission reserved a slot per command, so the staged batch always fits beside unconsumed outcomes.
+    LUDUS_ASSERT(mCommandOutcomeCount + mStagedCommandOutcomeCount <= MAX_ADDRESSED_COMMANDS);
+    for (usize index = 0; index < mStagedCommandOutcomeCount; ++index)
+    {
+        mCommandOutcomes[mCommandOutcomeCount++] = mStagedCommandOutcomes[index];
+    }
+    mStagedCommandOutcomeCount = 0;
+    mDamageMailbox.ReleaseCaptured();
 }
 Status GameWorld::QueueSpawn(Recipe recipe, uint64& request) noexcept
 {
@@ -836,8 +975,8 @@ Status GameWorld::Damage(EntityId entity) noexcept
 Status GameWorld::Gameplay(TickInput input, Name& nextLevel) noexcept
 {
     LUDUS_PROFILE_SCOPE(WorldGameplay);
-    // Damage order is player intent, then stable enemy creation sequence, then
-    // exit triggers. Pending destruction immediately excludes later interactions.
+    // Damage order is player intent, then stable enemy creation sequence, then addressed
+    // commands, then exit triggers. Pending destruction immediately excludes later interactions.
     if (mRegistry.IsActive(mPlayer))
     {
         auto* player = mPlayers.Find(mPlayer);
@@ -901,6 +1040,13 @@ Status GameWorld::Gameplay(TickInput input, Name& nextLevel) noexcept
                 return status;
             }
         }
+    }
+    // Addressed commands captured at BeginTick resolve after combat, so a target or scope owner that combat
+    // destroyed this tick rejects its command instead of being resurrected.
+    const Status commandStatus = deliverCommands();
+    if (commandStatus != Status::Success)
+    {
+        return commandStatus;
     }
     for (const auto& contact : GetContacts())
     {
@@ -1148,6 +1294,15 @@ Status GameWorld::RunTick(TickInput input) noexcept
     {
         motion.Override = false;
     }
+    // Capture the addressed commands admitted before this tick; later admissions wait for the next tick.
+    mStagedCommandOutcomeCount = 0;
+    if (mDamageMailbox.Capture() != Status::Success)
+    {
+        mPhase = Phase::Faulted;
+        trace.LastPhase = Phase::BeginTick;
+        trace.Result = Status::InvalidPhase;
+        return Status::InvalidPhase;
+    }
     const auto completionCount = mCompletionCount;
     mCompletionCount = 0;
     foundation::Sort(mCompletions, completionCount, [](const Completion& first, const Completion& second) {
@@ -1208,6 +1363,7 @@ Status GameWorld::RunTick(TickInput input) noexcept
         return status;
     }
     mNextLevel = nextLevel;
+    publishCommandOutcomes();
     // Optional cosmetics may be dropped, required level outcome lives in state.
     for (usize index = 0; index < mStagedCount; ++index)
     {
@@ -1388,7 +1544,7 @@ bool GameWorld::Extract(float32 alpha,
 uint64 GameWorld::GetReplayHash() const noexcept
 {
     // Hash only a completed boundary; queued work belongs to the next tick.
-    if (mPhase != Phase::Idle || mCommandCount != 0 || mCompletionCount != 0)
+    if (mPhase != Phase::Idle || mCommandCount != 0 || mCompletionCount != 0 || mDamageMailbox.GetOccupancy() != 0)
     {
         return 0;
     }
@@ -1402,6 +1558,8 @@ uint64 GameWorld::GetReplayHash() const noexcept
     mix(mNextRequest);
     mix(mRegistry.GetCapacity());
     mix(mRegistry.GetAvailable());
+    // Open command scopes decide future command outcomes, so they are part of the canonical boundary.
+    mix(mCommandScopes.GetOpenCount());
     RequestLease requests[16] = {};
     usize requestCount = 0;
     for (const auto& request : mRequests)
@@ -1820,15 +1978,29 @@ void Session::recordTombstones() noexcept
         mTombstones[slot] = tombstone;
     }
 }
+bool Session::canActivate() const noexcept
+{
+    return mStage == LoadStage::Ready &&
+           mRetiredOutcomeCount + mActive.GetRetiringCommandCount() <= mRetiredOutcomes.GetSize();
+}
 bool Session::Activate() noexcept
 {
-    if (mStage != LoadStage::Ready)
+    if (canActivate() == false)
     {
         return false;
     }
+    // The replaced world's commands keep exactly one outcome: unconsumed ones move here, unresolved ones supersede.
+    const usize retiring = mActive.GetRetiringCommandCount();
+    if (mActive.RetireCommands({mRetiredOutcomes.GetData() + mRetiredOutcomeCount,
+                                mRetiredOutcomes.GetSize() - mRetiredOutcomeCount}) != Status::Success)
+    {
+        return false;
+    }
+    mRetiredOutcomeCount += retiring;
     recordTombstones();
     mActive = Move(mCandidate);
     mStage = LoadStage::Empty;
+    mHasObservedNextLevel = false;
     Driver.Reset();
     return true;
 }
@@ -1836,6 +2008,158 @@ void Session::CancelLoad() noexcept
 {
     mCandidate = GameWorld{};
     mStage = LoadStage::Cancelled;
+}
+Status Session::ProcessFlowBoundary() noexcept
+{
+    const Status status = mFlow.BeginBoundary();
+    if (status != Status::Success)
+    {
+        return status;
+    }
+    observeFlow();
+    FlowTransition transition;
+    if (mFlow.SelectTransition(transition) == true)
+    {
+        if (preflightTransition(transition) == true)
+        {
+            executeTransition(transition);
+            mFlow.ApplyTransition(transition);
+        }
+        else
+        {
+            mFlow.RejectTransition(transition);
+        }
+    }
+    mFlow.EndBoundary();
+    return Status::Success;
+}
+void Session::observeFlow() noexcept
+{
+    const FlowState state = mFlow.GetState();
+    if (state == FlowState::Preparing)
+    {
+        if (mStage == LoadStage::Ready)
+        {
+            (void)mFlow.Observe({ .Kind = FlowRequestKind::CandidateReady });
+        }
+        else if (mStage != LoadStage::Preparing && mStage != LoadStage::Building)
+        {
+            // Failed, cancelled outside the flow, or consumed by a direct Activate: no candidate remains.
+            (void)mFlow.Observe({ .Kind = FlowRequestKind::CandidateFailed });
+        }
+        return;
+    }
+    if (IsSessionState(state) == false)
+    {
+        return;
+    }
+    if (Driver.GetMode() == Mode::Faulted || mActive.GetPhase() == Phase::Faulted)
+    {
+        (void)mFlow.Observe({ .Kind = FlowRequestKind::Fault });
+        return;
+    }
+    // The world records its level outcome; the session chooses the flow action at this completed boundary.
+    if (state == FlowState::Playing && mHasObservedNextLevel == false && mActive.GetNextLevel().View().empty() == false)
+    {
+        mHasObservedNextLevel = true;
+        (void)mFlow.Observe(
+        {
+            .Kind = FlowRequestKind::Load,
+            .Level = { .Source = LevelSource::Builtin, .Builtin = mActive.GetNextLevel() },
+        });
+    }
+}
+bool Session::preflightLoad(const LevelReference& level) noexcept
+{
+    const std::string_view source =
+        level.Source == LevelSource::Provided ? mProvidedLevel : BuiltinLevel(level.Builtin.View());
+    if (source.empty() == true || mTransition == std::numeric_limits<uint64>::max())
+    {
+        return false;
+    }
+    // ReadLevel leaves the staged definition unchanged on failure, and nothing live has been touched.
+    if (ReadLevel(source, mStagedDefinition).Error != LevelError::None)
+    {
+        return false;
+    }
+    return mFlowScopes.Open({}, mPreflightScope) == Status::Success;
+}
+bool Session::preflightTransition(const FlowTransition& transition) noexcept
+{
+    if (transition.To == FlowState::Preparing)
+    {
+        return preflightLoad(transition.Level);
+    }
+    if (transition.Kind == FlowRequestKind::CandidateReady)
+    {
+        return canActivate();
+    }
+    return true;
+}
+void Session::startStagedLoad() noexcept
+{
+    ++mTransition;
+    mCandidate = GameWorld{};
+    mDefinition = mStagedDefinition;
+    mStage = LoadStage::Preparing;
+    mLoadScope = mPreflightScope;
+    mPreflightScope = {};
+}
+void Session::executeTransition(const FlowTransition& transition) noexcept
+{
+    // Exit leaf to the common ancestor.
+    if (transition.From == FlowState::Preparing)
+    {
+        // Preparing owns its load: any exit other than activation or failure cancels it exactly once.
+        const bool isLoadFinished =
+            transition.Kind == FlowRequestKind::CandidateReady || transition.Kind == FlowRequestKind::CandidateFailed;
+        if (isLoadFinished == false && mFlowScopes.Cancel(mLoadScope) == true)
+        {
+            CancelLoad();
+            ++mCancelledLoads;
+        }
+        (void)mFlowScopes.Close(mLoadScope);
+        mLoadScope = {};
+    }
+    if (IsSessionState(transition.From) == true && IsSessionState(transition.To) == false)
+    {
+        // Session superstate exit: hold the retained world and drop its frame debt.
+        Driver.SetMode(Mode::Paused);
+    }
+    // The transition's own action.
+    if (transition.Kind == FlowRequestKind::CandidateReady)
+    {
+        (void)Activate();
+    }
+    if (transition.To == FlowState::Preparing)
+    {
+        startStagedLoad();
+    }
+    // Enter ancestor to leaf. The Session superstate has no entry action; leaves apply their policy.
+    enterFlowState(transition.To);
+}
+void Session::enterFlowState(FlowState state) noexcept
+{
+    switch (world_demo::GetFlowPolicy(state).Simulation)
+    {
+        case SimulationPolicy::Running:
+            Driver.SetMode(Mode::Playing);
+            break;
+        case SimulationPolicy::Held:
+            Driver.SetMode(Mode::Paused);
+            break;
+        case SimulationPolicy::Stopped:
+            Driver.SetMode(state == FlowState::Faulted ? Mode::Faulted : Mode::Paused);
+            break;
+    }
+}
+Status Session::StepFlow() noexcept
+{
+    if (world_demo::GetFlowPolicy(mFlow.GetState()).CanStep == false)
+    {
+        return Status::InvalidPhase;
+    }
+    return Driver.Step(mActive);
 }
 namespace
 {
@@ -2044,6 +2368,15 @@ RandomCheckpointStatus Session::TryRestoreCheckpoint(std::span<const uint8> sour
             .IsHarvested = harvested == 1u,
         };
     }
+    // The discarded world's commands keep exactly one outcome, as on activation; refuse before changing anything.
+    const usize retiring = mActive.GetRetiringCommandCount();
+    if (mRetiredOutcomeCount + retiring > mRetiredOutcomes.GetSize() ||
+        mActive.RetireCommands({mRetiredOutcomes.GetData() + mRetiredOutcomeCount,
+                                mRetiredOutcomes.GetSize() - mRetiredOutcomeCount}) != Status::Success)
+    {
+        return RandomCheckpointStatus::CapacityExceeded;
+    }
+    mRetiredOutcomeCount += retiring;
     // Commit the reload: the restored state replaces the session's, and no stale world is recorded over it.
     for (usize i = 0; i < contents.EventCount; ++i)
     {
@@ -2054,6 +2387,7 @@ RandomCheckpointStatus Session::TryRestoreCheckpoint(std::span<const uint8> sour
     mActive = GameWorld{};
     mCandidate = GameWorld{};
     mStage = LoadStage::Empty;
+    mHasObservedNextLevel = false;
     Driver.Reset();
     return RandomCheckpointStatus::Success;
 }

@@ -21,12 +21,13 @@ def main():
     parser.add_argument('--capture-profile-package')
     parser.add_argument('--luslc')
     parser.add_argument('--lusl-style', choices=('strict', 'warn', 'off'))
+    parser.add_argument('--bounds-checks', action='store_true')
     args = parser.parse_args()
     try:
         report = render_graph_build.build_package(args.manifest, args.output, root=args.root,
                     helper=args.helper, compiler=args.compiler, validator=args.validator, spirv_cross=args.spirv_cross, worker_socket=args.worker_socket,
                     ray_path_capture=args.ray_path_capture, capture_profile=args.capture_profile,
-                    luslc=args.luslc, lusl_style=args.lusl_style, dxc=args.dxc_path)
+                    luslc=args.luslc, lusl_style=args.lusl_style, dxc=args.dxc_path, bounds_checks=args.bounds_checks)
         render_graph_execution.emit_runtime(report['package'], args.header,
                     configuration=args.configuration, name=args.name)
         if args.runtime_package:
