@@ -1031,6 +1031,38 @@ See the [GPU timing contract](../architecture/profiling-final.md#basic-gpu-timin
 and [graphics-debugging plan](../architecture/graphics-debugging.md#perfetto-recording-in-the-editor)
 for pass timing, clock calibration and later process targets.
 
+### Find the authored operation for a GPU timing sample
+
+Keep the original Editor Perfetto JSON export and the
+`.lurgrt.resources.json` sidecar from the cooked World graph. Each recorded
+World graph frame carries the SHA-256 of the cooked package submitted on that
+frame. Keep the sidecar for each revision you want to inspect after recooking.
+
+From the source checkout, export a report for an inclusive frame range:
+
+```sh
+python3 scripts/python/render_graph_timing_lookup.py --editor-trace trace.json \
+    --plan world.lurgrt.resources.json --first-frame 12 --last-frame 19
+```
+
+Use a row's frame, device session, scope identity and scope pass index to find
+the measurement in the trace. For the reverse lookup, add
+`--operation Main/West/draw` using the qualified operation ID from the saved
+plan. Cooked raster and upscale operations carry scope mappings. Both members
+of a measured merged scope resolve to the same group-wide
+duration when the plan carries the member list. A group-wide duration only
+supports conclusions about the whole group. A frame whose operation was culled
+has no matching scope. A skipped measurement or missing recorded plan shows
+an unavailable state. If a saved sidecar predates scope mappings, recook the
+original build generation and check that the cooked package SHA-256 is the same.
+Supply additional saved revisions with repeated `--plan`.
+
+For the Metal [installed-SDK skylight fixture](render-graph-authoring.md#sky-visibility),
+save the standard output of `skylight timing open` and pass it with
+`--sdk-timing` in place of `--editor-trace`. Use the sidecar for the exact
+cooked package staged in the app. GPU duration and the SDK fixture's CPU
+preparation time appear in distinct fields, both in nanoseconds.
+
 ### Trace a shader edit to its first paint
 
 Start a CPU or Both recording, change a graph shader, and build a preview. For

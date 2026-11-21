@@ -654,6 +654,7 @@ struct RenderGraphPreview::State final
         /// Runtime package and generation identity, for ray path capture of this generation.
         QString PackagePath;
         QByteArray GenerationIdentity;
+        QByteArray RuntimeIdentity;
         RenderGraphPreviewSource Source;
         StaticArray<format::Resource, format::MAX_RESOURCES> Descriptions{};
         /// FindRenderGraphCaptureProblem of every logical resource, for the reference capture window.
@@ -1169,6 +1170,7 @@ RenderGraphPreviewLoad RenderGraphPreview::Load(const QString& runtimePackagePat
     target.Catalogue =
         MakeTargetCatalogue(plan, package->GetGenerationIdentity(), namesDocument, decodedRuntimeIdentity);
     target.PackagePath = Move(selectedPath);
+    target.RuntimeIdentity = decodedRuntimeIdentity;
     const BorrowedView<const uint8> generationIdentity = package->GetGenerationIdentity();
     target.GenerationIdentity = QByteArray(reinterpret_cast<const char*>(generationIdentity.GetDataOrNull()),
                                            static_cast<qsizetype>(generationIdentity.GetSize()));
@@ -2065,7 +2067,7 @@ void RenderGraphPreview::submitFrame(renderer::RenderGraph& inoutGraph, uint64 g
                       .arg(DescribeRasterStatus(rendered)));
         return;
     }
-    Q_EMIT SubmissionRecorded();
+    Q_EMIT SubmissionRecorded(state.Active.RuntimeIdentity);
     state.RenderedGeneration = generation;
     // Progressive samples of one drawable scene keep its view even after newer revisions evict it.
     if (state.HasRenderedView == false || state.RenderedRevision != drawableRevision)
