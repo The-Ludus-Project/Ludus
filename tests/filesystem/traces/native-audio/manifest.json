@@ -1,0 +1,39 @@
+{
+  "schema": 1,
+  "kind": "native-audio-overlap",
+  "loose_reference": true,
+  "files": {
+    "catalog.json": "103e1f32766a3d9e3b07cc54fe0788f0e21b90bb19097b5b5a34ebdfda8c3e33",
+    "impact.json": "6bc2e93134b7981708b5c81cdba305f01c3ed9f24e5796bb5bead40786cfb94c",
+    "impact.wav": "2dd2f21c188c737aa3428deb4d80270ae9ffa834bddd50a97565442127e484e9",
+    "theme.json": "73cf529ea99ea1ec15cdb436f0727a9a64c5eb97c0bfe32d1b5f2f528493078e",
+    "theme.wav": "ff17a24e680b753dd548ebeca1dd1cbc0edffb0bd02c7014096be0396955b20f"
+  },
+  "game_binary_sha256": "a8c90df065965d3b8dd376940abb19357db42a7dd69f57b6d1697e2648d4de8f",
+  "read_log_sha256": "9ab1ec8e8e865b3d632ad0bd77c900f588c618d261096a9d972e2ef3e31f00d8",
+  "traces": {
+    "transition": "a63c35df6921284c431438dd2fcc58e5124062bbf82f520fcac4e4b93f76c2b3"
+  },
+  "captured_requests": 841,
+  "replayed_requests": 50,
+  "replayed_bytes": 138741,
+  "cross_thread_overlap_ns": 5384542,
+  "overlapping_reads": [
+    {
+      "start": 784968924842500,
+      "end": 784968931023583,
+      "thread": 24843067,
+      "entry": "theme.wav",
+      "offset": 94252,
+      "size": 4096
+    },
+    {
+      "start": 784968925392958,
+      "end": 784968930777500,
+      "thread": 24843068,
+      "entry": "catalog.json",
+      "offset": 0,
+      "size": 418
+    }
+  ]
+}

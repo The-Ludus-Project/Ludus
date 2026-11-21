@@ -246,8 +246,8 @@ reader. No native backend, automatic crossover or pack-format change is enabled.
 
 The question is whether service, scheduler queueing, host collection or shared
 opened-pack scratch dominates representative loading shapes under CPU contention.
-The shipped startup, transition and background traces are deterministic **synthetic
-workloads**, not captured game traces. The text format also accepts captured accesses
+The generated startup, transition and background traces are deterministic **synthetic
+workloads**. The native World startup capture below uses a separate corpus. The text format also accepts captured accesses
 mapped to this corpus: `fs-r2 1 COUNT`, then one row per request containing release
 nanoseconds, file index, offset bytes, length bytes, priority and cancel intent
 (0/1). Releases must be ordered; the parser rejects overflow, trailing fields,
@@ -325,6 +325,236 @@ Content/renderer consumer before adopting FS-R3/FS-R4. Before a comparison, decl
 acceptable p99/CPU/residency/frame regressions; no universal budgets or performance
 thresholds are inferred from these fixtures. Linux/SSD/HDD and controlled-cold runs
 need their own evidence; local macOS results cannot establish them.
+
+### Capture and replay a packed World startup
+
+Build the windowed World demo with info logging enabled and the native filesystem
+benchmark. The following commands use the prepared macOS Development preset
+and the [World demo's packed-room route](../examples/world-demo.md#run-the-application).
+
+```bash
+out/host-tools/venv/bin/cmake --preset macos-clang-development \
+  -DLUDUS_BUILD_WORLD_DEMO=ON -DLUDUS_BUILD_FILESYSTEM_BENCHMARK=ON \
+  -DLUDUS_SLANG_COMPILER="$PWD/out/shader-tools/slang/bin/slangc"
+out/host-tools/venv/bin/cmake --build --preset macos-clang-development \
+  --target ludus_world_demo ludus_filesystem_benchmark
+build="$PWD/out/build/macos-clang-development"
+out/host-tools/venv/bin/python scripts/pack apps/world_demo/levels out/world-levels.lupak
+out/host-tools/venv/bin/python tests/filesystem/streaming.py capture-world-startup out/fs-r2-world \
+  --world-demo "$build/apps/world_demo/ludus_world_demo" \
+  --pack out/world-levels.lupak --loose apps/world_demo/levels --entry first-room.world.json
+out/host-tools/venv/bin/python tests/filesystem/streaming.py measure out/fs-r2-world \
+  --benchmark "$build/modules/foundation/filesystem/ludus_filesystem_benchmark" \
+  --output out/fs-r2-world-replay --families startup --layouts lz4.pack \
+  --workers 0 1 4 --contention 0 2 --tracing 4096 --repetitions 5 \
+  --compiler-description 'Clang 23, Development' --storage-description 'record device, filesystem and host load'
+```
+
+The capture launches a native window for each repetition and exits after the
+first successful present. It saves exact commands, timestamps, and the ordered
+logical pack requests. The manifest hashes the game binary, unchanged pack,
+independent loose source and replay trace. The version-2 trace header is
+`fs-r2 2 REQUEST_COUNT FILE_COUNT`, followed by one exact pack entry path per
+line in file-index order, then the same six-field request rows as version 1.
+Replay uses the captured pack and compares every delivered byte with the
+independent loose source loaded before the timed pass. Captured loose-file
+replays use an explicit independent reference directory. Reference files are
+capped at 2 MiB each and count toward process RSS. Release zero represents the game's first logical
+read. Pack header and index reads occur while opening the provider and are
+outside the replay service interval.
+
+The app reports pack open, logical read, initial text validation, World
+activation, renderer readiness and first successful presentation on the CPU
+monotonic clock, measured from entry to `main`. It also records the separate
+session load request (which decodes World text again) and the shared quad's
+upload submission through the first Ready poll. The quad interval includes
+time between polls. Presentation measures return from the application's
+present call. These intervals include CPU scheduling and provide no
+display scanout or isolated GPU execution measurement.
+
+For a separate native read count and range capture on macOS, compile and
+inject the measurement shim into the development executable. Use the same
+pack, resolved to a physical path for the exact descriptor filter. Run this
+instrumented pass separately because the shim adds descriptor inspection and
+logging. The syscall interval includes kernel service and scheduling. It
+cannot by itself distinguish a cache hit, storage wait, or kernel copy.
+
+```bash
+clang -dynamiclib -Wall -Wextra -Werror tests/filesystem/macos_pack_pread_capture.c \
+  -o out/fs-r2-pread.dylib
+FS_R2_PACK_PATH="$(realpath out/world-levels.lupak)" \
+  DYLD_INSERT_LIBRARIES="$PWD/out/fs-r2-pread.dylib" \
+  "$build/apps/world_demo/ludus_world_demo" --startup-report --frames 1 \
+  --level-pack out/world-levels.lupak first-room.world.json \
+  2> out/fs-r2-world-pread.log
+```
+
+### Captured World startup on macOS
+
+Five windowed Metal launches used the default packed first room on macOS 26.6
+and a Clang 23.1.3 Development build. The binary SHA-256 was
+`d0ebaf0f87772dc49e5116fb700bfe5cf5d7a157a7d7f097411869dc662bd66f`.
+The 3,972-byte pack SHA-256 was
+`71b314240a12a40c5bee1f0c0a3166efcc3f46328ba063530246ed6309185815`.
+The loose room SHA-256 was
+`d52744ab883f1b7a3abd11de1cccf252f171173b88686ab3b477de457edd7a23`.
+The pack and reference were hashed before launch. Other builds were active
+on the host. One-minute load averages sampled after launches ranged from
+84 to 94. Treat these timings as a functional capture and stage comparison
+on a busy host.
+
+The entire pack-entry request was captured at logical offset zero. It maps
+to file index zero, with release time normalized to the start of this one
+request. The trace SHA-256 is
+`92a31d0661280daf379465759b3e6d2fc4bdeb8eda7eb1dc23e6c35946424bb6`.
+
+```text
+fs-r2 2 1 1
+first-room.world.json
+0 0 0 3439 0 0
+```
+
+The native hook observed these three complete archive reads, in order. The
+format explains the read roles. Revision checks around the payload read
+performed no additional `pread` calls.
+
+| Archive offset | Requested and returned bytes | Role |
+| ---: | ---: | --- |
+| 0 | 80 | Header |
+| 80 | 234 | Index |
+| 314 | 1,124 | LZ4 payload for the first room |
+
+The payload read fills 1,124 bytes of stored scratch. The LZ4 decoder
+produces 3,439 decoded bytes, CRC inspects the decoded block, and the
+provider copies all 3,439 bytes to the caller. These volumes describe the
+explicit buffers. They do not apportion CPU time or measure copies inside
+the kernel. This route did not supply repeatable evidence of a material
+read-side copy cost, so it did not trigger a mapped-input trial.
+
+Reported stages in milliseconds, with World, renderer and presentation
+measured from entry to `main`.
+
+| Launch | Pack open | Logical read | Initial validation | Session load request | Quad ready interval | World ready | Renderer ready | First present |
+| ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| 1 | 0.956 | 0.044 | 0.218 | 0.736 | 0.139 | 4834.827 | 4834.997 | 4850.131 |
+| 2 | 0.165 | 0.045 | 0.081 | 0.090 | 0.535 | 3839.758 | 3840.369 | 3878.111 |
+| 3 | 0.219 | 0.043 | 1.511 | 0.092 | 0.364 | 2574.757 | 2575.167 | 2599.785 |
+| 4 | 8.666 | 25.949 | 20.171 | 0.076 | 0.878 | 2376.850 | 2377.815 | 2405.582 |
+| 5 | 5.164 | 0.048 | 2.446 | 0.134 | 0.214 | 2182.586 | 2182.847 | 2199.401 |
+
+Most elapsed time fell between initial validation and readiness for the
+world and renderer. This interval covers window/device setup and staged
+initialization, with delays between polls on the busy host. The logical
+read was far shorter, including the launch with the longest read.
+The application used its ordinary synchronous startup path in all five
+launches. Standalone replay timings cannot establish a change in time to
+first present.
+
+The replay ran five repetitions per worker count, synthetic CPU-load
+setting and open mode, with 1 ms collection ticks and explicit warm-up.
+All 60 runs returned the entire 3,439-byte reference. Workers collected
+one trace per run with zero drops and drained all requests and bytes.
+The capture contained no cancellation intent or deadline. The async
+scheduler's existing cancellation and latest-start deadline tests passed
+separately.
+
+Benchmark SHA-256
+`9ba183deb6086d3d49d8cb5c58f1751bcb437fe43b6c44f785678d84465430f9`.
+The one-minute host load was 123 before replay. Shared-open results below
+are medians of five independent passes. Each pass has one read, so its
+p50, p95 and p99 are the same observation. The range exposes the
+variation across passes.
+
+| Busy threads | Workers | Queue (µs) | Provider (µs) | Delivery (µs) | Completion (µs) | Completion min–max (µs) | CPU (ms) | Peak RSS (MiB) |
+| ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| 0 | 0 | 0.00 | 44.50 | 0.00 | 44.50 | 34.62–62.83 | 0.048 | 17.62 |
+| 0 | 1 | 922.00 | 54.00 | 1238.12 | 1465.04 | 1278.00–10925.75 | 0.094 | 22.22 |
+| 0 | 4 | 103.71 | 47.38 | 1997.79 | 4218.21 | 1309.08–8242.33 | 0.097 | 22.23 |
+| 2 | 0 | 0.00 | 58.67 | 0.00 | 58.67 | 41.04–710.88 | 0.072 | 17.66 |
+| 2 | 1 | 243.50 | 57.58 | 1538.54 | 3673.38 | 1595.79–4955.17 | 2.511 | 22.22 |
+| 2 | 4 | 643.54 | 49.75 | 1191.29 | 1729.12 | 1254.46–4427.46 | 2.781 | 22.30 |
+
+Worker delivery adds the host's tick-based collection and OS scheduling
+to this small read. Independent opens also passed full-byte validation.
+With a single request there is no simultaneous access to pack scratch,
+and the test cannot show an advantage from changing the open mode.
+Use a quiet physical host for any latency conclusions. A native game
+route with overlapping reads is still needed to qualify captured
+streaming contention and a player-visible worker comparison.
+
+The same build also passed 54 warm synthetic runs across startup, transition
+and background, with 16 requests per pass, shared and independent opens,
+zero, one and four workers, and two explicit busy threads. Each of the three
+shared-open transition passes per mode reached the expected cancellation
+accounting: both intents cancelled and 1,101,824 delivered bytes validated.
+The worker's cancellation-to-collection p99 varied from 5.00 to 8.63 ms
+with one worker and 2.41 to 56.80 ms with four. Synchronous cancellation
+skips the reads and supplies no comparable wait sample. These stand-alone
+runs confirm result and trace accounting under load.
+
+### Native Audio Content overlap
+
+The [Audio Content demo](../examples/audio-content.md) plays a streamed WAV
+through CoreAudio while the loader handles a second music lookup. One of three
+unchanged `--native` runs on an Apple M5 showed overlapping native reads on
+different threads. All three runs completed, with zero reported stream
+starvations and errors. The overlap was between a 4,096-byte refill of
+`theme.wav` at byte 94,252 and a 418-byte read of `catalog.json` at byte zero.
+The refill entered the call about 0.55 ms before the catalog read. Their
+instrumented call intervals overlapped for 5.38 ms. These intervals bracket
+`pread` and include possible descheduling.
+
+The checked-in trace retains 50 reads of five files and 138,741 returned bytes
+from the first pair of overlapping calls and up to 100 ms on either side. The native run captured 841 reads in total. Releases retain their
+relative timing from the first selected read, and the replay uses the actual
+loose-file layout. This sample is an audio path. It does not exercise pack
+scratch sharing, cancellation, deadlines, or time to first graphics
+presentation.
+
+To reproduce the exact replay, generate the demo's original input bytes and
+use the recorded trace and hashes. The benchmark verifies the loose input and
+independent reference before measuring. A new capture can also be imported
+with `streaming.py import-macos-overlap`. Run the existing macOS shim with
+`FS_R2_CAPTURE_ROOT` set to the absolute flat fixture directory instead of
+`FS_R2_PACK_PATH`, launch `ludus_audio_content_demo --native`, and pass the
+successful launch's stderr plus the executable and source paths to the
+importer. A launch that shows no cross-thread overlap is rejected.
+
+```bash
+python=out/host-tools/venv/bin/python
+corpus=out/fs-r2-native-audio
+benchmark=out/build/macos-clang-development/modules/foundation/filesystem/ludus_filesystem_benchmark
+mkdir -p "$corpus"
+cp tests/filesystem/traces/native-audio/{manifest.json,transition.trace} "$corpus/"
+"$python" examples/audio-content/generate_fixtures.py "$corpus/loose"
+cp -R "$corpus/loose" "$corpus/reference"
+"$python" tests/filesystem/streaming.py measure "$corpus" --benchmark "$benchmark" \
+  --output out/fs-r2-native-audio-replay --families transition --layouts loose \
+  --workers 0 1 4 --contention 0 --open-modes independent --tracing 4096 --repetitions 3 \
+  --compiler-description 'Clang 23.1.3 Development O2' --storage-description 'record host and cache conditions'
+```
+
+The nine functional warm-cache passes validated 138,741 bytes in every
+synchronous, one-worker, and four-worker run. The worker runs collected all
+50 traces per pass, dropped none, and drained all requests and bytes. Peak
+in-flight requests reached the scheduler's 16-slot window in the worker runs.
+No artificial busy threads were requested. Other builds were active on the
+Mac and the one-minute load average was 127.75 before replay. The table records
+these runs for comparison with a quiet-host replay. It does not qualify the
+worker latency or establish a performance gain.
+
+| Workers | Queue p99 (ms) | Provider p99 (ms) | Delivery p99 (ms) | Completion p99 (ms) | CPU (ms) | Peak RSS (MiB) |
+| ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| 0 | 0 | 34.766 | 0 | 34.766 | 0.499 | 18.03 |
+| 1 | 62.822 | 7.627 | 75.434 | 100.862 | 1.215 | 22.53 |
+| 4 | 19.958 | 14.757 | 53.490 | 56.620 | 1.561 | 22.50 |
+
+Values are medians across three repetitions per worker count. The native route
+binary was built from checkout `6716ea67e05a` (Clang 23.1.3). Its SHA-256, the
+captured read log hash, the exact replay trace hash, and all input digests are
+in `tests/filesystem/traces/native-audio/manifest.json`. The replay benchmark
+SHA-256 was
+`cfc909f7b6c294c10b2a64f3d0fb11aacb6f7618ce7addad0e3eea7e6a52c48a`.
 
 ### Local FS-R2 harness validation
 
