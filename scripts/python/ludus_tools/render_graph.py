@@ -824,7 +824,7 @@ def _operation_resource_uses(operation):
         writes = use['access'] == 'ReadWrite'
         yield use['resource'], use['input_version'], use['output_version'] if writes else None, True if writes else None
     for use in operation.get('persistent_buffers', ()):
-        yield use['resource'], use['input_version'], use['output_version'], True
+        yield use['resource'], use['input_version'], use['output_version'], True if use['output_version'] is not None else None
     for field in ('visibility', 'visibility_depth', 'source_color'):
         if field in operation:
             use = operation[field]
@@ -995,17 +995,20 @@ class _Compiler:
                     resource = self.resources[inputs[identity].resource]
                     if 'stride' in resource:
                         continue
-                    _require('shader_struct' not in resource or is_compute, 'Capability', where,
-                             'buffers sized from a shader struct require a scene ComputePipeline',
+                    output = next((row for row in authored_pipeline['outputs'] if row['target'] == input_mapping[identity]), None)
+                    _require(output is not None or 'shader_struct' in resource, 'Capability', where,
+                             'raw persistent Buffer inputs require a paired Load/Store output',
                              port=port['id'], direction='input',
-                             repair='Connect the buffer to a scene ComputePipeline or select Fixed bytes.')
-                    output = next((port for port in authored_pipeline['outputs'] if port['target'] == input_mapping[identity]), None)
-                    _require(output is not None, 'Capability', where, 'each persistent Buffer input requires a paired Load/Store Buffer output')
-                    written = self.write(inputs[identity], {identity + '_load': 'Load', identity + '_store': 'Store'},
-                                         identity, where, ())
-                    buffer_uses.append({'resource': written.resource, 'slot': slot,
-                                        'input_version': inputs[identity].version, 'output_version': written.version})
-                    buffer_outputs[output['id']] = written
+                             repair='Add a paired Writable Resource or choose From shader struct for read-only access.')
+                    source = inputs[identity]
+                    version = None
+                    if output is not None:
+                        written = self.write(source, {identity + '_load': 'Load', identity + '_store': 'Store'},
+                                             identity, where, ())
+                        version = written.version
+                        buffer_outputs[output['id']] = written
+                    buffer_uses.append({'resource': source.resource, 'slot': slot,
+                                        'input_version': source.version, 'output_version': version})
                 _require(len({use['resource'] for use in buffer_uses}) == len(buffer_uses), 'MultipleWriters', where,
                          'one physical buffer cannot occupy both buffer inputs of a pass')
                 attachments = {}

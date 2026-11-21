@@ -1301,6 +1301,49 @@ Wire the Buffer into the
 producer and the producer's updated output into the consumer, with the same
 paired **Load**/**Store** resource as for a fixed-byte Buffer.
 
+### Access an ordered Buffer by port name
+
+Enable `"graph_resources": true` on the compute or ray-generation program in the
+graph's shader manifest. Add a final `<FunctionName>Resources resources`
+parameter to that program's function. **Shader API** shows the signature. The
+editor's shader completion uses the generated members for the connected pass.
+For a port named `edges` and a function named `BuildEdges`:
+
+```slang
+float3 BuildEdges(SceneContext scene, RayLaunch launch, inout RayQueryContext queries,
+                  BuildEdgesResources resources)
+{
+    uint index = launch.WorkItemIndex;
+    if (index < resources.Edges.GetCount() && index < GetSceneInfo(scene).TriangleCount)
+    {
+        TriangleData triangle = GetTriangle(scene, index);
+        Edge edge;
+        edge.BeginWorld = triangle.Position0World;
+        edge.EndWorld = triangle.Position1World;
+        resources.Edges[index] = edge;
+    }
+    return float3(0);
+}
+```
+
+This example writes the first side of each processed triangle. Put `Edge` in
+`edge.slang` with `float3 BeginWorld` and `float3 EndWorld`, then choose that
+file and type in **From shader struct…** and set the element capacity. Configure
+the producer with **Work items** and an `edges` **Writable Resource**. Connect
+its output to an `edges` **Read Input** on the consumer. The graph includes
+`edge.slang` in both shaders. The consumer reads
+`Edge edge = resources.Edges[index];` through a read-only view. Check the index against the populated edge count as well as the
+allocation capacity returned by `GetCount()`.
+
+The member name capitalizes the port's first letter and preserves the remaining
+spelling. Use Slang identifiers for port names. Named views support 32-bit
+float, signed integer and unsigned integer fields, their vectors, nested
+records and fixed arrays. They load and store whole records using the reflected
+storage layout. Fixed-byte Buffer ports use `uint4` elements and a paired
+Writable Resource. A reused function requires matching named fields, types and
+access. The same callback variant also shares one slot and capacity mapping.
+Use ordered scene compute or **Compute** invocation on a Ray Tracing Pipeline.
+
 ### Author scene compute passes
 
 A **ComputePipeline** with a **Scene** input is a *scene compute pass*. It accepts
