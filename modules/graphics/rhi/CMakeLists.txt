@@ -356,6 +356,9 @@ if(LUDUS_BUILD_TESTS AND NOT EMSCRIPTEN AND NOT WIN32 AND LUDUS_SLANG_COMPILER A
     ludus_apply_project_defaults(ludus_rhi_r8_consumer)
     ludus_compile_shader(TARGET ludus_rhi_r8_consumer NAME raster RASTER
         SOURCE "${PROJECT_SOURCE_DIR}/tests/sdk_consumer/shaders/raster.slang" VERTEX vertexMain FRAGMENT fragmentMain)
+    include("${PROJECT_SOURCE_DIR}/tests/sdk_consumer/mip_streaming.cmake")
+    ludus_add_mip_streaming_consumer(ludus_rhi_mip_streaming_consumer)
+    ludus_apply_project_defaults(ludus_rhi_mip_streaming_consumer)
     add_executable(ludus_rhi_r11_consumer "${PROJECT_SOURCE_DIR}/tests/sdk_consumer/r11.cpp")
     target_link_libraries(ludus_rhi_r11_consumer PRIVATE Ludus::GraphicsRhi Ludus::FoundationTime)
     ludus_apply_project_defaults(ludus_rhi_r11_consumer)
