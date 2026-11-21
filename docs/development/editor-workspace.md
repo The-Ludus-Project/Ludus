@@ -311,16 +311,23 @@ Version-1 descriptors retain their original Linux preset contract.
 
 Qt 6.12.0's Cocoa accessibility bridge incorrectly deletes a table's accessibility
 identity when releasing a synthetic row, column or cell that borrows it. This can
-crash a screen reader or UI inspector while reading selected cells. The editor
+crash a screen reader or UI inspector while reading selected cells. Releasing a
+native row also deleted the cell interfaces that an accessibility client had read,
+although the Qt item-view table still cached them. The next row insertion or
+removal, such as an editor selector rebuilding its items with `clear()`, then
+crashed with a null dereference in `QAccessibleTable::modelChange`. The editor
 installs a process-local ownership correction before creating its widgets: real
-elements retain Qt's cleanup, while synthetic elements never delete borrowed
-identities. Other Qt versions are unchanged, and the system Qt installation is
+elements retain Qt's cleanup for interfaces they own, while synthetic elements
+never delete borrowed identities and native cells never delete interfaces that
+their item-view table owns; the table releases those on model changes and
+destruction. Other Qt versions are unchanged, and the system Qt installation is
 not modified. An unexpected native layout fails startup with a diagnostic rather
 than applying the correction blindly. Thanks to The Qt Company for the
 [Cocoa accessibility implementation](https://github.com/qt/qtbase/blob/v6.12.0/src/plugins/platforms/cocoa/qcocoaaccessibilityelement.mm)
 used to identify the ownership error. The macOS `ludus_editor_accessibility_tests`
 exercise native selection, deselection, model resets and widget destruction for
-tables, lists and trees; they require the Cocoa platform plugin.
+tables, lists and trees, and rebuild a combo box after a client reads its items;
+they require the Cocoa platform plugin.
 
 Live Play and native reload support macOS Debug/Development profiles with
 validated Mach-O UUIDs and immutable detached DWARF symbols. Build and Play,
