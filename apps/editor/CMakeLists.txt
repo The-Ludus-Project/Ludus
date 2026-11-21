@@ -1720,7 +1720,10 @@ if(LUDUS_BUILD_TESTS AND NOT EMSCRIPTEN)
             "[reference-compute][emissive-patches]" --durations yes)
         add_test(NAME ludus_editor_reference_oracle_parity COMMAND ludus_editor_tests
             "[reference-compute][oracle-parity]" --durations yes)
+        add_test(NAME ludus_editor_reference_sample_presets COMMAND ludus_editor_tests
+            "[reference-compute][sample-presets]" --durations yes)
         set_tests_properties(ludus_editor_reference_emissive_patches ludus_editor_reference_oracle_parity
+            ludus_editor_reference_sample_presets
             PROPERTIES LABELS "unit;editor;gpu" TIMEOUT "${editor_reference_case_timeout}" SKIP_RETURN_CODE 4
             ENVIRONMENT "${editor_test_environment}" RESOURCE_LOCK ludus_editor)
     endif()

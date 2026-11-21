@@ -3184,10 +3184,19 @@ the [reference capture](#reference-capture-of-the-viewport) instead.
 viewport's current camera. Its **Source** is **RT1 reference** by default, which
 path-traces the camera with the renderer's RT1 progressive reference integrator.
 Use the result as ground truth for the raster image. Set the image's long side
-(the short side follows the viewport's aspect), the samples per pixel, the maximum
-scattering depth and the traversal, then choose **Capture viewport**. The
-**Render graph** source captures the viewport's own graph instead; see
-[Capture the render graph](#capture-the-render-graph).
+(the short side follows the viewport's aspect), the maximum scattering depth and
+the traversal. Then choose a **Sample preset** and select **Capture viewport**.
+
+- **Quick inspection** is the default at 16 samples per pixel. Use it to check
+  broad lighting and material changes with a shorter wait.
+- **Detailed comparison** traces 128 samples per pixel to reduce noise when
+  comparing subtle lighting changes, including small regions lit indirectly.
+- **Custom** keeps the displayed sample count and lets you enter your own. Editing
+  **Samples** also selects **Custom**.
+
+**Samples** shows the target in samples per pixel before capture. A preset changes
+only the next RT1 sample target. The **Render graph** source has its own sample
+control. See [Capture the render graph](#capture-the-render-graph).
 
 The settings, the capture buttons, progress and status sit in one column at the
 window's leading edge; the Reference, Render graph and Difference images take the
@@ -3201,8 +3210,10 @@ navigation or edits do not change it; capture again to include them. The window
 shows the image as it fills in, the minimum samples reached per pixel, the number
 of analytic lights and the elapsed time. **Stop** discards the capture. **Save…**
 writes the linear `LUHDR01` capture and, beside it, a PNG with the same base name.
-A capture saved before it finishes is marked partial and keeps exact per-pixel
-sample counts. Convert the HDR file with
+To keep an in-progress result, choose **Save…** while the capture is still
+running, before choosing **Stop**. The HDR records the requested target and marks
+the file partial with the exact per-pixel sample counts in the saved image.
+Convert the HDR file with
 [`scripts/reference-hdr`](../architecture/renderer-systems.md#reference-workflow-and-frozen-profile).
 The PNG and the window show the reference the way the viewport displays its
 output when the capture starts. When a ToneMap draws that output, they use its
