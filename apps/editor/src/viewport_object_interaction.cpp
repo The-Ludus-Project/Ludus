@@ -54,6 +54,8 @@ constexpr float32 PROJECTION_EPSILON = 0.000001F;
 constexpr float64 HANDLE_PIXELS = 80;
 constexpr float64 HANDLE_HIT_PIXELS = 9;
 constexpr float64 MINIMUM_AXIS_PIXELS = 8;
+/// A subpixel ring segment cannot reliably distinguish the direction of a drag.
+constexpr float64 MINIMUM_ROTATE_SEGMENT_PIXELS = 1;
 /// Arrowhead length and half width of a move handle, in logical pixels.
 constexpr float64 ARROW_LENGTH_PIXELS = 15;
 constexpr float64 ARROW_HALF_WIDTH_PIXELS = 6;
@@ -1561,6 +1563,12 @@ bool ViewportObjectInteraction::Press(QPointF positionPixel, const QRectF& outer
     const HandleTarget target = pickHandle(positionPixel);
     if (target.IsValid() == true)
     {
+        if (mTool == Tool::Rotate && target.Kind == HandleKind::Axis &&
+            QPointF::dotProduct(mAxisPixel, mAxisPixel) < MINIMUM_ROTATE_SEGMENT_PIXELS * MINIMUM_ROTATE_SEGMENT_PIXELS)
+        {
+            // Keep the selection when a picked arc collapses at the tip of an edge-on ring.
+            return true;
+        }
         mDragTarget = target;
         mHoverTarget = {};
         mCandidate = mPlacement;

@@ -503,8 +503,8 @@ TEST_CASE("RG2 bound uniforms render per-draw material values without shader per
 TEST_CASE("Equivalent LUSL and Slang raster callbacks render the same pixels", "[render-graph][gpu]")
 {
     // rg2_bound_lusl is rg2_bound with its vertex, color and depth callbacks ported to LUSL; they
-    // read the schemas and the material binding through the generated graph_schemas.luslh
-    // (docs/architecture/shading-language.md#delivery-plan, L3 acceptance).
+    // read the schemas and material binding through graph_schemas.luslh. The manifest selects
+    // the color callback's LUDUS_USE_MATERIAL_TINT branch to match the original Slang shader.
     StaticArray<uint8, PIXEL_BYTES> slang{};
     StaticArray<uint8, PIXEL_BYTES> lusl{};
     StaticArray<uint8, PIXEL_BYTES> variant{};

@@ -131,6 +131,19 @@ class CrashCaptureTests(unittest.TestCase):
         Receiver.events.get(timeout=15)
         self.wait_for(lambda: self.counts()["uploaded"] == 1)
 
+    def test_fatal_assertion_uses_the_same_consent_gate(self):
+        child = self.launch(False, action="assert")
+        _stdout, errors = child.communicate(timeout=15)
+        self.assertEqual(child.returncode, -signal.SIGABRT)
+        self.assertIn(b"triggering fatal assertion fixture", errors)
+        self.wait_for(lambda: self.counts()["pending"] == 1)
+        self.assertTrue(Receiver.events.empty())
+
+        self.launch(True, crash=False)
+        _path, body = Receiver.events.get(timeout=15)
+        self.assertIn(b"upload_file_minidump", body)
+        self.wait_for(lambda: self.counts()["uploaded"] == 1)
+
     def test_missing_handler_fails_without_crashing_fixture(self):
         child = self.launch(False, handler=self.root / "missing-handler")
         _output, errors = child.communicate(timeout=15)
@@ -179,8 +192,8 @@ class CrashCaptureTests(unittest.TestCase):
         self.assertEqual(result.returncode, 0, result.stderr.decode(errors="replace"))
 
     def test_production_startup_needs_no_launcher_environment(self):
-        # Exercise the same before-QApplication initializer as main.cpp. HOME is
-        # private so neither reports nor preferences touch the developer's account.
+        # Exercise the same before-QApplication initializer as main.cpp with
+        # explicit INI preferences. HOME isolates the report database.
         environment = {key: value for key, value in os.environ.items()
                        if not key.startswith(("SENTRY_", "LUDUS_DIAGNOSTIC_"))}
         environment.update(HOME=str(self.root), CFFIXED_USER_HOME=str(self.root))
@@ -189,7 +202,9 @@ class CrashCaptureTests(unittest.TestCase):
         for count, platform in enumerate(("offscreen", "ludus-missing-platform"), 1):
             with self.subTest(platform=platform):
                 environment["QT_QPA_PLATFORM"] = platform
-                child = subprocess.run([str(PROBE), "production"], env=environment, capture_output=True, timeout=20)
+                settings = self.root / f"{platform}.ini"
+                child = subprocess.run([str(PROBE), "production", str(settings)], env=environment,
+                                       capture_output=True, timeout=20)
                 self.assertNotIn(b"ERROR: AddressSanitizer", child.stderr)
                 self.assertNotIn(b"runtime error:", child.stderr)
                 self.assertEqual(child.returncode, -signal.SIGABRT, child.stderr.decode())

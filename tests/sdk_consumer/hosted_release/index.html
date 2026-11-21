@@ -1,0 +1,56 @@
+<!doctype html>
+<html lang="en">
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Color Rally</title>
+<style>
+    body { background: #20242b; color: #fff; font: 1rem system-ui, sans-serif; margin: 1rem; }
+    canvas { background: #121418; display: block; width: 100%; height: min(48vh, 16rem); }
+    :focus-visible { outline: 3px solid #ffdc70; outline-offset: 3px; }
+    button { margin: 0.5rem 0.5rem 0.5rem 0; }
+</style>
+<h1>Color Rally</h1>
+<details>
+    <summary>Controls and access</summary>
+    <p>Use Tab to reach Start and press Enter. Start focuses the game canvas.
+       After the score appears, press Space to score and change the canvas color.
+       If focus moves away, Tab back to the canvas or click it.
+       The score is also shown in text.</p>
+    <p>Fullscreen is optional. Tab to Fullscreen and press Enter. Press Escape to leave it.
+       This build requires a physical keyboard and a desktop browser with WebGPU.
+       Touch controls are unavailable.</p>
+</details>
+<button id="start" type="button">Start</button>
+<button id="fullscreen" type="button">Fullscreen</button>
+<p id="fullscreen-status" role="status"></p>
+<p id="status" role="status">Ready to start</p>
+<canvas id="canvas" tabindex="0" aria-label="Color Rally game canvas" aria-describedby="status"></canvas>
+<script type="module">
+    const canvas = document.getElementById('canvas');
+    const status = document.getElementById('status');
+    const start = document.getElementById('start');
+    start.addEventListener('click', () => {
+        canvas.focus();
+        if (start.dataset.started) return;
+        start.dataset.started = 'true';
+        status.textContent = 'Loading WebGPU…';
+        const runtime = document.createElement('script');
+        runtime.src = 'index.js';
+        runtime.addEventListener('error', () => {
+            delete start.dataset.started;
+            status.textContent = 'The game could not load. Select Start to retry.';
+        });
+        document.head.append(runtime);
+    });
+    document.getElementById('fullscreen').addEventListener('click', async () => {
+        const fullscreenStatus = document.getElementById('fullscreen-status');
+        try {
+            await canvas.requestFullscreen();
+            fullscreenStatus.textContent = '';
+            canvas.focus();
+        } catch {
+            fullscreenStatus.textContent = 'Fullscreen is unavailable in this embed. Return to the canvas to play in the page.';
+        }
+    });
+</script>
+</html>

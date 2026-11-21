@@ -280,27 +280,6 @@ void Shutdown() noexcept
     GetWebDispatch().App = {};
     GetWebDispatch().Window = {};
 }
-bool Initialize(const ApplicationInfo&) noexcept
-{
-    return false;
-}
-bool ConnectWindow(const WindowInfo&) noexcept
-{
-    return false;
-}
-bool InitializeRendering() noexcept
-{
-    return false;
-}
-void ShutdownRendering() noexcept {}
-bool BeginFrame() noexcept
-{
-    return false;
-}
-bool EndFrame() noexcept
-{
-    return false;
-}
 FrameStatus SetTarget(const FrameTarget& target) noexcept
 {
     return MakeWebGlCurrent() == true ? webgl::SetTarget(target) : webgpu::SetTarget(target);

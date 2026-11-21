@@ -246,78 +246,89 @@ RenderPanel::~RenderPanel()
     delete Job_;
     Job_ = nullptr;
 }
-// The launch address precedes the failure reason, matching the Play viewport interface.
-// NOLINTNEXTLINE(bugprone-easily-swappable-parameters)
-bool RenderPanel::BeginPlay(QString& outAddress, QString& outReason)
+PlayViewportStartResult RenderPanel::BeginPlay()
+{
+    return BeginPlayOn(*Viewport_, Preview_);
+}
+
+PlayViewportStartResult RenderPanel::BeginPlayOn(PreviewViewport& inoutViewport, RenderPreview& inoutPreview)
 {
 #if defined(LUDUS_EDITOR_NATIVE_PREVIEW)
     mPlayUnavailableReason.clear();
     if (mIsPlaying == true)
     {
-        outReason = QStringLiteral("A game is already playing in this viewport.");
-        return false;
+        return { .Reason = QStringLiteral("A game is already playing in this viewport.") };
     }
     // Game images are imported onto Qt's own device; the readback canvas cannot show them.
     if (PreviewViewport::GetPresentation() != ViewportPresentation::SharedDevice)
     {
-        outReason = QStringLiteral("Play in the viewport needs the on-screen GPU viewport; this editor shows the "
-                                   "World through an offscreen copy.");
-        return false;
+        return
+        {
+            .Reason = QStringLiteral("Play in the viewport needs the on-screen GPU viewport; this editor shows the "
+                                     "World through an offscreen copy."),
+        };
     }
     // Linux: Qt's Vulkan device imports the game's memory only with VK_KHR_external_memory_fd,
     // and a viewport that fell back to the readback canvas has no Qt device to import onto.
-    if (Viewport_->CanImportHostedImages() == false)
+    if (inoutViewport.CanImportHostedImages() == false)
     {
-        outReason = QStringLiteral("Play in the viewport needs a GPU viewport whose device can import the game's "
-                                   "images (Vulkan VK_KHR_external_memory_fd); this one cannot.");
-        return false;
+        return
+        {
+            .Reason = QStringLiteral("Play in the viewport needs a GPU viewport whose device can import the game's "
+                                     "images (Vulkan VK_KHR_external_memory_fd); this one cannot."),
+        };
     }
     // The game's frames are imported onto the edit preview's device, the one Qt samples with.
     graphics::rhi::NativeDeviceLease lease;
-    if (Preview_.PinDevice(lease) != graphics::rhi::RasterStatus::Ready)
+    if (inoutPreview.PinDevice(lease) != graphics::rhi::RasterStatus::Ready)
     {
-        outReason = QStringLiteral("Play in the viewport needs the World viewport's GPU device, which has not "
-                                   "started yet.");
-        return false;
+        return
+        {
+            .Reason = QStringLiteral("Play in the viewport needs the World viewport's GPU device, which has not "
+                                     "started yet."),
+        };
     }
     graphics::rhi::NativeDeviceInfo device;
     const graphics::rhi::RasterStatus described = graphics::rhi::GetNativeDeviceInfo(lease, device);
     static_cast<void>(graphics::rhi::ReleaseNativeDevice(lease));
     if (described != graphics::rhi::RasterStatus::Ready)
     {
-        outReason = QStringLiteral("Play in the viewport needs the World viewport's GPU device, which is shutting "
-                                   "down.");
-        return false;
+        return
+        {
+            .Reason = QStringLiteral("Play in the viewport needs the World viewport's GPU device, which is shutting "
+                                     "down."),
+        };
     }
     if (mPlayOrNull == nullptr)
     {
         mPlayOrNull = new PlayViewportSource(this);
         connect(mPlayOrNull, &PlayViewportSource::StateChanged, this, &RenderPanel::updatePlay);
     }
-    const foundation::float64 ratio = Viewport_->devicePixelRatioF();
-    const foundation::uint32 width =
-        static_cast<foundation::uint32>(qMax(1, qRound(static_cast<foundation::float64>(Viewport_->width()) * ratio)));
-    const foundation::uint32 height =
-        static_cast<foundation::uint32>(qMax(1, qRound(static_cast<foundation::float64>(Viewport_->height()) * ratio)));
+    const foundation::float64 ratio = inoutViewport.devicePixelRatioF();
+    const foundation::uint32 width = static_cast<foundation::uint32>(
+        qMax(1, qRound(static_cast<foundation::float64>(inoutViewport.width()) * ratio)));
+    const foundation::uint32 height = static_cast<foundation::uint32>(
+        qMax(1, qRound(static_cast<foundation::float64>(inoutViewport.height()) * ratio)));
     // sockaddr_un paths are at most 103 bytes; keep the session's private directory parent short.
     const QString socketParent = QStringLiteral("/tmp");
     if (mPlayOrNull->Start(socketParent, device.Identity, width, height, static_cast<foundation::float32>(ratio)) ==
         false)
     {
-        outReason = mPlayOrNull->GetUnavailableReason();
-        return false;
+        return { .Reason = mPlayOrNull->GetUnavailableReason() };
     }
+    mPlayViewportOrNull = &inoutViewport;
+    mPlayPreviewOrNull = &inoutPreview;
     mIsPlaying = true;
-    outAddress = mPlayOrNull->GetChannelAddress();
+    PlayViewportStartResult result{ .Address = mPlayOrNull->GetChannelAddress() };
     setStatus(QStringLiteral("Starting the game in this viewport. The World stays as edited until its first "
                              "frame arrives."),
               StatusKind::Notice);
     Q_EMIT PlayStateChanged();
-    return true;
+    return result;
 #else
-    static_cast<void>(outAddress);
-    outReason = QStringLiteral("Play in the viewport needs the native GPU preview.");
-    return false;
+    static_cast<void>(inoutViewport);
+    static_cast<void>(inoutPreview);
+    return { .Reason = QStringLiteral("Play in the viewport needs the native GPU preview.") };
 #endif
 }
 void RenderPanel::EndPlay() noexcept
@@ -329,10 +340,12 @@ void RenderPanel::EndPlay() noexcept
     }
     // Cleared first: stopping the source reports a state change of its own.
     mIsPlaying = false;
-    Viewport_->SetPlayInput(nullptr);
+    mPlayViewportOrNull->SetPlayInput(nullptr);
     // Edit frames return; every game frame read ends through the play source.
-    Viewport_->SetFrameSource(nullptr);
-    Preview_.SetPresentationVisible(true);
+    mPlayViewportOrNull->SetFrameSource(nullptr);
+    mPlayPreviewOrNull->SetPresentationVisible(true);
+    mPlayViewportOrNull = nullptr;
+    mPlayPreviewOrNull = nullptr;
     mPlayOrNull->Stop();
     Q_EMIT PlayStateChanged();
 #endif
@@ -342,7 +355,7 @@ void RenderPanel::RequestPlayClose() noexcept
 #if defined(LUDUS_EDITOR_NATIVE_PREVIEW)
     if (mIsPlaying == true)
     {
-        Viewport_->SuspendPlayInput();
+        mPlayViewportOrNull->SuspendPlayInput();
         static_cast<void>(mPlayOrNull->GetEndpoint().SendClose());
     }
 #endif
@@ -392,13 +405,13 @@ void RenderPanel::updatePlay()
         return;
     }
     const PlaySourceState state = mPlayOrNull->GetState();
-    if (state == PlaySourceState::Playing && &Viewport_->GetFrameSource() != mPlayOrNull)
+    if (state == PlaySourceState::Playing && &mPlayViewportOrNull->GetFrameSource() != mPlayOrNull)
     {
         // The game's first frame is pending: switching now replaces the edit image with it.
-        Viewport_->SetFrameSource(mPlayOrNull);
-        Viewport_->SetPlayInput(&mPlayOrNull->GetEndpoint());
+        mPlayViewportOrNull->SetFrameSource(mPlayOrNull);
+        mPlayViewportOrNull->SetPlayInput(&mPlayOrNull->GetEndpoint());
         // The edit preview keeps its device but stops drawing frames nobody sees.
-        Preview_.SetPresentationVisible(false);
+        mPlayPreviewOrNull->SetPresentationVisible(false);
         const bool shouldCapturePointer = mPlayOrNull->GetEndpoint().ShouldForwardRelativePointer();
         setStatus(shouldCapturePointer == true
                       ? QStringLiteral("Click the Play viewport to capture the mouse. Shift+F1 releases it and "

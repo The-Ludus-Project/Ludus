@@ -29,6 +29,8 @@ Closest-hit can inspect materials, sample lights, issue visibility queries and
 write a continuation into the user's payload. The user chooses the estimator,
 BSDF, MIS weights, throughput, termination and bounce count. Standard BSDF and
 light-sampling routines are optional primitives, not mandatory shading policy.
+Templates can expose a project-owned draw and matching probability evaluator
+through the proposed [renderer sampling contract](renderer-sampling.md#project-authored-proposals).
 
 The initial target is `camera -> x0 -> light` plus
 `camera -> x0 -> x1 -> light`: direct illumination and one intermediate surface
@@ -346,6 +348,13 @@ move its ray directions a sizeable fraction of a pixel off the raster projection
 (issue #1761), which a visibility-buffer reconstruction reports as a missed
 triangle. The renderer packs one eye-relative matrix for the graph kernels, the
 GPU preview and RT1 alike; RT1's CPU oracle builds the same ray.
+
+Use `TryMakeCameraRayFromWorldPosition(launch, positionWorld, ray)` to reconstruct
+a camera ray through a known position in world metres. It uses the same near and
+far clip distances as `MakeCameraRay`, with an eye origin for perspective cameras
+and a near-plane origin for orthographic cameras. Positions outside the image
+are valid. The helper returns false and clears the output if the projection is
+undefined or the position is at or behind a perspective camera.
 
 RayQueryContext is a separate invocation-local mutable context initialized once
 by the generated wrapper. It carries query counters and the failure latch;

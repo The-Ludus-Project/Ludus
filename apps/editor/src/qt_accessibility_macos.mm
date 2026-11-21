@@ -35,10 +35,38 @@ constexpr foundation::uint32 REMOVE_METHOD_ARGUMENT_COUNT = 3;
 // https://github.com/qt/qtbase/blob/v6.12.0/src/plugins/platforms/cocoa/qcocoaaccessibilityelement.mm
 // Synthetic rows/columns/cells borrow the table's axid. Deleting that identity
 // when a selected cell replaces a placeholder destroys the table and the other
-// selected interfaces. Keep Qt's real-element cleanup, but never delete borrowed IDs.
+// selected interfaces. A real cell element, created when a client reads an item,
+// replaces its placeholder in the row; releasing that row deleted the cell interface
+// although QAccessibleTable (itemviews.cpp) still caches its ID and dereferences
+// it on the next row insertion or removal. Keep Qt's cleanup for interfaces the
+// element owns, but never delete borrowed IDs or cells owned by a table.
+bool IsOwnedByTable(id element) noexcept
+{
+    QAccessible::Id identity = 0;
+    std::memcpy(&identity,
+                reinterpret_cast<const foundation::uint8*>(element) + ivar_getOffset(ownershipHooks.IdentityOrNull),
+                sizeof(identity));
+    if (identity == 0)
+    {
+        return false;
+    }
+    QAccessibleInterface* interfaceOrNull = QAccessible::accessibleInterface(identity);
+    if (interfaceOrNull == nullptr || interfaceOrNull->object() != nullptr)
+    {
+        return false;
+    }
+    QAccessibleInterface* parentOrNull = interfaceOrNull->parent();
+    return parentOrNull != nullptr && parentOrNull->tableInterface() != nullptr;
+}
+
+bool IsBorrowedIdentity(id element) noexcept
+{
+    return object_getIvar(element, ownershipHooks.SynthesizedRoleOrNull) != nil || IsOwnedByTable(element) == true;
+}
+
 void ReleaseAccessibleElement(id element, SEL selector) noexcept
 {
-    if (object_getIvar(element, ownershipHooks.SynthesizedRoleOrNull) != nil)
+    if (IsBorrowedIdentity(element) == true)
     {
         const QAccessible::Id identity = 0;
         std::memcpy(reinterpret_cast<foundation::uint8*>(element) + ivar_getOffset(ownershipHooks.IdentityOrNull),
@@ -53,7 +81,7 @@ void RemoveOwnedAccessibleElements(id elementClass, SEL selector, NSArray* eleme
     NSMutableArray* owners = [NSMutableArray arrayWithCapacity:elements.count];
     for (id element in elements)
     {
-        if (object_getIvar(element, ownershipHooks.SynthesizedRoleOrNull) == nil)
+        if (IsBorrowedIdentity(element) == false)
         {
             [owners addObject:element];
         }

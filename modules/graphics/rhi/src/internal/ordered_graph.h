@@ -2469,10 +2469,7 @@ RasterStatus ExecuteGraphCommands(DeviceHandle device,
         if (begun != DeviceStatus::Ready)
         {
             backend::RasterDiscardSubmission();
-            return begun == DeviceStatus::Skipped         ? RasterStatus::NotReady
-                   : begun == DeviceStatus::InvalidHandle ? RasterStatus::InvalidHandle
-                   : begun == DeviceStatus::DeviceLost    ? RasterStatus::DeviceLost
-                                                          : RasterStatus::Failed;
+            return ToRasterStatus(begun);
         }
     }
     if (Admission(device, false) != RasterStatus::Ready)

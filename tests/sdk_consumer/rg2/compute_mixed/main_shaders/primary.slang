@@ -3,7 +3,7 @@
 // Scene compute kernel (ComputePipeline): one TraceClosest, no hit or miss callbacks.
 float3 TracePrimary(SceneContext scene, RayLaunch launch, inout RayQueryContext queries)
 {
-    float2 jitterPixel = float2(SampleSceneRandom(launch, 0), SampleSceneRandom(launch, 1));
+    float2 jitterPixel = float2(SampleUniformFloat01(launch, 0), SampleUniformFloat01(launch, 1));
     // Recorded only so the shade pass can measure cross-pass stream correlation.
     float automaticDraw = SampleSceneRandom(queries);
     SurfaceHit hit;

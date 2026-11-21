@@ -131,7 +131,11 @@ recovery checkpoint corroborates. It then measures from core acceptance to
 the first ready browser frame carrying the published extraction identity.
 A screenshot checks the marker itself. Screenshot sampling adds browser and
 capture overhead and is reported separately. The test checks that an older
-accepted extraction does not draw after the latest one. Draw calls and upload
+accepted extraction does not draw after the latest one. It types that latest
+edit while it holds the earlier edit's recovery checkpoint write open, so the
+editor is suspended in a folder call and Qt queues the click and keys.
+`typedDuringFolderWrite` records the unsent Qt events and the focused element;
+the edit must still apply exactly. Draw calls and upload
 bytes cover the instrumented browser graphics calls. Snapshot bytes, hardware
 memory traffic and CPU picking time need independent instrumentation. The
 accessibility-tree snapshot records browser-exposed roles for manual follow-up.
@@ -143,3 +147,11 @@ after reopening. Refusal and resize screenshots preserve the visible state and
 any repeated warnings. Set `LUDUS_QA_BROWSER` to the named Chromium-family
 executable under test and record the host, device and run conditions. A forced
 backend or simulation only establishes that particular execution path.
+
+A failed step records `failureState` in its sample: the latest published and
+drawn extraction identities, the viewport canvases and `qtEvents`, read from
+Qt 6.10's private suspend/resume control. If its
+`isWaiting` stays false while `unsent` browser events remain, Qt's event loop
+has stopped, rather than the renderer. The run fails on any page error, including the Qt
+`TypeError` that once stopped that loop (see
+[Ludus changes to Qt](../browser-editor.md#ludus-changes-to-qt)).

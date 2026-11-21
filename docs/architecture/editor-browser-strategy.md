@@ -128,6 +128,28 @@ thread); and reading a file in an editor-level event loop before each use
 Limits and coupling: a nested Wasm call made while another call is suspended
 cannot wait for disk and fails with `EIO` (Qt queues its own events during the
 suspension, so this needs a JavaScript callback that calls Wasm directly).
+Qt sends those queued events as one batch when the call resumes. Qt 6.10.3
+sent a batch by its starting length, so a nested event loop that emptied the
+queue first ended Qt's event loop and froze the editor. The editor's Qt build
+backports the upstream reentrant sender (see
+[Ludus changes to Qt](../development/browser-editor.md#ludus-changes-to-qt)).
+Qt cancels the browser default of input only when it handles the queued
+event, after the browser has already applied that default. A queued key
+reached Qt after Qt's hidden input element had moved its caret or taken the
+text. A queued click in a Qt window moved focus from that element to the
+document body, because nothing else in a Qt window is focusable, so keys typed
+before Qt handled the click never reached Qt at all. While a host-folder call
+is suspended, `browser/suspended_input.js` therefore cancels, in the capture
+phase, the browser default of trusted `keydown`/`keyup` events and of trusted
+`pointerdown`/`mousedown` events inside a Qt window. The events still reach
+Qt's queue in their place among other input; Qt types text from `keydown`
+itself and moves focus when it handles the click. Holding keys back and
+dispatching them later would let a queued click overtake them. IME composition
+keys, the copy, cut and paste shortcuts and clicks outside Qt's windows keep
+their default.
+`apps/editor/tests/browser_suspended_input_tests.cjs` covers the cancellation,
+and the [World edit qualification](../development/tools/web-browser-tests.md#full-authoring-world-edit-qualification)
+types an edit while a folder write holds the editor suspended.
 Renames across mounts fail with `EXDEV`, which Qt turns into copies. Symbolic
 links cannot be created in a folder mount. The overrides reproduce Emscripten
 4.0.23's `__syscall_openat` and `__syscall_renameat` over the public FS API and

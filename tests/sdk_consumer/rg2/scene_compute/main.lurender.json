@@ -301,7 +301,11 @@
         {
           "id": "hits",
           "kind": "Buffer",
-          "bytes": 112032
+          "shader_struct": {
+            "source": "main_shaders/work_item_record.slang",
+            "type": "WorkItemRecord",
+            "count": 7002
+          }
         },
         {
           "id": "trace",
