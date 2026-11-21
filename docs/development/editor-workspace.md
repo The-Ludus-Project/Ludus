@@ -1287,8 +1287,10 @@ There are no separate Scene or 3D Levels authoring tabs.
    an exact value. The slider edits the same draft as typing, so
    **Apply Changes** and **Reset Fields** treat both alike. Position, rotation,
    scale and colour channels keep their compact rows: drag an axis letter to
-   change one of those. The default World's Transform also reads as one
-   Position, Rotation and Scale row each rather than nine separate rows.
+   change one of those. Hold Shift for fine steps or Control (Command on macOS)
+   for coarse steps. You can switch sensitivity during the drag and the current
+   value stays put until you move the pointer. The default World's Transform
+   reads as one Position, Rotation and Scale row each.
 4. Use **Apply Changes** to validate all fields as one edit. Invalid text stays
    visible and the applied document stays intact. **Reset Fields** restores the
    last applied values. Selection and structural commands wait for Apply/Reset.
