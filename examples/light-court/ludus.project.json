@@ -1,0 +1,12 @@
+{
+  "version": 1,
+  "name": "Light Court",
+  "provider": "cmake",
+  "source_dir": ".",
+  "preset": "linux-clang-development",
+  "target": "light_court",
+  "run": {
+    "cwd": ".",
+    "args": []
+  }
+}

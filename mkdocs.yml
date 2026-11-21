@@ -117,6 +117,7 @@ nav:
       - Browser editor build: development/browser-editor.md
   - Samples:
       - Your first rendered scene: examples/cornell-box.md
+      - Edit the lighting in Light Court: examples/light-court.md
       - Cook and capture staircase2: examples/reference-scene.md
   - Learn:
       - How Ludus fits together: wiki/learn/architecture.md

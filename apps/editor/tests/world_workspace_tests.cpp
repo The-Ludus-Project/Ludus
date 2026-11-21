@@ -5508,6 +5508,46 @@ ludus::foundation::float32 GetPresentedX(const WorldWorkspace& workspace, const 
 }
 } // namespace
 
+TEST_CASE("Undo republishes the saved Light Court Sun after its live inspector preview", "[editor][world][light-court]")
+{
+    QTemporaryDir directory;
+    REQUIRE(directory.isValid() == true);
+    const QDir root(QFileInfo(directory.path()).canonicalFilePath());
+    const QString worldPath = root.filePath(QStringLiteral("light-court.world.json"));
+    REQUIRE(
+        QFile::copy(QStringLiteral(LUDUS_EDITOR_PROJECT_ROOT "/examples/light-court/authoring/light-court.world.json"),
+                    worldPath) == true);
+    WorldWorkspace workspace;
+    if (PreviewViewport::CanPresent() == true)
+    {
+        workspace.show();
+    }
+    workspace.SetProject(root.path(), 1);
+    REQUIRE(workspace.Open(worldPath) == true);
+    WaitForValidatedScene(workspace);
+    LevelWorkspace& scene = GetLevel(workspace);
+    const QByteArray originalIdentity = scene.GetPresentedScene().Identity;
+    REQUIRE(originalIdentity.isEmpty() == false);
+
+    REQUIRE(workspace.SelectEntity(QStringLiteral("light.sun")) == true);
+    QLineEdit* const rotationOrNull = workspace.findChild<QLineEdit*>(QStringLiteral("worldField:transform/ry"));
+    REQUIRE(rotationOrNull != nullptr);
+    rotationOrNull->selectAll();
+    QTest::keyClicks(rotationOrNull, QStringLiteral("75"));
+    REQUIRE(QTest::qWaitFor(
+                [&scene, &originalIdentity]() { return scene.GetPresentedScene().Identity != originalIdentity; },
+                MAX_SCENE_WAIT_MILLISECONDS) == true);
+    WaitForValidatedScene(workspace);
+
+    REQUIRE(workspace.Apply() == true);
+    WaitForValidatedScene(workspace);
+    REQUIRE(workspace.CanUndo() == true);
+    workspace.Undo();
+    WaitForValidatedScene(workspace);
+    CHECK(workspace.Dirty() == false);
+    CHECK(scene.GetPresentedScene().Identity == originalIdentity);
+}
+
 TEST_CASE("An open World publishes newly imported diffuse conductor Mix geometry", "[editor][world][mix]")
 {
     namespace format = ludus::content::scene_format;

@@ -1,42 +1,17 @@
 {
   "version": 1,
-  "schema": "ludus.world.starter.v1",
+  "schema": "ludus.world.default.v1",
   "entities": [
-    {
-      "id": "preview.camera",
-      "name": "Courtyard Camera",
-      "components": {
-        "transform": {
-          "x": -2.2,
-          "y": 4.0,
-          "z": 11.5,
-          "rx": -12.4,
-          "ry": -11.3,
-          "rz": 0,
-          "sx": 1,
-          "sy": 1,
-          "sz": 1
-        },
-        "camera": {
-          "projection": "perspective",
-          "fov": 35,
-          "span": 8,
-          "near": 0.1,
-          "far": 120,
-          "follow": ""
-        }
-      }
-    },
     {
       "id": "light.sun",
       "name": "Sun",
       "components": {
         "transform": {
-          "x": -3.5,
-          "y": 5,
-          "z": 3.5,
+          "x": 4.5,
+          "y": 5.5,
+          "z": -3,
           "rx": -34,
-          "ry": -47,
+          "ry": 128,
           "rz": 0,
           "sx": 1,
           "sy": 1,
@@ -46,9 +21,37 @@
           "kind": "directional",
           "enabled": true,
           "r": 1,
-          "g": 0.86,
-          "b": 0.69,
-          "intensity": 8,
+          "g": 0.94,
+          "b": 0.84,
+          "intensity": 5.6,
+          "range": 10,
+          "innerAngle": 25,
+          "outerAngle": 30
+        }
+      }
+    },
+    {
+      "id": "light.fill",
+      "name": "Cool Fill",
+      "components": {
+        "transform": {
+          "x": -3,
+          "y": 6,
+          "z": 5,
+          "rx": -48,
+          "ry": -50,
+          "rz": 0,
+          "sx": 1,
+          "sy": 1,
+          "sz": 1
+        },
+        "light": {
+          "kind": "directional",
+          "enabled": true,
+          "r": 0.88,
+          "g": 0.96,
+          "b": 1,
+          "intensity": 2.5,
           "range": 10,
           "innerAngle": 25,
           "outerAngle": 30
@@ -74,9 +77,9 @@
           "mesh": "mesh.cube",
           "texture": "",
           "visible": true,
-          "r": 0.105,
-          "g": 0.117,
-          "b": 0.128
+          "r": 0.055,
+          "g": 0.067,
+          "b": 0.078
         }
       }
     },
@@ -99,9 +102,9 @@
           "mesh": "mesh.cube",
           "texture": "",
           "visible": true,
-          "r": 0.68,
-          "g": 0.54,
-          "b": 0.38
+          "r": 0.56,
+          "g": 0.5,
+          "b": 0.42
         }
       }
     },
@@ -124,9 +127,9 @@
           "mesh": "mesh.cube",
           "texture": "",
           "visible": true,
-          "r": 0.68,
-          "g": 0.54,
-          "b": 0.38
+          "r": 0.56,
+          "g": 0.5,
+          "b": 0.42
         }
       }
     },
@@ -149,9 +152,9 @@
           "mesh": "mesh.cube",
           "texture": "",
           "visible": true,
-          "r": 0.68,
-          "g": 0.54,
-          "b": 0.38
+          "r": 0.56,
+          "g": 0.5,
+          "b": 0.42
         }
       }
     },
@@ -174,9 +177,9 @@
           "mesh": "mesh.cube",
           "texture": "",
           "visible": true,
-          "r": 0.68,
-          "g": 0.54,
-          "b": 0.38
+          "r": 0.56,
+          "g": 0.5,
+          "b": 0.42
         }
       }
     },
@@ -224,9 +227,9 @@
           "mesh": "mesh.cube",
           "texture": "",
           "visible": true,
-          "r": 0.56,
-          "g": 0.22,
-          "b": 0.09
+          "r": 0.42,
+          "g": 0.175,
+          "b": 0.077
         }
       }
     },
@@ -255,5 +258,30 @@
         }
       }
     }
-  ]
+  ],
+  "scene": {
+    "version": 1,
+    "id": "83bd75c9-8925-4ba4-ba35-fbdd28ab4440",
+    "name": "Light Court",
+    "profile": "resident-reference-v1",
+    "camera": {
+      "eye": [
+        -2.9,
+        4.05,
+        12.7
+      ],
+      "target": [
+        0.1,
+        1.45,
+        0
+      ],
+      "up": [
+        0,
+        1,
+        0
+      ],
+      "fov": 0.6283185307
+    },
+    "imports": []
+  }
 }

@@ -1228,7 +1228,7 @@ void LevelWorkspace::Edit()
 }
 PlacementPublication LevelWorkspace::PublishPlacement(const QJsonObject& level, const WorldDocument& world)
 {
-    if (Busy_ == true || WorldOwned_ == false || mPresentedScene.Definition == nullptr)
+    if (Busy_ == true || WorldOwned_ == false)
     {
         return PlacementPublication::RequiresAssembly;
     }
@@ -1240,6 +1240,10 @@ PlacementPublication LevelWorkspace::PublishPlacement(const QJsonObject& level, 
     if (level == mPresentedLevel)
     {
         return PlacementPublication::Unchanged;
+    }
+    if (mPresentedScene.Definition == nullptr)
+    {
+        return PlacementPublication::RequiresAssembly;
     }
     if (mPlacementValidation != PlacementValidation::Ready && level == mValidatedLevel &&
         unplacedWorld == mValidatedWorld)

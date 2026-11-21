@@ -46,6 +46,9 @@ within reach. The engine sample ships the inputs needed to reproduce the image.
 
 ### Light Court showcase sample
 
+[Edit the lighting in Light Court](../examples/light-court.md) opens the
+standalone desktop sample and includes the rendered view.
+
 ![Light Court concept with an L-shaped concrete wall, a blue-green enamel panel, a copper plate and a graphite sphere. Raking sunlight crosses the wall and platform.](../development/images/light-court-concept.jpg)
 
 *Light Court visual target, generated with OpenAI ImageGen. This illustration
