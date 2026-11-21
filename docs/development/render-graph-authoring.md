@@ -4706,7 +4706,7 @@ wrappers include it automatically. Authors do not read private packed buffers.
 | GetEmitterBounds | Precomputed emitter bounding sphere, geometric-normal cone and emission sidedness, for one weight per emitter without a triangle loop |
 | IsSurfaceCovered | Fixed-mip sampled-endpoint alpha coverage, using the same inclusive cutoff as closest-hit traversal, with no ray query; keep uncovered area samples as zero events |
 | GetSurfaceHit | Surface endpoint from triangle/barycentrics, without tracing; IncomingRay and DistanceWorld are zero |
-| SampleLight | Select a catalog source and sample its incident light at `shadingHit`, the surface hit being shaded. Returns the selection PMF and conditional probability separately. |
+| SampleLight | Select a catalog source and sample its incident light at a world-space position or a `SurfaceHit`. Returns the selection PMF and conditional probability separately. |
 | EvaluateLightAlongRay | Return the radiance and matching continuous light proposal for a traced mesh hit or environment miss, using the same selection policy as SampleLight. |
 | SelectLight / EvaluateLightSelectionPmf | Default uniform source selection and its discrete probability. SelectLight(scene, queries) uses the invocation stream. |
 | SelectLightByMeshPower / EvaluateMeshPowerLightSelectionPmf | Addressed catalog selection and its matching PMF. Mesh lights split their uniform category share by power, with uniform fallback. |
@@ -5259,14 +5259,22 @@ if (light.Incident.HasSample == false)
 float probability = light.Selection.SelectionPmf * light.Incident.ConditionalProbability;
 ```
 
+If you have a world-space point in metres, pass `positionWorld` in place of
+`shadingHit`. Both overloads are available in Slang and through
+`scene_shader.luslh`. Given the same position and random addresses, they return
+the same proposal. For a point sampled on an edge, construct the shadow ray
+with the origin and self-intersection rule for your edge model. The
+`SurfaceHit` form of `TestVisibility` uses the hit's triangle to offset the ray.
+
 Reserve `SCENE_INCIDENT_LIGHT_DIMENSION_COUNT` slots for the default incident
 proposal. Mesh lights read all three slots and the environment reads the last
 two. Directional, point and spot lights read none. The addressed sampler never
 advances the invocation stream. If a needed address is exhausted, it latches the
 invocation failure. A source index outside the catalog returns no sample.
 
-Use the probability product after checking `incident.HasSample` and use
-`TestVisibility` with the incident result to trace its connection. The incident
+Use the probability product after checking `light.Incident.HasSample`. At a
+surface hit, pass `shadingHit` and `light.Incident` to `TestVisibility` to trace
+the connection. The incident
 probability is a density per steradian for `IncidentLightMeasure::SolidAngle` and
 a mass for `IncidentLightMeasure::Discrete`. Analytic delta samples have
 conditional mass one and zero competing solid-angle density. For MIS after a

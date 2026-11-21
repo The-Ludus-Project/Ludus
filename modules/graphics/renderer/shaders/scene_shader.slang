@@ -229,8 +229,8 @@ enum LightSelectionPolicy : uint
 /// A selected source and its conditional incident sample. Keep the two probabilities separate for MIS.
 struct SceneLightSample
 {
-    SelectedLight Selection;
-    IncidentLightSample Incident;
+    SelectedLight Selection;      ///< Catalog source and its selection probability.
+    IncidentLightSample Incident; ///< Conditional proposal and its probability given the selected source.
 };
 /// Emitted radiance and the matching continuous light proposal for a traced ray.
 struct RayLightEvaluation
@@ -923,7 +923,7 @@ static const uint INCIDENT_LIGHT_SECOND_DIMENSION_OFFSET = 1;
 static const uint INCIDENT_LIGHT_LAST_DIMENSION_OFFSET = SCENE_INCIDENT_LIGHT_DIMENSION_COUNT - 1;
 
 static IncidentLightSample
-SampleIncidentLightAtCoordinates(SceneContext scene, LightInfo light, SurfaceHit receiver, float3 shapeSample)
+SampleIncidentLightAtCoordinates(SceneContext scene, LightInfo light, float3 positionWorld, float3 shapeSample)
 {
     IncidentLightSample result = (IncidentLightSample)0;
     result.TriangleIndex = SCENE_INVALID_INDEX;
@@ -947,7 +947,7 @@ SampleIncidentLightAtCoordinates(SceneContext scene, LightInfo light, SurfaceHit
         result.Barycentric = float2(root * (1 - shapeSample.z), root * shapeSample.z);
         result.TriangleIndex = triangle;
         result.PositionWorld = PositionWorld(triangle, result.Barycentric);
-        float3 offsetWorld = result.PositionWorld - receiver.PositionWorld;
+        float3 offsetWorld = result.PositionWorld - positionWorld;
         result.DistanceWorld = length(offsetWorld);
         if (result.DistanceWorld <= 0)
             return result;
@@ -981,7 +981,7 @@ SampleIncidentLightAtCoordinates(SceneContext scene, LightInfo light, SurfaceHit
         if (light.Kind != SceneLightKind::Directional)
         {
             result.PositionWorld = light.PositionWorld;
-            float3 offsetWorld = light.PositionWorld - receiver.PositionWorld;
+            float3 offsetWorld = light.PositionWorld - positionWorld;
             float distanceSquared = dot(offsetWorld, offsetWorld);
             if (distanceSquared <= 0)
                 return result;
@@ -1010,8 +1010,10 @@ LightSample SampleIncidentLight(SceneContext scene, SelectedLight selected, Surf
     if (selected.HasSample == false || selected.LightIndex >= GetLightCount(scene) || any(shapeSample < 0) ||
         any(shapeSample >= 1) || any(isfinite(shapeSample) == false))
         return result;
-    IncidentLightSample incident =
-        SampleIncidentLightAtCoordinates(scene, GetLightInfo(scene, selected.LightIndex), receiver, shapeSample);
+    IncidentLightSample incident = SampleIncidentLightAtCoordinates(scene,
+                                                                    GetLightInfo(scene, selected.LightIndex),
+                                                                    receiver.PositionWorld,
+                                                                    shapeSample);
     result.LightIndex = selected.LightIndex;
     result.TriangleIndex = incident.TriangleIndex;
     result.Barycentric = incident.Barycentric;
@@ -1359,15 +1361,12 @@ float SampleSceneRandom(RayLaunch launch, uint dimension)
     uint pixel = launch.PositionPixel.y * launch.ExtentPixel.x + launch.PositionPixel.x;
     return SampleRandomFloat01(launch.Seed, PixelRandomAddress(pixel, launch.SampleIndex, dimension));
 }
-/// Sample one catalog source using the kind's addressed incident proposal, without advancing the automatic stream.
-/// Mesh reads three dimensions starting at the address, environment reads only the last two, and analytic sources
-/// read no dimensions. An out-of-range source returns no sample. Exhausting a needed address fails the invocation.
-IncidentLightSample SampleIncidentLight(SceneContext scene,
-                                        uint lightIndex,
-                                        SurfaceHit receiver,
-                                        uint2 seed,
-                                        RandomAddress firstAddress,
-                                        inout RayQueryContext inoutQueries)
+static IncidentLightSample SampleIncidentLightAtAddress(SceneContext scene,
+                                                        uint lightIndex,
+                                                        float3 positionWorld,
+                                                        uint2 seed,
+                                                        RandomAddress firstAddress,
+                                                        inout RayQueryContext inoutQueries)
 {
     IncidentLightSample empty = (IncidentLightSample)0;
     empty.TriangleIndex = SCENE_INVALID_INDEX;
@@ -1392,7 +1391,19 @@ IncidentLightSample SampleIncidentLight(SceneContext scene,
         address.Dimension = firstAddress.Dimension + INCIDENT_LIGHT_LAST_DIMENSION_OFFSET;
         shapeSample.z = SampleRandomFloat01(seed, address);
     }
-    return SampleIncidentLightAtCoordinates(scene, light, receiver, shapeSample);
+    return SampleIncidentLightAtCoordinates(scene, light, positionWorld, shapeSample);
+}
+/// Sample one catalog source using the kind's addressed incident proposal, without advancing the automatic stream.
+/// Mesh reads three dimensions starting at the address, environment reads only the last two, and analytic sources
+/// read no dimensions. An out-of-range source returns no sample. Exhausting a needed address fails the invocation.
+IncidentLightSample SampleIncidentLight(SceneContext scene,
+                                        uint lightIndex,
+                                        SurfaceHit receiver,
+                                        uint2 seed,
+                                        RandomAddress firstAddress,
+                                        inout RayQueryContext inoutQueries)
+{
+    return SampleIncidentLightAtAddress(scene, lightIndex, receiver.PositionWorld, seed, firstAddress, inoutQueries);
 }
 /// Sample one source using the launch's pixel/sample address and the first reserved incident dimension.
 IncidentLightSample SampleIncidentLight(SceneContext scene,
@@ -1410,11 +1421,14 @@ IncidentLightSample SampleIncidentLight(SceneContext scene,
                                PixelRandomAddress(pixel, launch.SampleIndex, firstDimension),
                                inoutQueries);
 }
-/// Select and sample one scene light for the surface hit being shaded.
-/// Selection and incident addresses are independent.
-/// Uses the chosen kind's default incident proposal and does not trace visibility.
+/// Select and sample one scene light at a finite position in world metres. No scene hit is required.
+/// Use independent addresses for source selection and the conditional incident proposal. Reserve
+/// SCENE_INCIDENT_LIGHT_DIMENSION_COUNT dimensions starting at incidentDimension.
+/// Returns selection and incident probabilities separately. Check Incident.HasSample before use.
+/// An exhausted incident address latches failure when the selected proposal needs it.
+/// Leaves the invocation random stream and ray query budgets untouched.
 SceneLightSample SampleLight(SceneContext scene,
-                             SurfaceHit shadingHit,
+                             float3 positionWorld,
                              RayLaunch launch,
                              uint selectionDimension,
                              uint incidentDimension,
@@ -1424,6 +1438,7 @@ SceneLightSample SampleLight(SceneContext scene,
     SceneLightSample result = (SceneLightSample)0;
     if (inoutQueries.HasFailed == true)
         return result;
+    const uint pixel = launch.PositionPixel.y * launch.ExtentPixel.x + launch.PositionPixel.x;
     if (policy == LightSelectionPolicy::MeshPower)
         result.Selection = SelectLightByMeshPower(scene, launch, selectionDimension);
     else if (policy == LightSelectionPolicy::NonMesh)
@@ -1432,7 +1447,6 @@ SceneLightSample SampleLight(SceneContext scene,
         const uint count = GetLightCount(scene) - meshCount;
         if (count == 0)
             return result;
-        const uint pixel = launch.PositionPixel.y * launch.ExtentPixel.x + launch.PositionPixel.x;
         uint ordinal;
         if (TrySampleRandomBounded(launch.Seed,
                                    PixelRandomAddress(pixel, launch.SampleIndex, selectionDimension),
@@ -1446,13 +1460,31 @@ SceneLightSample SampleLight(SceneContext scene,
     else
         result.Selection = SelectLight(scene, launch, selectionDimension);
     if (result.Selection.HasSample == true)
-        result.Incident = SampleIncidentLight(scene,
-                                              result.Selection.LightIndex,
-                                              shadingHit,
-                                              launch,
-                                              incidentDimension,
-                                              inoutQueries);
+        result.Incident = SampleIncidentLightAtAddress(scene,
+                                                       result.Selection.LightIndex,
+                                                       positionWorld,
+                                                       launch.Seed,
+                                                       PixelRandomAddress(pixel, launch.SampleIndex, incidentDimension),
+                                                       inoutQueries);
     return result;
+}
+/// Select and sample one scene light at shadingHit.PositionWorld, with the same addressed sampling
+/// and query-state contract as the world-position overload.
+SceneLightSample SampleLight(SceneContext scene,
+                             SurfaceHit shadingHit,
+                             RayLaunch launch,
+                             uint selectionDimension,
+                             uint incidentDimension,
+                             LightSelectionPolicy policy,
+                             inout RayQueryContext inoutQueries)
+{
+    return SampleLight(scene,
+                       shadingHit.PositionWorld,
+                       launch,
+                       selectionDimension,
+                       incidentDimension,
+                       policy,
+                       inoutQueries);
 }
 /// Draw a pseudorandom float in [0,1), advancing the renderer-owned invocation stream.
 /// Available in ray generation, closest-hit and miss with no ScenePayload fields.
