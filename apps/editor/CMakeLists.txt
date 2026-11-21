@@ -765,20 +765,24 @@ target_link_libraries(ludus_editor_render_graph_authoring
         "$<COMPILE_ONLY:Ludus::GraphicsRenderer>" "$<COMPILE_ONLY:Ludus::GameplayCamera>"
         "$<COMPILE_ONLY:Ludus::Resources>" "$<COMPILE_ONLY:ludus_first_person_walking>")
 
-# The content browser, its catalog and imports. The job scheduler (content_jobs.cpp)
-# differs between the native editor and the browser scheduler test.
+# The content browser, its catalog and imports.
 ludus_editor_add_objects(ludus_editor_content
     src/internal/content_browser.h src/content_catalog_model.cpp src/content_import.cpp src/content_workspace.cpp
     src/internal/content_types.h src/content_types.cpp src/content_filter.cpp src/content_asset_catalog.cpp
     src/internal/content_thumbnails.h src/content_thumbnails.cpp
+    src/internal/cooked_content_watch.h src/cooked_content_watch.cpp
     src/internal/state_view.h src/state_view.cpp
     src/editor_files.cpp src/internal/scene_archive.h src/scene_archive.cpp
     src/internal/browser_folder.h src/browser_folder.cpp
     $<$<BOOL:${EMSCRIPTEN}>:src/browser_host_folder.cpp>)
 # Thumbnails decode cooked SceneFormat texture records; the scene catalog limits come from SceneCook's header only.
 target_link_libraries(ludus_editor_content PUBLIC ludus_editor_presentation Qt6::Core Qt6::Widgets
-    Ludus::AudioContent Ludus::FoundationMath Ludus::SceneFormat ludus_stb_image
+    Ludus::AudioContent Ludus::FoundationFilesystem Ludus::FoundationMath Ludus::SceneFormat ludus_stb_image
     PRIVATE "$<COMPILE_ONLY:Ludus::SceneCook>")
+# Share the production scheduler with its native recovery test. The cooperative
+# scheduler test compiles the same source in its own variant.
+ludus_editor_add_objects(ludus_editor_content_jobs src/content_jobs.cpp)
+target_link_libraries(ludus_editor_content_jobs PRIVATE "$<COMPILE_ONLY:ludus_editor_content>")
 
 ludus_editor_add_objects(ludus_editor_project_explorer
     src/internal/project_explorer.h src/project_explorer.cpp
@@ -896,7 +900,6 @@ ludus_editor_add_objects(ludus_editor_application
     src/internal/audio_preview.h
     src/internal/startup_sound.h
     src/startup_sound.cpp
-    src/content_jobs.cpp
     src/internal/script_workspace.h
     src/script_workspace.cpp
     src/internal/renderer_workspace.h
@@ -1089,7 +1092,7 @@ qt_add_resources(ludus_editor_application_resources ludus_project_templates
 # Every object library the editor application and its main test executable link.
 set(editor_application_objects
     ludus_editor_application ludus_editor_render_graph_model ludus_editor_render_graph_canvas
-    ludus_editor_render_graph_authoring ludus_editor_presentation ludus_editor_content
+    ludus_editor_render_graph_authoring ludus_editor_presentation ludus_editor_content ludus_editor_content_jobs
     ludus_editor_project_explorer ludus_editor_document_well ludus_editor_geometry_model)
 if(TARGET ludus_editor_texture_display AND LUDUS_EDITOR_RENDER_PREVIEW)
     list(APPEND editor_application_objects ludus_editor_texture_display)
@@ -1294,6 +1297,19 @@ if(LUDUS_BUILD_TESTS AND NOT EMSCRIPTEN)
     add_test(NAME ludus_editor_browser_content_tests COMMAND ludus_editor_browser_content_tests)
     set_tests_properties(ludus_editor_browser_content_tests PROPERTIES
         LABELS "unit;editor;browser" TIMEOUT "${content_editor_timeout}" ENVIRONMENT "${editor_test_environment}")
+    if(APPLE OR CMAKE_SYSTEM_NAME STREQUAL "Linux")
+        add_executable(ludus_editor_cooked_content_recovery_tests tests/cooked_content_recovery_tests.cpp)
+        set_target_properties(ludus_editor_cooked_content_recovery_tests PROPERTIES AUTOMOC ON)
+        target_include_directories(ludus_editor_cooked_content_recovery_tests PRIVATE src)
+        target_compile_definitions(ludus_editor_cooked_content_recovery_tests PRIVATE QT_NO_KEYWORDS QT_NO_CAST_FROM_ASCII)
+        target_link_libraries(ludus_editor_cooked_content_recovery_tests PRIVATE ludus_editor_content
+            ludus_editor_content_jobs ludus_editor_presentation ludus_editor_icon_resources ludus_editor_test_main Qt6::Test)
+        ludus_apply_project_defaults(ludus_editor_cooked_content_recovery_tests)
+        ludus_enable_test_exceptions(ludus_editor_cooked_content_recovery_tests)
+        add_test(NAME ludus_editor_cooked_content_recovery_tests COMMAND ludus_editor_cooked_content_recovery_tests)
+        set_tests_properties(ludus_editor_cooked_content_recovery_tests PROPERTIES
+            LABELS "unit;editor;native" TIMEOUT 20 ENVIRONMENT "${editor_test_environment}")
+    endif()
     add_executable(ludus_project_explorer_tests tests/project_explorer_tests.cpp)
     set_target_properties(ludus_project_explorer_tests PROPERTIES AUTOMOC ON)
     target_include_directories(ludus_project_explorer_tests PRIVATE src)

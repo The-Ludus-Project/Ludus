@@ -48,6 +48,7 @@ constexpr int ROW_PROGRESS_HEIGHT = 3;
 constexpr int PROGRESS_STEPS = 1000;
 /// Quiet period after a catalog folder changes before the list refreshes, so one import's several writes refresh once.
 constexpr int WATCH_DELAY_MILLISECONDS = 250;
+constexpr int COOKED_WATCH_INTERVAL_MILLISECONDS = 100;
 
 [[nodiscard]] QString GetStageText(ContentImportStage stage)
 {
@@ -108,7 +109,8 @@ public:
 };
 } // namespace
 
-ContentWorkspace::ContentWorkspace(QWidget* parent) : QWidget(parent)
+ContentWorkspace::ContentWorkspace(QWidget* parentOrNull, const foundation::filesystem::WatchConfig& cookedWatchConfig)
+    : QWidget(parentOrNull), mCookedWatchTimer(this), mCookedWatch(cookedWatchConfig)
 {
     setObjectName(QStringLiteral("contentWorkspace"));
     auto* layout = new QVBoxLayout(this);
@@ -315,8 +317,10 @@ ContentWorkspace::ContentWorkspace(QWidget* parent) : QWidget(parent)
         Refresh();
     });
 #if !defined(Q_OS_WASM)
-    // A scene import from the World or an outside cook replaces assets/catalog.json; refresh so the list and its
-    // thumbnails follow the new artifact keys without a manual Refresh.
+    // Audio keeps its directory watcher. Cooked assets have explicit registrations and overflow recovery.
+    mCookedWatchTimer.setObjectName(QStringLiteral("cookedContentWatch"));
+    mCookedWatchTimer.setInterval(COOKED_WATCH_INTERVAL_MILLISECONDS);
+    connect(&mCookedWatchTimer, &QTimer::timeout, this, &ContentWorkspace::pollCookedContent);
     mWatcherOrNull = new QFileSystemWatcher(this);
     connect(mWatcherOrNull, &QFileSystemWatcher::directoryChanged, this, [this]() { mWatchDelay.start(); });
 #endif
@@ -354,6 +358,14 @@ void ContentWorkspace::SetProject(const QString& root, foundation::uint64 epoch,
     mProblemOrNull->hide();
     Applying_ = false;
     watchCatalogs();
+#if !defined(Q_OS_WASM)
+    mCookedWatchTimer.stop();
+    if (mCookedWatch.Reset(mAssetRoot) == true)
+    {
+        mCookedWatchClock.start();
+        mCookedWatchTimer.start();
+    }
+#endif
     RefreshPending_ = Busy() && Root_.isEmpty() == false;
     if (Root_.isEmpty() == false && Busy() == false)
     {
@@ -378,18 +390,14 @@ ContentRequest ContentWorkspace::Request() const
 }
 void ContentWorkspace::Refresh()
 {
-    if (Root_.isEmpty() || Busy() || Closing_ || NextOperation_ == ~foundation::uint64{0})
+    if (Root_.isEmpty() == true || Busy() == true || Closing_ == true || mCookedWatch.NeedsRescan() == true ||
+        NextOperation_ == ~foundation::uint64{0})
     {
         return;
     }
     auto request = Request();
     request.Operation = ++NextOperation_;
     ActiveOperation_ = request.Operation;
-    // A refresh retries a catalog problem; an import failure stays until it is retried or dismissed.
-    if (mProblemImportId.isEmpty() == true)
-    {
-        hideProblem();
-    }
     Status_->setText(QStringLiteral("Reading content catalog…"));
     if (Jobs_->Start(request) == false)
     {
@@ -576,6 +584,21 @@ void ContentWorkspace::Accept(const ContentResult& result)
     HasCatalog_ = result.HasAudioCatalog;
     mCatalogRows = result.Rows;
     applyRows();
+    QStringList texturePaths;
+    for (const ContentRow& row : mCatalogRows)
+    {
+        if (row.Type == ContentType::Texture)
+        {
+            texturePaths.append(row.Path);
+        }
+    }
+    const QString failedPath = mCookedWatch.SetTexturePaths(texturePaths);
+    if (failedPath.isEmpty() == false)
+    {
+        reportCookedWatchFailure(
+            QStringLiteral("Could not watch %1. Keep its cooked artifact accessible or use Refresh to validate it.")
+                .arg(failedPath));
+    }
 }
 void ContentWorkspace::finishImport(const ContentResult& result)
 {
@@ -823,17 +846,42 @@ void ContentWorkspace::watchCatalogs()
     {
         folders.append(Root_);
     }
-    const QString assets =
-        mAssetRoot.isEmpty() == true ? QString() : QDir(mAssetRoot).filePath(QStringLiteral("assets"));
-    if (assets.isEmpty() == false && QFileInfo(assets).isDir() == true)
-    {
-        folders.append(assets);
-    }
     if (folders.isEmpty() == false)
     {
         (void)mWatcherOrNull->addPaths(folders);
     }
 #endif
+}
+void ContentWorkspace::pollCookedContent()
+{
+    if (Busy() == true || Closing_ == true)
+    {
+        return;
+    }
+    const CookedContentWatchStep step =
+        mCookedWatch.Poll(static_cast<foundation::uint64>(mCookedWatchClock.nsecsElapsed()));
+    if (step.FailedPath.isEmpty() == false)
+    {
+        reportCookedWatchFailure(
+            QStringLiteral("Could not observe %1. Cooked content recovery is pending; restore a readable cooked "
+                           "artifact at that path. The last valid previews remain available.")
+                .arg(step.FailedPath));
+    }
+    if (step.ShouldRefresh == true)
+    {
+        Refresh();
+    }
+}
+void ContentWorkspace::reportCookedWatchFailure(const QString& message)
+{
+    Status_->setText(message);
+    if (mProblemImportId.isEmpty() == true)
+    {
+        ContentResult result;
+        result.Status = content::Status::IoError;
+        result.Message = message;
+        showProblem(result);
+    }
 }
 bool ContentWorkspace::event(QEvent* event)
 {
@@ -908,6 +956,8 @@ void ContentWorkspace::Shutdown()
     Closing_ = true;
     mImportQueue.clear();
     mWatchDelay.stop();
+    mCookedWatchTimer.stop();
+    static_cast<void>(mCookedWatch.Reset({}));
     Jobs_->Shutdown();
     RenderActions();
 }
