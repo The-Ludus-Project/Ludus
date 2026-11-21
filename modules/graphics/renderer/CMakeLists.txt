@@ -332,6 +332,9 @@ if(TARGET ludus_rhi_render_tests AND NOT WIN32)
     ludus_compile_shader(TARGET ludus_renderer_render_tests NAME random_parity
         SOURCE "${PROJECT_SOURCE_DIR}/tests/sdk_consumer/random_parity.slang" COMPUTE ComputeMain
         INCLUDES "${PROJECT_SOURCE_DIR}/modules/foundation/math/shaders")
+    if(APPLE AND LUDUS_SPIRV_CROSS)
+        add_subdirectory(tests/lusl_textures)
+    endif()
     # LUSL L5a GPU evidence: resource queries, atomics and barriers, each beside its Slang
     # equivalent (docs/modules/tooling/shader-language.md#resources-and-bindings). Slang's direct
     # Metal backend has no buffer-length query, so Apple builds compile the buffer queries through

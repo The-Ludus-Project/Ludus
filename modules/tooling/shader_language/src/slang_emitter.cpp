@@ -283,7 +283,10 @@ private:
             BindingRecord record;
             record.Variable = locateSymbol(symbol);
             (void)record.Name.TryAssign(getName(symbol));
-            record.Kind = getType(declared.Type).Resource;
+            const SemanticType& shape = getType(declared.Type);
+            const bool isArray = shape.Kind == TypeKind::Array;
+            record.Kind = isArray == true ? getType(shape.Element).Resource : shape.Resource;
+            record.Count = isArray == true ? shape.Count : 1;
             record.Slot = declared.Slot;
             if (mResult.Bindings.TryAdd(record) == false)
             {
@@ -610,6 +613,12 @@ private:
             case IrHelperKind::Dimensions:
                 write("_luslDimensions");
                 break;
+            case IrHelperKind::Fwidth:
+                write("_luslFwidth");
+                break;
+            case IrHelperKind::Clip:
+                write("_luslClip");
+                break;
             default:
                 write("_luslWrap");
                 break;
@@ -648,6 +657,22 @@ private:
                 case IrHelperKind::Dimensions:
                     writeDimensionsHelper(helper);
                     break;
+                case IrHelperKind::Fwidth:
+                    writeType(entry.Type);
+                    write(" ");
+                    writeHelperName(helper);
+                    write("(");
+                    writeType(entry.Type);
+                    write(" value) { return abs(ddx(value)) + abs(ddy(value)); }\n");
+                    break;
+                case IrHelperKind::Clip:
+                    write("void ");
+                    writeHelperName(helper);
+                    write("(");
+                    writeType(entry.Type);
+                    write(getType(entry.Type).Kind == TypeKind::Vector ? " value) { if (any(value < 0)) discard; }\n"
+                                                                       : " value) { if (value < 0) discard; }\n");
+                    break;
             }
         }
     }
@@ -657,16 +682,33 @@ private:
     {
         const IrHelper& entry = mModule.Helpers[helper];
         const ResourceKind kind = getType(entry.Type).Resource;
-        const bool isTexture = kind == ResourceKind::Texture2D || kind == ResourceKind::RWTexture2D;
-        write(isTexture == true ? "uint2 " : "uint ");
+        const uint32 width = internal::GetTextureSizeWidth(kind);
+        if (width == 0)
+        {
+            write("uint ");
+        }
+        else
+        {
+            write("uint");
+            writeUnsigned(width);
+            write(" ");
+        }
         writeHelperName(helper);
         write("(");
         writeResourceType(entry.Type, entry.Symbol != NO_SYMBOL);
         write(" resource)\n{\n");
-        if (isTexture == true)
+        if (width != 0)
         {
-            write("    uint width;\n    uint height;\n    resource.GetDimensions(width, height);\n");
-            write("    return uint2(width, height);\n}\n");
+            write("    uint width;\n    uint height;\n");
+            if (width > 2)
+            {
+                write("    uint depthOrLayers;\n    resource.GetDimensions(width, height, depthOrLayers);\n");
+                write("    return uint3(width, height, depthOrLayers);\n}\n");
+            }
+            else
+            {
+                write("    resource.GetDimensions(width, height);\n    return uint2(width, height);\n}\n");
+            }
             return;
         }
         write("    uint count;\n    uint stride;\n    resource.GetDimensions(count, stride);\n    return count;\n}\n");
@@ -1393,13 +1435,26 @@ private:
         write("[[vk::binding(");
         writeUnsigned(declared.Slot);
         write(", 0)]] ");
-        writeResourceType(node.Type, declared.IsAtomic);
+        const SemanticType& shape = getType(node.Type);
+        const bool isArray = shape.Kind == TypeKind::Array;
+        const uint32 resource = isArray == true ? shape.Element : node.Type;
+        writeResourceType(resource, declared.IsAtomic);
         write(" ");
         write(getName(node.Symbol));
+        if (isArray == true)
+        {
+            write("[");
+            writeUnsigned(shape.Count);
+            write("]");
+        }
         write(" : register(");
-        switch (getType(node.Type).Resource)
+        switch (getType(resource).Resource)
         {
             case ResourceKind::Texture2D:
+            case ResourceKind::Texture3D:
+            case ResourceKind::TextureCube:
+            case ResourceKind::Texture2DArray:
+            case ResourceKind::DepthTexture2D:
             case ResourceKind::StructuredBuffer:
                 write("t");
                 break;
@@ -1408,6 +1463,7 @@ private:
                 write("u");
                 break;
             case ResourceKind::Sampler:
+            case ResourceKind::ComparisonSampler:
                 write("s");
                 break;
             case ResourceKind::ConstantBuffer:
@@ -2288,7 +2344,14 @@ private:
                 writeMethodCall(expression);
                 return;
             case IrKind::IntrinsicCall:
-                write(getName(node.Symbol));
+                if (node.Index != NO_INDEX)
+                {
+                    writeHelperName(node.Index);
+                }
+                else
+                {
+                    write(getName(node.Symbol));
+                }
                 write("(");
                 writeArguments(node.FirstChild);
                 write(")");

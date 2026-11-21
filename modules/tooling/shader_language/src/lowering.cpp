@@ -502,7 +502,7 @@ private:
     {
         const uint32 symbol = symbolOf(declaration);
         const SyntaxNode& syntax = getSyntax(declaration);
-        const bool isResource = getType(getSymbol(symbol).Type).Kind == TypeKind::Resource;
+        const bool isResource = getSymbol(symbol).Slot != NO_LOCATION;
         const IrKind kind = isResource == true             ? IrKind::Resource
                             : syntax.IsGroupshared == true ? IrKind::Groupshared
                                                            : IrKind::Constant;
@@ -1801,14 +1801,34 @@ private:
         const uint32 callee = firstChild(node);
         switch (call)
         {
-            case CallKind::Intrinsic:
-                return lowerPositional(node, IrKind::IntrinsicCall, type, type);
+            case CallKind::Intrinsic: {
+                const uint32 result = lowerPositional(node, IrKind::IntrinsicCall, type, type);
+                const std::string_view name = spellNode(callee);
+                if (result != NO_IR && (name == "fwidth" || name == "clip"))
+                {
+                    const uint32 operand = at(result).FirstChild;
+                    if (operand == NO_IR)
+                    {
+                        return NO_IR;
+                    }
+                    IrHelper helper;
+                    helper.Kind = name == "fwidth" ? IrHelperKind::Fwidth : IrHelperKind::Clip;
+                    helper.Type = at(operand).Type;
+                    const uint32 index = findOrAddHelper(helper, node);
+                    if (index == NO_INDEX)
+                    {
+                        return NO_IR;
+                    }
+                    at(result).Index = index;
+                }
+                return result;
+            }
             case CallKind::Construction:
                 return lowerPositional(node, IrKind::Construct, type, getElementScalar(type));
             case CallKind::Conversion:
                 return lowerPositional(node, IrKind::Convert, type, NO_TYPE);
             case CallKind::ResourceMethod: {
-                // The only untyped argument a resource operation takes is SampleLevel's float level.
+                // Untyped scalar arguments are the float LOD or comparison reference.
                 const uint32 result =
                     lowerPositional(node, IrKind::ResourceMethodCall, type, getScalarType(ScalarKind::Float32));
                 if (result == NO_IR)
