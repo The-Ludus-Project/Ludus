@@ -723,6 +723,7 @@ private:
         analysis.Request.Files = analysis.Files.GetFiles();
         analysis.Request.Source = MakeView(GetView(document.Path));
         analysis.Request.IncludeDirectories = mOptions.IncludeDirectories;
+        analysis.Request.Configuration = mOptions.Configuration;
         analysis.Document = index;
         if (language::Preprocess(analysis.Request, analysis.Preprocessed) != language::Status::Ready)
         {
