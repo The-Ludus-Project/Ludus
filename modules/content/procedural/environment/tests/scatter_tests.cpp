@@ -576,3 +576,106 @@ TEST_CASE("Scatter rejects bad ranges and storage before writing", "[procedural]
         CHECK(placement.LatticeX == 12345);
     }
 }
+
+TEST_CASE("Scatter explanations agree with generation and name the excluding input", "[procedural][scatter][explain]")
+{
+    const Fixture fixture;
+    usize keepOutRejections = 0;
+    usize regionRejections = 0;
+    usize conflictRejections = 0;
+    for (usize layer = 0; layer < fixture.Recipe.Layers.GetSize(); ++layer)
+    {
+        const ScatterCellRange cells = GetCells(fixture.Recipe, layer);
+        static Result result;
+        REQUIRE(Generate(fixture.Recipe, fixture.Keys, layer, cells, result) == ScatterStatus::Success);
+        usize next = 0;
+        const ScatterLayer& recipeLayer = fixture.Recipe.Layers[layer];
+        for (int32 y = cells.MinimumY; y < cells.MaximumY; ++y)
+        {
+            for (int32 x = cells.MinimumX; x < cells.MaximumX; ++x)
+            {
+                for (uint16 k = 0; k < recipeLayer.CandidatesPerCell; ++k)
+                {
+                    const ScatterIdentity identity{fixture.Recipe.Room,
+                                                   recipeLayer.Id,
+                                                   static_cast<uint8>(k),
+                                                   static_cast<int16>(x),
+                                                   static_cast<int16>(y)};
+                    ScatterDecision decision;
+                    REQUIRE(TryExplainScatterCandidate(fixture.Recipe, fixture.Keys, layer, identity, decision) ==
+                            ScatterStatus::Success);
+                    const bool isGenerated = next < result.Count && result.Placements[next].Identity == identity;
+                    REQUIRE(decision.IsAccepted() == isGenerated);
+                    if (isGenerated == true)
+                    {
+                        ++next;
+                        continue;
+                    }
+                    if (decision.Rule == ScatterDecisionRule::KeepOut)
+                    {
+                        ++keepOutRejections;
+                        REQUIRE(decision.Stage == ScatterDecisionStage::Eligibility);
+                        REQUIRE(decision.KeepOut < fixture.Recipe.KeepOuts.GetSize());
+                    }
+                    else if (decision.Rule == ScatterDecisionRule::OutsideRegion)
+                    {
+                        ++regionRejections;
+                        REQUIRE(decision.Stage == ScatterDecisionStage::Eligibility);
+                    }
+                    else
+                    {
+                        ++conflictRejections;
+                        REQUIRE(decision.Stage == ScatterDecisionStage::Thinning);
+                        REQUIRE(decision.Rule == ScatterDecisionRule::Conflict);
+                        // The outranking candidate is itself eligible, so it is never explained by eligibility.
+                        ScatterDecision outranking;
+                        REQUIRE(TryExplainScatterCandidate(fixture.Recipe,
+                                                           fixture.Keys,
+                                                           layer,
+                                                           decision.Outranking,
+                                                           outranking) == ScatterStatus::Success);
+                        REQUIRE(outranking.Stage != ScatterDecisionStage::Eligibility);
+                    }
+                }
+            }
+        }
+        REQUIRE(next == result.Count);
+    }
+    // The golden recipe exercises every rule.
+    REQUIRE(keepOutRejections > 0);
+    REQUIRE(regionRejections > 0);
+    REQUIRE(conflictRejections > 0);
+
+    const ScatterCellRange cells = GetCells(fixture.Recipe, 0);
+    const ScatterLayer& layer = fixture.Recipe.Layers[0];
+    ScatterDecision decision;
+    decision.KeepOut = 5;
+    const ScatterIdentity outside{fixture.Recipe.Room,
+                                  layer.Id,
+                                  0,
+                                  static_cast<int16>(cells.MaximumX),
+                                  static_cast<int16>(cells.MinimumY)};
+    REQUIRE(TryExplainScatterCandidate(fixture.Recipe, fixture.Keys, 0, outside, decision) == ScatterStatus::Success);
+    REQUIRE(decision.Stage == ScatterDecisionStage::Recipe);
+    REQUIRE(decision.Rule == ScatterDecisionRule::CellOutsideRegion);
+    const ScatterIdentity extraCandidate{fixture.Recipe.Room,
+                                         layer.Id,
+                                         static_cast<uint8>(layer.CandidatesPerCell),
+                                         static_cast<int16>(cells.MinimumX),
+                                         static_cast<int16>(cells.MinimumY)};
+    REQUIRE(TryExplainScatterCandidate(fixture.Recipe, fixture.Keys, 0, extraCandidate, decision) ==
+            ScatterStatus::Success);
+    REQUIRE(decision.Rule == ScatterDecisionRule::CandidateIndex);
+
+    // Another room or layer, or an invalid layer index, fails and leaves the output unchanged.
+    ScatterIdentity otherRoom = extraCandidate;
+    otherRoom.Room = static_cast<uint16>(fixture.Recipe.Room + 1);
+    decision.KeepOut = 41;
+    REQUIRE(TryExplainScatterCandidate(fixture.Recipe, fixture.Keys, 0, otherRoom, decision) ==
+            ScatterStatus::InvalidRecipe);
+    REQUIRE(TryExplainScatterCandidate(fixture.Recipe, fixture.Keys, 1, extraCandidate, decision) ==
+            ScatterStatus::InvalidRecipe);
+    REQUIRE(TryExplainScatterCandidate(fixture.Recipe, fixture.Keys, 2, extraCandidate, decision) ==
+            ScatterStatus::InvalidRecipe);
+    REQUIRE(decision.KeepOut == 41);
+}

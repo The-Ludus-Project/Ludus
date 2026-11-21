@@ -44,11 +44,12 @@
 @declare SurfaceHit MaterialSample LightInfo SelectedLight LightSample IncidentLightSample SceneInfo
 
 @declare FailSceneQuery MakeCameraRay SpawnSurfaceRay TraceClosest TestVisibility
+@declare TryMakeCameraRayFromWorldPosition
 @declare EvaluateMaterial EvaluateEmission EvaluateEnvironment ApplyAerialPerspective
 @declare GetSceneInfo GetLightCount GetLightInfo SelectLight SampleIncidentLight GetSurfaceHit
 @declare EvaluateLightPdfSolidAngle EvaluateEnvironmentPdfSolidAngle EvaluateLightSelectionPmf
 @declare GetSurfaceLightIndex GetEnvironmentLightIndex EvaluateIncidentLightPdfSolidAngle
-@declare EvaluateIncidentEnvironmentPdfSolidAngle SampleSceneRandom PixelRandomAddress
+@declare EvaluateIncidentEnvironmentPdfSolidAngle SampleUniformFloat01 SampleSceneRandom PixelRandomAddress
 /// Draw a weighted component index from finite, nonnegative weights.
 /// Returns SCENE_INVALID_INDEX and latches a failure if the draw or weights are invalid.
 @declare SampleSceneWeightedIndex

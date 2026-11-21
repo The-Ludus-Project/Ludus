@@ -205,7 +205,8 @@ private:
     [[nodiscard]] ViewportDisplayTransform
     resolveDisplayTransform(const graphics::renderer::ViewDescription& view) const;
     [[nodiscard]] bool startRasterCapture(const QSize& requestedSize, QSize& outExtent, QString& outError);
-    [[nodiscard]] bool startGraphCapture(const QSize& requestedSize, QSize& outExtent, QString& outError);
+    [[nodiscard]] bool
+    startGraphCapture(const QSize& requestedSize, foundation::uint32 samples, QSize& outExtent, QString& outError);
     [[nodiscard]] bool startGraphSource();
     [[nodiscard]] QString describeRaster() const;
     [[nodiscard]] bool saveComparison(const QString& hdrPath, QString& outError) const;
@@ -261,6 +262,9 @@ private:
     // Child widgets, created in the constructor and owned by this window.
     QSpinBox* const mLongSide;
     QSpinBox* const mSamples;
+    QComboBox* const mSamplePreset;
+    QLabel* const mSamplePresetDescription;
+    QSpinBox* const mGraphSamples;
     QSpinBox* const mMaxDepth;
     QComboBox* const mTraversal;
     QCheckBox* const mCenterRays;

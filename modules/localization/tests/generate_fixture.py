@@ -5,12 +5,15 @@ release cooker replaying the pinned ICU checker's recorded verdicts, so ordinary
 builds need no ICU; the ICU-enabled test proves those recordings are current.
 """
 from pathlib import Path
+import json
 import sys
+from tempfile import TemporaryDirectory
 
 ROOT = Path(__file__).resolve().parents[3]
 sys.path.insert(0, str(ROOT / "scripts/python"))
 from localization import bindings, cook, document, export_review, read_json, write_atomic  # noqa: E402
-from localization_release import RecordedProfileChecker, _pascal, cook_release  # noqa: E402
+from localization_release import (KIND_DYNAMIC, KIND_STATIC, RecordedProfileChecker, _pascal,  # noqa: E402
+                                  cook_release, decode_package, encode_package)
 
 source = document(read_json(Path(__file__).parent / "source.json"), False)
 translation = export_review(source, "fr-FR")
@@ -66,6 +69,40 @@ for prefix, manifest, results, domain, namespace in releases:
         name = prefix + "".join(part.capitalize() for part in package["locale"].split("-"))
         emit(name, package["data"])
         packages.setdefault(prefix, []).append((package["locale"], name))
+
+# A second verified release of the same domain and locale with changed wording.
+# Both strings have recorded verdicts for the same locale and empty schema.
+output_path = Path(sys.argv[1])
+output_path.parent.mkdir(parents=True, exist_ok=True)
+with TemporaryDirectory(dir=output_path.parent) as directory:
+    reload_root = Path(directory)
+    for name in ("release.json", "test-l1.source.json", "test-l1.fr-CA.json", "test-l1.fr-FR.json"):
+        data = read_json(TESTS / "release" / name)
+        if name == "test-l1.fr-FR.json":
+            messages = {message["key"]: message for message in data["messages"]}
+            start = messages["menu/start"]
+            start["pattern"] = messages["menu/credits"]["pattern"]
+            start["translation_revision"] += 1
+        (reload_root / name).write_text(json.dumps(data), encoding="utf-8")
+    checker = RecordedProfileChecker(TESTS / "release/profile-results.json")
+    reloaded = cook_release(reload_root / "release.json", checker)
+    french = [package["data"] for package in reloaded["packages"] if package["locale"] == "fr-FR"]
+    if len(french) != 1:
+        raise ValueError("expected exactly one reloaded French package")
+    emit("kReloadedReleaseFrFr", french[0])
+
+# Encode a valid v2 package with incompatible arguments on a message hidden from the reload view.
+decoded = decode_package(french[0])
+providers = decoded["providers"]
+records = decoded["records"]
+for record in records:
+    record["kind"] = KIND_STATIC if record["kind"] == "static" else KIND_DYNAMIC
+    record["value"] = record["value"].encode("utf-8")
+    record["provider"] = providers.index(record["provider"])
+    if record["key"] == "hud/lives":
+        record["arguments"][0]["max"] -= 1
+emit("kIncompatibleReleaseFrFr", encode_package(decoded["domain"], decoded["locale"], decoded["source_locale"],
+                                                 providers, decoded["linguistic_data"], records))
 
 
 def literal(text: str) -> str:

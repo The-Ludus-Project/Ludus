@@ -10,6 +10,7 @@
 #include <ludus/foundation/profiling/memory_gauges.hpp>
 #include <ludus/foundation/profiling/profiling.hpp>
 #include <ludus/foundation/profiling/trace_system.hpp>
+#include <ludus/foundation/time/time.hpp>
 #include <ludus/graphics/rhi/rhi.h>
 #include <ludus/platform/frame_pacing.h>
 #include <string_view>
@@ -21,6 +22,15 @@ using ludus::foundation::usize;
 using ludus::world_demo::LEVEL_TEXT_CAPACITY_BYTES;
 using LevelBytes = StaticArray<char, LEVEL_TEXT_CAPACITY_BYTES>;
 namespace filesystem = ludus::foundation::filesystem;
+namespace timing = ludus::foundation::time;
+
+struct LevelReadTiming
+{
+    timing::Timestamp OpenStart;
+    timing::Timestamp ReadStart;
+    timing::Timestamp ReadEnd;
+    timing::Timestamp ValidationEnd;
+};
 
 // Names the two paths of one --level/--level-pack request so callers cannot swap them.
 struct LevelSourcePaths
@@ -31,7 +41,10 @@ struct LevelSourcePaths
     std::string_view PackedPath;
 };
 
-bool ReadLevelSource(const LevelSourcePaths& paths, LevelBytes& outBytes, usize& outSize) noexcept
+bool ReadLevelSource(const LevelSourcePaths& paths,
+                     LevelBytes& outBytes,
+                     usize& outSize,
+                     LevelReadTiming& outTiming) noexcept
 {
     const std::string_view nativePath = paths.NativePath;
     const std::string_view packedPath = paths.PackedPath;
@@ -43,6 +56,7 @@ bool ReadLevelSource(const LevelSourcePaths& paths, LevelBytes& outBytes, usize&
     const std::string_view root =
         separator == std::string_view::npos ? std::string_view(".") : nativePath.substr(0, separator + 1);
     const std::string_view leaf = separator == std::string_view::npos ? nativePath : nativePath.substr(separator + 1);
+    outTiming.OpenStart = timing::Now();
     filesystem::ProviderHandle storage;
     if (filesystem::CreateDirectoryProvider(root, storage).Succeeded() == false)
     {
@@ -71,7 +85,9 @@ bool ReadLevelSource(const LevelSourcePaths& paths, LevelBytes& outBytes, usize&
         return false;
     }
     const usize byteCount = static_cast<usize>(size);
+    outTiming.ReadStart = timing::Now();
     const filesystem::ReadResult read = file->ReadAt(0, {reinterpret_cast<uint8*>(outBytes.GetData()), byteCount});
+    outTiming.ReadEnd = timing::Now();
     if (read.Outcome.Succeeded() == false || read.BytesRead != byteCount)
     {
         return false;
@@ -79,6 +95,38 @@ bool ReadLevelSource(const LevelSourcePaths& paths, LevelBytes& outBytes, usize&
     outSize = byteCount;
     return true;
 }
+
+#if LUDUS_TARGET_OS != LUDUS_OS_WEB
+bool LogStartupReport([[maybe_unused]] const ludus::world_demo::Application& application,
+                      [[maybe_unused]] const LevelReadTiming& readTiming,
+                      [[maybe_unused]] timing::Timestamp startupStart,
+                      [[maybe_unused]] usize size,
+                      [[maybe_unused]] std::string_view entry) noexcept
+{
+    if (application.GetPresentedFrames() != 1)
+    {
+        LUDUS_LOG_ERROR(ludus::foundation::logging::LOG_CORE,
+                        "Packed World startup ended before its first presentation.");
+        return false;
+    }
+    LUDUS_LOG_INFO(ludus::foundation::logging::LOG_CORE,
+                   "FS-R2 startup: open_start_ns={} read_start_ns={} read_end_ns={} validation_end_ns={} "
+                   "world_ready_ns={} renderer_ready_ns={} present_ns={} load_request_ns={} quad_ready_ns={} "
+                   "offset=0 bytes={} entry={}",
+                   readTiming.OpenStart.Nanoseconds - startupStart.Nanoseconds,
+                   readTiming.ReadStart.Nanoseconds - startupStart.Nanoseconds,
+                   readTiming.ReadEnd.Nanoseconds - startupStart.Nanoseconds,
+                   readTiming.ValidationEnd.Nanoseconds - startupStart.Nanoseconds,
+                   application.GetFirstWorldActivation().Nanoseconds - startupStart.Nanoseconds,
+                   application.GetFirstRendererReady().Nanoseconds - startupStart.Nanoseconds,
+                   application.GetLastPresentReturn().Nanoseconds - startupStart.Nanoseconds,
+                   application.GetInitialLoadRequestDuration().Nanoseconds,
+                   application.GetQuadReadyDuration().Nanoseconds,
+                   size,
+                   entry);
+    return true;
+}
+#endif
 
 constexpr ludus::foundation::uint64 HEADLESS_DEFAULT_TICKS = 120;
 constexpr ludus::foundation::usize MAX_TRACE_PATH_BYTES = 4096;
@@ -213,6 +261,7 @@ void Frame() noexcept
 int main(int argc, char** argv)
 {
     using namespace ludus::world_demo;
+    [[maybe_unused]] const timing::Timestamp startupStart = timing::Now();
     ludus::foundation::logging::LogConfig config;
     config.EnableConsole = true;
     config.EnableFile = false;
@@ -229,6 +278,9 @@ int main(int argc, char** argv)
     // runtime; loading never rewrites, builds or repairs the source project.
     LevelBytes levelBytes;
     usize levelSize = 0;
+    LevelReadTiming levelReadTiming;
+    std::string_view startupPackEntry;
+    bool isStartupReported = false;
     bool headless = false;
     bool follow = false;
     uint64 frameLimit = 0;
@@ -264,6 +316,16 @@ int main(int argc, char** argv)
                 return 1;
             }
         }
+        else if (flag == "--startup-report")
+        {
+            if (LUDUS_COMPILED_LOG_LEVEL > LUDUS_LOG_LEVEL_INFO)
+            {
+                LUDUS_LOG_ERROR(ludus::foundation::logging::LOG_CORE,
+                                "--startup-report requires a build that includes info logging.");
+                return 1;
+            }
+            isStartupReported = true;
+        }
         else if (flag == "--pacing-report")
         {
             isPacingReported = true;
@@ -293,7 +355,10 @@ int main(int argc, char** argv)
                 }
             }
             if (levelSize != 0 || path.empty() == true || path.size() > filesystem::MAX_ROOT_BYTES ||
-                ReadLevelSource({ .NativePath = path, .PackedPath = packedPath }, levelBytes, levelSize) == false)
+                ReadLevelSource({ .NativePath = path, .PackedPath = packedPath },
+                                levelBytes,
+                                levelSize,
+                                levelReadTiming) == false)
             {
                 LUDUS_LOG_ERROR(ludus::foundation::logging::LOG_CORE,
                                 "Cannot read level '{}' from '{}'. Check the path or rebuild the level pack.",
@@ -309,11 +374,20 @@ int main(int argc, char** argv)
                                 path);
                 return 1;
             }
+            levelReadTiming.ValidationEnd = timing::Now();
+            startupPackEntry = packedPath;
         }
         else
         {
             return 1;
         }
+    }
+    if (isStartupReported == true &&
+        (headless == true || startupPackEntry.empty() == true || frameLimit != 1 || LUDUS_TARGET_OS == LUDUS_OS_WEB))
+    {
+        LUDUS_LOG_ERROR(ludus::foundation::logging::LOG_CORE,
+                        "Use --startup-report with --level-pack and --frames 1 in a native window.");
+        return 1;
     }
     const std::string_view source = levelSize != 0 ? std::string_view(levelBytes.GetData(), levelSize) : ExampleLevel();
 #if LUDUS_TARGET_OS == LUDUS_OS_WEB
@@ -449,6 +523,9 @@ int main(int argc, char** argv)
                    "Reference presented {} frames",
                    application.GetPresentedFrames());
     const AppState state = application.GetState();
+    const bool hasStartupReport =
+        isStartupReported == false ||
+        LogStartupReport(application, levelReadTiming, startupStart, levelSize, startupPackEntry);
     if (traceOutput.empty() == false)
     {
         (void)ludus::foundation::profiling::RecordMemoryGauges();
@@ -456,6 +533,8 @@ int main(int argc, char** argv)
     application.Shutdown();
     const bool isReportWritten = isPacingReported == false || LogPacingReport(pacingReport) == true;
     const bool isTraceWritten = WriteRequestedTrace(traceOutput);
-    return state == AppState::Failed || isTraceWritten == false || isReportWritten == false ? 1 : 0;
+    return state == AppState::Failed || hasStartupReport == false || isTraceWritten == false || isReportWritten == false
+               ? 1
+               : 0;
 #endif
 }

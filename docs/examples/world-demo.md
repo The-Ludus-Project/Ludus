@@ -237,9 +237,42 @@ count (`GetRegrowExhaustions`) and leaves the placement harvested; it never wrap
 Tombstones, regrow ordinals and the current harvested/regrown variant enter the
 replay hash; cosmetic tints do not. Harvest and regrow storage is bounded and
 allocated when the room is prepared, so the tick, commit and extraction paths
-allocate nothing. Checkpoint persistence of tombstones and ordinals, weighted
-variant selection and automatic seed acquisition stay deferred to later
-randomness milestones.
+allocate nothing. Weighted variant selection and automatic seed acquisition stay
+deferred to later randomness milestones.
+
+#### Session checkpoints
+
+`Session::TrySaveCheckpoint` saves the session's random state into a caller
+buffer of at most `MAX_SESSION_CHECKPOINT_BYTES`. It first records the active
+room's placements into the tombstone store, as leaving the room would, then
+writes this little-endian layout:
+
+| Part | Fields |
+| --- | --- |
+| Envelope | `LWDS` magic, version 1 (`SESSION_CHECKPOINT_VERSION`), total bytes, each `uint32` |
+| Random checkpoint | The session's `WorldSeed` as root seed, `Session::GetCheckpointContentIdentity()`, and one event counter per tombstone: domain `scatter.regrow`, the placement's packed scope and its regrow ordinal |
+| Tombstone overrides | A `uint32` count, then per tombstone in the same order: scope `uint64`, current variant `uint8`, harvested flag `uint8` |
+
+The [random checkpoint](../wiki/guides/randomness.md#write-and-restore-a-checkpoint)
+carries the RNG contract versions. The content identity folds in the random
+domain manifest, the room catalog's ordinals, the scatter layout version and the
+regrow address, so a checkpoint from changed content is rejected rather than
+reinterpreted.
+
+`Session::TryRestoreCheckpoint` is a reload. It validates the whole checkpoint
+first: envelope, contract versions, content identity, unique counter owners in
+the regrow domain, one override per counter with the same scope, nonzero
+ordinals and a harvested flag of 0 or 1. Any rejection leaves the session
+unchanged and names the cause through `RandomCheckpointStatus`. On success it
+replaces the seed and tombstone store together and discards the active world and
+any load in progress; the next `RequestLoad` regenerates the room from the restored
+state. A harvested placement becomes due to regrow on the first tick, exactly as
+when re-entering its room, and draws the same variant as the uninterrupted
+session. `Prepare` rejects a tombstone whose variant lies outside its layer or
+whose ordinal is zero with `InvalidConfiguration` and keeps no placements.
+Entity, combat and pacing state are not part of the checkpoint.
+`apps/world_demo/tests/harvest_tests.cpp` checks the reload replay, every
+rejection and the short-buffer case.
 
 `Level` is also directly constructible in code. `Prepare` and `BuildNext` use the
 same world semantics for compiled definitions and decoded JSON. `WriteLevel`
@@ -366,7 +399,9 @@ while it plays saves a trace of the game's own passes:
 `Viewport/Scene`, `Viewport/Composite` and `Viewport/Present`. Its process is
 named after the game and its process ID. A standalone window pays nothing for
 this: it has no recorder and no timing queries. The recorder owns pass timing
-while it records, and the game never arms it. The
+while it records, and the game never arms it. On a device without per-pass
+timestamp counters the trace holds whole-frame durations instead, and the status
+says frame timing only. The
 [Hosted recording](../architecture/editor-gui-systems.md#hosted-recording)
 contract describes coverage, disconnection and the export.
 

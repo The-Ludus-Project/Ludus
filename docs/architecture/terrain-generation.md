@@ -5,8 +5,12 @@ mesh preview in default Worlds. See [World authoring](../development/editor-work
 [`Ludus::ContentTerrain`](../modules/content/terrain.md) implements the first T1
 kernels headlessly: the editor's elevation recipe, slope, whole-domain D8
 drainage over a depression-filled surface, a wetness field, material rules
-with bounded patch palettes, and river channel networks with carving. The terrain content formats, imports and stamps as
-cooker stages, erosion, and streamed terrain described below remain proposed
+with bounded patch palettes, and river channel networks with carving. It also
+cooks a complete height field into a versioned manifest and independently
+readable height pages with halos, digests and edit-scoped recooking
+([page cooking](../modules/content/terrain.md#versioned-page-cooking)). The
+source schema, imports and stamps as cooker stages, material/hole/coarse
+channels, erosion, and streamed terrain described below remain proposed
 alongside [terrain systems](terrain.md).
 
 Generate a terrain as an editable base plus explicit authored layers, then cook

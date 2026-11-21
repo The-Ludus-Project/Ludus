@@ -6,8 +6,11 @@
 // columns. Every row is one line spacing tall, so pass bars can be drawn behind rows by index. GUI or
 // scene-graph render thread; nothing here allocates per frame beyond the text it lays out.
 
+#include "design_tokens.h"
+
 #include <QFont>
 #include <QLabel>
+#include <QMouseEvent>
 #include <QPainter>
 #include <QRectF>
 #include <QRgb>
@@ -18,6 +21,18 @@ namespace ludus::editor
 {
 /// Body type with tabular figures, the font of the viewport's statistics and messages.
 [[nodiscard]] QFont GetViewportHudFont();
+
+/// Caption-scaled HUD font used by the statistics overlay so the panel stays compact.
+[[nodiscard]] QFont GetViewportStatisticsFont();
+
+/// Opacity, of 255, of the statistics overlay panel. Quieter than a message chip so the scene stays visible.
+inline constexpr int VIEWPORT_STATISTICS_BACKGROUND_OPACITY = 120;
+
+/// Padding between the statistics panel edge and its text, in logical pixels.
+inline constexpr int VIEWPORT_STATISTICS_PADDING = design::SPACING_EXTRA_SMALL;
+
+/// Prefix compactText with a disclosure mark, or replace it with the collapsed one-line chip.
+[[nodiscard]] QString MakeStatisticsOverlayText(const QString& compactText, const QString& summary);
 
 /// Space between the label and value columns, in logical pixels.
 [[nodiscard]] qreal GetViewportHudColumnGap();
@@ -39,10 +54,21 @@ class HudGridLabel final : public QLabel
 public:
     explicit HudGridLabel(QWidget* parent);
 
+    /// compactText is the mean-times grid; fullText is the tooltip (with p95 and max); summary is the
+    /// collapsed chip. The label paints the compact grid or the chip, and a click toggles that state.
+    void SetStatisticsText(const QString& compactText, const QString& fullText, const QString& summary);
+
     [[nodiscard]] QSize sizeHint() const override;
     [[nodiscard]] QSize minimumSizeHint() const override;
 
 protected:
     void paintEvent(QPaintEvent* event) override;
+    void mousePressEvent(QMouseEvent* event) override;
+
+private:
+    void applyStatisticsDisplay();
+    QString mCompactText;
+    QString mFullText;
+    QString mSummary;
 };
 } // namespace ludus::editor

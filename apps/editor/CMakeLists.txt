@@ -416,7 +416,9 @@ endfunction()
 # without the native preview), so the Renderer tab can show and copy them.
 function(ludus_editor_add_default_render_graph target)
     set(restir_template "${PROJECT_SOURCE_DIR}/modules/graphics/renderer/render_graphs/restir_di")
-    file(GLOB restir_template_shaders CONFIGURE_DEPENDS "${restir_template}/main_shaders/*.slang")
+    file(GLOB restir_template_shaders CONFIGURE_DEPENDS
+        "${restir_template}/main_shaders/*.slang" "${restir_template}/main_shaders/*.lusl"
+        "${restir_template}/main_shaders/*.luslh")
     qt_add_resources(${target} ludus_restir_configuration
         PREFIX "/render-graph/templates/restir-di" BASE "${restir_template}"
         FILES "${restir_template}/library.lurender.json" "${restir_template}/main.lushader.json.in"
@@ -426,7 +428,9 @@ function(ludus_editor_add_default_render_graph target)
             polygonal_light_sampling slice_sampling_luminaire rough_pair_slice steinberg_plt steinberg_physical_optics wave_tracing restir_gi rao_blackwell_mh guided_restir_fg_plus conditional_restir one_more_vertex_nee light_transformer)
         string(REPLACE "_" "-" template_identity "${template_directory}")
         set(visibility_template "${PROJECT_SOURCE_DIR}/modules/graphics/renderer/render_graphs/${template_directory}")
-        file(GLOB template_sources CONFIGURE_DEPENDS "${visibility_template}/main_shaders/*.slang")
+        file(GLOB template_sources CONFIGURE_DEPENDS
+            "${visibility_template}/main_shaders/*.slang" "${visibility_template}/main_shaders/*.lusl"
+            "${visibility_template}/main_shaders/*.luslh")
         if(template_directory STREQUAL "visibility_buffer")
             list(APPEND template_sources "${visibility_template}/resolve_library.lurender.json"
                 "${visibility_template}/resolve.lushader.json.in")
@@ -630,7 +634,7 @@ ludus_apply_project_defaults(ludus_editor_code)
 
 # --- Editor application ------------------------------------------------------
 option(LUDUS_EDITOR_CRASH_CAPTURE "Capture macOS editor crashes using a bundled external Crashpad handler" ${APPLE})
-set(LUDUS_EDITOR_SENTRY_DSN "" CACHE STRING "Default Sentry project DSN for distributed editors (public ingestion key, never an auth token)")
+set(LUDUS_EDITOR_SENTRY_DSN "team" CACHE STRING "macOS Editor crash destination (team, a public HTTPS Sentry DSN, or empty for local capture)")
 if(LUDUS_EDITOR_CRASH_CAPTURE)
     if(NOT APPLE OR EMSCRIPTEN)
         message(FATAL_ERROR "LUDUS_EDITOR_CRASH_CAPTURE currently supports native macOS only")
@@ -761,20 +765,24 @@ target_link_libraries(ludus_editor_render_graph_authoring
         "$<COMPILE_ONLY:Ludus::GraphicsRenderer>" "$<COMPILE_ONLY:Ludus::GameplayCamera>"
         "$<COMPILE_ONLY:Ludus::Resources>" "$<COMPILE_ONLY:ludus_first_person_walking>")
 
-# The content browser, its catalog and imports. The job scheduler (content_jobs.cpp)
-# differs between the native editor and the browser scheduler test.
+# The content browser, its catalog and imports.
 ludus_editor_add_objects(ludus_editor_content
     src/internal/content_browser.h src/content_catalog_model.cpp src/content_import.cpp src/content_workspace.cpp
     src/internal/content_types.h src/content_types.cpp src/content_filter.cpp src/content_asset_catalog.cpp
     src/internal/content_thumbnails.h src/content_thumbnails.cpp
+    src/internal/cooked_content_watch.h src/cooked_content_watch.cpp
     src/internal/state_view.h src/state_view.cpp
     src/editor_files.cpp src/internal/scene_archive.h src/scene_archive.cpp
     src/internal/browser_folder.h src/browser_folder.cpp
     $<$<BOOL:${EMSCRIPTEN}>:src/browser_host_folder.cpp>)
 # Thumbnails decode cooked SceneFormat texture records; the scene catalog limits come from SceneCook's header only.
 target_link_libraries(ludus_editor_content PUBLIC ludus_editor_presentation Qt6::Core Qt6::Widgets
-    Ludus::AudioContent Ludus::FoundationMath Ludus::SceneFormat ludus_stb_image
+    Ludus::AudioContent Ludus::FoundationFilesystem Ludus::FoundationMath Ludus::SceneFormat ludus_stb_image
     PRIVATE "$<COMPILE_ONLY:Ludus::SceneCook>")
+# Share the production scheduler with its native recovery test. The cooperative
+# scheduler test compiles the same source in its own variant.
+ludus_editor_add_objects(ludus_editor_content_jobs src/content_jobs.cpp)
+target_link_libraries(ludus_editor_content_jobs PRIVATE "$<COMPILE_ONLY:ludus_editor_content>")
 
 ludus_editor_add_objects(ludus_editor_project_explorer
     src/internal/project_explorer.h src/project_explorer.cpp
@@ -808,6 +816,7 @@ endif()
 # add only main.cpp or their tests, and main_window.cpp.
 ludus_editor_add_objects(ludus_editor_application
     ${editor_profiling_sources}
+    src/internal/project_save_conflict_dialog.h src/project_save_conflict_dialog.cpp
     src/internal/render_load_job.h
     src/render_load_job.cpp
     src/internal/render_preview.h
@@ -892,7 +901,6 @@ ludus_editor_add_objects(ludus_editor_application
     src/internal/audio_preview.h
     src/internal/startup_sound.h
     src/startup_sound.cpp
-    src/content_jobs.cpp
     src/internal/script_workspace.h
     src/script_workspace.cpp
     src/internal/renderer_workspace.h
@@ -1085,7 +1093,7 @@ qt_add_resources(ludus_editor_application_resources ludus_project_templates
 # Every object library the editor application and its main test executable link.
 set(editor_application_objects
     ludus_editor_application ludus_editor_render_graph_model ludus_editor_render_graph_canvas
-    ludus_editor_render_graph_authoring ludus_editor_presentation ludus_editor_content
+    ludus_editor_render_graph_authoring ludus_editor_presentation ludus_editor_content ludus_editor_content_jobs
     ludus_editor_project_explorer ludus_editor_document_well ludus_editor_geometry_model)
 if(TARGET ludus_editor_texture_display AND LUDUS_EDITOR_RENDER_PREVIEW)
     list(APPEND editor_application_objects ludus_editor_texture_display)
@@ -1098,6 +1106,12 @@ set(editor_application_resources
     ludus_editor_icon_resources)
 
 qt_add_executable(ludus_editor main.cpp src/main_window.cpp)
+if(TARGET ludus_first_person_player)
+    add_dependencies(ludus_editor ludus_first_person_player)
+    # Stage beside the native editor executable, including inside its macOS bundle.
+    set_target_properties(ludus_first_person_player PROPERTIES
+        RUNTIME_OUTPUT_DIRECTORY "${CMAKE_CURRENT_BINARY_DIR}/ludus_editor.app/Contents/MacOS")
+endif()
 if(WIN32 AND LUDUS_EDITOR_RENDER_PREVIEW)
     ludus_attach_d3d12_agility(ludus_editor "${LUDUS_D3D12_AGILITY_SDK_VERSION}"
         "${LUDUS_D3D12_AGILITY_BINARIES}" "${LUDUS_D3D12_AGILITY_LICENSE}")
@@ -1136,8 +1150,14 @@ if(LUDUS_EDITOR_CRASH_CAPTURE)
     if(editor_source_status)
         set(editor_source_modified true)
     endif()
-    if(LUDUS_EDITOR_SENTRY_DSN MATCHES "[\"\n\r]" OR LUDUS_EDITOR_SENTRY_DSN MATCHES "\\)ludus")
-        message(FATAL_ERROR "LUDUS_EDITOR_SENTRY_DSN must be a single-line project DSN")
+    set(editor_default_sentry_dsn "${LUDUS_EDITOR_SENTRY_DSN}")
+    set(editor_has_team_sentry_default false)
+    if(editor_default_sentry_dsn STREQUAL "team")
+        set(editor_default_sentry_dsn "${editor_team_sentry_dsn}")
+        set(editor_has_team_sentry_default true)
+    endif()
+    if(editor_default_sentry_dsn MATCHES "[\"\n\r]" OR editor_default_sentry_dsn MATCHES "\\)ludus")
+        message(FATAL_ERROR "LUDUS_EDITOR_SENTRY_DSN must be team, empty, or a single-line project DSN")
     endif()
     set(editor_crash_config_directory "${CMAKE_CURRENT_BINARY_DIR}/crash-config")
     file(MAKE_DIRECTORY "${editor_crash_config_directory}")
@@ -1284,6 +1304,19 @@ if(LUDUS_BUILD_TESTS AND NOT EMSCRIPTEN)
     add_test(NAME ludus_editor_browser_content_tests COMMAND ludus_editor_browser_content_tests)
     set_tests_properties(ludus_editor_browser_content_tests PROPERTIES
         LABELS "unit;editor;browser" TIMEOUT "${content_editor_timeout}" ENVIRONMENT "${editor_test_environment}")
+    if(APPLE OR CMAKE_SYSTEM_NAME STREQUAL "Linux")
+        add_executable(ludus_editor_cooked_content_recovery_tests tests/cooked_content_recovery_tests.cpp)
+        set_target_properties(ludus_editor_cooked_content_recovery_tests PROPERTIES AUTOMOC ON)
+        target_include_directories(ludus_editor_cooked_content_recovery_tests PRIVATE src)
+        target_compile_definitions(ludus_editor_cooked_content_recovery_tests PRIVATE QT_NO_KEYWORDS QT_NO_CAST_FROM_ASCII)
+        target_link_libraries(ludus_editor_cooked_content_recovery_tests PRIVATE ludus_editor_content
+            ludus_editor_content_jobs ludus_editor_presentation ludus_editor_icon_resources ludus_editor_test_main Qt6::Test)
+        ludus_apply_project_defaults(ludus_editor_cooked_content_recovery_tests)
+        ludus_enable_test_exceptions(ludus_editor_cooked_content_recovery_tests)
+        add_test(NAME ludus_editor_cooked_content_recovery_tests COMMAND ludus_editor_cooked_content_recovery_tests)
+        set_tests_properties(ludus_editor_cooked_content_recovery_tests PROPERTIES
+            LABELS "unit;editor;native" TIMEOUT 20 ENVIRONMENT "${editor_test_environment}")
+    endif()
     add_executable(ludus_project_explorer_tests tests/project_explorer_tests.cpp)
     set_target_properties(ludus_project_explorer_tests PROPERTIES AUTOMOC ON)
     target_include_directories(ludus_project_explorer_tests PRIVATE src)
@@ -1574,6 +1607,18 @@ if(LUDUS_BUILD_TESTS AND NOT EMSCRIPTEN)
     endif()
     if(LUDUS_EDITOR_RENDER_PREVIEW AND NOT EMSCRIPTEN)
         target_sources(ludus_editor_tests PRIVATE tests/play_viewport_source_tests.cpp)
+        if(TARGET ludus_first_person_player)
+            set(player_fixture "${CMAKE_CURRENT_BINARY_DIR}/first-person-fixture.luplay")
+            set(player_fixture_script "${PROJECT_SOURCE_DIR}/apps/first_person_player/tests/native_fixture.py")
+            add_custom_command(OUTPUT "${player_fixture}"
+                COMMAND "${Python3_EXECUTABLE}" "${player_fixture_script}" --write "${player_fixture}"
+                DEPENDS "${player_fixture_script}" VERBATIM)
+            add_custom_target(ludus_first_person_fixture DEPENDS "${player_fixture}")
+            add_dependencies(ludus_editor_tests ludus_first_person_player ludus_first_person_fixture)
+            target_compile_definitions(ludus_editor_tests PRIVATE
+                LUDUS_FIRST_PERSON_PLAYER="$<TARGET_FILE:ludus_first_person_player>"
+                LUDUS_FIRST_PERSON_FIXTURE="${player_fixture}")
+        endif()
         if(TARGET ludus_rhi_hosted_producer)
             # A real hosted game: the RHI test producer renders a known colour into its hosted window.
             target_compile_definitions(ludus_editor_tests PRIVATE
@@ -1681,7 +1726,10 @@ if(LUDUS_BUILD_TESTS AND NOT EMSCRIPTEN)
             "[reference-compute][emissive-patches]" --durations yes)
         add_test(NAME ludus_editor_reference_oracle_parity COMMAND ludus_editor_tests
             "[reference-compute][oracle-parity]" --durations yes)
+        add_test(NAME ludus_editor_reference_sample_presets COMMAND ludus_editor_tests
+            "[reference-compute][sample-presets]" --durations yes)
         set_tests_properties(ludus_editor_reference_emissive_patches ludus_editor_reference_oracle_parity
+            ludus_editor_reference_sample_presets
             PROPERTIES LABELS "unit;editor;gpu" TIMEOUT "${editor_reference_case_timeout}" SKIP_RETURN_CODE 4
             ENVIRONMENT "${editor_test_environment}" RESOURCE_LOCK ludus_editor)
     endif()

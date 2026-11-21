@@ -1054,7 +1054,7 @@ bool Supports(BackendSelection selection) noexcept
     // explicitly rather than silently falling back to Vulkan.
     return selection == BackendSelection::Auto;
 }
-bool Initialize(const ApplicationInfo& app) noexcept
+static bool InitializeInstance(const ApplicationInfo& app) noexcept
 {
     if (const auto* imported = internal::NativeDeviceRequest())
     {
@@ -1131,13 +1131,13 @@ bool Initialize(const ApplicationInfo& app) noexcept
         hasVersion12 == true;
     return true;
 }
-bool ConnectWindow(const WindowInfo& window) noexcept
+static bool ConnectPrimarySurface(const WindowInfo& window) noexcept
 {
     if (GetVulkan().Instance == VK_NULL_HANDLE)
     {
         return false;
     }
-    // The legacy and owned startup paths connect only the primary surface.
+    // Startup connects only the primary surface.
     GetVulkan().ActiveSurface = 0;
     if (GetVulkan().IsBorrowedDevice && GetVulkan().Pass == VK_NULL_HANDLE)
     {
@@ -1599,7 +1599,7 @@ void SetVulkanObjectName(VkObjectType type, uint64 object, const char* name) noe
     };
     static_cast<void>(vkSetDebugUtilsObjectNameEXT(GetVulkan().Device, &information));
 }
-bool InitializeRendering() noexcept
+static bool InitializeFrameResources() noexcept
 {
     if (GetVulkan().Device == VK_NULL_HANDLE)
     {
@@ -1653,15 +1653,15 @@ StartupError Start(const ApplicationInfo& app, const WindowInfo& window, uint32 
         return StartupError::InvalidWindow;
     }
     GetVulkan().Session = token;
-    if (backend::Initialize(app) == false)
+    if (InitializeInstance(app) == false)
     {
         return StartupError::InstanceUnavailable;
     }
-    if (ConnectWindow(window) == false)
+    if (ConnectPrimarySurface(window) == false)
     {
         return StartupError::SurfaceUnavailable;
     }
-    if (InitializeRendering() == false)
+    if (InitializeFrameResources() == false)
     {
         return StartupError::RenderingUnavailable;
     }
@@ -1671,7 +1671,7 @@ StartupError Start(const ApplicationInfo& app, const WindowInfo& window, uint32 
         { .MaxFrameDimension2D = GetVulkan().MaxDimension, .MaxUniformBufferSize = GetVulkan().MaxUniformSize });
     return StartupError::None;
 }
-void ShutdownRendering() noexcept
+static void ReleaseFrameResources() noexcept
 {
     if (GetVulkan().Device == VK_NULL_HANDLE)
     {
@@ -1704,9 +1704,9 @@ void ShutdownRendering() noexcept
 void Shutdown() noexcept
 {
     ReleaseCreatedSurfaces();
-    ShutdownRendering();
+    ReleaseFrameResources();
     ReleaseTargets();
-    // ShutdownRendering waited for every submission that wrote a hosted image.
+    // Frame resource teardown waited for every submission that wrote a hosted image.
     GetActiveSurface().HostedProducer.Disconnect();
     if (GetVulkan().Device != VK_NULL_HANDLE)
     {
@@ -2221,14 +2221,6 @@ FrameStatus End() noexcept
         }
     }
     return FrameStatus::Ready;
-}
-bool BeginFrame() noexcept
-{
-    return Begin() == FrameStatus::Ready;
-}
-bool EndFrame() noexcept
-{
-    return End() == FrameStatus::Ready;
 }
 ResourceStatus CreateShader(usize slot, const ShaderDescription& description, uint32) noexcept
 {

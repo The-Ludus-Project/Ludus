@@ -215,12 +215,13 @@ void HostedProfilingSession::acceptAcknowledgement(
         {
             mFailure = acknowledgement.Result == platform::HostedRecordingResult::Busy
                            ? QStringLiteral("The game is already recording for another request.")
-                           : QStringLiteral("The game cannot record GPU passes: it has no hosted GPU recorder, or its "
+                           : QStringLiteral("The game cannot record GPU timing: it has no hosted GPU recorder, or its "
                                             "device was created without GPU timing.");
             finish();
             return;
         }
         mProducer.StartFrame = acknowledgement.Frame;
+        mProducer.IsPassTimingSupported = acknowledgement.IsPassTimingSupported;
         mProducer.StartAcknowledgedTicks = acknowledgement.Ticks;
         mProducer.StartReceivedTicks = now;
         mPhase = HostedRecordingPhase::Recording;
@@ -244,8 +245,10 @@ void HostedProfilingSession::acceptSample(const platform::HostedRecordingSample&
 {
     // Only this recording's samples, from its acknowledged start frame on. Frame numbers
     // restart with every game process, so the recording identity is what separates them.
+    // A device without per-pass counters sends whole frames, and only then.
     if ((mPhase != HostedRecordingPhase::Recording && mPhase != HostedRecordingPhase::Stopping) ||
-        sample.Recording != mProducer.Recording || sample.Frame < mProducer.StartFrame)
+        sample.Recording != mProducer.Recording || sample.Frame < mProducer.StartFrame ||
+        sample.IsFrame == mProducer.IsPassTimingSupported)
     {
         ++mProducer.RejectedSamples;
         return;
@@ -294,7 +297,7 @@ profiling::GpuTraceCoverage HostedProfilingSession::GetCoverage() const noexcept
     return
     {
         .IsGpuRequested = true,
-        .IsPassTimingSupported = HasStarted(),
+        .IsPassTimingSupported = HasStarted() == true && mProducer.IsPassTimingSupported == true,
         .EligibleFrames = producer.SubmittedFrames,
         .InvalidSamples = producer.InvalidSamples,
         .DroppedSamples = producer.DroppedSamples + mEditorDroppedSamples + mEndpointDroppedEvents,
@@ -337,6 +340,11 @@ void AppendHostedProducerTrace(QJsonObject& inoutTrace, const HostedProducerReco
         {QStringLiteral("recording"), ToJson(producer.Recording)},
         {QStringLiteral("frameNumbering"), QStringLiteral("game recorder's submitted frames, from one per process")},
         {QStringLiteral("startFrame"), ToJson(producer.StartFrame)},
+        {QStringLiteral("passTimingSupported"), producer.IsPassTimingSupported},
+        {QStringLiteral("sampleKind"),
+         producer.IsPassTimingSupported == true
+             ? QStringLiteral("named physical passes")
+             : QStringLiteral("whole frames: the game's device has no per-pass counters")},
         {QStringLiteral("stopFrame"), ToJson(producer.StopFrame)},
         {QStringLiteral("firstSampleFrame"), ToJson(producer.FirstSampleFrame)},
         {QStringLiteral("lastSampleFrame"), ToJson(producer.LastSampleFrame)},

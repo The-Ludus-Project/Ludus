@@ -48,5 +48,114 @@ class NativeTests(unittest.TestCase):
             self.assertNotEqual(result.returncode, 0)
             self.assertEqual(output.read_bytes(), b"original")
 
+@unittest.skipIf(sys.version_info < (3, 11), "optional TOML tool requires Python 3.11+")
+class StartupManifestTests(unittest.TestCase):
+    MANIFEST = """version = 1
+engine = ["frames.toml", "headless.toml"]
+project = ["project.toml"]
+
+[profiles.preview]
+files = ["profile.toml"]
+devices = ["portable"]
+qualities = ["low"]
+
+[devices]
+portable = ["device.toml"]
+other = ["unused.toml"]
+
+[qualities]
+low = ["quality.toml"]
+high = ["unused.toml"]
+"""
+
+    def setUp(self):
+        directory = tempfile.TemporaryDirectory()
+        self.addCleanup(directory.cleanup)
+        self.root = Path(directory.name)
+        self.manifest = self.root / "startup.toml"
+        self.output = self.root / "startup.json"
+        self.manifest.write_text(self.MANIFEST, encoding="utf-8")
+        for index, filename in enumerate(("frames", "project", "profile", "device", "quality"), 1):
+            (self.root / f"{filename}.toml").write_text(f"[host]\nmax_frames = {index}\n", encoding="utf-8")
+        (self.root / "headless.toml").write_text("[host]\nheadless = true\n", encoding="utf-8")
+
+    def run_cooker(self, *selection):
+        return subprocess.run(
+            [sys.executable, str(Path(cook.__file__).resolve()), str(self.manifest), str(self.output),
+             "--validator", str(Path(VALIDATOR).resolve()), *selection],
+            cwd=self.root.parent, capture_output=True, timeout=15,
+        )
+
+    def test_selected_layers_are_canonical_and_independent_of_input_order(self):
+        result = self.run_cooker("--profile", "preview", "--device", "portable", "--quality", "low")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        first = self.output.read_bytes()
+        layers = json.loads(first)["layers"]
+        self.assertEqual(list(layers), ["engine", "project", "profile", "device", "quality"])
+        for index, (name, layer) in enumerate(layers.items(), 1):
+            self.assertEqual(layer["layer"], name)
+            self.assertEqual(layer["values"][-1]["value"], str(index))
+        self.assertEqual([record["source"] for record in layers["engine"]["values"]],
+                         ["headless.toml", "frames.toml"])
+        self.manifest.write_text(self.MANIFEST.replace('"frames.toml", "headless.toml"',
+                                                       '"headless.toml", "frames.toml"'), encoding="utf-8")
+        result = self.run_cooker("--quality", "low", "--device", "portable", "--profile", "preview")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(self.output.read_bytes(), first)
+
+    def test_unknown_incompatible_and_malformed_selections_preserve_output(self):
+        self.output.write_bytes(b"previous")
+        for selection, message in (
+            (("missing", None, None), "unknown profile"),
+            (("preview", "missing", None), "unknown device"),
+            (("preview", "other", None), "incompatible"),
+            (("preview", None, "high"), "incompatible"),
+        ):
+            with self.subTest(selection=selection):
+                with self.assertRaisesRegex(ValueError, message):
+                    cook.cook_startup(self.manifest, self.output, Path(VALIDATOR), *selection)
+
+        for options, message in (
+            (("--profile", "preview", "--device", "other"), b"incompatible"),
+            (("--device", "portable"), b"require --profile"),
+            (("--profile", "preview", "--profile", "missing"), b"at most one --profile"),
+        ):
+            with self.subTest(options=options):
+                result = self.run_cooker(*options)
+                self.assertNotEqual(result.returncode, 0)
+                self.assertIn(message, result.stderr)
+                self.assertEqual(self.output.read_bytes(), b"previous")
+
+        for content, message in (
+            (self.MANIFEST.replace("version = 1", "version = true"), "use version = 1"),
+            (self.MANIFEST.replace('"portable"', '"unlisted"', 1), "corresponding manifest table"),
+            (self.MANIFEST.replace("frames.toml", "../frames.toml"), "relative .toml paths"),
+            ("#" * (cook.MAX_BYTES + 1), "TOML input exceeds"),
+            (self.MANIFEST.replace('"frames.toml", "headless.toml"',
+                                   ", ".join(f'"source-{i}.toml"' for i in range(cook.MAX_FILES_PER_LAYER + 1))),
+             "at most"),
+        ):
+            with self.subTest(message=message):
+                self.manifest.write_text(content, encoding="utf-8")
+                with self.assertRaisesRegex(ValueError, message):
+                    cook.cook_startup(self.manifest, self.output, Path(VALIDATOR), "preview", None, None)
+
+    def test_same_rank_duplicates_and_masked_invalid_values_are_rejected(self):
+        self.output.write_bytes(b"previous")
+        source = self.root / "headless.toml"
+        source.write_text("[host]\nmax_frames = 2\n", encoding="utf-8")
+        result = self.run_cooker("--profile", "preview")
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn(b"duplicate engine setting 'host.max_frames'", result.stderr)
+        self.assertEqual(self.output.read_bytes(), b"previous")
+
+        source.write_text("[host]\nheadless = true\n", encoding="utf-8")
+        (self.root / "frames.toml").write_text("[host]\nmax_frames = -1\n", encoding="utf-8")
+        result = self.run_cooker("--profile", "preview", "--quality", "low")
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn(b"engine layer", result.stderr)
+        self.assertEqual(self.output.read_bytes(), b"previous")
+
+
 if __name__ == "__main__":
     unittest.main()

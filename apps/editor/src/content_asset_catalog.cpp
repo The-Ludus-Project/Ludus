@@ -1,10 +1,10 @@
 #include "internal/content_browser.h"
 
 #include <ludus/content/scene_cook/limits.h>
+#include <ludus/content/scene_format/limits.h>
+#include <ludus/content/scene_format/luscn.h>
 
 #include <QByteArray>
-#include <QDir>
-#include <QFile>
 #include <QJsonArray>
 #include <QJsonDocument>
 #include <QJsonObject>
@@ -15,59 +15,118 @@ namespace ludus::editor
 namespace
 {
 using foundation::usize;
+namespace format = content::scene_format;
+constexpr usize MAX_COOKED_TEXTURE_FILE_BYTES = sizeof(format::TextureRecord) + format::MAX_TEXTURE_BYTES;
 
-/// Catalog location below the project root, as scene_assets.cpp publishes it.
-constexpr QLatin1StringView SCENE_CATALOG_PATH("assets/catalog.json");
-
-/// A material's source name, or an empty string when its description records none or cannot be read.
-[[nodiscard]] QString ReadMaterialName(const QString& path)
+[[nodiscard]] std::string_view GetView(const QByteArray& bytes) noexcept
 {
-    QFile file(path);
-    if (file.open(QIODevice::ReadOnly) == false)
+    return {bytes.constData(), static_cast<usize>(bytes.size())};
+}
+
+[[nodiscard]] content::Status ValidatePreviewArtifact(std::string_view root,
+                                                      const QJsonObject& fields,
+                                                      const QJsonObject& resources,
+                                                      ContentRow& inoutRow,
+                                                      QString& outProblem)
+{
+    const bool isTexture = inoutRow.Type == ContentType::Texture;
+    content::Bytes bytes;
+    const content::Status status =
+        content::ReadFile(root,
+                          GetView(inoutRow.Path.toUtf8()),
+                          isTexture ? MAX_COOKED_TEXTURE_FILE_BYTES : content::scene_cook::MAX_METADATA_BYTES,
+                          bytes);
+    const QString identity = QStringLiteral("%1 (%2)").arg(inoutRow.Id, inoutRow.Path);
+    if (status != content::Status::Ok)
     {
-        return {};
+        outProblem = QStringLiteral("Could not read cooked artifact %1.").arg(identity);
+        return status;
     }
-    const QByteArray bytes = file.read(static_cast<qint64>(content::scene_cook::MAX_METADATA_BYTES) + 1);
-    if (static_cast<usize>(bytes.size()) > content::scene_cook::MAX_METADATA_BYTES)
+
+    const content::Digest digest = content::Hash(bytes.Data());
+    const QByteArray hexDigest =
+        QByteArray::fromRawData(reinterpret_cast<const char*>(digest.Data), sizeof(digest.Data)).toHex();
+    if (fields.value(QStringLiteral("sha256")).toString().toLatin1() != hexDigest ||
+        fields.value(QStringLiteral("bytes")).toInteger(-1) != static_cast<qint64>(bytes.Data().size()))
     {
-        return {};
+        outProblem = QStringLiteral("Cooked artifact %1 does not match its catalog digest or size.").arg(identity);
+        return content::Status::Invalid;
     }
-    const QJsonObject material = QJsonDocument::fromJson(bytes).object();
-    return material.value(QStringLiteral("source_material")).toObject().value(QStringLiteral("name")).toString();
+    if (isTexture == true)
+    {
+        if (IsValidCookedTexture(bytes.Data()) == true)
+        {
+            return content::Status::Ok;
+        }
+        outProblem = QStringLiteral("Cooked texture %1 has an invalid texel record.").arg(identity);
+        return content::Status::Invalid;
+    }
+
+    const QByteArray view =
+        QByteArray::fromRawData(bytes.String().data(), static_cast<qsizetype>(bytes.String().size()));
+    const QJsonDocument material = QJsonDocument::fromJson(view);
+    if (material.isObject() == false)
+    {
+        outProblem = QStringLiteral("Cooked material %1 is not a JSON object.").arg(identity);
+        return content::Status::Invalid;
+    }
+    const QJsonObject dependencyKeys = fields.value(QStringLiteral("dependency_keys")).toObject();
+    for (const QString& dependency : inoutRow.Dependencies)
+    {
+        const QString key = resources.value(dependency).toObject().value(QStringLiteral("key")).toString();
+        if (key.isEmpty() == true || dependencyKeys.value(dependency).toString() != key)
+        {
+            outProblem = QStringLiteral("Cooked material %1 has a stale binding for %2.").arg(identity, dependency);
+            return content::Status::Invalid;
+        }
+    }
+    const QJsonObject description = material.object();
+    const QString textureId = description.value(QStringLiteral("texture")).toString();
+    if (textureId.isEmpty() == false &&
+        (inoutRow.Dependencies.contains(textureId) == false ||
+         resources.value(textureId).toObject().value(QStringLiteral("kind")).toString() != QStringLiteral("texture")))
+    {
+        outProblem = QStringLiteral("Cooked material %1 has no texture binding for %2.").arg(identity, textureId);
+        return content::Status::Invalid;
+    }
+    inoutRow.Label =
+        description.value(QStringLiteral("source_material")).toObject().value(QStringLiteral("name")).toString();
+    return content::Status::Ok;
 }
 } // namespace
 
-// The catalog is replaced as a whole when an import commits (assets/catalog.json is the commit point, see
-// ludus/content/scene_cook/scene_assets.h), so one read observes one complete version without the writer lock.
+// The catalog is replaced as a whole when an import commits. Each preview artifact is opened at its
+// catalog path and checked independently before any rows from this candidate are published.
 content::Status ReadSceneAssetRows(const QString& root, QVector<ContentRow>& outRows, QString& outProblem)
 {
-    outRows.clear();
     outProblem.clear();
-    QFile file(QDir(root).filePath(SCENE_CATALOG_PATH));
-    if (file.exists() == false)
+    const QByteArray encodedRoot = root.toUtf8();
+    content::Bytes bytes;
+    const content::Status status =
+        content::ReadFile(GetView(encodedRoot), COOKED_CATALOG_PATH, content::scene_cook::MAX_CATALOG_BYTES, bytes);
+    if (status == content::Status::NotFound)
     {
+        outRows.clear();
         return content::Status::Ok;
     }
-    if (file.open(QIODevice::ReadOnly) == false)
+    if (status != content::Status::Ok)
     {
-        outProblem = QStringLiteral("assets/catalog.json cannot be read: %1").arg(file.errorString());
-        return content::Status::IoError;
+        outProblem = QStringLiteral("Could not read assets/catalog.json within the scene catalog limit.");
+        return status;
     }
-    const QByteArray bytes = file.read(static_cast<qint64>(content::scene_cook::MAX_CATALOG_BYTES) + 1);
-    if (static_cast<usize>(bytes.size()) > content::scene_cook::MAX_CATALOG_BYTES)
-    {
-        outProblem = QStringLiteral("assets/catalog.json is larger than the scene catalog limit.");
-        return content::Status::Limit;
-    }
+    const QByteArray view =
+        QByteArray::fromRawData(bytes.String().data(), static_cast<qsizetype>(bytes.String().size()));
     QJsonParseError error;
-    const QJsonDocument document = QJsonDocument::fromJson(bytes, &error);
-    const QJsonObject resources = document.object().value(QStringLiteral("resources")).toObject();
-    if (error.error != QJsonParseError::NoError || document.isObject() == false)
+    const QJsonDocument document = QJsonDocument::fromJson(view, &error);
+    const QJsonValue resourcesValue = document.object().value(QStringLiteral("resources"));
+    if (error.error != QJsonParseError::NoError || resourcesValue.isObject() == false)
     {
-        outProblem = QStringLiteral("assets/catalog.json is not valid JSON: %1").arg(error.errorString());
+        outProblem = QStringLiteral("assets/catalog.json has invalid JSON or is missing its resources object.");
         return content::Status::Invalid;
     }
-    outRows.reserve(resources.size());
+    const QJsonObject resources = resourcesValue.toObject();
+    QVector<ContentRow> rows;
+    rows.reserve(resources.size());
     for (QJsonObject::const_iterator record = resources.constBegin(); record != resources.constEnd(); ++record)
     {
         const QJsonObject fields = record.value().toObject();
@@ -85,12 +144,18 @@ content::Status ReadSceneAssetRows(const QString& root, QVector<ContentRow>& out
         {
             row.Dependencies.append(dependencies.at(index).toString());
         }
-        if (row.Type == ContentType::Material && row.Path.isEmpty() == false)
+        if (row.Type == ContentType::Texture || row.Type == ContentType::Material)
         {
-            row.Label = ReadMaterialName(QDir(root).filePath(row.Path));
+            const content::Status artifactStatus =
+                ValidatePreviewArtifact(GetView(encodedRoot), fields, resources, row, outProblem);
+            if (artifactStatus != content::Status::Ok)
+            {
+                return artifactStatus;
+            }
         }
-        outRows.append(row);
+        rows.append(row);
     }
+    outRows.swap(rows);
     return content::Status::Ok;
 }
 } // namespace ludus::editor

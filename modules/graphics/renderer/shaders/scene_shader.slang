@@ -1352,9 +1352,11 @@ RayLightEvaluation EvaluateLightAlongRay(SceneContext scene,
     }
     return result;
 }
-/// Draw a pseudorandom float in [0,1) at an explicit address, without advancing queries.
+/// Draw a uniform pseudorandom float in [0,1) for an explicit pixel sample dimension.
+/// The draw uses the launch seed, linear pixel index and progressive sample index.
+/// The automatic invocation stream is unaffected.
 /// @pre dimension is no greater than FoundationMath's RANDOM_MAX_DIMENSION.
-float SampleSceneRandom(RayLaunch launch, uint dimension)
+float SampleUniformFloat01(RayLaunch launch, uint dimension)
 {
     uint pixel = launch.PositionPixel.y * launch.ExtentPixel.x + launch.PositionPixel.x;
     return SampleRandomFloat01(launch.Seed, PixelRandomAddress(pixel, launch.SampleIndex, dimension));
@@ -1453,7 +1455,7 @@ SceneLightSample SampleLight(SceneContext scene,
 /// Available in ray generation, closest-hit and miss with no ScenePayload fields.
 /// Forward the same queries through callbacks; do not reset or copy its state.
 /// Exhaustion latches HasFailed and returns zero, preventing sample publication.
-/// Explicit launch/dimension overloads address their own draws and do not advance this stream.
+/// Use SampleUniformFloat01 to draw at an explicit pixel sample dimension.
 float SampleSceneRandom(inout RayQueryContext queries)
 {
     uint dimension;
@@ -1783,7 +1785,7 @@ struct SpecularChain
 /// tracer handles delta bounces this way: emission found after one takes the full MIS weight. Thanks to Matt Pharr,
 /// Wenzel Jakob and Greg Humphreys, Physically Based Rendering, 4th edition, section 13.4 (A Better Path Tracer),
 /// https://pbr-book.org/4ed/Light_Transport_I_Surface_Reflection/A_Better_Path_Tracer.
-/// Draws event k at SampleSceneRandom(launch, firstDimension + k); reserve SCENE_SPECULAR_CHAIN_DIMENSIONS of them
+/// Draws event k at SampleUniformFloat01(launch, firstDimension + k); reserve SCENE_SPECULAR_CHAIN_DIMENSIONS of them
 /// and SCENE_SPECULAR_CHAIN_EVENTS surface queries. Emission of the final Hit is left to the caller. A hit that is
 /// not glass returns itself with unit throughput and no queries.
 SpecularChain FollowSpecularChain(SceneContext scene,
@@ -1815,7 +1817,7 @@ SpecularChain FollowSpecularChain(SceneContext scene,
         StandardBsdfTransportSample sampled =
             SampleDielectricTransport(material,
                                       chain.ViewDirectionWorld,
-                                      float3(SampleSceneRandom(launch, firstDimension + chain.Events), 0, 0),
+                                      float3(SampleUniformFloat01(launch, firstDimension + chain.Events), 0, 0),
                                       isViewerInside);
         bool isOnViewerSide = (dot(geometricNormalWorld, sampled.DirectionWorld) > 0) == (isViewerInside == false);
         if (sampled.HasSample == false || isOnViewerSide == sampled.IsTransmission)
@@ -1889,13 +1891,12 @@ SceneInfo GetSceneInfo(SceneContext scene)
     result.EmitterCount = GetEmitterCount(scene);
     return result;
 }
-Ray MakeCameraRay(RayLaunch launch, float2 samplePixel)
+Ray MakeCameraRayAtClipPosition(RayLaunch launch, float2 positionClip)
 {
-    float2 positionUv = (float2(launch.PositionPixel) + samplePixel) / float2(launch.ExtentPixel);
     CameraRaySegment camera = MakeCameraRaySegment(launch.CameraClipToEye,
                                                    launch.CameraPositionWorld,
                                                    launch.IsOrthographic,
-                                                   float2(positionUv.x * 2 - 1, 1 - positionUv.y * 2),
+                                                   positionClip,
                                                    0);
     Ray ray;
     ray.OriginWorld = camera.OriginWorld;
@@ -1903,6 +1904,42 @@ Ray MakeCameraRay(RayLaunch launch, float2 samplePixel)
     ray.MinDistanceWorld = camera.MinDistanceWorld;
     ray.MaxDistanceWorld = camera.MaxDistanceWorld;
     return ray;
+}
+
+Ray MakeCameraRay(RayLaunch launch, float2 samplePixel)
+{
+    float2 positionUv = (float2(launch.PositionPixel) + samplePixel) / float2(launch.ExtentPixel);
+    return MakeCameraRayAtClipPosition(launch, float2(positionUv.x * 2 - 1, 1 - positionUv.y * 2));
+}
+
+/// Build the camera ray through positionWorld (in metres) using the launch's camera and clip distances.
+/// Accepts positions outside the image. Returns false and clears outRay if the projection is undefined
+/// or if the position is at or behind a perspective camera.
+bool TryMakeCameraRayFromWorldPosition(RayLaunch launch, float3 positionWorld, out Ray outRay)
+{
+    outRay = (Ray)0;
+    float3 positionEye = positionWorld - launch.CameraPositionWorld;
+    float4x4 columnsClipToEye = transpose(launch.CameraClipToEye);
+    // Eliminate the homogeneous eye-space scale using positionEye, then solve for clip x/w and y/w.
+    float3 horizontalEye = columnsClipToEye[0].xyz - positionEye * columnsClipToEye[0].w;
+    float3 verticalEye = columnsClipToEye[1].xyz - positionEye * columnsClipToEye[1].w;
+    float3 depthEye = columnsClipToEye[2].xyz - positionEye * columnsClipToEye[2].w;
+    float3 offsetEye = positionEye * columnsClipToEye[3].w - columnsClipToEye[3].xyz;
+    float3 horizontalNormalEye = cross(verticalEye, depthEye);
+    float determinant = dot(horizontalEye, horizontalNormalEye);
+    if (determinant == 0 || isfinite(determinant) == false)
+        return false;
+
+    float2 positionClip =
+        float2(dot(offsetEye, horizontalNormalEye), dot(horizontalEye, cross(offsetEye, depthEye))) / determinant;
+    if (all(isfinite(positionClip)) == false)
+        return false;
+
+    Ray ray = MakeCameraRayAtClipPosition(launch, positionClip);
+    if (IsSceneRayValid(ray) == false || (launch.IsOrthographic == false && dot(positionEye, ray.DirectionWorld) <= 0))
+        return false;
+    outRay = ray;
+    return true;
 }
 
 float4 SampleMaterialTexture(SceneContext scene, SurfaceHit hit, float2 texcoordUv, uint mapIndex)

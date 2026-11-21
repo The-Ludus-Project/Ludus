@@ -411,7 +411,8 @@ public:
 
 Q_SIGNALS:
     void PreparingSubmission();
-    void SubmissionRecorded();
+    /// Exact cooked-package SHA-256 of the graph that submitted this frame.
+    void SubmissionRecorded(const QByteArray& runtimeIdentity);
     /// A new complete GPU snapshot or CPU fallback image replaced the presented frame.
     void FramePresented();
     /// Activation or candidate state changed; the status text may differ.

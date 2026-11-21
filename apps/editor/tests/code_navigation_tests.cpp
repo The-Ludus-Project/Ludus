@@ -7,6 +7,7 @@
 
 #include <QAction>
 #include <QApplication>
+#include <QColor>
 #include <QCoreApplication>
 #include <QDialog>
 #include <QFrame>
@@ -22,9 +23,11 @@
 #include <QRect>
 #include <QSignalSpy>
 #include <QTest>
+#include <QTextBlock>
 #include <QTextCursor>
 #include <QTextDocument>
 #include <QTextEdit>
+#include <QTextLayout>
 #include <QTimer>
 
 using namespace ludus::editor;
@@ -36,6 +39,20 @@ QJsonObject MakeRange(int32 line, int32 start, int32 end)
     return {
         {QStringLiteral("start"), QJsonObject{{QStringLiteral("line"), line}, {QStringLiteral("character"), start}}},
         {QStringLiteral("end"), QJsonObject{{QStringLiteral("line"), line}, {QStringLiteral("character"), end}}}};
+}
+
+QColor ForegroundAt(const CodeEditor& editor, int position)
+{
+    const QTextBlock block = editor.document()->findBlock(position);
+    const int offset = position - block.position();
+    for (const QTextLayout::FormatRange& range : block.layout()->formats())
+    {
+        if (offset >= range.start && offset < range.start + range.length)
+        {
+            return range.format.foreground().color();
+        }
+    }
+    return {};
 }
 } // namespace
 
@@ -346,18 +363,92 @@ TEST_CASE("Generated definitions are inspected read-only without changing the au
     CodeEditor editor;
     editor.setPlainText(QStringLiteral("authored"));
     bool isReadOnly = false;
+    bool hasLineNumbers = false;
+    bool hasSlangHighlighting = false;
+    QString title;
+    QString bodyLabel;
+    CodeLanguage language = CodeLanguage::PlainText;
     QTimer::singleShot(0, &editor, [&]() {
-        QPlainTextEdit* sourceOrNull = editor.findChild<QPlainTextEdit*>(QStringLiteral("codeNavigationReadOnly"));
+        CodeEditor* sourceOrNull = editor.findChild<CodeEditor*>(QStringLiteral("codeNavigationReadOnly"));
         if (sourceOrNull != nullptr)
         {
+            QDialog* dialogOrNull = qobject_cast<QDialog*>(sourceOrNull->parentWidget());
             isReadOnly = sourceOrNull->isReadOnly() == true &&
                          sourceOrNull->textCursor().selectedText() == QStringLiteral("Scene");
-            static_cast<QDialog*>(sourceOrNull->parentWidget())->reject();
+            language = sourceOrNull->GetLanguage();
+            QWidget* gutterOrNull = sourceOrNull->findChild<QWidget*>(QStringLiteral("codeEditorGutter"));
+            hasLineNumbers = gutterOrNull != nullptr && gutterOrNull->isVisible() == true && gutterOrNull->width() > 0;
+            // The visible Slang lexer colours after a zero-delay refresh once the dialog is on screen.
+            QApplication::processEvents();
+            static_cast<void>(sourceOrNull->grab());
+            const QString text = sourceOrNull->toPlainText();
+            const QColor structure =
+                ForegroundAt(*sourceOrNull, static_cast<int>(text.indexOf(QStringLiteral("struct"))));
+            const QColor name = ForegroundAt(*sourceOrNull, static_cast<int>(text.indexOf(QStringLiteral("Scene"))));
+            hasSlangHighlighting = structure.isValid() == true && structure != name;
+            if (dialogOrNull != nullptr)
+            {
+                title = dialogOrNull->windowTitle();
+                for (QLabel* item : dialogOrNull->findChildren<QLabel*>())
+                {
+                    if (item->text().contains(QStringLiteral("Scene")) == true)
+                    {
+                        bodyLabel = item->text();
+                    }
+                }
+                dialogOrNull->reject();
+            }
         }
     });
-    CHECK(editor.GetNavigation().Navigate(
-              {QStringLiteral("Scene API"), {}, QStringLiteral("struct Scene {};"), 7, 12, true}) == true);
+    CHECK(editor.GetNavigation().Navigate({QStringLiteral("Scene — shader context, line 1 (read-only)"),
+                                           {},
+                                           QStringLiteral("struct Scene {};"),
+                                           7,
+                                           12,
+                                           true}) == true);
     CHECK(isReadOnly == true);
+    CHECK(language == CodeLanguage::Slang);
+    CHECK(hasLineNumbers == true);
+    CHECK(hasSlangHighlighting == true);
+    CHECK(title == QStringLiteral("Shader definition"));
+    CHECK(bodyLabel.contains(QStringLiteral("read-only")) == true);
+    CHECK(title.contains(QStringLiteral("read-only"), Qt::CaseInsensitive) == false);
     CHECK(editor.toPlainText() == QStringLiteral("authored"));
     CHECK(editor.document()->isUndoAvailable() == false);
+}
+
+TEST_CASE("Navigation status names a single location and keeps the hint short", "[editor][code-navigation]")
+{
+    const QString uri = QStringLiteral("file:///context.slang");
+    const QString prefix = QStringLiteral("struct Generated {};\n");
+    const QString source = QStringLiteral("float Value() { return 1; }\n");
+    const QString unit = prefix + source;
+    const QJsonObject link{{QStringLiteral("targetUri"), uri},
+                           {QStringLiteral("targetSelectionRange"), MakeRange(0, 7, 16)}};
+    QString message;
+    const QList<CodeNavigationTarget> one = ReadCodeNavigationResults(CodeNavigationKind::Definition,
+                                                                      QJsonArray{link},
+                                                                      uri,
+                                                                      unit,
+                                                                      prefix,
+                                                                      source,
+                                                                      QStringLiteral("color.slang"),
+                                                                      {},
+                                                                      message);
+    REQUIRE(one.size() == 1);
+    CHECK(message == QStringLiteral("1 location. Enter to jump."));
+
+    const QJsonObject second{{QStringLiteral("targetUri"), uri},
+                             {QStringLiteral("targetSelectionRange"), MakeRange(0, 0, 6)}};
+    const QList<CodeNavigationTarget> many = ReadCodeNavigationResults(CodeNavigationKind::Definition,
+                                                                       QJsonArray{link, second},
+                                                                       uri,
+                                                                       unit,
+                                                                       prefix,
+                                                                       source,
+                                                                       QStringLiteral("color.slang"),
+                                                                       {},
+                                                                       message);
+    REQUIRE(many.size() == 2);
+    CHECK(message == QStringLiteral("2 locations. Enter to jump."));
 }

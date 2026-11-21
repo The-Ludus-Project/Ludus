@@ -64,9 +64,73 @@ across tiles for identical shared positions. Positions and indices use the
 same decoded triangles as the queries. Every non-success status preserves
 the tile, contact or mesh buffers supplied to the operation.
 
-This slice covers solid height tiles and the raw height payload. Cook manifests,
-holes, physical materials, residency and renderer/physics adapters are governed
-by the [terrain architecture](../../architecture/terrain.md#performance-and-delivery-gates).
+This slice covers solid height tiles and the raw height payload. Holes, physical
+materials, residency and renderer/physics adapters are governed by the
+[terrain architecture](../../architecture/terrain.md#performance-and-delivery-gates).
+
+## Versioned page cooking
+
+`terrain_cook.h` cooks one complete elevation field into a terrain revision: a
+manifest plus a pack of independently readable height pages. The wire layout is
+owned by the header-only `Ludus::TerrainFormat` target
+(`ludus/content/terrain_format/`), which both the cooker and any reader include.
+It follows the [cooked format contract](../../architecture/terrain-generation.md#cooked-format-and-validation).
+
+1. Describe the revision with a `TerrainRevisionLayout`: the revision number,
+   your recipe version and source digest, the first page's tile address, the
+   page counts on X and Z, cells per page, spacing and the shared height codec.
+   The field has `PagesX * CellsPerPage + 1` columns and
+   `PagesZ * CellsPerPage + 1` rows. Field sample (0, 0) is the first page's
+   minimum global sample.
+2. Call `TryCookTerrainRevision` to cook every page serially. To cook pages on
+   several workers, call `TryCookTerrainPage` for each page address from the
+   same immutable field, then pass all of them, in any order, to
+   `TryAssembleTerrainRevision`. The output bytes do not depend on the order.
+3. Store `GetManifestBytes()` and `GetPagePackBytes()`. To read, validate the
+   manifest with `TryReadTerrainManifest`, then fetch one page's byte range
+   from its `TerrainPageRecord` (`ByteOffset`, `ByteSize`). Decode it with
+   `TryReadTerrainPage`, which needs no other page.
+4. Use `TerrainPage::GetTile()` with the existing tile queries, mesh export and
+   `CheckTerrainTileSeam`. `TryGetTerrainPageHeight` also reads the halo.
+
+Each page stores its core samples and a one-sample halo. The core is exactly the
+tile height payload version 1. The halo lets a page compute central-difference
+normals at its border without loading a neighbour. Inside the domain a halo
+sample repeats the code of the page that owns it. Outside the domain it repeats
+the nearest domain sample, so the boundary uses a one-sided difference, as the
+manifest's `ClampToEdge` boundary extension declares. Assembly checks every
+shared edge, corner and halo sample against its owner and returns
+`BorderMismatch` instead of publishing disagreeing pages.
+
+Records carry the page address, the revision that last cooked the page, the
+lowest and highest core code, and the largest quantization error in metres. They
+also carry an XXH3-128 digest of the payload. Readers check the magic, the
+format version, the exact size, the tags, the canonical page order, contiguous
+byte ranges, code bounds and both digests before exposing a page. Truncation,
+trailing bytes, out-of-range fields and pages from another range fail with a
+`TerrainCookStatus` and leave outputs unchanged. `Ludus::TerrainFormat`'s
+`limits.h` owns the admission limits.
+
+### Recook after an edit
+
+`TryCollectTerrainEditPages` lists the pages whose core or halo contains a
+sample of an edited rectangle. Use it to show the rebuild scope before an
+expensive edit. `TryRecookTerrainRevision` takes the base manifest and pack, the
+same layout with a later revision, the complete new field and the edited
+rectangle. It cooks those pages at the new revision and copies every other page
+after checking its digest. Reused pages keep their content revision. The
+result decodes to the same heights, and the same payload digests, as a full cook
+of the new field. Declare every changed sample in the rectangle. If the
+rectangle misses a change next to a page border, the border check rejects the
+recook. A change elsewhere is not detected, so derive the rectangle from the
+edit's support.
+
+Only heights are cooked. Drainage, rivers and other regional products can
+depend on the whole domain; recompute them from the complete field rather than
+from the edited pages. Material, hole and coarse-level channels are later
+format versions. The cooker produces bytes in memory. Write the manifest last,
+or into an immutable revision directory, so an interrupted publication leaves
+the previous revision usable.
 
 ## Elevation recipe (`terrain_noise.h`)
 
@@ -178,11 +242,16 @@ surface before deriving slope, wetness or materials from it.
 | Cells per patch edge | 1 through 256 |
 | Halo samples | 0 through 4 |
 | River profile reach | 16 samples from the channel centre |
+| Cells per cooked page edge | 1 through 256 |
+| Cells per cooked revision axis | 4096 |
+| Pages per cooked revision | 4096 |
+| Halo samples per cooked page | 1 |
 
 The tiled codec, queries and mesh export, elevation recipe, slope, drainage,
-wetness, rules and palettes, river networks and carving have regression tests in
-`modules/content/terrain/tests`. File imports, stamps, thermal and hydraulic
-erosion, cook manifests and blended material textures remain future pipeline work.
+wetness, rules and palettes, river networks and carving, and versioned page
+cooking have regression tests in `modules/content/terrain/tests`. File imports,
+stamps, thermal and hydraulic erosion, material and hole channels, coarse page
+levels and blended material textures remain future pipeline work.
 The World editor uses
 these kernels to carve rivers and bake its terrain surface; see
 [World authoring](../../development/editor-workspace.md#s4-scene-authoring).

@@ -7,15 +7,14 @@
 
 #include <ludus/animation/skeleton.hpp>
 
+#include "internal/canonical_bytes.hpp"
 #include "internal/storage.hpp"
 
-#include <ludus/foundation/base/byte_order.hpp>
 #include <ludus/foundation/base/checked_integer.hpp>
 #include <ludus/foundation/containers/array.hpp>
 #include <ludus/foundation/containers/sort.hpp>
 #include <ludus/foundation/math/scalar.hpp>
 
-#include <bit>
 #include <new>
 #include <span>
 
@@ -37,43 +36,6 @@ constexpr usize COMPATIBILITY_HEADER_BYTES = sizeof(uint32) + sizeof(uint32) + s
 /// Canonical joint: identity, parent, subtree end and rest transform components.
 constexpr usize COMPATIBILITY_JOINT_BYTES =
     sizeof(uint64) + sizeof(uint32) + sizeof(uint32) + TRANSFORM_COMPONENT_COUNT * sizeof(float32);
-
-/// Little-endian writer over a buffer sized exactly for the canonical compatibility bytes.
-class CanonicalByteWriter final
-{
-public:
-    explicit CanonicalByteWriter(std::span<uint8> bytes) noexcept : mBytes(bytes) {}
-
-    void WriteUint32(uint32 value) noexcept
-    {
-        [[maybe_unused]] const bool isWritten = foundation::TryWriteLittleEndian(value, mBytes.subspan(mOffset));
-        LUDUS_ASSERT(isWritten == true);
-        mOffset += sizeof(uint32);
-    }
-
-    void WriteUint64(uint64 value) noexcept
-    {
-        [[maybe_unused]] const bool isWritten = foundation::TryWriteLittleEndian(value, mBytes.subspan(mOffset));
-        LUDUS_ASSERT(isWritten == true);
-        mOffset += sizeof(uint64);
-    }
-
-    void WriteFloat32(float32 value) noexcept
-    {
-        // Positive and negative zero describe the same transform; hash one spelling.
-        const float32 canonical = value == 0 ? 0.0F : value;
-        WriteUint32(std::bit_cast<uint32>(canonical));
-    }
-
-    [[nodiscard]] usize GetOffset() const noexcept
-    {
-        return mOffset;
-    }
-
-private:
-    std::span<uint8> mBytes;
-    usize mOffset = 0;
-};
 
 bool IsPackageHierarchyShapeValid(foundation::BorrowedView<const SkeletonJointRecord> joints,
                                   uint32& outMaxDepth) noexcept
@@ -186,7 +148,7 @@ bool TryComputeCompatibility(const detail::SkeletonStorage& storage,
     {
         return false;
     }
-    CanonicalByteWriter writer({bytes.GetData(), bytes.GetSize()});
+    detail::CanonicalByteWriter writer({bytes.GetData(), bytes.GetSize()});
     writer.WriteUint32(SKELETON_COMPATIBILITY_VERSION);
     writer.WriteUint32(static_cast<uint32>(count));
     writer.WriteFloat32(storage.MetersPerUnit);

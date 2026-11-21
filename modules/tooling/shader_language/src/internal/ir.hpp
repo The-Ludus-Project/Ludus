@@ -273,6 +273,10 @@ enum class IrHelperKind : foundation::uint8
     /// buffer's element count as `uint`. Type: the resource type. Symbol: the atomic binding whose
     /// `Atomic<T>` elements the parameter spells, or NO_SYMBOL.
     Dimensions,
+    /// Evaluate the operand once and return abs(ddx(value)) + abs(ddy(value)).
+    Fwidth,
+    /// Discard the fragment when any component of the operand is negative.
+    Clip,
 };
 
 /// @brief One generated helper; names are `_lusl` + kind + index, so they are deterministic.

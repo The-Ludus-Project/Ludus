@@ -70,8 +70,17 @@ constexpr std::string_view URI_SAFE = "/-._~";
 /// Scalar spellings offered by completion, with their vector and matrix forms.
 constexpr std::string_view SCALAR_NAMES[] =
     {"bool", "int16", "uint16", "int32", "uint32", "int64", "uint64", "float16", "float32", "float64"};
-constexpr std::string_view RESOURCE_NAMES[] =
-    {"Texture2D", "RWTexture2D", "SamplerState", "ConstantBuffer", "StructuredBuffer", "RWStructuredBuffer"};
+constexpr std::string_view RESOURCE_NAMES[] = {"Texture2D",
+                                               "Texture3D",
+                                               "TextureCube",
+                                               "Texture2DArray",
+                                               "DepthTexture2D",
+                                               "RWTexture2D",
+                                               "SamplerState",
+                                               "SamplerComparisonState",
+                                               "ConstantBuffer",
+                                               "StructuredBuffer",
+                                               "RWStructuredBuffer"};
 constexpr uint32 MIN_COMPONENTS = 2;
 constexpr uint32 MAX_COMPONENTS = 4;
 
@@ -723,6 +732,7 @@ private:
         analysis.Request.Files = analysis.Files.GetFiles();
         analysis.Request.Source = MakeView(GetView(document.Path));
         analysis.Request.IncludeDirectories = mOptions.IncludeDirectories;
+        analysis.Request.Configuration = mOptions.Configuration;
         analysis.Document = index;
         if (language::Preprocess(analysis.Request, analysis.Preprocessed) != language::Status::Ready)
         {

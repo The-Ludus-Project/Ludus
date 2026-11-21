@@ -660,27 +660,6 @@ void Shutdown() noexcept
     GetWebGpu().MaxUniformSize = 0;
     GetWebGpu().Session = 0;
 }
-bool Initialize(const ApplicationInfo&) noexcept
-{
-    return false;
-}
-bool ConnectWindow(const WindowInfo&) noexcept
-{
-    return false;
-}
-bool InitializeRendering() noexcept
-{
-    return false;
-}
-void ShutdownRendering() noexcept {}
-bool BeginFrame() noexcept
-{
-    return false;
-}
-bool EndFrame() noexcept
-{
-    return false;
-}
 bool AreSameCanvases(const char* first, const char* second) noexcept
 {
     return IsSameCanvas(first, second) == 1;

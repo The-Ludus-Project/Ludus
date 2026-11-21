@@ -4,7 +4,7 @@ bool ValidateSceneRandomLimits(SceneContext scene, RayLaunch launch, RayQueryCon
     RayQueryContext uniformQueries = queries;
     uniformQueries.NextRandomDimension = RANDOM_MAX_DIMENSION;
     float last = SampleSceneRandom(uniformQueries);
-    if (last != SampleSceneRandom(launch, RANDOM_MAX_DIMENSION) || uniformQueries.HasFailed == true)
+    if (last != SampleUniformFloat01(launch, RANDOM_MAX_DIMENSION) || uniformQueries.HasFailed == true)
         return false;
     float exhausted = SampleSceneRandom(uniformQueries);
     if (exhausted != 0 || uniformQueries.HasFailed == false ||
@@ -94,7 +94,7 @@ bool ValidateSceneWeightedSampling(RayLaunch launch, RayQueryContext queries)
     RayQueryContext vectorQueries = queries;
     for (uint dimension = 0; dimension < DRAW_COUNT; ++dimension)
     {
-        const uint expectedIndex = SampleSceneRandom(launch, dimension) < 0.25f ? 1 : 3;
+        const uint expectedIndex = SampleUniformFloat01(launch, dimension) < 0.25f ? 1 : 3;
         if (SampleSceneWeightedIndex(arrayQueries, weights) != expectedIndex ||
             SampleSceneWeightedIndex(vectorQueries, normalizedWeights) != expectedIndex ||
             arrayQueries.HasFailed == true || vectorQueries.HasFailed == true ||
@@ -105,7 +105,7 @@ bool ValidateSceneWeightedSampling(RayLaunch launch, RayQueryContext queries)
     // Max+max overflows an unscaled sum. Smallest+smallest can flush on some shader backends.
     const float largest = asfloat(0x7f7fffffu);
     const float smallest = asfloat(1u);
-    const uint expectedIndex = SampleSceneRandom(launch, 0) < 0.5f ? 0 : 1;
+    const uint expectedIndex = SampleUniformFloat01(launch, 0) < 0.5f ? 0 : 1;
     RayQueryContext largeQueries = queries;
     RayQueryContext smallQueries = queries;
     if (SampleSceneWeightedIndex(largeQueries, float2(largest, largest)) != expectedIndex ||
@@ -201,14 +201,14 @@ float3 GenerateRay(SceneContext scene, RayLaunch launch, inout RayQueryContext q
         FailSceneQuery(queries, LUDUS_SCENE_FAILURE_AUTHORED_FIRST);
     // Check automatic initialization against the independently addressed public API.
     float first = SampleSceneRandom(queries);
-    if (first != SampleSceneRandom(launch, 0))
+    if (first != SampleUniformFloat01(launch, 0))
         FailSceneQuery(queries, LUDUS_SCENE_FAILURE_AUTHORED_FIRST);
-    payload.ExpectedMissRandom = SampleSceneRandom(launch, 1);
+    payload.ExpectedMissRandom = SampleUniformFloat01(launch, 1);
     payload.ExpectedLightIndex = SelectLight(scene, launch, 1).LightIndex;
     uint shapeDimension = GetLightCount(scene) > 0 ? 2 : 1;
-    payload.ExpectedRandom = float3(SampleSceneRandom(launch, shapeDimension),
-                                    SampleSceneRandom(launch, shapeDimension + 1),
-                                    SampleSceneRandom(launch, shapeDimension + 2));
+    payload.ExpectedRandom = float3(SampleUniformFloat01(launch, shapeDimension),
+                                    SampleUniformFloat01(launch, shapeDimension + 1),
+                                    SampleUniformFloat01(launch, shapeDimension + 2));
     uint expectedIntegerOffset;
     const uint INTEGER_RANGE_MINIMUM = 5;
     const uint INTEGER_RANGE_WIDTH = 7;

@@ -38,6 +38,7 @@ struct ResourceDescription final
     int32 Stride = 0;
     QString Count{};
     bool IsPersistent = false;
+    QString StructType{};
 };
 
 QJsonObject FindRecord(const QJsonArray& records, const QString& identity)
@@ -127,6 +128,13 @@ ResolveResource(const ResourceContext& context, const QString& endpoint, int32& 
         result.Type = QStringLiteral("Buffer");
         result.Format = QStringLiteral("Bytes");
         result.IsPersistent = true;
+        const QJsonObject record = node.value(QStringLiteral("shader_struct")).toObject();
+        if (record.isEmpty() == false)
+        {
+            result.StructType = record.value(QStringLiteral("type")).toString();
+            result.Count = QString::number(record.value(QStringLiteral("count")).toInteger());
+            return result;
+        }
         result.Stride = node.contains(QStringLiteral("bytes_per_pixel")) == true
                             ? node.value(QStringLiteral("bytes_per_pixel")).toInt()
                             : static_cast<int32>(content::render_graph_format::RAY_BUFFER_WORD_BYTES);
@@ -456,6 +464,11 @@ RenderGraphResourceFeedback DescribeRenderGraphResource(const RenderGraphDocumen
     const ResourceDescription resource = ResolveResource(context, endpoint, remainingSteps);
     if (resource.Type == QStringLiteral("Buffer"))
     {
+        if (resource.StructType.isEmpty() == false)
+        {
+            return {QStringLiteral("%1 × %2").arg(resource.Count, resource.StructType),
+                    QStringLiteral("Build Graph resolves the byte capacity from the shared Slang struct.")};
+        }
         const QString count = resource.Count == QStringLiteral("ColorTarget") ? QStringLiteral("one per output pixel")
                               : resource.Count == QStringLiteral("RenderSize")
                                   ? QStringLiteral("connected RenderSize pixels")

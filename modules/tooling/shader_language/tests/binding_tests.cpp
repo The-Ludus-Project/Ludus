@@ -196,7 +196,7 @@ void Write(in uint32 index)
     const CheckedSource written = Check("void F(out SamplerState result)\n{\n}\n");
     CHECK(written.FindDiagnosticOrNull(DiagnosticCode::TypeMismatch) != nullptr);
     const CheckedSource array = Check("static const uint32 COUNT = 2;\nTexture2D<float32x4> images[COUNT];\n");
-    CHECK(array.FindDiagnosticOrNull(DiagnosticCode::TypeMismatch) != nullptr);
+    CHECK(array.GetStatus() == language::Status::Ready);
     const CheckedSource initialized = Check("SamplerState other = 0;\n");
     CHECK(initialized.FindDiagnosticOrNull(DiagnosticCode::InvalidInitializer) != nullptr);
     const CheckedSource assigned = Check(R"(void F()
@@ -209,7 +209,7 @@ void Write(in uint32 index)
     const CheckedSource indexed = Check("float32x4 F()\n{\n    return image[0];\n}\n");
     CHECK(indexed.FindDiagnosticOrNull(DiagnosticCode::InvalidOperands) != nullptr);
     const CheckedSource unknown = Check("float32x4 F()\n{\n    return image.Gather(imageSampler);\n}\n");
-    CHECK(unknown.FindDiagnosticOrNull(DiagnosticCode::UnknownMember) != nullptr);
+    CHECK(unknown.FindDiagnosticOrNull(DiagnosticCode::NoMatchingOverload) != nullptr);
     const CheckedSource sampler =
         Check("float32x4 F()\n{\n    return image.Sample(float32x2(0.5), float32x2(0.5));\n}\n");
     CHECK(sampler.FindDiagnosticOrNull(DiagnosticCode::TypeMismatch) != nullptr);
@@ -315,4 +315,142 @@ void Other()
         CheckedSource(std::string("[stage(fragment)]\nfloat32x4 Main(in SamplerState state)\n{\n    return "
                                   "float32x4(0.0);\n}\n"));
     CHECK(resourceParameter.FindDiagnosticOrNull(DiagnosticCode::TypeMismatch) != nullptr);
+}
+
+TEST_CASE("LUSL records texture kinds and reserves contiguous native array registers", "[shader-language][bindings]")
+{
+    std::string slang;
+    const language::LoweringResult result = Lower(R"(static const uint32 COUNT = 2;
+Texture3D<float32x4> volumes[COUNT];
+TextureCube<float32x4> sky;
+Texture2DArray<float32x4> layers;
+SamplerState samplers[COUNT];
+DepthTexture2D depthImage;
+SamplerComparisonState depthSampler;
+[stage(fragment)]
+float32x4 Main()
+{
+    float32x4 volume = volumes[1].Load(int32x4(0));
+    float32x4 skyColor = sky.SampleLevel(samplers[1], float32x3(1, 0, 0), 0);
+    float32x4 layer = layers.Gather(samplers[0], float32x3(0.5));
+    float32 shadow = depthImage.SampleCmp(depthSampler, float32x2(0.5), 0.5);
+    return volume + skyColor + layer + float32x4(shadow);
+}
+)",
+                                                  slang);
+    CHECK(Contains(slang, "[[vk::binding(0, 0)]] Texture3D<float4> volumes[2] : register(t0);"));
+    CHECK(Contains(slang, "[[vk::binding(2, 0)]] TextureCube<float4> sky : register(t2);"));
+    CHECK(Contains(slang, "[[vk::binding(3, 0)]] Texture2DArray<float4> layers : register(t3);"));
+    CHECK(Contains(slang, "[[vk::binding(4, 0)]] SamplerState samplers[2] : register(s4);"));
+    CHECK(Contains(slang, "[[vk::binding(6, 0)]] DepthTexture2D depthImage : register(t6);"));
+    CHECK(Contains(slang, "[[vk::binding(7, 0)]] SamplerComparisonState depthSampler : register(s7);"));
+    CHECK(Contains(slang, "volumes[1u].Load(int4(0))"));
+    CHECK(Contains(slang, "layers.Gather(samplers[0u], float3(0.5f))"));
+    CHECK(Contains(slang, "depthImage.SampleCmp(depthSampler, float2(0.5f), 0.5f)"));
+    REQUIRE(result.Bindings.GetSize() == 6);
+    CHECK(result.Bindings[0].Count == 2);
+    CHECK(result.Bindings[0].Kind == language::ResourceKind::Texture3D);
+    CHECK(result.Bindings[1].Slot == 2);
+    CHECK(result.Bindings[1].Kind == language::ResourceKind::TextureCube);
+    CHECK(result.Bindings[2].Kind == language::ResourceKind::Texture2DArray);
+    CHECK(result.Bindings[3].Count == 2);
+    CHECK(result.Bindings[4].Kind == language::ResourceKind::DepthTexture2D);
+    CHECK(result.Bindings[5].Kind == language::ResourceKind::ComparisonSampler);
+}
+
+TEST_CASE("LUSL checks descriptor array shape, index and capacity", "[shader-language][bindings]")
+{
+    constexpr std::string_view PRELUDE = R"(static const uint32 COUNT = 2;
+Texture2D<float32x4> images[COUNT];
+SamplerState sampling;
+)";
+    struct InvalidCase
+    {
+        std::string_view Text;
+        DiagnosticCode Code;
+    };
+    const InvalidCase cases[] = {
+        {"TextureCube<float32x4> literal[2];", DiagnosticCode::ArraySizeLiteral},
+        {"Texture2DArray<float32x4> computed[COUNT + 1];", DiagnosticCode::NotConstant},
+        {"Texture3D<float32x4> matrix[COUNT][COUNT];", DiagnosticCode::TypeMismatch},
+        {"static const uint32 EMPTY = 0;\nTexture2D<float32x4> empty[EMPTY];", DiagnosticCode::InvalidArraySize},
+        {"static const uint32 CAPACITY = 64;\nTexture2D<float32x4> full[CAPACITY];", DiagnosticCode::CheckerLimit},
+        {"void F() { SamplerState local[COUNT]; }", DiagnosticCode::TypeMismatch},
+        {"void F(in Texture2D<float32x4> parameter[COUNT]) {}", DiagnosticCode::TypeMismatch},
+        {"float32x4 F(in uint32 index) { return images[index].Load(int32x3(0)); }", DiagnosticCode::NotConstant},
+        {"float32x4 F() { return images[COUNT].Load(int32x3(0)); }", DiagnosticCode::ConstantOutOfRange},
+        {"void F() { images[0] = images[1]; }", DiagnosticCode::NotAssignable},
+        {"Texture3D<float32x4> volume;\nfloat32x4 F() { return volume.Gather(sampling, float32x3(0)); }",
+         DiagnosticCode::UnknownMember},
+        {"TextureCube<float32x4> cube;\nfloat32x4 F() { return cube.Load(int32x4(0)); }",
+         DiagnosticCode::UnknownMember},
+        {"Texture2DArray<float32x4> layers;\nfloat32x4 F() { return layers.Sample(sampling, float32x2(0)); }",
+         DiagnosticCode::TypeMismatch},
+        {"DepthTexture2D depth;\nfloat32 F() { return depth.SampleCmp(sampling, float32x2(0), 0); }",
+         DiagnosticCode::TypeMismatch},
+    };
+    for (const InvalidCase& invalid : cases)
+    {
+        const CheckedSource checked(std::string(PRELUDE) + std::string(invalid.Text));
+        INFO(invalid.Text);
+        INFO(checked.DescribeDiagnostics());
+        CHECK(checked.FindDiagnosticOrNull(invalid.Code) != nullptr);
+    }
+}
+
+TEST_CASE("LUSL lowers L5a intrinsics and diagnoses float classification", "[shader-language][intrinsics]")
+{
+    std::string slang;
+    (void)Lower(R"([stage(fragment)]
+float32x4 Main()
+{
+    float32x3 normal = float32x3(0, 1, 0);
+    float32x3 incident = float32x3(1, 0, 0);
+    float32x3 directed = faceforward(normal, incident, normal);
+    float32x3 bent = refract(incident, directed, 0.5);
+    float32x3 adjusted = select(bent >= float32x3(0), tanh(bent), float32x3(sign(bent)));
+    float32 area = determinant(float32x2x2(1, 0, 0, 1));
+    float32 value = fma(area, bent.x, area);
+    clip(adjusted);
+    return float32x4(fwidth(adjusted), value);
+}
+)",
+                slang);
+    CHECK(Contains(slang, "faceforward(normal, incident, normal)"));
+    CHECK(Contains(slang, "refract(incident, directed, 0.5f)"));
+    CHECK(Contains(slang, "select("));
+    CHECK(Contains(slang, "tanh(bent), float3(sign(bent))"));
+    CHECK(Contains(slang, "determinant("));
+    CHECK(Contains(slang, "fma(area, bent.x, area)"));
+    CHECK(Contains(slang, "if (any(value < 0)) discard;"));
+    CHECK(Contains(slang, "return abs(ddx(value)) + abs(ddy(value));"));
+    CHECK(Contains(slang, "_luslFwidth"));
+    const CheckedSource checked(R"(bool Classify(in float32 value)
+{
+    return isfinite(value) || isnan(value) || isinf(value);
+}
+)");
+    CHECK(checked.CountDiagnostics(DiagnosticCode::UnknownName) == 3);
+    const language::Diagnostic* diagnosticOrNull = checked.FindDiagnosticOrNull(DiagnosticCode::UnknownName);
+    REQUIRE(diagnosticOrNull != nullptr);
+    CHECK(diagnosticOrNull->Fix.Edits[0].Inserted.GetView() == "IsFiniteBits");
+}
+
+TEST_CASE("LUSL rejects mismatched L5a intrinsic arguments", "[shader-language][intrinsics]")
+{
+    for (const std::string_view call : {"select(1, 0, 1);",
+                                        "sign(uint32(1));",
+                                        "fma(true, true, true);",
+                                        "tanh(false);",
+                                        "faceforward(1.0, 1.0, 1.0);",
+                                        "determinant(float32x2(1));",
+                                        "refract(1.0, 1.0, 1.0);",
+                                        "clip(true);",
+                                        "fwidth(uint32(1));"})
+    {
+        const CheckedSource checked(std::string("void F() { ") + std::string(call) + " }");
+        INFO(call);
+        INFO(checked.DescribeDiagnostics());
+        CHECK(checked.FindDiagnosticOrNull(DiagnosticCode::NoMatchingOverload) != nullptr);
+    }
 }

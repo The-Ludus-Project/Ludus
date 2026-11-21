@@ -2463,6 +2463,9 @@ private:
             switch (spelling.Kind)
             {
                 case ResourceKind::Texture2D:
+                case ResourceKind::Texture3D:
+                case ResourceKind::TextureCube:
+                case ResourceKind::Texture2DArray:
                 case ResourceKind::RWTexture2D:
                     isValid = (shape.Kind == TypeKind::Scalar || shape.Kind == TypeKind::Vector) &&
                               (shape.Scalar == ScalarKind::Float32 || shape.Scalar == ScalarKind::Int32 ||
@@ -2482,6 +2485,8 @@ private:
                     requirement = "a value type without bool";
                     break;
                 case ResourceKind::Sampler:
+                case ResourceKind::ComparisonSampler:
+                case ResourceKind::DepthTexture2D:
                     break;
             }
             if (isValid == false)
@@ -2542,6 +2547,11 @@ private:
         return type != NO_TYPE && type < mModel.Types.GetSize() && getType(type).Kind == TypeKind::Resource;
     }
 
+    [[nodiscard]] bool isBindingArray(uint32 type) const noexcept
+    {
+        return type != NO_TYPE && getType(type).Kind == TypeKind::Array && isResource(getType(type).Element) == true;
+    }
+
     /// Report `what` and return the error type when `type` is a resource; resources are handles
     /// declared at top level, not values.
     [[nodiscard]] uint32 rejectResourceValue(uint32 type, uint32 node, std::string_view what) noexcept
@@ -2559,10 +2569,12 @@ private:
     }
 
     /// Apply the ArraySize children that follow `child` to `element`, outermost first.
-    [[nodiscard]] uint32 applyArraySizes(uint32 element, uint32 child) noexcept
+    [[nodiscard]] uint32 applyArraySizes(uint32 element, uint32 child, bool canDeclareBindingArray = false) noexcept
     {
         foundation::StaticArray<uint32, MAX_SYNTAX_DEPTH> counts{};
         usize dimensionCount = 0;
+        const uint32 firstSize = child;
+        const bool isResourceElement = isResource(element);
         for (; child != NO_NODE && getKind(child) == SyntaxKind::ArraySize; child = nextSibling(child))
         {
             const uint32 size = firstChild(child);
@@ -2578,6 +2590,13 @@ private:
             }
             else if (size != NO_NODE)
             {
+                if (isResourceElement == true && getKind(size) != SyntaxKind::Name)
+                {
+                    report(DiagnosticCode::NotConstant,
+                           size,
+                           ComposeMessage("name the binding array size with a static const"));
+                    return TypeTable::ERROR_TYPE;
+                }
                 (void)checkExpression(size, NO_TYPE);
                 const IntegerConstant value = mModel.NodeIntegerConstants[size];
                 const SemanticType& sizeType = getType(mModel.NodeTypes[size]);
@@ -2617,13 +2636,23 @@ private:
         {
             return TypeTable::ERROR_TYPE;
         }
-        if (dimensionCount > 0 && isResource(element) == true)
+        if (dimensionCount > 0 && isResourceElement == true)
         {
-            report(DiagnosticCode::TypeMismatch,
-                   child == NO_NODE ? 0 : child,
-                   ComposeMessage("resources cannot form arrays; binding arrays wait for the RHI, so declare one "
-                                  "resource per binding"));
-            return TypeTable::ERROR_TYPE;
+            if (canDeclareBindingArray == false || dimensionCount != 1)
+            {
+                report(DiagnosticCode::TypeMismatch,
+                       firstSize,
+                       ComposeMessage("declare binding arrays as one-dimensional top-level LUSL resources"));
+                return TypeTable::ERROR_TYPE;
+            }
+            const ResourceKind kind = getType(element).Resource;
+            if (internal::GetTextureSampleWidth(kind) == 0 && kind != ResourceKind::Sampler)
+            {
+                report(DiagnosticCode::TypeMismatch,
+                       firstSize,
+                       ComposeMessage("use a sampled color texture or SamplerState for a binding array"));
+                return TypeTable::ERROR_TYPE;
+            }
         }
         uint32 type = element;
         for (usize i = dimensionCount; i > 0; --i)
@@ -2726,11 +2755,15 @@ private:
     /// Give resource variable `symbol` the next binding slot.
     void assignSlot(uint32 symbol, uint32 node) noexcept
     {
-        if (mModel.Bindings.GetSize() >= MAX_BINDINGS)
+        const SemanticType& shape = getType(getSymbol(symbol).Type);
+        const uint32 count = shape.Kind == TypeKind::Array ? shape.Count : 1;
+        if (count > MAX_BINDINGS - mNextBindingSlot)
         {
             report(DiagnosticCode::CheckerLimit,
                    node,
-                   ComposeMessage("more than ", uint64{MAX_BINDINGS}, " resource bindings"));
+                   ComposeMessage("resource bindings reserve more than ",
+                                  uint64{MAX_BINDINGS},
+                                  " slots; reduce the array sizes or remove bindings"));
             return;
         }
         if (mModel.Bindings.TryAdd(symbol) == false)
@@ -2739,7 +2772,8 @@ private:
             mIsFatal = true;
             return;
         }
-        getSymbol(symbol).Slot = static_cast<uint32>(mModel.Bindings.GetSize() - 1);
+        getSymbol(symbol).Slot = mNextBindingSlot;
+        mNextBindingSlot += count;
     }
 
     /// Check a variable declaration and bind its name in the current scope.
@@ -2748,7 +2782,9 @@ private:
         const SyntaxNode& syntax = getNode(node);
         rejectAttributes(node, "variables");
         const uint32 typeNode = skipAttributes(firstChild(node));
-        uint32 type = rejectInterfaceValue(applyArraySizes(resolveType(typeNode), nextSibling(typeNode)), typeNode);
+        uint32 type = rejectInterfaceValue(
+            applyArraySizes(resolveType(typeNode), nextSibling(typeNode), isGlobal == true && mIsInExtern == false),
+            typeNode);
         uint32 initializer = nextSibling(typeNode);
         while (initializer != NO_NODE && getKind(initializer) == SyntaxKind::ArraySize)
         {
@@ -2759,7 +2795,7 @@ private:
             report(DiagnosticCode::UnknownType, node, ComposeMessage("a variable cannot be void"));
             type = TypeTable::ERROR_TYPE;
         }
-        const bool isResourceVariable = isResource(type);
+        const bool isResourceVariable = isResource(type) == true || isBindingArray(type) == true;
         if (isResourceVariable == true && isGlobal == false)
         {
             report(DiagnosticCode::TypeMismatch,
@@ -5261,6 +5297,13 @@ private:
             return TypeTable::ERROR_TYPE;
         }
         const uint32 common = unify(whenTrue, whenFalse, false);
+        if (isBindingArray(common) == true)
+        {
+            report(DiagnosticCode::InvalidOperands,
+                   node,
+                   ComposeMessage("select an element of each binding array before using it"));
+            return TypeTable::ERROR_TYPE;
+        }
         if (common == NO_TYPE)
         {
             reportOperands(node, "?:", a, b);
@@ -5430,6 +5473,13 @@ private:
             return TypeTable::ERROR_TYPE;
         }
         const IntegerConstant value = getConstant(index);
+        if (isBindingArray(type) == true && value.IsKnown == false)
+        {
+            report(DiagnosticCode::NotConstant,
+                   index,
+                   ComposeMessage("use an integer constant to index a binding array"));
+            return TypeTable::ERROR_TYPE;
+        }
         if (value.IsKnown == true && (value.Value < 0 || value.Value >= static_cast<int64>(count)))
         {
             report(DiagnosticCode::ConstantOutOfRange,
@@ -5549,7 +5599,14 @@ private:
             const uint32 symbol = mScopes.Find(name);
             if (symbol == ScopeTable::UNBOUND)
             {
-                report(DiagnosticCode::UnknownName, callee, ComposeMessage("'", name, "' is not declared"));
+                if (name == "isfinite" || name == "isnan" || name == "isinf")
+                {
+                    reportFloatClassification(callee, name, facts);
+                }
+                else
+                {
+                    report(DiagnosticCode::UnknownName, callee, ComposeMessage("'", name, "' is not declared"));
+                }
                 return TypeTable::ERROR_TYPE;
             }
             const Symbol& declared = mModel.Symbols[symbol];
@@ -5610,47 +5667,82 @@ private:
         return TypeTable::ERROR_TYPE;
     }
 
-    /// @brief The operations of a resource: `Sample(sampler, uv)`, `SampleLevel(sampler, uv, level)`
-    /// and `Load(pixel)` of a Texture2D, and `GetDimensions()` of textures (`uint32x2` width and
-    /// height of level 0) and structured buffers (`uint32` element count). Arguments are positional.
+    void reportFloatClassification(uint32 callee,
+                                   std::string_view name,
+                                   const Array<internal::ArgumentFacts>& facts) noexcept
+    {
+        const std::string_view repair = name == "isfinite" ? "IsFiniteBits"
+                                        : name == "isnan"  ? "IsNanBits"
+                                                           : "IsInfBits";
+        internal::FixBuilder fix(mRequest, mInput);
+        const bool isScalarFloat = facts.GetSize() == 1 && facts[0].Type == mTypes.GetScalar(ScalarKind::Float32);
+        if (isScalarFloat == true)
+        {
+            fix.Replace(getNode(callee).Token, repair);
+        }
+        report(DiagnosticCode::UnknownName,
+               callee,
+               ComposeMessage("Metal fast math can fold '",
+                              name,
+                              "'; include FoundationMath's math.luslh and use ",
+                              repair,
+                              " on each float32 component"),
+               isScalarFloat == true ? fix.GetFix() : DiagnosticFix{});
+    }
+
+    /// Validate positional texture and buffer operations against their resource kind and shape.
     [[nodiscard]] uint32 checkResourceMethod(uint32 node,
                                              uint32 callee,
                                              uint32 objectType,
                                              const Array<uint32>& arguments,
                                              const Array<internal::ArgumentFacts>& facts) noexcept
     {
-        const SemanticType& shape = getType(objectType);
+        const SemanticType shape = getType(objectType);
+        const ResourceKind kind = shape.Resource;
         const std::string_view name = spellNode(callee);
-        if (name == "GetDimensions" && shape.Resource != ResourceKind::Sampler &&
-            shape.Resource != ResourceKind::ConstantBuffer)
+        if (name == "GetDimensions" &&
+            (internal::GetTextureSizeWidth(kind) != 0 || kind == ResourceKind::StructuredBuffer ||
+             kind == ResourceKind::RWStructuredBuffer))
         {
-            return checkDimensions(node, shape.Resource, arguments);
+            return checkDimensions(node, kind, arguments);
         }
-        constexpr uint32 UV_COMPONENTS = 2;
-        constexpr uint32 LOAD_COMPONENTS = 3;
-        /// Arguments of Sample (sampler, uv) and SampleLevel (sampler, uv, level).
-        constexpr usize SAMPLE_ARGUMENTS = 2;
-        constexpr usize SAMPLE_LEVEL_ARGUMENTS = 3;
-        constexpr usize MAX_RESOURCE_ARGUMENTS = SAMPLE_LEVEL_ARGUMENTS;
-        uint32 sampler = NO_TYPE;
-        const internal::TypeOutcome outcome = mTypes.TryGetResource(ResourceKind::Sampler, NO_TYPE, sampler);
-        if (outcome != internal::TypeOutcome::Ok)
-        {
-            return failType(outcome, node);
-        }
+
+        constexpr uint32 GATHER_COMPONENTS = 4;
+        constexpr usize MAX_RESOURCE_ARGUMENTS = 3;
+        const uint32 sampleWidth = internal::GetTextureSampleWidth(kind);
+        const bool isCompare = name == "SampleCmp" && kind == ResourceKind::DepthTexture2D;
+        const bool isSample = (name == "Sample" || name == "SampleLevel") && sampleWidth != 0;
+        const bool isGather =
+            name == "Gather" && (kind == ResourceKind::Texture2D || kind == ResourceKind::Texture2DArray ||
+                                 kind == ResourceKind::TextureCube);
+        const bool isLoad = name == "Load" && sampleWidth != 0 && kind != ResourceKind::TextureCube;
         foundation::StaticArray<uint32, MAX_RESOURCE_ARGUMENTS> expected{};
+        uint32 result = shape.Element;
         usize count = 0;
-        const bool isTexture = shape.Resource == ResourceKind::Texture2D;
-        if (isTexture == true && (name == "Sample" || name == "SampleLevel"))
+        if (isSample == true || isGather == true || isCompare == true)
         {
-            expected[0] = sampler;
-            expected[1] = mTypes.GetVector(ScalarKind::Float32, UV_COMPONENTS);
+            const ResourceKind samplerKind =
+                isCompare == true ? ResourceKind::ComparisonSampler : ResourceKind::Sampler;
+            const internal::TypeOutcome outcome = mTypes.TryGetResource(samplerKind, NO_TYPE, expected[0]);
+            if (outcome != internal::TypeOutcome::Ok)
+            {
+                return failType(outcome, node);
+            }
+            expected[1] = mTypes.GetVector(ScalarKind::Float32, isCompare == true ? 2 : sampleWidth);
             expected[2] = mTypes.GetScalar(ScalarKind::Float32);
-            count = name == "Sample" ? SAMPLE_ARGUMENTS : SAMPLE_LEVEL_ARGUMENTS;
+            count = name == "SampleLevel" || isCompare == true ? MAX_RESOURCE_ARGUMENTS : 2;
+            if (isGather == true)
+            {
+                result = mTypes.GetVector(getType(shape.Element).Scalar, GATHER_COMPONENTS);
+            }
+            else if (isCompare == true)
+            {
+                result = expected[2];
+            }
         }
-        else if (isTexture == true && name == "Load")
+        else if (isLoad == true)
         {
-            expected[0] = mTypes.GetVector(ScalarKind::Int32, LOAD_COMPONENTS);
+            expected[0] = mTypes.GetVector(ScalarKind::Int32, sampleWidth + 1);
             count = 1;
         }
         else
@@ -5661,8 +5753,8 @@ private:
                    ComposeMessage(typeName.GetView(),
                                   " has no operation '",
                                   name,
-                                  "'; a Texture2D offers Sample, SampleLevel, Load and GetDimensions, structured "
-                                  "buffers and RWTexture2D are indexed and offer GetDimensions"));
+                                  name == "SampleCmp" ? "'; declare a DepthTexture2D and pass a SamplerComparisonState"
+                                                      : "'; use a resource type that supports this operation"));
             return TypeTable::ERROR_TYPE;
         }
         if (rejectMarks(node, arguments, "resource operations") == false)
@@ -5681,11 +5773,10 @@ private:
         {
             const uint32 value = firstChild(arguments[i]);
             const bool isSamplerMismatch =
-                isError(facts[i].Type) == false && expected[i] == sampler && facts[i].Type != sampler;
+                isError(facts[i].Type) == false && isResource(expected[i]) == true && facts[i].Type != expected[i];
             if (isSamplerMismatch == true)
             {
-                // A sampler has no conversion, so name it rather than suggest one.
-                reportMismatch(value, sampler, facts[i].Type);
+                reportMismatch(value, expected[i], facts[i].Type);
             }
             const bool isArgumentValid = isError(facts[i].Type) == false && isSamplerMismatch == false &&
                                          coerce(value, expected[i], false) == true;
@@ -5696,11 +5787,10 @@ private:
             return TypeTable::ERROR_TYPE;
         }
         mModel.NodeCallKinds[node] = CallKind::ResourceMethod;
-        return shape.Element;
+        return result;
     }
 
-    /// `resource.GetDimensions()`: a texture's level-0 size as `uint32x2`, or a structured buffer's
-    /// element count as `uint32`, returned by value.
+    /// `resource.GetDimensions()`: level-zero extents of a texture or the element count of a buffer.
     [[nodiscard]] uint32 checkDimensions(uint32 node, ResourceKind kind, const Array<uint32>& arguments) noexcept
     {
         if (arguments.IsEmpty() == false)
@@ -5710,11 +5800,9 @@ private:
                    ComposeMessage("'GetDimensions' takes no arguments; it returns the size by value"));
             return TypeTable::ERROR_TYPE;
         }
-        constexpr uint32 TEXTURE_DIMENSIONS = 2;
         mModel.NodeCallKinds[node] = CallKind::ResourceMethod;
-        const bool isTexture = kind == ResourceKind::Texture2D || kind == ResourceKind::RWTexture2D;
-        return isTexture == true ? mTypes.GetVector(ScalarKind::Uint32, TEXTURE_DIMENSIONS)
-                                 : mTypes.GetScalar(ScalarKind::Uint32);
+        const uint32 width = internal::GetTextureSizeWidth(kind);
+        return width == 0 ? mTypes.GetScalar(ScalarKind::Uint32) : mTypes.GetVector(ScalarKind::Uint32, width);
     }
 
     [[nodiscard]] bool rejectMarks(uint32 node, const Array<uint32>& arguments, std::string_view what) noexcept
@@ -6017,12 +6105,23 @@ private:
         const bool isSpreadAllowed = intrinsic.Family == internal::IntrinsicFamily::NumericBinary ||
                                      intrinsic.Family == internal::IntrinsicFamily::FloatBinary ||
                                      intrinsic.Family == internal::IntrinsicFamily::NumericTernary ||
-                                     intrinsic.Family == internal::IntrinsicFamily::FloatTernary;
+                                     intrinsic.Family == internal::IntrinsicFamily::FloatTernary ||
+                                     intrinsic.Family == internal::IntrinsicFamily::Select;
         const uint32 elementScalar = isError(operand) == true ? operand : mTypes.GetScalar(getType(operand).Scalar);
-        for (const uint32 argument : arguments)
+        for (usize i = 0; i < arguments.GetSize(); ++i)
         {
+            const uint32 argument = arguments[i];
             const uint32 value = firstChild(argument);
             const uint32 type = mModel.NodeTypes[value];
+            if (internal::IsHeterogeneousOperand(intrinsic.Family, i) == true)
+            {
+                if (intrinsic.Family == internal::IntrinsicFamily::Refract)
+                {
+                    (void)coerce(value, elementScalar, false);
+                }
+                (void)setType(argument, mModel.NodeTypes[value]);
+                continue;
+            }
             const bool isSpreadScalar = isSpreadAllowed == true && (type == elementScalar || isUntyped(type) == true);
             if (isSpreadScalar == true)
             {
@@ -6596,7 +6695,7 @@ private:
                     return false;
                 }
                 const Symbol& declared = mModel.Symbols[symbol];
-                if (isResource(declared.Type) == true)
+                if (isResource(declared.Type) == true || isBindingArray(declared.Type) == true)
                 {
                     report(DiagnosticCode::NotAssignable,
                            node,
@@ -6798,6 +6897,7 @@ private:
     const SyntaxTree& mTree;
     CheckOptions mOptions;
     SemanticModel& mModel;
+    uint32 mNextBindingSlot = 0;
     internal::DiagnosticSink mSink;
     TypeTable mTypes;
     ScopeTable mScopes;

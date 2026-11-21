@@ -105,7 +105,9 @@ existing item that covers the work.
 - Batches run `main`'s workflow definitions against the candidate's sources, so a
   workflow edit reaches batches only after promotion. Keep file lists, test lists
   and other candidate data out of workflow YAML: upload by pattern and name tests
-  in candidate files (`tests/sdk_consumer/browser-suites.json`). See
+  in candidate files (`tests/sdk_consumer/browser-suites.json`). Put a migrated
+  job's commands in its check plan (`scripts/ci/macos_native.py`), which runs every
+  independent check and reports each failure. See
   `docs/development/continuous-integration.md#batch-workflow-definitions`.
 - Request a manual batch only when the maintainer needs earlier qualification;
   retry an unchanged failed candidate only after investigating the failure. See

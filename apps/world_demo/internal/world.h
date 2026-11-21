@@ -4,6 +4,7 @@
 #include <ludus/foundation/containers/array.hpp>
 #include <ludus/foundation/containers/borrowed_view.hpp>
 #include <ludus/foundation/math/addressed_random.hpp>
+#include <ludus/foundation/math/random_checkpoint.hpp>
 #include <ludus/foundation/time/timers.hpp>
 #include <ludus/gameplay/camera/evaluation.hpp>
 #include <ludus/gameplay/world/component_pool.hpp>
@@ -243,6 +244,22 @@ struct Tombstone final
     /// Whether the placement is currently harvested.
     bool IsHarvested = false;
 };
+/// Session tombstone capacity: one record per placement of every catalog room.
+inline constexpr usize MAX_SESSION_TOMBSTONES = MAX_ROOM_PLACEMENTS * 2;
+/// Leading word of a session checkpoint: the bytes `LWDS` in file order.
+inline constexpr uint32 SESSION_CHECKPOINT_MAGIC = 0x5344574cu;
+/// Version of the session checkpoint envelope below.
+inline constexpr uint32 SESSION_CHECKPOINT_VERSION = 1;
+/// uint32 envelope fields before the random checkpoint: magic, version and total bytes.
+inline constexpr usize SESSION_CHECKPOINT_ENVELOPE_FIELDS = 3;
+/// Encoded bytes of one tombstone override: packed scope uint64, variant uint8 and harvested flag uint8.
+inline constexpr usize SESSION_TOMBSTONE_OVERRIDE_BYTES = sizeof(uint64) + sizeof(uint8) + sizeof(uint8);
+/// @brief Largest session checkpoint: the envelope, a random checkpoint with one regrow counter per tombstone, the
+/// override count and one override per tombstone. Session::TrySaveCheckpoint never writes more.
+inline constexpr usize MAX_SESSION_CHECKPOINT_BYTES =
+    SESSION_CHECKPOINT_ENVELOPE_FIELDS * sizeof(uint32) + foundation::math::RANDOM_CHECKPOINT_HEADER_BYTES +
+    MAX_SESSION_TOMBSTONES * foundation::math::RANDOM_CHECKPOINT_EVENT_RECORD_BYTES + sizeof(uint32) +
+    MAX_SESSION_TOMBSTONES * SESSION_TOMBSTONE_OVERRIDE_BYTES;
 class GameWorld final
 {
 public:
@@ -254,7 +271,8 @@ public:
     /// @param worldSeed The session root seed recorded with the world; drives every scatter draw.
     /// @param tombstones Session harvest records for this room, reapplied by packed scope after generation;
     ///        empty by default. Scopes with no placement are ignored.
-    /// @return InvalidConfiguration for an invalid level, capacity, unknown room or unusable recipe;
+    /// @return InvalidConfiguration for an invalid level, capacity, unknown room or unusable recipe, or a tombstone
+    /// whose variant is outside its placement's layer or whose regrow ordinal is zero;
     /// CapacityExceeded when the recipe enumerates more candidates or accepts more placements than the room
     /// limits; AllocationFailure when storage is unavailable. Nothing is published on failure.
     [[nodiscard]] Status Prepare(const Level& level,
@@ -608,6 +626,30 @@ public:
     {
         return {mTombstones, mTombstoneCount};
     }
+    /// @brief Identity of the content a session checkpoint belongs to: the random domain manifest, the room
+    /// catalog's ordinals and the scatter layout and regrow address versions. A checkpoint from other content is
+    /// rejected rather than reinterpreted.
+    [[nodiscard]] static uint64 GetCheckpointContentIdentity() noexcept;
+    /// @brief Save the session's random state: the root seed, each tombstone's regrow ordinal as an event counter of
+    /// the regrow domain, and each tombstone's harvest and variant override.
+    ///
+    /// The active world's placements are first recorded into the tombstone store, as leaving its room would.
+    /// Layout: "Session checkpoints" in docs/examples/world-demo.md.
+    /// @param destination Receives the checkpoint in its first bytes; at most MAX_SESSION_CHECKPOINT_BYTES are needed.
+    /// @param outWritten Receives the encoded length on success; unchanged on failure.
+    /// @return Success, or CapacityExceeded when destination is too short, with destination untouched.
+    [[nodiscard]] foundation::math::RandomCheckpointStatus TrySaveCheckpoint(std::span<uint8> destination,
+                                                                             usize& outWritten) noexcept;
+    /// @brief Restore a checkpoint written by TrySaveCheckpoint, as a reload: the seed and tombstone store are
+    /// replaced together, the active world and any load in progress are discarded, and the next RequestLoad
+    /// regenerates its room from the restored state.
+    ///
+    /// The whole checkpoint is validated first, so any rejection leaves the session unchanged.
+    /// @param source The checkpoint bytes; bytes after its recorded length are ignored.
+    /// @return Success; Malformed or UnsupportedFormat for an unknown envelope; the random checkpoint's rejection
+    /// (UnsupportedContract, IncompatibleContent, ...); OwnerMismatch when a counter has no matching override or
+    /// belongs to another domain; InvalidRecord for a zero ordinal or a harvested flag other than 0 or 1.
+    [[nodiscard]] foundation::math::RandomCheckpointStatus TryRestoreCheckpoint(std::span<const uint8> source) noexcept;
 
 private:
     /// Snapshot the active world's harvested/regrown placements into the session tombstone store, keyed by scope.
@@ -619,7 +661,7 @@ private:
     uint64 mTransition = 0;
     /// Bounded tombstone store across visited rooms; a scope's entry is updated in place, so it is at most one
     /// per placement of every catalog room.
-    Tombstone mTombstones[MAX_ROOM_PLACEMENTS * 2] = {};
+    Tombstone mTombstones[MAX_SESSION_TOMBSTONES] = {};
     usize mTombstoneCount = 0;
 };
 } // namespace ludus::world_demo

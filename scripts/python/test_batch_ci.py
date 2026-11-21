@@ -491,6 +491,17 @@ class WatchTests(unittest.TestCase):
         undated = [dict(failed[0], completed_at=None)]
         self.assertEqual(batch_ci.watch_decision(undated, late), "wait")
 
+    def test_aggregate_gate_alone_does_not_stop_the_batch(self):
+        # The native gate fails when a job never acquired a runner; stopping then
+        # would cancel unrelated suites and defeat the runner retry.
+        late = START + timedelta(hours=3)
+        gate = [watched_job("native / Ubuntu Clang", conclusion="failure", completed=START),
+                watched_job("native / macOS native backends and diagnostics", conclusion="cancelled", completed=START),
+                watched_job("threading / macOS threading", "in_progress")]
+        self.assertEqual(batch_ci.watch_decision(gate, late), "wait")
+        real = [*gate, watched_job("native / Build-time budget", conclusion="failure", completed=START)]
+        self.assertEqual(batch_ci.watch_decision(real, late), "stop")
+
     def run_watch(self, listings, *, limit_seconds=batch_ci.WATCH_LIMIT_SECONDS):
         now = [START]
         sleeps = []
@@ -617,6 +628,10 @@ class WorkflowContractTests(unittest.TestCase):
         self.assertIn("    needs: snapshot\n", batch["wiki"])
         self.assertIn("    needs: snapshot\n", batch["wiki-macos-intel"])
         self.assertIn("    needs: [snapshot, sdk]\n", batch["wiki-macos"])
+        # The short ARM workflows run in order beside native, not after it: native holds at
+        # most two ARM runners, so the batch asks for at most three.
+        self.assertIn("    needs: [snapshot]\n", batch["threading"])
+        self.assertIn("    needs: [snapshot, threading]\n", batch["sdk"])
         self.assertNotIn("batch_macos_tools_runner", batch["wiki"])
         self.assertIn("      batch_macos_tools_runner: macos-15\n", batch["wiki-macos"])
         self.assertIn("      batch_macos_tools_runner: macos-15-intel\n", batch["wiki-macos-intel"])
@@ -828,6 +843,207 @@ class NestedPermissionTests(unittest.TestCase):
                          {"contents": "read", "actions": "write"})
         with self.assertRaises(AssertionError):
             read_permissions("permissions: read-all\n", "")
+
+
+UNACQUIRED = "The job was not acquired by Runner of type hosted even after multiple attempts"
+
+
+def batch_job(job_id, name, conclusion="success", runner="GitHub Actions 1", status="completed"):
+    return {"id": job_id, "name": name, "status": status, "conclusion": conclusion, "runner_name": runner}
+
+
+class RetryClient:
+    """Serves a batch run whose attempts are scripted as job listings."""
+
+    def __init__(self, attempts, annotations=None, newer_runs=None):
+        self.attempts = attempts
+        self.attempt = 1
+        self.annotations = annotations or {}
+        self.newer_runs = newer_runs or []
+        self.requests = []
+        self.reruns = []
+
+    def request(self, path, method="GET", data=None):
+        self.requests.append((method, path))
+        if method == "POST":
+            match = re.fullmatch(r"actions/jobs/(\d+)/rerun", path)
+            assert match is not None, path
+            self.reruns.append(int(match.group(1)))
+            self.attempt += 1
+            return {}
+        if path == "actions/runs/42":
+            return {"id": 42, "status": "completed", "run_attempt": self.attempt}
+        if path.startswith("actions/runs/42/jobs"):
+            jobs = self.attempts[min(self.attempt, len(self.attempts)) - 1]
+            return {"total_count": len(jobs), "jobs": jobs}
+        if path.startswith("actions/workflows/batch-ci.yml/runs"):
+            return {"workflow_runs": [{"id": run["id"], "status": run["status"]} for run in self.newer_runs]}
+        match = re.fullmatch(r"actions/runs/(\d+)/jobs.*", path)
+        if match is not None:
+            jobs = next(run["jobs"] for run in self.newer_runs if run["id"] == int(match.group(1)))
+            return {"total_count": len(jobs), "jobs": jobs}
+        match = re.fullmatch(r"check-runs/(\d+)/annotations\?per_page=50", path)
+        if match is not None:
+            return [{"message": message} for message in self.annotations.get(int(match.group(1)), [])]
+        raise AssertionError(path)
+
+
+class RunnerRetryTests(unittest.TestCase):
+    def run_retry(self, client, **options):
+        now = [START]
+        sleeps = []
+
+        def sleep(seconds):
+            sleeps.append(seconds)
+            now[0] += timedelta(seconds=seconds)
+
+        result = batch_ci.retry_unacquired(client, 42, clock=lambda: now[0], sleep=sleep, **options)
+        return result, sleeps
+
+    def expired_attempt(self, job_id=7):
+        return [batch_job(1, "Capture develop candidate"),
+                batch_job(job_id, "native / macOS native backends and diagnostics", "cancelled", runner=""),
+                batch_job(3, "native / macOS ASan and UBSan"),
+                batch_job(4, "native / Ubuntu Clang", "failure"),
+                batch_job(5, "Promote validated candidate", "skipped", runner="")]
+
+    def passed_attempt(self):
+        return [batch_job(1, "Capture develop candidate"),
+                batch_job(8, "native / macOS native backends and diagnostics"),
+                batch_job(3, "native / macOS ASan and UBSan"),
+                batch_job(9, "native / Ubuntu Clang"),
+                batch_job(10, "Promote validated candidate")]
+
+    def test_unacquired_job_is_rerun_alone_after_the_delay(self):
+        client = RetryClient([self.expired_attempt(), self.passed_attempt()], annotations={7: [UNACQUIRED]})
+        (needs_attention, lines), sleeps = self.run_retry(client)
+        self.assertFalse(needs_attention)
+        self.assertEqual(client.reruns, [7])
+        self.assertIn(batch_ci.RETRY_DELAY_SECONDS, sleeps)
+        self.assertIn("Retry 1 of 2: re-running native / macOS native backends and diagnostics", lines[0])
+        self.assertEqual(lines[-1], "No job was cancelled for lack of a runner.")
+        # The delay is spent before the re-run request, not after it.
+        rerun_index = client.requests.index(("POST", "actions/jobs/7/rerun"))
+        self.assertTrue(any(path.startswith("actions/workflows/") for _, path in client.requests[:rerun_index]))
+
+    def test_retries_are_bounded_and_end_as_a_capacity_failure(self):
+        attempts = [self.expired_attempt(7), self.expired_attempt(11), self.expired_attempt(12)]
+        client = RetryClient(attempts, annotations={7: [UNACQUIRED], 11: [UNACQUIRED], 12: [UNACQUIRED]})
+        (needs_attention, lines), _ = self.run_retry(client)
+        self.assertTrue(needs_attention)
+        self.assertEqual(client.reruns, [7, 11])
+        self.assertEqual(len(client.reruns), batch_ci.MAX_ACQUISITION_RETRIES)
+        self.assertIn("runner capacity, not a code failure", lines[-1])
+
+    def test_only_annotated_cancellations_without_a_runner_are_retried(self):
+        # A person, the stop job or a newer run cancels without GitHub's annotation.
+        manual = RetryClient([self.expired_attempt()], annotations={7: ["The operation was canceled."]})
+        (needs_attention, lines), _ = self.run_retry(manual)
+        self.assertEqual((needs_attention, manual.reruns), (False, []))
+        self.assertEqual(lines, ["No job was cancelled for lack of a runner."])
+        started = self.expired_attempt()
+        started[1]["runner_name"] = "GitHub Actions 3"
+        client = RetryClient([started], annotations={7: [UNACQUIRED]})
+        self.assertEqual(self.run_retry(client)[0], (False, ["No job was cancelled for lack of a runner."]))
+        self.assertFalse(any(path.startswith("check-runs/") for _, path in client.requests))
+
+    def test_real_failures_and_stopped_batches_are_not_retried(self):
+        failed = [*self.expired_attempt(), batch_job(13, "native / Build-time budget", "failure")]
+        client = RetryClient([failed], annotations={7: [UNACQUIRED]})
+        (needs_attention, lines), _ = self.run_retry(client)
+        self.assertEqual((needs_attention, client.reruns), (False, []))
+        self.assertIn("native / Build-time budget", lines[-1])
+        for conclusion in ("timed_out", "startup_failure"):
+            other = [*self.expired_attempt(), batch_job(13, "windows / MSBuild", conclusion)]
+            self.assertEqual(RetryClient([other], annotations={7: [UNACQUIRED]}).reruns, [])
+            self.assertFalse(self.run_retry(RetryClient([other], annotations={7: [UNACQUIRED]}))[0][0])
+        stopped = [*self.expired_attempt(), batch_job(14, batch_ci.STOP_JOB)]
+        client = RetryClient([stopped], annotations={7: [UNACQUIRED]})
+        (_, lines), _ = self.run_retry(client)
+        self.assertEqual(client.reruns, [])
+        self.assertIn("stopped", lines[-1])
+
+    def test_newer_batch_with_suites_supersedes_the_retry(self):
+        newer = {"id": 50, "status": "in_progress",
+                 "jobs": [batch_job(51, "Capture develop candidate"), batch_job(52, "native / changes", status="queued")]}
+        client = RetryClient([self.expired_attempt()], annotations={7: [UNACQUIRED]}, newer_runs=[newer])
+        (needs_attention, lines), _ = self.run_retry(client)
+        self.assertEqual((needs_attention, client.reruns), (False, []))
+        self.assertIn("newer batch", lines[-1])
+
+    def test_newer_tick_that_captured_nothing_does_not_block_the_retry(self):
+        older = {"id": 30, "status": "completed", "jobs": [batch_job(31, "native / changes")]}
+        idle = {"id": 60, "status": "completed",
+                "jobs": [batch_job(61, "Capture develop candidate"), batch_job(62, "Mark run as not validated")]}
+        client = RetryClient([self.expired_attempt(), self.passed_attempt()], annotations={7: [UNACQUIRED]},
+                             newer_runs=[idle, older])
+        (needs_attention, _), _ = self.run_retry(client)
+        self.assertEqual((needs_attention, client.reruns), (False, [7]))
+
+    def test_a_capturing_tick_is_awaited_and_time_is_bounded(self):
+        capturing = {"id": 60, "status": "in_progress",
+                     "jobs": [batch_job(61, "Capture develop candidate", status="in_progress")]}
+        client = RetryClient([self.expired_attempt()], annotations={7: [UNACQUIRED]}, newer_runs=[capturing])
+        (needs_attention, lines), sleeps = self.run_retry(client, limit_seconds=10 * batch_ci.WATCH_INTERVAL_SECONDS)
+        self.assertTrue(needs_attention)
+        self.assertEqual(client.reruns, [])
+        self.assertIn("did not finish capturing", lines[-1])
+        self.assertLessEqual(sum(sleeps), 10 * batch_ci.WATCH_INTERVAL_SECONDS)
+
+    def test_retry_waits_for_the_rerun_attempt_to_complete(self):
+        client = RetryClient([self.expired_attempt(), self.passed_attempt()], annotations={7: [UNACQUIRED]})
+        original = client.request
+        polls = {"count": 0}
+
+        def request(path, method="GET", data=None):
+            if path == "actions/runs/42" and client.attempt == 2 and polls["count"] < 3:
+                polls["count"] += 1
+                client.requests.append((method, path))
+                return {"id": 42, "status": "in_progress", "run_attempt": 2}
+            return original(path, method, data)
+
+        client.request = request
+        (needs_attention, _), sleeps = self.run_retry(client)
+        self.assertFalse(needs_attention)
+        self.assertEqual(polls["count"], 3)
+        self.assertEqual(sleeps.count(batch_ci.WATCH_INTERVAL_SECONDS), 3)
+
+    def test_summary_marks_attention(self):
+        self.assertIn("needs attention", batch_ci.describe_retry(True, ["x"]))
+        self.assertEqual(batch_ci.describe_retry(False, ["x"]), "### Runner retry\n\n- x\n")
+
+
+class RunnerRetryWorkflowTests(unittest.TestCase):
+    ROOT = Path(__file__).resolve().parents[2]
+
+    def test_retry_runs_trusted_code_once_per_failed_batch_run(self):
+        workflow = (self.ROOT / ".github/workflows/batch-runner-retry.yml").read_text()
+        coordinator = (self.ROOT / ".github/workflows/batch-ci.yml").read_text()
+        name = re.search(r"(?m)^name: (.*)$", coordinator).group(1)
+        self.assertIn(f"    workflows: [{name}]\n    types: [completed]\n    branches: [main]\n", workflow)
+        self.assertIn("    if: github.event.workflow_run.run_attempt == 1 && "
+                      "github.event.workflow_run.conclusion != 'success'\n", workflow)
+        self.assertIn("    timeout-minutes: 360\n", workflow)
+        self.assertLess(batch_ci.RETRY_LIMIT_SECONDS, 360 * 60)
+        self.assertEqual(read_permissions(workflow, ""), {"contents": "read"})
+        job = split_jobs(workflow)["retry"]
+        self.assertEqual(read_permissions(job, "    "), {"contents": "read", "actions": "write", "checks": "read"})
+        self.assertIn("persist-credentials: false", job)
+        self.assertIn("run: python3 scripts/python/batch_ci.py retry-runners", job)
+        # No candidate code: the job never checks out the batch SHA or receives secrets.
+        self.assertNotIn("batch_sha", job)
+        self.assertNotIn("secrets.", job)
+        self.assertIn("cancel-in-progress: false", workflow)
+        self.assertEqual(batch_ci.BATCH_WORKFLOW, "batch-ci.yml")
+        self.assertIn(f"    name: {batch_ci.CAPTURE_JOB}\n", coordinator)
+        self.assertIn(f"    name: {batch_ci.STOP_JOB}\n", coordinator)
+
+    def test_aggregate_gates_name_the_native_gate(self):
+        workflow = (self.ROOT / ".github/workflows/ci.yml").read_text()
+        linux = split_jobs(workflow)["linux"]
+        self.assertIn("|| 'Ubuntu Clang' }}", linux)
+        self.assertIn("always()", linux)
+        self.assertEqual(batch_ci.AGGREGATE_JOBS, frozenset({"native / Ubuntu Clang"}))
 
 
 if __name__ == "__main__":

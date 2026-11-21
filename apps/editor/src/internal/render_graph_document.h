@@ -11,6 +11,7 @@
 #include "internal/code_document.h"
 #include "internal/document_history.h"
 #include "internal/render_graph_scene_query_budgets.h"
+#include "internal/render_graph_shader_language.h"
 #include "internal/render_graph_source.h"
 
 #include <QByteArray>
@@ -218,11 +219,14 @@ public:
     /// Replace a node atomically, preserving connected port identities and types.
     /// Subgraph replacements automatically disconnect missing/incompatible ports and clear
     /// affected configuration-output sources while retaining their declarations, in the same undo step.
+    /// For pipeline nodes, newShaderLanguage selects the source language for newly created programs.
     /// On failure the draft/history is preserved; optional error names the affected endpoint and repair.
-    [[nodiscard]] RenderGraphDocumentStatus ReplaceNode(const QString& file,
-                                                        const QString& configuration,
-                                                        const QJsonObject& node,
-                                                        QString* outErrorOrNull = nullptr);
+    [[nodiscard]] RenderGraphDocumentStatus
+    ReplaceNode(const QString& file,
+                const QString& configuration,
+                const QJsonObject& node,
+                QString* outErrorOrNull = nullptr,
+                RenderGraphShaderLanguage newShaderLanguage = RenderGraphShaderLanguage::Lusl);
     /// Replace a configuration's public finite choices in one undo step. Targets forward to
     /// node.OptionId; incompatible bindings or existing caller overrides reject the edit.
     /// Failure preserves the complete draft and history. Save remains explicit. GUI thread only.
@@ -243,13 +247,16 @@ public:
                                                        QString& outError);
     /// Apply a pipeline and create missing shader programs and source templates as one
     /// undoable draft edit, including the selected technique and recipe. Program placeholders receive generated names.
-    /// New programs grow budgets.programs to fit within supported build limits; a larger value is retained.
+    /// New programs use newShaderLanguage and grow budgets.programs within supported build limits.
+    /// A larger authored budget is retained. Existing sources keep their language.
     /// Existing programs must match stage and source. Failure preserves all draft files; Save publishes new files
     /// without replacement.
-    [[nodiscard]] RenderGraphDocumentStatus ApplyPipeline(const QString& file,
-                                                          const QString& configuration,
-                                                          const QJsonObject& node,
-                                                          QString* outErrorOrNull = nullptr);
+    [[nodiscard]] RenderGraphDocumentStatus
+    ApplyPipeline(const QString& file,
+                  const QString& configuration,
+                  const QJsonObject& node,
+                  QString* outErrorOrNull = nullptr,
+                  RenderGraphShaderLanguage newShaderLanguage = RenderGraphShaderLanguage::Lusl);
     /// Unpack full Scene wires touching a node into typed members as one undoable edit.
     /// Preserves the selected scene/data. Failure preserves all draft files. No disk writes.
     [[nodiscard]] RenderGraphDocumentStatus

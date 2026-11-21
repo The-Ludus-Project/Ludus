@@ -130,7 +130,27 @@ install(TARGETS ludus_graphics_renderer EXPORT LudusTargets ARCHIVE DESTINATION 
 # Source is cooked by the existing installed shader helper; no runtime compiler dependency.
 install(FILES include/ludus/graphics/renderer/detail/deferred_binding_slots.inc
     DESTINATION "${CMAKE_INSTALL_INCLUDEDIR}/ludus/graphics/renderer/detail")
-install(FILES "${PROJECT_SOURCE_DIR}/modules/content/scene_format/include/ludus/content/scene_format/material.h" "${PROJECT_SOURCE_DIR}/modules/content/scene_format/include/ludus/content/scene_format/material_program.h" "${PROJECT_SOURCE_DIR}/modules/content/render_graph_format/include/ludus/content/render_graph_format/scene_data.h" include/ludus/graphics/renderer/scene_shader_layout.h include/ludus/graphics/renderer/lighting_layout.h include/ludus/graphics/renderer/deferred_layout.h include/ludus/graphics/renderer/detail/deferred_binding_slots.inc shaders/renderer_deferred_fullscreen.slang shaders/renderer_deferred_material.slang shaders/renderer_deferred_lighting.slang shaders/renderer_atmosphere.slang shaders/renderer_atmosphere_layout.h shaders/renderer_atmosphere_transport.slang shaders/renderer_atmosphere_celestial.slang shaders/renderer_atmosphere_surface.slang shaders/renderer_atmosphere_deferred.slang shaders/renderer_skin_deferred.slang shaders/renderer_atmosphere_skin_deferred.slang shaders/renderer_skin_diffusion.slang shaders/renderer_skin_blur.slang shaders/renderer_skin_composite.slang shaders/skin_diffusion_layout.h shaders/renderer_mesh_lights.slang shaders/renderer_deferred_depth.slang shaders/recipes.json shaders/renderer_light_transformer_query.slang shaders/renderer_light_transformer_encoder.slang shaders/renderer_light_transformer_encoded_queries.slang "${PROJECT_SOURCE_DIR}/modules/content/render_graph_format/include/ludus/content/render_graph_format/detail/light_transformer_encoder_layout.h" shaders/renderer_light_transformer_decoder.slang "${PROJECT_SOURCE_DIR}/modules/content/render_graph_format/include/ludus/content/render_graph_format/detail/light_transformer_layout.h" shaders/renderer_point_neighbors.slang "${PROJECT_SOURCE_DIR}/modules/foundation/geometry/shaders/point_search.slang" "${PROJECT_SOURCE_DIR}/modules/foundation/geometry/include/ludus/foundation/geometry/detail/point_search_layout.h" shaders/renderer_gpu_preview_layout.h shaders/scene_shader.slang shaders/stochastic_reuse.slang shaders/geometry_sampling_layout.h shaders/photon_layout.h shaders/scene_payload.slang shaders/visibility_buffer.slang shaders/ray_shader.slang shaders/ray_shader.luslh shaders/scene_shader.luslh shaders/scene_payload.luslh shaders/ray_triangle_loop.slang shaders/ray_line_visibility.slang shaders/ray_bvh_nodes.slang shaders/ray_bvh_traversal.slang shaders/renderer_flat.slang shaders/renderer_composite.slang shaders/renderer_overlay.slang shaders/renderer_selection_mask.slang shaders/renderer_selection_outline.slang shaders/renderer_grid.slang shaders/renderer_material.slang shaders/renderer_lit.slang shaders/probe_volume_layout.h shaders/renderer_clustered.slang shaders/renderer_shadow.slang shaders/renderer_output.slang shaders/display_tone_mapping.slang shaders/renderer_gpu_preview.slang shaders/renderer_gpu_preview_software.slang shaders/renderer_gpu_preview_visibility_full.slang shaders/renderer_gpu_preview_hit_cached.slang shaders/renderer_gpu_preview_group32.slang shaders/renderer_gpu_preview_group64.slang shaders/renderer_gpu_preview_group128.slang shaders/renderer_gpu_preview_group8x8.slang shaders/renderer_gpu_preview_image.slang shaders/renderer_reference.slang shaders/renderer_reference_layout.h shaders/metropolis_layout.h shaders/reference_light_sampling.slang shaders/renderer_surface.slang shaders/renderer_clustered_surface.slang shaders/renderer_surface_functions.slang shaders/material_scattering.slang shaders/material_program.slang shaders/coated_diffuse.slang shaders/dielectric.slang shaders/reference_medium.slang shaders/coated_diffuse_layout.h shaders/renderer_authored.slang shaders/renderer_clustered_authored.slang shaders/renderer_lit_debug.slang shaders/renderer_clustered_authored_debug.slang shaders/renderer_environment_layout.h shaders/ltc_table.slang shaders/ltc_table_layout.h shaders/ggx_albedo_table.slang shaders/ggx_albedo_table_layout.h DESTINATION "${CMAKE_INSTALL_LIBDIR}/cmake/Ludus/shaders")
+install(FILES "${PROJECT_SOURCE_DIR}/modules/content/scene_format/include/ludus/content/scene_format/material.h" "${PROJECT_SOURCE_DIR}/modules/content/scene_format/include/ludus/content/scene_format/material_program.h" "${PROJECT_SOURCE_DIR}/modules/content/render_graph_format/include/ludus/content/render_graph_format/scene_data.h" include/ludus/graphics/renderer/scene_shader_layout.h include/ludus/graphics/renderer/lighting_layout.h include/ludus/graphics/renderer/deferred_layout.h include/ludus/graphics/renderer/detail/deferred_binding_slots.inc shaders/renderer_deferred_fullscreen.slang shaders/renderer_deferred_material.slang shaders/renderer_deferred_lighting.slang shaders/renderer_atmosphere.slang shaders/renderer_atmosphere_layout.h shaders/renderer_atmosphere_transport.slang shaders/renderer_atmosphere_celestial.slang shaders/renderer_atmosphere_surface.slang shaders/renderer_atmosphere_deferred.slang shaders/renderer_skin_deferred.slang shaders/renderer_atmosphere_skin_deferred.slang shaders/renderer_skin_diffusion.slang shaders/renderer_skin_blur.slang shaders/renderer_skin_composite.slang shaders/skin_diffusion_layout.h shaders/renderer_mesh_lights.slang shaders/renderer_deferred_depth.slang shaders/recipes.json shaders/renderer_light_transformer_query.slang shaders/renderer_light_transformer_encoder.slang shaders/renderer_light_transformer_encoded_queries.slang "${PROJECT_SOURCE_DIR}/modules/content/render_graph_format/include/ludus/content/render_graph_format/detail/light_transformer_encoder_layout.h" shaders/renderer_light_transformer_decoder.slang "${PROJECT_SOURCE_DIR}/modules/content/render_graph_format/include/ludus/content/render_graph_format/detail/light_transformer_layout.h" shaders/renderer_point_neighbors.slang "${PROJECT_SOURCE_DIR}/modules/foundation/geometry/shaders/point_search.slang" "${PROJECT_SOURCE_DIR}/modules/foundation/geometry/include/ludus/foundation/geometry/detail/point_search_layout.h" shaders/renderer_gpu_preview_layout.h shaders/scene_shader.slang shaders/stochastic_reuse.slang shaders/geometry_sampling_layout.h shaders/photon_layout.h shaders/scene_payload.slang shaders/visibility_buffer.slang shaders/ray_shader.slang shaders/ray_shader.luslh shaders/scene_shader.luslh shaders/scene_payload.luslh shaders/ray_triangle_loop.slang shaders/ray_line_visibility.slang shaders/ray_bvh_nodes.slang shaders/ray_bvh_traversal.slang shaders/renderer_flat.slang shaders/renderer_composite.slang shaders/renderer_overlay.slang shaders/renderer_selection_mask.slang shaders/renderer_selection_outline.slang shaders/renderer_grid.slang shaders/renderer_material.slang shaders/renderer_lit.slang shaders/probe_volume_layout.h shaders/renderer_clustered.slang shaders/renderer_shadow.slang shaders/renderer_output.slang shaders/display_tone_mapping.slang shaders/renderer_gpu_preview.slang shaders/renderer_gpu_preview_software.slang shaders/renderer_gpu_preview_visibility_full.slang shaders/renderer_gpu_preview_hit_cached.slang shaders/renderer_gpu_preview_group32.slang shaders/renderer_gpu_preview_group64.slang shaders/renderer_gpu_preview_group128.slang shaders/renderer_gpu_preview_group8x8.slang shaders/renderer_gpu_preview_image.slang shaders/renderer_reference.slang shaders/renderer_reference_repeat_closest.slang shaders/renderer_reference_repeat_visibility.slang shaders/renderer_reference_permuted.slang shaders/renderer_reference_layout.h shaders/metropolis_layout.h shaders/reference_light_sampling.slang shaders/renderer_surface.slang shaders/renderer_clustered_surface.slang shaders/renderer_surface_functions.slang shaders/material_scattering.slang shaders/material_program.slang shaders/coated_diffuse.slang shaders/dielectric.slang shaders/reference_medium.slang shaders/coated_diffuse_layout.h shaders/renderer_authored.slang shaders/renderer_clustered_authored.slang shaders/renderer_lit_debug.slang shaders/renderer_clustered_authored_debug.slang shaders/renderer_environment_layout.h shaders/ltc_table.slang shaders/ltc_table_layout.h shaders/ggx_albedo_table.slang shaders/ggx_albedo_table_layout.h DESTINATION "${CMAKE_INSTALL_LIBDIR}/cmake/Ludus/shaders")
+install(FILES
+    shaders/renderer_lusl_layout_probe.lusl
+    shaders/renderer_gpu_preview_layout.luslh
+    shaders/renderer_reference_layout.luslh
+    include/ludus/graphics/renderer/scene_shader_layout.luslh
+    "${PROJECT_SOURCE_DIR}/modules/foundation/geometry/include/ludus/foundation/geometry/detail/point_search_layout.luslh"
+    DESTINATION "${CMAKE_INSTALL_LIBDIR}/cmake/Ludus/shaders")
+set(lusl_layout_generator "${PROJECT_SOURCE_DIR}/cmake/shaders/generate_lusl_layouts.py")
+add_custom_target(ludus_generate_lusl_layouts
+    COMMAND "${Python3_EXECUTABLE}" "${lusl_layout_generator}"
+    COMMENT "Regenerating the LUSL views of shared layout headers"
+    VERBATIM)
+if(LUDUS_BUILD_TESTS AND NOT EMSCRIPTEN)
+    add_test(NAME lusl_layout_headers_current
+        COMMAND "${Python3_EXECUTABLE}" "${PROJECT_SOURCE_DIR}/cmake/shaders/generate_lusl_layouts.py" --check)
+    set_tests_properties(lusl_layout_headers_current PROPERTIES LABELS "unit;shader;tooling;generated-source" TIMEOUT 30)
+    if(LUDUS_SLANG_COMPILER AND TARGET luslc)
+        add_subdirectory("${PROJECT_SOURCE_DIR}/tests/sdk_consumer/lusl_layout" lusl_layout_probe)
+    endif()
+endif()
 install(FILES shaders/wave_scene_layout.h shaders/wave_scene_queries.slang shaders/wave_connection_layout.h
     shaders/wave_connection.slang shaders/wave_reference_scene.slang DESTINATION "${CMAKE_INSTALL_LIBDIR}/cmake/Ludus/shaders")
 install(FILES shaders/renderer_shadow_depth.slang DESTINATION "${CMAKE_INSTALL_LIBDIR}/cmake/Ludus/shaders")
@@ -312,6 +332,9 @@ if(TARGET ludus_rhi_render_tests AND NOT WIN32)
     ludus_compile_shader(TARGET ludus_renderer_render_tests NAME random_parity
         SOURCE "${PROJECT_SOURCE_DIR}/tests/sdk_consumer/random_parity.slang" COMPUTE ComputeMain
         INCLUDES "${PROJECT_SOURCE_DIR}/modules/foundation/math/shaders")
+    if(APPLE AND LUDUS_SPIRV_CROSS)
+        add_subdirectory(tests/lusl_textures)
+    endif()
     # LUSL L5a GPU evidence: resource queries, atomics and barriers, each beside its Slang
     # equivalent (docs/modules/tooling/shader-language.md#resources-and-bindings). Slang's direct
     # Metal backend has no buffer-length query, so Apple builds compile the buffer queries through
@@ -447,7 +470,8 @@ if(TARGET ludus_rhi_render_tests AND NOT WIN32)
     ludus_apply_project_defaults(ludus_reference_benchmark)
     ludus_compile_renderer_shaders(TARGET ludus_reference_benchmark SHADERS
         renderer_flat renderer_composite renderer_authored renderer_authored_shadow renderer_shadow renderer_output
-        renderer_reference renderer_reference_reduce)
+        renderer_reference renderer_reference_reduce renderer_reference_repeat_closest
+        renderer_reference_repeat_visibility renderer_reference_permuted)
     ludus_compile_renderer_shaders(TARGET ludus_renderer_render_tests SHADERS renderer_reference renderer_reference_reduce)
     ludus_compile_renderer_shaders(TARGET ludus_renderer_render_tests SHADERS renderer_flat)
     ludus_compile_renderer_shaders(TARGET ludus_renderer_render_tests SHADERS renderer_composite)
@@ -757,7 +781,7 @@ endif()
 if(TARGET ludus_renderer_render_tests)
     add_executable(ludus_wave_graph_tests tests/wave_tracing_graph_tests.cpp tests/wave_scene_graph_tests.cpp)
     target_link_libraries(ludus_wave_graph_tests PRIVATE Ludus::FoundationThreading Ludus::GraphicsRenderer Ludus::Resources Ludus::Content
-        Ludus::FoundationFilesystem Ludus::FoundationTime Catch2::Catch2WithMain)
+        Ludus::FoundationStrings Ludus::FoundationFilesystem Ludus::FoundationTime Catch2::Catch2WithMain)
     ludus_apply_project_defaults(ludus_wave_graph_tests)
     ludus_enable_test_exceptions(ludus_wave_graph_tests)
     ludus_compile_renderer_shaders(TARGET ludus_wave_graph_tests SHADERS renderer_composite)
@@ -799,8 +823,11 @@ if(TARGET ludus_renderer_render_tests)
         MANIFEST "${mh_graph_staged}/main.lushader.json" CONFIGURATION JumpRestore RUNTIME_PACKAGE)
     cmake_path(GET jump_restore_graph_RUNTIME_PACKAGE PARENT_PATH jump_restore_graph_directory)
     target_compile_definitions(ludus_metropolis_graph_tests PRIVATE LUDUS_JR_TEMPLATE_DIRECTORY="${jump_restore_graph_directory}")
-    add_test(NAME ludus_metropolis_graph_pixels COMMAND ludus_metropolis_graph_tests)
-    set_tests_properties(ludus_metropolis_graph_pixels PROPERTIES LABELS "renderer;gpu" TIMEOUT 180)
+    # One cold MH and Jump Restore capture: 163 s, then over 180 s, under ASan on lavapipe
+    # (batches 44798972441, 44830871804). Use the renderer's sanitizer-aware case budget.
+    add_test(NAME ludus_metropolis_graph_pixels COMMAND ludus_metropolis_graph_tests --durations yes)
+    set_tests_properties(ludus_metropolis_graph_pixels PROPERTIES LABELS "renderer;gpu"
+        TIMEOUT ${renderer_test_case_timeout_seconds})
     add_executable(ludus_render_graph_ray_tests tests/render_graph_ray_tests.cpp)
     target_link_libraries(ludus_render_graph_ray_tests PRIVATE ludus_renderer_test_oracles Ludus::FoundationThreading Ludus::GraphicsRenderer
         Ludus::FoundationFilesystem Ludus::FoundationTime Ludus::SceneSource Catch2::Catch2WithMain)

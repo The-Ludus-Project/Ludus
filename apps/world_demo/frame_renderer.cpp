@@ -71,6 +71,7 @@ rhi::RasterStatus FrameRenderer::Prepare(rhi::DeviceHandle device) noexcept
             {
                 return status;
             }
+            mQuadUploadStart = foundation::time::Now();
             status = mRenderer.CreateMesh(GetUnitQuadMesh(), mQuad);
             if (IsAccepted(status) == false)
             {
@@ -83,6 +84,7 @@ rhi::RasterStatus FrameRenderer::Prepare(rhi::DeviceHandle device) noexcept
             const rhi::RasterStatus status = mRenderer.GetStatus(mQuad);
             if (status == rhi::RasterStatus::Ready)
             {
+                (void)foundation::time::TryElapsed(mQuadUploadStart, foundation::time::Now(), mQuadReadyDuration);
                 mStage = FrameRendererStage::Ready;
             }
             return status;
@@ -200,6 +202,8 @@ void FrameRenderer::Reset() noexcept
     mQuad = {};
     mSnapshot = {};
     mDevice = {};
+    mQuadUploadStart = {};
+    mQuadReadyDuration = {};
     mStage = FrameRendererStage::Idle;
     mViewportWidth = 0;
     mViewportHeight = 0;

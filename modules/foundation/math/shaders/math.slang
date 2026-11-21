@@ -38,6 +38,16 @@ bool IsFiniteBits(float3 value)
 {
     return IsFiniteBits(value.x) == true && IsFiniteBits(value.y) == true && IsFiniteBits(value.z) == true;
 }
+// Strip the sign bit before comparing the IEEE binary32 infinity and NaN encodings.
+static const uint FLOAT_MAGNITUDE_BITS = 0x7fffffffu;
+bool IsNanBits(float value)
+{
+    return (asuint(value) & FLOAT_MAGNITUDE_BITS) > FLOAT_EXPONENT_BITS;
+}
+bool IsInfBits(float value)
+{
+    return (asuint(value) & FLOAT_MAGNITUDE_BITS) == FLOAT_EXPONENT_BITS;
+}
 float3 NormalizeOrZero(float3 v)
 {
     float s = dot(v, v);
@@ -375,11 +385,10 @@ bool TrySampleRandomBounded(uint2 key, RandomAddress address, uint bound, out ui
     return TrySampleRandomBoundedFrom(source, bound, outValue);
 }
 
-static const uint FLOAT_SIGN_BIT = 0x80000000u;
 static const uint FLOAT_MINIMUM_NORMAL_BITS = 0x00800000u;
 static float ScaleNonnegativeWeight(float weight, int exponentOffset, float subnormalScale)
 {
-    const uint magnitudeBits = asuint(weight) & ~FLOAT_SIGN_BIT;
+    const uint magnitudeBits = asuint(weight) & FLOAT_MAGNITUDE_BITS;
     if (magnitudeBits < FLOAT_MINIMUM_NORMAL_BITS)
         return (float(magnitudeBits) / float(FLOAT_MINIMUM_NORMAL_BITS)) * subnormalScale;
     const int scaledBits = int(magnitudeBits) + exponentOffset;
@@ -391,14 +400,14 @@ bool TrySampleWeightedIndex<let WeightCount : int>(in float weights[WeightCount]
 {
     outIndex = 0;
     const uint randomBits = asuint(randomValue);
-    if (randomBits >= asuint(1.0f) && randomBits != FLOAT_SIGN_BIT)
+    if (randomBits >= asuint(1.0f) && (randomBits & FLOAT_MAGNITUDE_BITS) != 0)
         return false;
 
     uint largestWeightBits = 0;
     for (int index = 0; index < WeightCount; ++index)
     {
         const uint weightBits = asuint(weights[index]);
-        const uint magnitudeBits = weightBits & ~FLOAT_SIGN_BIT;
+        const uint magnitudeBits = weightBits & FLOAT_MAGNITUDE_BITS;
         if (IsFiniteBits(weights[index]) == false || (weightBits != magnitudeBits && magnitudeBits != 0))
             return false;
         largestWeightBits = max(largestWeightBits, magnitudeBits);

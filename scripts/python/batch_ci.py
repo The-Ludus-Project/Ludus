@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import argparse
 import base64
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 import json
 import os
 from pathlib import Path
@@ -27,6 +27,10 @@ SUITE_JOBS = (*VALIDATION_JOBS, "recovery")
 # Measured batches report deterministic failures within 3-13 minutes, and every
 # job except the sanitizers and macOS native backends ends within about 45.
 STOP_CONCLUSIONS = frozenset({"failure", "timed_out", "startup_failure"})
+# Aggregate gates fail whenever a job they read did not succeed, including a job
+# that never acquired a runner. Every real failure they report is a failed job of
+# its own, so they neither stop the batch nor block a runner retry.
+AGGREGATE_JOBS = frozenset({"native / Ubuntu Clang"})
 STOP_GRACE_SECONDS = 30 * 60
 WATCH_INTERVAL_SECONDS = 60
 # Below the watcher's 360-minute job limit, so it reports instead of timing out.
@@ -35,7 +39,18 @@ WATCH_LIMIT_SECONDS = 330 * 60
 COMPLETION_JOB = "Prune superseded caches"
 # Runs only when the watcher stopped the batch; develop health reads its presence.
 STOP_JOB = "Cancel failed batch"
+# The capture job; a newer tick without suite jobs captured nothing.
+CAPTURE_JOB = "Capture develop candidate"
+BATCH_WORKFLOW = "batch-ci.yml"
 MAX_JOB_PAGES = 5
+# GitHub cancels a job that no hosted runner accepts and annotates it with this.
+# Retry such jobs a bounded number of times: an outage must not hold the single
+# promotion slot indefinitely. The delay gives hosted capacity time to recover.
+ACQUISITION_FAILURE = "was not acquired by Runner"
+MAX_ACQUISITION_RETRIES = 2
+RETRY_DELAY_SECONDS = 5 * 60
+# Below the retry job's 360-minute limit, so it reports instead of timing out.
+RETRY_LIMIT_SECONDS = 330 * 60
 # Repository-owned cache key families. Each key ends in input hashes and, for
 # compiler caches, the commit that saved it; older entries of a family on the
 # batch's ref can never be restored again once a newer one exists.
@@ -318,6 +333,11 @@ def failed_suite_jobs(jobs: list[dict]) -> list[dict]:
     return [job for job in jobs if is_suite_job(job.get("name")) and job.get("conclusion") in STOP_CONCLUSIONS]
 
 
+def stopping_suite_jobs(jobs: list[dict]) -> list[dict]:
+    """Failed suite jobs that reject the candidate by themselves, excluding aggregate gates."""
+    return [job for job in failed_suite_jobs(jobs) if job.get("name") not in AGGREGATE_JOBS]
+
+
 def watch_decision(jobs: list[dict], now: datetime, grace_seconds: float = STOP_GRACE_SECONDS) -> str:
     """Return "done", "stop" or "wait" for one listing of the batch's jobs.
 
@@ -328,7 +348,7 @@ def watch_decision(jobs: list[dict], now: datetime, grace_seconds: float = STOP_
     """
     if any(job.get("name") == COMPLETION_JOB for job in jobs):
         return "done"
-    failed = failed_suite_jobs(jobs)
+    failed = stopping_suite_jobs(jobs)
     if not failed:
         return "wait"
     # A failed job without a completion time counts from now: never stop early.
@@ -336,13 +356,16 @@ def watch_decision(jobs: list[dict], now: datetime, grace_seconds: float = STOP_
     return "stop" if (now - first).total_seconds() >= grace_seconds else "wait"
 
 
-def list_run_jobs(client: GitHub, run_id: int) -> list[dict]:
+def list_run_jobs(client: GitHub, run_id: int, *, attempt: int | None = None) -> list[dict]:
     # Thanks to GitHub, "REST API endpoints for workflow jobs", List jobs for a
     # workflow run: filter=latest reports each job's most recent attempt.
     # https://docs.github.com/en/rest/actions/workflow-jobs#list-jobs-for-a-workflow-run
+    run_path = f"actions/runs/{int(run_id)}"
+    endpoint = (f"{run_path}/jobs?filter=latest&" if attempt is None
+                else f"{run_path}/attempts/{int(attempt)}/jobs?")
     jobs: list[dict] = []
     for page in range(1, MAX_JOB_PAGES + 1):
-        listing = client.request(f"actions/runs/{int(run_id)}/jobs?filter=latest&per_page=100&page={page}")
+        listing = client.request(f"{endpoint}per_page=100&page={page}")
         entries = listing.get("jobs") if isinstance(listing, dict) else None
         if not isinstance(entries, list):
             raise BatchError(f"Run {run_id} returned no job listing.")
@@ -365,6 +388,7 @@ def watch(client: GitHub, run_id: int, *, clock=None, sleep=time.sleep,
     started = clock()
     errors = 0
     failed: list[str] = []
+    observed_failures: set[int] = set()
     while (clock() - started).total_seconds() < limit_seconds:
         try:
             jobs = list_run_jobs(client, run_id)
@@ -375,8 +399,21 @@ def watch(client: GitHub, run_id: int, *, clock=None, sleep=time.sleep,
                 return False, failed
         else:
             errors = 0
-            failed = sorted({job["name"] for job in failed_suite_jobs(jobs)})
-            decision = watch_decision(jobs, clock(), grace_seconds)
+            failures = failed_suite_jobs(jobs)
+            failed = sorted({job["name"] for job in failures})
+            observed_at = clock()
+            decision = watch_decision(jobs, observed_at, grace_seconds)
+            for job in failures:
+                job_id = job.get("id")
+                if isinstance(job_id, int) and job_id not in observed_failures:
+                    observed_failures.add(job_id)
+                    print(f"Batch report observed failure {job_id} at {observed_at.isoformat()}", flush=True)
+            if decision == "stop":
+                for job in jobs:
+                    job_id = job.get("id")
+                    if (isinstance(job_id, int) and is_suite_job(job.get("name"))
+                            and job.get("status") in {"queued", "waiting", "pending", "requested"}):
+                        print(f"Batch report observed queued job {job_id}", flush=True)
             if decision != "wait":
                 return decision == "stop", failed
         sleep(interval_seconds)
@@ -395,9 +432,130 @@ def describe_watch(should_stop: bool, failed: list[str]) -> str:
     return "\n".join([*lines, *(f"- {name}" for name in failed)]) + "\n"
 
 
+def is_unacquired(client: GitHub, job: dict) -> bool:
+    """Whether GitHub cancelled job because no hosted runner accepted it.
+
+    Only a cancelled job that never had a runner is checked, and only GitHub's own
+    acquisition annotation qualifies: a cancellation by a person, by the stop job
+    or by a newer run carries no such annotation and is never retried.
+    """
+    if job.get("conclusion") != "cancelled" or job.get("runner_name") or not isinstance(job.get("id"), int):
+        return False
+    # Thanks to GitHub, "REST API endpoints for check runs", List check run
+    # annotations: a workflow job's id is its check run id.
+    # https://docs.github.com/en/rest/checks/runs#list-check-run-annotations
+    annotations = client.request(f"check-runs/{job['id']}/annotations?per_page=50")
+    if not isinstance(annotations, list):
+        raise BatchError(f"Job {job['id']} returned no annotation listing.")
+    return any(isinstance(entry, dict) and ACQUISITION_FAILURE in str(entry.get("message", ""))
+               for entry in annotations)
+
+
+def retry_candidates(client: GitHub, jobs: list[dict]) -> tuple[list[dict], str]:
+    """Return the jobs to retry, or none and the reason the run is not retried."""
+    if any(job.get("name") == STOP_JOB and job.get("conclusion") not in {None, "skipped"} for job in jobs):
+        return [], "The batch was stopped after a suite failed; the candidate is already rejected."
+    failed = sorted(job.get("name", "?") for job in jobs
+                    if job.get("conclusion") in STOP_CONCLUSIONS and job.get("name") not in AGGREGATE_JOBS)
+    if failed:
+        return [], "Jobs failed for reasons other than runner capacity: " + ", ".join(failed) + "."
+    unacquired = [job for job in jobs if is_unacquired(client, job)]
+    if not unacquired:
+        return [], "No job was cancelled for lack of a runner."
+    return sorted(unacquired, key=lambda job: job["id"]), ""
+
+
+def newer_batch_state(client: GitHub, run_id: int) -> str:
+    """Return "none", "started" or "pending" for batch runs created after run_id.
+
+    A newer tick that captured nothing runs only its capture job and cancels
+    itself. A newer run with suite jobs validates a later develop commit, which
+    contains this candidate, so retrying this run would only delay it.
+    """
+    listing = client.request(f"actions/workflows/{BATCH_WORKFLOW}/runs?branch=main&per_page=20")
+    runs = listing.get("workflow_runs") if isinstance(listing, dict) else None
+    if not isinstance(runs, list):
+        raise BatchError("The batch run listing is unavailable.")
+    state = "none"
+    for run in runs:
+        if not isinstance(run, dict) or not isinstance(run.get("id"), int) or run["id"] <= run_id:
+            continue
+        jobs = list_run_jobs(client, run["id"])
+        if any(is_suite_job(job.get("name")) for job in jobs):
+            return "started"
+        capture = [job for job in jobs if job.get("name") == CAPTURE_JOB]
+        if run.get("status") != "completed" and (not capture or capture[0].get("status") != "completed"):
+            state = "pending"
+    return state
+
+
+def wait_for_run(client: GitHub, run_id: int, *, clock, sleep, deadline: datetime,
+                 interval_seconds: float, after_attempt: int = 0) -> dict | None:
+    """Poll until the run has an attempt above after_attempt and that attempt completed."""
+    while clock() < deadline:
+        run = client.request(f"actions/runs/{int(run_id)}")
+        if not isinstance(run, dict):
+            raise BatchError(f"Run {run_id} returned no metadata.")
+        attempt = run.get("run_attempt")
+        if isinstance(attempt, int) and attempt > after_attempt and run.get("status") == "completed":
+            return run
+        sleep(interval_seconds)
+    return None
+
+
+def retry_unacquired(client: GitHub, run_id: int, *, clock=None, sleep=time.sleep,
+                     retries: int = MAX_ACQUISITION_RETRIES, delay_seconds: float = RETRY_DELAY_SECONDS,
+                     interval_seconds: float = WATCH_INTERVAL_SECONDS,
+                     limit_seconds: float = RETRY_LIMIT_SECONDS) -> tuple[bool, list[str]]:
+    """Re-run batch jobs GitHub cancelled before a hosted runner accepted them.
+
+    GitHub re-runs jobs only in a completed run, so a retried job starts after
+    every other job has finished and asks for one runner alone: the serialized
+    admission the batch used before its macOS jobs ran in parallel. Each round
+    re-runs one job and its dependents, at most retries rounds in all. Return
+    whether the run still needs a person (capacity exhausted or time ran out)
+    and the lines that report what happened.
+    """
+    clock = clock or (lambda: datetime.now(timezone.utc))
+    deadline = clock() + timedelta(seconds=limit_seconds)
+    lines: list[str] = []
+    attempt = 0
+    for round_number in range(retries + 1):
+        run = wait_for_run(client, run_id, clock=clock, sleep=sleep, deadline=deadline,
+                           interval_seconds=interval_seconds, after_attempt=attempt)
+        if run is None:
+            return True, [*lines, "Stopped waiting for the batch run within the retry time limit."]
+        attempt = run["run_attempt"]
+        candidates, reason = retry_candidates(client, list_run_jobs(client, run_id))
+        if not candidates:
+            return False, [*lines, reason]
+        names = ", ".join(job.get("name", "?") for job in candidates)
+        if round_number == retries:
+            return True, [*lines, f"GitHub could not supply a runner after {retries} retries: {names}. "
+                                  "This is runner capacity, not a code failure; dispatch the batch with "
+                                  "retry once capacity returns."]
+        while (state := newer_batch_state(client, run_id)) == "pending":
+            if clock() >= deadline:
+                return True, [*lines, "A newer tick did not finish capturing within the retry time limit."]
+            sleep(interval_seconds)
+        if state == "started":
+            return False, [*lines, "A newer batch already validates a later develop commit; not retrying."]
+        sleep(delay_seconds)
+        job = candidates[0]
+        client.request(f"actions/jobs/{job['id']}/rerun", "POST", {})
+        lines.append(f"Retry {round_number + 1} of {retries}: re-running {job.get('name', '?')} "
+                     "and the jobs that depend on it.")
+    return True, lines
+
+
+def describe_retry(needs_attention: bool, lines: list[str]) -> str:
+    title = "### Runner retry needs attention" if needs_attention else "### Runner retry"
+    return "\n".join([title, "", *(f"- {line}" for line in lines)]) + "\n"
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("command", choices=("snapshot", "promote", "prune-caches", "watch"))
+    parser.add_argument("command", choices=("snapshot", "promote", "prune-caches", "watch", "retry-runners"))
     parser.add_argument("--retry", action="store_true")
     parser.add_argument("--base", default="")
     parser.add_argument("--candidate", default="")
@@ -424,6 +582,17 @@ def main() -> int:
                 stream.write(f"should_stop={'true' if should_stop else 'false'}\n")
             summary = describe_watch(should_stop, failed)
             print(summary, end="")
+        elif arguments.command == "retry-runners":
+            needs_attention, lines = retry_unacquired(client, int(os.environ["BATCH_RUN_ID"]))
+            summary = describe_retry(needs_attention, lines)
+            print(summary, end="")
+            if needs_attention:
+                escaped = " ".join(lines[-1:]).replace("%", "%25").replace("\r", "%0D").replace("\n", "%0A")
+                print(f"::error title=Batch runner retry::{escaped}")
+                if os.environ.get("GITHUB_STEP_SUMMARY"):
+                    with Path(os.environ["GITHUB_STEP_SUMMARY"]).open("a", encoding="utf-8") as stream:
+                        stream.write(summary)
+                return 1
         elif arguments.command == "prune-caches":
             deleted, failures = prune_caches(client, os.environ["GITHUB_REF"])
             summary = describe_pruning(deleted, failures)

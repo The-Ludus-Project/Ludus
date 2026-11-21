@@ -616,6 +616,9 @@ abstraction”](https://godotengine.org/article/godot-3-renderer-design-explaine
 Add a manifest slot when a second concrete implementation needs to be selectable
 under the same contract. Cross-stage interpolation, stage placement and effect
 inference remain separate design questions.
+The [renderer sampling proposal](renderer-sampling.md#project-authored-proposals)
+uses a project include for its first template and follows this contract when a
+graph offers multiple selectable sampling implementations.
 
 Thanks to Simon Taylor, [“Flexible and Extensible Shader Authoring in Frostbite
 with Serac”](https://advances.realtimerendering.com/s2024/index.html#serac),

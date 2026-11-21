@@ -19,6 +19,16 @@ using namespace foundation;
 constexpr int32 MAX_RESULTS = 256;
 constexpr int32 MAX_EXAMINED_RESULTS = 8192;
 constexpr int32 MAX_LABEL_UNITS = 2048;
+constexpr int32 SINGULAR_COUNT = 1;
+
+QString DescribeLocationCount(int32 count)
+{
+    if (count == SINGULAR_COUNT)
+    {
+        return QStringLiteral("1 location");
+    }
+    return QStringLiteral("%1 locations").arg(count);
+}
 } // namespace
 
 namespace
@@ -204,19 +214,18 @@ QList<CodeNavigationTarget> ReadCodeNavigationResults(CodeNavigationKind kind,
         }
         result.append({label, targetFile, text, start, end, isReadOnly});
     }
-    outMessage = result.isEmpty() == true
-                     ? QStringLiteral("No mapped locations. Check the shader/program context and retry.")
-                     : QStringLiteral("%1 locations. Filter, then Enter to jump; Escape keeps the current view.")
-                           .arg(result.size());
+    outMessage =
+        result.isEmpty() == true
+            ? QStringLiteral("No mapped locations. Check the shader/program context and retry.")
+            : QStringLiteral("%1. Enter to jump.").arg(DescribeLocationCount(static_cast<int32>(result.size())));
     if (pending.isEmpty() == false)
     {
         outMessage += QStringLiteral(" Result limit reached; narrow the query.");
     }
     if (rejected > 0)
     {
-        outMessage +=
-            QStringLiteral(" %1 locations outside the captured source map or with invalid ranges were omitted.")
-                .arg(rejected);
+        outMessage += QStringLiteral(" %1 outside the captured source map or with invalid ranges were omitted.")
+                          .arg(DescribeLocationCount(rejected));
     }
     return result;
 }

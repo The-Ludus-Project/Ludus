@@ -1,6 +1,6 @@
 #pragma once
 
-// Hosted-window channel protocol, version 4 (private to Platform; version 5 on Windows).
+// Hosted-window channel protocol, version 5 (private to Platform; version 6 on Windows).
 //
 // The editor endpoint and the hosted window speak this bounded binary protocol
 // over one Unix stream socket. It is separate from the GameHost control protocol
@@ -17,8 +17,10 @@
 // (deviceUUID and driverUUID), so a Vulkan game can render on the editor's GPU.
 // Version 4 (5 on Windows, whose version 4 added ImagesCopied) adds hosted
 // recording: the endpoint sends RecordingRequest, and the window answers with
-// RecordingAcknowledgement and streams RecordingSample. A peer of another version
-// is refused as IncompatibleVersion.
+// RecordingAcknowledgement and streams RecordingSample. Version 5 (6 on Windows)
+// lets a Start acknowledgement say whether the game's device has per-pass counters
+// and lets a sample measure a whole frame instead. A peer of another version is
+// refused as IncompatibleVersion.
 
 #include <ludus/foundation/base/core.h>
 
@@ -45,9 +47,9 @@ using foundation::usize;
 
 /// Wire protocol version carried by Hello and Welcome.
 #if LUDUS_TARGET_OS == LUDUS_OS_WINDOWS
-inline constexpr uint16 PROTOCOL_VERSION = 5;
+inline constexpr uint16 PROTOCOL_VERSION = 6;
 #else
-inline constexpr uint16 PROTOCOL_VERSION = 4;
+inline constexpr uint16 PROTOCOL_VERSION = 5;
 #endif
 /// First field of every Hello payload: "LHWN" read as little-endian bytes.
 inline constexpr uint32 HELLO_MAGIC = 0x4E57484C;
@@ -146,8 +148,8 @@ inline constexpr usize IMAGES_COPIED_PAYLOAD_BYTES = sizeof(uint32);
 inline constexpr usize RECORDING_REQUEST_PAYLOAD_BYTES = 1 + 8 + 8;
 /// Coverage counters of a Stop acknowledgement.
 inline constexpr usize RECORDING_COVERAGE_WORDS = 8;
-/// Kind, result, name length and a reserved byte; recording, request, frame and ticks;
-/// coverage; the zero-padded producer name.
+/// Kind, result, name length and flags; recording, request, frame and ticks; coverage;
+/// the zero-padded producer name.
 inline constexpr usize RECORDING_ACKNOWLEDGEMENT_PAYLOAD_BYTES =
     1 + 1 + 1 + 1 + (4 * 8) + (RECORDING_COVERAGE_WORDS * 8) + HOSTED_RECORDING_PRODUCER_NAME_BYTES;
 /// Recording, frame, submission, collection, duration and scope; pass index and logical
@@ -155,9 +157,9 @@ inline constexpr usize RECORDING_ACKNOWLEDGEMENT_PAYLOAD_BYTES =
 /// zero-padded pass name.
 inline constexpr usize RECORDING_SAMPLE_PAYLOAD_BYTES =
     (6 * 8) + 4 + 4 + 1 + 1 + 1 + 1 + (3 * 8) + HOSTED_RECORDING_PASS_NAME_BYTES;
-/// Largest payload of any version-4 message.
+/// Largest payload of any message of this version.
 inline constexpr usize MAX_PAYLOAD_BYTES = RECORDING_SAMPLE_PAYLOAD_BYTES;
-/// Largest encoded version-4 message.
+/// Largest encoded message of this version.
 inline constexpr usize MAX_MESSAGE_BYTES = HEADER_BYTES + MAX_PAYLOAD_BYTES;
 /// Largest payload any version may frame. A peer reading a longer frame stops at once; a
 /// shorter one, even of a future Hello, is framed so its version can be reported.
@@ -173,6 +175,10 @@ inline constexpr usize MAX_SURFACE_MESSAGE_BYTES = HEADER_BYTES + IMAGES_PAYLOAD
 
 /// Sample payload flag: the sample carries a calibrated interval on the game's clock.
 inline constexpr uint8 SAMPLE_FLAG_CPU_INTERVAL = 0x01;
+/// Sample payload flag: the sample measures the whole frame (HostedRecordingSample::IsFrame).
+inline constexpr uint8 SAMPLE_FLAG_FRAME = 0x02;
+/// Acknowledgement payload flag: a successful Start's device has per-pass counters.
+inline constexpr uint8 ACKNOWLEDGEMENT_FLAG_PASS_TIMING = 0x01;
 /// Key payload flag: the transition is an operating-system auto-repeat.
 inline constexpr uint8 KEY_FLAG_REPEAT = 0x01;
 /// Welcome flag: the payload's UUIDs name the consumer's adapter. Without it they are zero.
@@ -284,12 +290,15 @@ TryDecodeMessage(foundation::BorrowedView<const uint8> bytes, Message& outMessag
 /// True when `request` has a known kind and nonzero recording and request numbers.
 [[nodiscard]] bool IsValidRecordingRequest(const HostedRecordingRequest& request) noexcept;
 
-/// True when `acknowledgement` has a known kind and result, nonzero identities and a
-/// terminated, valid UTF-8 producer name of at most HOSTED_RECORDING_PRODUCER_NAME_BYTES.
+/// True when `acknowledgement` has a known kind and result, nonzero identities, a
+/// terminated, valid UTF-8 producer name of at most HOSTED_RECORDING_PRODUCER_NAME_BYTES,
+/// and IsPassTimingSupported only on a successful Start.
 [[nodiscard]] bool IsValidRecordingAcknowledgement(const HostedRecordingAcknowledgement& acknowledgement) noexcept;
 
-/// True when `sample` has nonzero identities and logical count, a known kind, ordered
-/// ticks and interval, and a nonempty, terminated, valid UTF-8 name.
+/// True when `sample` has nonzero recording and frame, a nonzero logical count, a known
+/// kind, ordered ticks and interval and a terminated, valid UTF-8 name, and is either a
+/// pass sample with a nonzero scope and a nonempty name or a frame sample whose pass
+/// fields keep their neutral values (HostedRecordingSample).
 [[nodiscard]] bool IsValidRecordingSample(const HostedRecordingSample& sample) noexcept;
 
 /// Constant-time comparison of two tokens.

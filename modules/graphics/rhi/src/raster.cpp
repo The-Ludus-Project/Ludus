@@ -8,6 +8,7 @@
 #include "internal/native_interop.h"
 #include "internal/owner.h"
 
+#include <ludus/graphics/rhi/frame_producer.h>
 #include <ludus/graphics/rhi/graph.h>
 #include <ludus/graphics/rhi/pipeline_preparation.h>
 

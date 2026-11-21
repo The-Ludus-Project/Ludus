@@ -14,7 +14,7 @@ authored regional schedules and bounded fields within a ground-based World.
 | Render graph integration | The renderer reports [World feature support](../development/render-graph-authoring.md#world-features) from the selected graph. Raster clear-sky support and RT1 sky support have different transport contracts. |
 | Clouds | [#1319](https://github.com/The-Ludus-Project/Ludus/issues/1319) tracks a bounded cloud transport prototype and its integration with aerial perspective. |
 | Wind | [PhysicsFluid](fluid-field.md) owns numerical grid operations. [Sandbox](drift-game-integration.md) owns its wind policy. [Foliage #1697](https://github.com/The-Ludus-Project/Ludus/issues/1697) needs a reusable World provider and owns plant response. |
-| Climate and precipitation | [Terrain fields](../modules/content/terrain.md) supply elevation-derived wetness and drainage for generation. Regional climate, runtime weather, precipitation and exposure-dependent surface wetness are proposed here. |
+| Climate and precipitation | [Terrain fields](../modules/content/terrain.md) supply elevation-derived wetness and drainage for generation. [GameplayWeather](../modules/gameplay/weather.md) cooks regional climates and resolves deterministic weather, including precipitation rate, at World positions. Exposure-dependent surface wetness is proposed here. |
 
 ## Ownership and data flow
 
@@ -277,7 +277,7 @@ physical WebGPU hardware before making browser performance claims.
 
 | Slice | Delivery gate |
 | --- | --- |
-| [Shared climate and weather](https://github.com/The-Ludus-Project/Ludus/issues/1704) | One default region and one feathered override. Compare per-tick golden samples/events across chunked stepping, pause, replay, save/load, iteration-order changes, and distinct view locations. Qualify Editor preview and SDK packaged play. |
+| [Shared climate and weather](https://github.com/The-Ludus-Project/Ludus/issues/1704) | One default region and one feathered override. Compare per-tick golden samples/events across chunked stepping, pause, replay, save/load, iteration-order changes, and distinct view locations. Qualify Editor preview and SDK packaged play. The [runtime and its golden corpus](../modules/gameplay/weather.md#determinism-evidence) are in place; Editor, Play controls and SDK play remain. |
 | [Analytic World wind](https://github.com/The-Ludus-Project/Ludus/issues/1705) | Match sampled speed and direction at ground and cloud heights, calm, bounded falloff, and uninterrupted phase after clock restore and rebasing. Qualify two consumers using a cloud tracer marker and a ground receiver. |
 | Cloud prototype | Reuse [#1319](https://github.com/The-Ludus-Project/Ludus/issues/1319) and its analytic and scene-linear controls. |
 | [Weather-driven clouds](https://github.com/The-Ludus-Project/Ludus/issues/1706) | One authored coverage/type map, stable advection and accepted snapshots tied to World revisions. Verify clipping, horizon, day/night, clear recovery and profile fallback. |

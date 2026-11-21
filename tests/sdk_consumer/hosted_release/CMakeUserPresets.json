@@ -1,0 +1,16 @@
+{
+  "version": 3,
+  "configurePresets": [
+    {
+      "name": "web-emscripten-release",
+      "generator": "Ninja",
+      "binaryDir": "${sourceDir}/out/build/web-emscripten-release",
+      "toolchainFile": "$env{EMSDK}/upstream/emscripten/cmake/Modules/Platform/Emscripten.cmake",
+      "cacheVariables": {
+        "CMAKE_BUILD_TYPE": "Release",
+        "CMAKE_FIND_ROOT_PATH": "$env{LUDUS_SDK_PREFIX}",
+        "BUILD_TESTING": "OFF"
+      }
+    }
+  ]
+}

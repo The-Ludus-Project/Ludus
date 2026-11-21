@@ -133,16 +133,23 @@ sent a batch by its starting length, so a nested event loop that emptied the
 queue first ended Qt's event loop and froze the editor. The editor's Qt build
 backports the upstream reentrant sender (see
 [Ludus changes to Qt](../development/browser-editor.md#ludus-changes-to-qt)).
-A queued key also reaches Qt after the browser has applied it: with a text
-field focused, Qt's hidden input element has already moved its caret or taken
-the text, so typing right after a save landed out of order. While a host-folder
-call is suspended, `browser/suspended_input.js` therefore cancels the browser
-default of trusted `keydown`/`keyup` events in the capture phase. The events
-still reach Qt's queue in their place among pointer and other input, and Qt
-types text from `keydown` itself. Holding keys back and dispatching them later
-would let a queued click overtake them. IME composition keys and the copy, cut
-and paste shortcuts keep their default.
-`apps/editor/tests/browser_suspended_input_tests.cjs` covers the cancellation.
+Qt cancels the browser default of input only when it handles the queued
+event, after the browser has already applied that default. A queued key
+reached Qt after Qt's hidden input element had moved its caret or taken the
+text. A queued click in a Qt window moved focus from that element to the
+document body, because nothing else in a Qt window is focusable, so keys typed
+before Qt handled the click never reached Qt at all. While a host-folder call
+is suspended, `browser/suspended_input.js` therefore cancels, in the capture
+phase, the browser default of trusted `keydown`/`keyup` events and of trusted
+`pointerdown`/`mousedown` events inside a Qt window. The events still reach
+Qt's queue in their place among other input; Qt types text from `keydown`
+itself and moves focus when it handles the click. Holding keys back and
+dispatching them later would let a queued click overtake them. IME composition
+keys, the copy, cut and paste shortcuts and clicks outside Qt's windows keep
+their default.
+`apps/editor/tests/browser_suspended_input_tests.cjs` covers the cancellation,
+and the [World edit qualification](../development/tools/web-browser-tests.md#full-authoring-world-edit-qualification)
+types an edit while a folder write holds the editor suspended.
 Renames across mounts fail with `EXDEV`, which Qt turns into copies. Symbolic
 links cannot be created in a folder mount. The overrides reproduce Emscripten
 4.0.23's `__syscall_openat` and `__syscall_renameat` over the public FS API and

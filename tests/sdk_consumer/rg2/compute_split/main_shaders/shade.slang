@@ -31,7 +31,7 @@ float3 ShadeRecordedHit(SceneContext scene, RayLaunch launch, inout RayQueryCont
                          all(abs(traced.PositionWorld - recorded.PositionWorld) <= RETRACE_TOLERANCE_WORLD);
     }
     bool isCorrelated = asuint(SampleSceneRandom(queries)) == sampleWord.w;
-    bool isOffsetIndependent = SampleSceneRandom(launch, PRIMARY_RANDOM_DIMENSION_COUNT) != asfloat(sampleWord.w);
+    bool isOffsetIndependent = SampleUniformFloat01(launch, PRIMARY_RANDOM_DIMENSION_COUNT) != asfloat(sampleWord.w);
     float triangleShade = isHit == true ? float(surfaceWord.x) / float(GetSceneInfo(scene).TriangleCount) : 0;
     return float3(isCurrent == true && isSameIdentity == true ? 1 : 0,
                   triangleShade,

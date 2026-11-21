@@ -81,9 +81,15 @@ ludus render-graph migrate-pipelines graphs/Main/rasterize.lurender.json \
 The command writes only stdout (`--json` returns a `document` object). It does
 not replace files or convert imported assets automatically.
 
-In **Properties → Shaders** or the canvas node editor, add a row, choose its stage
-and set its shader ID. Completed edits automatically create a `.slang` template and register a program in the root
-`.lushader.json` for each new program name. The initial `Program` value
+In **Properties → Shaders** or **Edit Node** on the canvas, choose the new shader
+language and click **Add**, then set the row's stage and shader ID. LUSL
+(`.lusl`) is the default. Choose Slang (`.slang`) to create a Slang source in
+the same package. The Editor registers each new program in the root
+`.lushader.json`. Renaming a program keeps its source language. Template
+instances copy the source languages used by the template. For a scene ray
+pipeline with a custom payload, declare its layout in LUSL as described in the
+[shader language guide](../modules/tooling/shader-language.md#render-graph-programs).
+The initial `Program` value
 receives a unique name from the node and shader IDs. Program IDs belong to the root
 shader manifest and are shared across all imported graphs and configurations;
 graph-local node names do not create separate program namespaces. Generated names
@@ -126,8 +132,8 @@ authored build roots even when no node currently selects them; their programs su
 Remove an unwanted technique explicitly in **Source** before running cleanup.
 
 Unused program registrations are removed in one undoable draft edit, with the
-`.slang` sources that no remaining program uses and the helpers that only those
-sources include (for example a template's `hit_record.slang`). A file survives when
+`.lusl` and `.slang` sources that no remaining program uses, along with helpers
+that only those sources include (for example a template's `hit_record.slang`). A file survives when
 a remaining program registers it, a remaining graph or manifest field names it (a
 traversal source or ray payload, for example), or a surviving source could include
 it, directly or through other survivors. Builds resolve literal includes relative to
@@ -1221,6 +1227,80 @@ buffer values. They establish the storage/ordering seam for an authored ReSTIR
 implementation; reservoir sampling, temporal reprojection and disocclusion logic
 remain shader policy.
 
+### Size an ordered Buffer from a shader struct
+
+For a fixed allocation shared by scene compute passes, select the Buffer and
+choose **From shader struct…** in Properties or in the canvas node's **Edit
+Node…** dialog. Choose a package-local Slang file, enter the struct name and set
+the element capacity. **Build Graph** reflects the struct's storage stride,
+multiplies it by the capacity, and rounds the allocation up to a full 16-byte
+word. A successful build shows the reflected stride and allocation on the node.
+Changing the shared file updates the allocation on the next build.
+
+Put the declaration in one file with a leading `#pragma once`. Include that file
+from each connected compute program using a quoted include relative to that
+program's source. The Buffer's source path is relative to the **graph package**
+root. The builder checks every producer and consumer's captured include closure.
+For a UTD edge table, choose **one** element because the table already contains
+its own fixed-capacity array.
+
+```slang
+#pragma once
+
+static const uint MAX_EDGE_COUNT = 256;
+
+struct EdgeRecord
+{
+    float4 BeginWorldAndLength;
+    float4 EndWorldAndCumulativeLength;
+};
+
+struct EdgeTable
+{
+    uint4 Header;
+    EdgeRecord Edges[MAX_EDGE_COUNT];
+};
+
+static const uint EDGE_RECORD_WORDS = sizeof(EdgeRecord) / sizeof(uint4);
+
+EdgeRecord LoadEdgeRecord(RWStructuredBuffer<uint4> words, uint edgeIndex)
+{
+    uint firstWord = 1 + edgeIndex * EDGE_RECORD_WORDS;
+    EdgeRecord edge;
+    edge.BeginWorldAndLength = asfloat(words[firstWord]);
+    edge.EndWorldAndCumulativeLength = asfloat(words[firstWord + 1]);
+    return edge;
+}
+
+void StoreEdgeRecord(RWStructuredBuffer<uint4> words, uint edgeIndex, EdgeRecord edge)
+{
+    uint firstWord = 1 + edgeIndex * EDGE_RECORD_WORDS;
+    words[firstWord] = asuint(edge.BeginWorldAndLength);
+    words[firstWord + 1] = asuint(edge.EndWorldAndCumulativeLength);
+}
+```
+
+```json
+{
+  "id": "edges",
+  "kind": "Buffer",
+  "shader_struct": {
+    "source": "main_shaders/edge_table.slang",
+    "type": "EdgeTable",
+    "count": 1
+  }
+}
+```
+
+This layout allocates 8,208 bytes. The ordered buffer slots expose
+`RWStructuredBuffer<uint4>` on native Metal and Vulkan. Keep pack and unpack
+helpers beside the declaration so both passes share the same field order.
+For this layout, `GraphBufferN[0]` is the header. Check the populated count in
+the header before reading an edge, and bound all writes by `MAX_EDGE_COUNT`.
+Wire the Buffer into the
+producer and the producer's updated output into the consumer, with the same
+paired **Load**/**Store** resource as for a fixed-byte Buffer.
+
 ### Author scene compute passes
 
 A **ComputePipeline** with a **Scene** input is a *scene compute pass*. It accepts
@@ -1352,10 +1432,10 @@ queries)`) therefore see the same values at each pixel. Decorrelate them with on
 of two patterns:
 
 - **Explicit dimension ranges.** Give each pass a disjoint, documented range and
-  draw with the address overloads `SampleSceneRandom(launch, dimension)` and
+  draw with `SampleUniformFloat01(launch, dimension)` and
   `SelectLight(scene, launch, dimension)`. For example, a primary pass draws its
   subpixel jitter from `[0, 2)`, and a shading pass draws its light selection and
-  light sample from `[2, 6)`. These overloads do not advance or reset
+  light sample from `[2, 6)`. These calls do not advance or reset
   `RayQueryContext`. Use this pattern when each pass needs a fixed number of draws.
 - **Pass-scoped addresses.** Address draws with `(pixel, GetGraphPassIndex())`, as
   `SampleReuseRandom` in the ReSTIR DI template's
@@ -4722,7 +4802,8 @@ wrappers include it automatically. Authors do not read private packed buffers.
 | TraceClosest / TestVisibility | Closest or occlusion query with explicit miss/surface/failure status |
 | FindVisibleLineIntervals / ClearLineVisibility | Visible parts of a world-space segment from a receiver, as sorted parameter intervals; see [Find the visible parts of a segment](#find-the-visible-parts-of-a-segment) |
 | SpawnSurfaceRay | Error-bound origin offset for a unit world direction and explicit maximum distance |
-| SampleSceneRandom / MakeCameraRay | Automatic invocation-stream draw or explicit random dimension / chosen subpixel camera ray |
+| SampleUniformFloat01 / SampleSceneRandom | Uniform draw at an explicit pixel sample dimension / next draw from the invocation stream |
+| MakeCameraRay | Camera ray through a chosen subpixel position |
 | RequireSceneBsdf | Check the assigned scene materials against a pass’s transport or fixed-dimension reflection requirements and report a repairable failure. The renderer decides from each material's declared capabilities, not its model name |
 | EvaluateStandardBsdf / SampleStandardBsdf | Optional existing scattering-model primitives; no integrator or MIS |
 | SampleStandardBsdfTransport / ComputeStandardBsdfCosine | Continuation with complete weight and specular/transmission flags / matching light cosine, zero for glass |
@@ -5249,10 +5330,11 @@ The stream admits dimensions zero through FoundationMath's
 `RANDOM_MAX_DIMENSION`, inclusive. Exhaustion latches `HasFailed` and returns
 zero/no sample; the renderer rejects that invocation's result. Scheduling other
 pixels does not change the stream. Changing the callback's draw order does.
-The existing `SampleSceneRandom(launch, dimension)` and
-`SelectLight(scene, launch, dimension)` overloads remain available for explicitly
-addressed algorithms. They do not advance the automatic stream and can address
-the same draws; use one addressing strategy or reserve disjoint dimensions when
+`SampleUniformFloat01(launch, dimension)` returns a uniform pseudorandom float in
+`[0, 1)` keyed by the launch seed, linear pixel index, progressive sample index
+and explicit dimension. Both it and `SelectLight(scene, launch, dimension)` leave
+the automatic stream at its current dimension. For image launches, explicit and
+automatic draws can use the same addresses, so reserve disjoint dimensions when
 combining them.
 
 The default distribution is uniform over analytic sources, emitting instance/slot
@@ -7160,10 +7242,12 @@ unit disk) reaches height `z` above the disk's plane in the direction
 Every tap is such a direction, looked up on whichever cube face holds it, so the
 search and the filter cross face seams and widen with the light rather than stopping
 at the face gutter. The resolve offsets the receiver by 1.5 shadow texels along its
-normal and searches thirteen taps: the receiver's own direction, then four rings of
-three taps whose lateral widths lie an octave apart below that of the near plane, at
-most twice the receiver's distance. A receiver within half a ring's width of an
-occluder's hard shadow therefore always finds it. A found occluder counts only if it
+normal and starts the blocker search in the receiver's own direction. Four wide rings
+of three taps search lateral widths up to an octave apart, starting at the near
+plane's width capped at twice the receiver's distance. Two compact rings sample at
+half and a quarter of the disk radius when those widths span at least one texel
+and lie within the search range. They can find disjoint blockers on either side of
+a clear centre texel that the wide rings miss. A found occluder counts only if it
 lies between the disk's plane and the receiver and, seen from the receiver,
 backprojects onto the disk; the emitters behind the plane hide nothing. When it finds
 any, the resolve filters twelve light points at the blockers' mean inverse height.
@@ -7192,8 +7276,8 @@ unshadowed emitter. The grid lists a caster's records together, so one lookup se
 a run of them. Occluders nearer than a caster's near distance are ignored: half its
 offset in front of one-sided emitters, and its radius when it encloses its members.
 The penumbra remains an estimate from one point per caster: the disk is round, the
-blockers' heights come from thirteen taps, and occluders nearer the light's plane
-than about half its radius filter too narrowly. Under a 0.8 m square of 4.4 nits with
+blockers' heights come from at most nineteen taps of the nearest stored depths,
+and occluders nearer the light's plane than about half its radius filter too narrowly. Under a 0.8 m square of 4.4 nits with
 blockers 0.22 m and 0.47 m in front of its caster, the
 [RT2 area-light fixture](../architecture/renderer-systems.md#partial-area-light-shadows)
 measures visibility RMS error 0.063–0.088 against an exact backprojection oracle,
@@ -7234,8 +7318,9 @@ On an Apple M5, the SDK reported one caster, five drawn faces and zero pending
 faces for each World. Its sole caster takes 512-texel faces in the 2048² atlas with a
 four-texel gutter. Each emitter fits one planar polygon record with a 0.271 m disk
 radius. The square's enclosing radius is 0.339 m and the elongated rectangle's is
-0.495 m. All measurements below use five-row mean visibility unless a single probe
-is identified. Full light and full shadow controls require normalized visibility
+0.495 m. The original qualification measurements below predate the compact
+search rings. They use five-row mean visibility unless a single probe is identified.
+Full light and full shadow controls require normalized visibility
 above 0.95 and below 0.05. The gates allow two linear RGBA8 codes between routes,
 0.03 RMS visibility error against the per-tap disk model, and 0.06 absolute error
 in the mean adjacent-pixel step across the face boundary. The sampled geometric
@@ -7265,8 +7350,8 @@ a blocker beyond its point shadow and return fully lit inside the physical
 penumbra. That produces a visible step even within one cube face.
 
 At the central overlap probe (x = 1.984875), disjoint half-emitter footprints
-cover the entire source. The raster and disk model both return fully lit there.
-The matched clear radiance is 60/255 on each route. The three blocker pairs give the following results.
+cover the entire source. The original raster and disk model both returned fully lit there.
+The matched clear radiance was 60/255 on each route. The three blocker pairs gave the following results.
 
 | Projected overlap | Raw shadow code / 255 | Raster visibility | Geometric visibility | Weighted visibility |
 | --- | ---: | ---: | ---: | ---: |
@@ -7275,8 +7360,15 @@ The matched clear radiance is 60/255 on each route. The three blocker pairs give
 | Coincident | 42/255 | 0.700 | 0.500 | 0.559 |
 
 Alone, the first blocker gives 1.000 at that probe against a weighted 0.559.
-The three second-blocker controls give 1.000, 0.433 and 0.700 against 0.441,
-0.504 and 0.559. The largest overlap error here is a missed occluder.
+The three second-blocker controls gave 1.000, 0.433 and 0.700 against 0.441,
+0.504 and 0.559. The largest overlap error here was a missed occluder.
+
+The current qualification requires visibility below 0.05 at pixel (80, 80)
+in `overlap-0` on both Metal routes. At the same pixel, the partially overlapping
+and coincident pairs and the single-blocker controls must agree with their weighted
+references within 0.15 absolute visibility. This tolerance accounts for estimating
+a rectangular source with a finite set of disk samples and for the atlas storing
+only the nearest depth in each texel.
 
 For the depth sweep one plate stays at z = 0.80. The outer receiver bands
 measure each penumbra. The mixed band near y = −0.28 supplies the partial
@@ -7540,7 +7632,7 @@ Root execution configurations cannot contain unbound interface inputs.
 | Scene | None | Outputs `scene: Scene`; declares a future scene-snapshot binding |
 | Camera | `active`, `role` (`Presentation` or `Offscreen`), `target_type` | Input `target` of the specified texture type; output `view: View`. An inactive camera may leave target unbound and needs no route, but cannot drive a raster pass |
 | Target | `type`, `format`, `extent: [width, height]` or `"RenderSize"`, `samples`, `imported`, `initialized`, `presentation` | Optional `size: RenderSize` input; outputs `texture` of the specified texture type; names physical resource version 0 |
-| Buffer | Fixed `bytes`, or `bytes_per_pixel` and `extent: "RenderSize"` | Optional `size: RenderSize` input; outputs shared persistent `buffer: Buffer` for [ordered ray passes](#order-ray-passes-and-share-persistent-buffers) |
+| Buffer | Fixed `bytes`, `bytes_per_pixel` and `extent: "RenderSize"`, or [`shader_struct`](#size-an-ordered-buffer-from-a-shader-struct) | Optional `size: RenderSize` input for per-pixel sizing, plus a shared persistent `buffer: Buffer` output for [ordered ray passes](#order-ray-passes-and-share-persistent-buffers) |
 | StructuredBuffer (version 2) | `stride` in bytes, `count` as a positive integer or `"ColorTarget"` | Outputs zero-initialized `buffer: Buffer`; native ray storage follows the [reservoir workflow](#create-structured-reservoir-buffers) |
 | OutputSize (version 2) | `extent: "Viewport"` or fixed `[width,height]` | Outputs graph-only `size: RenderSize`; the viewport mode uses physical drawable pixels |
 | RenderSize (version 2) | `extent: "OutputSize"` with `scale: [numerator,denominator]`, fixed `extent`, `"Texture"`, or `{"reference":"View","scale":[numerator,denominator]}` | `output: RenderSize` for output-derived scaling, or optional color/depth `texture` metadata input; outputs graph-only `size: RenderSize` |

@@ -5,11 +5,14 @@
 // advances exactly once per committed regrow, the BuildNext and fault paths do
 // not advance it, forced exhaustion fails and leaves outputs unchanged,
 // tombstones survive a room round-trip, and the replay hash tracks harvest and
-// regrow but not rendering or cosmetic changes.
+// regrow but not rendering or cosmetic changes. Milestone 2: the session checkpoint replays harvest and regrow
+// across a reload and rejects incompatible or corrupt checkpoints without changing the session.
 #include "internal/room_catalog.h"
 #include "internal/world.h"
 
 #include <ludus/content/procedural/environment/scatter.h>
+#include <ludus/foundation/containers/static_array.hpp>
+#include <ludus/foundation/math/random_checkpoint.hpp>
 
 #include <catch2/catch_test_macros.hpp>
 
@@ -19,6 +22,7 @@
 
 using namespace ludus::world_demo;
 namespace procedural = ludus::content::procedural;
+using ludus::foundation::math::RandomCheckpointStatus;
 
 namespace ludus::world_demo::internal
 {
@@ -305,4 +309,179 @@ TEST_CASE("The replay hash ignores rendering, pacing and cosmetic draws but trac
     REQUIRE(drawn.RunTick({}) == Status::Success);
     REQUIRE(blind.RunTick({}) == Status::Success);
     CHECK(drawn.GetReplayHash() != blind.GetReplayHash());
+}
+
+namespace
+{
+using CheckpointBytes = StaticArray<uint8, MAX_SESSION_CHECKPOINT_BYTES>;
+/// Byte offsets inside a session checkpoint: the envelope, then the random checkpoint's header fields.
+constexpr usize ENVELOPE_VERSION_OFFSET = 4;
+constexpr usize ENVELOPE_BYTES = SESSION_CHECKPOINT_ENVELOPE_FIELDS * sizeof(uint32);
+constexpr usize RANDOM_SETUP_VERSION_OFFSET = ENVELOPE_BYTES + 24;
+constexpr usize RANDOM_CONTENT_IDENTITY_OFFSET = ENVELOPE_BYTES + 32;
+/// Ticks that cover a regrow after re-entering a room, whose harvested placements are due at once.
+constexpr usize REPLAY_TICKS = REGROW_DELAY_TICKS * 2;
+
+/// Harvest the first harvestable placement of the active world by moving the player onto it for one tick.
+usize HarvestFirst(Session& inoutSession)
+{
+    const usize index = FirstHarvestable(inoutSession.World());
+    const Placement& placement = inoutSession.World().GetPlacements()[index];
+    const float32 units = static_cast<float32>(Read(HarvestableRoom()).Scatter.UnitsPerMetre);
+    WorldTestAccess::SetPlayerPosition(
+        inoutSession.World(),
+        {static_cast<float32>(placement.LatticeX) / units, static_cast<float32>(placement.LatticeY) / units});
+    REQUIRE(inoutSession.World().RunTick({}) == Status::Success);
+    REQUIRE(WorldTestAccess::State(inoutSession.World(), index).IsHarvested == true);
+    return index;
+}
+
+/// A session with a non-default seed and one harvested placement, saved to `outBytes`.
+usize SaveHarvestedSession(Session& outSession, CheckpointBytes& outBytes)
+{
+    outSession.Seed = WorldSeed{ .Value = DEFAULT_WORLD_SEED + 1 };
+    Load(outSession, HarvestableRoom());
+    static_cast<void>(HarvestFirst(outSession));
+    usize written = 0;
+    REQUIRE(outSession.TrySaveCheckpoint({outBytes.data(), outBytes.size()}, written) ==
+            RandomCheckpointStatus::Success);
+    REQUIRE(outSession.GetTombstones().empty() == false);
+    return written;
+}
+
+bool AreTombstonesEqual(std::span<const Tombstone> left, std::span<const Tombstone> right)
+{
+    if (left.size() != right.size())
+    {
+        return false;
+    }
+    for (usize i = 0; i < left.size(); ++i)
+    {
+        if (left[i].Scope != right[i].Scope || left[i].RegrowOrdinal != right[i].RegrowOrdinal ||
+            left[i].Variant != right[i].Variant || left[i].IsHarvested != right[i].IsHarvested)
+        {
+            return false;
+        }
+    }
+    return true;
+}
+} // namespace
+
+TEST_CASE("A session checkpoint replays harvest and regrow across a reload", "[world-demo][harvest][checkpoint]")
+{
+    Session saved;
+    CheckpointBytes bytes{};
+    const usize written = SaveHarvestedSession(saved, bytes);
+    const usize index = FirstHarvestable(saved.World());
+
+    Session reloaded;
+    REQUIRE(reloaded.TryRestoreCheckpoint({bytes.data(), written}) == RandomCheckpointStatus::Success);
+    CHECK(reloaded.Seed.Value == saved.Seed.Value);
+    CHECK(AreTombstonesEqual(reloaded.GetTombstones(), saved.GetTombstones()) == true);
+    // Restoring is a reload: no world is active until the next load regenerates the room.
+    CHECK(reloaded.World().GetRoom() == 0);
+
+    // The uninterrupted session re-enters the room; the reloaded one loads it from the checkpoint alone.
+    Load(saved, HarvestableRoom());
+    Load(reloaded, HarvestableRoom());
+    REQUIRE(reloaded.World().GetPlacementDigest() == saved.World().GetPlacementDigest());
+    REQUIRE(WorldTestAccess::State(reloaded.World(), index).IsHarvested == true);
+    REQUIRE(reloaded.World().GetReplayHash() == saved.World().GetReplayHash());
+    for (usize tick = 0; tick < REPLAY_TICKS; ++tick)
+    {
+        REQUIRE(saved.World().RunTick({}) == Status::Success);
+        REQUIRE(reloaded.World().RunTick({}) == Status::Success);
+        REQUIRE(reloaded.World().GetReplayHash() == saved.World().GetReplayHash());
+    }
+    // Both regrew the placement from the restored ordinal and drew the same variant.
+    const PlacementState& savedState = WorldTestAccess::State(saved.World(), index);
+    const PlacementState& reloadedState = WorldTestAccess::State(reloaded.World(), index);
+    CHECK(reloadedState.IsHarvested == false);
+    CHECK(reloadedState.RegrowOrdinal == 2);
+    CHECK(reloadedState == savedState);
+
+    // Without the checkpoint, the same seed regenerates the untouched room.
+    Session fresh;
+    fresh.Seed = saved.Seed;
+    Load(fresh, HarvestableRoom());
+    CHECK(WorldTestAccess::State(fresh.World(), index).IsHarvested == false);
+}
+
+TEST_CASE("Restoring an incompatible or corrupt session checkpoint changes nothing",
+          "[world-demo][harvest][checkpoint]")
+{
+    Session saved;
+    CheckpointBytes bytes{};
+    const usize written = SaveHarvestedSession(saved, bytes);
+    const usize overrideCount = saved.GetTombstones().size();
+    const usize firstOverride = written - overrideCount * SESSION_TOMBSTONE_OVERRIDE_BYTES;
+
+    Session target;
+    Load(target, BuiltinLevel("second-room"));
+    const uint64 hash = target.World().GetReplayHash();
+    const auto requireRejected = [&](CheckpointBytes patched, usize length, RandomCheckpointStatus expected) {
+        REQUIRE(target.TryRestoreCheckpoint({patched.data(), length}) == expected);
+        REQUIRE(target.Seed.Value == DEFAULT_WORLD_SEED);
+        REQUIRE(target.GetTombstones().empty() == true);
+        REQUIRE(target.World().GetRoom() == 2);
+        REQUIRE(target.World().GetReplayHash() == hash);
+    };
+    const auto patch = [&](usize offset, uint8 value) {
+        CheckpointBytes patched = bytes;
+        patched[offset] = value;
+        return patched;
+    };
+    requireRejected(patch(0, 0), written, RandomCheckpointStatus::Malformed);
+    requireRejected(patch(ENVELOPE_VERSION_OFFSET, 2), written, RandomCheckpointStatus::UnsupportedFormat);
+    requireRejected(bytes, written - 1, RandomCheckpointStatus::Malformed);
+    requireRejected(patch(RANDOM_SETUP_VERSION_OFFSET, 2), written, RandomCheckpointStatus::UnsupportedContract);
+    requireRejected(
+        patch(RANDOM_CONTENT_IDENTITY_OFFSET, static_cast<uint8>(bytes[RANDOM_CONTENT_IDENTITY_OFFSET] ^ 1u)),
+        written,
+        RandomCheckpointStatus::IncompatibleContent);
+    requireRejected(patch(firstOverride - sizeof(uint32), static_cast<uint8>(overrideCount + 1)),
+                    written,
+                    RandomCheckpointStatus::Malformed);
+    requireRejected(patch(firstOverride, static_cast<uint8>(bytes[firstOverride] ^ 1u)),
+                    written,
+                    RandomCheckpointStatus::OwnerMismatch);
+    requireRejected(patch(firstOverride + sizeof(uint64) + sizeof(uint8), 2),
+                    written,
+                    RandomCheckpointStatus::InvalidRecord);
+    // The unmodified checkpoint is still accepted afterwards.
+    REQUIRE(target.TryRestoreCheckpoint({bytes.data(), written}) == RandomCheckpointStatus::Success);
+    CHECK(target.Seed.Value == saved.Seed.Value);
+}
+
+TEST_CASE("Saving a session checkpoint into a short buffer writes nothing", "[world-demo][harvest][checkpoint]")
+{
+    Session saved;
+    CheckpointBytes bytes{};
+    const usize written = SaveHarvestedSession(saved, bytes);
+    CheckpointBytes shortBytes{};
+    shortBytes.Fill(0xcc);
+    usize shortWritten = 7;
+    REQUIRE(saved.TrySaveCheckpoint({shortBytes.data(), written - 1}, shortWritten) ==
+            RandomCheckpointStatus::CapacityExceeded);
+    CHECK(shortWritten == 7);
+    for (const uint8 value : shortBytes)
+    {
+        REQUIRE(value == 0xcc);
+    }
+}
+
+TEST_CASE("Prepare rejects a tombstone the room cannot draw", "[world-demo][harvest][checkpoint]")
+{
+    const GameWorld world = Build(HarvestableRoom());
+    const usize index = FirstHarvestable(world);
+    const Level level = Read(HarvestableRoom());
+    const uint8 variantCount =
+        static_cast<uint8>(level.Scatter.Layers[world.GetPlacements()[index].Layer].VariantCount);
+    for (const Tombstone tombstone : {Tombstone{ .Scope = world.GetPlacements()[index].Scope, .Variant = variantCount },
+                                      Tombstone{ .Scope = world.GetPlacements()[index].Scope, .RegrowOrdinal = 0 }})
+    {
+        GameWorld rejected;
+        CHECK(rejected.Prepare(level, MAX_WORLD_ENTITIES, {}, {&tombstone, 1}) == Status::InvalidConfiguration);
+        CHECK(rejected.GetPlacements().empty() == true);
+    }
 }

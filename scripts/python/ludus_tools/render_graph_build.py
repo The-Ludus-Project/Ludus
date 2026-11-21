@@ -154,6 +154,7 @@ class Snapshot:
         self.generated = set()
         self.language_tool = None
         self.language_reports = {}
+        self.language_configurations = {}
         self.executable_language_programs = {}
         self.total = 0
 
@@ -306,7 +307,7 @@ def validate_manifest(value):
             f'increase budgets.programs to at least {program_count} or reuse existing programs')
     for program in value['programs']:
         keys(program, ('id', 'stage', 'source', 'function', 'input', 'output', 'bindings'), 'program',
-             ('capture_warmup_setting', 'light_transformer'))
+             ('capture_warmup_setting', 'light_transformer', 'configuration_values'))
         if 'capture_warmup_setting' in program:
             setting = next((item for item in value.get('settings', [])
                             if item['id'] == program['capture_warmup_setting']), None)
@@ -878,7 +879,7 @@ def portable_stage_output(output, command):
     return text
 
 
-def run_stage(command, cancel):
+def run_stage(command, cancel, *, describe_output=None, where='shader helper'):
     """Poll cancellation; terminate/reap compiler process on cancellation/failure."""
     import signal
     with tempfile.TemporaryFile() as log:
@@ -889,7 +890,8 @@ def run_stage(command, cancel):
                 time.sleep(0.05)
             log.seek(0)
             output = log.read(64 * 1024).decode('utf-8', errors='replace')
-            require(process.returncode == 0, 'Shader', 'shader helper', portable_stage_output(output, command))
+            if process.returncode != 0:
+                fail('Shader', where, describe_output(output) if describe_output else portable_stage_output(output, command))
         finally:
             if process.poll() is None:
                 os.killpg(process.pid, signal.SIGTERM)
@@ -921,6 +923,16 @@ def stage_directory_name(index, target):
     program ID's length, so long authored IDs never lengthen staged include paths.
     """
     return f'{index}-{target}'
+
+
+def verify_shader_dependencies(depfile, closure, source, wrapper, where):
+    # Escape-aware depfile parsing supports spaces in package/build directories.
+    text = depfile.read_text().replace('\\\n', ' ')
+    dependencies = re.findall(r'(?:\\.|[^\s])+', text.split(': ', 1)[-1])
+    allowed = {(source / p).resolve() for p in closure} | {wrapper.resolve()}
+    for item in dependencies:
+        path = Path(re.sub(r'\\(.)', r'\1', item)).resolve()
+        require(path in allowed, 'Source', where, 'compiler read an uncaptured dependency')
 
 
 def compile_program(program, schemas, closure, snapshot, work, helper, tools, target, cancel, worker_socket=None, worker_identity=None):
@@ -972,13 +984,7 @@ def compile_program(program, schemas, closure, snapshot, work, helper, tools, ta
     result = document(read(output / 'stage.json'), 'stage result')
     raw = document(read(output / 'reflection.json'), 'target reflection')
     result['layouts'] = check_layout(program, schemas, result, raw)
-    # Escape-aware depfile parsing supports spaces in package/build directories.
-    text = (output / 'stage.d').read_text().replace('\\\n', ' ')
-    dependencies = re.findall(r'(?:\\.|[^\s])+', text.split(': ', 1)[-1])
-    allowed = {(source / p).resolve() for p in closure} | {(source / 'wrapper.slang').resolve()}
-    for item in dependencies:
-        path = Path(re.sub(r'\\(.)', r'\1', item)).resolve()
-        require(path in allowed, 'Source', program['id'], 'compiler read an uncaptured dependency')
+    verify_shader_dependencies(output / 'stage.d', closure, source, source / 'wrapper.slang', program['id'])
     # Readable provenance is separate from shader identities. No temporary or
     # machine paths enter immutable stage outputs/cache/package descriptors.
     (output / 'wrapper.slang').write_text(wrapper)
@@ -1106,6 +1112,7 @@ def prepare_sources(manifest, helper, *, root=None, ray_path_capture=False, capt
         require(snapshot.load(label) == data, 'Stale', label, 'graph changed while capturing sources')
     plans = [graph.compile_graph(graph_path, root=snapshot.root, configuration=c['id'])
              for c in library.assets[graph_path]['configurations']]
+    buffers.validate_persistent_struct_links(plans, programs, closures, sys.modules[__name__])
     for plan in plans:
         require(all(digest(snapshot.files[d['source']]) == d['sha256'] for d in plan['dependencies']),
                 'Stale', plan['configuration'], 'graph changed during plan compilation')
@@ -1323,18 +1330,21 @@ def build_package(manifest, output, *, helper, compiler, validator=None, spirv_c
         cache.mkdir(exist_ok=True); generations.mkdir(exist_ok=True)
         with tempfile.TemporaryDirectory(prefix='.rg1-', dir=output) as stage:
             stage = Path(stage)
+            shader_buffer_layouts = buffers.size_persistent_structs(
+                plans, snapshot, stage, tool_paths['tool/slangc'], cancel, sys.modules[__name__])
             compiled, entries, hits, misses = {}, {}, 0, 0
             pending, pending_keys = [], set()
             # Report-only attribution: miss, local cache hit, or reuse of a key this build already resolved.
             requests, loaded_keys, compile_seconds = {}, set(), {}
             for pid, program in sorted(programs.items()):
+                closure = closures[pid]
+                configuration_reads = language.configuration_reads(snapshot, closure)
                 for target in sorted(value['profiles']):
                     if program.get('native_ray_pipeline') and target != 'metal':
                         continue
                     if program.get('native_ray_profile') and target not in ('metal', 'spirv'):
                         continue
                     checkpoint(cancel)
-                    closure = closures[pid]
                     used = {program['input'], *(b['schema'] for b in program['bindings'])}
                     if program['stage'] == 'vertex':
                         used.add(program['output'])
@@ -1346,6 +1356,8 @@ def build_package(manifest, output, *, helper, compiler, validator=None, spirv_c
                                           and not (target in ('metal', 'wgsl', 'dxil') and k == 'tool/spirv-val')
                                           and not (target != 'dxil' and k in ('tool/dxcompiler.dll', 'tool/dxil.dll'))
                                           and not (target != 'glsl' and not (program.get('native_ray_queries') or program.get('software_ray_queries')) and ('spirv-cross' in k or k.endswith('spirv_cross_toolchain.json')))}}
+                    if configuration_reads:
+                        key_data['lusl_configuration_reads'] = configuration_reads
                     key = identity(key_data)
                     entries[(pid, target)] = key
                     if key in pending_keys:
@@ -1514,6 +1526,8 @@ def build_package(manifest, output, *, helper, compiler, validator=None, spirv_c
             checkpoint(cancel)
             report = {'package': str(generation), 'generation': generation_key, 'cache_hits': hits, 'cache_misses': misses,
                       'elapsed_seconds': time.monotonic() - started, 'counts': counts, 'inventory': build_inventory}
+            if shader_buffer_layouts:
+                report['shader_buffer_layouts'] = shader_buffer_layouts
             # Warnings that do not reject the build; recomputed from sources, so cache hits report them too.
             warnings = reasonless_failure_diagnostics(closures, snapshot)
             if warnings:

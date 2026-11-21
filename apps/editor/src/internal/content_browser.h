@@ -3,12 +3,14 @@
 #include "internal/content_import_gate.h"
 #include "internal/content_thumbnails.h"
 #include "internal/content_types.h"
+#include "internal/cooked_content_watch.h"
 
 #include <ludus/foundation/base/types.h>
 
 #include <ludus/content/content.h>
 
 #include <QAbstractTableModel>
+#include <QElapsedTimer>
 #include <QHash>
 #include <QObject>
 #include <QSortFilterProxyModel>
@@ -182,17 +184,17 @@ struct ContentResult final
     content::Status Status = content::Status::Invalid;
     QString Message;
     QString CandidatePath;
+    QString ReplacementGuidance;
     QVector<ContentRow> Rows;
     content::Digest CatalogDigest;
     /// Whether content/catalog.json exists; imports compare-and-swap against CatalogDigest only then.
     bool HasAudioCatalog = false;
-    /// Why the scene asset catalog could not be listed; empty when it was listed or is absent.
-    QString AssetProblem;
 };
 
 /// Read the scene asset catalog below root (assets/catalog.json) into browser rows: every record's ID, kind,
-/// artifact path, key and dependencies, and a material's source name. Returns Ok with no rows when the catalog does
-/// not exist, and the failing status with outProblem set when it is unreadable or malformed. Call on a worker.
+/// artifact path, key and dependencies. Validate cooked textures, material digests and exact texture bindings before
+/// replacing outRows. Missing catalog returns Ok with no rows. A failed refresh preserves outRows and explains why
+/// in outProblem. Call on a worker.
 [[nodiscard]] content::Status
 ReadSceneAssetRows(const QString& root, QVector<ContentRow>& outRows, QString& outProblem);
 
@@ -236,7 +238,9 @@ class ContentWorkspace final : public QWidget
 {
     Q_OBJECT
 public:
-    explicit ContentWorkspace(QWidget* parent = nullptr);
+    explicit ContentWorkspace(
+        QWidget* parentOrNull = nullptr,
+        const foundation::filesystem::WatchConfig& cookedWatchConfig = COOKED_CONTENT_WATCH_CONFIG);
     ~ContentWorkspace() override;
     /// Browse root (a project's content folder, holding the audio catalog) and assetRoot (the project root, holding
     /// assets/catalog.json); an empty assetRoot lists audio content only.
@@ -270,15 +274,20 @@ Q_SIGNALS:
 
 protected:
     bool event(QEvent* event) override;
+    bool eventFilter(QObject* watched, QEvent* event) override;
 
 private:
     struct QueuedImport final
     {
         QString File;
         QString Id;
+        bool ShouldChooseReplacement = false;
     };
 
     void RenderActions();
+    void activateResource(const QModelIndex& index);
+    void chooseImportFile(const QString& id);
+    [[nodiscard]] QString getRetryLabel(const QString& id) const;
     void showProblem(const ContentResult& result);
     void hideProblem();
     void RestoreSelection();
@@ -291,6 +300,8 @@ private:
     void renderProgress();
     void clearImports();
     void watchCatalogs();
+    void pollCookedContent();
+    void reportCookedWatchFailure(const QString& message);
     [[nodiscard]] ContentRequest Request() const;
     ContentJobs* Jobs_ = nullptr;
     ContentCatalogModel* Model_ = nullptr;
@@ -313,6 +324,9 @@ private:
     QPushButton* Cancel_ = nullptr;
     QFileSystemWatcher* mWatcherOrNull = nullptr;
     QTimer mWatchDelay;
+    QTimer mCookedWatchTimer;
+    QElapsedTimer mCookedWatchClock;
+    CookedContentWatch mCookedWatch;
     QString Root_;
     QString mAssetRoot;
     QString SelectedId_;

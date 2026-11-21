@@ -38,6 +38,10 @@ struct ArgumentRecord final
 /// Decoders over a valid catalog; callers pass indices the catalog validated.
 struct CatalogAccess final
 {
+    [[nodiscard]] static bool IsValidDomain(std::string_view domain) noexcept;
+    [[nodiscard]] static bool IsValidLocaleLabel(std::string_view locale) noexcept;
+    /// Compare source identity, exact sorted keys and their argument declarations between valid packages.
+    [[nodiscard]] static bool HasSameSchema(const Catalog& left, const Catalog& right) noexcept;
     [[nodiscard]] static uint32 GetVersion(const Catalog& catalog) noexcept;
     /// Reports whether binding was made by catalog (or a copy of it).
     [[nodiscard]] static bool IsBindingOf(const Catalog& catalog, MessageBinding binding) noexcept;

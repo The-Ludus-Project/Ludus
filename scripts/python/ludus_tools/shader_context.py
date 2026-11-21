@@ -117,7 +117,9 @@ def export_language_context(manifest, output, source, *, helper, context=None, r
     build.require(sum(len(data) for data in files.values()) <= MAX_CONTEXT_BYTES, 'Capacity', source,
                   'language translation unit exceeds limit')
     snapshot.verify()
+    configuration = snapshot.language_configurations[source]
     directory = output / (CONTEXT_DIRECTORY_PREFIX + build.identity({'program': programs[selected],
+                                                                     'configuration': configuration,
                                                                      'files': {p: build.digest(d) for p, d in files.items() if p != source}}))
     _own_directory(directory, output)
     destination = build.Snapshot(directory)
@@ -125,7 +127,8 @@ def export_language_context(manifest, output, source, *, helper, context=None, r
         path = destination.path(relative)
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_bytes(data)
-    arguments = ['lsp', '--root', str(directory)]
+    arguments = ['lsp', '--root', str(directory),
+                 *language.configuration_arguments(configuration)]
     for include in include_directories:
         arguments += ['--include-directory', include]
     return {'version': 1, 'language': 'lusl', 'contexts': candidates, 'context': selected,

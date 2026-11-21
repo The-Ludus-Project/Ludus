@@ -7,6 +7,15 @@ set(LUDUS_ENGINE_EXPORT_NAMESPACE "Ludus::")
 set(LUDUS_ENGINE_PACKAGE_NAME "Ludus")
 
 project(${LUDUS_ENGINE_PROJECT_NAME} VERSION 0.1.0 LANGUAGES CXX)
+
+# The ios-* and android-* presets build only the M0 toolchain probes while
+# FoundationBase rejects those targets (docs/development/mobile-support-plan.md).
+option(LUDUS_MOBILE_PROBE_ONLY "Configure only the mobile toolchain probes" OFF)
+if(LUDUS_MOBILE_PROBE_ONLY)
+    include(CTest)
+    add_subdirectory(tools/mobile-probe)
+    return()
+endif()
 if(CMAKE_SYSTEM_NAME STREQUAL "Darwin")
     # Enable in the common parent scope for both Platform and GraphicsRhi.
     enable_language(OBJCXX)
@@ -60,12 +69,21 @@ option(LUDUS_BUILD_SCRIPT_INTERACTION "Build the experimental S1 native/Luau hea
 # subdirectory (see apps/editor/CMakeLists.txt), never globally. See
 # .kiro/specs/editor-workspace/{requirements,design}.md (E01/E02).
 option(LUDUS_BUILD_EDITOR "Build the optional Qt editor workspace (apps/editor)" OFF)
+option(LUDUS_BUILD_NETWORK_NATIVE_PROBE "Build the private N2 GameNetworkingSockets transport qualification" OFF)
 option(LUDUS_BUILD_WEB_PROBES "Build browser feasibility probes" ON)
 include(EngineInitOptions)
 include(EngineEditorOptions)
 if(LUDUS_BUILD_BEHAVIOR)
     include(LudusBehaviorProfile)
     ludus_behavior_admit_profile("${PROJECT_SOURCE_DIR}/config/behavior_profiles.json" LUDUS_BEHAVIOR_TARGET_PROFILE)
+endif()
+if(LUDUS_BUILD_NETWORK_NATIVE_PROBE AND
+        (NOT CMAKE_SYSTEM_NAME MATCHES "^(Darwin|Linux)$" OR LUDUS_SHADER_WORKER_ONLY))
+    message(FATAL_ERROR "The N2 network transport probe needs a native Linux or macOS engine build")
+endif()
+if(LUDUS_BUILD_NETWORK_NATIVE_PROBE)
+    # GNS exports C compile features to its adapter and test consumers.
+    enable_language(C)
 endif()
 if(EMSCRIPTEN)
     # Native Catch2 test targets are not browser executables.
@@ -327,6 +345,7 @@ add_subdirectory(modules/physics/fluid)
 # PhysicsCollision depends on Base, Containers, Identity and Math only and builds for native and web.
 add_subdirectory(modules/physics/collision)
 add_subdirectory(modules/foundation/time)
+add_subdirectory(modules/network/session)
 add_subdirectory(modules/foundation/logging)
 add_subdirectory(modules/foundation/profiling)
 add_subdirectory(tools/memory-bench)
@@ -337,7 +356,6 @@ add_subdirectory(modules/ui)
 # normalized keyboard record/sink vocabulary (one-way dependency).
 add_subdirectory(modules/input)
 add_subdirectory(apps/world_demo)
-add_subdirectory(apps/first_person_player)
 # Private pinned miniaudio C dependency (locked source bootstrap, hash-verified
 # at configure time). Added before the audio module, which links it PRIVATE. It
 # deliberately enables the C language for its own targets; the root project
@@ -384,14 +402,26 @@ add_subdirectory(modules/content/scene_source)
 # LUSTR cooked string dictionary contract, validating reader and deterministic writer.
 add_subdirectory(modules/content/string_dictionary_format)
 add_subdirectory(modules/content/string_dictionary)
+# LUFOL cooked foliage placement page contract, encoder and validating reader (foliage F0).
+add_subdirectory(modules/content/foliage_format)
+add_subdirectory(modules/content/foliage_pages)
 # Versioned UUID authoring records and the one-time World ID migration manifest.
 add_subdirectory(modules/content/identity_records)
 # Stage-4 two-pass World restore; bridges ContentIdentity and GameplayWorld.
 add_subdirectory(modules/content/world_restore)
-# Headless procedural scatter kernel (P0); Foundation-only, native and web.
+# Procedural generation digests, validated stage cache and traces (P1); Foundation-only, native and web.
+add_subdirectory(modules/content/procedural/core)
+# Headless procedural scatter kernel (P0) and its staged generation coordinator (P1).
 add_subdirectory(modules/content/procedural/environment)
+# LUTRN cooked terrain revision format contract shared by ContentTerrain's cooker and reader.
+add_subdirectory(modules/content/terrain_format)
 # Headless terrain fields, drainage, wetness and material rules (T1); Foundation-only, native and web.
 add_subdirectory(modules/content/terrain)
+# LUWTH climate contract, its headless cooker and the deterministic fixed-tick weather runtime;
+# Foundation-only, native and web (docs/modules/gameplay/weather.md).
+add_subdirectory(modules/content/weather_format)
+add_subdirectory(modules/content/weather)
+add_subdirectory(modules/gameplay/weather)
 # Scene cooker (pbrt-reference-v1). The library builds for every target; its
 # file I/O reports Unsupported where Ludus::Content has no native file access,
 # and the ludus-cook CLI plus golden tests are native-host only (Linux, macOS, Windows).
@@ -419,6 +449,7 @@ if(EMSCRIPTEN)
     add_subdirectory(modules/graphics/renderer)
     add_subdirectory(modules/runtime/shader_development)
     add_subdirectory(modules/graphics/text)
+    add_subdirectory(modules/graphics/ui_render)
     # NOTE: Ludus::Text is intentionally NOT built for the Emscripten target yet.
     # Its FreeType/HarfBuzz dependencies are resolved natively through Conan; the
     # separate pinned web source-bootstrap for those libraries is still pending
@@ -434,6 +465,7 @@ if(EMSCRIPTEN)
         add_subdirectory(tools/web-localization-probe)
         add_subdirectory(tools/web-fluid-probe)
         add_subdirectory(tools/web-collision-probe)
+        add_subdirectory(tools/web-weather-probe)
         add_subdirectory(tools/web-observability-probe)
     endif()
     if(LUDUS_BUILD_SMOKE_APP)
@@ -446,6 +478,7 @@ else()
     add_subdirectory(modules/runtime/shader_development)
     add_subdirectory(modules/text)
     add_subdirectory(modules/graphics/text)
+    add_subdirectory(modules/graphics/ui_render)
 
     # Qt-free static GameHost runtime library and loader (project-live-reload
     # design section 2). Native-only: it uses dlopen and the Platform/RHI
@@ -486,6 +519,8 @@ else()
         endif()
     endif()
 endif()
+
+add_subdirectory(apps/first_person_player)
 
 # Editor-OFF builds never discover Qt; browser and native shells share widgets.
 if(LUDUS_BUILD_EDITOR)
@@ -567,7 +602,7 @@ write_basic_package_version_file(
 # Public exported components (one per installed Ludus:: module target).
 foreach(_component
     FoundationBase FoundationMemory FoundationHash FoundationIdentity FoundationStrings FoundationContainers FoundationThreading FoundationFilesystem FoundationParsing FoundationParsingJson FoundationMath FoundationGeometry FoundationTime FoundationLogging ShaderCompilerClient ShaderLanguage
-    FoundationProfiling FoundationThreadingProfiling FoundationReflection FoundationSerialization FoundationConfig FoundationConfigJson RuntimeConfiguration GamePropertyBinding NetworkCore Input Audio Content ProceduralEnvironment SceneFormat GeometryFormat GeometryContent RenderGraphFormat SceneSource StringDictionaryFormat StringDictionary StringDictionaryWriter AudioContent Resources GameplayWorld GameplayCamera GameplaySequencer Animation GameApi PhysicsFluid PhysicsCollision Ui Localization)
+    FoundationProfiling FoundationThreadingProfiling FoundationReflection FoundationSerialization FoundationConfig FoundationConfigJson RuntimeConfiguration GamePropertyBinding NetworkCore Input Audio Content ProceduralCore ProceduralEnvironment SceneFormat GeometryFormat GeometryContent RenderGraphFormat SceneSource StringDictionaryFormat StringDictionary StringDictionaryWriter FoliageFormat FoliagePages AudioContent Resources GameplayWorld GameplayCamera GameplaySequencer Animation GameApi PhysicsFluid PhysicsCollision Ui Localization)
     ludus_sdk_register_component(${_component})
     ludus_sdk_register_feature(${_component})
 endforeach()
@@ -583,7 +618,7 @@ if(LUDUS_BUILD_UNICODE)
     ludus_sdk_register_dependency(ICU4C "78.3" "Unicode-3.0" bundled)
 endif()
 if(NOT EMSCRIPTEN)
-    foreach(_component Platform PlatformEntropy PlatformPacing GraphicsRhi GraphicsRenderer GraphicsText Text)
+    foreach(_component Platform PlatformEntropy PlatformPacing GraphicsRhi GraphicsRenderer GraphicsText UiRender Text)
         ludus_sdk_register_component(${_component})
         ludus_sdk_register_feature(${_component})
     endforeach()
@@ -594,7 +629,7 @@ if(NOT EMSCRIPTEN)
         ludus_sdk_register_feature(ShaderDevelopment)
     endif()
 else()
-    foreach(_component Platform PlatformEntropy PlatformPacing GraphicsRhi GraphicsRenderer GraphicsText)
+    foreach(_component Platform PlatformEntropy PlatformPacing GraphicsRhi GraphicsRenderer GraphicsText UiRender)
         ludus_sdk_register_component(${_component})
         ludus_sdk_register_feature(${_component})
     endforeach()
