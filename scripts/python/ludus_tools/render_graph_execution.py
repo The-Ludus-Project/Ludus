@@ -147,6 +147,8 @@ def lower_plan(package, configuration):
     resource_records = []
     for resource in resources:
         value = plan['resources'][resource]
+        build.require('shader_struct' not in value or 'stride' in value['shader_struct'],
+                      'Package', resource, 'shader struct size is unresolved. Build the graph before cooking it.')
         build.require(value['type'] == 'Buffer' or (value['format'] in ('RGBA8Unorm', 'Depth32Float') and value['samples'] == 1 and
                       not value['initialized'] and (not value['imported'] or value['presentation'])),
                       'Configuration', resource, 'unqualified format/sample/import/history profile')

@@ -1221,6 +1221,80 @@ buffer values. They establish the storage/ordering seam for an authored ReSTIR
 implementation; reservoir sampling, temporal reprojection and disocclusion logic
 remain shader policy.
 
+### Size an ordered Buffer from a shader struct
+
+For a fixed allocation shared by scene compute passes, select the Buffer and
+choose **From shader struct…** in Properties or in the canvas node's **Edit
+Node…** dialog. Choose a package-local Slang file, enter the struct name and set
+the element capacity. **Build Graph** reflects the struct's storage stride,
+multiplies it by the capacity, and rounds the allocation up to a full 16-byte
+word. A successful build shows the reflected stride and allocation on the node.
+Changing the shared file updates the allocation on the next build.
+
+Put the declaration in one file with a leading `#pragma once`. Include that file
+from each connected compute program using a quoted include relative to that
+program's source. The Buffer's source path is relative to the **graph package**
+root. The builder checks every producer and consumer's captured include closure.
+For a UTD edge table, choose **one** element because the table already contains
+its own fixed-capacity array.
+
+```slang
+#pragma once
+
+static const uint MAX_EDGE_COUNT = 256;
+
+struct EdgeRecord
+{
+    float4 BeginWorldAndLength;
+    float4 EndWorldAndCumulativeLength;
+};
+
+struct EdgeTable
+{
+    uint4 Header;
+    EdgeRecord Edges[MAX_EDGE_COUNT];
+};
+
+static const uint EDGE_RECORD_WORDS = sizeof(EdgeRecord) / sizeof(uint4);
+
+EdgeRecord LoadEdgeRecord(RWStructuredBuffer<uint4> words, uint edgeIndex)
+{
+    uint firstWord = 1 + edgeIndex * EDGE_RECORD_WORDS;
+    EdgeRecord edge;
+    edge.BeginWorldAndLength = asfloat(words[firstWord]);
+    edge.EndWorldAndCumulativeLength = asfloat(words[firstWord + 1]);
+    return edge;
+}
+
+void StoreEdgeRecord(RWStructuredBuffer<uint4> words, uint edgeIndex, EdgeRecord edge)
+{
+    uint firstWord = 1 + edgeIndex * EDGE_RECORD_WORDS;
+    words[firstWord] = asuint(edge.BeginWorldAndLength);
+    words[firstWord + 1] = asuint(edge.EndWorldAndCumulativeLength);
+}
+```
+
+```json
+{
+  "id": "edges",
+  "kind": "Buffer",
+  "shader_struct": {
+    "source": "main_shaders/edge_table.slang",
+    "type": "EdgeTable",
+    "count": 1
+  }
+}
+```
+
+This layout allocates 8,208 bytes. The ordered buffer slots expose
+`RWStructuredBuffer<uint4>` on native Metal and Vulkan. Keep pack and unpack
+helpers beside the declaration so both passes share the same field order.
+For this layout, `GraphBufferN[0]` is the header. Check the populated count in
+the header before reading an edge, and bound all writes by `MAX_EDGE_COUNT`.
+Wire the Buffer into the
+producer and the producer's updated output into the consumer, with the same
+paired **Load**/**Store** resource as for a fixed-byte Buffer.
+
 ### Author scene compute passes
 
 A **ComputePipeline** with a **Scene** input is a *scene compute pass*. It accepts
@@ -7523,7 +7597,7 @@ Root execution configurations cannot contain unbound interface inputs.
 | Scene | None | Outputs `scene: Scene`; declares a future scene-snapshot binding |
 | Camera | `active`, `role` (`Presentation` or `Offscreen`), `target_type` | Input `target` of the specified texture type; output `view: View`. An inactive camera may leave target unbound and needs no route, but cannot drive a raster pass |
 | Target | `type`, `format`, `extent: [width, height]` or `"RenderSize"`, `samples`, `imported`, `initialized`, `presentation` | Optional `size: RenderSize` input; outputs `texture` of the specified texture type; names physical resource version 0 |
-| Buffer | Fixed `bytes`, or `bytes_per_pixel` and `extent: "RenderSize"` | Optional `size: RenderSize` input; outputs shared persistent `buffer: Buffer` for [ordered ray passes](#order-ray-passes-and-share-persistent-buffers) |
+| Buffer | Fixed `bytes`, `bytes_per_pixel` and `extent: "RenderSize"`, or [`shader_struct`](#size-an-ordered-buffer-from-a-shader-struct) | Optional `size: RenderSize` input for per-pixel sizing, plus a shared persistent `buffer: Buffer` output for [ordered ray passes](#order-ray-passes-and-share-persistent-buffers) |
 | StructuredBuffer (version 2) | `stride` in bytes, `count` as a positive integer or `"ColorTarget"` | Outputs zero-initialized `buffer: Buffer`; native ray storage follows the [reservoir workflow](#create-structured-reservoir-buffers) |
 | OutputSize (version 2) | `extent: "Viewport"` or fixed `[width,height]` | Outputs graph-only `size: RenderSize`; the viewport mode uses physical drawable pixels |
 | RenderSize (version 2) | `extent: "OutputSize"` with `scale: [numerator,denominator]`, fixed `extent`, `"Texture"`, or `{"reference":"View","scale":[numerator,denominator]}` | `output: RenderSize` for output-derived scaling, or optional color/depth `texture` metadata input; outputs graph-only `size: RenderSize` |
