@@ -392,6 +392,8 @@ add_subdirectory(modules/content/identity_records)
 add_subdirectory(modules/content/world_restore)
 # Headless procedural scatter kernel (P0); Foundation-only, native and web.
 add_subdirectory(modules/content/procedural/environment)
+# LUTRN cooked terrain revision format contract shared by ContentTerrain's cooker and reader.
+add_subdirectory(modules/content/terrain_format)
 # Headless terrain fields, drainage, wetness and material rules (T1); Foundation-only, native and web.
 add_subdirectory(modules/content/terrain)
 # Scene cooker (pbrt-reference-v1). The library builds for every target; its
