@@ -89,6 +89,16 @@ TEST_CASE("shader cleanup scans every configuration subgraph and technique and p
 {
     QTemporaryDir directory;
     MakePackage(directory);
+    const QString legacySource = QStringLiteral("exclusive.slang");
+    const QString luslSource = QStringLiteral("exclusive.lusl");
+    const QDir package(directory.path());
+    QFile manifestSource(package.filePath(MANIFEST));
+    REQUIRE(manifestSource.open(QIODevice::ReadOnly) == true);
+    QByteArray manifestBytes = manifestSource.readAll();
+    manifestSource.close();
+    manifestBytes.replace(legacySource.toUtf8(), luslSource.toUtf8());
+    WriteSource(directory, MANIFEST, manifestBytes);
+    WriteSource(directory, luslSource, QByteArrayLiteral("#include \"graph_schemas.luslh\"\n"));
     RenderGraphDocument document;
     REQUIRE(document.Load(directory.path(), ROOT_GRAPH) == RenderGraphDocumentStatus::Ok);
     const QMap<QString, QByteArray> original = GetSources(document);
@@ -98,9 +108,7 @@ TEST_CASE("shader cleanup scans every configuration subgraph and technique and p
     REQUIRE(document.RemoveUnusedShaders(programs, sources, error) == RenderGraphDocumentStatus::Ok);
     CHECK(programs.size() == 8);
     // Both programs of shared.slang are unused, so the source is free although two registrations named it.
-    CHECK(sources == QStringList{QStringLiteral("exclusive.slang"),
-                                 QStringLiteral("nested/other.slang"),
-                                 QStringLiteral("shared.slang")});
+    CHECK(sources == QStringList{luslSource, QStringLiteral("nested/other.slang"), QStringLiteral("shared.slang")});
     const QByteArray manifest = document.GetDraft(MANIFEST);
     for (const QByteArray& identity : {QByteArrayLiteral("InactiveProgram"),
                                        QByteArrayLiteral("NestedProgram"),
@@ -120,7 +128,7 @@ TEST_CASE("shader cleanup scans every configuration subgraph and technique and p
         }
     }
     // Draft pruning never deletes disk files, and all bytes restore in one step.
-    CHECK(QFileInfo::exists(QDir(directory.path()).filePath(QStringLiteral("exclusive.slang"))) == true);
+    CHECK(QFileInfo::exists(QDir(directory.path()).filePath(luslSource)) == true);
     const QMap<QString, QByteArray> cleaned = GetSources(document);
     REQUIRE(document.Undo() == true);
     CHECK(GetSources(document) == original);
@@ -134,11 +142,28 @@ TEST_CASE("shader cleanup scans every configuration subgraph and technique and p
     CHECK(document.GetRevision() == revision);
     QStringList saved;
     REQUIRE(document.Save(saved) == RenderGraphDocumentStatus::Ok);
-    CHECK(QFileInfo::exists(QDir(directory.path()).filePath(QStringLiteral("exclusive.slang"))) == false);
+    CHECK(QFileInfo::exists(QDir(directory.path()).filePath(luslSource)) == false);
     CHECK(QFileInfo::exists(QDir(directory.path()).filePath(QStringLiteral("included.slang"))) == true);
     REQUIRE(document.Undo() == true);
     REQUIRE(document.Save(saved) == RenderGraphDocumentStatus::Ok);
-    CHECK(QFileInfo::exists(QDir(directory.path()).filePath(QStringLiteral("exclusive.slang"))) == true);
+    CHECK(QFileInfo::exists(QDir(directory.path()).filePath(luslSource)) == true);
+}
+
+TEST_CASE("shader cleanup follows LUSL headers into Slang sources", "[editor][render-graph][shader-cleanup]")
+{
+    QTemporaryDir directory;
+    MakePackage(directory);
+    WriteSource(directory, QStringLiteral("loose.lusl"), QByteArrayLiteral("#include \"interop.luslh\"\n"));
+    WriteSource(directory, QStringLiteral("interop.luslh"), QByteArrayLiteral("extern slang \"exclusive.slang\" {}\n"));
+    RenderGraphDocument document;
+    REQUIRE(document.Load(directory.path(), ROOT_GRAPH) == RenderGraphDocumentStatus::Ok);
+    QStringList programs;
+    QStringList sources;
+    QString error;
+    REQUIRE(document.RemoveUnusedShaders(programs, sources, error) == RenderGraphDocumentStatus::Ok);
+    CHECK(document.GetDraft(MANIFEST).contains("ExclusiveUnused") == false);
+    CHECK(sources == QStringList{QStringLiteral("nested/other.slang"), QStringLiteral("shared.slang")});
+    CHECK(document.GetFiles().contains(QStringLiteral("exclusive.slang")) == true);
 }
 
 TEST_CASE("shader cleanup preserves an authored traversal source after removing its unused program",

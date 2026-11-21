@@ -83,7 +83,7 @@ TEST_CASE("Metal validates the native startup policy before device acquisition",
     CHECK(rhi::GetStartup().Error == rhi::StartupError::InvalidWindow);
     CHECK(rhi::Start({}, {}) == rhi::StartStatus::Busy);
 }
-TEST_CASE("Metal clears a headless target and releases legacy sessions", "[rhi][macos][gpu]")
+TEST_CASE("Metal clears a headless target and restarts after shutdown", "[rhi][macos][gpu]")
 {
     Guard guard;
     RequireDevice();
@@ -107,14 +107,13 @@ TEST_CASE("Metal clears a headless target and releases legacy sessions", "[rhi][
     CHECK(rhi::BeginFrameStatus() == rhi::FrameStatus::Skipped);
     CHECK(rhi::SetFrameTarget({ .Width = 17, .Height = 9, .Red = -1 }) == rhi::FrameStatus::Failed);
     rhi::Shutdown();
-    REQUIRE(rhi::Initialize({}));
-    REQUIRE(rhi::ConnectWindow({ .Width = 17, .Height = 9 }));
-    REQUIRE(rhi::InitializeRendering());
-    REQUIRE(rhi::BeginFrame());
-    REQUIRE(rhi::EndFrame());
-    rhi::ShutdownRendering();
-    REQUIRE(rhi::InitializeRendering());
-    REQUIRE(rhi::BeginFrame());
+    REQUIRE(rhi::Start({}, { .Width = 17, .Height = 9 }) == rhi::StartStatus::Ready);
+    REQUIRE(rhi::GetStartup().State == rhi::StartupState::Ready);
+    REQUIRE(rhi::BeginFrameStatus() == rhi::FrameStatus::Ready);
+    REQUIRE(rhi::EndFrameStatus() == rhi::FrameStatus::Ready);
+    rhi::Shutdown();
+    REQUIRE(rhi::Start({}, { .Width = 17, .Height = 9 }) == rhi::StartStatus::Ready);
+    REQUIRE(rhi::BeginFrameStatus() == rhi::FrameStatus::Ready);
     // Abort an unsubmitted encoder.
     rhi::Shutdown();
     REQUIRE(rhi::Start({}, {}) == rhi::StartStatus::Ready);

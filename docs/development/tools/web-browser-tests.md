@@ -131,7 +131,11 @@ recovery checkpoint corroborates. It then measures from core acceptance to
 the first ready browser frame carrying the published extraction identity.
 A screenshot checks the marker itself. Screenshot sampling adds browser and
 capture overhead and is reported separately. The test checks that an older
-accepted extraction does not draw after the latest one. Draw calls and upload
+accepted extraction does not draw after the latest one. It types that latest
+edit while it holds the earlier edit's recovery checkpoint write open, so the
+editor is suspended in a folder call and Qt queues the click and keys.
+`typedDuringFolderWrite` records the unsent Qt events and the focused element;
+the edit must still apply exactly. Draw calls and upload
 bytes cover the instrumented browser graphics calls. Snapshot bytes, hardware
 memory traffic and CPU picking time need independent instrumentation. The
 accessibility-tree snapshot records browser-exposed roles for manual follow-up.

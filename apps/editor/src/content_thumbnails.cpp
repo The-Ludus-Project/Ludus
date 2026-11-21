@@ -1,6 +1,8 @@
 #include "internal/content_thumbnails.h"
 #include "design_tokens.h"
 
+#include <ludus/foundation/base/byte_order.hpp>
+
 #include <ludus/content/scene_cook/limits.h>
 #include <ludus/content/scene_format/limits.h>
 #include <ludus/content/scene_format/luscn.h>
@@ -76,20 +78,32 @@ constexpr qreal SRGB_LINEAR_SLOPE = 12.92;
 constexpr qreal SRGB_OFFSET = 0.055;
 constexpr qreal SRGB_SCALE = 1.055;
 constexpr qreal SRGB_EXPONENT = 2.4;
-constexpr int BITS_PER_BYTE = 8;
-constexpr int SECOND_BYTE = 1;
-constexpr int THIRD_BYTE = 2;
-constexpr int FOURTH_BYTE = 3;
 constexpr int RED = 0;
 constexpr int GREEN = 1;
 constexpr int BLUE = 2;
 constexpr int ALPHA = 3;
 
-[[nodiscard]] uint32 DecodeUint32(const char* bytes) noexcept
+[[nodiscard]] bool ReadTextureRecord(std::span<const foundation::uint8> header,
+                                     uint64 fileBytes,
+                                     format::TextureRecord& outRecord) noexcept
 {
-    const auto byte = [bytes](int index) { return static_cast<uint32>(static_cast<unsigned char>(bytes[index])); };
-    return byte(0) | (byte(SECOND_BYTE) << BITS_PER_BYTE) | (byte(THIRD_BYTE) << (BITS_PER_BYTE * 2)) |
-           (byte(FOURTH_BYTE) << (BITS_PER_BYTE * FOURTH_BYTE));
+    if (header.size() < TEXTURE_HEADER_BYTES)
+    {
+        return false;
+    }
+    format::TextureRecord record;
+    if (foundation::TryReadLittleEndian(header, record.Width) == false ||
+        foundation::TryReadLittleEndian(header.subspan(sizeof(uint32)), record.Height) == false ||
+        foundation::TryReadLittleEndian(header.subspan(2 * sizeof(uint32)), record.ByteCount) == false ||
+        record.Width == 0 || record.Height == 0 || record.Width > format::MAX_TEXTURE_DIMENSION ||
+        record.Height > format::MAX_TEXTURE_DIMENSION || record.ByteCount > format::MAX_TEXTURE_BYTES ||
+        uint64{record.ByteCount} != uint64{record.Width} * record.Height * format::TEXEL_BYTES ||
+        fileBytes != TEXTURE_HEADER_BYTES + uint64{record.ByteCount})
+    {
+        return false;
+    }
+    outRecord = record;
+    return true;
 }
 
 // Thanks to the International Electrotechnical Commission, IEC 61966-2-1:1999, "Multimedia systems and equipment -
@@ -142,17 +156,18 @@ struct SrgbTable final
         outFailure = QStringLiteral("The cooked texture is shorter than its header.");
         return false;
     }
-    const uint32 width = DecodeUint32(header.constData());
-    const uint32 height = DecodeUint32(header.constData() + sizeof(uint32));
-    const uint32 byteCount = DecodeUint32(header.constData() + 2 * sizeof(uint32));
-    if (width == 0 || height == 0 || width > format::MAX_TEXTURE_DIMENSION || height > format::MAX_TEXTURE_DIMENSION ||
-        uint64{byteCount} != uint64{width} * uint64{height} * format::TEXEL_BYTES ||
-        file.size() < TEXTURE_HEADER_BYTES + static_cast<qint64>(byteCount))
+    format::TextureRecord record;
+    if (ReadTextureRecord(
+            {reinterpret_cast<const foundation::uint8*>(header.constData()), static_cast<usize>(header.size())},
+            static_cast<uint64>(file.size()),
+            record) == false)
     {
-        outFailure = QStringLiteral("The cooked texture header is outside the texture limits or its texels are "
-                                    "missing; recook the scene that owns it.");
+        outFailure = QStringLiteral("The cooked texture header is outside the texture limits or its texels do not "
+                                    "match the header; recook the scene that owns it.");
         return false;
     }
+    const uint32 width = record.Width;
+    const uint32 height = record.Height;
     const uint32 longest = width > height ? width : height;
     const int outWidth = qMax(1, qRound(static_cast<qreal>(width) * side / longest));
     const int outHeight = qMax(1, qRound(static_cast<qreal>(height) * side / longest));
@@ -229,6 +244,12 @@ struct SrgbTable final
     return false;
 }
 } // namespace
+
+bool IsValidCookedTexture(std::span<const foundation::uint8> bytes) noexcept
+{
+    format::TextureRecord record;
+    return ReadTextureRecord(bytes, bytes.size(), record);
+}
 
 bool TryMakeTextureThumbnail(const QString& path, int side, QImage& outImage, QString& outFailure)
 {
@@ -318,9 +339,10 @@ bool TryMakeMaterialThumbnail(const QString& path,
     const QString textureId = material.value(QStringLiteral("texture")).toString();
     if (textureId.isEmpty() == false && texturePaths.contains(textureId) == true)
     {
-        QString textureFailure;
-        // A missing or broken texture still previews the material's shading, untextured.
-        (void)ReadTexture(texturePaths.value(textureId), MATERIAL_TEXTURE_SIDE, texture, textureFailure);
+        if (ReadTexture(texturePaths.value(textureId), MATERIAL_TEXTURE_SIDE, texture, outFailure) == false)
+        {
+            return false;
+        }
     }
     static const SrgbTable SRGB;
     QImage image(side, side, QImage::Format_ARGB32_Premultiplied);
@@ -465,25 +487,32 @@ ContentThumbnailCache::~ContentThumbnailCache()
 QPixmap ContentThumbnailCache::Find(const QString& id, // NOLINT(bugprone-easily-swappable-parameters)
                                     const QString& key)
 {
-    const Entry* entry = mEntries.object(id);
-    return entry != nullptr && entry->Key == key && entry->HasFailed == false ? entry->Pixmap : QPixmap();
+    const Entry* entryOrNull = mEntries.object(id);
+    return entryOrNull != nullptr && entryOrNull->Key == key ? entryOrNull->Pixmap : QPixmap();
+}
+
+QPixmap ContentThumbnailCache::FindLastDrawable(const QString& id)
+{
+    const Entry* entryOrNull = mEntries.object(id);
+    return entryOrNull != nullptr ? entryOrNull->Pixmap : QPixmap();
 }
 
 bool ContentThumbnailCache::HasFailed(const QString& id, // NOLINT(bugprone-easily-swappable-parameters)
                                       const QString& key) const
 {
-    const Entry* entry = mEntries.object(id);
-    return entry != nullptr && entry->Key == key && entry->HasFailed == true;
+    const Entry* entryOrNull = mEntries.object(id);
+    return entryOrNull != nullptr && entryOrNull->FailedKey == key;
 }
 
 void ContentThumbnailCache::Request(const ContentThumbnailRequest& request)
 {
-    if (request.Id.isEmpty() == true || HasContentThumbnail(request.Type) == false || mResultsOrNull == nullptr)
+    if (request.Id.isEmpty() == true || request.Key.isEmpty() == true || HasContentThumbnail(request.Type) == false ||
+        mResultsOrNull == nullptr)
     {
         return;
     }
-    const Entry* entry = mEntries.object(request.Id);
-    if ((entry != nullptr && entry->Key == request.Key) ||
+    const Entry* entryOrNull = mEntries.object(request.Id);
+    if ((entryOrNull != nullptr && (entryOrNull->Key == request.Key || entryOrNull->FailedKey == request.Key)) ||
         (mRunningKeys.contains(request.Id) == true && mRunningKeys.value(request.Id) == request.Key))
     {
         return;
@@ -559,7 +588,16 @@ void ContentThumbnailCache::dispatch()
 {
     while (mQueue.isEmpty() == false && mRunningKeys.size() < CONTENT_THUMBNAIL_WORKERS)
     {
-        const ContentThumbnailRequest request = mQueue.takeLast();
+        qsizetype available = mQueue.size();
+        do
+        {
+            --available;
+        } while (available >= 0 && mRunningKeys.contains(mQueue[available].Id) == true);
+        if (available < 0)
+        {
+            return;
+        }
+        const ContentThumbnailRequest request = mQueue.takeAt(available);
         mQueuedKeys.remove(request.Id);
         mRunningKeys.insert(request.Id, request.Key);
         const uint64 generation = mGeneration;
@@ -602,11 +640,16 @@ void ContentThumbnailCache::deliver()
             continue;
         }
         const ContentThumbnailResult& result = item.second;
-        if (mRunningKeys.contains(result.Id) == true && mRunningKeys.value(result.Id) == result.Key)
-        {
-            mRunningKeys.remove(result.Id);
-        }
         ++mGeneratedCount;
+        if (mRunningKeys.value(result.Id) != result.Key)
+        {
+            continue;
+        }
+        mRunningKeys.remove(result.Id);
+        if (mQueuedKeys.contains(result.Id) == true)
+        {
+            continue;
+        }
         accept(result);
         Q_EMIT ThumbnailReady(result.Id);
     }
@@ -615,24 +658,33 @@ void ContentThumbnailCache::deliver()
 
 void ContentThumbnailCache::accept(const ContentThumbnailResult& result)
 {
-    Entry* entry = new (std::nothrow) Entry;
-    if (entry == nullptr)
+    if (result.Image.isNull() == true)
+    {
+        Entry* previousOrNull = mEntries.object(result.Id);
+        if (previousOrNull != nullptr)
+        {
+            previousOrNull->FailedKey = result.Key;
+            return;
+        }
+    }
+    Entry* entryOrNull = new (std::nothrow) Entry;
+    if (entryOrNull == nullptr)
     {
         return;
     }
-    entry->Key = result.Key;
     constexpr qint64 BYTES_PER_KIBIBYTE = 1024;
     qint64 cost = 1;
     if (result.Image.isNull() == true)
     {
-        entry->HasFailed = true;
+        entryOrNull->FailedKey = result.Key;
     }
     else
     {
-        entry->Pixmap = QPixmap::fromImage(result.Image);
-        entry->Pixmap.setDevicePixelRatio(result.DevicePixelRatio);
+        entryOrNull->Key = result.Key;
+        entryOrNull->Pixmap = QPixmap::fromImage(result.Image);
+        entryOrNull->Pixmap.setDevicePixelRatio(result.DevicePixelRatio);
         cost = qMax<qint64>(1, result.Image.sizeInBytes() / BYTES_PER_KIBIBYTE);
     }
-    (void)mEntries.insert(result.Id, entry, cost);
+    (void)mEntries.insert(result.Id, entryOrNull, cost);
 }
 } // namespace ludus::editor

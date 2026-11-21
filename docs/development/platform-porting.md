@@ -25,7 +25,7 @@ needs a concrete deployment task, not just another preprocessor flag.
 - Last audited base commit/date and last accepted implementation commit/date.
 
 Use separate worktrees and `codex/` task branches for agent work. Preserve other
-checkouts; start new work from fetched `origin/main` and submit PRs to `main`.
+checkouts; start new work from fetched `origin/develop` and submit PRs to `develop`.
 
 ## Maintain subsystem coverage
 

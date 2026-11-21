@@ -30,9 +30,9 @@ struct ScrubSettings final
     foundation::float64 Step = 1; ///< Change per pixel dragged; Shift divides it, Control multiplies it.
 };
 
-/// Value after dragging deltaPixels (positive to the right) from startValue. Shift gives fine steps and
-/// Control coarse ones. Clamped to the range and rounded to a few decimals so 0.1 + 0.2 reads 0.3.
-[[nodiscard]] foundation::float64 ComputeScrubbedValue(foundation::float64 startValue,
+/// Unrounded, clamped value after moving deltaPixels (positive to the right) from previousValue.
+/// Shift gives fine steps and Control gives coarse ones.
+[[nodiscard]] foundation::float64 ComputeScrubbedValue(foundation::float64 previousValue,
                                                        foundation::int32 deltaPixels,
                                                        const ScrubSettings& settings,
                                                        Qt::KeyboardModifiers modifiers);
@@ -247,8 +247,8 @@ protected:
 private:
     QLineEdit& mField;
     ScrubSettings mSettings;
-    foundation::float64 mStartValue = 0;
-    foundation::int32 mStartX = 0;
+    foundation::float64 mScrubValue = 0;
+    foundation::int32 mPreviousPointerX = 0;
     bool mIsScrubbing = false;
     bool mHasMoved = false;
 };

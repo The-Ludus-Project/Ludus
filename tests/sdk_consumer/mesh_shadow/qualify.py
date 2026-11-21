@@ -33,6 +33,12 @@ from oracle import (
 )
 
 
+FULL_SHADOW_VISIBILITY = 0.05
+# Finite disk taps approximate the rectangular emitter, and each cube texel
+# retains only the nearest blocker. Compare absolute normalized visibility.
+OVERLAP_WEIGHTED_TOLERANCE = 0.15
+
+
 def require(condition, reason):
     if not condition:
         raise ValueError(reason)
@@ -409,10 +415,31 @@ def analyze(root, graph):
         for route in ("sdk", "viewport"):
             low, high = band[route]["visibility_range"]
             require(
-                low < 0.05 and high > 0.95 and band[route]["raster_10_90"],
+                low < FULL_SHADOW_VISIBILITY and high > 0.95 and band[route]["raster_10_90"],
                 f"{name}: lit/partial/blocked controls",
             )
     for route in ("sdk", "viewport"):
+        probe = report["cases"]["overlap-0"]["bands"]["centre"][route]["centre_probe"]
+        require(
+            probe["visibility"] < FULL_SHADOW_VISIBILITY,
+            f"overlap-0 centre {route}: visibility {probe['visibility']:.3f} must be "
+            f"below {FULL_SHADOW_VISIBILITY:.2f} at ({EXTENT // 2}, {EXTENT // 2})",
+        )
+        for name in (
+            "overlap-first",
+            "overlap-0-second",
+            "overlap-1-second",
+            "overlap-2-second",
+            "overlap-1",
+            "overlap-2",
+        ):
+            probe = report["cases"][name]["bands"]["centre"][route]["centre_probe"]
+            require(
+                abs(probe["visibility"] - probe["weighted"]) < OVERLAP_WEIGHTED_TOLERANCE,
+                f"{name} centre {route}: visibility {probe['visibility']:.3f} differs from "
+                f"weighted reference {probe['weighted']:.3f} by at least "
+                f"{OVERLAP_WEIGHTED_TOLERANCE:.2f}",
+            )
         require(
             np.array_equal(
                 read_frame(root / "rotate-45", route),

@@ -24,7 +24,7 @@ Runner::Runner(std::span<const Node> plan, std::span<NodeRecord> records, std::s
 {
 }
 
-bool Runner::Validate() noexcept
+bool Runner::validate() noexcept
 {
     mPlanDiagnostic = {};
     if (mRecords.size() < mPlan.size() || mJournal.size() < mPlan.size())
@@ -38,17 +38,17 @@ bool Runner::Validate() noexcept
     }
     for (usize position = 0; position < mPlan.size(); ++position)
     {
-        const auto& node = mPlan[position];
+        const Node& node = mPlan[position];
         PlanError error = PlanError::None;
         if (node.Id >= mPlan.size())
         {
             error = PlanError::InvalidId;
         }
-        else if (mRecords[node.Id].Position != InvalidNode)
+        else if (mRecords[node.Id].Position != INVALID_NODE)
         {
             error = PlanError::DuplicateId;
         }
-        else if (node.Name.empty())
+        else if (node.Name.empty() == true)
         {
             error = PlanError::MissingName;
         }
@@ -64,31 +64,93 @@ bool Runner::Validate() noexcept
         }
         mRecords[node.Id].Position = position;
     }
+    return validateProviders();
+}
+
+bool Runner::validateProviders() noexcept
+{
+    // Before the attempt begins, the journal is scratch storage: entry i holds the
+    // position of the last consumer that listed provider i, which finds repeated
+    // edges in O(V + E) without allocation.
+    for (usize id = 0; id < mPlan.size(); ++id)
+    {
+        mJournal[id] = INVALID_NODE;
+    }
     for (usize position = 0; position < mPlan.size(); ++position)
     {
-        const auto& node = mPlan[position];
+        const Node& node = mPlan[position];
         for (const usize provider : node.Providers)
         {
-            const auto error = provider >= mPlan.size()                  ? PlanError::InvalidProvider
-                               : mRecords[provider].Position >= position ? PlanError::ProviderOrder
-                                                                         : PlanError::None;
+            PlanError error = PlanError::None;
+            if (provider >= mPlan.size())
+            {
+                error = PlanError::InvalidProvider;
+            }
+            else if (provider == node.Id)
+            {
+                error = PlanError::SelfProvider;
+            }
+            else if (mJournal[provider] == position)
+            {
+                error = PlanError::DuplicateProvider;
+            }
+            else if (mRecords[provider].Position > position)
+            {
+                error = isProviderCycle(node, provider) == true ? PlanError::ProviderCycle : PlanError::ProviderOrder;
+            }
             if (error != PlanError::None)
             {
                 mPlanDiagnostic = { .Error = error, .NodeId = node.Id, .ProviderId = provider };
                 return false;
             }
+            mJournal[provider] = position;
         }
     }
     return true;
 }
 
+bool Runner::isProviderCycle(const Node& consumer, usize providerId) noexcept
+{
+    // Bounded diagnostic DFS: does the forward provider transitively depend on its
+    // consumer? Each node is marked when pushed, so the journal-backed stack never
+    // exceeds the plan size and the search is O(V + E). It distinguishes a cycle
+    // from a merely misordered plan; it never repairs the plan.
+    usize depth = 0;
+    mJournal[depth++] = providerId;
+    mRecords[providerId].State = NodeState::Starting;
+    bool isCycle = false;
+    while (depth > 0 && isCycle == false)
+    {
+        const usize id = mJournal[--depth];
+        for (const usize provider : mPlan[mRecords[id].Position].Providers)
+        {
+            if (provider == consumer.Id)
+            {
+                isCycle = true;
+                break;
+            }
+            // Later nodes are not validated yet; their invalid edges cannot close a cycle.
+            if (provider < mPlan.size() && mRecords[provider].State == NodeState::Dormant)
+            {
+                mRecords[provider].State = NodeState::Starting;
+                mJournal[depth++] = provider;
+            }
+        }
+    }
+    for (usize id = 0; id < mPlan.size(); ++id)
+    {
+        mRecords[id].State = NodeState::Dormant;
+    }
+    return isCycle;
+}
+
 BeginStatus Runner::Begin() noexcept
 {
-    if (mAdvancing || (mState != State::Idle && mState != State::Stopped))
+    if (mIsAdvancing == true || (mState != State::Idle && mState != State::Stopped))
     {
         return BeginStatus::Busy;
     }
-    if (Validate() == false)
+    if (validate() == false)
     {
         return BeginStatus::InvalidPlan;
     }
@@ -96,9 +158,10 @@ BeginStatus Runner::Begin() noexcept
     {
         return BeginStatus::GenerationExhausted;
     }
-    mStopRequested.store(false, std::memory_order_release);
+    mIsStopRequested.store(false, std::memory_order_release);
     mNext = 0;
-    mAttempted = 0;
+    mJournalSize = 0;
+    mAttemptedCount = 0;
     mOutcome = Outcome::None;
     mFailure = {};
     mCleanupFailure = {};
@@ -108,76 +171,89 @@ BeginStatus Runner::Begin() noexcept
 
 void Runner::RequestStop() noexcept
 {
-    mStopRequested.store(true, std::memory_order_release);
+    mIsStopRequested.store(true, std::memory_order_release);
 }
 
-void Runner::ObserveStopRequest() noexcept
+void Runner::enterCleanup() noexcept
 {
-    if (mStopRequested.load(std::memory_order_acquire) == false)
+    mState = mJournalSize == 0 ? State::Stopped : State::Stopping;
+}
+
+void Runner::observeStopRequest() noexcept
+{
+    if (mIsStopRequested.load(std::memory_order_acquire) == false)
     {
         return;
     }
     if (mState == State::Starting || mState == State::Ready || mState == State::Idle)
     {
         mOutcome = mState == State::Starting ? Outcome::Cancelled : Outcome::Completed;
-        mState = mAttempted == 0 ? State::Stopped : State::Stopping;
+        enterCleanup();
     }
 }
 
-bool Runner::ReportFailure(usize nodeId, uint32 error) noexcept
+bool Runner::ReportFailure(usize nodeId, ErrorCode error) noexcept
 {
-    if (mAdvancing || nodeId >= mPlan.size() || (mState != State::Starting && mState != State::Ready))
+    if (mIsAdvancing == true || nodeId >= mPlan.size() || (mState != State::Starting && mState != State::Ready))
     {
         return false;
     }
-    mFailure = { .NodeId = nodeId, .Error = error };
+    mFailure = { .NodeId = nodeId, .Source = FailureSource::Runtime, .Error = error };
     mOutcome = Outcome::RuntimeFailed;
-    mState = mAttempted == 0 ? State::Stopped : State::Stopping;
+    enterCleanup();
     return true;
 }
 
-bool Runner::BlockCleanup(uint32 error) noexcept
+void Runner::blockCleanup(FailureSource source, ErrorCode error) noexcept
 {
-    if (mAdvancing || mState != State::Stopping || mAttempted == 0)
-    {
-        return false;
-    }
-    auto& record = mRecords[mPlan[mJournal[mAttempted - 1]].Id];
-    // A deadline can quarantine an already-issued stop, never skip BeginStop.
-    if (record.State != NodeState::Stopping)
-    {
-        return false;
-    }
+    const usize id = mPlan[mJournal[mJournalSize - 1]].Id;
+    NodeRecord& record = mRecords[id];
     record.State = NodeState::CleanupBlocked;
     record.Error = error;
-    mCleanupFailure = { .NodeId = mPlan[mJournal[mAttempted - 1]].Id, .Error = error };
+    mCleanupFailure = { .NodeId = id, .Source = source, .Error = error };
     mState = State::CleanupBlocked;
+}
+
+bool Runner::BlockCleanup(ErrorCode error) noexcept
+{
+    if (mIsAdvancing == true || mState != State::Stopping || mJournalSize == 0)
+    {
+        return false;
+    }
+    // A deadline can quarantine an already-issued stop, never skip BeginStop.
+    if (mRecords[mPlan[mJournal[mJournalSize - 1]].Id].State != NodeState::Stopping)
+    {
+        return false;
+    }
+    blockCleanup(FailureSource::Deadline, error);
     return true;
 }
 
 bool Runner::ResumeCleanup() noexcept
 {
-    if (mAdvancing || mState != State::CleanupBlocked)
+    if (mIsAdvancing == true || mState != State::CleanupBlocked)
     {
         return false;
     }
-    mRecords[mPlan[mJournal[mAttempted - 1]].Id].State = NodeState::Stopping;
+    mRecords[mPlan[mJournal[mJournalSize - 1]].Id].State = NodeState::Stopping;
     mState = State::Stopping;
     return true;
 }
 
-void Runner::StartOne() noexcept
+void Runner::startOne() noexcept
 {
-    const auto& node = mPlan[mNext];
-    auto& record = mRecords[node.Id];
-    const bool begin = record.State == NodeState::Dormant;
-    if (begin)
+    const Node& node = mPlan[mNext];
+    NodeRecord& record = mRecords[node.Id];
+    const bool isBegin = record.State == NodeState::Dormant;
+    if (isBegin == true)
     {
         // Journal BEFORE the callback: a failed BeginStart may own resources.
-        mJournal[mAttempted++] = mNext;
+        mJournal[mJournalSize++] = mNext;
+        ++mAttemptedCount;
         record.State = NodeState::Starting;
     }
-    const auto result = begin ? node.BeginStart(node.Context) : node.PollStart(node.Context);
+    const StartResult result =
+        isBegin == true ? node.BeginStart(node.ContextOrNull) : node.PollStart(node.ContextOrNull);
     record.Error = result.Error;
     record.WaitReason = result.WaitReason;
     if (result.Status == StartStatus::Ready)
@@ -188,46 +264,46 @@ void Runner::StartOne() noexcept
     else if (result.Status == StartStatus::Failed)
     {
         record.State = NodeState::Failed;
-        mFailure = { .NodeId = node.Id, .Error = result.Error };
+        mFailure =
+        {
+            .NodeId = node.Id,
+            .Source = isBegin == true ? FailureSource::BeginStart : FailureSource::PollStart,
+            .Error = result.Error,
+        };
         mOutcome = Outcome::StartFailed;
-        mState = State::Stopping;
+        enterCleanup();
     }
 }
 
-void Runner::StopOne() noexcept
+void Runner::stopOne() noexcept
 {
-    const auto& node = mPlan[mJournal[mAttempted - 1]];
-    auto& record = mRecords[node.Id];
-    const bool begin = record.State != NodeState::Stopping;
+    const Node& node = mPlan[mJournal[mJournalSize - 1]];
+    NodeRecord& record = mRecords[node.Id];
+    const bool isBegin = record.State != NodeState::Stopping;
     record.State = NodeState::Stopping;
-    const auto result = begin ? node.BeginStop(node.Context) : node.PollStop(node.Context);
+    const StopResult result = isBegin == true ? node.BeginStop(node.ContextOrNull) : node.PollStop(node.ContextOrNull);
     record.Error = result.Error;
     record.WaitReason = result.WaitReason;
     if (result.Status == StopStatus::Stopped)
     {
         record.State = NodeState::Stopped;
-        --mAttempted;
-        if (mAttempted == 0)
-        {
-            mState = State::Stopped;
-        }
+        --mJournalSize;
+        enterCleanup();
     }
     else if (result.Status == StopStatus::Unsafe)
     {
-        record.State = NodeState::CleanupBlocked;
-        mCleanupFailure = { .NodeId = node.Id, .Error = result.Error };
-        mState = State::CleanupBlocked;
+        blockCleanup(isBegin == true ? FailureSource::BeginStop : FailureSource::PollStop, result.Error);
     }
 }
 
 State Runner::Advance(usize callbackBudget) noexcept
 {
-    if (mAdvancing)
+    if (mIsAdvancing == true)
     {
         return mState;
     }
-    mAdvancing = true;
-    ObserveStopRequest();
+    mIsAdvancing = true;
+    observeStopRequest();
     while (callbackBudget > 0)
     {
         if (mState == State::Starting)
@@ -237,10 +313,10 @@ State Runner::Advance(usize callbackBudget) noexcept
                 mState = State::Ready;
                 break;
             }
-            const auto id = mPlan[mNext].Id;
-            StartOne();
+            const usize id = mPlan[mNext].Id;
+            startOne();
             --callbackBudget;
-            ObserveStopRequest();
+            observeStopRequest();
             if (mState != State::Starting || mRecords[id].State == NodeState::Starting)
             {
                 break;
@@ -248,10 +324,10 @@ State Runner::Advance(usize callbackBudget) noexcept
         }
         else if (mState == State::Stopping)
         {
-            const auto before = mAttempted;
-            StopOne();
+            const usize before = mJournalSize;
+            stopOne();
             --callbackBudget;
-            if (mAttempted == before)
+            if (mJournalSize == before)
             {
                 break;
             }
@@ -262,12 +338,51 @@ State Runner::Advance(usize callbackBudget) noexcept
         }
     }
     // Publishing Ready requires no extra callback or owner-loop iteration.
-    ObserveStopRequest();
+    observeStopRequest();
     if (mState == State::Starting && mNext == mPlan.size())
     {
         mState = State::Ready;
     }
-    mAdvancing = false;
+    mIsAdvancing = false;
     return mState;
+}
+
+std::span<const usize> Runner::GetRemainingCleanup() const noexcept
+{
+    return std::span<const usize>(mJournal).first(mJournalSize);
+}
+
+std::span<const NodeRecord> Runner::GetRecords() const noexcept
+{
+    return mRecords.size() > mPlan.size() ? mRecords.first(mPlan.size()) : mRecords;
+}
+
+Report Runner::GetReport() const noexcept
+{
+    CleanupOutcome cleanup = CleanupOutcome::None;
+    if (mState == State::CleanupBlocked)
+    {
+        cleanup = CleanupOutcome::Blocked;
+    }
+    else if (mState == State::Stopping)
+    {
+        cleanup = CleanupOutcome::Pending;
+    }
+    else if (mState == State::Stopped)
+    {
+        cleanup = CleanupOutcome::Complete;
+    }
+    return
+    {
+        .Generation = mGeneration,
+        .RunnerState = mState,
+        .Primary = mOutcome,
+        .PrimaryFailure = mFailure,
+        .Cleanup = cleanup,
+        .CleanupFailure = mCleanupFailure,
+        .AttemptedCount = mAttemptedCount,
+        .StoppedCount = mAttemptedCount - mJournalSize,
+        .RemainingCount = mJournalSize,
+    };
 }
 } // namespace ludus::smoke::lifecycle

@@ -310,4 +310,24 @@ float64 internal::DecodeTerrainTileHeight(const TerrainTile& tile, uint32 column
     const TerrainTileDescription description = tile.GetDescription();
     return DecodeHeight(description.Codec, ReadTileHeightCode(tile, description, column, row));
 }
+
+int64 internal::ReadTerrainTileHeightCode(const TerrainTile& tile, uint32 column, uint32 row) noexcept
+{
+    return ReadTileHeightCode(tile, tile.GetDescription(), column, row);
+}
+
+float64 internal::DecodeTerrainHeight(const TerrainHeightCodec& codec, int64 code) noexcept
+{
+    return DecodeHeight(codec, code);
+}
+
+bool internal::TryEncodeTerrainHeight(const TerrainHeightCodec& codec, float64 heightMetres, int64& outCode) noexcept
+{
+    return TryEncodeHeight(codec, heightMetres, outCode);
+}
+
+TerrainTileStatus internal::ValidateTerrainTileDescription(const TerrainTileDescription& description) noexcept
+{
+    return ValidateTileDescription(description);
+}
 } // namespace ludus::content::terrain

@@ -19,6 +19,7 @@
 #include <QKeyEvent>
 #include <QMouseEvent>
 #include <QPointer>
+#include <QRect>
 #include <QResizeEvent>
 #include <QTimer>
 #include <QWheelEvent>
@@ -27,6 +28,7 @@
 QT_BEGIN_NAMESPACE
 class QAction;
 class QContextMenuEvent;
+class QMenu;
 class QMessageBox;
 QT_END_NAMESPACE
 namespace ludus::platform
@@ -68,6 +70,12 @@ enum class ViewportPresentation : foundation::uint8
 /// @return The open box, owned by inoutParent; object name `viewportSlowFrameSuggestion`.
 QMessageBox*
 SuggestRasterFallback(QWidget& inoutParent, RenderPreview& inoutSource, foundation::float64 frameMilliseconds);
+/// Places the viewport toolbar overflow menu inside the viewport, opening downward and leftward,
+/// and to the left of the axis gizmo when gizmoGlobal is a valid rectangle so the menu never covers it.
+void PlaceViewportOverflowMenu(QMenu& inoutMenu,
+                               const QWidget& viewport,
+                               const QRect& overflowButtonGlobal,
+                               const QRect& gizmoGlobal);
 // One embedded presentation surface for both World bindings and cooked scenes.
 // Frames come from a ViewportFrameSource; device admission and navigation stay with the RenderPreview.
 class PreviewViewport final : public QWidget
@@ -183,6 +191,8 @@ public:
     [[nodiscard]] foundation::uint64 GetPresentedGraphFrameSerial() const noexcept;
     /// True while the axis orientation widget is drawn: a frame is on screen and the game is not playing.
     [[nodiscard]] bool IsOrientationWidgetShown() const noexcept;
+    /// Global rectangle reserved for the axis widget, whether or not it is currently drawn.
+    [[nodiscard]] QRect GetOrientationWidgetGlobalRect() const;
     /// Text of the GPU/CPU statistics overlay as currently shown; empty while Stats is off.
     [[nodiscard]] QString GetStatisticsText() const;
     /// Live shader status shown below the statistics (reload notices and errors); empty when none.
@@ -256,6 +266,12 @@ private:
     /// Snap the camera to the axis view of the orientation handle under globalPosition. False when the
     /// widget is hidden or the point misses every handle.
     [[nodiscard]] bool tryPickOrientationWidget(QPointF globalPosition);
+    /// Front-most orientation handle under globalPosition. Failure leaves outView unchanged.
+    [[nodiscard]] bool tryHitOrientationWidget(QPointF globalPosition, EditorAxisView& outView) const;
+    /// Toggle the collapsed statistics chip when globalPosition hits the overlay. False otherwise.
+    [[nodiscard]] bool tryToggleStatisticsOverlay(QPointF globalPosition);
+    /// Paint a quiet hover halo on the orientation handle under the cursor, or clear it.
+    void updateOrientationHover(QPointF globalPosition);
     /// Open the Error List when globalPosition hits the build-failure chip over the frame. False otherwise.
     [[nodiscard]] bool tryActivateProblemChip(QPointF globalPosition);
     void resizeSurface();

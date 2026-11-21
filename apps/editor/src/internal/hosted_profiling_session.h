@@ -98,6 +98,9 @@ struct HostedProducerRecord final
     foundation::uint64 Recording = 0;
     /// First frame the game acknowledged; zero when Start was never acknowledged.
     foundation::uint64 StartFrame = 0;
+    /// The game's Start acknowledgement reported per-pass counters on its device. False
+    /// before the acknowledgement and when the game records whole-frame timing only.
+    bool IsPassTimingSupported = false;
     /// Last frame the game reported at Stop; zero when Stop was not acknowledged.
     foundation::uint64 StopFrame = 0;
     /// Lowest and highest frame of an admitted sample; zero without samples.
@@ -116,7 +119,8 @@ struct HostedProducerRecord final
     foundation::uint64 StopReceivedTicks = 0;
     /// The game's coverage from its Stop acknowledgement.
     platform::HostedRecordingCoverage Coverage{};
-    /// Samples refused because they named another recording or preceded the start frame.
+    /// Samples refused because they named another recording, preceded the start frame or
+    /// were not the kind the Start acknowledgement announced.
     foundation::uint64 RejectedSamples = 0;
     /// Game frames the viewport took and returned while recording.
     foundation::uint64 ConsumedFrames = 0;
@@ -129,7 +133,9 @@ struct HostedProducerRecord final
 /// sample only for this session's nonzero recording identity, which no other recording of
 /// this editor process uses, and only from the acknowledged start frame on, so delayed
 /// samples of an earlier recording or game process are refused even when their frame
-/// numbers repeat. Samples received before a disconnection are kept. GUI thread only.
+/// numbers repeat. A recording admits only the sample kind its Start acknowledgement
+/// announced: named passes, or whole frames from a device without per-pass counters.
+/// Samples received before a disconnection are kept. GUI thread only.
 class HostedProfilingSession final : public HostedRecordingSink
 {
 public:

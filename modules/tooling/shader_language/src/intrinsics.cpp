@@ -61,6 +61,9 @@ uint32 GetIntrinsicArity(IntrinsicFamily family) noexcept
             return 2;
         case IntrinsicFamily::NumericTernary:
         case IntrinsicFamily::FloatTernary:
+        case IntrinsicFamily::FloatVectorTernary:
+        case IntrinsicFamily::Select:
+        case IntrinsicFamily::Refract:
         case IntrinsicFamily::AtomicExchange:
         case IntrinsicFamily::AtomicCompareStore:
             return TERNARY_ARITY;
@@ -96,6 +99,10 @@ bool ResolveIntrinsic(IntrinsicFamily family,
             outResultType = TypeTable::ERROR_TYPE;
             return true;
         }
+        if (IsHeterogeneousOperand(family, i) == true)
+        {
+            continue;
+        }
         if (kind == TypeKind::UntypedFloat)
         {
             hasUntypedFloat = true;
@@ -110,12 +117,19 @@ bool ResolveIntrinsic(IntrinsicFamily family,
     const bool isFloatFamily = family == IntrinsicFamily::FloatUnary || family == IntrinsicFamily::FloatVector ||
                                family == IntrinsicFamily::FloatBinary || family == IntrinsicFamily::FloatTernary ||
                                family == IntrinsicFamily::Length || family == IntrinsicFamily::Distance ||
-                               family == IntrinsicFamily::Cross || family == IntrinsicFamily::Reflect;
+                               family == IntrinsicFamily::Cross || family == IntrinsicFamily::Reflect ||
+                               family == IntrinsicFamily::FloatVectorTernary || family == IntrinsicFamily::Refract ||
+                               family == IntrinsicFamily::Clip;
     if (operand == NO_TYPE)
     {
         // Only constants: they take the family's default element type.
         const bool isFloat = hasUntypedFloat == true || isFloatFamily == true;
         operand = types.GetScalar(isFloat == true ? ScalarKind::Float32 : ScalarKind::Int32);
+    }
+    if (family == IntrinsicFamily::Select && types.Get(argumentTypes[0]).Kind == TypeKind::Vector &&
+        types.Get(operand).Kind == TypeKind::Scalar)
+    {
+        operand = types.GetVector(types.Get(operand).Scalar, types.Get(argumentTypes[0]).Rows);
     }
     const SemanticType& shape = types.Get(operand);
     const bool isScalarOrVector = shape.Kind == TypeKind::Scalar || shape.Kind == TypeKind::Vector;
@@ -132,7 +146,24 @@ bool ResolveIntrinsic(IntrinsicFamily family,
             return isFloat;
         case IntrinsicFamily::FloatVector:
         case IntrinsicFamily::Reflect:
+        case IntrinsicFamily::FloatVectorTernary:
+        case IntrinsicFamily::Refract:
             return isFloat == true && isVector == true;
+        case IntrinsicFamily::Sign:
+            outResultType = types.WithScalar(operand, ScalarKind::Int32);
+            return isNumeric == true && IsSignedScalar(shape.Scalar) == true;
+        case IntrinsicFamily::Determinant:
+            outResultType = types.GetScalar(shape.Scalar);
+            return shape.Kind == TypeKind::Matrix && shape.Rows == shape.Columns && IsFloatScalar(shape.Scalar) == true;
+        case IntrinsicFamily::Select: {
+            const SemanticType& condition = types.Get(argumentTypes[0]);
+            return isScalarOrVector == true && condition.Scalar == ScalarKind::Bool &&
+                   (condition.Kind == TypeKind::Scalar ||
+                    (condition.Kind == TypeKind::Vector && isVector == true && condition.Rows == shape.Rows));
+        }
+        case IntrinsicFamily::Clip:
+            outResultType = TypeTable::VOID_TYPE;
+            return isFloat;
         case IntrinsicFamily::NumericUnary:
         case IntrinsicFamily::NumericBinary:
         case IntrinsicFamily::NumericTernary:

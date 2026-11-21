@@ -887,10 +887,11 @@ endpoint reports Unavailable.
   message with the reason (WrongUser, BadToken, IncompatibleVersion,
   MalformedHello or HandshakeTimeout) and is disconnected. The endpoint keeps
   listening for the real window and counts each refusal.
-- **Protocol.** The protocol is version 4 on Unix and version 5 on Windows.
+- **Protocol.** The protocol is version 5 on Unix and version 6 on Windows.
   Windows version 4 added NT handle values and a duplication acknowledgment.
-  Version 1 had no hosted surface, version 2 no consumer adapter in the Welcome
-  and version 3 (4 on Windows) no [hosted recording](#hosted-recording); either
+  Version 1 had no hosted surface, version 2 no consumer adapter in the Welcome,
+  version 3 (4 on Windows) no [hosted recording](#hosted-recording) and version
+  4 (5 on Windows) no per-pass counter answer or whole-frame samples; either
   side refuses another version as IncompatibleVersion. Each message is
   a little-endian 4-byte header (`uint16` kind, `uint16` payload size) followed
   by a payload of the size specified for its message. A frame payload is at most 255 bytes, so a peer can
@@ -913,8 +914,8 @@ endpoint reports Unavailable.
 | Present | window → endpoint | generation, image index, frame sequence |
 | Release | endpoint → window | generation, image index |
 | RecordingRequest | endpoint → window | Start or Stop, recording identity, request number |
-| RecordingAcknowledgement | window → endpoint | request kind, result, recording, request, frame, game clock ticks, eight coverage counts, producer name (≤ 63 bytes) |
-| RecordingSample | window → endpoint | recording, frame, submission/collection ticks, duration, scope identity, pass index, logical count, kind, calibrated interval and uncertainty, pass name (≤ 127 bytes) |
+| RecordingAcknowledgement | window → endpoint | request kind, result, flags (per-pass counters, successful Start only), recording, request, frame, game clock ticks, eight coverage counts, producer name (≤ 63 bytes) |
+| RecordingSample | window → endpoint | recording, frame, submission/collection ticks, duration, scope identity, pass index, logical count, kind, flags (calibrated interval, whole frame), calibrated interval and uncertainty, pass name (≤ 127 bytes; empty for a whole frame) |
 
 Either side treats an unknown kind, a wrong size, a nonzero reserved byte or an
 out-of-range value as a violation and closes the channel. Names are zero-padded,
@@ -1249,11 +1250,22 @@ side of the [graphics-debugging P2 phase](graphics-debugging.md#perfetto-recordi
   covered frame; Stop's reports the last one and the coverage counts. Stop waits
   up to eight frames for a batch already measuring a covered frame, then reports
   it unresolved.
+- **Devices without per-pass counters.** When `rhi::ArmGpuPassTimings` returns
+  Unsupported, as on the Apple Paravirtual device of hosted macOS runners, the
+  recorder owns the device's frame probe (`rhi::ArmGpuTiming`) instead. Start is
+  acknowledged with its per-pass counter flag clear, and every sample measures
+  one whole submitted frame: it has a zero scope identity and pass index, the
+  Raster kind, no calibrated interval and an empty name. Only a device that
+  measures neither passes nor frames, such as one created without GPU timing,
+  answers Start with Unsupported. The editor admits only the sample kind Start
+  announced, sets the trace's `passTimingSupported` from the game's answer, and
+  says **Per-pass counters unavailable on the game's device; frame timing only**
+  in the recording and saved status, as the editor viewport's path does.
 - **Games.** The World-demo game attaches a recorder only when it runs in a
   hosted window, and creates only that device with GPU timing. It calls the
   recorder's `BeginFrame` once its device is ready and before the Renderer opens
   the frame, then `EndFrame` with whether the frame was presented. It never arms
-  pass timing itself. Its samples are the Renderer's `RasterViewport` scopes:
+  pass or frame timing itself. Its samples are the Renderer's `RasterViewport` scopes:
   `Viewport/Scene`, `Viewport/Composite` and `Viewport/Present`. A recorder that
   cannot attach leaves the game playing and its Starts answered Unsupported.
 - **Frame ownership.** Recording messages travel on the same ordered stream as
@@ -1284,17 +1296,20 @@ side of the [graphics-debugging P2 phase](graphics-debugging.md#perfetto-recordi
 - **Modes.** GPU records the game. CPU still records the editor. Both is refused
   while a game plays, because it would combine two processes on unrelated clocks.
 
-`ludus_platform_hosted_tests` checks the codec, request ordering, unsolicited
+`ludus_platform_hosted_tests` checks the codec, both per-pass counter answers,
+whole-frame samples, request ordering, unsolicited
 acknowledgements, a window without a recorder, survival across a disconnection,
 delayed samples of an earlier recording and the surface send reserve. The
 editor's `[profiling][hosted]` cases script the channel to check admission,
-refusal and export. The `[native-hosted-frames]` Play case records the RHI test
-producer's named surface pass. It kills the game after a sample and checks the
+refusal, export and a frame-timing-only recording. The `[native-hosted-frames]`
+Play case records the RHI test producer's named surface pass, or whole frames on
+a device without per-pass counters. It kills the game after a sample and checks the
 incomplete export, then reconnects and records a complete second trace. The
 `[.play-native]` World-demo recording case plays the World-demo game in the
-World viewport, records it, and checks the three viewport pass names, the game's
-process identifier and producer name, and a complete export with an
-acknowledged Stop.
+World viewport, records it, and checks that the game's per-pass counter answer
+matches the editor device's, the three viewport pass names (or whole-frame
+samples and the frame-timing-only status without counters), the game's process
+identifier and producer name, and a complete export with an acknowledged Stop.
 
 ### Separate window mode
 
