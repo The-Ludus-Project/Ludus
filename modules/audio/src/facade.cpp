@@ -781,7 +781,7 @@ BatchResult AudioSystem::TrySubmitBatch(std::span<const Command> commands) noexc
 
     // --- Phase 3: publish once ---------------------------------------------
     std::span<const QueuedCommand> batch(s.BatchScratch, scratchCount);
-    if (s.CommandRing.TryPublishBatch(batch) == false)
+    if (s.PublishCommands(batch) == false)
     {
         rollback();
         s.LastBatchVoiceCount = 0;
@@ -812,6 +812,7 @@ BatchResult AudioSystem::TrySubmitBatch(std::span<const Command> commands) noexc
 
     result.Result = Status::Ok;
     result.Voices = std::span<const VoiceHandle>(s.LastBatchVoices, s.LastBatchVoiceCount);
+    result.Sequence = s.PublishedCommands;
     return result;
 }
 
@@ -902,7 +903,7 @@ Status AudioSystem::PlayStream(StreamHandle stream,
     q.Stream = instance.Data;
     q.AdmissionEpoch = s.StopAllEpoch;
     q.Looping = v.Looping;
-    if (s.CommandRing.TryPublishBatch({&q, 1}) == false)
+    if (s.PublishCommands({&q, 1}) == false)
     {
         v.InUse = false;
         return Status::QueueFull;
@@ -1022,7 +1023,11 @@ Status AudioSystem::SetStreamGroupGains(VoiceHandle voice, std::span<const float
         }
         command.LayerGains[i] = gains[i];
     }
-    return owner.CommandRing.TryPublishBatch({&command, 1}) == true ? Status::Ok : Status::QueueFull;
+    if (owner.PublishCommands({&command, 1}) == false)
+    {
+        return Status::QueueFull;
+    }
+    return Status::Ok;
 }
 Status AudioSystem::ScheduleStreamGroup(std::span<const StreamHandle> streams,
                                         std::span<const float32> gains,
@@ -1380,6 +1385,20 @@ void AudioSystem::GetSystemSnapshot(SystemSnapshot& out) const noexcept
     mImpl->FillSnapshot(out);
 }
 
+uint32 AudioSystem::GetCommandRoom() const noexcept
+{
+    if (mImpl.Get() == nullptr || mImpl->State != SystemState::Ready)
+    {
+        return 0;
+    }
+    return mImpl->CommandRing.FreeSlots();
+}
+
+uint64 AudioSystem::GetAppliedSequence() const noexcept
+{
+    return mImpl.Get() == nullptr ? 0 : mImpl->AppliedCommands.load(std::memory_order_acquire);
+}
+
 // ===========================================================================
 // Offline rendering
 // ===========================================================================
@@ -1538,7 +1557,7 @@ Status AudioSystem::AcquireModifier(std::span<const ModifierValue> values,
         {
             q.ModifierValues[i] = values[i];
         }
-        if (s.CommandRing.TryPublishBatch({&q, 1}) == false)
+        if (s.PublishCommands({&q, 1}) == false)
         {
             m.InUse = false;
             return Status::QueueFull;
@@ -1572,7 +1591,7 @@ Status AudioSystem::UpdateModifier(ModifierHandle modifier, float32 weight) noex
         q.ModifierSlotIndex = slot;
         q.ModifierGeneration = m.Generation.Value;
         q.ModifierWeight = weight;
-        if (mImpl->CommandRing.TryPublishBatch({&q, 1}) == false)
+        if (mImpl->PublishCommands({&q, 1}) == false)
         {
             return Status::QueueFull;
         }
@@ -1601,7 +1620,7 @@ Status AudioSystem::ReleaseModifier(ModifierHandle modifier) noexcept
         q.BatchLength = 1;
         q.ModifierSlotIndex = slot;
         q.ModifierGeneration = m.Generation.Value;
-        if (mImpl->CommandRing.TryPublishBatch({&q, 1}) == false)
+        if (mImpl->PublishCommands({&q, 1}) == false)
         {
             return Status::QueueFull;
         }

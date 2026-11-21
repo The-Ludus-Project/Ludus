@@ -966,6 +966,7 @@ target_link_libraries(ludus_editor_application
         Ludus::AudioContent
         Ludus::FoundationConfigJson
         Ludus::RuntimeConfiguration
+        Ludus::RuntimeConfigurationSchemas
         Ludus::FoundationMath
         Ludus::GameplayCamera
         Ludus::GameplayWorld
@@ -1460,6 +1461,7 @@ if(LUDUS_BUILD_TESTS AND NOT EMSCRIPTEN)
             Ludus::AudioContent
             Ludus::FoundationConfigJson
             Ludus::RuntimeConfiguration
+            Ludus::RuntimeConfigurationSchemas
             Ludus::FoundationMath
             Ludus::GameplayCamera
             Ludus::GameplayWorld

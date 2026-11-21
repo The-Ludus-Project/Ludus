@@ -56,8 +56,17 @@ def read_toml(source: Path) -> dict:
         raise ValueError(f"{source}: {error}") from error
 
 
-def read_schema(validator: Path) -> dict:
-    invocation = subprocess.run([str(validator), "--schema"], capture_output=True, check=True, timeout=15)
+def validator_command(validator: Path, schema_id: str | None) -> list[str]:
+    """The validator invocation prefix; an explicit schema identity selects that engine schema."""
+    return [str(validator), "--schema-id", schema_id] if schema_id else [str(validator)]
+
+
+def read_schema(validator: Path, schema_id: str | None = None) -> dict:
+    invocation = subprocess.run([*validator_command(validator, schema_id), "--schema"], capture_output=True,
+                                timeout=15)
+    if invocation.returncode:
+        details = invocation.stderr.decode("utf-8", errors="replace").strip()
+        raise ValueError(details or "schema export failed; check --schema-id against ludus-config")
     return json.loads(invocation.stdout)
 
 
@@ -68,7 +77,8 @@ def encode(document: dict) -> bytes:
     return encoded
 
 
-def cook_layer(sources: list[tuple[Path, str]], validator: Path, schema: dict, layer: str) -> bytes:
+def cook_layer(sources: list[tuple[Path, str]], validator: Path, schema: dict, layer: str,
+               schema_id: str | None = None) -> bytes:
     descriptors = {setting["key"]: setting for setting in schema["settings"]}
     values = {}
     for source, origin in sorted(sources, key=lambda file: file[1]):
@@ -100,8 +110,8 @@ def cook_layer(sources: list[tuple[Path, str]], validator: Path, schema: dict, l
             raise ValueError(f"{origin}: wrong TOML type for {key}; use {kind}")
         records.append({"key": key, "type": kind, "value": value, "source": origin, "line": 0})
     bundle = {"version": 1, "schema": schema["schema"], "layer": layer, "values": records}
-    validated = subprocess.run([str(validator), "--validate", layer], input=encode(bundle),
-                               capture_output=True, timeout=15)
+    validated = subprocess.run([*validator_command(validator, schema_id), "--validate", layer],
+                               input=encode(bundle), capture_output=True, timeout=15)
     if validated.returncode:
         details = validated.stderr.decode("utf-8", errors="replace").strip()
         origins = ", ".join(origin for _, origin in sources)
@@ -110,8 +120,8 @@ def cook_layer(sources: list[tuple[Path, str]], validator: Path, schema: dict, l
     return validated.stdout
 
 
-def cook(source: Path, validator: Path, layer: str) -> bytes:
-    return cook_layer([(source, source.name)], validator, read_schema(validator), layer)
+def cook(source: Path, validator: Path, layer: str, schema_id: str | None = None) -> bytes:
+    return cook_layer([(source, source.name)], validator, read_schema(validator, schema_id), layer, schema_id)
 
 
 def manifest_files(value: object, location: str) -> list[str]:
@@ -144,7 +154,7 @@ def compatible_names(value: object, choices: dict, location: str) -> list[str]:
 
 
 def cook_startup(manifest: Path, output: Path, validator: Path, profile: str,
-                 device: str | None, quality: str | None) -> bytes:
+                 device: str | None, quality: str | None, schema_id: str | None = None) -> bytes:
     document = read_toml(manifest)
     if (document.keys() - {"version", "engine", "project", "profiles", "devices", "qualities"}
             or type(document.get("version")) is not int or document["version"] != STARTUP_VERSION):
@@ -188,12 +198,12 @@ def cook_startup(manifest: Path, output: Path, validator: Path, profile: str,
     destination = output.resolve()
     if any((manifest.parent / name).resolve() == destination for name in all_files):
         raise ValueError("output must be separate from every declared TOML source")
-    schema = read_schema(validator)
+    schema = read_schema(validator, schema_id)
     layers = {}
     for layer, files in selected.items():
         if files:
             sources = [(manifest.parent / name, name) for name in files]
-            layers[layer] = json.loads(cook_layer(sources, validator, schema, layer))
+            layers[layer] = json.loads(cook_layer(sources, validator, schema, layer, schema_id))
     return encode({"version": STARTUP_VERSION, "layers": layers})
 
 
@@ -206,6 +216,7 @@ def main() -> int:
     parser.add_argument("--profile", action="append", help="cook the startup manifest using this named profile")
     parser.add_argument("--device", action="append", help="select a compatible named device")
     parser.add_argument("--quality", action="append", help="select a compatible named quality preset")
+    parser.add_argument("--schema-id", help="engine schema identity, such as ludus.audio.v1 (default: GameHost)")
     args = parser.parse_args()
     for option in ("profile", "device", "quality"):
         if len(getattr(args, option) or []) > 1:
@@ -220,10 +231,10 @@ def main() -> int:
             raise ValueError("output must be a separate regular file")
         validator = args.validator.resolve()
         if args.profile is None:
-            result = cook(args.source, validator, args.layer or "project")
+            result = cook(args.source, validator, args.layer or "project", args.schema_id)
         else:
             result = cook_startup(args.source, args.output, validator, args.profile[0],
-                                  (args.device or [None])[0], (args.quality or [None])[0])
+                                  (args.device or [None])[0], (args.quality or [None])[0], args.schema_id)
         with tempfile.NamedTemporaryFile(dir=args.output.parent, prefix=f".{args.output.name}.", delete=False) as stream:
             temporary = Path(stream.name)
             stream.write(result)

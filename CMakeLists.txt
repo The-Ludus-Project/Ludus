@@ -440,6 +440,8 @@ add_subdirectory(modules/content/scene_cook)
 # Cooked curves/surfaces geometry codecs, loading and publication (G5).
 add_subdirectory(modules/geometry/content)
 add_subdirectory(modules/audio/content)
+# Audio configuration schema and Live mix owner; links Audio and FoundationConfig.
+add_subdirectory(modules/audio/configuration)
 add_subdirectory(modules/runtime/resources)
 
 # Ludus::GameApi is a header-only INTERFACE target defining the gameplay module
@@ -609,6 +611,12 @@ write_basic_package_version_file(
 foreach(_component
     FoundationBase FoundationMemory FoundationHash FoundationIdentity FoundationStrings FoundationContainers FoundationThreading FoundationFilesystem FoundationParsing FoundationParsingJson FoundationMath FoundationGeometry FoundationTime FoundationLogging ShaderCompilerClient ShaderLanguage
     FoundationProfiling FoundationThreadingProfiling FoundationReflection FoundationSerialization FoundationConfig FoundationConfigJson RuntimeConfiguration GamePropertyBinding NetworkCore Input Audio Content ProceduralCore ProceduralEnvironment SceneFormat GeometryFormat GeometryContent RenderGraphFormat SceneSource SequenceFormat StringDictionaryFormat StringDictionary StringDictionaryWriter FoliageFormat FoliagePages AudioContent Resources GameplayWorld GameplayCamera GameplaySequencer Animation GameApi PhysicsFluid PhysicsCollision PhysicsRigid Ui Localization)
+    ludus_sdk_register_component(${_component})
+    ludus_sdk_register_feature(${_component})
+endforeach()
+# Audio configuration and the engine schema catalog (configuration C4), kept
+# apart from the shared list above.
+foreach(_component AudioConfiguration RuntimeConfigurationSchemas)
     ludus_sdk_register_component(${_component})
     ludus_sdk_register_feature(${_component})
 endforeach()

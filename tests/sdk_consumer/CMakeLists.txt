@@ -7,7 +7,7 @@ set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_CXX_EXTENSIONS OFF)
 set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
 
-find_package(Ludus CONFIG REQUIRED COMPONENTS Resources GameplayCamera GameplaySequencer Animation FoundationReflection FoundationSerialization GamePropertyBinding Ui FoundationParsing FoundationParsingJson FoundationConfig FoundationConfigJson RuntimeConfiguration Localization StringDictionary StringDictionaryWriter FoliagePages OPTIONAL_COMPONENTS MissingUiTestComponent)
+find_package(Ludus CONFIG REQUIRED COMPONENTS Resources GameplayCamera GameplaySequencer Animation FoundationReflection FoundationSerialization GamePropertyBinding Ui FoundationParsing FoundationParsingJson FoundationConfig FoundationConfigJson RuntimeConfiguration RuntimeConfigurationSchemas AudioConfiguration Localization StringDictionary StringDictionaryWriter FoliagePages OPTIONAL_COMPONENTS MissingUiTestComponent)
 # Direct CMake exports and CLI/editor project admission must agree. A target can
 # be installed successfully while missing from the identity manifest (#196), so
 # every exported Ludus module must be listed. Bundled third-party libraries are
@@ -79,6 +79,8 @@ if(NOT EMSCRIPTEN)
     target_link_libraries(ludus_sdk_consumer PRIVATE consumer_reflection Ludus::AudioContent Ludus::Content Ludus::FoundationConfigJson Ludus::RuntimeConfiguration Ludus::NetworkCore Ludus::FoundationParsing Ludus::FoundationParsingJson Ludus::Localization Ludus::StringDictionary Ludus::StringDictionaryWriter Ludus::FoliagePages Ludus::FoundationContainers Ludus::FoundationFilesystem Ludus::FoundationStrings Ludus::FoundationBase Ludus::FoundationMath Ludus::FoundationGeometry Ludus::FoundationThreading Ludus::FoundationTime Ludus::FoundationIdentity Ludus::Platform Ludus::GraphicsRhi Ludus::Input Ludus::GameplayWorld Ludus::GameplayCamera Ludus::GameplaySequencer Ludus::Animation Ludus::PhysicsFluid Ludus::PhysicsCollision Ludus::PhysicsRigid Ludus::Ui Ludus::GraphicsRenderer)
     include("${CMAKE_CURRENT_SOURCE_DIR}/geometry.cmake")
     ludus_add_sdk_geometry_exercise(ludus_sdk_consumer)
+    # configuration.cpp exercises the schema catalog and the audio configuration adapters.
+    target_link_libraries(ludus_sdk_consumer PRIVATE Ludus::RuntimeConfigurationSchemas Ludus::AudioConfiguration)
     target_compile_definitions(ludus_sdk_consumer PRIVATE
         EXPECTED_DENOISER=$<BOOL:${Ludus_ENABLE_OIDN}>
         EXPECTED_FLAVOR=${Ludus_BUILD_FLAVOR_ID}

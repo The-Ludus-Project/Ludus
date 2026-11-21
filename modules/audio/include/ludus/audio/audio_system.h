@@ -46,6 +46,12 @@ struct BatchResult final
     ///
     /// Non-Play commands contribute no entry.
     std::span<const VoiceHandle> Voices;
+    /// @brief Acknowledgement ticket: the session's cumulative count of published command records after this
+    /// batch.
+    ///
+    /// Filled only on Status::Ok and zero otherwise; an empty batch publishes nothing and reports zero. The
+    /// renderer has applied the batch once GetAppliedSequence() is at least this value.
+    uint64 Sequence = 0;
 };
 
 /// Browser async teardown progress (design section 10).
@@ -218,6 +224,21 @@ public:
     [[nodiscard]] Status GetGroupInfo(uint32 groupIndex, GroupInfo& out) const noexcept;
     [[nodiscard]] Status GetBusMeter(uint32 busIndex, BusMeter& out) const noexcept;
     void GetSystemSnapshot(SystemSnapshot& out) const noexcept;
+
+    /// @brief Free command records the renderer queue can accept now.
+    ///
+    /// Owner thread only. The renderer only frees records, so the room stays at least this large until the owner
+    /// publishes again; a caller can reserve room for a later batch without allocating. Returns zero unless the
+    /// system is Ready.
+    [[nodiscard]] uint32 GetCommandRoom() const noexcept;
+
+    /// @brief Cumulative count of published command records the renderer has applied at a control boundary.
+    ///
+    /// Compare with BatchResult::Sequence to learn whether a submitted batch reached renderer state; the counter
+    /// advances after that boundary recomputes bus gains, so the audio rendered afterwards uses the batch. Device
+    /// mode reads a value the render thread publishes; Offline mode advances during RenderOffline. Commands still
+    /// queued at shutdown are never acknowledged. Owner thread only.
+    [[nodiscard]] uint64 GetAppliedSequence() const noexcept;
 
     // --- Offline rendering (Offline mode only; design section 5) --------
     /// @brief Run the production render entry serially on the caller thread.
