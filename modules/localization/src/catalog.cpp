@@ -456,6 +456,74 @@ Origin Catalog::getOrigin(uint32 provider) const noexcept
     return provider == 0 ? Origin::Translation : Origin::Fallback;
 }
 
+bool detail::CatalogAccess::IsValidDomain(std::string_view domain) noexcept
+{
+    return IsValidId(domain);
+}
+
+bool detail::CatalogAccess::IsValidLocaleLabel(std::string_view locale) noexcept
+{
+    return IsValidLocale(locale);
+}
+
+namespace
+{
+bool AreArgumentRecordsEqual(const Catalog& left, uint32 leftIndex, const Catalog& right, uint32 rightIndex) noexcept
+{
+    const detail::ArgumentRecord leftArgument = detail::CatalogAccess::GetArgument(left, leftIndex);
+    const detail::ArgumentRecord rightArgument = detail::CatalogAccess::GetArgument(right, rightIndex);
+    if (leftArgument.Name != rightArgument.Name || leftArgument.Type != rightArgument.Type ||
+        leftArgument.Origin != rightArgument.Origin || leftArgument.Unknown != rightArgument.Unknown ||
+        leftArgument.MaxBytes != rightArgument.MaxBytes || leftArgument.Minimum != rightArgument.Minimum ||
+        leftArgument.Maximum != rightArgument.Maximum || leftArgument.ValueCount != rightArgument.ValueCount)
+    {
+        return false;
+    }
+    for (uint32 i = 0; i < leftArgument.ValueCount; ++i)
+    {
+        if (detail::CatalogAccess::GetEnumValue(left, leftArgument.FirstValue + i) !=
+            detail::CatalogAccess::GetEnumValue(right, rightArgument.FirstValue + i))
+        {
+            return false;
+        }
+    }
+    return true;
+}
+} // namespace
+
+bool detail::CatalogAccess::HasSameSchema(const Catalog& left, const Catalog& right) noexcept
+{
+    if (left.mLayout.Version != right.mLayout.Version || left.mLayout.Count != right.mLayout.Count ||
+        left.GetDomain() != right.GetDomain() || left.GetSourceLocale() != right.GetSourceLocale())
+    {
+        return false;
+    }
+    for (uint32 i = 0; i < left.mLayout.Count; ++i)
+    {
+        const usize recordOffset = static_cast<usize>(i) * left.mLayout.RecordBytes;
+        if (left.getSliceAt(left.mLayout.Records + recordOffset) !=
+            right.getSliceAt(right.mLayout.Records + recordOffset))
+        {
+            return false;
+        }
+        const MessageRecord leftMessage = GetMessage(left, i);
+        const MessageRecord rightMessage = GetMessage(right, i);
+        if (leftMessage.ArgumentCount != rightMessage.ArgumentCount)
+        {
+            return false;
+        }
+        for (uint32 j = 0; j < leftMessage.ArgumentCount; ++j)
+        {
+            if (AreArgumentRecordsEqual(left, leftMessage.FirstArgument + j, right, rightMessage.FirstArgument + j) ==
+                false)
+            {
+                return false;
+            }
+        }
+    }
+    return true;
+}
+
 uint32 detail::CatalogAccess::GetVersion(const Catalog& catalog) noexcept
 {
     return catalog.mLayout.Version;

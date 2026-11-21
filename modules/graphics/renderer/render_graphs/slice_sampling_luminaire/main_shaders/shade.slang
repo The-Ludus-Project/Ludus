@@ -135,7 +135,7 @@ float3 SampleLuminaire(SceneContext scene,
     uint luminaireIndex = 0;
     if (luminaireCount > 1)
     {
-        float selectionSample = SampleSceneRandom(launch, LUMINAIRE_SELECTION_DIMENSION);
+        float selectionSample = SampleUniformFloat01(launch, LUMINAIRE_SELECTION_DIMENSION);
         luminaireIndex = min(uint(selectionSample * float(luminaireCount)), luminaireCount - 1);
     }
     LuminaireInfo info = GetLuminaireInfo(scene, luminaireIndex);
@@ -143,18 +143,18 @@ float3 SampleLuminaire(SceneContext scene,
         return float3(0);
     Luminaire luminaire = MakeLuminaire(info);
     LuminaireReceiver receiver = MakeLuminaireReceiver(luminaire, shadingPoint.Hit.PositionWorld);
-    float2 seedSample = float2(SampleSceneRandom(launch, SLICE_SEED_DIMENSION_FIRST),
-                               SampleSceneRandom(launch, SLICE_SEED_DIMENSION_FIRST + 1));
-    float branchSample = SampleSceneRandom(launch, SLICE_BRANCH_DIMENSION);
-    float2 areaSample = float2(SampleSceneRandom(launch, PANEL_AREA_DIMENSION_FIRST),
-                               SampleSceneRandom(launch, PANEL_AREA_DIMENSION_FIRST + 1));
+    float2 seedSample = float2(SampleUniformFloat01(launch, SLICE_SEED_DIMENSION_FIRST),
+                               SampleUniformFloat01(launch, SLICE_SEED_DIMENSION_FIRST + 1));
+    float branchSample = SampleUniformFloat01(launch, SLICE_BRANCH_DIMENSION);
+    float2 areaSample = float2(SampleUniformFloat01(launch, PANEL_AREA_DIMENSION_FIRST),
+                               SampleUniformFloat01(launch, PANEL_AREA_DIMENSION_FIRST + 1));
     LuminaireLightSample light;
     if (estimator == SliceSamplingEstimator::DefensiveSlice)
     {
         light = SampleLuminaireDefensive(luminaire,
                                          receiver,
                                          SLICE_DEFENSIVE_FRACTION,
-                                         SampleSceneRandom(launch, MIXTURE_COMPONENT_DIMENSION),
+                                         SampleUniformFloat01(launch, MIXTURE_COMPONENT_DIMENSION),
                                          seedSample,
                                          branchSample,
                                          areaSample);

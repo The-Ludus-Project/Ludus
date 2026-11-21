@@ -1,9 +1,14 @@
 #include "entropy_fixture.h"
 
 #include <ludus/content/identity_records/migration_manifest.h>
+#include <ludus/foundation/containers/static_array.hpp>
+#include <ludus/foundation/memory/allocation_statistics.hpp>
+#include <ludus/foundation/parsing/json.hpp>
 
 #include <catch2/catch_test_macros.hpp>
 
+#include <span>
+#include <string>
 #include <string_view>
 
 namespace
@@ -40,6 +45,66 @@ constexpr std::string_view ROOM_B = R"({"version": 1, "schema": "game.v1", "enti
     MigrationManifest manifest;
     IdentityRecordError error;
     return GetIdentityRecordStatusName(manifest.Read(json, error));
+}
+// Exercise the encoded byte limit and both semantic count limits in one input.
+[[nodiscard]] Bytes MakeLargestManifest()
+{
+    Bytes input;
+    REQUIRE(input.Resize(MAX_MANIFEST_BYTES) == true);
+    ludus::foundation::parsing::JsonWriter writer(input.Data());
+    CountingEntropy entropy;
+    const auto writeUuid = [&]() {
+        identity::Uuid uuid;
+        REQUIRE(identity::TryGenerateUuidV4(entropy.GetSource(), uuid) == identity::UuidStatus::Success);
+        StaticArray<char, identity::UUID_TEXT_BUFFER_BYTES> text;
+        REQUIRE(identity::FormatUuid(uuid, text.GetData(), text.GetSize()) == identity::UuidStatus::Success);
+        writer.String({text.GetData(), identity::UUID_TEXT_LENGTH});
+    };
+    const auto writeLabel = [&](usize index) {
+        constexpr usize RADIX = 10;
+        constexpr usize DIGITS = 3;
+        StaticArray<char, DIGITS> text;
+        for (usize position = DIGITS; position > 0; --position)
+        {
+            text[position - 1] = static_cast<char>('0' + index % RADIX);
+            index /= RADIX;
+        }
+        writer.String({text.GetData(), text.GetSize()});
+    };
+    writer.Raw(R"({"format":"ludus.identity-migration","version":1,"documents":[)");
+    for (usize i = 0; i < MAX_MANIFEST_DOCUMENTS; ++i)
+    {
+        if (i != 0)
+        {
+            writer.Raw(",");
+        }
+        writer.Raw(R"({"path":)");
+        writeLabel(i);
+        writer.Raw(R"(,"document":)");
+        writeUuid();
+        writer.Raw(R"(,"objects":[)");
+        for (usize j = 0; j < MAX_DOCUMENT_OBJECTS; ++j)
+        {
+            if (j != 0)
+            {
+                writer.Raw(",");
+            }
+            writer.Raw(R"({"legacy_id":)");
+            writeLabel(j);
+            writer.Raw(R"(,"object":)");
+            writeUuid();
+            writer.Raw("}");
+        }
+        writer.Raw("]}");
+    }
+    writer.Raw("]}");
+    std::span<const uint8> encoded;
+    REQUIRE(writer.Finish(encoded) == ludus::foundation::parsing::ParseStatus::Ok);
+    for (uint8& byte : input.Data().subspan(encoded.size()))
+    {
+        byte = ' ';
+    }
+    return input;
 }
 } // namespace
 
@@ -210,6 +275,110 @@ TEST_CASE("Manifest reading enforces the versioned schema and identity rules", "
     CHECK(manifest.Read("{}", error) == IdentityRecordStatus::Malformed);
     CHECK(error.Message.View().empty() == false);
     CHECK(manifest.GetDocuments().size() == 1);
+}
+
+TEST_CASE("Manifest read reports precise locations and keeps the accepted tables", "[identity][manifest]")
+{
+    constexpr std::string_view REPLACEMENT = R"({"format":"ludus.identity-migration","version":1,"documents":[
+      {"path":"different.world.json","document":"11111111-1111-4111-8111-111111111111","objects":[
+        {"legacy_id":"alpha","object":"22222222-2222-4222-8222-222222222222"},
+        {"legacy_id":"beta","object":"33333333-3333-4333-8333-333333333333"}]}]})";
+    CountingEntropy entropy;
+    MigrationManifest manifest = Generate(entropy);
+    const MigrationDocument* accepted = manifest.GetDocuments().data();
+    const MigrationObject* acceptedObjects = manifest.GetObjects(*accepted).data();
+    Bytes before;
+    REQUIRE(manifest.Write(before) == IdentityRecordStatus::Success);
+    IdentityRecordError error;
+    const auto checkFailure = [&](std::string_view json, IdentityRecordStatus status, std::string_view location) {
+        REQUIRE(manifest.Read(json, error) == status);
+        CHECK(error.Status == status);
+        CHECK(error.Message.View().ends_with(location) == true);
+        REQUIRE(manifest.GetDocuments().data() == accepted);
+        CHECK(manifest.GetObjects(*accepted).data() == acceptedObjects);
+        Bytes after;
+        REQUIRE(manifest.Write(after) == IdentityRecordStatus::Success);
+        CHECK(after.String() == before.String());
+    };
+    checkFailure("{", IdentityRecordStatus::Malformed, "byte 1");
+    checkFailure("{}", IdentityRecordStatus::Malformed, "$.format");
+    const auto replace =
+        [&](std::string_view from, std::string_view to, IdentityRecordStatus status, std::string_view location) {
+            const usize offset = REPLACEMENT.find(from);
+            REQUIRE(offset != std::string_view::npos);
+            std::string replacement(REPLACEMENT);
+            replacement.replace(offset, from.size(), to);
+            checkFailure(replacement, status, location);
+        };
+    replace("different.world.json", "../outside", IdentityRecordStatus::InvalidLegacyId, "$.documents[0].path");
+    replace(R"json("beta")json", "false", IdentityRecordStatus::Malformed, "$.documents[0].objects[1].legacy_id");
+    replace("beta", "alpha", IdentityRecordStatus::InvalidLegacyId, "$.documents[0].objects[1].legacy_id");
+    replace("33333333-3333-4333-8333-333333333333",
+            "11111111-1111-4111-8111-111111111111",
+            IdentityRecordStatus::DuplicateIdentity,
+            "$.documents[0].objects[1].object");
+
+    // Copy decoded strings from mutable input and destroy it after publication.
+    {
+        std::string input(REPLACEMENT);
+        REQUIRE(manifest.Read(input, error) == IdentityRecordStatus::Success);
+        input.assign(input.size(), '_');
+    }
+    REQUIRE(manifest.GetDocuments().size() == 1);
+    CHECK(manifest.GetDocuments()[0].Path.View() == "different.world.json");
+    CHECK(manifest.GetObjects(manifest.GetDocuments()[0])[1].LegacyId.View() == "beta");
+    CHECK(error.Status == IdentityRecordStatus::Success);
+    CHECK(error.Message.View().empty() == true);
+}
+
+TEST_CASE("Maximum manifest decode measures and enforces peak requested bytes", "[identity][manifest]")
+{
+    const Bytes input = MakeLargestManifest();
+    constexpr usize OBJECT_COUNT = MAX_MANIFEST_DOCUMENTS * MAX_DOCUMENT_OBJECTS;
+    constexpr usize TABLE_BYTES =
+        MAX_MANIFEST_DOCUMENTS * sizeof(MigrationDocument) + OBJECT_COUNT * sizeof(MigrationObject);
+    MigrationManifest manifest;
+    IdentityRecordError error;
+    usize peakBytes = 0;
+    const AllocationDomain& system = GetSystemAllocationDomain();
+    const AllocationDomain& containers = GetContainerAllocationDomain();
+    const AllocationStatistics systemBefore = GetAllocationStatistics(system);
+    const AllocationStatistics containersBefore = GetAllocationStatistics(containers);
+    const IdentityRecordStatus decoded = manifest.Read(input.String(), error, peakBytes);
+    const AllocationStatistics systemAfter = GetAllocationStatistics(system);
+    const AllocationStatistics containersAfter = GetAllocationStatistics(containers);
+    REQUIRE(decoded == IdentityRecordStatus::Success);
+    CHECK(systemAfter.AllocationCount - systemBefore.AllocationCount == 1);
+    CHECK(systemAfter.LiveRequestedBytes == systemBefore.LiveRequestedBytes);
+    CHECK(containersAfter.AllocationCount - containersBefore.AllocationCount == 3);
+    CHECK(containersAfter.LiveRequestedBytes - containersBefore.LiveRequestedBytes == TABLE_BYTES);
+    const uint64 parserBytes = systemAfter.AllocatedBytes - systemBefore.AllocatedBytes;
+    const uint64 indexedBytes = containersAfter.AllocatedBytes - containersBefore.AllocatedBytes;
+    const uint64 parsingPeak = parserBytes + TABLE_BYTES;
+    CAPTURE(peakBytes, parserBytes, indexedBytes);
+    CHECK(peakBytes == (parsingPeak > indexedBytes ? parsingPeak : indexedBytes));
+    CHECK(peakBytes <= MAX_MANIFEST_DECODE_BYTES);
+    REQUIRE(manifest.GetDocuments().size() == MAX_MANIFEST_DOCUMENTS);
+    const MigrationDocument* accepted = manifest.GetDocuments().data();
+    const MigrationObject* acceptedObjects = manifest.GetObjects(*accepted).data();
+    CHECK(manifest.GetObjects(manifest.GetDocuments().back()).size() == MAX_DOCUMENT_OBJECTS);
+
+    const usize exactBudget = peakBytes;
+    CHECK(manifest.Read(input.String(), error, peakBytes, 0) == IdentityRecordStatus::Limit);
+    CHECK(peakBytes == 0);
+    CHECK(error.Message.View().ends_with('$') == true);
+    CHECK(manifest.Read(input.String(), error, peakBytes, exactBudget - 1) == IdentityRecordStatus::Limit);
+    CHECK(peakBytes < exactBudget);
+    CHECK(error.Message.View().ends_with("$.documents") == true);
+    REQUIRE(manifest.GetDocuments().data() == accepted);
+    CHECK(manifest.GetObjects(*accepted).data() == acceptedObjects);
+    CHECK(manifest.GetDocuments().back().Path.View() == "063");
+    CHECK(manifest.GetObjects(manifest.GetDocuments().back()).back().LegacyId.View() == "127");
+    CHECK(GetAllocationStatistics(system).LiveRequestedBytes == systemAfter.LiveRequestedBytes);
+    CHECK(GetAllocationStatistics(containers).LiveRequestedBytes == containersAfter.LiveRequestedBytes);
+
+    REQUIRE(manifest.Read(input.String(), error, peakBytes, exactBudget) == IdentityRecordStatus::Success);
+    CHECK(peakBytes == exactBudget);
 }
 
 TEST_CASE("Legacy IDs follow the Editor World ID rule", "[identity][manifest]")

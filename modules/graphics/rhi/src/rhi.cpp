@@ -39,8 +39,6 @@ struct SessionState final
     /// Callback token of the current startup attempt; zero when none is live.
     uint32 Token = 0;
     ludus::foundation::uint64 DeviceOwner = 0;
-    bool IsLegacy = false;
-    bool IsRendering = false;
     bool IsFrameOpen = false;
     bool IsRayProfileRequested = false;
     bool IsDrawn = false;
@@ -101,7 +99,7 @@ void SetDeviceOwner(ludus::foundation::uint64 owner) noexcept
 }
 bool SessionBusy() noexcept
 {
-    return GetSession().IsLegacy || GetSession().Startup.State != StartupState::Idle || NativeInteropBusy();
+    return GetSession().Startup.State != StartupState::Idle || NativeInteropBusy();
 }
 void SetFallback(FallbackHandler handler) noexcept
 {
@@ -508,43 +506,6 @@ FrameStatus internal::EndFrameStatus() noexcept
                                       GetSession().Startup.State == StartupState::Ready);
     return result;
 }
-bool Initialize(const ApplicationInfo& app) noexcept
-{
-    internal::BindOwnerSlot(0);
-    if (internal::IsAnySessionBusy() == true)
-    {
-        return false;
-    }
-    GetSession().IsLegacy = backend::Initialize(app);
-    return GetSession().IsLegacy;
-}
-bool ConnectWindow(const WindowInfo& window) noexcept
-{
-    internal::BindOwnerSlot(0);
-    return GetSession().IsLegacy && backend::ConnectWindow(window);
-}
-bool InitializeRendering() noexcept
-{
-    internal::BindOwnerSlot(0);
-    if (GetSession().IsLegacy == false)
-    {
-        return false;
-    }
-    if (GetSession().IsRendering == false)
-    {
-        GetSession().IsRendering = backend::InitializeRendering();
-    }
-    return GetSession().IsRendering;
-}
-void ShutdownRendering() noexcept
-{
-    internal::BindOwnerSlot(0);
-    if (GetSession().IsLegacy && GetSession().IsRendering)
-    {
-        backend::ShutdownRendering();
-    }
-    GetSession().IsRendering = false;
-}
 void internal::Shutdown() noexcept
 {
     // Stop or abandon a capture before any native object it borrows is released.
@@ -568,8 +529,6 @@ void internal::Shutdown() noexcept
         internal::FinishNativeInteropShutdown();
     }
     GetSession().Startup = {};
-    GetSession().IsLegacy = false;
-    GetSession().IsRendering = false;
     GetSession().IsFrameOpen = false;
 }
 namespace internal
@@ -583,18 +542,6 @@ void FinishNativeInteropShutdown() noexcept
     NativeInteropShutdownFinished();
 }
 } // namespace internal
-bool BeginFrame() noexcept
-{
-    internal::BindOwnerSlot(0);
-    return GetSession().IsLegacy ? (GetSession().IsRendering && backend::BeginFrame())
-                                 : BeginFrameStatus() == FrameStatus::Ready;
-}
-bool EndFrame() noexcept
-{
-    internal::BindOwnerSlot(0);
-    return GetSession().IsLegacy ? (GetSession().IsRendering && backend::EndFrame())
-                                 : EndFrameStatus() == FrameStatus::Ready;
-}
 
 namespace internal
 {

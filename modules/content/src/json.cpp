@@ -50,6 +50,10 @@ bool JsonValue::Array() const noexcept
 {
     return Parsed(*this).Array();
 }
+bool JsonValue::Object() const noexcept
+{
+    return Parsed(*this).Object();
+}
 bool JsonValue::String(std::string_view& output) const noexcept
 {
     return Parsed(*this).String(output);
@@ -70,6 +74,7 @@ bool JsonValue::Fields(std::initializer_list<const char*> required) const noexce
 {
     return Parsed(*this).Fields(required);
 }
+JsonDocument::JsonDocument(const AllocationDomain& domain) noexcept : mDocument(domain) {}
 JsonDocument::~JsonDocument() noexcept = default;
 Status JsonDocument::Read(std::string_view input, Diagnostic& diagnostic) noexcept
 {

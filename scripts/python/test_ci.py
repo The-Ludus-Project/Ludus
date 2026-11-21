@@ -17,8 +17,14 @@ import threading
 import unittest
 from unittest.mock import patch
 
+import ci_checks
 import engine
 import web_build
+
+
+def load_macos_native_plan() -> list:
+    """The macOS native batch job's checks (scripts/ci/macos_native.py), in run order."""
+    return ci_checks.load_plan(Path(__file__).resolve().parents[2] / "scripts/ci/macos_native.py")
 
 LLVM_MAJOR = engine.pinned_llvm_major(engine.repo_root())
 CLANG_TIDY = engine.pinned_llvm_tool(engine.repo_root(), "clang-tidy")
@@ -323,6 +329,8 @@ class ToolchainBootstrapTests(unittest.TestCase):
         root = Path(__file__).resolve().parents[2]
         workflow = (root / ".github/workflows/ci.yml").read_text()
         jobs = re.split(r"(?m)^  [a-z][a-z0-9_-]*:\n", workflow)[1:]
+        # The macOS native job runs its commands from its check plan.
+        jobs.append("runs-on: macos-15\n" + (root / "scripts/ci/macos_native.py").read_text())
         checked = 0
         for job in jobs:
             if re.search(r"runs-on: macos-", job) and "-DCMAKE_CXX_COMPILER=" in job:
@@ -357,6 +365,9 @@ class ToolchainBootstrapTests(unittest.TestCase):
                         (checkout / "config").mkdir()
                         (checkout / "config/tool_versions.json").write_text(json.dumps(
                             {"minimum": {"clang": f"{major}.1.3"}}))
+                        installer = checkout / ".github/actions/apt-install/apt-install.sh"
+                        installer.parent.mkdir(parents=True)
+                        shutil.copy2(root / ".github/actions/apt-install/apt-install.sh", installer)
                         binaries = checkout / "bin"
                         binaries.mkdir()
                         (binaries / "python3").symlink_to(sys.executable)
@@ -376,7 +387,9 @@ class ToolchainBootstrapTests(unittest.TestCase):
                         subprocess.run(["/bin/bash", "-e", "-c", script], cwd=checkout, env=environment,
                                        check=True, capture_output=True, text=True)
                         commands = log.read_text().splitlines()
-                        installed = next(line.split() for line in commands if line.startswith("apt-get install "))
+                        # The bounded installer downloads first, then installs the cached archives.
+                        installed = next(line.split() for line in commands
+                                         if "apt-get install --no-download " in line)
                         for package in packages:
                             self.assertIn(f"{package}-{major}", installed)
                             self.assertNotIn(f"{package}-{23 if major == 18 else 18}", installed)
@@ -1050,7 +1063,11 @@ class AnalysisTests(unittest.TestCase):
                 # Read the job until the next two-space job key, preserving step indentation.
                 section = re.split(r"\n  [a-z][a-z0-9-]*:\n", workflow.split(f"\n  {job}:\n", 1)[1], 1)[0]
                 self.assertIn(f'LUDUS_TIDY_JOBS: "{workers}"', section)
-                command = section.split(f"- name: {step}\n", 1)[1].split("\n      - ", 1)[0]
+                if job == "macos-compile":
+                    # This job's commands live in its candidate-owned check plan.
+                    command = next(check.run for check in load_macos_native_plan() if check.title == step)
+                else:
+                    command = section.split(f"- name: {step}\n", 1)[1].split("\n      - ", 1)[0]
                 self.assertIn(f"./scripts/check {preset} --tidy-sources", command)
                 self.assertNotIn("out/host-tools/bin/clang-tidy", command)
 
@@ -1348,40 +1365,135 @@ class BatchWorkflowDefinitionTests(unittest.TestCase):
 
 
 class MacosAnalysisOrderTests(unittest.TestCase):
-    """The macOS job analyzes the development build before its long test steps.
+    """The macOS job analyzes the development build before its long test checks.
 
     Batch 44661689378 reached its two-second Metal analysis after 51 minutes of
     tests, so a clang-tidy error failed the batch nearly an hour later than needed.
     """
 
+    def test_development_analysis_precedes_the_first_test_check(self):
+        checks = load_macos_native_plan()
+        first_test = next(i for i, check in enumerate(checks) if "ctest " in check.run)
+        # Analyze checks that read only the development build; the Debug helper's analysis
+        # follows the check that configures macos-clang-debug.
+        analyses = [(i, check.title) for i, check in enumerate(checks) if check.title.startswith("Analyze ")
+                    and "macos-clang-debug" not in check.run]
+        self.assertGreaterEqual(len(analyses), 6)
+        late = [title for i, title in analyses if i > first_test]
+        self.assertEqual(late, [], "run development-build analysis before the macOS test checks")
+
+
+class BoundedAptInstallTests(unittest.TestCase):
+    """Workflow package installs go through the bounded, retrying installer.
+
+    A stalled mirror held the required host-tooling check of #2059 for 37 minutes
+    inside a direct apt-get install; without a job timeout it would have waited 6 hours.
+    """
+
+    ROOT = Path(__file__).resolve().parents[2]
+    INSTALLER = ".github/actions/apt-install/apt-install.sh"
+
+    def test_workflows_do_not_call_apt_get_directly(self):
+        direct = re.compile(r"\bapt-get\b[^\n]*\b(?:install|update)\b")
+        offending = []
+        for path in sorted((self.ROOT / ".github/workflows").glob("*.yml")):
+            for number, line in enumerate(path.read_text(encoding="utf-8").splitlines(), start=1):
+                if direct.search(line) is not None:
+                    offending.append(f"{path.name}:{number}: {line.strip()}")
+        self.assertEqual(offending, [], f"install packages with bash {self.INSTALLER} <packages>")
+
+    def test_installer_bounds_every_network_attempt(self):
+        text = (self.ROOT / self.INSTALLER).read_text(encoding="utf-8")
+        self.assertIn("timeout --signal=TERM --kill-after=30s", text)
+        self.assertIn("install --download-only", text)
+        self.assertIn("apt-get install --no-download", text)
+
+
+class MacosCrashReportTests(unittest.TestCase):
+    """Failed macOS test jobs keep their crash reports.
+
+    Batch 44677372848 lost ludus_editor_tests_2 to SIGTRAP with no stderr, so the log
+    could not name the trap; only a macOS crash report records it.
+    """
+
     ROOT = Path(__file__).resolve().parents[2]
 
-    def macos_steps(self) -> list[tuple[str, str]]:
-        lines = (self.ROOT / ".github/workflows/ci.yml").read_text(encoding="utf-8").splitlines()
-        start = lines.index("  macos-compile:")
-        end = next(i for i in range(start + 1, len(lines)) if re.match(r"^  [A-Za-z0-9_-]+:\s*$", lines[i]))
-        steps: list[list[str]] = []
-        for line in lines[start:end]:
-            if line.startswith("      - "):
-                steps.append([])
-            if steps:
-                steps[-1].append(line)
-        named = []
-        for step in steps:
-            name = next((m.group(1) for line in step if (m := re.match(r"\s+(?:- )?name: (.*)", line))), "")
-            named.append((name.strip(), "\n".join(step)))
-        return named
+    def test_macos_test_jobs_upload_crash_reports_on_failure(self):
+        workflow = (self.ROOT / ".github/workflows/ci.yml").read_text(encoding="utf-8")
+        for job in ("macos-compile", "macos-sanitizers"):
+            with self.subTest(job=job):
+                body = workflow.split(f"\n  {job}:\n", 1)[1]
+                body = re.split(r"\n  [A-Za-z0-9_-]+:\n", body, maxsplit=1)[0]
+                preserve = body.split("      - name: Preserve macOS crash reports\n", 1)
+                self.assertEqual(len(preserve), 2, "collect crash reports in this job")
+                self.assertTrue(preserve[1].startswith("        if: failure()\n"))
+                self.assertIn("Library/Logs/DiagnosticReports", preserve[1])
+                upload = body.split("      - name: Upload macOS crash reports\n", 1)
+                self.assertEqual(len(upload), 2)
+                self.assertTrue(upload[1].startswith("        if: failure()\n"))
 
-    def test_development_analysis_precedes_the_first_test_step(self):
-        steps = self.macos_steps()
-        first_test = next(i for i, (_, body) in enumerate(steps) if "ctest " in body)
-        # Analyze steps that read only the development build; the Debug helper's analysis
-        # follows the step that configures macos-clang-debug.
-        analyses = [(i, name) for i, (name, body) in enumerate(steps) if name.startswith("Analyze ")
-                    and "macos-clang-debug" not in body]
-        self.assertGreaterEqual(len(analyses), 6)
-        late = [name for i, name in analyses if i > first_test]
-        self.assertEqual(late, [], "run development-build analysis before the macOS test steps")
+
+class BatchJobCheckPlanTests(unittest.TestCase):
+    """The macOS native batch job keeps its commands in a candidate-owned check plan.
+
+    Batches run main's workflow definitions, and a failed step skipped every later
+    one: for weeks each batch reached one more macOS step, as hidden failures queued
+    behind the last. The runner reports every failure of one run.
+    """
+
+    ROOT = Path(__file__).resolve().parents[2]
+
+    def test_macos_native_job_runs_only_its_plan(self):
+        workflow = (self.ROOT / ".github/workflows/ci.yml").read_text(encoding="utf-8")
+        job = re.split(r"\n  [A-Za-z0-9_-]+:\n", workflow.split("\n  macos-compile:\n", 1)[1], maxsplit=1)[0]
+        steps = re.split(r"\n      - ", job.split("\n    steps:\n", 1)[1])
+        # Besides setup and the plan runner, only artifact, cache and report steps may run here.
+        commands = [step for step in steps if "\n        run:" in step or step.startswith("name:") and " run:" in step]
+        runners = [step for step in commands if "scripts/python/ci_checks.py scripts/ci/macos_native.py" in step]
+        self.assertEqual(len(runners), 1)
+        others = [step.splitlines()[0] for step in commands if step not in runners
+                  and "if: always()" not in step and "if: failure()" not in step]
+        self.assertEqual(others, [], "put macOS native commands in scripts/ci/macos_native.py")
+        self.assertIn("steps.checks.outputs.build == 'success'", job)
+
+    def test_every_check_follows_the_build(self):
+        checks = load_macos_native_plan()
+        self.assertEqual(checks[0].id, "build")
+        reaches = {"build"}
+        for check in checks[1:]:
+            with self.subTest(check=check.id):
+                self.assertTrue(set(check.needs) & reaches, "a check that does not need the build runs without one")
+                reaches.add(check.id)
+
+
+class MacosReferencePlanTests(unittest.TestCase):
+    """The CPU/GPU reference oracle cases run in their own macOS job, exactly once."""
+
+    ROOT = Path(__file__).resolve().parents[2]
+    PREFIX = "'^ludus_renderer_reference: '"
+
+    def test_reference_cases_move_from_the_native_plan_to_the_reference_plan(self):
+        native = {check.id: check for check in load_macos_native_plan()}
+        reference = {check.id: check for check in
+                     ci_checks.load_plan(self.ROOT / "scripts/ci/macos_reference.py")}
+        self.assertIn(f"--exclude-regex {self.PREFIX}", native["native-tests"].run)
+        self.assertIn(f"--tests-regex {self.PREFIX}", reference["reference-tests"].run)
+        self.assertEqual(list(reference)[0], "build")
+        self.assertIn("--target ludus_renderer_render_tests", reference["build"].run)
+        # Same configure as the native job, so both use one compiler cache.
+        configure = native["build"].run.split("out/host-tools/venv/bin/cmake --build", 1)[0]
+        self.assertTrue(reference["build"].run.startswith(configure))
+
+    def test_reference_job_runs_its_plan_and_never_saves_the_shared_cache(self):
+        workflow = (self.ROOT / ".github/workflows/ci.yml").read_text(encoding="utf-8")
+        job = re.split(r"\n  [A-Za-z0-9_-]+:\n", workflow.split("\n  macos-reference:\n", 1)[1], maxsplit=1)[0]
+        self.assertIn("scripts/python/ci_checks.py scripts/ci/macos_reference.py", job)
+        self.assertIn("cache-variant: native", job)
+        self.assertNotIn("actions/cache/save", job)
+        gate = re.split(r"\n  [A-Za-z0-9_-]+:\n", workflow.split("\n  linux:\n", 1)[1], maxsplit=1)[0]
+        needs = re.search(r"(?m)^    needs: \[(.*)\]$", gate)
+        self.assertIsNotNone(needs)
+        self.assertIn("macos-reference", [name.strip() for name in needs.group(1).split(",")])
 
 
 if __name__ == "__main__":

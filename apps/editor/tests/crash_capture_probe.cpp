@@ -2,10 +2,12 @@
 #include "internal/crash_capture.h"
 #include "internal/crash_reporting.h"
 
+#include <ludus/foundation/base/assert.hpp>
 #include <ludus/foundation/base/compiler.h>
 #include <ludus/foundation/base/types.h>
 
 #include <QApplication>
+#include <QByteArray>
 #include <QCoreApplication>
 #include <QFile>
 #include <QIODevice>
@@ -23,6 +25,21 @@ namespace
 LUDUS_NOINLINE void TriggerCrashFromCaller()
 {
     std::abort();
+}
+
+LUDUS_NOINLINE void TriggerFatalAssertionFromCaller()
+{
+    // Verify the callback ran. A native assertion report requires the separate
+    // emergency socket, which launch fixtures leave unconfigured.
+    QFile marker;
+    const QByteArray message = QByteArrayLiteral("triggering fatal assertion fixture\n");
+    if (marker.open(2, QIODevice::WriteOnly | QIODevice::Unbuffered) == false ||
+        marker.write(message) != message.size())
+    {
+        QCoreApplication::exit(1);
+        return;
+    }
+    LUDUS_REQUIRE(false, "crash capture assertion fixture");
 }
 
 int WriteCounts(const char* database)
@@ -64,6 +81,10 @@ int main(int argc, char** argv)
         QSettings settings(temporary.filePath(QStringLiteral("settings.ini")), QSettings::IniFormat);
         const QString original = QStringLiteral("https://abc@first.example.test/42");
         const QString different = QStringLiteral("https://abc@second.example.test/42");
+        if (ludus::editor::HasEditorCrashUploadConsent(settings, original) == true)
+        {
+            return 1;
+        }
         settings.setValue(QStringLiteral("crashReporting/automaticSubmission"), true);
         if (ludus::editor::HasEditorCrashUploadConsent(settings, original) == true)
         {
@@ -78,9 +99,14 @@ int main(int argc, char** argv)
         settings.setValue(QStringLiteral("crashReporting/automaticSubmission"), false);
         return ludus::editor::HasEditorCrashUploadConsent(settings, original) == false ? 0 : 1;
     }
-    if (mode == QStringLiteral("production"))
+    constexpr int PRODUCTION_ARGUMENT_COUNT = 3;
+    if (mode == QStringLiteral("production") && argc == PRODUCTION_ARGUMENT_COUNT)
     {
-        ludus::editor::InitializeEditorCrashReporting();
+        // Use the actual startup initializer with a fresh test-only preferences store
+        // and a loopback destination. Native macOS preferences may outlive HOME changes.
+        QSettings settings(QString::fromLocal8Bit(argv[2]), QSettings::IniFormat);
+        settings.setValue(QStringLiteral("crashReporting/dsn"), QStringLiteral("https://fixture@127.0.0.1/42"));
+        ludus::editor::InitializeEditorCrashReporting(settings);
         QApplication application(argc, argv);
         QTimer::singleShot(0, &application, TriggerCrashFromCaller);
         return application.exec();
@@ -113,6 +139,7 @@ int main(int argc, char** argv)
     }
     const bool canUpload = QString::fromLocal8Bit(argv[5]) == QStringLiteral("yes");
     const bool shouldCrash = QString::fromLocal8Bit(argv[6]) == QStringLiteral("crash");
+    const bool shouldFailAssertion = QString::fromLocal8Bit(argv[6]) == QStringLiteral("assert");
     const bool shouldRevoke = QString::fromLocal8Bit(argv[6]) == QStringLiteral("revoke");
     const bool shouldEnable = QString::fromLocal8Bit(argv[6]) == QStringLiteral("enable");
     if (ludus::editor::StartCrashCapture(argv[2],
@@ -138,7 +165,11 @@ int main(int argc, char** argv)
             return 2;
         }
     }
-    if (shouldCrash == true || shouldRevoke == true)
+    if (shouldFailAssertion == true)
+    {
+        QTimer::singleShot(0, &application, TriggerFatalAssertionFromCaller);
+    }
+    else if (shouldCrash == true || shouldRevoke == true)
     {
         QTimer::singleShot(0, &application, TriggerCrashFromCaller);
     }

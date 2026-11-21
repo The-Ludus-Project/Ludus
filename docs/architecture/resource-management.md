@@ -1027,6 +1027,41 @@ still has the existing bounded encoded-input limitation until a separate streami
 implementation proves otherwise. Optional native accelerators are capability
 choices; unsupported platforms use the same semantic pipeline with simpler I/O.
 
+### Native texture streaming qualification
+
+The installed-SDK raster project at
+[`tests/sdk_consumer/raster`](../../tests/sdk_consumer/raster/CMakeLists.txt)
+contains the `ludus_sdk_mip_streaming_consumer` target. Configure it against a
+native Ludus SDK and its pinned shader tools, then build and run the focused test.
+
+```sh
+cmake --build <raster-sdk-build> --target ludus_sdk_mip_streaming_consumer
+ctest --test-dir <raster-sdk-build> -V -R '^ludus_sdk_mip_streaming_consumer$'
+```
+
+The consumer draws the same textured plane from three fixed camera positions.
+It binds original mip 2 alone, then publishes a new view exposing original mips
+1 and 2 once the admitted uploads have completed. The RHI excludes mutation of
+allocations retained by bindings, so refinement prepares a separate allocation.
+The old view remains usable while that allocation is prepared, including when
+an obsolete transfer is cancelled or a request exceeds the staging or logical
+resource budget. A submitted coarse draw retains the view and backing even
+after the public handles are released.
+
+The shader subtracts the published base mip from the original LOD and returns
+the GPU's reported view level count alongside the scene-linear red and green
+sample. Probes at LOD 1.25, 1.5 and 2.25 check coarse fallback, quarter and
+half blends, and clamping past the coarsest mip. Allow one RGBA8 code of
+rounding error in the blended channels. The old draw's readback must still
+match coarse coverage after the new view renders.
+
+The executable emits monotonic CPU event traces for the first device and
+pipeline use and an immediate repeat on the same device and pipeline, with
+fresh texture allocations on both passes. The traces include readiness and
+publication, sampled LOD, payload bytes, logical storage and detached records.
+These timings describe the synthetic GPU workload with CPU polling and readback.
+Asset I/O, disk cache state and physical VRAM residency are outside the fixture.
+
 ## Stop and failure behavior
 
 Stopping closes normal admission, closes child scopes, cancels unneeded operations,

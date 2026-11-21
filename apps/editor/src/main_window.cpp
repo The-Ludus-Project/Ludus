@@ -20,6 +20,7 @@
 #include "internal/project_creation_dialog.h"
 #include "internal/project_explorer.h"
 #include "internal/project_rendering_settings.h"
+#include "internal/project_save_conflict_dialog.h"
 #include "internal/project_setup_dialog.h"
 #include "internal/recent_project_delegate.h"
 #include "internal/renderer_workspace.h"
@@ -218,6 +219,39 @@ MainWindow::MainWindow(EditorController* controller, QWidget* parent, const QStr
                 matches = true;
             }
         }
+#if defined(Q_OS_MACOS)
+        if (World_->Document().HasBuiltInSchema() == true)
+        {
+            ToolLaunch launch;
+            QString error;
+            launch.EditorExecutable = QCoreApplication::applicationFilePath();
+            launch.BuiltInPlayer =
+                QDir(QCoreApplication::applicationDirPath()).filePath(QStringLiteral("ludus_first_person_player"));
+            if (Controller_->CanPlayWorld() == false)
+            {
+                StatusLabel_->setText(QStringLiteral("Finish the active job and save Project settings before Play."));
+                return;
+            }
+            if (QFileInfo(launch.BuiltInPlayer).isExecutable() == false)
+            {
+                StatusLabel_->setText(QStringLiteral("Install an Editor build with the Metal first-person player."));
+                return;
+            }
+            if (World_->GetBuiltInPlaySelection(launch.WorldPath, launch.SpawnEntity, error) == false)
+            {
+                StatusLabel_->setText(error);
+                return;
+            }
+            const PlayWindow window = World_->PreparePlay(mode, launch.HostedWindowAddress);
+            if (window == PlayWindow::Unavailable)
+            {
+                StatusLabel_->setText(World_->GetPlayUnavailableText());
+                return;
+            }
+            launchAfterPreview(LaunchAction::BuiltInWorld, {}, false, launch.HostedWindowAddress, launch);
+            return;
+        }
+#endif
         if (state.Saved.Target != QStringLiteral("ludus_world_demo") || matches == false)
         {
             StatusLabel_->setText(
@@ -767,7 +801,13 @@ void MainWindow::BuildMenus()
 #if defined(LUDUS_EDITOR_CRASH_CAPTURE)
     QAction* crashReporting = helpMenu->addAction(QStringLiteral("Crash &Reporting..."));
     crashReporting->setObjectName(QStringLiteral("help.crashReporting"));
-    connect(crashReporting, &QAction::triggered, this, [this]() { ShowEditorCrashReporting(this); });
+    connect(crashReporting, &QAction::triggered, this, [this]() {
+        if (ShowEditorCrashReporting(this) == true)
+        {
+            mShouldRestart = true;
+            close();
+        }
+    });
 #endif
     auto* shortcuts = helpMenu->addAction(QStringLiteral("Keyboard Shortcuts..."));
     shortcuts->setObjectName(QStringLiteral("keyboardShortcutsAction"));
@@ -801,10 +841,13 @@ void MainWindow::BuildMenus()
 void MainWindow::launchAfterPreview(LaunchAction action,
                                     const QString& debugger,
                                     bool shouldSetUpDebugger,
-                                    const QString& hostedWindowAddress)
+                                    const QString& hostedWindowAddress,
+                                    const ToolLaunch& worldLaunch)
 {
-    if (AudioLaunchPending_ || AudioClosing_ || Scripts_->ConfirmDiscard() == false ||
-        World_->ConfirmDiscard() == false || Renderer_->ConfirmDiscard() == false)
+    if (AudioLaunchPending_ || AudioClosing_ ||
+        (action != LaunchAction::BuiltInWorld &&
+         (Scripts_->ConfirmDiscard() == false || World_->ConfirmDiscard() == false ||
+          Renderer_->ConfirmDiscard() == false)))
     {
         World_->EndPlayInViewport();
         return;
@@ -830,7 +873,7 @@ void MainWindow::launchAfterPreview(LaunchAction action,
     connect(timer,
             &QTimer::timeout,
             this,
-            [this, timer, epoch, digest, action, debugger, shouldSetUpDebugger, hostedWindowAddress]() {
+            [this, timer, epoch, digest, action, debugger, shouldSetUpDebugger, hostedWindowAddress, worldLaunch]() {
                 if (Audio_->PreviewFinished() == false)
                 {
                     return;
@@ -857,6 +900,9 @@ void MainWindow::launchAfterPreview(LaunchAction action,
                 {
                     case LaunchAction::Run:
                         Controller_->BuildRun(hostedWindowAddress);
+                        break;
+                    case LaunchAction::BuiltInWorld:
+                        Controller_->PlayWorld(worldLaunch);
                         break;
                     case LaunchAction::Play:
                         Controller_->Play();
@@ -1049,7 +1095,19 @@ bool MainWindow::SaveProjectSettings()
         StatusLabel_->setText(QStringLiteral("The renderer could not be saved. Resolution edits remain in its draft."));
         return false;
     }
-    Controller_->Save();
+    const ResultCode result = Controller_->Save();
+    if (result == ResultCode::Conflict)
+    {
+        const foundation::uint64 epoch = state.ProjectEpoch;
+        const foundation::uint64 revision = Controller_->ProjectRevision();
+        const LoadOutcome disk = Controller_->Store().Load(state.DescriptorPath);
+        if (ConfirmProjectConflictReload(*this, state.Saved, disk, state.Draft) == true &&
+            state.ProjectEpoch == epoch && Controller_->ProjectRevision() == revision)
+        {
+            reloadProject(true);
+        }
+        return false;
+    }
 #if defined(Q_OS_WASM)
     if (Controller_->State().Dirty() == false)
     {
@@ -1060,6 +1118,11 @@ bool MainWindow::SaveProjectSettings()
 }
 
 void MainWindow::OnReloadRequested()
+{
+    reloadProject(false);
+}
+
+void MainWindow::reloadProject(bool hasConfirmedProjectDiscard)
 {
     if (Content_->Importing())
     {
@@ -1072,7 +1135,7 @@ void MainWindow::OnReloadRequested()
         return;
     }
     Audio_->StopPreview();
-    if (Controller_->State().Dirty())
+    if (hasConfirmedProjectDiscard == false && Controller_->State().Dirty() == true)
     {
         const auto choice = QMessageBox::question(this,
                                                   QStringLiteral("Unsaved changes"),
@@ -1083,7 +1146,16 @@ void MainWindow::OnReloadRequested()
             return;
         }
     }
-    Controller_->Reload();
+    if (Controller_->Reload() == false && hasConfirmedProjectDiscard == true)
+    {
+        const QString detail = Controller_->State().Result.Message.toHtmlEscaped();
+        QMessageBox::warning(
+            this,
+            QStringLiteral("Project reload failed"),
+            QStringLiteral("<p>Your draft and undo history are still available.</p>"
+                           "<p>%1</p><p>Repair or restore the descriptor on disk, then retry Reload.</p>")
+                .arg(detail));
+    }
 }
 
 void MainWindow::OnCopyJobDetails()
@@ -2218,6 +2290,11 @@ void MainWindow::OnPackageRelease()
     dialog->open();
 }
 
+bool MainWindow::ShouldRestart() const noexcept
+{
+    return mShouldRestart;
+}
+
 void MainWindow::closeEvent(QCloseEvent* event)
 {
     ProfilingController& profiling = mProfilingPanel->GetController();
@@ -2227,6 +2304,7 @@ void MainWindow::closeEvent(QCloseEvent* event)
     }
     if (profiling.GetState() == ProfilingState::Finalizing || profiling.HasUnsavedSnapshot() == true)
     {
+        mShouldRestart = false;
         showToolWindow(mProfilingDock);
         statusBar()->showMessage(QStringLiteral("Finish saving or discard the profiling recording, then close again."));
         event->ignore();
@@ -2234,8 +2312,10 @@ void MainWindow::closeEvent(QCloseEvent* event)
     }
     if (AudioClosing_ == false)
     {
-        if (ConfirmProjectChange(QStringLiteral("quitting")) == false)
+        if (ConfirmProjectChange(mShouldRestart == true ? QStringLiteral("restarting") : QStringLiteral("quitting")) ==
+            false)
         {
+            mShouldRestart = false;
             event->ignore();
             return;
         }
@@ -2243,6 +2323,7 @@ void MainWindow::closeEvent(QCloseEvent* event)
              World_->ConfirmDiscard() == false || Renderer_->ConfirmDiscard() == false) ||
             Configuration_->ConfirmDiscard() == false || mCodeArea->ConfirmDiscardAll() == false)
         {
+            mShouldRestart = false;
             event->ignore();
             return;
         }
@@ -2259,6 +2340,7 @@ void MainWindow::closeEvent(QCloseEvent* event)
                 QMessageBox::Close | QMessageBox::Cancel);
             if (choice != QMessageBox::Close)
             {
+                mShouldRestart = false;
                 event->ignore();
                 return;
             }

@@ -121,6 +121,11 @@ void PreviewViewport::mousePressEvent(QMouseEvent* event)
         event->accept();
         return;
     }
+    if (event->button() == Qt::LeftButton && tryToggleStatisticsOverlay(event->globalPosition()) == true)
+    {
+        event->accept();
+        return;
+    }
     if (event->button() == Qt::LeftButton && tryActivateProblemChip(event->globalPosition()) == true)
     {
         event->accept();
@@ -271,6 +276,7 @@ void PreviewViewport::mouseMoveEvent(QMouseEvent* event)
     }
     if (event->buttons() == Qt::NoButton && mIsFlying == false)
     {
+        updateOrientationHover(event->globalPosition());
         static_cast<void>(
             mObjectInteraction->Hover(getInteractionPosition(event->globalPosition()), getInteractionFrame()));
     }
@@ -296,6 +302,7 @@ void PreviewViewport::mouseMoveEvent(QMouseEvent* event)
 void PreviewViewport::leaveEvent(QEvent* event)
 {
     mObjectInteraction->ClearHover();
+    updateOrientationHover(QPointF(-1, -1));
     QWidget::leaveEvent(event);
 }
 void PreviewViewport::updateGizmoCursor()
