@@ -14,8 +14,8 @@
 #include <QHash>
 #include <QSet>
 #include <QStringView>
-#include <QSysInfo>
 #include <QTextDocument>
+#include <QtGlobal>
 
 #include <climits>
 #include <cstdlib>
@@ -50,6 +50,13 @@ constexpr int32 MAXIMUM_FOLDS = 12000;
 constexpr int32 MAXIMUM_OPEN_REGIONS = 128;
 constexpr int32 TAB_COLUMNS = 4;
 constexpr uint32 CODE_UNIT_BYTES = sizeof(QChar);
+/// Tree-sitter reads QString storage as UTF-16 in the host byte order. The preprocessor
+/// selects it, since a constant ternary leaves one arm unreachable (-Wunreachable-code).
+#if Q_BYTE_ORDER == Q_LITTLE_ENDIAN
+constexpr TSInputEncoding UTF16_ENCODING = TSInputEncodingUTF16LE;
+#else
+constexpr TSInputEncoding UTF16_ENCODING = TSInputEncodingUTF16BE;
+#endif
 
 enum class SyntaxPhase : uint8
 {
@@ -1103,13 +1110,11 @@ private:
 
     bool parse(QElapsedTimer& inoutClock)
     {
-        constexpr TSInputEncoding ENCODING =
-            QSysInfo::ByteOrder == QSysInfo::LittleEndian ? TSInputEncodingUTF16LE : TSInputEncodingUTF16BE;
         const TSInput input
         {
             .payload = &mSource,
             .read = ReadSource,
-            .encoding = ENCODING,
+            .encoding = UTF16_ENCODING,
             .decode = nullptr,
         };
         const TSParseOptions options
@@ -1207,14 +1212,12 @@ private:
         {
             return false;
         }
-        constexpr TSInputEncoding ENCODING =
-            QSysInfo::ByteOrder == QSysInfo::LittleEndian ? TSInputEncodingUTF16LE : TSInputEncodingUTF16BE;
         QString text = QString::fromRawData(mSource.constData() + range.Start, range.End - range.Start);
         const TSInput input
         {
             .payload = &text,
             .read = ReadSource,
-            .encoding = ENCODING,
+            .encoding = UTF16_ENCODING,
             .decode = nullptr,
         };
         QElapsedTimer clock;

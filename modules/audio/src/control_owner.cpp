@@ -699,6 +699,9 @@ void AudioSystem::Impl::ProcessControlBoundary() noexcept
     ResolveScheduledStarts();
     RecomputeBusGains();
     SelectAndCharge();
+    // Acknowledge consumption only after this boundary's commands reached renderer state.
+    Impl& owner = Control != nullptr ? *Control : *this;
+    owner.AppliedCommands.store(AcceptedCommands, std::memory_order_release);
 }
 
 // ---------------------------------------------------------------------------

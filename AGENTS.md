@@ -165,6 +165,11 @@ engine code. Discuss such cases in the PR before adding them.
   (`cmake/EngineCompilerWarnings.cmake`).
 - CI builds with warnings-as-errors (`LUDUS_WARNINGS_AS_ERRORS=ON`). Do not
   introduce new warnings; do not suppress them without justification in the PR.
+- Pull requests build only on Linux; MSVC and Emscripten warnings first appear in
+  batches. Declare a constant, internal function or parameter use under the same
+  preprocessor condition as its uses, and use `if constexpr` for conditions that
+  name only constants. See
+  `docs/development/continuous-integration.md#platform-only-warnings`.
 
 ### Formatting and static analysis
 
@@ -260,6 +265,7 @@ copied from `modules/content/scene_cook/.clang-tidy`) are checked in full.
 | Case rules: private/protected methods camelCase; public methods, free functions, types PascalCase; private members `m` + PascalCase; parameters and locals camelCase; constants UPPER_CASE | clang-tidy `readability-identifier-naming`: adopted scopes in full, `--tidy-changed` on changed lines |
 | No magic numbers | `source_policy.py` (lexical) and clang-tidy `readability-magic-numbers` (`--tidy-changed`) on changed non-test lines; waive a justified literal with `// ludus-style: magic-number <reason>` |
 | Pointers/integers compared explicitly | clang-tidy `readability-implicit-bool-conversion` on changed lines |
+| Symbols used only under an `#if` branch declared there; `if constexpr` for conditions naming only constants | `source_policy.py` (lexical) on changed lines; waive with `// ludus-style: conditional-use <reason>` or `constant-condition <reason>`. Clang builds also enable `-Wunreachable-code` |
 | `out`/`inout` prefix on non-const lvalue reference parameters; none on rvalue references | N2: adopted scopes and changed lines (`out` vs `inout` choice is review-only) |
 | Boolean names read as questions | N3 (declarations spelled `bool`): adopted scopes and changed lines |
 | `OrNull` on nullable pointer variables | N4 (explicit null initializers): adopted scopes and changed lines; inferred nullability is review-only |

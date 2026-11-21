@@ -145,6 +145,8 @@ FAILURE_STRIDE = 4
 # records the graph's support. Native ray stages reserve slot 11 for their function table and define neither slot.
 AERIAL_PERSPECTIVE_SLOT = 11
 ATMOSPHERE_SKY_SLOT = 15
+# Matches LUDUS_GRAPH_COLOR_INPUT_BINDING in renderer_gpu_preview_layout.h.
+COLOR_INPUT_SLOT = 12
 WORLD_TABLE_STRIDE = 16
 WORLD_FEATURE_DEFINES = ('#define LUDUS_AERIAL_PERSPECTIVE_BINDING LUDUS_GRAPH_AERIAL_PERSPECTIVE_BINDING\n'
                          '#define LUDUS_ATMOSPHERE_SKY_BINDING LUDUS_GRAPH_ATMOSPHERE_SKY_BINDING\n')
@@ -219,7 +221,7 @@ def lower(node, where, graph):
     return record, mappings, outputs
 
 
-def lower_ports(node, where, graph, noun, profile, *, is_buffer_dispatch=False):
+def lower_ports(node, where, graph, noun, profile, *, is_buffer_dispatch=False, allows_color_input=False):
     """Check the shared C04 port contract of ray and scene compute passes.
 
     Returns the input mappings, the output mappings and the color output port. The
@@ -248,6 +250,12 @@ def lower_ports(node, where, graph, noun, profile, *, is_buffer_dispatch=False):
     graph._require(types.get(mappings['color']) == 'ColorTexture', 'Capability', where, f'{noun} output requires color input')
     color_reads = [identity for identity, kind in types.items() if kind == 'ColorTexture' and identity != mappings['color']]
     depth_reads = [identity for identity, kind in types.items() if kind == 'DepthTexture']
+    if allows_color_input and not depth_reads:
+        graph._require(len(color_reads) <= 1, 'Capability', where,
+                       'scene compute supports one sampled color input per pass',
+                       repair='Keep the ColorTexture you want to sample and remove the other read-only color inputs.')
+        if color_reads:
+            mappings['source_color'] = color_reads.pop()
     graph._require((len(color_reads), len(depth_reads)) in ((0, 0), (1, 1)), 'Capability', where,
                    f'{noun} visibility input requires one read-only color and one depth texture; input declarations: ' +
                    ', '.join(f"'{identity}' ({types[identity]})" for identity in color_reads + depth_reads) +
@@ -353,8 +361,13 @@ def group_profiles(plans, technique, build):
         build.require(not has_visibility or technique.get('scene_interface', {}).get('visibility_buffer', False),
                       'Configuration', plan['configuration'],
                       'visibility inputs require scene_interface.visibility_buffer')
+        has_color_input = any('source_color' in operation for operation in operations)
+        build.require(not has_color_input or (not has_visibility and not requires_native_pipeline(plan)),
+                      'Capability', plan['configuration'],
+                      'scene compute color inputs require an ordered compute sequence without visibility/depth; '
+                      'select Compute invocation on RayTracingPipeline producers')
         has_native_queries = requires_native_queries(plan) or requires_native_pipeline(plan)
-        group = groups.setdefault((has_visibility, has_native_queries), {'variants': set(), 'persistent': False, 'structured_buffers': False})
+        group = groups.setdefault((has_visibility, has_native_queries, has_color_input), {'variants': set(), 'persistent': False, 'structured_buffers': False})
         group['variants'].update(get_callback_variant(operation['pipeline']) for operation in operations)
         group['structured_buffers'] |= any(operation.get('buffers') for operation in operations)
         group['scene_dispatch'] = group.get('scene_dispatch', False) or any('work_items' in operation for operation in operations)
@@ -373,20 +386,25 @@ def group_profiles(plans, technique, build):
                       'a ray technique without default callbacks requires a RayTracingPipeline or scene compute pass')
         # No visibility pass dispatches the default callbacks, so the kernel reads no visibility
         # inputs and reflection drops them, even when scene_interface.visibility_buffer permits them.
-        groups[(False, True)] = {
+        groups[(False, True, False)] = {
             'variants': {tuple(technique[stage] for stage in STAGES)}, 'persistent': False, 'structured_buffers': False}
     result = []
-    for (has_visibility, has_native_queries), group in sorted(groups.items()):
+    for (has_visibility, has_native_queries, has_color_input), group in sorted(groups.items()):
         build.require(not (group['persistent'] or len(group['variants']) > 1) or not group['structured_buffers'],
                       'Capability', 'ray storage',
                       'ordered ray passes use shared Buffer nodes; StructuredBuffer nodes remain private to one ray job')
+        if has_visibility and (False, has_native_queries, False) in groups:
+            compute_identity = VISIBILITY_COMPUTE_ID if has_native_queries else SOFTWARE_VISIBILITY_COMPUTE_ID
+        else:
+            compute_identity = COMPUTE_ID if has_native_queries else SOFTWARE_COMPUTE_ID
+        if has_color_input:
+            compute_identity += 'WithColorInput'
         result.append({'workgroup': workgroup, 'visibility_buffer': has_visibility, 'native_ray_queries': has_native_queries,
                        'native_pipeline': group.get('native_pipeline', False),
                        'scene_dispatch': group.get('scene_dispatch', False),
-                       'variants': sorted(group['variants']),
+                       'variants': sorted(group['variants']), 'color_input': has_color_input,
                        'persistent': group['persistent'] or len(group['variants']) > 1,
-                       'compute': ((VISIBILITY_COMPUTE_ID if has_visibility and (False, has_native_queries) in groups else COMPUTE_ID) if has_native_queries else
-                                   (SOFTWARE_VISIBILITY_COMPUTE_ID if has_visibility and (False, has_native_queries) in groups else SOFTWARE_COMPUTE_ID))})
+                       'compute': compute_identity})
     return result
 
 
@@ -541,6 +559,8 @@ static const float RAY_DIRECTION_SQUARED_TOLERANCE = 0.00001;
                           'function': 'rgEntry', 'input': '', 'output': '', 'bindings': [], 'ray_wrapper': wrapper, 'ray_workgroup': workgroup, 'native_ray_queries': native_ray_queries, 'software_ray_queries': not native_ray_queries, 'native_ray_profile': True, 'persistent_ray_profile': persistent, 'storage_bindings': storage, 'storage_schemas': {binding['schema']: schemas[binding['schema']] for binding in storage}, 'visibility_buffer': technique.get('scene_interface', {}).get('visibility_buffer', False), 'ltc_table': technique.get('scene_interface', {}).get('polygonal_light_sampling', False)}
     if named_record_views:
         result[compute_identity]['named_record_views'] = named_record_views
+    if technique.get('scene_interface', {}).get('color_input', False):
+        result[compute_identity]['color_input'] = True
     if compatibility['sources']:
         result[compute_identity]['source_overrides'] = compatibility['sources']
     if native_ray_pipeline:
@@ -609,7 +629,7 @@ def check_interface(program, result, build):
     """Validate the frozen renderer ABI from independently reflected artifacts."""
     interface = result['interface']
     entries = sorted(interface['entries'], key=lambda value: value['binding'])
-    if program['id'] in COMPUTE_IDS or program.get('native_ray_pipeline'):
+    if program['id'] in COMPUTE_IDS or program.get('native_ray_pipeline') or program.get('color_input'):
         expected = [(0, 'UniformBuffer', PARAMETERS_BYTES), (1, 'StorageRead', 16), (2, 'StorageReadWrite', 16),
                     (3, 'StorageReadWrite', 16), (4, 'StorageRead', 16), (5, 'RayScene', 0)]
         if not program.get('native_ray_queries', True):
@@ -623,6 +643,7 @@ def check_interface(program, result, build):
                       # World-feature tables appear exactly when a callback calls their scene function.
                       ([(AERIAL_PERSPECTIVE_SLOT, 'StorageRead', WORLD_TABLE_STRIDE)] if not program.get('native_ray_pipeline') and
                        any(entry['binding'] == AERIAL_PERSPECTIVE_SLOT for entry in entries) else []) +
+                      ([(COLOR_INPUT_SLOT, 'Texture2D', 0)] if program.get('color_input', False) else []) +
                       # Reflection drops the table when no callback reads it; the renderer then binds nothing.
                       ([(LTC_TABLE_SLOT, 'StorageRead', LTC_TABLE_STRIDE)] if program.get('ltc_table', False) and
                        any(entry['binding'] == LTC_TABLE_SLOT for entry in entries) else []) +
@@ -896,6 +917,8 @@ def persistent_wrapper(programs, technique, variants, snapshot, build, recipe, c
         prefix += '[[vk::binding(6, 0)]] RWStructuredBuffer<uint4> GraphBuffer0;\n'
         prefix += '[[vk::binding(7, 0)]] RWStructuredBuffer<uint4> GraphBuffer1;\n'
     prefix += 'uint GetGraphPassIndex() { return (Sampling.z >> LUDUS_GRAPH_PASS_INDEX_SHIFT) & LUDUS_GRAPH_PASS_INDEX_MASK; }\n'
+    if interface.get('color_input', False):
+        prefix += '[[vk::binding(LUDUS_GRAPH_COLOR_INPUT_BINDING, 0)]] Texture2D<float4> GraphColorInput;\n'
     custom_sources = sorted({get_custom_traversal_source(variant) for variant in variants
                              if get_custom_traversal_source(variant)})
     if custom_sources:
@@ -978,7 +1001,8 @@ def persistent_wrapper(programs, technique, variants, snapshot, build, recipe, c
                         '    if (Dimensions.z == 0) {\n'
                         f'        Hit interfaceHit = {interface_trace}(float3(0), float3(0, 0, 1), 0, 1, false);\n'
                         '        GraphBuffer0[0] = GraphBuffer1[0];\n'
-                        '        GraphBuffer1[0] = uint4(interfaceHit.Triangle, 0, 0, 0);\n'
+                        '        GraphBuffer1[0] = uint4(interfaceHit.Triangle, 0, 0, 0);\n' +
+                        ('        colors[0] = GraphColorInput.Load(int3(0));\n' if interface.get('color_input', False) else '') +
                         '    }\n    SceneContext scene;\n')
     elif native_ray_pipeline:
         body = body.replace('    SceneContext scene;\n',

@@ -153,8 +153,10 @@ inline constexpr foundation::uint32 SCENE_RESOURCE_AERIAL_PERSPECTIVE = 16U;
 inline constexpr foundation::uint32 SCENE_WORK_ITEMS_PACKAGE_VERSION = 39;
 /// First package whose deferred resolve blends a stabilized near directional region with its whole-scene region.
 inline constexpr foundation::uint32 DIRECTIONAL_NEAR_PACKAGE_VERSION = 40;
+/// Version 41 admits SourceColor on scene compute consumers using the sampled color binding.
+inline constexpr foundation::uint32 SCENE_COLOR_INPUT_PACKAGE_VERSION = 41;
 /// Current runtime generation layout version.
-inline constexpr foundation::uint32 PACKAGE_VERSION = DIRECTIONAL_NEAR_PACKAGE_VERSION;
+inline constexpr foundation::uint32 PACKAGE_VERSION = SCENE_COLOR_INPUT_PACKAGE_VERSION;
 /// First package carrying explicit OIDN denoising quality per ray pass.
 inline constexpr foundation::uint32 DENOISING_PACKAGE_VERSION = 16;
 /// First package carrying the renderer-owned bilinear image operation.

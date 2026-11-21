@@ -1209,6 +1209,8 @@ def prepare_sources(manifest, helper, *, root=None, ray_path_capture=False, capt
             technique = deepcopy(techniques[ray.TECHNIQUE])
             if 'scene_interface' in technique:
                 technique['scene_interface']['visibility_buffer'] = profile['visibility_buffer']
+                if profile['color_input']:
+                    technique['scene_interface']['color_input'] = True
                 # The capture profile links the larger capture budget into every wrapper of this build.
                 if capture_profile:
                     interface = technique['scene_interface']
@@ -1438,6 +1440,8 @@ def build_package(manifest, output, *, helper, compiler, validator=None, spirv_c
                                     for identity in ray.callback_programs(variant))
                                 for variant in profile['variants']]
                             record['visibility_buffer'] = profile['visibility_buffer']
+                            if profile['color_input']:
+                                record['color_input'] = True
                             if ray_path_capture:
                                 record['ray_path_capture'] = True
                             if capture_profile:

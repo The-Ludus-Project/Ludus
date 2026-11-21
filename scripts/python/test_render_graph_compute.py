@@ -475,6 +475,23 @@ class NativeSceneComputeTests(unittest.TestCase):
             self.assertEqual(1, sum(variant[-1] == ray.TRIANGLE_LOOP_TAG for variant in recipe['ray_programs']))
             execution.cook_runtime(str(package), root / 'mixed.lurgrt')
 
+    def test_scene_compute_samples_an_earlier_ray_color_output(self):
+        from test_render_graph_authoring import parse_runtime
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            package, recipe, wrapper = self.build(SCENE_COMPUTE, root, 'main_shaders/produce_diffraction.slang')
+            self.assertTrue(recipe['color_input'])
+            self.assertIn('Texture2D<float4> GraphColorInput;', wrapper)
+            destination = root / 'color-input.lurgrt'
+            execution.cook_runtime(package, destination, configuration='ColorInput')
+            _, resources, passes, _ = execution.lower_plan(
+                json.loads((package / 'package.json').read_text()), 'ColorInput')
+            self.assertEqual(2, len(passes))
+            self.assertEqual(passes[0]['Color'], passes[1]['SourceColor'])
+            self.assertNotEqual(passes[1]['Color'], passes[1]['SourceColor'])
+            self.assertEqual('Color', resources[passes[1]['SourceColor']]['Kind'])
+            self.assertEqual(execution.PACKAGE_VERSION, parse_runtime(destination.read_bytes())['version'])
+
     def test_compute_kernels_dispatch_only_from_ray_generation(self):
         from test_render_graph_authoring import parse_runtime
         with tempfile.TemporaryDirectory() as temporary:

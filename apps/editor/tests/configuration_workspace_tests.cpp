@@ -2,6 +2,7 @@
 
 #include <catch2/catch_test_macros.hpp>
 
+#include <QComboBox>
 #include <QFile>
 #include <QTableWidget>
 #include <QTemporaryDir>
@@ -54,4 +55,50 @@ TEST_CASE("Configuration workspace rejects malformed files and external preferen
     CHECK_FALSE(workspace.Load(path, Layer::Preference));
     REQUIRE(file.open(QIODevice::ReadOnly));
     CHECK(file.readAll() == QByteArrayLiteral("changed"));
+}
+TEST_CASE("Configuration workspace selects engine schemas explicitly and from loaded bundles",
+          "[editor][configuration]")
+{
+    QTemporaryDir directory;
+    REQUIRE(directory.isValid());
+    ConfigurationWorkspace workspace;
+    auto* table = workspace.findChild<QTableWidget*>(QStringLiteral("configurationSettings"));
+    QComboBox* selector = workspace.findChild<QComboBox*>(QStringLiteral("configurationSchema"));
+    REQUIRE(table != nullptr);
+    REQUIRE(selector != nullptr);
+    CHECK(workspace.GetSchemaIdentity() == "ludus.host.v1");
+    CHECK(selector->count() >= 2);
+
+    selector->setCurrentIndex(selector->findData(QStringLiteral("ludus.audio.v1")));
+    CHECK(workspace.GetSchemaIdentity() == "ludus.audio.v1");
+    CHECK(table->rowCount() == 4);
+    CHECK_FALSE(workspace.Edit("host.headless", QStringLiteral("true")));
+    REQUIRE(workspace.Edit("audio.volume.music", QStringLiteral("0.5")));
+    CHECK_FALSE(workspace.Edit("audio.volume.music", QStringLiteral("2")));
+    const QString audio = directory.filePath(QStringLiteral("audio.json"));
+    REQUIRE(workspace.SavePreferences(audio));
+    QFile file(audio);
+    REQUIRE(file.open(QIODevice::ReadOnly));
+    const auto bytes = file.readAll();
+    file.close();
+    CHECK(bytes.contains("\"schema\":\"ludus.audio.v1\""));
+    CHECK(bytes.contains("audio.volume.music"));
+    CHECK_FALSE(bytes.contains("audio.volume.master"));
+    CHECK_FALSE(workspace.SelectSchema("ludus.audio.v0"));
+    CHECK(workspace.GetSchemaIdentity() == "ludus.audio.v1");
+
+    // A clean host workspace switches to the schema an audio bundle names.
+    ConfigurationWorkspace loaded;
+    REQUIRE(loaded.Load(audio, Layer::Preference));
+    CHECK(loaded.GetSchemaIdentity() == "ludus.audio.v1");
+    QComboBox* loadedSelector = loaded.findChild<QComboBox*>(QStringLiteral("configurationSchema"));
+    REQUIRE(loadedSelector != nullptr);
+    CHECK(loadedSelector->currentData().toString() == QStringLiteral("ludus.audio.v1"));
+    Binding binding;
+    Explanation explanation;
+    REQUIRE(loaded.Preview()->Bind("audio.volume.music", binding) == Status::Ok);
+    REQUIRE(loaded.Preview()->Explain(binding, explanation) == Status::Ok);
+    CHECK(explanation.Requested.Real == 0.5);
+    REQUIRE(loaded.SelectSchema("ludus.host.v1"));
+    CHECK(loaded.findChild<QTableWidget*>(QStringLiteral("configurationSettings"))->rowCount() == 2);
 }

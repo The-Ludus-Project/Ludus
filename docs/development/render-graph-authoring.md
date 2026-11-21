@@ -1368,7 +1368,7 @@ The node accepts the same ports as a Ray Tracing Pipeline node:
 - exactly one Scene input and one View input;
 - exactly one writable RGBA8Unorm ColorTexture with **Clear**/**Store**;
 - up to two writable **Buffer** resources with **Load**/**Store**, bound as `GraphBuffer0/1`;
-- optionally the read-only visibility color and depth input pair.
+- optionally one [sampled color input](#read-a-color-texture-from-an-earlier-pass) or the read-only visibility color and depth pair.
 
 `StructuredBuffer` inputs are rejected: connect a `Buffer` node instead. Set
 `invocation.dimensions` to `"ColorTarget"`, or to the exact `[width, height, 1]` of
@@ -1541,6 +1541,34 @@ The [mixed sequence fixture](../../tests/sdk_consumer/rg2/compute_mixed/main.lur
 has a scene compute primary pass that records per-pixel hits in a Buffer, followed
 by a ray pass that resolves them. `ludus_render_graph_ray_tests` renders both on
 native ray hardware.
+
+### Read a color texture from an earlier pass
+
+To read an intermediate color image in a scene **ComputePipeline**, add one
+**ColorTexture** under **Read Inputs**. Connect it to an earlier scene compute or
+ray pass's color output. For example, connect `utd.diffraction` to the
+`diffraction` input on `shade`. Keep a separate writable color target for
+`shade`. The source must be an offscreen, single-sample RGBA8Unorm texture
+written earlier in the same ordered sequence.
+
+**Build Graph** binds the connected texture as `Texture2D<float4> GraphColorInput`.
+The authored port name is used on the graph. Use the generated name in Slang
+without a shader-manifest binding or descriptor annotation. For equal source
+and destination extents, load the texel corresponding to the launch pixel.
+
+```slang
+float3 diffraction = GraphColorInput.Load(int3(launch.PositionPixel, 0)).rgb;
+```
+
+The load returns the stored normalized color, including any color processing
+applied before the wire. Query `GetDimensions` and bound coordinates against
+the source extent if the targets differ. The renderer orders the producer's
+color write before the consumer's read on Metal and Vulkan.
+
+Use Compute invocation for RayTracingPipeline nodes in this sequence. Scene
+visibility/depth inputs and tiled frame capture require a separate configuration
+or whole-frame capture, respectively. Rebuild the package with an SDK that
+supports runtime generation 41.
 
 <a id="select-emitters-per-screen-tile"></a>
 
@@ -4829,7 +4857,7 @@ wrappers include it automatically. Authors do not read private packed buffers.
 | GetEmitterBounds | Precomputed emitter bounding sphere, geometric-normal cone and emission sidedness, for one weight per emitter without a triangle loop |
 | IsSurfaceCovered | Fixed-mip sampled-endpoint alpha coverage, using the same inclusive cutoff as closest-hit traversal, with no ray query; keep uncovered area samples as zero events |
 | GetSurfaceHit | Surface endpoint from triangle/barycentrics, without tracing; IncomingRay and DistanceWorld are zero |
-| SampleLight | Select a catalog source and sample it with the default incident proposal. Returns the selection PMF and conditional probability separately. |
+| SampleLight | Select a catalog source and sample its incident light at a world-space position or a `SurfaceHit`. Returns the selection PMF and conditional probability separately. |
 | EvaluateLightAlongRay | Return the radiance and matching continuous light proposal for a traced mesh hit or environment miss, using the same selection policy as SampleLight. |
 | SelectLight / EvaluateLightSelectionPmf | Default uniform source selection and its discrete probability. SelectLight(scene, queries) uses the invocation stream. |
 | SelectLightByMeshPower / EvaluateMeshPowerLightSelectionPmf | Addressed catalog selection and its matching PMF. Mesh lights split their uniform category share by power, with uniform fallback. |
@@ -4842,7 +4870,7 @@ wrappers include it automatically. Authors do not read private packed buffers.
 | SelectEmissiveTriangle / EvaluateEmissiveTriangleSelectionPmf | [Power-weighted emissive triangle](#select-emissive-triangles-by-power) at an explicit dimension / that selection's probability for a triangle |
 | EvaluateEnvironment | Background radiance along a world direction: the Atmosphere's sky when the World has one that lights the scene, otherwise the World environment. See [World features](#world-features) |
 | ApplyAerialPerspective | Haze between a ray origin and a visible surface point: the surface radiance attenuated by the air plus the sky light it scatters. See [World features](#world-features) |
-| TraceClosest / TestVisibility | Closest or occlusion query with explicit miss/surface/failure status |
+| TraceClosest / TestVisibility | Closest or occlusion query with explicit miss/surface/failure status. `TestVisibility` accepts a `SurfaceHit` or a world-space ray origin. |
 | FindVisibleLineIntervals / ClearLineVisibility | Visible parts of a world-space segment from a receiver, as sorted parameter intervals; see [Find the visible parts of a segment](#find-the-visible-parts-of-a-segment) |
 | SpawnSurfaceRay | Error-bound origin offset for a unit world direction and explicit maximum distance |
 | SampleUniformFloat01 / SampleSceneRandom | Uniform draw at an explicit pixel sample dimension / next draw from the invocation stream |
@@ -5387,18 +5415,26 @@ its source selection probability. Emission maps are sampled at the actual UV;
 black texels and back-side one-sided samples remain zero-contribution events.
 The initial environment proposal is uniform sphere, including HDR maps.
 
-The Compute ray tracing template uses `SampleLight` with independent addresses
-for source selection and the conditional incident proposal.
+`SampleLight` uses independent addresses for source selection and the conditional
+incident proposal. For a world-space point in metres, such as a point on an edge,
+pass `pointWorld` directly to both `SampleLight` and `TestVisibility`.
 
 ```slang
 SceneLightSample light = SampleLight(
-    scene, receiver, launch, LIGHT_SELECTION_DIMENSION, INCIDENT_DIMENSION_FIRST,
+    scene, pointWorld, launch, LIGHT_SELECTION_DIMENSION, INCIDENT_DIMENSION_FIRST,
     LightSelectionPolicy::Uniform, queries);
 if (light.Incident.HasSample == false)
     return float3(0);
 
+SceneQuery visibility = TestVisibility(scene, queries, pointWorld, light.Incident);
 float probability = light.Selection.SelectionPmf * light.Incident.ConditionalProbability;
 ```
+
+The visibility ray starts at `pointWorld`. It connects to the sampled endpoint
+for a finite light, including the usual mesh endpoint offset, and uses the
+sampled direction for an infinite light. `SceneQuery::Miss` means the connection
+is clear. Both forms use the visibility query budget and are available in Slang
+and LUSL.
 
 Reserve `SCENE_INCIDENT_LIGHT_DIMENSION_COUNT` slots for the default incident
 proposal. Mesh lights read all three slots and the environment reads the last
@@ -5406,10 +5442,13 @@ two. Directional, point and spot lights read none. The addressed sampler never
 advances the invocation stream. If a needed address is exhausted, it latches the
 invocation failure. A source index outside the catalog returns no sample.
 
-Use the probability product after checking `incident.HasSample` and use
-`TestVisibility` with the incident result to trace its connection. The incident
-probability is a density per steradian for `IncidentLightMeasure::SolidAngle` and
-a mass for `IncidentLightMeasure::Discrete`. Analytic delta samples have
+The Compute ray tracing template passes a `SurfaceHit` from `GetSurfaceHit` to
+both operations. A hit from `TraceClosest` works too. `SampleLight` uses the
+hit's position and `TestVisibility` applies the triangle's origin offset.
+
+The incident probability is a density per steradian for
+`IncidentLightMeasure::SolidAngle` and a mass for `IncidentLightMeasure::Discrete`.
+Analytic delta samples have
 conditional mass one and zero competing solid-angle density. For MIS after a
 BSDF sample, pass the trace result, original receiver position and same
 selection policy to `EvaluateLightAlongRay`. Multiply its source PMF by its
