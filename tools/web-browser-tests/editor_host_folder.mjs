@@ -132,7 +132,10 @@ try {
   await click(page, 302, 195); // Project Settings tab.
   await page.waitForTimeout(500);
   await page.screenshot({path: resolve(output, 'settings.png')});
-  const nameField = JSON.parse(process.env.LUDUS_QA_NAME_FIELD || '[660, 490]');
+  // Centre of the Project section's Name field on the 1280x800 page (settings.png).
+  // Qt's accessibility nodes carry no field names, so the click is positional;
+  // move it here when the Project Settings layout changes.
+  const nameField = JSON.parse(process.env.LUDUS_QA_NAME_FIELD || '[718, 387]');
   await click(page, nameField[0], nameField[1]);
   await page.keyboard.press('ControlOrMeta+A');
   await page.keyboard.type(edited, {delay: 10});
@@ -149,7 +152,9 @@ try {
     return await (await (await folder.getFileHandle('ludus.project.json')).getFile()).text();
   }, folderName);
   report.savedDescriptor = saved;
-  assert.equal(JSON.parse(saved).name, edited, 'the saved name reached the folder');
+  assert.equal(JSON.parse(saved).name, edited, 'the saved name reached the folder. If saved.png shows the page ' +
+    'text selected instead of an edited Name, the click at ' + JSON.stringify(nameField) + ' missed the field: ' +
+    'compare settings.png and update the Name field coordinate');
   report.cases.push('Save writes the edited descriptor back to the folder');
   report.pendingWrites = await page.evaluate(() => globalThis.ludusHostPendingWrites?.());
   // Optionally open a World from the Project Explorer: its assets are read from the folder on demand.

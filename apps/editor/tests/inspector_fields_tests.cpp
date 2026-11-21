@@ -14,8 +14,11 @@
 #include <QFile>
 #include <QFileInfo>
 #include <QFormLayout>
+#include <QJsonObject>
 #include <QLabel>
 #include <QLineEdit>
+#include <QMouseEvent>
+#include <QPoint>
 #include <QPushButton>
 #include <QSignalSpy>
 #include <QTemporaryDir>
@@ -83,6 +86,16 @@ QRect GetRectangleIn(const QWidget& ancestor, const QWidget& widget)
 {
     return {widget.mapTo(&ancestor, QPoint(0, 0)), widget.size()};
 }
+void MoveScrubPointer(ScrubLabel& inoutLabel, const QPoint& pointerGlobal, Qt::KeyboardModifiers modifiers)
+{
+    QMouseEvent event(QEvent::MouseMove,
+                      QPointF(inoutLabel.mapFromGlobal(pointerGlobal)),
+                      QPointF(pointerGlobal),
+                      Qt::NoButton,
+                      Qt::LeftButton,
+                      modifiers);
+    QApplication::sendEvent(&inoutLabel, &event);
+}
 } // namespace
 
 TEST_CASE("Scrubbing a label changes the number by a step per pixel", "[editor][inspector]")
@@ -99,10 +112,10 @@ TEST_CASE("Scrubbing a label changes the number by a step per pixel", "[editor][
     CHECK(fine > 0.0);
     CHECK(fine < plain);
     CHECK(coarse > plain);
-    // The range holds, and the result carries no floating-point residue.
+    // The range holds in either direction.
     CHECK(ComputeScrubbedValue(0.0, SCRUB_PAST_LIMIT, settings, Qt::NoModifier) == Catch::Approx(settings.Maximum));
     CHECK(ComputeScrubbedValue(0.0, -SCRUB_PAST_LIMIT, settings, Qt::NoModifier) == Catch::Approx(settings.Minimum));
-    CHECK(ComputeScrubbedValue(0.1, 20, settings, Qt::NoModifier) == 0.3);
+    CHECK(ComputeScrubbedValue(0.1, 20, settings, Qt::NoModifier) == Catch::Approx(0.3));
 }
 
 TEST_CASE("Scrub steps follow the unit and the range of a field", "[editor][inspector]")
@@ -180,6 +193,53 @@ TEST_CASE("Dragging an axis letter scrubs its field and reports the edit", "[edi
     CHECK(GetRectangleIn(host, field).top() < GetRectangleIn(host, other).bottom());
     CHECK(GetRectangleIn(host, other).top() < GetRectangleIn(host, field).bottom());
     CHECK(GetRectangleIn(host, field).right() < GetRectangleIn(host, other).left());
+}
+
+TEST_CASE("A held axis label applies sensitivity only to new movement", "[editor][inspector][scrub]")
+{
+    QWidget host;
+    QLineEdit field(QStringLiteral("1"), &host);
+    constexpr int32 NORMAL_PIXELS = 4;
+    constexpr int32 COARSE_PIXELS = 3;
+    constexpr float64 STEP = 0.125;
+    constexpr float64 MAXIMUM = 2;
+    ScrubLabel label(QStringLiteral("X"), field, { .Minimum = 0, .Maximum = MAXIMUM, .Step = STEP }, &host);
+    host.show();
+
+    const QPoint grab(GRAB_X, GRAB_Y);
+    const QPoint startGlobal = label.mapToGlobal(grab);
+    const auto move = [&label, startGlobal](int32 pixels, Qt::KeyboardModifiers modifiers) {
+        MoveScrubPointer(label, startGlobal + QPoint(pixels, 0), modifiers);
+    };
+    QSignalSpy scrubbed(&label, &ScrubLabel::Scrubbed);
+
+    QTest::mousePress(&label, Qt::LeftButton, Qt::NoModifier, grab);
+    move(NORMAL_PIXELS, Qt::NoModifier);
+    REQUIRE(field.text().toDouble() == Catch::Approx(1.5));
+
+    move(NORMAL_PIXELS, Qt::ShiftModifier);
+    CHECK(field.text().toDouble() == Catch::Approx(1.5));
+    CHECK(scrubbed.count() == 1);
+    move(NORMAL_PIXELS + 2, Qt::ShiftModifier);
+    CHECK(field.text().toDouble() == Catch::Approx(1.525));
+    move(NORMAL_PIXELS + 1, Qt::ShiftModifier);
+    CHECK(field.text().toDouble() == Catch::Approx(1.5125));
+
+    move(NORMAL_PIXELS + 1, Qt::ControlModifier);
+    CHECK(field.text().toDouble() == Catch::Approx(1.5125));
+    CHECK(scrubbed.count() == 3);
+    move(NORMAL_PIXELS, Qt::ControlModifier);
+    CHECK(field.text().toDouble() == Catch::Approx(0.2625));
+    move(NORMAL_PIXELS + COARSE_PIXELS, Qt::ControlModifier);
+    CHECK(field.text().toDouble() == MAXIMUM);
+
+    move(NORMAL_PIXELS + COARSE_PIXELS, Qt::NoModifier);
+    CHECK(field.text().toDouble() == MAXIMUM);
+    CHECK(scrubbed.count() == 5);
+    move(NORMAL_PIXELS + COARSE_PIXELS - 1, Qt::NoModifier);
+    QTest::mouseRelease(&label, Qt::LeftButton, Qt::NoModifier, grab + QPoint(NORMAL_PIXELS + COARSE_PIXELS - 1, 0));
+    CHECK(field.text().toDouble() == Catch::Approx(MAXIMUM - STEP));
+    CHECK(label.IsScrubbing() == false);
 }
 
 TEST_CASE("A click on an axis letter focuses the field without changing it", "[editor][inspector]")
@@ -293,6 +353,93 @@ TEST_CASE("The world inspector shows compact transform rows and short identifier
     CHECK(identifierOrNull->GetIdentifier().isEmpty() == false);
     identifierOrNull->Copy();
     CHECK(QApplication::clipboard()->text() == identifierOrNull->GetIdentifier());
+}
+
+TEST_CASE("World transform scrubs reset or apply as one undoable edit", "[editor][inspector][world][scrub]")
+{
+    QTemporaryDir directory;
+    const QString path = MakeStarterProject(directory);
+    WorldWorkspace workspace;
+    workspace.SetProject(directory.path(), 1);
+    REQUIRE(workspace.Open(path) == true);
+    workspace.resize(WORKSPACE_WIDTH, WORKSPACE_HEIGHT);
+    workspace.show();
+
+    QTreeWidget* entitiesOrNull = workspace.findChild<QTreeWidget*>(QStringLiteral("worldEntities"));
+    REQUIRE(entitiesOrNull != nullptr);
+    entitiesOrNull->setCurrentItem(entitiesOrNull->topLevelItem(0), 0, QItemSelectionModel::ClearAndSelect);
+    QWidget* window = workspace.window();
+    const auto getField = [window](const QString& axis) -> QLineEdit& {
+        QLineEdit* fieldOrNull = window->findChild<QLineEdit*>(QStringLiteral("worldField:transform/") + axis);
+        REQUIRE(fieldOrNull != nullptr);
+        return *fieldOrNull;
+    };
+    const auto getAcceptedTransform = [&workspace]() {
+        return workspace.Document()
+            .Entity(QStringLiteral("starter.cube"))
+            .value(QStringLiteral("components"))
+            .toObject()
+            .value(QStringLiteral("transform"))
+            .toObject();
+    };
+    constexpr float64 SCRUBBED_POSITION = 0.11;
+    const QString x = QStringLiteral("x");
+    const QString y = QStringLiteral("y");
+    const QString z = QStringLiteral("z");
+    const QString originalX = getField(x).text();
+    const QString originalY = getField(y).text();
+    const QString originalZ = getField(z).text();
+    const QJsonObject originalTransform = getAcceptedTransform();
+    REQUIRE(originalTransform.contains(x) == true);
+    REQUIRE(workspace.CanUndo() == false);
+
+    const auto scrubPosition =
+        [&getField, &x, &y, &z, &originalY, &originalZ, &originalTransform, &getAcceptedTransform]() {
+            QLineEdit& field = getField(x);
+            ScrubLabel* labelOrNull = field.parentWidget()->findChild<ScrubLabel*>(QStringLiteral("inspectorScrub:X"));
+            REQUIRE(labelOrNull != nullptr);
+            const QPoint grab(GRAB_X, GRAB_Y);
+            const QPoint startGlobal = labelOrNull->mapToGlobal(grab);
+            const QPoint normalEnd(SCRUB_DISTANCE, 0);
+            const QPoint fineEnd(SCRUB_DISTANCE * 2, 0);
+            QTest::mousePress(labelOrNull, Qt::LeftButton, Qt::NoModifier, grab);
+            MoveScrubPointer(*labelOrNull, startGlobal + normalEnd, Qt::NoModifier);
+            CHECK(field.text().toDouble() == Catch::Approx(SCRUBBED_TEN_PIXELS));
+            MoveScrubPointer(*labelOrNull, startGlobal + normalEnd, Qt::ShiftModifier);
+            CHECK(field.text().toDouble() == Catch::Approx(SCRUBBED_TEN_PIXELS));
+            MoveScrubPointer(*labelOrNull, startGlobal + fineEnd, Qt::ShiftModifier);
+            QTest::mouseRelease(labelOrNull, Qt::LeftButton, Qt::ShiftModifier, grab + fineEnd);
+            CHECK(field.text().toDouble() == Catch::Approx(SCRUBBED_POSITION));
+            CHECK(getField(y).text() == originalY);
+            CHECK(getField(z).text() == originalZ);
+            CHECK(getAcceptedTransform() == originalTransform);
+        };
+
+    scrubPosition();
+    QPushButton* resetOrNull = window->findChild<QPushButton*>(QStringLiteral("worldReset"));
+    REQUIRE(resetOrNull != nullptr);
+    REQUIRE(resetOrNull->isEnabled() == true);
+    resetOrNull->click();
+    CHECK(getField(x).text() == originalX);
+    CHECK(getAcceptedTransform() == originalTransform);
+    CHECK(workspace.Dirty() == false);
+    CHECK(workspace.CanUndo() == false);
+
+    scrubPosition();
+    QPushButton* applyOrNull = window->findChild<QPushButton*>(QStringLiteral("worldApply"));
+    REQUIRE(applyOrNull != nullptr);
+    REQUIRE(applyOrNull->isEnabled() == true);
+    applyOrNull->click();
+    QJsonObject expectedTransform = originalTransform;
+    const QJsonObject appliedTransform = getAcceptedTransform();
+    CHECK(appliedTransform.value(x).toDouble() == Catch::Approx(SCRUBBED_POSITION));
+    expectedTransform.insert(x, appliedTransform.value(x));
+    CHECK(appliedTransform == expectedTransform);
+    REQUIRE(workspace.CanUndo() == true);
+    workspace.Undo();
+    CHECK(getAcceptedTransform() == originalTransform);
+    CHECK(getField(x).text() == originalX);
+    CHECK(workspace.CanUndo() == false);
 }
 
 TEST_CASE("The world inspector shows a swatch beside colour channels", "[editor][inspector][world]")

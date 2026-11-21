@@ -204,15 +204,15 @@ bool IsWavePointBlocked(SceneContext scene, WaveInteractionRegion region, float2
         }
         segment.NearWorld = distanceWorld;
         segment.FarWorld = min(cone.FarWorld, distanceWorld + cone.NearWorld);
-        WaveInteractionRegion region = (WaveInteractionRegion)0;
-        WaveQuery status = FindWaveInteractionRegion(scene, segment, region);
-        if (status == WaveQuery::Ready && region.TriangleCount == 0)
+        bool hasHit;
+        WaveQuery status = TestWaveInteraction(scene, segment, hasHit);
+        if (status != WaveQuery::Ready)
+            return status;
+        if (hasHit == false)
         {
             outDistanceWorld = distanceWorld;
-            return status;
+            return WaveQuery::Ready;
         }
-        if (status != WaveQuery::Ready && status != WaveQuery::Capacity)
-            return status;
         if (distanceWorld >= maximumBallisticWorld)
         {
             segment.NearWorld = distanceWorld;

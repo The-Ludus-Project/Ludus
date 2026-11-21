@@ -338,11 +338,11 @@ void EditorController::RedoProjectEdit()
     }
 }
 
-void EditorController::Save()
+ResultCode EditorController::Save()
 {
     if (Saving_ || Caps().CanSave == false)
     {
-        return;
+        return ResultCode::Busy;
     }
     // A save acknowledges only its captured snapshot, including when a storage
     // callback causes another edit. Failure never clears history or the draft.
@@ -356,7 +356,7 @@ void EditorController::Save()
     Saving_ = false;
     if (epoch != State_.ProjectEpoch || path != State_.DescriptorPath)
     {
-        return;
+        return ResultCode::Superseded;
     }
     if (outcome.Ok() == false)
     {
@@ -367,7 +367,7 @@ void EditorController::Save()
         State_.Result = result;
         LUDUS_LOG_TEXT(LOG_EDITOR_CTRL, Warning, "save failed; keeping dirty draft and previous saved file");
         Publish();
-        return;
+        return outcome.Code;
     }
     State_.Saved = snapshot;
     State_.SavedDigest = outcome.Digest;
@@ -377,13 +377,14 @@ void EditorController::Save()
     RememberProject();
     ScheduleSetupCheck();
     Publish();
+    return ResultCode::Ok;
 }
 
-void EditorController::Reload()
+bool EditorController::Reload()
 {
     if (Caps().CanReload == false)
     {
-        return;
+        return false;
     }
     const LoadOutcome outcome = Store_.Load(State_.DescriptorPath);
     if (outcome.Ok() == false)
@@ -394,12 +395,13 @@ void EditorController::Reload()
         result.Message = outcome.Parse.Message;
         State_.Result = foundation::Move(result);
         Publish();
-        return;
+        return false;
     }
     State_.SavedDigest = outcome.Digest;
     State_.Saved = outcome.Parse.Descriptor;
     State_.Draft = outcome.Parse.Descriptor;
     State_.HasSaved = true;
+    State_.Result = LastResult{};
     State_.ProjectEpoch += 1;
     ProjectHistory_.Reset();
     State_.DiscoveredTargets.clear();
@@ -407,6 +409,7 @@ void EditorController::Reload()
     RememberProject();
     ScheduleSetupCheck();
     Publish();
+    return true;
 }
 
 void EditorController::StartJob(ActionKind kind, ToolOperation operation, const ToolLaunch& options)
@@ -595,6 +598,20 @@ void EditorController::BuildRun(const QString& hostedWindowAddress)
         ToolLaunch options;
         options.HostedWindowAddress = hostedWindowAddress;
         StartJob(ActionKind::BuildRun, ToolOperation::BuildRun, options);
+    }
+}
+
+bool EditorController::CanPlayWorld() const
+{
+    return Tool_.Active() == false && Play_.Active() == false && GenerationJob_ == false &&
+           PlayState_.Phase == PlayPhase::Stopped && CanStartJob(State_, ActionKind::PlayWorld);
+}
+
+void EditorController::PlayWorld(const ToolLaunch& launch)
+{
+    if (CanPlayWorld() == true)
+    {
+        StartJob(ActionKind::PlayWorld, ToolOperation::PlayWorld, launch);
     }
 }
 

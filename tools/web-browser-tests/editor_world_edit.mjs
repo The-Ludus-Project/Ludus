@@ -83,6 +83,15 @@ async function observeEditor(page) {
       observe(globalThis.GPURenderPassEncoder?.prototype, method, () => ++trace.gpu.draws);
     }
     FileSystemFileHandle.prototype.createWritable = function (...parameters) {
+      // Hold one recovery checkpoint write open: the editor stays suspended in
+      // its folder call until the test releases it.
+      if (this.name === recoveryFile && trace.shouldHoldRecoveryWrite) {
+        trace.shouldHoldRecoveryWrite = false;
+        return new Promise(resolve => {
+          trace.releaseRecoveryWrite = () => resolve(createWritable.apply(this, parameters));
+          trace.heldRecoveryWrite = performance.now();
+        });
+      }
       if (this.name === worldFile && trace.isWriteRefused) {
         trace.refusals.push(performance.now());
         return Promise.reject(new DOMException('Qualification test refused this World write', 'NotAllowedError'));
@@ -104,7 +113,10 @@ async function observeEditor(page) {
       trace.drawable.push({...event.detail, canvas: event.target.id, frame: Number(event.target.dataset.frames)});
     });
     addEventListener('DOMContentLoaded', () => {
-      document.querySelector('#screen').dataset.measureWorldEdits = 'true';
+      // A new tab's about:blank document also runs this script; only the editor page has a screen.
+      const screen = document.querySelector('#screen');
+      if (screen === null) return;
+      screen.dataset.measureWorldEdits = 'true';
       const observer = new MutationObserver(records => {
         for (const record of records) {
           if (record.attributeName === 'data-editor-state' && document.body.dataset.editorState === 'ready') {
@@ -211,6 +223,25 @@ async function readMarker(page, surface, predicate) {
   } while (Date.now() < deadline);
   const diagnostic = await page.locator('#screen').getAttribute('data-viewport-error');
   assert.fail('The viewport did not draw the requested placement marker' + (diagnostic ? ': ' + diagnostic : ''));
+}
+
+// Where a failed step stopped: the latest published and drawn extractions, the
+// viewport canvases, and whether Qt's event loop still runs. Qt 6.10's private
+// suspend/resume control holds the browser events that Qt has not sent yet; a
+// control with neither a waiting event loop nor sent events no longer runs.
+async function describeStall(page) {
+  return page.evaluate(() => {
+    const control = window.qaEditor?.qtSuspendResumeControl;
+    return {
+      revisions: window.qaWorld.revisions.slice(-6),
+      drawable: window.qaWorld.drawable.slice(-6),
+      viewports: [...document.querySelectorAll('.ludus-gpu-viewport')].map(canvas => ({
+        id: canvas.id, display: canvas.style.display, frames: canvas.dataset.frames, api: canvas.dataset.api,
+      })),
+      qtEvents: control ? {isWaiting: control.resume != null, unsent: control.pendingEvents?.length} : null,
+      status: document.querySelector('#screen')?.dataset.viewportPrompt,
+    };
+  });
 }
 
 async function replaceField(page, x) {
@@ -347,9 +378,11 @@ export async function qualifyWorldEdits({browser, canvas, click, importScene, op
         await session.detach();
       }
 
-      async function edit(x, predicate, shouldResize = false) {
+      async function edit(x, predicate, {shouldResize = false, isTyped = false} = {}) {
         const gpuBefore = await page.evaluate(() => window.qaWorld.gpu);
-        await replaceField(page, x);
+        if (!isTyped) {
+          await replaceField(page, x);
+        }
         if (shouldResize) {
           const narrow = {width: 1200, height: viewport.height};
           await page.setViewportSize(narrow);
@@ -386,13 +419,29 @@ export async function qualifyWorldEdits({browser, canvas, click, importScene, op
       }
       await edit(firstEdit, offset => offset > initial.offsetPixels + 70);
       await edit(secondEdit, offset => offset < initial.offsetPixels - 70);
-      await edit(resizedEdit, offset => offset > initial.offsetPixels + 90, true);
+      await edit(resizedEdit, offset => offset > initial.offsetPixels + 90, {shouldResize: true});
       // Two distinct accepted edits with no frame wait between them. After the
       // latest revision becomes drawable, no earlier revision may replace it.
+      // The later edit is typed while the earlier edit's recovery checkpoint is
+      // still being written to the folder, so the editor is suspended and Qt
+      // queues the click and keys: none may be lost or applied out of order.
+      await page.evaluate(() => { window.qaWorld.shouldHoldRecoveryWrite = true; });
       await replaceField(page, -0.75);
       const earlierInput = await applyField(page);
       const earlier = await waitForCheckpoint(page, id, -0.75, earlierInput);
-      await edit(finalEdit, offset => offset > initial.offsetPixels + 120 && offset < initial.offsetPixels + 200);
+      await page.waitForFunction(() => window.qaWorld.heldRecoveryWrite !== undefined, null, {timeout: timeLimit});
+      await replaceField(page, finalEdit);
+      sample.typedDuringFolderWrite = await page.evaluate(() => ({
+        unsentQtEvents: window.qaEditor.qtSuspendResumeControl.pendingEvents.length,
+        focus: document.activeElement === document.body ? 'body' : document.activeElement?.id || document.activeElement?.tagName,
+      }));
+      await page.evaluate(() => window.qaWorld.releaseRecoveryWrite());
+      assert.ok(sample.typedDuringFolderWrite.unsentQtEvents > 0,
+        'The final edit must be typed while the folder write keeps the editor suspended');
+      assert.notEqual(sample.typedDuringFolderWrite.focus, 'body',
+        "A click queued during a folder write must not move focus out of Qt's window");
+      await edit(finalEdit, offset => offset > initial.offsetPixels + 120 && offset < initial.offsetPixels + 200,
+        {isTyped: true});
       const latest = sample.edits.at(-1).drawable;
       const laterRevisions = await page.evaluate(time => window.qaWorld.drawable
         .filter(frame => frame.milliseconds >= time).map(frame => frame.identity), latest.milliseconds);
@@ -468,7 +517,10 @@ export async function qualifyWorldEdits({browser, canvas, click, importScene, op
       sample.recovery.reopened = true;
     } catch (error) {
       const active = context.pages().at(-1);
-      if (active && !active.isClosed()) await active.screenshot({path: resolve(output, `qualification-failure-${api}-${placementCount}.png`)});
+      if (active && !active.isClosed()) {
+        await active.screenshot({path: resolve(output, `qualification-failure-${api}-${placementCount}.png`)});
+        sample.failureState = await describeStall(active).catch(reason => ({unavailable: String(reason)}));
+      }
       throw error;
     } finally {
       await context.close();

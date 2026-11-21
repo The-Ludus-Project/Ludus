@@ -191,7 +191,7 @@ bool ProposeLineU(SceneContext scene,
         return true;
     // Map one uniform draw linearly across the concatenated visible intervals.
     float remaining =
-        SampleSceneRandom(launch, positionDimension) * visibility.VisibleLengthWorld / outProposal.Chord.LengthWorld;
+        SampleUniformFloat01(launch, positionDimension) * visibility.VisibleLengthWorld / outProposal.Chord.LengthWorld;
     outProposal.DrawnParameter = visibility.Intervals[visibility.IntervalCount - 1].y;
     for (uint i = 0; i < visibility.IntervalCount; ++i)
     {

@@ -1,0 +1,111 @@
+name: macOS Editor distribution
+
+on:
+  workflow_dispatch:
+  pull_request:
+    paths:
+      - '.github/workflows/macos-editor-distribution.yml'
+      - 'scripts/python/*macos_editor_symbols.py'
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - run: python3 -m unittest discover -s scripts/python -p test_macos_editor_symbols.py -v
+
+  distribute:
+    # Package only a revision that the batch coordinator has promoted.
+    if: >-
+      github.event_name == 'workflow_dispatch' &&
+      github.repository == 'The-Ludus-Project/Ludus' && github.ref == 'refs/heads/main'
+    runs-on: macos-15
+    timeout-minutes: 90
+    environment: macos-editor-distribution
+    env:
+      CMAKE_BUILD_PARALLEL_LEVEL: '3'
+      CONAN_HOME: ${{ github.workspace }}/out/conan/home
+      CONAN_NON_INTERACTIVE: '1'
+      EDITOR_BUILD: out/build/macos-clang-development/apps/editor
+      EDITOR_STAGE: out/macos-editor-distribution
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Check destination and upload credentials
+        env:
+          EDITOR_DSN: ${{ vars.LUDUS_EDITOR_SENTRY_DSN }}
+          SENTRY_AUTH_TOKEN: ${{ secrets.SENTRY_AUTH_TOKEN }}
+        shell: bash
+        run: |
+          if [[ ! "$EDITOR_DSN" =~ ^https://[[:alnum:]]+@([[:alnum:]-]+\.)*sentry\.io/4512466349195264$ ]]; then
+            echo "::error::Set LUDUS_EDITOR_SENTRY_DSN to the HTTPS DSN for the ludus-editor Sentry project."
+            exit 1
+          fi
+          if [[ -z "$SENTRY_AUTH_TOKEN" ]]; then
+            echo "::error::Set SENTRY_AUTH_TOKEN in the macos-editor-distribution environment."
+            exit 1
+          fi
+      - uses: ./.github/actions/macos-setup
+        with:
+          preset: macos-clang-development
+          build-editor: 'false'
+      - name: Build the macOS Editor with crash capture
+        env:
+          EDITOR_DSN: ${{ vars.LUDUS_EDITOR_SENTRY_DSN }}
+        shell: bash
+        run: |
+          export PATH="$PWD/out/host-tools/bin:$PWD/out/host-tools/venv/bin:$PATH"
+          cmake --preset macos-clang-development \
+            -DLUDUS_WARNINGS_AS_ERRORS=ON -DLUDUS_EDITOR_CRASH_CAPTURE=ON \
+            -DLUDUS_EDITOR_SENTRY_DSN="$EDITOR_DSN"
+          cmake --build --preset macos-clang-development --target ludus_editor
+      - name: Stage the app with its runtime dependencies
+        shell: bash
+        run: |
+          mkdir -p "$EDITOR_STAGE"
+          app="$EDITOR_STAGE/Ludus Editor.app"
+          ditto "$EDITOR_BUILD/ludus_editor.app" "$app"
+          handler="$app/Contents/MacOS/ludus_crash_handler"
+          test -x "$handler"
+          test -d "$app/Contents/Resources/crash-reporting-licenses"
+          "$(brew --prefix qtbase)/bin/macdeployqt" "$app" \
+            "-executable=$handler" -no-strip
+          test -f "$app/Contents/PlugIns/platforms/libqcocoa.dylib"
+          codesign --verify --deep --strict "$app"
+      - name: Install pinned Sentry CLI
+        shell: bash
+        run: |
+          # Digest from the upstream 2.58.2 GitHub release asset.
+          cli="$RUNNER_TEMP/sentry-cli"
+          curl --fail --silent --show-error --location --retry 3 \
+            https://github.com/getsentry/sentry-cli/releases/download/2.58.2/sentry-cli-Darwin-arm64 \
+            --output "$cli"
+          echo "f84d5716d74ea4b1355c64ef6cb6a14f2097ab2541c9747b7aee4bad39a647e4  $cli" | shasum -a 256 --check
+          chmod +x "$cli"
+      - name: Verify Mach-O UUIDs and upload matching debug files
+        env:
+          SENTRY_AUTH_TOKEN: ${{ secrets.SENTRY_AUTH_TOKEN }}
+        shell: bash
+        run: |
+          python3 scripts/python/macos_editor_symbols.py "$RUNNER_TEMP/sentry-cli" \
+            "$EDITOR_STAGE/Ludus Editor.app/Contents/MacOS/ludus_editor" \
+            "$EDITOR_BUILD/ludus_editor.app.dSYM/Contents/Resources/DWARF/ludus_editor"
+      - name: Archive the verified package
+        shell: bash
+        run: |
+          ditto -c -k --keepParent "$EDITOR_STAGE/Ludus Editor.app" "$EDITOR_STAGE/Ludus-Editor-macOS-arm64.zip"
+      - name: Publish the tester package
+        uses: actions/upload-artifact@v4
+        with:
+          name: ludus-editor-macos-arm64-${{ github.sha }}-${{ github.run_attempt }}
+          path: out/macos-editor-distribution/Ludus-Editor-macOS-arm64.zip
+          if-no-files-found: error
+          compression-level: 0

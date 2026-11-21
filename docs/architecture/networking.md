@@ -1,9 +1,8 @@
 # Networking architecture
 
-Status: N0/N1 protocol-core implementation. Session, Internet transports,
-replication and prediction below are planned, with separate acceptance gates.
-This document defines the intended system; it does not claim a shipping online
-multiplayer engine, measured AAA-scale throughput, or a universally best backend.
+N0 and N1 provide the portable protocol core. N2 adds a build-tree session
+and an opt-in native transport qualification. Replication, prediction and
+browser interop have separate acceptance gates.
 
 ## Goals and initial design
 
@@ -48,9 +47,11 @@ only FoundationBase. It reuses FoundationBase byte-order codecs and contains non
 message envelope, serial arithmetic, an outbound queue, and a link simulator.
 Both native and Emscripten configure it; it makes no socket or browser API calls.
 
-`NetworkSession` will use FoundationTime for host timestamps and own connection generations, compatibility negotiation,
-bounded ingress, deadlines, liveness, rate limits, and backend lifetime. It has
-no dependency on game objects. Backend state and third-party headers stay private.
+`Ludus::NetworkSession` uses FoundationTime timestamps supplied by its owner.
+It owns connection generations, compatibility and admission, bounded ingress,
+and negotiation and send-stall deadlines. The native adapter owns connection
+liveness and lifetime. Neither target depends on game objects. The N2 session
+and backend stay in the build tree while their API is qualified.
 
 `NetworkReplication` will map registered game schemas and network object IDs to
 application messages. An explicit bridge reads/writes game components at tick
@@ -63,9 +64,10 @@ Prefer an established secure, congestion-controlled message transport over
 maintaining a second UDP reliability, crypto, NAT, or pacing implementation.
 [Valve's GameNetworkingSockets](https://github.com/ValveSoftware/GameNetworkingSockets)
 is the native candidate: it exposes reliable/unreliable messages and supports
-message lanes. Steam relay/account integrations require their own product setup;
-open-source sockets alone do not imply Steam services. Pin, build, audit licensing
-and exception behavior, and exercise a headless client/server spike before adoption.
+message lanes. Steam relay and account integrations require their own product setup. The
+opt-in N2 profile exercises authenticated client/server operation over direct
+UDP. [Native transport qualification](#native-transport-qualification) records
+the dependency, authentication boundary and test commands.
 
 [WebTransport](https://www.w3.org/TR/webtransport/) is the browser candidate.
 Its datagrams and streams require a compatible server endpoint and browser
@@ -82,13 +84,12 @@ TCP head-of-line behavior is unsuitable as an invisible fallback for real-time
 snapshots. WebRTC is an alternative when browser peer connectivity is a product
 requirement; raw UDP/ENet require additional security and service decisions.
 
-The future internal adapter contract uses `Open`, `Poll`, `Send`, `Close`, and
-`GetStats`, explicit statuses including `WouldBlock`/`Unsupported`, and message
-ownership. It advertises datagram/reliable-lane capability, negotiated message
-bounds, maximum connections, and encryption/authentication readiness. Poll copies
-into caller-owned ingress buffers and releases backend-owned messages promptly.
-No C++ exceptions may cross the adapter. One session owner drives it; if a library
-uses internal threads, callbacks enter a bounded queue and publish no world state.
+The internal adapter exposes explicit connection and send outcomes.
+`Receive` copies into caller-owned buffers and releases native messages
+promptly. `Send` copies on acceptance and returns `WouldBlock` when the native
+send limit is reached. One session owner drives the adapter. GNS services UDP
+on its own worker and dispatches connection events on the polling owner
+thread. Callbacks publish no world state.
 
 ## Tick ownership and bounded work
 
@@ -227,21 +228,73 @@ block unrelated snapshot traffic. Server rewind for hits is bounded by server
 history and authoritative eligibility; client timestamps never choose unlimited
 rewind or advance simulation time.
 
-## Lifecycle and security (planned)
+## Session lifecycle and admission
 
-States: Idle -> Connecting -> Negotiating -> Synchronizing -> Active -> Closing
--> Closed, with explicit terminal reason and deadlines. A reconnect obtains a
-fresh generation/epoch and resets queues/history. Index-plus-generation handles
-reject delayed callbacks and prevent accidental reuse of closed connections.
-Only backend-authenticated, admitted peers enter the application receive path.
+The N2 session owns one peer. Its caller drives it from Idle through Connecting
+and Negotiating to Active or Closed. Closed retains a terminal reason. A new
+attempt increments the local generation and resets queues and sequence windows.
+Each server owner supplies increasing epochs for its peer. Clients require an
+epoch above the highest one previously accepted by that client session. A server
+that persists client sessions across its own restart needs an epoch allocator
+whose values continue to advance.
 
-Use external identity/session tickets with expiry, intended server/audience and
-single-use/replay policy. The backend authenticates the encrypted channel;
-application admission binds the ticket to that connection. Validate per-kind
-sender permissions and command budgets even for authenticated peers. No raw
-password handling, custom ciphers, proof by epoch/checksum, unauthenticated
-server-amplifying responses, or uncapped fragment allocation in the engine core.
-Account services, matchmaking, relays, NAT and orchestration are separate adapters.
+Negotiation runs on reliable Control after native transport authentication.
+Hello carries the application protocol, schema and content fingerprints, a
+proposed message bound and an opaque ticket. Welcome confirms compatibility,
+selects the lower message bound and supplies the epoch. Ready confirms the
+client received that choice. The server can hold a bounded amount of early
+reliable Bulk until Ready arrives, since Bulk has independent ordering.
+Application validation runs before sequence-window commit, and delivery follows
+commit on the session's owner thread. Full reliable sends retain their bytes
+until accepted or until the send-stall deadline closes the attempt.
+
+The server's admission callback receives the transport-authenticated peer
+identity and a borrowed ticket. The external issuer and admission policy own
+ticket authenticity, expiry, audience, replay prevention and authorization.
+The N2 fixture supplies a test issuer and a one-use ticket policy so it can
+exercise that boundary without an account service.
+
+The application still validates sender permissions and command budgets for
+each kind. The session epoch separates connection lifetimes. GNS verifies
+credentials and encrypts the channel. Account services, matchmaking, relays,
+NAT and orchestration are separate adapters.
+
+## Native transport qualification
+
+Enable `LUDUS_BUILD_NETWORK_NATIVE_PROBE=ON` on a native Linux or macOS
+development configuration with tests enabled, OpenSSL 3 Crypto, and a matching
+Protobuf C++ library and `protoc`. The opt-in configuration fetches and verifies
+[GameNetworkingSockets v1.6.1](https://github.com/ValveSoftware/GameNetworkingSockets/releases/tag/v1.6.1)
+at revision `d534c19aa760df3fb75fd20db13ba1932b8a5463` (BSD-3-Clause).
+The probe links the pinned static library privately and builds its C++ objects
+with exceptions disabled. The transport and its certificate integration
+remain private build-tree targets.
+
+The native runtime uses one explicitly supplied trust root per process. An
+external issuer signs the GNS certificate request for each endpoint. The
+adapter requires an encrypted connection and matches the remote GNS
+certificate identity to the peer configured by its caller. The narrowly scoped
+bridge uses the pinned upstream trust store and certificate validation, with
+certificate expiry checked against the host wall clock. GNS remains responsible
+for encryption, retransmission and congestion control. The probe uses a single
+connection per session, with separate reliable Control and Bulk lanes and
+unreliable Input and Snapshot lanes.
+
+From the configured build tree, run the two-endpoint gate and the deterministic
+core and session tests:
+
+```sh
+cmake --build <build-directory> --target ludus_network_native_acceptance ludus_network_session_tests ludus_network_core_tests
+ctest --test-dir <build-directory> --output-on-failure -R '^ludus_network_(native_acceptance|session_tests|core_tests)$'
+```
+
+The native gate uses a real loopback UDP listener and a separately credentialed
+client interface. It rejects expired, wrong-audience and replayed tickets and
+a peer with the wrong certificate identity. It forces packet loss and native
+send-buffer saturation, then requires ordered reliable delivery after the
+link recovers. A new connection must reject an old-epoch frame and accept the
+first frame of its new generation. The deterministic session tests also drive
+N1's fault simulator and check budget and failure behavior.
 
 ## Debuggability and performance gates
 
@@ -269,10 +322,8 @@ FIFO wrap, ownership, seeded faults and an integrated send/receive path. Install
 SDK tests exercise exported symbols and public headers. Native debug/development,
 ASan/UBSan, pinned format/tidy, standalone headers and web compilation gate review.
 
-N2+ adds fuzz corpora and long adversarial soak tests for schemas/session; real
-localhost server/client tests; rejected unauthenticated/expired-ticket traffic;
-reconnect generations; reliable loss recovery; backend backpressure; browser
-interop; and load/performance tests. Report p50/p95/p99 tick/poll/decode costs,
+Later slices add fuzz corpora, long adversarial soak tests, browser interop,
+and load and performance tests. Report p50/p95/p99 tick/poll/decode costs,
 bytes per client/tick, queue age, correction rate and allocations under defined
 loss/jitter/bandwidth profiles. Do not claim optimization from loopback throughput
 alone. Embedded N1 storage allocates no heap on hot paths; memory footprint must
@@ -285,7 +336,7 @@ move this storage behind explicit allocator-backed session ownership.
 | --- | --- | --- | --- |
 | N0 | Architecture, decision record, Gems review | Clear authority/ownership/budgets | Implemented |
 | N1 | Portable codec/window/queue/fault simulator and SDK export | Native, sanitizers, static analysis, SDK and web core builds | Implemented; validation reported in PR |
-| N2 | Session + pinned native transport spike | Two real endpoints, authenticated admission, reconnect, loss/backpressure | Planned |
+| N2 | Session + pinned native transport spike | Two real endpoints, authenticated admission, reconnect, loss/backpressure | Opt-in qualification |
 | N3 | Explicit schemas + spawn/despawn + relevance + keyframes | Multi-client headless demo, object generation and baseline tests | Planned |
 | N4 | Input prediction/reconciliation + interpolation + bounded rewind | Loss/jitter journeys with bounded history and correction measurements | Planned |
 | N5 | Browser transport/server interop + inspector/load tooling | Browser/native interop and defined 16/128-peer performance gates | Planned |

@@ -3,8 +3,12 @@ import argparse
 import json
 from pathlib import Path
 import subprocess
+import sys
 import tempfile
 from unittest.mock import patch
+
+# ray_storage.cpp's exit status when the adapter has no native ray queries.
+CONSUMER_SKIPPED = 77
 
 
 def check_layout(package, profile):
@@ -44,6 +48,9 @@ def check_sensitivity(manifest, helper, compiler, cross, consumer):
         result = subprocess.run([consumer, root, runtime.name], stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
                                 text=True, check=False)
         print(result.stdout, end='')
+        if result.returncode == CONSUMER_SKIPPED:
+            # The adapter has no native ray queries, so the perturbed package cannot run either.
+            sys.exit(CONSUMER_SKIPPED)
         if result.returncode != 1 or 'Pixel 0 returned (6, 6, 10) after 2 samples, expected (14, 6, 10)' not in result.stdout:
             raise ValueError(f'perturbed package failed to demonstrate the expected field mismatch (exit {result.returncode})')
 

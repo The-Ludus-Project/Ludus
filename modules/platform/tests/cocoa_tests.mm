@@ -410,29 +410,35 @@ TEST_CASE("Standalone Cocoa capture coexists with held movement and releases on 
         REQUIRE(native.keyWindow == YES);
         REQUIRE(window->HandleEvent({}));
 
-        const auto postMotion = [](int32 horizontal, int32 vertical, float64 timestamp) {
+        // Whole-point native deltas; one argument keeps them apart from the timestamp.
+        struct PointerDelta final
+        {
+            int32 Horizontal = 0;
+            int32 Vertical = 0;
+        };
+        const auto postMotion = [](PointerDelta delta, float64 timestamp) {
             CGEventRef nativeEvent =
                 CGEventCreateMouseEvent(nullptr, kCGEventMouseMoved, CGPointZero, kCGMouseButtonLeft);
             REQUIRE(nativeEvent != nullptr);
             constexpr float64 NANOSECONDS_PER_SECOND = 1000000000;
             CGEventSetTimestamp(nativeEvent, static_cast<CGEventTimestamp>(timestamp * NANOSECONDS_PER_SECOND));
-            CGEventSetIntegerValueField(nativeEvent, kCGMouseEventDeltaX, horizontal);
-            CGEventSetIntegerValueField(nativeEvent, kCGMouseEventDeltaY, vertical);
+            CGEventSetIntegerValueField(nativeEvent, kCGMouseEventDeltaX, delta.Horizontal);
+            CGEventSetIntegerValueField(nativeEvent, kCGMouseEventDeltaY, delta.Vertical);
             NSEvent* event = [NSEvent eventWithCGEvent:nativeEvent];
             CFRelease(nativeEvent);
             REQUIRE(event != nil);
             [NSApp postEvent:event atStart:NO];
         };
-        postMotion(5, 6, NSProcessInfo.processInfo.systemUptime);
+        postMotion({ .Horizontal = 5, .Vertical = 6 }, NSProcessInfo.processInfo.systemUptime);
         REQUIRE(window->HandleEvent({}));
         CHECK(window->TakeRelativePointerMotion().Horizontal == 0);
 
         REQUIRE(window->TryCaptureRelativePointer());
         REQUIRE(window->TryCaptureRelativePointer());
         PostKey(native, NSEventTypeKeyDown, 0x0D);
-        postMotion(100, 100, NSProcessInfo.processInfo.systemUptime - 1);
-        postMotion(5, -6, NSProcessInfo.processInfo.systemUptime);
-        postMotion(-1, 4, NSProcessInfo.processInfo.systemUptime);
+        postMotion({ .Horizontal = 100, .Vertical = 100 }, NSProcessInfo.processInfo.systemUptime - 1);
+        postMotion({ .Horizontal = 5, .Vertical = -6 }, NSProcessInfo.processInfo.systemUptime);
+        postMotion({ .Horizontal = -1, .Vertical = 4 }, NSProcessInfo.processInfo.systemUptime);
         REQUIRE(window->HandleEvent({}));
         REQUIRE(probe.Input.ConsumeStep(1) == ludus::input::StepStatus::Ok);
         const usize forwardKey = ludus::input::KeyIndex(Key::KeyW);
@@ -446,7 +452,7 @@ TEST_CASE("Standalone Cocoa capture coexists with held movement and releases on 
         UniquePtr<Window> alternate = MakeWindow("Ludus focus target");
         REQUIRE(window->HandleEvent({}));
         REQUIRE(Native(*alternate).keyWindow == YES);
-        postMotion(5, 6, NSProcessInfo.processInfo.systemUptime);
+        postMotion({ .Horizontal = 5, .Vertical = 6 }, NSProcessInfo.processInfo.systemUptime);
         REQUIRE(window->HandleEvent({}));
         CHECK(window->TakeRelativePointerMotion().Horizontal == 0);
         CHECK_FALSE(window->TryCaptureRelativePointer());
@@ -471,7 +477,7 @@ TEST_CASE("Standalone Cocoa capture coexists with held movement and releases on 
         REQUIRE(alternate->HandleEvent({}));
         REQUIRE(alternate->TryCaptureRelativePointer());
         alternate->ReleaseRelativePointer();
-        postMotion(5, 6, NSProcessInfo.processInfo.systemUptime);
+        postMotion({ .Horizontal = 5, .Vertical = 6 }, NSProcessInfo.processInfo.systemUptime);
         REQUIRE(alternate->HandleEvent({}));
         CHECK(alternate->TakeRelativePointerMotion().Horizontal == 0);
     }

@@ -567,6 +567,8 @@ class ToolContext:
     tooling_root: Path
     engine: Any
     cmake_targets: Any
+    editor_executable: Optional[Path] = None
+    builtin_player: Optional[Path] = None
 
 
 @dataclass
@@ -970,6 +972,8 @@ class Operation:
             if self._operation == "project_create":
                 return self._execute_setup(None)
             descriptor = self._load_clean_descriptor()
+            if self._operation == "play_world":
+                return self._play_world(descriptor)
             if self._operation in ("project_check", "project_setup"):
                 return self._execute_setup(descriptor)
             if self._operation in ("release_init", "package"):
@@ -1318,27 +1322,61 @@ class Operation:
         except self._context.engine.EngineError as exc:
             raise _StageFailed(self._stage, "TargetInvalid", None, message=str(exc)) from exc
 
+    def _play_world(self, descriptor: editor_project.Descriptor) -> OperationResult:
+        import tempfile
+
+        editor = self._context.editor_executable
+        player = self._context.builtin_player
+        if (platform.system() != "Darwin" or editor is None or player is None
+                or not all(path.is_absolute() and path.is_file() and os.access(path, os.X_OK)
+                           for path in (editor, player))):
+            raise _StageFailed("launching", "SpawnFailed", None,
+                               message="Install an Editor build with the macOS Metal first-person player.")
+        root = (self._project_path.parent / descriptor.source_dir).resolve()
+        env = os.environ.copy()
+        env.pop(HOSTED_WINDOW_VARIABLE, None)
+        world = self._options["world"]
+        spawn = self._options["spawn"]
+        with tempfile.TemporaryDirectory(prefix="ludus-play-") as directory:
+            snapshot = str(Path(directory) / "world.luplay")
+            self._stage = "configuring"
+            self._writer.phase(self._stage)
+            prepare = [str(editor), "--prepare-world", str(root), world, "raster", snapshot]
+            self._writer.command(self._stage, prepare, str(root))
+            self._check_cancel()
+            report = self._supervisor.run_command(self._stage, OwnedProcess(prepare, str(root), env))
+            if not report.confirmed:
+                raise _CleanupUnknown(self._stage, report)
+            if report.exit_code != 0 or report.signal is not None:
+                raise _StageFailed(self._stage, "RuntimeFailed", report, message=(
+                    f"Could not prepare {world}. See the preparation error in Output, repair the World and try Play again."))
+            return self._run_runtime(player, Path(directory), [snapshot, spawn], env, is_builtin=True)
+
     def _launch_runtime(self, plan: Plan, artifact: Path) -> OperationResult:
+        return self._run_runtime(artifact, plan.run_cwd, plan.descriptor.run_args, plan.env)
+
+    def _run_runtime(self, artifact: Path, cwd: Path, arguments: list[str], env: dict[str, str],
+                     *, is_builtin: bool = False) -> OperationResult:
         self._stage = "launching"
         self._writer.phase("launching")
-        run_argv = [str(artifact), *plan.descriptor.run_args]
-        self._writer.command("launching", run_argv, str(plan.run_cwd))
-        if not plan.run_cwd.is_dir():
+        run_argv = [str(artifact), *arguments]
+        self._writer.command("launching", run_argv, str(cwd))
+        if not cwd.is_dir():
             raise _StageFailed("launching", "SpawnFailed", None,
-                               message=f"run working directory does not exist: {plan.run_cwd}")
+                               message=f"run working directory does not exist: {cwd}")
         self._check_cancel()
-        runtime_env = plan.env
+        runtime_env = env
         hosted_window = self._options.get("hosted_window")
         if hosted_window:
             # Play in the editor viewport: the game's window is the editor's viewport.
-            runtime_env = {**plan.env, HOSTED_WINDOW_VARIABLE: hosted_window}
+            runtime_env = {**env, HOSTED_WINDOW_VARIABLE: hosted_window}
         try:
-            child = OwnedProcess(run_argv, str(plan.run_cwd), runtime_env)
+            child = OwnedProcess(run_argv, str(cwd), runtime_env)
         except OSError as exc:
             raise _StageFailed("launching", "SpawnFailed", None, message=str(exc)) from exc
         self._stage = "running"
         self._writer.phase("running")
-        self._writer.runtime_started(child.pid, str(artifact), str(plan.run_cwd), plan.descriptor.run_args)
+        self._writer.runtime_started(child.pid, str(artifact), str(cwd), arguments)
         try:
             report = self._supervisor.run_command("running", child)
         except Cancelled as exc:
@@ -1358,11 +1396,14 @@ class Operation:
                                    exit_code=report.exit_code, signal=report.signal)
         if report.signal is not None:
             return OperationResult("failed", "running", "RuntimeSignaled",
-                                   f"runtime terminated by signal {report.signal}",
+                                   (f"The player stopped unexpectedly (signal {report.signal}). See Output and try Play again."
+                                    if is_builtin else f"runtime terminated by signal {report.signal}"),
                                    exit_code=None, signal=report.signal)
         if report.exit_code not in (0, None):
             return OperationResult("failed", "running", "RuntimeFailed",
-                                   f"runtime exited with code {report.exit_code}",
+                                   ("The first-person player could not continue. Check its diagnostic in Output, "
+                                    "repair the spawn or runtime content and try Play again."
+                                    if is_builtin else f"runtime exited with code {report.exit_code}"),
                                    exit_code=report.exit_code)
         return OperationResult("success", "running", "Ok", "runtime exited cleanly",
                                exit_code=report.exit_code)
@@ -1429,7 +1470,7 @@ def _validate_request(message: dict) -> tuple[str, str, Path, str]:
     except ValueError as exc:
         raise ProtocolError("request job is not hex") from exc
     operation = message.get("operation")
-    if operation not in ("configure", "build", "build_run", "build_debug", "build_generation", "cook_scripts", "inspect_setup", "release_init", "package", "project_check", "project_setup", "project_create"):
+    if operation not in ("configure", "build", "build_run", "play_world", "build_debug", "build_generation", "cook_scripts", "inspect_setup", "release_init", "package", "project_check", "project_setup", "project_create"):
         raise ProtocolError("unknown operation")
     project = message.get("project")
     if not isinstance(project, str) or not os.path.isabs(project):
@@ -1460,11 +1501,19 @@ def _validate_request(message: dict) -> tuple[str, str, Path, str]:
         value = message.get(key)
         if not isinstance(value, str) or len(value.encode()) > maximum or any(ord(c) < 32 for c in value):
             raise ProtocolError("invalid release request field: " + key)
+    if operation == "play_world":
+        world = message.get("world")
+        spawn = message.get("spawn")
+        if (not isinstance(world, str) or not world or Path(world).is_absolute()
+                or ".." in Path(world).parts or len(world.encode()) > 4096
+                or not isinstance(spawn, str) or not spawn or len(spawn.encode()) > 256
+                or any(ord(c) < 32 for c in world + spawn)):
+            raise ProtocolError("play_world needs a project-relative World and a spawn entity")
     if "hosted_window" in message:
         hosted = message.get("hosted_window")
-        if (operation != "build_run" or not isinstance(hosted, str) or len(hosted.encode()) > MAX_HOSTED_WINDOW_BYTES
+        if (operation not in ("build_run", "play_world") or not isinstance(hosted, str) or len(hosted.encode()) > MAX_HOSTED_WINDOW_BYTES
                 or HOSTED_WINDOW_ADDRESS.fullmatch(hosted) is None):
-            raise ProtocolError("hosted_window must be a build_run channel address")
+            raise ProtocolError("hosted_window must be a game launch channel address")
     return job, operation, Path(project), expected
 
 
@@ -1575,10 +1624,14 @@ def main(argv: Optional[list[str]] = None) -> int:
     parser.add_argument("--stdio", action="store_true", required=True,
                         help="run the one-operation stdio protocol")
     parser.add_argument("--tooling-root", required=True, help="absolute trusted Ludus tooling checkout")
+    parser.add_argument("--editor-executable", type=Path)
+    parser.add_argument("--builtin-player", type=Path)
     args = parser.parse_args(argv)
 
     tooling_root = Path(args.tooling_root).resolve()
     context = _make_context(tooling_root)
+    context.editor_executable = args.editor_executable
+    context.builtin_player = args.builtin_player
     return run_stdio(context, sys.stdin.fileno(), sys.stdout.fileno())
 
 

@@ -37,7 +37,7 @@ const QString LOCK_NAME = QStringLiteral(".ludus-editor-render-graph.lock");
 bool IsAuthoredSource(const QString& path)
 {
     return path.endsWith(QStringLiteral(".lurender.json")) || path.endsWith(QStringLiteral(".lushader.json")) ||
-           path.endsWith(QStringLiteral(".slang"));
+           IsRenderGraphShaderSource(path);
 }
 
 void AppendString(const QString& text, QByteArray& inoutBytes)
@@ -1084,11 +1084,12 @@ RenderGraphDocumentStatus RenderGraphDocument::editConfiguration(const QString& 
 RenderGraphDocumentStatus RenderGraphDocument::ReplaceNode(const QString& file,
                                                            const QString& configuration,
                                                            const QJsonObject& node,
-                                                           QString* outErrorOrNull)
+                                                           QString* outErrorOrNull,
+                                                           RenderGraphShaderLanguage newShaderLanguage)
 {
     if (IsPipelineNode(node.value(QStringLiteral("kind")).toString()) == true)
     {
-        return ApplyPipeline(file, configuration, node, outErrorOrNull);
+        return ApplyPipeline(file, configuration, node, outErrorOrNull, newShaderLanguage);
     }
     if (node.value(QStringLiteral("kind")) == QStringLiteral("Subgraph"))
     {
@@ -1156,7 +1157,8 @@ RenderGraphDocumentStatus RenderGraphDocument::ReplaceNode(const QString& file,
 RenderGraphDocumentStatus RenderGraphDocument::ApplyPipeline(const QString& file,
                                                              const QString& configuration,
                                                              const QJsonObject& node,
-                                                             QString* outErrorOrNull)
+                                                             QString* outErrorOrNull,
+                                                             RenderGraphShaderLanguage newShaderLanguage)
 {
     if (outErrorOrNull != nullptr)
     {
@@ -1192,8 +1194,13 @@ RenderGraphDocumentStatus RenderGraphDocument::ApplyPipeline(const QString& file
             previousNode = value.toObject();
         }
     }
-    const RenderGraphDocumentStatus status =
-        PreparePipelineShaders(candidate, pipeline, previousNode, manifest, mPackageRoot, outErrorOrNull);
+    const RenderGraphDocumentStatus status = PreparePipelineShaders(candidate,
+                                                                    pipeline,
+                                                                    previousNode,
+                                                                    manifest,
+                                                                    mPackageRoot,
+                                                                    newShaderLanguage,
+                                                                    outErrorOrNull);
     if (status != RenderGraphDocumentStatus::Ok)
     {
         return status;

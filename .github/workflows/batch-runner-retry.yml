@@ -1,0 +1,49 @@
+name: Batch runner retry
+
+# Hosted macOS ARM capacity can run out: GitHub then cancels a queued job with
+# "The job was not acquired by Runner of type hosted even after multiple attempts".
+# Such a cancellation says nothing about the code, so this workflow re-runs those
+# jobs after the batch completes, a bounded number of times, and reports a
+# capacity failure when they still find no runner. A retried job starts only
+# after every other job in the run has finished, so it asks for one runner alone.
+# Thanks to GitHub, "Events that trigger workflows", workflow_run: it runs the
+# default branch's definition after the batch run completes.
+# https://docs.github.com/en/actions/reference/workflows-and-actions/events-that-trigger-workflows#workflow_run
+# Thanks to GitHub, "Re-running workflows and jobs": a re-run job also re-runs the
+# jobs that depend on it, and the others keep their results.
+# https://docs.github.com/en/actions/how-tos/manage-workflow-runs/re-run-workflows-and-jobs
+on:
+  workflow_run:
+    workflows: [Batched integration and promotion]
+    types: [completed]
+    branches: [main]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: batch-runner-retry
+  cancel-in-progress: false
+
+jobs:
+  retry:
+    name: Retry jobs that found no runner
+    # One retry job per batch run: its own loop covers every attempt, so the
+    # completion of a re-run attempt never starts a second retry job.
+    if: github.event.workflow_run.run_attempt == 1 && github.event.workflow_run.conclusion != 'success'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 360
+    permissions:
+      contents: read
+      actions: write
+      checks: read
+    steps:
+      # Trusted default-branch revision; no candidate code runs here.
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Re-run jobs GitHub cancelled before a runner accepted them
+        env:
+          GH_TOKEN: ${{ github.token }}
+          BATCH_RUN_ID: ${{ github.event.workflow_run.id }}
+        run: python3 scripts/python/batch_ci.py retry-runners

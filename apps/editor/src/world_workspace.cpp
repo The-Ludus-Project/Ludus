@@ -1346,9 +1346,10 @@ WorldWorkspace::WorldWorkspace(const ToolingPaths& tooling, QWidget* parent)
                           .arg(targets.size())
                     : QStringLiteral("Component added with project defaults."));
     });
-    connect(Apply_, &QPushButton::clicked, this, [this]() { (void)Apply(); });
+    connect(Apply_, &QPushButton::clicked, this, [this]() { requestApply(); });
     connect(Reset_, &QPushButton::clicked, this, [this]() {
         DraftTimer_.stop();
+        mIsApplyQueued = false;
         Pending_ = false;
         PreviewDraft();
         Render();
@@ -1384,6 +1385,7 @@ void WorldWorkspace::SetProject(const QString& root, foundation::uint64 epoch)
     }
     DraftTimer_.stop();
     DraftPreview_ = false;
+    mIsApplyQueued = false;
     StopPreview();
     Render_->Preview().RestoreNavigation({});
     Scene_->RestoreNavigation({});
@@ -1925,6 +1927,13 @@ void WorldWorkspace::SceneCompleted(bool accepted)
         {
             Changed();
         }
+        if (mIsApplyQueued == true)
+        {
+            // Apply reads the fields now, so the edit holds what was typed after the click too, and
+            // a refused draft reports its field here.
+            mIsApplyQueued = false;
+            static_cast<void>(Apply());
+        }
         return;
     }
 
@@ -2057,9 +2066,13 @@ void WorldWorkspace::Render()
     BoundViewport_->setVisible(scene == false);
     Render_->setVisible(scene == false);
     const bool isPlayable = IsWorldDemo(Document_);
-    PlayButton_->setVisible(isPlayable);
+    bool canPlayBuiltIn = false;
+#if defined(Q_OS_MACOS)
+    canPlayBuiltIn = Document_.Loaded() == true && Document_.HasBuiltInSchema() == true;
+#endif
+    PlayButton_->setVisible(isPlayable == true || canPlayBuiltIn == true);
     // The box only configures Play saved World; without the button it would be an unexplained control.
-    mPlayModeBox->setVisible(isPlayable);
+    mPlayModeBox->setVisible(isPlayable == true || canPlayBuiltIn == true);
     updateShownRenderPreview(scene);
 }
 void WorldWorkspace::renderLights()
@@ -4304,7 +4317,8 @@ void WorldWorkspace::Changed(const QString& message)
     mAddObjectButton->menu()->menuAction()->setVisible(hasPresets);
     Attach_->setEnabled(mSelectedEntities.isEmpty() == false && Pending_ == false &&
                         mComponentMenu->actions().isEmpty() == false && isBusy == false);
-    Apply_->setEnabled(Pending_ && isBusy == false);
+    // A draft preview only shows the fields; Apply clicked during it waits for it (requestApply).
+    Apply_->setEnabled(Pending_ && (isBusy == false || DraftPreview_ == true));
 #if defined(Q_OS_WASM)
     TraceWorldApplyAvailability(Apply_->isEnabled() == true ? 1 : 0);
 #endif
@@ -4840,6 +4854,16 @@ bool WorldWorkspace::SelectEntity(const QString& id)
     Changed();
     return true;
 }
+void WorldWorkspace::requestApply()
+{
+    if (DraftPreview_ == true && Pending_ == true && SceneBusy() == true)
+    {
+        mIsApplyQueued = true;
+        Changed(QStringLiteral("Applying when the preview of these fields finishes…"));
+        return;
+    }
+    static_cast<void>(Apply());
+}
 bool WorldWorkspace::Apply()
 {
     if (SceneBusy())
@@ -5174,20 +5198,23 @@ RenderPreview& WorldWorkspace::GetRenderPreview() noexcept
 {
     return mShownRenderPreviewOrNull != nullptr ? *mShownRenderPreviewOrNull : Render_->Preview();
 }
-bool WorldWorkspace::BeginPlayInViewport(QString& outAddress, QString& outReason)
+PlayViewportStartResult WorldWorkspace::beginPlayInViewport()
 {
-    // Only the bound viewport of a World without an imported scene hosts Play today.
+    if (Document_.Loaded() == true && Document_.HasBuiltInSchema() == true && Render_->isHidden() == true &&
+        Scene_->PreviewRunning() == true)
+    {
+        return Render_->BeginPlayOn(Scene_->GetViewport(), Scene_->GetRenderPreview());
+    }
+    // The bound viewport hosts other Worlds, including the World Demo adapter.
     if (Document_.Loaded() == false || Document_.SceneLevel().isEmpty() == false || Render_->isHidden() == true)
     {
-        outReason = QStringLiteral("Play in the viewport needs this World shown in the World viewport.");
-        return false;
+        return { .Reason = QStringLiteral("Play in the viewport needs this World shown in the World viewport.") };
     }
     if (Render_->Preview().Running() == false)
     {
-        outReason = QStringLiteral("Play in the viewport needs the World viewport running; it is paused.");
-        return false;
+        return { .Reason = QStringLiteral("Play in the viewport needs the World viewport running; it is paused.") };
     }
-    return Render_->BeginPlay(outAddress, outReason);
+    return Render_->BeginPlay();
 }
 PlayMode WorldWorkspace::GetPlayMode() const noexcept
 {
@@ -5208,16 +5235,52 @@ PlayWindow WorldWorkspace::PreparePlay(PlayMode mode, QString& outAddress)
     {
         return PlayWindow::SeparateWindow;
     }
-    QString address;
-    QString reason;
-    if (BeginPlayInViewport(address, reason) == false)
+    PlayViewportStartResult started = beginPlayInViewport();
+    if (started.Address.isEmpty() == true)
     {
-        showPlayUnavailable(reason);
+        showPlayUnavailable(started.Reason);
         return PlayWindow::Unavailable;
     }
-    outAddress = foundation::Move(address);
+    outAddress = foundation::Move(started.Address);
     return PlayWindow::InViewport;
 }
+// NOLINTNEXTLINE(bugprone-easily-swappable-parameters)
+bool WorldWorkspace::GetBuiltInPlaySelection(QString& outWorld, QString& outSpawn, QString& outError) const
+{
+    if (Document_.HasBuiltInSchema() == false || Dirty() == true || QFileInfo(Path_).isFile() == false)
+    {
+        outError = QStringLiteral("Save this built-in World before starting Play.");
+        return false;
+    }
+    const QString relative = QDir(Root_).relativeFilePath(Path_);
+    if (QDir::isAbsolutePath(relative) == true || relative.startsWith(QStringLiteral("../")) == true)
+    {
+        outError = QStringLiteral("Save the World inside the project to play it.");
+        return false;
+    }
+    QStringList spawns;
+    for (const QJsonValueConstRef value : Document_.Draft().value(QStringLiteral("entities")).toArray())
+    {
+        const QString key = Document_.GetEntityKey(value.toObject());
+        if (HasWorldFirstPersonPlayer(Document_, key) == true)
+        {
+            spawns.append(key);
+        }
+    }
+    const QString spawn = spawns.contains(Selected_) == true ? Selected_
+                          : spawns.size() == 1               ? spawns.first()
+                                                             : QString();
+    if (spawn.isEmpty() == true)
+    {
+        outError = spawns.isEmpty() == true ? QStringLiteral("Add a First Person Player to the World and save it.")
+                                            : QStringLiteral("Select the First Person Player to use as the spawn.");
+        return false;
+    }
+    outWorld = relative;
+    outSpawn = spawn;
+    return true;
+}
+
 QString WorldWorkspace::GetPlayUnavailableText() const
 {
     return mPlayUnavailableLabel->isHidden() == true ? QString() : mPlayUnavailableLabel->text();

@@ -428,6 +428,10 @@ class ExecutionTests(unittest.TestCase):
         suffix = b''.join(struct.pack('<I', len(name.encode())) + name.encode() + bytes(-len(name.encode()) % 4)
                           for name in pass_names)
         self.assertTrue(destination.read_bytes().endswith(suffix))
+        self.assertEqual(names['gpu_scopes'], [
+            {'scope_identity': index, 'operations': [name]}
+            for index, name in enumerate(pass_names, start=1)
+        ])
         header = self.root / 'named.hpp'
         execution.emit_runtime(self.output, header)
         self.assertIn('PASS_NAMES.GetData()', header.read_text())

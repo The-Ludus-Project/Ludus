@@ -48,9 +48,10 @@ const std::string_view USAGE =
     "                    [--output FILE] [--report FILE] SOURCE\n"
     "       luslc format [--root DIR] [--check | --write] FILE...\n"
     "       luslc lsp    [--root DIR] [--include-directory DIR]... [--style strict|warn|off]\n"
+    "                    [--define NAME=VALUE]...\n"
     "SOURCE, FILE and --include-directory are '/'-separated paths relative to --root (default: the\n"
     "current directory). --max-specializations is the specialization budget, 1 to 256 (default 256).\n"
-    "--report writes the specializations, groupshared clears, bindings and vertex inputs of the\n"
+    "--report writes specializations, groupshared clears, bindings, vertex inputs and configuration reads of the\n"
     "lowered module. lsp serves the Language Server Protocol on standard input and output; without\n"
     "--root it uses the client's workspace root.\n";
 
@@ -266,6 +267,16 @@ AppendLocation(const Snapshot& snapshot, const language::SourceLocation& locatio
     {
         case language::ResourceKind::Texture2D:
             return "Texture2D";
+        case language::ResourceKind::Texture3D:
+            return "Texture3D";
+        case language::ResourceKind::TextureCube:
+            return "TextureCube";
+        case language::ResourceKind::Texture2DArray:
+            return "Texture2DArray";
+        case language::ResourceKind::DepthTexture2D:
+            return "DepthTexture2D";
+        case language::ResourceKind::ComparisonSampler:
+            return "SamplerComparisonState";
         case language::ResourceKind::RWTexture2D:
             return "RWTexture2D";
         case language::ResourceKind::Sampler:
@@ -283,12 +294,31 @@ AppendLocation(const Snapshot& snapshot, const language::SourceLocation& locatio
 /// The build report of a lowered module, one tab-separated record per line:
 /// `specialization <template location> <name> <generated name>`,
 /// `groupshared-clear <entry location> <variable location> <unpadded bytes>`,
-/// `binding <variable location> <name> <kind> <slot>` and
+/// `binding <variable location> <name> <kind> <slot> [<count>]` and
 /// `vertex-input <entry location> <name> <location>`.
+/// Configured requests also report `configuration-read-mask <bits in --define order>`.
 [[nodiscard]] bool
 ComposeReport(const Snapshot& snapshot, const language::LoweringResult& result, Array<char>& outText) noexcept
 {
     outText.Clear();
+    if (result.ConfigurationReadMask.IsEmpty() == false)
+    {
+        if (AppendText("configuration-read-mask\t", outText) == false)
+        {
+            return false;
+        }
+        for (const ludus::foundation::uint8 readBit : result.ConfigurationReadMask)
+        {
+            if (AppendText(readBit != 0 ? "1" : "0", outText) == false)
+            {
+                return false;
+            }
+        }
+        if (AppendText("\n", outText) == false)
+        {
+            return false;
+        }
+    }
     for (const language::SpecializationRecord& record : result.Specializations)
     {
         if (AppendText("specialization\t", outText) == false ||
@@ -303,6 +333,11 @@ ComposeReport(const Snapshot& snapshot, const language::LoweringResult& result, 
     {
         Line slot;
         slot.AppendUnsigned(record.Slot);
+        if (record.Count > 1)
+        {
+            slot.Append("\t");
+            slot.AppendUnsigned(record.Count);
+        }
         if (AppendText("binding\t", outText) == false || AppendLocation(snapshot, record.Variable, outText) == false ||
             AppendText("\t", outText) == false || AppendText(record.Name.GetView(), outText) == false ||
             AppendText("\t", outText) == false || AppendText(GetResourceKindName(record.Kind), outText) == false ||
@@ -480,6 +515,8 @@ int main(int argc, char** argv)
         server.Root = options.HasRoot == true ? options.Root : std::string_view{};
         server.IncludeDirectories = BorrowedView<const BorrowedView<const char>>(options.IncludeDirectories.GetData(),
                                                                                  options.IncludeDirectoryCount);
+        server.Configuration =
+            BorrowedView<const language::ConfigurationValue>(options.Defines.GetData(), options.DefineCount);
         server.Style = options.Lowering.Check.Style;
         return RunLanguageServer(server);
     }

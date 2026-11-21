@@ -33,6 +33,7 @@
 #include <QAction>
 #include <QApplication>
 #include <QByteArray>
+#include <QCryptographicHash>
 #include <QDir>
 #include <QElapsedTimer>
 #include <QFile>
@@ -686,6 +687,24 @@ void WriteSceneProject(const QString& root, // NOLINT(bugprone-easily-swappable-
     resources.insert(QStringLiteral("scene/main"),
                      MakeRecord(QStringLiteral("scene"), QStringLiteral("main1"), {QStringLiteral("material/brick")}));
     resources.insert(QStringLiteral("license/cc0"), MakeRecord(QStringLiteral("license"), QStringLiteral("cc01")));
+    for (QJsonObject::iterator item = resources.begin(); item != resources.end(); ++item)
+    {
+        QJsonObject record = item.value().toObject();
+        QFile file(QDir(root).filePath(record.value(QStringLiteral("path")).toString()));
+        REQUIRE(file.open(QIODevice::ReadOnly));
+        const QByteArray bytes = file.readAll();
+        record.insert(QStringLiteral("bytes"), bytes.size());
+        record.insert(QStringLiteral("sha256"),
+                      QString::fromLatin1(QCryptographicHash::hash(bytes, QCryptographicHash::Sha256).toHex()));
+        QJsonObject bindings;
+        for (const QJsonValue dependency : record.value(QStringLiteral("dependencies")).toArray())
+        {
+            const QString id = dependency.toString();
+            bindings.insert(id, resources.value(id).toObject().value(QStringLiteral("key")));
+        }
+        record.insert(QStringLiteral("dependency_keys"), bindings);
+        item.value() = record;
+    }
     QJsonObject catalog;
     catalog.insert(QStringLiteral("resources"), resources);
     catalog.insert(QStringLiteral("version"), 1);

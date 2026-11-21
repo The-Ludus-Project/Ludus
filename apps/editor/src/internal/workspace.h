@@ -82,6 +82,7 @@ enum class ActionKind : foundation::uint8
     Configure,
     Build,
     BuildRun,
+    PlayWorld,
     BuildDebug,
     ProjectCheck,
     ProjectSetup,
