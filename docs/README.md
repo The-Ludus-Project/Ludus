@@ -179,6 +179,7 @@ for content changes. Module/sample/tool READMEs link to these owners.
 - [Reflection and serialization](architecture/reflection-serialization.md)
 - [Render graph authoring, shader builds and pipeline management](architecture/render-graph-authoring.md)
 - [Render graph frame capture](architecture/render-graph-frame-capture.md)
+- [Renderer Sampling Architecture](architecture/renderer-sampling.md)
 - [Resource manager architecture](architecture/resource-management.md)
 - [Runtime UI architecture](architecture/ui.md)
 - [S2: dependency cook, source debugging and transactional replacement](architecture/luau-s2.md)

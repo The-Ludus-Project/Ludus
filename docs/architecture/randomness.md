@@ -524,7 +524,8 @@ Renderer quality has a different objective: reducing error and organizing sample
 over dimensions, pixels, and frames. A high-quality IID generator does not replace
 stratified/Sobol sampling or blue-noise masks. Keep those in renderer sampling,
 with explicit sample dimensions and reset/history policy; see the
-[PBRT sampling interface](https://www.pbr-book.org/4ed/Sampling_and_Reconstruction/Sampling_Interface).
+[renderer sampling architecture](renderer-sampling.md#random-coordinates-and-sample-patterns)
+and the [PBRT sampling interface](https://www.pbr-book.org/4ed/Sampling_and_Reconstruction/Sampling_Interface).
 Cosmetic particles, audio variation, and rendering have separate domains and
 owners. Changing render rate, visibility, debug draws, or audio completion timing
 must never advance authoritative simulation streams.
