@@ -34,7 +34,7 @@ public:
     template <core::UnsignedInteger ValueType>
     [[nodiscard]] bool TryRead(ValueType& outValue) noexcept
     {
-        if (core::TryReadLittleEndian(mBytes.subspan(mOffset), outValue) == false)
+        if (core::TryReadLittleEndian({mBytes.data() + mOffset, mBytes.size() - mOffset}, outValue) == false)
         {
             return false;
         }
@@ -67,7 +67,7 @@ public:
     template <core::UnsignedInteger ValueType>
     void Write(ValueType value) noexcept
     {
-        const bool isWritten = core::TryWriteLittleEndian(value, mBytes.subspan(mOffset));
+        const bool isWritten = core::TryWriteLittleEndian(value, {mBytes.data() + mOffset, mBytes.size() - mOffset});
         LUDUS_ASSERT(isWritten == true);
         static_cast<void>(isWritten);
         mOffset += sizeof(ValueType);

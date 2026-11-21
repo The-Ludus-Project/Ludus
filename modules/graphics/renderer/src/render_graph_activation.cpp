@@ -59,7 +59,8 @@ public:
     {
         uint32 value = 0;
         if (mIsOk == false || mBytes.size() - mOffset < sizeof(uint32) ||
-            TryReadLittleEndian(mBytes.subspan(mOffset, sizeof(uint32)), value) == false)
+            TryReadLittleEndian(ludus::foundation::MakeBorrowedView(mBytes.subspan(mOffset, sizeof(uint32))), value) ==
+                false)
         {
             mIsOk = false;
             return 0;
@@ -481,7 +482,9 @@ RenderGraphPackageStatus RenderGraphPackage::State::DecodeStages(ByteReader& ino
             }
             for (usize word = 0; word < view.Words.GetSize(); ++word)
             {
-                static_cast<void>(TryReadLittleEndian(artifact.subspan(word * sizeof(uint32)), view.Words[word]));
+                static_cast<void>(
+                    TryReadLittleEndian(ludus::foundation::MakeBorrowedView(artifact.subspan(word * sizeof(uint32))),
+                                        view.Words[word]));
             }
         }
         else if (target == static_cast<uint32>(format::ShaderTarget::Dxil))

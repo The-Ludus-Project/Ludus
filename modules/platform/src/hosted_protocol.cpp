@@ -1,10 +1,10 @@
 #include "internal/hosted_protocol.hpp"
 
+#include <ludus/foundation/base/borrowed_view.hpp>
 #include <ludus/foundation/base/byte_order.hpp>
 #include <ludus/foundation/strings/utf8.hpp>
 
 #include <cstring>
-#include <span>
 
 namespace ludus::platform::hosted
 {
@@ -30,7 +30,7 @@ public:
             mHasFailed = true;
             return;
         }
-        const std::span<uint8> destination(mBytes.GetDataOrNull() + mSize, sizeof(ValueType));
+        const foundation::BorrowedView<uint8> destination(mBytes.GetDataOrNull() + mSize, sizeof(ValueType));
         mHasFailed = foundation::TryWriteLittleEndian<ValueType>(value, destination) == false;
         mSize += sizeof(ValueType);
     }
@@ -76,7 +76,7 @@ public:
             mHasFailed = true;
             return value;
         }
-        const std::span<const uint8> source(mBytes + mOffset, sizeof(ValueType));
+        const foundation::BorrowedView<const uint8> source(mBytes + mOffset, sizeof(ValueType));
         mHasFailed = foundation::TryReadLittleEndian<ValueType>(source, value) == false;
         mOffset += sizeof(ValueType);
         return value;

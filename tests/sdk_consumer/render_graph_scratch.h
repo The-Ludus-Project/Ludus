@@ -7,8 +7,6 @@
 #include <ludus/foundation/containers/array.hpp>
 #include <ludus/foundation/containers/borrowed_view.hpp>
 
-#include <span>
-
 /// RG4 transient-pooling workload shared by the Renderer GPU tests and the installed
 /// SDK consumer. No admitted cooked graph has a transient attachment that carries useful
 /// work: no pass samples a graph resource, and a scene pass into an unexported target
@@ -28,8 +26,7 @@ using foundation::usize;
 [[nodiscard]] inline bool ReadWord(foundation::BorrowedView<const uint8> bytes, usize offset, uint32& outWord) noexcept
 {
     return offset <= bytes.GetSize() && bytes.GetSize() - offset >= sizeof(uint32) &&
-           foundation::TryReadLittleEndian(std::span<const uint8>{bytes.GetDataOrNull() + offset, sizeof(uint32)},
-                                           outWord);
+           foundation::TryReadLittleEndian({bytes.GetDataOrNull() + offset, sizeof(uint32)}, outWord);
 }
 /// Append one little-endian word.
 inline void WriteWord(foundation::Array<uint8>& inoutBytes, uint32 word) noexcept

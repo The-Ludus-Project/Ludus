@@ -5,7 +5,6 @@
 
 #include <ludus/foundation/base/byte_order.hpp>
 #include <ludus/foundation/containers/array.hpp>
-#include <ludus/foundation/containers/span_compatibility.hpp>
 #include <ludus/foundation/hash/hash.hpp>
 #include <ludus/foundation/math/addressed_random.hpp>
 #include <ludus/foundation/math/scalar.hpp>
@@ -181,12 +180,12 @@ void ReadPages(const terrain::TerrainCookedRevision& revision,
 
 void WriteUint32At(Array<uint8>& inoutBytes, usize offset, uint32 value)
 {
-    REQUIRE(ludus::foundation::TryWriteLittleEndian(value, std::span<uint8>{inoutBytes.GetData() + offset, 4}));
+    REQUIRE(ludus::foundation::TryWriteLittleEndian(value, {inoutBytes.GetData() + offset, 4}));
 }
 
 void WriteUint64At(Array<uint8>& inoutBytes, usize offset, uint64 value)
 {
-    REQUIRE(ludus::foundation::TryWriteLittleEndian(value, std::span<uint8>{inoutBytes.GetData() + offset, 8}));
+    REQUIRE(ludus::foundation::TryWriteLittleEndian(value, {inoutBytes.GetData() + offset, 8}));
 }
 
 /// Recompute the trailing manifest digest after a deliberate field edit, so only the semantic check can fail.

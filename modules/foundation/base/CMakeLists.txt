@@ -94,6 +94,7 @@ target_sources(
             include/ludus/foundation/base/parse_number.hpp
             include/ludus/foundation/base/checked_integer.hpp
             include/ludus/foundation/base/int128.hpp
+            include/ludus/foundation/base/borrowed_view.hpp
             include/ludus/foundation/base/byte_order.hpp
             include/ludus/foundation/base/version.hpp
             "${LUDUS_FOUNDATION_BASE_GENERATED_INCLUDE_DIR}/ludus/foundation/base/build_metadata.hpp"

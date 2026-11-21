@@ -3,6 +3,7 @@
 
 #include <ludus/foundation/base/byte_order.hpp>
 #include <ludus/foundation/base/core.h>
+#include <ludus/foundation/containers/span_compatibility.hpp>
 
 // Thanks to Microsoft and the DirectX Shader Compiler contributors for the container
 // and pipeline state validation layouts in "DxilContainer.h" and
@@ -54,7 +55,8 @@ constexpr usize RUNTIME_VERSION3_BYTES = 52;
 
 [[nodiscard]] bool ReadUint32(std::span<const uint8> bytes, usize offset, uint32& outValue) noexcept
 {
-    return offset <= bytes.size() && core::TryReadLittleEndian(bytes.subspan(offset), outValue) == true;
+    return offset <= bytes.size() &&
+           core::TryReadLittleEndian(MakeBorrowedView(bytes.subspan(offset)), outValue) == true;
 }
 
 [[nodiscard]] uint32 GetShaderKind(ShaderStage stage) noexcept

@@ -301,10 +301,11 @@ Status Write(GameInstance* instance, CheckpointHeader* header, ByteSpan body, us
     {
         return Status::Internal;
     }
-    (void)TryWriteLittleEndian(owner.Tick, bytes);
-    (void)TryWriteLittleEndian(owner.Applied, bytes.subspan(CHECKPOINT_APPLIED_OFFSET));
-    (void)TryWriteLittleEndian(owner.PreviousActions, bytes.subspan(CHECKPOINT_PREVIOUS_ACTIONS_OFFSET));
-    (void)TryWriteLittleEndian(owner.Execution, bytes.subspan(CHECKPOINT_EXECUTION_OFFSET));
+    (void)TryWriteLittleEndian(owner.Tick, {bytes.data(), bytes.size()});
+    (void)TryWriteLittleEndian(owner.Applied, {bytes.data() + CHECKPOINT_APPLIED_OFFSET, sizeof(uint64)});
+    (void)TryWriteLittleEndian(owner.PreviousActions,
+                               {bytes.data() + CHECKPOINT_PREVIOUS_ACTIONS_OFFSET, sizeof(uint64)});
+    (void)TryWriteLittleEndian(owner.Execution, {bytes.data() + CHECKPOINT_EXECUTION_OFFSET, sizeof(uint64)});
     *written = encoded + CHECKPOINT_STATE_OFFSET;
     *header =
     {
@@ -335,10 +336,12 @@ Status Candidate(const CreateInfo* info, const CheckpointHeader* header, ByteVie
     const auto bytes = std::span<const uint8>(body.Data, body.Size);
     uint64 previous_execution = 0;
     if (behavior::DecodeState(project::SCHEMA, bytes.subspan(CHECKPOINT_STATE_OFFSET), owner->State) == false ||
-        TryReadLittleEndian(bytes, owner->Tick) == false ||
-        TryReadLittleEndian(bytes.subspan(CHECKPOINT_APPLIED_OFFSET), owner->Applied) == false ||
-        TryReadLittleEndian(bytes.subspan(CHECKPOINT_PREVIOUS_ACTIONS_OFFSET), owner->PreviousActions) == false ||
-        TryReadLittleEndian(bytes.subspan(CHECKPOINT_EXECUTION_OFFSET), previous_execution) == false ||
+        TryReadLittleEndian({bytes.data(), bytes.size()}, owner->Tick) == false ||
+        TryReadLittleEndian({bytes.data() + CHECKPOINT_APPLIED_OFFSET, sizeof(uint64)}, owner->Applied) == false ||
+        TryReadLittleEndian({bytes.data() + CHECKPOINT_PREVIOUS_ACTIONS_OFFSET, sizeof(uint64)},
+                            owner->PreviousActions) == false ||
+        TryReadLittleEndian({bytes.data() + CHECKPOINT_EXECUTION_OFFSET, sizeof(uint64)}, previous_execution) ==
+            false ||
         previous_execution == ~uint64{0})
     {
         Destroy(reinterpret_cast<GameInstance*>(owner));

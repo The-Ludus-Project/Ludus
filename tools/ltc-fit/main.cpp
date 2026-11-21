@@ -251,8 +251,8 @@ void AppendFloat32Bytes(Array<uint8>& inoutBytes, bool& inoutIsOk, float64 value
 {
     ludus::foundation::StaticArray<uint8, sizeof(float32)> bytes{};
     const uint32 bits = std::bit_cast<uint32>(static_cast<float32>(value));
-    inoutIsOk = inoutIsOk == true &&
-                ludus::foundation::core::TryWriteLittleEndian(bits, std::span<uint8>(bytes.GetData(), bytes.GetSize()));
+    inoutIsOk =
+        inoutIsOk == true && ludus::foundation::core::TryWriteLittleEndian(bits, {bytes.GetData(), bytes.GetSize()});
     for (usize i = 0; i < bytes.GetSize(); ++i)
     {
         inoutIsOk = inoutIsOk == true && inoutBytes.TryAdd(bytes[i]) == true;

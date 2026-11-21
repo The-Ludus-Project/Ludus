@@ -3,6 +3,7 @@
 #include "internal/terrain_tile_heights.h"
 
 #include <ludus/content/terrain_format/terrain_format.h>
+#include <ludus/foundation/base/borrowed_view.hpp>
 #include <ludus/foundation/base/byte_order.hpp>
 #include <ludus/foundation/base/checked_integer.hpp>
 #include <ludus/foundation/containers/span_compatibility.hpp>
@@ -317,7 +318,7 @@ usize GetPayloadSampleIndex(uint32 cellsPerPage, PageSample sample) noexcept
 int64 ReadCode(BorrowedView<const uint8> payload, TerrainHeightEncoding encoding, usize sampleIndex) noexcept
 {
     const usize width = GetCodeBytes(encoding);
-    const std::span<const uint8> bytes{payload.GetDataOrNull() + (sampleIndex * width), width};
+    const foundation::BorrowedView<const uint8> bytes{payload.GetDataOrNull() + (sampleIndex * width), width};
     if (encoding == TerrainHeightEncoding::Unsigned16)
     {
         uint16 code = 0;
@@ -333,7 +334,7 @@ int64 ReadCode(BorrowedView<const uint8> payload, TerrainHeightEncoding encoding
 void WriteCode(int64 code, TerrainHeightEncoding encoding, usize sampleIndex, BorrowedView<uint8> outPayload) noexcept
 {
     const usize width = GetCodeBytes(encoding);
-    const std::span<uint8> bytes{outPayload.GetDataOrNull() + (sampleIndex * width), width};
+    const foundation::BorrowedView<uint8> bytes{outPayload.GetDataOrNull() + (sampleIndex * width), width};
     if (encoding == TerrainHeightEncoding::Unsigned16)
     {
         LUDUS_REQUIRE(foundation::TryWriteLittleEndian(static_cast<uint16>(code), bytes));
@@ -371,9 +372,7 @@ public:
     void WriteUnsigned(ValueType value) noexcept
     {
         LUDUS_REQUIRE(sizeof(ValueType) <= mBytes.GetSize() - mPosition);
-        LUDUS_REQUIRE(
-            foundation::TryWriteLittleEndian(value,
-                                             std::span<uint8>{mBytes.GetDataOrNull() + mPosition, sizeof(ValueType)}));
+        LUDUS_REQUIRE(foundation::TryWriteLittleEndian(value, {mBytes.GetDataOrNull() + mPosition, sizeof(ValueType)}));
         mPosition += sizeof(ValueType);
     }
 
@@ -452,9 +451,7 @@ public:
         {
             return value;
         }
-        LUDUS_REQUIRE(foundation::TryReadLittleEndian(
-            std::span<const uint8>{mBytes.GetDataOrNull() + mPosition, sizeof(ValueType)},
-            value));
+        LUDUS_REQUIRE(foundation::TryReadLittleEndian({mBytes.GetDataOrNull() + mPosition, sizeof(ValueType)}, value));
         mPosition += sizeof(ValueType);
         return value;
     }

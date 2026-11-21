@@ -227,16 +227,18 @@ enum class Field : uint8
 [[nodiscard]] uint32 ReadUint32(std::span<const uint8> bytes, usize at) noexcept
 {
     uint32 value = 0;
-    return at <= bytes.size() && foundation::core::TryReadLittleEndian(bytes.subspan(at), value) == true ? value : 0;
+    return at <= bytes.size() &&
+                   foundation::core::TryReadLittleEndian(ludus::foundation::MakeBorrowedView(bytes.subspan(at)),
+                                                         value) == true
+               ? value
+               : 0;
 }
 
 /// Little-endian 16-bit component at the start of bytes.
 [[nodiscard]] uint16 ReadUint16(const uint8* bytes) noexcept
 {
     uint16 value = 0;
-    return foundation::core::TryReadLittleEndian(std::span<const uint8>(bytes, UINT16_COMPONENT_BYTES), value) == true
-               ? value
-               : 0;
+    return foundation::core::TryReadLittleEndian({bytes, UINT16_COMPONENT_BYTES}, value) == true ? value : 0;
 }
 
 [[nodiscard]] int32 DecodeBase64Digit(char value) noexcept

@@ -2,6 +2,7 @@
 
 #include <ludus/foundation/base/byte_order.hpp>
 #include <ludus/foundation/containers/array.hpp>
+#include <ludus/foundation/containers/span_compatibility.hpp>
 
 #include <cstring>
 #include <fstream>
@@ -319,10 +320,10 @@ TEST_CASE("S4 package metadata rejection preserves the active catalog")
     bytes.Add(0);
     REQUIRE(provider.Load(ludus::sample::SCHEMA, bytes) == Status::InvalidPackage);
     bytes = good;
-    REQUIRE(TryWriteLittleEndian(uint32{9}, std::span<uint8>{bytes}.subspan(112)));
+    REQUIRE(TryWriteLittleEndian(uint32{9}, MakeBorrowedView(std::span<uint8>{bytes}.subspan(112))));
     REQUIRE(provider.Load(ludus::sample::SCHEMA, bytes) == Status::InvalidPackage);
     bytes = good;
-    REQUIRE(TryWriteLittleEndian(uint32{1}, std::span<uint8>{bytes}.subspan(116)));
+    REQUIRE(TryWriteLittleEndian(uint32{1}, MakeBorrowedView(std::span<uint8>{bytes}.subspan(116))));
     REQUIRE(provider.Load(ludus::sample::SCHEMA, bytes) == Status::InvalidPackage);
     Outcome output;
     Diagnostic diagnostic;

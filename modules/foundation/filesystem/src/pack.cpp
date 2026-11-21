@@ -1,6 +1,7 @@
 #include <ludus/foundation/base/byte_order.hpp>
 #include <ludus/foundation/base/checked_integer.hpp>
 #include <ludus/foundation/containers/sort.hpp>
+#include <ludus/foundation/containers/span_compatibility.hpp>
 #include <ludus/foundation/filesystem/pack.hpp>
 
 #include "internal/pack_codec.hpp"
@@ -27,6 +28,7 @@ namespace ludus::foundation::filesystem
 namespace
 {
 constexpr usize HEADER_BYTES = 80;
+constexpr usize HEADER_CHECKSUM_OFFSET = 68;
 constexpr usize ENTRY_BYTES = 32;
 constexpr usize BLOCK_BYTES = 24;
 constexpr uint8 MAGIC[]{'L', 'U', 'D', 'P', 'A', 'C', 'K', 0};
@@ -66,7 +68,7 @@ struct Reader final
     template <typename T>
     bool Read(T& output) noexcept
     {
-        if (TryReadLittleEndian(Bytes.subspan(Position), output) == false)
+        if (TryReadLittleEndian(ludus::foundation::MakeBorrowedView(Bytes.subspan(Position)), output) == false)
         {
             return false;
         }
@@ -122,7 +124,9 @@ Result ParseHeader(std::span<uint8> bytes, const PackLimits& limits, uint64 arch
         return {Status::CorruptData};
     }
     // Validate the header CRC before trusting feature dispatch or admission sizes.
-    (void)TryWriteLittleEndian(uint32{0}, bytes.subspan(68, 4));
+    (void)TryWriteLittleEndian(
+        uint32{0},
+        ludus::foundation::MakeBorrowedView(bytes.subspan(HEADER_CHECKSUM_OFFSET, sizeof(checksum))));
     if (internal::Crc32(bytes) != checksum)
     {
         return {Status::CorruptData};
