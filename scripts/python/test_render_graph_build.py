@@ -172,26 +172,27 @@ class BuildTests(unittest.TestCase):
         luslc = self.root / 'luslc'
         luslc.write_text('test tool identity')
 
-        def lower(files, builder, tool, source, style, budget, directories, configuration):
+        def lower(files, builder, tool, source, style, budget, directories, configuration, bounds_checks):
+            self.assertFalse(bounds_checks)
             return b'// same lowering at both values', build.language._parse_report(
                 'configuration-read-mask\t10\n', builder, source, configuration)
 
         color['configuration_values'] = {'Unused': 10, 'Read': 1}
         with patch.object(build.language, '_lower', side_effect=lower):
             self.manifest.write_text(json.dumps(manifest))
-            first = self.run_build(luslc=luslc)
+            first = self.run_build(luslc=luslc, bounds_checks=True)
             self.assertEqual(first['lusl'][color['source']]['configuration_reads'], {'Read': 1})
             self.calls.clear()
 
             color['configuration_values']['Unused'] = 20
             self.manifest.write_text(json.dumps(manifest))
-            unread = self.run_build(luslc=luslc)
+            unread = self.run_build(luslc=luslc, bounds_checks=True)
             self.assertEqual(unread['cache_misses'], 0)
             self.assertEqual(self.calls, [])
 
             color['configuration_values']['Read'] = 2
             self.manifest.write_text(json.dumps(manifest))
-            changed = self.run_build(luslc=luslc)
+            changed = self.run_build(luslc=luslc, bounds_checks=True)
             self.assertEqual(changed['lusl'][color['source']]['configuration_reads'], {'Read': 2})
             self.assertEqual(changed['cache_misses'], 2)
             self.assertCountEqual([(target, stage) for target, stage, _ in self.calls],

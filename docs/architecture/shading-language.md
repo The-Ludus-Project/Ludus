@@ -981,6 +981,41 @@ moves in wave 5.
 
 The items other than ray storage are tracked in issue [1734](https://github.com/The-Ludus-Project/Ludus/issues/1734).
 
+For signed-overflow lowering, the migrated workgroup reduction
+(`tests/lusl_shared_memory/barriers.lusl` under the renderer) exercises signed
+index and accumulator additions in each reduction step. Slang 2026.1.2 emits
+signed additions in the original Metal loop. The LUSL output keeps the same loop
+and threadgroup barrier, and emits two calls to the same wrapping helper per
+active thread. The helper adds `uint` bit patterns and bitcasts the result back
+to `int`. This comparison inspects emitted Metal source.
+
+On Apple M5 (macOS 26.6, 25G72, Metal safe math), each dispatch used 4,096 groups
+of 64 threads and checked every group sum and neighbor exchange against the CPU
+formula. The measurement used one dispatch per command buffer and subtracted
+Metal's GPU start timestamp from its end timestamp. After five warmup dispatches
+per variant, 60 measurements per variant alternated which variant ran first.
+
+| Shader | p10 (µs) | Median (µs) | p90 (µs) |
+| --- | ---: | ---: | ---: |
+| Slang | 76.92 | 77.08 | 273.87 |
+| LUSL | 76.92 | 77.19 | 196.25 |
+
+The medians differ by 0.11 µs (0.14%), with substantial tail variation. The
+measurement covers this kernel and device.
+
+`traversal_parity_lusl` checks Metal's native-query path against the original
+Slang callbacks. A caller can keep its `inout RayQueryContext` signature while
+passing a value copy to the isolated helper and copying back the helper's
+explicit `out` result. Slang emits `DontInline` for that helper, and the Metal
+translator restores it as `noinline`. The existing merged-kernel check rejects
+intersection queries placed directly in the kernel. The native GPU fixture
+checks both the emitted annotation and identical query results.
+
+The Windows source runtime's raster graph suite cooks the LUSL vertex, color,
+and depth callbacks in `rg2_bound_lusl` through the pinned DXIL toolchain.
+It checks the cooked color stages for signed DXIL and compares the graph's
+Direct3D 12 WARP pixels with the original Slang graph.
+
 ### L5d: migration waves
 
 Each wave ports files that only depend on LUSL or retained Slang, deletes the

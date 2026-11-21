@@ -22,6 +22,9 @@ float32 EncodeIdentity(in SceneQuery status, in SurfaceHit hit)
 
 float32x3 GenerateRay(in SceneContext scene, in RayLaunch launch, inout RayQueryContext inoutQueries)
 {
+    // The only positive component always wins, regardless of the draw.
+    if (SampleSceneWeightedIndex(inout inoutQueries, float32x3(0.0, 2.0, 0.0)) != 1)
+        FailSceneQuery(inout inoutQueries, SCENE_FAILURE_AUTHORED_FIRST);
     ScenePayload payload = 0;
     TraceAndShade(scene, inout inoutQueries, MakeCameraRay(launch, SUBPIXEL_SAMPLE), inout payload);
     return payload.Radiance;
@@ -32,13 +35,31 @@ void ShadeMiss(in SceneContext scene, in Ray ray, inout RayQueryContext inoutQue
     inoutPayload.Radiance = float32x3(0.0);
 }
 
+// Keep the query call isolated using the value plus explicit out pattern in
+// guided_restir_fg_plus/main_shaders/path_evaluation.slang. Slang can inline a
+// function that forwards an inout parameter even when marked noinline.
+[noinline]
+SceneQuery TraceSecondary(in SceneContext scene,
+                          in RayQueryContext queries,
+                          in SurfaceHit hit,
+                          out SurfaceHit outSecondary,
+                          out RayQueryContext outQueries)
+{
+    RayQueryContext updatedQueries = queries;
+    SceneQuery status = TraceClosest(scene,
+                                     inout updatedQueries,
+                                     SpawnSurfaceRay(hit, SECONDARY_DIRECTION_WORLD, SECONDARY_DISTANCE_WORLD),
+                                     out outSecondary);
+    outQueries = updatedQueries;
+    return status;
+}
+
 void ShadeClosest(in SceneContext scene, in SurfaceHit hit, inout RayQueryContext inoutQueries, inout ScenePayload inoutPayload)
 {
     SurfaceHit secondary = void;
-    SceneQuery secondaryStatus = TraceClosest(scene,
-                                              inout inoutQueries,
-                                              SpawnSurfaceRay(hit, SECONDARY_DIRECTION_WORLD, SECONDARY_DISTANCE_WORLD),
-                                              out secondary);
+    RayQueryContext updatedQueries = void;
+    SceneQuery secondaryStatus = TraceSecondary(scene, inoutQueries, hit, out secondary, out updatedQueries);
+    inoutQueries = updatedQueries;
     LightSample light = 0;
     light.HasSample = true;
     light.DirectionWorld = VISIBILITY_DIRECTION_WORLD;

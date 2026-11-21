@@ -101,6 +101,10 @@ TEST_CASE("Playable World freezes an applied glTF placement and admits only a co
     QJsonObject components = skyEntity.value("components"_L1).toObject();
     QJsonObject atmosphere = components.value("atmosphere"_L1).toObject();
     atmosphere.insert("sun"_L1, sun);
+    // The cloud layer travels with the Atmosphere into the player.
+    constexpr foundation::float64 CLOUD_BASE_METRES = 2500;
+    atmosphere.insert("clouds"_L1, true);
+    atmosphere.insert("cloudBase"_L1, CLOUD_BASE_METRES);
     components.insert("atmosphere"_L1, atmosphere);
     REQUIRE(world.Edit(sky, components, skyEntity.value("name"_L1).toString(), error) == true);
     const QByteArray catalog = ReadBytes(QDir(root).filePath("assets/catalog.json"_L1));
@@ -129,6 +133,10 @@ TEST_CASE("Playable World freezes an applied glTF placement and admits only a co
     CHECK(accepted.Atmosphere.SunSourceId == ComputeEntitySourceId(sun));
     REQUIRE(accepted.RasterUnshadowedLightIds.GetSize() == 1);
     CHECK(accepted.RasterUnshadowedLightIds[0] == accepted.Atmosphere.SunSourceId);
+    CHECK(accepted.Atmosphere.Clouds.IsEnabled == true);
+    CHECK(static_cast<foundation::float64>(accepted.Atmosphere.Clouds.BaseHeightMetres) == CLOUD_BASE_METRES);
+    CHECK(accepted.Atmosphere.Clouds.ExtinctionPerMetre ==
+          graphics::renderer::CloudLayerDescription::DEFAULT_EXTINCTION_PER_METRE);
     REQUIRE(prepare() == true);
     CHECK(ReadBytes(output) == acceptedBytes);
     CHECK(ReadBytes(QDir(root).filePath("assets/catalog.json"_L1)) == catalog);

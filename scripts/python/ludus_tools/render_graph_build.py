@@ -1079,7 +1079,7 @@ def compile_stages(jobs, stage, schemas, snapshot, helper, tools, cancel, worker
 
 
 def prepare_sources(manifest, helper, *, root=None, ray_path_capture=False, capture_profile=False, luslc=None,
-                    lusl_style='strict'):
+                    lusl_style='strict', bounds_checks=False):
     """Capture and lower the same immutable shader contexts for compilation and editing.
 
     No compiler execution or output publication. Returns package metadata, exact
@@ -1097,7 +1097,7 @@ def prepare_sources(manifest, helper, *, root=None, ray_path_capture=False, capt
     # LUSL programs name their generated Slang module from here on.
     snapshot.language_tool, snapshot.language_reports = language.lower_sources(
         snapshot, programs, helper, sys.modules[__name__], luslc=luslc, style=lusl_style,
-        specialization_budget=value['budgets'].get('specializations'), schemas=schemas)
+        specialization_budget=value['budgets'].get('specializations'), schemas=schemas, bounds_checks=bounds_checks)
     visibility_helper = helper / 'visibility_buffer.slang'
     if visibility_helper.is_file():
         snapshot.capture('_ludus_visibility.slang', read(visibility_helper), external=visibility_helper)
@@ -1254,7 +1254,7 @@ def prepare_sources(manifest, helper, *, root=None, ray_path_capture=False, capt
 
 def build_package(manifest, output, *, helper, compiler, validator=None, spirv_cross=None, root=None, cancel=None, worker_socket=None,
                   ray_path_capture=False, capture_profile=False, luslc=None, lusl_style=None, dxc=None,
-                  trace_shader_stages=False):
+                  trace_shader_stages=False, bounds_checks=False):
     """Build every authored technique/profile and atomically publish current.json.
 
     Sources/tools must remain identical to their captured snapshot at publication.
@@ -1271,6 +1271,7 @@ def build_package(manifest, output, *, helper, compiler, validator=None, spirv_c
     cook_capture_profile, never cook_runtime.
     luslc lowers `.lusl` program sources (default: $LUDUS_LUSLC, then the SDK's bin/luslc), and
     lusl_style is their style setting, strict unless $LUDUS_LUSL_STYLE says otherwise.
+    bounds_checks enables ray invocation diagnostics for checked LUSL indices.
     dxc names the directory holding the pinned dxcompiler.dll and dxil.dll; a dxil profile
     requires it and a Windows host.
     """
@@ -1280,7 +1281,7 @@ def build_package(manifest, output, *, helper, compiler, validator=None, spirv_c
     lusl_style = lusl_style or os.environ.get('LUDUS_LUSL_STYLE') or 'strict'
     snapshot, value, schemas, programs, techniques, counts, closures, plans, library, graph_path, ray_profiles = prepare_sources(
         manifest, helper, root=root, ray_path_capture=ray_path_capture, capture_profile=capture_profile, luslc=luslc,
-        lusl_style=lusl_style)
+        lusl_style=lusl_style, bounds_checks=bounds_checks)
     authored_programs_by_identity = {program['id']: program for program in value['programs']}
     manifest_label = manifest.relative_to(snapshot.root).as_posix()
     worker_socket = worker_socket or os.environ.get('LUDUS_SHADER_WORKER_SOCKET')

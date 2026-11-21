@@ -96,6 +96,10 @@ private:
                                      foundation::time::Timestamp now) noexcept;
     [[nodiscard]] bool render(const platform::browser::WindowState& window) noexcept;
     void browserInput(const platform::browser::WindowState& window) noexcept;
+    /// Admit a game flow request; a Load restarts the example room.
+    void requestFlow(FlowRequestKind kind) noexcept;
+    /// Run a flow boundary and apply its presentation consequences.
+    void processFlowBoundary() noexcept;
     input::InputSystem mInput;
     foundation::UniquePtr<platform::Window> mWindow;
     Session mSession;
