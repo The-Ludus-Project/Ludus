@@ -388,7 +388,9 @@ add_subdirectory(modules/content/string_dictionary)
 add_subdirectory(modules/content/identity_records)
 # Stage-4 two-pass World restore; bridges ContentIdentity and GameplayWorld.
 add_subdirectory(modules/content/world_restore)
-# Headless procedural scatter kernel (P0); Foundation-only, native and web.
+# Procedural generation digests, validated stage cache and traces (P1); Foundation-only, native and web.
+add_subdirectory(modules/content/procedural/core)
+# Headless procedural scatter kernel (P0) and its staged generation coordinator (P1).
 add_subdirectory(modules/content/procedural/environment)
 # Headless terrain fields, drainage, wetness and material rules (T1); Foundation-only, native and web.
 add_subdirectory(modules/content/terrain)
@@ -567,7 +569,7 @@ write_basic_package_version_file(
 # Public exported components (one per installed Ludus:: module target).
 foreach(_component
     FoundationBase FoundationMemory FoundationHash FoundationIdentity FoundationStrings FoundationContainers FoundationThreading FoundationFilesystem FoundationParsing FoundationParsingJson FoundationMath FoundationGeometry FoundationTime FoundationLogging ShaderCompilerClient ShaderLanguage
-    FoundationProfiling FoundationThreadingProfiling FoundationReflection FoundationSerialization FoundationConfig FoundationConfigJson RuntimeConfiguration GamePropertyBinding NetworkCore Input Audio Content ProceduralEnvironment SceneFormat GeometryFormat GeometryContent RenderGraphFormat SceneSource StringDictionaryFormat StringDictionary StringDictionaryWriter AudioContent Resources GameplayWorld GameplayCamera GameplaySequencer Animation GameApi PhysicsFluid PhysicsCollision Ui Localization)
+    FoundationProfiling FoundationThreadingProfiling FoundationReflection FoundationSerialization FoundationConfig FoundationConfigJson RuntimeConfiguration GamePropertyBinding NetworkCore Input Audio Content ProceduralCore ProceduralEnvironment SceneFormat GeometryFormat GeometryContent RenderGraphFormat SceneSource StringDictionaryFormat StringDictionary StringDictionaryWriter AudioContent Resources GameplayWorld GameplayCamera GameplaySequencer Animation GameApi PhysicsFluid PhysicsCollision Ui Localization)
     ludus_sdk_register_component(${_component})
     ludus_sdk_register_feature(${_component})
 endforeach()

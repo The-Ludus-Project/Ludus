@@ -1,14 +1,17 @@
 # Ludus::ProceduralEnvironment: headless serial reference scatter kernel for
 # procedural content generation slice P0
-# (docs/architecture/procedural-content-generation.md#p0-room-scoped-scatter).
-# Foundation-only kernel shared by the in-tree and installed-SDK World Demo.
-add_library(ludus_procedural_environment STATIC src/scatter.cpp)
+# (docs/architecture/procedural-content-generation.md#p0-room-scoped-scatter)
+# and its staged, cached generation coordinator (P1, on Ludus::ProceduralCore).
+# Foundation-only, shared by the in-tree and installed-SDK World Demo.
+add_library(ludus_procedural_environment STATIC src/scatter.cpp src/scatter_generation.cpp)
 add_library(Ludus::ProceduralEnvironment ALIAS ludus_procedural_environment)
 set_target_properties(ludus_procedural_environment PROPERTIES EXPORT_NAME ProceduralEnvironment)
 target_sources(ludus_procedural_environment PUBLIC FILE_SET public_headers TYPE HEADERS BASE_DIRS include
-    FILES include/ludus/content/procedural/environment/scatter.h)
+    FILES
+        include/ludus/content/procedural/environment/scatter.h
+        include/ludus/content/procedural/environment/scatter_generation.h)
 target_link_libraries(ludus_procedural_environment
-    PUBLIC Ludus::FoundationBase Ludus::FoundationContainers Ludus::FoundationMath)
+    PUBLIC Ludus::FoundationBase Ludus::FoundationContainers Ludus::FoundationMath Ludus::ProceduralCore)
 ludus_apply_project_defaults(ludus_procedural_environment)
 
 install(TARGETS ludus_procedural_environment EXPORT LudusTargets
@@ -17,7 +20,7 @@ install(TARGETS ludus_procedural_environment EXPORT LudusTargets
 
 if(LUDUS_BUILD_TESTS)
     find_package(Catch2 3 REQUIRED CONFIG)
-    add_executable(ludus_procedural_environment_tests tests/scatter_tests.cpp)
+    add_executable(ludus_procedural_environment_tests tests/scatter_tests.cpp tests/scatter_generation_tests.cpp)
     target_link_libraries(ludus_procedural_environment_tests
         PRIVATE Ludus::ProceduralEnvironment Ludus::FoundationThreading Catch2::Catch2WithMain)
     ludus_apply_project_defaults(ludus_procedural_environment_tests)
