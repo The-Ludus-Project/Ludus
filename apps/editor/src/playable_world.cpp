@@ -4,6 +4,7 @@
 #include "internal/project_files.h"
 #include "internal/render_scene.h"
 #include "internal/world_celestial_light.h"
+#include "internal/world_climate.h"
 #include "internal/world_document.h"
 #include "internal/world_terrain.h"
 
@@ -64,6 +65,7 @@ bool AssembleImports(const QString& root,
             QStringLiteral("Check the World imports %1 and reimport the affected asset. %2")
                 .arg(QString::fromUtf8(
                          QJsonDocument(level.value("imports"_L1).toArray()).toJson(QJsonDocument::Compact)),
+                     // NOLINTNEXTLINE(bugprone-suspicious-stringview-data-usage): the message length is passed.
                      QString::fromUtf8(error.Message.View().data(), static_cast<qsizetype>(error.Message.Length)));
         return false;
     }
@@ -114,6 +116,28 @@ QJsonObject EncodeAtmosphere(const graphics::renderer::AtmosphereDescription& sk
             {"planets"_L1, planets},
             {"clouds"_L1, cloudLayer}};
 }
+/// The manifest's climate member: the World climate cooked to LUWTH, as lowercase hex with its SHA-256, or
+/// null when the World has no climate. The player admits the bytes with the runtime's validating loader.
+bool EncodeClimate(const WorldDocument& world, const QString& relativeWorld, QJsonValue& outClimate, QString& outError)
+{
+    const QJsonValue authored = world.Draft().value(WORLD_CLIMATE);
+    if (authored.isUndefined() == true)
+    {
+        outClimate = QJsonValue::Null;
+        return true;
+    }
+    foundation::Array<uint8> cooked;
+    QString error;
+    if (TryCookWorldClimate(authored, cooked, error) == false)
+    {
+        outError = QStringLiteral("%1: %2").arg(relativeWorld, error);
+        return false;
+    }
+    const QByteArray bytes(reinterpret_cast<const char*>(cooked.GetData()), static_cast<qsizetype>(cooked.GetSize()));
+    outClimate = QJsonObject{{"bytes"_L1, QString::fromLatin1(bytes.toHex())}, {"sha256"_L1, ComputeDigest(bytes)}};
+    return true;
+}
+
 bool ExtractEntities(const WorldDocument& world, QJsonArray& outEntities, QJsonArray& outWarnings, QString& outError)
 {
     bool hasSpawn = false;
@@ -179,6 +203,7 @@ bool ExtractEntities(const WorldDocument& world, QJsonArray& outEntities, QJsonA
 }
 } // namespace
 
+// NOLINTBEGIN(bugprone-easily-swappable-parameters): named project paths and renderer, matching the header.
 bool PreparePlayableWorld(const QString& root,
                           const QString& relativeWorld,
                           const WorldDocument& world,
@@ -187,6 +212,7 @@ bool PreparePlayableWorld(const QString& root,
                           const cook::Cancellation* cancelOrNull,
                           QString& outError,
                           QStringList* warningsOrNull)
+// NOLINTEND(bugprone-easily-swappable-parameters)
 {
     if (relativeWorld.isEmpty() == true || QDir::isAbsolutePath(relativeWorld) == true ||
         relativeWorld != QDir::cleanPath(relativeWorld) || relativeWorld == ".."_L1 ||
@@ -203,8 +229,10 @@ bool PreparePlayableWorld(const QString& root,
     }
     QJsonArray entities;
     QJsonArray warnings;
+    QJsonValue climate;
     RenderScene authored;
     if (CheckCancellation(cancelOrNull, outError) == false ||
+        EncodeClimate(world, relativeWorld, climate, outError) == false ||
         ExtractEntities(world, entities, warnings, outError) == false ||
         RenderScene::Load(root, world, authored, outError, false) == false)
     {
@@ -307,6 +335,7 @@ bool PreparePlayableWorld(const QString& root,
         {"objects"_L1, objects},
         {"earthObserver"_L1, GetWorldEarthObserver(world.Draft())},
         {"atmosphere"_L1, EncodeAtmosphere(authored.GetAtmosphereForView())},
+        {"climate"_L1, climate},
         {"artifacts"_L1, dependencies},
         {"warnings"_L1, warnings}};
     const QByteArray header = QJsonDocument(manifest).toJson(QJsonDocument::Compact) + '\n';

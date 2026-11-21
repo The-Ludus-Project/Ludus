@@ -37,6 +37,64 @@ bool MatchesDigest(std::string_view encoded, const content::Digest& digest) noex
     return true;
 }
 
+/// Decode the manifest's climate member: null means no climate; otherwise lowercase hex LUWTH bytes whose SHA-256
+/// matches, admitted by the runtime loader with the same rules as the Editor's cooker.
+bool ReadClimate(JsonValue value, gameplay::weather::Climate& outClimate) noexcept
+{
+    if (value.Null() == true)
+    {
+        outClimate = {};
+        return true;
+    }
+    std::string_view hex;
+    std::string_view digest;
+    if (value.Fields({"bytes", "sha256"}) == false || value.Get("bytes").String(hex) == false ||
+        value.Get("sha256").String(digest) == false || hex.size() % 2 != 0 ||
+        hex.size() / 2 > content::weather_format::MAX_CLIMATE_BYTES)
+    {
+        return false;
+    }
+    constexpr uint8 NIBBLE_BITS = 4;
+    constexpr uint8 DECIMAL_DIGITS = 10;
+    const auto readNibble = [](char digit, uint8& outNibble) noexcept {
+        if (digit >= '0' && digit <= '9')
+        {
+            outNibble = static_cast<uint8>(digit - '0');
+            return true;
+        }
+        if (digit >= 'a' && digit <= 'f')
+        {
+            outNibble = static_cast<uint8>(digit - 'a' + DECIMAL_DIGITS);
+            return true;
+        }
+        return false;
+    };
+    Array<uint8> bytes;
+    if (bytes.TryResize(hex.size() / 2) == false)
+    {
+        return false;
+    }
+    for (usize i = 0; i < bytes.GetSize(); ++i)
+    {
+        uint8 high = 0;
+        uint8 low = 0;
+        if (readNibble(hex[i * 2], high) == false || readNibble(hex[i * 2 + 1], low) == false)
+        {
+            return false;
+        }
+        bytes[i] = static_cast<uint8>((high << NIBBLE_BITS) | low);
+    }
+    gameplay::weather::Climate climate;
+    if (MatchesDigest(digest, content::Hash(std::span<const uint8>(bytes.GetData(), bytes.GetSize()))) == false ||
+        gameplay::weather::TryLoadClimate({bytes.GetData(), bytes.GetSize()}, climate) !=
+            content::weather_format::WeatherFormatStatus::Success)
+    {
+        return false;
+    }
+    outClimate = Move(climate);
+    return true;
+}
+
 bool IsDigestText(JsonValue value) noexcept
 {
     constexpr std::string_view HEX_DIGITS = "0123456789abcdef";
@@ -279,7 +337,8 @@ bool DecodePlayableSnapshot(BorrowedView<const uint8> bytes, PlayableSnapshot& o
                      "artifacts",
                      "warnings",
                      "earthObserver",
-                     "atmosphere"}) == false)
+                     "atmosphere",
+                     "climate"}) == false)
     {
         return false;
     }
@@ -302,7 +361,8 @@ bool DecodePlayableSnapshot(BorrowedView<const uint8> bytes, PlayableSnapshot& o
         MatchesDigest(digest, content::Hash(bundle)) == false ||
         (bundle.empty() == false &&
          resources::SceneDefinition::Decode(bundle.data(), bundle.size(), candidate.Scene) != resources::Status::Ok) ||
-        ReadAtmosphere(root.Get("atmosphere"), candidate.Atmosphere) == false || ReadBindings(root, candidate) == false)
+        ReadAtmosphere(root.Get("atmosphere"), candidate.Atmosphere) == false ||
+        ReadClimate(root.Get("climate"), candidate.Climate) == false || ReadBindings(root, candidate) == false)
     {
         return false;
     }
