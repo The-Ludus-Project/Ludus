@@ -4,7 +4,7 @@ Open a small courtyard, rotate its Sun and watch the shadow move. Light Court
 is a standalone authoring sample for the [desktop editor](../wiki/getting-started/install.md)
 with [rendered World preview enabled](../development/editor-workspace.md#enable-the-rendered-authoring-surface).
 
-![Light Court rendered by RT1. The graphite sphere has a soft highlight, a diagonal shadow crosses the concrete steps, and a warm reflection from the copper plate lights the wall beside the blue-green panel.](images/light-court.png)
+![Light Court rendered by RT1. A diagonal shadow crosses the concrete steps. Fine grain is visible on the tall wall, and the satin copper plate reflects warm light beside the blue-green enamel panel.](images/light-court.png)
 
 The image is a 1440 × 960 [RT1 reference capture](../development/editor-workspace.md#reference-capture-of-the-viewport)
 from the saved start view on macOS Metal. GPU compute traced 1,024 samples per
@@ -29,10 +29,17 @@ data for tools that read the project.
 
 The [Light Court glTF](../../examples/light-court/art/light-court.gltf) contains
 the original geometry and five metallic-roughness materials. In the World's
-**Materials** tab, inspect the imported slots. Concrete uses roughness 0.86, the
-blue-green enamel uses 0.22, and satin copper uses metallic 1 and roughness 0.34.
-The graphite ceramic sphere uses smooth vertex normals, a tangent-space normal
-map for fine grain, and a roughness map that varies the sheen across the glaze.
+**Materials** tab, inspect the imported slots. Concrete, copper, enamel and
+graphite ceramic use tangent-space normal and roughness maps.
+
+- Warm concrete has fine mineral grain, small pores and slight variation in its
+  base color. Its roughness stays near 0.86 so broad surfaces read as matte.
+- Satin copper has fine brush marks running along the plate. Its metallic value
+  is 1, and the roughness map varies around 0.34.
+- Blue-green enamel has a slight orange-peel glaze with roughness around 0.22.
+- The graphite ceramic sphere uses smooth vertex normals and fine grain to soften
+  its highlight.
+
 The mesh, materials and maps are original to Light Court and ship under the
 [sample license](../../examples/light-court/art/LICENSE.txt). The catalog and
 blobs under `assets/` are the Editor import of this source. See [inspect imported
