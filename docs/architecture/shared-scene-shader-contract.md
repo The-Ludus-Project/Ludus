@@ -258,7 +258,7 @@ does include inverse-square attenuation. Do not multiply either case twice.
 
 `TestVisibility` traces an occlusion segment without invoking authored shading.
 With a `SurfaceHit`, it offsets the ray origin using that triangle's error bound.
-With a world-space origin, it starts at the caller-supplied point. For a mesh
+With a world-space ray origin, it starts at that point. For a mesh
 light it offsets the endpoint toward the ray origin and excludes the numerical
 endpoint from the segment. Other triangles of the same emitter can occlude.
 An infinite endpoint traces to a conservative scene exit distance; this shadow

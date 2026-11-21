@@ -4719,7 +4719,7 @@ wrappers include it automatically. Authors do not read private packed buffers.
 | SelectEmissiveTriangle / EvaluateEmissiveTriangleSelectionPmf | [Power-weighted emissive triangle](#select-emissive-triangles-by-power) at an explicit dimension / that selection's probability for a triangle |
 | EvaluateEnvironment | Background radiance along a world direction: the Atmosphere's sky when the World has one that lights the scene, otherwise the World environment. See [World features](#world-features) |
 | ApplyAerialPerspective | Haze between a ray origin and a visible surface point: the surface radiance attenuated by the air plus the sky light it scatters. See [World features](#world-features) |
-| TraceClosest / TestVisibility | Closest or occlusion query with explicit miss/surface/failure status. `TestVisibility` accepts a `SurfaceHit` or a caller-offset world-space origin. |
+| TraceClosest / TestVisibility | Closest or occlusion query with explicit miss/surface/failure status. `TestVisibility` accepts a `SurfaceHit` or a world-space ray origin. |
 | FindVisibleLineIntervals / ClearLineVisibility | Visible parts of a world-space segment from a receiver, as sorted parameter intervals; see [Find the visible parts of a segment](#find-the-visible-parts-of-a-segment) |
 | SpawnSurfaceRay | Error-bound origin offset for a unit world direction and explicit maximum distance |
 | SampleSceneRandom / MakeCameraRay | Automatic invocation-stream draw or explicit random dimension / chosen subpixel camera ray |
@@ -5245,33 +5245,26 @@ its source selection probability. Emission maps are sampled at the actual UV;
 black texels and back-side one-sided samples remain zero-contribution events.
 The initial environment proposal is uniform sphere, including HDR maps.
 
-The Compute ray tracing template uses `SampleLight` with independent addresses
-for source selection and the conditional incident proposal. Pass the current
-`SurfaceHit` from `TraceClosest` or `GetSurfaceHit` as `shadingHit`.
+`SampleLight` uses independent addresses for source selection and the conditional
+incident proposal. For a world-space point in metres, such as a point on an edge,
+pass `pointWorld` directly to both `SampleLight` and `TestVisibility`.
 
 ```slang
 SceneLightSample light = SampleLight(
-    scene, shadingHit, launch, LIGHT_SELECTION_DIMENSION, INCIDENT_DIMENSION_FIRST,
+    scene, pointWorld, launch, LIGHT_SELECTION_DIMENSION, INCIDENT_DIMENSION_FIRST,
     LightSelectionPolicy::Uniform, queries);
 if (light.Incident.HasSample == false)
     return float3(0);
 
+SceneQuery visibility = TestVisibility(scene, queries, pointWorld, light.Incident);
 float probability = light.Selection.SelectionPmf * light.Incident.ConditionalProbability;
 ```
 
-If you have a world-space point in metres, pass `positionWorld` in place of
-`shadingHit`. Both overloads are available in Slang and through
-`scene_shader.luslh`. Given the same position and random addresses, they return
-the same proposal.
-
-For an edge, sample at the original `positionWorld` and compute the shadow-ray
-origin with your edge offset. Pass that final origin in metres to
-`TestVisibility(scene, queries, originWorld, light.Incident)`. This overload
-uses the supplied origin directly. It connects to the sampled endpoint for a
-finite light, including the usual mesh endpoint offset, and uses the sampled
-direction for an infinite light. `SceneQuery::Miss` means the connection is
-clear. The overload uses the same visibility query budget as the surface form
-and is available in Slang and LUSL.
+The visibility ray starts at `pointWorld`. It connects to the sampled endpoint
+for a finite light, including the usual mesh endpoint offset, and uses the
+sampled direction for an infinite light. `SceneQuery::Miss` means the connection
+is clear. Both forms use the visibility query budget and are available in Slang
+and LUSL.
 
 Reserve `SCENE_INCIDENT_LIGHT_DIMENSION_COUNT` slots for the default incident
 proposal. Mesh lights read all three slots and the environment reads the last
@@ -5279,11 +5272,13 @@ two. Directional, point and spot lights read none. The addressed sampler never
 advances the invocation stream. If a needed address is exhausted, it latches the
 invocation failure. A source index outside the catalog returns no sample.
 
-Use the probability product after checking `light.Incident.HasSample`. At a
-surface hit, pass `shadingHit` and `light.Incident` to `TestVisibility` to apply the
-triangle's origin offset. The incident probability is a density per steradian
-for `IncidentLightMeasure::SolidAngle` and
-a mass for `IncidentLightMeasure::Discrete`. Analytic delta samples have
+The Compute ray tracing template passes a `SurfaceHit` from `GetSurfaceHit` to
+both operations. A hit from `TraceClosest` works too. `SampleLight` uses the
+hit's position and `TestVisibility` applies the triangle's origin offset.
+
+The incident probability is a density per steradian for
+`IncidentLightMeasure::SolidAngle` and a mass for `IncidentLightMeasure::Discrete`.
+Analytic delta samples have
 conditional mass one and zero competing solid-angle density. For MIS after a
 BSDF sample, pass the trace result, original receiver position and same
 selection policy to `EvaluateLightAlongRay`. Multiply its source PMF by its

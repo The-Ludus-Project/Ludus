@@ -1029,9 +1029,9 @@ LightSample SampleIncidentLight(SceneContext scene, SelectedLight selected, Surf
     return result;
 }
 /// Trace visibility from the supplied world-space ray origin in metres to an incident light sample.
-/// Pass the final origin, including any offset needed for the originating geometry. For a finite light,
-/// aim at the sampled endpoint and offset a mesh endpoint toward the origin. For an infinite light, use
-/// the sampled direction and the scene's shadow range. Uses the invocation's visibility query budget.
+/// The ray starts at originWorld. For a finite light, aim at the sampled endpoint and offset a mesh
+/// endpoint toward the origin. For an infinite light, use the sampled direction and the scene's
+/// shadow range. Uses the invocation's visibility query budget.
 /// Returns Miss for a clear connection, Surface for an occluder, or Failure with queries.HasFailed latched.
 SceneQuery
 TestVisibility(SceneContext scene, inout RayQueryContext queries, float3 originWorld, IncidentLightSample light)
@@ -1095,7 +1095,7 @@ TestVisibility(SceneContext scene, inout RayQueryContext queries, SurfaceHit rec
 {
     return TestVisibility(scene, queries, SpawnSurfaceRay(receiver, light.DirectionWorld, 0).OriginWorld, light);
 }
-/// Trace visibility from a caller-offset world-space origin to a legacy explicit-coordinate light sample.
+/// Trace visibility from a world-space ray origin in metres to a legacy explicit-coordinate light sample.
 /// Uses the same endpoint handling, query budget and result codes as the incident sample overload.
 SceneQuery TestVisibility(SceneContext scene, inout RayQueryContext queries, float3 originWorld, LightSample light)
 {
