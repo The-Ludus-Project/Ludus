@@ -8,7 +8,9 @@
 #include <ludus/content/json.h>
 
 #include <ludus/audio/audio_source.h>
-#include <ludus/audio/content/definitions.h>
+#include <ludus/audio/content/music_score.h>
+
+#include <ludus/foundation/containers/static_array.hpp>
 
 #include <new>
 #include <span>
@@ -44,6 +46,42 @@ content::Text<64> Hex(content::Digest digest) noexcept
     text.Length = 64;
     return text;
 }
+bool AddScoreSources(const audio::content::MusicScore& score,
+                     const content::Catalog& catalog,
+                     std::string_view root,
+                     content::Catalog& inoutClosure) noexcept
+{
+    for (usize i = 0; i < score.SectionCount; ++i)
+    {
+        const audio::content::MusicSection& section = score.Sections[i];
+        audio::SourceInfo first;
+        for (usize j = 0; j < section.LayerCount; ++j)
+        {
+            const content::Resource* sourceOrNull = catalog.Find(section.Layers[j].Source.View());
+            if (sourceOrNull == nullptr || sourceOrNull->Type != content::Kind::AudioSource)
+            {
+                return false;
+            }
+            const std::string_view path = sourceOrNull->Path.View();
+            Input input;
+            audio::SourceInfo info;
+            float32 peak = 0;
+            const audio::SourceFormat format =
+                path.ends_with(".flac") ? audio::SourceFormat::Flac : audio::SourceFormat::Wav;
+            if ((path.ends_with(".wav") == false && path.ends_with(".flac") == false) ||
+                input.File.Open(root, path) != content::Status::Ok ||
+                audio::InspectSource(input, format, info, {&peak, 1}) != audio::Status::Ok ||
+                section.LoopEnd > info.Frames ||
+                (j != 0 && (first.Frames != info.Frames || first.SampleRate != info.SampleRate)) ||
+                inoutClosure.Put(*sourceOrNull) != content::Status::Ok)
+            {
+                return false;
+            }
+            first = info;
+        }
+    }
+    return true;
+}
 bool Run(int argc, char** argv) noexcept
 {
     if (argc < 4)
@@ -64,15 +102,50 @@ bool Run(int argc, char** argv) noexcept
     const auto catalogHash = Hex(content::Hash(bytes.Data()));
     const std::string_view buses[] = {"master", "sfx", "music"}, groups[] = {"default", "impacts"};
     const audio::content::Routing routing{buses, groups};
+    const auto hasBus = [&](std::string_view name) {
+        for (std::string_view bus : routing.Buses)
+        {
+            if (bus == name)
+            {
+                return true;
+            }
+        }
+        return false;
+    };
     content::Digest definitionHashes[content::MAX_RESOURCES]{};
     bool validated[content::MAX_RESOURCES]{};
-    for (int arg = 3; arg < argc; ++arg)
-    {
-        const auto* resource = catalog.Find(argv[arg]);
-        if (resource == nullptr || resource->Type == content::Kind::AudioSource)
+    ludus::foundation::StaticArray<const content::Resource*, content::MAX_RESOURCES> roots{};
+    usize rootCount = 0;
+    const auto addRoot = [&](const content::Resource* resourceOrNull) {
+        if (resourceOrNull == nullptr)
         {
             return false;
         }
+        for (usize i = 0; i < rootCount; ++i)
+        {
+            if (roots[i] == resourceOrNull)
+            {
+                return true;
+            }
+        }
+        if (rootCount == roots.GetSize())
+        {
+            return false;
+        }
+        roots[rootCount++] = resourceOrNull;
+        return true;
+    };
+    constexpr int FIRST_ROOT_ARGUMENT = 3;
+    for (int i = FIRST_ROOT_ARGUMENT; i < argc; ++i)
+    {
+        if (addRoot(catalog.Find(argv[i])) == false)
+        {
+            return false;
+        }
+    }
+    for (usize rootIndex = 0; rootIndex < rootCount; ++rootIndex)
+    {
+        const content::Resource* resource = roots[rootIndex];
         if (resource->Type != content::Kind::Sound && resource->Type != content::Kind::Music)
         {
             LUDUS_LOG_ERROR(ludus::foundation::logging::LOG_CORE,
@@ -91,6 +164,28 @@ bool Run(int argc, char** argv) noexcept
         const bool isMusic = resource->Type == content::Kind::Music;
         const auto status = isMusic ? audio::content::ReadMusic(bytes.String(), music, diagnostic)
                                     : audio::content::ReadSound(bytes.String(), sound, diagnostic);
+        if (isMusic == true && status == content::Status::Invalid &&
+            audio::content::IsDynamicMusicDocument(bytes.String()) == true)
+        {
+            audio::content::MusicScore score;
+            if (audio::content::ReadMusicScore(bytes.String(), score, diagnostic) != content::Status::Ok ||
+                score.Id.View() != resource->Id.View() || hasBus(score.Bus.View()) == false ||
+                AddScoreSources(score, catalog, root, closure) == false ||
+                closure.Put(*resource) != content::Status::Ok)
+            {
+                return false;
+            }
+            for (usize i = 0; i < score.StingerCount; ++i)
+            {
+                const content::Resource* accentOrNull = catalog.Find(score.Stingers[i].Sound.View());
+                if (accentOrNull == nullptr || accentOrNull->Type != content::Kind::Sound ||
+                    addRoot(accentOrNull) == false)
+                {
+                    return false;
+                }
+            }
+            continue;
+        }
         if (status != content::Status::Ok || (isMusic ? music.Id.View() : sound.Id.View()) != resource->Id.View())
         {
             return false;

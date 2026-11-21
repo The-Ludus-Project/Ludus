@@ -3,6 +3,8 @@
 #include <ludus/audio/audio_types.h>
 
 #include <atomic>
+#include <climits>
+#include <ludus/foundation/containers/static_array.hpp>
 #include <span>
 
 namespace ludus::audio::internal
@@ -28,6 +30,30 @@ struct StreamResult final
 };
 struct StreamData final
 {
+    // Owner initializes the predecessor before publishing Play. The renderer atomically
+    // seals the requested frame. Zero in an editable plan means cancellation.
+    static constexpr uint64 SEALED = uint64{1} << (sizeof(uint64) * CHAR_BIT - 1);
+    VoiceHandle Outgoing;
+    std::atomic<uint64> TransitionFrame{0};
+    std::atomic<uint64> HeldFrames{0};
+    uint64 EndRenderFrame = 0; // renderer only
+    ludus::foundation::StaticArray<StreamData*, STREAM_CAPACITY> Members{};
+    ludus::foundation::StaticArray<float32, STREAM_CAPACITY> Gains{};
+    ludus::foundation::StaticArray<float32, STREAM_CAPACITY> PendingGains{};
+    ludus::foundation::StaticArray<float32, STREAM_CAPACITY> TargetGains{};
+    uint64 GainFrame = 0;
+    uint32 PendingRamp = 0;
+    uint32 RemainingRamp = 0;
+    bool HasGainEdit = false;
+    usize MemberCount = 0;
+    uint64 SourceFrames = 0;
+    uint32 SourceRate = 0;
+    uint32 CrossfadeFrames = 0;
+    uint64 FadeOutBegin = 0;
+    float32 GroupLeft = 0;
+    float32 GroupRight = 0;
+    float32 AvailabilityGain = 1;
+    [[nodiscard]] StreamResult RenderGroup(float32* output, const StreamRequest& request, uint64 firstFrame) noexcept;
     StreamChunk Chunks[STREAM_CHUNK_COUNT];
     std::atomic<uint32> Written{0};
     std::atomic<uint32> Read{0};

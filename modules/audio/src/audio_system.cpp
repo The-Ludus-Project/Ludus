@@ -176,7 +176,12 @@ void AudioSystem::Impl::ReleaseVoiceSlot(uint32 index) noexcept
     VoiceSlot& v = Voices[index];
     if (v.IsStream)
     {
-        Streams[v.StreamSlotIndex].Data->Cancel.store(true, std::memory_order_release);
+        internal::StreamData& stream = *Streams[v.StreamSlotIndex].Data;
+        for (usize i = 1; i < stream.MemberCount; ++i)
+        {
+            stream.Members[i]->Cancel.store(true, std::memory_order_release);
+        }
+        stream.Cancel.store(true, std::memory_order_release);
     }
     if (v.IsStream == false)
     {

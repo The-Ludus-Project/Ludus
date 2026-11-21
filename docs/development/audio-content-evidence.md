@@ -15,6 +15,46 @@ world binding are outside this implementation. Implementation checkboxes describ
 delivered code; the remaining acceptance gates below prevent a release-complete
 claim. The PR remains a draft until those gates are reviewed.
 
+## C6 rendered transition timing
+
+Before extending the lifecycle for [#1226](https://github.com/The-Ludus-Project/Ludus/issues/1226),
+the four-stream C3 refill/replay regression and native-device test passed on macOS.
+The existing C5 installed SDK fixture also passed acquisition, replacement, session
+ownership and retirement. The C3 device-loss and soak gates and the C5 world outbox
+binding remain open.
+
+The installed SDK consumer rendered two loopable stereo sections at 48 kHz through
+the production decoder worker and mixer. The outgoing and incoming sections each
+held two streams, including a muted layer. The initial gameplay cue at frame
+23,999 quantized to 24,000. The control quantum containing that beat begins at
+23,936. A marker at source frame 384 identifies the incoming section independently
+of voice acknowledgements.
+
+| Action | Edit submitted at frame | Revised gameplay cue | Result | Applied transition | Right-channel marker |
+| --- | ---: | ---: | --- | ---: | ---: |
+| Move before cutoff | 23,935 | 24,001 | Ok | 48,000 | 48,384 |
+| Move after cutoff | 23,937 | 24,001 | TooLate | 24,000 | 24,384 |
+| Cancel before cutoff | 23,935 | — | Ok | None | None |
+
+Both 512-frame and 173-frame renders produced the same marker positions. The
+consumer compared every stereo sample before the accepted boundary to an
+uninterrupted outgoing render. For cancellation it compared the entire capture.
+The Python verifier reopened the exported replacement WAV and found exactly one
+right-channel marker. A separate request for frame 119,999 remained pending
+outside the two-second horizon and applied at 120,000. The same fixture rendered
+the authored 240-frame intensity ramp and compared every stereo-left sample
+against the expected gain on the aligned second layer. A quantized resident
+stinger produced one marker, and a second submission returned `VoiceCapacity`.
+
+Native and ThreadSanitizer builds exercised the installed consumer. The warm
+group submission, revision and render test counted zero allocations and frees.
+The group regression held both cursors when one stem starved, resumed them
+together and terminated on decoder error. Package tests reject five-stream
+overlap and unequal source lengths or rates while retaining the last published
+package. A native output callback acknowledged a revised four-stream crossfade.
+Human listening acceptance remains open. The [SDK sample guide](../examples/audio-content.md)
+includes the commands to reproduce the capture.
+
 ## Delivered paths and contracts
 
 | Milestone | Implementation and exercised behavior |

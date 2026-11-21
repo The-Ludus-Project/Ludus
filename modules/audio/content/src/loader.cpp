@@ -1,4 +1,4 @@
-#include "internal/file_input.hpp"
+#include "internal/score_revision.hpp"
 #include <ludus/audio/audio_source.h>
 #include <ludus/audio/content/loader.h>
 #include <ludus/content/limits.h>
@@ -46,6 +46,7 @@ struct Acquisition final
     ResourceId Id;
     Sound Definition;
     Music MusicDefinition;
+    foundation::core::UniquePtr<internal::ScoreRevision> Dynamic;
     bool Draft = false;
     bool MusicDraft = false;
     bool IsMusic = false;
@@ -111,6 +112,22 @@ struct Acquisition final
             }
             Result = IsMusic ? ReadMusic(bytes.String(), MusicDefinition, Error)
                              : ReadSound(bytes.String(), Definition, Error);
+            if (IsMusic == true && Result == ContentStatus::Invalid && IsDynamicMusicDocument(bytes.String()) == true)
+            {
+                Dynamic.Reset(new (std::nothrow) internal::ScoreRevision());
+                if (Dynamic.Get() == nullptr)
+                {
+                    Result = ContentStatus::OutOfMemory;
+                    return;
+                }
+                Result = ReadMusicScore(bytes.String(), Dynamic->Score, Error);
+                if (Result == ContentStatus::Ok)
+                {
+                    Result = Dynamic->Score.Id.View() == Id.View() ? Dynamic->Open(Root.View(), Catalog, Cancelled)
+                                                                   : ContentStatus::Invalid;
+                }
+                return;
+            }
             if (Result != ContentStatus::Ok)
             {
                 return;
@@ -248,6 +265,7 @@ struct Loader::Impl final
         bool IsMusic = false;
         Sound Definition;
         Music MusicDefinition;
+        foundation::core::UniquePtr<internal::ScoreRevision> Dynamic;
         app::EventDescriptor Descriptor;
         uint32 Clips[16]{};
         usize Count = 0;
@@ -502,8 +520,19 @@ ContentStatus Loader::Poll(const Routing& routing, Lease& output, Diagnostic& di
     auto& revision = mImpl->Revisions[index];
     app::EventDescriptor descriptor{};
     uint32 musicBus = 0;
-    result = job->IsMusic ? ValidateMusic(job->MusicDefinition, job->Catalog, routing, musicBus, diagnostic)
-                          : Resolve(job->Definition, job->Catalog, routing, descriptor, diagnostic);
+    if (job->Dynamic.Get() != nullptr)
+    {
+        while (musicBus < routing.Buses.size() && routing.Buses[musicBus] != job->Dynamic->Score.Bus.View())
+        {
+            ++musicBus;
+        }
+        result = musicBus < routing.Buses.size() ? ContentStatus::Ok : ContentStatus::NotFound;
+    }
+    else
+    {
+        result = job->IsMusic ? ValidateMusic(job->MusicDefinition, job->Catalog, routing, musicBus, diagnostic)
+                              : Resolve(job->Definition, job->Catalog, routing, descriptor, diagnostic);
+    }
     if (result != ContentStatus::Ok)
     {
         mImpl->ReleasePending();
@@ -575,6 +604,7 @@ ContentStatus Loader::Poll(const Routing& routing, Lease& output, Diagnostic& di
     ++revision.Generation;
     revision.Session = job->Session;
     revision.IsMusic = job->IsMusic;
+    revision.Dynamic = std::move(job->Dynamic);
     revision.Definition = job->Definition;
     revision.MusicDefinition = job->MusicDefinition;
     revision.Descriptor = descriptor;
@@ -624,9 +654,69 @@ ContentStatus Loader::GetMusic(Lease lease, Music& definition) const noexcept
     {
         return ContentStatus::Invalid;
     }
+    if (revision.Dynamic.Get() != nullptr)
+    {
+        return ContentStatus::Unsupported;
+    }
     definition = revision.MusicDefinition;
     return ContentStatus::Ok;
 }
+ContentStatus Loader::GetMusicScore(Lease lease, MusicScore& outScore, uint32& outBus) const noexcept
+{
+    if (mImpl == nullptr || lease.Slot >= std::size(mImpl->Revisions) || lease.Owner != mImpl->Owner)
+    {
+        return ContentStatus::Invalid;
+    }
+    const Impl::Revision& revision = mImpl->Revisions[lease.Slot];
+    if (revision.InUse == false || revision.Generation != lease.Generation ||
+        revision.Session != mImpl->Audio.GetSession() || revision.Dynamic.Get() == nullptr)
+    {
+        return ContentStatus::Invalid;
+    }
+    outScore = revision.Dynamic->Score;
+    outBus = revision.MusicBus;
+    return ContentStatus::Ok;
+}
+
+Status Loader::PrepareMusicLayer(Lease lease, usize sectionIndex, usize layerIndex, StreamHandle& outStream) noexcept
+{
+    if (mImpl == nullptr || lease.Slot >= std::size(mImpl->Revisions) || lease.Owner != mImpl->Owner)
+    {
+        return Status::InvalidHandle;
+    }
+    const Impl::Revision& revision = mImpl->Revisions[lease.Slot];
+    if (revision.InUse == false || revision.Generation != lease.Generation ||
+        revision.Session != mImpl->Audio.GetSession() || revision.Dynamic.Get() == nullptr)
+    {
+        return Status::InvalidHandle;
+    }
+    const internal::ScoreRevision& stored = *revision.Dynamic;
+    if (sectionIndex >= stored.Score.SectionCount || layerIndex >= stored.Score.Sections[sectionIndex].LayerCount)
+    {
+        return Status::InvalidArgument;
+    }
+    const MusicSection& section = stored.Score.Sections[sectionIndex];
+    const internal::ScoreLayer& layer = stored.Layers[sectionIndex][layerIndex];
+    StreamInput* readerOrNull = layer.Input.Clone();
+    foundation::core::UniquePtr<StreamInput> input(readerOrNull);
+    if (input.Get() == nullptr)
+    {
+        return Status::IoError;
+    }
+    StreamDescriptor descriptor;
+    descriptor.Format = layer.Format;
+    descriptor.Looping = true;
+    descriptor.SourceLoopBegin = section.LoopBegin;
+    descriptor.SourceLoopEnd = section.LoopEnd;
+    StreamHandle stream;
+    const Status result = mImpl->Audio.PrepareStream(std::move(input), descriptor, stream);
+    if (result == Status::Ok)
+    {
+        outStream = stream;
+    }
+    return result;
+}
+
 Status Loader::PlayMusic(Lease lease, VoiceHandle& voice) noexcept
 {
     Music definition;
@@ -693,6 +783,7 @@ ContentStatus Loader::Release(Lease lease) noexcept
     revision.Encoded = Bytes{};
     delete revision.Input;
     revision.Input = nullptr;
+    revision.Dynamic.Reset();
     revision.InUse = false;
     return ContentStatus::Ok;
 }

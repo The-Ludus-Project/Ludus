@@ -282,3 +282,34 @@ TEST_CASE("File-backed music survives source replacement and lease release", "[c
     REQUIRE(system.BeginShutdown() == audio::Status::Ok);
     loader.Service();
 }
+
+TEST_CASE("Rational musical boundaries use absolute beats and preserve output on overflow", "[audio][music]")
+{
+    audio::content::MusicScore score;
+    score.TempoNumerator = 123;
+    score.TempoDenominator = 2;
+    score.MeterBeats = 7;
+    score.MeterUnit = 8;
+    constexpr uint64 ORIGIN = 37;
+    constexpr uint64 BEAT_COUNT = 7000000;
+    // Seven eighth-notes per bar. The closed form is independent of scheduler code.
+    constexpr uint64 EXPECTED = ORIGIN + (BEAT_COUNT * 44100 * 60 + 122) / 123;
+    uint64 frame = 0;
+    REQUIRE(audio::content::QuantizeMusicFrame(score,
+                                               44100,
+                                               audio::content::MusicBoundary::Bar,
+                                               ORIGIN,
+                                               EXPECTED - 1,
+                                               frame));
+    REQUIRE(frame == EXPECTED);
+    REQUIRE(
+        audio::content::QuantizeMusicFrame(score, 44100, audio::content::MusicBoundary::Beat, ORIGIN, EXPECTED, frame));
+    REQUIRE(frame == EXPECTED);
+    REQUIRE_FALSE(audio::content::QuantizeMusicFrame(score,
+                                                     44100,
+                                                     audio::content::MusicBoundary::Beat,
+                                                     UINT64_MAX - 1,
+                                                     UINT64_MAX,
+                                                     frame));
+    REQUIRE(frame == EXPECTED);
+}

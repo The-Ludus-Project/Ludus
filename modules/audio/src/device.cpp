@@ -303,7 +303,8 @@ void AudioSystem::Impl::PublishRender() noexcept
         {
             continue;
         }
-        const RenderRecord record{i, v.Generation.Value, v.State, v.CursorFrame, v.FadeGain, v.LastCause, v.Silence};
+        const RenderRecord
+            record{i, v.Generation.Value, v.State, v.CursorFrame, v.FadeGain, v.LastCause, v.Silence, v.StartFrame};
         if (Control->RenderSnapshots.TryPublishBatch({&record, 1}) == false)
         {
             ++SnapshotLosses;
@@ -348,6 +349,7 @@ void AudioSystem::Impl::CollectRender() noexcept
         {
             voice.State = record.State;
             voice.CursorFrame = record.Cursor;
+            voice.StartFrame = record.StartFrame;
             voice.FadeGain = record.Gain;
             voice.LastCause = record.Cause;
             voice.Silence = record.Silence;

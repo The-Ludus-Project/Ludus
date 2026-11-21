@@ -40,6 +40,8 @@ const char* ToString(Status status) noexcept
             return "IoError";
         case Status::DeviceError:
             return "DeviceError";
+        case Status::TooLate:
+            return "TooLate";
         case Status::SequenceExhausted:
             return "SequenceExhausted";
     }

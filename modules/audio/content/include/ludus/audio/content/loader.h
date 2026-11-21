@@ -3,7 +3,7 @@
 #include <ludus/foundation/base/core.h>
 
 #include <ludus/audio/audio_system.h>
-#include <ludus/audio/content/definitions.h>
+#include <ludus/audio/content/music_score.h>
 
 #include <string_view>
 
@@ -86,6 +86,12 @@ public:
     /// Copy a music definition on Ok; preserve output for invalid/foreign/stale
     /// or wrong-kind leases. The source descriptor remains owned by the lease.
     [[nodiscard]] ContentStatus GetMusic(Lease lease, Music& definition) const noexcept;
+    /// Copy the version-two definition and resolved bus from a live lease. Failure preserves both outputs.
+    [[nodiscard]] ContentStatus GetMusicScore(Lease lease, MusicScore& outScore, uint32& outBus) const noexcept;
+    /// Cold control-owner operation. Prepare an independent loop from the exact source pinned by a score lease.
+    /// The caller owns a successful stream and must retire it. Failure preserves outStream.
+    [[nodiscard]] Status
+    PrepareMusicLayer(Lease lease, usize sectionIndex, usize layerIndex, StreamHandle& outStream) noexcept;
     /// Start an independent stream from a valid music lease. Playback retains its
     /// own source reader and survives lease release; voice is assigned on success.
     /// Stream preparation is cold work. Invalid leases return InvalidHandle.

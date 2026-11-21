@@ -104,6 +104,7 @@ enum class Status : uint8
     IoError,
     DeviceError,
     SequenceExhausted, // session/generation/epoch space exhausted
+    TooLate,           ///< Renderer sealed the transition before the requested edit.
 };
 
 [[nodiscard]] constexpr bool IsOk(Status status) noexcept
@@ -532,6 +533,7 @@ struct VoiceInfo final
     bool Stale = false;       ///< cached renderer view may be stale
     uint64 SnapshotFrame = 0; ///< RenderFrame at which the snapshot was taken
     uint64 CursorFrame = 0;   ///< source cursor (prepared-rate)
+    uint64 HeldFrames = 0;    ///< Group frames withheld while any stem lacked samples.
     uint64 StartFrame = 0;
     float32 EffectiveGain = 0.0F;
     uint8 Priority = 0;

@@ -112,3 +112,58 @@ TEST_CASE("Warm submit + render performs no allocation or free", "[audio][alloc]
 
     REQUIRE(gAllocCount.load(std::memory_order_relaxed) == 0);
 }
+
+TEST_CASE("Warm music group admission, cue revision and rendering allocate nothing", "[audio][alloc][music]")
+{
+    using namespace ludus::audio;
+    using namespace ludus::foundation;
+    AudioSystem system;
+    REQUIRE(system.Initialize({}) == Status::Ok);
+    const Array<uint8> wave = test::MakeSineWav(DEFAULT_SAMPLE_RATE, 2, 8192);
+    StreamDescriptor descriptor;
+    descriptor.Looping = true;
+    StreamHandle initial[2];
+    StreamHandle incoming[2];
+    for (usize i = 0; i < 2; ++i)
+    {
+        REQUIRE(system.PrepareStream(std::span<const uint8>(wave.data(), wave.size()), descriptor, initial[i]) ==
+                Status::Ok);
+        REQUIRE(system.PrepareStream(std::span<const uint8>(wave.data(), wave.size()), descriptor, incoming[i]) ==
+                Status::Ok);
+    }
+    StreamHandle overflow;
+    REQUIRE(system.PrepareStream(std::span<const uint8>(wave.data(), wave.size()), descriptor, overflow) ==
+            Status::StreamCapacity);
+    float32 samples[CONTROL_QUANTUM_FRAMES * 2]{};
+    REQUIRE(system.RenderOffline(samples, ChannelLayout::Stereo, BufferLayout::Interleaved, CONTROL_QUANTUM_FRAMES) ==
+            Status::Ok);
+    VoiceHandle outgoing;
+    VoiceHandle candidate;
+    const float32 gains[] = {0.5F, 0};
+    const StreamHandle duplicate[] = {initial[0], initial[0]};
+    REQUIRE(system.PlayStreamGroup(duplicate, gains, 0, PRIORITY_MAX, outgoing) == Status::InvalidArgument);
+    gAllocCount.store(0);
+    gTrackAllocs.store(true);
+    const Status start = system.PlayStreamGroup(initial, gains, 0, PRIORITY_MAX, outgoing);
+    const Status render =
+        system.RenderOffline(samples, ChannelLayout::Stereo, BufferLayout::Interleaved, CONTROL_QUANTUM_FRAMES);
+    const Status schedule = system.ScheduleStreamGroup(incoming, gains, outgoing, 1024, 32, candidate);
+    const Status revise = system.ReviseStreamTransition(candidate, 512);
+    const Status intensity = system.SetStreamGroupGains(candidate, gains, 768, 128);
+    for (usize i = 0; i < 8; ++i)
+    {
+        (void)system.RenderOffline(samples, ChannelLayout::Stereo, BufferLayout::Interleaved, CONTROL_QUANTUM_FRAMES);
+        system.Service();
+    }
+    gTrackAllocs.store(false);
+    REQUIRE(gAllocCount.load() == 0);
+    REQUIRE(start == Status::Ok);
+    REQUIRE(render == Status::Ok);
+    REQUIRE(schedule == Status::Ok);
+    REQUIRE(revise == Status::Ok);
+    REQUIRE(intensity == Status::Ok);
+    VoiceInfo info;
+    REQUIRE(system.GetVoiceInfo(candidate, info) == Status::Ok);
+    REQUIRE(info.StartFrame == 512);
+    REQUIRE(info.CursorFrame > 0);
+}
