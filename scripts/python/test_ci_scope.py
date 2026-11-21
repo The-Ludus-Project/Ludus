@@ -306,10 +306,10 @@ class RequiredGateTests(unittest.TestCase):
         # source/tooling job to succeed before promotion.
         workflow = (Path(__file__).resolve().parents[2] / ".github/workflows/ci.yml").read_text()
         dependencies = dict(re.findall(r"^  ([a-z][a-z0-9-]*):\n(?:    .*\n)*?    needs: (.*)$", workflow, re.MULTILINE))
-        # Capacity admission serializes long ARM jobs without depending on formatting
-        # or inheriting the previous lane's success requirement.
-        serial = {"macos-compile": "[changes, macos-sanitizers]",
-                  "macos-analysis": "[changes, macos-compile]"}
+        # Native acceptance runs beside the sanitizers; the nightly analyzer waits for
+        # the sanitizer lane so at most two ARM runners are held, without depending on
+        # formatting or inheriting the previous lane's success requirement.
+        serial = {"macos-analysis": "[changes, macos-sanitizers]"}
         for name in ci_scope.NATIVE_JOBS:
             with self.subTest(job=name):
                 self.assertEqual(dependencies.get(name),

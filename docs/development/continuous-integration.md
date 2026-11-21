@@ -189,7 +189,9 @@ diagnostics. The **Watch for failed suites** job runs trusted `main` code beside
 suites and polls the run's jobs every minute. When a suite job (`native / ...`,
 `windows / ...` and so on) fails, times out or fails to start, the jobs still
 running get 30 minutes from that first failure to report (`STOP_GRACE_SECONDS` in
-`scripts/python/batch_ci.py`). Then **Cancel failed batch** cancels the run, so the
+`scripts/python/batch_ci.py`). The native **Ubuntu Clang** aggregate gate does not
+start that period by itself: every real failure it reports is a failed job of its
+own, and a job that only found no runner is [retried](#retry-jobs-that-found-no-runner). Then **Cancel failed batch** cancels the run, so the
 next tick can validate a candidate containing the fix instead of waiting for the
 longest sanitizer and macOS jobs. In measured batches, deterministic failures
 appeared within 3-13 minutes and every job except the sanitizers and macOS native
@@ -629,12 +631,14 @@ Native jobs use `macos-15` arm64. Host and documentation tooling separately chec
 not establish macOS 14 runtime qualification. See GitHub's
 [macOS 14 deprecation notice](https://github.com/actions/runner-images/issues/13518).
 
-The long ARM jobs run in order: sanitizers, native/SDK acceptance, then the nightly
-analyzer. This limits simultaneous runner demand after hosted ARM capacity left
-parallel jobs unacquired until GitHub cancelled them. Later jobs use an explicit
-status condition so a test failure does not suppress independent evidence;
-cancelling the workflow still stops the chain. All required results remain part
-of the promotion gate. The batch also admits ARM-owning workflows in order:
+Native/SDK acceptance and the sanitizers start together. Strictly ordered, the
+native job, which fails most often, reported about 45 minutes after the sanitizers
+and made macOS the slowest path in the batch. The nightly analyzer starts after the
+sanitizers, so `ci.yml` holds at most two ARM runners. It uses an explicit status
+condition so a sanitizer failure does not suppress its evidence; cancelling the
+workflow still stops it. All required results remain part of the promotion gate.
+Hosted ARM capacity can still run out; see
+[retry jobs that found no runner](#retry-jobs-that-found-no-runner). The batch also admits ARM-owning workflows in order:
 native, macOS threading, installed host tooling, then ARM documentation tools. This
 prevents short ARM jobs from expiring behind native work in a different reusable
 workflow. The Linux wiki call, Intel documentation tools and Windows threading
@@ -643,9 +647,31 @@ workflows. The Linux call builds and verifies the public API
 and the browser editor, checks sample playback and uploads the Pages artifact.
 Promotion waits for all three wiki calls and both threading checks. Only the
 post-promotion job deploys the candidate wiki.
-The ARM sequence can increase total batch duration. A platform-wide shortage
-can still require retrying a job whose annotations show that it failed to acquire
-a runner.
+The ARM sequence can increase total batch duration.
+
+#### Retry jobs that found no runner
+
+When no hosted runner accepts a queued job, GitHub cancels it with the annotation
+"The job was not acquired by Runner of type hosted even after multiple attempts".
+On 2026-11-02 this cancelled native, sanitizer, analyzer and macOS documentation
+jobs that were queued together. `.github/workflows/batch-runner-retry.yml` runs
+trusted `main` code after a batch run completes without success. It re-runs only
+a job that was cancelled without a runner and carries that annotation, with the
+jobs that depend on it; the others keep their results. GitHub re-runs jobs only in
+a completed run, so the retried job asks for one runner after everything else has
+finished.
+
+The retry waits five minutes, re-runs one job per round and stops after two
+rounds (`MAX_ACQUISITION_RETRIES` in `scripts/python/batch_ci.py`), so an outage
+cannot hold the promotion slot indefinitely. It does not retry when another job
+failed, when **Cancel failed batch** stopped the run, or when a newer batch is
+already validating a later `develop` commit. The native **Ubuntu Clang** gate
+fails whenever a job it reads did not succeed, so neither the retry nor the
+[early stop](#stop-a-failed-batch-early) treats that aggregate failure alone as
+rejecting the candidate. When both rounds find no runner, **Retry jobs that found
+no runner** fails with a capacity error; dispatch the coordinator with **retry**
+once capacity returns. Like every coordinator edit, the retry starts only after
+it reaches `main`.
 
 In a timing replay of [batch 43134442495](https://github.com/The-Ludus-Project/Ludus/actions/runs/43134442495),
 early Linux wiki alone brings capture-to-promotion from 2h 38m 11s to 2h 22m 35s.
