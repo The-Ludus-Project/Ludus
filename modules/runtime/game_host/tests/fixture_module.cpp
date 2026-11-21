@@ -59,6 +59,14 @@ constexpr const char* kIdentity = LUDUS_FIXTURE_IDENTITY;
 
 constexpr bool kIsVariantB = (kVariantName[0] == 'B');
 
+/// Whether this build is the failure variant named by letter. A call rather than a
+/// constant comparison, so a variant's probe is not unreachable code in the other
+/// variants' builds (-Wunreachable-code).
+[[nodiscard]] bool IsVariant(char letter) noexcept
+{
+    return kVariantName[0] == letter;
+}
+
 // Failure injection for pre-commit reload stages (tasks.md L3). A test sets
 // LUDUS_FIXTURE_FAIL to a stage name; the matching callback returns an error so
 // the host must preserve A and resume it unchanged. Read once per call; cheap.
@@ -344,7 +352,7 @@ Status FixtureCreate(const CreateInfo* info, GameInstance** outInstance) noexcep
 
 void FixtureDestroy(GameInstance* instance) noexcept
 {
-    if (kVariantName[0] == 'D' || (ShouldFail("work_pending") && AsState(instance)->WorkerLive))
+    if (IsVariant('D') || (ShouldFail("work_pending") && AsState(instance)->WorkerLive))
     {
         std::abort(); // Native destructor failure / unsafe worker destruction probe.
     }
@@ -357,11 +365,11 @@ void FixtureDestroy(GameInstance* instance) noexcept
 
 Status FixtureUpdate(GameInstance* instance, const FrameInput* input, RenderParams* outRender) noexcept
 {
-    if (kVariantName[0] == 'C')
+    if (IsVariant('C'))
     {
         std::abort();
     }
-    if (kVariantName[0] == 'H')
+    if (IsVariant('H'))
     {
         for (;;)
         {
