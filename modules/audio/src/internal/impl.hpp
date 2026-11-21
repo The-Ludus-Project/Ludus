@@ -80,6 +80,7 @@ struct AudioSystem::Impl final
         float32 Gain = 0.0F;
         StateCause Cause = StateCause::None;
         SilenceCause Silence = SilenceCause::None;
+        uint64 StartFrame = 0;
     };
     SpscRing<RenderRecord, 1024> RenderSnapshots;
     struct RenderStats final
@@ -191,11 +192,15 @@ struct AudioSystem::Impl final
     [[nodiscard]] ClipHandle MakeClipHandle(uint32 slot) const noexcept;
 
     // --- Boundary / render (control_owner.cpp) -----------------------------
+    [[nodiscard]] Status ConfigureStreamGroup(std::span<const StreamHandle> streams,
+                                              std::span<const float32> gains) noexcept;
+    void FinishStreamGroup(std::span<const StreamHandle> streams, Status result) noexcept;
     void ProcessControlBoundary() noexcept;
     void ConsumeAndApplyBatch() noexcept;
     void ApplyOneCommand(const QueuedCommand& cmd) noexcept;
     void ApplyStopMailboxes() noexcept;
     void ResolveScheduledStarts() noexcept;
+    [[nodiscard]] uint32 ResolveStreamTransitions(uint32 frames) noexcept;
     void SelectAndCharge() noexcept;
     void AcknowledgeTerminals() noexcept;
 
