@@ -40,6 +40,11 @@ jobs:
       candidate_sha: ${{ steps.capture.outputs.candidate_sha }}
       recovery_required: ${{ steps.capture.outputs.recovery_required }}
     steps:
+      - name: Link to the outcome report
+        continue-on-error: true
+        run: |
+          printf '### Batch outcome report\n\nAfter this attempt completes, open [Batch outcome reports](%s/%s/actions/workflows/batch-outcome.yml) and select **Batch %s · attempt %s**.\n' \
+            "$GITHUB_SERVER_URL" "$GITHUB_REPOSITORY" "$GITHUB_RUN_ID" "$GITHUB_RUN_ATTEMPT" >> "$GITHUB_STEP_SUMMARY"
       - uses: actions/checkout@v4
         with:
           persist-credentials: false
