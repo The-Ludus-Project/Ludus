@@ -1238,8 +1238,9 @@ wrapper includes `scene_shader.slang` before any callback:
   `SceneInfo`;
 - the public operations, from `TraceClosest`, `TestVisibility`,
   `MakeCameraRay` and `SpawnSurfaceRay` to `EvaluateMaterial`, `SelectLight`,
-  `SampleIncidentLight`, `SampleUniformFloat01` for explicit dimensions and
-  `SampleSceneRandom` for automatic draws;
+  `SampleIncidentLight`, `SampleUniformFloat01` for explicit dimensions,
+  `SampleSceneRandom` for automatic draws and the vector overloads of
+  `SampleSceneWeightedIndex`;
 - the failure reasons as LUSL constants (`SCENE_FAILURE_AUTHORED_FIRST`, ...).
 
 It includes `math.luslh`. A scene-interface program includes

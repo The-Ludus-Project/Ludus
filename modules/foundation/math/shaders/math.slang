@@ -438,6 +438,65 @@ bool TrySampleRandomBounded(uint2 key, RandomAddress address, uint bound, out ui
     return TrySampleRandomBoundedFrom(source, bound, outValue);
 }
 
+static const uint FLOAT_MINIMUM_NORMAL_BITS = 0x00800000u;
+static float ScaleNonnegativeWeight(float weight, int exponentOffset, float subnormalScale)
+{
+    const uint magnitudeBits = asuint(weight) & FLOAT_MAGNITUDE_BITS;
+    if (magnitudeBits < FLOAT_MINIMUM_NORMAL_BITS)
+        return (float(magnitudeBits) / float(FLOAT_MINIMUM_NORMAL_BITS)) * subnormalScale;
+    const int scaledBits = int(magnitudeBits) + exponentOffset;
+    return scaledBits >= int(FLOAT_MINIMUM_NORMAL_BITS) ? asfloat(uint(scaledBits)) : 0;
+}
+/// Sample a zero-based index from finite, nonnegative weights and a uniform draw in [0, 1).
+/// Returns false and sets outIndex to zero if the draw or weights are invalid or the total is zero.
+bool TrySampleWeightedIndex<let WeightCount : int>(in float weights[WeightCount], float randomValue, out uint outIndex)
+{
+    outIndex = 0;
+    const uint randomBits = asuint(randomValue);
+    if (randomBits >= asuint(1.0f) && (randomBits & FLOAT_MAGNITUDE_BITS) != 0)
+        return false;
+
+    uint largestWeightBits = 0;
+    for (int index = 0; index < WeightCount; ++index)
+    {
+        const uint weightBits = asuint(weights[index]);
+        const uint magnitudeBits = weightBits & FLOAT_MAGNITUDE_BITS;
+        if (IsFiniteBits(weights[index]) == false || (weightBits != magnitudeBits && magnitudeBits != 0))
+            return false;
+        largestWeightBits = max(largestWeightBits, magnitudeBits);
+    }
+    if (largestWeightBits == 0)
+        return false;
+
+    // Shift the binary32 exponents before adding the weights so fast math cannot sum the unscaled values.
+    const uint unitExponent = asuint(1.0f);
+    const uint largestExponent = largestWeightBits & FLOAT_EXPONENT_BITS;
+    const uint scaleExponent = max(unitExponent + unitExponent - largestExponent, FLOAT_MINIMUM_NORMAL_BITS);
+    const int exponentOffset = int(scaleExponent) - int(unitExponent);
+    // Shift the smallest normal's exponent to decode subnormal inputs without subnormal arithmetic.
+    const float subnormalScale = exponentOffset >= 0 ? asfloat(uint(exponentOffset) + FLOAT_MINIMUM_NORMAL_BITS) : 0;
+    float totalWeight = 0;
+    for (int index = 0; index < WeightCount; ++index)
+        totalWeight += ScaleNonnegativeWeight(weights[index], exponentOffset, subnormalScale);
+
+    // As in SelectTileEmitter, the first inclusive prefix strictly above the draw owns the sample.
+    const float target = randomValue * totalWeight;
+    float cumulativeWeight = 0;
+    for (int index = 0; index < WeightCount; ++index)
+    {
+        const float previousWeight = cumulativeWeight;
+        cumulativeWeight += ScaleNonnegativeWeight(weights[index], exponentOffset, subnormalScale);
+        if (cumulativeWeight > previousWeight)
+        {
+            // Keep the last nonempty interval if the target rounds up to the total.
+            outIndex = uint(index);
+            if (cumulativeWeight > target)
+                break;
+        }
+    }
+    return true;
+}
+
 // UV-derived frame used by renderer raster and ray profiles; see
 // docs/architecture/renderer-systems.md#material-and-lighting-fidelity.
 // Orthonormalizes against the supplied unit normal, preserving mirrored UV sign.
