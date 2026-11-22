@@ -21,6 +21,8 @@ WorldFeatureSupport GetWorldFeatureSupport(const RenderGraphPrograms& programs, 
         case WorldFeature::AerialPerspective:
             return programs.HasAerialPerspective == true ? WorldFeatureSupport::Approximated
                                                          : WorldFeatureSupport::NotRendered;
+        case WorldFeature::Aurora:
+            return WorldFeatureSupport::NotRendered;
     }
     return WorldFeatureSupport::NotRendered;
 }

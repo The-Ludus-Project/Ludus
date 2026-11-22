@@ -4,6 +4,7 @@
 #include "renderer_deferred_fullscreen.slang"
 #include "renderer_mesh_lights.slang"
 #ifdef LUDUS_ATMOSPHERE_SURFACE
+#    include "renderer_aurora_layer.slang"
 #    include "renderer_cloud_layer.slang"
 #endif
 
@@ -23,6 +24,7 @@ struct DeferredViewParameters
     float4 AtmosphereIlluminance;   // xyz: linear RGB illuminance at the top boundary.
     float4 AtmosphereCameraWorld;   // xyz: eye in metres, w: orthographic flag.
     float4 AtmosphereCloudLayer[CLOUD_LAYER_UNIFORM_ROWS];
+    float4 AtmosphereAuroraLayer[AURORA_LAYER_UNIFORM_ROWS];
 #endif
 };
 LUDUS_SHADER_BINDING(LUDUS_DEFERRED_NORMAL_BINDING)

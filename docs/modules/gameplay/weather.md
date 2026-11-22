@@ -186,6 +186,39 @@ Editor test cooks the corpus climate spelled as a World member and checks that
 it produces the corpus bytes. The installed SDK therefore mounts the same
 cooked input that Editor Play packages.
 
+## Edit a climate in the Environment tool
+
+Open **Environment** beside **Lights** and **Materials** in the World sidebar.
+The tool works with Properties hidden.
+
+1. In a World without a climate, choose **Add Climate**. It starts a draft with
+   a 2 km domain around the origin, a **Clear** preset and a **Default**
+   schedule that holds it.
+2. Edit the **Climate** domain and default schedule. Use **Presets**,
+   **Schedules** and **Regions** to choose, **Add** or **Remove** records and
+   edit the chosen record. A schedule's entries list each preset with its hold
+   and blend in ticks (60 per second of Play). **Loop from** names the entry
+   that follows the last one. A region has a priority, a schedule, World edges
+   in metres and an inward feather distance.
+3. Every committed field edit is checked by the cooker. A failure stays at the top
+   of the tool and names the record and its repair, for example *Region “Ridge”
+   must be a nonempty rectangle inside the climate domain. Shrink the region or
+   enlarge the domain.* **Apply** is refused until the draft is valid.
+4. While the tool is shown, the viewport draws the domain, each region's edge
+   and its feather depth as dashed outlines on the ground plane (Y = 0).
+5. **Preview** evaluates the authored climate at **Preview time**, a tick of
+   Play, at **Inspect X** and **Inspect Z**. It shows the contributing regions
+   with their weights, the temperature, humidity, cloud coverage,
+   precipitation, ground wind and fog. The preview never changes the World.
+6. **Apply** commits the whole draft as one undoable **Edit Climate** step.
+   **Revert** discards the draft. **Remove Climate…** names what it removes and
+   asks first; Cancel is the default, and Undo restores the climate.
+
+A document refresh, such as Undo, keeps an unapplied draft. If the World's
+climate changed meanwhile, the tool says that **Apply** replaces it and
+**Revert** shows the World's climate. Save the World before Play, which
+packages the saved file.
+
 ## Pause, step, preview and reset
 
 The session's fixed ticks are the weather clock, so the session's controls
@@ -242,13 +275,13 @@ runs the same corpus under Node as `ludus_web_weather_corpus`.
 
 ## Not yet covered
 
-The runtime, its session control semantics, the World climate member, Play
-packaging and the installed SDK components are in place. Still to come under
-[#1704](https://github.com/The-Ludus-Project/Ludus/issues/1704): the
-**Environment** World tool, for editing presets, schedules and regions with a
-region overlay, a preview time and a position inspector; and driving the weather
-from the Play session's controls, which the built-in player gains with the
-session clock of [#1606](https://github.com/The-Ludus-Project/Ludus/issues/1606). Seasonal schedule selection, altitude profiles, accumulated surface
+The runtime, its session control semantics, the World climate member, the
+Environment tool, Play packaging and the installed SDK components are in place.
+Still to come under [#1704](https://github.com/The-Ludus-Project/Ludus/issues/1704):
+driving the weather from the Play session's controls, which the built-in player
+gains with the session clock of [#1606](https://github.com/The-Ludus-Project/Ludus/issues/1606).
+Dragging region edges in the viewport is not yet supported; edit them in the
+tool. Seasonal schedule selection, altitude profiles, accumulated surface
 wetness ([#1707](https://github.com/The-Ludus-Project/Ludus/issues/1707)) and
 the shared wind provider
 ([#1705](https://github.com/The-Ludus-Project/Ludus/issues/1705)) are separate

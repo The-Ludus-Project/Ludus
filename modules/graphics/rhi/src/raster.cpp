@@ -659,9 +659,14 @@ bool ValidBinding(const RasterBinding& binding) noexcept
     }
     if (StorageTextureBinding(binding.Kind) == true)
     {
-        return (binding.Visibility == RasterVisibility::Compute || binding.Visibility == RasterVisibility::Fragment) &&
-               binding.Count == 1 && binding.MinSize == 0 && binding.HasPartialBinding == false &&
-               binding.IsRuntimeSized == false && IsStorageTextureFormat(binding.StorageFormat) == true;
+        const bool hasSupportedAccess =
+            binding.Kind == RasterBindingKind::StorageTexture2D
+                ? (binding.Visibility == RasterVisibility::Compute || binding.Visibility == RasterVisibility::Fragment)
+                : (binding.Visibility == RasterVisibility::Compute &&
+                   binding.StorageFormat == RasterFormat::Rgba8Unorm);
+        return hasSupportedAccess == true && binding.Count == 1 && binding.MinSize == 0 &&
+               binding.HasPartialBinding == false && binding.IsRuntimeSized == false &&
+               IsStorageTextureFormat(binding.StorageFormat) == true;
     }
     return (binding.Visibility != RasterVisibility::Compute ||
             (binding.Count == 1 &&
@@ -764,6 +769,11 @@ RasterStatus ValidateLayoutCapabilities(const RasterLayout& layout) noexcept
     bool hasRayScene = false;
     for (usize entry = 0; entry < layout.Count; ++entry)
     {
+        if (layout.Entries[entry].Kind == RasterBindingKind::StorageTexture2DReadWrite &&
+            backend::Kind() != Backend::Vulkan && backend::Kind() != Backend::Metal)
+        {
+            return RasterStatus::Unsupported;
+        }
         if (layout.Entries[entry].Kind == RasterBindingKind::RayScene)
         {
             if (hasRayScene == true)

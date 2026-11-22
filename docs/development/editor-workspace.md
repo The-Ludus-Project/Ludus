@@ -2028,6 +2028,13 @@ mappings and explicit Project BRDF assignments. Renderables that override
 coating or roughness still appear under the same resource. Inspect an individual
 renderable to see its effective values.
 
+### Author a World's regional climate
+
+Open **Environment** in the World sidebar to author the World's climate presets,
+schedules and feathered regions, preview them at a time and position, and apply
+them as one undoable edit. See
+[Edit a climate in the Environment tool](../modules/gameplay/weather.md#edit-a-climate-in-the-environment-tool).
+
 ### Check an imported diffuse material against a swatch
 
 For a glTF dielectric (`metallicFactor` set to zero and no metallic map),
@@ -2491,6 +2498,36 @@ account for the shift in a nearby moon's apparent position. A value of zero
 treats the source as distant. The rule follows a prescribed circular orbit and
 uses the same horizon cutoff as the Earth templates.
 
+### Render a celestial time-lapse
+
+In the native World viewport, save the composition with **View → Set start view
+from this view**. Set at least one enabled directional light to **Dynamic
+Celestial → Earth Sun** or **Earth Moon**. Set the World's date and observer
+location, and link those lights to the Atmosphere to show their disks and
+changes in the sky. Older Worlds with static lights keep their authored lighting
+until you choose an Earth preset.
+
+1. Open **Reference…**. Choose **RT1 reference** and its traversal and sample
+   count, or **Render graph** and a capturable graph output. Set the image size,
+   then choose **Time-lapse…**. To use a different source or quality, close
+   Time-lapse, change the selection in Reference and reopen it.
+2. Set **Start** and **End** on the World's clock, plus **Video length** and
+   **Frame rate**. Drag the frame slider to preview a time from the saved
+   camera. Scrubbing renders a lower-cost still with the selected source and
+   leaves the World and its live viewport available for editing. The last
+   complete preview stays visible while a new frame renders.
+3. Choose **Export MP4…** and enter a new filename. Export uses the quality
+   selected in Reference. It renders every frame in order, including both
+   selected instants, and completes each frame before advancing celestial time.
+   **Stop** cancels the job. The MP4 appears at its destination after encoding.
+
+MP4 export uses a local [FFmpeg](https://ffmpeg.org/download.html) build with
+the `libx264` encoder. The editor finds it on PATH or prompts for the executable.
+The destination needs space for the video and the staged PNGs. The World camera,
+observer and graph are frozen when Time-lapse opens. With automatic viewport
+exposure selected, the capture meters each sampled sky. A graph must support
+Reference capture of the selected output, using its authored capture profile.
+
 ### Add a clear-sky atmosphere
 
 In a default World, open **Add World Preset → Atmosphere** from the entity
@@ -2572,6 +2609,15 @@ shadow on the ground, does not change the sky's light on surfaces, and has no
 multiple scattering, so thick clouds look darker than real ones. Orthographic
 views, ray-traced configurations and RT1 reference captures leave it out.
 [Cloud transport contract](../architecture/world-environment.md#controlled-cloud-layer)
+
+To add northern lights, select the Atmosphere, tick **Northern lights** in
+Properties, and apply. Look low toward the Atmosphere entity's local +Z at
+night. Rotate the entity around its up axis to move the curtains around the
+horizon. **Aurora emission** controls their brightness. **Aurora time** selects
+a frame in the 120-second loop. The viewport shows that fixed time for authoring
+and Play advances from it. Use a perspective camera inside the atmosphere and
+**Force raster** if the active graph omits the effect.
+[Aurora transport contract](../architecture/world-environment.md#auroral-curtains)
 
 A perspective camera above the atmosphere can see the illuminated limb and
 the celestial background. The ground uses a dark boundary. Below ground or

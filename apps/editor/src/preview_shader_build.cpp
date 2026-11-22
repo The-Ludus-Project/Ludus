@@ -125,6 +125,8 @@ QString GetBindingKindName(rhi::RasterBindingKind kind)
             return QStringLiteral("storage buffer");
         case rhi::RasterBindingKind::StorageTexture2D:
             return QStringLiteral("storage texture");
+        case rhi::RasterBindingKind::StorageTexture2DReadWrite:
+            return QStringLiteral("read/write storage texture");
     }
     return QStringLiteral("resource");
 }

@@ -43,6 +43,7 @@
 #include <QPointF>
 #include <cmath>
 #include <ludus/foundation/base/compiler.h>
+#include <ludus/gameplay/world/celestial_transform.hpp>
 
 #include "internal/workspace_style.h"
 #include <QAction>
@@ -3946,7 +3947,7 @@ TEST_CASE("Earth lights share one World date, time and location that starts at t
     workspace.StopPreview();
 }
 
-TEST_CASE("The Atmosphere's cloud layer fields show when enabled and reach the renderer", "[editor][world][atmosphere]")
+TEST_CASE("The Atmosphere shows enabled layer fields and extracts their settings", "[editor][world][atmosphere]")
 {
     QTemporaryDir directory;
     const QString root = QFileInfo(directory.path()).canonicalFilePath();
@@ -3973,7 +3974,8 @@ TEST_CASE("The Atmosphere's cloud layer fields show when enabled and reach the r
     REQUIRE(RenderScene::Load(root, workspace.Document(), scene, error) == true);
     REQUIRE(scene.Atmosphere.IsEnabled == true);
     CHECK(scene.Atmosphere.Clouds.IsEnabled == false);
-    const QJsonObject beforeClouds = workspace.Document().Draft();
+    CHECK(scene.Atmosphere.Aurora.IsEnabled == false);
+    const QJsonObject beforeLayers = workspace.Document().Draft();
 
     // The layer's fields stay hidden until the layer is ticked.
     QCheckBox* cloudsOrNull = workspace.findChild<QCheckBox*>(QStringLiteral("worldField:atmosphere/clouds"));
@@ -3990,6 +3992,14 @@ TEST_CASE("The Atmosphere's cloud layer fields show when enabled and reach the r
     CHECK(extinctionOrNull->isVisibleTo(&workspace) == true);
     baseOrNull->setText(QStringLiteral("2500"));
     extinctionOrNull->setText(QStringLiteral("0.002"));
+    QCheckBox* auroraOrNull = workspace.findChild<QCheckBox*>(QStringLiteral("worldField:atmosphere/aurora"));
+    QLineEdit* auroraTimeOrNull = workspace.findChild<QLineEdit*>(QStringLiteral("worldField:atmosphere/auroraTime"));
+    REQUIRE(auroraOrNull != nullptr);
+    REQUIRE(auroraTimeOrNull != nullptr);
+    CHECK(auroraTimeOrNull->isVisibleTo(&workspace) == false);
+    auroraOrNull->setChecked(true);
+    CHECK(auroraTimeOrNull->isVisibleTo(&workspace) == true);
+    auroraTimeOrNull->setText(QStringLiteral("23"));
     REQUIRE(workspace.Apply() == true);
     REQUIRE(RenderScene::Load(root, workspace.Document(), scene, error) == true);
     const ludus::graphics::renderer::CloudLayerDescription& clouds = scene.Atmosphere.Clouds;
@@ -3998,12 +4008,15 @@ TEST_CASE("The Atmosphere's cloud layer fields show when enabled and reach the r
     CHECK(clouds.ExtinctionPerMetre == Catch::Approx(0.002));
     CHECK(clouds.ThicknessMetres == ludus::graphics::renderer::CloudLayerDescription::DEFAULT_THICKNESS_METRES);
     CHECK(clouds.AxisXWorld.X == Catch::Approx(1));
+    CHECK(scene.Atmosphere.Aurora.IsEnabled == true);
+    CHECK(scene.Atmosphere.Aurora.TimeSeconds == 23);
 
     // Undo restores the clear sky in one step.
     workspace.Undo();
-    CHECK(workspace.Document().Draft() == beforeClouds);
+    CHECK(workspace.Document().Draft() == beforeLayers);
     REQUIRE(RenderScene::Load(root, workspace.Document(), scene, error) == true);
     CHECK(scene.Atmosphere.Clouds.IsEnabled == false);
+    CHECK(scene.Atmosphere.Aurora.IsEnabled == false);
     workspace.StopPreview();
 }
 
@@ -7858,11 +7871,23 @@ TEST_CASE("Atmosphere entities retain their Sun across deletion, undo and reopen
     CHECK(scene.Atmosphere.Celestial.MilkyWayRadiance > 0);
     CHECK(scene.Atmosphere.Celestial.Planets[0].Illuminance.X > 0);
     const math::Vector3 midnightCenterWorld = scene.Atmosphere.Celestial.GalacticCenterWorld;
+    const QByteArray authoredWorld = reopened.Encode();
+    RenderScene sampled = scene;
+    REQUIRE(sampled.TrySampleEarthTime(0, error) == true);
+    CHECK(sampled.Atmosphere.Celestial.GalacticCenterWorld != midnightCenterWorld);
+    CHECK(reopened.Encode() == authoredWorld);
+    CHECK(scene.Atmosphere.Celestial.GalacticCenterWorld == midnightCenterWorld);
+    const float64 invalidTime = ludus::gameplay::world::MAX_EARTH_CELESTIAL_DAYS + 1;
+    CHECK(sampled.TrySampleEarthTime(invalidTime, error) == false);
+
     earthMoon.insert(QString(WORLD_CELESTIAL_TIME), 0);
     moonComponents.insert(lightComponent, earthMoon);
     REQUIRE(reopened.Edit(moonId, moonComponents, moonName, error) == true);
     REQUIRE(RenderScene::Load(directory.path(), reopened, scene, error) == true);
     CHECK(scene.Atmosphere.Celestial.GalacticCenterWorld != midnightCenterWorld);
+    CHECK(sampled.Atmosphere.Celestial.GalacticCenterWorld == scene.Atmosphere.Celestial.GalacticCenterWorld);
+    CHECK(sampled.Atmosphere.Celestial.DirectionToMoonWorld == scene.Atmosphere.Celestial.DirectionToMoonWorld);
+    CHECK(sampled.Atmosphere.Celestial.LunarPeakRadiance == scene.Atmosphere.Celestial.LunarPeakRadiance);
     values.insert(QStringLiteral("stars"), false);
     components.insert(atmosphereComponent, values);
     REQUIRE(reopened.Edit(atmosphereId, components, atmosphere.value(QStringLiteral("name")).toString(), error) ==

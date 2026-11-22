@@ -47,6 +47,19 @@ class SceneComputeFixture(unittest.TestCase):
 
 
 class SceneComputeLoweringTests(SceneComputeFixture):
+    def test_storage_launch_is_independent_of_viewport_extent(self):
+        self.configuration = next(config for config in self.document['configurations'] if config['id'] == 'ColorInput')
+        self.document['default'] = self.configuration['id']
+        plan = self.compile()
+        producer = next(operation for operation in plan['passes'] if operation['id'] == 'Main/utd')
+        texture = plan['resources'][producer['attachments']['color']['resource']]
+        self.assertEqual([8, 8, 1], producer['dimensions'])
+        self.assertEqual([1, 1], texture['view_scale'])
+        self.assertNotEqual(producer['dimensions'][:2], texture['extent'])
+        self.node('utd')['invocation'].pop('storage_texture')
+        self.node('utd')['outputs'][0]['load'] = 'Clear'
+        self.fails('AttachmentMismatch', 'is view-relative')
+
     def test_scene_compute_node_lowers_to_a_ray_sequence_member(self):
         before = deepcopy(self.document)
         plan = self.compile()
@@ -293,12 +306,20 @@ class ManifestTests(unittest.TestCase):
 
 @unittest.skipUnless(all(os.environ.get(name) for name in NATIVE_TOOLS), 'requires pinned native shader tools')
 class NativeSceneComputeTests(unittest.TestCase):
-    def build(self, fixture, root, kernel_source):
+    def build(self, fixture, root, kernel_source, *, native_storage=False):
         """Build fixture and return its package, ray recipe and wrapper for the kernel compiled from kernel_source."""
         source = root / fixture.name
         shutil.copytree(fixture, source)
         manifest = source / 'main.lushader.json'
         manifest.write_text((source / 'main.lushader.json.in').read_text().replace('@RG2_TEST_PROFILES@', '["metal","wgsl"]'))
+        if native_storage:
+            path = source / 'main.lurender.json'
+            document = json.loads(path.read_text())
+            config = next(config for config in document['configurations'] if config['id'] == 'ColorInput')
+            producer = next(node for node in config['nodes'] if node['id'] == 'utd')
+            producer['invocation'].pop('traversal')
+            producer['invocation']['type'] = 'RayTracing'
+            path.write_bytes(graph.canonical_asset(document))
         result = build.build_package(manifest, root / (fixture.name + '-build'), helper=os.environ['LUDUS_RG1_HELPER'],
                                      compiler=os.environ['LUDUS_RG1_SLANG'], spirv_cross=os.environ['LUDUS_RG1_CROSS'])
         package = Path(result['package'])
@@ -482,6 +503,7 @@ class NativeSceneComputeTests(unittest.TestCase):
             package, recipe, wrapper = self.build(SCENE_COMPUTE, root, 'main_shaders/produce_diffraction.slang')
             self.assertTrue(recipe['color_input'])
             self.assertIn('Texture2D<float4> GraphColorInput;', wrapper)
+            self.assertIn('RWTexture2D<float4> GraphStorageTexture;', wrapper)
             destination = root / 'color-input.lurgrt'
             execution.cook_runtime(package, destination, configuration='ColorInput')
             _, resources, passes, _ = execution.lower_plan(
@@ -490,7 +512,26 @@ class NativeSceneComputeTests(unittest.TestCase):
             self.assertEqual(passes[0]['Color'], passes[1]['SourceColor'])
             self.assertNotEqual(passes[1]['Color'], passes[1]['SourceColor'])
             self.assertEqual('Color', resources[passes[1]['SourceColor']]['Kind'])
-            self.assertEqual(execution.PACKAGE_VERSION, parse_runtime(destination.read_bytes())['version'])
+            self.assertEqual((8, 8), (passes[0]['StorageLaunchWidth'], passes[0]['StorageLaunchHeight']))
+            self.assertEqual((1, 1), (resources[passes[0]['Color']]['ViewNumerator'],
+                                     resources[passes[0]['Color']]['ViewDenominator']))
+            parsed = parse_runtime(destination.read_bytes())
+            self.assertEqual(execution.PACKAGE_VERSION, parsed['version'])
+            self.assertEqual((8, 8), parsed['passes'][0][-2:])
+
+    def test_native_ray_stages_can_write_the_storage_texture(self):
+        from test_render_graph_authoring import parse_runtime
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            package, recipe, _ = self.build(SCENE_COMPUTE, root, 'main_shaders/produce_diffraction.slang',
+                                            native_storage=True)
+            self.assertTrue(recipe['storage_texture'])
+            self.assertIn('native_pipeline', recipe)
+            destination = root / 'native-storage.lurgrt'
+            execution.cook_runtime(package, destination, configuration='ColorInput')
+            stages = parse_runtime(destination.read_bytes())['stages']
+            stage = next(stage for stage in stages if stage['role'] == execution.NATIVE_RAY_STAGE_ROLE)
+            self.assertEqual((8, 8, 1), stage['workgroup'])
 
     def test_compute_kernels_dispatch_only_from_ray_generation(self):
         from test_render_graph_authoring import parse_runtime

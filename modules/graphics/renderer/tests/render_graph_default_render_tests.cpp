@@ -4144,3 +4144,110 @@ TEST_CASE("Cloud layer attenuates opaque surfaces from its entry to their depth"
         }
     }
 }
+
+TEST_CASE("Auroral curtains animate, attenuate and respect opaque depth in the deferred atmosphere",
+          "[render-graph][atmosphere][aurora][gpu][reference-compute]")
+{
+    GraphGpuFixture fixture;
+    const core::UniquePtr<renderer::RenderGraphPackage> package =
+        LoadPackage({LUDUS_RG3_CLUSTERED_DEFAULT_DIRECTORY, "rg2_clustered_Default.lurgrt"});
+    const renderer::RenderGraphPrograms programs =
+        package->GetPrograms(shaders::renderer_composite::Vertex(), shaders::renderer_composite::Fragment());
+    REQUIRE(PollAtmosphereGraph(
+                fixture,
+                fixture.Graph.Initialize(fixture.Device, package->GetPlan(), programs, nullptr, WIDTH, HEIGHT)) ==
+            rhi::RasterStatus::Ready);
+
+    renderer::ViewDescription& camera = fixture.Cameras[0];
+    constexpr float32 EYE_HEIGHT_METRES = 2;
+    constexpr float32 LOOK_SLOPE = 0.32F;
+    camera.CameraPosition = {0, EYE_HEIGHT_METRES, 0};
+    math::Vector3 directionWorld;
+    REQUIRE(math::TryNormalize(math::Vector3{0, LOOK_SLOPE, -1}, directionWorld) == math::MathStatus::Success);
+    SetCloudCamera(camera, directionWorld, {0, 1, 0});
+    camera.Atmosphere.IsEnabled = true;
+    camera.Atmosphere.ShouldLightScene = true;
+    camera.Atmosphere.DirectionToSunWorld = {0, -1, 0};
+    renderer::AuroraLayerDescription& aurora = camera.Atmosphere.Aurora;
+    aurora.AxisXWorld = {-1, 0, 0};
+    // Keep the narrower green band above quantization in the linear RGBA8 readback.
+    constexpr float32 EMISSION_PER_METRE = 0.000005F;
+    const StaticArray<math::Vector3, VERTEX_COUNT> normals{{{0, 0, 1}, {0, 0, 1}, {0, 0, 1}}};
+    fixture.Meshes[0].Geometry.Normals = normals.GetData();
+    const uint32 materialIndex = 0;
+    fixture.Meshes[0].MaterialBindings = {&materialIndex, 1};
+    renderer::SceneShaderMaterial material;
+    material.BaseColor = {};
+    material.Emission = {0.25F, 0, 0};
+    material.ShouldRegisterRasterMeshLight = false;
+    renderer::SceneShaderInputs inputs;
+    inputs.Materials = {&material, 1};
+    uint64 revision = 0;
+    const auto capture = [&](bool hasOpaqueSurface) {
+        renderer::RenderGraphReport report;
+        const BorrowedView<const renderer::RenderGraphMesh> meshes =
+            hasOpaqueSurface == true ? BorrowedView<const renderer::RenderGraphMesh>{fixture.Meshes.GetData(), 1}
+                                     : BorrowedView<const renderer::RenderGraphMesh>{};
+        const BorrowedView<const renderer::RenderGraphItem> items =
+            hasOpaqueSurface == true ? BorrowedView<const renderer::RenderGraphItem>{fixture.Items.GetData(), 1}
+                                     : BorrowedView<const renderer::RenderGraphItem>{};
+        REQUIRE(PollAtmosphereGraph(fixture,
+                                    fixture.Graph.Update(meshes,
+                                                         items,
+                                                         {&camera, 1},
+                                                         ++revision,
+                                                         renderer::RenderGraphCoveragePolicy::RejectIncomplete,
+                                                         report,
+                                                         &inputs)) == rhi::RasterStatus::Ready);
+        REQUIRE(report.UnrenderedWorldFeatures == 0);
+        ReadAtmosphereFrame(fixture);
+    };
+
+    capture(false);
+    const StaticArray<uint8, PIXEL_BYTES> clear = fixture.Pixels;
+    aurora.IsEnabled = true;
+    aurora.EmissionPerMetre = 0;
+    capture(false);
+    CHECK(fixture.Pixels == clear);
+
+    aurora.EmissionPerMetre = EMISSION_PER_METRE;
+    capture(false);
+    const StaticArray<uint8, PIXEL_BYTES> first = fixture.Pixels;
+    const usize middle = GetPixel(WIDTH / 2, HEIGHT / 2);
+    CHECK(first[middle + 1] > clear[middle + 1]);
+    CHECK(first[middle + 1] > first[middle]);
+    CHECK(first[middle + 1] > first[middle + 2]);
+
+    aurora.TimeSeconds = renderer::AuroraLayerDescription::LOOP_SECONDS / 4;
+    capture(false);
+    CHECK(fixture.Pixels != first);
+    aurora.TimeSeconds = renderer::AuroraLayerDescription::LOOP_SECONDS;
+    capture(false);
+    CHECK(fixture.Pixels == first);
+
+    // A black cloud cuts the view to the aurora. It is lit by neither the Sun nor the aurora.
+    camera.Atmosphere.Clouds = MakeCloudLayer(renderer::CloudLayerDescription::DEFAULT_EXTINCTION_PER_METRE);
+    camera.Atmosphere.Clouds.SingleScatteringAlbedo = 0;
+    capture(false);
+    CHECK(fixture.Pixels[middle + 1] < first[middle + 1]);
+    camera.Atmosphere.Clouds = {};
+
+    // Opaque geometry nearby overwrites only the pixels it covers.
+    constexpr float32 SURFACE_DISTANCE_METRES = 10;
+    fixture.Items[0].MeshToWorld.Translation = camera.CameraPosition + directionWorld * SURFACE_DISTANCE_METRES;
+    capture(true);
+    const StaticArray<uint8, PIXEL_BYTES> obscured = fixture.Pixels;
+    aurora.IsEnabled = false;
+    capture(true);
+    CHECK(obscured[middle] > 0);
+    CHECK(obscured[middle + 1] == fixture.Pixels[middle + 1]);
+    CHECK(obscured[middle + 1] < first[middle + 1]);
+
+    aurora.IsEnabled = true;
+    SetCloudCamera(camera, {0, -LOOK_SLOPE, -1}, {0, 1, 0});
+    capture(false);
+    const StaticArray<uint8, PIXEL_BYTES> ground = fixture.Pixels;
+    aurora.IsEnabled = false;
+    capture(false);
+    CHECK(fixture.Pixels == ground);
+}

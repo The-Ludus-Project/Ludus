@@ -4,10 +4,12 @@
 #include <ludus/foundation/logging/log_format.hpp>
 #include <ludus/foundation/logging/log_system.hpp>
 #include <ludus/foundation/math/projection.hpp>
+#include <ludus/foundation/math/scalar.hpp>
 #include <ludus/foundation/threading/thread.hpp>
 #include <ludus/foundation/time/time.hpp>
 #include <ludus/gameplay/camera/control.hpp>
 #include <ludus/gameplay/weather/weather_simulation.h>
+#include <ludus/graphics/renderer/atmosphere.hpp>
 #include <ludus/platform/base/window.h>
 
 #include <signal.h>
@@ -114,6 +116,10 @@ bool Play(const PlayableSnapshot& snapshot,
     uint32 frames = 0;
     bool hasPresented = false;
     uint64 previous = time::NowTicks();
+    const bool shouldAnimateAurora = snapshot.Atmosphere.IsEnabled == true &&
+                                     snapshot.Atmosphere.Aurora.IsEnabled == true &&
+                                     snapshot.Atmosphere.Aurora.EmissionPerMetre > 0 && shouldVerifyFixture == false;
+    float64 auroraTimeSeconds = static_cast<float64>(snapshot.Atmosphere.Aurora.TimeSeconds);
     while (gShouldStop == 0 && inoutWindow.HandleEvent({}) == true)
     {
         const platform::NativeWindowInfo native = inoutWindow.GetNativeWindowInfo();
@@ -195,7 +201,7 @@ bool Play(const PlayableSnapshot& snapshot,
                                      controls.ShouldJump);
         controls.ShouldJump = false;
         if (isResized == true || hasPresented == false || eyeWorld != priorEyeWorld || motion.Horizontal != 0 ||
-            motion.Vertical != 0)
+            motion.Vertical != 0 || shouldAnimateAurora == true)
         {
             rr::ViewDescription view;
             math::Quaternion orientation;
@@ -226,6 +232,13 @@ bool Play(const PlayableSnapshot& snapshot,
             view.Depth = rr::DepthConvention::ReverseZ;
             view.WorldToClip = viewToClip * worldToView;
             view.Atmosphere = snapshot.Atmosphere;
+            if (shouldAnimateAurora == true)
+            {
+                constexpr float64 LOOP_SECONDS = static_cast<float64>(rr::AuroraLayerDescription::LOOP_SECONDS);
+                auroraTimeSeconds += elapsed;
+                auroraTimeSeconds -= math::Floor(auroraTimeSeconds / LOOP_SECONDS) * LOOP_SECONDS;
+                view.Atmosphere.Aurora.TimeSeconds = static_cast<float32>(auroraTimeSeconds);
+            }
             if (inoutRenderer.Update(scene, view) == false)
             {
                 LUDUS_LOG_ERROR(

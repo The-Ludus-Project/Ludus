@@ -396,6 +396,45 @@ void ViewportObjectInteraction::SetTerrainFootprint(const QJsonObject& recipe)
     mTerrainBaseElevation = base;
     Q_EMIT Changed();
 }
+void ViewportObjectInteraction::SetClimateOverlay(const QJsonValue& climate)
+{
+    QList<ClimateOutline> outlines;
+    const auto addBounds = [&outlines](const QJsonObject& bounds, float64 inset) {
+        const ClimateOutline outline
+        {
+            .MinimumX = static_cast<float32>(bounds.value(QStringLiteral("minimumX")).toDouble() + inset),
+            .MinimumZ = static_cast<float32>(bounds.value(QStringLiteral("minimumZ")).toDouble() + inset),
+            .MaximumX = static_cast<float32>(bounds.value(QStringLiteral("maximumX")).toDouble() - inset),
+            .MaximumZ = static_cast<float32>(bounds.value(QStringLiteral("maximumZ")).toDouble() - inset),
+        };
+        if (outline.MinimumX < outline.MaximumX && outline.MinimumZ < outline.MaximumZ)
+        {
+            outlines.append(outline);
+        }
+    };
+    if (climate.isObject() == true)
+    {
+        const QJsonObject object = climate.toObject();
+        addBounds(object.value(QStringLiteral("domain")).toObject(), 0);
+        for (const QJsonValue region : object.value(QStringLiteral("regions")).toArray())
+        {
+            const QJsonObject record = region.toObject();
+            const QJsonObject bounds = record.value(QStringLiteral("bounds")).toObject();
+            addBounds(bounds, 0);
+            const float64 feather = record.value(QStringLiteral("feather")).toDouble();
+            if (feather > 0)
+            {
+                addBounds(bounds, feather);
+            }
+        }
+    }
+    if (outlines == mClimateOutlines)
+    {
+        return;
+    }
+    mClimateOutlines = foundation::Move(outlines);
+    Q_EMIT Changed();
+}
 void ViewportObjectInteraction::SetTerrainBrush(const QString& key,
                                                 float32 radius,
                                                 bool shouldPickHeight,
@@ -1132,6 +1171,44 @@ void ViewportObjectInteraction::appendTerrainFootprint(ViewportObjectOverlay& in
     }
 }
 
+void ViewportObjectInteraction::appendClimateOutlines(ViewportObjectOverlay& inoutOverlay) const
+{
+    constexpr usize CORNER_COUNT = 4;
+    constexpr int32 DASH_COUNT = 24;
+    for (const ClimateOutline& outline : mClimateOutlines)
+    {
+        const StaticArray<math::Vector3, CORNER_COUNT> cornersWorld{{{outline.MinimumX, 0, outline.MinimumZ},
+                                                                     {outline.MaximumX, 0, outline.MinimumZ},
+                                                                     {outline.MaximumX, 0, outline.MaximumZ},
+                                                                     {outline.MinimumX, 0, outline.MaximumZ}}};
+        for (usize corner = 0; corner < CORNER_COUNT; ++corner)
+        {
+            if (inoutOverlay.OutlineLinesPixel.GetSize() + DASH_COUNT > ViewportObjectOverlay::MAX_OUTLINE_LINES)
+            {
+                return;
+            }
+            const math::Vector3& firstWorld = cornersWorld[corner];
+            const math::Vector3& secondWorld = cornersWorld[(corner + 1) % CORNER_COUNT];
+            const SilhouetteSegment segment
+            {
+                .FirstClip = mWorldToClip * math::Vector4{firstWorld.X, firstWorld.Y, firstWorld.Z, 1},
+                .SecondClip = mWorldToClip * math::Vector4{secondWorld.X, secondWorld.Y, secondWorld.Z, 1},
+            };
+            QLineF linePixel;
+            if (projectSegment(segment, linePixel) == false)
+            {
+                continue;
+            }
+            for (int32 dash = 0; dash < DASH_COUNT; ++dash)
+            {
+                const float64 start = static_cast<float64>(dash) / DASH_COUNT;
+                const float64 end = (static_cast<float64>(dash) + 0.5) / DASH_COUNT;
+                inoutOverlay.OutlineLinesPixel.Add(QLineF(linePixel.pointAt(start), linePixel.pointAt(end)));
+            }
+        }
+    }
+}
+
 bool ViewportObjectInteraction::isProbeVolumeLayout() const noexcept
 {
     return mProbeVolume.Layout == GiProbeLayout::Volume;
@@ -1315,7 +1392,9 @@ void ViewportObjectInteraction::dragProbeFace(QPointF positionPixel)
         Q_EMIT Changed();
         return;
     }
-    const uint32 count = static_cast<uint32>(math::Clamp(desiredCount, 2.F, maximumCount) + 0.5F);
+    // The clamped count is positive, so adding one half and flooring rounds it to the nearest whole count.
+    const uint32 count =
+        static_cast<uint32>(math::Floor(static_cast<float64>(math::Clamp(desiredCount, 2.F, maximumCount)) + 0.5));
     rr::GiProbeGrid candidate = mProbeGrid;
     candidate.Counts[axis] = count;
     if (isMinimumFace == true)
@@ -1346,6 +1425,7 @@ void ViewportObjectInteraction::dragProbeFace(QPointF positionPixel)
     Q_EMIT Changed();
 }
 
+// NOLINTNEXTLINE(bugprone-easily-swappable-parameters): the pointer position, then its motion since the press.
 void ViewportObjectInteraction::dragProbeSpacing(QPointF positionPixel, QPointF deltaPixel, bool shouldSnap)
 {
     const float64 originalSpacing = static_cast<float64>(mProbeGrid.Spacing);
@@ -1756,7 +1836,7 @@ bool ViewportObjectInteraction::dragUniform(QPointF deltaPixel, bool shouldSnap,
         }
         scaled[axis] = value;
     }
-    inoutValues = scaled;
+    inoutValues = foundation::Move(scaled);
     mReadoutText = FormatScaleReadout(GIZMO_READOUT_NO_AXIS, factor);
     return true;
 }
@@ -1966,6 +2046,16 @@ void ViewportObjectInteraction::buildOverlayGeometry(const QRectF& outerFramePix
     outOverlay.ReadoutText.clear();
     outOverlay.FramePixel = {};
     const QRectF framePixel = resolveFrame(outerFramePixel);
+    if (mSelected.isEmpty() == true && mClimateOutlines.isEmpty() == false &&
+        describe(framePixel, mWorldToClip) == true &&
+        outOverlay.OutlineLinesPixel.TryEnsureCapacity(MAX_OUTLINE_LINES) == true)
+    {
+        // Without a selection only the Environment tool's climate outlines are drawn.
+        mFramePixel = framePixel;
+        outOverlay.FramePixel = framePixel;
+        appendClimateOutlines(outOverlay);
+        return;
+    }
     if (describe(framePixel, mWorldToClip) == false || mSelected.isEmpty() == true ||
         outOverlay.OutlineLinesPixel.TryEnsureCapacity(MAX_OUTLINE_LINES) == false ||
         outOverlay.HandleStrokes.TryEnsureCapacity(MAX_HANDLE_STROKES) == false ||
@@ -2047,6 +2137,7 @@ void ViewportObjectInteraction::buildOverlayGeometry(const QRectF& outerFramePix
         appendPlaneGeometry(plane, outOverlay);
     }
     appendTerrainFootprint(outOverlay);
+    appendClimateOutlines(outOverlay);
     appendTerrainBrush(outOverlay);
     appendProbeVolume(outOverlay);
     if (mHasUniformHandle == true)

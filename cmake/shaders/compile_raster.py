@@ -159,7 +159,7 @@ def is_storage_texture(resource):
     return shape.get('kind') == 'resource' and shape.get('baseShape') == 'texture2D' and shape.get('access') in ('write', 'readWrite')
 
 
-def raster_interface(document, stage, metal=False, native_arrays=False, runtime_arrays=False, structured_records=False, dxil=False, raster_storage=False, storage_slots=None):
+def raster_interface(document, stage, metal=False, native_arrays=False, runtime_arrays=False, structured_records=False, dxil=False, raster_storage=False, storage_slots=None, graph_storage_texture=False):
     points = [x for x in document['entryPoints'] if x['stage'] == stage]
     if len(points) != 1:
         raise RuntimeError('Expected one entry per raster stage')
@@ -248,8 +248,9 @@ def raster_interface(document, stage, metal=False, native_arrays=False, runtime_
                 raise RuntimeError('Comparison samplers are outside the raster profile')
             kind = 'Sampler'
         elif kind == 'resource' and resource_type.get('baseShape') == 'texture2D' and resource_type.get('access') in ('write', 'readWrite'):
-            # R12b write-only storage textures: one 2D image, float4 texels, explicit [format].
-            if resource_type.get('access') != 'write':
+            is_read_write = resource_type.get('access') == 'readWrite'
+            if is_read_write and not (graph_storage_texture and stage == 'compute' and
+                                      resource['name'] == 'GraphStorageTexture' and resource.get('format') == 'rgba8'):
                 raise RuntimeError('Read/write storage textures are outside the R12b write-only profile')
             if not (stage == 'compute' or (stage == 'fragment' and raster_storage)):
                 raise RuntimeError('Storage textures require compute or the raster-storage fragment profile')
@@ -260,7 +261,7 @@ def raster_interface(document, stage, metal=False, native_arrays=False, runtime_
                 raise RuntimeError('Storage textures require one non-arrayed float4 2D image')
             if resource.get('format') not in STORAGE_TEXTURE_FORMATS:
                 raise RuntimeError('Storage textures require [format("rgba8")] or [format("rgba16f")]')
-            kind = 'StorageTexture2D'
+            kind = 'StorageTexture2DReadWrite' if is_read_write else 'StorageTexture2D'
         elif kind == 'resource' and resource_type.get('baseShape') in ('texture2D', 'textureCube', 'texture3D'):
             if resource_type.get('access', 'read') not in ('read', 'readOnly') or resource_type.get('multisample', False):
                 raise RuntimeError('Raster textures require non-multisampled read-only sampling')
@@ -280,7 +281,7 @@ def raster_interface(document, stage, metal=False, native_arrays=False, runtime_
                 kind = 'TextureDepth2D' if scalar == 'float32' else 'TextureStencil2D'
         else:
             raise RuntimeError('Unsupported raster resource shape: ' + kind)
-        if stage == 'compute' and kind not in ('UniformBuffer', 'StorageRead', 'StorageReadWrite', 'RayScene', 'Texture2D', 'TextureDepth2D', 'StorageTexture2D'):
+        if stage == 'compute' and kind not in ('UniformBuffer', 'StorageRead', 'StorageReadWrite', 'RayScene', 'Texture2D', 'TextureDepth2D', 'StorageTexture2D', 'StorageTexture2DReadWrite'):
             raise RuntimeError('Compute profile accepts buffers, native scenes, unfiltered 2D color/depth textures and storage textures only')
         if metal or dxil:
             native_kind = {'StorageRead': 'constantBuffer', 'StorageReadWrite': 'constantBuffer', 'UniformBuffer': 'constantBuffer', 'Texture2D': 'shaderResource', 'Texture2DArray': 'shaderResource', 'TextureCube': 'shaderResource', 'Texture3D': 'shaderResource', 'TextureDepth2D': 'shaderResource', 'TextureStencil2D': 'shaderResource', 'Sampler': 'samplerState', 'StorageTexture2D': 'shaderResource'}[kind]
@@ -302,7 +303,7 @@ def raster_interface(document, stage, metal=False, native_arrays=False, runtime_
             if count != 1 or is_runtime or kind not in supported:
                 raise RuntimeError(f'DXIL {stage} requires scalar bindings of kinds: {", ".join(supported)}')
         value = {'binding': index, 'kind': kind, 'size': size, 'name': resource['name']}
-        if kind == 'StorageTexture2D':
+        if kind in ('StorageTexture2D', 'StorageTexture2DReadWrite'):
             value['storage_format'] = STORAGE_TEXTURE_FORMATS[resource['format']]
         if is_runtime and kind not in ('Texture2D', 'Texture2DArray', 'TextureCube', 'Texture3D'):
             raise RuntimeError('Runtime arrays require sampled color texture descriptors')

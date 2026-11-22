@@ -291,6 +291,46 @@ adds about 1 ms. Cutting the view steps from 32 to 8 recovered only part of
 the full-view cost; the rest is not yet attributed. A disabled layer costs
 one uniform branch. The traversal measurement in #1319 owns any cheaper path.
 
+### Auroral curtains
+
+`AtmosphereDescription::Aurora` is an opt-in emission field for the native
+clustered deferred renderer. A folded arc and a fainter companion extend
+between 100 and 300 km above the Earth sphere. The Atmosphere entity sets the
+tangent frame. The arcs run along its local X axis with their centres toward
+local +Z. Bright patches move along the arcs, clustering rays above a sharp
+green lower edge. Only the more active patches show a faint red upper trail.
+The shape and brightness vary over a 120-second loop independently of the Sun
+and celestial background. The authored brightness scale is scene-linear nits
+per metre.
+
+The renderer clips the ray to the emitting shell, each ribbon's bounds and the
+first opaque hit. The planet blocks rays that hit the ground before reaching
+the emitting shell. The ribbon profile is the product of a procedural
+footprint and an altitude-dependent emission profile, following Lawlor and
+Genetti's [Interactive Volume Rendering Aurora on the GPU](https://lawlor.cs.uaf.edu/~olawlor/papers/2010/aurora/lawlor_aurora_2010.pdf).
+The height and colour choices follow the observed green and red oxygen emission
+ranges described by [NASA](https://science.nasa.gov/sun/auroras/). The moving
+folds follow [NOAA's aurora observations](https://www.spaceweather.gov/content/aurora-tutorial).
+The renderer skips empty intervals using a conservative upper bound on the footprint's
+slope, then integrates the remaining intervals with bounded midpoint steps.
+
+The clear-air model ends at the aurora's base, so every visible sample along a
+ray shares the same camera-to-top transmittance. The view integral multiplies
+that transmittance by the sum of emission per metre times segment length. A
+constant emitter in vacuum would therefore add its emission per metre times
+visible length. The cloud pass attenuates the aurora behind it. The sky and
+opaque surface resolves add the result before exposure. Zero emission skips
+the layer entirely.
+
+This profile draws the curtains from perspective views inside the clear-air
+shell. For opaque geometry beyond the shell, use `ShouldLightScene` to enable
+the finite-distance resolve. Forward and ray graphs report the missing World
+feature. Orthographic, orbital and RT1 reference views omit the curtains.
+Aurora contributes to camera rays only. Environment lighting, exposure
+metering and reflections use the existing sky and lighting inputs.
+[#1932](https://github.com/The-Ludus-Project/Ludus/issues/1932)
+tracks the sampling and target-resolution qualification.
+
 ## Rain, wetness and authoring
 
 Sample a bounded world-space shelter mask at receivers. The initial fixture
@@ -352,7 +392,7 @@ physical WebGPU hardware before making browser performance claims.
 
 | Slice | Delivery gate |
 | --- | --- |
-| [Shared climate and weather](https://github.com/The-Ludus-Project/Ludus/issues/1704) | One default region and one feathered override. Compare per-tick golden samples/events across chunked stepping, pause, replay, save/load, iteration-order changes, and distinct view locations. Qualify Editor preview and SDK packaged play. The [runtime](../modules/gameplay/weather.md#determinism-evidence) and its [pause, step, preview and reset semantics](../modules/gameplay/weather.md#pause-step-preview-and-reset) are in place; Editor authoring, Play wiring and SDK play remain. |
+| [Shared climate and weather](https://github.com/The-Ludus-Project/Ludus/issues/1704) | One default region and one feathered override. Compare per-tick golden samples/events across chunked stepping, pause, replay, save/load, iteration-order changes, and distinct view locations. Qualify Editor preview and SDK packaged play. The [runtime](../modules/gameplay/weather.md#determinism-evidence) and its [pause, step, preview and reset semantics](../modules/gameplay/weather.md#pause-step-preview-and-reset) are in place, with [Environment tool authoring](../modules/gameplay/weather.md#edit-a-climate-in-the-environment-tool) and installed SDK components; Play-clock wiring remains. |
 | [Analytic World wind](https://github.com/The-Ludus-Project/Ludus/issues/1705) | Match sampled speed and direction at ground and cloud heights, calm, bounded falloff, and uninterrupted phase after clock restore and rebasing. Qualify two consumers using a cloud tracer marker and a ground receiver. |
 | Cloud prototype | Reuse [#1319](https://github.com/The-Ludus-Project/Ludus/issues/1319) and its analytic and scene-linear controls. |
 | [Weather-driven clouds](https://github.com/The-Ludus-Project/Ludus/issues/1706) | One authored coverage/type map, stable advection and accepted snapshots tied to World revisions. Verify clipping, horizon, day/night, clear recovery and profile fallback. |

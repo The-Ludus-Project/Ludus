@@ -173,6 +173,7 @@ struct RenderGraphPackage::State final
     bool HasSceneData = false;
     bool HasNativeRay = false;
     bool HasExplicitRayWorkgroup = false;
+    bool HasExplicitNativeRayWorkgroup = false;
     bool HasExplicitRayTraversal = false;
     bool HasCustomRayTraversal = false;
     bool HasNativeRayPipeline = false;
@@ -182,6 +183,8 @@ struct RenderGraphPackage::State final
     bool HasVisibilityFields = false;
     bool CanHaveSceneColorInput = false;
     bool HasSceneColorInput = false;
+    bool CanHaveSceneStorageTexture = false;
+    bool HasSceneStorageTexture = false;
     bool HasPersistentBuffers = false;
     bool HasForwardStages = false;
     bool CanHaveForwardSurfaceCharts = false;
@@ -370,7 +373,8 @@ RenderGraphPackageStatus RenderGraphPackage::State::DecodeStages(ByteReader& ino
         }
         const bool isCompute = role == static_cast<uint32>(format::StageRole::RayCompute) ||
                                role == static_cast<uint32>(format::StageRole::SceneRayCompute) ||
-                               role == static_cast<uint32>(format::StageRole::PersistentRayCompute);
+                               role == static_cast<uint32>(format::StageRole::PersistentRayCompute) ||
+                               (role == format::NATIVE_RAY_STAGE_ROLE && HasExplicitNativeRayWorkgroup == true);
         StaticArray<uint32, format::RAY_WORKGROUP_DIMENSIONS> workgroup{};
         if (HasExplicitRayWorkgroup == true && isCompute == true)
         {
@@ -779,10 +783,18 @@ RenderGraphPackageStatus RenderGraphPackage::State::AppendSceneResourceBindings(
             (HasLtcTable == true && isNativeStages == false ? LUDUS_GRAPH_LTC_TABLE_BINDING_COUNT : 0) +
             (HasFailureSummary == true ? LUDUS_GRAPH_FAILURE_BINDING_COUNT : 0) +
             (hasAerialPerspective == true ? 1 : 0) + (hasAtmosphereSky == true ? 1 : 0) +
-            (HasSceneColorInput == true && isNativeStages == false ? 1 : 0);
+            (HasSceneColorInput == true && (isNativeStages == false || HasSceneStorageTexture == true) ? 1 : 0) +
+            (HasSceneStorageTexture == true ? 1 : 0);
         if (Bindings[role].GetSize() - BindingCounts[role] < appended)
         {
             return RenderGraphPackageStatus::CapacityExceeded;
+        }
+        if (HasSceneStorageTexture == true)
+        {
+            Bindings[role][BindingCounts[role]++] = {LUDUS_GRAPH_STORAGE_TEXTURE_BINDING,
+                                                     rhi::RasterBindingKind::StorageTexture2DReadWrite,
+                                                     rhi::RasterVisibility::Compute,
+                                                     0};
         }
         if (hasAerialPerspective == true)
         {
@@ -791,7 +803,7 @@ RenderGraphPackageStatus RenderGraphPackage::State::AppendSceneResourceBindings(
                                                      rhi::RasterVisibility::Compute,
                                                      LUDUS_GPU_PREVIEW_VECTOR_BYTES};
         }
-        if (HasSceneColorInput == true && isNativeStages == false)
+        if (HasSceneColorInput == true && (isNativeStages == false || HasSceneStorageTexture == true))
         {
             Bindings[role][BindingCounts[role]++] = {LUDUS_GRAPH_COLOR_INPUT_BINDING,
                                                      rhi::RasterBindingKind::Texture2D,
@@ -911,7 +923,17 @@ RenderGraphPackageStatus RenderGraphPackage::State::DecodeRecords(ByteReader& in
         }
         pass.ToneMappingCurve = static_cast<format::DisplayCurve>(curve);
         pass.WorkItemCount = HasSceneWorkItems == true ? inoutReader.ReadWord() : 0;
-        if (pass.WorkItemCount > format::MAX_SCENE_WORK_ITEMS ||
+        if (CanHaveSceneStorageTexture == true)
+        {
+            pass.StorageLaunchWidth = inoutReader.ReadWord();
+            pass.StorageLaunchHeight = inoutReader.ReadWord();
+            HasSceneStorageTexture = HasSceneStorageTexture == true || pass.StorageLaunchWidth != 0;
+        }
+        if ((pass.StorageLaunchWidth == 0) != (pass.StorageLaunchHeight == 0) ||
+            uint64(pass.StorageLaunchWidth) * pass.StorageLaunchHeight > format::MAX_SCENE_WORK_ITEMS ||
+            (pass.StorageLaunchWidth != 0 &&
+             (pass.WorkItemCount != 0 || program != static_cast<uint32>(format::Technique::RayTracing))) ||
+            pass.WorkItemCount > format::MAX_SCENE_WORK_ITEMS ||
             (pass.WorkItemCount != 0 && (program != static_cast<uint32>(format::Technique::RayTracing) ||
                                          pass.Camera != format::ABSENT || pass.Color != format::ABSENT)))
         {
@@ -999,8 +1021,9 @@ RenderGraphPackageStatus RenderGraphPackage::decode(BorrowedView<const uint8> by
     const uint32 magic = reader.ReadWord();
     const uint32 version = reader.ReadWord();
     if (magic != expectedMagic ||
-        (version != format::SCENE_COLOR_INPUT_PACKAGE_VERSION && version != format::DIRECTIONAL_NEAR_PACKAGE_VERSION &&
-         version != format::SCENE_WORK_ITEMS_PACKAGE_VERSION && version != format::WORLD_FEATURE_PACKAGE_VERSION &&
+        (version != format::STORAGE_TEXTURE_PACKAGE_VERSION && version != format::SCENE_COLOR_INPUT_PACKAGE_VERSION &&
+         version != format::DIRECTIONAL_NEAR_PACKAGE_VERSION && version != format::SCENE_WORK_ITEMS_PACKAGE_VERSION &&
+         version != format::WORLD_FEATURE_PACKAGE_VERSION &&
          version != format::DEFERRED_SURFACE_CHART_GBUFFER_PACKAGE_VERSION &&
          version != format::DEFERRED_PROBE_GBUFFER_PACKAGE_VERSION && version != format::RECIPE_KEY_PACKAGE_VERSION &&
          version != format::FORWARD_SURFACE_CHART_PACKAGE_VERSION &&
@@ -1041,6 +1064,8 @@ RenderGraphPackageStatus RenderGraphPackage::decode(BorrowedView<const uint8> by
     candidate->HasRayTiles = version >= format::TILED_RAY_PACKAGE_VERSION;
     candidate->HasSceneWorkItems = version >= format::SCENE_WORK_ITEMS_PACKAGE_VERSION;
     candidate->CanHaveSceneColorInput = version >= format::SCENE_COLOR_INPUT_PACKAGE_VERSION;
+    candidate->CanHaveSceneStorageTexture = version >= format::STORAGE_TEXTURE_PACKAGE_VERSION;
+    candidate->HasExplicitNativeRayWorkgroup = version >= format::STORAGE_TEXTURE_PACKAGE_VERSION;
     candidate->CanHaveClusteredForward = version >= format::CLUSTERED_FORWARD_PACKAGE_VERSION;
     candidate->HasExplicitAccumulation = version >= format::ACCUMULATION_PACKAGE_VERSION;
     candidate->HasExplicitToneMapping = version >= format::TONE_MAPPING_PACKAGE_VERSION;
@@ -1300,7 +1325,8 @@ RenderGraphPackageStatus RenderGraphPackage::decode(BorrowedView<const uint8> by
     }
     candidate->DeriveBindings();
     if (candidate->HasLtcTable == true || candidate->HasFailureSummary == true || candidate->HasAtmosphereSky == true ||
-        candidate->HasAerialPerspective == true || candidate->HasSceneColorInput == true)
+        candidate->HasAerialPerspective == true || candidate->HasSceneColorInput == true ||
+        candidate->HasSceneStorageTexture == true)
     {
         status = candidate->AppendSceneResourceBindings();
         if (status != RenderGraphPackageStatus::Ready)
@@ -1490,8 +1516,9 @@ RenderGraphPrograms RenderGraphPackage::GetPrograms(const rhi::RasterShaderDescr
                                        isPersistentCompute,
                                        result.HasVisibilityBuffer,
                                        state.HasNativeRayQueries);
-            if (description.Artifact.Stage == rhi::ShaderStage::Compute && role != format::NATIVE_RAY_STAGE_ROLE &&
-                state.HasExplicitRayWorkgroup == true)
+            if (description.Artifact.Stage == rhi::ShaderStage::Compute &&
+                (role == format::NATIVE_RAY_STAGE_ROLE ? state.HasExplicitNativeRayWorkgroup
+                                                       : state.HasExplicitRayWorkgroup) == true)
             {
                 for (const State::StageView& view : views)
                 {

@@ -611,9 +611,10 @@ while the window changes. Independent graph instances supply independent referen
 The compiler normalizes scale fractions, propagates them through texture metadata
 and subgraph bindings, and retains them in generated plans/runtime packages.
 Attachment compatibility compares policies as well as nominal dimensions: a fixed
-320 × 240 image and a half-view image are not guaranteed to match. Relative ray
-outputs require **Match color target**, since an explicit launch cannot cover
-every reference size.
+320 × 240 image and a half-view image are not guaranteed to match. A ray pass
+that returns an image to a view-relative target uses **Match color target**.
+A [storage texture dispatch](#write-a-storage-texture-at-an-independent-launch-size)
+can use a fixed launch with a view-relative texture.
 
 For direct SDK use, pass the drawable width/height after the optional pool argument
 to `RenderGraph::Initialize`. For `RenderGraphActivation`, call `Resize(width, height)`
@@ -1565,10 +1566,36 @@ applied before the wire. Query `GetDimensions` and bound coordinates against
 the source extent if the targets differ. The renderer orders the producer's
 color write before the consumer's read on Metal and Vulkan.
 
-Use Compute invocation for RayTracingPipeline nodes in this sequence. Scene
+Use Compute invocation for an image-producing RayTracingPipeline in this sequence.
+An independent storage texture producer can also use native Metal ray stages. Scene
 visibility/depth inputs and tiled frame capture require a separate configuration
-or whole-frame capture, respectively. Rebuild the package with an SDK that
-supports runtime generation 41.
+or whole-frame capture, respectively.
+
+### Write a storage texture at an independent launch size
+
+On a **RayTracingPipeline** or scene **ComputePipeline**, choose **Invocation →
+Launch size → Independent storage texture**. Set the launch to a positive
+`[width, height, 1]`, such as `[8, 8, 1]`. This setting is available in Properties
+and in **Edit Node** on the canvas. Connect a dedicated offscreen, single-sample
+RGBA8Unorm **Target** to the writable color port. The editor sets its operation to
+**Load**/**Store**. In graph source, use `"dimensions": [8, 8, 1]` and
+`"storage_texture": true` in `invocation`. The target can have a fixed extent or
+inherit a view-relative **RenderSize**.
+
+The scene shader wrapper exposes `RWTexture2D<float4> GraphStorageTexture`.
+The ray-generation callback or scene compute kernel writes the texels it owns and
+returns `float3(0)`. `launch.PositionPixel` and `launch.ExtentPixel` address
+the dispatch grid. Query `GraphStorageTexture.GetDimensions` for texture bounds
+and coordinate work between shader invocations so their accesses do not race.
+New allocations start at zero, and untouched texels retain their contents while
+the allocation lives. A later scene compute pass can sample the stored result
+as `GraphColorInput`.
+
+This mode uses native Vulkan or Metal with tier-2 read/write textures and
+requires the scene shader interface. To accumulate, denoise, or tone-map, first
+sample the texture in a later image pass. Use a separate configuration for
+visibility/depth or ray-path diagnostics. Storage dispatches require a whole-frame
+launch and runtime generation 42.
 
 <a id="select-emitters-per-screen-tile"></a>
 
@@ -5601,15 +5628,15 @@ operation that can also reduce noise.
 ### World features
 
 A World can contain optional features, such as an **Atmosphere**, that a render
-graph may or may not draw. Each feature maps to one engine-owned scene function.
-When a ray kernel calls the function, the graph draws the feature. You do not
-declare support in the manifest. The builder records it from the functions the
-compiled kernel calls.
+graph may draw. The builder records ray support from the engine-owned scene
+functions called by the compiled kernel. The clustered deferred renderer also
+draws native raster features.
 
 | Feature | Scene function | Where to call it | Without it | Ray approximation |
 | --- | --- | --- | --- | --- |
 | Atmosphere sky | `EvaluateEnvironment(scene, directionWorld)` | Return it where a ray leaves the scene: in the miss callback, or where ray generation finds no surface. EvaluateLightAlongRay, SampleLight and FollowSpecularChain call it for you. | The background is the World environment, and the Atmosphere's Sun is not dimmed by the air. | A distant sky resolved at the camera's altitude when the scene is prepared, without the night sky, replaces the World environment; the linked Sun keeps the illuminance that reaches the camera. |
 | Aerial perspective | `ApplyAerialPerspective(scene, originWorld, hitWorld, radiance)` | Call it on the radiance a camera ray brings back from a surface, in the closest-hit callback or in ray generation after shading, with the ray origin and the hit position. | Distant surfaces are neither hazed nor dimmed by the air. | Every segment uses the haze seen from the camera's altitude, read from a table resolved when the scene is prepared, up to 32 km. |
+| Northern lights | — | Use the native clustered deferred raster graph with a perspective camera inside the clear-air shell. | The sky has no auroral curtains. | — |
 
 `graphics::renderer::DescribeWorldFeature` owns this text, and the editor shows
 the same table. A renderer test compares this page with it, so edit both

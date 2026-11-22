@@ -260,6 +260,11 @@ void WritePlan(PackageWriter& inoutWriter, const PackageOptions& options, uint32
     {
         inoutWriter.WriteWord(0);
     }
+    if (options.Version >= format::STORAGE_TEXTURE_PACKAGE_VERSION)
+    {
+        inoutWriter.WriteWord(0);
+        inoutWriter.WriteWord(0);
+    }
     if (options.HasUniforms == false)
     {
         return;
@@ -1005,9 +1010,16 @@ TEST_CASE("A graph without clustered deferred programs draws a World with an Atm
     fixture.Cameras[0].Atmosphere.ShouldLightScene = false;
     REQUIRE(fixture.Update(report, 4) == rhi::RasterStatus::Ready);
     CHECK(report.UnrenderedWorldFeatures == renderer::GetWorldFeatureBit(renderer::WorldFeature::AtmosphereSky));
+    fixture.Cameras[0].Atmosphere.Aurora.IsEnabled = true;
+    REQUIRE(fixture.Update(report, 5) == rhi::RasterStatus::Ready);
+    CHECK(report.UnrenderedWorldFeatures == (renderer::GetWorldFeatureBit(renderer::WorldFeature::AtmosphereSky) |
+                                             renderer::GetWorldFeatureBit(renderer::WorldFeature::Aurora)));
+    fixture.Cameras[0].Atmosphere.Aurora.EmissionPerMetre = 0;
+    REQUIRE(fixture.Update(report, 6) == rhi::RasterStatus::Ready);
+    CHECK(report.UnrenderedWorldFeatures == renderer::GetWorldFeatureBit(renderer::WorldFeature::AtmosphereSky));
     // Turning the Atmosphere off clears the report on the next accepted extraction.
     fixture.Cameras[0].Atmosphere.IsEnabled = false;
-    REQUIRE(fixture.Update(report, 5) == rhi::RasterStatus::Ready);
+    REQUIRE(fixture.Update(report, 7) == rhi::RasterStatus::Ready);
     CHECK(report.UnrenderedWorldFeatures == 0);
 }
 
@@ -1545,15 +1557,17 @@ TEST_CASE("runtime independent shader pairs decode with their own stage and bind
         // WritePlan's uniform fixture starts with the legacy color program. Retarget
         // that serialized binding explicitly; the rest of its layout is unchanged.
         constexpr usize LEGACY_PASS_FIELDS = 10;
-        const usize passBytes = (version >= format::SCENE_WORK_ITEMS_PACKAGE_VERSION      ? format::PASS_FIELD_COUNT
-                                 : version >= format::RASTER_TONE_MAPPING_PACKAGE_VERSION ? format::PASS_FIELD_COUNT - 1
-                                 : version >= format::SOFTWARE_RAY_PACKAGE_VERSION        ? format::PASS_FIELD_COUNT - 2
-                                 : version >= format::DENOISING_PACKAGE_VERSION           ? format::PASS_FIELD_COUNT - 3
-                                 : version >= format::BILINEAR_PACKAGE_VERSION            ? format::PASS_FIELD_COUNT - 4
-                                 : version >= format::TONE_MAPPING_PACKAGE_VERSION        ? format::PASS_FIELD_COUNT - 5
-                                 : version >= format::ACCUMULATION_PACKAGE_VERSION        ? format::PASS_FIELD_COUNT - 6
-                                 : version >= format::VISIBILITY_PACKAGE_VERSION          ? format::PASS_FIELD_COUNT - 7
-                                 : version >= format::ORDERED_PACKAGE_VERSION             ? format::PASS_FIELD_COUNT - 9
+        constexpr usize SCENE_WORK_ITEM_FIELDS = format::PASS_FIELD_COUNT - 2;
+        const usize passBytes = (version >= format::STORAGE_TEXTURE_PACKAGE_VERSION       ? format::PASS_FIELD_COUNT
+                                 : version >= format::SCENE_WORK_ITEMS_PACKAGE_VERSION    ? SCENE_WORK_ITEM_FIELDS
+                                 : version >= format::RASTER_TONE_MAPPING_PACKAGE_VERSION ? SCENE_WORK_ITEM_FIELDS - 1
+                                 : version >= format::SOFTWARE_RAY_PACKAGE_VERSION        ? SCENE_WORK_ITEM_FIELDS - 2
+                                 : version >= format::DENOISING_PACKAGE_VERSION           ? SCENE_WORK_ITEM_FIELDS - 3
+                                 : version >= format::BILINEAR_PACKAGE_VERSION            ? SCENE_WORK_ITEM_FIELDS - 4
+                                 : version >= format::TONE_MAPPING_PACKAGE_VERSION        ? SCENE_WORK_ITEM_FIELDS - 5
+                                 : version >= format::ACCUMULATION_PACKAGE_VERSION        ? SCENE_WORK_ITEM_FIELDS - 6
+                                 : version >= format::VISIBILITY_PACKAGE_VERSION          ? SCENE_WORK_ITEM_FIELDS - 7
+                                 : version >= format::ORDERED_PACKAGE_VERSION             ? SCENE_WORK_ITEM_FIELDS - 9
                                                                                           : LEGACY_PASS_FIELDS) *
                                 sizeof(uint32);
         const usize bindingOffset =

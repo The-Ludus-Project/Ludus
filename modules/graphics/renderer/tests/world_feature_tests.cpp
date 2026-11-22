@@ -29,7 +29,7 @@ namespace
 constexpr usize CHANNEL_COUNT = 3;
 constexpr float64 METRES_PER_KILOMETRE = 1000;
 constexpr StaticArray<renderer::WorldFeature, renderer::WORLD_FEATURE_COUNT> FEATURES{
-    {renderer::WorldFeature::AtmosphereSky, renderer::WorldFeature::AerialPerspective}};
+    {renderer::WorldFeature::AtmosphereSky, renderer::WorldFeature::AerialPerspective, renderer::WorldFeature::Aurora}};
 
 renderer::AtmosphereDescription MakeAtmosphere()
 {
@@ -70,17 +70,18 @@ std::string ReadGuide()
 }
 } // namespace
 
-TEST_CASE("World features describe themselves and name their scene function", "[render-graph][world-features]")
+TEST_CASE("World features describe themselves and their available scene functions", "[render-graph][world-features]")
 {
     for (usize i = 0; i < FEATURES.GetSize(); ++i)
     {
         const renderer::WorldFeatureDescription description = renderer::DescribeWorldFeature(FEATURES[i]);
         INFO("feature " << i);
         CHECK(std::string_view(description.Name).empty() == false);
-        CHECK(std::string_view(description.Function).find('(') != std::string_view::npos);
+        const bool hasRayImplementation = FEATURES[i] != renderer::WorldFeature::Aurora;
+        CHECK((std::string_view(description.Function).find('(') != std::string_view::npos) == hasRayImplementation);
         CHECK(std::string_view(description.Callback).empty() == false);
         CHECK(std::string_view(description.Omission).empty() == false);
-        CHECK(std::string_view(description.Approximation).empty() == false);
+        CHECK(std::string_view(description.Approximation).empty() == (hasRayImplementation == false));
         CHECK(renderer::GetWorldFeatureBit(FEATURES[i]) == (renderer::WorldFeatureMask{1} << i));
         for (usize j = 0; j < i; ++j)
         {
@@ -131,7 +132,9 @@ TEST_CASE("The authoring guide's World features table repeats the renderer's des
     for (const renderer::WorldFeature feature : FEATURES)
     {
         const renderer::WorldFeatureDescription description = renderer::DescribeWorldFeature(feature);
-        const std::string row = std::string("| ") + description.Name + " | `" + description.Function + "` | ";
+        const std::string function =
+            *description.Function != '\0' ? std::string("`") + description.Function + "`" : "—";
+        const std::string row = std::string("| ") + description.Name + " | " + function + " | ";
         INFO("expected a table row starting " << row);
         const usize start = guide.find(row);
         REQUIRE(start != std::string::npos);

@@ -116,6 +116,7 @@ bool IsAccepted(Status status) noexcept
 
 // The shaders read the layer as this many float4 rows (renderer_cloud_layer.slang).
 static_assert(sizeof(CloudLayerUniform) == LUDUS_CLOUD_LAYER_UNIFORM_ROWS * sizeof(math::Vector4));
+static_assert(sizeof(AuroraLayerUniform) == LUDUS_AURORA_LAYER_UNIFORM_ROWS * sizeof(math::Vector4));
 
 struct AtmosphereViewUniform final
 {
@@ -135,6 +136,7 @@ struct AtmosphereViewUniform final
     StaticArray<math::Vector4, ATMOSPHERE_PLANET_CAPACITY> PlanetDirectionsWorld{};
     StaticArray<math::Vector4, ATMOSPHERE_PLANET_CAPACITY> PlanetIlluminance{};
     CloudLayerUniform CloudLayer{};
+    AuroraLayerUniform AuroraLayer{};
 };
 
 namespace
@@ -319,6 +321,49 @@ bool TryPackCloudLayer(const AtmosphereDescription& atmosphere,
         return false;
     }
     outUniform = uniform;
+    return true;
+}
+
+bool TryPackAuroraLayer(const AtmosphereDescription& atmosphere,
+                        bool isOrthographic,
+                        bool isOrbital,
+                        AuroraLayerUniform& outUniform) noexcept
+{
+    const AuroraLayerDescription& aurora = atmosphere.Aurora;
+    if (aurora.IsEnabled == false || aurora.EmissionPerMetre == 0)
+    {
+        outUniform = {};
+        return true;
+    }
+    math::Vector3 upWorld;
+    if (math::IsFinite(aurora.EmissionPerMetre) == false || aurora.EmissionPerMetre < 0 ||
+        aurora.EmissionPerMetre > AuroraLayerDescription::MAXIMUM_EMISSION_PER_METRE ||
+        math::IsFinite(aurora.TimeSeconds) == false || aurora.TimeSeconds < 0 ||
+        aurora.TimeSeconds > AuroraLayerDescription::LOOP_SECONDS ||
+        math::TryNormalize(atmosphere.SurfaceUpWorld, upWorld) != math::MathStatus::Success)
+    {
+        return false;
+    }
+    math::Vector3 axisXWorld;
+    if (math::TryNormalize(aurora.AxisXWorld - upWorld * math::Dot(aurora.AxisXWorld, upWorld), axisXWorld) !=
+        math::MathStatus::Success)
+    {
+        return false;
+    }
+    if (isOrthographic == true || isOrbital == true)
+    {
+        outUniform = {};
+        return true;
+    }
+    const math::Vector3 axisZWorld = math::Cross(axisXWorld, upWorld);
+    const float32 phase = aurora.TimeSeconds == AuroraLayerDescription::LOOP_SECONDS
+                              ? 0
+                              : (aurora.TimeSeconds / AuroraLayerDescription::LOOP_SECONDS) * (2 * math::kPiF);
+    outUniform =
+    {
+        .AxisXWorld = {axisXWorld.X, axisXWorld.Y, axisXWorld.Z, aurora.EmissionPerMetre},
+        .AxisZWorld = {axisZWorld.X, axisZWorld.Y, axisZWorld.Z, phase},
+    };
     return true;
 }
 
@@ -689,7 +734,8 @@ Status RenderGraphAtmosphereView::Prepare(RenderGraphAtmosphereProgram& inoutPro
         uniform.CameraForwardWorld = {forwardWorld.X, forwardWorld.Y, forwardWorld.Z, diskScale};
         uniform.Lighting.X = atmosphere.ShouldLightScene == true ? 1.0F : 0.0F;
         // Orbital views draw the shell from outside, where the flat slab is not defined.
-        if (TryPackCloudLayer(atmosphere, camera, uniform.CloudLayer) == false)
+        if (TryPackCloudLayer(atmosphere, camera, uniform.CloudLayer) == false ||
+            TryPackAuroraLayer(atmosphere, camera.OrthographicCamera, mIsOrbital, uniform.AuroraLayer) == false)
         {
             return Status::InvalidDescription;
         }

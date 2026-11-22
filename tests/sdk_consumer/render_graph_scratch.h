@@ -149,6 +149,8 @@ struct ScratchShape final
                                   0U,
                                   static_cast<uint32>(format::RayTraversal::NativeQuery),
                                   static_cast<uint32>(format::DisplayCurve::Reinhard),
+                                  0U,
+                                  0U,
                                   0U})
         {
             WriteWord(bytes, word);

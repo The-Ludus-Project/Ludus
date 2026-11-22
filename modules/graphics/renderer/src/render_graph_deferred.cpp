@@ -54,6 +54,7 @@ struct ViewParameters final
     math::Vector4 AtmosphereIlluminance{};
     math::Vector4 AtmosphereCameraWorld{};
     CloudLayerUniform AtmosphereCloudLayer{};
+    AuroraLayerUniform AtmosphereAuroraLayer{};
 };
 math::Matrix4 MakeTranslation(math::Vector3 offsetWorld) noexcept
 {
@@ -747,7 +748,11 @@ Status RenderGraphDeferredPass::Initialize(RenderGraphDeferredTargets& inoutTarg
                                             camera.CameraPosition.Y,
                                             camera.CameraPosition.Z,
                                             camera.OrthographicCamera == true ? 1.0F : 0.0F};
-        if (TryPackCloudLayer(atmosphere, camera, parameters.AtmosphereCloudLayer) == false)
+        if (TryPackCloudLayer(atmosphere, camera, parameters.AtmosphereCloudLayer) == false ||
+            TryPackAuroraLayer(atmosphere,
+                               camera.OrthographicCamera,
+                               altitude > GetAtmosphereTopAltitude(),
+                               parameters.AtmosphereAuroraLayer) == false)
         {
             return mStatus = Status::InvalidDescription;
         }
