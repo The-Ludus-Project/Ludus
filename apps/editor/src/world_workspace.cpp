@@ -1879,8 +1879,8 @@ void WorldWorkspace::RefreshScene()
         mPlacementDocumentGeneration = DocumentGeneration_;
         return;
     }
-    if (publication == PlacementPublication::Unchanged ||
-        (level == ValidatedScene_ && Document_.Encode() == ValidatedWorld_))
+    // A validated World can be hidden by an accepted inspector preview. Undo must show its own inputs again.
+    if (publication == PlacementPublication::Unchanged)
     {
         return;
     }

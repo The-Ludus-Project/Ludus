@@ -46,6 +46,9 @@ within reach. The engine sample ships the inputs needed to reproduce the image.
 
 ### Light Court showcase sample
 
+[Edit the lighting in Light Court](../examples/light-court.md) opens the
+standalone desktop sample and includes the rendered view.
+
 ![Light Court concept with an L-shaped concrete wall, a blue-green enamel panel, a copper plate and a graphite sphere. Raking sunlight crosses the wall and platform.](../development/images/light-court-concept.jpg)
 
 *Light Court visual target, generated with OpenAI ImageGen. This illustration
@@ -65,12 +68,12 @@ one strong diagonal shadow should remain recognizable at thumbnail size.
 | Lighting | Use an authored, low-angle directional light with a clear cast shadow and readable dark planes. If the chosen profile needs fill, use an explicit supported light in the saved World. |
 | Color pipeline | Author material factors in linear space, encode base-color textures as sRGB, and use the selected renderer profile's documented display transform. Record that profile and the camera with the published capture. |
 
-Use project-owned assets, ordinary meshes and the standard raster path. Give
-the key light the name **Sun** and open the World at the authored camera. The
+Use project-owned meshes and materials. Use the standard raster path for live
+editing. Name the key light **Sun** and open the World at the authored camera. The
 starter task is **Select Sun. Rotate it. Watch the shadow move.** Saving,
-undoing and reopening follow the existing World workflow. The sample should
-also read with selection cleared so the team can capture a clean image from the
-same project. See [World renderer and camera preview](../development/editor-workspace.md#world-renderer-and-camera-preview)
+undoing and reopening follow the existing World workflow. Use RT1 to capture
+the showcase image from that same saved World and camera so the authored
+materials and indirect light are visible. See [World renderer and camera preview](../development/editor-workspace.md#world-renderer-and-camera-preview)
 and [lighting a World](../development/editor-workspace.md#lighting-a-world-that-renders-black).
 
 Use the approved Block as the identity reference for any further Ludus-owned

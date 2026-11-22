@@ -112,6 +112,7 @@ for content changes. Module/sample/tool READMEs link to these owners.
 - [Associative container benchmark](development/tools/container-bench.md)
 - [Audio content sample](examples/audio-content.md)
 - [Cook and capture staircase2](examples/reference-scene.md)
+- [Edit the lighting in Light Court](examples/light-court.md)
 - [Game world reference](examples/world-demo.md)
 - [Ludus smoke application](examples/smoke.md)
 - [Packaged browser CI tests](development/tools/web-browser-tests.md)

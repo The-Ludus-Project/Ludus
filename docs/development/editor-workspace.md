@@ -3328,10 +3328,10 @@ the scene's own, as the raster does. Its linked Sun arrives dimmed and reddened
 by the air between the Sun and the camera. The progress line then names
 **Atmosphere sky**. The sky is evaluated once at the camera's altitude, so a low
 Sun that the buildings block leaves an interior lit by skylight and
-inter-reflection alone, much darker than a raster profile that does not shadow
-its sky lighting. Night-sky stars, the Moon's disk and aerial perspective over
-scene distances are left out. Move the Sun with its celestial time or rotation
-for a brighter scene.
+inter-reflection alone. Primary camera rays can see the Sun and Moon disks and
+the enabled night sky. For aerial perspective along the camera-to-surface path,
+use the clustered deferred raster view. Move the Sun with its celestial time or
+rotation for a brighter scene.
 
 | Traversal | Use |
 | --- | --- |
