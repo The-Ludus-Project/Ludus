@@ -683,7 +683,8 @@ ludus_editor_add_objects(ludus_editor_render_graph_model
     src/internal/render_graph_wire_routes.h src/render_graph_wire_routes.cpp
     src/internal/render_graph_live_build.h src/render_graph_live_build.cpp
     src/internal/render_graph_options.h src/render_graph_options.cpp
-    src/internal/render_graph_shader_interface.h src/render_graph_shader_interface.cpp)
+    src/internal/render_graph_shader_interface.h src/render_graph_shader_interface.cpp
+    src/internal/render_graph_shader_edits.h src/render_graph_shader_edits.cpp)
 target_link_libraries(ludus_editor_render_graph_model PUBLIC Qt6::Core Qt6::Widgets
     Ludus::FoundationContainers Ludus::FoundationMath Ludus::FoundationStrings
     PRIVATE ludus_editor_file_write)

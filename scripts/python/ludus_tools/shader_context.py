@@ -89,14 +89,26 @@ def _own_directory(directory, output):
 
 
 def _resource_api(snapshot, value, source):
-    """Return the same connected fields that the wrapper and language server use."""
-    return [{'program': program['id'], 'function': program['function'],
-             'fields': [{'name': field['field'], 'type': field['record']['type'] if field['record'] else 'uint4',
-                         'writable': field['writable'],
-                         **({'legacy_raw': True} if not field['record'] and not field['word_view'] else {})}
-                        for field in snapshot.named_resource_programs[program['id']]]}
-            for program in value['programs']
-            if program['source'] == source and program['id'] in snapshot.named_resource_programs]
+    """Describe active bindings and compatible connections awaiting a source upgrade."""
+    result = []
+    for program in value['programs']:
+        identity = program['id']
+        if program['source'] != source:
+            continue
+        fields = snapshot.named_resource_programs.get(identity)
+        entry = {'program': identity, 'function': program['function']}
+        if fields is None:
+            fields = snapshot.pending_resource_programs.get(identity)
+            if not fields:
+                continue
+            entry['needs_upgrade'] = True
+        entry['fields'] = [
+            {'name': field['field'], 'type': field['record']['type'] if field['record'] else 'uint4',
+             'writable': field['writable'],
+             **({'legacy_raw': True} if not field['record'] and not field['word_view'] else {})}
+            for field in fields]
+        result.append(entry)
+    return result
 
 
 def export_language_context(manifest, output, source, *, helper, context=None, root=None, compiler=None):
@@ -107,7 +119,7 @@ def export_language_context(manifest, output, source, *, helper, context=None, r
     `_ludus_ray` and generated graph headers). The context URI points to the staged source.
     """
     snapshot, value, schemas, programs, techniques, _, plans, *_ = build.capture_graph_shader_inputs(
-        manifest, helper=helper, root=root, compiler=compiler)
+        manifest, helper=helper, root=root, compiler=compiler, allow_resource_upgrades=True)
     selected_programs = {technique[stage] for technique in techniques.values()
                          for stage in (*language.RAY_STAGES, *language.RASTER_STAGES) if stage in technique}
     selected_programs.update(shader['program'] for plan in plans for operation in plan['passes']
@@ -163,7 +175,7 @@ def export_context(manifest, output, source, *, helper, context=None, root=None,
     """
     if language.is_language_source(source):
         return export_language_context(manifest, output, source, helper=helper, context=context, root=root, compiler=compiler)
-    snapshot, value, schemas, programs, _, _, closures, _, _, _, _ = build.prepare_sources(manifest, helper, root=root, compiler=compiler)
+    snapshot, value, schemas, programs, _, _, closures, _, _, _, _ = build.prepare_sources(manifest, helper, root=root, compiler=compiler, allow_resource_upgrades=True)
     snapshot.path(source)
     build.require(source in snapshot.files, 'Source', source, 'source is outside the selected build closure')
     output = Path(output).resolve()

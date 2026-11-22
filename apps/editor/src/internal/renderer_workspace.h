@@ -540,6 +540,8 @@ private:
     [[nodiscard]] QString
     stageSharedShaderSource(QWidget& inoutParent, const QString& nearbyFile, SharedShaderFilePurpose purpose);
     void openNewSharedShaderSource(QWidget& inoutParent, const QString& nearbyFile);
+    void insertSharedShaderInclude();
+    void addShaderBufferAccess();
     void populateBufferSizing(const QJsonObject& node, QFormLayout& outFields, QWidget& inoutParent);
     void populateNodeNameFields(QFormLayout& outFields, QWidget& inoutParent, QDialog* closeOnRenameOrNull = nullptr);
     [[nodiscard]] bool renameSelectedNode(const QString& name, QString& outError);
@@ -676,6 +678,7 @@ private:
     QPlainTextEdit* mSourceInterface;
     QSplitter* mSourceSplit;
     QPushButton* mSourceInterfaceToggle;
+    QPushButton* mAddShaderBufferAccess;
     QPushButton* mSourceFocusToggle;
     QLabel* mSourceStatus;
     foundation::uint64 mSourcePresentedGeneration = 0;

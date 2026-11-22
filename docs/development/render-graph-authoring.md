@@ -1357,11 +1357,19 @@ the type to both programs. The consumer reads a record with
 `Edge edge = resources.Edges.Load(index);`. Check the populated count as well
 as the allocation capacity returned by `GetCount()`.
 
-For an existing shader that uses positional bindings, add the final Resources
-parameter once to adopt named access. In LUSL, add
-`#include "graph_resources.luslh"` alongside the existing scene include and
-declare the parameter as `in BuildEdgesResources resources`. Existing
-three-parameter shaders retain their positional bindings.
+For an existing scene callback, open its source and choose **Shader API → Add
+Buffer Access…**. Review the change and apply it to add the final Resources
+parameter and the generated include for LUSL as one undoable draft edit.
+Shader API lists compatible connected Buffer fields while the upgrade is
+pending. If a read-only Buffer needs this upgrade, activate the build error to
+open the affected callback with Shader API visible. **Save** publishes the edit.
+Existing positional writable bindings still work, so adopt the named interface
+when you need it and change the shader body to use `Load` or `Store` as needed.
+
+You can also add the final Resources parameter yourself. In a LUSL callback,
+add `#include "graph_resources.luslh"` alongside the scene include and declare
+the parameter as `in BuildEdgesResources resources`. The generated interface
+already exposes the selected Buffer layout to named callbacks.
 
 The member name capitalizes the port's first letter and preserves the remaining
 spelling. Named views load and store whole records using the reflected layout.
@@ -9211,11 +9219,14 @@ ordinary-line and plain-Qt comparison probes are opt-in `[.benchmark]` tests in
    uses the source in context for the starting folder and language. Without a
    shader in context, it defaults to LUSL. Enter a package-relative path and
    click **Create Shared File**.
-3. Add your declarations or helpers in the new Source draft. In each program
-   that needs the file, add a quoted `#include` relative to that program's
-   source. For sibling files use `#include "common.luslh"` in LUSL or
-   `#include "common.slang"` in Slang. **Save** publishes the files. Run
-   **Build Graph** to check the includes.
+3. Keep **Include from …** selected to add a compatible include from the
+   current source when creating the shared file. Both edits undo together.
+   In a source that needs a file you already created, use **Source → Insert
+   Shared Include…**. The Buffer declaration editor also offers this action
+   for dependencies such as a nested record declared in another header.
+4. Add your declarations or helpers in the shared file. You can edit the
+   quoted include manually using a path relative to the source. **Save**
+   publishes the draft. Run **Build Graph** to check the includes.
 
 For a layout that sets a Buffer's capacity, use the [struct sizing
 workflow](#size-an-ordered-buffer-from-a-shader-struct), which also accepts
