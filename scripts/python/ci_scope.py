@@ -41,7 +41,7 @@ NIGHTLY_JOBS = ("macos-analysis",)
 # the change adding it is promoted. A job listed here may be absent from the results; its
 # presence is still checked as usual. Remove an entry once main's ci.yml defines the job
 # (test_ci_scope.PendingPromotionJobTests reports entries main already has).
-PENDING_PROMOTION_JOBS = ("macos-reference",)
+PENDING_PROMOTION_JOBS: tuple[str, ...] = ()
 TIERS = frozenset({FULL_TIER, INTEGRATION_TIER, NIGHTLY_TIER})
 # Integration PRs check sources, compile the Editor configuration and run static
 # analysis, so a build or analysis break cannot reach develop and fail every

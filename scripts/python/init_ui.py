@@ -476,8 +476,7 @@ def select_options(args: argparse.Namespace, engine) -> argparse.Namespace | Non
                 included.append("3D preview + live shaders" if flags["with_editor_preview"].get() else "document-only editor")
             ios_summary = "Includes iPhone and iPad setup.\n" if flags["with_ios"].get() else ""
             summary.set(f"{action} for {scope}.\nOptional targets: {', '.join(included) or 'none'}.\n{ios_summary}"
-                        "Progress appears in a window after you choose Initialize; "
-                        "any sudo password prompt appears in the launching terminal.")
+                        "Progress appears after you choose Initialize.")
 
         def change_workflow(_event=None):
             chosen = next(item for item in PERSONAS if item.label == persona.get())

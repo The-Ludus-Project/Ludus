@@ -28,6 +28,15 @@ def resolved(*options):
 
 
 class ParserTests(unittest.TestCase):
+    def test_user_action_survives_output_and_clears_explicitly(self):
+        progress = init_progress.SetupProgress()
+        self.assertFalse(progress.feed("LUDUS_PROGRESS_ACTION Approve in macOS", 0.0))
+        self.assertTrue(progress.feed("+ osascript", 1.0))
+        self.assertTrue(progress.feed("Command output while approval is active", 2.0))
+        self.assertEqual(progress.user_action, "Approve in macOS")
+        self.assertFalse(progress.feed("LUDUS_PROGRESS_ACTION", 3.0))
+        self.assertEqual(progress.user_action, "")
+
     def test_steps_details_notes_and_ninja_status(self):
         progress = init_progress.SetupProgress.from_plan([init_progress.Step(str(i), f"Step {i}") for i in range(4)])
         self.assertFalse(progress.has_started_step)
@@ -162,10 +171,17 @@ class ReporterTests(unittest.TestCase):
         init_progress.start([], environment={"LUDUS_INIT_PROGRESS": "1"})
         for argv, cached, expected in ((["/usr/bin/sudo", "apt-get"], False, True),
                                        (["/usr/bin/sudo", "apt-get"], True, False),
+                                       (["/usr/bin/sudo", "-n", "apt-get"], False, False),
                                        (["apt-get"], False, False)):
             with self.subTest(argv=argv, cached=cached), contextlib.redirect_stdout(io.StringIO()) as output:
-                init_progress.announce_privileged_command(argv, probe=lambda: cached)
-            self.assertEqual("LUDUS_PROGRESS_NOTE Waiting for your sudo password" in output.getvalue(), expected)
+                with init_progress.sudo_password_notice(argv, probe=lambda: cached):
+                    print("command output")
+            lines = output.getvalue().splitlines()
+            if expected:
+                self.assertIn("in the terminal that launched setup", lines[0])
+                self.assertEqual(lines[1:], ["command output", init_progress.ACTION_MARKER])
+            else:
+                self.assertEqual(lines, ["command output"])
 
 
 class PlanTests(unittest.TestCase):
@@ -338,6 +354,11 @@ FAKE_RUNNER = textwrap.dedent("""
     outcome = sys.argv[1]
     print("Ludus one-command onboarding", flush=True)
     print("LUDUS_PROGRESS 1 3 Installing system prerequisites", flush=True)
+    if outcome == "authorization":
+        print("LUDUS_PROGRESS_ACTION Approve the macOS administrator prompt to select Xcode.", flush=True)
+        print("+ osascript", flush=True)
+        time.sleep(1.0)
+        print("LUDUS_PROGRESS_ACTION", flush=True)
     print("LUDUS_PROGRESS_NOTE Waiting for your sudo password in the terminal that launched setup", flush=True)
     time.sleep(0.2)
     print("+ sudo apt-get update", flush=True)
@@ -433,6 +454,21 @@ class WindowTests(unittest.TestCase):
         # A skipped step says so instead of showing a near-zero time.
         self.assertEqual(observed["durations"][1], init_progress.UP_TO_DATE_LABEL)
         self.assertNotEqual(observed["durations"][0], init_progress.UP_TO_DATE_LABEL)
+
+    def test_administrator_action_stays_visible_after_command_echo(self):
+        running = {}
+
+        def observe(window):
+            running["action"] = window.note.get()
+            running["visible"] = window.note_label.winfo_ismapped()
+            running["activity"] = window.activity.get()
+
+        code, window, _ = self.run_window("authorization", action=observe)
+        self.assertEqual(code, 0)
+        self.assertTrue(running["visible"])
+        self.assertIn("Approve the macOS administrator prompt", running["action"])
+        self.assertIn("+ osascript", running["activity"])
+        self.assertEqual(window.progress.user_action, "")
 
     def test_short_screen_keeps_the_footer_and_outcome_visible(self):
         # Shorter than the finished window, as on a MacBook Air with the Dock shown.

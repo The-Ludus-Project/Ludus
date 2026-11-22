@@ -190,9 +190,12 @@ app bundle on disk, so `./init.sh` runs the window from a generated
 Python's `Python.app`. Without that bundle (`engine.py init` run directly, or a
 Python that is not a framework build) the Dock shows *Python*.
 
-A sudo password prompt still appears in the launching terminal; the window
-shows a notice while it waits. Setup runs in a child `engine.py init --cli`
-process with every chosen option spelled out, so the window never blocks.
+On macOS, graphical iOS setup requests administrator approval in a system
+dialog and identifies the action in the progress window. Canceling approval
+returns to setup with **Retry**. For Linux setup commands that require sudo,
+the window shows where to enter your password in the launching terminal.
+Setup runs in a child `engine.py init --cli` process with every chosen option
+spelled out, so the window stays responsive.
 In the terminal, the CLI opens with a *Ludus Setup* banner (repository, preset,
 scope), prints the same steps as `==> [N/M] label` headers and ends with the
 outcome, the total time and the next commands; a failure names the step that
@@ -200,7 +203,8 @@ stopped. Colour is used only in an interactive terminal and is turned off by
 `NO_COLOR` (any non-empty value) or `TERM=dumb`; the text is identical either way.
 With `LUDUS_INIT_PROGRESS=1` it prints machine-readable lines instead:
 `LUDUS_PROGRESS <index> <total> <label>`, `LUDUS_PROGRESS_DETAIL <done> <total>
-<text>` and `LUDUS_PROGRESS_NOTE <text>` (see `scripts/python/init_progress.py`).
+<text>`, `LUDUS_PROGRESS_NOTE <text>`, and `LUDUS_PROGRESS_ACTION [text]` (see
+`scripts/python/init_progress.py`).
 
 The default Engine contributor workflow prepares system prerequisites,
 project-managed CMake/Ninja/Conan, and Conan dependency files for all native
@@ -238,9 +242,10 @@ that need a different Xcode version, use
 Setup uses the active full Xcode or your `DEVELOPER_DIR` override. If only
 Command Line Tools are selected and `/Applications/Xcode.app` exists, setup
 selects it after the Apple toolchain probe passes. Setup runs Xcode's
-first-launch command, which accepts the license and installs required components. You can also open
-Xcode and review the license there before retrying setup. Setup may ask for an
-administrator password in the launching terminal. It requests iOS support from
+first-launch command, which accepts the license and installs required components.
+You can also open Xcode and review the license there before retrying setup.
+With `--cli`, any administrator password prompt appears in that terminal.
+Setup requests iOS support from
 Xcode if an SDK is missing and checks for the device and Simulator SDKs and
 `devicectl`. It then uses the selected Ludus Clang to compile and link against
 both SDKs, including for an existing Xcode installation. A failure stops setup

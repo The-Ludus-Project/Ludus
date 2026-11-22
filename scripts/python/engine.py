@@ -236,18 +236,18 @@ def run(
     capture: bool = False,
 ) -> subprocess.CompletedProcess[str]:
     """Run a command and return the result."""
-    init_progress.announce_privileged_command(argv)
-    print(init_terminal.command_echo(command_line(argv), init_terminal.painter_for()), flush=True)
     try:
-        return subprocess.run(
-            [str(arg) for arg in argv],
-            cwd=str(cwd),
-            env=env,
-            check=True,
-            text=True,
-            stdout=subprocess.PIPE if capture else None,
-            stderr=subprocess.STDOUT if capture else None,
-        )
+        with init_progress.sudo_password_notice(argv):
+            print(init_terminal.command_echo(command_line(argv), init_terminal.painter_for()), flush=True)
+            return subprocess.run(
+                [str(arg) for arg in argv],
+                cwd=str(cwd),
+                env=env,
+                check=True,
+                text=True,
+                stdout=subprocess.PIPE if capture else None,
+                stderr=subprocess.STDOUT if capture else None,
+            )
     except FileNotFoundError as exc:
         raise EngineError(f"command not found while running: {command_line(argv)}") from exc
     except subprocess.CalledProcessError as exc:
