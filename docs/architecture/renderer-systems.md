@@ -572,6 +572,19 @@ attachment-only, one mip; unsupported devices return Unsupported and callers cho
 the linear RGBA8 LDR path. LDR clips radiance above one before tone mapping; HDR
 preserves it. This is explicit quality selection, not a failed-frame fallback.
 
+For a dark gradient, check the scene attachment and the final SDR output
+separately. At exposure one, Reinhard followed by sRGB maps scene-linear
+`0.001` to display byte `3` when the scene attachment is RGBA16F. A linear
+RGBA8 scene attachment rounds that input to `0` before tone mapping, so the
+same pixel produces byte `0`. For a fixed camera, exposure, and tone curve,
+compare a scene-linear readback and the resulting SDR bytes for the same
+ramp. If the linear target merged distinct shades, try a supported float
+attachment where the chosen profile admits it. If the shades survive until
+the SDR write, evaluate dithering at that write. Use the same comparison when
+choosing the precision of a linear display intermediate for UI composition.
+[Bram Stolk's dark-gradient example](https://stolk.org/blog/srgb-versus-linear-colour-space.html)
+illustrates the cost of quantizing before the transfer.
+
 `PrepareLightingPresentation` retains an immutable source, mapping and manual
 exposure. It precreates both output encoding choices and selects one using the
 acquired `FrameInfo.Encoding`. Apply exposure and the selected `ToneCurve` once: guarded per-channel
