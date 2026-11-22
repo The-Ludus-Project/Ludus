@@ -197,6 +197,12 @@ if(NOT COMMAND ludus_apply_app_policy)
         set_target_properties(${target} PROPERTIES CXX_SCAN_FOR_MODULES OFF)
         if(NOT MSVC)
             target_compile_options(${target} PRIVATE -fno-exceptions)
+            # Log and assertion sites name their file through __FILE__. Map the project's own
+            # source and build directories out of those literals, so a release payload carries
+            # no producer path (game-packaging-publishing.md, step 4). Debug information keeps
+            # its paths; it is not part of the payload.
+            target_compile_options(${target} PRIVATE "-fmacro-prefix-map=${PROJECT_SOURCE_DIR}/="
+                                                     "-fmacro-prefix-map=${PROJECT_BINARY_DIR}/=")
         else()
             target_compile_options(${target} PRIVATE /EHs-c-)
         endif()
