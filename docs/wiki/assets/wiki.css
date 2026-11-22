@@ -34,6 +34,42 @@
   border-radius: 0.35rem;
 }
 
+.md-typeset .render-study-hero,
+.md-typeset .render-study-comparison figure {
+  display: block;
+  margin: 0;
+  max-width: none;
+}
+
+.md-typeset .render-study-comparison {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 0.75rem;
+}
+
+.md-typeset .render-study-hero img,
+.md-typeset .render-study-comparison img {
+  display: block;
+  width: 100%;
+  height: auto;
+}
+
+.md-typeset .render-study-hero figcaption,
+.md-typeset .render-study-comparison figcaption {
+  margin: 0.45rem 0 0;
+  max-width: none;
+  color: var(--md-default-fg-color--light);
+  font-size: 0.75rem;
+  font-style: normal;
+  text-align: start;
+}
+
+@media (max-width: 37.5em) {
+  .md-typeset .render-study-comparison {
+    grid-template-columns: 1fr;
+  }
+}
+
 /* API declarations use the same reading surface as guides; long qualified
    signatures wrap so the page remains readable on narrow screens. */
 .md-typeset .api-paragraph {
