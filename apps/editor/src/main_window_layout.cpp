@@ -490,6 +490,13 @@ void MainWindow::BuildUi()
     Renderer_ = new RendererWorkspace(Controller_->Tooling(), mDocuments);
     mCodeArea = new CodeEditorArea(mDocuments);
     mCodeArea->setObjectName(QStringLiteral("codeEditorArea"));
+    Renderer_->SetCodeEditorArea(*mCodeArea);
+    connect(Renderer_, &RendererWorkspace::ShaderCodeWorkspaceRequested, this, [this]() {
+        static_cast<void>(mDocuments->OpenDocument(mCodeArea));
+    });
+    connect(Renderer_, &RendererWorkspace::GraphWorkspaceRequested, this, [this]() {
+        static_cast<void>(mDocuments->OpenDocument(Renderer_));
+    });
     // A code tab's load failure is surfaced where Open Externally stays available.
     connect(mCodeArea, &CodeEditorArea::OpenFailed, this, [this](const QString& file, const QString& explanation) {
         const QString message =

@@ -1617,16 +1617,7 @@ RendererWorkspace::RendererWorkspace(const ToolingPaths& tooling, QWidget* paren
     mSourceEditDebounce.setSingleShot(true);
     mSourceEditDebounce.setInterval(SOURCE_EDIT_DEBOUNCE_MILLISECONDS);
     connect(mSourceController, &CodeDocumentController::TextAccepted, this, [this]() {
-        if (IsRenderGraphShaderSource(mSourceFile->currentText()) == true)
-        {
-            queueGraphEditTrace(RenderGraphSource::Draft);
-        }
-        // History is immediate. Expensive tree/interface/watch refresh stays coalesced.
-        mSourceEditDebounce.start();
-        SetSourceStatus(*mSourceStatus,
-                        QStringLiteral("Draft r%1 · Unsaved · Save publishes files. Preview retained.")
-                            .arg(mDocument.GetRevision()));
-        Q_EMIT CommandsChanged();
+        sourceTextEdited(mSourceFile->currentText());
     });
     connect(&mSourceEditDebounce, &QTimer::timeout, this, &RendererWorkspace::applySourceEdit);
 #if defined(LUDUS_EDITOR_NATIVE_PREVIEW)
@@ -1818,6 +1809,7 @@ bool RendererWorkspace::RestoreSourceViewState(const QJsonObject& state)
 
 RendererWorkspace::~RendererWorkspace()
 {
+    resetShaderCodeTabs();
     EndViewportTrace(mQueuedGraphEditStage, "workspace closed");
     EndViewportTrace(mQueuedGraphEdit.Lifetime, "workspace closed");
     EndViewportTrace(mWorkerStartupTrace, "workspace closed");
@@ -1836,6 +1828,7 @@ void RendererWorkspace::SetProject(const QString& root, uint64 epoch)
     const QString canonicalRoot = root.isEmpty() == true ? QString() : QFileInfo(root).canonicalFilePath();
     if (canonicalRoot != mProjectRoot || epoch != mEpoch)
     {
+        resetShaderCodeTabs();
         mRecovery->Leave();
         mCreation.Cancel();
         mSourceFormatter->Cancel();
@@ -2056,6 +2049,7 @@ bool RendererWorkspace::OpenGraph(const QString& path)
 
 void RendererWorkspace::showDocument(const RenderGraphDocument& document)
 {
+    resetShaderCodeTabs();
     mSource->GetNavigation().Clear();
     mRecovery->Leave();
     CancelJob();
@@ -2242,6 +2236,7 @@ bool RendererWorkspace::writeDocument()
     QStringList saved;
     QString writeError;
     const RenderGraphDocumentStatus status = mDocument.Save(saved, &writeError);
+    refreshShaderCodeTabs();
     if (status != RenderGraphDocumentStatus::Ok)
     {
         // A partial Save can update saved bytes without changing the draft revision.
@@ -2311,7 +2306,7 @@ bool RendererWorkspace::JumpToHistory(foundation::int32 cursor)
     return true;
 }
 
-void RendererWorkspace::restoreSourceHistory()
+void RendererWorkspace::restoreSourceHistory(bool shouldFocusSource)
 {
     mSourceEditDebounce.stop();
     mSourceController->BreakUndoGroup();
@@ -2333,8 +2328,11 @@ void RendererWorkspace::restoreSourceHistory()
     if (state.File.isEmpty() == false)
     {
         mSourceController->RestoreSelection(state.Selection);
-        mViews->setCurrentIndex(SOURCE_VIEW);
-        mSource->setFocus();
+        if (shouldFocusSource == true)
+        {
+            mViews->setCurrentIndex(SOURCE_VIEW);
+            mSource->setFocus();
+        }
     }
 }
 
@@ -2711,6 +2709,22 @@ void RendererWorkspace::queueGraphEditTrace(RenderGraphSource source)
     mQueuedGraphEdit = BeginGraphEditTrace();
     mQueuedGraphEditInput = mQueuedGraphEdit.CandidateId != 0 ? getBuildIdentity(source) : QByteArray{};
     mQueuedGraphEditStage = BeginGraphEditStage(mQueuedGraphEdit, "Await preview build request");
+}
+
+void RendererWorkspace::sourceTextEdited(const QString& file)
+{
+    if (IsRenderGraphShaderSource(file) == true)
+    {
+        queueGraphEditTrace(RenderGraphSource::Draft);
+    }
+    mSourceController->Synchronize();
+    refreshShaderCodeTabs();
+    // History is immediate. Expensive tree/interface/watch refresh stays coalesced.
+    mSourceEditDebounce.start();
+    SetSourceStatus(
+        *mSourceStatus,
+        QStringLiteral("Draft r%1 · Unsaved · Save publishes files. Preview retained.").arg(mDocument.GetRevision()));
+    Q_EMIT CommandsChanged();
 }
 
 void RendererWorkspace::applySourceEdit()
@@ -4586,6 +4600,7 @@ void RendererWorkspace::renderSource()
     updateSourceInterfaceVisibility();
     updateSourceInterfaceContents();
     updateSourceDiagnostics(false);
+    refreshShaderCodeTabs();
 }
 
 void RendererWorkspace::updateSourceDiagnostics(bool isNewResult)

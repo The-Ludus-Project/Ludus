@@ -7,6 +7,7 @@
 #include <ludus/graphics/renderer/renderer.hpp>
 #include <ludus/graphics/renderer/world_feature.hpp>
 
+#include "internal/code_navigation.h"
 #include "internal/controller.h"
 #include "internal/external_code_editor.h"
 #include "internal/render_graph_build_settings.h"
@@ -28,6 +29,7 @@
 #include <QByteArray>
 #include <QJsonObject>
 #include <QPointF>
+#include <QPointer>
 #include <QSharedPointer>
 #include <QString>
 #include <QTimer>
@@ -61,6 +63,8 @@ class RenderGraphRecovery;
 struct RenderGraphTemplate;
 struct RenderGraphResolutionSelection;
 class CodeEditor;
+class CodeEditorArea;
+class CodeDocumentTab;
 class CodeDocumentController;
 class CodeFormatter;
 class RenderGraphShaderAssistance;
@@ -91,7 +95,7 @@ class RenderGraphResourceInspector;
 // docs/development/render-graph-authoring.md#node-canvas-and-preview-rg3b,
 // docs/development/render-graph-authoring.md#start-customizing-the-renderer and
 // docs/development/editor-workspace.md#workspace-layout.
-class RendererWorkspace final : public QWidget
+class RendererWorkspace final : public QWidget, private CodeNavigationViewHost
 {
     Q_OBJECT
 public:
@@ -127,6 +131,8 @@ public:
     /// graphs/Main/main.lurender.json, or the engine default when it has none (or it cannot
     /// be loaded; the status line says why). Binding writes nothing.
     void SetProject(const QString& root, foundation::uint64 epoch);
+    /// Attach the application's document tabs for shader editing and navigation.
+    void SetCodeEditorArea(CodeEditorArea& inoutArea);
     /// Open a root .lurender.json inside the project; its directory is the package root.
     [[nodiscard]] bool OpenGraph(const QString& path);
     /// Create and open a built-in raster, ReSTIR DI or visibility offscreen Renderer template in the selected project's
@@ -472,6 +478,8 @@ public:
     void ServicePreview();
 
 Q_SIGNALS:
+    void ShaderCodeWorkspaceRequested();
+    void GraphWorkspaceRequested();
     /// Ask the shell to show this Source editor beside the existing World document.
     void CodeViewportRequested();
     /// Request that the shell toggle its reversible focus layout for this document.
@@ -531,7 +539,28 @@ private:
     void renderTree(bool shouldRefreshInspector = true, QWidget* editOriginOrNull = nullptr);
     void renderInspector();
     void populateNodeFields(QFormLayout& outFields, QWidget& inoutParent);
-    void editBufferSizing(QWidget& inoutParent);
+    struct BufferSizingDraft final
+    {
+        QString File;
+        QString Configuration;
+        QString Node;
+        QString Source;
+        QString Type;
+        foundation::int32 Mode = 1;
+        foundation::int32 Count = 1;
+        foundation::int32 Bytes = 0;
+    };
+    void editBufferSizing(QWidget& inoutParent, const BufferSizingDraft* pendingOrNull = nullptr);
+    void returnToBufferSizing();
+    void clearBufferSizingReturn();
+    [[nodiscard]] CodeDocumentTab* openShaderCodeTab(const QString& file, bool isPreview);
+    [[nodiscard]] CodeNavigation* OpenNavigationTarget(const CodeNavigationTarget& target) override;
+    [[nodiscard]] CodeNavigation* ActivateNavigationView(CodeNavigation* viewOrNull, const QString& file) override;
+    void revealShaderCodeTab(CodeDocumentTab& inoutTab);
+    void refreshShaderCodeTabs();
+    void resetShaderCodeTabs();
+    void sourceTextEdited(const QString& file);
+    void restoreShaderTabHistory(bool shouldRedo);
     enum class SharedShaderFilePurpose : foundation::uint8
     {
         Include,
@@ -555,7 +584,7 @@ private:
     void renderSource();
     /// True when the Source pane's language can be formatted now: LUSL in process, Slang by clang-format.
     [[nodiscard]] bool canFormatSource() const;
-    void restoreSourceHistory();
+    void restoreSourceHistory(bool shouldFocusSource = true);
     void renderStatus();
     void updateActions();
     void documentEdited(RenderGraphDocumentStatus status,
@@ -630,6 +659,8 @@ private:
     RenderGraphDocument mDocument;
     RenderGraphRecovery* mRecovery;
     RenderGraphCodeDocument mSourceDocument;
+    QPointer<CodeEditorArea> mShaderCodeArea;
+    BufferSizingDraft mPendingBufferSizing;
     ExternalCodeEditor mCodeEditor;
     RenderGraphJob mJob;
     RenderGraphCreation mCreation;

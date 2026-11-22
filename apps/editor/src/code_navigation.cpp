@@ -5,8 +5,6 @@
 #include "internal/mouse_history_buttons.h"
 
 #include <QAction>
-#include <QDialog>
-#include <QDialogButtonBox>
 #include <QEvent>
 #include <QFrame>
 #include <QKeyEvent>
@@ -14,7 +12,9 @@
 #include <QLabel>
 #include <QLineEdit>
 #include <QListWidget>
+#include <QScopedValueRollback>
 #include <QScreen>
+#include <QScrollBar>
 #include <QTextBlock>
 #include <QTextDocument>
 #include <QVBoxLayout>
@@ -27,8 +27,6 @@ using namespace foundation;
 constexpr int32 MAX_HISTORY = 64;
 constexpr int32 PICKER_WIDTH = 640;
 constexpr int32 PICKER_HEIGHT = 320;
-constexpr int32 INSPECT_WIDTH = 900;
-constexpr int32 INSPECT_HEIGHT = 600;
 constexpr int32 PICKER_OFFSET = 8;
 constexpr qsizetype FIRST_SEMANTIC_ACTION = 3;
 
@@ -40,25 +38,6 @@ int32 ClampOffset(const QString& text, int32 offset)
         --result;
     }
     return result;
-}
-
-CodeLanguage LanguageForInspectedSource(const CodeEditor& editor, const QString& file)
-{
-    if (file.isEmpty() == false)
-    {
-        const QByteArray fileName = file.toUtf8();
-        const CodeLanguage classified = CodeLanguageRegistry::Get().ClassifyFileName(
-            BorrowedView<const char>(fileName.constData(), static_cast<usize>(fileName.size())));
-        if (classified != CodeLanguage::PlainText)
-        {
-            return classified;
-        }
-    }
-    if (editor.GetLanguage() != CodeLanguage::PlainText)
-    {
-        return editor.GetLanguage();
-    }
-    return CodeLanguage::Slang;
 }
 } // namespace
 
@@ -139,16 +118,45 @@ bool CodeNavigation::IsChoosing() const
     return mPopup->isVisible();
 }
 
+void CodeNavigation::SetViewHost(CodeNavigationViewHost* hostOrNull, CodeNavigation* historyOwnerOrNull)
+{
+    if (mHistoryOwner.isNull() == false)
+    {
+        disconnect(mHistoryOwner, &CodeNavigation::HistoryChanged, this, &CodeNavigation::RefreshActions);
+    }
+    mViewHostOrNull = hostOrNull;
+    mHistoryOwner = historyOwnerOrNull;
+    if (historyOwnerOrNull != nullptr)
+    {
+        connect(historyOwnerOrNull, &CodeNavigation::HistoryChanged, this, &CodeNavigation::RefreshActions);
+    }
+    RefreshActions();
+}
+
+CodeNavigation& CodeNavigation::historyOwner() noexcept
+{
+    return mHistoryOwner.isNull() == true ? *this : *mHistoryOwner;
+}
+
+void CodeNavigation::notifyHistoryChanged()
+{
+    CodeNavigation& owner = historyOwner();
+    owner.RefreshActions();
+    Q_EMIT owner.HistoryChanged();
+}
+
 void CodeNavigation::RefreshActions()
 {
-    mBack->setEnabled(mPrevious.isEmpty() == false);
-    mForward->setEnabled(mNext.isEmpty() == false);
+    const CodeNavigation& owner = historyOwner();
+    mBack->setEnabled(owner.mPrevious.isEmpty() == false);
+    mForward->setEnabled(owner.mNext.isEmpty() == false);
     mFiles->setEnabled(mFilesAvailable.isEmpty() == false);
     for (qsizetype index = FIRST_SEMANTIC_ACTION; index < mActions.size(); ++index)
     {
-        mActions.at(index)->setEnabled(HasCodeLanguageService(mEditor.GetLanguage()));
+        mActions.at(index)->setEnabled(mEditor.isReadOnly() == false && HasCodeLanguageService(mEditor.GetLanguage()));
     }
-    mReferences->setEnabled(HasCodeLanguageService(mEditor.GetLanguage()) == true && mCanFindReferences == true);
+    mReferences->setEnabled(mEditor.isReadOnly() == false && HasCodeLanguageService(mEditor.GetLanguage()) == true &&
+                            mCanFindReferences == true);
     mReferences->setToolTip(
         mCanFindReferences == true
             ? QStringLiteral("Find references in the selected compiler context.")
@@ -161,14 +169,14 @@ void CodeNavigation::SetReferencesAvailable(bool canFindReferences)
     RefreshActions();
 }
 
-CodeNavigation::Location CodeNavigation::capture(const QTextCursor& cursor) const
+CodeNavigation::Location CodeNavigation::capture(const QTextCursor& cursor)
 {
-    return {mFile, cursor, cursor.blockNumber(), cursor.positionInBlock()};
+    return {mFile, cursor, this, mEditor.verticalScrollBar()->value(), cursor.blockNumber(), cursor.positionInBlock()};
 }
 
 QTextCursor CodeNavigation::resolve(const Location& location) const
 {
-    if (location.Anchor.isNull() == false)
+    if (location.Anchor.isNull() == false && location.Anchor.document() == mEditor.document())
     {
         return location.Anchor;
     }
@@ -183,7 +191,8 @@ void CodeNavigation::appendLocation(QList<Location>& inoutLocations, const Locat
     if (inoutLocations.isEmpty() == false)
     {
         const Location& last = inoutLocations.last();
-        if (last.File == location.File && last.Block == location.Block && last.Column == location.Column)
+        if (last.View == location.View && last.File == location.File && last.Block == location.Block &&
+            last.Column == location.Column)
         {
             return;
         }
@@ -197,13 +206,14 @@ void CodeNavigation::appendLocation(QList<Location>& inoutLocations, const Locat
 
 void CodeNavigation::Remember(const QTextCursor& cursor)
 {
-    if (mIsTraversing == true || mIsBinding == true)
+    CodeNavigation& owner = historyOwner();
+    if (owner.mIsTraversing == true || mIsBinding == true)
     {
         return;
     }
-    appendLocation(mPrevious, capture(cursor));
-    mNext.clear();
-    RefreshActions();
+    appendLocation(owner.mPrevious, capture(cursor));
+    owner.mNext.clear();
+    notifyHistoryChanged();
 }
 
 void CodeNavigation::RememberCurrent()
@@ -215,7 +225,7 @@ void CodeNavigation::freezeLocations(QList<Location>& inoutLocations)
 {
     for (Location& location : inoutLocations)
     {
-        if (location.File == mFile && location.Anchor.isNull() == false)
+        if (location.View == this && location.File == mFile && location.Anchor.isNull() == false)
         {
             location.Block = location.Anchor.blockNumber();
             location.Column = location.Anchor.positionInBlock();
@@ -228,7 +238,7 @@ void CodeNavigation::anchorLocations(QList<Location>& inoutLocations)
 {
     for (Location& location : inoutLocations)
     {
-        if (location.File == mFile)
+        if (location.View == this && location.File == mFile)
         {
             location.Anchor = resolve(location);
         }
@@ -242,7 +252,7 @@ void CodeNavigation::Clear()
     mNext.clear();
     mFile.clear();
     mScope.clear();
-    RefreshActions();
+    notifyHistoryChanged();
 }
 
 void CodeNavigation::BeginSource(const QString& scope, const QString& file, const QStringList& files)
@@ -258,8 +268,9 @@ void CodeNavigation::BeginSource(const QString& scope, const QString& file, cons
         {
             RememberCurrent();
         }
-        freezeLocations(mPrevious);
-        freezeLocations(mNext);
+        CodeNavigation& owner = historyOwner();
+        freezeLocations(owner.mPrevious);
+        freezeLocations(owner.mNext);
         Dismiss();
     }
     mIsBinding = true;
@@ -270,8 +281,9 @@ void CodeNavigation::BeginSource(const QString& scope, const QString& file, cons
 void CodeNavigation::EndSource()
 {
     mIsBinding = false;
-    anchorLocations(mPrevious);
-    anchorLocations(mNext);
+    CodeNavigation& owner = historyOwner();
+    anchorLocations(owner.mPrevious);
+    anchorLocations(owner.mNext);
     RefreshActions();
 }
 
@@ -286,6 +298,11 @@ void CodeNavigation::Forward()
 
 void CodeNavigation::traverse(bool shouldGoForward)
 {
+    if (mViewHostOrNull != nullptr)
+    {
+        traverseViews(shouldGoForward);
+        return;
+    }
     QList<Location>& locations = shouldGoForward == true ? mNext : mPrevious;
     if (locations.isEmpty() == true)
     {
@@ -325,6 +342,38 @@ void CodeNavigation::traverse(bool shouldGoForward)
     }
     mIsTraversing = false;
     RefreshActions();
+}
+
+void CodeNavigation::traverseViews(bool shouldGoForward)
+{
+    CodeNavigation& owner = historyOwner();
+    QList<Location>& locations = shouldGoForward == true ? owner.mNext : owner.mPrevious;
+    const Location origin = capture(mEditor.textCursor());
+    const QScopedValueRollback<bool> traversing(owner.mIsTraversing, true);
+    while (locations.isEmpty() == false)
+    {
+        const Location destination = locations.last();
+        CodeNavigation* viewOrNull = mViewHostOrNull->ActivateNavigationView(destination.View.data(), destination.File);
+        if (viewOrNull == nullptr && destination.File.isEmpty() == true)
+        {
+            // A captured preview may have been replaced by a newer preview.
+            locations.removeLast();
+            continue;
+        }
+        if (viewOrNull == nullptr)
+        {
+            ReportFailure(QStringLiteral("That source is unavailable. Quick Open an available package source."));
+            break;
+        }
+        locations.removeLast();
+        appendLocation(shouldGoForward == true ? owner.mPrevious : owner.mNext, origin);
+        viewOrNull->mEditor.RevealTextCursor(viewOrNull->resolve(destination));
+        viewOrNull->mEditor.verticalScrollBar()->setValue(destination.Scroll);
+        viewOrNull->mEditor.ensureCursorVisible();
+        viewOrNull->mEditor.setFocus();
+        break;
+    }
+    owner.notifyHistoryChanged();
 }
 
 void CodeNavigation::openFile()
@@ -426,34 +475,34 @@ bool CodeNavigation::Navigate(const CodeNavigationTarget& target)
 {
     // Copy before hiding: focus changes can cancel and release the provider's results.
     const CodeNavigationTarget destination = target;
-    if (destination.IsReadOnly == true)
+    if (destination.IsReadOnly == true ||
+        (mViewHostOrNull != nullptr && destination.File.isEmpty() == false && destination.File != mFile))
     {
+        if (mViewHostOrNull == nullptr)
+        {
+            ReportFailure(QStringLiteral("Open the shader in the project editor to inspect generated source."));
+            return false;
+        }
+        CodeNavigation& owner = historyOwner();
+        const Location origin = capture(mEditor.textCursor());
         Dismiss();
-        QDialog dialog(&mEditor);
-        // Read-only is already in the location label; the title names the window once.
-        dialog.setWindowTitle(QStringLiteral("Shader definition"));
-        dialog.resize(INSPECT_WIDTH, INSPECT_HEIGHT);
-        QVBoxLayout* layout = new QVBoxLayout(&dialog);
-        QLabel* label = new QLabel(destination.Label, &dialog);
-        label->setTextFormat(Qt::PlainText);
-        label->setWordWrap(true);
-        layout->addWidget(label);
-        CodeEditor* source = new CodeEditor(&dialog);
-        source->setObjectName(QStringLiteral("codeNavigationReadOnly"));
-        source->SetLanguage(LanguageForInspectedSource(mEditor, destination.File));
-        source->setReadOnly(true);
-        source->setFont(mEditor.font());
-        source->setPlainText(destination.Text);
-        QTextCursor cursor(source->document());
-        cursor.setPosition(destination.Start);
-        cursor.setPosition(destination.End, QTextCursor::KeepAnchor);
-        source->RevealTextCursor(cursor);
-        source->centerCursor();
-        layout->addWidget(source, 1);
-        QDialogButtonBox* close = new QDialogButtonBox(QDialogButtonBox::Close, &dialog);
-        connect(close, &QDialogButtonBox::rejected, &dialog, &QDialog::reject);
-        layout->addWidget(close);
-        static_cast<void>(dialog.exec());
+        CodeNavigation* targetViewOrNull = mViewHostOrNull->OpenNavigationTarget(destination);
+        if (targetViewOrNull == nullptr)
+        {
+            ReportFailure(QStringLiteral("The source could not be opened. Request navigation again."));
+            return false;
+        }
+        appendLocation(owner.mPrevious, origin);
+        owner.mNext.clear();
+        owner.notifyHistoryChanged();
+        CodeEditor& editor = targetViewOrNull->mEditor;
+        const QString text = editor.toPlainText();
+        QTextCursor cursor(editor.document());
+        cursor.setPosition(ClampOffset(text, destination.Start));
+        cursor.setPosition(ClampOffset(text, destination.End), QTextCursor::KeepAnchor);
+        editor.RevealTextCursor(cursor);
+        editor.centerCursor();
+        editor.setFocus();
         return true;
     }
     if (destination.File.isEmpty() == false && destination.File != mFile &&

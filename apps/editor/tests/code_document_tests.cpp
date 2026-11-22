@@ -17,7 +17,6 @@
 #include <QClipboard>
 #include <QColor>
 #include <QCoreApplication>
-#include <QDialog>
 #include <QDir>
 #include <QFile>
 #include <QInputMethodEvent>
@@ -1056,19 +1055,31 @@ TEST_CASE("Native Slang resolves authored symbols references and generated API d
     editor.setFocus();
     cursor.setPosition(static_cast<int32>(source.indexOf(QStringLiteral("SceneContext"))) + 2);
     editor.setTextCursor(cursor);
-    bool hasInspected = false;
-    QTimer inspector;
-    QObject::connect(&inspector, &QTimer::timeout, &editor, [&]() {
-        QPlainTextEdit* readOnlyOrNull = editor.findChild<QPlainTextEdit*>(QStringLiteral("codeNavigationReadOnly"));
-        if (readOnlyOrNull != nullptr)
+    class DefinitionViewHost final : public CodeNavigationViewHost
+    {
+    public:
+        CodeNavigation* OpenNavigationTarget(const CodeNavigationTarget& target) override
         {
-            hasInspected = readOnlyOrNull->isReadOnly() == true && readOnlyOrNull->toPlainText().contains(prefix);
-            static_cast<QDialog*>(readOnlyOrNull->parentWidget())->reject();
+            Destination = target;
+            Preview.setPlainText(target.Text);
+            return &Preview.GetNavigation();
         }
-    });
-    inspector.start(20);
+
+        CodeNavigation* ActivateNavigationView(CodeNavigation* viewOrNull, const QString&) override
+        {
+            return viewOrNull;
+        }
+
+        CodeNavigationTarget Destination;
+        CodeEditor Preview;
+    };
+    DefinitionViewHost views;
+    editor.GetNavigation().SetViewHost(&views);
     assistance.RequestNavigation(CodeNavigationKind::Definition);
-    REQUIRE(QTest::qWaitFor([&]() { return hasInspected; }, 15000));
+    REQUIRE(QTest::qWaitFor([&]() { return views.Destination.IsReadOnly == true; }, 15000));
+    CHECK(views.Destination.Text.contains(prefix) == true);
+    CHECK(views.Preview.textCursor().selectedText() == QStringLiteral("SceneContext"));
+    editor.GetNavigation().SetViewHost(nullptr);
     CHECK(host.GetState().Text == source.toUtf8());
     CHECK(host.CanUndo() == false);
 }
