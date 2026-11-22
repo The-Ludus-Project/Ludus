@@ -130,6 +130,7 @@ class AndroidSetupTests(unittest.TestCase):
         (sdkmanager / "lib").mkdir()
         (sdkmanager / "lib/sdkmanager-classpath.jar").touch()
         (sdkmanager / "package.xml").write_text('<localPackage path="cmdline-tools;latest"/>')
+        sdkmanager.chmod(0o555)
         self.write_package(source / "platform-tools", "adb", "Pkg.Revision=37.0.3")
         self.write_package(source / "platforms/android-36", "android.jar", "AndroidVersion.ApiLevel=36")
         self.write_package(source / "build-tools/36.0.0", "aapt2", "Pkg.Revision=35.0.0")
@@ -160,6 +161,7 @@ class AndroidSetupTests(unittest.TestCase):
         self.assertEqual((source / "platform-tools/adb").read_bytes(), b"")
         self.assertEqual(android_tools.read_revision(source / "build-tools/36.0.0"), "35.0.0")
         self.assertTrue((sdkmanager / "package.xml").is_file())
+        self.assertEqual(sdkmanager.stat().st_mode & 0o777, 0o555)
         self.assertFalse((self.sdk / "cmdline-tools/21.0/package.xml").exists())
 
     def test_external_package_links_never_escape_the_local_copy(self):

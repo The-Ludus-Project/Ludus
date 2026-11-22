@@ -8,6 +8,7 @@ from pathlib import Path
 import platform
 import re
 import shutil
+import stat
 import subprocess
 import sys
 import tempfile
@@ -145,11 +146,15 @@ def missing_packages(sdk: Path, pins: dict, system: str) -> dict[str, Path]:
     return {package: directory for package, (directory, is_installed) in packages.items() if not is_installed}
 
 
-def check_package_links(package: Path) -> None:
-    """Approve only relative symlinks that still resolve within the copied package."""
+def prepare_copied_package(package: Path) -> None:
+    """Make copied directories writable locally and validate every symlink."""
     for directory, children, files in os.walk(package):
+        folder = Path(directory)
+        mode = folder.stat().st_mode
+        if not mode & stat.S_IWUSR:
+            folder.chmod(mode | stat.S_IWUSR)
         for name in (*children, *files):
-            path = Path(directory) / name
+            path = folder / name
             if path.is_symlink() and (path.readlink().is_absolute() or not path.resolve(strict=True).is_relative_to(package)):
                 raise ValueError(f"{path.relative_to(package)} links outside its package")
 
@@ -163,7 +168,7 @@ def copy_sdk_package(sdk: Path, name: str, source: Path, destination: Path,
             staging_sdk = working / "sdk"
             staged = staging_sdk / destination.relative_to(sdk)
             shutil.copytree(source, staged, symlinks=True)
-            check_package_links(staged.resolve())
+            prepare_copied_package(staged.resolve())
             if source.name == "latest" and destination.parent.name == "cmdline-tools":
                 # SDK Manager may have recorded this directory under the "latest"
                 # package ID. The copied source.properties describes the actual revision.
