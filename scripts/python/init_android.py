@@ -1,6 +1,7 @@
 """Install the optional Android SDK and Java used by the mobile probes."""
 from __future__ import annotations
 
+from collections.abc import Callable
 import hashlib
 import os
 from pathlib import Path
@@ -16,7 +17,7 @@ import zipfile
 
 import build_slots
 import init_progress
-from android_tools import managed_sdk, managed_java_home, read_android_pins, read_property, read_revision
+from android_tools import existing_sdk_roots, managed_sdk, managed_java_home, read_android_pins, read_property, read_revision
 
 
 RETRY_COMMAND = "./init.sh --cli --android-only"
@@ -72,10 +73,29 @@ def is_executable(path: Path) -> bool:
     return path.is_file() and os.access(path, os.X_OK)
 
 
+def has_pinned_sdkmanager(directory: Path, version: str) -> bool:
+    return (is_executable(directory / "bin/sdkmanager")
+            and (directory / "lib/sdkmanager-classpath.jar").is_file()
+            and read_revision(directory) == version)
+
+
+def publish_package(staged: Path, destination: Path, working: Path) -> None:
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    previous = working / "previous"
+    if destination.exists() or destination.is_symlink():
+        destination.rename(previous)
+    try:
+        staged.replace(destination)
+    except OSError:
+        if previous.exists() or previous.is_symlink():
+            previous.rename(destination)
+        raise
+
+
 def install_sdkmanager(sdk: Path, pin: dict, system: str, engine) -> Path:
     directory = sdk / "cmdline-tools" / pin["version"]
     manager = directory / "bin/sdkmanager"
-    if is_executable(manager) and read_revision(directory) == pin["version"]:
+    if has_pinned_sdkmanager(directory, pin["version"]):
         return manager
     directory.parent.mkdir(parents=True, exist_ok=True)
     with tempfile.TemporaryDirectory(prefix=".install-", dir=directory.parent) as temporary:
@@ -84,13 +104,11 @@ def install_sdkmanager(sdk: Path, pin: dict, system: str, engine) -> Path:
         with zipfile.ZipFile(archive) as contents:
             contents.extractall(staging)
         unpacked = staging / "cmdline-tools"
-        if not (unpacked / "bin/sdkmanager").is_file() or read_revision(unpacked) != pin["version"]:
-            raise engine.EngineError("The Android command-line tools archive is missing sdkmanager or its metadata.")
         for executable in (unpacked / "bin").iterdir():
             executable.chmod(0o755)
-        if directory.exists():
-            directory.rename(staging / "old")
-        unpacked.replace(directory)
+        if not has_pinned_sdkmanager(unpacked, pin["version"]):
+            raise engine.EngineError("The Android command-line tools archive is missing its pinned SDK Manager.")
+        publish_package(unpacked, directory, staging)
     return manager
 
 
@@ -125,6 +143,96 @@ def missing_packages(sdk: Path, pins: dict, system: str) -> dict[str, Path]:
         ),
     }
     return {package: directory for package, (directory, is_installed) in packages.items() if not is_installed}
+
+
+def check_package_links(package: Path) -> None:
+    """Approve only relative symlinks that still resolve within the copied package."""
+    for directory, children, files in os.walk(package):
+        for name in (*children, *files):
+            path = Path(directory) / name
+            if path.is_symlink() and (path.readlink().is_absolute() or not path.resolve(strict=True).is_relative_to(package)):
+                raise ValueError(f"{path.relative_to(package)} links outside its package")
+
+
+def copy_sdk_package(sdk: Path, name: str, source: Path, destination: Path,
+                     validate: Callable[[Path], bool]) -> bool:
+    """Import one SDK package from a read-only source, publishing after validation."""
+    try:
+        with tempfile.TemporaryDirectory(prefix=".android-import-", dir=sdk.parent) as temporary:
+            working = Path(temporary)
+            staging_sdk = working / "sdk"
+            staged = staging_sdk / destination.relative_to(sdk)
+            shutil.copytree(source, staged, symlinks=True)
+            check_package_links(staged.resolve())
+            if source.name == "latest" and destination.parent.name == "cmdline-tools":
+                # SDK Manager may have recorded this directory under the "latest"
+                # package ID. The copied source.properties describes the actual revision.
+                (staged / "package.xml").unlink(missing_ok=True)
+            if not validate(staging_sdk):
+                raise ValueError("the copy is missing required files or version metadata")
+            publish_package(staged, destination, working)
+    except (OSError, RuntimeError, ValueError) as error:
+        print(f"Could not reuse Android package {name} from {source}: {error}. Trying another source or downloading it.",
+              flush=True)
+        return False
+    print(f"Reused Android package {name} from {source}.", flush=True)
+    return True
+
+
+def reuse_sdk_packages(sdk: Path, pins: dict, system: str, sources: list[Path]) -> bool:
+    sources = [source for source in sources if not source.is_relative_to(sdk) and not sdk.is_relative_to(source)]
+    if not sources:
+        return False
+
+    is_reused = False
+    version = pins["commandLineTools"]["version"]
+    relative = Path("cmdline-tools") / version
+    if not has_pinned_sdkmanager(sdk / relative, version):
+        for source in (root / "cmdline-tools" / folder for root in sources for folder in (version, "latest")):
+            try:
+                is_compatible = has_pinned_sdkmanager(source, version)
+            except (OSError, ValueError):
+                continue
+            if is_compatible and copy_sdk_package(
+                    sdk, f"cmdline-tools;{version}", source, sdk / relative,
+                    lambda staging: has_pinned_sdkmanager(staging / relative, version)):
+                is_reused = True
+                break
+
+    packages = missing_packages(sdk, pins, system)
+    if not packages:
+        return is_reused
+    source_missing = []
+    for source in sources:
+        try:
+            source_missing.append((source, missing_packages(source, pins, system)))
+        except (OSError, ValueError) as error:
+            print(f"Could not read Android SDK metadata at {source}: {error}. Skipping that SDK.", flush=True)
+    for name, destination in packages.items():
+        for source, missing in source_missing:
+            if name not in missing and copy_sdk_package(
+                    sdk, name, source / destination.relative_to(sdk), destination,
+                    lambda staging, package=name: package not in missing_packages(staging, pins, system)):
+                is_reused = True
+                break
+    return is_reused
+
+
+def check_managed_sdk_location(sdk: Path, engine) -> None:
+    """Keep package manager operations in the checkout, including repairs."""
+    if sdk != sdk.resolve():
+        raise engine.EngineError(f"Android setup requires a checkout-local SDK directory at {sdk}. "
+                                 "Move the link and rerun setup to keep the existing SDK intact.")
+    versioned = ("cmdline-tools", "platforms", "build-tools", "ndk")
+    versioned_roots = [sdk / name for name in versioned]
+    directories = [*versioned_roots, sdk / "platform-tools", sdk / "licenses", sdk / ".temp"]
+    for directory in versioned_roots:
+        if directory.is_dir() and not directory.is_symlink():
+            directories.extend(directory.iterdir())
+    for directory in directories:
+        if directory.is_symlink():
+            raise engine.EngineError(f"Android setup cannot write through the link at {directory}. "
+                                     "Move the link and rerun setup to keep the existing SDK intact.")
 
 
 def repair_packages(root: Path, sdk: Path, manager: Path, java_home: Path, packages: dict[str, Path], engine) -> None:
@@ -216,26 +324,31 @@ def install_android(root: Path, engine, *, is_license_accepted: bool = False) ->
     if key not in SUPPORTED_HOSTS:
         raise engine.EngineError("Android setup supports macOS (Apple silicon or Intel) and Linux x64.")
     system = key.split("-", 1)[0]
+    root = root.resolve()
     sdk = managed_sdk(root)
     try:
         pins = read_android_pins(root)
+        check_managed_sdk_location(sdk, engine)
         sdk.parent.mkdir(parents=True, exist_ok=True)
         lock = build_slots.try_lock(sdk.parent / ".android-setup.lock")
         if lock is None:
             raise engine.EngineError(f"Android setup is already running for this checkout. Wait, then rerun {RETRY_COMMAND}.")
         try:
             confirm_license(sdk, pins["sdkLicense"], is_license_accepted, engine)
+            sources = existing_sdk_roots(Path.home(), os.environ)
+            is_reused = reuse_sdk_packages(sdk, pins, system, sources)
             java_home = install_java(root, pins["jdk"], key, engine)
             manager = install_sdkmanager(sdk, pins["commandLineTools"], system, engine)
             packages = missing_packages(sdk, pins, system)
-            if not packages:
+            if packages:
+                repair_packages(root, sdk, manager, java_home, packages, engine)
+                missing = missing_packages(sdk, pins, system)
+                if missing:
+                    raise engine.EngineError(f"Android setup did not install {', '.join(missing)}. "
+                                             f"Check the license and download output, then rerun {RETRY_COMMAND}.")
+            elif not is_reused:
                 init_progress.up_to_date("Android SDK, NDK and Java are installed")
                 return
-            repair_packages(root, sdk, manager, java_home, packages, engine)
-            missing = missing_packages(sdk, pins, system)
-            if missing:
-                raise engine.EngineError(f"Android setup did not install {', '.join(missing)}. "
-                                         f"Check the license and download output, then rerun {RETRY_COMMAND}.")
         finally:
             build_slots.unlock(lock)
     except (OSError, ValueError, EOFError, ElementTree.ParseError, zipfile.BadZipFile) as error:

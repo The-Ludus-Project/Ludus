@@ -30,15 +30,14 @@ def read_revision(directory: Path) -> str | None:
     return read_property(directory / "source.properties", "Pkg.Revision")
 
 
+def existing_sdk_roots(home: Path, environment: dict[str, str]) -> list[Path]:
+    configured = [Path(environment[name]) for name in ("ANDROID_HOME", "ANDROID_SDK_ROOT") if environment.get(name)]
+    candidates = [*configured, home / "Library/Android/sdk", home / "Android/Sdk"]
+    return list(dict.fromkeys(path.resolve() for path in candidates if path.is_dir()))
+
+
 def resolve_sdk(root: Path, home: Path, environment: dict[str, str]) -> Path | None:
     local_sdk = managed_sdk(root)
     if (local_sdk / "platform-tools/adb").is_file():
         return local_sdk
-    for variable in ("ANDROID_HOME", "ANDROID_SDK_ROOT"):
-        value = environment.get(variable)
-        if value and Path(value).is_dir():
-            return Path(value)
-    for candidate in (home / "Library/Android/sdk", home / "Android/Sdk"):
-        if candidate.is_dir():
-            return candidate
-    return None
+    return next(iter(existing_sdk_roots(home, environment)), None)

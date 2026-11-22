@@ -398,13 +398,17 @@ Android tools on an initialized checkout:
 ```
 
 For unattended setup after reviewing the pinned agreement, pass
-`--accept-android-sdk-license`. Setup installs the pinned command-line tools,
-SDK platform, build-tools, NDK and Java under `out/host-tools`. It also installs
-stable platform-tools (including ADB) at or above the minimum in
-`config/android_toolchain.json`. Allow several gigabytes for downloads and the
-extracted NDK. Setup reuses compatible packages in that checkout and repairs
-missing or incompatible ones. Android Studio, system-wide packages, and other
-checkouts keep their own SDKs and Java installations.
+`--accept-android-sdk-license`. Setup prepares the pinned command-line tools,
+SDK platform, build-tools, NDK and Java under `out/host-tools`. Platform-tools
+(including ADB) must meet the minimum in `config/android_toolchain.json`.
+
+Setup checks the checkout first. For each missing or incompatible SDK package,
+it looks in `ANDROID_HOME`, `ANDROID_SDK_ROOT`, and Android Studio's default
+SDK paths (`~/Library/Android/sdk` on macOS, `~/Android/Sdk` on Linux). It
+copies compatible packages into the checkout and downloads the rest. The source
+SDK stays intact and subsequent Android Studio updates are independent. Local
+copies still need disk space, especially the NDK. The pinned JDK and this
+checkout's SDK license acceptance are handled by Ludus setup.
 
 The mobile presets and probes prefer the checkout-local tools. If no managed
 tools are available, they can use the SDK from `ANDROID_HOME` or

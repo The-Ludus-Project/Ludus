@@ -18,7 +18,7 @@ class AndroidSetupTests(unittest.TestCase):
     def setUp(self):
         temporary = tempfile.TemporaryDirectory()
         self.addCleanup(temporary.cleanup)
-        self.root = Path(temporary.name)
+        self.root = Path(temporary.name).resolve()
         self.pins = android_tools.read_android_pins(engine.repo_root())
         self.sdk = android_tools.managed_sdk(self.root)
 
@@ -122,6 +122,80 @@ class AndroidSetupTests(unittest.TestCase):
         self.assertEqual(android_tools.resolve_sdk(self.root, self.root, environment), external)
         self.write_package(self.sdk / "platform-tools", "adb", "Pkg.Revision=37.0.3")
         self.assertEqual(android_tools.resolve_sdk(self.root, self.root, environment), self.sdk)
+
+    def test_mixed_setup_copies_compatible_sdk_packages_and_downloads_only_the_rest(self):
+        source = self.root / "AndroidStudioSdk"
+        sdkmanager = source / "cmdline-tools/latest"
+        self.write_package(sdkmanager, "bin/sdkmanager", "Pkg.Revision=21.0")
+        (sdkmanager / "lib").mkdir()
+        (sdkmanager / "lib/sdkmanager-classpath.jar").touch()
+        (sdkmanager / "package.xml").write_text('<localPackage path="cmdline-tools;latest"/>')
+        self.write_package(source / "platform-tools", "adb", "Pkg.Revision=37.0.3")
+        self.write_package(source / "platforms/android-36", "android.jar", "AndroidVersion.ApiLevel=36")
+        self.write_package(source / "build-tools/36.0.0", "aapt2", "Pkg.Revision=35.0.0")
+        (source / "platform-tools/adb-alias").symlink_to("adb")
+
+        def install(root, sdk, manager, _java, packages, _engine):
+            self.assertEqual(root, self.root)
+            self.assertEqual(sdk, self.sdk)
+            self.assertEqual(manager, self.sdk / "cmdline-tools/21.0/bin/sdkmanager")
+            self.assertEqual(packages, ["build-tools;36.0.0", f"ndk;{self.pins['ndk']}"])
+            self.write_package(sdk / "build-tools/36.0.0", "aapt2", "Pkg.Revision=36.0.0")
+            self.write_package(sdk / "ndk" / self.pins["ndk"], "toolchains/llvm/prebuilt/darwin-x86_64/bin/clang++",
+                               f"Pkg.Revision={self.pins['ndk']}")
+
+        with patch.object(init_android, "host_key", return_value="Darwin-arm64"), \
+                patch.object(init_android, "read_android_pins", return_value=self.pins), \
+                patch.object(init_android, "existing_sdk_roots", return_value=[source]), \
+                patch.object(init_android, "install_java", return_value=Path("/java")), \
+                patch.object(init_android, "download_verified") as download, \
+                patch.object(init_android, "install_packages", side_effect=install) as download_sdk:
+            init_android.install_android(self.root, engine, is_license_accepted=True)
+            init_android.install_android(self.root, engine, is_license_accepted=False)
+        download.assert_not_called()
+        download_sdk.assert_called_once()
+        installed_tools = self.sdk / "platform-tools"
+        self.assertEqual((installed_tools / "adb-alias").resolve(), installed_tools / "adb")
+        (installed_tools / "adb").write_text("Ludus copy", encoding="utf-8")
+        self.assertEqual((source / "platform-tools/adb").read_bytes(), b"")
+        self.assertEqual(android_tools.read_revision(source / "build-tools/36.0.0"), "35.0.0")
+        self.assertTrue((sdkmanager / "package.xml").is_file())
+        self.assertFalse((self.sdk / "cmdline-tools/21.0/package.xml").exists())
+
+    def test_external_package_links_never_escape_the_local_copy(self):
+        source = self.root / "AndroidStudioSdk/platform-tools"
+        self.write_package(source, "adb", "Pkg.Revision=37.0.3")
+        (source / "outside").symlink_to("../elsewhere")
+        (source.parent / "elsewhere").touch()
+        self.sdk.parent.mkdir(parents=True)
+        self.assertFalse(init_android.reuse_sdk_packages(self.sdk, self.pins, "Darwin", [source.parent]))
+        self.assertFalse((self.sdk / "platform-tools").exists())
+        self.assertTrue((source / "outside").exists())
+
+    def test_setup_refuses_a_managed_sdk_link_to_an_external_sdk(self):
+        source = self.root / "AndroidStudioSdk"
+        source.mkdir()
+        self.sdk.parent.mkdir(parents=True)
+        self.sdk.symlink_to(source, target_is_directory=True)
+        with patch.object(init_android, "host_key", return_value="Darwin-arm64"), \
+                patch.object(init_android, "read_android_pins", return_value=self.pins), \
+                patch.object(init_android, "download_verified") as download:
+            with self.assertRaisesRegex(engine.EngineError, "checkout-local SDK"):
+                init_android.install_android(self.root, engine, is_license_accepted=True)
+        download.assert_not_called()
+        self.assertEqual(list(source.iterdir()), [])
+
+    def test_setup_refuses_a_managed_package_link_to_an_external_sdk(self):
+        source = self.root / "AndroidStudioSdk/ndk" / self.pins["ndk"]
+        source.mkdir(parents=True)
+        destination = self.sdk / "ndk" / self.pins["ndk"]
+        destination.parent.mkdir(parents=True)
+        destination.symlink_to(source, target_is_directory=True)
+        with patch.object(init_android, "host_key", return_value="Darwin-arm64"), \
+                patch.object(init_android, "read_android_pins", return_value=self.pins):
+            with self.assertRaisesRegex(engine.EngineError, "cannot write through the link"):
+                init_android.install_android(self.root, engine, is_license_accepted=True)
+        self.assertEqual(list(source.iterdir()), [])
 
     def test_java_checks_runtime_metadata_as_well_as_executables(self):
         home = self.root / "java"
