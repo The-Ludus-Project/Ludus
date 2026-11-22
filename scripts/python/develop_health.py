@@ -46,11 +46,7 @@ WINDOWS_EDITOR_JOBS = frozenset({"MSVC host and D3D12 / Editor", "MSVC host and 
 # Batch jobs that develop merged into another job. Batches run main's workflow definitions, so
 # until promotion a batch can fail a job that no branch dispatch runs any more; the successor runs
 # the same tests. Remove an entry once main defines the successor.
-PENDING_PROMOTION_SUCCESSORS = {
-    ("browser", "Renderer browser tests (baseline)"): "Packaged browser tests (software GPU)",
-    ("browser", "Renderer browser tests (scaling)"): "Packaged browser tests (software GPU)",
-    ("browser", "Renderer browser tests (pooling)"): "Packaged browser tests (software GPU)",
-}
+PENDING_PROMOTION_SUCCESSORS: dict[tuple[str, str], str] = {}
 WORKFLOW_DIRECTORY = Path(".github/workflows")
 EXPRESSION = re.compile(r"\$\{\{.*?\}\}")
 FAILED_CONCLUSIONS = frozenset({"failure", "timed_out", "cancelled", "startup_failure"})

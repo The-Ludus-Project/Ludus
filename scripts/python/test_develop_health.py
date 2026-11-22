@@ -4,6 +4,7 @@ from __future__ import annotations
 from pathlib import Path
 import re
 import unittest
+from unittest import mock
 
 import batch_ci
 import develop_health
@@ -224,6 +225,10 @@ class GateTests(unittest.TestCase):
         self.assertFalse(is_open)
         self.assertIn("gh workflow run wiki.yml --ref codex/fix`", "\n".join(lines))
 
+    # The browser renderer suites merged into the packaged suite; main defines the successor now,
+    # so this test supplies the mapping that once bridged their promotion.
+    @mock.patch.dict(develop_health.PENDING_PROMOTION_SUCCESSORS,
+                     {("browser", "Renderer browser tests (baseline)"): "Packaged browser tests (software GPU)"})
     def test_a_merged_batch_job_is_proven_by_its_develop_successor(self):
         red = develop_health.Health(24, "u", ("browser / Renderer browser tests (baseline)",))
         body = "Batch-Fix: browser / Renderer browser tests (baseline)"

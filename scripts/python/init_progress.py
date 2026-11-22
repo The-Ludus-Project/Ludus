@@ -7,8 +7,8 @@ and the runner prints machine-readable lines instead::
 
     LUDUS_PROGRESS <index> <total> <label>         a step began (1-based index)
     LUDUS_PROGRESS_DETAIL <done> <total> <text>    progress inside the step
-    LUDUS_PROGRESS_NOTE <text>                     a transient notice, such as a
-                                                   sudo password prompt
+    LUDUS_PROGRESS_NOTE <text>                     a transient notice
+    LUDUS_PROGRESS_ACTION [text]                   show or clear a user action
     LUDUS_PROGRESS_UP_TO_DATE <text>               the current step found its inputs
                                                    unchanged and skipped its work
 
@@ -22,6 +22,7 @@ import os
 import platform
 import re
 import time
+from contextlib import contextmanager, nullcontext
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Sequence
@@ -31,9 +32,11 @@ import init_terminal
 
 
 PROGRESS_ENVIRONMENT = "LUDUS_INIT_PROGRESS"
+GUI_ENVIRONMENT = "LUDUS_INIT_GUI"
 STEP_MARKER = "LUDUS_PROGRESS"
 DETAIL_MARKER = "LUDUS_PROGRESS_DETAIL"
 NOTE_MARKER = "LUDUS_PROGRESS_NOTE"
+ACTION_MARKER = "LUDUS_PROGRESS_ACTION"
 UP_TO_DATE_MARKER = "LUDUS_PROGRESS_UP_TO_DATE"
 UP_TO_DATE_LABEL = "up to date"
 
@@ -45,6 +48,7 @@ ANSI_ESCAPE = re.compile(r"\x1b\[[0-9;?]*[ -/]*[@-~]")
 STEP_LINE = re.compile(r"^" + STEP_MARKER + r" (\d+) (\d+) (.+)$")
 DETAIL_LINE = re.compile(r"^" + DETAIL_MARKER + r" (\d+) (\d+) ?(.*)$")
 NOTE_LINE = re.compile(r"^" + NOTE_MARKER + r" (.+)$")
+ACTION_LINE = re.compile(r"^" + ACTION_MARKER + r"(?: (.*))?$")
 UP_TO_DATE_LINE = re.compile(r"^" + UP_TO_DATE_MARKER + r" ?(.*)$")
 ERROR_PREFIX = "error: "
 COMPLETION_PREFIX = "Ludus initialization"
@@ -55,6 +59,13 @@ PREFLIGHT_LABEL = "Checking this computer"
 class Step:
     key: str
     label: str
+
+
+ANDROID_STEP = Step("android", "Installing the Android SDK, NDK and JDK")
+
+
+def android_plan() -> list[Step]:
+    return [ANDROID_STEP]
 
 
 def native_plan(args, *, system: str | None = None, environment=None) -> list[Step]:
@@ -74,6 +85,8 @@ def native_plan(args, *, system: str | None = None, environment=None) -> list[St
         steps.append(Step("system", "Installing system prerequisites"))
     if getattr(args, "with_ios", False):
         steps.append(Step("ios_toolchain", "Checking iOS compiler and SDK compatibility"))
+    if getattr(args, "with_android", False):
+        steps.append(ANDROID_STEP)
     single = args.preset_only and not validating
     steps.append(Step("host_tools", "Installing pinned CMake, Ninja and Conan"))
     steps.append(Step("conan", "Conan install" + (" (" + args.preset + ")" if single else " (all native presets)")))
@@ -188,6 +201,10 @@ class Reporter:
         if self.machine_readable:
             self.write(f"{NOTE_MARKER} {text}", flush=True)
 
+    def action(self, text: str) -> None:
+        if self.machine_readable:
+            self.write(f"{ACTION_MARKER} {text}" if text else ACTION_MARKER, flush=True)
+
 
 _active: Reporter | None = None
 
@@ -239,12 +256,24 @@ def note(text: str) -> None:
         _active.note(text)
 
 
-def announce_privileged_command(argv: Sequence[object], probe=None) -> None:
-    """Tell the setup window that sudo is about to ask for a password in the terminal."""
-    if _active is None or not _active.machine_readable or not argv:
-        return
-    if Path(str(argv[0])).name != "sudo":
-        return
+@contextmanager
+def show_user_action(text: str):
+    """Keep an instruction visible until the operation that needs it returns."""
+    reporter = _active
+    if reporter is not None:
+        reporter.action(text)
+    try:
+        yield
+    finally:
+        if reporter is not None:
+            reporter.action("")
+
+
+def sudo_password_notice(argv: Sequence[object], probe=None):
+    """Show where to authorize a sudo command that may prompt."""
+    if (_active is None or not _active.machine_readable or not argv or Path(str(argv[0])).name != "sudo"
+            or (len(argv) > 1 and argv[1] in ("-n", "--non-interactive"))):
+        return nullcontext()
     if probe is None:
         import subprocess
 
@@ -255,8 +284,9 @@ def announce_privileged_command(argv: Sequence[object], probe=None) -> None:
                                       stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, check=False).returncode == 0
             except OSError:
                 return False
-    if not probe():
-        _active.note("Waiting for your sudo password in the terminal that launched setup")
+    if probe():
+        return nullcontext()
+    return show_user_action("If sudo asks for your password, enter it in the terminal that launched setup.")
 
 
 # ---------------------------------------------------------------------------
@@ -289,6 +319,7 @@ class SetupProgress:
     detail_text: str = ""
     has_runner_detail: bool = False
     note: str = ""
+    user_action: str = ""
     last_line: str = ""
     is_last_line_status: bool = False
     error: str = ""
@@ -330,6 +361,10 @@ class SetupProgress:
         match = NOTE_LINE.match(line)
         if match:
             self.note = match.group(1)
+            return False
+        match = ACTION_LINE.match(line)
+        if match:
+            self.user_action = match.group(1) or ""
             return False
         match = UP_TO_DATE_LINE.match(line)
         if match:
@@ -373,6 +408,7 @@ class SetupProgress:
                 # A step the runner skipped at run time (for example nothing to refresh).
                 step.status = DONE
         self.note = ""
+        self.user_action = ""
 
     def _begin(self, index: int, total: int, label: str, now: float) -> None:
         if index < 1 or total < 1 or index > total:
@@ -395,6 +431,7 @@ class SetupProgress:
         self.detail_text = ""
         self.has_runner_detail = False
         self.note = ""
+        self.user_action = ""
 
 
 def clean_line(raw_line: str) -> str:

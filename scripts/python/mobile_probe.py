@@ -29,6 +29,8 @@ import subprocess
 import sys
 import tempfile
 
+from android_tools import managed_java_home, managed_sdk, read_android_pins, read_revision, resolve_sdk
+
 ROOT = Path(__file__).resolve().parents[2]
 PROBE_SOURCES = ROOT / "tools" / "mobile-probe"
 FOUNDATION_BASE_INCLUDE = ROOT / "modules" / "foundation" / "base" / "include"
@@ -75,9 +77,10 @@ class Host:
     Tests replace it with a scripted host so probes run without any SDK.
     """
 
-    def __init__(self, environment: dict[str, str] | None = None, home: Path | None = None):
+    def __init__(self, environment: dict[str, str] | None = None, home: Path | None = None, root: Path = ROOT):
         self.environment = dict(os.environ) if environment is None else environment
         self.home = Path.home() if home is None else home
+        self.root = root
 
     def run(self, command: list[str], timeout: int = QUERY_TIMEOUT_SECONDS, input_text: str | None = None) -> Result:
         """Run a command; a missing executable or a timeout is a non-zero result, never an exception."""
@@ -489,21 +492,11 @@ def apple_signing(host: Host, options: argparse.Namespace) -> dict:
 
 # ------------------------------------------------------------------- Android probes
 
-ANDROID_REMEDY = (
-    "Install the Android command-line tools, platform-tools, a platform, build-tools and the NDK with "
-    "sdkmanager, then set ANDROID_HOME."
-)
+ANDROID_REMEDY = "Run ./init.sh --cli --android-only, or select Install Android SDK and NDK in ./init.sh."
 
 
 def android_sdk_root(host: Host) -> Path | None:
-    for variable in ("ANDROID_HOME", "ANDROID_SDK_ROOT"):
-        value = host.environment.get(variable)
-        if value and Path(value).is_dir():
-            return Path(value)
-    for candidate in (host.home / "Library/Android/sdk", host.home / "Android/Sdk"):
-        if candidate.is_dir():
-            return candidate
-    return None
+    return resolve_sdk(host.root, host.home, host.environment)
 
 
 def natural_key(name: str) -> list:
@@ -517,19 +510,21 @@ def newest_child(directory: Path) -> Path | None:
     return children[-1] if children else None
 
 
-def read_revision(directory: Path) -> str | None:
-    properties = directory / "source.properties"
-    if not properties.is_file():
-        return None
-    match = re.search(r"^Pkg\.Revision\s*=\s*(\S+)", properties.read_text(), re.MULTILINE)
-    return match.group(1) if match else None
-
-
 def find_ndk(host: Host, sdk: Path | None, explicit: str | None) -> Path | None:
-    for value in (explicit, host.environment.get("ANDROID_NDK_HOME"), host.environment.get("ANDROID_NDK_ROOT")):
+    if explicit:
+        override = Path(explicit)
+        return override if (override / "source.properties").is_file() else None
+    if sdk == managed_sdk(host.root):
+        ndk = sdk / "ndk" / read_android_pins(ROOT)["ndk"]
+        return ndk if (ndk / "source.properties").is_file() else None
+    for variable in ("ANDROID_NDK_HOME", "ANDROID_NDK_ROOT"):
+        value = host.environment.get(variable)
         if value and (Path(value) / "source.properties").is_file():
             return Path(value)
     if sdk is not None:
+        pinned = sdk / "ndk" / read_android_pins(ROOT)["ndk"]
+        if (pinned / "source.properties").is_file():
+            return pinned
         newest = newest_child(sdk / "ndk")
         if newest is not None and (newest / "source.properties").is_file():
             return newest
@@ -572,8 +567,23 @@ def check_page_alignment(host: Host, readelf: str, library: Path) -> dict:
     }
 
 
+def android_java_tool(host: Host, name: str) -> str | None:
+    local_java = managed_java_home(host.root, read_android_pins(ROOT)["jdk"], platform.system()) / "bin" / name
+    if local_java.is_file():
+        return str(local_java)
+    java_home = host.environment.get("JAVA_HOME")
+    if java_home:
+        candidate = Path(java_home) / "bin" / name
+        if candidate.is_file():
+            return str(candidate)
+    return host.which(name)
+
+
 def java_version(host: Host) -> str | None:
-    result = host.run(["java", "-version"])
+    java = android_java_tool(host, "java")
+    if java is None:
+        return None
+    result = host.run([java, "-version"])
     match = re.search(r'version "([^"]+)"', result.output)
     return match.group(1) if result.returncode == 0 and match else None
 
@@ -604,15 +614,26 @@ def android_toolchain(host: Host, options: argparse.Namespace) -> dict:
     prebuilt = ndk_prebuilt(ndk)
     if prebuilt is None:
         return not_installed(record, ["NDK LLVM toolchain for this host"], ANDROID_REMEDY)
+    revision = read_revision(ndk)
+    pins = read_android_pins(ROOT)
+    required_revision = pins["ndk"]
+    if options.ndk is None and revision != required_revision:
+        found = revision or "unknown"
+        return not_installed(record, [f"NDK {required_revision} (found {found})"], ANDROID_REMEDY)
 
-    command_line_tools = newest_child(sdk / "cmdline-tools")
-    platform_directory = newest_child(sdk / "platforms")
-    build_tools = newest_child(sdk / "build-tools")
+    if sdk == managed_sdk(host.root):
+        command_line_tools = sdk / "cmdline-tools" / pins["commandLineTools"]["version"]
+        platform_directory = sdk / "platforms" / pins["platform"]
+        build_tools = sdk / "build-tools" / pins["buildTools"]
+    else:
+        command_line_tools = newest_child(sdk / "cmdline-tools")
+        platform_directory = newest_child(sdk / "platforms")
+        build_tools = newest_child(sdk / "build-tools")
     record["components"] = {
         "commandLineTools": read_revision(command_line_tools) if command_line_tools else None,
-        "platform": platform_directory.name if platform_directory else None,
-        "buildTools": build_tools.name if build_tools else None,
-        "ndk": read_revision(ndk),
+        "platform": platform_directory.name if platform_directory and platform_directory.is_dir() else None,
+        "buildTools": build_tools.name if build_tools and build_tools.is_dir() else None,
+        "ndk": revision,
         "jdk": java_version(host),
         "gradle": gradle_version(host),
         "androidGradlePlugin": "not detectable without a project; pinned in config/android_toolchain.json at M1",
@@ -630,6 +651,10 @@ def android_toolchain(host: Host, options: argparse.Namespace) -> dict:
     ndk_clang = prebuilt / "bin" / f"{triple}-clang++"
     ndk_lld = prebuilt / "bin" / "ld.lld"
     pinned_lld = Path(clang).parent / "ld.lld"
+    if not pinned_lld.is_file():
+        shim = ROOT / "out/host-tools/bin/ld.lld"
+        if shim.is_file():
+            pinned_lld = shim
     readelf = prebuilt / "bin" / "llvm-readelf"
     record["linker"] = {
         "optionA": "pinned LLD" if pinned_lld.exists() else "NDK-bundled LLD (pinned LLD not found beside the pinned Clang)",
@@ -704,7 +729,7 @@ def android_toolchain(host: Host, options: argparse.Namespace) -> dict:
 def android_signing(host: Host, options: argparse.Namespace) -> dict:
     record = new_record("android-signing", host)
     sdk = android_sdk_root(host)
-    keytool = host.which("keytool")
+    keytool = android_java_tool(host, "keytool")
     missing = []
     if sdk is None:
         missing.append("Android SDK")
@@ -712,7 +737,9 @@ def android_signing(host: Host, options: argparse.Namespace) -> dict:
         missing.append("keytool (JDK)")
     if missing:
         return not_installed(record, missing, ANDROID_REMEDY)
-    keystore = host.home / ".android" / "debug.keystore"
+    user_directory = host.environment.get("ANDROID_USER_HOME")
+    android_home = Path(user_directory) if user_directory else host.home / ".android"
+    keystore = android_home / "debug.keystore"
     record["hasDebugKeystore"] = False
     if keystore.is_file():
         listing = host.run([keytool, "-list", "-keystore", str(keystore), "-storepass", "android"])
@@ -745,13 +772,14 @@ def parse_vkjson(text: str) -> dict | None:
     try:
         document = json.loads(text[start:])
         device = document["devices"][0]
-        extensions = {entry.get("extensionName") for entry in device.get("extensions", [])}
-        extensions |= {entry.get("extensionName") for entry in document.get("instance", {}).get("extensions", [])}
+        device_extensions = {entry.get("extensionName") for entry in device.get("extensions", [])}
+        instance_entries = document.get("extensions", document.get("instance", {}).get("extensions", []))
+        instance_extensions = {entry.get("extensionName") for entry in instance_entries}
         return {
             "apiVersion": decode_vulkan_version(int(device["properties"]["apiVersion"])),
             "gpu": str(device["properties"].get("deviceName", "unknown")),
-            "hasAndroidSurface": "VK_KHR_android_surface" in extensions,
-            "hasSwapchainMaintenance1": "VK_EXT_swapchain_maintenance1" in extensions,
+            "hasAndroidSurface": "VK_KHR_android_surface" in instance_extensions,
+            "hasSwapchainMaintenance1": "VK_EXT_swapchain_maintenance1" in device_extensions,
         }
     except (ValueError, KeyError, IndexError, TypeError):
         return None

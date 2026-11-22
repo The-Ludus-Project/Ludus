@@ -16,8 +16,7 @@
         "CMAKE_MAKE_PROGRAM": "${sourceDir}/out/host-tools/venv/bin/ninja",
         "CMAKE_EXPORT_COMPILE_COMMANDS": "ON",
         "LUDUS_MOBILE_PROBE_ONLY": "ON",
-        "LUDUS_BUILD_TESTS": "ON",
-        "LUDUS_WARNINGS_AS_ERRORS": "ON",
+        "BUILD_TESTING": "ON",
         "LUDUS_HOST_TOOLS_PREFIX": "${sourceDir}/out/host-tools"
       }
     },

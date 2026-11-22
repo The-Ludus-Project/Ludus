@@ -236,18 +236,18 @@ def run(
     capture: bool = False,
 ) -> subprocess.CompletedProcess[str]:
     """Run a command and return the result."""
-    init_progress.announce_privileged_command(argv)
-    print(init_terminal.command_echo(command_line(argv), init_terminal.painter_for()), flush=True)
     try:
-        return subprocess.run(
-            [str(arg) for arg in argv],
-            cwd=str(cwd),
-            env=env,
-            check=True,
-            text=True,
-            stdout=subprocess.PIPE if capture else None,
-            stderr=subprocess.STDOUT if capture else None,
-        )
+        with init_progress.sudo_password_notice(argv):
+            print(init_terminal.command_echo(command_line(argv), init_terminal.painter_for()), flush=True)
+            return subprocess.run(
+                [str(arg) for arg in argv],
+                cwd=str(cwd),
+                env=env,
+                check=True,
+                text=True,
+                stdout=subprocess.PIPE if capture else None,
+                stderr=subprocess.STDOUT if capture else None,
+            )
     except FileNotFoundError as exc:
         raise EngineError(f"command not found while running: {command_line(argv)}") from exc
     except subprocess.CalledProcessError as exc:
@@ -1776,6 +1776,8 @@ def command_init(args: argparse.Namespace) -> int:
     root = repo_root()
     versions = load_tool_versions(root)
     preset = args.preset
+    if args.android_only:
+        return run_android_init(args, root)
     ensure_known_preset(preset)
     run_validation = args.validate or args.ci
     if args.all_presets and args.preset_only:
@@ -1787,6 +1789,21 @@ def command_init(args: argparse.Namespace) -> int:
     init_progress.start(init_progress.native_plan(args))
     try:
         return run_init_steps(args, root, versions, preset, run_validation)
+    except EngineError:
+        init_progress.fail()
+        raise
+    finally:
+        init_progress.stop()
+
+
+def run_android_init(args: argparse.Namespace, root: Path) -> int:
+    from init_android import install_android
+
+    init_progress.start(init_progress.android_plan())
+    try:
+        install_android(root, sys.modules[__name__], is_license_accepted=args.accept_android_sdk_license)
+        print("Ludus initialization complete for the Android tools.")
+        return 0
     except EngineError:
         init_progress.fail()
         raise
@@ -1855,6 +1872,10 @@ def run_init_steps(args: argparse.Namespace, root: Path, versions: dict[str, dic
         validate_required_system_tools(root, versions)
         init_progress.begin("ios_toolchain")
         verify_ios_toolchain(ios_selection, root, sys.modules[__name__])
+
+    if args.with_android:
+        from init_android import install_android
+        install_android(root, sys.modules[__name__], is_license_accepted=args.accept_android_sdk_license)
 
     if args.preset_only and not run_validation:
         presets = (preset,)
@@ -3246,6 +3267,13 @@ def make_parser() -> argparse.ArgumentParser:
     init_parser.add_argument("--persona", choices=("contributor", "application", "browser", "validation"),
                              help="setup defaults (default: contributor); explicit options override them")
     init_parser.add_argument("--no-system-install", action="store_true", help="use existing system packages and SDKs")
+    android = init_parser.add_mutually_exclusive_group()
+    android.add_argument("--with-android", action="store_true",
+                         help="also install the Android SDK, NDK, platform-tools and JDK for mobile probes")
+    android.add_argument("--android-only", action="store_true",
+                         help="install just the Android tools using terminal setup")
+    init_parser.add_argument("--accept-android-sdk-license", action="store_true",
+                             help="record acceptance of the pinned Android SDK License Agreement after reviewing it")
     init_parser.add_argument("--with-rad-debugger", action="store_true", help="also build the optional pinned Linux RAD Debugger")
     init_parser.add_argument("--with-ios", action="store_true", help="set up optional iOS SDKs and device tools on macOS")
     editor = init_parser.add_mutually_exclusive_group()

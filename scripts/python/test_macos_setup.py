@@ -4,6 +4,8 @@ import io
 import json
 import os
 from pathlib import Path
+import shlex
+import subprocess
 import tempfile
 import unittest
 from unittest.mock import patch
@@ -35,7 +37,8 @@ class IosSetupTests(unittest.TestCase):
             return result
 
         enter(patch.object(init_ios, "XCODE_APPLICATION", self.application))
-        enter(patch.dict(os.environ, {"DEVELOPER_DIR": "", "CI": "", "LUDUS_INIT_PROGRESS": "1"}))
+        enter(patch.dict(os.environ, {"DEVELOPER_DIR": "", "CI": "", "LUDUS_INIT_PROGRESS": "1",
+                                      init_progress.GUI_ENVIRONMENT: ""}))
         enter(patch.object(init_ios.sys.stdin, "isatty", return_value=True))
         enter(patch.object(init_ios.os, "geteuid", return_value=501))
         self.run_command = enter(patch.object(engine, "run"))
@@ -126,6 +129,29 @@ class IosSetupTests(unittest.TestCase):
         self.assertEqual(self.run_command.call_count, 1)
         self.assertEqual(self.run_command.call_args.args[0][-1], "-runFirstLaunch")
 
+    def test_gui_requests_native_administrator_approval_with_quoted_xcode_path(self):
+        developer = self.root / "Xcode beta's.app" / "Contents/Developer"
+        self.run_command.return_value = subprocess.CompletedProcess([], 0, stdout="")
+        with patch.dict(os.environ, {init_progress.GUI_ENVIRONMENT: "1"}):
+            init_ios.verify_ios_toolchain((developer, True), self.root, engine)
+        self.run_command.assert_called_once()
+        command = self.run_command.call_args.args[0]
+        self.assertEqual(command[0], "/usr/bin/osascript")
+        self.assertIn("with administrator privileges", command[4])
+        self.assertEqual(shlex.split(command[-1]), [init_ios.XCODE_SELECT, "--switch", str(developer)])
+        self.assertEqual(self.run_command.call_args.kwargs, {"cwd": self.root, "capture": True})
+
+    def test_cancelled_native_authorization_offers_retry(self):
+        def cancel(*_args, **_kwargs):
+            cause = subprocess.CalledProcessError(1, [], output="execution error: User canceled. (-128)\n")
+            raise engine.EngineError("osascript failed") from cause
+
+        self.run_command.side_effect = cancel
+        with patch.dict(os.environ, {init_progress.GUI_ENVIRONMENT: "1"}):
+            with self.assertRaisesRegex(engine.EngineError, "Administrator approval was canceled. Choose Retry"):
+                init_ios.verify_ios_toolchain((self.developer, True), self.root, engine)
+        self.run_command.assert_called_once()
+
     def test_selected_xcode_is_reused_and_missing_download_is_detected(self):
         self.install_xcode()
         self.selected = self.application
@@ -158,10 +184,11 @@ class IosSetupTests(unittest.TestCase):
                          self.probe_record)
         self.run_command.assert_not_called()
 
-    def test_native_init_checks_existing_xcode_before_starting_conan(self):
+    def test_native_init_runs_both_mobile_steps_before_starting_conan(self):
         self.install_xcode()
         self.install_sdks()
         self.args.no_system_install = True
+        self.args.with_android = True
         self.selected = self.application
         steps = []
         with (
@@ -170,6 +197,7 @@ class IosSetupTests(unittest.TestCase):
             patch.object(engine, "configure_system_tool_shims", side_effect=lambda *_: steps.append("compiler")),
             patch.object(engine, "validate_required_system_tools"),
             patch.object(engine.init_progress, "begin", side_effect=steps.append),
+            patch("init_android.install_android", side_effect=lambda *_, **__: steps.append("android")),
             patch.object(engine, "prepare_conan_artifacts", side_effect=lambda *_, **__: steps.append("conan")),
             patch("init_options.save_options"),
             patch("init_denoiser.setup_denoiser"),
@@ -178,16 +206,18 @@ class IosSetupTests(unittest.TestCase):
         ):
             self.assertEqual(engine.run_init_steps(self.args, self.root, {"minimum": {"python": "3.10"}},
                                                    self.args.preset, False), 0)
-        self.assertEqual(steps, ["preflight", "ios", "system", "compiler", "ios_toolchain", "conan"])
+        self.assertEqual(steps, ["preflight", "ios", "system", "compiler", "ios_toolchain", "android", "conan"])
         self.run_probe.assert_called_once()
         self.run_command.assert_not_called()
 
-    def test_resolved_native_selection_reaches_runner_and_progress_plan(self):
+    def test_resolved_mobile_selection_reaches_runner_and_progress_plan(self):
+        self.args.with_android = True
         argv = init_ui.selection_to_argv(self.args)
         selection = engine.make_parser().parse_args(["init", *argv])
         self.assertTrue(selection.with_ios)
-        self.assertEqual([step.key for step in init_progress.plan(selection, environment={})][:5],
-                         ["preflight", "ios", "system", "ios_toolchain", "host_tools"])
+        self.assertTrue(selection.with_android)
+        self.assertEqual([step.key for step in init_progress.plan(selection, environment={})][:6],
+                         ["preflight", "ios", "system", "ios_toolchain", "android", "host_tools"])
 
 
 class MacosSetupTests(unittest.TestCase):
