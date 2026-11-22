@@ -92,6 +92,125 @@ affected and require an explicit undoable **Replace lattice and remove affected
 overrides** action. Material-only edits refresh render bindings and retain
 placement identities.
 
+### Terrain cook
+
+`Ludus::FoliageCook` (`modules/content/foliage_cook`) implements the rules
+above for one finite terrain snapshot. It depends on ContentTerrain,
+FoliagePages and the Foundation modules, and it builds for native and browser
+targets. Like ContentTerrain, it stays in-tree until an SDK consumer needs it.
+
+The input borrows the following:
+
+- A row-major rectangle of tiles from one terrain revision.
+- Optional per-sample wetness and mask channels in 1/65,535 units, and
+  optional per-cell holes.
+- The domain: ID, origin sample and page size.
+- Layers in ID order and species in key order.
+- Suppression keys in identity order.
+
+Horizontal values are lattice units, and the World converts authored metres
+to them. `ValidateFoliageCookInput` checks every rule before a page is cooked.
+A failure reports the status, the violated rule and the index of the tile,
+layer, species or suppression to repair. If a rule requires a missing channel,
+the result is `MissingField`. It names the layer and either the wetness
+channel or the mask ID. A missing optional channel is neutral.
+
+**Identity and randomness.** A candidate is (layer, cell X, cell Z, slot) in
+the page set's domain, with full `int32` cells. Address layout 1 puts the cell
+Z and cell X bits in the 64-bit Philox scope, and the layer and slot in the
+32-bit event. Every key therefore has a distinct address, and the room
+scatter's 16-bit packing is not reused. Each layer seed derives one key per
+engine-owned domain:
+
+| Domain | Dimension | Meaning |
+| --- | --- | --- |
+| `FOLP` | 0, 1 | X and Z offsets below the cell size |
+| `FOLP` | 2 | Admission word |
+| `FOLP` | 3 | Thinning priority |
+| `FOLS` | 0 | Weighted palette entry |
+| `FOLS` | 1 | Scale above the species minimum |
+| `FOLV` | 0 | Variant |
+| `FOLT` | 0 | Yaw, the high 16 bits |
+
+Variant and yaw are drawn only for accepted candidates and never affect
+acceptance. The scale does affect acceptance, because exclusion compares
+scaled radii.
+
+#### Fixed-point sampling
+
+The cook reads the tiles' quantized codes and uses the same triangles as
+`TrySampleTerrainTile`. In each cell, the triangle on the X ≥ Z side of the
+diagonal owns the diagonal. Binary32 metadata are exact dyadic rationals, so
+each conversion below rounds an exact value once:
+
+| Quantity | Rule |
+| --- | --- |
+| Sample height | `(origin + quantum × code) × 2^26`, nearest, ties toward +∞; within ±2^29 root height units |
+| Spacing | `spacing × 2^26`, nearest, ties toward +∞ |
+| Root height | Lattice-weighted sum of three corner heights ÷ 2^24, nearest, ties toward +∞ |
+| Channel value | Lattice-weighted sum of three corner values ÷ 256, nearest, ties toward +∞ |
+| Slope | `floor(4096 × gradient length ÷ spacing)`, at most 64 × 4096 |
+| Up direction | Each horizontal component of `(−g_x, spacing, −g_z) ÷ length` times 32,767, truncated toward zero |
+
+Comparisons use exact 128-bit products, so no floating-point operation reaches
+a cooked byte. A root outside the terrain cells or in a hole cell is rejected.
+
+**Suitability and admission.** Height, slope and wetness ranges have a
+multiplier of one inside and fall linearly to zero across their feathers. Each
+mask multiplies by its value. Multipliers apply in the order height, slope,
+wetness, then masks, each as `floor(σ × m ÷ 2^16)`. The per-slot threshold at
+suitability one is `floor(density × cell² × spacing² ÷ slots)`, which is 2^32
+times the admission probability. Validation rejects a layer whose threshold
+exceeds 2^32, because its density is above the slot capacity. A candidate is
+admitted when its admission word is below `floor(threshold × σ ÷ 2^16)`.
+
+**Strata and thinning.** Lower stratum ordinals are decided first. Each
+species has up to four exclusion-class radii; use one class for trunk
+clearance and another for canopy occupancy. Two candidates conflict when they
+share a class and their root distance is less than the sum of their scaled
+radii, `ceil(radius × scale ÷ 4096)`, in that class. A candidate is occupied
+when it conflicts with an accepted placement of an earlier stratum. In its own
+stratum, it loses to any unoccupied conflicting candidate of greater
+(priority, identity), including one that loses elsewhere. A suppressed
+candidate is absent. Its key stays in the input while its candidate is
+missing, and it applies again when the candidate returns.
+
+**Halo, pages and dirty recook.** A page owns the roots in its half-open
+square. Its cook evaluates the halo that its owned decisions depend on. That
+halo is the page expanded by twice each stratum's maximum scaled radius for
+thinning, plus the sum of the radii of every earlier stratum for occupancy.
+Pages cooked alone, together, in any order or on several threads therefore
+produce the same records. `TryMergeFoliageCookedPages` joins separate cooks
+and replaces recooked pages. `TryWriteFoliageCookedPageSet` writes the pages
+in address order with every layer and species.
+
+`TryGetFoliageSampleEditRoots` maps a terrain or channel edit to the roots
+whose cells read the edited samples. `TryGetFoliageCandidateRoots` does the
+same for a suppression edit. `TryGetFoliageDirtyPages` expands those roots by
+the same reach. Recooking the dirty pages over the previous cook equals a
+clean cook. Layer, species, seed and domain edits invalidate every page.
+
+**Cache key and limits.** The input digest is the SHA-256 of the versions,
+domain, terrain metadata and codes, channels, recipe, species placement
+properties and suppressions. A species' `RenderRevision` is excluded, so a
+material-only edit keeps every byte. Placement revisions change only the key.
+A page and its halo may evaluate up to 2^20 candidates
+(`MAX_FOLIAGE_COOK_CANDIDATES`). The grid holds at most 4,096 tiles, and the
+radii and terrain coordinates have checked limits. Cells and pages beyond
+`int32` fail with `CoordinateOutOfRange`.
+
+The tests in `modules/content/foliage_cook/tests` check the following:
+
+- Identical bytes from full, shuffled, isolated and four-thread cooks across
+  the negative seam.
+- Heights and up directions against the binary64 surface query.
+- Holes, slope, wetness, masks and exclusion between strata.
+- Dormant suppressions, signed-limit cells, dirty recooks of terrain and
+  suppression edits, and render-only edits.
+
+The golden cook in `foliage_cook_golden.h` is shared with the WebAssembly math
+probe, so native and browser builds must produce the same pinned bytes.
+
 ## Cooked pages and publication
 
 Use a versioned little-endian format with a page directory, terrain and input
@@ -107,8 +226,9 @@ from the decoded records and evolve its layout independently of the disk format.
 `Ludus::FoliageFormat` owns the version 1 wire contract and its admission
 limits in `lufol.h` and `limits.h`. `Ludus::FoliagePages` encodes page sets
 for the cooker and validates and reads them for runtime consumers. Both
-targets depend only on Foundation modules. The cook adapter that produces
-these records and their publication are later F0 and F1 work.
+targets depend only on Foundation modules. The [terrain cook](#terrain-cook)
+produces these records. Publication that keeps the previous generation after a
+failed replacement is later F0 and F1 work.
 
 A page set is one terrain domain's pages, tightly packed in little-endian
 order:

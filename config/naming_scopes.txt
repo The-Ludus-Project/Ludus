@@ -22,6 +22,7 @@ modules/content/sequence_format
 modules/content/sequence_content
 modules/content/foliage_format
 modules/content/foliage_pages
+modules/content/foliage_cook
 modules/foundation/identity
 modules/platform/include/ludus/platform/entropy.h
 modules/platform/src/entropy.cpp

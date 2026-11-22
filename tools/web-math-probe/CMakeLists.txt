@@ -5,14 +5,16 @@ add_executable(ludus_web_math_probe main.cpp)
 # helper adds the source with its libraries, so the two builds cannot drift apart.
 include("${PROJECT_SOURCE_DIR}/tests/sdk_consumer/geometry.cmake")
 ludus_add_sdk_geometry_exercise(ludus_web_math_probe)
-# The procedural scatter golden digest and the LUFOL foliage page set golden bytes share
-# their fixtures with the native scatter and FoliagePages tests.
+# The procedural scatter golden digest, the LUFOL foliage page set golden bytes and the
+# golden foliage cook share their fixtures with the native scatter, FoliagePages and
+# FoliageCook tests.
 target_link_libraries(ludus_web_math_probe PRIVATE Ludus::FoundationMath Ludus::ProceduralEnvironment
-    Ludus::FoliagePages)
+    Ludus::FoliagePages Ludus::FoliageCook)
 # The enclosure oracle is shared with the native FoundationMath tests.
 target_include_directories(ludus_web_math_probe PRIVATE "${PROJECT_SOURCE_DIR}/modules/foundation/math/tests"
     "${PROJECT_SOURCE_DIR}/modules/content/procedural/environment/tests"
-    "${PROJECT_SOURCE_DIR}/modules/content/foliage_pages/tests")
+    "${PROJECT_SOURCE_DIR}/modules/content/foliage_pages/tests"
+    "${PROJECT_SOURCE_DIR}/modules/content/foliage_cook/tests")
 ludus_apply_project_defaults(ludus_web_math_probe)
 # The checked math .cpp files already compile with -ffp-contract=off through the
 # library target; the probe only calls them. Keep exceptions off (engine policy).
