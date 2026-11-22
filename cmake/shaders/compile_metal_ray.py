@@ -15,6 +15,11 @@ from copy import deepcopy
 from pathlib import Path
 import re
 
+from compile_raster import raster_interface_usage
+
+
+LTC_TABLE_RESOURCE = 'LudusLtcTable'
+
 
 def _require(condition, message):
     if not condition:
@@ -88,7 +93,13 @@ def legalize(code, document, layout, storage_bindings=None):
     entry_body = code[entry.end():body_end]
     assignments = dict((argument, member) for member, argument in re.findall(
         r'\(&\w+\)->(\w+)\s*=\s*(\w+)\s*;', entry_body))
-    resources = {item['name']: item for item in document['parameters']}
+    _require(LTC_TABLE_RESOURCE not in raster_interface_usage(document, 'compute'),
+             'a hardware ray shader reads the polygonal-lighting table, which the native Metal stages cannot bind. '
+             'Move the table lookup into a separate lighting pass that supports it.')
+    # Metal reflection lists unused global declarations, although the kernel has
+    # no argument for them. Preserve the strict ABI checks for all other resources.
+    excluded = private | {LTC_TABLE_RESOURCE}
+    resources = {item['name']: item for item in document['parameters'] if item['name'] != LTC_TABLE_RESOURCE}
     _require(set(resources) <= set(slots) and private <= set(resources), 'unrecognized resource interface')
     arguments, selected = [], {}
     for argument in _arguments(entry[2]):
@@ -206,17 +217,17 @@ bool {abi['LUDUS_METAL_RAY_INTERSECTION']}(uint primitive [[primitive_id]], uint
 }}
 '''
     normalized = deepcopy(document)
-    normalized['parameters'] = [item for item in normalized['parameters'] if item['name'] not in private]
+    normalized['parameters'] = [item for item in normalized['parameters'] if item['name'] not in excluded]
     for value in [*normalized['parameters'], *normalized['entryPoints'][0].get('bindings', [])]:
         name = value['name']
-        if name not in private:
+        if name not in excluded:
             # A resource pinned to a native register reflects a list of bindings; any of them carries its usage.
             originals = value.pop('bindings', None) or [value.get('binding', {})]
             usage = [entry['used'] for entry in originals if 'used' in entry]
             value['binding'] = {'kind': 'descriptorTableSlot', 'index': slots[name],
                                 **({'used': int(any(usage))} if usage else {})}
     normalized['entryPoints'][0]['bindings'] = [item for item in normalized['entryPoints'][0].get('bindings', [])
-                                               if item['name'] not in private]
+                                               if item['name'] not in excluded]
     _require('intersection_query<' not in code and 'LUDUS_NATIVE_CONTEXT' not in code,
              'inline-query or unresolved intrinsic remains in native stage output')
     return code, normalized

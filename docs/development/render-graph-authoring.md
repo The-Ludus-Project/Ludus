@@ -4701,14 +4701,18 @@ Their contracts are on the
 [FoundationMath page](../modules/foundation/math.md#linearly-transformed-cosines-over-polygons),
 in [randomness](../architecture/randomness.md#sequential-weighted-reservoir) and in
 the [LTC table guide](ltc-table.md). The table itself is 3.4 MB, so it is not
-part of the source snapshot: the renderer uploads it once and binds it read-only
-at slot 13 when the linked kernel's reflection keeps that binding. A flag
-without a `LookupSpecularLtc` call binds nothing. Version 25 runtime packages
-record the binding in one scene resource word. Native ray stages
-(`"type": "RayTracing"` invocations) cannot bind the table, so read it from a
-compute-invoked pass. Omit the field when you do not need the helpers. It must
-be a Boolean, and older SDKs reject the unknown field instead of building
-without the helpers. The
+part of the source snapshot. The renderer uploads it once and binds it read-only
+at slot 13 when the linked kernel actually reads it. Version 25 runtime
+packages record that binding in one scene resource word.
+
+In a package that uses native ray stages, Build Graph links the callbacks
+reachable from each configuration separately when these helpers are enabled.
+The native Metal shader includes only callbacks selected for hardware RT.
+A configuration that never reads the table runs without allocating it, even
+when other configurations need it. A compute-invoked pass can read the table
+in a configuration that also has hardware RT passes. Build Graph rejects a
+hardware RT shader only if its compiled code reads the table. The shared flag
+is a Boolean that exposes the helpers. The
 [RIS and projected-solid-angle template](#resample-many-area-lights-with-projected-solid-angle-sampling)
 declares it.
 

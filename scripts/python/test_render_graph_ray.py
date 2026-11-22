@@ -428,7 +428,7 @@ class RayPipelineTests(unittest.TestCase):
         plan = self.compile()
         self.assertEqual(ray.HARDWARE_PIPELINE_TAG, ray.program_tuple(self.node)[-1])
         profiles = ray.group_profiles([plan], {}, build)
-        self.assertTrue(profiles[0]['native_pipeline'])
+        self.assertEqual({profiles[0]['variants'][0]: 0}, profiles[0]['native_slots'])
         self.assertFalse(profiles[0]['persistent'])
         self.assertTrue(ray.requires_native_queries(plan))
 
@@ -440,7 +440,7 @@ class RayPipelineTests(unittest.TestCase):
         self.assertEqual(1, len(profiles))
         self.assertEqual(1, len(profiles[0]['variants']))
         self.assertFalse(profiles[0]['persistent'])
-        self.assertTrue(profiles[0]['native_pipeline'])
+        self.assertEqual({profiles[0]['variants'][0]: 0}, profiles[0]['native_slots'])
 
     def test_hardware_invocation_rejects_compute_traversal_fields(self):
         self.node['invocation'].update(type='RayTracing', traversal='NativeQuery')
@@ -968,6 +968,58 @@ class RayCompilerAcceptance(unittest.TestCase):
             execution.cook_runtime(str(package), root / 'hardware.lurgrt', configuration='Hardware')
             execution.emit_runtime(str(package), root / 'hardware.h', name='Hardware', configuration='Hardware')
             self.assertIn('result.NativeRayStages.Artifact.HasNativeRayStages = true', (root / 'hardware.h').read_text())
+
+    def test_native_ray_lighting_uses_reflected_resources_of_its_own_configuration(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            source = root / 'source'
+            shutil.copytree(ROOT / 'tests/sdk_consumer/rg2/scene_ray', source)
+            path = source / 'main.lurender.json'
+            document = json.loads(path.read_text())
+            hardware = deepcopy(document['configurations'][0])
+            hardware['id'] = 'Hardware'
+            node = next(item for item in hardware['nodes'] if item['kind'] == 'RayTracingPipeline')
+            node['invocation']['type'] = 'RayTracing'
+            next(row for row in node['shaders'] if row['stage'] == 'closest_hit')['program'] = 'HardwareClosest'
+            document['configurations'].append(hardware)
+            path.write_bytes(graph.canonical_asset(document))
+
+            value = json.loads((source / 'main.lushader.json.in').read_text()
+                               .replace('@RG2_TEST_PROFILES@', '["metal"]'))
+            technique = next(item for item in value['techniques'] if item['id'] == ray.TECHNIQUE)
+            technique['scene_interface']['polygonal_light_sampling'] = True
+            closest = next(item for item in value['programs'] if item['id'] == 'Closest')
+            hardware_source = 'main_shaders/hardware_closest.slang'
+            value['programs'].append({**closest, 'id': 'HardwareClosest', 'source': hardware_source})
+            manifest = source / 'main.lushader.json'
+            manifest.write_text(json.dumps(value))
+
+            ordinary = (source / closest['source']).read_text()
+            lit = ordinary.replace(
+                '    payload.Radiance = material.BaseColor',
+                '    payload.Radiance = LookupSpecularLtc(0.5, float3(0, 0, 1), float3(0.04)).Norm * material.BaseColor', 1)
+            self.assertNotEqual(ordinary, lit)
+            (source / closest['source']).write_text(lit)
+            (source / hardware_source).write_text(ordinary)
+            output = root / 'build'
+            options = dict(helper=os.environ['LUDUS_RG1_HELPER'], compiler=os.environ['LUDUS_RG1_SLANG'],
+                           spirv_cross=os.environ['LUDUS_RG1_CROSS'])
+            package = build.build_package(manifest, output, **options)['package']
+            self.assertTrue(execution._runtime_contents(package, 'Default')['ltc_table'])
+            hardware_contents = execution._runtime_contents(package, 'Hardware')
+            self.assertFalse(hardware_contents['ltc_table'])
+            self.assertEqual('HardwarePipeline', hardware_contents['passes'][0]['Traversal'])
+            stage = hardware_contents['artifacts'][('NativeRayStages', 'compute', 'metal')]
+            self.assertNotIn(ray.LTC_TABLE_SLOT, {entry['binding'] for entry in stage['descriptor']['interface']['entries']})
+            self.assertIn(b'intersector.intersect(ray, scene', stage['bytes'])
+            self.assertNotIn(b'LudusLtcTable', stage['bytes'])
+            execution.cook_runtime(package, root / 'hardware.lurgrt', configuration='Hardware')
+
+            accepted = (output / 'current.json').read_bytes()
+            (source / hardware_source).write_text(lit)
+            with self.assertRaisesRegex(ToolingError, 'hardware ray shader reads the polygonal-lighting table'):
+                build.build_package(manifest, output, **options)
+            self.assertEqual(accepted, (output / 'current.json').read_bytes())
 
     def test_reasonless_failures_in_ray_callbacks_are_located_warnings(self):
         # Linked ray kernels replace the authored callbacks in the build's program set; the scan
