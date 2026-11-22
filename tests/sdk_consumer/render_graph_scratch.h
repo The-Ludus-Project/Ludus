@@ -128,30 +128,38 @@ struct ScratchShape final
     for (uint32 i = 0; i < scratchCount; ++i)
     {
         const uint32 color = resources + 2 * i;
-        for (const uint32 word : {static_cast<uint32>(format::Technique::ColorAndDepth),
-                                  0U,
-                                  color,
-                                  color + 1,
-                                  static_cast<uint32>(format::Load::Clear),
-                                  static_cast<uint32>(format::Store::Store),
-                                  static_cast<uint32>(format::Load::Clear),
-                                  static_cast<uint32>(format::Store::Store),
-                                  1U,
-                                  ::ludus::content::render_graph_format::SCENE_DATA_ALL,
-                                  0U,
-                                  format::ABSENT,
-                                  format::ABSENT,
-                                  format::ABSENT,
-                                  format::ABSENT,
-                                  0U,
-                                  0U,
-                                  format::ABSENT,
-                                  0U,
-                                  static_cast<uint32>(format::RayTraversal::NativeQuery),
-                                  static_cast<uint32>(format::DisplayCurve::Reinhard),
-                                  0U,
-                                  0U,
-                                  0U})
+        // A raw array deduces its length, so a pass-record format change that adds fields fails
+        // to compile here instead of producing packages that no longer decode.
+        const uint32 scratchPass[] = {
+            static_cast<uint32>(format::Technique::ColorAndDepth),
+            0U,
+            color,
+            color + 1,
+            static_cast<uint32>(format::Load::Clear),
+            static_cast<uint32>(format::Store::Store),
+            static_cast<uint32>(format::Load::Clear),
+            static_cast<uint32>(format::Store::Store),
+            1U,
+            ::ludus::content::render_graph_format::SCENE_DATA_ALL,
+            0U,
+            format::ABSENT,
+            format::ABSENT,
+            format::ABSENT,
+            format::ABSENT,
+            0U,
+            0U,
+            format::ABSENT,
+            0U,
+            static_cast<uint32>(format::RayTraversal::NativeQuery),
+            static_cast<uint32>(format::DisplayCurve::Reinhard),
+            0U, // WorkItemCount
+            0U, // StorageLaunchWidth
+            0U, // StorageLaunchHeight
+            0U, // ImageLaunchWidth
+            0U, // ImageLaunchHeight
+        };
+        static_assert(sizeof(scratchPass) == format::PASS_RECORD_BYTES, "scratch pass must match format::Pass");
+        for (const uint32 word : scratchPass)
         {
             WriteWord(bytes, word);
         }
