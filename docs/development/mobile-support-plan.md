@@ -231,7 +231,7 @@ tracker below; raw output stays private.
 
 | Blocker | Owner | Next action |
 | --- | --- | --- |
-| The maintainer Mac has no Xcode, iOS SDK or `devicectl` (only Command Line Tools) | Maintainer | Run `./init.sh --with-ios` and complete the App Store install if prompted. Retry setup, then run the Apple probes |
+| On the maintainer Mac, Xcode first-launch setup and Apple toolchain verification are pending | Maintainer | Run `./init.sh --with-ios` and complete the App Store install if prompted. Retry setup, then run the Apple probes |
 | No Android SDK, NDK or `adb` on the maintainer Mac | Maintainer | Install command-line tools, NDK and platform-tools; then run the Android probes |
 | Device signing material | Maintainer | Create an Apple development team identity and an Android debug keystore locally; keep them out of the repository |
 | FoundationBase rejects `iOS` and `Android` | Both tracks | Add explicit target runtime boundaries in M1 |
@@ -464,7 +464,7 @@ Device/tool versions and logs belong in evidence, not speculative completion dat
 
 | Gate | Shared | iPhone 16 Pro | iPad Pro M4 | Galaxy Flip |
 | --- | --- | --- | --- | --- |
-| M0 | in progress: contracts frozen; probes blocked on SDK installs ([#1229](https://github.com/The-Ludus-Project/Ludus/issues/1229)) | blocked: no Xcode on the maintainer Mac | blocked: no Xcode on the maintainer Mac | blocked: no Android SDK/NDK on the maintainer Mac |
+| M0 | in progress: contracts frozen; toolchain, signing and device evidence pending ([#1229](https://github.com/The-Ludus-Project/Ludus/issues/1229)) | blocked: Xcode setup and device inventory pending | blocked: Xcode setup and device inventory pending | blocked: no Android SDK/NDK on the maintainer Mac |
 | M1 | not started | not started | not started | not started |
 | M2 | not started | not started | not started | not started |
 | M3 | not started | not started | not started | not started |
