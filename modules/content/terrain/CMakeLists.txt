@@ -43,6 +43,7 @@ if(LUDUS_BUILD_TESTS)
         tests/terrain_materials_tests.cpp
         tests/terrain_rivers_tests.cpp
         tests/terrain_cook_tests.cpp
+        tests/terrain_drainage_cook_tests.cpp
     )
     target_link_libraries(ludus_content_terrain_tests
         PRIVATE Ludus::ContentTerrain Ludus::TerrainFormat Catch2::Catch2WithMain)

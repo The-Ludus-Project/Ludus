@@ -127,10 +127,68 @@ edit's support.
 
 Only heights are cooked. Drainage, rivers and other regional products can
 depend on the whole domain; recompute them from the complete field rather than
-from the edited pages. Material, hole and coarse-level channels are later
-format versions. The cooker produces bytes in memory. Write the manifest last,
-or into an immutable revision directory, so an interrupted publication leaves
-the previous revision usable.
+from the edited pages (see
+[Drainage over decoded pages](#drainage-over-decoded-pages)). Material, hole
+and coarse-level channels are later format versions. The cooker produces bytes
+in memory. Write the manifest last, or into an immutable revision directory, so
+an interrupted publication leaves the previous revision usable.
+
+### Drainage over decoded pages
+
+Pages hold quantized heights, not drainage. A consumer that reads decoded
+pages and reruns `TryComputeTerrainDrainage` gets a diagnostic, not the source
+drainage. Two fixtures in `terrain_drainage_cook_tests.cpp` measure the gap.
+
+**A branching basin.** Two tributaries cross page edges, join, and drain to
+one outlet. The fixture cooks the basin at 16-cell and 8-cell pages in
+shuffled order, then reassembles the decoded field. Shared channel heights
+agree exactly across every page edge, core or halo, and lie within half a
+quantum of the source. Drainage over the decoded field keeps the control's
+network, confluence and outlet accumulation. It still differs at a few
+hillslope samples: there, two neighbours' drops differ by at most two
+quanta per metre of spacing, and the decoded heights pick the other neighbour.
+Accumulation along the channels moves by at most the samples those flips
+carry.
+
+A dam stamp diverts one tributary across a low divide. The recook rebuilds
+only the pages the stamp reaches, and they decode exactly as a clean cook of
+the final terrain. Drainage still changes on reused pages downstream of the
+divide. Recompute drainage over the whole field after every edit.
+
+**A shallow saddle.** A lake can spill over two passes on a page edge. The
+fixture sets the two pass heights on either side of one quantum. Every decoded
+height passes the half-quantum tolerance, and every partition and cook order
+decodes the same field and drainage. The route depends on how the pass heights
+fall relative to the codes:
+
+| Pass heights | Decoded passes | Decoded route |
+| --- | --- | --- |
+| 1.25 quanta apart | Different codes | Source outlet kept |
+| A quarter quantum apart across a code boundary | Different codes, one quantum apart | Source outlet kept |
+| Half a quantum apart in one code; the source route's pass has the higher sample index | Tie | Whole lake moves to the other outlet |
+| Half a quantum apart in one code; the source route's pass has the lower sample index | Tie | Outlet kept; one ridge sample moves to the other outlet |
+
+Rounding to the nearest code is monotone. Quantization can therefore merge
+two spill heights into one code but never reverses their order. When pass
+heights differ by more than one quantum, their codes differ too, so the source
+order survives. A merged pair resolves by the kernel's tie rules: the flood
+visits equal heights in ascending sample index, and D8 picks equal drops in
+`TerrainFlowDirection` order. The pointwise error bound says nothing about
+which route that picks.
+
+If a consumer needs the source drainage topology, choose one of these:
+
+- **A codec scale.** Recompute from decoded heights only when every pair of
+  competing spill points differs by more than one `QuantumMetres`. Choose the
+  quantum against the smallest such difference, for example `Signed32` with a
+  finer quantum. Generated and eroded terrain has no lower bound on that
+  difference, so this works only for terrain whose saddles you control.
+- **A canonical cook-stage drainage product.** Use drainage computed by
+  `TryComputeTerrainDrainage` over the complete source field, versioned with
+  `TERRAIN_FIELDS_LAYOUT_VERSION`, for rivers, lakes, wetness and materials.
+  T1 cooks heights only and does not publish this product yet. Until it does,
+  compute drainage from the source field where it is available, and treat
+  drainage from decoded pages as a preview.
 
 ## Elevation recipe (`terrain_noise.h`)
 
@@ -276,6 +334,16 @@ these kernels to carve rivers and bake its terrain surface; see
 - Arthur N. Strahler, *Quantitative analysis of watershed geomorphology*,
   Transactions, American Geophysical Union 38(6), pp. 913–920, 1957. Stream
   order.
+- Kelley, Malin and Nielson, *Terrain Simulation Using a Model of Stream
+  Erosion*, SIGGRAPH '88, pp. 263–268
+  ([doi:10.1145/378456.378519](https://doi.org/10.1145/378456.378519)).
+  Branching drainage networks as terrain structure; the branching-basin
+  fixture uses a confluence across pages.
+- Yuxiao Li, Mingze Xia, Xin Liang, Bei Wang and Hanqi Guo, *Preserving
+  Discrete Morse-Smale Complexes in Error-Bounded Lossy Compression*, IEEE
+  TVCG 32(7), pp. 6593–6609 ([arXiv:2409.17346](https://arxiv.org/abs/2409.17346)).
+  A bounded pointwise error can still change critical points and their
+  connections; the shallow-saddle fixture measures this for the height codec.
 - Ken Perlin, *Implementing Improved Perlin Noise*, GPU Gems 1, chapter 5.
   Smooth fade and balanced gradients.
 - Ferenc Pintér, *Large-Scale Terrain Rendering for Outdoor Games*, GPU Pro 2,
