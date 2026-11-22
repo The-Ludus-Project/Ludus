@@ -48,10 +48,15 @@
 }
 
 .md-typeset .render-study-hero img,
+.md-typeset .render-study-hero video,
 .md-typeset .render-study-comparison img {
   display: block;
   width: 100%;
   height: auto;
+}
+
+.md-typeset .render-study-hero + .render-study-hero {
+  margin-top: 1.5rem;
 }
 
 .md-typeset .render-study-hero figcaption,
