@@ -13,6 +13,7 @@
 #include <ludus/foundation/identity/handle.hpp>
 #include <ludus/foundation/math/quaternion.hpp>
 #include <ludus/foundation/math/vector.hpp>
+#include <ludus/physics/collision/contacts.h>
 #include <ludus/physics/collision/convex_shape.h>
 #include <ludus/physics/collision/geometry_store.h>
 #include <ludus/physics/collision/queries.h>
@@ -236,6 +237,27 @@ struct WorldHitsResult final
     bool IsComplete = true; ///< Whether WrittenCount equals HitCount.
 };
 
+/// @brief Request for the colliders that may touch one collider.
+struct ContactCandidateInput final
+{
+    /// The collider to find partners for.
+    ColliderHandle Collider{};
+    /// How far the collider's bounds are widened before they are compared, in [0, MAX_CONTACT_OFFSET_METERS].
+    float64 MarginMeters = DEFAULT_CONTACT_OFFSET_METERS;
+    /// Hierarchy, or QueryTraversal::AllTriangles to compare against every collider slot as a brute-force oracle.
+    QueryTraversal Traversal = QueryTraversal::Hierarchy;
+};
+
+/// @brief Completion of a contact-candidate search.
+///
+/// Written handles are sorted by collider slot. IsComplete is true exactly when every candidate was written.
+struct ContactCandidateResult final
+{
+    usize CandidateCount = 0; ///< Candidates found.
+    usize WrittenCount = 0;   ///< Handles written, a sorted prefix of the buffer.
+    bool IsComplete = true;   ///< Whether WrittenCount equals CandidateCount.
+};
+
 class CollisionWorld;
 
 /// @brief Scoped, protected read access to a CollisionWorld.
@@ -349,6 +371,43 @@ public:
     [[nodiscard]] Status Overlap(const WorldOverlapInput& input,
                                  foundation::BorrowedView<ColliderOverlap> overlapBuffer,
                                  WorldOverlapResult& outResult) const noexcept;
+
+    /// @brief Find the colliders that may touch one collider: the candidate pairs of contact generation.
+    ///
+    /// A candidate is another live collider that is enabled and solid, whose filter and the collider's accept each
+    /// other (ShouldCollide), and whose world bounds overlap the collider's bounds widened by the margin. Bounds
+    /// are only candidates: GenerateContacts decides whether a pair touches. A collider that is disabled or not
+    /// solid has no candidates.
+    /// @param input Collider, margin and traversal.
+    /// @param candidateBuffer Caller storage for the handles, borrowed for this call; may be empty.
+    /// @param outResult Receives the counts and completion on Success; unchanged on failure.
+    /// @return Success; InvalidPhase for an inactive view; InvalidHandle; NonFiniteInput or OutOfRange for the
+    /// margin; or InvalidArgument for an unknown traversal or an invalid buffer view. After a failure the buffer's
+    /// contents are unspecified.
+    [[nodiscard]] Status FindContactCandidates(const ContactCandidateInput& input,
+                                               foundation::BorrowedView<ColliderHandle> candidateBuffer,
+                                               ContactCandidateResult& outResult) const noexcept;
+
+    /// @brief Generate the contact patches between two colliders.
+    ///
+    /// Sphere, capsule and box pairs use closed-form and separating-axis kernels; a pair with a hull uses the
+    /// general convex path, GJK distance with expanding-polytope penetration; a convex shape against a triangle
+    /// mesh tests the triangles its bounds reach and honors their feature classification. Points are reduced to
+    /// MAX_CONTACT_PATCH_POINTS per patch, keeping the deepest point and the widest support area. The query reads
+    /// neither filters nor participation flags: any two distinct live colliders may be tested. The result does not
+    /// depend on which thread runs the query, and swapping the two colliders mirrors it.
+    /// @param first First collider of the pair; normals point away from it.
+    /// @param second Second collider of the pair.
+    /// @param settings Contact offset.
+    /// @param outContacts Receives the patches and points on Success, with zero counts when the pair is further
+    /// apart than the contact offset; unchanged on failure.
+    /// @return Success; InvalidPhase for an inactive view; InvalidHandle; InvalidArgument when both handles name
+    /// the same collider; NonFiniteInput or OutOfRange for the contact offset; or Unsupported for two triangle
+    /// meshes.
+    [[nodiscard]] Status GenerateContacts(ColliderHandle first,
+                                          ColliderHandle second,
+                                          const ContactSettings& settings,
+                                          ContactPairContacts& outContacts) const noexcept;
 
 private:
     friend class CollisionWorld;
@@ -487,6 +546,7 @@ private:
 
     friend class CollisionReadView;
     friend class CollisionWorldQueries;
+    friend class CollisionWorldContacts;
     friend class ColliderHierarchy;
     friend class CollisionDebugExtraction;
 

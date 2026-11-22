@@ -229,7 +229,7 @@ tracker below; raw output stays private.
 
 | Blocker | Owner | Next action |
 | --- | --- | --- |
-| Xcode is installed, but needs license acceptance and selection for the Apple probes | Maintainer | Review the Xcode license, select Xcode and run the Apple probes |
+| Apple toolchain pins are provisional | Maintainer | Use the Apple toolchain probe record and complete the signing and device checks to finalize the toolchain choice |
 | Apple signing material | Maintainer | Create an Apple development team identity locally and run the Apple signing probe |
 | FoundationBase rejects `iOS` and `Android` | Both tracks | Add explicit target runtime boundaries in M1 |
 | Platform falls back to headless on `iOS` and `Android` | Both tracks | Add UIKit and Android selections that reject a silent null backend in M1 |
@@ -385,6 +385,18 @@ acceptance. Deferred features remain visible after a platform is admitted.
 
 ## Running the M0 probes
 
+### Prepare the Apple tools
+
+On the Mac, `./init.sh --with-ios` prepares Xcode, the iOS SDKs and device
+tools, then runs the Apple toolchain probe against the selected Xcode and Clang.
+The probe tests compatibility using the provisional deployment target while
+the Xcode and SDK version pins are pending. See
+[One-command onboarding](building.md#one-command-onboarding) for setup options
+and failure reporting. To repeat the check independently, run
+`./scripts/mobile-probe apple-toolchain`. Run
+`./scripts/mobile-probe apple-signing` after configuring local development signing
+in Xcode.
+
 ### Prepare the Android tools
 
 On macOS or Linux x64, run `./init.sh`, select **Install Android SDK and NDK**
@@ -424,8 +436,7 @@ and [Samsung Auto Blocker](https://www.samsung.com/ca/support/mobile-devices/pro
 
 ### Collect the evidence
 
-With Xcode installed for the Apple probes and the Android tools ready, run the
-probes to produce the sanitized M0 acceptance records:
+Run the M0 probes after both toolchains are ready.
 
 ```bash
 ./scripts/mobile-probe all
@@ -456,9 +467,13 @@ still holds a private token. Review a record before linking it from the tracker.
 - **Provisional levels.** `--ios-minimum` (default 17.0) and `--android-api`
   (default 29) only select what to compile for. Each record says whether the value
   was a default. Record the chosen minimums under Target profiles after the probes.
-- **Devices.** Connect each device by cable and trust the Mac. The probe reads
-  Apple devices with `devicectl` and Android devices with `adb`, and labels them
-  `apple-1`, `android-1` and so on.
+- **Devices.** Connect the iPhone 16 Pro and 11-inch iPad Pro (M4) by USB,
+  unlock them, and accept the trust prompt. Run `./scripts/mobile-probe devices`.
+  The probe reads Apple devices with `devicectl` and Android devices with
+  `adb`, and labels them `apple-1`, `android-1` and so on. The inventory can
+  capture the Apple devices before Android is ready. For on-device app testing
+  in M1, also [enable Developer Mode](https://developer.apple.com/documentation/xcode/enabling-developer-mode-on-a-device)
+  and use the local development signing setup.
 
 The mobile presets build the probes while FoundationBase still rejects iOS and
 Android. List them with the selected CMake:
@@ -489,7 +504,7 @@ Device/tool versions and logs belong in evidence, not speculative completion dat
 
 | Gate | Shared | iPhone 16 Pro | iPad Pro M4 | Galaxy Flip |
 | --- | --- | --- | --- | --- |
-| M0 | in validation: shared compiler decision awaits Apple probes ([#1229](https://github.com/The-Ludus-Project/Ludus/issues/1229)) | blocked: Xcode license, signing and device probes pending | blocked: Xcode license, signing and device probes pending | passed: [Android M0 evidence](#android-m0-evidence) |
+| M0 | in validation: Apple and Android SDK compile/link probes passed. Shared toolchain decision pending ([#1229](https://github.com/The-Ludus-Project/Ludus/issues/1229), [#2186](https://github.com/The-Ludus-Project/Ludus/pull/2186)) | blocked: signing and device inventory pending | blocked: signing and device inventory pending | passed: [Android M0 evidence](#android-m0-evidence) |
 | M1 | not started | not started | not started | not started |
 | M2 | not started | not started | not started | not started |
 | M3 | not started | not started | not started | not started |

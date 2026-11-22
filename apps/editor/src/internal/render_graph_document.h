@@ -214,12 +214,18 @@ public:
         return source == RenderGraphSource::Saved ? mSavedRevision : mHistory.Revision();
     }
     /// Stage a package-local shader include with the selected language's suffix as one undoable edit.
-    /// Null initialSource selects the default include template.
+    /// Null initialSource selects the default include template. A nonempty includeTarget links the new file
+    /// from that source in the same undo step.
     /// Save publishes it. Existing files are preserved; outError describes any failure and its repair.
     [[nodiscard]] RenderGraphDocumentStatus CreateSharedShaderSource(const QString& file,
                                                                      RenderGraphShaderLanguage language,
                                                                      QString& outError,
-                                                                     const QByteArray& initialSource = {});
+                                                                     const QByteArray& initialSource = {},
+                                                                     const QString& includeTarget = {});
+    /// Add named Buffer access for one scene function and lift any explicit legacy opt-out for its
+    /// programs. Applies the source and manifest edits as one undo step; Save publishes them.
+    [[nodiscard]] RenderGraphDocumentStatus
+    AddShaderBufferAccess(const QString& manifest, const QString& file, const QString& function, QString& outError);
     /// Parse a draft graph document; returns false for missing or non-object JSON.
     [[nodiscard]] bool GetGraph(const QString& file, QJsonObject& outGraph) const;
 

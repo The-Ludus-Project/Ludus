@@ -161,6 +161,7 @@ class Snapshot:
         self.buffer_layout_dependencies = {}
         self.inline_buffer_sources = set()
         self.named_resource_programs = {}
+        self.pending_resource_programs = {}
         self.executable_language_programs = {}
         self.total = 0
 
@@ -1094,7 +1095,7 @@ def compile_stages(jobs, stage, schemas, snapshot, helper, tools, cancel, worker
 
 
 def capture_graph_shader_inputs(manifest, *, helper, root=None, compiler=None, cancel=None, luslc=None,
-                                lusl_style='strict', check_ray_targets=True):
+                                lusl_style='strict', check_ray_targets=True, allow_resource_upgrades=False):
     """Capture graph connections and their shader interfaces before checking the editable sources."""
     manifest = Path(manifest).resolve()
     snapshot = Snapshot(root if root is not None else manifest.parent)
@@ -1119,14 +1120,16 @@ def capture_graph_shader_inputs(manifest, *, helper, root=None, compiler=None, c
     snapshot.language_tool = language.lower_buffer_headers(
         snapshot, layout_sources, Path(helper).resolve(), sys.modules[__name__],
         luslc=luslc, style=lusl_style, cancel=cancel)
-    named_resources = buffers.link_persistent_structs(plans, programs, snapshot, sys.modules[__name__])
+    pending = snapshot.pending_resource_programs if allow_resource_upgrades else None
+    named_resources = buffers.link_persistent_structs(plans, programs, snapshot, sys.modules[__name__],
+                                                     pending_resources=pending)
     language.prepare_resource_headers(snapshot, programs, named_resources, compiler, cancel, sys.modules[__name__])
     snapshot.named_resource_programs = {variant[0]: fields for variant, fields in named_resources.items()}
     return snapshot, value, schemas, programs, techniques, counts, plans, library, graph_path, named_resources
 
 
 def prepare_sources(manifest, helper, *, root=None, ray_path_capture=False, capture_profile=False, luslc=None,
-                    lusl_style='strict', bounds_checks=False, compiler=None, cancel=None):
+                    lusl_style='strict', bounds_checks=False, compiler=None, cancel=None, allow_resource_upgrades=False):
     """Capture and lower the same immutable shader contexts for compilation and editing.
 
     Reflects any LUSL-facing Buffer layouts but does not publish outputs. Returns package metadata, exact
@@ -1137,7 +1140,8 @@ def prepare_sources(manifest, helper, *, root=None, ray_path_capture=False, capt
     helper = Path(helper).resolve()
     snapshot, value, schemas, programs, techniques, counts, plans, library, graph_path, named_resources = (
         capture_graph_shader_inputs(manifest, helper=helper, root=root, compiler=compiler, cancel=cancel,
-                                    luslc=luslc, lusl_style=lusl_style, check_ray_targets=False))
+                                    luslc=luslc, lusl_style=lusl_style, check_ray_targets=False,
+                                    allow_resource_upgrades=allow_resource_upgrades))
     if ray.TECHNIQUE in techniques:
         # A build can report an unsupported invocation at its graph node rather than its manifest.
         ray.validate_native_invocations(plans, value['profiles'], techniques[ray.TECHNIQUE], sys.modules[__name__])
@@ -1158,7 +1162,8 @@ def prepare_sources(manifest, helper, *, root=None, ray_path_capture=False, capt
     if len(schemas.get('RendererStatic', {}).get('fields', [])) == 8:
         require('_ludus_visibility.slang' in snapshot.files, 'Tools', 'visibility', 'SDK visibility helper is missing')
         closures = {pid: sorted(set(closure) | {'_ludus_visibility.slang'}) for pid, closure in closures.items()}
-    buffers.link_persistent_structs(plans, programs, snapshot, sys.modules[__name__], closures)
+    buffers.link_persistent_structs(plans, programs, snapshot, sys.modules[__name__], closures,
+                                    pending_resources={} if allow_resource_upgrades else None)
     for plan in plans:
         require(all(digest(snapshot.files[d['source']]) == d['sha256'] for d in plan['dependencies']),
                 'Stale', plan['configuration'], 'graph changed during plan compilation')

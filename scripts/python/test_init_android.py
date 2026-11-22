@@ -41,6 +41,12 @@ class AndroidSetupTests(unittest.TestCase):
         self.assertTrue(install.call_args.kwargs["is_license_accepted"])
         native.assert_not_called()
 
+    def test_android_only_rejects_ios_instead_of_ignoring_it(self):
+        args = engine.make_parser().parse_args(["init", "--android-only", "--with-ios"])
+        with patch.object(init_android, "host_key", return_value="Darwin-arm64"):
+            with self.assertRaisesRegex(engine.EngineError, "conflicting setup scopes"):
+                init_ui.prepare_init(args, engine)
+
     def test_declining_license_creates_no_sdk_and_never_downloads(self):
         with patch.object(init_android.sys.stdin, "isatty", return_value=False):
             with self.assertRaisesRegex(engine.EngineError, "requires acceptance"):

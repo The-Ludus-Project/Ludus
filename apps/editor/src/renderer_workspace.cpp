@@ -35,6 +35,7 @@
 #include "internal/render_graph_resources.h"
 #include "internal/render_graph_shader_assistance.h"
 #include "internal/render_graph_shader_creation.h"
+#include "internal/render_graph_shader_edits.h"
 #include "internal/render_graph_shader_interface.h"
 #include "internal/render_graph_template_registry.h"
 #include "internal/render_graph_upscale_node.h"
@@ -916,6 +917,15 @@ RendererWorkspace::RendererWorkspace(const ToolingPaths& tooling, QWidget* paren
     connect(newSharedSource, &QAction::triggered, this, [this]() {
         openNewSharedShaderSource(*this, GetSourceFile());
     });
+    QAction* insertSharedInclude = sourceMenu->addAction(QStringLiteral("Insert Shared Include…"));
+    insertSharedInclude->setObjectName(QStringLiteral("renderGraphInsertSharedInclude"));
+    connect(insertSharedInclude, &QAction::triggered, this, [this]() {
+        const QString message = insertSharedShaderInclude(*this, GetSourceFile());
+        if (message.isEmpty() == false)
+        {
+            mSourceStatus->setText(message);
+        }
+    });
     for (QPushButton* button : {openCodeEditor, chooseCodeEditor, reloadSources})
     {
         button->hide();
@@ -944,6 +954,11 @@ RendererWorkspace::RendererWorkspace(const ToolingPaths& tooling, QWidget* paren
     mSourceAssistance = new RenderGraphShaderAssistance(mDocument, *mSource, *mSourceController, mTooling, sourcePage);
     sourceLayout->addWidget(mSourceAssistance);
     QWidget* interfacePage = CreateShaderInterfaceView(mSourceInterface, sourcePage);
+    mAddShaderBufferAccess = new QPushButton(QStringLiteral("Add Buffer Access…"), interfacePage);
+    mAddShaderBufferAccess->setObjectName(QStringLiteral("renderGraphAddShaderBufferAccess"));
+    mAddShaderBufferAccess->setToolTip(QStringLiteral("Add the named Buffer interface to an existing scene callback."));
+    static_cast<QVBoxLayout*>(interfacePage->layout())->insertWidget(1, mAddShaderBufferAccess);
+    connect(mAddShaderBufferAccess, &QPushButton::clicked, this, &RendererWorkspace::addShaderBufferAccess);
     connect(mSourceAssistance,
             &RenderGraphShaderAssistance::ResourceApiChanged,
             this,
@@ -4478,6 +4493,31 @@ void RendererWorkspace::updateSourceInterfaceVisibility()
 void RendererWorkspace::updateSourceInterfaceContents()
 {
     const QString file = mSourceFile->currentText();
+    const QByteArray manifest = mDocument.GetDraft(manifestFile());
+    const QJsonArray resources = mSourceAssistance->GetResourceApi();
+    const QByteArray source = mDocument.GetDraft(file);
+    bool canAddBufferAccess = false;
+    for (const QJsonValueConstRef entry : resources)
+    {
+        canAddBufferAccess =
+            canAddBufferAccess || entry.toObject().value(QStringLiteral("needs_upgrade")).toBool() == true;
+    }
+    for (const QJsonValueConstRef entry : FindShaderBufferCallbacks(manifest, file))
+    {
+        if (canAddBufferAccess == true)
+        {
+            break;
+        }
+        const QJsonObject callback = entry.toObject();
+        QString ignored;
+        const QByteArray updated = AddShaderBufferParameter(source,
+                                                            callback.value(QStringLiteral("function")).toString(),
+                                                            file.endsWith(QStringLiteral(".lusl")),
+                                                            ignored);
+        canAddBufferAccess = canAddBufferAccess || (updated.isNull() == false && updated != source) ||
+                             callback.value(QStringLiteral("graph_resources")) == QJsonValue(false);
+    }
+    mAddShaderBufferAccess->setVisible(canAddBufferAccess);
     QMap<QString, QByteArray> sources;
     for (const QString& draftFile : mDocument.GetFiles())
     {
@@ -4486,12 +4526,7 @@ void RendererWorkspace::updateSourceInterfaceContents()
             sources.insert(QDir::cleanPath(draftFile), mDocument.GetDraft(draftFile));
         }
     }
-    UpdateShaderInterfaceView(*mSourceInterface,
-                              file,
-                              DescribeShaderInterface(mDocument.GetDraft(manifestFile()),
-                                                      file,
-                                                      sources,
-                                                      mSourceAssistance->GetResourceApi()));
+    UpdateShaderInterfaceView(*mSourceInterface, file, DescribeShaderInterface(manifest, file, sources, resources));
 }
 
 void RendererWorkspace::renderSourceStatus()
@@ -5808,6 +5843,10 @@ bool RendererWorkspace::ActivateDiagnostic(int32 row)
     if (location.contains(QStringLiteral("line")) == true)
     {
         mCanvas->GetDiagnostics().SetCurrentRow(row);
+        if (location.value(QStringLiteral("repair")).toString() == QStringLiteral("add_buffer_access"))
+        {
+            mSourceInterfaceToggle->setChecked(true);
+        }
         openSourceLine(source,
                        location.value(QStringLiteral("line")).toInt(),
                        location.value(QStringLiteral("column")).toInt());

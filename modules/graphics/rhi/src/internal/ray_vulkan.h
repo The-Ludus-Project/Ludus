@@ -8,6 +8,9 @@
 // static/query features and the serialized build/read dependency sequence:
 // https://docs.vulkan.org/guide/latest/extensions/ray_tracing.html
 // https://docs.vulkan.org/guide/latest/synchronization_examples.html
+// R16b follows the Vulkan specification, "Acceleration Structures", for update-mode builds
+// from a separate source, compacted-size queries and compacting copies:
+// https://docs.vulkan.org/spec/latest/chapters/accelstructures.html
 // VMA owns native buffer allocations; each ray incarnation stays in RHI's registry.
 namespace ludus::graphics::rhi::backend
 {
@@ -26,6 +29,8 @@ struct RayVulkanStructure final
     RayVulkanBuffer Storage, Inputs, Indices, Opacity, Scratch;
     VkCommandBuffer Command = VK_NULL_HANDLE;
     VkFence Fence = VK_NULL_HANDLE;
+    /// R16b: one compacted-size query written by the build of compaction-enabled geometry.
+    VkQueryPool CompactedSizeOrNull = VK_NULL_HANDLE;
 };
 struct RayVulkanProgram final
 {
@@ -190,6 +195,10 @@ void RayVulkanDropStructure(RayVulkanStructure& structure) noexcept
     {
         vkDestroyFence(GetVulkan().Device, structure.Fence, nullptr);
     }
+    if (structure.CompactedSizeOrNull != VK_NULL_HANDLE)
+    {
+        vkDestroyQueryPool(GetVulkan().Device, structure.CompactedSizeOrNull, nullptr);
+    }
     RayVulkanDropBuffer(structure.Storage);
     RayVulkanDropBuffer(structure.Inputs);
     RayVulkanDropBuffer(structure.Indices);
@@ -206,6 +215,40 @@ struct RayVulkanBuildDescription final
     const VkAccelerationStructureGeometryKHR* SecondGeometryOrNull = nullptr;
     uint32 SecondPrimitiveCount = 0;
     usize InputBytes = 0, ByteBudget = 0;
+    /// R16b: Ready update-enabled source of an update-mode build; null builds from scratch.
+    VkAccelerationStructureKHR SourceOrNull = VK_NULL_HANDLE;
+    bool ShouldAllowUpdate = false;
+    bool ShouldAllowCompaction = false;
+};
+/// R16b: native build flags of a description's update and compaction options.
+VkBuildAccelerationStructureFlagsKHR GetRayVulkanBuildFlags(bool shouldAllowUpdate, bool shouldAllowCompaction) noexcept
+{
+    VkBuildAccelerationStructureFlagsKHR flags = VK_BUILD_ACCELERATION_STRUCTURE_PREFER_FAST_TRACE_BIT_KHR;
+    if (shouldAllowUpdate == true)
+    {
+        flags |= VK_BUILD_ACCELERATION_STRUCTURE_ALLOW_UPDATE_BIT_KHR;
+    }
+    if (shouldAllowCompaction == true)
+    {
+        flags |= VK_BUILD_ACCELERATION_STRUCTURE_ALLOW_COMPACTION_BIT_KHR;
+    }
+    return flags;
+}
+/// Make prior acceleration-structure writes and host inputs visible to a build, refit or copy.
+constexpr RayVulkanDependency RAY_VULKAN_BUILD_INPUTS
+{
+    .SourceStage = VK_PIPELINE_STAGE_HOST_BIT | VK_PIPELINE_STAGE_ACCELERATION_STRUCTURE_BUILD_BIT_KHR,
+    .DestinationStage = VK_PIPELINE_STAGE_ACCELERATION_STRUCTURE_BUILD_BIT_KHR,
+    .SourceAccess = VK_ACCESS_HOST_WRITE_BIT | VK_ACCESS_ACCELERATION_STRUCTURE_WRITE_BIT_KHR,
+    .DestinationAccess = VK_ACCESS_SHADER_READ_BIT | VK_ACCESS_ACCELERATION_STRUCTURE_READ_BIT_KHR,
+};
+/// Make a finished build or copy visible to later builds, size queries and compute queries.
+constexpr RayVulkanDependency RAY_VULKAN_BUILD_OUTPUTS
+{
+    .SourceStage = VK_PIPELINE_STAGE_ACCELERATION_STRUCTURE_BUILD_BIT_KHR,
+    .DestinationStage = VK_PIPELINE_STAGE_ACCELERATION_STRUCTURE_BUILD_BIT_KHR | VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
+    .SourceAccess = VK_ACCESS_ACCELERATION_STRUCTURE_WRITE_BIT_KHR,
+    .DestinationAccess = VK_ACCESS_ACCELERATION_STRUCTURE_READ_BIT_KHR,
 };
 RasterStatus RayVulkanBuild(RayVulkanStructure& structure,
                             const RayVulkanBuildDescription& description,
@@ -231,8 +274,10 @@ RasterStatus RayVulkanBuild(RayVulkanStructure& structure,
     {
         .sType = VK_STRUCTURE_TYPE_ACCELERATION_STRUCTURE_BUILD_GEOMETRY_INFO_KHR,
         .type = type,
-        .flags = VK_BUILD_ACCELERATION_STRUCTURE_PREFER_FAST_TRACE_BIT_KHR,
-        .mode = VK_BUILD_ACCELERATION_STRUCTURE_MODE_BUILD_KHR,
+        .flags = GetRayVulkanBuildFlags(description.ShouldAllowUpdate, description.ShouldAllowCompaction),
+        .mode = description.SourceOrNull != VK_NULL_HANDLE ? VK_BUILD_ACCELERATION_STRUCTURE_MODE_UPDATE_KHR
+                                                           : VK_BUILD_ACCELERATION_STRUCTURE_MODE_BUILD_KHR,
+        .srcAccelerationStructure = description.SourceOrNull,
         .geometryCount = geometryCount,
         .pGeometries = geometries.GetData(),
     };
@@ -245,12 +290,30 @@ RasterStatus RayVulkanBuild(RayVulkanStructure& structure,
                                             &build,
                                             primitives.GetData(),
                                             &sizes);
+    if (description.SourceOrNull != VK_NULL_HANDLE)
+    {
+        sizes.buildScratchSize = sizes.updateScratchSize;
+    }
     const auto limit = RayLimits().MaxBufferBytes;
     if (sizes.accelerationStructureSize == 0 || sizes.accelerationStructureSize > limit ||
         sizes.buildScratchSize > limit || inputs > budget || sizes.accelerationStructureSize > budget - inputs ||
         sizes.buildScratchSize > budget - inputs - sizes.accelerationStructureSize)
     {
         return RasterStatus::CapacityExceeded;
+    }
+    if (description.ShouldAllowCompaction == true)
+    {
+        const VkQueryPoolCreateInfo query
+        {
+            .sType = VK_STRUCTURE_TYPE_QUERY_POOL_CREATE_INFO,
+            .queryType = VK_QUERY_TYPE_ACCELERATION_STRUCTURE_COMPACTED_SIZE_KHR,
+            .queryCount = 1,
+        };
+        const VkResult created = vkCreateQueryPool(GetVulkan().Device, &query, nullptr, &structure.CompactedSizeOrNull);
+        if (created != VK_SUCCESS)
+        {
+            return RasterError(created);
+        }
     }
     auto result = RayVulkanBufferCreate(static_cast<usize>(sizes.accelerationStructureSize),
                                         VK_BUFFER_USAGE_ACCELERATION_STRUCTURE_STORAGE_BIT_KHR,
@@ -292,22 +355,23 @@ RasterStatus RayVulkanBuild(RayVulkanStructure& structure,
     rangesStorage[0].primitiveCount = primitives[0];
     rangesStorage[1].primitiveCount = primitives[1];
     const VkAccelerationStructureBuildRangeInfoKHR* ranges = rangesStorage.GetData();
-    RayVulkanBarrier(structure.Command,
-                     {
-                         .SourceStage = VK_PIPELINE_STAGE_HOST_BIT,
-                         .DestinationStage = VK_PIPELINE_STAGE_ACCELERATION_STRUCTURE_BUILD_BIT_KHR,
-                         .SourceAccess = VK_ACCESS_HOST_WRITE_BIT,
-                         .DestinationAccess = VK_ACCESS_SHADER_READ_BIT,
-                     });
+    if (structure.CompactedSizeOrNull != VK_NULL_HANDLE)
+    {
+        vkCmdResetQueryPool(structure.Command, structure.CompactedSizeOrNull, 0, 1);
+    }
+    // An update reads its source, written by an earlier submission on this queue.
+    RayVulkanBarrier(structure.Command, RAY_VULKAN_BUILD_INPUTS);
     vkCmdBuildAccelerationStructuresKHR(structure.Command, 1, &build, &ranges);
-    RayVulkanBarrier(structure.Command,
-                     {
-                         .SourceStage = VK_PIPELINE_STAGE_ACCELERATION_STRUCTURE_BUILD_BIT_KHR,
-                         .DestinationStage = VK_PIPELINE_STAGE_ACCELERATION_STRUCTURE_BUILD_BIT_KHR |
-                                             VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
-                         .SourceAccess = VK_ACCESS_ACCELERATION_STRUCTURE_WRITE_BIT_KHR,
-                         .DestinationAccess = VK_ACCESS_ACCELERATION_STRUCTURE_READ_BIT_KHR,
-                     });
+    RayVulkanBarrier(structure.Command, RAY_VULKAN_BUILD_OUTPUTS);
+    if (structure.CompactedSizeOrNull != VK_NULL_HANDLE)
+    {
+        vkCmdWriteAccelerationStructuresPropertiesKHR(structure.Command,
+                                                      1,
+                                                      &structure.Object,
+                                                      VK_QUERY_TYPE_ACCELERATION_STRUCTURE_COMPACTED_SIZE_KHR,
+                                                      structure.CompactedSizeOrNull,
+                                                      0);
+    }
     result = RayVulkanSubmit(structure.Command, structure.Fence);
     if (result != VK_SUCCESS)
     {
@@ -342,6 +406,8 @@ RayCapabilities RayLimits() noexcept
     {
         .StaticTriangles = true,
         .InlineQueries = true,
+        .Updates = true,
+        .CanCompact = true,
         .MaxInstances = supported < 0x01000000U ? supported : 0x01000000U,
         .MaxRays = 4096,
         .MaxBufferBytes = bufferLimit,
@@ -424,8 +490,13 @@ RasterStatus RayCreateProgram(usize slot, const ShaderDescription& description) 
     }
     return RasterError(result);
 }
-RasterStatus
-RayCreateGeometry(usize slot, const RayGeometryDescription& description, RayAllocation& allocation) noexcept
+namespace
+{
+/// Build geometry, or update from the Ready source structure when it is not null.
+RasterStatus RayVulkanBuildGeometry(usize slot,
+                                    VkAccelerationStructureKHR sourceOrNull,
+                                    const RayGeometryDescription& description,
+                                    RayAllocation& outAllocation) noexcept
 {
     if (GetRayVulkan().Geometry.EnsureSlots(slot + 1) == false)
     {
@@ -487,11 +558,112 @@ RayCreateGeometry(usize slot, const RayGeometryDescription& description, RayAllo
                               .SecondPrimitiveCount = triangleCount - d.OpaqueTriangleCount,
                               .InputBytes = vertexBytes + indexBytes,
                               .ByteBudget = d.ByteBudget,
+                              .SourceOrNull = sourceOrNull,
+                              .ShouldAllowUpdate = d.ShouldAllowUpdate,
+                              .ShouldAllowCompaction = d.ShouldAllowCompaction,
                           },
-                          allocation);
+                          outAllocation);
+}
+} // namespace
+RasterStatus
+RayCreateGeometry(usize slot, const RayGeometryDescription& description, RayAllocation& allocation) noexcept
+{
+    return RayVulkanBuildGeometry(slot, VK_NULL_HANDLE, description, allocation);
+}
+RasterStatus RayUpdateGeometry(usize slot,
+                               usize source,
+                               const RayGeometryDescription& description,
+                               RayAllocation& outAllocation) noexcept
+{
+    return RayVulkanBuildGeometry(slot, GetRayVulkan().Geometry[source].Object, description, outAllocation);
 }
 RasterStatus
-RayCreateScene(usize slot, const internal::NativeRaySceneDescription& description, RayAllocation& allocation) noexcept
+RayCompactGeometry(usize slot, const internal::NativeRayCompaction& compaction, RayAllocation& outAllocation) noexcept
+{
+    const usize source = compaction.Source;
+    const usize byteBudget = compaction.ByteBudget;
+    if (GetRayVulkan().Geometry.EnsureSlots(slot + 1) == false)
+    {
+        return internal::StorageFailure();
+    }
+    const RayVulkanStructure& from = GetRayVulkan().Geometry[source];
+    if (from.CompactedSizeOrNull == VK_NULL_HANDLE)
+    {
+        return RasterStatus::Failed;
+    }
+    // The source fence has signaled, so the query result is available without waiting.
+    uint64 compactedBytes = 0;
+    VkResult result = vkGetQueryPoolResults(GetVulkan().Device,
+                                            from.CompactedSizeOrNull,
+                                            0,
+                                            1,
+                                            sizeof(compactedBytes),
+                                            &compactedBytes,
+                                            sizeof(compactedBytes),
+                                            VK_QUERY_RESULT_64_BIT);
+    if (result != VK_SUCCESS)
+    {
+        return result == VK_NOT_READY ? RasterStatus::Failed : RasterError(result);
+    }
+    if (compactedBytes == 0 || compactedBytes > from.Storage.Size)
+    {
+        return RasterStatus::Failed;
+    }
+    if (compactedBytes > byteBudget || compactedBytes > RayLimits().MaxBufferBytes)
+    {
+        return RasterStatus::CapacityExceeded;
+    }
+    RayVulkanStructure& geometry = GetRayVulkan().Geometry[slot];
+    result = RayVulkanBufferCreate(static_cast<usize>(compactedBytes),
+                                   VK_BUFFER_USAGE_ACCELERATION_STRUCTURE_STORAGE_BIT_KHR,
+                                   false,
+                                   nullptr,
+                                   geometry.Storage);
+    if (result != VK_SUCCESS)
+    {
+        return RasterError(result);
+    }
+    const VkAccelerationStructureCreateInfoKHR create
+    {
+        .sType = VK_STRUCTURE_TYPE_ACCELERATION_STRUCTURE_CREATE_INFO_KHR,
+        .buffer = geometry.Storage.Object,
+        .size = compactedBytes,
+        .type = VK_ACCELERATION_STRUCTURE_TYPE_BOTTOM_LEVEL_KHR,
+    };
+    result = vkCreateAccelerationStructureKHR(GetVulkan().Device, &create, nullptr, &geometry.Object);
+    if (result == VK_SUCCESS)
+    {
+        result = RayVulkanBegin(geometry.Command, geometry.Fence);
+    }
+    if (result != VK_SUCCESS)
+    {
+        return RasterError(result);
+    }
+    const VkCopyAccelerationStructureInfoKHR copy
+    {
+        .sType = VK_STRUCTURE_TYPE_COPY_ACCELERATION_STRUCTURE_INFO_KHR,
+        .src = from.Object,
+        .dst = geometry.Object,
+        .mode = VK_COPY_ACCELERATION_STRUCTURE_MODE_COMPACT_KHR,
+    };
+    RayVulkanBarrier(geometry.Command, RAY_VULKAN_BUILD_INPUTS);
+    vkCmdCopyAccelerationStructureKHR(geometry.Command, &copy);
+    RayVulkanBarrier(geometry.Command, RAY_VULKAN_BUILD_OUTPUTS);
+    result = RayVulkanSubmit(geometry.Command, geometry.Fence);
+    if (result != VK_SUCCESS)
+    {
+        return RasterError(result);
+    }
+    outAllocation = {static_cast<usize>(compactedBytes), 0};
+    return RasterStatus::Pending;
+}
+namespace
+{
+/// Build a scene, or update from the Ready source structure when it is not null.
+RasterStatus RayVulkanBuildScene(usize slot,
+                                 VkAccelerationStructureKHR sourceOrNull,
+                                 const internal::NativeRaySceneDescription& description,
+                                 RayAllocation& outAllocation) noexcept
 {
     if (GetRayVulkan().Scenes.EnsureSlots(slot + 1) == false)
     {
@@ -562,8 +734,23 @@ RayCreateScene(usize slot, const internal::NativeRaySceneDescription& descriptio
                               .PrimitiveCount = static_cast<uint32>(count),
                               .InputBytes = instanceBytes + opacityBytes,
                               .ByteBudget = budget,
+                              .SourceOrNull = sourceOrNull,
+                              .ShouldAllowUpdate = description.ShouldAllowUpdate,
                           },
-                          allocation);
+                          outAllocation);
+}
+} // namespace
+RasterStatus
+RayCreateScene(usize slot, const internal::NativeRaySceneDescription& description, RayAllocation& allocation) noexcept
+{
+    return RayVulkanBuildScene(slot, VK_NULL_HANDLE, description, allocation);
+}
+RasterStatus RayUpdateScene(usize slot,
+                            usize source,
+                            const internal::NativeRaySceneDescription& description,
+                            RayAllocation& outAllocation) noexcept
+{
+    return RayVulkanBuildScene(slot, GetRayVulkan().Scenes[source].Object, description, outAllocation);
 }
 RasterStatus RaySubmit(usize slot, const internal::NativeRaySubmission& submission, RayAllocation& allocation) noexcept
 {

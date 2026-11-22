@@ -10,12 +10,14 @@
 
 #include <ludus/foundation/containers/array.hpp>
 #include <ludus/foundation/containers/borrowed_view.hpp>
+#include <ludus/foundation/containers/static_array.hpp>
 #include <ludus/foundation/identity/handle.hpp>
 #include <ludus/foundation/math/vector.hpp>
 #include <ludus/physics/collision/collision_world.h>
 #include <ludus/physics/collision/geometry_store.h>
 #include <ludus/physics/rigid/body.h>
 #include <ludus/physics/rigid/commands.h>
+#include <ludus/physics/rigid/contacts.h>
 #include <ludus/physics/rigid/mass_properties.h>
 #include <ludus/physics/rigid/status.h>
 
@@ -54,6 +56,14 @@ struct RigidWorldSettings final
     uint32 SubstepCount = DEFAULT_SUBSTEP_COUNT; ///< Substeps per tick, in [1, MAX_SUBSTEP_COUNT].
     /// Gravity acceleration, components within MAX_GRAVITY_COMPONENT_METERS_PER_SECOND_SQUARED.
     foundation::math::Vector3d GravityWorld{0.0, -STANDARD_GRAVITY_METERS_PER_SECOND_SQUARED, 0.0};
+    /// Collider pairs that may hold contacts in one tick, in [0, MAX_RIGID_WORLD_CONTACT_PAIRS]. Zero disables
+    /// contact generation: Step then runs no detection and bodies do not notice each other.
+    uint32 MaxContactPairs = 0;
+    /// Contact points in one tick, in [0, MAX_RIGID_WORLD_CONTACT_POINTS]; zero exactly when MaxContactPairs is
+    /// zero. A pair holds at most collision::MAX_CONTACT_PAIR_POINTS points.
+    uint32 MaxContactPoints = 0;
+    /// Largest gap between two surfaces that still makes a contact, in [0, collision::MAX_CONTACT_OFFSET_METERS].
+    float64 ContactOffsetMeters = collision::DEFAULT_CONTACT_OFFSET_METERS;
 };
 
 /// @brief Phase of a RigidWorld. Callers observe Uninitialized, Idle or Faulted; the others exist during Step.
@@ -61,6 +71,7 @@ enum class WorldPhase : uint8
 {
     Uninitialized, ///< TryInitialize has not succeeded.
     Idle,          ///< Between ticks: mutations, commands and read views are admitted.
+    Detect,        ///< Step is generating contacts into scratch; no body or command has changed yet.
     Commit,        ///< Step is applying the tick's commands.
     Simulate,      ///< Step is integrating substeps.
     Publish,       ///< Step is publishing poses, colliders and command results.
@@ -79,17 +90,24 @@ enum class FaultReason : uint8
 /// @brief Outcome of one RigidWorld::Step call.
 ///
 /// Result is Success when the tick advanced exactly once. A preflight failure (Phase Idle) leaves the tick, the
-/// pending commands and every published value unchanged. A fault (Result Faulted, Phase Faulted) leaves state
-/// partially advanced and publishes no tick.
+/// pending commands and every published value unchanged. So does contact capacity exhaustion (Result
+/// CapacityExceeded, Phase Idle), which names the exhausted table and the count it would have needed: contacts are
+/// detected and counted before any command is applied or any body moves, so no pose, velocity, command or cached
+/// contact has changed. A fault (Result Faulted, Phase Faulted) leaves state partially advanced and publishes no
+/// tick.
 struct StepResult final
 {
-    Status Result = Status::Success;       ///< Success, InvalidPhase, or Faulted.
+    Status Result = Status::Success;       ///< Success, InvalidPhase, CapacityExceeded, or Faulted.
     WorldPhase Phase = WorldPhase::Idle;   ///< Idle after success or preflight failure; Faulted after a fault.
     uint64 Tick = 0;                       ///< The tick that was simulated, on success.
     uint32 AppliedCommandCount = 0;        ///< Commands with CommandOutcome::Applied.
     uint32 UnappliedCommandCount = 0;      ///< Commands whose body was destroyed or whose target was superseded.
     FaultReason Fault = FaultReason::None; ///< Why the world faulted.
     BodyHandle FaultBody{};                ///< The first body found in the fault state.
+    /// The contact table this tick's contacts did not fit, for Result CapacityExceeded.
+    ContactTable ExhaustedTable = ContactTable::None;
+    /// Entries the exhausted table would have needed; recreate the world with at least this many, or remove load.
+    usize RequiredCount = 0;
 };
 
 /// @brief Plain-value diagnostics of a RigidWorld.
@@ -120,13 +138,15 @@ struct BodyExportResult final
 
 /// @brief Static, kinematic and dynamic bodies over one owned CollisionWorld, advanced by a fixed tick.
 ///
-/// The world reserves every body, collider, command and result slot when it is initialized, so creating bodies,
-/// admitting commands and stepping never allocate. Bodies have no contacts in this gate: they fall, spin and follow
-/// kinematic targets without touching each other. Each body's attached colliders follow it in the collision world.
+/// The world reserves every body, collider, command, result and contact slot when it is initialized, so creating
+/// bodies, admitting commands and stepping never allocate. Contacts are generated, matched to the previous tick's
+/// and exported, but nothing responds to them in this gate: bodies fall, spin and follow kinematic targets through
+/// each other until the solver arrives. Each body's attached colliders follow it in the collision world.
 ///
-/// One Step advances one tick: preflight, then Commit (apply that tick's commands in key order), Simulate
-/// (integrate SubstepCount substeps) and Publish (poses, colliders, results). Dynamic bodies integrate their COM
-/// pose with semi-implicit Euler and an implicit gyroscopic term; body poses are recovered through
+/// One Step advances one tick: preflight, then Detect (generate this tick's contacts from the published poses and
+/// check them against the reserved capacities), Commit (apply that tick's commands in key order), Simulate
+/// (integrate SubstepCount substeps) and Publish (poses, colliders, results, contacts). Dynamic bodies integrate their
+/// COM pose with semi-implicit Euler and an implicit gyroscopic term; body poses are recovered through
 /// BodyFromCenterOfMass.
 ///
 /// Thread affinity: initialization, mutation, command admission and Step happen on one owner thread. Collision read
@@ -189,6 +209,12 @@ public:
                                             foundation::math::Vector3d linearVelocityWorld,
                                             foundation::math::Vector3d angularVelocityWorld) noexcept;
 
+    /// @brief Change the material identifier of a collider attached to a body of this world.
+    ///
+    /// The collider's cached contacts retire with ContactRetirement::MaterialChanged at the next Step.
+    /// @return Success; InvalidPhase; Faulted; or InvalidHandle for a collider that is not live in this world.
+    [[nodiscard]] Status TrySetColliderMaterial(collision::ColliderHandle collider, uint32 material) noexcept;
+
     /// @brief Admit a force command.
     /// @return Success; InvalidPhase when uninitialized; Faulted; PastTick for a tick already simulated;
     /// InvalidHandle; InvalidArgument for a body that is not dynamic or an unknown frame; NonFiniteInput or
@@ -205,7 +231,8 @@ public:
 
     /// @brief Advance exactly one tick, or report why not.
     /// @return See StepResult. Preflight fails with InvalidPhase when uninitialized or a collision read view is
-    /// active, and with Faulted for a faulted world.
+    /// active, and with Faulted for a faulted world. Contact detection fails with CapacityExceeded when the tick's
+    /// contacts exceed MaxContactPairs or MaxContactPoints.
     [[nodiscard]] StepResult Step() noexcept;
 
     /// @brief Read one body's plain-value state. Permitted while Faulted, for diagnostics.
@@ -244,6 +271,23 @@ public:
     /// @return Success; InvalidPhase when uninitialized; or InvalidArgument for an invalid buffer view.
     [[nodiscard]] Status TryExportBodyStates(foundation::BorrowedView<BodyState> stateBuffer,
                                              BodyExportResult& outResult) const noexcept;
+
+    /// @brief Export the contact points of the last completed tick as plain values.
+    ///
+    /// The contacts are those detected at the start of that tick. They stay available, unchanged, until the next
+    /// successful Step, including after bodies were destroyed: the handles in a record may then be stale.
+    /// @param pointBuffer Caller storage, borrowed for this call; may be empty.
+    /// @param outResult Receives counts and completion on success; unchanged on failure.
+    /// @return Success; InvalidPhase when uninitialized; or InvalidArgument for an invalid buffer view.
+    [[nodiscard]] Status TryExportContacts(foundation::BorrowedView<ContactPointState> pointBuffer,
+                                           ContactExportResult& outResult) const noexcept;
+
+    /// Diagnostics of the last contact detection: counts, cache reuse, retirement reasons and exhaustion.
+    /// Permitted in every phase.
+    [[nodiscard]] LUDUS_INLINE const ContactDiagnostics& GetContactDiagnostics() const noexcept
+    {
+        return mContactDiagnostics;
+    }
 
     /// Results of the last successful tick's commands, in application order; valid until the next mutation or Step.
     [[nodiscard]] foundation::BorrowedView<const CommandResult> GetCommandResults() const noexcept;
@@ -324,6 +368,7 @@ private:
         uint32 FirstCollider = 0;                                   ///< Collision slot of the first attached collider.
         uint32 ColliderCount = 0;                                   ///< Attached colliders.
         uint32 Generation = foundation::identity::FIRST_GENERATION; ///< Current incarnation of the slot.
+        uint32 TeleportRevision = 0;    ///< Advanced by every teleport; cached contacts record it.
         uint32 TargetResult = 0;        ///< Result index of the target applied this tick, while HasTarget.
         bool HasTarget = false;         ///< A kinematic target applies to the tick being simulated.
         bool IsFollowingTarget = false; ///< The last tick followed a target; the body stops next tick.
@@ -335,7 +380,61 @@ private:
     {
         collision::ColliderHandle Collider{}; ///< The collider in the owned collision world.
         BodyLocalPose Pose{};                 ///< Placement in the body frame.
+        collision::ShapeHandle Shape{};       ///< The collider's shape: its geometry revision.
         uint32 Next = 0;                      ///< Collision slot of the body's next collider.
+        uint32 Body = 0;                      ///< Slot of the body the collider is attached to.
+        uint32 Material = 0;                  ///< The collider's material identifier.
+    };
+
+    /// One side of a contact pair: everything a cached contact must still agree with.
+    struct ContactSide final
+    {
+        collision::ColliderHandle Collider{}; ///< The collider incarnation.
+        collision::ShapeHandle Shape{};       ///< Its shape when the contacts were generated.
+        BodyHandle Body{};                    ///< The body it was attached to.
+        uint32 Material = 0;                  ///< Its material identifier then.
+        uint32 TeleportRevision = 0;          ///< Its body's teleport revision then.
+    };
+
+    /// One collider pair with contacts. Pairs are sorted by the two collider slots.
+    struct ContactPairRecord final
+    {
+        ContactSide First{};         ///< The collider with the lower slot.
+        ContactSide Second{};        ///< The collider with the higher slot.
+        uint32 SettingsRevision = 0; ///< The world's contact settings revision when generated.
+        uint32 FirstPatch = 0;       ///< Index of the pair's first patch.
+        uint32 PatchCount = 0;       ///< Patches of the pair.
+    };
+
+    /// One contact patch of a pair.
+    struct ContactPatchRecord final
+    {
+        foundation::math::Vector3d NormalWorld{}; ///< Unit normal from the first collider toward the second.
+        uint32 FirstPoint = 0;                    ///< Index of the patch's first point.
+        uint32 PointCount = 0;                    ///< Points of the patch.
+        bool IsApproximate = false;               ///< The penetration search stopped at a bound.
+    };
+
+    /// One contact point with the state a solver carries from tick to tick.
+    struct ContactPointRecord final
+    {
+        collision::ContactPoint Point{}; ///< Position, separation, features and triangle.
+        uint32 PersistedTickCount = 0;   ///< Consecutive earlier ticks the point was matched.
+        float64 NormalImpulse = 0.0;     ///< Cached normal impulse, newton seconds; zero until a solver writes it.
+        /// Cached friction impulses along the solver's two tangents; zero until a solver writes them.
+        foundation::StaticArray<float64, 2> TangentImpulses{};
+        bool IsMatched = false; ///< Scratch of cache matching: a current point has claimed this cached point.
+    };
+
+    /// One generation of contacts: the published one, or the scratch the next Step fills.
+    struct ContactTables final
+    {
+        foundation::Array<ContactPairRecord> Pairs;    ///< The first PairCount entries are live.
+        foundation::Array<ContactPatchRecord> Patches; ///< The first PatchCount entries are live.
+        foundation::Array<ContactPointRecord> Points;  ///< The first PointCount entries are live.
+        usize PairCount = 0;                           ///< Pairs with contacts.
+        usize PatchCount = 0;                          ///< Patches over all pairs.
+        usize PointCount = 0;                          ///< Points over all patches.
     };
 
     /// One admitted command; the fields of other kinds stay zero.
@@ -360,6 +459,7 @@ private:
     };
 
     friend class RigidWorldMotion;
+    friend class RigidWorldContacts;
 
     [[nodiscard]] BodySlot* findLive(BodyHandle body) noexcept;
     [[nodiscard]] const BodySlot* findLive(BodyHandle body) const noexcept;
@@ -376,6 +476,13 @@ private:
     foundation::Array<Attachment> mAttachments;
     foundation::Array<PendingCommand> mPending; ///< Sorted by key; the first mPendingCount entries are live.
     foundation::Array<CommandResult> mResults;  ///< The first mResultCount entries are the last tick's results.
+    /// The published contacts and the scratch generation; mPublishedContacts indexes the published one.
+    foundation::StaticArray<ContactTables, 2> mContactTables{};
+    foundation::Array<collision::ColliderHandle> mContactCandidates; ///< Candidate scratch: one per collider slot.
+    ContactDiagnostics mContactDiagnostics{};
+    uint64 mContactTick = 0;             ///< The tick the published contacts were detected for.
+    uint32 mPublishedContacts = 0;       ///< Index of the published generation in mContactTables.
+    uint32 mContactSettingsRevision = 0; ///< Advanced by every change of the contact settings.
     usize mFreeBodyCount = 0;
     usize mPendingCount = 0;
     usize mPendingHighWater = 0;

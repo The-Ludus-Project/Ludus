@@ -8,6 +8,7 @@ namespace ludus::graphics::rhi
 {
 /// Immutable native triangle BLAS in the shared resource registry. Copies borrow
 /// identity; scenes and pending builds retain the exact incarnation after Destroy.
+/// R16b refits and compacted copies publish new incarnations instead of mutating one.
 struct RayGeometryHandle final
 {
 private:
@@ -49,8 +50,11 @@ struct RayCapabilities final
     bool RayPipelines = false;
     /// Procedural intersections; false for RT0.
     bool ProceduralIntersections = false;
-    /// Native geometry updates/refits; false for RT0.
+    /// R16b native refits of update-enabled geometry and scenes into new incarnations
+    /// (UpdateRayGeometry, UpdateRayScene). False for the RT0-only profile.
     bool Updates = false;
+    /// R16b compacted copies of compaction-enabled geometry (CompactRayGeometry).
+    bool CanCompact = false;
     /// Motion geometry; false for RT0.
     bool Motion = false;
     /// Enabled maximum instances per scene, clamped from StorageLimits::RayInstances
@@ -65,7 +69,8 @@ struct RayCapabilities final
 };
 /// Borrowed local triangle-list inputs, copied/consumed before creation returns.
 /// Finite positions in meters and optional finite top-left UVs are tightly packed.
-/// Nonzero indices form complete nondegenerate triangles. No deformation or refit.
+/// Nonzero indices form complete nondegenerate triangles. Deformation uses
+/// UpdateRayGeometry on geometry created with ShouldAllowUpdate (R16b).
 struct RayGeometryDescription final
 {
     /// Tightly packed XYZ, three finite float32 values per vertex in [-1000000,1000000] meters.
@@ -87,6 +92,12 @@ struct RayGeometryDescription final
     /// one BLAS. Public hit Primitive still addresses the full original triangle list.
     /// Requires the matching SDK query shader when querying a partitioned geometry.
     ludus::foundation::uint32 OpaqueTriangleCount = 0;
+    /// R16b: build a refittable BLAS for UpdateRayGeometry. Requires RayCapabilities::Updates.
+    /// Native builders may trade trace quality and resident bytes for refit support.
+    bool ShouldAllowUpdate = false;
+    /// R16b: build a BLAS that CompactRayGeometry can copy into a smaller incarnation.
+    /// Requires RayCapabilities::CanCompact.
+    bool ShouldAllowCompaction = false;
 };
 /// Copied instance and opacity contract. Reference filtering uses a declared fixed
 /// mip with nearest or bilinear alpha; it never borrows raster derivatives.
@@ -128,6 +139,19 @@ struct RaySceneDescription final
     /// Count up to RayCapabilities::MaxInstances; zero creates an empty scene.
     ludus::foundation::usize Count = 0;
     /// Explicit TLAS/table/scratch budget in bytes, excluding retained BLAS versions.
+    ludus::foundation::usize ByteBudget = 0;
+    /// R16b: build a refittable TLAS for UpdateRayScene. Requires RayCapabilities::Updates.
+    bool ShouldAllowUpdate = false;
+};
+/// R16b compaction request: copy a Ready compaction-enabled BLAS into a new incarnation
+/// of its native compacted size.
+struct RayCompactionDescription final
+{
+    /// Ready geometry created with ShouldAllowCompaction. The pending copy retains this
+    /// exact incarnation until the copy completes, even after Destroy.
+    RayGeometryHandle Source{};
+    /// Explicit byte budget for the compacted structure. Zero is invalid; a compacted
+    /// size above it returns CapacityExceeded without publishing output.
     ludus::foundation::usize ByteBudget = 0;
 };
 /// Fixed 48-byte ray ABI; normalized world direction makes distance units meters.
@@ -213,6 +237,44 @@ struct RayResourceStats final
 /// Asynchronously build a TLAS/opacity table. Pending BLAS returns NotReady without
 /// publishing output. Ready/Pending retains every exact input version. Between frames.
 [[nodiscard]] RasterStatus CreateRayScene(DeviceHandle, const RaySceneDescription&, RaySceneHandle&) noexcept;
+/// R16b: asynchronously refit a Ready update-enabled BLAS with new vertex positions into
+/// a new incarnation. Description must keep the source topology: equal VertexCount,
+/// IndexCount, index values, OpaqueTriangleCount and build options; positions and UVs may
+/// change and are validated like CreateRayGeometry. A topology change returns
+/// InvalidDescription; rebuild with CreateRayGeometry instead. A Pending source returns
+/// NotReady; a source without ShouldAllowUpdate returns InvalidState. The source is never
+/// mutated: scenes and batches using it keep their results, and the pending refit retains
+/// it until completion. Scenes must be rebuilt (CreateRayScene) to reference the result.
+/// Requires RayCapabilities::Updates. Owner-thread/between-frames only; failure
+/// preserves null output.
+[[nodiscard]] RasterStatus UpdateRayGeometry(DeviceHandle device,
+                                             RayGeometryHandle source,
+                                             const RayGeometryDescription& description,
+                                             RayGeometryHandle& outGeometry) noexcept;
+/// R16b: asynchronously refit a Ready update-enabled TLAS into a new incarnation.
+/// Description must keep the source topology: equal Count and ShouldAllowUpdate, and
+/// each instance must name the same geometry incarnation with the same AlphaMasked
+/// choice. Transforms, masks and opacity parameters/tables may change and are validated
+/// like CreateRayScene. A topology change returns InvalidDescription; rebuild with
+/// CreateRayScene, which is also required after a geometry refit or compaction. Pending
+/// source or geometry returns NotReady; a source without ShouldAllowUpdate returns
+/// InvalidState. The source keeps serving its accepted batches and graph reads; the
+/// pending refit retains it until completion. Requires RayCapabilities::Updates.
+/// Owner-thread/between-frames only; failure preserves null output.
+[[nodiscard]] RasterStatus UpdateRayScene(DeviceHandle device,
+                                          RaySceneHandle source,
+                                          const RaySceneDescription& description,
+                                          RaySceneHandle& outScene) noexcept;
+/// R16b: asynchronously copy a Ready compaction-enabled BLAS into a new incarnation of
+/// its native compacted size. The result keeps the source triangle identities and
+/// opacity ranges, cannot itself be refit or compacted again, and owns no vertex/index
+/// inputs. Destroying the source afterwards retires it once the copy and every scene or
+/// batch using it complete. A Pending source returns NotReady; a source without
+/// ShouldAllowCompaction returns InvalidState. Requires RayCapabilities::CanCompact.
+/// Owner-thread/between-frames only; failure preserves null output.
+[[nodiscard]] RasterStatus CompactRayGeometry(DeviceHandle device,
+                                              const RayCompactionDescription& description,
+                                              RayGeometryHandle& outGeometry) noexcept;
 /// Submit a bounded immutable ray batch between frames. Copies every ray; retains
 /// program/scene until completion. Count must be positive and within negotiated limits.
 /// Pending dependencies return NotReady; other failures preserve null output.

@@ -30,6 +30,12 @@ class InitTests(unittest.TestCase):
     def args(self, *options):
         return engine.make_parser().parse_args(["init", *options])
 
+    def test_ios_setup_requires_a_macos_native_preset(self):
+        for host, preset in (("Linux", "linux-clang-development"), ("Darwin", "web-emscripten-development")):
+            with self.subTest(host=host, preset=preset), patch.object(platform, "system", return_value=host):
+                with self.assertRaisesRegex(engine.EngineError, "--with-ios requires a macOS native setup preset"):
+                    init_ui.prepare_init(self.args("--cli", "--with-ios", preset), engine)
+
     def test_old_macos_tk_is_rejected_before_creating_window(self):
         tk = types.ModuleType("tkinter")
         tk.TkVersion = 8.5
@@ -515,6 +521,20 @@ class WindowTests(unittest.TestCase):
                  and widget.cget("text") == "Initialize").invoke()
         result = self.select(accept, engine.NATIVE_PRESET_PREFIX + "-development")
         self.assertTrue(result.with_editor)
+
+    def test_ios_checkbox_is_opt_in_and_requires_the_macos_native_workflow(self):
+        def accept(window, widgets):
+            ios = next(widget for widget in widgets if widget.winfo_class() == "TCheckbutton"
+                       and widget.cget("text") == init_ui.OPTION_LABELS["with_ios"])
+            is_macos = platform.system() == "Darwin"
+            self.assertEqual(ios.instate(["disabled"]), not is_macos)
+            self.assertFalse(ios.instate(["selected"]))
+            ios.invoke()
+            self.assertEqual(bool(window.getvar(ios.cget("variable"))), is_macos)
+            next(widget for widget in widgets if widget.winfo_class() == "TButton"
+                 and widget.cget("text") == "Initialize").invoke()
+        result = self.select(accept, engine.NATIVE_PRESET_PREFIX + "-development")
+        self.assertEqual(result.with_ios, platform.system() == "Darwin")
 
     def test_advanced_setup_can_disable_default_editor_preview(self):
         def accept(window, widgets):

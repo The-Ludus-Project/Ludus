@@ -86,7 +86,7 @@ elseif(WIN32)
     ludus_configure_win32_target(ludus_graphics_rhi)
     target_link_libraries(ludus_graphics_rhi PRIVATE d3d12 dxgi dxguid user32)
 else()
-    target_sources(ludus_graphics_rhi PRIVATE src/rhi_vulkan.cpp src/volk_impl.cpp src/vma.cpp src/hosted_vulkan.cpp src/hosted_consumer_vulkan.cpp)
+    target_sources(ludus_graphics_rhi PRIVATE src/rhi_vulkan.cpp src/surface_formats_vulkan.cpp src/volk_impl.cpp src/vma.cpp src/hosted_vulkan.cpp src/hosted_consumer_vulkan.cpp)
     target_link_libraries(ludus_graphics_rhi PRIVATE volk::volk_headers)
     file(READ "${PROJECT_SOURCE_DIR}/config/vulkan_memory_allocator.json" vma_pin)
     string(JSON vma_header_sha GET "${vma_pin}" sha256 "vk_mem_alloc.h")
@@ -128,6 +128,7 @@ if(LUDUS_BUILD_TESTS AND NOT APPLE AND NOT WIN32)
         tests/rhi_tests.cpp
         tests/buffer_access_vulkan_tests.cpp
         tests/buffer_range_vulkan_tests.cpp
+        tests/surface_formats_vulkan_tests.cpp
         tests/depth_barrier_vulkan_tests.cpp)
     target_include_directories(ludus_graphics_rhi_tests PRIVATE src)
     target_link_libraries(ludus_graphics_rhi_tests PRIVATE
@@ -167,6 +168,7 @@ if(LUDUS_BUILD_TESTS)
         tests/raster_storage_tests.cpp
         tests/indirect_tests.cpp
         tests/ray_graph_tests.cpp
+        tests/ray_update_tests.cpp
         tests/hosted_ring_tests.cpp
         tests/hosted_adapter_tests.cpp
         tests/dxil_container_tests.cpp

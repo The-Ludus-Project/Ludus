@@ -1,14 +1,16 @@
 # Physics rigid module
 
-`Ludus::PhysicsRigid` (`modules/physics/rigid/`) is the first slice of physics
-gate P2 in the [physics systems architecture](physics-systems.md#delivery-gates),
-tracked as P2.1. A rigid world owns exactly one
+`Ludus::PhysicsRigid` (`modules/physics/rigid/`) holds the first two slices of
+physics gate P2 in the [physics systems architecture](physics-systems.md#delivery-gates),
+tracked as P2.1 and P2.2. A rigid world owns exactly one
 [collision world](physics-collision.md#geometry-store-and-collision-world) and
 adds static, kinematic and dynamic bodies to it. Bodies have mass frames, a
 fixed tick with substeps, ordered force, impulse and kinematic-target commands,
-interpolation poses and plain-value state export. This slice has **no contacts**:
-bodies fall, spin and follow kinematic targets without touching each other.
-Contacts, the solver and continuous collision are the later P2 slices.
+interpolation poses and plain-value state export. Each tick also generates the
+bodies' [contacts](#contacts), matches them to the previous tick's and exports
+them. **Nothing responds to contacts yet**: bodies fall, spin and follow
+kinematic targets through each other. The solver and continuous collision are
+the later P2 slices.
 
 The module depends on FoundationBase, FoundationContainers, FoundationIdentity,
 FoundationMath and PhysicsCollision. It contains no third-party physics code,
@@ -24,6 +26,7 @@ Public headers:
 | `<ludus/physics/rigid/mass_properties.h>` | `InertiaTensor`, `MassProperties`, `BodyLocalPose`, `MassPart`, `PrincipalMassFrame` and the mass functions |
 | `<ludus/physics/rigid/body.h>` | `BodyHandle`, `MotionType`, `MassSource`, body and collider descriptions, `BodyState` and `BodyMassInfo` |
 | `<ludus/physics/rigid/commands.h>` | `CommandKey`, force, impulse and kinematic-target commands, and `CommandResult` |
+| `<ludus/physics/rigid/contacts.h>` | `ContactTable`, `ContactRetirement`, `ContactDiagnostics`, `ContactPointState` and `ContactExportResult` |
 | `<ludus/physics/rigid/rigid_world.h>` | `RigidWorldSettings`, `WorldPhase`, `StepResult`, diagnostics and `RigidWorld` |
 
 The Doxygen comments beside each declaration are the API contract. This page
@@ -122,7 +125,8 @@ principal axes, kept separate from the authored body frame.
 the mass frame, checks body and collider capacity, creates every collider in
 the owned collision world and only then publishes the body. Any failure creates
 nothing. Each `BodyColliderDescription` places a stored shape in the body
-frame, with participation, filter, binding and density. A dynamic body takes
+frame, with participation, filter, binding, density and an opaque `Material`
+identifier. A dynamic body takes
 its mass from `MassSource::Colliders` (every non-sensor collider with
 `ShouldContributeMass`) or from validated `MassSource::Explicit` properties, which
 also allows a body with no colliders. Triangle meshes are never mass sources:
@@ -193,11 +197,151 @@ tick, `GetCommandResults` lists each applied command by key with `Applied`,
 `BodyDestroyed` or `Superseded` (an earlier kinematic target for the same body
 and tick).
 
+## Contacts
+
+A world initialized with `MaxContactPairs` and `MaxContactPoints` generates
+contacts every tick. Both default to zero, which turns contact generation
+off: `Step` then runs no detection.
+
+```cpp
+world.TryInitialize(store,
+                    {
+                        .MaxBodies = 64,
+                        .MaxColliders = 64,
+                        .MaxPendingCommands = 256,
+                        .MaxContactPairs = 256,
+                        .MaxContactPoints = 1024,
+                    });
+// ... create bodies ...
+const rigid::StepResult step = world.Step();
+if (step.Result == rigid::Status::CapacityExceeded)
+{
+    // step.ExhaustedTable and step.RequiredCount say which table was too small and by how much.
+}
+StaticArray<rigid::ContactPointState, 1024> points{};
+rigid::ContactExportResult exported;
+world.TryExportContacts(BorrowedView<rigid::ContactPointState>(points.GetData(), points.GetSize()), exported);
+```
+
+### Which pairs make contacts
+
+Contact geometry comes from the collision module's
+[contact generation](physics-collision.md#contact-generation). The rigid world
+decides which pairs to ask about:
+
+1. Every enabled, solid collider of a **dynamic** body asks the collider
+   hierarchy for its candidates: enabled, solid colliders whose filter and its
+   own accept each other and whose bounds, widened by `ContactOffsetMeters`,
+   overlap its own.
+2. A candidate on the same body is skipped.
+3. Two dynamic colliders find each other from both sides; the one with the
+   lower collider slot reports the pair.
+
+Static against static, static against kinematic and kinematic against
+kinematic pairs therefore produce no solid contacts, and are never tested.
+Sensors are not solid and make no contacts. A pair of two triangle meshes is
+counted in `UnsupportedPairCount` and skipped. In every pair the *first*
+collider is the one with the lower slot, and normals point from it toward the
+second.
+
+### Detection before anything changes
+
+`Step` generates contacts in its `Detect` phase, before it applies a single
+command. Detection reads the poses the previous tick published and writes only
+scratch tables. Commands change velocities, and contact geometry depends on
+poses alone, so detecting first changes no result.
+
+It does change what a capacity failure costs. Every pair is found, generated
+and counted even after a table is full, so the required count is exact. If the
+tick's contacts do not fit:
+
+- `Step` returns `CapacityExceeded` with `Phase` `Idle`, the `ExhaustedTable`
+  (`Pairs` is checked before `Points`) and its `RequiredCount`.
+- The tick does not advance. No pose or velocity has changed, the tick's
+  commands are still pending, and forces are still held.
+- The contacts of the last completed tick are still published, and the cache
+  they form is intact.
+
+Remove load, or recreate the world with at least `RequiredCount` entries, and
+step again: the same tick then runs, with its commands applied once.
+
+| Capacity | Limit | Reserved |
+| --- | --- | --- |
+| `MaxContactPairs` | `MAX_RIGID_WORLD_CONTACT_PAIRS` (2^22) | Two generations of pair records |
+| `MaxContactPoints` | `MAX_RIGID_WORLD_CONTACT_POINTS` (2^24) | Two generations of point records and of patch records |
+| `ContactOffsetMeters` | `collision::MAX_CONTACT_OFFSET_METERS` (1 m) | Nothing; the default is two centimeters |
+
+A pair holds at most `collision::MAX_CONTACT_PAIR_POINTS` (32) points in
+`collision::MAX_CONTACT_PAIR_PATCHES` (8) patches of at most
+`collision::MAX_CONTACT_PATCH_POINTS` (4). The candidate scratch holds one
+handle per collider slot, so it cannot overflow.
+
+### Persistent contacts
+
+A solver starts each tick from the impulses of the last one, which is only
+sound while a contact point is still the same point. Each point is therefore
+identified, and its record carries a `PersistedTickCount` and impulse slots
+that stay zero until the solver arrives.
+
+A point's identity is the pair of collider incarnations (slot and generation),
+their shapes, the mesh triangle, and the two
+[contact features](physics-collision.md#from-a-normal-to-contact-points). Pair
+records are kept sorted by their two collider slots and joined with the
+previous tick's in one pass; points are matched by comparing those values in
+full. No hash takes part, so a hash collision cannot stand for equality.
+
+A cached point is carried over only while everything it depended on still
+agrees. Otherwise it retires, under exactly one `ContactRetirement` reason,
+the first that applies:
+
+| Reason | When |
+| --- | --- |
+| `Separated` | The pair has no contacts now: it moved apart, or a collider was destroyed, disabled or filtered out. A new collider in a reused slot is a new pair |
+| `GeometryChanged` | A collider of the pair uses a different shape |
+| `MaterialChanged` | A collider's `Material` changed (`TrySetColliderMaterial`) |
+| `SettingsChanged` | The world's contact settings changed |
+| `Teleported` | A body of the pair was teleported, even to the same pose |
+| `FeatureChanged` | The pair still touches, but no current point has this point's triangle and features |
+| `NormalChanged` | A current point has the same features, but its patch normal turned by more than `collision::CONTACT_PATCH_NORMAL_COSINE` (five degrees) |
+
+Shapes and contact settings cannot change after creation in this slice, so
+`GeometryChanged` and `SettingsChanged` are checked but not yet reachable.
+Colliders with different materials are different colliders, so a patch never
+mixes materials. Friction and restitution values, and what a cached impulse is
+worth after a change, belong to the solver.
+
+### Diagnostics and export
+
+`GetContactDiagnostics` describes the last detection, including one whose
+`Step` failed on capacity:
+
+| Field | Meaning |
+| --- | --- |
+| `CandidatePairCount`, `TestedPairCount`, `UnsupportedPairCount` | Bounds candidates, pairs sent to contact generation, and mesh-mesh pairs skipped |
+| `PairCount`, `PatchCount`, `PointCount` | What the tick's contacts are, or would have been |
+| `GeneratedPointCount` | Points before reduction |
+| `TriangleTestCount`, `ApproximatePatchCount`, `DiscardedPatchCount` | Mesh work, patches whose penetration search stopped at a bound, and patches beyond the pair limit |
+| `PersistedPointCount`, `NewPointCount` | Cache hits, and points with no usable cached point |
+| `RetiredPointCounts`, `GetRetiredPointCount(reason)` | Cached points not carried over, by reason |
+| `PairHighWater`, `PointHighWater` | Largest counts of any detection since initialization |
+| `ExhaustedTable`, `RequiredCount` | The table the last detection exhausted, and what it needed |
+
+Every current point is persisted or new, and every cached point was persisted
+or retired. A detection that failed on capacity matched nothing, so its cache
+counts are zero.
+
+`TryExportContacts` writes one plain-value `ContactPointState` per point of the
+last completed tick: both bodies and colliders, the patch index and normal,
+position, separation, features, triangle, `PersistedTickCount` and
+`IsApproximate`. Points come in pair order, then patch, then point. A buffer
+that is too small still reports `PointCount`. The contacts are those detected
+at the start of that tick, from the poses the tick before published.
+
 ## Phases and failures
 
 ```text
-Idle -> Commit -> Simulate -> Publish -> Idle
-                      \-> Faulted
+Idle -> Detect -> Commit -> Simulate -> Publish -> Idle
+           \-> Idle (capacity)   \-> Faulted
 ```
 
 Callers observe `Uninitialized`, `Idle` or `Faulted`; the other phases exist
@@ -210,17 +354,24 @@ that apply without contacts behave as follows:
 | Invalid input, handle or phase; unsupported capability | No mutation, output unchanged, the failing field named by the status |
 | Initialization or admission capacity or allocation failure | `TryInitialize` installs nothing; a full body, collider, lease or command table creates or admits nothing |
 | `Step` preflight failure | `InvalidPhase` (uninitialized, or a collision read view active) or `Faulted`: the tick does not advance, commands stay pending, published state is unchanged |
+| Contact capacity exhausted after detection | `CapacityExceeded` with the exhausted table and its required count: the tick does not advance; no pose, velocity or cached contact changes; commands stay pending and forces stay held |
 | Successful step | The tick advances exactly once, forces are consumed, the epoch advances and results are published |
 | Nonfinite state or a COM outside the coordinate envelope after advancement begins | `Faulted`: state may be partially advanced, no tick or results are published, and every later mutation, command and step is rejected with `Faulted` |
 
 A faulted world still answers `TryGetBodyState`, `TryExportBodyStates` and
 `GetDiagnostics`, which reports the `FaultReason` and the first faulted body;
-destroy it and rebuild from a last complete checkpoint. The contact, row and
-island capacity row, and incomplete event output, arrive with contacts.
+destroy it and rebuild from a last complete checkpoint. The architecture's
+capacity row says that commands already committed for the tick stay applied.
+This world detects [before it commits](#detection-before-anything-changes), so
+at exhaustion nothing has been committed and the commands simply stay pending.
+Row and island capacities arrive with the solver, and incomplete event output
+with events.
 
 Every table is reserved at initialization from `RigidWorldSettings`: body slots,
-collider attachments, pending commands and results. Body creation, command
-admission, `Step`, export and teleport never allocate; the allocation tests
+collider attachments, pending commands, results, two generations of contact
+pairs, patches and points, and the candidate scratch. Body creation, command
+admission, `Step` with its contact detection, export and teleport never
+allocate; the allocation tests
 replace the global allocator to fail every initialization allocation in turn and
 to prove that an active tick performs none.
 
@@ -257,15 +408,48 @@ admitted values; simulated speeds are not clamped.
 - Kinematic targets take the shortest arc and land exactly; teleports reset
   interpolation.
 
+The contact suite checks:
+
+- **Pair rule:** static and kinematic bodies overlapping each other make no
+  contacts and are never tested; a dynamic body contacts each of them; two
+  dynamic bodies make one pair; colliders of one body, sensors, disabled
+  colliders and rejected categories make none.
+- **All-pairs oracle:** 72 seeded bodies of mixed motion types, one or two
+  turned colliders each, with mixed filters, sensors and disabled colliders.
+  The test applies the pair rule to every pair of colliders and asks contact
+  generation directly; the world's exported contacts equal the oracle's, value
+  for value, over three ticks with a third of the bodies teleported between
+  them.
+- **Resting patch:** a cube sunk one centimeter into a floor, as a box and as
+  a triangle mesh, keeps its four corners with the floor normal and the
+  analytic depth, and all four persist on the following ticks.
+- **Mesh seams:** a capsule lying on a flat floor of one-meter cells slides
+  diagonally for 240 ticks across cell edges and diagonals. Every normal stays
+  the floor's normal, every depth stays one centimeter, and each tick has
+  exactly its two ends. The same floor cooked with
+  `InternalEdgePolicy::KeepAll` is the control: it reports sideways normals.
+- **Capacity:** three cubes on a floor exceed two pairs, then ten points.
+  `Step` names the table and the required count, and the tick, every pose and
+  velocity, the pending impulse and the published contacts are unchanged,
+  twice in a row. After one cube is removed the tick runs, the impulse applies
+  once and the first cube's cached points are still matched.
+- **Cache:** reuse on rest, and retirement by teleport of either body,
+  separation and return, destruction with slot reuse, a material change,
+  corners sliding off a floor's edge (`FeatureChanged` for those two, the
+  other two persist) and a sphere passing another (`NormalChanged`).
+
 The command and world suites cover every applicable failure row, and
 `ludus_physics_rigid_allocation_tests` covers allocation injection and the
-zero-allocation tick.
+zero-allocation tick, with contact detection, matching and export inside it.
 
 ## Limits of this slice
 
-No contacts, friction, restitution, constraints, sleeping, continuous
-collision, fixed axes, damping, shape replacement or momentum-preserving mass
-changes. Static bodies do not wake anything, because nothing sleeps yet. The
+Contacts are generated and cached but not solved: no contact response,
+friction, restitution, constraints, sleeping, continuous collision, fixed
+axes, damping, shape replacement or momentum-preserving mass changes. Contact
+candidates use poses widened by the contact offset, not velocities; fast
+bodies are continuous collision's job. Static bodies do not wake anything,
+because nothing sleeps yet. The
 first-order splitting of velocity and orientation updates bounds how well the
 direction of angular momentum is kept; the scene above records it.
 
@@ -280,6 +464,14 @@ direction of angular momentum is kept; the scene above records it.
 - Tetrahedron second moments: Fabio Tonon,
   [Explicit Exact Formulas for the 3-D Tetrahedron Inertia Tensor in Terms of its Vertex Coordinates](https://doi.org/10.3844/jmssp.2005.8.11),
   *Journal of Mathematics and Statistics* 1(1), 2005, pages 8-11.
+- Feature-keyed persistent contacts: Ádám Moravánszky and Pierre Terdiman,
+  *Fast Contact Reduction for Dynamics Simulation*, *Game Programming Gems 4*,
+  Charles River Media, 2004, section 3.5, pages 253-263, as recorded in the
+  [Gems review](physics-systems-gems-review.md#fast-contact-reduction-for-dynamics-simulation).
+  Ludus compares full identities instead of a feature hash.
+- Coherence only while the contact geometry persists: David Baraff,
+  [Curved Surfaces and Coherence for Non-Penetrating Rigid Body Simulation](https://www.cs.cmu.edu/~baraff/papers/sig90.pdf),
+  *Computer Graphics* (SIGGRAPH '90) 24(4), 1990, pages 19-28.
 - The implicit gyroscopic Newton solve: Erin Catto,
   [Numerical Methods](https://box2d.org/files/ErinCatto_NumericalMethods_GDC2015.pdf),
   Game Developers Conference 2015.

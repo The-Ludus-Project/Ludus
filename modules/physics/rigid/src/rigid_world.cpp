@@ -75,6 +75,24 @@ Status ValidateSettings(const RigidWorldSettings& settings) noexcept
     {
         return Status::OutOfRange;
     }
+    // Contact generation is either off, with no capacity, or has room for pairs and points.
+    if ((settings.MaxContactPairs == 0) != (settings.MaxContactPoints == 0))
+    {
+        return Status::InvalidArgument;
+    }
+    if (settings.MaxContactPairs > MAX_RIGID_WORLD_CONTACT_PAIRS ||
+        settings.MaxContactPoints > MAX_RIGID_WORLD_CONTACT_POINTS)
+    {
+        return Status::CapacityExceeded;
+    }
+    if (math::IsFinite(settings.ContactOffsetMeters) == false)
+    {
+        return Status::NonFiniteInput;
+    }
+    if (settings.ContactOffsetMeters < 0.0 || settings.ContactOffsetMeters > collision::MAX_CONTACT_OFFSET_METERS)
+    {
+        return Status::OutOfRange;
+    }
     return internal::ValidateBounded(settings.GravityWorld, MAX_GRAVITY_COMPONENT_METERS_PER_SECOND_SQUARED);
 }
 
@@ -181,6 +199,23 @@ Status RigidWorld::TryInitialize(collision::GeometryStore& inoutStore, const Rig
     {
         return Status::AllocationFailure;
     }
+    // Two generations of contacts: the published one and the scratch a Step fills. A patch holds at least one
+    // point, so the point capacity also bounds the patches. One collider has at most every other as a candidate.
+    StaticArray<ContactTables, 2> contactTables{};
+    foundation::Array<collision::ColliderHandle> contactCandidates;
+    for (ContactTables& tables : contactTables)
+    {
+        if (tables.Pairs.TryResize(settings.MaxContactPairs) == false ||
+            tables.Patches.TryResize(settings.MaxContactPoints) == false ||
+            tables.Points.TryResize(settings.MaxContactPoints) == false)
+        {
+            return Status::AllocationFailure;
+        }
+    }
+    if (settings.MaxContactPairs > 0 && contactCandidates.TryResize(settings.MaxColliders) == false)
+    {
+        return Status::AllocationFailure;
+    }
     for (uint32 index = 0; index < settings.MaxBodies; ++index)
     {
         freeBodies[index] = settings.MaxBodies - 1 - index;
@@ -201,6 +236,8 @@ Status RigidWorld::TryInitialize(collision::GeometryStore& inoutStore, const Rig
     mAttachments = foundation::Move(attachments);
     mPending = foundation::Move(pending);
     mResults = foundation::Move(results);
+    mContactTables = foundation::Move(contactTables);
+    mContactCandidates = foundation::Move(contactCandidates);
     mFreeBodyCount = settings.MaxBodies;
     mStoreOrNull = &inoutStore;
     mSettings = settings;
@@ -345,6 +382,7 @@ Status RigidWorld::TryCreateBody(const BodyDescription& description, BodyHandle&
         .OrientationWorld = internal::Narrow(internal::WidenNormalized(description.Pose.OrientationWorld)),
     };
     // Create every collider before publishing the body, and roll back on any failure.
+    const uint32 slotIndex = mFreeBodies[mFreeBodyCount - 1];
     uint32 firstCollider = 0;
     uint32 previousCollider = 0;
     for (usize index = 0; index < colliderCount; ++index)
@@ -370,6 +408,9 @@ Status RigidWorld::TryCreateBody(const BodyDescription& description, BodyHandle&
         {
             .Collider = handle,
             .Pose = collider.Pose,
+            .Shape = collider.Shape,
+            .Body = slotIndex,
+            .Material = collider.Material,
         };
         if (index == 0)
         {
@@ -382,7 +423,6 @@ Status RigidWorld::TryCreateBody(const BodyDescription& description, BodyHandle&
         previousCollider = handle.Slot;
     }
     --mFreeBodyCount;
-    const uint32 slotIndex = mFreeBodies[mFreeBodyCount];
     BodySlot& slot = mBodies[slotIndex];
     const uint32 generation = slot.Generation;
     slot = BodySlot{};
@@ -469,10 +509,28 @@ Status RigidWorld::TryTeleportBody(BodyHandle body, const collision::RigidPose& 
     RigidWorldMotion::PlaceCenterOfMass(slot, placed);
     slot.Pose = placed;
     slot.PreviousPose = placed;
+    // A teleport is discontinuous: contacts cached before it must not be matched after it.
+    ++slot.TeleportRevision;
     const Status colliders = RigidWorldMotion::PoseColliders(*this, slot);
     // The pose was validated and no read view is active, so every collider accepts it.
     LUDUS_ASSERT(colliders == Status::Success);
     (void)colliders;
+    ++mEpoch;
+    return Status::Success;
+}
+
+Status RigidWorld::TrySetColliderMaterial(collision::ColliderHandle collider, uint32 material) noexcept
+{
+    const Status phase = checkMutable();
+    if (phase != Status::Success)
+    {
+        return phase;
+    }
+    if (mCollision.IsAlive(collider) == false)
+    {
+        return Status::InvalidHandle;
+    }
+    mAttachments[collider.Slot].Material = material;
     ++mEpoch;
     return Status::Success;
 }
