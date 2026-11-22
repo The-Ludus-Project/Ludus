@@ -1099,3 +1099,71 @@ is implemented.
   The rules for uniform control flow, derivative operations and `discard` as
   demotion. LUSL declares `uniform` parameters instead of inferring
   per-parameter requirements.
+
+### References for further work
+
+- Yong He, Theresa Foley, Teguh Hofstee, Haomin Long and Kayvon Fatahalian,
+  “Shader Components: Modular and High Performance Shader Development,”
+  *ACM Transactions on Graphics* 36(4), SIGGRAPH 2017, §§5.6–6. The paper
+  specializes reusable shader components by implementation and parameter value.
+  During the [shared-library migration](#l5b-shared-libraries-and-build-paths),
+  a material or lighting helper with two concrete implementations could test
+  whether LUSL's [interfaces and concepts](#interfaces-concepts-and-templates)
+  remove duplicated shader code while staying within the existing package
+  budgets and preserving the output of each cooked variant.
+  [Author-hosted paper](https://graphics.cs.cmu.edu/projects/shadercomp/he17_shadercomp.pdf)
+- Damian Nachman (Unity Technologies), “Improvements to shader build times
+  and memory usage in 2021 LTS,” December 2022, “Shader variant
+  prefiltering.” Unity excludes combinations early
+  using render-pipeline settings to reduce enumeration work. If the Sample
+  migration slows shader cooking, measure clean and incremental cook times,
+  package size, and the separate configuration, program and specialization
+  counts. Use the package's authored configurations as the baseline. Cook and
+  run the affected configurations through the SDK to check that each still
+  resolves to the expected programs.
+  [Unity engineering article](https://unity.com/blog/engine-platform/2021-lts-improvements-to-shader-build-times-and-memory-usage)
+- Dietrich Geisler, Irene Yoon, Aditi Kabra, Horace He, Yinnon Sanders and Adrian
+  Sampson, “Geometry Types for Graphics Programming,” *Proceedings of the ACM on
+  Programming Languages* 4, OOPSLA 2020, §§3–5. Gator distinguishes reference
+  frames, geometric kinds such as points and directions, and coordinate
+  representations. When porting shared geometry helpers, test mismatched
+  frames, legal transform composition and the translation behavior of points
+  and directions. Use the last case to assess whether
+  [LUSL's explicit space types](#matrices-and-coordinate-spaces) need a
+  point/direction distinction at those interfaces.
+  [Paper](https://doi.org/10.1145/3428241)
+- LLVM Project, “Convergence and Uniformity,” “Temporal Divergence” and “Static
+  Uniformity Analysis.” LLVM models values produced by threads that leave a
+  loop on different iterations. If real shaders expose limitations in
+  [LUSL's conservative uniformity checker](#uniformity), use paired loop
+  fixtures to distinguish valid reconvergence from values that remain varying
+  after a loop. Check that rejected cases point the Editor author to the
+  deciding LUSL condition and that accepted cases compile on supported targets.
+  [LLVM design documentation](https://llvm.org/docs/ConvergenceAndUniformity.html)
+- Alastair F. Donaldson, Hugues Evrard, Andrei Lascu and Paul Thomson,
+  “Automated Testing of Graphics Shader Compilers,” *Proceedings of the ACM
+  on Programming Languages* 1, OOPSLA 2017, §§1.1 and 3. GLFuzz compares
+  rendering from shaders related by a transformation that preserves behavior.
+  Ludus already applies that idea in the
+  [same-backend raster fixture](https://github.com/The-Ludus-Project/Ludus/issues/1634)
+  for helper calls and named arguments. The same method can cover other lowering
+  changes during L5 by cooking equivalent LUSL shaders with shared inputs and
+  comparing readback on each backend.
+  [Paper](https://doi.org/10.1145/3133917)
+- Bastien Lecoeur, Hasan Mohsin and Alastair F. Donaldson, “Program
+  Reconditioning: Avoiding Undefined Behaviour When Finding and Reducing
+  Compiler Bugs,” *Proceedings of the ACM on Programming Languages* 7,
+  PLDI 2023, §§3–5. GLSLsmith and WGSLsmith constrain generated and reduced
+  programs to avoid undefined behavior and reduce false mismatches. To extend
+  [LUSL's existing fuzz and parity checks](#testing), start with bounded
+  compute programs that exercise defined integer behavior and compare exact
+  readback against an independently computed result. Add floating-point
+  cases once their comparison rules account for rounding on each target.
+  [Paper](https://doi.org/10.1145/3591294)
+- Microsoft PIX team, “Using automatic shader PDB resolution in PIX,” “PDB
+  Best Practices” and “Emitting PDBs for DXIL Shaders.” PIX can discover
+  external shader debug data using the compiler's suggested name. For the
+  [DXIL debug-view qualification](#tooling), capture a cooked SDK shader on
+  Windows and verify that PIX resolves its symbols and opens the original
+  `.lusl` file at the expected line through LUSL's lowering chain.
+  [Microsoft PIX engineering article](https://devblogs.microsoft.com/pix/using-automatic-shader-pdb-resolution-in-pix/)
