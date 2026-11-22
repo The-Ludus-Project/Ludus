@@ -155,7 +155,9 @@ if(LUDUS_BUILD_WORLD_DEMO)
         endif()
     endif()
     if(EMSCRIPTEN)
-        target_link_options(ludus_world_demo PRIVATE -fno-exceptions -g0 -sENVIRONMENT=web -sALLOW_MEMORY_GROWTH=1 -sINITIAL_MEMORY=33554432 -sMAXIMUM_MEMORY=268435456 -sSTACK_SIZE=262144 -sASSERTIONS=1)
+        target_link_options(ludus_world_demo PRIVATE -fno-exceptions -g0 -sENVIRONMENT=web -sALLOW_MEMORY_GROWTH=1 -sINITIAL_MEMORY=33554432 -sMAXIMUM_MEMORY=268435456 -sSTACK_SIZE=262144 -sASSERTIONS=1
+            # Report an overflow at the offending call instead of a later allocator abort.
+            -sSTACK_OVERFLOW_CHECK=2)
         set_target_properties(ludus_world_demo PROPERTIES OUTPUT_NAME index SUFFIX ".js")
         configure_file(shell.html index.html COPYONLY)
     endif()

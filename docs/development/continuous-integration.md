@@ -1098,11 +1098,14 @@ errors had one of two causes, and the checks below catch them before review:
   or `while` whose condition is constant as C4127, and unreachable code as
   C4702. `source_policy.py` reports a condition that names only UPPER_CASE
   constants; use `if constexpr`, with an `else` when the true arm returns, so
-  that the code after it stays reachable. Clang and AppleClang builds also
-  enable `-Wunreachable-code` and `-Wunreachable-code-loop-increment`
-  (`cmake/EngineCompilerWarnings.cmake`), which reject unreachable code that
-  Clang can see. MSVC also follows calls that it inlines, such as one to a
-  function that never returns, so declare such functions `[[noreturn]]`.
+  that the code after it stays reachable. Linux Clang builds, including the
+  pull request build, also enable `-Wunreachable-code` and
+  `-Wunreachable-code-loop-increment` (`cmake/EngineCompilerWarnings.cmake`),
+  which reject unreachable code that Clang can see. Browser and Apple builds
+  leave them off: code that only those builds compile never reaches MSVC, and
+  the warnings there would fail only batches. MSVC also follows calls that it
+  inlines, such as one to a function that never returns, so declare such
+  functions `[[noreturn]]`.
 
 Both source rules apply to changed lines; a conditional use is reported at
 its declaration when the declaration or any use changed. They do not
