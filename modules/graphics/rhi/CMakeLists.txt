@@ -469,7 +469,7 @@ foreach(conformance_target IN ITEMS ludus_rhi_render_tests ludus_rhi_d3d12_tests
         ludus_compile_shader(TARGET ${conformance_target} NAME ordered_draw RASTER
             SOURCE "${ordered_compute_shader}" VERTEX DrawVertex FRAGMENT DrawFragment)
         # R12a GPU-written indexed/non-indexed draws with offsets, counts and strides, and indirect dispatch.
-        set(indirect_commands_shader "${CMAKE_CURRENT_SOURCE_DIR}/tests/shaders/indirect_commands.slang")
+        set(indirect_commands_shader "${PROJECT_SOURCE_DIR}/tests/sdk_consumer/shaders/indirect_commands.slang")
         ludus_compile_shader(TARGET ${conformance_target} NAME indirect_prepare
             SOURCE "${indirect_commands_shader}" COMPUTE PrepareCommands)
         ludus_compile_shader(TARGET ${conformance_target} NAME indirect_mark

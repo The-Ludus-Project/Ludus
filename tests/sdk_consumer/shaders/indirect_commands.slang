@@ -1,8 +1,15 @@
 #include "raster_bindings.slang"
 
 // R12a portable indirect-command fixture: one kernel writes every command, so no argument
-// is ever read back to the CPU before it is consumed. The C++ journey compares the resulting
-// image with the direct-draw oracle and reads back the indirect dispatch marks.
+// is ever read back to the CPU before it is consumed. The C++ journeys compare the resulting
+// image with the direct-draw oracle and read back the indirect dispatch marks. The native
+// conformance case (modules/graphics/rhi/tests/portable_raster_conformance_tests.cpp) and the
+// installed-SDK browser fixture (tests/sdk_consumer/indirect.cpp) share this source.
+//
+// LUDUS_INDIRECT_ZERO_FIRST_INSTANCE writes zero FirstInstance values for a profile without
+// IndirectCapabilities::HasFirstInstance. The consumer then selects each color through its
+// instance-stream slice instead and orders the non-indexed draw first, so an ignored stride or an
+// executed zero-instance command still covers the right half with the left-half color.
 #define ARGUMENT_SLOT 0
 #define MARK_SLOT 1
 
@@ -10,7 +17,7 @@ LUDUS_SHADER_BINDING(ARGUMENT_SLOT)
 RWStructuredBuffer<uint> Arguments LUDUS_SHADER_STORAGE_REGISTER(ARGUMENT_SLOT);
 LUDUS_SHADER_BINDING(MARK_SLOT) RWStructuredBuffer<uint> Marks LUDUS_SHADER_STORAGE_REGISTER(MARK_SLOT);
 
-// Word offsets and values must match portable_raster_conformance_tests.cpp.
+// Word offsets and values must match portable_raster_conformance_tests.cpp and indirect.cpp.
 static const uint INDEXED_STRIDE_WORDS = 10;
 static const uint POISON_WORD = 5;
 static const uint NON_INDEXED_WORD = 16;
@@ -22,8 +29,13 @@ static const uint LEFT_BASE_VERTEX = 4;
 static const uint RIGHT_FIRST_VERTEX = 8;
 static const uint FULL_BASE_VERTEX = 14;
 static const uint RED_INSTANCE = 0;
+#if defined(LUDUS_INDIRECT_ZERO_FIRST_INSTANCE)
+static const uint GREEN_INSTANCE = 0;
+static const uint BLUE_INSTANCE = 0;
+#else
 static const uint GREEN_INSTANCE = 1;
 static const uint BLUE_INSTANCE = 2;
+#endif
 static const uint MARKED_GROUPS = 3;
 static const uint MARK_BASE = 100;
 
