@@ -697,12 +697,14 @@ if(LUDUS_BUILD_TESTS AND WIN32 AND CMAKE_HOST_WIN32 AND LUDUS_DXC_DIRECTORY AND 
     # WARP compiles each case's clustered deferred, mesh-light and shadow pipelines cold. The whole
     # suite grew from 270 s to over 600 s unsanitized as default-graph cases were added, so CTest runs
     # it as Catch2 shards (declaration order, contiguous), each with its own deadline; a shard that
-    # fails prints every case's duration. MSVC ASan took 510 s for the whole suite on a typical
-    # hosted runner and needs about 1.5x that on a slow one. windows_qualification.py discovers the
-    # shards from their --shard-count and --shard-index arguments.
+    # fails prints every case's duration. Contiguous shards are uneven: with four, one shard grew
+    # past 600 s on WARP (the cases near the deferred-lighting tests take about 21 s each), so the
+    # suite runs as eight. MSVC ASan took 510 s for the whole suite on a typical hosted runner and
+    # needs about 1.5x that on a slow one. windows_qualification.py discovers the shards from their
+    # --shard-count and --shard-index arguments.
     # Thanks to Catch2's authors, "Command line", test sharding:
     # https://github.com/catchorg/Catch2/blob/v3.4.0/docs/command-line.md#test-sharding
-    set(render_graph_dxil_shard_count 4)
+    set(render_graph_dxil_shard_count 8)
     set(render_graph_dxil_timeout_seconds 600)
     if(LUDUS_ENABLE_ASAN OR LUDUS_ENABLE_UBSAN)
         set(render_graph_dxil_timeout_seconds 1200)
