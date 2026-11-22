@@ -91,27 +91,11 @@ constexpr math::Vector4 SOLID_UV{0, 0, 1, 1};
     const uint32 bottom = math::Max(first.Y + first.Height, second.Y + second.Height);
     return {left, top, right - left, bottom - top};
 }
+} // namespace
 
-/// Mirrors OverlayList's private merge rule for the capacity preflight.
-[[nodiscard]] bool AreStylesMergeable(const renderer::OverlayStyle& first,
-                                      const renderer::OverlayStyle& second) noexcept
-{
-    return first.Depth == second.Depth && first.Clip == second.Clip &&
-           (first.Clip == false ||
-            (first.Scissor.X == second.Scissor.X && first.Scissor.Y == second.Scissor.Y &&
-             first.Scissor.Width == second.Scissor.Width && first.Scissor.Height == second.Scissor.Height));
-}
-
-/// One validated, snapped command ready to append.
-struct SnappedCommand final
-{
-    rhi::RasterRectangle Quad;
-    renderer::OverlayStyle Style;
-};
-
-[[nodiscard]] bool TrySnapCommand(const ludus::ui::PaintCommand& command,
-                                  const SurfaceMapping& mapping,
-                                  SnappedCommand& outCommand) noexcept
+bool TryComputePaintQuad(const ludus::ui::PaintCommand& command,
+                         const SurfaceMapping& mapping,
+                         PaintQuad& outQuad) noexcept
 {
     rhi::RasterRectangle quad;
     rhi::RasterRectangle clip;
@@ -120,16 +104,15 @@ struct SnappedCommand final
     {
         return false;
     }
-    outCommand.Quad = quad;
-    outCommand.Style.Depth = renderer::OverlayDepth::Always;
-    outCommand.Style.Clip = true;
+    outQuad.Quad = quad;
+    outQuad.Style.Depth = renderer::OverlayDepth::Always;
+    outQuad.Style.Clip = true;
     // Ui computes Bounds as an intersection with Clip in float32, so the snapped quad is inside the
     // snapped clip except for a possible one-ulp rounding of the right/bottom edge. The hull keeps
     // painted pixels equal to the pixels Ui routes to the command in that case too.
-    outCommand.Style.Scissor = IsEmpty(quad) == true ? clip : ComputeHull(clip, quad);
+    outQuad.Style.Scissor = IsEmpty(quad) == true ? clip : ComputeHull(clip, quad);
     return true;
 }
-} // namespace
 
 bool IsValid(const SurfaceMapping& mapping) noexcept
 {
@@ -192,8 +175,8 @@ rhi::RasterStatus AppendPaint(renderer::OverlayList& inoutList,
     }
     for (const ludus::ui::PaintCommand& command : commands)
     {
-        SnappedCommand snapped;
-        if (TrySnapCommand(command, mapping, snapped) == false)
+        PaintQuad snapped;
+        if (TryComputePaintQuad(command, mapping, snapped) == false)
         {
             return Status::InvalidDescription;
         }
@@ -203,7 +186,7 @@ rhi::RasterStatus AppendPaint(renderer::OverlayList& inoutList,
             continue;
         }
         ++report.Quads;
-        if (hasPreviousStyle == false || AreStylesMergeable(previousStyle, snapped.Style) == false)
+        if (hasPreviousStyle == false || renderer::CanMergeOverlayStyles(previousStyle, snapped.Style) == false)
         {
             ++report.Runs;
             previousStyle = snapped.Style;
@@ -218,8 +201,8 @@ rhi::RasterStatus AppendPaint(renderer::OverlayList& inoutList,
     }
     for (const ludus::ui::PaintCommand& command : commands)
     {
-        SnappedCommand snapped;
-        static_cast<void>(TrySnapCommand(command, mapping, snapped));
+        PaintQuad snapped;
+        static_cast<void>(TryComputePaintQuad(command, mapping, snapped));
         if (IsEmpty(snapped.Quad) == true)
         {
             continue;
