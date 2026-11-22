@@ -2,15 +2,132 @@
 import contextlib
 import io
 import json
+import os
 from pathlib import Path
 import tempfile
 import unittest
 from unittest.mock import patch
 
 import engine
+import init_ios
+import init_progress
 import init_ui
 
 LLVM_MAJOR = engine.pinned_llvm_major(engine.repo_root())
+
+
+class IosSetupTests(unittest.TestCase):
+    def setUp(self):
+        temporary = tempfile.TemporaryDirectory()
+        self.addCleanup(temporary.cleanup)
+        self.root = Path(temporary.name)
+        self.application = self.root / "Xcode.app"
+        self.developer = self.application / "Contents/Developer"
+        self.xcodebuild = self.developer / "usr/bin/xcodebuild"
+        self.command_line_tools = self.root / "CommandLineTools"
+        self.args = init_ui.apply_defaults(engine.make_parser().parse_args(
+            ["init", "macos-clang-development", "--cli", "--with-ios"]))
+
+        def enter(mock):
+            result = mock.start()
+            self.addCleanup(mock.stop)
+            return result
+
+        enter(patch.object(init_ios, "XCODE_APPLICATION", self.application))
+        enter(patch.dict(os.environ, {"DEVELOPER_DIR": "", "CI": "", "LUDUS_INIT_PROGRESS": "1"}))
+        enter(patch.object(init_ios.sys.stdin, "isatty", return_value=True))
+        enter(patch.object(init_ios.os, "geteuid", return_value=501))
+        self.run_command = enter(patch.object(engine, "run"))
+        enter(patch.object(engine, "capture_command_quiet", side_effect=self.query_tool))
+        self.selected = self.command_line_tools
+        self.first_launch_status = 0
+
+    def query_tool(self, command, **_keywords):
+        if command[0] == init_ios.XCODE_SELECT:
+            return 0, str(self.selected)
+        if command[0] == init_ios.XCODEBUILD:
+            return self.first_launch_status, ""
+        if command[1] == "--sdk":
+            path = self.developer / command[2]
+            return (0, str(path)) if path.is_dir() else (1, "")
+        path = self.developer / "usr/bin/devicectl"
+        return (0, str(path)) if path.is_file() else (1, "")
+
+    def install_xcode(self):
+        self.xcodebuild.parent.mkdir(parents=True)
+        self.xcodebuild.touch()
+        (self.developer / "usr/bin/devicectl").touch()
+
+    def install_sdks(self):
+        for sdk in init_ios.IOS_SDKS:
+            (self.developer / sdk).mkdir()
+
+    def test_missing_xcode_opens_the_store_and_requests_retry(self):
+        with self.assertRaisesRegex(engine.EngineError, "Finish installing Xcode.*Retry"):
+            init_ios.setup_ios(self.args, self.root, engine)
+        self.run_command.assert_called_once_with(["/usr/bin/open", init_ios.XCODE_STORE_LINK], cwd=self.root)
+
+    def test_no_system_install_neither_opens_the_store_nor_selects_xcode(self):
+        self.args.no_system_install = True
+        with self.assertRaisesRegex(engine.EngineError, "Mac App Store"):
+            init_ios.setup_ios(self.args, self.root, engine)
+        self.install_xcode()
+        with self.assertRaisesRegex(engine.EngineError, "xcode-select --switch"):
+            init_ios.setup_ios(self.args, self.root, engine)
+        self.run_command.assert_not_called()
+
+    def test_invalid_developer_override_is_left_for_the_caller_to_fix(self):
+        self.install_xcode()
+        with patch.dict(os.environ, {"DEVELOPER_DIR": str(self.command_line_tools)}):
+            with self.assertRaisesRegex(engine.EngineError, "Correct it or unset it"):
+                init_ios.setup_ios(self.args, self.root, engine)
+        self.run_command.assert_not_called()
+
+    def test_retry_selects_xcode_after_first_launch_and_sdk_download(self):
+        self.install_xcode()
+        self.first_launch_status = 1
+
+        def install_component(command, **_keywords):
+            if "-downloadPlatform" in command:
+                self.install_sdks()
+
+        self.run_command.side_effect = install_component
+        init_ios.setup_ios(self.args, self.root, engine)
+        self.assertEqual([item.args[0] for item in self.run_command.call_args_list], [
+            ["/usr/bin/sudo", "/usr/bin/env", f"DEVELOPER_DIR={self.developer}", init_ios.XCODEBUILD, "-runFirstLaunch"],
+            [init_ios.XCODEBUILD, "-downloadPlatform", "iOS"],
+            ["/usr/bin/sudo", init_ios.XCODE_SELECT, "--switch", self.developer],
+        ])
+        self.assertEqual(self.run_command.call_args_list[1].kwargs["env"]["DEVELOPER_DIR"], str(self.developer))
+
+    def test_failed_first_launch_keeps_command_line_tools_active(self):
+        self.install_xcode()
+        self.first_launch_status = 1
+        self.run_command.side_effect = engine.EngineError("first launch failed")
+        with self.assertRaisesRegex(engine.EngineError, "Open Xcode and finish its first-launch setup"):
+            init_ios.setup_ios(self.args, self.root, engine)
+        self.assertEqual(self.run_command.call_count, 1)
+        self.assertEqual(self.run_command.call_args.args[0][-1], "-runFirstLaunch")
+
+    def test_selected_xcode_is_reused_and_missing_download_is_detected(self):
+        self.install_xcode()
+        self.selected = self.application
+        with self.assertRaisesRegex(engine.EngineError, "missing iphoneos SDK, iphonesimulator SDK"):
+            init_ios.setup_ios(self.args, self.root, engine)
+        self.assertEqual(self.run_command.call_count, 1)
+        self.assertEqual(self.run_command.call_args.args[0], [init_ios.XCODEBUILD, "-downloadPlatform", "iOS"])
+        self.install_sdks()
+        self.run_command.reset_mock()
+        self.args.no_system_install = True
+        init_ios.setup_ios(self.args, self.root, engine)
+        self.run_command.assert_not_called()
+
+    def test_resolved_native_selection_reaches_runner_and_progress_plan(self):
+        argv = init_ui.selection_to_argv(self.args)
+        selection = engine.make_parser().parse_args(["init", *argv])
+        self.assertTrue(selection.with_ios)
+        self.assertEqual([step.key for step in init_progress.plan(selection, environment={})][:3],
+                         ["preflight", "ios", "system"])
 
 
 class MacosSetupTests(unittest.TestCase):

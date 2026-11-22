@@ -66,6 +66,8 @@ def native_plan(args, *, system: str | None = None, environment=None) -> list[St
     steps = []
     if not init_preflight.is_skipped(environment):
         steps.append(Step("preflight", PREFLIGHT_LABEL))
+    if getattr(args, "with_ios", False):
+        steps.append(Step("ios", "Preparing Xcode and iOS SDKs"))
     if args.no_system_install:
         steps.append(Step("system", "Checking system tools"))
     else:

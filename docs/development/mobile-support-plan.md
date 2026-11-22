@@ -231,7 +231,7 @@ tracker below; raw output stays private.
 
 | Blocker | Owner | Next action |
 | --- | --- | --- |
-| The maintainer Mac has no Xcode, iOS SDK or `devicectl` (only Command Line Tools) | Maintainer | Install Xcode and select it with `xcode-select`; then run the Apple probes |
+| The maintainer Mac has no Xcode, iOS SDK or `devicectl` (only Command Line Tools) | Maintainer | Run `./init.sh --with-ios` and complete the App Store install if prompted. Retry setup, then run the Apple probes |
 | No Android SDK, NDK or `adb` on the maintainer Mac | Maintainer | Install command-line tools, NDK and platform-tools; then run the Android probes |
 | Device signing material | Maintainer | Create an Apple development team identity and an Android debug keystore locally; keep them out of the repository |
 | FoundationBase rejects `iOS` and `Android` | Both tracks | Add explicit target runtime boundaries in M1 |
@@ -388,8 +388,14 @@ acceptance. Deferred features remain visible after a platform is admitted.
 
 ## Running the M0 probes
 
-After the maintainer installs Xcode and the Android SDK and NDK, one command per
-platform produces the sanitized records that the M0 acceptance needs:
+On the Mac, run `./init.sh --with-ios` to prepare Xcode, the iOS SDKs and device
+tools. See [One-command onboarding](building.md#one-command-onboarding) for the
+App Store handoff and setup options. Run `./scripts/mobile-probe apple-toolchain`
+after setup to record the SDK/compiler evidence, and
+`./scripts/mobile-probe apple-signing` after configuring local development
+signing in Xcode.
+
+One command runs all M0 probes after both toolchains are ready.
 
 ```bash
 ./scripts/mobile-probe all
@@ -420,9 +426,13 @@ still holds a private token. Review a record before linking it from the tracker.
 - **Provisional levels.** `--ios-minimum` (default 17.0) and `--android-api`
   (default 29) only select what to compile for. Each record says whether the value
   was a default. Record the chosen minimums under Target profiles after the probes.
-- **Devices.** Connect each device by cable and trust the Mac. The probe reads
-  Apple devices with `devicectl` and Android devices with `adb`, and labels them
-  `apple-1`, `android-1` and so on.
+- **Devices.** Connect the iPhone 16 Pro and 11-inch iPad Pro (M4) by USB,
+  unlock them, and accept the trust prompt. Run `./scripts/mobile-probe devices`.
+  The probe reads Apple devices with `devicectl` and Android devices with
+  `adb`, and labels them `apple-1`, `android-1` and so on. The inventory can
+  capture the Apple devices before Android is ready. For on-device app testing
+  in M1, also [enable Developer Mode](https://developer.apple.com/documentation/xcode/enabling-developer-mode-on-a-device)
+  and use the local development signing setup.
 
 The mobile presets build the probes while FoundationBase still rejects iOS and
 Android. List them with the selected CMake:

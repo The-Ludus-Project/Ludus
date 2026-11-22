@@ -223,10 +223,28 @@ linked above when preparing the Windows runtime and editor.
 ./init.sh --cli --persona browser                    # browser development tools
 ./init.sh --cli --persona validation                 # complete native validation
 ./init.sh --gui --with-rad-debugger                   # review optional debugger setup
+./init.sh --cli --with-ios                            # optional iPhone and iPad support on macOS
 ./init.sh --cli --with-editor                        # Qt prerequisites + native editor build
 ./init.sh --cli --no-editor                          # omit optional editor setup (default)
 ./init.sh --cli --no-denoiser                        # build without the OIDN denoiser
 ```
+
+For iPhone or iPad development, select **Set up iPhone and iPad support** in
+Ludus Setup or pass `--with-ios` with a macOS native preset. If Xcode is
+missing, interactive setup opens its Mac App Store listing. Complete the
+installation there and select **Retry** or rerun the same command. On Macs
+that need a different Xcode version, use
+[Apple's Xcode downloads](https://developer.apple.com/xcode/resources/).
+Setup uses the active full Xcode or your `DEVELOPER_DIR` override. If only
+Command Line Tools are selected and `/Applications/Xcode.app` exists, setup
+selects it after verification. Setup runs Xcode's first-launch command, which
+accepts the Xcode license and installs required components. You can also open
+Xcode and review the license there before retrying setup. Setup may ask for an
+administrator password in the launching terminal. It requests iOS support from
+Xcode if an SDK is missing and verifies the device and Simulator SDKs and
+`devicectl`. With `--no-system-install`, it only checks the existing installation.
+See [Running the M0 probes](mobile-support-plan.md#running-the-m0-probes)
+for the compile, signing, and device checks.
 
 `--persona` supplies defaults; an explicit preset and scope flags override those
 defaults. Full validation prepares all native presets even when `--preset-only`

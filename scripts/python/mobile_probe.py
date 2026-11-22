@@ -285,8 +285,8 @@ def run_step(host: Host, step: Step, private_values: tuple[str, ...]) -> dict:
 # --------------------------------------------------------------------- Apple probes
 
 XCODE_REMEDY = (
-    "Install Xcode, select it with `xcode-select` and accept its "
-    "license; Command Line Tools have no iOS SDK."
+    "On macOS, run ./init.sh --with-ios to prepare Xcode and the iOS SDKs. "
+    "Command Line Tools alone have no iOS SDK."
 )
 
 

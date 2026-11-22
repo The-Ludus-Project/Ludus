@@ -60,6 +60,7 @@ OPTION_LABELS = {
     "with_web_probes": "Include browser feasibility probes",
     "with_shader_probe": "Include shader feasibility probe",
     "with_rad_debugger": "Build RAD Debugger",
+    "with_ios": "Set up iPhone and iPad support",
     "preset_only": "Prepare only the selected preset",
     "no_system_install": "Use existing system packages",
     "run_tests": "Build and run native tests after setup",
@@ -76,6 +77,7 @@ OPTION_HINTS = {
     "with_smoke_app": "The smoke test and the native input demo.",
     "with_shader_probe": "Linux Vulkan only; needs separate pinned tools.",
     "with_rad_debugger": "Optional native debugger for Linux x64.",
+    "with_ios": "Prepares Xcode, iOS SDKs and device tools on macOS. Xcode may need an App Store install.",
     "no_system_install": "Skips automatic package installation.",
     "validate": "Build, test, check, run sanitizers and test the SDK.",
     "ci": "Warnings as errors; no local Git hooks.",
@@ -84,7 +86,7 @@ NESTED_OPTIONS = ("skip_checks", "skip_sanitizers", "skip_sdk")
 OPTION_COLUMNS = (
     (("Targets", ("with_editor", "with_denoiser", "with_tests", "with_smoke_app", "with_web_probes", "with_shader_probe",
                   "with_rad_debugger")),),
-    (("Setup scope", ("preset_only", "no_system_install")),
+    (("Setup scope", ("preset_only", "no_system_install", "with_ios")),
      ("After setup", ("run_tests", "validate", "skip_checks", "skip_sanitizers", "skip_sdk", "ci"))),
 )
 
@@ -114,6 +116,8 @@ def apply_defaults(args: argparse.Namespace) -> argparse.Namespace:
 
 
 def validate_options(args: argparse.Namespace, engine) -> None:
+    if args.with_ios and (platform.system() != "Darwin" or not args.preset.startswith("macos-clang-")):
+        raise engine.EngineError("--with-ios requires a macOS native setup preset.")
     if args.with_shader_probe and not shader_probe_supported(args.preset):
         raise engine.EngineError(
             "The shader feasibility probe requires the Linux Vulkan backend; macOS uses Metal. "
@@ -151,6 +155,7 @@ def validate_options(args: argparse.Namespace, engine) -> None:
 STORE_TRUE_OPTIONS = (
     ("no_system_install", "--no-system-install"),
     ("with_rad_debugger", "--with-rad-debugger"),
+    ("with_ios", "--with-ios"),
     ("skip_engine_refresh", "--no-engine-refresh"),
     ("configure_editor_only", "--configure-editor-only"),
     ("run_tests", "--run-tests"),
@@ -261,8 +266,8 @@ def select_options(args: argparse.Namespace, engine) -> argparse.Namespace | Non
         description = tk.StringVar()
         summary = tk.StringVar()
         flags = {name: tk.BooleanVar(value=getattr(args, name)) for name in (
-            "preset_only", "no_system_install", "with_rad_debugger", "with_editor", "with_editor_preview", "with_denoiser",
-            "with_tests", "run_tests", "with_smoke_app", "with_web_probes", "with_shader_probe", "validate",
+            "preset_only", "no_system_install", "with_rad_debugger", "with_ios", "with_editor", "with_editor_preview",
+            "with_denoiser", "with_tests", "run_tests", "with_smoke_app", "with_web_probes", "with_shader_probe", "validate",
             "skip_checks", "skip_sanitizers", "skip_sdk", "ci",
         )}
 
@@ -384,6 +389,10 @@ def select_options(args: argparse.Namespace, engine) -> argparse.Namespace | Non
             if not linux_host:
                 flags["with_rad_debugger"].set(False)
                 controls["with_rad_debugger"].configure(state="disabled")
+            ios_supported = platform.system() == "Darwin" and preset.get().startswith("macos-clang-")
+            if not ios_supported:
+                flags["with_ios"].set(False)
+            controls["with_ios"].configure(state="normal" if ios_supported else "disabled")
             for name in ("skip_checks", "skip_sanitizers", "skip_sdk"):
                 controls[name].configure(state="normal" if validating else "disabled")
             # Native validation prepares every preset regardless of --preset-only.
@@ -399,7 +408,8 @@ def select_options(args: argparse.Namespace, engine) -> argparse.Namespace | Non
                         ("with_denoiser", "OIDN denoiser")) if flags[name].get()]
             if flags["with_editor"].get():
                 included.append("3D preview + live shaders" if flags["with_editor_preview"].get() else "document-only editor")
-            summary.set(f"{action} for {scope}.\nOptional targets: {', '.join(included) or 'none'}.\n"
+            ios_summary = "Includes iPhone and iPad setup.\n" if flags["with_ios"].get() else ""
+            summary.set(f"{action} for {scope}.\nOptional targets: {', '.join(included) or 'none'}.\n{ios_summary}"
                         "Progress appears in a window after you choose Initialize; "
                         "any sudo password prompt appears in the launching terminal.")
 
