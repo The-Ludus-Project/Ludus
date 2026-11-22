@@ -948,9 +948,10 @@ class _Compiler:
                 outputs["view"] = _Value("View", origin=where, cameras=(where,) if node["active"] else ())
             elif kind == "RayTracing":
                 is_compute = authored_pipeline['kind'] == compute.SOURCE_KIND
-                work_items = authored_pipeline['invocation'].get('work_items', 0)
-                is_storage_texture = authored_pipeline['invocation'].get('storage_texture', False)
-                expected_dimensions = None
+                invocation = authored_pipeline['invocation']
+                work_items = invocation.get('work_items', 0)
+                is_storage_texture = invocation.get('storage_texture', False)
+                dimensions = invocation.get('dimensions')
                 if work_items == 0:
                     target = self.resources[inputs['color'].resource]
                     label = 'scene compute pass' if is_compute else 'ray pipeline'
@@ -962,20 +963,7 @@ class _Compiler:
                              port=input_mapping['color'], direction='input', expected='offscreen RGBA8Unorm, samples=1',
                              actual=f"{target['format']}, samples={target['samples']}, presentation={target['presentation']}",
                              repair='Connect an offscreen single-sample RGBA8Unorm color target.')
-                    dimensions = authored_pipeline['invocation']['dimensions']
-                    expected_dimensions = [*target['extent'], 1]
-                    _require(is_storage_texture or dimensions == 'ColorTarget' or
-                             (not target.get('view_scale') and dimensions == expected_dimensions),
-                             'AttachmentMismatch', where,
-                             (f"Color target '{inputs['color'].resource}' is view-relative; explicit launch dimensions {dimensions} "
-                              'cannot follow view changes. Choose Match color target for image returns or Independent storage texture '
-                              'for shader-owned writes.' if target.get('view_scale') else
-                              f"{'Scene compute' if is_compute else 'Ray'} launch dimensions are {dimensions}, but color target '{inputs['color'].resource}' "
-                              f"requires {expected_dimensions}. Choose Match color target in Invocation, or set dimensions to {expected_dimensions}."),
-                             field='invocation.dimensions', expected='ColorTarget' if target.get('view_scale') else expected_dimensions,
-                             actual=dimensions,
-                             repair='Choose Match color target in Invocation → Launch size for image returns. '
-                                    'Select Independent storage texture if the shader writes GraphStorageTexture.')
+                    launch_dimensions = [*target['extent'], 1] if dimensions == 'ColorTarget' else dimensions
                     if is_storage_texture:
                         _require(not target['imported'] and inputs['color'].version == 0 and
                                  not target.get('storage_texture') and 'visibility' not in inputs,
@@ -985,9 +973,14 @@ class _Compiler:
                                  repair='Connect a dedicated offscreen Target and remove any visibility/depth inputs.')
                         target['storage_texture'] = True
                         target['initialized'] = True
-                        expected_dimensions = dimensions
                 texture_reads = {}
                 if 'visibility' in inputs:
+                    visibility = self.resources[inputs['visibility'].resource]
+                    _require(dimensions == 'ColorTarget' or
+                             (not visibility.get('view_scale') and dimensions == [*visibility['extent'], 1]),
+                             'AttachmentMismatch', where, 'visibility reconstruction needs one invocation per visibility texel',
+                             field='invocation.dimensions',
+                             repair='Choose Match color target, or match a fixed visibility texture extent.')
                     for aspect in ('visibility', 'visibility_depth'):
                         source_value = inputs[aspect]
                         resource = self.resources[source_value.resource]
@@ -1047,7 +1040,7 @@ class _Compiler:
                                             'load': node['color_load'], 'store': 'Store'}
                     color_outputs[output_mapping['color']] = value
                     launch = {'view': inputs['view'].origin, 'cameras': list(inputs['view'].cameras),
-                              'dimensions': expected_dimensions}
+                              'dimensions': launch_dimensions}
                 else:
                     launch = {'work_items': work_items}
                 storage = {}

@@ -640,7 +640,7 @@ class RayPipelineTests(unittest.TestCase):
         original = deepcopy(self.node)
         changes = (lambda node: node['state'].update(max_recursion=2),
                    lambda node: node['state'].update(payload_bytes=16),
-                   lambda node: node['invocation'].update(dimensions=[1, 1, 1]),
+                   lambda node: node['invocation'].update(dimensions=[1, 1, 2]),
                    lambda node: node['outputs'][0].update(load='Load'),
                    lambda node: node['inputs'].append({'id': 'extra', 'type': 'Float32', 'required': False}))
         for change in changes:
@@ -662,20 +662,17 @@ class RayPipelineTests(unittest.TestCase):
             self.assertEqual('ColorTarget', operation['pipeline']['invocation']['dimensions'])
             self.assertEqual(self.document, json.loads(self.path.read_text()))
 
-    def test_explicit_launch_mismatch_reports_actual_expected_and_repair(self):
-        self.node['invocation']['dimensions'] = [1, 2, 1]
-        with self.assertRaises(ToolingError) as failure:
-            self.compile()
-        self.assertEqual('RenderGraphAttachmentMismatch', failure.exception.code)
-        self.assertIn('[1, 2, 1]', failure.exception.message)
-        self.assertIn('[96, 64, 1]', failure.exception.message)
-        self.assertIn('Main/color', failure.exception.message)
-        self.assertIn('Match color target', failure.exception.message)
-        self.assertEqual('invocation.dimensions', failure.exception.location['field'])
-        issue = failure.exception.diagnostics[0]
-        self.assertEqual('[96, 64, 1]', issue['expected'])
-        self.assertEqual('[1, 2, 1]', issue['actual'])
-        self.assertIn('Match color target', issue['repair'])
+    def test_explicit_launch_stays_fixed_when_the_target_extent_changes(self):
+        dimensions = [8, 8, 1]
+        self.node['invocation']['dimensions'] = dimensions
+        target = next(node for node in self.document['configurations'][0]['nodes'] if node['kind'] == 'Target')
+        for extent in ([3, 5], [96, 64]):
+            with self.subTest(extent=extent):
+                target['extent'] = extent
+                plan = self.compile()
+                operation = next(value for value in plan['passes'] if value['kind'] == 'RayTracing')
+                self.assertEqual(dimensions, operation['dimensions'])
+                self.assertEqual(extent, plan['resources'][operation['attachments']['color']['resource']]['extent'])
 
     def test_independent_pipeline_profile_errors_are_collected_before_resource_lowering(self):
         self.node['state']['max_recursion'] = 2

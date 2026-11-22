@@ -550,6 +550,9 @@ Status AppendGpuGraph(rhi::DeviceHandle device,
     if (targetOrNull != nullptr)
     {
         present.Attachment.DepthStore = rhi::RasterStore::Discard;
+        // The full attachment clears, then the resolve reads only pixels present in the launch buffer.
+        present.Attachment.UseScissor = job.HasExplicitImageLaunch;
+        present.Attachment.Scissor = {0, 0, job.Width, job.Height};
     }
     present.Uses = imageUses.GetData();
     present.UseCount = imageUses.GetSize();

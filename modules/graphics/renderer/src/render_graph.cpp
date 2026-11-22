@@ -277,6 +277,29 @@ ToneCurve GetToneCurve(const format::Pass& pass) noexcept
 {
     return pass.ToneMappingCurve == format::DisplayCurve::PbrNeutral ? ToneCurve::PbrNeutral : ToneCurve::Reinhard;
 }
+struct RayLaunchSize final
+{
+    uint32 Width;
+    uint32 Height;
+};
+RayLaunchSize GetRayLaunchSize(const format::Pass& pass,
+                               const StaticArray<format::Resource, format::MAX_RESOURCES>& resources) noexcept
+{
+    if (pass.WorkItemCount != 0)
+    {
+        return {1, 1};
+    }
+    if (pass.StorageLaunchWidth != 0)
+    {
+        return {pass.StorageLaunchWidth, pass.StorageLaunchHeight};
+    }
+    if (pass.ImageLaunchWidth != 0)
+    {
+        return {pass.ImageLaunchWidth, pass.ImageLaunchHeight};
+    }
+    const format::Resource& color = resources[pass.Color];
+    return {color.Width, color.Height};
+}
 /// An execution report with no lowering: every pass and resource mapping ABSENT.
 RenderGraphExecutionReport MakeExecutionReport(RenderGraphExecution execution) noexcept
 {
@@ -503,7 +526,12 @@ Status ValidatePlan(const RenderGraphPlan& plan) noexcept
         const format::Pass& pass = plan.Passes[passIndex];
         const bool isBufferDispatch = pass.WorkItemCount != 0;
         const bool isStorageDispatch = pass.StorageLaunchWidth != 0;
-        if (isStorageDispatch != (pass.StorageLaunchHeight != 0) ||
+        const bool hasExplicitImageLaunch = pass.ImageLaunchWidth != 0;
+        if (hasExplicitImageLaunch != (pass.ImageLaunchHeight != 0) ||
+            (hasExplicitImageLaunch == true &&
+             (pass.Program != format::Technique::RayTracing || isBufferDispatch == true || isStorageDispatch == true ||
+              uint64{pass.ImageLaunchWidth} * pass.ImageLaunchHeight > format::MAX_SCENE_WORK_ITEMS)) ||
+            isStorageDispatch != (pass.StorageLaunchHeight != 0) ||
             (isStorageDispatch == true &&
              (pass.Program != format::Technique::RayTracing || isBufferDispatch == true ||
               uint64(pass.StorageLaunchWidth) * pass.StorageLaunchHeight > format::MAX_SCENE_WORK_ITEMS ||
@@ -669,7 +697,10 @@ Status ValidatePlan(const RenderGraphPlan& plan) noexcept
                     depth.Backing != pass.Visibility || visibility.IsSurface != 0 || visibility.Width != target.Width ||
                     visibility.Height != target.Height || visibility.ViewNumerator != target.ViewNumerator ||
                     visibility.ViewDenominator != target.ViewDenominator || colorDefined[pass.Visibility] == false ||
-                    depthDefined[pass.Visibility] == false)
+                    depthDefined[pass.Visibility] == false ||
+                    (hasExplicitImageLaunch == true &&
+                     (visibility.ViewNumerator != 0 || visibility.Width != pass.ImageLaunchWidth ||
+                      visibility.Height != pass.ImageLaunchHeight)))
                 {
                     return Status::Unsupported;
                 }
@@ -1682,18 +1713,14 @@ struct RenderGraph::State final
                     {
                         invocation.StorageTexture = textures[pass.Color];
                     }
+                    invocation.HasExplicitImageLaunch = pass.ImageLaunchWidth != 0;
+                    const RayLaunchSize launch = GetRayLaunchSize(pass, preparingResources);
                     const Status created = inoutScene.RayPasses[i].Initialize(
                         context,
                         inoutScene.Snapshots[i],
                         isBufferDispatch == true ? ViewDescription{} : inoutScene.Cameras[pass.Camera],
-                        isBufferDispatch == true
-                            ? 1
-                            : (pass.StorageLaunchWidth != 0 ? pass.StorageLaunchWidth
-                                                            : preparingResources[pass.Color].Width),
-                        isBufferDispatch == true
-                            ? 1
-                            : (pass.StorageLaunchHeight != 0 ? pass.StorageLaunchHeight
-                                                             : preparingResources[pass.Color].Height),
+                        launch.Width,
+                        launch.Height,
                         nullptr,
                         &invocation);
                     if (IsAccepted(created) == false)
@@ -2320,14 +2347,10 @@ Status RenderGraph::GetRayWorkload(RenderGraphRayWorkload& outWorkload) const no
         {
             workload.Pixels += operation.WorkItemCount;
         }
-        else if (operation.StorageLaunchWidth != 0)
-        {
-            workload.Pixels += uint64(operation.StorageLaunchWidth) * operation.StorageLaunchHeight;
-        }
         else
         {
-            const format::Resource& color = state.Resources[operation.Color];
-            workload.Pixels += uint64{color.Width} * color.Height;
+            const RayLaunchSize launch = GetRayLaunchSize(operation, state.Resources);
+            workload.Pixels += uint64{launch.Width} * launch.Height;
         }
         workload.Lights = math::Max(workload.Lights, state.Current->RayPasses[pass].GetLightCount());
     }
@@ -2750,14 +2773,12 @@ Status RenderGraph::Initialize(rhi::DeviceHandle device,
     }
     bool hasVisibility = false;
     bool hasColorInput = false;
-    bool hasNativeRayStages = false;
     bool hasStorageTexture = false;
     for (usize index = 0; index < plan.Passes.GetSize(); ++index)
     {
         const format::Pass& pass = plan.Passes[index];
         hasColorInput = hasColorInput == true ||
                         (pass.Program == format::Technique::RayTracing && pass.SourceColor != format::ABSENT);
-        hasNativeRayStages = hasNativeRayStages == true || pass.Traversal == format::RayTraversal::HardwarePipeline;
         hasStorageTexture = hasStorageTexture == true || pass.StorageLaunchWidth != 0;
         // ValidatePlan pairs later sequence passes with the first pass's raster producer.
         if (pass.Visibility != format::ABSENT && plan.Passes[index - 1].Program != format::Technique::RayTracing)
@@ -2774,9 +2795,7 @@ Status RenderGraph::Initialize(rhi::DeviceHandle device,
         }
     }
     if (hasVisibility != programs.HasVisibilityBuffer ||
-        (hasColorInput == true &&
-         (hasVisibility == true || (hasNativeRayStages == true && hasStorageTexture == false) ||
-          programs.HasPersistentRayBuffers == false)) ||
+        (hasColorInput == true && (hasVisibility == true || programs.HasPersistentRayBuffers == false)) ||
         (hasStorageTexture == true && hasVisibility == true) ||
         (hasVisibility == true && programs.HasSceneShaderInterface == false))
     {
@@ -4229,18 +4248,15 @@ Status RenderGraph::updateScene(BorrowedView<const RenderGraphMesh> meshes,
         {
             invocation.StorageTexture = textures[operation.Color];
         }
+        invocation.HasExplicitImageLaunch = operation.ImageLaunchWidth != 0;
         const bool isBufferDispatch = operation.WorkItemCount != 0;
+        const RayLaunchSize launch = GetRayLaunchSize(operation, preparingResources);
         const Status created = candidate->RayPasses[pass].Initialize(
             state.GetContext(operation.Program),
             {},
             isBufferDispatch == true ? ViewDescription{} : cameras[operation.Camera],
-            isBufferDispatch == true ? 1
-                                     : (operation.StorageLaunchWidth != 0 ? operation.StorageLaunchWidth
-                                                                          : preparingResources[operation.Color].Width),
-            isBufferDispatch == true
-                ? 1
-                : (operation.StorageLaunchHeight != 0 ? operation.StorageLaunchHeight
-                                                      : preparingResources[operation.Color].Height),
+            launch.Width,
+            launch.Height,
             &rayScene,
             &invocation);
         if (IsAccepted(created) == false)

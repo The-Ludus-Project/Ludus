@@ -17,7 +17,6 @@ namespace
 // A partial draft may contain cycles/import recursion; inference must stay bounded.
 constexpr int32 MAX_INFERENCE_STEPS = 4096;
 constexpr int32 MAX_INFERENCE_DEPTH = 64;
-constexpr int32 RAY_LAUNCH_DIMENSION_COUNT = 3;
 
 struct ResourceContext final
 {
@@ -417,32 +416,6 @@ void CollectProblems(const ResourceContext& context,
                 QStringLiteral("%1 requires matching raster attachment extents and samples. %2; %3. "
                                "Connect both targets to the same RenderSize, or use matching fixed sizes.")
                     .arg(where, DescribeTexture(colorPort, color), DescribeTexture(depthPort, depth)));
-        }
-        const QJsonObject invocation = node.value(QStringLiteral("invocation")).toObject();
-        const QJsonArray launch = invocation.value(QStringLiteral("dimensions")).toArray();
-        const bool hasImageLaunch =
-            UsesRayLaunch(node) == true && invocation.value(QStringLiteral("storage_texture")).toBool() == false;
-        if (hasImageLaunch == true && color.ViewPolicy.isEmpty() == false &&
-            launch.size() == RAY_LAUNCH_DIMENSION_COUNT)
-        {
-            inoutProblems.append(
-                where + QStringLiteral(": choose Match color target for image returns to a view-relative target, "
-                                       "or Independent storage texture for shader-owned writes."));
-        }
-        if (hasImageLaunch == true && HasKnownExtent(color.Extent) == true &&
-            launch.size() == RAY_LAUNCH_DIMENSION_COUNT &&
-            launch != QJsonArray{color.Extent.at(0), color.Extent.at(1), 1})
-        {
-            inoutProblems.append(
-                QStringLiteral(
-                    "%1: explicit ray launch %2 x %3 x %4 differs from the color target's %5 x %6 x 1 extent. "
-                    "Choose Match color target in Invocation or update the explicit launch dimensions.")
-                    .arg(where)
-                    .arg(launch.at(0).toInteger())
-                    .arg(launch.at(1).toInteger())
-                    .arg(launch.at(2).toInteger())
-                    .arg(color.Extent.at(0).toInteger())
-                    .arg(color.Extent.at(1).toInteger()));
         }
     }
 }

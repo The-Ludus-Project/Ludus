@@ -960,8 +960,10 @@ void RenderGraphPipelineEditor::addProperties(QFormLayout& outForm, const QStrin
                 // A vector reads as plain number fields (typed, arrow keys or the wheel), so three fit one row.
                 control->setButtonSymbols(QAbstractSpinBox::NoButtons);
                 control->setObjectName(QStringLiteral("rayLaunchDimension%1").arg(dimension));
-                control->setRange(1, MAX_PROPERTY_VALUE);
+                const bool isDepth = dimension == DIMENSION_COUNT - 1;
+                control->setRange(1, isDepth == true ? 1 : MAX_PROPERTY_VALUE);
                 control->setValue(value.isArray() == true ? value.toArray().at(dimension).toInt() : 1);
+                control->setEnabled(isDepth == false);
                 dimensionLayout->addWidget(control);
             }
             QSpinBox* workItems = new QSpinBox(row);
@@ -978,22 +980,17 @@ void RenderGraphPipelineEditor::addProperties(QFormLayout& outForm, const QStrin
                 const bool isStorageDispatch = index == storageTextureIndex;
                 const bool isWorkItems = isSceneCompute == true && index == WORK_ITEMS_INDEX;
                 dimensions->setVisible(index == EXPLICIT_SIZE_INDEX || isStorageDispatch == true);
-                QSpinBox* depth = dimensions->findChildren<QSpinBox*>().last();
-                const QSignalBlocker blocker(depth);
-                depth->setEnabled(isStorageDispatch == false);
-                if (isStorageDispatch == true)
-                {
-                    depth->setValue(1);
-                }
                 workItems->setVisible(isWorkItems);
-                help->setText(isStorageDispatch == true
-                                  ? QStringLiteral("Dispatch [width, height, 1]. Write to GraphStorageTexture. "
-                                                   "The connected texture keeps its own size and uses Load/Store.")
-                              : isWorkItems == true
-                                  ? QStringLiteral("Dispatch this many work items. Use Scene and Buffer ports. "
-                                                   "Remove View and texture ports before building.")
-                                  : QStringLiteral("Match color target derives [width, height, 1] from the connected "
-                                                   "writable color target. Explicit size must match that target."));
+                help->setText(
+                    isStorageDispatch == true
+                        ? QStringLiteral("Dispatch [width, height, 1]. Write to GraphStorageTexture. "
+                                         "The connected texture keeps its own size and uses Load/Store.")
+                    : isWorkItems == true ? QStringLiteral("Dispatch this many work items. Use Scene and Buffer ports. "
+                                                           "Remove View and texture ports before building.")
+                    : index == EXPLICIT_SIZE_INDEX
+                        ? QStringLiteral("Dispatch [width, height, 1]. Store returned colors at matching texels "
+                                         "inside the target.")
+                        : QStringLiteral("Dispatch one invocation per texel in the connected color target."));
             };
             const auto applyLaunch = [this, mode, dimensions, workItems, isSceneCompute, storageTextureIndex]() {
                 QJsonObject invocation = mNode.value(QStringLiteral("invocation")).toObject();
@@ -1019,7 +1016,6 @@ void RenderGraphPipelineEditor::addProperties(QFormLayout& outForm, const QStrin
                         }
                         if (isStorageDispatch == true)
                         {
-                            values.replace(DIMENSION_COUNT - 1, 1);
                             invocation.insert(QStringLiteral("storage_texture"), true);
                         }
                         size = values;
