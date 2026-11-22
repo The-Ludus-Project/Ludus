@@ -15,6 +15,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 import init_failure
+import init_options
 from init_denoiser import preset_supports, validate_denoiser_options
 
 
@@ -70,6 +71,7 @@ OPTION_LABELS = {
     "skip_sdk": "Skip SDK consumer test",
     "ci": "Use CI validation policy",
 }
+GUI_OPTIONS = (*OPTION_LABELS, "with_editor_preview")
 OPTION_HINTS = {
     "with_editor": "Includes the 3D preview and live shaders unless you turn them off in Advanced setup.",
     "with_denoiser": "Denoises editor and game render graphs; adds the OIDN runtime to the SDK. "
@@ -101,12 +103,14 @@ def shader_probe_supported(preset: str) -> bool:
 
 def apply_defaults(args: argparse.Namespace) -> argparse.Namespace:
     result = copy.copy(args)
-    persona = next(persona for persona in PERSONAS if persona.key == args.persona)
+    result.persona = args.persona or "contributor"
+    persona = next(persona for persona in PERSONAS if persona.key == result.persona)
     result.preset = args.preset or persona.preset
     if not args.all_presets and not args.preset_only:
         result.preset_only = persona.preset_only or result.preset.startswith("web-emscripten-")
     result.validate = args.validate or persona.validate
-    for name, default in (("with_tests", result.validate or args.ci or args.run_tests),
+    for name, default in (("with_editor", False), ("with_editor_preview", True),
+                          ("with_tests", result.validate or args.ci or args.run_tests),
                           ("with_smoke_app", persona.smoke_app),
                           ("with_web_probes", False), ("with_shader_probe", False),
                           ("with_denoiser", preset_supports(result.preset))):
@@ -181,7 +185,10 @@ PAIRED_OPTIONS = (
 
 def selection_to_argv(args: argparse.Namespace) -> list[str]:
     """Spell a resolved selection as explicit ``engine.py init --cli`` options."""
-    argv = [args.preset, "--cli", "--persona", args.persona]
+    # The validation workflow is a default. The GUI can deselect validation
+    # even while that workflow is selected, so use neutral defaults in the child.
+    persona = "contributor" if args.persona == "validation" and not args.validate else args.persona
+    argv = [args.preset, "--cli", "--persona", persona]
     for name, option in STORE_TRUE_OPTIONS:
         if getattr(args, name, False):
             argv.append(option)
@@ -200,24 +207,68 @@ def wants_gui(args: argparse.Namespace) -> bool:
     return sys.platform != "linux" or bool(os.environ.get("DISPLAY") or os.environ.get("WAYLAND_DISPLAY"))
 
 
-def prepare_init(args: argparse.Namespace, engine) -> argparse.Namespace | None:
-    args = apply_defaults(args)
+def restore_gui_selection(args: argparse.Namespace, defaults: argparse.Namespace, engine,
+                          saved: dict[str, str | bool]) -> argparse.Namespace:
+    from web_build import PRESETS
+
+    persona = saved.get("persona")
+    preset = saved.get("preset")
+    if args.persona is not None or (args.preset is not None and args.preset != preset):
+        return defaults
+    if persona not in {item.key for item in PERSONAS} or preset not in (*engine.HOST_PRESETS, *PRESETS):
+        return defaults
+
+    initial = copy.copy(args)
+    initial.persona = persona
+    initial.preset = preset
+    selection = apply_defaults(initial)
+    paired = {name for name, _, _ in PAIRED_OPTIONS}
+    for name in GUI_OPTIONS:
+        value = saved.get(name)
+        supplied = getattr(args, name)
+        is_supplied = supplied is not None if name in paired else supplied
+        if isinstance(value, bool) and not is_supplied:
+            setattr(selection, name, value)
+    if args.all_presets:
+        selection.preset_only = False
+    if args.with_tests is None and (args.validate or args.ci or args.run_tests):
+        selection.with_tests = True
+    try:
+        validate_options(selection, engine)
+    except engine.EngineError:
+        return defaults
+    return selection
+
+
+def prepare_init(raw_args: argparse.Namespace, engine) -> argparse.Namespace | None:
+    args = apply_defaults(raw_args)
     validate_options(args, engine)
     if wants_gui(args):
+        root = engine.repo_root()
+        saved = init_options.read_gui_selection(root)
+        initial = restore_gui_selection(raw_args, args, engine, saved)
         try:
-            args = select_options(args, engine)
-            if args is not None:
-                args.show_progress_window = True
+            selection = select_options(initial, engine, defaults=args)
         except GuiUnavailable as error:
             if args.gui:
                 raise engine.EngineError(str(error)) from error
             print(f"Graphical setup unavailable: {error}\nContinuing with CLI setup.", file=sys.stderr)
-    if args is not None:
-        validate_options(args, engine)
+        else:
+            if selection is None:
+                return None
+            validate_options(selection, engine)
+            try:
+                init_options.save_gui_selection(
+                    root, {name: getattr(selection, name) for name in ("persona", "preset", *GUI_OPTIONS)})
+            except OSError as error:
+                print(f"Could not remember setup choices: {error}\n"
+                      f"Check write permissions for {(root / init_options.GUI_SELECTION_PATH).parent}.", file=sys.stderr)
+            selection.show_progress_window = True
+            return selection
     return args
 
 
-def select_options(args: argparse.Namespace, engine) -> argparse.Namespace | None:
+def select_options(args: argparse.Namespace, engine, *, defaults: argparse.Namespace) -> argparse.Namespace | None:
     try:
         import tkinter as tk
         from tkinter import messagebox, ttk
@@ -265,11 +316,7 @@ def select_options(args: argparse.Namespace, engine) -> argparse.Namespace | Non
         preset = tk.StringVar(value=args.preset)
         description = tk.StringVar()
         summary = tk.StringVar()
-        flags = {name: tk.BooleanVar(value=getattr(args, name)) for name in (
-            "preset_only", "no_system_install", "with_rad_debugger", "with_ios", "with_editor", "with_editor_preview",
-            "with_denoiser", "with_tests", "run_tests", "with_smoke_app", "with_web_probes", "with_shader_probe", "validate",
-            "skip_checks", "skip_sanitizers", "skip_sdk", "ci",
-        )}
+        flags = {name: tk.BooleanVar(value=getattr(args, name)) for name in GUI_OPTIONS}
 
         card_padding = (space(init_theme.SPACE_LARGE), space(init_theme.SPACE_MEDIUM))
         workflow_card = ttk.Frame(panel, style="Card.TFrame", padding=card_padding)
@@ -350,7 +397,7 @@ def select_options(args: argparse.Namespace, engine) -> argparse.Namespace | Non
             result.all_presets = not result.preset_only
             return result
 
-        def refresh():
+        def refresh(*, restore_denoiser_default=True):
             browser = preset.get().startswith("web-")
             if browser:
                 flags["preset_only"].set(True)
@@ -366,7 +413,8 @@ def select_options(args: argparse.Namespace, engine) -> argparse.Namespace | Non
                 state="normal" if editor_supported and flags["with_editor"].get() else "disabled")
             # Unavailable presets turn the denoiser off; returning to a supported one restores the default.
             denoiser_supported = preset_supports(preset.get())
-            if denoiser_supported and str(controls["with_denoiser"].cget("state")) == "disabled":
+            if (restore_denoiser_default and denoiser_supported
+                    and str(controls["with_denoiser"].cget("state")) == "disabled"):
                 flags["with_denoiser"].set(True)
             if not denoiser_supported:
                 flags["with_denoiser"].set(False)
@@ -441,6 +489,15 @@ def select_options(args: argparse.Namespace, engine) -> argparse.Namespace | Non
         presets.bind("<<ComboboxSelected>>", lambda _event: refresh())
         description.set(next(item.description for item in PERSONAS if item.key == args.persona))
 
+        def reset_defaults():
+            chosen = next(item for item in PERSONAS if item.key == defaults.persona)
+            persona.set(chosen.label)
+            description.set(chosen.description)
+            preset.set(defaults.preset)
+            for name, value in flags.items():
+                value.set(getattr(defaults, name))
+            refresh(restore_denoiser_default=False)
+
         def accept(_event=None):
             nonlocal selection
             candidate = current_args()
@@ -458,6 +515,8 @@ def select_options(args: argparse.Namespace, engine) -> argparse.Namespace | Non
         footer.grid(row=2, column=0, sticky="ew")
         buttons = ttk.Frame(footer, style="Workspace.TFrame")
         buttons.grid(row=1, column=1, sticky="e", padx=footer.buttons_padding)
+        ttk.Button(buttons, text="Reset to defaults", command=reset_defaults).pack(
+            side="left", padx=(0, space(init_theme.SPACE_SMALL)))
         ttk.Button(buttons, text="Cancel", command=window.quit).pack(side="left", padx=(0, space(init_theme.SPACE_SMALL)))
         initialize = ttk.Button(buttons, text="Initialize", style="Primary.TButton", command=accept)
         initialize.pack(side="left")
