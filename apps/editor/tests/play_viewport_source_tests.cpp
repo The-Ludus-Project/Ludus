@@ -59,10 +59,12 @@ const QString SOCKET_PARENT = QStringLiteral("/tmp");
 /// Upper bound for the game to connect, render and close.
 constexpr int32 TIMEOUT_MILLISECONDS = 20000;
 constexpr int32 POLL_MILLISECONDS = 10;
+// The GPU cases below each compile under their own producer, platform and profiling
+// conditions; a build with none of them uses none of these shared constants.
 /// Frames the viewport presents in each phase of the GPU case.
-constexpr uint64 PRESENTED_FRAMES = 4;
-constexpr int32 VIEWPORT_WIDTH = 320;
-constexpr int32 VIEWPORT_HEIGHT = 240;
+[[maybe_unused]] constexpr uint64 PRESENTED_FRAMES = 4;
+[[maybe_unused]] constexpr int32 VIEWPORT_WIDTH = 320;
+[[maybe_unused]] constexpr int32 VIEWPORT_HEIGHT = 240;
 /// One 8-bit code of Qt's swapchain rounding on top of the producer's own tolerance.
 constexpr int32 DISPLAY_TOLERANCE = 2;
 

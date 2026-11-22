@@ -288,7 +288,9 @@ int main(int argc, char** argv)
     } cleanup;
     // --level is an explicit bounded read. The same codec validates Editor and
     // runtime; loading never rewrites, builds or repairs the source project.
-    LevelBytes levelBytes;
+    // Static storage: the 64 KiB buffer on main's frame left the browser build's
+    // 256 KiB stack too little for Application::Start and overflowed it.
+    static LevelBytes levelBytes;
     usize levelSize = 0;
     LevelReadTiming levelReadTiming;
     std::string_view startupPackEntry;

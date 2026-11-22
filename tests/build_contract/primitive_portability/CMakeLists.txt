@@ -40,6 +40,24 @@ endif()
 
 include(CTest)
 find_package(Catch2 3 REQUIRED CONFIG)
+
+# Production headers reach core.h (borrowed_view.hpp through byte_order.hpp), whose
+# assert.hpp includes the SDK-generated assert_config.hpp. The probe links no
+# assertion runtime, so it generates the Release policy (assertions compiled out)
+# from the engine's template and policy version rather than admitting its flavors.
+file(STRINGS "${ludus_root}/cmake/EngineBuildFlavor.cmake" ludus_policy_line
+    REGEX "^set\\(LUDUS_ASSERT_POLICY_VERSION [0-9]+\\)$")
+string(REGEX REPLACE "^set\\(LUDUS_ASSERT_POLICY_VERSION ([0-9]+)\\)$" "\\1" LUDUS_ASSERT_POLICY_VERSION "${ludus_policy_line}")
+if(NOT LUDUS_ASSERT_POLICY_VERSION MATCHES "^[0-9]+$")
+    message(FATAL_ERROR "Cannot read LUDUS_ASSERT_POLICY_VERSION from cmake/EngineBuildFlavor.cmake")
+endif()
+set(LUDUS_BUILD_FLAVOR_ID 4) # Release: the fourth of EngineBuildFlavor.cmake's LUDUS_BUILD_FLAVORS.
+set(LUDUS_ENABLE_ASSERTS 0)
+set(LUDUS_BREAK_ON_CHECK 0)
+set(LUDUS_ASSERT_DIALOGS_AVAILABLE 0)
+set(ludus_probe_generated_include "${CMAKE_BINARY_DIR}/generated/include")
+configure_file("${ludus_root}/cmake/assert_config.hpp.in"
+    "${ludus_probe_generated_include}/ludus/foundation/base/assert_config.hpp" @ONLY NEWLINE_STYLE UNIX)
 add_library(ludus_primitive_representation OBJECT "${ludus_root}/modules/foundation/base/src/types.cpp")
 add_executable(ludus_primitive_portability
     "${ludus_root}/modules/foundation/base/tests/checked_integer_tests.cpp"
@@ -48,7 +66,8 @@ add_executable(ludus_primitive_portability
     $<TARGET_OBJECTS:ludus_primitive_representation>)
 target_link_libraries(ludus_primitive_portability PRIVATE Catch2::Catch2WithMain)
 foreach(target ludus_primitive_representation ludus_primitive_portability)
-    target_include_directories(${target} PRIVATE "${ludus_root}/modules/foundation/base/include")
+    target_include_directories(${target} PRIVATE "${ludus_root}/modules/foundation/base/include"
+        "${ludus_probe_generated_include}")
     if(CMAKE_CXX_COMPILER_ID STREQUAL "MSVC")
         target_compile_options(${target} PRIVATE /W4 /WX /permissive- /Zc:__cplusplus /Zc:preprocessor /utf-8)
     else()
