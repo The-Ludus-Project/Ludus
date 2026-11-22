@@ -223,14 +223,14 @@ def _validate_node(node, where):
             record = node['shader_struct']
             _keys(record, ('source', 'type', 'count'), where)
             source = record['source']
-            _require(type(source) is str and source.endswith('.slang') and
+            _require(type(source) is str and source.endswith(('.slang', '.luslh')) and
                      not any(character in source for character in ('\\', ':', '"', '\0', '\n', '\r')),
-                     'Source', where, 'select a package-relative Slang file for the buffer struct')
+                     'Source', where, 'select a package-relative .slang or .luslh file for the buffer struct')
             relative = Path(source)
             _require(not relative.is_absolute() and '..' not in relative.parts and relative.as_posix() == source,
                      'Source', where, 'the struct file must be inside the graph package')
             name = _identifier(record['type'], where)
-            _require('-' not in name, 'Schema', where, 'enter a Slang struct identifier')
+            _require('-' not in name, 'Schema', where, 'enter a shader struct identifier')
             _integer(record['count'], 1, ray.MAX_BUFFER_BYTES, where)
         elif 'bytes_per_pixel' in node:
             _integer(node['bytes_per_pixel'], ray.BUFFER_WORD_BYTES, ray.MAX_BUFFER_PIXEL_BYTES, where)

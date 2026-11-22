@@ -567,6 +567,10 @@ static const float RAY_DIRECTION_SQUARED_TOLERANCE = 0.00001;
               if program['stage'] not in (*STAGES, COMPUTE_STAGE)}
     result[compute_identity] = {'id': compute_identity, 'stage': 'compute', 'source': selected['ray_generation']['source'],
                           'function': 'rgEntry', 'input': '', 'output': '', 'bindings': [], 'ray_wrapper': wrapper, 'ray_workgroup': workgroup, 'native_ray_queries': native_ray_queries, 'software_ray_queries': not native_ray_queries, 'native_ray_profile': True, 'persistent_ray_profile': persistent, 'storage_bindings': storage, 'storage_schemas': {binding['schema']: schemas[binding['schema']] for binding in storage}, 'visibility_buffer': technique.get('scene_interface', {}).get('visibility_buffer', False), 'ltc_table': technique.get('scene_interface', {}).get('polygonal_light_sampling', False)}
+    if needs_dispatch and snapshot.inline_buffer_sources:
+        result[compute_identity]['buffer_layout_namespaces'] = {
+            source: f'GraphSource{index}' for index, source in enumerate(sorted(selected_sources))
+            if source in snapshot.inline_buffer_sources}
     if named_record_views:
         result[compute_identity]['named_record_views'] = named_record_views
     if technique.get('scene_interface', {}).get('color_input', False):
@@ -601,6 +605,7 @@ def stage_helpers(snapshot, helper, roots, build):
     directory, in every preprocessor branch, so an engine shader that gains an include
     cannot leave the snapshot short of it. Names absent from the helper directory are
     left to the compiler, which reports them; authored sources are never followed here.
+    Return the captured paths so standalone probes can stage the same closure.
     """
     pending = list(roots)
     staged = set()
@@ -620,6 +625,7 @@ def stage_helpers(snapshot, helper, roots, build):
         text = data.decode('utf-8', 'replace') if isinstance(data, bytes) else data
         pending += [name for name in HELPER_INCLUDE.findall(text)
                     if '_ludus_ray/' + name not in staged and (helper / name).is_file()]
+    return staged
 
 
 def capture_program_closure(program, snapshot, build):
@@ -957,26 +963,38 @@ def persistent_wrapper(programs, technique, variants, snapshot, build, recipe, c
     # Shared type/helper includes are global and captured before entry-source namespaces.
     # Includes are compiler-resolved from the same immutable source snapshot.
     dependencies = {path for source in sources for path in snapshot.shader_closure(source)} - set(sources)
-    for source, _, _ in (named_record_views or {}).values():
-        build.require(source not in sources, 'ShaderInterface', source,
-                      'move the Buffer record declaration into a shared Slang header')
-        snapshot.shader_closure(source)
-        dependencies.add(source)
+    layout_namespaces = {source: f'GraphSource{index}' for index, source in enumerate(sources)
+                         if source in snapshot.inline_buffer_sources}
+    for record_source, _, _ in (named_record_views or {}).values():
+        if record_source in snapshot.inline_buffer_sources:
+            build.require(record_source in layout_namespaces, 'ShaderInterface', record_source,
+                          'the Buffer declaration must be visible to each linked shader; '
+                          'use a shared .luslh or .slang declaration across separate shader contexts')
+        else:
+            source = snapshot.buffer_layout_sources.get(record_source, record_source)
+            dependencies.add(source)
     for dependency in sorted(dependencies - {interface.get('payload')} - set((compatibility or {}).get('sources', {}))):
         prefix += '#include "' + dependency + '"\n'
-    for view, (_, type_name, is_writable) in (named_record_views or {}).items():
-        prefix += buffers.record_view_definition(view, type_name, is_writable)
+    for view, (source, type_name, is_writable) in (named_record_views or {}).items():
+        qualified_type = buffers.qualify_record_type(source, type_name, layout_namespaces)
+        prefix += buffers.record_view_definition(view, qualified_type, is_writable)
     prefix += buffers.word_view_definitions((named_resources or {}).values())
-    source_contexts = {}
+    source_contexts, source_aliases = {}, {}
     for variant, fields in (named_resources or {}).items():
         program = programs[variant[0]]
-        function = program['function']
+        function, source = program['function'], program['source']
         context = (f'struct {function}Resources {{\n' + ''.join(
             f'    {buffers.record_view_name(field)} {field["field"]};\n' for field in fields) + '};\n')
-        source_contexts.setdefault(program['source'], {})[function] = context
+        source_contexts.setdefault(source, {})[function] = context
+        for field in fields:
+            record = field['record']
+            if record and record['source'] != source and record['source'] in layout_namespaces:
+                source_aliases.setdefault(source, set()).add((record['source'], record['type']))
     for index, source in enumerate(sources):
+        aliases = ''.join(f'typedef {buffers.qualify_record_type(owner, type_name, layout_namespaces)} {type_name};\n'
+                          for owner, type_name in sorted(source_aliases.get(source, ())))
         declarations = ''.join(source_contexts.get(source, {}).values())
-        prefix += f'namespace GraphSource{index} {{\n{declarations}#include "{source}"\n}}\n'
+        prefix += f'namespace GraphSource{index} {{\n{aliases}{declarations}#include "{source}"\n}}\n'
     variant_callbacks = []
     for index, variant in enumerate(variants):
         variant_selected = {stage: dict(programs[identity], function=f'GraphSource{sources.index(programs[identity]["source"])}::' + programs[identity]['function'])

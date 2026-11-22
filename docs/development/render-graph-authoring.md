@@ -1234,19 +1234,24 @@ remain shader policy.
 ### Size an ordered Buffer from a shader struct
 
 On the canvas, open the Buffer's **Edit Node…** dialog or select it in
-Properties. Choose **From shader struct…** and select a shared Slang file and a
-struct declared in it. The picker lists package files and excludes program
-entry points. Use **New shared shader file…** to create a draft include. In
-Buffer sizing the language is Slang because Build Graph reflects the storage
-layout directly from the `.slang` declaration.
+Properties. Choose **From shader struct…**, select a package-relative `.luslh`
+or `.slang` file, and choose the struct it declares. Use **New shared shader
+file…** if you need a declaration file. The creation dialog defaults to a LUSL
+header and also offers Slang.
 
-Put the layout in the shared file after the leading `#pragma once`. Include it
-from each connected positional Slang shader with a quoted path relative to that
-shader's source. The Buffer refers to the file by its package-relative path.
-Save the files and Buffer settings, then run **Build Graph**. Slang reflects the
-storage stride and Ludus multiplies it by the element capacity, then rounds up
-to a 16-byte word. The Buffer shows the stride and allocation after a successful
-build. A change to the declaration takes effect on the next build.
+Build Graph lowers LUSL headers and reflects the storage stride with Slang.
+It multiplies the stride by the element capacity and rounds up to a 16-byte
+word. The Buffer shows both values after a successful build. Save changes to
+the declaration and run Build Graph again to update the allocation.
+
+An ordered Slang shader can declare the struct in its existing program file.
+Select that file and the type in **Buffer sizing**. Ordered Slang callbacks
+linked in the same shader context can use that layout, including through named
+Buffer ports. Use a shared declaration across separate contexts or with a named
+LUSL Buffer port. Named LUSL shaders get the linked type through
+`graph_resources.luslh`. Positional Slang shaders sharing a separate `.slang`
+declaration include it with a quoted path relative to the shader source.
+
 For a UTD edge table, choose **one** element because the table already contains
 its own fixed-capacity array.
 
@@ -9201,7 +9206,8 @@ ordinary-line and plain-Qt comparison probes are opt-in `[.benchmark]` tests in
    **Build Graph** to check the includes.
 
 For a layout that sets a Buffer's capacity, use the [struct sizing
-workflow](#size-an-ordered-buffer-from-a-shader-struct).
+workflow](#size-an-ordered-buffer-from-a-shader-struct), which also accepts
+structs already declared in ordered Slang shader programs.
 
 ### Edit shader sources in a code editor
 
