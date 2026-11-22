@@ -222,6 +222,7 @@ def lower_plan(package, configuration):
             if color is not None:
                 ray_colors[color['resource']] = color['output_version']
             recipes = [recipe for recipe in package.get('recipes', []) if recipe['technique'] == ray.TECHNIQUE and
+                       plan['configuration'] in recipe.get('configurations', (plan['configuration'],)) and
                        recipe.get('visibility_buffer', False) == ('visibility' in operation) and
                        recipe.get('color_input', False) == has_color_input and
                        recipe.get('storage_texture', False) == has_storage_texture and
@@ -528,6 +529,7 @@ def _runtime_contents(path, configuration):
     selected_techniques = set(plan['techniques'])
     ray_recipes = [recipe for recipe in package['recipes'] if ray.TECHNIQUE in selected_techniques and
                    recipe['technique'] == ray.TECHNIQUE and
+                   plan['configuration'] in recipe.get('configurations', (plan['configuration'],)) and
                    recipe.get('visibility_buffer', False) == has_visibility and
                    recipe.get('color_input', False) == has_color_input and
                    recipe.get('storage_texture', False) == has_storage_texture and

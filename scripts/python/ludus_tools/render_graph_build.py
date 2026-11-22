@@ -1259,16 +1259,17 @@ def prepare_sources(manifest, helper, *, root=None, ray_path_capture=False, capt
                                           profile['native_ray_queries'], ray_path_capture, workgroup=profile['workgroup'],
                                           scene_dispatch=profile['scene_dispatch'], named_resources=named_resources)
             linked_programs.update(expanded)
-            if profile['native_pipeline']:
-                require(not any(named_resources.get(variant) for variant in profile['variants']),
+            if profile['native_slots']:
+                require(not any(named_resources.get(variant) for variant in profile['native_slots']),
                         'Capability', 'RayTracing',
                         'named buffers require compute scene traversal; select Compute in the ray Invocation settings')
                 require('metal' in value['profiles'], 'Capability', 'RayTracing',
                         'hardware ray-stage invocation requires the native Metal backend; select Compute explicitly on other backends')
                 profile['native_compute'] = profile['compute'] + 'NativeStages'
                 linked_programs.update(ray.expand_programs(authored_programs, technique, snapshot, helper, sys.modules[__name__],
-                    profile['variants'], profile['persistent'], schemas, profile['native_compute'], True, ray_path_capture,
-                    native_ray_pipeline=True, workgroup=profile['workgroup'], named_resources=named_resources))
+                    list(profile['native_slots']), profile['persistent'], schemas, profile['native_compute'],
+                    True, ray_path_capture, native_slots=profile['native_slots'], workgroup=profile['workgroup'],
+                    named_resources=named_resources))
         programs = linked_programs
         for program_identity in programs:
             if 'ray_wrapper' in programs[program_identity]:
@@ -1466,6 +1467,8 @@ def build_package(manifest, output, *, helper, compiler, validator=None, spirv_c
                                 'compute': entries[(profile['compute'], target)], 'vertex': entries[(ray.IMAGE_VERTEX_ID, target)],
                                 'fragment': entries[(ray.IMAGE_FRAGMENT_ID, target)], 'bindings': {'vertex': [], 'fragment': []}}
                             record['ray_programs'] = [list(variant) for variant in profile['variants']]
+                            if profile['configurations']:
+                                record['configurations'] = profile['configurations']
                             record['persistent_buffers'] = profile['persistent']
                             record['native_ray_queries'] = profile['native_ray_queries']
                             if profile.get('native_compute') and target == 'metal':

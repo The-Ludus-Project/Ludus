@@ -315,7 +315,7 @@ class ManifestTests(unittest.TestCase):
 
 @unittest.skipUnless(all(os.environ.get(name) for name in NATIVE_TOOLS), 'requires pinned native shader tools')
 class NativeSceneComputeTests(unittest.TestCase):
-    def build(self, fixture, root, kernel_source, *, native_output=None, image_launch=None):
+    def build(self, fixture, root, kernel_source, *, native_output=None, image_launch=None, lit_consumer=False):
         """Build fixture and return its package, ray recipe and wrapper for the kernel compiled from kernel_source."""
         source = root / fixture.name
         shutil.copytree(fixture, source)
@@ -328,6 +328,8 @@ class NativeSceneComputeTests(unittest.TestCase):
             producer = next(node for node in config['nodes'] if node['id'] == 'utd')
             producer['invocation'].pop('traversal')
             producer['invocation']['type'] = 'RayTracing'
+            if lit_consumer:
+                next(row for row in producer['shaders'] if row['stage'] == 'ray_generation')['program'] = 'TraceDiffraction'
             if native_output == 'image':
                 producer['invocation'].pop('storage_texture')
                 producer['outputs'][0]['load'] = 'Clear'
@@ -338,6 +340,18 @@ class NativeSceneComputeTests(unittest.TestCase):
                                   '{ return float3(1, 0, 0); }\n'
                                   'void DiffractionMiss' + callbacks)
             path.write_bytes(graph.canonical_asset(document))
+        if lit_consumer:
+            value = json.loads(manifest.read_text())
+            next(item for item in value['programs'] if item['id'] == 'ProduceDiffraction')['id'] = 'TraceDiffraction'
+            technique = next(item for item in value['techniques'] if item['id'] == ray.TECHNIQUE)
+            technique['scene_interface']['polygonal_light_sampling'] = True
+            manifest.write_text(json.dumps(value))
+            shader = source / 'main_shaders/read_diffraction.slang'
+            original = shader.read_text()
+            lit = original.replace('return diffraction.bgr;',
+                                   'return diffraction.bgr * LookupSpecularLtc(0.5, float3(0, 0, 1), float3(0.04)).Norm;')
+            self.assertNotEqual(original, lit)
+            shader.write_text(lit)
         if image_launch is not None:
             path = source / 'main.lurender.json'
             document = json.loads(path.read_text())
@@ -669,10 +683,19 @@ class NativeSceneComputeTests(unittest.TestCase):
         from test_render_graph_authoring import parse_runtime
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
-            package, recipe, _ = self.build(SCENE_COMPUTE, root, 'main_shaders/produce_diffraction.slang',
-                                            native_output='storage')
+            package, recipe, _ = self.build(SCENE_COMPUTE, root, 'main_shaders/read_diffraction.slang',
+                                            native_output='storage', lit_consumer=True)
             self.assertTrue(recipe['storage_texture'])
             self.assertIn('native_pipeline', recipe)
+            contents = execution._runtime_contents(str(package), 'ColorInput')
+            self.assertTrue(contents['ltc_table'])
+            native = contents['artifacts'][('NativeRayStages', 'compute', 'metal')]
+            self.assertNotIn(ray.LTC_TABLE_SLOT, {entry['binding'] for entry in native['descriptor']['interface']['entries']})
+            native_wrapper = (package / 'programs' / recipe['native_pipeline'] / 'wrapper.slang').read_text()
+            self.assertNotIn('ReadDiffraction', native_wrapper)
+            native_pass = next(item for item in contents['passes'] if item['Traversal'] == 'HardwarePipeline')
+            self.assertGreater(native_pass['RayProgram'], 0)
+            self.assertRegex(native_wrapper, rf"case {native_pass['RayProgram']}: .*ProduceDiffraction")
             destination = root / 'native-storage.lurgrt'
             execution.cook_runtime(package, destination, configuration='ColorInput')
             stages = parse_runtime(destination.read_bytes())['stages']
