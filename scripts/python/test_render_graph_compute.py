@@ -514,6 +514,19 @@ class NativeSceneComputeTests(unittest.TestCase):
             shade.write_text(consumer)
             options = dict(helper=os.environ['LUDUS_RG1_HELPER'], compiler=os.environ['LUDUS_RG1_SLANG'],
                            spirv_cross=os.environ['LUDUS_RG1_CROSS'], validator=validator)
+            legacy = consumer.replace(', ShadeRecordedHitResources resources', '').replace(
+                'Edge edge = resources.Edges[0];', 'Edge edge = {};')
+            shade.write_text(legacy)
+            pending = shader_context.export_context(manifest_path, root / 'editor', 'main_shaders/shade.slang',
+                                                    helper=options['helper'])['resources'][0]
+            self.assertTrue(pending['needs_upgrade'])
+            self.assertEqual({'name': 'Edges', 'type': 'Edge', 'writable': False}, pending['fields'][0])
+            self.assertEqual(legacy, shade.read_text())
+            with self.assertRaisesRegex(ToolingError, 'Add Buffer Access') as failure:
+                build.build_package(manifest_path, root / 'build', **options)
+            self.assertEqual('main_shaders/shade.slang', failure.exception.location['source'])
+            self.assertEqual('add_buffer_access', failure.exception.location['repair'])
+            shade.write_text(consumer)
             context = shader_context.export_context(manifest_path, root / 'editor', 'main_shaders/shade.slang',
                                                     helper=options['helper'])
             self.assertIn('GraphReadOnlyEdgeView Edges;', context['prefix'])
@@ -665,6 +678,14 @@ class NativeSceneComputeTests(unittest.TestCase):
                 '    return edge.EndWorld - edge.BeginWorld;\n'
                 '}\n')
             shade_lusl = shaders / 'shade.lusl'
+            legacy_lusl = lusl_consumer.replace('#include "graph_resources.luslh"\n', '').replace(
+                ', in ShadeRecordedHitResources resources', '').replace('resources.Edges.Load(0)', '0')
+            shade_lusl.write_text(legacy_lusl)
+            pending = shader_context.export_context(manifest_path, root / 'lusl-editor', 'main_shaders/shade.lusl',
+                                                    helper=options['helper'], compiler=options['compiler'])['resources'][0]
+            self.assertTrue(pending['needs_upgrade'])
+            self.assertEqual({'name': 'Edges', 'type': 'Edge', 'writable': False}, pending['fields'][0])
+            self.assertEqual(legacy_lusl, shade_lusl.read_text())
             shade_lusl.write_text(lusl_consumer.replace('resources.Edges.Load(0)', 'resources.'))
             context = shader_context.export_context(manifest_path, root / 'lusl-editor', 'main_shaders/shade.lusl',
                                                     helper=options['helper'], compiler=options['compiler'])

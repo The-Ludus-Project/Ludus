@@ -7,8 +7,11 @@
 
 #include <QComboBox>
 #include <QCryptographicHash>
+#include <QHBoxLayout>
 #include <QLabel>
+#include <QPushButton>
 #include <QStringList>
+#include <QWidget>
 
 namespace ludus::editor
 {
@@ -67,8 +70,22 @@ CodeDocumentTab* RendererWorkspace::openShaderCodeTab(const QString& file, bool 
         navigation.SetViewHost(this, &mSource->GetNavigation());
         RenderGraphShaderAssistance* assistance =
             new RenderGraphShaderAssistance(mDocument, editor, tab.GetController(), mTooling, &tab);
+        QWidget* controls = new QWidget(&tab);
+        QHBoxLayout* row = new QHBoxLayout(controls);
+        row->setContentsMargins(0, 0, 0, 0);
+        row->addWidget(assistance, 1);
+        QPushButton* include = new QPushButton(QStringLiteral("Insert Shared Include…"), controls);
+        include->setObjectName(QStringLiteral("renderGraphInsertSharedIncludeInTab"));
+        row->addWidget(include);
+        connect(include, &QPushButton::clicked, &tab, [this, file, &tab]() {
+            const QString message = insertSharedShaderInclude(tab, file);
+            if (message.isEmpty() == false)
+            {
+                tab.GetBanner().ShowExplanation(message);
+            }
+        });
         QLabel* status = assistance->GetStatusLabel();
-        tab.AddSessionControls(*assistance, *status);
+        tab.AddSessionControls(*controls, *status);
         status->hide();
         connect(assistance, &RenderGraphShaderAssistance::StatusTextChanged, status, [status]() {
             status->setVisible(status->text().isEmpty() == false);

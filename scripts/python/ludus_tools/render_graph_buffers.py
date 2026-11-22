@@ -21,9 +21,9 @@ def requests_named_resources(program, snapshot):
     return re.search(rf'\b{function}\s*\([^()]*\b{function}Resources\s+[A-Za-z_]\w*\s*\)', text) is not None
 
 
-def link_persistent_structs(plans, programs, snapshot, build, closures=None):
+def link_persistent_structs(plans, programs, snapshot, build, closures=None, *, pending_resources=None):
     """Resolve named shader arguments from pass-local port declarations."""
-    variants, signatures = {}, {}
+    variants, signatures, ambiguous_pending = {}, {}, set()
     for plan in plans:
         instances = {context['instance']: context for context in plan['activity']}
         for operation in plan['passes']:
@@ -42,9 +42,14 @@ def link_persistent_structs(plans, programs, snapshot, build, closures=None):
             for use in operation.get('persistent_buffers', []):
                 record = resources[use['resource']].get('shader_struct')
                 is_writable = use['output_version'] is not None
-                build.require(is_writable or is_named, 'ShaderInterface', operation['id'],
-                              f"add a final {program.get('function', 'ShaderMain')}Resources resources parameter to "
-                              f"'{program_id}' to use its read-only Buffer port; see Shader API")
+                if not (is_writable or is_named) and pending_resources is None:
+                    function = program.get('function', 'ShaderMain')
+                    raise build.ToolingError(
+                        'RenderGraphBuildShaderInterface',
+                        f"{operation['id']}: use Shader API → Add Buffer Access for '{program_id}', or "
+                        f'add a final {function}Resources resources parameter for the read-only Buffer port.',
+                        location={'source': program.get('source', ''), 'program': program_id, 'line': 1,
+                                  'column': 1, 'repair': 'add_buffer_access'})
                 if record is not None and program:
                     source = record['source']
                     if is_named and source_is_lusl and source in snapshot.inline_buffer_sources:
@@ -56,15 +61,16 @@ def link_persistent_structs(plans, programs, snapshot, build, closures=None):
                             f"for '{record['type']}'. Select that declaration in Buffer sizing.",
                             location={'source': context['source'], 'configuration': context['configuration'],
                                       'node': node, 'field': 'shader_struct'})
-                    if (closures is not None and not is_named and source not in snapshot.inline_buffer_sources and
+                    if (closures is not None and pending_resources is None and not is_named and
+                            source not in snapshot.inline_buffer_sources and
                             source not in snapshot.buffer_layout_sources and source not in closures[program_id]):
                         raise build.ToolingError(
                             'RenderGraphBuildShaderInterface',
-                            f"{use['resource']}: add a quoted #include for shared file '{source}' to "
-                            f"'{program_id}', with a path relative to the program source.",
+                            f"{use['resource']}: in '{program_id}', use Source → Insert Shared Include or "
+                            f"add a quoted #include for shared file '{source}' relative to the program source.",
                             location={'source': program['source'], 'program': program_id, 'line': 1, 'column': 1})
                     build.name(record['type'], 'buffer struct type')
-                if is_named:
+                if is_named or (pending_resources is not None and program.get('output') == 'Radiance'):
                     port = ports[use['slot']]['id']
                     field = port[0].upper() + port[1:]
                     build.name(field, f"shader member for Buffer port '{port}'")
@@ -74,9 +80,14 @@ def link_persistent_structs(plans, programs, snapshot, build, closures=None):
                     fields.append({'field': field, 'slot': use['slot'], 'record': record,
                                    'writable': is_writable,
                                    'word_view': record is None and not uses_legacy_word_binding})
-            if not is_named:
-                continue
             ordered = sorted(fields, key=lambda field: field['field'])
+            if not is_named:
+                if pending_resources is not None and program_id not in ambiguous_pending:
+                    previous = pending_resources.setdefault(program_id, ordered)
+                    if previous != ordered:
+                        ambiguous_pending.add(program_id)
+                        del pending_resources[program_id]
+                continue
             signature = [(field['field'], field['writable'], field['record'] and
                           (field['record']['source'], field['record']['type'])) for field in ordered]
             key = (program['source'], program['function'])

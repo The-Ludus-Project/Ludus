@@ -1,11 +1,13 @@
 #include "internal/code_editor.h"
 #include "internal/code_editor_area.h"
 #include "internal/render_graph_node_details.h"
+#include "internal/render_graph_shader_edits.h"
 #include "internal/render_graph_shader_language.h"
 #include "internal/renderer_workspace.h"
 
 #include <ludus/content/render_graph_format/plan.h>
 
+#include <QCheckBox>
 #include <QComboBox>
 #include <QDialog>
 #include <QDialogButtonBox>
@@ -14,9 +16,12 @@
 #include <QFontMetrics>
 #include <QFormLayout>
 #include <QHBoxLayout>
+#include <QInputDialog>
+#include <QJsonArray>
 #include <QJsonObject>
 #include <QLabel>
 #include <QLineEdit>
+#include <QMessageBox>
 #include <QObject>
 #include <QPushButton>
 #include <QRegularExpression>
@@ -65,6 +70,30 @@ QStringList FindDeclaredStructs(const QByteArray& source)
     }
     names.removeDuplicates();
     return names;
+}
+
+QStringList FindSharedShaderIncludes(const RenderGraphDocument& document, const QString& target)
+{
+    QStringList headers;
+    for (const QString& file : document.GetFiles())
+    {
+        if (GetSharedShaderIncludePath(target, file).isEmpty() == false)
+        {
+            headers.append(file);
+        }
+    }
+    return headers;
+}
+
+QString ChooseSharedShaderInclude(QWidget& inoutParent, const QStringList& headers, const QString& target)
+{
+    const QString header = QInputDialog::getItem(&inoutParent,
+                                                 QStringLiteral("Insert Shared Include"),
+                                                 QStringLiteral("Header in this graph package"),
+                                                 headers,
+                                                 0,
+                                                 false);
+    return header.isEmpty() == true ? QString() : GetSharedShaderIncludePath(target, header);
 }
 
 CodeEditor* AddDeclarationEditor(QFormLayout& outFields, QDialog& inoutDialog, const QString& text)
@@ -134,11 +163,23 @@ QString RendererWorkspace::stageSharedShaderSource(QWidget& inoutParent,
     path->setObjectName(QStringLiteral("renderGraphSharedShaderPath"));
     path->selectAll();
     fields.addRow(QStringLiteral("Package-relative path"), path);
+    QCheckBox* include = new QCheckBox(QStringLiteral("Include from %1").arg(nearbyFile), &dialog);
+    include->setObjectName(QStringLiteral("renderGraphIncludeNewSharedShader"));
+    include->setToolTip(
+        QStringLiteral("Link the new file from the current shader when their languages and paths are compatible."));
+    include->setVisible(isBufferLayout == false && nearbyFile.isEmpty() == false);
+    const auto updateInclude = [include, path, nearbyFile]() {
+        include->setEnabled(GetSharedShaderIncludePath(nearbyFile, path->text().trimmed()).isEmpty() == false);
+    };
+    include->setChecked(true);
+    updateInclude();
+    connect(path, &QLineEdit::textChanged, &dialog, updateInclude);
+    fields.addRow(include);
     const QString usage =
         isBufferLayout == true
             ? QStringLiteral("Define the buffer struct below. The file joins the graph draft when you create it.")
             : QStringLiteral("Declare shared types and helpers here. Use a quoted #include from the shaders "
-                             "that need them. Save writes the file to the graph package.");
+                             "that need them, or let Ludus add the include below. Save writes the graph draft.");
     QLabel* hint = new QLabel(usage, &dialog);
     hint->setObjectName(QStringLiteral("renderGraphSharedShaderHint"));
     hint->setWordWrap(true);
@@ -183,31 +224,39 @@ QString RendererWorkspace::stageSharedShaderSource(QWidget& inoutParent,
     create->setObjectName(QStringLiteral("renderGraphCreateSharedShader"));
     fields.addRow(buttons);
     connect(buttons, &QDialogButtonBox::rejected, &dialog, &QDialog::reject);
-    connect(create, &QPushButton::clicked, &dialog, [this, path, language, problem, editorOrNull, &dialog]() {
-        QByteArray source;
-        if (editorOrNull != nullptr && ReadBufferDeclaration(*editorOrNull, *problem, source) == false)
-        {
-            return;
-        }
-        QString error;
-        const RenderGraphShaderLanguage selected = language->currentData().value<RenderGraphShaderLanguage>();
-        const QString file = path->text().trimmed();
-        const RenderGraphDocumentStatus status = mDocument.CreateSharedShaderSource(file, selected, error, source);
-        if (status == RenderGraphDocumentStatus::Ok)
-        {
-            dialog.accept();
-            return;
-        }
-        if (editorOrNull != nullptr && status == RenderGraphDocumentStatus::Conflict &&
-            mDocument.GetFiles().contains(file, Qt::CaseInsensitive) == true)
-        {
-            error = QStringLiteral("'%1' already exists. Choose another path, or cancel and select it in Buffer "
-                                   "sizing to edit its declaration.")
-                        .arg(file);
-        }
-        problem->setText(error);
-        path->setFocus();
-    });
+    connect(create,
+            &QPushButton::clicked,
+            &dialog,
+            [this, path, language, problem, editorOrNull, include, isBufferLayout, nearbyFile, &dialog]() {
+                QByteArray source;
+                if (editorOrNull != nullptr && ReadBufferDeclaration(*editorOrNull, *problem, source) == false)
+                {
+                    return;
+                }
+                QString error;
+                const RenderGraphShaderLanguage selected = language->currentData().value<RenderGraphShaderLanguage>();
+                const QString file = path->text().trimmed();
+                const QString target =
+                    isBufferLayout == false && include->isEnabled() == true && include->isChecked() == true ? nearbyFile
+                                                                                                            : QString();
+                const RenderGraphDocumentStatus status =
+                    mDocument.CreateSharedShaderSource(file, selected, error, source, target);
+                if (status == RenderGraphDocumentStatus::Ok)
+                {
+                    dialog.accept();
+                    return;
+                }
+                if (editorOrNull != nullptr && status == RenderGraphDocumentStatus::Conflict &&
+                    mDocument.GetFiles().contains(file, Qt::CaseInsensitive) == true)
+                {
+                    error =
+                        QStringLiteral("'%1' already exists. Choose another path, or cancel and select it in Buffer "
+                                       "sizing to edit its declaration.")
+                            .arg(file);
+                }
+                problem->setText(error);
+                path->setFocus();
+            });
     path->setFocus();
     return dialog.exec() == QDialog::Accepted ? path->text().trimmed() : QString();
 }
@@ -226,6 +275,120 @@ void RendererWorkspace::openNewSharedShaderSource(QWidget& inoutParent, const QS
     }
     documentEdited(RenderGraphDocumentStatus::Ok);
     openSourceLine(file, 1);
+}
+
+QString RendererWorkspace::insertSharedShaderInclude(QWidget& inoutParent, const QString& target)
+{
+    const QStringList headers = FindSharedShaderIncludes(mDocument, target);
+    if (headers.isEmpty() == true)
+    {
+        return QStringLiteral("No compatible shared header is available for this source. "
+                              "Use Source → New shared shader file to create one.");
+    }
+    const QString package = mDocument.GetPackageRoot();
+    const foundation::uint64 revision = mDocument.GetRevision();
+    const QString include = ChooseSharedShaderInclude(inoutParent, headers, target);
+    if (include.isEmpty() == true)
+    {
+        return {};
+    }
+    if (package != mDocument.GetPackageRoot() || revision != mDocument.GetRevision())
+    {
+        return QStringLiteral("The shader draft changed. Review the current source and try again.");
+    }
+    const QByteArray before = mDocument.GetDraft(target);
+    const QByteArray after = InsertShaderInclude(before, include);
+    if (after == before)
+    {
+        return QStringLiteral("This source already includes '%1'.").arg(include);
+    }
+    const RenderGraphDocumentStatus status = mDocument.SetText(target, after);
+    documentEdited(status);
+    return status == RenderGraphDocumentStatus::Ok
+               ? QString()
+               : (status == RenderGraphDocumentStatus::Capacity
+                      ? DescribePackageCapacity()
+                      : QStringLiteral("Could not insert the include. Reopen the shader and try again."));
+}
+
+void RendererWorkspace::addShaderBufferAccess()
+{
+    const QString file = GetSourceFile();
+    const QString manifest = manifestFile();
+    const QByteArray source = mDocument.GetDraft(file);
+    const foundation::uint64 revision = mDocument.GetRevision();
+    const QJsonArray callbacks = FindShaderBufferCallbacks(mDocument.GetDraft(manifest), file);
+    const bool isLusl = file.endsWith(QStringLiteral(".lusl"));
+    QStringList functions;
+    for (const QJsonValueConstRef entry : callbacks)
+    {
+        const QJsonObject program = entry.toObject();
+        const QString function = program.value(QStringLiteral("function")).toString();
+        if (functions.contains(function) == false)
+        {
+            functions.append(function);
+        }
+    }
+    if (functions.isEmpty() == true)
+    {
+        return;
+    }
+    const QString function = functions.size() == 1 ? functions.constFirst()
+                                                   : QInputDialog::getItem(this,
+                                                                           QStringLiteral("Add Buffer Access"),
+                                                                           QStringLiteral("Callback in %1").arg(file),
+                                                                           functions,
+                                                                           0,
+                                                                           false);
+    if (function.isEmpty() == true)
+    {
+        return;
+    }
+    QString error;
+    const QByteArray updated = AddShaderBufferParameter(source, function, isLusl, error);
+    if (updated.isNull() == true)
+    {
+        mSourceStatus->setText(error);
+        return;
+    }
+    QMessageBox confirm(QMessageBox::Question,
+                        QStringLiteral("Add Buffer Access"),
+                        QStringLiteral("Enable named Buffer access for %1 in %2?").arg(function, file),
+                        QMessageBox::Cancel,
+                        this);
+    confirm.setTextFormat(Qt::PlainText);
+    QString description = isLusl == true
+                              ? QStringLiteral("Adds the generated include and the resource parameter where needed.")
+                              : QStringLiteral("Adds the resource parameter where needed.");
+    for (const QJsonValueConstRef entry : callbacks)
+    {
+        const QJsonObject program = entry.toObject();
+        if (program.value(QStringLiteral("function")).toString() == function &&
+            program.value(QStringLiteral("graph_resources")) == QJsonValue(false))
+        {
+            description += QStringLiteral(" Also enables named access for this callback in the shader manifest.");
+            break;
+        }
+    }
+    confirm.setInformativeText(description + QStringLiteral(" Save publishes the change."));
+    QPushButton* apply = confirm.addButton(QStringLiteral("Add Buffer Access"), QMessageBox::AcceptRole);
+    confirm.setDefaultButton(QMessageBox::Cancel);
+    confirm.exec();
+    if (confirm.clickedButton() != apply)
+    {
+        return;
+    }
+    if (revision != mDocument.GetRevision() || file != GetSourceFile())
+    {
+        mSourceStatus->setText(QStringLiteral("The shader draft changed. Review the current source and try again."));
+        return;
+    }
+    const RenderGraphDocumentStatus status = mDocument.AddShaderBufferAccess(manifest, file, function, error);
+    documentEdited(status);
+    if (status != RenderGraphDocumentStatus::Ok)
+    {
+        mSourceStatus->setText(error);
+    }
 }
 
 void RendererWorkspace::editBufferSizing(QWidget& inoutParent, const BufferSizingDraft* pendingOrNull)

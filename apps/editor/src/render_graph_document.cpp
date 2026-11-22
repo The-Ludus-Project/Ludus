@@ -6,6 +6,7 @@
 #include "internal/render_graph_pipeline_node.h"
 #include "internal/render_graph_scene_bundle.h"
 #include "internal/render_graph_shader_creation.h"
+#include "internal/render_graph_shader_edits.h"
 #include "internal/render_graph_upscale_node.h"
 #include "internal/render_graph_wire_routes.h"
 
@@ -1873,7 +1874,8 @@ bool IsRecoverySourcePath(const QString& path)
 RenderGraphDocumentStatus RenderGraphDocument::CreateSharedShaderSource(const QString& file,
                                                                         RenderGraphShaderLanguage language,
                                                                         QString& outError,
-                                                                        const QByteArray& initialSource)
+                                                                        const QByteArray& initialSource,
+                                                                        const QString& includeTarget)
 {
     static const QRegularExpression PATH_WITHOUT_SUFFIX(
         QStringLiteral("\\A(?:[A-Za-z0-9_][A-Za-z0-9_.-]*/)*[A-Za-z0-9_][A-Za-z0-9_.-]*\\z"));
@@ -1916,6 +1918,18 @@ RenderGraphDocumentStatus RenderGraphDocument::CreateSharedShaderSource(const QS
     }
 
     RenderGraphSnapshot candidate = mDraft;
+    if (includeTarget.isEmpty() == false)
+    {
+        const QString include = GetSharedShaderIncludePath(includeTarget, file);
+        if (include.isEmpty() == true || candidate.Files.contains(includeTarget) == false)
+        {
+            outError = QStringLiteral("Choose a compatible header path for '%1', or clear the include checkbox.")
+                           .arg(includeTarget);
+            return RenderGraphDocumentStatus::InvalidEdit;
+        }
+        const QByteArray target = candidate.Files.value(includeTarget);
+        candidate.Files.insert(includeTarget, InsertShaderInclude(target, include));
+    }
     candidate.Files.insert(
         file,
         initialSource.isNull() == true
@@ -1927,6 +1941,71 @@ RenderGraphDocumentStatus RenderGraphDocument::CreateSharedShaderSource(const QS
                : status == RenderGraphDocumentStatus::Capacity
                    ? DescribePackageCapacity()
                    : QStringLiteral("Could not add the file to the draft. Reopen the graph and try again.");
+    return status;
+}
+
+RenderGraphDocumentStatus RenderGraphDocument::AddShaderBufferAccess(const QString& manifest,
+                                                                     const QString& file,
+                                                                     const QString& function,
+                                                                     QString& outError)
+{
+    const QByteArray manifestBytes = GetDraft(manifest);
+    QStringList callbackPrograms;
+    for (const QJsonValueConstRef entry : FindShaderBufferCallbacks(manifestBytes, file))
+    {
+        const QJsonObject program = entry.toObject();
+        if (program.value(QStringLiteral("function")).toString() == function)
+        {
+            callbackPrograms.append(program.value(QStringLiteral("id")).toString());
+        }
+    }
+    if (callbackPrograms.isEmpty() == true || mDraft.Files.contains(file) == false)
+    {
+        outError = QStringLiteral("This callback is no longer assigned. Reopen the shader and try again.");
+        return RenderGraphDocumentStatus::NotFound;
+    }
+    const QByteArray source = GetDraft(file);
+    const QByteArray updated =
+        AddShaderBufferParameter(source, function, file.endsWith(QStringLiteral(".lusl")), outError);
+    if (updated.isNull() == true)
+    {
+        return RenderGraphDocumentStatus::InvalidEdit;
+    }
+
+    QJsonObject manifestObject = QJsonDocument::fromJson(manifestBytes).object();
+    QJsonArray programs = manifestObject.value(QStringLiteral("programs")).toArray();
+    bool hasLegacyOptOut = false;
+    for (qsizetype index = 0; index < programs.size(); ++index)
+    {
+        QJsonObject program = programs.at(index).toObject();
+        if (callbackPrograms.contains(program.value(QStringLiteral("id")).toString()) == true &&
+            program.value(QStringLiteral("graph_resources")) == QJsonValue(false))
+        {
+            program.remove(QStringLiteral("graph_resources"));
+            programs.replace(index, program);
+            hasLegacyOptOut = true;
+        }
+    }
+    if (updated == source && hasLegacyOptOut == false)
+    {
+        outError = QStringLiteral("%1 already has the named Buffer interface.").arg(function);
+        return RenderGraphDocumentStatus::InvalidEdit;
+    }
+    RenderGraphSnapshot candidate = mDraft;
+    candidate.Files.insert(file, updated);
+    if (hasLegacyOptOut == true)
+    {
+        manifestObject.insert(QStringLiteral("programs"), programs);
+        candidate.Files.insert(manifest, QJsonDocument(manifestObject).toJson());
+    }
+    const RenderGraphDocumentStatus status =
+        commit(candidate, "Add Buffer Access", false, {}, {}, {}, {}, CommitKind::Source);
+    if (status != RenderGraphDocumentStatus::Ok)
+    {
+        outError = status == RenderGraphDocumentStatus::Capacity
+                       ? DescribePackageCapacity()
+                       : QStringLiteral("Could not add Buffer access. Reopen the shader and try again.");
+    }
     return status;
 }
 

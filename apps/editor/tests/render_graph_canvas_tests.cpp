@@ -18,6 +18,7 @@
 
 #include <catch2/catch_test_macros.hpp>
 
+#include <QAbstractButton>
 #include <QAction>
 #include <QApplication>
 #include <QCheckBox>
@@ -34,12 +35,14 @@
 #include <QGraphicsRectItem>
 #include <QGraphicsScene>
 #include <QGroupBox>
+#include <QInputDialog>
 #include <QJsonArray>
 #include <QJsonDocument>
 #include <QKeySequence>
 #include <QLabel>
 #include <QLineEdit>
 #include <QMenu>
+#include <QMessageBox>
 #include <QNativeGestureEvent>
 #include <QPlainTextEdit>
 #include <QPointingDevice>
@@ -1711,6 +1714,22 @@ TEST_CASE("persistent buffer capacity edits share canvas and Properties history"
     CHECK(declaration->GetPath() == emptyFile);
     CHECK(declaration->IsPreview() == false);
     CHECK(declaration->GetEditor().toPlainText() == QStringLiteral("#pragma once\n"));
+    QPushButton* include = declaration->findChild<QPushButton*>(QStringLiteral("renderGraphInsertSharedIncludeInTab"));
+    REQUIRE(include != nullptr);
+    QTimer::singleShot(0, declaration, [sharedFile]() {
+        QInputDialog* picker = qobject_cast<QInputDialog*>(QApplication::activeModalWidget());
+        REQUIRE(picker != nullptr);
+        QComboBox* headers = picker->findChild<QComboBox*>();
+        REQUIRE(headers != nullptr);
+        REQUIRE(headers->findText(sharedFile) >= 0);
+        headers->setCurrentText(sharedFile);
+        picker->accept();
+    });
+    include->click();
+    CHECK(workspace.GetDocument().GetDraft(emptyFile) ==
+          QByteArrayLiteral("#pragma once\n#include \"edge_table.slang\"\n"));
+    CHECK(declaration->GetEditor().toPlainText() == QString::fromUtf8(workspace.GetDocument().GetDraft(emptyFile)));
+
     QTextCursor endCursor = declaration->GetEditor().textCursor();
     endCursor.movePosition(QTextCursor::End);
     declaration->GetEditor().setTextCursor(endCursor);
@@ -1985,6 +2004,123 @@ TEST_CASE("Source creates a shared LUSL include using the language picker", "[ed
     RenderGraphDocument reopened;
     REQUIRE(reopened.Load(package, GetRootGraph()) == RenderGraphDocumentStatus::Ok);
     CHECK(reopened.GetDraft(file) == workspace.GetDocument().GetDraft(file));
+}
+
+TEST_CASE("Shader API can upgrade a legacy callback and undo the complete edit",
+          "[editor][render-graph][shader-creation]")
+{
+    QTemporaryDir project;
+    const QDir package(MakePackage(project));
+    const QString file = QStringLiteral("main_shaders/edges.lusl");
+    const QString manifest = QStringLiteral("main.lushader.json");
+    const QByteArray source = QByteArrayLiteral(
+        "#include \"scene_shader.luslh\"\n"
+        "float32x3 ShaderMain(in SceneContext scene, in RayLaunch launch, inout RayQueryContext inoutQueries)\n"
+        "{ return float32x3(0); }\n");
+    WriteFile(package.filePath(file), source);
+    QJsonObject descriptor = QJsonDocument::fromJson(ReadFile(package.filePath(manifest))).object();
+    QJsonArray programs = descriptor.value(QStringLiteral("programs")).toArray();
+    programs.append(QJsonObject{
+        {QStringLiteral("id"), QStringLiteral("Edges")},
+        {QStringLiteral("stage"), QStringLiteral("compute")},
+        {QStringLiteral("input"), QStringLiteral("RayLaunch")},
+        {QStringLiteral("output"), QStringLiteral("Radiance")},
+        {QStringLiteral("function"), QStringLiteral("ShaderMain")},
+        {QStringLiteral("source"), file},
+        {QStringLiteral("graph_resources"), false},
+    });
+    descriptor.insert(QStringLiteral("programs"), programs);
+    const QByteArray manifestBytes = QJsonDocument(descriptor).toJson();
+    WriteFile(package.filePath(manifest), manifestBytes);
+
+    RendererWorkspace workspace({});
+    workspace.SetProject(project.path(), 1);
+    REQUIRE(workspace.OpenGraph(package.filePath(GetRootGraph())) == true);
+    workspace.SetLivePreview(false);
+    REQUIRE(workspace.ShowSourceView() == true);
+    QComboBox* sources = workspace.findChild<QComboBox*>(QStringLiteral("renderGraphSourceFile"));
+    REQUIRE(sources != nullptr);
+    sources->setCurrentText(file);
+    QPushButton* api = workspace.findChild<QPushButton*>(QStringLiteral("renderGraphShaderApiToggle"));
+    QPushButton* add = workspace.findChild<QPushButton*>(QStringLiteral("renderGraphAddShaderBufferAccess"));
+    REQUIRE(api != nullptr);
+    REQUIRE(add != nullptr);
+    api->setChecked(true);
+    REQUIRE(add->isHidden() == false);
+
+    const uint64 revision = workspace.GetDocument().GetRevision();
+    QTimer::singleShot(0, &workspace, []() {
+        QMessageBox* dialog = qobject_cast<QMessageBox*>(QApplication::activeModalWidget());
+        REQUIRE(dialog != nullptr);
+        dialog->reject();
+    });
+    add->click();
+    CHECK(workspace.GetDocument().GetRevision() == revision);
+
+    QTimer::singleShot(0, &workspace, []() {
+        QMessageBox* dialog = qobject_cast<QMessageBox*>(QApplication::activeModalWidget());
+        REQUIRE(dialog != nullptr);
+        CHECK(dialog->defaultButton() == dialog->button(QMessageBox::Cancel));
+        for (QAbstractButton* button : dialog->buttons())
+        {
+            if (dialog->buttonRole(button) == QMessageBox::AcceptRole)
+            {
+                button->click();
+                return;
+            }
+        }
+        dialog->reject();
+    });
+    add->click();
+    const QByteArray updated = workspace.GetDocument().GetDraft(file);
+    CHECK(updated.contains("#include \"graph_resources.luslh\"") == true);
+    CHECK(updated.contains("in ShaderMainResources resources)") == true);
+    CHECK(workspace.GetDocument().GetDraft(manifest).contains("graph_resources") == false);
+    CHECK(workspace.GetDocument().GetRevision() == revision + 1);
+    CHECK(ReadFile(package.filePath(file)) == source);
+    workspace.Undo();
+    CHECK(workspace.GetDocument().GetDraft(file) == source);
+    CHECK(workspace.GetDocument().GetDraft(manifest) == manifestBytes);
+    workspace.Redo();
+    REQUIRE(workspace.Save() == true);
+    CHECK(ReadFile(package.filePath(file)) == updated);
+}
+
+TEST_CASE("Creating a shared shader can link its include in the same undo step",
+          "[editor][render-graph][shader-creation]")
+{
+    QTemporaryDir project;
+    const QString package = MakePackage(project);
+    RendererWorkspace workspace({});
+    workspace.SetProject(project.path(), 1);
+    REQUIRE(workspace.OpenGraph(QDir(package).filePath(GetRootGraph())) == true);
+    workspace.SetLivePreview(false);
+    REQUIRE(workspace.ShowSourceView() == true);
+    QComboBox* sources = workspace.findChild<QComboBox*>(QStringLiteral("renderGraphSourceFile"));
+    REQUIRE(sources != nullptr);
+    const QString target = QStringLiteral("main_shaders/color.slang");
+    const QString header = QStringLiteral("main_shaders/shared.slang");
+    sources->setCurrentText(target);
+    const QByteArray before = workspace.GetDocument().GetDraft(target);
+    QAction* create = workspace.findChild<QAction*>(QStringLiteral("renderGraphNewSharedShaderFromSource"));
+    REQUIRE(create != nullptr);
+    QTimer::singleShot(0, &workspace, []() {
+        QDialog* dialog = qobject_cast<QDialog*>(QApplication::activeModalWidget());
+        REQUIRE(dialog != nullptr);
+        QCheckBox* include = dialog->findChild<QCheckBox*>(QStringLiteral("renderGraphIncludeNewSharedShader"));
+        QPushButton* submit = dialog->findChild<QPushButton*>(QStringLiteral("renderGraphCreateSharedShader"));
+        REQUIRE(include != nullptr);
+        REQUIRE(submit != nullptr);
+        REQUIRE(include->isEnabled() == true);
+        REQUIRE(include->isChecked() == true);
+        submit->click();
+    });
+    create->trigger();
+    CHECK(workspace.GetDocument().GetDraft(target) == QByteArrayLiteral("#include \"shared.slang\"\n") + before);
+    CHECK(workspace.GetDocument().GetFiles().contains(header) == true);
+    workspace.Undo();
+    CHECK(workspace.GetDocument().GetDraft(target) == before);
+    CHECK(workspace.GetDocument().GetFiles().contains(header) == false);
 }
 
 TEST_CASE("structured buffer fields edit on canvas with Properties hidden and undo", "[editor][render-graph][storage]")

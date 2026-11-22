@@ -146,6 +146,10 @@ QString DescribeRayInterface(const QJsonObject& program,
                                      .arg(isLusl == true ? QStringLiteral("in ") : QString(), function);
             if (resourceContract.isEmpty() == false)
             {
+                if (resourceContract.value(QStringLiteral("needs_upgrade")).toBool() == true)
+                {
+                    lines.append(QStringLiteral("// Choose Add Buffer Access to use these connected Buffer ports."));
+                }
                 const QJsonArray fields = resourceContract.value(QStringLiteral("fields")).toArray();
                 if (fields.isEmpty() == true)
                 {
