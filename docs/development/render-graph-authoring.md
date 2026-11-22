@@ -1235,9 +1235,17 @@ remain shader policy.
 
 On the canvas, open the Buffer's **Edit Node…** dialog or select it in
 Properties. Choose **From shader struct…**, select a package-relative `.luslh`
-or `.slang` file, and choose the struct it declares. Use **New shared shader
-file…** if you need a declaration file. The creation dialog defaults to a LUSL
-header and also offers Slang.
+or `.slang` file, and choose the struct it declares. **Edit Declaration…**
+opens the selected source from Buffer sizing. To start a file, choose **New
+Shared Shader File…**, enter its path, and define the struct in the same dialog.
+The creation dialog defaults to a LUSL header and also offers Slang.
+
+**Keep Source Changes** or **Create Shared File** adds the source edit to the
+graph draft and returns to Buffer sizing. If the file declares one struct, the
+picker selects it automatically. Set **Element capacity** and click **Apply**
+to update the Buffer. Source and sizing edits have separate undo steps, and
+**Save** publishes both. You can also reopen the declaration from the file
+dropdown in the graph's **Source** view.
 
 Build Graph lowers LUSL headers and reflects the storage stride with Slang.
 It multiplies the stride by the element capacity and rounds up to a 16-byte
