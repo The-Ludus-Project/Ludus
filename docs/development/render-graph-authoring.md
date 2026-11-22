@@ -1236,16 +1236,17 @@ remain shader policy.
 On the canvas, open the Buffer's **Edit Node…** dialog or select it in
 Properties. Choose **From shader struct…**, select a package-relative `.luslh`
 or `.slang` file, and choose the struct it declares. **Edit Declaration…**
-opens the selected source from Buffer sizing. To start a file, choose **New
-Shared Shader File…**, enter its path, and define the struct in the same dialog.
-The creation dialog defaults to a LUSL header and also offers Slang.
+opens the declaration in the main Code workspace. Edit the file, then choose
+**Return to Buffer Sizing**. The form restores your pending values and refreshes
+the struct choices from the current source draft. If the file declares one
+struct, the picker selects it automatically. Set **Element capacity** and click
+**Apply** to update the Buffer.
 
-**Keep Source Changes** or **Create Shared File** adds the source edit to the
-graph draft and returns to Buffer sizing. If the file declares one struct, the
-picker selects it automatically. Set **Element capacity** and click **Apply**
-to update the Buffer. Source and sizing edits have separate undo steps, and
-**Save** publishes both. You can also reopen the declaration from the file
-dropdown in the graph's **Source** view.
+To start a file, choose **New Shared Shader File…**, enter its path, and define
+the struct in the creation dialog. The dialog defaults to a LUSL header and also
+offers Slang. Source and sizing edits have separate undo steps. **Save Render
+Graph** publishes both, and Cancel in Buffer sizing dismisses the pending sizing
+values.
 
 Build Graph lowers LUSL headers and reflects the storage stride with Slang.
 It multiplies the stride by the element capacity and rounds up to a 16-byte
@@ -9091,16 +9092,19 @@ Reference search is enabled only when the selected `slangd` advertises support;
 otherwise its menu entry explains the limitation. Use **Find** for text matches.
 An unsupported operation preserves the ready server, current source and selection.
 
-Exact unchanged package includes map back to editable drafts. Generated interfaces,
-rewritten compatibility dependencies and inlined surrounding context open in a
-separate **read-only captured context** window. You can inspect and copy there;
-closing it preserves the source view. Unknown server URIs and invalid UTF-16 ranges
+A definition in the current file opens in place. Definitions in other package
+files open in the main Code workspace, using an existing file tab or a reusable
+preview tab. Exact unchanged package includes map back to editable drafts.
+Generated interfaces, rewritten compatibility dependencies and inlined
+surrounding context open as read-only source previews where you can inspect and
+copy code. Unknown server URIs and invalid UTF-16 ranges
 are omitted, never opened as arbitrary files. The context owner supplies exact
 snapshot URI/file/hash records; navigation does not parse shader declarations or
 guess source paths. Go to Symbol excludes generated surroundings.
 
 **Navigate Back / Forward** returns through explicit source, symbol, line, Find and
-diagnostic jumps, including source-file changes within a package. It retains up to
+diagnostic jumps, including between the graph's Source pane and its code tabs.
+It retains up to
 64 locations in each direction and clears Forward on a new jump. Positions follow
 edits while their buffer is open; after a source rebind they use clamped line/column
 positions. Replacing a graph or project/epoch clears this view history. It does not

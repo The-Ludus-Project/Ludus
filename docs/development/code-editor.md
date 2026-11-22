@@ -24,9 +24,12 @@ A file can be open in two editor groups side by side. Both views share one
 buffer and one undo history, so an edit in one group appears in the other at
 once; each view keeps its own caret, selection, scroll position and wrap.
 
-Files owned by a render-graph package open in that package's **Source** pane
-rather than a standalone tab. **Open Externally** remains available for files the
-editor opens read-only or cannot open.
+Package files selected from Project Explorer open the render graph that owns them.
+**Edit Declaration** from Buffer sizing and cross-file shader definitions open in
+the main Code workspace, backed by the same render-graph draft. Generated
+definitions open as read-only previews. Use **Navigate Back** to return to the
+call site. **Open Externally** remains available for project files the editor
+opens read-only or cannot open.
 
 ### Files that open read-only
 

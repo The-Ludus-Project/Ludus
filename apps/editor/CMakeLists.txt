@@ -736,6 +736,7 @@ target_link_libraries(ludus_editor_presentation PUBLIC Qt6::Widgets Ludus::Found
 ludus_editor_add_objects(ludus_editor_render_graph_authoring
     src/renderer_workspace_selection.cpp src/renderer_workspace_node_details.cpp
     src/renderer_workspace_buffer_sizing.cpp
+    src/renderer_workspace_shader_tabs.cpp
     src/renderer_workspace_availability.cpp
     src/internal/render_graph_luminaire_coverage.h src/render_graph_luminaire_coverage.cpp
     src/internal/world_lighting_coverage.h src/world_lighting_coverage.cpp

@@ -4,6 +4,8 @@
 #endif
 #include "internal/application_icon.h"
 #include "internal/audio_workspace.h"
+#include "internal/code_conflict_banner.h"
+#include "internal/code_document_tab.h"
 #include "internal/code_editor.h"
 #include "internal/code_editor_area.h"
 #include "internal/command_palette.h"
@@ -1057,8 +1059,23 @@ void MainWindow::OnSaveRequested()
     }
     if (areaOrNull == mCodeArea)
     {
-        // A failure is explained in the tab's bar, where the user acted.
-        static_cast<void>(mCodeArea->SaveActiveTab());
+        CodeDocumentTab* tabOrNull = mCodeArea->GetActiveTabOrNull();
+        if (tabOrNull != nullptr && tabOrNull->GetSessionKey().isEmpty() == false)
+        {
+            if (tabOrNull->IsReadOnly() == false)
+            {
+                const bool isSaved = Renderer_->Save();
+                tabOrNull->GetBanner().ShowExplanation(isSaved == true ? QString() : Renderer_->GetStatusText());
+                if (isSaved == true)
+                {
+                    mProjectExplorer->Refresh();
+                }
+            }
+        }
+        else
+        {
+            static_cast<void>(mCodeArea->SaveActiveTab());
+        }
         return;
     }
     if (areaOrNull != nullptr && areaOrNull->isAncestorOf(Audio_))

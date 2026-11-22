@@ -3,6 +3,7 @@
 #include "internal/project_rendering_settings.h"
 
 #include "internal/audio_workspace.h"
+#include "internal/code_document_tab.h"
 #include "internal/code_editor_area.h"
 #include "internal/configuration_workspace.h"
 #include "internal/content_browser.h"
@@ -95,11 +96,15 @@ void MainWindow::RenderDocumentActions()
     const bool isWorld = areaOrNull == World_;
     const bool isRenderer = areaOrNull == Renderer_;
     const bool isCode = areaOrNull == mCodeArea;
+    const CodeDocumentTab* tabOrNull = isCode == true ? mCodeArea->GetActiveTabOrNull() : nullptr;
+    const bool isShaderTab =
+        tabOrNull != nullptr && tabOrNull->GetSessionKey().isEmpty() == false && tabOrNull->IsReadOnly() == false;
+    const bool isGraphSave = isRenderer == true || isShaderTab == true;
     SaveAction_->setText(isProject         ? QStringLiteral("&Save Project Settings")
                          : isAudio         ? QStringLiteral("&Save Audio")
                          : isWorld         ? QStringLiteral("&Save World")
                          : isScripts       ? QStringLiteral("&Save Script Asset")
-                         : isRenderer      ? QStringLiteral("&Save Render Graph")
+                         : isGraphSave     ? QStringLiteral("&Save Render Graph")
                          : isConfiguration ? QStringLiteral("&Save Preferences")
                          : isCode          ? QStringLiteral("&Save File")
                                            : QStringLiteral("&Save"));
@@ -109,13 +114,13 @@ void MainWindow::RenderDocumentActions()
                                Controller_->State().Draft.SourceDir != Controller_->State().Saved.SourceDir;
     SaveAction_->setToolTip(isRootBlocked ? QStringLiteral("Finish or cancel content work before changing its root.")
                                           : QString());
-    SaveAction_->setEnabled(isProject    ? Controller_->Caps().CanEdit && isRootBlocked == false
-                            : isAudio    ? Audio_->CanSave()
-                            : isWorld    ? World_->CanSave()
-                            : isScripts  ? Scripts_->CanSave()
-                            : isRenderer ? Renderer_->CanSave()
-                            : isCode     ? mCodeArea->CanSaveActiveTab()
-                                         : isConfiguration && Configuration_->Preview() != nullptr);
+    SaveAction_->setEnabled(isProject     ? Controller_->Caps().CanEdit && isRootBlocked == false
+                            : isAudio     ? Audio_->CanSave()
+                            : isWorld     ? World_->CanSave()
+                            : isScripts   ? Scripts_->CanSave()
+                            : isGraphSave ? Renderer_->CanSave()
+                            : isCode      ? mCodeArea->CanSaveActiveTab()
+                                          : isConfiguration && Configuration_->Preview() != nullptr);
 #if defined(Q_OS_WASM)
     if (Audio_->IsDirty() == true || World_->Dirty() == true || Scripts_->Dirty() == true ||
         Renderer_->IsDirty() == true)

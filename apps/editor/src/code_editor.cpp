@@ -1691,7 +1691,7 @@ void CodeEditor::GoToLine(int32 line, int32 column)
 
 QTextCursor CodeEditor::getDefinitionLinkAt(const QPoint& position) const
 {
-    if (HasCodeLanguageService(mLanguage) == false)
+    if (isReadOnly() == true || HasCodeLanguageService(mLanguage) == false)
     {
         return {};
     }
