@@ -532,8 +532,14 @@ private:
     void renderInspector();
     void populateNodeFields(QFormLayout& outFields, QWidget& inoutParent);
     void editBufferSizing(QWidget& inoutParent);
-    [[nodiscard]] QString stageSharedSlangSource(QWidget& inoutParent);
-    void openNewSharedSlangSource(QWidget& inoutParent);
+    enum class SharedShaderFilePurpose : foundation::uint8
+    {
+        Include,
+        BufferLayout,
+    };
+    [[nodiscard]] QString
+    stageSharedShaderSource(QWidget& inoutParent, const QString& nearbyFile, SharedShaderFilePurpose purpose);
+    void openNewSharedShaderSource(QWidget& inoutParent, const QString& nearbyFile);
     void populateBufferSizing(const QJsonObject& node, QFormLayout& outFields, QWidget& inoutParent);
     void populateNodeNameFields(QFormLayout& outFields, QWidget& inoutParent, QDialog* closeOnRenameOrNull = nullptr);
     [[nodiscard]] bool renameSelectedNode(const QString& name, QString& outError);

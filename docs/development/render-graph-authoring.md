@@ -1233,11 +1233,11 @@ remain shader policy.
 On the canvas, open the Buffer's **Edit Node…** dialog or select it in
 Properties. Choose **From shader struct…** and select a shared Slang file and a
 struct declared in it. The picker lists package files and excludes program
-entry points. **New shared Slang file…** opens a draft include in Source. The
-same command is in **Shaders** and in the **Source** menu. **Add Shader
-Program** assigns an executable stage to a pipeline.
+entry points. Use **New shared shader file…** to create a draft include. In
+Buffer sizing the language is Slang because Build Graph reflects the storage
+layout directly from the `.slang` declaration.
 
-Put the layout in the shared file with a leading \`#pragma once\`. Include it
+Put the layout in the shared file after the leading `#pragma once`. Include it
 from each connected positional Slang shader with a quoted path relative to that
 shader's source. The Buffer refers to the file by its package-relative path.
 Save the files and Buffer settings, then run **Build Graph**. Slang reflects the
@@ -9172,6 +9172,25 @@ debounced. Source editing itself requires no compiler or language server.
 Extreme single-line files remain a known Qt layout performance limit; the
 ordinary-line and plain-Qt comparison probes are opt-in `[.benchmark]` tests in
 `ludus_code_editor_tests`.
+
+### Create a shared shader file
+
+1. Open a render graph. Switch to its **Source** tab and open **Source →
+   New shared shader file…**. You can also select a pipeline on the canvas and
+   choose **Shaders → New shared shader file…** in its **Edit Node…** dialog
+   or Properties.
+2. Choose **LUSL include (.luslh)** or **Slang include (.slang)**. The dialog
+   uses the source in context for the starting folder and language. Without a
+   shader in context, it defaults to LUSL. Enter a package-relative path and
+   click **Create Shared File**.
+3. Add your declarations or helpers in the new Source draft. In each program
+   that needs the file, add a quoted `#include` relative to that program's
+   source. For sibling files use `#include "common.luslh"` in LUSL or
+   `#include "common.slang"` in Slang. **Save** publishes the files. Run
+   **Build Graph** to check the includes.
+
+For a layout that sets a Buffer's capacity, use the [struct sizing
+workflow](#size-an-ordered-buffer-from-a-shader-struct).
 
 ### Edit shader sources in a code editor
 

@@ -50,7 +50,7 @@ Q_SIGNALS:
     /// Double-clicking a shader part requests its current source by assignment ID; no draft edit is made.
     void ShaderOpenRequested(const QString& shaderId);
     /// Request a package-local include from the owning workspace.
-    void SharedSlangFileRequested();
+    void SharedShaderFileRequested();
     /// A completed budget edit proposes the shared technique's limits; no node fields change.
     void SceneQueryBudgetsEdited(const RenderGraphSceneQueryBudgets& budgets);
 

@@ -616,7 +616,7 @@ RenderGraphDocumentStatus PreparePipelineShaders(RenderGraphSnapshot& inoutSnaps
                     RenderGraphDocumentStatus::InvalidEdit,
                     outErrorOrNull,
                     QStringLiteral("Stage '%1' already has a program. Choose an unassigned stage or edit the existing "
-                                   "program. For shared structs and helpers, use a shared Slang file from Source.")
+                                   "program. For shared structs and helpers, use a shared shader file from Source.")
                         .arg(stage));
             }
         }

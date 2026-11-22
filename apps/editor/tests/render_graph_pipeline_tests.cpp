@@ -2968,8 +2968,8 @@ TEST_CASE("compute program assignments reject duplicate stages", "[editor][rende
     QPushButton* add = editor.findChild<QPushButton*>(QStringLiteral("renderGraphAdd_shaders"));
     REQUIRE(add != nullptr);
     CHECK(add->isEnabled() == false);
-    CHECK(add->toolTip().contains(QStringLiteral("shared Slang file")) == true);
-    QPushButton* shared = editor.findChild<QPushButton*>(QStringLiteral("renderGraphNewSharedSlangFromShaders"));
+    CHECK(add->toolTip().contains(QStringLiteral("shared shader file")) == true);
+    QPushButton* shared = editor.findChild<QPushButton*>(QStringLiteral("renderGraphNewSharedShaderFromShaders"));
     REQUIRE(shared != nullptr);
     CHECK(shared->isEnabled() == true);
 

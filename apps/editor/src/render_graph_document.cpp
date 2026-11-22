@@ -1870,14 +1870,20 @@ bool IsRecoverySourcePath(const QString& path)
     return true;
 }
 
-RenderGraphDocumentStatus RenderGraphDocument::CreateSharedSlangSource(const QString& file, QString& outError)
+RenderGraphDocumentStatus RenderGraphDocument::CreateSharedShaderSource(const QString& file,
+                                                                        RenderGraphShaderLanguage language,
+                                                                        QString& outError)
 {
-    static const QRegularExpression PATH(
-        QStringLiteral("\\A(?:[A-Za-z0-9_][A-Za-z0-9_.-]*/)*[A-Za-z0-9_][A-Za-z0-9_.-]*\\.slang\\z"));
-    if (IsLoaded() == false || IsRecoverySourcePath(file) == false || PATH.match(file).hasMatch() == false)
+    static const QRegularExpression PATH_WITHOUT_SUFFIX(
+        QStringLiteral("\\A(?:[A-Za-z0-9_][A-Za-z0-9_.-]*/)*[A-Za-z0-9_][A-Za-z0-9_.-]*\\z"));
+    const QString suffix = GetShaderIncludeSuffix(language);
+    if (IsLoaded() == false || IsRecoverySourcePath(file) == false || file.endsWith(suffix) == false ||
+        PATH_WITHOUT_SUFFIX.match(file.chopped(suffix.size())).hasMatch() == false)
     {
-        outError = QStringLiteral("Enter a package-relative .slang path. Use letters, digits, underscores, dots and "
-                                  "hyphens in names, with '/' between directories.");
+        outError =
+            QStringLiteral("Enter a package-relative path ending with %1. Use letters, digits, underscores, dots "
+                           "and hyphens in names, with '/' between directories.")
+                .arg(suffix);
         return RenderGraphDocumentStatus::InvalidEdit;
     }
 
@@ -1912,7 +1918,7 @@ RenderGraphDocumentStatus RenderGraphDocument::CreateSharedSlangSource(const QSt
     candidate.Files.insert(file,
                            QByteArrayLiteral("#pragma once\n\n// Declare shared shader structs and helpers here.\n"));
     const RenderGraphDocumentStatus status =
-        commit(candidate, "Create Shared Slang File", false, {}, {}, {}, {}, CommitKind::Source);
+        commit(candidate, "Create Shared Shader File", false, {}, {}, {}, {}, CommitKind::Source);
     outError = status == RenderGraphDocumentStatus::Ok ? QString()
                : status == RenderGraphDocumentStatus::Capacity
                    ? DescribePackageCapacity()

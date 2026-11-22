@@ -911,8 +911,11 @@ RendererWorkspace::RendererWorkspace(const ToolingPaths& tooling, QWidget* paren
     QAction* codeViewport = sourceMenu->addAction(QStringLiteral("Code and Viewport"));
     connect(codeViewport, &QAction::triggered, this, &RendererWorkspace::CodeViewportRequested);
     sourceMenu->addSeparator();
-    QAction* newSharedSource = sourceMenu->addAction(QStringLiteral("New shared Slang file…"));
-    connect(newSharedSource, &QAction::triggered, this, [this]() { openNewSharedSlangSource(*this); });
+    QAction* newSharedSource = sourceMenu->addAction(QStringLiteral("New shared shader file…"));
+    newSharedSource->setObjectName(QStringLiteral("renderGraphNewSharedShaderFromSource"));
+    connect(newSharedSource, &QAction::triggered, this, [this]() {
+        openNewSharedShaderSource(*this, GetSourceFile());
+    });
     for (QPushButton* button : {openCodeEditor, chooseCodeEditor, reloadSources})
     {
         button->hide();
@@ -3822,8 +3825,10 @@ void RendererWorkspace::populateNodeFields(QFormLayout& outFields, QWidget& inou
         connect(editor, &RenderGraphPipelineEditor::ShaderOpenRequested, this, [this, editor](const QString& shaderId) {
             openNodeShader(shaderId, editor);
         });
-        connect(editor, &RenderGraphPipelineEditor::SharedSlangFileRequested, this, [this, editor]() {
-            openNewSharedSlangSource(*editor);
+        connect(editor, &RenderGraphPipelineEditor::SharedShaderFileRequested, this, [this, editor]() {
+            const QString current = GetSourceFile();
+            const QStringList sources = GetSelectedShaderSources();
+            openNewSharedShaderSource(*editor, sources.contains(current) == true ? current : sources.value(0, current));
         });
         editor->AddOptionsEditor(createNodeOptionsEditor(inoutParent));
         // The parts row wraps, so the narrow Properties dock shows every part like the Details dialog.

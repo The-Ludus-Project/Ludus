@@ -1,3 +1,4 @@
+#include "internal/render_graph_shader_language.h"
 #include "internal/renderer_workspace.h"
 
 #include <ludus/content/render_graph_format/plan.h>
@@ -18,11 +19,16 @@
 #include <QSignalBlocker>
 #include <QSpinBox>
 #include <QStringList>
+#include <QVariant>
 
 namespace ludus::editor
 {
 namespace
 {
+const QString BUFFER_LAYOUT_LANGUAGE_NOTE =
+    QStringLiteral("Automatic sizing uses a .slang declaration because Build Graph reflects the storage layout "
+                   "directly from Slang source.");
+
 QStringList FindDeclaredStructs(const QByteArray& source)
 {
     // Recognize declarations in the selected file. Slang resolves preprocessing and
@@ -59,7 +65,9 @@ QStringList FindDeclaredStructs(const QByteArray& source)
 }
 } // namespace
 
-QString RendererWorkspace::stageSharedSlangSource(QWidget& inoutParent)
+QString RendererWorkspace::stageSharedShaderSource(QWidget& inoutParent,
+                                                   const QString& nearbyFile,
+                                                   SharedShaderFilePurpose purpose)
 {
     if (mDocument.IsLoaded() == false)
     {
@@ -67,32 +75,73 @@ QString RendererWorkspace::stageSharedSlangSource(QWidget& inoutParent)
     }
 
     QDialog dialog(&inoutParent);
-    dialog.setWindowTitle(QStringLiteral("New shared Slang file"));
+    dialog.setWindowTitle(QStringLiteral("New shared shader file"));
     QFormLayout fields(&dialog);
-    const QString directory = QFileInfo(GetSourceFile()).path();
-    QLineEdit* path = new QLineEdit(QDir::cleanPath(QDir(directory).filePath(QStringLiteral("shared.slang"))), &dialog);
-    path->setObjectName(QStringLiteral("renderGraphSharedSlangPath"));
+    const bool isBufferLayout = purpose == SharedShaderFilePurpose::BufferLayout;
+    const RenderGraphShaderLanguage defaultLanguage =
+        isBufferLayout == true || nearbyFile.endsWith(GetShaderSourceSuffix(RenderGraphShaderLanguage::Slang)) == true
+            ? RenderGraphShaderLanguage::Slang
+            : RenderGraphShaderLanguage::Lusl;
+    QComboBox* language = new QComboBox(&dialog);
+    language->setObjectName(QStringLiteral("renderGraphSharedShaderLanguage"));
+    if (isBufferLayout == false)
+    {
+        language->addItem(
+            QStringLiteral("LUSL include (%1)").arg(GetShaderIncludeSuffix(RenderGraphShaderLanguage::Lusl)),
+            QVariant::fromValue(RenderGraphShaderLanguage::Lusl));
+    }
+    language->addItem(
+        QStringLiteral("Slang include (%1)").arg(GetShaderIncludeSuffix(RenderGraphShaderLanguage::Slang)),
+        QVariant::fromValue(RenderGraphShaderLanguage::Slang));
+    language->setCurrentIndex(language->findData(QVariant::fromValue(defaultLanguage)));
+    language->setEnabled(isBufferLayout == false);
+    fields.addRow(QStringLiteral("Language"), language);
+
+    const QDir directory(QFileInfo(nearbyFile).path());
+    const QString defaultPath =
+        QDir::cleanPath(directory.filePath(QStringLiteral("shared") + GetShaderIncludeSuffix(defaultLanguage)));
+    QLineEdit* path = new QLineEdit(defaultPath, &dialog);
+    path->setObjectName(QStringLiteral("renderGraphSharedShaderPath"));
     path->selectAll();
     fields.addRow(QStringLiteral("Package-relative path"), path);
+    const QString usage =
+        QStringLiteral("Declare shared types and helpers here. Use a quoted #include from the shaders "
+                       "that need them. Save writes the file to the graph package.");
     QLabel* hint =
-        new QLabel(QStringLiteral("Declare shared structs and helpers here. Use a quoted #include from the shaders "
-                                  "that need them. Save writes the file to the graph package."),
-                   &dialog);
+        new QLabel(isBufferLayout == true ? BUFFER_LAYOUT_LANGUAGE_NOTE + QLatin1Char('\n') + usage : usage, &dialog);
+    hint->setObjectName(QStringLiteral("renderGraphSharedShaderHint"));
     hint->setWordWrap(true);
     fields.addRow(hint);
     QLabel* problem = new QLabel(&dialog);
-    problem->setObjectName(QStringLiteral("renderGraphSharedSlangError"));
+    problem->setObjectName(QStringLiteral("renderGraphSharedShaderError"));
     problem->setTextFormat(Qt::PlainText);
     problem->setWordWrap(true);
     fields.addRow(problem);
+    connect(path, &QLineEdit::textEdited, problem, &QLabel::clear);
+    connect(language, &QComboBox::currentIndexChanged, &dialog, [language, path, problem]() {
+        const RenderGraphShaderLanguage selected = language->currentData().value<RenderGraphShaderLanguage>();
+        const RenderGraphShaderLanguage other = selected == RenderGraphShaderLanguage::Lusl
+                                                    ? RenderGraphShaderLanguage::Slang
+                                                    : RenderGraphShaderLanguage::Lusl;
+        QString file = path->text().trimmed();
+        const QString otherSuffix = GetShaderIncludeSuffix(other);
+        if (file.endsWith(otherSuffix) == true)
+        {
+            file.chop(otherSuffix.size());
+            path->setText(file + GetShaderIncludeSuffix(selected));
+        }
+        problem->clear();
+    });
     QDialogButtonBox* buttons = new QDialogButtonBox(QDialogButtonBox::Cancel, &dialog);
     QPushButton* create = buttons->addButton(QStringLiteral("Create Shared File"), QDialogButtonBox::AcceptRole);
-    create->setObjectName(QStringLiteral("renderGraphCreateSharedSlang"));
+    create->setObjectName(QStringLiteral("renderGraphCreateSharedShader"));
     fields.addRow(buttons);
     connect(buttons, &QDialogButtonBox::rejected, &dialog, &QDialog::reject);
-    connect(create, &QPushButton::clicked, &dialog, [this, path, problem, &dialog]() {
+    connect(create, &QPushButton::clicked, &dialog, [this, path, language, problem, &dialog]() {
         QString error;
-        if (mDocument.CreateSharedSlangSource(path->text().trimmed(), error) == RenderGraphDocumentStatus::Ok)
+        const RenderGraphShaderLanguage selected = language->currentData().value<RenderGraphShaderLanguage>();
+        if (mDocument.CreateSharedShaderSource(path->text().trimmed(), selected, error) ==
+            RenderGraphDocumentStatus::Ok)
         {
             dialog.accept();
             return;
@@ -103,9 +152,9 @@ QString RendererWorkspace::stageSharedSlangSource(QWidget& inoutParent)
     return dialog.exec() == QDialog::Accepted ? path->text().trimmed() : QString();
 }
 
-void RendererWorkspace::openNewSharedSlangSource(QWidget& inoutParent)
+void RendererWorkspace::openNewSharedShaderSource(QWidget& inoutParent, const QString& nearbyFile)
 {
-    const QString file = stageSharedSlangSource(inoutParent);
+    const QString file = stageSharedShaderSource(inoutParent, nearbyFile, SharedShaderFilePurpose::Include);
     if (file.isEmpty() == true)
     {
         return;
@@ -146,7 +195,8 @@ void RendererWorkspace::editBufferSizing(QWidget& inoutParent)
     source->setObjectName(QStringLiteral("renderGraphBufferStructSource"));
     for (const QString& file : mDocument.GetFiles())
     {
-        if (file.endsWith(QStringLiteral(".slang")) == true && programSources.contains(file) == false)
+        if (file.endsWith(GetShaderIncludeSuffix(RenderGraphShaderLanguage::Slang)) == true &&
+            programSources.contains(file) == false)
         {
             source->addItem(file);
         }
@@ -155,8 +205,12 @@ void RendererWorkspace::editBufferSizing(QWidget& inoutParent)
     source->setPlaceholderText(QStringLiteral("Select a shared Slang file"));
     source->setCurrentIndex(source->findText(previousSource));
     fields.addRow(QStringLiteral("Shared Slang file"), source);
-    QPushButton* create = new QPushButton(QStringLiteral("New shared Slang file…"), &dialog);
-    create->setObjectName(QStringLiteral("renderGraphNewSharedSlang"));
+    QLabel* languageNote = new QLabel(BUFFER_LAYOUT_LANGUAGE_NOTE, &dialog);
+    languageNote->setObjectName(QStringLiteral("renderGraphBufferLayoutLanguageNote"));
+    languageNote->setWordWrap(true);
+    fields.addRow(languageNote);
+    QPushButton* create = new QPushButton(QStringLiteral("New shared shader file…"), &dialog);
+    create->setObjectName(QStringLiteral("renderGraphNewSharedShader"));
     create->setAutoDefault(false);
     fields.addRow(create);
 
@@ -186,46 +240,57 @@ void RendererWorkspace::editBufferSizing(QWidget& inoutParent)
     QPushButton* apply = buttons->button(QDialogButtonBox::Apply);
     connect(buttons, &QDialogButtonBox::rejected, &dialog, &QDialog::reject);
     const bool isPreviousProgram = programSources.contains(previousSource);
-    const auto refresh =
-        [&fields, mode, source, type, create, count, bytes, hint, apply, previousSource, isPreviousProgram]() {
-            const bool isFromStruct = mode->currentIndex() == 1;
-            fields.setRowVisible(source, isFromStruct);
-            fields.setRowVisible(create, isFromStruct);
-            fields.setRowVisible(type, isFromStruct);
-            fields.setRowVisible(count, isFromStruct);
-            fields.setRowVisible(bytes, isFromStruct == false);
-            QString message;
-            if (isFromStruct == false)
-            {
-                message = QStringLiteral("Enter a capacity in whole 16-byte buffer words.");
-            }
-            else if (source->currentIndex() < 0 && isPreviousProgram == true)
-            {
-                message =
-                    QStringLiteral("'%1' is a shader program source. Move the buffer layout into a shared .slang file, "
-                                   "include it from the connected shaders, and select it here.")
-                        .arg(previousSource);
-            }
-            else if (source->currentIndex() < 0)
-            {
-                message = QStringLiteral("Choose or create a shared .slang file that declares the buffer layout. "
-                                         "The Shaders list is for executable programs.");
-            }
-            else if (type->count() == 0)
-            {
-                message = QStringLiteral("No struct declaration was found in '%1'. Declare the struct in Source "
-                                         "or select a different shared file.")
-                              .arg(source->currentText());
-            }
-            else
-            {
-                message = QStringLiteral("Use a quoted #include in each connected Slang shader that uses this layout. "
-                                         "Build Graph verifies the shader and calculates the allocation.");
-            }
-            hint->setText(message);
-            apply->setEnabled(isFromStruct == true ? type->currentIndex() >= 0
-                                                   : bytes->value() % format::RAY_BUFFER_WORD_BYTES == 0);
-        };
+    const auto refresh = [&fields,
+                          mode,
+                          source,
+                          type,
+                          create,
+                          languageNote,
+                          count,
+                          bytes,
+                          hint,
+                          apply,
+                          previousSource,
+                          isPreviousProgram]() {
+        const bool isFromStruct = mode->currentIndex() == 1;
+        fields.setRowVisible(source, isFromStruct);
+        fields.setRowVisible(create, isFromStruct);
+        fields.setRowVisible(languageNote, isFromStruct);
+        fields.setRowVisible(type, isFromStruct);
+        fields.setRowVisible(count, isFromStruct);
+        fields.setRowVisible(bytes, isFromStruct == false);
+        QString message;
+        if (isFromStruct == false)
+        {
+            message = QStringLiteral("Enter a capacity in whole 16-byte buffer words.");
+        }
+        else if (source->currentIndex() < 0 && isPreviousProgram == true)
+        {
+            message =
+                QStringLiteral("'%1' is a shader program source. Move the buffer layout into a shared .slang file, "
+                               "include it from the connected shaders, and select it here.")
+                    .arg(previousSource);
+        }
+        else if (source->currentIndex() < 0)
+        {
+            message = QStringLiteral("Choose or create a shared .slang file that declares the buffer layout. "
+                                     "The Shaders list is for executable programs.");
+        }
+        else if (type->count() == 0)
+        {
+            message = QStringLiteral("No struct declaration was found in '%1'. Declare the struct in Source "
+                                     "or select a different shared file.")
+                          .arg(source->currentText());
+        }
+        else
+        {
+            message = QStringLiteral("Use a quoted #include in each connected Slang shader that uses this layout. "
+                                     "Build Graph verifies the shader and calculates the allocation.");
+        }
+        hint->setText(message);
+        apply->setEnabled(isFromStruct == true ? type->currentIndex() >= 0
+                                               : bytes->value() % format::RAY_BUFFER_WORD_BYTES == 0);
+    };
     const auto selectSource = [this, source, type, record, previousSource, refresh]() {
         const QSignalBlocker blocker(type);
         type->clear();
@@ -242,8 +307,12 @@ void RendererWorkspace::editBufferSizing(QWidget& inoutParent)
     connect(bytes, &QSpinBox::valueChanged, &dialog, refresh);
 
     QString createdFile;
-    connect(create, &QPushButton::clicked, &dialog, [this, &dialog, &createdFile]() {
-        createdFile = stageSharedSlangSource(dialog);
+    connect(create, &QPushButton::clicked, &dialog, [this, &dialog, &createdFile, source, previousSource]() {
+        const QString selected = source->currentText();
+        const QString nearbyFile = selected.isEmpty() == false ? selected : previousSource;
+        createdFile = stageSharedShaderSource(dialog,
+                                              nearbyFile.isEmpty() == false ? nearbyFile : GetSourceFile(),
+                                              SharedShaderFilePurpose::BufferLayout);
         if (createdFile.isEmpty() == false)
         {
             dialog.accept();

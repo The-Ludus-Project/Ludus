@@ -17,10 +17,15 @@ enum class RenderGraphShaderLanguage : foundation::uint8
     return language == RenderGraphShaderLanguage::Slang ? QStringLiteral(".slang") : QStringLiteral(".lusl");
 }
 
+[[nodiscard]] LUDUS_INLINE QString GetShaderIncludeSuffix(RenderGraphShaderLanguage language)
+{
+    return language == RenderGraphShaderLanguage::Lusl ? QStringLiteral(".luslh") : GetShaderSourceSuffix(language);
+}
+
 [[nodiscard]] LUDUS_INLINE bool IsLuslShaderSource(const QString& path)
 {
     return path.endsWith(GetShaderSourceSuffix(RenderGraphShaderLanguage::Lusl)) ||
-           path.endsWith(QStringLiteral(".luslh"));
+           path.endsWith(GetShaderIncludeSuffix(RenderGraphShaderLanguage::Lusl));
 }
 
 [[nodiscard]] LUDUS_INLINE bool IsRenderGraphShaderSource(const QString& path)

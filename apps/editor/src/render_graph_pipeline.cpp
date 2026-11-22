@@ -659,7 +659,7 @@ RenderGraphPipelineEditor::createTable(const QString& name, const QStringList& f
             QStringLiteral(
                 "Program IDs are shared by every graph and configuration in the root shader manifest. "
                 "Enter an existing program ID to reuse it, or Program to generate a unique ID. "
-                "For shared structs and helpers, create a shared Slang file and include it from your program."),
+                "For shared structs and helpers, create a shared shader file and include it from your program."),
             panel);
         scope->setWordWrap(true);
         layout->addWidget(scope);
@@ -809,9 +809,9 @@ RenderGraphPipelineEditor::createTable(const QString& name, const QStringList& f
     buttons->addWidget(remove);
     if (name == QStringLiteral("shaders"))
     {
-        QPushButton* shared = new QPushButton(QStringLiteral("New shared Slang file…"), panel);
-        shared->setObjectName(QStringLiteral("renderGraphNewSharedSlangFromShaders"));
-        connect(shared, &QPushButton::clicked, this, &RenderGraphPipelineEditor::SharedSlangFileRequested);
+        QPushButton* shared = new QPushButton(QStringLiteral("New shared shader file…"), panel);
+        shared->setObjectName(QStringLiteral("renderGraphNewSharedShaderFromShaders"));
+        connect(shared, &QPushButton::clicked, this, &RenderGraphPipelineEditor::SharedShaderFileRequested);
         buttons->addWidget(shared);
     }
     layout->addLayout(buttons);
@@ -823,7 +823,7 @@ RenderGraphPipelineEditor::createTable(const QString& name, const QStringList& f
             add->setEnabled(canAdd);
             add->setToolTip(canAdd == true ? QStringLiteral("Assign a shader program to this pipeline.")
                                            : QStringLiteral("No additional stage is available. Edit an existing "
-                                                            "program, or create a shared Slang file in Source."));
+                                                            "program, or create a shared shader file in Source."));
         };
         updateAdd();
         connect(this, &RenderGraphPipelineEditor::Edited, add, updateAdd);
