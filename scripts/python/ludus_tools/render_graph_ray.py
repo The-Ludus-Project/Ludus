@@ -342,6 +342,57 @@ def migrate_legacy_scene_sources(sources, snapshot):
     return {'sources': overrides, 'callbacks': sorted(callbacks)}
 
 
+def reject_native_invocation(operation, ports, reason, build):
+    """Point the build diagnostic at the authored node and input connector."""
+    location = {'source': operation['source'], 'configuration': operation['asset_configuration'],
+                'node': operation['pipeline']['id'], 'instance': operation['id'], 'field': 'invocation.type'}
+    subject = operation['id']
+    if ports:
+        location.update(port=ports[0], direction='input')
+        inputs = 'input' if len(ports) == 1 else 'inputs'
+        subject += f' Buffer {inputs} ' + ', '.join(map(repr, ports))
+    raise build.ToolingError('RenderGraphBuildCapability',
+                             f'{subject}: Hardware RT pipeline invocation {reason}', location=location)
+
+
+def validate_native_invocations(plans, profiles, technique, build):
+    """Reject unavailable native execution before the shader wrappers are generated."""
+    if 'metal' not in profiles:
+        reason = ('requires a Metal package profile. Add Metal to the shader manifest profiles or select '
+                  'Compute pipeline in Invocation settings.')
+    elif 'scene_interface' not in technique:
+        reason = ('requires scene_interface version 1 in the ray technique. Declare that interface '
+                  'in the shader manifest.')
+    else:
+        return
+    for plan in plans:
+        for operation in plan['passes']:
+            if operation['kind'] != 'RayTracing':
+                continue
+            pipeline = operation['pipeline']
+            if invocation.resolve_type(pipeline) == invocation.HARDWARE_PIPELINE:
+                ports = [port['id'] for port in pipeline['inputs'] if port['type'] == 'Buffer']
+                reject_native_invocation(operation, ports, reason, build)
+
+
+def validate_native_buffer_layouts(operations, programs, named_resources, snapshot, build):
+    """Identify records declared inline in a shader outside the native stage bundle."""
+    sources = {programs[identity]['source'] for variant in operations for identity in callback_programs(variant)}
+    unavailable_sources = snapshot.inline_buffer_sources - sources
+    if not unavailable_sources:
+        return
+    for variant, operation in operations.items():
+        ports = [port['id'] for port in operation['pipeline']['inputs'] if port['type'] == 'Buffer']
+        for field in named_resources.get(variant, ()):
+            record = field['record']
+            if record is not None and record['source'] in unavailable_sources:
+                reject_native_invocation(
+                    operation, [ports[field['slot']]],
+                    f"cannot bind record '{record['type']}' declared in '{record['source']}' outside its native stages. "
+                    'Move the record to a shared .slang or .luslh declaration and select it in Buffer sizing.',
+                    build)
+
+
 def group_profiles(plans, technique, build):
     """Group compatible callback sets, isolating lighting dependencies by configuration."""
     groups = {}
@@ -374,16 +425,16 @@ def group_profiles(plans, technique, build):
                       'Capability', plan['configuration'],
                       'storage texture dispatch requires scene materials and a configuration without visibility/depth')
         variants = {get_callback_variant(operation['pipeline']) for operation in operations}
-        native_variants = {get_callback_variant(operation['pipeline']) for operation in operations
-                           if invocation.resolve_type(operation['pipeline']) == invocation.HARDWARE_PIPELINE}
+        native_operations = {get_callback_variant(operation['pipeline']): operation for operation in operations
+                             if invocation.resolve_type(operation['pipeline']) == invocation.HARDWARE_PIPELINE}
         # With optional lighting helpers, share an artifact only between configurations
         # that use the same callbacks. Reflection can then omit the table per configuration.
-        callbacks = (tuple(sorted(variants)), tuple(sorted(native_variants))) if isolate_lighting else ()
+        callbacks = (tuple(sorted(variants)), tuple(sorted(native_operations))) if isolate_lighting else ()
         group = groups.setdefault((has_visibility, has_native_queries, has_color_input, has_storage_texture, callbacks),
-                                  {'variants': set(), 'native_variants': set(), 'configurations': [],
+                                  {'variants': set(), 'native_operations': {}, 'configurations': [],
                                    'persistent': False, 'structured_buffers': False})
         group['variants'].update(variants)
-        group['native_variants'].update(native_variants)
+        group['native_operations'].update(native_operations)
         group['configurations'].append(plan['configuration'])
         group['structured_buffers'] |= any(operation.get('buffers') for operation in operations)
         group['scene_dispatch'] = group.get('scene_dispatch', False) or any('work_items' in operation for operation in operations)
@@ -402,7 +453,7 @@ def group_profiles(plans, technique, build):
         # No visibility pass dispatches the default callbacks, so the kernel reads no visibility
         # inputs and reflection drops them, even when scene_interface.visibility_buffer permits them.
         groups[(False, True, False, False, ())] = {
-            'variants': {tuple(technique[stage] for stage in STAGES)}, 'native_variants': set(), 'configurations': [],
+            'variants': {tuple(technique[stage] for stage in STAGES)}, 'native_operations': {}, 'configurations': [],
             'persistent': False, 'structured_buffers': False}
     result = []
     for (has_visibility, has_native_queries, has_color_input, has_storage_texture, callbacks), group in sorted(groups.items()):
@@ -420,9 +471,9 @@ def group_profiles(plans, technique, build):
         if callbacks:
             compute_identity += 'Configuration' + str(len(result))
         variants = sorted(group['variants'])
-        native_slots = {variant: index for index, variant in enumerate(variants) if variant in group['native_variants']}
+        native_slots = {variant: index for index, variant in enumerate(variants) if variant in group['native_operations']}
         result.append({'workgroup': workgroup, 'visibility_buffer': has_visibility, 'native_ray_queries': has_native_queries,
-                       'native_slots': native_slots,
+                       'native_slots': native_slots, 'native_operations': group['native_operations'],
                        'configurations': sorted(group['configurations']) if callbacks else [],
                        'scene_dispatch': group.get('scene_dispatch', False),
                        'variants': variants, 'color_input': has_color_input,
