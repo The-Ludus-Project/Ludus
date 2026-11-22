@@ -427,6 +427,8 @@ add_subdirectory(modules/content/procedural/storage)
 add_subdirectory(modules/content/terrain_format)
 # Headless terrain fields, drainage, wetness and material rules (T1); Foundation-only, native and web.
 add_subdirectory(modules/content/terrain)
+# Bounded terrain foliage placement cook producing LUFOL page sets (foliage F0); native and web.
+add_subdirectory(modules/content/foliage_cook)
 # LUWTH climate contract, its headless cooker and the deterministic fixed-tick weather runtime;
 # Foundation-only, native and web (docs/modules/gameplay/weather.md).
 add_subdirectory(modules/content/weather_format)

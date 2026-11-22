@@ -22,6 +22,7 @@
 #include <ludus/foundation/math/transform.hpp>
 
 #include "enclosure_oracle.hpp"
+#include "foliage_cook_golden.h"
 #include "foliage_pages_golden.h"
 #include "scatter_golden.h"
 
@@ -211,6 +212,24 @@ int main()
                   foliage::golden::ComputeDigest(view) == foliage::golden::ENCODED_DIGEST &&
                   read == foliage::FoliagePageStatus::Ok,
               "foliage page set golden v1");
+    }
+
+    // Golden foliage cook: the same terrain, recipe and pinned digest as the native FoliageCook tests, so the
+    // wasm cook samples the terrain, thins candidates and encodes the page set to identical bytes.
+    {
+        namespace cook = ludus::content::foliage_cook;
+        static cook::golden::GoldenCook fixture;
+        ludus::foundation::Array<ludus::foundation::core::uint8> cookBytes;
+        cook::FoliageCookDiagnostic diagnostic;
+        const bool isInitialized = cook::golden::TryInitializeGoldenCook(fixture);
+        const cook::FoliageCookStatus status =
+            isInitialized == true ? cook::golden::TryCookAll(fixture.MakeInput(), cookBytes, diagnostic)
+                                  : cook::FoliageCookStatus::InvalidArgument;
+        const ludus::foundation::BorrowedView<const ludus::foundation::core::uint8> view(cookBytes.GetData(),
+                                                                                         cookBytes.GetSize());
+        Check(status == cook::FoliageCookStatus::Ok && cookBytes.GetSize() == cook::golden::ENCODED_BYTES &&
+                  ludus::content::foliage_pages::golden::ComputeDigest(view) == cook::golden::ENCODED_DIGEST,
+              "foliage terrain cook golden v1");
     }
 
     std::printf("LUDUS_WEB_MATH_RESULT failures=%d\n", gFail);

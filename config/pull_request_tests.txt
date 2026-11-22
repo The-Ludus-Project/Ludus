@@ -31,6 +31,7 @@ ludus_filesystem_persistence_fault_tests
 ludus_filesystem_tests
 ludus_filesystem_watch_fault_tests
 ludus_first_person_walking_tests
+ludus_foliage_cook_tests
 ludus_foliage_format_tests
 ludus_foliage_pages_tests
 ludus_foundation_base_tests
