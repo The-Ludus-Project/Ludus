@@ -117,6 +117,11 @@ GenerationCacheOutcome TryFindGenerationProduct(GenerationCacheStore& inoutStore
     {
         return GenerationCacheOutcome::ReadFailed;
     }
+    if (read == GenerationStoreRead::Corrupt)
+    {
+        inoutStore.Remove(key);
+        return GenerationCacheOutcome::Corrupt;
+    }
     GenerationByteReader reader({entry.GetData(), entry.GetSize()});
     const uint32 magic = reader.ReadUInt32();
     const uint32 version = reader.ReadUInt32();

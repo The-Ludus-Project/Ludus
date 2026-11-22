@@ -1,17 +1,19 @@
 #pragma once
 
 // Staged scatter generation: the first consumer of the procedural generation
-// executor contracts of slice P1. Each room is an independently keyed scope and
-// each of its layers a pure, cached stage product. A request stages a candidate
-// manifest; the coordinator publishes it only when it succeeded, satisfies every
-// author lock and was staged against the current accepted revision. Comparison
-// explains each removed placement by its first responsible stage and input.
+// executor of slice P1 (Ludus::ProceduralCore's GenerationCoordinator). Each room is
+// an independently keyed scope and each of its layers a pure, cached stage whose
+// kernel reads only its own parameter bytes. A request stages a candidate manifest;
+// the coordinator publishes it only when it succeeded, satisfies every author lock
+// and was staged against the current accepted revision. Comparison explains each
+// removed placement by its first responsible stage and input.
 // Contracts: docs/architecture/procedural-content-generation.md#p1-staged-scatter-generation.
 
 #include <ludus/foundation/base/core.h>
 
 #include <ludus/content/procedural/core/generation_bytes.h>
 #include <ludus/content/procedural/core/generation_cache.h>
+#include <ludus/content/procedural/core/generation_executor.h>
 #include <ludus/content/procedural/core/generation_trace.h>
 #include <ludus/content/procedural/environment/scatter.h>
 #include <ludus/foundation/containers/array.hpp>
@@ -23,8 +25,8 @@ namespace ludus::content::procedural
 inline constexpr uint32 SCATTER_LAYER_OPERATOR = 1;
 /// Schema of a cached scatter layer product: a count, then fixed-width placement records.
 inline constexpr uint32 SCATTER_LAYER_PRODUCT_SCHEMA = 1;
-/// Version of the cache key and manifest digest encodings below.
-inline constexpr uint32 SCATTER_GENERATION_VERSION = 1;
+/// Version of the scatter layer stage's parameter encoding: the operator version of every scatter layer stage.
+inline constexpr uint32 SCATTER_GENERATION_VERSION = 2;
 /// Most scopes in one request.
 inline constexpr usize MAX_SCATTER_GENERATION_SCOPES = 64;
 /// Most author locks in one scope.
@@ -79,7 +81,8 @@ struct ScatterManifest final
     foundation::Array<ScatterManifestLayer> Layers;
     /// Each layer's placements in canonical order, concatenated in Layers order.
     foundation::Array<ScatterPlacement> Placements;
-    /// Digest over the layer rooms, IDs, keys and output digests; equal digests mean equal manifests.
+    /// The generation manifest digest (TryComputeGenerationManifestDigest) over the layer stages; equal digests mean
+    /// equal manifests.
     GenerationDigest Digest;
 
     /// @brief The placement with an identity, or null when the manifest has none. O(layers + log placements).
@@ -110,6 +113,8 @@ struct ScatterCandidate final
     ScatterManifest Manifest;
     /// Unsatisfied author locks; nonempty exactly when Status is ConstraintFailed.
     foundation::Array<ScatterLockConflict> Conflicts;
+    /// The staged layer stage products that publication accepts with the manifest; empty when Manifest is.
+    GenerationCandidate Generation;
 };
 
 /// @brief How a placement differs between two manifests.
@@ -134,10 +139,68 @@ struct ScatterChange final
     ScatterDecision Decision;
 };
 
+/// @brief The kernel of every scatter layer stage.
+///
+/// It decodes the stage's parameters (seed, domains, room, the layer, region and keep-outs written by
+/// TryAddScatterStages) and generates or validates the layer from them alone. Holds reusable scratch storage.
+/// Single-owner; not thread-safe.
+class ScatterLayerKernel final : public GenerationStageKernel
+{
+public:
+    /// @copydoc GenerationStageKernel::TryExecute
+    /// @return Success; InvalidInput for malformed parameters; CapacityExceeded when the layer exceeds
+    ///         MAX_SCATTER_LAYER_CANDIDATES; OutOfMemory; or SearchExhausted when a bounded draw is exhausted.
+    [[nodiscard]] GenerationStatus TryExecute(const GenerationStage& stage,
+                                              GenerationInputProducts inputs,
+                                              GenerationByteWriter& outProduct) noexcept override;
+    /// @brief Check a cached layer product: identities in the stage's room and layer, strictly canonical order, and
+    ///        candidate, variant and scale in range.
+    [[nodiscard]] bool IsValidProduct(const GenerationStage& stage,
+                                      GenerationInputProducts inputs,
+                                      foundation::BorrowedView<const uint8> product) noexcept override;
+
+private:
+    [[nodiscard]] bool tryDecodeParameters(const GenerationStage& stage) noexcept;
+
+    foundation::Array<ScatterVariant> mVariants;
+    foundation::Array<ScatterRectangle> mKeepOuts;
+    ScatterLayer mLayer;
+    ScatterRecipe mRecipe;
+    ScatterKeys mKeys;
+    foundation::Array<ScatterPlacement> mScratch;
+    foundation::Array<ScatterPlacement> mPlacements;
+};
+
+/// @brief Append one stage per layer of every scope of a request to a plan, in scope then recipe layer order.
+///
+/// Each stage's Scope is its room and its Stage the layer ID. Its parameters encode every input the layer depends
+/// on: SCATTER_LAYOUT_VERSION, the seed, domain IDs, room, the layer's own fields and variants, the region and the
+/// keep-outs. Other layers and locks are excluded, so editing them never invalidates it. Scatter stages have no
+/// upstream inputs.
+/// @param input The request; validated by this call.
+/// @param inoutKernel The kernel of the appended stages; borrowed and must outlive every request using the plan.
+/// @param inoutPlan Receives the stages; unchanged on failure.
+/// @return Success, InvalidInput or OutOfMemory.
+[[nodiscard]] GenerationStatus TryAddScatterStages(const ScatterGenerationInput& input,
+                                                   ScatterLayerKernel& inoutKernel,
+                                                   foundation::Array<GenerationStage>& inoutPlan) noexcept;
+
+/// @brief Decode a scatter layer product's placements.
+///
+/// Checks the record count against the byte length and strictly canonical identity order within one room and layer;
+/// range checks against a recipe are the kernel's IsValidProduct.
+/// @param product The product's canonical bytes.
+/// @param outPlacements Replaced on success; unchanged on failure.
+/// @return False when the bytes are not a well-formed layer product or allocation fails.
+[[nodiscard]] bool TryReadScatterLayerProduct(foundation::BorrowedView<const uint8> product,
+                                              foundation::Array<ScatterPlacement>& outPlacements) noexcept;
+
 /// @brief Stages scatter candidates through a validated product cache and owns the accepted manifest.
 ///
-/// The accepted manifest changes only through TryPublish. Staging never changes it, whatever the outcome. The
-/// coordinator borrows the cache store, which must outlive it. Single-owner; not thread-safe.
+/// Staging, caching, the trace, revisions and publication are the shared GenerationCoordinator's; this coordinator
+/// adds the typed manifest and author locks. The accepted manifest changes only through TryPublish. Staging never
+/// changes it, whatever the outcome. The coordinator borrows the cache store, which must outlive it. Single-owner;
+/// not thread-safe.
 class ScatterGenerationCoordinator final
 {
 public:
@@ -160,8 +223,8 @@ public:
 
     /// @brief Make a successful candidate the accepted manifest and advance the revision.
     /// @param inoutCandidate Emptied and marked NotReady on success; unchanged on failure.
-    /// @return Success; NotReady when the candidate did not stage successfully; or StaleCandidate when it was staged
-    ///         against an older revision. The accepted manifest is unchanged on failure.
+    /// @return Success; NotReady when the candidate did not stage successfully; StaleCandidate when it was staged
+    ///         against an older revision; or OutOfMemory. The accepted manifest is unchanged on failure.
     [[nodiscard]] GenerationStatus TryPublish(ScatterCandidate& inoutCandidate) noexcept;
 
     /// Discard a candidate without changing the accepted manifest; it becomes empty and NotReady.
@@ -175,13 +238,13 @@ public:
     /// Revision of the accepted manifest; zero before the first publication.
     [[nodiscard]] LUDUS_INLINE uint64 GetAcceptedRevision() const noexcept
     {
-        return mAcceptedRevision;
+        return mGeneration.GetAcceptedRevision();
     }
 
 private:
-    GenerationCacheStore& mCacheStore;
+    GenerationCoordinator mGeneration;
+    ScatterLayerKernel mKernel;
     ScatterManifest mAccepted;
-    uint64 mAcceptedRevision = 0;
 };
 
 /// @brief Compare an accepted manifest with a candidate by persistent placement identity.

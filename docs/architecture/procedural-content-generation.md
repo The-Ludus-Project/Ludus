@@ -129,23 +129,25 @@ then drains work and releases its storage through the existing lifetime fence.
 
 Initially implement one consumer with ordinary native functions. Extract the
 common executor after environment scatter and modular assemblies demonstrate
-the same contracts. P1 has started that extraction: the domain-agnostic digest,
-validated cache and trace are in `Ludus::ProceduralCore`, while the coordinator
-that stages and publishes candidates stays with scatter until modular assembly
-shares it ([P1](#p1-staged-scatter-generation)). The following target layout is
-proposed:
+the same contracts. P1 made that extraction once modular assembly became the
+second consumer. The digest, validated cache, trace and the demand-driven stage
+coordinator that stages and publishes candidates are in `Ludus::ProceduralCore`.
+Scatter keeps its typed manifest, locks and explanations; the persistent cache
+store is a Content adapter ([P1](#p1-staged-scatter-generation)). The following
+target layout is proposed; the core, environment, architecture and storage
+targets exist:
 
 | Location and target | Responsibility and dependency boundary |
 | --- | --- |
 | `modules/content/procedural/core`, `Ludus::ProceduralCore` | Recipe IDs, stage plans, bounded views, execution, diagnostics and provenance; Foundation and the Content SHA-256 digest only |
 | `modules/content/procedural/spatial`, `Ludus::ProceduralSpatial` | Reusable sampled fields, spatial indices, candidates and socket assembly; Core and Math |
 | `modules/content/procedural/environment` | Terrain provider adapters, biome plans, ecology, scatter and regional road products; terrain keeps its own generation/cooking contract |
-| `modules/content/procedural/architecture` | Parcels, building/interior plans and module assembly |
+| `modules/content/procedural/architecture`, `Ludus::ProceduralArchitecture` | Parcels, building/interior plans and module assembly |
 | `modules/content/procedural/character` | Body/rig families, appearance and wardrobe selection |
 | `modules/content/procedural/garment` | Pattern assets, fitting and cooked garment bindings |
 | `modules/content/procedural/vehicle` | Chassis families, sockets, assembly and physical descriptors |
 | Shared procedural format | Header-only INTERFACE schema target depending only on FoundationBase; fixed-width field layouts, limits and versions shared by tools and runtime |
-| Content/tool adapters | Catalog, file acquisition, importers, cache storage and cooking; use Content, the existing Resources coordinator and selected generators |
+| Content/tool adapters, including `modules/content/procedural/storage`, `Ludus::ProceduralStorage` | Catalog, file acquisition, importers, cache storage and cooking; use Content, the existing Resources coordinator and selected generators |
 | Game integration | Plans to game-owned static cells and spawn definitions; depends on GameplayWorld and selected domains |
 | Editor integration | Draft/preview/inspection in `apps/editor`; Qt remains private |
 
@@ -335,7 +337,9 @@ still used by a job, world, renderer or preview.
 
 Write cache products into private staging, verify lengths/digests/schema, and
 publish a completion manifest last. A cache hit validates content, rather than
-trusting filename existence. A corrupt entry is discarded and rebuilt. Packaged
+trusting filename existence. A corrupt entry is discarded and rebuilt. P1's
+persistent store follows this order
+([persistent store](#p1-staged-scatter-generation)). Packaged
 content has a manifest rooted in ordinary Content identity and needs neither
 authoring tools nor a developer cache. Sources and licenses remain under the
 game's asset/version-control policy. Optional distributed cooking can use the
@@ -915,56 +919,127 @@ occupancy and checkpoint persistence of tombstones and ordinals.
 
 ### P1: staged scatter generation
 
-P1 begins with room scatter as the first consumer of a staged, cached and
-explained generation request. Modular assembly, requests for a single output,
-a persistent cache store, override conflict repair in the Editor and World Demo
-consumption of the accepted manifest follow as separate changes under the same
-acceptance gate. Locks entering thinning before constraints are solved, and the
-comparison of serial and bounded-worker preparation, also follow.
+P1 began with room scatter as the first consumer of a staged, cached and
+explained generation request. Modular assembly is the second consumer, and the
+executor they share now serves requests for a single scope's output over a
+persistent cache store. Override conflict repair in the Editor, locks entering
+thinning before constraints are solved, and World Demo consumption of the
+accepted manifest follow as separate changes under the same acceptance gate.
+The comparison of serial and bounded-worker preparation also follows.
 
 **Modules.** `Ludus::ProceduralCore` (`modules/content/procedural/core`) holds
 the parts no domain owns: canonical little-endian byte encoding
 (`GenerationByteWriter`, `GenerationByteReader`), content digests
-(`GenerationDigest`, the Content module's SHA-256), the validated product cache
-and a bounded stage trace. It depends on Foundation and Content only and builds
+(`GenerationDigest`, the Content module's SHA-256), the validated product cache,
+a bounded stage trace and the demand-driven `GenerationCoordinator`
+(`generation_executor.h`). It depends on Foundation and Content only and builds
 for native and browser targets. `Ludus::ProceduralEnvironment` adds
-`scatter_generation.h`. Its `ScatterGenerationCoordinator` stages scatter
-candidates and owns the accepted manifest.
+`scatter_generation.h`. Its `ScatterGenerationCoordinator` wraps the shared
+coordinator with a typed scatter manifest and author locks.
+`Ludus::ProceduralArchitecture` (`modular_assembly.h`) adds the module catalog
+and span assembly stages. `Ludus::ProceduralStorage`
+(`file_generation_cache.h`) adds the persistent cache store on Content's file
+adapter.
 
-**Scopes and stages.** A request (`ScatterGenerationInput`) carries the world
+**Plans and stages.** A plan is an ordered list of `GenerationStage` values.
+Each has a scope and stage ID, a persistent operator ID and version, a product
+schema, canonical parameter bytes, the plan indices of its upstream inputs and a
+`GenerationStageKernel`. A kernel derives its product only from the stage's
+parameters and its input products, which are exactly the inputs of the stage
+key. A cached product therefore cannot disagree with what the kernel would
+generate. The key is the digest of the key version, operator and version,
+schema, scope, stage, parameters, and each input's scope, stage and output
+digest. Keys cover input product digests rather than input parameters. An
+upstream edit that reproduces the same bytes, such as reordering an authored
+module library, reruns the upstream stage and leaves every dependent cached.
+`ValidateGenerationPlan` checks bounds, that each input precedes its consumer,
+unique scope and stage pairs and present kernels. Operator IDs are allocated
+across domains: scatter layers use 1, module catalogs 2 and span assemblies 3.
+
+**Scatter stages.** A request (`ScatterGenerationInput`) carries the world
 seed, the scatter domains and one or more scopes in ascending room order. Each
-scope is a room's recipe plus its author locks. Every layer of a scope is one
-pure stage. Its cache key is the digest of the generation version, operator ID,
-scatter layout version, product schema, seed, domain IDs, room, the layer's own
-fields and variants, the region and the keep-outs. Other layers and locks are
-not in the key. A scale edit therefore reruns only its layer, a lock changes no
-product, and an edit in one room leaves every other room's products cached. A
-layer product is a placement count followed by fixed 24-byte placement records,
-written field by field in little-endian order.
+scope is a room's recipe plus its author locks. `TryAddScatterStages` appends one
+pure stage per layer, with the room as its scope and the layer ID as its stage.
+Its parameters encode the scatter layout version, seed, domain IDs, room, the
+layer's own fields and variants, the region and the keep-outs.
+`ScatterLayerKernel` decodes them and generates the layer from them alone.
+Other layers and locks are not parameters. A scale edit therefore reruns only
+its layer, a lock changes no product, and an edit in one room leaves every
+other room's products cached. A layer product is a placement count followed by
+fixed 24-byte placement records, written field by field in little-endian order.
+
+**Modular assembly.** A module catalog stage (`TryAddModuleCatalogStage`) turns
+an authored library into a canonical catalog product sorted by module ID. Each
+module has an ID, a width in lattice units and a role: repeat, or an authored
+adapter that closes residual spans. A span assembly stage
+(`TryAddSpanAssemblyStage`) reads one catalog product and a scope's local spans.
+It closes every span exactly with the fewest adapters, then the fewest modules.
+From the span's start, each slot takes the lowest-ID module that still allows
+an optimal closure of the remainder. A span with no exact closure fails the
+stage with `ConstraintFailed`. Every instance has a persistent identity: its
+scope, span ID and slot. Several assemblies can share one catalog stage. The
+repeat split of Müller, Wonka, Haegler, Ulmer and Van Gool's
+[Procedural Modeling of Buildings](https://doi.org/10.1145/1179352.1141931)
+informs the closure; Ludus requires an exact closure in integer lattice units.
+
+**Demand-driven requests.** `TryBeginCandidate` binds a candidate to a plan's
+digest and the accepted revision, with every product pending.
+`TryRequestScope` evaluates exactly the requested scope's stages and their
+pending upstream closure; `TryRequestAll` evaluates every stage. Other scopes
+stay pending, and products already ready are not evaluated again, so a later
+request for another scope reuses the shared upstream product in the same
+candidate. A request with an edited plan is refused: an edit begins a new
+candidate. A failing stage is marked failed and latches the candidate's status;
+products evaluated earlier stay ready. The demand-driven execution of
+Schroeder, Martin and Lorensen's *The Visualization Toolkit*, 4th edition,
+[section 4.4](https://book.vtk.org/en/latest/VTKBook/04Chapter4.html#executing-the-pipeline)
+and Figure 4-6, informs the request: an output updates only the branch it
+depends on. Ludus decides what is out of date from content digests rather than
+modification times.
 
 **Cache.** `GenerationCacheStore` stores opaque bytes by key.
 `MemoryGenerationCacheStore` is the in-process store with fixed entry and byte
 budgets; it refuses a write over budget rather than evicting. Each entry carries
 its framing version, key, schema, payload length and payload digest, and every
-hit verifies all of them. The scatter stage then decodes the payload and checks
-the room, layer, candidate, variant and scale ranges, plus strict canonical
-order. An entry that fails either check is removed and rebuilt, and the trace
-names the miss as `Corrupt`. A refused or failed store write never changes a
-result.
+hit verifies all of them. The stage kernel then checks the payload's content.
+The scatter kernel checks the room, layer, candidate, variant and scale ranges,
+plus strict canonical order. The assembly kernel checks that every span closes
+with catalog modules at contiguous offsets. An entry that fails any check is
+removed and rebuilt, and the trace names the miss as `Corrupt`. A refused or
+failed store write never changes a result.
 
-**Trace.** Each layer evaluation records its scope, stage, key, output digest,
+**Persistent store.** `FileGenerationCacheStore` keeps entries in one existing
+directory through Content's `ReadFile` and atomic `SaveFile`. A write first
+stages the bytes privately as a content-addressed object,
+`<key>-<object digest>.object`, and reads it back to verify its length and
+digest. It then publishes the key's completion record, `<key>.entry`, last.
+The record holds its version, the key, the object's length and digest, and a
+digest of its own fields. A read trusts neither names nor existence. It verifies
+the record, then the object's length and digest, and reports any mismatch,
+truncation or missing object as `Corrupt`. A store-level `Corrupt` result
+replaces the record with a removal record and the stage is rebuilt. An
+interrupted write leaves the previous entry or no entry. An object that no
+record names is never read. Content has no delete operation, so such objects
+remain until a later eviction policy removes them. SaveFile's digest check
+refuses a concurrent writer instead of coordinating it.
+
+**Trace.** Each stage evaluation records its scope, stage, key, output digest,
 whether it was a cache hit, executed or failed, the cache outcome that names
 every miss, and whether the product was stored. The trace is bounded and counts
 the records it drops; it never changes generation.
 
-**Candidates and publication.** `TryStage` builds a candidate manifest of layer
-products with their keys and output digests, plus a manifest digest over them.
-Staging never changes the accepted manifest. `TryPublish` accepts a candidate
-only when its status is `Success` and it was staged against the current accepted
-revision. A candidate staged against an older revision is `StaleCandidate`. One
-with an unsatisfied lock is `ConstraintFailed`, and any failed candidate is
-`NotReady`. `Reject` discards a candidate. Every failure leaves the accepted
-manifest and revision unchanged.
+**Candidates and publication.** `GenerationCoordinator::TryPublish` accepts a
+candidate only when it succeeded, every product is ready and it was begun
+against the current accepted revision. A candidate with a pending or failed
+stage is `NotReady`, and one begun against an older revision is
+`StaleCandidate`. The accepted `GenerationManifest` holds every product and a
+digest over the scopes, stage IDs, keys and output digests. The scatter
+coordinator's `TryStage` requests every scatter stage, decodes the products
+into a typed manifest with that digest and checks locks. Its `TryPublish`
+additionally refuses a candidate with an unsatisfied lock (`ConstraintFailed`)
+as `NotReady`. `Reject` discards a candidate. Staging, requesting and rejecting
+never change the accepted manifest, and every failure leaves it and the
+revision unchanged.
 
 **Locks.** In this slice, a lock is an accepted placement the author protects.
 The candidate must contain the same identity with exactly the same values. Locks
@@ -1002,3 +1077,23 @@ invalidation per layer, seed and lock edits; lock conflicts by keep-out, value
 and removed layer; stale candidates; corrupt and mis-shaped cache entries
 rebuilt to the same manifest; a store that refuses every write; and invalid
 requests that stage and publish nothing.
+
+The demand fixture extends the two rooms into one plan. A shared module catalog
+stage feeds a span assembly in each room, beside the rooms' scatter layers, and
+room B's spans are its separately editable local input. After an edit to B's
+spans, requesting room A records four cache hits: the catalog, A's two layers
+and A's assembly, with no execution and no evaluation of B. B stays pending and
+the candidate cannot publish. Requesting B then runs only B's assembly, reusing
+its cached layer. The final products equal a clean full cook with an empty
+cache stage by stage, and every placement and unedited instance keeps its
+identity. A module width edit invalidates the catalog and both assemblies as
+each room is requested. Reordering the library reruns only the catalog. The
+recovery run cooks the fixture into a persistent store and reopens it as a
+fresh session in which every stage is a hit. It then deletes the catalog's
+object, truncates A's assembly record, flips a byte of B's layer object and
+adds an orphan object. Requesting each room rebuilds exactly the damaged
+entries, the recovered manifest equals the clean cook, every placement and
+instance identity is unchanged, and a third session is all hits. Executor,
+assembly and store tests cover plan validation, latched failures, stale
+candidates, span closure, invalid libraries and spans, and damaged records and
+objects.
