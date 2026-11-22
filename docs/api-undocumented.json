@@ -900,7 +900,6 @@
   "function ludus::foundation::logging::LogSystem::Health()",
   "function ludus::foundation::logging::LogSystem::SetCategoryLevel(LogCategory category, LogLevel level)",
   "function ludus::foundation::logging::LogSystem::SetGlobalLevel(LogLevel level)",
-  "function ludus::foundation::logging::LogSystem::Shutdown()",
   "function ludus::foundation::logging::LogSystem::Statistics()",
   "function ludus::foundation::logging::ToString(LogLevel level) noexcept",
   "function ludus::foundation::math::Abs(float32 value) noexcept",
