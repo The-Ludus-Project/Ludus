@@ -514,7 +514,36 @@ class PlatformOnlyWarningTests(unittest.TestCase):
     def diagnose(self, text, path="tests/example/source.cpp", changed=None):
         lines = set(range(1, text.count("\n") + 2)) if changed is None else changed
         return [(line, message) for line, message in violations(path, text, lines)
-                if "preprocessor branch" in message or "C4127" in message]
+                if "preprocessor branch" in message or "C4127" in message or "inside LUDUS_ASSERT" in message]
+
+    def test_symbols_read_only_by_assertions_are_maybe_unused(self):
+        # Develop 1c4b12f09: Profile, Release and web builds compile LUDUS_ASSERT out, so a
+        # constant read only by an assertion became an unused-variable error there.
+        source = """namespace
+{
+constexpr uint32 LAST_BIT = 127;
+}
+uint64 Shift(uint64 value, uint32 shift)
+{
+    LUDUS_ASSERT(shift >= 1 && shift <= LAST_BIT);
+    return value << shift;
+}
+void Check(uint32 count)
+{
+    LUDUS_ASSERT_F(count > 0, "count {}", count);
+}
+"""
+        findings = sorted(self.diagnose(source))
+        self.assertEqual([line for line, _ in findings], [3, 10], findings)
+        self.assertIn("LAST_BIT is used only inside LUDUS_ASSERT", findings[0][1])
+        self.assertIn("count is used only inside LUDUS_ASSERT", findings[1][1])
+        waived = source.replace("constexpr uint32 LAST_BIT", "[[maybe_unused]] constexpr uint32 LAST_BIT").replace(
+            "void Check(uint32 count)", "void Check([[maybe_unused]] uint32 count)")
+        self.assertEqual(self.diagnose(waived), [])
+        # REQUIRE and CHECK stay in every build, and a use outside the assertion counts.
+        kept = source.replace("LUDUS_ASSERT(", "LUDUS_REQUIRE(").replace(
+            "LUDUS_ASSERT_F(count > 0, \"count {}\", count);", "LUDUS_ASSERT(count > 0);\n    Store(count);")
+        self.assertEqual(self.diagnose(kept), [])
 
     def test_constants_used_only_under_a_branch_are_declared_there(self):
         # Batch 44900782876: the web build rejected a native-only tick limit.

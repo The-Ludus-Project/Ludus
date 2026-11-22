@@ -50,6 +50,27 @@ FUNCTION_HEADER = re.compile(
 )
 NAMESPACE_HEADER = re.compile(r"(?:inline\s+)?namespace(?:\s+[\w:]+)?|extern")
 CLASS_HEADER = re.compile(r"(?:^|[\s>])(?:class|struct|union)\s*(?:[\w:]+)?(?:\s*final)?(?:\s*:[^;(){}]*)?$")
+# Assertion macros whose arguments vanish when LUDUS_ENABLE_ASSERTS is 0 (assert.hpp,
+# assert_format.hpp), as in Profile, Release and the browser builds.
+COMPILED_OUT_ASSERTION = re.compile(r"\bLUDUS_ASSERT(?:_F)?\s*\(")
+
+
+def compiled_out_spans(code: str) -> list[tuple[int, int]]:
+    """Offset ranges of LUDUS_ASSERT/LUDUS_ASSERT_F argument lists in code-only text."""
+    spans = []
+    for match in COMPILED_OUT_ASSERTION.finditer(code):
+        depth = 1
+        index = match.end()
+        while index < len(code) and depth > 0:
+            if code[index] == "(":
+                depth += 1
+            elif code[index] == ")":
+                depth -= 1
+            index += 1
+        spans.append((match.end(), index))
+    return spans
+
+
 CONSTANT_DECLARATION = re.compile(
     r"(?m)^[ \t]*(static\s+)?(inline\s+|extern\s+)?(?:constexpr|const)\b[^;(){}=]*?"
     r"\b([A-Za-z_]\w*)\s*(?:\[[^\]]*\]\s*)?(?:=|\{)"
@@ -299,6 +320,7 @@ def conditional_use_findings(path: str, source: str, code: str) -> list[tuple[in
     """Declarations used only under preprocessor branches: (declaration line, use lines, message)."""
     regions = Regions(source)
     scopes = Scopes(code)
+    assertions = compiled_out_spans(code)
     source_lines = source.splitlines()
     code_lines = code.splitlines()
     is_main_file = path.endswith(MAIN_FILE_SUFFIXES)
@@ -313,11 +335,18 @@ def conditional_use_findings(path: str, source: str, code: str) -> list[tuple[in
         if CONDITIONAL_USE_WAIVER.search(text) or "maybe_unused" in code_lines[line - 1]:
             return
         pattern = re.compile(rf"\b{re.escape(name)}\b")
-        uses = [line_of(match.start()) for match in pattern.finditer(code, first, last) if match.start() != declaration]
+        offsets = [match.start() for match in pattern.finditer(code, first, last) if match.start() != declaration]
+        asserted = [offset for offset in offsets if any(begin <= offset < end for begin, end in assertions)]
+        uses = [line_of(offset) for offset in offsets if offset not in asserted]
         first_line = line_of(first)
         last_line = line_of(last)
         uses += [number for number, body in regions.definitions
                  if first_line <= number <= last_line and pattern.search(body)]
+        if len(uses) == 0 and len(asserted) != 0:
+            found.append((line, sorted({line_of(offset) for offset in asserted}),
+                          f"{name} is used only inside LUDUS_ASSERT, which builds without assertions compile out; "
+                          "mark it [[maybe_unused]]"))
+            return
         if len(uses) == 0:
             return  # Wholly unused: every build already reports it.
         if regions.has_unused_configuration(line, uses):

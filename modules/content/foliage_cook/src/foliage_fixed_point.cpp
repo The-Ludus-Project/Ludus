@@ -28,7 +28,8 @@ constexpr int32 FLOAT32_SUBNORMAL_EXPONENT = -149;
 
 constexpr uint32 WORD_BITS = 64;
 constexpr uint32 INT128_BITS = 128;
-constexpr uint32 INT128_LAST_BIT = INT128_BITS - 1;
+// Read only by LUDUS_ASSERT, which builds without assertions compile out.
+[[maybe_unused]] constexpr uint32 INT128_LAST_BIT = INT128_BITS - 1;
 /// Largest power of two whose Int128 factor fits a signed 64-bit constructor argument.
 constexpr uint32 SHIFT_STEP = 62;
 constexpr uint32 HALF_WORD_BITS = 32;

@@ -1081,8 +1081,8 @@ remain analyzed only in macOS batch jobs.
 
 Pull requests compile on Linux. The MSVC and Emscripten builds run only in
 batch validation, so a warning that only they report reaches `develop` and
-fails the next batch. From October to November 2026 at least 15 such build
-errors had one of two causes, and the checks below catch them before review:
+fails the next batch. From October to November 2026 at least 16 such build
+errors had one of the causes below, and these checks catch them before review:
 
 - **A symbol used only inside an `#if` branch.** A build that compiles another
   branch reports it as unused (`-Wunused-const-variable`, `-Wunused-function`,
@@ -1094,6 +1094,12 @@ errors had one of two causes, and the checks below catch them before review:
   count as unconditional. An arm that stops the build with `#error` selects no
   configuration. Declare the symbol under the same condition as its uses, or
   discard a parameter in the other arms with `static_cast<void>(name)`.
+- **A symbol read only by an assertion.** `LUDUS_ASSERT` and `LUDUS_ASSERT_F`
+  compile to nothing when assertions are off, as in Profile, Release and the
+  browser builds, so their arguments are unused there. The same rule reports a
+  constant, internal function or parameter whose only uses are inside those
+  macros. Mark it `[[maybe_unused]]`. `LUDUS_REQUIRE` and `LUDUS_CHECK` stay in
+  every build and count as ordinary uses.
 - **Constant conditions and unreachable code.** MSVC reports a run-time `if`
   or `while` whose condition is constant as C4127, and unreachable code as
   C4702. `source_policy.py` reports a condition that names only UPPER_CASE
