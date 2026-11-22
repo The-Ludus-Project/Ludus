@@ -71,8 +71,12 @@ struct BodyColliderDescription final
     /// Uniform density in (0, MAX_DENSITY_KILOGRAMS_PER_CUBIC_METER] when the collider contributes mass.
     float64 DensityKilogramsPerCubicMeter = DEFAULT_DENSITY_KILOGRAMS_PER_CUBIC_METER;
     bool ShouldContributeMass = true; ///< False marks a massless collider.
-    bool IsEnabled = true;            ///< Disabled colliders take part in nothing.
-    uint64 Binding = 0;               ///< Opaque game value copied into query results.
+    /// Opaque surface material identifier. Contacts of colliders with different materials never share a patch, and
+    /// changing it (RigidWorld::TrySetColliderMaterial) retires the collider's cached contacts. Friction and
+    /// restitution values arrive with the solver.
+    uint32 Material = 0;
+    bool IsEnabled = true; ///< Disabled colliders take part in nothing.
+    uint64 Binding = 0;    ///< Opaque game value copied into query results.
 };
 
 /// @brief Description of a new body.

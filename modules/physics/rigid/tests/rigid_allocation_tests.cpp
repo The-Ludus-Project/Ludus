@@ -14,6 +14,7 @@
 #include <ludus/physics/collision/geometry_store.h>
 #include <ludus/physics/rigid/body.h>
 #include <ludus/physics/rigid/commands.h>
+#include <ludus/physics/rigid/contacts.h>
 #include <ludus/physics/rigid/mass_properties.h>
 #include <ludus/physics/rigid/rigid_world.h>
 #include <ludus/physics/rigid/status.h>
@@ -139,6 +140,7 @@ using ludus::foundation::math::Vector3d;
 namespace
 {
 constexpr uint32 CAPACITY = 8;
+constexpr uint32 CONTACT_POINT_CAPACITY = 64;
 
 collision::ConvexHull MakeTetrahedronHull()
 {
@@ -162,6 +164,8 @@ TEST_CASE("Rigid world initialization fails every allocation without installing 
         .MaxBodies = CAPACITY,
         .MaxColliders = CAPACITY,
         .MaxPendingCommands = CAPACITY,
+        .MaxContactPairs = CAPACITY,
+        .MaxContactPoints = CAPACITY,
     };
     RigidWorld world;
     int64 failedAllocation = 0;
@@ -178,8 +182,9 @@ TEST_CASE("Rigid world initialization fails every allocation without installing 
         REQUIRE(world.IsInitialized() == false);
         REQUIRE(world.GetCollisionWorld().IsInitialized() == false);
     }
-    // Five rigid tables and the collision world's four.
-    CHECK(failedAllocation >= 5);
+    // Five body and command tables, two generations of three contact tables, the candidate scratch, and the
+    // collision world's four.
+    CHECK(failedAllocation >= 12);
     CHECK(world.GetPhase() == WorldPhase::Idle);
 }
 
@@ -198,12 +203,16 @@ TEST_CASE("Bodies, commands, active ticks and export allocate nothing", "[rigid]
                                     .MaxBodies = CAPACITY,
                                     .MaxColliders = CAPACITY,
                                     .MaxPendingCommands = CAPACITY,
+                                    .MaxContactPairs = CAPACITY,
+                                    .MaxContactPoints = CONTACT_POINT_CAPACITY,
                                 }) == Status::Success);
     const StaticArray<BodyColliderDescription, 2> colliders{
         BodyColliderDescription{ .Shape = box },
         BodyColliderDescription{ .Shape = hullShape, .Pose = { .PositionBody = {1.0, 0.0, 0.0} } },
     };
     StaticArray<BodyState, CAPACITY> states{};
+    StaticArray<ContactPointState, CONTACT_POINT_CAPACITY> contactPoints{};
+    usize contactPointTotal = 0;
 
     gCounters = {};
     isTrackingAllocations = true;
@@ -244,10 +253,17 @@ TEST_CASE("Bodies, commands, active ticks and export allocate nothing", "[rigid]
         BodyExportResult exported;
         const Status exportStatus =
             world.TryExportBodyStates(BorrowedView<BodyState>(states.GetData(), CAPACITY), exported);
-        isEveryStepSuccessful = isEveryStepSuccessful == true && force == Status::Success &&
-                                impulse == Status::Success && target == Status::Success &&
-                                step.Result == Status::Success && exportStatus == Status::Success &&
-                                exported.IsComplete == true;
+        // The kinematic box starts inside the dynamic body's box and hull, so the closed-form and the general
+        // contact paths, cache matching and the contact export all run inside the tracked region.
+        ContactExportResult contacts;
+        const Status contactStatus =
+            world.TryExportContacts(BorrowedView<ContactPointState>(contactPoints.GetData(), CONTACT_POINT_CAPACITY),
+                                    contacts);
+        contactPointTotal += contacts.PointCount;
+        isEveryStepSuccessful =
+            isEveryStepSuccessful == true && force == Status::Success && impulse == Status::Success &&
+            target == Status::Success && step.Result == Status::Success && exportStatus == Status::Success &&
+            exported.IsComplete == true && contactStatus == Status::Success && contacts.IsComplete == true;
     }
     const Status teleported = world.TryTeleportBody(dynamic, { .PositionWorld = {0.0, 5.0, 0.0} });
     const Status destroyed = world.TryDestroyBody(kinematic);
@@ -256,6 +272,7 @@ TEST_CASE("Bodies, commands, active ticks and export allocate nothing", "[rigid]
     REQUIRE(createdDynamic == Status::Success);
     REQUIRE(createdKinematic == Status::Success);
     CHECK(isEveryStepSuccessful == true);
+    CHECK(contactPointTotal > 0);
     CHECK(teleported == Status::Success);
     CHECK(destroyed == Status::Success);
     CHECK(gCounters.Allocations == 0);

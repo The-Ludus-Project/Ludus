@@ -8,6 +8,7 @@
 // top's kinetic energy in 10 s, while the midpoint form preserves energy and |L|. Orientations turn by the exact
 // rotation of the substep's constant angular velocity.
 
+#include "internal/rigid_world_contacts.h"
 #include "internal/rigid_world_motion.h"
 
 #include "internal/rigid_math.h"
@@ -250,6 +251,28 @@ StepResult RigidWorldMotion::Step(RigidWorld& inoutWorld) noexcept
     const uint64 tick = world.mNextTick;
     const float64 tickSeconds = world.mSettings.TickSeconds;
 
+    // Detection comes before any mutation. It reads the poses the last tick published and writes only scratch, so
+    // a tick whose contacts do not fit the reserved tables ends here with no pose, velocity, command or cached
+    // contact changed. Commit changes velocities only, and contact geometry depends on poses alone.
+    const bool hasContacts = world.mSettings.MaxContactPairs > 0;
+    if (hasContacts == true)
+    {
+        world.mPhase = WorldPhase::Detect;
+        const Status detection = RigidWorldContacts::Detect(world, tick);
+        world.mPhase = WorldPhase::Idle;
+        if (detection != Status::Success)
+        {
+            result.Result = detection;
+            result.Phase = WorldPhase::Idle;
+            if (detection == Status::CapacityExceeded)
+            {
+                result.ExhaustedTable = world.mContactDiagnostics.ExhaustedTable;
+                result.RequiredCount = world.mContactDiagnostics.RequiredCount;
+            }
+            return result;
+        }
+    }
+
     world.mPhase = WorldPhase::Commit;
     for (BodySlot& slot : world.mBodies)
     {
@@ -416,6 +439,10 @@ StepResult RigidWorldMotion::Step(RigidWorld& inoutWorld) noexcept
         }
     }
     world.mResultCount = resultCount;
+    if (hasContacts == true)
+    {
+        RigidWorldContacts::Publish(world, tick);
+    }
     ++world.mNextTick;
     ++world.mEpoch;
     world.mPhase = WorldPhase::Idle;
