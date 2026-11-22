@@ -5,6 +5,10 @@
 // candidate filtering and explicit useResource for indirectly referenced BLAS:
 // https://developer.apple.com/documentation/metal/accelerating-ray-tracing-using-metal
 // https://developer.apple.com/videos/play/wwdc2021/10149/
+// R16b follows the same sample's compaction sequence (write the compacted size in the
+// build encoder, then copyAndCompact into a structure of that size) and Apple's
+// MTLAccelerationStructureCommandEncoder refit reference for out-of-place refits:
+// https://developer.apple.com/documentation/metal/mtlaccelerationstructurecommandencoder
 namespace ludus::graphics::rhi::backend
 {
 namespace
@@ -16,7 +20,27 @@ struct RayMetalGeometry final
     id<MTLAccelerationStructure> Structure = nil;
     id<MTLBuffer> Vertices = nil, Indices = nil, Scratch = nil;
     id<MTLCommandBuffer> Command = nil;
+    /// R16b: shared uint64 compacted size written by the build of compaction-enabled geometry.
+    id<MTLBuffer> CompactedSizeOrNil = nil;
 };
+/// R16b: geometry or scene slot of a build that has no refit source.
+constexpr usize RAY_METAL_NO_SOURCE = ~usize{0};
+/// R16b: native usage of a build, refittable when the description allows updates.
+MTLAccelerationStructureUsage GetRayMetalUsage(bool shouldAllowUpdate) noexcept
+{
+    return shouldAllowUpdate == true ? MTLAccelerationStructureUsageRefit : MTLAccelerationStructureUsageNone;
+}
+/// R16b: a refit can need no scratch, but Metal returns no buffer for a zero length.
+/// The reported allocation keeps the native size; one byte is never read.
+usize GetRayMetalScratchAllocationBytes(usize scratchBytes) noexcept
+{
+    return scratchBytes == 0 ? 1 : scratchBytes;
+}
+/// R16b: a refit destination holds at least the source structure and the descriptor's size.
+usize GetRayMetalStructureBytes(id<MTLAccelerationStructure> sourceOrNil, usize descriptorBytes) noexcept
+{
+    return sourceOrNil != nil && sourceOrNil.size > descriptorBytes ? sourceOrNil.size : descriptorBytes;
+}
 struct RayMetalScene final
 {
     id<MTLAccelerationStructure> Structure = nil;
@@ -91,6 +115,8 @@ RayCapabilities RayLimits() noexcept
         .StaticTriangles = true,
         .InlineQueries = true,
         .RayPipelines = GetMetal().Device.supportsFunctionPointers == true,
+        .Updates = true,
+        .CanCompact = true,
         .MaxInstances = internal::CurrentStorageLimits().RayInstances,
         .MaxRays = 4096,
         .MaxBufferBytes = internal::GetResourceSizeLimit(GetMetal().Device.maxBufferLength),
@@ -194,7 +220,11 @@ RasterStatus RayCreateProgram(usize slot, const ShaderDescription& description) 
         return RasterStatus::Ready;
     }
 }
-RasterStatus RayCreateGeometry(usize slot, const RayGeometryDescription& d, RayAllocation& allocation) noexcept
+namespace
+{
+/// Build geometry, or refit the Ready source slot when it is not RAY_METAL_NO_SOURCE.
+RasterStatus
+RayMetalBuildGeometry(usize slot, usize source, const RayGeometryDescription& d, RayAllocation& outAllocation) noexcept
 {
     if (GetRayMetal().Geometry.EnsureSlots(slot + 1) == false)
     {
@@ -245,14 +275,32 @@ RasterStatus RayCreateGeometry(usize slot, const RayGeometryDescription& d, RayA
         {
             descriptor.geometryDescriptors = @[ triangles ];
         }
-        const auto sizes = [GetMetal().Device accelerationStructureSizesWithDescriptor:descriptor];
-        if (RayMetalSizes(sizes, vertexBytes + indexBytes, d.ByteBudget, allocation) == false)
+        descriptor.usage = GetRayMetalUsage(d.ShouldAllowUpdate);
+        const id<MTLAccelerationStructure> sourceOrNil =
+            source == RAY_METAL_NO_SOURCE ? nil : GetRayMetal().Geometry[source].Structure;
+        MTLAccelerationStructureSizes sizes = [GetMetal().Device accelerationStructureSizesWithDescriptor:descriptor];
+        sizes.accelerationStructureSize = GetRayMetalStructureBytes(sourceOrNil, sizes.accelerationStructureSize);
+        if (sourceOrNil != nil)
+        {
+            sizes.buildScratchBufferSize = sizes.refitScratchBufferSize;
+        }
+        if (RayMetalSizes(sizes, vertexBytes + indexBytes, d.ByteBudget, outAllocation) == false)
         {
             return RasterStatus::CapacityExceeded;
         }
+        if (d.ShouldAllowCompaction == true)
+        {
+            geometry.CompactedSizeOrNil = [GetMetal().Device newBufferWithLength:sizeof(uint64)
+                                                                         options:MTLResourceStorageModeShared];
+            if (geometry.CompactedSizeOrNil == nil)
+            {
+                return RasterStatus::OutOfMemory;
+            }
+        }
         geometry.Structure = [GetMetal().Device newAccelerationStructureWithSize:sizes.accelerationStructureSize];
-        geometry.Scratch = [GetMetal().Device newBufferWithLength:sizes.buildScratchBufferSize
-                                                          options:MTLResourceStorageModePrivate];
+        geometry.Scratch =
+            [GetMetal().Device newBufferWithLength:GetRayMetalScratchAllocationBytes(sizes.buildScratchBufferSize)
+                                           options:MTLResourceStorageModePrivate];
         geometry.Command = [GetMetal().Queue commandBuffer];
         if (geometry.Structure == nil || geometry.Scratch == nil || geometry.Command == nil)
         {
@@ -263,18 +311,100 @@ RasterStatus RayCreateGeometry(usize slot, const RayGeometryDescription& d, RayA
         {
             return RasterStatus::Failed;
         }
-        [encoder buildAccelerationStructure:geometry.Structure
-                                 descriptor:descriptor
-                              scratchBuffer:geometry.Scratch
-                        scratchBufferOffset:0];
+        if (sourceOrNil == nil)
+        {
+            [encoder buildAccelerationStructure:geometry.Structure
+                                     descriptor:descriptor
+                                  scratchBuffer:geometry.Scratch
+                            scratchBufferOffset:0];
+        }
+        else
+        {
+            [encoder refitAccelerationStructure:sourceOrNil
+                                     descriptor:descriptor
+                                    destination:geometry.Structure
+                                  scratchBuffer:geometry.Scratch
+                            scratchBufferOffset:0];
+        }
+        if (geometry.CompactedSizeOrNil != nil)
+        {
+            [encoder writeCompactedAccelerationStructureSize:geometry.Structure
+                                                    toBuffer:geometry.CompactedSizeOrNil
+                                                      offset:0
+                                                sizeDataType:MTLDataTypeULong];
+        }
         [encoder endEncoding];
         GetRayMetal().Geometry[slot] = geometry;
         [geometry.Command commit];
         return RasterStatus::Pending;
     }
 }
+} // namespace
 RasterStatus
-RayCreateScene(usize slot, const internal::NativeRaySceneDescription& description, RayAllocation& allocation) noexcept
+RayCreateGeometry(usize slot, const RayGeometryDescription& description, RayAllocation& outAllocation) noexcept
+{
+    return RayMetalBuildGeometry(slot, RAY_METAL_NO_SOURCE, description, outAllocation);
+}
+RasterStatus RayUpdateGeometry(usize slot,
+                               usize source,
+                               const RayGeometryDescription& description,
+                               RayAllocation& outAllocation) noexcept
+{
+    return RayMetalBuildGeometry(slot, source, description, outAllocation);
+}
+RasterStatus
+RayCompactGeometry(usize slot, const internal::NativeRayCompaction& compaction, RayAllocation& outAllocation) noexcept
+{
+    const usize source = compaction.Source;
+    const usize byteBudget = compaction.ByteBudget;
+    if (GetRayMetal().Geometry.EnsureSlots(slot + 1) == false)
+    {
+        return internal::StorageFailure();
+    }
+    @autoreleasepool
+    {
+        const RayMetalGeometry& from = GetRayMetal().Geometry[source];
+        if (from.CompactedSizeOrNil == nil || from.CompactedSizeOrNil.contents == nullptr)
+        {
+            return RasterStatus::Failed;
+        }
+        uint64 compactedBytes = 0;
+        std::memcpy(&compactedBytes, from.CompactedSizeOrNil.contents, sizeof(compactedBytes));
+        if (compactedBytes == 0 || compactedBytes > from.Structure.size)
+        {
+            return RasterStatus::Failed;
+        }
+        if (compactedBytes > byteBudget || compactedBytes > RayLimits().MaxBufferBytes)
+        {
+            return RasterStatus::CapacityExceeded;
+        }
+        RayMetalGeometry geometry;
+        geometry.Structure = [GetMetal().Device newAccelerationStructureWithSize:static_cast<usize>(compactedBytes)];
+        geometry.Command = [GetMetal().Queue commandBuffer];
+        if (geometry.Structure == nil || geometry.Command == nil)
+        {
+            return RasterStatus::OutOfMemory;
+        }
+        id<MTLAccelerationStructureCommandEncoder> encoder = [geometry.Command accelerationStructureCommandEncoder];
+        if (encoder == nil)
+        {
+            return RasterStatus::Failed;
+        }
+        [encoder copyAndCompactAccelerationStructure:from.Structure toAccelerationStructure:geometry.Structure];
+        [encoder endEncoding];
+        GetRayMetal().Geometry[slot] = geometry;
+        outAllocation = {static_cast<usize>(compactedBytes), 0};
+        [geometry.Command commit];
+        return RasterStatus::Pending;
+    }
+}
+namespace
+{
+/// Build a scene, or refit the Ready sourceScene slot when it is not RAY_METAL_NO_SOURCE.
+RasterStatus RayMetalBuildScene(usize slot,
+                                usize sourceScene,
+                                const internal::NativeRaySceneDescription& description,
+                                RayAllocation& outAllocation) noexcept
 {
     if (GetRayMetal().Scenes.EnsureSlots(slot + 1) == false)
     {
@@ -342,14 +472,23 @@ RayCreateScene(usize slot, const internal::NativeRaySceneDescription& descriptio
         descriptor.instanceDescriptorBuffer = scene.Instances;
         descriptor.instanceCount = count;
         descriptor.instancedAccelerationStructures = structures;
-        const auto sizes = [GetMetal().Device accelerationStructureSizesWithDescriptor:descriptor];
-        if (RayMetalSizes(sizes, instanceBytes + opacityBytes, budget, allocation) == false)
+        descriptor.usage = GetRayMetalUsage(description.ShouldAllowUpdate);
+        const id<MTLAccelerationStructure> sourceOrNil =
+            sourceScene == RAY_METAL_NO_SOURCE ? nil : GetRayMetal().Scenes[sourceScene].Structure;
+        MTLAccelerationStructureSizes sizes = [GetMetal().Device accelerationStructureSizesWithDescriptor:descriptor];
+        sizes.accelerationStructureSize = GetRayMetalStructureBytes(sourceOrNil, sizes.accelerationStructureSize);
+        if (sourceOrNil != nil)
+        {
+            sizes.buildScratchBufferSize = sizes.refitScratchBufferSize;
+        }
+        if (RayMetalSizes(sizes, instanceBytes + opacityBytes, budget, outAllocation) == false)
         {
             return RasterStatus::CapacityExceeded;
         }
         scene.Structure = [GetMetal().Device newAccelerationStructureWithSize:sizes.accelerationStructureSize];
-        scene.Scratch = [GetMetal().Device newBufferWithLength:sizes.buildScratchBufferSize
-                                                       options:MTLResourceStorageModePrivate];
+        scene.Scratch =
+            [GetMetal().Device newBufferWithLength:GetRayMetalScratchAllocationBytes(sizes.buildScratchBufferSize)
+                                           options:MTLResourceStorageModePrivate];
         scene.Command = [GetMetal().Queue commandBuffer];
         if (scene.Structure == nil || scene.Scratch == nil || scene.Command == nil)
         {
@@ -360,15 +499,39 @@ RayCreateScene(usize slot, const internal::NativeRaySceneDescription& descriptio
         {
             return RasterStatus::Failed;
         }
-        [encoder buildAccelerationStructure:scene.Structure
-                                 descriptor:descriptor
-                              scratchBuffer:scene.Scratch
-                        scratchBufferOffset:0];
+        if (sourceOrNil == nil)
+        {
+            [encoder buildAccelerationStructure:scene.Structure
+                                     descriptor:descriptor
+                                  scratchBuffer:scene.Scratch
+                            scratchBufferOffset:0];
+        }
+        else
+        {
+            [encoder refitAccelerationStructure:sourceOrNil
+                                     descriptor:descriptor
+                                    destination:scene.Structure
+                                  scratchBuffer:scene.Scratch
+                            scratchBufferOffset:0];
+        }
         [encoder endEncoding];
         GetRayMetal().Scenes[slot] = Move(scene);
         [GetRayMetal().Scenes[slot].Command commit];
         return RasterStatus::Pending;
     }
+}
+} // namespace
+RasterStatus
+RayCreateScene(usize slot, const internal::NativeRaySceneDescription& description, RayAllocation& allocation) noexcept
+{
+    return RayMetalBuildScene(slot, RAY_METAL_NO_SOURCE, description, allocation);
+}
+RasterStatus RayUpdateScene(usize slot,
+                            usize source,
+                            const internal::NativeRaySceneDescription& description,
+                            RayAllocation& outAllocation) noexcept
+{
+    return RayMetalBuildScene(slot, source, description, outAllocation);
 }
 RasterStatus RaySubmit(usize slot, const internal::NativeRaySubmission& submission, RayAllocation& allocation) noexcept
 {

@@ -2892,7 +2892,9 @@ preserve raster, required requests fail startup explicitly. Metal additionally e
 native ray stage/function-table execution on hardware-ray devices supporting function
 pointers. The logical RT node selects this separately from inline-query compute or
 custom/software compute traversal; see [ray invocation authoring](../development/render-graph-authoring.md).
-Updates/refits, procedural primitives, motion and asynchronous compute remain unavailable.
+The RHI exposes [R16b refits and compaction](../development/fullscreen-rendering.md#acceleration-structure-refit-and-compaction-r16b),
+but the RT0 node does not use them yet; refit and rebuild policy is RT3. Procedural
+primitives, motion and asynchronous compute remain unavailable.
 
 The installed `ludus_compile_ray_queries(TARGET ... NAME ...)` helper cooks the
 fixed query kernel with verified Slang/SPIRV-Cross source and binary provenance.

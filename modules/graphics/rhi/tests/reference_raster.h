@@ -122,6 +122,13 @@ inline RasterStatus RayBuildPoll = RasterStatus::Pending;
 /// Resident and scratch bytes reported for each geometry and scene build.
 inline foundation::usize RayResidentBytes = 0;
 inline foundation::usize RayScratchBytes = 0;
+/// R16b refits and compacted copies the services handed to the backend, so tests can
+/// check that only admitted operations reach it.
+inline foundation::usize RayGeometryUpdates = 0;
+inline foundation::usize RaySceneUpdates = 0;
+inline foundation::usize RayCompactions = 0;
+/// Resident bytes of a compacted copy; a value above the request budget is rejected.
+inline foundation::usize RayCompactedBytes = 0;
 /// Reset every reference counter, including the annotation journal.
 void Reset() noexcept;
 } // namespace ludus::graphics::rhi::reference
