@@ -124,7 +124,10 @@ TEST_CASE("Warm submit + render performs no allocation or free", "[audio][alloc]
     REQUIRE(gFreeCount.load(std::memory_order_relaxed) == 0);
 }
 
-TEST_CASE("Warm music group admission, cue revision and rendering allocate nothing", "[audio][alloc][music]")
+// Music streams decode on the native audio worker, which Windows does not provide yet
+// (PrepareStream returns Unsupported there); Windows runs this suite without the tag.
+TEST_CASE("Warm music group admission, cue revision and rendering allocate nothing",
+          "[audio][alloc][music][native-audio-worker]")
 {
     using namespace ludus::audio;
     using namespace ludus::foundation;
