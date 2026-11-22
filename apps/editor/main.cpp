@@ -145,7 +145,7 @@ int main(int argc, char** argv)
 
     QCommandLineParser parser;
     parser.setApplicationDescription(QStringLiteral("Ludus Editor workspace"));
-    parser.addHelpOption();
+    const QCommandLineOption helpOption = parser.addHelpOption();
     QCommandLineOption toolingRootOption(QStringLiteral("tooling-root"),
                                          QStringLiteral("Absolute trusted Ludus tooling checkout"),
                                          QStringLiteral("path"));
@@ -162,7 +162,21 @@ int main(int argc, char** argv)
     parser.addOption(pythonOption);
     parser.addOption(projectOption);
     parser.addOption(adapterOption);
-    parser.process(app);
+    // parse(), not process(): process() calls exit() for an invalid command line
+    // or --help, which skips the logging shutdown and destroys running loggers.
+    if (parser.parse(app.arguments()) == false)
+    {
+        QTextStream(stderr) << QCoreApplication::applicationName() << QStringLiteral(": ") << parser.errorText()
+                            << QStringLiteral("\nRun with --help to list the supported options.\n");
+        logging::LogSystem::Shutdown();
+        return 1;
+    }
+    if (parser.isSet(helpOption) == true || parser.isSet(QStringLiteral("help-all")) == true)
+    {
+        QTextStream(stdout) << parser.helpText();
+        logging::LogSystem::Shutdown();
+        return 0;
+    }
 
     ludus::editor::ToolingPaths tooling;
     tooling.ToolingRoot = parser.value(toolingRootOption);

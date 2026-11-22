@@ -1270,6 +1270,11 @@ if(LUDUS_BUILD_TESTS AND NOT EMSCRIPTEN)
     add_test(NAME ludus_document_well_tests COMMAND ludus_document_well_tests)
     set_tests_properties(ludus_document_well_tests PROPERTIES LABELS "unit;editor;layout" TIMEOUT 30
         ENVIRONMENT "${editor_test_environment}")
+    # Launches the real editor: an invalid command line or --help returns from main.
+    add_test(NAME ludus_editor_command_line_exit
+        COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/tests/test_command_line_exit.py"
+            "$<TARGET_FILE:ludus_editor>")
+    set_tests_properties(ludus_editor_command_line_exit PROPERTIES LABELS "editor" TIMEOUT 120)
     if(APPLE)
         add_executable(ludus_editor_accessibility_tests tests/accessibility_tests.mm)
         target_include_directories(ludus_editor_accessibility_tests PRIVATE src)
