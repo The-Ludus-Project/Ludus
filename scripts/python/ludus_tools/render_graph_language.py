@@ -353,7 +353,13 @@ def prepare_resource_headers(snapshot, programs, contracts, compiler, cancel, bu
                     else:
                         element = 'uint32x4'
                     setter = f' void Store(in uint32 index, in {element} record);' if field['writable'] else ''
-                    views[view] = f'struct {view} {{ uint32 GetCount(); {element} Load(in uint32 index);{setter} }};'
+                    byte_access = ''
+                    if record:
+                        byte_access = ' uint32 GetByteSize(); uint32 LoadWord(in uint32 byteOffset);'
+                        if field['writable']:
+                            byte_access += ' void StoreWord(in uint32 byteOffset, in uint32 word);'
+                    views[view] = (f'struct {view} {{ uint32 GetCount(); {element} Load(in uint32 index);'
+                                   f'{setter}{byte_access} }};')
                     members.append(f'{view} {field["field"]};')
                 resources.append(f'struct {function}Resources {{ ' +
                                  ' '.join(members) + ' };')

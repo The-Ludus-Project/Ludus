@@ -1375,6 +1375,33 @@ already exposes the selected Buffer layout to named callbacks.
 The member name capitalizes the port's first letter and preserves the remaining
 spelling. Named views load and store whole records using the reflected layout.
 Supported fields are 32-bit scalars and vectors, nested records and fixed arrays.
+Structured views also expose `GetByteSize()` and `LoadWord(byteOffset)` in Slang
+and LUSL. Writable views add `StoreWord(byteOffset, word)`. Use these methods in
+your own shader helpers to encode records or update individual 32-bit fields
+without loading and storing the whole struct. For example, a Slang helper for a
+Buffer sized from `EdgesData` can write a single float at an authored offset:
+
+```slang
+void StoreEdgeWeight(in GraphWritableEdgesDataView edges, uint byteOffset, float weight)
+{
+    uint byteSize = edges.GetByteSize();
+    uint wordBytes = sizeof(uint);
+    if (byteOffset % wordBytes == 0 && byteOffset < byteSize)
+    {
+        edges.StoreWord(byteOffset, asuint(weight));
+    }
+}
+```
+
+Offsets are relative to the start of the allocation, must be multiples of four,
+and must fit a full 32-bit word within `GetByteSize()`. This size is the reflected
+record stride times the declared record count. The calls leave alignment and
+bounds checks to the shader. If a shader also uses typed access, its custom
+offsets and encoding must agree with the reflected storage layout for those
+fields. Read-only views can use `LoadWord` with the same layout. The generated
+Slang editor context labels its layout-dependent placeholders. The package build
+emits the actual reflected accessors.
+
 Fixed-byte Buffer ports expose four unsigned integers per element. A reused
 function needs matching fields, types and access. The same callback variant
 also shares one slot and capacity mapping. Named Buffer ports work in scene
