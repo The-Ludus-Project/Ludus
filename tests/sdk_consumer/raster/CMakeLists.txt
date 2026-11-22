@@ -144,6 +144,31 @@ else()
     set_tests_properties(ludus_sdk_r18c_consumer PROPERTIES LABELS "rhi;gpu;build-contract" TIMEOUT 60)
 endif()
 
+# R12a expanded indirect draws and dispatches, or the authored direct variant without
+# IndirectRendering (WebGL 2). The shader source is shared with the native RHI conformance case.
+add_executable(ludus_sdk_indirect_consumer ../indirect.cpp)
+target_link_libraries(ludus_sdk_indirect_consumer PRIVATE Ludus::GraphicsRhi Ludus::FoundationTime)
+target_compile_options(ludus_sdk_indirect_consumer PRIVATE -Wall -Wextra -Wpedantic -Werror -fno-exceptions)
+ludus_compile_shader(TARGET ludus_sdk_indirect_consumer NAME indirect_prepare
+    SOURCE ../shaders/indirect_commands.slang COMPUTE PrepareCommands)
+ludus_compile_shader(TARGET ludus_sdk_indirect_consumer NAME indirect_prepare_zero
+    SOURCE ../shaders/indirect_commands.slang COMPUTE PrepareCommands DEFINES LUDUS_INDIRECT_ZERO_FIRST_INSTANCE=1)
+ludus_compile_shader(TARGET ludus_sdk_indirect_consumer NAME indirect_mark
+    SOURCE ../shaders/indirect_commands.slang COMPUTE MarkGroups)
+ludus_compile_shader(TARGET ludus_sdk_indirect_consumer NAME indirect_draw RASTER
+    SOURCE ../shaders/indirect_commands.slang VERTEX CommandVertex FRAGMENT CommandFragment)
+if(EMSCRIPTEN)
+    target_link_options(ludus_sdk_indirect_consumer PRIVATE -fno-exceptions -g2 -sENVIRONMENT=web -sALLOW_MEMORY_GROWTH=1 -sASSERTIONS=1)
+    set_target_properties(ludus_sdk_indirect_consumer PROPERTIES OUTPUT_NAME indirect SUFFIX ".js")
+    configure_file(../indirect.html indirect.html COPYONLY)
+else()
+    add_test(NAME ludus_sdk_indirect_consumer COMMAND ludus_sdk_indirect_consumer)
+    add_test(NAME ludus_sdk_indirect_zero_first_instance_consumer
+        COMMAND ludus_sdk_indirect_consumer --zero-first-instance)
+    set_tests_properties(ludus_sdk_indirect_consumer ludus_sdk_indirect_zero_first_instance_consumer
+        PROPERTIES LABELS "rhi;gpu;build-contract" TIMEOUT 60)
+endif()
+
 # Addressed-random GPU parity: the corpus shared with the native renderer test,
 # checked against the CPU reference compiled into the fixture (WebAssembly in
 # the browser). math.slang comes from the installed SDK shader directory.

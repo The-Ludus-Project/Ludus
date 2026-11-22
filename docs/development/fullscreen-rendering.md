@@ -2575,8 +2575,9 @@ boundaries.
 
 The portable conformance case `Portable R12a indirect commands honor offsets,
 counts, strides and dispatch arguments` (`ludus_rhi_render_tests` and the Windows
-`ludus_rhi_d3d12_tests`) cooks `tests/shaders/indirect_commands.slang` for every
-native target. One kernel writes every command; nothing is read back before use:
+`ludus_rhi_d3d12_tests`) cooks `tests/sdk_consumer/shaders/indirect_commands.slang`
+for every native target. One kernel writes every command; nothing is read back
+before use:
 
 - an indexed command with nonzero `FirstIndex`, `BaseVertex` and `FirstInstance`;
 - a zero-instance command 40 bytes later, consumed through `IndirectCount = 2`, with
@@ -2589,7 +2590,28 @@ right half, and the dispatch marks are read back. Reference tests (`[indirect]` 
 `ludus_rhi_lifecycle_tests`) cover the profile and its WebGL absence, non-indexed
 admission, count, stride, alignment and span-overflow rejection, disabled-feature
 `Unsupported` results, graph span declarations and producer-to-command hazards.
-Metal runs locally. Vulkan, Direct3D 12 and WebGPU results come from their CI
+
+The installed-SDK fixture `tests/sdk_consumer/indirect.cpp` runs the same commands
+through the public API with the shared shader. Natively it is the CTests
+`ludus_sdk_indirect_consumer` and `ludus_sdk_indirect_zero_first_instance_consumer`.
+The second forces the layout for a profile without `HasFirstInstance`: the kernel
+writes zero `FirstInstance` values, each packet's instance slice starts at its
+color, and the non-indexed draw runs first so that a wrong stride or an executed
+zero-instance command still covers the right half. In the browser,
+`indirect-browser-test.mjs` (the `raster` suite in
+`tests/sdk_consumer/browser-suites.json`) runs four scenarios in Chromium on
+SwiftShader:
+
+| Scenario | Checks |
+| --- | --- |
+| `webgpu` | Fixed profile (4-byte alignment, 64 commands, non-indexed, offsets, dispatch); `indirect-first-instance` requested exactly when the adapter offers it; image and dispatch marks |
+| `webgpu-no-first-instance` | The adapter hides the feature: `HasFirstInstance` is false, the device does not request it, and the zero-`FirstInstance` layout matches the oracle |
+| `webgl2` | Empty profile, `Unsupported` for a `StorageIndirect` buffer, a required `IndirectRendering` rejected at `CreateDevice`, and the authored direct variant matches the oracle |
+| `auto-fallback` | Without `navigator.gpu`, Auto selects WebGL 2 and draws the direct variant |
+
+The report records whether the software adapter offered `indirect-first-instance`,
+so nonzero browser `FirstInstance` coverage is explicit rather than assumed.
+Metal runs locally. Vulkan, Direct3D 12 and browser results come from their CI
 lanes, and physical-GPU qualification remains R7b. Visibility and compaction
 algorithms that produce commands remain renderer policy.
 
