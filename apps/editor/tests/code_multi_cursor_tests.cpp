@@ -10,6 +10,7 @@
 #include "internal/code_editor.h"
 #include "internal/code_file_document.h"
 #include "internal/code_multi_cursor.h"
+#include "internal/code_syntax_highlighter.h"
 
 #include <catch2/catch_test_macros.hpp>
 
@@ -23,7 +24,9 @@
 #include <QList>
 #include <QString>
 #include <QTemporaryDir>
+#include <QTextBlock>
 #include <QTextCursor>
+#include <QTextLayout>
 
 using namespace ludus::editor;
 using namespace ludus::foundation;
@@ -323,4 +326,72 @@ TEST_CASE("Typing at tens of thousands of cursors stays linear", "[code-editor][
     QList<CodeTextSelection> undone;
     REQUIRE(host.Undo(undone) == true);
     CHECK(DraftOf(host) == original);
+}
+
+TEST_CASE("Multi-cursor typing edits each line in place", "[code-editor][multi-cursor]")
+{
+    QTemporaryDir directory;
+    REQUIRE(directory.isValid() == true);
+    CodeFileDocument host = OpenHost(directory, QByteArray("ab\ncd\nef\n"));
+    BoundView view(host);
+
+    // Mark the middle line, which lies between the two carets. Replacing the
+    // span from the first caret to the last would delete this block and its data
+    // and relayout every line in between (issue 1261). The block owns the data.
+    CodeBlockData* marker = new CodeBlockData;
+    QTextBlock middle = view.Editor->document()->findBlockByNumber(1);
+    middle.setUserData(marker);
+    PutCaret(*view.Editor, 0);
+    AddSecondaryCaret(*view.Editor, 6);
+
+    SendKey(*view.Editor, Qt::Key_X, Qt::NoModifier, QStringLiteral("X"));
+    CHECK(DraftOf(host) == QByteArray("Xab\ncd\nXef\n"));
+    CHECK(view.Editor->toPlainText() == QStringLiteral("Xab\ncd\nXef\n"));
+    CHECK(view.Editor->document()->findBlockByNumber(1).userData() == marker);
+
+    // Backspace removes through the same in-place path.
+    SendKey(*view.Editor, Qt::Key_Backspace, Qt::NoModifier, QString());
+    CHECK(DraftOf(host) == QByteArray("ab\ncd\nef\n"));
+    CHECK(view.Editor->toPlainText() == QStringLiteral("ab\ncd\nef\n"));
+    CHECK(view.Editor->document()->findBlockByNumber(1).userData() == marker);
+}
+
+TEST_CASE("Painting secondary carets lays out only visible lines", "[code-editor][multi-cursor]")
+{
+    // Many more lines than the viewport shows, with a caret on every line.
+    constexpr qsizetype LINE_COUNT = 400;
+    constexpr int32 VIEW_WIDTH = 800;
+    constexpr int32 VIEW_HEIGHT = 600;
+    QTemporaryDir directory;
+    REQUIRE(directory.isValid() == true);
+    CodeFileDocument host = OpenHost(directory, RepeatLine(QByteArray("value\n"), LINE_COUNT));
+    BoundView view(host);
+    view.Editor->resize(VIEW_WIDTH, VIEW_HEIGHT);
+    view.Editor->show();
+    PutCaret(*view.Editor, 0);
+    QList<CodeSecondaryCursor> cursors;
+    for (qsizetype line = 1; line < LINE_COUNT; ++line)
+    {
+        const int32 position = static_cast<int32>(line) * 6;
+        cursors.append(CodeSecondaryCursor{ .Anchor = position, .Caret = position });
+    }
+    view.Editor->GetMultiCursor().AdoptSecondaryCursors(cursors);
+    QCoreApplication::processEvents();
+
+    SendKey(*view.Editor, Qt::Key_X, Qt::NoModifier, QStringLiteral("X"));
+    QCoreApplication::processEvents();
+    QCoreApplication::processEvents();
+    REQUIRE(DraftOf(host) == RepeatLine(QByteArray("Xvalue\n"), LINE_COUNT));
+
+    // Locating a caret lays out its line. Clear one visible and one off-screen
+    // caret line, then repaint synchronously (no queued work can run): the paint
+    // must lay out the visible line and leave the off-screen one alone. Timed
+    // syntax passes may lay out other lines, so the check isolates the paint.
+    QTextBlock visible = view.Editor->document()->findBlockByNumber(1);
+    QTextBlock hidden = view.Editor->document()->findBlockByNumber(static_cast<int32>(LINE_COUNT / 2));
+    visible.clearLayout();
+    hidden.clearLayout();
+    view.Editor->viewport()->repaint();
+    CHECK(visible.layout()->lineCount() > 0);
+    CHECK(hidden.layout()->lineCount() == 0);
 }

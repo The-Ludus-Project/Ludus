@@ -488,7 +488,7 @@ bool CodeMultiCursor::applyRegionEdits(const QList<CodeRegionEdit>& regionsInDoc
     return true;
 }
 
-void CodeMultiCursor::Paint(QPainter& inoutPainter) const
+void CodeMultiCursor::Paint(QPainter& inoutPainter, int32 firstVisiblePosition, int32 lastVisiblePosition) const
 {
     QColor caretColor = mEditor.palette().color(QPalette::Text);
     caretColor.setAlpha(SECONDARY_CARET_OPACITY);
@@ -496,6 +496,10 @@ void CodeMultiCursor::Paint(QPainter& inoutPainter) const
     inoutPainter.setBrush(caretColor);
     for (const CodeSecondaryCursor& secondary : mSecondary)
     {
+        if (secondary.Caret < firstVisiblePosition || secondary.Caret > lastVisiblePosition)
+        {
+            continue;
+        }
         QTextCursor cursor(mEditor.document());
         cursor.setPosition(secondary.Caret);
         const QRect caret = mEditor.cursorRect(cursor);
