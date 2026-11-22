@@ -35,6 +35,10 @@ void Reset() noexcept
     IsRayAvailable = false;
     RayBuildResult = RayBuildPoll = RasterStatus::Pending;
     RayResidentBytes = RayScratchBytes = 0;
+    RayGeometryUpdates = 0;
+    RaySceneUpdates = 0;
+    RayCompactions = 0;
+    RayCompactedBytes = 0;
     Dispatches = 0;
     ComputeResult = RasterStatus::Ready;
     Next = RasterStatus::Ready;

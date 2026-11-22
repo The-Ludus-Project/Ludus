@@ -168,6 +168,7 @@ if(LUDUS_BUILD_TESTS)
         tests/raster_storage_tests.cpp
         tests/indirect_tests.cpp
         tests/ray_graph_tests.cpp
+        tests/ray_update_tests.cpp
         tests/hosted_ring_tests.cpp
         tests/hosted_adapter_tests.cpp
         tests/dxil_container_tests.cpp

@@ -161,6 +161,17 @@ struct RayRecordInfo final
     uint32 OpaqueTriangleCount = 0;
     usize Scene = 0, Program = 0, Count = 0;
     RayAllocation Allocation;
+    /// R16b refit topology of update-enabled geometry: vertex count and index values.
+    usize VertexCount = 0;
+    StorageArray<uint32> Indices;
+    /// R16b refit topology of an update-enabled scene: per-instance native opacity flags.
+    StorageArray<bool> IsInstanceOpaque;
+    /// R16b build options; compacted geometry clears both.
+    bool IsUpdatable = false;
+    bool IsCompactable = false;
+    /// R16b refit/compaction source of the same kind, retained only while this build is Pending.
+    usize Source = 0;
+    bool HasSource = false;
 };
 /// Owner-thread wall-clock history of one native raster pipeline creation (issue #1253). Diagnostic only;
 /// it never enters the field-wise pipeline key, and other record kinds leave it zero.
@@ -438,6 +449,11 @@ void Dependencies(Record& record, RasterKind kind, bool retain) noexcept
             reference(RasterKind::RayGeometry, slot);
         }
     }
+    if ((kind == RasterKind::RayGeometry || kind == RasterKind::RayScene) && record.Ray.Get() != nullptr &&
+        record.Ray->HasSource == true)
+    {
+        reference(kind, record.Ray->Source);
+    }
     else if (kind == RasterKind::RayBatch)
     {
         reference(RasterKind::RayProgram, record.Ray->Program);
@@ -470,6 +486,13 @@ void Collect() noexcept
             if (record.Owner != 0 && record.Status == RasterStatus::Pending)
             {
                 record.Status = backend::RayPoll(static_cast<RasterKind>(kind), slot);
+            }
+            // R16b: a refit or compacted copy reads its source only until the native work completes.
+            if (record.Owner != 0 && record.Status != RasterStatus::Pending && record.Ray.Get() != nullptr &&
+                record.Ray->HasSource == true)
+            {
+                Release(static_cast<RasterKind>(kind), record.Ray->Source);
+                record.Ray->HasSource = false;
             }
         }
     }

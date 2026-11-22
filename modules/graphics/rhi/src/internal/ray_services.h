@@ -120,6 +120,68 @@ RasterStatus RayBytes(DeviceHandle device, T handle, RasterKind kind, RayAllocat
     output = record->Ray->Allocation;
     return RasterStatus::Ready;
 }
+/// R16b: source slot of a creation that builds rather than refits or compacts.
+constexpr usize RAY_NO_SOURCE = ~usize{0};
+/// R16b: resolve a published refit/compaction source that has finished building.
+template <typename T>
+RasterStatus ResolveReadyRaySource(T handle, RasterKind kind, usize& outSlot) noexcept
+{
+    Collect();
+    const Record* recordOrNull = Resolve(handle, kind);
+    if (recordOrNull == nullptr)
+    {
+        return RasterStatus::InvalidHandle;
+    }
+    if (recordOrNull->Status == RasterStatus::Pending)
+    {
+        return RasterStatus::NotReady;
+    }
+    if (recordOrNull->Status != RasterStatus::Ready)
+    {
+        return RasterStatus::Failed;
+    }
+    outSlot = RasterAccess::Slot(handle);
+    return RasterStatus::Ready;
+}
+/// R16b: a geometry refit keeps the vertex count, index values, opaque prefix and build options.
+bool IsRayGeometryTopologyEqual(const RayRecordInfo& source, const RayGeometryDescription& description) noexcept
+{
+    if (source.VertexCount != description.VertexCount || source.Indices.GetSize() != description.IndexCount ||
+        source.OpaqueTriangleCount != description.OpaqueTriangleCount ||
+        source.IsUpdatable != description.ShouldAllowUpdate ||
+        source.IsCompactable != description.ShouldAllowCompaction)
+    {
+        return false;
+    }
+    for (usize i = 0; i < description.IndexCount; ++i)
+    {
+        if (source.Indices[i] != description.Indices[i])
+        {
+            return false;
+        }
+    }
+    return true;
+}
+/// R16b: a scene refit keeps the instance count, each instance's exact geometry incarnation,
+/// its native opacity flag and the build options; transforms, masks and opacity tables may change.
+bool IsRaySceneTopologyEqual(const RayRecordInfo& source,
+                             const NativeRayInstance* instances,
+                             usize count,
+                             bool shouldAllowUpdate) noexcept
+{
+    if (source.Count != count || source.IsUpdatable != shouldAllowUpdate || source.IsInstanceOpaque.GetSize() != count)
+    {
+        return false;
+    }
+    for (usize i = 0; i < count; ++i)
+    {
+        if (source.GeometrySlots[i] != instances[i].Geometry || source.IsInstanceOpaque[i] != instances[i].IsOpaque)
+        {
+            return false;
+        }
+    }
+    return true;
+}
 bool ValidRay(const RayInput& ray) noexcept
 {
     float64 lengthSquared = 0;
@@ -172,8 +234,13 @@ CreateRayQueryProgram(DeviceHandle device, const ShaderDescription& description,
         return backend::RayCreateProgram(slot, description);
     });
 }
-RasterStatus
-CreateRayGeometry(DeviceHandle device, const RayGeometryDescription& description, RayGeometryHandle& output) noexcept
+namespace
+{
+/// Build geometry, or refit the Ready update-enabled source slot when it is not RAY_NO_SOURCE.
+RasterStatus BuildRayGeometry(DeviceHandle device,
+                              const RayGeometryDescription& description,
+                              usize source,
+                              RayGeometryHandle& outGeometry) noexcept
 {
     const auto admission = Admission(device);
     if (admission != RasterStatus::Ready)
@@ -182,6 +249,11 @@ CreateRayGeometry(DeviceHandle device, const RayGeometryDescription& description
     }
     const auto limits = backend::RayLimits();
     if (limits.StaticTriangles == false)
+    {
+        return RasterStatus::Unsupported;
+    }
+    if ((description.ShouldAllowUpdate == true && limits.Updates == false) ||
+        (description.ShouldAllowCompaction == true && limits.CanCompact == false))
     {
         return RasterStatus::Unsupported;
     }
@@ -233,7 +305,12 @@ CreateRayGeometry(DeviceHandle device, const RayGeometryDescription& description
             return RasterStatus::InvalidDescription;
         }
     }
-    return Publish(RasterKind::RayGeometry, output, [&d](usize slot, Record& record) noexcept {
+    if (source != RAY_NO_SOURCE && IsRayGeometryTopologyEqual(*At(RasterKind::RayGeometry, source).Ray, d) == false)
+    {
+        return RasterStatus::InvalidDescription;
+    }
+    return Publish(RasterKind::RayGeometry, outGeometry, [&d, source](usize slot, Record& inoutRecord) noexcept {
+        Record& record = inoutRecord;
         if (RayRecord(record) == false || record.Ray->TriangleUvs.TryResize(d.IndexCount * 2) == false)
         {
             return StorageFailure();
@@ -246,11 +323,119 @@ CreateRayGeometry(DeviceHandle device, const RayGeometryDescription& description
             uv[i * 2] = d.Texcoords == nullptr ? 0 : RayScalar(d.Texcoords, usize(d.Indices[i]) * 2);
             uv[i * 2 + 1] = d.Texcoords == nullptr ? 0 : RayScalar(d.Texcoords, usize(d.Indices[i]) * 2 + 1);
         }
-        return backend::RayCreateGeometry(slot, d, record.Ray->Allocation);
+        record.Ray->VertexCount = d.VertexCount;
+        record.Ray->IsUpdatable = d.ShouldAllowUpdate;
+        record.Ray->IsCompactable = d.ShouldAllowCompaction;
+        if (d.ShouldAllowUpdate == true)
+        {
+            if (record.Ray->Indices.TryResize(d.IndexCount) == false)
+            {
+                return StorageFailure();
+            }
+            std::memcpy(record.Ray->Indices.GetData(), d.Indices, d.IndexCount * sizeof(uint32));
+        }
+        if (source == RAY_NO_SOURCE)
+        {
+            return backend::RayCreateGeometry(slot, d, record.Ray->Allocation);
+        }
+        record.Ray->Source = source;
+        record.Ray->HasSource = true;
+        return backend::RayUpdateGeometry(slot, source, d, record.Ray->Allocation);
     });
 }
+} // namespace
 RasterStatus
-CreateRayScene(DeviceHandle device, const RaySceneDescription& description, RaySceneHandle& output) noexcept
+CreateRayGeometry(DeviceHandle device, const RayGeometryDescription& description, RayGeometryHandle& output) noexcept
+{
+    return BuildRayGeometry(device, description, RAY_NO_SOURCE, output);
+}
+RasterStatus UpdateRayGeometry(DeviceHandle device,
+                               RayGeometryHandle source,
+                               const RayGeometryDescription& description,
+                               RayGeometryHandle& outGeometry) noexcept
+{
+    const RasterStatus admission = Admission(device);
+    if (admission != RasterStatus::Ready)
+    {
+        return admission;
+    }
+    if (backend::RayLimits().Updates == false)
+    {
+        return RasterStatus::Unsupported;
+    }
+    usize slot = 0;
+    const RasterStatus resolved = ResolveReadyRaySource(source, RasterKind::RayGeometry, slot);
+    if (resolved != RasterStatus::Ready)
+    {
+        return resolved;
+    }
+    if (At(RasterKind::RayGeometry, slot).Ray->IsUpdatable == false)
+    {
+        return RasterStatus::InvalidState;
+    }
+    return BuildRayGeometry(device, description, slot, outGeometry);
+}
+RasterStatus CompactRayGeometry(DeviceHandle device,
+                                const RayCompactionDescription& description,
+                                RayGeometryHandle& outGeometry) noexcept
+{
+    const RasterStatus admission = Admission(device);
+    if (admission != RasterStatus::Ready)
+    {
+        return admission;
+    }
+    if (backend::RayLimits().CanCompact == false)
+    {
+        return RasterStatus::Unsupported;
+    }
+    if (description.ByteBudget == 0)
+    {
+        return RasterStatus::InvalidDescription;
+    }
+    usize source = 0;
+    const RasterStatus resolved = ResolveReadyRaySource(description.Source, RasterKind::RayGeometry, source);
+    if (resolved != RasterStatus::Ready)
+    {
+        return resolved;
+    }
+    if (At(RasterKind::RayGeometry, source).Ray->IsCompactable == false)
+    {
+        return RasterStatus::InvalidState;
+    }
+    const usize byteBudget = description.ByteBudget;
+    return Publish(RasterKind::RayGeometry,
+                   outGeometry,
+                   [source, byteBudget](usize slot, Record& inoutRecord) noexcept {
+                       if (RayRecord(inoutRecord) == false)
+                       {
+                           return StorageFailure();
+                       }
+                       // The paged record table keeps the source address stable across the reservation.
+                       const RayRecordInfo& from = *At(RasterKind::RayGeometry, source).Ray;
+                       if (inoutRecord.Ray->TriangleUvs.TryResize(from.TriangleUvs.GetSize()) == false)
+                       {
+                           return StorageFailure();
+                       }
+                       for (usize i = 0; i < from.TriangleUvs.GetSize(); ++i)
+                       {
+                           inoutRecord.Ray->TriangleUvs[i] = from.TriangleUvs[i];
+                       }
+                       inoutRecord.Ray->Count = from.Count;
+                       inoutRecord.Ray->OpaqueTriangleCount = from.OpaqueTriangleCount;
+                       inoutRecord.Ray->VertexCount = from.VertexCount;
+                       inoutRecord.Ray->Source = source;
+                       inoutRecord.Ray->HasSource = true;
+                       const internal::NativeRayCompaction compaction{ .Source = source, .ByteBudget = byteBudget };
+                       return backend::RayCompactGeometry(slot, compaction, inoutRecord.Ray->Allocation);
+                   });
+}
+namespace
+{
+/// Build a scene, or refit the Ready update-enabled source slot when it is not RAY_NO_SOURCE.
+RasterStatus BuildRayScene(DeviceHandle device,
+                           const RaySceneDescription& description,
+                           usize source,
+                           RaySceneHandle& outScene) noexcept
 {
     const auto admission = Admission(device);
     if (admission != RasterStatus::Ready)
@@ -259,6 +444,10 @@ CreateRayScene(DeviceHandle device, const RaySceneDescription& description, RayS
     }
     const auto limits = backend::RayLimits();
     if (limits.StaticTriangles == false)
+    {
+        return RasterStatus::Unsupported;
+    }
+    if (description.ShouldAllowUpdate == true && limits.Updates == false)
     {
         return RasterStatus::Unsupported;
     }
@@ -393,9 +582,17 @@ CreateRayScene(DeviceHandle device, const RaySceneDescription& description, RayS
         opacity[base + 11] = static_cast<float32>((input.RepeatU ? 1U : 0U) | (input.RepeatV ? 2U : 0U) |
                                                   (input.LinearFilter ? 4U : 0U));
     }
+    if (source != RAY_NO_SOURCE && IsRaySceneTopologyEqual(*At(RasterKind::RayScene, source).Ray,
+                                                           instances.GetData(),
+                                                           instances.GetSize(),
+                                                           description.ShouldAllowUpdate) == false)
+    {
+        return RasterStatus::InvalidDescription;
+    }
     return Publish(RasterKind::RayScene,
-                   output,
-                   [&description, &instances, &opacity](usize slot, Record& record) noexcept {
+                   outScene,
+                   [&description, &instances, &opacity, source](usize slot, Record& inoutRecord) noexcept {
+                       Record& record = inoutRecord;
                        if (RayRecord(record) == false ||
                            record.Ray->GeometrySlots.TryResize(description.Count) == false)
                        {
@@ -406,6 +603,18 @@ CreateRayScene(DeviceHandle device, const RaySceneDescription& description, RayS
                        {
                            record.Ray->GeometrySlots[i] = instances[i].Geometry;
                        }
+                       record.Ray->IsUpdatable = description.ShouldAllowUpdate;
+                       if (description.ShouldAllowUpdate == true)
+                       {
+                           if (record.Ray->IsInstanceOpaque.TryResize(description.Count) == false)
+                           {
+                               return StorageFailure();
+                           }
+                           for (usize i = 0; i < description.Count; ++i)
+                           {
+                               record.Ray->IsInstanceOpaque[i] = instances[i].IsOpaque;
+                           }
+                       }
                        const internal::NativeRaySceneDescription native
                        {
                            .Instances = instances.GetData(),
@@ -413,9 +622,48 @@ CreateRayScene(DeviceHandle device, const RaySceneDescription& description, RayS
                            .Opacity = opacity.GetData(),
                            .ScalarCount = opacity.GetSize(),
                            .ByteBudget = description.ByteBudget,
+                           .ShouldAllowUpdate = description.ShouldAllowUpdate,
                        };
-                       return backend::RayCreateScene(slot, native, record.Ray->Allocation);
+                       if (source == RAY_NO_SOURCE)
+                       {
+                           return backend::RayCreateScene(slot, native, record.Ray->Allocation);
+                       }
+                       record.Ray->Source = source;
+                       record.Ray->HasSource = true;
+                       return backend::RayUpdateScene(slot, source, native, record.Ray->Allocation);
                    });
+}
+} // namespace
+RasterStatus
+CreateRayScene(DeviceHandle device, const RaySceneDescription& description, RaySceneHandle& output) noexcept
+{
+    return BuildRayScene(device, description, RAY_NO_SOURCE, output);
+}
+RasterStatus UpdateRayScene(DeviceHandle device,
+                            RaySceneHandle source,
+                            const RaySceneDescription& description,
+                            RaySceneHandle& outScene) noexcept
+{
+    const RasterStatus admission = Admission(device);
+    if (admission != RasterStatus::Ready)
+    {
+        return admission;
+    }
+    if (backend::RayLimits().Updates == false)
+    {
+        return RasterStatus::Unsupported;
+    }
+    usize slot = 0;
+    const RasterStatus resolved = ResolveReadyRaySource(source, RasterKind::RayScene, slot);
+    if (resolved != RasterStatus::Ready)
+    {
+        return resolved;
+    }
+    if (At(RasterKind::RayScene, slot).Ray->IsUpdatable == false)
+    {
+        return RasterStatus::InvalidState;
+    }
+    return BuildRayScene(device, description, slot, outScene);
 }
 RasterStatus SubmitRayQueries(DeviceHandle device,
                               RayQueryProgram program,

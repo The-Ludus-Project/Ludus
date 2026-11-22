@@ -82,9 +82,10 @@ TEST_CASE("Ray capability reports match the adapter and leave raster usable", "[
         REQUIRE(status == rhi::RasterStatus::Ready);
         CHECK(hasProfile == true);
     }
-    // RT0 never negotiates procedural intersections or geometry updates.
+    // RT0 never negotiates procedural intersections; R16b refit and compaction accompany the profile.
     CHECK(capabilities.ProceduralIntersections == false);
-    CHECK(capabilities.Updates == false);
+    CHECK(capabilities.Updates == hasProfile);
+    CHECK(capabilities.CanCompact == hasProfile);
     CHECK(rhi::BeginFrame(device, surface) == rhi::DeviceStatus::Ready);
     CHECK(rhi::EndFrame(device) == rhi::DeviceStatus::Ready);
 }
@@ -125,7 +126,6 @@ TEST_CASE("Native RT0 filters opacity, traces offscreen instances and retains de
     }
     REQUIRE(capabilities.InlineQueries == true);
     // Inline queries also run on devices that expose optional native ray pipelines.
-    CHECK_FALSE(capabilities.Updates);
     CHECK(sizeof(rhi::RayInput) == 48);
     CHECK(sizeof(rhi::RayResult) == 32);
     rhi::RayQueryProgram program;
@@ -805,4 +805,269 @@ TEST_CASE("Ordered graphs read declared native scenes in compute ray queries", "
     CHECK(stats.Scenes == 0);
     CHECK(stats.Geometries == 0);
     REQUIRE(rhi::Destroy(device, pipeline) == rhi::RasterStatus::Ready);
+}
+
+namespace
+{
+// R16b parity fixture: a deformable grid of quads traced by a fixed grid of downward rays.
+constexpr usize GRID_QUADS = 8;
+constexpr usize GRID_VERTICES_PER_SIDE = GRID_QUADS + 1;
+constexpr usize GRID_VERTEX_COUNT = GRID_VERTICES_PER_SIDE * GRID_VERTICES_PER_SIDE;
+constexpr usize GRID_INDEX_COUNT = GRID_QUADS * GRID_QUADS * 6;
+constexpr usize GRID_POSITION_COUNT = GRID_VERTEX_COUNT * 3;
+constexpr usize GRID_RAYS_PER_SIDE = 12;
+constexpr usize GRID_RAY_COUNT = GRID_RAYS_PER_SIDE * GRID_RAYS_PER_SIDE;
+constexpr usize GRID_BYTE_BUDGET = usize{16} * 1024 * 1024;
+// Refit and rebuilt structures intersect the same triangles; traversal order alone differs.
+constexpr float32 PARITY_TOLERANCE = 1e-5F;
+using GridPositions = StaticArray<float32, GRID_POSITION_COUNT>;
+using GridResults = StaticArray<rhi::RayResult, GRID_RAY_COUNT>;
+// Grid over [-1,1]^2; a nonzero amplitude bends each vertex height without folding a triangle.
+GridPositions MakeGridPositions(float32 amplitude) noexcept
+{
+    GridPositions positions{};
+    for (usize row = 0; row < GRID_VERTICES_PER_SIDE; ++row)
+    {
+        for (usize column = 0; column < GRID_VERTICES_PER_SIDE; ++column)
+        {
+            const usize vertex = row * GRID_VERTICES_PER_SIDE + column;
+            positions[vertex * 3] = -1 + 2 * static_cast<float32>(column) / GRID_QUADS;
+            positions[vertex * 3 + 1] = -1 + 2 * static_cast<float32>(row) / GRID_QUADS;
+            positions[vertex * 3 + 2] = amplitude * static_cast<float32>((row * 3 + column * 5) % 7) / 7;
+        }
+    }
+    return positions;
+}
+StaticArray<uint32, GRID_INDEX_COUNT> MakeGridIndices() noexcept
+{
+    StaticArray<uint32, GRID_INDEX_COUNT> indices{};
+    usize next = 0;
+    for (usize row = 0; row < GRID_QUADS; ++row)
+    {
+        for (usize column = 0; column < GRID_QUADS; ++column)
+        {
+            const uint32 corner = static_cast<uint32>(row * GRID_VERTICES_PER_SIDE + column);
+            const uint32 above = corner + static_cast<uint32>(GRID_VERTICES_PER_SIDE);
+            const StaticArray<uint32, 6> quad{{corner, corner + 1, above + 1, corner, above + 1, above}};
+            for (const uint32 index : quad)
+            {
+                indices[next] = index;
+                ++next;
+            }
+        }
+    }
+    return indices;
+}
+// Downward rays over a slightly larger square, so the outer ring misses the grid.
+StaticArray<rhi::RayInput, GRID_RAY_COUNT> MakeGridRays() noexcept
+{
+    StaticArray<rhi::RayInput, GRID_RAY_COUNT> rays{};
+    for (usize row = 0; row < GRID_RAYS_PER_SIDE; ++row)
+    {
+        for (usize column = 0; column < GRID_RAYS_PER_SIDE; ++column)
+        {
+            rhi::RayInput& ray = rays[row * GRID_RAYS_PER_SIDE + column];
+            ray.Origin[0] = -1.3F + 2.6F * (static_cast<float32>(column) + 0.5F) / GRID_RAYS_PER_SIDE;
+            ray.Origin[1] = -1.3F + 2.6F * (static_cast<float32>(row) + 0.5F) / GRID_RAYS_PER_SIDE;
+            ray.Origin[2] = 2;
+        }
+    }
+    return rays;
+}
+bool IsNear(float32 a, float32 b) noexcept
+{
+    const float32 difference = a > b ? a - b : b - a;
+    return difference <= PARITY_TOLERANCE;
+}
+// One trace of the grid rays.
+struct GridTrace final
+{
+    GridResults Results{};
+    // Count hits whose identity or geometry differs from another trace of the same rays.
+    [[nodiscard]] usize CountMismatches(const GridTrace& other) const noexcept
+    {
+        usize mismatches = 0;
+        for (usize i = 0; i < GRID_RAY_COUNT; ++i)
+        {
+            const rhi::RayResult& a = Results[i];
+            const rhi::RayResult& b = other.Results[i];
+            if (a.Hit != b.Hit || a.Primitive != b.Primitive || a.Instance != b.Instance ||
+                IsNear(a.Distance, b.Distance) == false || IsNear(a.U, b.U) == false || IsNear(a.V, b.V) == false)
+            {
+                ++mismatches;
+            }
+        }
+        return mismatches;
+    }
+};
+} // namespace
+
+TEST_CASE("R16b refits and compacted copies trace like rebuilt structures", "[rhi][gpu][ray][update]")
+{
+    rhi::Shutdown();
+    struct Guard final
+    {
+        LUDUS_INLINE ~Guard() noexcept
+        {
+            rhi::Shutdown();
+        }
+    } guard;
+    rhi::DeviceHandle device;
+    rhi::SurfaceHandle surface;
+    rhi::DeviceDescription deviceDescription;
+    deviceDescription.Preferred.RayQueries = true;
+    const rhi::DeviceStatus started =
+        rhi::CreateDevice({}, { .Width = 8, .Height = 8 }, deviceDescription, device, surface);
+    if (started != rhi::DeviceStatus::Ready && rhi::GetStartup().Error == rhi::StartupError::AdapterUnavailable)
+    {
+        SKIP("No native GPU adapter");
+    }
+    REQUIRE(started == rhi::DeviceStatus::Ready);
+    rhi::RayCapabilities capabilities;
+    if (rhi::GetRayCapabilities(device, capabilities) == rhi::RasterStatus::Unsupported)
+    {
+        SKIP("Native ray queries unavailable");
+    }
+    REQUIRE(capabilities.Updates == true);
+    REQUIRE(capabilities.CanCompact == true);
+    rhi::RayQueryProgram program;
+    REQUIRE(rhi::CreateRayQueryProgram(device, ludus::shaders::ray_query::Query(), program) ==
+            rhi::RasterStatus::Ready);
+    const StaticArray<uint32, GRID_INDEX_COUNT> indices = MakeGridIndices();
+    const StaticArray<rhi::RayInput, GRID_RAY_COUNT> rays = MakeGridRays();
+    const GridPositions flat = MakeGridPositions(0);
+    const GridPositions bent = MakeGridPositions(0.5F);
+    const auto describe = [&indices](const GridPositions& positions, bool isDynamic) noexcept {
+        rhi::RayGeometryDescription description;
+        description.Positions = positions.GetData();
+        description.VertexCount = GRID_VERTEX_COUNT;
+        description.Indices = indices.GetData();
+        description.IndexCount = indices.GetSize();
+        description.ByteBudget = GRID_BYTE_BUDGET;
+        description.ShouldAllowUpdate = isDynamic;
+        description.ShouldAllowCompaction = isDynamic;
+        return description;
+    };
+    const auto build = [device](const rhi::RayGeometryDescription& description) {
+        rhi::RayGeometryHandle geometry;
+        REQUIRE(rhi::CreateRayGeometry(device, description, geometry) == rhi::RasterStatus::Pending);
+        REQUIRE(Poll(device, geometry) == rhi::RasterStatus::Ready);
+        return geometry;
+    };
+    const auto place = [device](rhi::RayGeometryHandle geometry, float32 offset, bool shouldAllowUpdate) {
+        rhi::RayInstanceDescription instance;
+        instance.Geometry = geometry;
+        instance.Transform[3] = offset;
+        rhi::RaySceneHandle scene;
+        REQUIRE(rhi::CreateRayScene(device, {&instance, 1, GRID_BYTE_BUDGET, shouldAllowUpdate}, scene) ==
+                rhi::RasterStatus::Pending);
+        REQUIRE(Poll(device, scene) == rhi::RasterStatus::Ready);
+        return scene;
+    };
+    const auto trace = [device, program, &rays](rhi::RaySceneHandle scene) {
+        rhi::RayQueryBatch batch;
+        REQUIRE(rhi::SubmitRayQueries(device, program, scene, rays.GetData(), rays.GetSize(), batch) ==
+                rhi::RasterStatus::Pending);
+        REQUIRE(Poll(device, batch) == rhi::RasterStatus::Ready);
+        GridTrace traced;
+        REQUIRE(rhi::ReadRayResults(device, batch, traced.Results.GetData(), traced.Results.GetSize()) ==
+                rhi::RasterStatus::Ready);
+        REQUIRE(rhi::Destroy(device, batch) == rhi::RasterStatus::Ready);
+        return traced;
+    };
+
+    rhi::RayGeometryHandle source = build(describe(flat, true));
+    rhi::RaySceneHandle sourceScene = place(source, 0, true);
+    const GridTrace flatResults = trace(sourceScene);
+    usize hits = 0;
+    for (const rhi::RayResult& result : flatResults.Results)
+    {
+        hits += result.Hit;
+    }
+    // The outer ring of rays misses; every inner ray hits the grid.
+    CHECK(hits > 0);
+    CHECK(hits < GRID_RAY_COUNT);
+
+    // A topology change is rejected natively before any work is submitted.
+    StaticArray<uint32, GRID_INDEX_COUNT> rewound = indices;
+    rewound[1] = indices[2];
+    rewound[2] = indices[1];
+    rhi::RayGeometryDescription changed = describe(bent, true);
+    changed.Indices = rewound.GetData();
+    rhi::RayGeometryHandle rejected;
+    CHECK(rhi::UpdateRayGeometry(device, source, changed, rejected) == rhi::RasterStatus::InvalidDescription);
+    CHECK(rhi::GetStatus(device, rejected) == rhi::RasterStatus::InvalidHandle);
+
+    // Geometry refit against a rebuild from the same deformed positions.
+    rhi::RayGeometryHandle refit;
+    REQUIRE(rhi::UpdateRayGeometry(device, source, describe(bent, true), refit) == rhi::RasterStatus::Pending);
+    REQUIRE(Poll(device, refit) == rhi::RasterStatus::Ready);
+    rhi::RayGeometryHandle rebuilt = build(describe(bent, false));
+    rhi::RaySceneHandle refitScene = place(refit, 0, false);
+    rhi::RaySceneHandle rebuiltScene = place(rebuilt, 0, false);
+    const GridTrace bentResults = trace(rebuiltScene);
+    const GridTrace refitResults = trace(refitScene);
+    CHECK(bentResults.CountMismatches(refitResults) == 0);
+    CHECK(flatResults.CountMismatches(bentResults) > 0);
+    // The source incarnation is not mutated by its refit.
+    const GridTrace sourceAfterRefit = trace(sourceScene);
+    CHECK(flatResults.CountMismatches(sourceAfterRefit) == 0);
+
+    // Scene refit against a rebuild with the same moved instance.
+    constexpr float32 MOVED_OFFSET = 0.3F;
+    rhi::RayInstanceDescription moved;
+    moved.Geometry = source;
+    moved.Transform[3] = MOVED_OFFSET;
+    rhi::RaySceneHandle refitSourceScene;
+    REQUIRE(rhi::UpdateRayScene(device, sourceScene, {&moved, 1, GRID_BYTE_BUDGET, true}, refitSourceScene) ==
+            rhi::RasterStatus::Pending);
+    REQUIRE(Poll(device, refitSourceScene) == rhi::RasterStatus::Ready);
+    rhi::RaySceneHandle movedScene = place(source, MOVED_OFFSET, false);
+    const GridTrace movedResults = trace(movedScene);
+    const GridTrace refitMovedResults = trace(refitSourceScene);
+    CHECK(movedResults.CountMismatches(refitMovedResults) == 0);
+    CHECK(flatResults.CountMismatches(movedResults) > 0);
+    const GridTrace sourceAfterSceneRefit = trace(sourceScene);
+    CHECK(flatResults.CountMismatches(sourceAfterSceneRefit) == 0);
+
+    // Compaction keeps the traced result and owns fewer resident bytes than its source.
+    rhi::RayAllocation sourceBytes;
+    REQUIRE(rhi::GetRayAllocation(device, source, sourceBytes) == rhi::RasterStatus::Ready);
+    rhi::RayGeometryHandle compacted;
+    REQUIRE(rhi::CompactRayGeometry(device, {source, GRID_BYTE_BUDGET}, compacted) == rhi::RasterStatus::Pending);
+    REQUIRE(rhi::Destroy(device, movedScene) == rhi::RasterStatus::Ready);
+    REQUIRE(rhi::Destroy(device, refitSourceScene) == rhi::RasterStatus::Ready);
+    REQUIRE(rhi::Destroy(device, sourceScene) == rhi::RasterStatus::Ready);
+    REQUIRE(rhi::Destroy(device, source) == rhi::RasterStatus::Ready);
+    REQUIRE(Poll(device, compacted) == rhi::RasterStatus::Ready);
+    rhi::RayAllocation compactedBytes;
+    REQUIRE(rhi::GetRayAllocation(device, compacted, compactedBytes) == rhi::RasterStatus::Ready);
+    CHECK(compactedBytes.ResidentBytes > 0);
+    CHECK(compactedBytes.ResidentBytes < sourceBytes.ResidentBytes);
+    CHECK(compactedBytes.ScratchBytes == 0);
+    rhi::RaySceneHandle compactedScene = place(compacted, 0, false);
+    const GridTrace compactedResults = trace(compactedScene);
+    CHECK(flatResults.CountMismatches(compactedResults) == 0);
+    // Once the copy completed, the detached source and its scenes retired.
+    rhi::RayResourceStats stats;
+    REQUIRE(rhi::GetRayResourceStats(device, stats) == rhi::RasterStatus::Ready);
+    CHECK(stats.Geometries == 3);
+    CHECK(stats.Scenes == 3);
+    CHECK(stats.DetachedBytes == 0);
+    CHECK(stats.BuildScratchBytes == 0);
+    rhi::RayGeometryHandle immutable;
+    CHECK(rhi::UpdateRayGeometry(device, compacted, describe(bent, true), immutable) ==
+          rhi::RasterStatus::InvalidState);
+
+    REQUIRE(rhi::Destroy(device, compactedScene) == rhi::RasterStatus::Ready);
+    REQUIRE(rhi::Destroy(device, refitScene) == rhi::RasterStatus::Ready);
+    REQUIRE(rhi::Destroy(device, rebuiltScene) == rhi::RasterStatus::Ready);
+    REQUIRE(rhi::Destroy(device, compacted) == rhi::RasterStatus::Ready);
+    REQUIRE(rhi::Destroy(device, refit) == rhi::RasterStatus::Ready);
+    REQUIRE(rhi::Destroy(device, rebuilt) == rhi::RasterStatus::Ready);
+    REQUIRE(rhi::Destroy(device, program) == rhi::RasterStatus::Ready);
+    REQUIRE(rhi::GetRayResourceStats(device, stats) == rhi::RasterStatus::Ready);
+    CHECK(stats.Geometries == 0);
+    CHECK(stats.Scenes == 0);
+    CHECK(stats.ResidentBytes == 0);
 }
