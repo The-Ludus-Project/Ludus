@@ -4,6 +4,8 @@
 
 #include <ludus/foundation/base/core.h>
 
+#include <ludus/foundation/containers/array.hpp>
+#include <ludus/foundation/containers/sort.hpp>
 #include <ludus/foundation/containers/static_array.hpp>
 #include <ludus/foundation/math/scalar.hpp>
 
@@ -22,6 +24,47 @@ constexpr uint32 TRIANGLES_PER_LEAF = 8;
 // a split by count, bounding depth (see MAX_TRIANGLE_MESH_HIERARCHY_DEPTH).
 constexpr uint32 MIN_PARTITION_DIVISOR = 4;
 constexpr float64 CENTROID_WEIGHT = 1.0 / static_cast<float64>(TRIANGLE_CORNER_COUNT);
+
+/// An edge record packs its cooked triangle index and the edge's slot in that triangle.
+constexpr uint32 EDGE_SLOT_BITS = 2;
+constexpr uint32 EDGE_SLOT_MASK = (1U << EDGE_SLOT_BITS) - 1U;
+/// Sides of a triangle on which a feature is active.
+constexpr uint8 NO_SIDE = 0;
+constexpr uint8 FRONT_SIDE = 1;
+constexpr uint8 BACK_SIDE = 2;
+constexpr uint8 BOTH_SIDES = FRONT_SIDE | BACK_SIDE;
+
+/// One triangle edge, filed under the lower of its two source vertex indices.
+struct EdgeRecord final
+{
+    uint32 High = 0;            ///< The higher source vertex index of the edge.
+    uint32 TriangleAndEdge = 0; ///< `cooked triangle index << EDGE_SLOT_BITS | edge`.
+};
+
+/// Where the flags of one kind of feature start in TriangleFeatureFlags, for each side.
+struct FeatureShifts final
+{
+    uint32 Front = 0;
+    uint32 Back = 0;
+};
+
+constexpr FeatureShifts EDGE_SHIFTS{ .Front = TRIANGLE_FRONT_EDGE_SHIFT, .Back = TRIANGLE_BACK_EDGE_SHIFT };
+constexpr FeatureShifts CORNER_SHIFTS{ .Front = TRIANGLE_FRONT_CORNER_SHIFT, .Back = TRIANGLE_BACK_CORNER_SHIFT };
+
+/// The feature bits of edge or corner `slot`, active on `sides`.
+TriangleFeatureFlags MakeFeatureBits(uint8 sides, const FeatureShifts& shifts, uint32 slot) noexcept
+{
+    uint32 bits = 0;
+    if ((sides & FRONT_SIDE) != 0)
+    {
+        bits |= 1U << (shifts.Front + slot);
+    }
+    if ((sides & BACK_SIDE) != 0)
+    {
+        bits |= 1U << (shifts.Back + slot);
+    }
+    return static_cast<TriangleFeatureFlags>(bits);
+}
 
 enum class TriangleCheck : uint8
 {
@@ -90,6 +133,15 @@ private:
                                            const TriangleMeshCookSettings& settings,
                                            uint32& outAdmittedCount) noexcept;
     [[nodiscard]] static bool copyTriangles(const TriangleMeshSource& source, TriangleMesh& inoutMesh) noexcept;
+    [[nodiscard]] static math::Vector3d getCorner(const TriangleMesh::Triangle& triangle, uint32 corner) noexcept;
+    [[nodiscard]] static uint8 classifySharedEdge(const TriangleMeshSource& source,
+                                                  const TriangleMesh& mesh,
+                                                  const EdgeRecord& first,
+                                                  const EdgeRecord& second,
+                                                  float64 activeEdgeCosine) noexcept;
+    [[nodiscard]] static Status classifyEdges(const TriangleMeshSource& source,
+                                              const TriangleMeshCookSettings& settings,
+                                              TriangleMesh& inoutMesh) noexcept;
     static uint32
     partition(TriangleMesh& inoutMesh, const math::Aabb3& boundsMesh, uint32 first, uint32 count) noexcept;
     [[nodiscard]] static Status buildHierarchy(TriangleMesh& inoutMesh) noexcept;
@@ -142,7 +194,9 @@ TriangleMeshCookResult TriangleMeshBuilder::validate(const TriangleMeshSource& s
     if (source.PositionsMesh.IsValid() == false || source.Indices.IsValid() == false ||
         source.Indices.GetSize() % TRIANGLE_CORNER_COUNT != 0 ||
         (settings.DegeneratePolicy != DegenerateTrianglePolicy::Reject &&
-         settings.DegeneratePolicy != DegenerateTrianglePolicy::Skip))
+         settings.DegeneratePolicy != DegenerateTrianglePolicy::Skip) ||
+        (settings.EdgePolicy != InternalEdgePolicy::Classify && settings.EdgePolicy != InternalEdgePolicy::KeepAll) ||
+        math::IsFinite(settings.ActiveEdgeCosine) == false || math::Abs(settings.ActiveEdgeCosine) > 1.0)
     {
         return { .Result = Status::InvalidArgument };
     }
@@ -203,6 +257,169 @@ bool TriangleMeshBuilder::copyTriangles(const TriangleMeshSource& source, Triang
         }
     }
     return true;
+}
+
+math::Vector3d TriangleMeshBuilder::getCorner(const TriangleMesh::Triangle& triangle, uint32 corner) noexcept
+{
+    if (corner == 0)
+    {
+        return Widen(triangle.FirstMesh);
+    }
+    return Widen(corner == 1 ? triangle.SecondMesh : triangle.ThirdMesh);
+}
+
+// The sides on which an edge shared by exactly two triangles is active, seen from the first triangle. Consistently
+// wound neighbours traverse the edge in opposite directions and share their front side.
+uint8 TriangleMeshBuilder::classifySharedEdge(const TriangleMeshSource& source,
+                                              const TriangleMesh& mesh,
+                                              const EdgeRecord& first,
+                                              const EdgeRecord& second,
+                                              float64 activeEdgeCosine) noexcept
+{
+    const TriangleMesh::Triangle& firstTriangle = mesh.mTriangles[first.TriangleAndEdge >> EDGE_SLOT_BITS];
+    const TriangleMesh::Triangle& secondTriangle = mesh.mTriangles[second.TriangleAndEdge >> EDGE_SLOT_BITS];
+    const uint32 firstEdge = first.TriangleAndEdge & EDGE_SLOT_MASK;
+    const uint32 secondEdge = second.TriangleAndEdge & EDGE_SLOT_MASK;
+    const usize firstBase = static_cast<usize>(firstTriangle.SourceIndex) * TRIANGLE_CORNER_COUNT;
+    const usize secondBase = static_cast<usize>(secondTriangle.SourceIndex) * TRIANGLE_CORNER_COUNT;
+    if (source.Indices[firstBase + firstEdge] == source.Indices[secondBase + secondEdge])
+    {
+        // Both triangles traverse the edge the same way: their fronts face opposite sides of the surface.
+        return BOTH_SIDES;
+    }
+    const math::Vector3d firstOrigin = getCorner(firstTriangle, 0);
+    const math::Vector3d secondOrigin = getCorner(secondTriangle, 0);
+    const math::Vector3d firstArea =
+        math::Cross(getCorner(firstTriangle, 1) - firstOrigin, getCorner(firstTriangle, 2) - firstOrigin);
+    const math::Vector3d secondArea =
+        math::Cross(getCorner(secondTriangle, 1) - secondOrigin, getCorner(secondTriangle, 2) - secondOrigin);
+    // Admitted triangles pass MIN_TRIANGLE_SHAPE_RATIO, so neither area vector is zero.
+    const float64 cosine = math::Dot(firstArea, secondArea) / (math::Length(firstArea) * math::Length(secondArea));
+    if (cosine >= activeEdgeCosine)
+    {
+        return NO_SIDE;
+    }
+    const uint32 oppositeCorner = (secondEdge + 2) % static_cast<uint32>(TRIANGLE_CORNER_COUNT);
+    const float64 oppositeSide =
+        math::Dot(getCorner(secondTriangle, oppositeCorner) - getCorner(firstTriangle, firstEdge), firstArea);
+    if (oppositeSide < 0.0)
+    {
+        return FRONT_SIDE; // A ridge: the neighbour falls away behind the first triangle's plane.
+    }
+    return oppositeSide > 0.0 ? BACK_SIDE : BOTH_SIDES;
+}
+
+// Adjacency by source indices, in linear time: edge records are counted and scattered into one bucket per lower
+// vertex index, each bucket is sorted by the higher index, and equal neighbours in a bucket share an edge.
+Status TriangleMeshBuilder::classifyEdges(const TriangleMeshSource& source,
+                                          const TriangleMeshCookSettings& settings,
+                                          TriangleMesh& inoutMesh) noexcept
+{
+    if (settings.EdgePolicy == InternalEdgePolicy::KeepAll)
+    {
+        return Status::Success; // Triangles are copied with every feature active.
+    }
+    const usize triangleCount = inoutMesh.mTriangles.GetSize();
+    const uint32 cornerCount = static_cast<uint32>(TRIANGLE_CORNER_COUNT);
+    usize vertexCount = 0;
+    for (const TriangleMesh::Triangle& triangle : inoutMesh.mTriangles)
+    {
+        const usize base = static_cast<usize>(triangle.SourceIndex) * TRIANGLE_CORNER_COUNT;
+        for (usize corner = 0; corner < TRIANGLE_CORNER_COUNT; ++corner)
+        {
+            vertexCount = math::Max(vertexCount, static_cast<usize>(source.Indices[base + corner]) + 1);
+        }
+    }
+    foundation::Array<uint32> bucketEnds;
+    foundation::Array<EdgeRecord> records;
+    foundation::Array<uint8> vertexSides;
+    if (bucketEnds.TryResize(vertexCount + 1, 0U) == false ||
+        records.TryResize(triangleCount * TRIANGLE_CORNER_COUNT, EdgeRecord{}) == false ||
+        vertexSides.TryResize(vertexCount, NO_SIDE) == false)
+    {
+        return Status::AllocationFailure;
+    }
+    // Count each bucket one slot ahead, then turn the counts into bucket starts.
+    for (usize index = 0; index < triangleCount; ++index)
+    {
+        const usize base = static_cast<usize>(inoutMesh.mTriangles[index].SourceIndex) * TRIANGLE_CORNER_COUNT;
+        for (uint32 edge = 0; edge < cornerCount; ++edge)
+        {
+            const uint32 start = source.Indices[base + edge];
+            const uint32 end = source.Indices[base + (edge + 1) % cornerCount];
+            ++bucketEnds[static_cast<usize>(math::Min(start, end)) + 1];
+        }
+        inoutMesh.mTriangles[index].Features = 0;
+    }
+    for (usize vertex = 0; vertex < vertexCount; ++vertex)
+    {
+        bucketEnds[vertex + 1] += bucketEnds[vertex];
+    }
+    // Scatter: each bucket's start advances to its end, which is the next bucket's start.
+    for (usize index = 0; index < triangleCount; ++index)
+    {
+        const usize base = static_cast<usize>(inoutMesh.mTriangles[index].SourceIndex) * TRIANGLE_CORNER_COUNT;
+        for (uint32 edge = 0; edge < cornerCount; ++edge)
+        {
+            const uint32 start = source.Indices[base + edge];
+            const uint32 end = source.Indices[base + (edge + 1) % cornerCount];
+            records[bucketEnds[math::Min(start, end)]++] =
+            {
+                .High = math::Max(start, end),
+                .TriangleAndEdge = (static_cast<uint32>(index) << EDGE_SLOT_BITS) | edge,
+            };
+        }
+    }
+    usize bucketStart = 0;
+    for (usize low = 0; low < vertexCount; ++low)
+    {
+        const usize bucketEnd = bucketEnds[low];
+        foundation::Sort(records.GetData() + bucketStart,
+                         bucketEnd - bucketStart,
+                         [](const EdgeRecord& first, const EdgeRecord& second) {
+                             if (first.High != second.High)
+                             {
+                                 return first.High < second.High;
+                             }
+                             return first.TriangleAndEdge < second.TriangleAndEdge;
+                         });
+        usize groupStart = bucketStart;
+        while (groupStart < bucketEnd)
+        {
+            usize groupEnd = groupStart + 1;
+            while (groupEnd < bucketEnd && records[groupEnd].High == records[groupStart].High)
+            {
+                ++groupEnd;
+            }
+            // One triangle is a boundary and three or more are nonmanifold: both stay active on both sides.
+            const uint8 sides = groupEnd - groupStart == 2 ? classifySharedEdge(source,
+                                                                                inoutMesh,
+                                                                                records[groupStart],
+                                                                                records[groupStart + 1],
+                                                                                settings.ActiveEdgeCosine)
+                                                           : BOTH_SIDES;
+            for (usize member = groupStart; member < groupEnd; ++member)
+            {
+                TriangleMesh::Triangle& triangle =
+                    inoutMesh.mTriangles[records[member].TriangleAndEdge >> EDGE_SLOT_BITS];
+                triangle.Features |=
+                    MakeFeatureBits(sides, EDGE_SHIFTS, records[member].TriangleAndEdge & EDGE_SLOT_MASK);
+            }
+            vertexSides[low] |= sides;
+            vertexSides[records[groupStart].High] |= sides;
+            groupStart = groupEnd;
+        }
+        bucketStart = bucketEnd;
+    }
+    for (TriangleMesh::Triangle& triangle : inoutMesh.mTriangles)
+    {
+        const usize base = static_cast<usize>(triangle.SourceIndex) * TRIANGLE_CORNER_COUNT;
+        for (uint32 corner = 0; corner < cornerCount; ++corner)
+        {
+            triangle.Features |= MakeFeatureBits(vertexSides[source.Indices[base + corner]], CORNER_SHIFTS, corner);
+        }
+    }
+    return Status::Success;
 }
 
 // The partition, its axis choice and the split-by-count fallback are lifted
@@ -314,6 +531,12 @@ TriangleMeshCookResult TriangleMeshBuilder::Cook(const TriangleMeshSource& sourc
     {
         return { .Result = Status::AllocationFailure };
     }
+    // Edges are classified in source order, before the hierarchy reorders the triangles.
+    const Status edgeStatus = classifyEdges(source, settings, candidate);
+    if (edgeStatus != Status::Success)
+    {
+        return { .Result = edgeStatus };
+    }
     const Status hierarchyStatus = buildHierarchy(candidate);
     if (hierarchyStatus != Status::Success)
     {
@@ -321,6 +544,23 @@ TriangleMeshCookResult TriangleMeshBuilder::Cook(const TriangleMeshSource& sourc
     }
     outMesh = foundation::Move(candidate);
     return {};
+}
+
+Status TriangleMesh::TryGetTriangleFeatures(uint32 sourceTriangleIndex, TriangleFeatureFlags& outFlags) const noexcept
+{
+    if (IsCooked() == false)
+    {
+        return Status::NoGeometry;
+    }
+    for (const Triangle& triangle : mTriangles)
+    {
+        if (triangle.SourceIndex == sourceTriangleIndex)
+        {
+            outFlags = triangle.Features;
+            return Status::Success;
+        }
+    }
+    return Status::IndexOutOfRange;
 }
 
 TriangleMeshCookResult TriangleMesh::TryCook(const TriangleMeshSource& source,

@@ -3,12 +3,14 @@ add_library(ludus_physics_rigid STATIC
     src/mass_properties.cpp
     src/rigid_math.cpp
     src/rigid_world.cpp
+    src/rigid_world_contacts.cpp
     src/rigid_world_step.cpp)
 add_library(Ludus::PhysicsRigid ALIAS ludus_physics_rigid)
 set_target_properties(ludus_physics_rigid PROPERTIES EXPORT_NAME PhysicsRigid)
 target_sources(ludus_physics_rigid PUBLIC FILE_SET public_headers TYPE HEADERS BASE_DIRS include FILES
     include/ludus/physics/rigid/body.h
     include/ludus/physics/rigid/commands.h
+    include/ludus/physics/rigid/contacts.h
     include/ludus/physics/rigid/mass_properties.h
     include/ludus/physics/rigid/rigid_world.h
     include/ludus/physics/rigid/status.h)
@@ -21,7 +23,7 @@ install(TARGETS ludus_physics_rigid EXPORT LudusTargets ARCHIVE DESTINATION "${C
 if(LUDUS_BUILD_TESTS)
     find_package(Catch2 3 REQUIRED CONFIG)
     add_executable(ludus_physics_rigid_tests tests/mass_properties_tests.cpp tests/rigid_world_tests.cpp
-        tests/rigid_world_motion_tests.cpp tests/rigid_world_command_tests.cpp)
+        tests/rigid_world_motion_tests.cpp tests/rigid_world_command_tests.cpp tests/rigid_contact_tests.cpp)
     target_link_libraries(ludus_physics_rigid_tests PRIVATE Ludus::PhysicsRigid Catch2::Catch2WithMain)
     ludus_apply_project_defaults(ludus_physics_rigid_tests)
     ludus_enable_test_exceptions(ludus_physics_rigid_tests)

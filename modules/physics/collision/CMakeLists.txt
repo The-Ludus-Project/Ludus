@@ -1,6 +1,12 @@
 add_library(ludus_physics_collision STATIC
     src/collider_hierarchy.cpp
     src/collision_world.cpp
+    src/contact_general.cpp
+    src/contact_kernels.cpp
+    src/contact_manifold.cpp
+    src/contact_mesh.cpp
+    src/contact_shapes.cpp
+    src/contact_world.cpp
     src/convex_hull_cook.cpp
     src/debug_overlay.cpp
     src/geometry_store.cpp
@@ -13,6 +19,7 @@ add_library(Ludus::PhysicsCollision ALIAS ludus_physics_collision)
 set_target_properties(ludus_physics_collision PROPERTIES EXPORT_NAME PhysicsCollision)
 target_sources(ludus_physics_collision PUBLIC FILE_SET public_headers TYPE HEADERS BASE_DIRS include FILES
     include/ludus/physics/collision/collision_world.h
+    include/ludus/physics/collision/contacts.h
     include/ludus/physics/collision/convex_shape.h
     include/ludus/physics/collision/debug_overlay.h
     include/ludus/physics/collision/geometry_store.h
@@ -32,7 +39,8 @@ if(LUDUS_BUILD_TESTS)
         tests/convex_cast_tests.cpp tests/convex_cast_oracle_tests.cpp tests/collision_world_tests.cpp
         tests/collision_world_convex_tests.cpp tests/collision_world_query_mode_tests.cpp
         tests/collision_world_hierarchy_tests.cpp tests/collision_world_retained_shape_tests.cpp
-        tests/collision_debug_overlay_tests.cpp)
+        tests/collision_debug_overlay_tests.cpp tests/triangle_mesh_edge_tests.cpp tests/contact_kernel_tests.cpp
+        tests/contact_manifold_tests.cpp tests/contact_mesh_tests.cpp)
     target_link_libraries(ludus_physics_collision_tests PRIVATE Ludus::PhysicsCollision Ludus::FoundationTime
         Catch2::Catch2WithMain)
     ludus_apply_project_defaults(ludus_physics_collision_tests)
