@@ -221,7 +221,7 @@ def define_record_views(program, layouts, build):
 
 def size_persistent_structs(plans, snapshot, stage, compiler, cancel, build):
     """Use the same SPIR-V storage layout that the ordered Metal/Vulkan shaders use."""
-    records, layouts = dict(getattr(snapshot, 'buffer_record_layouts', {})), []
+    records, layouts = dict(snapshot.buffer_record_layouts), []
     for plan in plans:
         instances = {context['instance']: context for context in plan['activity']}
         for identity, resource in plan['resources'].items():

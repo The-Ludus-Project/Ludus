@@ -298,8 +298,6 @@ def prepare_resource_headers(snapshot, programs, contracts, compiler, cancel, bu
         program = programs[variant[0]]
         if is_language_source(program['source']):
             contexts.setdefault(program['source'], {})[program['function']] = fields
-    snapshot.language_resource_headers = {}
-    snapshot.buffer_record_layouts = {}
     if not contexts:
         return
     # The same reflection results are reused to size storage and emit executable accessors.

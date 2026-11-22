@@ -155,6 +155,9 @@ class Snapshot:
         self.language_tool = None
         self.language_reports = {}
         self.language_configurations = {}
+        self.language_resource_headers = {}
+        self.buffer_record_layouts = {}
+        self.named_resource_programs = {}
         self.executable_language_programs = {}
         self.total = 0
 
