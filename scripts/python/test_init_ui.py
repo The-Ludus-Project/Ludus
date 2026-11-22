@@ -469,6 +469,32 @@ class WindowTests(unittest.TestCase):
         self.assertIsNotNone(match)
         self.assertLessEqual(int(match.group(1)), 420)
 
+    def test_android_checkbox_reviews_license_and_passes_consent_to_worker(self):
+        def accept(window, widgets):
+            checkbox = next(widget for widget in widgets if widget.winfo_class() == "TCheckbutton"
+                            and widget.cget("text") == "Install Android SDK and NDK")
+            checkbox.invoke()
+
+            def accept_agreement():
+                dialog = next(widget for widget in window.winfo_children() if widget.winfo_class() == "Toplevel")
+                self.assertEqual(dialog.title(), "Android SDK License Agreement")
+                text = next(widget for widget in dialog.winfo_children() if widget.winfo_class() == "Text")
+                self.assertIn("Pinned Google terms", text.get("1.0", "end"))
+                next(button for frame in dialog.winfo_children() for button in frame.winfo_children()
+                     if button.winfo_class() == "TButton" and button.cget("text") == "Accept and install").invoke()
+
+            window.after(DRIVE_DELAY_MILLISECONDS, accept_agreement)
+            next(widget for widget in widgets if widget.winfo_class() == "TButton"
+                 and widget.cget("text") == "Initialize").invoke()
+
+        with patch("init_android.host_key", return_value="Darwin-arm64"), \
+                patch("init_android.has_accepted_license", return_value=False), \
+                patch("init_android.load_license_text", return_value="Pinned Google terms"):
+            result = self.select(accept, engine.NATIVE_PRESET_PREFIX + "-development")
+        self.assertTrue(result.with_android)
+        self.assertTrue(result.accept_android_sdk_license)
+        self.assertIn("--accept-android-sdk-license", init_ui.selection_to_argv(result))
+
     def test_denoiser_checkbox_follows_host_support_and_opts_out(self):
         supported = init_denoiser.preset_supports(engine.NATIVE_PRESET_PREFIX + "-development")
 

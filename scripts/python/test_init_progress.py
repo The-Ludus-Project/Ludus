@@ -229,7 +229,8 @@ class SelectionTests(unittest.TestCase):
         init = next(action for action in parser._subparsers._group_actions[0].choices.values()
                     if action.prog.endswith(" init"))
         covered = {name for name, _ in init_ui.STORE_TRUE_OPTIONS} | {item[0] for item in init_ui.PAIRED_OPTIONS}
-        interface = {"help", "cli", "gui", "preset", "persona", "func"}
+        # Android-only is a terminal entry point with no selector or GUI worker.
+        interface = {"help", "cli", "gui", "preset", "persona", "func", "android_only"}
         for action in init._actions:
             if action.dest not in interface:
                 self.assertIn(action.dest, covered, f"{action.dest} is not forwarded by selection_to_argv")

@@ -158,10 +158,11 @@ class IosSetupTests(unittest.TestCase):
                          self.probe_record)
         self.run_command.assert_not_called()
 
-    def test_native_init_checks_existing_xcode_before_starting_conan(self):
+    def test_native_init_runs_both_mobile_steps_before_starting_conan(self):
         self.install_xcode()
         self.install_sdks()
         self.args.no_system_install = True
+        self.args.with_android = True
         self.selected = self.application
         steps = []
         with (
@@ -170,6 +171,7 @@ class IosSetupTests(unittest.TestCase):
             patch.object(engine, "configure_system_tool_shims", side_effect=lambda *_: steps.append("compiler")),
             patch.object(engine, "validate_required_system_tools"),
             patch.object(engine.init_progress, "begin", side_effect=steps.append),
+            patch("init_android.install_android", side_effect=lambda *_, **__: steps.append("android")),
             patch.object(engine, "prepare_conan_artifacts", side_effect=lambda *_, **__: steps.append("conan")),
             patch("init_options.save_options"),
             patch("init_denoiser.setup_denoiser"),
@@ -178,16 +180,18 @@ class IosSetupTests(unittest.TestCase):
         ):
             self.assertEqual(engine.run_init_steps(self.args, self.root, {"minimum": {"python": "3.10"}},
                                                    self.args.preset, False), 0)
-        self.assertEqual(steps, ["preflight", "ios", "system", "compiler", "ios_toolchain", "conan"])
+        self.assertEqual(steps, ["preflight", "ios", "system", "compiler", "ios_toolchain", "android", "conan"])
         self.run_probe.assert_called_once()
         self.run_command.assert_not_called()
 
-    def test_resolved_native_selection_reaches_runner_and_progress_plan(self):
+    def test_resolved_mobile_selection_reaches_runner_and_progress_plan(self):
+        self.args.with_android = True
         argv = init_ui.selection_to_argv(self.args)
         selection = engine.make_parser().parse_args(["init", *argv])
         self.assertTrue(selection.with_ios)
-        self.assertEqual([step.key for step in init_progress.plan(selection, environment={})][:5],
-                         ["preflight", "ios", "system", "ios_toolchain", "host_tools"])
+        self.assertTrue(selection.with_android)
+        self.assertEqual([step.key for step in init_progress.plan(selection, environment={})][:6],
+                         ["preflight", "ios", "system", "ios_toolchain", "android", "host_tools"])
 
 
 class MacosSetupTests(unittest.TestCase):

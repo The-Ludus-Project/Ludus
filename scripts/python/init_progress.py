@@ -57,6 +57,13 @@ class Step:
     label: str
 
 
+ANDROID_STEP = Step("android", "Installing the Android SDK, NDK and JDK")
+
+
+def android_plan() -> list[Step]:
+    return [ANDROID_STEP]
+
+
 def native_plan(args, *, system: str | None = None, environment=None) -> list[Step]:
     """Return the ordered steps ``engine.command_init`` runs for ``args``."""
     system = system or platform.system()
@@ -74,6 +81,8 @@ def native_plan(args, *, system: str | None = None, environment=None) -> list[St
         steps.append(Step("system", "Installing system prerequisites"))
     if getattr(args, "with_ios", False):
         steps.append(Step("ios_toolchain", "Checking iOS compiler and SDK compatibility"))
+    if getattr(args, "with_android", False):
+        steps.append(ANDROID_STEP)
     single = args.preset_only and not validating
     steps.append(Step("host_tools", "Installing pinned CMake, Ninja and Conan"))
     steps.append(Step("conan", "Conan install" + (" (" + args.preset + ")" if single else " (all native presets)")))

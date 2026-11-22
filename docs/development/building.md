@@ -290,6 +290,10 @@ presets. Custom CMake users can bypass saved choices with
 `-DLUDUS_USE_INIT_OPTIONS=OFF` and set their own target options. Existing checkouts
 without saved choices retain the committed developer preset settings.
 
+The optional **Install Android SDK and NDK** checkbox prepares Android
+development tools and ADB. See [Android setup and the mobile probes](mobile-support-plan.md#prepare-the-android-tools)
+for the terminal equivalent and device testing workflow.
+
 The optional **Build Ludus editor** checkbox is off by default. Selecting it
 installs `qt6-base-dev` and `qt6-wayland` on Ubuntu/Debian when missing, enables
 `LUDUS_BUILD_EDITOR`, and builds `ludus_editor` for the selected Debug or
