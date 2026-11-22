@@ -579,6 +579,14 @@ cpu::FontSystemCounters gCountersBeforeLoss;
 
 [[nodiscard]] Status DrawCase(const TextCase& test) noexcept
 {
+    // The browser backends skip every frame while the surface target is 0 x 0, so set it between
+    // frames before acquiring one.
+    const rhi::DeviceStatus targeted =
+        rhi::SetFrameTarget(gDevice, gSurface, {SURFACE_WIDTH, SURFACE_HEIGHT, 0, 0, 0, 1});
+    if (targeted != rhi::DeviceStatus::Ready)
+    {
+        return Status::Failed;
+    }
     const rhi::DeviceStatus begun = rhi::BeginFrame(gDevice, gSurface);
     if (begun == rhi::DeviceStatus::Skipped)
     {
