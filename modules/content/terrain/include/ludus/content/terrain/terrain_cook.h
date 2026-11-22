@@ -54,7 +54,9 @@ struct TerrainRevisionLayout final
 {
     /// Revision the manifest publishes. A recook must name a later revision than its base.
     uint64 Revision = 0;
-    /// Caller's generation recipe version, recorded for replay and not interpreted by the cooker.
+    /// Caller's generation recipe version, recorded for replay and not interpreted by the cooker. A field generated
+    /// by terrain_noise.h records its TerrainNoiseLayout version (TERRAIN_NOISE_LAYOUT_VERSION for new content), so
+    /// a replay regenerates it with the same fade.
     uint32 RecipeVersion = 0;
     /// Caller's digest of the source (recipe, imports and ordered edits) that produced the field.
     foundation::Fingerprint128 SourceDigest{};

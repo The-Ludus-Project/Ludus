@@ -1120,8 +1120,9 @@ bool WorldDocument::Validate(const QJsonObject& candidate, QString& error) const
                     const bool isNewAtmosphereField =
                         HasBuiltInSchema() == true && c.key() == GetWorldAtmosphereComponentId() &&
                         (property == QStringLiteral("moon") || property == QStringLiteral("stars"));
-                    const bool isNewTerrainField = HasBuiltInTerrain() == true && c.key() == terrainComponent &&
-                                                   IsTerrainSurfaceProperty(property) == true;
+                    const bool isNewTerrainField =
+                        HasBuiltInTerrain() == true && c.key() == terrainComponent &&
+                        (IsTerrainSurfaceProperty(property) == true || property == GetTerrainNoiseLayoutKey());
                     // A volume saved before the layout choice existed keeps its counts.
                     const bool isNewProbeVolumeField = HasBuiltInSchema() == true &&
                                                        c.key() == GetGiProbeVolumeComponentId() &&
