@@ -310,6 +310,13 @@ void Stop(bool hasFailed) noexcept
 
 [[nodiscard]] Status DrawCase(const ScaleCase& test) noexcept
 {
+    // The browser backends open no frame for a zero-sized target and report every attempt as
+    // Skipped, so set the surface extent before each frame as the other consumers do.
+    if (rhi::SetFrameTarget(gDevice, gSurface, { .Width = SURFACE_WIDTH, .Height = SURFACE_HEIGHT }) !=
+        rhi::DeviceStatus::Ready)
+    {
+        return Status::Failed;
+    }
     const rhi::DeviceStatus begun = rhi::BeginFrame(gDevice, gSurface);
     if (begun == rhi::DeviceStatus::Skipped)
     {
