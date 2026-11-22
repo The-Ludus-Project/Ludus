@@ -1872,7 +1872,8 @@ bool IsRecoverySourcePath(const QString& path)
 
 RenderGraphDocumentStatus RenderGraphDocument::CreateSharedShaderSource(const QString& file,
                                                                         RenderGraphShaderLanguage language,
-                                                                        QString& outError)
+                                                                        QString& outError,
+                                                                        const QByteArray& initialSource)
 {
     static const QRegularExpression PATH_WITHOUT_SUFFIX(
         QStringLiteral("\\A(?:[A-Za-z0-9_][A-Za-z0-9_.-]*/)*[A-Za-z0-9_][A-Za-z0-9_.-]*\\z"));
@@ -1915,8 +1916,11 @@ RenderGraphDocumentStatus RenderGraphDocument::CreateSharedShaderSource(const QS
     }
 
     RenderGraphSnapshot candidate = mDraft;
-    candidate.Files.insert(file,
-                           QByteArrayLiteral("#pragma once\n\n// Declare shared shader structs and helpers here.\n"));
+    candidate.Files.insert(
+        file,
+        initialSource.isNull() == true
+            ? QByteArrayLiteral("#pragma once\n\n// Declare shared shader structs and helpers here.\n")
+            : initialSource);
     const RenderGraphDocumentStatus status =
         commit(candidate, "Create Shared Shader File", false, {}, {}, {}, {}, CommitKind::Source);
     outError = status == RenderGraphDocumentStatus::Ok ? QString()

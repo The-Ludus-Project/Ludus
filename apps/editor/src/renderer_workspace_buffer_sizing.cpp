@@ -1,3 +1,4 @@
+#include "internal/code_editor.h"
 #include "internal/render_graph_shader_language.h"
 #include "internal/renderer_workspace.h"
 
@@ -8,10 +9,13 @@
 #include <QDialogButtonBox>
 #include <QDir>
 #include <QFileInfo>
+#include <QFontMetrics>
 #include <QFormLayout>
+#include <QHBoxLayout>
 #include <QJsonObject>
 #include <QLabel>
 #include <QLineEdit>
+#include <QObject>
 #include <QPushButton>
 #include <QRegularExpression>
 #include <QSignalBlocker>
@@ -25,6 +29,7 @@ namespace
 {
 const QString BUFFER_LAYOUT_LANGUAGE_NOTE =
     QStringLiteral("Build Graph reflects the storage layout from the selected shader declaration.");
+constexpr foundation::int32 DECLARATION_EDITOR_LINES = 12;
 
 QStringList FindDeclaredStructs(const QByteArray& source)
 {
@@ -58,6 +63,92 @@ QStringList FindDeclaredStructs(const QByteArray& source)
     }
     names.removeDuplicates();
     return names;
+}
+
+CodeEditor* AddDeclarationEditor(QFormLayout& outFields, QDialog& inoutDialog, const QString& text)
+{
+    CodeEditor* editor = new CodeEditor(&inoutDialog);
+    editor->setObjectName(QStringLiteral("renderGraphBufferDeclarationEditor"));
+    editor->setAccessibleName(QStringLiteral("Shader declaration source"));
+    editor->setMinimumHeight(editor->fontMetrics().lineSpacing() * DECLARATION_EDITOR_LINES);
+    editor->setPlainText(text);
+    outFields.addRow(editor);
+    return editor;
+}
+
+bool ReadBufferDeclaration(CodeEditor& inoutEditor, QLabel& outProblem, QByteArray& outSource)
+{
+    const QByteArray source = inoutEditor.toPlainText().toUtf8();
+    if (source.size() > RenderGraphDocument::MAX_FILE_BYTES)
+    {
+        outProblem.setText(DescribePackageCapacity());
+    }
+    else if (FindDeclaredStructs(source).isEmpty() == true)
+    {
+        outProblem.setText(QStringLiteral("Add a top-level struct definition with a body to use for buffer sizing."));
+    }
+    else
+    {
+        outSource = source;
+        return true;
+    }
+    inoutEditor.setFocus();
+    return false;
+}
+
+bool EditBufferDeclaration(QDialog& inoutParent, RenderGraphDocument& inoutDocument, const QString& file)
+{
+    QDialog dialog(&inoutParent);
+    dialog.setWindowTitle(QStringLiteral("Edit shader declaration"));
+    QFormLayout fields(&dialog);
+    QLabel* path = new QLabel(file, &dialog);
+    path->setTextFormat(Qt::PlainText);
+    path->setTextInteractionFlags(Qt::TextSelectableByMouse | Qt::TextSelectableByKeyboard);
+    path->setWordWrap(true);
+    fields.addRow(QStringLiteral("File"), path);
+    CodeEditor* editor = AddDeclarationEditor(fields, dialog, QString::fromUtf8(inoutDocument.GetDraft(file)));
+    const QByteArray original = editor->toPlainText().toUtf8();
+    editor->SetLanguage(file.endsWith(GetShaderIncludeSuffix(RenderGraphShaderLanguage::Lusl)) == true
+                            ? CodeLanguage::Lusl
+                            : CodeLanguage::Slang);
+    QLabel* problem = new QLabel(&dialog);
+    problem->setObjectName(QStringLiteral("renderGraphBufferDeclarationError"));
+    problem->setTextFormat(Qt::PlainText);
+    problem->setWordWrap(true);
+    fields.addRow(problem);
+    QObject::connect(editor, &CodeEditor::textChanged, problem, &QLabel::clear);
+    QDialogButtonBox* buttons = new QDialogButtonBox(QDialogButtonBox::Cancel, &dialog);
+    QPushButton* keep = buttons->addButton(QStringLiteral("Keep Source Changes"), QDialogButtonBox::AcceptRole);
+    keep->setObjectName(QStringLiteral("renderGraphKeepBufferDeclaration"));
+    keep->setToolTip(QStringLiteral("Keep changes in the graph draft. Save writes them to disk."));
+    fields.addRow(buttons);
+    QObject::connect(buttons, &QDialogButtonBox::rejected, &dialog, &QDialog::reject);
+    QObject::connect(
+        keep,
+        &QPushButton::clicked,
+        &dialog,
+        [&dialog, &inoutDocument, &file, &original, editor, problem]() {
+            QByteArray source;
+            if (ReadBufferDeclaration(*editor, *problem, source) == false)
+            {
+                return;
+            }
+            if (source != original)
+            {
+                const RenderGraphDocumentStatus status = inoutDocument.SetText(file, source);
+                if (status != RenderGraphDocumentStatus::Ok)
+                {
+                    problem->setText(
+                        status == RenderGraphDocumentStatus::Capacity
+                            ? DescribePackageCapacity()
+                            : QStringLiteral("Could not update this file. Cancel and reopen its declaration."));
+                    return;
+                }
+            }
+            dialog.accept();
+        });
+    editor->setFocus();
+    return dialog.exec() == QDialog::Accepted;
 }
 } // namespace
 
@@ -97,22 +188,36 @@ QString RendererWorkspace::stageSharedShaderSource(QWidget& inoutParent,
     fields.addRow(QStringLiteral("Package-relative path"), path);
     const QString usage =
         isBufferLayout == true
-            ? QStringLiteral("Declare the struct in Source, save the file, then select its type in Buffer sizing.")
+            ? QStringLiteral("Define the buffer struct below. The file joins the graph draft when you create it.")
             : QStringLiteral("Declare shared types and helpers here. Use a quoted #include from the shaders "
                              "that need them. Save writes the file to the graph package.");
-    QLabel* hint =
-        new QLabel(isBufferLayout == true ? BUFFER_LAYOUT_LANGUAGE_NOTE + QLatin1Char('\n') + usage : usage, &dialog);
+    QLabel* hint = new QLabel(usage, &dialog);
     hint->setObjectName(QStringLiteral("renderGraphSharedShaderHint"));
     hint->setWordWrap(true);
     fields.addRow(hint);
+    CodeEditor* editorOrNull = nullptr;
+    if (isBufferLayout == true)
+    {
+        editorOrNull = AddDeclarationEditor(fields, dialog, QStringLiteral("#pragma once\n\n"));
+        editorOrNull->SetLanguage(CodeLanguage::Lusl);
+    }
     QLabel* problem = new QLabel(&dialog);
     problem->setObjectName(QStringLiteral("renderGraphSharedShaderError"));
     problem->setTextFormat(Qt::PlainText);
     problem->setWordWrap(true);
     fields.addRow(problem);
     connect(path, &QLineEdit::textEdited, problem, &QLabel::clear);
-    connect(language, &QComboBox::currentIndexChanged, &dialog, [language, path, problem]() {
+    if (editorOrNull != nullptr)
+    {
+        connect(editorOrNull, &CodeEditor::textChanged, problem, &QLabel::clear);
+    }
+    connect(language, &QComboBox::currentIndexChanged, &dialog, [language, path, problem, editorOrNull]() {
         const RenderGraphShaderLanguage selected = language->currentData().value<RenderGraphShaderLanguage>();
+        if (editorOrNull != nullptr)
+        {
+            editorOrNull->SetLanguage(selected == RenderGraphShaderLanguage::Lusl ? CodeLanguage::Lusl
+                                                                                  : CodeLanguage::Slang);
+        }
         const RenderGraphShaderLanguage other = selected == RenderGraphShaderLanguage::Lusl
                                                     ? RenderGraphShaderLanguage::Slang
                                                     : RenderGraphShaderLanguage::Lusl;
@@ -130,18 +235,32 @@ QString RendererWorkspace::stageSharedShaderSource(QWidget& inoutParent,
     create->setObjectName(QStringLiteral("renderGraphCreateSharedShader"));
     fields.addRow(buttons);
     connect(buttons, &QDialogButtonBox::rejected, &dialog, &QDialog::reject);
-    connect(create, &QPushButton::clicked, &dialog, [this, path, language, problem, &dialog]() {
+    connect(create, &QPushButton::clicked, &dialog, [this, path, language, problem, editorOrNull, &dialog]() {
+        QByteArray source;
+        if (editorOrNull != nullptr && ReadBufferDeclaration(*editorOrNull, *problem, source) == false)
+        {
+            return;
+        }
         QString error;
         const RenderGraphShaderLanguage selected = language->currentData().value<RenderGraphShaderLanguage>();
-        if (mDocument.CreateSharedShaderSource(path->text().trimmed(), selected, error) ==
-            RenderGraphDocumentStatus::Ok)
+        const QString file = path->text().trimmed();
+        const RenderGraphDocumentStatus status = mDocument.CreateSharedShaderSource(file, selected, error, source);
+        if (status == RenderGraphDocumentStatus::Ok)
         {
             dialog.accept();
             return;
         }
+        if (editorOrNull != nullptr && status == RenderGraphDocumentStatus::Conflict &&
+            mDocument.GetFiles().contains(file, Qt::CaseInsensitive) == true)
+        {
+            error = QStringLiteral("'%1' already exists. Choose another path, or cancel and select it in Buffer "
+                                   "sizing to edit its declaration.")
+                        .arg(file);
+        }
         problem->setText(error);
         path->setFocus();
     });
+    path->setFocus();
     return dialog.exec() == QDialog::Accepted ? path->text().trimmed() : QString();
 }
 
@@ -192,11 +311,19 @@ void RendererWorkspace::editBufferSizing(QWidget& inoutParent)
     QLabel* languageNote = new QLabel(BUFFER_LAYOUT_LANGUAGE_NOTE, &dialog);
     languageNote->setObjectName(QStringLiteral("renderGraphBufferLayoutLanguageNote"));
     languageNote->setWordWrap(true);
-    fields.addRow(languageNote);
-    QPushButton* create = new QPushButton(QStringLiteral("New shared shader file…"), &dialog);
+    QWidget* declarationActions = new QWidget(&dialog);
+    QHBoxLayout* declarationLayout = new QHBoxLayout(declarationActions);
+    declarationLayout->setContentsMargins(0, 0, 0, 0);
+    QPushButton* edit = new QPushButton(QStringLiteral("Edit Declaration…"), declarationActions);
+    edit->setObjectName(QStringLiteral("renderGraphEditBufferDeclaration"));
+    edit->setAutoDefault(false);
+    declarationLayout->addWidget(edit);
+    QPushButton* create = new QPushButton(QStringLiteral("New Shared Shader File…"), declarationActions);
     create->setObjectName(QStringLiteral("renderGraphNewSharedShader"));
     create->setAutoDefault(false);
-    fields.addRow(create);
+    declarationLayout->addWidget(create);
+    declarationLayout->addStretch();
+    fields.addRow(declarationActions);
 
     QComboBox* type = new QComboBox(&dialog);
     type->setObjectName(QStringLiteral("renderGraphBufferStructType"));
@@ -213,6 +340,7 @@ void RendererWorkspace::editBufferSizing(QWidget& inoutParent)
     bytes->setSingleStep(format::RAY_BUFFER_WORD_BYTES);
     bytes->setValue(node.value(QStringLiteral("bytes")).toInt(format::RAY_BUFFER_WORD_BYTES));
     fields.addRow(QStringLiteral("Capacity (bytes)"), bytes);
+    fields.addRow(languageNote);
 
     QLabel* hint = new QLabel(&dialog);
     hint->setObjectName(QStringLiteral("renderGraphBufferSizingHint"));
@@ -223,63 +351,77 @@ void RendererWorkspace::editBufferSizing(QWidget& inoutParent)
     fields.addRow(buttons);
     QPushButton* apply = buttons->button(QDialogButtonBox::Apply);
     connect(buttons, &QDialogButtonBox::rejected, &dialog, &QDialog::reject);
-    const auto refresh = [&fields, mode, source, type, create, languageNote, count, bytes, hint, apply]() {
-        const bool isFromStruct = mode->currentIndex() == 1;
-        fields.setRowVisible(source, isFromStruct);
-        fields.setRowVisible(create, isFromStruct);
-        fields.setRowVisible(languageNote, isFromStruct);
-        fields.setRowVisible(type, isFromStruct);
-        fields.setRowVisible(count, isFromStruct);
-        fields.setRowVisible(bytes, isFromStruct == false);
-        QString message;
-        if (isFromStruct == false)
-        {
-            message = QStringLiteral("Enter a capacity in whole 16-byte buffer words.");
-        }
-        else if (source->currentIndex() < 0)
-        {
-            message = QStringLiteral("Choose a .slang source or a .luslh header that declares the buffer layout.");
-        }
-        else if (type->count() == 0)
-        {
-            message = QStringLiteral("No struct declaration was found in '%1'. Declare the struct in Source "
-                                     "or select a different shared file.")
-                          .arg(source->currentText());
-        }
-        else
-        {
-            message = QStringLiteral("Build Graph calculates the allocation. Connect the Buffer to a shader node and "
-                                     "open Shader API to see the named resource.");
-        }
-        hint->setText(message);
-        apply->setEnabled(isFromStruct == true ? type->currentIndex() >= 0
-                                               : bytes->value() % format::RAY_BUFFER_WORD_BYTES == 0);
-    };
-    const auto selectSource = [this, source, type, record, previousSource, refresh]() {
+    const auto refresh =
+        [&fields, mode, source, type, declarationActions, edit, languageNote, count, bytes, hint, apply]() {
+            const bool isFromStruct = mode->currentIndex() == 1;
+            fields.setRowVisible(source, isFromStruct);
+            fields.setRowVisible(declarationActions, isFromStruct);
+            edit->setEnabled(source->currentIndex() >= 0);
+            fields.setRowVisible(languageNote, isFromStruct);
+            fields.setRowVisible(type, isFromStruct);
+            fields.setRowVisible(count, isFromStruct);
+            fields.setRowVisible(bytes, isFromStruct == false);
+            QString message;
+            if (isFromStruct == false)
+            {
+                message = QStringLiteral("Enter a capacity in whole 16-byte buffer words.");
+            }
+            else if (source->currentIndex() < 0)
+            {
+                message = QStringLiteral("Choose a declaration file or create a shared shader file.");
+            }
+            else if (type->count() == 0)
+            {
+                message = QStringLiteral("No struct declaration was found in '%1'. Use Edit Declaration to add one.")
+                              .arg(source->currentText());
+            }
+            else if (type->currentIndex() < 0)
+            {
+                message = QStringLiteral("Choose the struct that describes one buffer element.");
+            }
+            else
+            {
+                message = QStringLiteral("Open Shader API on a connected shader node to see the named resource.");
+            }
+            hint->setText(message);
+            apply->setEnabled(isFromStruct == true ? type->currentIndex() >= 0
+                                                   : bytes->value() % format::RAY_BUFFER_WORD_BYTES == 0);
+        };
+    const auto listStructs = [this, source, type, refresh](const QString& preferredType) {
         const QSignalBlocker blocker(type);
         type->clear();
         const QString file = source->currentText();
         type->addItems(FindDeclaredStructs(mDocument.GetDraft(file)));
-        const foundation::int32 index =
-            file == previousSource ? type->findText(record.value(QStringLiteral("type")).toString()) : -1;
+        const foundation::int32 index = type->findText(preferredType);
         type->setCurrentIndex(index < 0 && type->count() == 1 ? 0 : index);
         refresh();
+    };
+    const auto selectSource = [source, record, previousSource, listStructs]() {
+        listStructs(source->currentText() == previousSource ? record.value(QStringLiteral("type")).toString()
+                                                            : QString());
     };
     connect(mode, &QComboBox::currentIndexChanged, &dialog, refresh);
     connect(source, &QComboBox::currentIndexChanged, &dialog, selectSource);
     connect(type, &QComboBox::currentIndexChanged, &dialog, refresh);
     connect(bytes, &QSpinBox::valueChanged, &dialog, refresh);
 
-    QString createdFile;
-    connect(create, &QPushButton::clicked, &dialog, [this, &dialog, &createdFile, source, previousSource]() {
+    connect(edit, &QPushButton::clicked, &dialog, [this, &dialog, source, type, listStructs]() {
+        if (EditBufferDeclaration(dialog, mDocument, source->currentText()) == true)
+        {
+            listStructs(type->currentText());
+        }
+    });
+    connect(create, &QPushButton::clicked, &dialog, [this, &dialog, source, previousSource]() {
         const QString selected = source->currentText();
         const QString nearbyFile = selected.isEmpty() == false ? selected : previousSource;
-        createdFile = stageSharedShaderSource(dialog,
-                                              nearbyFile.isEmpty() == false ? nearbyFile : GetSourceFile(),
-                                              SharedShaderFilePurpose::BufferLayout);
+        const QString createdFile =
+            stageSharedShaderSource(dialog,
+                                    nearbyFile.isEmpty() == false ? nearbyFile : GetSourceFile(),
+                                    SharedShaderFilePurpose::BufferLayout);
         if (createdFile.isEmpty() == false)
         {
-            dialog.accept();
+            source->addItem(createdFile);
+            source->setCurrentText(createdFile);
         }
     });
     const foundation::uint64 revision = mDocument.GetRevision();
@@ -308,24 +450,10 @@ void RendererWorkspace::editBufferSizing(QWidget& inoutParent)
         hint->setText(error.isEmpty() == false ? error : QStringLiteral("Reselect the Buffer and try again."));
     });
     selectSource();
-    if (dialog.exec() == QDialog::Accepted)
+    dialog.exec();
+    if (mDocument.GetRevision() != revision)
     {
-        if (createdFile.isEmpty() == false)
-        {
-            QDialog* detailsOrNull = qobject_cast<QDialog*>(inoutParent.window());
-            if (detailsOrNull != nullptr)
-            {
-                detailsOrNull->accept();
-            }
-        }
-        if (mDocument.GetRevision() != revision)
-        {
-            documentEdited(RenderGraphDocumentStatus::Ok);
-        }
-        if (createdFile.isEmpty() == false)
-        {
-            openSourceLine(createdFile, 1);
-        }
+        documentEdited(RenderGraphDocumentStatus::Ok);
     }
 }
 } // namespace ludus::editor
