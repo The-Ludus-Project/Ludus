@@ -304,6 +304,30 @@ QStringList GetCellChoices(const QString& field, const QString& kind, const QStr
     return {};
 }
 
+QString GetNextShaderStage(const QTableWidget& table, const QString& kind)
+{
+    QStringList stages = GetPipelineShaderStages(kind);
+    if (kind == QStringLiteral("RayTracingPipeline"))
+    {
+        return stages.value(0);
+    }
+    for (int32 row = 0; row < table.rowCount(); ++row)
+    {
+        const QComboBox* stage = qobject_cast<QComboBox*>(table.cellWidget(row, 1));
+        LUDUS_REQUIRE(stage != nullptr);
+        if (kind == QStringLiteral("ComputePipeline"))
+        {
+            if (stage->currentText() == QStringLiteral("compute"))
+            {
+                return {};
+            }
+            stages.removeAll(QStringLiteral("compute"));
+        }
+        stages.removeAll(stage->currentText());
+    }
+    return stages.value(0);
+}
+
 void AddCell(QTableWidget& inoutTable,
              int32 row,
              int32 column,
@@ -632,8 +656,10 @@ RenderGraphPipelineEditor::createTable(const QString& name, const QStringList& f
     if (name == QStringLiteral("shaders"))
     {
         QLabel* scope = new QLabel(
-            QStringLiteral("Program IDs are shared by every graph and configuration in the root shader manifest. "
-                           "Enter an existing program to share it, or Program to generate a unique name."),
+            QStringLiteral(
+                "Program IDs are shared by every graph and configuration in the root shader manifest. "
+                "Enter an existing program ID to reuse it, or Program to generate a unique ID. "
+                "For shared structs and helpers, create a shared shader file and include it from your program."),
             panel);
         scope->setWordWrap(true);
         layout->addWidget(scope);
@@ -703,7 +729,9 @@ RenderGraphPipelineEditor::createTable(const QString& name, const QStringList& f
     layout->addWidget(table);
     // The buttons wrap under each other in a narrow dock rather than widening the panel past its edge.
     FlowLayout* buttons = new FlowLayout(nullptr, design::SPACING_SMALL);
-    QPushButton* add = new QPushButton(QStringLiteral("Add"), panel);
+    QPushButton* add = new QPushButton(name == QStringLiteral("shaders") ? QStringLiteral("Add Shader Program")
+                                                                         : QStringLiteral("Add"),
+                                       panel);
     QPushButton* remove = new QPushButton(QStringLiteral("Remove Selected"), panel);
     add->setObjectName(QStringLiteral("renderGraphAdd_") + name);
     remove->setObjectName(QStringLiteral("renderGraphRemove_") + name);
@@ -718,8 +746,10 @@ RenderGraphPipelineEditor::createTable(const QString& name, const QStringList& f
         buttons->addWidget(language);
     }
     connect(add, &QPushButton::clicked, this, [this, table, defaults, fields, name, kind, connectResourceType]() {
-        const int32 maximum = name == QStringLiteral("shaders") ? MAX_SHADERS : MAX_PORTS;
-        if (table->rowCount() >= maximum)
+        const bool isShaders = name == QStringLiteral("shaders");
+        const int32 maximum = isShaders == true ? MAX_SHADERS : MAX_PORTS;
+        const QString stage = isShaders == true ? GetNextShaderStage(*table, kind) : QString();
+        if (table->rowCount() >= maximum || (isShaders == true && stage.isEmpty() == true))
         {
             return;
         }
@@ -728,7 +758,7 @@ RenderGraphPipelineEditor::createTable(const QString& name, const QStringList& f
         table->insertRow(row);
         for (int32 column = 0; column < defaults.size(); ++column)
         {
-            QString value = defaults.at(column);
+            QString value = fields.at(column) == QStringLiteral("stage") ? stage : defaults.at(column);
             if (fields.at(column) == QStringLiteral("load") && mNode.value(QStringLiteral("invocation"))
                                                                        .toObject()
                                                                        .value(QStringLiteral("storage_texture"))
@@ -777,8 +807,27 @@ RenderGraphPipelineEditor::createTable(const QString& name, const QStringList& f
     });
     buttons->addWidget(add);
     buttons->addWidget(remove);
+    if (name == QStringLiteral("shaders"))
+    {
+        QPushButton* shared = new QPushButton(QStringLiteral("New shared shader file…"), panel);
+        shared->setObjectName(QStringLiteral("renderGraphNewSharedShaderFromShaders"));
+        connect(shared, &QPushButton::clicked, this, &RenderGraphPipelineEditor::SharedShaderFileRequested);
+        buttons->addWidget(shared);
+    }
     layout->addLayout(buttons);
     layout->addStretch(1);
+    if (name == QStringLiteral("shaders"))
+    {
+        const auto updateAdd = [table, add, kind]() {
+            const bool canAdd = table->rowCount() < MAX_SHADERS && GetNextShaderStage(*table, kind).isEmpty() == false;
+            add->setEnabled(canAdd);
+            add->setToolTip(canAdd == true ? QStringLiteral("Assign a shader program to this pipeline.")
+                                           : QStringLiteral("No additional stage is available. Edit an existing "
+                                                            "program, or create a shared shader file in Source."));
+        };
+        updateAdd();
+        connect(this, &RenderGraphPipelineEditor::Edited, add, updateAdd);
+    }
     const auto showRows = [table, empty, remove, name]() {
         const bool isEmpty = table->rowCount() == 0;
         empty->setVisible(isEmpty);

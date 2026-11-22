@@ -10,6 +10,7 @@ def link_persistent_structs(plans, programs, closures, build):
     """Resolve named shader arguments from pass-local port declarations."""
     variants, signatures = {}, {}
     for plan in plans:
+        instances = {context['instance']: context for context in plan['activity']}
         for operation in plan['passes']:
             if operation['kind'] != 'RayTracing':
                 continue
@@ -28,11 +29,20 @@ def link_persistent_structs(plans, programs, closures, build):
                               f"set graph_resources on '{program_id}' to use a read-only Buffer port")
                 if record is not None and program:
                     source = record['source']
-                    if source == program['source'] or (not is_named and source not in closures[program_id]):
+                    if source == program['source']:
+                        instance, node = use['resource'].rsplit('/', 1)
+                        context = instances[instance]
                         raise build.ToolingError(
                             'RenderGraphBuildShaderInterface',
-                            f"{use['resource']}: include '{source}' from program '{program_id}'. Select the shared file "
-                            "that declares the struct in Buffer sizing.",
+                            f"{use['resource']}: '{source}' is the entry point for '{program_id}'. Move the struct "
+                            "to a shared Slang file, include it from the program, and choose it in Buffer sizing.",
+                            location={'source': context['source'], 'configuration': context['configuration'],
+                                      'node': node, 'field': 'shader_struct'})
+                    if not is_named and source not in closures[program_id]:
+                        raise build.ToolingError(
+                            'RenderGraphBuildShaderInterface',
+                            f"{use['resource']}: add a quoted #include for shared file '{source}' to "
+                            f"'{program_id}', with a path relative to the program source.",
                             location={'source': program['source'], 'program': program_id, 'line': 1, 'column': 1})
                     build.name(record['type'], 'buffer struct type')
                 if is_named:

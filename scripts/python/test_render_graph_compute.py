@@ -377,7 +377,16 @@ class NativeSceneComputeTests(unittest.TestCase):
             options = dict(helper=os.environ['LUDUS_RG1_HELPER'], compiler=os.environ['LUDUS_RG1_SLANG'],
                            spirv_cross=os.environ['LUDUS_RG1_CROSS'])
             output = Path(temporary) / 'build'
-            with self.assertRaisesRegex(ToolingError, "include 'main_shaders/edge_table.slang'"):
+            buffer['shader_struct']['source'] = 'main_shaders/work_items.slang'
+            graph_path.write_bytes(graph.canonical_asset(document))
+            with self.assertRaisesRegex(ToolingError, 'is the entry point') as invalid_source:
+                build.build_package(manifest, output, **options)
+            self.assertEqual(invalid_source.exception.location,
+                             {'source': 'main.lurender.json', 'configuration': 'WorkItems',
+                              'node': 'hits', 'field': 'shader_struct'})
+            buffer['shader_struct']['source'] = header
+            graph_path.write_bytes(graph.canonical_asset(document))
+            with self.assertRaisesRegex(ToolingError, "quoted #include for shared file 'main_shaders/edge_table.slang'"):
                 build.build_package(manifest, output, **options)
             shader.write_text('#include "edge_table.slang"\n' + original)
             for count in (256, 16):

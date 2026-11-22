@@ -1233,18 +1233,20 @@ remain shader policy.
 
 ### Size an ordered Buffer from a shader struct
 
-For a fixed allocation shared by scene compute passes, select the Buffer and
-choose **From shader struct…** in Properties or in the canvas node's **Edit
-Node…** dialog. Choose a package-local Slang file, enter the struct name and set
-the element capacity. **Build Graph** reflects the struct's storage stride,
-multiplies it by the capacity, and rounds the allocation up to a full 16-byte
-word. A successful build shows the reflected stride and allocation on the node.
-Changing the shared file updates the allocation on the next build.
+On the canvas, open the Buffer's **Edit Node…** dialog or select it in
+Properties. Choose **From shader struct…** and select a shared Slang file and a
+struct declared in it. The picker lists package files and excludes program
+entry points. Use **New shared shader file…** to create a draft include. In
+Buffer sizing the language is Slang because Build Graph reflects the storage
+layout directly from the `.slang` declaration.
 
-Put the declaration in one file with a leading `#pragma once`. Include that file
-from each connected compute program using a quoted include relative to that
-program's source. The Buffer's source path is relative to the **graph package**
-root. The builder checks every producer and consumer's captured include closure.
+Put the layout in the shared file after the leading `#pragma once`. Include it
+from each connected positional Slang shader with a quoted path relative to that
+shader's source. The Buffer refers to the file by its package-relative path.
+Save the files and Buffer settings, then run **Build Graph**. Slang reflects the
+storage stride and Ludus multiplies it by the element capacity, then rounds up
+to a 16-byte word. The Buffer shows the stride and allocation after a successful
+build. A change to the declaration takes effect on the next build.
 For a UTD edge table, choose **one** element because the table already contains
 its own fixed-capacity array.
 
@@ -9172,6 +9174,25 @@ debounced. Source editing itself requires no compiler or language server.
 Extreme single-line files remain a known Qt layout performance limit; the
 ordinary-line and plain-Qt comparison probes are opt-in `[.benchmark]` tests in
 `ludus_code_editor_tests`.
+
+### Create a shared shader file
+
+1. Open a render graph. Switch to its **Source** tab and open **Source →
+   New shared shader file…**. You can also select a pipeline on the canvas and
+   choose **Shaders → New shared shader file…** in its **Edit Node…** dialog
+   or Properties.
+2. Choose **LUSL include (.luslh)** or **Slang include (.slang)**. The dialog
+   uses the source in context for the starting folder and language. Without a
+   shader in context, it defaults to LUSL. Enter a package-relative path and
+   click **Create Shared File**.
+3. Add your declarations or helpers in the new Source draft. In each program
+   that needs the file, add a quoted `#include` relative to that program's
+   source. For sibling files use `#include "common.luslh"` in LUSL or
+   `#include "common.slang"` in Slang. **Save** publishes the files. Run
+   **Build Graph** to check the includes.
+
+For a layout that sets a Buffer's capacity, use the [struct sizing
+workflow](#size-an-ordered-buffer-from-a-shader-struct).
 
 ### Edit shader sources in a code editor
 
