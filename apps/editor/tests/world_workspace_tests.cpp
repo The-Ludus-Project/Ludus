@@ -7861,13 +7861,22 @@ TEST_CASE("Atmosphere entities retain their Sun across deletion, undo and reopen
     QJsonObject components = atmosphere.value(QStringLiteral("components")).toObject();
     QJsonObject values = components.value(atmosphereComponent).toObject();
     values.insert(QStringLiteral("sun"), sunId);
-    // An A1 world omits the A2 fields and keeps their defaults after loading.
+    // An A1 world omits the A2 fields, and a World saved before the aurora layer omits its
+    // fields; both keep the defaults after loading.
     values.remove(QStringLiteral("stars"));
     values.remove(QStringLiteral("moon"));
+    values.remove(QStringLiteral("aurora"));
+    values.remove(QStringLiteral("auroraEmission"));
+    values.remove(QStringLiteral("auroraTime"));
     components.insert(atmosphereComponent, values);
     REQUIRE(document.Edit(atmosphereId, components, atmosphere.value(QStringLiteral("name")).toString(), error) ==
             true);
+    // Open validates the saved bytes, not the edited draft (examples/light-court before the fix).
+    WorldDocument savedWithoutAurora;
+    REQUIRE(savedWithoutAurora.LoadSchema(schema, error) == true);
+    REQUIRE(savedWithoutAurora.Load(QJsonDocument(document.Draft()).toJson(), error) == true);
     REQUIRE(RenderScene::Load(directory.path(), document, scene, error) == true);
+    CHECK(scene.Atmosphere.Aurora.IsEnabled == false);
     CHECK(scene.Atmosphere.IsEnabled == true);
     CHECK(scene.Atmosphere.DirectionToSunWorld.Y == Catch::Approx(1));
     CHECK(scene.Atmosphere.SolarIlluminance.X == Catch::Approx(10));
