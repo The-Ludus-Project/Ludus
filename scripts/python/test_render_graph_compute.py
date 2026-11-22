@@ -334,7 +334,8 @@ class NativeSceneComputeTests(unittest.TestCase):
                 shader = source / kernel_source
                 callbacks = shader.read_text().split('void DiffractionMiss', 1)[1]
                 shader.write_text('float3 ProduceDiffraction(SceneContext scene, RayLaunch launch, '
-                                  'inout RayQueryContext queries) { return float3(1, 0, 0); }\n'
+                                  'inout RayQueryContext queries, ProduceDiffractionResources resources) '
+                                  '{ return float3(1, 0, 0); }\n'
                                   'void DiffractionMiss' + callbacks)
             path.write_bytes(graph.canonical_asset(document))
         if image_launch is not None:
@@ -419,6 +420,25 @@ class NativeSceneComputeTests(unittest.TestCase):
                 build.build_package(manifest, output, **options)
             self.assertEqual(accepted_pointer, (output / 'current.json').read_bytes())
 
+    def check_resource_completion(self, context, server, language, text):
+        from test_shader_context import ShaderLanguagePeer
+        from urllib.parse import unquote, urlparse
+
+        workspace = Path(unquote(urlparse(context['uri']).path)).parents[1]
+        peer = ShaderLanguagePeer(server, workspace, context.get('server_arguments', ()))
+        try:
+            expression = 'Edge edge = resources.'
+            before = text[:text.index(expression) + len(expression)]
+            peer.notify('textDocument/didOpen', {'textDocument': {
+                'uri': context['uri'], 'languageId': language, 'version': 1, 'text': text}})
+            completion = peer.call('textDocument/completion', {
+                'textDocument': {'uri': context['uri']},
+                'position': {'line': before.count('\n'), 'character': len(before.rsplit('\n', 1)[-1])}})
+            items = completion if isinstance(completion, list) else completion.get('items', [])
+            self.assertTrue({'Edges', 'Scratch'} <= {item['label'] for item in items})
+        finally:
+            peer.close()
+
     def test_named_edge_records_cross_compute_and_ray_passes(self):
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
@@ -458,9 +478,6 @@ class NativeSceneComputeTests(unittest.TestCase):
             profiles = ['metal', 'spirv'] if validator else ['metal']
             manifest = json.loads((source / 'main.lushader.json.in').read_text().replace(
                 '@RG2_TEST_PROFILES@', json.dumps(profiles)))
-            for program in manifest['programs']:
-                if program['id'] in ('Primary', 'Shade'):
-                    program['graph_resources'] = True
             manifest_path.write_text(json.dumps(manifest))
             shaders = source / 'main_shaders'
             (shaders / 'edge.slang').write_text(
@@ -484,6 +501,12 @@ class NativeSceneComputeTests(unittest.TestCase):
             context = shader_context.export_context(manifest_path, root / 'editor', 'main_shaders/shade.slang',
                                                     helper=options['helper'])
             self.assertIn('GraphReadOnlyEdgeView Edges;', context['prefix'])
+            self.assertEqual({'name': 'Edges', 'type': 'Edge', 'writable': False},
+                             context['resources'][0]['fields'][0])
+            slangd = Path(options['compiler']).with_name('slangd.exe' if os.name == 'nt' else 'slangd')
+            if slangd.is_file():
+                text = context['prefix'] + consumer.replace('resources.Edges[0]', 'resources.') + context['suffix']
+                self.check_resource_completion(context, slangd, 'slang', text)
             output = root / 'build'
             built = build.build_package(manifest_path, output, **options)
             package = Path(built['package'])
@@ -504,6 +527,63 @@ class NativeSceneComputeTests(unittest.TestCase):
             accepted = (output / 'current.json').read_bytes()
             shade.write_text(consumer.replace('return edge.EndWorld', 'resources.Edges[0] = edge; return edge.EndWorld'))
             with self.assertRaisesRegex(ToolingError, 'set|l-value|assign'):
+                build.build_package(manifest_path, output, **options)
+            self.assertEqual(accepted, (output / 'current.json').read_bytes())
+
+            # Both languages see the graph-derived ports with no manifest selection.
+            for program in manifest['programs']:
+                if program['id'] in ('Primary', 'Shade'):
+                    program['source'] = program['source'].replace('.slang', '.lusl')
+            manifest_path.write_text(json.dumps(manifest))
+            (shaders / 'primary.lusl').write_text(
+                '#include "scene_shader.luslh"\n#include "graph_resources.luslh"\n'
+                'float32x3 TracePrimary(in SceneContext scene, in RayLaunch launch, '
+                'inout RayQueryContext inoutQueries, in TracePrimaryResources resources)\n'
+                '{\n'
+                '    uint32 index = launch.WorkItemIndex;\n'
+                '    if (index < resources.Edges.GetCount())\n'
+                '    {\n'
+                '        Edge edge = 0;\n'
+                '        edge.BeginWorld = float32x3(float32(index));\n'
+                '        edge.EndWorld = edge.BeginWorld + 1;\n'
+                '        resources.Edges.Store(index, edge);\n'
+                '    }\n'
+                '    return float32x3(0);\n'
+                '}\n')
+            lusl_consumer = (
+                '#include "scene_shader.luslh"\n#include "graph_resources.luslh"\n'
+                'float32x3 ShadeRecordedHit(in SceneContext scene, in RayLaunch launch, '
+                'inout RayQueryContext inoutQueries, in ShadeRecordedHitResources resources)\n'
+                '{\n'
+                '    Edge edge = resources.Edges.Load(0);\n'
+                '    if (resources.Scratch.GetCount() > 0)\n'
+                '    {\n'
+                '        uint32x4 word = resources.Scratch.Load(0);\n'
+                '        word.x = word.x + 1;\n'
+                '        resources.Scratch.Store(0, word);\n'
+                '    }\n'
+                '    return edge.EndWorld - edge.BeginWorld;\n'
+                '}\n')
+            shade_lusl = shaders / 'shade.lusl'
+            shade_lusl.write_text(lusl_consumer.replace('resources.Edges.Load(0)', 'resources.'))
+            context = shader_context.export_context(manifest_path, root / 'lusl-editor', 'main_shaders/shade.lusl',
+                                                    helper=options['helper'], compiler=options['compiler'])
+            self.assertEqual({'name': 'Edges', 'type': 'Edge', 'writable': False},
+                             context['resources'][0]['fields'][0])
+            from urllib.parse import unquote, urlparse
+            staged_source = Path(unquote(urlparse(context['uri']).path))
+            header = staged_source.parents[1] / '_ludus_graph' / 'graph_resources.luslh'
+            self.assertIn('GraphReadOnlyEdgeView Edges;', header.read_text())
+            self.assertNotIn('void Store(in uint32 index, in Edge record)', header.read_text())
+            luslc = build.language.find_luslc(options['helper'])
+            self.check_resource_completion(context, luslc, 'lusl', staged_source.read_text())
+            shade_lusl.write_text(lusl_consumer)
+            built = build.build_package(manifest_path, output, **options)
+            execution.cook_runtime(built['package'], root / 'lusl-named.lurgrt')
+            accepted = (output / 'current.json').read_bytes()
+            shade_lusl.write_text(lusl_consumer.replace(
+                'return edge.EndWorld', 'resources.Edges.Store(0, edge); return edge.EndWorld'))
+            with self.assertRaisesRegex(ToolingError, 'Store'):
                 build.build_package(manifest_path, output, **options)
             self.assertEqual(accepted, (output / 'current.json').read_bytes())
 

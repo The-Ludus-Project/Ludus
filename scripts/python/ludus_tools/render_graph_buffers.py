@@ -1,12 +1,27 @@
 """Graph-owned structured storage and shader-derived persistent buffer sizes."""
 
+import re
+
 MAX_BUFFERS = 2
 FIRST_SLOT = 6
 MAX_STRIDE = 4096
 MAX_ELEMENTS = 16 * 1024 * 1024
 
 
-def link_persistent_structs(plans, programs, closures, build):
+def requests_named_resources(program, snapshot):
+    """Recognize the authored Resources parameter; retain explicit legacy manifest choices."""
+    if 'graph_resources' in program:
+        return program['graph_resources']
+    if program['stage'] not in ('compute', 'ray_generation') or program['output'] != 'Radiance':
+        return False
+    source = program.get('language_source', program['source'])
+    text = snapshot.load(source).decode('utf-8')
+    text = re.sub(r'/\*.*?\*/|//[^\n]*|"(?:\\.|[^"\\])*"', ' ', text, flags=re.S)
+    function = re.escape(program['function'])
+    return re.search(rf'\b{function}\s*\([^()]*\b{function}Resources\s+[A-Za-z_]\w*\s*\)', text) is not None
+
+
+def link_persistent_structs(plans, programs, snapshot, build, closures=None):
     """Resolve named shader arguments from pass-local port declarations."""
     variants, signatures = {}, {}
     for plan in plans:
@@ -19,26 +34,31 @@ def link_persistent_structs(plans, programs, closures, build):
             variant = build.ray.get_callback_variant(pipeline)
             program_id = variant[0]
             program = programs.get(program_id, {})
-            is_named = program.get('graph_resources', False)
+            is_named = bool(program) and requests_named_resources(program, snapshot)
             ports = [port for port in pipeline['inputs'] if port['type'] == 'Buffer']
+            source_is_lusl = program.get('language_source', program.get('source', '')).endswith('.lusl')
+            uses_legacy_word_binding = program.get('graph_resources', False) and not source_is_lusl
             fields = []
             for use in operation.get('persistent_buffers', []):
                 record = resources[use['resource']].get('shader_struct')
                 is_writable = use['output_version'] is not None
                 build.require(is_writable or is_named, 'ShaderInterface', operation['id'],
-                              f"set graph_resources on '{program_id}' to use a read-only Buffer port")
+                              f"add a final {program.get('function', 'ShaderMain')}Resources resources parameter to "
+                              f"'{program_id}' to use its read-only Buffer port; see Shader API")
                 if record is not None and program:
                     source = record['source']
-                    if source == program['source']:
+                    if source == program.get('language_source', program['source']):
                         instance, node = use['resource'].rsplit('/', 1)
                         context = instances[instance]
+                        repair = ('and choose it in Buffer sizing' if is_named else
+                                  'include it from the program, and choose it in Buffer sizing')
                         raise build.ToolingError(
                             'RenderGraphBuildShaderInterface',
                             f"{use['resource']}: '{source}' is the entry point for '{program_id}'. Move the struct "
-                            "to a shared Slang file, include it from the program, and choose it in Buffer sizing.",
+                            f"to a shared Slang file, {repair}.",
                             location={'source': context['source'], 'configuration': context['configuration'],
                                       'node': node, 'field': 'shader_struct'})
-                    if not is_named and source not in closures[program_id]:
+                    if closures is not None and not is_named and source not in closures[program_id]:
                         raise build.ToolingError(
                             'RenderGraphBuildShaderInterface',
                             f"{use['resource']}: add a quoted #include for shared file '{source}' to "
@@ -53,11 +73,10 @@ def link_persistent_structs(plans, programs, closures, build):
                                   'ShaderInterface', operation['id'],
                                   f"Buffer ports map to the same shader member '{field}'. Rename one port.")
                     fields.append({'field': field, 'slot': use['slot'], 'record': record,
-                                   'writable': is_writable})
+                                   'writable': is_writable,
+                                   'word_view': record is None and not uses_legacy_word_binding})
             if not is_named:
                 continue
-            build.require(fields, 'ShaderInterface', operation['id'],
-                          "connect a Buffer port or remove graph_resources from the shader program")
             ordered = sorted(fields, key=lambda field: field['field'])
             signature = [(field['field'], field['writable'], field['record'] and
                           (field['record']['source'], field['record']['type'])) for field in ordered]
@@ -73,7 +92,9 @@ def link_persistent_structs(plans, programs, closures, build):
 def record_view_name(field):
     record = field['record']
     if record is None:
-        return 'RWStructuredBuffer<uint4>'
+        if not field.get('word_view'):
+            return 'RWStructuredBuffer<uint4>'
+        return 'Graph' + ('Writable' if field['writable'] else 'ReadOnly') + 'BufferWordsView'
     return 'Graph' + ('Writable' if field['writable'] else 'ReadOnly') + record['type'] + 'View'
 
 
@@ -117,8 +138,9 @@ def emit_record_layout(shape, expression, address, loads, stores, depth, build, 
 
 def record_view_argument(field):
     handle = f'GraphBuffer{field["slot"]}'
-    return (f'{record_view_name(field)}({handle}, {field["record"]["count"]}u)'
-            if field['record'] else handle)
+    if field['record']:
+        return f'{record_view_name(field)}({handle}, {field["record"]["count"]}u)'
+    return f'{record_view_name(field)}({handle})' if field.get('word_view') else handle
 
 
 def collect_record_views(contracts, build):
@@ -138,10 +160,8 @@ def collect_record_views(contracts, build):
 def record_view_definition(view, type_name, is_writable, *, loads=None, stores=None):
     """Describe the view for source assistance, or define it for an executable build."""
     getter = f'{type_name} record; {" ".join(loads)} return record;' if loads is not None else f'return ({type_name})0;'
-    setter = ''
-    if is_writable:
-        code = f'{type_name} record = newValue; ' + ' '.join(stores) if stores is not None else ''
-        setter = f'set {{ {code} }}'
+    store = f'void Store(uint index, {type_name} record) {{ {" ".join(stores or [])} }}' if is_writable else ''
+    setter = 'set { Store(index, newValue); }' if is_writable else ''
     return f"""
 struct {view}
 {{
@@ -149,13 +169,36 @@ struct {view}
     private uint Count;
     __init(RWStructuredBuffer<uint4> words, uint count) {{ Words = words; Count = count; }}
     uint GetCount() {{ return Count; }}
+    {type_name} Load(uint index) {{ {getter} }}
+    {store}
     __subscript(uint index) -> {type_name}
     {{
-        get {{ {getter} }}
+        get {{ return Load(index); }}
         {setter}
     }}
 }};
 """
+
+
+def word_view_definitions(contracts):
+    """Raw Buffer views take their capacity from the bound allocation at runtime."""
+    variants = {field['writable']: record_view_name(field) for fields in contracts for field in fields
+                if field.get('word_view')}
+    return ''.join(f"""
+struct {view}
+{{
+    private RWStructuredBuffer<uint4> Words;
+    __init(RWStructuredBuffer<uint4> words) {{ Words = words; }}
+    uint GetCount() {{ uint count; uint stride; Words.GetDimensions(count, stride); return count; }}
+    uint4 Load(uint index) {{ return Words[index]; }}
+    {'void Store(uint index, uint4 record) { Words[index] = record; }' if writable else ''}
+    __subscript(uint index) -> uint4
+    {{
+        get {{ return Load(index); }}
+        {'set { Store(index, newValue); }' if writable else ''}
+    }}
+}};
+""" for writable, view in sorted(variants.items()))
 
 
 def define_record_views(program, layouts, build):
@@ -178,7 +221,7 @@ def define_record_views(program, layouts, build):
 
 def size_persistent_structs(plans, snapshot, stage, compiler, cancel, build):
     """Use the same SPIR-V storage layout that the ordered Metal/Vulkan shaders use."""
-    records, layouts = {}, []
+    records, layouts = dict(getattr(snapshot, 'buffer_record_layouts', {})), []
     for plan in plans:
         instances = {context['instance']: context for context in plan['activity']}
         for identity, resource in plan['resources'].items():

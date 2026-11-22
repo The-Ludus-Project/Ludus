@@ -4,6 +4,7 @@
 #include "internal/render_graph_build_settings.h"
 #include "internal/render_graph_job.h"
 
+#include <QJsonArray>
 #include <QJsonObject>
 #include <QTemporaryDir>
 #include <QWidget>
@@ -41,7 +42,12 @@ public:
         return mStatus;
     }
 
+    /// Prepare the connected Buffer interface while Shader API is open.
+    void RequestResourceApi();
+    [[nodiscard]] QJsonArray GetResourceApi() const;
+
 Q_SIGNALS:
+    void ResourceApiChanged();
     /// The status line's text changed; the host shows the line only while it says something.
     void StatusTextChanged();
 
@@ -67,6 +73,8 @@ private:
     QJsonObject mResult;
     foundation::uint64 mEpoch = 0;
     foundation::uint64 mNextRequest = 0;
+    foundation::uint64 mResourceApiRevision = 0;
+    foundation::uint64 mRequestedResourceRevision = 0;
     bool mHasPending = false;
 };
 } // namespace ludus::editor

@@ -317,8 +317,8 @@ def validate_manifest(value):
             require(type(program['graph_resources']) is bool and
                     (program['graph_resources'] is False or
                      (program['stage'] in (ray.COMPUTE_STAGE, 'ray_generation') and program['output'] == 'Radiance' and
-                      type(program['source']) is str and program['source'].endswith('.slang'))),
-                    'Schema', program['id'], 'graph_resources requires a Slang scene compute or radiance ray-generation program')
+                      type(program['source']) is str and program['source'].endswith(('.lusl', '.slang')))),
+                    'Schema', program['id'], 'graph_resources requires a scene compute or radiance ray-generation program')
         if 'light_transformer' in program:
             require(type(program['light_transformer']) is bool and
                     (program['light_transformer'] is False or program['stage'] == ray.COMPUTE_STAGE),
@@ -1080,22 +1080,44 @@ def compile_stages(jobs, stage, schemas, snapshot, helper, tools, cancel, worker
         return [future.exception() or future.result() for future in futures]
 
 
-def prepare_sources(manifest, helper, *, root=None, ray_path_capture=False, capture_profile=False, luslc=None,
-                    lusl_style='strict', bounds_checks=False):
-    """Capture and lower the same immutable shader contexts for compilation and editing.
-
-    No compiler execution or output publication. Returns package metadata, exact
-    generated wrappers, their captured include closures and the grouped ray profiles
-    (empty without a ray technique) that select linked ray kernels. All normal graph,
-    schema and capacity validation remains authoritative here.
-    """
+def capture_graph_shader_inputs(manifest, *, root=None, compiler=None, cancel=None):
+    """Capture graph connections and their shader interfaces before checking the editable sources."""
     manifest = Path(manifest).resolve()
     snapshot = Snapshot(root if root is not None else manifest.parent)
     require(manifest.is_relative_to(snapshot.root), 'Source', str(manifest), 'manifest outside root')
     manifest_label = manifest.relative_to(snapshot.root).as_posix()
     value = document(snapshot.load(manifest_label), manifest_label)
     schemas, programs, techniques, counts = validate_manifest(value)
+    # Build plans for every declared closed root configuration and preserve graph
+    # imports in the same source snapshot used by shaders.
+    graph_path = manifest.with_suffix('').with_suffix('.lurender.json')
+    # The sibling graph is the explicit owner of this build manifest.
+    require(graph_path.is_file(), 'Source', str(graph_path), 'expected sibling .lurender.json graph')
+    library, graph_path = graph._library(graph_path, snapshot.root)
+    for p, data in library.bytes.items():
+        label = library.label(p)
+        require(snapshot.load(label) == data, 'Stale', label, 'graph changed while capturing sources')
+    plans = [graph.compile_graph(graph_path, root=snapshot.root, configuration=c['id'])
+             for c in library.assets[graph_path]['configurations']]
+    named_resources = buffers.link_persistent_structs(plans, programs, snapshot, sys.modules[__name__])
+    language.prepare_resource_headers(snapshot, programs, named_resources, compiler, cancel, sys.modules[__name__])
+    snapshot.named_resource_programs = {variant[0]: fields for variant, fields in named_resources.items()}
+    return snapshot, value, schemas, programs, techniques, counts, plans, library, graph_path, named_resources
+
+
+def prepare_sources(manifest, helper, *, root=None, ray_path_capture=False, capture_profile=False, luslc=None,
+                    lusl_style='strict', bounds_checks=False, compiler=None, cancel=None):
+    """Capture and lower the same immutable shader contexts for compilation and editing.
+
+    Reflects any LUSL-facing Buffer layouts but does not publish outputs. Returns package metadata, exact
+    generated wrappers, their captured include closures and the grouped ray profiles
+    (empty without a ray technique) that select linked ray kernels. All normal graph,
+    schema and capacity validation remains authoritative here.
+    """
     helper = Path(helper).resolve()
+    snapshot, value, schemas, programs, techniques, counts, plans, library, graph_path, named_resources = (
+        capture_graph_shader_inputs(manifest, root=root, compiler=compiler, cancel=cancel))
+    manifest_label = Path(manifest).resolve().relative_to(snapshot.root).as_posix()
     # LUSL programs name their generated Slang module from here on.
     snapshot.language_tool, snapshot.language_reports = language.lower_sources(
         snapshot, programs, helper, sys.modules[__name__], luslc=luslc, style=lusl_style,
@@ -1109,18 +1131,7 @@ def prepare_sources(manifest, helper, *, root=None, ray_path_capture=False, capt
     if len(schemas.get('RendererStatic', {}).get('fields', [])) == 8:
         require('_ludus_visibility.slang' in snapshot.files, 'Tools', 'visibility', 'SDK visibility helper is missing')
         closures = {pid: sorted(set(closure) | {'_ludus_visibility.slang'}) for pid, closure in closures.items()}
-    # Build plans for every declared closed root configuration and preserve graph
-    # imports in the same source snapshot used by shaders.
-    graph_path = manifest.with_suffix('').with_suffix('.lurender.json')
-    # The sibling graph is the explicit owner of this build manifest.
-    require(graph_path.is_file(), 'Source', str(graph_path), 'expected sibling .lurender.json graph')
-    library, graph_path = graph._library(graph_path, snapshot.root)
-    for p, data in library.bytes.items():
-        label = library.label(p)
-        require(snapshot.load(label) == data, 'Stale', label, 'graph changed while capturing sources')
-    plans = [graph.compile_graph(graph_path, root=snapshot.root, configuration=c['id'])
-             for c in library.assets[graph_path]['configurations']]
-    named_resources = buffers.link_persistent_structs(plans, programs, closures, sys.modules[__name__])
+    buffers.link_persistent_structs(plans, programs, snapshot, sys.modules[__name__], closures)
     for plan in plans:
         require(all(digest(snapshot.files[d['source']]) == d['sha256'] for d in plan['dependencies']),
                 'Stale', plan['configuration'], 'graph changed during plan compilation')
@@ -1228,7 +1239,7 @@ def prepare_sources(manifest, helper, *, root=None, ray_path_capture=False, capt
                                           scene_dispatch=profile['scene_dispatch'], named_resources=named_resources)
             linked_programs.update(expanded)
             if profile['native_pipeline']:
-                require(not any(variant in named_resources for variant in profile['variants']),
+                require(not any(named_resources.get(variant) for variant in profile['variants']),
                         'Capability', 'RayTracing',
                         'named buffers require compute scene traversal; select Compute in the ray Invocation settings')
                 require('metal' in value['profiles'], 'Capability', 'RayTracing',
@@ -1236,7 +1247,7 @@ def prepare_sources(manifest, helper, *, root=None, ray_path_capture=False, capt
                 profile['native_compute'] = profile['compute'] + 'NativeStages'
                 linked_programs.update(ray.expand_programs(authored_programs, technique, snapshot, helper, sys.modules[__name__],
                     profile['variants'], profile['persistent'], schemas, profile['native_compute'], True, ray_path_capture,
-                    native_ray_pipeline=True, workgroup=profile['workgroup']))
+                    native_ray_pipeline=True, workgroup=profile['workgroup'], named_resources=named_resources))
         programs = linked_programs
         for program_identity in programs:
             if 'ray_wrapper' in programs[program_identity]:
@@ -1290,7 +1301,7 @@ def build_package(manifest, output, *, helper, compiler, validator=None, spirv_c
     lusl_style = lusl_style or os.environ.get('LUDUS_LUSL_STYLE') or 'strict'
     snapshot, value, schemas, programs, techniques, counts, closures, plans, library, graph_path, ray_profiles = prepare_sources(
         manifest, helper, root=root, ray_path_capture=ray_path_capture, capture_profile=capture_profile, luslc=luslc,
-        lusl_style=lusl_style, bounds_checks=bounds_checks)
+        lusl_style=lusl_style, bounds_checks=bounds_checks, compiler=compiler, cancel=cancel)
     authored_programs_by_identity = {program['id']: program for program in value['programs']}
     manifest_label = manifest.relative_to(snapshot.root).as_posix()
     worker_socket = worker_socket or os.environ.get('LUDUS_SHADER_WORKER_SOCKET')

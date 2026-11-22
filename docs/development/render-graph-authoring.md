@@ -1309,10 +1309,13 @@ paired **Load**/**Store** resource as for a fixed-byte Buffer.
 
 ### Access an ordered Buffer by port name
 
-Enable `"graph_resources": true` on the compute or ray-generation program in the
-graph's shader manifest. Add a final `<FunctionName>Resources resources`
-parameter to that program's function. **Shader API** shows the signature. The
-editor's shader completion uses the generated members for the connected pass.
+Connect a Buffer to a scene compute or radiance ray-generation shader. New
+shaders created in the Editor include a final `<FunctionName>Resources resources`
+parameter. Its members follow the connected ports. Open **Shader API** to see
+their element types and access, or complete after `resources.` in either LUSL
+or Slang. The Editor supplies the generated LUSL resource include in the source
+template and links the selected layout for both languages.
+
 For a port named `edges` and a function named `BuildEdges`:
 
 ```slang
@@ -1326,7 +1329,7 @@ float3 BuildEdges(SceneContext scene, RayLaunch launch, inout RayQueryContext qu
         Edge edge;
         edge.BeginWorld = triangle.Position0World;
         edge.EndWorld = triangle.Position1World;
-        resources.Edges[index] = edge;
+        resources.Edges.Store(index, edge);
     }
     return float3(0);
 }
@@ -1336,19 +1339,24 @@ This example writes the first side of each processed triangle. Put `Edge` in
 `edge.slang` with `float3 BeginWorld` and `float3 EndWorld`, then choose that
 file and type in **From shader struct…** and set the element capacity. Configure
 the producer with **Work items** and an `edges` **Writable Resource**. Connect
-its output to an `edges` **Read Input** on the consumer. The graph includes
-`edge.slang` in both shaders. The consumer reads
-`Edge edge = resources.Edges[index];` through a read-only view. Check the index against the populated edge count as well as the
-allocation capacity returned by `GetCount()`.
+its output to an `edges` **Read Input** on the consumer. The graph supplies
+the type to both programs. The consumer reads a record with
+`Edge edge = resources.Edges.Load(index);`. Check the populated count as well
+as the allocation capacity returned by `GetCount()`.
+
+For an existing shader that uses positional bindings, add the final Resources
+parameter once to adopt named access. In LUSL, add
+`#include "graph_resources.luslh"` alongside the existing scene include and
+declare the parameter as `in BuildEdgesResources resources`. Existing
+three-parameter shaders retain their positional bindings.
 
 The member name capitalizes the port's first letter and preserves the remaining
-spelling. Use Slang identifiers for port names. Named views support 32-bit
-float, signed integer and unsigned integer fields, their vectors, nested
-records and fixed arrays. They load and store whole records using the reflected
-storage layout. Fixed-byte Buffer ports use `uint4` elements and a paired
-Writable Resource. A reused function requires matching named fields, types and
-access. The same callback variant also shares one slot and capacity mapping.
-Use ordered scene compute or **Compute** invocation on a Ray Tracing Pipeline.
+spelling. Named views load and store whole records using the reflected layout.
+Supported fields are 32-bit scalars and vectors, nested records and fixed arrays.
+Fixed-byte Buffer ports expose four unsigned integers per element. A reused
+function needs matching fields, types and access. The same callback variant
+also shares one slot and capacity mapping. Use ordered scene compute or
+**Compute** invocation on a Ray Tracing Pipeline.
 
 ### Author scene compute passes
 
@@ -1373,7 +1381,8 @@ The node accepts the same ports as a Ray Tracing Pipeline node:
 
 - exactly one Scene input and one View input;
 - exactly one writable RGBA8Unorm ColorTexture with **Clear**/**Store**;
-- up to two writable **Buffer** resources with **Load**/**Store**, bound as `GraphBuffer0/1`;
+- up to two **Buffer** ports, with **Load**/**Store** for writable ports. See
+  [named access](#access-an-ordered-buffer-by-port-name) for the shader interface;
 - optionally one [sampled color input](#read-a-color-texture-from-an-earlier-pass) or the read-only visibility color and depth pair.
 
 `StructuredBuffer` inputs are rejected: connect a `Buffer` node instead. Set

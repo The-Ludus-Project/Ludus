@@ -99,7 +99,7 @@ RenderGraphShaderAssistance::RenderGraphShaderAssistance(RenderGraphDocument& in
 #if defined(Q_OS_WASM)
     retry->setEnabled(false);
     mContexts->setEnabled(false);
-    setStatus(QStringLiteral("Native Slang completion and signature help are unavailable in the browser editor."));
+    setStatus(QStringLiteral("Shader completion and signature help are available in the native editor."));
 #endif
 }
 
@@ -144,6 +144,8 @@ void RenderGraphShaderAssistance::Update(const QString& project,
         mJob.Cancel();
         mAssistance.ClearContext();
         mResult = {};
+        mResourceApiRevision = 0;
+        mRequestedResourceRevision = 0;
         mSelectedContext.clear();
         mContexts->clear();
         mProject = project;
@@ -152,12 +154,31 @@ void RenderGraphShaderAssistance::Update(const QString& project,
         mFile = file;
         mSettings = settings;
 #if defined(Q_OS_WASM)
-        setStatus(QStringLiteral("Native Slang completion and signature help are unavailable in the browser editor."));
+        setStatus(QStringLiteral("Shader completion and signature help are available in the native editor."));
 #else
         setStatus({});
 #endif
     }
-    setVisible(file.endsWith(QStringLiteral(".slang")));
+    setVisible(file.endsWith(QStringLiteral(".slang")) || file.endsWith(QStringLiteral(".lusl")));
+}
+
+void RenderGraphShaderAssistance::RequestResourceApi()
+{
+#if !defined(Q_OS_WASM)
+    const uint64 revision = mDocument.GetRevision();
+    if (mRequestedResourceRevision != revision && mResourceApiRevision != revision &&
+        mDocument.GetDraft(mFile).contains("Resources") == true)
+    {
+        mRequestedResourceRevision = revision;
+        prepare();
+    }
+#endif
+}
+
+QJsonArray RenderGraphShaderAssistance::GetResourceApi() const
+{
+    return mResourceApiRevision == mDocument.GetRevision() ? mResult.value(QStringLiteral("resources")).toArray()
+                                                           : QJsonArray();
 }
 
 void RenderGraphShaderAssistance::prepare()
@@ -268,8 +289,8 @@ void RenderGraphShaderAssistance::accept(const RenderGraphJobResult& result)
     }
     if (result.Request.Revision != mDocument.GetRevision() || result.Request.InputIdentity != getIdentity())
     {
-        setStatus(QStringLiteral(
-            "Shader inputs changed while preparing assistance. Request completion or signature help again."));
+        setStatus(
+            QStringLiteral("Shader inputs changed. Request completion or Retry assistance to refresh Shader API."));
         return;
     }
     if (result.IsSuccessful == false)
@@ -280,6 +301,8 @@ void RenderGraphShaderAssistance::accept(const RenderGraphJobResult& result)
         return;
     }
     mResult = result.Payload;
+    mResourceApiRevision = result.Request.Revision;
+    Q_EMIT ResourceApiChanged();
     mSelectedContext = mResult.value(QStringLiteral("context")).toString();
     const QSignalBlocker blocker(mContexts);
     mContexts->clear();

@@ -504,6 +504,12 @@ TEST_CASE("pipeline shader creation commits source manifest and references toget
         CHECK(shader.value(QStringLiteral("stage")) == program.value(QStringLiteral("stage")));
         const QString source = program.value(QStringLiteral("source")).toString();
         CHECK(document.GetDraft(source).contains("ShaderMain") == true);
+        if (program.value(QStringLiteral("stage")).toString() == QStringLiteral("ray_generation"))
+        {
+            CHECK(document.GetDraft(source).contains("in ShaderMainResources resources") == true);
+            CHECK(document.GetDraft(source).contains("#include \"graph_resources.luslh\"") == true);
+            CHECK(program.contains(QStringLiteral("graph_resources")) == false);
+        }
         CHECK(QFileInfo::exists(QDir(package).filePath(source)) == false);
     }
     REQUIRE(document.Undo() == true);

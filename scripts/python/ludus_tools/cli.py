@@ -497,7 +497,7 @@ def cmd_render_graph(args) -> int:
             if not helper or not compiler:
                 raise ToolingError("MissingTools", "Select project shader tools or supply --helper and --compiler.")
             payload = export_context(args.manifest, args.output, args.source, helper=helper,
-                                     context=args.context, root=args.root)
+                                     context=args.context, root=args.root, compiler=compiler)
             if args.project:
                 options['cancel']()  # Recheck the SDK selection after context generation too.
             if payload.get('language') == 'lusl':
