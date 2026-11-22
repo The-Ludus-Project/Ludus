@@ -37,21 +37,21 @@ setup. To capture your own scene, use
 ### Afternoon to blue hour
 
 <figure class="render-study-hero" markdown="1">
-<video controls playsinline preload="none" width="768" height="480" aria-label="The Landing from afternoon to blue hour" poster="../../engineering/assets/renderer/the-landing-time-lapse-poster.webp">
+<video controls playsinline preload="none" width="1728" height="1080" aria-label="The Landing from afternoon to blue hour" poster="../../engineering/assets/renderer/the-landing-time-lapse-poster.webp">
   <source src="../../engineering/assets/renderer/the-landing-time-lapse.mp4" type="video/mp4">
   <source src="../../engineering/assets/renderer/the-landing-time-lapse.webm" type="video/webm">
 </video>
-<figcaption markdown="1">**RT1 celestial time-lapse.** Sunlight climbs the folded wall and fades as the sky cools. [Download the silent time-lapse](../../assets/renderer/the-landing-time-lapse.mp4).</figcaption>
+<figcaption markdown="1">**RT1 celestial time-lapse.** Sunlight climbs the folded wall and fades as the sky cools. Each frame uses 1,024 samples per pixel and a 16-bounce limit. [Download the silent time-lapse](../../assets/renderer/the-landing-time-lapse.mp4).</figcaption>
 </figure>
 
 ### Aurora after dark
 
 <figure class="render-study-hero" markdown="1">
-<video controls playsinline preload="none" width="768" height="480" aria-label="Auroral curtains above The Landing" poster="../../engineering/assets/renderer/the-landing-aurora-poster.webp">
+<video controls playsinline preload="none" width="1728" height="1080" aria-label="Auroral curtains above The Landing" poster="../../engineering/assets/renderer/the-landing-aurora-poster.webp">
   <source src="../../engineering/assets/renderer/the-landing-aurora.mp4" type="video/mp4">
   <source src="../../engineering/assets/renderer/the-landing-aurora.webm" type="video/webm">
 </video>
-<figcaption markdown="1">**Clustered-deferred raster.** A green auroral curtain drifts above the amber-lit landing. [Download the silent aurora clip](../../assets/renderer/the-landing-aurora.mp4).</figcaption>
+<figcaption markdown="1">**Clustered-deferred raster.** The auroral curtain folds above the amber-lit landing as individual rays brighten and fade. [Download the silent aurora clip](../../assets/renderer/the-landing-aurora.mp4).</figcaption>
 </figure>
 
 ## Rendering architecture

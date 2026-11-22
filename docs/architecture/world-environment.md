@@ -375,11 +375,12 @@ homogeneous path.
 clustered deferred renderer. A folded arc and a fainter companion extend
 between 100 and 300 km above the Earth sphere. The Atmosphere entity sets the
 tangent frame. The arcs run along its local X axis with their centres toward
-local +Z. Bright patches move along the arcs, clustering rays above a sharp
-green lower edge. Only the more active patches show a faint red upper trail.
-The shape and brightness vary over a 120-second loop independently of the Sun
-and celestial background. The authored brightness scale is scene-linear nits
-per metre.
+local +Z. Broad creases deepen and relax at different points along the arcs.
+Individual shafts pulse at seeded rates and phases along the curtain. Bright
+patches gather above a sharp green lower edge, with a faint red upper trail in
+the most active regions. The shape and brightness vary over a 120-second loop
+independently of the Sun and celestial background. The authored brightness
+scale is scene-linear nits per metre.
 
 The renderer clips the ray to the emitting shell, each ribbon's bounds and the
 first opaque hit. The planet blocks rays that hit the ground before reaching
