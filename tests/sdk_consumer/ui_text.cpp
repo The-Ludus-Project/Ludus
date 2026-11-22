@@ -143,6 +143,7 @@ enum class Step : uint8
     StartOverlays,
     WaitOverlays,
     PrepareCase,
+    PrepareOverlay,
     WaitCase,
     Draw,
     ReadPixels,
@@ -569,12 +570,21 @@ cpu::FontSystemCounters gCountersBeforeLoss;
         Stop(true);
         return false;
     }
-    const Status prepared = gOverlays.Prepare(gList, gAtlasTexture, gOverlay);
-    if (IsAccepted(prepared) == false)
-    {
-        return Fail("preparing overlay", prepared);
-    }
     return true;
+}
+
+/// Prepares the case's overlay once the published atlas texture is usable. A freshly published
+/// texture stays Pending until its upload completes on the browser backends, and Prepare reads its
+/// description. Returns Pending while the atlas uploads and Ready once the overlay was prepared.
+[[nodiscard]] Status PrepareOverlay() noexcept
+{
+    const Status atlas = rhi::GetStatus(gDevice, gAtlasTexture);
+    if (atlas != Status::Ready)
+    {
+        return atlas;
+    }
+    const Status prepared = gOverlays.Prepare(gList, gAtlasTexture, gOverlay);
+    return IsAccepted(prepared) == true ? Status::Ready : prepared;
 }
 
 [[nodiscard]] Status DrawCase(const TextCase& test) noexcept
@@ -1008,6 +1018,20 @@ void Tick() noexcept
     {
         if (PrepareCase(test) == false)
         {
+            return;
+        }
+        gStep = Step::PrepareOverlay;
+    }
+    if (gStep == Step::PrepareOverlay)
+    {
+        const Status prepared = PrepareOverlay();
+        if (IsWaiting(prepared) == true)
+        {
+            return;
+        }
+        if (prepared != Status::Ready)
+        {
+            static_cast<void>(Fail("preparing overlay", prepared));
             return;
         }
         gStep = Step::WaitCase;
