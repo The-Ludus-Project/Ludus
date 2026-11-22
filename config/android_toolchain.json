@@ -1,0 +1,41 @@
+{
+  "sdkLicense": {
+    "repository": "https://dl.google.com/android/repository/repository2-1.xml",
+    "id": "android-sdk-license",
+    "acceptanceSha1": "24333f8a63b6825ea9c5514f83c2829b004d1fee",
+    "reviewTextSha256": "1268aeee833b3a62463b58bd6df146b7835a0a94d8905511223ac415fe733f57"
+  },
+  "commandLineTools": {
+    "version": "21.0",
+    "archives": {
+      "Darwin": {
+        "url": "https://dl.google.com/android/repository/commandlinetools-mac-15641748_latest.zip",
+        "sha256": "a2253766e128f6d4ff594d23857b67f52028a7e8773b2634dcc3d3e60d13b290"
+      },
+      "Linux": {
+        "url": "https://dl.google.com/android/repository/commandlinetools-linux-15641748_latest.zip",
+        "sha256": "a66d5ef0238fc0162e9c1446602ce0dd41702d4dd7a94d2ce42d12b7f80baf7e"
+      }
+    }
+  },
+  "platform": "android-36",
+  "buildTools": "36.0.0",
+  "ndk": "29.0.14206865",
+  "jdk": {
+    "version": "21.0.13.1+2",
+    "archives": {
+      "Darwin-arm64": {
+        "url": "https://github.com/adoptium/temurin21-binaries/releases/download/jdk-21.0.13.1%2B2/OpenJDK21U-jdk_aarch64_mac_hotspot_21.0.13.1_2.tar.gz",
+        "sha256": "48067f2b7c958ed104a9d8a5749be7d25220b0a356b4d2d1bcfaab3e16ad0b14"
+      },
+      "Darwin-x86_64": {
+        "url": "https://github.com/adoptium/temurin21-binaries/releases/download/jdk-21.0.13.1%2B2/OpenJDK21U-jdk_x64_mac_hotspot_21.0.13.1_2.tar.gz",
+        "sha256": "1b5eff1741bb83d32e2e19aade71452bb42e40f047c01d3e178d438304c9a26d"
+      },
+      "Linux-x86_64": {
+        "url": "https://github.com/adoptium/temurin21-binaries/releases/download/jdk-21.0.13.1%2B2/OpenJDK21U-jdk_x64_linux_hotspot_21.0.13.1_2.tar.gz",
+        "sha256": "bb8a93f9ae6e7a693b2b721e85dbeff26ae1a77447985a8d7afcdd9c7cf6222e"
+      }
+    }
+  }
+}

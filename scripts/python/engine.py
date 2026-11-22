@@ -1776,6 +1776,8 @@ def command_init(args: argparse.Namespace) -> int:
     root = repo_root()
     versions = load_tool_versions(root)
     preset = args.preset
+    if args.android_only:
+        return run_android_init(args, root)
     ensure_known_preset(preset)
     run_validation = args.validate or args.ci
     if args.all_presets and args.preset_only:
@@ -1787,6 +1789,21 @@ def command_init(args: argparse.Namespace) -> int:
     init_progress.start(init_progress.native_plan(args))
     try:
         return run_init_steps(args, root, versions, preset, run_validation)
+    except EngineError:
+        init_progress.fail()
+        raise
+    finally:
+        init_progress.stop()
+
+
+def run_android_init(args: argparse.Namespace, root: Path) -> int:
+    from init_android import install_android
+
+    init_progress.start(init_progress.android_plan())
+    try:
+        install_android(root, sys.modules[__name__], is_license_accepted=args.accept_android_sdk_license)
+        print("Ludus initialization complete for the Android tools.")
+        return 0
     except EngineError:
         init_progress.fail()
         raise
@@ -1843,6 +1860,10 @@ def run_init_steps(args: argparse.Namespace, root: Path, versions: dict[str, dic
                 configure_system_tool_shims(root, versions)
         else:
             install_ubuntu_system_prerequisites(root, versions)
+
+    if args.with_android:
+        from init_android import install_android
+        install_android(root, sys.modules[__name__], is_license_accepted=args.accept_android_sdk_license)
 
     if args.preset_only and not run_validation:
         presets = (preset,)
@@ -3232,6 +3253,13 @@ def make_parser() -> argparse.ArgumentParser:
     init_parser.add_argument("--persona", choices=("contributor", "application", "browser", "validation"),
                              default="contributor", help="setup defaults (default: contributor); explicit options override them")
     init_parser.add_argument("--no-system-install", action="store_true", help="do not install Ubuntu packages automatically")
+    android = init_parser.add_mutually_exclusive_group()
+    android.add_argument("--with-android", action="store_true",
+                         help="also install the Android SDK, NDK, platform-tools and JDK for mobile probes")
+    android.add_argument("--android-only", action="store_true",
+                         help="install just the Android tools using terminal setup")
+    init_parser.add_argument("--accept-android-sdk-license", action="store_true",
+                             help="record acceptance of the pinned Android SDK License Agreement after reviewing it")
     init_parser.add_argument("--with-rad-debugger", action="store_true", help="also build the optional pinned Linux RAD Debugger")
     editor = init_parser.add_mutually_exclusive_group()
     editor.add_argument("--with-editor", dest="with_editor", action="store_true",

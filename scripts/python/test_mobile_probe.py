@@ -5,6 +5,7 @@ import io
 import json
 import tempfile
 import unittest
+from unittest.mock import patch
 from contextlib import redirect_stderr, redirect_stdout
 from pathlib import Path
 
@@ -23,7 +24,7 @@ class FakeHost(mobile_probe.Host):
     """A host whose commands are answered by a function and whose tools come from a table."""
 
     def __init__(self, home: Path, answers=None, tools=None, environment=None):
-        super().__init__(environment={"PATH": ""} if environment is None else environment, home=home)
+        super().__init__(environment={"PATH": ""} if environment is None else environment, home=home, root=home)
         self.answers = answers or (lambda command: Result(127, ""))
         self.tools = tools or {}
         self.commands: list[list[str]] = []
@@ -103,15 +104,15 @@ class ParserTests(unittest.TestCase):
             "devices": [
                 {
                     "properties": {"apiVersion": (1 << 22) | (1 << 12), "deviceName": "Example GPU"},
-                    "extensions": [{"extensionName": "VK_KHR_android_surface"}],
+                    "extensions": [{"extensionName": "VK_EXT_swapchain_maintenance1"}],
                 }
             ],
-            "instance": {"extensions": []},
+            "extensions": [{"extensionName": "VK_KHR_android_surface"}],
         }
         parsed = mobile_probe.parse_vkjson("noise " + json.dumps(document))
         self.assertEqual(parsed["apiVersion"], "1.1.0")
         self.assertTrue(parsed["hasAndroidSurface"])
-        self.assertFalse(parsed["hasSwapchainMaintenance1"])
+        self.assertTrue(parsed["hasSwapchainMaintenance1"])
         self.assertIsNone(mobile_probe.parse_vkjson("not json"))
 
 
@@ -313,7 +314,8 @@ class DeviceRunnerTests(unittest.TestCase):
 
     def test_missing_adb_is_reported(self):
         environment = {mobile_device_runner.DEVICE_ENVIRONMENT_VARIABLE: "device", "PATH": ""}
-        code, message = self.run_runner(["--platform", "android", "--", "/bin/true"], environment)
+        with patch.object(mobile_device_runner, "resolve_sdk", return_value=None):
+            code, message = self.run_runner(["--platform", "android", "--", "/bin/true"], environment)
         self.assertEqual(code, mobile_device_runner.EXIT_TOOL_MISSING)
         self.assertIn("adb is not installed", message)
 

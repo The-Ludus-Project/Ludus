@@ -10,10 +10,8 @@ evidence. Existing API comments and module designs remain contract owners.
 ## Goal and initial scope
 
 Run one shared Ludus game on an iPhone 16 Pro, iPad Pro 11-inch (M4), and the
-owner's Galaxy Flip. The reported name “Galaxy Flip V” has not been resolved to
-an exact model: record its model number, OS build and GPU during M0 instead of
-assuming a generation or Vulkan feature set. All three devices are available
-for acceptance; none has been tested for this plan.
+owner's Galaxy Z Flip5. The Android M0 inventory identified model SM-F731N.
+See the [milestone tracker](#milestone-tracker) for the device evidence.
 
 Start Apple and Android implementation together after the shared M0 contracts
 are agreed. Apple uses an iOS/iPadOS UIKit host with Metal; Android starts with
@@ -171,10 +169,11 @@ compiler major, and its own C++23 qualification. Format and tidy stay on the
 pinned LLVM 23 in either case. Choose option B only when option A fails a probe,
 and record that failure.
 
-Pins to add once the probes pass: `config/apple_toolchain.json` (Xcode version
-and build, iOS SDK, minimum OS) and `config/android_toolchain.json` (command-line
-tools, platform, build-tools, NDK revision, AGP, Gradle, JDK and GameActivity).
-CI and setup read them in the same way they read `tool_versions.json`.
+The provisional Android setup pins for the M0 probes live in
+`config/android_toolchain.json`. The probe compile API remains separate from
+the installed SDK platform. Add AGP, Gradle and GameActivity pins when M1
+introduces an app. The Apple pins (Xcode version and build, iOS SDK, minimum OS)
+remain pending. Record the toolchain decision after collecting probe evidence.
 
 ### Dependency inventory
 
@@ -222,23 +221,21 @@ tracker below; raw output stays private.
   size. For Android, the Vulkan API version and whether
   `VK_KHR_android_surface` and `VK_EXT_swapchain_maintenance1` are present, read
   from `adb shell cmd gpu vkjson` where the OS provides it, otherwise from the
-  M1 probe app. The Galaxy's exact model number resolves the open "Galaxy Flip V"
-  question in the [goal](#goal-and-initial-scope). On-device probes in M1 and M3
-  record Metal GPU family, the simultaneous-touch limit and whether
+  M1 probe app. On-device probes in M1 and M3 record Metal GPU family, the
+  simultaneous-touch limit and whether
   `steady_clock` advances while the device sleeps.
 
 ### Open blockers
 
 | Blocker | Owner | Next action |
 | --- | --- | --- |
-| The maintainer Mac has no Xcode, iOS SDK or `devicectl` (only Command Line Tools) | Maintainer | Install Xcode and select it with `xcode-select`; then run the Apple probes |
-| No Android SDK, NDK or `adb` on the maintainer Mac | Maintainer | Install command-line tools, NDK and platform-tools; then run the Android probes |
-| Device signing material | Maintainer | Create an Apple development team identity and an Android debug keystore locally; keep them out of the repository |
+| Xcode is installed, but needs license acceptance and selection for the Apple probes | Maintainer | Review the Xcode license, select Xcode and run the Apple probes |
+| Apple signing material | Maintainer | Create an Apple development team identity locally and run the Apple signing probe |
 | FoundationBase rejects `iOS` and `Android` | Both tracks | Add explicit target runtime boundaries in M1 |
 | Platform falls back to headless on `iOS` and `Android` | Both tracks | Add UIKit and Android selections that reject a silent null backend in M1 |
 | RHI's `APPLE` branch links AppKit | Apple track | Separate macOS and iOS selection in M2 |
 | Conan pulls volk on iOS and lacks mobile profiles | Shared | Add profiles and target-correct requirements with the probes |
-| Vulkan retirement needs `VK_EXT_swapchain_maintenance1` | Android track | Read it from the Galaxy inventory; define an alternative in M2 if it is missing |
+| Vulkan retirement needs `VK_EXT_swapchain_maintenance1` | Android track | The Galaxy advertises the extension. Verify its feature bit and present-fence behavior in M2 |
 
 ## M1 and M2: boot and present independently
 
@@ -388,8 +385,37 @@ acceptance. Deferred features remain visible after a platform is admitted.
 
 ## Running the M0 probes
 
-After the maintainer installs Xcode and the Android SDK and NDK, one command per
-platform produces the sanitized records that the M0 acceptance needs:
+### Prepare the Android tools
+
+On macOS or Linux x64, run `./init.sh`, select **Install Android SDK and NDK**
+under **Targets**, then choose **Initialize**. The setup window displays Google's
+SDK agreement for review before installation. From a terminal, use
+`./init.sh --cli --with-android` alongside native setup, or install just the
+Android tools on an initialized checkout:
+
+```bash
+./init.sh --cli --android-only
+```
+
+For unattended setup after reviewing the pinned agreement, pass
+`--accept-android-sdk-license`. Setup installs the pinned command-line tools,
+SDK platform, build-tools, NDK and Java under `out/host-tools`, along with the
+Android SDK Manager's current stable platform-tools (including ADB). Allow
+several gigabytes for the downloads and extracted NDK. The existing mobile
+presets and probes discover the checkout-local SDK. An explicit `ANDROID_HOME`
+or `ANDROID_SDK_ROOT` selects an external SDK for those consumers. CMake and the
+probes also honor an explicit NDK override.
+
+On the phone, enable USB debugging in Developer options, connect it by USB
+while unlocked and approve the Mac's debugging key. If ADB still shows no
+device after reconnecting, check whether Samsung Auto Blocker is preventing USB
+debugging. See [Android device setup](https://developer.android.com/studio/run/device)
+and [Samsung Auto Blocker](https://www.samsung.com/ca/support/mobile-devices/protect-your-samsung-galaxy-with-auto-blocker/).
+
+### Collect the evidence
+
+With Xcode installed for the Apple probes and the Android tools ready, run the
+probes to produce the sanitized M0 acceptance records:
 
 ```bash
 ./scripts/mobile-probe all
@@ -443,8 +469,7 @@ binaries only through `scripts/mobile-device-runner`
 emulators, a booted simulator UDID for `ios-simulator-clang-development`. Android
 device presets refuse an emulator and the reverse. A bare executable cannot run on
 an iPhone or iPad, so `ios-clang-*` tests refuse to run until the M1 app bundle
-exists. Both toolchain files and the Android runner path have not run against a real
-SDK, NDK or device yet; the first run on the maintainer Mac is the evidence.
+exists. See the milestone tracker for toolchain and device evidence.
 
 ## Milestone tracker
 
@@ -454,13 +479,31 @@ Device/tool versions and logs belong in evidence, not speculative completion dat
 
 | Gate | Shared | iPhone 16 Pro | iPad Pro M4 | Galaxy Flip |
 | --- | --- | --- | --- | --- |
-| M0 | in progress: contracts frozen; probes blocked on SDK installs ([#1229](https://github.com/The-Ludus-Project/Ludus/issues/1229)) | blocked: no Xcode on the maintainer Mac | blocked: no Xcode on the maintainer Mac | blocked: no Android SDK/NDK on the maintainer Mac |
+| M0 | in validation: shared compiler decision awaits Apple probes ([#1229](https://github.com/The-Ludus-Project/Ludus/issues/1229)) | blocked: Xcode license, signing and device probes pending | blocked: Xcode license, signing and device probes pending | passed: [Android M0 evidence](#android-m0-evidence) |
 | M1 | not started | not started | not started | not started |
 | M2 | not started | not started | not started | not started |
 | M3 | not started | not started | not started | not started |
 | M4 | not started | not started | not started | not started |
 | M5 | not started | not started | not started | not started |
 | M6 | not started | not started | not started | not started |
+
+### Android M0 evidence
+
+On 2026-11-22, the Apple silicon host used SDK command-line tools 21.0,
+platform-tools 37.0.3, SDK Platform 36, Build Tools 36.0.0, NDK 29.0.14206865 and
+Temurin 21.0.13.1. `./scripts/mobile-probe android-toolchain` passed at the
+provisional minimum API 29. Upstream Clang and LLD 23.1.3 compiled and linked
+the C++23 and JNI probes against the NDK sysroot. The NDK's Clang passed the
+comparison too. Both builds produced ELF libraries whose `LOAD` segments were
+aligned to 16 KiB. The Android signing probe passed using a local debug keystore.
+
+The physical Galaxy Z Flip5 (SM-F731N) reported Android 17 (API 37), arm64-v8a,
+4 KiB memory pages and Adreno 740 with Vulkan 1.3.128. Its inventory advertised
+`VK_KHR_android_surface` and `VK_EXT_swapchain_maintenance1`. The
+`android-clang-development` preset built with upstream Clang 23, and CTest
+passed `ludus_mobile_probe_runner` on the phone over USB. The 16 KiB runtime
+check and the GameActivity/Vulkan presentation path remain later acceptance
+gates.
 
 ## Subsystem port ledger
 

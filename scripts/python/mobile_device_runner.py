@@ -22,6 +22,8 @@ import subprocess
 import sys
 import uuid
 
+from android_tools import resolve_sdk
+
 DEVICE_ENVIRONMENT_VARIABLE = "LUDUS_MOBILE_DEVICE"
 PLATFORMS = ("ios", "ios-simulator", "android", "android-emulator")
 EXIT_NO_DEVICE = 78
@@ -59,14 +61,12 @@ def report(message: str) -> None:
 
 
 def find_adb(environment: dict[str, str]) -> str | None:
-    for variable in ("ANDROID_HOME", "ANDROID_SDK_ROOT"):
-        root = environment.get(variable)
-        if root:
-            candidate = Path(root) / "platform-tools" / "adb"
-            if candidate.is_file():
-                return str(candidate)
-    return shutil.which("adb")
-
+    sdk = resolve_sdk(Path(__file__).resolve().parents[2], Path.home(), environment)
+    if sdk is not None:
+        candidate = sdk / "platform-tools" / "adb"
+        if candidate.is_file():
+            return str(candidate)
+    return shutil.which("adb", path=environment.get("PATH", ""))
 
 def select_device(environment: dict[str, str], platform: str) -> str | None:
     """Return the selected device identifier, or None when the selection is missing or empty."""
@@ -82,7 +82,7 @@ def run_android(device: str, executable: str, arguments: list[str], emulator: bo
         return EXIT_NO_DEVICE
     adb = find_adb(environment)
     if adb is None:
-        report("adb is not installed. Install the Android SDK platform-tools; see scripts/mobile-probe android-toolchain.")
+        report("adb is not installed. Run ./init.sh --cli --android-only to install Android Platform-Tools.")
         return EXIT_TOOL_MISSING
     state = run_command([adb, "-s", device, "get-state"])
     if state.returncode != 0 or state.output.strip() != "device":
