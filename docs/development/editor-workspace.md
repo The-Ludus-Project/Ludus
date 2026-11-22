@@ -2028,6 +2028,13 @@ mappings and explicit Project BRDF assignments. Renderables that override
 coating or roughness still appear under the same resource. Inspect an individual
 renderable to see its effective values.
 
+### Author a World's regional climate
+
+Open **Environment** in the World sidebar to author the World's climate presets,
+schedules and feathered regions, preview them at a time and position, and apply
+them as one undoable edit. See
+[Edit a climate in the Environment tool](../modules/gameplay/weather.md#edit-a-climate-in-the-environment-tool).
+
 ### Check an imported diffuse material against a swatch
 
 For a glTF dielectric (`metallicFactor` set to zero and no metallic map),

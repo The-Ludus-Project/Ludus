@@ -54,6 +54,7 @@ class InspectorSection;
 class WorldLightsPanel;
 class WorldMaterialDocument;
 class WorldMaterialsPanel;
+class WorldEnvironmentPanel;
 class WorldTerrainPanel;
 struct WorldLightChange;
 struct WorldLightRow;
@@ -280,6 +281,11 @@ private:
     void renderLights();
     /// Apply a light switch, Solo or Enable All from the light list as one undo step.
     void applyLightChange(const WorldLightChange& change, const QString& message);
+    /// Commit the Environment tool's climate (undefined removes it) as one undoable edit; a refusal stays in the
+    /// Environment tab with its repair.
+    void applyClimateChange(const QJsonValue& climate);
+    /// Draw the Environment draft's domain and regions in both viewports while the Environment tab is shown.
+    void updateClimateOverlay();
     /// Show the properties of a light selected in the light list: select its first World entity, or, for a light
     /// without one, clear the entity selection so the inspector shows the light's own values.
     void selectLight(const WorldLightRow& row);
@@ -395,6 +401,7 @@ private:
     WorldLightsPanel* mLightsPanel;
     QTabWidget* mWorldLists;
     WorldMaterialsPanel* mMaterialsPanel;
+    WorldEnvironmentPanel* mEnvironmentPanel;
     QPointer<WorldMaterialDocument> mMaterialDocumentOrNull;
     /// Splitter sizes captured when the chrome was hidden, restored when it is shown.
     QByteArray mSplitterStateBeforeChromeHidden;

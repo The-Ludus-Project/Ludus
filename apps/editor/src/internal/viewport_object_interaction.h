@@ -18,7 +18,9 @@
 #include <QByteArray>
 #include <QJsonArray>
 #include <QJsonObject>
+#include <QJsonValue>
 #include <QLineF>
+#include <QList>
 #include <QObject>
 #include <QPointF>
 #include <QPointer>
@@ -86,6 +88,15 @@ public:
     /// Draw the Add Terrain footprint and its X/Z resize handles for the current draft selection.
     /// An empty recipe removes the draft overlay.
     void SetTerrainFootprint(const QJsonObject& recipe);
+    /// Draw a World climate's domain, each region's edge and each region's inner feather depth as dashed outlines
+    /// on the World ground plane (Y = 0). An undefined or malformed climate removes the overlay.
+    /// @param climate The Environment tool's draft climate member.
+    void SetClimateOverlay(const QJsonValue& climate);
+    /// Number of climate outlines the overlay draws, for tests.
+    [[nodiscard]] LUDUS_INLINE foundation::usize GetClimateOutlineCount() const noexcept
+    {
+        return static_cast<foundation::usize>(mClimateOutlines.size());
+    }
     /// An empty key restores normal picking. The brush radius is measured in terrain-local metres.
     /// While a key is set, left presses belong to the brush: they never select or show transform handles.
     /// When canSculpt is false (for example while the previous stroke's preview is pending), presses are
@@ -270,6 +281,7 @@ private:
     [[nodiscard]] bool refreshSilhouette(foundation::int32 meshIndex);
     void buildHandles();
     void appendTerrainFootprint(ViewportObjectOverlay& inoutOverlay) const;
+    void appendClimateOutlines(ViewportObjectOverlay& inoutOverlay) const;
     void appendTerrainBrush(ViewportObjectOverlay& inoutOverlay) const;
     [[nodiscard]] QString pick(QPointF positionPixel,
                                const QRectF& framePixel,
@@ -294,6 +306,16 @@ private:
     bool mHasTerrainStrokeGap = false;
     bool mHasTerrainStrokeOverflowed = false;
     QRectF mTerrainStrokeFramePixel;
+    /// One climate outline on the ground plane, in World metres.
+    struct ClimateOutline final
+    {
+        foundation::float32 MinimumX = 0;
+        foundation::float32 MinimumZ = 0;
+        foundation::float32 MaximumX = 0;
+        foundation::float32 MaximumZ = 0;
+        bool operator==(const ClimateOutline&) const = default;
+    };
+    QList<ClimateOutline> mClimateOutlines;
     foundation::math::Vector2 mTerrainExtent;
     foundation::float32 mTerrainBaseElevation = 0;
     foundation::float32 mTerrainDragExtent = 0;

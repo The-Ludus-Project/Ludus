@@ -24,7 +24,9 @@
 #include "internal/material_inspection.h"
 #include "internal/render_panel.h"
 #include "internal/state_view.h"
+#include "internal/world_climate.h"
 #include "internal/world_demo_adapter.h"
+#include "internal/world_environment_panel.h"
 #include "internal/world_lights_panel.h"
 #include "internal/world_material_creation.h"
 #include "internal/world_material_document.h"
@@ -1083,6 +1085,11 @@ WorldWorkspace::WorldWorkspace(const ToolingPaths& tooling, QWidget* parent)
     mMaterialsPanel = new WorldMaterialsPanel(mWorldLists);
     mWorldLists->addTab(mLightsPanel, QStringLiteral("Lights"));
     mWorldLists->addTab(mMaterialsPanel, QStringLiteral("Materials"));
+    mEnvironmentPanel = new WorldEnvironmentPanel(mWorldLists);
+    mWorldLists->addTab(mEnvironmentPanel, QStringLiteral("Environment"));
+    connect(mEnvironmentPanel, &WorldEnvironmentPanel::ApplyRequested, this, &WorldWorkspace::applyClimateChange);
+    connect(mEnvironmentPanel, &WorldEnvironmentPanel::DraftChanged, this, &WorldWorkspace::updateClimateOverlay);
+    connect(mWorldLists, &QTabWidget::currentChanged, this, &WorldWorkspace::updateClimateOverlay);
     sections->setStretchFactor(0, ENTITY_SECTION_STRETCH);
     sections->setStretchFactor(1, WORLD_LISTS_SECTION_STRETCH);
     connect(mMaterialsPanel, &WorldMaterialsPanel::RenderableActivated, this, [this](const QString& id) {
@@ -2094,6 +2101,10 @@ void WorldWorkspace::Render()
     renderLights();
     mMaterialsPanel->SetRows(
         CollectWorldMaterialRows(Document_, Scene_->GetPresentedLevel(), Scene_->GetPresentedScene()));
+    mEnvironmentPanel->SetCommittedClimate(Document_.Draft().value(WORLD_CLIMATE),
+                                           Document_.Loaded() == true && Document_.HasBuiltInSchema() == true,
+                                           false);
+    updateClimateOverlay();
     RenderInspector();
     const bool scene = Document_.Draft().contains(QStringLiteral("scene"));
     Viewport_->setVisible(scene);
@@ -2137,6 +2148,40 @@ void WorldWorkspace::applyLightChange(const WorldLightChange& change, const QStr
     Render();
     Snapshot();
     Changed(message);
+}
+void WorldWorkspace::applyClimateChange(const QJsonValue& climate)
+{
+    if (SceneBusy() == true || Pending_ == true)
+    {
+        mEnvironmentPanel->ShowStatus(
+            QStringLiteral("Apply or discard the pending World edits and wait for the scene to finish, then apply the "
+                           "climate again."));
+        return;
+    }
+    QString error;
+    if (Document_.SetClimate(climate, error) == false)
+    {
+        mEnvironmentPanel->ShowStatus(error);
+        return;
+    }
+    mEnvironmentPanel->SetCommittedClimate(Document_.Draft().value(WORLD_CLIMATE),
+                                           Document_.HasBuiltInSchema() == true,
+                                           true);
+    Render();
+    Snapshot();
+    const QString message =
+        climate.isUndefined() == true
+            ? QStringLiteral("Climate removed. Undo restores it.")
+            : QStringLiteral("Climate applied. Undo is available, and Play uses it after you save.");
+    mEnvironmentPanel->ShowStatus(message);
+    Changed(message);
+}
+void WorldWorkspace::updateClimateOverlay()
+{
+    const QJsonValue climate =
+        mWorldLists->currentWidget() == mEnvironmentPanel ? mEnvironmentPanel->GetDraft() : QJsonValue::Undefined;
+    Render_->GetViewport().GetObjectInteraction().SetClimateOverlay(climate);
+    Scene_->GetViewport().GetObjectInteraction().SetClimateOverlay(climate);
 }
 void WorldWorkspace::selectLight(const WorldLightRow& row)
 {
@@ -4332,6 +4377,7 @@ void WorldWorkspace::Changed(const QString& message)
     mEntitySearch->setEnabled(mEntities->isEnabled());
     mLightsPanel->setEnabled(Pending_ == false && isBusy == false);
     mMaterialsPanel->setEnabled(Pending_ == false && isBusy == false);
+    mEnvironmentPanel->setEnabled(Pending_ == false && isBusy == false);
     const bool isWorkerActive = isSceneWorkerActive();
     Import_->setEnabled(Document_.Loaded() && IsWorldDemo(Document_) == false && Pending_ == false &&
                         isWorkerActive == false);
