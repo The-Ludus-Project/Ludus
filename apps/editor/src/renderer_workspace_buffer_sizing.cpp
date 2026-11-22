@@ -268,7 +268,7 @@ void RendererWorkspace::editBufferSizing(QWidget& inoutParent)
         {
             message =
                 QStringLiteral("'%1' is a shader program source. Move the buffer layout into a shared .slang file, "
-                               "include it from the connected shaders, and select it here.")
+                               "then select it here.")
                     .arg(previousSource);
         }
         else if (source->currentIndex() < 0)
@@ -284,8 +284,8 @@ void RendererWorkspace::editBufferSizing(QWidget& inoutParent)
         }
         else
         {
-            message = QStringLiteral("Use a quoted #include in each connected Slang shader that uses this layout. "
-                                     "Build Graph verifies the shader and calculates the allocation.");
+            message = QStringLiteral("Build Graph calculates the allocation. Connect the Buffer to a shader node and "
+                                     "open Shader API to see the named resource.");
         }
         hint->setText(message);
         apply->setEnabled(isFromStruct == true ? type->currentIndex() >= 0

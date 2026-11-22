@@ -541,15 +541,16 @@ static const float RAY_DIRECTION_SQUARED_TOLERANCE = 0.00001;
     named_resources = {variant: named_resources[variant] for variant in (variants or [])
                        if named_resources and variant in named_resources}
     named_record_views = buffers.collect_record_views(named_resources.values(), build)
-    if persistent or native_ray_pipeline:
+    needs_dispatch = persistent or native_ray_pipeline or bool(named_resources)
+    if needs_dispatch:
         build.require(technique.get('scene_interface') is not None, 'Capability', TECHNIQUE,
                       'native ray stages, ordered ray passes and persistent buffers require the scene callback interface')
         wrapper = persistent_wrapper(programs, technique, variants, snapshot, build, compute_recipe, compatibility,
                                      native_ray_queries, native_ray_pipeline, persistent, storage_source, named_resources, named_record_views)
     selected_sources = ({programs[identity]['source'] for variant in variants for identity in callback_programs(variant)}
-                        if persistent or native_ray_pipeline else {program['source'] for program in selected.values()})
+                        if needs_dispatch else {program['source'] for program in selected.values()})
     wrapper = report_bounds_failures(wrapper, selected_sources, snapshot,
-                                     namespaced=persistent or native_ray_pipeline)
+                                     namespaced=needs_dispatch)
     if scene_dispatch:
         wrapper = '#define LUDUS_GRAPH_BUFFER_DISPATCH 1\n' + wrapper
     workgroup = list(workgroup or DEFAULT_WORKGROUP_SIZE)
@@ -924,8 +925,9 @@ def persistent_wrapper(programs, technique, variants, snapshot, build, recipe, c
                    f'    const uint strategies[] = {{ {choices} }};\n'
                    '    uint index = (Sampling.z >> LUDUS_GRAPH_PASS_INDEX_SHIFT) & LUDUS_GRAPH_PASS_INDEX_MASK;\n'
                    f'    return index < {len(variants)} ? strategies[index] : LUDUS_GRAPH_TRAVERSAL_NATIVE_QUERY;\n}}\n')
-    prefix = prefix.replace('#define LUDUS_SCENE_RAY_INTERFACE 1',
-                            '#define LUDUS_SCENE_RAY_INTERFACE 1\n#define LUDUS_GRAPH_PERSISTENT_PIPELINE 1')
+    if has_persistent_buffers or native_ray_pipeline:
+        prefix = prefix.replace('#define LUDUS_SCENE_RAY_INTERFACE 1',
+                                '#define LUDUS_SCENE_RAY_INTERFACE 1\n#define LUDUS_GRAPH_PERSISTENT_PIPELINE 1')
     if has_persistent_buffers:
         prefix += '[[vk::binding(6, 0)]] RWStructuredBuffer<uint4> GraphBuffer0;\n'
         prefix += '[[vk::binding(7, 0)]] RWStructuredBuffer<uint4> GraphBuffer1;\n'
@@ -964,6 +966,7 @@ def persistent_wrapper(programs, technique, variants, snapshot, build, recipe, c
         prefix += '#include "' + dependency + '"\n'
     for view, (_, type_name, is_writable) in (named_record_views or {}).items():
         prefix += buffers.record_view_definition(view, type_name, is_writable)
+    prefix += buffers.word_view_definitions((named_resources or {}).values())
     source_contexts = {}
     for variant, fields in (named_resources or {}).items():
         program = programs[variant[0]]
@@ -991,7 +994,7 @@ def persistent_wrapper(programs, technique, variants, snapshot, build, recipe, c
                 continue  # A scene compute pass has no hit or miss callback; default: latches HasFailed.
             function = variant_callbacks[index][stage]
             fields = (named_resources or {}).get(variant) if stage == 'ray_generation' else None
-            if fields:
+            if fields is not None:
                 values = ', '.join(buffers.record_view_argument(field) for field in fields)
                 result += (f'case {index}: {{ {function}Resources resources = {{ {values} }}; '
                            f'return {function}({arguments}, resources); }}\n')

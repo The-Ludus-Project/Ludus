@@ -1466,6 +1466,13 @@ float32x3 ShadeWithFog(in M material, in float32x3 normalWorld, in FogParameters
 
 ## Render-graph programs
 
+Scene shader templates include the generated `graph_resources.luslh` and
+declare an `in <FunctionName>Resources resources` parameter. Connected Buffer
+ports supply the members, with `GetCount()` and `Load(index)` on readable views
+and `Store(index, value)` on writable views. The language server checks the same
+generated declarations as the build. See [access a Buffer by port
+name](../../development/render-graph-authoring.md#access-an-ordered-buffer-by-port-name).
+
 A render-graph program's `source` may name a `.lusl` file:
 
 ```json

@@ -30,6 +30,39 @@ QByteArray ReadFixture(const QString& profile)
 }
 } // namespace
 
+TEST_CASE("Shader API describes the connected resource contract for either shader language", "[editor][shader-api]")
+{
+    QString extension = QStringLiteral(".slang");
+    QString returnType = QStringLiteral("float3");
+    QString parameter = QStringLiteral("BuildEdgesResources resources");
+    SECTION("Slang") {}
+    SECTION("LUSL")
+    {
+        extension = QStringLiteral(".lusl");
+        returnType = QStringLiteral("float32x3");
+        parameter.prepend(QStringLiteral("in "));
+    }
+    const QString file = QStringLiteral("edges") + extension;
+    const QJsonObject program{{QStringLiteral("id"), QStringLiteral("Edges")},
+                              {QStringLiteral("stage"), QStringLiteral("compute")},
+                              {QStringLiteral("source"), file},
+                              {QStringLiteral("function"), QStringLiteral("BuildEdges")},
+                              {QStringLiteral("input"), QStringLiteral("RayLaunch")},
+                              {QStringLiteral("output"), QStringLiteral("Radiance")}};
+    const QByteArray manifest = QJsonDocument(QJsonObject{{QStringLiteral("programs"), QJsonArray{program}}}).toJson();
+    const QJsonArray fields{QJsonObject{{QStringLiteral("name"), QStringLiteral("Edges")},
+                                        {QStringLiteral("type"), QStringLiteral("Edge")},
+                                        {QStringLiteral("writable"), false}}};
+    const QJsonArray resources{
+        QJsonObject{{QStringLiteral("program"), QStringLiteral("Edges")}, {QStringLiteral("fields"), fields}}};
+    const QString text = DescribeShaderInterface(manifest, file, {}, resources);
+    CHECK(text.contains(returnType + QStringLiteral(" BuildEdges(")) == true);
+    CHECK(text.contains(parameter) == true);
+    CHECK(text.contains(QStringLiteral("resources.Edges · Edge · read-only")) == true);
+    CHECK(text.contains(QStringLiteral("Load(index)")) == true);
+    CHECK(text.contains(QStringLiteral("Store(index, value)")) == false);
+}
+
 TEST_CASE("Ray callbacks expose their actual fields without scene-only APIs", "[editor][shader-api]")
 {
     const QByteArray manifest = ReadFixture(QStringLiteral("raytracing"));

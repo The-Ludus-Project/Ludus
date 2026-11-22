@@ -703,7 +703,7 @@ private:
     // ----- Analysis -------------------------------------------------------------------------------
 
     /// Check document `index` with the other open documents in place of their files on disk.
-    [[nodiscard]] bool analyze(usize index) noexcept
+    [[nodiscard]] bool analyze(usize index, std::string_view sourceOverride = {}) noexcept
     {
         Analysis& analysis = mAnalysis;
         analysis.Document = MAX_DOCUMENTS;
@@ -711,7 +711,8 @@ private:
         analysis.HasModel = false;
         analysis.Files.Clear();
         const Document& document = mDocuments[index];
-        if (analysis.Files.TryAddText(GetView(document.Path), GetView(document.Text)) == false)
+        const std::string_view source = sourceOverride.empty() == true ? GetView(document.Text) : sourceOverride;
+        if (analysis.Files.TryAddText(GetView(document.Path), source) == false)
         {
             return false;
         }
@@ -1239,21 +1240,45 @@ private:
         }
     }
 
-    /// Fields and methods of the struct before a `.` at `offset`, or false when there is none.
-    [[nodiscard]] bool
-    writeMemberCompletions(parsing::JsonWriter& inoutWriter, usize offset, bool& inoutIsFirst) noexcept
+    [[nodiscard]] static usize getMemberStart(std::string_view text, usize offset) noexcept
     {
-        const std::string_view text = GetView(mDocuments[mAnalysis.Document].Text);
-        usize dot = offset;
-        while (dot > 0 && IsIdentifierByte(text[dot - 1]) == true)
+        while (offset > 0 && IsIdentifierByte(text[offset - 1]) == true)
         {
-            --dot;
+            --offset;
         }
-        if (dot == 0 || text[dot - 1] != '.' || dot < 2)
+        return offset >= 2 && text[offset - 1] == '.' ? offset : std::string_view::npos;
+    }
+
+    /// Analyze a private copy with the unfinished member removed. Byte offsets
+    /// up to the receiver stay stable, and ordinary diagnostics keep the real text.
+    [[nodiscard]] bool analyzeCompletionReceiver(usize document, std::string_view text, usize memberStart) noexcept
+    {
+        usize memberEnd = memberStart;
+        while (memberEnd < text.size() && IsIdentifierByte(text[memberEnd]) == true)
+        {
+            ++memberEnd;
+        }
+        const std::string_view rest = text.substr(memberEnd);
+        const usize next = rest.find_first_not_of(" \t\r");
+        const bool shouldAddTerminator = next == std::string_view::npos || rest[next] == '\n' || rest[next] == '}';
+        Array<char> repaired;
+        if (AppendText(text.substr(0, memberStart - 1), repaired) == false ||
+            (shouldAddTerminator == true && repaired.TryAdd(';') == false) || AppendText(rest, repaired) == false)
         {
             return false;
         }
-        const uint32 token = findToken(dot - 2);
+        return analyze(document, GetView(repaired));
+    }
+
+    /// Fields and methods of the receiver, or false when the caret follows no dot.
+    [[nodiscard]] bool
+    writeMemberCompletions(parsing::JsonWriter& inoutWriter, usize memberStart, bool& inoutIsFirst) noexcept
+    {
+        if (memberStart == std::string_view::npos)
+        {
+            return false;
+        }
+        const uint32 token = findToken(memberStart - 2);
         const uint32 node = token == language::NO_TOKEN ? language::NO_NODE : findNode(token);
         if (node == language::NO_NODE || mAnalysis.HasModel == false)
         {
@@ -1287,10 +1312,20 @@ private:
         if (document != MAX_DOCUMENTS && readPosition(parameters.Get("position"), position) == true &&
             ensureAnalysis(document) == true)
         {
-            const usize offset = GetOffset(GetView(mDocuments[document].Text), position);
-            if (writeMemberCompletions(writer, offset, isFirst) == false)
+            const std::string_view text = GetView(mDocuments[document].Text);
+            const usize memberStart = getMemberStart(text, GetOffset(text, position));
+            const bool shouldRecover = memberStart != std::string_view::npos && mAnalysis.HasTree == false;
+            if (shouldRecover == true)
+            {
+                static_cast<void>(analyzeCompletionReceiver(document, text, memberStart));
+            }
+            if (writeMemberCompletions(writer, memberStart, isFirst) == false)
             {
                 writeNameCompletions(writer, isFirst);
+            }
+            if (shouldRecover == true)
+            {
+                mAnalysis.Document = MAX_DOCUMENTS;
             }
         }
         writer.Raw("]}");

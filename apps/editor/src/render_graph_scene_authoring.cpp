@@ -157,7 +157,8 @@ QByteArray MakeSceneRaySource(QJsonObject& inoutProgram, bool isLusl)
     {
         inoutProgram.insert(QStringLiteral("input"), QStringLiteral("RayLaunch"));
         inoutProgram.insert(QStringLiteral("output"), QStringLiteral("Radiance"));
-        source += QStringLiteral("float3 %1(SceneContext scene, RayLaunch launch, inout RayQueryContext queries)\n"
+        source += QStringLiteral("float3 %1(SceneContext scene, RayLaunch launch, inout RayQueryContext queries, "
+                                 "%1Resources resources)\n"
                                  "{\n    ScenePayload payload = (ScenePayload)0;\n"
                                  "    TraceAndShade(scene, queries, launch.CameraRay, payload);\n"
                                  "    return payload.Radiance;\n}\n")
@@ -180,7 +181,8 @@ QByteArray MakeSceneRaySource(QJsonObject& inoutProgram, bool isLusl)
         // C03 scene compute kernel: the ray-generation signature, without hit or miss callbacks.
         inoutProgram.insert(QStringLiteral("input"), QStringLiteral("RayLaunch"));
         inoutProgram.insert(QStringLiteral("output"), QStringLiteral("Radiance"));
-        source += QStringLiteral("float3 %1(SceneContext scene, RayLaunch launch, inout RayQueryContext queries)\n"
+        source += QStringLiteral("float3 %1(SceneContext scene, RayLaunch launch, inout RayQueryContext queries, "
+                                 "%1Resources resources)\n"
                                  "{\n"
                                  "    // A compute pass has no hit or miss callbacks: TraceAndShade fails here.\n"
                                  "    SurfaceHit hit;\n"
@@ -210,6 +212,12 @@ QByteArray MakeSceneRaySource(QJsonObject& inoutProgram, bool isLusl)
         source.replace(QStringLiteral("(ScenePayload)0"), QStringLiteral("0"));
         source.replace(QStringLiteral("inout RayQueryContext queries"),
                        QStringLiteral("inout RayQueryContext inoutQueries"));
+        if (stage == QStringLiteral("compute") || stage == QStringLiteral("ray_generation"))
+        {
+            source.replace(QStringLiteral("%1Resources resources").arg(function),
+                           QStringLiteral("in %1Resources resources").arg(function));
+            source.prepend(QStringLiteral("#include \"graph_resources.luslh\"\n"));
+        }
         source.replace(QStringLiteral("inout ScenePayload payload"), QStringLiteral("inout ScenePayload inoutPayload"));
         if (stage == QStringLiteral("closest_hit") || stage == QStringLiteral("miss"))
         {
