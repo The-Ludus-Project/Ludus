@@ -29,7 +29,7 @@ for content changes. Module/sample/tool READMEs link to these owners.
 
 ## Start and orientation
 
-- [Build understanding. Then build your game.](wiki/index.md)
+- [Build your first world in Ludus](wiki/index.md)
 - [Content and audio](wiki/architecture/content.md)
 - [Contribute to Ludus](wiki/contribute/index.md)
 - [Create your first project](wiki/getting-started/first-project.md)
