@@ -328,6 +328,8 @@ class NativeSceneComputeTests(unittest.TestCase):
             producer = next(node for node in config['nodes'] if node['id'] == 'utd')
             producer['invocation'].pop('traversal')
             producer['invocation']['type'] = 'RayTracing'
+            if lit_consumer:
+                next(row for row in producer['shaders'] if row['stage'] == 'ray_generation')['program'] = 'TraceDiffraction'
             if native_output == 'image':
                 producer['invocation'].pop('storage_texture')
                 producer['outputs'][0]['load'] = 'Clear'
@@ -340,6 +342,7 @@ class NativeSceneComputeTests(unittest.TestCase):
             path.write_bytes(graph.canonical_asset(document))
         if lit_consumer:
             value = json.loads(manifest.read_text())
+            next(item for item in value['programs'] if item['id'] == 'ProduceDiffraction')['id'] = 'TraceDiffraction'
             technique = next(item for item in value['techniques'] if item['id'] == ray.TECHNIQUE)
             technique['scene_interface']['polygonal_light_sampling'] = True
             manifest.write_text(json.dumps(value))
@@ -646,7 +649,7 @@ class NativeSceneComputeTests(unittest.TestCase):
         from test_render_graph_authoring import parse_runtime
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
-            package, recipe, _ = self.build(SCENE_COMPUTE, root, 'main_shaders/produce_diffraction.slang',
+            package, recipe, _ = self.build(SCENE_COMPUTE, root, 'main_shaders/read_diffraction.slang',
                                             native_output='storage', lit_consumer=True)
             self.assertTrue(recipe['storage_texture'])
             self.assertIn('native_pipeline', recipe)
@@ -657,6 +660,7 @@ class NativeSceneComputeTests(unittest.TestCase):
             native_wrapper = (package / 'programs' / recipe['native_pipeline'] / 'wrapper.slang').read_text()
             self.assertNotIn('ReadDiffraction', native_wrapper)
             native_pass = next(item for item in contents['passes'] if item['Traversal'] == 'HardwarePipeline')
+            self.assertGreater(native_pass['RayProgram'], 0)
             self.assertRegex(native_wrapper, rf"case {native_pass['RayProgram']}: .*ProduceDiffraction")
             destination = root / 'native-storage.lurgrt'
             execution.cook_runtime(package, destination, configuration='ColorInput')
