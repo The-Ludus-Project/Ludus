@@ -70,8 +70,10 @@ bool UsesTechnique(const QJsonObject& technique, const QJsonObject& program)
                : technique.value(stage).toString() == program.value(QStringLiteral("id")).toString();
 }
 
-QString
-DescribeRayInterface(const QJsonObject& program, const QJsonArray& techniques, const QMap<QString, QByteArray>& sources)
+QString DescribeRayInterface(const QJsonObject& program,
+                             const QJsonArray& techniques,
+                             const QMap<QString, QByteArray>& sources,
+                             const QJsonArray& resources)
 {
     const QString stage = program.value(QStringLiteral("stage")).toString();
     const QString input = program.value(QStringLiteral("input")).toString();
@@ -123,22 +125,69 @@ DescribeRayInterface(const QJsonObject& program, const QJsonArray& techniques, c
                 "// PositionPixel and ExtentPixel describe the dispatch. Query GetDimensions for the texture size."));
         }
         QString trailingParameters = isLaunch == true ? QString{} : QStringLiteral(",\n    inout ScenePayload payload");
-        if (program.value(QStringLiteral("graph_resources")).toBool() == true)
+        const QString source = program.value(QStringLiteral("source")).toString();
+        const bool isLusl = source.endsWith(QStringLiteral(".lusl"));
+        QJsonObject resourceContract;
+        for (const QJsonValueConstRef item : resources)
         {
-            trailingParameters = QStringLiteral(",\n    %1Resources resources").arg(function);
-            lines.append(
-                QStringLiteral("// Buffer ports supply named resources. A port named edges is resources.Edges.\n"
-                               "// The connected Buffer supplies the record type. A Writable Resource allows writes."));
+            if (item.toObject().value(QStringLiteral("program")) == program.value(QStringLiteral("id")))
+            {
+                resourceContract = item.toObject();
+                break;
+            }
         }
-        lines.append(
-            QStringLiteral("%1 %2(\n    SceneContext scene,\n    %3 %4,\n    inout RayQueryContext queries%5);")
-                .arg(isLaunch == true ? QStringLiteral("float3") : QStringLiteral("void"),
-                     function,
-                     input,
-                     isLaunch == true                  ? QStringLiteral("launch")
-                     : stage == QStringLiteral("miss") ? QStringLiteral("ray")
-                                                       : QStringLiteral("hit"),
-                     trailingParameters));
+        const bool hasResources =
+            resourceContract.isEmpty() == false || program.value(QStringLiteral("graph_resources")).toBool() == true ||
+            (program.contains(QStringLiteral("graph_resources")) == false &&
+             sources.value(source).contains((function + QStringLiteral("Resources")).toUtf8()) == true);
+        if (isLaunch == true && hasResources == true)
+        {
+            trailingParameters = QStringLiteral(",\n    %1%2Resources resources")
+                                     .arg(isLusl == true ? QStringLiteral("in ") : QString(), function);
+            if (resourceContract.isEmpty() == false)
+            {
+                const QJsonArray fields = resourceContract.value(QStringLiteral("fields")).toArray();
+                if (fields.isEmpty() == true)
+                {
+                    lines.append(QStringLiteral("// No connected Buffer ports."));
+                }
+                for (const QJsonValueConstRef fieldValue : fields)
+                {
+                    const QJsonObject field = fieldValue.toObject();
+                    const bool isWritable = field.value(QStringLiteral("writable")).toBool();
+                    const QString type = field.value(QStringLiteral("type")).toString();
+                    const bool isLegacyRaw = field.value(QStringLiteral("legacy_raw")).toBool();
+                    const QString operations =
+                        isLegacyRaw == true
+                            ? QStringLiteral("[index], GetDimensions(count, stride)")
+                            : (isWritable == true ? QStringLiteral("GetCount(), Load(index), Store(index, value)")
+                                                  : QStringLiteral("GetCount(), Load(index)"));
+                    lines.append(
+                        QStringLiteral("// resources.%1 · %2 · %3\n"
+                                       "// %4")
+                            .arg(field.value(QStringLiteral("name")).toString(),
+                                 isLusl == true && type == QStringLiteral("uint4") ? QStringLiteral("uint32x4") : type,
+                                 isWritable == true ? QStringLiteral("read/write") : QStringLiteral("read-only"),
+                                 operations));
+                }
+            }
+            else
+            {
+                lines.append(QStringLiteral("// Connected Buffer ports supply the Resources members."));
+            }
+        }
+        lines.append(QStringLiteral("%1 %2(\n    %6SceneContext scene,\n    %6%3 %4,\n    inout RayQueryContext %7%5);")
+                         .arg(isLaunch == true
+                                  ? (isLusl == true ? QStringLiteral("float32x3") : QStringLiteral("float3"))
+                                  : QStringLiteral("void"),
+                              function,
+                              input,
+                              isLaunch == true                  ? QStringLiteral("launch")
+                              : stage == QStringLiteral("miss") ? QStringLiteral("ray")
+                                                                : QStringLiteral("hit"),
+                              trailingParameters,
+                              isLusl == true ? QStringLiteral("in ") : QString(),
+                              isLusl == true ? QStringLiteral("inoutQueries") : QStringLiteral("queries")));
     }
     else
     {
@@ -272,8 +321,10 @@ QString DescribeSchema(const QJsonArray& schemas, const QString& identity)
 }
 } // namespace
 
-QString
-DescribeShaderInterface(const QByteArray& manifest, const QString& sourceFile, const QMap<QString, QByteArray>& sources)
+QString DescribeShaderInterface(const QByteArray& manifest,
+                                const QString& sourceFile,
+                                const QMap<QString, QByteArray>& sources,
+                                const QJsonArray& resources)
 {
     const QJsonDocument document = QJsonDocument::fromJson(manifest);
     if (document.isObject() == false)
@@ -298,7 +349,7 @@ DescribeShaderInterface(const QByteArray& manifest, const QString& sourceFile, c
             (stage == QStringLiteral("compute") && output == QStringLiteral("Radiance")))
         {
             descriptions.append(
-                DescribeRayInterface(program, root.value(QStringLiteral("techniques")).toArray(), sources));
+                DescribeRayInterface(program, root.value(QStringLiteral("techniques")).toArray(), sources, resources));
             continue;
         }
         if (stage != QStringLiteral("vertex") && stage != QStringLiteral("fragment"))

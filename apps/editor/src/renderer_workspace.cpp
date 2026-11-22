@@ -944,6 +944,10 @@ RendererWorkspace::RendererWorkspace(const ToolingPaths& tooling, QWidget* paren
     mSourceAssistance = new RenderGraphShaderAssistance(mDocument, *mSource, *mSourceController, mTooling, sourcePage);
     sourceLayout->addWidget(mSourceAssistance);
     QWidget* interfacePage = CreateShaderInterfaceView(mSourceInterface, sourcePage);
+    connect(mSourceAssistance,
+            &RenderGraphShaderAssistance::ResourceApiChanged,
+            this,
+            &RendererWorkspace::updateSourceInterfaceContents);
     mSourceSplit = new QSplitter(Qt::Horizontal, sourcePage);
     mSourceSplit->setObjectName(QStringLiteral("renderGraphSourceSplitter"));
     mSourceSplit->addWidget(new CodeEditorPanel(mSource, mSourceController, mSourceSplit));
@@ -4435,7 +4439,8 @@ void RendererWorkspace::renderEdges()
 
 void RendererWorkspace::updateSourceInterfaceVisibility()
 {
-    const bool isShader = mSourceFile->currentText().endsWith(QStringLiteral(".slang"));
+    const QString file = mSourceFile->currentText();
+    const bool isShader = file.endsWith(QStringLiteral(".slang")) || file.endsWith(QStringLiteral(".lusl"));
     mSourceInterfaceToggle->setEnabled(isShader);
     QWidget* interfacePage = mSourceInterface->parentWidget();
     const bool shouldShow = isShader == true && mSourceInterfaceToggle->isChecked() == true && mIsChromeVisible == true;
@@ -4447,9 +4452,32 @@ void RendererWorkspace::updateSourceInterfaceVisibility()
     interfacePage->setVisible(shouldShow);
     if (shouldShow == true)
     {
+        if (mViews->currentIndex() == SOURCE_VIEW)
+        {
+            mSourceAssistance->RequestResourceApi();
+        }
         static_cast<void>(
             mSourceSplit->restoreState(QSettings().value(QStringLiteral("renderGraph/sourceSplit")).toByteArray()));
     }
+}
+
+void RendererWorkspace::updateSourceInterfaceContents()
+{
+    const QString file = mSourceFile->currentText();
+    QMap<QString, QByteArray> sources;
+    for (const QString& draftFile : mDocument.GetFiles())
+    {
+        if (IsRenderGraphShaderSource(draftFile) == true)
+        {
+            sources.insert(QDir::cleanPath(draftFile), mDocument.GetDraft(draftFile));
+        }
+    }
+    UpdateShaderInterfaceView(*mSourceInterface,
+                              file,
+                              DescribeShaderInterface(mDocument.GetDraft(manifestFile()),
+                                                      file,
+                                                      sources,
+                                                      mSourceAssistance->GetResourceApi()));
 }
 
 void RendererWorkspace::renderSourceStatus()
@@ -4556,17 +4584,7 @@ void RendererWorkspace::renderSource()
     mSource->setEnabled(file.isEmpty() == false);
     mSource->SetCanFormat(canFormatSource());
     updateSourceInterfaceVisibility();
-    QMap<QString, QByteArray> sources;
-    for (const QString& draftFile : mDocument.GetFiles())
-    {
-        if (draftFile.endsWith(QStringLiteral(".slang")) == true)
-        {
-            sources.insert(QDir::cleanPath(draftFile), mDocument.GetDraft(draftFile));
-        }
-    }
-    UpdateShaderInterfaceView(*mSourceInterface,
-                              file,
-                              DescribeShaderInterface(mDocument.GetDraft(manifestFile()), file, sources));
+    updateSourceInterfaceContents();
     updateSourceDiagnostics(false);
 }
 

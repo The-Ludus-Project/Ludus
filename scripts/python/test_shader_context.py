@@ -253,10 +253,10 @@ class ShaderContextTests(unittest.TestCase):
         self.assertTrue(Path(unquote(urlparse(second['uri']).path)).parents[1].joinpath(CONTEXT_OWNER_FILE).is_file())
 
 
-class SlangPeer:
-    """Independent stdio client for checking compiler-owned source with real Slang."""
-    def __init__(self, program, workspace):
-        self.process = subprocess.Popen([program], stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL)
+class ShaderLanguagePeer:
+    """Independent stdio client for checking compiler-owned editing contexts."""
+    def __init__(self, program, workspace, arguments=()):
+        self.process = subprocess.Popen([program, *arguments], stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL)
         self.messages = queue.Queue()
         self.thread = threading.Thread(target=self.read, daemon=True)
         self.thread.start()
@@ -324,7 +324,7 @@ class SlangSemanticAcceptance(unittest.TestCase):
             helper.write_text('float ProjectTint(float value) { return value; }\n')
             path.write_text('#include "draft_api.slang"\nfloat3 TracePixel(SceneContext scene, RayLaunch launch, inout RayQueryContext queries) { return 0; }\n')
             context = export_context(manifest, root / 'language', source, helper=os.environ['LUDUS_RG1_HELPER'])
-            peer = SlangPeer(os.environ['LUDUS_TEST_SLANGD'], root / 'language')
+            peer = ShaderLanguagePeer(os.environ['LUDUS_TEST_SLANGD'], root / 'language')
             try:
                 previous = ''
                 for serial, (probe, method, expected) in enumerate((

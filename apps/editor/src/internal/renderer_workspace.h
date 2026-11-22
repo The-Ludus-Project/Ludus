@@ -604,6 +604,7 @@ private:
     void renderPreview();
     void renderSourceStatus();
     void updateSourceInterfaceVisibility();
+    void updateSourceInterfaceContents();
     void updateChromeVisibility();
     void openSubgraph(const QString& asset, const QString& configuration, const QString& instance);
 

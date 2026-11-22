@@ -20,6 +20,8 @@ import subprocess
 import tempfile
 from pathlib import Path
 
+from . import render_graph_buffers as buffers
+
 LANGUAGE_SUFFIX = '.lusl'
 GENERATED_SUFFIX = '.slang'
 # SDK headers are staged where ray wrappers already stage engine helpers.
@@ -32,6 +34,7 @@ LANGUAGE_FILES = ('.lusl', '.luslh')
 # The generated schema header of raster programs, below its own include directory.
 GRAPH_DIRECTORY = '_ludus_graph'
 SCHEMA_HEADER = 'graph_schemas.luslh'
+RESOURCES_HEADER = 'graph_resources.luslh'
 RASTER_STAGES = ('vertex', 'fragment')
 # Ray callbacks read their manifest bindings as structured buffers (render_graph_buffers.declarations).
 RAY_STAGES = ('ray_generation', 'miss', 'closest_hit')
@@ -263,6 +266,83 @@ def _lower(files, build, tool, source, style, specialization_budget, include_dir
         return output.read_bytes(), _parse_report(report.read_text(encoding='utf-8'), build, source, configuration)
 
 
+def _record_declaration(shape, name, definitions, build):
+    """Mirror the compiler's record shape for LUSL type checking, not storage sizing."""
+    kind = shape['kind']
+    if kind == 'struct':
+        type_name = shape.get('name')
+        build.name(type_name, 'shared Buffer record type')
+        fields = [_record_declaration(field['type'], field['name'], definitions, build)
+                  for field in shape['fields']]
+        declaration = f"struct {type_name} {{ " + ' '.join(fields) + ' };'
+        build.require(definitions.setdefault(type_name, declaration) == declaration, 'ShaderInterface', type_name,
+                      'give distinct names to Buffer record types used in one LUSL program')
+        return f'{type_name} {name};'
+    if kind == 'array':
+        return _record_declaration(shape['elementType'], f'{name}[{shape["elementCount"]}]', definitions, build)
+    scalar = (shape['elementType'] if kind == 'vector' else shape).get('scalarType')
+    build.require(kind in ('scalar', 'vector') and scalar in ('float32', 'int32', 'uint32'), 'ShaderInterface', name,
+                  'Buffer record fields must use 32-bit scalars, vectors, structs or fixed arrays')
+    spelling = scalar + (f'x{shape["elementCount"]}' if kind == 'vector' else '')
+    return f'{spelling} {name};'
+
+
+def prepare_resource_headers(snapshot, programs, contracts, compiler, cancel, build):
+    """Stage each LUSL module's generated interface before lowering or source assistance."""
+    contexts = {}
+    for program in programs.values():
+        source = program['source']
+        if is_language_source(source) and buffers.requests_named_resources(program, snapshot):
+            contexts.setdefault(source, {})[program['function']] = []
+    for variant, fields in contracts.items():
+        program = programs[variant[0]]
+        if is_language_source(program['source']):
+            contexts.setdefault(program['source'], {})[program['function']] = fields
+    if not contexts:
+        return
+    # The same reflection results are reused to size storage and emit executable accessors.
+    with tempfile.TemporaryDirectory(prefix='ludus-buffer-interface-') as directory:
+        for source, functions in contexts.items():
+            records, views, resources = {}, {}, []
+            for function, fields in functions.items():
+                members = []
+                for field in fields:
+                    view = buffers.record_view_name(field)
+                    record = field['record']
+                    if record:
+                        key = (record['source'], record['type'])
+                        if key not in snapshot.buffer_record_layouts:
+                            build.require(compiler, 'Tools', record['source'],
+                                          'select the Slang compiler to resolve the connected Buffer layout')
+                            stage = Path(directory) / str(len(snapshot.buffer_record_layouts))
+                            snapshot.buffer_record_layouts[key] = buffers.reflect_record(
+                                *key, snapshot, stage, compiler, cancel, build)
+                        _, shape = snapshot.buffer_record_layouts[key]
+                        _record_declaration(shape, field['field'], records, build)
+                        element = record['type']
+                    else:
+                        element = 'uint32x4'
+                    setter = f' void Store(in uint32 index, in {element} record);' if field['writable'] else ''
+                    views[view] = f'struct {view} {{ uint32 GetCount(); {element} Load(in uint32 index);{setter} }};'
+                    members.append(f'{view} {field["field"]};')
+                resources.append(f'struct {function}Resources {{ ' +
+                                 ' '.join(members) + ' };')
+            lines = ['#pragma once', 'extern slang', '{', *records.values(), *views.values(), *resources, '};', '']
+            snapshot.language_resource_headers[source] = '\n'.join(lines).encode()
+
+
+def stage_generated_headers(snapshot, files, include_directories, source, programs, schemas, build):
+    """Give lowering and the language server one generated header set."""
+    headers = {SCHEMA_HEADER: schema_header(source, programs, schemas, build),
+               RESOURCES_HEADER: snapshot.language_resource_headers.get(source)}
+    if not any(headers.values()):
+        return
+    include_directories.append(GRAPH_DIRECTORY)
+    for name, header in headers.items():
+        if header is not None:
+            files[posixpath.join(GRAPH_DIRECTORY, name)] = header
+
+
 def lower_sources(snapshot, programs, helper, build, *, luslc=None, style='strict', specialization_budget=None,
                   schemas=None, bounds_checks=False):
     """Lower every `.lusl` program source once and point its programs at the generated module.
@@ -299,10 +379,7 @@ def lower_sources(snapshot, programs, helper, build, *, luslc=None, style='stric
                       'the generated module of ' + source + ' would replace an authored file; rename one of them')
         files = _collect(snapshot, helper, build, source)
         include_directories = [SDK_DIRECTORY]
-        header = schema_header(source, programs, schemas or {}, build)
-        if header is not None:
-            files[posixpath.join(GRAPH_DIRECTORY, SCHEMA_HEADER)] = header
-            include_directories.append(GRAPH_DIRECTORY)
+        stage_generated_headers(snapshot, files, include_directories, source, programs, schemas or {}, build)
         # Ray invocations have a diagnostic buffer; raster stages have no failure channel.
         checks = bounds_checks and any(p['source'] == source and p.get('stage') in (*RAY_STAGES, 'compute')
                                       for p in programs.values())

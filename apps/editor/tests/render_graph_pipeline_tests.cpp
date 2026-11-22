@@ -504,6 +504,12 @@ TEST_CASE("pipeline shader creation commits source manifest and references toget
         CHECK(shader.value(QStringLiteral("stage")) == program.value(QStringLiteral("stage")));
         const QString source = program.value(QStringLiteral("source")).toString();
         CHECK(document.GetDraft(source).contains("ShaderMain") == true);
+        if (program.value(QStringLiteral("stage")).toString() == QStringLiteral("ray_generation"))
+        {
+            CHECK(document.GetDraft(source).contains("in ShaderMainResources resources") == true);
+            CHECK(document.GetDraft(source).contains("#include \"graph_resources.luslh\"") == true);
+            CHECK(program.contains(QStringLiteral("graph_resources")) == false);
+        }
         CHECK(QFileInfo::exists(QDir(package).filePath(source)) == false);
     }
     REQUIRE(document.Undo() == true);
@@ -2741,15 +2747,18 @@ TEST_CASE("scene compute shaders use the scene-aware stub, technique and interfa
     const QString sourceFile = program.value(QStringLiteral("source")).toString();
     const QByteArray source = document.GetDraft(sourceFile);
     CHECK(source.contains(
-              "float32x3 ShaderMain(SceneContext scene, RayLaunch launch, inout RayQueryContext inoutQueries)") ==
-          true);
+              "float32x3 ShaderMain(SceneContext scene, RayLaunch launch, inout RayQueryContext inoutQueries, "
+              "in ShaderMainResources resources)") == true);
+    CHECK(source.contains("#include \"graph_resources.luslh\"") == true);
+    CHECK(program.contains(QStringLiteral("graph_resources")) == false);
     CHECK(source.contains("TraceClosest(scene, inout inoutQueries, launch.CameraRay, out hit)") == true);
     CHECK(source.contains("TraceAndShade(") == false);
     const QByteArray manifest = document.GetDraft(QStringLiteral("main.lushader.json"));
-    const QString description = DescribeShaderInterface(manifest, sourceFile);
+    const QString description = DescribeShaderInterface(manifest, sourceFile, {{sourceFile, source}});
     CHECK(description.contains(QStringLiteral("Scene compute pass")) == true);
-    CHECK(description.contains(QStringLiteral("float3 ShaderMain(\n    SceneContext scene,\n    RayLaunch launch,\n"
-                                              "    inout RayQueryContext queries);")) == true);
+    CHECK(description.contains(QStringLiteral(
+              "float32x3 ShaderMain(\n    in SceneContext scene,\n    in RayLaunch launch,\n"
+              "    inout RayQueryContext inoutQueries,\n    in ShaderMainResources resources);")) == true);
     CHECK(description.contains(QStringLiteral("struct RayLaunch")) == true);
     CHECK(description.contains(QStringLiteral("SceneQuery TraceClosest(")) == true);
     CHECK(description.contains(QStringLiteral("declaration unavailable")) == false);
