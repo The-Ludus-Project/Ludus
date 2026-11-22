@@ -7,4 +7,10 @@ endif()
 
 add_library(ludus_lusl_layout_probe STATIC layout_probe.cpp)
 target_link_libraries(ludus_lusl_layout_probe PRIVATE Ludus::GraphicsRhi)
+# Engine and SDK consumer code builds without exceptions (ludus_compile_policy checks the in-tree build).
+if(COMMAND ludus_apply_project_defaults)
+    ludus_apply_project_defaults(ludus_lusl_layout_probe)
+else()
+    target_compile_options(ludus_lusl_layout_probe PRIVATE -Wall -Wextra -Wpedantic -Werror -fno-exceptions)
+endif()
 ludus_compile_renderer_shaders(TARGET ludus_lusl_layout_probe SHADERS renderer_lusl_layout_probe)

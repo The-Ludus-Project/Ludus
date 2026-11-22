@@ -347,16 +347,18 @@ TEST_CASE("Invalid generation requests stage nothing and publish nothing", "[pro
     const ScatterManifest accepted = coordinator.GetAccepted();
     GenerationTrace trace(TRACE_CAPACITY);
     ScatterCandidate candidate;
+    // The comparison after the sections reads fixture.Input again, so the storage a section points
+    // it at must outlive the section.
+    const ScatterScope reversed[] = {fixture.Scopes[1], fixture.Scopes[0]};
+    const ScatterPlacement lock = accepted.Placements[accepted.Placements.GetSize() - 1];
 
     SECTION("scopes out of room order")
     {
-        const ScatterScope reversed[] = {fixture.Scopes[1], fixture.Scopes[0]};
         fixture.Input.Scopes = BorrowedView<const ScatterScope>(reversed);
         REQUIRE(coordinator.TryStage(fixture.Input, trace, candidate) == GenerationStatus::InvalidInput);
     }
     SECTION("a lock in another room")
     {
-        const ScatterPlacement lock = accepted.Placements[accepted.Placements.GetSize() - 1];
         REQUIRE(lock.Identity.Room == ROOM_B);
         fixture.Scopes[0].Locks = {&lock, 1};
         REQUIRE(coordinator.TryStage(fixture.Input, trace, candidate) == GenerationStatus::InvalidInput);

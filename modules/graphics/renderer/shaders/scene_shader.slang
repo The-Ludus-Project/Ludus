@@ -1030,9 +1030,9 @@ LightSample SampleIncidentLight(SceneContext scene, SelectedLight selected, Surf
 }
 /// Trace visibility from the supplied world-space ray origin in metres to an incident light sample.
 /// The ray starts at originWorld. For a finite light, aim at the sampled endpoint and offset a mesh
-/// endpoint toward the origin. For an infinite light, use the sampled direction and the scene's
-/// shadow range. Uses the invocation's visibility query budget.
-/// Returns Miss for a clear connection, Surface for an occluder, or Failure with queries.HasFailed latched.
+/// endpoint against the sample's direction, toward the position it was sampled from. For an infinite
+/// light, use the sampled direction and the scene's shadow range. Uses the invocation's visibility query
+/// budget. Returns Miss for a clear connection, Surface for an occluder, or Failure with queries.HasFailed latched.
 SceneQuery
 TestVisibility(SceneContext scene, inout RayQueryContext queries, float3 originWorld, IncidentLightSample light)
 {
@@ -1058,7 +1058,12 @@ TestVisibility(SceneContext scene, inout RayQueryContext queries, float3 originW
     {
         float3 endpointWorld = light.PositionWorld;
         if (light.TriangleIndex != SCENE_INVALID_INDEX)
-            endpointWorld = OffsetPositionWorld(endpointWorld, light.TriangleIndex, originWorld - endpointWorld);
+        {
+            // Offset against the sample's direction, toward the position it was sampled from. Offsetting
+            // toward the already offset origin moves both points to the same side when the endpoint lies
+            // on the origin's own surface, which leaves no unit shadow direction (an InvalidRay failure).
+            endpointWorld = OffsetPositionWorld(endpointWorld, light.TriangleIndex, -light.DirectionWorld);
+        }
         float3 offsetWorld = endpointWorld - shadow.OriginWorld;
         shadow.DirectionWorld = NormalizeOrZero(offsetWorld);
         shadow.MaxDistanceWorld = length(offsetWorld);
