@@ -2499,7 +2499,7 @@ void RasterTextureBarrier(usize slot, RasterTextureUse use) noexcept
         storage.newLayout = VK_IMAGE_LAYOUT_GENERAL;
         storage.srcQueueFamilyIndex = storage.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
         storage.srcAccessMask = texture.ColorWriterAccess | texture.ColorAccess;
-        storage.dstAccessMask = VK_ACCESS_SHADER_WRITE_BIT;
+        storage.dstAccessMask = VK_ACCESS_SHADER_READ_BIT | VK_ACCESS_SHADER_WRITE_BIT;
         storage.image = texture.Object;
         storage.subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, 0, texture.Info.MipLevels, 0, 1};
         vkCmdPipelineBarrier(GetVulkan().Frames[GetVulkan().FrameIndex].Command,

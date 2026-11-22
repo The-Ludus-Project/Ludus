@@ -970,6 +970,8 @@ def compile_program(program, schemas, closure, snapshot, work, helper, tools, ta
         command += ['--graph-software-rays']
     if program.get('fragment_storage'):
         command += ['--fragment-storage']
+    if program.get('storage_texture'):
+        command += ['--graph-storage-texture']
     if worker_socket:
         command += ['--worker-socket', worker_socket, '--worker-identity', worker_identity]
     if 'tool/spirv-val' in tools:
@@ -1211,6 +1213,10 @@ def prepare_sources(manifest, helper, *, root=None, ray_path_capture=False, capt
                 technique['scene_interface']['visibility_buffer'] = profile['visibility_buffer']
                 if profile['color_input']:
                     technique['scene_interface']['color_input'] = True
+                if profile['storage_texture']:
+                    require(not ray_path_capture, 'Capability', 'RayTracing',
+                            'storage texture dispatch does not support ray path capture; select an image-only configuration')
+                    technique['scene_interface']['storage_texture'] = True
                 # The capture profile links the larger capture budget into every wrapper of this build.
                 if capture_profile:
                     interface = technique['scene_interface']
@@ -1229,7 +1235,8 @@ def prepare_sources(manifest, helper, *, root=None, ray_path_capture=False, capt
                         'hardware ray-stage invocation requires the native Metal backend; select Compute explicitly on other backends')
                 profile['native_compute'] = profile['compute'] + 'NativeStages'
                 linked_programs.update(ray.expand_programs(authored_programs, technique, snapshot, helper, sys.modules[__name__],
-                    profile['variants'], profile['persistent'], schemas, profile['native_compute'], True, ray_path_capture, True))
+                    profile['variants'], profile['persistent'], schemas, profile['native_compute'], True, ray_path_capture,
+                    native_ray_pipeline=True, workgroup=profile['workgroup']))
         programs = linked_programs
         for program_identity in programs:
             if 'ray_wrapper' in programs[program_identity]:
@@ -1442,6 +1449,8 @@ def build_package(manifest, output, *, helper, compiler, validator=None, spirv_c
                             record['visibility_buffer'] = profile['visibility_buffer']
                             if profile['color_input']:
                                 record['color_input'] = True
+                            if profile['storage_texture']:
+                                record['storage_texture'] = True
                             if ray_path_capture:
                                 record['ray_path_capture'] = True
                             if capture_profile:

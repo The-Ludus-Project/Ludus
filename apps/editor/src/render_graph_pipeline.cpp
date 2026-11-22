@@ -729,6 +729,13 @@ RenderGraphPipelineEditor::createTable(const QString& name, const QStringList& f
         for (int32 column = 0; column < defaults.size(); ++column)
         {
             QString value = defaults.at(column);
+            if (fields.at(column) == QStringLiteral("load") && mNode.value(QStringLiteral("invocation"))
+                                                                       .toObject()
+                                                                       .value(QStringLiteral("storage_texture"))
+                                                                       .toBool() == true)
+            {
+                value = QStringLiteral("Load");
+            }
             if (column == 0)
             {
                 QStringList identities;
@@ -904,7 +911,7 @@ void RenderGraphPipelineEditor::addProperties(QFormLayout& outForm, const QStrin
         const QString key = property.key();
         if (name == QStringLiteral("invocation") && UsesRayLaunch(mNode) == true &&
             (key == QStringLiteral("type") || key == QStringLiteral("traversal") ||
-             key == QStringLiteral("traversal_source")))
+             key == QStringLiteral("traversal_source") || key == QStringLiteral("storage_texture")))
         {
             continue;
         }
@@ -932,11 +939,15 @@ void RenderGraphPipelineEditor::addProperties(QFormLayout& outForm, const QStrin
             {
                 mode->addItem(QStringLiteral("Work items"));
             }
+            const int32 storageTextureIndex = mode->count();
+            mode->addItem(QStringLiteral("Independent storage texture"));
             const bool isBufferDispatch = key == QStringLiteral("work_items");
+            const bool hasStorageTexture = properties.value(QStringLiteral("storage_texture")).toBool();
             const bool isAutomatic = value.toString() == QStringLiteral("ColorTarget");
-            mode->setCurrentIndex(isBufferDispatch == true ? WORK_ITEMS_INDEX
-                                  : isAutomatic == true    ? MATCH_COLOR_TARGET_INDEX
-                                                           : EXPLICIT_SIZE_INDEX);
+            mode->setCurrentIndex(hasStorageTexture == true  ? storageTextureIndex
+                                  : isBufferDispatch == true ? WORK_ITEMS_INDEX
+                                  : isAutomatic == true      ? MATCH_COLOR_TARGET_INDEX
+                                                             : EXPLICIT_SIZE_INDEX);
             layout->addWidget(mode);
 
             QWidget* dimensions = new QWidget(row);
@@ -963,19 +974,34 @@ void RenderGraphPipelineEditor::addProperties(QFormLayout& outForm, const QStrin
             QLabel* help = new QLabel(row);
             help->setWordWrap(true);
             layout->addWidget(help);
-            const auto showMode = [dimensions, workItems, help](int32 index) {
-                dimensions->setVisible(index == EXPLICIT_SIZE_INDEX);
-                workItems->setVisible(index == WORK_ITEMS_INDEX);
-                help->setText(index == WORK_ITEMS_INDEX
+            const auto showMode = [dimensions, workItems, help, isSceneCompute, storageTextureIndex](int32 index) {
+                const bool isStorageDispatch = index == storageTextureIndex;
+                const bool isWorkItems = isSceneCompute == true && index == WORK_ITEMS_INDEX;
+                dimensions->setVisible(index == EXPLICIT_SIZE_INDEX || isStorageDispatch == true);
+                QSpinBox* depth = dimensions->findChildren<QSpinBox*>().last();
+                const QSignalBlocker blocker(depth);
+                depth->setEnabled(isStorageDispatch == false);
+                if (isStorageDispatch == true)
+                {
+                    depth->setValue(1);
+                }
+                workItems->setVisible(isWorkItems);
+                help->setText(isStorageDispatch == true
+                                  ? QStringLiteral("Dispatch [width, height, 1]. Write to GraphStorageTexture. "
+                                                   "The connected texture keeps its own size and uses Load/Store.")
+                              : isWorkItems == true
                                   ? QStringLiteral("Dispatch this many work items. Use Scene and Buffer ports. "
                                                    "Remove View and texture ports before building.")
                                   : QStringLiteral("Match color target derives [width, height, 1] from the connected "
                                                    "writable color target. Explicit size must match that target."));
             };
-            const auto applyLaunch = [this, mode, dimensions, workItems]() {
+            const auto applyLaunch = [this, mode, dimensions, workItems, isSceneCompute, storageTextureIndex]() {
                 QJsonObject invocation = mNode.value(QStringLiteral("invocation")).toObject();
                 const int32 index = mode->currentIndex();
-                if (index == WORK_ITEMS_INDEX)
+                const bool isStorageDispatch = index == storageTextureIndex;
+                const bool hasPreviousStorageDispatch = invocation.value(QStringLiteral("storage_texture")).toBool();
+                invocation.remove(QStringLiteral("storage_texture"));
+                if (isSceneCompute == true && index == WORK_ITEMS_INDEX)
                 {
                     invocation.remove(QStringLiteral("dimensions"));
                     invocation.insert(QStringLiteral("work_items"), workItems->value());
@@ -984,16 +1010,39 @@ void RenderGraphPipelineEditor::addProperties(QFormLayout& outForm, const QStrin
                 {
                     invocation.remove(QStringLiteral("work_items"));
                     QJsonValue size(QStringLiteral("ColorTarget"));
-                    if (index == EXPLICIT_SIZE_INDEX)
+                    if (index == EXPLICIT_SIZE_INDEX || isStorageDispatch == true)
                     {
                         QJsonArray values;
                         for (const QSpinBox* field : dimensions->findChildren<QSpinBox*>())
                         {
                             values.append(field->value());
                         }
+                        if (isStorageDispatch == true)
+                        {
+                            values.replace(DIMENSION_COUNT - 1, 1);
+                            invocation.insert(QStringLiteral("storage_texture"), true);
+                        }
                         size = values;
                     }
                     invocation.insert(QStringLiteral("dimensions"), size);
+                }
+                if (hasPreviousStorageDispatch != isStorageDispatch)
+                {
+                    const QStringList fields = mOutputs->property("fields").toStringList();
+                    const int32 typeColumn = static_cast<int32>(fields.indexOf(QStringLiteral("type")));
+                    const int32 loadColumn = static_cast<int32>(fields.indexOf(QStringLiteral("load")));
+                    for (int32 row = 0; row < mOutputs->rowCount(); ++row)
+                    {
+                        const QComboBox* typeOrNull = qobject_cast<QComboBox*>(mOutputs->cellWidget(row, typeColumn));
+                        QComboBox* loadOrNull = qobject_cast<QComboBox*>(mOutputs->cellWidget(row, loadColumn));
+                        if (typeOrNull != nullptr && loadOrNull != nullptr &&
+                            typeOrNull->currentText() == QStringLiteral("ColorTexture"))
+                        {
+                            const QSignalBlocker blocker(loadOrNull);
+                            loadOrNull->setCurrentText(isStorageDispatch == true ? QStringLiteral("Load")
+                                                                                 : QStringLiteral("Clear"));
+                        }
+                    }
                 }
                 mNode.insert(QStringLiteral("invocation"), invocation);
                 publishEdit();

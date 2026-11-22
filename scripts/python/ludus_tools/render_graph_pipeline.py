@@ -161,7 +161,7 @@ def validate(node, where, graph):
             _check_field(graph._integer, invocation['work_items'], 'Invocation → work_items', where, graph, 1,
                          ray.MAX_SCENE_WORK_ITEMS)
         else:
-            graph._keys(invocation, ('dimensions',), where, ('type', 'traversal', 'traversal_source'))
+            graph._keys(invocation, ('dimensions',), where, ('type', 'traversal', 'traversal_source', 'storage_texture'))
             if invocation['dimensions'] != 'ColorTarget':
                 _dimensions(invocation['dimensions'], where, graph, 'Invocation → dimensions')
     elif node['kind'] == 'ComputePipeline':
@@ -176,9 +176,19 @@ def validate(node, where, graph):
         for field in ('payload_bytes', 'attribute_bytes'):
             if field in state:
                 _check_field(graph._integer, state[field], f'Pipeline State → {field} (bytes)', where, graph, 0, 4096)
-        graph._keys(invocation, ('dimensions',), where, ('type', 'traversal', 'traversal_source'))
+        graph._keys(invocation, ('dimensions',), where, ('type', 'traversal', 'traversal_source', 'storage_texture'))
         if invocation['dimensions'] != 'ColorTarget':
             _dimensions(invocation['dimensions'], where, graph, 'Invocation → dimensions')
+
+    if 'storage_texture' in invocation:
+        graph._boolean(invocation['storage_texture'], where)
+        dimensions = invocation['dimensions']
+        graph._require(not invocation['storage_texture'] or
+                       (dimensions != 'ColorTarget' and dimensions[2] == 1 and
+                        dimensions[0] * dimensions[1] <= ray.MAX_SCENE_WORK_ITEMS),
+                       'Capability', where, 'storage texture dispatch requires an explicit [width, height, 1] launch',
+                       field='invocation.dimensions',
+                       repair=f'Use depth 1 and a width × height of at most {ray.MAX_SCENE_WORK_ITEMS} invocations.')
 
     if any(field in invocation for field in ('type', 'traversal', 'traversal_source')):
         graph._require(node['kind'] == 'RayTracingPipeline' or is_scene_compute(node),

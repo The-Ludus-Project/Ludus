@@ -611,9 +611,10 @@ while the window changes. Independent graph instances supply independent referen
 The compiler normalizes scale fractions, propagates them through texture metadata
 and subgraph bindings, and retains them in generated plans/runtime packages.
 Attachment compatibility compares policies as well as nominal dimensions: a fixed
-320 × 240 image and a half-view image are not guaranteed to match. Relative ray
-outputs require **Match color target**, since an explicit launch cannot cover
-every reference size.
+320 × 240 image and a half-view image are not guaranteed to match. A ray pass
+that returns an image to a view-relative target uses **Match color target**.
+A [storage texture dispatch](#write-a-storage-texture-at-an-independent-launch-size)
+can use a fixed launch with a view-relative texture.
 
 For direct SDK use, pass the drawable width/height after the optional pool argument
 to `RenderGraph::Initialize`. For `RenderGraphActivation`, call `Resize(width, height)`
@@ -1565,10 +1566,36 @@ applied before the wire. Query `GetDimensions` and bound coordinates against
 the source extent if the targets differ. The renderer orders the producer's
 color write before the consumer's read on Metal and Vulkan.
 
-Use Compute invocation for RayTracingPipeline nodes in this sequence. Scene
+Use Compute invocation for an image-producing RayTracingPipeline in this sequence.
+An independent storage texture producer can also use native Metal ray stages. Scene
 visibility/depth inputs and tiled frame capture require a separate configuration
-or whole-frame capture, respectively. Rebuild the package with an SDK that
-supports runtime generation 41.
+or whole-frame capture, respectively.
+
+### Write a storage texture at an independent launch size
+
+On a **RayTracingPipeline** or scene **ComputePipeline**, choose **Invocation →
+Launch size → Independent storage texture**. Set the launch to a positive
+`[width, height, 1]`, such as `[8, 8, 1]`. This setting is available in Properties
+and in **Edit Node** on the canvas. Connect a dedicated offscreen, single-sample
+RGBA8Unorm **Target** to the writable color port. The editor sets its operation to
+**Load**/**Store**. In graph source, use `"dimensions": [8, 8, 1]` and
+`"storage_texture": true` in `invocation`. The target can have a fixed extent or
+inherit a view-relative **RenderSize**.
+
+The scene shader wrapper exposes `RWTexture2D<float4> GraphStorageTexture`.
+The ray-generation callback or scene compute kernel writes the texels it owns and
+returns `float3(0)`. `launch.PositionPixel` and `launch.ExtentPixel` address
+the dispatch grid. Query `GraphStorageTexture.GetDimensions` for texture bounds
+and coordinate work between shader invocations so their accesses do not race.
+New allocations start at zero, and untouched texels retain their contents while
+the allocation lives. A later scene compute pass can sample the stored result
+as `GraphColorInput`.
+
+This mode uses native Vulkan or Metal with tier-2 read/write textures and
+requires the scene shader interface. To accumulate, denoise, or tone-map, first
+sample the texture in a later image pass. Use a separate configuration for
+visibility/depth or ray-path diagnostics. Storage dispatches require a whole-frame
+launch and runtime generation 42.
 
 <a id="select-emitters-per-screen-tile"></a>
 

@@ -13,7 +13,7 @@ namespace ludus::content::render_graph_format
 {
 /// Static triangle execution profile: opaque/masked raster with per-draw uniforms,
 /// and authored ray functions over immutable scene geometry, materials and lighting.
-inline constexpr foundation::uint32 VERSION = 15;
+inline constexpr foundation::uint32 VERSION = 16;
 /// Opt-in portable raster ABI: static inputs plus primitive halves and draw/instance references.
 inline constexpr foundation::usize VISIBILITY_INPUT_COUNT = 8;
 /// Maximum authored passes in one admitted configuration.
@@ -77,7 +77,7 @@ inline constexpr foundation::usize MAX_UNIFORM_BLOCK_BYTES = 1024;
 /// Largest number of distinct per-draw uniform value sets one technique prepares per extraction.
 inline constexpr foundation::usize MAX_UNIFORM_SETS = 16;
 /// Number of explicitly serialized four-byte fields in a current pass record (uint32 or float32).
-inline constexpr foundation::usize PASS_FIELD_COUNT = 22;
+inline constexpr foundation::usize PASS_FIELD_COUNT = 24;
 /// Serialized four-byte field index of Pass::DenoisingQuality, stable since it was appended in
 /// runtime package version 16; later versions append fields after it.
 inline constexpr foundation::usize PASS_DENOISING_QUALITY_FIELD = 18;
@@ -280,6 +280,11 @@ struct Pass final
     DisplayCurve ToneMappingCurve = DisplayCurve::Reinhard;
     /// Positive for a buffer-only scene compute pass with no camera or color, zero for existing passes.
     foundation::uint32 WorkItemCount = 0;
+    /// Explicit X invocation count when Color is a shader-owned RGBA8 storage output.
+    /// Zero selects the existing image or buffer-only dispatch contract.
+    foundation::uint32 StorageLaunchWidth = 0;
+    /// Explicit Y invocation count for a storage dispatch, zero when unused.
+    foundation::uint32 StorageLaunchHeight = 0;
 };
 /// Whether a pass's ToneMap fields form an admitted pair: a zero exposure with the Reinhard (zero) code, or an exposure
 /// in [MIN_TONE_MAPPING_EXPOSURE, MAX_TONE_MAPPING_EXPOSURE] with either curve on a RayTracing or ColorAndDepth pass.

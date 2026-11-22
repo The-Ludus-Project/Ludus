@@ -29,7 +29,7 @@ MAX_UNIFORM_BINDINGS = 16
 MAX_UNIFORM_FIELDS = 256
 MAX_UNIFORM_BLOCK_BYTES = 1024
 UNIFORM_SLOT_COUNT = 8
-FORMAT_VERSION = 15
+FORMAT_VERSION = 16
 ABSENT = 0xFFFFFFFF
 # Exact technique identities and their numeric program roles, in format order.
 PROGRAMS = {'DefaultStaticOpaque.ColorAndDepth': 'ColorAndDepth', 'DefaultStaticOpaque.DepthOnly': 'DepthOnly',
@@ -155,7 +155,8 @@ def lower_plan(package, configuration):
         build.require('shader_struct' not in value or 'stride' in value['shader_struct'],
                       'Package', resource, 'shader struct size is unresolved. Build the graph before cooking it.')
         build.require(value['type'] == 'Buffer' or (value['format'] in ('RGBA8Unorm', 'Depth32Float') and value['samples'] == 1 and
-                      not value['initialized'] and (not value['imported'] or value['presentation'])),
+                      (not value['initialized'] or value.get('storage_texture', False)) and
+                      (not value['imported'] or value['presentation'])),
                       'Configuration', resource, 'unqualified format/sample/import/history profile')
         parent = plan['resources'][backing[resource]]
         resource_records.append({'Width': value['extent'][0], 'Height': value['extent'][1],
@@ -169,6 +170,7 @@ def lower_plan(package, configuration):
     color_defined = {r: False for r in resources}
     has_color_input = any(operation['kind'] == 'RayTracing' and 'source_color' in operation
                           for operation in operations)
+    has_storage_texture = any(operation.get('storage_texture', False) for operation in operations)
     ray_colors = {}
     for operation in operations:
         if operation['kind'] == 'Upscale':
@@ -222,6 +224,7 @@ def lower_plan(package, configuration):
             recipes = [recipe for recipe in package.get('recipes', []) if recipe['technique'] == ray.TECHNIQUE and
                        recipe.get('visibility_buffer', False) == ('visibility' in operation) and
                        recipe.get('color_input', False) == has_color_input and
+                       recipe.get('storage_texture', False) == has_storage_texture and
                        recipe.get('native_ray_queries', True) == ray.requires_native_queries(plan)]
             variants = recipes[0].get('ray_programs', [list(ray.get_callback_variant(operation['pipeline']))]) if recipes else [list(ray.get_callback_variant(operation['pipeline']))]
             variant = list(ray.get_callback_variant(operation['pipeline']))
@@ -232,7 +235,7 @@ def lower_plan(package, configuration):
                 persistent_slots[use['slot']] = resources.index(use['resource'])
             pass_records.append({'Program': 'RayTracing', 'Camera': cameras.index(operation['view']) if color else ABSENT,
                 'Color': resources.index(color['resource']) if color else ABSENT, 'Depth': ABSENT,
-                'ColorLoad': 'Clear' if color else 'Discard', 'ColorStore': 'Store' if color else 'Discard',
+                'ColorLoad': color['load'] if color else 'Discard', 'ColorStore': 'Store' if color else 'Discard',
                 'DepthLoad': 'Discard', 'DepthStore': 'Discard', 'AllowsRepeatedCoverage': 0, 'SceneData': operation.get('scene_data', graph.scene_bundle.ALL_DATA),
                 'RayProgram': variants.index(variant), 'Buffer0': persistent_slots[0], 'Buffer1': persistent_slots[1],
                 'Visibility': resources.index(operation['visibility']['resource']) if 'visibility' in operation else ABSENT,
@@ -300,6 +303,15 @@ def lower_plan(package, configuration):
         record['ToneMappingCurve'] = operation.get('tone_mapping', {}).get('curve', 'Reinhard')
         if 'work_items' in operation:
             record['WorkItemCount'] = operation['work_items']
+        if operation.get('storage_texture', False):
+            build.require(not any(field in operation for field in ('accumulation', 'denoising', 'tone_mapping')),
+                          'Capability', operation['id'],
+                          'storage texture results bypass image processing; sample the texture in a later image pass')
+            record['StorageLaunchWidth'], record['StorageLaunchHeight'] = operation['dimensions'][:2]
+        for attachment in operation.get('attachments', {}).values():
+            build.require(not plan['resources'][attachment['resource']].get('storage_texture') or
+                          operation.get('storage_texture', False), 'Capability', operation['id'],
+                          'a storage output must have a dedicated Target; connect a separate attachment for image writes')
     return plan, resource_records, pass_records, cameras
 
 
@@ -362,8 +374,8 @@ CAPTURE_PROFILE_PACKAGE_MAGIC = 0x4352554C
 # Version 38 admits the World-feature scene resource bits: the linked ray kernel reads the Atmosphere sky or the
 # aerial perspective table.
 # Version 39 appends the buffer-only scene dispatch work item count to each pass.
-# Version 41 allows a scene compute pass to sample an earlier pass through SourceColor.
-PACKAGE_VERSION = 41
+# Version 42 appends a storage output's explicit 2D launch size and native Metal workgroup metadata.
+PACKAGE_VERSION = 42
 # render_graph_format::DisplayCurve codes, by index; zero (Reinhard) also marks a pass without a ToneMap.
 DISPLAY_CURVE_CODES = ('Reinhard', 'PbrNeutral')
 # Version 25 scene resource word: the linked ray kernel reads the renderer's LTC table.
@@ -377,6 +389,7 @@ SCENE_RESOURCE_ATMOSPHERE_SKY = 8
 SCENE_RESOURCE_AERIAL_PERSPECTIVE = 16
 RESOURCE_FIELD_COUNT = 9
 RESOURCE_RECORD_BYTES = RESOURCE_FIELD_COUNT * 4
+PASS_RECORD_BYTES = 24 * 4
 MAX_PASS_NAME_BYTES = 127
 IDENTITY_BYTES = 32
 MAX_RUNTIME_BYTES = 16 * 1024 * 1024
@@ -507,11 +520,13 @@ def _runtime_contents(path, configuration):
     plan, resources, passes, cameras = lower_plan(package, configuration)
     has_visibility = any(p.get('Visibility', ABSENT) != ABSENT for p in passes)
     has_color_input = any(p['Program'] == 'RayTracing' and p['SourceColor'] != ABSENT for p in passes)
+    has_storage_texture = any('StorageLaunchWidth' in p for p in passes)
     selected_techniques = set(plan['techniques'])
     ray_recipes = [recipe for recipe in package['recipes'] if ray.TECHNIQUE in selected_techniques and
                    recipe['technique'] == ray.TECHNIQUE and
                    recipe.get('visibility_buffer', False) == has_visibility and
                    recipe.get('color_input', False) == has_color_input and
+                   recipe.get('storage_texture', False) == has_storage_texture and
                    recipe.get('native_ray_queries', True) == ray.requires_native_queries(plan)]
     stages = {}
     roles = program_roles(package)
@@ -897,7 +912,7 @@ def _emit_runtime(path, destination, *, configuration='Default', name='DefaultGr
                 lines += ['        },', '    };', f'    result.{member}.Inputs = {{{declaration}Inputs.GetData(), {declaration}Inputs.GetSize()}};']
             if program_name in ('RayTracing', 'NativeRayStages'):
                 lines += ['    renderer::SetRenderGraphRayInterface(result.' + member + ', rhi::ShaderStage::' + stage.title() + ', result.HasPersistentRayBuffers, result.HasVisibilityBuffer, ' + ('true' if ray.requires_native_queries(contents['plan']) else 'false') + ');']
-            if program_name == 'RayTracing' and stage == 'compute':
+            if program_name in ('RayTracing', 'NativeRayStages') and stage == 'compute':
                 shape = contents['artifacts'][keys[0]]['descriptor']['interface']['workgroup']
                 for axis, dimension in enumerate(shape):
                     lines.append(f'    result.{member}.WorkgroupSize[{axis}] = {dimension};')
@@ -974,6 +989,7 @@ def encode_runtime_package(contents, *, magic=PACKAGE_MAGIC):
         data += u32(p.get('DenoisingQuality', 0))
         data += u32(ray.TRAVERSAL_CODES.index(p.get('Traversal', 'NativeQuery')))
         data += u32(DISPLAY_CURVE_CODES.index(p.get('ToneMappingCurve', 'Reinhard')), p.get('WorkItemCount', 0))
+        data += u32(p.get('StorageLaunchWidth', 0), p.get('StorageLaunchHeight', 0))
     for b in contents['bindings']:
         data += u32(PROGRAM_CODES[b['Program']], b['Slot'], VISIBILITY[b['Stages']], b['ValueOffset'], b['ValueCount'])
     for b in contents['blocks']:
@@ -990,7 +1006,7 @@ def encode_runtime_package(contents, *, magic=PACKAGE_MAGIC):
                           else role('ForwardSurfaceChart', 'fragment') + 1)
         data += u32(stage_role, TARGET_CODES[target], len(inputs), len(entry), len(item['bytes']),
                     len(item['blocks']))
-        if program_name == 'RayTracing' and stage == 'compute':
+        if program_name in ('RayTracing', 'NativeRayStages') and stage == 'compute':
             workgroup = item['descriptor']['interface']['workgroup']
             build.require(workgroup in ray.SUPPORTED_WORKGROUP_SIZES, 'ShaderInterface', program_name,
                           'ray workgroup differs from the admitted compiler policy')

@@ -109,7 +109,7 @@ def verify_ray_compute_metal(code, interface, requires_native_queries=True):
     if not requires_native_queries and (scenes or 'intersection_query<' in code or 'metal_raytracing' in code):
         raise RuntimeError('Software ray Metal artifact must not require native ray traversal')
     for binding in interface['entries']:
-        resource = 'texture' if binding['kind'] in ('Texture2D', 'TextureDepth2D') else 'buffer'
+        resource = 'texture' if binding['kind'] in ('Texture2D', 'TextureDepth2D', 'StorageTexture2DReadWrite') else 'buffer'
         # Slang reflects a World-feature table (renderer_gpu_preview_layout.h) from the call graph, which records
         # the graph's support; SPIRV-Cross may still drop a read its optimizer proved unreachable. The renderer
         # binding a buffer at an index the kernel never declares is harmless, so only a moved slot fails.
@@ -294,7 +294,8 @@ def compile_graph_stage(args, lock):
         artifact.write_text(code)
         reflection.write_text(json.dumps(document))
     interface = raster_interface(document, stage, metal and not translated_compute and not native_pipeline,
-                                 structured_records=translated_compute or native_pipeline, dxil=dxil)
+                                 structured_records=translated_compute or native_pipeline, dxil=dxil,
+                                 graph_storage_texture=getattr(args, 'graph_storage_texture', False))
     if translated_compute:
         from compile_raster import verify_storage_record_strides
         verify_storage_record_strides(intermediate.read_bytes(), interface)
