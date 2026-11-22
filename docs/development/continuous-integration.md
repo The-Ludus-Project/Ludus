@@ -456,6 +456,13 @@ To submit a fix while develop is red:
    `threading-windows` use `threading-platforms.yml`. The `windows` workflow is
    `windows-direct3d12.yml` and `recovery` is `filesystem-recovery.yml`.
    Branch dispatches never deploy the wiki or promote.
+
+   Batches use `main`'s job names. When `develop` has merged a batch job into
+   another one that runs the same tests, a branch dispatch runs only the new
+   job. The gate accepts that job as evidence until promotion: for example,
+   **Packaged browser tests (software GPU)** proves the old **Renderer browser
+   tests** suites. `develop_health.py` lists each pair in
+   `PENDING_PROMOTION_SUCCESSORS`. Remove an entry once `main` defines the new job.
 4. When each declared job has succeeded on the PR's exact head commit, re-run
    the **Develop health** check. Editing the description re-runs only that check.
 
