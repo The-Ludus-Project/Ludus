@@ -3675,6 +3675,13 @@ Status RenderGraph::updateScene(BorrowedView<const RenderGraphMesh> meshes,
             {
                 unrenderedWorldFeatures |= GetWorldFeatureBit(WorldFeature::AerialPerspective);
             }
+            if (admittedCamera.Atmosphere.Aurora.IsEnabled == true &&
+                admittedCamera.Atmosphere.Aurora.EmissionPerMetre != 0 &&
+                renderer::GetWorldFeatureSupport(state.Programs, WorldFeature::Aurora) ==
+                    WorldFeatureSupport::NotRendered)
+            {
+                unrenderedWorldFeatures |= GetWorldFeatureBit(WorldFeature::Aurora);
+            }
         }
         if (state.Programs.HasClusteredDeferred == false)
         {

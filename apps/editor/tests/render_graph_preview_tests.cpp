@@ -1501,6 +1501,11 @@ TEST_CASE("a graph that omits World features names them, the functions that draw
     CHECK(SummarizeUnrenderedWorldFeatures(both) ==
           QStringLiteral("Atmosphere sky and aerial perspective not rendered by this graph"));
     CHECK(SummarizeUnrenderedWorldFeatures(0).isEmpty() == true);
+    const renderer::WorldFeatureMask aurora = renderer::GetWorldFeatureBit(renderer::WorldFeature::Aurora);
+    const QString omittedAurora = DescribeUnrenderedWorldFeatures(QStringLiteral("main"), aurora);
+    CHECK(omittedAurora.contains(QStringLiteral("Force raster")) == true);
+    CHECK(omittedAurora.contains(QStringLiteral("turn off Northern lights")) == true);
+    CHECK(omittedAurora.contains(QStringLiteral("ray callback")) == false);
     CHECK(line.contains(QLatin1Char('\n')) == false);
 }
 
@@ -6267,6 +6272,40 @@ TEST_CASE("The selected World viewport renders its authored Atmosphere entity",
     REQUIRE(waitFor([&]() { return graphViewOrNull->GetImage() == nightSky; }) == true);
     RenderGraphPreview* previewOrNull = rendererWorkspace.GetPreviewOrNull();
     REQUIRE(previewOrNull != nullptr);
+
+    RenderPreview& source = world.GetRenderPreview();
+    source.SetExposureMode(ViewportExposureMode::Graph);
+    math::Vector3 forwardWorld;
+    REQUIRE(math::TryNormalize(math::Vector3{0, 0.39F, 1}, forwardWorld) == math::MathStatus::Success);
+    math::Quaternion orientation;
+    REQUIRE(math::TryRotationBetween({0, 0, -1}, forwardWorld, orientation) == math::MathStatus::Success);
+    QJsonObject navigation = source.Navigation();
+    navigation.insert(QStringLiteral("camera"), QString{});
+    navigation.insert(QStringLiteral("eyeX"), 0);
+    navigation.insert(QStringLiteral("eyeY"), 2);
+    navigation.insert(QStringLiteral("eyeZ"), 0);
+    navigation.insert(QStringLiteral("rotationX"), static_cast<float64>(orientation.X));
+    navigation.insert(QStringLiteral("rotationY"), static_cast<float64>(orientation.Y));
+    navigation.insert(QStringLiteral("rotationZ"), static_cast<float64>(orientation.Z));
+    navigation.insert(QStringLiteral("rotationW"), static_cast<float64>(orientation.W));
+    const uint64 priorView = previewOrNull->GetPresentedRevision();
+    source.RestoreNavigation(navigation);
+    REQUIRE(waitFor([&]() { return previewOrNull->GetPresentedRevision() > priorView; }) == true);
+    const QImage withoutAurora = graphViewOrNull->GetImage();
+
+    QCheckBox* auroraOrNull = world.findChild<QCheckBox*>(QStringLiteral("worldField:atmosphere/aurora"));
+    QLineEdit* emissionOrNull = world.findChild<QLineEdit*>(QStringLiteral("worldField:atmosphere/auroraEmission"));
+    REQUIRE(auroraOrNull != nullptr);
+    REQUIRE(emissionOrNull != nullptr);
+    auroraOrNull->setChecked(true);
+    emissionOrNull->setText(QStringLiteral("0.00005"));
+    REQUIRE(world.Apply() == true);
+    REQUIRE(waitFor([&]() {
+                renderer::ViewDescription presented;
+                return previewOrNull->TryGetPresentedView(presented) == true &&
+                       presented.Atmosphere.Aurora.IsEnabled == true && graphViewOrNull->GetImage() != withoutAurora;
+            }) == true);
+
     const uint64 skyRevision = previewOrNull->GetPresentedRevision();
     world.GetRenderPreview().Orbit(2, 0);
     REQUIRE(waitFor([&]() { return previewOrNull->GetPresentedRevision() > skyRevision; }) == true);

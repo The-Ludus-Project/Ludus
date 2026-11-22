@@ -48,6 +48,34 @@
       "help": "Bind a different directional light to the optional lunar disk. Its Transform or celestial driver sets the direction."
     },
     {
+      "id": "aurora",
+      "label": "Northern lights",
+      "type": "boolean",
+      "default": false,
+      "unit": "",
+      "help": "Draw auroral curtains toward this entity's local +Z direction. Use a perspective camera and look low in the night sky."
+    },
+    {
+      "id": "auroraEmission",
+      "label": "Aurora emission",
+      "type": "number",
+      "default": 0.0000005,
+      "unit": "nits/m",
+      "min": 0,
+      "max": 0.001,
+      "help": "Peak brightness added per metre through a curtain. Zero hides the layer."
+    },
+    {
+      "id": "auroraTime",
+      "label": "Aurora time",
+      "type": "number",
+      "default": 0,
+      "unit": "s",
+      "min": 0,
+      "max": 120,
+      "help": "Preview a moment in the 120-second loop. Play starts the animation here."
+    },
+    {
       "id": "clouds",
       "label": "Cloud layer",
       "type": "boolean",

@@ -5628,15 +5628,15 @@ operation that can also reduce noise.
 ### World features
 
 A World can contain optional features, such as an **Atmosphere**, that a render
-graph may or may not draw. Each feature maps to one engine-owned scene function.
-When a ray kernel calls the function, the graph draws the feature. You do not
-declare support in the manifest. The builder records it from the functions the
-compiled kernel calls.
+graph may draw. The builder records ray support from the engine-owned scene
+functions called by the compiled kernel. The clustered deferred renderer also
+draws native raster features.
 
 | Feature | Scene function | Where to call it | Without it | Ray approximation |
 | --- | --- | --- | --- | --- |
 | Atmosphere sky | `EvaluateEnvironment(scene, directionWorld)` | Return it where a ray leaves the scene: in the miss callback, or where ray generation finds no surface. EvaluateLightAlongRay, SampleLight and FollowSpecularChain call it for you. | The background is the World environment, and the Atmosphere's Sun is not dimmed by the air. | A distant sky resolved at the camera's altitude when the scene is prepared, without the night sky, replaces the World environment; the linked Sun keeps the illuminance that reaches the camera. |
 | Aerial perspective | `ApplyAerialPerspective(scene, originWorld, hitWorld, radiance)` | Call it on the radiance a camera ray brings back from a surface, in the closest-hit callback or in ray generation after shading, with the ray origin and the hit position. | Distant surfaces are neither hazed nor dimmed by the air. | Every segment uses the haze seen from the camera's altitude, read from a table resolved when the scene is prepared, up to 32 km. |
+| Northern lights | — | Use the native clustered deferred raster graph with a perspective camera inside the clear-air shell. | The sky has no auroral curtains. | — |
 
 `graphics::renderer::DescribeWorldFeature` owns this text, and the editor shows
 the same table. A renderer test compares this page with it, so edit both

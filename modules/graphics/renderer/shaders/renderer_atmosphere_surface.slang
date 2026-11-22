@@ -189,7 +189,8 @@ void IntegrateAtmosphereViewSegment(in float3 positionWorld, out float3 outTrans
 {
     IntegrateClearAtmosphereViewSegment(positionWorld, outTransmittance, outInscattered);
     CloudLayerParameters cloud = UnpackCloudLayer(deferredView.AtmosphereCloudLayer);
-    if (cloud.AxisXWorld.w <= 0)
+    AuroraLayerParameters aurora = UnpackAuroraLayer(deferredView.AtmosphereAuroraLayer);
+    if (cloud.AxisXWorld.w <= 0 && aurora.AxisXWorld.w <= 0)
     {
         return;
     }
@@ -199,6 +200,21 @@ void IntegrateAtmosphereViewSegment(in float3 positionWorld, out float3 outTrans
     float3 rayWorld = offsetWorld / max(distanceMetres, DIRECTION_EPSILON);
     float3 upWorld = deferredView.AtmosphereRadialUpWorld.xyz;
     float3 sunWorld = deferredView.AtmosphereSunWorld.xyz;
+    if (aurora.AxisXWorld.w > 0 && distanceMetres > 0)
+    {
+        float height = deferredView.AtmosphereRadialUpWorld.w;
+        float3 emission =
+            IntegrateAuroraLayer(aurora, upWorld, rayWorld, height, distanceMetres * ATMOSPHERE_KILOMETRES_PER_METRE);
+        if (any(emission > 0))
+        {
+            outInscattered +=
+                emission * SampleTransmittance(atmosphereTransmittanceTexture, height, dot(upWorld, rayWorld));
+        }
+    }
+    if (cloud.AxisXWorld.w <= 0)
+    {
+        return;
+    }
     CloudLayerSegment segment = IntegrateCloudLayer(atmosphereTransmittanceTexture,
                                                     cloud,
                                                     rayWorld,

@@ -216,7 +216,10 @@ QString DescribeUnrenderedWorldFeatures(const QString& configuration, renderer::
         }
         const renderer::WorldFeatureDescription description = renderer::DescribeWorldFeature(feature);
         names.append(QString::fromUtf8(description.Name));
-        functions.append(QString::fromUtf8(description.Function));
+        if (*description.Function != '\0')
+        {
+            functions.append(QString::fromUtf8(description.Function));
+        }
         omissions.append(QString::fromUtf8(description.Omission));
     }
     if (names.isEmpty() == true)
@@ -226,14 +229,18 @@ QString DescribeUnrenderedWorldFeatures(const QString& configuration, renderer::
     const QString graph = configuration.isEmpty() == true
                               ? QStringLiteral("The selected graph configuration")
                               : QStringLiteral("Graph configuration “%1”").arg(configuration);
-    return QStringLiteral("World features not rendered: %1. %2 draws the World without them. %3 To draw them, call %4 "
-                          "from a ray callback, as the World features table in Render Preview shows. Or turn on Force "
-                          "raster in the viewport toolbar to see them with the engine's default raster graph, or "
-                          "disable the Atmosphere entity in the World.")
-        .arg(names.join(QStringLiteral(", ")),
-             graph,
-             omissions.join(QLatin1Char(' ')),
-             functions.join(QStringLiteral(" and ")));
+    const bool hasMissingAurora = (features & renderer::GetWorldFeatureBit(renderer::WorldFeature::Aurora)) != 0;
+    const QString rayHelp = functions.isEmpty() == true
+                                ? QString{}
+                                : QStringLiteral(" Call %1 from a ray callback, as the World features table in "
+                                                 "Render Preview shows.")
+                                      .arg(functions.join(QStringLiteral(" and ")));
+    const QString disableHelp = hasMissingAurora == true && functions.isEmpty() == true
+                                    ? QStringLiteral("turn off Northern lights in Atmosphere Properties")
+                                    : QStringLiteral("disable the Atmosphere entity in the World");
+    return QStringLiteral("World features not rendered: %1. %2 draws the World without them. %3%4 Turn on Force "
+                          "raster in the viewport toolbar to use the engine's default raster graph, or %5.")
+        .arg(names.join(QStringLiteral(", ")), graph, omissions.join(QLatin1Char(' ')), rayHelp, disableHelp);
 }
 
 QString DescribeRenderGraphFailureStage(renderer::RenderGraphFailureStage stage)

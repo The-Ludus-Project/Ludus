@@ -38,6 +38,19 @@ struct CloudLayerUniform final
                                      const ViewDescription& camera,
                                      CloudLayerUniform& outUniform) noexcept;
 
+// Mirrors AuroraLayerParameters in the sky and deferred resolve shaders.
+struct AuroraLayerUniform final
+{
+    foundation::math::Vector4 AxisXWorld{};
+    foundation::math::Vector4 AxisZWorld{};
+};
+
+/// Validate the emission, frame and time. Write zero for disabled or unsupported views.
+[[nodiscard]] bool TryPackAuroraLayer(const AtmosphereDescription& atmosphere,
+                                      bool isOrthographic,
+                                      bool isOrbital,
+                                      AuroraLayerUniform& outUniform) noexcept;
+
 struct AtmosphereLightingResources final
 {
     rhi::BindingLayoutHandle Layout{};

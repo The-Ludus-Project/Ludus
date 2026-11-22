@@ -2573,6 +2573,15 @@ multiple scattering, so thick clouds look darker than real ones. Orthographic
 views, ray-traced configurations and RT1 reference captures leave it out.
 [Cloud transport contract](../architecture/world-environment.md#controlled-cloud-layer)
 
+To add northern lights, select the Atmosphere, tick **Northern lights** in
+Properties, and apply. Look low toward the Atmosphere entity's local +Z at
+night. Rotate the entity around its up axis to move the curtains around the
+horizon. **Aurora emission** controls their brightness. **Aurora time** selects
+a frame in the 120-second loop. The viewport shows that fixed time for authoring
+and Play advances from it. Use a perspective camera inside the atmosphere and
+**Force raster** if the active graph omits the effect.
+[Aurora transport contract](../architecture/world-environment.md#auroral-curtains)
+
 A perspective camera above the atmosphere can see the illuminated limb and
 the celestial background. The ground uses a dark boundary. Below ground or
 outside the supported sky range, the graph uses its ordinary background.
