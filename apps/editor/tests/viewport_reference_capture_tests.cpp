@@ -1,4 +1,7 @@
 #include "internal/builtin_world.h"
+#if defined(LUDUS_EDITOR_NATIVE_PREVIEW)
+#    include "internal/celestial_time_lapse_window.h"
+#endif
 #include "internal/light_switches.h"
 #include "internal/reference_capture_window.h"
 #include "internal/render_preview.h"
@@ -1333,3 +1336,23 @@ TEST_CASE("Supplied World completes reference capture with all reference modes",
     preview.Stop();
     rhi::Shutdown();
 }
+
+#if defined(LUDUS_EDITOR_NATIVE_PREVIEW)
+TEST_CASE("Celestial time-lapse evaluates absolute times, including both selected endpoints", "[editor][time-lapse]")
+{
+    constexpr float64 START = 9700.125;
+    constexpr float64 END = 9700.25;
+    constexpr int32 FRAME_COUNT = 121;
+    float64 time = 0;
+    REQUIRE(TryGetCelestialFrameTime(START, END, FRAME_COUNT - 1, FRAME_COUNT, time) == true);
+    CHECK(time == END);
+    REQUIRE(TryGetCelestialFrameTime(START, END, FRAME_COUNT / 2, FRAME_COUNT, time) == true);
+    CHECK(time == (START + END) * 0.5);
+    REQUIRE(TryGetCelestialFrameTime(START, END, 0, FRAME_COUNT, time) == true);
+    CHECK(time == START);
+    CHECK(TryGetCelestialFrameTime(END, START, 0, FRAME_COUNT, time) == false);
+    CHECK(TryGetCelestialFrameTime(START, END, FRAME_COUNT, FRAME_COUNT, time) == false);
+    CHECK(TryGetCelestialFrameTime(START, END, 0, 1, time) == false);
+    CHECK(time == START);
+}
+#endif
