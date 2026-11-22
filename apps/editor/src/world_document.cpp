@@ -1116,10 +1116,13 @@ bool WorldDocument::Validate(const QJsonObject& candidate, QString& error) const
                 const QJsonValue v = props.value(property);
                 if (v.isUndefined() == true)
                 {
-                    // Older Worlds may omit fields added by the built-in schema extensions.
+                    // Older Worlds may omit fields added by the built-in schema extensions. A World
+                    // saved before the aurora layer keeps it off at its default emission and time.
                     const bool isNewAtmosphereField =
                         HasBuiltInSchema() == true && c.key() == GetWorldAtmosphereComponentId() &&
-                        (property == QStringLiteral("moon") || property == QStringLiteral("stars"));
+                        (property == QStringLiteral("moon") || property == QStringLiteral("stars") ||
+                         property == QStringLiteral("aurora") || property == QStringLiteral("auroraEmission") ||
+                         property == QStringLiteral("auroraTime"));
                     const bool isNewTerrainField =
                         HasBuiltInTerrain() == true && c.key() == terrainComponent &&
                         (IsTerrainSurfaceProperty(property) == true || property == GetTerrainNoiseLayoutKey());
