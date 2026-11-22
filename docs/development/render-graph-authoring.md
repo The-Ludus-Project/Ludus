@@ -574,7 +574,7 @@ Texture compatibility belongs to the operation using the texture. The current
 color/depth raster operation requires equal attachment extents and sample counts;
 GraphicsPipeline writable resources must match their declared format and pipeline
 samples. The triangle ray profile requires a single-sample offscreen RGBA8Unorm
-color target, with target-derived launch sizing or matching explicit dimensions.
+color target. Ray launch dimensions can follow the target or use fixed counts.
 The canvas and Properties connection controls reject newly provable mismatches,
 including ones resolved through nested subgraphs. The message names the operation,
 dimensions or format/samples, and the repair. A size alone does not imply that two
@@ -1082,10 +1082,13 @@ New ray nodes use **Invocation > Launch size > Match color target**
 (`"dimensions": "ColorTarget"`). The compiler derives `[width, height, 1]` from
 the connected writable color target separately for each graph instance; the
 Plan lists the resolved launch dimensions. Reusing the subgraph with a different
-target extent requires no edit to its ray node. Existing explicit dimensions
-remain supported and are preserved when opening or saving a graph. To keep an
-explicit launch size, select **Explicit size** and enter the color target's exact
-`[width, height, 1]`; a mismatch reports both sizes and the target's identity.
+target extent requires no edit to its ray node. **Explicit size** launches the
+entered `[width, height, 1]` even when the target resizes. The renderer clears the
+target and stores returned colors at the corresponding texels from the top-left
+origin, clipping writes to the target bounds. A larger target keeps its clear
+color beyond the launch rectangle. A visibility-driven pass requires one
+invocation per visibility texel, so use **Match color target** for a
+view-relative visibility input.
 The same launch-size controls are available from the canvas node editor with
 Properties hidden. Feed Scene and Camera into those inputs,
 the target into both Camera's designated target and the ray node, and the ray
@@ -1507,8 +1510,8 @@ surfaces make the same undoable document edit, and **Save** publishes it.
    and up to two **Buffer** rows with **Load**/**Store**. Connect them as for a
    Ray Tracing Pipeline node.
 5. **Invocation → Launch size** offers **Match color target** or **Explicit
-   size**, as for ray nodes. An explicit `[width, height, 1]` must match the
-   connected color target. The canvas reports a mismatch when you connect it.
+   size**, as for ray nodes. An explicit `[width, height, 1]` remains fixed across
+   target resizes. Returned colors are stored in the overlap with the target.
 6. **Pipeline State → Overrides → Group size** offers **64 × 1 × 1**
    and **8 × 8 × 1**. The same form is available from the canvas with Properties
    hidden. All explicit overrides in the bundle must agree; automatic passes
@@ -1566,10 +1569,9 @@ applied before the wire. Query `GetDimensions` and bound coordinates against
 the source extent if the targets differ. The renderer orders the producer's
 color write before the consumer's read on Metal and Vulkan.
 
-Use Compute invocation for an image-producing RayTracingPipeline in this sequence.
-An independent storage texture producer can also use native Metal ray stages. Scene
-visibility/depth inputs and tiled frame capture require a separate configuration
-or whole-frame capture, respectively.
+A RayTracingPipeline producer can use **Compute** invocation or native Metal ray
+stages. Scene visibility/depth inputs and tiled frame capture require a separate
+configuration or whole-frame capture, respectively.
 
 ### Write a storage texture at an independent launch size
 
@@ -1595,7 +1597,7 @@ This mode uses native Vulkan or Metal with tier-2 read/write textures and
 requires the scene shader interface. To accumulate, denoise, or tone-map, first
 sample the texture in a later image pass. Use a separate configuration for
 visibility/depth or ray-path diagnostics. Storage dispatches require a whole-frame
-launch and runtime generation 42.
+launch and runtime generation 42 or later.
 
 <a id="select-emitters-per-screen-tile"></a>
 

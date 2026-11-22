@@ -1246,8 +1246,7 @@ Status Renderer::EnableGpuPreview(const rhi::RasterShaderDescription& compute,
     const bool hasPersistentBuffers = options.StorageBuffers.IsEmpty() == true &&
                                       bufferBindingCount == baseBindingCount + internal::GPU_GRAPH_BUFFER_COUNT;
     if (((hasColorInput == true || hasStorageTexture == true) &&
-         (hasPersistentBuffers == false || hasVisibilityBuffer == true ||
-          (hasStorageTexture == false && options.NativeRayStagesOrNull != nullptr))) ||
+         (hasPersistentBuffers == false || hasVisibilityBuffer == true)) ||
         options.StorageBuffers.IsValid() == false || options.StorageBuffers.GetSize() > format::MAX_STORAGE_BUFFERS ||
         (hasPersistentBuffers == false && bufferBindingCount != storageBindingCount) || compute.WorkgroupSize[0] == 0 ||
         compute.WorkgroupSize[1] == 0 || compute.WorkgroupSize[2] != 1)
@@ -1704,7 +1703,7 @@ Status Renderer::BeginGpuPreview(Snapshot snapshot,
     }
     if (description.MaxDepth > LUDUS_GPU_PREVIEW_MAX_DEPTH ||
         description.TargetSamples > content::render_graph_format::MAX_ACCUMULATION_SAMPLES ||
-        uint64(description.Width) * description.Height > (uint64{1} << 24))
+        uint64{description.Width} * description.Height > content::render_graph_format::MAX_SCENE_WORK_ITEMS)
     {
         return Status::Unsupported;
     }
@@ -1722,6 +1721,11 @@ Status Renderer::BeginGpuPreview(Snapshot snapshot,
         invocationOrNull != nullptr ? invocationOrNull->StorageTexture : rhi::TextureHandle{};
     const bool isStorageDispatch = rhi::IsNull(storageTexture) == false;
     const bool hasImage = isBufferDispatch == false && isStorageDispatch == false;
+    const bool hasExplicitImageLaunch = invocationOrNull != nullptr && invocationOrNull->HasExplicitImageLaunch == true;
+    if (hasExplicitImageLaunch == true && hasImage == false)
+    {
+        return Status::InvalidDescription;
+    }
     if (invocationOrNull != nullptr && rhi::IsNull(colorInput) == false &&
         (state.HasColorInput == false || isBufferDispatch == true))
     {
@@ -2133,6 +2137,7 @@ Status Renderer::BeginGpuPreview(Snapshot snapshot,
     job.Width = description.Width;
     job.Height = description.Height;
     job.WorkItemCount = workItemCount;
+    job.HasExplicitImageLaunch = hasExplicitImageLaunch;
     job.ColorInput = colorInput;
     job.StorageTexture = storageTexture;
     if (isBufferDispatch == true)
@@ -2321,7 +2326,8 @@ Status Renderer::PrepareGpuPreviewGraph(renderer::GpuPreview job,
     {
         return status;
     }
-    if (description.Width != jobOrNull->Width || description.Height != jobOrNull->Height ||
+    if ((jobOrNull->HasExplicitImageLaunch == false &&
+         (description.Width != jobOrNull->Width || description.Height != jobOrNull->Height)) ||
         description.Attachment == false || description.Format != rhi::RasterFormat::Rgba8Unorm ||
         description.SampleCount != 1)
     {
@@ -2434,7 +2440,8 @@ Status Renderer::prepareGpuPreviewGraphSequence(BorrowedView<const renderer::Gpu
         {
             return status;
         }
-        if (description.Width != jobOrNull->Width || description.Height != jobOrNull->Height ||
+        if ((jobOrNull->HasExplicitImageLaunch == false &&
+             (description.Width != jobOrNull->Width || description.Height != jobOrNull->Height)) ||
             description.Attachment == false || description.Format != rhi::RasterFormat::Rgba8Unorm ||
             description.SampleCount != 1 ||
             (visibilityOrNull != nullptr && targets[index] == visibilityOrNull->Attachment.Color))

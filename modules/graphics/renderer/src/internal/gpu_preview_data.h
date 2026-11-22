@@ -152,6 +152,7 @@ struct GpuPreviewRecord final
     /// Referenced GpuPreviewState::Scenes slot; Data, Texels and NativeGeometry below copy its handles.
     usize Scene = NO_GPU_PREVIEW_SCENE;
     bool HasNativeRayInvocation = false;
+    bool HasExplicitImageLaunch = false;
     uint32 WorkItemCount = 0;
     uint64 Generation = 1;
     bool Used = false;

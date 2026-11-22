@@ -265,6 +265,11 @@ void WritePlan(PackageWriter& inoutWriter, const PackageOptions& options, uint32
         inoutWriter.WriteWord(0);
         inoutWriter.WriteWord(0);
     }
+    if (options.Version >= format::IMAGE_LAUNCH_PACKAGE_VERSION)
+    {
+        inoutWriter.WriteWord(0);
+        inoutWriter.WriteWord(0);
+    }
     if (options.HasUniforms == false)
     {
         return;
@@ -1557,8 +1562,10 @@ TEST_CASE("runtime independent shader pairs decode with their own stage and bind
         // WritePlan's uniform fixture starts with the legacy color program. Retarget
         // that serialized binding explicitly; the rest of its layout is unchanged.
         constexpr usize LEGACY_PASS_FIELDS = 10;
-        constexpr usize SCENE_WORK_ITEM_FIELDS = format::PASS_FIELD_COUNT - 2;
-        const usize passBytes = (version >= format::STORAGE_TEXTURE_PACKAGE_VERSION       ? format::PASS_FIELD_COUNT
+        constexpr usize STORAGE_TEXTURE_PASS_FIELDS = format::PASS_FIELD_COUNT - 2;
+        constexpr usize SCENE_WORK_ITEM_FIELDS = STORAGE_TEXTURE_PASS_FIELDS - 2;
+        const usize passBytes = (version >= format::IMAGE_LAUNCH_PACKAGE_VERSION          ? format::PASS_FIELD_COUNT
+                                 : version >= format::STORAGE_TEXTURE_PACKAGE_VERSION     ? STORAGE_TEXTURE_PASS_FIELDS
                                  : version >= format::SCENE_WORK_ITEMS_PACKAGE_VERSION    ? SCENE_WORK_ITEM_FIELDS
                                  : version >= format::RASTER_TONE_MAPPING_PACKAGE_VERSION ? SCENE_WORK_ITEM_FIELDS - 1
                                  : version >= format::SOFTWARE_RAY_PACKAGE_VERSION        ? SCENE_WORK_ITEM_FIELDS - 2

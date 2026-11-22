@@ -29,7 +29,7 @@ MAX_UNIFORM_BINDINGS = 16
 MAX_UNIFORM_FIELDS = 256
 MAX_UNIFORM_BLOCK_BYTES = 1024
 UNIFORM_SLOT_COUNT = 8
-FORMAT_VERSION = 16
+FORMAT_VERSION = 17
 ABSENT = 0xFFFFFFFF
 # Exact technique identities and their numeric program roles, in format order.
 PROGRAMS = {'DefaultStaticOpaque.ColorAndDepth': 'ColorAndDepth', 'DefaultStaticOpaque.DepthOnly': 'DepthOnly',
@@ -308,6 +308,9 @@ def lower_plan(package, configuration):
                           'Capability', operation['id'],
                           'storage texture results bypass image processing; sample the texture in a later image pass')
             record['StorageLaunchWidth'], record['StorageLaunchHeight'] = operation['dimensions'][:2]
+        elif (operation['kind'] == 'RayTracing' and 'dimensions' in operation and
+              operation['pipeline']['invocation']['dimensions'] != 'ColorTarget'):
+            record['ImageLaunchWidth'], record['ImageLaunchHeight'] = operation['dimensions'][:2]
         for attachment in operation.get('attachments', {}).values():
             build.require(not plan['resources'][attachment['resource']].get('storage_texture') or
                           operation.get('storage_texture', False), 'Capability', operation['id'],
@@ -375,7 +378,8 @@ CAPTURE_PROFILE_PACKAGE_MAGIC = 0x4352554C
 # aerial perspective table.
 # Version 39 appends the buffer-only scene dispatch work item count to each pass.
 # Version 42 appends a storage output's explicit 2D launch size and native Metal workgroup metadata.
-PACKAGE_VERSION = 42
+# Version 43 appends an independent 2D launch size for image returns.
+PACKAGE_VERSION = 43
 # render_graph_format::DisplayCurve codes, by index; zero (Reinhard) also marks a pass without a ToneMap.
 DISPLAY_CURVE_CODES = ('Reinhard', 'PbrNeutral')
 # Version 25 scene resource word: the linked ray kernel reads the renderer's LTC table.
@@ -389,7 +393,7 @@ SCENE_RESOURCE_ATMOSPHERE_SKY = 8
 SCENE_RESOURCE_AERIAL_PERSPECTIVE = 16
 RESOURCE_FIELD_COUNT = 9
 RESOURCE_RECORD_BYTES = RESOURCE_FIELD_COUNT * 4
-PASS_RECORD_BYTES = 24 * 4
+PASS_RECORD_BYTES = 26 * 4
 MAX_PASS_NAME_BYTES = 127
 IDENTITY_BYTES = 32
 MAX_RUNTIME_BYTES = 16 * 1024 * 1024
@@ -990,6 +994,7 @@ def encode_runtime_package(contents, *, magic=PACKAGE_MAGIC):
         data += u32(ray.TRAVERSAL_CODES.index(p.get('Traversal', 'NativeQuery')))
         data += u32(DISPLAY_CURVE_CODES.index(p.get('ToneMappingCurve', 'Reinhard')), p.get('WorkItemCount', 0))
         data += u32(p.get('StorageLaunchWidth', 0), p.get('StorageLaunchHeight', 0))
+        data += u32(p.get('ImageLaunchWidth', 0), p.get('ImageLaunchHeight', 0))
     for b in contents['bindings']:
         data += u32(PROGRAM_CODES[b['Program']], b['Slot'], VISIBILITY[b['Stages']], b['ValueOffset'], b['ValueCount'])
     for b in contents['blocks']:

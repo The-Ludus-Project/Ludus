@@ -182,13 +182,16 @@ def validate(node, where, graph):
 
     if 'storage_texture' in invocation:
         graph._boolean(invocation['storage_texture'], where)
-        dimensions = invocation['dimensions']
-        graph._require(not invocation['storage_texture'] or
-                       (dimensions != 'ColorTarget' and dimensions[2] == 1 and
-                        dimensions[0] * dimensions[1] <= ray.MAX_SCENE_WORK_ITEMS),
+        graph._require(not invocation['storage_texture'] or invocation['dimensions'] != 'ColorTarget',
                        'Capability', where, 'storage texture dispatch requires an explicit [width, height, 1] launch',
-                       field='invocation.dimensions',
-                       repair=f'Use depth 1 and a width × height of at most {ray.MAX_SCENE_WORK_ITEMS} invocations.')
+                       field='invocation.dimensions', repair='Set positive explicit width and height values.')
+    if node['kind'] == 'RayTracingPipeline' or is_scene_compute(node):
+        dimensions = invocation.get('dimensions', 'ColorTarget')
+        if dimensions != 'ColorTarget':
+            graph._require(dimensions[2] == 1 and dimensions[0] * dimensions[1] <= ray.MAX_SCENE_WORK_ITEMS,
+                           'Capability', where, 'a 2D ray launch requires [width, height, 1] within the dispatch limit',
+                           field='invocation.dimensions', actual=dimensions,
+                           repair=f'Use depth 1 and a width × height of at most {ray.MAX_SCENE_WORK_ITEMS} invocations.')
 
     if any(field in invocation for field in ('type', 'traversal', 'traversal_source')):
         graph._require(node['kind'] == 'RayTracingPipeline' or is_scene_compute(node),

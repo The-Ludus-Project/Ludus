@@ -366,11 +366,8 @@ def group_profiles(plans, technique, build):
                       'visibility inputs require scene_interface.visibility_buffer')
         has_color_input = any('source_color' in operation for operation in operations)
         has_storage_texture = any(operation.get('storage_texture', False) for operation in operations)
-        build.require(not has_color_input or
-                      (not has_visibility and (has_storage_texture or not requires_native_pipeline(plan))),
-                      'Capability', plan['configuration'],
-                      'scene compute color inputs require an ordered compute sequence without visibility/depth; '
-                      'select Compute invocation on RayTracingPipeline producers')
+        build.require(not has_color_input or not has_visibility, 'Capability', plan['configuration'],
+                      'scene compute color inputs require an ordered scene sequence without visibility/depth')
         has_native_queries = requires_native_queries(plan) or requires_native_pipeline(plan)
         build.require(not has_storage_texture or (not has_visibility and technique.get('scene_interface')),
                       'Capability', plan['configuration'],

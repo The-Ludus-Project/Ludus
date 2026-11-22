@@ -157,8 +157,10 @@ inline constexpr foundation::uint32 DIRECTIONAL_NEAR_PACKAGE_VERSION = 40;
 inline constexpr foundation::uint32 SCENE_COLOR_INPUT_PACKAGE_VERSION = 41;
 /// Version 42 carries explicit launch sizes for independently sized storage textures and native shader workgroup sizes.
 inline constexpr foundation::uint32 STORAGE_TEXTURE_PACKAGE_VERSION = 42;
+/// First generation carrying explicit launch sizes for image returns.
+inline constexpr foundation::uint32 IMAGE_LAUNCH_PACKAGE_VERSION = 43;
 /// Current runtime generation layout version.
-inline constexpr foundation::uint32 PACKAGE_VERSION = STORAGE_TEXTURE_PACKAGE_VERSION;
+inline constexpr foundation::uint32 PACKAGE_VERSION = IMAGE_LAUNCH_PACKAGE_VERSION;
 /// First package carrying explicit OIDN denoising quality per ray pass.
 inline constexpr foundation::uint32 DENOISING_PACKAGE_VERSION = 16;
 /// First package carrying the renderer-owned bilinear image operation.

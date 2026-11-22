@@ -13,7 +13,7 @@ namespace ludus::content::render_graph_format
 {
 /// Static triangle execution profile: opaque/masked raster with per-draw uniforms,
 /// and authored ray functions over immutable scene geometry, materials and lighting.
-inline constexpr foundation::uint32 VERSION = 16;
+inline constexpr foundation::uint32 VERSION = 17;
 /// Opt-in portable raster ABI: static inputs plus primitive halves and draw/instance references.
 inline constexpr foundation::usize VISIBILITY_INPUT_COUNT = 8;
 /// Maximum authored passes in one admitted configuration.
@@ -56,7 +56,7 @@ inline constexpr foundation::uint32 RAY_BUFFER_WORD_BYTES = 16;
 inline constexpr foundation::uint32 MAX_RAY_BUFFER_PIXEL_BYTES = 4096;
 /// Maximum bytes in one persistent buffer, fixed or resolved per pixel.
 inline constexpr foundation::uint32 MAX_RAY_BUFFER_BYTES = 256 * 1024 * 1024;
-/// Maximum logical invocations in one buffer-only scene dispatch.
+/// Maximum logical invocations in an explicit scene dispatch.
 inline constexpr foundation::uint32 MAX_SCENE_WORK_ITEMS = 16 * 1024 * 1024;
 /// Number of shader stages (vertex and fragment) of one technique.
 inline constexpr foundation::usize TECHNIQUE_STAGE_COUNT = 2;
@@ -77,7 +77,7 @@ inline constexpr foundation::usize MAX_UNIFORM_BLOCK_BYTES = 1024;
 /// Largest number of distinct per-draw uniform value sets one technique prepares per extraction.
 inline constexpr foundation::usize MAX_UNIFORM_SETS = 16;
 /// Number of explicitly serialized four-byte fields in a current pass record (uint32 or float32).
-inline constexpr foundation::usize PASS_FIELD_COUNT = 24;
+inline constexpr foundation::usize PASS_FIELD_COUNT = 26;
 /// Serialized four-byte field index of Pass::DenoisingQuality, stable since it was appended in
 /// runtime package version 16; later versions append fields after it.
 inline constexpr foundation::usize PASS_DENOISING_QUALITY_FIELD = 18;
@@ -285,6 +285,11 @@ struct Pass final
     foundation::uint32 StorageLaunchWidth = 0;
     /// Explicit Y invocation count for a storage dispatch, zero when unused.
     foundation::uint32 StorageLaunchHeight = 0;
+    /// Explicit image-return launch width. Zero derives both dimensions from Color.
+    foundation::uint32 ImageLaunchWidth = 0;
+    /// Explicit image-return launch height. Both dimensions are independent of the target extent.
+    /// The renderer places returned colors at corresponding texels in the overlap with Color.
+    foundation::uint32 ImageLaunchHeight = 0;
 };
 /// Whether a pass's ToneMap fields form an admitted pair: a zero exposure with the Reinhard (zero) code, or an exposure
 /// in [MIN_TONE_MAPPING_EXPOSURE, MAX_TONE_MAPPING_EXPOSURE] with either curve on a RayTracing or ColorAndDepth pass.

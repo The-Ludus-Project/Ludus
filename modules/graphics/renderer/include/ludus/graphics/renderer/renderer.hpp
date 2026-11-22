@@ -81,6 +81,9 @@ struct GpuPreviewGraphInvocation final
     /// Its extent is independent of the invocation extent. Retain it through job release
     /// and submitted completion. A null handle selects the existing image or buffer path.
     rhi::TextureHandle StorageTexture{};
+    /// Allow the returned image to use a different extent from the graph attachment. The image is placed
+    /// at the attachment origin and clipped to its bounds after the attachment clear. Requires an image job.
+    bool HasExplicitImageLaunch = false;
 };
 namespace internal
 {
@@ -607,7 +610,8 @@ public:
     /// only after that producer finishes. The GPU job/target outlive graph encoding; RHI retains
     /// submitted resources through completion. Job progress/preview frame leases are unaffected.
     /// @param job Ready GPU job; do not also AdvanceGpuPreview this job.
-    /// @param target Borrowed attachment, cleared/stored in color; private depth is discarded.
+    /// @param target Borrowed attachment, cleared/stored in color; private depth is discarded. An image
+    /// job uses its exact extent unless HasExplicitImageLaunch permits clipping to the attachment bounds.
     /// @param visibilityOrNull Optional visibility producer, appended before the ray dispatch; source differs from
     /// target.
     /// @param outGraph Null graph receives the commands. Failure preserves it and releases temporary leases.
@@ -637,7 +641,8 @@ public:
     /// @param visibilityOrNull Optional opaque visibility producer, appended once before the first ray dispatch.
     /// Every job then samples that same written color/depth image, so the source must not be any job's target.
     /// @param jobs Ready jobs from this Renderer; never also AdvanceGpuPreview them.
-    /// @param targets Borrowed ready RGBA8 attachments with each job's exact extent.
+    /// @param targets Borrowed ready RGBA8 attachments. An image job requires its own extent unless
+    /// HasExplicitImageLaunch permits clipping to the attachment bounds.
     /// @param outGraph Receives compiled commands on Ready; caller discards or encodes once.
     [[nodiscard]] rhi::RasterStatus
     PrepareGpuPreviewGraphSequence(foundation::BorrowedView<const GpuPreview> jobs,

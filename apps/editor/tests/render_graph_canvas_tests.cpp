@@ -2143,7 +2143,11 @@ TEST_CASE("scene compute nodes are authored on the canvas with Properties hidden
         QComboBox* modeOrNull = dialogOrNull->findChild<QComboBox*>(QStringLiteral("rayLaunchSizeMode"));
         REQUIRE(modeOrNull != nullptr);
         CHECK(modeOrNull->currentText() == QStringLiteral("Match color target"));
-        modeOrNull->setCurrentIndex(1);
+        modeOrNull->setCurrentText(QStringLiteral("Explicit size"));
+        const QSpinBox* depthOrNull = dialogOrNull->findChild<QSpinBox*>(QStringLiteral("rayLaunchDimension2"));
+        REQUIRE(depthOrNull != nullptr);
+        CHECK(depthOrNull->value() == 1);
+        CHECK(depthOrNull->isEnabled() == false);
         CHECK(workspace.GetDocument().GetRevision() == revision + 2);
         CHECK(workspace.GetDocument().GetDraft(GetRootGraph()).contains("ColorTarget") == false);
         modeOrNull->setCurrentText(QStringLiteral("Independent storage texture"));

@@ -3115,6 +3115,72 @@ math::Vector3 ComputeMeanRadiance(const Array<uint8>& pixels)
 }
 } // namespace
 
+TEST_CASE("An explicit image launch writes only the overlap with a resized target",
+          "[render-graph][gpu][compute-ray-tracing][explicit-launch]")
+{
+    GraphGpuFixture fixture;
+    const core::UniquePtr<renderer::RenderGraphPackage> package =
+        LoadPackage({LUDUS_RG3_SCENE_COMPUTE_DIRECTORY, "rg2_scene_compute.lurgrt"});
+    renderer::RenderGraphPlan plan = package->GetPlan();
+    const renderer::RenderGraphPrograms programs =
+        package->GetPrograms(shaders::renderer_composite::Vertex(), shaders::renderer_composite::Fragment());
+    REQUIRE(plan.Passes.GetSize() == 1);
+    REQUIRE(plan.Resources.GetSize() == 1);
+    REQUIRE(plan.Passes[0].Color == 0);
+    constexpr uint32 LAUNCH_SIDE = 8;
+    StaticArray<format::Pass, 1> passes{{plan.Passes[0]}};
+    passes[0].ImageLaunchWidth = LAUNCH_SIDE;
+    passes[0].ImageLaunchHeight = LAUNCH_SIDE;
+    plan.Passes = {passes.GetData(), passes.GetSize()};
+    StaticArray<format::Resource, 1> resources{{plan.Resources[0]}};
+    resources[0].ViewNumerator = 1;
+    resources[0].ViewDenominator = 1;
+    plan.Resources = {resources.GetData(), resources.GetSize()};
+
+    const auto finish = [&fixture](rhi::RasterStatus status) {
+        const uint64 beginning = time::NowTicks();
+        while (status == rhi::RasterStatus::Pending && time::NowTicks() - beginning < FIRST_SAMPLE_TIMEOUT_NANOSECONDS)
+        {
+            threading::SleepFor(COMPLETION_POLL_INTERVAL);
+            status = fixture.Graph.Poll();
+        }
+        CAPTURE(fixture.Graph.GetLastFailureStage());
+        REQUIRE(status == rhi::RasterStatus::Ready);
+    };
+    finish(fixture.Graph.Initialize(fixture.Device, plan, programs, nullptr, WIDTH, HEIGHT));
+    fixture.Cameras[0].OrthographicCamera = true;
+    const auto update = [&fixture, &finish](uint64 revision) {
+        renderer::RenderGraphReport report;
+        finish(fixture.Graph.Update({fixture.Meshes.GetData(), fixture.Meshes.GetSize()},
+                                    {fixture.Items.GetData(), fixture.Items.GetSize()},
+                                    {fixture.Cameras.GetData(), fixture.Cameras.GetSize()},
+                                    revision,
+                                    renderer::RenderGraphCoveragePolicy::RejectIncomplete,
+                                    report,
+                                    nullptr,
+                                    revision));
+        renderer::RenderGraphRayWorkload workload;
+        REQUIRE(fixture.Graph.GetRayWorkload(workload) == rhi::RasterStatus::Ready);
+        CHECK(workload.Pixels == LAUNCH_SIDE * LAUNCH_SIDE);
+    };
+
+    Array<uint8> pixels;
+    constexpr usize CHANNEL_COUNT = 4;
+    constexpr uint32 SMALL_TARGET_SIDE = LAUNCH_SIDE / 2;
+    update(1);
+    RenderExport(fixture.Graph, fixture, 0, {WIDTH, HEIGHT}, pixels);
+    const uint8 sampleOne = GetDisplayedOne(passes[0].ToneMappingExposure);
+    CHECK(pixels[GetPixel(LAUNCH_SIDE - 1, LAUNCH_SIDE - 1)] == sampleOne);
+    CHECK(pixels[GetPixel(LAUNCH_SIDE, LAUNCH_SIDE - 1)] == 0);
+    CHECK(pixels[GetPixel(LAUNCH_SIDE - 1, LAUNCH_SIDE)] == 0);
+
+    REQUIRE(fixture.Graph.Resize(SMALL_TARGET_SIDE, SMALL_TARGET_SIDE) == rhi::RasterStatus::Pending);
+    update(2);
+    RenderExport(fixture.Graph, fixture, 0, {SMALL_TARGET_SIDE, SMALL_TARGET_SIDE}, pixels);
+    constexpr usize LAST_SMALL_PIXEL = SMALL_TARGET_SIDE * SMALL_TARGET_SIDE - 1;
+    CHECK(pixels[LAST_SMALL_PIXEL * CHANNEL_COUNT] == sampleOne);
+}
+
 TEST_CASE("The simple triangle-loop template keeps the nearest instance in either input order",
           "[render-graph][gpu][simple-compute-template]")
 {
