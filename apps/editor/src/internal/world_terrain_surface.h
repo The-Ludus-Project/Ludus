@@ -3,6 +3,7 @@
 #include "internal/render_scene.h"
 
 #include <ludus/content/terrain/terrain_fields.h>
+#include <ludus/content/terrain/terrain_noise.h>
 #include <ludus/foundation/base/types.h>
 #include <ludus/foundation/math/addressed_random.hpp>
 #include <ludus/foundation/math/vector.hpp>
@@ -48,6 +49,7 @@ struct TerrainWaterLevels final
 /// @param waterOrNull Water from CarveTerrainRivers, or null without rivers.
 /// @param snowLineMetres Local elevation above which snow settles on gentle slopes.
 /// @param variationKey Random key of the surface variation domain.
+/// @param variationLayout Noise layout of the variation; the terrain recipe's, so a saved World keeps its surface.
 /// @param outImage RGBA8 sRGB pixels whose rows run along +Z; written only on success.
 /// @param outMeanLinear Linear mean of the baked RGB; written only on success.
 /// @param outError The cause and the next step on failure.
@@ -56,6 +58,7 @@ struct TerrainWaterLevels final
                                       const TerrainWaterLevels* waterOrNull,
                                       foundation::float32 snowLineMetres,
                                       foundation::math::RandomKey variationKey,
+                                      content::terrain::TerrainNoiseLayout variationLayout,
                                       QImage& outImage,
                                       foundation::math::Vector3& outMeanLinear,
                                       QString& outError);

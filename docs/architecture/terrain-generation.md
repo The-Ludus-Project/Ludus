@@ -92,11 +92,17 @@ gradient constants, lattice addressing, interpolation, evaluation order,
 normalization, octave order and allowed parameter ranges. Use the quintic fade
 `6t^5 - 15t^4 + 10t^3` and derivatives where useful. Version ridged transforms,
 domain warp and remap curves separately; a function named Noise is not a
-reproducibility specification.
+reproducibility specification. The implemented recipe keeps its original cubic
+fade as frozen noise layout 1 for saved Worlds and adopts the quintic as layout
+2 for new content; see the
+[noise layout migration](../modules/content/terrain.md#noise-layouts-and-the-fade-migration).
 
 Thanks to **Ken Perlin**, *Implementing Improved Perlin Noise*, GPU Gems 1,
 chapter 5, sections 5.3–5.4, for the smooth fade and balanced gradient argument
-([author chapter](https://developer.nvidia.com/gpugems/gpugems/part-i-natural-effects/chapter-5-implementing-improved-perlin-noise)).
+([author chapter](https://developer.nvidia.com/gpugems/gpugems/part-i-natural-effects/chapter-5-implementing-improved-perlin-noise)),
+and *Improving Noise*, SIGGRAPH '02, pp. 681–682, for the cubic's nonzero
+endpoint second derivatives and the quintic replacement
+([paper](https://www.cs.rpi.edu/~cutler/classes/advancedgraphics/S23/papers/perlin_improving_noise_2002.pdf)).
 Ludus's 2D gradient set and addressed sampling are separate versioned choices;
 no chapter shader or periodic lookup table is copied.
 

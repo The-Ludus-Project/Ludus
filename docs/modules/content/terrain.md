@@ -203,9 +203,49 @@ a height. `CanSampleTerrainNoise(shape, halfExtentMetres)` rejects shapes whose
 highest octave would address a lattice point beyond
 `MAX_TERRAIN_LATTICE_POSITION`.
 
-`TERRAIN_NOISE_LAYOUT_VERSION` names the gradient set, fade and octave layout.
-The module tests pin a digest of a golden grid; a different digest requires a
-new layout version, because it would move every saved default World's terrain.
+### Noise layouts and the fade migration
+
+`TerrainNoiseLayout` names the lattice addressing, gradient set, fade and octave
+layout. Store its integer with generated content: `TryGetTerrainNoiseLayout`
+reads it back and rejects versions this build does not implement, and
+`CanSampleTerrainNoise` rejects a shape with an unknown layout.
+
+| Layout | Fade | Status |
+| --- | --- | --- |
+| 1, `CubicFade` | `3t^2 - 2t^3` (FoundationMath `SmoothStep01`) | Frozen. Every terrain recipe saved before the layout was recorded, and every cook replay of one |
+| 2, `QuinticFade` | `6t^5 - 15t^4 + 10t^3`, evaluated as `t^3 (t (6t - 15) + 10)` without fused multiply-adds | Current (`LATEST_TERRAIN_NOISE_LAYOUT`, `TERRAIN_NOISE_LAYOUT_VERSION`); new content records it |
+
+Both layouts read the same gradients at the same lattice addresses, with the
+same octave order and normalization; only the fade that blends a cell's four
+gradients differs. They therefore agree wherever both fade weights are 0, ½
+or 1. Values and first derivatives are continuous across lattice edges in both
+layouts. The cubic's second derivative is `6 (1 - 2t)` times a gradient
+difference, nonzero at both ends of a cell, so it jumps across each edge; that
+crease shows in derivative-derived normals and slope fields. The quintic's
+first and second derivatives vanish at both ends, which closes the jump.
+
+The design calls for the quintic, but changing layout 1 would move the terrain
+of every saved World. Ludus therefore keeps layout 1 exactly as it was and
+adds the quintic as layout 2:
+
+- The World editor's terrain recipe stores the layout in `noiseLayout`. A
+  recipe without the field, as every World saved before it does, is layout 1
+  and keeps its heights and surface variation. New terrain records layout 2.
+  Editing an existing terrain keeps its layout, because a different fade would
+  move its saved heights under any sculpt strokes; add a new terrain to use
+  layout 2.
+- A cooked revision records the layout in its manifest's `RecipeVersion`
+  (`terrain_cook.h`), so a replay regenerates the field with the same fade.
+- `TerrainNoiseShape::Layout` defaults to the latest layout for new content.
+  Readers of stored recipes set the layout the data records.
+
+The module tests pin a digest of a golden grid for each layout; a different
+digest requires a new layout version, never an updated constant. A fixed-key
+lattice-seam test measures one-sided values and derivatives on both sides of a
+lattice edge: values and slopes match for both layouts, the cubic's second
+derivative jumps, and the quintic's is zero on both sides. The cook tests run
+each layout through two page partitions, a scrambled page order and a
+save/reopen replay from the recorded `RecipeVersion`.
 
 ## Derived fields (`terrain_fields.h`)
 
@@ -346,5 +386,10 @@ these kernels to carve rivers and bake its terrain surface; see
   connections; the shallow-saddle fixture measures this for the height codec.
 - Ken Perlin, *Implementing Improved Perlin Noise*, GPU Gems 1, chapter 5.
   Smooth fade and balanced gradients.
+- Ken Perlin, *Improving Noise*, SIGGRAPH '02 (ACM Transactions on Graphics
+  21(3)), pp. 681–682
+  ([paper](https://www.cs.rpi.edu/~cutler/classes/advancedgraphics/S23/papers/perlin_improving_noise_2002.pdf)).
+  The cubic interpolant's nonzero second derivatives at the cell ends and the
+  quintic replacement adopted as noise layout 2.
 - Ferenc Pintér, *Large-Scale Terrain Rendering for Outdoor Games*, GPU Pro 2,
   chapter II.3. Procedural soil maps combined with artist paint.

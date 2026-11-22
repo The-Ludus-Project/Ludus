@@ -15,6 +15,16 @@
       "max": 3
     },
     {
+      "id": "noiseLayout",
+      "label": "Noise layout",
+      "type": "integer",
+      "default": 1,
+      "help": "Selects the saved noise fade. 1 is the original cubic fade that older Worlds keep; new terrain records 2, the smoother quintic fade.",
+      "unit": "",
+      "min": 1,
+      "max": 2
+    },
+    {
       "id": "shape",
       "label": "Shape",
       "type": "enum",

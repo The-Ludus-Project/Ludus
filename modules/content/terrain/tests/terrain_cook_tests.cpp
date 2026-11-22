@@ -10,6 +10,7 @@
 #include <ludus/foundation/math/scalar.hpp>
 
 #include <catch2/catch_test_macros.hpp>
+#include <catch2/generators/catch_generators.hpp>
 
 namespace
 {
@@ -61,11 +62,14 @@ struct Domain final
     Array<float32> Elevations;
 };
 
-[[nodiscard]] terrain::TerrainRevisionLayout MakeLayout(uint32 cellsPerPage = PAGE_CELLS)
+// NOLINTBEGIN(bugprone-easily-swappable-parameters): the page size and the recipe version are distinct.
+[[nodiscard]] terrain::TerrainRevisionLayout MakeLayout(uint32 cellsPerPage = PAGE_CELLS,
+                                                        uint32 recipeVersion = terrain::TERRAIN_NOISE_LAYOUT_VERSION)
+// NOLINTEND(bugprone-easily-swappable-parameters)
 {
     terrain::TerrainRevisionLayout layout;
     layout.Revision = 1;
-    layout.RecipeVersion = terrain::TERRAIN_NOISE_LAYOUT_VERSION;
+    layout.RecipeVersion = recipeVersion;
     layout.SourceDigest = {SEED, 0};
     const uint32 scale = PAGE_CELLS / cellsPerPage;
     layout.FirstPage = {-1 * static_cast<int64>(scale), -2 * static_cast<int64>(scale)};
@@ -90,12 +94,14 @@ struct Domain final
     return origin;
 }
 
-/// Sample the addressed noise recipe by global lattice coordinates, so every partition sees one field.
+/// Sample the addressed noise recipe by global lattice coordinates, so every partition sees one field. The layout's
+/// RecipeVersion selects the noise layout, as a replay of a cooked manifest would.
 void FillDomain(const terrain::TerrainRevisionLayout& layout, uint64 seed, Domain& outDomain)
 {
     math::RandomKey key;
     REQUIRE(math::TryMakeRandomKey(seed, TERRAIN_DOMAIN, key) == math::MathStatus::Success);
     terrain::TerrainNoiseShape shape;
+    REQUIRE(terrain::TryGetTerrainNoiseLayout(layout.RecipeVersion, shape.Layout) == true);
     shape.MaximumElevationMetres = MAXIMUM_ELEVATION_METRES;
     shape.FeatureSizeMetres = FEATURE_SIZE_METRES;
     shape.Roughness = ROUGHNESS;
@@ -333,12 +339,17 @@ TEST_CASE("Terrain page halos repeat their owners' samples and clamp at the doma
     CHECK(terrain::TryGetTerrainPageHeight(empty, 0, 0, height) == TerrainCookStatus::InvalidStorage);
 }
 
-TEST_CASE("Terrain cooking is independent of page partition and cook order", "[terrain][cook]")
+TEST_CASE("Terrain cooking is independent of page partition, cook order and save/reopen for each noise layout",
+          "[terrain][cook]")
 {
+    const terrain::TerrainNoiseLayout noiseLayout =
+        GENERATE(terrain::TerrainNoiseLayout::CubicFade, terrain::TerrainNoiseLayout::QuinticFade);
+    const uint32 recipeVersion = static_cast<uint32>(noiseLayout);
+    INFO("noise layout " << recipeVersion);
     Domain coarse;
-    FillDomain(MakeLayout(PAGE_CELLS), SEED, coarse);
+    FillDomain(MakeLayout(PAGE_CELLS, recipeVersion), SEED, coarse);
     Domain fine;
-    FillDomain(MakeLayout(HALF_PAGE_CELLS), SEED, fine);
+    FillDomain(MakeLayout(HALF_PAGE_CELLS, recipeVersion), SEED, fine);
     terrain::TerrainCookedRevision coarseRevision;
     terrain::TerrainCookedRevision fineRevision;
     CookDomain(coarse, coarseRevision);
@@ -390,6 +401,30 @@ TEST_CASE("Terrain cooking is independent of page partition and cook order", "[t
     CHECK(terrain::TryAssembleTerrainRevision(fine.Layout, scrambled.AsView(), assembled) ==
           TerrainCookStatus::InvalidArgument);
     CHECK(AreBytesEqual(assembled.GetManifestBytes(), fineRevision.GetManifestBytes()));
+
+    // Save the revision, reopen the copies, and replay the field from the recipe version the manifest records.
+    const Array<uint8> savedManifest = CopyBytes(coarseRevision.GetManifestBytes());
+    const Array<uint8> savedPages = CopyBytes(coarseRevision.GetPagePackBytes());
+    terrain::TerrainManifest reopened;
+    REQUIRE(terrain::TryReadTerrainManifest(savedManifest.AsView(), reopened) == TerrainCookStatus::Success);
+    CHECK(reopened.GetLayout().RecipeVersion == recipeVersion);
+    Domain replay;
+    FillDomain(reopened.GetLayout(), SEED, replay);
+    terrain::TerrainCookedRevision replayed;
+    CookDomain(replay, replayed);
+    CHECK(AreBytesEqual(replayed.GetManifestBytes(), savedManifest.AsView()));
+    CHECK(AreBytesEqual(replayed.GetPagePackBytes(), savedPages.AsView()));
+
+    // The recorded version is what selects the field: replaying under the other layout cooks different pages.
+    terrain::TerrainRevisionLayout otherLayout = reopened.GetLayout();
+    otherLayout.RecipeVersion = noiseLayout == terrain::TerrainNoiseLayout::CubicFade
+                                    ? static_cast<uint32>(terrain::TerrainNoiseLayout::QuinticFade)
+                                    : static_cast<uint32>(terrain::TerrainNoiseLayout::CubicFade);
+    Domain other;
+    FillDomain(otherLayout, SEED, other);
+    terrain::TerrainCookedRevision otherRevision;
+    CookDomain(other, otherRevision);
+    CHECK(AreBytesEqual(otherRevision.GetPagePackBytes(), savedPages.AsView()) == false);
 }
 
 TEST_CASE("Terrain assembly rejects pages whose shared samples or halos disagree", "[terrain][cook]")
