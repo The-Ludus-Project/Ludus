@@ -25,7 +25,7 @@ the change in the viewport.
 </figure>
 
 <figure class="render-study-hero" markdown="1">
-<video controls playsinline preload="none" width="768" height="480" aria-label="The Landing from afternoon to blue hour" poster="engineering/assets/renderer/the-landing-time-lapse-poster.webp">
+<video controls playsinline preload="none" width="1728" height="1080" aria-label="The Landing from afternoon to blue hour" poster="engineering/assets/renderer/the-landing-time-lapse-poster.webp">
   <source src="engineering/assets/renderer/the-landing-time-lapse.mp4" type="video/mp4">
   <source src="engineering/assets/renderer/the-landing-time-lapse.webm" type="video/webm">
 </video>
