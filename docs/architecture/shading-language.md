@@ -1071,6 +1071,25 @@ The design's six open questions were resolved by the author on November 4,
 | May game projects relax naming? | Yes, through a project-wide `strict`/`warn`/`off` style setting. The engine is always `strict`, and language rules are never relaxed | [Style rules](#style-rules) |
 | Development bounds checks on local arrays? | Yes, for local and `groupshared` arrays: clamp and latch a mapped failure. Release builds emit no checks | [Development bounds checks](#development-bounds-checks) |
 
+## Conferences and journals to follow
+
+Start with the Khronos shading symposium for changes in Slang and shader
+tooling. Use the graphics and programming-language research venues to evaluate
+language changes, and the game-development archives to see how those choices
+affect shader authors and shipped games.
+
+| Resource | Type | Focus for LUSL |
+| --- | --- | --- |
+| Khronos Real-Time Shading Symposium | Practitioner and research symposium | Follow Slang, HLSL and GLSL compiler development, reflection, source-level debugging and backend portability. Check proposed improvements against LUSL's [Slang lowering and target pipeline](#compiler-architecture). [Khronos program](https://www.khronos.org/events/real-time-shading-symposium-2027) and [2026 Shading Languages Symposium archive](https://www.khronos.org/events/shading-languages-symposium-2026) |
+| ACM SIGGRAPH and SIGGRAPH Asia | Research conferences | Search the technical programs for shader languages, modular materials and cross-stage composition. Compare how those systems express the same material families with [LUSL interfaces and concepts](#interfaces-concepts-and-templates). [ACM SIGGRAPH conference archives](https://www.siggraph.org/siggraph-events/conferences/) |
+| ACM Transactions on Graphics (TOG) | Journal | Look for full language and rendering-system evaluations with representative scenes. Use their baselines to design shader-library migration comparisons for authoring effort, permutation counts and GPU output. [ACM journal](https://dl.acm.org/journal/tog) |
+| High-Performance Graphics (HPG) | Research conference | Look for GPU execution studies, specialized pipelines and shader performance measurements. Use them to choose workloads for timing and generated-code comparisons during [L5 qualification](#l5c-qualification-before-bulk-migration). [HPG programs](https://highperformancegraphics.org/) |
+| ACM SIGPLAN PLDI and OOPSLA, and Proceedings of the ACM on Programming Languages (PACMPL) | Research conferences and journal | Follow compiler correctness and testing at PLDI and language design and type systems at OOPSLA. Search their PACMPL issues for techniques to extend [uniformity checking](#uniformity), [space types](#matrices-and-coordinate-spaces) and differential shader tests. [SIGPLAN conferences](https://sigplan-www.sigplan.hosting.acm.org/Conferences/) and [PACMPL](https://sigplan-www.sigplan.hosting.acm.org/PACMPL/) |
+| IEEE/ACM International Symposium on Code Generation and Optimization (CGO) | Research conference | Look for compiler IR, lowering and optimization studies. Use their measurement methods when evaluating [emitted shader code](#testing) or a future direct backend. [CGO conference series](https://cgo.org/) |
+| GDC Festival of Gaming | Industry conference | Search the programming and graphics sessions for shader cooks, variant budgets and editor iteration. Use production case studies to choose what to measure during the Sample migration and in installed-SDK builds. [GDC Vault](https://gdcvault.com/) |
+| SIGGRAPH Advances in Real-Time Rendering in Games | Industry and research course series | Follow production renderers for patterns that stress shader interfaces, such as material layering and libraries shared across passes. Use them to choose representative Editor and cooked-package fixtures. [Course archive](https://advances.realtimerendering.com/) |
+| Journal of Computer Graphics Techniques (JCGT) | Journal | Look for shader-based techniques with enough implementation detail to reproduce them. Use them as small workloads for [LUSL and Slang parity tests](#testing). [JCGT issues](https://jcgt.org/read.html) |
+
 ## References
 
 These sources informed the design. Code comments will cite them where each idea
