@@ -222,7 +222,8 @@ TEST_CASE("texture-derived size ports accept color and depth but reject values a
               .Code == QStringLiteral("Cycle"));
 }
 
-TEST_CASE("pipeline texture contracts check samples and explicit ray coverage", "[editor][render-graph][render-size]")
+TEST_CASE("pipeline texture contracts check samples and allow fixed ray launch sizes",
+          "[editor][render-graph][render-size]")
 {
     QTemporaryDir project;
     RenderGraphDocument document;
@@ -263,13 +264,12 @@ TEST_CASE("pipeline texture contracts check samples and explicit ray coverage", 
     ray.insert(QStringLiteral("outputs"), pipeline.value(QStringLiteral("outputs")));
     ray.insert(QStringLiteral("invocation"), QJsonObject{{QStringLiteral("dimensions"), QJsonArray{1, 2, 1}}});
     REQUIRE(document.AddNode(ROOT_GRAPH, DEFAULT_CONFIGURATION, ray) == RenderGraphDocumentStatus::Ok);
-    const RenderGraphLinkCheck mismatch = CheckRenderGraphLink(document,
-                                                               ROOT_GRAPH,
-                                                               DEFAULT_CONFIGURATION,
-                                                               QStringLiteral("color.texture"),
-                                                               QStringLiteral("ray.color"));
-    CHECK(mismatch.Code == QStringLiteral("AttachmentMismatch"));
-    CHECK(mismatch.Reason.contains(QStringLiteral("Match color target")) == true);
+    CHECK(CheckRenderGraphLink(document,
+                               ROOT_GRAPH,
+                               DEFAULT_CONFIGURATION,
+                               QStringLiteral("color.texture"),
+                               QStringLiteral("ray.color"))
+              .IsLegal() == true);
     ray.insert(QStringLiteral("invocation"),
                QJsonObject{{QStringLiteral("dimensions"), QStringLiteral("ColorTarget")}});
     REQUIRE(document.ReplaceNode(ROOT_GRAPH, DEFAULT_CONFIGURATION, ray) == RenderGraphDocumentStatus::Ok);
@@ -279,7 +279,7 @@ TEST_CASE("pipeline texture contracts check samples and explicit ray coverage", 
                                QStringLiteral("color.texture"),
                                QStringLiteral("ray.color"))
               .IsLegal() == true);
-    // A scene compute pass is a ray launch: the same color coverage rule applies.
+    // Scene compute also accepts a fixed launch with an independently sized color target.
     QJsonObject kernel;
     REQUIRE(MakeSceneComputeNode(MakePipelineNode(QStringLiteral("ComputePipeline"), QStringLiteral("kernel")),
                                  kernel) == true);
@@ -289,13 +289,12 @@ TEST_CASE("pipeline texture contracts check samples and explicit ray coverage", 
     kernel.insert(QStringLiteral("outputs"), pipeline.value(QStringLiteral("outputs")));
     kernel.insert(QStringLiteral("invocation"), QJsonObject{{QStringLiteral("dimensions"), QJsonArray{1, 2, 1}}});
     REQUIRE(document.AddNode(ROOT_GRAPH, DEFAULT_CONFIGURATION, kernel) == RenderGraphDocumentStatus::Ok);
-    const RenderGraphLinkCheck kernelMismatch = CheckRenderGraphLink(document,
-                                                                     ROOT_GRAPH,
-                                                                     DEFAULT_CONFIGURATION,
-                                                                     QStringLiteral("color.texture"),
-                                                                     QStringLiteral("kernel.color"));
-    CHECK(kernelMismatch.Code == QStringLiteral("AttachmentMismatch"));
-    CHECK(kernelMismatch.Reason.contains(QStringLiteral("Match color target")) == true);
+    CHECK(CheckRenderGraphLink(document,
+                               ROOT_GRAPH,
+                               DEFAULT_CONFIGURATION,
+                               QStringLiteral("color.texture"),
+                               QStringLiteral("kernel.color"))
+              .IsLegal() == true);
     kernel.insert(QStringLiteral("invocation"),
                   QJsonObject{{QStringLiteral("dimensions"), QStringLiteral("ColorTarget")}});
     REQUIRE(document.ReplaceNode(ROOT_GRAPH, DEFAULT_CONFIGURATION, kernel) == RenderGraphDocumentStatus::Ok);
