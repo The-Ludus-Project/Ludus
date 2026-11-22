@@ -217,7 +217,9 @@ LUDUS_SETUP_TEST_SDK="$PWD/out/install/macos-clang-development" LUDUS_RELEASE_TE
 sdk="$PWD/out/install/macos-clang-release"
 sample=examples/lighting-room
 ./scripts/ludus project repair "$sample" --tools "$PWD" --sdk "$sdk" --profile macos-clang-release --no-web
-./scripts/ludus --json project package "$sample" --profile macos-release --version 0.1.0 --sdk "$sdk" > "$RUNNER_TEMP/lighting-room-package.log"
+# The JSON result names the failure; show it rather than only the exit status.
+./scripts/ludus --json project package "$sample" --profile macos-release --version 0.1.0 --sdk "$sdk" > "$RUNNER_TEMP/lighting-room-package.log" ||
+  { cat "$RUNNER_TEMP/lighting-room-package.log"; exit 1; }
 package_dir=$(tail -n 1 "$RUNNER_TEMP/lighting-room-package.log" | jq -er '.package')
 ./scripts/ludus project package verify "$package_dir"
 relocated=$(mktemp -d "$RUNNER_TEMP/Lighting Room.XXXXXX")
