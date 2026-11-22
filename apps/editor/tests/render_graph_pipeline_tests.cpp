@@ -2947,6 +2947,46 @@ TEST_CASE("scene compute callback programs use scene stubs and survive document 
     CHECK(GetNode(reloaded, QStringLiteral("trace")) == applied);
 }
 
+TEST_CASE("compute program assignments reject duplicate stages", "[editor][render-graph][shader-creation]")
+{
+    QTemporaryDir project;
+    const QString package = MakePackage(project);
+    RenderGraphDocument document;
+    REQUIRE(document.Load(package, ROOT_GRAPH) == RenderGraphDocumentStatus::Ok);
+    const QString identity = QStringLiteral("preprocess");
+    QJsonObject node = MakePipelineNode(QStringLiteral("ComputePipeline"), identity);
+    REQUIRE(document.AddNode(ROOT_GRAPH, DEFAULT_CONFIGURATION, node) == RenderGraphDocumentStatus::Ok);
+    QJsonArray shaders{QJsonObject{{QStringLiteral("id"), QStringLiteral("preprocess")},
+                                   {QStringLiteral("stage"), QStringLiteral("compute")},
+                                   {QStringLiteral("program"), QStringLiteral("Program")}}};
+    node.insert(QStringLiteral("shaders"), shaders);
+    QString error;
+    REQUIRE(document.ApplyPipeline(ROOT_GRAPH, DEFAULT_CONFIGURATION, node, &error) == RenderGraphDocumentStatus::Ok);
+    node = GetNode(document, identity);
+
+    RenderGraphPipelineEditor editor(node);
+    QPushButton* add = editor.findChild<QPushButton*>(QStringLiteral("renderGraphAdd_shaders"));
+    REQUIRE(add != nullptr);
+    CHECK(add->isEnabled() == false);
+    CHECK(add->toolTip().contains(QStringLiteral("shared Slang file")) == true);
+    QPushButton* shared = editor.findChild<QPushButton*>(QStringLiteral("renderGraphNewSharedSlangFromShaders"));
+    REQUIRE(shared != nullptr);
+    CHECK(shared->isEnabled() == true);
+
+    const uint64 revision = document.GetRevision();
+    const QStringList files = document.GetFiles();
+    shaders = node.value(QStringLiteral("shaders")).toArray();
+    shaders.append(QJsonObject{{QStringLiteral("id"), QStringLiteral("common")},
+                               {QStringLiteral("stage"), QStringLiteral("compute")},
+                               {QStringLiteral("program"), QStringLiteral("Program")}});
+    node.insert(QStringLiteral("shaders"), shaders);
+    CHECK(document.ApplyPipeline(ROOT_GRAPH, DEFAULT_CONFIGURATION, node, &error) ==
+          RenderGraphDocumentStatus::InvalidEdit);
+    CHECK(error.contains(QStringLiteral("Stage 'compute' already has a program")) == true);
+    CHECK(document.GetRevision() == revision);
+    CHECK(document.GetFiles() == files);
+}
+
 TEST_CASE("Add Shader grows exhausted budgets with sources as one undoable edit",
           "[editor][render-graph][pipeline][shader-creation]")
 {

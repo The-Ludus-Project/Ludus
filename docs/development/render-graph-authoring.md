@@ -1230,18 +1230,20 @@ remain shader policy.
 
 ### Size an ordered Buffer from a shader struct
 
-For a fixed allocation shared by scene compute passes, select the Buffer and
-choose **From shader struct…** in Properties or in the canvas node's **Edit
-Node…** dialog. Choose a package-local Slang file, enter the struct name and set
-the element capacity. **Build Graph** reflects the struct's storage stride,
-multiplies it by the capacity, and rounds the allocation up to a full 16-byte
-word. A successful build shows the reflected stride and allocation on the node.
-Changing the shared file updates the allocation on the next build.
+On the canvas, open the Buffer's **Edit Node…** dialog or select it in
+Properties. Choose **From shader struct…** and select a shared Slang file and a
+struct declared in it. The picker lists package files and excludes program
+entry points. **New shared Slang file…** opens a draft include in Source. The
+same command is in **Shaders** and in the **Source** menu. **Add Shader
+Program** assigns an executable stage to a pipeline.
 
-Put the declaration in one file with a leading `#pragma once`. Include that file
-from each connected compute program using a quoted include relative to that
-program's source. The Buffer's source path is relative to the **graph package**
-root. The builder checks every producer and consumer's captured include closure.
+Put the layout in the shared file with a leading \`#pragma once\`. Include it
+from each connected positional Slang shader with a quoted path relative to that
+shader's source. The Buffer refers to the file by its package-relative path.
+Save the files and Buffer settings, then run **Build Graph**. Slang reflects the
+storage stride and Ludus multiplies it by the element capacity, then rounds up
+to a 16-byte word. The Buffer shows the stride and allocation after a successful
+build. A change to the declaration takes effect on the next build.
 For a UTD edge table, choose **one** element because the table already contains
 its own fixed-capacity array.
 

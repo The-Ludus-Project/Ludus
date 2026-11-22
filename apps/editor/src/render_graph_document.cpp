@@ -19,6 +19,7 @@
 #include <QJsonDocument>
 #include <QJsonParseError>
 #include <QLockFile>
+#include <QRegularExpression>
 #include <QSaveFile>
 
 #include <cmath>
@@ -1867,6 +1868,56 @@ bool IsRecoverySourcePath(const QString& path)
         }
     }
     return true;
+}
+
+RenderGraphDocumentStatus RenderGraphDocument::CreateSharedSlangSource(const QString& file, QString& outError)
+{
+    static const QRegularExpression PATH(
+        QStringLiteral("\\A(?:[A-Za-z0-9_][A-Za-z0-9_.-]*/)*[A-Za-z0-9_][A-Za-z0-9_.-]*\\.slang\\z"));
+    if (IsLoaded() == false || IsRecoverySourcePath(file) == false || PATH.match(file).hasMatch() == false)
+    {
+        outError = QStringLiteral("Enter a package-relative .slang path. Use letters, digits, underscores, dots and "
+                                  "hyphens in names, with '/' between directories.");
+        return RenderGraphDocumentStatus::InvalidEdit;
+    }
+
+    for (const RenderGraphSource version : {RenderGraphSource::Draft, RenderGraphSource::Saved})
+    {
+        for (const QString& existing : GetFiles(version))
+        {
+            if (existing.compare(file, Qt::CaseInsensitive) == 0)
+            {
+                outError =
+                    QStringLiteral("'%1' already exists in the package. Open it in Source or choose another path.")
+                        .arg(existing);
+                return RenderGraphDocumentStatus::Conflict;
+            }
+        }
+    }
+
+    const QDir package(mPackageRoot);
+    QString relative;
+    for (const QString& component : file.split(QLatin1Char('/')))
+    {
+        relative = relative.isEmpty() == true ? component : relative + QLatin1Char('/') + component;
+        const QFileInfo entry(package.filePath(relative));
+        if (entry.isSymLink() == true || (entry.exists() == true && (relative == file || entry.isDir() == false)))
+        {
+            outError = QStringLiteral("'%1' is already in use. Choose a different package-local path.").arg(relative);
+            return RenderGraphDocumentStatus::Conflict;
+        }
+    }
+
+    RenderGraphSnapshot candidate = mDraft;
+    candidate.Files.insert(file,
+                           QByteArrayLiteral("#pragma once\n\n// Declare shared shader structs and helpers here.\n"));
+    const RenderGraphDocumentStatus status =
+        commit(candidate, "Create Shared Slang File", false, {}, {}, {}, {}, CommitKind::Source);
+    outError = status == RenderGraphDocumentStatus::Ok ? QString()
+               : status == RenderGraphDocumentStatus::Capacity
+                   ? DescribePackageCapacity()
+                   : QStringLiteral("Could not add the file to the draft. Reopen the graph and try again.");
+    return status;
 }
 
 RenderGraphSnapshot RenderGraphDocument::CaptureRecoverySnapshot(RenderGraphSource source) const

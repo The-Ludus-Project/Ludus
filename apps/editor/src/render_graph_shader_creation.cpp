@@ -7,6 +7,7 @@
 #include <QFileInfo>
 #include <QJsonArray>
 #include <QJsonDocument>
+#include <QMap>
 #include <QRegularExpression>
 
 namespace ludus::editor
@@ -595,6 +596,30 @@ RenderGraphDocumentStatus PreparePipelineShaders(RenderGraphSnapshot& inoutSnaps
     if (originalShaders.isEmpty() == true && previousNode.value(QStringLiteral("shaders")).toArray().isEmpty() == true)
     {
         return RenderGraphDocumentStatus::Ok;
+    }
+    const QString kind = inoutNode.value(QStringLiteral("kind")).toString();
+    if (kind != QStringLiteral("RayTracingPipeline"))
+    {
+        QMap<QString, qsizetype> previousStages;
+        for (const QJsonValueConstRef shader : previousNode.value(QStringLiteral("shaders")).toArray())
+        {
+            ++previousStages[shader.toObject().value(QStringLiteral("stage")).toString()];
+        }
+        QMap<QString, qsizetype> stages;
+        for (const QJsonValueConstRef shader : originalShaders)
+        {
+            const QString stage = shader.toObject().value(QStringLiteral("stage")).toString();
+            const qsizetype count = ++stages[stage];
+            if (count > 1 && count > previousStages.value(stage))
+            {
+                return ReportShaderFailure(
+                    RenderGraphDocumentStatus::InvalidEdit,
+                    outErrorOrNull,
+                    QStringLiteral("Stage '%1' already has a program. Choose an unassigned stage or edit the existing "
+                                   "program. For shared structs and helpers, use a shared Slang file from Source.")
+                        .arg(stage));
+            }
+        }
     }
     const QJsonDocument manifestDocument = QJsonDocument::fromJson(inoutSnapshot.Files.value(manifestFile));
     if (manifestDocument.isObject() == false ||

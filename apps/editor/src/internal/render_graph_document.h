@@ -213,6 +213,9 @@ public:
     {
         return source == RenderGraphSource::Saved ? mSavedRevision : mHistory.Revision();
     }
+    /// Stage a new package-local Slang include as one undoable edit. Save publishes it.
+    /// Existing files are preserved. On failure, outError explains how to repair the path or package.
+    [[nodiscard]] RenderGraphDocumentStatus CreateSharedSlangSource(const QString& file, QString& outError);
     /// Parse a draft graph document; returns false for missing or non-object JSON.
     [[nodiscard]] bool GetGraph(const QString& file, QJsonObject& outGraph) const;
 

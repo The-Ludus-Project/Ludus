@@ -49,6 +49,8 @@ Q_SIGNALS:
     void Edited(const QJsonObject& node, RenderGraphShaderLanguage newShaderLanguage);
     /// Double-clicking a shader part requests its current source by assignment ID; no draft edit is made.
     void ShaderOpenRequested(const QString& shaderId);
+    /// Request a package-local include from the owning workspace.
+    void SharedSlangFileRequested();
     /// A completed budget edit proposes the shared technique's limits; no node fields change.
     void SceneQueryBudgetsEdited(const RenderGraphSceneQueryBudgets& budgets);
 

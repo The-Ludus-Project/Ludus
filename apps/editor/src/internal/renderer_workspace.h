@@ -532,6 +532,8 @@ private:
     void renderInspector();
     void populateNodeFields(QFormLayout& outFields, QWidget& inoutParent);
     void editBufferSizing(QWidget& inoutParent);
+    [[nodiscard]] QString stageSharedSlangSource(QWidget& inoutParent);
+    void openNewSharedSlangSource(QWidget& inoutParent);
     void populateBufferSizing(const QJsonObject& node, QFormLayout& outFields, QWidget& inoutParent);
     void populateNodeNameFields(QFormLayout& outFields, QWidget& inoutParent, QDialog* closeOnRenameOrNull = nullptr);
     [[nodiscard]] bool renameSelectedNode(const QString& name, QString& outError);
