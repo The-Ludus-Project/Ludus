@@ -12,6 +12,7 @@ import engine
 import init_ios
 import init_progress
 import init_ui
+import mobile_probe
 
 LLVM_MAJOR = engine.pinned_llvm_major(engine.repo_root())
 
@@ -39,6 +40,14 @@ class IosSetupTests(unittest.TestCase):
         enter(patch.object(init_ios.os, "geteuid", return_value=501))
         self.run_command = enter(patch.object(engine, "run"))
         enter(patch.object(engine, "capture_command_quiet", side_effect=self.query_tool))
+        self.probe_record = {
+            "probe": "apple-toolchain",
+            "status": mobile_probe.STATUS_PASSED,
+            "deploymentTarget": mobile_probe.DEFAULT_IOS_MINIMUM,
+            "xcode": {"version": "16.2", "build": "16C5032a"},
+            "sdks": [{"sdk": sdk, "version": "18.2"} for sdk in init_ios.IOS_SDKS],
+        }
+        self.run_probe = enter(patch.object(mobile_probe, "run_probe", return_value=self.probe_record))
         self.selected = self.command_line_tools
         self.first_launch_status = 0
 
@@ -64,26 +73,26 @@ class IosSetupTests(unittest.TestCase):
 
     def test_missing_xcode_opens_the_store_and_requests_retry(self):
         with self.assertRaisesRegex(engine.EngineError, "Finish installing Xcode.*Retry"):
-            init_ios.setup_ios(self.args, self.root, engine)
+            init_ios.prepare_ios(self.args, self.root, engine)
         self.run_command.assert_called_once_with(["/usr/bin/open", init_ios.XCODE_STORE_LINK], cwd=self.root)
 
     def test_no_system_install_neither_opens_the_store_nor_selects_xcode(self):
         self.args.no_system_install = True
         with self.assertRaisesRegex(engine.EngineError, "Mac App Store"):
-            init_ios.setup_ios(self.args, self.root, engine)
+            init_ios.prepare_ios(self.args, self.root, engine)
         self.install_xcode()
         with self.assertRaisesRegex(engine.EngineError, "xcode-select --switch"):
-            init_ios.setup_ios(self.args, self.root, engine)
+            init_ios.prepare_ios(self.args, self.root, engine)
         self.run_command.assert_not_called()
 
     def test_invalid_developer_override_is_left_for_the_caller_to_fix(self):
         self.install_xcode()
         with patch.dict(os.environ, {"DEVELOPER_DIR": str(self.command_line_tools)}):
             with self.assertRaisesRegex(engine.EngineError, "Correct it or unset it"):
-                init_ios.setup_ios(self.args, self.root, engine)
+                init_ios.prepare_ios(self.args, self.root, engine)
         self.run_command.assert_not_called()
 
-    def test_retry_selects_xcode_after_first_launch_and_sdk_download(self):
+    def test_retry_selects_xcode_after_first_launch_download_and_probe(self):
         self.install_xcode()
         self.first_launch_status = 1
 
@@ -92,20 +101,28 @@ class IosSetupTests(unittest.TestCase):
                 self.install_sdks()
 
         self.run_command.side_effect = install_component
-        init_ios.setup_ios(self.args, self.root, engine)
+        selection = init_ios.prepare_ios(self.args, self.root, engine)
+        self.run_probe.assert_not_called()
+        self.assertEqual(self.run_command.call_count, 2)
+        init_ios.verify_ios_toolchain(selection, self.root, engine)
         self.assertEqual([item.args[0] for item in self.run_command.call_args_list], [
             ["/usr/bin/sudo", "/usr/bin/env", f"DEVELOPER_DIR={self.developer}", init_ios.XCODEBUILD, "-runFirstLaunch"],
             [init_ios.XCODEBUILD, "-downloadPlatform", "iOS"],
             ["/usr/bin/sudo", init_ios.XCODE_SELECT, "--switch", self.developer],
         ])
         self.assertEqual(self.run_command.call_args_list[1].kwargs["env"]["DEVELOPER_DIR"], str(self.developer))
+        name, host, options = self.run_probe.call_args.args
+        self.assertEqual(name, "apple-toolchain")
+        self.assertEqual(host.environment["DEVELOPER_DIR"], str(self.developer))
+        self.assertEqual(options.clang, str(engine.clang_cxx(self.root)))
+        self.assertEqual(options.ios_minimum, mobile_probe.DEFAULT_IOS_MINIMUM)
 
     def test_failed_first_launch_keeps_command_line_tools_active(self):
         self.install_xcode()
         self.first_launch_status = 1
         self.run_command.side_effect = engine.EngineError("first launch failed")
         with self.assertRaisesRegex(engine.EngineError, "Open Xcode and finish its first-launch setup"):
-            init_ios.setup_ios(self.args, self.root, engine)
+            init_ios.prepare_ios(self.args, self.root, engine)
         self.assertEqual(self.run_command.call_count, 1)
         self.assertEqual(self.run_command.call_args.args[0][-1], "-runFirstLaunch")
 
@@ -113,21 +130,64 @@ class IosSetupTests(unittest.TestCase):
         self.install_xcode()
         self.selected = self.application
         with self.assertRaisesRegex(engine.EngineError, "missing iphoneos SDK, iphonesimulator SDK"):
-            init_ios.setup_ios(self.args, self.root, engine)
+            init_ios.prepare_ios(self.args, self.root, engine)
         self.assertEqual(self.run_command.call_count, 1)
         self.assertEqual(self.run_command.call_args.args[0], [init_ios.XCODEBUILD, "-downloadPlatform", "iOS"])
         self.install_sdks()
         self.run_command.reset_mock()
         self.args.no_system_install = True
-        init_ios.setup_ios(self.args, self.root, engine)
+        selection = init_ios.prepare_ios(self.args, self.root, engine)
+        init_ios.verify_ios_toolchain(selection, self.root, engine)
+        self.run_command.assert_not_called()
+        self.run_probe.assert_called_once()
+
+    def test_failed_probe_saves_diagnostics_and_keeps_command_line_tools_active(self):
+        self.install_xcode()
+        self.install_sdks()
+        self.probe_record["status"] = mobile_probe.STATUS_FAILED
+        self.probe_record["steps"] = [{"step": "iphoneos: compile ARC Objective-C++", "ok": False,
+                                       "diagnostics": ["error: UIKit header is unavailable"]}]
+        selection = init_ios.prepare_ios(self.args, self.root, engine)
+        with contextlib.redirect_stdout(io.StringIO()) as output, self.assertRaises(engine.EngineError) as failure:
+            init_ios.verify_ios_toolchain(selection, self.root, engine)
+        self.assertIn("iphoneos: compile ARC Objective-C++", str(failure.exception))
+        self.assertIn("Settings > Components", str(failure.exception))
+        self.assertIn("DEVELOPER_DIR", str(failure.exception))
+        self.assertIn("UIKit header is unavailable", output.getvalue())
+        self.assertEqual(json.loads((self.root / mobile_probe.OUTPUT_DIRECTORY / "apple-toolchain.json").read_text()),
+                         self.probe_record)
+        self.run_command.assert_not_called()
+
+    def test_native_init_checks_existing_xcode_before_starting_conan(self):
+        self.install_xcode()
+        self.install_sdks()
+        self.args.no_system_install = True
+        self.selected = self.application
+        steps = []
+        with (
+            patch.object(engine, "run_init_preflight"),
+            patch.object(engine, "check_current_python"),
+            patch.object(engine, "configure_system_tool_shims", side_effect=lambda *_: steps.append("compiler")),
+            patch.object(engine, "validate_required_system_tools"),
+            patch.object(engine.init_progress, "begin", side_effect=steps.append),
+            patch.object(engine, "prepare_conan_artifacts", side_effect=lambda *_, **__: steps.append("conan")),
+            patch("init_options.save_options"),
+            patch("init_denoiser.setup_denoiser"),
+            patch.object(engine, "run_remaining_init_steps", return_value=0),
+            contextlib.redirect_stdout(io.StringIO()),
+        ):
+            self.assertEqual(engine.run_init_steps(self.args, self.root, {"minimum": {"python": "3.10"}},
+                                                   self.args.preset, False), 0)
+        self.assertEqual(steps, ["preflight", "ios", "system", "compiler", "ios_toolchain", "conan"])
+        self.run_probe.assert_called_once()
         self.run_command.assert_not_called()
 
     def test_resolved_native_selection_reaches_runner_and_progress_plan(self):
         argv = init_ui.selection_to_argv(self.args)
         selection = engine.make_parser().parse_args(["init", *argv])
         self.assertTrue(selection.with_ios)
-        self.assertEqual([step.key for step in init_progress.plan(selection, environment={})][:3],
-                         ["preflight", "ios", "system"])
+        self.assertEqual([step.key for step in init_progress.plan(selection, environment={})][:5],
+                         ["preflight", "ios", "system", "ios_toolchain", "host_tools"])
 
 
 class MacosSetupTests(unittest.TestCase):

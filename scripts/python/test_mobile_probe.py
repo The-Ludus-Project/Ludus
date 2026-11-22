@@ -161,6 +161,8 @@ class MissingToolTests(unittest.TestCase):
     def test_wrong_clang_major_is_not_accepted(self):
         clang = self.home / "clang++"
         clang.write_text("")
+        fallback = self.home / "clang++-fallback"
+        fallback.write_text("")
 
         def answers(command):
             if command[0] == "xcodebuild":
@@ -171,11 +173,15 @@ class MissingToolTests(unittest.TestCase):
                 return Result(0, "17.2\n")
             if command[0] == str(clang):
                 return Result(0, "Apple clang version 17.0.0\n")
+            if command[0] == str(fallback):
+                return Result(0, CLANG_VERSION)
             return Result(1, "")
 
-        record = mobile_probe.run_probe("apple-toolchain", FakeHost(self.home, answers), options(clang=str(clang)))
+        host = FakeHost(self.home, answers, environment={"LUDUS_MOBILE_CLANG": str(fallback)})
+        record = mobile_probe.run_probe("apple-toolchain", host, options(clang=str(clang)))
         self.assertEqual(record["status"], mobile_probe.STATUS_NOT_INSTALLED)
         self.assertIn("found major 17", record["missing"][0])
+        self.assertNotIn([str(fallback), "--version"], host.commands)
 
     def test_failed_compile_is_a_failed_probe_with_sanitized_diagnostics(self):
         clang = self.home / "clang++"

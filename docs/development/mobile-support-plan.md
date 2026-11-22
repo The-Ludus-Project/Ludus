@@ -231,7 +231,7 @@ tracker below; raw output stays private.
 
 | Blocker | Owner | Next action |
 | --- | --- | --- |
-| On the maintainer Mac, Xcode first-launch setup and Apple toolchain verification are pending | Maintainer | Run `./init.sh --with-ios` and complete the App Store install if prompted. Retry setup, then run the Apple probes |
+| Apple toolchain pins are provisional | Maintainer | Use the Apple toolchain probe record and complete the signing and device checks to finalize the toolchain choice |
 | No Android SDK, NDK or `adb` on the maintainer Mac | Maintainer | Install command-line tools, NDK and platform-tools; then run the Android probes |
 | Device signing material | Maintainer | Create an Apple development team identity and an Android debug keystore locally; keep them out of the repository |
 | FoundationBase rejects `iOS` and `Android` | Both tracks | Add explicit target runtime boundaries in M1 |
@@ -388,12 +388,15 @@ acceptance. Deferred features remain visible after a platform is admitted.
 
 ## Running the M0 probes
 
-On the Mac, run `./init.sh --with-ios` to prepare Xcode, the iOS SDKs and device
-tools. See [One-command onboarding](building.md#one-command-onboarding) for the
-App Store handoff and setup options. Run `./scripts/mobile-probe apple-toolchain`
-after setup to record the SDK/compiler evidence, and
-`./scripts/mobile-probe apple-signing` after configuring local development
-signing in Xcode.
+On the Mac, `./init.sh --with-ios` prepares Xcode, the iOS SDKs and device
+tools, then runs the Apple toolchain probe against the selected Xcode and Clang.
+The probe tests compatibility using the provisional deployment target while
+the Xcode and SDK version pins are pending. See
+[One-command onboarding](building.md#one-command-onboarding) for setup options
+and failure reporting. To repeat the check independently, run
+`./scripts/mobile-probe apple-toolchain`. Run
+`./scripts/mobile-probe apple-signing` after configuring local development signing
+in Xcode.
 
 One command runs all M0 probes after both toolchains are ready.
 
@@ -464,7 +467,7 @@ Device/tool versions and logs belong in evidence, not speculative completion dat
 
 | Gate | Shared | iPhone 16 Pro | iPad Pro M4 | Galaxy Flip |
 | --- | --- | --- | --- | --- |
-| M0 | in progress: contracts frozen; toolchain, signing and device evidence pending ([#1229](https://github.com/The-Ludus-Project/Ludus/issues/1229)) | blocked: Xcode setup and device inventory pending | blocked: Xcode setup and device inventory pending | blocked: no Android SDK/NDK on the maintainer Mac |
+| M0 | in progress: contracts frozen and Apple SDK compile/link probe passed on the maintainer Mac ([#1229](https://github.com/The-Ludus-Project/Ludus/issues/1229), [#2186](https://github.com/The-Ludus-Project/Ludus/pull/2186)) | blocked: signing and device inventory pending | blocked: signing and device inventory pending | blocked: no Android SDK/NDK on the maintainer Mac |
 | M1 | not started | not started | not started | not started |
 | M2 | not started | not started | not started | not started |
 | M3 | not started | not started | not started | not started |

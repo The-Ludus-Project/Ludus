@@ -1823,10 +1823,11 @@ def run_init_steps(args: argparse.Namespace, root: Path, versions: dict[str, dic
     init_progress.begin("preflight")
     run_init_preflight(args, root, versions)
 
+    ios_selection = None
     if args.with_ios:
-        from init_ios import setup_ios
+        from init_ios import prepare_ios
         init_progress.begin("ios")
-        setup_ios(args, root, sys.modules[__name__])
+        ios_selection = prepare_ios(args, root, sys.modules[__name__])
 
     init_progress.begin("system")
     check_current_python(root, versions["minimum"]["python"])
@@ -1848,6 +1849,12 @@ def run_init_steps(args: argparse.Namespace, root: Path, versions: dict[str, dic
                 configure_system_tool_shims(root, versions)
         else:
             install_ubuntu_system_prerequisites(root, versions)
+
+    if ios_selection is not None:
+        from init_ios import verify_ios_toolchain
+        validate_required_system_tools(root, versions)
+        init_progress.begin("ios_toolchain")
+        verify_ios_toolchain(ios_selection, root, sys.modules[__name__])
 
     if args.preset_only and not run_validation:
         presets = (preset,)
@@ -1948,7 +1955,7 @@ def print_init_summary(args: argparse.Namespace, root: Path, preset: str, preset
     print("Prepared presets: " + ", ".join(presets))
     print("OIDN denoiser: " + ("on" if getattr(args, "with_denoiser", False) else "off"))
     if args.with_ios:
-        print("Run the iOS toolchain probe with ./scripts/mobile-probe apple-toolchain")
+        print("Apple toolchain probe passed. Record: out/mobile-probes/apple-toolchain.json")
     elapsed = init_progress.elapsed()
     if elapsed:
         print(f"Finished in {elapsed}.")

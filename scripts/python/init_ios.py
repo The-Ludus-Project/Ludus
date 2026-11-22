@@ -2,10 +2,12 @@
 from __future__ import annotations
 
 import os
+from argparse import Namespace
 from pathlib import Path
 import sys
 
 import init_progress
+import mobile_probe
 
 
 XCODE_APPLICATION = Path("/Applications/Xcode.app")
@@ -73,7 +75,7 @@ def run_privileged(engine, root: Path, command: list[object]) -> None:
     engine.run([*prefix, *command], cwd=root)
 
 
-def setup_ios(args, root: Path, engine) -> None:
+def prepare_ios(args, root: Path, engine) -> tuple[Path, bool]:
     environment = dict(os.environ)
 
     def query(command):
@@ -108,13 +110,53 @@ def setup_ios(args, root: Path, engine) -> None:
         raise engine.EngineError(f"Xcode is missing {', '.join(missing)}. "
                                  "Open Xcode, finish first-launch setup and install iOS support in Settings > Components, "
                                  "then retry.")
+    return developer, should_select
+
+
+def verify_ios_toolchain(selection: tuple[Path, bool], root: Path, engine) -> None:
+    developer, should_select = selection
+    environment = {**os.environ, "DEVELOPER_DIR": str(developer)}
+    options = Namespace(clang=str(engine.clang_cxx(root)), ios_minimum=mobile_probe.DEFAULT_IOS_MINIMUM)
+    try:
+        record = mobile_probe.run_probe("apple-toolchain", mobile_probe.Host(environment), options)
+        path = mobile_probe.write_record(record, root / mobile_probe.OUTPUT_DIRECTORY).relative_to(root)
+    except (mobile_probe.LeakError, OSError) as error:
+        raise engine.EngineError(f"Could not write the Apple toolchain probe record. {error}") from error
+    print(f"Apple toolchain probe record: {path}", flush=True)
+    if "xcode" in record:
+        xcode = record["xcode"]
+        sdks = ", ".join(f"{sdk['sdk']} {sdk['version']}" for sdk in record["sdks"])
+        print(f"Xcode {xcode['version']} ({xcode['build']}) with {sdks}. "
+              f"Provisional deployment target iOS {record['deploymentTarget']}.", flush=True)
+    if record["status"] != mobile_probe.STATUS_PASSED:
+        raise engine.EngineError(report_probe_failure(record, path))
+
     if should_select:
-        # Keep Command Line Tools active until Xcode works. A failed first
-        # launch can otherwise keep Apple's Python launcher from starting init.
+        # Keep Command Line Tools active until Xcode passes the compile/link probe.
         try:
             run_privileged(engine, root, [XCODE_SELECT, "--switch", developer])
         except engine.EngineError as error:
             raise engine.EngineError("Select the verified Xcode in a terminal with "
                                      "`sudo xcode-select --switch /Applications/Xcode.app`, then retry. "
                                      f"{error}") from error
-    print("Verified the iOS device and Simulator SDKs and devicectl.", flush=True)
+    print("Apple toolchain probe passed for the iOS device and Simulator SDKs.", flush=True)
+
+
+def report_probe_failure(record: dict, path: Path) -> str:
+    failed = [step for step in record.get("steps", ()) if not step["ok"]]
+    if failed:
+        for step in failed:
+            print(f"{step['step']} failed.", flush=True)
+            for diagnostic in step.get("diagnostics", ()):
+                print(f"  {diagnostic}", flush=True)
+        names = ", ".join(step["step"] for step in failed)
+        return (f"Apple toolchain probe failed at {names}. For missing SDK headers or libraries, reinstall iOS "
+                "support in Xcode Settings > Components. For a compiler or linker incompatibility, update Xcode "
+                "or select another Xcode.app with DEVELOPER_DIR. Rerun ./init.sh --with-ios after the repair. "
+                f"See {path} for diagnostics.")
+    missing = record.get("missing", ())
+    if missing and missing[0].startswith("upstream Clang"):
+        remedy = "Install the required upstream LLVM, add its bin directory to PATH, then retry."
+    else:
+        remedy = "Open the selected Xcode, finish first launch and install iOS support in Settings > Components, then retry."
+    return f"Apple toolchain probe could not resolve {', '.join(missing)}. {remedy} See {path}."

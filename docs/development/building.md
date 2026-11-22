@@ -237,14 +237,18 @@ that need a different Xcode version, use
 [Apple's Xcode downloads](https://developer.apple.com/xcode/resources/).
 Setup uses the active full Xcode or your `DEVELOPER_DIR` override. If only
 Command Line Tools are selected and `/Applications/Xcode.app` exists, setup
-selects it after verification. Setup runs Xcode's first-launch command, which
-accepts the Xcode license and installs required components. You can also open
+selects it after the Apple toolchain probe passes. Setup runs Xcode's
+first-launch command, which accepts the license and installs required components. You can also open
 Xcode and review the license there before retrying setup. Setup may ask for an
 administrator password in the launching terminal. It requests iOS support from
-Xcode if an SDK is missing and verifies the device and Simulator SDKs and
-`devicectl`. With `--no-system-install`, it only checks the existing installation.
+Xcode if an SDK is missing and checks for the device and Simulator SDKs and
+`devicectl`. It then uses the selected Ludus Clang to compile and link against
+both SDKs, including for an existing Xcode installation. A failure stops setup
+with the failed step, repair instructions, and a sanitized report at
+`out/mobile-probes/apple-toolchain.json`. With `--no-system-install`, setup runs
+the same probe using the existing installation.
 See [Running the M0 probes](mobile-support-plan.md#running-the-m0-probes)
-for the compile, signing, and device checks.
+for the provisional deployment target and the signing and device checks.
 
 `--persona` supplies defaults; an explicit preset and scope flags override those
 defaults. Full validation prepares all native presets even when `--preset-only`
