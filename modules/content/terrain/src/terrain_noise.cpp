@@ -2,6 +2,7 @@
 
 #include <ludus/content/terrain/terrain_noise.h>
 
+#include <ludus/foundation/base/compiler.h>
 #include <ludus/foundation/math/scalar.hpp>
 
 namespace ludus::content::terrain
@@ -40,7 +41,7 @@ constexpr float64 QUINTIC_THIRD_ORDER = 10;
 // multiply-adds; t is a cell offset in [0, 1).
 [[nodiscard]] float64 ComputeQuinticFade(float64 t) noexcept
 {
-#if defined(__clang__)
+#if LUDUS_TARGET_COMPILER == LUDUS_CXX_CLANG
 #    pragma clang fp contract(off)
 #endif
     return t * t * t * (t * (t * QUINTIC_FIFTH_ORDER - QUINTIC_FOURTH_ORDER) + QUINTIC_THIRD_ORDER);
