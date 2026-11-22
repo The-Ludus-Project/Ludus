@@ -399,12 +399,18 @@ Android tools on an initialized checkout:
 
 For unattended setup after reviewing the pinned agreement, pass
 `--accept-android-sdk-license`. Setup installs the pinned command-line tools,
-SDK platform, build-tools, NDK and Java under `out/host-tools`, along with the
-Android SDK Manager's current stable platform-tools (including ADB). Allow
-several gigabytes for the downloads and extracted NDK. The existing mobile
-presets and probes discover the checkout-local SDK. An explicit `ANDROID_HOME`
-or `ANDROID_SDK_ROOT` selects an external SDK for those consumers. CMake and the
-probes also honor an explicit NDK override.
+SDK platform, build-tools, NDK and Java under `out/host-tools`. It also installs
+stable platform-tools (including ADB) at or above the minimum in
+`config/android_toolchain.json`. Allow several gigabytes for downloads and the
+extracted NDK. Setup reuses compatible packages in that checkout and repairs
+missing or incompatible ones. Android Studio, system-wide packages, and other
+checkouts keep their own SDKs and Java installations.
+
+The mobile presets and probes prefer the checkout-local tools. If no managed
+tools are available, they can use the SDK from `ANDROID_HOME` or
+`ANDROID_SDK_ROOT`. A preset requires the pinned NDK revision, even with a
+`LUDUS_ANDROID_NDK` CMake override. To compare an alternate NDK explicitly, run
+`./scripts/mobile-probe android-toolchain --ndk <path>`.
 
 On the phone, enable USB debugging in Developer options, connect it by USB
 while unlocked and approve the Mac's debugging key. If ADB still shows no

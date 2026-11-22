@@ -73,12 +73,76 @@ class AndroidSetupTests(unittest.TestCase):
                 init_android.install_android(self.root, engine, is_license_accepted=True)
         self.assertIn("platform-tools", install.call_args.args[4])
 
+    def write_package(self, directory: Path, filename: str, properties: str) -> None:
+        marker = directory / filename
+        marker.parent.mkdir(parents=True, exist_ok=True)
+        marker.touch()
+        marker.chmod(0o755)
+        (directory / "source.properties").write_text(properties, encoding="utf-8")
+
+    def test_repairs_stale_checkout_packages_and_reuses_compatible_ones(self):
+        platform_tools = self.sdk / "platform-tools"
+        platform = self.sdk / "platforms" / self.pins["platform"]
+        build_tools = self.sdk / "build-tools" / self.pins["buildTools"]
+        ndk = self.sdk / "ndk" / self.pins["ndk"]
+        compiler = "toolchains/llvm/prebuilt/darwin-x86_64/bin/clang++"
+        self.write_package(platform_tools, "adb", "Pkg.Revision=34.0.0")
+        self.write_package(platform, "android.jar", "AndroidVersion.ApiLevel=36")
+        self.write_package(build_tools, "aapt2", "Pkg.Revision=36.0.0")
+        self.write_package(ndk, compiler, "Pkg.Revision=28.0.0")
+        pending = init_android.missing_packages(self.sdk, self.pins, "Darwin")
+        self.assertEqual(pending, {"platform-tools": platform_tools, f"ndk;{self.pins['ndk']}": ndk})
+
+        def install(_root, _sdk, _manager, _java, packages, _engine):
+            self.assertEqual(packages, list(pending))
+            self.assertFalse(platform_tools.exists())
+            self.assertFalse(ndk.exists())
+            self.assertTrue((platform / "android.jar").is_file())
+            self.assertTrue((build_tools / "aapt2").is_file())
+            self.write_package(platform_tools, "adb", "Pkg.Revision=37.1.0")
+            self.write_package(ndk, compiler, f"Pkg.Revision = {self.pins['ndk']}")
+
+        with patch.object(init_android, "install_packages", side_effect=install):
+            init_android.repair_packages(self.root, self.sdk, Path("/manager"), Path("/java"), pending, engine)
+        self.assertEqual(init_android.missing_packages(self.sdk, self.pins, "Darwin"), {})
+
+    def test_failed_repair_restores_the_previous_package_if_sdkmanager_left_no_replacement(self):
+        platform_tools = self.sdk / "platform-tools"
+        self.write_package(platform_tools, "adb", "Pkg.Revision=34.0.0")
+        with patch.object(init_android, "install_packages", side_effect=engine.EngineError("offline")):
+            with self.assertRaisesRegex(engine.EngineError, "offline"):
+                init_android.repair_packages(self.root, self.sdk, Path("/manager"), Path("/java"),
+                                             {"platform-tools": platform_tools}, engine)
+        self.assertEqual(android_tools.read_revision(platform_tools), "34.0.0")
+
+    def test_managed_sdk_takes_precedence_over_an_older_external_sdk(self):
+        external = self.root / "external-sdk"
+        external.mkdir()
+        environment = {"ANDROID_HOME": str(external)}
+        self.assertEqual(android_tools.resolve_sdk(self.root, self.root, environment), external)
+        self.write_package(self.sdk / "platform-tools", "adb", "Pkg.Revision=37.0.3")
+        self.assertEqual(android_tools.resolve_sdk(self.root, self.root, environment), self.sdk)
+
+    def test_java_checks_runtime_metadata_as_well_as_executables(self):
+        home = self.root / "java"
+        (home / "bin").mkdir(parents=True)
+        for name in ("java", "keytool", "javac"):
+            tool = home / "bin" / name
+            tool.touch()
+            tool.chmod(0o755)
+        pinned = self.pins["jdk"]["version"]
+        release = home / "release"
+        release.write_text('JAVA_RUNTIME_VERSION="17.0.1+1-LTS"\n', encoding="utf-8")
+        self.assertFalse(init_android.is_pinned_java(home, pinned))
+        release.write_text(f'JAVA_RUNTIME_VERSION="{pinned}-LTS"\n', encoding="utf-8")
+        self.assertTrue(init_android.is_pinned_java(home, pinned))
+
     def test_setup_reuses_installed_packages(self):
         with patch.object(init_android, "read_android_pins", return_value=self.pins), \
                 patch.object(init_android, "host_key", return_value="Darwin-arm64"), \
                 patch.object(init_android, "install_java"), \
                 patch.object(init_android, "install_sdkmanager"), \
-                patch.object(init_android, "missing_packages", return_value=[]), \
+                patch.object(init_android, "missing_packages", return_value={}), \
                 patch.object(init_android, "install_packages") as install:
             init_android.install_android(self.root, engine, is_license_accepted=True)
         install.assert_not_called()

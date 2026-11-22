@@ -11,34 +11,42 @@ if(NOT LUDUS_ANDROID_API)
     message(FATAL_ERROR "Select an android-* configure preset; LUDUS_ANDROID_API is not set.")
 endif()
 
+# The toolchain is also loaded inside try_compile, where CMAKE_SOURCE_DIR
+# is the generated test directory. Resolve managed tools from this file.
+file(READ "${CMAKE_CURRENT_LIST_DIR}/../android_toolchain.json" ludus_android_pins)
+string(JSON ludus_ndk_revision GET "${ludus_android_pins}" ndk)
+set(ludus_managed_ndk "${CMAKE_CURRENT_LIST_DIR}/../../out/host-tools/android-sdk/ndk/${ludus_ndk_revision}")
 set(ludus_ndk "${LUDUS_ANDROID_NDK}")
+if(ludus_ndk STREQUAL "" AND EXISTS "${ludus_managed_ndk}/source.properties")
+    set(ludus_ndk "${ludus_managed_ndk}")
+endif()
 if(ludus_ndk STREQUAL "")
     set(ludus_ndk "$ENV{ANDROID_NDK_HOME}")
+endif()
+if(ludus_ndk STREQUAL "")
+    set(ludus_ndk "$ENV{ANDROID_NDK_ROOT}")
 endif()
 if(ludus_ndk STREQUAL "")
     set(ludus_sdk "$ENV{ANDROID_HOME}")
     if(ludus_sdk STREQUAL "")
         set(ludus_sdk "$ENV{ANDROID_SDK_ROOT}")
     endif()
-    if(ludus_sdk STREQUAL "")
-        # The toolchain is also loaded inside try_compile, where CMAKE_SOURCE_DIR
-        # is the generated test directory. Resolve managed tools from this file.
-        set(ludus_sdk "${CMAKE_CURRENT_LIST_DIR}/../../out/host-tools/android-sdk")
-        file(READ "${CMAKE_CURRENT_LIST_DIR}/../android_toolchain.json" ludus_android_pins)
-        string(JSON ludus_ndk_revision GET "${ludus_android_pins}" ndk)
+    if(NOT ludus_sdk STREQUAL "")
         set(ludus_ndk "${ludus_sdk}/ndk/${ludus_ndk_revision}")
-    else()
-        file(GLOB ludus_ndk_revisions LIST_DIRECTORIES true "${ludus_sdk}/ndk/*")
-        list(SORT ludus_ndk_revisions COMPARE NATURAL ORDER DESCENDING)
-        if(ludus_ndk_revisions)
-            list(GET ludus_ndk_revisions 0 ludus_ndk)
-        endif()
     endif()
 endif()
 if(ludus_ndk STREQUAL "" OR NOT EXISTS "${ludus_ndk}/source.properties")
     message(FATAL_ERROR
-        "The Android NDK is not installed. Run `./init.sh --cli --android-only` or "
-        "set ANDROID_HOME or ANDROID_NDK_HOME to an existing installation.")
+        "Android NDK ${ludus_ndk_revision} is required. Run `./init.sh --cli --android-only` "
+        "or set LUDUS_ANDROID_NDK to that revision in an existing installation.")
+endif()
+file(STRINGS "${ludus_ndk}/source.properties" ludus_ndk_version_property REGEX "^Pkg[.]Revision[ 	]*=")
+string(REGEX REPLACE "^Pkg[.]Revision[ 	]*=[ 	]*" "" ludus_ndk_version "${ludus_ndk_version_property}")
+string(STRIP "${ludus_ndk_version}" ludus_ndk_version)
+if(NOT ludus_ndk_version STREQUAL ludus_ndk_revision)
+    message(FATAL_ERROR
+        "Android NDK ${ludus_ndk_revision} is required. Found revision '${ludus_ndk_version}' at '${ludus_ndk}'. "
+        "Run `./init.sh --cli --android-only` and remove any incompatible LUDUS_ANDROID_NDK override.")
 endif()
 file(REAL_PATH "${ludus_ndk}" ludus_ndk)
 

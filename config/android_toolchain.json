@@ -20,6 +20,7 @@
   },
   "platform": "android-36",
   "buildTools": "36.0.0",
+  "minimumPlatformTools": "37.0.3",
   "ndk": "29.0.14206865",
   "jdk": {
     "version": "21.0.13.1+2",

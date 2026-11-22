@@ -5,6 +5,7 @@ import hashlib
 import os
 from pathlib import Path
 import platform
+import re
 import shutil
 import subprocess
 import sys
@@ -15,7 +16,7 @@ import zipfile
 
 import build_slots
 import init_progress
-from android_tools import managed_sdk, managed_java_home, read_android_pins
+from android_tools import managed_sdk, managed_java_home, read_android_pins, read_property, read_revision
 
 
 RETRY_COMMAND = "./init.sh --cli --android-only"
@@ -42,7 +43,7 @@ def download_verified(archive_pin: dict, directory: Path, engine) -> Path:
 
 def install_java(root: Path, pin: dict, key: str, engine) -> Path:
     java_home = managed_java_home(root, pin, key.split("-", 1)[0])
-    if all(is_executable(java_home / "bin" / name) for name in ("java", "keytool", "javac")):
+    if is_pinned_java(java_home, pin["version"]):
         return java_home
     prefix = root / "out/host-tools/android-jdk" / pin["version"]
     prefix.parent.mkdir(parents=True, exist_ok=True)
@@ -53,12 +54,18 @@ def install_java(root: Path, pin: dict, key: str, engine) -> Path:
         engine.run(["tar", "-xf", archive], cwd=staging)
         unpacked = staging / f"jdk-{pin['version']}"
         home = unpacked / java_home.relative_to(prefix)
-        if not all(is_executable(home / "bin" / name) for name in ("java", "keytool", "javac")):
-            raise engine.EngineError("The Android Java archive is missing required JDK executables.")
+        if not is_pinned_java(home, pin["version"]):
+            raise engine.EngineError("The Android Java archive is missing its pinned runtime or JDK executables.")
         if prefix.exists():
             prefix.rename(staging / "old")
         unpacked.replace(prefix)
     return java_home
+
+
+def is_pinned_java(home: Path, version: str) -> bool:
+    runtime = read_property(home / "release", "JAVA_RUNTIME_VERSION")
+    return (runtime is not None and runtime.removesuffix("-LTS") == version
+            and all(is_executable(home / "bin" / name) for name in ("java", "keytool", "javac")))
 
 
 def is_executable(path: Path) -> bool:
@@ -68,7 +75,7 @@ def is_executable(path: Path) -> bool:
 def install_sdkmanager(sdk: Path, pin: dict, system: str, engine) -> Path:
     directory = sdk / "cmdline-tools" / pin["version"]
     manager = directory / "bin/sdkmanager"
-    if is_executable(manager) and (directory / "source.properties").is_file():
+    if is_executable(manager) and read_revision(directory) == pin["version"]:
         return manager
     directory.parent.mkdir(parents=True, exist_ok=True)
     with tempfile.TemporaryDirectory(prefix=".install-", dir=directory.parent) as temporary:
@@ -77,7 +84,7 @@ def install_sdkmanager(sdk: Path, pin: dict, system: str, engine) -> Path:
         with zipfile.ZipFile(archive) as contents:
             contents.extractall(staging)
         unpacked = staging / "cmdline-tools"
-        if not (unpacked / "bin/sdkmanager").is_file() or not (unpacked / "source.properties").is_file():
+        if not (unpacked / "bin/sdkmanager").is_file() or read_revision(unpacked) != pin["version"]:
             raise engine.EngineError("The Android command-line tools archive is missing sdkmanager or its metadata.")
         for executable in (unpacked / "bin").iterdir():
             executable.chmod(0o755)
@@ -87,16 +94,55 @@ def install_sdkmanager(sdk: Path, pin: dict, system: str, engine) -> Path:
     return manager
 
 
-def missing_packages(sdk: Path, pins: dict, system: str) -> list[str]:
+def stable_version(version: str | None) -> tuple[int, ...]:
+    if version is None or re.fullmatch(r"\d+\.\d+\.\d+", version) is None:
+        return ()
+    return tuple(map(int, version.split(".")))
+
+
+def missing_packages(sdk: Path, pins: dict, system: str) -> dict[str, Path]:
+    platform_tools = sdk / "platform-tools"
+    platform = sdk / "platforms" / pins["platform"]
+    build_tools = sdk / "build-tools" / pins["buildTools"]
     ndk = sdk / "ndk" / pins["ndk"]
     ndk_bin = ndk / "toolchains/llvm/prebuilt" / NDK_HOSTS[system] / "bin"
     packages = {
-        "platform-tools": is_executable(sdk / "platform-tools/adb"),
-        f"platforms;{pins['platform']}": (sdk / "platforms" / pins["platform"] / "android.jar").is_file(),
-        f"build-tools;{pins['buildTools']}": is_executable(sdk / "build-tools" / pins["buildTools"] / "aapt2"),
-        f"ndk;{pins['ndk']}": (ndk / "source.properties").is_file() and is_executable(ndk_bin / "clang++"),
+        "platform-tools": (
+            platform_tools,
+            is_executable(platform_tools / "adb")
+            and stable_version(read_revision(platform_tools)) >= stable_version(pins["minimumPlatformTools"]),
+        ),
+        f"platforms;{pins['platform']}": (
+            platform,
+            (platform / "android.jar").is_file()
+            and read_property(platform / "source.properties", "AndroidVersion.ApiLevel") == pins["platform"].removeprefix("android-"),
+        ),
+        f"build-tools;{pins['buildTools']}": (
+            build_tools, is_executable(build_tools / "aapt2") and read_revision(build_tools) == pins["buildTools"],
+        ),
+        f"ndk;{pins['ndk']}": (
+            ndk, is_executable(ndk_bin / "clang++") and read_revision(ndk) == pins["ndk"],
+        ),
     }
-    return [package for package, is_installed in packages.items() if not is_installed]
+    return {package: directory for package, (directory, is_installed) in packages.items() if not is_installed}
+
+
+def repair_packages(root: Path, sdk: Path, manager: Path, java_home: Path, packages: dict[str, Path], engine) -> None:
+    # SDK Manager can skip a damaged package if package.xml still marks it as installed.
+    # Move only generated, incompatible package directories out of its way.
+    with tempfile.TemporaryDirectory(prefix=".android-repair-", dir=sdk.parent) as temporary:
+        retired = Path(temporary)
+        try:
+            for name, directory in packages.items():
+                if directory.exists() or directory.is_symlink():
+                    print(f"Replacing incompatible or incomplete Android package {name}.", flush=True)
+                    directory.rename(retired / name)
+            install_packages(root, sdk, manager, java_home, list(packages), engine)
+        finally:
+            for name, directory in packages.items():
+                previous = retired / name
+                if (previous.exists() or previous.is_symlink()) and not (directory.exists() or directory.is_symlink()):
+                    previous.rename(directory)
 
 
 def license_path(sdk: Path, license_pin: dict) -> Path:
@@ -185,7 +231,7 @@ def install_android(root: Path, engine, *, is_license_accepted: bool = False) ->
             if not packages:
                 init_progress.up_to_date("Android SDK, NDK and Java are installed")
                 return
-            install_packages(root, sdk, manager, java_home, packages, engine)
+            repair_packages(root, sdk, manager, java_home, packages, engine)
             missing = missing_packages(sdk, pins, system)
             if missing:
                 raise engine.EngineError(f"Android setup did not install {', '.join(missing)}. "
