@@ -622,7 +622,7 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--store", help="SDK store root (default: $LUDUS_SDK_STORE or the native user data directory)")
     sub = p.add_subparsers(dest="group", required=True)
     graphs = sub.add_parser("render-graph", help="graph contracts and offline shader packages (no GPU execution)").add_subparsers(dest="graph_action", required=True)
-    context = graphs.add_parser("shader-context", help="stage compiler-owned source for native Slang assistance; no compilation")
+    context = graphs.add_parser("shader-context", help="stage a LUSL or Slang source context for shader assistance")
     context.add_argument("manifest")
     context.add_argument("output", help="separate owned temporary directory")
     context.add_argument("--source", required=True, help="package-relative editable source")
