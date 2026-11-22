@@ -180,7 +180,6 @@ COMPUTE_ID = 'GraphRayCompute'
 VISIBILITY_COMPUTE_ID = 'GraphVisibilityRayCompute'
 SOFTWARE_COMPUTE_ID = 'GraphSoftwareRayCompute'
 SOFTWARE_VISIBILITY_COMPUTE_ID = 'GraphSoftwareVisibilityRayCompute'
-COMPUTE_IDS = (COMPUTE_ID, VISIBILITY_COMPUTE_ID, SOFTWARE_COMPUTE_ID, SOFTWARE_VISIBILITY_COMPUTE_ID)
 IMAGE_VERTEX_ID = 'GraphRayImageVertex'
 IMAGE_INPUTS = [{'location': 0, 'format': 'Float2'}]
 IMAGE_FRAGMENT_ID = 'GraphRayImageFragment'
@@ -344,8 +343,10 @@ def migrate_legacy_scene_sources(sources, snapshot):
 
 
 def group_profiles(plans, technique, build):
-    """Separate ordinary and visibility callback sets without changing their shared payload."""
+    """Group compatible callback sets, isolating lighting dependencies by configuration."""
     groups = {}
+    isolate_lighting = (technique.get('scene_interface', {}).get('polygonal_light_sampling', False) and
+                        any(requires_native_pipeline(plan) for plan in plans))
     explicit_workgroups = {tuple(operation['pipeline']['state']['group_size'])
                            for plan in plans for operation in plan['passes']
                            if operation['kind'] == 'RayTracing' and
@@ -372,9 +373,18 @@ def group_profiles(plans, technique, build):
         build.require(not has_storage_texture or (not has_visibility and technique.get('scene_interface')),
                       'Capability', plan['configuration'],
                       'storage texture dispatch requires scene materials and a configuration without visibility/depth')
-        group = groups.setdefault((has_visibility, has_native_queries, has_color_input, has_storage_texture),
-                                  {'variants': set(), 'persistent': False, 'structured_buffers': False})
-        group['variants'].update(get_callback_variant(operation['pipeline']) for operation in operations)
+        variants = {get_callback_variant(operation['pipeline']) for operation in operations}
+        native_variants = {get_callback_variant(operation['pipeline']) for operation in operations
+                           if invocation.resolve_type(operation['pipeline']) == invocation.HARDWARE_PIPELINE}
+        # With optional lighting helpers, share an artifact only between configurations
+        # that use the same callbacks. Reflection can then omit the table per configuration.
+        callbacks = (tuple(sorted(variants)), tuple(sorted(native_variants))) if isolate_lighting else ()
+        group = groups.setdefault((has_visibility, has_native_queries, has_color_input, has_storage_texture, callbacks),
+                                  {'variants': set(), 'native_variants': set(), 'configurations': [],
+                                   'persistent': False, 'structured_buffers': False})
+        group['variants'].update(variants)
+        group['native_variants'].update(native_variants)
+        group['configurations'].append(plan['configuration'])
         group['structured_buffers'] |= any(operation.get('buffers') for operation in operations)
         group['scene_dispatch'] = group.get('scene_dispatch', False) or any('work_items' in operation for operation in operations)
         # GraphBuffer0/1 and GetGraphPassIndex exist only in the persistent wrapper, so a
@@ -382,7 +392,6 @@ def group_profiles(plans, technique, build):
         has_shader_traversal = any(invocation.resolve_traversal(operation['pipeline']) in
                                    (invocation.TRIANGLE_LOOP, invocation.CUSTOM_QUERY, invocation.COMPUTE_BVH)
                                    for operation in operations)
-        group['native_pipeline'] = group.get('native_pipeline', False) or requires_native_pipeline(plan)
         group['persistent'] |= has_storage_texture or has_shader_traversal or len(operations) > 1 or any(
             resource['type'] == 'Buffer' and 'stride' not in resource
             for resource in plan['resources'].values()) or any(
@@ -392,14 +401,15 @@ def group_profiles(plans, technique, build):
                       'a ray technique without default callbacks requires a RayTracingPipeline or scene compute pass')
         # No visibility pass dispatches the default callbacks, so the kernel reads no visibility
         # inputs and reflection drops them, even when scene_interface.visibility_buffer permits them.
-        groups[(False, True, False, False)] = {
-            'variants': {tuple(technique[stage] for stage in STAGES)}, 'persistent': False, 'structured_buffers': False}
+        groups[(False, True, False, False, ())] = {
+            'variants': {tuple(technique[stage] for stage in STAGES)}, 'native_variants': set(), 'configurations': [],
+            'persistent': False, 'structured_buffers': False}
     result = []
-    for (has_visibility, has_native_queries, has_color_input, has_storage_texture), group in sorted(groups.items()):
+    for (has_visibility, has_native_queries, has_color_input, has_storage_texture, callbacks), group in sorted(groups.items()):
         build.require(not (group['persistent'] or len(group['variants']) > 1) or not group['structured_buffers'],
                       'Capability', 'ray storage',
                       'ordered ray passes use shared Buffer nodes; StructuredBuffer nodes remain private to one ray job')
-        if has_visibility and (False, has_native_queries, False, False) in groups:
+        if has_visibility and any(key[:4] == (False, has_native_queries, False, False) for key in groups):
             compute_identity = VISIBILITY_COMPUTE_ID if has_native_queries else SOFTWARE_VISIBILITY_COMPUTE_ID
         else:
             compute_identity = COMPUTE_ID if has_native_queries else SOFTWARE_COMPUTE_ID
@@ -407,10 +417,15 @@ def group_profiles(plans, technique, build):
             compute_identity += 'WithColorInput'
         if has_storage_texture:
             compute_identity += 'WithStorageTexture'
+        if callbacks:
+            compute_identity += 'Configuration' + str(len(result))
+        variants = sorted(group['variants'])
+        native_slots = {variant: index for index, variant in enumerate(variants) if variant in group['native_variants']}
         result.append({'workgroup': workgroup, 'visibility_buffer': has_visibility, 'native_ray_queries': has_native_queries,
-                       'native_pipeline': group.get('native_pipeline', False),
+                       'native_slots': native_slots,
+                       'configurations': sorted(group['configurations']) if callbacks else [],
                        'scene_dispatch': group.get('scene_dispatch', False),
-                       'variants': sorted(group['variants']), 'color_input': has_color_input,
+                       'variants': variants, 'color_input': has_color_input,
                        'storage_texture': has_storage_texture,
                        'persistent': group['persistent'] or len(group['variants']) > 1,
                        'compute': compute_identity})
@@ -446,12 +461,13 @@ def report_bounds_failures(wrapper, selected_sources, snapshot, *, namespaced):
 
 def expand_programs(programs, technique, snapshot, helper, build, variants=None, persistent=False, schemas=None,
                     compute_identity=COMPUTE_ID, native_ray_queries=True, ray_path_capture=False,
-                    native_ray_pipeline=False, workgroup=None, scene_dispatch=False, named_resources=None):
+                    native_slots=None, workgroup=None, scene_dispatch=False, named_resources=None):
     """Capture the engine kernel and all three functions in one linked compute entry.
 
     ray_path_capture links the diagnostic LUDUS_RAY_PATH_CAPTURE variant of the same
     source snapshot. The flag is part of the program, so it joins the stage cache identity.
     """
+    native_ray_pipeline = native_slots is not None
     selected = select_callbacks(programs, variants[0]) if variants else {stage: programs[technique[stage]] for stage in STAGES}
     storage = buffers.merge_bindings(selected, build)
     build.require(not persistent or not storage, 'Capability', TECHNIQUE, 'ordered ray passes use Buffer storage; StructuredBuffer remains the single-job profile')
@@ -535,9 +551,6 @@ static const float RAY_DIRECTION_SQUARED_TOLERANCE = 0.00001;
         compatibility = migrate_legacy_scene_sources(sources, snapshot)
         wrapper = scene_wrapper(selected, technique['scene_interface'], snapshot, build, compute_recipe, storage_source,
                                 compatibility)
-    build.require(not native_ray_pipeline or not technique.get('scene_interface', {}).get('polygonal_light_sampling', False),
-                  'Capability', TECHNIQUE, 'native ray stages cannot bind the LTC table of polygonal_light_sampling; '
-                  'use a scene compute pass')
     named_resources = {variant: named_resources[variant] for variant in (variants or [])
                        if named_resources and variant in named_resources}
     named_record_views = buffers.collect_record_views(named_resources.values(), build)
@@ -546,7 +559,7 @@ static const float RAY_DIRECTION_SQUARED_TOLERANCE = 0.00001;
         build.require(technique.get('scene_interface') is not None, 'Capability', TECHNIQUE,
                       'native ray stages, ordered ray passes and persistent buffers require the scene callback interface')
         wrapper = persistent_wrapper(programs, technique, variants, snapshot, build, compute_recipe, compatibility,
-                                     native_ray_queries, native_ray_pipeline, persistent, storage_source, named_resources, named_record_views)
+                                     native_ray_queries, native_slots, persistent, storage_source, named_resources, named_record_views)
     selected_sources = ({programs[identity]['source'] for variant in variants for identity in callback_programs(variant)}
                         if needs_dispatch else {program['source'] for program in selected.values()})
     wrapper = report_bounds_failures(wrapper, selected_sources, snapshot,
@@ -647,8 +660,7 @@ def check_interface(program, result, build):
     """Validate the frozen renderer ABI from independently reflected artifacts."""
     interface = result['interface']
     entries = sorted(interface['entries'], key=lambda value: value['binding'])
-    if (program['id'] in COMPUTE_IDS or program.get('native_ray_pipeline') or program.get('color_input') or
-            program.get('storage_texture')):
+    if program.get('native_ray_profile') and program['stage'] == 'compute':
         expected = [(0, 'UniformBuffer', PARAMETERS_BYTES), (1, 'StorageRead', 16), (2, 'StorageReadWrite', 16),
                     (3, 'StorageReadWrite', 16), (4, 'StorageRead', 16), (5, 'RayScene', 0)]
         if not program.get('native_ray_queries', True):
@@ -904,9 +916,10 @@ def validate_payload(data, budget, build):
 
 
 def persistent_wrapper(programs, technique, variants, snapshot, build, recipe, compatibility=None,
-                       native_ray_queries=True, native_ray_pipeline=False, has_persistent_buffers=True, storage_source="",
+                       native_ray_queries=True, native_slots=None, has_persistent_buffers=True, storage_source="",
                        named_resources=None, named_record_views=None):
     """Namespace each unique authored source and dispatch its callbacks by pass index."""
+    native_ray_pipeline = native_slots is not None
     interface = technique['scene_interface']
     sources = sorted({programs[identity]['source'] for variant in variants for identity in callback_programs(variant)})
     # A ray variant supplies the callback template; it is the first variant in ray-only sequences.
@@ -1011,13 +1024,14 @@ def persistent_wrapper(programs, technique, variants, snapshot, build, recipe, c
             if stage not in variant_callbacks[index]:
                 continue  # A scene compute pass has no hit or miss callback; default: latches HasFailed.
             function = variant_callbacks[index][stage]
+            slot = native_slots[variant] if native_ray_pipeline else index
             fields = (named_resources or {}).get(variant) if stage == 'ray_generation' else None
             if fields is not None:
                 values = ', '.join(buffers.record_view_argument(field) for field in fields)
-                result += (f'case {index}: {{ {function}Resources resources = {{ {values} }}; '
+                result += (f'case {slot}: {{ {function}Resources resources = {{ {values} }}; '
                            f'return {function}({arguments}, resources); }}\n')
                 continue
-            result += f'case {index}: ' + ('return ' if returns else '') + function + '(' + arguments + ');'
+            result += f'case {slot}: ' + ('return ' if returns else '') + function + '(' + arguments + ');'
             result += ('\n' if returns else ' break;\n')
         return result + ('default: graphFailureReason = LUDUS_SCENE_FAILURE_INVALID_ARGUMENT; return float3(-1); }' if returns
                          else 'default: FailSceneQuery(queries, LUDUS_SCENE_FAILURE_INVALID_ARGUMENT); break; }')

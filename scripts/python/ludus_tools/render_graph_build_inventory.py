@@ -70,7 +70,8 @@ def describe(*, plans, routes, techniques, recipes, entries, requests, compile_s
             if 'technique' not in operation:
                 continue
             reference = (plan['configuration'], operation['id'])
-            selected = recipes_by_technique.get(operation['technique'], [])
+            selected = [recipe for recipe in recipes_by_technique.get(operation['technique'], [])
+                        if plan['configuration'] in recipe.get('configurations', (plan['configuration'],))]
             choice = {'configuration': plan['configuration'], 'node': operation['id'], 'kind': operation['kind'],
                       'technique': operation['technique']}
             if reference in raster_recipe_ids:
