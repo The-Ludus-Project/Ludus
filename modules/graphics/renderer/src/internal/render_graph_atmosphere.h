@@ -2,6 +2,7 @@
 
 #include <ludus/foundation/containers/static_array.hpp>
 #include <ludus/foundation/math/vector.hpp>
+#include <ludus/graphics/renderer/atmosphere.hpp>
 #include <ludus/graphics/rhi/graph.h>
 #include <ludus/graphics/rhi/raster.h>
 
@@ -9,7 +10,6 @@
 
 namespace ludus::graphics::renderer
 {
-struct AtmosphereDescription;
 struct ViewDescription;
 namespace internal
 {
@@ -28,6 +28,10 @@ struct CloudLayerUniform final
     foundation::math::Vector4 CameraLocal{};
     foundation::math::Vector4 Medium{};
     foundation::math::Vector4 Phase{};
+    /// CloudLayerTestField: unit split normal in the layer frame and the plane's offset in metres.
+    foundation::math::Vector4 TestSplit{};
+    /// Per region: source radiance in xyz and extinction (density applied) per metre in w.
+    foundation::StaticArray<foundation::math::Vector4, CloudLayerTestField::REGION_COUNT> TestRegions{};
 };
 
 /// Validate an Atmosphere's cloud layer (CloudLayerDescription) and pack it for one camera. A disabled layer, an

@@ -429,4 +429,42 @@ TEST_CASE("Cloud layer packing validates its fields and places the eye in the la
     invalid = atmosphere.Clouds;
     invalid.AxisXWorld = {0, 3, 0};
     reject(invalid);
+
+    // A homogeneous layer packs no test field.
+    CHECK(uniform.Phase.Y == 0);
+    CHECK(uniform.Phase.Z == clouds.SingleScatteringAlbedo);
+    CHECK(uniform.TestSplit == math::Vector4{});
+
+    // The two-region fixture packs a unit normal, the offset and each region with the density applied.
+    camera.CameraPosition = {130, 2, -70};
+    atmosphere.Clouds.Density = 2;
+    renderer::CloudLayerTestField& field = atmosphere.Clouds.TestField;
+    field.IsEnabled = true;
+    field.SplitNormalLocal = {0, 0, -4};
+    field.SplitOffsetMetres = -250;
+    field.Regions[0] = { .ExtinctionPerMetre = 0.001F, .SourceRadiance = {0.5F, 0.25F, 0} };
+    field.Regions[1] = { .ExtinctionPerMetre = 0.003F, .SourceRadiance = {0, 0, 1} };
+    REQUIRE(renderer::internal::TryPackCloudLayer(atmosphere, camera, uniform) == true);
+    CHECK(uniform.Phase.Y == 1);
+    CHECK(uniform.TestSplit == math::Vector4{0, 0, -1, -250});
+    CHECK(uniform.TestRegions[0] == math::Vector4{0.5F, 0.25F, 0, 0.002F});
+    CHECK(uniform.TestRegions[1] == math::Vector4{0, 0, 1, 0.006F});
+    const renderer::CloudLayerDescription valid = atmosphere.Clouds;
+    invalid = valid;
+    invalid.TestField.SplitNormalLocal = {};
+    reject(invalid);
+    invalid = valid;
+    invalid.TestField.SplitOffsetMetres = std::nanf("");
+    reject(invalid);
+    invalid = valid;
+    invalid.TestField.Regions[1].ExtinctionPerMetre = -1;
+    reject(invalid);
+    invalid = valid;
+    invalid.TestField.Regions[0].SourceRadiance.Y = -1;
+    reject(invalid);
+    // A disabled field ignores its values.
+    invalid.TestField.IsEnabled = false;
+    atmosphere.Clouds = invalid;
+    REQUIRE(renderer::internal::TryPackCloudLayer(atmosphere, camera, uniform) == true);
+    CHECK(uniform.Phase.Y == 0);
 }
