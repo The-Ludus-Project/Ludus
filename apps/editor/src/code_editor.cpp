@@ -441,8 +441,11 @@ void CodeEditor::paintEvent(QPaintEvent* event)
     }
     if (mMultiCursor.HasSecondaryCursors() == true)
     {
+        // The first visible block's start to the end of the block under the
+        // viewport's bottom edge; both lines are already laid out by the paint.
+        const QTextBlock last = cursorForPosition(viewport()->rect().bottomRight()).block();
         QPainter painter(viewport());
-        mMultiCursor.Paint(painter);
+        mMultiCursor.Paint(painter, firstVisibleBlock().position(), last.position() + last.length() - 1);
     }
     paintFoldPlaceholders(event);
     paintDiagnosticCallout();

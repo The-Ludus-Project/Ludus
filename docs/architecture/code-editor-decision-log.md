@@ -674,7 +674,8 @@ the editor build and tests), exactly as the M0 baseline did (recorded on an
 Apple M5). The two new workloads print one WARN summary each; the maintainer runs
 `ludus_code_editor_tests "[.benchmark][code-editor]"` on a quiet reference
 machine and records the summaries against the 1-cursor (4 ms) and 100-cursor
-(8 ms) budgets. Until then the typing budgets for M2 are pending that run.
+(8 ms) budgets. The run is recorded in
+[M2 typing budgets recorded](#m2-typing-budgets-recorded-ce21-2026-11-22).
 
 ### M2 gate report (2026-11-05)
 
@@ -753,3 +754,63 @@ offscreen. The merged M2 stack did not compile, and five tests failed once it di
 Kiro's sandbox cannot compile, so the "authored, not run" label covered
 compiling as well as running. `AGENTS.md` and `.kiro/steering` now require a
 warnings-as-errors build before a pull request, or a draft titled `[unbuilt]`.
+
+### M2 typing budgets recorded (CE21, 2026-11-22)
+
+The batch 7 workloads were first run on an Apple M5 (10 cores, 16 GiB), macOS
+26.6, Homebrew Clang 23.1.3 and Qt 6.12.0, with preset `macos-clang-development`
+(RelWithDebInfo), `LUDUS_WARNINGS_AS_ERRORS=ON` and `QT_QPA_PLATFORM=offscreen`
+([issue 1261](https://github.com/The-Ludus-Project/Ludus/issues/1261)).
+Concurrent agent builds kept the load average high, so this is not the quiet
+reference machine that M9 qualifies with the native probe.
+
+```bash
+./init.sh --cli --with-tests --with-editor --preset-only --skip-checks --skip-sanitizers --skip-sdk macos-clang-development
+cmake --preset macos-clang-development -DLUDUS_WARNINGS_AS_ERRORS=ON
+cmake --build out/build/macos-clang-development --target ludus_code_editor_tests
+QT_QPA_PLATFORM=offscreen out/build/macos-clang-development/apps/editor/ludus_code_editor_tests \
+  "corpus: 1-cursor typing through the edit-set path","corpus: 100-cursor typing through the edit-set path" -r compact
+```
+
+At a load average of 16-21 the 100-cursor case missed its budget: handling p95
+was 17-55 ms and key-to-paint p95 16-52 ms. A `sample` profile found two costs
+that grow with the distance between the cursors, not with the edit:
+
+- **Span replacement.** After the host applied the edit set,
+  `CodeDocumentController::Synchronize` diffed the view against the host text
+  by common prefix and suffix and replaced everything between them in one
+  `insertText`. With carets spread over 400 lines, every keystroke deleted and
+  recreated every line between the first and last caret, with a layout per
+  recreated line. `ApplyMultiCursorEdit` now applies each accepted region to
+  the view in place, last region first, in one Qt edit block, so each line
+  keeps its `QTextBlock`, layout cache, syntax state and fold data. The
+  following `Synchronize` still compares the view with the host text and
+  repairs any difference.
+- **Off-screen carets.** `CodeMultiCursor::Paint` located every secondary
+  caret with `cursorRect`, which lays out the caret's line, even outside the
+  viewport. Paint now receives the visible position range and skips carets
+  outside it.
+
+Two regression tests cover these: `Multi-cursor typing edits each line in place`
+keeps a marked line between two carets, and `Painting secondary carets lays out
+only visible lines` repaints synchronously and checks that an off-screen caret's
+line stays unlaid out. Each fails without its fix.
+
+Results with both fixes, alternating the builds before and after the change in
+one session (load average about 9). Each run has 100 samples with a nearest-rank
+p95; figures are the range over four runs, in microseconds:
+
+| Workload | Build | Handling p50 | Handling p95 | Key-to-paint p50 | Key-to-paint p95 | Budget | Result |
+| --- | --- | --- | --- | --- | --- | --- | --- |
+| 1 cursor (72 chars, 5 lines) | Before | 63-70 | 74-81 | 51-55 | 60-67 | ≤ 4 ms handling p95; ≤ 16 ms key-to-paint p95 | Within |
+| 1 cursor | After | 63-70 | 71-108 | 50-55 | 57-87 | ≤ 4 ms handling p95; ≤ 16 ms key-to-paint p95 | Within |
+| 100 cursors (7,200 chars, 401 lines) | Before | 2,219-2,246 | 2,306-3,627 | 2,132-2,150 | 2,214-3,495 | ≤ 8 ms handling p95; ≤ 16 ms key-to-paint p95 | Within |
+| 100 cursors | After | 861-929 | 936-1,001 | 776-839 | 843-897 | ≤ 8 ms handling p95; ≤ 16 ms key-to-paint p95 | Within |
+
+The earlier failure was mostly load: at a load average of about 9 the build
+before the change met its budget too. The change still makes the 100-cursor
+keystroke about 2.4 times cheaper. At a load average of about 7, alternating
+runs gave a 100-cursor handling p95 of 7.4-11.7 ms before the change and
+3.4-5.0 ms after it, so it also restores headroom on a busy machine. Both M2
+typing budgets are now recorded and met offscreen. The native keypress-to-paint
+qualification on quiet reference machines remains M9 work.

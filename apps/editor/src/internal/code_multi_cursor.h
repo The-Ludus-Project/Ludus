@@ -121,8 +121,12 @@ public:
     /// Paint the secondary carets over the viewport, after the base
     /// QPlainTextEdit paint and before the latency probe marks the frame. The
     /// secondary selections are drawn by the view as Qt extra selections, since
-    /// extra selections paint no caret of their own.
-    void Paint(QPainter& inoutPainter) const;
+    /// extra selections paint no caret of their own. Only carets whose UTF-16
+    /// position lies in [firstVisiblePosition, lastVisiblePosition] are painted:
+    /// locating a caret lays out its line, so carets outside the viewport would
+    /// cost a layout per cursor per paint.
+    void
+    Paint(QPainter& inoutPainter, foundation::int32 firstVisiblePosition, foundation::int32 lastVisiblePosition) const;
 
     /// Replace the secondary cursors with `secondaryCursors` (document order, in
     /// UTF-16 positions) and repaint. The controller calls this when it restores

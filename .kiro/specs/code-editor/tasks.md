@@ -213,7 +213,10 @@ Requirements: CE05-CE07, CE17. Prerequisite: M1.
   that type a real key event through the M2 multi-cursor edit-set path; the
   numbers are recorded on a reference machine by the maintainer, as the M0
   baseline was — authored, not run here. See the
-  [M2 batch 7 decision-log entry](../../../docs/architecture/code-editor-decision-log.md#m2-batch-7-typing-budgets-ce21-2026-11-05).)*
+  [M2 batch 7 decision-log entry](../../../docs/architecture/code-editor-decision-log.md#m2-batch-7-typing-budgets-ce21-2026-11-05).
+  Recorded on an Apple M5 on 2026-11-22, both within budget after the in-place
+  projection and visible-caret paint fixes; see
+  [M2 typing budgets recorded](../../../docs/architecture/code-editor-decision-log.md#m2-typing-budgets-recorded-ce21-2026-11-22).)*
 
 Gate: the CE05-CE07 and CE17 tests pass; the typing budgets are recorded. The
 test cases are authored; the budgets are recorded on a reference machine by the
