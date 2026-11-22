@@ -433,14 +433,18 @@ builder.
 interactive output the Editor's World viewport uses. It prepares the flat, views
 and lighting-output profiles, replaces the snapshot every frame, and composites
 to the surface in the same submission. The last drawable view keeps presenting
-while a newer view's upload is Pending. Colours are linear, so the window shows
-the Renderer's display transform: an 8-bit linear target, per-channel Reinhard
-tone mapping at exposure one, then sRGB encoding. Edit and Play show the same
-pixels. Outside the room's bounds the Renderer's black clear shows. Collider
-boxes are axis-aligned; visual rotation affects drawing. Narrow windows expand the camera height to keep the
-authored horizontal bounds visible. The item and view builders have no window,
-device or Qt dependency, so an Editor view of a World-demo World can draw the same
-geometry from the same extraction.
+while a newer view's upload is Pending. The standalone game and hosted Play use
+an 8-bit linear scene target, per-channel Reinhard tone mapping at exposure one,
+and sRGB output. The Editor's Edit view uses PBR Neutral. The game's `Linear8`
+profile rounds dark values before tone mapping. See
+[Linear composition and capabilities](../architecture/renderer-systems.md#linear-composition-and-capabilities)
+for a precision check when adding gradients to the demo.
+
+Outside the room's bounds the Renderer's black clear shows. Collider boxes are
+axis-aligned. Visual rotation affects drawing. Narrow windows expand the camera
+height to keep the authored horizontal bounds visible. The item and view builders
+have no window, device or Qt dependency, so an Editor view of a World-demo World
+can draw the same geometry from the same extraction.
 
 ### Record GPU passes from the Editor
 

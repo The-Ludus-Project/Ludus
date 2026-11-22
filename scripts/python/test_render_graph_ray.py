@@ -962,7 +962,8 @@ class RayCompilerAcceptance(unittest.TestCase):
             self.assertNotIn(('NativeRayStages', 'compute', 'metal'), default_contents['artifacts'])
             compute_artifact = default_contents['artifacts'][('RayTracing', 'compute', 'metal')]
             self.assertEqual([8, 8, 1], compute_artifact['descriptor']['interface']['workgroup'])
-            self.assertEqual([64, 1, 1], native['descriptor']['interface']['workgroup'])
+            # Since package version 42 (#2148) the native stages record the bundle's one workgroup shape.
+            self.assertEqual([8, 8, 1], native['descriptor']['interface']['workgroup'])
             execution.emit_runtime(str(package), root / 'default.h', configuration='Default')
             self.assertNotIn('result.NativeRayStages.Artifact.HasNativeRayStages = true', (root / 'default.h').read_text())
             execution.cook_runtime(str(package), root / 'hardware.lurgrt', configuration='Hardware')

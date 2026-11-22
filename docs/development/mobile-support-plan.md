@@ -336,6 +336,20 @@ is unavailable, record why. Where available, use Samsung's
 [GPUWatch](https://developer.samsung.com/galaxy-gamedev/gpuwatch.html) in a
 separate diagnostic run so the overlay is absent from the budget measurements.
 
+In the sustained Galaxy Release run, record emitted draw commands and CPU
+times for renderer preparation, Vulkan command recording, and queue submission.
+Report acquire and wait time separately, alongside GPU elapsed time and actual
+display intervals. If command recording contributes to a repeatable budget
+miss, compare the serial baseline with an equivalent indexed-instanced variant
+where the scene has compatible repeated opaque geometry. Hold the camera
+replay, resolution, visible geometry, and material settings fixed. Verify
+matching output and compare draw counts, CPU and GPU timing tails, and missed
+display intervals. Record missing timing coverage and any instrumentation cost.
+If recording remains a bottleneck, use the trace to scope the
+[serial versus worker recording comparison](../architecture/rhi-gdi.md#schedule-comparison-for-r15).
+Thanks to Max Röhrbein-Kling and Johannes Kuhlmann for isolating CPU draw
+emission in [*Bringing Galaxy on Fire 3 to Vulkan: Stats & Summary*, “Some Numbers”](https://www.gamedeveloper.com/programming/bringing-galaxy-on-fire-3-to-vulkan-stats-summary).
+
 Record [Android thermal status or headroom](https://developer.android.com/games/optimize/adpf/thermal)
 where available, including the initial state and changes during the run. Mark
 unavailable telemetry explicitly and retain a fixed-quality run. Revisit

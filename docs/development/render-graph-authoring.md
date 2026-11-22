@@ -1376,8 +1376,14 @@ spelling. Named views load and store whole records using the reflected layout.
 Supported fields are 32-bit scalars and vectors, nested records and fixed arrays.
 Fixed-byte Buffer ports expose four unsigned integers per element. A reused
 function needs matching fields, types and access. The same callback variant
-also shares one slot and capacity mapping. Use ordered scene compute or
-**Compute** invocation on a Ray Tracing Pipeline.
+also shares one slot and capacity mapping. Named Buffer ports work in scene
+compute kernels and in the ray-generation callback of either invocation type.
+**Hardware RT pipeline** requires a Metal package profile and a supported Metal
+device. When the package targets Vulkan, use **Compute pipeline** with **Native
+ray query** for hardware-accelerated intersections on supported devices. If
+a native ray pass reads a record defined in a separate compute shader, move
+the record declaration to a shared `.slang` or `.luslh` file and select that
+file under **From shader struct** in the Buffer's sizing settings.
 
 ### Author scene compute passes
 

@@ -553,6 +553,58 @@ class NativeSceneComputeTests(unittest.TestCase):
             _, reordered = find_ray_compute(Path(rebuilt['package']), 'main_shaders/primary.slang')
             self.assertIn('GraphReadOnlyEdgeView(GraphBuffer0, 16u)', reordered)
             self.assertEqual(consumer, shade.read_text())
+
+            # Bind the same typed read-only port through the native Metal ray-generation stage.
+            shade_invocation = nodes['shade']['invocation']
+            shade_invocation['type'] = 'RayTracing'
+            graph_path.write_bytes(graph.canonical_asset(document))
+            built = build.build_package(manifest_path, output, **options)
+            package = Path(built['package'])
+            contents = execution._runtime_contents(str(package), configuration['id'])
+            producer, native_pass = contents['passes']
+            self.assertEqual('HardwarePipeline', native_pass['Traversal'])
+            self.assertEqual(producer['Buffer0'], native_pass['Buffer0'])
+            self.assertNotEqual(execution.ABSENT, native_pass['Buffer0'])
+            native_stage = contents['artifacts'][('NativeRayStages', 'compute', 'metal')]
+            entries = native_stage['descriptor']['interface']['entries']
+            self.assertIn((6, 'StorageReadWrite', 16),
+                          [(entry['binding'], entry['kind'], entry['size']) for entry in entries])
+            native_pipeline = next(recipe['native_pipeline'] for recipe in contents['package']['recipes']
+                                   if recipe['profile'] == 'metal' and 'native_pipeline' in recipe)
+            native_wrapper = (package / 'programs' / native_pipeline / 'wrapper.slang').read_text()
+            self.assertIn('GraphReadOnlyEdgeView(GraphBuffer0, 16u)', native_wrapper)
+            self.assertIn('LudusNativeRayGeneration', native_wrapper)
+            execution.cook_runtime(package, root / 'native-named.lurgrt')
+            accepted_native = (output / 'current.json').read_bytes()
+
+            binding_location = {'source': 'main.lurender.json', 'configuration': configuration['id'],
+                                'node': 'shade', 'instance': 'Main/shade', 'port': 'edges', 'direction': 'input',
+                                'field': 'invocation.type'}
+            for unsupported_profile in ('spirv', 'wgsl'):
+                with self.subTest(unsupported_profile=unsupported_profile):
+                    manifest_path.write_text(json.dumps({**manifest, 'profiles': [unsupported_profile]}))
+                    with self.assertRaisesRegex(ToolingError, r"Main/shade.*'edges'.*Hardware RT pipeline.*Metal") as failure:
+                        build.build_package(manifest_path, output, **options)
+                    self.assertEqual(binding_location, failure.exception.location)
+                    self.assertEqual(accepted_native, (output / 'current.json').read_bytes())
+            manifest_path.write_text(json.dumps(manifest))
+
+            # A record declared in the compute producer is outside the native stage bundle.
+            primary = shaders / 'primary.slang'
+            producer_source = primary.read_text()
+            primary.write_text((shaders / 'edge.slang').read_text() + producer_source)
+            nodes['hits']['shader_struct']['source'] = 'main_shaders/primary.slang'
+            graph_path.write_bytes(graph.canonical_asset(document))
+            with self.assertRaisesRegex(
+                    ToolingError, r"Main/shade.*'edges'.*Hardware RT pipeline.*Edge.*shared .slang") as failure:
+                build.build_package(manifest_path, output, **options)
+            self.assertEqual(binding_location, failure.exception.location)
+            self.assertEqual(accepted_native, (output / 'current.json').read_bytes())
+            primary.write_text(producer_source)
+            nodes['hits']['shader_struct']['source'] = 'main_shaders/edge.slang'
+
+            del shade_invocation['type']
+            graph_path.write_bytes(graph.canonical_asset(document))
             accepted = (output / 'current.json').read_bytes()
             shade.write_text(consumer.replace('return edge.EndWorld', 'resources.Edges[0] = edge; return edge.EndWorld'))
             with self.assertRaisesRegex(ToolingError, 'set|l-value|assign'):

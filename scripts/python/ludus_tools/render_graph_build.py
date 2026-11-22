@@ -255,7 +255,7 @@ class Snapshot:
             require(read(self.external.get(relative, self.path(relative))) == data, 'Stale', relative, 'source changed during build; prior package retained')
 
 
-def validate_manifest(value):
+def validate_manifest(value, *, check_ray_targets=True):
     keys(value, ('version', 'id', 'profiles', 'schemas', 'programs', 'techniques', 'budgets'), 'build manifest', ('settings',))
     from . import render_graph_settings
     render_graph_settings.validate(value.get('settings', []), sys.modules[__name__])
@@ -424,7 +424,8 @@ def validate_manifest(value):
             require(is_scene or (declared_stages and
                                  tuple(programs[technique[stage]]['output'] for stage in ray.STAGES) == ('Ray', 'Color', 'Color')),
                     'ShaderInterface', ray.TECHNIQUE, 'callback signatures must match the selected scene/legacy profile')
-            require(ray.TECHNIQUE not in techniques and any(target in ('metal', 'spirv') for target in value['profiles']),
+            require(ray.TECHNIQUE not in techniques and (not check_ray_targets or
+                    any(target in ('metal', 'spirv') for target in value['profiles'])),
                     'Capability', ray.TECHNIQUE,
                     'Hardware raytracing requires native Metal or Vulkan; unsupported APIs need an authored raster configuration')
             techniques[ray.TECHNIQUE] = technique
@@ -1094,14 +1095,14 @@ def compile_stages(jobs, stage, schemas, snapshot, helper, tools, cancel, worker
 
 
 def capture_graph_shader_inputs(manifest, *, helper, root=None, compiler=None, cancel=None, luslc=None,
-                                lusl_style='strict', allow_resource_upgrades=False):
+                                lusl_style='strict', check_ray_targets=True, allow_resource_upgrades=False):
     """Capture graph connections and their shader interfaces before checking the editable sources."""
     manifest = Path(manifest).resolve()
     snapshot = Snapshot(root if root is not None else manifest.parent)
     require(manifest.is_relative_to(snapshot.root), 'Source', str(manifest), 'manifest outside root')
     manifest_label = manifest.relative_to(snapshot.root).as_posix()
     value = document(snapshot.load(manifest_label), manifest_label)
-    schemas, programs, techniques, counts = validate_manifest(value)
+    schemas, programs, techniques, counts = validate_manifest(value, check_ray_targets=check_ray_targets)
     # Build plans for every declared closed root configuration and preserve graph
     # imports in the same source snapshot used by shaders.
     graph_path = manifest.with_suffix('').with_suffix('.lurender.json')
@@ -1139,7 +1140,13 @@ def prepare_sources(manifest, helper, *, root=None, ray_path_capture=False, capt
     helper = Path(helper).resolve()
     snapshot, value, schemas, programs, techniques, counts, plans, library, graph_path, named_resources = (
         capture_graph_shader_inputs(manifest, helper=helper, root=root, compiler=compiler, cancel=cancel,
-                                    luslc=luslc, lusl_style=lusl_style, allow_resource_upgrades=allow_resource_upgrades))
+                                    luslc=luslc, lusl_style=lusl_style, check_ray_targets=False,
+                                    allow_resource_upgrades=allow_resource_upgrades))
+    if ray.TECHNIQUE in techniques:
+        # A build can report an unsupported invocation at its graph node rather than its manifest.
+        ray.validate_native_invocations(plans, value['profiles'], techniques[ray.TECHNIQUE], sys.modules[__name__])
+        require(any(target in ('metal', 'spirv') for target in value['profiles']), 'Capability', 'profiles',
+                'Hardware raytracing requires native Metal or Vulkan; select an authored raster configuration on unsupported APIs')
     manifest_label = Path(manifest).resolve().relative_to(snapshot.root).as_posix()
     # LUSL programs name their generated Slang module from here on.
     program_language_tool, snapshot.language_reports = language.lower_sources(
@@ -1235,8 +1242,6 @@ def prepare_sources(manifest, helper, *, root=None, ray_path_capture=False, capt
             'a capture profile and a ray path capture are separate builds')
     ray_profiles = []
     if ray.TECHNIQUE in techniques:
-        require(any(target in ('metal', 'spirv') for target in value['profiles']), 'Capability', 'profiles',
-                'Hardware raytracing requires native Metal or Vulkan; select an authored raster configuration on unsupported APIs')
         ray_profiles = ray.group_profiles(plans, techniques[ray.TECHNIQUE], sys.modules[__name__])
         authored_programs = programs
         linked_programs = {}
@@ -1264,11 +1269,8 @@ def prepare_sources(manifest, helper, *, root=None, ray_path_capture=False, capt
                                           scene_dispatch=profile['scene_dispatch'], named_resources=named_resources)
             linked_programs.update(expanded)
             if profile['native_slots']:
-                require(not any(named_resources.get(variant) for variant in profile['native_slots']),
-                        'Capability', 'RayTracing',
-                        'named buffers require compute scene traversal; select Compute in the ray Invocation settings')
-                require('metal' in value['profiles'], 'Capability', 'RayTracing',
-                        'hardware ray-stage invocation requires the native Metal backend; select Compute explicitly on other backends')
+                ray.validate_native_buffer_layouts(profile['native_operations'], authored_programs,
+                                                   named_resources, snapshot, sys.modules[__name__])
                 profile['native_compute'] = profile['compute'] + 'NativeStages'
                 linked_programs.update(ray.expand_programs(authored_programs, technique, snapshot, helper, sys.modules[__name__],
                     list(profile['native_slots']), profile['persistent'], schemas, profile['native_compute'],

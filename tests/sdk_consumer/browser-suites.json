@@ -3,7 +3,9 @@
     {"title": "Test installed portable raster pixels, API selection and failures",
      "script": "raster-browser-test.mjs", "results": "raster"},
     {"title": "Check addressed-random GPU parity on WebGPU against the Wasm CPU reference",
-     "script": "random-parity-browser-test.mjs", "results": "random-parity"}
+     "script": "random-parity-browser-test.mjs", "results": "random-parity"},
+    {"title": "Check R12a indirect draws and dispatches on WebGPU, without indirect-first-instance and through the WebGL 2 direct variant",
+     "script": "indirect-browser-test.mjs", "results": "indirect"}
   ],
   "renderer-baseline": [
     {"title": "Test installed L0/L1/L2/L3/L4 renderer against direct and cross-backend image oracles",
