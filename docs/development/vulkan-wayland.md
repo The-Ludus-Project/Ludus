@@ -31,6 +31,16 @@ Run lifecycle calls on the main thread. To retry a failed session or switch its
 primary window, call `Shutdown` before starting again. A headless window uses
 the same startup API with a headless descriptor.
 
+Surface-format discovery sizes temporary storage from the driver's complete
+advertised list, including lists larger than 64 entries. That storage counts
+against `StorageLimits::HostBytes` and is released after selection. If the list
+grows between the count and data queries, discovery retries up to three times;
+it never selects from an incomplete prefix. The existing BGRA8 UNORM preference
+and compatible RGBA8/BGRA8 sRGB fallbacks are unchanged. A query error, exhausted
+host budget or unstable list fails discovery without publishing a selected format.
+Retry startup after a transient query failure; for budget pressure, review the
+device's host-memory budget and retained resources before retrying.
+
 For swapchains that share a device, use the
 [multiple-surface device API](fullscreen-rendering.md#multiple-surfaces-per-device-r14b).
 
@@ -51,6 +61,14 @@ Before an output advertises a scale, or on a surface too old for buffer scaling,
 the integer scale is one.
 
 ## Verification
+
+The driver-independent surface-format regressions exercise a 72-entry list,
+count/list races, shrinking lists, format preferences, query errors and host-budget
+rejection:
+
+```sh
+out/build/linux-clang-debug/modules/graphics/rhi/ludus_graphics_rhi_tests '[surface-formats]'
+```
 
 The normal test suite checks frame status before startup. Compiling the RHI
 test with its public header before Volk checks native-handle type compatibility;
