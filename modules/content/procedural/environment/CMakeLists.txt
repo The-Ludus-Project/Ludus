@@ -21,8 +21,15 @@ install(TARGETS ludus_procedural_environment EXPORT LudusTargets
 if(LUDUS_BUILD_TESTS)
     find_package(Catch2 3 REQUIRED CONFIG)
     add_executable(ludus_procedural_environment_tests tests/scatter_tests.cpp tests/scatter_generation_tests.cpp)
+    # The demand fixture composes scatter with modular assembly over one shared catalog.
     target_link_libraries(ludus_procedural_environment_tests
-        PRIVATE Ludus::ProceduralEnvironment Ludus::FoundationThreading Catch2::Catch2WithMain)
+        PRIVATE Ludus::ProceduralEnvironment Ludus::ProceduralArchitecture Ludus::FoundationThreading
+            Catch2::Catch2WithMain)
+    # Cache recovery runs over the persistent store create temporary native directories.
+    if(CMAKE_SYSTEM_NAME MATCHES "^(Linux|Darwin)$" AND NOT EMSCRIPTEN)
+        target_sources(ludus_procedural_environment_tests PRIVATE tests/generation_storage_tests.cpp)
+        target_link_libraries(ludus_procedural_environment_tests PRIVATE Ludus::ProceduralStorage)
+    endif()
     ludus_apply_project_defaults(ludus_procedural_environment_tests)
     ludus_enable_test_exceptions(ludus_procedural_environment_tests)
     add_test(NAME ludus_procedural_environment_tests COMMAND ludus_procedural_environment_tests)

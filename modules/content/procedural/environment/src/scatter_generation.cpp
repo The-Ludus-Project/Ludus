@@ -94,18 +94,25 @@ void WriteRectangle(const ScatterRectangle& rectangle, GenerationByteWriter& out
     outWriter.WriteInt32(rectangle.MaximumY);
 }
 
-/// Every input a layer product depends on: operator, versions, seed, domains, room, the layer and its variants,
-/// the region and the keep-outs. Other layers and locks are excluded, so editing them never invalidates it.
-void WriteLayerKey(const ScatterGenerationInput& input,
-                   const ScatterRecipe& recipe,
-                   const ScatterLayer& layer,
-                   GenerationByteWriter& outWriter) noexcept
+[[nodiscard]] ScatterRectangle ReadRectangle(GenerationByteReader& inoutReader) noexcept
+{
+    ScatterRectangle rectangle;
+    rectangle.MinimumX = inoutReader.ReadInt32();
+    rectangle.MinimumY = inoutReader.ReadInt32();
+    rectangle.MaximumX = inoutReader.ReadInt32();
+    rectangle.MaximumY = inoutReader.ReadInt32();
+    return rectangle;
+}
+
+/// A layer stage's parameters: every input the layer product depends on. Other layers and locks are excluded, so
+/// editing them never invalidates it. The operator, its version and the schema are in the stage key already.
+void WriteLayerParameters(const ScatterGenerationInput& input,
+                          const ScatterRecipe& recipe,
+                          const ScatterLayer& layer,
+                          GenerationByteWriter& outWriter) noexcept
 {
     outWriter.Clear();
-    outWriter.WriteUInt32(SCATTER_GENERATION_VERSION);
-    outWriter.WriteUInt32(SCATTER_LAYER_OPERATOR);
     outWriter.WriteUInt32(SCATTER_LAYOUT_VERSION);
-    outWriter.WriteUInt32(SCATTER_LAYER_PRODUCT_SCHEMA);
     outWriter.WriteUInt64(input.WorldSeed);
     outWriter.WriteUInt32(input.Domains.Placement);
     outWriter.WriteUInt32(input.Domains.Variant);
@@ -148,12 +155,10 @@ void WriteLayerProduct(BorrowedView<const ScatterPlacement> placements, Generati
     }
 }
 
-/// Decode a cached layer product and check it against the layer: identities in this room and layer, strictly
-/// canonical order, candidate, variant and scale in range. False rejects the entry as corrupt.
-[[nodiscard]] bool TryReadLayerProduct(BorrowedView<const uint8> bytes,
-                                       const ScatterRecipe& recipe,
-                                       const ScatterLayer& layer,
-                                       Array<ScatterPlacement>& inoutPlacements) noexcept
+/// Decode a layer product's placements and append them: every record in the first record's room and layer, in
+/// strictly canonical order. False leaves the array unchanged.
+[[nodiscard]] bool TryAppendLayerPlacements(BorrowedView<const uint8> bytes,
+                                            Array<ScatterPlacement>& inoutPlacements) noexcept
 {
     GenerationByteReader reader(bytes);
     const uint32 count = reader.ReadUInt32();
@@ -178,17 +183,22 @@ void WriteLayerProduct(BorrowedView<const ScatterPlacement> placements, Generati
         placement.Variant = reader.ReadUInt32();
         placement.Rotation = reader.ReadUInt16();
         placement.Scale = reader.ReadUInt16();
-        const bool isOrdered = i == 0 || IsCanonicallyBefore(inoutPlacements.GetLast().Identity, placement.Identity);
-        if (placement.Identity.Room != recipe.Room || placement.Identity.Layer != layer.Id ||
-            placement.Identity.Candidate >= layer.CandidatesPerCell || placement.Variant >= layer.Variants.GetSize() ||
-            placement.Scale < layer.MinimumScale || placement.Scale > layer.MaximumScale || isOrdered == false)
+        const bool isOrdered = i == 0 || (placement.Identity.Room == inoutPlacements.GetLast().Identity.Room &&
+                                          placement.Identity.Layer == inoutPlacements.GetLast().Identity.Layer &&
+                                          IsCanonicallyBefore(inoutPlacements.GetLast().Identity, placement.Identity));
+        if (isOrdered == false)
         {
             inoutPlacements.RemoveRange(first, inoutPlacements.GetSize());
             return false;
         }
         inoutPlacements.Add(placement);
     }
-    return reader.IsAtEnd() == true;
+    if (reader.IsAtEnd() == false)
+    {
+        inoutPlacements.RemoveRange(first, inoutPlacements.GetSize());
+        return false;
+    }
+    return true;
 }
 
 /// Generate one layer into the manifest's placements.
@@ -262,87 +272,38 @@ void WriteLayerProduct(BorrowedView<const ScatterPlacement> placements, Generati
     return GenerationStatus::Success;
 }
 
-void WriteManifestDigest(BorrowedView<const ScatterManifestLayer> layers, GenerationByteWriter& outWriter) noexcept
+/// Decode a fully staged generation candidate into a typed manifest.
+[[nodiscard]] GenerationStatus TryBuildManifest(const GenerationCandidate& generation,
+                                                ScatterManifest& outManifest) noexcept
 {
-    outWriter.Clear();
-    outWriter.WriteUInt32(SCATTER_GENERATION_VERSION);
-    outWriter.WriteUInt32(static_cast<uint32>(layers.GetSize()));
-    for (const ScatterManifestLayer& layer : layers)
-    {
-        outWriter.WriteUInt16(layer.Room);
-        outWriter.WriteUInt8(layer.Layer);
-        outWriter.WriteDigest(layer.Key);
-        outWriter.WriteDigest(layer.Output);
-    }
-}
-
-/// Stage one layer: look up its product, else generate and store it; append it to the manifest.
-[[nodiscard]] GenerationStatus TryStageLayer(GenerationCacheStore& inoutStore,
-                                             const ScatterGenerationInput& input,
-                                             const ScatterKeys& keys,
-                                             const ScatterRecipe& recipe,
-                                             usize layerIndex,
-                                             GenerationTrace& inoutTrace,
-                                             Array<ScatterPlacement>& inoutScratch,
-                                             ScatterManifest& inoutManifest) noexcept
-{
-    const ScatterLayer& layer = recipe.Layers[layerIndex];
-    GenerationByteWriter writer;
-    WriteLayerKey(input, recipe, layer, writer);
-    if (writer.HasFailed() == true)
+    ScatterManifest manifest;
+    if (manifest.Layers.TryEnsureCapacity(generation.Products.GetSize()) == false)
     {
         return GenerationStatus::OutOfMemory;
     }
-    ScatterManifestLayer product;
-    product.Room = recipe.Room;
-    product.Layer = layer.Id;
-    product.Key = writer.ComputeDigest();
-    product.FirstPlacement = inoutManifest.Placements.GetSize();
-
-    GenerationStageRecord record;
-    record.Scope = recipe.Room;
-    record.Stage = layer.Id;
-    record.Key = product.Key;
-    Array<uint8> cached;
-    record.Cache = TryFindGenerationProduct(inoutStore, product.Key, SCATTER_LAYER_PRODUCT_SCHEMA, cached);
-    if (record.Cache == GenerationCacheOutcome::Hit &&
-        TryReadLayerProduct({cached.GetData(), cached.GetSize()}, recipe, layer, inoutManifest.Placements) == false)
+    for (const GenerationProduct& product : generation.Products)
     {
-        // The framing verified but the content does not fit the layer; discard it like any corrupt entry.
-        inoutStore.Remove(product.Key);
-        record.Cache = GenerationCacheOutcome::Corrupt;
-    }
-    if (record.Cache == GenerationCacheOutcome::Hit)
-    {
-        record.Outcome = GenerationStageOutcome::CacheHit;
-        record.Output = ComputeGenerationDigest({cached.GetData(), cached.GetSize()});
-    }
-    else
-    {
-        const GenerationStatus status =
-            TryGenerateLayer(recipe, keys, layerIndex, inoutScratch, inoutManifest.Placements);
-        if (status != GenerationStatus::Success)
+        ScatterManifestLayer layer;
+        layer.Room = static_cast<uint16>(product.Scope);
+        layer.Layer = static_cast<uint8>(product.Stage);
+        layer.Key = product.Key;
+        layer.Output = product.Output;
+        layer.FirstPlacement = manifest.Placements.GetSize();
+        if (TryAppendLayerPlacements({product.Bytes.GetData(), product.Bytes.GetSize()}, manifest.Placements) == false)
         {
-            record.Outcome = GenerationStageOutcome::Failed;
-            inoutTrace.Record(record);
-            return status;
-        }
-        WriteLayerProduct({inoutManifest.Placements.GetData() + product.FirstPlacement,
-                           inoutManifest.Placements.GetSize() - product.FirstPlacement},
-                          writer);
-        if (writer.HasFailed() == true)
-        {
+            // The kernel wrote or validated every product, so only allocation can fail here.
             return GenerationStatus::OutOfMemory;
         }
-        record.Outcome = GenerationStageOutcome::Executed;
-        record.Output = writer.ComputeDigest();
-        record.IsStored =
-            TryStoreGenerationProduct(inoutStore, product.Key, SCATTER_LAYER_PRODUCT_SCHEMA, writer.GetBytes());
+        layer.PlacementCount = manifest.Placements.GetSize() - layer.FirstPlacement;
+        manifest.Layers.Add(layer);
     }
-    product.Output = record.Output;
-    product.PlacementCount = inoutManifest.Placements.GetSize() - product.FirstPlacement;
-    inoutTrace.Record(record);
-    return inoutManifest.Layers.TryAdd(product) == true ? GenerationStatus::Success : GenerationStatus::OutOfMemory;
+    if (TryComputeGenerationManifestDigest({generation.Products.GetData(), generation.Products.GetSize()},
+                                           manifest.Digest) == false)
+    {
+        return GenerationStatus::OutOfMemory;
+    }
+    outManifest = foundation::Move(manifest);
+    return GenerationStatus::Success;
 }
 
 [[nodiscard]] GenerationStatus
@@ -410,8 +371,138 @@ const ScatterPlacement* ScatterManifest::FindPlacement(ScatterIdentity identity)
     return nullptr;
 }
 
+bool ScatterLayerKernel::tryDecodeParameters(const GenerationStage& stage) noexcept
+{
+    GenerationByteReader reader({stage.Parameters.GetData(), stage.Parameters.GetSize()});
+    const uint32 layout = reader.ReadUInt32();
+    const uint64 worldSeed = reader.ReadUInt64();
+    ScatterDomains domains;
+    domains.Placement = reader.ReadUInt32();
+    domains.Variant = reader.ReadUInt32();
+    domains.Transform = reader.ReadUInt32();
+    mRecipe.Room = reader.ReadUInt16();
+    mLayer.Id = reader.ReadUInt8();
+    mLayer.CellSize = reader.ReadUInt16();
+    mLayer.CandidatesPerCell = reader.ReadUInt16();
+    mLayer.MinimumScale = reader.ReadUInt16();
+    mLayer.MaximumScale = reader.ReadUInt16();
+    const uint32 variantCount = reader.ReadUInt32();
+    if (reader.HasFailed() == true || layout != SCATTER_LAYOUT_VERSION || variantCount > MAX_SCATTER_VARIANTS ||
+        mVariants.TryResize(variantCount) == false)
+    {
+        return false;
+    }
+    for (ScatterVariant& variant : mVariants)
+    {
+        variant.ExclusionRadius = reader.ReadUInt32();
+    }
+    mRecipe.Region = ReadRectangle(reader);
+    const uint32 keepOutCount = reader.ReadUInt32();
+    if (reader.HasFailed() == true || keepOutCount > MAX_SCATTER_KEEP_OUTS ||
+        mKeepOuts.TryResize(keepOutCount) == false)
+    {
+        return false;
+    }
+    for (ScatterRectangle& keepOut : mKeepOuts)
+    {
+        keepOut = ReadRectangle(reader);
+    }
+    mLayer.Variants = {mVariants.GetData(), mVariants.GetSize()};
+    mRecipe.KeepOuts = {mKeepOuts.GetData(), mKeepOuts.GetSize()};
+    mRecipe.Layers = {&mLayer, 1};
+    return reader.IsAtEnd() == true && mRecipe.Room == stage.Scope && mLayer.Id == stage.Stage &&
+           ValidateScatterRecipe(mRecipe).Status == ScatterStatus::Success &&
+           TryMakeScatterKeys(worldSeed, domains, mKeys) == ScatterStatus::Success;
+}
+
+GenerationStatus ScatterLayerKernel::TryExecute(const GenerationStage& stage,
+                                                GenerationInputProducts inputs,
+                                                GenerationByteWriter& outProduct) noexcept
+{
+    if (inputs.IsEmpty() == false || tryDecodeParameters(stage) == false)
+    {
+        return GenerationStatus::InvalidInput;
+    }
+    mPlacements.Clear();
+    const GenerationStatus status = TryGenerateLayer(mRecipe, mKeys, 0, mScratch, mPlacements);
+    if (status != GenerationStatus::Success)
+    {
+        return status;
+    }
+    WriteLayerProduct({mPlacements.GetData(), mPlacements.GetSize()}, outProduct);
+    return outProduct.HasFailed() == true ? GenerationStatus::OutOfMemory : GenerationStatus::Success;
+}
+
+bool ScatterLayerKernel::IsValidProduct(const GenerationStage& stage,
+                                        GenerationInputProducts inputs,
+                                        BorrowedView<const uint8> product) noexcept
+{
+    mPlacements.Clear();
+    if (inputs.IsEmpty() == false || tryDecodeParameters(stage) == false ||
+        TryAppendLayerPlacements(product, mPlacements) == false)
+    {
+        return false;
+    }
+    for (const ScatterPlacement& placement : mPlacements)
+    {
+        if (placement.Identity.Room != mRecipe.Room || placement.Identity.Layer != mLayer.Id ||
+            placement.Identity.Candidate >= mLayer.CandidatesPerCell || placement.Variant >= mVariants.GetSize() ||
+            placement.Scale < mLayer.MinimumScale || placement.Scale > mLayer.MaximumScale)
+        {
+            return false;
+        }
+    }
+    return true;
+}
+
+GenerationStatus TryAddScatterStages(const ScatterGenerationInput& input,
+                                     ScatterLayerKernel& inoutKernel,
+                                     Array<GenerationStage>& inoutPlan) noexcept
+{
+    ScatterKeys keys;
+    const GenerationStatus inputStatus = ValidateInput(input, keys);
+    if (inputStatus != GenerationStatus::Success)
+    {
+        return inputStatus;
+    }
+    const usize first = inoutPlan.GetSize();
+    GenerationByteWriter writer;
+    for (const ScatterScope& scope : input.Scopes)
+    {
+        for (const ScatterLayer& layer : scope.Recipe.Layers)
+        {
+            WriteLayerParameters(input, scope.Recipe, layer, writer);
+            GenerationStage stage;
+            stage.Scope = scope.Recipe.Room;
+            stage.Stage = layer.Id;
+            stage.Operator = SCATTER_LAYER_OPERATOR;
+            stage.OperatorVersion = SCATTER_GENERATION_VERSION;
+            stage.Schema = SCATTER_LAYER_PRODUCT_SCHEMA;
+            stage.KernelOrNull = &inoutKernel;
+            if (writer.HasFailed() == true || stage.Parameters.TryAddRange(writer.GetBytes()) == false ||
+                inoutPlan.TryAdd(foundation::Move(stage)) == false)
+            {
+                inoutPlan.RemoveRange(first, inoutPlan.GetSize());
+                return GenerationStatus::OutOfMemory;
+            }
+        }
+    }
+    return GenerationStatus::Success;
+}
+
+bool TryReadScatterLayerProduct(BorrowedView<const uint8> product, Array<ScatterPlacement>& outPlacements) noexcept
+{
+    Array<ScatterPlacement> placements;
+    if (product.IsValid() == false || TryAppendLayerPlacements(product, placements) == false)
+    {
+        return false;
+    }
+    outPlacements = foundation::Move(placements);
+    return true;
+}
+
 ScatterGenerationCoordinator::ScatterGenerationCoordinator(GenerationCacheStore& inoutCacheStore) noexcept
-    : mCacheStore(inoutCacheStore)
+    : mGeneration(inoutCacheStore)
 {
 }
 
@@ -420,31 +511,36 @@ GenerationStatus ScatterGenerationCoordinator::TryStage(const ScatterGenerationI
                                                         ScatterCandidate& outCandidate) noexcept
 {
     ScatterCandidate candidate;
-    candidate.BaseRevision = mAcceptedRevision;
+    candidate.BaseRevision = mGeneration.GetAcceptedRevision();
     ScatterKeys keys;
     candidate.Status = ValidateInput(input, keys);
-    Array<ScatterPlacement> scratch;
-    for (usize scope = 0; scope < input.Scopes.GetSize() && candidate.Status == GenerationStatus::Success; ++scope)
+    Array<GenerationStage> plan;
+    if (candidate.Status == GenerationStatus::Success)
     {
-        const ScatterRecipe& recipe = input.Scopes[scope].Recipe;
-        for (usize layer = 0; layer < recipe.Layers.GetSize() && candidate.Status == GenerationStatus::Success; ++layer)
-        {
-            candidate.Status =
-                TryStageLayer(mCacheStore, input, keys, recipe, layer, inoutTrace, scratch, candidate.Manifest);
-        }
+        candidate.Status = TryAddScatterStages(input, mKernel, plan);
+    }
+    const BorrowedView<const GenerationStage> planView{plan.GetData(), plan.GetSize()};
+    if (candidate.Status == GenerationStatus::Success)
+    {
+        candidate.Status = mGeneration.TryBeginCandidate(planView, candidate.Generation);
     }
     if (candidate.Status == GenerationStatus::Success)
     {
-        GenerationByteWriter writer;
-        WriteManifestDigest({candidate.Manifest.Layers.GetData(), candidate.Manifest.Layers.GetSize()}, writer);
-        candidate.Manifest.Digest = writer.ComputeDigest();
-        candidate.Status =
-            writer.HasFailed() == true ? GenerationStatus::OutOfMemory : TryCheckLocks(input, keys, candidate);
+        candidate.Status = mGeneration.TryRequestAll(planView, inoutTrace, candidate.Generation);
+    }
+    if (candidate.Status == GenerationStatus::Success)
+    {
+        candidate.Status = TryBuildManifest(candidate.Generation, candidate.Manifest);
+    }
+    if (candidate.Status == GenerationStatus::Success)
+    {
+        candidate.Status = TryCheckLocks(input, keys, candidate);
     }
     if (candidate.Status != GenerationStatus::Success && candidate.Status != GenerationStatus::ConstraintFailed)
     {
         candidate.Manifest = ScatterManifest{};
         candidate.Conflicts.Clear();
+        mGeneration.Reject(candidate.Generation);
     }
     outCandidate = foundation::Move(candidate);
     return outCandidate.Status;
@@ -456,12 +552,12 @@ GenerationStatus ScatterGenerationCoordinator::TryPublish(ScatterCandidate& inou
     {
         return GenerationStatus::NotReady;
     }
-    if (inoutCandidate.BaseRevision != mAcceptedRevision)
+    const GenerationStatus status = mGeneration.TryPublish(inoutCandidate.Generation);
+    if (status != GenerationStatus::Success)
     {
-        return GenerationStatus::StaleCandidate;
+        return status;
     }
     mAccepted = foundation::Move(inoutCandidate.Manifest);
-    ++mAcceptedRevision;
     Reject(inoutCandidate);
     return GenerationStatus::Success;
 }

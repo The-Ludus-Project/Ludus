@@ -27,6 +27,9 @@ enum class GenerationStoreRead : uint8
     Absent,
     /// The entry exists but could not be read, for example on allocation failure.
     Failed,
+    /// The store's own integrity check rejected the entry, for example a stored length or digest that does not match
+    /// the bytes; the store no longer serves it.
+    Corrupt,
 };
 
 /// @brief Result of a cache lookup; every miss names its reason.
@@ -36,7 +39,7 @@ enum class GenerationCacheOutcome : uint8
     Hit,
     /// No entry exists for the key.
     Absent,
-    /// The entry's framing, key, length or payload digest did not verify; it was removed.
+    /// The store or the entry's framing, key, length or payload digest did not verify; it was removed.
     Corrupt,
     /// The entry verified but holds a different product schema; it was removed.
     SchemaMismatch,
@@ -57,7 +60,7 @@ public:
     /// @brief Read the bytes stored for a key.
     /// @param key The entry key.
     /// @param outBytes Replaced with the entry bytes on Found; unchanged otherwise.
-    /// @return Found, Absent or Failed.
+    /// @return Found, Absent, Failed, or Corrupt when the store's own verification rejects the entry.
     [[nodiscard]] virtual GenerationStoreRead TryRead(const GenerationDigest& key,
                                                       foundation::Array<uint8>& outBytes) noexcept = 0;
     /// @brief Store bytes for a key, replacing an existing entry.

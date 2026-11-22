@@ -1,66 +1,23 @@
 // Staged scatter generation contracts (slice P1): two independently keyed
 // scopes, precise cache invalidation, explanations of removed placements by
-// persistent identity, author locks, stale candidates, cache corruption recovery
-// and no publication on failure. See
+// persistent identity, author locks, stale candidates, cache corruption recovery,
+// no publication on failure, and demand-driven requests for one scope's output
+// over a shared upstream stage. See
 // docs/architecture/procedural-content-generation.md#p1-staged-scatter-generation.
 
-#include <ludus/content/procedural/environment/scatter_generation.h>
+#include "generation_fixture.h"
 
-#include "scatter_golden.h"
+#include <ludus/content/procedural/environment/scatter_generation.h>
 
 #include <catch2/catch_test_macros.hpp>
 
 using namespace ludus::content::procedural;
+using namespace ludus::content::procedural::generation_fixture;
 using ludus::foundation::Array;
 using ludus::foundation::BorrowedView;
 
 namespace
 {
-constexpr GenerationCacheLimits CACHE_LIMITS{64, 1U << 20U};
-constexpr usize TRACE_CAPACITY = 64;
-constexpr uint16 ROOM_A = 1;
-constexpr uint16 ROOM_B = 2;
-constexpr uint8 TREE_LAYER = 1;
-constexpr uint8 STONE_LAYER = 2;
-
-constexpr ScatterVariant TREE_VARIANTS[] = {{10U}, {20U}};
-constexpr ScatterVariant STONE_VARIANTS[] = {{5U}};
-constexpr ScatterRectangle ROOM_B_KEEP_OUTS[] = {{0, 0, 50, 50}};
-/// The keep-out edit of room A, with known removals: every accepted placement inside it.
-constexpr ScatterRectangle ROOM_A_EDIT[] = {{100, 80, 220, 200}};
-
-/// Two rooms: A with trees and stones, B with trees and a keep-out. Views borrow the fixture's own arrays.
-struct TwoScopeFixture final
-{
-    TwoScopeFixture()
-    {
-        RoomALayers[0] = {TREE_LAYER, 40, 3, BorrowedView<const ScatterVariant>(TREE_VARIANTS), 900, 1100};
-        RoomALayers[1] = {STONE_LAYER, 25, 2, BorrowedView<const ScatterVariant>(STONE_VARIANTS), 1000, 1000};
-        RoomBLayers[0] = {TREE_LAYER, 30, 2, BorrowedView<const ScatterVariant>(TREE_VARIANTS), 800, 1200};
-        Scopes[0].Recipe = {ROOM_A, {0, 0, 400, 300}, {}, BorrowedView<const ScatterLayer>(RoomALayers)};
-        Scopes[1].Recipe = {ROOM_B,
-                            {-200, -100, 200, 200},
-                            BorrowedView<const ScatterRectangle>(ROOM_B_KEEP_OUTS),
-                            {RoomBLayers}};
-        Input.WorldSeed = golden::WORLD_SEED;
-        Input.Domains = golden::DOMAINS;
-        Input.Scopes = BorrowedView<const ScatterScope>(Scopes);
-    }
-    TwoScopeFixture(const TwoScopeFixture&) = delete;
-    TwoScopeFixture& operator=(const TwoScopeFixture&) = delete;
-
-    ScatterLayer RoomALayers[2] = {};
-    ScatterLayer RoomBLayers[1] = {};
-    ScatterScope Scopes[2] = {};
-    ScatterGenerationInput Input;
-};
-
-[[nodiscard]] bool AreEqual(const ScatterPlacement& a, const ScatterPlacement& b) noexcept
-{
-    return a.Identity == b.Identity && a.LatticeX == b.LatticeX && a.LatticeY == b.LatticeY && a.Variant == b.Variant &&
-           a.Rotation == b.Rotation && a.Scale == b.Scale;
-}
-
 [[nodiscard]] bool Contains(const ScatterRectangle& rectangle, const ScatterPlacement& placement) noexcept
 {
     return placement.LatticeX >= rectangle.MinimumX && placement.LatticeX < rectangle.MaximumX &&
@@ -76,19 +33,6 @@ void RequireSameManifest(const ScatterManifest& expected, const ScatterManifest&
     {
         REQUIRE(AreEqual(actual.Placements[i], expected.Placements[i]) == true);
     }
-}
-
-[[nodiscard]] const GenerationStageRecord& FindRecord(const GenerationTrace& trace, uint16 room, uint8 layer)
-{
-    for (const GenerationStageRecord& record : trace.GetRecords())
-    {
-        if (record.Scope == room && record.Stage == layer)
-        {
-            return record;
-        }
-    }
-    FAIL("no trace record for the stage");
-    return trace.GetRecords()[0];
 }
 
 /// Stage and publish the fixture's baseline.
@@ -434,4 +378,178 @@ TEST_CASE("Invalid generation requests stage nothing and publish nothing", "[pro
     Array<ScatterChange> changes;
     REQUIRE(TryCompareScatterManifests(accepted, candidate.Manifest, fixture.Input, changes) ==
             GenerationStatus::InvalidInput);
+}
+
+namespace
+{
+/// Begin, request every scope and publish the fixture's current plan.
+void PublishPlan(GenerationCoordinator& inoutCoordinator, const DemandFixture& fixture)
+{
+    GenerationTrace trace(TRACE_CAPACITY);
+    GenerationCandidate candidate;
+    REQUIRE(inoutCoordinator.TryBeginCandidate(fixture.GetPlan(), candidate) == GenerationStatus::Success);
+    REQUIRE(inoutCoordinator.TryRequestAll(fixture.GetPlan(), trace, candidate) == GenerationStatus::Success);
+    REQUIRE(inoutCoordinator.TryPublish(candidate) == GenerationStatus::Success);
+}
+
+/// The products of one scope, in plan order.
+[[nodiscard]] Array<GenerationProduct> GetScopeProducts(BorrowedView<const GenerationProduct> products, uint32 scope)
+{
+    Array<GenerationProduct> selected;
+    for (const GenerationProduct& product : products)
+    {
+        if (product.Scope == scope)
+        {
+            selected.Add(product);
+        }
+    }
+    return selected;
+}
+
+void RequireSameScope(const GenerationManifest& expected, const GenerationCandidate& actual, uint32 scope)
+{
+    const Array<GenerationProduct> expectedProducts =
+        GetScopeProducts({expected.Products.GetData(), expected.Products.GetSize()}, scope);
+    const Array<GenerationProduct> actualProducts =
+        GetScopeProducts({actual.Products.GetData(), actual.Products.GetSize()}, scope);
+    RequireSameProducts({expectedProducts.GetData(), expectedProducts.GetSize()},
+                        {actualProducts.GetData(), actualProducts.GetSize()});
+}
+
+/// Request each room in turn after an edit and check the final manifest against a clean full cook.
+void RequireCleanCookAfterPublishing(GenerationCoordinator& inoutCoordinator,
+                                     const DemandFixture& fixture,
+                                     GenerationCandidate& inoutCandidate)
+{
+    const GenerationManifest clean = CookClean(fixture.GetPlan());
+    RequireSameProducts({clean.Products.GetData(), clean.Products.GetSize()},
+                        {inoutCandidate.Products.GetData(), inoutCandidate.Products.GetSize()});
+    const uint64 revision = inoutCoordinator.GetAcceptedRevision();
+    REQUIRE(inoutCoordinator.TryPublish(inoutCandidate) == GenerationStatus::Success);
+    REQUIRE(inoutCoordinator.GetAcceptedRevision() == revision + 1);
+    REQUIRE(inoutCoordinator.GetAccepted().Digest == clean.Digest);
+    RequireSameContents(ReadContents(clean), ReadContents(inoutCoordinator.GetAccepted()));
+}
+} // namespace
+
+TEST_CASE("Requesting one scope leaves an edited scope pending until it is requested",
+          "[procedural][generation][demand]")
+{
+    MemoryGenerationCacheStore store(CACHE_LIMITS);
+    GenerationCoordinator coordinator(store);
+    DemandFixture fixture;
+    fixture.Rebuild();
+    PublishPlan(coordinator, fixture);
+    const GenerationManifest accepted = coordinator.GetAccepted();
+    const ManifestContents acceptedContents = ReadContents(accepted);
+
+    // Edit only B's local input.
+    fixture.RoomBSpans[1].Length = 95;
+    fixture.Rebuild();
+    GenerationCandidate candidate;
+    REQUIRE(coordinator.TryBeginCandidate(fixture.GetPlan(), candidate) == GenerationStatus::Success);
+    REQUIRE(candidate.IsScopeReady(ROOM_A) == false);
+
+    // Requesting A evaluates the shared catalog and A's stages, all cache hits, and nothing of B.
+    GenerationTrace trace(TRACE_CAPACITY);
+    REQUIRE(coordinator.TryRequestScope(fixture.GetPlan(), ROOM_A, trace, candidate) == GenerationStatus::Success);
+    REQUIRE(trace.GetRecords().GetSize() == 4);
+    REQUIRE(CountOutcome(trace, GenerationStageOutcome::CacheHit) == 4);
+    REQUIRE(FindRecord(trace, SHARED_SCOPE, CATALOG_STAGE).Outcome == GenerationStageOutcome::CacheHit);
+    REQUIRE(FindRecord(trace, ROOM_A, ASSEMBLY_STAGE).Outcome == GenerationStageOutcome::CacheHit);
+    REQUIRE(HasScopeRecord(trace, ROOM_B) == false);
+    REQUIRE(candidate.IsScopeReady(ROOM_A) == true);
+    RequireSameScope(accepted, candidate, ROOM_A);
+
+    // B stays pending, so the candidate cannot publish and the accepted manifest is untouched.
+    REQUIRE(candidate.IsScopeReady(ROOM_B) == false);
+    REQUIRE(candidate.FindProduct(ROOM_B, TREE_LAYER)->State == GenerationProductState::Pending);
+    REQUIRE(candidate.FindProduct(ROOM_B, ASSEMBLY_STAGE)->State == GenerationProductState::Pending);
+    REQUIRE(coordinator.TryPublish(candidate) == GenerationStatus::NotReady);
+    REQUIRE(coordinator.GetAcceptedRevision() == 1);
+    REQUIRE(coordinator.GetAccepted().Digest == accepted.Digest);
+
+    // Requesting B runs only its edited assembly; the shared catalog is already ready.
+    trace.Clear();
+    REQUIRE(coordinator.TryRequestScope(fixture.GetPlan(), ROOM_B, trace, candidate) == GenerationStatus::Success);
+    REQUIRE(trace.GetRecords().GetSize() == 2);
+    REQUIRE(FindRecord(trace, ROOM_B, TREE_LAYER).Outcome == GenerationStageOutcome::CacheHit);
+    REQUIRE(FindRecord(trace, ROOM_B, ASSEMBLY_STAGE).Outcome == GenerationStageOutcome::Executed);
+    REQUIRE(HasScopeRecord(trace, SHARED_SCOPE) == false);
+    REQUIRE(candidate.FindProduct(ROOM_B, ASSEMBLY_STAGE)->Key != accepted.FindProduct(ROOM_B, ASSEMBLY_STAGE)->Key);
+    REQUIRE(candidate.FindProduct(ROOM_B, TREE_LAYER)->Output == accepted.FindProduct(ROOM_B, TREE_LAYER)->Output);
+
+    RequireCleanCookAfterPublishing(coordinator, fixture, candidate);
+    // Every placement keeps its identity and values; only B's edited span changes its instances.
+    const ManifestContents edited = ReadContents(coordinator.GetAccepted());
+    RequireSameContents(ManifestContents{acceptedContents.Placements, {}}, ManifestContents{edited.Placements, {}});
+    for (const AssemblyInstance& instance : acceptedContents.Instances)
+    {
+        if (instance.Identity.Scope == ROOM_A || instance.Identity.Span == fixture.RoomBSpans[0].Id)
+        {
+            bool isKept = false;
+            for (const AssemblyInstance& current : edited.Instances)
+            {
+                isKept = isKept == true || (current.Identity == instance.Identity &&
+                                            current.Module == instance.Module && current.Offset == instance.Offset);
+            }
+            REQUIRE(isKept == true);
+        }
+    }
+}
+
+TEST_CASE("A shared-input edit invalidates each dependent output as it is requested",
+          "[procedural][generation][demand]")
+{
+    MemoryGenerationCacheStore store(CACHE_LIMITS);
+    GenerationCoordinator coordinator(store);
+    DemandFixture fixture;
+    fixture.Rebuild();
+    PublishPlan(coordinator, fixture);
+    const GenerationManifest accepted = coordinator.GetAccepted();
+    GenerationTrace trace(TRACE_CAPACITY);
+    GenerationCandidate candidate;
+
+    SECTION("a module width edit changes the catalog and both assemblies")
+    {
+        fixture.Modules[1].Width = 35;
+        fixture.Rebuild();
+        REQUIRE(coordinator.TryBeginCandidate(fixture.GetPlan(), candidate) == GenerationStatus::Success);
+        REQUIRE(coordinator.TryRequestScope(fixture.GetPlan(), ROOM_A, trace, candidate) == GenerationStatus::Success);
+        REQUIRE(FindRecord(trace, SHARED_SCOPE, CATALOG_STAGE).Outcome == GenerationStageOutcome::Executed);
+        REQUIRE(FindRecord(trace, ROOM_A, ASSEMBLY_STAGE).Outcome == GenerationStageOutcome::Executed);
+        REQUIRE(FindRecord(trace, ROOM_A, TREE_LAYER).Outcome == GenerationStageOutcome::CacheHit);
+        REQUIRE(FindRecord(trace, ROOM_A, STONE_LAYER).Outcome == GenerationStageOutcome::CacheHit);
+        REQUIRE(HasScopeRecord(trace, ROOM_B) == false);
+        REQUIRE(candidate.FindProduct(ROOM_B, ASSEMBLY_STAGE)->State == GenerationProductState::Pending);
+        REQUIRE(coordinator.TryPublish(candidate) == GenerationStatus::NotReady);
+
+        trace.Clear();
+        REQUIRE(coordinator.TryRequestScope(fixture.GetPlan(), ROOM_B, trace, candidate) == GenerationStatus::Success);
+        REQUIRE(trace.GetRecords().GetSize() == 2);
+        REQUIRE(FindRecord(trace, ROOM_B, ASSEMBLY_STAGE).Outcome == GenerationStageOutcome::Executed);
+        REQUIRE(FindRecord(trace, ROOM_B, TREE_LAYER).Outcome == GenerationStageOutcome::CacheHit);
+        for (const uint32 room : {ROOM_A, ROOM_B})
+        {
+            REQUIRE(candidate.FindProduct(room, ASSEMBLY_STAGE)->Key !=
+                    accepted.FindProduct(room, ASSEMBLY_STAGE)->Key);
+        }
+        RequireCleanCookAfterPublishing(coordinator, fixture, candidate);
+    }
+    SECTION("reordering the library reruns the catalog but no dependent")
+    {
+        const AssemblyModule first = fixture.Modules[0];
+        fixture.Modules[0] = fixture.Modules[3];
+        fixture.Modules[3] = first;
+        fixture.Rebuild();
+        REQUIRE(coordinator.TryBeginCandidate(fixture.GetPlan(), candidate) == GenerationStatus::Success);
+        REQUIRE(coordinator.TryRequestScope(fixture.GetPlan(), ROOM_A, trace, candidate) == GenerationStatus::Success);
+        REQUIRE(coordinator.TryRequestScope(fixture.GetPlan(), ROOM_B, trace, candidate) == GenerationStatus::Success);
+        const GenerationStageRecord& catalog = FindRecord(trace, SHARED_SCOPE, CATALOG_STAGE);
+        REQUIRE(catalog.Outcome == GenerationStageOutcome::Executed);
+        REQUIRE(catalog.Output == accepted.FindProduct(SHARED_SCOPE, CATALOG_STAGE)->Output);
+        REQUIRE(CountOutcome(trace, GenerationStageOutcome::Executed) == 1);
+        REQUIRE(CountOutcome(trace, GenerationStageOutcome::CacheHit) == fixture.Plan.GetSize() - 1);
+        RequireCleanCookAfterPublishing(coordinator, fixture, candidate);
+    }
 }

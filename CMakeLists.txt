@@ -419,6 +419,10 @@ add_subdirectory(modules/content/world_restore)
 add_subdirectory(modules/content/procedural/core)
 # Headless procedural scatter kernel (P0) and its staged generation coordinator (P1).
 add_subdirectory(modules/content/procedural/environment)
+# Modular assembly stages on the procedural executor (P1); Foundation-only, native and web.
+add_subdirectory(modules/content/procedural/architecture)
+# Persistent procedural generation cache store on Content's file adapter (P1).
+add_subdirectory(modules/content/procedural/storage)
 # LUTRN cooked terrain revision format contract shared by ContentTerrain's cooker and reader.
 add_subdirectory(modules/content/terrain_format)
 # Headless terrain fields, drainage, wetness and material rules (T1); Foundation-only, native and web.
@@ -610,7 +614,7 @@ write_basic_package_version_file(
 # Public exported components (one per installed Ludus:: module target).
 foreach(_component
     FoundationBase FoundationMemory FoundationHash FoundationIdentity FoundationStrings FoundationContainers FoundationThreading FoundationFilesystem FoundationParsing FoundationParsingJson FoundationMath FoundationGeometry FoundationTime FoundationLogging ShaderCompilerClient ShaderLanguage
-    FoundationProfiling FoundationThreadingProfiling FoundationReflection FoundationSerialization FoundationConfig FoundationConfigJson RuntimeConfiguration GamePropertyBinding NetworkCore Input Audio Content ProceduralCore ProceduralEnvironment SceneFormat GeometryFormat GeometryContent RenderGraphFormat SceneSource SequenceFormat StringDictionaryFormat StringDictionary StringDictionaryWriter FoliageFormat FoliagePages WeatherFormat ContentWeather GameplayWeather AudioContent Resources GameplayWorld GameplayCamera GameplaySequencer Animation GameApi PhysicsFluid PhysicsCollision PhysicsRigid Ui Localization)
+    FoundationProfiling FoundationThreadingProfiling FoundationReflection FoundationSerialization FoundationConfig FoundationConfigJson RuntimeConfiguration GamePropertyBinding NetworkCore Input Audio Content ProceduralCore ProceduralEnvironment ProceduralArchitecture ProceduralStorage SceneFormat GeometryFormat GeometryContent RenderGraphFormat SceneSource SequenceFormat StringDictionaryFormat StringDictionary StringDictionaryWriter FoliageFormat FoliagePages WeatherFormat ContentWeather GameplayWeather AudioContent Resources GameplayWorld GameplayCamera GameplaySequencer Animation GameApi PhysicsFluid PhysicsCollision PhysicsRigid Ui Localization)
     ludus_sdk_register_component(${_component})
     ludus_sdk_register_feature(${_component})
 endforeach()
