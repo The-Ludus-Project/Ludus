@@ -39,6 +39,15 @@ struct OverlayStyle final
     /// Enable explicit scissor, including an empty rectangle.
     bool Clip = false;
 };
+/// Whether OverlayList extends the run that ends with `previous` when it appends a command styled `next`.
+///
+/// Runs merge when depth behavior and scissor enablement agree and, for scissored commands, the
+/// scissor rectangles are equal. Coverage sampling and color never split a run, so solid quads and
+/// glyph coverage quads share one draw. Adapters use this to count draws before appending.
+/// @param previous Style of the list's last run.
+/// @param next Style of the command being appended.
+/// @return true when no new run (draw) is opened.
+[[nodiscard]] bool CanMergeOverlayStyles(const OverlayStyle& previous, const OverlayStyle& next) noexcept;
 /// Borrowed command range in an OverlayList; order is significant.
 struct OverlayCommand final
 {

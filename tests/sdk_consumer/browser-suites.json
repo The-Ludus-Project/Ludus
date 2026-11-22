@@ -10,6 +10,8 @@
      "script": "renderer-browser-test.mjs", "results": "renderer"},
     {"title": "Qualify U1 UiRender paint and hit clipping on WebGPU and WebGL 2 at two scales and after a resize",
      "script": "ui-render-browser-test.mjs", "results": "ui-render"},
+    {"title": "Qualify U1 UiText labels inside UiRender's clipped runs on WebGPU and WebGL 2 at two scales and after a resize",
+     "script": "ui-text-browser-test.mjs", "results": "ui-text"},
     {"title": "Activate an installed RG3 runtime generation on WebGPU and compare its exported pixels",
      "script": "render-graph-runtime-browser-test.mjs", "results": "render-graph-runtime"},
     {"title": "Share one managed bilinear upscale pipeline on WebGPU and compare exported pixels with the unshared pass",

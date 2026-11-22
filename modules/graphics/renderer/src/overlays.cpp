@@ -27,12 +27,6 @@ bool Color(math::Vector4 color) noexcept
     return math::IsFinite(color) && color.X >= 0 && color.X <= 1 && color.Y >= 0 && color.Y <= 1 && color.Z >= 0 &&
            color.Z <= 1 && color.W >= 0 && color.W <= 1;
 }
-bool Same(const OverlayStyle& a, const OverlayStyle& b) noexcept
-{
-    return a.Depth == b.Depth && a.Clip == b.Clip &&
-           (a.Clip == false || (a.Scissor.X == b.Scissor.X && a.Scissor.Y == b.Scissor.Y &&
-                                a.Scissor.Width == b.Scissor.Width && a.Scissor.Height == b.Scissor.Height));
-}
 rhi::RasterRectangle Intersection(rhi::RasterRectangle a, rhi::RasterRectangle b) noexcept
 {
     const auto x = math::Max(a.X, b.X), y = math::Max(a.Y, b.Y);
@@ -99,6 +93,13 @@ uint64 OverlayList::DroppedCommands() const noexcept
 {
     return mState ? mState->Dropped : 0;
 }
+bool CanMergeOverlayStyles(const OverlayStyle& previous, const OverlayStyle& next) noexcept
+{
+    return previous.Depth == next.Depth && previous.Clip == next.Clip &&
+           (previous.Clip == false ||
+            (previous.Scissor.X == next.Scissor.X && previous.Scissor.Y == next.Scissor.Y &&
+             previous.Scissor.Width == next.Scissor.Width && previous.Scissor.Height == next.Scissor.Height));
+}
 // Thanks to Aurelio Reis, "Fast Font Rendering with Instancing", Game Programming
 // Gems 8 (2010), section 1.1, pp. 3-11, for compatible batch boundaries and
 // painter-order constraints. Merge adjacent compatible commands only; this
@@ -116,8 +117,8 @@ Status OverlayList::Append(const OverlayVertex* vertices, usize count, const Ove
         return Status::InvalidDescription;
     }
     auto& s = *mState;
-    const bool merge = s.CommandsUsed != 0 && Same(s.Commands[s.CommandsUsed - 1].Style, style);
-    if (count > MAX_VERTICES - s.VerticesUsed || (count != 0 && merge == false && s.CommandsUsed == MAX_COMMANDS))
+    const bool canMerge = s.CommandsUsed != 0 && CanMergeOverlayStyles(s.Commands[s.CommandsUsed - 1].Style, style);
+    if (count > MAX_VERTICES - s.VerticesUsed || (count != 0 && canMerge == false && s.CommandsUsed == MAX_COMMANDS))
     {
         if (s.Dropped != ~uint64{0})
         {
@@ -144,7 +145,7 @@ Status OverlayList::Append(const OverlayVertex* vertices, usize count, const Ove
     {
         s.Vertices[s.VerticesUsed++] = vertices[i];
     }
-    if (merge)
+    if (canMerge == true)
     {
         s.Commands[s.CommandsUsed - 1].Count += static_cast<uint32>(count);
     }

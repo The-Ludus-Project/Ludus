@@ -85,6 +85,28 @@ struct PaintReport final
                                                const SurfaceMapping& mapping,
                                                rhi::RasterRectangle& outRectangle) noexcept;
 
+/// Physical geometry and overlay state for one paint command, exactly as AppendPaint appends it.
+struct PaintQuad final
+{
+    /// Snapped clipped bounds; empty when the command covers no physical pixel centre.
+    rhi::RasterRectangle Quad;
+    /// Always-visible depth with an explicit scissor over the snapped effective clip, grown to the
+    /// quad if float32 rounding of the clipped bounds would leave a painted pixel outside it.
+    renderer::OverlayStyle Style;
+};
+
+/// Snap one paint command and derive its overlay style.
+///
+/// Adapters that interleave other overlay geometry with Ui paint (UiText labels) use this so their
+/// fills, scissors and merged runs stay identical to AppendPaint's.
+/// @param command Paint command whose Bounds, Clip and Fill are validated.
+/// @param mapping Valid mapping for the target framebuffer.
+/// @param outQuad Receives the quad and style on success; unchanged on failure.
+/// @return false for an invalid mapping, a nonfinite or negative-extent rectangle or a color
+/// channel outside [0, 1].
+[[nodiscard]] bool
+TryComputePaintQuad(const ludus::ui::PaintCommand& command, const SurfaceMapping& mapping, PaintQuad& outQuad) noexcept;
+
 /// Append committed Ui paint commands to an overlay list in paint order.
 ///
 /// Each command becomes one solid pixel-aligned quad over TryComputePhysicalRectangle(Bounds) with a

@@ -144,6 +144,7 @@ out/host-tools/venv/bin/ctest --test-dir out/renderer-sdk -R "^installed_encoder
 out/renderer-sdk/ludus_sdk_renderer_views_consumer
 out/renderer-sdk/ludus_sdk_renderer_overlays_consumer
 out/renderer-sdk/ludus_sdk_ui_render_consumer
+out/renderer-sdk/ludus_sdk_ui_text_consumer
 out/renderer-sdk/ludus_sdk_renderer_materials_consumer
 out/renderer-sdk/ludus_sdk_renderer_lighting_consumer
 out/renderer-sdk/ludus_sdk_renderer_scaling_consumer
