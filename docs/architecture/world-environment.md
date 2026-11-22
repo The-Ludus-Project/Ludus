@@ -259,6 +259,18 @@ lighting work builds on it. The editor workflow is in
   resolve. All of this happens before exposure and tone mapping. Frostbite's
   cloud and aerial-perspective composition, §5.9.1 of Hillaire's course notes
   cited in the renderer, is the design reference.
+- **Two-region test field.** `CloudLayerDescription::TestField`
+  (`CloudLayerTestField`) is a renderer validation fixture that World
+  extraction and the Editor never author. A plane in the layer frame splits
+  the slab into two homogeneous regions. Each has its own extinction, still
+  multiplied by density and the edge fade, and a scene-linear source radiance
+  `S` in nits that emits `σ · S` per metre. A region of transmittance `T`
+  alone therefore adds `S · (1 − T)`. The view march splits the step that
+  crosses the plane into two homogeneous parts, so transmittance and source
+  are exact for the piecewise-constant field. The path toward the Sun is
+  split at the plane too. The source adds to the Sun's single scattering and
+  does not depend on the Atmosphere's illuminance. With the field disabled
+  the march is the homogeneous one above.
 - **Limits.** Perspective cameras inside the shell only. Orthographic and
   orbital views, forward and ray-traced graphs, and RT1 reference captures
   omit the layer. Ray graphs do not report it as a World feature yet. The
@@ -290,6 +302,72 @@ vary between runs. A 60° view toward the slab near the horizon from 30 km
 adds about 1 ms. Cutting the view steps from 32 to 8 recovered only part of
 the full-view cost; the rest is not yet attributed. A disabled layer costs
 one uniform branch. The traversal measurement in #1319 owns any cheaper path.
+
+#### Two-region controls
+
+Two further `[cloud-layer]` tests use the two-region test field without
+sunlight, so only the view ray's extinction and the test sources act. The
+slab is 800 m deep along Z and split at its middle. The camera sits at the
+slab's middle height, 500 m outside it, and an emissive triangle on the
+central ray is the opaque backdrop. A binary64 reference integrates each
+case with 65,536 midpoint steps that are not aligned to the plane. Its
+error, at most half a step of optical depth at the crossing, is within
+1e-5.
+
+- **Nonuniform transmittance.** The front region has σ₁ = 0.001 m⁻¹ and the
+  back region σ₂ = 0.0025 m⁻¹. Backdrops lie 300, 700, 1100 and 1500 m away
+  along Z: in front of the layer, inside the front region, inside the back
+  region and behind both. The test repeats them on a ray 36.87° off the
+  slab's normal, which lengthens every path by 1.25. The expected
+  transmittance is `exp(−σ₁d₁ − σ₂d₂)` with each length clipped to the
+  backdrop. The observed value is the clouded pixel divided by the clear
+  pixel, and the air in front cancels. At every depth an empty layer must
+  match the clear frame byte for byte. The tolerance is one readback code,
+  half a code of rounding in each of the two frames, because the split
+  march is exact up to float32 rounding.
+- **Region order.** Region A has σ = 0.002 m⁻¹ and source (0.8, 0.2, 0.1).
+  Region B has σ = 0.0005 m⁻¹ and source (0.1, 0.3, 0.9). Both are 400 m
+  deep, so swapping their coefficients reverses their order on the same
+  ray. The reference integrates each region alone for `L` and `T`. Three
+  frames keep the terms separately inspectable. Absorbers in front of the
+  emissive backdrop give `T_A · T_B`. The sources in front of a black
+  backdrop give `T_air · (L_A + T_A · L_B)`, where `T_air` is the clear air
+  to the entry. Both together give the composed pixel. The tolerances are
+  one code for each isolated term and 1.5 codes for the composed pixel,
+  which also carries the clear frame's rounding. Reversing the order must
+  move the cloud from red toward blue and leave the transmittance within
+  one code.
+
+| Case (Apple M5, Metal) | Expected | Observed (R, G, B) |
+| --- | --- | --- |
+| Head-on, 700 m | T = 0.8187 | 0.8174, 0.8167, 0.8186 |
+| Head-on, 1100 m | T = 0.4066 | 0.4083, 0.4059, 0.4060 |
+| Head-on, 1500 m | T = 0.2466 | 0.2458, 0.2489, 0.2457 |
+| Oblique, 700 m | T = 0.7788 | 0.7801, 0.7782, 0.7797 |
+| Oblique, 1100 m | T = 0.3247 | 0.3250, 0.3235, 0.3276 |
+| Oblique, 1500 m | T = 0.1738 | 0.1757, 0.1737, 0.1747 |
+| A in front: cloud radiance | 0.4472, 0.1337, 0.1265 | 0.4471, 0.1333, 0.1255 |
+| B in front: cloud radiance | 0.3776, 0.1436, 0.2051 | 0.3765, 0.1451, 0.2039 |
+| Either order: `T_A · T_B` | 0.3679 | 0.3651, 0.3710, 0.3667 |
+
+The 300 m backdrops in front of the layer read 1.0 exactly. The worst
+transmittance error was 0.68 codes, and the worst order-check error was
+0.0018, under half a code. The observed transmittance is quantized to
+about 1/clear code, which is why individual ratios scatter by a few
+thousandths.
+
+The same 1920 × 1080 in-process method as above measured the field's cost,
+with 12 alternating blocks of 20 frames on a heavily loaded Apple M5. For a
+view-filling slab in the sky draw, the frame medians were about 1.2 ms
+clear, 15.4 ms homogeneous and 17.0 ms with the two-region field. The
+per-block median difference between the field and the homogeneous layer
+was about 0.9 ms, within the run-to-run spread. With an opaque surface
+behind the slab, the deferred resolve medians were about 45, 76 and 76 ms.
+That deferred-path cost of about 30 ms is the existing per-pixel cloud and
+air-segment work, which the traversal measurement in #1319 owns. The field
+adds no measurable cost there. The extra split part per step is empty
+except where the ray crosses the plane, and a disabled field takes the
+homogeneous path.
 
 ### Auroral curtains
 

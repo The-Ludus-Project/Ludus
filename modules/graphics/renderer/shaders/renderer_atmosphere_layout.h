@@ -47,7 +47,7 @@
 #define LUDUS_CLOUD_LAYER_STEPS 32
 #define LUDUS_CLOUD_LAYER_AIR_STEPS 16
 // float4 rows of the packed layer in the sky and deferred uniforms (CloudLayerUniform).
-#define LUDUS_CLOUD_LAYER_UNIFORM_ROWS 6
+#define LUDUS_CLOUD_LAYER_UNIFORM_ROWS 9
 // Upper bound in metres of any path through an admitted slab, used to clip rays toward the Sun.
 #define LUDUS_CLOUD_LAYER_MAXIMUM_PATH_METRES 1000000.0
 

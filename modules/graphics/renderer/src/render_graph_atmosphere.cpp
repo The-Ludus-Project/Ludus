@@ -155,6 +155,31 @@ bool TryMakeOrbitalRayTransform(const ViewDescription& camera, math::Matrix4& ou
     return math::TryInverse(directionToClip, outClipToEye) == math::MathStatus::Success;
 }
 
+/// A disabled two-region fixture is always valid; an enabled one needs a nonzero normal and nonnegative regions.
+bool IsCloudLayerTestFieldValid(const CloudLayerTestField& field) noexcept
+{
+    if (field.IsEnabled == false)
+    {
+        return true;
+    }
+    math::Vector3 normalLocal;
+    if (math::IsFinite(field.SplitOffsetMetres) == false ||
+        math::TryNormalize(field.SplitNormalLocal, normalLocal) != math::MathStatus::Success)
+    {
+        return false;
+    }
+    for (const CloudLayerTestRegion& region : field.Regions)
+    {
+        const math::Vector3& source = region.SourceRadiance;
+        if (math::IsFinite(region.ExtinctionPerMetre) == false || region.ExtinctionPerMetre < 0 ||
+            math::IsFinite(source) == false || source.X < 0 || source.Y < 0 || source.Z < 0)
+        {
+            return false;
+        }
+    }
+    return true;
+}
+
 bool IsCloudLayerValid(const CloudLayerDescription& clouds) noexcept
 {
     const auto isNonnegative = [](float32 value) noexcept { return math::IsFinite(value) == true && value >= 0; };
@@ -169,7 +194,30 @@ bool IsCloudLayerValid(const CloudLayerDescription& clouds) noexcept
            isNonnegative(clouds.SingleScatteringAlbedo) == true && clouds.SingleScatteringAlbedo <= 1 &&
            math::IsFinite(clouds.PhaseAsymmetry) == true &&
            math::Abs(clouds.PhaseAsymmetry) <= CloudLayerDescription::MAX_PHASE_ASYMMETRY &&
-           math::IsFinite(clouds.AxisXWorld) == true;
+           math::IsFinite(clouds.AxisXWorld) == true && IsCloudLayerTestFieldValid(clouds.TestField) == true;
+}
+
+/// Write a validated two-region fixture's rows and flag; a disabled field leaves them zero.
+void PackCloudLayerTestField(const CloudLayerTestField& field,
+                             float32 density,
+                             CloudLayerUniform& inoutUniform) noexcept
+{
+    math::Vector3 normalLocal;
+    if (field.IsEnabled == false ||
+        math::TryNormalize(field.SplitNormalLocal, normalLocal) != math::MathStatus::Success)
+    {
+        return;
+    }
+    inoutUniform.TestSplit = {normalLocal.X, normalLocal.Y, normalLocal.Z, field.SplitOffsetMetres};
+    for (usize i = 0; i < CloudLayerTestField::REGION_COUNT; ++i)
+    {
+        const CloudLayerTestRegion& region = field.Regions[i];
+        inoutUniform.TestRegions[i] = {region.SourceRadiance.X,
+                                       region.SourceRadiance.Y,
+                                       region.SourceRadiance.Z,
+                                       density * region.ExtinctionPerMetre};
+    }
+    inoutUniform.Phase.Y = 1;
 }
 
 bool TryPackNightSky(const CelestialBackgroundDescription& celestial, AtmosphereViewUniform& inoutUniform) noexcept
@@ -315,8 +363,10 @@ bool TryPackCloudLayer(const AtmosphereDescription& atmosphere,
                            static_cast<float32>(math::Dot(offsetWorld, toDouble(axisZWorld))),
                            math::Min(clouds.EdgeFadeMetres, math::Min(halfSizeX, halfSizeZ))};
     uniform.Medium = {halfSizeX, halfSizeZ, extinction, extinction * clouds.SingleScatteringAlbedo};
-    uniform.Phase = {clouds.PhaseAsymmetry, 0, 0, 0};
-    if (math::IsFinite(uniform.Medium) == false || math::IsFinite(uniform.CameraLocal) == false)
+    uniform.Phase = {clouds.PhaseAsymmetry, 0, clouds.SingleScatteringAlbedo, 0};
+    PackCloudLayerTestField(clouds.TestField, clouds.Density, uniform);
+    if (math::IsFinite(uniform.Medium) == false || math::IsFinite(uniform.CameraLocal) == false ||
+        math::IsFinite(uniform.TestRegions[0]) == false || math::IsFinite(uniform.TestRegions[1]) == false)
     {
         return false;
     }

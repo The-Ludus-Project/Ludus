@@ -26,7 +26,7 @@ static const uint CLOUD_LAYER_UNIFORM_ROWS = LUDUS_CLOUD_LAYER_UNIFORM_ROWS;
 
 // Packed by TryPackCloudLayer (render_graph_atmosphere.cpp) as CLOUD_LAYER_UNIFORM_ROWS float4 rows, in this field
 // order; uniforms carry the rows because browser raster uniforms admit no nested structures. A zero AxisXWorld.w
-// omits the layer.
+// omits the layer. A nonzero Phase.y replaces the homogeneous extinction with CloudLayerTestField's two regions.
 struct CloudLayerParameters
 {
     float4 AxisXWorld;  // xyz: unit layer +X, w: one when the layer is drawn.
@@ -34,7 +34,18 @@ struct CloudLayerParameters
     float4 AxisZWorld;  // xyz: unit layer +Z; w: top height in metres.
     float4 CameraLocal; // xyz: eye in the layer frame in metres; w: edge fade in metres.
     float4 Medium;      // xy: half sizes along X and Z in metres; z: extinction and w: scattering, per metre.
-    float4 Phase;       // x: Henyey-Greenstein asymmetry.
+    float4 Phase;       // x: Henyey-Greenstein asymmetry; y: one with the test field; z: single-scattering albedo.
+    float4 TestSplit;   // xyz: unit split normal in the layer frame; w: plane offset in metres.
+    float4 TestRegion0; // Negative side of the plane. xyz: source radiance; w: extinction per metre.
+    float4 TestRegion1; // Positive side of the plane, packed as TestRegion0.
+};
+
+// The coefficients of the layer at one point before the edge fade: extinction per metre and the test source
+// radiance, which emits extinction * source per metre.
+struct CloudLayerMedium
+{
+    float Extinction;
+    float3 Source;
 };
 
 // The slab's part of a view ray: scene-linear radiance scattered toward the camera at the entry, grey
@@ -56,7 +67,68 @@ CloudLayerParameters UnpackCloudLayer(in float4 rows[CLOUD_LAYER_UNIFORM_ROWS])
     cloud.CameraLocal = rows[3];
     cloud.Medium = rows[4];
     cloud.Phase = rows[5];
+    cloud.TestSplit = rows[6];
+    cloud.TestRegion0 = rows[7];
+    cloud.TestRegion1 = rows[8];
     return cloud;
+}
+
+bool HasCloudLayerTestField(in CloudLayerParameters cloud)
+{
+    return cloud.Phase.y > 0;
+}
+
+// Signed distance of positionLocal from the test field's plane, negative in TestRegion0.
+float GetCloudLayerSplitSide(in CloudLayerParameters cloud, in float3 positionLocal)
+{
+    return dot(positionLocal, cloud.TestSplit.xyz) - cloud.TestSplit.w;
+}
+
+CloudLayerMedium SampleCloudLayerMedium(in CloudLayerParameters cloud, in float3 positionLocal)
+{
+    CloudLayerMedium medium;
+    medium.Extinction = cloud.Medium.z;
+    medium.Source = 0;
+    if (HasCloudLayerTestField(cloud) == true)
+    {
+        float4 region = GetCloudLayerSplitSide(cloud, positionLocal) < 0 ? cloud.TestRegion0 : cloud.TestRegion1;
+        medium.Extinction = region.w;
+        medium.Source = region.xyz;
+    }
+    return medium;
+}
+
+// Distance along originLocal + t * directionLocal, t > 0, where the ray crosses the test field's plane, or
+// fallbackMetres when it has no test field, is parallel to the plane or crosses it behind the origin.
+float GetCloudLayerSplitDistance(in CloudLayerParameters cloud,
+                                 in float3 originLocal,
+                                 in float3 directionLocal,
+                                 float fallbackMetres)
+{
+    float rate = dot(directionLocal, cloud.TestSplit.xyz);
+    if (HasCloudLayerTestField(cloud) == false || abs(rate) < CLOUD_LAYER_PARALLEL_EPSILON)
+    {
+        return fallbackMetres;
+    }
+    float distanceMetres = -GetCloudLayerSplitSide(cloud, originLocal) / rate;
+    return distanceMetres > 0 ? distanceMetres : fallbackMetres;
+}
+
+// Optical depth before the edge fade from positionLocal along directionLocal for lengthMetres, where the point's
+// own extinction is extinction. A test field's path is split at its plane.
+float ComputeCloudLayerPathDepth(in CloudLayerParameters cloud,
+                                 in float3 positionLocal,
+                                 in float3 directionLocal,
+                                 float extinction,
+                                 float lengthMetres)
+{
+    float splitMetres = GetCloudLayerSplitDistance(cloud, positionLocal, directionLocal, lengthMetres);
+    if (splitMetres >= lengthMetres)
+    {
+        return extinction * lengthMetres;
+    }
+    float beyond = GetCloudLayerSplitSide(cloud, positionLocal) < 0 ? cloud.TestRegion1.w : cloud.TestRegion0.w;
+    return extinction * splitMetres + beyond * (lengthMetres - splitMetres);
 }
 
 float3 ToCloudLayerLocal(in CloudLayerParameters cloud, in float3 directionWorld)
@@ -124,11 +196,72 @@ float EvaluateCloudLayerPhase(float asymmetry, float cosine)
     return (1 - asymmetrySquared) / (SPHERE_SOLID_ANGLE_PER_PI * PI * base * sqrt(base));
 }
 
-// Integrate single scattering of the Sun through the slab along a camera ray. height is the camera's altitude in
-// kilometres and the cosines are measured at the camera against its radial up; maximumMetres clips the ray at the
-// first opaque surface or ground. Each uniform step is homogeneous at its midpoint: its transmittance is exact for a
-// constant density, and its source is the scattering coefficient times the phase function times the Sun reaching
-// the midpoint through the air (transmittance table, zero in the planet's shadow) and through the slab.
+// The per-ray inputs of IntegrateCloudLayer shared by every part of its march.
+struct CloudLayerRay
+{
+    float3 RayLocal; // Unit view ray in the layer frame (+X, +Y up, +Z).
+    float3 SunLocal; // Unit direction toward the Sun in the layer frame.
+    float3 SolarIlluminance;
+    float Phase;
+    float ScatteringCosine;
+    float Height;
+    float ZenithCosine;
+    float SolarZenithCosine;
+};
+
+// Add one homogeneous part [startMetres, endMetres] of the view ray, sampled at its midpoint, to inoutSegment. Its
+// transmittance is exact for the part's constant density. The source is the test field's emission plus the
+// scattering coefficient times the phase function times the Sun reaching the midpoint through the air
+// (transmittance table, zero in the planet's shadow) and through the slab.
+void AccumulateCloudLayerPart(Texture2D<float4> transmittanceTable,
+                              in CloudLayerParameters cloud,
+                              in CloudLayerRay ray,
+                              float startMetres,
+                              float endMetres,
+                              inout CloudLayerSegment inoutSegment)
+{
+    float partLength = endMetres - startMetres;
+    if (partLength <= 0)
+    {
+        return;
+    }
+    float distanceMetres = 0.5 * (startMetres + endMetres);
+    float3 positionLocal = cloud.CameraLocal.xyz + distanceMetres * ray.RayLocal;
+    float fade = ComputeCloudLayerFade(cloud, positionLocal);
+    CloudLayerMedium medium = SampleCloudLayerMedium(cloud, positionLocal);
+    float extinction = fade * medium.Extinction;
+    float scattering = HasCloudLayerTestField(cloud) == true ? extinction * cloud.Phase.z : fade * cloud.Medium.w;
+    float opticalDepth = extinction * partLength;
+    float partTransmittance = exp(-opticalDepth);
+    float integrated =
+        opticalDepth < OPTICAL_DEPTH_LINEAR_THRESHOLD ? 1 - opticalDepth * 0.5 : (1 - partTransmittance) / opticalDepth;
+    // The emission integrates to source * (1 - partTransmittance).
+    inoutSegment.Radiance += (inoutSegment.Transmittance * integrated * opticalDepth) * medium.Source;
+    float distance = distanceMetres / CLOUD_LAYER_METRES_PER_KILOMETRE;
+    float altitude = ComputeAltitude(ray.Height, ray.ZenithCosine, distance);
+    float radius = GROUND_RADIUS + ray.Height;
+    float sampleSolarCosine =
+        clamp((radius * ray.SolarZenithCosine + distance * ray.ScatteringCosine) / (GROUND_RADIUS + altitude), -1, 1);
+    float sunNear;
+    float sunFar;
+    if (scattering > 0 && sampleSolarCosine >= ComputeHorizonCosine(altitude) &&
+        IntersectCloudLayer(cloud, positionLocal, ray.SunLocal, CLOUD_LAYER_MAXIMUM_PATH_METRES, sunNear, sunFar) ==
+            true)
+    {
+        float sunDepth =
+            fade * ComputeCloudLayerPathDepth(cloud, positionLocal, ray.SunLocal, medium.Extinction, sunFar);
+        float3 incident = ray.SolarIlluminance * SampleTransmittance(transmittanceTable, altitude, sampleSolarCosine) *
+                          exp(-sunDepth);
+        inoutSegment.Radiance +=
+            (inoutSegment.Transmittance * integrated * partLength * scattering * ray.Phase) * incident;
+    }
+    inoutSegment.Transmittance *= partTransmittance;
+}
+
+// Integrate the slab along a camera ray. height is the camera's altitude in kilometres and the cosines are measured
+// at the camera against its radial up; maximumMetres clips the ray at the first opaque surface or ground. The
+// clipped interval takes CLOUD_LAYER_STEPS uniform steps. A test field's plane splits the step it crosses into two
+// homogeneous parts, so a piecewise-constant field is integrated exactly along the view.
 CloudLayerSegment IntegrateCloudLayer(Texture2D<float4> transmittanceTable,
                                       in CloudLayerParameters cloud,
                                       in float3 directionWorld,
@@ -144,48 +277,34 @@ CloudLayerSegment IntegrateCloudLayer(Texture2D<float4> transmittanceTable,
     segment.Transmittance = 1;
     segment.EntryMetres = 0;
     segment.ExitMetres = 0;
-    float3 directionLocal = ToCloudLayerLocal(cloud, directionWorld);
+    CloudLayerRay ray;
+    ray.RayLocal = ToCloudLayerLocal(cloud, directionWorld);
     float entryMetres;
     float exitMetres;
     if (cloud.AxisXWorld.w <= 0 ||
-        IntersectCloudLayer(cloud, cloud.CameraLocal.xyz, directionLocal, maximumMetres, entryMetres, exitMetres) ==
+        IntersectCloudLayer(cloud, cloud.CameraLocal.xyz, ray.RayLocal, maximumMetres, entryMetres, exitMetres) ==
             false)
     {
         return segment;
     }
     segment.EntryMetres = entryMetres;
     segment.ExitMetres = exitMetres;
-    float3 sunLocal = ToCloudLayerLocal(cloud, sunWorld);
-    float scatteringCosine = clamp(dot(directionWorld, sunWorld), -1, 1);
-    float phase = EvaluateCloudLayerPhase(cloud.Phase.x, scatteringCosine);
-    float radius = GROUND_RADIUS + height;
+    ray.SunLocal = ToCloudLayerLocal(cloud, sunWorld);
+    ray.SolarIlluminance = solarIlluminance;
+    ray.ScatteringCosine = clamp(dot(directionWorld, sunWorld), -1, 1);
+    ray.Phase = EvaluateCloudLayerPhase(cloud.Phase.x, ray.ScatteringCosine);
+    ray.Height = height;
+    ray.ZenithCosine = zenithCosine;
+    ray.SolarZenithCosine = solarZenithCosine;
+    float splitMetres = GetCloudLayerSplitDistance(cloud, cloud.CameraLocal.xyz, ray.RayLocal, exitMetres);
     float stepLength = (exitMetres - entryMetres) / CLOUD_LAYER_STEPS;
     for (uint step = 0; step < CLOUD_LAYER_STEPS; ++step)
     {
-        float distanceMetres = entryMetres + (float(step) + 0.5) * stepLength;
-        float3 positionLocal = cloud.CameraLocal.xyz + distanceMetres * directionLocal;
-        float fade = ComputeCloudLayerFade(cloud, positionLocal);
-        float extinction = fade * cloud.Medium.z;
-        float opticalDepth = extinction * stepLength;
-        float stepTransmittance = exp(-opticalDepth);
-        float integrated = opticalDepth < OPTICAL_DEPTH_LINEAR_THRESHOLD ? 1 - opticalDepth * 0.5
-                                                                         : (1 - stepTransmittance) / opticalDepth;
-        float distance = distanceMetres / CLOUD_LAYER_METRES_PER_KILOMETRE;
-        float altitude = ComputeAltitude(height, zenithCosine, distance);
-        float sampleSolarCosine =
-            clamp((radius * solarZenithCosine + distance * scatteringCosine) / (GROUND_RADIUS + altitude), -1, 1);
-        float sunNear;
-        float sunFar;
-        if (fade > 0 && sampleSolarCosine >= ComputeHorizonCosine(altitude) &&
-            IntersectCloudLayer(cloud, positionLocal, sunLocal, CLOUD_LAYER_MAXIMUM_PATH_METRES, sunNear, sunFar) ==
-                true)
-        {
-            float3 incident = solarIlluminance * SampleTransmittance(transmittanceTable, altitude, sampleSolarCosine) *
-                              exp(-extinction * sunFar);
-            segment.Radiance +=
-                (segment.Transmittance * integrated * stepLength * fade * cloud.Medium.w * phase) * incident;
-        }
-        segment.Transmittance *= stepTransmittance;
+        float startMetres = entryMetres + float(step) * stepLength;
+        float endMetres = step + 1 == CLOUD_LAYER_STEPS ? exitMetres : startMetres + stepLength;
+        float middleMetres = clamp(splitMetres, startMetres, endMetres);
+        AccumulateCloudLayerPart(transmittanceTable, cloud, ray, startMetres, middleMetres, segment);
+        AccumulateCloudLayerPart(transmittanceTable, cloud, ray, middleMetres, endMetres, segment);
     }
     return segment;
 }

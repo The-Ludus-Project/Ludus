@@ -48,6 +48,39 @@ struct CelestialBackgroundDescription final
     foundation::math::Vector3 DirectionToSunAtMoonWorld{};
 };
 
+/// One homogeneous region of a CloudLayerTestField.
+struct CloudLayerTestRegion final
+{
+    /// Extinction at unit layer density in inverse metres, finite and nonnegative. It replaces
+    /// CloudLayerDescription::ExtinctionPerMetre inside the region; Density and the edge fade still multiply it.
+    foundation::float32 ExtinctionPerMetre = 0;
+    /// Finite nonnegative scene-linear RGB source radiance in nits. The region emits ExtinctionPerMetre times this
+    /// per metre, so a homogeneous region of transmittance T alone contributes SourceRadiance * (1 - T). The source
+    /// adds to the Sun's single scattering and is independent of the Atmosphere's illuminance.
+    foundation::math::Vector3 SourceRadiance{};
+};
+
+/// @brief Renderer validation fixture: two homogeneous regions of a cloud layer on either side of one plane.
+///
+/// World extraction and the Editor never author it; the `[cloud-layer]` tests use it to check transmittance through
+/// a nonuniform layer and the front-to-back order of two emitting, attenuating regions. A layer point p in the
+/// CloudLayerDescription frame (metres) lies in Regions[0] when dot(p, SplitNormalLocal) < SplitOffsetMetres and in
+/// Regions[1] otherwise. The view march splits its steps at the plane, so each region is integrated as homogeneous
+/// and its transmittance and source are exact. The Sun path toward a step is split at the plane too.
+struct CloudLayerTestField final
+{
+    /// Number of regions, one on each side of the plane.
+    static constexpr foundation::usize REGION_COUNT = 2;
+    /// False keeps the layer homogeneous. Other fields are ignored when false.
+    bool IsEnabled = false;
+    /// Finite nonzero plane normal in the layer frame (+X, +Y up, +Z), normalized when packed.
+    foundation::math::Vector3 SplitNormalLocal{0, 0, 1};
+    /// Finite signed distance in metres of the plane from the layer origin along the normalized normal.
+    foundation::float32 SplitOffsetMetres = 0;
+    /// Regions[0] lies on the negative side of the plane, Regions[1] on the positive side.
+    foundation::StaticArray<CloudLayerTestRegion, REGION_COUNT> Regions{};
+};
+
 /// @brief One bounded, horizontal slab of homogeneous cloud in the Atmosphere's surface frame.
 ///
 /// The slab is flat in the plane tangent to the ground at AtmosphereDescription::SurfaceAnchorWorld: its frame has
@@ -107,6 +140,10 @@ struct CloudLayerDescription final
     /// Nonzero finite world direction of the frame's +X axis. Only its part perpendicular to SurfaceUpWorld is
     /// used, which must be nonzero.
     foundation::math::Vector3 AxisXWorld{1, 0, 0};
+    /// Optional two-region validation density and source. Disabled by default; see CloudLayerTestField.
+    // Explicit default preserves designated-initializer callers under -Wmissing-field-initializers.
+    // NOLINTNEXTLINE(readability-redundant-member-init)
+    CloudLayerTestField TestField{};
 };
 
 /// Procedural auroral curtains anchored to the Earth atmosphere's surface frame.
