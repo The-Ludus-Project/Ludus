@@ -31,6 +31,9 @@ static const float AURORA_WIDE_FOLD_KILOMETRES = 96;
 static const float AURORA_NARROW_FOLD_KILOMETRES = 34;
 static const float AURORA_WIDE_FOLD_SCALE_KILOMETRES = 147;
 static const float AURORA_NARROW_FOLD_SCALE_KILOMETRES = 57;
+static const float AURORA_FOLD_PHASE_SCALE_KILOMETRES = 210;
+static const float AURORA_WIDE_FOLD_BASE = 0.66;
+static const float AURORA_WIDE_FOLD_PULSE = 1 - AURORA_WIDE_FOLD_BASE;
 static const float AURORA_RIPPLE_KILOMETRES = 12;
 static const float AURORA_RIPPLE_SCALE_KILOMETRES = 21;
 static const float AURORA_RIPPLE_PHASE_RATE = 3;
@@ -65,17 +68,33 @@ bool ClipAuroraAxis(float eye, float direction, float minimum, float maximum, in
     return inoutRange.x < inoutRange.y;
 }
 
-float GetAuroraRibbonOffset(float x, float phase)
+float GetAuroraRibbonOffset(float alongRibbonKilometres, float phase)
 {
-    float arc = x / AURORA_HALF_LENGTH_KILOMETRES;
-    float broadFold = sin(x / AURORA_WIDE_FOLD_SCALE_KILOMETRES + phase);
-    float ripple = (0.5 + 0.5 * broadFold) * sin(x / AURORA_RIPPLE_SCALE_KILOMETRES + AURORA_RIPPLE_PHASE_RATE * phase);
+    float arc = alongRibbonKilometres / AURORA_HALF_LENGTH_KILOMETRES;
+    // The creases stay attached to the arc. Their depths change at different points along it.
+    float foldPhase = alongRibbonKilometres / AURORA_FOLD_PHASE_SCALE_KILOMETRES;
+    float broadFold = sin(alongRibbonKilometres / AURORA_WIDE_FOLD_SCALE_KILOMETRES) *
+                      (AURORA_WIDE_FOLD_BASE + AURORA_WIDE_FOLD_PULSE * cos(phase + foldPhase));
+    float narrowFold = sin(alongRibbonKilometres / AURORA_NARROW_FOLD_SCALE_KILOMETRES) * cos(2 * phase - foldPhase);
+    float ripple = (0.5 + 0.5 * broadFold) *
+                   sin(alongRibbonKilometres / AURORA_RIPPLE_SCALE_KILOMETRES + AURORA_RIPPLE_PHASE_RATE * phase);
     return AURORA_ARC_BEND_KILOMETRES * arc * arc + AURORA_WIDE_FOLD_KILOMETRES * broadFold +
-           AURORA_NARROW_FOLD_KILOMETRES * sin(x / AURORA_NARROW_FOLD_SCALE_KILOMETRES - 2 * phase) +
-           AURORA_RIPPLE_KILOMETRES * ripple;
+           AURORA_NARROW_FOLD_KILOMETRES * narrowFold + AURORA_RIPPLE_KILOMETRES * ripple;
 }
 
-float SampleAuroraRayBrightness(float coordinate, uint ribbon)
+float EvaluateAuroraRayBrightness(uint randomWord, float phase)
+{
+    const float MINIMUM_RAY_PULSE = 0.06;
+    const float RAY_PULSE_RATE_COUNT = 3;
+    const float RAY_PHASE_OFFSET_RATE = 7;
+    float amplitude = RandomFloat01(randomWord);
+    float pulseRate = 2 + floor(amplitude * RAY_PULSE_RATE_COUNT);
+    float phaseOffset = 2 * PI * frac(amplitude * RAY_PHASE_OFFSET_RATE);
+    float pulse = 0.5 + 0.5 * sin(pulseRate * phase + phaseOffset);
+    return amplitude * lerp(MINIMUM_RAY_PULSE, 1, pulse * pulse);
+}
+
+float SampleAuroraRayBrightness(float coordinate, float phase, uint ribbon)
 {
     const uint CELLS_PER_BLOCK = 4;
     uint cell = asuint(int(floor(coordinate)));
@@ -83,12 +102,13 @@ float SampleAuroraRayBrightness(float coordinate, uint ribbon)
     uint nextLane = (lane + 1) % CELLS_PER_BLOCK;
     uint2 key = uint2(ribbon, 0);
     uint4 samples = Philox4x32(uint4(cell / CELLS_PER_BLOCK, 0, 0, 0), key);
-    float lower = RandomFloat01(samples[lane]);
+    float lower = EvaluateAuroraRayBrightness(samples[lane], phase);
     if (nextLane == 0)
     {
         samples = Philox4x32(uint4((cell + 1) / CELLS_PER_BLOCK, 0, 0, 0), key);
     }
-    return lerp(lower, RandomFloat01(samples[nextLane]), smoothstep(0, 1, frac(coordinate)));
+    float upper = EvaluateAuroraRayBrightness(samples[nextLane], phase);
+    return lerp(lower, upper, smoothstep(0, 1, frac(coordinate)));
 }
 
 // Thanks to NOAA Space Weather Prediction Center, Aurora Tutorial, "Shapes and
@@ -103,9 +123,8 @@ EvaluateAuroraEmission(in float2 pointAurora, float altitude, float offset, floa
     const float SURGE_SCALE_KILOMETRES = 37;
     const float ACTIVITY_WEIGHT = 0.52;
     const float RAY_SCALE_KILOMETRES = 4.8;
-    const float RAY_DRIFT_KILOMETRES = 23;
     const float RAY_TILT_KILOMETRES_PER_KILOMETRE = 0.065;
-    const float RAY_BACKGROUND = 0.18;
+    const float RAY_BACKGROUND = 0.10;
     const float SECONDARY_RIBBON_BRIGHTNESS = 0.32;
     const float GREEN_LOWER_EDGE_KILOMETRES = 7;
     const float GREEN_PEAK_KILOMETRES = 108;
@@ -128,9 +147,8 @@ EvaluateAuroraEmission(in float2 pointAurora, float altitude, float offset, floa
     float surge = 0.5 + 0.5 * sin(pointAurora.x / SURGE_SCALE_KILOMETRES - 2 * phase);
     float activity = lerp(broad, surge, ACTIVITY_WEIGHT);
     float activePatch = smoothstep(0, 1, activity);
-    float ray = pointAurora.x + RAY_TILT_KILOMETRES_PER_KILOMETRE * (altitude - AURORA_BASE_KILOMETRES) +
-                RAY_DRIFT_KILOMETRES * sin(phase);
-    float shafts = SampleAuroraRayBrightness(ray / RAY_SCALE_KILOMETRES, ribbon);
+    float ray = pointAurora.x + RAY_TILT_KILOMETRES_PER_KILOMETRE * (altitude - AURORA_BASE_KILOMETRES);
+    float shafts = SampleAuroraRayBrightness(ray / RAY_SCALE_KILOMETRES, phase, ribbon);
     float brightness = lerp(RAY_BACKGROUND, 1, activePatch * shafts);
     float depositionAltitude = altitude - DEPOSITION_LIFT_KILOMETRES * (1 - activePatch);
     float lowerEdge =
@@ -178,11 +196,15 @@ float3 IntegrateAuroraLayer(in AuroraLayerParameters aurora,
         return 0;
     }
 
+    const float MAXIMUM_WIDE_FOLD_SLOPE =
+        1 / AURORA_WIDE_FOLD_SCALE_KILOMETRES + AURORA_WIDE_FOLD_PULSE / AURORA_FOLD_PHASE_SCALE_KILOMETRES;
+    const float MAXIMUM_NARROW_FOLD_SLOPE =
+        1 / AURORA_NARROW_FOLD_SCALE_KILOMETRES + 1 / AURORA_FOLD_PHASE_SCALE_KILOMETRES;
     const float MAXIMUM_RIBBON_SLOPE =
         2 * AURORA_ARC_BEND_KILOMETRES / AURORA_HALF_LENGTH_KILOMETRES +
-        AURORA_WIDE_FOLD_KILOMETRES / AURORA_WIDE_FOLD_SCALE_KILOMETRES +
-        AURORA_NARROW_FOLD_KILOMETRES / AURORA_NARROW_FOLD_SCALE_KILOMETRES +
-        AURORA_RIPPLE_KILOMETRES * (1 / AURORA_RIPPLE_SCALE_KILOMETRES + 0.5 / AURORA_WIDE_FOLD_SCALE_KILOMETRES);
+        AURORA_WIDE_FOLD_KILOMETRES * MAXIMUM_WIDE_FOLD_SLOPE +
+        AURORA_NARROW_FOLD_KILOMETRES * MAXIMUM_NARROW_FOLD_SLOPE +
+        AURORA_RIPPLE_KILOMETRES * (1 / AURORA_RIPPLE_SCALE_KILOMETRES + 0.5 * MAXIMUM_WIDE_FOLD_SLOPE);
     const float MAXIMUM_STEP_KILOMETRES = 4;
     const float MINIMUM_STEP_KILOMETRES = 1;
     const float RAY_STRUCTURE_STEP_KILOMETRES = 2;
