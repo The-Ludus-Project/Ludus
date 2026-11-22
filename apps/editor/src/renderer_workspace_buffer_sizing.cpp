@@ -1,4 +1,6 @@
 #include "internal/code_editor.h"
+#include "internal/code_editor_area.h"
+#include "internal/render_graph_node_details.h"
 #include "internal/render_graph_shader_edits.h"
 #include "internal/render_graph_shader_language.h"
 #include "internal/renderer_workspace.h"
@@ -26,7 +28,6 @@
 #include <QSignalBlocker>
 #include <QSpinBox>
 #include <QStringList>
-#include <QTextCursor>
 #include <QVariant>
 
 namespace ludus::editor
@@ -126,78 +127,6 @@ bool ReadBufferDeclaration(CodeEditor& inoutEditor, QLabel& outProblem, QByteArr
     return false;
 }
 
-bool EditBufferDeclaration(QDialog& inoutParent, RenderGraphDocument& inoutDocument, const QString& file)
-{
-    QDialog dialog(&inoutParent);
-    dialog.setWindowTitle(QStringLiteral("Edit shader declaration"));
-    QFormLayout fields(&dialog);
-    QLabel* path = new QLabel(file, &dialog);
-    path->setTextFormat(Qt::PlainText);
-    path->setTextInteractionFlags(Qt::TextSelectableByMouse | Qt::TextSelectableByKeyboard);
-    path->setWordWrap(true);
-    fields.addRow(QStringLiteral("File"), path);
-    CodeEditor* editor = AddDeclarationEditor(fields, dialog, QString::fromUtf8(inoutDocument.GetDraft(file)));
-    const QByteArray original = editor->toPlainText().toUtf8();
-    QPushButton* include = new QPushButton(QStringLiteral("Insert Shared Include…"), &dialog);
-    const QStringList headers = FindSharedShaderIncludes(inoutDocument, file);
-    include->setEnabled(headers.isEmpty() == false);
-    fields.addRow(include);
-    QObject::connect(include, &QPushButton::clicked, &dialog, [&dialog, &headers, &file, editor]() {
-        const QString path = ChooseSharedShaderInclude(dialog, headers, file);
-        if (path.isEmpty() == false)
-        {
-            const QByteArray before = editor->toPlainText().toUtf8();
-            const QByteArray after = InsertShaderInclude(before, path);
-            if (before != after)
-            {
-                QTextCursor cursor = editor->textCursor();
-                cursor.select(QTextCursor::Document);
-                cursor.insertText(QString::fromUtf8(after));
-            }
-        }
-    });
-    editor->SetLanguage(file.endsWith(GetShaderIncludeSuffix(RenderGraphShaderLanguage::Lusl)) == true
-                            ? CodeLanguage::Lusl
-                            : CodeLanguage::Slang);
-    QLabel* problem = new QLabel(&dialog);
-    problem->setObjectName(QStringLiteral("renderGraphBufferDeclarationError"));
-    problem->setTextFormat(Qt::PlainText);
-    problem->setWordWrap(true);
-    fields.addRow(problem);
-    QObject::connect(editor, &CodeEditor::textChanged, problem, &QLabel::clear);
-    QDialogButtonBox* buttons = new QDialogButtonBox(QDialogButtonBox::Cancel, &dialog);
-    QPushButton* keep = buttons->addButton(QStringLiteral("Keep Source Changes"), QDialogButtonBox::AcceptRole);
-    keep->setObjectName(QStringLiteral("renderGraphKeepBufferDeclaration"));
-    keep->setToolTip(QStringLiteral("Keep changes in the graph draft. Save writes them to disk."));
-    fields.addRow(buttons);
-    QObject::connect(buttons, &QDialogButtonBox::rejected, &dialog, &QDialog::reject);
-    QObject::connect(
-        keep,
-        &QPushButton::clicked,
-        &dialog,
-        [&dialog, &inoutDocument, &file, &original, editor, problem]() {
-            QByteArray source;
-            if (ReadBufferDeclaration(*editor, *problem, source) == false)
-            {
-                return;
-            }
-            if (source != original)
-            {
-                const RenderGraphDocumentStatus status = inoutDocument.SetText(file, source);
-                if (status != RenderGraphDocumentStatus::Ok)
-                {
-                    problem->setText(
-                        status == RenderGraphDocumentStatus::Capacity
-                            ? DescribePackageCapacity()
-                            : QStringLiteral("Could not update this file. Cancel and reopen its declaration."));
-                    return;
-                }
-            }
-            dialog.accept();
-        });
-    editor->setFocus();
-    return dialog.exec() == QDialog::Accepted;
-}
 } // namespace
 
 QString RendererWorkspace::stageSharedShaderSource(QWidget& inoutParent,
@@ -348,42 +277,38 @@ void RendererWorkspace::openNewSharedShaderSource(QWidget& inoutParent, const QS
     openSourceLine(file, 1);
 }
 
-void RendererWorkspace::insertSharedShaderInclude()
+QString RendererWorkspace::insertSharedShaderInclude(QWidget& inoutParent, const QString& target)
 {
-    const QString target = GetSourceFile();
     const QStringList headers = FindSharedShaderIncludes(mDocument, target);
     if (headers.isEmpty() == true)
     {
-        mSourceStatus->setText(QStringLiteral("No compatible shared header is available for this source. "
-                                              "Use Source → New shared shader file to create one."));
-        return;
+        return QStringLiteral("No compatible shared header is available for this source. "
+                              "Use Source → New shared shader file to create one.");
     }
+    const QString package = mDocument.GetPackageRoot();
     const foundation::uint64 revision = mDocument.GetRevision();
-    const QString include = ChooseSharedShaderInclude(*this, headers, target);
+    const QString include = ChooseSharedShaderInclude(inoutParent, headers, target);
     if (include.isEmpty() == true)
     {
-        return;
+        return {};
     }
-    if (revision != mDocument.GetRevision() || target != GetSourceFile())
+    if (package != mDocument.GetPackageRoot() || revision != mDocument.GetRevision())
     {
-        mSourceStatus->setText(QStringLiteral("The shader draft changed. Review the current source and try again."));
-        return;
+        return QStringLiteral("The shader draft changed. Review the current source and try again.");
     }
     const QByteArray before = mDocument.GetDraft(target);
     const QByteArray after = InsertShaderInclude(before, include);
     if (after == before)
     {
-        mSourceStatus->setText(QStringLiteral("This source already includes '%1'.").arg(include));
-        return;
+        return QStringLiteral("This source already includes '%1'.").arg(include);
     }
     const RenderGraphDocumentStatus status = mDocument.SetText(target, after);
     documentEdited(status);
-    if (status != RenderGraphDocumentStatus::Ok)
-    {
-        mSourceStatus->setText(status == RenderGraphDocumentStatus::Capacity
-                                   ? DescribePackageCapacity()
-                                   : QStringLiteral("Could not insert the include. Reopen the shader and try again."));
-    }
+    return status == RenderGraphDocumentStatus::Ok
+               ? QString()
+               : (status == RenderGraphDocumentStatus::Capacity
+                      ? DescribePackageCapacity()
+                      : QStringLiteral("Could not insert the include. Reopen the shader and try again."));
 }
 
 void RendererWorkspace::addShaderBufferAccess()
@@ -466,10 +391,22 @@ void RendererWorkspace::addShaderBufferAccess()
     }
 }
 
-void RendererWorkspace::editBufferSizing(QWidget& inoutParent)
+void RendererWorkspace::editBufferSizing(QWidget& inoutParent, const BufferSizingDraft* pendingOrNull)
 {
     namespace format = content::render_graph_format;
     const QJsonObject node = selectedNode();
+    const QString nodeFile = mSelectedFile;
+    const QString configuration = mSelectedConfiguration;
+    const QString nodeId = mSelectedNode;
+    if (pendingOrNull == nullptr && mPendingBufferSizing.File == nodeFile &&
+        mPendingBufferSizing.Configuration == configuration && mPendingBufferSizing.Node == nodeId &&
+        nodeId.isEmpty() == false)
+    {
+        const BufferSizingDraft pending = mPendingBufferSizing;
+        clearBufferSizingReturn();
+        editBufferSizing(inoutParent, &pending);
+        return;
+    }
     const QJsonObject record = node.value(QStringLiteral("shader_struct")).toObject();
     QDialog dialog(&inoutParent);
     dialog.setWindowTitle(QStringLiteral("Buffer sizing"));
@@ -477,7 +414,7 @@ void RendererWorkspace::editBufferSizing(QWidget& inoutParent)
     QComboBox* mode = new QComboBox(&dialog);
     mode->setObjectName(QStringLiteral("renderGraphBufferSizingMode"));
     mode->addItems({QStringLiteral("Fixed bytes"), QStringLiteral("From shader struct")});
-    mode->setCurrentIndex(1);
+    mode->setCurrentIndex(pendingOrNull == nullptr ? 1 : pendingOrNull->Mode);
     fields.addRow(QStringLiteral("Sizing"), mode);
 
     QComboBox* source = new QComboBox(&dialog);
@@ -492,7 +429,7 @@ void RendererWorkspace::editBufferSizing(QWidget& inoutParent)
     }
     const QString previousSource = record.value(QStringLiteral("source")).toString();
     source->setPlaceholderText(QStringLiteral("Select a shader declaration file"));
-    source->setCurrentIndex(source->findText(previousSource));
+    source->setCurrentIndex(source->findText(pendingOrNull == nullptr ? previousSource : pendingOrNull->Source));
     fields.addRow(QStringLiteral("Shader declaration file"), source);
     QLabel* languageNote = new QLabel(BUFFER_LAYOUT_LANGUAGE_NOTE, &dialog);
     languageNote->setObjectName(QStringLiteral("renderGraphBufferLayoutLanguageNote"));
@@ -518,13 +455,14 @@ void RendererWorkspace::editBufferSizing(QWidget& inoutParent)
     QSpinBox* count = new QSpinBox(&dialog);
     count->setObjectName(QStringLiteral("renderGraphBufferStructCount"));
     count->setRange(1, format::MAX_RAY_BUFFER_BYTES);
-    count->setValue(record.value(QStringLiteral("count")).toInt(1));
+    count->setValue(pendingOrNull == nullptr ? record.value(QStringLiteral("count")).toInt(1) : pendingOrNull->Count);
     fields.addRow(QStringLiteral("Element capacity"), count);
     QSpinBox* bytes = new QSpinBox(&dialog);
     bytes->setObjectName(QStringLiteral("renderGraphFixedBufferBytes"));
     bytes->setRange(format::RAY_BUFFER_WORD_BYTES, format::MAX_RAY_BUFFER_BYTES);
     bytes->setSingleStep(format::RAY_BUFFER_WORD_BYTES);
-    bytes->setValue(node.value(QStringLiteral("bytes")).toInt(format::RAY_BUFFER_WORD_BYTES));
+    bytes->setValue(pendingOrNull == nullptr ? node.value(QStringLiteral("bytes")).toInt(format::RAY_BUFFER_WORD_BYTES)
+                                             : pendingOrNull->Bytes);
     fields.addRow(QStringLiteral("Capacity (bytes)"), bytes);
     fields.addRow(languageNote);
 
@@ -591,12 +529,53 @@ void RendererWorkspace::editBufferSizing(QWidget& inoutParent)
     connect(type, &QComboBox::currentIndexChanged, &dialog, refresh);
     connect(bytes, &QSpinBox::valueChanged, &dialog, refresh);
 
-    connect(edit, &QPushButton::clicked, &dialog, [this, &dialog, source, type, listStructs]() {
-        if (EditBufferDeclaration(dialog, mDocument, source->currentText()) == true)
-        {
-            listStructs(type->currentText());
-        }
-    });
+    connect(edit,
+            &QPushButton::clicked,
+            &dialog,
+            [this, &dialog, &inoutParent, nodeFile, configuration, nodeId, mode, source, type, count, bytes, hint]() {
+                const QString file = source->currentText();
+                if (mShaderCodeArea.isNull() == true || mDocument.GetFiles().contains(file) == false)
+                {
+                    hint->setText(
+                        QStringLiteral("Could not open the declaration. Choose an available package source."));
+                    return;
+                }
+                if (mPendingBufferSizing.Node.isEmpty() == false)
+                {
+                    hint->setText(QStringLiteral(
+                        "Return to the pending Buffer sizing from the Code tab before editing another declaration."));
+                    return;
+                }
+                count->interpretText();
+                bytes->interpretText();
+                mPendingBufferSizing =
+                {
+                    .File = nodeFile,
+                    .Configuration = configuration,
+                    .Node = nodeId,
+                    .Source = file,
+                    .Type = type->currentText(),
+                    .Mode = mode->currentIndex(),
+                    .Count = count->value(),
+                    .Bytes = bytes->value(),
+                };
+                mShaderCodeArea->SetSessionAction(QStringLiteral("Return to Buffer Sizing"));
+                dialog.reject();
+                RenderGraphNodeDetails* detailsOrNull = qobject_cast<RenderGraphNodeDetails*>(inoutParent.window());
+                if (detailsOrNull != nullptr)
+                {
+                    detailsOrNull->accept();
+                }
+                QMetaObject::invokeMethod(
+                    this,
+                    [this, file]() {
+                        if (mPendingBufferSizing.Source == file)
+                        {
+                            static_cast<void>(openShaderCodeTab(file, false));
+                        }
+                    },
+                    Qt::QueuedConnection);
+            });
     connect(create, &QPushButton::clicked, &dialog, [this, &dialog, source, previousSource]() {
         const QString selected = source->currentText();
         const QString nearbyFile = selected.isEmpty() == false ? selected : previousSource;
@@ -611,35 +590,67 @@ void RendererWorkspace::editBufferSizing(QWidget& inoutParent)
         }
     });
     const foundation::uint64 revision = mDocument.GetRevision();
-    connect(apply, &QPushButton::clicked, &dialog, [this, node, mode, source, type, count, bytes, hint, &dialog]() {
-        QJsonObject candidate = node;
-        if (mode->currentIndex() == 1)
-        {
-            candidate.remove(QStringLiteral("bytes"));
-            candidate.insert(QStringLiteral("shader_struct"),
-                             QJsonObject{{QStringLiteral("source"), source->currentText()},
-                                         {QStringLiteral("type"), type->currentText()},
-                                         {QStringLiteral("count"), count->value()}});
-        }
-        else
-        {
-            candidate.remove(QStringLiteral("shader_struct"));
-            candidate.insert(QStringLiteral("bytes"), bytes->value());
-        }
-        QString error;
-        if (candidate == node || mDocument.ReplaceNode(mSelectedFile, mSelectedConfiguration, candidate, &error) ==
-                                     RenderGraphDocumentStatus::Ok)
-        {
-            dialog.accept();
-            return;
-        }
-        hint->setText(error.isEmpty() == false ? error : QStringLiteral("Reselect the Buffer and try again."));
-    });
-    selectSource();
+    connect(apply,
+            &QPushButton::clicked,
+            &dialog,
+            [this, node, nodeFile, configuration, mode, source, type, count, bytes, hint, &dialog]() {
+                QJsonObject candidate = node;
+                if (mode->currentIndex() == 1)
+                {
+                    candidate.remove(QStringLiteral("bytes"));
+                    candidate.insert(QStringLiteral("shader_struct"),
+                                     QJsonObject{{QStringLiteral("source"), source->currentText()},
+                                                 {QStringLiteral("type"), type->currentText()},
+                                                 {QStringLiteral("count"), count->value()}});
+                }
+                else
+                {
+                    candidate.remove(QStringLiteral("shader_struct"));
+                    candidate.insert(QStringLiteral("bytes"), bytes->value());
+                }
+                QString error;
+                if (candidate == node ||
+                    mDocument.ReplaceNode(nodeFile, configuration, candidate, &error) == RenderGraphDocumentStatus::Ok)
+                {
+                    dialog.accept();
+                    return;
+                }
+                hint->setText(error.isEmpty() == false ? error : QStringLiteral("Reselect the Buffer and try again."));
+            });
+    listStructs(pendingOrNull == nullptr ? record.value(QStringLiteral("type")).toString() : pendingOrNull->Type);
     dialog.exec();
     if (mDocument.GetRevision() != revision)
     {
         documentEdited(RenderGraphDocumentStatus::Ok);
     }
+}
+void RendererWorkspace::clearBufferSizingReturn()
+{
+    mPendingBufferSizing = {};
+    if (mShaderCodeArea.isNull() == false)
+    {
+        mShaderCodeArea->SetSessionAction({});
+    }
+}
+
+void RendererWorkspace::returnToBufferSizing()
+{
+    const BufferSizingDraft pending = mPendingBufferSizing;
+    if (pending.Node.isEmpty() == true)
+    {
+        return;
+    }
+    clearBufferSizingReturn();
+    Q_EMIT GraphWorkspaceRequested();
+    if (SelectNode(pending.File, pending.Configuration, pending.Node) == false ||
+        selectedNode().value(QStringLiteral("kind")).toString() != QStringLiteral("Buffer"))
+    {
+        const QString message =
+            QStringLiteral("The original Buffer is unavailable. Select a Buffer and reopen sizing.");
+        mStatus->setText(message);
+        Q_EMIT NodeOperationFailed(message);
+        return;
+    }
+    editBufferSizing(*this, &pending);
 }
 } // namespace ludus::editor

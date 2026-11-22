@@ -4,6 +4,7 @@
 
 #include <QList>
 #include <QObject>
+#include <QPointer>
 #include <QString>
 #include <QStringList>
 #include <QTextCursor>
@@ -40,6 +41,19 @@ struct CodeNavigationTarget final
     bool IsReadOnly = false;
 };
 
+class CodeNavigation;
+
+/// Presents package sources in the document area and restores live views for history.
+class CodeNavigationViewHost
+{
+public:
+    virtual ~CodeNavigationViewHost() = default;
+    /// Open a validated location, returning null if its source is unavailable.
+    [[nodiscard]] virtual CodeNavigation* OpenNavigationTarget(const CodeNavigationTarget& target) = 0;
+    /// Restore an existing view or reopen its authored file, returning null on failure.
+    [[nodiscard]] virtual CodeNavigation* ActivateNavigationView(CodeNavigation* viewOrNull, const QString& file) = 0;
+};
+
 /// Source navigation presentation and bounded view history, independent of authored Undo.
 /// Borrows the editor, which owns this object. GUI thread only; no disk or process access.
 class CodeNavigation final : public QObject
@@ -47,6 +61,8 @@ class CodeNavigation final : public QObject
     Q_OBJECT
 public:
     explicit CodeNavigation(CodeEditor& inoutEditor);
+    /// Use the package's existing history across the Source pane and its code tabs.
+    void SetViewHost(CodeNavigationViewHost* hostOrNull, CodeNavigation* historyOwnerOrNull = nullptr);
     /// Pair around the host's buffer rebinding. Scope changes clear history/results;
     /// file changes freeze anchored positions before Qt replaces the text.
     void BeginSource(const QString& scope, const QString& file, const QStringList& files);
@@ -82,12 +98,15 @@ Q_SIGNALS:
     void Requested(CodeNavigationKind kind);
     void ResultChosen(foundation::int32 row);
     void Dismissed();
+    void HistoryChanged();
 
 private:
     struct Location final
     {
         QString File;
         QTextCursor Anchor;
+        QPointer<CodeNavigation> View;
+        foundation::int32 Scroll = 0;
         foundation::int32 Block = 0;
         foundation::int32 Column = 0;
     };
@@ -97,12 +116,17 @@ private:
     void showPicker();
     void openFile();
     void traverse(bool shouldGoForward);
+    void traverseViews(bool shouldGoForward);
+    void notifyHistoryChanged();
+    [[nodiscard]] CodeNavigation& historyOwner() noexcept;
     void appendLocation(QList<Location>& inoutLocations, const Location& location);
-    [[nodiscard]] Location capture(const QTextCursor& cursor) const;
+    [[nodiscard]] Location capture(const QTextCursor& cursor);
     [[nodiscard]] QTextCursor resolve(const Location& location) const;
     void freezeLocations(QList<Location>& inoutLocations);
     void anchorLocations(QList<Location>& inoutLocations);
     CodeEditor& mEditor;
+    CodeNavigationViewHost* mViewHostOrNull = nullptr;
+    QPointer<CodeNavigation> mHistoryOwner;
     QFrame* mPopup;
     QLineEdit* mFilter;
     QListWidget* mResults;

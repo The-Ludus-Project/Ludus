@@ -1,6 +1,10 @@
 // RG3b node canvas: drag gestures, link pre-checks, removal and Subgraph navigation over the
 // shared RenderGraphDocument operations. Offscreen widgets prove canvas/document wiring and
 // undo; GPU output is covered separately by render_graph_preview_tests.cpp.
+#include "internal/code_document_tab.h"
+#include "internal/code_editor.h"
+#include "internal/code_editor_area.h"
+#include "internal/code_navigation.h"
 #include "internal/render_graph_canvas.h"
 #include "internal/render_graph_document.h"
 #include "internal/render_graph_pipeline.h"
@@ -25,11 +29,13 @@
 #include <QDialogButtonBox>
 #include <QDir>
 #include <QDoubleSpinBox>
+#include <QEvent>
 #include <QFile>
 #include <QGraphicsEllipseItem>
 #include <QGraphicsRectItem>
 #include <QGraphicsScene>
 #include <QGroupBox>
+#include <QInputDialog>
 #include <QJsonArray>
 #include <QJsonDocument>
 #include <QKeySequence>
@@ -49,6 +55,7 @@
 #include <QTableWidget>
 #include <QTemporaryDir>
 #include <QTest>
+#include <QTextCursor>
 #include <QTimer>
 #include <QToolBar>
 #include <QVBoxLayout>
@@ -1603,7 +1610,9 @@ TEST_CASE("persistent buffer capacity edits share canvas and Properties history"
               "namespace Library { struct Nested { uint4 Ignored; }; }\n");
     WriteFile(QDir(package).filePath(emptyFile), "#pragma once\n");
     WriteFile(QDir(package).filePath(luslInclude), "#pragma once\nstruct LuslTable { uint32 Count; };\n");
+    CodeEditorArea codeArea;
     RendererWorkspace workspace({});
+    workspace.SetCodeEditorArea(codeArea);
     workspace.SetProject(project.path(), 1);
     REQUIRE(workspace.OpenGraph(QDir(package).filePath(GetRootGraph())) == true);
     workspace.SetLivePreview(false);
@@ -1615,8 +1624,7 @@ TEST_CASE("persistent buffer capacity edits share canvas and Properties history"
     add->click();
     REQUIRE(workspace.SelectNode(GetRootGraph(), GetDefaultConfiguration(), QStringLiteral("buffer")) == true);
     CHECK(workspace.GetCanvas().GetPortPosition(QStringLiteral("buffer.buffer"), true).isNull() == false);
-    const auto exercise = [&workspace, entryPoint, sharedFile, emptyFile, luslInclude](QWidget& inoutFields,
-                                                                                       bool isLusl) {
+    const auto startSizing = [&workspace, entryPoint, emptyFile, luslInclude](QWidget& inoutFields) {
         QSpinBox* capacity = inoutFields.findChild<QSpinBox*>(QStringLiteral("renderGraphField_bytes"));
         REQUIRE(capacity != nullptr);
         const uint64 revision = workspace.GetDocument().GetRevision();
@@ -1630,7 +1638,7 @@ TEST_CASE("persistent buffer capacity edits share canvas and Properties history"
         CHECK(workspace.GetDocument().GetDraft(GetRootGraph()).contains("98304") == true);
         QPushButton* editOrNull = inoutFields.findChild<QPushButton*>(QStringLiteral("renderGraphEditBufferSizing"));
         REQUIRE(editOrNull != nullptr);
-        QTimer::singleShot(0, &inoutFields, [entryPoint, sharedFile, emptyFile, luslInclude, isLusl]() {
+        QTimer::singleShot(0, &inoutFields, [entryPoint, emptyFile, luslInclude]() {
             QDialog* sizingOrNull = qobject_cast<QDialog*>(QApplication::activeModalWidget());
             REQUIRE(sizingOrNull != nullptr);
             QDialogButtonBox* buttonsOrNull = sizingOrNull->findChild<QDialogButtonBox*>();
@@ -1661,100 +1669,36 @@ TEST_CASE("persistent buffer capacity edits share canvas and Properties history"
             QSpinBox* countOrNull = sizingOrNull->findChild<QSpinBox*>(QStringLiteral("renderGraphBufferStructCount"));
             REQUIRE(countOrNull != nullptr);
             countOrNull->setValue(256);
-            QTimer::singleShot(0, sizingOrNull, [sizingOrNull]() {
-                QDialog* declarationOrNull = qobject_cast<QDialog*>(QApplication::activeModalWidget());
-                REQUIRE(declarationOrNull != nullptr);
-                REQUIRE(declarationOrNull != sizingOrNull);
-                QPlainTextEdit* editorOrNull =
-                    declarationOrNull->findChild<QPlainTextEdit*>(QStringLiteral("renderGraphBufferDeclarationEditor"));
-                REQUIRE(editorOrNull != nullptr);
-                CHECK(editorOrNull->toPlainText() == QStringLiteral("#pragma once\n"));
-                editorOrNull->setPlainText(QStringLiteral("struct Discarded { uint4 Words; };\n"));
-                declarationOrNull->reject();
-            });
             editDeclarationOrNull->click();
-            CHECK(applyOrNull->isEnabled() == false);
-            QTimer::singleShot(0, sizingOrNull, [sizingOrNull]() {
-                QDialog* declarationOrNull = qobject_cast<QDialog*>(QApplication::activeModalWidget());
-                REQUIRE(declarationOrNull != nullptr);
-                REQUIRE(declarationOrNull != sizingOrNull);
-                QPlainTextEdit* editorOrNull =
-                    declarationOrNull->findChild<QPlainTextEdit*>(QStringLiteral("renderGraphBufferDeclarationEditor"));
-                QPushButton* keepOrNull =
-                    declarationOrNull->findChild<QPushButton*>(QStringLiteral("renderGraphKeepBufferDeclaration"));
-                QLabel* problemOrNull =
-                    declarationOrNull->findChild<QLabel*>(QStringLiteral("renderGraphBufferDeclarationError"));
-                REQUIRE(editorOrNull != nullptr);
-                REQUIRE(keepOrNull != nullptr);
-                REQUIRE(problemOrNull != nullptr);
-                CHECK(editorOrNull->toPlainText() == QStringLiteral("#pragma once\n"));
-                keepOrNull->click();
-                CHECK(problemOrNull->text().contains(QStringLiteral("top-level struct")) == true);
-                editorOrNull->setPlainText(QStringLiteral("#pragma once\nstruct Repaired { uint4 Words; };\n"));
-                CHECK(problemOrNull->text().isEmpty() == true);
-                keepOrNull->click();
-            });
-            editDeclarationOrNull->click();
-            CHECK(QApplication::activeModalWidget() == sizingOrNull);
-            CHECK(source->currentText() == emptyFile);
-            CHECK(types->currentText() == QStringLiteral("Repaired"));
-            CHECK(countOrNull->value() == 256);
-            CHECK(applyOrNull->isEnabled() == true);
-            source->setCurrentText(luslInclude);
-            CHECK(types->currentText() == QStringLiteral("LuslTable"));
-            CHECK(applyOrNull->isEnabled() == true);
-            source->setCurrentText(sharedFile);
-            CHECK(types->isEditable() == false);
-            CHECK(types->count() == 1);
-            CHECK(types->currentText() == QStringLiteral("EdgeTable"));
-            CHECK(hint->text().contains(QStringLiteral("No struct declaration")) == false);
-            if (isLusl == true)
-            {
-                source->setCurrentText(luslInclude);
-            }
-            REQUIRE(applyOrNull->isEnabled() == true);
-            applyOrNull->click();
         });
         editOrNull->click();
-        const QString key = QStringLiteral("shader_struct");
-        const QString identity = QStringLiteral("buffer");
-        const QJsonObject record = FindNode(workspace.GetDocument(), identity).value(key).toObject();
-        CHECK(record.value(QStringLiteral("source")).toString() == (isLusl == true ? luslInclude : sharedFile));
-        CHECK(record.value(QStringLiteral("type")).toString() ==
-              (isLusl == true ? QStringLiteral("LuslTable") : QStringLiteral("EdgeTable")));
-        CHECK(record.value(QStringLiteral("count")).toInt() == 256);
-        CHECK(FindNode(workspace.GetDocument(), identity).contains(QStringLiteral("bytes")) == false);
-        workspace.Undo();
-        CHECK(FindNode(workspace.GetDocument(), identity).contains(key) == false);
-        workspace.Redo();
-        CHECK(FindNode(workspace.GetDocument(), identity).value(key).toObject() == record);
-        REQUIRE(workspace.Save() == true);
     };
+    bool isLusl = false;
     QWidget* properties = workspace.findChild<QWidget*>(QStringLiteral("renderGraphProperties"));
     REQUIRE(properties != nullptr);
     SECTION("Properties")
     {
-        exercise(*properties, false);
+        startSizing(*properties);
     }
     SECTION("canvas with Properties hidden")
     {
+        isLusl = true;
         workspace.resize(1200, 800);
         workspace.show();
         properties->hide();
         QCoreApplication::processEvents();
         RenderGraphCanvas& canvas = workspace.GetCanvas();
         canvas.Rebuild();
-        QTimer::singleShot(0, &canvas, [&canvas, &exercise, properties]() {
+        QTimer::singleShot(0, &canvas, [&canvas, &startSizing, properties]() {
             QMenu* menu = qobject_cast<QMenu*>(QApplication::activePopupWidget());
             REQUIRE(menu != nullptr);
             QAction* edit = menu->findChild<QAction*>(QStringLiteral("renderGraphEditNodeAction"));
             REQUIRE(edit != nullptr);
-            QTimer::singleShot(0, &canvas, [&exercise, properties]() {
-                QDialog* dialog = qobject_cast<QDialog*>(QApplication::activeModalWidget());
-                REQUIRE(dialog != nullptr);
+            QTimer::singleShot(0, &canvas, [&startSizing, properties]() {
+                QWidget* details = QApplication::activeModalWidget();
+                REQUIRE(details != nullptr);
                 CHECK(properties->isVisible() == false);
-                exercise(*dialog, true);
-                dialog->reject();
+                startSizing(*details);
             });
             menu->close();
             edit->trigger();
@@ -1763,10 +1707,150 @@ TEST_CASE("persistent buffer capacity edits share canvas and Properties history"
         QContextMenuEvent context(QContextMenuEvent::Mouse, point, canvas.viewport()->mapToGlobal(point));
         QApplication::sendEvent(canvas.viewport(), &context);
     }
+    QCoreApplication::processEvents();
+    CHECK(QApplication::activeModalWidget() == nullptr);
+    CodeDocumentTab* declaration = codeArea.GetActiveTabOrNull();
+    REQUIRE(declaration != nullptr);
+    CHECK(declaration->GetPath() == emptyFile);
+    CHECK(declaration->IsPreview() == false);
+    CHECK(declaration->GetEditor().toPlainText() == QStringLiteral("#pragma once\n"));
+    QPushButton* include = declaration->findChild<QPushButton*>(QStringLiteral("renderGraphInsertSharedIncludeInTab"));
+    REQUIRE(include != nullptr);
+    QTimer::singleShot(0, declaration, [sharedFile]() {
+        QInputDialog* picker = qobject_cast<QInputDialog*>(QApplication::activeModalWidget());
+        REQUIRE(picker != nullptr);
+        QComboBox* headers = picker->findChild<QComboBox*>();
+        REQUIRE(headers != nullptr);
+        REQUIRE(headers->findText(sharedFile) >= 0);
+        headers->setCurrentText(sharedFile);
+        picker->accept();
+    });
+    include->click();
+    CHECK(workspace.GetDocument().GetDraft(emptyFile) ==
+          QByteArrayLiteral("#pragma once\n#include \"edge_table.slang\"\n"));
+    CHECK(declaration->GetEditor().toPlainText() == QString::fromUtf8(workspace.GetDocument().GetDraft(emptyFile)));
+
+    QTextCursor endCursor = declaration->GetEditor().textCursor();
+    endCursor.movePosition(QTextCursor::End);
+    declaration->GetEditor().setTextCursor(endCursor);
+    QTest::keyClicks(&declaration->GetEditor(), QStringLiteral("struct Repaired { uint4 Words; };"));
+    REQUIRE(workspace.GetDocument().GetDraft(emptyFile).contains("struct Repaired") == true);
+    CHECK(FindNode(workspace.GetDocument(), QStringLiteral("buffer")).contains(QStringLiteral("shader_struct")) ==
+          false);
+    QPushButton* returnButton = codeArea.findChild<QPushButton*>(QStringLiteral("codeEditorSessionAction"));
+    REQUIRE(returnButton != nullptr);
+    CHECK(returnButton->isHidden() == false);
+    REQUIRE(workspace.SelectNode(GetRootGraph(), GetDefaultConfiguration(), {}) == true);
+    QTimer::singleShot(0, &workspace, [emptyFile, sharedFile, luslInclude, isLusl]() {
+        QDialog* sizingOrNull = qobject_cast<QDialog*>(QApplication::activeModalWidget());
+        REQUIRE(sizingOrNull != nullptr);
+        QComboBox* source = sizingOrNull->findChild<QComboBox*>(QStringLiteral("renderGraphBufferStructSource"));
+        QComboBox* types = sizingOrNull->findChild<QComboBox*>(QStringLiteral("renderGraphBufferStructType"));
+        QSpinBox* countOrNull = sizingOrNull->findChild<QSpinBox*>(QStringLiteral("renderGraphBufferStructCount"));
+        QLabel* hint = sizingOrNull->findChild<QLabel*>(QStringLiteral("renderGraphBufferSizingHint"));
+        QDialogButtonBox* buttons = sizingOrNull->findChild<QDialogButtonBox*>();
+        REQUIRE(source != nullptr);
+        REQUIRE(types != nullptr);
+        REQUIRE(countOrNull != nullptr);
+        REQUIRE(hint != nullptr);
+        REQUIRE(buttons != nullptr);
+        QPushButton* applyOrNull = buttons->button(QDialogButtonBox::Apply);
+        REQUIRE(applyOrNull != nullptr);
+        CHECK(source->currentText() == emptyFile);
+        CHECK(types->currentText() == QStringLiteral("Repaired"));
+        CHECK(countOrNull->value() == 256);
+        CHECK(applyOrNull->isEnabled() == true);
+        source->setCurrentText(luslInclude);
+        CHECK(types->currentText() == QStringLiteral("LuslTable"));
+        CHECK(applyOrNull->isEnabled() == true);
+        source->setCurrentText(sharedFile);
+        CHECK(types->isEditable() == false);
+        CHECK(types->count() == 1);
+        CHECK(types->currentText() == QStringLiteral("EdgeTable"));
+        CHECK(hint->text().contains(QStringLiteral("No struct declaration")) == false);
+        if (isLusl == true)
+        {
+            source->setCurrentText(luslInclude);
+        }
+        REQUIRE(applyOrNull->isEnabled() == true);
+        applyOrNull->click();
+    });
+    returnButton->click();
+    CHECK(returnButton->isHidden() == true);
+    const QString key = QStringLiteral("shader_struct");
+    const QString identity = QStringLiteral("buffer");
+    const QJsonObject record = FindNode(workspace.GetDocument(), identity).value(key).toObject();
+    CHECK(record.value(QStringLiteral("source")).toString() == (isLusl == true ? luslInclude : sharedFile));
+    CHECK(record.value(QStringLiteral("type")).toString() ==
+          (isLusl == true ? QStringLiteral("LuslTable") : QStringLiteral("EdgeTable")));
+    CHECK(record.value(QStringLiteral("count")).toInt() == 256);
+    CHECK(FindNode(workspace.GetDocument(), identity).contains(QStringLiteral("bytes")) == false);
+    workspace.Undo();
+    CHECK(FindNode(workspace.GetDocument(), identity).contains(key) == false);
+    workspace.Redo();
+    CHECK(FindNode(workspace.GetDocument(), identity).value(key).toObject() == record);
+    REQUIRE(workspace.Save() == true);
     RenderGraphDocument reopened;
     REQUIRE(reopened.Load(package, GetRootGraph()) == RenderGraphDocumentStatus::Ok);
     CHECK(reopened.GetDraft(GetRootGraph()) == workspace.GetDocument().GetDraft(GetRootGraph()));
     CHECK(reopened.GetDraft(emptyFile).contains("struct Repaired") == true);
+}
+
+TEST_CASE("Shader definition tabs preserve navigation across authored and generated source",
+          "[editor][render-graph][code-navigation]")
+{
+    QTemporaryDir project;
+    const QString package = MakePackage(project);
+    const QString callerFile = QStringLiteral("main_shaders/color.slang");
+    const QString helperFile = QStringLiteral("main_shaders/helper.slang");
+    const QString helperText = QStringLiteral("float Helper() { return 1; }\n");
+    WriteFile(QDir(package).filePath(helperFile), helperText.toUtf8());
+    CodeEditorArea codeArea;
+    RendererWorkspace workspace({});
+    workspace.SetCodeEditorArea(codeArea);
+    workspace.SetProject(project.path(), 1);
+    REQUIRE(workspace.OpenGraph(QDir(package).filePath(GetRootGraph())) == true);
+    REQUIRE(workspace.ShowSourceView() == true);
+    QComboBox* files = workspace.findChild<QComboBox*>(QStringLiteral("renderGraphSourceFile"));
+    CodeEditor* source = workspace.findChild<CodeEditor*>(QStringLiteral("renderGraphSource"));
+    REQUIRE(files != nullptr);
+    REQUIRE(source != nullptr);
+    files->setCurrentText(callerFile);
+    QTextCursor caller = source->textCursor();
+    caller.setPosition(8);
+    source->setTextCursor(caller);
+    REQUIRE(source->GetNavigation().Navigate({{}, helperFile, helperText, 6, 12, false}) == true);
+    CodeDocumentTab* helper = codeArea.GetActiveTabOrNull();
+    REQUIRE(helper != nullptr);
+    CHECK(helper->IsPreview() == true);
+    CHECK(helper->GetEditor().textCursor().selectedText() == QStringLiteral("Helper"));
+
+    const CodeNavigationTarget generated =
+        {QStringLiteral("Scene — shader context, line 1"), {}, QStringLiteral("struct Scene {};"), 7, 12, true};
+    REQUIRE(helper->GetEditor().GetNavigation().Navigate(generated) == true);
+    CHECK(QApplication::activeModalWidget() == nullptr);
+    CodeDocumentTab* preview = codeArea.GetActiveTabOrNull();
+    REQUIRE(preview != nullptr);
+    CHECK(codeArea.GetTabCount() == 1);
+    CHECK(preview->IsPreview() == true);
+    CHECK(preview->IsReadOnly() == true);
+    CHECK(codeArea.CanSaveActiveTab() == false);
+    CHECK(preview->GetEditor().GetLanguage() == CodeLanguage::Slang);
+    CHECK(preview->GetEditor().textCursor().selectedText() == QStringLiteral("Scene"));
+    CHECK(codeArea.SaveState().value(QStringLiteral("tabs")).toArray().isEmpty() == true);
+
+    QCoreApplication::sendPostedEvents(nullptr, QEvent::DeferredDelete);
+    preview->GetEditor().GetNavigation().Back();
+    CodeDocumentTab* reopened = codeArea.GetActiveTabOrNull();
+    REQUIRE(reopened != nullptr);
+    CHECK(reopened->GetPath() == helperFile);
+    CHECK(reopened->GetEditor().textCursor().position() == 12);
+    reopened->GetEditor().GetNavigation().Back();
+    CHECK(source->textCursor().position() == 8);
+    source->GetNavigation().Forward();
+    CHECK(codeArea.GetActiveTabOrNull() == reopened);
+    CHECK(reopened->GetEditor().textCursor().position() == 12);
+    CHECK(workspace.GetDocument().IsDirty() == false);
 }
 
 TEST_CASE("Buffer sizing creates and assigns a declaration in place", "[editor][render-graph][ray-buffer]")
