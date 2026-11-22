@@ -380,11 +380,13 @@ class NativeSceneComputeTests(unittest.TestCase):
             output = Path(temporary) / 'build'
             buffer['shader_struct']['source'] = 'main_shaders/work_items.slang'
             graph_path.write_bytes(graph.canonical_asset(document))
-            with self.assertRaisesRegex(ToolingError, 'is the entry point') as invalid_source:
-                build.build_package(manifest, output, **options)
-            self.assertEqual(invalid_source.exception.location,
-                             {'source': 'main.lurender.json', 'configuration': 'WorkItems',
-                              'node': 'hits', 'field': 'shader_struct'})
+            # The selected declaration lives alongside a callback which needs SceneContext
+            # and GraphBuffer0. The allocation probe must use that linked shader context.
+            shader.write_text('struct EdgeTable { uint4 Header; uint4 Edges[2]; };\n' + original)
+            inline = build.build_package(manifest, output, **options)
+            self.assertIn({'node': 'hits', 'graph': 'main.lurender.json', 'configuration': 'WorkItems',
+                           'stride': 48, 'bytes': 48}, inline['shader_buffer_layouts'])
+            shader.write_text(original)
             buffer['shader_struct']['source'] = header
             graph_path.write_bytes(graph.canonical_asset(document))
             with self.assertRaisesRegex(ToolingError, "quoted #include for shared file 'main_shaders/edge_table.slang'"):
@@ -530,7 +532,39 @@ class NativeSceneComputeTests(unittest.TestCase):
                 build.build_package(manifest_path, output, **options)
             self.assertEqual(accepted, (output / 'current.json').read_bytes())
 
-            # Both languages see the graph-derived ports with no manifest selection.
+            shade.write_text(consumer)
+            primary = shaders / 'primary.slang'
+            producer = primary.read_text()
+            nodes['hits']['shader_struct']['source'] = 'main_shaders/primary.slang'
+            graph_path.write_bytes(graph.canonical_asset(document))
+            primary.write_text((shaders / 'edge.slang').read_text() + producer)
+            built = build.build_package(manifest_path, output, **options)
+            _, inline_wrapper = find_ray_compute(Path(built['package']), 'main_shaders/primary.slang')
+            self.assertRegex(inline_wrapper, r'typedef GraphSource\d+::Edge Edge;')
+            self.assertIn('index * 8u', inline_wrapper)
+            primary.write_text(producer)
+
+            # A LUSL header supplies the storage layout to both shader languages.
+            nodes['hits']['shader_struct']['source'] = 'main_shaders/edge.luslh'
+            (shaders / 'edge.luslh').write_text(
+                '#pragma once\n#include "math.luslh"\n#include "endpoints.luslh"\n'
+                'struct Edge { EDGE_VECTOR BeginWorld; EDGE_VECTOR EndWorld; };\n')
+            endpoints = shaders / 'endpoints.luslh'
+            endpoints.write_text('#pragma once\n#define EDGE_VECTOR float32x3\n')
+            graph_path.write_bytes(graph.canonical_asset(document))
+            built = build.build_package(manifest_path, output, **options)
+            self.assertIn({'node': 'hits', 'graph': 'main.lurender.json', 'configuration': configuration['id'],
+                           'stride': 32, 'bytes': 512}, built['shader_buffer_layouts'])
+            _, wrapper = find_ray_compute(Path(built['package']), 'main_shaders/primary.slang')
+            self.assertIn('#include "main_shaders/edge.luslh.slang"', wrapper)
+            self.assertIn('index * 8u', wrapper)
+            accepted = (output / 'current.json').read_bytes()
+            endpoints.write_text('#pragma once\n#define EDGE_VECTOR MissingVector\n')
+            with self.assertRaisesRegex(ToolingError, 'MissingVector'):
+                build.build_package(manifest_path, output, **options)
+            self.assertEqual(accepted, (output / 'current.json').read_bytes())
+            endpoints.write_text('#pragma once\n#define EDGE_VECTOR float32x3\n')
+
             for program in manifest['programs']:
                 if program['id'] in ('Primary', 'Shade'):
                     program['source'] = program['source'].replace('.slang', '.lusl')

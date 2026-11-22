@@ -47,18 +47,17 @@ def link_persistent_structs(plans, programs, snapshot, build, closures=None):
                               f"'{program_id}' to use its read-only Buffer port; see Shader API")
                 if record is not None and program:
                     source = record['source']
-                    if source == program.get('language_source', program['source']):
+                    if is_named and source_is_lusl and source in snapshot.inline_buffer_sources:
                         instance, node = use['resource'].rsplit('/', 1)
                         context = instances[instance]
-                        repair = ('and choose it in Buffer sizing' if is_named else
-                                  'include it from the program, and choose it in Buffer sizing')
                         raise build.ToolingError(
                             'RenderGraphBuildShaderInterface',
-                            f"{use['resource']}: '{source}' is the entry point for '{program_id}'. Move the struct "
-                            f"to a shared Slang file, {repair}.",
+                            f"{use['resource']}: LUSL named Buffer fields need a shared .luslh or .slang declaration "
+                            f"for '{record['type']}'. Select that declaration in Buffer sizing.",
                             location={'source': context['source'], 'configuration': context['configuration'],
                                       'node': node, 'field': 'shader_struct'})
-                    if closures is not None and not is_named and source not in closures[program_id]:
+                    if (closures is not None and not is_named and source not in snapshot.inline_buffer_sources and
+                            source not in snapshot.buffer_layout_sources and source not in closures[program_id]):
                         raise build.ToolingError(
                             'RenderGraphBuildShaderInterface',
                             f"{use['resource']}: add a quoted #include for shared file '{source}' to "
@@ -153,8 +152,13 @@ def collect_record_views(contracts, build):
             view = record_view_name(field)
             key = (record['source'], record['type'], field['writable'])
             build.require(views.setdefault(view, key) == key, 'ShaderInterface', view,
-                          'include one shared Slang declaration per Buffer record type')
+                          'use one shared declaration per Buffer record type')
     return views
+
+
+def qualify_record_type(source, type_name, namespaces):
+    namespace = namespaces.get(source)
+    return f'{namespace}::{type_name}' if namespace is not None else type_name
 
 
 def record_view_definition(view, type_name, is_writable, *, loads=None, stores=None):
@@ -205,6 +209,7 @@ def define_record_views(program, layouts, build):
     wrapper = program['ray_wrapper']
     for view, (source, type_name, is_writable) in program['named_record_views'].items():
         stride, shape = layouts[(source, type_name)]
+        type_name = qualify_record_type(source, type_name, program.get('buffer_layout_namespaces', {}))
         build.require(stride % 4 == 0, 'ShaderInterface', view, 'named Buffer record stride must be word-aligned')
         address = f'(index * {stride // 4}u)'
         loads, stores = [], []
@@ -219,7 +224,7 @@ def define_record_views(program, layouts, build):
     return wrapper
 
 
-def size_persistent_structs(plans, snapshot, stage, compiler, cancel, build):
+def size_persistent_structs(plans, snapshot, stage, compiler, cancel, build, programs, closures, schemas):
     """Use the same SPIR-V storage layout that the ordered Metal/Vulkan shaders use."""
     records, layouts = dict(snapshot.buffer_record_layouts), []
     for plan in plans:
@@ -232,7 +237,11 @@ def size_persistent_structs(plans, snapshot, stage, compiler, cancel, build):
             key = (source, type_name)
             if key not in records:
                 directory = stage / ('buffer-layout-' + str(len(records)))
-                records[key] = reflect_record(source, type_name, snapshot, directory, compiler, cancel, build)
+                if source in snapshot.inline_buffer_sources:
+                    records[key] = reflect_inline_record(
+                        source, type_name, snapshot, directory, compiler, cancel, build, programs, closures, schemas)
+                else:
+                    records[key] = reflect_record(source, type_name, snapshot, directory, compiler, cancel, build)
             stride, _ = records[key]
             bytes_total = stride * record['count']
             word_bytes = build.ray.BUFFER_WORD_BYTES
@@ -249,42 +258,81 @@ def size_persistent_structs(plans, snapshot, stage, compiler, cancel, build):
     return layouts, records
 
 
-def reflect_record(source, type_name, snapshot, directory, compiler, cancel, build):
+def reflect_inline_record(source, type_name, snapshot, directory, compiler, cancel, build, programs, closures, schemas):
+    """Probe positional records in the same namespaces and shader context as the linked passes."""
+    contexts = [(identity, program, program['buffer_layout_namespaces'][source])
+                for identity, program in programs.items()
+                if source in program.get('buffer_layout_namespaces', {}) and not program.get('native_ray_pipeline')]
+    build.require(contexts, 'ShaderInterface', f'{source}::{type_name}',
+                  'select a record in an ordered shader used by this graph or use a shared .luslh or .slang declaration')
+    layout = None
+    for index, (identity, program, namespace) in enumerate(contexts):
+        work = directory / str(index)
+        authored = work / 'source'
+        closure = closures[identity]
+        compiled = build.stage_shader_sources(authored, closure, snapshot, program.get('source_overrides', {}), identity)
+        wrapper = authored / 'wrapper.slang'
+        wrapper.write_text(build.shader_source(program, schemas) + layout_probe(f'{namespace}::{type_name}'),
+                           encoding='utf-8')
+        candidate = reflect_probe(source, type_name, closure, authored, wrapper, work, compiler, cancel, build,
+                                  program=program, compiled=compiled)
+        build.require(layout is None or layout == candidate, 'ShaderInterface', f'{source}::{type_name}',
+                      'the record layout differs across ordered shader contexts; use one shared declaration')
+        layout = candidate
+    return layout
+
+
+def layout_probe(type_name):
     # Thanks to the Slang team, Using the Reflection API (Types and Layouts),
     # https://shader-slang.org/slang/user-guide/reflection.html.
-    # Slang reflects the stride of a fixed array of T in a storage-buffer record.
-    # This includes the tail alignment that the last reflected field alone omits.
-    closure = snapshot.shader_closure(source)
-    authored = directory / 'source'
-    if build.os.name == 'nt':
-        build.require_paths_within_windows_limit(source, [authored / relative for relative in closure])
-    for relative in closure:
-        path = authored / relative
-        path.parent.mkdir(parents=True, exist_ok=True)
-        path.write_bytes(snapshot.files[relative])
-    # Keep the generated root outside the package-relative namespace.
-    wrapper = directory / 'layout_probe.slang'
-    wrapper.write_text(
-        f'#include "source/{source}"\n'
-        f'struct LudusLayoutProbe {{ {type_name} Elements[2]; }};\n'
+    # The fixed array captures the storage stride, including tail alignment.
+    return (
+        f'\nstruct LudusLayoutProbe {{ {type_name} Elements[2]; }};\n'
         'RWStructuredBuffer<LudusLayoutProbe> LudusLayoutRecords;\n'
         'RWStructuredBuffer<uint2> LudusLayoutResult;\n'
         '[numthreads(1, 1, 1)]\n'
         'void LudusLayoutMain()\n'
         '{ uint count; uint stride; LudusLayoutRecords.GetDimensions(count, stride);\n'
-        '  LudusLayoutResult[0] = uint2(count, stride); }\n',
-        encoding='utf-8')
+        '  LudusLayoutResult[0] = uint2(count, stride); }\n')
+
+
+def reflect_record(source, type_name, snapshot, directory, compiler, cancel, build):
+    layout_source = snapshot.buffer_layout_sources.get(source, source)
+    closure = snapshot.buffer_layout_dependencies.get(source)
+    if closure is None:
+        closure = snapshot.shader_closure(layout_source)
+    authored = directory / 'source'
+    build.stage_shader_sources(authored, closure, snapshot, {}, source)
+    wrapper = directory / 'layout_probe.slang'
+    wrapper.write_text(f'#include "source/{layout_source}"\n' + layout_probe(type_name), encoding='utf-8')
+    return reflect_probe(source, type_name, closure, authored, wrapper, directory, compiler, cancel, build)
+
+
+def reflect_probe(source, type_name, closure, authored, wrapper, directory, compiler, cancel, build,
+                  *, program=None, compiled=None):
     reflection = directory / 'reflection.json'
     depfile = directory / 'layout.d'
     command = [str(compiler), str(wrapper), '-target', 'spirv', '-profile', 'spirv_1_3',
                '-entry', 'LudusLayoutMain', '-stage', 'compute', '-o', str(directory / 'layout.spv'),
                '-reflection-json', str(reflection), '-depfile', str(depfile)]
+    where = f'{source}::{type_name}'
+
+    def describe_output(message):
+        for path in (authored, authored.resolve(), directory, directory.resolve()):
+            message = message.replace(str(path) + '/', '')
+        return message
+
     try:
-        build.run_stage(command, cancel, describe_output=lambda message: message.replace(str(directory) + '/', ''),
-                        where=f'{source}::{type_name}')
+        build.run_stage(command, cancel, describe_output=describe_output, where=where)
     except build.ToolingError as error:
         if error.code == 'RenderGraphBuildShader':
             error.location = {'source': source, 'line': 1, 'column': 1}
+            if program is not None:
+                output = error.message.removeprefix(where + ': ')
+                error.diagnostics = build.map_shader_diagnostics(output, program, 'spirv', closure, compiled)
+                error.location = next((item['location'] for item in error.diagnostics
+                                       if item['severity'] == 'error' and 'source' in item.get('location', {})),
+                                      error.location)
         raise
     build.verify_shader_dependencies(depfile, closure, authored, wrapper, f'{source}::{type_name}')
     data = build.document(build.read(reflection), source)

@@ -30,7 +30,8 @@ STYLES = ('strict', 'warn', 'off')
 TIMEOUT_SECONDS = 120
 # Paths LUSL names: `#include "x"` and `extern slang "x"`. The scan is lexical and conservative.
 NAMED_PATH = re.compile(r'(?:#[ \t]*include|\bextern[ \t\r\n]+slang)[ \t\r\n]*"([^"\n]+)"')
-LANGUAGE_FILES = ('.lusl', '.luslh')
+HEADER_SUFFIX = '.luslh'
+LANGUAGE_FILES = (LANGUAGE_SUFFIX, HEADER_SUFFIX)
 # The generated schema header of raster programs, below its own include directory.
 GRAPH_DIRECTORY = '_ludus_graph'
 SCHEMA_HEADER = 'graph_schemas.luslh'
@@ -264,6 +265,35 @@ def _lower(files, build, tool, source, style, specialization_budget, include_dir
         build.require(result.returncode == 0, 'Source', source,
                       result.stderr.strip() or f'luslc failed with exit code {result.returncode}')
         return output.read_bytes(), _parse_report(report.read_text(encoding='utf-8'), build, source, configuration)
+
+
+def lower_buffer_headers(snapshot, sources, helper, build, *, luslc=None, style='strict', cancel=None):
+    """Lower graph-owned LUSL layouts before shader resource interfaces are generated."""
+    headers = sorted(source for source in sources if source.endswith(HEADER_SUFFIX))
+    if not headers:
+        return None
+    tool = find_luslc(helper, luslc)
+    build.require(tool is not None and tool.is_file(), 'Tools', headers[0],
+                  'LUSL buffer layouts need luslc: use the installed SDK or set LUDUS_LUSLC')
+    build.require(style in STYLES, 'Configuration', 'lusl_style', f'expected one of {", ".join(STYLES)}')
+    for header in headers:
+        build.checkpoint(cancel)
+        source = header + LANGUAGE_SUFFIX
+        generated = header + GENERATED_SUFFIX
+        for path in (source, generated):
+            build.require(path not in snapshot.files and not snapshot.path(path).exists(), 'Source', path,
+                          'this name is reserved by the LUSL Buffer layout; rename the authored file')
+        files = _collect(snapshot, helper, build, header)
+        files[source] = f'#include "{posixpath.basename(header)}"\n'.encode()
+        data, _ = _lower(files, build, tool, source, style, None, [SDK_DIRECTORY], {}, False)
+        snapshot.capture(generated, b'#pragma once\n' + data, generated=True)
+        snapshot.buffer_layout_sources[header] = generated
+        closure = snapshot.shader_closure(generated)
+        sdk_roots = [path.removeprefix(SDK_DIRECTORY + '/') for path in closure
+                     if path.startswith(SDK_DIRECTORY + '/')]
+        helpers = build.ray.stage_helpers(snapshot, helper, sdk_roots, build)
+        snapshot.buffer_layout_dependencies[header] = sorted(set(closure) | helpers)
+    return tool
 
 
 def _record_declaration(shape, name, definitions, build):

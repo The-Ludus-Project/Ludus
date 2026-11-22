@@ -107,7 +107,7 @@ def export_language_context(manifest, output, source, *, helper, context=None, r
     `_ludus_ray` and generated graph headers). The context URI points to the staged source.
     """
     snapshot, value, schemas, programs, techniques, _, plans, *_ = build.capture_graph_shader_inputs(
-        manifest, root=root, compiler=compiler)
+        manifest, helper=helper, root=root, compiler=compiler)
     selected_programs = {technique[stage] for technique in techniques.values()
                          for stage in (*language.RAY_STAGES, *language.RASTER_STAGES) if stage in technique}
     selected_programs.update(shader['program'] for plan in plans for operation in plan['passes']

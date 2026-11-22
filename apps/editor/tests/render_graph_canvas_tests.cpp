@@ -1613,7 +1613,8 @@ TEST_CASE("persistent buffer capacity edits share canvas and Properties history"
     add->click();
     REQUIRE(workspace.SelectNode(GetRootGraph(), GetDefaultConfiguration(), QStringLiteral("buffer")) == true);
     CHECK(workspace.GetCanvas().GetPortPosition(QStringLiteral("buffer.buffer"), true).isNull() == false);
-    const auto exercise = [&workspace, entryPoint, sharedFile, emptyFile, luslInclude](QWidget& inoutFields) {
+    const auto exercise = [&workspace, entryPoint, sharedFile, emptyFile, luslInclude](QWidget& inoutFields,
+                                                                                       bool isLusl) {
         QSpinBox* capacity = inoutFields.findChild<QSpinBox*>(QStringLiteral("renderGraphField_bytes"));
         REQUIRE(capacity != nullptr);
         const uint64 revision = workspace.GetDocument().GetRevision();
@@ -1627,7 +1628,7 @@ TEST_CASE("persistent buffer capacity edits share canvas and Properties history"
         CHECK(workspace.GetDocument().GetDraft(GetRootGraph()).contains("98304") == true);
         QPushButton* editOrNull = inoutFields.findChild<QPushButton*>(QStringLiteral("renderGraphEditBufferSizing"));
         REQUIRE(editOrNull != nullptr);
-        QTimer::singleShot(0, &inoutFields, [entryPoint, sharedFile, emptyFile, luslInclude]() {
+        QTimer::singleShot(0, &inoutFields, [entryPoint, sharedFile, emptyFile, luslInclude, isLusl]() {
             QDialog* sizingOrNull = qobject_cast<QDialog*>(QApplication::activeModalWidget());
             REQUIRE(sizingOrNull != nullptr);
             QDialogButtonBox* buttonsOrNull = sizingOrNull->findChild<QDialogButtonBox*>();
@@ -1641,8 +1642,8 @@ TEST_CASE("persistent buffer capacity edits share canvas and Properties history"
             REQUIRE(source != nullptr);
             REQUIRE(types != nullptr);
             REQUIRE(hint != nullptr);
-            CHECK(source->findText(entryPoint) == -1);
-            CHECK(source->findText(luslInclude) == -1);
+            CHECK(source->findText(entryPoint) >= 0);
+            CHECK(source->findText(luslInclude) >= 0);
             QLabel* languageNote =
                 sizingOrNull->findChild<QLabel*>(QStringLiteral("renderGraphBufferLayoutLanguageNote"));
             REQUIRE(languageNote != nullptr);
@@ -1650,11 +1651,18 @@ TEST_CASE("persistent buffer capacity edits share canvas and Properties history"
             source->setCurrentText(emptyFile);
             CHECK(hint->text().contains(QStringLiteral("No struct declaration")) == true);
             CHECK(applyOrNull->isEnabled() == false);
+            source->setCurrentText(luslInclude);
+            CHECK(types->currentText() == QStringLiteral("LuslTable"));
+            CHECK(applyOrNull->isEnabled() == true);
             source->setCurrentText(sharedFile);
             CHECK(types->isEditable() == false);
             CHECK(types->count() == 1);
             CHECK(types->currentText() == QStringLiteral("EdgeTable"));
             CHECK(hint->text().contains(QStringLiteral("No struct declaration")) == false);
+            if (isLusl == true)
+            {
+                source->setCurrentText(luslInclude);
+            }
             sizingOrNull->findChild<QSpinBox*>(QStringLiteral("renderGraphBufferStructCount"))->setValue(256);
             REQUIRE(applyOrNull->isEnabled() == true);
             applyOrNull->click();
@@ -1663,8 +1671,9 @@ TEST_CASE("persistent buffer capacity edits share canvas and Properties history"
         const QString key = QStringLiteral("shader_struct");
         const QString identity = QStringLiteral("buffer");
         const QJsonObject record = FindNode(workspace.GetDocument(), identity).value(key).toObject();
-        CHECK(record.value(QStringLiteral("source")).toString() == sharedFile);
-        CHECK(record.value(QStringLiteral("type")).toString() == QStringLiteral("EdgeTable"));
+        CHECK(record.value(QStringLiteral("source")).toString() == (isLusl == true ? luslInclude : sharedFile));
+        CHECK(record.value(QStringLiteral("type")).toString() ==
+              (isLusl == true ? QStringLiteral("LuslTable") : QStringLiteral("EdgeTable")));
         CHECK(record.value(QStringLiteral("count")).toInt() == 256);
         CHECK(FindNode(workspace.GetDocument(), identity).contains(QStringLiteral("bytes")) == false);
         workspace.Undo();
@@ -1677,7 +1686,7 @@ TEST_CASE("persistent buffer capacity edits share canvas and Properties history"
     REQUIRE(properties != nullptr);
     SECTION("Properties")
     {
-        exercise(*properties);
+        exercise(*properties, false);
     }
     SECTION("canvas with Properties hidden")
     {
@@ -1696,7 +1705,7 @@ TEST_CASE("persistent buffer capacity edits share canvas and Properties history"
                 QDialog* dialog = qobject_cast<QDialog*>(QApplication::activeModalWidget());
                 REQUIRE(dialog != nullptr);
                 CHECK(properties->isVisible() == false);
-                exercise(*dialog);
+                exercise(*dialog, true);
                 dialog->reject();
             });
             menu->close();
@@ -1711,7 +1720,7 @@ TEST_CASE("persistent buffer capacity edits share canvas and Properties history"
     CHECK(reopened.GetDraft(GetRootGraph()) == workspace.GetDocument().GetDraft(GetRootGraph()));
 }
 
-TEST_CASE("Buffer sizing creates and opens an undoable shared Slang file", "[editor][render-graph][ray-buffer]")
+TEST_CASE("Buffer sizing creates and opens an undoable LUSL header", "[editor][render-graph][ray-buffer]")
 {
     QTemporaryDir project;
     const QString package = MakePackage(project);
@@ -1723,7 +1732,7 @@ TEST_CASE("Buffer sizing creates and opens an undoable shared Slang file", "[edi
     workspace.findChild<QPushButton*>(QStringLiteral("renderGraphAddNode"))->click();
     REQUIRE(workspace.SelectNode(GetRootGraph(), GetDefaultConfiguration(), QStringLiteral("buffer")) == true);
 
-    const QString file = QStringLiteral("main_shaders/edge_table.slang");
+    const QString file = QStringLiteral("main_shaders/edge_table.luslh");
     const QString manifestFile = QStringLiteral("main.lushader.json");
     const QByteArray manifest = workspace.GetDocument().GetDraft(manifestFile);
     const uint64 revision = workspace.GetDocument().GetRevision();
@@ -1744,17 +1753,20 @@ TEST_CASE("Buffer sizing creates and opens an undoable shared Slang file", "[edi
             QLabel* hint = dialog->findChild<QLabel*>(QStringLiteral("renderGraphSharedShaderHint"));
             REQUIRE(language != nullptr);
             REQUIRE(hint != nullptr);
-            CHECK(language->isEnabled() == false);
-            CHECK(language->count() == 1);
-            CHECK(language->currentText() == QStringLiteral("Slang include (.slang)"));
+            CHECK(language->isEnabled() == true);
+            CHECK(language->count() == 2);
+            CHECK(language->currentText() == QStringLiteral("LUSL include (.luslh)"));
             CHECK(hint->text().contains(QStringLiteral("reflects the storage layout")) == true);
             REQUIRE(path != nullptr);
             REQUIRE(problem != nullptr);
             REQUIRE(submit != nullptr);
+            CHECK(path->text().endsWith(QStringLiteral("shared.luslh")) == true);
+            language->setCurrentText(QStringLiteral("Slang include (.slang)"));
             path->setText(QStringLiteral("main_shaders/color.slang"));
             submit->click();
             CHECK(problem->text().contains(QStringLiteral("already exists")) == true);
             CHECK(workspace.GetDocument().GetRevision() == revision);
+            language->setCurrentText(QStringLiteral("LUSL include (.luslh)"));
             path->setText(file);
             submit->click();
         });

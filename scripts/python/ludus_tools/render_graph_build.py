@@ -157,6 +157,9 @@ class Snapshot:
         self.language_configurations = {}
         self.language_resource_headers = {}
         self.buffer_record_layouts = {}
+        self.buffer_layout_sources = {}
+        self.buffer_layout_dependencies = {}
+        self.inline_buffer_sources = set()
         self.named_resource_programs = {}
         self.executable_language_programs = {}
         self.total = 0
@@ -646,10 +649,11 @@ def tool_identity(helper, compiler, validator, cross, *, worker_socket=None, has
     paths['generator/render_graph_metal_ray.py'] = Path(ray.metal_ray.__file__)
     paths['generator/render_graph_ray_invocation.py'] = Path(ray.invocation.__file__)
     paths['generator/render_graph_compute.py'] = Path(compute.__file__)
+    paths['generator/render_graph_buffers.py'] = Path(buffers.__file__)
     paths['generator/render_graph_forward.py'] = Path(forward.__file__)
     paths['tool/slangc'] = Path(compiler).resolve()
     if luslc:
-        # Packages with LUSL programs also record the compiler that lowered them.
+        # LUSL programs and buffer layouts record the compiler that lowered them.
         paths['generator/render_graph_language.py'] = Path(language.__file__)
         paths['tool/luslc'] = Path(luslc).resolve()
     if validator:
@@ -944,19 +948,24 @@ def verify_shader_dependencies(depfile, closure, source, wrapper, where):
         require(path in allowed, 'Source', where, 'compiler read an uncaptured dependency')
 
 
+def stage_shader_sources(source, closure, snapshot, overrides, where):
+    if os.name == 'nt':
+        require_paths_within_windows_limit(where, [source / relative for relative in closure])
+    source.mkdir(parents=True)
+    compiled = {}
+    for relative in closure:
+        path = source / relative
+        path.parent.mkdir(parents=True, exist_ok=True)
+        override = overrides.get(relative)
+        compiled[relative] = override.encode('utf-8') if override is not None else snapshot.files[relative]
+        path.write_bytes(compiled[relative])
+    return compiled
+
+
 def compile_program(program, schemas, closure, snapshot, work, helper, tools, target, cancel, worker_socket=None, worker_identity=None):
     """Compile only captured sources; reject any untracked compiler dependency."""
     source = work / 'source'
-    if os.name == 'nt':
-        require_paths_within_windows_limit(program['id'], [source / relative for relative in closure])
-    source.mkdir()
-    compiled = {}
-    for relative in closure:
-        p = source / relative
-        p.parent.mkdir(parents=True, exist_ok=True)
-        override = program.get('source_overrides', {}).get(relative)
-        compiled[relative] = override.encode('utf-8') if override is not None else snapshot.files[relative]
-        p.write_bytes(compiled[relative])
+    compiled = stage_shader_sources(source, closure, snapshot, program.get('source_overrides', {}), program['id'])
     wrapper = shader_source(program, schemas)
     (source / 'wrapper.slang').write_text(wrapper)
     output = work / 'artifact'
@@ -1083,7 +1092,8 @@ def compile_stages(jobs, stage, schemas, snapshot, helper, tools, cancel, worker
         return [future.exception() or future.result() for future in futures]
 
 
-def capture_graph_shader_inputs(manifest, *, root=None, compiler=None, cancel=None):
+def capture_graph_shader_inputs(manifest, *, helper, root=None, compiler=None, cancel=None, luslc=None,
+                                lusl_style='strict'):
     """Capture graph connections and their shader interfaces before checking the editable sources."""
     manifest = Path(manifest).resolve()
     snapshot = Snapshot(root if root is not None else manifest.parent)
@@ -1102,6 +1112,12 @@ def capture_graph_shader_inputs(manifest, *, root=None, compiler=None, cancel=No
         require(snapshot.load(label) == data, 'Stale', label, 'graph changed while capturing sources')
     plans = [graph.compile_graph(graph_path, root=snapshot.root, configuration=c['id'])
              for c in library.assets[graph_path]['configurations']]
+    layout_sources = {resource['shader_struct']['source'] for plan in plans for resource in plan['resources'].values()
+                      if 'shader_struct' in resource}
+    snapshot.inline_buffer_sources = layout_sources & {program['source'] for program in programs.values()}
+    snapshot.language_tool = language.lower_buffer_headers(
+        snapshot, layout_sources, Path(helper).resolve(), sys.modules[__name__],
+        luslc=luslc, style=lusl_style, cancel=cancel)
     named_resources = buffers.link_persistent_structs(plans, programs, snapshot, sys.modules[__name__])
     language.prepare_resource_headers(snapshot, programs, named_resources, compiler, cancel, sys.modules[__name__])
     snapshot.named_resource_programs = {variant[0]: fields for variant, fields in named_resources.items()}
@@ -1119,12 +1135,14 @@ def prepare_sources(manifest, helper, *, root=None, ray_path_capture=False, capt
     """
     helper = Path(helper).resolve()
     snapshot, value, schemas, programs, techniques, counts, plans, library, graph_path, named_resources = (
-        capture_graph_shader_inputs(manifest, root=root, compiler=compiler, cancel=cancel))
+        capture_graph_shader_inputs(manifest, helper=helper, root=root, compiler=compiler, cancel=cancel,
+                                    luslc=luslc, lusl_style=lusl_style))
     manifest_label = Path(manifest).resolve().relative_to(snapshot.root).as_posix()
     # LUSL programs name their generated Slang module from here on.
-    snapshot.language_tool, snapshot.language_reports = language.lower_sources(
+    program_language_tool, snapshot.language_reports = language.lower_sources(
         snapshot, programs, helper, sys.modules[__name__], luslc=luslc, style=lusl_style,
         specialization_budget=value['budgets'].get('specializations'), schemas=schemas, bounds_checks=bounds_checks)
+    snapshot.language_tool = program_language_tool or snapshot.language_tool
     visibility_helper = helper / 'visibility_buffer.slang'
     if visibility_helper.is_file():
         snapshot.capture('_ludus_visibility.slang', read(visibility_helper), external=visibility_helper)
@@ -1364,7 +1382,8 @@ def build_package(manifest, output, *, helper, compiler, validator=None, spirv_c
         with tempfile.TemporaryDirectory(prefix='.rg1-', dir=output) as stage:
             stage = Path(stage)
             shader_buffer_layouts, record_layouts = buffers.size_persistent_structs(
-                plans, snapshot, stage, tool_paths['tool/slangc'], cancel, sys.modules[__name__])
+                plans, snapshot, stage, tool_paths['tool/slangc'], cancel, sys.modules[__name__],
+                programs, closures, schemas)
             for program in programs.values():
                 if program.get('named_record_views'):
                     program['ray_wrapper'] = buffers.define_record_views(program, record_layouts, sys.modules[__name__])
