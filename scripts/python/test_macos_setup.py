@@ -4,6 +4,8 @@ import io
 import json
 import os
 from pathlib import Path
+import shlex
+import subprocess
 import tempfile
 import unittest
 from unittest.mock import patch
@@ -35,7 +37,8 @@ class IosSetupTests(unittest.TestCase):
             return result
 
         enter(patch.object(init_ios, "XCODE_APPLICATION", self.application))
-        enter(patch.dict(os.environ, {"DEVELOPER_DIR": "", "CI": "", "LUDUS_INIT_PROGRESS": "1"}))
+        enter(patch.dict(os.environ, {"DEVELOPER_DIR": "", "CI": "", "LUDUS_INIT_PROGRESS": "1",
+                                      init_progress.GUI_ENVIRONMENT: ""}))
         enter(patch.object(init_ios.sys.stdin, "isatty", return_value=True))
         enter(patch.object(init_ios.os, "geteuid", return_value=501))
         self.run_command = enter(patch.object(engine, "run"))
@@ -125,6 +128,29 @@ class IosSetupTests(unittest.TestCase):
             init_ios.prepare_ios(self.args, self.root, engine)
         self.assertEqual(self.run_command.call_count, 1)
         self.assertEqual(self.run_command.call_args.args[0][-1], "-runFirstLaunch")
+
+    def test_gui_requests_native_administrator_approval_with_quoted_xcode_path(self):
+        developer = self.root / "Xcode beta's.app" / "Contents/Developer"
+        self.run_command.return_value = subprocess.CompletedProcess([], 0, stdout="")
+        with patch.dict(os.environ, {init_progress.GUI_ENVIRONMENT: "1"}):
+            init_ios.verify_ios_toolchain((developer, True), self.root, engine)
+        self.run_command.assert_called_once()
+        command = self.run_command.call_args.args[0]
+        self.assertEqual(command[0], "/usr/bin/osascript")
+        self.assertIn("with administrator privileges", command[4])
+        self.assertEqual(shlex.split(command[-1]), [init_ios.XCODE_SELECT, "--switch", str(developer)])
+        self.assertEqual(self.run_command.call_args.kwargs, {"cwd": self.root, "capture": True})
+
+    def test_cancelled_native_authorization_offers_retry(self):
+        def cancel(*_args, **_kwargs):
+            cause = subprocess.CalledProcessError(1, [], output="execution error: User canceled. (-128)\n")
+            raise engine.EngineError("osascript failed") from cause
+
+        self.run_command.side_effect = cancel
+        with patch.dict(os.environ, {init_progress.GUI_ENVIRONMENT: "1"}):
+            with self.assertRaisesRegex(engine.EngineError, "Administrator approval was canceled. Choose Retry"):
+                init_ios.verify_ios_toolchain((self.developer, True), self.root, engine)
+        self.run_command.assert_called_once()
 
     def test_selected_xcode_is_reused_and_missing_download_is_detected(self):
         self.install_xcode()

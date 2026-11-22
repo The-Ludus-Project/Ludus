@@ -84,6 +84,7 @@ def editor_command(args, root: Path, engine) -> list[str] | None:
 def child_environment() -> dict[str, str]:
     environment = dict(os.environ)
     environment[init_progress.PROGRESS_ENVIRONMENT] = "1"
+    environment[init_progress.GUI_ENVIRONMENT] = "1"
     environment["PYTHONUNBUFFERED"] = "1"
     return environment
 
@@ -583,8 +584,9 @@ class SetupWindow:
             self.detail.set("Working…" if progress.has_started_step else "")
         # The newest output line shows activity even when a step reports no counts.
         self.activity.set("" if progress.is_last_line_status else shorten(progress.last_line))
-        if progress.note:
-            self.note.set(progress.note)
+        notice = progress.user_action or progress.note
+        if notice:
+            self.note.set(notice)
             self.note_label.grid()
         else:
             self.note_label.grid_remove()

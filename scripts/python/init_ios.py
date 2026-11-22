@@ -4,6 +4,8 @@ from __future__ import annotations
 import os
 from argparse import Namespace
 from pathlib import Path
+import shlex
+import subprocess
 import sys
 
 import init_progress
@@ -16,6 +18,8 @@ XCODE_STORE_LINK = "macappstore://itunes.apple.com/app/id497799835?mt=12"
 XCODE_SELECT = "/usr/bin/xcode-select"
 XCODEBUILD = "/usr/bin/xcodebuild"
 XCRUN = "/usr/bin/xcrun"
+OSASCRIPT = "/usr/bin/osascript"
+APPLESCRIPT_CANCELLED = "(-128)"
 IOS_SDKS = ("iphoneos", "iphonesimulator")
 QUERY_TIMEOUT_SECONDS = 30
 
@@ -68,11 +72,34 @@ def require_xcode(args, root: Path, engine, query) -> tuple[Path, bool]:
     raise engine.EngineError(f"iOS setup needs the full Xcode app. {remedy}")
 
 
-def run_privileged(engine, root: Path, command: list[object]) -> None:
-    prefix = [] if os.geteuid() == 0 else ["/usr/bin/sudo"]
-    if prefix and not sys.stdin.isatty():
-        prefix.append("-n")
-    engine.run([*prefix, *command], cwd=root)
+def run_privileged(engine, root: Path, command: list[object], *, action: str, recovery: str) -> None:
+    """Run an Apple setup operation with administrator authorization when required."""
+    is_root = os.geteuid() == 0
+    is_graphical = not is_root and os.environ.get(init_progress.GUI_ENVIRONMENT) == "1" and not os.environ.get("CI")
+    try:
+        if is_graphical:
+            # Thanks to Apple's AppleScript Language Guide, Commands Reference, for system
+            # authentication through Standard Additions without a password argument.
+            # https://developer.apple.com/library/archive/documentation/AppleScript/Conceptual/AppleScriptLangGuide/reference/ASLR_cmds.html
+            script = [OSASCRIPT, "-e", "on run argv",
+                      "-e", "do shell script (item 1 of argv) with administrator privileges",
+                      "-e", "end run", shlex.join(str(part) for part in command)]
+            with init_progress.show_user_action(f"Approve the macOS administrator prompt to {action}."):
+                completed = engine.run(script, cwd=root, capture=True)
+                if completed.stdout:
+                    print(completed.stdout, end="", flush=True)
+        else:
+            prefix = [] if is_root else ["/usr/bin/sudo"]
+            if prefix and not sys.stdin.isatty():
+                prefix.append("-n")
+            engine.run([*prefix, *command], cwd=root)
+    except engine.EngineError as error:
+        cause = error.__cause__
+        if is_graphical and isinstance(cause, subprocess.CalledProcessError) and (
+            (cause.stdout or "").rstrip().endswith(APPLESCRIPT_CANCELLED)
+        ):
+            raise engine.EngineError(f"Administrator approval was canceled. Choose Retry to {action}.") from error
+        raise engine.EngineError(f"{recovery} {error}") from error
 
 
 def prepare_ios(args, root: Path, engine) -> tuple[Path, bool]:
@@ -91,11 +118,9 @@ def prepare_ios(args, root: Path, engine) -> tuple[Path, bool]:
         if args.no_system_install:
             raise engine.EngineError("Xcode first-launch setup is incomplete. Open Xcode and finish setup, "
                                      "or retry iOS setup without --no-system-install.")
-        try:
-            run_privileged(engine, root, ["/usr/bin/env", f"DEVELOPER_DIR={developer}",
-                                          XCODEBUILD, "-runFirstLaunch"])
-        except engine.EngineError as error:
-            raise engine.EngineError(f"Open Xcode and finish its first-launch setup, then retry. {error}") from error
+        run_privileged(engine, root, ["/usr/bin/env", f"DEVELOPER_DIR={developer}", XCODEBUILD, "-runFirstLaunch"],
+                       action="complete Xcode first-launch setup",
+                       recovery="Open Xcode and finish its first-launch setup, then retry.")
 
     missing = missing_ios_tools(query)
     if any(sdk + " SDK" in missing for sdk in IOS_SDKS) and not args.no_system_install:
@@ -133,12 +158,8 @@ def verify_ios_toolchain(selection: tuple[Path, bool], root: Path, engine) -> No
 
     if should_select:
         # Keep Command Line Tools active until Xcode passes the compile/link probe.
-        try:
-            run_privileged(engine, root, [XCODE_SELECT, "--switch", developer])
-        except engine.EngineError as error:
-            raise engine.EngineError("Select the verified Xcode in a terminal with "
-                                     "`sudo xcode-select --switch /Applications/Xcode.app`, then retry. "
-                                     f"{error}") from error
+        run_privileged(engine, root, [XCODE_SELECT, "--switch", developer], action="select Xcode for command-line tools",
+                       recovery="Select Xcode with `sudo xcode-select --switch /Applications/Xcode.app`, then retry.")
     print("Apple toolchain probe passed for the iOS device and Simulator SDKs.", flush=True)
 
 
