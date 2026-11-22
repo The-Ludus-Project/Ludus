@@ -21,8 +21,8 @@ execute_process(
     OUTPUT_STRIP_TRAILING_WHITESPACE)
 if(NOT ludus_sdk_result EQUAL 0 OR ludus_sdk_path STREQUAL "")
     message(FATAL_ERROR
-        "The ${LUDUS_IOS_SDK} SDK is not installed. Install Xcode, select it with "
-        "`sudo xcode-select -s /Applications/Xcode.app`, then run `./scripts/mobile-probe apple-toolchain`. "
+        "The ${LUDUS_IOS_SDK} SDK is not available. On macOS, run `./init.sh --with-ios` "
+        "to prepare Xcode and the iOS SDKs, then run `./scripts/mobile-probe apple-toolchain`. "
         "Command Line Tools alone have no iOS SDK.")
 endif()
 

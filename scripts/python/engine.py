@@ -1823,6 +1823,12 @@ def run_init_steps(args: argparse.Namespace, root: Path, versions: dict[str, dic
     init_progress.begin("preflight")
     run_init_preflight(args, root, versions)
 
+    ios_selection = None
+    if args.with_ios:
+        from init_ios import prepare_ios
+        init_progress.begin("ios")
+        ios_selection = prepare_ios(args, root, sys.modules[__name__])
+
     init_progress.begin("system")
     check_current_python(root, versions["minimum"]["python"])
     if args.no_system_install:
@@ -1843,6 +1849,12 @@ def run_init_steps(args: argparse.Namespace, root: Path, versions: dict[str, dic
                 configure_system_tool_shims(root, versions)
         else:
             install_ubuntu_system_prerequisites(root, versions)
+
+    if ios_selection is not None:
+        from init_ios import verify_ios_toolchain
+        validate_required_system_tools(root, versions)
+        init_progress.begin("ios_toolchain")
+        verify_ios_toolchain(ios_selection, root, sys.modules[__name__])
 
     if args.preset_only and not run_validation:
         presets = (preset,)
@@ -1942,6 +1954,8 @@ def print_init_summary(args: argparse.Namespace, root: Path, preset: str, preset
             print(f"Launch the editor: ./scripts/editor --preset {preset}")
     print("Prepared presets: " + ", ".join(presets))
     print("OIDN denoiser: " + ("on" if getattr(args, "with_denoiser", False) else "off"))
+    if args.with_ios:
+        print("Apple toolchain probe passed. Record: out/mobile-probes/apple-toolchain.json")
     elapsed = init_progress.elapsed()
     if elapsed:
         print(f"Finished in {elapsed}.")
@@ -3227,12 +3241,13 @@ def make_parser() -> argparse.ArgumentParser:
     init_parser = subparsers.add_parser("init", help="install prerequisites and prepare local build dependencies")
     init_parser.add_argument("preset", nargs="?", default=None)
     interface = init_parser.add_mutually_exclusive_group()
-    interface.add_argument("--cli", action="store_true", help="use terminal setup without opening a window")
+    interface.add_argument("--cli", action="store_true", help="use terminal setup without the Ludus setup window")
     interface.add_argument("--gui", action="store_true", help="require the graphical setup window")
     init_parser.add_argument("--persona", choices=("contributor", "application", "browser", "validation"),
                              default="contributor", help="setup defaults (default: contributor); explicit options override them")
-    init_parser.add_argument("--no-system-install", action="store_true", help="do not install Ubuntu packages automatically")
+    init_parser.add_argument("--no-system-install", action="store_true", help="use existing system packages and SDKs")
     init_parser.add_argument("--with-rad-debugger", action="store_true", help="also build the optional pinned Linux RAD Debugger")
+    init_parser.add_argument("--with-ios", action="store_true", help="set up optional iOS SDKs and device tools on macOS")
     editor = init_parser.add_mutually_exclusive_group()
     editor.add_argument("--with-editor", dest="with_editor", action="store_true",
                         help="install Qt and pinned shader tools, then build the native editor with 3D preview")

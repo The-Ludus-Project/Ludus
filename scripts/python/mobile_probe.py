@@ -33,7 +33,8 @@ ROOT = Path(__file__).resolve().parents[2]
 PROBE_SOURCES = ROOT / "tools" / "mobile-probe"
 FOUNDATION_BASE_INCLUDE = ROOT / "modules" / "foundation" / "base" / "include"
 TOOL_VERSIONS = ROOT / "config" / "tool_versions.json"
-DEFAULT_OUTPUT_DIRECTORY = ROOT / "out" / "mobile-probes"
+OUTPUT_DIRECTORY = Path("out/mobile-probes")
+DEFAULT_OUTPUT_DIRECTORY = ROOT / OUTPUT_DIRECTORY
 
 SCHEMA_VERSION = 1
 STATUS_PASSED = "passed"
@@ -233,10 +234,9 @@ def clang_major(host: Host, clang: str) -> int | None:
 
 
 def find_pinned_clang(host: Host, explicit: str | None) -> tuple[str | None, int | None]:
-    """Return the pinned-major upstream clang++ (or None) and the major found for the wrong candidates."""
+    """Resolve a pinned-major clang++, honoring an explicit compiler without fallback."""
     pinned = read_pinned_llvm_major()
-    candidates = [
-        explicit,
+    candidates = [explicit] if explicit is not None else [
         host.environment.get("LUDUS_MOBILE_CLANG"),
         str(ROOT / "out" / "host-tools" / "bin" / "clang++"),
         f"/opt/homebrew/opt/llvm@{pinned}/bin/clang++",
@@ -285,8 +285,8 @@ def run_step(host: Host, step: Step, private_values: tuple[str, ...]) -> dict:
 # --------------------------------------------------------------------- Apple probes
 
 XCODE_REMEDY = (
-    "Install Xcode, select it with `xcode-select` and accept its "
-    "license; Command Line Tools have no iOS SDK."
+    "On macOS, run ./init.sh --with-ios to prepare Xcode and the iOS SDKs. "
+    "Command Line Tools alone have no iOS SDK."
 )
 
 
@@ -872,7 +872,15 @@ def run_probe(name: str, host: Host, options: argparse.Namespace) -> dict:
 def write_record(record: dict, directory: Path) -> Path:
     directory.mkdir(parents=True, exist_ok=True)
     path = directory / f"{record['probe']}.json"
-    path.write_text(json.dumps(record, indent=2, sort_keys=True) + "\n")
+    temporary = None
+    try:
+        with tempfile.NamedTemporaryFile(mode="w", encoding="utf-8", dir=directory, delete=False) as stream:
+            temporary = Path(stream.name)
+            stream.write(json.dumps(record, indent=2, sort_keys=True) + "\n")
+        temporary.replace(path)
+    finally:
+        if temporary is not None:
+            temporary.unlink(missing_ok=True)
     return path
 
 
