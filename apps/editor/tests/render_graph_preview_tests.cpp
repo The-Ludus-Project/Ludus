@@ -2186,6 +2186,22 @@ TEST_CASE("canvas resource inspection opens the existing viewer and shares its G
     inspectorOrNull->close();
 }
 
+namespace
+{
+QString CopyShaderHelperFixture(const QTemporaryDir& project)
+{
+    const QString helper = QDir(project.path()).filePath(QStringLiteral("shader-helper"));
+    REQUIRE(QDir().mkpath(helper) == true);
+    const QDir originalHelper(QDir(QFileInfo(QStringLiteral(LUDUS_EDITOR_RENDER_GRAPH_FIXTURE)).absolutePath())
+                                  .filePath(QStringLiteral("helper")));
+    for (const QString& file : originalHelper.entryList(QDir::Files))
+    {
+        REQUIRE(QFile::copy(originalHelper.filePath(file), QDir(helper).filePath(file)) == true);
+    }
+    return helper;
+}
+} // namespace
+
 TEST_CASE("Cold project shader timeout keeps the default rendering the current World",
           "[editor][render-graph][world-graph][fallback]")
 {
@@ -2205,14 +2221,7 @@ TEST_CASE("Cold project shader timeout keeps the default rendering the current W
         seed.SetProject(project.path(), 1);
         REQUIRE(seed.CustomizeBuiltIn() == true);
     }
-    const QString helper = QDir(project.path()).filePath(QStringLiteral("shader-helper"));
-    REQUIRE(QDir().mkpath(helper) == true);
-    const QDir originalHelper(QDir(QFileInfo(QStringLiteral(LUDUS_EDITOR_RENDER_GRAPH_FIXTURE)).absolutePath())
-                                  .filePath(QStringLiteral("helper")));
-    for (const QString& file : originalHelper.entryList(QDir::Files))
-    {
-        REQUIRE(QFile::copy(originalHelper.filePath(file), QDir(helper).filePath(file)) == true);
-    }
+    const QString helper = CopyShaderHelperFixture(project);
     const QString helperScript = QDir(helper).filePath(QStringLiteral("compile_shader.py"));
     QFile originalScript(helperScript);
     REQUIRE(originalScript.open(QIODevice::ReadOnly) == true);
@@ -2316,6 +2325,84 @@ TEST_CASE("Cold project shader timeout keeps the default rendering the current W
     CHECK(workspace.IsUsingDefaultRenderer() == false);
     CHECK(workspace.GetRenderProblem().isEmpty() == true);
     CHECK(workspace.GetScenePreparationProblem().isEmpty() == true);
+    CHECK(failed.isEmpty() == true);
+    source.Stop();
+    workspace.SetPreviewSource(nullptr);
+    rhi::Shutdown();
+}
+
+TEST_CASE("Force raster starts a World with a decoded runtime after a project shader build fails",
+          "[editor][render-graph][world-graph][fallback]")
+{
+    constexpr int32 TIMEOUT_MILLISECONDS = 60000;
+    const QString compiler = QStringLiteral(LUDUS_EDITOR_PROJECT_ROOT "/out/shader-tools/slang/bin/slangc");
+    const QString python = QString::fromUtf8(LUDUS_TEST_PYTHON);
+    if (QFileInfo(compiler).isExecutable() == false || QFileInfo(python).isExecutable() == false)
+    {
+        SKIP("pinned shader tools are required for the project recovery test");
+    }
+    rhi::Shutdown();
+    QTemporaryDir project;
+    REQUIRE(project.isValid() == true);
+    const ToolingPaths tooling{python, {}, QStringLiteral(LUDUS_EDITOR_PROJECT_ROOT)};
+    RendererWorkspace workspace(tooling);
+    workspace.SetProject(project.path(), 1);
+    REQUIRE(workspace.CustomizeBuiltIn() == true);
+    workspace.EnableWorldRendering();
+    workspace.SetLivePreview(false);
+    const QString helper = CopyShaderHelperFixture(project);
+    QSaveFile shaderCompiler(QDir(helper).filePath(QStringLiteral("compile_shader.py")));
+    const QByteArray diagnostic =
+        QByteArrayLiteral("import sys\nprint('Ludus shader build: invalid replacement shader', file=sys.stderr)\n"
+                          "sys.exit(1)\n");
+    REQUIRE(shaderCompiler.open(QIODevice::WriteOnly) == true);
+    REQUIRE(shaderCompiler.write(diagnostic) == diagnostic.size());
+    REQUIRE(shaderCompiler.commit() == true);
+    workspace.SetBuildTools(helper, compiler);
+    const QString validator = QStringLiteral(LUDUS_EDITOR_TEST_SPIRV_VALIDATOR);
+    if (QFileInfo(validator).isExecutable() == true)
+    {
+        RenderGraphBuildSettings settings = workspace.GetBuildSettings();
+        settings.Tools.Validator = validator;
+        workspace.SetBuildSettings(settings);
+    }
+    // A previously cooked package is valid even though recompiling the current shader will fail.
+    const QString projectRuntime = workspace.GetRuntimePackagePath();
+    REQUIRE(projectRuntime.isEmpty() == false);
+    REQUIRE(QDir().mkpath(QFileInfo(projectRuntime).absolutePath()) == true);
+    REQUIRE(QFile::copy(GetDefaultRenderGraphRuntime(), projectRuntime) == true);
+    REQUIRE(workspace.PreviewRuntime() == true);
+    REQUIRE(workspace.GetPreviewOrNull()->IsAttached() == false);
+    REQUIRE(workspace.GetPreviewOrNull()->GetTargetSize().isEmpty() == false);
+    QSignalSpy finished(&workspace, &RendererWorkspace::JobFinished);
+    REQUIRE(workspace.BuildAndPreview() == true);
+    const bool hasFinished = finished.count() != 0 || finished.wait(TIMEOUT_MILLISECONDS) == true;
+    REQUIRE(hasFinished == true);
+    REQUIRE(workspace.GetLastResult().IsSuccessful == false);
+    CHECK(workspace.GetLastResult().Code == QStringLiteral("RenderGraphBuildShader"));
+    CHECK(workspace.GetScenePreparationProblem().isEmpty() == true);
+    RenderPreview source;
+    PreviewViewport viewport(&source);
+    viewport.resize(WIDTH, HEIGHT);
+    viewport.show();
+    viewport.UseProjectGraph(workspace);
+    workspace.SetPreviewSource(&source);
+    QSignalSpy failed(&source, &RenderPreview::Failed);
+    source.SetForceRaster(true);
+    REQUIRE(source.SetScene(MakeScene({0, 0, 1, 1})) == true);
+    REQUIRE(source.Start() == true);
+    QElapsedTimer timer;
+    timer.start();
+    while (source.FrameAvailable() == false && timer.elapsed() < TIMEOUT_MILLISECONDS)
+    {
+        QTest::qWait(1);
+        workspace.ServicePreview();
+    }
+    INFO(source.Status().toStdString());
+    INFO(workspace.GetPreviewOrNull()->GetDisplayStatus().toStdString());
+    REQUIRE(source.FrameAvailable() == true);
+    CHECK(workspace.GetPreviewOrNull()->GetActivePackagePath() == GetDefaultRenderGraphRuntime());
+    CHECK(workspace.GetRenderProblem().contains(QStringLiteral("invalid replacement shader")) == true);
     CHECK(failed.isEmpty() == true);
     source.Stop();
     workspace.SetPreviewSource(nullptr);

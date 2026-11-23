@@ -2539,18 +2539,18 @@ QString RendererWorkspace::GetScenePreparationProblem() const
         {
             return {};
         }
-        if (mIsDefaultPreview == true)
+        if (report.Candidate == graphics::renderer::RenderGraphCandidateState::Failed ||
+            report.Candidate == graphics::renderer::RenderGraphCandidateState::RestartRequired)
         {
-            if (report.Candidate == graphics::renderer::RenderGraphCandidateState::Failed ||
-                report.Candidate == graphics::renderer::RenderGraphCandidateState::RestartRequired)
-            {
-                return mPreviewOrNull->GetDisplayStatus();
-            }
-            // Detach keeps the accepted package request; Attach reloads it on the next device.
-            if (mPreviewOrNull->IsAttached() == false || mPreviewOrNull->GetTargetSize().isEmpty() == false)
-            {
-                return {};
-            }
+            return mPreviewOrNull->GetDisplayStatus();
+        }
+        // A decoded or staged runtime needs the World viewport's device before it can draw.
+        // Diagnostics from newer source builds must not prevent that runtime from preparing.
+        // Detaching the default keeps its package request; Attach reloads it on the next device.
+        if (mPreviewOrNull->GetTargetSize().isEmpty() == false ||
+            (mIsDefaultPreview == true && mPreviewOrNull->IsAttached() == false))
+        {
+            return {};
         }
     }
 #endif

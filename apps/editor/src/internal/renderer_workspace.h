@@ -386,8 +386,8 @@ public:
     {
         return mActivationProblem;
     }
-    /// Failure that prevents scene preparation. Source/build errors are nonfatal while the
-    /// prebuilt default prepares or a previously accepted graph remains active.
+    /// Failure that prevents scene preparation. A decoded, preparing or active runtime may
+    /// render even when a newer source build has failed.
     [[nodiscard]] QString GetScenePreparationProblem() const;
     /// Advisory about how the displayed route lights the viewport's World, such as a slice-sampling luminaire panel
     /// placed for another scene. It never blocks preparation or rendering and is empty without one. Refreshed while
