@@ -29,7 +29,9 @@
 #include <QDialogButtonBox>
 #include <QDir>
 #include <QDoubleSpinBox>
+#include <QElapsedTimer>
 #include <QEvent>
+#include <QEventLoop>
 #include <QFile>
 #include <QGraphicsEllipseItem>
 #include <QGraphicsRectItem>
@@ -45,6 +47,7 @@
 #include <QMessageBox>
 #include <QNativeGestureEvent>
 #include <QPlainTextEdit>
+#include <QPointer>
 #include <QPointingDevice>
 #include <QPushButton>
 #include <QScrollArea>
@@ -1860,6 +1863,69 @@ TEST_CASE("Buffer sizing previews the rounded storage size before applying", "[e
               JOB_TIMEOUT_MILLISECONDS) == true);
     CHECK(workspace.GetDocument().GetRevision() == revision + 1);
     CHECK(workspace.IsJobActive() == false);
+}
+
+TEST_CASE("A detached buffer layout preview stops when its workspace closes", "[editor][render-graph][ray-buffer]")
+{
+    // Rebuilding Properties detaches the old rows and deletes them later. A preview whose
+    // reflection was still debounced must not read the closed workspace's document.
+    QPointer<QLabel> detachedOrNull;
+    QString detachedText;
+    {
+        QTemporaryDir project;
+        const QString package = MakePackage(project);
+        const QString declaration = QStringLiteral("main_shaders/table.slang");
+        WriteFile(QDir(package).filePath(declaration), "struct Table { uint Count; };\n");
+        RendererWorkspace workspace({});
+        workspace.SetProject(project.path(), 1);
+        workspace.SetLivePreview(false);
+        REQUIRE(workspace.OpenGraph(QDir(package).filePath(GetRootGraph())) == true);
+        QComboBox* kindsOrNull = workspace.findChild<QComboBox*>(QStringLiteral("renderGraphNewKind"));
+        QPushButton* addOrNull = workspace.findChild<QPushButton*>(QStringLiteral("renderGraphAddNode"));
+        REQUIRE(kindsOrNull != nullptr);
+        REQUIRE(addOrNull != nullptr);
+        kindsOrNull->setCurrentText(QStringLiteral("Buffer"));
+        addOrNull->click();
+        REQUIRE(workspace.SelectNode(GetRootGraph(), GetDefaultConfiguration(), QStringLiteral("buffer")) == true);
+        QWidget* propertiesOrNull = workspace.findChild<QWidget*>(QStringLiteral("renderGraphProperties"));
+        REQUIRE(propertiesOrNull != nullptr);
+        QPushButton* editOrNull =
+            propertiesOrNull->findChild<QPushButton*>(QStringLiteral("renderGraphEditBufferSizing"));
+        REQUIRE(editOrNull != nullptr);
+        QTimer::singleShot(0, &workspace, [declaration]() {
+            QDialog* dialogOrNull = qobject_cast<QDialog*>(QApplication::activeModalWidget());
+            REQUIRE(dialogOrNull != nullptr);
+            QComboBox* sourceOrNull =
+                dialogOrNull->findChild<QComboBox*>(QStringLiteral("renderGraphBufferStructSource"));
+            QDialogButtonBox* buttonsOrNull = dialogOrNull->findChild<QDialogButtonBox*>();
+            REQUIRE(sourceOrNull != nullptr);
+            REQUIRE(buttonsOrNull != nullptr);
+            sourceOrNull->setCurrentText(declaration);
+            QPushButton* applyOrNull = buttonsOrNull->button(QDialogButtonBox::Apply);
+            REQUIRE(applyOrNull != nullptr);
+            REQUIRE(applyOrNull->isEnabled() == true);
+            applyOrNull->click();
+        });
+        editOrNull->click();
+        detachedOrNull = propertiesOrNull->findChild<QLabel*>(QStringLiteral("renderGraphBufferStructLayout"));
+        REQUIRE(detachedOrNull.isNull() == false);
+        detachedText = detachedOrNull->text();
+        REQUIRE(workspace.SelectNode(GetRootGraph(), GetDefaultConfiguration(), {}) == true);
+    }
+    // Outlast the reflection debounce without delivering the deferred deletion first.
+    constexpr int32 DEBOUNCE_MARGIN_MILLISECONDS = 400;
+    QElapsedTimer elapsed;
+    elapsed.start();
+    while (elapsed.elapsed() < DEBOUNCE_MARGIN_MILLISECONDS)
+    {
+        QCoreApplication::processEvents(QEventLoop::AllEvents, DEBOUNCE_MARGIN_MILLISECONDS);
+    }
+    if (detachedOrNull.isNull() == false)
+    {
+        CHECK(detachedOrNull->text() == detachedText);
+    }
+    QCoreApplication::sendPostedEvents(nullptr, QEvent::DeferredDelete);
+    CHECK(detachedOrNull.isNull() == true);
 }
 
 TEST_CASE("Shader definition tabs preserve navigation across authored and generated source",

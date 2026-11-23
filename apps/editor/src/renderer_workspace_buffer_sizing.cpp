@@ -26,6 +26,7 @@
 #include <QLineEdit>
 #include <QMessageBox>
 #include <QObject>
+#include <QPointer>
 #include <QPushButton>
 #include <QRegularExpression>
 #include <QSignalBlocker>
@@ -47,16 +48,20 @@ const QString BUFFER_LAYOUT_ALIGNMENT_NOTE =
 constexpr foundation::int32 DECLARATION_EDITOR_LINES = 12;
 
 // Each surface owns its pending preview. Results never enter the graph build or document history.
+// The document and tooling belong to the workspace. A rebuilt Properties panel detaches its old
+// rows and deletes them later, so a preview can outlive the workspace by one event-loop pass;
+// its timer and job must then stop instead of reading the destroyed document.
 class BufferLayoutPreview final : public QLabel
 {
 public:
-    BufferLayoutPreview(const RenderGraphDocument& document,
+    BufferLayoutPreview(const RendererWorkspace& owner,
+                        const RenderGraphDocument& document,
                         const ToolingPaths& tooling,
                         const QString& manifest,
                         const QStringList& toolArguments,
                         const QString& heading,
                         QWidget& inoutParent)
-        : QLabel(&inoutParent), mDocument(document), mTooling(tooling), mManifest(manifest),
+        : QLabel(&inoutParent), mOwnerOrNull(&owner), mDocument(document), mTooling(tooling), mManifest(manifest),
           mToolArguments(toolArguments), mHeading(heading)
     {
         setTextFormat(Qt::PlainText);
@@ -67,6 +72,10 @@ public:
         mDebounce.setInterval(REFLECTION_DEBOUNCE_MILLISECONDS);
         connect(&mDebounce, &QTimer::timeout, this, [this]() { startReflection(); });
         connect(&mJob, &RenderGraphJob::Finished, this, [this](const RenderGraphJobResult& result) {
+            if (isOwnerAlive() == false)
+            {
+                return;
+            }
             if (result.Request.Request == mGeneration && result.Request.Revision == mDocument.GetRevision())
             {
                 mStride = result.Payload.value(QStringLiteral("buffer_layout"))
@@ -112,13 +121,23 @@ public:
 
     void RefreshDraft()
     {
-        if (mRevision != mDocument.GetRevision())
+        if (isOwnerAlive() == true && mRevision != mDocument.GetRevision())
         {
             refresh();
         }
     }
 
 private:
+    [[nodiscard]] bool isOwnerAlive()
+    {
+        if (mOwnerOrNull.isNull() == false)
+        {
+            return true;
+        }
+        mDebounce.stop();
+        return false;
+    }
+
     void refresh()
     {
         ++mGeneration;
@@ -138,7 +157,7 @@ private:
 
     void startReflection()
     {
-        if (mJob.IsActive() == true)
+        if (isOwnerAlive() == false || mJob.IsActive() == true)
         {
             return;
         }
@@ -203,6 +222,7 @@ private:
         setText(mHeading.isEmpty() == true ? description : mHeading + QStringLiteral("\n") + description);
     }
 
+    QPointer<const RendererWorkspace> mOwnerOrNull;
     const RenderGraphDocument& mDocument;
     const ToolingPaths& mTooling;
     QString mManifest;
@@ -585,7 +605,7 @@ void RendererWorkspace::populateBufferSizing(const QJsonObject& node, QFormLayou
         QStringList toolArguments;
         appendShaderToolArguments(toolArguments);
         BufferLayoutPreview* sizing =
-            new BufferLayoutPreview(mDocument, mTooling, manifestFile(), toolArguments, heading, inoutParent);
+            new BufferLayoutPreview(*this, mDocument, mTooling, manifestFile(), toolArguments, heading, inoutParent);
         sizing->setObjectName(QStringLiteral("renderGraphBufferStructLayout"));
         sizing->SetCount(count);
         sizing->SetRecord(source, type);
@@ -670,7 +690,7 @@ void RendererWorkspace::editBufferSizing(QWidget& inoutParent, const BufferSizin
     QStringList toolArguments;
     appendShaderToolArguments(toolArguments);
     BufferLayoutPreview* sizing =
-        new BufferLayoutPreview(mDocument, mTooling, manifestFile(), toolArguments, {}, dialog);
+        new BufferLayoutPreview(*this, mDocument, mTooling, manifestFile(), toolArguments, {}, dialog);
     sizing->setObjectName(QStringLiteral("renderGraphBufferBytePreview"));
     sizing->SetCount(count->value());
     fields.addRow(QStringLiteral("Storage size"), sizing);
