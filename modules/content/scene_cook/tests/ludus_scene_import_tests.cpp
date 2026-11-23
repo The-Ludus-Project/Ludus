@@ -506,6 +506,45 @@ TEST_CASE("Ludus scene import cooks the engine's grain-mix test scene", "[scene_
     CHECK(programs == 1);
 }
 
+TEST_CASE("Ludus scene import cooks the engine's varnished-wood layered test scene",
+          "[scene_cook][ludus-scene][program]")
+{
+    namespace format = ludus::content::scene_format;
+    BestEffortResult result;
+    CookError error;
+    REQUIRE(ImportSceneBestEffort(GetTestScene("materials/varnished-wood-panel.luscene.json"), {}, result, error) ==
+            true);
+    ludus::resources::SceneDefinition decoded;
+    REQUIRE(ludus::resources::SceneDefinition::Decode(result.Bundle.GetData(), result.Bundle.GetSize(), decoded) ==
+            ludus::resources::Status::Ok);
+    usize layered = 0;
+    bool hasBlackSubstrate = false;
+    for (const ludus::resources::SceneObject& object : decoded.Objects)
+    {
+        const ludus::resources::SceneMaterial& material = decoded.Materials[object.Material];
+        if (material.Scattering.Model != format::MaterialModel::Program)
+        {
+            continue;
+        }
+        ++layered;
+        // Each layered record is an ordered coat over a substrate: a diffuse substrate lobe attenuated by the
+        // coat's complementary transmittance, then the dielectric coat's cosine-power reflection highlight.
+        REQUIRE(material.Program.LobeCount == 2);
+        CHECK(material.Program.Lobes[0].Operation == format::MaterialLobeOperation::Diffuse);
+        CHECK(material.Program.Lobes[1].Operation == format::MaterialLobeOperation::CosinePower);
+        CHECK(material.Metallic == 0);
+        // The ordered coat keeps the material a fixed-dimension reflection, so restricted profiles accept it.
+        CHECK(format::SupportsFixedDimensionReflection(material.Scattering, material.Program) == true);
+        if (material.Name.View() == "Black under coat")
+        {
+            hasBlackSubstrate = true;
+        }
+    }
+    // The varnished-wood panel and the black companion patch under the same coat.
+    CHECK(layered == 2);
+    CHECK(hasBlackSubstrate == true);
+}
+
 TEST_CASE("Ludus scene import cooks the engine's hair-card test scene into LUSCN version 13",
           "[scene_cook][ludus-scene][hair]")
 {
