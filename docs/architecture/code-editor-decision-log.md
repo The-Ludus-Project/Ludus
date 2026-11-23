@@ -893,3 +893,38 @@ The fixture replaces neither `slang_server_fixture.py` nor the `[slang-native]`
 case: they keep covering the shader context. The remaining fixture failure paths
 (oversize messages, stale replies across documents, workspace-edit rejections)
 belong to the batches that add those features.
+
+### M4 batch 3a: hover and Analysis diagnostics (CE10, CE20, 2026-11-23)
+
+The first part of the third M4 task
+([issue 1263](https://github.com/The-Ludus-Project/Ludus/issues/1263)):
+
+- **Analysis diagnostics.** The client emits `textDocument/publishDiagnostics`
+  (bounded to 1,024 per report) and advertises version support. Once a context
+  is prepared, `CodeAssistance` re-synchronizes the draft 100 ms after an edit.
+  A report is applied only when it names the context's document, carries the
+  version the server last received (or none), and that text is still the
+  current draft; otherwise the next report replaces it. Positions use the
+  negotiated encoding, and ranges in the generated prefix or suffix are
+  dropped. Hints are dropped; information shows as a warning.
+- **Separate layer.** `CodeEditor::SetAnalysisDiagnostics` keeps its own
+  markers, drawn with a dotted underline beneath the build's wave squiggles
+  and described as `Analysis (<server>) error/warning`. Build markers, F8 and
+  the gutter keep their current meaning. The Error List's Analysis and Build
+  groups follow in a later batch.
+- **Hover.** After 300 ms of pointer rest (VS Code's default), or **Show
+  Hover** in the context menu, the editor asks for a hover. Hover never
+  prepares a context, so a resting pointer cannot start tools: before a context
+  exists it shows local diagnostics only. A reply applies only to the document
+  revision and context it was asked for. Contents are shown as plain text, with
+  code fences and Slang's generated `Defined in` provenance removed, followed by
+  that position's build and analysis messages. Show Hover has no default
+  shortcut: VS Code's Ctrl+K Ctrl+I needs the Ctrl+K prefix that the Ludus
+  profile keeps for the command palette.
+- **Show Log** in the Source pane's shader-assistance row shows the server's
+  retained standard error (CE20).
+
+Tests drive `language_server_fixture.py`, which can now publish a diagnostic
+for every occurrence of a word, optionally with a stale version. The context
+prefix contains the word too, so generated text must not produce a marker.
+

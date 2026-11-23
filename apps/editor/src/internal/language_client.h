@@ -11,6 +11,7 @@
 #include <QByteArray>
 #include <QDeadlineTimer>
 #include <QElapsedTimer>
+#include <QJsonArray>
 #if !defined(Q_OS_WASM)
 #    include <QFutureWatcher>
 #    include <QJsonDocument>
@@ -55,6 +56,8 @@ class LanguageClient final : public QObject
 {
     Q_OBJECT
 public:
+    /// Published diagnostics beyond this count per notification are dropped.
+    static constexpr foundation::int32 MAX_PUBLISHED_DIAGNOSTICS = 1024;
     explicit LanguageClient(QObject* parentOrNull = nullptr);
     ~LanguageClient() override;
     /// Stop any running server, clear the crash history and start `program` for
@@ -84,6 +87,11 @@ public:
     [[nodiscard]] const QJsonObject& GetCapabilities() const noexcept;
     /// The negotiated position encoding; UTF-16 before initialization.
     [[nodiscard]] LanguagePositionEncoding GetPositionEncoding() const noexcept;
+    /// The document URI, version and text the server last received. Pushed
+    /// diagnostics describe this text when their version matches.
+    [[nodiscard]] const QString& GetSentUri() const noexcept;
+    [[nodiscard]] foundation::int32 GetSentVersion() const noexcept;
+    [[nodiscard]] const QString& GetSentText() const noexcept;
     /// The server's retained standard error (at most the diagnostic budget), for
     /// Show Log. Kept after a failure until the next Start.
     [[nodiscard]] const QString& GetLog() const noexcept;
@@ -103,6 +111,9 @@ Q_SIGNALS:
     void RequestUnavailable(LanguageRequestKind kind, const QString& message);
     /// The server exited unexpectedly and restarts after a backoff.
     void Restarting(const QString& message);
+    /// `textDocument/publishDiagnostics` for `uri`, bounded to the first
+    /// MAX_PUBLISHED_DIAGNOSTICS entries. `version` is -1 when the server sent none.
+    void DiagnosticsPublished(const QString& uri, foundation::int32 version, const QJsonArray& diagnostics);
 
 private:
     struct PendingRequest final

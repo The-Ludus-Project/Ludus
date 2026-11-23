@@ -54,6 +54,13 @@ private:
     void requestCurrent();
     void receive(foundation::int32 request, const QJsonValue& value);
     void applyAvailability();
+    void requestHover(foundation::int32 position);
+    void receiveHover(foundation::int32 request, const QJsonValue& value);
+    void synchronizeAnalysis();
+    void receiveDiagnostics(const QString& uri, foundation::int32 version, const QJsonArray& diagnostics);
+    void clearAnalysis();
+    /// The current draft as the server's virtual unit, or false when it is not valid text.
+    [[nodiscard]] bool buildUnit(CodeTextCapture& outCapture, QString& outSource, QString& outUnit) const;
     void resetAvailability();
     void showSignatures();
     void acceptCompletion(foundation::int32 row);
@@ -66,6 +73,16 @@ private:
     LanguageClient mClient;
     const LanguageServerProfile* mProfile = &GetSlangServerProfile();
     LanguageRequestKind mRequestKind = LanguageRequestKind::Completion;
+    /// The hover in flight: its request, position and the identities it was asked for.
+    struct HoverRequest final
+    {
+        foundation::int32 Request = 0;
+        foundation::int32 Position = 0;
+        CodeDocumentIdentity Identity;
+        foundation::uint64 Context = 0;
+    };
+    HoverRequest mHover;
+    QTimer mAnalysisSync;
     QTimer mRefresh;
     CodeTextCapture mCapture;
     QString mServer;

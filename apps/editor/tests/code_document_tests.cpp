@@ -890,6 +890,134 @@ TEST_CASE("Capability dispatch disables unadvertised assistance and follows serv
     CHECK(signatureOrNull->isEnabled() == true);
 }
 
+namespace
+{
+/// A Slang assistance session against language_server_fixture.py with `options`.
+/// Its context prefix contains the diagnosed word, so generated surroundings
+/// must never produce markers in the authored text.
+struct FakeAssistanceSession final
+{
+    FakeAssistanceSession(const QByteArray& text, const QStringList& options)
+        : Host(text), Document(Editor), Assistance(Editor, Document)
+    {
+        Document.Bind(&Host);
+        Editor.SetLanguage(CodeLanguage::Slang);
+        QStringList arguments{QString::fromUtf8(LUDUS_LANGUAGE_SERVER_FIXTURE)};
+        arguments.append(options);
+        QObject::connect(&Assistance, &CodeAssistance::ContextRequested, &Editor, [this, arguments]() {
+            Assistance.SetContext(QString::fromUtf8(LUDUS_TEST_PYTHON),
+                                  Temporary.path(),
+                                  QUrl::fromLocalFile(Temporary.filePath(QStringLiteral("unit.slang"))).toString(),
+                                  QStringLiteral("// generated missing\n"),
+                                  {},
+                                  arguments);
+        });
+        Editor.resize(800, 400);
+        Editor.show();
+        Editor.setFocus();
+    }
+
+    /// Prepare the context through an ordinary completion intent.
+    void Prepare()
+    {
+        Editor.moveCursor(QTextCursor::End);
+        Assistance.Request(false);
+    }
+
+    MemoryCodeDocument Host;
+    CodeEditor Editor;
+    CodeDocumentController Document;
+    CodeAssistance Assistance;
+    QTemporaryDir Temporary;
+};
+
+const QStringList DIAGNOSING_SERVER{QStringLiteral("--capabilities"),
+                                    QStringLiteral(R"({"completionProvider": {}, "hoverProvider": true})"),
+                                    QStringLiteral("--diagnose"),
+                                    QStringLiteral("missing")};
+} // namespace
+
+TEST_CASE("Analysis diagnostics follow the draft and stay apart from build results", "[editor][text][assistance]")
+{
+    FakeAssistanceSession session("float a = missing;\nfloat b = 2;\n", DIAGNOSING_SERVER);
+    session.Prepare();
+    CodeEditor& editor = session.Editor;
+    REQUIRE(QTest::qWaitFor([&editor]() { return editor.GetAnalysisDiagnosticCount() == 1; }));
+    CHECK(editor.GetAnalysisDiagnosticRange(0).selectedText() == QStringLiteral("missing"));
+    const int32 marked = editor.GetAnalysisDiagnosticRange(0).selectionStart() + 2;
+    CHECK(editor.DescribeDiagnosticsAt(marked) == QStringLiteral("Analysis (slangd) error: unknown name missing"));
+    // Build results stay their own layer and the build report keeps its label.
+    editor.SetDiagnostics({{ .Line = 2, .Column = 7, .Length = 1, .Message = QStringLiteral("build says b") }}, true);
+    CHECK(editor.GetDiagnosticCount() == 1);
+    CHECK(editor.GetAnalysisDiagnosticCount() == 1);
+    CHECK(editor.DescribeLineDiagnostics(1) == QStringLiteral("Error: build says b"));
+    // Typing re-synchronizes after a pause and the next report replaces the markers.
+    editor.moveCursor(QTextCursor::End);
+    QTest::keyClicks(&editor, QStringLiteral("missing"));
+    REQUIRE(QTest::qWaitFor([&editor]() { return editor.GetAnalysisDiagnosticCount() == 2; }));
+    CHECK(editor.GetDiagnosticCount() == 1);
+    // A new context clears analysis; the build report is not the client's to clear.
+    session.Assistance.ClearContext();
+    CHECK(editor.GetAnalysisDiagnosticCount() == 0);
+    CHECK(editor.GetDiagnosticCount() == 1);
+}
+
+TEST_CASE("Analysis reports for an older version are discarded", "[editor][text][assistance]")
+{
+    QStringList options = DIAGNOSING_SERVER;
+    options.append(QStringLiteral("--stale-diagnostics"));
+    FakeAssistanceSession session("float a = missing;\n", options);
+    QSignalSpy status(&session.Assistance, &CodeAssistance::StatusChanged);
+    session.Prepare();
+    REQUIRE(QTest::qWaitFor([&status]() { return status.isEmpty() == false; }));
+    QTest::qWait(500);
+    CHECK(session.Editor.GetAnalysisDiagnosticCount() == 0);
+}
+
+TEST_CASE("Hover shows the server's text with diagnostics and never prepares a context", "[editor][text][assistance]")
+{
+    QStringList options = DIAGNOSING_SERVER;
+    options.append({QStringLiteral("--hold"), QStringLiteral("textDocument/hover")});
+    FakeAssistanceSession session("float a = missing;\n", options);
+    CodeEditor& editor = session.Editor;
+    QSignalSpy contexts(&session.Assistance, &CodeAssistance::ContextRequested);
+    QAction* hoverOrNull = nullptr;
+    for (QAction* action : editor.actions())
+    {
+        hoverOrNull = action->objectName() == QStringLiteral("codeEditorHover") ? action : hoverOrNull;
+    }
+    REQUIRE(hoverOrNull != nullptr);
+    // No context yet: hover describes local diagnostics only and starts nothing.
+    hoverOrNull->trigger();
+    QTest::qWait(100);
+    CHECK(contexts.isEmpty() == true);
+    CHECK(editor.GetHoverText().isEmpty() == true);
+    session.Prepare();
+    REQUIRE(QTest::qWaitFor([&editor]() { return editor.GetAnalysisDiagnosticCount() == 1; }));
+    QTest::keyClick(&editor, Qt::Key_Escape);
+    QTextCursor cursor = editor.textCursor();
+    cursor.setPosition(editor.GetAnalysisDiagnosticRange(0).selectionStart() + 1);
+    editor.setTextCursor(cursor);
+    // The first hover reply is held; an edit makes it stale before it arrives.
+    hoverOrNull->trigger();
+    QTest::qWait(100);
+    editor.moveCursor(QTextCursor::End);
+    QTest::keyClicks(&editor, QStringLiteral("x"));
+    session.Assistance.Request(false); // any request releases the held reply
+    QTest::qWait(300);
+    CHECK(editor.GetHoverText().isEmpty() == true);
+    QTest::keyClick(&editor, Qt::Key_Escape);
+    editor.setTextCursor(cursor);
+    hoverOrNull->trigger();
+    REQUIRE(QTest::qWaitFor([&editor]() { return editor.GetHoverText().isEmpty() == false; }));
+    CHECK(editor.GetHoverText().startsWith(QStringLiteral("hover ")) == true);
+    CHECK(editor.GetHoverText().contains(QStringLiteral("Analysis (slangd) error: unknown name missing")) == true);
+    // Resting the pointer requests a hover where it rests.
+    QSignalSpy requests(&editor, &CodeEditor::HoverRequested);
+    QTest::mouseMove(editor.viewport(), editor.cursorRect(cursor).center());
+    REQUIRE(QTest::qWaitFor([&requests]() { return requests.isEmpty() == false; }));
+}
+
 TEST_CASE("Escape cancels pending shader assistance before a delayed reply", "[editor][text][assistance]")
 {
     MemoryCodeDocument host("// hold-response\nscene.Ve");
