@@ -2,6 +2,8 @@
 
 #include <ludus/foundation/base/types.h>
 
+#include <ludus/foundation/containers/static_array.hpp>
+
 #include <QList>
 #include <QObject>
 #include <QPointer>
@@ -28,6 +30,9 @@ enum class CodeNavigationKind : foundation::uint8
     Definition,
     References,
 };
+
+/// The number of CodeNavigationKind values, for per-kind tables.
+inline constexpr foundation::usize CODE_NAVIGATION_KIND_COUNT = 3;
 
 /// Copied semantic destination. Offsets are validated UTF-16 boundaries in Text.
 /// An empty File means the current buffer. Read-only targets never rebind authored text.
@@ -84,7 +89,11 @@ public:
     void ReportFailure(const QString& message);
     void RefreshActions();
     /// Provider capability, independent of language selection. Unknown providers start enabled.
-    void SetReferencesAvailable(bool canFindReferences);
+    /// Disable the command for `kind` with `unavailableReason` in its tooltip, or
+    /// enable it when the reason is empty (capability dispatch, CE09).
+    void SetSemanticAvailability(CodeNavigationKind kind, const QString& unavailableReason);
+    /// Enable every semantic command again, before a server reports its capabilities.
+    void ResetSemanticAvailability();
     /// Request the definition at the caret, as Go to Definition does. Returns false, without
     /// emitting Requested, when the current language provides no semantic navigation.
     bool RequestDefinition();
@@ -135,8 +144,10 @@ private:
     QAction* mBack;
     QAction* mForward;
     QAction* mFiles;
+    QAction* mSymbols;
     QAction* mDefinition;
     QAction* mReferences;
+    foundation::StaticArray<QString, CODE_NAVIGATION_KIND_COUNT> mUnavailableReasons{};
     QString mScope;
     QString mFile;
     QStringList mFilesAvailable;
@@ -146,6 +157,5 @@ private:
     bool mIsBinding = false;
     bool mIsTraversing = false;
     bool mIsFilePicker = false;
-    bool mCanFindReferences = true;
 };
 } // namespace ludus::editor

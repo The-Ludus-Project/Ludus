@@ -2,7 +2,6 @@
 
 #include <QJsonValue>
 #include <QString>
-#include <QStringList>
 
 namespace ludus::editor
 {
@@ -13,11 +12,12 @@ using LanguageServerConfigurationResponder = QJsonValue (*)(const QString& secti
 
 /// The language-specific part of one generic LSP connection (code editor M4).
 /// The client owns framing, process supervision, decoding and synchronization;
-/// a profile names the language identifier it sends, the capabilities it
-/// requires before the connection is ready, its `workspace/configuration`
-/// answers and the vocabulary of its user-facing messages. A profile never
-/// names an executable or adds arguments: resolution stays with the context
-/// provider, so a project file cannot replace a server program.
+/// a profile names the language identifier it sends, its
+/// `workspace/configuration` answers and the vocabulary of its user-facing
+/// messages. Which requests a server serves comes from its advertised
+/// capabilities, not from the profile. A profile never names an executable or
+/// adds arguments: resolution stays with the context provider, so a project
+/// file cannot replace a server program.
 ///
 /// Profiles are immutable static values; references to them stay valid for the
 /// process lifetime and may be read from any thread.
@@ -39,18 +39,13 @@ struct LanguageServerProfile final
     QString SyntaxNoun;
     /// The fix offered when the executable cannot start.
     QString StartRepair;
-    /// Server capabilities the initialize response must advertise; otherwise the
-    /// connection fails with the pinned-tools fix.
-    QStringList RequiredCapabilities;
-    /// Describes the required protocol in the unsupported-server failure
-    /// ("UTF-16 completion/signature").
-    QString RequiredProtocol;
     /// `workspace/configuration` answers; never null.
     LanguageServerConfigurationResponder ConfigurationResponder = nullptr;
 };
 
-/// The `slangd` profile from the selected Slang SDK. It also serves LUSL sources
-/// until the LUSL profile is added, exactly as before the move to the generic
-/// client.
+/// The `slangd` profile from the selected Slang SDK.
 [[nodiscard]] const LanguageServerProfile& GetSlangServerProfile();
+
+/// The `luslc lsp` profile from the project SDK (LUSL sources).
+[[nodiscard]] const LanguageServerProfile& GetLuslServerProfile();
 } // namespace ludus::editor

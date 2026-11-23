@@ -18,6 +18,12 @@ QJsonValue ConfigureSlangSection(const QString& section)
     }
     return QJsonValue::Null;
 }
+
+QJsonValue ConfigureNoSection(const QString& section)
+{
+    static_cast<void>(section);
+    return QJsonValue::Null;
+}
 } // namespace
 
 const LanguageServerProfile& GetSlangServerProfile()
@@ -32,9 +38,24 @@ const LanguageServerProfile& GetSlangServerProfile()
         .ContextNoun = QStringLiteral("shader context"),
         .SyntaxNoun = QStringLiteral("shader syntax"),
         .StartRepair = QStringLiteral("Repair project shader tools or check the compiler override."),
-        .RequiredCapabilities = {QStringLiteral("completionProvider"), QStringLiteral("signatureHelpProvider")},
-        .RequiredProtocol = QStringLiteral("UTF-16 completion/signature"),
         .ConfigurationResponder = &ConfigureSlangSection,
+    };
+    return PROFILE;
+}
+
+const LanguageServerProfile& GetLuslServerProfile()
+{
+    static const LanguageServerProfile PROFILE
+    {
+        .LanguageId = QStringLiteral("lusl"),
+        .ProductName = QStringLiteral("LUSL"),
+        .ServerName = QStringLiteral("luslc"),
+        .AssistanceTitle = QStringLiteral("LUSL assistance"),
+        .AssistanceNoun = QStringLiteral("LUSL assistance"),
+        .ContextNoun = QStringLiteral("shader context"),
+        .SyntaxNoun = QStringLiteral("LUSL syntax"),
+        .StartRepair = QStringLiteral("Repair project tools or set LUDUS_LUSLC, then Retry assistance."),
+        .ConfigurationResponder = &ConfigureNoSection,
     };
     return PROFILE;
 }

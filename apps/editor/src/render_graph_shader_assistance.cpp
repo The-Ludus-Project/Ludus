@@ -421,6 +421,7 @@ void RenderGraphShaderAssistance::publish()
                            prefix,
                            suffix,
                            serverArguments,
-                           navigationSources);
+                           navigationSources,
+                           isLusl == true ? GetLuslServerProfile() : GetSlangServerProfile());
 }
 } // namespace ludus::editor

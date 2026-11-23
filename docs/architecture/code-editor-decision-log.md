@@ -843,3 +843,53 @@ This is a structural move with no behavior change:
 the exact missing-server and unsupported-server messages, and drives a
 completion through the client against `slang_server_fixture.py`. The existing
 assistance and navigation cases run unchanged.
+
+### M4 batch 2: capability dispatch and the request table (CE09, CE20, 2026-11-22)
+
+The second M4 task adds the client's protocol machinery
+([issue 1263](https://github.com/The-Ludus-Project/Ludus/issues/1263)). Behavior
+changes, each with a test against the new scripted fixture
+`apps/editor/tests/language_server_fixture.py`:
+
+- **Request table** (`internal/language_requests.h`). One row per request
+  kind: method, the server capability (and option, such as
+  `completionProvider.resolveProvider`) that enables it, its priority and
+  whether the client adds `textDocument`. Later batches add features by using
+  their rows; no feature names a method string.
+- **Capability dispatch.** The profile no longer lists required capabilities.
+  A kind the ready server does not advertise is never sent: `CanRequest` and
+  `GetUnavailableReason` disable its command with the reason in its tooltip
+  (completion and signature help in the view; Go to Symbol, Go to Definition
+  and Find References in navigation). Typing triggers completion and signature
+  help only from the server's `triggerCharacters` (and signature
+  `retriggerCharacters`); the earlier `.`, `(` and `,` remain the defaults until
+  a server reports its options. This fixes LUSL assistance: `luslc lsp`
+  advertises no signature help, which the batch 1 Slang requirements rejected.
+  LUSL sources now use their own `GetLuslServerProfile`.
+- **Cancellation and priority.** At most one request per kind is in flight; a
+  newer one sends `$/cancelRequest` for the older, whose late reply is
+  discarded. Each sent request has its own ten-second deadline. Interactive
+  requests flush pending text and go at once; background requests (document
+  symbols, semantic tokens, inlay hints, folding ranges) wait for the 30 ms
+  synchronization debounce, then go before workspace symbols.
+- **Synchronization.** `didChange` is coalesced to the debounce, sent at once
+  before an interactive request, and uses full text when the server asks for
+  `TextDocumentSyncKind.Full`. A server with no synchronization is rejected.
+- **Positions.** The client offers `utf-8` then `utf-16` and accepts either;
+  `internal/language_positions.h` maps UTF-16 editor offsets both ways, and
+  completion edits, navigation results and `didChange` ranges use the
+  negotiated encoding. The pinned `slangd` and `luslc` choose UTF-16.
+- **Errors and crashes.** An error reply is `RequestFailed`: the status names
+  the request's repair and the server keeps running (it used to be stopped and
+  restarted on the next request). An unexpected exit restarts the same server
+  after 1 s, then 2 s, with a status saying editing is unaffected and the
+  pending intent re-sent when it is still current. A third exit within 60 s
+  stops it with Retry assistance as the fix. The retained standard error
+  (bounded by the existing 8 KiB budget) is available as `GetServerLog` for the
+  status-bar Show Log action, which lands with the status-bar language-server
+  item in the diagnostics batch.
+
+The fixture replaces neither `slang_server_fixture.py` nor the `[slang-native]`
+case: they keep covering the shader context. The remaining fixture failure paths
+(oversize messages, stale replies across documents, workspace-edit rejections)
+belong to the batches that add those features.
