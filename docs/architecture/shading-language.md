@@ -1077,10 +1077,13 @@ changed-source gate, which then rejects new Slang sources there.
 viewer depth pack (`apps/editor/shaders`) are migrated. The standalone shader
 helper lowers sources that name `LUDUS_GLSL_ES` once per value, as the
 [module guide](../modules/tooling/shader-language.md#resources-and-bindings)
-describes. The Cornell box, `apps/smoke` and the shader probe also ship
-browser players. Browser builds have no host `luslc` yet, so those ports wait
-for it and for the browser evidence that issue 1735 requires. The tools'
-benchmarks and the standalone SDK consumer shaders remain.
+describes. Browser builds lower LUSL with a host `luslc` (`LUDUS_LUSLC`, built
+by `./scripts/bootstrap-luslc`). With it, the Cornell box
+(`examples/cornell-box/shaders`), `apps/smoke/shaders` and the shader probe
+(`tools/shader-probe`) are migrated. The tools' benchmarks and the standalone
+SDK consumer shaders remain. That includes the fullscreen diagnostic, whose
+installed-helper tests pass `DEFINES` that the helper does not yet forward to
+`luslc`.
 
 ### Acceptance
 

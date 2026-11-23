@@ -40,9 +40,9 @@ class ContractTests(unittest.TestCase):
 
     def test_emitted_wgsl_drift(self):
         original = (OUTPUT / "probe.wgsl").read_text()
-        for before, after in (("@align(8) elapsedTime", "@align(16) elapsedTime"),
+        for before, after in (("@align(8) ElapsedTime", "@align(16) ElapsedTime"),
                               ("@binding(0)", "@binding(1)"),
-                              ("fn vertexMain", "fn renamedMain")):
+                              ("fn VertexMain", "fn renamedMain")):
             self.assertIn(before, original)
             with self.assertRaises(RuntimeError):
                 VERIFY["check_wgsl"](original.replace(before, after))

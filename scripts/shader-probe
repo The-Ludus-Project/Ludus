@@ -22,7 +22,8 @@ ROOT = Path(__file__).resolve().parent.parent
 TOOLS = ROOT / "out/shader-tools"
 SOURCE = ROOT / "tools/shader-probe"
 LOCK = json.loads((ROOT / "config/shader_toolchain.json").read_text())
-OFFSETS = {"resolution": 0, "elapsedTime": 8, "direction": 16, "tint": 32}
+OFFSETS = {"Resolution": 0, "ElapsedTime": 8, "Direction": 16, "Tint": 32}
+ENTRY_POINTS = (("vertex", "VertexMain"), ("fragment", "FragmentMain"))
 
 
 def run(command: list[str], *, echo_output: bool = True) -> str:
@@ -250,19 +251,30 @@ def check_wgsl(code: str) -> dict:
     require(re.search(r"@binding\(0\) @group\(0\) var<uniform> probe_\d+ : " + match[1], code)
             is not None, "WGSL binding differs")
     require(re.findall(r"@(vertex|fragment)\s+fn (\w+)", code) ==
-            [("vertex", "vertexMain"), ("fragment", "fragmentMain")], "WGSL entry points differ")
+            list(ENTRY_POINTS), "WGSL entry points differ")
     return {"offsets": offsets, "size": size, "alignment": alignment,
-            "group": 0, "binding": 0, "entry_points": ["vertexMain", "fragmentMain"]}
+            "group": 0, "binding": 0, "entry_points": [entry for _, entry in ENTRY_POINTS]}
 
 
-def compile_probe(output: Path) -> None:
+def lower_probe(luslc: Path, output: Path) -> tuple[Path, list[str]]:
+    """Lower probe.lusl with the SDK helper's lowering step (both LUDUS_GLSL_ES variants)."""
+    lowered = output / "probe.lusl.slang"
+    command = [sys.executable, str(ROOT / "cmake/shaders/lower_lusl.py"), "--luslc", str(luslc),
+               "--root", str(SOURCE), "--source", "probe.lusl", "--name", "probe", "--output", str(lowered),
+               "--slots", str(output / "probe_slots.h"), "--depfile", str(output / "lusl.d")]
+    run(command)
+    return lowered, command
+
+
+def compile_probe(output: Path, luslc: Path) -> None:
     slang, val, dis = verify_tools()
     output.mkdir(parents=True, exist_ok=True)
-    commands = []
-    for stage, entry in (("vertex", "vertexMain"), ("fragment", "fragmentMain")):
+    source, lowering = lower_probe(luslc, output)
+    commands = [lowering]
+    for stage, entry in ENTRY_POINTS:
         binary = output / f"probe.{stage}.spv"
         reflection = output / f"{stage}.reflection.json"
-        command = [str(slang), str(SOURCE / "probe.slang"), "-target", "spirv", "-profile",
+        command = [str(slang), str(source), "-target", "spirv", "-profile",
                    "spirv_1_3", "-entry", entry, "-stage", stage, "-o", str(binary),
                    "-reflection-json", str(reflection)]
         commands.append(command)
@@ -283,11 +295,11 @@ def compile_probe(output: Path) -> None:
                     "SPIR-V decorations disagree with reflection/CPU")
             require("OpDecorate %probe Binding 0" in assembly and
                     "OpDecorate %probe DescriptorSet 0" in assembly, "SPIR-V binding differs")
-            require("OpExecutionMode %fragmentMain OriginUpperLeft" in assembly,
+            require("OpExecutionMode %FragmentMain OriginUpperLeft" in assembly,
                     "SPIR-V fragment origin differs")
     wgsl = output / "probe.wgsl"
-    command = [str(slang), str(SOURCE / "probe.slang"), "-target", "wgsl", "-profile", "sm_6_0",
-               "-entry", "vertexMain", "-entry", "fragmentMain", "-o", str(wgsl),
+    command = [str(slang), str(source), "-target", "wgsl", "-profile", "sm_6_0",
+               "-entry", "VertexMain", "-entry", "FragmentMain", "-o", str(wgsl),
                "-reflection-json", str(output / "wgsl.reflection.json")]
     commands.append(command)
     run(command)
@@ -309,7 +321,7 @@ def compile_probe(output: Path) -> None:
     (output / "build-evidence.json").write_text(json.dumps({"lock": LOCK, "commands": commands,
         "artifacts": {p.name: digest(p) for p in sorted(output.iterdir())
                       if p.suffix in (".spv", ".wgsl", ".slang")},
-        "source_sha256": digest(SOURCE / "probe.slang"),
+        "source_sha256": digest(SOURCE / "probe.lusl"),
         "runtime_validation": "Not established by compilation; run both pixel probes"}, indent=2) + "\n")
 
 
@@ -317,11 +329,17 @@ def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("action", choices=("bootstrap", "compile", "check", "format"))
     parser.add_argument("--output", type=Path, default=ROOT / "out/shader-probe")
+    parser.add_argument("--luslc", type=Path, help="luslc that lowers probe.lusl (default: ./scripts/bootstrap-luslc)")
     args = parser.parse_args()
     if args.action == "bootstrap":
         bootstrap()
     elif args.action == "compile":
-        compile_probe(args.output.resolve())
+        luslc = args.luslc
+        if luslc is None:
+            sys.path.insert(0, str(ROOT / "scripts/python"))
+            import host_luslc
+            luslc = host_luslc.ensure(ROOT)
+        compile_probe(args.output.resolve(), luslc.resolve())
     else:
         sys.path.insert(0, str(ROOT / "scripts/python"))
         from formatting import format_source

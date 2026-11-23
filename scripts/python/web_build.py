@@ -11,6 +11,7 @@ import subprocess
 import urllib.request
 
 from formatting import format_source
+import host_luslc
 import init_progress
 import managed_venv
 from analysis_inventory import inventory, request_codemodel, SOURCE_ROOTS
@@ -155,6 +156,11 @@ def command(args, engine) -> int:
                 if not path.is_file():
                     raise EngineError("Missing shader tool; run ./init.sh " + args.preset + " --preset-only")
                 shader_args.append("-D" + variable + "=" + str(path))
+            # The browser build has no luslc target; LUSL sources lower with a host build of it.
+            try:
+                shader_args.append("-DLUDUS_LUSLC=" + str(host_luslc.ensure(root)))
+            except host_luslc.HostLuslcError as error:
+                raise EngineError(str(error)) from error
         init_progress.begin("configure")
         request_codemodel(root / "out/build" / args.preset)
         run([emscripten / "emcmake", cmake, "--preset", args.preset, *shader_args], cwd=root, env=env)

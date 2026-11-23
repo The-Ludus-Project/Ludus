@@ -11,6 +11,18 @@
     {
       "path": "apps/editor/shaders",
       "issue": 1735
+    },
+    {
+      "path": "apps/smoke/shaders",
+      "issue": 1735
+    },
+    {
+      "path": "examples/cornell-box/shaders",
+      "issue": 1735
+    },
+    {
+      "path": "tools/shader-probe",
+      "issue": 1735
     }
   ],
   "retained": [

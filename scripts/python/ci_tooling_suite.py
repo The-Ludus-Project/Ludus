@@ -18,6 +18,8 @@ TEST_MODULES = (
     "test_ctest_headroom",
     "test_ctest_shard",
     "test_ci_checks",
+    # The host luslc that browser builds and their CI jobs lower LUSL shaders with.
+    "test_host_luslc",
 )
 
 

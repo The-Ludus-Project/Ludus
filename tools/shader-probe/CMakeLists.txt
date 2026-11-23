@@ -13,9 +13,11 @@ add_custom_command(
                "${shader_output}/wgsl.reflection.json" "${shader_output}/probe.vertex.spvasm"
                "${shader_output}/probe.fragment.spvasm" "${shader_output}/build-evidence.json"
                "${shader_output}/index.html" "${shader_output}/browser.js"
+               "${shader_output}/probe.lusl.slang" "${shader_output}/probe_slots.h" "${shader_output}/lusl.d"
     COMMAND "${Python3_EXECUTABLE}" "${PROJECT_SOURCE_DIR}/scripts/shader-probe"
-            compile --output "${shader_output}"
-    DEPENDS probe.slang "${PROJECT_SOURCE_DIR}/scripts/shader-probe"
+            compile --output "${shader_output}" --luslc "$<TARGET_FILE:luslc>"
+    DEPENDS probe.lusl luslc "${PROJECT_SOURCE_DIR}/scripts/shader-probe"
+            "${PROJECT_SOURCE_DIR}/cmake/shaders/lower_lusl.py"
             "${PROJECT_SOURCE_DIR}/config/shader_toolchain.json" browser.js index.html
     VERBATIM
 )
