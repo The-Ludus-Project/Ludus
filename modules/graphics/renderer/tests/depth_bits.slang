@@ -1,7 +1,7 @@
 // Test-only exact depth readback: copy every Depth32Float texel's IEEE bits into the four bytes of the RGBA8Unorm
 // surface (least significant byte in red), so the suites can measure positions rebuilt from the stored depth. Each
 // byte k is written as k / 255, which unorm conversion rounds back to k. The editor's texture viewer packs depth the
-// same way (apps/editor/shaders/texture_depth_pack.slang).
+// same way (apps/editor/shaders/texture_depth_pack.lusl).
 #include "raster_bindings.slang"
 
 LUDUS_SHADER_BINDING(0) Texture2D<float> DepthImage : register(t0);

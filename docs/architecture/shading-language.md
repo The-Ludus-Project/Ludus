@@ -934,6 +934,17 @@ are its `graphs/Main` programs, most of them instances of engine templates.
 
 L5 records the retained files in one list under `config/`, each with its reason.
 
+**The migrated-scope gate.** `config/lusl_migration.json` lists the
+directories whose shaders are LUSL (`migrated`) and the Slang files or
+directories the repository keeps (`retained`), each with its reason. The
+changed-source gate (`scripts/python/source_policy.py`, through
+`lusl_migration.py`) reads the whole tree. It rejects every `.slang` or
+`.slangh` file under a migrated directory that the retained list does not name,
+however the file arrived: added, renamed or copied. It also rejects a stale
+entry, a retained path that is not Slang, a duplicate and a reason too short to
+say why the file stays. A wave adds the directories it ports to `migrated` in
+the change that deletes their Slang originals.
+
 ### L5a: language and library gaps
 
 | Gap | Ludus files | Sample files | Proposed form |
@@ -1058,6 +1069,15 @@ changed-source gate, which then rejects new Slang sources there.
 | 3 | Render-graph templates, one template per change | Sample's instances of a template migrate in a Sample change built against that SDK | [1737](https://github.com/The-Ludus-Project/Ludus/issues/1737) |
 | 4 | Sample's project-only programs | After the templates they include | [1738](https://github.com/The-Ludus-Project/Ludus/issues/1738) |
 | 5 | Shared libraries: FoundationMath, FoundationGeometry, the scene shader API, reservoir and sampling helpers | Last: every remaining consumer is LUSL or reaches them through generated Slang | [1739](https://github.com/The-Ludus-Project/Ludus/issues/1739) |
+
+**Wave 1 status.** The retained list, the gate, and the Editor's texture
+viewer depth pack (`apps/editor/shaders`) are migrated. The standalone shader
+helper lowers sources that name `LUDUS_GLSL_ES` once per value, as the
+[module guide](../modules/tooling/shader-language.md#resources-and-bindings)
+describes. The Cornell box, `apps/smoke` and the shader probe also ship
+browser players. Browser builds have no host `luslc` yet, so those ports wait
+for it and for the browser evidence that issue 1735 requires. The tools'
+benchmarks and the standalone SDK consumer shaders remain.
 
 ### Acceptance
 

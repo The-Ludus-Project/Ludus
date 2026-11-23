@@ -353,6 +353,11 @@ rejects the explicit `== true`/`== false` style.
   common material/transport shaders. Preserve reflection and installation tests.
   C++ math headers are not automatically Slang-compatible: keep language-specific
   declarations in their owner's shader include, with matched numerical tests.
+- Write shaders in directories that `config/lusl_migration.json` lists as
+  migrated in LUSL. `source_policy.py` rejects any `.slang`/`.slangh` file
+  there that the file's retained list does not name with a reason. A migration
+  wave deletes the Slang originals and adds their directories in one change. See
+  `docs/architecture/shading-language.md#l5d-migration-waves`.
 - Run `python3 scripts/python/source_policy.py --base <base-commit-or-ref>`.
   CI checks added/modified lines against the PR base, including standalone
   samples and tests, without a debt baseline. Existing violations do not permit

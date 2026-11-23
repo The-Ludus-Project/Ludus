@@ -369,7 +369,7 @@ function(ludus_editor_compile_render_graph_host target)
         "LUDUS_EDITOR_DEFAULT_RENDER_GRAPH_RUNTIME=\"${editor_default_graph_RUNTIME_PACKAGE}\"")
     # Texture viewer depth readback: packs Depth32Float bits into an RGBA8 attachment.
     ludus_compile_shader(TARGET ${target} NAME editor_texture_depth_pack RASTER
-        SOURCE "${CMAKE_CURRENT_FUNCTION_LIST_DIR}/shaders/texture_depth_pack.slang"
+        SOURCE "${CMAKE_CURRENT_FUNCTION_LIST_DIR}/shaders/texture_depth_pack.lusl"
         VERTEX VertexMain FRAGMENT FragmentMain)
 endfunction()
 

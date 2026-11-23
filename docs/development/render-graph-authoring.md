@@ -10485,7 +10485,7 @@ Inspection is visibility-aware and uses independent snapshots:
   A pending refresh does not delay rendering during that interval.
 - Between frames, colour textures receive an exact-format GPU copy into an owned
   texture. RHI readback is RGBA8 only, so the editor's
-  `apps/editor/shaders/texture_depth_pack.slang` packs depth IEEE bits into an
+  `apps/editor/shaders/texture_depth_pack.lusl` packs depth IEEE bits into an
   owned RGBA8 attachment instead. Both preserve the captured frame's pixels.
 - Only GPU snapshot completion gates reuse of the source attachment. Subsequent
   band reads use the owned texture while the live graph renders newer frames or

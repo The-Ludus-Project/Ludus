@@ -1,0 +1,34 @@
+{
+  "$comment": [
+    "LUSL migration scope, checked by scripts/python/lusl_migration.py through source_policy.py",
+    "(docs/architecture/shading-language.md#l5d-migration-waves). 'migrated' lists directories whose",
+    "shaders are LUSL: each wave adds the directories it ports, and the gate then rejects any Slang",
+    "source (.slang/.slangh) there that 'retained' does not name. 'retained' lists the Slang files or",
+    "directories the repository keeps, each with the reason it stays Slang. Paths are",
+    "checkout-relative; every entry must exist."
+  ],
+  "migrated": [
+    {
+      "path": "apps/editor/shaders",
+      "issue": 1735
+    }
+  ],
+  "retained": [
+    {
+      "path": "modules/graphics/rhi/shaders",
+      "reason": "RHI interface vocabulary that LUSL lowering writes against (raster_bindings.slang, ray_query.slang, runtime_bindings.slang)"
+    },
+    {
+      "path": "modules/graphics/rhi/tests/shaders",
+      "reason": "RHI tests of Slang input: graph ray queries, ordered compute and raster storage"
+    },
+    {
+      "path": "modules/graphics/renderer/shaders/renderer_composite.slang",
+      "reason": "Differential oracle: a renderer GPU test compares its pixels with tests/lusl_composite.lusl"
+    },
+    {
+      "path": "scripts/python/fixtures",
+      "reason": "Legacy-format render-graph template fixtures that the template update and capture warmup tests read"
+    }
+  ]
+}

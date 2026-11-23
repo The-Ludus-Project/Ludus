@@ -5,6 +5,11 @@ Slang source. The LUSL compiler assigns binding slots and vertex input locations
 (docs/architecture/shading-language.md#resources-and-bindings); this script writes them as named
 C++ constants in <name>_slots.h, so host code never spells a slot number. It also writes a
 depfile of every file the lowering may read, found by the same lexical scan luslc uses.
+
+compile_shader.py defines LUDUS_GLSL_ES=1 only for the GLSL ES (WebGL 2) artifact. A LUSL
+preprocessor reads that macro before Slang sees it, so a source that tests it is lowered once with
+LUDUS_GLSL_ES=0 and once with =1; the module selects the lowering by the macro's value. Both
+lowerings must assign the same slots and locations, because host code binds one slot table.
 See docs/modules/tooling/shader-language.md, "Standalone shaders".
 """
 import argparse
@@ -21,6 +26,8 @@ TIMEOUT_SECONDS = 120
 # Paths LUSL names: `#include "x"` and `extern slang "x"`. The scan is lexical and conservative.
 NAMED_PATH = re.compile(r'(?:#[ \t]*include|\bextern[ \t\r\n]+slang)[ \t\r\n]*"([^"\n]+)"')
 LANGUAGE_FILES = ('.lusl', '.luslh')
+# Target macros that compile_shader.py defines for one artifact only (its GLSL ES variant).
+GLSL_ES_MACRO = 'LUDUS_GLSL_ES'
 IDENTIFIER = re.compile(r'[A-Za-z_][A-Za-z0-9_.]*\Z')
 
 
@@ -140,6 +147,46 @@ def depfile_path(path):
     return path.as_posix().replace('$', '$$').replace('#', r'\#').replace(' ', r'\ ')
 
 
+def references_macro(files, macro):
+    """Whether any LUSL file of the snapshot names `macro`, by the same lexical scan as includes."""
+    pattern = re.compile(rf'\b{re.escape(macro)}\b')
+    return any(pattern.search(path.read_text(encoding='utf-8', errors='replace')) is not None
+               for logical, path in files.items() if logical.endswith(LANGUAGE_FILES))
+
+
+def combine_variants(default, variant, macro):
+    """One module holding both lowerings; Slang's preprocessor selects one by `macro`."""
+    def ending(text):
+        return text if text.endswith('\n') else text + '\n'
+    # Slang's preprocessor evaluates both `&&` operands and warns about an undefined macro, so the
+    # selector is a generated macro that is always defined (`_LUSL` names are reserved for lowering).
+    selector = f'_LUSL_SELECT_{macro}'
+    return (f'// Lowered with {macro}=0 and {macro}=1; ludus_compile_shader defines it for one artifact.\n'
+            f'#if defined({macro})\n#define {selector} {macro}\n#else\n#define {selector} 0\n#endif\n'
+            f'#if {selector}\n{ending(variant)}#else\n{ending(default)}#endif\n')
+
+
+def lower(luslc, snapshot, directories, source, style, defines, directory):
+    """Run `luslc lower` once; return the generated Slang text and the slot report."""
+    report = Path(directory) / 'report.txt'
+    output = Path(directory) / 'generated.slang'
+    command = [luslc, 'lower', '--root', str(snapshot), '--style', style,
+               '--output', str(output), '--report', str(report)]
+    for include in directories:
+        command += ['--include-directory', include]
+    for define in defines:
+        command += ['--define', define]
+    command.append(source)
+    try:
+        result = subprocess.run(command, capture_output=True, text=True, timeout=TIMEOUT_SECONDS, check=False)
+    except (OSError, subprocess.TimeoutExpired) as error:
+        fail(f'luslc could not run: {error}')
+    sys.stderr.write(result.stderr)
+    if result.returncode != 0:
+        raise SystemExit(1)
+    return output.read_text(encoding='utf-8'), report.read_text(encoding='utf-8')
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     for key in ('luslc', 'root', 'source', 'output', 'slots', 'depfile', 'name'):
@@ -151,25 +198,24 @@ def main():
         fail(f"'{args.name}' is not a shader name")
     root = Path(args.root)
     with tempfile.TemporaryDirectory(prefix='ludus-lusl-') as directory:
-        report = Path(directory) / 'report.txt'
-        output = Path(directory) / 'generated.slang'
         snapshot = Path(directory) / 'snapshot'
         directories, files = stage_snapshot(root, args.source, args.include_directory, snapshot)
-        command = [args.luslc, 'lower', '--root', str(snapshot), '--style', args.style,
-                   '--output', str(output), '--report', str(report)]
-        for include in directories:
-            command += ['--include-directory', include]
-        command.append(args.source)
-        try:
-            result = subprocess.run(command, capture_output=True, text=True, timeout=TIMEOUT_SECONDS, check=False)
-        except (OSError, subprocess.TimeoutExpired) as error:
-            fail(f'luslc could not run: {error}')
-        if result.returncode != 0:
-            sys.stderr.write(result.stderr)
-            raise SystemExit(1)
-        sys.stderr.write(result.stderr)
-        generated = remap_slang_includes(output.read_text(encoding='utf-8'), files, Path(args.output).parent)
-        slots = slot_header(args.name, report.read_text(encoding='utf-8'))
+        variants = [[]]
+        if references_macro(files, GLSL_ES_MACRO):
+            variants = [[f'{GLSL_ES_MACRO}=0'], [f'{GLSL_ES_MACRO}=1']]
+        lowered = []
+        for index, defines in enumerate(variants):
+            work = Path(directory) / f'variant{index}'
+            work.mkdir()
+            text, report = lower(args.luslc, snapshot, directories, args.source, args.style, defines, work)
+            lowered.append((text, slot_header(args.name, report)))
+        generated, slots = lowered[0]
+        if len(lowered) > 1:
+            if lowered[1][1] != slots:
+                fail(f'{args.source}: {GLSL_ES_MACRO} changes the binding slots or vertex input locations; '
+                     f'keep resource and input declarations outside #if {GLSL_ES_MACRO}')
+            generated = combine_variants(generated, lowered[1][0], GLSL_ES_MACRO)
+        generated = remap_slang_includes(generated, files, Path(args.output).parent)
     publish(Path(args.slots), slots)
     inputs = ' '.join(depfile_path(path) for path in sorted(set(files.values())))
     # Ninja reads one target per depfile: the generated module, written last.

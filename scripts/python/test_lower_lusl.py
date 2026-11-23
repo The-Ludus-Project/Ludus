@@ -74,6 +74,25 @@ class LowerLuslTests(unittest.TestCase):
             self.assertEqual(lower_lusl.remap_slang_includes(f'#include "{logical_include}"\n', files, output),
                              '#include "../first root/implementation.slang"\n')
 
+    def test_glsl_es_sources_are_found_through_includes(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            (root / 'main.lusl').write_text('#include "fullscreen.luslh"\n')
+            (root / 'fullscreen.luslh').write_text('#if LUDUS_GLSL_ES\n#endif\n')
+            (root / 'plain.lusl').write_text('// LUDUS_GLSL_ESX is another name\n')
+            _, files = lower_lusl.stage_snapshot(root, 'main.lusl', [], root / 'snapshot')
+            self.assertTrue(lower_lusl.references_macro(files, 'LUDUS_GLSL_ES'))
+            _, files = lower_lusl.stage_snapshot(root, 'plain.lusl', [], root / 'plain')
+            self.assertFalse(lower_lusl.references_macro(files, 'LUDUS_GLSL_ES'))
+
+    def test_glsl_es_lowerings_are_selected_by_the_driver_macro(self):
+        module = lower_lusl.combine_variants('float Identity();', 'float Flip();\n', 'LUDUS_GLSL_ES')
+        lines = module.splitlines()
+        self.assertEqual(lines[1:6], ['#if defined(LUDUS_GLSL_ES)', '#define _LUSL_SELECT_LUDUS_GLSL_ES LUDUS_GLSL_ES',
+                                      '#else', '#define _LUSL_SELECT_LUDUS_GLSL_ES 0', '#endif'])
+        self.assertEqual(lines[6:], ['#if _LUSL_SELECT_LUDUS_GLSL_ES', 'float Flip();', '#else', 'float Identity();',
+                                     '#endif'])
+
 
 if __name__ == '__main__':
     unittest.main()
