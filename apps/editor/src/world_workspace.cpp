@@ -3089,6 +3089,7 @@ void WorldWorkspace::addCreatedMaterial(QFormLayout& inoutRows)
     inoutRows.addRow(edit);
 }
 
+// NOLINTNEXTLINE(bugprone-easily-swappable-parameters): the source resource ID and the preferred model are distinct.
 void WorldWorkspace::createImportedMaterial(const QString& source, const QString& preferredModel)
 {
     const RenderScene& presented = Scene_->PreviewScene();
