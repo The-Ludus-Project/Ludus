@@ -2,6 +2,8 @@
 
 #include <ludus/foundation/base/types.h>
 
+#include "internal/language_profiles.h"
+
 #include <QByteArray>
 #if !defined(Q_OS_WASM)
 #    include <QFutureWatcher>
@@ -20,16 +22,24 @@ QT_END_NAMESPACE
 
 namespace ludus::editor
 {
-/// Private native stdio adapter for Slang LSP. No document/widget/file ownership.
-/// GUI-thread calls; process IO is asynchronous and bounded. Each restart drops
-/// outstanding requests. Only UTF-16 and incremental text synchronization are admitted.
-class SlangLanguageService final : public QObject
+/// Private native stdio LSP 3.17 client for one profiled server (code editor M4).
+/// No document/widget/file ownership. GUI-thread calls; process IO is
+/// asynchronous and bounded. Each restart drops outstanding requests. Only
+/// UTF-16 and incremental text synchronization are admitted. The profile
+/// supplies the language identifier, required capabilities, configuration
+/// answers and message vocabulary; the client never interprets a language.
+class LanguageClient final : public QObject
 {
     Q_OBJECT
 public:
-    explicit SlangLanguageService(QObject* parentOrNull = nullptr);
-    ~SlangLanguageService() override;
-    void Start(const QString& program, const QString& workspace, const QStringList& arguments = {});
+    explicit LanguageClient(QObject* parentOrNull = nullptr);
+    ~LanguageClient() override;
+    /// Stop any running server and start `program` for `profile`. The profile
+    /// must outlive the connection; the built-in profiles are static.
+    void Start(const LanguageServerProfile& profile,
+               const QString& program,
+               const QString& workspace,
+               const QStringList& arguments = {});
     void Stop();
     /// Retain the latest virtual unit while initializing; opens/changes it when ready.
     void SetDocument(const QString& uri, const QString& text);
@@ -53,6 +63,8 @@ private:
     void receive(const QJsonObject& message);
     void fail(const QString& message);
     void synchronize();
+    [[nodiscard]] bool hasRequiredCapabilities(const QJsonObject& capabilities) const;
+    const LanguageServerProfile* mProfile = &GetSlangServerProfile();
     QProcess* mProcessOrNull = nullptr;
     QTimer mDeadline;
 #if !defined(Q_OS_WASM)

@@ -2,7 +2,7 @@
 
 #include "internal/code_document_controller.h"
 #include "internal/code_navigation_results.h"
-#include "internal/slang_language_service.h"
+#include "internal/language_client.h"
 
 #include <QJsonArray>
 #include <QJsonObject>
@@ -58,7 +58,7 @@ private:
     [[nodiscard]] bool mapPosition(const QJsonObject& position, foundation::usize& outBytes) const;
     CodeEditor& mEditor;
     CodeDocumentController& mDocument;
-    SlangLanguageService mService;
+    LanguageClient mClient;
     QTimer mRefresh;
     CodeTextCapture mCapture;
     QString mServer;

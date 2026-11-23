@@ -257,8 +257,10 @@ interactive qualification are recorded for review.
 
 Requirements: CE09-CE11, CE20. Prerequisite: M2, M3.
 
-- [ ] Move `SlangLanguageService` into `LanguageClient` with no behavior change;
-  all existing slangd tests must pass unchanged.
+- [x] Move `SlangLanguageService` into `LanguageClient` with no behavior change;
+  all existing slangd tests must pass unchanged. *(Batch 1;
+  `internal/language_client.h/.cpp` and `internal/language_profiles.h/.cpp`;
+  see the [M4 batch 1 decision-log entry](../../../docs/architecture/code-editor-decision-log.md#m4-batch-1-the-generic-client-move-ce09-2026-11-22).)*
 - [ ] Add capability dispatch, the request table, priorities, cancellation,
   incremental synchronization, position-encoding negotiation and the restart
   policy.
