@@ -126,6 +126,35 @@ bool CodeNavigation::RequestDefinition()
     return true;
 }
 
+bool CodeNavigation::RequestReferences()
+{
+    if (mReferences->isEnabled() == false)
+    {
+        return false;
+    }
+    mReferences->trigger();
+    return true;
+}
+
+QString CodeNavigation::GetReferencesUnavailableReason() const
+{
+    return mReferences->isEnabled() == true ? QString() : mReferences->toolTip();
+}
+
+bool CodeNavigation::RevealView()
+{
+    return mViewHostOrNull == nullptr || mViewHostOrNull->ActivateNavigationView(this, mFile) == this;
+}
+
+void CodeNavigation::ShowReferences(const CodeReferenceResults& results)
+{
+    if (mViewHostOrNull != nullptr && mViewHostOrNull->ShowReferences(*this, results) == true)
+    {
+        return;
+    }
+    ShowResults(results.Targets, results.Message);
+}
+
 bool CodeNavigation::IsChoosing() const
 {
     return mPopup->isVisible();

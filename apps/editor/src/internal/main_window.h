@@ -54,6 +54,7 @@ class CodeAreaSearchScope;
 class CodeEditorArea;
 class CodeStatusBar;
 class SearchToolWindow;
+class CodeReferencesWindow;
 class ConfigurationWorkspace;
 class EditHistoryPanel;
 struct EditHistoryState;
@@ -315,6 +316,9 @@ private:
     // members, and are owned by their dock / this window.
     QDockWidget* mSearchDockOrNull = nullptr;
     SearchToolWindow* mSearchOrNull = nullptr;
+    /// The References tool window (code editor M4): Find References results from package shaders.
+    QDockWidget* mReferencesDockOrNull = nullptr;
+    CodeReferencesWindow* mReferencesOrNull = nullptr;
     CodeAreaSearchScope* mSearchScopeOrNull = nullptr;
     // The editor keymap (CE07/CE17 shortcut resolution): the active profile, the
     // user overrides and the resolved bindings applied to the shell's actions.

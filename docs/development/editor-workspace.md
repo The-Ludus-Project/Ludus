@@ -558,10 +558,11 @@ The layout follows Visual Studio, built on Qt Widgets' own docking:
   as large as the window allows: Project Explorer (tabbed with Content and Render
   Preview) is on the left, Properties (tabbed with Live Inspector, and Ray Paths
   when a capture starts) is on the right, and the diagnostics group below the
-  documents starts **closed**: Error List tabbed with Output, Timing and
-  Profiling. Each opens when there is something to show: new errors or warnings
-  reveal the Error List, a build reveals Output, the first Play session of an
-  editor run reveals Timing, and recording reveals Profiling. Drag a title bar to
+  documents starts **closed**: Error List tabbed with Search, References,
+  Output, Timing and Profiling. Each opens when there is something to show: new
+  errors or warnings reveal the Error List, Find in Files reveals Search, Find
+  References in a shader reveals References, a build reveals Output, the first
+  Play session of an editor run reveals Timing, and recording reveals Profiling. Drag a title bar to
   move, tab or float a tool window. **View** shows and focuses one (Project
   Explorer Ctrl+Alt+L, Properties F4, Error List Ctrl+Alt+E, Output Ctrl+Alt+O,
   Render Preview). The **Window** menu lists every tool window with a check mark

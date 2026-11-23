@@ -315,6 +315,8 @@ MainWindow::MainWindow(EditorController* controller, QWidget* parent, const QStr
 
 MainWindow::~MainWindow()
 {
+    // Shader tabs outlive the References window during teardown; detach it first.
+    Renderer_->SetReferencesWindow(nullptr);
     // The Search tool window borrows the scope provider by reference, so destroy
     // the dock (and with it the tool window) before the non-QObject scope it used.
     delete mSearchDockOrNull;
@@ -756,6 +758,13 @@ void MainWindow::BuildMenus()
             }
         });
         viewMenu->addAction(searchAction);
+    }
+    if (mReferencesDockOrNull != nullptr)
+    {
+        QAction* referencesAction = new QAction(QStringLiteral("&References"), this);
+        referencesAction->setObjectName(QStringLiteral("viewReferencesToolWindow"));
+        connect(referencesAction, &QAction::triggered, this, [this]() { showToolWindow(mReferencesDockOrNull); });
+        viewMenu->addAction(referencesAction);
     }
     addToolWindowCommand(VIEW_OUTPUT_COMMAND, OutputDock_);
     addToolWindowCommand(VIEW_CONTENT_COMMAND, mContentDock);

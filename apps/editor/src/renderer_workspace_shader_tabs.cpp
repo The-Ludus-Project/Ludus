@@ -4,6 +4,7 @@
 #include "internal/code_document_tab.h"
 #include "internal/code_editor_area.h"
 #include "internal/code_formatter.h"
+#include "internal/code_references_window.h"
 #include "internal/lusl_formatting.h"
 #include "internal/render_graph_shader_assistance.h"
 #include "internal/render_graph_shader_language.h"
@@ -416,6 +417,21 @@ CodeNavigation* RendererWorkspace::OpenNavigationTarget(const CodeNavigationTarg
     mShaderCodeArea->RefreshSessionTabs();
     revealShaderCodeTab(tab);
     return &navigation;
+}
+
+void RendererWorkspace::SetReferencesWindow(CodeReferencesWindow* windowOrNull)
+{
+    mReferencesWindow = windowOrNull;
+}
+
+bool RendererWorkspace::ShowReferences(CodeNavigation& inoutOrigin, const CodeReferenceResults& results)
+{
+    if (mReferencesWindow.isNull() == true)
+    {
+        return false;
+    }
+    mReferencesWindow->Show(inoutOrigin, results);
+    return true;
 }
 
 CodeNavigation* RendererWorkspace::ActivateNavigationView(CodeNavigation* viewOrNull, const QString& file)

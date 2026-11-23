@@ -1032,3 +1032,26 @@ next batch.
 
 The references tool window follows in its own batch.
 
+### M4 batch 3e: the References tool window (CE10, 2026-11-23)
+
+- **Routing.** `CodeNavigationViewHost` gains `ShowReferences`, which returns
+  false by default. `CodeAssistance` hands Find References results, with the
+  symbol at the caret, to `CodeNavigation::ShowReferences`; a host that has a
+  References window takes them, and any other host (plain Code tabs, tests)
+  keeps the chooser beside the editor. `RendererWorkspace` takes them for
+  package shaders once the main window attaches its window.
+- **Window.** `CodeReferencesWindow` (`internal/code_references_window.h`) is a
+  bottom tool window tabbed with the Error List and Search, closed until a
+  result arrives, and listed in **View** and **Window**. It groups rows by file
+  (the current source, other package files, and read-only shader context) and
+  shows each use's line, column and line text from the captured snapshot.
+- **Staleness.** Rows hold copied targets, not anchors, so they stay correct
+  only while the finding editor's text is unchanged. The window records that
+  document's revision: after an edit, activating a row reports that the list
+  describes earlier text and offers **Find Again** rather than jumping to a
+  shifted position. Find Again restores the request caret, which is anchored in
+  the document and so moved with the edits, and runs Find References there. A
+  closed editor disables Find Again and says how to start over. Activating a
+  row first brings the finding editor's tab forward through its host, so a row
+  works after the author has switched tabs.
+
