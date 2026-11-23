@@ -601,6 +601,8 @@ add_library(ludus_editor_code STATIC
     src/internal/code_formatter.h src/code_formatter.cpp
     src/internal/lusl_formatting.h src/lusl_formatting.cpp
     src/internal/language_profiles.h src/language_profiles.cpp
+    src/internal/language_positions.h src/language_positions.cpp
+    src/internal/language_requests.h src/language_requests.cpp
     src/internal/language_client.h src/language_client.cpp
     src/internal/code_assistance.h src/code_assistance.cpp)
 file(READ "${PROJECT_SOURCE_DIR}/config/tool_versions.json" editor_tool_versions)
@@ -1294,8 +1296,10 @@ if(LUDUS_BUILD_TESTS AND NOT EMSCRIPTEN)
     target_compile_definitions(ludus_code_editor_tests PRIVATE QT_NO_KEYWORDS QT_NO_CAST_FROM_ASCII)
     configure_file(tests/formatter_fixture.py generated/formatter_fixture.py COPYONLY)
     configure_file(tests/slang_server_fixture.py generated/slang_server_fixture.py COPYONLY)
+    configure_file(tests/language_server_fixture.py generated/language_server_fixture.py COPYONLY)
     target_compile_definitions(ludus_code_editor_tests PRIVATE
         "LUDUS_SLANG_FIXTURE=\"${CMAKE_CURRENT_BINARY_DIR}/generated/slang_server_fixture.py\""
+        "LUDUS_LANGUAGE_SERVER_FIXTURE=\"${CMAKE_CURRENT_BINARY_DIR}/generated/language_server_fixture.py\""
         "LUDUS_TEST_PYTHON=\"${Python3_EXECUTABLE}\"")
     target_compile_definitions(ludus_code_editor_tests PRIVATE
         "LUDUS_FORMATTER_FIXTURE=\"${CMAKE_CURRENT_BINARY_DIR}/generated/formatter_fixture.py\"")

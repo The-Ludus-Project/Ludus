@@ -756,6 +756,70 @@ TEST_CASE("Slang protocol failures and crashes preserve text and allow a fresh r
     }
 }
 
+TEST_CASE("Capability dispatch disables unadvertised assistance and follows server trigger characters",
+          "[editor][text][assistance]")
+{
+    MemoryCodeDocument host("Ite");
+    CodeEditor editor;
+    CodeDocumentController document(editor);
+    document.Bind(&host);
+    editor.SetLanguage(CodeLanguage::Lusl);
+    CodeAssistance assistance(editor, document);
+    QTemporaryDir temporary;
+    QObject::connect(&assistance, &CodeAssistance::ContextRequested, &editor, [&]() {
+        assistance.SetContext(
+            QString::fromUtf8(LUDUS_TEST_PYTHON),
+            temporary.path(),
+            QUrl::fromLocalFile(temporary.filePath(QStringLiteral("unit.lusl"))).toString(),
+            {},
+            {},
+            {QString::fromUtf8(LUDUS_LANGUAGE_SERVER_FIXTURE),
+             QStringLiteral("--capabilities"),
+             QStringLiteral(R"({"completionProvider": {"triggerCharacters": [":"]}, "referencesProvider": true})")},
+            {},
+            GetLuslServerProfile());
+    });
+    editor.show();
+    editor.setFocus();
+    editor.moveCursor(QTextCursor::End);
+    assistance.Request(false);
+    QListWidget* popupOrNull = editor.findChild<QListWidget*>(QStringLiteral("codeCompletionList"));
+    REQUIRE(popupOrNull != nullptr);
+    // A server without signature help still serves completion (LUSL before M4 failed here).
+    REQUIRE(QTest::qWaitFor([popupOrNull]() { return popupOrNull->isVisible() == true; }));
+    REQUIRE(popupOrNull->count() == 1);
+    CHECK(popupOrNull->item(0)->text().startsWith(QStringLiteral("Item")) == true);
+    QTest::keyClick(&editor, Qt::Key_Escape);
+    QAction* signatureOrNull = nullptr;
+    for (QAction* action : editor.actions())
+    {
+        signatureOrNull = action->objectName() == QStringLiteral("codeEditorSignature") ? action : signatureOrNull;
+    }
+    REQUIRE(signatureOrNull != nullptr);
+    CHECK(signatureOrNull->isEnabled() == false);
+    CHECK(signatureOrNull->toolTip() == QStringLiteral("The selected luslc does not support signatureHelp."));
+    for (QAction* action : editor.GetNavigation().GetActions())
+    {
+        if (action->text() == QStringLiteral("Go to Definition"))
+        {
+            CHECK(action->isEnabled() == false);
+            CHECK(action->toolTip().contains(QStringLiteral("does not support definition")) == true);
+        }
+        if (action->text() == QStringLiteral("Find References"))
+        {
+            CHECK(action->isEnabled() == true);
+        }
+    }
+    // The server's trigger character requests completion while typing.
+    QTest::keyClick(&editor, Qt::Key_End);
+    QTest::keyClicks(&editor, QStringLiteral(":"));
+    REQUIRE(QTest::qWaitFor([popupOrNull]() { return popupOrNull->isVisible() == true; }));
+    CHECK(host.CanUndo() == true);
+    // A new context returns to the defaults until its server reports capabilities.
+    assistance.ClearContext();
+    CHECK(signatureOrNull->isEnabled() == true);
+}
+
 TEST_CASE("Escape cancels pending shader assistance before a delayed reply", "[editor][text][assistance]")
 {
     MemoryCodeDocument host("// hold-response\nscene.Ve");

@@ -9172,13 +9172,17 @@ also work without Slang, including in the session-only browser editor.
 #### Shader completion and signature help
 
 In a native Source editor, press **Ctrl+Space** to complete a symbol, or type
-`.` for members. Type a prefix to narrow the suggestions. Up/Down selects an
+one of the language server's trigger characters (`.` for members with `slangd`
+and `luslc`). Type a prefix to narrow the suggestions. Up/Down selects an
 item; Enter or Tab accepts it; Escape dismisses assistance. Completion uses the
 current unsaved draft, including package includes, manifest-generated types and
 bindings, scene/material APIs and shader functions. An accepted completion and
 its additional source edits form one undo step; Save remains explicit.
 
 Press **Ctrl+Shift+Space** inside a call, or type `(` or `,`, for signature help.
+A command the selected language server does not support (for example signature
+help with `luslc`, or Find References with an older `slangd`) is disabled, and
+its tooltip names the reason.
 The active parameter is emphasized. **Alt+PageUp/PageDown** selects another
 overload when available. These two Space shortcuts use the physical **Control**
 key on macOS, unlike the Command mapping of the ordinary editing shortcuts above.
@@ -9199,7 +9203,10 @@ temporary draft package and uses the same source-generation owner as shader
 compilation. It does not download tools or save project files. Missing tools,
 invalid graph/interface inputs and process failures appear directly below the
 selector with a repair message. After repairing them, use **Retry assistance**
-to refresh available contexts and start again. Ordinary editing stays available.
+to refresh available contexts and start again. If the server exits unexpectedly,
+assistance restarts it after one second, then two; after a third exit within a
+minute it stays stopped until **Retry assistance**. LUSL sources use `luslc lsp`
+from the project SDK the same way. Ordinary editing stays available.
 
 The initial provider needs an executable program context. Unassigned source files,
 legacy compatibility rewrites of the editable file, repeated inclusion of that

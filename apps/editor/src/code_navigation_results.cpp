@@ -31,51 +31,9 @@ QString DescribeLocationCount(int32 count)
 }
 } // namespace
 
-namespace
-{
-using ProtocolLineOffsets = QList<foundation::int32>;
-ProtocolLineOffsets BuildProtocolLines(const QString& text)
-{
-    ProtocolLineOffsets lines{0};
-    qsizetype position = 0;
-    while ((position = text.indexOf(QLatin1Char('\n'), position)) >= 0)
-    {
-        lines.append(static_cast<foundation::int32>(++position));
-    }
-    return lines;
-}
-
-bool ResolveProtocolOffset(const QString& text,
-                           const ProtocolLineOffsets& lines,
-                           const QJsonObject& position,
-                           foundation::int32& outOffset)
-{
-    const foundation::int32 line = position.value(QStringLiteral("line")).toInt(-1);
-    const foundation::int32 column = position.value(QStringLiteral("character")).toInt(-1);
-    if (line < 0 || line >= lines.size() || column < 0)
-    {
-        return false;
-    }
-    const foundation::int32 start = lines.at(line);
-    const foundation::int32 end =
-        line + 1 < lines.size() ? lines.at(line + 1) - 1 : static_cast<foundation::int32>(text.size());
-    if (column > end - start)
-    {
-        return false;
-    }
-    const foundation::int32 offset = start + column;
-    if (offset > 0 && offset < text.size() && text.at(offset).isLowSurrogate() == true)
-    {
-        return false;
-    }
-    outOffset = offset;
-    return true;
-}
-} // namespace
-
 bool GetCodeProtocolOffset(const QString& text, const QJsonObject& position, foundation::int32& outOffset)
 {
-    return ResolveProtocolOffset(text, BuildProtocolLines(text), position, outOffset);
+    return GetLanguageOffset(text, position, LanguagePositionEncoding::Utf16, outOffset);
 }
 
 QList<CodeNavigationTarget> ReadCodeNavigationResults(CodeNavigationKind kind,
@@ -86,13 +44,14 @@ QList<CodeNavigationTarget> ReadCodeNavigationResults(CodeNavigationKind kind,
                                                       const QString& source,
                                                       const QString& file,
                                                       const CodeNavigationSources& sources,
-                                                      QString& outMessage)
+                                                      QString& outMessage,
+                                                      LanguagePositionEncoding encoding)
 {
     using namespace foundation;
     QList<CodeNavigationTarget> result;
     QJsonArray pending =
         value.isArray() == true ? value.toArray() : (value.isObject() == true ? QJsonArray{value} : QJsonArray{});
-    QMap<QString, ProtocolLineOffsets> indexedLines;
+    QMap<QString, QList<int32>> indexedLines;
     QSet<QString> seen;
     const int32 prefixLines = static_cast<int32>(prefix.count(QLatin1Char('\n')));
     int32 examined = 0;
@@ -149,14 +108,14 @@ QList<CodeNavigationTarget> ReadCodeNavigationResults(CodeNavigationKind kind,
         }
         if (indexedLines.contains(targetUri) == false)
         {
-            indexedLines.insert(targetUri, BuildProtocolLines(text));
+            indexedLines.insert(targetUri, IndexLanguageLines(text));
         }
-        const ProtocolLineOffsets lines = indexedLines.value(targetUri);
+        const QList<int32> lines = indexedLines.value(targetUri);
         int32 displayLine = range.value(QStringLiteral("start")).toObject().value(QStringLiteral("line")).toInt() + 1;
         int32 start = 0;
         int32 end = 0;
-        if (ResolveProtocolOffset(text, lines, range.value(QStringLiteral("start")).toObject(), start) == false ||
-            ResolveProtocolOffset(text, lines, range.value(QStringLiteral("end")).toObject(), end) == false ||
+        if (GetLanguageOffset(text, lines, range.value(QStringLiteral("start")).toObject(), encoding, start) == false ||
+            GetLanguageOffset(text, lines, range.value(QStringLiteral("end")).toObject(), encoding, end) == false ||
             end < start)
         {
             ++rejected;

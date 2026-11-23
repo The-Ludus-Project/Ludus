@@ -28,7 +28,6 @@ constexpr int32 MAX_HISTORY = 64;
 constexpr int32 PICKER_WIDTH = 640;
 constexpr int32 PICKER_HEIGHT = 320;
 constexpr int32 PICKER_OFFSET = 8;
-constexpr qsizetype FIRST_SEMANTIC_ACTION = 3;
 
 int32 ClampOffset(const QString& text, int32 offset)
 {
@@ -82,7 +81,7 @@ CodeNavigation::CodeNavigation(CodeEditor& inoutEditor)
     new MouseHistoryButtons(*this, mEditor, *mBack, *mForward);
     mFiles =
         addAction(QStringLiteral("Quick Open Source"), QKeySequence(Qt::CTRL | Qt::Key_P), [this]() { openFile(); });
-    addAction(QStringLiteral("Go to Symbol"), QKeySequence(Qt::CTRL | Qt::SHIFT | Qt::Key_O), [this]() {
+    mSymbols = addAction(QStringLiteral("Go to Symbol"), QKeySequence(Qt::CTRL | Qt::SHIFT | Qt::Key_O), [this]() {
         Q_EMIT Requested(CodeNavigationKind::Symbols);
     });
     mDefinition = addAction(QStringLiteral("Go to Definition"), QKeySequence(Qt::Key_F12), [this]() {
@@ -151,21 +150,33 @@ void CodeNavigation::RefreshActions()
     mBack->setEnabled(owner.mPrevious.isEmpty() == false);
     mForward->setEnabled(owner.mNext.isEmpty() == false);
     mFiles->setEnabled(mFilesAvailable.isEmpty() == false);
-    for (qsizetype index = FIRST_SEMANTIC_ACTION; index < mActions.size(); ++index)
+    const bool hasService = mEditor.isReadOnly() == false && HasCodeLanguageService(mEditor.GetLanguage()) == true;
+    const StaticArray<QAction*, CODE_NAVIGATION_KIND_COUNT> actions{{mSymbols, mDefinition, mReferences}};
+    const StaticArray<QString, CODE_NAVIGATION_KIND_COUNT> descriptions{
+        {QStringLiteral("Go to a symbol of this source in the selected compiler context."),
+         QStringLiteral("Go to the definition in the selected compiler context."),
+         QStringLiteral("Find references in the selected compiler context.")}};
+    for (usize index = 0; index < CODE_NAVIGATION_KIND_COUNT; ++index)
     {
-        mActions.at(index)->setEnabled(mEditor.isReadOnly() == false && HasCodeLanguageService(mEditor.GetLanguage()));
+        const QString& reason = mUnavailableReasons[index];
+        actions[index]->setEnabled(hasService == true && reason.isEmpty() == true);
+        actions[index]->setToolTip(reason.isEmpty() == true ? descriptions[index]
+                                                            : reason + QStringLiteral(" Use Find for text matches."));
     }
-    mReferences->setEnabled(mEditor.isReadOnly() == false && HasCodeLanguageService(mEditor.GetLanguage()) == true &&
-                            mCanFindReferences == true);
-    mReferences->setToolTip(
-        mCanFindReferences == true
-            ? QStringLiteral("Find references in the selected compiler context.")
-            : QStringLiteral("The selected slangd does not advertise reference search. Use Find for text matches."));
 }
 
-void CodeNavigation::SetReferencesAvailable(bool canFindReferences)
+void CodeNavigation::SetSemanticAvailability(CodeNavigationKind kind, const QString& unavailableReason)
 {
-    mCanFindReferences = canFindReferences;
+    mUnavailableReasons[static_cast<usize>(kind)] = unavailableReason;
+    RefreshActions();
+}
+
+void CodeNavigation::ResetSemanticAvailability()
+{
+    for (QString& reason : mUnavailableReasons)
+    {
+        reason.clear();
+    }
     RefreshActions();
 }
 

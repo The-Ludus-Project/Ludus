@@ -29,7 +29,10 @@ public:
                     const QString& prefix,
                     const QString& suffix,
                     const QStringList& serverArguments = {},
-                    const CodeNavigationSources& navigationSources = {});
+                    const CodeNavigationSources& navigationSources = {},
+                    const LanguageServerProfile& profile = GetSlangServerProfile());
+    /// The connected server's retained standard error, for Show Log.
+    [[nodiscard]] const QString& GetServerLog() const noexcept;
     void Request(bool isSignature);
     /// Read-only semantic navigation through the same versioned compiler context.
     void RequestNavigation(CodeNavigationKind kind);
@@ -50,6 +53,8 @@ private:
     void cancelPending();
     void requestCurrent();
     void receive(foundation::int32 request, const QJsonValue& value);
+    void applyAvailability();
+    void resetAvailability();
     void showSignatures();
     void acceptCompletion(foundation::int32 row);
     void acceptNavigation(foundation::int32 row);
@@ -59,6 +64,8 @@ private:
     CodeEditor& mEditor;
     CodeDocumentController& mDocument;
     LanguageClient mClient;
+    const LanguageServerProfile* mProfile = &GetSlangServerProfile();
+    LanguageRequestKind mRequestKind = LanguageRequestKind::Completion;
     QTimer mRefresh;
     CodeTextCapture mCapture;
     QString mServer;

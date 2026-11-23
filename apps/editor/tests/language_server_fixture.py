@@ -1,0 +1,129 @@
+#!/usr/bin/env python3
+"""Scripted framed-stdio LSP peer for the generic language client (code editor M4).
+
+Options shape the server a test needs:
+  --capabilities JSON   extra ServerCapabilities, merged over the defaults
+  --sync KIND           textDocumentSync change kind (0 none, 1 full, 2 incremental)
+  --encoding NAME       positionEncoding to choose, or 'omit' to leave it out
+  --record PATH         append one JSON line per received message, plus the
+                        document text after each change
+  --hold METHOD         hold the first METHOD reply until the next request arrives
+  --error METHOD        answer METHOD with an internal error
+  --crash-starts PATH:N exit after initialize on the first N starts, counted in PATH
+"""
+import argparse
+import json
+import sys
+
+parser = argparse.ArgumentParser()
+parser.add_argument('--capabilities', default='{}')
+parser.add_argument('--sync', type=int, default=2)
+parser.add_argument('--encoding', default='utf-16')
+parser.add_argument('--record')
+parser.add_argument('--hold', action='append', default=[])
+parser.add_argument('--error', action='append', default=[])
+parser.add_argument('--crash-starts')
+options = parser.parse_args()
+
+text = ''
+held = []
+
+
+def record(value):
+    if options.record:
+        with open(options.record, 'a', encoding='utf-8') as output:
+            output.write(json.dumps(value) + '\n')
+
+
+def send(value):
+    body = json.dumps(dict(jsonrpc='2.0', **value)).encode()
+    sys.stdout.buffer.write(b'Content-Length: ' + str(len(body)).encode() + b'\r\n\r\n' + body)
+    sys.stdout.buffer.flush()
+
+
+def offset(position):
+    """The str index of a protocol position in the chosen encoding."""
+    lines = text.split('\n')
+    before = sum(len(line) + 1 for line in lines[:position['line']])
+    line = lines[position['line']]
+    if options.encoding == 'utf-8':
+        return before + len(line.encode('utf-8')[:position['character']].decode('utf-8'))
+    units = line.encode('utf-16-le')[:position['character'] * 2]
+    return before + len(units.decode('utf-16-le'))
+
+
+def should_crash():
+    if not options.crash_starts:
+        return False
+    path, limit = options.crash_starts.rsplit(':', 1)
+    try:
+        with open(path, encoding='utf-8') as counter:
+            starts = int(counter.read() or '0')
+    except FileNotFoundError:
+        starts = 0
+    with open(path, 'w', encoding='utf-8') as counter:
+        counter.write(str(starts + 1))
+    return starts < int(limit)
+
+
+while True:
+    header = sys.stdin.buffer.readline()
+    if not header:
+        break
+    length = int(header.split(b':')[1])
+    sys.stdin.buffer.readline()
+    message = json.loads(sys.stdin.buffer.read(length))
+    method = message.get('method')
+    record({'method': method, 'id': message.get('id'), 'params': message.get('params')})
+    if method == 'initialize':
+        capabilities = {'textDocumentSync': {'openClose': True, 'change': options.sync}}
+        if options.encoding != 'omit':
+            capabilities['positionEncoding'] = options.encoding
+        capabilities.update(json.loads(options.capabilities))
+        send({'id': message['id'], 'result': {'capabilities': capabilities}})
+        if should_crash():
+            sys.exit(3)
+        continue
+    if method == 'textDocument/didOpen':
+        text = message['params']['textDocument']['text']
+        record({'text': text})
+        continue
+    if method == 'textDocument/didChange':
+        for change in message['params']['contentChanges']:
+            if 'range' in change:
+                start = offset(change['range']['start'])
+                end = offset(change['range']['end'])
+                text = text[:start] + change['text'] + text[end:]
+            else:
+                text = change['text']
+        record({'text': text})
+        continue
+    if 'id' not in message or method is None:
+        continue
+    # Any request releases replies held for an earlier one, so a test can
+    # deliver a stale answer after a newer request.
+    for response in held:
+        send(response)
+    held = []
+    if method in options.error:
+        send({'id': message['id'], 'error': {'code': -32603, 'message': 'scripted failure'}})
+        continue
+    params = message.get('params') or {}
+    result = None
+    if method == 'textDocument/completion':
+        result = [{'label': 'Item%d' % message['id'], 'position': params.get('position')}]
+    elif method == 'textDocument/hover':
+        result = {'contents': {'kind': 'plaintext', 'value': 'hover %d' % message['id']}}
+    elif method == 'textDocument/signatureHelp':
+        result = {'signatures': [{'label': 'Call(int value)', 'parameters': [{'label': [5, 14]}]}]}
+    elif method in ('textDocument/documentSymbol', 'textDocument/inlayHint', 'textDocument/foldingRange',
+                    'workspace/symbol', 'textDocument/references', 'textDocument/definition'):
+        result = []
+    elif method == 'textDocument/semanticTokens/full':
+        result = {'data': []}
+    response = {'id': message['id'], 'result': result}
+    if method in options.hold:
+        options.hold.remove(method)
+        held.append(response)
+    else:
+        send(response)
