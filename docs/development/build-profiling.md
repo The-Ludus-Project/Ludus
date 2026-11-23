@@ -802,8 +802,12 @@ The host was shared and under heavy load. Both clean and warm differences were
 within run-to-run variation. The local result establishes the include removal
 and leaves the aggregate build-time benefit to the batch measurement. The
 [pre-change build budget](https://github.com/The-Ludus-Project/Ludus/actions/runs/44871868793/job/136748150276)
-recorded 268.7 s of frontend parsing, 251.6 s normalized against the 320 s
-budget. The first batch containing the change supplies the post-change figure.
+recorded 268.7 s of frontend parsing and 251.6 s normalized against the 320 s
+budget. The [first successful batch containing the change](https://github.com/The-Ludus-Project/Ludus/actions/runs/45067503758/job/137347040844)
+built candidate `6a8ee3979` and recorded 298.6 s of frontend parsing and
+281.9 s normalized, within the same 320 s budget. Other changes landed
+between these measurements, so the aggregate difference cannot isolate
+the cost of removing `<span>`.
 
 ## Build graph check
 
