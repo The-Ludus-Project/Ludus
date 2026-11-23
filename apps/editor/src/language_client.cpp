@@ -194,8 +194,15 @@ void LanguageClient::startProcess()
     const QString workspace = mWorkspace;
     connect(process, &QProcess::started, this, [this, workspace]() {
         mInitializeRequest = ++mNextRequest;
-        const QJsonObject completionItem{{QStringLiteral("snippetSupport"), false},
-                                         {QStringLiteral("insertReplaceSupport"), true}};
+        const QJsonObject completionItem{{QStringLiteral("snippetSupport"), true},
+                                         {QStringLiteral("insertReplaceSupport"), true},
+                                         {QStringLiteral("documentationFormat"),
+                                          QJsonArray{QStringLiteral("plaintext"), QStringLiteral("markdown")}},
+                                         {QStringLiteral("resolveSupport"),
+                                          QJsonObject{{QStringLiteral("properties"),
+                                                       QJsonArray{QStringLiteral("documentation"),
+                                                                  QStringLiteral("detail"),
+                                                                  QStringLiteral("additionalTextEdits")}}}}};
         const QJsonObject parameterInformation{{QStringLiteral("labelOffsetSupport"), true}};
         const QJsonObject signatureInformation{{QStringLiteral("parameterInformation"), parameterInformation}};
         const QJsonObject signatureHelp{{QStringLiteral("signatureInformation"), signatureInformation}};

@@ -280,7 +280,9 @@ Requirements: CE09-CE11, CE20. Prerequisite: M2, M3.
   [M4 batch 3d decision-log entry](../../../docs/architecture/code-editor-decision-log.md#m4-batch-3d-inlay-hints-ce10-2026-11-23).
   Batch 3e: the References tool window; see the
   [M4 batch 3e decision-log entry](../../../docs/architecture/code-editor-decision-log.md#m4-batch-3e-the-references-tool-window-ce10-2026-11-23).
-  Completion resolve and snippets follow.)*
+  Batch 3f: completion resolve, the documentation panel and server snippets
+  with tab stops; see the
+  [M4 batch 3f decision-log entry](../../../docs/architecture/code-editor-decision-log.md#m4-batch-3f-completion-resolve-and-snippets-ce10-2026-11-23).)*
 - [ ] Add rename with preview, code actions with the light bulb, and workspace
   edits with transaction undo.
 - [ ] Add the fake LSP fixture and its failure-path tests.

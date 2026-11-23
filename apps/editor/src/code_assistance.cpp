@@ -3,6 +3,7 @@
 #include <ludus/foundation/base/compiler.h>
 
 #include "internal/code_language_registry.h"
+#include "internal/code_snippet.h"
 #include "internal/code_text.h"
 #include "internal/language_positions.h"
 
@@ -104,6 +105,7 @@ CodeAssistance::CodeAssistance(CodeEditor& inoutEditor, CodeDocumentController& 
     connect(&mEditor.GetNavigation(), &CodeNavigation::ResultChosen, this, &CodeAssistance::acceptNavigation);
     connect(&mEditor.GetNavigation(), &CodeNavigation::Dismissed, this, &CodeAssistance::Cancel);
     connect(&mEditor, &CodeEditor::CompletionChosen, this, &CodeAssistance::acceptCompletion);
+    connect(&mEditor, &CodeEditor::CompletionHighlighted, this, &CodeAssistance::resolveCompletion);
     connect(&mEditor, &CodeEditor::SignatureOverloadRequested, this, [this](int32 direction) {
         if (isCurrent() == true && mSignatures.isEmpty() == false)
         {
@@ -153,6 +155,11 @@ CodeAssistance::CodeAssistance(CodeEditor& inoutEditor, CodeDocumentController& 
                 if (kind == LanguageRequestKind::Hover)
                 {
                     receiveHover(request, value);
+                    return;
+                }
+                if (kind == LanguageRequestKind::CompletionResolve)
+                {
+                    receiveResolve(request, value);
                     return;
                 }
                 receive(request, value);
@@ -228,6 +235,11 @@ void CodeAssistance::cancelPending()
     }
     mHasIntent = false;
     mRequest = 0;
+    if (mResolve.Request != 0)
+    {
+        mClient.Cancel(LanguageRequestKind::CompletionResolve);
+    }
+    mResolve = {};
     mCompletions.clear();
     mSignatures = {};
     mNavigationTargets.clear();
@@ -707,7 +719,14 @@ void CodeAssistance::receive(int32 request, const QJsonValue& value)
             item.insert(QStringLiteral("textEdit"), edit);
         }
         const QString detail = item.value(QStringLiteral("detail")).toString().left(MAX_DOCUMENTATION_UNITS);
-        mCompletions.append({label, detail, item});
+        mCompletions.append(
+        {
+            .Label = label,
+            .Detail = detail,
+            .Item = item,
+            .Original = entry.toObject(),
+            .IsResolved = false,
+        });
         labels.append(detail.isEmpty() == true ? label : label + QStringLiteral("  —  ") + detail);
         details.append(GetDocumentation(item.value(QStringLiteral("documentation"))));
     }
@@ -718,6 +737,48 @@ void CodeAssistance::receive(int32 request, const QJsonValue& value)
         : mCompletions.size() == MAX_COMPLETIONS
             ? QStringLiteral("Showing the first %1 symbols. Type a prefix and complete again.").arg(MAX_COMPLETIONS)
             : QString());
+}
+
+void CodeAssistance::resolveCompletion(int32 row)
+{
+    // Documentation and details arrive lazily for the highlighted suggestion only
+    // (CE10); a server without resolveProvider is never asked.
+    if (isCurrent() == false || row < 0 || row >= mCompletions.size() || mCompletions.at(row).IsResolved == true ||
+        mClient.CanRequest(LanguageRequestKind::CompletionResolve) == false)
+    {
+        return;
+    }
+    mResolve =
+    {
+        .Request = mClient.Request(LanguageRequestKind::CompletionResolve, mCompletions.at(row).Original),
+        .Row = row,
+    };
+}
+
+void CodeAssistance::receiveResolve(int32 request, const QJsonValue& value)
+{
+    if (request == 0 || request != mResolve.Request || isCurrent() == false || mResolve.Row >= mCompletions.size())
+    {
+        return;
+    }
+    Completion& completion = mCompletions[mResolve.Row];
+    const int32 row = mResolve.Row;
+    mResolve = {};
+    completion.IsResolved = true;
+    // The resolved item adds fields, such as documentation, detail and
+    // additional edits; the edits computed from the list defaults stay unless it
+    // replaces them.
+    const QJsonObject resolved = value.toObject();
+    for (QJsonObject::const_iterator field = resolved.constBegin(); field != resolved.constEnd(); ++field)
+    {
+        completion.Item.insert(field.key(), field.value());
+    }
+    completion.Detail = completion.Item.value(QStringLiteral("detail")).toString().left(MAX_DOCUMENTATION_UNITS);
+    mEditor.UpdateCompletion(row,
+                             completion.Detail.isEmpty() == true
+                                 ? completion.Label
+                                 : completion.Label + QStringLiteral("  —  ") + completion.Detail,
+                             GetDocumentation(completion.Item.value(QStringLiteral("documentation"))));
 }
 
 void CodeAssistance::acceptNavigation(int32 row)
@@ -743,12 +804,30 @@ void CodeAssistance::acceptCompletion(int32 row)
     }
     const Completion completion = mCompletions.at(row);
     constexpr int32 SNIPPET_FORMAT = 2;
-    if (completion.Item.value(QStringLiteral("insertTextFormat")).toInt() == SNIPPET_FORMAT)
+    const bool isSnippet = completion.Item.value(QStringLiteral("insertTextFormat")).toInt() == SNIPPET_FORMAT;
+    QJsonObject primary = completion.Item.value(QStringLiteral("textEdit")).toObject();
+    QString insertText = completion.Item.value(QStringLiteral("insertText")).toString(completion.Label);
+    CodeSnippet snippet;
+    if (isSnippet == true)
     {
-        Cancel();
-        Q_EMIT StatusChanged(QStringLiteral(
-            "This completion requires unsupported snippet placeholders. Choose another symbol; no edit was applied."));
-        return;
+        // Snippets (CE10) expand to their text; the editor then visits their tab stops.
+        const QString source =
+            primary.isEmpty() == true ? insertText : primary.value(QStringLiteral("newText")).toString();
+        if (ParseCodeSnippet(source, snippet) == false)
+        {
+            Cancel();
+            Q_EMIT StatusChanged(QStringLiteral("This completion uses a snippet transform or more placeholders than "
+                                                "the editor supports. Choose another symbol; no edit was applied."));
+            return;
+        }
+        if (primary.isEmpty() == true)
+        {
+            insertText = snippet.Text;
+        }
+        else
+        {
+            primary.insert(QStringLiteral("newText"), snippet.Text);
+        }
     }
     struct Replacement final
     {
@@ -793,14 +872,13 @@ void CodeAssistance::acceptCompletion(int32 row)
         replacements.append(replacement);
         return true;
     };
-    QJsonObject primary = completion.Item.value(QStringLiteral("textEdit")).toObject();
     bool isValid = true;
     if (primary.isEmpty() == true)
     {
         Replacement replacement;
         isValid = GetCodeByteOffset(mCapture.Text, mWordStart, replacement.Start) == true &&
                   GetCodeByteOffset(mCapture.Text, mWordEnd, replacement.End) == true;
-        replacement.Text = completion.Item.value(QStringLiteral("insertText")).toString(completion.Label).toUtf8();
+        replacement.Text = insertText.toUtf8();
         replacement.IsPrimary = true;
         replacements.append(replacement);
     }
@@ -828,6 +906,7 @@ void CodeAssistance::acceptCompletion(int32 row)
     QByteArray result;
     usize original = 0;
     usize caret = 0;
+    usize primaryStart = 0;
     bool hasPrior = false;
     bool hasCapacityFailure = false;
     usize priorEnd = 0;
@@ -842,6 +921,10 @@ void CodeAssistance::acceptCompletion(int32 row)
             break;
         }
         result += mCapture.Text.mid(static_cast<isize>(original), static_cast<isize>(replacement.Start - original));
+        if (replacement.IsPrimary == true)
+        {
+            primaryStart = static_cast<usize>(result.size());
+        }
         result += replacement.Text;
         if (replacement.IsPrimary == true)
         {
@@ -878,9 +961,15 @@ void CodeAssistance::acceptCompletion(int32 row)
     const CodeEditStatus status = mDocument.ApplyServiceText(identity, result, {caret, caret});
     switch (status)
     {
-        case CodeEditStatus::Ok:
+        case CodeEditStatus::Ok: {
             Q_EMIT StatusChanged(QString());
+            int32 snippetStart = 0;
+            if (isSnippet == true && GetCodeCursorPosition(result, primaryStart, snippetStart) == true)
+            {
+                mEditor.StartSnippet(snippetStart, snippet);
+            }
             break;
+        }
         case CodeEditStatus::Conflict:
             Q_EMIT StatusChanged(QStringLiteral("The source changed or has a disk conflict. Resolve or reload the "
                                                 "source, then request completion again."));

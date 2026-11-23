@@ -1055,3 +1055,33 @@ The references tool window follows in its own batch.
   row first brings the finding editor's tab forward through its host, so a row
   works after the author has switched tabs.
 
+### M4 batch 3f: completion resolve and snippets (CE10, 2026-11-23)
+
+- **Resolve.** When the server advertises `completionProvider.resolveProvider`,
+  highlighting a suggestion sends `completionItem/resolve` with the item as the
+  server sent it, once per suggestion. The reply's fields are merged into the
+  item, so its documentation, detail and additional edits apply, while the edit
+  range taken from the list defaults stays unless the reply replaces it. A reply
+  applies only while the same request is current. The client now advertises
+  `resolveSupport` for `documentation`, `detail` and `additionalTextEdits`.
+- **Documentation.** The completion list shows the highlighted suggestion's
+  documentation in a panel beside it (plain text; the earlier tooltip remains),
+  on the side with room.
+- **Snippets.** The client advertises `snippetSupport`. `ParseCodeSnippet`
+  (`internal/code_snippet.h`) expands the LSP 3.17 grammar: tab stops, nested
+  placeholders, choices (the first is inserted), variables and escapes. A
+  construct that does not parse is literal text, as in VS Code. A transform is
+  refused with a message rather than inserted wrongly, as is a snippet beyond
+  128 stops or 16 nesting levels. A bare `$N` after `${N:text}` repeats that
+  text. The editor resolves no variables: the `TM_` ones are empty and keep
+  their default, and others insert their name, as the protocol asks.
+- **Tab stops.** The expanded text is applied as one undoable edit like any
+  completion, then `CodeSnippetSession` selects the first stop. Tab and
+  Shift+Tab move between stops; a stop's other occurrences become secondary
+  cursors, so the existing multi-cursor editing keeps mirrors in step. Stops are
+  anchored in the document and drawn with a faint background. `$0`, or the end
+  of the snippet without one, ends the session, as do Escape and moving the
+  caret outside the inserted text. Choices are inserted without a picker.
+
+Snippets as a separate completion source (the architecture's merged snippet
+list), rename, code actions and workspace edits follow.
