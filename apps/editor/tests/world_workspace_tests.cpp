@@ -7462,8 +7462,9 @@ Shape "trianglemesh" "point3 P" [0 0 0 1 0 0 0 1 0] "integer indices" [0 1 2]
         return labelOrNull->text();
     };
     // The document labels the ordered layers of the coat over the substrate.
-    CHECK(getLabel(QStringLiteral("materialIdentity")).contains(QStringLiteral("dielectric coat over a diffuse "
-                                                                               "substrate")) == true);
+    CHECK(getLabel(QStringLiteral("materialIdentity"))
+              .contains(QStringLiteral("dielectric coat over a diffuse "
+                                       "substrate")) == true);
     const QString status = QStringLiteral("materialStatus");
     const QString apply = QStringLiteral("materialApply");
     const QString alpha = QStringLiteral("alpha");

@@ -142,7 +142,7 @@ bool ValidateCreatedMaterial(const QJsonValue& value, QString& outError)
     const bool isMetallicRoughness = model == QString::fromLatin1(CREATED_MATERIAL_METALLIC_ROUGHNESS);
     const bool isCoatedDiffuse = model == QString::fromLatin1(CREATED_MATERIAL_COATED_DIFFUSE);
     const QJsonValue baseColor = definition.value(QString::fromLatin1(CREATED_MATERIAL_BASE_COLOR_KEY));
-    const qsizetype expectedMembers = isDiffuse == true          ? DIFFUSE_MEMBERS
+    const qsizetype expectedMembers = isDiffuse == true             ? DIFFUSE_MEMBERS
                                       : isMetallicRoughness == true ? METALLIC_ROUGHNESS_MEMBERS
                                                                     : COATED_DIFFUSE_MEMBERS;
     if (value.isObject() == false || (isDiffuse == false && isMetallicRoughness == false && isCoatedDiffuse == false) ||
@@ -219,22 +219,21 @@ QJsonObject MakeCoatedDiffuseMaterialDraft(const resources::SceneMaterial& mater
     }
     // An already coated-diffuse record seeds its own coat; any other model starts from the shared coating defaults.
     const bool isCoated = material.Scattering.Model == format::MaterialModel::CoatedDiffuse;
-    const foundation::float64 alpha =
-        isCoated == true ? static_cast<foundation::float64>(material.Scattering.AlphaU)
-                         : static_cast<foundation::float64>(format::LUDUS_COATING_MIN_ALPHA);
-    const foundation::float64 eta =
-        isCoated == true ? static_cast<foundation::float64>(material.Scattering.CoatingEta)
-                         : static_cast<foundation::float64>(format::DEFAULT_COATING_ETA);
-    const foundation::float64 thickness =
-        isCoated == true ? static_cast<foundation::float64>(material.Scattering.CoatingThickness)
-                         : static_cast<foundation::float64>(format::DEFAULT_COATING_THICKNESS);
-    return {{QString::fromLatin1(CREATED_MATERIAL_MODEL_KEY), QString::fromLatin1(CREATED_MATERIAL_COATED_DIFFUSE)},
-            {QString::fromLatin1(CREATED_MATERIAL_BASE_COLOR_KEY), baseColor},
-            {QString::fromLatin1(CREATED_MATERIAL_COATING_ALPHA_KEY),
-             ClampToProperty(MakeCoatingAlphaProperty(), alpha)},
-            {QString::fromLatin1(CREATED_MATERIAL_COATING_ETA_KEY), ClampToProperty(MakeCoatingEtaProperty(), eta)},
-            {QString::fromLatin1(CREATED_MATERIAL_COATING_THICKNESS_KEY),
-             ClampToProperty(MakeCoatingThicknessProperty(), thickness)}};
+    const foundation::float64 alpha = isCoated == true
+                                          ? static_cast<foundation::float64>(material.Scattering.AlphaU)
+                                          : static_cast<foundation::float64>(format::LUDUS_COATING_MIN_ALPHA);
+    const foundation::float64 eta = isCoated == true ? static_cast<foundation::float64>(material.Scattering.CoatingEta)
+                                                     : static_cast<foundation::float64>(format::DEFAULT_COATING_ETA);
+    const foundation::float64 thickness = isCoated == true
+                                              ? static_cast<foundation::float64>(material.Scattering.CoatingThickness)
+                                              : static_cast<foundation::float64>(format::DEFAULT_COATING_THICKNESS);
+    return {
+        {QString::fromLatin1(CREATED_MATERIAL_MODEL_KEY), QString::fromLatin1(CREATED_MATERIAL_COATED_DIFFUSE)},
+        {QString::fromLatin1(CREATED_MATERIAL_BASE_COLOR_KEY), baseColor},
+        {QString::fromLatin1(CREATED_MATERIAL_COATING_ALPHA_KEY), ClampToProperty(MakeCoatingAlphaProperty(), alpha)},
+        {QString::fromLatin1(CREATED_MATERIAL_COATING_ETA_KEY), ClampToProperty(MakeCoatingEtaProperty(), eta)},
+        {QString::fromLatin1(CREATED_MATERIAL_COATING_THICKNESS_KEY),
+         ClampToProperty(MakeCoatingThicknessProperty(), thickness)}};
 }
 
 QStringList DescribeKeptMaterialInputs(const resources::SceneDefinition& scene,
@@ -441,11 +440,8 @@ void WorldMaterialCreationDialog::requestCreation()
         QJsonValue thickness;
         if (ReadMaterialNumberInput(MakeCoatingAlphaProperty(), *mCoatingAlpha, alpha, hasChanged, error) == false ||
             ReadMaterialNumberInput(MakeCoatingEtaProperty(), *mCoatingEta, eta, hasChanged, error) == false ||
-            ReadMaterialNumberInput(MakeCoatingThicknessProperty(),
-                                    *mCoatingThickness,
-                                    thickness,
-                                    hasChanged,
-                                    error) == false)
+            ReadMaterialNumberInput(MakeCoatingThicknessProperty(), *mCoatingThickness, thickness, hasChanged, error) ==
+                false)
         {
             ShowError(error);
             return;
