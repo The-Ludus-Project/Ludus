@@ -2037,11 +2037,16 @@ Ray MakeCameraRay(RayLaunch launch, float2 samplePixel)
 }
 
 /// Build the camera ray through positionWorld (in metres) using the launch's camera and clip distances.
-/// Accepts positions outside the image. Returns false and clears outRay if the projection is undefined
-/// or if the position is at or behind a perspective camera.
-bool TryMakeCameraRayFromWorldPosition(RayLaunch launch, float3 positionWorld, out Ray outRay)
+/// Returns the projected x/w and y/w in outPositionClip, with positive y pointing up.
+/// Accepts positions outside the image. Returns false and clears both outputs if the projection
+/// or camera ray is invalid, or if the position is at or behind a perspective camera.
+bool TryMakeCameraRayFromWorldPosition(RayLaunch launch,
+                                       float3 positionWorld,
+                                       out Ray outRay,
+                                       out float2 outPositionClip)
 {
     outRay = (Ray)0;
+    outPositionClip = float2(0);
     float3 positionEye = positionWorld - launch.CameraPositionWorld;
     float4x4 columnsClipToEye = transpose(launch.CameraClipToEye);
     // Eliminate the homogeneous eye-space scale using positionEye, then solve for clip x/w and y/w.
@@ -2063,7 +2068,17 @@ bool TryMakeCameraRayFromWorldPosition(RayLaunch launch, float3 positionWorld, o
     if (IsSceneRayValid(ray) == false || (launch.IsOrthographic == false && dot(positionEye, ray.DirectionWorld) <= 0))
         return false;
     outRay = ray;
+    outPositionClip = positionClip;
     return true;
+}
+
+/// Build the camera ray through positionWorld (in metres) using the launch's camera and clip distances.
+/// Accepts positions outside the image. Returns false and clears outRay if the projection
+/// or camera ray is invalid, or if the position is at or behind a perspective camera.
+bool TryMakeCameraRayFromWorldPosition(RayLaunch launch, float3 positionWorld, out Ray outRay)
+{
+    float2 positionClip;
+    return TryMakeCameraRayFromWorldPosition(launch, positionWorld, outRay, positionClip);
 }
 
 float4 SampleMaterialTexture(SceneContext scene, SurfaceHit hit, float2 texcoordUv, uint mapIndex)

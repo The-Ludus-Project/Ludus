@@ -359,6 +359,26 @@ and a near-plane origin for orthographic cameras. Positions outside the image
 are valid. The helper returns false and clears the output if the projection is
 undefined or the position is at or behind a perspective camera.
 
+The overload `TryMakeCameraRayFromWorldPosition(launch, positionWorld, ray, positionClip)`
+also returns the projected `x/w` and `y/w`. It clears both outputs on failure.
+To find the destination pixel in an image dispatch, map the projected position to
+top-left-origin UVs, reject UVs outside `[0, 1)` on either axis, then scale by the
+full image extent. Check the hit's distance against the returned ray's clip
+distances when the contribution must lie inside the camera frustum.
+
+```slang
+Ray cameraRay;
+float2 positionClip;
+if (TryMakeCameraRayFromWorldPosition(launch, hit.PositionWorld, cameraRay, positionClip) == false)
+    return float3(0);
+
+float2 positionUv = float2(positionClip.x + 1, 1 - positionClip.y) * 0.5;
+if (any(positionUv < 0) == true || any(positionUv >= 1) == true)
+    return float3(0);
+
+uint2 positionPixel = min(uint2(positionUv * float2(launch.ExtentPixel)), launch.ExtentPixel - 1);
+```
+
 RayQueryContext is a separate invocation-local mutable context initialized once
 by the generated wrapper. It carries query counters and the failure latch;
 every query and callback forwards that same context by inout reference. Scene
