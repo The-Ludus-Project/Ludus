@@ -60,8 +60,8 @@ constexpr int OPERATION_TIMEOUT_MILLISECONDS = 60000;
 /// docs/architecture/renderer-systems.md#hair-and-skin-rendering.
 enum class Profile : uint32
 {
-    ForwardLit,         ///< Shades the Hair slot's authored strand highlight (renderer_lit/renderer_lit_shadow).
-    ClusteredDeferred,  ///< Spreads the Skin slot's diffuse lighting (renderer_skin_deferred/blur/composite).
+    ForwardLit,        ///< Shades the Hair slot's authored strand highlight (renderer_lit/renderer_lit_shadow).
+    ClusteredDeferred, ///< Spreads the Skin slot's diffuse lighting (renderer_skin_deferred/blur/composite).
 };
 
 enum class Feature : uint32
@@ -224,9 +224,8 @@ bool MakeFeatureMaterial(Feature feature, const Authored& authored, renderer::Sc
     outMaterial.Metallic = 0;
     format::MaterialScattering skin;
     skin.Model = format::MaterialModel::Skin;
-    skin.K = {{authored.SkinScatteringDistance.X,
-               authored.SkinScatteringDistance.Y,
-               authored.SkinScatteringDistance.Z}};
+    skin.K = {
+        {authored.SkinScatteringDistance.X, authored.SkinScatteringDistance.Y, authored.SkinScatteringDistance.Z}};
     outMaterial.Scattering = skin;
     return format::IsMaterialScatteringValid(skin);
 }
