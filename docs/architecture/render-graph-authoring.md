@@ -1515,6 +1515,119 @@ edit the same draft manifest and require Save/rebuild before activation.
 A proposed `ris-projected-solid-angle` template follows the four-pass
 `veach-guibas-mis` shape for many-area-light direct lighting; see its
 [estimator review](many-area-light-sampling-reference-review.md#template-ris-projected-solid-angle).
+
+### Native structured Buffer ports (proposed)
+
+A graph author can pass `resources.Edges` to a helper taking
+`RWStructuredBuffer<EdgesData>` and write `resources.Edges[0].Weights[edgeIndex]`
+directly. A consumer with a read-only connection receives
+`StructuredBuffer<EdgesData>` and can read the same field. Both passes use the
+same graph-owned allocation. This extends the
+[named Buffer workflow](../development/render-graph-authoring.md#access-an-ordered-buffer-by-port-name)
+and builds on [the original named Buffer issue](https://github.com/The-Ludus-Project/Ludus/issues/2131).
+The design covers ordered scene compute and ray-generation callbacks on Metal and
+Vulkan, including the existing Metal hardware ray stage path.
+
+**Authoring.** Keep the existing Buffer node, struct picker and named ports.
+For a newly configured struct Buffer, **Structured** is the default once the
+selected targets and shader languages qualify. **Packed words** selects the
+existing view with record `Load`/`Store` and byte-offset helpers. Existing graphs
+keep their saved access behavior and can switch explicitly. A Buffer owns the
+choice for every connected pass. Port direction supplies the access type.
+**Shader API** and completion show the actual shader type, and Go to Definition
+opens the shared struct declaration.
+Show declared element count, reflected stride and total bytes in Buffer Details.
+The shader needs the declared element count for bounds checks. Carry it as
+per-dispatch data, accessible by name, so editing capacity can reuse shader
+artifacts. `EdgesData.EdgesCount` remains authored data written by the producer.
+
+The canvas and Properties use the same controls and undo operation. An explicit
+access change stages the candidate graph with its affected ports and callbacks.
+Open those sources with completion for the candidate type so the author can
+update a producer and its consumers before Build validates the combined draft.
+Publish the validated graph and shader snapshot together. When validation fails,
+identify the pass, port, record and target at the point of action, and offer
+navigation to the source or access setting that needs repair. Keep the candidate
+editable and preserve the last accepted generation and its drawable view.
+Test the workflow from the canvas with Properties hidden.
+
+**Linking and binding.** Start with one generated compute artifact per compatible
+group. Group by the existing scene pipeline requirements and by each slot's
+record declaration, reflected layout identity, access and binding.
+Use stable slot assignment for named ports so rearranging their rows can reuse an
+artifact. Preserve positional slot identities for legacy callbacks. Reflected,
+unused slots can share a group with an otherwise compatible pass. A one-member
+group can call its callback directly. This separates the two declarations when a
+writer and reader require different resource types. Slang 2026.1.2 rejects an
+implicit conversion from `RWStructuredBuffer<T>` to `StructuredBuffer<T>`.
+Slang also warns when different resources declare the same binding, and its
+direct Metal output gives them distinct arguments. SPIRV-Cross can lower those
+aliases to one Metal pointer. That approach needs an alias-aware validator and
+native Metal stage lowering, so the first slice uses explicit groups.
+
+Extend the cooked pass with a reference to the deduplicated compute recipe and
+its callback selector. Older packages decode to their existing single recipe.
+Keep graph scheduling, traversal, resource versions and barriers with their
+existing owners. Bind each pass's existing allocation according to the recipe
+and activate prepared recipes together at the frame boundary. An access or
+layout change uses the existing generation reset and retirement policy. Both
+layout and access participate in reflection checks. Require each target's
+storage stride and field offsets to agree with the selected layout before
+admitting the Buffer. Check the SPIR-V storage decorations and the native Metal
+storage declaration, including vector alignment, fixed-array stride and nested
+members.
+Report an incompatible field with its target-specific offsets and a path to the
+shared declaration. Store the verified binding requirements in the cooked recipe.
+Validate pass recipe indices, storage access, allocation coverage and existing
+limits when opening the cooked package.
+The Slang and LUSL authoring paths must agree on resource direction and shape.
+The current LUSL checker rejects resource members even in `extern slang` structs.
+Teach it to model typed handles in generated Resources declarations and verify
+member indexing, helper calls and read-only rejection before enabling the mode
+for LUSL callbacks.
+
+**Cost and acceptance.** Reuse the same allocation for all passes and calculate
+its size from the reflected stride and count. Key shader artifacts on the actual
+code and binding contract. Keep allocation identity, element count, pass order
+and graph instance names out of stage keys. Reuse the existing preparation
+cache and reports. Record cold and warm compile time, unique stage and recipe
+keys, artifact bytes, device preparation, edit-to-first-paint, resident Buffer
+bytes and GPU command p50/p95. For a camera or capacity edit, check that no new
+shader artifact is compiled. For a shared layout edit, check that only groups
+whose code depends on that layout change keys. Compare against the same project,
+target, toolchain, scene, inputs and cache state. Report pipeline residency
+independently from Buffer bytes and artifact bytes.
+
+An Apple M5 probe used Slang 2026.1.2 and the SDK's SPIRV-Cross to update one
+weight in each of 1,024 `EdgesData` records with 32 threads per group. All three
+paths used the same 9,453,568-byte allocation. GPU readback checked both the
+updated weight and an adjacent weight. The table shows ranges over three runs
+with rotating case order, 10 warmups and 90 measured commands per case per run.
+
+| Access | SPIR-V bytes | Static stores / loops | Median GPU command time | p95 GPU command time |
+| --- | ---: | ---: | ---: | ---: |
+| Generated view, whole-record update | 5,576 | 28 / 4 | 340.6–413.3 µs | 652.8–702.5 µs |
+| Generated view, byte-offset store | 948 | 1 / 0 | 1.5–2.4 µs | 6.7–35.9 µs |
+| Native structured field assignment | 1,360 | 1 / 0 | 1.3–2.3 µs | 14.5–359.5 µs |
+
+The native field assignment and byte-offset store both lower to one scalar
+store. Their median ranges overlap and command tails vary substantially. This
+probe establishes field-level code generation and shared storage behavior. The
+full graph still needs cook, pipeline preparation, device residency and Vulkan
+execution measurements.
+
+Begin with the UTD edge producer and ordered reader, then add a pass that uses
+a different struct in the same slot and mix in an existing positional callback. Verify a
+field write and the adjacent fields by GPU readback, and verify read-only
+rejection, mixed-layout grouping, port reordering, capacity edits, deterministic
+cooking, and a pending or failed replacement. Exercise native Metal hardware ray
+generation, Vulkan query and software traversal on an installed SDK. Test
+materialization and preparation of every used recipe, including the optional ray
+path capture for a selected pass. Use the existing
+[variant cost reporting plan](#attribute-variant-cost-before-optimizing-proposed)
+to decide whether further group coalescing is worth the complexity. Establish
+time budgets from the complete workload measurements before changing defaults.
+
 ### Structured storage in the native ray profile
 
 Native triangle-ray jobs admit two named structured buffers in user slots 6/7.
