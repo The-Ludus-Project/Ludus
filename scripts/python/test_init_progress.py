@@ -265,12 +265,20 @@ class SelectionTests(unittest.TestCase):
         selection = resolved("--no-system-install")
         with patch.object(init_ui, "wants_gui", return_value=True), \
                 patch.object(init_ui, "select_options", return_value=selection), \
+                patch("init_options.save_gui_selection"), \
                 patch("init_window.run_setup", return_value=0) as window, \
                 patch.object(engine, "command_init") as install:
             self.assertEqual(engine.main(["init"]), 0)
         install.assert_not_called()
         window.assert_called_once()
         self.assertTrue(window.call_args.args[0].no_system_install)
+
+    def test_gui_can_deselect_validation_before_starting_the_child(self):
+        selection = resolved("--persona", "validation")
+        selection.validate = False
+        selection.with_tests = False
+        child = init_ui.apply_defaults(engine.make_parser().parse_args(["init", *init_ui.selection_to_argv(selection)]))
+        self.assertFalse(child.validate or child.with_tests)
 
 
 class SetupLogTests(unittest.TestCase):

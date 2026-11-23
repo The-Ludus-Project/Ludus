@@ -109,6 +109,14 @@ preset), Browser developer (one Emscripten preset), or Full validation, then
 review the preset and optional tools before pressing **Initialize**. Closing or
 cancelling the selection runs no setup actions.
 
+The window reopens with the workflow, preset, and options you last confirmed
+with **Initialize** in this checkout, even if that setup run failed. **Cancel**
+keeps the previous selection. **Reset to defaults** resets the form, and
+**Initialize** saves the resulting choices. An explicit workflow or a different
+preset starts from its own defaults. Other explicit flags override remembered
+choices, and an incompatible selection falls back to the launch defaults.
+Terminal and CI setup use their usual command-line defaults.
+
 Before installing anything, setup's first step, *Checking this computer*,
 runs fast preflight checks (normally well under a second) and stops with a
 fix for each problem it finds:

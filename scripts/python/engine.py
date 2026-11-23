@@ -3265,7 +3265,7 @@ def make_parser() -> argparse.ArgumentParser:
     interface.add_argument("--cli", action="store_true", help="use terminal setup without the Ludus setup window")
     interface.add_argument("--gui", action="store_true", help="require the graphical setup window")
     init_parser.add_argument("--persona", choices=("contributor", "application", "browser", "validation"),
-                             default="contributor", help="setup defaults (default: contributor); explicit options override them")
+                             help="setup defaults (default: contributor); explicit options override them")
     init_parser.add_argument("--no-system-install", action="store_true", help="use existing system packages and SDKs")
     android = init_parser.add_mutually_exclusive_group()
     android.add_argument("--with-android", action="store_true",
@@ -3281,7 +3281,7 @@ def make_parser() -> argparse.ArgumentParser:
                         help="install Qt and pinned shader tools, then build the native editor with 3D preview")
     editor.add_argument("--no-editor", dest="with_editor", action="store_false",
                         help="skip optional editor setup (default)")
-    init_parser.set_defaults(with_editor=False)
+    init_parser.set_defaults(with_editor=None)
     init_parser.add_argument("--configure-editor-only", action="store_true",
                              help="with --with-editor, prepare dependencies and configure without building the editor")
     preview = init_parser.add_mutually_exclusive_group()
@@ -3289,7 +3289,7 @@ def make_parser() -> argparse.ArgumentParser:
                          help="include native editor 3D preview and prepare pinned shader tools (default)")
     preview.add_argument("--no-editor-preview", dest="with_editor_preview", action="store_false",
                          help="build a lightweight document-only editor without shader tools")
-    init_parser.set_defaults(with_editor_preview=True)
+    init_parser.set_defaults(with_editor_preview=None)
     denoiser = init_parser.add_mutually_exclusive_group()
     denoiser.add_argument("--with-denoiser", dest="with_denoiser", action="store_true",
                           help="install the pinned OIDN denoiser for editor and game render-graph denoising "
