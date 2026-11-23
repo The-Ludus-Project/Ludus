@@ -9204,6 +9204,22 @@ The static browser editor has no native Slang process and reports that completio
 and signature help are unavailable. The searchable Shader API reference remains
 available independently.
 
+#### Hover and live analysis
+
+Rest the pointer on a name for a moment, or choose **Show Hover** from the
+editor's context menu, to see the language server's description of it together
+with any messages at that position. Hover uses the prepared shader context only:
+it never prepares one, so before the first completion or navigation request it
+shows local messages alone.
+
+Once a context is prepared, the server analyses the draft as you type and its
+messages appear with a dotted underline. They are labelled
+`Analysis (slangd)` (or `luslc`) in tooltips and hover, apart from the build's
+squiggles and **Error List** entries, which remain authoritative for build
+errors. Messages about generated surroundings or from an earlier version of the
+text are not shown. **Show Log**, beside **Retry assistance**, shows the
+server's diagnostic output since it last started.
+
 #### Compiler messages in the source
 
 After a Validate, Build or live preview build fails, the Source pane marks the

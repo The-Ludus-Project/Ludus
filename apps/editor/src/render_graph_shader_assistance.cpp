@@ -15,6 +15,7 @@
 #include <QJsonDocument>
 #include <QLabel>
 #include <QLineEdit>
+#include <QMessageBox>
 #include <QPushButton>
 #include <QSignalBlocker>
 #include <QUrl>
@@ -60,7 +61,27 @@ RenderGraphShaderAssistance::RenderGraphShaderAssistance(RenderGraphDocument& in
     retry->setToolTip(
         QStringLiteral("Recreate the current draft's compiler context and restart failed shader assistance."));
     row->addWidget(retry);
+    // Show Log (CE20): the language server's retained diagnostic output.
+    QPushButton* log = new QPushButton(QStringLiteral("Show Log"), this);
+    log->setObjectName(QStringLiteral("shaderAssistanceLog"));
+    log->setToolTip(QStringLiteral("Show the language server's diagnostic output since it last started."));
+    row->addWidget(log);
     layout->addLayout(row);
+    connect(log, &QPushButton::clicked, this, [this]() {
+        const QString text = mAssistance.GetServerLog();
+        QMessageBox box(QMessageBox::Information,
+                        QStringLiteral("Language server log"),
+                        text.isEmpty() == true
+                            ? QStringLiteral("The language server has written no diagnostic output since it started.")
+                            : QStringLiteral("The language server's diagnostic output is in Show Details."),
+                        QMessageBox::Close,
+                        this);
+        if (text.isEmpty() == false)
+        {
+            box.setDetailedText(text);
+        }
+        box.exec();
+    });
     mStatus->setObjectName(QStringLiteral("shaderAssistanceStatus"));
     mStatus->setTextFormat(Qt::PlainText);
     mStatus->setWordWrap(false);
@@ -98,6 +119,7 @@ RenderGraphShaderAssistance::RenderGraphShaderAssistance(RenderGraphDocument& in
     });
 #if defined(Q_OS_WASM)
     retry->setEnabled(false);
+    log->setEnabled(false);
     mContexts->setEnabled(false);
     setStatus(QStringLiteral("Shader completion and signature help are available in the native editor."));
 #endif

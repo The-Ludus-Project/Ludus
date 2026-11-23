@@ -22,6 +22,12 @@ constexpr int32 MAX_COMPLETION_CANDIDATES = 8192;
 constexpr int32 MAX_ADDITIONAL_EDITS = 32;
 constexpr int32 MAX_LABEL_UNITS = 2048;
 constexpr int32 MAX_DOCUMENTATION_UNITS = 4096;
+// Analysis follows edits after this pause, so typing never sends per keystroke.
+constexpr int32 ANALYSIS_DELAY_MILLISECONDS = 100;
+constexpr int32 MAX_ANALYSIS_MESSAGE_UNITS = 2048;
+// LSP DiagnosticSeverity: 1 error, 2 warning, 3 information, 4 hint.
+constexpr int32 SEVERITY_ERROR = 1;
+constexpr int32 SEVERITY_INFORMATION = 3;
 
 QString GetDocumentation(const QJsonValue& value)
 {
@@ -36,6 +42,26 @@ QString GetDocumentation(const QJsonValue& value)
         text.truncate(provenance);
     }
     return text.trimmed();
+}
+
+// Hover contents are MarkupContent, a MarkedString or an array of them. Show them
+// as plain text: fences are dropped and nothing is rendered as markup.
+QString ReadHoverText(const QJsonValue& contents)
+{
+    QStringList parts;
+    const QJsonArray values = contents.isArray() == true ? contents.toArray() : QJsonArray{contents};
+    for (const QJsonValue& value : values)
+    {
+        QString part = GetDocumentation(value);
+        QStringList lines = part.split(QLatin1Char('\n'));
+        lines.removeIf([](const QString& line) { return line.trimmed().startsWith(QStringLiteral("```")) == true; });
+        part = lines.join(QLatin1Char('\n')).trimmed();
+        if (part.isEmpty() == false)
+        {
+            parts.append(part);
+        }
+    }
+    return parts.join(QStringLiteral("\n\n")).left(MAX_DOCUMENTATION_UNITS);
 }
 
 bool IsWordCharacter(QChar character)
@@ -95,9 +121,25 @@ CodeAssistance::CodeAssistance(CodeEditor& inoutEditor, CodeDocumentController& 
             &LanguageClient::Replied,
             this,
             [this](int32 request, LanguageRequestKind kind, const QJsonValue& value) {
-                static_cast<void>(kind);
+                if (kind == LanguageRequestKind::Hover)
+                {
+                    receiveHover(request, value);
+                    return;
+                }
                 receive(request, value);
             });
+    connect(&mClient, &LanguageClient::DiagnosticsPublished, this, &CodeAssistance::receiveDiagnostics);
+    connect(&mEditor, &CodeEditor::HoverRequested, this, &CodeAssistance::requestHover);
+    mAnalysisSync.setSingleShot(true);
+    mAnalysisSync.setInterval(ANALYSIS_DELAY_MILLISECONDS);
+    connect(&mAnalysisSync, &QTimer::timeout, this, &CodeAssistance::synchronizeAnalysis);
+    connect(&mDocument, &CodeDocumentController::TextAccepted, this, [this]() {
+        mEditor.HideHover();
+        if (mUri.isEmpty() == false && mClient.IsReady() == true)
+        {
+            mAnalysisSync.start();
+        }
+    });
     connect(&mClient, &LanguageClient::Ready, this, [this]() {
         applyAvailability();
         requestCurrent();
@@ -127,6 +169,7 @@ CodeAssistance::CodeAssistance(CodeEditor& inoutEditor, CodeDocumentController& 
         Cancel();
         mServer.clear();
         resetAvailability();
+        clearAnalysis();
         Q_EMIT StatusChanged(message);
     });
 }
@@ -169,6 +212,7 @@ void CodeAssistance::applyAvailability()
     CodeAssistanceAvailability availability;
     availability.CompletionUnavailableReason = mClient.GetUnavailableReason(LanguageRequestKind::Completion);
     availability.SignatureUnavailableReason = mClient.GetUnavailableReason(LanguageRequestKind::SignatureHelp);
+    availability.HoverUnavailableReason = mClient.GetUnavailableReason(LanguageRequestKind::Hover);
     const auto readTriggers = [this](const QString& capability, QString& outTriggers) {
         const QJsonObject options = mClient.GetCapabilities().value(capability).toObject();
         if (options.contains(QStringLiteral("triggerCharacters")) == false)
@@ -204,9 +248,136 @@ const QString& CodeAssistance::GetServerLog() const noexcept
     return mClient.GetLog();
 }
 
+void CodeAssistance::clearAnalysis()
+{
+    mAnalysisSync.stop();
+    mHover = {};
+    mEditor.HideHover();
+    mEditor.SetAnalysisDiagnostics({}, {});
+}
+
+bool CodeAssistance::buildUnit(CodeTextCapture& outCapture, QString& outSource, QString& outUnit) const
+{
+    CodeTextCapture capture = mDocument.Capture();
+    QString source;
+    if (DecodeCodeText(capture.Text, source) == false)
+    {
+        return false;
+    }
+    outUnit = mPrefix + source + mSuffix;
+    outSource = source;
+    outCapture = capture;
+    return true;
+}
+
+void CodeAssistance::synchronizeAnalysis()
+{
+    CodeTextCapture capture;
+    QString source;
+    QString unit;
+    if (mUri.isEmpty() == false && mDocument.IsBound() == true && buildUnit(capture, source, unit) == true)
+    {
+        mClient.SetDocument(mUri, unit);
+    }
+}
+
+void CodeAssistance::receiveDiagnostics(const QString& uri, int32 version, const QJsonArray& diagnostics)
+{
+    // Stale-result rules: the report must name this context's document, describe
+    // the version the server last received, and that text must still be the
+    // current draft. Anything else waits for the next report.
+    if (mUri.isEmpty() == true || QUrl(uri) != QUrl(mUri) || (version >= 0 && version != mClient.GetSentVersion()) ||
+        QUrl(mClient.GetSentUri()) != QUrl(mUri))
+    {
+        return;
+    }
+    CodeTextCapture capture;
+    QString source;
+    QString unit;
+    if (buildUnit(capture, source, unit) == false || unit != mClient.GetSentText())
+    {
+        return;
+    }
+    const QList<int32> lines = IndexLanguageLines(unit);
+    const int32 begin = static_cast<int32>(mPrefix.size());
+    const int32 sourceEnd = begin + static_cast<int32>(source.size());
+    QList<CodeAnalysisDiagnostic> markers;
+    for (const QJsonValue& value : diagnostics)
+    {
+        const QJsonObject diagnostic = value.toObject();
+        const int32 severity = diagnostic.value(QStringLiteral("severity")).toInt(SEVERITY_ERROR);
+        const QJsonObject range = diagnostic.value(QStringLiteral("range")).toObject();
+        int32 start = 0;
+        int32 end = 0;
+        // Hints are suggestions, not problems; generated surroundings are not authored text.
+        if (severity > SEVERITY_INFORMATION ||
+            GetLanguageOffset(unit,
+                              lines,
+                              range.value(QStringLiteral("start")).toObject(),
+                              mClient.GetPositionEncoding(),
+                              start) == false ||
+            GetLanguageOffset(unit,
+                              lines,
+                              range.value(QStringLiteral("end")).toObject(),
+                              mClient.GetPositionEncoding(),
+                              end) == false ||
+            start < begin || end > sourceEnd || end < start)
+        {
+            continue;
+        }
+        markers.append(
+        {
+            .Start = start - begin,
+            .End = end - begin,
+            .Severity = severity == SEVERITY_ERROR ? CodeDiagnosticSeverity::Error : CodeDiagnosticSeverity::Warning,
+            .Message = diagnostic.value(QStringLiteral("message")).toString().left(MAX_ANALYSIS_MESSAGE_UNITS),
+        });
+    }
+    mEditor.SetAnalysisDiagnostics(markers, mProfile->ServerName);
+}
+
+void CodeAssistance::requestHover(int32 position)
+{
+    // Hover never prepares a context: a resting pointer must not start tools.
+    mHover = {};
+    if (mUri.isEmpty() == true || mClient.CanRequest(LanguageRequestKind::Hover) == false ||
+        HasCodeLanguageService(mEditor.GetLanguage()) == false || mDocument.IsBound() == false)
+    {
+        // Without a server hover the editor still describes diagnostics there.
+        mEditor.ShowHover(position, {});
+        return;
+    }
+    CodeTextCapture capture;
+    QString source;
+    QString unit;
+    if (buildUnit(capture, source, unit) == false || position < 0 || position > source.size())
+    {
+        return;
+    }
+    mClient.SetDocument(mUri, unit);
+    const int32 request = mClient.Request(
+        LanguageRequestKind::Hover,
+        {{QStringLiteral("position"),
+          MakeLanguagePosition(unit, static_cast<int32>(mPrefix.size()) + position, mClient.GetPositionEncoding())}});
+    mHover = { .Request = request, .Position = position, .Identity = capture.Identity, .Context = mContext };
+}
+
+void CodeAssistance::receiveHover(int32 request, const QJsonValue& value)
+{
+    if (request == 0 || request != mHover.Request || mHover.Context != mContext ||
+        mHover.Identity != mDocument.Capture().Identity)
+    {
+        return;
+    }
+    const int32 position = mHover.Position;
+    mHover = {};
+    mEditor.ShowHover(position, ReadHoverText(value.toObject().value(QStringLiteral("contents"))));
+}
+
 void CodeAssistance::ClearContext()
 {
     resetAvailability();
+    clearAnalysis();
     mShouldTrackSignature = false;
     mShouldTrackCompletion = false;
     Cancel();

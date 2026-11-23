@@ -205,7 +205,11 @@ void LanguageClient::startProcess()
              QJsonObject{{QStringLiteral("hierarchicalDocumentSymbolSupport"), true}}},
             {QStringLiteral("definition"), QJsonObject{{QStringLiteral("linkSupport"), true}}},
             {QStringLiteral("completion"), QJsonObject{{QStringLiteral("completionItem"), completionItem}}},
-            {QStringLiteral("signatureHelp"), signatureHelp}};
+            {QStringLiteral("signatureHelp"), signatureHelp},
+            {QStringLiteral("hover"),
+             QJsonObject{{QStringLiteral("contentFormat"),
+                          QJsonArray{QStringLiteral("plaintext"), QStringLiteral("markdown")}}}},
+            {QStringLiteral("publishDiagnostics"), QJsonObject{{QStringLiteral("versionSupport"), true}}}};
         const QJsonObject capabilities{
             {QStringLiteral("general"),
              QJsonObject{{QStringLiteral("positionEncodings"),
@@ -412,6 +416,21 @@ const QJsonObject& LanguageClient::GetCapabilities() const noexcept
 LanguagePositionEncoding LanguageClient::GetPositionEncoding() const noexcept
 {
     return mEncoding;
+}
+
+const QString& LanguageClient::GetSentUri() const noexcept
+{
+    return mSentUri;
+}
+
+int32 LanguageClient::GetSentVersion() const noexcept
+{
+    return mVersion;
+}
+
+const QString& LanguageClient::GetSentText() const noexcept
+{
+    return mSentText;
 }
 
 const QString& LanguageClient::GetLog() const noexcept
@@ -648,7 +667,27 @@ void LanguageClient::receive(const QJsonObject& message)
             }
             send({{QStringLiteral("id"), message.value(QStringLiteral("id"))}, {QStringLiteral("result"), result}});
         }
-        return; // background diagnostics are deliberately not a build-report authority
+        else if (message.value(QStringLiteral("method")).toString() ==
+                 QStringLiteral("textDocument/publishDiagnostics"))
+        {
+            // Analysis diagnostics (CE10): shown apart from the build report, which
+            // stays the authority for build errors.
+            const QJsonObject parameters = message.value(QStringLiteral("params")).toObject();
+            const QJsonArray published = parameters.value(QStringLiteral("diagnostics")).toArray();
+            QJsonArray diagnostics;
+            for (const QJsonValue& diagnostic : published)
+            {
+                if (diagnostics.size() == MAX_PUBLISHED_DIAGNOSTICS)
+                {
+                    break;
+                }
+                diagnostics.append(diagnostic);
+            }
+            Q_EMIT DiagnosticsPublished(parameters.value(QStringLiteral("uri")).toString(),
+                                        parameters.value(QStringLiteral("version")).toInt(-1),
+                                        diagnostics);
+        }
+        return;
     }
     const int32 id = message.value(QStringLiteral("id")).toInt();
     if (id == mInitializeRequest && mInitializeRequest != 0)

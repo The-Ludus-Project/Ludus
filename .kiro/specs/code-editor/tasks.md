@@ -269,7 +269,9 @@ Requirements: CE09-CE11, CE20. Prerequisite: M2, M3.
   the diagnostics batch. See the [M4 batch 2 decision-log entry](../../../docs/architecture/code-editor-decision-log.md#m4-batch-2-capability-dispatch-and-the-request-table-ce09-ce20-2026-11-22).)*
 - [ ] Add hover, Analysis diagnostics, semantic tokens, inlay hints, folding
   ranges (merged by kind per CE26), document and workspace symbols, the remaining Go to commands, references window,
-  completion resolve and snippets.
+  completion resolve and snippets. *(Batch 3a: hover and Analysis markers; see the
+  [M4 batch 3a decision-log entry](../../../docs/architecture/code-editor-decision-log.md#m4-batch-3a-hover-and-analysis-diagnostics-ce10-ce20-2026-11-23).
+  The Error List Analysis group and the remaining features follow.)*
 - [ ] Add rename with preview, code actions with the light bulb, and workspace
   edits with transaction undo.
 - [ ] Add the fake LSP fixture and its failure-path tests.
