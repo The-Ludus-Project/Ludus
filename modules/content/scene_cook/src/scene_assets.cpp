@@ -958,23 +958,40 @@ struct MaterialDefinition final
     foundation::StaticArray<float32, format::MATERIAL_RGB_CHANNELS> BaseColor{};
     float32 Metallic = 0;
     float32 Roughness = 1;
+    /// Coat GGX alpha of a coated-diffuse definition; other models keep the MaterialScattering default.
+    float32 CoatingAlpha = 1;
+    /// Coat index of refraction of a coated-diffuse definition.
+    float32 CoatingEta = format::DEFAULT_COATING_ETA;
+    /// Coat optical thickness of a coated-diffuse definition.
+    float32 CoatingThickness = format::DEFAULT_COATING_THICKNESS;
 };
 /// Members of a "material_definitions" entry; the names match the World document's.
 constexpr std::string_view DEFINITION_MODEL_KEY = "model";
 constexpr std::string_view DEFINITION_BASE_COLOR_KEY = "base_color";
 constexpr std::string_view DEFINITION_METALLIC_KEY = "metallic";
 constexpr std::string_view DEFINITION_ROUGHNESS_KEY = "roughness";
+/// Coat controls of a coated-diffuse definition; the names match the World document's coat fields.
+constexpr std::string_view DEFINITION_COATING_ALPHA_KEY = "coating_alpha";
+constexpr std::string_view DEFINITION_COATING_ETA_KEY = "coating_eta";
+constexpr std::string_view DEFINITION_COATING_THICKNESS_KEY = "coating_thickness";
 /// "model" values of a "material_definitions" entry.
 constexpr std::string_view DEFINITION_DIFFUSE_MODEL = "diffuse";
 constexpr std::string_view DEFINITION_METALLIC_ROUGHNESS_MODEL = "metallic_roughness";
+/// "model" of a coated-diffuse definition: a dielectric coat over a diffuse substrate (its base colour).
+constexpr std::string_view DEFINITION_COATED_DIFFUSE_MODEL = "coated_diffuse";
 /// Members of a metallic-roughness definition: its model, base colour, metallic and roughness.
 constexpr usize METALLIC_ROUGHNESS_DEFINITION_MEMBERS = 4;
 /// Members of a diffuse definition: its model and base colour.
 constexpr usize DIFFUSE_DEFINITION_MEMBERS = 2;
+/// Members of a coated-diffuse definition: its model, base colour and the three coat controls.
+constexpr usize COATED_DIFFUSE_DEFINITION_MEMBERS = 5;
 
 /// Read one "material_definitions" entry. A diffuse entry holds exactly its model and a linear RGB base colour in
-/// [0, 1]; a metallic-roughness entry also holds a metallic in [0, 1] and a roughness in [MIN_AUTHORED_ROUGHNESS, 1].
-/// A missing node leaves the definition unassigned. Invalid entries return false and preserve outDefinition.
+/// [0, 1]; a metallic-roughness entry also holds a metallic in [0, 1] and a roughness in [MIN_AUTHORED_ROUGHNESS, 1];
+/// a coated-diffuse entry holds its model, a linear RGB substrate base colour in [0, 1] and the three coat controls
+/// (coat GGX alpha in [LUDUS_COATING_MIN_ALPHA, 1], coat index of refraction in [1, MAX_MATERIAL_OPTICAL_CONSTANT]
+/// and coat optical thickness in [0, MAX_MATERIAL_OPTICAL_CONSTANT]). A missing node leaves the definition
+/// unassigned. Invalid entries return false and preserve outDefinition.
 [[nodiscard]] bool
 ReadMaterialDefinition(const JsonTree& tree, JsonIndex node, MaterialDefinition& outDefinition) noexcept
 {
@@ -1001,6 +1018,11 @@ ReadMaterialDefinition(const JsonTree& tree, JsonIndex node, MaterialDefinition&
         definition.Model = format::MaterialModel::MetallicRoughness;
         expectedMembers = METALLIC_ROUGHNESS_DEFINITION_MEMBERS;
     }
+    else if (tree.IsString(model, DEFINITION_COATED_DIFFUSE_MODEL) == true)
+    {
+        definition.Model = format::MaterialModel::CoatedDiffuse;
+        expectedMembers = COATED_DIFFUSE_DEFINITION_MEMBERS;
+    }
     else
     {
         return false;
@@ -1023,6 +1045,26 @@ ReadMaterialDefinition(const JsonTree& tree, JsonIndex node, MaterialDefinition&
         }
         definition.Metallic = static_cast<float32>(metallic.ToFloat());
         definition.Roughness = static_cast<float32>(roughness.ToFloat());
+    }
+    else if (definition.Model == format::MaterialModel::CoatedDiffuse)
+    {
+        PythonNumber alpha;
+        PythonNumber eta;
+        PythonNumber thickness;
+        const float64 minimumAlpha = static_cast<float64>(format::LUDUS_COATING_MIN_ALPHA);
+        const float64 maximumOptical = static_cast<float64>(format::MAX_MATERIAL_OPTICAL_CONSTANT);
+        if (IsAuthoredNumber(tree, tree.GetMember(node, DEFINITION_COATING_ALPHA_KEY), alpha) == false ||
+            alpha.ToFloat() < minimumAlpha || alpha.ToFloat() > 1 ||
+            IsAuthoredNumber(tree, tree.GetMember(node, DEFINITION_COATING_ETA_KEY), eta) == false ||
+            eta.ToFloat() < 1 || eta.ToFloat() > maximumOptical ||
+            IsAuthoredNumber(tree, tree.GetMember(node, DEFINITION_COATING_THICKNESS_KEY), thickness) == false ||
+            thickness.ToFloat() < 0 || thickness.ToFloat() > maximumOptical)
+        {
+            return false;
+        }
+        definition.CoatingAlpha = static_cast<float32>(alpha.ToFloat());
+        definition.CoatingEta = static_cast<float32>(eta.ToFloat());
+        definition.CoatingThickness = static_cast<float32>(thickness.ToFloat());
     }
     outDefinition = definition;
     return true;
@@ -3212,6 +3254,15 @@ void ApplyMaterialDefinition(const MaterialDefinition& definition, SourceMateria
     }
     inoutSource.Scattering = {};
     inoutSource.Scattering.Model = definition.Model;
+    if (definition.Model == format::MaterialModel::CoatedDiffuse)
+    {
+        // The substrate is the definition's base colour; the coat controls seed the typed coat parameters, which a
+        // slot or shared coating instance then overrides through the same path as an imported coated-diffuse material.
+        inoutSource.Scattering.AlphaU = definition.CoatingAlpha;
+        inoutSource.Scattering.AlphaV = definition.CoatingAlpha;
+        inoutSource.Scattering.CoatingEta = definition.CoatingEta;
+        inoutSource.Scattering.CoatingThickness = definition.CoatingThickness;
+    }
     inoutSource.Program = {};
     inoutSource.Reflectance = {definition.BaseColor[0], definition.BaseColor[1], definition.BaseColor[2]};
 }

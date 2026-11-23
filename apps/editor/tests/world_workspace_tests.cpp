@@ -7352,6 +7352,176 @@ Shape "trianglemesh" "point3 P" [0 0 0 1 0 0 0 1 0] "integer indices" [0 1 2]
     reopened.StopPreview();
 }
 
+TEST_CASE("World creates a varnish-over-wood layered material from a slot and edits its coat",
+          "[editor][world][coating]")
+{
+    namespace format = ludus::content::scene_format;
+    QTemporaryDir directory;
+    const QString path = Fixture(directory);
+    const QString external = directory.filePath(QStringLiteral("external"));
+    REQUIRE(QDir().mkpath(external) == true);
+    // A matte wood substrate the author coats with varnish. Two slots share the imported material.
+    Write(QDir(external).filePath(QStringLiteral("wood.pbrt")), QByteArrayLiteral(R"(LookAt 0 0 3 0 0 0 0 1 0
+Camera "perspective" "float fov" 45
+WorldBegin
+MakeNamedMaterial "Wood" "string type" "diffuse" "rgb reflectance" [0.32 0.17 0.08]
+NamedMaterial "Wood"
+Shape "trianglemesh" "point3 P" [0 0 0 1 0 0 0 1 0] "integer indices" [0 1 2]
+)"));
+    QString error;
+    const QString relativeLevel = QStringLiteral("scenes/wood.lulevel");
+    REQUIRE(ludus::editor::tests::PrepareImportedLevel(directory.path(), relativeLevel, external, error, "wood.pbrt") ==
+            true);
+    const QJsonObject level = QJsonDocument::fromJson(Read(directory.filePath(relativeLevel))).object();
+    WorldDocument document = Document();
+    REQUIRE(document.ImportScene(level, error) == true);
+    const QString selected =
+        level.value(QStringLiteral("objects")).toArray().first().toObject().value(QStringLiteral("id")).toString();
+    QString sibling;
+    REQUIRE(document.DuplicateEntity(ludus::platform::GetSystemEntropySource(), error, selected, sibling) == true);
+    Write(path, document.Encode());
+
+    WorldWorkspace workspace;
+    if (PreviewViewport::CanPresent() == true)
+    {
+        workspace.show();
+    }
+    workspace.SetProject(directory.path(), 1);
+    REQUIRE(workspace.Open(path) == true);
+    WaitForValidatedScene(workspace);
+    REQUIRE(workspace.SelectEntity(selected) == true);
+    const auto getMaterial = [](const WorldWorkspace& source, const QString& id) {
+        const ludus::resources::SceneMaterial* materialOrNull =
+            GetSceneObjectMaterialOrNull(GetLevel(source).PreviewScene(), id);
+        REQUIRE(materialOrNull != nullptr);
+        return *materialOrNull;
+    };
+    REQUIRE(getMaterial(workspace, selected).Scattering.Model == format::MaterialModel::Diffuse);
+
+    // Make Coated Diffuse opens the creation dialog pre-set to the layered model for the shared source material.
+    QPushButton* makeOrNull = workspace.findChild<QPushButton*>(QStringLiteral("worldMakeCoatedDiffuse"));
+    REQUIRE(makeOrNull != nullptr);
+    REQUIRE(makeOrNull->isEnabled() == true);
+    makeOrNull->click();
+    QDialog* creationOrNull = workspace.findChild<QDialog*>(QStringLiteral("worldMaterialCreation"));
+    REQUIRE(creationOrNull != nullptr);
+    QComboBox* modelOrNull = creationOrNull->findChild<QComboBox*>(QStringLiteral("worldMaterialCreationModel"));
+    REQUIRE(modelOrNull != nullptr);
+    CHECK(modelOrNull->currentData().toString() == QStringLiteral("coated_diffuse"));
+    const auto creationInput = [&](const QString& name) {
+        QLineEdit* inputOrNull = creationOrNull->findChild<QLineEdit*>(name);
+        REQUIRE(inputOrNull != nullptr);
+        return inputOrNull;
+    };
+    Type(creationInput(QStringLiteral("worldMaterialCreationCoatingAlpha")), QStringLiteral("0.2"));
+    Type(creationInput(QStringLiteral("worldMaterialCreationCoatingEta")), QStringLiteral("1.5"));
+    Type(creationInput(QStringLiteral("worldMaterialCreationCoatingThickness")), QStringLiteral("0.05"));
+    QPushButton* confirmOrNull =
+        creationOrNull->findChild<QPushButton*>(QStringLiteral("worldConfirmMaterialCreation"));
+    REQUIRE(confirmOrNull != nullptr);
+    confirmOrNull->click();
+    WaitForValidatedScene(workspace);
+
+    // Both slots now resolve to the ordered coat over the wood substrate.
+    const auto checkCreated = [&](const WorldWorkspace& source, const QString& id) {
+        const ludus::resources::SceneMaterial material = getMaterial(source, id);
+        CHECK(material.Scattering.Model == format::MaterialModel::CoatedDiffuse);
+        CHECK(material.Reflectance.X == 0.32F);
+        CHECK(material.Scattering.CoatingEta == 1.5F);
+        CHECK(material.Scattering.CoatingThickness == 0.05F);
+        // The coat runs an internal walk, so a fixed-dimension profile cannot consume it.
+        CHECK(format::SupportsFixedDimensionReflection(material.Scattering) == false);
+    };
+    checkCreated(workspace, selected);
+    checkCreated(workspace, sibling);
+
+    QWidget* propertiesOrNull = workspace.findChild<QWidget*>(QStringLiteral("worldProperties"));
+    REQUIRE(propertiesOrNull != nullptr);
+    propertiesOrNull->hide();
+    QPushButton* editOrNull = workspace.findChild<QPushButton*>(QStringLiteral("worldEditMaterial"));
+    REQUIRE(editOrNull != nullptr);
+    REQUIRE(editOrNull->isEnabled() == true);
+    editOrNull->click();
+    QDialog* view = workspace.findChild<QDialog*>(QStringLiteral("worldMaterialDocument"));
+    REQUIRE(view != nullptr);
+    REQUIRE(view->isVisible() == true);
+    const auto getInput = [&](const QString& key) {
+        QLineEdit* inputOrNull = view->findChild<QLineEdit*>(QStringLiteral("materialCoating:") + key);
+        REQUIRE(inputOrNull != nullptr);
+        return inputOrNull;
+    };
+    const auto click = [&](const QString& name) {
+        QPushButton* buttonOrNull = view->findChild<QPushButton*>(name);
+        REQUIRE(buttonOrNull != nullptr);
+        REQUIRE(buttonOrNull->isEnabled() == true);
+        buttonOrNull->click();
+    };
+    const auto getLabel = [&](const QString& name) {
+        const QLabel* labelOrNull = view->findChild<QLabel*>(name);
+        REQUIRE(labelOrNull != nullptr);
+        return labelOrNull->text();
+    };
+    // The document labels the ordered layers of the coat over the substrate.
+    CHECK(getLabel(QStringLiteral("materialIdentity"))
+              .contains(QStringLiteral("dielectric coat over a diffuse "
+                                       "substrate")) == true);
+    const QString status = QStringLiteral("materialStatus");
+    const QString apply = QStringLiteral("materialApply");
+    const QString alpha = QStringLiteral("alpha");
+    const QString eta = QStringLiteral("eta");
+    const QString thickness = QStringLiteral("thickness");
+
+    // A rejected coat value keeps the draft and the last drawable material.
+    Type(getInput(alpha), QStringLiteral("0"));
+    click(apply);
+    CHECK(getLabel(status).contains(QStringLiteral("enter a finite value")) == true);
+    CHECK(getInput(alpha)->text() == QStringLiteral("0"));
+    CHECK(getMaterial(workspace, selected).Scattering.AlphaU == 0.2F);
+
+    // A valid slot-override coat edit changes only this slot; the sibling keeps the shared coat.
+    Type(getInput(alpha), QStringLiteral("0.3"));
+    Type(getInput(eta), QStringLiteral("1.6"));
+    Type(getInput(thickness), QStringLiteral("0.08"));
+    click(apply);
+    WaitForValidatedScene(workspace);
+    const auto checkOverride = [&](const WorldWorkspace& source) {
+        const ludus::resources::SceneMaterial material = getMaterial(source, selected);
+        CHECK(material.Scattering.AlphaU == 0.3F);
+        CHECK(material.Scattering.CoatingEta == 1.6F);
+        CHECK(material.Scattering.CoatingThickness == 0.08F);
+        CHECK(getMaterial(source, sibling).Scattering.CoatingEta == 1.5F);
+    };
+    checkOverride(workspace);
+
+    click(QStringLiteral("materialUndo"));
+    WaitForValidatedScene(workspace);
+    CHECK(getMaterial(workspace, selected).Scattering.CoatingEta == 1.5F);
+    click(QStringLiteral("materialRedo"));
+    WaitForValidatedScene(workspace);
+    checkOverride(workspace);
+
+    click(QStringLiteral("materialSave"));
+    WaitForValidatedScene(workspace);
+    REQUIRE(workspace.Dirty() == false);
+    REQUIRE(view->close() == true);
+    workspace.StopPreview();
+    workspace.hide();
+
+    // Save and reopen: the created layered material and its slot override persist.
+    WorldWorkspace reopened;
+    if (PreviewViewport::CanPresent() == true)
+    {
+        reopened.show();
+    }
+    reopened.SetProject(directory.path(), 2);
+    REQUIRE(reopened.Open(path) == true);
+    WaitForValidatedScene(reopened);
+    REQUIRE(reopened.SelectEntity(selected) == true);
+    checkOverride(reopened);
+    checkCreated(reopened, sibling);
+    reopened.StopPreview();
+}
+
 TEST_CASE("Placement-only World edits derive the presented scene and keep everything else assembled",
           "[editor][world][placement]")
 {
