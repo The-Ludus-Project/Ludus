@@ -1,6 +1,9 @@
 #include "internal/code_semantic_layers.h"
 
-#include <ludus/foundation/base/compiler.h>
+#include <ludus/foundation/base/core.h>
+
+#include <ludus/foundation/containers/stable_sort.hpp>
+#include <ludus/foundation/containers/static_array.hpp>
 
 #include "internal/code_editor.h"
 #include "internal/code_structure_view.h"
@@ -26,6 +29,15 @@ constexpr qsizetype LENGTH_FIELD = 2;
 constexpr qsizetype TYPE_FIELD = 3;
 constexpr qsizetype MODIFIERS_FIELD = 4;
 constexpr qsizetype MODIFIER_BITS = 32;
+// The layers a refresh asks for, in the order they are requested.
+constexpr usize LAYER_KIND_COUNT = 3;
+constexpr StaticArray<LanguageRequestKind, LAYER_KIND_COUNT> LAYER_KINDS{{
+    LanguageRequestKind::SemanticTokens,
+    LanguageRequestKind::InlayHints,
+    LanguageRequestKind::FoldingRanges,
+}};
+// Shortened inlay hint labels end in a horizontal ellipsis.
+constexpr char16_t ELLIPSIS = u'\u2026';
 // A collapsed range's placeholder names at most this many UTF-16 units.
 constexpr qsizetype MAX_COLLAPSED_TEXT_UNITS = 100;
 } // namespace
@@ -175,6 +187,75 @@ DecodeFoldingRanges(const QJsonArray& ranges, const QString& unit, const CodeSem
     return folds;
 }
 
+QList<CodeInlayHint> DecodeInlayHints(const QJsonArray& hints,
+                                      const QString& unit,
+                                      LanguagePositionEncoding encoding,
+                                      const CodeSemanticSource& source)
+{
+    // LSP 3.17 InlayHintKind: 1 type, 2 parameter.
+    constexpr int32 TYPE_HINT = 1;
+    constexpr int32 PARAMETER_HINT = 2;
+    const QList<int32> lines = IndexLanguageLines(unit);
+    QList<CodeInlayHint> decoded;
+    for (const QJsonValue value : hints)
+    {
+        if (decoded.size() == CodeSemanticLayers::MAX_INLAY_HINTS)
+        {
+            break;
+        }
+        const QJsonObject hint = value.toObject();
+        const QJsonValue label = hint.value(QStringLiteral("label"));
+        QString text;
+        if (label.isArray() == true)
+        {
+            for (const QJsonValue part : label.toArray())
+            {
+                text += part.toObject().value(QStringLiteral("value")).toString();
+                if (text.size() > CodeSemanticLayers::MAX_INLAY_HINT_LABEL_UNITS)
+                {
+                    break;
+                }
+            }
+        }
+        else
+        {
+            text = label.toString();
+        }
+        if (text.size() > CodeSemanticLayers::MAX_INLAY_HINT_LABEL_UNITS)
+        {
+            text = text.left(CodeSemanticLayers::MAX_INLAY_HINT_LABEL_UNITS - 1) + QChar(ELLIPSIS);
+        }
+        int32 position = 0;
+        if (text.trimmed().isEmpty() == true || text.contains(QLatin1Char('\n')) == true ||
+            GetLanguageOffset(unit, lines, hint.value(QStringLiteral("position")).toObject(), encoding, position) ==
+                false ||
+            position < source.Start || position > source.End)
+        {
+            continue;
+        }
+        const int32 kind = hint.value(QStringLiteral("kind")).toInt(0);
+        decoded.append(
+        {
+            .Position = position - source.Start,
+            .Label = text,
+            .Kind = kind == TYPE_HINT        ? CodeInlayHintKind::Type
+                    : kind == PARAMETER_HINT ? CodeInlayHintKind::Parameter
+                                             : CodeInlayHintKind::Other,
+            .HasPaddingLeft = hint.value(QStringLiteral("paddingLeft")).toBool(false),
+            .HasPaddingRight = hint.value(QStringLiteral("paddingRight")).toBool(false),
+        });
+    }
+    // Servers usually answer in order; equal positions keep the server's order.
+    QList<CodeInlayHint> scratch = decoded;
+    const bool isSorted = StableSort(
+        decoded.data(),
+        scratch.data(),
+        static_cast<usize>(decoded.size()),
+        [](const CodeInlayHint& left, const CodeInlayHint& right) noexcept { return left.Position < right.Position; });
+    LUDUS_ASSERT(isSorted == true || decoded.isEmpty() == true);
+    return decoded;
+}
+
 CodeSemanticLayers::CodeSemanticLayers(CodeEditor& inoutEditor, LanguageClient& inoutClient)
     : mEditor(inoutEditor), mClient(inoutClient)
 {
@@ -182,7 +263,11 @@ CodeSemanticLayers::CodeSemanticLayers(CodeEditor& inoutEditor, LanguageClient& 
 
 CodeSemanticLayers::Pending& CodeSemanticLayers::getPending(LanguageRequestKind kind) noexcept
 {
-    return kind == LanguageRequestKind::SemanticTokens ? mTokens : mFolds;
+    if (kind == LanguageRequestKind::SemanticTokens)
+    {
+        return mTokens;
+    }
+    return kind == LanguageRequestKind::InlayHints ? mHints : mFolds;
 }
 
 void CodeSemanticLayers::Refresh(const CodeDocumentIdentity& identity,
@@ -190,7 +275,7 @@ void CodeSemanticLayers::Refresh(const CodeDocumentIdentity& identity,
                                  const QString& unit,
                                  const CodeSemanticSource& source)
 {
-    for (const LanguageRequestKind kind : {LanguageRequestKind::SemanticTokens, LanguageRequestKind::FoldingRanges})
+    for (const LanguageRequestKind kind : LAYER_KINDS)
     {
         Pending& pending = getPending(kind);
         // Background layers never report an unadvertised kind: that would cancel
@@ -200,9 +285,19 @@ void CodeSemanticLayers::Refresh(const CodeDocumentIdentity& identity,
             pending = {};
             continue;
         }
+        QJsonObject parameters;
+        if (kind == LanguageRequestKind::InlayHints)
+        {
+            // The whole authored source: hints are few, and moving them with edits
+            // needs no new request when the view scrolls.
+            const LanguagePositionEncoding encoding = mClient.GetPositionEncoding();
+            parameters.insert(QStringLiteral("range"),
+                              QJsonObject{{QStringLiteral("start"), MakeLanguagePosition(unit, source.Start, encoding)},
+                                          {QStringLiteral("end"), MakeLanguagePosition(unit, source.End, encoding)}});
+        }
         pending =
         {
-            .Request = mClient.Request(kind, {}),
+            .Request = mClient.Request(kind, parameters),
             .Identity = identity,
             .Context = context,
             .Unit = unit,
@@ -217,7 +312,8 @@ bool CodeSemanticLayers::Receive(int32 request,
                                  const CodeDocumentIdentity& currentIdentity,
                                  uint64 currentContext)
 {
-    if (kind != LanguageRequestKind::SemanticTokens && kind != LanguageRequestKind::FoldingRanges)
+    if (kind != LanguageRequestKind::SemanticTokens && kind != LanguageRequestKind::FoldingRanges &&
+        kind != LanguageRequestKind::InlayHints)
     {
         return false;
     }
@@ -247,6 +343,11 @@ bool CodeSemanticLayers::Receive(int32 request,
                                                        mClient.GetPositionEncoding(),
                                                        reply.Source));
     }
+    else if (kind == LanguageRequestKind::InlayHints)
+    {
+        mEditor.SetInlayHints(
+            DecodeInlayHints(value.toArray(), reply.Unit, mClient.GetPositionEncoding(), reply.Source));
+    }
     else
     {
         mEditor.GetStructure().SetServerFolds(DecodeFoldingRanges(value.toArray(), reply.Unit, reply.Source));
@@ -256,7 +357,7 @@ bool CodeSemanticLayers::Receive(int32 request,
 
 void CodeSemanticLayers::Clear()
 {
-    for (const LanguageRequestKind kind : {LanguageRequestKind::SemanticTokens, LanguageRequestKind::FoldingRanges})
+    for (const LanguageRequestKind kind : LAYER_KINDS)
     {
         Pending& pending = getPending(kind);
         if (pending.Request != 0)
@@ -266,6 +367,7 @@ void CodeSemanticLayers::Clear()
         pending = {};
     }
     mEditor.SetSemanticTokens({});
+    mEditor.SetInlayHints({});
     mEditor.GetStructure().SetServerFolds({});
 }
 } // namespace ludus::editor

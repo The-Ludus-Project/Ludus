@@ -1126,6 +1126,32 @@ TEST_CASE("Semantic tokens and folding ranges follow the draft and drop stale re
     CHECK(editor.GetStructure().GetServerFolds().isEmpty() == true);
 }
 
+TEST_CASE("Inlay hints cover the authored source and follow a server refresh", "[editor][text][assistance]")
+{
+    // The first reply has no hints; the server then asks for a refresh.
+    FakeAssistanceSession session("float a = Call(missing);\nfloat b = Call(missing);\n",
+                                  {QStringLiteral("--capabilities"),
+                                   QStringLiteral(R"({"completionProvider": {}, "inlayHintProvider": true})"),
+                                   QStringLiteral("--hints"),
+                                   QStringLiteral("missing"),
+                                   QStringLiteral("--refresh-hints")});
+    CodeEditor& editor = session.Editor;
+    session.Prepare();
+    REQUIRE(QTest::qWaitFor([&editor]() { return editor.GetInlayHints().size() == 2; }));
+    const QString text = editor.toPlainText();
+    CHECK(editor.GetInlayHints().at(0).Position == text.indexOf(QStringLiteral("missing")));
+    CHECK(editor.GetInlayHints().at(1).Position == text.lastIndexOf(QStringLiteral("missing")));
+    CHECK(editor.GetInlayHints().at(0).Label == QStringLiteral("name:"));
+    CHECK(editor.GetInlayHints().at(0).Kind == CodeInlayHintKind::Parameter);
+    CHECK(session.Host.CanUndo() == false);
+    QTest::keyClick(&editor, Qt::Key_Escape);
+    editor.moveCursor(QTextCursor::End);
+    QTest::keyClicks(&editor, QStringLiteral("Call(missing);"));
+    REQUIRE(QTest::qWaitFor([&editor]() { return editor.GetInlayHints().size() == 3; }));
+    session.Assistance.ClearContext();
+    CHECK(editor.GetInlayHints().isEmpty() == true);
+}
+
 TEST_CASE("A semantic token reply for an earlier draft is discarded", "[editor][text][assistance]")
 {
     FakeAssistanceSession session("float a = missing;\n",
@@ -1427,7 +1453,8 @@ TEST_CASE("Native Slang resolves authored symbols references and generated API d
     }
     const QString prefix = QStringLiteral("struct SceneContext { float Exposure; };\n");
     const QString source = QStringLiteral(
-        "// Unicode: \U0001f600\nfloat Value() { return 1; }\nfloat Main(SceneContext scene) { return Value(); }\n");
+        "// Unicode: \U0001f600\nfloat Value() { return 1; }\nfloat Main(SceneContext scene) { return Value(); }\n"
+        "float Twice(float amount) { return amount * 2; }\nfloat Use() { return Twice(3); }\n");
     MemoryCodeDocument host(source.toUtf8());
     CodeEditor editor;
     CodeDocumentController document(editor);
@@ -1469,6 +1496,22 @@ TEST_CASE("Native Slang resolves authored symbols references and generated API d
     REQUIRE(QTest::qWaitFor([&]() { return hasToken(QStringLiteral("Value"), CodeSyntaxRole::Function); }, 15000));
     CHECK(hasToken(QStringLiteral("SceneContext"), CodeSyntaxRole::Type) == true);
     CHECK(hasToken(QStringLiteral("scene"), CodeSyntaxRole::Parameter) == true);
+    // Inlay hints name the parameter an argument binds.
+    // slangd sends none until it has read its configuration, then asks for a refresh.
+    const int32 argument = static_cast<int32>(source.lastIndexOf(QStringLiteral("3)")));
+    REQUIRE(QTest::qWaitFor(
+        [&]() {
+            for (const CodeInlayHint& hint : editor.GetInlayHints())
+            {
+                if (hint.Position == argument && hint.Kind == CodeInlayHintKind::Parameter &&
+                    hint.Label.startsWith(QStringLiteral("amount")) == true)
+                {
+                    return true;
+                }
+            }
+            return false;
+        },
+        15000));
     assistance.RequestNavigation(CodeNavigationKind::Symbols);
     REQUIRE(QTest::qWaitFor([&]() { return editor.GetNavigation().IsChoosing(); }, 15000));
     QListWidget* resultsOrNull = editor.findChild<QListWidget*>(QStringLiteral("codeNavigationResults"));

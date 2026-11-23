@@ -116,6 +116,9 @@ TEST_CASE("The Slang profile answers the editor's workspace configuration", "[ed
     CHECK(profile.ConfigurationResponder(QStringLiteral("slang.predefinedMacros")) == QJsonValue(QJsonArray{}));
     CHECK(profile.ConfigurationResponder(QStringLiteral("slang.additionalSearchPaths")) == QJsonValue(QJsonArray{}));
     CHECK(profile.ConfigurationResponder(QStringLiteral("slang.searchInAllWorkspaceDirectories")) == QJsonValue(false));
+    // slangd sends inlay hints only when both are enabled; the view decides whether to draw them.
+    CHECK(profile.ConfigurationResponder(QStringLiteral("slang.inlayHints.deducedTypes")) == QJsonValue(true));
+    CHECK(profile.ConfigurationResponder(QStringLiteral("slang.inlayHints.parameterNames")) == QJsonValue(true));
     CHECK(profile.ConfigurationResponder(QStringLiteral("slang.unknown")).isNull() == true);
     const LanguageServerProfile& lusl = GetLuslServerProfile();
     REQUIRE(lusl.ConfigurationResponder != nullptr);

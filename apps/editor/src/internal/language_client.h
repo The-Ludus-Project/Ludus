@@ -114,6 +114,10 @@ Q_SIGNALS:
     /// `textDocument/publishDiagnostics` for `uri`, bounded to the first
     /// MAX_PUBLISHED_DIAGNOSTICS entries. `version` is -1 when the server sent none.
     void DiagnosticsPublished(const QString& uri, foundation::int32 version, const QJsonArray& diagnostics);
+    /// The server asked the client to request its inlay hints or semantic tokens
+    /// again (`workspace/inlayHint/refresh`, `workspace/semanticTokens/refresh`),
+    /// for example after it read its configuration. The request is already answered.
+    void RefreshRequested();
 
 private:
     struct PendingRequest final

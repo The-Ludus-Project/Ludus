@@ -16,6 +16,12 @@ QJsonValue ConfigureSlangSection(const QString& section)
     {
         return false;
     }
+    // Inlay hints are drawn or hidden by the view's setting; the server always computes them.
+    if (section == QStringLiteral("slang.inlayHints.deducedTypes") ||
+        section == QStringLiteral("slang.inlayHints.parameterNames"))
+    {
+        return true;
+    }
     return QJsonValue::Null;
 }
 

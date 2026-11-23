@@ -17,6 +17,11 @@ Options shape the server a test needs:
   --tokens WORD         answer semanticTokens/full with a token of legend type 0
                         for every WORD in the document
   --folding-ranges JSON answer foldingRange with this list of ranges
+  --hints WORD          answer inlayHint with a parameter hint "name:" before every
+                        WORD inside the requested range
+  --refresh-hints       answer the first inlayHint with no hints, then send
+                        workspace/inlayHint/refresh, as slangd does after
+                        reading its configuration
 """
 import argparse
 import json
@@ -35,6 +40,8 @@ parser.add_argument('--stale-diagnostics', action='store_true')
 parser.add_argument('--target')
 parser.add_argument('--tokens')
 parser.add_argument('--folding-ranges')
+parser.add_argument('--hints')
+parser.add_argument('--refresh-hints', action='store_true')
 options = parser.parse_args()
 
 text = ''
@@ -182,6 +189,20 @@ while True:
             previous = begin
             start = text.find(options.tokens, start + len(options.tokens))
         result = {'data': data}
+    elif method == 'textDocument/inlayHint' and options.refresh_hints:
+        options.refresh_hints = False
+        send({'id': message['id'], 'result': []})
+        send({'id': 'refresh-1', 'method': 'workspace/inlayHint/refresh'})
+        continue
+    elif method == 'textDocument/inlayHint' and options.hints:
+        first = offset(params['range']['start'])
+        last = offset(params['range']['end'])
+        result = []
+        start = text.find(options.hints, first)
+        while 0 <= start and start + len(options.hints) <= last:
+            result.append({'position': position(start), 'label': [{'value': 'name'}, {'value': ':'}], 'kind': 2,
+                           'paddingRight': True})
+            start = text.find(options.hints, start + len(options.hints))
     elif method == 'textDocument/foldingRange' and options.folding_ranges:
         result = json.loads(options.folding_ranges)
     elif method in ('textDocument/documentSymbol', 'textDocument/inlayHint', 'textDocument/foldingRange',
