@@ -1085,3 +1085,41 @@ The references tool window follows in its own batch.
 
 Snippets as a separate completion source (the architecture's merged snippet
 list), rename, code actions and workspace edits follow.
+
+### M4 batch 4a: rename and workspace edits (CE10, CE11, 2026-11-23)
+
+The first part of the fourth M4 task
+([issue 1263](https://github.com/The-Ludus-Project/Ludus/issues/1263)). Code
+actions with the light bulb follow, and reuse these workspace edits.
+
+- **Rename Symbol** (F2, VS Code's binding) prepares the shader context, asks
+  `textDocument/prepareRename` when the server offers it (otherwise the word at
+  the caret is renamed), and opens an inline box over the symbol, the one
+  overlay besides Find that takes focus. Enter sends `textDocument/rename`;
+  Shift+Enter, or a rename that reaches other files, shows a preview dialog
+  listing every file and change with Apply and Cancel. A rename applies only to
+  the draft revision and context it was asked for. The command is disabled with
+  its reason for a server without `renameProvider`.
+- **Workspace edits.** `ReadCodeWorkspaceEdit` (`internal/code_workspace_edit.h`)
+  reads `changes` and `documentChanges` and validates the whole edit before
+  anything applies, as the design asks. It refuses: edits in the generated
+  prefix or suffix; read-only captured sources; URIs outside the context's
+  inventory; other files when the host cannot edit them; a versioned edit for an
+  older document; resource operations (create, rename, delete); invalid or
+  overlapping ranges; and more than 256 files (`CODE_MAX_WORKSPACE_EDIT_FILES`)
+  or 65,536 edits. Each refusal names its repair and says nothing changed.
+- **One transaction.** Shader sources live in the render-graph package, whose
+  history already snapshots every package file. `RenderGraphShaderAssistance`
+  implements `CodeWorkspaceEditHost`: it checks that every change's text is
+  still its file's draft, rebuilds each file's bytes (keeping CRLF endings), and
+  commits them through `RenderGraphDocument::ReplaceTexts` as a single undo step.
+  This is stronger than CE11's "Undo offers to undo in all files": one Undo in
+  any of the files reverts them all, because they share one history. The files
+  stay unsaved drafts until Save, and every open view refreshes as after Undo.
+  Without a host (a plain buffer), a rename is limited to the edited source and
+  applies through its controller as one edit.
+
+Neither pinned server advertises `renameProvider` (nor `codeActionProvider`),
+so the path is exercised by `language_server_fixture.py`'s new `--rename` and
+`--stale-rename` options and by a package test that applies a two-file edit.
+

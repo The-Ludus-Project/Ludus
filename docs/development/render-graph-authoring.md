@@ -9217,7 +9217,19 @@ returns one mapped location; multiple definitions open a filterable chooser.
 The list stays while you follow it: activate a row to open that location. After
 you edit the shader, the rows describe the earlier text, so activating one says
 so instead of jumping to a wrong place; **Find Again** searches from the same
-symbol in the current text. **Go to Declaration**, **Go to Type Definition** and
+symbol in the current text.
+
+**Rename Symbol** (F2, also in the editor's context menu) renames a name and
+every use the language server finds. A box opens over the name with it
+selected: type the new name and press Enter. When the rename also changes other
+package files, or when you press **Shift+Enter**, a preview lists every file and
+each change first; choose **Apply** or **Cancel**. The rename is one edit to the
+package draft, so a single **Undo** reverts every file it changed, and nothing
+is saved until you save. Escape or clicking elsewhere leaves the name as it was.
+A rename that would change generated code, read-only shader context, a file
+outside the shader's context, or an older version of the text is refused with
+the reason, and nothing changes. The pinned `slangd` and `luslc` do not support
+rename yet, so the command is disabled with that reason for them. **Go to Declaration**, **Go to Type Definition** and
 **Go to Implementation** (in the editor's context menu) behave the same way. **Go
 to Symbol in Workspace** asks the server for symbols named like the word at the
 caret across the captured context and lists those in authored sources. References cover the selected captured compiler context,

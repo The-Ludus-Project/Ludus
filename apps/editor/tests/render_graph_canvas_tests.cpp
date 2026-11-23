@@ -10,6 +10,7 @@
 #include "internal/render_graph_canvas.h"
 #include "internal/render_graph_document.h"
 #include "internal/render_graph_pipeline.h"
+#include "internal/render_graph_shader_assistance.h"
 #include "internal/renderer_workspace.h"
 #include "internal/theme_colour.h"
 #include "internal/world_workspace.h"
@@ -2018,6 +2019,59 @@ TEST_CASE("Analysis rows follow each open shader tab and select their range", "[
     // A replaced marker or a file without a tab reports failure instead of guessing.
     CHECK(workspace.ActivateAnalysisDiagnostic(callerFile, 1) == false);
     CHECK(workspace.ActivateAnalysisDiagnostic(QStringLiteral("main_shaders/missing.slang"), 0) == false);
+}
+
+TEST_CASE("A shader workspace edit changes several package files as one undo step",
+          "[editor][render-graph][code-navigation]")
+{
+    QTemporaryDir project;
+    const QString package = MakePackage(project);
+    const QString callerFile = QStringLiteral("main_shaders/color.slang");
+    const QString helperFile = QStringLiteral("main_shaders/helper.slang");
+    const QString helperText = QStringLiteral("float Helper() { return 1; }\n");
+    WriteFile(QDir(package).filePath(helperFile), helperText.toUtf8());
+    CodeEditorArea codeArea;
+    RendererWorkspace workspace({});
+    workspace.SetCodeEditorArea(codeArea);
+    workspace.SetProject(project.path(), 1);
+    REQUIRE(workspace.OpenGraph(QDir(package).filePath(GetRootGraph())) == true);
+    REQUIRE(workspace.OpenGraphSource(callerFile) == true);
+    CodeDocumentTab* callerTab = codeArea.GetActiveTabOrNull();
+    REQUIRE(callerTab != nullptr);
+    RenderGraphShaderAssistance* assistanceOrNull = callerTab->findChild<RenderGraphShaderAssistance*>();
+    REQUIRE(assistanceOrNull != nullptr);
+    CodeEditor& caller = callerTab->GetEditor();
+    const QString callerText = caller.toPlainText();
+    const QByteArray callerDraft = workspace.GetDocument().GetDraft(callerFile);
+    QList<CodeWorkspaceFileChange> changes{
+        {{}, callerText, {{0, 0, QStringLiteral("// renamed\n")}}},
+        {helperFile, helperText, {{6, 12, QStringLiteral("Twice")}}},
+    };
+
+    // A change whose text is no longer its file's draft is refused, and nothing changes.
+    changes[1].Text = QStringLiteral("float Helper() { return 2; }\n");
+    CHECK(assistanceOrNull->ApplyWorkspaceEdit(callerTab->GetController().Capture().Identity,
+                                               changes,
+                                               0,
+                                               "Rename Symbol") == CodeEditStatus::Conflict);
+    CHECK(workspace.GetDocument().GetDraft(callerFile) == callerDraft);
+    CHECK(workspace.GetDocument().GetDraft(helperFile) == helperText.toUtf8());
+
+    changes[1].Text = helperText;
+    QSignalSpy applied(assistanceOrNull, &RenderGraphShaderAssistance::WorkspaceEditApplied);
+    REQUIRE(assistanceOrNull->ApplyWorkspaceEdit(callerTab->GetController().Capture().Identity,
+                                                 changes,
+                                                 0,
+                                                 "Rename Symbol") == CodeEditStatus::Ok);
+    CHECK(applied.size() == 1);
+    CHECK(workspace.GetDocument().GetDraft(helperFile) == "float Twice() { return 1; }\n");
+    CHECK(workspace.GetDocument().GetDraft(callerFile) == "// renamed\n" + callerDraft);
+    CHECK(caller.toPlainText() == QStringLiteral("// renamed\n") + callerText);
+    // The package history holds both files: one Undo reverts them together.
+    workspace.Undo();
+    CHECK(workspace.GetDocument().GetDraft(helperFile) == helperText.toUtf8());
+    CHECK(workspace.GetDocument().GetDraft(callerFile) == callerDraft);
+    CHECK(caller.toPlainText() == callerText);
 }
 
 TEST_CASE("Shader Find References results open in the References window across tabs",

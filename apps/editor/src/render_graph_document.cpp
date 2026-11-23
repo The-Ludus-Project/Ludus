@@ -1764,6 +1764,49 @@ CodeEditStatus RenderGraphDocument::ApplyTextEdit(const QString& file,
     return status == RenderGraphDocumentStatus::Capacity ? CodeEditStatus::Capacity : CodeEditStatus::Conflict;
 }
 
+CodeEditStatus RenderGraphDocument::ReplaceTexts(uint64 expectedRevision,
+                                                 const QMap<QString, QByteArray>& files,
+                                                 const char* name,
+                                                 const RenderGraphTextState& before,
+                                                 const RenderGraphTextState& after)
+{
+    if (expectedRevision != GetRevision())
+    {
+        return CodeEditStatus::Conflict;
+    }
+    RenderGraphSnapshot candidate = mDraft;
+    for (QMap<QString, QByteArray>::const_iterator file = files.constBegin(); file != files.constEnd(); ++file)
+    {
+        if (mDraft.Files.contains(file.key()) == false)
+        {
+            return CodeEditStatus::Unavailable;
+        }
+        if (file.value().size() > MAX_FILE_BYTES)
+        {
+            return CodeEditStatus::Capacity;
+        }
+        Utf8View proof;
+        usize errorOffset = 0;
+        if (ValidateUtf8({file.value().constData(), static_cast<usize>(file.value().size())}, proof, errorOffset) !=
+            StringStatus::Ok)
+        {
+            return CodeEditStatus::InvalidText;
+        }
+        candidate.Files.insert(file.key(), file.value());
+    }
+    if (candidate.Files == mDraft.Files)
+    {
+        return CodeEditStatus::Ok;
+    }
+    const RenderGraphDocumentStatus status = commit(candidate, name, false, before, after, {}, {}, CommitKind::Source);
+    if (status == RenderGraphDocumentStatus::Ok)
+    {
+        mLastMove.clear();
+        return CodeEditStatus::Ok;
+    }
+    return status == RenderGraphDocumentStatus::Capacity ? CodeEditStatus::Capacity : CodeEditStatus::Conflict;
+}
+
 void RenderGraphDocument::BreakTextGroup() noexcept
 {
     mLastTextFile.clear();

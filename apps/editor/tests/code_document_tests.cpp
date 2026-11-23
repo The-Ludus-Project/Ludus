@@ -10,6 +10,7 @@
 #include "internal/code_structure_view.h"
 #include "internal/code_syntax_service.h"
 #include "internal/code_text.h"
+#include "internal/code_workspace_edit_preview.h"
 #include "internal/document_history.h"
 #include "internal/lusl_formatting.h"
 
@@ -27,6 +28,7 @@
 #include <QLabel>
 #include <QLineEdit>
 #include <QListWidget>
+#include <QPushButton>
 #include <QScrollBar>
 #include <QSignalSpy>
 #include <QTemporaryDir>
@@ -35,6 +37,7 @@
 #include <QTextDocument>
 #include <QTextLayout>
 #include <QTimer>
+#include <QTreeWidget>
 #include <QUrl>
 
 using namespace ludus::editor;
@@ -1134,6 +1137,146 @@ TEST_CASE("Semantic tokens and folding ranges follow the draft and drop stale re
     session.Assistance.ClearContext();
     CHECK(editor.GetSemanticTokens().isEmpty() == true);
     CHECK(editor.GetStructure().GetServerFolds().isEmpty() == true);
+}
+
+namespace
+{
+const QString RENAMING_CAPABILITIES =
+    QStringLiteral(R"({"completionProvider": {}, "renameProvider": {"prepareProvider": true}})");
+
+QAction* FindRenameAction(CodeEditor& inoutEditor)
+{
+    QAction* renameOrNull = nullptr;
+    for (QAction* action : inoutEditor.actions())
+    {
+        renameOrNull = action->objectName() == QStringLiteral("codeEditorRename") ? action : renameOrNull;
+    }
+    REQUIRE(renameOrNull != nullptr);
+    return renameOrNull;
+}
+
+/// Put the caret inside the last `word` and run Rename Symbol until the box opens.
+QLineEdit& OpenRenameBox(CodeEditor& inoutEditor, const QString& word)
+{
+    QTextCursor cursor(inoutEditor.document());
+    cursor.setPosition(static_cast<int32>(inoutEditor.toPlainText().lastIndexOf(word)) + 1);
+    inoutEditor.setTextCursor(cursor);
+    FindRenameAction(inoutEditor)->trigger();
+    QLineEdit* boxOrNull = inoutEditor.findChild<QLineEdit*>(QStringLiteral("codeEditorRenameBox"));
+    REQUIRE(boxOrNull != nullptr);
+    REQUIRE(QTest::qWaitFor([boxOrNull]() { return boxOrNull->isVisible() == true; }));
+    return *boxOrNull;
+}
+} // namespace
+
+TEST_CASE("Rename Symbol renames every use as one undoable edit", "[editor][text][assistance]")
+{
+    FakeAssistanceSession session(
+        "float value = 1;\nfloat b = value;\n",
+        {QStringLiteral("--capabilities"), RENAMING_CAPABILITIES, QStringLiteral("--rename"), QStringLiteral("value")});
+    CodeEditor& editor = session.Editor;
+    QSignalSpy status(&session.Assistance, &CodeAssistance::StatusChanged);
+    QLineEdit& box = OpenRenameBox(editor, QStringLiteral("value"));
+    CHECK(box.text() == QStringLiteral("value"));
+    CHECK(box.selectedText() == QStringLiteral("value"));
+    QTest::keyClicks(&box, QStringLiteral("amount"));
+    QTest::keyClick(&box, Qt::Key_Return);
+    REQUIRE(QTest::qWaitFor(
+        [&session]() { return session.Host.GetState().Text == "float amount = 1;\nfloat b = amount;\n"; }));
+    CHECK(box.isVisible() == false);
+    CHECK(editor.textCursor().position() ==
+          static_cast<int32>(editor.toPlainText().lastIndexOf(QStringLiteral("amount"))));
+    CHECK(status.last().first().toString().startsWith(QStringLiteral("Renamed 'value' to 'amount'")) == true);
+    // One edit: a single Undo restores both uses.
+    REQUIRE(session.Host.Undo() == true);
+    session.Document.Synchronize(true);
+    CHECK(session.Host.GetState().Text == "float value = 1;\nfloat b = value;\n");
+    CHECK(session.Host.CanUndo() == false);
+
+    // Escape leaves the text alone and sends nothing.
+    QLineEdit& again = OpenRenameBox(editor, QStringLiteral("value"));
+    QTest::keyClicks(&again, QStringLiteral("other"));
+    QTest::keyClick(&again, Qt::Key_Escape);
+    QTest::qWait(200);
+    CHECK(session.Host.GetState().Text == "float value = 1;\nfloat b = value;\n");
+}
+
+TEST_CASE("Shift+Enter previews a rename before applying it", "[editor][text][assistance]")
+{
+    FakeAssistanceSession session(
+        "float value = 1;\nfloat b = value;\n",
+        {QStringLiteral("--capabilities"), RENAMING_CAPABILITIES, QStringLiteral("--rename"), QStringLiteral("value")});
+    CodeEditor& editor = session.Editor;
+    for (const bool shouldApply : {false, true})
+    {
+        QLineEdit& box = OpenRenameBox(editor, QStringLiteral("value"));
+        QTest::keyClicks(&box, QStringLiteral("amount"));
+        QTest::keyClick(&box, Qt::Key_Return, Qt::ShiftModifier);
+        CodeWorkspaceEditPreview* previewOrNull = nullptr;
+        REQUIRE(QTest::qWaitFor([&]() {
+            previewOrNull = editor.findChild<CodeWorkspaceEditPreview*>();
+            return previewOrNull != nullptr && previewOrNull->isVisible() == true;
+        }));
+        CHECK(previewOrNull->GetEditCount() == 2);
+        CHECK(session.Host.GetState().Text == "float value = 1;\nfloat b = value;\n");
+        QTreeWidget* filesOrNull = previewOrNull->findChild<QTreeWidget*>(QStringLiteral("codeWorkspaceEditFiles"));
+        REQUIRE(filesOrNull != nullptr);
+        REQUIRE(filesOrNull->topLevelItemCount() == 1);
+        CHECK(filesOrNull->topLevelItem(0)->child(1)->text(0) ==
+              QStringLiteral("line 2, column 11: 'value' → 'amount'"));
+        if (shouldApply == false)
+        {
+            previewOrNull->reject();
+            QTest::qWait(100);
+            CHECK(session.Host.GetState().Text == "float value = 1;\nfloat b = value;\n");
+            continue;
+        }
+        QPushButton* applyOrNull = previewOrNull->findChild<QPushButton*>(QStringLiteral("codeWorkspaceEditApply"));
+        REQUIRE(applyOrNull != nullptr);
+        applyOrNull->click();
+        CHECK(session.Host.GetState().Text == "float amount = 1;\nfloat b = amount;\n");
+    }
+}
+
+TEST_CASE("A rename that reaches generated text or an older version changes nothing", "[editor][text][assistance]")
+{
+    // The context prefix "// generated missing" holds the name too.
+    for (const bool isStale : {false, true})
+    {
+        QStringList options{QStringLiteral("--capabilities"),
+                            RENAMING_CAPABILITIES,
+                            QStringLiteral("--rename"),
+                            isStale == true ? QStringLiteral("value") : QStringLiteral("missing")};
+        if (isStale == true)
+        {
+            options.append(QStringLiteral("--stale-rename"));
+        }
+        FakeAssistanceSession session("float value = missing;\n", options);
+        CodeEditor& editor = session.Editor;
+        QSignalSpy status(&session.Assistance, &CodeAssistance::StatusChanged);
+        QLineEdit& box = OpenRenameBox(editor, isStale == true ? QStringLiteral("value") : QStringLiteral("missing"));
+        QTest::keyClicks(&box, QStringLiteral("renamed"));
+        QTest::keyClick(&box, Qt::Key_Return);
+        const QString phrase = isStale == true ? QStringLiteral("earlier version") : QStringLiteral("generated");
+        REQUIRE(QTest::qWaitFor([&status, &phrase]() {
+            return status.isEmpty() == false && status.last().first().toString().contains(phrase) == true;
+        }));
+        CHECK(session.Host.GetState().Text == "float value = missing;\n");
+        CHECK(session.Host.CanUndo() == false);
+    }
+}
+
+TEST_CASE("Rename Symbol is disabled with its reason when the server cannot rename", "[editor][text][assistance]")
+{
+    FakeAssistanceSession session("float value = 1;\n",
+                                  {QStringLiteral("--capabilities"), QStringLiteral(R"({"completionProvider": {}})")});
+    CodeEditor& editor = session.Editor;
+    QAction* rename = FindRenameAction(editor);
+    CHECK(rename->shortcut() == QKeySequence(Qt::Key_F2));
+    CHECK(rename->isEnabled() == true);
+    session.Prepare();
+    REQUIRE(QTest::qWaitFor([rename]() { return rename->isEnabled() == false; }));
+    CHECK(rename->toolTip() == QStringLiteral("The selected slangd does not support rename."));
 }
 
 TEST_CASE("Snippet tab stops edit mirrors together and end at the final position", "[editor][text][assistance]")

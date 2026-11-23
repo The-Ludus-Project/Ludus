@@ -26,6 +26,9 @@ Options shape the server a test needs:
                         inserts TEXT (InsertTextFormat.Snippet)
   --resolve             answer completionItem/resolve with the item plus a
                         detail and documentation naming its label
+  --rename WORD         answer prepareRename on a WORD with its range, and rename
+                        with a workspace edit replacing every WORD
+  --stale-rename        send that edit as documentChanges for an older version
 """
 import argparse
 import json
@@ -48,10 +51,13 @@ parser.add_argument('--hints')
 parser.add_argument('--refresh-hints', action='store_true')
 parser.add_argument('--snippet')
 parser.add_argument('--resolve', action='store_true')
+parser.add_argument('--rename')
+parser.add_argument('--stale-rename', action='store_true')
 options = parser.parse_args()
 
 text = ''
 uri = ''
+version = 0
 held = []
 
 
@@ -139,10 +145,12 @@ while True:
     if method == 'textDocument/didOpen':
         text = message['params']['textDocument']['text']
         uri = message['params']['textDocument']['uri']
+        version = message['params']['textDocument']['version']
         record({'text': text})
         publish(message['params']['textDocument']['uri'], message['params']['textDocument']['version'])
         continue
     if method == 'textDocument/didChange':
+        version = message['params']['textDocument']['version']
         for change in message['params']['contentChanges']:
             if 'range' in change:
                 start = offset(change['range']['start'])
@@ -171,6 +179,21 @@ while True:
         result = [{'label': 'Item%d' % message['id'], 'position': params.get('position')}]
         if options.resolve:
             result.append({'label': 'Other%d' % message['id']})
+    elif method in ('textDocument/prepareRename', 'textDocument/rename') and options.rename:
+        occurrences = []
+        start = text.find(options.rename)
+        while start >= 0:
+            occurrences.append({'start': position(start), 'end': position(start + len(options.rename))})
+            start = text.find(options.rename, start + len(options.rename))
+        caret = offset(params['position'])
+        found = [r for r in occurrences if offset(r['start']) <= caret <= offset(r['end'])]
+        if method == 'textDocument/prepareRename':
+            result = {'range': found[0], 'placeholder': options.rename} if found else None
+        elif options.stale_rename:
+            edits = [{'range': r, 'newText': params['newName']} for r in occurrences]
+            result = {'documentChanges': [{'textDocument': {'uri': uri, 'version': version - 1}, 'edits': edits}]}
+        else:
+            result = {'changes': {uri: [{'range': r, 'newText': params['newName']} for r in occurrences]}}
     elif method == 'completionItem/resolve' and options.resolve:
         result = dict(params)
         result['detail'] = 'resolved detail'

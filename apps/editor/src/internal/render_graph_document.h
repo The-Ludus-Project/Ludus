@@ -495,6 +495,16 @@ public:
                                                CodeTextSelection before,
                                                CodeTextSelection after,
                                                bool shouldMerge);
+    /// Replace several existing sources' drafts as one undo step named `name` (a
+    /// workspace edit, code editor M4 CE11): Undo restores every file together.
+    /// `file` is the source being edited, with its selection before and after.
+    /// Rejects a stale revision, an unknown file, invalid UTF-8 or a size limit
+    /// without changing the draft or history.
+    [[nodiscard]] CodeEditStatus ReplaceTexts(foundation::uint64 expectedRevision,
+                                              const QMap<QString, QByteArray>& files,
+                                              const char* name,
+                                              const RenderGraphTextState& before,
+                                              const RenderGraphTextState& after);
     void BreakTextGroup() noexcept;
     [[nodiscard]] LUDUS_INLINE const RenderGraphTextState& GetHistoryTextState() const noexcept
     {
