@@ -5848,7 +5848,7 @@ name every check this way.
 
 A build warns at each authored `HasFailed = true` with a
 `RenderGraphBuildReasonlessFailure` row in the Error List, located at its line,
-and marks the line in the Source view. The build still succeeds. Replace each
+and marks the line in Code. The build still succeeds. Replace each
 one with `FailSceneQuery` so its pixels name their check. The check is lexical,
 so a write hidden behind a macro or a differently named context is not found.
 
@@ -6445,7 +6445,7 @@ the editor uses it for any project that has no graph of its own.
    shader compilation. Opening the project writes nothing. The **Render Preview** panel mirrors the same graph
    output and is optional. Camera navigation and scene edits feed that graph directly.
 3. **Edit it.** Change anything: move a node on the canvas, edit a selected node's
-   field in **Properties**, or apply shader text in the **Source** view. The first edit turns the
+   field in **Properties**, or edit shader text in **Code**. The first edit turns the
    default into a project draft:
    - The path label changes to `graphs/Main/main.lurender.json (new, unsaved)`, and the
      status line names the folder that Save will create.
@@ -8810,7 +8810,7 @@ With `--json`, a failure's `error.location` names its authored owner:
 | --- | --- | --- |
 | Source/document error | `source`, optional `configuration` and `node` | Selects the configuration or node |
 | Expanded-plan error | `source`, `configuration`, `node`, `instance` (nested path such as `Main/raster/draw`) | Selects the node in its own library |
-| Shader compiler error | `source`, `line`, optional `column` and `length`; `diagnostics` lists up to 32 compiler messages | Opens the function file at that line and column; the Source pane marks each message |
+| Shader compiler error | `source`, `line`, optional `column` and `length`; `diagnostics` lists up to 32 compiler messages | Opens the function file at that line and column; the Code tab marks each message |
 | Generated wrapper error | `generated: wrapper.slang`, `program`, `line` | Opens the program record in the build manifest |
 
 `column` is a one-based Unicode scalar column and `length` counts Unicode scalars
@@ -9050,20 +9050,27 @@ the accepted rename with the graph.
 
 ### Edit shader sources inside Ludus
 
-The **Source** pane uses the shared code editor: line numbers, Slang lexical
-coloring, current-line and matching-bracket highlighting, and native text
-selection, clipboard and navigation. Strings and comments are excluded from
+Choose **Open Source** from the graph to work in **Code**. The selected node's
+shader opens when one is assigned. The package file picker opens other shaders,
+editable graph JSON and the shader manifest. All tabs edit the same package
+draft that the canvas uses. **Return to Graph** restores the node selection.
+**Validate**, **Build Graph** and **Live Preview** are available while a package
+tab is shown, including when reading generated source.
+
+The editor provides line numbers, Slang coloring, current-line and matching-bracket
+highlighting, and native text selection, clipboard and navigation. Strings and comments are excluded from
 bracket matching; matching is bounded for responsiveness. Shader formatting and
 unified source/canvas undo, native shader completion and signature help are
 available. Symbol hover remains a future increment, described in the
 [shared editor architecture](../architecture/editor-gui-systems.md#source-editing-direction).
 
-Use **Focus Source** or **Shift+Alt+Return** while Source is active to hide the
-surrounding tool windows, graph source tree and API reference. **Restore Layout**
+Use **Focus Source** or **Shift+Alt+Return** while a package tab is active to
+hide the surrounding tool windows and Shader API reference. **Restore Layout**
 or the same shortcut restores the previous arrangement, selection and active
 source. The View menu's **Focus Viewport** command also supports Source.
-**Shader API** shows or hides the reference; it starts hidden, remembers the
-choice, and retains the reference split width across focus and source changes.
+**Shader API** shows or hides the reference for the shader in context, including
+when a definition opens generated source. It remembers its visibility and split
+width across focus and source changes.
 External editor and reload actions are grouped under the **Source** menu.
 
 The compact editor strip exposes **Edit**, text size in points, **Wrap** and
@@ -9156,8 +9163,7 @@ snapshot URI/file/hash records; navigation does not parse shader declarations or
 guess source paths. Go to Symbol excludes generated surroundings.
 
 **Navigate Back / Forward** returns through explicit source, symbol, line, Find and
-diagnostic jumps, including between the graph's Source pane and its code tabs.
-It retains up to
+diagnostic jumps across the package's Code tabs. It retains up to
 64 locations in each direction and clears Forward on a new jump. Positions follow
 edits while their buffer is open; after a source rebind they use clamped line/column
 positions. Replacing a graph or project/epoch clears this view history. It does not
@@ -9220,8 +9226,8 @@ available independently.
 
 #### Compiler messages in the source
 
-After a Validate, Build or live preview build fails, the Source pane marks the
-compiler messages for the file it shows. Each message gets a gutter marker beside
+After a Validate, Build or live preview build fails, the Code tabs mark the
+compiler messages for each open source file. Each message gets a gutter marker beside
 its line number and a wavy underline under the reported token (red for errors,
 amber for warnings). A message without a column underlines the line's text.
 Hover over the underline or the gutter marker to read the message. Activating a
@@ -9273,8 +9279,8 @@ ordinary-line and plain-Qt comparison probes are opt-in `[.benchmark]` tests in
 
 ### Create a shared shader file
 
-1. Open a render graph. Switch to its **Source** tab and open **Source →
-   New shared shader file…**. You can also select a pipeline on the canvas and
+1. Open a render graph, choose **Open Source**, then use **Source →
+   New shared shader file…** in Code. You can also select a pipeline on the canvas and
    choose **Shaders → New shared shader file…** in its **Edit Node…** dialog
    or Properties.
 2. Choose **LUSL include (.luslh)** or **Slang include (.slang)**. The dialog
@@ -9296,7 +9302,7 @@ structs already declared in ordered Slang shader programs.
 
 ### Edit shader sources in a code editor
 
-On native desktop, select a file in the **Source** view and choose **Source >
+On native desktop, open a package file in **Code** and choose **Source →
 Open in Code Editor**. The first use opens a native application picker; **Source >
 Choose Code Editor…** changes that saved preference. On macOS, select the editor's `.app`
 from Applications. No command-line launcher or shell command is required.
@@ -9400,9 +9406,8 @@ stay in step.
 
 Use **Outline** in the document header to hide or restore the graph outline. It lists each
 file's configurations and shows the nodes of the displayed configuration; other
-configurations stay collapsed until you open them. The Source view hides the outline to give
-the code room, and the next view brings it back if it was open.
-Its visibility and splitter width are remembered between sessions. The status
+configurations stay collapsed until you open them. The outline's visibility
+and splitter width are remembered between sessions. The status
 strip reserves one line; longer reports remain scrollable. **View → Focus
 Viewport** (Shift+Alt+Enter; Shift+Option+Return on macOS), while the graph is
 active, hides the surrounding tool windows and graph navigation to give the
@@ -9504,7 +9509,7 @@ releasing on a port connects or rejects as usual.
 | Right-click Accumulate, Denoise or ToneMap → Disable Node | Toggle its `enabled` field as one undoable edit; the compiler [forwards its input](#disable-a-node) |
 | Select a node and press Delete | `RemoveNode` (also drops its links and layout position) |
 | Right-click a Subgraph node → Delete Subgraph and Library | `RemoveSubgraphLibrary`: also deletes its library graph and the shader files only that library uses ([details](#remove-a-template-or-library)) |
-| Double-click a Subgraph node | Opens its asset's configuration on the canvas, in the tree and in the Source view; not an edit |
+| Double-click a Subgraph node | Opens its asset’s configuration on the canvas and in the tree |
 | Double-click an ordinary node | Opens Details; pipeline parts share their controls with Properties |
 | Pinch apart/together on a supported trackpad | Zoom in/out around the gesture position; does not edit the draft |
 | Mouse wheel, or Ctrl/Command+scroll from any device | Zoom around the pointer, including smooth pixel scrolling |

@@ -510,6 +510,7 @@ void MainWindow::BuildUi()
     // Save follows the active code tab, so its label and state track the tabs.
     connect(mCodeArea, &CodeEditorArea::TabsChanged, this, &MainWindow::RenderDocumentActions);
     connect(mCodeArea, &CodeEditorArea::ActiveTabChanged, this, &MainWindow::RenderDocumentActions);
+    connect(mCodeArea, &CodeEditorArea::ActiveTabChanged, this, &MainWindow::updateContextStrip);
     // Rendering resolution: the active renderer graph's output size and scale, saved with the project's settings.
     SettingsSection* renderingSection = new SettingsSection(QStringLiteral("Rendering resolution"), column);
     renderingSection->setObjectName(QStringLiteral("projectRenderingSection"));
@@ -718,8 +719,9 @@ void MainWindow::BuildUi()
     // while a code view has a tab active (architecture, "Status bar").
     mCodeStatusBarOrNull = new CodeStatusBar(this);
     statusBar()->addPermanentWidget(mCodeStatusBarOrNull);
-    mCodeStatusBarOrNull->SetActiveTab(mCodeArea->GetActiveTabOrNull());
-    connect(mCodeArea, &CodeEditorArea::ActiveTabChanged, mCodeStatusBarOrNull, &CodeStatusBar::SetActiveTab);
+    connect(mCodeArea, &CodeEditorArea::ActiveTabChanged, this, [this](CodeDocumentTab* tabOrNull) {
+        mCodeStatusBarOrNull->SetActiveTab(mDocuments->GetActiveDocumentOrNull() == mCodeArea ? tabOrNull : nullptr);
+    });
     // A save, edit or profile change can change the shown items (dirty, endings).
     connect(mCodeArea, &CodeEditorArea::TabsChanged, mCodeStatusBarOrNull, [this]() {
         mCodeStatusBarOrNull->Refresh();
@@ -1128,12 +1130,19 @@ void MainWindow::hideIdleRayPaths()
 void MainWindow::showCodeAndViewport()
 {
     setViewportFocused(false);
-    if (Renderer_->ShowSourceView() == false || mDocuments->ShowDocumentsSideBySide(Renderer_, World_) == false)
+    const bool isGraphCodeCurrent =
+        mDocuments->IsDocumentCurrent(mCodeArea) == true && Renderer_->IsGraphCodeActive() == true;
+    if ((isGraphCodeCurrent == false && Renderer_->ShowSourceView() == false) ||
+        mDocuments->ShowDocumentsSideBySide(mCodeArea, World_) == false)
     {
         statusBar()->showMessage(QStringLiteral("Open a project render graph with sources to use Code and Viewport."));
         return;
     }
-    Renderer_->FocusActiveView();
+    CodeDocumentTab* tabOrNull = mCodeArea->GetActiveTabOrNull();
+    if (tabOrNull != nullptr)
+    {
+        tabOrNull->GetEditor().setFocus(Qt::ShortcutFocusReason);
+    }
     updateContextStrip();
 }
 
@@ -1168,6 +1177,10 @@ void MainWindow::setViewportFocused(bool isFocused)
             Renderer_->SetChromeVisible(false);
             Renderer_->FocusActiveView();
         }
+        else if (mFocusRestoreDocumentOrNull == mCodeArea && Renderer_->IsGraphCodeActive() == true)
+        {
+            Renderer_->SetCodeFocused(true);
+        }
         else
         {
             World_->SetChromeVisible(false);
@@ -1178,6 +1191,7 @@ void MainWindow::setViewportFocused(bool isFocused)
     mIsViewportFocused = false;
     World_->SetChromeVisible(true);
     Renderer_->SetChromeVisible(true);
+    Renderer_->SetCodeFocused(false);
     if (restoreState(mFocusRestoreState, LAYOUT_VERSION) == false)
     {
         LUDUS_LOG_TEXT(LOG_EDITOR_LAYOUT, Warning, "Could not restore the layout from before Focus Viewport.");
@@ -1491,12 +1505,12 @@ void MainWindow::SetProjectWorkspace(const QString& root, bool restore)
     }
     hideIdleRayPaths();
     World_->RestoreSession(object.value(QStringLiteral("world")).toObject());
-    static_cast<void>(Renderer_->RestoreSourceViewState(object.value(QStringLiteral("renderer")).toObject()));
     // Reopen the project's code tabs before the document arrangement, so the
     // saved layout can show the Code document with its tabs already present.
     mCodeArea->RestoreState(object.value(QStringLiteral("codeTabs")).toObject());
     // Malformed or stale arrangements leave the project's default World document open.
     static_cast<void>(mDocuments->RestoreState(object.value(QStringLiteral("documents")).toObject()));
+    static_cast<void>(Renderer_->RestoreSourceViewState(object.value(QStringLiteral("renderer")).toObject()));
     if (mDocuments->GetActiveDocumentOrNull() == nullptr)
     {
         static_cast<void>(mDocuments->OpenDocument(World_));

@@ -1679,7 +1679,7 @@ void CodeEditor::DeleteLines()
 }
 
 // NOLINTNEXTLINE(bugprone-easily-swappable-parameters): line then column is the universal order.
-void CodeEditor::GoToLine(int32 line, int32 column)
+void CodeEditor::GoToLine(int32 line, int32 column, bool shouldRemember)
 {
     const int32 clamped = qBound(1, line, blockCount());
     const QTextBlock block = document()->findBlockByNumber(clamped - 1);
@@ -1688,7 +1688,7 @@ void CodeEditor::GoToLine(int32 line, int32 column)
     {
         cursor.setPosition(block.position() + GetScalarOffset(block.text(), column - 1));
     }
-    if (cursor != textCursor())
+    if (shouldRemember == true && cursor != textCursor())
     {
         mNavigation->RememberCurrent();
     }

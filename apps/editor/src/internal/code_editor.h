@@ -146,7 +146,7 @@ public:
     /// Clamp a one-based line, and an optional one-based Unicode scalar column, to
     /// the document and reveal that position. Column 0 selects the line start.
     // NOLINTNEXTLINE(bugprone-easily-swappable-parameters): line then column is the universal order.
-    void GoToLine(foundation::int32 line, foundation::int32 column = 0);
+    void GoToLine(foundation::int32 line, foundation::int32 column = 0, bool shouldRemember = true);
     /// View-only source history and semantic navigation presentation; owned by this editor.
     [[nodiscard]] LUDUS_INLINE CodeNavigation& GetNavigation() const noexcept
     {

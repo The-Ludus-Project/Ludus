@@ -63,6 +63,7 @@ public:
     /// Populate an immutable captured source with its provenance.
     void SetReadOnlySource(const QString& text, const QString& explanation);
     void AddSessionControls(QWidget& inoutControls, QWidget& inoutStatus);
+    void ShowEditorControls();
 
     /// Re-synchronize the projection from the host after another view edited it.
     /// The controller's guard prevents the mirrored delta from being re-sent.
