@@ -594,6 +594,12 @@ Status PackGpuScene(const ReferenceJob& job,
                   GpuBits(static_cast<uint32>(job.SourceGeneration >> LUDUS_GRAPH_SOURCE_HIGH_SHIFT)));
     return Status::Ready;
 }
+rhi::BindingLayoutHandle GetGpuComputeLayout(const GpuPreviewState& state, const GpuPreviewRecord& job) noexcept
+{
+    return job.HasNativeRayInvocation == true && state.NativeRecordBytes != 0 ? state.NativeRayLayout
+                                                                              : state.ComputeLayout;
+}
+
 // The compute bindings of a job, one per binding of the job's layout (GpuPreviewState::ComputeBindings), each chosen
 // by its slot: the layout's order and optional slots (storage, visibility, ray path capture, LTC table, failure
 // summary) then need no position arithmetic. parameters is the job's uniform or one row band's copy; failures is the
@@ -863,7 +869,7 @@ Status PollGpuJob(rhi::DeviceHandle device, GpuPreviewState& inoutState, GpuPrev
                     return Status::InvalidDescription;
                 }
                 return rhi::CreateBindingSet(device,
-                                             inoutState.ComputeLayout,
+                                             GetGpuComputeLayout(inoutState, inoutJob),
                                              {bindings.GetData(), count},
                                              inoutJob.ComputeBindings);
             }();
@@ -1130,6 +1136,7 @@ void Renderer::State::ClearGpuPreview() noexcept
     static_cast<void>(rhi::Destroy(Device, state.NativeRayShader));
     static_cast<void>(rhi::Destroy(Device, state.ImagePipeline));
     static_cast<void>(rhi::Destroy(Device, state.ComputeLayout));
+    static_cast<void>(rhi::Destroy(Device, state.NativeRayLayout));
     static_cast<void>(rhi::Destroy(Device, state.ImageLayout));
     static_cast<void>(rhi::Destroy(Device, state.ComputeShader));
     static_cast<void>(rhi::Destroy(Device, state.VertexShader));
@@ -1267,12 +1274,31 @@ Status Renderer::EnableGpuPreview(const rhi::RasterShaderDescription& compute,
             return Status::InvalidDescription;
         }
     }
+    usize nativeRecordBytes = 0;
+    if (hasPersistentBuffers == true && options.NativeRayStagesOrNull != nullptr)
+    {
+        for (const rhi::RasterBinding& binding : options.NativeRayStagesOrNull->Bindings)
+        {
+            if (binding.Binding == LUDUS_GRAPH_BUFFER1_BINDING && binding.Kind == rhi::RasterBindingKind::StorageRead)
+            {
+                if (binding.MinSize == 0 || binding.MinSize > caps.MaxStorageRange ||
+                    binding.MinSize % sizeof(uint32) != 0 || binding.Visibility != rhi::RasterVisibility::Compute)
+                {
+                    return Status::InvalidDescription;
+                }
+                nativeRecordBytes = binding.MinSize;
+            }
+        }
+    }
     for (usize index = baseBindingCount; hasPersistentBuffers == true && index < bufferBindingCount; ++index)
     {
         const rhi::RasterBinding& binding = kernelBindings[index];
+        const usize expectedSize = binding.Binding == LUDUS_GRAPH_BUFFER1_BINDING && nativeRecordBytes != 0
+                                       ? nativeRecordBytes
+                                       : LUDUS_GPU_PREVIEW_VECTOR_BYTES;
         if (binding.Binding != LUDUS_GRAPH_BUFFER0_BINDING + index - baseBindingCount ||
             binding.Kind != rhi::RasterBindingKind::StorageReadWrite ||
-            binding.Visibility != rhi::RasterVisibility::Compute || binding.MinSize != LUDUS_GPU_PREVIEW_VECTOR_BYTES)
+            binding.Visibility != rhi::RasterVisibility::Compute || binding.MinSize != expectedSize)
         {
             return Status::InvalidDescription;
         }
@@ -1336,6 +1362,7 @@ Status Renderer::EnableGpuPreview(const rhi::RasterShaderDescription& compute,
     core::UniquePtr<GpuPreviewState> state(allocation);
     state->Options = options;
     state->HasPersistentBuffers = hasPersistentBuffers;
+    state->NativeRecordBytes = nativeRecordBytes;
     state->HasNativeRayQueries = hasNativeRayQueries;
     for (usize i = 0; i < options.StorageBuffers.GetSize(); ++i)
     {
@@ -1486,6 +1513,29 @@ Status Renderer::PollGpuPreview() noexcept
                 break;
             case 1:
                 status = rhi::GetStatus(mState->Device, state.ComputeLayout);
+                if (status == Status::Ready && state.NativeRecordBytes != 0)
+                {
+                    if (state.HasCreatedNativeRayLayout == false)
+                    {
+                        StaticArray<rhi::RasterBinding, internal::GPU_PREVIEW_COMPUTE_BINDING_CAPACITY> bindings =
+                            state.ComputeBindings;
+                        for (usize index = 0; index < state.ComputeBindingCount; ++index)
+                        {
+                            if (bindings[index].Binding == LUDUS_GRAPH_BUFFER1_BINDING)
+                            {
+                                bindings[index].Kind = rhi::RasterBindingKind::StorageRead;
+                            }
+                        }
+                        status = rhi::CreateBindingLayout(mState->Device,
+                                                          {bindings.GetData(), state.ComputeBindingCount},
+                                                          state.NativeRayLayout);
+                        state.HasCreatedNativeRayLayout = Accepted(status);
+                    }
+                    if (status == Status::Ready)
+                    {
+                        status = rhi::GetStatus(mState->Device, state.NativeRayLayout);
+                    }
+                }
                 if (status == Status::Ready)
                 {
                     status = rhi::CreateBindingLayout(mState->Device, GPU_IMAGE_BINDINGS, state.ImageLayout);
@@ -1507,8 +1557,10 @@ Status Renderer::PollGpuPreview() noexcept
                 {
                     if (state.HasCreatedNativeRayPipeline == false)
                     {
+                        const rhi::BindingLayoutHandle layout =
+                            state.NativeRecordBytes != 0 ? state.NativeRayLayout : state.ComputeLayout;
                         status = rhi::CreateComputePipeline(mState->Device,
-                                                            {state.NativeRayShader, state.ComputeLayout},
+                                                            {state.NativeRayShader, layout},
                                                             state.NativeRayPipeline);
                         state.HasCreatedNativeRayPipeline = Accepted(status);
                         if (status != Status::Ready)
@@ -2010,6 +2062,12 @@ Status Renderer::BeginGpuPreview(Snapshot snapshot,
                                                invocationOrNull->Buffers.IsEmpty() == true ||
                                                (invocationOrNull->Buffers[bufferIndex].Buffer == rhi::BufferHandle{} &&
                                                 invocationOrNull->Buffers[bufferIndex].Size == 0);
+        if (state.NativeRecordBytes != 0 && bufferIndex + LUDUS_GRAPH_BUFFER0_BINDING == LUDUS_GRAPH_BUFFER1_BINDING &&
+            (shouldCreatePrivateBuffer == true ||
+             invocationOrNull->Buffers[bufferIndex].Size < state.NativeRecordBytes))
+        {
+            return Status::InvalidDescription;
+        }
         if (shouldCreatePrivateBuffer == true &&
             foundation::TryAdd(gpuBytes, usize{LUDUS_GPU_PREVIEW_VECTOR_BYTES}, gpuBytes) == false)
         {

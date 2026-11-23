@@ -366,6 +366,9 @@ def prepare_resource_headers(snapshot, programs, contracts, compiler, cancel, bu
                         _, shape = snapshot.buffer_record_layouts[key]
                         _record_declaration(shape, field['field'], records, array_lengths, build)
                         element = record['type']
+                        if buffers.is_native_record(record):
+                            members.append(f'{view} {field["field"]};')
+                            continue
                         array_access = _record_array_declarations(shape, field['writable'])
                     else:
                         element = 'uint32x4'

@@ -867,18 +867,32 @@ def normalize_metal_storage_textures(code, interface, document):
 
 def normalize_metal_storage(code, interface):
     # Slang emits non-const device pointers for StructuredBuffer.
-    # Preserve the independently reflected read-only contract in MSL,
-    # including the compiler's context member and entry argument.
+    # Preserve the independently reflected read-only contract in MSL.
+    writable_bindings = [re.escape(binding['name']) for binding in interface['entries']
+                         if binding['kind'] == 'StorageReadWrite']
     for binding in interface['entries']:
         if binding['kind'] != 'StorageRead':
             continue
-        scalar = {'float32': 'float', 'uint32': 'uint', 'int32': 'int'}[binding['scalar']]
-        element = scalar if binding['width'] == 1 else scalar + str(binding['width'])
-        pattern = r'(?<!const )\b' + element + r'\s+device\s*\*\s+' + re.escape(binding['name']) + r'(?:_\d+)?\b'
+        name = re.escape(binding['name']) + r'(?:_\d+)?\b'
+        if 'fields' in binding:
+            # A record pointer can flow through callback arguments, locals and out
+            # parameters. Const must follow the entire chain, including the entry.
+            match = re.search(r'\b([A-Za-z_]\w*)\s+device\s*\*\s+' + name, code)
+            if match is None:
+                raise RuntimeError('Metal emitted read-only storage record parameter is missing')
+            record_pointer = r'\b' + re.escape(match[1]) + r'\s+device\s*\*'
+            if any(re.search(record_pointer + r'\s+' + writable + r'(?:_\d+)?\b', code)
+                   for writable in writable_bindings):
+                raise RuntimeError('Metal read-only storage record shares a type with a writable binding in this stage')
+            pattern = r'(?<!const )' + record_pointer
+        else:
+            scalar = {'float32': 'float', 'uint32': 'uint', 'int32': 'int'}[binding['scalar']]
+            element = scalar if binding['width'] == 1 else scalar + str(binding['width'])
+            pointer = r'\b' + element + r'\s+device\s*\*\s+' + name
+            if re.search(pointer, code) is None:
+                raise RuntimeError('Metal emitted read-only storage parameter is missing')
+            pattern = r'(?<!const )' + pointer
         code = re.sub(pattern, lambda match: 'const ' + match[0], code)
-        # Slang already emits vertex-stage storage reads as const device pointers.
-        if re.search(r'\bconst\s+' + element + r'\s+device\s*\*\s+' + re.escape(binding['name']) + r'(?:_\d+)?\b', code) is None:
-            raise RuntimeError('Metal emitted read-only storage parameter is missing')
     return code
 
 

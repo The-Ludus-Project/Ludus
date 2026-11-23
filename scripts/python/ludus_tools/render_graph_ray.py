@@ -427,14 +427,37 @@ def group_profiles(plans, technique, build):
         variants = {get_callback_variant(operation['pipeline']) for operation in operations}
         native_operations = {get_callback_variant(operation['pipeline']): operation for operation in operations
                              if invocation.resolve_type(operation['pipeline']) == invocation.HARDWARE_PIPELINE}
+        native_uses = [use for operation in operations for use in operation.get('persistent_buffers', [])
+                       if 'binding_slot' in use]
+        uses_native_records = bool(native_uses)
+        if uses_native_records:
+            build.require(len({use['resource'] for use in native_uses}) == 1 and
+                          {use['output_version'] is None for use in native_uses} == {False, True},
+                          'Capability', plan['configuration'],
+                          'connect one native structured Buffer from a scene compute writer to a Metal ray reader')
+            for operation in operations:
+                variant = get_callback_variant(operation['pipeline'])
+                for use in operation.get('persistent_buffers', []):
+                    if 'binding_slot' in use:
+                        build.require((use['output_version'] is None) == (variant in native_operations),
+                                      'Capability', operation['id'],
+                                      'native structured buffers are written by ordered compute and read by '
+                                      'a Metal hardware ray pass. Set the reader invocation to RayTracing.')
+                    else:
+                        build.require(use['slot'] != buffers.NATIVE_RECORD_SLOT, 'Capability', operation['id'],
+                                      'the native structured Buffer occupies the second graph binding. '
+                                      'Use one positional Buffer in this configuration.')
         # With optional lighting helpers, share an artifact only between configurations
         # that use the same callbacks. Reflection can then omit the table per configuration.
-        callbacks = (tuple(sorted(variants)), tuple(sorted(native_operations))) if isolate_lighting else ()
+        callbacks = ((tuple(sorted(variants)), tuple(sorted(native_operations)), plan['configuration'])
+                     if uses_native_records else
+                     (tuple(sorted(variants)), tuple(sorted(native_operations))) if isolate_lighting else ())
         group = groups.setdefault((has_visibility, has_native_queries, has_color_input, has_storage_texture, callbacks),
                                   {'variants': set(), 'native_operations': {}, 'configurations': [],
                                    'persistent': False, 'structured_buffers': False})
         group['variants'].update(variants)
         group['native_operations'].update(native_operations)
+        group['native_graph_records'] = uses_native_records
         group['configurations'].append(plan['configuration'])
         group['structured_buffers'] |= any(operation.get('buffers') for operation in operations)
         group['scene_dispatch'] = group.get('scene_dispatch', False) or any('work_items' in operation for operation in operations)
@@ -456,6 +479,7 @@ def group_profiles(plans, technique, build):
             'variants': {tuple(technique[stage] for stage in STAGES)}, 'native_operations': {}, 'configurations': [],
             'persistent': False, 'structured_buffers': False}
     result = []
+    has_native_record_profile = any(group.get('native_graph_records', False) for group in groups.values())
     for (has_visibility, has_native_queries, has_color_input, has_storage_texture, callbacks), group in sorted(groups.items()):
         build.require(not (group['persistent'] or len(group['variants']) > 1) or not group['structured_buffers'],
                       'Capability', 'ray storage',
@@ -474,7 +498,8 @@ def group_profiles(plans, technique, build):
         native_slots = {variant: index for index, variant in enumerate(variants) if variant in group['native_operations']}
         result.append({'workgroup': workgroup, 'visibility_buffer': has_visibility, 'native_ray_queries': has_native_queries,
                        'native_slots': native_slots, 'native_operations': group['native_operations'],
-                       'configurations': sorted(group['configurations']) if callbacks else [],
+                       'native_graph_records': group.get('native_graph_records', False),
+                       'configurations': sorted(group['configurations']) if callbacks or has_native_record_profile else [],
                        'scene_dispatch': group.get('scene_dispatch', False),
                        'variants': variants, 'color_input': has_color_input,
                        'storage_texture': has_storage_texture,
@@ -512,7 +537,7 @@ def report_bounds_failures(wrapper, selected_sources, snapshot, *, namespaced):
 
 def expand_programs(programs, technique, snapshot, helper, build, variants=None, persistent=False, schemas=None,
                     compute_identity=COMPUTE_ID, native_ray_queries=True, ray_path_capture=False,
-                    native_slots=None, workgroup=None, scene_dispatch=False, named_resources=None):
+                    native_slots=None, workgroup=None, scene_dispatch=False, named_resources=None, dispatch_slots=None):
     """Capture the engine kernel and all three functions in one linked compute entry.
 
     ray_path_capture links the diagnostic LUDUS_RAY_PATH_CAPTURE variant of the same
@@ -605,12 +630,14 @@ static const float RAY_DIRECTION_SQUARED_TOLERANCE = 0.00001;
     named_resources = {variant: named_resources[variant] for variant in (variants or [])
                        if named_resources and variant in named_resources}
     named_record_views = buffers.collect_record_views(named_resources.values(), build)
+    native_records = buffers.collect_native_records(named_resources.values(), build)
     needs_dispatch = persistent or native_ray_pipeline or bool(named_resources)
     if needs_dispatch:
         build.require(technique.get('scene_interface') is not None, 'Capability', TECHNIQUE,
                       'native ray stages, ordered ray passes and persistent buffers require the scene callback interface')
         wrapper = persistent_wrapper(programs, technique, variants, snapshot, build, compute_recipe, compatibility,
-                                     native_ray_queries, native_slots, persistent, storage_source, named_resources, named_record_views)
+                                     native_ray_queries, native_slots, persistent, storage_source, named_resources,
+                                     named_record_views, native_records, dispatch_slots)
     selected_sources = ({programs[identity]['source'] for variant in variants for identity in callback_programs(variant)}
                         if needs_dispatch else {program['source'] for program in selected.values()})
     wrapper = report_bounds_failures(wrapper, selected_sources, snapshot,
@@ -637,6 +664,8 @@ static const float RAY_DIRECTION_SQUARED_TOLERANCE = 0.00001;
             if source in snapshot.inline_buffer_sources}
     if named_record_views:
         result[compute_identity]['named_record_views'] = named_record_views
+    if native_records:
+        result[compute_identity]['native_graph_records'] = native_records
     if technique.get('scene_interface', {}).get('color_input', False):
         result[compute_identity]['color_input'] = True
     if technique.get('scene_interface', {}).get('storage_texture', False):
@@ -707,7 +736,7 @@ def capture_program_closure(program, snapshot, build):
     return sorted(engine | authored)
 
 
-def check_interface(program, result, build):
+def check_interface(program, result, build, raw=None):
     """Validate the frozen renderer ABI from independently reflected artifacts."""
     interface = result['interface']
     entries = sorted(interface['entries'], key=lambda value: value['binding'])
@@ -717,7 +746,20 @@ def check_interface(program, result, build):
         if not program.get('native_ray_queries', True):
             expected = [entry for entry in expected if entry[1] != 'RayScene']
         if program.get('persistent_ray_profile'):
-            expected += [(6, 'StorageReadWrite', 16), (7, 'StorageReadWrite', 16)]
+            layouts = program.get('native_graph_layouts', {})
+            parameters = {item['name']: item['type'] for item in (raw or {}).get('parameters', [])}
+            for slot in range(buffers.MAX_BUFFERS):
+                binding = buffers.FIRST_SLOT + slot
+                if binding not in layouts:
+                    expected.append((binding, 'StorageReadWrite', BUFFER_WORD_BYTES))
+                    continue
+                (stride, shape), is_writable = layouts[binding]
+                expected.append((binding, 'StorageReadWrite' if is_writable else 'StorageRead', stride))
+                reflected = parameters.get(f'GraphBuffer{slot}', {}).get('resultType', {})
+                build.require(buffers.storage_shape(reflected) == buffers.storage_shape(shape),
+                              'ShaderInterface', program['id'],
+                              f'native structured Buffer {shape.get("name", "")} has different field offsets '
+                              'or array strides on the selected target')
         build.require(interface.get('workgroup') == program.get('ray_workgroup', DEFAULT_WORKGROUP_SIZE) and interface['inputs'] == [] and
                       [(entry['binding'], entry['kind'], entry['size']) for entry in entries if program.get('persistent_ray_profile') or entry['binding'] < buffers.FIRST_SLOT or entry['binding'] >= VISIBILITY_SLOT] ==
                       expected + ([(VISIBILITY_SLOT, 'Texture2D', 0), (VISIBILITY_SLOT + 1, 'TextureDepth2D', 0)] if program.get('visibility_buffer', False) else []) +
@@ -968,7 +1010,7 @@ def validate_payload(data, budget, build):
 
 def persistent_wrapper(programs, technique, variants, snapshot, build, recipe, compatibility=None,
                        native_ray_queries=True, native_slots=None, has_persistent_buffers=True, storage_source="",
-                       named_resources=None, named_record_views=None):
+                       named_resources=None, named_record_views=None, native_records=None, dispatch_slots=None):
     """Namespace each unique authored source and dispatch its callbacks by pass index."""
     native_ray_pipeline = native_slots is not None
     interface = technique['scene_interface']
@@ -987,20 +1029,28 @@ def persistent_wrapper(programs, technique, variants, snapshot, build, recipe, c
     strategies = [get_traversal(variant) for variant in variants]
     if any(strategy in ('TriangleLoop', 'Custom', 'ComputeBvh') for strategy in strategies):
         # Native stages run their own pipeline, so their passes keep the native-query code here.
-        choices = ', '.join(STRATEGY_MACROS.get(strategy, STRATEGY_MACROS['NativeQuery']) for strategy in strategies)
+        if dispatch_slots is None:
+            choices = ', '.join(STRATEGY_MACROS.get(strategy, STRATEGY_MACROS['NativeQuery']) for strategy in strategies)
+            traversal = (f'    const uint strategies[] = {{ {choices} }};\n'
+                         f'    return index < {len(variants)} ? strategies[index] : LUDUS_GRAPH_TRAVERSAL_NATIVE_QUERY;\n')
+        else:
+            cases = ''.join(f'case {dispatch_slots[variant]}: '
+                            f'return {STRATEGY_MACROS.get(strategy, STRATEGY_MACROS["NativeQuery"])}; '
+                            for variant, strategy in zip(variants, strategies))
+            traversal = f'    switch (index) {{ {cases}default: return LUDUS_GRAPH_TRAVERSAL_NATIVE_QUERY; }}\n'
         prefix = ('#define LUDUS_GRAPH_TRAVERSAL_STRATEGIES 1\n' +
                   ('#define LUDUS_GRAPH_COMPUTE_BVH_TRAVERSAL 1\n' if 'ComputeBvh' in strategies else '') +
                   'uint GetGraphTraversalStrategy();\n' + prefix)
         prefix += ('uint GetGraphTraversalStrategy() {\n'
-                   f'    const uint strategies[] = {{ {choices} }};\n'
                    '    uint index = (Sampling.z >> LUDUS_GRAPH_PASS_INDEX_SHIFT) & LUDUS_GRAPH_PASS_INDEX_MASK;\n'
-                   f'    return index < {len(variants)} ? strategies[index] : LUDUS_GRAPH_TRAVERSAL_NATIVE_QUERY;\n}}\n')
+                   + traversal + '}\n')
     if has_persistent_buffers or native_ray_pipeline:
         prefix = prefix.replace('#define LUDUS_SCENE_RAY_INTERFACE 1',
                                 '#define LUDUS_SCENE_RAY_INTERFACE 1\n#define LUDUS_GRAPH_PERSISTENT_PIPELINE 1')
     if has_persistent_buffers:
-        prefix += '[[vk::binding(6, 0)]] RWStructuredBuffer<uint4> GraphBuffer0;\n'
-        prefix += '[[vk::binding(7, 0)]] RWStructuredBuffer<uint4> GraphBuffer1;\n'
+        for slot in range(buffers.MAX_BUFFERS):
+            if slot not in (native_records or {}):
+                prefix += f'[[vk::binding({buffers.FIRST_SLOT + slot}, 0)]] RWStructuredBuffer<uint4> GraphBuffer{slot};\n'
     prefix += 'uint GetGraphPassIndex() { return (Sampling.z >> LUDUS_GRAPH_PASS_INDEX_SHIFT) & LUDUS_GRAPH_PASS_INDEX_MASK; }\n'
     if interface.get('color_input', False):
         prefix += '[[vk::binding(LUDUS_GRAPH_COLOR_INPUT_BINDING, 0)]] Texture2D<float4> GraphColorInput;\n'
@@ -1037,8 +1087,13 @@ def persistent_wrapper(programs, technique, variants, snapshot, build, recipe, c
         else:
             source = snapshot.buffer_layout_sources.get(record_source, record_source)
             dependencies.add(source)
+    for record_source, _, _ in (native_records or {}).values():
+        dependencies.add(snapshot.buffer_layout_sources.get(record_source, record_source))
     for dependency in sorted(dependencies - {interface.get('payload')} - set((compatibility or {}).get('sources', {}))):
         prefix += '#include "' + dependency + '"\n'
+    for slot, (_, type_name, is_writable) in (native_records or {}).items():
+        access = 'RW' if is_writable else ''
+        prefix += f'[[vk::binding({buffers.FIRST_SLOT + slot}, 0)]] {access}StructuredBuffer<{type_name}> GraphBuffer{slot};\n'
     for view, (source, type_name, is_writable) in (named_record_views or {}).items():
         qualified_type = buffers.qualify_record_type(source, type_name, layout_namespaces)
         prefix += buffers.record_view_definition(view, qualified_type, is_writable)
@@ -1075,7 +1130,8 @@ def persistent_wrapper(programs, technique, variants, snapshot, build, recipe, c
             if stage not in variant_callbacks[index]:
                 continue  # A scene compute pass has no hit or miss callback; default: latches HasFailed.
             function = variant_callbacks[index][stage]
-            slot = native_slots[variant] if native_ray_pipeline else index
+            slot = native_slots[variant] if native_ray_pipeline else (
+                dispatch_slots[variant] if dispatch_slots is not None else index)
             fields = (named_resources or {}).get(variant) if stage == 'ray_generation' else None
             if fields is not None:
                 values = ', '.join(buffers.record_view_argument(field) for field in fields)
@@ -1099,11 +1155,14 @@ def persistent_wrapper(programs, technique, variants, snapshot, build, recipe, c
     # RenderGraphRayPass::Initialize; this ABI liveness branch never runs for them.
     interface_trace = 'TraceNative' if native_ray_queries else 'TraceTriangleLoop'
     if has_persistent_buffers:
+        buffer_liveness = ('        GraphBuffer0[0] = GraphBuffer1[0];\n'
+                           '        GraphBuffer1[0] = uint4(interfaceHit.Triangle, 0, 0, 0);\n')
+        if native_records:
+            buffer_liveness = '        GraphBuffer0[0] = uint4(interfaceHit.Triangle, 0, 0, 0);\n'
         body = body.replace('    SceneContext scene;\n',
                         '    if (Dimensions.z == 0) {\n'
                         f'        Hit interfaceHit = {interface_trace}(float3(0), float3(0, 0, 1), 0, 1, false);\n'
-                        '        GraphBuffer0[0] = GraphBuffer1[0];\n'
-                        '        GraphBuffer1[0] = uint4(interfaceHit.Triangle, 0, 0, 0);\n' +
+                        + buffer_liveness +
                         ('        colors[0] = GraphColorInput.Load(int3(0));\n' if interface.get('color_input', False) else '') +
                         ('        GraphStorageTexture[uint2(0)] = GraphStorageTexture[uint2(0)] + colors[0];\n'
                          if interface.get('storage_texture', False) else '') +

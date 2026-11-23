@@ -237,6 +237,7 @@ struct GpuPreviewState final
     rhi::TextureViewHandle DefaultStorageTextureView{};
     bool HasDefaultStorageTextureView = false;
     bool HasPersistentBuffers = false;
+    usize NativeRecordBytes = 0;
     uint32 Phase = 0;
     bool QuadCreated = false;
     bool IndicesCreated = false;
@@ -247,9 +248,11 @@ struct GpuPreviewState final
     rhi::ComputePipelineHandle NativeRayPipeline{};
     bool HasNativeRayShader = false;
     bool HasCreatedNativeRayPipeline = false;
+    bool HasCreatedNativeRayLayout = false;
     rhi::RasterShaderHandle VertexShader{};
     rhi::RasterShaderHandle FragmentShader{};
     rhi::BindingLayoutHandle ComputeLayout{};
+    rhi::BindingLayoutHandle NativeRayLayout{};
     rhi::BindingLayoutHandle ImageLayout{};
     rhi::ComputePipelineHandle ComputePipeline{};
     rhi::RasterPipelineHandle ImagePipeline{};

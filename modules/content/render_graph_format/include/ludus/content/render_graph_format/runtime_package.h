@@ -70,6 +70,9 @@
 /// supply no recipe keys. Keys identify build inventory entries for diagnostics.
 /// Version 38 admits the World-feature scene resource bits SCENE_RESOURCE_ATMOSPHERE_SKY and
 /// SCENE_RESOURCE_AERIAL_PERSPECTIVE without changing any record width.
+/// Version 44 inserts the shared structured graph buffer stride before the storage records.
+/// The persistent compute stage writes its second graph binding; the native Metal stage reads
+/// that same binding. A zero stride leaves the older word-buffer layout in effect.
 namespace ludus::content::render_graph_format
 {
 /// "LURG" read as a little-endian uint32.
@@ -159,7 +162,9 @@ inline constexpr foundation::uint32 SCENE_COLOR_INPUT_PACKAGE_VERSION = 41;
 inline constexpr foundation::uint32 STORAGE_TEXTURE_PACKAGE_VERSION = 42;
 /// First generation carrying explicit launch sizes for image returns.
 inline constexpr foundation::uint32 IMAGE_LAUNCH_PACKAGE_VERSION = 43;
-/// Current runtime generation layout version.
+/// First package carrying the reflected stride for a shared structured graph buffer.
+inline constexpr foundation::uint32 NATIVE_GRAPH_RECORD_PACKAGE_VERSION = 44;
+/// Default runtime generation layout. Use NATIVE_GRAPH_RECORD_PACKAGE_VERSION for a shared native record.
 inline constexpr foundation::uint32 PACKAGE_VERSION = IMAGE_LAUNCH_PACKAGE_VERSION;
 /// First package carrying explicit OIDN denoising quality per ray pass.
 inline constexpr foundation::uint32 DENOISING_PACKAGE_VERSION = 16;

@@ -187,6 +187,7 @@ struct RenderGraphPackage::State final
     bool CanHaveSceneStorageTexture = false;
     bool HasSceneStorageTexture = false;
     bool HasPersistentBuffers = false;
+    uint32 NativeRecordStride = 0;
     bool HasForwardStages = false;
     bool CanHaveForwardSurfaceCharts = false;
     bool CanHaveDeferredProbeGBuffer = false;
@@ -757,7 +758,8 @@ RenderGraphPackageStatus RenderGraphPackage::State::AppendSceneResourceBindings(
                              format::NATIVE_RAY_STAGE_ROLE})
     {
         const bool isNativeStages = role == format::NATIVE_RAY_STAGE_ROLE;
-        if (hasArtifact(role) == false || (isNativeStages == true && HasFailureSummary == false))
+        if (hasArtifact(role) == false ||
+            (isNativeStages == true && HasFailureSummary == false && NativeRecordStride == 0))
         {
             continue;
         }
@@ -774,7 +776,16 @@ RenderGraphPackageStatus RenderGraphPackage::State::AppendSceneResourceBindings(
                                        HasNativeRayQueries);
             for (const rhi::RasterBinding& binding : description.Bindings)
             {
-                Bindings[role][BindingCounts[role]++] = binding;
+                rhi::RasterBinding& entry = Bindings[role][BindingCounts[role]++];
+                entry = binding;
+                if (NativeRecordStride != 0 && entry.Binding == LUDUS_GRAPH_BUFFER1_BINDING)
+                {
+                    entry.MinSize = NativeRecordStride;
+                    if (isNativeStages == true)
+                    {
+                        entry.Kind = rhi::RasterBindingKind::StorageRead;
+                    }
+                }
             }
         }
         // Native ray stages bind neither World-feature table: their kernels never define the slots.
@@ -1030,9 +1041,10 @@ RenderGraphPackageStatus RenderGraphPackage::decode(BorrowedView<const uint8> by
     const uint32 magic = reader.ReadWord();
     const uint32 version = reader.ReadWord();
     if (magic != expectedMagic ||
-        (version != format::IMAGE_LAUNCH_PACKAGE_VERSION && version != format::STORAGE_TEXTURE_PACKAGE_VERSION &&
-         version != format::SCENE_COLOR_INPUT_PACKAGE_VERSION && version != format::DIRECTIONAL_NEAR_PACKAGE_VERSION &&
-         version != format::SCENE_WORK_ITEMS_PACKAGE_VERSION && version != format::WORLD_FEATURE_PACKAGE_VERSION &&
+        (version != format::NATIVE_GRAPH_RECORD_PACKAGE_VERSION && version != format::IMAGE_LAUNCH_PACKAGE_VERSION &&
+         version != format::STORAGE_TEXTURE_PACKAGE_VERSION && version != format::SCENE_COLOR_INPUT_PACKAGE_VERSION &&
+         version != format::DIRECTIONAL_NEAR_PACKAGE_VERSION && version != format::SCENE_WORK_ITEMS_PACKAGE_VERSION &&
+         version != format::WORLD_FEATURE_PACKAGE_VERSION &&
          version != format::DEFERRED_SURFACE_CHART_GBUFFER_PACKAGE_VERSION &&
          version != format::DEFERRED_PROBE_GBUFFER_PACKAGE_VERSION && version != format::RECIPE_KEY_PACKAGE_VERSION &&
          version != format::FORWARD_SURFACE_CHART_PACKAGE_VERSION &&
@@ -1136,9 +1148,52 @@ RenderGraphPackageStatus RenderGraphPackage::decode(BorrowedView<const uint8> by
     {
         return status;
     }
+    if (version >= format::NATIVE_GRAPH_RECORD_PACKAGE_VERSION)
+    {
+        candidate->NativeRecordStride = reader.ReadWord();
+        const uint32 stride = candidate->NativeRecordStride;
+        if (reader.IsOk() == false || stride > format::MAX_RAY_BUFFER_BYTES || stride % sizeof(uint32) != 0)
+        {
+            return RenderGraphPackageStatus::Malformed;
+        }
+        if (stride != 0)
+        {
+            constexpr usize METAL_TARGET = static_cast<usize>(format::ShaderTarget::Metal);
+            constexpr usize COMPUTE_ROLE = static_cast<usize>(format::StageRole::PersistentRayCompute);
+            if (candidate->Stages[COMPUTE_ROLE][METAL_TARGET].IsPresent == false ||
+                candidate->Stages[format::NATIVE_RAY_STAGE_ROLE][METAL_TARGET].IsPresent == false)
+            {
+                return RenderGraphPackageStatus::Malformed;
+            }
+            uint32 resource = format::ABSENT;
+            for (usize index = 0; index < candidate->Header.PassCount; ++index)
+            {
+                const format::Pass& pass = candidate->Passes[index];
+                if (pass.Program != format::Technique::RayTracing)
+                {
+                    continue;
+                }
+                if (pass.Buffer1 >= candidate->Header.ResourceCount ||
+                    (resource != format::ABSENT && resource != pass.Buffer1))
+                {
+                    return RenderGraphPackageStatus::Malformed;
+                }
+                resource = pass.Buffer1;
+            }
+            if (resource == format::ABSENT || candidate->Resources[resource].Kind != format::Aspect::Buffer ||
+                candidate->Resources[resource].Width < stride)
+            {
+                return RenderGraphPackageStatus::Malformed;
+            }
+        }
+    }
     if (version >= format::STORAGE_PACKAGE_VERSION)
     {
         candidate->StorageBufferCount = reader.ReadWord();
+        if (candidate->NativeRecordStride != 0 && candidate->StorageBufferCount != 0)
+        {
+            return RenderGraphPackageStatus::Malformed;
+        }
         if (candidate->StorageBufferCount > format::MAX_STORAGE_BUFFERS)
         {
             return RenderGraphPackageStatus::CapacityExceeded;
@@ -1336,7 +1391,7 @@ RenderGraphPackageStatus RenderGraphPackage::decode(BorrowedView<const uint8> by
     candidate->DeriveBindings();
     if (candidate->HasLtcTable == true || candidate->HasFailureSummary == true || candidate->HasAtmosphereSky == true ||
         candidate->HasAerialPerspective == true || candidate->HasSceneColorInput == true ||
-        candidate->HasSceneStorageTexture == true)
+        candidate->HasSceneStorageTexture == true || candidate->NativeRecordStride != 0)
     {
         status = candidate->AppendSceneResourceBindings();
         if (status != RenderGraphPackageStatus::Ready)

@@ -324,19 +324,30 @@ Status AppendGpuGraph(rhi::DeviceHandle device,
     {
         const GpuPreviewGraphBuffer& buffer = job.GraphBuffers[slot];
         rhi::GraphVersion previous;
-        rhi::GraphVersion next;
         status = inoutResources.ImportBuffer(device, graph, buffer.Buffer, previous);
-        if (status == Status::Ready)
-        {
-            status = rhi::NextGraphVersion(device, graph, previous, next);
-        }
         if (status != Status::Ready)
         {
             return status;
         }
-        inoutResources.SetBufferVersion(buffer.Buffer, next);
-        computeUses[computeUseCount++] = {next,
-                                          rhi::GraphAccessMode::StorageReadWrite,
+        const bool isRecordReader = job.HasNativeRayInvocation == true && state.NativeRecordBytes != 0 &&
+                                    slot + LUDUS_GRAPH_BUFFER0_BINDING == LUDUS_GRAPH_BUFFER1_BINDING;
+        rhi::GraphVersion bound;
+        if (isRecordReader == true)
+        {
+            bound = previous;
+        }
+        else
+        {
+            status = rhi::NextGraphVersion(device, graph, previous, bound);
+            if (status != Status::Ready)
+            {
+                return status;
+            }
+            inoutResources.SetBufferVersion(buffer.Buffer, bound);
+        }
+        computeUses[computeUseCount++] = {bound,
+                                          isRecordReader == true ? rhi::GraphAccessMode::StorageRead
+                                                                 : rhi::GraphAccessMode::StorageReadWrite,
                                           0,
                                           buffer.Size,
                                           rhi::RasterVisibility::Compute};

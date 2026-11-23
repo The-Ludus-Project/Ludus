@@ -1380,8 +1380,28 @@ The member name capitalizes the port's first letter and preserves the remaining
 spelling. Named views load and store whole records using the reflected layout.
 Supported fields are 32-bit scalars and vectors, nested records and fixed arrays.
 
-In a named LUSL callback, a shared buffer record with a fixed array of structs
-also exposes `Load<Field>(recordIndex, elementIndex)`. Writable views expose
+For a Metal graph with an ordered scene compute writer and a hardware ray
+reader, choose **Native structured buffer (Metal)** in Buffer sizing. Both
+passes bind the same graph allocation. Shader API shows the writer's
+`RWStructuredBuffer<EdgesData>` and the reader's `StructuredBuffer<EdgesData>`.
+Use a shared declaration and named Buffer access in both callbacks. The native
+record uses the second graph binding. A legacy positional Buffer can keep the
+first binding in the same configuration.
+
+In the LUSL reader, include `graph_resources.luslh` and
+`scene_shader.luslh`. For an `EdgesData` table with capacity one, read the
+record at index zero and pass its fixed-size weights array to the scene sampler.
+
+```c
+EdgesData edges = resources.Edges[0];
+Edge first = edges.Edges[0];
+uint32 sampledIndex = SampleSceneWeightedIndex(inout inoutQueries, edges.Weights);
+```
+
+Keep unused weights zero and check the populated edge count before indexing.
+
+With **Packed words** access, a named LUSL buffer view for a shared record with
+a fixed array of structs exposes `Load<Field>(recordIndex, elementIndex)`. Writable views expose
 `Store<Field>(recordIndex, elementIndex, value)`. For an `EdgesData` buffer
 with capacity one and a member `Edge Edges[256]`, use
 `Edge edge = resources.Edges.LoadEdges(0, edgeIndex);` and

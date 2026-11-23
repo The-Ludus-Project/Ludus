@@ -131,6 +131,11 @@ def lower_plan(package, configuration):
     build.require(0 < len(operations) <= MAX_PASSES and 0 < len(resources) <= MAX_RESOURCES and len(cameras) <= MAX_CAMERAS,
                   'Capacity', configuration, 'Renderer execution limits exceeded')
     build.require(len({p['scene'] for p in rasters}) == 1, 'Configuration', configuration, 'one World extraction per execution profile')
+    native_resources = {use['resource'] for operation in operations for use in operation.get('persistent_buffers', [])
+                        if 'binding_slot' in use}
+    build.require(len(native_resources) <= 1, 'Package', configuration,
+                  'native structured shaders require one shared graph Buffer')
+    native_slot_resource = resources.index(next(iter(native_resources))) if native_resources else ABSENT
     ray_positions = [index for index, operation in enumerate(operations) if operation['kind'] == 'RayTracing']
     build.require(not ray_positions or ray_positions == list(range(ray_positions[0], ray_positions[-1] + 1)),
                   'Capability', configuration, 'ray passes must form one consecutive ordered sequence')
@@ -232,8 +237,11 @@ def lower_plan(package, configuration):
             build.require(variant in variants and all(recipe.get('ray_programs', variants) == variants for recipe in recipes),
                           'Package', operation['id'], 'ray callback selection differs between target artifacts')
             persistent_slots = [ABSENT] * ray.MAX_BUFFERS
+            # In the linked kernel, callbacks without a typed port leave this bound
+            # allocation untouched. Bind it anyway to satisfy the shader's layout.
+            persistent_slots[buffers.NATIVE_RECORD_SLOT] = native_slot_resource
             for use in operation.get('persistent_buffers', []):
-                persistent_slots[use['slot']] = resources.index(use['resource'])
+                persistent_slots[use.get('binding_slot', use['slot'])] = resources.index(use['resource'])
             pass_records.append({'Program': 'RayTracing', 'Camera': cameras.index(operation['view']) if color else ABSENT,
                 'Color': resources.index(color['resource']) if color else ABSENT, 'Depth': ABSENT,
                 'ColorLoad': color['load'] if color else 'Discard', 'ColorStore': 'Store' if color else 'Discard',
@@ -381,6 +389,7 @@ CAPTURE_PROFILE_PACKAGE_MAGIC = 0x4352554C
 # Version 42 appends a storage output's explicit 2D launch size and native Metal workgroup metadata.
 # Version 43 appends an independent 2D launch size for image returns.
 PACKAGE_VERSION = 43
+NATIVE_GRAPH_RECORD_PACKAGE_VERSION = 44
 # render_graph_format::DisplayCurve codes, by index; zero (Reinhard) also marks a pass without a ToneMap.
 DISPLAY_CURVE_CODES = ('Reinhard', 'PbrNeutral')
 # Version 25 scene resource word: the linked ray kernel reads the renderer's LTC table.
@@ -687,6 +696,11 @@ def _runtime_contents(path, configuration):
             'cameras': cameras, 'camera_targets': camera_targets, 'artifacts': artifacts,
             'uniform_values': value_count, 'bindings': bindings, 'blocks': blocks, 'fields': fields,
             'storage_buffers': storage_buffers, 'uniform_interface': uniform_interface,
+            'native_record_stride': next((entry['size'] for (name, stage, target), item in artifacts.items()
+                                          if (name, stage, target) == ('NativeRayStages', 'compute', 'metal')
+                                          for entry in item['descriptor']['interface']['entries']
+                                          if entry['binding'] == buffers.FIRST_SLOT + buffers.NATIVE_RECORD_SLOT and
+                                          entry['kind'] == 'StorageRead' and 'fields' in entry), 0),
             'interface_identity': build.identity(interface), 'generation': path.name}
 
 
@@ -978,7 +992,9 @@ def encode_runtime_package(contents, *, magic=PACKAGE_MAGIC):
     aspects = {'Color': 0, 'Depth': 1, 'Buffer': 2}
     loads, stores = {'Clear': 0, 'Load': 1, 'Discard': 2}, {'Store': 0, 'Discard': 1}
     stages = sorted(contents['artifacts'].items(), key=lambda item: item[1]['ordinal'])
-    data = bytearray(u32(magic, PACKAGE_VERSION, len(contents['resources']), len(contents['passes']),
+    record_stride = contents.get('native_record_stride', 0)
+    version = NATIVE_GRAPH_RECORD_PACKAGE_VERSION if record_stride else PACKAGE_VERSION
+    data = bytearray(u32(magic, version, len(contents['resources']), len(contents['passes']),
                          len(contents['camera_targets']), contents['uniform_values'], len(contents['bindings']),
                          len(contents['blocks']), len(contents['fields']), len(stages)))
     data += bytes.fromhex(contents['interface_identity']) + bytes.fromhex(contents['generation'])
@@ -1032,6 +1048,8 @@ def encode_runtime_package(contents, *, magic=PACKAGE_MAGIC):
                 data += u32(int(slot), texture['sampler'], len(text)) + text + bytes(-len(text) % 4)
         for blob in (entry, item['bytes']):
             data += blob + bytes(-len(blob) % 4)
+    if record_stride:
+        data += u32(record_stride)
     storage = contents.get('storage_buffers', [])
     data += u32(len(storage))
     for buffer in storage:

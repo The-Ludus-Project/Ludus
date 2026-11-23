@@ -532,7 +532,7 @@ def shader_source(program, schemas):
 def check_layout(program, schemas, result, raw):
     """Verify field identity/type/offset and declared read-only binding use."""
     if 'ray_wrapper' in program:
-        ray.check_interface(program, result, sys.modules[__name__])
+        ray.check_interface(program, result, sys.modules[__name__], raw)
         return []
     if 'forward_wrapper' in program:
         return forward.check_interface(program, result, sys.modules[__name__])
@@ -1304,10 +1304,20 @@ def prepare_sources(manifest, helper, *, root=None, ray_path_capture=False, capt
                     interface = technique['scene_interface']
                     interface['visibility_queries'] = interface.get('capture_visibility_queries',
                                                                     interface['visibility_queries'])
+            compute_variants = profile['variants']
+            dispatch_slots = None
+            if profile['native_graph_records']:
+                require('metal' in value['profiles'], 'Capability', 'profiles',
+                        'add the Metal target profile to use a native structured Buffer')
+                compute_variants = [variant for variant in profile['variants'] if variant not in profile['native_slots']]
+                require(compute_variants, 'Capability', profile['compute'],
+                        'connect a scene compute producer to the native structured Buffer')
+                dispatch_slots = {variant: index for index, variant in enumerate(profile['variants'])}
             expanded = ray.expand_programs(authored_programs, technique, snapshot, helper, sys.modules[__name__],
-                                          profile['variants'], profile['persistent'], schemas, profile['compute'],
+                                          compute_variants, profile['persistent'], schemas, profile['compute'],
                                           profile['native_ray_queries'], ray_path_capture, workgroup=profile['workgroup'],
-                                          scene_dispatch=profile['scene_dispatch'], named_resources=named_resources)
+                                          scene_dispatch=profile['scene_dispatch'], named_resources=named_resources,
+                                          dispatch_slots=dispatch_slots)
             linked_programs.update(expanded)
             if profile['native_slots']:
                 ray.validate_native_buffer_layouts(profile['native_operations'], authored_programs,
@@ -1436,6 +1446,10 @@ def build_package(manifest, output, *, helper, compiler, validator=None, spirv_c
                 if program.get('named_record_views'):
                     program['ray_wrapper'] = buffers.define_record_views(
                         program, record_layouts, sys.modules[__name__], lusl_record_layouts=snapshot.buffer_record_layouts)
+                if program.get('native_graph_records'):
+                    program['native_graph_layouts'] = {
+                        buffers.FIRST_SLOT + slot: (record_layouts[(source, kind)], is_writable)
+                        for slot, (source, kind, is_writable) in program['native_graph_records'].items()}
             compiled, entries, hits, misses = {}, {}, 0, 0
             pending, pending_keys = [], set()
             # Report-only attribution: miss, local cache hit, or reuse of a key this build already resolved.
@@ -1444,7 +1458,7 @@ def build_package(manifest, output, *, helper, compiler, validator=None, spirv_c
                 closure = closures[pid]
                 configuration_reads = language.configuration_reads(snapshot, closure)
                 for target in sorted(value['profiles']):
-                    if program.get('native_ray_pipeline') and target != 'metal':
+                    if (program.get('native_ray_pipeline') or program.get('native_graph_records')) and target != 'metal':
                         continue
                     if program.get('native_ray_profile') and target not in ('metal', 'spirv'):
                         continue
@@ -1511,6 +1525,8 @@ def build_package(manifest, output, *, helper, compiler, validator=None, spirv_c
                         if target not in ('metal', 'spirv'):
                             continue
                         for profile in ray_profiles:
+                            if profile['native_graph_records'] and target != 'metal':
+                                continue
                             record = {'technique': tid, 'profile': target, 'state': ray.resolve_state(technique['recipes'][0]),
                                 'compute': entries[(profile['compute'], target)], 'vertex': entries[(ray.IMAGE_VERTEX_ID, target)],
                                 'fragment': entries[(ray.IMAGE_FRAGMENT_ID, target)], 'bindings': {'vertex': [], 'fragment': []}}
