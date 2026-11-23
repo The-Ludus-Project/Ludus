@@ -959,6 +959,7 @@ RendererWorkspace::RendererWorkspace(const ToolingPaths& tooling, QWidget* paren
     openCodeEditor->setToolTip(QStringLiteral("External code editors are available in the native Ludus editor."));
 #endif
     mSourceAssistance = new RenderGraphShaderAssistance(mDocument, *mSource, *mSourceController, mTooling, sourcePage);
+    connect(mSource, &CodeEditor::AnalysisDiagnosticsChanged, this, &RendererWorkspace::AnalysisDiagnosticsChanged);
     sourceLayout->addWidget(mSourceAssistance);
     QWidget* interfacePage = CreateShaderInterfaceView(mSourceInterface, sourcePage);
     mAddShaderBufferAccess = new QPushButton(QStringLiteral("Add Buffer Access…"), interfacePage);
@@ -5813,6 +5814,58 @@ int32 RendererWorkspace::GetDiagnosticCount() const
 QJsonObject RendererWorkspace::getDiagnosticLocation(int32 row) const
 {
     return mLastResult.GetDiagnostic(row).value(QStringLiteral("location")).toObject();
+}
+
+QList<ErrorListEntry> RendererWorkspace::GetAnalysisEntries() const
+{
+    QList<ErrorListEntry> entries;
+    for (const QString& file : getAnalysisFiles())
+    {
+        const CodeEditor* editorOrNull = findAnalysisEditorOrNull(file);
+        if (editorOrNull == nullptr)
+        {
+            continue;
+        }
+        for (int32 index = 0; index < editorOrNull->GetAnalysisDiagnosticCount(); ++index)
+        {
+            const CodeAnalysisDiagnostic diagnostic = editorOrNull->GetAnalysisDiagnostic(index);
+            const QTextBlock block = editorOrNull->document()->findBlock(diagnostic.Start);
+            ErrorListEntry entry;
+            entry.Severity = diagnostic.Severity == CodeDiagnosticSeverity::Error ? ErrorListSeverity::Error
+                                                                                  : ErrorListSeverity::Warning;
+            entry.Producer = ErrorListProducer::Analysis;
+            entry.Description = diagnostic.Message;
+            entry.File = file;
+            entry.Location =
+                QStringLiteral("%1:%2").arg(block.blockNumber() + 1).arg(diagnostic.Start - block.position() + 1);
+            entry.Origin = QStringLiteral("Analysis (%1)").arg(editorOrNull->GetAnalysisSource());
+            entry.SourceIndex = index;
+            entries.append(entry);
+        }
+    }
+    return entries;
+}
+
+bool RendererWorkspace::ActivateAnalysisDiagnostic(const QString& file, int32 index)
+{
+    CodeEditor* editorOrNull = findAnalysisEditorOrNull(file);
+    if (editorOrNull == nullptr || index < 0 || index >= editorOrNull->GetAnalysisDiagnosticCount())
+    {
+        return false;
+    }
+    if (mShaderCodeArea.isNull() == false)
+    {
+        // Brings the Code workspace and this file's tab forward without rebinding it.
+        const CodeAnalysisDiagnostic diagnostic = editorOrNull->GetAnalysisDiagnostic(index);
+        const QTextBlock block = editorOrNull->document()->findBlock(diagnostic.Start);
+        openGraphCodeLine(file, block.blockNumber() + 1, diagnostic.Start - block.position() + 1);
+    }
+    else
+    {
+        mViews->setCurrentIndex(SOURCE_VIEW);
+    }
+    editorOrNull->setFocus();
+    return editorOrNull->RevealAnalysisDiagnostic(index);
 }
 
 void RendererWorkspace::openSourceLine(const QString& file, int32 line, int32 column)

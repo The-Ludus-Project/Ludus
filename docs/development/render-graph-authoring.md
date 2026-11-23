@@ -9105,6 +9105,8 @@ Ctrl is shown below (Qt's native shortcut mapping):
 | Quick Open source in this package | Ctrl+P |
 | Go to shader symbol in the current source | Ctrl+Shift+O |
 | Go to definition / find references | F12 or Ctrl+click / Shift+F12 |
+| Go to implementation | Ctrl+F12 |
+| Go to symbol in the shader context | Ctrl+T |
 | Navigate Back / Forward | Ctrl+Alt+Left / Ctrl+Alt+Right, or the mouse's side Back / Forward buttons over the editor |
 | Indent / outdent selected lines | Tab / Shift+Tab |
 | Toggle Slang line comments | Ctrl+/ |
@@ -9146,7 +9148,10 @@ functions, types and members. Hold Ctrl (Command on macOS) to underline the name
 under the pointer, and click it to request **Go to Definition** for that name.
 Names in comments, strings and keywords are not links. **Go to Definition** jumps directly when the compiler
 returns one mapped location; multiple definitions and **Find References** open the
-same filterable chooser. References cover the selected captured compiler context,
+same filterable chooser. **Go to Declaration**, **Go to Type Definition** and
+**Go to Implementation** (in the editor's context menu) behave the same way. **Go
+to Symbol in Workspace** asks the server for symbols named like the word at the
+caret across the captured context and lists those in authored sources. References cover the selected captured compiler context,
 including its declaration, rather than a project-wide text search. These commands
 share completion's native Slang process and selected program context, use the
 current unsaved draft and reject replies/selections after source, caret, binding,
@@ -9238,9 +9243,11 @@ shows local messages alone.
 
 Once a context is prepared, the server analyses the draft as you type and its
 messages appear with a dotted underline. They are labelled
-`Analysis (slangd)` (or `luslc`) in tooltips and hover, apart from the build's
-squiggles and **Error List** entries, which remain authoritative for build
-errors. Messages about generated surroundings or from an earlier version of the
+`Analysis (slangd)` (or `luslc`) in tooltips and hover, and listed in the
+**Error List** with that origin, apart from the build's squiggles and rows,
+which remain authoritative for build errors. Analysis rows never bring the
+Error List forward while you type; activating one opens that shader's tab and
+selects the message's range. Messages about generated surroundings or from an earlier version of the
 text are not shown. **Show Log**, beside **Retry assistance**, shows the
 server's diagnostic output since it last started.
 

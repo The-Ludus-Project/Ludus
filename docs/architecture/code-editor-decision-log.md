@@ -928,3 +928,29 @@ Tests drive `language_server_fixture.py`, which can now publish a diagnostic
 for every occurrence of a word, optionally with a stale version. The context
 prefix contains the word too, so generated text must not produce a marker.
 
+### M4 batch 3b: Analysis rows and the remaining Go to commands (CE10, 2026-11-23)
+
+- **Error List.** A new `ErrorListProducer::Analysis` holds one row per analysis
+  marker in every open package-shader Code tab (since
+  [PR 2208](https://github.com/The-Ludus-Project/Ludus/pull/2208) shaders open
+  there; the Source pane serves when a workspace has no Code area), with the
+  origin `Analysis (<server>)`, the package file and the marker's current line
+  and column. A closed tab's rows leave with it. The producer replaces only its own
+  rows like the others, but never emits `ProblemsReported`: analysis changes as
+  the author types, and raising the list on each report would take focus from
+  the text. Activating a row brings that file's tab forward and selects the
+  marker's range, expanding folds, or reports that the row was replaced. The architecture's "Analysis" and "Build"
+  groups are these origins; the list is not split into two tables.
+- **Go to commands.** Go to Declaration, Go to Type Definition and Go to
+  Implementation (Ctrl+F12, VS Code's binding) use the request table's rows and
+  the same result reader as Go to Definition, jumping straight to a single
+  location. Declaration and Type Definition have no default binding, as in VS
+  Code. Each is disabled with its reason when the server lacks the provider.
+- **Go to Symbol in Workspace** (Ctrl+T) sends `workspace/symbol` with the word
+  at the caret and lists the results in authored sources of the captured
+  context; generated text is excluded, as for Go to Symbol. Re-querying as the
+  filter changes is not implemented: the chooser filters the returned list.
+
+The references tool window moves to the next batch with semantic tokens: it
+needs its own dock, and the existing chooser keeps serving Find References.
+

@@ -90,6 +90,20 @@ CodeNavigation::CodeNavigation(CodeEditor& inoutEditor)
     mReferences = addAction(QStringLiteral("Find References"), QKeySequence(Qt::SHIFT | Qt::Key_F12), [this]() {
         Q_EMIT Requested(CodeNavigationKind::References);
     });
+    // The remaining Go to commands (CE10). Declaration and Type Definition have no
+    // default binding in VS Code either; Implementation is Ctrl+F12 there.
+    mDeclaration = addAction(QStringLiteral("Go to Declaration"), QKeySequence(), [this]() {
+        Q_EMIT Requested(CodeNavigationKind::Declaration);
+    });
+    mTypeDefinition = addAction(QStringLiteral("Go to Type Definition"), QKeySequence(), [this]() {
+        Q_EMIT Requested(CodeNavigationKind::TypeDefinition);
+    });
+    mImplementation = addAction(QStringLiteral("Go to Implementation"), QKeySequence(Qt::CTRL | Qt::Key_F12), [this]() {
+        Q_EMIT Requested(CodeNavigationKind::Implementation);
+    });
+    mWorkspaceSymbols = addAction(QStringLiteral("Go to Symbol in Workspace"),
+                                  QKeySequence(Qt::CTRL | Qt::Key_T),
+                                  [this]() { Q_EMIT Requested(CodeNavigationKind::WorkspaceSymbols); });
     mPopup->hide();
     RefreshActions();
 }
@@ -151,11 +165,16 @@ void CodeNavigation::RefreshActions()
     mForward->setEnabled(owner.mNext.isEmpty() == false);
     mFiles->setEnabled(mFilesAvailable.isEmpty() == false);
     const bool hasService = mEditor.isReadOnly() == false && HasCodeLanguageService(mEditor.GetLanguage()) == true;
-    const StaticArray<QAction*, CODE_NAVIGATION_KIND_COUNT> actions{{mSymbols, mDefinition, mReferences}};
+    const StaticArray<QAction*, CODE_NAVIGATION_KIND_COUNT> actions{
+        {mSymbols, mDefinition, mReferences, mDeclaration, mTypeDefinition, mImplementation, mWorkspaceSymbols}};
     const StaticArray<QString, CODE_NAVIGATION_KIND_COUNT> descriptions{
         {QStringLiteral("Go to a symbol of this source in the selected compiler context."),
          QStringLiteral("Go to the definition in the selected compiler context."),
-         QStringLiteral("Find references in the selected compiler context.")}};
+         QStringLiteral("Find references in the selected compiler context."),
+         QStringLiteral("Go to the declaration in the selected compiler context."),
+         QStringLiteral("Go to the definition of this value's type in the selected compiler context."),
+         QStringLiteral("Go to the implementations in the selected compiler context."),
+         QStringLiteral("Go to a symbol named like the word at the caret, across the compiler context.")}};
     for (usize index = 0; index < CODE_NAVIGATION_KIND_COUNT; ++index)
     {
         const QString& reason = mUnavailableReasons[index];

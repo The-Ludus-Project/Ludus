@@ -29,10 +29,28 @@ enum class CodeNavigationKind : foundation::uint8
     Symbols,
     Definition,
     References,
+    Declaration,
+    TypeDefinition,
+    Implementation,
+    /// Symbols across the server's workspace, queried with the word at the caret.
+    WorkspaceSymbols,
 };
 
 /// The number of CodeNavigationKind values, for per-kind tables.
-inline constexpr foundation::usize CODE_NAVIGATION_KIND_COUNT = 3;
+inline constexpr foundation::usize CODE_NAVIGATION_KIND_COUNT = 7;
+
+/// True for the kinds that list symbols rather than locations of one name.
+[[nodiscard]] constexpr bool IsCodeSymbolNavigation(CodeNavigationKind kind) noexcept
+{
+    return kind == CodeNavigationKind::Symbols || kind == CodeNavigationKind::WorkspaceSymbols;
+}
+
+/// True for the Go to kinds that jump straight to a single result.
+[[nodiscard]] constexpr bool IsCodeGoToNavigation(CodeNavigationKind kind) noexcept
+{
+    return kind == CodeNavigationKind::Definition || kind == CodeNavigationKind::Declaration ||
+           kind == CodeNavigationKind::TypeDefinition || kind == CodeNavigationKind::Implementation;
+}
 
 /// Copied semantic destination. Offsets are validated UTF-16 boundaries in Text.
 /// An empty File means the current buffer. Read-only targets never rebind authored text.
@@ -147,6 +165,10 @@ private:
     QAction* mSymbols;
     QAction* mDefinition;
     QAction* mReferences;
+    QAction* mDeclaration;
+    QAction* mTypeDefinition;
+    QAction* mImplementation;
+    QAction* mWorkspaceSymbols;
     foundation::StaticArray<QString, CODE_NAVIGATION_KIND_COUNT> mUnavailableReasons{};
     QString mScope;
     QString mFile;
