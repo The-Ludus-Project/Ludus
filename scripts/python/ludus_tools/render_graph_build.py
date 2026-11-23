@@ -1128,8 +1128,46 @@ def capture_graph_shader_inputs(manifest, *, helper, root=None, compiler=None, c
     return snapshot, value, schemas, programs, techniques, counts, plans, library, graph_path, named_resources
 
 
+def inspect_buffer_stride(manifest, source, type_name, *, root, helper, compiler, cancel=None):
+    """Reflect one candidate record from a captured draft, without building or publishing the graph."""
+    snapshot = Snapshot(root)
+    require(type(type_name) is str and NAME.fullmatch(type_name), 'Schema', 'Buffer struct type',
+            'Select a shader struct identifier.')
+    require(type(source) is str and source.endswith(('.slang', language.HEADER_SUFFIX)) and
+            not any(character in source for character in ('"', '\0', '\n', '\r')),
+            'Source', source, 'Select a package-relative .luslh or .slang declaration.')
+    snapshot.load(source)
+    manifest = Path(manifest).resolve()
+    require(manifest.is_relative_to(snapshot.root), 'Source', str(manifest), 'manifest outside root')
+    manifest_label = manifest.relative_to(snapshot.root).as_posix()
+    manifest_value = document(snapshot.load(manifest_label), manifest_label) if manifest.is_file() else {}
+    require(type(manifest_value) is dict, 'Schema', manifest_label, 'expected a shader build manifest object')
+    programs = manifest_value.get('programs', [])
+    is_inline = source.endswith('.slang') and isinstance(programs, list) and any(
+        isinstance(program, dict) and program.get('source') == source for program in programs)
+    helper = Path(helper).resolve()
+    compiler = Path(compiler).resolve()
+    with tempfile.TemporaryDirectory(prefix='ludus-buffer-layout-') as directory:
+        stage = Path(directory)
+        if is_inline:
+            snapshot, _, schemas, programs, _, _, closures, _, _, _, _ = prepare_sources(
+                manifest, helper, root=root, compiler=compiler, cancel=cancel, allow_resource_upgrades=True,
+                inline_layout_source=source)
+            stride, _ = buffers.reflect_inline_record(
+                source, type_name, snapshot, stage, compiler, cancel, sys.modules[__name__],
+                programs, closures, schemas)
+        else:
+            language.lower_buffer_headers(snapshot, {source}, helper, sys.modules[__name__], cancel=cancel)
+            stride, _ = buffers.reflect_record(source, type_name, snapshot, stage, compiler, cancel,
+                                               sys.modules[__name__])
+        snapshot.verify()
+        checkpoint(cancel)
+    return stride
+
+
 def prepare_sources(manifest, helper, *, root=None, ray_path_capture=False, capture_profile=False, luslc=None,
-                    lusl_style='strict', bounds_checks=False, compiler=None, cancel=None, allow_resource_upgrades=False):
+                    lusl_style='strict', bounds_checks=False, compiler=None, cancel=None, allow_resource_upgrades=False,
+                    inline_layout_source=None):
     """Capture and lower the same immutable shader contexts for compilation and editing.
 
     Reflects any LUSL-facing Buffer layouts but does not publish outputs. Returns package metadata, exact
@@ -1142,6 +1180,9 @@ def prepare_sources(manifest, helper, *, root=None, ray_path_capture=False, capt
         capture_graph_shader_inputs(manifest, helper=helper, root=root, compiler=compiler, cancel=cancel,
                                     luslc=luslc, lusl_style=lusl_style, check_ray_targets=False,
                                     allow_resource_upgrades=allow_resource_upgrades))
+    if inline_layout_source is not None:
+        # Keep the namespace for a selected declaration even before a Buffer adopts it.
+        snapshot.inline_buffer_sources.add(inline_layout_source)
     if ray.TECHNIQUE in techniques:
         # A build can report an unsupported invocation at its graph node rather than its manifest.
         ray.validate_native_invocations(plans, value['profiles'], techniques[ray.TECHNIQUE], sys.modules[__name__])

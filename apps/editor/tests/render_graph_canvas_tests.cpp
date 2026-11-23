@@ -1654,10 +1654,10 @@ TEST_CASE("persistent buffer capacity edits share canvas and Properties history"
             REQUIRE(hint != nullptr);
             CHECK(source->findText(entryPoint) >= 0);
             CHECK(source->findText(luslInclude) >= 0);
-            QLabel* languageNote =
-                sizingOrNull->findChild<QLabel*>(QStringLiteral("renderGraphBufferLayoutLanguageNote"));
-            REQUIRE(languageNote != nullptr);
-            CHECK(languageNote->text().contains(QStringLiteral("reflects the storage layout")) == true);
+            QLabel* alignmentNoteOrNull =
+                sizingOrNull->findChild<QLabel*>(QStringLiteral("renderGraphBufferLayoutAlignmentNote"));
+            REQUIRE(alignmentNoteOrNull != nullptr);
+            CHECK(alignmentNoteOrNull->text().contains(QStringLiteral("16-byte buffer word")) == true);
             source->setCurrentText(emptyFile);
             CHECK(hint->text().contains(QStringLiteral("No struct declaration")) == true);
             CHECK(applyOrNull->isEnabled() == false);
@@ -1794,6 +1794,72 @@ TEST_CASE("persistent buffer capacity edits share canvas and Properties history"
     REQUIRE(reopened.Load(package, GetRootGraph()) == RenderGraphDocumentStatus::Ok);
     CHECK(reopened.GetDraft(GetRootGraph()) == workspace.GetDocument().GetDraft(GetRootGraph()));
     CHECK(reopened.GetDraft(emptyFile).contains("struct Repaired") == true);
+}
+
+TEST_CASE("Buffer sizing previews the rounded storage size before applying", "[editor][render-graph][ray-buffer]")
+{
+    const QString python = FindPython();
+    const QString compiler = QStringLiteral(LUDUS_EDITOR_PROJECT_ROOT "/out/shader-tools/slang/bin/slangc");
+    if (python.isEmpty() == true || QFileInfo(compiler).isExecutable() == false)
+    {
+        SKIP("python3 and the pinned slangc are required");
+    }
+    QTemporaryDir project;
+    const QString package = MakePackage(project);
+    const QString declaration = QStringLiteral("main_shaders/table.slang");
+    WriteFile(QDir(package).filePath(declaration), "struct Table { uint Count; };\n");
+    const QString toolingRoot = QStringLiteral(LUDUS_EDITOR_PROJECT_ROOT);
+    RendererWorkspace workspace({python, {}, toolingRoot});
+    workspace.SetProject(project.path(), 1);
+    workspace.SetBuildTools(toolingRoot, compiler);
+    workspace.SetLivePreview(false);
+    REQUIRE(workspace.OpenGraph(QDir(package).filePath(GetRootGraph())) == true);
+    QComboBox* kindsOrNull = workspace.findChild<QComboBox*>(QStringLiteral("renderGraphNewKind"));
+    QPushButton* addOrNull = workspace.findChild<QPushButton*>(QStringLiteral("renderGraphAddNode"));
+    REQUIRE(kindsOrNull != nullptr);
+    REQUIRE(addOrNull != nullptr);
+    kindsOrNull->setCurrentText(QStringLiteral("Buffer"));
+    addOrNull->click();
+    REQUIRE(workspace.SelectNode(GetRootGraph(), GetDefaultConfiguration(), QStringLiteral("buffer")) == true);
+    QWidget* propertiesOrNull = workspace.findChild<QWidget*>(QStringLiteral("renderGraphProperties"));
+    REQUIRE(propertiesOrNull != nullptr);
+    QPushButton* editOrNull = propertiesOrNull->findChild<QPushButton*>(QStringLiteral("renderGraphEditBufferSizing"));
+    REQUIRE(editOrNull != nullptr);
+    const uint64 revision = workspace.GetDocument().GetRevision();
+    QTimer::singleShot(0, &workspace, [&workspace, declaration, revision]() {
+        QDialog* dialogOrNull = qobject_cast<QDialog*>(QApplication::activeModalWidget());
+        REQUIRE(dialogOrNull != nullptr);
+        QComboBox* sourceOrNull = dialogOrNull->findChild<QComboBox*>(QStringLiteral("renderGraphBufferStructSource"));
+        QSpinBox* countOrNull = dialogOrNull->findChild<QSpinBox*>(QStringLiteral("renderGraphBufferStructCount"));
+        QLabel* sizeOrNull = dialogOrNull->findChild<QLabel*>(QStringLiteral("renderGraphBufferBytePreview"));
+        QDialogButtonBox* buttonsOrNull = dialogOrNull->findChild<QDialogButtonBox*>();
+        REQUIRE(sourceOrNull != nullptr);
+        REQUIRE(countOrNull != nullptr);
+        REQUIRE(sizeOrNull != nullptr);
+        REQUIRE(buttonsOrNull != nullptr);
+        sourceOrNull->setCurrentText(declaration);
+        REQUIRE(QTest::qWaitFor(
+                    [sizeOrNull]() {
+                        return sizeOrNull->text().contains(QStringLiteral("4 bytes per element · 16 bytes total"));
+                    },
+                    JOB_TIMEOUT_MILLISECONDS) == true);
+        constexpr int32 ELEMENT_CAPACITY = 5;
+        countOrNull->setValue(ELEMENT_CAPACITY);
+        CHECK(sizeOrNull->text() == QStringLiteral("4 bytes per element · 32 bytes total"));
+        CHECK(workspace.GetDocument().GetRevision() == revision);
+        buttonsOrNull->button(QDialogButtonBox::Apply)->click();
+    });
+    editOrNull->click();
+
+    QLabel* summaryOrNull = propertiesOrNull->findChild<QLabel*>(QStringLiteral("renderGraphBufferStructLayout"));
+    REQUIRE(summaryOrNull != nullptr);
+    CHECK(QTest::qWaitFor(
+              [summaryOrNull]() {
+                  return summaryOrNull->text().contains(QStringLiteral("4 bytes per element · 32 bytes total"));
+              },
+              JOB_TIMEOUT_MILLISECONDS) == true);
+    CHECK(workspace.GetDocument().GetRevision() == revision + 1);
+    CHECK(workspace.IsJobActive() == false);
 }
 
 TEST_CASE("Shader definition tabs preserve navigation across authored and generated source",

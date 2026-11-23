@@ -799,6 +799,7 @@ private:
     void queueGraphEditTrace(RenderGraphSource source);
     void appendWorkerSocketArgument(QStringList& inoutArguments);
     /// Shader tool selection shared by graph builds and capture builds.
+    void appendShaderToolArguments(QStringList& inoutArguments) const;
     void appendBuildToolArguments(QStringList& inoutArguments) const;
     QTimer mSourceEditDebounce;
     /// Result, project and file whose diagnostics the Source view marks.

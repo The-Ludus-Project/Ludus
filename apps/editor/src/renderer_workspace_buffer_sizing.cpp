@@ -1,11 +1,14 @@
 #include "internal/code_editor.h"
 #include "internal/code_editor_area.h"
+#include "internal/render_graph_document.h"
+#include "internal/render_graph_job.h"
 #include "internal/render_graph_node_details.h"
 #include "internal/render_graph_shader_edits.h"
 #include "internal/render_graph_shader_language.h"
 #include "internal/renderer_workspace.h"
 
 #include <ludus/content/render_graph_format/plan.h>
+#include <ludus/foundation/base/types.h>
 
 #include <QCheckBox>
 #include <QComboBox>
@@ -27,16 +30,195 @@
 #include <QRegularExpression>
 #include <QSignalBlocker>
 #include <QSpinBox>
+#include <QString>
 #include <QStringList>
+#include <QTemporaryDir>
+#include <QTimer>
 #include <QVariant>
 
 namespace ludus::editor
 {
 namespace
 {
-const QString BUFFER_LAYOUT_LANGUAGE_NOTE =
-    QStringLiteral("Build Graph reflects the storage layout from the selected shader declaration.");
+namespace format = content::render_graph_format;
+
+const QString BUFFER_LAYOUT_ALIGNMENT_NOTE =
+    QStringLiteral("Total capacity rounds up to a %1-byte buffer word.").arg(format::RAY_BUFFER_WORD_BYTES);
 constexpr foundation::int32 DECLARATION_EDITOR_LINES = 12;
+
+// Each surface owns its pending preview. Results never enter the graph build or document history.
+class BufferLayoutPreview final : public QLabel
+{
+public:
+    BufferLayoutPreview(const RenderGraphDocument& document,
+                        const ToolingPaths& tooling,
+                        const QString& manifest,
+                        const QStringList& toolArguments,
+                        const QString& heading,
+                        QWidget& inoutParent)
+        : QLabel(&inoutParent), mDocument(document), mTooling(tooling), mManifest(manifest),
+          mToolArguments(toolArguments), mHeading(heading)
+    {
+        setTextFormat(Qt::PlainText);
+        setTextInteractionFlags(Qt::TextSelectableByMouse);
+        setWordWrap(true);
+        mDebounce.setSingleShot(true);
+        constexpr foundation::int32 REFLECTION_DEBOUNCE_MILLISECONDS = 150;
+        mDebounce.setInterval(REFLECTION_DEBOUNCE_MILLISECONDS);
+        connect(&mDebounce, &QTimer::timeout, this, [this]() { startReflection(); });
+        connect(&mJob, &RenderGraphJob::Finished, this, [this](const RenderGraphJobResult& result) {
+            if (result.Request.Request == mGeneration && result.Request.Revision == mDocument.GetRevision())
+            {
+                mStride = result.Payload.value(QStringLiteral("buffer_layout"))
+                              .toObject()
+                              .value(QStringLiteral("stride"))
+                              .toInteger();
+                if (result.IsSuccessful == false || mStride <= 0 || mStride > format::MAX_RAY_BUFFER_BYTES)
+                {
+                    mStride = 0;
+                    mProblem = result.Message.isEmpty() == false
+                                   ? result.Message
+                                   : QStringLiteral("The compiler returned no usable stride. Check the declaration.");
+                }
+                render();
+            }
+            else
+            {
+                RefreshDraft();
+                if (mType.isEmpty() == false && mDebounce.isActive() == false)
+                {
+                    mDebounce.start();
+                }
+            }
+        });
+    }
+
+    void SetRecord(const QString& source, const QString& type)
+    {
+        if (source == mSource && type == mType)
+        {
+            return;
+        }
+        mSource = source;
+        mType = type;
+        refresh();
+    }
+
+    void SetCount(foundation::int64 count)
+    {
+        mCount = count;
+        render();
+    }
+
+    void RefreshDraft()
+    {
+        if (mRevision != mDocument.GetRevision())
+        {
+            refresh();
+        }
+    }
+
+private:
+    void refresh()
+    {
+        ++mGeneration;
+        mRevision = mDocument.GetRevision();
+        mStride = 0;
+        mProblem.clear();
+        if (mType.isEmpty() == true)
+        {
+            mDebounce.stop();
+        }
+        else
+        {
+            mDebounce.start();
+        }
+        render();
+    }
+
+    void startReflection()
+    {
+        if (mJob.IsActive() == true)
+        {
+            return;
+        }
+        if (mType.isEmpty() == true)
+        {
+            return;
+        }
+        const QString root = mTemporary.filePath(QStringLiteral("draft"));
+        if (mTemporary.isValid() == false || QDir(root).removeRecursively() == false || QDir().mkpath(root) == false ||
+            mDocument.WriteSnapshot(root) != RenderGraphDocumentStatus::Ok)
+        {
+            mProblem = QStringLiteral("Could not capture the draft. Check available temporary storage.");
+            render();
+            return;
+        }
+        RenderGraphJobRequest request;
+        request.Request = mGeneration;
+        request.Revision = mRevision;
+        request.Action = QStringLiteral("buffer-layout");
+        request.Arguments = {QDir(root).filePath(mManifest),
+                             QStringLiteral("--root"),
+                             root,
+                             QStringLiteral("--source"),
+                             mSource,
+                             QStringLiteral("--type"),
+                             mType};
+        request.Arguments += mToolArguments;
+        if (mJob.Start(mTooling, request) == false)
+        {
+            mProblem = QStringLiteral("Shader reflection tooling is unavailable. Check the editor's shader tools.");
+            render();
+        }
+    }
+
+    void render()
+    {
+        QString description;
+        if (mType.isEmpty() == false)
+        {
+            if (mProblem.isEmpty() == false)
+            {
+                description =
+                    QStringLiteral("Size unavailable. %1").arg(mProblem.trimmed().section(QLatin1Char('\n'), 0, 0));
+            }
+            else if (mStride == 0)
+            {
+                description = QStringLiteral("Reflecting storage layout…");
+            }
+            else
+            {
+                const foundation::int64 word = format::RAY_BUFFER_WORD_BYTES;
+                const foundation::int64 bytes = ((mStride * mCount + word - 1) / word) * word;
+                description = QStringLiteral("%L1 bytes per element · %L2 bytes total").arg(mStride).arg(bytes);
+                if (bytes > format::MAX_RAY_BUFFER_BYTES)
+                {
+                    description += QStringLiteral("\nLimit is %L1 bytes. Reduce the element capacity or struct size.")
+                                       .arg(format::MAX_RAY_BUFFER_BYTES);
+                }
+            }
+        }
+        setToolTip(mProblem);
+        setText(mHeading.isEmpty() == true ? description : mHeading + QStringLiteral("\n") + description);
+    }
+
+    const RenderGraphDocument& mDocument;
+    const ToolingPaths& mTooling;
+    QString mManifest;
+    QStringList mToolArguments;
+    QString mHeading;
+    QString mSource;
+    QString mType;
+    QString mProblem;
+    foundation::int64 mCount = 1;
+    foundation::int64 mStride = 0;
+    foundation::uint64 mGeneration = 0;
+    foundation::uint64 mRevision = 0;
+    QTemporaryDir mTemporary;
+    QTimer mDebounce;
+    RenderGraphJob mJob;
+};
 
 QStringList FindDeclaredStructs(const QByteArray& source)
 {
@@ -391,9 +573,37 @@ void RendererWorkspace::addShaderBufferAccess()
     }
 }
 
+void RendererWorkspace::populateBufferSizing(const QJsonObject& node, QFormLayout& outFields, QWidget& inoutParent)
+{
+    const QJsonObject record = node.value(QStringLiteral("shader_struct")).toObject();
+    if (record.isEmpty() == false)
+    {
+        const QString source = record.value(QStringLiteral("source")).toString();
+        const QString type = record.value(QStringLiteral("type")).toString();
+        const foundation::int64 count = record.value(QStringLiteral("count")).toInteger();
+        const QString heading = QStringLiteral("%L1 × %2\n%3").arg(count).arg(type, source);
+        QStringList toolArguments;
+        appendShaderToolArguments(toolArguments);
+        BufferLayoutPreview* sizing =
+            new BufferLayoutPreview(mDocument, mTooling, manifestFile(), toolArguments, heading, inoutParent);
+        sizing->setObjectName(QStringLiteral("renderGraphBufferStructLayout"));
+        sizing->SetCount(count);
+        sizing->SetRecord(source, type);
+        connect(this, &RendererWorkspace::DocumentChanged, sizing, &BufferLayoutPreview::RefreshDraft);
+        outFields.addRow(QStringLiteral("Shader struct"), sizing);
+    }
+    QPushButton* edit = new QPushButton(record.isEmpty() == true ? QStringLiteral("From shader struct…")
+                                                                 : QStringLiteral("Edit buffer sizing…"),
+                                        &inoutParent);
+    edit->setObjectName(QStringLiteral("renderGraphEditBufferSizing"));
+    edit->setProperty("renderGraphField", QStringLiteral("shader_struct"));
+    QWidget* parent = &inoutParent;
+    connect(edit, &QPushButton::clicked, this, [this, parent]() { editBufferSizing(*parent); });
+    outFields.addRow(edit);
+}
+
 void RendererWorkspace::editBufferSizing(QWidget& inoutParent, const BufferSizingDraft* pendingOrNull)
 {
-    namespace format = content::render_graph_format;
     const QJsonObject node = selectedNode();
     const QString nodeFile = mSelectedFile;
     const QString configuration = mSelectedConfiguration;
@@ -431,9 +641,9 @@ void RendererWorkspace::editBufferSizing(QWidget& inoutParent, const BufferSizin
     source->setPlaceholderText(QStringLiteral("Select a shader declaration file"));
     source->setCurrentIndex(source->findText(pendingOrNull == nullptr ? previousSource : pendingOrNull->Source));
     fields.addRow(QStringLiteral("Shader declaration file"), source);
-    QLabel* languageNote = new QLabel(BUFFER_LAYOUT_LANGUAGE_NOTE, &dialog);
-    languageNote->setObjectName(QStringLiteral("renderGraphBufferLayoutLanguageNote"));
-    languageNote->setWordWrap(true);
+    QLabel* alignmentNote = new QLabel(BUFFER_LAYOUT_ALIGNMENT_NOTE, &dialog);
+    alignmentNote->setObjectName(QStringLiteral("renderGraphBufferLayoutAlignmentNote"));
+    alignmentNote->setWordWrap(true);
     QWidget* declarationActions = new QWidget(&dialog);
     QHBoxLayout* declarationLayout = new QHBoxLayout(declarationActions);
     declarationLayout->setContentsMargins(0, 0, 0, 0);
@@ -457,6 +667,15 @@ void RendererWorkspace::editBufferSizing(QWidget& inoutParent, const BufferSizin
     count->setRange(1, format::MAX_RAY_BUFFER_BYTES);
     count->setValue(pendingOrNull == nullptr ? record.value(QStringLiteral("count")).toInt(1) : pendingOrNull->Count);
     fields.addRow(QStringLiteral("Element capacity"), count);
+    QStringList toolArguments;
+    appendShaderToolArguments(toolArguments);
+    BufferLayoutPreview* sizing =
+        new BufferLayoutPreview(mDocument, mTooling, manifestFile(), toolArguments, {}, dialog);
+    sizing->setObjectName(QStringLiteral("renderGraphBufferBytePreview"));
+    sizing->SetCount(count->value());
+    fields.addRow(QStringLiteral("Storage size"), sizing);
+    connect(count, &QSpinBox::valueChanged, sizing, &BufferLayoutPreview::SetCount);
+    connect(this, &RendererWorkspace::DocumentChanged, sizing, &BufferLayoutPreview::RefreshDraft);
     QSpinBox* bytes = new QSpinBox(&dialog);
     bytes->setObjectName(QStringLiteral("renderGraphFixedBufferBytes"));
     bytes->setRange(format::RAY_BUFFER_WORD_BYTES, format::MAX_RAY_BUFFER_BYTES);
@@ -464,7 +683,7 @@ void RendererWorkspace::editBufferSizing(QWidget& inoutParent, const BufferSizin
     bytes->setValue(pendingOrNull == nullptr ? node.value(QStringLiteral("bytes")).toInt(format::RAY_BUFFER_WORD_BYTES)
                                              : pendingOrNull->Bytes);
     fields.addRow(QStringLiteral("Capacity (bytes)"), bytes);
-    fields.addRow(languageNote);
+    fields.addRow(alignmentNote);
 
     QLabel* hint = new QLabel(&dialog);
     hint->setObjectName(QStringLiteral("renderGraphBufferSizingHint"));
@@ -476,14 +695,17 @@ void RendererWorkspace::editBufferSizing(QWidget& inoutParent, const BufferSizin
     QPushButton* apply = buttons->button(QDialogButtonBox::Apply);
     connect(buttons, &QDialogButtonBox::rejected, &dialog, &QDialog::reject);
     const auto refresh =
-        [&fields, mode, source, type, declarationActions, edit, languageNote, count, bytes, hint, apply]() {
+        [&fields, mode, source, type, declarationActions, edit, alignmentNote, count, sizing, bytes, hint, apply]() {
             const bool isFromStruct = mode->currentIndex() == 1;
             fields.setRowVisible(source, isFromStruct);
             fields.setRowVisible(declarationActions, isFromStruct);
             edit->setEnabled(source->currentIndex() >= 0);
-            fields.setRowVisible(languageNote, isFromStruct);
+            fields.setRowVisible(alignmentNote, isFromStruct);
             fields.setRowVisible(type, isFromStruct);
             fields.setRowVisible(count, isFromStruct);
+            const bool hasRecord = isFromStruct == true && type->currentIndex() >= 0;
+            fields.setRowVisible(sizing, hasRecord);
+            sizing->SetRecord(source->currentText(), hasRecord == true ? type->currentText() : QString());
             fields.setRowVisible(bytes, isFromStruct == false);
             QString message;
             if (isFromStruct == false)

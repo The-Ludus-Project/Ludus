@@ -481,6 +481,18 @@ def cmd_render_graph(args) -> int:
             defaults = _read_json_argument(args.defaults, "--defaults") if args.defaults else None
             payload = {"migration": render_graph_authoring.migrate_values(Path(args.old), Path(args.new), values, defaults)}
         human = _json.dumps(payload, indent=2)
+    elif args.graph_action == "buffer-layout":
+        from .render_graph_build import inspect_buffer_stride
+        options = {"helper": args.helper, "compiler": args.compiler}
+        if args.project:
+            from .render_graph_project import resolve_build_tools
+            options, _ = resolve_build_tools(args.project, args.tooling_root, args.manifest,
+                                            assistance_only=True, store=_store(args), **options)
+        if not options["helper"] or not options["compiler"]:
+            raise ToolingError("MissingTools", "Select project shader tools or supply --helper and --compiler.")
+        stride = inspect_buffer_stride(args.manifest, args.source, args.type, root=args.root, **options)
+        payload = {"buffer_layout": {"stride": stride}}
+        human = f"{stride} bytes per element"
     elif args.graph_action == "shader-context":
         from contextlib import nullcontext
         from .shader_context import capture_draft, export_context
@@ -622,6 +634,17 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--store", help="SDK store root (default: $LUDUS_SDK_STORE or the native user data directory)")
     sub = p.add_subparsers(dest="group", required=True)
     graphs = sub.add_parser("render-graph", help="graph contracts and offline shader packages (no GPU execution)").add_subparsers(dest="graph_action", required=True)
+    layout = graphs.add_parser("buffer-layout", help="reflect the storage stride of one Buffer struct")
+    layout.add_argument("manifest")
+    layout.add_argument("--root", required=True)
+    layout.add_argument("--source", required=True)
+    layout.add_argument("--type", required=True)
+    layout.add_argument("--helper")
+    layout.add_argument("--compiler")
+    layout.add_argument("--project")
+    layout.add_argument("--tooling-root")
+    layout.add_argument("--store")
+    layout.set_defaults(func=cmd_render_graph)
     context = graphs.add_parser("shader-context", help="stage a LUSL or Slang source context for shader assistance")
     context.add_argument("manifest")
     context.add_argument("output", help="separate owned temporary directory")
