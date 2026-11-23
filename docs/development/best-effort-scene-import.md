@@ -634,9 +634,90 @@ reader and image decoders, and `ludus_scene_cook_import_fuzzer` over the glTF
 and OBJ readers, the OpenEXR/Radiance/JPEG decoders and tangent generation.
 Seed it with the fixture directory.
 
+### Reference scene downloads
+
+These scenes support optional local import and renderer checks. Keep the
+downloaded assets and their license files outside source control. The examples
+below use `references/resources/` as the local root. Extract only the scene you
+need, retain its relative paths, and avoid an extra archive directory level.
+
+For a small local set, keep **The Wooden Staircase** for the importer smoke
+test and **Modern Hall** for the [reference capture sample](../examples/reference-scene.md).
+Add **PBRT Bistro** for the full geometry import check, **Sponza Base Scene**
+and **Colorful Curtains** for the combined World check, and **Sun Temple** for
+the [renderer acceptance](../examples/reference-scene.md#full-static-sponza-and-suntemple-acceptance).
+Keep any locally edited variants alongside their source scene.
+
+#### PBRT v4 scenes
+
+Choose the **pbrt v4** download next to the named scene in
+[Benedikt Bitterli’s rendering resources](https://benedikt-bitterli.me/resources/).
+Copy the whole extracted scene directory, including `scene-v4.pbrt`, its models,
+textures and license, to the corresponding local path.
+
+| Download | Local path under `references/resources/` |
+| --- | --- |
+| The Wooden Staircase | `scenes/staircase/` |
+| Modern Hall | `scenes/staircase2/` |
+| Contemporary Bathroom | `scenes/bathroom/` |
+| Bedroom | `scenes/bedroom/` |
+| The White Room | `scenes/living-room-2/` |
+
+The [PBRT v4 example scenes repository](https://github.com/mmp/pbrt-v4-scenes)
+provides Bistro, San Miguel and Zero Day. Copy the selected directory under
+`references/resources/scenes/`. Use a sparse clone outside the Ludus checkout
+to fetch a single scene. For example, to fetch Bistro into a fresh directory:
+
+```sh
+git clone --depth 1 --filter=blob:none --sparse https://github.com/mmp/pbrt-v4-scenes.git /tmp/pbrt-v4-scenes
+git -C /tmp/pbrt-v4-scenes sparse-checkout set bistro
+mkdir -p references/resources/scenes
+cp -R /tmp/pbrt-v4-scenes/bistro references/resources/scenes/
+```
+
+| Download | Local path under `references/resources/` |
+| --- | --- |
+| [PBRT Bistro](https://github.com/mmp/pbrt-v4-scenes/tree/master/bistro) | `scenes/bistro/` |
+| [San Miguel](https://github.com/mmp/pbrt-v4-scenes/tree/master/sanmiguel) | `scenes/sanmiguel/` |
+| [PBRT Zero Day](https://github.com/mmp/pbrt-v4-scenes/tree/master/zero-day) | `scenes/zero-day/` |
+
+#### NVIDIA Open Research Content Archive
+
+Use the **Download** link on the corresponding asset page. Keep the FBX,
+textures and accompanying files together.
+
+| Download | Local path under `references/resources/` |
+| --- | --- |
+| [Amazon Lumberyard Bistro](https://developer.nvidia.com/orca/amazon-lumberyard-bistro) | `Bistro_v5_2/` |
+| [Emerald Square](https://developer.nvidia.com/orca/nvidia-emerald-square) | `EmeraldSquare_v4_1/` |
+| [SpeedTree Trees and Plants](https://developer.nvidia.com/orca/speedtree) | `SpeedTree_v2/` |
+| [UE4 Sun Temple](https://developer.nvidia.com/ue4-sun-temple) | `SunTemple_v4/SunTemple/` |
+| [Beeple Zero-Day](https://developer.nvidia.com/orca/beeple-zero-day) | `ZeroDay_v1/` |
+
+#### Intel Graphics Research sample packs
+
+The [Intel GPU Research Samples Library](https://www.intel.com/content/www/us/en/developer/topic-technology/graphics-research/samples.html)
+provides an individual download for each pack. Extract each under the local
+path below. For the import and renderer checks, keep the Sponza glTF files
+with their companion binaries and textures. The static renderer fixture
+also uses the base pack's HDR environment.
+
+| Download | Local path under `references/resources/` |
+| --- | --- |
+| Jungle Ruins Scene | `JungleRuins/` |
+| Sponza Base Scene | `main_sponza/` |
+| Colorful Curtains | `pkg_a_curtains/` |
+| Ivy | `pkg_b_ivy/` |
+| Trees | `pkg_c_trees/` |
+| Emissive Candles | `pkg_d_10k_candles/` |
+| Animated Knight | `pkg_e_knight_anim/` |
+| Flood | `pkg_f_flood/` |
+| Volumetric Explosion | `pkg_g_explosion/` |
+
 ### Local smoke test with licensed scenes
 
-Licensed scenes are never committed. To import them locally:
+Download The Wooden Staircase from the [reference scene catalog](#reference-scene-downloads)
+to run the licensed smoke test locally:
 
 ```sh
 LUDUS_PBRT_SCENES_DIR=~/Ludus/references/resources/scenes \
