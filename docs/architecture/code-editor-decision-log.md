@@ -998,3 +998,37 @@ occurrence of a word (`--tokens`) and return given folding ranges
 (`--folding-ranges`). Inlay hints and the references tool window follow in the
 next batch.
 
+### M4 batch 3d: inlay hints (CE10, 2026-11-23)
+
+- **Requests.** `CodeSemanticLayers` adds `textDocument/inlayHint` to its
+  refresh, for the whole authored source rather than the visible lines: hints
+  are few, and edits move them without a request when the view scrolls. The
+  client advertises `inlayHint` without resolve. The Slang profile now answers
+  `slang.inlayHints.deducedTypes` and `slang.inlayHints.parameterNames` with
+  `true`; the pinned `slangd` sends no hints otherwise. Whether hints are drawn
+  is the view's setting, so changing it never restarts or reconfigures the server.
+- **Refresh.** `slangd` answers the first request with no hints, reads its
+  configuration, then sends `workspace/inlayHint/refresh`. The client now
+  advertises `refreshSupport` for inlay hints and semantic tokens, answers both
+  refresh requests and emits `RefreshRequested`; the layers ask again after the
+  same 100 ms pause as an edit. Before this, the shader editor never showed a
+  hint from the real server.
+- **Decoding.** A label is a string or its joined parts, shortened with an
+  ellipsis past 64 UTF-16 units. Hints outside the authored source, with an
+  empty label or spanning lines are dropped; at most 4,096 are kept, ordered by
+  position with Foundation's `StableSort`.
+- **Drawing.** The architecture requires inline text that never enters the
+  projection. `QPlainTextEdit` has no inline objects, so the highlighter reserves
+  each hint's measured width as absolute letter spacing on the character before
+  it, and the view paints the label into that gap. The document, its revision,
+  the clipboard and the history are untouched, and the caret, selection and hit
+  testing stay on real characters. A consequence is that a hint at a line start,
+  with no character before it, is not shown; `slangd`'s hints follow a name or an
+  opening parenthesis, so none is lost in practice. Edits move later hints and
+  drop the ones at the edit until the next reply.
+- **Setting.** **Show Inlay Hints** is a checkable editor command, persisted as
+  `codeEditor/inlayHints` (default on). Holding Ctrl+Alt shows hidden hints until
+  either key is released or the editor loses focus, as the architecture asks.
+
+The references tool window follows in its own batch.
+

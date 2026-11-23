@@ -241,13 +241,17 @@ void LanguageClient::startProcess()
                           QJsonArray{QStringLiteral("plaintext"), QStringLiteral("markdown")}}}},
             {QStringLiteral("publishDiagnostics"), QJsonObject{{QStringLiteral("versionSupport"), true}}},
             {QStringLiteral("semanticTokens"), semanticTokens},
-            {QStringLiteral("foldingRange"), foldingRange}};
+            {QStringLiteral("foldingRange"), foldingRange},
+            {QStringLiteral("inlayHint"), QJsonObject{{QStringLiteral("dynamicRegistration"), false}}}};
         const QJsonObject capabilities{
             {QStringLiteral("general"),
              QJsonObject{{QStringLiteral("positionEncodings"),
                           QJsonArray{GetLanguagePositionEncodingName(LanguagePositionEncoding::Utf8),
                                      GetLanguagePositionEncodingName(LanguagePositionEncoding::Utf16)}}}},
-            {QStringLiteral("workspace"), QJsonObject{{QStringLiteral("configuration"), true}}},
+            {QStringLiteral("workspace"),
+             QJsonObject{{QStringLiteral("configuration"), true},
+                         {QStringLiteral("inlayHint"), QJsonObject{{QStringLiteral("refreshSupport"), true}}},
+                         {QStringLiteral("semanticTokens"), QJsonObject{{QStringLiteral("refreshSupport"), true}}}}},
             {QStringLiteral("textDocument"), textDocument}};
         send({{QStringLiteral("id"), mInitializeRequest},
               {QStringLiteral("method"), QStringLiteral("initialize")},
@@ -698,6 +702,12 @@ void LanguageClient::receive(const QJsonObject& message)
                 result = values;
             }
             send({{QStringLiteral("id"), message.value(QStringLiteral("id"))}, {QStringLiteral("result"), result}});
+            const QString method = message.value(QStringLiteral("method")).toString();
+            if (method == QStringLiteral("workspace/inlayHint/refresh") ||
+                method == QStringLiteral("workspace/semanticTokens/refresh"))
+            {
+                Q_EMIT RefreshRequested();
+            }
         }
         else if (message.value(QStringLiteral("method")).toString() ==
                  QStringLiteral("textDocument/publishDiagnostics"))

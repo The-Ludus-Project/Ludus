@@ -10,6 +10,8 @@
 
 #include <QColor>
 #include <QElapsedTimer>
+#include <QFont>
+#include <QFontMetricsF>
 #include <QPalette>
 #include <QStringView>
 #include <QTextDocument>
@@ -186,6 +188,18 @@ bool IsLuslKeyword(QStringView word)
 }
 } // namespace
 
+QString GetCodeInlayHintText(const CodeInlayHint& hint)
+{
+    return (hint.HasPaddingLeft == true ? QStringLiteral(" ") : QString()) + hint.Label +
+           (hint.HasPaddingRight == true ? QStringLiteral(" ") : QString());
+}
+
+float64 MeasureCodeInlayHint(const QFontMetricsF& metrics, const CodeInlayHint& hint)
+{
+    // A quarter of a space on each side separates the drawn background from the text.
+    return metrics.horizontalAdvance(GetCodeInlayHintText(hint)) + metrics.horizontalAdvance(QLatin1Char(' ')) * 0.5;
+}
+
 bool IsLightCodePalette(const QPalette& palette)
 {
     return palette.color(QPalette::Base).lightness() >= LIGHT_PALETTE_THRESHOLD;
@@ -212,6 +226,7 @@ CodeSyntaxHighlighter::CodeSyntaxHighlighter(QTextDocument* document, const Code
         {
             mDocumentRevision = revision;
             moveSemanticTokens(position, removed, added);
+            moveInlayHints(position, removed, added);
             rehighlightEdit(position, added);
         }
     });
@@ -225,6 +240,7 @@ void CodeSyntaxHighlighter::SetLanguage(CodeLanguage language)
     {
         mLanguage = language;
         mSemanticTokens.clear();
+        mInlayHints.clear();
         ScheduleReapply();
     }
 }
@@ -396,6 +412,91 @@ void CodeSyntaxHighlighter::moveSemanticTokens(int32 position, int32 removed, in
     }
 }
 
+void CodeSyntaxHighlighter::SetInlayHints(const QList<CodeInlayHint>& hints)
+{
+    if (hints == mInlayHints)
+    {
+        return;
+    }
+    mInlayHints = hints;
+    ScheduleReapply();
+}
+
+void CodeSyntaxHighlighter::SetInlayHintsShown(bool isShown)
+{
+    if (mAreInlayHintsShown != isShown)
+    {
+        mAreInlayHintsShown = isShown;
+        if (mInlayHints.isEmpty() == false)
+        {
+            ScheduleReapply();
+        }
+    }
+}
+
+void CodeSyntaxHighlighter::moveInlayHints(int32 position, int32 removed, int32 added)
+{
+    if (mInlayHints.isEmpty() == true)
+    {
+        return;
+    }
+    // A hint at the edit no longer describes the text beside it.
+    const int32 removedEnd = position + removed;
+    mInlayHints.removeIf([position, removedEnd](const CodeInlayHint& hint) {
+        return hint.Position >= position && hint.Position <= removedEnd;
+    });
+    for (CodeInlayHint& hint : mInlayHints)
+    {
+        if (hint.Position > removedEnd)
+        {
+            hint.Position += added - removed;
+        }
+    }
+}
+
+void CodeSyntaxHighlighter::applyInlayHints()
+{
+    if (mAreInlayHintsShown == false || mInlayHints.isEmpty() == true)
+    {
+        return;
+    }
+    const QTextBlock block = currentBlock();
+    const int32 start = block.position();
+    const int32 end = start + block.length() - 1;
+    qsizetype first = 0;
+    qsizetype last = mInlayHints.size();
+    while (first < last)
+    {
+        const qsizetype middle = first + (last - first) / 2;
+        if (mInlayHints.at(middle).Position <= start)
+        {
+            first = middle + 1;
+        }
+        else
+        {
+            last = middle;
+        }
+    }
+    const QFontMetricsF metrics(document()->defaultFont());
+    qsizetype index = first;
+    while (index < mInlayHints.size() && mInlayHints.at(index).Position <= end)
+    {
+        // Hints sharing a position share one gap after the character before it.
+        const int32 position = mInlayHints.at(index).Position;
+        float64 width = 0;
+        while (index < mInlayHints.size() && mInlayHints.at(index).Position == position)
+        {
+            width += MeasureCodeInlayHint(metrics, mInlayHints.at(index));
+            ++index;
+        }
+        const int32 column = position - start - 1;
+        QTextCharFormat reserved = format(column);
+        reserved.setFontLetterSpacingType(QFont::AbsoluteSpacing);
+        reserved.setFontLetterSpacing(width);
+        setFormat(column, 1, reserved);
+    }
+}
+
 void CodeSyntaxHighlighter::applySyntaxTokens()
 {
     const CodeSyntaxResult* resultOrNull = mSyntax.GetCurrentResultOrNull();
@@ -404,6 +505,7 @@ void CodeSyntaxHighlighter::applySyntaxTokens()
         applyTokens(resultOrNull->Tokens);
     }
     applyTokens(mSemanticTokens);
+    applyInlayHints();
 }
 
 void CodeSyntaxHighlighter::applyTokens(const QList<CodeSyntaxToken>& tokens)

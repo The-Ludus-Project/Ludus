@@ -94,6 +94,31 @@ struct CodeAnalysisDiagnostic final
     QString Message;
 };
 
+/// What an inlay hint names (LSP 3.17 `InlayHintKind`).
+enum class CodeInlayHintKind : foundation::uint8
+{
+    Other,
+    /// A deduced type, such as `: float` after a `let` name.
+    Type,
+    /// The parameter an argument binds, such as `value:` before it.
+    Parameter,
+};
+
+/// A language server's inline hint (code editor M4, CE10). The view draws its
+/// label just before Position in space it reserves; the label is never part of
+/// the document, the clipboard or the history.
+struct CodeInlayHint final
+{
+    /// UTF-16 position in the view's document. A hint at a line start is not shown.
+    foundation::int32 Position = 0;
+    QString Label;
+    CodeInlayHintKind Kind = CodeInlayHintKind::Other;
+    /// A space before or after the label, as the server asks.
+    bool HasPaddingLeft = false;
+    bool HasPaddingRight = false;
+    [[nodiscard]] bool operator==(const CodeInlayHint& other) const = default;
+};
+
 /// What the current language server serves for completion and signature help,
 /// from its advertised capabilities (code editor M4, CE09).
 struct CodeAssistanceAvailability final
@@ -201,6 +226,17 @@ public:
     void SetSemanticTokens(const QList<CodeSyntaxToken>& tokens);
     /// The current semantic tokens at their edit-moved positions.
     [[nodiscard]] const QList<CodeSyntaxToken>& GetSemanticTokens() const noexcept;
+    /// Replace the language server's inlay hints, ordered by position. Edits move
+    /// later hints and drop the ones at the edit until the next replacement.
+    void SetInlayHints(const QList<CodeInlayHint>& hints);
+    /// The current inlay hints at their edit-moved positions, shown or not.
+    [[nodiscard]] const QList<CodeInlayHint>& GetInlayHints() const noexcept;
+    /// Persist whether inlay hints are drawn (default true); the text, its
+    /// layout positions and history are unchanged. Holding Ctrl+Alt (Command+Option
+    /// on macOS) shows hidden hints until either key is released. GUI thread only.
+    void SetInlayHintsVisible(bool isVisible);
+    /// Whether inlay hints are drawn now, including while Ctrl+Alt is held.
+    [[nodiscard]] bool AreInlayHintsShown() const noexcept;
     [[nodiscard]] LUDUS_INLINE foundation::int32 GetDiagnosticCount() const noexcept
     {
         return static_cast<foundation::int32>(mDiagnostics.size());
@@ -289,6 +325,8 @@ private:
     void paintEvent(QPaintEvent* event) override;
     void paintIndentGuides(const QPaintEvent* event);
     void paintFoldPlaceholders(const QPaintEvent* event);
+    void paintInlayHints(const QPaintEvent* event);
+    void updateInlayHintPresentation();
     [[nodiscard]] QRect getFoldPlaceholderRect(const QTextBlock& block) const;
     void paintDiagnosticCallout();
     void keyPressEvent(QKeyEvent* event) override;
@@ -366,6 +404,10 @@ private:
     /// The text changed after the markers were set; they still point at where the problem was.
     bool mHasEditedSinceReport = false;
     bool mShouldShowIndentGuides = true;
+    bool mShouldShowInlayHints = true;
+    /// Ctrl+Alt is held, showing hidden inlay hints.
+    bool mIsPeekingInlayHints = false;
+    QAction* mInlayHintsAction;
     bool mShouldPairBrackets = true;
     bool mShouldUseDocumentHistory = false;
     bool mCanUndo = false;

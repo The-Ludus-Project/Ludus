@@ -24,6 +24,7 @@
 #include <QFontDatabase>
 #include <QFontInfo>
 #include <QFontMetrics>
+#include <QFontMetricsF>
 #include <QHelpEvent>
 #include <QInputMethodEvent>
 #include <QKeyEvent>
@@ -45,6 +46,7 @@
 #include <QResizeEvent>
 #include <QScreen>
 #include <QSettings>
+#include <QSignalBlocker>
 #include <QStringList>
 #include <QStringView>
 #include <QTextBlock>
@@ -246,6 +248,15 @@ CodeEditor::CodeEditor(QWidget* parentOrNull)
     mHoverAction->setEnabled(false);
     connect(mHoverAction, &QAction::triggered, this, [this]() { Q_EMIT HoverRequested(textCursor().position()); });
     addAction(mHoverAction);
+    // Inlay hints (CE10): a persisted toggle; Ctrl+Alt shows hidden hints while held.
+    mInlayHintsAction = new QAction(QStringLiteral("Show Inlay Hints"), this);
+    mInlayHintsAction->setObjectName(QStringLiteral("codeEditorInlayHints"));
+    mInlayHintsAction->setCheckable(true);
+    mInlayHintsAction->setChecked(true);
+    mInlayHintsAction->setToolTip(QStringLiteral(
+        "Show parameter names and deduced types from the language server. Hold Ctrl+Alt to show them briefly."));
+    connect(mInlayHintsAction, &QAction::toggled, this, &CodeEditor::SetInlayHintsVisible);
+    addAction(mInlayHintsAction);
     mHoverDelay.setSingleShot(true);
     mHoverDelay.setInterval(HOVER_DELAY_MILLISECONDS);
     connect(&mHoverDelay, &QTimer::timeout, this, [this]() {
@@ -274,6 +285,7 @@ CodeEditor::CodeEditor(QWidget* parentOrNull)
     SetFontPointSize(preferences.value(QStringLiteral("codeEditor/fontPoints"), DEFAULT_FONT_POINTS).toInt());
     SetWordWrap(preferences.value(QStringLiteral("codeEditor/wordWrap"), false).toBool());
     SetIndentGuidesVisible(preferences.value(QStringLiteral("codeEditor/indentGuides"), true).toBool());
+    SetInlayHintsVisible(preferences.value(QStringLiteral("codeEditor/inlayHints"), true).toBool());
     setTabStopDistance(fontMetrics().horizontalAdvance(QLatin1Char(' ')) * INDENT_WIDTH);
     mHighlighter->SetPalette(palette());
     connect(mSyntax, &CodeSyntaxService::ResultChanged, this, [this]() {
@@ -416,6 +428,40 @@ void CodeEditor::SetIndentGuidesVisible(bool isVisible)
     Q_EMIT PresentationChanged();
 }
 
+void CodeEditor::SetInlayHintsVisible(bool isVisible)
+{
+    mShouldShowInlayHints = isVisible;
+    {
+        const QSignalBlocker blocker(mInlayHintsAction);
+        mInlayHintsAction->setChecked(isVisible);
+    }
+    QSettings().setValue(QStringLiteral("codeEditor/inlayHints"), isVisible);
+    updateInlayHintPresentation();
+    Q_EMIT PresentationChanged();
+}
+
+bool CodeEditor::AreInlayHintsShown() const noexcept
+{
+    return mHighlighter->AreInlayHintsShown();
+}
+
+void CodeEditor::updateInlayHintPresentation()
+{
+    mHighlighter->SetInlayHintsShown(mShouldShowInlayHints == true || mIsPeekingInlayHints == true);
+    viewport()->update();
+}
+
+void CodeEditor::SetInlayHints(const QList<CodeInlayHint>& hints)
+{
+    mHighlighter->SetInlayHints(hints);
+    viewport()->update();
+}
+
+const QList<CodeInlayHint>& CodeEditor::GetInlayHints() const noexcept
+{
+    return mHighlighter->GetInlayHints();
+}
+
 void CodeEditor::GoToDiagnostic(bool shouldGoBackward)
 {
     if (mDiagnostics.isEmpty() == true)
@@ -465,6 +511,7 @@ void CodeEditor::paintEvent(QPaintEvent* event)
         QPainter painter(viewport());
         mMultiCursor.Paint(painter, firstVisibleBlock().position(), last.position() + last.length() - 1);
     }
+    paintInlayHints(event);
     paintFoldPlaceholders(event);
     paintDiagnosticCallout();
     mLatencyProbe.MarkPainted();
@@ -533,6 +580,66 @@ QRect CodeEditor::getFoldPlaceholderRect(const QTextBlock& block) const
                  caret.top(),
                  fontMetrics().horizontalAdvance(label),
                  fontMetrics().height());
+}
+
+void CodeEditor::paintInlayHints(const QPaintEvent* event)
+{
+    const QList<CodeInlayHint>& hints = mHighlighter->GetInlayHints();
+    if (mHighlighter->AreInlayHintsShown() == false || hints.isEmpty() == true)
+    {
+        return;
+    }
+    QPainter painter(viewport());
+    painter.setRenderHint(QPainter::Antialiasing);
+    const QFontMetricsF metrics(document()->defaultFont());
+    QColor background = palette().color(QPalette::Text);
+    constexpr float64 BACKGROUND_OPACITY = 0.08;
+    background.setAlphaF(BACKGROUND_OPACITY);
+    const QColor text = palette().color(QPalette::PlaceholderText);
+    constexpr float64 CORNER_LINE_FRACTION = 0.25;
+    const float64 corner = metrics.height() * CORNER_LINE_FRACTION;
+    const int32 first = firstVisibleBlock().position();
+    qsizetype index = 0;
+    while (index < hints.size() && hints.at(index).Position <= first)
+    {
+        ++index;
+    }
+    while (index < hints.size())
+    {
+        // Hints sharing a position fill the gap the highlighter reserved before it, left to right.
+        const int32 position = hints.at(index).Position;
+        const QTextBlock block = document()->findBlock(position);
+        if (blockBoundingGeometry(block).translated(contentOffset()).top() > event->rect().bottom())
+        {
+            break;
+        }
+        qsizetype end = index;
+        float64 width = 0;
+        while (end < hints.size() && hints.at(end).Position == position)
+        {
+            width += MeasureCodeInlayHint(metrics, hints.at(end));
+            ++end;
+        }
+        QTextCursor cursor(document());
+        cursor.setPosition(position);
+        const QRect caret = cursorRect(cursor);
+        float64 left = caret.left() - width;
+        if (block.isVisible() == true && position > block.position())
+        {
+            for (; index < end; ++index)
+            {
+                const float64 hintWidth = MeasureCodeInlayHint(metrics, hints.at(index));
+                const QRectF area(left, caret.top() + 1, hintWidth, caret.height() - 2);
+                painter.setPen(Qt::NoPen);
+                painter.setBrush(background);
+                painter.drawRoundedRect(area, corner, corner);
+                painter.setPen(text);
+                painter.drawText(area, Qt::AlignCenter, GetCodeInlayHintText(hints.at(index)));
+                left += hintWidth;
+            }
+        }
+        index = end;
+    }
 }
 
 void CodeEditor::paintFoldPlaceholders(const QPaintEvent* event)
@@ -890,6 +997,11 @@ void CodeEditor::focusOutEvent(QFocusEvent* event)
     }
     HideAssistance();
     updateDefinitionLink({}, Qt::NoModifier);
+    if (mIsPeekingInlayHints == true)
+    {
+        mIsPeekingInlayHints = false;
+        updateInlayHintPresentation();
+    }
     QPlainTextEdit::focusOutEvent(event);
     Q_EMIT EditBoundary();
 }
@@ -1311,6 +1423,11 @@ void CodeEditor::changeEvent(QEvent* event)
     {
         setTabStopDistance(fontMetrics().horizontalAdvance(QLatin1Char(' ')) * INDENT_WIDTH);
         updateGutterWidth();
+        if (mHighlighter->GetInlayHints().isEmpty() == false)
+        {
+            // The reserved gaps are measured in the text font.
+            mHighlighter->ScheduleReapply();
+        }
     }
 }
 
@@ -2045,6 +2162,11 @@ void CodeEditor::keyReleaseEvent(QKeyEvent* event)
     {
         updateDefinitionLink(viewport()->mapFromGlobal(QCursor::pos()), event->modifiers());
     }
+    if (mIsPeekingInlayHints == true && (event->key() == Qt::Key_Control || event->key() == Qt::Key_Alt))
+    {
+        mIsPeekingInlayHints = false;
+        updateInlayHintPresentation();
+    }
     QPlainTextEdit::keyReleaseEvent(event);
 }
 
@@ -2054,6 +2176,14 @@ void CodeEditor::keyPressEvent(QKeyEvent* event)
     if (event->key() == Qt::Key_Control)
     {
         updateDefinitionLink(viewport()->mapFromGlobal(QCursor::pos()), event->modifiers());
+    }
+    constexpr Qt::KeyboardModifiers PEEK_MODIFIERS = Qt::ControlModifier | Qt::AltModifier;
+    if ((event->key() == Qt::Key_Control || event->key() == Qt::Key_Alt) &&
+        (event->modifiers() & PEEK_MODIFIERS) == PEEK_MODIFIERS && mIsPeekingInlayHints == false &&
+        mShouldShowInlayHints == false)
+    {
+        mIsPeekingInlayHints = true;
+        updateInlayHintPresentation();
     }
     LUDUS_PROFILE_SCOPE(CodeEditorKeyPress);
     const int32 revision = document()->revision();

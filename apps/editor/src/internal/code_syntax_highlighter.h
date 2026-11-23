@@ -7,6 +7,7 @@
 
 #include "internal/code_syntax_service.h"
 
+#include <QFontMetricsF>
 #include <QList>
 #include <QPalette>
 #include <QStringView>
@@ -45,6 +46,13 @@ struct CodeBlockData final : QTextBlockUserData
 /// Whether a word is a Slang keyword in the lexical coloring profile.
 [[nodiscard]] bool IsSlangKeyword(QStringView word);
 
+/// The label an inlay hint draws, with the padding spaces the server asked for.
+[[nodiscard]] QString GetCodeInlayHintText(const CodeInlayHint& hint);
+
+/// The width an inlay hint reserves in `metrics`' font: its text plus a margin on
+/// each side. The highlighter and the view use it so the drawn hint fills the gap.
+[[nodiscard]] foundation::float64 MeasureCodeInlayHint(const QFontMetricsF& metrics, const CodeInlayHint& hint);
+
 /// Bounded single-pass block lexer. Qt propagates changed multiline state to
 /// subsequent blocks; no compiler or whole-document regular expression runs.
 /// Functions, constants and user type names are classified from the
@@ -70,16 +78,35 @@ public:
     {
         return mSemanticTokens;
     }
+    /// Replace the inlay hints, ordered by position. While shown, each reserves its
+    /// measured width after the character before it, as letter spacing in that
+    /// character's format; the document text never changes. Edits move later hints
+    /// and drop the ones at the edit; a language change clears them.
+    void SetInlayHints(const QList<CodeInlayHint>& hints);
+    [[nodiscard]] LUDUS_INLINE const QList<CodeInlayHint>& GetInlayHints() const noexcept
+    {
+        return mInlayHints;
+    }
+    /// Reserve space for the hints (true) or lay the text out as if there were none.
+    void SetInlayHintsShown(bool isShown);
+    [[nodiscard]] LUDUS_INLINE bool AreInlayHintsShown() const noexcept
+    {
+        return mAreInlayHintsShown;
+    }
 
 private:
     void highlightBlock(const QString& text) override;
     void applySyntaxTokens();
     void applyTokens(const QList<CodeSyntaxToken>& tokens);
     void moveSemanticTokens(foundation::int32 position, foundation::int32 removed, foundation::int32 added);
+    void moveInlayHints(foundation::int32 position, foundation::int32 removed, foundation::int32 added);
+    void applyInlayHints();
     void rehighlightEdit(foundation::int32 position, foundation::int32 added);
     void reapplySlice();
     const CodeSyntaxService& mSyntax;
     QList<CodeSyntaxToken> mSemanticTokens;
+    QList<CodeInlayHint> mInlayHints;
+    bool mAreInlayHintsShown = true;
     QTimer mReapply;
     // The next block to reapply, by number. A stored QTextBlock would keep a fragment index that an edit or a
     // replaced document frees between slices.

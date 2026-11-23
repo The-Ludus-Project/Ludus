@@ -9257,8 +9257,15 @@ functions, parameters, properties and user types. The colors follow your edits
 at once; a name you are changing keeps its syntax color until the server
 analyses the new text. When a server reports folding ranges, it adds only kinds
 the editor's grammar does not produce (such as `imports`), so folds you have
-collapsed never move while a server starts, restarts or stops. Neither layer
-changes the text, its undo history or the saved file.
+collapsed never move while a server starts, restarts or stops.
+
+`slangd` also shows **inlay hints**: the parameter each argument binds (`value:`
+before it) and the type a `let` deduces (`: float` after its name), drawn in a
+muted box inside the line. Turn them off with **Show Inlay Hints** in the
+editor's context menu (the choice is remembered); while they are off, hold
+**Ctrl+Alt** (Command+Option on macOS) to show them until you release a key.
+A hint at the very start of a line is not shown. None of these layers changes
+the text, the clipboard, the undo history or the saved file.
 
 #### Compiler messages in the source
 
