@@ -10,6 +10,7 @@ from pathlib import Path
 
 from authored_lines import authored_lines
 from formatting import TOKENS, format_source
+from lusl_migration import check_migration
 from naming_rules import (
     abbreviation_findings,
     pointer_findings,
@@ -622,6 +623,8 @@ def check(
             found = violations(name, source, changed & authored_lines(root, base, name, head))
         for line, message in found:
             failures.append(f"{name}:{line}: {message}")
+    # Migrated shader directories admit no Slang outside the retained list (lusl_migration.py).
+    failures += check_migration(root, head)
     return failures
 
 

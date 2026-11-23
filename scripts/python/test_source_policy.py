@@ -2,6 +2,7 @@
 
 import contextlib
 import io
+import json
 import shutil
 import subprocess
 import tempfile
@@ -11,6 +12,7 @@ from unittest.mock import patch
 
 import engine
 from formatting import format_source
+from lusl_migration import check_migration
 from source_policy import added_lines, check, check_formatting, violations
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -790,6 +792,93 @@ class ChangedFormattingTests(unittest.TestCase):
             self.assertEqual(engine.command_check(arguments), 0)
         format_changed.assert_called_once_with(ROOT, "origin/main", fix=True)
         format_all.assert_not_called()
+
+
+class LuslMigrationGateTests(unittest.TestCase):
+    """The migrated-scope gate (lusl_migration.py), through source_policy's changed-source check."""
+
+    def make_repository(self, directory, retained):
+        root = Path(directory)
+
+        def git(*arguments):
+            return subprocess.run(
+                ["git", *arguments], cwd=root, check=True, text=True, capture_output=True
+            ).stdout.strip()
+
+        git("init", "-q")
+        git("config", "user.name", "Policy test")
+        git("config", "user.email", "policy@example.invalid")
+        (root / "config").mkdir()
+        (root / "apps/game/shaders").mkdir(parents=True)
+        (root / "apps/game/shaders/oracle.slang").write_text("float4 Oracle() { return 0; }\n")
+        (root / "apps/game/shaders/shade.lusl").write_text("float32 Shade() { return 0; }\n")
+        (root / "config/lusl_migration.json").write_text(
+            json.dumps({"migrated": [{"path": "apps/game/shaders"}], "retained": retained}),
+            encoding="utf-8",
+        )
+        git("add", ".")
+        git("commit", "-qm", "fixture")
+        return root, git
+
+    ORACLE = [{"path": "apps/game/shaders/oracle.slang", "reason": "Differential oracle of shade.lusl"}]
+
+    def test_retained_slang_file_is_accepted(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root, git = self.make_repository(directory, self.ORACLE)
+            self.assertEqual(check(root, git("rev-parse", "HEAD")), [])
+            self.assertEqual(check_migration(root, git("rev-parse", "HEAD")), [])
+
+    def test_new_slang_files_in_migrated_directories_are_rejected(self):
+        for name in ["apps/game/shaders/added.slang", "apps/game/shaders/nested/added.slangh"]:
+            with self.subTest(name=name), tempfile.TemporaryDirectory() as directory:
+                root, git = self.make_repository(directory, self.ORACLE)
+                base = git("rev-parse", "HEAD")
+                (root / name).parent.mkdir(parents=True, exist_ok=True)
+                (root / name).write_text("float4 Added() { return 0; }\n")
+                failures = check(root, base)
+                self.assertEqual(len(failures), 1, failures)
+                self.assertIn(f"{name}: Slang source in the LUSL-migrated directory", failures[0])
+                # A committed PR head is rejected too, and so is a move into the directory.
+                git("add", ".")
+                git("commit", "-qm", "add Slang")
+                self.assertEqual(len(check_migration(root, git("rev-parse", "HEAD"))), 1)
+
+    def test_unretained_existing_slang_and_moves_into_scope_are_rejected(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root, git = self.make_repository(directory, [])
+            failures = check_migration(root)
+            self.assertEqual(len(failures), 1, failures)
+            self.assertIn("apps/game/shaders/oracle.slang", failures[0])
+        with tempfile.TemporaryDirectory() as directory:
+            root, git = self.make_repository(directory, self.ORACLE)
+            (root / "tools").mkdir()
+            (root / "tools/outside.slang").write_text("float4 Outside() { return 0; }\n")
+            self.assertEqual(check_migration(root), [])
+            git("add", ".")
+            git("commit", "-qm", "outside the scope")
+            git("mv", "tools/outside.slang", "apps/game/shaders/outside.slang")
+            self.assertEqual(len(check_migration(root)), 1)
+
+    def test_retained_entries_need_an_existing_slang_path_and_a_reason(self):
+        cases = {
+            "stale": ([{"path": "apps/game/shaders/gone.slang", "reason": "Kept for a removed test"}],
+                      "does not exist"),
+            "reason": ([{"path": "apps/game/shaders/oracle.slang", "reason": "oracle"}],
+                       "needs a reason"),
+            "kind": ([{"path": "apps/game/shaders/shade.lusl", "reason": "Not a Slang source at all"}],
+                     "is not a Slang source"),
+            "duplicate": (self.ORACLE + self.ORACLE, "listed twice"),
+            "normalized": ([{"path": "apps/game/shaders/", "reason": "A directory with a slash"}],
+                           "normalized"),
+        }
+        for case, (retained, message) in cases.items():
+            with self.subTest(case=case), tempfile.TemporaryDirectory() as directory:
+                root, _ = self.make_repository(directory, retained)
+                failures = check_migration(root)
+                self.assertTrue(any(message in failure for failure in failures), failures)
+
+    def test_repository_migration_list_is_valid(self):
+        self.assertEqual(check_migration(ROOT), [])
 
 
 if __name__ == "__main__":

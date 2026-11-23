@@ -890,6 +890,16 @@ ludus_compile_shader(TARGET my_game NAME composite
   searches beside the file naming the include, then in the source directory,
   then in the supplied roots in order. A depfile tracks the original files
   behind the lowering snapshot.
+- **The GLSL ES variant.** The shader driver defines `LUDUS_GLSL_ES=1` only
+  for the WebGL 2 artifact ([ADR 0013](../../decisions/0013-browser-glsl-es-shader-toolchain.md)),
+  but the LUSL preprocessor runs before that. When the source or one of its
+  headers names `LUDUS_GLSL_ES`, the helper lowers it twice, with `=0` and `=1`.
+  It then writes both lowerings into one module that selects one by the
+  macro's value. Both lowerings must assign the same slots and locations,
+  because host code binds one slot table. Keep resource and input declarations
+  outside the condition. A source that does not name the macro is lowered once.
+  Without the helper, `luslc lower` needs an explicit `--define LUDUS_GLSL_ES=0`
+  or `=1`; an undefined macro in `#if` is `LUSL0219`.
 - `<NAME>_slots.h` is generated beside `<NAME>.h`. Host code binds by these
   constants, never by a literal:
 
