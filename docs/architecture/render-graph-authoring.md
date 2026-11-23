@@ -1518,6 +1518,12 @@ A proposed `ris-projected-solid-angle` template follows the four-pass
 
 ### Native structured Buffer ports (proposed)
 
+The Metal path supports one shared structured Buffer per ordered configuration.
+An ordered scene compute pass writes it and a Metal hardware ray-generation
+pass reads it. The cooked runtime carries the reflected record stride and uses
+a read-only binding layout for the native reader. See
+[Buffer sizing and shader access](../development/render-graph-authoring.md#access-an-ordered-buffer-by-port-name).
+
 A graph author can pass `resources.Edges` to a helper taking
 `RWStructuredBuffer<EdgesData>` and write `resources.Edges[0].Weights[edgeIndex]`
 directly. A consumer with a read-only connection receives
