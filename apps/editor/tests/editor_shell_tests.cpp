@@ -1887,7 +1887,7 @@ TEST_CASE("Toolbars group commands, hide session commands until a game runs and 
     }
 }
 
-TEST_CASE("Routing opens ordinary text files as code tabs and keeps package shaders in Source",
+TEST_CASE("Routing opens ordinary text files as code tabs and package shaders through their render graph",
           "[editor][layout][shell][code-editor]")
 {
     QTemporaryDir directory;
@@ -1921,17 +1921,19 @@ TEST_CASE("Routing opens ordinary text files as code tabs and keeps package shad
     // A single-click open is a preview tab (CE01).
     CHECK(codeArea->GetActiveTabOrNull()->IsPreview() == true);
 
-    // A package-owned shader still routes to the render-graph Source pane, not a
-    // code tab, so the render-graph Source tests keep their behavior.
+    // A package-owned shader opens in Code through the render graph that owns it:
+    // its tab edits the package draft, named relative to the package root.
     RendererWorkspace* renderer = window.findChild<RendererWorkspace*>();
     REQUIRE(renderer != nullptr);
     REQUIRE(explorer->ActivateItem(ProjectItemKind::Shader,
                                    QDir(root).filePath(QStringLiteral("renderer/main_shaders/geometry.slang"))) ==
             true);
     Settle();
-    CHECK(well.GetActiveDocumentOrNull() == renderer);
-    // The shader did not add a second code tab.
-    CHECK(codeArea->GetTabCount() == 1);
+    CHECK(well.GetActiveDocumentOrNull() == codeArea);
+    REQUIRE(renderer->GetDocument().IsLoaded() == true);
+    CHECK(renderer->IsGraphCodeActive() == true);
+    REQUIRE(codeArea->GetActiveTabOrNull() != nullptr);
+    CHECK(codeArea->GetActiveTabOrNull()->GetPath() == QStringLiteral("main_shaders/geometry.slang"));
 }
 
 TEST_CASE("Save saves the active code tab", "[editor][shell][code-editor]")
