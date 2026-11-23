@@ -1379,6 +1379,20 @@ already exposes the selected Buffer layout to named callbacks.
 The member name capitalizes the port's first letter and preserves the remaining
 spelling. Named views load and store whole records using the reflected layout.
 Supported fields are 32-bit scalars and vectors, nested records and fixed arrays.
+
+In a named LUSL callback, a shared buffer record with a fixed array of structs
+also exposes `Load<Field>(recordIndex, elementIndex)`. Writable views expose
+`Store<Field>(recordIndex, elementIndex, value)`. For an `EdgesData` buffer
+with capacity one and a member `Edge Edges[256]`, use
+`Edge edge = resources.Edges.LoadEdges(0, edgeIndex);` and
+`resources.Edges.StoreEdges(0, edgeIndex, edge);`. The first index selects a
+buffer record, and the second selects an element of its array. Shader API lists
+the methods and the declared array capacity. Check both indices against their
+capacities before accessing the buffer and use the populated count when reading
+a partially filled array. Each call accesses the selected element's fields
+using the reflected offsets and stride, so writing it preserves the table
+header and neighboring entries.
+
 Structured views also expose `GetByteSize()` and `LoadWord(byteOffset)` in Slang
 and LUSL. Writable views add `StoreWord(byteOffset, word)`. Use these methods in
 your own shader helpers to encode records or update individual 32-bit fields

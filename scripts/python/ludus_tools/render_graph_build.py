@@ -1434,7 +1434,8 @@ def build_package(manifest, output, *, helper, compiler, validator=None, spirv_c
                 programs, closures, schemas)
             for program in programs.values():
                 if program.get('named_record_views'):
-                    program['ray_wrapper'] = buffers.define_record_views(program, record_layouts, sys.modules[__name__])
+                    program['ray_wrapper'] = buffers.define_record_views(
+                        program, record_layouts, sys.modules[__name__], lusl_record_layouts=snapshot.buffer_record_layouts)
             compiled, entries, hits, misses = {}, {}, 0, 0
             pending, pending_keys = [], set()
             # Report-only attribution: miss, local cache hit, or reuse of a key this build already resolved.
