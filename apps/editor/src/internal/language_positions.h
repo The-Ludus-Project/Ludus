@@ -47,4 +47,13 @@ MakeLanguagePosition(const QString& text, foundation::int32 offset, LanguagePosi
                                      const QJsonObject& position,
                                      LanguagePositionEncoding encoding,
                                      foundation::int32& outOffset);
+/// GetLanguageOffset for a zero-based `line` and `character` given as numbers, as
+/// semantic tokens encode them.
+// NOLINTNEXTLINE(bugprone-easily-swappable-parameters): line then character is the protocol's order.
+[[nodiscard]] bool GetLanguageOffset(const QString& text,
+                                     const QList<foundation::int32>& lineStarts,
+                                     foundation::int32 line,
+                                     foundation::int32 character,
+                                     LanguagePositionEncoding encoding,
+                                     foundation::int32& outOffset);
 } // namespace ludus::editor

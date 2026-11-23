@@ -9251,6 +9251,15 @@ selects the message's range. Messages about generated surroundings or from an ea
 text are not shown. **Show Log**, beside **Retry assistance**, shows the
 server's diagnostic output since it last started.
 
+With a prepared context, names are also colored by what the server knows about
+them, over the editor's own syntax colors: `slangd` distinguishes, for example,
+functions, parameters, properties and user types. The colors follow your edits
+at once; a name you are changing keeps its syntax color until the server
+analyses the new text. When a server reports folding ranges, it adds only kinds
+the editor's grammar does not produce (such as `imports`), so folds you have
+collapsed never move while a server starts, restarts or stops. Neither layer
+changes the text, its undo history or the saved file.
+
 #### Compiler messages in the source
 
 After a Validate, Build or live preview build fails, the Code tabs mark the

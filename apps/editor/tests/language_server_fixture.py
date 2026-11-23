@@ -14,6 +14,9 @@ Options shape the server a test needs:
   --stale-diagnostics   publish them with the previous document version
   --target WORD         answer definition-like requests and workspace/symbol with
                         the first WORD in the document
+  --tokens WORD         answer semanticTokens/full with a token of legend type 0
+                        for every WORD in the document
+  --folding-ranges JSON answer foldingRange with this list of ranges
 """
 import argparse
 import json
@@ -30,6 +33,8 @@ parser.add_argument('--crash-starts')
 parser.add_argument('--diagnose')
 parser.add_argument('--stale-diagnostics', action='store_true')
 parser.add_argument('--target')
+parser.add_argument('--tokens')
+parser.add_argument('--folding-ranges')
 options = parser.parse_args()
 
 text = ''
@@ -164,6 +169,21 @@ while True:
             result = [{'name': options.target, 'kind': 12, 'location': location}]
         else:
             result = []
+    elif method == 'textDocument/semanticTokens/full' and options.tokens:
+        data = []
+        previous = {'line': 0, 'character': 0}
+        start = text.find(options.tokens)
+        while start >= 0:
+            begin = position(start)
+            length = position(start + len(options.tokens))['character'] - begin['character']
+            delta_line = begin['line'] - previous['line']
+            delta_start = begin['character'] - (previous['character'] if delta_line == 0 else 0)
+            data += [delta_line, delta_start, length, 0, 0]
+            previous = begin
+            start = text.find(options.tokens, start + len(options.tokens))
+        result = {'data': data}
+    elif method == 'textDocument/foldingRange' and options.folding_ranges:
+        result = json.loads(options.folding_ranges)
     elif method in ('textDocument/documentSymbol', 'textDocument/inlayHint', 'textDocument/foldingRange',
                     'workspace/symbol', 'textDocument/references', 'textDocument/definition',
                     'textDocument/declaration', 'textDocument/typeDefinition', 'textDocument/implementation'):

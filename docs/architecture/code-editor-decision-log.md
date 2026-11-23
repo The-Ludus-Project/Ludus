@@ -954,3 +954,47 @@ prefix contains the word too, so generated text must not produce a marker.
 The references tool window moves to the next batch with semantic tokens: it
 needs its own dock, and the existing chooser keeps serving Find References.
 
+### M4 batch 3c: semantic tokens and server folding ranges (CE10, CE26, 2026-11-23)
+
+Two background layers, owned by a new `CodeSemanticLayers`
+(`apps/editor/src/internal/code_semantic_layers.h`) rather than added to
+`CodeAssistance`, which only forwards replies and says when to refresh:
+
+- **Requests.** After each analysis synchronization (100 ms after an edit), and
+  when a context is set or the server becomes ready, the layers ask for
+  `textDocument/semanticTokens/full` and `textDocument/foldingRange` when the
+  ready server advertises them. They never ask for an unadvertised kind, which
+  would report the command unavailable. A reply applies only to the document
+  revision and context it was asked for; the request table's per-kind
+  cancellation drops older replies. The client now advertises every standard
+  token type and modifier, the `relative` format without overlapping or
+  multi-line tokens, and line-only folding ranges with `collapsedText`.
+- **Semantic tokens** are decoded through the server's legend into the same
+  `CodeSyntaxToken` records as tree-sitter, mapped to the design-token syntax
+  roles by one table (`ReadSemanticTokenRole`; a `readonly` variable is a
+  constant), and drawn by `CodeSyntaxHighlighter` over the syntax tokens. Tokens
+  in the generated prefix or suffix, spanning lines, overlapping an earlier
+  token or of a type with no role are dropped; a malformed entry ends the
+  decode, since later tokens are relative to it. At most 131,072 tokens are
+  kept. Between replies, edits move later tokens and drop the ones they touch,
+  so colors do not flicker while typing. The table lives beside the decoder,
+  not in the language registry, because the capture-to-role mapping it mirrors
+  is in the syntax service.
+- **Folding ranges** follow CE26: a server range is offered only for a kind the
+  language's grammar does not produce (a grammar produces Syntax, Comment and
+  Region ranges; without one, indentation), and never where a syntax range
+  already starts. With the current grammars that admits `imports`, a new
+  `CodeFoldKind` appended so saved fold state keeps its values; a range with no
+  or an unknown kind is a Syntax range. Ranges are anchored to text cursors, so
+  a collapsed server range moves with edits and stays collapsed through the
+  next syntax result. At most 4,096 are kept.
+
+The pinned `slangd` advertises semantic tokens (`type`, `enumMember`,
+`variable`, `parameter`, `function`, `property`, `namespace`, `keyword`, `macro`
+and `string`) and inlay hints, but no folding ranges; `luslc lsp` advertises
+neither layer. The folding path is therefore exercised by
+`language_server_fixture.py`, which can now answer semantic tokens for every
+occurrence of a word (`--tokens`) and return given folding ranges
+(`--folding-ranges`). Inlay hints and the references tool window follow in the
+next batch.
+

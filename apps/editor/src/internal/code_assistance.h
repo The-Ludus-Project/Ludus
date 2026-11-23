@@ -2,6 +2,7 @@
 
 #include "internal/code_document_controller.h"
 #include "internal/code_navigation_results.h"
+#include "internal/code_semantic_layers.h"
 #include "internal/language_client.h"
 
 #include <QJsonArray>
@@ -56,6 +57,7 @@ private:
     void applyAvailability();
     void requestHover(foundation::int32 position);
     void receiveHover(foundation::int32 request, const QJsonValue& value);
+    /// Send the current draft and refresh the background layers for it.
     void synchronizeAnalysis();
     void receiveDiagnostics(const QString& uri, foundation::int32 version, const QJsonArray& diagnostics);
     void clearAnalysis();
@@ -71,6 +73,7 @@ private:
     CodeEditor& mEditor;
     CodeDocumentController& mDocument;
     LanguageClient mClient;
+    CodeSemanticLayers mLayers;
     const LanguageServerProfile* mProfile = &GetSlangServerProfile();
     LanguageRequestKind mRequestKind = LanguageRequestKind::Completion;
     /// The hover in flight: its request, position and the identities it was asked for.

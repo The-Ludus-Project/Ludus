@@ -35,12 +35,11 @@ void MeasureCodePoint(const QString& text, int32 index, int32& outUtf8Bytes, int
 
 bool ResolveOffset(const QString& text,
                    const QList<int32>& lineStarts,
-                   const QJsonObject& position,
+                   int32 line,
+                   int32 column,
                    LanguagePositionEncoding encoding,
                    int32& outOffset)
 {
-    const int32 line = position.value(QStringLiteral("line")).toInt(-1);
-    const int32 column = position.value(QStringLiteral("character")).toInt(-1);
     if (line < 0 || line >= lineStarts.size() || column < 0)
     {
         return false;
@@ -137,7 +136,12 @@ bool GetLanguageOffset(const QString& text,
                        LanguagePositionEncoding encoding,
                        int32& outOffset)
 {
-    return ResolveOffset(text, IndexLines(text), position, encoding, outOffset);
+    return ResolveOffset(text,
+                         IndexLines(text),
+                         position.value(QStringLiteral("line")).toInt(-1),
+                         position.value(QStringLiteral("character")).toInt(-1),
+                         encoding,
+                         outOffset);
 }
 
 QList<int32> IndexLanguageLines(const QString& text)
@@ -151,6 +155,21 @@ bool GetLanguageOffset(const QString& text,
                        LanguagePositionEncoding encoding,
                        int32& outOffset)
 {
-    return ResolveOffset(text, lineStarts, position, encoding, outOffset);
+    return ResolveOffset(text,
+                         lineStarts,
+                         position.value(QStringLiteral("line")).toInt(-1),
+                         position.value(QStringLiteral("character")).toInt(-1),
+                         encoding,
+                         outOffset);
+}
+
+bool GetLanguageOffset(const QString& text,
+                       const QList<int32>& lineStarts,
+                       int32 line,
+                       int32 character,
+                       LanguagePositionEncoding encoding,
+                       int32& outOffset)
+{
+    return ResolveOffset(text, lineStarts, line, character, encoding, outOffset);
 }
 } // namespace ludus::editor

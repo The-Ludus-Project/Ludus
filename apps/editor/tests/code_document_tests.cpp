@@ -6,6 +6,8 @@
 #include "internal/code_formatter.h"
 #include "internal/code_language_registry.h"
 #include "internal/code_navigation.h"
+#include "internal/code_structure_view.h"
+#include "internal/code_syntax_service.h"
 #include "internal/code_text.h"
 #include "internal/document_history.h"
 #include "internal/lusl_formatting.h"
@@ -1069,6 +1071,103 @@ TEST_CASE("Go to Declaration, Type Definition and Symbol in Workspace follow the
     CHECK(session.Host.CanUndo() == false);
 }
 
+TEST_CASE("Semantic tokens and folding ranges follow the draft and drop stale replies", "[editor][text][assistance]")
+{
+    // The context prefix "// generated missing\n" holds a token and the start of a
+    // range on its line 0: generated text must not produce either.
+    FakeAssistanceSession session("float a = missing;\nfloat b = missing;\nfloat c;\n",
+                                  {QStringLiteral("--capabilities"),
+                                   QStringLiteral(R"({"completionProvider": {}, "foldingRangeProvider": true,
+                            "semanticTokensProvider": {"legend": {"tokenTypes": ["function"], "tokenModifiers": []},
+                                                       "full": true}})"),
+                                   QStringLiteral("--tokens"),
+                                   QStringLiteral("missing"),
+                                   QStringLiteral("--folding-ranges"),
+                                   QStringLiteral(R"([{"startLine": 1, "endLine": 3, "kind": "imports"},
+                           {"startLine": 0, "endLine": 2, "kind": "imports"}])")});
+    CodeEditor& editor = session.Editor;
+    const auto areTokensOnWord = [&editor]() {
+        const QString text = editor.toPlainText();
+        for (const CodeSyntaxToken& token : editor.GetSemanticTokens())
+        {
+            if (QStringView(text).sliced(token.GetStart(), token.GetEnd() - token.GetStart()) !=
+                    QStringLiteral("missing") ||
+                token.GetRole() != CodeSyntaxRole::Function)
+            {
+                return false;
+            }
+        }
+        return true;
+    };
+    session.Prepare();
+    REQUIRE(QTest::qWaitFor([&editor]() { return editor.GetSemanticTokens().size() == 2; }));
+    CHECK(areTokensOnWord() == true);
+    REQUIRE(QTest::qWaitFor([&editor]() { return editor.GetStructure().GetServerFolds().size() == 1; }));
+    const CodeSyntaxFold fold = editor.GetStructure().GetServerFolds().constFirst();
+    CHECK(fold.FirstLine == 0);
+    CHECK(fold.LastLine == 2);
+    CHECK(fold.Kind == CodeFoldKind::Imports);
+    QTest::keyClick(&editor, Qt::Key_Escape);
+
+    // Typing moves the shown tokens at once, and the next synchronization asks again.
+    QTextCursor cursor(editor.document());
+    editor.setTextCursor(cursor);
+    QTest::keyClicks(&editor, QStringLiteral("x"));
+    CHECK(editor.GetSemanticTokens().size() == 2);
+    CHECK(areTokensOnWord() == true);
+    editor.moveCursor(QTextCursor::End);
+    QTest::keyClicks(&editor, QStringLiteral("missing"));
+    REQUIRE(QTest::qWaitFor([&editor]() { return editor.GetSemanticTokens().size() == 3; }));
+    CHECK(areTokensOnWord() == true);
+
+    // A new context removes both layers.
+    session.Assistance.ClearContext();
+    CHECK(editor.GetSemanticTokens().isEmpty() == true);
+    CHECK(editor.GetStructure().GetServerFolds().isEmpty() == true);
+}
+
+TEST_CASE("A semantic token reply for an earlier draft is discarded", "[editor][text][assistance]")
+{
+    FakeAssistanceSession session("float a = missing;\n",
+                                  {QStringLiteral("--capabilities"),
+                                   QStringLiteral(R"({"completionProvider": {}, "hoverProvider": true,
+                            "semanticTokensProvider": {"legend": {"tokenTypes": ["function"], "tokenModifiers": []},
+                                                       "full": true}})"),
+                                   QStringLiteral("--tokens"),
+                                   QStringLiteral("missing"),
+                                   QStringLiteral("--hold"),
+                                   QStringLiteral("textDocument/semanticTokens/full")});
+    CodeEditor& editor = session.Editor;
+    QAction* hoverOrNull = nullptr;
+    for (QAction* action : editor.actions())
+    {
+        hoverOrNull = action->objectName() == QStringLiteral("codeEditorHover") ? action : hoverOrNull;
+    }
+    REQUIRE(hoverOrNull != nullptr);
+    session.Prepare();
+    QListWidget* popupOrNull = editor.findChild<QListWidget*>(QStringLiteral("codeCompletionList"));
+    REQUIRE(popupOrNull != nullptr);
+    REQUIRE(QTest::qWaitFor([popupOrNull]() { return popupOrNull->isVisible() == true; }));
+    QTest::keyClick(&editor, Qt::Key_Escape);
+    // The first token reply is held. An edit at the start makes it describe the
+    // previous text; a hover, which sends the draft without asking for layers,
+    // releases it before the next synchronization asks again.
+    QTextCursor cursor(editor.document());
+    editor.setTextCursor(cursor);
+    QTest::keyClicks(&editor, QStringLiteral("x"));
+    hoverOrNull->trigger();
+    REQUIRE(QTest::qWaitFor([&editor]() { return editor.GetHoverText().isEmpty() == false; }));
+    // Applied, the stale reply would mark "issing" at the old offset.
+    const QString text = editor.toPlainText();
+    for (const CodeSyntaxToken& token : editor.GetSemanticTokens())
+    {
+        CHECK(QStringView(text).sliced(token.GetStart(), token.GetEnd() - token.GetStart()) ==
+              QStringLiteral("missing"));
+    }
+    REQUIRE(QTest::qWaitFor([&editor]() { return editor.GetSemanticTokens().size() == 1; }));
+    CHECK(editor.GetSemanticTokens().constFirst().GetStart() == text.indexOf(QStringLiteral("missing")));
+}
+
 TEST_CASE("Escape cancels pending shader assistance before a delayed reply", "[editor][text][assistance]")
 {
     MemoryCodeDocument host("// hold-response\nscene.Ve");
@@ -1354,6 +1453,22 @@ TEST_CASE("Native Slang resolves authored symbols references and generated API d
         QTest::qWaitFor([&]() { return editor.textCursor().selectedText().contains(QStringLiteral("Value")); }, 15000));
     CHECK(editor.textCursor().blockNumber() == 1);
     CHECK(host.CanUndo() == false);
+    // slangd's semantic tokens color authored names after the astral character on
+    // the first line; the generated prefix's names never reach the view.
+    const auto hasToken = [&editor, &source](const QString& name, CodeSyntaxRole role) {
+        for (const CodeSyntaxToken& token : editor.GetSemanticTokens())
+        {
+            if (token.GetRole() == role &&
+                QStringView(source).sliced(token.GetStart(), token.GetEnd() - token.GetStart()) == name)
+            {
+                return true;
+            }
+        }
+        return false;
+    };
+    REQUIRE(QTest::qWaitFor([&]() { return hasToken(QStringLiteral("Value"), CodeSyntaxRole::Function); }, 15000));
+    CHECK(hasToken(QStringLiteral("SceneContext"), CodeSyntaxRole::Type) == true);
+    CHECK(hasToken(QStringLiteral("scene"), CodeSyntaxRole::Parameter) == true);
     assistance.RequestNavigation(CodeNavigationKind::Symbols);
     REQUIRE(QTest::qWaitFor([&]() { return editor.GetNavigation().IsChoosing(); }, 15000));
     QListWidget* resultsOrNull = editor.findChild<QListWidget*>(QStringLiteral("codeNavigationResults"));

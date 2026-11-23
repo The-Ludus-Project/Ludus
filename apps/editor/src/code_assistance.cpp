@@ -96,7 +96,8 @@ bool IsWordCharacter(QChar character)
 } // namespace
 
 CodeAssistance::CodeAssistance(CodeEditor& inoutEditor, CodeDocumentController& inoutDocument, QObject* parentOrNull)
-    : QObject(parentOrNull), mEditor(inoutEditor), mDocument(inoutDocument), mClient(this)
+    : QObject(parentOrNull), mEditor(inoutEditor), mDocument(inoutDocument), mClient(this),
+      mLayers(inoutEditor, mClient)
 {
     connect(&mEditor, &CodeEditor::AssistanceRequested, this, &CodeAssistance::Request);
     connect(&mEditor.GetNavigation(), &CodeNavigation::Requested, this, &CodeAssistance::RequestNavigation);
@@ -145,6 +146,10 @@ CodeAssistance::CodeAssistance(CodeEditor& inoutEditor, CodeDocumentController& 
             &LanguageClient::Replied,
             this,
             [this](int32 request, LanguageRequestKind kind, const QJsonValue& value) {
+                if (mLayers.Receive(request, kind, value, mDocument.Capture().Identity, mContext) == true)
+                {
+                    return;
+                }
                 if (kind == LanguageRequestKind::Hover)
                 {
                     receiveHover(request, value);
@@ -167,6 +172,7 @@ CodeAssistance::CodeAssistance(CodeEditor& inoutEditor, CodeDocumentController& 
     connect(&mClient, &LanguageClient::Ready, this, [this]() {
         applyAvailability();
         requestCurrent();
+        synchronizeAnalysis();
     });
     connect(&mClient,
             &LanguageClient::RequestUnavailable,
@@ -277,6 +283,7 @@ void CodeAssistance::clearAnalysis()
     mHover = {};
     mEditor.HideHover();
     mEditor.SetAnalysisDiagnostics({}, {});
+    mLayers.Clear();
 }
 
 bool CodeAssistance::buildUnit(CodeTextCapture& outCapture, QString& outSource, QString& outUnit) const
@@ -298,9 +305,19 @@ void CodeAssistance::synchronizeAnalysis()
     CodeTextCapture capture;
     QString source;
     QString unit;
-    if (mUri.isEmpty() == false && mDocument.IsBound() == true && buildUnit(capture, source, unit) == true)
+    if (mUri.isEmpty() == false && mDocument.IsBound() == true && mClient.IsReady() == true &&
+        buildUnit(capture, source, unit) == true)
     {
         mClient.SetDocument(mUri, unit);
+        const int32 start = static_cast<int32>(mPrefix.size());
+        mLayers.Refresh(capture.Identity,
+                        mContext,
+                        unit,
+                        {
+                            .Start = start,
+                            .End = start + static_cast<int32>(source.size()),
+                            .FirstLine = static_cast<int32>(mPrefix.count(QLatin1Char('\n'))),
+                        });
     }
 }
 
@@ -451,6 +468,7 @@ void CodeAssistance::SetContext(const QString& server,
         applyAvailability();
     }
     requestCurrent();
+    synchronizeAnalysis();
 }
 
 void CodeAssistance::Request(bool isSignature)
