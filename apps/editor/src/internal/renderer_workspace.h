@@ -68,6 +68,7 @@ class CodeDocumentTab;
 class CodeDocumentController;
 class CodeFormatter;
 class RenderGraphShaderAssistance;
+struct ErrorListEntry;
 class RayPathInspection;
 class RenderGraphCaptureProfile;
 class RenderGraphLibraryCapture;
@@ -339,6 +340,14 @@ public:
     /// the same configuration, reveal warning/error ports and open shared field controls. Invalid
     /// graph targets preserve selection/view/history and return false. Never changes document undo.
     [[nodiscard]] bool ActivateDiagnostic(foundation::int32 row);
+    /// Error List rows for the live analysis of every open package shader (code
+    /// editor M4, CE10): each shader Code tab, or the Source pane when this
+    /// workspace has no Code area. One row per marker, File is the package file
+    /// and SourceIndex the marker's index in that file's editor.
+    [[nodiscard]] QList<ErrorListEntry> GetAnalysisEntries() const;
+    /// Show `file`'s editor and select its analysis marker `index`; false when the
+    /// file is no longer open or the marker was replaced.
+    [[nodiscard]] bool ActivateAnalysisDiagnostic(const QString& file, foundation::int32 index);
     [[nodiscard]] QString GetSourceFile() const;
     [[nodiscard]] foundation::int32 GetSourceLine() const;
     /// One-based Unicode scalar column of the Source view caret.
@@ -489,6 +498,8 @@ Q_SIGNALS:
     void ErrorListRequested();
     /// A viewport asked to see one listed problem, by its code; the shell shows the Error List with that row selected.
     void ErrorListEntryRequested(const QString& code);
+    /// A shader editor's analysis markers changed or one closed; GetAnalysisEntries has the new rows.
+    void AnalysisDiagnosticsChanged();
     void DocumentChanged();
     /// Node fields changed; the originating surface may retain its active controls.
     /// editOriginOrNull is borrowed during synchronous notification, or null for a full refresh.
@@ -563,6 +574,10 @@ private:
     void returnToGraph();
     [[nodiscard]] CodeDocumentTab* activeGraphCodeTab() const;
     [[nodiscard]] const CodeEditor& activeGraphSourceEditor() const;
+    /// The editor showing package `file` with live analysis, or null when it is not open.
+    [[nodiscard]] CodeEditor* findAnalysisEditorOrNull(const QString& file) const;
+    /// Every package file with an editor that can hold live analysis, in tab order.
+    [[nodiscard]] QStringList getAnalysisFiles() const;
     [[nodiscard]] RenderGraphShaderAssistance* activeShaderAssistance() const;
     [[nodiscard]] QString shaderInterfaceFile() const;
     void setUpGraphCodeFormatting(CodeDocumentTab& inoutTab);

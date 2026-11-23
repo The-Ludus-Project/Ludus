@@ -955,6 +955,38 @@ void CodeEditor::SetAnalysisDiagnostics(const QList<CodeAnalysisDiagnostic>& dia
     }
     mGutter->update();
     mSelectionUpdate.start(0);
+    Q_EMIT AnalysisDiagnosticsChanged();
+}
+
+CodeAnalysisDiagnostic CodeEditor::GetAnalysisDiagnostic(int32 index) const
+{
+    if (index < 0 || index >= mAnalysis.size())
+    {
+        return {};
+    }
+    const DiagnosticMarker& marker = mAnalysis.at(index);
+    return
+    {
+        .Start = marker.Range.selectionStart(),
+        .End = marker.Range.selectionEnd(),
+        .Severity = marker.Severity,
+        .Message = marker.Message,
+    };
+}
+
+const QString& CodeEditor::GetAnalysisSource() const noexcept
+{
+    return mAnalysisSource;
+}
+
+bool CodeEditor::RevealAnalysisDiagnostic(int32 index)
+{
+    if (index < 0 || index >= mAnalysis.size())
+    {
+        return false;
+    }
+    RevealTextCursor(mAnalysis.at(index).Range);
+    return true;
 }
 
 QTextCursor CodeEditor::GetAnalysisDiagnosticRange(int32 index) const

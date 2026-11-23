@@ -12,6 +12,8 @@ Options shape the server a test needs:
   --crash-starts PATH:N exit after initialize on the first N starts, counted in PATH
   --diagnose WORD       publish an error for every WORD after each text change
   --stale-diagnostics   publish them with the previous document version
+  --target WORD         answer definition-like requests and workspace/symbol with
+                        the first WORD in the document
 """
 import argparse
 import json
@@ -27,9 +29,11 @@ parser.add_argument('--error', action='append', default=[])
 parser.add_argument('--crash-starts')
 parser.add_argument('--diagnose')
 parser.add_argument('--stale-diagnostics', action='store_true')
+parser.add_argument('--target')
 options = parser.parse_args()
 
 text = ''
+uri = ''
 held = []
 
 
@@ -116,6 +120,7 @@ while True:
         continue
     if method == 'textDocument/didOpen':
         text = message['params']['textDocument']['text']
+        uri = message['params']['textDocument']['uri']
         record({'text': text})
         publish(message['params']['textDocument']['uri'], message['params']['textDocument']['version'])
         continue
@@ -148,8 +153,20 @@ while True:
         result = {'contents': {'kind': 'plaintext', 'value': 'hover %d' % message['id']}}
     elif method == 'textDocument/signatureHelp':
         result = {'signatures': [{'label': 'Call(int value)', 'parameters': [{'label': [5, 14]}]}]}
+    elif options.target and options.target in text and method in (
+            'textDocument/definition', 'textDocument/declaration', 'textDocument/typeDefinition',
+            'textDocument/implementation', 'workspace/symbol'):
+        start = text.find(options.target)
+        location = {'uri': uri, 'range': {'start': position(start), 'end': position(start + len(options.target))}}
+        if method != 'workspace/symbol':
+            result = [location]
+        elif params.get('query', '') in options.target:
+            result = [{'name': options.target, 'kind': 12, 'location': location}]
+        else:
+            result = []
     elif method in ('textDocument/documentSymbol', 'textDocument/inlayHint', 'textDocument/foldingRange',
-                    'workspace/symbol', 'textDocument/references', 'textDocument/definition'):
+                    'workspace/symbol', 'textDocument/references', 'textDocument/definition',
+                    'textDocument/declaration', 'textDocument/typeDefinition', 'textDocument/implementation'):
         result = []
     elif method == 'textDocument/semanticTokens/full':
         result = {'data': []}

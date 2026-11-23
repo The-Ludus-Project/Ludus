@@ -271,7 +271,11 @@ Requirements: CE09-CE11, CE20. Prerequisite: M2, M3.
   ranges (merged by kind per CE26), document and workspace symbols, the remaining Go to commands, references window,
   completion resolve and snippets. *(Batch 3a: hover and Analysis markers; see the
   [M4 batch 3a decision-log entry](../../../docs/architecture/code-editor-decision-log.md#m4-batch-3a-hover-and-analysis-diagnostics-ce10-ce20-2026-11-23).
-  The Error List Analysis group and the remaining features follow.)*
+  Batch 3b: the Error List's Analysis rows, Go to Declaration, Type Definition and
+  Implementation, and Go to Symbol in Workspace; see the
+  [M4 batch 3b decision-log entry](../../../docs/architecture/code-editor-decision-log.md#m4-batch-3b-analysis-rows-and-the-remaining-go-to-commands-ce10-2026-11-23).
+  The references window, semantic tokens, inlay hints, folding ranges, completion
+  resolve and snippets follow.)*
 - [ ] Add rename with preview, code actions with the light bulb, and workspace
   edits with transaction undo.
 - [ ] Add the fake LSP fixture and its failure-path tests.

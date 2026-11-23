@@ -282,6 +282,16 @@ void MainWindow::activateErrorEntry(const ErrorListEntry& entry)
         showToolWindow(mRenderPreviewDock);
         return;
     }
+    if (entry.Producer == ErrorListProducer::Analysis)
+    {
+        static_cast<void>(mDocuments->OpenDocument(Renderer_));
+        if (Renderer_->ActivateAnalysisDiagnostic(entry.File, entry.SourceIndex) == false)
+        {
+            statusBar()->showMessage(QStringLiteral("This analysis message was replaced. Choose its newer row."),
+                                     STATUS_MESSAGE_MILLISECONDS);
+        }
+        return;
+    }
     if (entry.Producer == ErrorListProducer::RenderGraph)
     {
         // RendererWorkspace owns the authored-location mapping (graph node, source line or

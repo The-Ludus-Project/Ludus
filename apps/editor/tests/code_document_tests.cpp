@@ -20,6 +20,7 @@
 #include <QDir>
 #include <QFile>
 #include <QInputMethodEvent>
+#include <QKeySequence>
 #include <QLabel>
 #include <QLineEdit>
 #include <QListWidget>
@@ -1016,6 +1017,56 @@ TEST_CASE("Hover shows the server's text with diagnostics and never prepares a c
     QSignalSpy requests(&editor, &CodeEditor::HoverRequested);
     QTest::mouseMove(editor.viewport(), editor.cursorRect(cursor).center());
     REQUIRE(QTest::qWaitFor([&requests]() { return requests.isEmpty() == false; }));
+}
+
+TEST_CASE("Go to Declaration, Type Definition and Symbol in Workspace follow the server's capabilities",
+          "[editor][text][assistance][code-navigation]")
+{
+    FakeAssistanceSession session(
+        "struct Target {};\nTarget value;\n",
+        {QStringLiteral("--capabilities"),
+         QStringLiteral(R"({"completionProvider": {}, "declarationProvider": true, "typeDefinitionProvider": true,
+                            "workspaceSymbolProvider": true})"),
+         QStringLiteral("--target"),
+         QStringLiteral("Target")});
+    CodeEditor& editor = session.Editor;
+    const auto findAction = [&editor](const QString& text) {
+        QAction* foundOrNull = nullptr;
+        for (QAction* action : editor.GetNavigation().GetActions())
+        {
+            foundOrNull = action->text() == text ? action : foundOrNull;
+        }
+        REQUIRE(foundOrNull != nullptr);
+        return foundOrNull;
+    };
+    QAction* implementation = findAction(QStringLiteral("Go to Implementation"));
+    session.Prepare();
+    // Capability dispatch: the server advertises no implementation provider.
+    REQUIRE(QTest::qWaitFor([implementation]() { return implementation->isEnabled() == false; }));
+    CHECK(implementation->toolTip().contains(QStringLiteral("does not support implementation")) == true);
+    CHECK(implementation->shortcut() == QKeySequence(Qt::CTRL | Qt::Key_F12));
+    QTest::keyClick(&editor, Qt::Key_Escape);
+    const auto placeCaret = [&editor]() {
+        QTextCursor cursor(editor.document());
+        cursor.setPosition(static_cast<int32>(editor.toPlainText().lastIndexOf(QStringLiteral("Target"))) + 2);
+        editor.setTextCursor(cursor);
+    };
+    for (const CodeNavigationKind kind : {CodeNavigationKind::Declaration, CodeNavigationKind::TypeDefinition})
+    {
+        placeCaret();
+        session.Assistance.RequestNavigation(kind);
+        // A single location jumps straight to it, as Go to Definition does.
+        REQUIRE(QTest::qWaitFor([&editor]() { return editor.textCursor().blockNumber() == 0; }));
+        CHECK(editor.textCursor().selectedText() == QStringLiteral("Target"));
+    }
+    placeCaret();
+    session.Assistance.RequestNavigation(CodeNavigationKind::WorkspaceSymbols);
+    REQUIRE(QTest::qWaitFor([&editor]() { return editor.GetNavigation().IsChoosing() == true; }));
+    QListWidget* resultsOrNull = editor.findChild<QListWidget*>(QStringLiteral("codeNavigationResults"));
+    REQUIRE(resultsOrNull != nullptr);
+    REQUIRE(resultsOrNull->count() == 1);
+    CHECK(resultsOrNull->item(0)->text().startsWith(QStringLiteral("Target")) == true);
+    CHECK(session.Host.CanUndo() == false);
 }
 
 TEST_CASE("Escape cancels pending shader assistance before a delayed reply", "[editor][text][assistance]")

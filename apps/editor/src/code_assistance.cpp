@@ -1,5 +1,7 @@
 #include "internal/code_assistance.h"
 
+#include <ludus/foundation/base/compiler.h>
+
 #include "internal/code_language_registry.h"
 #include "internal/code_text.h"
 #include "internal/language_positions.h"
@@ -62,6 +64,28 @@ QString ReadHoverText(const QJsonValue& contents)
         }
     }
     return parts.join(QStringLiteral("\n\n")).left(MAX_DOCUMENTATION_UNITS);
+}
+
+LanguageRequestKind GetNavigationRequest(CodeNavigationKind kind)
+{
+    switch (kind)
+    {
+        case CodeNavigationKind::Symbols:
+            return LanguageRequestKind::DocumentSymbols;
+        case CodeNavigationKind::Definition:
+            return LanguageRequestKind::Definition;
+        case CodeNavigationKind::References:
+            return LanguageRequestKind::References;
+        case CodeNavigationKind::Declaration:
+            return LanguageRequestKind::Declaration;
+        case CodeNavigationKind::TypeDefinition:
+            return LanguageRequestKind::TypeDefinition;
+        case CodeNavigationKind::Implementation:
+            return LanguageRequestKind::Implementation;
+        case CodeNavigationKind::WorkspaceSymbols:
+            return LanguageRequestKind::WorkspaceSymbols;
+    }
+    LUDUS_UNREACHABLE();
 }
 
 bool IsWordCharacter(QChar character)
@@ -203,12 +227,11 @@ void CodeAssistance::applyAvailability()
     // Capability dispatch (CE09): a command the server does not serve is disabled
     // with its reason, never sent and left to fail.
     CodeNavigation& navigation = mEditor.GetNavigation();
-    navigation.SetSemanticAvailability(CodeNavigationKind::Symbols,
-                                       mClient.GetUnavailableReason(LanguageRequestKind::DocumentSymbols));
-    navigation.SetSemanticAvailability(CodeNavigationKind::Definition,
-                                       mClient.GetUnavailableReason(LanguageRequestKind::Definition));
-    navigation.SetSemanticAvailability(CodeNavigationKind::References,
-                                       mClient.GetUnavailableReason(LanguageRequestKind::References));
+    for (usize index = 0; index < CODE_NAVIGATION_KIND_COUNT; ++index)
+    {
+        const CodeNavigationKind kind = static_cast<CodeNavigationKind>(index);
+        navigation.SetSemanticAvailability(kind, mClient.GetUnavailableReason(GetNavigationRequest(kind)));
+    }
     CodeAssistanceAvailability availability;
     availability.CompletionUnavailableReason = mClient.GetUnavailableReason(LanguageRequestKind::Completion);
     availability.SignatureUnavailableReason = mClient.GetUnavailableReason(LanguageRequestKind::SignatureHelp);
@@ -517,12 +540,14 @@ void CodeAssistance::requestCurrent()
         mIsSignature == true ? LanguageRequestKind::SignatureHelp : LanguageRequestKind::Completion;
     if (mIsNavigation == true)
     {
-        kind = mNavigationKind == CodeNavigationKind::Symbols      ? LanguageRequestKind::DocumentSymbols
-               : mNavigationKind == CodeNavigationKind::Definition ? LanguageRequestKind::Definition
-                                                                   : LanguageRequestKind::References;
+        kind = GetNavigationRequest(mNavigationKind);
     }
     QJsonObject parameters;
-    if (kind != LanguageRequestKind::DocumentSymbols)
+    if (kind == LanguageRequestKind::WorkspaceSymbols)
+    {
+        parameters.insert(QStringLiteral("query"), source.mid(mWordStart, mWordEnd - mWordStart));
+    }
+    else if (kind != LanguageRequestKind::DocumentSymbols)
     {
         parameters.insert(QStringLiteral("position"),
                           MakeLanguagePosition(mUnit, position, mClient.GetPositionEncoding()));
@@ -577,7 +602,7 @@ void CodeAssistance::receive(int32 request, const QJsonValue& value)
                                                        message,
                                                        mClient.GetPositionEncoding());
         Q_EMIT StatusChanged(message);
-        if (mNavigationKind == CodeNavigationKind::Definition && mNavigationTargets.size() == 1)
+        if (IsCodeGoToNavigation(mNavigationKind) == true && mNavigationTargets.size() == 1)
         {
             acceptNavigation(0);
         }

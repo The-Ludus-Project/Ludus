@@ -276,6 +276,9 @@ MainWindow::MainWindow(EditorController* controller, QWidget* parent, const QStr
     connect(Renderer_, &RendererWorkspace::DocumentChanged, this, &MainWindow::renderGraphCommands);
     connect(Renderer_, &RendererWorkspace::DocumentChanged, this, &MainWindow::RenderCapabilities);
     connect(Renderer_, &RendererWorkspace::JobFinished, this, &MainWindow::renderGraphErrors);
+    connect(Renderer_, &RendererWorkspace::AnalysisDiagnosticsChanged, this, [this]() {
+        mErrorList->ReplaceEntries(ErrorListProducer::Analysis, Renderer_->GetAnalysisEntries());
+    });
     connect(Renderer_, &RendererWorkspace::RenderProblemChanged, this, &MainWindow::renderGraphErrors);
     connect(Renderer_, &RendererWorkspace::DocumentChanged, this, &MainWindow::renderGraphErrors);
     connect(Renderer_, &RendererWorkspace::CommandsChanged, this, &MainWindow::renderGraphCommands);

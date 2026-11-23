@@ -5,6 +5,7 @@
 #include "internal/code_editor.h"
 #include "internal/code_editor_area.h"
 #include "internal/code_navigation.h"
+#include "internal/error_list.h"
 #include "internal/render_graph_canvas.h"
 #include "internal/render_graph_document.h"
 #include "internal/render_graph_pipeline.h"
@@ -1980,6 +1981,42 @@ TEST_CASE("Graph Code keeps the package draft and restores the originating canva
     CHECK(workspace.GetCanvas().GetFile() == GetLibrary());
     CHECK(workspace.Save() == true);
     CHECK(ReadFile(package.filePath(GetLibrary())) == original + ' ');
+}
+
+TEST_CASE("Analysis rows follow each open shader tab and select their range", "[editor][render-graph][diagnostics]")
+{
+    QTemporaryDir project;
+    const QString package = MakePackage(project);
+    const QString callerFile = QStringLiteral("main_shaders/color.slang");
+    CodeEditorArea codeArea;
+    RendererWorkspace workspace({});
+    workspace.SetCodeEditorArea(codeArea);
+    workspace.SetProject(project.path(), 1);
+    REQUIRE(workspace.OpenGraph(QDir(package).filePath(GetRootGraph())) == true);
+    QSignalSpy changes(&workspace, &RendererWorkspace::AnalysisDiagnosticsChanged);
+    REQUIRE(workspace.OpenGraphSource(callerFile) == true);
+    CodeDocumentTab* tabOrNull = codeArea.GetActiveTabOrNull();
+    REQUIRE(tabOrNull != nullptr);
+    CodeEditor& editor = tabOrNull->GetEditor();
+    CHECK(workspace.GetAnalysisEntries().isEmpty() == true);
+    editor.SetAnalysisDiagnostics(
+        {{ .Start = 0, .End = 4, .Severity = CodeDiagnosticSeverity::Error, .Message = QStringLiteral("first") }},
+        QStringLiteral("slangd"));
+    CHECK(changes.isEmpty() == false);
+    const QList<ErrorListEntry> entries = workspace.GetAnalysisEntries();
+    REQUIRE(entries.size() == 1);
+    CHECK(entries.first().Producer == ErrorListProducer::Analysis);
+    CHECK(entries.first().File == callerFile);
+    CHECK(entries.first().Location == QStringLiteral("1:1"));
+    CHECK(entries.first().Origin == QStringLiteral("Analysis (slangd)"));
+    CHECK(entries.first().Description == QStringLiteral("first"));
+    editor.moveCursor(QTextCursor::End);
+    REQUIRE(workspace.ActivateAnalysisDiagnostic(callerFile, 0) == true);
+    CHECK(editor.textCursor().selectionStart() == 0);
+    CHECK(editor.textCursor().selectionEnd() == 4);
+    // A replaced marker or a file without a tab reports failure instead of guessing.
+    CHECK(workspace.ActivateAnalysisDiagnostic(callerFile, 1) == false);
+    CHECK(workspace.ActivateAnalysisDiagnostic(QStringLiteral("main_shaders/missing.slang"), 0) == false);
 }
 
 TEST_CASE("Shader definition tabs preserve navigation across authored and generated source",
