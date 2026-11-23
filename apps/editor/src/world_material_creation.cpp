@@ -57,15 +57,21 @@ QJsonObject MakeRoughnessProperty()
 }
 QJsonObject MakeCoatingAlphaProperty()
 {
-    return MakeNumberProperty("Coating GGX alpha", format::LUDUS_COATING_MIN_ALPHA, 1);
+    return MakeNumberProperty("Coating GGX alpha",
+                              static_cast<foundation::float64>(format::LUDUS_COATING_MIN_ALPHA),
+                              1);
 }
 QJsonObject MakeCoatingEtaProperty()
 {
-    return MakeNumberProperty("Coating IOR", 1, format::MAX_MATERIAL_OPTICAL_CONSTANT);
+    return MakeNumberProperty("Coating IOR",
+                              1,
+                              static_cast<foundation::float64>(format::MAX_MATERIAL_OPTICAL_CONSTANT));
 }
 QJsonObject MakeCoatingThicknessProperty()
 {
-    return MakeNumberProperty("Coating optical thickness", 0, format::MAX_MATERIAL_OPTICAL_CONSTANT);
+    return MakeNumberProperty("Coating optical thickness",
+                              0,
+                              static_cast<foundation::float64>(format::MAX_MATERIAL_OPTICAL_CONSTANT));
 }
 
 [[nodiscard]] bool IsNumberInRange(const QJsonObject& property, const QJsonValue& value, QString& outError)

@@ -1051,12 +1051,14 @@ ReadMaterialDefinition(const JsonTree& tree, JsonIndex node, MaterialDefinition&
         PythonNumber alpha;
         PythonNumber eta;
         PythonNumber thickness;
+        constexpr float64 MIN_COATING_ALPHA = static_cast<float64>(format::LUDUS_COATING_MIN_ALPHA);
+        constexpr float64 MAX_OPTICAL_CONSTANT = static_cast<float64>(format::MAX_MATERIAL_OPTICAL_CONSTANT);
         if (IsAuthoredNumber(tree, tree.GetMember(node, DEFINITION_COATING_ALPHA_KEY), alpha) == false ||
-            alpha.ToFloat() < format::LUDUS_COATING_MIN_ALPHA || alpha.ToFloat() > 1 ||
+            alpha.ToFloat() < MIN_COATING_ALPHA || alpha.ToFloat() > 1 ||
             IsAuthoredNumber(tree, tree.GetMember(node, DEFINITION_COATING_ETA_KEY), eta) == false ||
-            eta.ToFloat() < 1 || eta.ToFloat() > format::MAX_MATERIAL_OPTICAL_CONSTANT ||
+            eta.ToFloat() < 1 || eta.ToFloat() > MAX_OPTICAL_CONSTANT ||
             IsAuthoredNumber(tree, tree.GetMember(node, DEFINITION_COATING_THICKNESS_KEY), thickness) == false ||
-            thickness.ToFloat() < 0 || thickness.ToFloat() > format::MAX_MATERIAL_OPTICAL_CONSTANT)
+            thickness.ToFloat() < 0 || thickness.ToFloat() > MAX_OPTICAL_CONSTANT)
         {
             return false;
         }
