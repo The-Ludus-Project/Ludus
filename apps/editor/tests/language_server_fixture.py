@@ -32,6 +32,11 @@ Options shape the server a test needs:
   --actions JSON        answer codeAction with this list; "$URI" names the document
   --resolve-action-edit JSON
                         answer codeAction/resolve with the action plus this edit
+  --corrupt METHOD:KIND answer METHOD with a broken message: oversize (a length
+                        past the 4 MiB budget), long-header (past 8 KiB),
+                        duplicate-length or invalid-json
+  --silent METHOD       never answer METHOD
+  --stray-reply         after initialize, answer a request the client never sent
 """
 import argparse
 import json
@@ -58,6 +63,9 @@ parser.add_argument('--rename')
 parser.add_argument('--stale-rename', action='store_true')
 parser.add_argument('--actions')
 parser.add_argument('--resolve-action-edit')
+parser.add_argument('--corrupt', action='append', default=[])
+parser.add_argument('--silent', action='append', default=[])
+parser.add_argument('--stray-reply', action='store_true')
 options = parser.parse_args()
 
 text = ''
@@ -75,6 +83,20 @@ def record(value):
 def send(value):
     body = json.dumps(dict(jsonrpc='2.0', **value)).encode()
     sys.stdout.buffer.write(b'Content-Length: ' + str(len(body)).encode() + b'\r\n\r\n' + body)
+    sys.stdout.buffer.flush()
+
+
+def send_corrupt(kind):
+    """A framing or body the client must reject without crashing."""
+    if kind == 'oversize':
+        raw = b'Content-Length: ' + str(5 * 1024 * 1024).encode() + b'\r\n\r\n{}'
+    elif kind == 'long-header':
+        raw = b'X-Padding: ' + b'a' * 9000 + b'\r\nContent-Length: 2\r\n\r\n{}'
+    elif kind == 'duplicate-length':
+        raw = b'Content-Length: 2\r\nContent-Length: 2\r\n\r\n{}'
+    else:
+        raw = b'Content-Length: 9\r\n\r\n{not json'
+    sys.stdout.buffer.write(raw)
     sys.stdout.buffer.flush()
 
 
@@ -146,6 +168,8 @@ while True:
         send({'id': message['id'], 'result': {'capabilities': capabilities}})
         if should_crash():
             sys.exit(3)
+        if options.stray_reply:
+            send({'id': 987654, 'result': {'unexpected': True}})
         continue
     if method == 'textDocument/didOpen':
         text = message['params']['textDocument']['text']
@@ -175,6 +199,12 @@ while True:
     held = []
     if method in options.error:
         send({'id': message['id'], 'error': {'code': -32603, 'message': 'scripted failure'}})
+        continue
+    if method in options.silent:
+        continue
+    corrupt = [entry.split(':', 1)[1] for entry in options.corrupt if entry.split(':', 1)[0] == method]
+    if corrupt:
+        send_corrupt(corrupt[0])
         continue
     params = message.get('params') or {}
     result = None

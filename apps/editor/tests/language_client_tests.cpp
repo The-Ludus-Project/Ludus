@@ -27,12 +27,19 @@ constexpr int32 RESTART_WAIT_MILLISECONDS = 10000;
 class FakeServer final
 {
 public:
-    explicit FakeServer(const QStringList& options = {}) : mRecord(mDirectory.filePath(QStringLiteral("record.jsonl")))
+    explicit FakeServer(const QStringList& options = {}, const LanguageServerProfile& profile = GetSlangServerProfile())
+        : mRecord(mDirectory.filePath(QStringLiteral("record.jsonl")))
     {
         REQUIRE(mDirectory.isValid() == true);
+        Start(options, profile);
+    }
+
+    /// Start the fixture again with `options`, as Retry assistance does.
+    void Start(const QStringList& options, const LanguageServerProfile& profile = GetSlangServerProfile())
+    {
         QStringList arguments{QString::fromUtf8(LUDUS_LANGUAGE_SERVER_FIXTURE), QStringLiteral("--record"), mRecord};
         arguments.append(options);
-        Client.Start(GetSlangServerProfile(), QString::fromUtf8(LUDUS_TEST_PYTHON), mDirectory.path(), arguments);
+        Client.Start(profile, QString::fromUtf8(LUDUS_TEST_PYTHON), mDirectory.path(), arguments);
     }
 
     [[nodiscard]] QString GetPath(const QString& name) const
@@ -391,4 +398,85 @@ TEST_CASE("A crashed server restarts with backoff, then stops after three crashe
         CHECK(failures.first().first().toString().contains(QStringLiteral("3 times within a minute")) == true);
         CHECK(server.Client.IsReady() == false);
     }
+}
+
+TEST_CASE("Malformed and oversized messages stop the connection until a retry", "[editor][text][assistance]")
+{
+    struct Case final
+    {
+        const char* Kind;
+        const char* Message;
+    };
+    // Each refusal names the server and its repair; the client never reads past a budget.
+    for (const Case& broken : {Case{"oversize", "Invalid Slang protocol length; retry assistance."},
+                               Case{"long-header", "Slang protocol header exceeded its budget."},
+                               Case{"duplicate-length", "Invalid Slang protocol length; retry assistance."},
+                               Case{"invalid-json", "Invalid Slang response; retry assistance."}})
+    {
+        INFO(broken.Kind);
+        const QStringList capabilities{QStringLiteral("--capabilities"),
+                                       QStringLiteral(R"({"completionProvider": {}})")};
+        FakeServer server(capabilities +
+                          QStringList{QStringLiteral("--corrupt"),
+                                      QStringLiteral("textDocument/completion:") + QString::fromLatin1(broken.Kind)});
+        server.Client.SetDocument(server.GetUri(), QStringLiteral("text\n"));
+        REQUIRE(server.WaitForReady() == true);
+        QSignalSpy failures(&server.Client, &LanguageClient::Failed);
+        QSignalSpy replies(&server.Client, &LanguageClient::Replied);
+        REQUIRE(server.Client.Request(LanguageRequestKind::Completion,
+                                      {{QStringLiteral("position"), MakePosition(0, 0)}}) != 0);
+        REQUIRE(QTest::qWaitFor([&failures]() { return failures.isEmpty() == false; }));
+        CHECK(failures.first().first().toString() == QString::fromLatin1(broken.Message));
+        CHECK(replies.isEmpty() == true);
+        CHECK(server.Client.IsReady() == false);
+        // Retry starts a fresh connection that serves requests again.
+        server.Start(capabilities);
+        server.Client.SetDocument(server.GetUri(), QStringLiteral("text\n"));
+        REQUIRE(server.WaitForReady() == true);
+        REQUIRE(server.Client.Request(LanguageRequestKind::Completion,
+                                      {{QStringLiteral("position"), MakePosition(0, 0)}}) != 0);
+        REQUIRE(QTest::qWaitFor([&replies]() { return replies.isEmpty() == false; }));
+    }
+}
+
+TEST_CASE("A request the server never answers stops it at the profile's deadline", "[editor][text][assistance]")
+{
+    // A short deadline keeps the test quick; the built-in profiles allow ten seconds.
+    constexpr int32 SHORT_DEADLINE_MILLISECONDS = 400;
+    static LanguageServerProfile profile = GetSlangServerProfile();
+    profile.RequestTimeoutMilliseconds = SHORT_DEADLINE_MILLISECONDS;
+    CHECK(GetSlangServerProfile().RequestTimeoutMilliseconds == LANGUAGE_SERVER_REQUEST_TIMEOUT_MILLISECONDS);
+    FakeServer server({QStringLiteral("--capabilities"),
+                       QStringLiteral(R"({"hoverProvider": true})"),
+                       QStringLiteral("--silent"),
+                       QStringLiteral("textDocument/hover")},
+                      profile);
+    server.Client.SetDocument(server.GetUri(), QStringLiteral("text\n"));
+    REQUIRE(server.WaitForReady() == true);
+    QSignalSpy failures(&server.Client, &LanguageClient::Failed);
+    REQUIRE(server.Client.Request(LanguageRequestKind::Hover, {{QStringLiteral("position"), MakePosition(0, 0)}}) != 0);
+    REQUIRE(QTest::qWaitFor([&failures]() { return failures.isEmpty() == false; }));
+    CHECK(failures.first().first().toString() ==
+          QStringLiteral("Shader assistance timed out. Retry completion to restart Slang."));
+}
+
+TEST_CASE("A reply to a request the client never sent is ignored", "[editor][text][assistance]")
+{
+    FakeServer server({QStringLiteral("--capabilities"),
+                       QStringLiteral(R"({"completionProvider": {}})"),
+                       QStringLiteral("--stray-reply")});
+    // The stray reply arrives right after initialize, so the spies listen from the start.
+    QSignalSpy replies(&server.Client, &LanguageClient::Replied);
+    QSignalSpy failures(&server.Client, &LanguageClient::Failed);
+    server.Client.SetDocument(server.GetUri(), QStringLiteral("text\n"));
+    REQUIRE(server.WaitForReady() == true);
+    QTest::qWait(100);
+    CHECK(replies.isEmpty() == true);
+    const int32 request =
+        server.Client.Request(LanguageRequestKind::Completion, {{QStringLiteral("position"), MakePosition(0, 0)}});
+    REQUIRE(QTest::qWaitFor([&replies]() { return replies.isEmpty() == false; }));
+    REQUIRE(replies.size() == 1);
+    CHECK(replies.first().first().toInt() == request);
+    CHECK(failures.isEmpty() == true);
+    CHECK(server.Client.IsReady() == true);
 }

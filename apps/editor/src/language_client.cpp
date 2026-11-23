@@ -24,7 +24,6 @@ namespace ludus::editor
 namespace
 {
 using namespace foundation;
-constexpr int32 REQUEST_TIMEOUT_MILLISECONDS = 10000;
 #if !defined(Q_OS_WASM)
 constexpr isize MAX_PROTOCOL_BYTES = isize{4} * 1024 * 1024;
 constexpr isize MAX_HEADER_BYTES = 8192;
@@ -292,9 +291,9 @@ void LanguageClient::startProcess()
                            {QStringLiteral("rootUri"), QUrl::fromLocalFile(workspace).toString()},
                            {QStringLiteral("capabilities"), capabilities}}}});
     });
-    mInitializeDeadline.setRemainingTime(REQUEST_TIMEOUT_MILLISECONDS);
+    mInitializeDeadline.setRemainingTime(mProfile->RequestTimeoutMilliseconds);
     // The initialize deadline covers the start itself, before an id is assigned.
-    mDeadline.start(REQUEST_TIMEOUT_MILLISECONDS);
+    mDeadline.start(mProfile->RequestTimeoutMilliseconds);
     process->start(mProgram, mArguments);
 #endif
 }
@@ -549,7 +548,7 @@ int32 LanguageClient::Request(LanguageRequestKind kind, const QJsonObject& param
 void LanguageClient::sendRequest(PendingRequest& inoutRequest)
 {
     inoutRequest.IsSent = true;
-    inoutRequest.Deadline.setRemainingTime(REQUEST_TIMEOUT_MILLISECONDS);
+    inoutRequest.Deadline.setRemainingTime(mProfile->RequestTimeoutMilliseconds);
     // send may fail the connection, which resets the table; copy the message first.
     const QJsonObject message = inoutRequest.Message;
     inoutRequest.Message = {};

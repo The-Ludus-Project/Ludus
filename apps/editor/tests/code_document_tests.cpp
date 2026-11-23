@@ -1422,6 +1422,63 @@ TEST_CASE("A resolved code action applies its edit; one touching generated text 
     CHECK(session.Host.CanUndo() == false);
 }
 
+TEST_CASE("Replies for a document the editor no longer shows are discarded", "[editor][text][assistance]")
+{
+    QStringList options{
+        QStringLiteral("--capabilities"),
+        QStringLiteral(R"({"completionProvider": {}, "hoverProvider": true, "codeActionProvider": {}})"),
+        QStringLiteral("--actions"),
+        CODE_ACTIONS,
+    };
+    bool isHover = false;
+    SECTION("code actions") {}
+    SECTION("hover")
+    {
+        isHover = true;
+    }
+    options.append(
+        {QStringLiteral("--hold"),
+         isHover == true ? QStringLiteral("textDocument/hover") : QStringLiteral("textDocument/codeAction")});
+    FakeAssistanceSession session("float a = missing;\n", options);
+    CodeEditor& editor = session.Editor;
+    session.Prepare();
+    QListWidget* popupOrNull = editor.findChild<QListWidget*>(QStringLiteral("codeCompletionList"));
+    REQUIRE(popupOrNull != nullptr);
+    REQUIRE(QTest::qWaitFor([popupOrNull]() { return popupOrNull->isVisible() == true; }));
+    QTest::keyClick(&editor, Qt::Key_Escape);
+    QTextCursor cursor(editor.document());
+    cursor.setPosition(static_cast<int32>(editor.toPlainText().indexOf(QStringLiteral("missing"))) + 2);
+    editor.setTextCursor(cursor);
+    // The reply to this request is held by the server.
+    const QString command =
+        isHover == true ? QStringLiteral("codeEditorHover") : QStringLiteral("codeEditorCodeActions");
+    for (QAction* action : editor.actions())
+    {
+        if (action->objectName() == command)
+        {
+            action->trigger();
+        }
+    }
+    QTest::qWait(200);
+    // The editor now shows another document; the next request releases the held reply.
+    MemoryCodeDocument other("float b = 1;\n");
+    session.Document.Bind(&other);
+    session.Prepare();
+    REQUIRE(QTest::qWaitFor([popupOrNull]() { return popupOrNull->isVisible() == true; }));
+    QTest::qWait(200);
+    CHECK(editor.GetHoverText().isEmpty() == true);
+    CHECK(editor.HasCodeActions() == false);
+    bool isMenuShown = false;
+    for (const QMenu* menu : editor.findChildren<QMenu*>(QStringLiteral("codeEditorCodeActionMenu")))
+    {
+        isMenuShown = isMenuShown == true || menu->isVisible() == true;
+    }
+    CHECK(isMenuShown == false);
+    CHECK(other.GetState().Text == "float b = 1;\n");
+    CHECK(session.Host.GetState().Text == "float a = missing;\n");
+    session.Document.Bind(&session.Host);
+}
+
 TEST_CASE("Show Code Actions is disabled with its reason when the server has none", "[editor][text][assistance]")
 {
     FakeAssistanceSession session("float a = 1;\n",
@@ -1946,6 +2003,14 @@ TEST_CASE("Native Slang resolves authored symbols references and generated API d
             return false;
         },
         15000));
+    const QString assistanceCapture = qEnvironmentVariable("LUDUS_NAVIGATION_CAPTURE_DIR");
+    if (assistanceCapture.isEmpty() == false)
+    {
+        // Semantic colors and inlay hints from the real server, for visual acceptance.
+        QTest::qWait(500);
+        REQUIRE(QDir().mkpath(assistanceCapture) == true);
+        REQUIRE(editor.grab().save(QDir(assistanceCapture).filePath(QStringLiteral("assistance.png"))) == true);
+    }
     assistance.RequestNavigation(CodeNavigationKind::Symbols);
     REQUIRE(QTest::qWaitFor([&]() { return editor.GetNavigation().IsChoosing(); }, 15000));
     QListWidget* resultsOrNull = editor.findChild<QListWidget*>(QStringLiteral("codeNavigationResults"));

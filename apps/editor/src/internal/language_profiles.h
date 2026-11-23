@@ -1,5 +1,7 @@
 #pragma once
 
+#include <ludus/foundation/base/types.h>
+
 #include <QJsonValue>
 #include <QString>
 
@@ -21,6 +23,10 @@ using LanguageServerConfigurationResponder = QJsonValue (*)(const QString& secti
 ///
 /// Profiles are immutable static values; references to them stay valid for the
 /// process lifetime and may be read from any thread.
+/// How long a server may take to initialize or answer one request before the
+/// client stops it, unless its profile says otherwise.
+inline constexpr foundation::int32 LANGUAGE_SERVER_REQUEST_TIMEOUT_MILLISECONDS = 10000;
+
 struct LanguageServerProfile final
 {
     /// The LSP `languageId` sent with `textDocument/didOpen` ("slang").
@@ -41,6 +47,8 @@ struct LanguageServerProfile final
     QString StartRepair;
     /// `workspace/configuration` answers; never null.
     LanguageServerConfigurationResponder ConfigurationResponder = nullptr;
+    /// The initialize and per-request deadline, in milliseconds.
+    foundation::int32 RequestTimeoutMilliseconds = LANGUAGE_SERVER_REQUEST_TIMEOUT_MILLISECONDS;
 };
 
 /// The `slangd` profile from the selected Slang SDK.
