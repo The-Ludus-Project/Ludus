@@ -959,6 +959,10 @@ RendererWorkspace::RendererWorkspace(const ToolingPaths& tooling, QWidget* paren
     openCodeEditor->setToolTip(QStringLiteral("External code editors are available in the native Ludus editor."));
 #endif
     mSourceAssistance = new RenderGraphShaderAssistance(mDocument, *mSource, *mSourceController, mTooling, sourcePage);
+    // A rename across package files refreshes every view and restores the edited file's caret, as Undo does.
+    connect(mSourceAssistance, &RenderGraphShaderAssistance::WorkspaceEditApplied, this, [this]() {
+        restoreSourceHistory(true);
+    });
     connect(mSource, &CodeEditor::AnalysisDiagnosticsChanged, this, &RendererWorkspace::AnalysisDiagnosticsChanged);
     sourceLayout->addWidget(mSourceAssistance);
     QWidget* interfacePage = CreateShaderInterfaceView(mSourceInterface, sourcePage);

@@ -3,6 +3,7 @@
 #include "internal/code_document_controller.h"
 #include "internal/code_navigation_results.h"
 #include "internal/code_semantic_layers.h"
+#include "internal/code_workspace_edit.h"
 #include "internal/language_client.h"
 
 #include <QJsonArray>
@@ -34,6 +35,13 @@ public:
                     const LanguageServerProfile& profile = GetSlangServerProfile());
     /// The connected server's retained standard error, for Show Log.
     [[nodiscard]] const QString& GetServerLog() const noexcept;
+    /// Apply renames that reach other files through `hostOrNull`, which must
+    /// outlive this object (code editor M4, CE11). Without a host, a rename that
+    /// would change another file is refused and only the edited source changes.
+    void SetWorkspaceEditHost(CodeWorkspaceEditHost* hostOrNull) noexcept;
+    /// Rename Symbol at the caret: prepare the context, ask the server where the
+    /// symbol is, then show the editor's rename box.
+    void RequestRename();
     void Request(bool isSignature);
     /// Read-only semantic navigation through the same versioned compiler context.
     void RequestNavigation(CodeNavigationKind kind);
@@ -66,6 +74,25 @@ private:
     void applyAvailability();
     void requestHover(foundation::int32 position);
     void receiveHover(foundation::int32 request, const QJsonValue& value);
+    /// The rename in progress: where the symbol is, its old and new name, and the
+    /// draft and context it was found in.
+    struct RenameRequest final
+    {
+        foundation::int32 Request = 0;
+        CodeDocumentIdentity Identity;
+        foundation::uint64 Context = 0;
+        foundation::int32 Start = 0;
+        foundation::int32 End = 0;
+        QString OldName;
+        QString NewName;
+        bool ShouldPreview = false;
+    };
+    void receivePrepareRename(const QJsonValue& value);
+    void showRenameBox(foundation::int32 start, foundation::int32 end, const QString& name);
+    void acceptRename(const QString& name, bool shouldPreview);
+    void receiveRename(foundation::int32 request, const QJsonValue& value);
+    void applyRename(const RenameRequest& rename, const QList<CodeWorkspaceFileChange>& changes);
+    [[nodiscard]] bool isRenameCurrent(const RenameRequest& rename) const;
     void resolveCompletion(foundation::int32 row);
     void receiveResolve(foundation::int32 request, const QJsonValue& value);
     /// Send the current draft and refresh the background layers for it.
@@ -97,6 +124,8 @@ private:
     };
     HoverRequest mHover;
     ResolveRequest mResolve;
+    RenameRequest mRename;
+    CodeWorkspaceEditHost* mWorkspaceEditHostOrNull = nullptr;
     QTimer mAnalysisSync;
     QTimer mRefresh;
     CodeTextCapture mCapture;
@@ -122,6 +151,7 @@ private:
     foundation::int32 mActiveParameter = 0;
     bool mIsSignature = false;
     bool mIsNavigation = false;
+    bool mIsRename = false;
     CodeNavigationKind mNavigationKind = CodeNavigationKind::Symbols;
     bool mHasIntent = false;
     bool mShouldTrackSignature = false;

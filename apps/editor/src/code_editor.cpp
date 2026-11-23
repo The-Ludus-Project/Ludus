@@ -31,6 +31,7 @@
 #include <QKeyEvent>
 #include <QKeySequence>
 #include <QLabel>
+#include <QLineEdit>
 #include <QListWidget>
 #include <QMenu>
 #include <QMimeData>
@@ -268,6 +269,20 @@ CodeEditor::CodeEditor(QWidget* parentOrNull)
     mHoverAction->setEnabled(false);
     connect(mHoverAction, &QAction::triggered, this, [this]() { Q_EMIT HoverRequested(textCursor().position()); });
     addAction(mHoverAction);
+    // Rename Symbol (CE10): F2, as in VS Code; the box sits over the symbol.
+    mRenameAction = new QAction(QStringLiteral("Rename Symbol"), this);
+    mRenameAction->setObjectName(QStringLiteral("codeEditorRename"));
+    mRenameAction->setShortcut(QKeySequence(Qt::Key_F2));
+    mRenameAction->setShortcutContext(Qt::WidgetShortcut);
+    mRenameAction->setEnabled(false);
+    connect(mRenameAction, &QAction::triggered, this, [this]() { Q_EMIT RenameRequested(); });
+    addAction(mRenameAction);
+    mRenameBox = new QLineEdit(viewport());
+    mRenameBox->setObjectName(QStringLiteral("codeEditorRenameBox"));
+    mRenameBox->setAccessibleName(QStringLiteral("New name"));
+    mRenameBox->setToolTip(QStringLiteral("Enter to rename, Shift+Enter to preview, Escape to cancel."));
+    mRenameBox->installEventFilter(this);
+    mRenameBox->hide();
     // Inlay hints (CE10): a persisted toggle; Ctrl+Alt shows hidden hints while held.
     mInlayHintsAction = new QAction(QStringLiteral("Show Inlay Hints"), this);
     mInlayHintsAction->setObjectName(QStringLiteral("codeEditorInlayHints"));
@@ -798,6 +813,83 @@ void CodeEditor::SetAssistanceAvailability(const CodeAssistanceAvailability& ava
     mSignatureAction->setToolTip(availability.SignatureUnavailableReason);
     mHoverAction->setEnabled(hasService == true && availability.HoverUnavailableReason.isEmpty() == true);
     mHoverAction->setToolTip(availability.HoverUnavailableReason);
+    mRenameAction->setEnabled(hasService == true && isReadOnly() == false &&
+                              availability.RenameUnavailableReason.isEmpty() == true);
+    mRenameAction->setToolTip(availability.RenameUnavailableReason);
+}
+
+void CodeEditor::ShowRenameBox(int32 start, int32 end, const QString& name)
+{
+    QTextCursor symbol(document());
+    symbol.setPosition(start);
+    symbol.setPosition(end, QTextCursor::KeepAnchor);
+    RevealTextCursor(symbol);
+    setTextCursor(symbol);
+    QTextCursor first(document());
+    first.setPosition(start);
+    const QRect anchor = cursorRect(first);
+    constexpr int32 RENAME_MINIMUM_WIDTH = 160;
+    constexpr int32 RENAME_TEXT_ROOM = 48;
+    mRenameBox->setText(name);
+    mRenameBox->selectAll();
+    mRenameBox->resize(qMax(RENAME_MINIMUM_WIDTH, fontMetrics().horizontalAdvance(name) + RENAME_TEXT_ROOM),
+                       mRenameBox->sizeHint().height());
+    mRenameBox->move(qBound(0, anchor.left(), qMax(0, viewport()->width() - mRenameBox->width())),
+                     qMax(0, anchor.top() - (mRenameBox->height() - anchor.height()) / 2));
+    mRenameBox->show();
+    mRenameBox->setFocus(Qt::OtherFocusReason);
+}
+
+void CodeEditor::HideRenameBox()
+{
+    if (mRenameBox->isVisible() == true)
+    {
+        mIsClosingRename = true;
+        const bool hasFocus = mRenameBox->hasFocus();
+        mRenameBox->hide();
+        if (hasFocus == true)
+        {
+            setFocus(Qt::OtherFocusReason);
+        }
+        mIsClosingRename = false;
+    }
+}
+
+bool CodeEditor::IsRenaming() const noexcept
+{
+    return mRenameBox->isVisible();
+}
+
+bool CodeEditor::eventFilter(QObject* watched, QEvent* event)
+{
+    if (watched == mRenameBox && mRenameBox->isVisible() == true)
+    {
+        if (event->type() == QEvent::KeyPress)
+        {
+            const QKeyEvent* key = static_cast<const QKeyEvent*>(event);
+            if (key->key() == Qt::Key_Return || key->key() == Qt::Key_Enter)
+            {
+                const QString name = mRenameBox->text();
+                HideRenameBox();
+                Q_EMIT RenameAccepted(name, key->modifiers().testFlag(Qt::ShiftModifier));
+                return true;
+            }
+            if (key->key() == Qt::Key_Escape)
+            {
+                HideRenameBox();
+                Q_EMIT RenameCancelled();
+                return true;
+            }
+        }
+    }
+    if (watched == mRenameBox && event->type() == QEvent::FocusOut && mIsClosingRename == false &&
+        mRenameBox->isVisible() == true)
+    {
+        // Clicking elsewhere leaves the name unchanged, as in VS Code.
+        mRenameBox->hide();
+        Q_EMIT RenameCancelled();
+    }
+    return QPlainTextEdit::eventFilter(watched, event);
 }
 
 void CodeEditor::SetLargeFileMode(bool isLarge)

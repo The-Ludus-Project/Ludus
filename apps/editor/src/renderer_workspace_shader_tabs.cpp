@@ -339,6 +339,10 @@ CodeDocumentTab* RendererWorkspace::openShaderCodeTab(const QString& file, bool 
         });
         RenderGraphShaderAssistance* assistance =
             new RenderGraphShaderAssistance(mDocument, editor, tab.GetController(), mTooling, &tab);
+        // A rename across package files refreshes every view and restores the edited file's caret, as Undo does.
+        connect(assistance, &RenderGraphShaderAssistance::WorkspaceEditApplied, this, [this]() {
+            restoreSourceHistory(true);
+        });
         QWidget* controls = new QWidget(&tab);
         QHBoxLayout* row = new QHBoxLayout(controls);
         row->setContentsMargins(0, 0, 0, 0);

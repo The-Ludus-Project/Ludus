@@ -30,6 +30,7 @@ class QHelpEvent;
 class QAction;
 class QListWidget;
 class QLabel;
+class QLineEdit;
 QT_END_NAMESPACE
 
 namespace ludus::editor
@@ -135,6 +136,8 @@ struct CodeAssistanceAvailability final
     QString SignatureUnavailableReason;
     /// Why hover is disabled, or empty when it is available.
     QString HoverUnavailableReason;
+    /// Why Rename Symbol is disabled, or empty when it is available.
+    QString RenameUnavailableReason;
 };
 
 class CodeEditor final : public QPlainTextEdit
@@ -246,6 +249,13 @@ public:
     void StartSnippet(foundation::int32 position, const CodeSnippet& snippet);
     /// Whether a snippet's tab stops are being visited.
     [[nodiscard]] bool IsInSnippet() const noexcept;
+    /// Show the inline rename box over the symbol at UTF-16 [start, end) with
+    /// `name` selected, and give it focus (code editor M4, CE10). Enter emits
+    /// RenameAccepted (Shift+Enter asks for a preview); Escape or leaving the box
+    /// emits RenameCancelled. The text never changes here.
+    void ShowRenameBox(foundation::int32 start, foundation::int32 end, const QString& name);
+    void HideRenameBox();
+    [[nodiscard]] bool IsRenaming() const noexcept;
     [[nodiscard]] LUDUS_INLINE foundation::int32 GetDiagnosticCount() const noexcept
     {
         return static_cast<foundation::int32>(mDiagnostics.size());
@@ -318,6 +328,12 @@ Q_SIGNALS:
     void CompletionChosen(foundation::int32 row);
     /// The highlighted suggestion changed to `row`, including the first one shown.
     void CompletionHighlighted(foundation::int32 row);
+    /// Rename Symbol (F2) ran at the caret.
+    void RenameRequested();
+    /// The rename box was confirmed with `name`; `shouldPreview` is true for Shift+Enter.
+    void RenameAccepted(const QString& name, bool shouldPreview);
+    /// The rename box was dismissed without renaming.
+    void RenameCancelled();
     void SignatureOverloadRequested(foundation::int32 direction);
     /// Analysis markers were replaced.
     void AnalysisDiagnosticsChanged();
@@ -336,7 +352,12 @@ private:
     QListWidget* mCompletionList;
     QLabel* mSignature;
     QLabel* mCompletionDocumentation;
+    QLineEdit* mRenameBox;
+    QAction* mRenameAction;
+    /// The rename box is being closed on purpose; its focus loss is not a cancel.
+    bool mIsClosingRename = false;
     void showCompletionDocumentation();
+    bool eventFilter(QObject* watched, QEvent* event) override;
     friend class CodeEditorGutter;
     friend class CodeStructureView;
     void resizeEvent(QResizeEvent* event) override;

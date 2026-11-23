@@ -15,6 +15,7 @@
 #include <QJsonDocument>
 #include <QLabel>
 #include <QLineEdit>
+#include <QMap>
 #include <QMessageBox>
 #include <QPushButton>
 #include <QSignalBlocker>
@@ -40,10 +41,12 @@ RenderGraphShaderAssistance::RenderGraphShaderAssistance(RenderGraphDocument& in
                                                          CodeDocumentController& inoutController,
                                                          const ToolingPaths& tooling,
                                                          QWidget* parentOrNull)
-    : QWidget(parentOrNull), mDocument(inoutDocument), mAssistance(inoutEditor, inoutController, this),
-      mTooling(tooling), mJob(this), mContexts(new QComboBox(this)), mStatus(new QLabel(this))
+    : QWidget(parentOrNull), mDocument(inoutDocument), mController(inoutController),
+      mAssistance(inoutEditor, inoutController, this), mTooling(tooling), mJob(this), mContexts(new QComboBox(this)),
+      mStatus(new QLabel(this))
 {
     setObjectName(QStringLiteral("renderGraphShaderAssistance"));
+    mAssistance.SetWorkspaceEditHost(this);
     QVBoxLayout* layout = new QVBoxLayout(this);
     layout->setContentsMargins(0, 0, 0, 0);
     QHBoxLayout* row = new QHBoxLayout;
@@ -150,6 +153,52 @@ QByteArray RenderGraphShaderAssistance::getIdentity() const
         hash.addData(mDocument.GetDraft(file));
     }
     return hash.result();
+}
+
+CodeEditStatus RenderGraphShaderAssistance::ApplyWorkspaceEdit(const CodeDocumentIdentity& expected,
+                                                               const QList<CodeWorkspaceFileChange>& changes,
+                                                               int32 caret,
+                                                               const char* name)
+{
+    if (mFile.isEmpty() == true || expected != mController.Capture().Identity)
+    {
+        return CodeEditStatus::Conflict;
+    }
+    // Every file is checked and rebuilt before the package changes anything.
+    QMap<QString, QByteArray> files;
+    for (const CodeWorkspaceFileChange& change : changes)
+    {
+        const QString file = change.File.isEmpty() == true ? mFile : change.File;
+        const QByteArray draft = mDocument.GetDraft(file);
+        QString text;
+        if (mDocument.GetFiles().contains(file) == false || DecodeCodeText(draft, text) == false ||
+            text != change.Text || files.contains(file) == true)
+        {
+            return CodeEditStatus::Conflict;
+        }
+        QByteArray result;
+        if (ApplyCodeWorkspaceEditBytes(draft, change.Edits, result) == false)
+        {
+            return CodeEditStatus::InvalidText;
+        }
+        files.insert(file, result);
+    }
+    const QByteArray current = files.value(mFile, mDocument.GetDraft(mFile));
+    usize caretBytes = 0;
+    if (GetCodeByteOffset(current, caret, caretBytes) == false)
+    {
+        caretBytes = 0;
+    }
+    const CodeEditStatus status = mDocument.ReplaceTexts(expected.Revision,
+                                                         files,
+                                                         name,
+                                                         {mFile, mController.CaptureSelection()},
+                                                         {mFile, {caretBytes, caretBytes}});
+    if (status == CodeEditStatus::Ok)
+    {
+        Q_EMIT WorkspaceEditApplied();
+    }
+    return status;
 }
 
 void RenderGraphShaderAssistance::Update(const QString& project,

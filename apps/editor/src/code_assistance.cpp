@@ -5,6 +5,7 @@
 #include "internal/code_language_registry.h"
 #include "internal/code_snippet.h"
 #include "internal/code_text.h"
+#include "internal/code_workspace_edit_preview.h"
 #include "internal/language_positions.h"
 
 #include <QDateTime>
@@ -106,6 +107,9 @@ CodeAssistance::CodeAssistance(CodeEditor& inoutEditor, CodeDocumentController& 
     connect(&mEditor.GetNavigation(), &CodeNavigation::Dismissed, this, &CodeAssistance::Cancel);
     connect(&mEditor, &CodeEditor::CompletionChosen, this, &CodeAssistance::acceptCompletion);
     connect(&mEditor, &CodeEditor::CompletionHighlighted, this, &CodeAssistance::resolveCompletion);
+    connect(&mEditor, &CodeEditor::RenameRequested, this, &CodeAssistance::RequestRename);
+    connect(&mEditor, &CodeEditor::RenameAccepted, this, &CodeAssistance::acceptRename);
+    connect(&mEditor, &CodeEditor::RenameCancelled, this, [this]() { mRename = {}; });
     connect(&mEditor, &CodeEditor::SignatureOverloadRequested, this, [this](int32 direction) {
         if (isCurrent() == true && mSignatures.isEmpty() == false)
         {
@@ -162,6 +166,11 @@ CodeAssistance::CodeAssistance(CodeEditor& inoutEditor, CodeDocumentController& 
                     receiveResolve(request, value);
                     return;
                 }
+                if (kind == LanguageRequestKind::Rename)
+                {
+                    receiveRename(request, value);
+                    return;
+                }
                 receive(request, value);
             });
     connect(&mClient, &LanguageClient::DiagnosticsPublished, this, &CodeAssistance::receiveDiagnostics);
@@ -201,6 +210,12 @@ CodeAssistance::CodeAssistance(CodeEditor& inoutEditor, CodeDocumentController& 
             this,
             [this](int32 request, LanguageRequestKind kind, const QString& message) {
                 static_cast<void>(kind);
+                if (request != 0 && request == mRename.Request)
+                {
+                    mRename = {};
+                    Q_EMIT StatusChanged(message);
+                    return;
+                }
                 if (request == mRequest)
                 {
                     Cancel();
@@ -261,6 +276,7 @@ void CodeAssistance::applyAvailability()
     availability.CompletionUnavailableReason = mClient.GetUnavailableReason(LanguageRequestKind::Completion);
     availability.SignatureUnavailableReason = mClient.GetUnavailableReason(LanguageRequestKind::SignatureHelp);
     availability.HoverUnavailableReason = mClient.GetUnavailableReason(LanguageRequestKind::Hover);
+    availability.RenameUnavailableReason = mClient.GetUnavailableReason(LanguageRequestKind::Rename);
     const auto readTriggers = [this](const QString& capability, QString& outTriggers) {
         const QJsonObject options = mClient.GetCapabilities().value(capability).toObject();
         if (options.contains(QStringLiteral("triggerCharacters")) == false)
@@ -505,6 +521,7 @@ void CodeAssistance::Request(bool isSignature)
     Q_EMIT StatusChanged(QStringLiteral("Shader assistance needs native Slang; unavailable in the browser editor."));
 #else
     mIsNavigation = false;
+    mIsRename = false;
     mShouldTrackSignature = isSignature;
     mShouldTrackCompletion = isSignature == false;
     mIsSignature = isSignature;
@@ -525,6 +542,7 @@ void CodeAssistance::RequestNavigation(CodeNavigationKind kind)
         "Semantic navigation needs native Slang. Quick Open, line navigation and history remain available."));
 #else
     mIsNavigation = true;
+    mIsRename = false;
     mNavigationKind = kind;
     beginRequest();
 #endif
@@ -579,6 +597,28 @@ void CodeAssistance::requestCurrent()
     {
         kind = GetNavigationRequest(mNavigationKind);
     }
+    if (mIsRename == true)
+    {
+        kind = LanguageRequestKind::PrepareRename;
+        if (mClient.IsReady() == true && mClient.CanRequest(LanguageRequestKind::Rename) == false)
+        {
+            mHasIntent = false;
+            Q_EMIT StatusChanged(mClient.GetUnavailableReason(LanguageRequestKind::Rename));
+            return;
+        }
+        // A server without prepareRename renames the word at the caret.
+        if (mClient.IsReady() == true && mClient.CanRequest(LanguageRequestKind::PrepareRename) == false)
+        {
+            mHasIntent = false;
+            if (mWordStart == mWordEnd)
+            {
+                Q_EMIT StatusChanged(QStringLiteral("Place the caret on a name to rename it."));
+                return;
+            }
+            showRenameBox(mWordStart, mWordEnd, source.mid(mWordStart, mWordEnd - mWordStart));
+            return;
+        }
+    }
     QJsonObject parameters;
     if (kind == LanguageRequestKind::WorkspaceSymbols)
     {
@@ -618,6 +658,11 @@ void CodeAssistance::receive(int32 request, const QJsonValue& value)
 {
     if (request != mRequest || isCurrent() == false)
     {
+        return;
+    }
+    if (mIsRename == true)
+    {
+        receivePrepareRename(value);
         return;
     }
     if (mIsNavigation == true)
@@ -737,6 +782,258 @@ void CodeAssistance::receive(int32 request, const QJsonValue& value)
         : mCompletions.size() == MAX_COMPLETIONS
             ? QStringLiteral("Showing the first %1 symbols. Type a prefix and complete again.").arg(MAX_COMPLETIONS)
             : QString());
+}
+
+void CodeAssistance::SetWorkspaceEditHost(CodeWorkspaceEditHost* hostOrNull) noexcept
+{
+    mWorkspaceEditHostOrNull = hostOrNull;
+}
+
+void CodeAssistance::RequestRename()
+{
+    Cancel();
+    mRename = {};
+    if (HasCodeLanguageService(mEditor.GetLanguage()) == false || mDocument.IsBound() == false ||
+        mEditor.isReadOnly() == true)
+    {
+        return;
+    }
+#if defined(Q_OS_WASM)
+    Q_EMIT StatusChanged(QStringLiteral("Rename needs native shader assistance; unavailable in the browser editor."));
+#else
+    mIsNavigation = false;
+    mIsSignature = false;
+    mIsRename = true;
+    beginRequest();
+#endif
+}
+
+void CodeAssistance::receivePrepareRename(const QJsonValue& value)
+{
+    mHasIntent = false;
+    mRequest = 0;
+    QString source;
+    if (DecodeCodeText(mCapture.Text, source) == false)
+    {
+        return;
+    }
+    // LSP 3.17: a Range, { range, placeholder }, { defaultBehavior } or null.
+    const QJsonObject result = value.toObject();
+    if (value.isObject() == false || result.isEmpty() == true)
+    {
+        Q_EMIT StatusChanged(QStringLiteral("Nothing at the caret can be renamed. Place the caret on a name you "
+                                            "authored and press F2 again."));
+        return;
+    }
+    if (result.value(QStringLiteral("defaultBehavior")).toBool(false) == true)
+    {
+        if (mWordStart == mWordEnd)
+        {
+            Q_EMIT StatusChanged(QStringLiteral("Place the caret on a name to rename it."));
+            return;
+        }
+        showRenameBox(mWordStart, mWordEnd, source.mid(mWordStart, mWordEnd - mWordStart));
+        return;
+    }
+    const QJsonObject range =
+        result.contains(QStringLiteral("range")) == true ? result.value(QStringLiteral("range")).toObject() : result;
+    const int32 begin = static_cast<int32>(mPrefix.size());
+    int32 start = 0;
+    int32 end = 0;
+    if (GetLanguageOffset(mUnit,
+                          range.value(QStringLiteral("start")).toObject(),
+                          mClient.GetPositionEncoding(),
+                          start) == false ||
+        GetLanguageOffset(mUnit, range.value(QStringLiteral("end")).toObject(), mClient.GetPositionEncoding(), end) ==
+            false ||
+        start < begin || end > begin + source.size() || end <= start)
+    {
+        Q_EMIT StatusChanged(QStringLiteral("That name is declared in generated code, so it cannot be renamed here. "
+                                            "Rename it where it is authored."));
+        return;
+    }
+    const QString placeholder =
+        result.value(QStringLiteral("placeholder")).toString(source.mid(start - begin, end - start));
+    showRenameBox(start - begin, end - begin, placeholder);
+}
+
+void CodeAssistance::showRenameBox(int32 start, int32 end, const QString& name)
+{
+    mRename =
+    {
+        .Request = 0,
+        .Identity = mCapture.Identity,
+        .Context = mContext,
+        .Start = start,
+        .End = end,
+        .OldName = name,
+        .NewName = {},
+        .ShouldPreview = false,
+    };
+    mEditor.ShowRenameBox(start, end, name);
+}
+
+bool CodeAssistance::isRenameCurrent(const RenameRequest& rename) const
+{
+    return rename.Context != 0 && rename.Context == mContext && rename.Identity == mDocument.Capture().Identity;
+}
+
+void CodeAssistance::acceptRename(const QString& name, bool shouldPreview)
+{
+    if (isRenameCurrent(mRename) == false)
+    {
+        mRename = {};
+        Q_EMIT StatusChanged(QStringLiteral("The source changed while you were renaming. Press F2 again; nothing "
+                                            "was changed."));
+        return;
+    }
+    CodeTextCapture capture;
+    QString source;
+    QString unit;
+    if (name.isEmpty() == true || name == mRename.OldName || buildUnit(capture, source, unit) == false)
+    {
+        mRename = {};
+        return;
+    }
+    mClient.SetDocument(mUri, unit);
+    mRename.NewName = name;
+    mRename.ShouldPreview = shouldPreview;
+    mRename.Request = mClient.Request(LanguageRequestKind::Rename,
+                                      {{QStringLiteral("position"),
+                                        MakeLanguagePosition(unit,
+                                                             static_cast<int32>(mPrefix.size()) + mRename.Start,
+                                                             mClient.GetPositionEncoding())},
+                                       {QStringLiteral("newName"), name}});
+    if (mRename.Request == 0)
+    {
+        mRename = {};
+        Q_EMIT StatusChanged(QStringLiteral("Shader assistance is not ready. Wait for it to start, then press F2 "
+                                            "again; nothing was changed."));
+    }
+}
+
+void CodeAssistance::receiveRename(int32 request, const QJsonValue& value)
+{
+    if (request == 0 || request != mRename.Request)
+    {
+        return;
+    }
+    const RenameRequest rename = mRename;
+    mRename = {};
+    CodeTextCapture capture;
+    QString source;
+    QString unit;
+    if (isRenameCurrent(rename) == false || buildUnit(capture, source, unit) == false)
+    {
+        Q_EMIT StatusChanged(QStringLiteral("The source changed before the rename arrived. Press F2 again; nothing "
+                                            "was changed."));
+        return;
+    }
+    const int32 begin = static_cast<int32>(mPrefix.size());
+    const CodeWorkspaceEditContext context
+    {
+        .Uri = mUri,
+        .Unit = unit,
+        .SourceStart = begin,
+        .SourceEnd = begin + static_cast<int32>(source.size()),
+        .SentVersion = mClient.GetSentVersion(),
+        .Sources = mNavigationSources,
+        .Encoding = mClient.GetPositionEncoding(),
+        .CanEditOtherFiles = mWorkspaceEditHostOrNull != nullptr,
+    };
+    QList<CodeWorkspaceFileChange> changes;
+    QString message;
+    if (ReadCodeWorkspaceEdit(value.toObject(), context, changes, message) == false)
+    {
+        Q_EMIT StatusChanged(message);
+        return;
+    }
+    if (changes.isEmpty() == true)
+    {
+        Q_EMIT StatusChanged(QStringLiteral("The server found nothing to rename at that name."));
+        return;
+    }
+    const bool isSpanningFiles = changes.size() > 1 || changes.constFirst().File.isEmpty() == false;
+    if (rename.ShouldPreview == false && isSpanningFiles == false)
+    {
+        applyRename(rename, changes);
+        return;
+    }
+    // A change beyond the edited source is shown first, as is any rename asked for with Shift+Enter.
+    const QString sourceName = mEditor.GetNavigation().GetSource().isEmpty() == true
+                                   ? QStringLiteral("Current source")
+                                   : mEditor.GetNavigation().GetSource();
+    CodeWorkspaceEditPreview* preview =
+        new CodeWorkspaceEditPreview(QStringLiteral("Rename '%1' to '%2'").arg(rename.OldName, rename.NewName),
+                                     sourceName,
+                                     changes,
+                                     &mEditor);
+    preview->setAttribute(Qt::WA_DeleteOnClose);
+    connect(preview, &QDialog::accepted, this, [this, rename, changes]() { applyRename(rename, changes); });
+    connect(preview, &QDialog::rejected, this, [this]() {
+        Q_EMIT StatusChanged(QStringLiteral("Rename cancelled; nothing was changed."));
+    });
+    preview->open();
+}
+
+void CodeAssistance::applyRename(const RenameRequest& rename, const QList<CodeWorkspaceFileChange>& changes)
+{
+    if (isRenameCurrent(rename) == false)
+    {
+        Q_EMIT StatusChanged(QStringLiteral("The source changed before the rename was applied. Press F2 again; "
+                                            "nothing was changed."));
+        return;
+    }
+    int32 caret = rename.Start;
+    qsizetype editCount = 0;
+    const CodeWorkspaceFileChange* currentOrNull = nullptr;
+    for (const CodeWorkspaceFileChange& change : changes)
+    {
+        editCount += change.Edits.size();
+        if (change.File.isEmpty() == true)
+        {
+            currentOrNull = &change;
+            caret = MapCodeWorkspacePosition(change.Edits, rename.Start);
+        }
+    }
+    const CodeTextCapture capture = mDocument.Capture();
+    CodeEditStatus status = CodeEditStatus::Unavailable;
+    if (mWorkspaceEditHostOrNull != nullptr)
+    {
+        status = mWorkspaceEditHostOrNull->ApplyWorkspaceEdit(capture.Identity, changes, caret, "Rename Symbol");
+    }
+    else if (currentOrNull != nullptr)
+    {
+        QByteArray result;
+        usize caretBytes = 0;
+        status = ApplyCodeWorkspaceEditBytes(capture.Text, currentOrNull->Edits, result) == true &&
+                         GetCodeByteOffset(result, caret, caretBytes) == true
+                     ? mDocument.ApplyServiceText(capture.Identity, result, {caretBytes, caretBytes})
+                     : CodeEditStatus::InvalidText;
+    }
+    switch (status)
+    {
+        case CodeEditStatus::Ok:
+            Q_EMIT StatusChanged(QStringLiteral("Renamed '%1' to '%2': %3 changes in %4 files. Undo reverts all of "
+                                                "them.")
+                                     .arg(rename.OldName, rename.NewName)
+                                     .arg(editCount)
+                                     .arg(changes.size()));
+            break;
+        case CodeEditStatus::Conflict:
+            Q_EMIT StatusChanged(QStringLiteral("A file changed before the rename was applied. Press F2 again; "
+                                                "nothing was changed."));
+            break;
+        case CodeEditStatus::Capacity:
+            Q_EMIT StatusChanged(QStringLiteral("The rename would exceed a source or package size limit. Choose a "
+                                                "shorter name; nothing was changed."));
+            break;
+        case CodeEditStatus::InvalidText:
+        case CodeEditStatus::Unavailable:
+            Q_EMIT StatusChanged(QStringLiteral("The rename could not be applied to these sources. Press F2 again; "
+                                                "nothing was changed."));
+            break;
+    }
 }
 
 void CodeAssistance::resolveCompletion(int32 row)
