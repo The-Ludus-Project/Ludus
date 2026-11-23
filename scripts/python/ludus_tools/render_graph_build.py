@@ -1302,6 +1302,7 @@ def prepare_sources(manifest, helper, *, root=None, ray_path_capture=False, capt
                 technique['scene_interface']['visibility_buffer'] = profile['visibility_buffer']
                 if profile['color_input']:
                     technique['scene_interface']['color_input'] = True
+                    technique['scene_interface']['sampled_texture_count'] = profile['sampled_texture_count']
                 if profile['storage_texture']:
                     require(not ray_path_capture, 'Capability', 'RayTracing',
                             'storage texture dispatch does not support ray path capture; select an image-only configuration')
@@ -1585,6 +1586,7 @@ def build_package(manifest, output, *, helper, compiler, validator=None, spirv_c
                             record['visibility_buffer'] = profile['visibility_buffer']
                             if profile['color_input']:
                                 record['color_input'] = True
+                                record['sampled_texture_count'] = profile['sampled_texture_count']
                             if profile['storage_texture']:
                                 record['storage_texture'] = True
                             if profile['named_texture_count']:

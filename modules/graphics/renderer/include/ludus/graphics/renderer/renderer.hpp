@@ -93,6 +93,10 @@ struct GpuPreviewGraphInvocation final
     foundation::StaticArray<rhi::TextureHandle, content::render_graph_format::MAX_SHADER_TEXTURES> ShaderTextures{};
     /// Dispatch and publish shader texture writes without compositing returned RGB.
     bool HasShaderOutputsOnly = false;
+    /// Sampled color inputs after ColorInput, in shader slot order. Null entries use the black fallback.
+    /// Keep each supplied allocation alive through job release and submitted completion.
+    foundation::StaticArray<rhi::TextureHandle, content::render_graph_format::MAX_ADDITIONAL_SAMPLED_TEXTURES>
+        AdditionalSampledTextures{};
 };
 namespace internal
 {

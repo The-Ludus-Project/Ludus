@@ -354,9 +354,9 @@ def prepare_resource_headers(snapshot, programs, contracts, compiler, cancel, bu
                 for field in fields:
                     view = buffers.record_view_name(field)
                     if field.get('texture'):
+                        store = ' void Store(in uint32x2 positionPixel, in float32x4 value);' if field['writable'] else ''
                         views[view] = (f'struct {view} {{ uint32x2 GetDimensions(); '
-                                       'float32x4 Load(in uint32x2 positionPixel); '
-                                       'void Store(in uint32x2 positionPixel, in float32x4 value); };')
+                                       f'float32x4 Load(in uint32x2 positionPixel);{store} }};')
                         members.append(f'{view} {field["field"]};')
                         continue
                     record = field['record']

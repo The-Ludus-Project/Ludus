@@ -1986,8 +1986,9 @@ A complete 8240-by-8200 RGBA8 blob requires both an upload limit and remaining
 resource budget large enough for its roughly 258 MiB payload; width alone does
 not establish support. There is no implicit resizing or conversion.
 
-Binding metadata and copied dynamic-offset/shader-name tables now have sixteen
-slots (`RASTER_BINDING_COUNT`). `Interface.MaxBindings` and
+Compute layouts have eighteen slots (`RASTER_COMPUTE_BINDING_COUNT`), with the
+last two reserved for sampled color textures. Graphics layouts, dynamic offsets
+and shader-name tables use the first sixteen (`RASTER_BINDING_COUNT`). `Interface.MaxBindings` and
 `Binding.MaxBindings` report the enabled entry/index envelope. Independently
 check `Binding.MaxUniformBuffersPerStage`, `MaxSampledTexturesPerStage`,
 `MaxSamplersPerStage`, `Compute.MaxStorageBindings` and

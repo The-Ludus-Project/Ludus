@@ -104,7 +104,7 @@ def _resource_api(snapshot, value, source):
                 continue
             entry['needs_upgrade'] = True
         entry['fields'] = [
-            ({'name': field['field'], 'type': buffers.record_view_name(field), 'writable': True, 'texture': True}
+            ({'name': field['field'], 'type': buffers.record_view_name(field), 'writable': field['writable'], 'texture': True}
              if field.get('texture') else
              {'name': field['field'],
               'type': buffers.record_view_name(field) if buffers.is_native_record(field['record'])

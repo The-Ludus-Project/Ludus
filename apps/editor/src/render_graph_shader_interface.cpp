@@ -108,12 +108,11 @@ QString DescribeRayInterface(const QJsonObject& program,
     {
         lines.append(
             stage == QStringLiteral("compute")
-                ? QStringLiteral(
-                      "// Scene compute pass: one invocation per launch pixel in the ordered ray sequence.\n"
-                      "// Trace with TraceClosest or TestVisibility.\n"
-                      "// There are no hit or miss callbacks: TraceAndShade latches queries.HasFailed.\n"
-                      "// A read-only ColorTexture from an earlier scene pass binds GraphColorInput.\n"
-                      "// Read with GraphColorInput.Load(int3(launch.PositionPixel, 0)) at matching extents.")
+                ? QStringLiteral("// Scene compute pass: one invocation per launch pixel in the ordered ray sequence.\n"
+                                 "// Trace with TraceClosest or TestVisibility.\n"
+                                 "// There are no hit or miss callbacks: TraceAndShade latches queries.HasFailed.\n"
+                                 "// Sample earlier scene passes through read-only ColorTexture members in resources.\n"
+                                 "// For example, port diffraction is resources.Diffraction.")
                 : QStringLiteral(
                       "// Scene materials enabled.\n"
                       "// Closest-hit material access: MaterialSample material = EvaluateMaterial(scene, hit);\n"
@@ -122,7 +121,7 @@ QString DescribeRayInterface(const QJsonObject& program,
         {
             lines.append(QStringLiteral(
                 "// Return linear RGB for automatic color output, or zero for shader-only output.\n"
-                "// Each shader read/write texture appears by input port name in resources.\n"
+                "// Shader read/write textures appear by input port name in resources.\n"
                 "// PositionPixel and ExtentPixel describe the dispatch. Query GetDimensions for the texture size."));
         }
         QString trailingParameters = isLaunch == true ? QString{} : QStringLiteral(",\n    inout ScenePayload payload");
@@ -167,8 +166,14 @@ QString DescribeRayInterface(const QJsonObject& program,
                     const QString operations =
                         isTexture == true
                             ? (isLusl == true
-                                   ? QStringLiteral("Load(positionPixel), Store(positionPixel, value), GetDimensions()")
-                                   : QStringLiteral("[positionPixel], GetDimensions(width, height)"))
+                                   ? (isWritable == true
+                                          ? QStringLiteral(
+                                                "Load(positionPixel), Store(positionPixel, value), GetDimensions()")
+                                          : QStringLiteral("Load(positionPixel), GetDimensions()"))
+                                   : (isWritable == true
+                                          ? QStringLiteral("[positionPixel], GetDimensions(width, height)")
+                                          : QStringLiteral(
+                                                "Load(int3(positionPixel, 0)), GetDimensions(width, height)")))
                         : isNativeStructured == true ? QStringLiteral("[recordIndex].Field")
                         : isLegacyRaw == true
                             ? QStringLiteral("[index], GetDimensions(count, stride)")
@@ -205,7 +210,7 @@ QString DescribeRayInterface(const QJsonObject& program,
             }
             else
             {
-                lines.append(QStringLiteral("// Connected Buffer ports supply the Resources members."));
+                lines.append(QStringLiteral("// Connected Buffer and texture ports supply the Resources members."));
             }
         }
         lines.append(QStringLiteral("%1 %2(\n    %6SceneContext scene,\n    %6%3 %4,\n    inout RayQueryContext %7%5);")

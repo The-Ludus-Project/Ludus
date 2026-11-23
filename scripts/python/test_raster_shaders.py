@@ -92,11 +92,13 @@ class RasterReflectionTests(unittest.TestCase):
 
     def test_binding_slot_limit_matches_the_public_rhi_contract(self):
         import re
-        from compile_raster import RASTER_BINDING_COUNT, RUNTIME_BINDING_LENGTH_SLOT, RUNTIME_BINDING_ARRAY_SLOT
+        from compile_raster import (RASTER_BINDING_COUNT, RASTER_COMPUTE_BINDING_COUNT,
+                                    RUNTIME_BINDING_LENGTH_SLOT, RUNTIME_BINDING_ARRAY_SLOT)
         source = (ROOT/'modules/graphics/rhi/include/ludus/graphics/rhi/profile.h').read_text()
         match = re.search(r'RASTER_BINDING_COUNT\s*=\s*(\d+)', source)
         self.assertIsNotNone(match)
         self.assertEqual(RASTER_BINDING_COUNT, int(match.group(1)))
+        self.assertIn(f'RASTER_COMPUTE_BINDING_COUNT = {RASTER_COMPUTE_BINDING_COUNT}', source)
         self.assertEqual(RUNTIME_BINDING_LENGTH_SLOT, RASTER_BINDING_COUNT - 2)
         self.assertEqual(RUNTIME_BINDING_ARRAY_SLOT, RASTER_BINDING_COUNT - 1)
         self.assertIn('RUNTIME_BINDING_LENGTH_SLOT = RASTER_BINDING_COUNT - 2', source)
@@ -105,6 +107,9 @@ class RasterReflectionTests(unittest.TestCase):
         document['parameters'][0]['binding']['index'] = RASTER_BINDING_COUNT - 1
         result = raster_interface(document, 'fragment')
         self.assertEqual(result['entries'][0]['binding'], RASTER_BINDING_COUNT - 1)
+        document['parameters'][0]['binding']['index'] = RASTER_COMPUTE_BINDING_COUNT - 1
+        with self.assertRaisesRegex(RuntimeError, 'outside the bounded profile'):
+            raster_interface(document, 'fragment')
 
     def test_external_large_shader_preserves_exact_utf8_and_terminator(self):
         import re
@@ -492,6 +497,7 @@ class RasterReflectionTests(unittest.TestCase):
             wgsl_contract(code, invalid, 'compute')
 
     def test_compute_rejects_unportable_elements_and_extra_storage(self):
+        from compile_raster import RASTER_BINDING_COUNT
         data=self.compute_fixture()
         for change in ({'elementCount':3},{'elementType':{'kind':'scalar','scalarType':'float64'}},
                        {'kind':'struct','fields':[]}):
@@ -502,12 +508,12 @@ class RasterReflectionTests(unittest.TestCase):
             data['parameters'].append(resource)
             data['entryPoints'][0]['bindings'].append({'name':resource['name'],'binding':{'used':1}})
         self.assertEqual(len(raster_interface(data,'compute')['entries']), 5)
-        for i in range(5,16):
+        for i in range(5, RASTER_BINDING_COUNT):
             resource=copy.deepcopy(data['parameters'][0]);resource['name']=f'records{i}';resource['binding']['index']=i
             data['parameters'].append(resource)
             data['entryPoints'][0]['bindings'].append({'name':resource['name'],'binding':{'used':1}})
-        self.assertEqual(len(raster_interface(data,'compute')['entries']), 16)
-        data['parameters'][-1]['binding']['index'] = 16
+        self.assertEqual(len(raster_interface(data,'compute')['entries']), RASTER_BINDING_COUNT)
+        data['parameters'][-1]['binding']['index'] = RASTER_BINDING_COUNT
         with self.assertRaisesRegex(RuntimeError,'bounded profile'):raster_interface(data,'compute')
 
 if __name__=='__main__':unittest.main()

@@ -8,6 +8,9 @@ NATIVE_RECORD_SLOT = MAX_BUFFERS - 1
 # Mirrors the named texture binding range in render_graph_format/plan.h.
 MAX_TEXTURES = 3
 FIRST_TEXTURE_SLOT = 8
+# Mirrors the scene sampled color slots in renderer_gpu_preview_layout.h.
+SAMPLED_TEXTURE_SLOTS = (12, 16, 17)
+READ_ONLY_TEXTURE_VIEW = 'GraphReadOnlyTextureView'
 WRITABLE_TEXTURE_VIEW = 'GraphWritableTextureView'
 MAX_STRIDE = 4096
 MAX_ELEMENTS = 16 * 1024 * 1024
@@ -16,6 +19,20 @@ NATIVE_LAYOUT_ERROR = re.compile(r'^Ludus shader build: Native structured buffer
 
 def is_native_record(record):
     return record is not None and record.get('access') == 'Structured'
+
+
+def sampled_texture_name(index):
+    """The first slot keeps the global name used by existing Slang shaders."""
+    return 'GraphColorInput' if index == 0 else f'GraphSampledTexture{index}'
+
+
+def get_sampled_textures(operation):
+    """Read the pass's sampled inputs, including the older single-input plan shape."""
+    if 'sampled_textures' in operation:
+        return operation['sampled_textures']
+    if 'source_color' in operation and operation['kind'] == 'RayTracing':
+        return (operation['source_color'],)
+    return ()
 
 
 def requests_named_resources(program, snapshot):
@@ -103,15 +120,25 @@ def link_persistent_structs(plans, programs, snapshot, build, closures=None, *, 
                     f"{operation['id']}: add a final {function}Resources resources parameter to access named textures.",
                     location={'source': program.get('source', ''), 'program': program_id, 'line': 1,
                               'column': 1, 'repair': 'add_buffer_access'})
-            for slot, use in enumerate(textures):
-                port = use['port']
-                field = port[0].upper() + port[1:]
-                build.name(field, f"shader member for texture port '{port}'")
-                build.require(all(previous['field'] != field for previous in fields),
-                              'ShaderInterface', operation['id'],
-                              f"Resource ports map to the same shader member '{field}'. Rename one port.")
-                fields.append({'field': field, 'slot': slot, 'record': None, 'writable': True, 'texture': True,
-                               'texture_view': source_is_lusl})
+            sampled = operation.get('sampled_textures', ())
+            if len(sampled) > 1 and not is_named and pending_resources is None:
+                function = program.get('function', 'ShaderMain')
+                raise build.ToolingError(
+                    'RenderGraphBuildShaderInterface',
+                    f"{operation['id']}: add a final {function}Resources resources parameter to read each sampled texture by port name.",
+                    location={'source': program.get('source', ''), 'program': program_id, 'line': 1,
+                              'column': 1, 'repair': 'add_buffer_access'})
+            texture_groups = ((textures, True), (sampled if is_named or pending_resources is not None else (), False))
+            for group, is_writable in texture_groups:
+                for slot, use in enumerate(group):
+                    port = use['port']
+                    field = port[0].upper() + port[1:]
+                    build.name(field, f"shader member for texture port '{port}'")
+                    build.require(all(previous['field'] != field for previous in fields),
+                                  'ShaderInterface', operation['id'],
+                                  f"Resource ports map to the same shader member '{field}'. Rename one port.")
+                    fields.append({'field': field, 'slot': slot, 'record': None, 'writable': is_writable,
+                                   'texture': True, 'texture_view': source_is_lusl})
             ordered = sorted(fields, key=lambda field: field['field'])
             if not is_named:
                 if pending_resources is not None and program_id not in ambiguous_pending:
@@ -133,7 +160,9 @@ def link_persistent_structs(plans, programs, snapshot, build, closures=None, *, 
 
 def record_view_name(field):
     if field.get('texture'):
-        return WRITABLE_TEXTURE_VIEW if field.get('texture_view') else 'RWTexture2D<float4>'
+        if field.get('texture_view'):
+            return WRITABLE_TEXTURE_VIEW if field['writable'] else READ_ONLY_TEXTURE_VIEW
+        return 'RWTexture2D<float4>' if field['writable'] else 'Texture2D<float4>'
     record = field['record']
     if record is None:
         if not field.get('word_view'):
@@ -184,8 +213,9 @@ def emit_record_layout(shape, expression, address, loads, stores, depth, build, 
 
 def record_view_argument(field):
     if field.get('texture'):
-        handle = f'GraphWritableTexture{field["slot"]}'
-        return f'{WRITABLE_TEXTURE_VIEW}({handle})' if field.get('texture_view') else handle
+        slot = field['slot']
+        handle = f'GraphWritableTexture{slot}' if field['writable'] else sampled_texture_name(slot)
+        return f'{record_view_name(field)}({handle})' if field.get('texture_view') else handle
     handle = f'GraphBuffer{field["slot"]}'
     if is_native_record(field['record']):
         return handle
@@ -303,17 +333,20 @@ def record_view_definition(view, type_name, is_writable, *, stride=0, loads=None
 """
 
 
-def texture_view_definition():
+def texture_view_definition(is_writable):
     """Keep texture storage behind an extern Slang type in LuSL resource structs."""
+    view = WRITABLE_TEXTURE_VIEW if is_writable else READ_ONLY_TEXTURE_VIEW
+    texture = 'RWTexture2D<float4>' if is_writable else 'Texture2D<float4>'
+    load = 'Texture[positionPixel]' if is_writable else 'Texture.Load(int3(positionPixel, 0))'
+    store = '    void Store(uint2 positionPixel, float4 value) { Texture[positionPixel] = value; }\n' if is_writable else ''
     return f"""
-struct {WRITABLE_TEXTURE_VIEW}
+struct {view}
 {{
-    private RWTexture2D<float4> Texture;
-    __init(RWTexture2D<float4> texture) {{ Texture = texture; }}
+    private {texture} Texture;
+    __init({texture} texture) {{ Texture = texture; }}
     uint2 GetDimensions() {{ uint width; uint height; Texture.GetDimensions(width, height); return uint2(width, height); }}
-    float4 Load(uint2 positionPixel) {{ return Texture[positionPixel]; }}
-    void Store(uint2 positionPixel, float4 value) {{ Texture[positionPixel] = value; }}
-}};
+    float4 Load(uint2 positionPixel) {{ return {load}; }}
+{store}}};
 """
 
 

@@ -1043,7 +1043,7 @@ float32x3 ShadeRecordedHit(in SceneContext scene, in RayLaunch launch,
             self.assertEqual(1, sum(variant[-1] == ray.TRIANGLE_LOOP_TAG for variant in recipe['ray_programs']))
             execution.cook_runtime(str(package), root / 'mixed.lurgrt')
 
-    def test_native_ray_generation_binds_two_named_textures_in_both_languages(self):
+    def test_native_ray_writes_and_scene_compute_samples_named_textures_in_both_languages(self):
         from test_render_graph_authoring import parse_runtime
         for extension, has_image in (('slang', False), ('lusl', False), ('slang', True)):
             with self.subTest(language=extension, image=has_image), tempfile.TemporaryDirectory() as temporary:
@@ -1061,6 +1061,9 @@ float32x3 ShadeRecordedHit(in SceneContext scene, in RayLaunch launch,
                 producer['outputs'].append({**producer['outputs'][0], 'id': 'weights', 'target': 'weights'})
                 producer['invocation'] = {'type': 'RayTracing', 'dimensions': [8, 8, 1]}
                 config['edges'].append({'from': 'weights.texture', 'to': 'utd.weights'})
+                consumer = next(node for node in config['nodes'] if node['id'] == 'shade')
+                consumer['inputs'].append({**consumer['inputs'][-1], 'id': 'weights'})
+                config['edges'].append({'from': 'utd.weights', 'to': 'shade.weights'})
                 if has_image:
                     config['nodes'].append({**target, 'id': 'preview', 'extent': [64, 32]})
                     producer['inputs'].append({**producer['inputs'][-1], 'id': 'preview'})
@@ -1079,7 +1082,25 @@ float32x3 ShadeRecordedHit(in SceneContext scene, in RayLaunch launch,
                 callbacks = source / program['source']
                 callbacks.write_text('void DiffractionMiss' + callbacks.read_text().split('void DiffractionMiss', 1)[1])
                 program['source'] = f'main_shaders/named_textures.{extension}'
+                reader_program = next(item for item in value['programs'] if item['id'] == 'ReadDiffraction')
+                reader_program['source'] = f'main_shaders/read_diffraction.{extension}'
                 manifest.write_text(json.dumps(value))
+                reader_source = source / reader_program['source']
+                if extension == 'slang':
+                    reader_source.write_text(
+                        'float3 ReadDiffraction(SceneContext scene, RayLaunch launch, inout RayQueryContext queries, '
+                        'ReadDiffractionResources resources)\n'
+                        '{\n'
+                        '    return resources.Diffraction.Load(int3(0)).rgb + resources.Weights.Load(int3(0)).rgb;\n'
+                        '}\n')
+                else:
+                    reader_source.write_text(
+                        '#include "scene_shader.luslh"\n#include "graph_resources.luslh"\n'
+                        'float32x3 ReadDiffraction(in SceneContext scene, in RayLaunch launch, '
+                        'inout RayQueryContext inoutQueries, in ReadDiffractionResources resources)\n'
+                        '{\n'
+                        '    return resources.Diffraction.Load(uint32x2(0)).rgb + resources.Weights.Load(uint32x2(0)).rgb;\n'
+                        '}\n')
                 shader = source / program['source']
                 if extension == 'slang':
                     shader.write_text(
@@ -1114,11 +1135,18 @@ float32x3 ShadeRecordedHit(in SceneContext scene, in RayLaunch launch,
                                  (writer.get('ImageLaunchWidth', 0), writer.get('ImageLaunchHeight', 0)))
                 self.assertNotIn(writer['Color'], writer['ShaderTextures'])
                 self.assertEqual(reader['SourceColor'], writer['ShaderTextures'][0])
+                self.assertEqual([writer['ShaderTextures'][1]], reader['AdditionalSampledTextures'])
+                compute_bindings = contents['artifacts'][('RayTracing', 'compute', 'metal')]['descriptor']['interface']['entries']
+                self.assertTrue(set(ray.buffers.SAMPLED_TEXTURE_SLOTS[:2]) <=
+                                {entry['binding'] for entry in compute_bindings})
                 self.assertNotEqual(*writer['ShaderTextures'])
                 destination = root / 'named-textures.lurgrt'
                 execution.cook_runtime(package, destination, configuration='ColorInput')
                 parsed = parse_runtime(destination.read_bytes())
                 self.assertEqual(tuple(writer['ShaderTextures']), parsed['shader_textures'][0][:2])
+                self.assertEqual(execution.SAMPLED_TEXTURES_PACKAGE_VERSION, parsed['version'])
+                self.assertEqual((writer['ShaderTextures'][1], execution.ABSENT),
+                                 parsed['additional_sampled_textures'][1])
                 header = root / 'named-textures.hpp'
                 execution.emit_runtime(package, header, configuration='ColorInput')
                 slots = ', '.join(str(slot) for slot in writer['ShaderTextures'])
@@ -1128,6 +1156,11 @@ float32x3 ShadeRecordedHit(in SceneContext scene, in RayLaunch launch,
                 resource_fields = next(item['fields'] for item in api['resources'] if item['program'] == program['id'])
                 self.assertEqual(['Diffraction', 'Weights'], [field['name'] for field in resource_fields])
                 self.assertTrue(all(field['texture'] and field['writable'] for field in resource_fields))
+                api = shader_context.export_context(manifest, root / 'editor-read', reader_program['source'],
+                                                    helper=options['helper'], compiler=options['compiler'])
+                resource_fields = next(item['fields'] for item in api['resources'] if item['program'] == 'ReadDiffraction')
+                self.assertEqual(['Diffraction', 'Weights'], [field['name'] for field in resource_fields])
+                self.assertTrue(all(field['texture'] and not field['writable'] for field in resource_fields))
 
     def test_scene_compute_samples_an_earlier_ray_color_output(self):
         from test_render_graph_authoring import parse_runtime

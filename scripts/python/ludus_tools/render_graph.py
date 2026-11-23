@@ -829,6 +829,8 @@ def _operation_resource_uses(operation):
         yield use['resource'], use['input_version'], use['output_version'], True if use['output_version'] is not None else None
     for use in operation.get('storage_textures', ()):
         yield use['resource'], use['input_version'], use['output_version'], True
+    for use in operation.get('sampled_textures', ()):
+        yield use['resource'], use['input_version'], None, None
     for field in ('visibility', 'visibility_depth', 'source_color'):
         if field in operation:
             use = operation[field]
@@ -994,18 +996,21 @@ class _Compiler:
                                  resource.get('view_scale') == target.get('view_scale') and resource['samples'] == 1,
                                  'AttachmentMismatch', where, 'visibility/depth must be initialized and match the ray extent')
                         texture_reads[aspect] = {'resource': source_value.resource, 'input_version': source_value.version}
-                if 'source_color' in inputs:
-                    source_value = inputs['source_color']
+                sampled_textures = []
+                for key, port in input_mapping.items():
+                    if not key.startswith('sampled:') or key not in inputs:
+                        continue
+                    source_value = inputs[key]
                     resource = self.resources[source_value.resource]
                     _require(source_value.defined and
                              ('color' not in inputs or source_value.resource != inputs['color'].resource) and
                              resource['format'] == 'RGBA8Unorm' and resource['samples'] == 1 and
                              not resource['presentation'], 'AttachmentMismatch', where,
                              'scene compute color input requires a defined, separate, offscreen RGBA8Unorm texture',
-                             port=input_mapping['source_color'], direction='input',
+                             port=port, direction='input',
                              repair='Connect the color output of an upstream scene compute or ray pass.')
-                    texture_reads['source_color'] = {'resource': source_value.resource,
-                                                        'input_version': source_value.version}
+                    sampled_textures.append({'port': port, 'resource': source_value.resource,
+                                             'input_version': source_value.version})
                 structured = [port['id'] for port in authored_pipeline['inputs'] if port['type'] == 'Buffer' and
                               'stride' in self.resources[inputs['buffer:' + port['id']].resource]]
                 _require(not is_compute or not structured, 'Capability', where,
@@ -1058,8 +1063,9 @@ class _Compiler:
                 else:
                     launch = {'work_items': work_items}
                 storage_textures = []
-                occupied_textures = {inputs[key].resource for key in ('color', 'source_color', 'visibility', 'visibility_depth')
+                occupied_textures = {inputs[key].resource for key in ('color', 'visibility', 'visibility_depth')
                                      if key in inputs}
+                occupied_textures.update(use['resource'] for use in sampled_textures)
                 for key, port in input_mapping.items():
                     if not key.startswith('texture:'):
                         continue
@@ -1087,8 +1093,8 @@ class _Compiler:
                                              'input_version': source.version, 'output_version': value.version})
                 storage = {}
                 storage_outputs = {}
-                for name in sorted(set(inputs) - {'scene', 'view', 'color', 'visibility', 'visibility_depth', 'source_color'}):
-                    if name.startswith('texture:'):
+                for name in sorted(set(inputs) - {'scene', 'view', 'color', 'visibility', 'visibility_depth'}):
+                    if name.startswith(('texture:', 'sampled:')):
                         continue
                     buffer = inputs[name]
                     if 'stride' not in self.resources[buffer.resource]:
@@ -1117,6 +1123,7 @@ class _Compiler:
                     'dependencies': sorted({v.producer for v in inputs.values() if v.producer}), 'pipeline': authored_pipeline,
                     'persistent_buffers': buffer_uses, 'buffers': storage, **texture_reads,
                     **({'storage_textures': storage_textures} if storage_textures else {}),
+                    **({'sampled_textures': sampled_textures} if sampled_textures else {}),
                     'attachments': attachments})
                 if is_compute:
                     # Only the offline plan names the source; the numeric pass record stays RayTracing (design D1).
@@ -1307,7 +1314,7 @@ class _Compiler:
             for operation in self.passes:
                 if operation['id'] == average['id']:
                     continue
-                reads = [*operation.get('attachments', {}).values(),
+                reads = [*operation.get('attachments', {}).values(), *operation.get('sampled_textures', ()),
                          *(operation[key] for key in ('visibility', 'visibility_depth', 'source_color') if key in operation)]
                 _require(not any(read['resource'] == source['resource'] and
                                  read['input_version'] == source['input_version'] for read in reads),
@@ -1492,14 +1499,15 @@ def dump_plan(plan):
         if entry['kind'] == 'RayTracing':
             if 'work_items' in entry:
                 lines.append(f"    launch: {entry['work_items']} scene work items")
-            else:
+            elif 'color' in entry['attachments']:
                 target = entry['attachments']['color']['resource']
                 target_kind = 'storage texture' if entry.get('storage_texture') else 'color target'
                 lines.append(f"    launch: {entry['dimensions']}; {target_kind}: {target}")
+            else:
+                lines.append(f"    launch: {entry['dimensions']}; shader-writable textures")
             if 'source_kind' in entry:
                 lines.append(f"    source: {entry['source_kind']} (scene compute pass in the ray sequence)")
-            if 'source_color' in entry:
-                source = entry['source_color']
+            for source in buffers.get_sampled_textures(entry):
                 lines.append(f"    sampled color: {source['resource']}@{source['input_version']}")
         for name, use in entry.get('buffers', {}).items():
             lines.append(f"    {name}: {use['resource']}@{use['input_version']} -> @{use['output_version']} ({use['access']})")

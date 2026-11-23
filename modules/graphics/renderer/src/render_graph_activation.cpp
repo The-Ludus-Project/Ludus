@@ -44,6 +44,8 @@ static_assert(static_cast<uint32>(format::RayTraversal::NativeQuery) == LUDUS_GR
                       LUDUS_GRAPH_TRAVERSAL_HARDWARE_PIPELINE &&
                   static_cast<uint32>(format::RayTraversal::ComputeBvh) == LUDUS_GRAPH_TRAVERSAL_COMPUTE_BVH,
               "cooked pass traversal codes select the linked kernel's strategy");
+static_assert(format::FIRST_SAMPLED_TEXTURE_BINDING == LUDUS_GRAPH_COLOR_INPUT_BINDING);
+static_assert(format::GetSampledTextureBinding(format::MAX_SAMPLED_TEXTURES - 1) < rhi::RASTER_COMPUTE_BINDING_COUNT);
 constexpr uint32 FIRST_ENTRY_CHARACTER = 0x21;
 constexpr uint32 LAST_ENTRY_CHARACTER = 0x7E;
 bool IsAccepted(Status status) noexcept
@@ -182,7 +184,7 @@ struct RenderGraphPackage::State final
     bool HasIndependentPrograms = false;
     bool HasVisibilityFields = false;
     bool CanHaveSceneColorInput = false;
-    bool HasSceneColorInput = false;
+    uint32 SampledTextureCount = 0;
     bool HasExplicitImageLaunchFields = false;
     bool CanHaveSceneStorageTexture = false;
     bool HasIndependentColorAccess = false;
@@ -228,7 +230,8 @@ struct RenderGraphPackage::State final
     /// Stage binding requirements derived from the uniform records, one table per role.
     static constexpr usize STAGE_BINDING_CAPACITY =
         LUDUS_GRAPH_VISIBILITY_BINDING_COUNT + format::MAX_STORAGE_BUFFERS + LUDUS_GRAPH_LTC_TABLE_BINDING_COUNT +
-        LUDUS_GRAPH_FAILURE_BINDING_COUNT + LUDUS_GRAPH_WORLD_TABLE_BINDING_COUNT + format::MAX_SHADER_TEXTURES + 1;
+        LUDUS_GRAPH_FAILURE_BINDING_COUNT + LUDUS_GRAPH_WORLD_TABLE_BINDING_COUNT + format::MAX_SHADER_TEXTURES +
+        format::MAX_SAMPLED_TEXTURES;
     // RasterBinding initializes Visibility to Both, including every nested array element.
     // NOLINTNEXTLINE(bugprone-invalid-enum-default-initialization)
     StaticArray<StaticArray<rhi::RasterBinding, STAGE_BINDING_CAPACITY>, format::STAGE_ROLE_COUNT> Bindings{};
@@ -808,8 +811,8 @@ RenderGraphPackageStatus RenderGraphPackage::State::AppendSceneResourceBindings(
             (hasReaderCapture == true ? 1 : 0) +
             (HasLtcTable == true && isNativeStages == false ? LUDUS_GRAPH_LTC_TABLE_BINDING_COUNT : 0) +
             (HasFailureSummary == true ? LUDUS_GRAPH_FAILURE_BINDING_COUNT : 0) +
-            (hasAerialPerspective == true ? 1 : 0) + (hasAtmosphereSky == true ? 1 : 0) +
-            (HasSceneColorInput == true ? 1 : 0) + (HasSceneStorageTexture == true ? 1 : 0) + ShaderTextureCount;
+            (hasAerialPerspective == true ? 1 : 0) + (hasAtmosphereSky == true ? 1 : 0) + SampledTextureCount +
+            (HasSceneStorageTexture == true ? 1 : 0) + ShaderTextureCount;
         if (Bindings[role].GetSize() - BindingCounts[role] < appended)
         {
             return RenderGraphPackageStatus::CapacityExceeded;
@@ -842,9 +845,9 @@ RenderGraphPackageStatus RenderGraphPackage::State::AppendSceneResourceBindings(
                                                      rhi::RasterVisibility::Compute,
                                                      LUDUS_GPU_PREVIEW_VECTOR_BYTES};
         }
-        if (HasSceneColorInput == true)
+        if (SampledTextureCount != 0)
         {
-            Bindings[role][BindingCounts[role]++] = {LUDUS_GRAPH_COLOR_INPUT_BINDING,
+            Bindings[role][BindingCounts[role]++] = {format::FIRST_SAMPLED_TEXTURE_BINDING,
                                                      rhi::RasterBindingKind::Texture2D,
                                                      rhi::RasterVisibility::Compute,
                                                      0};
@@ -869,6 +872,13 @@ RenderGraphPackageStatus RenderGraphPackage::State::AppendSceneResourceBindings(
                                                      rhi::RasterBindingKind::StorageRead,
                                                      rhi::RasterVisibility::Compute,
                                                      LUDUS_GPU_PREVIEW_VECTOR_BYTES};
+        }
+        for (uint32 slot = 1; slot < SampledTextureCount; ++slot)
+        {
+            Bindings[role][BindingCounts[role]++] = {format::GetSampledTextureBinding(slot),
+                                                     rhi::RasterBindingKind::Texture2D,
+                                                     rhi::RasterVisibility::Compute,
+                                                     0};
         }
     }
     return hasComputeRole == true ? RenderGraphPackageStatus::Ready : RenderGraphPackageStatus::Malformed;
@@ -1008,9 +1018,10 @@ RenderGraphPackageStatus RenderGraphPackage::State::DecodeRecords(ByteReader& in
                                             (pass.Traversal == format::RayTraversal::NativeQuery ||
                                              pass.Traversal == format::RayTraversal::HardwarePipeline));
         const bool isUpscale = format::IsImageTechnique(static_cast<format::Technique>(program)) == true;
-        HasSceneColorInput =
-            HasSceneColorInput == true ||
-            (program == static_cast<uint32>(format::Technique::RayTracing) && pass.SourceColor != format::ABSENT);
+        if (program == static_cast<uint32>(format::Technique::RayTracing) && pass.SourceColor != format::ABSENT)
+        {
+            SampledTextureCount = 1;
+        }
         if (pass.DenoisingQuality > static_cast<uint32>(format::ProcessingQuality::High) ||
             (isUpscale == true && (HasBilinearUpscale == false || pass.SceneData != 0)) ||
             (program > static_cast<uint32>(format::Technique::BilinearUpscale) && HasMetalFxSpatialUpscale == false) ||
@@ -1085,7 +1096,8 @@ RenderGraphPackageStatus RenderGraphPackage::decode(BorrowedView<const uint8> by
     const uint32 magic = reader.ReadWord();
     const uint32 version = reader.ReadWord();
     if (magic != expectedMagic ||
-        (version != format::SHADER_TEXTURE_ACCESS_PACKAGE_VERSION && version != format::RECORD_READER_PACKAGE_VERSION &&
+        (version != format::SAMPLED_TEXTURES_PACKAGE_VERSION &&
+         version != format::SHADER_TEXTURE_ACCESS_PACKAGE_VERSION && version != format::RECORD_READER_PACKAGE_VERSION &&
          version != format::NATIVE_GRAPH_RECORD_PACKAGE_VERSION && version != format::IMAGE_LAUNCH_PACKAGE_VERSION &&
          version != format::STORAGE_TEXTURE_PACKAGE_VERSION && version != format::SCENE_COLOR_INPUT_PACKAGE_VERSION &&
          version != format::DIRECTIONAL_NEAR_PACKAGE_VERSION && version != format::SCENE_WORK_ITEMS_PACKAGE_VERSION &&
@@ -1428,7 +1440,8 @@ RenderGraphPackageStatus RenderGraphPackage::decode(BorrowedView<const uint8> by
         }
         candidate->HasPassNames = true;
     }
-    if (version >= format::SHADER_TEXTURE_ACCESS_PACKAGE_VERSION && reader.IsComplete() == false)
+    if (version >= format::SAMPLED_TEXTURES_PACKAGE_VERSION ||
+        (version >= format::SHADER_TEXTURE_ACCESS_PACKAGE_VERSION && reader.IsComplete() == false))
     {
         for (uint32 index = 0; index < candidate->Header.PassCount; ++index)
         {
@@ -1453,7 +1466,37 @@ RenderGraphPackageStatus RenderGraphPackage::decode(BorrowedView<const uint8> by
                 candidate->ShaderTextureCount = count;
             }
         }
-        if (candidate->ShaderTextureCount == 0 || candidate->HasSceneStorageTexture == true)
+        if ((candidate->ShaderTextureCount == 0 && version < format::SAMPLED_TEXTURES_PACKAGE_VERSION) ||
+            (candidate->ShaderTextureCount != 0 && candidate->HasSceneStorageTexture == true))
+        {
+            return RenderGraphPackageStatus::Malformed;
+        }
+    }
+    if (version >= format::SAMPLED_TEXTURES_PACKAGE_VERSION)
+    {
+        for (uint32 index = 0; index < candidate->Header.PassCount; ++index)
+        {
+            format::Pass& pass = candidate->Passes[index];
+            uint32 count = format::GetSampledTextureCount(pass);
+            for (uint32 slot = 1; slot < format::MAX_SAMPLED_TEXTURES; ++slot)
+            {
+                const uint32 resource = reader.ReadWord();
+                if (resource != format::ABSENT)
+                {
+                    if (count != slot || resource >= candidate->Header.ResourceCount)
+                    {
+                        return RenderGraphPackageStatus::Malformed;
+                    }
+                    ++count;
+                }
+                pass.AdditionalSampledTextures[slot - 1] = resource;
+            }
+            if (count > candidate->SampledTextureCount)
+            {
+                candidate->SampledTextureCount = count;
+            }
+        }
+        if (candidate->SampledTextureCount <= 1)
         {
             return RenderGraphPackageStatus::Malformed;
         }
@@ -1516,7 +1559,7 @@ RenderGraphPackageStatus RenderGraphPackage::decode(BorrowedView<const uint8> by
     }
     candidate->DeriveBindings();
     if (candidate->HasLtcTable == true || candidate->HasFailureSummary == true || candidate->HasAtmosphereSky == true ||
-        candidate->HasAerialPerspective == true || candidate->HasSceneColorInput == true ||
+        candidate->HasAerialPerspective == true || candidate->SampledTextureCount != 0 ||
         candidate->HasSceneStorageTexture == true || candidate->NativeRecordStride != 0 ||
         candidate->ShaderTextureCount != 0)
     {

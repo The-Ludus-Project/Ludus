@@ -390,6 +390,9 @@ def parse_runtime(data):
     result['shader_textures'] = (
         [take(execution.buffers.MAX_TEXTURES) for _ in range(passes)]
         if version >= execution.SHADER_TEXTURE_ACCESS_PACKAGE_VERSION and offset < len(data) else [])
+    result['additional_sampled_textures'] = (
+        [take(len(execution.buffers.SAMPLED_TEXTURE_SLOTS) - 1) for _ in range(passes)]
+        if version >= execution.SAMPLED_TEXTURES_PACKAGE_VERSION else [])
     assert offset == len(data)
     return result
 

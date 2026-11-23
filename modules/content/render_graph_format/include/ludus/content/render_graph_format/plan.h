@@ -83,6 +83,19 @@ inline constexpr foundation::usize PASS_FIELD_COUNT = 26;
 inline constexpr foundation::uint32 FIRST_SHADER_TEXTURE_BINDING = 8;
 /// Maximum distinct shader read/write textures a ray pass may bind.
 inline constexpr foundation::uint32 MAX_SHADER_TEXTURES = 3;
+/// Additional sampled color slots following the legacy GraphColorInput slot.
+inline constexpr foundation::uint32 MAX_ADDITIONAL_SAMPLED_TEXTURES = 2;
+/// Maximum read-only color textures exposed to a scene compute pass.
+inline constexpr foundation::uint32 MAX_SAMPLED_TEXTURES = 1 + MAX_ADDITIONAL_SAMPLED_TEXTURES;
+/// Shader binding for the first scene sampled texture, also exposed as GraphColorInput.
+inline constexpr foundation::uint32 FIRST_SAMPLED_TEXTURE_BINDING = 12;
+/// First binding in the contiguous range for the remaining sampled textures.
+inline constexpr foundation::uint32 FIRST_ADDITIONAL_SAMPLED_TEXTURE_BINDING = 16;
+/// Get the compute shader binding for a sampled texture slot below MAX_SAMPLED_TEXTURES.
+[[nodiscard]] LUDUS_INLINE constexpr foundation::uint32 GetSampledTextureBinding(foundation::uint32 slot) noexcept
+{
+    return slot == 0 ? FIRST_SAMPLED_TEXTURE_BINDING : FIRST_ADDITIONAL_SAMPLED_TEXTURE_BINDING + slot - 1;
+}
 /// Serialized four-byte field index of Pass::DenoisingQuality, stable since it was appended in
 /// runtime package version 16; later versions append fields after it.
 inline constexpr foundation::usize PASS_DENOISING_QUALITY_FIELD = 18;
@@ -300,12 +313,31 @@ struct Pass final
     bool HasStorageTexture = false;
     /// Graph resource IDs in shader storage slot order. Unused slots are ABSENT and follow the bound slots.
     foundation::uint32 ShaderTextures[MAX_SHADER_TEXTURES]{ABSENT, ABSENT, ABSENT};
+    /// Sampled color inputs after SourceColor, in shader slot order. Unused trailing slots are ABSENT.
+    foundation::uint32 AdditionalSampledTextures[MAX_ADDITIONAL_SAMPLED_TEXTURES]{ABSENT, ABSENT};
 };
 /// Number of occupied slots. An admitted Pass has no gaps between bound slots.
 [[nodiscard]] LUDUS_INLINE constexpr foundation::uint32 GetShaderTextureCount(const Pass& pass) noexcept
 {
     foundation::uint32 count = 0;
     while (count < MAX_SHADER_TEXTURES && pass.ShaderTextures[count] != ABSENT)
+    {
+        ++count;
+    }
+    return count;
+}
+/// Get the resource ID for a RayTracing pass's sampled texture slot below MAX_SAMPLED_TEXTURES.
+[[nodiscard]] LUDUS_INLINE constexpr foundation::uint32 GetSampledTexture(const Pass& pass,
+                                                                          foundation::uint32 slot) noexcept
+{
+    return slot == 0 ? pass.SourceColor : pass.AdditionalSampledTextures[slot - 1];
+}
+/// Get the number of occupied sampled color slots in an admitted pass. Image operations return zero.
+[[nodiscard]] LUDUS_INLINE constexpr foundation::uint32 GetSampledTextureCount(const Pass& pass) noexcept
+{
+    foundation::uint32 count = 0;
+    while (pass.Program == Technique::RayTracing && count < MAX_SAMPLED_TEXTURES &&
+           GetSampledTexture(pass, count) != ABSENT)
     {
         ++count;
     }

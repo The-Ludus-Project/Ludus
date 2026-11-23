@@ -99,8 +99,7 @@ bool RasterMetalBindings(NSArray<id<MTLBinding>>* bindings,
         // user shader resources. Their reserved indices follow the verified
         // vertex descriptor, independently of the group-zero resource layout.
         if (shader.Stage == ShaderStage::Vertex && binding.type == MTLBindingTypeBuffer &&
-            binding.index >= internal::RASTER_BINDINGS &&
-            binding.index < internal::RASTER_BINDINGS + pipeline.StreamCount)
+            binding.index >= RASTER_BINDING_COUNT && binding.index < RASTER_BINDING_COUNT + pipeline.StreamCount)
         {
             continue;
         }
@@ -253,18 +252,18 @@ BindingCapabilities BindingLimits() noexcept
     }
     return
     {
-        .MaxDynamicUniformBuffers = static_cast<uint32>(internal::RASTER_BINDINGS),
-        .MaxDynamicStorageBuffers = static_cast<uint32>(internal::RASTER_BINDINGS),
+        .MaxDynamicUniformBuffers = static_cast<uint32>(RASTER_BINDING_COUNT),
+        .MaxDynamicStorageBuffers = static_cast<uint32>(RASTER_BINDING_COUNT),
         .MaxTextureArrayElements = 31,
         .MaxDescriptorsPerSet = internal::CurrentStorageLimits().DescriptorsPerSet,
         .HasUniformTextureIndexing = true,
         .HasBindlessTextureIndexing = internal::IsBindlessRequested(),
         .MaxBindings = static_cast<uint32>(internal::RASTER_BINDINGS),
-        .MaxUniformBuffersPerStage = static_cast<uint32>(internal::RASTER_BINDINGS),
+        .MaxUniformBuffersPerStage = static_cast<uint32>(RASTER_BINDING_COUNT),
         .MaxSampledTexturesPerStage = 31,
         .MaxSamplersPerStage = 16,
-        .MaxUniformBuffersPerSet = static_cast<uint32>(internal::RASTER_BINDINGS),
-        .MaxSamplersPerSet = static_cast<uint32>(internal::RASTER_BINDINGS),
+        .MaxUniformBuffersPerSet = static_cast<uint32>(RASTER_BINDING_COUNT),
+        .MaxSamplersPerSet = static_cast<uint32>(RASTER_BINDING_COUNT),
         .HasSamplerDescriptorArrays = true,
         .HasPartiallyBoundArrays = true,
     };
@@ -299,7 +298,7 @@ RasterStorageCapabilities RasterStorageLimits() noexcept
     }
     const bool hasWritableTextures = [GetMetal().Device supportsFamily:MTLGPUFamilyApple3] == YES ||
                                      [GetMetal().Device supportsFamily:MTLGPUFamilyMac2] == YES;
-    const uint32 slots = static_cast<uint32>(internal::RASTER_BINDINGS);
+    const uint32 slots = static_cast<uint32>(RASTER_BINDING_COUNT);
     return
     {
         .MaxVertexStorageBuffers = slots,
@@ -349,7 +348,7 @@ ComputeCapabilities ComputeLimits() noexcept
              static_cast<uint32>(threads.depth < 64 ? threads.depth : 64)},
             256,
             {65535, 65535, 65535},
-            static_cast<uint32>(internal::RASTER_BINDINGS)};
+            static_cast<uint32>(RASTER_BINDING_COUNT)};
 }
 // Thanks to Apple, "MTLCompileOptions.mathMode" and "MTLMathMode", Metal documentation:
 // https://developer.apple.com/documentation/metal/mtlcompileoptions/mathmode.
@@ -993,7 +992,7 @@ RasterStatus MetalRasterPreparation::Build() noexcept
         MTLVertexDescriptor* vertex = [MTLVertexDescriptor vertexDescriptor];
         for (usize i = 0; i < info.StreamCount; ++i)
         {
-            const usize binding = internal::RASTER_BINDINGS + i;
+            const usize binding = RASTER_BINDING_COUNT + i;
             vertex.layouts[binding].stride = info.Streams[i].Stride;
             vertex.layouts[binding].stepFunction =
                 info.Streams[i].PerInstance == true ? MTLVertexStepFunctionPerInstance : MTLVertexStepFunctionPerVertex;
@@ -1007,7 +1006,7 @@ RasterStatus MetalRasterPreparation::Build() noexcept
                 : attribute.Format == RasterVertexFormat::Float3 ? MTLVertexFormatFloat3
                                                                  : MTLVertexFormatFloat4;
             vertex.attributes[attribute.Location].offset = attribute.Offset;
-            vertex.attributes[attribute.Location].bufferIndex = internal::RASTER_BINDINGS + attribute.Stream;
+            vertex.attributes[attribute.Location].bufferIndex = RASTER_BINDING_COUNT + attribute.Stream;
         }
         descriptor.vertexDescriptor = vertex;
 
@@ -1221,7 +1220,7 @@ RasterStatus RasterDraw(const internal::RasterPacket& packet) noexcept
     {
         [GetMetal().Encoder setVertexBuffer:GetRasterMetal().Buffers[packet.Vertices[i]]
                                      offset:packet.Offsets[i]
-                                    atIndex:internal::RASTER_BINDINGS + i];
+                                    atIndex:RASTER_BINDING_COUNT + i];
     }
     [GetMetal().Encoder setCullMode:MTLCullModeNone];
     // Encoder state outlives the draw, so every packet states its own fill mode.

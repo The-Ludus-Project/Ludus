@@ -1485,7 +1485,7 @@ The node accepts the same ports as a Ray Tracing Pipeline node:
 - exactly one writable RGBA8Unorm ColorTexture with **Clear**/**Store**;
 - up to two **Buffer** ports, with **Load**/**Store** for writable ports. See
   [named access](#access-an-ordered-buffer-by-port-name) for the shader interface;
-- optionally one [sampled color input](#read-a-color-texture-from-an-earlier-pass) or the read-only visibility color and depth pair.
+- up to three [sampled color inputs](#read-a-color-texture-from-an-earlier-pass) or the read-only visibility color and depth pair.
 
 `StructuredBuffer` inputs are rejected: connect a `Buffer` node instead. Set
 `invocation.dimensions` to `"ColorTarget"`, or to the exact `[width, height, 1]` of
@@ -1661,21 +1661,28 @@ native ray hardware.
 
 ### Read a color texture from an earlier pass
 
-To read an intermediate color image in a scene **ComputePipeline**, add one
-**ColorTexture** under **Read Inputs**. Connect it to an earlier scene compute or
-ray pass's color output. For example, connect `utd.diffraction` to the
-`diffraction` input on `shade`. Keep a separate writable color target for
-`shade`. The source must be an offscreen, single-sample RGBA8Unorm texture
-written earlier in the same ordered sequence.
+In a scene **ComputePipeline**, add up to three **ColorTexture** ports under
+**Read Inputs**. Connect each port to an earlier scene compute or ray pass's
+color output. For example, connect `utd.diffraction` to the `diffraction`
+input on `shade`. Each source must be an offscreen, single-sample RGBA8Unorm
+texture written earlier in the same ordered sequence. Keep a separate
+allocation for each texture this pass writes.
 
-**Build Graph** binds the connected texture as `Texture2D<float4> GraphColorInput`.
-The authored port name is used on the graph. Use the generated name in Slang
-without a shader-manifest binding or descriptor annotation. For equal source
-and destination extents, load the texel corresponding to the launch pixel.
+Use **Shader API → Add Resource Access** or add a final
+`<FunctionName>Resources resources` parameter to the shader. **Build Graph**
+generates a read-only texture member from each connected port, with its first
+letter capitalized. For example, Slang exposes `diffraction` as
+`Texture2D<float4> Diffraction` in `resources`. The graph owns the binding.
+For matching source and dispatch extents, read the launch pixel:
 
 ```slang
-float3 diffraction = GraphColorInput.Load(int3(launch.PositionPixel, 0)).rgb;
+float3 diffraction = resources.Diffraction.Load(int3(launch.PositionPixel, 0)).rgb;
 ```
+
+In LuSL, include `graph_resources.luslh` and declare the final parameter as
+`in <FunctionName>Resources resources`. Read with
+`resources.Diffraction.Load(launch.PositionPixel)`. Existing Slang shaders
+can continue to read the first sampled input through `GraphColorInput`.
 
 The load returns the stored normalized color, including any color processing
 applied before the wire. Query `GetDimensions` and bound coordinates against
@@ -1736,8 +1743,8 @@ Each pass can bind up to three named shader-writable textures. Dispatch indices
 describe the dispatch grid. Query each texture's own bounds before addressing
 it, and coordinate writes if multiple invocations can reach the same texel.
 New allocations start at zero. Texels retain their contents while the allocation
-lives. A later scene compute pass can sample a written texture as
-`GraphColorInput`. Connect the previous writer's output if the next pass also
+lives. A later scene compute pass can sample a written texture through its
+named read-only input in `resources`. Connect the previous writer's output if the next pass also
 needs to read and write it.
 
 This mode uses the native Vulkan or Metal tier-2 read/write texture profile and

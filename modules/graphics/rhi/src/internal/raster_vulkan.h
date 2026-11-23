@@ -919,16 +919,16 @@ BindingCapabilities BindingLimits() noexcept
     uint32 samplers = limits.maxPerStageDescriptorSamplers < limits.maxDescriptorSetSamplers
                           ? limits.maxPerStageDescriptorSamplers
                           : limits.maxDescriptorSetSamplers;
-    uniforms = uniforms < internal::RASTER_BINDINGS ? uniforms : static_cast<uint32>(internal::RASTER_BINDINGS);
-    samplers = samplers < internal::RASTER_BINDINGS ? samplers : static_cast<uint32>(internal::RASTER_BINDINGS);
+    uniforms = uniforms < RASTER_BINDING_COUNT ? uniforms : static_cast<uint32>(RASTER_BINDING_COUNT);
+    samplers = samplers < RASTER_BINDING_COUNT ? samplers : static_cast<uint32>(RASTER_BINDING_COUNT);
     return
     {
-        .MaxDynamicUniformBuffers = limits.maxDescriptorSetUniformBuffersDynamic < internal::RASTER_BINDINGS
+        .MaxDynamicUniformBuffers = limits.maxDescriptorSetUniformBuffersDynamic < RASTER_BINDING_COUNT
                                         ? limits.maxDescriptorSetUniformBuffersDynamic
-                                        : static_cast<uint32>(internal::RASTER_BINDINGS),
-        .MaxDynamicStorageBuffers = limits.maxDescriptorSetStorageBuffersDynamic < internal::RASTER_BINDINGS
+                                        : static_cast<uint32>(RASTER_BINDING_COUNT),
+        .MaxDynamicStorageBuffers = limits.maxDescriptorSetStorageBuffersDynamic < RASTER_BINDING_COUNT
                                         ? limits.maxDescriptorSetStorageBuffersDynamic
-                                        : static_cast<uint32>(internal::RASTER_BINDINGS),
+                                        : static_cast<uint32>(RASTER_BINDING_COUNT),
         .MaxTextureArrayElements = textures,
         .MaxDescriptorsPerSet = limits.maxPerStageResources < internal::CurrentStorageLimits().DescriptorsPerSet
                                     ? limits.maxPerStageResources
@@ -939,12 +939,12 @@ BindingCapabilities BindingLimits() noexcept
         .MaxUniformBuffersPerStage = uniforms,
         .MaxSampledTexturesPerStage = textures,
         .MaxSamplersPerStage = samplers,
-        .MaxUniformBuffersPerSet = limits.maxDescriptorSetUniformBuffers < internal::RASTER_BINDINGS
+        .MaxUniformBuffersPerSet = limits.maxDescriptorSetUniformBuffers < RASTER_BINDING_COUNT
                                        ? limits.maxDescriptorSetUniformBuffers
-                                       : static_cast<uint32>(internal::RASTER_BINDINGS),
-        .MaxSamplersPerSet = limits.maxDescriptorSetSamplers < internal::RASTER_BINDINGS
+                                       : static_cast<uint32>(RASTER_BINDING_COUNT),
+        .MaxSamplersPerSet = limits.maxDescriptorSetSamplers < RASTER_BINDING_COUNT
                                  ? limits.maxDescriptorSetSamplers
-                                 : static_cast<uint32>(internal::RASTER_BINDINGS),
+                                 : static_cast<uint32>(RASTER_BINDING_COUNT),
         .HasBufferDescriptorArrays = true,
         .HasSamplerDescriptorArrays = true,
         .HasRuntimeTextureArrays = GetVulkan().HasRuntimeTextureArrays,
@@ -1021,7 +1021,7 @@ ComputeCapabilities ComputeLimits() noexcept
                                        ? limits.maxPerStageDescriptorStorageBuffers
                                        : limits.maxDescriptorSetStorageBuffers;
     result.MaxStorageBindings =
-        storageBindings < internal::RASTER_BINDINGS ? storageBindings : static_cast<uint32>(internal::RASTER_BINDINGS);
+        storageBindings < RASTER_BINDING_COUNT ? storageBindings : static_cast<uint32>(RASTER_BINDING_COUNT);
     result.MaxWorkgroupInvocations = 256;
     const uint32 size[3]{256, 256, 64};
     for (usize i = 0; i < 3; ++i)
@@ -1083,9 +1083,9 @@ RasterStorageCapabilities RasterStorageLimits() noexcept
     const uint32 images = limits.maxPerStageDescriptorStorageImages < limits.maxDescriptorSetStorageImages
                               ? limits.maxPerStageDescriptorStorageImages
                               : limits.maxDescriptorSetStorageImages;
-    const uint32 textures = hasStorageFormats == false           ? 0U
-                            : images < internal::RASTER_BINDINGS ? images
-                                                                 : static_cast<uint32>(internal::RASTER_BINDINGS);
+    const uint32 textures = hasStorageFormats == false      ? 0U
+                            : images < RASTER_BINDING_COUNT ? images
+                                                            : static_cast<uint32>(RASTER_BINDING_COUNT);
     return
     {
         .MaxVertexStorageBuffers = compute.MaxStorageBindings,

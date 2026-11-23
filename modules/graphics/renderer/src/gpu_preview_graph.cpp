@@ -300,7 +300,8 @@ Status AppendGpuGraph(rhi::DeviceHandle device,
     StaticArray<rhi::GraphUse,
                 LUDUS_GRAPH_COMPUTE_BINDING_COUNT + 1 + LUDUS_GRAPH_LTC_TABLE_BINDING_COUNT +
                     LUDUS_GRAPH_FAILURE_BINDING_COUNT + RAY_SCENE_USE_COUNT +
-                    content::render_graph_format::MAX_SHADER_TEXTURES + 2>
+                    content::render_graph_format::MAX_SHADER_TEXTURES +
+                    content::render_graph_format::MAX_SAMPLED_TEXTURES + 1>
         computeUses{{{versions[0], rhi::GraphAccessMode::StorageRead, 0, job.DataBytes, rhi::RasterVisibility::Compute},
                      {versions[1],
                       rhi::GraphAccessMode::Uniform,
@@ -372,10 +373,20 @@ Status AppendGpuGraph(rhi::DeviceHandle device,
                                           0,
                                           rhi::RasterVisibility::Compute};
     }
-    if (state.HasColorInput == true)
+    for (uint32 slot = 0; slot < state.SampledTextureCount; ++slot)
     {
+        const rhi::TextureHandle sampledTexture = job.SampledTextures[slot].Texture;
         const rhi::TextureHandle colorInput =
-            rhi::IsNull(job.ColorInput) == true ? state.DefaultColorInput : job.ColorInput;
+            rhi::IsNull(sampledTexture) == true ? state.DefaultColorInput : sampledTexture;
+        bool isAlreadySampled = false;
+        for (uint32 earlier = 0; earlier < slot; ++earlier)
+        {
+            isAlreadySampled = isAlreadySampled == true || job.SampledTextures[earlier].Texture == sampledTexture;
+        }
+        if (isAlreadySampled == true)
+        {
+            continue;
+        }
         rhi::GraphVersion sampled;
         status = inoutResources.ImportTexture(device, graph, colorInput, sampled);
         if (status != Status::Ready)
