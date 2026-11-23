@@ -285,7 +285,7 @@ void MainWindow::activateErrorEntry(const ErrorListEntry& entry)
     if (entry.Producer == ErrorListProducer::Analysis)
     {
         static_cast<void>(mDocuments->OpenDocument(Renderer_));
-        if (Renderer_->ActivateAnalysisDiagnostic(entry.SourceIndex) == false)
+        if (Renderer_->ActivateAnalysisDiagnostic(entry.File, entry.SourceIndex) == false)
         {
             statusBar()->showMessage(QStringLiteral("This analysis message was replaced. Choose its newer row."),
                                      STATUS_MESSAGE_MILLISECONDS);

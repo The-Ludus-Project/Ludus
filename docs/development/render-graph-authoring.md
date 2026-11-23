@@ -9246,8 +9246,8 @@ messages appear with a dotted underline. They are labelled
 `Analysis (slangd)` (or `luslc`) in tooltips and hover, and listed in the
 **Error List** with that origin, apart from the build's squiggles and rows,
 which remain authoritative for build errors. Analysis rows never bring the
-Error List forward while you type; activating one selects its range in the
-Source editor. Messages about generated surroundings or from an earlier version of the
+Error List forward while you type; activating one opens that shader's tab and
+selects the message's range. Messages about generated surroundings or from an earlier version of the
 text are not shown. **Show Log**, beside **Retry assistance**, shows the
 server's diagnostic output since it last started.
 

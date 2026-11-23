@@ -20,6 +20,7 @@
 #include <QSplitter>
 #include <QStringList>
 #include <QTabWidget>
+#include <QTimer>
 #include <QVBoxLayout>
 #include <QVariant>
 #include <QWidget>
@@ -82,6 +83,39 @@ void RendererWorkspace::SetCodeEditorArea(CodeEditorArea& inoutArea)
     connect(&inoutArea, &CodeEditorArea::ActiveTabChanged, this, &RendererWorkspace::updateGraphCodeContext);
     connect(&inoutArea, &CodeEditorArea::SessionActionRequested, this, &RendererWorkspace::returnToBufferSizing);
     updateGraphCodeContext();
+}
+
+CodeEditor* RendererWorkspace::findAnalysisEditorOrNull(const QString& file) const
+{
+    if (mShaderCodeArea.isNull() == true)
+    {
+        return GetSourceFile() == file ? mSource : nullptr;
+    }
+    for (CodeDocumentTab* tab : mShaderCodeArea->GetTabs())
+    {
+        if (tab->GetSessionKey().startsWith(SHADER_TAB_PREFIX) == true && tab->GetPath() == file)
+        {
+            return &tab->GetEditor();
+        }
+    }
+    return nullptr;
+}
+
+QStringList RendererWorkspace::getAnalysisFiles() const
+{
+    if (mShaderCodeArea.isNull() == true)
+    {
+        return {GetSourceFile()};
+    }
+    QStringList files;
+    for (CodeDocumentTab* tab : mShaderCodeArea->GetTabs())
+    {
+        if (tab->GetSessionKey().startsWith(SHADER_TAB_PREFIX) == true)
+        {
+            files.append(tab->GetPath());
+        }
+    }
+    return files;
 }
 
 CodeDocumentTab* RendererWorkspace::activeGraphCodeTab() const
@@ -297,6 +331,11 @@ CodeDocumentTab* RendererWorkspace::openShaderCodeTab(const QString& file, bool 
         navigation.EndSource();
         navigation.SetViewHost(this, &mSource->GetNavigation());
         applySourceDiagnostics(editor, file);
+        connect(&editor, &CodeEditor::AnalysisDiagnosticsChanged, this, &RendererWorkspace::AnalysisDiagnosticsChanged);
+        // A closed tab takes its rows with it once it is gone from the area.
+        connect(&tab, &QObject::destroyed, this, [this]() {
+            QTimer::singleShot(0, this, &RendererWorkspace::AnalysisDiagnosticsChanged);
+        });
         RenderGraphShaderAssistance* assistance =
             new RenderGraphShaderAssistance(mDocument, editor, tab.GetController(), mTooling, &tab);
         QWidget* controls = new QWidget(&tab);

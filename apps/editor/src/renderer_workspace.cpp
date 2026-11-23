@@ -5819,35 +5819,53 @@ QJsonObject RendererWorkspace::getDiagnosticLocation(int32 row) const
 QList<ErrorListEntry> RendererWorkspace::GetAnalysisEntries() const
 {
     QList<ErrorListEntry> entries;
-    const QString file = GetSourceFile();
-    for (int32 index = 0; index < mSource->GetAnalysisDiagnosticCount(); ++index)
+    for (const QString& file : getAnalysisFiles())
     {
-        const CodeAnalysisDiagnostic diagnostic = mSource->GetAnalysisDiagnostic(index);
-        const QTextBlock block = mSource->document()->findBlock(diagnostic.Start);
-        ErrorListEntry entry;
-        entry.Severity = diagnostic.Severity == CodeDiagnosticSeverity::Error ? ErrorListSeverity::Error
-                                                                              : ErrorListSeverity::Warning;
-        entry.Producer = ErrorListProducer::Analysis;
-        entry.Description = diagnostic.Message;
-        entry.File = file;
-        entry.Location =
-            QStringLiteral("%1:%2").arg(block.blockNumber() + 1).arg(diagnostic.Start - block.position() + 1);
-        entry.Origin = QStringLiteral("Analysis (%1)").arg(mSource->GetAnalysisSource());
-        entry.SourceIndex = index;
-        entries.append(entry);
+        const CodeEditor* editorOrNull = findAnalysisEditorOrNull(file);
+        if (editorOrNull == nullptr)
+        {
+            continue;
+        }
+        for (int32 index = 0; index < editorOrNull->GetAnalysisDiagnosticCount(); ++index)
+        {
+            const CodeAnalysisDiagnostic diagnostic = editorOrNull->GetAnalysisDiagnostic(index);
+            const QTextBlock block = editorOrNull->document()->findBlock(diagnostic.Start);
+            ErrorListEntry entry;
+            entry.Severity = diagnostic.Severity == CodeDiagnosticSeverity::Error ? ErrorListSeverity::Error
+                                                                                  : ErrorListSeverity::Warning;
+            entry.Producer = ErrorListProducer::Analysis;
+            entry.Description = diagnostic.Message;
+            entry.File = file;
+            entry.Location =
+                QStringLiteral("%1:%2").arg(block.blockNumber() + 1).arg(diagnostic.Start - block.position() + 1);
+            entry.Origin = QStringLiteral("Analysis (%1)").arg(editorOrNull->GetAnalysisSource());
+            entry.SourceIndex = index;
+            entries.append(entry);
+        }
     }
     return entries;
 }
 
-bool RendererWorkspace::ActivateAnalysisDiagnostic(int32 index)
+bool RendererWorkspace::ActivateAnalysisDiagnostic(const QString& file, int32 index)
 {
-    if (index < 0 || index >= mSource->GetAnalysisDiagnosticCount())
+    CodeEditor* editorOrNull = findAnalysisEditorOrNull(file);
+    if (editorOrNull == nullptr || index < 0 || index >= editorOrNull->GetAnalysisDiagnosticCount())
     {
         return false;
     }
-    mViews->setCurrentIndex(SOURCE_VIEW);
-    mSource->setFocus();
-    return mSource->RevealAnalysisDiagnostic(index);
+    if (mShaderCodeArea.isNull() == false)
+    {
+        // Brings the Code workspace and this file's tab forward without rebinding it.
+        const CodeAnalysisDiagnostic diagnostic = editorOrNull->GetAnalysisDiagnostic(index);
+        const QTextBlock block = editorOrNull->document()->findBlock(diagnostic.Start);
+        openGraphCodeLine(file, block.blockNumber() + 1, diagnostic.Start - block.position() + 1);
+    }
+    else
+    {
+        mViews->setCurrentIndex(SOURCE_VIEW);
+    }
+    editorOrNull->setFocus();
+    return editorOrNull->RevealAnalysisDiagnostic(index);
 }
 
 void RendererWorkspace::openSourceLine(const QString& file, int32 line, int32 column)
