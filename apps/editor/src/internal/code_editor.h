@@ -40,6 +40,8 @@ class CodeSyntaxService;
 class CodeSyntaxToken;
 class CodeStructureView;
 class CodeNavigation;
+class CodeSnippetSession;
+struct CodeSnippet;
 
 /// Stable identities for lexical, syntax and semantic language profiles.
 enum class CodeLanguage : foundation::uint8
@@ -237,6 +239,13 @@ public:
     void SetInlayHintsVisible(bool isVisible);
     /// Whether inlay hints are drawn now, including while Ctrl+Alt is held.
     [[nodiscard]] bool AreInlayHintsShown() const noexcept;
+    /// Visit the tab stops of `snippet`, whose Text was just inserted at UTF-16
+    /// `position` (code editor M4, CE10). Tab and Shift+Tab move between stops,
+    /// stops with the same index are edited together, and `$0`, Escape or moving
+    /// out of the snippet ends it. No text changes here.
+    void StartSnippet(foundation::int32 position, const CodeSnippet& snippet);
+    /// Whether a snippet's tab stops are being visited.
+    [[nodiscard]] bool IsInSnippet() const noexcept;
     [[nodiscard]] LUDUS_INLINE foundation::int32 GetDiagnosticCount() const noexcept
     {
         return static_cast<foundation::int32>(mDiagnostics.size());
@@ -270,6 +279,11 @@ public:
     void ShowCompletions(const QStringList& labels, const QStringList& details);
     void ShowSignature(const QString& html);
     void HideAssistance();
+    /// Replace a shown suggestion's label and documentation, as a resolved item
+    /// arrives (code editor M4, CE10). Out-of-range rows are ignored.
+    void UpdateCompletion(foundation::int32 row, const QString& label, const QString& documentation);
+    /// The documentation shown beside the suggestions, or empty when hidden.
+    [[nodiscard]] QString GetCompletionDocumentation() const;
     /// Nestable input/command boundaries, including edits spanning many ranges.
     void BeginEditOperation(CodeEditKind kind = CodeEditKind::Command);
     void EndEditOperation();
@@ -302,6 +316,8 @@ Q_SIGNALS:
     void AssistanceRequested(bool isSignature);
     void AssistanceDismissed();
     void CompletionChosen(foundation::int32 row);
+    /// The highlighted suggestion changed to `row`, including the first one shown.
+    void CompletionHighlighted(foundation::int32 row);
     void SignatureOverloadRequested(foundation::int32 direction);
     /// Analysis markers were replaced.
     void AnalysisDiagnosticsChanged();
@@ -319,6 +335,8 @@ Q_SIGNALS:
 private:
     QListWidget* mCompletionList;
     QLabel* mSignature;
+    QLabel* mCompletionDocumentation;
+    void showCompletionDocumentation();
     friend class CodeEditorGutter;
     friend class CodeStructureView;
     void resizeEvent(QResizeEvent* event) override;
@@ -418,6 +436,7 @@ private:
     CodeAssistanceAvailability mAssistanceAvailability;
     QAction* mChooseFormatterAction;
     CodeNavigation* mNavigation;
+    CodeSnippetSession* mSnippet;
     /// Name underlined for Ctrl+click (Command+click on macOS) Go to Definition.
     QTextCursor mDefinitionLink;
     /// A definition click owns the press until release, so dragging never selects.

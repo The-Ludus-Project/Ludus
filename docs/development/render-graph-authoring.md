@@ -9263,6 +9263,18 @@ current unsaved draft, including package includes, manifest-generated types and
 bindings, scene/material APIs and shader functions. An accepted completion and
 its additional source edits form one undo step; Save remains explicit.
 
+The highlighted suggestion's documentation appears beside the list. When the
+server supports it, the editor asks for a suggestion's details only once you
+highlight it, so the list opens quickly and fills in as you move through it.
+Some suggestions are **snippets** with placeholders, such as a call with its
+arguments: accepting one selects the first placeholder. Type to replace it,
+then press **Tab** for the next and **Shift+Tab** for the previous; a
+placeholder that appears more than once changes everywhere as you type. After
+the last placeholder, Tab moves the caret to the snippet's end. **Escape**, or
+moving the caret out of the snippet, leaves the placeholders as they are. A
+snippet with a transform (`${1/…/…/}`) is refused with a message, and the text
+is unchanged.
+
 Press **Ctrl+Shift+Space** inside a call, or type `(` or `,`, for signature help.
 A command the selected language server does not support (for example signature
 help with `luslc`, or Find References with an older `slangd`) is disabled, and
@@ -9296,7 +9308,7 @@ The initial provider needs an executable program context. Unassigned source file
 legacy compatibility rewrites of the editable file, repeated inclusion of that
 file in one linked unit and include cycles through that file report an explicit
 mapping limitation. Completion edits must stay inside the current authored file;
-generated-file edits and unsolicited snippets are rejected. Literal package
+generated-file edits are rejected. Literal package
 includes follow the build owner's existing rules; module imports are unsupported.
 The static browser editor has no native Slang process and reports that completion
 and signature help are unavailable. The searchable Shader API reference remains

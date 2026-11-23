@@ -61,6 +61,7 @@ MIT license), which the import records like any other source license.
 | `materials/closure-program-block.luscene.json` | A weathered gold block on a grey floor under a square one-sided ceiling light. The block's [closure program](#closure-program) mixes a rust diffuse lobe, a gold conductor and a cosine-power sheen whose weights read the metallic and base colour inputs. | The closure-program cook check of `ludus_scene_import_tests` and the `[program]` World import test of `ludus_editor_tests` |
 | `materials/skin-diffusion-bench.luscene.json` | A head-sized bench for [skin](#skin): a skin block beside a glossy white non-skin block at the same depth, a dark bar floating in front that casts a sharp shadow band across both faces, and a small one-sided light in front of them. The bar's silhouette is a depth edge over the skin and the white block a material edge at equal depth. Its scattering distances are exaggerated so the spread covers several pixels of the test image. | The skin cook and decode check of `ludus_scene_import_tests` |
 | `materials/grain-mix-board.luscene.json` | A board leaning back on a grey floor under a square one-sided ceiling light. Its [closure program](#closure-program) reads a scalar grain mask from the base colour input: a white diffuse lobe takes the complement and a glossy gold conductor takes the mask. The authored base colour is an interior mask; a base texture supplies the grain. | The `[scene-source]` check of `ludus_render_graph_ray_tests`, which requires the file to compile to the [texture-weighted mixing](renderer-systems.md#texture-weighted-mixing-of-distinct-lobes) tests' program record, and the grain-mix cook check of `ludus_scene_import_tests` |
+| `materials/varnished-wood-panel.luscene.json` | A varnished wood panel beside a black companion patch under the same coat, on a grey floor under a square one-sided ceiling light. Its [closure program](#closure-program) authors the first [opaque layered material](renderer-systems.md#the-first-opaque-layered-material): an ordered dielectric varnish coat over a diffuse wood substrate. A cosine-power lobe weighted by the coat's normal-incidence reflectance is the varnish highlight; the diffuse substrate is weighted by the coat's complementary transmittance, so the coat sits over the wood and attenuates it. The black patch's substrate is black, so its response is the coat reflection alone. | The varnished-wood cook check of `ludus_scene_import_tests`; import it into World to author the coat over the substrate and compare the two patches |
 | `materials/hair-card-patch.luscene.json` | A flat vertical [hair card](#hair-card) with a vertical strand beside an ordinary metallic/roughness control card of the same base colour and roughness, under a square one-sided ceiling light above a grey floor. | The hair-card cook check of `ludus_scene_import_tests`; import it into World to compare the strand highlight with the control |
 | `line_sampling/large-line-grid.luscene.json` | A 20 m floor and a ceiling 4 m above it, each tessellated into 160 × 160 quads (102,400 triangles), under a 2 m square light. 3.2 MB, because it lists every quad. | The [`[scene-capacity]` regression](renderer-systems.md#l51-budgeted-scene-capacity) of the line-sampling template |
 
@@ -326,6 +327,44 @@ scale the lobe:
 A nested mix is written as a product of weights, so the mixture is always flat.
 The material's `base_color`, `metallic` and `roughness` are the surface inputs.
 They are also the metallic-roughness approximation that raster profiles draw.
+
+An ordered coat over a substrate is parameter layering: the coat lobe takes the
+coat's reflectance and the substrate lobe takes the complementary transmittance,
+so the coat sits over the substrate and attenuates it. This example is the
+[first opaque layered material](renderer-systems.md#the-first-opaque-layered-material),
+a dielectric varnish over diffuse wood. The coat's normal-incidence reflectance
+`((eta − 1) / (eta + 1))²` of index 1.5 is 0.04; the wood substrate is weighted
+by `1 − 0.04`:
+
+```json
+{
+  "name": "Varnished wood",
+  "model": "program",
+  "base_color": [0.32, 0.17, 0.08],
+  "metallic": 0,
+  "roughness": 0.18,
+  "program": {
+    "version": 1,
+    "parameters": [
+      {"name": "coat_reflectance", "constant": 0.04},
+      {"name": "coat_transmittance", "one_minus": "coat_reflectance"},
+      {"name": "wood", "input": "base_color"},
+      {"name": "substrate", "multiply": ["coat_transmittance", "wood"]},
+      {"name": "coat_roughness", "input": "roughness"}
+    ],
+    "lobes": [
+      {"operation": "diffuse", "weight": "substrate"},
+      {"operation": "cosine_power", "weight": "coat_reflectance",
+       "roughness": "coat_roughness", "power": 24}
+    ]
+  }
+}
+```
+
+The lobe order records the layer order: the substrate lobe first, the coat lobe
+over it. Raising `coat_reflectance` deepens the varnish; a black `base_color`
+under the same coat leaves the coat reflection alone, which is the companion
+patch of the fixture.
 
 The reader compiles the program into bounded register code:
 - At most 32 values, counting inline constants.

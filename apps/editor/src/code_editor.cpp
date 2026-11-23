@@ -7,6 +7,7 @@
 #include "internal/code_edit_scope.h"
 #include "internal/code_language_registry.h"
 #include "internal/code_navigation.h"
+#include "internal/code_snippet_session.h"
 #include "internal/code_structure_view.h"
 #include "internal/code_syntax_highlighter.h"
 #include "internal/code_syntax_service.h"
@@ -227,8 +228,27 @@ CodeEditor::CodeEditor(QWidget* parentOrNull)
     mSignature->setTextFormat(Qt::RichText);
     mSignature->setWordWrap(true);
     mSignature->setMaximumWidth(SIGNATURE_WIDTH);
+    // The highlighted suggestion's documentation (CE10), beside the list; the
+    // server may fill it in later through completionItem/resolve.
+    mCompletionDocumentation = new QLabel(this);
+    mCompletionDocumentation->setWindowFlags(Qt::ToolTip);
+    mCompletionDocumentation->setAttribute(Qt::WA_ShowWithoutActivating);
+    mCompletionDocumentation->setObjectName(QStringLiteral("codeCompletionDocumentation"));
+    mCompletionDocumentation->setAccessibleName(QStringLiteral("Shader completion documentation"));
+    mCompletionDocumentation->setMargin(INDENT_WIDTH);
+    mCompletionDocumentation->setTextFormat(Qt::PlainText);
+    mCompletionDocumentation->setWordWrap(true);
+    mCompletionDocumentation->setMaximumWidth(SIGNATURE_WIDTH);
+    connect(mCompletionList, &QListWidget::currentRowChanged, this, [this](int32 row) {
+        if (row >= 0)
+        {
+            showCompletionDocumentation();
+            Q_EMIT CompletionHighlighted(row);
+        }
+    });
     mCompletionList->hide();
     mSignature->hide();
+    mCompletionDocumentation->hide();
 
     QAction* complete = new QAction(QStringLiteral("Complete Shader Symbol (Ctrl+Space)"), this);
     mCompleteAction = complete;
@@ -400,6 +420,7 @@ CodeEditor::CodeEditor(QWidget* parentOrNull)
     connect(mChooseFormatterAction, &QAction::triggered, this, &CodeEditor::ChooseFormatterRequested);
     updateGutterWidth();
     mNavigation = new CodeNavigation(*this);
+    mSnippet = new CodeSnippetSession(*this);
     viewport()->setMouseTracking(true);
 }
 
@@ -426,6 +447,17 @@ void CodeEditor::SetIndentGuidesVisible(bool isVisible)
     QSettings().setValue(QStringLiteral("codeEditor/indentGuides"), isVisible);
     viewport()->update();
     Q_EMIT PresentationChanged();
+}
+
+void CodeEditor::StartSnippet(int32 position, const CodeSnippet& snippet)
+{
+    static_cast<void>(mSnippet->Start(position, snippet));
+    mSelectionUpdate.start(0);
+}
+
+bool CodeEditor::IsInSnippet() const noexcept
+{
+    return mSnippet->IsActive();
 }
 
 void CodeEditor::SetInlayHintsVisible(bool isVisible)
@@ -1524,6 +1556,19 @@ void CodeEditor::updateSelections()
             selections.append(selection);
         }
     }
+    // Snippet placeholders (CE10) keep a faint background until the session ends.
+    if (mSnippet->IsActive() == true)
+    {
+        QColor placeholderColor = palette().color(QPalette::Highlight);
+        placeholderColor.setAlpha(CURRENT_LINE_ALPHA);
+        for (const QTextCursor& range : mSnippet->GetRanges())
+        {
+            QTextEdit::ExtraSelection placeholder;
+            placeholder.cursor = range;
+            placeholder.format.setBackground(placeholderColor);
+            selections.append(placeholder);
+        }
+    }
     appendDiagnosticSelections(selections);
     if (mDefinitionLink.hasSelection() == true)
     {
@@ -2232,6 +2277,31 @@ void CodeEditor::handleKeyPress(QKeyEvent* event)
         event->accept();
         return;
     }
+    // Snippet tab stops (CE10) take Tab, Shift+Tab and Escape before the cursor
+    // set does, since their mirrors are secondary cursors.
+    if (hasPopup == false && mSnippet->IsActive() == true)
+    {
+        if (event->key() == Qt::Key_Tab && event->modifiers() == Qt::NoModifier)
+        {
+            static_cast<void>(mSnippet->Next());
+            event->accept();
+            return;
+        }
+        if (event->key() == Qt::Key_Backtab)
+        {
+            static_cast<void>(mSnippet->Previous());
+            event->accept();
+            return;
+        }
+        if (event->key() == Qt::Key_Escape)
+        {
+            mSnippet->End();
+            static_cast<void>(mMultiCursor.Collapse());
+            mSelectionUpdate.start(0);
+            event->accept();
+            return;
+        }
+    }
     // Multiple cursors (CE06). The add-cursor commands are QActions bound above,
     // so they reach this view before keyPressEvent; here only the set's own
     // behavior is handled. Escape collapses to the primary, and every edit,
@@ -2471,6 +2541,53 @@ void CodeEditor::HideAssistance()
 {
     mCompletionList->hide();
     mSignature->hide();
+    mCompletionDocumentation->hide();
+}
+
+void CodeEditor::UpdateCompletion(int32 row, const QString& label, const QString& documentation)
+{
+    QListWidgetItem* itemOrNull = mCompletionList->item(row);
+    if (itemOrNull == nullptr)
+    {
+        return;
+    }
+    itemOrNull->setText(label);
+    itemOrNull->setData(Qt::UserRole, documentation);
+    itemOrNull->setToolTip(documentation.isEmpty() == true
+                               ? QString()
+                               : QStringLiteral("<pre>%1</pre>").arg(documentation.toHtmlEscaped()));
+    if (row == mCompletionList->currentRow())
+    {
+        showCompletionDocumentation();
+    }
+}
+
+QString CodeEditor::GetCompletionDocumentation() const
+{
+    return mCompletionDocumentation->isVisible() == true ? mCompletionDocumentation->text() : QString();
+}
+
+void CodeEditor::showCompletionDocumentation()
+{
+    const QListWidgetItem* itemOrNull = mCompletionList->currentItem();
+    const QString text = itemOrNull == nullptr ? QString() : itemOrNull->data(Qt::UserRole).toString();
+    if (text.isEmpty() == true || mCompletionList->isVisible() == false)
+    {
+        mCompletionDocumentation->hide();
+        return;
+    }
+    mCompletionDocumentation->setText(text);
+    mCompletionDocumentation->adjustSize();
+    // Beside the list, on the side with room.
+    const QRect list = mCompletionList->geometry();
+    const QRect available = screen()->availableGeometry();
+    int32 left = list.right() + 1;
+    if (left + mCompletionDocumentation->width() > available.right())
+    {
+        left = qMax(available.left(), list.left() - mCompletionDocumentation->width());
+    }
+    mCompletionDocumentation->move(left, qMin(list.top(), available.bottom() - mCompletionDocumentation->height()));
+    mCompletionDocumentation->show();
 }
 
 void CodeEditor::ShowCompletions(const QStringList& labels, const QStringList& details)
@@ -2480,6 +2597,7 @@ void CodeEditor::ShowCompletions(const QStringList& labels, const QStringList& d
     for (int32 index = 0; index < labels.size(); ++index)
     {
         QListWidgetItem* item = new QListWidgetItem(labels.at(index), mCompletionList);
+        item->setData(Qt::UserRole, details.value(index));
         item->setToolTip(QStringLiteral("<pre>%1</pre>").arg(details.value(index).toHtmlEscaped()));
     }
     if (labels.isEmpty() == true || hasFocus() == false)
@@ -2496,6 +2614,7 @@ void CodeEditor::ShowCompletions(const QStringList& labels, const QStringList& d
     mCompletionList->move(qBound(available.left(), location.x(), available.right() - mCompletionList->width()),
                           qMin(location.y(), available.bottom() - mCompletionList->height()));
     mCompletionList->show();
+    showCompletionDocumentation();
 }
 
 void CodeEditor::ShowSignature(const QString& html)

@@ -169,6 +169,12 @@ bool Trace(in float32x3 origin, out float32x3 outRadiance)
     outRadiance = origin * 0.5;
     return true;
 }
+Lobe MakeLobe(in float32 weight)
+{
+    Lobe lobe = { .IsFront = true };
+    lobe.Weights[0] = weight;
+    return lobe;
+}
 float32 Pick(in uint32 index, in uint32 count)
 {
     float32 weights[TAP_COUNT] = 0;
@@ -197,9 +203,11 @@ float32 Pick(in uint32 index, in uint32 count)
             total = 3;
             break;
     }
+    const Lobe sampled = MakeLobe(float32(count));
+    const float32 sampledWeight = sampled.Evaluate(0.5);
     if (mode == Mode::On && hasHit == true)
     {
-        total += ComputeLuminance(radiance) + positionClip.w + lobe.Twice();
+        total += ComputeLuminance(radiance) + positionClip.w + lobe.Twice() + sampledWeight * sampled.Weights[0];
     }
     return weights[index] + Scale(total, bias = 1.0) + Scale(factor = 3.0, value = Constant()) +
            float32(Wrap(int32(index), LOWEST));

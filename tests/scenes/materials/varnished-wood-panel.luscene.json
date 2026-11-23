@@ -1,0 +1,84 @@
+{
+  "format": "ludus.scene",
+  "version": 1,
+  "name": "Varnished wood panel",
+  "description": "A varnished wood panel and a black companion patch under the same coat, on a grey floor under a square one-sided ceiling light. The panel is the first opaque two-layer material: an ordered dielectric varnish coat over a diffuse wood substrate, authored through the shared closure evaluator. A cosine-power lobe weighted by the coat's normal-incidence reflectance is the ordered varnish highlight; the diffuse wood substrate is weighted by the coat's complementary transmittance, so the coat sits over the wood and attenuates it. The black patch shares the coat with a black substrate, so its response is the coat reflection alone. World import, inspection and the varnished-wood cook test use it.",
+  "camera": {
+    "eye": [0, 0, 3.4],
+    "target": [0, 0, -1],
+    "up": [0, 1, 0],
+    "vertical_fov_degrees": 48.88790956083307
+  },
+  "materials": [
+    {"name": "Floor", "model": "diffuse", "base_color": [0.5, 0.5, 0.5]},
+    {
+      "name": "Varnished wood",
+      "model": "program",
+      "base_color": [0.32, 0.17, 0.08],
+      "metallic": 0,
+      "roughness": 0.18,
+      "program": {
+        "version": 1,
+        "parameters": [
+          {"name": "coat_reflectance", "constant": 0.04},
+          {"name": "coat_transmittance", "one_minus": "coat_reflectance"},
+          {"name": "wood", "input": "base_color"},
+          {"name": "substrate", "multiply": ["coat_transmittance", "wood"]},
+          {"name": "coat_roughness", "input": "roughness"}
+        ],
+        "lobes": [
+          {"operation": "diffuse", "weight": "substrate"},
+          {"operation": "cosine_power", "weight": "coat_reflectance", "roughness": "coat_roughness", "power": 24}
+        ]
+      }
+    },
+    {
+      "name": "Black under coat",
+      "model": "program",
+      "base_color": [0, 0, 0],
+      "metallic": 0,
+      "roughness": 0.18,
+      "program": {
+        "version": 1,
+        "parameters": [
+          {"name": "coat_reflectance", "constant": 0.04},
+          {"name": "coat_transmittance", "one_minus": "coat_reflectance"},
+          {"name": "substrate_color", "input": "base_color"},
+          {"name": "substrate", "multiply": ["coat_transmittance", "substrate_color"]},
+          {"name": "coat_roughness", "input": "roughness"}
+        ],
+        "lobes": [
+          {"operation": "diffuse", "weight": "substrate"},
+          {"operation": "cosine_power", "weight": "coat_reflectance", "roughness": "coat_roughness", "power": 24}
+        ]
+      }
+    },
+    {"name": "Light", "model": "metallic_roughness", "base_color": [0.8, 0.8, 0.8], "roughness": 1, "emission": {"radiance": [12, 12, 12], "two_sided": false}}
+  ],
+  "objects": [
+    {
+      "name": "Floor",
+      "material": "Floor",
+      "positions": [[-1, -1, 1], [1, -1, 1], [1, -1, -1], [-1, -1, -1]],
+      "polygons": [[0, 1, 2, 3]]
+    },
+    {
+      "name": "Panel",
+      "material": "Varnished wood",
+      "positions": [[-0.7, -0.99, 0.2], [0.05, -0.99, 0.2], [0.05, 0.3, -0.5], [-0.7, 0.3, -0.5]],
+      "polygons": [[0, 1, 2, 3]]
+    },
+    {
+      "name": "Black patch",
+      "material": "Black under coat",
+      "positions": [[0.15, -0.99, 0.2], [0.7, -0.99, 0.2], [0.7, 0.3, -0.5], [0.15, 0.3, -0.5]],
+      "polygons": [[0, 1, 2, 3]]
+    },
+    {
+      "name": "Light",
+      "material": "Light",
+      "positions": [[-0.25, 0.99, -0.25], [0.25, 0.99, -0.25], [0.25, 0.99, 0.25], [-0.25, 0.99, 0.25]],
+      "polygons": [[0, 1, 2, 3]]
+    }
+  ]
+}

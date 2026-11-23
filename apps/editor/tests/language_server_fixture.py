@@ -22,6 +22,10 @@ Options shape the server a test needs:
   --refresh-hints       answer the first inlayHint with no hints, then send
                         workspace/inlayHint/refresh, as slangd does after
                         reading its configuration
+  --snippet TEXT        answer completion with one snippet item, "Call", that
+                        inserts TEXT (InsertTextFormat.Snippet)
+  --resolve             answer completionItem/resolve with the item plus a
+                        detail and documentation naming its label
 """
 import argparse
 import json
@@ -42,6 +46,8 @@ parser.add_argument('--tokens')
 parser.add_argument('--folding-ranges')
 parser.add_argument('--hints')
 parser.add_argument('--refresh-hints', action='store_true')
+parser.add_argument('--snippet')
+parser.add_argument('--resolve', action='store_true')
 options = parser.parse_args()
 
 text = ''
@@ -159,8 +165,16 @@ while True:
         continue
     params = message.get('params') or {}
     result = None
-    if method == 'textDocument/completion':
+    if method == 'textDocument/completion' and options.snippet is not None:
+        result = [{'label': 'Call', 'insertText': options.snippet, 'insertTextFormat': 2, 'data': 7}]
+    elif method == 'textDocument/completion':
         result = [{'label': 'Item%d' % message['id'], 'position': params.get('position')}]
+        if options.resolve:
+            result.append({'label': 'Other%d' % message['id']})
+    elif method == 'completionItem/resolve' and options.resolve:
+        result = dict(params)
+        result['detail'] = 'resolved detail'
+        result['documentation'] = {'kind': 'plaintext', 'value': 'Documentation for ' + params['label']}
     elif method == 'textDocument/hover':
         result = {'contents': {'kind': 'plaintext', 'value': 'hover %d' % message['id']}}
     elif method == 'textDocument/signatureHelp':

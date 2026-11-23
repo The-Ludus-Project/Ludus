@@ -315,6 +315,34 @@ class LanguageServerTests(unittest.TestCase):
         self.assertEqual(server.diagnostics()["diagnostics"], [])
         self.assertEqual(server.close(), 0)
 
+    def test_describes_const_locals_as_function_scoped(self):
+        server = self.server
+        server.request("initialize", {"processId": None, "rootUri": self.root.as_uri(), "capabilities": {}})
+        server.notify("initialized", {})
+        uri = (self.root / "main.lusl").as_uri()
+        text = ('#include "common.luslh"\nstatic const float32 GAIN = 2.0;\n'
+                "float32 Shade(in Light light)\n{\n    const float32 scaled = Scale(light.Power);\n"
+                "    return scaled * GAIN;\n}\n")
+        server.notify("textDocument/didOpen", {"textDocument": {"uri": uri, "languageId": "lusl", "version": 1,
+                                                                "text": text}})
+        self.assertEqual(server.diagnostics()["diagnostics"], [])
+
+        local = server.request("textDocument/hover", {"textDocument": {"uri": uri},
+                                                       "position": {"line": 5, "character": 12}})
+        self.assertIn("const float32 scaled", local["result"]["contents"]["value"])
+        self.assertNotIn("static const float32 scaled", local["result"]["contents"]["value"])
+        constant = server.request("textDocument/hover", {"textDocument": {"uri": uri},
+                                                          "position": {"line": 5, "character": 22}})
+        self.assertIn("static const float32 GAIN", constant["result"]["contents"]["value"])
+
+        # Module-level names are offered everywhere; the function's const local is not one of them.
+        names = server.request("textDocument/completion", {"textDocument": {"uri": uri},
+                                                            "position": {"line": 1, "character": 0}})
+        labels = {item["label"] for item in names["result"]}
+        self.assertIn("GAIN", labels)
+        self.assertNotIn("scaled", labels)
+        self.assertEqual(server.close(), 0)
+
     def test_exit_without_shutdown_fails(self):
         self.server.notify("exit", None)
         self.assertEqual(self.server.process.wait(timeout=10), 1)
