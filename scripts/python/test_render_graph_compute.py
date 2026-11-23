@@ -499,28 +499,35 @@ class NativeSceneComputeTests(unittest.TestCase):
             (shaders / 'edge.slang').write_text(
                 '#pragma once\nstruct Edge { float3 BeginWorld; float3 EndWorld; };\n')
             (shaders / 'primary.slang').write_text(
+                'void StoreEndX(in GraphWritableEdgeView edges, uint index, float value) {\n'
+                '    edges.StoreWord(index * 32 + 16, asuint(value));\n}\n'
                 'float3 TracePrimary(SceneContext scene, RayLaunch launch, inout RayQueryContext queries, '
                 'TracePrimaryResources resources) {\n'
                 '    uint index = launch.WorkItemIndex;\n'
                 '    if (index >= resources.Edges.GetCount()) return float3(0);\n'
                 '    Edge edge; edge.BeginWorld = float3(index); edge.EndWorld = float3(index + 1);\n'
-                '    resources.Edges[index] = edge; return float3(0);\n}\n')
+                '    resources.Edges[index] = edge;\n'
+                '    StoreEndX(resources.Edges, index, float(index + 2));\n'
+                '    return float3(0);\n}\n')
             consumer = (
                 'float3 ShadeRecordedHit(SceneContext scene, RayLaunch launch, inout RayQueryContext queries, '
                 'ShadeRecordedHitResources resources) {\n'
                 '    Edge edge = resources.Edges[0];\n'
-                '    return edge.EndWorld - edge.BeginWorld;\n}\n')
+                '    if (resources.Edges.GetByteSize() < 32) return float3(0);\n'
+                '    float endX = asfloat(resources.Edges.LoadWord(16));\n'
+                '    return float3(endX, edge.EndWorld.yz) - edge.BeginWorld;\n}\n')
             shade = shaders / 'shade.slang'
             shade.write_text(consumer)
             options = dict(helper=os.environ['LUDUS_RG1_HELPER'], compiler=os.environ['LUDUS_RG1_SLANG'],
                            spirv_cross=os.environ['LUDUS_RG1_CROSS'], validator=validator)
-            legacy = consumer.replace(', ShadeRecordedHitResources resources', '').replace(
-                'Edge edge = resources.Edges[0];', 'Edge edge = {};')
+            legacy = ('float3 ShadeRecordedHit(SceneContext scene, RayLaunch launch, inout RayQueryContext queries) '
+                      '{ return float3(0); }\n')
             shade.write_text(legacy)
             pending = shader_context.export_context(manifest_path, root / 'editor', 'main_shaders/shade.slang',
                                                     helper=options['helper'])['resources'][0]
             self.assertTrue(pending['needs_upgrade'])
-            self.assertEqual({'name': 'Edges', 'type': 'Edge', 'writable': False}, pending['fields'][0])
+            edges_api = {'name': 'Edges', 'type': 'Edge', 'writable': False, 'byte_access': True}
+            self.assertEqual(edges_api, pending['fields'][0])
             self.assertEqual(legacy, shade.read_text())
             with self.assertRaisesRegex(ToolingError, 'Add Buffer Access') as failure:
                 build.build_package(manifest_path, root / 'build', **options)
@@ -530,8 +537,9 @@ class NativeSceneComputeTests(unittest.TestCase):
             context = shader_context.export_context(manifest_path, root / 'editor', 'main_shaders/shade.slang',
                                                     helper=options['helper'])
             self.assertIn('GraphReadOnlyEdgeView Edges;', context['prefix'])
-            self.assertEqual({'name': 'Edges', 'type': 'Edge', 'writable': False},
-                             context['resources'][0]['fields'][0])
+            self.assertEqual(edges_api, context['resources'][0]['fields'][0])
+            self.assertIn('Layout-dependent accessors are placeholders', context['prefix'])
+            self.assertIn('uint LoadWord(uint byteOffset)', context['prefix'])
             slangd = Path(options['compiler']).with_name('slangd.exe' if os.name == 'nt' else 'slangd')
             if slangd.is_file():
                 text = context['prefix'] + consumer.replace('resources.Edges[0]', 'resources.') + context['suffix']
@@ -546,6 +554,8 @@ class NativeSceneComputeTests(unittest.TestCase):
             self.assertIn('GraphWritableEdgeView(GraphBuffer0, 16u)', wrapper)
             self.assertIn('GraphReadOnlyEdgeView(GraphBuffer1, 16u)', wrapper)
             self.assertIn('index * 8u', wrapper)
+            self.assertIn('uint GetByteSize() { return Count * 32u; }', wrapper)
+            self.assertNotIn('Layout-dependent accessors are placeholders', wrapper)
             execution.cook_runtime(str(package), root / 'named.lurgrt')
             nodes['shade']['inputs'].append(nodes['shade']['inputs'].pop(0))
             graph_path.write_bytes(graph.canonical_asset(document))
@@ -606,8 +616,12 @@ class NativeSceneComputeTests(unittest.TestCase):
             del shade_invocation['type']
             graph_path.write_bytes(graph.canonical_asset(document))
             accepted = (output / 'current.json').read_bytes()
-            shade.write_text(consumer.replace('return edge.EndWorld', 'resources.Edges[0] = edge; return edge.EndWorld'))
+            shade.write_text(consumer.replace('float endX', 'resources.Edges[0] = edge; float endX'))
             with self.assertRaisesRegex(ToolingError, 'set|l-value|assign'):
+                build.build_package(manifest_path, output, **options)
+            self.assertEqual(accepted, (output / 'current.json').read_bytes())
+            shade.write_text(consumer.replace('float endX', 'resources.Edges.StoreWord(16, 0); float endX'))
+            with self.assertRaisesRegex(ToolingError, 'StoreWord'):
                 build.build_package(manifest_path, output, **options)
             self.assertEqual(accepted, (output / 'current.json').read_bytes())
 
@@ -660,6 +674,7 @@ class NativeSceneComputeTests(unittest.TestCase):
                 '        edge.BeginWorld = float32x3(float32(index));\n'
                 '        edge.EndWorld = edge.BeginWorld + 1;\n'
                 '        resources.Edges.Store(index, edge);\n'
+                '        resources.Edges.StoreWord(index * 32 + 16, resources.Edges.LoadWord(index * 32 + 16));\n'
                 '    }\n'
                 '    return float32x3(0);\n'
                 '}\n')
@@ -669,6 +684,10 @@ class NativeSceneComputeTests(unittest.TestCase):
                 'inout RayQueryContext inoutQueries, in ShadeRecordedHitResources resources)\n'
                 '{\n'
                 '    Edge edge = resources.Edges.Load(0);\n'
+                '    if (resources.Edges.GetByteSize() < 32 || resources.Edges.LoadWord(16) == 0)\n'
+                '    {\n'
+                '        return float32x3(0);\n'
+                '    }\n'
                 '    if (resources.Scratch.GetCount() > 0)\n'
                 '    {\n'
                 '        uint32x4 word = resources.Scratch.Load(0);\n'
@@ -684,17 +703,18 @@ class NativeSceneComputeTests(unittest.TestCase):
             pending = shader_context.export_context(manifest_path, root / 'lusl-editor', 'main_shaders/shade.lusl',
                                                     helper=options['helper'], compiler=options['compiler'])['resources'][0]
             self.assertTrue(pending['needs_upgrade'])
-            self.assertEqual({'name': 'Edges', 'type': 'Edge', 'writable': False}, pending['fields'][0])
+            self.assertEqual(edges_api, pending['fields'][0])
             self.assertEqual(legacy_lusl, shade_lusl.read_text())
             shade_lusl.write_text(lusl_consumer.replace('resources.Edges.Load(0)', 'resources.'))
             context = shader_context.export_context(manifest_path, root / 'lusl-editor', 'main_shaders/shade.lusl',
                                                     helper=options['helper'], compiler=options['compiler'])
-            self.assertEqual({'name': 'Edges', 'type': 'Edge', 'writable': False},
-                             context['resources'][0]['fields'][0])
+            self.assertEqual(edges_api, context['resources'][0]['fields'][0])
             from urllib.parse import unquote, urlparse
             staged_source = Path(unquote(urlparse(context['uri']).path))
             header = staged_source.parents[1] / '_ludus_graph' / 'graph_resources.luslh'
             self.assertIn('GraphReadOnlyEdgeView Edges;', header.read_text())
+            self.assertIn('uint32 LoadWord(in uint32 byteOffset)', header.read_text())
+            self.assertNotIn('void StoreWord(in uint32 byteOffset', header.read_text())
             self.assertNotIn('void Store(in uint32 index, in Edge record)', header.read_text())
             luslc = build.language.find_luslc(options['helper'])
             self.check_resource_completion(context, luslc, 'lusl', staged_source.read_text())

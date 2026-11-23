@@ -173,6 +173,13 @@ QString DescribeRayInterface(const QJsonObject& program,
                                  isLusl == true && type == QStringLiteral("uint4") ? QStringLiteral("uint32x4") : type,
                                  isWritable == true ? QStringLiteral("read/write") : QStringLiteral("read-only"),
                                  operations));
+                    if (field.value(QStringLiteral("byte_access")).toBool() == true)
+                    {
+                        lines.append(
+                            isWritable == true
+                                ? QStringLiteral("// GetByteSize(), LoadWord(byteOffset), StoreWord(byteOffset, word)")
+                                : QStringLiteral("// GetByteSize(), LoadWord(byteOffset)"));
+                    }
                 }
             }
             else

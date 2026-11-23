@@ -172,18 +172,25 @@ def qualify_record_type(source, type_name, namespaces):
     return f'{namespace}::{type_name}' if namespace is not None else type_name
 
 
-def record_view_definition(view, type_name, is_writable, *, loads=None, stores=None):
+def record_view_definition(view, type_name, is_writable, *, stride=0, loads=None, stores=None):
     """Describe the view for source assistance, or define it for an executable build."""
     getter = f'{type_name} record; {" ".join(loads)} return record;' if loads is not None else f'return ({type_name})0;'
     store = f'void Store(uint index, {type_name} record) {{ {" ".join(stores or [])} }}' if is_writable else ''
     setter = 'set { Store(index, newValue); }' if is_writable else ''
+    assistance = ('// Layout-dependent accessors are placeholders in this editor context.\n'
+                  '// Builds generate them from reflection.\n') if loads is None else ''
+    word_address = 'Words[byteOffset / sizeof(uint4)][byteOffset % sizeof(uint4) / sizeof(uint)]'
+    store_word = f'void StoreWord(uint byteOffset, uint word) {{ {word_address} = word; }}' if is_writable else ''
     return f"""
-struct {view}
+{assistance}struct {view}
 {{
     private RWStructuredBuffer<uint4> Words;
     private uint Count;
     __init(RWStructuredBuffer<uint4> words, uint count) {{ Words = words; Count = count; }}
     uint GetCount() {{ return Count; }}
+    uint GetByteSize() {{ return Count * {stride}u; }}
+    uint LoadWord(uint byteOffset) {{ return {word_address}; }}
+    {store_word}
     {type_name} Load(uint index) {{ {getter} }}
     {store}
     __subscript(uint index) -> {type_name}
@@ -231,7 +238,8 @@ def define_record_views(program, layouts, build):
         build.require(wrapper.count(declaration) == 1, 'ShaderInterface', view,
                       'linked shader is missing its generated Buffer view declaration')
         wrapper = wrapper.replace(declaration,
-                                  record_view_definition(view, type_name, is_writable, loads=loads, stores=stores), 1)
+                                  record_view_definition(view, type_name, is_writable, stride=stride,
+                                                         loads=loads, stores=stores), 1)
     return wrapper
 
 

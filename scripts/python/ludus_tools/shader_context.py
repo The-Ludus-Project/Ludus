@@ -105,6 +105,7 @@ def _resource_api(snapshot, value, source):
         entry['fields'] = [
             {'name': field['field'], 'type': field['record']['type'] if field['record'] else 'uint4',
              'writable': field['writable'],
+             **({'byte_access': True} if field['record'] else {}),
              **({'legacy_raw': True} if not field['record'] and not field['word_view'] else {})}
             for field in fields]
         result.append(entry)
