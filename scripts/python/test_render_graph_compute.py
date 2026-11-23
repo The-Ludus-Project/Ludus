@@ -734,6 +734,20 @@ float32x3 ShadeRecordedHit(in SceneContext scene, in RayLaunch launch,
                              **execution._cpu_vertex_interface(schemas[0], metal_stages),
                              'uniform_schemas': contents['uniform_interface']}
                 self.assertEqual(build.identity(interface), contents['interface_identity'])
+            if is_hardware_reader:
+                accepted = (root / 'build/current.json').read_bytes()
+                layout = shaders / 'edges.luslh'
+                layout.write_text(layout.read_text().replace('float32x4 Begin', 'float32x3 Begin'))
+                writer = shaders / 'primary.lusl'
+                writer.write_text(writer.read_text().replace('float32x4(0.0, 1.0, 0.0, 0.0)', 'float32x3(0.0, 1.0, 0.0)'))
+                with self.assertRaisesRegex(ToolingError, r'Metal native structured buffer.*EdgesData\.Edges\[\]\.Begin') as failure:
+                    build.build_package(manifest_path, root / 'build', **options)
+                error = failure.exception
+                self.assertIn('size 16 bytes. Expected offset 0 and size 12 bytes', error.message)
+                self.assertIn('Use float4 in Slang or float32x4 in LUSL', error.message)
+                self.assertEqual({'source': 'main_shaders/edges.luslh', 'line': 4}, error.location)
+                self.assertEqual(error.location, error.diagnostics[0]['location'])
+                self.assertEqual(accepted, (root / 'build/current.json').read_bytes())
 
     def test_named_edge_records_cross_compute_and_ray_passes(self):
         with tempfile.TemporaryDirectory() as temporary:

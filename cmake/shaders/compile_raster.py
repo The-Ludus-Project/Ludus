@@ -143,27 +143,41 @@ def verify_storage_record_strides(binary, interface):
 
 def storage_record_layout(record):
     """Validate a native record against its reflected std430 layout."""
-    size, alignment, fields = storage_struct_layout(record)
+    size, alignment, fields = storage_struct_layout(record, record.get('name', 'record'))
     return (size + alignment - 1) // alignment * alignment, fields
 
 
-def storage_struct_layout(record):
+def storage_struct_layout(record, path):
     """Validate field offsets and return the occupied size, alignment and fields."""
     fields = record.get('fields', [])
     if not fields or len(fields) > 16:
-        raise RuntimeError('Native structured storage requires one to sixteen fields per struct')
+        raise RuntimeError(f"'{path}' requires one to sixteen fields per struct. "
+                           'Declare at least one field and split larger structs into nested records.')
     offset, alignment, members = 0, 1, []
     names = set()
     for field in fields:
+        name = field['name']
+        field_path = f'{path}.{name}'
         shape = field.get('type', {})
-        size, align, member = storage_value_layout(shape)
+        size, align, member = storage_value_layout(shape, field_path)
         offset = (offset + align - 1) // align * align
         layout = field.get('binding', {})
-        if layout.get('kind') != 'uniform' or layout.get('offset') != offset or layout.get('size') != size:
-            raise RuntimeError('Native structured storage field layout differs from std430')
-        name = field['name']
+        if layout.get('kind') != 'uniform':
+            raise RuntimeError(f"'{field_path}' has no reflected storage layout. Use a plain data field in the shared record.")
+        reflected_offset, reflected_size = layout.get('offset'), layout.get('size')
+        if reflected_offset != offset or reflected_size != size:
+            message = (f"'{field_path}' differs from std430. The target reports offset {reflected_offset} and size "
+                       f"{reflected_size} bytes. Expected offset {offset} and size {size} bytes.")
+            if member.get('width') == 3 and reflected_size == 16:
+                scalar = member['scalar']
+                slang_scalar = {'float32': 'float', 'int32': 'int', 'uint32': 'uint'}[scalar]
+                message += (f' Use {slang_scalar}4 in Slang or {scalar}x4 in LUSL. '
+                            'Initialize the fourth component and use .xyz where you need three components.')
+            else:
+                message += ' Check the field order and alignment in the shared declaration.'
+            raise RuntimeError(message)
         if name in names:
-            raise RuntimeError('Native structured storage field is duplicated')
+            raise RuntimeError(f"'{field_path}' is duplicated. Give each field in the record a unique name.")
         names.add(name)
         members.append({'name': name, **member, 'offset': offset})
         alignment = max(alignment, align)
@@ -171,22 +185,27 @@ def storage_struct_layout(record):
     return offset, alignment, members
 
 
-def storage_value_layout(shape):
+def storage_value_layout(shape, path):
     kind = shape.get('kind')
     if kind == 'struct':
-        size, alignment, fields = storage_struct_layout(shape)
+        size, alignment, fields = storage_struct_layout(shape, path)
         return size, alignment, {'fields': fields}
     if kind == 'array':
-        size, alignment, element = storage_value_layout(shape.get('elementType', {}))
+        size, alignment, element = storage_value_layout(shape.get('elementType', {}), path + '[]')
         stride = (size + alignment - 1) // alignment * alignment
         count = shape.get('elementCount')
-        if type(count) is not int or count <= 0 or shape.get('uniformStride') != stride:
-            raise RuntimeError('Native structured storage requires fixed arrays with std430 element stride')
+        if type(count) is not int or count <= 0:
+            raise RuntimeError(f"'{path}' requires a fixed array with a positive element count. Declare its capacity.")
+        reflected_stride = shape.get('uniformStride')
+        if reflected_stride != stride:
+            raise RuntimeError(f"'{path}' has a reflected array stride of {reflected_stride} bytes. "
+                               f"Expected a std430 element stride of {stride} bytes. Check the element type's alignment.")
         return stride * count, alignment, {'count': count, 'stride': stride, 'element': element}
     scalar = shape if kind == 'scalar' else shape.get('elementType', {})
     width = 1 if kind == 'scalar' else shape.get('elementCount')
     if kind not in ('scalar', 'vector') or scalar.get('scalarType') not in ('float32', 'uint32', 'int32') or width not in (1, 2, 3, 4):
-        raise RuntimeError('Native structured storage requires 32-bit scalars or vectors, structs, or fixed arrays')
+        raise RuntimeError(f"'{path}' has an unsupported native storage type. "
+                           'Use 32-bit scalars or vectors, structs, or fixed arrays.')
     size = 4 * width
     return size, 16 if width == 3 else size, {'scalar': scalar['scalarType'], 'width': width}
 
@@ -281,7 +300,10 @@ def raster_interface(document, stage, metal=False, native_arrays=False, runtime_
             scalar = result if result.get('kind') == 'scalar' else result.get('elementType', {})
             width = 1 if result.get('kind') == 'scalar' else result.get('elementCount')
             if structured_records and result.get('kind') == 'struct':
-                size, record_fields = storage_record_layout(result)
+                try:
+                    size, record_fields = storage_record_layout(result)
+                except RuntimeError as error:
+                    raise RuntimeError(f'Native structured buffer binding {index}: {error}') from error
             elif result.get('kind') not in ('scalar', 'vector') or scalar.get('scalarType') not in ('float32', 'uint32', 'int32') or width not in (1, 2, 4):
                 raise RuntimeError('Compute storage requires scalar32, vector2 or vector4 elements')
             else:

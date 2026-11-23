@@ -11,6 +11,7 @@ FIRST_TEXTURE_SLOT = 8
 WRITABLE_TEXTURE_VIEW = 'GraphWritableTextureView'
 MAX_STRIDE = 4096
 MAX_ELEMENTS = 16 * 1024 * 1024
+NATIVE_LAYOUT_ERROR = re.compile(r'^Ludus shader build: Native structured buffer binding ([0-9]+): (.+)$', re.M)
 
 
 def is_native_record(record):
@@ -218,6 +219,25 @@ def collect_native_records(contracts, build):
                 build.require(records.setdefault(field['slot'], key) == key, 'ShaderInterface', record['type'],
                               'passes sharing an artifact must agree on the native Buffer type and direction')
     return records
+
+
+def map_native_layout_error(output, program, target, snapshot):
+    """Resolve the rejected shader binding to its authored Buffer declaration."""
+    match = NATIVE_LAYOUT_ERROR.search(output)
+    if match is None:
+        return None
+    binding = int(match[1])
+    record = program.get('native_graph_records', {}).get(binding - FIRST_SLOT)
+    if record is None:
+        return None
+    source, type_name, _ = record
+    text = snapshot.files[source].decode('utf-8', errors='replace')
+    code = re.sub(r'/\*.*?\*/|//[^\n]*', lambda comment: ' ' + '\n' * comment[0].count('\n'), text, flags=re.S)
+    declarations = list(re.finditer(rf'\bstruct\s+{re.escape(type_name)}\s*\{{', code))
+    line = code.count('\n', 0, declarations[0].start()) + 1 if len(declarations) == 1 else 1
+    target_name = {'metal': 'Metal', 'spirv': 'Vulkan', 'wgsl': 'WebGPU'}.get(target, target)
+    return {'severity': 'error', 'message': f'{target_name} native structured buffer. {match[2]}',
+            'program': program['id'], 'target': target, 'location': {'source': source, 'line': line}}
 
 
 def qualify_record_type(source, type_name, namespaces):

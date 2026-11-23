@@ -1001,8 +1001,14 @@ def compile_program(program, schemas, closure, snapshot, work, helper, tools, ta
         if error.code == 'RenderGraphBuildShader':
             output = error.message.removeprefix('shader helper: ')
             error.diagnostics = map_shader_diagnostics(output, program, target, closure, compiled)
-            located = [d['location'] for d in error.diagnostics if 'location' in d]
-            error.location = located[0] if located else {'program': program['id']}
+            native_layout = buffers.map_native_layout_error(output, program, target, snapshot)
+            if native_layout is not None:
+                error.message = native_layout['message']
+                error.location = native_layout['location']
+                error.diagnostics = [native_layout, *error.diagnostics[:MAX_SHADER_DIAGNOSTICS - 1]]
+            else:
+                located = [d['location'] for d in error.diagnostics if 'location' in d]
+                error.location = located[0] if located else {'program': program['id']}
         raise
     result = document(read(output / 'stage.json'), 'stage result')
     raw = document(read(output / 'reflection.json'), 'target reflection')
