@@ -723,11 +723,11 @@ shader uses native traversal inside a compute invocation; dedicated ray stages o
 shader tables are not required for hardware acceleration. The default
 RayTracingPipeline traversal is native. The explicit triangle-loop and compute-BVH
 strategies described below use ordinary GPU compute and do not require ray hardware.
-WebGPU and WebGL2 do not execute this
-profile. Packages can retain browser raster targets alongside native targets;
-their `capability_profiles.ray_tracing` lists only `metal` and/or `spirv`, and no
-browser RT recipe or ray shader artifact is emitted. A browser-only RT manifest
-is rejected and needs an authored raster configuration. Metal cooking
+Native queries are available on Metal and Vulkan. Packages can also carry WGSL
+for eligible [ordered structured-buffer configurations](#access-an-ordered-buffer-by-port-name)
+that use software traversal. The package's `capability_profiles.ray_tracing`
+lists the targets for which it emitted scene compute or hardware ray recipes.
+Metal cooking
 requires the SDK-pinned SPIRV-Cross translator (`LUDUS_SPIRV_CROSS` in CMake or
 `--spirv-cross` for the package builder).
 
@@ -1387,11 +1387,15 @@ as `RWStructuredBuffer<EdgesData>` in the writer and
 named Buffer access in both shaders. One legacy positional Buffer can keep
 the first binding in the same configuration.
 
-For a graph that runs on Metal and Vulkan, use **Compute** invocation for a
-ray-generation reader and include the `metal` and `spirv` shader profiles.
-A Metal hardware ray pass can also read the buffer when the graph is authored
-for hardware invocation. Direct3D 12 and browser profiles currently lack the
-ordered scene compute shader targets used by this workflow.
+Use **Compute** invocation for the ray-generation reader on Metal, Vulkan,
+and WebGPU. Include the shader profiles your project targets (`metal`, `spirv`,
+and `wgsl`, respectively). For WebGPU, set traversal on every scene pass in the
+configuration to **Compute BVH**. The WebGPU package binds the same structured
+allocation as read/write storage in the writer and read-only storage in the
+reader. Metal also supports a hardware ray reader.
+
+Direct3D 12 currently lacks this ordered scene shader profile. WebGL 2 has no
+compute or writable shader storage, so it needs an authored raster configuration.
 
 In the LUSL reader, include `graph_resources.luslh` and
 `scene_shader.luslh`. For an `EdgesData` table with capacity one, read the

@@ -531,6 +531,62 @@ def wgsl_uniform_type(code, kind, depth=0, *, compute=False):
     raise RuntimeError('Browser raster uniforms require float/vector/mat4 or bounded vec4/mat4 arrays')
 
 
+def wgsl_struct_members(body):
+    """Split emitted members at commas outside array and vector type arguments."""
+    start, depth = 0, 0
+    for index, char in enumerate(body):
+        depth += (char == '<') - (char == '>')
+        if depth < 0:
+            raise RuntimeError('WGSL member type brackets are malformed')
+        if char == ',' and depth == 0:
+            yield body[start:index]
+            start = index + 1
+    if depth:
+        raise RuntimeError('WGSL member type brackets are malformed')
+    if body[start:].strip():
+        yield body[start:]
+
+
+def wgsl_record_type(structures, kind, depth=0):
+    """Measure the emitted storage shape using WGSL size and alignment rules."""
+    if depth == 16:
+        raise RuntimeError('WGSL structured storage nesting exceeds the admitted profile')
+    if scalar := re.fullmatch(r'(?:([fiu]32)|vec([234])<([fiu]32)>)', kind):
+        width = int(scalar[2] or 1)
+        size = 4 * width
+        scalar_type = {'f32': 'float32', 'i32': 'int32', 'u32': 'uint32'}[scalar[1] or scalar[3]]
+        return size, 16 if width == 3 else size, {'scalar': scalar_type, 'width': width}
+    if array := re.fullmatch(r'array<(.+),\s*(?:[iu]32\((\d+)\)|(\d+)[iu]?)>', kind):
+        size, align, shape = wgsl_record_type(structures, array[1].strip(), depth + 1)
+        count = int(array[2] or array[3])
+        stride = (size + align - 1) // align * align
+        return stride * count, align, {'count': count, 'stride': stride, 'element': shape}
+    if kind not in structures:
+        raise RuntimeError('WGSL structured storage references an unknown type')
+    members = []
+    offset, alignment = 0, 1
+    for member in wgsl_struct_members(structures[kind]):
+        field = re.fullmatch(r'\s*(?:@align\((\d+)\)\s*)?(\w+)\s*:\s*(.+?)\s*', member)
+        if field is None:
+            raise RuntimeError('WGSL structured storage member is malformed')
+        explicit, name, child = field.groups()
+        size, natural, shape = wgsl_record_type(structures, child, depth + 1)
+        align = int(explicit) if explicit is not None else natural
+        if align < natural or align & (align - 1):
+            raise RuntimeError('WGSL structured storage alignment is invalid')
+        offset = (offset + align - 1) // align * align
+        members.append({'name': re.sub(r'_\d+$', '', name), **shape, 'offset': offset})
+        offset += size
+        alignment = max(alignment, align)
+    size = (offset + alignment - 1) // alignment * alignment
+    # Slang wraps arrays of std430 structs in a one-member aligned container.
+    if kind.startswith('_Array_std430_') and len(members) == 1 and members[0]['name'] == 'data' and 'count' in members[0]:
+        shape = {key: members[0][key] for key in ('count', 'stride', 'element')}
+    else:
+        shape = {'fields': members}
+    return size, alignment, shape
+
+
 def verify_wgsl_compute_storage(code, interface):
     """Verify each reflected compute storage buffer's emitted WGSL element type and access.
 
@@ -542,14 +598,24 @@ def verify_wgsl_compute_storage(code, interface):
     for binding in interface['entries']:
         if binding['kind'] not in ('StorageRead', 'StorageReadWrite'):
             continue
+        access = 'read' if binding['kind'] == 'StorageRead' else 'read_write'
+        declaration = (r'@binding\(' + str(binding['binding']) + r'\)\s+@group\(0\)\s+var<storage,\s*' +
+                       access + r'>\s+\w+\s*:\s*array<')
+        if 'fields' in binding:
+            record = re.search(declaration + r'(\w+)>\s*;', code)
+            if record is None:
+                raise RuntimeError('WGSL emitted structured storage binding is missing or has the wrong access')
+            structures = dict(re.findall(r'\bstruct\s+(\w+)\s*\{([^}]+)\}', code))
+            size, _, shape = wgsl_record_type(structures, record[1])
+            if size != binding['size'] or shape != {'fields': binding['fields']}:
+                raise RuntimeError('WGSL emitted structured storage layout differs from reflection')
+            continue
         scalar = {'float32': 'f32', 'uint32': 'u32', 'int32': 'i32'}[binding['scalar']]
         element = scalar if binding['width'] == 1 else f'vec{binding["width"]}<{scalar}>'
-        access = 'read' if binding['kind'] == 'StorageRead' else 'read_write'
         elements = [re.escape(element)]
         if access == 'read_write' and binding['width'] == 1 and scalar in ('u32', 'i32'):
             elements.append(re.escape(f'atomic<{scalar}>'))
-        pattern = (r'@binding\(' + str(binding['binding']) + r'\)\s+@group\(0\)\s+var<storage,\s*' + access +
-                   r'>\s+\w+\s*:\s*array<(?:' + '|'.join(elements) + r')>\s*;')
+        pattern = declaration + r'(?:' + '|'.join(elements) + r')>\s*;'
         if re.search(pattern, code) is None:
             raise RuntimeError('WGSL emitted storage packing/access differs from reflection')
 
@@ -605,17 +671,7 @@ def wgsl_contract(code, reflected, stage):
         occupied, alignment, offsets = 0, 1, {}
         # Commas inside array<T,N> are not field separators. Reject nested
         # structures/runtime arrays; fixed vec4/mat4 arrays have verified strides.
-        members, start, depth = [], 0, 0
-        for index, char in enumerate(structure[1]):
-            depth += (char == '<') - (char == '>')
-            if depth < 0:
-                raise RuntimeError('WGSL uniform type brackets are malformed')
-            if char == ',' and depth == 0:
-                members.append(structure[1][start:index]); start = index + 1
-        members.append(structure[1][start:])
-        for member in members:
-            if not member.strip():
-                continue
+        for member in wgsl_struct_members(structure[1]):
             field = re.fullmatch(r'\s*(?:@align\((\d+)\)\s*)?(\w+)\s*:\s*(.+?)\s*', member)
             if field is None:
                 raise RuntimeError('Browser raster uniform member is malformed')

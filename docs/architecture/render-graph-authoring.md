@@ -1518,8 +1518,8 @@ A proposed `ris-projected-solid-angle` template follows the four-pass
 
 ### Native structured Buffer ports (proposed)
 
-Ordered scene compute on Metal and Vulkan supports one shared structured
-Buffer per configuration. The cooker links readers and writers into separate
+Ordered scene compute supports one shared structured Buffer per configuration
+on Metal, Vulkan and WebGPU. WebGPU uses software traversal. The cooker links readers and writers into separate
 shader artifacts and stores the reader callback mask and reflected record
 stride. The renderer binds the same allocation through the two layouts and
 records the reader against the writer's latest resource version. Metal
@@ -1533,8 +1533,8 @@ directly. A consumer with a read-only connection receives
 same graph-owned allocation. This extends the
 [named Buffer workflow](../development/render-graph-authoring.md#access-an-ordered-buffer-by-port-name)
 and builds on [the original named Buffer issue](https://github.com/The-Ludus-Project/Ludus/issues/2131).
-The design covers ordered scene compute and ray-generation callbacks on Metal and
-Vulkan, including the existing Metal hardware ray stage path.
+WebGPU cooks the software writer and reader directly to WGSL. The cooker verifies
+the emitted nested members, array strides and storage access against reflection.
 
 **Authoring.** Keep the existing Buffer node, struct picker and named ports.
 For a newly configured struct Buffer, **Structured** is the default once the

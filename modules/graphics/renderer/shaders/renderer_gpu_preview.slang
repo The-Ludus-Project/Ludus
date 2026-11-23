@@ -159,7 +159,7 @@ float4 Texel(uint t, int x, int y, uint map)
     uint word = textureWords[layout.x + (index >> 2)][index & 3];
     float4 c = float4(word & 255, (word >> 8) & 255, (word >> 16) & 255, word >> 24) / 255.0;
     if ((flags & 8) != 0)
-        c.xyz = float3(DecodeSrgb(c.x), DecodeSrgb(c.y), DecodeSrgb(c.z));
+        c.xyz = float3(DecodeNormalizedSrgb(c.x), DecodeNormalizedSrgb(c.y), DecodeNormalizedSrgb(c.z));
     return c;
 }
 // Thanks to the Slang authors, core module noinline attribute reference:

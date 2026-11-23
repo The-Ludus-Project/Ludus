@@ -101,6 +101,11 @@ def requires_native_queries(plan):
                for operation in plan['passes'])
 
 
+def supports_webgpu_records(profile):
+    """WebGPU can run an ordered structured record with software traversal."""
+    return bool(profile['record_readers']) and not profile['native_ray_queries']
+
+
 def is_compute_variant(variant):
     """Scene compute kernels occupy only the ray-generation position of the sequence."""
     return len(callback_programs(variant)) == 1

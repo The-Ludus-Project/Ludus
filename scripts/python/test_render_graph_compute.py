@@ -581,6 +581,9 @@ class NativeSceneComputeTests(unittest.TestCase):
     def test_ordered_compute_shares_one_native_edge_table_on_vulkan(self):
         self.check_shared_native_edge_table('spirv')
 
+    def test_ordered_compute_shares_one_native_edge_table_on_webgpu(self):
+        self.check_shared_native_edge_table('wgsl')
+
     def check_shared_native_edge_table(self, target, *, is_hardware_reader=False):
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
@@ -597,10 +600,13 @@ class NativeSceneComputeTests(unittest.TestCase):
             }
             if is_hardware_reader:
                 nodes['shade']['invocation']['type'] = 'RayTracing'
+            if target == 'wgsl':
+                for node in (nodes['primary'], nodes['shade']):
+                    node['invocation']['traversal'] = 'ComputeBvh'
             nodes['shade']['outputs'] = [port for port in nodes['shade']['outputs'] if port['id'] != 'hits']
             graph_path.write_bytes(graph.canonical_asset(document))
             manifest_path = source / 'main.lushader.json'
-            profiles = ['metal', 'spirv', 'wgsl'] if target == 'spirv' else ['metal', 'wgsl']
+            profiles = {'metal': ['metal', 'wgsl'], 'spirv': ['metal', 'spirv', 'wgsl'], 'wgsl': ['wgsl']}[target]
             manifest = json.loads((source / 'main.lushader.json.in').read_text().replace(
                 '@RG2_TEST_PROFILES@', json.dumps(profiles)))
             for program in manifest['programs']:
@@ -619,8 +625,11 @@ class NativeSceneComputeTests(unittest.TestCase):
 float32x3 TracePrimary(in SceneContext scene, in RayLaunch launch,
                        inout RayQueryContext inoutQueries, in TracePrimaryResources resources)
 {
-    resources.Hits[0].Edges[0].Begin = float32x4(1.0);
-    resources.Hits[0].Weights[42] = 1.0;
+    if (launch.PositionPixel.x == 0 && launch.PositionPixel.y == 0)
+    {
+        resources.Hits[0].Edges[0].Begin = float32x4(0.0, 1.0, 0.0, 0.0);
+        resources.Hits[0].Weights[42] = 1.0;
+    }
     return float32x3(0);
 }
 ''')
@@ -672,6 +681,20 @@ float32x3 ShadeRecordedHit(in SceneContext scene, in RayLaunch launch,
                 header = root / 'native-edges.h'
                 execution.emit_runtime(package, header, configuration=configuration['id'])
                 self.assertIn(f"result.RecordReaderMask = {1 << reader['RayProgram']};", header.read_text())
+            if target == 'wgsl':
+                fields = next(entry['fields'] for entry in reader_entries if entry['binding'] == 7)
+                self.assertEqual([('EdgesCount', 0), ('TotalWeight', 4), ('Padding', 8),
+                                  ('Edges', 16), ('Weights', 8208)],
+                                 [(field['name'], field['offset']) for field in fields])
+                self.assertEqual((256, 32), (fields[3]['count'], fields[3]['stride']))
+                self.assertEqual((256, 4), (fields[4]['count'], fields[4]['stride']))
+                self.assertEqual(['wgsl'], contents['package']['capability_profiles']['ray_tracing'])
+                accepted = (root / 'build/current.json').read_bytes()
+                nodes['shade']['invocation']['traversal'] = 'NativeQuery'
+                graph_path.write_bytes(graph.canonical_asset(document))
+                with self.assertRaisesRegex(ToolingError, 'WebGPU scene compute.*software traversal'):
+                    build.build_package(manifest_path, root / 'build', **options)
+                self.assertEqual(accepted, (root / 'build/current.json').read_bytes())
             if target == 'spirv':
                 self.assertIn(('RecordReadCompute', 'compute', 'metal'), contents['artifacts'])
                 schemas = [schema for schema in contents['package']['schemas'] if schema['id'] == 'RendererStatic']

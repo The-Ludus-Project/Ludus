@@ -139,9 +139,10 @@ def verify_native_record_targets(args, sdk, helper, output):
                        LUDUS_RG1_CROSS=str(Path(args.spirv_cross).resolve()),
                        LUDUS_RG1_VALIDATOR=str(Path(args.validator).resolve()))
     fixture = 'test_render_graph_compute.NativeSceneComputeTests'
-    subprocess.run([sys.executable, '-m', 'unittest',
-                    fixture + '.test_ordered_compute_shares_one_native_edge_table_on_vulkan'],
-                   check=True, cwd=output, env=environment)
+    tests = [fixture + '.test_ordered_compute_shares_one_native_edge_table_on_vulkan']
+    if 'wgsl' in args.profiles:
+        tests.append(fixture + '.test_ordered_compute_shares_one_native_edge_table_on_webgpu')
+    subprocess.run([sys.executable, '-m', 'unittest', *tests], check=True, cwd=output, env=environment)
 
 
 def verify_runtime_package(output, header, runtime, package):
