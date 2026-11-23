@@ -1,0 +1,76 @@
+{
+  "format": "ludus.scene",
+  "version": 1,
+  "name": "Hair and skin qualification companions",
+  "description": "The public scene-source materials the standalone qualification cooks and round-trips: the Skin and Hair materials assigned to the bust's slots, with the authored edited values, beside a flat hair-card patch and a skin patch with ordinary metallic/roughness controls of the same base colour and roughness. The patches carry no textures or masks (scene sources have none); the bust's masked hair coverage is imported from infinite-head-hair.gltf through the World. Cooking this source stores the Skin material as LUSCN v14 and the Hair material as v13; verify.py checks that the cooked records keep these edited values.",
+  "camera": {
+    "eye": [0, 0, 1.2],
+    "target": [0, 0, -1],
+    "up": [0, 1, 0],
+    "vertical_fov_degrees": 40.0
+  },
+  "materials": [
+    {"name": "Floor", "model": "diffuse", "base_color": [0.5, 0.5, 0.5]},
+    {
+      "name": "Skin",
+      "model": "skin",
+      "base_color": [0.76, 0.52, 0.43],
+      "roughness": 0.42,
+      "scattering_distance": [0.0015, 0.00094, 0.00057]
+    },
+    {"name": "SkinControl", "model": "metallic_roughness", "base_color": [0.76, 0.52, 0.43], "roughness": 0.42},
+    {
+      "name": "Hair",
+      "model": "hair_card",
+      "base_color": [0.33, 0.2, 0.11],
+      "roughness": 0.3,
+      "hair": {
+        "strand_direction_degrees": 90,
+        "primary_shift_degrees": -6,
+        "secondary_shift_degrees": 9,
+        "primary_weight": 0.12,
+        "secondary_weight": 0.06
+      }
+    },
+    {"name": "HairControl", "model": "metallic_roughness", "base_color": [0.33, 0.2, 0.11], "roughness": 0.3},
+    {"name": "Light", "model": "metallic_roughness", "base_color": [1, 1, 1], "roughness": 1, "emission": {"radiance": [12, 12, 12], "two_sided": false}}
+  ],
+  "objects": [
+    {
+      "name": "Floor",
+      "material": "Floor",
+      "positions": [[-1, -1, 1], [1, -1, 1], [1, -1, -1], [-1, -1, -1]],
+      "polygons": [[0, 1, 2, 3]]
+    },
+    {
+      "name": "Skin patch",
+      "material": "Skin",
+      "positions": [[-0.8, -0.7, -0.2], [-0.1, -0.7, -0.2], [-0.1, 0.5, -0.2], [-0.8, 0.5, -0.2]],
+      "polygons": [[0, 1, 2, 3]]
+    },
+    {
+      "name": "Skin control",
+      "material": "SkinControl",
+      "positions": [[0.1, -0.7, -0.2], [0.8, -0.7, -0.2], [0.8, 0.5, -0.2], [0.1, 0.5, -0.2]],
+      "polygons": [[0, 1, 2, 3]]
+    },
+    {
+      "name": "Hair card",
+      "material": "Hair",
+      "positions": [[-0.8, -0.7, 0.2], [-0.1, -0.7, 0.2], [-0.1, 0.5, 0.2], [-0.8, 0.5, 0.2]],
+      "polygons": [[0, 1, 2, 3]]
+    },
+    {
+      "name": "Hair control",
+      "material": "HairControl",
+      "positions": [[0.1, -0.7, 0.2], [0.8, -0.7, 0.2], [0.8, 0.5, 0.2], [0.1, 0.5, 0.2]],
+      "polygons": [[0, 1, 2, 3]]
+    },
+    {
+      "name": "Light",
+      "material": "Light",
+      "positions": [[-0.25, 0.99, -0.25], [0.25, 0.99, -0.25], [0.25, 0.99, 0.25], [-0.25, 0.99, 0.25]],
+      "polygons": [[0, 1, 2, 3]]
+    }
+  ]
+}

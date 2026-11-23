@@ -1,0 +1,55 @@
+{
+  "version": 1,
+  "schema": "ludus.world.hair-skin-bust.v1",
+  "name": "character-bust",
+  "revision": 1,
+  "description": "The static character bust with its Skin slot assigned a skin material and its Hair slot assigned a hair-card material, matching the editor's saved World in render_graph_preview_tests.cpp ([skin][hair-card]).",
+  "imports": [
+    {
+      "source": "infinite-head/infinite-head-hair.gltf",
+      "license": "infinite-head/LICENSE.txt"
+    }
+  ],
+  "camera": {
+    "eye": [0.0, 0.08, 0.42],
+    "target": [0.0, 0.08, 0.0],
+    "up": [0.0, 1.0, 0.0],
+    "vertical_fov_degrees": 28.0,
+    "near": 0.02,
+    "far": 2.0
+  },
+  "lights": [
+    {
+      "name": "Key",
+      "kind": "directional",
+      "direction": [-0.4, -0.35, -0.85],
+      "color": [1.0, 0.96, 0.9],
+      "illuminance_lux": 32000.0
+    },
+    {
+      "name": "Fill",
+      "kind": "directional",
+      "direction": [0.6, -0.1, 0.78],
+      "color": [0.78, 0.86, 1.0],
+      "illuminance_lux": 9000.0
+    }
+  ],
+  "environment": {
+    "irradiance": [0.3, 0.33, 0.4],
+    "ground_scale": 0.6
+  },
+  "slots": [
+    {
+      "name": "Skin",
+      "mesh": "infinite-head",
+      "material": "Skin"
+    },
+    {
+      "name": "Hair",
+      "mesh": "hair-cards",
+      "material": "Hair",
+      "opacity_texture": "infinite-head/hair-cards.png",
+      "alpha_cutoff": 0.5
+    }
+  ]
+}

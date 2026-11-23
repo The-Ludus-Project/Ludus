@@ -2133,7 +2133,12 @@ and package that saved World in an
 Verify retained material assignments, textures and shader dependencies, and
 compare the clean package's rendered output with the editor on a declared
 target and raster profile. The standalone qualification depends on both
-raster features. [Installed SDK #1400](https://github.com/The-Ludus-Project/Ludus/issues/1400)
+raster features, and no single raster profile shades both, so it qualifies the
+one saved bust World through the forward lit profile for hair cards and the
+clustered deferred profile for skin. See
+[Qualify hair and skin in a standalone game](../development/hair-skin-standalone-qualification.md)
+and the [`hair_skin_bust` fixture](https://github.com/The-Ludus-Project/Ludus/tree/develop/tests/sdk_consumer/hair_skin_bust).
+[Installed SDK #1400](https://github.com/The-Ludus-Project/Ludus/issues/1400)
 
 Defer strand production work until a named static groom and memory budget
 justify a paired CPU and GPU prototype. The candidate is Matt Jen-Yuan Chiang,
