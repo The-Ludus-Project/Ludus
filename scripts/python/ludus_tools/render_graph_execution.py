@@ -173,8 +173,7 @@ def lower_plan(package, configuration):
                                  'BytesPerPixel': value.get('bytes_per_pixel', 0)})
     pass_records = []
     color_defined = {r: False for r in resources}
-    has_color_input = any(operation['kind'] == 'RayTracing' and 'source_color' in operation
-                          for operation in operations)
+    sampled_texture_count = max((len(buffers.get_sampled_textures(operation)) for operation in operations), default=0)
     has_storage_texture = any(operation.get('storage_texture', False) for operation in operations)
     named_texture_count = max((len(operation.get('storage_textures', ())) for operation in operations), default=0)
     ray_colors = {}
@@ -219,8 +218,8 @@ def lower_plan(package, configuration):
                                   'Configuration', operation['id'],
                                   'visibility/depth must come from the immediately preceding opaque Clear/Store raster using the same view')
             color = operation['attachments'].get('color')
-            sampled_color = operation.get('source_color')
-            if sampled_color is not None:
+            sampled_colors = buffers.get_sampled_textures(operation)
+            for sampled_color in sampled_colors:
                 source = sampled_color['resource']
                 build.require(ray_colors.get(source) == sampled_color['input_version'],
                               'Capability', operation['id'],
@@ -232,7 +231,7 @@ def lower_plan(package, configuration):
             recipes = [recipe for recipe in package.get('recipes', []) if recipe['technique'] == ray.TECHNIQUE and
                        plan['configuration'] in recipe.get('configurations', (plan['configuration'],)) and
                        recipe.get('visibility_buffer', False) == ('visibility' in operation) and
-                       recipe.get('color_input', False) == has_color_input and
+                       recipe.get('sampled_texture_count', int(recipe.get('color_input', False))) == sampled_texture_count and
                        recipe.get('storage_texture', False) == has_storage_texture and
                        recipe.get('named_texture_count', 0) == named_texture_count and
                        recipe.get('native_ray_queries', True) == ray.requires_native_queries(plan)]
@@ -255,7 +254,7 @@ def lower_plan(package, configuration):
                 'VisibilityDepth': resources.index(operation['visibility_depth']['resource']) if 'visibility_depth' in operation else ABSENT,
                 'AccumulationSamples': operation.get('accumulation', {}).get('samples', 0),
                 'ToneMappingExposure': float(operation.get('tone_mapping', {}).get('exposure', 0)),
-                'SourceColor': resources.index(sampled_color['resource']) if sampled_color is not None else ABSENT})
+                'SourceColor': resources.index(sampled_colors[0]['resource']) if sampled_colors else ABSENT})
             continue
         choices = [r for r in package['recipes'] if r['technique'] == operation['technique'] and
                    ('pipeline' not in operation or all(r['state'][key] == value
@@ -327,6 +326,9 @@ def lower_plan(package, configuration):
             record['HasStorageTexture'] = True
         if operation.get('storage_textures'):
             record['ShaderTextures'] = [resources.index(texture['resource']) for texture in operation['storage_textures']]
+        sampled_colors = buffers.get_sampled_textures(operation)
+        if len(sampled_colors) > 1:
+            record['AdditionalSampledTextures'] = [resources.index(use['resource']) for use in sampled_colors[1:]]
         for attachment in operation.get('attachments', {}).values():
             build.require(not plan['resources'][attachment['resource']].get('storage_texture') or
                           operation.get('storage_texture', False), 'Capability', operation['id'],
@@ -403,6 +405,7 @@ NATIVE_GRAPH_RECORD_PACKAGE_VERSION = 44
 RECORD_READER_PACKAGE_VERSION = 45
 # Version 46 separates color access from dispatch size and can append named texture mappings.
 SHADER_TEXTURE_ACCESS_PACKAGE_VERSION = 46
+SAMPLED_TEXTURES_PACKAGE_VERSION = 47
 RAY_STAGE_PROGRAMS = ('RayTracing', 'NativeRayStages', 'RecordReadCompute')
 # render_graph_format::DisplayCurve codes, by index; zero (Reinhard) also marks a pass without a ToneMap.
 DISPLAY_CURVE_CODES = ('Reinhard', 'PbrNeutral')
@@ -549,7 +552,8 @@ def _runtime_contents(path, configuration):
                   'use an explicitly authored --renderer-static build manifest')
     plan, resources, passes, cameras = lower_plan(package, configuration)
     has_visibility = any(p.get('Visibility', ABSENT) != ABSENT for p in passes)
-    has_color_input = any(p['Program'] == 'RayTracing' and p['SourceColor'] != ABSENT for p in passes)
+    sampled_texture_count = max((1 + len(p.get('AdditionalSampledTextures', ())) for p in passes
+                                 if p['Program'] == 'RayTracing' and p['SourceColor'] != ABSENT), default=0)
     has_storage_texture = any(p.get('HasStorageTexture', False) for p in passes)
     named_texture_count = max((len(p.get('ShaderTextures', ())) for p in passes), default=0)
     selected_techniques = set(plan['techniques'])
@@ -557,7 +561,7 @@ def _runtime_contents(path, configuration):
                    recipe['technique'] == ray.TECHNIQUE and
                    plan['configuration'] in recipe.get('configurations', (plan['configuration'],)) and
                    recipe.get('visibility_buffer', False) == has_visibility and
-                   recipe.get('color_input', False) == has_color_input and
+                   recipe.get('sampled_texture_count', int(recipe.get('color_input', False))) == sampled_texture_count and
                    recipe.get('storage_texture', False) == has_storage_texture and
                    recipe.get('named_texture_count', 0) == named_texture_count and
                    recipe.get('native_ray_queries', True) == ray.requires_native_queries(plan)]
@@ -807,8 +811,9 @@ def _uniform_constants(contents):
 
 
 def _format_plan_field(field, value, kinds):
-    if field == 'ShaderTextures':
-        slots = value + [ABSENT] * (buffers.MAX_TEXTURES - len(value))
+    if field in ('ShaderTextures', 'AdditionalSampledTextures'):
+        capacity = buffers.MAX_TEXTURES if field == 'ShaderTextures' else len(buffers.SAMPLED_TEXTURE_SLOTS) - 1
+        slots = value + [ABSENT] * (capacity - len(value))
         return '{' + ', '.join('format::ABSENT' if slot == ABSENT else str(slot) for slot in slots) + '}'
     if field == 'Target':
         return 'format::ShaderTarget::' + TARGET_NAMES[value]
@@ -1057,7 +1062,9 @@ def encode_runtime_package(contents, *, magic=PACKAGE_MAGIC):
     reader_mask = contents.get('record_reader_mask', 0)
     has_named_textures = any(p.get('ShaderTextures') for p in contents['passes'])
     has_shader_texture_access = has_named_textures or any(p.get('HasStorageTexture') for p in contents['passes'])
-    version = (SHADER_TEXTURE_ACCESS_PACKAGE_VERSION if has_shader_texture_access else
+    has_additional_sampled = any(p.get('AdditionalSampledTextures') for p in contents['passes'])
+    version = (SAMPLED_TEXTURES_PACKAGE_VERSION if has_additional_sampled else
+               SHADER_TEXTURE_ACCESS_PACKAGE_VERSION if has_shader_texture_access else
                RECORD_READER_PACKAGE_VERSION if reader_mask else
                NATIVE_GRAPH_RECORD_PACKAGE_VERSION if record_stride else PACKAGE_VERSION)
     data = bytearray(u32(magic, version, len(contents['resources']), len(contents['passes']),
@@ -1140,10 +1147,14 @@ def encode_runtime_package(contents, *, magic=PACKAGE_MAGIC):
         build.require(0 < len(label) <= MAX_PASS_NAME_BYTES and b'\0' not in label,
                       'Capacity', operation['id'], 'pass debug name exceeds the runtime UTF-8 bound')
         data += u32(len(label)) + label + bytes(-len(label) % 4)
-    if has_named_textures:
+    if has_named_textures or has_additional_sampled:
         for p in contents['passes']:
             slots = p.get('ShaderTextures', [])
             data += u32(*slots, *([ABSENT] * (buffers.MAX_TEXTURES - len(slots))))
+    if has_additional_sampled:
+        for p in contents['passes']:
+            slots = p.get('AdditionalSampledTextures', [])
+            data += u32(*slots, *([ABSENT] * (len(buffers.SAMPLED_TEXTURE_SLOTS) - 1 - len(slots))))
     build.require(len(data) <= MAX_RUNTIME_BYTES, 'Capacity', 'runtime package', 'runtime generation exceeds 16 MiB')
     return bytes(data)
 

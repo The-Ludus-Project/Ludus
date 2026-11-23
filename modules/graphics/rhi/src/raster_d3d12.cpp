@@ -31,10 +31,10 @@ constexpr usize MAX_BUFFER_BYTES = usize{128} * 1024 * 1024;
 constexpr usize MAX_UNIFORM_BYTES = usize{D3D12_REQ_CONSTANT_BUFFER_ELEMENT_COUNT} * 16;
 constexpr uint32 MAX_MIP_LEVELS = D3D12_REQ_MIP_LEVELS;
 constexpr uint32 MAX_VERTEX_ATTRIBUTES = RASTER_BINDING_COUNT;
-constexpr uint32 MAX_SET_DESCRIPTORS = RASTER_BINDING_COUNT;
+constexpr uint32 MAX_SET_DESCRIPTORS = RASTER_COMPUTE_BINDING_COUNT;
 constexpr usize CBV_ALIGNMENT = D3D12_CONSTANT_BUFFER_DATA_PLACEMENT_ALIGNMENT;
 constexpr usize MAX_TEXTURE_SUBRESOURCES = usize{D3D12_REQ_TEXTURE2D_ARRAY_AXIS_DIMENSION} * MAX_MIP_LEVELS;
-constexpr usize DESCRIPTOR_TABLE_COUNT = RASTER_BINDING_COUNT;
+constexpr usize DESCRIPTOR_TABLE_COUNT = RASTER_COMPUTE_BINDING_COUNT;
 
 struct Buffer final
 {
@@ -339,7 +339,7 @@ BindingCapabilities BindingLimits() noexcept
     {
         .MaxTextureArrayElements = 1,
         .MaxDescriptorsPerSet = descriptorLimit < MAX_SET_DESCRIPTORS ? descriptorLimit : MAX_SET_DESCRIPTORS,
-        .MaxBindings = RASTER_BINDING_COUNT,
+        .MaxBindings = RASTER_COMPUTE_BINDING_COUNT,
         .MaxUniformBuffersPerStage = D3D12_COMMONSHADER_CONSTANT_BUFFER_API_SLOT_COUNT,
         .MaxSampledTexturesPerStage = RASTER_BINDING_COUNT,
         .MaxSamplersPerStage = D3D12_COMMONSHADER_SAMPLER_SLOT_COUNT,

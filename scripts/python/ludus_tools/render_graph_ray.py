@@ -151,8 +151,6 @@ FAILURE_STRIDE = 4
 # records the graph's support. Native ray stages reserve slot 11 for their function table and define neither slot.
 AERIAL_PERSPECTIVE_SLOT = 11
 ATMOSPHERE_SKY_SLOT = 15
-# Matches LUDUS_GRAPH_COLOR_INPUT_BINDING in renderer_gpu_preview_layout.h.
-COLOR_INPUT_SLOT = 12
 STORAGE_TEXTURE_SLOT = RAY_PATH_CAPTURE_SLOT
 WORLD_TABLE_STRIDE = 16
 WORLD_FEATURE_DEFINES = ('#define LUDUS_AERIAL_PERSPECTIVE_BINDING LUDUS_GRAPH_AERIAL_PERSPECTIVE_BINDING\n'
@@ -282,11 +280,12 @@ def lower_ports(node, where, graph, noun, profile, *, is_buffer_dispatch=False, 
                    identity != mappings.get('color') and identity not in texture_inputs]
     depth_reads = [identity for identity, kind in types.items() if kind == 'DepthTexture']
     if allows_color_input and not depth_reads:
-        graph._require(len(color_reads) <= 1, 'Capability', where,
-                       'scene compute supports one sampled color input per pass',
-                       repair='Keep the ColorTexture you want to sample and remove the other read-only color inputs.')
-        if color_reads:
-            mappings['source_color'] = color_reads.pop()
+        limit = len(buffers.SAMPLED_TEXTURE_SLOTS)
+        graph._require(len(color_reads) <= limit, 'Capacity', where,
+                       f'scene compute supports {limit} sampled color inputs per pass; received {len(color_reads)}',
+                       repair=f'Keep up to {limit} read-only ColorTexture inputs and split remaining reads into another pass.')
+        mappings.update({'sampled:' + name: name for name in color_reads})
+        color_reads = []
     graph._require((len(color_reads), len(depth_reads)) in ((0, 0), (1, 1)), 'Capability', where,
                    f'{noun} visibility input requires one read-only color and one depth texture; input declarations: ' +
                    ', '.join(f"'{identity}' ({types[identity]})" for identity in color_reads + depth_reads) +
@@ -449,12 +448,12 @@ def group_profiles(plans, technique, build):
         build.require(not has_visibility or technique.get('scene_interface', {}).get('visibility_buffer', False),
                       'Configuration', plan['configuration'],
                       'visibility inputs require scene_interface.visibility_buffer')
-        has_color_input = any('source_color' in operation for operation in operations)
+        sampled_texture_count = max(len(buffers.get_sampled_textures(operation)) for operation in operations)
         has_storage_texture = any(operation.get('storage_texture', False) for operation in operations)
         named_texture_count = max(len(operation.get('storage_textures', ())) for operation in operations)
         build.require(not named_texture_count or not has_storage_texture, 'Capability', plan['configuration'],
                       'named shader textures and the legacy storage output need separate configurations')
-        build.require(not has_color_input or not has_visibility, 'Capability', plan['configuration'],
+        build.require(not sampled_texture_count or not has_visibility, 'Capability', plan['configuration'],
                       'scene compute color inputs require an ordered scene sequence without visibility/depth')
         has_native_queries = requires_native_queries(plan) or requires_native_pipeline(plan)
         build.require(not (has_storage_texture or named_texture_count) or
@@ -497,7 +496,7 @@ def group_profiles(plans, technique, build):
         callbacks = ((tuple(sorted(variants)), tuple(sorted(native_operations)), plan['configuration'])
                      if uses_native_records else
                      (tuple(sorted(variants)), tuple(sorted(native_operations))) if isolate_lighting else ())
-        group = groups.setdefault((has_visibility, has_native_queries, has_color_input, has_storage_texture, named_texture_count, callbacks),
+        group = groups.setdefault((has_visibility, has_native_queries, sampled_texture_count, has_storage_texture, named_texture_count, callbacks),
                                   {'variants': set(), 'native_operations': {}, 'configurations': [],
                                    'persistent': False, 'structured_buffers': False})
         group['variants'].update(variants)
@@ -521,21 +520,23 @@ def group_profiles(plans, technique, build):
                       'a ray technique without default callbacks requires a RayTracingPipeline or scene compute pass')
         # No visibility pass dispatches the default callbacks, so the kernel reads no visibility
         # inputs and reflection drops them, even when scene_interface.visibility_buffer permits them.
-        groups[(False, True, False, False, 0, ())] = {
+        groups[(False, True, 0, False, 0, ())] = {
             'variants': {tuple(technique[stage] for stage in STAGES)}, 'native_operations': {}, 'configurations': [],
             'persistent': False, 'structured_buffers': False}
     result = []
     has_native_record_profile = any(group.get('native_graph_records', False) for group in groups.values())
-    for (has_visibility, has_native_queries, has_color_input, has_storage_texture, named_texture_count, callbacks), group in sorted(groups.items()):
+    for (has_visibility, has_native_queries, sampled_texture_count, has_storage_texture, named_texture_count, callbacks), group in sorted(groups.items()):
         build.require(not (group['persistent'] or len(group['variants']) > 1) or not group['structured_buffers'],
                       'Capability', 'ray storage',
                       'ordered ray passes use shared Buffer nodes; StructuredBuffer nodes remain private to one ray job')
-        if has_visibility and any(key[:4] == (False, has_native_queries, False, False) for key in groups):
+        if has_visibility and any(key[:4] == (False, has_native_queries, 0, False) for key in groups):
             compute_identity = VISIBILITY_COMPUTE_ID if has_native_queries else SOFTWARE_VISIBILITY_COMPUTE_ID
         else:
             compute_identity = COMPUTE_ID if has_native_queries else SOFTWARE_COMPUTE_ID
-        if has_color_input:
+        if sampled_texture_count == 1:
             compute_identity += 'WithColorInput'
+        elif sampled_texture_count > 1:
+            compute_identity += f'WithSampledTextures{sampled_texture_count}'
         if has_storage_texture:
             compute_identity += 'WithStorageTexture'
         if named_texture_count:
@@ -550,7 +551,8 @@ def group_profiles(plans, technique, build):
                        'record_readers': sorted(group.get('record_readers', ())),
                        'configurations': sorted(group['configurations']) if callbacks or has_native_record_profile else [],
                        'scene_dispatch': group.get('scene_dispatch', False),
-                       'variants': variants, 'color_input': has_color_input,
+                       'variants': variants, 'color_input': sampled_texture_count > 0,
+                       'sampled_texture_count': sampled_texture_count,
                        'storage_texture': has_storage_texture, 'named_texture_count': named_texture_count,
                        'persistent': group['persistent'] or len(group['variants']) > 1,
                        'compute': compute_identity})
@@ -717,6 +719,7 @@ static const float RAY_DIRECTION_SQUARED_TOLERANCE = 0.00001;
         result[compute_identity]['native_graph_records'] = native_records
     if technique.get('scene_interface', {}).get('color_input', False):
         result[compute_identity]['color_input'] = True
+        result[compute_identity]['sampled_texture_count'] = technique['scene_interface']['sampled_texture_count']
     if technique.get('scene_interface', {}).get('storage_texture', False):
         result[compute_identity]['storage_texture'] = True
     if technique.get('scene_interface', {}).get('named_texture_count', 0):
@@ -811,6 +814,7 @@ def check_interface(program, result, build, raw=None):
                               'ShaderInterface', program['id'],
                               f'native structured Buffer {shape.get("name", "")} has different field offsets '
                               'or array strides on the selected target')
+        sampled_slots = buffers.SAMPLED_TEXTURE_SLOTS[:program.get('sampled_texture_count', 0)]
         build.require(interface.get('workgroup') == program.get('ray_workgroup', DEFAULT_WORKGROUP_SIZE) and interface['inputs'] == [] and
                       [(entry['binding'], entry['kind'], entry['size']) for entry in entries if program.get('persistent_ray_profile') or entry['binding'] < buffers.FIRST_SLOT or entry['binding'] >= VISIBILITY_SLOT] ==
                       expected + ([(VISIBILITY_SLOT, 'Texture2D', 0), (VISIBILITY_SLOT + 1, 'TextureDepth2D', 0)] if program.get('visibility_buffer', False) else []) +
@@ -821,14 +825,15 @@ def check_interface(program, result, build, raw=None):
                       # World-feature tables appear exactly when a callback calls their scene function.
                       ([(AERIAL_PERSPECTIVE_SLOT, 'StorageRead', WORLD_TABLE_STRIDE)] if not program.get('native_ray_pipeline') and
                        any(entry['binding'] == AERIAL_PERSPECTIVE_SLOT for entry in entries) else []) +
-                      ([(COLOR_INPUT_SLOT, 'Texture2D', 0)] if program.get('color_input', False) else []) +
+                      [(slot, 'Texture2D', 0) for slot in sampled_slots[:1]] +
                       # Reflection drops the table when no callback reads it; the renderer then binds nothing.
                       ([(LTC_TABLE_SLOT, 'StorageRead', LTC_TABLE_STRIDE)] if program.get('ltc_table', False) and
                        any(entry['binding'] == LTC_TABLE_SLOT for entry in entries) else []) +
                       # Every graph ray kernel counts its latched pixels by failure reason.
                       [(FAILURE_SLOT, 'StorageReadWrite', FAILURE_STRIDE)] +
                       ([(ATMOSPHERE_SKY_SLOT, 'StorageRead', WORLD_TABLE_STRIDE)] if not program.get('native_ray_pipeline') and
-                       any(entry['binding'] == ATMOSPHERE_SKY_SLOT for entry in entries) else []),
+                       any(entry['binding'] == ATMOSPHERE_SKY_SLOT for entry in entries) else []) +
+                      [(slot, 'Texture2D', 0) for slot in sampled_slots[1:]],
                       'ShaderInterface', program['id'], 'ray compute reflection differs from the selected renderer ABI')
         declared = program.get('storage_bindings', [])
         extra = [entry for entry in entries if buffers.FIRST_SLOT <= entry['binding'] < VISIBILITY_SLOT and not program.get('persistent_ray_profile')]
@@ -1105,8 +1110,9 @@ def persistent_wrapper(programs, technique, variants, snapshot, build, recipe, c
             if slot not in (native_records or {}):
                 prefix += f'[[vk::binding({buffers.FIRST_SLOT + slot}, 0)]] RWStructuredBuffer<uint4> GraphBuffer{slot};\n'
     prefix += 'uint GetGraphPassIndex() { return (Sampling.z >> LUDUS_GRAPH_PASS_INDEX_SHIFT) & LUDUS_GRAPH_PASS_INDEX_MASK; }\n'
-    if interface.get('color_input', False):
-        prefix += '[[vk::binding(LUDUS_GRAPH_COLOR_INPUT_BINDING, 0)]] Texture2D<float4> GraphColorInput;\n'
+    sampled_texture_count = interface.get('sampled_texture_count', 0)
+    for index, slot in enumerate(buffers.SAMPLED_TEXTURE_SLOTS[:sampled_texture_count]):
+        prefix += f'[[vk::binding({slot}, 0)]] Texture2D<float4> {buffers.sampled_texture_name(index)};\n'
     if interface.get('storage_texture', False):
         prefix += ('[format("rgba8")] LUDUS_SHADER_BINDING(LUDUS_GRAPH_STORAGE_TEXTURE_BINDING) '
                    'RWTexture2D<float4> GraphStorageTexture;\n')
@@ -1156,8 +1162,10 @@ def persistent_wrapper(programs, technique, variants, snapshot, build, recipe, c
         qualified_type = buffers.qualify_record_type(source, type_name, layout_namespaces)
         prefix += buffers.record_view_definition(view, qualified_type, is_writable)
     prefix += buffers.word_view_definitions((named_resources or {}).values())
-    if any(field.get('texture_view') for fields in (named_resources or {}).values() for field in fields):
-        prefix += buffers.texture_view_definition()
+    texture_views = {field['writable'] for fields in (named_resources or {}).values() for field in fields
+                     if field.get('texture_view')}
+    for is_writable in sorted(texture_views):
+        prefix += buffers.texture_view_definition(is_writable)
     source_contexts, source_aliases = {}, {}
     for variant, fields in (named_resources or {}).items():
         program = programs[variant[0]]
@@ -1219,11 +1227,15 @@ def persistent_wrapper(programs, technique, variants, snapshot, build, recipe, c
                            '        GraphBuffer1[0] = uint4(interfaceHit.Triangle, 0, 0, 0);\n')
         if native_records:
             buffer_liveness = '        GraphBuffer0[0] = uint4(interfaceHit.Triangle, 0, 0, 0);\n'
+        sampled_liveness = ''
+        if sampled_texture_count:
+            loads = ' + '.join(f'{buffers.sampled_texture_name(index)}.Load(int3(0))'
+                               for index in range(sampled_texture_count))
+            sampled_liveness = f'        colors[0] = {loads};\n'
         body = body.replace('    SceneContext scene;\n',
                         '    if (Dimensions.z == 0) {\n'
                         f'        Hit interfaceHit = {interface_trace}(float3(0), float3(0, 0, 1), 0, 1, false);\n'
-                        + buffer_liveness +
-                        ('        colors[0] = GraphColorInput.Load(int3(0));\n' if interface.get('color_input', False) else '') +
+                        + buffer_liveness + sampled_liveness +
                         ('        GraphStorageTexture[uint2(0)] = GraphStorageTexture[uint2(0)] + colors[0];\n'
                          if interface.get('storage_texture', False) else '') +
                         ''.join(f'        GraphWritableTexture{index}[uint2(0)] = '

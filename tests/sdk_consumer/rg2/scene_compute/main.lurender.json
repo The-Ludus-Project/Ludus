@@ -388,6 +388,72 @@
       ]
     },
     {
+      "id": "NamedColorInputs",
+      "inputs": [],
+      "outputs": [],
+      "nodes": [
+        { "id": "scene", "kind": "Scene" },
+        { "id": "camera", "kind": "Camera", "active": true, "role": "Offscreen", "target_type": "ColorTexture" },
+        { "id": "diffraction", "kind": "Target", "type": "ColorTexture", "extent": [96, 64], "format": "RGBA8Unorm", "samples": 1, "imported": false, "initialized": false, "presentation": false },
+        { "id": "weights", "kind": "Target", "type": "ColorTexture", "extent": [96, 64], "format": "RGBA8Unorm", "samples": 1, "imported": false, "initialized": false, "presentation": false },
+        { "id": "mask", "kind": "Target", "type": "ColorTexture", "extent": [96, 64], "format": "RGBA8Unorm", "samples": 1, "imported": false, "initialized": false, "presentation": false },
+        { "id": "color", "kind": "Target", "type": "ColorTexture", "extent": [96, 64], "format": "RGBA8Unorm", "samples": 1, "imported": false, "initialized": false, "presentation": false },
+        {
+          "id": "write",
+          "kind": "ComputePipeline",
+          "inputs": [
+            { "id": "scene", "type": "Scene", "required": true },
+            { "id": "view", "type": "View", "required": true },
+            { "id": "diffraction", "type": "ColorTexture", "required": true },
+            { "id": "weights", "type": "ColorTexture", "required": true },
+            { "id": "mask", "type": "ColorTexture", "required": true }
+          ],
+          "outputs": [
+            { "id": "diffraction", "type": "ColorTexture", "target": "diffraction", "format": "RGBA8Unorm", "access": "ShaderReadWrite", "load": "Load", "store": "Store" },
+            { "id": "weights", "type": "ColorTexture", "target": "weights", "format": "RGBA8Unorm", "access": "ShaderReadWrite", "load": "Load", "store": "Store" },
+            { "id": "mask", "type": "ColorTexture", "target": "mask", "format": "RGBA8Unorm", "access": "ShaderReadWrite", "load": "Load", "store": "Store" }
+          ],
+          "shaders": [{ "id": "compute", "stage": "compute", "program": "WriteSampledColors" }],
+          "state": {},
+          "invocation": { "dimensions": [96, 64, 1], "traversal": "TriangleLoop" }
+        },
+        {
+          "id": "shade",
+          "kind": "ComputePipeline",
+          "inputs": [
+            { "id": "scene", "type": "Scene", "required": true },
+            { "id": "view", "type": "View", "required": true },
+            { "id": "color", "type": "ColorTexture", "required": true },
+            { "id": "weights", "type": "ColorTexture", "required": true },
+            { "id": "mask", "type": "ColorTexture", "required": true },
+            { "id": "diffraction", "type": "ColorTexture", "required": true }
+          ],
+          "outputs": [
+            { "id": "color", "type": "ColorTexture", "target": "color", "format": "RGBA8Unorm", "load": "Clear", "store": "Store" }
+          ],
+          "shaders": [{ "id": "compute", "stage": "compute", "program": "ReadSampledColors" }],
+          "state": {},
+          "invocation": { "dimensions": "ColorTarget", "traversal": "TriangleLoop" }
+        },
+        { "id": "output", "kind": "Export", "type": "ColorTexture" }
+      ],
+      "edges": [
+        { "from": "color.texture", "to": "camera.target" },
+        { "from": "scene.scene", "to": "write.scene" },
+        { "from": "camera.view", "to": "write.view" },
+        { "from": "diffraction.texture", "to": "write.diffraction" },
+        { "from": "weights.texture", "to": "write.weights" },
+        { "from": "mask.texture", "to": "write.mask" },
+        { "from": "scene.scene", "to": "shade.scene" },
+        { "from": "camera.view", "to": "shade.view" },
+        { "from": "color.texture", "to": "shade.color" },
+        { "from": "write.diffraction", "to": "shade.diffraction" },
+        { "from": "write.weights", "to": "shade.weights" },
+        { "from": "write.mask", "to": "shade.mask" },
+        { "from": "shade.color", "to": "output.texture" }
+      ]
+    },
+    {
       "id": "ColorInput",
       "inputs": [],
       "outputs": [],

@@ -16,6 +16,7 @@ from compile_shader import relative_line_directives, restore_metal_noinline
 # fragment storage and write-only 2D storage textures (also in compute), with no GLSL ES fallback.
 # Must match rhi::RASTER_BINDING_COUNT in profile.h; regression-checked.
 RASTER_BINDING_COUNT = 16
+RASTER_COMPUTE_BINDING_COUNT = 18
 RUNTIME_BINDING_LENGTH_SLOT = RASTER_BINDING_COUNT - 2
 RUNTIME_BINDING_ARRAY_SLOT = RASTER_BINDING_COUNT - 1
 # Slang [format(...)] spellings of the R12b write-only storage texture formats (rhi::RasterFormat).
@@ -248,6 +249,7 @@ def raster_interface(document, stage, metal=False, native_arrays=False, runtime_
             raise RuntimeError('Native raster stage usage is malformed')
         used = usage
     entries = []
+    slot_count = RASTER_COMPUTE_BINDING_COUNT if stage == 'compute' else RASTER_BINDING_COUNT
     for resource in document.get('parameters', []):
         if not used.get(resource['name'], False):
             continue
@@ -270,7 +272,7 @@ def raster_interface(document, stage, metal=False, native_arrays=False, runtime_
             if storage_slots is None or resource['name'] not in storage_slots:
                 raise RuntimeError('Metal storage textures require their authored descriptor slot')
             index = storage_slots[resource['name']]
-        if not 0 <= index < RASTER_BINDING_COUNT or any(e['binding'] == index for e in entries):
+        if not 0 <= index < slot_count or any(e['binding'] == index for e in entries):
             raise RuntimeError('Raster binding is duplicated or outside the bounded profile')
         resource_type = resource['type']
         count = 1
@@ -376,6 +378,8 @@ def raster_interface(document, stage, metal=False, native_arrays=False, runtime_
                          (('StorageReadWrite', 'StorageTexture2D') if raster_storage and stage == 'fragment' else ()))
             if count != 1 or is_runtime or kind not in supported:
                 raise RuntimeError(f'DXIL {stage} requires scalar bindings of kinds: {", ".join(supported)}')
+        if index >= RASTER_BINDING_COUNT and kind != 'Texture2D':
+            raise RuntimeError('Raster binding is duplicated or outside the bounded profile')
         value = {'binding': index, 'kind': kind, 'size': size, 'name': resource['name']}
         if kind in ('StorageTexture2D', 'StorageTexture2DReadWrite'):
             value['storage_format'] = STORAGE_TEXTURE_FORMATS[resource['format']]

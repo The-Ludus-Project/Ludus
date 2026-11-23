@@ -646,7 +646,10 @@ RasterStatus Publish(RasterKind kind, T& output, Create create, uint64 storageBy
 bool ValidBinding(const RasterBinding& binding) noexcept
 {
     const auto visibility = static_cast<uint8>(binding.Visibility);
-    if (binding.Binding >= RASTER_BINDINGS || visibility < 1 || visibility > 4 ||
+    const usize slotCount = binding.Visibility == RasterVisibility::Compute ? RASTER_BINDINGS : RASTER_BINDING_COUNT;
+    if (binding.Binding >= slotCount || visibility < static_cast<uint8>(RasterVisibility::Vertex) ||
+        visibility > static_cast<uint8>(RasterVisibility::Compute) ||
+        (binding.Binding >= RASTER_BINDING_COUNT && binding.Kind != RasterBindingKind::Texture2D) ||
         (binding.HasDynamicOffset == true && BufferBinding(binding.Kind) == false) || binding.Count == 0 ||
         (binding.Count != 1 && binding.HasDynamicOffset == true) ||
         (binding.Count > 1 &&
@@ -965,7 +968,7 @@ RasterStatus ValidateBindingOffsets(const RasterSet& set, const RasterBindingOff
     const RasterLayout& layout = set.Description;
     const RasterCapabilities raster = backend::RasterLimits();
     const ComputeCapabilities compute = backend::ComputeLimits();
-    for (usize bindingNumber = 0; bindingNumber < RASTER_BINDINGS; ++bindingNumber)
+    for (usize bindingNumber = 0; bindingNumber < RASTER_BINDING_COUNT; ++bindingNumber)
     {
         const uint32 offset = offsets.Bytes[bindingNumber];
         bool hasDynamicBinding = false;
@@ -1732,7 +1735,7 @@ CreateRasterShader(DeviceHandle device, const RasterShaderDescription& descripti
             }
         }
     }
-    for (usize i = 0; i < RASTER_BINDINGS; ++i)
+    for (usize i = 0; i < RASTER_BINDING_COUNT; ++i)
     {
         bool loadOnly = false;
         for (usize b = 0; b < info.Layout.Count; ++b)
@@ -1743,7 +1746,7 @@ CreateRasterShader(DeviceHandle device, const RasterShaderDescription& descripti
         }
         if (CopyName(description.UniformBlocks[i], info.UniformBlocks[i]) == false ||
             CopyName(description.TextureNames[i], info.TextureNames[i]) == false ||
-            (description.TextureSamplers[i] >= RASTER_BINDINGS &&
+            (description.TextureSamplers[i] >= RASTER_BINDING_COUNT &&
              (loadOnly == false || description.TextureSamplers[i] != ~uint32{0})))
         {
             return RasterStatus::InvalidDescription;

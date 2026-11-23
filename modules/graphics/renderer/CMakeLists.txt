@@ -1133,6 +1133,9 @@ if(TARGET ludus_renderer_render_tests)
     ludus_compile_render_graph(TARGET ludus_render_graph_ray_tests NAME rg2_scene_color_input
         MANIFEST "${scene_compute_staged}/main.lushader.json" CONFIGURATION ColorInput RUNTIME_PACKAGE)
     cmake_path(GET rg2_scene_color_input_RUNTIME_PACKAGE PARENT_PATH scene_color_input_package_directory)
+    ludus_compile_render_graph(TARGET ludus_render_graph_ray_tests NAME rg2_scene_named_color_inputs
+        MANIFEST "${scene_compute_staged}/main.lushader.json" CONFIGURATION NamedColorInputs RUNTIME_PACKAGE)
+    cmake_path(GET rg2_scene_named_color_inputs_RUNTIME_PACKAGE PARENT_PATH scene_named_color_inputs_package_directory)
     # Native ray queries in a merged Metal kernel: paths with several closest and visibility queries per invocation.
     set(native_multi_query_staged "${CMAKE_CURRENT_BINARY_DIR}/rg2-inputs/native_multi_query")
     ludus_stage_render_graph_fixture("${PROJECT_SOURCE_DIR}/tests/sdk_consumer/rg2/native_multi_query"
@@ -1750,6 +1753,7 @@ if(TARGET ludus_renderer_render_tests)
         LUDUS_RG3_SCENE_COMPUTE_RASTER_DIRECTORY="${scene_compute_raster_package_directory}"
         LUDUS_RG3_SCENE_WORK_ITEMS_DIRECTORY="${scene_work_items_package_directory}"
         LUDUS_RG3_SCENE_COLOR_INPUT_DIRECTORY="${scene_color_input_package_directory}"
+        LUDUS_RG3_SCENE_NAMED_COLOR_INPUTS_DIRECTORY="${scene_named_color_inputs_package_directory}"
         LUDUS_RG3_EMITTER_BOUNDS_DIRECTORY="${emitter_bounds_package_directory}"
         LUDUS_RG3_LTC_TABLE_DIRECTORY="${ltc_table_fixture_package_directory}"
         LUDUS_RG3_COMPUTE_MIXED_DIRECTORY="${compute_mixed_package_directory}"

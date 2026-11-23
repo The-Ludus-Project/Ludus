@@ -312,7 +312,7 @@ BindingCapabilities BindingLimits() noexcept
     const uint32 textures = static_cast<uint32>(vertexTextures < fragmentTextures ? vertexTextures : fragmentTextures);
     const uint32 nativeBindings = static_cast<uint32>(uniformBindings < textureUnits ? uniformBindings : textureUnits);
     const uint32 bindings =
-        nativeBindings < internal::RASTER_BINDINGS ? nativeBindings : static_cast<uint32>(internal::RASTER_BINDINGS);
+        nativeBindings < RASTER_BINDING_COUNT ? nativeBindings : static_cast<uint32>(RASTER_BINDING_COUNT);
     return
     {
         .MaxDynamicUniformBuffers = uniforms < bindings ? uniforms : bindings,

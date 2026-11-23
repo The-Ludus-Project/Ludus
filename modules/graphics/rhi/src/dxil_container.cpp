@@ -289,7 +289,7 @@ bool HasDxilBindings(std::span<const uint8> bytes, const RasterLayout& layout) n
             ReadUint32(part, record + 2 * UINT32_BYTES, lower) == false ||
             ReadUint32(part, record + UPPER_OFFSET, upper) == false ||
             ReadUint32(part, record + KIND_OFFSET, kind) == false || space != 0 || lower != upper ||
-            lower >= RASTER_BINDING_COUNT || (matchedBindings & (uint32{1} << lower)) != 0)
+            lower >= RASTER_COMPUTE_BINDING_COUNT || (matchedBindings & (uint32{1} << lower)) != 0)
         {
             return false;
         }

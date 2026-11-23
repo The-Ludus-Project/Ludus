@@ -147,6 +147,24 @@
       "bindings": []
     },
     {
+      "id": "WriteSampledColors",
+      "stage": "compute",
+      "source": "main_shaders/named_sampled_colors.slang",
+      "function": "WriteSampledColors",
+      "input": "RayLaunch",
+      "output": "Radiance",
+      "bindings": []
+    },
+    {
+      "id": "ReadSampledColors",
+      "stage": "compute",
+      "source": "main_shaders/named_sampled_colors.slang",
+      "function": "ReadSampledColors",
+      "input": "RayLaunch",
+      "output": "Radiance",
+      "bindings": []
+    },
+    {
       "id": "ReadDiffraction",
       "stage": "compute",
       "source": "main_shaders/read_diffraction.slang",

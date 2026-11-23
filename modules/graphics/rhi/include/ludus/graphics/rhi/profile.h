@@ -43,13 +43,15 @@ enum class RasterFormat : ludus::foundation::uint8
 /// Number of known formats; profile tables are indexed by RasterFormat.
 inline constexpr ludus::foundation::usize RASTER_FORMAT_COUNT =
     static_cast<ludus::foundation::usize>(RasterFormat::Bc5RgUnorm) + 1;
-/// Maximum group-zero binding numbers and copied shader/layout metadata entries.
-/// Enabled per-stage descriptor counts may be lower; query DeviceProfile before authoring layouts.
+/// Group-zero binding slots for graphics stages and dynamic offset tables.
 inline constexpr ludus::foundation::usize RASTER_BINDING_COUNT = 16;
+/// Group-zero binding slots for compute stages. Slots beyond RASTER_BINDING_COUNT accept sampled color textures.
+/// Enabled per-stage descriptor counts may be lower; query DeviceProfile before authoring layouts.
+inline constexpr ludus::foundation::usize RASTER_COMPUTE_BINDING_COUNT = 18;
 /// Reserved uniform binding for an RHI-owned immutable runtime table length.
 /// Runtime layouts reserve this slot; callers never supply or mutate its buffer.
 inline constexpr ludus::foundation::uint32 RUNTIME_BINDING_LENGTH_SLOT = RASTER_BINDING_COUNT - 2;
-/// Vulkan's variable-count sampled table occupies the highest group-zero binding.
+/// Vulkan's variable-count sampled table occupies the last graphics binding and must be last in its layout.
 inline constexpr ludus::foundation::uint32 RUNTIME_BINDING_ARRAY_SLOT = RASTER_BINDING_COUNT - 1;
 /// One uint4 constant-buffer record; its first word is the allocated table length.
 inline constexpr ludus::foundation::usize RUNTIME_BINDING_LENGTH_WORDS = 4;
