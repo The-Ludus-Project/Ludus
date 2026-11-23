@@ -1,5 +1,6 @@
 #pragma once
 
+#include "internal/code_actions.h"
 #include "internal/code_document_controller.h"
 #include "internal/code_navigation_results.h"
 #include "internal/code_semantic_layers.h"
@@ -42,6 +43,9 @@ public:
     /// Rename Symbol at the caret: prepare the context, ask the server where the
     /// symbol is, then show the editor's rename box.
     void RequestRename();
+    /// Show Code Actions at the caret or selection: prepare the context, ask the
+    /// server, then open the list (code editor M4, CE10).
+    void RequestCodeActions();
     void Request(bool isSignature);
     /// Read-only semantic navigation through the same versioned compiler context.
     void RequestNavigation(CodeNavigationKind kind);
@@ -93,6 +97,11 @@ private:
     void receiveRename(foundation::int32 request, const QJsonValue& value);
     void applyRename(const RenameRequest& rename, const QList<CodeWorkspaceFileChange>& changes);
     [[nodiscard]] bool isRenameCurrent(const RenameRequest& rename) const;
+    /// Ask for code actions at the caret now; the light bulb shows the result.
+    void requestCodeActions(bool isExplicit);
+    void scheduleCodeActions();
+    /// The context a workspace edit from the server is read against.
+    [[nodiscard]] CodeWorkspaceEditContext makeWorkspaceEditContext(const QString& unit, const QString& source) const;
     void resolveCompletion(foundation::int32 row);
     void receiveResolve(foundation::int32 request, const QJsonValue& value);
     /// Send the current draft and refresh the background layers for it.
@@ -112,6 +121,19 @@ private:
     CodeDocumentController& mDocument;
     LanguageClient mClient;
     CodeSemanticLayers mLayers;
+    CodeActions mActions;
+    /// A published analysis diagnostic as the server sent it, with its range in the
+    /// authored source, for code action requests.
+    struct AnalysisRecord final
+    {
+        QJsonObject Diagnostic;
+        foundation::int32 Start = 0;
+        foundation::int32 End = 0;
+    };
+    QList<AnalysisRecord> mAnalysisRecords;
+    /// The draft the analysis records describe.
+    CodeDocumentIdentity mAnalysisIdentity;
+    QTimer mCodeActionDelay;
     const LanguageServerProfile* mProfile = &GetSlangServerProfile();
     LanguageRequestKind mRequestKind = LanguageRequestKind::Completion;
     /// The hover in flight: its request, position and the identities it was asked for.
@@ -152,6 +174,7 @@ private:
     bool mIsSignature = false;
     bool mIsNavigation = false;
     bool mIsRename = false;
+    bool mIsCodeActions = false;
     CodeNavigationKind mNavigationKind = CodeNavigationKind::Symbols;
     bool mHasIntent = false;
     bool mShouldTrackSignature = false;

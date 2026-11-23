@@ -29,6 +29,9 @@ Options shape the server a test needs:
   --rename WORD         answer prepareRename on a WORD with its range, and rename
                         with a workspace edit replacing every WORD
   --stale-rename        send that edit as documentChanges for an older version
+  --actions JSON        answer codeAction with this list; "$URI" names the document
+  --resolve-action-edit JSON
+                        answer codeAction/resolve with the action plus this edit
 """
 import argparse
 import json
@@ -53,6 +56,8 @@ parser.add_argument('--snippet')
 parser.add_argument('--resolve', action='store_true')
 parser.add_argument('--rename')
 parser.add_argument('--stale-rename', action='store_true')
+parser.add_argument('--actions')
+parser.add_argument('--resolve-action-edit')
 options = parser.parse_args()
 
 text = ''
@@ -194,6 +199,11 @@ while True:
             result = {'documentChanges': [{'textDocument': {'uri': uri, 'version': version - 1}, 'edits': edits}]}
         else:
             result = {'changes': {uri: [{'range': r, 'newText': params['newName']} for r in occurrences]}}
+    elif method == 'textDocument/codeAction' and options.actions:
+        result = json.loads(options.actions.replace('$URI', uri))
+    elif method == 'codeAction/resolve' and options.resolve_action_edit:
+        result = dict(params)
+        result['edit'] = json.loads(options.resolve_action_edit.replace('$URI', uri))
     elif method == 'completionItem/resolve' and options.resolve:
         result = dict(params)
         result['detail'] = 'resolved detail'

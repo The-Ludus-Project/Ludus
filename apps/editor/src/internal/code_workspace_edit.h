@@ -80,6 +80,19 @@ ApplyCodeWorkspaceEditBytes(const QByteArray& draft, const QList<CodeWorkspaceTe
 [[nodiscard]] foundation::int32 MapCodeWorkspacePosition(const QList<CodeWorkspaceTextEdit>& edits,
                                                          foundation::int32 position);
 
+class CodeDocumentController;
+class CodeWorkspaceEditHost;
+
+/// Apply validated `changes` for the source bound to `inoutDocument` as one undo
+/// step named `name`: through `hostOrNull` when it is set, otherwise only the
+/// edited source's change (a change for another file needs a host). `caret` is
+/// the edited source's caret before the edits; it follows them.
+[[nodiscard]] CodeEditStatus ApplyCodeWorkspaceChanges(CodeDocumentController& inoutDocument,
+                                                       CodeWorkspaceEditHost* hostOrNull,
+                                                       const QList<CodeWorkspaceFileChange>& changes,
+                                                       foundation::int32 caret,
+                                                       const char* name);
+
 /// Applies a validated workspace edit as one transaction (CE11): every file
 /// changes, or none does. Implemented by the owner of the files' drafts.
 class CodeWorkspaceEditHost

@@ -283,11 +283,13 @@ Requirements: CE09-CE11, CE20. Prerequisite: M2, M3.
   Batch 3f: completion resolve, the documentation panel and server snippets
   with tab stops; see the
   [M4 batch 3f decision-log entry](../../../docs/architecture/code-editor-decision-log.md#m4-batch-3f-completion-resolve-and-snippets-ce10-2026-11-23).)*
-- [ ] Add rename with preview, code actions with the light bulb, and workspace
+- [x] Add rename with preview, code actions with the light bulb, and workspace
   edits with transaction undo. *(Batch 4a: rename with preview and validated
   workspace edits applied as one package transaction; see the
   [M4 batch 4a decision-log entry](../../../docs/architecture/code-editor-decision-log.md#m4-batch-4a-rename-and-workspace-edits-ce10-ce11-2026-11-23).
-  Code actions and the light bulb follow.)*
+  Batch 4b: code actions with the light bulb and resolve; see the
+  [M4 batch 4b decision-log entry](../../../docs/architecture/code-editor-decision-log.md#m4-batch-4b-code-actions-and-the-light-bulb-ce10-ce11-2026-11-23).
+  Server commands and the hover's Quick Fix link are not run or shown.)*
 - [ ] Add the fake LSP fixture and its failure-path tests.
 
 Gate: the CE09-CE11 tests pass against the fake server, and the `[slangd]` tests

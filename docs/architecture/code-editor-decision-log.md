@@ -1123,3 +1123,34 @@ Neither pinned server advertises `renameProvider` (nor `codeActionProvider`),
 so the path is exercised by `language_server_fixture.py`'s new `--rename` and
 `--stale-rename` options and by a package test that applies a two-file edit.
 
+### M4 batch 4b: code actions and the light bulb (CE10, CE11, 2026-11-23)
+
+- **Requests.** A new `CodeActions` component (`internal/code_actions.h`), kept
+  out of `CodeAssistance`, asks `textDocument/codeAction` 250 ms after the caret
+  rests in a prepared context, and at once for **Show Code Actions** (Ctrl+.,
+  VS Code's binding). The range is the selection or caret; the context carries
+  the analysis diagnostics there exactly as the server published them, while
+  they still describe the draft, and the trigger kind (automatic or invoked).
+  An automatic request never replaces a pending invoked one. Replies apply only
+  to the draft they were asked for, and an edit clears the light bulb until the
+  next reply.
+- **Light bulb and list.** While actions exist on the caret's line, the gutter's
+  marker column shows a light bulb, a shape distinct from the diagnostic dot it
+  can share the column with; clicking it or Ctrl+. opens the list. Preferred
+  actions come first, in bold. Disabled actions (LSP `disabled`) and actions
+  that only run a server command are listed disabled with their reason: the
+  client does not implement `workspace/executeCommand` or the server-initiated
+  `workspace/applyEdit` it implies. At most 64 actions are kept.
+- **Apply.** An action's `edit` goes through `ReadCodeWorkspaceEdit` and the new
+  shared `ApplyCodeWorkspaceChanges`, which rename now uses too, so it is
+  validated whole and applied as one package undo step. An action without an
+  edit is resolved with `codeAction/resolve` (a new request-table row) when the
+  server advertises `resolveProvider`. The client now advertises code action
+  literals with `isPreferred`, `disabled`, `data` and edit resolution, workspace
+  edit `documentChanges` with no resource operations and abort-on-failure, and
+  rename's `prepareSupport`, which batch 4a omitted.
+
+Not done: the hover's Quick Fix link, and running server commands. With this
+batch the fourth M4 task is complete; the fixture failure paths and the M4 gate
+remain.
+
