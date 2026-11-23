@@ -1,4 +1,5 @@
 #include "internal/code_assistance.h"
+#include "internal/code_completion_sources.h"
 #include "internal/code_document_controller.h"
 #include "internal/code_edit_scope.h"
 #include "internal/code_edit_set.h"
@@ -877,6 +878,7 @@ TEST_CASE("Capability dispatch disables unadvertised assistance and follows serv
     REQUIRE(popupOrNull != nullptr);
     // A server without signature help still serves completion (LUSL before M4 failed here).
     REQUIRE(QTest::qWaitFor([popupOrNull]() { return popupOrNull->isVisible() == true; }));
+    // "Ite" matches the server's item only: no built-in snippet prefix fits it.
     REQUIRE(popupOrNull->count() == 1);
     CHECK(popupOrNull->item(0)->text().startsWith(QStringLiteral("Item")) == true);
     QTest::keyClick(&editor, Qt::Key_Escape);
@@ -1497,6 +1499,53 @@ TEST_CASE("Show Code Actions is disabled with its reason when the server has non
     CHECK(editor.HasCodeActions() == false);
 }
 
+TEST_CASE("Completion merges words from open editors and built-in snippets", "[editor][text][assistance]")
+{
+    FakeAssistanceSession session("float accumulated = 1;\nfloat b = acc",
+                                  {QStringLiteral("--capabilities"), QStringLiteral(R"({"completionProvider": {}})")});
+    CodeEditor& editor = session.Editor;
+    // Another open shader contributes its words; an open file in another language does not.
+    CodeEditor shader;
+    shader.SetLanguage(CodeLanguage::Slang);
+    shader.setPlainText(QStringLiteral("float accelerate;\n"));
+    CodeEditor script;
+    script.SetLanguage(CodeLanguage::Luau);
+    script.setPlainText(QStringLiteral("local accent = 1\n"));
+    session.Prepare();
+    QListWidget* popupOrNull = editor.findChild<QListWidget*>(QStringLiteral("codeCompletionList"));
+    REQUIRE(popupOrNull != nullptr);
+    REQUIRE(QTest::qWaitFor([popupOrNull]() { return popupOrNull->isVisible() == true; }));
+    // The server's "Item" does not match "acc"; the words do.
+    REQUIRE(popupOrNull->count() == 2);
+    CHECK(popupOrNull->item(0)->text() == QStringLiteral("accumulated  —  word in an open file"));
+    CHECK(popupOrNull->item(1)->text().startsWith(QStringLiteral("accelerate")) == true);
+    QTest::keyClick(&editor, Qt::Key_Return);
+    CHECK(session.Host.GetState().Text == "float accumulated = 1;\nfloat b = accumulated");
+}
+
+TEST_CASE("A built-in snippet completes indented to its line", "[editor][text][assistance]")
+{
+    FakeAssistanceSession session("void Run()\n{\n    fo",
+                                  {QStringLiteral("--capabilities"), QStringLiteral(R"({"completionProvider": {}})")});
+    CodeEditor& editor = session.Editor;
+    session.Prepare();
+    QListWidget* popupOrNull = editor.findChild<QListWidget*>(QStringLiteral("codeCompletionList"));
+    REQUIRE(popupOrNull != nullptr);
+    REQUIRE(QTest::qWaitFor([popupOrNull]() { return popupOrNull->isVisible() == true; }));
+    REQUIRE(popupOrNull->count() == 1);
+    CHECK(popupOrNull->item(0)->text() == QStringLiteral("for  —  for loop (snippet)"));
+    CHECK(editor.GetCompletionDocumentation().startsWith(QStringLiteral("for (uint i = 0; i < count; ++i)")) == true);
+    QTest::keyClick(&editor, Qt::Key_Return);
+    CHECK(session.Host.GetState().Text ==
+          "void Run()\n{\n    for (uint i = 0; i < count; ++i)\n    {\n        \n    }");
+    CHECK(editor.IsInSnippet() == true);
+    CHECK(editor.textCursor().selectedText() == QStringLiteral("i"));
+    // The loop variable's mirrors follow it.
+    QTest::keyClicks(&editor, QStringLiteral("row"));
+    CHECK(session.Host.GetState().Text ==
+          "void Run()\n{\n    for (uint row = 0; row < count; ++row)\n    {\n        \n    }");
+}
+
 TEST_CASE("Snippet tab stops edit mirrors together and end at the final position", "[editor][text][assistance]")
 {
     CodeSnippet snippet;
@@ -1600,7 +1649,7 @@ TEST_CASE("Completion resolve fills in the highlighted suggestion's documentatio
     QListWidget* popupOrNull = editor.findChild<QListWidget*>(QStringLiteral("codeCompletionList"));
     REQUIRE(popupOrNull != nullptr);
     REQUIRE(QTest::qWaitFor([popupOrNull]() { return popupOrNull->isVisible() == true; }));
-    REQUIRE(popupOrNull->count() == 2);
+    REQUIRE(popupOrNull->count() == 2 + static_cast<int32>(GetCodeSnippetTemplates(CodeLanguage::Slang).GetSize()));
     // Only the highlighted item is resolved, and only once.
     REQUIRE(QTest::qWaitFor([&editor]() {
         return editor.GetCompletionDocumentation().startsWith(QStringLiteral("Documentation for Item")) == true;

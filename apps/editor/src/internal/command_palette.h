@@ -9,6 +9,8 @@
 
 #include <ludus/foundation/base/types.h>
 
+#include "internal/fuzzy_match.h"
+
 #include <QDialog>
 #include <QList>
 #include <QPointer>
@@ -48,15 +50,6 @@ struct PaletteEntry final
 /// toolbar's title) or only on the window itself (grouped under "Window"), so a command reached by a button or a
 /// window shortcut is found too. Each QAction appears once.
 [[nodiscard]] QList<PaletteEntry> CollectWindowPaletteEntries(const QMainWindow& window);
-
-/// How well query matches candidate: -1 when its letters do not appear in order, otherwise higher is better.
-/// Case and spaces are ignored. Consecutive letters, letters at the start of a word and a match at the start
-/// score higher; an empty query scores 0.
-[[nodiscard]] int ScoreFuzzyMatch(const QString& query, const QString& candidate);
-
-/// Positions in candidate of the letters ScoreFuzzyMatch matched, in order; empty when query is empty or does not
-/// match. The palette shows these letters in bold so a person sees why a command was found.
-[[nodiscard]] QList<int> FindFuzzyMatchPositions(const QString& query, const QString& candidate);
 
 /// Indices into a list of entries.
 using PaletteIndexList = QList<int>;

@@ -1,16 +1,22 @@
 #include "internal/code_assistance.h"
 
-#include <ludus/foundation/base/compiler.h>
+#include <ludus/foundation/base/core.h>
 
+#include <ludus/foundation/containers/stable_sort.hpp>
+
+#include "internal/code_completion_sources.h"
 #include "internal/code_language_registry.h"
 #include "internal/code_snippet.h"
 #include "internal/code_text.h"
 #include "internal/code_workspace_edit_preview.h"
+#include "internal/fuzzy_match.h"
 #include "internal/language_positions.h"
 
+#include <QApplication>
 #include <QDateTime>
 #include <QFileInfo>
 #include <QJsonArray>
+#include <QSet>
 #include <QTextDocument>
 #include <QUrl>
 
@@ -756,9 +762,19 @@ void CodeAssistance::receive(int32 request, const QJsonValue& value)
     const QJsonObject list = value.toObject();
     const QJsonArray items = value.isArray() == true ? value.toArray() : list.value(QStringLiteral("items")).toArray();
     const QJsonObject defaults = list.value(QStringLiteral("itemDefaults")).toObject();
-    const QString word = mEditor.toPlainText().mid(mWordStart, mCaret - mWordStart);
-    QStringList labels;
-    QStringList details;
+    const QString text = mEditor.toPlainText();
+    const QString word = text.mid(mWordStart, mCaret - mWordStart);
+    // Server items, built-in snippets and words from open buffers are merged and
+    // ranked by the command palette's fuzzy matcher (CE10). After a `.` only the
+    // server knows the members, so the other sources stay out.
+    struct Ranked final
+    {
+        int32 Index = 0;
+        int32 Score = 0;
+        CodeCompletionSource Source = CodeCompletionSource::Server;
+    };
+    QList<Completion> candidates;
+    QList<Ranked> ranked;
     int32 examined = 0;
     for (const QJsonValue& entry : items)
     {
@@ -768,15 +784,10 @@ void CodeAssistance::receive(int32 request, const QJsonValue& value)
         }
         QJsonObject item = entry.toObject();
         const QString label = item.value(QStringLiteral("label")).toString();
-        const QString filter = item.value(QStringLiteral("filterText")).toString(label);
-        if (label.isEmpty() == true || label.size() > MAX_LABEL_UNITS ||
-            filter.startsWith(word, Qt::CaseInsensitive) == false)
+        const int32 score = ScoreFuzzyMatch(word, item.value(QStringLiteral("filterText")).toString(label));
+        if (label.isEmpty() == true || label.size() > MAX_LABEL_UNITS || score < 0)
         {
             continue;
-        }
-        if (mCompletions.size() >= MAX_COMPLETIONS)
-        {
-            break;
         }
         if (item.contains(QStringLiteral("insertTextFormat")) == false)
         {
@@ -793,25 +804,136 @@ void CodeAssistance::receive(int32 request, const QJsonValue& value)
                             .toString(item.value(QStringLiteral("insertText")).toString(label)));
             item.insert(QStringLiteral("textEdit"), edit);
         }
-        const QString detail = item.value(QStringLiteral("detail")).toString().left(MAX_DOCUMENTATION_UNITS);
-        mCompletions.append(
+        ranked.append(
+            { .Index = static_cast<int32>(candidates.size()), .Score = score, .Source = CodeCompletionSource::Server });
+        candidates.append(
         {
             .Label = label,
-            .Detail = detail,
+            .Detail = item.value(QStringLiteral("detail")).toString().left(MAX_DOCUMENTATION_UNITS),
             .Item = item,
             .Original = entry.toObject(),
             .IsResolved = false,
         });
-        labels.append(detail.isEmpty() == true ? label : label + QStringLiteral("  —  ") + detail);
-        details.append(GetDocumentation(item.value(QStringLiteral("documentation"))));
+    }
+    const bool isMemberAccess = mWordStart > 0 && text.at(mWordStart - 1) == QLatin1Char('.');
+    if (isMemberAccess == false)
+    {
+        constexpr int32 SNIPPET_FORMAT = 2;
+        const qsizetype lineStart = text.lastIndexOf(QLatin1Char('\n'), qMax(0, mWordStart - 1)) + 1;
+        qsizetype indentEnd = lineStart;
+        while (indentEnd < mWordStart &&
+               (text.at(indentEnd) == QLatin1Char(' ') || text.at(indentEnd) == QLatin1Char('\t')))
+        {
+            ++indentEnd;
+        }
+        const QStringView indentation = QStringView(text).sliced(lineStart, indentEnd - lineStart);
+        for (const CodeSnippetTemplate& snippet : GetCodeSnippetTemplates(mEditor.GetLanguage()))
+        {
+            const QString prefix(snippet.Prefix);
+            const int32 score = ScoreFuzzyMatch(word, prefix);
+            const QString body = IndentCodeSnippetBody(QString(snippet.Body), indentation);
+            CodeSnippet expanded;
+            if (score < 0 || ParseCodeSnippet(body, expanded) == false)
+            {
+                continue;
+            }
+            ranked.append(
+            {
+                .Index = static_cast<int32>(candidates.size()),
+                .Score = score,
+                .Source = CodeCompletionSource::Snippet,
+            });
+            candidates.append(
+            {
+                .Label = prefix,
+                .Detail = QString(snippet.Description) + QStringLiteral(" (snippet)"),
+                .Item = {{QStringLiteral("label"), prefix},
+                         {QStringLiteral("insertText"), body},
+                         {QStringLiteral("insertTextFormat"), SNIPPET_FORMAT},
+                         {QStringLiteral("documentation"), expanded.Text}},
+                .Original = {},
+                .IsResolved = true,
+            });
+        }
+        if (word.isEmpty() == false)
+        {
+            QSet<QString> serverLabels;
+            for (const Completion& candidate : candidates)
+            {
+                serverLabels.insert(candidate.Label);
+            }
+            for (const QString& found : CollectCodeCompletionWords(collectOpenBuffers(), word))
+            {
+                if (serverLabels.contains(found) == true)
+                {
+                    continue;
+                }
+                ranked.append(
+                {
+                    .Index = static_cast<int32>(candidates.size()),
+                    .Score = ScoreFuzzyMatch(word, found),
+                    .Source = CodeCompletionSource::Word,
+                });
+                candidates.append(
+                {
+                    .Label = found,
+                    .Detail = QStringLiteral("word in an open file"),
+                    .Item = {{QStringLiteral("label"), found}, {QStringLiteral("insertText"), found}},
+                    .Original = {},
+                    .IsResolved = true,
+                });
+            }
+        }
+    }
+    // Higher scores first; equal scores keep server, then snippet, then word order.
+    QList<Ranked> scratch = ranked;
+    [[maybe_unused]] const bool isSorted =
+        StableSort(ranked.data(),
+                   scratch.data(),
+                   static_cast<usize>(ranked.size()),
+                   [](const Ranked& left, const Ranked& right) noexcept {
+                       return left.Score != right.Score ? left.Score > right.Score : left.Source < right.Source;
+                   });
+    LUDUS_ASSERT(isSorted == true || ranked.isEmpty() == true);
+    QStringList labels;
+    QStringList details;
+    for (const Ranked& entry : ranked)
+    {
+        if (mCompletions.size() == MAX_COMPLETIONS)
+        {
+            break;
+        }
+        const Completion& candidate = candidates.at(entry.Index);
+        mCompletions.append(candidate);
+        labels.append(candidate.Detail.isEmpty() == true
+                          ? candidate.Label
+                          : candidate.Label + QStringLiteral("  —  ") + candidate.Detail);
+        details.append(GetDocumentation(candidate.Item.value(QStringLiteral("documentation"))));
     }
     mShouldTrackCompletion = mCompletions.isEmpty() == false;
     mEditor.ShowCompletions(labels, details);
-    Q_EMIT StatusChanged(
-        mCompletions.isEmpty() == true ? QStringLiteral("No matching shader symbols.")
-        : mCompletions.size() == MAX_COMPLETIONS
-            ? QStringLiteral("Showing the first %1 symbols. Type a prefix and complete again.").arg(MAX_COMPLETIONS)
-            : QString());
+    Q_EMIT StatusChanged(mCompletions.isEmpty() == true ? QStringLiteral("No matching shader symbols.")
+                         : ranked.size() > MAX_COMPLETIONS
+                             ? QStringLiteral("Showing the best %1 suggestions. Type more of the name to narrow them.")
+                                   .arg(MAX_COMPLETIONS)
+                             : QString());
+}
+
+QList<QString> CodeAssistance::collectOpenBuffers() const
+{
+    // The buffer being edited first, then every other open editor of the same language.
+    QList<QString> texts{mEditor.toPlainText()};
+    for (QWidget* widget : QApplication::allWidgets())
+    {
+        const CodeEditor* editorOrNull = qobject_cast<const CodeEditor*>(widget);
+        if (editorOrNull != nullptr && editorOrNull != &mEditor &&
+            editorOrNull->GetLanguage() == mEditor.GetLanguage() &&
+            editorOrNull->document()->characterCount() <= CODE_MAX_COMPLETION_WORD_SCAN_UNITS)
+        {
+            texts.append(editorOrNull->toPlainText());
+        }
+    }
+    return texts;
 }
 
 void CodeAssistance::SetWorkspaceEditHost(CodeWorkspaceEditHost* hostOrNull) noexcept

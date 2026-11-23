@@ -9290,6 +9290,13 @@ current unsaved draft, including package includes, manifest-generated types and
 bindings, scene/material APIs and shader functions. An accepted completion and
 its additional source edits form one undo step; Save remains explicit.
 
+Suggestions come from the language server, from built-in snippets (`if`, `for`,
+`struct`, `func` and `compute` for Slang and LUSL) and from words in the shader
+files you have open. They are ranked together by how well they match what you
+typed, as in the command palette, so `acc` finds `accumulated`. After a `.`,
+only the server's members are offered. A multi-line snippet is indented to the
+line you insert it on.
+
 The highlighted suggestion's documentation appears beside the list. When the
 server supports it, the editor asks for a suggestion's details only once you
 highlight it, so the list opens quickly and fills in as you move through it.
