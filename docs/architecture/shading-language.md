@@ -239,6 +239,35 @@ LUSL keeps a C preprocessor, run before parsing:
   - Loop and branch attributes such as `[unroll]` and `[loop]` pass through to
     Slang from an allowlist.
 
+#### Runtime const locals
+
+**Planned.** A function-local `const` still requires a compile-time initializer
+in the current compiler. Extend it to accept any well-typed initializer,
+including a runtime function call. Evaluate the initializer once each time
+execution reaches the declaration. A `const` local requires an initializer
+that produces a value, so `= void` is invalid.
+
+The local and its fields and elements are read-only after initialization.
+The checker rejects assignments, increments and decrements, mutating method
+calls, and uses of the local or its subobjects as `out` or `inout` arguments.
+Reads and value copies are allowed.
+
+Constant-expression eligibility still depends on the initializer. A local
+initialized by a constant expression keeps its existing compile-time uses.
+A runtime-initialized local is invalid in constant-expression positions such
+as an array size or `static_assert`. Module and struct `static const`
+declarations still require compile-time initializers. Uniformity and
+coordinate spaces follow the existing analysis of the initializer.
+
+Functions can return related values together in a named struct. The caller can
+bind the whole result read-only with the proposed local declaration:
+
+```c
+const LightSample sample = SampleIncidentLight(scene, selected, receiver, shapeSample);
+```
+
+Implementation is tracked in [issue 2214](https://github.com/The-Ludus-Project/Ludus/issues/2214).
+
 ### Types
 
 | Kind | Spelling | Slang lowering |

@@ -75,6 +75,8 @@ constexpr Qt::KeyboardModifier DEFINITION_LINK_MODIFIER = Qt::ControlModifier;
 constexpr int32 COMPLETION_VISIBLE_ROWS = 9;
 constexpr int32 COMPLETION_WIDTH = 420;
 constexpr int32 SIGNATURE_WIDTH = 680;
+// The pointer rests this long before a hover request, as in VS Code.
+constexpr int32 HOVER_DELAY_MILLISECONDS = 300;
 constexpr int32 INDENT_GUIDE_ALPHA = 48;
 constexpr int32 GUTTER_MARGIN = 6;
 constexpr int32 FOLD_CONTROL_WIDTH = 17;
@@ -238,6 +240,20 @@ CodeEditor::CodeEditor(QWidget* parentOrNull)
     signature->setObjectName(QStringLiteral("codeEditorSignature"));
     signature->setEnabled(false);
     addAction(signature);
+    // Hover (CE10): 300 ms of rest, VS Code's default, or Show Hover at the caret.
+    mHoverAction = new QAction(QStringLiteral("Show Hover"), this);
+    mHoverAction->setObjectName(QStringLiteral("codeEditorHover"));
+    mHoverAction->setEnabled(false);
+    connect(mHoverAction, &QAction::triggered, this, [this]() { Q_EMIT HoverRequested(textCursor().position()); });
+    addAction(mHoverAction);
+    mHoverDelay.setSingleShot(true);
+    mHoverDelay.setInterval(HOVER_DELAY_MILLISECONDS);
+    connect(&mHoverDelay, &QTimer::timeout, this, [this]() {
+        if (mHoverAction->isEnabled() == true && mHoverPosition >= 0)
+        {
+            Q_EMIT HoverRequested(mHoverPosition);
+        }
+    });
     QFont textFont = QFontDatabase::systemFont(QFontDatabase::FixedFont);
     textFont.setStyleHint(QFont::Monospace);
     textFont.setFixedPitch(true);
@@ -640,6 +656,8 @@ void CodeEditor::SetAssistanceAvailability(const CodeAssistanceAvailability& ava
     mCompleteAction->setToolTip(availability.CompletionUnavailableReason);
     mSignatureAction->setEnabled(hasService == true && availability.SignatureUnavailableReason.isEmpty() == true);
     mSignatureAction->setToolTip(availability.SignatureUnavailableReason);
+    mHoverAction->setEnabled(hasService == true && availability.HoverUnavailableReason.isEmpty() == true);
+    mHoverAction->setToolTip(availability.HoverUnavailableReason);
 }
 
 void CodeEditor::SetLargeFileMode(bool isLarge)
@@ -830,17 +848,38 @@ void CodeEditor::inputMethodEvent(QInputMethodEvent* event)
     QPlainTextEdit::inputMethodEvent(event);
 }
 
-void CodeEditor::insertFromMimeData(const QMimeData* source)
+void CodeEditor::insertFromMimeData(const QMimeData* sourceOrNull)
 {
-    // Multi-cursor paste distributes clipboard lines across the cursors (CE06);
-    // with no secondary cursor Qt's single-cursor paste is used unchanged.
-    if (isReadOnly() == false && mMultiCursor.HasSecondaryCursors() == true && source != nullptr &&
-        source->hasText() == true && mMultiCursor.HandlePaste(source->text()) == true)
+    if (isReadOnly() == false && sourceOrNull != nullptr && sourceOrNull->hasText() == true &&
+        (mMultiCursor.HasSecondaryCursors() == true || mLanguage == CodeLanguage::Slang))
     {
-        return;
+        const QString text = sourceOrNull->text();
+        if (mMultiCursor.HasSecondaryCursors() == true && mMultiCursor.HandlePaste(text) == true)
+        {
+            return;
+        }
+        if (mLanguage == CodeLanguage::Slang && text.contains(QChar::LineSeparator) == true)
+        {
+            const QTextCursor cursor = textCursor();
+            CodeRegionEdit region =
+            {
+                .Start = cursor.selectionStart(),
+                .End = cursor.selectionEnd(),
+                .Inserted = text,
+            };
+            RepairSlangPaste(document()->toRawText(), {&region, 1});
+            if (region.Inserted != text)
+            {
+                QMimeData repaired;
+                repaired.setText(region.Inserted);
+                const CodeEditScope operation(*this);
+                QPlainTextEdit::insertFromMimeData(&repaired);
+                return;
+            }
+        }
     }
     const CodeEditScope operation(*this);
-    QPlainTextEdit::insertFromMimeData(source);
+    QPlainTextEdit::insertFromMimeData(sourceOrNull);
 }
 
 void CodeEditor::focusOutEvent(QFocusEvent* event)
@@ -893,6 +932,72 @@ void CodeEditor::SetDiagnostics(const QList<CodeDiagnostic>& diagnostics, bool i
     mSelectionUpdate.start(0);
 }
 
+void CodeEditor::SetAnalysisDiagnostics(const QList<CodeAnalysisDiagnostic>& diagnostics, const QString& source)
+{
+    mAnalysis.clear();
+    mAnalysisSource = source;
+    const int32 limit = document()->characterCount() - 1;
+    for (const CodeAnalysisDiagnostic& diagnostic : diagnostics)
+    {
+        if (diagnostic.Start < 0 || diagnostic.End < diagnostic.Start || diagnostic.End > limit)
+        {
+            continue;
+        }
+        DiagnosticMarker marker
+        {
+            .Range = QTextCursor(document()),
+            .Severity = diagnostic.Severity,
+            .Message = diagnostic.Message,
+        };
+        marker.Range.setPosition(diagnostic.Start);
+        marker.Range.setPosition(diagnostic.End, QTextCursor::KeepAnchor);
+        mAnalysis.append(marker);
+    }
+    mGutter->update();
+    mSelectionUpdate.start(0);
+}
+
+QTextCursor CodeEditor::GetAnalysisDiagnosticRange(int32 index) const
+{
+    return index >= 0 && index < mAnalysis.size() ? mAnalysis.at(index).Range : QTextCursor();
+}
+
+void CodeEditor::ShowHover(int32 position, const QString& text)
+{
+    if (position < 0 || position >= document()->characterCount())
+    {
+        return;
+    }
+    const QString diagnostics = DescribeDiagnosticsAt(position);
+    mHoverText = text.isEmpty() == true || diagnostics.isEmpty() == true ? text + diagnostics
+                                                                         : text + QStringLiteral("\n\n") + diagnostics;
+    if (mHoverText.isEmpty() == true)
+    {
+        HideHover();
+        return;
+    }
+    QTextCursor cursor(document());
+    cursor.setPosition(position);
+    QToolTip::showText(viewport()->mapToGlobal(cursorRect(cursor).bottomLeft()),
+                       MakeToolTipHtml(mHoverText),
+                       viewport());
+}
+
+void CodeEditor::HideHover()
+{
+    mHoverDelay.stop();
+    if (mHoverText.isEmpty() == false)
+    {
+        mHoverText.clear();
+        QToolTip::hideText();
+    }
+}
+
+const QString& CodeEditor::GetHoverText() const noexcept
+{
+    return mHoverText;
+}
+
 QTextCursor CodeEditor::GetDiagnosticRange(int32 index) const
 {
     return index >= 0 && index < mDiagnostics.size() ? mDiagnostics.at(index).Range : QTextCursor();
@@ -931,6 +1036,24 @@ QString CodeEditor::describeDiagnostics(int32 position, int32 blockNumber) const
     if (lines.isEmpty() == false && mAreDiagnosticsCurrent == false)
     {
         lines.prepend(QStringLiteral("Out of date: reported for an earlier version of this text. Build again."));
+    }
+    // Analysis follows the build report, labelled with its server so the two
+    // sources are never confused (CE10).
+    for (const DiagnosticMarker& marker : mAnalysis)
+    {
+        const int32 start = marker.Range.selectionStart();
+        const int32 end = marker.Range.selectionEnd();
+        const bool isCovered =
+            position >= qMax(start - (start == end ? 1 : 0), 0) && position <= end + (start == end ? 1 : 0);
+        if ((position >= 0 && isCovered == true) ||
+            (blockNumber >= 0 && document()->findBlock(start).blockNumber() == blockNumber))
+        {
+            lines.append(QStringLiteral("Analysis (%1) %2: %3")
+                             .arg(mAnalysisSource,
+                                  marker.Severity == CodeDiagnosticSeverity::Error ? QStringLiteral("error")
+                                                                                   : QStringLiteral("warning"),
+                                  marker.Message));
+        }
     }
     return lines.join(QLatin1Char('\n'));
 }
@@ -987,7 +1110,23 @@ QColor CodeEditor::getDiagnosticColor(CodeDiagnosticSeverity severity) const
 
 void CodeEditor::appendDiagnosticSelections(QList<QTextEdit::ExtraSelection>& inoutSelections) const
 {
-    // Errors are appended last so they draw over warnings on shared characters.
+    // Analysis first, dotted, so authoritative build squiggles draw over it; within
+    // each, errors are appended last so they draw over warnings on shared characters.
+    for (const DiagnosticMarker& marker : mAnalysis)
+    {
+        QTextEdit::ExtraSelection selection;
+        selection.cursor = marker.Range;
+        if (selection.cursor.hasSelection() == false && selection.cursor.atBlockEnd() == false)
+        {
+            selection.cursor.movePosition(QTextCursor::NextCharacter, QTextCursor::KeepAnchor);
+        }
+        if (selection.cursor.hasSelection() == true)
+        {
+            selection.format.setUnderlineStyle(QTextCharFormat::DotLine);
+            selection.format.setUnderlineColor(getDiagnosticColor(marker.Severity));
+            inoutSelections.append(selection);
+        }
+    }
     for (const CodeDiagnosticSeverity severity : {CodeDiagnosticSeverity::Warning, CodeDiagnosticSeverity::Error})
     {
         for (const DiagnosticMarker& marker : mDiagnostics)
@@ -1058,11 +1197,18 @@ bool CodeEditor::viewportEvent(QEvent* event)
     if (event->type() == QEvent::Leave)
     {
         updateDefinitionLink({}, Qt::NoModifier);
+        mHoverPosition = -1;
+        HideHover();
     }
     if (event->type() == QEvent::ToolTip)
     {
         const QHelpEvent* help = static_cast<QHelpEvent*>(event);
         const QTextCursor cursor = cursorForPosition(help->pos());
+        if (mHoverText.isEmpty() == false)
+        {
+            // A server hover is already shown for this rest; keep it.
+            return true;
+        }
         const QString text = getFoldPlaceholderRect(cursor.block()).contains(help->pos()) == true
                                  ? mStructure->DescribeFold(cursor.blockNumber())
                                  : DescribeDiagnosticsAt(cursor.position());
@@ -1827,6 +1973,16 @@ void CodeEditor::mouseMoveEvent(QMouseEvent* event)
         return;
     }
     updateDefinitionLink(event->position().toPoint(), event->modifiers());
+    if (event->buttons() == Qt::NoButton)
+    {
+        const int32 position = cursorForPosition(event->position().toPoint()).position();
+        if (position != mHoverPosition)
+        {
+            HideHover();
+            mHoverPosition = position;
+            mHoverDelay.start();
+        }
+    }
     QPlainTextEdit::mouseMoveEvent(event);
 }
 

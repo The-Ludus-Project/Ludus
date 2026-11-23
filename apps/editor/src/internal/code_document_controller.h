@@ -76,6 +76,7 @@ Q_SIGNALS:
     void Failed(const QString& message);
 
 private:
+    void queueSlangLineSeparatorRepair();
     void captureSelectionChange();
     void beginOperation(CodeEditKind kind);
     void endOperation();

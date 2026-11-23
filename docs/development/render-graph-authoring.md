@@ -9064,6 +9064,10 @@ unified source/canvas undo, native shader completion and signature help are
 available. Symbol hover remains a future increment, described in the
 [shared editor architecture](../architecture/editor-gui-systems.md#source-editing-direction).
 
+When you open or paste Slang code, the editor converts Unicode line separators
+(U+2028) to the file's usual newlines. Separators inside literals and comments
+are preserved. The repair is undoable, and **Save** publishes the repaired draft.
+
 Use **Focus Source** or **Shift+Alt+Return** while a package tab is active to
 hide the surrounding tool windows and Shader API reference. **Restore Layout**
 or the same shortcut restores the previous arrangement, selection and active
@@ -9223,6 +9227,22 @@ includes follow the build owner's existing rules; module imports are unsupported
 The static browser editor has no native Slang process and reports that completion
 and signature help are unavailable. The searchable Shader API reference remains
 available independently.
+
+#### Hover and live analysis
+
+Rest the pointer on a name for a moment, or choose **Show Hover** from the
+editor's context menu, to see the language server's description of it together
+with any messages at that position. Hover uses the prepared shader context only:
+it never prepares one, so before the first completion or navigation request it
+shows local messages alone.
+
+Once a context is prepared, the server analyses the draft as you type and its
+messages appear with a dotted underline. They are labelled
+`Analysis (slangd)` (or `luslc`) in tooltips and hover, apart from the build's
+squiggles and **Error List** entries, which remain authoritative for build
+errors. Messages about generated surroundings or from an earlier version of the
+text are not shown. **Show Log**, beside **Retry assistance**, shows the
+server's diagnostic output since it last started.
 
 #### Compiler messages in the source
 

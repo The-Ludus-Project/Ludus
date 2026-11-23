@@ -290,6 +290,76 @@ TEST_CASE("Shift Return writes a source newline with the document's line ending"
     CHECK(document.CanUndo() == false);
 }
 
+TEST_CASE("opening a Slang draft repairs code line separators as one undo step", "[editor][text][history]")
+{
+    CodeEditor editor;
+    editor.SetLanguage(CodeLanguage::Slang);
+    const QString prefix = QStringLiteral("\ufeffString text = \"left\\\"\u2028right\";\r\n"
+                                          "String raw = R\"tag(left\"\r\n\u2028right)tag\";\r\n"
+                                          "/* block \u2028 comment */\r\n"
+                                          "// continued \\\r\n\u2028comment\r\n");
+    const QString signature = QStringLiteral("void SamplePointOnEdges()");
+    const QByteArray original = (prefix + signature + QStringLiteral("\u2028{}\r\n")).toUtf8();
+    const QByteArray repaired = (prefix + signature + QStringLiteral("\r\n{}\r\n")).toUtf8();
+    MemoryCodeDocument document(original);
+    CodeDocumentController controller(editor);
+    QSignalSpy accepted(&controller, &CodeDocumentController::TextAccepted);
+    controller.Bind(&document);
+    editor.moveCursor(QTextCursor::End);
+    const int32 position = editor.textCursor().position();
+    QCoreApplication::processEvents();
+
+    CHECK(document.GetState().Text == repaired);
+    CHECK(editor.textCursor().position() == position);
+    CHECK(accepted.count() == 1);
+    REQUIRE(document.Undo() == true);
+    controller.Synchronize(true);
+    QCoreApplication::processEvents();
+    CHECK(document.GetState().Text == original);
+    CHECK(editor.document()->toRawText().contains(QChar::LineSeparator) == true);
+    CHECK(accepted.count() == 1);
+    CHECK(document.CanUndo() == false);
+}
+
+TEST_CASE("a queued Slang line repair skips a tab that has rebound", "[editor][text][history]")
+{
+    CodeEditor editor;
+    editor.SetLanguage(CodeLanguage::Slang);
+    const QByteArray original = QStringLiteral("void Original()\u2028{}").toUtf8();
+    MemoryCodeDocument originalDocument(original);
+    MemoryCodeDocument currentDocument(QByteArrayLiteral("void Current() {}"));
+    CodeDocumentController controller(editor);
+    controller.Bind(&originalDocument);
+    controller.Bind(&currentDocument);
+    QCoreApplication::processEvents();
+
+    CHECK(originalDocument.GetState().Text == original);
+    CHECK(currentDocument.GetState().Text == QByteArrayLiteral("void Current() {}"));
+    CHECK(currentDocument.CanUndo() == false);
+}
+
+TEST_CASE("Slang paste repairs code separators and keeps separators in strings", "[editor][text][history]")
+{
+    CodeEditor editor;
+    editor.SetLanguage(CodeLanguage::Slang);
+    const QByteArray original = QByteArrayLiteral("void SamplePointOnEdges(){}\r\n");
+    MemoryCodeDocument document(original);
+    CodeDocumentController controller(editor);
+    controller.Bind(&document);
+    QTextCursor cursor = editor.textCursor();
+    cursor.setPosition(static_cast<int32>(original.indexOf('{')));
+    editor.setTextCursor(cursor);
+    QApplication::clipboard()->setText(QStringLiteral("\u2028{ String label = \"left\u2028right\"; }\u2028"));
+    editor.paste();
+
+    CHECK(document.GetState().Text ==
+          QStringLiteral("void SamplePointOnEdges()\r\n{ String label = \"left\u2028right\"; }\r\n{}\r\n").toUtf8());
+    CHECK(editor.textCursor().blockNumber() == 2);
+    REQUIRE(document.Undo() == true);
+    CHECK(document.GetState().Text == original);
+    CHECK(document.CanUndo() == false);
+}
+
 TEST_CASE("rejected text input preserves owner and view without an undo entry", "[editor][text][history]")
 {
     CodeEditor editor;
@@ -818,6 +888,134 @@ TEST_CASE("Capability dispatch disables unadvertised assistance and follows serv
     // A new context returns to the defaults until its server reports capabilities.
     assistance.ClearContext();
     CHECK(signatureOrNull->isEnabled() == true);
+}
+
+namespace
+{
+/// A Slang assistance session against language_server_fixture.py with `options`.
+/// Its context prefix contains the diagnosed word, so generated surroundings
+/// must never produce markers in the authored text.
+struct FakeAssistanceSession final
+{
+    FakeAssistanceSession(const QByteArray& text, const QStringList& options)
+        : Host(text), Document(Editor), Assistance(Editor, Document)
+    {
+        Document.Bind(&Host);
+        Editor.SetLanguage(CodeLanguage::Slang);
+        QStringList arguments{QString::fromUtf8(LUDUS_LANGUAGE_SERVER_FIXTURE)};
+        arguments.append(options);
+        QObject::connect(&Assistance, &CodeAssistance::ContextRequested, &Editor, [this, arguments]() {
+            Assistance.SetContext(QString::fromUtf8(LUDUS_TEST_PYTHON),
+                                  Temporary.path(),
+                                  QUrl::fromLocalFile(Temporary.filePath(QStringLiteral("unit.slang"))).toString(),
+                                  QStringLiteral("// generated missing\n"),
+                                  {},
+                                  arguments);
+        });
+        Editor.resize(800, 400);
+        Editor.show();
+        Editor.setFocus();
+    }
+
+    /// Prepare the context through an ordinary completion intent.
+    void Prepare()
+    {
+        Editor.moveCursor(QTextCursor::End);
+        Assistance.Request(false);
+    }
+
+    MemoryCodeDocument Host;
+    CodeEditor Editor;
+    CodeDocumentController Document;
+    CodeAssistance Assistance;
+    QTemporaryDir Temporary;
+};
+
+const QStringList DIAGNOSING_SERVER{QStringLiteral("--capabilities"),
+                                    QStringLiteral(R"({"completionProvider": {}, "hoverProvider": true})"),
+                                    QStringLiteral("--diagnose"),
+                                    QStringLiteral("missing")};
+} // namespace
+
+TEST_CASE("Analysis diagnostics follow the draft and stay apart from build results", "[editor][text][assistance]")
+{
+    FakeAssistanceSession session("float a = missing;\nfloat b = 2;\n", DIAGNOSING_SERVER);
+    session.Prepare();
+    CodeEditor& editor = session.Editor;
+    REQUIRE(QTest::qWaitFor([&editor]() { return editor.GetAnalysisDiagnosticCount() == 1; }));
+    CHECK(editor.GetAnalysisDiagnosticRange(0).selectedText() == QStringLiteral("missing"));
+    const int32 marked = editor.GetAnalysisDiagnosticRange(0).selectionStart() + 2;
+    CHECK(editor.DescribeDiagnosticsAt(marked) == QStringLiteral("Analysis (slangd) error: unknown name missing"));
+    // Build results stay their own layer and the build report keeps its label.
+    editor.SetDiagnostics({{ .Line = 2, .Column = 7, .Length = 1, .Message = QStringLiteral("build says b") }}, true);
+    CHECK(editor.GetDiagnosticCount() == 1);
+    CHECK(editor.GetAnalysisDiagnosticCount() == 1);
+    CHECK(editor.DescribeLineDiagnostics(1) == QStringLiteral("Error: build says b"));
+    // Typing re-synchronizes after a pause and the next report replaces the markers.
+    editor.moveCursor(QTextCursor::End);
+    QTest::keyClicks(&editor, QStringLiteral("missing"));
+    REQUIRE(QTest::qWaitFor([&editor]() { return editor.GetAnalysisDiagnosticCount() == 2; }));
+    CHECK(editor.GetDiagnosticCount() == 1);
+    // A new context clears analysis; the build report is not the client's to clear.
+    session.Assistance.ClearContext();
+    CHECK(editor.GetAnalysisDiagnosticCount() == 0);
+    CHECK(editor.GetDiagnosticCount() == 1);
+}
+
+TEST_CASE("Analysis reports for an older version are discarded", "[editor][text][assistance]")
+{
+    QStringList options = DIAGNOSING_SERVER;
+    options.append(QStringLiteral("--stale-diagnostics"));
+    FakeAssistanceSession session("float a = missing;\n", options);
+    QSignalSpy status(&session.Assistance, &CodeAssistance::StatusChanged);
+    session.Prepare();
+    REQUIRE(QTest::qWaitFor([&status]() { return status.isEmpty() == false; }));
+    QTest::qWait(500);
+    CHECK(session.Editor.GetAnalysisDiagnosticCount() == 0);
+}
+
+TEST_CASE("Hover shows the server's text with diagnostics and never prepares a context", "[editor][text][assistance]")
+{
+    QStringList options = DIAGNOSING_SERVER;
+    options.append({QStringLiteral("--hold"), QStringLiteral("textDocument/hover")});
+    FakeAssistanceSession session("float a = missing;\n", options);
+    CodeEditor& editor = session.Editor;
+    QSignalSpy contexts(&session.Assistance, &CodeAssistance::ContextRequested);
+    QAction* hoverOrNull = nullptr;
+    for (QAction* action : editor.actions())
+    {
+        hoverOrNull = action->objectName() == QStringLiteral("codeEditorHover") ? action : hoverOrNull;
+    }
+    REQUIRE(hoverOrNull != nullptr);
+    // No context yet: hover describes local diagnostics only and starts nothing.
+    hoverOrNull->trigger();
+    QTest::qWait(100);
+    CHECK(contexts.isEmpty() == true);
+    CHECK(editor.GetHoverText().isEmpty() == true);
+    session.Prepare();
+    REQUIRE(QTest::qWaitFor([&editor]() { return editor.GetAnalysisDiagnosticCount() == 1; }));
+    QTest::keyClick(&editor, Qt::Key_Escape);
+    QTextCursor cursor = editor.textCursor();
+    cursor.setPosition(editor.GetAnalysisDiagnosticRange(0).selectionStart() + 1);
+    editor.setTextCursor(cursor);
+    // The first hover reply is held; an edit makes it stale before it arrives.
+    hoverOrNull->trigger();
+    QTest::qWait(100);
+    editor.moveCursor(QTextCursor::End);
+    QTest::keyClicks(&editor, QStringLiteral("x"));
+    session.Assistance.Request(false); // any request releases the held reply
+    QTest::qWait(300);
+    CHECK(editor.GetHoverText().isEmpty() == true);
+    QTest::keyClick(&editor, Qt::Key_Escape);
+    editor.setTextCursor(cursor);
+    hoverOrNull->trigger();
+    REQUIRE(QTest::qWaitFor([&editor]() { return editor.GetHoverText().isEmpty() == false; }));
+    CHECK(editor.GetHoverText().startsWith(QStringLiteral("hover ")) == true);
+    CHECK(editor.GetHoverText().contains(QStringLiteral("Analysis (slangd) error: unknown name missing")) == true);
+    // Resting the pointer requests a hover where it rests.
+    QSignalSpy requests(&editor, &CodeEditor::HoverRequested);
+    QTest::mouseMove(editor.viewport(), editor.cursorRect(cursor).center());
+    REQUIRE(QTest::qWaitFor([&requests]() { return requests.isEmpty() == false; }));
 }
 
 TEST_CASE("Escape cancels pending shader assistance before a delayed reply", "[editor][text][assistance]")

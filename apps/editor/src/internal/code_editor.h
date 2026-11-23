@@ -82,6 +82,17 @@ struct CodeDiagnostic final
 
 /// Reusable Qt text-input surface. Bound undo routes to the document owner;
 /// unbound views use Qt undo. No file, compilation or language-server lifetime. GUI thread only.
+/// A language server's analysis message for the current text (code editor M4,
+/// CE10). It is kept apart from build diagnostics, which stay the authority for
+/// build errors. Start and End are UTF-16 positions in the view's document.
+struct CodeAnalysisDiagnostic final
+{
+    foundation::int32 Start = 0;
+    foundation::int32 End = 0;
+    CodeDiagnosticSeverity Severity = CodeDiagnosticSeverity::Error;
+    QString Message;
+};
+
 /// What the current language server serves for completion and signature help,
 /// from its advertised capabilities (code editor M4, CE09).
 struct CodeAssistanceAvailability final
@@ -94,6 +105,8 @@ struct CodeAssistanceAvailability final
     QString CompletionUnavailableReason;
     /// Why signature help is disabled, or empty when it is available.
     QString SignatureUnavailableReason;
+    /// Why hover is disabled, or empty when it is available.
+    QString HoverUnavailableReason;
 };
 
 class CodeEditor final : public QPlainTextEdit
@@ -158,6 +171,21 @@ public:
     /// first edit marks them out of date until the producer replaces them.
     /// isCurrent false says the report already describes an earlier text version.
     void SetDiagnostics(const QList<CodeDiagnostic>& diagnostics, bool isCurrent);
+    /// Replace the language server's analysis markers. `source` names the server
+    /// ("slangd") in their descriptions. Ranges outside the document are ignored;
+    /// edits move the markers until the next replacement.
+    void SetAnalysisDiagnostics(const QList<CodeAnalysisDiagnostic>& diagnostics, const QString& source);
+    [[nodiscard]] LUDUS_INLINE foundation::int32 GetAnalysisDiagnosticCount() const noexcept
+    {
+        return static_cast<foundation::int32>(mAnalysis.size());
+    }
+    [[nodiscard]] QTextCursor GetAnalysisDiagnosticRange(foundation::int32 index) const;
+    /// Show a server hover for `position` (plain text, escaped here) with that
+    /// position's build and analysis diagnostics. Empty text shows diagnostics only.
+    void ShowHover(foundation::int32 position, const QString& text);
+    void HideHover();
+    /// The text of the hover currently shown, or empty; for tests.
+    [[nodiscard]] const QString& GetHoverText() const noexcept;
     [[nodiscard]] LUDUS_INLINE foundation::int32 GetDiagnosticCount() const noexcept
     {
         return static_cast<foundation::int32>(mDiagnostics.size());
@@ -224,6 +252,8 @@ Q_SIGNALS:
     void AssistanceDismissed();
     void CompletionChosen(foundation::int32 row);
     void SignatureOverloadRequested(foundation::int32 direction);
+    /// The pointer rested on `position` for the hover delay, or Show Hover ran at the caret.
+    void HoverRequested(foundation::int32 position);
     /// The number of cursors changed (1 plus the secondary cursors, CE06). The
     /// status bar shows the count; emitted only when the count actually changes.
     void CursorCountChanged(foundation::int32 count);
@@ -257,7 +287,7 @@ private:
     void changeEvent(QEvent* event) override;
     void contextMenuEvent(QContextMenuEvent* event) override;
     void inputMethodEvent(QInputMethodEvent* event) override;
-    void insertFromMimeData(const QMimeData* source) override;
+    void insertFromMimeData(const QMimeData* sourceOrNull) override;
     void focusOutEvent(QFocusEvent* event) override;
     bool viewportEvent(QEvent* event) override;
     /// The structural-editing pairs for the current language, from the registry
@@ -308,6 +338,12 @@ private:
     QTimer mSelectionUpdate;
     QTimer mVisibleSyntaxUpdate;
     QList<DiagnosticMarker> mDiagnostics;
+    QList<DiagnosticMarker> mAnalysis;
+    QString mAnalysisSource;
+    QTimer mHoverDelay;
+    foundation::int32 mHoverPosition = -1;
+    QString mHoverText;
+    QAction* mHoverAction;
     QString mDiagnosticText;
     bool mAreDiagnosticsCurrent = true;
     /// The text changed after the markers were set; they still point at where the problem was.

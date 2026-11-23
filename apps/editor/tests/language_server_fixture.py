@@ -10,6 +10,8 @@ Options shape the server a test needs:
   --hold METHOD         hold the first METHOD reply until the next request arrives
   --error METHOD        answer METHOD with an internal error
   --crash-starts PATH:N exit after initialize on the first N starts, counted in PATH
+  --diagnose WORD       publish an error for every WORD after each text change
+  --stale-diagnostics   publish them with the previous document version
 """
 import argparse
 import json
@@ -23,6 +25,8 @@ parser.add_argument('--record')
 parser.add_argument('--hold', action='append', default=[])
 parser.add_argument('--error', action='append', default=[])
 parser.add_argument('--crash-starts')
+parser.add_argument('--diagnose')
+parser.add_argument('--stale-diagnostics', action='store_true')
 options = parser.parse_args()
 
 text = ''
@@ -50,6 +54,32 @@ def offset(position):
         return before + len(line.encode('utf-8')[:position['character']].decode('utf-8'))
     units = line.encode('utf-16-le')[:position['character'] * 2]
     return before + len(units.decode('utf-16-le'))
+
+
+def position(index):
+    """The protocol position of a str index in the chosen encoding."""
+    before = text[:index]
+    line = before.count('\n')
+    column = before.rsplit('\n', 1)[-1]
+    if options.encoding == 'utf-8':
+        return {'line': line, 'character': len(column.encode('utf-8'))}
+    return {'line': line, 'character': len(column.encode('utf-16-le')) // 2}
+
+
+def publish(uri, version):
+    if not options.diagnose:
+        return
+    diagnostics = []
+    start = text.find(options.diagnose)
+    while start >= 0:
+        end = start + len(options.diagnose)
+        diagnostics.append({'range': {'start': position(start), 'end': position(end)}, 'severity': 1,
+                            'message': 'unknown name ' + options.diagnose})
+        start = text.find(options.diagnose, end)
+    if options.stale_diagnostics:
+        version -= 1
+    send({'method': 'textDocument/publishDiagnostics',
+          'params': {'uri': uri, 'version': version, 'diagnostics': diagnostics}})
 
 
 def should_crash():
@@ -87,6 +117,7 @@ while True:
     if method == 'textDocument/didOpen':
         text = message['params']['textDocument']['text']
         record({'text': text})
+        publish(message['params']['textDocument']['uri'], message['params']['textDocument']['version'])
         continue
     if method == 'textDocument/didChange':
         for change in message['params']['contentChanges']:
@@ -97,6 +128,7 @@ while True:
             else:
                 text = change['text']
         record({'text': text})
+        publish(message['params']['textDocument']['uri'], message['params']['textDocument']['version'])
         continue
     if 'id' not in message or method is None:
         continue
