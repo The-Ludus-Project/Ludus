@@ -432,15 +432,33 @@ def describe_watch(should_stop: bool, failed: list[str]) -> str:
     return "\n".join([*lines, *(f"- {name}" for name in failed)]) + "\n"
 
 
-def is_unacquired(client: GitHub, job: dict) -> bool:
+def attempt_identity(job: dict) -> tuple[str, str] | None:
+    """Return the name and completion time that identify a job across run attempts.
+
+    A re-run attempt copies each job it does not run under a new id, keeping the
+    name and completion time but none of the original's annotations (observed in
+    batch run 45203619841, where an unacquired job's copy had no annotations).
+    """
+    name = job.get("name")
+    completed_at = job.get("completed_at")
+    if not isinstance(name, str) or not isinstance(completed_at, str):
+        return None
+    return name, completed_at
+
+
+def is_unacquired(client: GitHub, job: dict, known: frozenset[tuple[str, str]] = frozenset()) -> bool:
     """Whether GitHub cancelled job because no hosted runner accepted it.
 
     Only a cancelled job that never had a runner is checked, and only GitHub's own
     acquisition annotation qualifies: a cancellation by a person, by the stop job
-    or by a newer run carries no such annotation and is never retried.
+    or by a newer run carries no such annotation and is never retried. known holds
+    the attempt identities of jobs already found unacquired in an earlier attempt,
+    so a copy that a later attempt did not run keeps that classification.
     """
     if job.get("conclusion") != "cancelled" or job.get("runner_name") or not isinstance(job.get("id"), int):
         return False
+    if attempt_identity(job) in known:
+        return True
     # Thanks to GitHub, "REST API endpoints for check runs", List check run
     # annotations: a workflow job's id is its check run id.
     # https://docs.github.com/en/rest/checks/runs#list-check-run-annotations
@@ -451,15 +469,19 @@ def is_unacquired(client: GitHub, job: dict) -> bool:
                for entry in annotations)
 
 
-def retry_candidates(client: GitHub, jobs: list[dict]) -> tuple[list[dict], str]:
-    """Return the jobs to retry, or none and the reason the run is not retried."""
+def retry_candidates(client: GitHub, jobs: list[dict],
+                     known: frozenset[tuple[str, str]] = frozenset()) -> tuple[list[dict], str]:
+    """Return the jobs to retry, or none and the reason the run is not retried.
+
+    known holds the attempt identities of jobs found unacquired in earlier attempts.
+    """
     if any(job.get("name") == STOP_JOB and job.get("conclusion") not in {None, "skipped"} for job in jobs):
         return [], "The batch was stopped after a suite failed; the candidate is already rejected."
     failed = sorted(job.get("name", "?") for job in jobs
                     if job.get("conclusion") in STOP_CONCLUSIONS and job.get("name") not in AGGREGATE_JOBS)
     if failed:
         return [], "Jobs failed for reasons other than runner capacity: " + ", ".join(failed) + "."
-    unacquired = [job for job in jobs if is_unacquired(client, job)]
+    unacquired = [job for job in jobs if is_unacquired(client, job, known)]
     if not unacquired:
         return [], "No job was cancelled for lack of a runner."
     return sorted(unacquired, key=lambda job: job["id"]), ""
@@ -520,15 +542,17 @@ def retry_unacquired(client: GitHub, run_id: int, *, clock=None, sleep=time.slee
     deadline = clock() + timedelta(seconds=limit_seconds)
     lines: list[str] = []
     attempt = 0
+    known: frozenset[tuple[str, str]] = frozenset()
     for round_number in range(retries + 1):
         run = wait_for_run(client, run_id, clock=clock, sleep=sleep, deadline=deadline,
                            interval_seconds=interval_seconds, after_attempt=attempt)
         if run is None:
             return True, [*lines, "Stopped waiting for the batch run within the retry time limit."]
         attempt = run["run_attempt"]
-        candidates, reason = retry_candidates(client, list_run_jobs(client, run_id))
+        candidates, reason = retry_candidates(client, list_run_jobs(client, run_id), known)
         if not candidates:
             return False, [*lines, reason]
+        known = known | {identity for job in candidates if (identity := attempt_identity(job)) is not None}
         names = ", ".join(job.get("name", "?") for job in candidates)
         if round_number == retries:
             return True, [*lines, f"GitHub could not supply a runner after {retries} retries: {names}. "

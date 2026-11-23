@@ -848,8 +848,11 @@ class NestedPermissionTests(unittest.TestCase):
 UNACQUIRED = "The job was not acquired by Runner of type hosted even after multiple attempts"
 
 
-def batch_job(job_id, name, conclusion="success", runner="GitHub Actions 1", status="completed"):
-    return {"id": job_id, "name": name, "status": status, "conclusion": conclusion, "runner_name": runner}
+def batch_job(job_id, name, conclusion="success", runner="GitHub Actions 1", status="completed", completed_at=None):
+    job = {"id": job_id, "name": name, "status": status, "conclusion": conclusion, "runner_name": runner}
+    if completed_at is not None:
+        job["completed_at"] = completed_at
+    return job
 
 
 class RetryClient:
@@ -1007,6 +1010,37 @@ class RunnerRetryTests(unittest.TestCase):
         self.assertFalse(needs_attention)
         self.assertEqual(polls["count"], 3)
         self.assertEqual(sleeps.count(batch_ci.WATCH_INTERVAL_SECONDS), 3)
+
+    def test_a_carried_unacquired_job_is_retried_in_a_later_round(self):
+        # Batch run 45203619841: two jobs found no runner. The first round re-ran one;
+        # the re-run attempt copied the other under a new id without its annotations.
+        oracle = "native / macOS GPU reference oracle"
+        butler = "sdk / Pinned butler installation (macos-15)"
+        cancelled_at = "2026-11-23T15:50:26Z"
+        first = [batch_job(1, "Capture develop candidate"),
+                 batch_job(7, oracle, "cancelled", runner="", completed_at="2026-11-23T15:40:00Z"),
+                 batch_job(20, butler, "cancelled", runner="", completed_at=cancelled_at),
+                 batch_job(4, "native / Ubuntu Clang", "failure")]
+        second = [batch_job(1, "Capture develop candidate"),
+                  batch_job(8, oracle),
+                  batch_job(21, butler, "cancelled", runner=None, completed_at=cancelled_at),
+                  batch_job(9, "native / Ubuntu Clang")]
+        third = [batch_job(1, "Capture develop candidate"), batch_job(8, oracle),
+                 batch_job(22, butler), batch_job(9, "native / Ubuntu Clang")]
+        client = RetryClient([first, second, third], annotations={7: [UNACQUIRED], 20: [UNACQUIRED]})
+        (needs_attention, lines), _ = self.run_retry(client)
+        self.assertFalse(needs_attention)
+        self.assertEqual(client.reruns, [7, 21])
+        self.assertIn(f"Retry 2 of 2: re-running {butler}", lines[1])
+        self.assertEqual(lines[-1], "No job was cancelled for lack of a runner.")
+
+        # A copy matches only the same name and completion time of an unacquired job.
+        moved = [dict(job) for job in second]
+        moved[2]["completed_at"] = "2026-11-23T16:00:00Z"
+        client = RetryClient([first, moved], annotations={7: [UNACQUIRED], 20: [UNACQUIRED]})
+        (needs_attention, lines), _ = self.run_retry(client)
+        self.assertEqual((needs_attention, client.reruns), (False, [7]))
+        self.assertEqual(lines[-1], "No job was cancelled for lack of a runner.")
 
     def test_summary_marks_attention(self):
         self.assertIn("needs attention", batch_ci.describe_retry(True, ["x"]))
