@@ -239,7 +239,11 @@ asset IDs with their exact artifact keys. World identity
 uses the v2 document UUID, the v1 imported level UUID, or the project-relative path for a
 v1 World without a level. Object bindings follow the decoded LUSCN object order.
 `DecodePlayableSnapshot` reads the file in memory without Qt, an asset catalog, or raw sources.
-It replaces a previous runtime snapshot only after validating the new candidate.
+It replaces a previous runtime snapshot only after validating the new candidate. It separates an
+unsupported renderer from an unreadable file: when the manifest is well-formed but its `renderer`
+is a renderer the player cannot draw (the player draws only `raster`), the decoder reports the
+rejected renderer by name so the player can tell the author to select Raster in the Editor and
+prepare the World again, rather than emitting the generic "Cannot read the cooked World" message.
 
 The redistributable acceptance fixture uses SceneCook's CC0 `gltf/maps` source. It checks a
 moved instance, mapped material textures, lighting, spawn identity and collider membership
@@ -273,6 +277,10 @@ its manifest.
 ```sh
 ./ludus_first_person_player /path/to/walk.luplay SPAWN_ENTITY_KEY
 ```
+
+If the snapshot was prepared for a renderer the player cannot draw, the player names that
+renderer and asks the author to select Raster in the Editor and prepare the World again; an
+otherwise unreadable snapshot asks for a fresh preparation instead.
 
 The macOS desktop fixture exercises the native player with an authored textured
 wall, a floor collider, directional shadows and static Atmosphere. It verifies
