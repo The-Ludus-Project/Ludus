@@ -243,6 +243,10 @@ extern slang
                               inout RayQueryContext queries,
                               in SurfaceHit receiver,
                               in LightSample light);
+    bool TryMakeCameraRayFromWorldPosition(in RayLaunch launch,
+                                           in float32x3 positionWorld,
+                                           out Ray outRay,
+                                           out float32x2 outPositionClip);
     bool TryMakeCameraRayFromWorldPosition(in RayLaunch launch, in float32x3 positionWorld, out Ray outRay);
     MaterialSample EvaluateMaterial(in SceneContext scene, in SurfaceHit hit);
     float32x3 EvaluateEmission(in SceneContext scene, in SurfaceHit hit, in float32x3 directionAwayWorld);
