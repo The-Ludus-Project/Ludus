@@ -143,6 +143,21 @@ TEST_CASE("LUSL rejects derivatives in non-uniform control flow", "[shader-langu
                  DiagnosticCode::NonUniformDerivative);
 }
 
+TEST_CASE("LUSL const locals keep the uniformity of their initializers", "[shader-language][uniformity]")
+{
+    RequireUniform("    const uint32 mode = settings.Mode;\n    const float32 weight = Weigh(mode);\n"
+                   "    if (mode == 1 && weight > 0.5)\n    {\n        color = image.Sample(imageSampler, input.Uv);\n"
+                   "    }");
+    RequireError("    const float32 bright = input.Uv.x;\n    if (bright > 0.5)\n    {\n"
+                 "        color = image.Sample(imageSampler, input.Uv);\n    }",
+                 DiagnosticCode::NonUniformDerivative);
+    RequireError("    const uint32 count = ReadCount();\n    if (count > 0)\n    {\n"
+                 "        color = image.Sample(imageSampler, input.Uv);\n    }",
+                 DiagnosticCode::NonUniformDerivative);
+    RequireError("    const uint32 mode = uint32(input.Uv.x);\n    color = Shade(mode, input.Uv);",
+                 DiagnosticCode::NonUniformArgument);
+}
+
 TEST_CASE("LUSL derivative errors name the decision and the repair", "[shader-language][uniformity]")
 {
     const CheckedSource checked(

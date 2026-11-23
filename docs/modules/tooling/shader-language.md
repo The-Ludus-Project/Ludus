@@ -388,6 +388,20 @@ bool CheckShade(const language::PreprocessRequest& request, const language::Prep
   contain itself.
 - **`enum class`:** the underlying type is an integer scalar. Enumerators number
   from zero or take constant values, and are named as `Mode::On`.
+- **`const` locals:** a function-local `const` binds any well-typed value
+  read-only, including a scalar or a struct a call returns, as in
+  `const LightSample sample = SampleIncidentLight(scene, receiver);`. The
+  initializer runs once each time execution reaches the declaration. A `const`
+  needs an initializer that produces a value, so a missing initializer or
+  `= void` is an error. Assigning the local, one of its fields, elements or
+  components, incrementing it, calling a `[mutating]` method on it, or passing
+  it or a subobject as `out` or `inout` is `not-assignable`; reads and value
+  copies are allowed. A local initialized by a constant expression is itself a
+  constant expression and may size an array or decide a `static_assert`; a
+  runtime-initialized local, or one built from it, may not (`not-constant`).
+  `static const`, at any scope, still requires a constant initializer. The local
+  keeps its initializer's uniformity and coordinate spaces
+  ([design](../../architecture/shading-language.md#runtime-const-locals)).
 - **Top-level variables** are `static const` (with a constant initializer),
   `groupshared`, or [resource bindings](#resources-and-bindings). Other globals
   come from render-graph bindings or `extern slang` blocks.

@@ -241,10 +241,9 @@ LUSL keeps a C preprocessor, run before parsing:
 
 #### Runtime const locals
 
-**Planned.** A function-local `const` still requires a compile-time initializer
-in the current compiler. Extend it to accept any well-typed initializer,
-including a runtime function call. Evaluate the initializer once each time
-execution reaches the declaration. A `const` local requires an initializer
+A function-local `const` accepts any well-typed initializer, including a
+runtime function call. The initializer is evaluated once each time execution
+reaches the declaration. A `const` local requires an initializer
 that produces a value, so `= void` is invalid.
 
 The local and its fields and elements are read-only after initialization.
@@ -260,13 +259,17 @@ declarations still require compile-time initializers. Uniformity and
 coordinate spaces follow the existing analysis of the initializer.
 
 Functions can return related values together in a named struct. The caller can
-bind the whole result read-only with the proposed local declaration:
+bind the whole result read-only with a local declaration:
 
 ```c
 const LightSample sample = SampleIncidentLight(scene, selected, receiver, shapeSample);
 ```
 
-Implementation is tracked in [issue 2214](https://github.com/The-Ludus-Project/Ludus/issues/2214).
+The checker records a runtime-initialized local as `Symbol::IsRuntimeConstant`,
+and lowering writes it as an ordinary Slang local initialized at its
+declaration. Usage and diagnostics are in the
+[module guide](../modules/tooling/shader-language.md#names-and-declarations);
+[issue 2214](https://github.com/The-Ludus-Project/Ludus/issues/2214) delivered it.
 
 ### Types
 
