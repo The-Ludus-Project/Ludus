@@ -6,6 +6,7 @@
 #include "internal/code_formatter.h"
 #include "internal/code_language_registry.h"
 #include "internal/code_navigation.h"
+#include "internal/code_snippet.h"
 #include "internal/code_structure_view.h"
 #include "internal/code_syntax_service.h"
 #include "internal/code_text.h"
@@ -680,7 +681,7 @@ TEST_CASE("Shader completion maps UTF-16 ranges and additional edits into one dr
     REQUIRE(host.CanUndo() == false);
 }
 
-TEST_CASE("Shader assistance rejects generated edits and unsolicited snippets", "[editor][text][assistance]")
+TEST_CASE("Shader assistance rejects generated edits and expands snippets", "[editor][text][assistance]")
 {
     for (const QByteArray& marker : {QByteArray("generated-edit"), QByteArray("snippet")})
     {
@@ -708,6 +709,15 @@ TEST_CASE("Shader assistance rejects generated edits and unsolicited snippets", 
         REQUIRE(popupOrNull != nullptr);
         REQUIRE(QTest::qWaitFor([popupOrNull]() { return popupOrNull->isVisible() == true; }));
         QTest::keyClick(&editor, Qt::Key_Return);
+        if (marker == "snippet")
+        {
+            // `${1:Version}` inserts its placeholder text and selects it as the first stop.
+            REQUIRE(host.GetState().Text.endsWith("scene.Version"));
+            CHECK(host.CanUndo() == true);
+            CHECK(editor.IsInSnippet() == true);
+            CHECK(editor.textCursor().selectedText() == QStringLiteral("Version"));
+            continue;
+        }
         REQUIRE(host.CanUndo() == false);
         REQUIRE(host.GetState().Text.endsWith("scene.Ve"));
         REQUIRE(status.last().at(0).toString().isEmpty() == false);
@@ -1124,6 +1134,126 @@ TEST_CASE("Semantic tokens and folding ranges follow the draft and drop stale re
     session.Assistance.ClearContext();
     CHECK(editor.GetSemanticTokens().isEmpty() == true);
     CHECK(editor.GetStructure().GetServerFolds().isEmpty() == true);
+}
+
+TEST_CASE("Snippet tab stops edit mirrors together and end at the final position", "[editor][text][assistance]")
+{
+    CodeSnippet snippet;
+    REQUIRE(ParseCodeSnippet(QStringLiteral("${1:value} = ${2:other} + $1;$0"), snippet) == true);
+    MemoryCodeDocument host(snippet.Text.toUtf8() + "\n");
+    CodeEditor editor;
+    CodeDocumentController document(editor);
+    document.Bind(&host);
+    editor.SetLanguage(CodeLanguage::Slang);
+    editor.show();
+    editor.setFocus();
+    editor.StartSnippet(0, snippet);
+    REQUIRE(editor.IsInSnippet() == true);
+    CHECK(editor.textCursor().selectedText() == QStringLiteral("value"));
+    // The mirror is a secondary cursor, so typing replaces both.
+    QTest::keyClicks(&editor, QStringLiteral("x"));
+    CHECK(editor.toPlainText() == QStringLiteral("x = other + x;\n"));
+    QTest::keyClick(&editor, Qt::Key_Tab);
+    CHECK(editor.textCursor().selectedText() == QStringLiteral("other"));
+    QTest::keyClick(&editor, Qt::Key_Backtab);
+    CHECK(editor.textCursor().selectedText() == QStringLiteral("x"));
+    QTest::keyClick(&editor, Qt::Key_Tab);
+    QTest::keyClicks(&editor, QStringLiteral("y"));
+    // Past the last stop the caret goes to $0 and Tab indents again.
+    QTest::keyClick(&editor, Qt::Key_Tab);
+    CHECK(editor.IsInSnippet() == false);
+    CHECK(editor.textCursor().position() == static_cast<int32>(QStringLiteral("x = y + x;").size()));
+    CHECK(editor.toPlainText() == QStringLiteral("x = y + x;\n"));
+
+    // Escape, or moving the caret out of the snippet, ends it as well.
+    REQUIRE(ParseCodeSnippet(QStringLiteral("${1:x} = ${2:y} + $1;"), snippet) == true);
+    REQUIRE(editor.toPlainText().startsWith(snippet.Text) == true);
+    editor.StartSnippet(0, snippet);
+    REQUIRE(editor.IsInSnippet() == true);
+    QTest::keyClick(&editor, Qt::Key_Escape);
+    CHECK(editor.IsInSnippet() == false);
+    editor.StartSnippet(0, snippet);
+    REQUIRE(editor.IsInSnippet() == true);
+    editor.moveCursor(QTextCursor::End);
+    CHECK(editor.IsInSnippet() == false);
+    // A snippet longer than the document starts nothing.
+    REQUIRE(ParseCodeSnippet(QStringLiteral("${1:a much longer placeholder than the text}"), snippet) == true);
+    editor.StartSnippet(0, snippet);
+    CHECK(editor.IsInSnippet() == false);
+}
+
+TEST_CASE("Snippet completions expand and visit their stops", "[editor][text][assistance]")
+{
+    FakeAssistanceSession session("float a = ",
+                                  {QStringLiteral("--capabilities"),
+                                   QStringLiteral(R"({"completionProvider": {}})"),
+                                   QStringLiteral("--snippet"),
+                                   QStringLiteral("Call(${1:value}, ${2:factor})$0")});
+    CodeEditor& editor = session.Editor;
+    session.Prepare();
+    QListWidget* popupOrNull = editor.findChild<QListWidget*>(QStringLiteral("codeCompletionList"));
+    REQUIRE(popupOrNull != nullptr);
+    REQUIRE(QTest::qWaitFor([popupOrNull]() { return popupOrNull->isVisible() == true; }));
+    QTest::keyClick(&editor, Qt::Key_Return);
+    REQUIRE(session.Host.GetState().Text == "float a = Call(value, factor)");
+    CHECK(editor.IsInSnippet() == true);
+    CHECK(editor.textCursor().selectedText() == QStringLiteral("value"));
+    QTest::keyClicks(&editor, QStringLiteral("1"));
+    QTest::keyClick(&editor, Qt::Key_Tab);
+    CHECK(editor.textCursor().selectedText() == QStringLiteral("factor"));
+    QTest::keyClicks(&editor, QStringLiteral("2"));
+    QTest::keyClick(&editor, Qt::Key_Tab);
+    CHECK(editor.IsInSnippet() == false);
+    CHECK(session.Host.GetState().Text == "float a = Call(1, 2)");
+    CHECK(editor.textCursor().position() == static_cast<int32>(editor.toPlainText().size()));
+}
+
+TEST_CASE("A snippet transform is refused without editing", "[editor][text][assistance]")
+{
+    FakeAssistanceSession session("float a = ",
+                                  {QStringLiteral("--capabilities"),
+                                   QStringLiteral(R"({"completionProvider": {}})"),
+                                   QStringLiteral("--snippet"),
+                                   QStringLiteral("${1/(.*)/upper/}")});
+    CodeEditor& editor = session.Editor;
+    QSignalSpy status(&session.Assistance, &CodeAssistance::StatusChanged);
+    session.Prepare();
+    QListWidget* popupOrNull = editor.findChild<QListWidget*>(QStringLiteral("codeCompletionList"));
+    REQUIRE(popupOrNull != nullptr);
+    REQUIRE(QTest::qWaitFor([popupOrNull]() { return popupOrNull->isVisible() == true; }));
+    QTest::keyClick(&editor, Qt::Key_Return);
+    CHECK(session.Host.GetState().Text == "float a = ");
+    CHECK(session.Host.CanUndo() == false);
+    REQUIRE(status.isEmpty() == false);
+    CHECK(status.last().first().toString().contains(QStringLiteral("snippet transform")) == true);
+}
+
+TEST_CASE("Completion resolve fills in the highlighted suggestion's documentation", "[editor][text][assistance]")
+{
+    FakeAssistanceSession session("float a = ",
+                                  {QStringLiteral("--capabilities"),
+                                   QStringLiteral(R"({"completionProvider": {"resolveProvider": true}})"),
+                                   QStringLiteral("--resolve")});
+    CodeEditor& editor = session.Editor;
+    session.Prepare();
+    QListWidget* popupOrNull = editor.findChild<QListWidget*>(QStringLiteral("codeCompletionList"));
+    REQUIRE(popupOrNull != nullptr);
+    REQUIRE(QTest::qWaitFor([popupOrNull]() { return popupOrNull->isVisible() == true; }));
+    REQUIRE(popupOrNull->count() == 2);
+    // Only the highlighted item is resolved, and only once.
+    REQUIRE(QTest::qWaitFor([&editor]() {
+        return editor.GetCompletionDocumentation().startsWith(QStringLiteral("Documentation for Item")) == true;
+    }));
+    CHECK(popupOrNull->item(0)->text().endsWith(QStringLiteral("resolved detail")) == true);
+    CHECK(popupOrNull->item(1)->text().contains(QStringLiteral("resolved")) == false);
+    QTest::keyClick(&editor, Qt::Key_Down);
+    REQUIRE(QTest::qWaitFor([&editor]() {
+        return editor.GetCompletionDocumentation().startsWith(QStringLiteral("Documentation for Other")) == true;
+    }));
+    QTest::keyClick(&editor, Qt::Key_Up);
+    CHECK(editor.GetCompletionDocumentation().startsWith(QStringLiteral("Documentation for Item")) == true);
+    QTest::keyClick(&editor, Qt::Key_Escape);
+    CHECK(editor.GetCompletionDocumentation().isEmpty() == true);
 }
 
 TEST_CASE("Inlay hints cover the authored source and follow a server refresh", "[editor][text][assistance]")

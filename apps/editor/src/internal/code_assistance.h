@@ -50,6 +50,15 @@ private:
         QString Label;
         QString Detail;
         QJsonObject Item;
+        /// The item as the server sent it, for completionItem/resolve.
+        QJsonObject Original;
+        bool IsResolved = false;
+    };
+    /// The completionItem/resolve in flight and the suggestion it describes.
+    struct ResolveRequest final
+    {
+        foundation::int32 Request = 0;
+        foundation::int32 Row = -1;
     };
     void cancelPending();
     void requestCurrent();
@@ -57,6 +66,8 @@ private:
     void applyAvailability();
     void requestHover(foundation::int32 position);
     void receiveHover(foundation::int32 request, const QJsonValue& value);
+    void resolveCompletion(foundation::int32 row);
+    void receiveResolve(foundation::int32 request, const QJsonValue& value);
     /// Send the current draft and refresh the background layers for it.
     void synchronizeAnalysis();
     void receiveDiagnostics(const QString& uri, foundation::int32 version, const QJsonArray& diagnostics);
@@ -85,6 +96,7 @@ private:
         foundation::uint64 Context = 0;
     };
     HoverRequest mHover;
+    ResolveRequest mResolve;
     QTimer mAnalysisSync;
     QTimer mRefresh;
     CodeTextCapture mCapture;
