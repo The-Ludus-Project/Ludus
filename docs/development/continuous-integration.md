@@ -1121,6 +1121,11 @@ errors had one of the causes below, and these checks catch them before review:
   the warnings there would fail only batches. MSVC also follows calls that it
   inlines, such as one to a function that never returns, so declare such
   functions `[[noreturn]]`.
+- **Floating-point truncation.** MSVC reports a `float64` value passed or
+  assigned to a `float` as C4305 or C4244, an error under `/WX`; Qt's `F`
+  colour setters such as `QColor::setAlphaF` take `float`. Linux Clang builds
+  enable `-Wimplicit-float-conversion` for the same reason as the reachability
+  warnings. Spell such a value as `float32`.
 
 Both source rules apply to changed lines; a conditional use is reported at
 its declaration when the declaration or any use changed. They do not
