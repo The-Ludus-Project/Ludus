@@ -353,6 +353,12 @@ def prepare_resource_headers(snapshot, programs, contracts, compiler, cancel, bu
                 members = []
                 for field in fields:
                     view = buffers.record_view_name(field)
+                    if field.get('texture'):
+                        views[view] = (f'struct {view} {{ uint32x2 GetDimensions(); '
+                                       'float32x4 Load(in uint32x2 positionPixel); '
+                                       'void Store(in uint32x2 positionPixel, in float32x4 value); };')
+                        members.append(f'{view} {field["field"]};')
+                        continue
                     record = field['record']
                     array_access = ''
                     if record:

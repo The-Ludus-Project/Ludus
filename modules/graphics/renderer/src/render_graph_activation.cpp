@@ -187,6 +187,7 @@ struct RenderGraphPackage::State final
     bool CanHaveSceneStorageTexture = false;
     bool HasIndependentColorAccess = false;
     bool HasSceneStorageTexture = false;
+    uint32 ShaderTextureCount = 0;
     bool HasPersistentBuffers = false;
     bool HasForwardStages = false;
     bool CanHaveForwardSurfaceCharts = false;
@@ -224,7 +225,7 @@ struct RenderGraphPackage::State final
     /// Stage binding requirements derived from the uniform records, one table per role.
     static constexpr usize STAGE_BINDING_CAPACITY =
         LUDUS_GRAPH_VISIBILITY_BINDING_COUNT + format::MAX_STORAGE_BUFFERS + LUDUS_GRAPH_LTC_TABLE_BINDING_COUNT +
-        LUDUS_GRAPH_FAILURE_BINDING_COUNT + LUDUS_GRAPH_WORLD_TABLE_BINDING_COUNT + 1;
+        LUDUS_GRAPH_FAILURE_BINDING_COUNT + LUDUS_GRAPH_WORLD_TABLE_BINDING_COUNT + format::MAX_SHADER_TEXTURES + 1;
     // RasterBinding initializes Visibility to Both, including every nested array element.
     // NOLINTNEXTLINE(bugprone-invalid-enum-default-initialization)
     StaticArray<StaticArray<rhi::RasterBinding, STAGE_BINDING_CAPACITY>, format::STAGE_ROLE_COUNT> Bindings{};
@@ -785,10 +786,17 @@ RenderGraphPackageStatus RenderGraphPackage::State::AppendSceneResourceBindings(
             (HasLtcTable == true && isNativeStages == false ? LUDUS_GRAPH_LTC_TABLE_BINDING_COUNT : 0) +
             (HasFailureSummary == true ? LUDUS_GRAPH_FAILURE_BINDING_COUNT : 0) +
             (hasAerialPerspective == true ? 1 : 0) + (hasAtmosphereSky == true ? 1 : 0) +
-            (HasSceneColorInput == true ? 1 : 0) + (HasSceneStorageTexture == true ? 1 : 0);
+            (HasSceneColorInput == true ? 1 : 0) + (HasSceneStorageTexture == true ? 1 : 0) + ShaderTextureCount;
         if (Bindings[role].GetSize() - BindingCounts[role] < appended)
         {
             return RenderGraphPackageStatus::CapacityExceeded;
+        }
+        for (uint32 slot = 0; slot < ShaderTextureCount; ++slot)
+        {
+            Bindings[role][BindingCounts[role]++] = {format::FIRST_SHADER_TEXTURE_BINDING + slot,
+                                                     rhi::RasterBindingKind::StorageTexture2DReadWrite,
+                                                     rhi::RasterVisibility::Compute,
+                                                     0};
         }
         if (HasSceneStorageTexture == true)
         {
@@ -1047,7 +1055,8 @@ RenderGraphPackageStatus RenderGraphPackage::decode(BorrowedView<const uint8> by
     const uint32 magic = reader.ReadWord();
     const uint32 version = reader.ReadWord();
     if (magic != expectedMagic ||
-        (version != format::INDEPENDENT_COLOR_ACCESS_PACKAGE_VERSION &&
+        (version != format::NAMED_SHADER_TEXTURE_PACKAGE_VERSION &&
+         version != format::INDEPENDENT_COLOR_ACCESS_PACKAGE_VERSION &&
          version != format::IMAGE_LAUNCH_PACKAGE_VERSION && version != format::STORAGE_TEXTURE_PACKAGE_VERSION &&
          version != format::SCENE_COLOR_INPUT_PACKAGE_VERSION && version != format::DIRECTIONAL_NEAR_PACKAGE_VERSION &&
          version != format::SCENE_WORK_ITEMS_PACKAGE_VERSION && version != format::WORLD_FEATURE_PACKAGE_VERSION &&
@@ -1296,6 +1305,36 @@ RenderGraphPackageStatus RenderGraphPackage::decode(BorrowedView<const uint8> by
         }
         candidate->HasPassNames = true;
     }
+    if (version >= format::NAMED_SHADER_TEXTURE_PACKAGE_VERSION && reader.IsComplete() == false)
+    {
+        for (uint32 index = 0; index < candidate->Header.PassCount; ++index)
+        {
+            format::Pass& pass = candidate->Passes[index];
+            uint32 count = 0;
+            for (uint32 slot = 0; slot < format::MAX_SHADER_TEXTURES; ++slot)
+            {
+                const uint32 resource = reader.ReadWord();
+                if (resource != format::ABSENT)
+                {
+                    if (slot != count || resource >= candidate->Header.ResourceCount ||
+                        pass.Program != format::Technique::RayTracing)
+                    {
+                        return RenderGraphPackageStatus::Malformed;
+                    }
+                    ++count;
+                }
+                pass.ShaderTextures[slot] = resource;
+            }
+            if (count > candidate->ShaderTextureCount)
+            {
+                candidate->ShaderTextureCount = count;
+            }
+        }
+        if (candidate->ShaderTextureCount == 0 || candidate->HasSceneStorageTexture == true)
+        {
+            return RenderGraphPackageStatus::Malformed;
+        }
+    }
     if (reader.IsComplete() == false)
     {
         return RenderGraphPackageStatus::Malformed;
@@ -1355,7 +1394,7 @@ RenderGraphPackageStatus RenderGraphPackage::decode(BorrowedView<const uint8> by
     candidate->DeriveBindings();
     if (candidate->HasLtcTable == true || candidate->HasFailureSummary == true || candidate->HasAtmosphereSky == true ||
         candidate->HasAerialPerspective == true || candidate->HasSceneColorInput == true ||
-        candidate->HasSceneStorageTexture == true)
+        candidate->HasSceneStorageTexture == true || candidate->ShaderTextureCount != 0)
     {
         status = candidate->AppendSceneResourceBindings();
         if (status != RenderGraphPackageStatus::Ready)

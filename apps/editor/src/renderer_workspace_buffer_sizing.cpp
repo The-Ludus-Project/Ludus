@@ -537,7 +537,7 @@ void RendererWorkspace::addShaderBufferAccess()
     }
     const QString function = functions.size() == 1 ? functions.constFirst()
                                                    : QInputDialog::getItem(this,
-                                                                           QStringLiteral("Add Buffer Access"),
+                                                                           QStringLiteral("Add Resource Access"),
                                                                            QStringLiteral("Callback in %1").arg(file),
                                                                            functions,
                                                                            0,
@@ -554,8 +554,8 @@ void RendererWorkspace::addShaderBufferAccess()
         return;
     }
     QMessageBox confirm(QMessageBox::Question,
-                        QStringLiteral("Add Buffer Access"),
-                        QStringLiteral("Enable named Buffer access for %1 in %2?").arg(function, file),
+                        QStringLiteral("Add Resource Access"),
+                        QStringLiteral("Enable named resource access for %1 in %2?").arg(function, file),
                         QMessageBox::Cancel,
                         this);
     confirm.setTextFormat(Qt::PlainText);
@@ -573,7 +573,7 @@ void RendererWorkspace::addShaderBufferAccess()
         }
     }
     confirm.setInformativeText(description + QStringLiteral(" Save publishes the change."));
-    QPushButton* apply = confirm.addButton(QStringLiteral("Add Buffer Access"), QMessageBox::AcceptRole);
+    QPushButton* apply = confirm.addButton(QStringLiteral("Add Resource Access"), QMessageBox::AcceptRole);
     confirm.setDefaultButton(QMessageBox::Cancel);
     confirm.exec();
     if (confirm.clickedButton() != apply)

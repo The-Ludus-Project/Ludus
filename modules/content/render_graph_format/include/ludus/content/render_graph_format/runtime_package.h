@@ -161,8 +161,10 @@ inline constexpr foundation::uint32 STORAGE_TEXTURE_PACKAGE_VERSION = 42;
 inline constexpr foundation::uint32 IMAGE_LAUNCH_PACKAGE_VERSION = 43;
 /// First package with shader color access and ray launch dimensions recorded independently.
 inline constexpr foundation::uint32 INDEPENDENT_COLOR_ACCESS_PACKAGE_VERSION = 44;
+/// First package allowed to carry a shader texture mapping for each pass after the pass names.
+inline constexpr foundation::uint32 NAMED_SHADER_TEXTURE_PACKAGE_VERSION = 45;
 /// Current runtime generation layout version.
-inline constexpr foundation::uint32 PACKAGE_VERSION = INDEPENDENT_COLOR_ACCESS_PACKAGE_VERSION;
+inline constexpr foundation::uint32 PACKAGE_VERSION = NAMED_SHADER_TEXTURE_PACKAGE_VERSION;
 /// First package carrying explicit OIDN denoising quality per ray pass.
 inline constexpr foundation::uint32 DENOISING_PACKAGE_VERSION = 16;
 /// First package carrying the renderer-owned bilinear image operation.

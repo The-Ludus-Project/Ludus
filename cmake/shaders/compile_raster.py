@@ -250,7 +250,9 @@ def raster_interface(document, stage, metal=False, native_arrays=False, runtime_
         elif kind == 'resource' and resource_type.get('baseShape') == 'texture2D' and resource_type.get('access') in ('write', 'readWrite'):
             is_read_write = resource_type.get('access') == 'readWrite'
             if is_read_write and not (graph_storage_texture and stage == 'compute' and
-                                      resource['name'] == 'GraphStorageTexture' and resource.get('format') == 'rgba8'):
+                                      (resource['name'] == 'GraphStorageTexture' or
+                                       re.fullmatch(r'GraphWritableTexture[0-2]', resource['name'])) and
+                                      resource.get('format') == 'rgba8'):
                 raise RuntimeError('Read/write storage textures are outside the R12b write-only profile')
             if not (stage == 'compute' or (stage == 'fragment' and raster_storage)):
                 raise RuntimeError('Storage textures require compute or the raster-storage fragment profile')

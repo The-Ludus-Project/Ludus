@@ -653,7 +653,7 @@ class NativeSceneComputeTests(unittest.TestCase):
             edges_api = {'name': 'Edges', 'type': 'Edge', 'writable': False, 'byte_access': True}
             self.assertEqual(edges_api, pending['fields'][0])
             self.assertEqual(legacy, shade.read_text())
-            with self.assertRaisesRegex(ToolingError, 'Add Buffer Access') as failure:
+            with self.assertRaisesRegex(ToolingError, 'Add Resource Access') as failure:
                 build.build_package(manifest_path, root / 'build', **options)
             self.assertEqual('main_shaders/shade.slang', failure.exception.location['source'])
             self.assertEqual('add_buffer_access', failure.exception.location['repair'])
@@ -873,6 +873,92 @@ class NativeSceneComputeTests(unittest.TestCase):
             self.assertEqual(1, sum(variant[-1] == ray.TRIANGLE_LOOP_TAG for variant in recipe['ray_programs']))
             execution.cook_runtime(str(package), root / 'mixed.lurgrt')
 
+    def test_native_ray_generation_binds_two_named_textures_in_both_languages(self):
+        from test_render_graph_authoring import parse_runtime
+        for extension, has_image in (('slang', False), ('lusl', False), ('slang', True)):
+            with self.subTest(language=extension, image=has_image), tempfile.TemporaryDirectory() as temporary:
+                root = Path(temporary)
+                source = root / 'source'
+                shutil.copytree(SCENE_COMPUTE, source)
+                graph_path = source / 'main.lurender.json'
+                document = json.loads(graph_path.read_text())
+                config = next(item for item in document['configurations'] if item['id'] == 'ColorInput')
+                producer = next(node for node in config['nodes'] if node['id'] == 'utd')
+                target = next(node for node in config['nodes'] if node['id'] == 'diffraction')
+                config['nodes'].append({**target, 'id': 'weights', 'extent': [4, 2]})
+                producer['inputs'].append({**producer['inputs'][-1], 'id': 'weights'})
+                producer['outputs'][0]['access'] = 'ShaderReadWrite'
+                producer['outputs'].append({**producer['outputs'][0], 'id': 'weights', 'target': 'weights'})
+                producer['invocation'] = {'type': 'RayTracing', 'dimensions': [8, 8, 1]}
+                config['edges'].append({'from': 'weights.texture', 'to': 'utd.weights'})
+                if has_image:
+                    config['nodes'].append({**target, 'id': 'preview', 'extent': [64, 32]})
+                    producer['inputs'].append({**producer['inputs'][-1], 'id': 'preview'})
+                    producer['outputs'].append({key: value for key, value in producer['outputs'][0].items()
+                                                if key != 'access'})
+                    producer['outputs'][-1].update(id='preview', target='preview', load='Clear')
+                    producer['invocation']['dimensions'] = 'ColorTarget'
+                    config['edges'].append({'from': 'preview.texture', 'to': 'utd.preview'})
+                graph_path.write_bytes(graph.canonical_asset(document))
+
+                manifest = source / 'main.lushader.json'
+                value = json.loads((source / 'main.lushader.json.in').read_text().replace(
+                    '@RG2_TEST_PROFILES@', '["metal"]'))
+                program = next(item for item in value['programs'] if item['id'] == 'ProduceDiffraction')
+                # Miss and closest-hit remain Slang in a file without the old storage callback.
+                callbacks = source / program['source']
+                callbacks.write_text('void DiffractionMiss' + callbacks.read_text().split('void DiffractionMiss', 1)[1])
+                program['source'] = f'main_shaders/named_textures.{extension}'
+                manifest.write_text(json.dumps(value))
+                shader = source / program['source']
+                if extension == 'slang':
+                    shader.write_text(
+                        'float3 ProduceDiffraction(SceneContext scene, RayLaunch launch, inout RayQueryContext queries, '
+                        'ProduceDiffractionResources resources)\n'
+                        '{\n'
+                        '    resources.Diffraction[uint2(0)] = resources.Weights[uint2(0)];\n'
+                        '    resources.Weights[uint2(0)] = float4(1);\n'
+                        '    return float3(0);\n'
+                        '}\n')
+                else:
+                    shader.write_text(
+                        '#include "scene_shader.luslh"\n#include "graph_resources.luslh"\n'
+                        'float32x3 ProduceDiffraction(in SceneContext scene, in RayLaunch launch, '
+                        'inout RayQueryContext inoutQueries, in ProduceDiffractionResources resources)\n'
+                        '{\n'
+                        '    resources.Diffraction.Store(uint32x2(0), resources.Weights.Load(uint32x2(0)));\n'
+                        '    resources.Weights.Store(uint32x2(0), float32x4(1));\n'
+                        '    return float32x3(0);\n'
+                        '}\n')
+                options = dict(helper=os.environ['LUDUS_RG1_HELPER'], compiler=os.environ['LUDUS_RG1_SLANG'],
+                               spirv_cross=os.environ['LUDUS_RG1_CROSS'])
+                result = build.build_package(manifest, root / 'build', **options)
+                package = Path(result['package'])
+                contents = execution._runtime_contents(package, 'ColorInput')
+                native = contents['artifacts'][('NativeRayStages', 'compute', 'metal')]
+                named_slots = {entry['binding'] for entry in native['descriptor']['interface']['entries']}
+                self.assertTrue({ray.buffers.FIRST_TEXTURE_SLOT, ray.buffers.FIRST_TEXTURE_SLOT + 1} <= named_slots)
+                writer, reader = contents['passes']
+                self.assertEqual(not has_image, writer['Color'] == execution.ABSENT)
+                self.assertEqual((0, 0) if has_image else (8, 8),
+                                 (writer.get('ImageLaunchWidth', 0), writer.get('ImageLaunchHeight', 0)))
+                self.assertNotIn(writer['Color'], writer['ShaderTextures'])
+                self.assertEqual(reader['SourceColor'], writer['ShaderTextures'][0])
+                self.assertNotEqual(*writer['ShaderTextures'])
+                destination = root / 'named-textures.lurgrt'
+                execution.cook_runtime(package, destination, configuration='ColorInput')
+                parsed = parse_runtime(destination.read_bytes())
+                self.assertEqual(tuple(writer['ShaderTextures']), parsed['shader_textures'][0][:2])
+                header = root / 'named-textures.hpp'
+                execution.emit_runtime(package, header, configuration='ColorInput')
+                slots = ', '.join(str(slot) for slot in writer['ShaderTextures'])
+                self.assertIn(f'.ShaderTextures = {{{slots}, format::ABSENT}}', header.read_text())
+                api = shader_context.export_context(manifest, root / 'editor', program['source'],
+                                                    helper=options['helper'], compiler=options['compiler'])
+                resource_fields = next(item['fields'] for item in api['resources'] if item['program'] == program['id'])
+                self.assertEqual(['Diffraction', 'Weights'], [field['name'] for field in resource_fields])
+                self.assertTrue(all(field['texture'] and field['writable'] for field in resource_fields))
+
     def test_scene_compute_samples_an_earlier_ray_color_output(self):
         from test_render_graph_authoring import parse_runtime
         with tempfile.TemporaryDirectory() as temporary:
@@ -896,6 +982,10 @@ class NativeSceneComputeTests(unittest.TestCase):
             parsed = parse_runtime(destination.read_bytes())
             self.assertEqual(execution.PACKAGE_VERSION, parsed['version'])
             self.assertEqual((1, 0, 8, 8), parsed['passes'][0][-4:])
+            header = root / 'legacy-storage.h'
+            execution.emit_runtime(package, header, configuration='ColorInput')
+            self.assertIn('.ImageLaunchWidth = 8, .ImageLaunchHeight = 8, .HasStorageTexture = true',
+                          header.read_text())
 
     def test_native_ray_stages_can_write_the_storage_texture(self):
         from test_render_graph_authoring import parse_runtime

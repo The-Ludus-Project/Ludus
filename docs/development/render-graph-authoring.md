@@ -1659,41 +1659,63 @@ configuration or whole-frame capture, respectively.
 
 <a id="write-a-storage-texture-at-an-independent-launch-size"></a>
 
-### Write a color texture from a ray shader
+### Write a texture by port name from a ray shader
 
-On a **RayTracingPipeline** or scene **ComputePipeline**, choose **Writable
-Resources → Color output → Shader read/write**. Connect a dedicated offscreen,
-single-sample RGBA8Unorm **Target** to the writable color port. The editor sets
-the operation to **Load**/**Store**. The target can have a fixed extent or inherit
-a view-relative **RenderSize**.
+On a **RayTracingPipeline** or scene **ComputePipeline**, add a writable
+**ColorTexture** for each texture. In **Writable Resources**, set each row's
+**Texture access** to **Shader read/write**. Connect a separate offscreen,
+single-sample **RGBA8Unorm Target** to each paired input. Connect downstream
+passes to the corresponding outputs. Targets can have different fixed or
+view-relative extents. The editor sets **Load**/**Store** on each row. In graph
+source, this is `"access": "ShaderReadWrite"` on the output record.
 
-Choose **Launch size** independently under **Invocation**. **Match color target**
-runs one invocation per texel and follows the target on resize. **Explicit size**
-runs a grid of your choosing, such as `[8, 8, 1]` for 64 invocations. Each
-invocation can trace rays within the scene query budget. In graph source,
-`"storage_texture": true` selects shader read/write with either
-`"dimensions": "ColorTarget"` or explicit dimensions. Older explicit storage
-dispatches keep their authored dimensions.
+For a pass with only shader-writable textures, choose **Launch size → Explicit
+size**. A grid of `[64, 1, 1]` gives 64 invocations. Each invocation can trace
+as many rays as the scene query budget allows. If the pass also has a **Store
+returned RGB** output, it can match that target's extent or use an explicit
+grid. **Work items** is also available for scene compute. The settings are
+available in Properties and in **Edit Node** on the canvas.
 
-**Store returned RGB** is the default color output mode. It writes the shader's
-returned RGB at the launch coordinate where it overlaps the target. Both modes
-and their launch settings are available in Properties and the canvas **Edit Node** dialog.
+Add the final `<FunctionName>Resources resources` parameter to your Slang
+callback. **Shader API → Add Resource Access** can add it for you. Each texture
+appears under its paired input port name, with the first letter capitalized.
+For example, after tracing, checking visibility, and projecting the visible hit:
 
-The scene shader wrapper exposes `RWTexture2D<float4> GraphStorageTexture`.
-The ray-generation callback or scene compute kernel writes the texels it owns and
-returns `float3(0)`. `launch.PositionPixel` and `launch.ExtentPixel` address
-the dispatch grid. Query `GraphStorageTexture.GetDimensions` for texture bounds
-and coordinate work between shader invocations so their accesses do not race.
-New allocations start at zero, and untouched texels retain their contents while
-the allocation lives. A later scene compute pass can sample the stored result
-as `GraphColorInput`.
+```slang
+uint width;
+uint height;
+resources.Diffraction.GetDimensions(width, height);
+if (all(positionPixel < uint2(width, height)) == true)
+{
+    resources.Diffraction[positionPixel] = float4(radiance, 1);
+}
+```
 
-This mode uses native Vulkan or Metal with tier-2 read/write textures and
-requires the scene shader interface. To accumulate, denoise, or tone-map, first
-sample the texture in a later image pass. Use a separate configuration for
-visibility/depth or ray-path diagnostics. Storage dispatches require a whole-frame
-launch. Matching the target extent with shader read/write requires runtime generation
-44 or later.
+With LuSL, include `graph_resources.luslh` and add an
+`in <FunctionName>Resources resources` parameter. Query the view for bounds,
+then load or store at an integer pixel:
+
+```c
+uint32x2 extentPixel = resources.Diffraction.GetDimensions();
+if (all(positionPixel < extentPixel) == true)
+{
+    resources.Diffraction.Store(positionPixel, float32x4(radiance, 1));
+}
+```
+
+Each pass can bind up to three named shader-writable textures. Dispatch indices
+describe the dispatch grid. Query each texture's own bounds before addressing
+it, and coordinate writes if multiple invocations can reach the same texel.
+New allocations start at zero. Texels retain their contents while the allocation
+lives. A later scene compute pass can sample a written texture as
+`GraphColorInput`. Connect the previous writer's output if the next pass also
+needs to read and write it.
+
+This mode uses the native Vulkan or Metal tier-2 read/write texture profile and
+requires a whole-frame dispatch. Use separate configurations for visibility/depth
+reconstruction, ray-path capture, or the legacy `GraphStorageTexture` binding.
+Accumulate, denoise, or tone-map the automatic image output, or sample a shader
+texture into a later image pass before applying image processing.
 
 <a id="select-emitters-per-screen-tile"></a>
 
@@ -1701,9 +1723,10 @@ launch. Matching the target extent with shader read/write requires runtime gener
 
 A scene `ComputePipeline` can launch a fixed number of work items independently
 of the viewport. In the pipeline editor, select **Invocation → Launch size →
-Buffer-only work items**. Use one Scene input and one or two raw Buffer inputs with matching
-**Load**/**Store** writable outputs. Remove the View and texture ports. Assign a
-single Slang compute program with the usual `RayLaunch` / `Radiance` signature.
+Work items**. Use one Scene input and connect buffers or shader-writable
+textures as your kernel requires. Remove View, sampled textures and the
+automatic color output. Assign a Slang or LuSL compute program with the usual
+`RayLaunch` / `Radiance` signature.
 
 ```json
 {

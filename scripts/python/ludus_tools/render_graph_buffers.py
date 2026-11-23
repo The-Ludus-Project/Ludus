@@ -4,6 +4,10 @@ import re
 
 MAX_BUFFERS = 2
 FIRST_SLOT = 6
+# Mirrors the named texture binding range in render_graph_format/plan.h.
+MAX_TEXTURES = 3
+FIRST_TEXTURE_SLOT = 8
+WRITABLE_TEXTURE_VIEW = 'GraphWritableTextureView'
 MAX_STRIDE = 4096
 MAX_ELEMENTS = 16 * 1024 * 1024
 
@@ -46,7 +50,7 @@ def link_persistent_structs(plans, programs, snapshot, build, closures=None, *, 
                     function = program.get('function', 'ShaderMain')
                     raise build.ToolingError(
                         'RenderGraphBuildShaderInterface',
-                        f"{operation['id']}: use Shader API → Add Buffer Access for '{program_id}', or "
+                        f"{operation['id']}: use Shader API → Add Resource Access for '{program_id}', or "
                         f'add a final {function}Resources resources parameter for the read-only Buffer port.',
                         location={'source': program.get('source', ''), 'program': program_id, 'line': 1,
                                   'column': 1, 'repair': 'add_buffer_access'})
@@ -80,6 +84,23 @@ def link_persistent_structs(plans, programs, snapshot, build, closures=None, *, 
                     fields.append({'field': field, 'slot': use['slot'], 'record': record,
                                    'writable': is_writable,
                                    'word_view': record is None and not uses_legacy_word_binding})
+            textures = operation.get('storage_textures', ())
+            if textures and not is_named and pending_resources is None:
+                function = program.get('function', 'ShaderMain')
+                raise build.ToolingError(
+                    'RenderGraphBuildShaderInterface',
+                    f"{operation['id']}: add a final {function}Resources resources parameter to access named textures.",
+                    location={'source': program.get('source', ''), 'program': program_id, 'line': 1,
+                              'column': 1, 'repair': 'add_buffer_access'})
+            for slot, use in enumerate(textures):
+                port = use['port']
+                field = port[0].upper() + port[1:]
+                build.name(field, f"shader member for texture port '{port}'")
+                build.require(all(previous['field'] != field for previous in fields),
+                              'ShaderInterface', operation['id'],
+                              f"Resource ports map to the same shader member '{field}'. Rename one port.")
+                fields.append({'field': field, 'slot': slot, 'record': None, 'writable': True, 'texture': True,
+                               'texture_view': source_is_lusl})
             ordered = sorted(fields, key=lambda field: field['field'])
             if not is_named:
                 if pending_resources is not None and program_id not in ambiguous_pending:
@@ -88,18 +109,20 @@ def link_persistent_structs(plans, programs, snapshot, build, closures=None, *, 
                         ambiguous_pending.add(program_id)
                         del pending_resources[program_id]
                 continue
-            signature = [(field['field'], field['writable'], field['record'] and
+            signature = [(field['field'], field['writable'], field.get('texture', False), field['record'] and
                           (field['record']['source'], field['record']['type'])) for field in ordered]
             key = (program['source'], program['function'])
             build.require(signatures.setdefault(key, signature) == signature,
                           'ShaderInterface', operation['id'],
-                          'reused shader function has different named Buffer fields; use matching ports or another function')
+                          'reused shader function has different named resource fields; use matching ports or another function')
             build.require(variants.setdefault(variant, ordered) == ordered, 'ShaderInterface', operation['id'],
-                          'reused callback variant has different Buffer slots or capacities; use matching ports or another program')
+                          'reused callback variant has different resource slots or capacities; use matching ports or another program')
     return variants
 
 
 def record_view_name(field):
+    if field.get('texture'):
+        return WRITABLE_TEXTURE_VIEW if field.get('texture_view') else 'RWTexture2D<float4>'
     record = field['record']
     if record is None:
         if not field.get('word_view'):
@@ -147,6 +170,9 @@ def emit_record_layout(shape, expression, address, loads, stores, depth, build, 
 
 
 def record_view_argument(field):
+    if field.get('texture'):
+        handle = f'GraphWritableTexture{field["slot"]}'
+        return f'{WRITABLE_TEXTURE_VIEW}({handle})' if field.get('texture_view') else handle
     handle = f'GraphBuffer{field["slot"]}'
     if field['record']:
         return f'{record_view_name(field)}({handle}, {field["record"]["count"]}u)'
@@ -226,6 +252,20 @@ def record_view_definition(view, type_name, is_writable, *, stride=0, loads=None
         get {{ return Load(index); }}
         {setter}
     }}
+}};
+"""
+
+
+def texture_view_definition():
+    """Keep texture storage behind an extern Slang type in LuSL resource structs."""
+    return f"""
+struct {WRITABLE_TEXTURE_VIEW}
+{{
+    private RWTexture2D<float4> Texture;
+    __init(RWTexture2D<float4> texture) {{ Texture = texture; }}
+    uint2 GetDimensions() {{ uint width; uint height; Texture.GetDimensions(width, height); return uint2(width, height); }}
+    float4 Load(uint2 positionPixel) {{ return Texture[positionPixel]; }}
+    void Store(uint2 positionPixel, float4 value) {{ Texture[positionPixel] = value; }}
 }};
 """
 

@@ -381,6 +381,9 @@ def parse_runtime(data):
             assert '\0' not in name
             result['pass_names'].append(name)
             offset += name_bytes + (-name_bytes % 4)
+    result['shader_textures'] = (
+        [take(execution.buffers.MAX_TEXTURES) for _ in range(passes)]
+        if version >= 45 and offset < len(data) else [])
     assert offset == len(data)
     return result
 

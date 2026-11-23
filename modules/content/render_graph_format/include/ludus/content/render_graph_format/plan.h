@@ -78,6 +78,11 @@ inline constexpr foundation::usize MAX_UNIFORM_BLOCK_BYTES = 1024;
 inline constexpr foundation::usize MAX_UNIFORM_SETS = 16;
 /// Number of explicitly serialized four-byte fields in a current pass record (uint32 or float32).
 inline constexpr foundation::usize PASS_FIELD_COUNT = 26;
+/// First shader binding for independently named graph textures. This profile reuses the
+/// ray visibility and capture slots. These bindings appear only in ordinary scene kernels.
+inline constexpr foundation::uint32 FIRST_SHADER_TEXTURE_BINDING = 8;
+/// Maximum distinct shader read/write textures a ray pass may bind.
+inline constexpr foundation::uint32 MAX_SHADER_TEXTURES = 3;
 /// Serialized four-byte field index of Pass::DenoisingQuality, stable since it was appended in
 /// runtime package version 16; later versions append fields after it.
 inline constexpr foundation::usize PASS_DENOISING_QUALITY_FIELD = 18;
@@ -278,14 +283,14 @@ struct Pass final
     /// Curve of the ToneMap described by ToneMappingExposure; Reinhard when that exposure is zero.
     /// Packages before RASTER_TONE_MAPPING_PACKAGE_VERSION imply Reinhard.
     DisplayCurve ToneMappingCurve = DisplayCurve::Reinhard;
-    /// Positive for a buffer-only scene compute pass with no camera or color, zero for existing passes.
+    /// Positive for a scene compute work-item pass with no camera or automatic color output.
     foundation::uint32 WorkItemCount = 0;
     /// Explicit storage-texture launch width in existing numeric plans. Both dimensions must be
     /// positive together. New callers can select a storage texture independently with HasStorageTexture.
     foundation::uint32 StorageLaunchWidth = 0;
     /// Explicit storage-texture launch height in existing numeric plans.
     foundation::uint32 StorageLaunchHeight = 0;
-    /// Explicit launch width for a ray pass with Color. Zero derives the size from Color or the legacy storage size.
+    /// Explicit launch width for ray dispatch. Zero derives the size from Color or the legacy storage size.
     foundation::uint32 ImageLaunchWidth = 0;
     /// Explicit launch height. The automatic output writes RGB at the matching launch coordinate in Color,
     /// while a storage texture shader can select any texel in Color.
@@ -293,7 +298,19 @@ struct Pass final
     /// Whether the shader reads and writes Color through GraphStorageTexture. Requires a dedicated offscreen
     /// RGBA8 target. Explicit storage launch dimensions also select this access mode for existing plans.
     bool HasStorageTexture = false;
+    /// Graph resource IDs in shader storage slot order. Unused slots are ABSENT and follow the bound slots.
+    foundation::uint32 ShaderTextures[MAX_SHADER_TEXTURES]{ABSENT, ABSENT, ABSENT};
 };
+/// Number of occupied slots. An admitted Pass has no gaps between bound slots.
+[[nodiscard]] LUDUS_INLINE constexpr foundation::uint32 GetShaderTextureCount(const Pass& pass) noexcept
+{
+    foundation::uint32 count = 0;
+    while (count < MAX_SHADER_TEXTURES && pass.ShaderTextures[count] != ABSENT)
+    {
+        ++count;
+    }
+    return count;
+}
 /// Whether Color is bound for shader read/write access, including existing numeric plans with explicit storage sizes.
 [[nodiscard]] LUDUS_INLINE constexpr bool UsesStorageTexture(const Pass& pass) noexcept
 {

@@ -110,7 +110,7 @@ QString DescribeRayInterface(const QJsonObject& program,
             stage == QStringLiteral("compute")
                 ? QStringLiteral(
                       "// Scene compute pass: one invocation per launch pixel in the ordered ray sequence.\n"
-                      "// Trace with TraceClosest or TestVisibility; return linear radiance.\n"
+                      "// Trace with TraceClosest or TestVisibility.\n"
                       "// There are no hit or miss callbacks: TraceAndShade latches queries.HasFailed.\n"
                       "// A read-only ColorTexture from an earlier scene pass binds GraphColorInput.\n"
                       "// Read with GraphColorInput.Load(int3(launch.PositionPixel, 0)) at matching extents.")
@@ -121,7 +121,8 @@ QString DescribeRayInterface(const QJsonObject& program,
         if (isLaunch == true)
         {
             lines.append(QStringLiteral(
-                "// Writable Resources → Shader read/write binds RWTexture2D<float4> GraphStorageTexture.\n"
+                "// Return linear RGB for automatic color output, or zero for shader-only output.\n"
+                "// Each shader read/write texture appears by input port name in resources.\n"
                 "// PositionPixel and ExtentPixel describe the dispatch. Query GetDimensions for the texture size."));
         }
         QString trailingParameters = isLaunch == true ? QString{} : QStringLiteral(",\n    inout ScenePayload payload");
@@ -148,12 +149,12 @@ QString DescribeRayInterface(const QJsonObject& program,
             {
                 if (resourceContract.value(QStringLiteral("needs_upgrade")).toBool() == true)
                 {
-                    lines.append(QStringLiteral("// Choose Add Buffer Access to use these connected Buffer ports."));
+                    lines.append(QStringLiteral("// Choose Add Resource Access to use these connected resources."));
                 }
                 const QJsonArray fields = resourceContract.value(QStringLiteral("fields")).toArray();
                 if (fields.isEmpty() == true)
                 {
-                    lines.append(QStringLiteral("// No connected Buffer ports."));
+                    lines.append(QStringLiteral("// No connected named resources."));
                 }
                 for (const QJsonValueConstRef fieldValue : fields)
                 {
@@ -161,8 +162,13 @@ QString DescribeRayInterface(const QJsonObject& program,
                     const bool isWritable = field.value(QStringLiteral("writable")).toBool();
                     const QString type = field.value(QStringLiteral("type")).toString();
                     const bool isLegacyRaw = field.value(QStringLiteral("legacy_raw")).toBool();
+                    const bool isTexture = field.value(QStringLiteral("texture")).toBool();
                     const QString operations =
-                        isLegacyRaw == true
+                        isTexture == true
+                            ? (isLusl == true
+                                   ? QStringLiteral("Load(positionPixel), Store(positionPixel, value), GetDimensions()")
+                                   : QStringLiteral("[positionPixel], GetDimensions(width, height)"))
+                        : isLegacyRaw == true
                             ? QStringLiteral("[index], GetDimensions(count, stride)")
                             : (isWritable == true ? QStringLiteral("GetCount(), Load(index), Store(index, value)")
                                                   : QStringLiteral("GetCount(), Load(index)"));

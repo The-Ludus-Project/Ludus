@@ -77,6 +77,7 @@ def legalize(code, document, layout, storage_bindings=None):
              'NativeRayFunctions': abi['LUDUS_METAL_RAY_FUNCTION_TABLE_BINDING'],
              'NativeRayIntersections': abi['LUDUS_METAL_RAY_INTERSECTION_TABLE_BINDING']}
     slots['GraphStorageTexture'] = slots['rayPathCapture']
+    slots.update({f'GraphWritableTexture{index}': 8 + index for index in range(3)})
     storage_bindings = storage_bindings or {}
     _require(type(storage_bindings) is dict and len(storage_bindings) <= 2 and
              len(set(storage_bindings.values())) == len(storage_bindings), 'invalid private storage slots')

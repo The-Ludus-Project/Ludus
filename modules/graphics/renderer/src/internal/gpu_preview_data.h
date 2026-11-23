@@ -31,8 +31,9 @@ static_assert(sizeof(foundation::uint32) == LUDUS_GRAPH_FAILURE_WORD_BYTES);
 /// ray path capture buffer of a diagnostic capture-variant kernel, the aerial perspective table, the LTC table, the
 /// failure summary and, last, the Atmosphere sky.
 inline constexpr usize GPU_PREVIEW_COMPUTE_BINDING_CAPACITY =
-    LUDUS_GRAPH_VISIBILITY_BINDING_COUNT + content::render_graph_format::MAX_STORAGE_BUFFERS + 1 +
-    LUDUS_GRAPH_LTC_TABLE_BINDING_COUNT + LUDUS_GRAPH_FAILURE_BINDING_COUNT + LUDUS_GRAPH_WORLD_TABLE_BINDING_COUNT + 2;
+    LUDUS_GRAPH_VISIBILITY_BINDING_COUNT + content::render_graph_format::MAX_STORAGE_BUFFERS +
+    content::render_graph_format::MAX_SHADER_TEXTURES + 1 + LUDUS_GRAPH_LTC_TABLE_BINDING_COUNT +
+    LUDUS_GRAPH_FAILURE_BINDING_COUNT + LUDUS_GRAPH_WORLD_TABLE_BINDING_COUNT + 2;
 /// The presentation quad's four float2 corners and six uint16 indices.
 inline constexpr usize GPU_PREVIEW_QUAD_BYTES = 44;
 /// Components of GpuPreviewUniform::Tile: origin x, y, then exclusive end x, y.
@@ -147,6 +148,12 @@ struct GpuPreviewSceneRecord final
     /// World-feature table ranges packed with the scene; a reusing job binds the same ranges.
     GpuPreviewWorldTables WorldTables{};
 };
+struct GpuPreviewShaderTexture final
+{
+    rhi::TextureHandle Texture{};
+    rhi::TextureViewHandle View{};
+    bool HasView = false;
+};
 struct GpuPreviewRecord final
 {
     /// Referenced GpuPreviewState::Scenes slot; Data, Texels and NativeGeometry below copy its handles.
@@ -182,6 +189,8 @@ struct GpuPreviewRecord final
     rhi::TextureHandle StorageTexture{};
     rhi::TextureViewHandle StorageTextureView{};
     bool HasStorageTextureView = false;
+    StaticArray<GpuPreviewShaderTexture, content::render_graph_format::MAX_SHADER_TEXTURES> ShaderTextures{};
+    bool HasShaderOutputsOnly = false;
     rhi::BindingSetHandle ComputeBindings{};
     rhi::BindingSetHandle ImageBindings{};
     foundation::StaticArray<GpuPreviewGraphBuffer, GPU_GRAPH_BUFFER_COUNT> GraphBuffers{};
@@ -236,6 +245,8 @@ struct GpuPreviewState final
     rhi::TextureHandle DefaultStorageTexture{};
     rhi::TextureViewHandle DefaultStorageTextureView{};
     bool HasDefaultStorageTextureView = false;
+    StaticArray<GpuPreviewShaderTexture, content::render_graph_format::MAX_SHADER_TEXTURES> DefaultShaderTextures{};
+    uint32 ShaderTextureCount = 0;
     bool HasPersistentBuffers = false;
     uint32 Phase = 0;
     bool QuadCreated = false;
