@@ -175,7 +175,7 @@ bool ReadCodeWorkspaceEdit(const QJsonObject& edit,
     {
         QList<CodeWorkspaceTextEdit>& edits = pending.Change.Edits;
         QList<CodeWorkspaceTextEdit> scratch = edits;
-        const bool isSorted =
+        [[maybe_unused]] const bool isSorted =
             StableSort(edits.data(),
                        scratch.data(),
                        static_cast<usize>(edits.size()),
