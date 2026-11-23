@@ -180,6 +180,13 @@ public:
         return static_cast<foundation::int32>(mAnalysis.size());
     }
     [[nodiscard]] QTextCursor GetAnalysisDiagnosticRange(foundation::int32 index) const;
+    /// The analysis marker at `index` at its current, edit-moved position, or a
+    /// default value when out of range.
+    [[nodiscard]] CodeAnalysisDiagnostic GetAnalysisDiagnostic(foundation::int32 index) const;
+    /// The server named by SetAnalysisDiagnostics ("slangd").
+    [[nodiscard]] const QString& GetAnalysisSource() const noexcept;
+    /// Select the analysis marker at `index`, expanding folds around it. False when out of range.
+    bool RevealAnalysisDiagnostic(foundation::int32 index);
     /// Show a server hover for `position` (plain text, escaped here) with that
     /// position's build and analysis diagnostics. Empty text shows diagnostics only.
     void ShowHover(foundation::int32 position, const QString& text);
@@ -252,6 +259,8 @@ Q_SIGNALS:
     void AssistanceDismissed();
     void CompletionChosen(foundation::int32 row);
     void SignatureOverloadRequested(foundation::int32 direction);
+    /// Analysis markers were replaced.
+    void AnalysisDiagnosticsChanged();
     /// The pointer rested on `position` for the hover delay, or Show Hover ran at the caret.
     void HoverRequested(foundation::int32 position);
     /// The number of cursors changed (1 plus the secondary cursors, CE06). The

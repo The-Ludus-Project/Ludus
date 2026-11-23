@@ -68,6 +68,7 @@ class CodeDocumentTab;
 class CodeDocumentController;
 class CodeFormatter;
 class RenderGraphShaderAssistance;
+struct ErrorListEntry;
 class RayPathInspection;
 class RenderGraphCaptureProfile;
 class RenderGraphLibraryCapture;
@@ -339,6 +340,11 @@ public:
     /// the same configuration, reveal warning/error ports and open shared field controls. Invalid
     /// graph targets preserve selection/view/history and return false. Never changes document undo.
     [[nodiscard]] bool ActivateDiagnostic(foundation::int32 row);
+    /// Error List rows for the Source editor's live analysis (code editor M4,
+    /// CE10), one per marker, with SourceIndex as the marker index.
+    [[nodiscard]] QList<ErrorListEntry> GetAnalysisEntries() const;
+    /// Show the Source editor and select analysis marker `index`; false when it no longer exists.
+    [[nodiscard]] bool ActivateAnalysisDiagnostic(foundation::int32 index);
     [[nodiscard]] QString GetSourceFile() const;
     [[nodiscard]] foundation::int32 GetSourceLine() const;
     /// One-based Unicode scalar column of the Source view caret.
@@ -489,6 +495,8 @@ Q_SIGNALS:
     void ErrorListRequested();
     /// A viewport asked to see one listed problem, by its code; the shell shows the Error List with that row selected.
     void ErrorListEntryRequested(const QString& code);
+    /// The Source editor's analysis markers changed; GetAnalysisEntries has the new rows.
+    void AnalysisDiagnosticsChanged();
     void DocumentChanged();
     /// Node fields changed; the originating surface may retain its active controls.
     /// editOriginOrNull is borrowed during synchronous notification, or null for a full refresh.

@@ -62,6 +62,7 @@ QList<CodeNavigationTarget> ReadCodeNavigationResults(CodeNavigationKind kind,
         pending.removeFirst();
         if (kind == CodeNavigationKind::Symbols)
         {
+            // Only document symbols nest; workspace symbols are flat.
             for (const QJsonValue& child : item.value(QStringLiteral("children")).toArray())
             {
                 if (pending.size() + examined >= MAX_EXAMINED_RESULTS)
@@ -137,7 +138,7 @@ QList<CodeNavigationTarget> ReadCodeNavigationResults(CodeNavigationKind kind,
                 targetFile.clear();
             }
         }
-        if (kind == CodeNavigationKind::Symbols && isReadOnly == true)
+        if (IsCodeSymbolNavigation(kind) == true && isReadOnly == true)
         {
             continue;
         }

@@ -959,6 +959,7 @@ RendererWorkspace::RendererWorkspace(const ToolingPaths& tooling, QWidget* paren
     openCodeEditor->setToolTip(QStringLiteral("External code editors are available in the native Ludus editor."));
 #endif
     mSourceAssistance = new RenderGraphShaderAssistance(mDocument, *mSource, *mSourceController, mTooling, sourcePage);
+    connect(mSource, &CodeEditor::AnalysisDiagnosticsChanged, this, &RendererWorkspace::AnalysisDiagnosticsChanged);
     sourceLayout->addWidget(mSourceAssistance);
     QWidget* interfacePage = CreateShaderInterfaceView(mSourceInterface, sourcePage);
     mAddShaderBufferAccess = new QPushButton(QStringLiteral("Add Buffer Access…"), interfacePage);
@@ -5813,6 +5814,40 @@ int32 RendererWorkspace::GetDiagnosticCount() const
 QJsonObject RendererWorkspace::getDiagnosticLocation(int32 row) const
 {
     return mLastResult.GetDiagnostic(row).value(QStringLiteral("location")).toObject();
+}
+
+QList<ErrorListEntry> RendererWorkspace::GetAnalysisEntries() const
+{
+    QList<ErrorListEntry> entries;
+    const QString file = GetSourceFile();
+    for (int32 index = 0; index < mSource->GetAnalysisDiagnosticCount(); ++index)
+    {
+        const CodeAnalysisDiagnostic diagnostic = mSource->GetAnalysisDiagnostic(index);
+        const QTextBlock block = mSource->document()->findBlock(diagnostic.Start);
+        ErrorListEntry entry;
+        entry.Severity = diagnostic.Severity == CodeDiagnosticSeverity::Error ? ErrorListSeverity::Error
+                                                                              : ErrorListSeverity::Warning;
+        entry.Producer = ErrorListProducer::Analysis;
+        entry.Description = diagnostic.Message;
+        entry.File = file;
+        entry.Location =
+            QStringLiteral("%1:%2").arg(block.blockNumber() + 1).arg(diagnostic.Start - block.position() + 1);
+        entry.Origin = QStringLiteral("Analysis (%1)").arg(mSource->GetAnalysisSource());
+        entry.SourceIndex = index;
+        entries.append(entry);
+    }
+    return entries;
+}
+
+bool RendererWorkspace::ActivateAnalysisDiagnostic(int32 index)
+{
+    if (index < 0 || index >= mSource->GetAnalysisDiagnosticCount())
+    {
+        return false;
+    }
+    mViews->setCurrentIndex(SOURCE_VIEW);
+    mSource->setFocus();
+    return mSource->RevealAnalysisDiagnostic(index);
 }
 
 void RendererWorkspace::openSourceLine(const QString& file, int32 line, int32 column)
