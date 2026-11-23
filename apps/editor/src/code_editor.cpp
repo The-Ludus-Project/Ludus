@@ -825,17 +825,38 @@ void CodeEditor::inputMethodEvent(QInputMethodEvent* event)
     QPlainTextEdit::inputMethodEvent(event);
 }
 
-void CodeEditor::insertFromMimeData(const QMimeData* source)
+void CodeEditor::insertFromMimeData(const QMimeData* sourceOrNull)
 {
-    // Multi-cursor paste distributes clipboard lines across the cursors (CE06);
-    // with no secondary cursor Qt's single-cursor paste is used unchanged.
-    if (isReadOnly() == false && mMultiCursor.HasSecondaryCursors() == true && source != nullptr &&
-        source->hasText() == true && mMultiCursor.HandlePaste(source->text()) == true)
+    if (isReadOnly() == false && sourceOrNull != nullptr && sourceOrNull->hasText() == true &&
+        (mMultiCursor.HasSecondaryCursors() == true || mLanguage == CodeLanguage::Slang))
     {
-        return;
+        const QString text = sourceOrNull->text();
+        if (mMultiCursor.HasSecondaryCursors() == true && mMultiCursor.HandlePaste(text) == true)
+        {
+            return;
+        }
+        if (mLanguage == CodeLanguage::Slang && text.contains(QChar::LineSeparator) == true)
+        {
+            const QTextCursor cursor = textCursor();
+            CodeRegionEdit region =
+            {
+                .Start = cursor.selectionStart(),
+                .End = cursor.selectionEnd(),
+                .Inserted = text,
+            };
+            RepairSlangPaste(document()->toRawText(), {&region, 1});
+            if (region.Inserted != text)
+            {
+                QMimeData repaired;
+                repaired.setText(region.Inserted);
+                const CodeEditScope operation(*this);
+                QPlainTextEdit::insertFromMimeData(&repaired);
+                return;
+            }
+        }
     }
     const CodeEditScope operation(*this);
-    QPlainTextEdit::insertFromMimeData(source);
+    QPlainTextEdit::insertFromMimeData(sourceOrNull);
 }
 
 void CodeEditor::focusOutEvent(QFocusEvent* event)
