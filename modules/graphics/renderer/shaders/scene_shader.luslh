@@ -273,6 +273,9 @@ extern slang
                                             in uint32 firstDimension,
                                             inout RayQueryContext inoutQueries);
     SurfaceHit GetSurfaceHit(in SceneContext scene, in uint32 triangleIndex, in float32x2 barycentric);
+    /// Sample a scene light at a position in world metres or at a SurfaceHit.
+    /// Pass launch and dimensions for addressed sampling, or omit them to draw from the invocation stream.
+    /// Check Incident.HasSample before using the proposal.
     SceneLightSample SampleLight(in SceneContext scene,
                                  in float32x3 positionWorld,
                                  in RayLaunch launch,
@@ -285,6 +288,14 @@ extern slang
                                  in RayLaunch launch,
                                  in uint32 selectionDimension,
                                  in uint32 incidentDimension,
+                                 in LightSelectionPolicy policy,
+                                 inout RayQueryContext inoutQueries);
+    SceneLightSample SampleLight(in SceneContext scene,
+                                 in float32x3 positionWorld,
+                                 in LightSelectionPolicy policy,
+                                 inout RayQueryContext inoutQueries);
+    SceneLightSample SampleLight(in SceneContext scene,
+                                 in SurfaceHit shadingHit,
                                  in LightSelectionPolicy policy,
                                  inout RayQueryContext inoutQueries);
     static const uint32 SCENE_INCIDENT_LIGHT_DIMENSION_COUNT;

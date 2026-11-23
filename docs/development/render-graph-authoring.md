@@ -5038,7 +5038,7 @@ wrappers include it automatically. Authors do not read private packed buffers.
 | GetEmitterBounds | Precomputed emitter bounding sphere, geometric-normal cone and emission sidedness, for one weight per emitter without a triangle loop |
 | IsSurfaceCovered | Fixed-mip sampled-endpoint alpha coverage, using the same inclusive cutoff as closest-hit traversal, with no ray query; keep uncovered area samples as zero events |
 | GetSurfaceHit | Surface endpoint from triangle/barycentrics, without tracing; IncomingRay and DistanceWorld are zero |
-| SampleLight | Select a catalog source and sample its incident light at a world-space position or a `SurfaceHit`. Returns the selection PMF and conditional probability separately. |
+| SampleLight | Select a catalog source and sample its incident light at a world-space position or a `SurfaceHit`. Uses the invocation random stream or caller-provided addresses. Returns the selection PMF and conditional probability separately. |
 | EvaluateLightAlongRay | Return the radiance and matching continuous light proposal for a traced mesh hit or environment miss, using the same selection policy as SampleLight. |
 | SelectLight / EvaluateLightSelectionPmf | Default uniform source selection and its discrete probability. SelectLight(scene, queries) uses the invocation stream. |
 | SelectLightByMeshPower / EvaluateMeshPowerLightSelectionPmf | Addressed catalog selection and its matching PMF. Mesh lights split their uniform category share by power, with uniform fallback. |
@@ -5596,14 +5596,15 @@ its source selection probability. Emission maps are sampled at the actual UV;
 black texels and back-side one-sided samples remain zero-contribution events.
 The initial environment proposal is uniform sphere, including HDR maps.
 
-`SampleLight` uses independent addresses for source selection and the conditional
-incident proposal. For a world-space point in metres, such as a point on an edge,
-pass `pointWorld` directly to both `SampleLight` and `TestVisibility`.
+`SampleLight(scene, pointWorld, policy, queries)` draws from the same invocation
+stream as `SampleSceneRandom`. Pass a position in world metres, such as a point
+on a diffraction edge, or pass a `SurfaceHit`. With eligible lights, the call
+reserves one slot for choosing the light and three for its incident sample.
+Empty eligible light sets leave the stream in place. If the remaining stream
+cannot fit the reservation, the call returns no sample and latches `HasFailed`.
 
 ```slang
-SceneLightSample light = SampleLight(
-    scene, pointWorld, launch, LIGHT_SELECTION_DIMENSION, INCIDENT_DIMENSION_FIRST,
-    LightSelectionPolicy::Uniform, queries);
+SceneLightSample light = SampleLight(scene, pointWorld, LightSelectionPolicy::Uniform, queries);
 if (light.Incident.HasSample == false)
     return float3(0);
 
@@ -5617,11 +5618,14 @@ sampled direction for an infinite light. `SceneQuery::Miss` means the connection
 is clear. Both forms use the visibility query budget and are available in Slang
 and LUSL.
 
-Reserve `SCENE_INCIDENT_LIGHT_DIMENSION_COUNT` slots for the default incident
-proposal. Mesh lights read all three slots and the environment reads the last
-two. Directional, point and spot lights read none. The addressed sampler never
-advances the invocation stream. If a needed address is exhausted, it latches the
-invocation failure. A source index outside the catalog returns no sample.
+Use `SampleLight(scene, pointWorld, launch, selectionDimension, incidentDimension,
+policy, queries)` when a shader needs fixed addresses across branches or passes.
+Keep the selection slot outside the `SCENE_INCIDENT_LIGHT_DIMENSION_COUNT` slots
+starting at `incidentDimension`. Mesh lights read all three slots and the
+environment reads the last two. Directional, point and spot lights read none.
+The addressed overload leaves the invocation stream in place. If a needed
+address is exhausted, it latches the invocation failure. A source index outside
+the catalog returns no sample.
 
 The Compute ray tracing template passes a `SurfaceHit` from `GetSurfaceHit` to
 both operations. A hit from `TraceClosest` works too. `SampleLight` uses the

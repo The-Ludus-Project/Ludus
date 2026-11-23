@@ -48,6 +48,9 @@
 @declare TryMakeCameraRayFromWorldPosition
 @declare EvaluateMaterial EvaluateEmission EvaluateEnvironment ApplyAerialPerspective
 @declare GetSceneInfo GetLightCount GetLightInfo SelectLight SampleIncidentLight GetSurfaceHit
+/// Sample a scene light at a position in world metres or at a SurfaceHit.
+/// Pass launch and dimensions for addressed sampling, or omit them to draw from the invocation stream.
+/// Check Incident.HasSample before using the proposal.
 @declare SampleLight SCENE_INCIDENT_LIGHT_DIMENSION_COUNT
 @declare EvaluateLightPdfSolidAngle EvaluateEnvironmentPdfSolidAngle EvaluateLightSelectionPmf
 @declare GetSurfaceLightIndex GetEnvironmentLightIndex EvaluateIncidentLightPdfSolidAngle
