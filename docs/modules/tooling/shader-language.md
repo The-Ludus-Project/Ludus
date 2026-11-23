@@ -736,6 +736,11 @@ Only the writable resource type permits writes to its elements. The Slang
 caller supplies the handles. Buffer element types must contain storage values,
 so they cannot contain resource handles.
 
+An `extern slang` function can declare a one-dimensional input parameter as
+`in T values[]`. Call it with a fixed array of the same element type. LUSL
+keeps the argument's length, and Slang selects the matching array overload.
+The scene interface uses this declaration for `SampleSceneWeightedIndex`.
+
 `Sample(sampler, coordinate)` uses an implicit LOD. `SampleLevel` adds a
 `float32` LOD. For `Load` the final coordinate is the integer mip level.
 `Gather` returns the first component of the four neighboring texels in

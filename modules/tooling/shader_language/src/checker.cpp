@@ -2571,7 +2571,10 @@ private:
     }
 
     /// Apply the ArraySize children that follow `child` to `element`, outermost first.
-    [[nodiscard]] uint32 applyArraySizes(uint32 element, uint32 child, bool canDeclareBindingArray = false) noexcept
+    [[nodiscard]] uint32 applyArraySizes(uint32 element,
+                                         uint32 child,
+                                         bool canDeclareBindingArray = false,
+                                         bool canInferArrayLength = false) noexcept
     {
         foundation::StaticArray<uint32, MAX_SYNTAX_DEPTH> counts{};
         usize dimensionCount = 0;
@@ -2590,7 +2593,20 @@ private:
                                       "'"));
                 element = TypeTable::ERROR_TYPE;
             }
-            else if (size != NO_NODE)
+            else if (size == NO_NODE)
+            {
+                const uint32 next = nextSibling(child);
+                if (canInferArrayLength == false || child != firstSize ||
+                    (next != NO_NODE && getKind(next) == SyntaxKind::ArraySize))
+                {
+                    report(DiagnosticCode::InvalidArraySize,
+                           child,
+                           ComposeMessage("write a named array size. An omitted size is valid only on a "
+                                          "one-dimensional 'in' parameter declared in 'extern slang'"));
+                    return TypeTable::ERROR_TYPE;
+                }
+            }
+            else
             {
                 if (isResourceElement == true && getKind(size) != SyntaxKind::Name)
                 {
@@ -3561,7 +3577,10 @@ private:
     {
         const SyntaxNode& syntax = getNode(node);
         const uint32 typeNode = firstChild(node);
-        uint32 type = rejectInterfaceValue(applyArraySizes(resolveType(typeNode), nextSibling(typeNode)), typeNode);
+        const bool canInferArrayLength = mIsInExtern == true && syntax.Direction == ParameterDirection::In;
+        uint32 type = rejectInterfaceValue(
+            applyArraySizes(resolveType(typeNode), nextSibling(typeNode), false, canInferArrayLength),
+            typeNode);
         if (isResource(type) == true && (stage != EntryStage::None || syntax.Direction == ParameterDirection::Out ||
                                          syntax.Direction == ParameterDirection::Inout))
         {
@@ -3592,7 +3611,13 @@ private:
         const uint32 defaultValue = child;
         if (defaultValue != NO_NODE)
         {
-            if (syntax.Direction == ParameterDirection::Out || syntax.Direction == ParameterDirection::Inout)
+            if (getType(type).Kind == TypeKind::Array && getType(type).Count == 0)
+            {
+                report(DiagnosticCode::InvalidInitializer,
+                       defaultValue,
+                       ComposeMessage("an array parameter with an inferred length cannot have a default"));
+            }
+            else if (syntax.Direction == ParameterDirection::Out || syntax.Direction == ParameterDirection::Inout)
             {
                 report(DiagnosticCode::DirectionMismatch,
                        defaultValue,
@@ -6457,7 +6482,12 @@ private:
             const uint32 position = bestBinding.ParameterOfArgument[i];
             const Symbol& parameter = mModel.Symbols[mModel.Members[function.FirstMember + position]];
             mModel.NodeParameters[argument] = position;
-            const uint32 parameterType = substitute(parameter.Type, best, bestBinding.TypeArguments);
+            uint32 parameterType = substitute(parameter.Type, best, bestBinding.TypeArguments);
+            if (getKind(value) != SyntaxKind::InitializerList &&
+                internal::MatchesInferredArrayLength(mTypes, mModel.NodeTypes[value], parameterType) == true)
+            {
+                parameterType = mModel.NodeTypes[value];
+            }
             if (getKind(value) == SyntaxKind::InitializerList)
             {
                 (void)checkExpression(value, parameterType);
@@ -7059,7 +7089,10 @@ TypeNameText FormatTypeName(const SemanticModel& model,
     for (usize i = 0; i < dimensionCount; ++i)
     {
         append("[");
-        appendNumber(dimensions[i]);
+        if (dimensions[i] != 0)
+        {
+            appendNumber(dimensions[i]);
+        }
         append("]");
     }
     return text;

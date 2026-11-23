@@ -63,6 +63,10 @@ struct BindingResult final
     foundation::StaticArray<foundation::uint32, MAX_TEMPLATE_PARAMETERS> TypeArguments{};
 };
 
+/// Match an external input array's inferred length using the concrete argument shape.
+[[nodiscard]] bool
+MatchesInferredArrayLength(const TypeTable& types, foundation::uint32 from, foundation::uint32 to) noexcept;
+
 /// True when a value of `from` may initialize `to` without an explicit conversion.
 [[nodiscard]] bool
 IsImplicitlyConvertible(const TypeTable& types, foundation::uint32 from, foundation::uint32 to) noexcept;

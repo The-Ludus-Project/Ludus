@@ -1584,8 +1584,8 @@ The Slang and LUSL authoring paths must agree on resource direction and shape.
 LUSL can mirror structured buffer handles in `extern slang` structs. Generate
 those declarations for typed graph ports and verify member indexing, helper
 calls and read-only rejection before enabling the mode for LUSL callbacks.
-The scene shader's LUSL declarations also need to expose the array form of
-`SampleSceneWeightedIndex` so callbacks can pass a record's weights directly.
+The LUSL scene interface exposes the array form of `SampleSceneWeightedIndex`
+so callbacks can pass a fixed array of weights directly.
 
 **Cost and acceptance.** Reuse the same allocation for all passes and calculate
 its size from the reflected stride and count. Key shader artifacts on the actual

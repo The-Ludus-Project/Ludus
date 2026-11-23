@@ -254,7 +254,7 @@ extern slang
         RWStructuredBuffer<EdgesData> Edges;
     };
     struct RayQueryContext;
-    uint32 SampleSceneWeightedIndex(inout RayQueryContext queries, in float32 weights[MAX_EDGE_COUNT]);
+    uint32 SampleSceneWeightedIndex(inout RayQueryContext queries, in float32 weights[]);
 };
 )";
     SECTION("A typed producer writes a field and a reader forwards an array")
@@ -304,6 +304,42 @@ StructuredBuffer<Container> invalid;
 )"};
         CHECK(checked.FindDiagnosticOrNull(DiagnosticCode::TypeMismatch) != nullptr);
     }
+}
+
+TEST_CASE("LUSL passes fixed arrays to Slang parameters with inferred lengths", "[shader-language][bindings]")
+{
+    constexpr std::string_view SOURCE = R"(static const uint32 SHORT_COUNT = 2;
+static const uint32 LONG_COUNT = 256;
+extern slang
+{
+    uint32 Sample(in float32 values[]);
+};
+uint32 Run(in float32 shortWeights[SHORT_COUNT], in float32 longWeights[LONG_COUNT])
+{
+    return Sample(shortWeights) + Sample(longWeights);
+}
+)";
+    std::string slang;
+    (void)Lower(SOURCE, slang);
+    CHECK(Contains(slang, "Sample(shortWeights) + Sample(longWeights)"));
+    for (const std::string_view invalid : {
+             "void Run(in float32 weights[]) {}",
+             "extern slang { void Write(out float32 weights[]); };",
+             "extern slang { void Read(in float32 weights[] = 0); };",
+             "struct Record { float32 Weights[]; };",
+         })
+    {
+        const CheckedSource checked{std::string(invalid)};
+        INFO(invalid);
+        CHECK(checked.GetStatus() == language::Status::Failed);
+    }
+    const CheckedSource wrongType{std::string(SOURCE) + R"(
+uint32 ReadIntegers(in uint32 weights[SHORT_COUNT])
+{
+    return Sample(weights);
+}
+)"};
+    CHECK(wrongType.FindDiagnosticOrNull(DiagnosticCode::TypeMismatch) != nullptr);
 }
 
 TEST_CASE("LUSL checks stage interfaces", "[shader-language][bindings]")
