@@ -1581,10 +1581,11 @@ shared declaration. Store the verified binding requirements in the cooked recipe
 Validate pass recipe indices, storage access, allocation coverage and existing
 limits when opening the cooked package.
 The Slang and LUSL authoring paths must agree on resource direction and shape.
-The current LUSL checker rejects resource members even in `extern slang` structs.
-Teach it to model typed handles in generated Resources declarations and verify
-member indexing, helper calls and read-only rejection before enabling the mode
-for LUSL callbacks.
+LUSL can mirror structured buffer handles in `extern slang` structs. Generate
+those declarations for typed graph ports and verify member indexing, helper
+calls and read-only rejection before enabling the mode for LUSL callbacks.
+The scene shader's LUSL declarations also need to expose the array form of
+`SampleSceneWeightedIndex` so callbacks can pass a record's weights directly.
 
 **Cost and acceptance.** Reuse the same allocation for all passes and calculate
 its size from the reflected stride and count. Key shader artifacts on the actual

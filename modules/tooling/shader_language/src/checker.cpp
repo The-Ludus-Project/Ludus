@@ -2473,16 +2473,16 @@ private:
                     requirement = "a float32, int32 or uint32 scalar or vector";
                     break;
                 case ResourceKind::ConstantBuffer:
-                    isValid =
-                        shape.Kind == TypeKind::Struct && isOpaque(element) == false && containsBool(element) == false;
-                    requirement = "a struct without bool fields";
+                    isValid = shape.Kind == TypeKind::Struct && isOpaque(element) == false &&
+                              containsNonStorageValue(element) == false;
+                    requirement = "a struct without bool or resource fields";
                     break;
                 case ResourceKind::StructuredBuffer:
                 case ResourceKind::RWStructuredBuffer:
                     isValid = shape.Kind != TypeKind::Interface && shape.Kind != TypeKind::TypeParameter &&
                               shape.Kind != TypeKind::Resource && shape.Kind != TypeKind::Void &&
-                              isOpaque(element) == false && containsBool(element) == false;
-                    requirement = "a value type without bool";
+                              isOpaque(element) == false && containsNonStorageValue(element) == false;
+                    requirement = "a value type without bool or resources";
                     break;
                 case ResourceKind::Sampler:
                 case ResourceKind::ComparisonSampler:
@@ -2513,8 +2513,8 @@ private:
         return type;
     }
 
-    /// True when `type` is, or contains, a `bool`.
-    [[nodiscard]] bool containsBool(uint32 type) const noexcept
+    /// True when `type` contains a boolean or resource handle, neither of which has a storage layout.
+    [[nodiscard]] bool containsNonStorageValue(uint32 type) const noexcept
     {
         const SemanticType& shape = getType(type);
         switch (shape.Kind)
@@ -2523,14 +2523,16 @@ private:
             case TypeKind::Vector:
             case TypeKind::Matrix:
                 return shape.Scalar == ScalarKind::Bool;
+            case TypeKind::Resource:
+                return true;
             case TypeKind::Array:
-                return containsBool(shape.Element);
+                return containsNonStorageValue(shape.Element);
             case TypeKind::Struct: {
                 const Symbol& declared = mModel.Symbols[shape.Symbol];
                 for (uint32 i = 0; i < declared.MemberCount; ++i)
                 {
                     const Symbol& member = mModel.Symbols[mModel.Members[declared.FirstMember + i]];
-                    if (member.Kind == SymbolKind::Field && containsBool(member.Type) == true)
+                    if (member.Kind == SymbolKind::Field && containsNonStorageValue(member.Type) == true)
                     {
                         return true;
                     }
@@ -3099,7 +3101,16 @@ private:
         }
         const uint32 typeNode = firstChild(node);
         uint32 type = rejectInterfaceValue(applyArraySizes(resolveType(typeNode), nextSibling(typeNode)), typeNode);
-        type = rejectResourceValue(type, typeNode, "a struct field");
+        if (isResource(type) == true)
+        {
+            const ResourceKind resource = getType(type).Resource;
+            const bool isStructuredBuffer =
+                resource == ResourceKind::StructuredBuffer || resource == ResourceKind::RWStructuredBuffer;
+            if (mIsInExtern == false || isStructuredBuffer == false)
+            {
+                type = rejectResourceValue(type, typeNode, "a struct field");
+            }
+        }
         if (isError(type) == false && getType(type).Kind == TypeKind::Struct &&
             getType(type).Symbol == mIncompleteStruct)
         {
@@ -6741,6 +6752,14 @@ private:
                 return false;
             }
             case SyntaxKind::MemberExpression: {
+                if (isResource(mModel.NodeTypes[node]) == true)
+                {
+                    report(DiagnosticCode::NotAssignable,
+                           node,
+                           ComposeMessage("The declaring Slang code binds this resource field. Write elements "
+                                          "through an RWStructuredBuffer"));
+                    return false;
+                }
                 if (mModel.NodeSymbols[node] == NO_SYMBOL)
                 {
                     bool hasRepeat = false;
