@@ -759,7 +759,9 @@ trusted `main` code after a batch run completes without success. It re-runs only
 a job that was cancelled without a runner and carries that annotation, with the
 jobs that depend on it; the others keep their results. GitHub re-runs jobs only in
 a completed run, so the retried job asks for one runner after everything else has
-finished.
+finished. A re-run attempt copies each job it does not run under a new id without
+the original's annotations, so a later round still retries a copy whose name and
+completion time match a job already found without a runner.
 
 The retry waits five minutes, re-runs one job per round and stops after two
 rounds (`MAX_ACQUISITION_RETRIES` in `scripts/python/batch_ci.py`), so an outage
