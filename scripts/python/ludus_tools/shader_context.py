@@ -13,6 +13,7 @@ import re
 import shutil
 
 from . import render_graph_build as build
+from . import render_graph_buffers as buffers
 from . import render_graph_language as language
 
 INCLUDE = re.compile(r'^[ \t]*#[ \t]*include[ \t]+"([^"\n]+)"[^\n]*(?:\n|$)', re.M)
@@ -108,6 +109,20 @@ def _resource_api(snapshot, value, source):
              **({'byte_access': True} if field['record'] else {}),
              **({'legacy_raw': True} if not field['record'] and not field['word_view'] else {})}
             for field in fields]
+        if language.is_language_source(source):
+            for field, description in zip(fields, entry['fields']):
+                record = field['record']
+                if record is None:
+                    continue
+                layout = snapshot.buffer_record_layouts.get((record['source'], record['type']))
+                if layout is None:
+                    continue
+                arrays = buffers.record_array_fields(layout[1])
+                if arrays:
+                    description['record_arrays'] = [
+                        {'name': member['name'], 'element_type': member['type']['elementType']['name'],
+                         'capacity': member['type']['elementCount']}
+                        for member in arrays]
         result.append(entry)
     return result
 

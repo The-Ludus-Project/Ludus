@@ -296,25 +296,39 @@ def lower_buffer_headers(snapshot, sources, helper, build, *, luslc=None, style=
     return tool
 
 
-def _record_declaration(shape, name, definitions, build):
+def _record_declaration(shape, name, definitions, array_lengths, build):
     """Mirror the compiler's record shape for LUSL type checking, not storage sizing."""
     kind = shape['kind']
     if kind == 'struct':
         type_name = shape.get('name')
         build.name(type_name, 'shared Buffer record type')
-        fields = [_record_declaration(field['type'], field['name'], definitions, build)
+        fields = [_record_declaration(field['type'], field['name'], definitions, array_lengths, build)
                   for field in shape['fields']]
         declaration = f"struct {type_name} {{ " + ' '.join(fields) + ' };'
         build.require(definitions.setdefault(type_name, declaration) == declaration, 'ShaderInterface', type_name,
                       'give distinct names to Buffer record types used in one LUSL program')
         return f'{type_name} {name};'
     if kind == 'array':
-        return _record_declaration(shape['elementType'], f'{name}[{shape["elementCount"]}]', definitions, build)
+        length = shape['elementCount']
+        constant = array_lengths.setdefault(length, f'LUDUS_GRAPH_REFLECTED_ARRAY_LENGTH_{length}')
+        return _record_declaration(shape['elementType'], f'{name}[{constant}]', definitions, array_lengths, build)
     scalar = (shape['elementType'] if kind == 'vector' else shape).get('scalarType')
     build.require(kind in ('scalar', 'vector') and scalar in ('float32', 'int32', 'uint32'), 'ShaderInterface', name,
                   'Buffer record fields must use 32-bit scalars, vectors, structs or fixed arrays')
     spelling = scalar + (f'x{shape["elementCount"]}' if kind == 'vector' else '')
     return f'{spelling} {name};'
+
+
+def _record_array_declarations(shape, is_writable):
+    declarations = []
+    parameters = 'in uint32 recordIndex, in uint32 elementIndex'
+    for field in buffers.record_array_fields(shape):
+        name = field['name']
+        element = field['type']['elementType']['name']
+        declarations.append(f'{element} Load{name}({parameters});')
+        if is_writable:
+            declarations.append(f'void Store{name}({parameters}, in {element} element);')
+    return ' ' + ' '.join(declarations) if declarations else ''
 
 
 def prepare_resource_headers(snapshot, programs, contracts, compiler, cancel, build):
@@ -334,11 +348,13 @@ def prepare_resource_headers(snapshot, programs, contracts, compiler, cancel, bu
     with tempfile.TemporaryDirectory(prefix='ludus-buffer-interface-') as directory:
         for source, functions in contexts.items():
             records, views, resources = {}, {}, []
+            array_lengths = {}
             for function, fields in functions.items():
                 members = []
                 for field in fields:
                     view = buffers.record_view_name(field)
                     record = field['record']
+                    array_access = ''
                     if record:
                         key = (record['source'], record['type'])
                         if key not in snapshot.buffer_record_layouts:
@@ -348,8 +364,9 @@ def prepare_resource_headers(snapshot, programs, contracts, compiler, cancel, bu
                             snapshot.buffer_record_layouts[key] = buffers.reflect_record(
                                 *key, snapshot, stage, compiler, cancel, build)
                         _, shape = snapshot.buffer_record_layouts[key]
-                        _record_declaration(shape, field['field'], records, build)
+                        _record_declaration(shape, field['field'], records, array_lengths, build)
                         element = record['type']
+                        array_access = _record_array_declarations(shape, field['writable'])
                     else:
                         element = 'uint32x4'
                     setter = f' void Store(in uint32 index, in {element} record);' if field['writable'] else ''
@@ -359,11 +376,13 @@ def prepare_resource_headers(snapshot, programs, contracts, compiler, cancel, bu
                         if field['writable']:
                             byte_access += ' void StoreWord(in uint32 byteOffset, in uint32 word);'
                     views[view] = (f'struct {view} {{ uint32 GetCount(); {element} Load(in uint32 index);'
-                                   f'{setter}{byte_access} }};')
+                                   f'{setter}{byte_access}{array_access} }};')
                     members.append(f'{view} {field["field"]};')
                 resources.append(f'struct {function}Resources {{ ' +
                                  ' '.join(members) + ' };')
-            lines = ['#pragma once', 'extern slang', '{', *records.values(), *views.values(), *resources, '};', '']
+            constants = [f'static const uint32 {name} = {length};' for length, name in sorted(array_lengths.items())]
+            lines = ['#pragma once', *constants, 'extern slang', '{', *records.values(), *views.values(), *resources,
+                     '};', '']
             snapshot.language_resource_headers[source] = '\n'.join(lines).encode()
 
 

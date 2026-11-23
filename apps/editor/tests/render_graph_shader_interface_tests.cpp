@@ -51,17 +51,28 @@ TEST_CASE("Shader API describes the connected resource contract for either shade
                               {QStringLiteral("input"), QStringLiteral("RayLaunch")},
                               {QStringLiteral("output"), QStringLiteral("Radiance")}};
     const QByteArray manifest = QJsonDocument(QJsonObject{{QStringLiteral("programs"), QJsonArray{program}}}).toJson();
-    const QJsonArray fields{QJsonObject{{QStringLiteral("name"), QStringLiteral("Edges")},
-                                        {QStringLiteral("type"), QStringLiteral("Edge")},
-                                        {QStringLiteral("writable"), false}}};
-    const QJsonArray resources{
-        QJsonObject{{QStringLiteral("program"), QStringLiteral("Edges")}, {QStringLiteral("fields"), fields}}};
+    const QJsonArray recordArrays{QJsonObject{{QStringLiteral("name"), QStringLiteral("Edges")},
+                                              {QStringLiteral("element_type"), QStringLiteral("Edge")},
+                                              {QStringLiteral("capacity"), 256}}};
+    QJsonObject field{{QStringLiteral("name"), QStringLiteral("Edges")},
+                      {QStringLiteral("type"), QStringLiteral("EdgesData")},
+                      {QStringLiteral("writable"), false},
+                      {QStringLiteral("record_arrays"), recordArrays}};
+    const QJsonArray resources{QJsonObject{{QStringLiteral("program"), QStringLiteral("Edges")},
+                                           {QStringLiteral("fields"), QJsonArray{field}}}};
     const QString text = DescribeShaderInterface(manifest, file, {}, resources);
     CHECK(text.contains(returnType + QStringLiteral(" BuildEdges(")) == true);
     CHECK(text.contains(parameter) == true);
-    CHECK(text.contains(QStringLiteral("resources.Edges · Edge · read-only")) == true);
+    CHECK(text.contains(QStringLiteral("resources.Edges · EdgesData · read-only")) == true);
     CHECK(text.contains(QStringLiteral("Load(index)")) == true);
     CHECK(text.contains(QStringLiteral("Store(index, value)")) == false);
+    CHECK(text.contains(QStringLiteral("Edge Edges[256] · LoadEdges(recordIndex, elementIndex)")) == true);
+    CHECK(text.contains(QStringLiteral("StoreEdges(")) == false);
+    field.insert(QStringLiteral("writable"), true);
+    const QJsonArray writableResources{QJsonObject{{QStringLiteral("program"), QStringLiteral("Edges")},
+                                                   {QStringLiteral("fields"), QJsonArray{field}}}};
+    CHECK(DescribeShaderInterface(manifest, file, {}, writableResources)
+              .contains(QStringLiteral("StoreEdges(recordIndex, elementIndex, element)")) == true);
 }
 
 TEST_CASE("Buffer access updates existing shader source without replacing its body", "[editor][shader-api]")
