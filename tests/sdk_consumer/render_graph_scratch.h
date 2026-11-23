@@ -153,8 +153,8 @@ struct ScratchShape final
             static_cast<uint32>(format::RayTraversal::NativeQuery),
             static_cast<uint32>(format::DisplayCurve::Reinhard),
             0U, // WorkItemCount
-            0U, // StorageLaunchWidth
-            0U, // StorageLaunchHeight
+            0U, // HasStorageTexture
+            0U, // Reserved
             0U, // ImageLaunchWidth
             0U, // ImageLaunchHeight
         };

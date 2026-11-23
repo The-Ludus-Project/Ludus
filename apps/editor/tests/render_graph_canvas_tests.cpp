@@ -2766,8 +2766,18 @@ TEST_CASE("scene compute nodes are authored on the canvas with Properties hidden
         QDialog* dialogOrNull = qobject_cast<QDialog*>(QApplication::activeModalWidget());
         REQUIRE(dialogOrNull != nullptr);
         CHECK(propertiesOrNull->isHidden() == true);
+        QTabWidget* partsOrNull = dialogOrNull->findChild<QTabWidget*>(QStringLiteral("renderGraphPipelineParts"));
+        REQUIRE(partsOrNull != nullptr);
         QComboBox* modeOrNull = dialogOrNull->findChild<QComboBox*>(QStringLiteral("rayLaunchSizeMode"));
         REQUIRE(modeOrNull != nullptr);
+        for (int32 part = 0; part < partsOrNull->count(); ++part)
+        {
+            if (partsOrNull->tabText(part) == QStringLiteral("Invocation"))
+            {
+                partsOrNull->setCurrentIndex(part);
+            }
+        }
+        REQUIRE(modeOrNull->isVisible() == true);
         CHECK(modeOrNull->currentText() == QStringLiteral("Match color target"));
         modeOrNull->setCurrentText(QStringLiteral("Explicit size"));
         const QSpinBox* depthOrNull = dialogOrNull->findChild<QSpinBox*>(QStringLiteral("rayLaunchDimension2"));
@@ -2776,7 +2786,19 @@ TEST_CASE("scene compute nodes are authored on the canvas with Properties hidden
         CHECK(depthOrNull->isEnabled() == false);
         CHECK(workspace.GetDocument().GetRevision() == revision + 2);
         CHECK(workspace.GetDocument().GetDraft(GetRootGraph()).contains("ColorTarget") == false);
-        modeOrNull->setCurrentText(QStringLiteral("Independent storage texture"));
+        QComboBox* colorOutputOrNull =
+            dialogOrNull->findChild<QComboBox*>(QStringLiteral("renderGraphColorOutputAccess"));
+        REQUIRE(colorOutputOrNull != nullptr);
+        for (int32 part = 0; part < partsOrNull->count(); ++part)
+        {
+            if (partsOrNull->tabText(part) == QStringLiteral("Writable Resources"))
+            {
+                partsOrNull->setCurrentIndex(part);
+            }
+        }
+        REQUIRE(colorOutputOrNull->isVisible() == true);
+        colorOutputOrNull->setCurrentText(QStringLiteral("Shader read/write"));
+        CHECK(modeOrNull->currentText() == QStringLiteral("Explicit size"));
         CHECK(workspace.GetDocument().GetRevision() == revision + 3);
         CHECK(workspace.GetDocument().GetDraft(GetRootGraph()).contains("storage_texture") == true);
         QGroupBox* advancedOrNull = dialogOrNull->findChild<QGroupBox*>(QStringLiteral("renderGraphComputeAdvanced"));

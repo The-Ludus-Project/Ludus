@@ -360,10 +360,20 @@ TEST_CASE("ray launch sizing derives from color by default and preserves explici
     legacyMode->setCurrentIndex(1);
     CHECK(legacyApplied.value(QStringLiteral("invocation")).toObject().value(QStringLiteral("dimensions")).toArray() ==
           QJsonArray{96, 64, 1});
-    legacyMode->setCurrentText(QStringLiteral("Independent storage texture"));
+    QComboBox* colorOutput = legacyEditor.findChild<QComboBox*>(QStringLiteral("renderGraphColorOutputAccess"));
+    REQUIRE(colorOutput != nullptr);
+    colorOutput->setCurrentText(QStringLiteral("Shader read/write"));
     const QJsonObject storageLaunch = legacyApplied.value(QStringLiteral("invocation")).toObject();
     CHECK(storageLaunch.value(QStringLiteral("dimensions")).toArray() == QJsonArray{96, 64, 1});
     CHECK(storageLaunch.value(QStringLiteral("storage_texture")).toBool() == true);
+    legacyMode->setCurrentText(QStringLiteral("Match color target"));
+    const QJsonObject matchedLaunch = legacyApplied.value(QStringLiteral("invocation")).toObject();
+    CHECK(matchedLaunch.value(QStringLiteral("dimensions")) == QStringLiteral("ColorTarget"));
+    CHECK(matchedLaunch.value(QStringLiteral("storage_texture")).toBool() == true);
+    colorOutput->setCurrentText(QStringLiteral("Store returned RGB"));
+    const QJsonObject returnedLaunch = legacyApplied.value(QStringLiteral("invocation")).toObject();
+    CHECK(returnedLaunch.value(QStringLiteral("dimensions")) == QStringLiteral("ColorTarget"));
+    CHECK(returnedLaunch.contains(QStringLiteral("storage_texture")) == false);
 }
 
 TEST_CASE("pipeline nodes edit custom interfaces with connection-safe undo and save",
@@ -2588,7 +2598,7 @@ TEST_CASE("scene compute nodes use automatic state and launch size while generic
     REQUIRE(canvasGroup != nullptr);
     REQUIRE(launchModeOrNull != nullptr);
     REQUIRE(workItemsOrNull != nullptr);
-    launchModeOrNull->setCurrentText(QStringLiteral("Work items"));
+    launchModeOrNull->setCurrentText(QStringLiteral("Buffer-only work items"));
     workItemsOrNull->setValue(7001);
     QJsonObject invocation = canvasEdit.value(QStringLiteral("invocation")).toObject();
     CHECK(invocation.value(QStringLiteral("work_items")).toInt() == 7001);

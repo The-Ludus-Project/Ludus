@@ -185,6 +185,7 @@ struct RenderGraphPackage::State final
     bool HasSceneColorInput = false;
     bool HasExplicitImageLaunchFields = false;
     bool CanHaveSceneStorageTexture = false;
+    bool HasIndependentColorAccess = false;
     bool HasSceneStorageTexture = false;
     bool HasPersistentBuffers = false;
     bool HasForwardStages = false;
@@ -923,30 +924,46 @@ RenderGraphPackageStatus RenderGraphPackage::State::DecodeRecords(ByteReader& in
         }
         pass.ToneMappingCurve = static_cast<format::DisplayCurve>(curve);
         pass.WorkItemCount = HasSceneWorkItems == true ? inoutReader.ReadWord() : 0;
-        if (CanHaveSceneStorageTexture == true)
+        const uint32 storageFirst = CanHaveSceneStorageTexture == true ? inoutReader.ReadWord() : 0;
+        const uint32 storageSecond = CanHaveSceneStorageTexture == true ? inoutReader.ReadWord() : 0;
+        pass.ImageLaunchWidth = HasExplicitImageLaunchFields == true ? inoutReader.ReadWord() : 0;
+        pass.ImageLaunchHeight = HasExplicitImageLaunchFields == true ? inoutReader.ReadWord() : 0;
+        if (HasIndependentColorAccess == true)
         {
-            pass.StorageLaunchWidth = inoutReader.ReadWord();
-            pass.StorageLaunchHeight = inoutReader.ReadWord();
-            HasSceneStorageTexture = HasSceneStorageTexture == true || pass.StorageLaunchWidth != 0;
+            if (storageFirst > 1 || storageSecond != 0)
+            {
+                return RenderGraphPackageStatus::Malformed;
+            }
+            pass.HasStorageTexture = storageFirst == 1;
         }
-        if (HasExplicitImageLaunchFields == true)
+        else if (storageFirst != 0 || storageSecond != 0)
         {
-            pass.ImageLaunchWidth = inoutReader.ReadWord();
-            pass.ImageLaunchHeight = inoutReader.ReadWord();
+            if (storageFirst == 0 || storageSecond == 0 || pass.ImageLaunchWidth != 0 || pass.ImageLaunchHeight != 0)
+            {
+                return RenderGraphPackageStatus::Malformed;
+            }
+            pass.HasStorageTexture = true;
+            pass.ImageLaunchWidth = storageFirst;
+            pass.ImageLaunchHeight = storageSecond;
         }
+        HasSceneStorageTexture = HasSceneStorageTexture == true || pass.HasStorageTexture == true;
         if ((pass.ImageLaunchWidth == 0) != (pass.ImageLaunchHeight == 0) ||
             uint64(pass.ImageLaunchWidth) * pass.ImageLaunchHeight > format::MAX_SCENE_WORK_ITEMS ||
-            (pass.ImageLaunchWidth != 0 && (pass.WorkItemCount != 0 || pass.StorageLaunchWidth != 0 ||
-                                            program != static_cast<uint32>(format::Technique::RayTracing))) ||
-            (pass.StorageLaunchWidth == 0) != (pass.StorageLaunchHeight == 0) ||
-            uint64(pass.StorageLaunchWidth) * pass.StorageLaunchHeight > format::MAX_SCENE_WORK_ITEMS ||
-            (pass.StorageLaunchWidth != 0 &&
+            ((pass.ImageLaunchWidth != 0 || pass.HasStorageTexture == true) &&
              (pass.WorkItemCount != 0 || program != static_cast<uint32>(format::Technique::RayTracing))) ||
             pass.WorkItemCount > format::MAX_SCENE_WORK_ITEMS ||
             (pass.WorkItemCount != 0 && (program != static_cast<uint32>(format::Technique::RayTracing) ||
                                          pass.Camera != format::ABSENT || pass.Color != format::ABSENT)))
         {
             return RenderGraphPackageStatus::Malformed;
+        }
+        if (pass.HasStorageTexture == true)
+        {
+            // Keep explicit storage dimensions available to callers of GetPlan.
+            pass.StorageLaunchWidth = pass.ImageLaunchWidth;
+            pass.StorageLaunchHeight = pass.ImageLaunchHeight;
+            pass.ImageLaunchWidth = 0;
+            pass.ImageLaunchHeight = 0;
         }
         HasNativeRayQueries =
             HasNativeRayQueries == true || (program == static_cast<uint32>(format::Technique::RayTracing) &&
@@ -1030,7 +1047,8 @@ RenderGraphPackageStatus RenderGraphPackage::decode(BorrowedView<const uint8> by
     const uint32 magic = reader.ReadWord();
     const uint32 version = reader.ReadWord();
     if (magic != expectedMagic ||
-        (version != format::IMAGE_LAUNCH_PACKAGE_VERSION && version != format::STORAGE_TEXTURE_PACKAGE_VERSION &&
+        (version != format::INDEPENDENT_COLOR_ACCESS_PACKAGE_VERSION &&
+         version != format::IMAGE_LAUNCH_PACKAGE_VERSION && version != format::STORAGE_TEXTURE_PACKAGE_VERSION &&
          version != format::SCENE_COLOR_INPUT_PACKAGE_VERSION && version != format::DIRECTIONAL_NEAR_PACKAGE_VERSION &&
          version != format::SCENE_WORK_ITEMS_PACKAGE_VERSION && version != format::WORLD_FEATURE_PACKAGE_VERSION &&
          version != format::DEFERRED_SURFACE_CHART_GBUFFER_PACKAGE_VERSION &&
@@ -1075,6 +1093,7 @@ RenderGraphPackageStatus RenderGraphPackage::decode(BorrowedView<const uint8> by
     candidate->CanHaveSceneColorInput = version >= format::SCENE_COLOR_INPUT_PACKAGE_VERSION;
     candidate->HasExplicitImageLaunchFields = version >= format::IMAGE_LAUNCH_PACKAGE_VERSION;
     candidate->CanHaveSceneStorageTexture = version >= format::STORAGE_TEXTURE_PACKAGE_VERSION;
+    candidate->HasIndependentColorAccess = version >= format::INDEPENDENT_COLOR_ACCESS_PACKAGE_VERSION;
     candidate->HasExplicitNativeRayWorkgroup = version >= format::STORAGE_TEXTURE_PACKAGE_VERSION;
     candidate->CanHaveClusteredForward = version >= format::CLUSTERED_FORWARD_PACKAGE_VERSION;
     candidate->HasExplicitAccumulation = version >= format::ACCUMULATION_PACKAGE_VERSION;

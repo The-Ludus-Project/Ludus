@@ -159,8 +159,10 @@ inline constexpr foundation::uint32 SCENE_COLOR_INPUT_PACKAGE_VERSION = 41;
 inline constexpr foundation::uint32 STORAGE_TEXTURE_PACKAGE_VERSION = 42;
 /// First generation carrying explicit launch sizes for image returns.
 inline constexpr foundation::uint32 IMAGE_LAUNCH_PACKAGE_VERSION = 43;
+/// First package with shader color access and ray launch dimensions recorded independently.
+inline constexpr foundation::uint32 INDEPENDENT_COLOR_ACCESS_PACKAGE_VERSION = 44;
 /// Current runtime generation layout version.
-inline constexpr foundation::uint32 PACKAGE_VERSION = IMAGE_LAUNCH_PACKAGE_VERSION;
+inline constexpr foundation::uint32 PACKAGE_VERSION = INDEPENDENT_COLOR_ACCESS_PACKAGE_VERSION;
 /// First package carrying explicit OIDN denoising quality per ray pass.
 inline constexpr foundation::uint32 DENOISING_PACKAGE_VERSION = 16;
 /// First package carrying the renderer-owned bilinear image operation.
@@ -346,7 +348,6 @@ enum class InputFormat : foundation::uint32
 static_assert(HEADER_BYTES == 104);
 static_assert(RESOURCE_RECORD_BYTES == sizeof(Resource));
 static_assert(CAMERA_RECORD_BYTES == sizeof(Camera));
-static_assert(PASS_RECORD_BYTES == sizeof(Pass));
 static_assert(UNIFORM_BINDING_RECORD_BYTES == sizeof(UniformBinding));
 static_assert(UNIFORM_BLOCK_RECORD_BYTES == sizeof(UniformBlock));
 static_assert(UNIFORM_FIELD_RECORD_BYTES == sizeof(UniformField));

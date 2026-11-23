@@ -1657,16 +1657,27 @@ A RayTracingPipeline producer can use **Compute** invocation or native Metal ray
 stages. Scene visibility/depth inputs and tiled frame capture require a separate
 configuration or whole-frame capture, respectively.
 
-### Write a storage texture at an independent launch size
+<a id="write-a-storage-texture-at-an-independent-launch-size"></a>
 
-On a **RayTracingPipeline** or scene **ComputePipeline**, choose **Invocation →
-Launch size → Independent storage texture**. Set the launch to a positive
-`[width, height, 1]`, such as `[8, 8, 1]`. This setting is available in Properties
-and in **Edit Node** on the canvas. Connect a dedicated offscreen, single-sample
-RGBA8Unorm **Target** to the writable color port. The editor sets its operation to
-**Load**/**Store**. In graph source, use `"dimensions": [8, 8, 1]` and
-`"storage_texture": true` in `invocation`. The target can have a fixed extent or
-inherit a view-relative **RenderSize**.
+### Write a color texture from a ray shader
+
+On a **RayTracingPipeline** or scene **ComputePipeline**, choose **Writable
+Resources → Color output → Shader read/write**. Connect a dedicated offscreen,
+single-sample RGBA8Unorm **Target** to the writable color port. The editor sets
+the operation to **Load**/**Store**. The target can have a fixed extent or inherit
+a view-relative **RenderSize**.
+
+Choose **Launch size** independently under **Invocation**. **Match color target**
+runs one invocation per texel and follows the target on resize. **Explicit size**
+runs a grid of your choosing, such as `[8, 8, 1]` for 64 invocations. Each
+invocation can trace rays within the scene query budget. In graph source,
+`"storage_texture": true` selects shader read/write with either
+`"dimensions": "ColorTarget"` or explicit dimensions. Older explicit storage
+dispatches keep their authored dimensions.
+
+**Store returned RGB** is the default color output mode. It writes the shader's
+returned RGB at the launch coordinate where it overlaps the target. Both modes
+and their launch settings are available in Properties and the canvas **Edit Node** dialog.
 
 The scene shader wrapper exposes `RWTexture2D<float4> GraphStorageTexture`.
 The ray-generation callback or scene compute kernel writes the texels it owns and
@@ -1681,7 +1692,8 @@ This mode uses native Vulkan or Metal with tier-2 read/write textures and
 requires the scene shader interface. To accumulate, denoise, or tone-map, first
 sample the texture in a later image pass. Use a separate configuration for
 visibility/depth or ray-path diagnostics. Storage dispatches require a whole-frame
-launch and runtime generation 42 or later.
+launch. Matching the target extent with shader read/write requires runtime generation
+44 or later.
 
 <a id="select-emitters-per-screen-tile"></a>
 
@@ -1689,7 +1701,7 @@ launch and runtime generation 42 or later.
 
 A scene `ComputePipeline` can launch a fixed number of work items independently
 of the viewport. In the pipeline editor, select **Invocation → Launch size →
-Work items**. Use one Scene input and one or two raw Buffer inputs with matching
+Buffer-only work items**. Use one Scene input and one or two raw Buffer inputs with matching
 **Load**/**Store** writable outputs. Remove the View and texture ports. Assign a
 single Slang compute program with the usual `RayLaunch` / `Radiance` signature.
 

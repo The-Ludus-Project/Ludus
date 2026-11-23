@@ -182,9 +182,6 @@ def validate(node, where, graph):
 
     if 'storage_texture' in invocation:
         graph._boolean(invocation['storage_texture'], where)
-        graph._require(not invocation['storage_texture'] or invocation['dimensions'] != 'ColorTarget',
-                       'Capability', where, 'storage texture dispatch requires an explicit [width, height, 1] launch',
-                       field='invocation.dimensions', repair='Set positive explicit width and height values.')
     if node['kind'] == 'RayTracingPipeline' or is_scene_compute(node):
         dimensions = invocation.get('dimensions', 'ColorTarget')
         if dimensions != 'ColorTarget':

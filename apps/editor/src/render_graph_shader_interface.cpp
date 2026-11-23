@@ -121,7 +121,7 @@ QString DescribeRayInterface(const QJsonObject& program,
         if (isLaunch == true)
         {
             lines.append(QStringLiteral(
-                "// Independent storage texture binds RWTexture2D<float4> GraphStorageTexture.\n"
+                "// Writable Resources → Shader read/write binds RWTexture2D<float4> GraphStorageTexture.\n"
                 "// PositionPixel and ExtentPixel describe the dispatch. Query GetDimensions for the texture size."));
         }
         QString trailingParameters = isLaunch == true ? QString{} : QStringLiteral(",\n    inout ScenePayload payload");

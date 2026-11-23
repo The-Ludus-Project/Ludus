@@ -56,6 +56,12 @@ class SceneComputeLoweringTests(SceneComputeFixture):
         self.assertEqual([8, 8, 1], producer['dimensions'])
         self.assertEqual([1, 1], texture['view_scale'])
         self.assertNotEqual(producer['dimensions'][:2], texture['extent'])
+        self.node('utd')['invocation']['dimensions'] = 'ColorTarget'
+        matched_plan = self.compile()
+        matched_producer = next(operation for operation in matched_plan['passes'] if operation['id'] == 'Main/utd')
+        self.assertTrue(matched_producer['storage_texture'])
+        self.assertEqual(texture['extent'], matched_producer['dimensions'][:2])
+        self.node('utd')['invocation']['dimensions'] = [8, 8, 1]
         self.node('utd')['invocation'].pop('storage_texture')
         self.node('utd')['outputs'][0]['load'] = 'Clear'
         image_plan = self.compile()
@@ -330,6 +336,8 @@ class NativeSceneComputeTests(unittest.TestCase):
             producer['invocation']['type'] = 'RayTracing'
             if lit_consumer:
                 next(row for row in producer['shaders'] if row['stage'] == 'ray_generation')['program'] = 'TraceDiffraction'
+            if native_output == 'matched_storage':
+                producer['invocation']['dimensions'] = 'ColorTarget'
             if native_output == 'image':
                 producer['invocation'].pop('storage_texture')
                 producer['outputs'][0]['load'] = 'Clear'
@@ -881,12 +889,13 @@ class NativeSceneComputeTests(unittest.TestCase):
             self.assertEqual(passes[0]['Color'], passes[1]['SourceColor'])
             self.assertNotEqual(passes[1]['Color'], passes[1]['SourceColor'])
             self.assertEqual('Color', resources[passes[1]['SourceColor']]['Kind'])
-            self.assertEqual((8, 8), (passes[0]['StorageLaunchWidth'], passes[0]['StorageLaunchHeight']))
+            self.assertTrue(passes[0]['HasStorageTexture'])
+            self.assertEqual((8, 8), (passes[0]['ImageLaunchWidth'], passes[0]['ImageLaunchHeight']))
             self.assertEqual((1, 1), (resources[passes[0]['Color']]['ViewNumerator'],
                                      resources[passes[0]['Color']]['ViewDenominator']))
             parsed = parse_runtime(destination.read_bytes())
             self.assertEqual(execution.PACKAGE_VERSION, parsed['version'])
-            self.assertEqual((8, 8, 0, 0), parsed['passes'][0][-4:])
+            self.assertEqual((1, 0, 8, 8), parsed['passes'][0][-4:])
 
     def test_native_ray_stages_can_write_the_storage_texture(self):
         from test_render_graph_authoring import parse_runtime
@@ -910,6 +919,20 @@ class NativeSceneComputeTests(unittest.TestCase):
             stages = parse_runtime(destination.read_bytes())['stages']
             stage = next(stage for stage in stages if stage['role'] == execution.NATIVE_RAY_STAGE_ROLE)
             self.assertEqual((8, 8, 1), stage['workgroup'])
+
+    def test_native_ray_stages_can_write_a_target_sized_storage_texture(self):
+        from test_render_graph_authoring import parse_runtime
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            package, recipe, wrapper = self.build(SCENE_COMPUTE, root, 'main_shaders/read_diffraction.slang',
+                                                 native_output='matched_storage', lit_consumer=True)
+            self.assertTrue(recipe['storage_texture'])
+            self.assertIn('RWTexture2D<float4> GraphStorageTexture;', wrapper)
+            destination = root / 'matched-storage.lurgrt'
+            execution.cook_runtime(package, destination, configuration='ColorInput')
+            parsed = parse_runtime(destination.read_bytes())
+            self.assertEqual((1, 0, 0, 0), parsed['passes'][0][-4:])
+            self.assertTrue(any(stage['role'] == execution.NATIVE_RAY_STAGE_ROLE for stage in parsed['stages']))
 
     def test_native_ray_stages_can_return_a_fixed_image_sampled_by_scene_compute(self):
         from test_render_graph_authoring import parse_runtime
