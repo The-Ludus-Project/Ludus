@@ -962,9 +962,10 @@ RendererWorkspace::RendererWorkspace(const ToolingPaths& tooling, QWidget* paren
     connect(mSource, &CodeEditor::AnalysisDiagnosticsChanged, this, &RendererWorkspace::AnalysisDiagnosticsChanged);
     sourceLayout->addWidget(mSourceAssistance);
     QWidget* interfacePage = CreateShaderInterfaceView(mSourceInterface, sourcePage);
-    mAddShaderBufferAccess = new QPushButton(QStringLiteral("Add Buffer Access…"), interfacePage);
+    mAddShaderBufferAccess = new QPushButton(QStringLiteral("Add Resource Access…"), interfacePage);
     mAddShaderBufferAccess->setObjectName(QStringLiteral("renderGraphAddShaderBufferAccess"));
-    mAddShaderBufferAccess->setToolTip(QStringLiteral("Add the named Buffer interface to an existing scene callback."));
+    mAddShaderBufferAccess->setToolTip(
+        QStringLiteral("Add the named resource interface to an existing scene callback."));
     static_cast<QVBoxLayout*>(interfacePage->layout())->insertWidget(1, mAddShaderBufferAccess);
     connect(mAddShaderBufferAccess, &QPushButton::clicked, this, &RendererWorkspace::addShaderBufferAccess);
     connect(mSourceAssistance,

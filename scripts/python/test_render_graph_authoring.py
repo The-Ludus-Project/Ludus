@@ -349,7 +349,9 @@ def parse_runtime(data):
     for _ in range(stages):
         role, target, inputs, entry_bytes, artifact_bytes, block_count = take(6)
         has_workgroup = ((version >= 21 and role in (8, 11, execution.PERSISTENT_RAY_STAGE_ROLE)) or
-                         (version >= 42 and role == execution.NATIVE_RAY_STAGE_ROLE))
+                         (version >= 42 and role == execution.NATIVE_RAY_STAGE_ROLE) or
+                         (version >= execution.RECORD_READER_PACKAGE_VERSION and
+                          role == execution.role('RecordReadCompute', 'compute')))
         workgroup = take(3) if has_workgroup else (64, 1, 1)
         stage_inputs = [take(2) for _ in range(inputs)]
         names = []
@@ -363,6 +365,10 @@ def parse_runtime(data):
         offset += artifact_bytes + (-artifact_bytes % 4)
         result['stages'].append({'role': role, 'target': target, 'inputs': stage_inputs, 'entry': entry,
                                  'artifact': artifact, 'blocks': names, 'workgroup': workgroup})
+    if version >= execution.NATIVE_GRAPH_RECORD_PACKAGE_VERSION:
+        result['native_record_stride'] = take(1)[0]
+    if version >= execution.RECORD_READER_PACKAGE_VERSION:
+        result['record_reader_mask'] = take(1)[0]
     result['storage_buffers'] = [take(4) for _ in range(take(1)[0])] if version >= 8 else []
     result['scene_resources'] = take(1)[0] if version >= 25 else 0
     result['capture_warmup_samples'] = take(execution.ray.MAX_RAY_PROGRAMS) if version >= 33 else (0,) * execution.ray.MAX_RAY_PROGRAMS
@@ -381,6 +387,9 @@ def parse_runtime(data):
             assert '\0' not in name
             result['pass_names'].append(name)
             offset += name_bytes + (-name_bytes % 4)
+    result['shader_textures'] = (
+        [take(execution.buffers.MAX_TEXTURES) for _ in range(passes)]
+        if version >= execution.SHADER_TEXTURE_ACCESS_PACKAGE_VERSION and offset < len(data) else [])
     assert offset == len(data)
     return result
 

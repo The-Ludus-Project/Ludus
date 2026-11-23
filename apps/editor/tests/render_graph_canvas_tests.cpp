@@ -2856,8 +2856,18 @@ TEST_CASE("scene compute nodes are authored on the canvas with Properties hidden
         QDialog* dialogOrNull = qobject_cast<QDialog*>(QApplication::activeModalWidget());
         REQUIRE(dialogOrNull != nullptr);
         CHECK(propertiesOrNull->isHidden() == true);
+        QTabWidget* partsOrNull = dialogOrNull->findChild<QTabWidget*>(QStringLiteral("renderGraphPipelineParts"));
+        REQUIRE(partsOrNull != nullptr);
         QComboBox* modeOrNull = dialogOrNull->findChild<QComboBox*>(QStringLiteral("rayLaunchSizeMode"));
         REQUIRE(modeOrNull != nullptr);
+        for (int32 part = 0; part < partsOrNull->count(); ++part)
+        {
+            if (partsOrNull->tabText(part) == QStringLiteral("Invocation"))
+            {
+                partsOrNull->setCurrentIndex(part);
+            }
+        }
+        REQUIRE(modeOrNull->isVisible() == true);
         CHECK(modeOrNull->currentText() == QStringLiteral("Match color target"));
         modeOrNull->setCurrentText(QStringLiteral("Explicit size"));
         const QSpinBox* depthOrNull = dialogOrNull->findChild<QSpinBox*>(QStringLiteral("rayLaunchDimension2"));
@@ -2866,29 +2876,48 @@ TEST_CASE("scene compute nodes are authored on the canvas with Properties hidden
         CHECK(depthOrNull->isEnabled() == false);
         CHECK(workspace.GetDocument().GetRevision() == revision + 2);
         CHECK(workspace.GetDocument().GetDraft(GetRootGraph()).contains("ColorTarget") == false);
-        modeOrNull->setCurrentText(QStringLiteral("Independent storage texture"));
-        CHECK(workspace.GetDocument().GetRevision() == revision + 3);
-        CHECK(workspace.GetDocument().GetDraft(GetRootGraph()).contains("storage_texture") == true);
+        for (int32 part = 0; part < partsOrNull->count(); ++part)
+        {
+            if (partsOrNull->tabText(part) == QStringLiteral("Writable Resources"))
+            {
+                partsOrNull->setCurrentIndex(part);
+            }
+        }
+        QPushButton* addResourceOrNull =
+            dialogOrNull->findChild<QPushButton*>(QStringLiteral("renderGraphAdd_outputs"));
+        REQUIRE(addResourceOrNull != nullptr);
+        addResourceOrNull->click();
+        QComboBox* textureAccessOrNull =
+            dialogOrNull->findChild<QComboBox*>(QStringLiteral("renderGraphWritableTextureAccess"));
+        REQUIRE(textureAccessOrNull != nullptr);
+        REQUIRE(textureAccessOrNull->isVisible() == true);
+        textureAccessOrNull->setCurrentText(QStringLiteral("Shader read/write"));
+        CHECK(modeOrNull->currentText() == QStringLiteral("Explicit size"));
+        CHECK(workspace.GetDocument().GetRevision() == revision + 4);
+        CHECK(workspace.GetDocument().GetDraft(GetRootGraph()).contains("ShaderReadWrite") == true);
         QGroupBox* advancedOrNull = dialogOrNull->findChild<QGroupBox*>(QStringLiteral("renderGraphComputeAdvanced"));
         REQUIRE(advancedOrNull != nullptr);
         CHECK(advancedOrNull->isChecked() == false);
         advancedOrNull->setChecked(true);
-        CHECK(workspace.GetDocument().GetRevision() == revision + 4);
+        CHECK(workspace.GetDocument().GetRevision() == revision + 5);
         CHECK(workspace.GetDocument().GetDraft(GetRootGraph()).contains("group_size") == true);
         dialogOrNull->accept();
     });
     const QJsonObject edited = getNode();
     CHECK(edited.value(QStringLiteral("invocation")).toObject().value(QStringLiteral("dimensions")).isArray() == true);
-    CHECK(edited.value(QStringLiteral("invocation")).toObject().value(QStringLiteral("storage_texture")).toBool() ==
-          true);
+    const QJsonObject texture = edited.value(QStringLiteral("outputs")).toArray().at(0).toObject();
+    CHECK(texture.value(QStringLiteral("access")) == QStringLiteral("ShaderReadWrite"));
+    CHECK(texture.value(QStringLiteral("load")) == QStringLiteral("Load"));
     CHECK(edited.value(QStringLiteral("state")).toObject() ==
           QJsonObject{{QStringLiteral("group_size"), QJsonArray{64, 1, 1}}});
-    CHECK(workspace.GetDocument().GetRevision() == revision + 4);
+    CHECK(workspace.GetDocument().GetRevision() == revision + 5);
+    workspace.Undo();
     workspace.Undo();
     workspace.Undo();
     workspace.Undo();
     workspace.Undo();
     CHECK(workspace.GetDocument().GetDraft(GetRootGraph()) == generic);
+    workspace.Redo();
     workspace.Redo();
     workspace.Redo();
     workspace.Redo();

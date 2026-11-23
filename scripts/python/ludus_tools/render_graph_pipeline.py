@@ -78,7 +78,9 @@ def validate(node, where, graph):
         for port in node[direction]:
             fields = ('id', 'type', 'required') if direction == 'inputs' else (
                 'id', 'type', 'target', 'format', 'load', 'store')
-            _check_field(graph._keys, port, f'{direction} port record', where, graph, fields)
+            optional = ('access',) if direction == 'outputs' else ()
+            _check_field(lambda value, location: graph._keys(value, fields, location, optional),
+                         port, f'{direction} port record', where, graph)
             _check_field(graph._identifier, port['id'], f'{direction} port ID', where, graph)
             graph._require(port['id'] not in identities, 'DuplicateIdentity', where,
                            f"{direction} port '{port['id']}' is declared more than once. "
@@ -107,6 +109,14 @@ def validate(node, where, graph):
                                'Give each writable resource a separate input, or remove the duplicate output. '
                                'Use separate pipeline nodes for sequential writes.')
                 targets[port['target']] = port['id']
+                if 'access' in port:
+                    _check_field(graph._enum, port['access'], f"Output '{port['id']}' Access", where, graph,
+                                 ('ShaderReadWrite',))
+                    graph._require(port['type'] == 'ColorTexture' and
+                                   (node['kind'] == 'RayTracingPipeline' or is_scene_compute(node)),
+                                   'Capability', where, 'shader read/write requires a ray or scene compute ColorTexture',
+                                   port=port['id'], direction='output',
+                                   repair='Use an automatic output or choose a ray or scene compute pass.')
                 formats = {'ColorTexture': ('RGBA8Unorm',), 'DepthTexture': ('Depth32Float',), 'Buffer': ('Bytes',)}
                 graph._require(port['format'] in formats[port['type']], 'Schema', where,
                                f"Output '{port['id']}' ({port['type']}) has format '{port['format']}'. "
@@ -182,9 +192,6 @@ def validate(node, where, graph):
 
     if 'storage_texture' in invocation:
         graph._boolean(invocation['storage_texture'], where)
-        graph._require(not invocation['storage_texture'] or invocation['dimensions'] != 'ColorTarget',
-                       'Capability', where, 'storage texture dispatch requires an explicit [width, height, 1] launch',
-                       field='invocation.dimensions', repair='Set positive explicit width and height values.')
     if node['kind'] == 'RayTracingPipeline' or is_scene_compute(node):
         dimensions = invocation.get('dimensions', 'ColorTarget')
         if dimensions != 'ColorTarget':

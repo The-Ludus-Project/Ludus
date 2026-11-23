@@ -343,7 +343,9 @@ TEST_CASE("ray launch sizing derives from color by default and preserves explici
           QStringLiteral("ColorTarget"));
 
     QJsonObject legacy = node;
-    legacy.insert(QStringLiteral("invocation"), QJsonObject{{QStringLiteral("dimensions"), QJsonArray{96, 64, 1}}});
+    legacy.insert(
+        QStringLiteral("invocation"),
+        QJsonObject{{QStringLiteral("dimensions"), QJsonArray{96, 64, 1}}, {QStringLiteral("storage_texture"), true}});
     RenderGraphPipelineEditor legacyEditor(legacy);
     QComboBox* legacyMode = legacyEditor.findChild<QComboBox*>(QStringLiteral("rayLaunchSizeMode"));
     REQUIRE(legacyMode != nullptr);
@@ -360,10 +362,50 @@ TEST_CASE("ray launch sizing derives from color by default and preserves explici
     legacyMode->setCurrentIndex(1);
     CHECK(legacyApplied.value(QStringLiteral("invocation")).toObject().value(QStringLiteral("dimensions")).toArray() ==
           QJsonArray{96, 64, 1});
-    legacyMode->setCurrentText(QStringLiteral("Independent storage texture"));
+    QComboBox* colorOutput = legacyEditor.findChild<QComboBox*>(QStringLiteral("renderGraphColorOutputAccess"));
+    REQUIRE(colorOutput != nullptr);
+    CHECK(colorOutput->currentText() == QStringLiteral("Shader read/write"));
     const QJsonObject storageLaunch = legacyApplied.value(QStringLiteral("invocation")).toObject();
     CHECK(storageLaunch.value(QStringLiteral("dimensions")).toArray() == QJsonArray{96, 64, 1});
     CHECK(storageLaunch.value(QStringLiteral("storage_texture")).toBool() == true);
+    legacyMode->setCurrentText(QStringLiteral("Match color target"));
+    const QJsonObject matchedLaunch = legacyApplied.value(QStringLiteral("invocation")).toObject();
+    CHECK(matchedLaunch.value(QStringLiteral("dimensions")) == QStringLiteral("ColorTarget"));
+    CHECK(matchedLaunch.value(QStringLiteral("storage_texture")).toBool() == true);
+    colorOutput->setCurrentText(QStringLiteral("Store returned RGB"));
+    const QJsonObject returnedLaunch = legacyApplied.value(QStringLiteral("invocation")).toObject();
+    CHECK(returnedLaunch.value(QStringLiteral("dimensions")) == QStringLiteral("ColorTarget"));
+    CHECK(returnedLaunch.contains(QStringLiteral("storage_texture")) == false);
+}
+
+TEST_CASE("each writable ray texture has its own shader access mode", "[editor][render-graph][pipeline]")
+{
+    RenderGraphPipelineEditor editor(MakePipelineNode(QStringLiteral("RayTracingPipeline"), QStringLiteral("trace")));
+    QJsonObject applied;
+    QObject::connect(&editor, &RenderGraphPipelineEditor::Edited, &editor, [&applied](const QJsonObject& candidate) {
+        applied = candidate;
+    });
+    QPushButton* add = editor.findChild<QPushButton*>(QStringLiteral("renderGraphAdd_outputs"));
+    REQUIRE(add != nullptr);
+    add->click();
+    add->click();
+    const QList<QComboBox*> choices =
+        editor.findChildren<QComboBox*>(QStringLiteral("renderGraphWritableTextureAccess"));
+    REQUIRE(choices.size() == 2);
+    choices.at(0)->setCurrentText(QStringLiteral("Shader read/write"));
+    QJsonArray outputs = applied.value(QStringLiteral("outputs")).toArray();
+    REQUIRE(outputs.size() == 2);
+    CHECK(outputs.at(0).toObject().value(QStringLiteral("access")) == QStringLiteral("ShaderReadWrite"));
+    CHECK(outputs.at(0).toObject().value(QStringLiteral("load")) == QStringLiteral("Load"));
+    CHECK(outputs.at(1).toObject().contains(QStringLiteral("access")) == false);
+    CHECK(outputs.at(1).toObject().value(QStringLiteral("load")) == QStringLiteral("Clear"));
+    choices.at(1)->setCurrentText(QStringLiteral("Shader read/write"));
+    outputs = applied.value(QStringLiteral("outputs")).toArray();
+    CHECK(outputs.at(1).toObject().value(QStringLiteral("access")) == QStringLiteral("ShaderReadWrite"));
+    CHECK(outputs.at(0).toObject().value(QStringLiteral("target")) !=
+          outputs.at(1).toObject().value(QStringLiteral("target")));
+    CHECK(applied.value(QStringLiteral("invocation")).toObject().value(QStringLiteral("dimensions")) ==
+          QStringLiteral("ColorTarget"));
 }
 
 TEST_CASE("pipeline nodes edit custom interfaces with connection-safe undo and save",

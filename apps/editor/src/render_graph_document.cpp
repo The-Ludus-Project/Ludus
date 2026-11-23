@@ -1999,7 +1999,7 @@ RenderGraphDocumentStatus RenderGraphDocument::AddShaderBufferAccess(const QStri
         candidate.Files.insert(manifest, QJsonDocument(manifestObject).toJson());
     }
     const RenderGraphDocumentStatus status =
-        commit(candidate, "Add Buffer Access", false, {}, {}, {}, {}, CommitKind::Source);
+        commit(candidate, "Add Resource Access", false, {}, {}, {}, {}, CommitKind::Source);
     if (status != RenderGraphDocumentStatus::Ok)
     {
         outError = status == RenderGraphDocumentStatus::Capacity

@@ -75,9 +75,16 @@ bool IsRayStorageTarget(BorrowedView<const format::Pass> passes, usize resource)
 {
     for (const format::Pass& pass : passes)
     {
-        if (pass.StorageLaunchWidth != 0 && pass.Color == resource)
+        if (format::UsesStorageTexture(pass) == true && pass.Color == resource)
         {
             return true;
+        }
+        for (const uint32 texture : pass.ShaderTextures)
+        {
+            if (texture == resource)
+            {
+                return true;
+            }
         }
     }
     return false;
@@ -299,6 +306,17 @@ RayLaunchSize GetRayLaunchSize(const format::Pass& pass,
     }
     const format::Resource& color = resources[pass.Color];
     return {color.Width, color.Height};
+}
+void BindRayShaderTextures(const format::Pass& pass,
+                           const StaticArray<rhi::TextureHandle, format::MAX_RESOURCES>& textures,
+                           GpuPreviewGraphInvocation& outInvocation) noexcept
+{
+    const uint32 count = format::GetShaderTextureCount(pass);
+    for (uint32 slot = 0; slot < count; ++slot)
+    {
+        outInvocation.ShaderTextures[slot] = textures[pass.ShaderTextures[slot]];
+    }
+    outInvocation.HasShaderOutputsOnly = count != 0 && pass.Color == format::ABSENT && pass.WorkItemCount == 0;
 }
 /// An execution report with no lowering: every pass and resource mapping ABSENT.
 RenderGraphExecutionReport MakeExecutionReport(RenderGraphExecution execution) noexcept
@@ -525,16 +543,52 @@ Status ValidatePlan(const RenderGraphPlan& plan) noexcept
     {
         const format::Pass& pass = plan.Passes[passIndex];
         const bool isBufferDispatch = pass.WorkItemCount != 0;
-        const bool isStorageDispatch = pass.StorageLaunchWidth != 0;
+        const bool isStorageDispatch = format::UsesStorageTexture(pass) == true;
         const bool hasExplicitImageLaunch = pass.ImageLaunchWidth != 0;
-        if (hasExplicitImageLaunch != (pass.ImageLaunchHeight != 0) ||
+        const bool hasLegacyStorageLaunch = pass.StorageLaunchWidth != 0;
+        const uint32 shaderTextures = format::GetShaderTextureCount(pass);
+        const bool hasShaderOutputsOnly = shaderTextures != 0 && pass.Color == format::ABSENT;
+        for (uint32 slot = 0; slot < format::MAX_SHADER_TEXTURES; ++slot)
+        {
+            const uint32 texture = pass.ShaderTextures[slot];
+            if (slot >= shaderTextures)
+            {
+                if (texture != format::ABSENT)
+                {
+                    return Status::InvalidDescription;
+                }
+                continue;
+            }
+            if (texture >= plan.Resources.GetSize() || plan.Resources[texture].Kind != format::Aspect::Color ||
+                plan.Resources[texture].IsSurface != 0 || texture == pass.Color || texture == pass.SourceColor ||
+                texture == pass.Visibility || texture == pass.VisibilityDepth)
+            {
+                return Status::InvalidDescription;
+            }
+            for (uint32 earlier = 0; earlier < slot; ++earlier)
+            {
+                if (pass.ShaderTextures[earlier] == texture)
+                {
+                    return Status::InvalidDescription;
+                }
+            }
+        }
+        if ((shaderTextures != 0 && (pass.Program != format::Technique::RayTracing || isStorageDispatch == true ||
+                                     pass.Visibility != format::ABSENT || pass.VisibilityDepth != format::ABSENT)) ||
+            (hasShaderOutputsOnly == true &&
+             ((isBufferDispatch == false && hasExplicitImageLaunch == false) || pass.AccumulationSamples != 0 ||
+              pass.ToneMappingExposure != 0 || pass.DenoisingQuality != 0 || pass.ColorLoad != format::Load::Discard ||
+              pass.ColorStore != format::Store::Discard)) ||
+            hasExplicitImageLaunch != (pass.ImageLaunchHeight != 0) ||
+            hasLegacyStorageLaunch != (pass.StorageLaunchHeight != 0) ||
+            (hasLegacyStorageLaunch == true &&
+             (hasExplicitImageLaunch == true ||
+              uint64{pass.StorageLaunchWidth} * pass.StorageLaunchHeight > format::MAX_SCENE_WORK_ITEMS)) ||
             (hasExplicitImageLaunch == true &&
-             (pass.Program != format::Technique::RayTracing || isBufferDispatch == true || isStorageDispatch == true ||
+             (pass.Program != format::Technique::RayTracing || isBufferDispatch == true ||
               uint64{pass.ImageLaunchWidth} * pass.ImageLaunchHeight > format::MAX_SCENE_WORK_ITEMS)) ||
-            isStorageDispatch != (pass.StorageLaunchHeight != 0) ||
             (isStorageDispatch == true &&
              (pass.Program != format::Technique::RayTracing || isBufferDispatch == true ||
-              uint64(pass.StorageLaunchWidth) * pass.StorageLaunchHeight > format::MAX_SCENE_WORK_ITEMS ||
               pass.Visibility != format::ABSENT || pass.VisibilityDepth != format::ABSENT ||
               pass.AccumulationSamples != 0 || pass.ToneMappingExposure != 0 || pass.DenoisingQuality != 0)) ||
             (isStorageDispatch == false && pass.Color != format::ABSENT &&
@@ -601,6 +655,11 @@ Status ValidatePlan(const RenderGraphPlan& plan) noexcept
             const uint32 requiredTarget = plan.Cameras[pass.Camera].Target;
             hasCameraRoute[pass.Camera] =
                 hasCameraRoute[pass.Camera] == true || pass.Color == requiredTarget || pass.Depth == requiredTarget;
+            for (uint32 slot = 0; slot < shaderTextures; ++slot)
+            {
+                hasCameraRoute[pass.Camera] =
+                    hasCameraRoute[pass.Camera] == true || pass.ShaderTextures[slot] == requiredTarget;
+            }
         }
         if ((pass.SceneData & ~::ludus::content::render_graph_format::SCENE_DATA_ALL) != 0 ||
             (pass.SceneData & ::ludus::content::render_graph_format::SCENE_DATA_GEOMETRY) == 0)
@@ -640,16 +699,34 @@ Status ValidatePlan(const RenderGraphPlan& plan) noexcept
                 return Status::InvalidDescription;
             }
             ++rayPassCount;
+            for (uint32 slot = 0; slot < shaderTextures; ++slot)
+            {
+                const uint32 texture = pass.ShaderTextures[slot];
+                colorDefined[texture] = true;
+                hasRayColor[texture] = true;
+            }
             if (isBufferDispatch == true)
             {
                 if (rayPassCount > format::MAX_RAY_PASSES || pass.Depth != format::ABSENT ||
                     pass.ColorLoad != format::Load::Discard || pass.ColorStore != format::Store::Discard ||
                     pass.DepthLoad != format::Load::Discard || pass.DepthStore != format::Store::Discard ||
-                    (pass.Buffer0 == format::ABSENT && pass.Buffer1 == format::ABSENT) ||
+                    (pass.Buffer0 == format::ABSENT && pass.Buffer1 == format::ABSENT && shaderTextures == 0) ||
                     pass.Visibility != format::ABSENT || pass.VisibilityDepth != format::ABSENT ||
                     pass.SourceColor != format::ABSENT || pass.Traversal == format::RayTraversal::HardwarePipeline ||
                     pass.AccumulationSamples != 0 || pass.ToneMappingExposure != 0 || pass.DenoisingQuality != 0 ||
                     isVisibilitySequence == true)
+                {
+                    return Status::Unsupported;
+                }
+                continue;
+            }
+            if (hasShaderOutputsOnly == true)
+            {
+                if (rayPassCount > format::MAX_RAY_PASSES || pass.Depth != format::ABSENT ||
+                    pass.DepthLoad != format::Load::Discard || pass.DepthStore != format::Store::Discard ||
+                    isVisibilitySequence == true ||
+                    (pass.SourceColor != format::ABSENT &&
+                     (pass.SourceColor >= plan.Resources.GetSize() || hasRayColor[pass.SourceColor] == false)))
                 {
                     return Status::Unsupported;
                 }
@@ -1709,11 +1786,13 @@ struct RenderGraph::State final
                     {
                         invocation.ColorInput = textures[pass.SourceColor];
                     }
-                    if (pass.StorageLaunchWidth != 0)
+                    if (format::UsesStorageTexture(pass) == true)
                     {
                         invocation.StorageTexture = textures[pass.Color];
                     }
-                    invocation.HasExplicitImageLaunch = pass.ImageLaunchWidth != 0;
+                    BindRayShaderTextures(pass, textures, invocation);
+                    invocation.HasExplicitImageLaunch = pass.Color != format::ABSENT && pass.ImageLaunchWidth != 0 &&
+                                                        format::UsesStorageTexture(pass) == false;
                     const RayLaunchSize launch = GetRayLaunchSize(pass, preparingResources);
                     const Status created = inoutScene.RayPasses[i].Initialize(
                         context,
@@ -2213,7 +2292,8 @@ Status RenderGraph::SetRayTileCount(uint32 tileCount) noexcept
         for (usize pass = 0; pass < state.Header.PassCount; ++pass)
         {
             const format::Pass& operation = state.Passes[pass];
-            if (operation.WorkItemCount != 0 || operation.StorageLaunchWidth != 0 ||
+            if (operation.WorkItemCount != 0 || format::UsesStorageTexture(operation) == true ||
+                format::GetShaderTextureCount(operation) != 0 ||
                 (operation.Program == format::Technique::RayTracing && operation.SourceColor != format::ABSENT))
             {
                 return Status::Unsupported;
@@ -2368,7 +2448,8 @@ Status RenderGraph::GetAccumulation(uint32 pass, rhi::BufferHandle& outBuffer) c
     {
         return Status::InvalidDescription;
     }
-    if (state.Passes[pass].WorkItemCount != 0 || state.Passes[pass].StorageLaunchWidth != 0)
+    if (state.Passes[pass].WorkItemCount != 0 || format::UsesStorageTexture(state.Passes[pass]) == true ||
+        state.Passes[pass].Color == format::ABSENT)
     {
         return Status::Unsupported;
     }
@@ -2596,7 +2677,8 @@ Status RenderGraph::Initialize(rhi::DeviceHandle device,
     for (usize index = 0; index < plan.Passes.GetSize(); ++index)
     {
         const format::Pass& pass = plan.Passes[index];
-        if ((pass.WorkItemCount != 0 || pass.StorageLaunchWidth != 0) &&
+        if ((pass.WorkItemCount != 0 || format::UsesStorageTexture(pass) == true ||
+             format::GetShaderTextureCount(pass) != 0) &&
             (programs.HasSceneShaderInterface == false || programs.HasPersistentRayBuffers == false ||
              programs.HasRayPathCapture == true))
         {
@@ -2774,12 +2856,18 @@ Status RenderGraph::Initialize(rhi::DeviceHandle device,
     bool hasVisibility = false;
     bool hasColorInput = false;
     bool hasStorageTexture = false;
+    uint32 shaderTextureCount = 0;
     for (usize index = 0; index < plan.Passes.GetSize(); ++index)
     {
         const format::Pass& pass = plan.Passes[index];
         hasColorInput = hasColorInput == true ||
                         (pass.Program == format::Technique::RayTracing && pass.SourceColor != format::ABSENT);
-        hasStorageTexture = hasStorageTexture == true || pass.StorageLaunchWidth != 0;
+        hasStorageTexture = hasStorageTexture == true || format::UsesStorageTexture(pass) == true;
+        const uint32 textureCount = format::GetShaderTextureCount(pass);
+        if (textureCount > shaderTextureCount)
+        {
+            shaderTextureCount = textureCount;
+        }
         // ValidatePlan pairs later sequence passes with the first pass's raster producer.
         if (pass.Visibility != format::ABSENT && plan.Passes[index - 1].Program != format::Technique::RayTracing)
         {
@@ -2796,7 +2884,8 @@ Status RenderGraph::Initialize(rhi::DeviceHandle device,
     }
     if (hasVisibility != programs.HasVisibilityBuffer ||
         (hasColorInput == true && (hasVisibility == true || programs.HasPersistentRayBuffers == false)) ||
-        (hasStorageTexture == true && hasVisibility == true) ||
+        ((hasStorageTexture == true || shaderTextureCount != 0) && hasVisibility == true) ||
+        (hasStorageTexture == true && shaderTextureCount != 0) ||
         (hasVisibility == true && programs.HasSceneShaderInterface == false))
     {
         return Status::InvalidDescription;
@@ -2848,6 +2937,18 @@ Status RenderGraph::Initialize(rhi::DeviceHandle device,
                                        hasStorageTextureBinding == false)))
     {
         return Status::InvalidDescription;
+    }
+    for (uint32 count = shaderTextureCount; count > 0; --count)
+    {
+        bool hasBinding = false;
+        if (peelBinding(format::FIRST_SHADER_TEXTURE_BINDING + count - 1,
+                        rhi::RasterBindingKind::StorageTexture2DReadWrite,
+                        0,
+                        hasBinding) == false ||
+            hasBinding == false)
+        {
+            return Status::InvalidDescription;
+        }
     }
     if (hasLtcBinding != programs.HasLtcTable || hasSkyBinding != programs.HasAtmosphereSky ||
         hasAerialBinding != programs.HasAerialPerspective ||
@@ -4247,11 +4348,13 @@ Status RenderGraph::updateScene(BorrowedView<const RenderGraphMesh> meshes,
         {
             invocation.ColorInput = textures[operation.SourceColor];
         }
-        if (operation.StorageLaunchWidth != 0)
+        if (format::UsesStorageTexture(operation) == true)
         {
             invocation.StorageTexture = textures[operation.Color];
         }
-        invocation.HasExplicitImageLaunch = operation.ImageLaunchWidth != 0;
+        BindRayShaderTextures(operation, textures, invocation);
+        invocation.HasExplicitImageLaunch = operation.Color != format::ABSENT && operation.ImageLaunchWidth != 0 &&
+                                            format::UsesStorageTexture(operation) == false;
         const bool isBufferDispatch = operation.WorkItemCount != 0;
         const RayLaunchSize launch = GetRayLaunchSize(operation, preparingResources);
         const Status created = candidate->RayPasses[pass].Initialize(
@@ -4594,7 +4697,7 @@ Status RenderGraph::PrepareEncoding() noexcept
             return tiles == Status::Pending ? Status::NotReady : tiles;
         }
         jobs[count] = state.Current->RayPasses[pass].GetJob();
-        targets[count++] = operation.WorkItemCount != 0 ? rhi::TextureHandle{} : state.Textures[operation.Color];
+        targets[count++] = operation.Color == format::ABSENT ? rhi::TextureHandle{} : state.Textures[operation.Color];
     }
     if (count != 0)
     {

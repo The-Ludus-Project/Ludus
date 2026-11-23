@@ -1,9 +1,11 @@
 #pragma once
 
+#include <ludus/content/render_graph_format/plan.h>
 #include <ludus/foundation/base/types.h>
 
 #include <ludus/foundation/base/pointer.hpp>
 #include <ludus/foundation/containers/borrowed_view.hpp>
+#include <ludus/foundation/containers/static_array.hpp>
 #include <ludus/foundation/math/matrix.hpp>
 #include <ludus/foundation/math/transform.hpp>
 #include <ludus/foundation/math/vector.hpp>
@@ -86,6 +88,11 @@ struct GpuPreviewGraphInvocation final
     bool HasExplicitImageLaunch = false;
     /// Use the ordered compute kernel with a read-only shared graph record binding.
     bool IsRecordReadCompute = false;
+    /// Independently bound storage allocations in shader-slot order. A null entry uses a private fallback.
+    /// The graph keeps each allocation alive through job release and submitted completion.
+    foundation::StaticArray<rhi::TextureHandle, content::render_graph_format::MAX_SHADER_TEXTURES> ShaderTextures{};
+    /// Dispatch and publish shader texture writes without compositing returned RGB.
+    bool HasShaderOutputsOnly = false;
 };
 namespace internal
 {

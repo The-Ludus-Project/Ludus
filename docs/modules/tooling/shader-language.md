@@ -1515,6 +1515,11 @@ and `Store(index, value)` on writable views. The language server checks the same
 generated declarations as the build. See [access a Buffer by port
 name](../../development/render-graph-authoring.md#access-an-ordered-buffer-by-port-name).
 
+Textures marked **Shader read/write** also appear by port name in
+`resources`. Each texture view exposes `GetDimensions()`,
+`Load(positionPixel)`, and `Store(positionPixel, value)`. See
+[write a texture by port name](../../development/render-graph-authoring.md#write-a-storage-texture-at-an-independent-launch-size).
+
 A render-graph program's `source` may name a `.lusl` file:
 
 ```json

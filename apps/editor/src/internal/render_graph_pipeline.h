@@ -58,6 +58,8 @@ private:
     bool eventFilter(QObject* watched, QEvent* event) override;
     [[nodiscard]] QTableWidget*
     createTable(const QString& name, const QStringList& fields, const QStringList& defaults);
+    void addColorOutputEditor();
+    void updateColorOutputAccess(QJsonObject& inoutInvocation, bool isShaderWritable);
     void addProperties(QFormLayout& outForm, const QString& name);
     void addRayStateProperties(QFormLayout& outForm);
     void addSceneComputeStateProperties(QFormLayout& outForm);

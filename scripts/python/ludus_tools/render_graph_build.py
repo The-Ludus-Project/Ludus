@@ -985,7 +985,7 @@ def compile_program(program, schemas, closure, snapshot, work, helper, tools, ta
         command += ['--graph-software-rays']
     if program.get('fragment_storage'):
         command += ['--fragment-storage']
-    if program.get('storage_texture'):
+    if program.get('storage_texture') or program.get('named_texture_count'):
         command += ['--graph-storage-texture']
     if worker_socket:
         command += ['--worker-socket', worker_socket, '--worker-identity', worker_identity]
@@ -1300,6 +1300,10 @@ def prepare_sources(manifest, helper, *, root=None, ray_path_capture=False, capt
                     require(not ray_path_capture, 'Capability', 'RayTracing',
                             'storage texture dispatch does not support ray path capture; select an image-only configuration')
                     technique['scene_interface']['storage_texture'] = True
+                if profile['named_texture_count']:
+                    require(not ray_path_capture, 'Capability', 'RayTracing',
+                            'named texture dispatch does not support ray path capture')
+                    technique['scene_interface']['named_texture_count'] = profile['named_texture_count']
                 # The capture profile links the larger capture budget into every wrapper of this build.
                 if capture_profile:
                     interface = technique['scene_interface']
@@ -1577,6 +1581,8 @@ def build_package(manifest, output, *, helper, compiler, validator=None, spirv_c
                                 record['color_input'] = True
                             if profile['storage_texture']:
                                 record['storage_texture'] = True
+                            if profile['named_texture_count']:
+                                record['named_texture_count'] = profile['named_texture_count']
                             if ray_path_capture:
                                 record['ray_path_capture'] = True
                             if capture_profile:

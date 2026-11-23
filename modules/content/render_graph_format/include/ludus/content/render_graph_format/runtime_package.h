@@ -170,6 +170,8 @@ inline constexpr foundation::uint32 NATIVE_GRAPH_RECORD_PACKAGE_VERSION = 44;
 inline constexpr foundation::uint32 RECORD_READER_PACKAGE_VERSION = 45;
 /// Default runtime generation layout. Use NATIVE_GRAPH_RECORD_PACKAGE_VERSION for a shared native record.
 inline constexpr foundation::uint32 PACKAGE_VERSION = IMAGE_LAUNCH_PACKAGE_VERSION;
+/// First package separating shader color access from launch size and carrying optional named texture mappings.
+inline constexpr foundation::uint32 SHADER_TEXTURE_ACCESS_PACKAGE_VERSION = 46;
 /// First package carrying explicit OIDN denoising quality per ray pass.
 inline constexpr foundation::uint32 DENOISING_PACKAGE_VERSION = 16;
 /// First package carrying the renderer-owned bilinear image operation.
@@ -357,7 +359,6 @@ enum class InputFormat : foundation::uint32
 static_assert(HEADER_BYTES == 104);
 static_assert(RESOURCE_RECORD_BYTES == sizeof(Resource));
 static_assert(CAMERA_RECORD_BYTES == sizeof(Camera));
-static_assert(PASS_RECORD_BYTES == sizeof(Pass));
 static_assert(UNIFORM_BINDING_RECORD_BYTES == sizeof(UniformBinding));
 static_assert(UNIFORM_BLOCK_RECORD_BYTES == sizeof(UniformBlock));
 static_assert(UNIFORM_FIELD_RECORD_BYTES == sizeof(UniformField));

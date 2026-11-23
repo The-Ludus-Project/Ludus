@@ -1692,7 +1692,7 @@ TEST_CASE("A buffer-only scene dispatch can trace more rays than there are pixel
     }
 }
 
-TEST_CASE("A fixed ray launch reads and writes a view-sized texture before scene compute samples it",
+TEST_CASE("Both ray launch modes read and write a view-sized texture before scene compute samples it",
           "[render-graph][gpu][compute-ray-tracing][sampled-color]")
 {
     GraphGpuFixture fixture{false, false};
@@ -1704,14 +1704,25 @@ TEST_CASE("A fixed ray launch reads and writes a view-sized texture before scene
         packages::rg2_scene_color_input::MakePrograms(shaders::renderer_composite::Vertex(),
                                                       shaders::renderer_composite::Fragment());
     CheckSameStage(decoded.RayCompute, compiled.RayCompute);
-    const renderer::RenderGraphPlan plan = package->GetPlan();
+    renderer::RenderGraphPlan plan = package->GetPlan();
     REQUIRE(plan.Passes.GetSize() == 2);
     REQUIRE(plan.Passes[0].Color == plan.Passes[1].SourceColor);
     REQUIRE(plan.Passes[1].SourceColor != plan.Passes[1].Color);
     REQUIRE(plan.Passes[1].VisibilityDepth == format::ABSENT);
     constexpr uint32 DISPATCH_SIDE = 8;
+    REQUIRE(plan.Passes[0].HasStorageTexture == true);
     REQUIRE(plan.Passes[0].StorageLaunchWidth == DISPATCH_SIDE);
     REQUIRE(plan.Passes[0].StorageLaunchHeight == DISPATCH_SIDE);
+
+    constexpr usize PASS_COUNT = 2;
+    StaticArray<format::Pass, PASS_COUNT> passes{{plan.Passes[0], plan.Passes[1]}};
+    SECTION("explicit launch size") {}
+    SECTION("match the color target")
+    {
+        passes[0].StorageLaunchWidth = 0;
+        passes[0].StorageLaunchHeight = 0;
+    }
+    plan.Passes = {passes.GetData(), passes.GetSize()};
 
     const auto finish = [&fixture](rhi::RasterStatus status) {
         const uint64 beginning = time::NowTicks();

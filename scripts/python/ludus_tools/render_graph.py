@@ -827,6 +827,8 @@ def _operation_resource_uses(operation):
         yield use['resource'], use['input_version'], use['output_version'] if writes else None, True if writes else None
     for use in operation.get('persistent_buffers', ()):
         yield use['resource'], use['input_version'], use['output_version'], True if use['output_version'] is not None else None
+    for use in operation.get('storage_textures', ()):
+        yield use['resource'], use['input_version'], use['output_version'], True
     for field in ('visibility', 'visibility_depth', 'source_color'):
         if field in operation:
             use = operation[field]
@@ -954,12 +956,14 @@ class _Compiler:
                 work_items = invocation.get('work_items', 0)
                 is_storage_texture = invocation.get('storage_texture', False)
                 dimensions = invocation.get('dimensions')
+                label = 'scene compute pass' if is_compute else 'ray pipeline'
                 if work_items == 0:
-                    target = self.resources[inputs['color'].resource]
-                    label = 'scene compute pass' if is_compute else 'ray pipeline'
                     _require(inputs['view'].cameras, 'CameraTarget', where, f'{label} requires an active camera',
                              port=input_mapping['view'], direction='input', expected='active camera View', actual='inactive camera View',
                              repair='Enable Active on the connected camera and give it a route to Export or Present.')
+                launch_dimensions = dimensions
+                if 'color' in inputs:
+                    target = self.resources[inputs['color'].resource]
                     _require(target['format'] == 'RGBA8Unorm' and target['samples'] == 1 and not target['presentation'],
                              'Capability', where, f'{label} requires an offscreen single-sample RGBA8Unorm target',
                              port=input_mapping['color'], direction='input', expected='offscreen RGBA8Unorm, samples=1',
@@ -993,7 +997,8 @@ class _Compiler:
                 if 'source_color' in inputs:
                     source_value = inputs['source_color']
                     resource = self.resources[source_value.resource]
-                    _require(source_value.defined and source_value.resource != inputs['color'].resource and
+                    _require(source_value.defined and
+                             ('color' not in inputs or source_value.resource != inputs['color'].resource) and
                              resource['format'] == 'RGBA8Unorm' and resource['samples'] == 1 and
                              not resource['presentation'], 'AttachmentMismatch', where,
                              'scene compute color input requires a defined, separate, offscreen RGBA8Unorm texture',
@@ -1040,20 +1045,51 @@ class _Compiler:
                          'Put the other Buffer input first or use Packed words for this configuration.')
                 attachments = {}
                 color_outputs = {}
-                if work_items == 0:
+                if 'color' in inputs:
                     source = replace(inputs['color'], defined=True) if is_storage_texture else inputs['color']
                     value = self.write(source, node, 'color', where, inputs['view'].cameras)
                     attachments['color'] = {'resource': value.resource, 'input_version': inputs['color'].version,
                                             'output_version': value.version, 'defined': value.defined,
                                             'load': node['color_load'], 'store': 'Store'}
                     color_outputs[output_mapping['color']] = value
+                if work_items == 0:
                     launch = {'view': inputs['view'].origin, 'cameras': list(inputs['view'].cameras),
                               'dimensions': launch_dimensions}
                 else:
                     launch = {'work_items': work_items}
+                storage_textures = []
+                occupied_textures = {inputs[key].resource for key in ('color', 'source_color', 'visibility', 'visibility_depth')
+                                     if key in inputs}
+                for key, port in input_mapping.items():
+                    if not key.startswith('texture:'):
+                        continue
+                    source = inputs[key]
+                    texture = self.resources[source.resource]
+                    _require(source.resource not in occupied_textures, 'MultipleWriters', where,
+                             'a shader texture must use its own allocation within this pass',
+                             port=port, direction='input', repair='Connect a different Target or remove the duplicate port.')
+                    occupied_textures.add(source.resource)
+                    _require(texture['format'] == 'RGBA8Unorm' and texture['samples'] == 1 and
+                             not texture['presentation'] and not texture['imported'],
+                             'Capability', where, 'shader read/write requires a graph-owned, single-sample RGBA8Unorm Target',
+                             port=port, direction='input', repair='Connect a dedicated offscreen Target.')
+                    _require(source.version == self.latest[source.resource], 'StaleVersion', where,
+                             'shader read/write must consume the current texture version',
+                             port=port, direction='input', repair='Connect the previous writer’s output.')
+                    if source.version == 0:
+                        texture['initialized'] = True
+                    texture['storage_texture'] = True
+                    value = self.write(replace(source, defined=True) if source.version == 0 else source,
+                                       {'texture_load': 'Load', 'texture_store': 'Store'}, 'texture', where,
+                                       inputs['view'].cameras if 'view' in inputs else (), port=port)
+                    color_outputs[output_mapping[key]] = value
+                    storage_textures.append({'port': port, 'resource': value.resource,
+                                             'input_version': source.version, 'output_version': value.version})
                 storage = {}
                 storage_outputs = {}
                 for name in sorted(set(inputs) - {'scene', 'view', 'color', 'visibility', 'visibility_depth', 'source_color'}):
+                    if name.startswith('texture:'):
+                        continue
                     buffer = inputs[name]
                     if 'stride' not in self.resources[buffer.resource]:
                         continue
@@ -1080,6 +1116,7 @@ class _Compiler:
                     **({'storage_texture': True} if is_storage_texture else {}),
                     'dependencies': sorted({v.producer for v in inputs.values() if v.producer}), 'pipeline': authored_pipeline,
                     'persistent_buffers': buffer_uses, 'buffers': storage, **texture_reads,
+                    **({'storage_textures': storage_textures} if storage_textures else {}),
                     'attachments': attachments})
                 if is_compute:
                     # Only the offline plan names the source; the numeric pass record stays RayTracing (design D1).

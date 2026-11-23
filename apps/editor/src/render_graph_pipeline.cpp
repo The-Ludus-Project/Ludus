@@ -161,6 +161,14 @@ QJsonArray ReadRows(const QTableWidget& table, const QStringList& fields)
             const QString value = choicesOrNull != nullptr ? choicesOrNull->currentText()
                                   : itemOrNull == nullptr  ? QString()
                                                            : itemOrNull->text();
+            if (fields.at(column) == QStringLiteral("access"))
+            {
+                if (choicesOrNull != nullptr && choicesOrNull->currentData().isValid() == true)
+                {
+                    record.insert(fields.at(column), choicesOrNull->currentData().toString());
+                }
+                continue;
+            }
             record.insert(fields.at(column),
                           fields.at(column) == QStringLiteral("required")
                               ? QJsonValue(itemOrNull != nullptr && itemOrNull->checkState() == Qt::Checked)
@@ -335,6 +343,19 @@ void AddCell(QTableWidget& inoutTable,
              const QString& value,
              const QString& kind)
 {
+    if (field == QStringLiteral("access"))
+    {
+        QComboBox* access = new QComboBox(&inoutTable);
+        access->setObjectName(QStringLiteral("renderGraphWritableTextureAccess"));
+        access->setAccessibleName(QStringLiteral("Texture access"));
+        access->addItem(QStringLiteral("Store returned RGB"));
+        access->addItem(QStringLiteral("Shader read/write"), QStringLiteral("ShaderReadWrite"));
+        access->setCurrentIndex(value == QStringLiteral("ShaderReadWrite") ? 1 : 0);
+        access->setToolTip(QStringLiteral("Store returned RGB at the launch pixel, or bind this texture by its "
+                                          "input port name for shader reads and writes."));
+        inoutTable.setCellWidget(row, column, access);
+        return;
+    }
     const QStringList choices = GetCellChoices(field, kind, inoutTable.objectName());
     if (choices.isEmpty() == false)
     {
@@ -365,16 +386,18 @@ RenderGraphPipelineEditor::RenderGraphPipelineEditor(const QJsonObject& node, QW
                           {QStringLiteral("id"), QStringLiteral("type"), QStringLiteral("required")},
                           {QStringLiteral("input"), QStringLiteral("ColorTexture"), QStringLiteral("true")})),
       mOutputs(createTable(QStringLiteral("outputs"),
-                           {QStringLiteral("id"),
-                            QStringLiteral("type"),
-                            QStringLiteral("format"),
-                            QStringLiteral("load"),
-                            QStringLiteral("store")},
-                           {QStringLiteral("resource"),
-                            QStringLiteral("ColorTexture"),
-                            QStringLiteral("RGBA8Unorm"),
-                            QStringLiteral("Clear"),
-                            QStringLiteral("Store")})),
+                           QStringList{QStringLiteral("id"),
+                                       QStringLiteral("type"),
+                                       QStringLiteral("format"),
+                                       QStringLiteral("load"),
+                                       QStringLiteral("store")} +
+                               (UsesRayLaunch(node) == true ? QStringList{QStringLiteral("access")} : QStringList{}),
+                           QStringList{QStringLiteral("resource"),
+                                       QStringLiteral("ColorTexture"),
+                                       QStringLiteral("RGBA8Unorm"),
+                                       QStringLiteral("Clear"),
+                                       QStringLiteral("Store")} +
+                               (UsesRayLaunch(node) == true ? QStringList{QString()} : QStringList{}))),
       mShaders(createTable(QStringLiteral("shaders"),
                            {QStringLiteral("id"), QStringLiteral("stage"), QStringLiteral("program")},
                            {QStringLiteral("shader"),
@@ -405,6 +428,11 @@ RenderGraphPipelineEditor::RenderGraphPipelineEditor(const QJsonObject& node, QW
             connectChoices(*table, row);
         }
         connect(table, &QTableWidget::cellChanged, this, [this]() { publishEdit(); });
+    }
+    if (UsesRayLaunch(mNode) == true &&
+        mNode.value(QStringLiteral("invocation")).toObject().value(QStringLiteral("storage_texture")).toBool() == true)
+    {
+        addColorOutputEditor();
     }
     for (const QString& name : {QStringLiteral("state"), QStringLiteral("invocation")})
     {
@@ -678,11 +706,19 @@ RenderGraphPipelineEditor::createTable(const QString& name, const QStringList& f
     }
     if (name == QStringLiteral("outputs"))
     {
-        table->setHorizontalHeaderLabels({QStringLiteral("Resource"),
-                                          QStringLiteral("Type"),
-                                          QStringLiteral("Format"),
-                                          QStringLiteral("Load"),
-                                          QStringLiteral("Store")});
+        QStringList headers{QStringLiteral("Resource"),
+                            QStringLiteral("Type"),
+                            QStringLiteral("Format"),
+                            QStringLiteral("Load"),
+                            QStringLiteral("Store")};
+        const int32 accessColumn = static_cast<int32>(fields.indexOf(QStringLiteral("access")));
+        if (accessColumn >= 0)
+        {
+            headers.append(QStringLiteral("Texture access"));
+            // Keep the access choice next to the port name in a narrow Properties dock.
+            table->horizontalHeader()->moveSection(accessColumn, 1);
+        }
+        table->setHorizontalHeaderLabels(headers);
     }
     const auto connectResourceType = [table, fields](int32 row) {
         const int32 typeColumn = static_cast<int32>(fields.indexOf(QStringLiteral("type")));
@@ -702,6 +738,41 @@ RenderGraphPipelineEditor::createTable(const QString& name, const QStringList& f
             format->clear();
             format->addItem(GetResourceFormat(value));
         });
+        const int32 accessColumn = static_cast<int32>(fields.indexOf(QStringLiteral("access")));
+        if (accessColumn >= 0)
+        {
+            QComboBox* access = qobject_cast<QComboBox*>(table->cellWidget(row, accessColumn));
+            QComboBox* load = qobject_cast<QComboBox*>(
+                table->cellWidget(row, static_cast<int32>(fields.indexOf(QStringLiteral("load")))));
+            QComboBox* store = qobject_cast<QComboBox*>(
+                table->cellWidget(row, static_cast<int32>(fields.indexOf(QStringLiteral("store")))));
+            const auto showAccess = [access, load, store]() {
+                const bool isShaderWritable = access->isEnabled() == true && access->currentData().isValid() == true;
+                load->setEnabled(isShaderWritable == false);
+                store->setEnabled(isShaderWritable == false);
+            };
+            access->setEnabled(type->currentText() == QStringLiteral("ColorTexture"));
+            showAccess();
+            connect(type, &QComboBox::currentTextChanged, access, [access, load, showAccess](const QString& value) {
+                const QSignalBlocker accessBlocker(access);
+                const QSignalBlocker loadBlocker(load);
+                if (value != QStringLiteral("ColorTexture") && access->currentData().isValid() == true)
+                {
+                    access->setCurrentIndex(0);
+                    load->setCurrentText(QStringLiteral("Clear"));
+                }
+                access->setEnabled(value == QStringLiteral("ColorTexture"));
+                showAccess();
+            });
+            connect(access, &QComboBox::currentIndexChanged, load, [access, load, store, showAccess]() {
+                const QSignalBlocker loadBlocker(load);
+                const QSignalBlocker storeBlocker(store);
+                load->setCurrentText(access->currentData().isValid() == true ? QStringLiteral("Load")
+                                                                             : QStringLiteral("Clear"));
+                store->setCurrentText(QStringLiteral("Store"));
+                showAccess();
+            });
+        }
     };
     if (name == QStringLiteral("outputs"))
     {
@@ -841,6 +912,67 @@ RenderGraphPipelineEditor::createTable(const QString& name, const QStringList& f
     connect(table->model(), &QAbstractItemModel::rowsInserted, empty, showRows);
     connect(table->model(), &QAbstractItemModel::rowsRemoved, empty, showRows);
     return table;
+}
+
+void RenderGraphPipelineEditor::addColorOutputEditor()
+{
+    QWidget* panel = mOutputs->parentWidget();
+    QWidget* controls = new QWidget(panel);
+    QFormLayout* form = new QFormLayout(controls);
+    form->setContentsMargins(0, 0, 0, 0);
+    form->setRowWrapPolicy(QFormLayout::WrapLongRows);
+    QComboBox* access = new QComboBox(controls);
+    access->setObjectName(QStringLiteral("renderGraphColorOutputAccess"));
+    access->setProperty("renderGraphField", QStringLiteral("invocation.storage_texture"));
+    access->addItem(QStringLiteral("Store returned RGB"));
+    access->addItem(QStringLiteral("Shader read/write"));
+    const QJsonObject current = mNode.value(QStringLiteral("invocation")).toObject();
+    access->setCurrentIndex(current.value(QStringLiteral("storage_texture")).toBool() == true ? 1 : 0);
+    access->setEnabled(current.contains(QStringLiteral("work_items")) == false);
+    access->setToolTip(
+        QStringLiteral("Store returned RGB at the launch pixel, or read and write the connected "
+                       "color target from Slang using GraphStorageTexture. Set launch size in Invocation."));
+    form->addRow(QStringLiteral("Legacy color output"), access);
+    static_cast<QVBoxLayout*>(panel->layout())->insertWidget(0, controls);
+    connect(access, &QComboBox::currentIndexChanged, this, [this](int32 index) {
+        QJsonObject invocation = mNode.value(QStringLiteral("invocation")).toObject();
+        updateColorOutputAccess(invocation, index == 1);
+        mNode.insert(QStringLiteral("invocation"), invocation);
+        publishEdit();
+    });
+}
+
+void RenderGraphPipelineEditor::updateColorOutputAccess(QJsonObject& inoutInvocation, bool isShaderWritable)
+{
+    const QString key = QStringLiteral("storage_texture");
+    if (inoutInvocation.value(key).toBool() == isShaderWritable)
+    {
+        return;
+    }
+    if (isShaderWritable == true)
+    {
+        inoutInvocation.insert(key, true);
+    }
+    else
+    {
+        inoutInvocation.remove(key);
+    }
+    const QStringList fields = mOutputs->property("fields").toStringList();
+    const int32 typeColumn = static_cast<int32>(fields.indexOf(QStringLiteral("type")));
+    const int32 loadColumn = static_cast<int32>(fields.indexOf(QStringLiteral("load")));
+    const int32 accessColumn = static_cast<int32>(fields.indexOf(QStringLiteral("access")));
+    for (int32 row = 0; row < mOutputs->rowCount(); ++row)
+    {
+        const QComboBox* typeOrNull = qobject_cast<QComboBox*>(mOutputs->cellWidget(row, typeColumn));
+        QComboBox* loadOrNull = qobject_cast<QComboBox*>(mOutputs->cellWidget(row, loadColumn));
+        const QComboBox* accessOrNull = qobject_cast<QComboBox*>(mOutputs->cellWidget(row, accessColumn));
+        if ((accessOrNull == nullptr || accessOrNull->currentData().isValid() == false) && typeOrNull != nullptr &&
+            loadOrNull != nullptr && typeOrNull->currentText() == QStringLiteral("ColorTexture"))
+        {
+            const QSignalBlocker blocker(loadOrNull);
+            loadOrNull->setCurrentText(isShaderWritable == true ? QStringLiteral("Load") : QStringLiteral("Clear"));
+        }
+    }
 }
 
 void RenderGraphPipelineEditor::addProperties(QFormLayout& outForm, const QString& name)
@@ -988,15 +1120,11 @@ void RenderGraphPipelineEditor::addProperties(QFormLayout& outForm, const QStrin
             {
                 mode->addItem(QStringLiteral("Work items"));
             }
-            const int32 storageTextureIndex = mode->count();
-            mode->addItem(QStringLiteral("Independent storage texture"));
-            const bool isBufferDispatch = key == QStringLiteral("work_items");
-            const bool hasStorageTexture = properties.value(QStringLiteral("storage_texture")).toBool();
+            const bool hasWorkItemLaunch = key == QStringLiteral("work_items");
             const bool isAutomatic = value.toString() == QStringLiteral("ColorTarget");
-            mode->setCurrentIndex(hasStorageTexture == true  ? storageTextureIndex
-                                  : isBufferDispatch == true ? WORK_ITEMS_INDEX
-                                  : isAutomatic == true      ? MATCH_COLOR_TARGET_INDEX
-                                                             : EXPLICIT_SIZE_INDEX);
+            mode->setCurrentIndex(hasWorkItemLaunch == true ? WORK_ITEMS_INDEX
+                                  : isAutomatic == true     ? MATCH_COLOR_TARGET_INDEX
+                                                            : EXPLICIT_SIZE_INDEX);
             layout->addWidget(mode);
 
             QWidget* dimensions = new QWidget(row);
@@ -1018,76 +1146,57 @@ void RenderGraphPipelineEditor::addProperties(QFormLayout& outForm, const QStrin
             QSpinBox* workItems = new QSpinBox(row);
             workItems->setObjectName(QStringLiteral("sceneWorkItemCount"));
             workItems->setRange(1, static_cast<int32>(content::render_graph_format::MAX_SCENE_WORK_ITEMS));
-            workItems->setValue(isBufferDispatch == true ? value.toInt() : 1);
+            workItems->setValue(hasWorkItemLaunch == true ? value.toInt() : 1);
             layout->addWidget(dimensions);
             layout->addWidget(workItems);
 
             QLabel* help = new QLabel(row);
             help->setWordWrap(true);
             layout->addWidget(help);
-            const auto showMode = [dimensions, workItems, help, isSceneCompute, storageTextureIndex](int32 index) {
-                const bool isStorageDispatch = index == storageTextureIndex;
-                const bool isWorkItems = isSceneCompute == true && index == WORK_ITEMS_INDEX;
-                dimensions->setVisible(index == EXPLICIT_SIZE_INDEX || isStorageDispatch == true);
-                workItems->setVisible(isWorkItems);
+            const auto showMode = [dimensions, workItems, help, isSceneCompute](int32 index) {
+                const bool isBufferDispatch = isSceneCompute == true && index == WORK_ITEMS_INDEX;
+                dimensions->setVisible(index == EXPLICIT_SIZE_INDEX);
+                workItems->setVisible(isBufferDispatch);
                 help->setText(
-                    isStorageDispatch == true
-                        ? QStringLiteral("Dispatch [width, height, 1]. Write to GraphStorageTexture. "
-                                         "The connected texture keeps its own size and uses Load/Store.")
-                    : isWorkItems == true ? QStringLiteral("Dispatch this many work items. Use Scene and Buffer ports. "
-                                                           "Remove View and texture ports before building.")
+                    isBufferDispatch == true
+                        ? QStringLiteral("Dispatch this many work items with Scene, buffers and shader-writable "
+                                         "textures. Remove View and automatic color output.")
                     : index == EXPLICIT_SIZE_INDEX
-                        ? QStringLiteral("Dispatch [width, height, 1]. Store returned colors at matching texels "
-                                         "inside the target.")
+                        ? QStringLiteral("Dispatch width × height invocations. Bound textures keep their own sizes.")
                         : QStringLiteral("Dispatch one invocation per texel in the connected color target."));
             };
-            const auto applyLaunch = [this, mode, dimensions, workItems, isSceneCompute, storageTextureIndex]() {
+            QComboBox* colorOutputOrNull = findChild<QComboBox*>(QStringLiteral("renderGraphColorOutputAccess"));
+            const auto applyLaunch = [this, mode, dimensions, workItems, isSceneCompute, colorOutputOrNull]() {
                 QJsonObject invocation = mNode.value(QStringLiteral("invocation")).toObject();
                 const int32 index = mode->currentIndex();
-                const bool isStorageDispatch = index == storageTextureIndex;
-                const bool hasPreviousStorageDispatch = invocation.value(QStringLiteral("storage_texture")).toBool();
-                invocation.remove(QStringLiteral("storage_texture"));
-                if (isSceneCompute == true && index == WORK_ITEMS_INDEX)
+                const bool isBufferDispatch = isSceneCompute == true && index == WORK_ITEMS_INDEX;
+                if (isBufferDispatch == true)
                 {
                     invocation.remove(QStringLiteral("dimensions"));
                     invocation.insert(QStringLiteral("work_items"), workItems->value());
+                    updateColorOutputAccess(invocation, false);
                 }
                 else
                 {
                     invocation.remove(QStringLiteral("work_items"));
                     QJsonValue size(QStringLiteral("ColorTarget"));
-                    if (index == EXPLICIT_SIZE_INDEX || isStorageDispatch == true)
+                    if (index == EXPLICIT_SIZE_INDEX)
                     {
                         QJsonArray values;
                         for (const QSpinBox* field : dimensions->findChildren<QSpinBox*>())
                         {
                             values.append(field->value());
                         }
-                        if (isStorageDispatch == true)
-                        {
-                            invocation.insert(QStringLiteral("storage_texture"), true);
-                        }
                         size = values;
                     }
                     invocation.insert(QStringLiteral("dimensions"), size);
                 }
-                if (hasPreviousStorageDispatch != isStorageDispatch)
+                if (colorOutputOrNull != nullptr)
                 {
-                    const QStringList fields = mOutputs->property("fields").toStringList();
-                    const int32 typeColumn = static_cast<int32>(fields.indexOf(QStringLiteral("type")));
-                    const int32 loadColumn = static_cast<int32>(fields.indexOf(QStringLiteral("load")));
-                    for (int32 row = 0; row < mOutputs->rowCount(); ++row)
-                    {
-                        const QComboBox* typeOrNull = qobject_cast<QComboBox*>(mOutputs->cellWidget(row, typeColumn));
-                        QComboBox* loadOrNull = qobject_cast<QComboBox*>(mOutputs->cellWidget(row, loadColumn));
-                        if (typeOrNull != nullptr && loadOrNull != nullptr &&
-                            typeOrNull->currentText() == QStringLiteral("ColorTexture"))
-                        {
-                            const QSignalBlocker blocker(loadOrNull);
-                            loadOrNull->setCurrentText(isStorageDispatch == true ? QStringLiteral("Load")
-                                                                                 : QStringLiteral("Clear"));
-                        }
-                    }
+                    const QSignalBlocker blocker(colorOutputOrNull);
+                    colorOutputOrNull->setCurrentIndex(
+                        invocation.value(QStringLiteral("storage_texture")).toBool() == true ? 1 : 0);
+                    colorOutputOrNull->setEnabled(isBufferDispatch == false);
                 }
                 mNode.insert(QStringLiteral("invocation"), invocation);
                 publishEdit();

@@ -176,6 +176,7 @@ def lower_plan(package, configuration):
     has_color_input = any(operation['kind'] == 'RayTracing' and 'source_color' in operation
                           for operation in operations)
     has_storage_texture = any(operation.get('storage_texture', False) for operation in operations)
+    named_texture_count = max((len(operation.get('storage_textures', ())) for operation in operations), default=0)
     ray_colors = {}
     for operation in operations:
         if operation['kind'] == 'Upscale':
@@ -226,11 +227,14 @@ def lower_plan(package, configuration):
                               'scene compute color input must read the current color output of an earlier ordered ray or scene compute pass')
             if color is not None:
                 ray_colors[color['resource']] = color['output_version']
+            for texture in operation.get('storage_textures', ()):
+                ray_colors[texture['resource']] = texture['output_version']
             recipes = [recipe for recipe in package.get('recipes', []) if recipe['technique'] == ray.TECHNIQUE and
                        plan['configuration'] in recipe.get('configurations', (plan['configuration'],)) and
                        recipe.get('visibility_buffer', False) == ('visibility' in operation) and
                        recipe.get('color_input', False) == has_color_input and
                        recipe.get('storage_texture', False) == has_storage_texture and
+                       recipe.get('named_texture_count', 0) == named_texture_count and
                        recipe.get('native_ray_queries', True) == ray.requires_native_queries(plan)]
             variants = recipes[0].get('ray_programs', [list(ray.get_callback_variant(operation['pipeline']))]) if recipes else [list(ray.get_callback_variant(operation['pipeline']))]
             variant = list(ray.get_callback_variant(operation['pipeline']))
@@ -242,7 +246,7 @@ def lower_plan(package, configuration):
             persistent_slots[buffers.NATIVE_RECORD_SLOT] = native_slot_resource
             for use in operation.get('persistent_buffers', []):
                 persistent_slots[use.get('binding_slot', use['slot'])] = resources.index(use['resource'])
-            pass_records.append({'Program': 'RayTracing', 'Camera': cameras.index(operation['view']) if color else ABSENT,
+            pass_records.append({'Program': 'RayTracing', 'Camera': cameras.index(operation['view']) if 'view' in operation else ABSENT,
                 'Color': resources.index(color['resource']) if color else ABSENT, 'Depth': ABSENT,
                 'ColorLoad': color['load'] if color else 'Discard', 'ColorStore': 'Store' if color else 'Discard',
                 'DepthLoad': 'Discard', 'DepthStore': 'Discard', 'AllowsRepeatedCoverage': 0, 'SceneData': operation.get('scene_data', graph.scene_bundle.ALL_DATA),
@@ -316,10 +320,13 @@ def lower_plan(package, configuration):
             build.require(not any(field in operation for field in ('accumulation', 'denoising', 'tone_mapping')),
                           'Capability', operation['id'],
                           'storage texture results bypass image processing; sample the texture in a later image pass')
-            record['StorageLaunchWidth'], record['StorageLaunchHeight'] = operation['dimensions'][:2]
-        elif (operation['kind'] == 'RayTracing' and 'dimensions' in operation and
-              operation['pipeline']['invocation']['dimensions'] != 'ColorTarget'):
+        if (operation['kind'] == 'RayTracing' and 'dimensions' in operation and
+                operation['pipeline']['invocation']['dimensions'] != 'ColorTarget'):
             record['ImageLaunchWidth'], record['ImageLaunchHeight'] = operation['dimensions'][:2]
+        if operation.get('storage_texture', False):
+            record['HasStorageTexture'] = True
+        if operation.get('storage_textures'):
+            record['ShaderTextures'] = [resources.index(texture['resource']) for texture in operation['storage_textures']]
         for attachment in operation.get('attachments', {}).values():
             build.require(not plan['resources'][attachment['resource']].get('storage_texture') or
                           operation.get('storage_texture', False), 'Capability', operation['id'],
@@ -394,6 +401,8 @@ CAPTURE_PROFILE_PACKAGE_MAGIC = 0x4352554C
 PACKAGE_VERSION = 43
 NATIVE_GRAPH_RECORD_PACKAGE_VERSION = 44
 RECORD_READER_PACKAGE_VERSION = 45
+# Version 46 separates color access from dispatch size and can append named texture mappings.
+SHADER_TEXTURE_ACCESS_PACKAGE_VERSION = 46
 RAY_STAGE_PROGRAMS = ('RayTracing', 'NativeRayStages', 'RecordReadCompute')
 # render_graph_format::DisplayCurve codes, by index; zero (Reinhard) also marks a pass without a ToneMap.
 DISPLAY_CURVE_CODES = ('Reinhard', 'PbrNeutral')
@@ -541,7 +550,8 @@ def _runtime_contents(path, configuration):
     plan, resources, passes, cameras = lower_plan(package, configuration)
     has_visibility = any(p.get('Visibility', ABSENT) != ABSENT for p in passes)
     has_color_input = any(p['Program'] == 'RayTracing' and p['SourceColor'] != ABSENT for p in passes)
-    has_storage_texture = any('StorageLaunchWidth' in p for p in passes)
+    has_storage_texture = any(p.get('HasStorageTexture', False) for p in passes)
+    named_texture_count = max((len(p.get('ShaderTextures', ())) for p in passes), default=0)
     selected_techniques = set(plan['techniques'])
     ray_recipes = [recipe for recipe in package['recipes'] if ray.TECHNIQUE in selected_techniques and
                    recipe['technique'] == ray.TECHNIQUE and
@@ -549,6 +559,7 @@ def _runtime_contents(path, configuration):
                    recipe.get('visibility_buffer', False) == has_visibility and
                    recipe.get('color_input', False) == has_color_input and
                    recipe.get('storage_texture', False) == has_storage_texture and
+                   recipe.get('named_texture_count', 0) == named_texture_count and
                    recipe.get('native_ray_queries', True) == ray.requires_native_queries(plan)]
     stages = {}
     roles = program_roles(package)
@@ -795,6 +806,23 @@ def _uniform_constants(contents):
     return lines
 
 
+def _format_plan_field(field, value, kinds):
+    if field == 'ShaderTextures':
+        slots = value + [ABSENT] * (buffers.MAX_TEXTURES - len(value))
+        return '{' + ', '.join('format::ABSENT' if slot == ABSENT else str(slot) for slot in slots) + '}'
+    if field == 'Target':
+        return 'format::ShaderTarget::' + TARGET_NAMES[value]
+    if field == 'Program' and PROGRAM_CODES[value] >= LEGACY_PROGRAM_COUNT:
+        return 'static_cast<format::Technique>(' + str(PROGRAM_CODES[value]) + ')'
+    if field == 'ToneMappingExposure':
+        return str(value) + 'F'
+    if field == 'HasStorageTexture':
+        return 'true'
+    if isinstance(value, str):
+        return 'format::' + kinds[field] + '::' + value
+    return 'format::ABSENT' if value == ABSENT else str(value)
+
+
 def _emit_runtime(path, destination, *, configuration='Default', name='DefaultGraph'):
     """Atomically emit a compiled header from a fully integrity-checked generation.
 
@@ -845,16 +873,8 @@ def _emit_runtime(path, destination, *, configuration='Default', name='DefaultGr
             for field, item in value.items():
                 if field in ('schema', 'layouts'):
                     continue
-                if field == 'Target':
-                    cells.append('format::ShaderTarget::' + TARGET_NAMES[item])
-                elif field == 'Program' and PROGRAM_CODES[item] >= LEGACY_PROGRAM_COUNT:
-                    cells.append('static_cast<format::Technique>(' + str(PROGRAM_CODES[item]) + ')')
-                elif field == 'ToneMappingExposure':
-                    cells.append(str(item) + 'F')
-                elif isinstance(item, str):
-                    cells.append('format::' + kinds[field] + '::' + item)
-                else:
-                    cells.append('format::ABSENT' if item == ABSENT else str(item))
+                cell = _format_plan_field(field, item, kinds)
+                cells.append(f'.{field} = {cell}' if label == 'PASSES' else cell)
             lines.append('        {' + ', '.join(cells) + '},')
         lines += ['    },', '};']
     lines += ['inline constexpr foundation::StaticArray<format::Camera, CAMERA_COUNT> CAMERAS', '{', '    {']
@@ -1035,7 +1055,10 @@ def encode_runtime_package(contents, *, magic=PACKAGE_MAGIC):
     stages = sorted(contents['artifacts'].items(), key=lambda item: item[1]['ordinal'])
     record_stride = contents.get('native_record_stride', 0)
     reader_mask = contents.get('record_reader_mask', 0)
-    version = (RECORD_READER_PACKAGE_VERSION if reader_mask else
+    has_named_textures = any(p.get('ShaderTextures') for p in contents['passes'])
+    has_shader_texture_access = has_named_textures or any(p.get('HasStorageTexture') for p in contents['passes'])
+    version = (SHADER_TEXTURE_ACCESS_PACKAGE_VERSION if has_shader_texture_access else
+               RECORD_READER_PACKAGE_VERSION if reader_mask else
                NATIVE_GRAPH_RECORD_PACKAGE_VERSION if record_stride else PACKAGE_VERSION)
     data = bytearray(u32(magic, version, len(contents['resources']), len(contents['passes']),
                          len(contents['camera_targets']), contents['uniform_values'], len(contents['bindings']),
@@ -1054,7 +1077,7 @@ def encode_runtime_package(contents, *, magic=PACKAGE_MAGIC):
         data += u32(p.get('DenoisingQuality', 0))
         data += u32(ray.TRAVERSAL_CODES.index(p.get('Traversal', 'NativeQuery')))
         data += u32(DISPLAY_CURVE_CODES.index(p.get('ToneMappingCurve', 'Reinhard')), p.get('WorkItemCount', 0))
-        data += u32(p.get('StorageLaunchWidth', 0), p.get('StorageLaunchHeight', 0))
+        data += u32(int(p.get('HasStorageTexture', False)), 0)
         data += u32(p.get('ImageLaunchWidth', 0), p.get('ImageLaunchHeight', 0))
     for b in contents['bindings']:
         data += u32(PROGRAM_CODES[b['Program']], b['Slot'], VISIBILITY[b['Stages']], b['ValueOffset'], b['ValueCount'])
@@ -1091,9 +1114,9 @@ def encode_runtime_package(contents, *, magic=PACKAGE_MAGIC):
                 data += u32(int(slot), texture['sampler'], len(text)) + text + bytes(-len(text) % 4)
         for blob in (entry, item['bytes']):
             data += blob + bytes(-len(blob) % 4)
-    if record_stride:
+    if version >= NATIVE_GRAPH_RECORD_PACKAGE_VERSION:
         data += u32(record_stride)
-    if reader_mask:
+    if version >= RECORD_READER_PACKAGE_VERSION:
         data += u32(reader_mask)
     storage = contents.get('storage_buffers', [])
     data += u32(len(storage))
@@ -1117,6 +1140,10 @@ def encode_runtime_package(contents, *, magic=PACKAGE_MAGIC):
         build.require(0 < len(label) <= MAX_PASS_NAME_BYTES and b'\0' not in label,
                       'Capacity', operation['id'], 'pass debug name exceeds the runtime UTF-8 bound')
         data += u32(len(label)) + label + bytes(-len(label) % 4)
+    if has_named_textures:
+        for p in contents['passes']:
+            slots = p.get('ShaderTextures', [])
+            data += u32(*slots, *([ABSENT] * (buffers.MAX_TEXTURES - len(slots))))
     build.require(len(data) <= MAX_RUNTIME_BYTES, 'Capacity', 'runtime package', 'runtime generation exceeds 16 MiB')
     return bytes(data)
 

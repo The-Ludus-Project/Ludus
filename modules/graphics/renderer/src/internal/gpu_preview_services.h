@@ -622,6 +622,15 @@ usize MakeGpuComputeBindings(
         const uint32 slot = state.ComputeBindings[index].Binding;
         rhi::RasterBindingResource& binding = outBindings[index];
         binding.Binding = slot;
+        constexpr uint32 FIRST_TEXTURE = content::render_graph_format::FIRST_SHADER_TEXTURE_BINDING;
+        if (slot >= FIRST_TEXTURE && slot - FIRST_TEXTURE < state.ShaderTextureCount)
+        {
+            const usize textureSlot = slot - FIRST_TEXTURE;
+            const internal::GpuPreviewShaderTexture& texture = job.ShaderTextures[textureSlot];
+            binding.Texture =
+                rhi::IsNull(texture.Texture) == true ? state.DefaultShaderTextures[textureSlot].View : texture.View;
+            continue;
+        }
         switch (slot)
         {
             case 0:
@@ -716,11 +725,25 @@ usize MakeGpuComputeBindings(
     }
     return state.ComputeBindingCount;
 }
+Status PollGraphShaderTextureView(rhi::DeviceHandle device, internal::GpuPreviewShaderTexture& inoutTexture) noexcept
+{
+    Status status = rhi::GetStatus(device, inoutTexture.Texture);
+    if (status == Status::Ready && inoutTexture.HasView == false)
+    {
+        rhi::TextureViewDescription view;
+        view.IsStorage = true;
+        status = rhi::CreateTextureView(device, inoutTexture.Texture, view, inoutTexture.View);
+        inoutTexture.HasView = Accepted(status);
+    }
+    return status == Status::Ready ? rhi::GetStatus(device, inoutTexture.View) : status;
+}
+
 Status PollGpuJob(rhi::DeviceHandle device, GpuPreviewState& inoutState, GpuPreviewRecord& inoutJob) noexcept
 {
     if (inoutJob.Setup == Status::Pending)
     {
-        const bool hasImage = inoutJob.WorkItemCount == 0 && rhi::IsNull(inoutJob.StorageTexture) == true;
+        const bool hasImage = inoutJob.WorkItemCount == 0 && rhi::IsNull(inoutJob.StorageTexture) == true &&
+                              inoutJob.HasShaderOutputsOnly == false;
         const rhi::BufferHandle buffers[]{inoutJob.Data,
                                           inoutJob.Texels,
                                           inoutJob.Parameters,
@@ -844,6 +867,18 @@ Status PollGpuJob(rhi::DeviceHandle device, GpuPreviewState& inoutState, GpuPrev
             (inoutState.HasVisibilityBuffer == false || rhi::IsNull(inoutJob.VisibilityTexture) == false))
         {
             const Status created = [&]() noexcept {
+                for (uint32 slot = 0; slot < inoutState.ShaderTextureCount; ++slot)
+                {
+                    internal::GpuPreviewShaderTexture& texture = inoutJob.ShaderTextures[slot];
+                    if (rhi::IsNull(texture.Texture) == false)
+                    {
+                        const Status ready = PollGraphShaderTextureView(device, texture);
+                        if (ready != Status::Ready)
+                        {
+                            return ready;
+                        }
+                    }
+                }
                 // Caller-owned buffers bound by the job must be ready before its bindings snapshot them.
                 for (usize slot = 0; inoutState.HasPersistentBuffers == true && slot < internal::GPU_GRAPH_BUFFER_COUNT;
                      ++slot)
@@ -1056,6 +1091,12 @@ void Renderer::State::DropGpuPreview(usize slot) noexcept
     static_cast<void>(rhi::Destroy(Device, job.VisibilityDepthView));
     static_cast<void>(rhi::Destroy(Device, job.ColorInputView));
     static_cast<void>(rhi::Destroy(Device, job.StorageTextureView));
+    for (internal::GpuPreviewShaderTexture& texture : job.ShaderTextures)
+    {
+        static_cast<void>(rhi::Destroy(Device, texture.View));
+        texture = {};
+    }
+    job.HasShaderOutputsOnly = false;
     job.VisibilityTexture = {};
     static_cast<void>(rhi::Destroy(Device, job.ImageBindings));
     static_cast<void>(rhi::Destroy(Device, job.NativeScene));
@@ -1151,6 +1192,11 @@ void Renderer::State::ClearGpuPreview() noexcept
     static_cast<void>(rhi::Destroy(Device, state.DefaultColorInput));
     static_cast<void>(rhi::Destroy(Device, state.DefaultStorageTextureView));
     static_cast<void>(rhi::Destroy(Device, state.DefaultStorageTexture));
+    for (internal::GpuPreviewShaderTexture& texture : state.DefaultShaderTextures)
+    {
+        static_cast<void>(rhi::Destroy(Device, texture.View));
+        static_cast<void>(rhi::Destroy(Device, texture.Texture));
+    }
     GpuPreview.Reset();
 }
 Status Renderer::EnableGpuPreview(const rhi::RasterShaderDescription& compute,
@@ -1205,6 +1251,7 @@ Status Renderer::EnableGpuPreview(const rhi::RasterShaderDescription& compute,
         kernelBindings = kernelBindings.first(kernelBindings.size() - 1);
         return bindingOrNull;
     };
+    namespace format = content::render_graph_format;
     const rhi::RasterBinding* skyBindingOrNull =
         peel(LUDUS_GRAPH_ATMOSPHERE_SKY_BINDING, rhi::RasterBindingKind::StorageRead, LUDUS_GPU_PREVIEW_VECTOR_BYTES);
     const rhi::RasterBinding* failureBindingOrNull =
@@ -1215,6 +1262,29 @@ Status Renderer::EnableGpuPreview(const rhi::RasterShaderDescription& compute,
     const rhi::RasterBinding* aerialBindingOrNull = peel(LUDUS_GRAPH_AERIAL_PERSPECTIVE_BINDING,
                                                          rhi::RasterBindingKind::StorageRead,
                                                          LUDUS_GPU_PREVIEW_VECTOR_BYTES);
+    uint32 shaderTextureCount = 0;
+    for (const rhi::RasterBinding& binding : kernelBindings)
+    {
+        if (binding.Binding == format::FIRST_SHADER_TEXTURE_BINDING &&
+            binding.Kind == rhi::RasterBindingKind::StorageTexture2DReadWrite)
+        {
+            shaderTextureCount = kernelBindings.back().Binding - format::FIRST_SHADER_TEXTURE_BINDING + 1;
+            break;
+        }
+    }
+    if (shaderTextureCount > format::MAX_SHADER_TEXTURES)
+    {
+        return Status::InvalidDescription;
+    }
+    for (uint32 remaining = shaderTextureCount; remaining != 0; --remaining)
+    {
+        if (peel(format::FIRST_SHADER_TEXTURE_BINDING + remaining - 1,
+                 rhi::RasterBindingKind::StorageTexture2DReadWrite,
+                 0) == nullptr)
+        {
+            return Status::InvalidDescription;
+        }
+    }
     const bool hasStorageTexture =
         kernelBindings.empty() == false &&
         kernelBindings.back().Kind == rhi::RasterBindingKind::StorageTexture2DReadWrite &&
@@ -1245,7 +1315,6 @@ Status Renderer::EnableGpuPreview(const rhi::RasterShaderDescription& compute,
     }
     const usize baseBindingCount = GPU_COMPUTE_BINDINGS.GetSize() - (hasNativeRayQueries == true ? 0 : 1);
     // Frozen kernel ABI: consume independently cooked target reflection, never invent it.
-    namespace format = content::render_graph_format;
     const bool hasVisibilityBuffer =
         kernelBindings.size() >= baseBindingCount + LUDUS_GRAPH_VISIBILITY_TEXTURE_COUNT &&
         kernelBindings[kernelBindings.size() - LUDUS_GRAPH_VISIBILITY_TEXTURE_COUNT].Kind ==
@@ -1255,7 +1324,7 @@ Status Renderer::EnableGpuPreview(const rhi::RasterShaderDescription& compute,
     const usize storageBindingCount = baseBindingCount + options.StorageBuffers.GetSize();
     const bool hasPersistentBuffers = options.StorageBuffers.IsEmpty() == true &&
                                       bufferBindingCount == baseBindingCount + internal::GPU_GRAPH_BUFFER_COUNT;
-    if (((hasColorInput == true || hasStorageTexture == true) &&
+    if (((hasColorInput == true || hasStorageTexture == true || shaderTextureCount != 0) &&
          (hasPersistentBuffers == false || hasVisibilityBuffer == true)) ||
         options.StorageBuffers.IsValid() == false || options.StorageBuffers.GetSize() > format::MAX_STORAGE_BUFFERS ||
         (hasPersistentBuffers == false && bufferBindingCount != storageBindingCount) || compute.WorkgroupSize[0] == 0 ||
@@ -1390,12 +1459,14 @@ Status Renderer::EnableGpuPreview(const rhi::RasterShaderDescription& compute,
     state->HasVisibilityBuffer = hasVisibilityBuffer;
     state->HasColorInput = hasColorInput;
     state->HasStorageTexture = hasStorageTexture;
+    state->ShaderTextureCount = shaderTextureCount;
     state->HasRayPathCapture = captureBindingOrNull != nullptr;
     state->HasLtcTable = ltcTableBindingOrNull != nullptr;
     state->HasFailureSummary = failureBindingOrNull != nullptr;
     const usize colorInputBytes = hasColorInput == true ? sizeof(uint32) : 0;
     const usize ltcBytes = state->HasLtcTable == true ? sizeof(internal::LTC_TABLE) : 0;
-    if (options.GpuByteBudget - internal::GPU_PREVIEW_QUAD_BYTES < ltcBytes + colorInputBytes)
+    const usize storageTextureBytes = (shaderTextureCount + (hasStorageTexture == true ? 1 : 0)) * sizeof(uint32);
+    if (options.GpuByteBudget - internal::GPU_PREVIEW_QUAD_BYTES < ltcBytes + colorInputBytes + storageTextureBytes)
     {
         return Status::CapacityExceeded;
     }
@@ -1755,13 +1826,28 @@ Status Renderer::PollGpuPreview() noexcept
                         status = rhi::GetStatus(mState->Device, state.DefaultStorageTextureView);
                     }
                 }
+                for (uint32 slot = 0; slot < state.ShaderTextureCount && status == Status::Ready; ++slot)
+                {
+                    internal::GpuPreviewShaderTexture& texture = state.DefaultShaderTextures[slot];
+                    if (rhi::IsNull(texture.Texture) == true)
+                    {
+                        status = internal::CreateGpuGraphStorageTexture(mState->Device,
+                                                                        { .Width = 1, .Height = 1 },
+                                                                        texture.Texture);
+                    }
+                    if (status == Status::Ready)
+                    {
+                        status = PollGraphShaderTextureView(mState->Device, texture);
+                    }
+                }
                 if (status == Status::Ready)
                 {
                     static_assert(sizeof(corners) + sizeof(indices) == internal::GPU_PREVIEW_QUAD_BYTES);
                     state.GpuBytes = internal::GPU_PREVIEW_QUAD_BYTES +
                                      (state.HasLtcTable == true ? sizeof(internal::LTC_TABLE) : 0) +
                                      (state.HasColorInput == true ? sizeof(uint32) : 0) +
-                                     (state.HasStorageTexture == true ? sizeof(uint32) : 0);
+                                     (state.HasStorageTexture == true ? sizeof(uint32) : 0) +
+                                     state.ShaderTextureCount * sizeof(uint32);
                     state.Setup = Status::Ready;
                     return status;
                 }
@@ -1841,7 +1927,40 @@ Status Renderer::BeginGpuPreview(Snapshot snapshot,
     const rhi::TextureHandle storageTexture =
         invocationOrNull != nullptr ? invocationOrNull->StorageTexture : rhi::TextureHandle{};
     const bool isStorageDispatch = rhi::IsNull(storageTexture) == false;
-    const bool hasImage = isBufferDispatch == false && isStorageDispatch == false;
+    const bool hasShaderOutputsOnly = invocationOrNull != nullptr && invocationOrNull->HasShaderOutputsOnly == true;
+    const bool hasImage = isBufferDispatch == false && isStorageDispatch == false && hasShaderOutputsOnly == false;
+    if (invocationOrNull != nullptr)
+    {
+        bool hasShaderTexture = false;
+        for (usize slot = 0; slot < invocationOrNull->ShaderTextures.GetSize(); ++slot)
+        {
+            const rhi::TextureHandle texture = invocationOrNull->ShaderTextures[slot];
+            if (rhi::IsNull(texture) == true)
+            {
+                continue;
+            }
+            hasShaderTexture = true;
+            if (slot >= state.ShaderTextureCount || texture == colorInput || texture == storageTexture ||
+                state.HasRayPathCapture == true)
+            {
+                return Status::InvalidDescription;
+            }
+            for (usize earlier = 0; earlier < slot; ++earlier)
+            {
+                if (texture == invocationOrNull->ShaderTextures[earlier])
+                {
+                    return Status::InvalidDescription;
+                }
+            }
+        }
+        if (hasShaderOutputsOnly == true &&
+            (hasShaderTexture == false || isStorageDispatch == true || isBufferDispatch == true ||
+             invocationOrNull->AccumulationSamples != 0 || invocationOrNull->DenoisingQuality != 0 ||
+             invocationOrNull->ToneMappingExposure != 0))
+        {
+            return Status::InvalidDescription;
+        }
+    }
     const bool hasExplicitImageLaunch = invocationOrNull != nullptr && invocationOrNull->HasExplicitImageLaunch == true;
     if (hasExplicitImageLaunch == true && hasImage == false)
     {
@@ -2267,6 +2386,14 @@ Status Renderer::BeginGpuPreview(Snapshot snapshot,
     job.HasExplicitImageLaunch = hasExplicitImageLaunch;
     job.ColorInput = colorInput;
     job.StorageTexture = storageTexture;
+    job.HasShaderOutputsOnly = hasShaderOutputsOnly;
+    if (invocationOrNull != nullptr)
+    {
+        for (uint32 textureSlot = 0; textureSlot < state.ShaderTextureCount; ++textureSlot)
+        {
+            job.ShaderTextures[textureSlot].Texture = invocationOrNull->ShaderTextures[textureSlot];
+        }
+    }
     if (isBufferDispatch == true)
     {
         uniform.Sampling[2] |= LUDUS_GPU_PREVIEW_SCENE_WORK_FLAG;
@@ -2544,7 +2671,7 @@ Status Renderer::prepareGpuPreviewGraphSequence(BorrowedView<const renderer::Gpu
         {
             return status;
         }
-        if (jobOrNull->WorkItemCount != 0)
+        if (jobOrNull->WorkItemCount != 0 || jobOrNull->HasShaderOutputsOnly == true)
         {
             if (rhi::IsNull(targets[index]) == false || visibilityOrNull != nullptr || tile != 0)
             {
@@ -2561,6 +2688,13 @@ Status Renderer::prepareGpuPreviewGraphSequence(BorrowedView<const renderer::Gpu
             }
             records[index] = jobOrNull;
             continue;
+        }
+        for (const internal::GpuPreviewShaderTexture& texture : jobOrNull->ShaderTextures)
+        {
+            if (rhi::IsNull(texture.Texture) == false && texture.Texture == targets[index])
+            {
+                return Status::InvalidDescription;
+            }
         }
         rhi::TextureDescription description;
         status = rhi::GetTextureDescription(mState->Device, targets[index], description);
@@ -2616,7 +2750,8 @@ Status Renderer::AdvanceGpuPreview(renderer::GpuPreview handle,
     {
         return status == Status::Pending ? Status::NotReady : status;
     }
-    if (job->Info.Complete == true || job->WorkItemCount != 0 || rhi::IsNull(job->StorageTexture) == false)
+    if (job->Info.Complete == true || job->WorkItemCount != 0 || job->HasShaderOutputsOnly == true ||
+        rhi::IsNull(job->StorageTexture) == false)
     {
         return Status::InvalidState;
     }
