@@ -172,7 +172,34 @@ def qualify_record_type(source, type_name, namespaces):
     return f'{namespace}::{type_name}' if namespace is not None else type_name
 
 
-def record_view_definition(view, type_name, is_writable, *, stride=0, loads=None, stores=None):
+def record_array_fields(shape):
+    """Select direct fixed arrays whose elements can be passed as records."""
+    return [field for field in shape['fields']
+            if field['type']['kind'] == 'array' and field['type']['elementType']['kind'] == 'struct']
+
+
+def record_array_methods(shape, stride, is_writable, build, view):
+    """Use the reflected array offset and stride to access one element."""
+    methods = []
+    for field in record_array_fields(shape):
+        array = field['type']
+        element = array['elementType']
+        type_name = element['name']
+        name = field['name']
+        offset = field['binding']['offset']
+        element_stride = array['uniformStride']
+        address = f'(recordIndex * {stride // 4}u + {offset // 4}u + elementIndex * {element_stride // 4}u)'
+        loads, stores = [], []
+        emit_record_layout(element, 'element', address, loads, stores, 0, build, view)
+        parameters = 'uint recordIndex, uint elementIndex'
+        methods.append(f'{type_name} Load{name}({parameters}) {{ {type_name} element; '
+                       f'{" ".join(loads)} return element; }}')
+        if is_writable:
+            methods.append(f'void Store{name}({parameters}, {type_name} element) {{ {" ".join(stores)} }}')
+    return '\n    '.join(methods)
+
+
+def record_view_definition(view, type_name, is_writable, *, stride=0, loads=None, stores=None, array_methods=''):
     """Describe the view for source assistance, or define it for an executable build."""
     getter = f'{type_name} record; {" ".join(loads)} return record;' if loads is not None else f'return ({type_name})0;'
     store = f'void Store(uint index, {type_name} record) {{ {" ".join(stores or [])} }}' if is_writable else ''
@@ -181,6 +208,7 @@ def record_view_definition(view, type_name, is_writable, *, stride=0, loads=None
                   '// Builds generate them from reflection.\n') if loads is None else ''
     word_address = 'Words[byteOffset / sizeof(uint4)][byteOffset % sizeof(uint4) / sizeof(uint)]'
     store_word = f'void StoreWord(uint byteOffset, uint word) {{ {word_address} = word; }}' if is_writable else ''
+    array_access = f'\n    {array_methods}' if array_methods else ''
     return f"""
 {assistance}struct {view}
 {{
@@ -192,7 +220,7 @@ def record_view_definition(view, type_name, is_writable, *, stride=0, loads=None
     uint LoadWord(uint byteOffset) {{ return {word_address}; }}
     {store_word}
     {type_name} Load(uint index) {{ {getter} }}
-    {store}
+    {store}{array_access}
     __subscript(uint index) -> {type_name}
     {{
         get {{ return Load(index); }}
@@ -223,15 +251,18 @@ struct {view}
 """ for writable, view in sorted(variants.items()))
 
 
-def define_record_views(program, layouts, build):
+def define_record_views(program, layouts, build, *, lusl_record_layouts):
     wrapper = program['ray_wrapper']
     for view, (source, type_name, is_writable) in program['named_record_views'].items():
-        stride, shape = layouts[(source, type_name)]
+        key = (source, type_name)
+        stride, shape = layouts[key]
         type_name = qualify_record_type(source, type_name, program.get('buffer_layout_namespaces', {}))
         build.require(stride % 4 == 0, 'ShaderInterface', view, 'named Buffer record stride must be word-aligned')
         address = f'(index * {stride // 4}u)'
         loads, stores = [], []
         emit_record_layout(shape, 'record', address, loads, stores, 0, build, view)
+        # The LUSL interface has already validated the shared element names.
+        array_methods = record_array_methods(shape, stride, is_writable, build, view) if key in lusl_record_layouts else ''
         # A reflected scalar is accessed as one scalar on both native targets, even
         # when adjacent records share one uint4. Padding remains untouched.
         declaration = record_view_definition(view, type_name, is_writable)
@@ -239,7 +270,7 @@ def define_record_views(program, layouts, build):
                       'linked shader is missing its generated Buffer view declaration')
         wrapper = wrapper.replace(declaration,
                                   record_view_definition(view, type_name, is_writable, stride=stride,
-                                                         loads=loads, stores=stores), 1)
+                                                         loads=loads, stores=stores, array_methods=array_methods), 1)
     return wrapper
 
 

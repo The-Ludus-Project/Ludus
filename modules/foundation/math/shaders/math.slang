@@ -1,7 +1,112 @@
 #pragma once
 
 // GPU counterparts of FoundationMath operations; Slang owns shader scalar spellings.
+/// Ratio of a circle's circumference to its diameter.
 static const float PI = 3.14159265358979323846;
+/// Full turn in radians.
+static const float TAU = 2 * PI;
+/// Quarter turn in radians.
+static const float HALF_PI = 0.5 * PI;
+/// Eighth turn in radians.
+static const float QUARTER_PI = 0.5 * HALF_PI;
+/// Reciprocal of pi.
+static const float INV_PI = 0.31830988618379067154;
+/// Reciprocal of tau.
+static const float INV_TAU = 0.5 * INV_PI;
+/// Multiply an angle in degrees by this factor to obtain radians.
+static const float DEGREES_TO_RADIANS = 0.01745329251994329577;
+/// Multiply an angle in radians by this factor to obtain degrees.
+static const float RADIANS_TO_DEGREES = 57.29577951308232087680;
+/// Base of the natural logarithm.
+static const float E = 2.71828182845904523536;
+/// Natural logarithm of two.
+static const float LN_2 = 0.69314718055994530942;
+/// Natural logarithm of ten.
+static const float LN_10 = 2.30258509299404568402;
+/// Base-two logarithm of e.
+static const float LOG2_E = 1.44269504088896340736;
+/// Base-ten logarithm of e.
+static const float LOG10_E = 0.43429448190325182765;
+/// Positive square root of two.
+static const float SQRT_2 = 1.41421356237309504880;
+/// Reciprocal of the positive square root of two.
+static const float INV_SQRT_2 = 0.70710678118654752440;
+
+/// Ratio of a circle's circumference to its diameter in binary64.
+static const double PI_F64 = 3.141592653589793238462643383279502884l;
+/// Full turn in radians in binary64.
+static const double TAU_F64 = 2 * PI_F64;
+/// Quarter turn in radians in binary64.
+static const double HALF_PI_F64 = 0.5l * PI_F64;
+/// Eighth turn in radians in binary64.
+static const double QUARTER_PI_F64 = 0.5l * HALF_PI_F64;
+/// Reciprocal of pi in binary64.
+static const double INV_PI_F64 = 0.318309886183790671537767526745028724l;
+/// Reciprocal of tau in binary64.
+static const double INV_TAU_F64 = 0.5l * INV_PI_F64;
+/// Multiply an angle in degrees by this binary64 factor to obtain radians.
+static const double DEGREES_TO_RADIANS_F64 = 0.017453292519943295769236907684886127l;
+/// Multiply an angle in radians by this binary64 factor to obtain degrees.
+static const double RADIANS_TO_DEGREES_F64 = 57.29577951308232087679815481410517033l;
+/// Base of the natural logarithm in binary64.
+static const double E_F64 = 2.718281828459045235360287471352662498l;
+/// Natural logarithm of two in binary64.
+static const double LN_2_F64 = 0.693147180559945309417232121458176568l;
+/// Natural logarithm of ten in binary64.
+static const double LN_10_F64 = 2.302585092994045684017991454684364208l;
+/// Base-two logarithm of e in binary64.
+static const double LOG2_E_F64 = 1.442695040888963407359924681001892137l;
+/// Base-ten logarithm of e in binary64.
+static const double LOG10_E_F64 = 0.434294481903251827651128918916605082l;
+/// Positive square root of two in binary64.
+static const double SQRT_2_F64 = 1.414213562373095048801688724209698079l;
+/// Reciprocal of the positive square root of two in binary64.
+static const double INV_SQRT_2_F64 = 0.707106781186547524400844362104849039l;
+
+/// Gap between one and the next larger binary16 value.
+static const half FLOAT16_EPSILON = 0x1p-10h;
+/// Smallest positive normal binary16 value.
+static const half FLOAT16_MIN_NORMAL = 0x1p-14h;
+/// Largest finite binary16 value.
+static const half FLOAT16_MAX = 0x1.ffcp15h;
+/// Gap between one and the next larger binary32 value.
+static const float FLOAT32_EPSILON = 0x1p-23f;
+/// Smallest positive normal binary32 value.
+static const float FLOAT32_MIN_NORMAL = 0x1p-126f;
+/// Largest finite binary32 value.
+static const float FLOAT32_MAX = 0x1.fffffep127f;
+/// Gap between one and the next larger binary64 value.
+static const double FLOAT64_EPSILON = 0x1p-52l;
+/// Smallest positive normal binary64 value.
+static const double FLOAT64_MIN_NORMAL = 0x1p-1022l;
+/// Largest finite binary64 value.
+static const double FLOAT64_MAX = 0x1.fffffffffffffp1023l;
+
+/// Least signed 8-bit integer. Available in Slang.
+static const int8_t INT8_MIN = -128;
+/// Greatest signed 8-bit integer. Available in Slang.
+static const int8_t INT8_MAX = 127;
+/// Greatest unsigned 8-bit integer. Available in Slang.
+static const uint8_t UINT8_MAX = 255;
+/// Least signed 16-bit integer.
+static const int16_t INT16_MIN = -32768;
+/// Greatest signed 16-bit integer.
+static const int16_t INT16_MAX = 32767;
+/// Greatest unsigned 16-bit integer.
+static const uint16_t UINT16_MAX = 65535;
+/// Least signed 32-bit integer.
+static const int INT32_MIN = -INT32_MAX - 1;
+/// Greatest signed 32-bit integer.
+static const int INT32_MAX = 2147483647;
+/// Greatest unsigned 32-bit integer.
+static const uint UINT32_MAX = 0xffffffffu;
+/// Least signed 64-bit integer.
+static const int64_t INT64_MIN = -INT64_MAX - 1;
+/// Greatest signed 64-bit integer.
+static const int64_t INT64_MAX = 9223372036854775807ll;
+/// Greatest unsigned 64-bit integer.
+static const uint64_t UINT64_MAX = 0xffffffffffffffffull;
+
 // The golden angle pi * (3 - sqrt(5)), which spreads successive azimuths of a sunflower (Vogel) disk evenly.
 static const float GOLDEN_ANGLE_RADIANS = 2.39996322972865332;
 // Thanks to Milton Abramowitz and Irene A. Stegun (eds.), Handbook of Mathematical

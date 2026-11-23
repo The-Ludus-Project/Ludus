@@ -260,6 +260,36 @@ TEST_CASE("Unicode input and CRLF survive document history and formatting", "[ed
     CHECK(document.GetState().Text == QByteArray("\xEF\xBB\xBF") + QString::fromUtf8("文字😀\r\n\r\nnext").toUtf8());
 }
 
+TEST_CASE("Shift Return writes a source newline with the document's line ending", "[editor][text][history]")
+{
+    CodeEditor editor;
+    editor.SetLanguage(CodeLanguage::Slang);
+    QByteArray lineEnding = QByteArrayLiteral("\n");
+    SECTION("LF") {}
+    SECTION("CRLF")
+    {
+        lineEnding = QByteArrayLiteral("\r\n");
+    }
+    const QByteArray firstLine = QByteArrayLiteral("void SamplePointOnEdges()");
+    const QByteArray original = firstLine + "{}" + lineEnding;
+    MemoryCodeDocument document(original);
+    CodeDocumentController controller(editor);
+    controller.Bind(&document);
+    QTextCursor cursor = editor.textCursor();
+    cursor.setPosition(static_cast<int32>(firstLine.size()));
+    editor.setTextCursor(cursor);
+
+    QTest::keyClick(&editor, Qt::Key_Return, Qt::ShiftModifier);
+
+    CHECK(document.GetState().Text == firstLine + lineEnding + "{}" + lineEnding);
+    CHECK(editor.document()->findBlockByNumber(1).text() == QStringLiteral("{}"));
+    REQUIRE(document.Undo() == true);
+    controller.Synchronize();
+    CHECK(document.GetState().Text == original);
+    CHECK(editor.textCursor().blockNumber() == 0);
+    CHECK(document.CanUndo() == false);
+}
+
 TEST_CASE("rejected text input preserves owner and view without an undo entry", "[editor][text][history]")
 {
     CodeEditor editor;
@@ -724,6 +754,70 @@ TEST_CASE("Slang protocol failures and crashes preserve text and allow a fresh r
         QTest::keyClick(&editor, Qt::Key_Return);
         REQUIRE(host.GetState().Text.endsWith("scene.Version"));
     }
+}
+
+TEST_CASE("Capability dispatch disables unadvertised assistance and follows server trigger characters",
+          "[editor][text][assistance]")
+{
+    MemoryCodeDocument host("Ite");
+    CodeEditor editor;
+    CodeDocumentController document(editor);
+    document.Bind(&host);
+    editor.SetLanguage(CodeLanguage::Lusl);
+    CodeAssistance assistance(editor, document);
+    QTemporaryDir temporary;
+    QObject::connect(&assistance, &CodeAssistance::ContextRequested, &editor, [&]() {
+        assistance.SetContext(
+            QString::fromUtf8(LUDUS_TEST_PYTHON),
+            temporary.path(),
+            QUrl::fromLocalFile(temporary.filePath(QStringLiteral("unit.lusl"))).toString(),
+            {},
+            {},
+            {QString::fromUtf8(LUDUS_LANGUAGE_SERVER_FIXTURE),
+             QStringLiteral("--capabilities"),
+             QStringLiteral(R"({"completionProvider": {"triggerCharacters": [":"]}, "referencesProvider": true})")},
+            {},
+            GetLuslServerProfile());
+    });
+    editor.show();
+    editor.setFocus();
+    editor.moveCursor(QTextCursor::End);
+    assistance.Request(false);
+    QListWidget* popupOrNull = editor.findChild<QListWidget*>(QStringLiteral("codeCompletionList"));
+    REQUIRE(popupOrNull != nullptr);
+    // A server without signature help still serves completion (LUSL before M4 failed here).
+    REQUIRE(QTest::qWaitFor([popupOrNull]() { return popupOrNull->isVisible() == true; }));
+    REQUIRE(popupOrNull->count() == 1);
+    CHECK(popupOrNull->item(0)->text().startsWith(QStringLiteral("Item")) == true);
+    QTest::keyClick(&editor, Qt::Key_Escape);
+    QAction* signatureOrNull = nullptr;
+    for (QAction* action : editor.actions())
+    {
+        signatureOrNull = action->objectName() == QStringLiteral("codeEditorSignature") ? action : signatureOrNull;
+    }
+    REQUIRE(signatureOrNull != nullptr);
+    CHECK(signatureOrNull->isEnabled() == false);
+    CHECK(signatureOrNull->toolTip() == QStringLiteral("The selected luslc does not support signatureHelp."));
+    for (QAction* action : editor.GetNavigation().GetActions())
+    {
+        if (action->text() == QStringLiteral("Go to Definition"))
+        {
+            CHECK(action->isEnabled() == false);
+            CHECK(action->toolTip().contains(QStringLiteral("does not support definition")) == true);
+        }
+        if (action->text() == QStringLiteral("Find References"))
+        {
+            CHECK(action->isEnabled() == true);
+        }
+    }
+    // The server's trigger character requests completion while typing.
+    QTest::keyClick(&editor, Qt::Key_End);
+    QTest::keyClicks(&editor, QStringLiteral(":"));
+    REQUIRE(QTest::qWaitFor([popupOrNull]() { return popupOrNull->isVisible() == true; }));
+    CHECK(host.CanUndo() == true);
+    // A new context returns to the defaults until its server reports capabilities.
+    assistance.ClearContext();
+    CHECK(signatureOrNull->isEnabled() == true);
 }
 
 TEST_CASE("Escape cancels pending shader assistance before a delayed reply", "[editor][text][assistance]")

@@ -1,4 +1,6 @@
+#include "internal/code_document_tab.h"
 #include "internal/code_editor.h"
+#include "internal/code_editor_area.h"
 #include "internal/configuration_workspace.h"
 #include "internal/controller.h"
 #include "internal/document_well.h"
@@ -500,11 +502,22 @@ TEST_CASE("Shader text undo reaches the package through shell keyboard and conte
     RendererWorkspace* workspaceOrNull = window.findChild<RendererWorkspace*>();
     REQUIRE(workspaceOrNull != nullptr);
     REQUIRE(window.GetDocumentWell().OpenDocument(workspaceOrNull) == true);
-    CodeEditor* editorOrNull = workspaceOrNull->findChild<CodeEditor*>(QStringLiteral("renderGraphSource"));
-    REQUIRE(editorOrNull != nullptr);
-    QTabWidget* viewsOrNull = workspaceOrNull->findChild<QTabWidget*>(QStringLiteral("renderGraphViews"));
-    REQUIRE(viewsOrNull != nullptr);
-    viewsOrNull->setCurrentIndex(1);
+    const QStringList files = workspaceOrNull->GetDocument().GetFiles();
+    QString shader;
+    for (const QString& file : files)
+    {
+        if (file.endsWith(QStringLiteral(".slang")) == true)
+        {
+            shader = file;
+            break;
+        }
+    }
+    REQUIRE(workspaceOrNull->OpenGraphSource(shader) == true);
+    CodeEditorArea* code = window.findChild<CodeEditorArea*>();
+    REQUIRE(code != nullptr);
+    CodeDocumentTab* tab = code->GetActiveTabOrNull();
+    REQUIRE(tab != nullptr);
+    CodeEditor* editorOrNull = &tab->GetEditor();
     editorOrNull->setFocus();
     QApplication::processEvents();
     const QString original = editorOrNull->toPlainText();

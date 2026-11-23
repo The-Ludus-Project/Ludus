@@ -472,14 +472,14 @@ class NativeSceneComputeTests(unittest.TestCase):
                 build.build_package(manifest, output, **options)
             self.assertEqual(accepted_pointer, (output / 'current.json').read_bytes())
 
-    def check_resource_completion(self, context, server, language, text):
+    def check_resource_completion(self, context, server, language, text,
+                                  expression='Edge edge = resources.', expected=('Edges', 'Scratch')):
         from test_shader_context import ShaderLanguagePeer
         from urllib.parse import unquote, urlparse
 
         workspace = Path(unquote(urlparse(context['uri']).path)).parents[1]
         peer = ShaderLanguagePeer(server, workspace, context.get('server_arguments', ()))
         try:
-            expression = 'Edge edge = resources.'
             before = text[:text.index(expression) + len(expression)]
             peer.notify('textDocument/didOpen', {'textDocument': {
                 'uri': context['uri'], 'languageId': language, 'version': 1, 'text': text}})
@@ -487,9 +487,89 @@ class NativeSceneComputeTests(unittest.TestCase):
                 'textDocument': {'uri': context['uri']},
                 'position': {'line': before.count('\n'), 'character': len(before.rsplit('\n', 1)[-1])}})
             items = completion if isinstance(completion, list) else completion.get('items', [])
-            self.assertTrue({'Edges', 'Scratch'} <= {item['label'] for item in items})
+            self.assertTrue(set(expected) <= {item['label'] for item in items})
         finally:
             peer.close()
+
+    def test_lusl_typed_array_element_access_uses_reflected_edge_table_layout(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            source = root / 'source'
+            shutil.copytree(COMPUTE_MIXED, source)
+            graph_path = source / 'main.lurender.json'
+            document = json.loads(graph_path.read_text())
+            configuration = document['configurations'][0]
+            nodes = {node['id']: node for node in configuration['nodes']}
+            nodes['hits'].pop('bytes')
+            nodes['hits']['shader_struct'] = {'source': 'main_shaders/edges.luslh', 'type': 'EdgesData', 'count': 1}
+            nodes['shade']['outputs'] = [port for port in nodes['shade']['outputs'] if port['id'] != 'hits']
+            graph_path.write_bytes(graph.canonical_asset(document))
+            manifest_path = source / 'main.lushader.json'
+            validator = os.environ.get('LUDUS_RG1_VALIDATOR')
+            profiles = ['metal', 'spirv'] if validator else ['metal']
+            manifest = json.loads((source / 'main.lushader.json.in').read_text().replace(
+                '@RG2_TEST_PROFILES@', json.dumps(profiles)))
+            for program in manifest['programs']:
+                if program['id'] in ('Primary', 'Shade'):
+                    program['source'] = program['source'].replace('.slang', '.lusl')
+            manifest_path.write_text(json.dumps(manifest))
+            shaders = source / 'main_shaders'
+            (shaders / 'edges.luslh').write_text(
+                '#pragma once\n'
+                'static const uint32 MAX_EDGE_COUNT = 256;\n'
+                'struct Edge { float32x4 Begin; float32x3 End; float32 Weight; };\n'
+                'struct EdgesData { uint32 EdgesCount; float32 TotalWeight; Edge Edges[MAX_EDGE_COUNT]; };\n')
+            includes = '#include "scene_shader.luslh"\n#include "graph_resources.luslh"\n'
+            producer = (
+                includes +
+                'float32x3 TracePrimary(in SceneContext scene, in RayLaunch launch, '
+                'inout RayQueryContext inoutQueries, in TracePrimaryResources resources)\n'
+                '{\n'
+                '    Edge edge = resources.Hits.LoadEdges(0, 1);\n'
+                '    edge.Weight = 9.0;\n'
+                '    resources.Hits.StoreEdges(0, 1, edge);\n'
+                '    return float32x3(0);\n'
+                '}\n')
+            (shaders / 'primary.lusl').write_text(producer)
+            consumer = (
+                includes +
+                'float32x3 ShadeRecordedHit(in SceneContext scene, in RayLaunch launch, '
+                'inout RayQueryContext inoutQueries, in ShadeRecordedHitResources resources)\n'
+                '{\n'
+                '    Edge edge = resources.Hits.LoadEdges(0, 1);\n'
+                '    return float32x3(edge.Weight);\n'
+                '}\n')
+            shade = shaders / 'shade.lusl'
+            shade.write_text(consumer)
+            options = dict(helper=os.environ['LUDUS_RG1_HELPER'], compiler=os.environ['LUDUS_RG1_SLANG'],
+                           spirv_cross=os.environ['LUDUS_RG1_CROSS'], validator=validator)
+            luslc = build.language.find_luslc(options['helper'])
+            arrays = [{'name': 'Edges', 'element_type': 'Edge', 'capacity': 256}]
+            for file, text, writable in (('primary', producer, True), ('shade', consumer, False)):
+                with self.subTest(file=file):
+                    context = shader_context.export_context(manifest_path, root / 'editor', f'main_shaders/{file}.lusl',
+                                                            helper=options['helper'], compiler=options['compiler'])
+                    field = context['resources'][0]['fields'][0]
+                    self.assertEqual(arrays, field['record_arrays'])
+                    self.assertEqual(writable, field['writable'])
+                    unfinished = text.replace('resources.Hits.LoadEdges(0, 1)', 'resources.Hits.')
+                    expected = ('LoadEdges', 'StoreEdges') if writable else ('LoadEdges',)
+                    self.check_resource_completion(context, luslc, 'lusl', unfinished,
+                                                   'Edge edge = resources.Hits.', expected)
+            output = root / 'build'
+            built = build.build_package(manifest_path, output, **options)
+            self.assertIn({'node': 'hits', 'graph': 'main.lurender.json', 'configuration': configuration['id'],
+                           'stride': 8208, 'bytes': 8208}, built['shader_buffer_layouts'])
+            _, wrapper = find_ray_compute(Path(built['package']), 'main_shaders/primary.lusl.slang')
+            self.assertIn('Edge LoadEdges(uint recordIndex, uint elementIndex)', wrapper)
+            self.assertIn('void StoreEdges(uint recordIndex, uint elementIndex, Edge element)', wrapper)
+            self.assertIn('recordIndex * 2052u + 4u + elementIndex * 8u', wrapper)
+            self.assertEqual(1, wrapper.count('void StoreEdges('))
+            accepted = (output / 'current.json').read_bytes()
+            shade.write_text(consumer.replace('return float32x3', 'resources.Hits.StoreEdges(0, 1, edge); return float32x3'))
+            with self.assertRaisesRegex(ToolingError, 'StoreEdges'):
+                build.build_package(manifest_path, output, **options)
+            self.assertEqual(accepted, (output / 'current.json').read_bytes())
 
     def test_named_edge_records_cross_compute_and_ray_passes(self):
         with tempfile.TemporaryDirectory() as temporary:

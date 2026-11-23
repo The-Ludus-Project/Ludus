@@ -1,6 +1,7 @@
 #include "internal/code_document_tab.h"
 
 #include "internal/code_conflict_banner.h"
+#include "internal/code_editor_panel.h"
 #include "internal/code_file_document.h"
 #include "internal/code_language_registry.h"
 #include "internal/code_structure_view.h"
@@ -152,6 +153,14 @@ void CodeDocumentTab::AddSessionControls(QWidget& inoutControls, QWidget& inoutS
     QVBoxLayout* column = static_cast<QVBoxLayout*>(layout());
     column->insertWidget(1, &inoutControls);
     column->addWidget(&inoutStatus);
+}
+
+void CodeDocumentTab::ShowEditorControls()
+{
+    QVBoxLayout* column = static_cast<QVBoxLayout*>(layout());
+    const int32 index = column->indexOf(mEditor);
+    column->removeWidget(mEditor);
+    column->insertWidget(index, new CodeEditorPanel(mEditor, mController, this), 1);
 }
 
 void CodeDocumentTab::MirrorFromHost()

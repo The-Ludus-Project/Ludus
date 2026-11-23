@@ -433,7 +433,7 @@ TEST_CASE("The SDK math declarations match math.slang on every target", "[shader
     Files files;
     files.Add("shaders/math.slang", ReadMathShader("math.slang"));
     files.Add("shaders/math.luslh", ReadMathShader("math.luslh"));
-    // Every declaration is called, so Slang checks each against its definition.
+    // Use the portable declarations so Slang checks them against their definitions.
     files.Add(std::string(ROOT), R"(#include "math.luslh"
 groupshared float32 result = 0;
 [stage(compute), threads(1, 1, 1)]
@@ -454,6 +454,11 @@ void Main(in uint32x3 dispatchThread : DispatchThreadId)
                     DecodeSrgb(0.5) + RandomFloat01(low ^ high) + SampleRandomFloat01(dispatchThread.xy, address);
     total += float32(Philox4x32(PackRandomCounter(address, 0), dispatchThread.xy).x) +
              float32(SampleRandomUInt32(dispatchThread.xy, address)) + normal.x + float32(bounded);
+    total += TAU + HALF_PI + QUARTER_PI + INV_PI + INV_TAU + DEGREES_TO_RADIANS + RADIANS_TO_DEGREES;
+    total += E + LN_2 + LN_10 + LOG2_E + LOG10_E + SQRT_2 + INV_SQRT_2;
+    total += clamp(float32(dispatchThread.x), FLOAT32_MIN_NORMAL, FLOAT32_MAX) * FLOAT32_EPSILON;
+    total += float32(clamp(int32(dispatchThread.x), INT32_MIN, INT32_MAX)) +
+             float32(dispatchThread.x ^ UINT32_MAX);
     if (IsFiniteBits(total) == true && IsFiniteBits(normal) == true && HasPositiveComponent(normal) == true &&
         IsNanBits(total) == false && IsInfBits(total) == false &&
         NearlyEqual(total, normal.x, 0.5, 0.125) == false &&
@@ -473,6 +478,69 @@ void Main(in uint32x3 dispatchThread : DispatchThreadId)
         INFO("target " << static_cast<int>(target) << "\n" << GetDiagnostics(result));
         CHECK(status == compiler::Status::Ready);
     }
+}
+
+TEST_CASE("The SDK math declarations support half-precision shaders", "[shader-language][emitter-targets]")
+{
+    compiler::Compiler& slang = GetCompiler();
+    Files files;
+    files.Add("shaders/math.slang", ReadMathShader("math.slang"));
+    files.Add("shaders/math.luslh", ReadMathShader("math.luslh"));
+    files.Add(std::string(ROOT), R"(#include "math.luslh"
+groupshared float32 result = 0;
+[stage(compute), threads(1, 1, 1)]
+void Main(in uint32x3 dispatchThread : DispatchThreadId)
+{
+    float16 value = float16(dispatchThread.x) * FLOAT16_EPSILON;
+    if (value >= FLOAT16_MIN_NORMAL && value <= FLOAT16_MAX)
+    {
+        result = float32(value);
+    }
+}
+)");
+    compiler::Request options;
+    for (const compiler::Target target : {compiler::Target::Spirv, compiler::Target::Wgsl, compiler::Target::Metal})
+    {
+        options.OutputTarget = target;
+        compiler::Result result;
+        const compiler::Status status = CompileLanguage(slang, files, options, result);
+        INFO("target " << static_cast<int>(target) << "\n" << GetDiagnostics(result));
+        CHECK(status == compiler::Status::Ready);
+    }
+}
+
+TEST_CASE("The SDK math declarations support native fixed-width shaders", "[shader-language][emitter-targets]")
+{
+    compiler::Compiler& slang = GetCompiler();
+    Files files;
+    files.Add("shaders/math.slang", ReadMathShader("math.slang"));
+    files.Add("shaders/math.luslh", ReadMathShader("math.luslh"));
+    files.Add(std::string(ROOT), R"(#include "math.luslh"
+groupshared float32 result = 0;
+[stage(compute), threads(1, 1, 1)]
+void Main(in uint32x3 dispatchThread : DispatchThreadId)
+{
+    int16 narrow = int16(dispatchThread.x);
+    int64 wide = int64(dispatchThread.x);
+    uint16 narrowMask = uint16(dispatchThread.x) ^ UINT16_MAX;
+    uint64 wideMask = uint64(dispatchThread.x) ^ UINT64_MAX;
+    float64 value = float64(dispatchThread.x) * FLOAT64_EPSILON;
+    if (narrow >= INT16_MIN && narrow < INT16_MAX && wide >= INT64_MIN && wide < INT64_MAX &&
+        value >= FLOAT64_MIN_NORMAL && value <= FLOAT64_MAX)
+    {
+        float64 total = PI_F64 + TAU_F64 + HALF_PI_F64 + QUARTER_PI_F64 + INV_PI_F64 + INV_TAU_F64 +
+                        DEGREES_TO_RADIANS_F64 + RADIANS_TO_DEGREES_F64 + E_F64 + LN_2_F64 + LN_10_F64 +
+                        LOG2_E_F64 + LOG10_E_F64 + SQRT_2_F64 + INV_SQRT_2_F64;
+        result = float32(total + value + float64(narrowMask) + float64(wideMask));
+    }
+}
+)");
+    compiler::Request options;
+    options.OutputTarget = compiler::Target::SpirvRayQuery;
+    compiler::Result result;
+    const compiler::Status status = CompileLanguage(slang, files, options, result);
+    INFO(GetDiagnostics(result));
+    CHECK(status == compiler::Status::Ready);
 }
 
 TEST_CASE("Lowered LUSL interfaces and templates compile for every portable target",

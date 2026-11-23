@@ -9,6 +9,7 @@
 #include <QAbstractItemView>
 #include <QHBoxLayout>
 #include <QHeaderView>
+#include <QItemSelectionModel>
 #include <QJsonArray>
 #include <QJsonObject>
 #include <QJsonValue>
@@ -566,7 +567,9 @@ bool ErrorList::SelectFirstProblem()
         firstRow = firstRow < 0 ? row : firstRow;
         if (mEntries.at(itemOrNull->data(ENTRY_ROLE).toInt()).Severity == ErrorListSeverity::Error)
         {
-            mTable->selectRow(row);
+            mTable->setCurrentCell(row,
+                                   SEVERITY_COLUMN,
+                                   QItemSelectionModel::ClearAndSelect | QItemSelectionModel::Rows);
             mTable->scrollToItem(itemOrNull);
             return true;
         }
@@ -575,7 +578,7 @@ bool ErrorList::SelectFirstProblem()
     {
         return false;
     }
-    mTable->selectRow(firstRow);
+    mTable->setCurrentCell(firstRow, SEVERITY_COLUMN, QItemSelectionModel::ClearAndSelect | QItemSelectionModel::Rows);
     return true;
 }
 

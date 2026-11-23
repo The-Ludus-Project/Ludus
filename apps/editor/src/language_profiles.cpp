@@ -1,0 +1,62 @@
+#include "internal/language_profiles.h"
+
+#include <QJsonArray>
+
+namespace ludus::editor
+{
+namespace
+{
+QJsonValue ConfigureSlangSection(const QString& section)
+{
+    if (section == QStringLiteral("slang.predefinedMacros") || section == QStringLiteral("slang.additionalSearchPaths"))
+    {
+        return QJsonArray{};
+    }
+    if (section == QStringLiteral("slang.searchInAllWorkspaceDirectories"))
+    {
+        return false;
+    }
+    return QJsonValue::Null;
+}
+
+QJsonValue ConfigureNoSection(const QString& section)
+{
+    static_cast<void>(section);
+    return QJsonValue::Null;
+}
+} // namespace
+
+const LanguageServerProfile& GetSlangServerProfile()
+{
+    static const LanguageServerProfile PROFILE
+    {
+        .LanguageId = QStringLiteral("slang"),
+        .ProductName = QStringLiteral("Slang"),
+        .ServerName = QStringLiteral("slangd"),
+        .AssistanceTitle = QStringLiteral("Shader assistance"),
+        .AssistanceNoun = QStringLiteral("shader assistance"),
+        .ContextNoun = QStringLiteral("shader context"),
+        .SyntaxNoun = QStringLiteral("shader syntax"),
+        .StartRepair = QStringLiteral("Repair project shader tools or check the compiler override."),
+        .ConfigurationResponder = &ConfigureSlangSection,
+    };
+    return PROFILE;
+}
+
+const LanguageServerProfile& GetLuslServerProfile()
+{
+    static const LanguageServerProfile PROFILE
+    {
+        .LanguageId = QStringLiteral("lusl"),
+        .ProductName = QStringLiteral("LUSL"),
+        .ServerName = QStringLiteral("luslc"),
+        .AssistanceTitle = QStringLiteral("LUSL assistance"),
+        .AssistanceNoun = QStringLiteral("LUSL assistance"),
+        .ContextNoun = QStringLiteral("shader context"),
+        .SyntaxNoun = QStringLiteral("LUSL syntax"),
+        .StartRepair = QStringLiteral("Repair project tools or set LUDUS_LUSLC, then Retry assistance."),
+        .ConfigurationResponder = &ConfigureNoSection,
+    };
+    return PROFILE;
+}
+} // namespace ludus::editor

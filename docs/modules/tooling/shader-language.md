@@ -1191,7 +1191,8 @@ The SDK's `.luslh` headers are generated from Slang reflection, so they cannot
 drift from the Slang they declare.
 
 `math.luslh` declares FoundationMath's `math.slang` for LUSL:
-- its constants, such as `PI` and `RANDOM_MAX_DIMENSION`;
+- its [shader math and numeric constants](#shader-math-and-numeric-constants), plus constants such as
+  `RANDOM_MAX_DIMENSION`;
 - `RandomAddress`;
 - its functions, from `ComputeErrorFunction` to `ApplyNormalWorld`.
 
@@ -1219,6 +1220,35 @@ bool AreEdgeEndpointsNear(in float32x3 firstWorld,
 ```
 
 Slang shaders call the same overloads via `#include "math.slang"`.
+
+#### Shader math and numeric constants
+
+Include `math.luslh` in LUSL or `math.slang` in Slang. The headers expose the
+same typed constants for their shared scalar types.
+
+| Group | Constants |
+| --- | --- |
+| Angles | `PI`, `TAU`, `HALF_PI`, `QUARTER_PI`, `INV_PI`, `INV_TAU` |
+| Angle conversion | `DEGREES_TO_RADIANS`, `RADIANS_TO_DEGREES` |
+| Exponentials and roots | `E`, `LN_2`, `LN_10`, `LOG2_E`, `LOG10_E`, `SQRT_2`, `INV_SQRT_2` |
+| Signed integer limits | `INT16_MIN`, `INT16_MAX`, `INT32_MIN`, `INT32_MAX`, `INT64_MIN`, `INT64_MAX` |
+| Unsigned integer limits | `UINT16_MAX`, `UINT32_MAX`, `UINT64_MAX`. All unsigned minima are zero. |
+| Floating-point limits | `FLOAT16_EPSILON`, `FLOAT16_MIN_NORMAL`, `FLOAT16_MAX`, with the same names prefixed `FLOAT32_` and `FLOAT64_` for the other widths |
+
+Angles, conversion factors, exponentials and roots use binary32 by default.
+Append `_F64`, as in `PI_F64`, for the binary64 value. `EPSILON` is the gap from
+one to the next larger representable value. `MIN_NORMAL` is the least positive
+normal value and `MAX` is the greatest finite value. The least finite value is
+`-MAX` for that width.
+
+Using a constant of a capability-gated type requires the same target support
+as any other value of that type. The shared headers can be included by 32-bit
+shaders on every portable target. WGSL half-precision arithmetic requires its
+`f16` extension and WebGPU's `shader-f16` device feature. The worker's portable
+profile checks SPIR-V, WGSL and Metal together. For widths outside that common
+set, use a supported native profile or lower with `luslc` and compile for a
+specific target with Slang. Slang also exposes `INT8_MIN`, `INT8_MAX`, and
+`UINT8_MAX` on targets that support 8-bit integer values.
 
 `ray_shader.luslh` declares the ray callback types `Ray`, `RayLaunch` and
 `RayHit` for [render-graph programs](#render-graph-programs). The ray wrapper

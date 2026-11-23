@@ -180,6 +180,19 @@ QString DescribeRayInterface(const QJsonObject& program,
                                 ? QStringLiteral("// GetByteSize(), LoadWord(byteOffset), StoreWord(byteOffset, word)")
                                 : QStringLiteral("// GetByteSize(), LoadWord(byteOffset)"));
                     }
+                    const QJsonArray recordArrays = field.value(QStringLiteral("record_arrays")).toArray();
+                    for (const QJsonValueConstRef arrayValue : recordArrays)
+                    {
+                        const QJsonObject array = arrayValue.toObject();
+                        const QString name = array.value(QStringLiteral("name")).toString();
+                        lines.append(QStringLiteral("// %1 %2[%3] · Load%2(recordIndex, elementIndex)")
+                                         .arg(array.value(QStringLiteral("element_type")).toString(), name)
+                                         .arg(array.value(QStringLiteral("capacity")).toInt()));
+                        if (isWritable == true)
+                        {
+                            lines.append(QStringLiteral("// Store%1(recordIndex, elementIndex, element)").arg(name));
+                        }
+                    }
                 }
             }
             else
