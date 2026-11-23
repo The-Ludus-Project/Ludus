@@ -115,7 +115,9 @@ isize SkipRawSlangString(QStringView source, isize delimiterStart)
         const QChar character = source.at(position);
         if (character == u'(')
         {
-            const QString terminator = QChar(u')') + source.sliced(delimiterStart, position - delimiterStart) + u'"';
+            QString terminator(u')');
+            terminator.append(source.sliced(delimiterStart, position - delimiterStart));
+            terminator.append(u'"');
             const isize close = source.indexOf(terminator, position + 1);
             return close < 0 ? source.size() : close + terminator.size();
         }

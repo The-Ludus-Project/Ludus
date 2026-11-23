@@ -757,7 +757,10 @@ TEST_CASE("Project Explorer opens documents and Error List navigates to graph no
     REQUIRE(explorer->ActivateItem(ProjectItemKind::Shader,
                                    QDir(root).filePath(QStringLiteral("renderer/main_shaders/geometry.slang"))) ==
             true);
-    CHECK(well.GetActiveDocumentOrNull() == renderer);
+    CodeEditorArea* code = window.findChild<CodeEditorArea*>();
+    REQUIRE(renderer != nullptr);
+    REQUIRE(code != nullptr);
+    CHECK(well.GetActiveDocumentOrNull() == code);
     REQUIRE(renderer->GetDocument().IsLoaded() == true);
     CHECK(renderer->GetDocument().GetRootGraph() == QStringLiteral("main.lurender.json"));
     CHECK(Action(window, QStringLiteral("renderGraph.validate"))->isEnabled() == true);
@@ -795,6 +798,7 @@ TEST_CASE("Project Explorer opens documents and Error List navigates to graph no
     REQUIRE(errors->ActivateVisibleRow(1) == true);
     CHECK(renderer->GetSourceFile() == QStringLiteral("main_shaders/geometry.slang"));
     CHECK(renderer->GetSourceLine() == 3);
+    CHECK(well.GetActiveDocumentOrNull() == code);
     // Severity filters hide rows without discarding them.
     QToolButton* warnings = window.findChild<QToolButton*>(QStringLiteral("errorListWarnings"));
     REQUIRE(warnings != nullptr);
@@ -833,6 +837,39 @@ TEST_CASE("Project Explorer opens documents and Error List navigates to graph no
     REQUIRE(errors->ActivateVisibleRow(2) == true);
     CHECK(Dock(window, QStringLiteral("outputDock"))->isVisible() == true);
     CHECK(text->textCursor().block().blockNumber() == 1);
+
+    QToolButton* buildButton = window.findChild<QToolButton*>(QStringLiteral("renderGraphBuildButton"));
+    QPushButton* api = code->findChild<QPushButton*>(QStringLiteral("renderGraphShaderApiToggle"));
+    QComboBox* files = code->findChild<QComboBox*>(QStringLiteral("renderGraphSourceFile"));
+    QPushButton* returnToGraph = code->findChild<QPushButton*>(QStringLiteral("renderGraphReturnFromCode"));
+    REQUIRE(buildButton != nullptr);
+    REQUIRE(api != nullptr);
+    REQUIRE(files != nullptr);
+    REQUIRE(returnToGraph != nullptr);
+    CHECK(buildButton->isVisible() == true);
+    CHECK(buildButton->defaultAction() == Action(window, QStringLiteral("renderGraph.build")));
+    REQUIRE(api->isEnabled() == true);
+    api->setChecked(true);
+    QWidget* reference = code->findChild<QWidget*>(QStringLiteral("renderGraphSourceInterface"));
+    REQUIRE(reference != nullptr);
+    CHECK(reference->isVisible() == true);
+
+    const QString graphFile = QStringLiteral("rasterize.lurender.json");
+    const int32 graphIndex = files->findText(graphFile);
+    REQUIRE(graphIndex >= 0);
+    files->setCurrentIndex(graphIndex);
+    Q_EMIT files->activated(graphIndex);
+    CodeDocumentTab* json = code->GetActiveTabOrNull();
+    REQUIRE(json != nullptr);
+    CHECK(json->GetPath() == graphFile);
+    CHECK(json->IsReadOnly() == false);
+    CHECK(api->isEnabled() == false);
+    CHECK(buildButton->isVisible() == true);
+    const QString nodeSelection = renderer->GetSelection();
+    REQUIRE(renderer->SelectNode(graphFile, QStringLiteral("ColorAndDepth"), {}) == true);
+    returnToGraph->click();
+    CHECK(well.GetActiveDocumentOrNull() == renderer);
+    CHECK(renderer->GetSelection() == nodeSelection);
 }
 
 TEST_CASE("Document well refuses malformed arrangements and keeps closed views alive", "[editor][layout][shell]")

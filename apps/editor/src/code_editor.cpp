@@ -227,11 +227,13 @@ CodeEditor::CodeEditor(QWidget* parentOrNull)
     mSignature->hide();
 
     QAction* complete = new QAction(QStringLiteral("Complete Shader Symbol (Ctrl+Space)"), this);
+    mCompleteAction = complete;
     connect(complete, &QAction::triggered, this, [this]() { Q_EMIT AssistanceRequested(false); });
     complete->setObjectName(QStringLiteral("codeEditorComplete"));
     complete->setEnabled(false);
     addAction(complete);
     QAction* signature = new QAction(QStringLiteral("Shader Signature Help (Ctrl+Shift+Space)"), this);
+    mSignatureAction = signature;
     connect(signature, &QAction::triggered, this, [this]() { Q_EMIT AssistanceRequested(true); });
     signature->setObjectName(QStringLiteral("codeEditorSignature"));
     signature->setEnabled(false);
@@ -622,19 +624,22 @@ void CodeEditor::paintDiagnosticCallout()
 void CodeEditor::SetLanguage(CodeLanguage language)
 {
     mLanguage = language;
-    for (QAction* action : actions())
-    {
-        if (action->objectName() == QStringLiteral("codeEditorComplete") ||
-            action->objectName() == QStringLiteral("codeEditorSignature"))
-        {
-            action->setEnabled(HasCodeLanguageService(language));
-        }
-    }
+    SetAssistanceAvailability(mAssistanceAvailability);
     mSyntax->SetLanguage(language);
     mHighlighter->SetLanguage(language);
     refreshVisibleSyntax();
     mNavigation->RefreshActions();
     mSelectionUpdate.start(0);
+}
+
+void CodeEditor::SetAssistanceAvailability(const CodeAssistanceAvailability& availability)
+{
+    mAssistanceAvailability = availability;
+    const bool hasService = HasCodeLanguageService(mLanguage);
+    mCompleteAction->setEnabled(hasService == true && availability.CompletionUnavailableReason.isEmpty() == true);
+    mCompleteAction->setToolTip(availability.CompletionUnavailableReason);
+    mSignatureAction->setEnabled(hasService == true && availability.SignatureUnavailableReason.isEmpty() == true);
+    mSignatureAction->setToolTip(availability.SignatureUnavailableReason);
 }
 
 void CodeEditor::SetLargeFileMode(bool isLarge)
@@ -1695,7 +1700,7 @@ void CodeEditor::DeleteLines()
 }
 
 // NOLINTNEXTLINE(bugprone-easily-swappable-parameters): line then column is the universal order.
-void CodeEditor::GoToLine(int32 line, int32 column)
+void CodeEditor::GoToLine(int32 line, int32 column, bool shouldRemember)
 {
     const int32 clamped = qBound(1, line, blockCount());
     const QTextBlock block = document()->findBlockByNumber(clamped - 1);
@@ -1704,7 +1709,7 @@ void CodeEditor::GoToLine(int32 line, int32 column)
     {
         cursor.setPosition(block.position() + GetScalarOffset(block.text(), column - 1));
     }
-    if (cursor != textCursor())
+    if (shouldRemember == true && cursor != textCursor())
     {
         mNavigation->RememberCurrent();
     }
@@ -1885,11 +1890,18 @@ void CodeEditor::keyPressEvent(QKeyEvent* event)
     if (didChange == true && HasCodeLanguageService(mLanguage) == true && event->text().size() == 1 &&
         (event->modifiers() & (Qt::ControlModifier | Qt::MetaModifier)) == Qt::NoModifier)
     {
+        // Trigger characters come from the server's capabilities (CE09); a request
+        // the server does not serve is never triggered by typing.
         const QChar typed = event->text().at(0);
-        const bool isSignature = typed == QLatin1Char('(') || typed == QLatin1Char(',');
-        if (isSignature == true || typed == QLatin1Char('.'))
+        if (mAssistanceAvailability.SignatureUnavailableReason.isEmpty() == true &&
+            mAssistanceAvailability.SignatureTriggers.contains(typed) == true)
         {
-            Q_EMIT AssistanceRequested(isSignature);
+            Q_EMIT AssistanceRequested(true);
+        }
+        else if (mAssistanceAvailability.CompletionUnavailableReason.isEmpty() == true &&
+                 mAssistanceAvailability.CompletionTriggers.contains(typed) == true)
+        {
+            Q_EMIT AssistanceRequested(false);
         }
     }
 }

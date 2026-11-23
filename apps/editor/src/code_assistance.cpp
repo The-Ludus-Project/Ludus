@@ -2,6 +2,7 @@
 
 #include "internal/code_language_registry.h"
 #include "internal/code_text.h"
+#include "internal/language_positions.h"
 
 #include <QDateTime>
 #include <QFileInfo>
@@ -45,7 +46,7 @@ bool IsWordCharacter(QChar character)
 } // namespace
 
 CodeAssistance::CodeAssistance(CodeEditor& inoutEditor, CodeDocumentController& inoutDocument, QObject* parentOrNull)
-    : QObject(parentOrNull), mEditor(inoutEditor), mDocument(inoutDocument), mService(this)
+    : QObject(parentOrNull), mEditor(inoutEditor), mDocument(inoutDocument), mClient(this)
 {
     connect(&mEditor, &CodeEditor::AssistanceRequested, this, &CodeAssistance::Request);
     connect(&mEditor.GetNavigation(), &CodeNavigation::Requested, this, &CodeAssistance::RequestNavigation);
@@ -90,18 +91,42 @@ CodeAssistance::CodeAssistance(CodeEditor& inoutEditor, CodeDocumentController& 
     });
     connect(&mDocument, &CodeDocumentController::BindingChanged, this, &CodeAssistance::ClearContext);
     connect(&mEditor, &QPlainTextEdit::cursorPositionChanged, this, invalidate);
-    connect(&mService, &SlangLanguageService::Replied, this, &CodeAssistance::receive);
-    connect(&mService, &SlangLanguageService::Ready, this, [this]() {
-        mEditor.GetNavigation().SetReferencesAvailable(mService.CanRequest(QStringLiteral("textDocument/references")));
+    connect(&mClient,
+            &LanguageClient::Replied,
+            this,
+            [this](int32 request, LanguageRequestKind kind, const QJsonValue& value) {
+                static_cast<void>(kind);
+                receive(request, value);
+            });
+    connect(&mClient, &LanguageClient::Ready, this, [this]() {
+        applyAvailability();
         requestCurrent();
     });
-    connect(&mService, &SlangLanguageService::RequestUnavailable, this, [this](const QString& message) {
-        Cancel();
-        Q_EMIT StatusChanged(message);
-    });
-    connect(&mService, &SlangLanguageService::Failed, this, [this](const QString& message) {
+    connect(&mClient,
+            &LanguageClient::RequestUnavailable,
+            this,
+            [this](LanguageRequestKind kind, const QString& message) {
+                static_cast<void>(kind);
+                Cancel();
+                Q_EMIT StatusChanged(message);
+            });
+    connect(&mClient,
+            &LanguageClient::RequestFailed,
+            this,
+            [this](int32 request, LanguageRequestKind kind, const QString& message) {
+                static_cast<void>(kind);
+                if (request == mRequest)
+                {
+                    Cancel();
+                    Q_EMIT StatusChanged(message);
+                }
+            });
+    // A restart keeps the intent: the next Ready re-sends it if it is still current.
+    connect(&mClient, &LanguageClient::Restarting, this, &CodeAssistance::StatusChanged);
+    connect(&mClient, &LanguageClient::Failed, this, [this](const QString& message) {
         Cancel();
         mServer.clear();
+        resetAvailability();
         Q_EMIT StatusChanged(message);
     });
 }
@@ -117,7 +142,10 @@ void CodeAssistance::Cancel()
 void CodeAssistance::cancelPending()
 {
     mRefresh.stop();
-    mService.Cancel();
+    if (mRequest != 0)
+    {
+        mClient.Cancel(mRequestKind);
+    }
     mHasIntent = false;
     mRequest = 0;
     mCompletions.clear();
@@ -127,9 +155,58 @@ void CodeAssistance::cancelPending()
     mEditor.HideAssistance();
 }
 
+void CodeAssistance::applyAvailability()
+{
+    // Capability dispatch (CE09): a command the server does not serve is disabled
+    // with its reason, never sent and left to fail.
+    CodeNavigation& navigation = mEditor.GetNavigation();
+    navigation.SetSemanticAvailability(CodeNavigationKind::Symbols,
+                                       mClient.GetUnavailableReason(LanguageRequestKind::DocumentSymbols));
+    navigation.SetSemanticAvailability(CodeNavigationKind::Definition,
+                                       mClient.GetUnavailableReason(LanguageRequestKind::Definition));
+    navigation.SetSemanticAvailability(CodeNavigationKind::References,
+                                       mClient.GetUnavailableReason(LanguageRequestKind::References));
+    CodeAssistanceAvailability availability;
+    availability.CompletionUnavailableReason = mClient.GetUnavailableReason(LanguageRequestKind::Completion);
+    availability.SignatureUnavailableReason = mClient.GetUnavailableReason(LanguageRequestKind::SignatureHelp);
+    const auto readTriggers = [this](const QString& capability, QString& outTriggers) {
+        const QJsonObject options = mClient.GetCapabilities().value(capability).toObject();
+        if (options.contains(QStringLiteral("triggerCharacters")) == false)
+        {
+            return;
+        }
+        outTriggers.clear();
+        for (const QString& key : {QStringLiteral("triggerCharacters"), QStringLiteral("retriggerCharacters")})
+        {
+            for (const QJsonValue& value : options.value(key).toArray())
+            {
+                // One UTF-16 unit each: the view compares the typed character.
+                if (value.toString().size() == 1)
+                {
+                    outTriggers += value.toString();
+                }
+            }
+        }
+    };
+    readTriggers(QStringLiteral("completionProvider"), availability.CompletionTriggers);
+    readTriggers(QStringLiteral("signatureHelpProvider"), availability.SignatureTriggers);
+    mEditor.SetAssistanceAvailability(availability);
+}
+
+void CodeAssistance::resetAvailability()
+{
+    mEditor.GetNavigation().ResetSemanticAvailability();
+    mEditor.SetAssistanceAvailability({});
+}
+
+const QString& CodeAssistance::GetServerLog() const noexcept
+{
+    return mClient.GetLog();
+}
+
 void CodeAssistance::ClearContext()
 {
-    mEditor.GetNavigation().SetReferencesAvailable(true);
+    resetAvailability();
     mShouldTrackSignature = false;
     mShouldTrackCompletion = false;
     Cancel();
@@ -146,7 +223,8 @@ void CodeAssistance::SetContext(const QString& server,
                                 const QString& prefix,
                                 const QString& suffix,
                                 const QStringList& serverArguments,
-                                const CodeNavigationSources& navigationSources)
+                                const CodeNavigationSources& navigationSources,
+                                const LanguageServerProfile& profile)
 {
     if (isCurrent() == false)
     {
@@ -165,14 +243,19 @@ void CodeAssistance::SetContext(const QString& server,
     const QString stamp =
         executable.canonicalFilePath() +
         QStringLiteral(":%1:%2").arg(executable.size()).arg(executable.lastModified().toMSecsSinceEpoch());
-    if (mServer != server || mServerStamp != stamp || mServerArguments != serverArguments)
+    if (mServer != server || mServerStamp != stamp || mServerArguments != serverArguments || mProfile != &profile)
     {
         mServer = server;
         mServerStamp = stamp;
         mServerArguments = serverArguments;
-        mService.Start(server, workspace, serverArguments);
+        mProfile = &profile;
+        resetAvailability();
+        mClient.Start(profile, server, workspace, serverArguments);
     }
-    mEditor.GetNavigation().SetReferencesAvailable(mService.CanRequest(QStringLiteral("textDocument/references")));
+    if (mClient.IsReady() == true)
+    {
+        applyAvailability();
+    }
     requestCurrent();
 }
 
@@ -258,20 +341,27 @@ void CodeAssistance::requestCurrent()
         ++mWordEnd;
     }
     const int32 position = static_cast<int32>(mPrefix.size()) + mCaret;
-    const int32 previous = position == 0 ? -1 : static_cast<int32>(mUnit.lastIndexOf(QLatin1Char('\n'), position - 1));
-    const QJsonObject location{
-        {QStringLiteral("line"), static_cast<int32>(mUnit.left(position).count(QLatin1Char('\n')))},
-        {QStringLiteral("character"), position - previous - 1}};
-    mService.SetDocument(mUri, mUnit);
-    QString method =
-        mIsSignature == true ? QStringLiteral("textDocument/signatureHelp") : QStringLiteral("textDocument/completion");
+    mClient.SetDocument(mUri, mUnit);
+    LanguageRequestKind kind =
+        mIsSignature == true ? LanguageRequestKind::SignatureHelp : LanguageRequestKind::Completion;
     if (mIsNavigation == true)
     {
-        method = mNavigationKind == CodeNavigationKind::Symbols      ? QStringLiteral("textDocument/documentSymbol")
-                 : mNavigationKind == CodeNavigationKind::Definition ? QStringLiteral("textDocument/definition")
-                                                                     : QStringLiteral("textDocument/references");
+        kind = mNavigationKind == CodeNavigationKind::Symbols      ? LanguageRequestKind::DocumentSymbols
+               : mNavigationKind == CodeNavigationKind::Definition ? LanguageRequestKind::Definition
+                                                                   : LanguageRequestKind::References;
     }
-    mRequest = mService.Request(method, location);
+    QJsonObject parameters;
+    if (kind != LanguageRequestKind::DocumentSymbols)
+    {
+        parameters.insert(QStringLiteral("position"),
+                          MakeLanguagePosition(mUnit, position, mClient.GetPositionEncoding()));
+    }
+    if (kind == LanguageRequestKind::References)
+    {
+        parameters.insert(QStringLiteral("context"), QJsonObject{{QStringLiteral("includeDeclaration"), true}});
+    }
+    mRequestKind = kind;
+    mRequest = mClient.Request(kind, parameters);
     if (mRequest == 0 && mHasIntent == true)
     {
         Q_EMIT StatusChanged(QStringLiteral("Starting Slang shader assistance…"));
@@ -282,7 +372,7 @@ bool CodeAssistance::mapPosition(const QJsonObject& position, usize& outBytes) c
 {
     int32 offset = 0;
     int32 sourceLength = 0;
-    if (GetCodeProtocolOffset(mUnit, position, offset) == false ||
+    if (GetLanguageOffset(mUnit, position, mClient.GetPositionEncoding(), offset) == false ||
         GetCodeCursorPosition(mCapture.Text, static_cast<usize>(mCapture.Text.size()), sourceLength) == false)
     {
         return false;
@@ -313,7 +403,8 @@ void CodeAssistance::receive(int32 request, const QJsonValue& value)
                                                        source,
                                                        mEditor.GetNavigation().GetSource(),
                                                        mNavigationSources,
-                                                       message);
+                                                       message,
+                                                       mClient.GetPositionEncoding());
         Q_EMIT StatusChanged(message);
         if (mNavigationKind == CodeNavigationKind::Definition && mNavigationTargets.size() == 1)
         {

@@ -3,7 +3,7 @@
 The editor opens every project text file as a **code tab** with a shared text
 surface, atomic save, external-change handling, crash recovery and a code status
 bar. Syntax highlighting and navigation are available from the same text
-surface in code tabs, the render-graph Source pane and the Scripts work area.
+surface in Code tabs and the Scripts work area.
 
 This page is a user guide for the code editor inside the native
 [editor workspace](editor-workspace.md). The authoritative contract is the
@@ -24,12 +24,16 @@ A file can be open in two editor groups side by side. Both views share one
 buffer and one undo history, so an edit in one group appears in the other at
 once; each view keeps its own caret, selection, scroll position and wrap.
 
-Package files selected from Project Explorer open the render graph that owns them.
-**Edit Declaration** from Buffer sizing and cross-file shader definitions open in
-the main Code workspace, backed by the same render-graph draft. Generated
-definitions open as read-only previews. Use **Navigate Back** to return to the
-call site. **Open Externally** remains available for project files the editor
-opens read-only or cannot open.
+From a graph, choose **Open Source** to open its selected node's shader
+or its graph JSON in **Code**. The package file picker also opens the shader
+manifest and other files in the same draft. **Shader API** is available for
+shader programs, and **Build Graph** uses the package shown in Code.
+Choose **Return to Graph** to restore the canvas and node you came from.
+
+**Edit Declaration** and cross-file shader definitions use the same tabs.
+Generated definitions open as read-only previews. **Navigate Back** returns to
+the call site. For native external editing, use **Source → Open in Code
+Editor**.
 
 ### Files that open read-only
 

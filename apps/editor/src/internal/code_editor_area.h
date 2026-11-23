@@ -84,6 +84,8 @@ public:
     void CloseSessionTabs();
     void RefreshSessionTabs();
     void SetSessionAction(const QString& label);
+    /// Transfer the package header and companion panel into the Code workspace.
+    QSplitter& InstallSessionWidgets(QWidget& inoutHeader, QWidget& inoutCompanion);
 
     /// Place the second editor group (creating it) and open `absolutePath` in it
     /// so the file is visible side by side with the active group (CE02).

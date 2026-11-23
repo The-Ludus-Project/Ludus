@@ -477,6 +477,7 @@ bool CodeEditorArea::ActivateTab(CodeDocumentTab& inoutTab)
         {
             group.Tabs->setCurrentWidget(&inoutTab);
             inoutTab.GetEditor().setFocus();
+            onCurrentChanged();
             return true;
         }
     }
@@ -515,6 +516,24 @@ void CodeEditorArea::SetSessionAction(const QString& label)
 {
     mSessionAction->setText(label);
     mSessionAction->setVisible(label.isEmpty() == false);
+}
+
+QSplitter& CodeEditorArea::InstallSessionWidgets(QWidget& inoutHeader, QWidget& inoutCompanion)
+{
+    QVBoxLayout* column = static_cast<QVBoxLayout*>(layout());
+    column->removeWidget(mSplitter);
+    inoutHeader.hide();
+    column->addWidget(&inoutHeader);
+    QSplitter* content = new QSplitter(Qt::Horizontal, this);
+    content->setObjectName(QStringLiteral("codeEditorSessionSplitter"));
+    content->addWidget(mSplitter);
+    content->addWidget(&inoutCompanion);
+    inoutCompanion.hide();
+    content->setCollapsible(0, false);
+    content->setStretchFactor(0, 2);
+    content->setStretchFactor(1, 1);
+    column->addWidget(content, 1);
+    return *content;
 }
 
 bool CodeEditorArea::OpenFileInSecondGroup(const QString& absolutePath)

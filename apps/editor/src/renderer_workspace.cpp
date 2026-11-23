@@ -892,11 +892,18 @@ RendererWorkspace::RendererWorkspace(const ToolingPaths& tooling, QWidget* paren
     mSourceInterfaceToggle->setCheckable(true);
     mSourceInterfaceToggle->setChecked(
         QSettings().value(QStringLiteral("renderGraph/shaderApiVisible"), false).toBool());
-    QHBoxLayout* sourceRow = new QHBoxLayout;
+    mGraphSourceHeader = new QWidget(sourcePage);
+    QHBoxLayout* sourceRow = new QHBoxLayout(mGraphSourceHeader);
+    sourceRow->setContentsMargins(0, 0, 0, 0);
+    mReturnToGraph = new QPushButton(QStringLiteral("Return to Graph"), mGraphSourceHeader);
+    mReturnToGraph->setObjectName(QStringLiteral("renderGraphReturnFromCode"));
+    mReturnToGraph->hide();
+    connect(mReturnToGraph, &QPushButton::clicked, this, &RendererWorkspace::returnToGraph);
+    sourceRow->addWidget(mReturnToGraph);
     sourceRow->addWidget(mSourceFile, 1);
     sourceRow->addWidget(mSourceInterfaceToggle);
     sourceRow->addWidget(mSourceFocusToggle);
-    sourceLayout->addLayout(sourceRow);
+    sourceLayout->addWidget(mGraphSourceHeader);
     QPushButton* openCodeEditor = new QPushButton(QStringLiteral("Open in Code Editor"), sourcePage);
     QPushButton* chooseCodeEditor = new QPushButton(QStringLiteral("Choose Code Editor..."), sourcePage);
     QPushButton* reloadSources = new QPushButton(QStringLiteral("Reload Sources"), sourcePage);
@@ -973,19 +980,7 @@ RendererWorkspace::RendererWorkspace(const ToolingPaths& tooling, QWidget* paren
     static_cast<void>(
         mSourceSplit->restoreState(QSettings().value(QStringLiteral("renderGraph/sourceSplit")).toByteArray()));
     sourceLayout->addWidget(mSourceSplit, 1);
-    connect(mSourceSplit, &QSplitter::splitterMoved, this, [this]() {
-        if (mIsChromeVisible == true)
-        {
-            const bool isVisible = mSourceSplit->sizes().value(1) > 0;
-            const QSignalBlocker blocker(mSourceInterfaceToggle);
-            mSourceInterfaceToggle->setChecked(isVisible);
-            QSettings().setValue(QStringLiteral("renderGraph/shaderApiVisible"), isVisible);
-        }
-        if (mSourceSplit->sizes().value(1) > 0)
-        {
-            QSettings().setValue(QStringLiteral("renderGraph/sourceSplit"), mSourceSplit->saveState());
-        }
-    });
+    connect(mSourceSplit, &QSplitter::splitterMoved, this, &RendererWorkspace::rememberSourceSplitter);
     connect(mSourceInterfaceToggle, &QPushButton::toggled, this, [this](bool isVisible) {
         QSettings().setValue(QStringLiteral("renderGraph/shaderApiVisible"), isVisible);
         updateSourceInterfaceVisibility();
@@ -1097,7 +1092,16 @@ RendererWorkspace::RendererWorkspace(const ToolingPaths& tooling, QWidget* paren
         modesLayout->addWidget(mode);
         modeGroup->addButton(mode, index);
     }
-    connect(modeGroup, &QButtonGroup::idClicked, mViews, &QTabWidget::setCurrentIndex);
+    connect(modeGroup, &QButtonGroup::idClicked, this, [this, modeGroup](int index) {
+        if (index == SOURCE_VIEW && mShaderCodeArea.isNull() == false)
+        {
+            QAbstractButton* current = modeGroup->button(mViews->currentIndex());
+            current->setChecked(true);
+            static_cast<void>(ShowSourceView());
+            return;
+        }
+        mViews->setCurrentIndex(index);
+    });
     connect(mViews, &QTabWidget::currentChanged, modeGroup, [modeGroup](int index) {
         QAbstractButton* buttonOrNull = modeGroup->button(index);
         if (buttonOrNull != nullptr)
@@ -1709,23 +1713,16 @@ void RendererWorkspace::SetChromeVisible(bool isVisible)
     updateChromeVisibility();
 }
 
-void RendererWorkspace::SetSourceCompanionLayout(bool shouldUseCompactSource)
-{
-    if (mShouldUseCompactSource != shouldUseCompactSource)
-    {
-        mShouldUseCompactSource = shouldUseCompactSource;
-        updateChromeVisibility();
-    }
-}
-
 void RendererWorkspace::updateChromeVisibility()
 {
-    const bool shouldShowNavigation =
-        mIsChromeVisible == true && (mShouldUseCompactSource == false || mViews->currentIndex() != SOURCE_VIEW);
+    const bool shouldShowNavigation = mIsChromeVisible;
     updateSourceInterfaceVisibility();
     const bool isSourceView = mViews->currentIndex() == SOURCE_VIEW;
     mNavigation->setVisible(shouldShowNavigation);
-    mSourceStatus->setVisible(isSourceView);
+    if (mShaderCodeArea.isNull() == true)
+    {
+        mSourceStatus->setVisible(isSourceView);
+    }
     mSourceAssistance->GetStatusLabel()->setVisible(isSourceView == true &&
                                                     mSourceAssistance->GetStatusLabel()->text().isEmpty() == false);
     mStatusRow->setVisible(shouldShowNavigation == true || isSourceView == true);
@@ -1749,6 +1746,14 @@ bool RendererWorkspace::ShowSourceView()
     if (mDocument.IsLoaded() == false || mSourceFile->count() == 0)
     {
         return false;
+    }
+    if (mShaderCodeArea.isNull() == false)
+    {
+        const QStringList shaders = GetSelectedShaderSources();
+        const QString file = shaders.isEmpty() == false         ? shaders.constFirst()
+                             : mSelectedFile.isEmpty() == false ? mSelectedFile
+                                                                : mDocument.GetRootGraph();
+        return OpenGraphSource(file);
     }
     if (mViews->currentIndex() != SOURCE_VIEW)
     {
@@ -1786,7 +1791,8 @@ QJsonObject RendererWorkspace::GetSourceViewState() const
             {QStringLiteral("graph"), graph},
             {QStringLiteral("builtIn"), mDocument.IsBuiltIn()},
             {QStringLiteral("source"), mSourceFile->currentText()},
-            {QStringLiteral("view"), mViews->currentIndex()}};
+            {QStringLiteral("view"),
+             IsGraphCodeActive() == true && isGraphCodeVisible() == true ? SOURCE_VIEW : mViews->currentIndex()}};
 }
 
 bool RendererWorkspace::RestoreSourceViewState(const QJsonObject& state)
@@ -1818,7 +1824,15 @@ bool RendererWorkspace::RestoreSourceViewState(const QJsonObject& state)
     {
         mSourceFile->setCurrentIndex(sourceIndex);
     }
-    mViews->setCurrentIndex(view);
+    if (view == SOURCE_VIEW && mShaderCodeArea.isNull() == false)
+    {
+        mViews->setCurrentIndex(CANVAS_VIEW);
+        static_cast<void>(OpenGraphSource(mSourceFile->currentText()));
+    }
+    else
+    {
+        mViews->setCurrentIndex(view);
+    }
     return true;
 }
 
@@ -2158,6 +2172,11 @@ bool RendererWorkspace::OpenSourceInCodeEditor()
         return false;
     }
     const QString file = mSourceFile->currentText();
+    if (file.isEmpty() == true)
+    {
+        mSourceStatus->setText(QStringLiteral("Select an authored package source before opening it externally."));
+        return false;
+    }
     if (mDocument.IsBuiltIn() == true || mDocument.IsDirty() == true)
     {
         const QMessageBox::StandardButton answer = QMessageBox::question(
@@ -2340,6 +2359,14 @@ void RendererWorkspace::restoreSourceHistory(bool shouldFocusSource)
         mSourceFile->setCurrentText(state.File);
     }
     documentEdited(RenderGraphDocumentStatus::Ok);
+    if (state.File.isEmpty() == false && mShaderCodeArea.isNull() == false)
+    {
+        if (shouldFocusSource == true)
+        {
+            restoreGraphCodeSelection(state);
+        }
+        return;
+    }
     if (state.File.isEmpty() == false)
     {
         mSourceController->RestoreSelection(state.Selection);
@@ -3336,6 +3363,7 @@ void RendererWorkspace::SetBuildSettings(const RenderGraphBuildSettings& setting
         preferences.setValue(WORKER_SOCKET_KEY, settings.WorkerSocket);
     }
     mBuildSettings = settings;
+    refreshShaderCodeTabs();
     mSourceAssistance->Update(mProjectRoot, mEpoch, manifestFile(), mSourceFile->currentText(), mBuildSettings);
 }
 
@@ -4414,13 +4442,31 @@ void RendererWorkspace::renderEdges()
     fill(*mEdgeTo, selectedConsumers, otherConsumers);
 }
 
+void RendererWorkspace::rememberSourceSplitter()
+{
+    if (mIsChromeVisible == true && mIsCodeFocused == false)
+    {
+        const bool isVisible = mSourceSplit->sizes().value(1) > 0;
+        const QSignalBlocker blocker(mSourceInterfaceToggle);
+        mSourceInterfaceToggle->setChecked(isVisible);
+        QSettings().setValue(QStringLiteral("renderGraph/shaderApiVisible"), isVisible);
+        if (isVisible == true)
+        {
+            QSettings().setValue(QStringLiteral("renderGraph/sourceSplit"), mSourceSplit->saveState());
+        }
+    }
+}
+
 void RendererWorkspace::updateSourceInterfaceVisibility()
 {
-    const QString file = mSourceFile->currentText();
-    const bool isShader = file.endsWith(QStringLiteral(".slang")) || file.endsWith(QStringLiteral(".lusl"));
+    const QString file = shaderInterfaceFile();
+    const bool isGraphCode = mShaderCodeArea.isNull() == false;
+    const bool isShader = mDocument.GetFiles().contains(file) == true &&
+                          (file.endsWith(QStringLiteral(".slang")) || file.endsWith(QStringLiteral(".lusl")));
     mSourceInterfaceToggle->setEnabled(isShader);
     QWidget* interfacePage = mSourceInterface->parentWidget();
-    const bool shouldShow = isShader == true && mSourceInterfaceToggle->isChecked() == true && mIsChromeVisible == true;
+    const bool shouldShow = isShader == true && mSourceInterfaceToggle->isChecked() == true &&
+                            (isGraphCode == true ? mIsCodeFocused == false : mIsChromeVisible == true);
     if (shouldShow == false && interfacePage->isHidden() == false && mSourceSplit->sizes().value(1) > 0)
     {
         QSettings().setValue(QStringLiteral("renderGraph/sourceSplit"), mSourceSplit->saveState());
@@ -4429,9 +4475,10 @@ void RendererWorkspace::updateSourceInterfaceVisibility()
     interfacePage->setVisible(shouldShow);
     if (shouldShow == true)
     {
-        if (mViews->currentIndex() == SOURCE_VIEW)
+        if (RenderGraphShaderAssistance* assistanceOrNull = activeShaderAssistance();
+            assistanceOrNull != nullptr && (isGraphCode == true || mViews->currentIndex() == SOURCE_VIEW))
         {
-            mSourceAssistance->RequestResourceApi();
+            assistanceOrNull->RequestResourceApi();
         }
         static_cast<void>(
             mSourceSplit->restoreState(QSettings().value(QStringLiteral("renderGraph/sourceSplit")).toByteArray()));
@@ -4440,9 +4487,10 @@ void RendererWorkspace::updateSourceInterfaceVisibility()
 
 void RendererWorkspace::updateSourceInterfaceContents()
 {
-    const QString file = mSourceFile->currentText();
+    const QString file = shaderInterfaceFile();
     const QByteArray manifest = mDocument.GetDraft(manifestFile());
-    const QJsonArray resources = mSourceAssistance->GetResourceApi();
+    RenderGraphShaderAssistance* assistanceOrNull = activeShaderAssistance();
+    const QJsonArray resources = assistanceOrNull == nullptr ? QJsonArray{} : assistanceOrNull->GetResourceApi();
     const QByteArray source = mDocument.GetDraft(file);
     bool canAddBufferAccess = false;
     for (const QJsonValueConstRef entry : resources)
@@ -4465,7 +4513,7 @@ void RendererWorkspace::updateSourceInterfaceContents()
         canAddBufferAccess = canAddBufferAccess || (updated.isNull() == false && updated != source) ||
                              callback.value(QStringLiteral("graph_resources")) == QJsonValue(false);
     }
-    mAddShaderBufferAccess->setVisible(canAddBufferAccess);
+    mAddShaderBufferAccess->setVisible(canAddBufferAccess == true && assistanceOrNull != nullptr);
     QMap<QString, QByteArray> sources;
     for (const QString& draftFile : mDocument.GetFiles())
     {
@@ -4563,6 +4611,12 @@ bool RendererWorkspace::canFormatSource() const
 
 void RendererWorkspace::renderSource()
 {
+    if (mShaderCodeArea.isNull() == false)
+    {
+        refreshShaderCodeTabs();
+        updateGraphCodeContext();
+        return;
+    }
     const QString file = mSourceFile->currentText();
     const QString navigationScope =
         mDocument.GetPackageRoot() + QChar::Null + mDocument.GetRootGraph() + QChar::Null + QString::number(mEpoch);
@@ -4588,6 +4642,14 @@ void RendererWorkspace::renderSource()
 
 void RendererWorkspace::updateSourceDiagnostics(bool isNewResult)
 {
+    if (mShaderCodeArea.isNull() == false)
+    {
+        if (isNewResult == true)
+        {
+            refreshGraphCodeDiagnostics();
+        }
+        return;
+    }
     const QString file = mSourceFile->currentText();
     const uint64 request = mHasResult == true ? mLastResult.Request.Request : 0;
     if (isNewResult == false && request == mSourceDiagnosticsRequest && mEpoch == mSourceDiagnosticsEpoch &&
@@ -4598,6 +4660,11 @@ void RendererWorkspace::updateSourceDiagnostics(bool isNewResult)
     mSourceDiagnosticsRequest = request;
     mSourceDiagnosticsEpoch = mEpoch;
     mSourceDiagnosticsFile = file;
+    applySourceDiagnostics(*mSource, file);
+}
+
+void RendererWorkspace::applySourceDiagnostics(CodeEditor& inoutEditor, const QString& file)
+{
     QList<CodeDiagnostic> diagnostics;
     // A successful build's warnings mark their lines too.
     const int32 count = mHasResult == true ? GetDiagnosticCount() : 0;
@@ -4645,7 +4712,7 @@ void RendererWorkspace::updateSourceDiagnostics(bool isNewResult)
                             mLastResult.Request.InputIdentity == getBuildIdentity(mLastResult.Request.Source)) &&
                            (mLastResult.Request.Source == RenderGraphSource::Draft ||
                             mDocument.GetDraft(file) == mDocument.GetSaved(file));
-    mSource->SetDiagnostics(diagnostics, isCurrent);
+    inoutEditor.SetDiagnostics(diagnostics, isCurrent);
 }
 
 void RendererWorkspace::updateCanvasDiagnostics()
@@ -5750,6 +5817,11 @@ QJsonObject RendererWorkspace::getDiagnosticLocation(int32 row) const
 
 void RendererWorkspace::openSourceLine(const QString& file, int32 line, int32 column)
 {
+    if (mShaderCodeArea.isNull() == false)
+    {
+        openGraphCodeLine(file, line, column);
+        return;
+    }
     mViews->setCurrentIndex(SOURCE_VIEW);
     mSourceFile->setCurrentText(file);
     renderSource();
@@ -5810,6 +5882,10 @@ bool RendererWorkspace::ActivateDiagnostic(int32 row)
     mCanvas->GetDiagnostics().SetCurrentRow(row);
     mCanvas->GetHistory().PrepareDiagnosticVisit();
     mViews->setCurrentIndex(CANVAS_VIEW);
+    if (mShaderCodeArea.isNull() == false)
+    {
+        Q_EMIT GraphWorkspaceRequested();
+    }
     const QString node = target.value(QStringLiteral("node")).toString();
     const bool isInterface = node == QStringLiteral("input") || node == QStringLiteral("#outputs");
     const bool isSelected = SelectNode(target.value(QStringLiteral("source")).toString(),
@@ -5851,12 +5927,12 @@ QString RendererWorkspace::GetSourceFile() const
 
 int32 RendererWorkspace::GetSourceLine() const
 {
-    return mSource->textCursor().blockNumber() + 1;
+    return activeGraphSourceEditor().textCursor().blockNumber() + 1;
 }
 
 int32 RendererWorkspace::GetSourceColumn() const
 {
-    const QTextCursor cursor = mSource->textCursor();
+    const QTextCursor cursor = activeGraphSourceEditor().textCursor();
     const QString prefix = cursor.block().text().left(cursor.positionInBlock());
     return static_cast<int32>(prefix.toUcs4().size()) + 1;
 }

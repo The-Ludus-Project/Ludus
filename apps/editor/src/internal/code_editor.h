@@ -82,6 +82,20 @@ struct CodeDiagnostic final
 
 /// Reusable Qt text-input surface. Bound undo routes to the document owner;
 /// unbound views use Qt undo. No file, compilation or language-server lifetime. GUI thread only.
+/// What the current language server serves for completion and signature help,
+/// from its advertised capabilities (code editor M4, CE09).
+struct CodeAssistanceAvailability final
+{
+    /// Characters that request completion when typed.
+    QString CompletionTriggers = QStringLiteral(".");
+    /// Characters that request signature help when typed.
+    QString SignatureTriggers = QStringLiteral("(,");
+    /// Why completion is disabled, or empty when it is available.
+    QString CompletionUnavailableReason;
+    /// Why signature help is disabled, or empty when it is available.
+    QString SignatureUnavailableReason;
+};
+
 class CodeEditor final : public QPlainTextEdit
 {
     Q_OBJECT
@@ -132,7 +146,7 @@ public:
     /// Clamp a one-based line, and an optional one-based Unicode scalar column, to
     /// the document and reveal that position. Column 0 selects the line start.
     // NOLINTNEXTLINE(bugprone-easily-swappable-parameters): line then column is the universal order.
-    void GoToLine(foundation::int32 line, foundation::int32 column = 0);
+    void GoToLine(foundation::int32 line, foundation::int32 column = 0, bool shouldRemember = true);
     /// View-only source history and semantic navigation presentation; owned by this editor.
     [[nodiscard]] LUDUS_INLINE CodeNavigation& GetNavigation() const noexcept
     {
@@ -167,6 +181,11 @@ public:
     void Undo();
     void Redo();
     void SetCanFormat(bool canFormat);
+    /// Apply the language server's completion and signature capabilities: the
+    /// characters that trigger each request while typing, and why a command is
+    /// disabled (empty when available). The defaults allow both so the first
+    /// request can start a server lazily.
+    void SetAssistanceAvailability(const CodeAssistanceAvailability& availability);
     /// Present copied assistance results at the caret. No text mutation; choosing
     /// an item emits its row to the version-checking editing controller.
     void ShowCompletions(const QStringList& labels, const QStringList& details);
@@ -299,6 +318,9 @@ private:
     bool mCanUndo = false;
     bool mCanRedo = false;
     QAction* mFormatAction;
+    QAction* mCompleteAction;
+    QAction* mSignatureAction;
+    CodeAssistanceAvailability mAssistanceAvailability;
     QAction* mChooseFormatterAction;
     CodeNavigation* mNavigation;
     /// Name underlined for Ctrl+click (Command+click on macOS) Go to Definition.
