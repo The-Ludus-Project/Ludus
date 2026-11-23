@@ -70,7 +70,7 @@ def emit_text_artifact(namespace, label, data):
 
 
 def verify_storage_record_strides(binary, interface):
-    """Cross-check structured element stride against the emitted SPIR-V ArrayStride.
+    """Cross-check reflected storage member offsets and array strides against SPIR-V.
 
     Raw reflection reports fields, while the binary owns the runtime array stride.
     Admit only a scalar binding whose block contains that one runtime array.
@@ -83,7 +83,8 @@ def verify_storage_record_strides(binary, interface):
     words = struct.unpack('<' + 'I' * (len(binary) // 4), binary)
     if words[0] != 0x07230203:
         raise RuntimeError('Structured storage requires SPIR-V magic')
-    decorations, pointers, blocks, arrays, variables = {}, {}, {}, set(), {}
+    decorations, offsets, pointers, blocks, arrays, variables = {}, {}, {}, {}, {}, {}
+    runtime_arrays = set()
     cursor = 5
     while cursor < len(words):
         count, opcode = words[cursor] >> 16, words[cursor] & 0xffff
@@ -92,53 +93,102 @@ def verify_storage_record_strides(binary, interface):
         operands = words[cursor + 1:cursor + count]
         if opcode == 71 and len(operands) == 3:  # OpDecorate
             decorations[(operands[0], operands[1])] = operands[2]
+        elif opcode == 72 and len(operands) == 4 and operands[2] == 35:  # OpMemberDecorate Offset
+            offsets[(operands[0], operands[1])] = operands[3]
         elif opcode == 32 and len(operands) == 3:  # OpTypePointer
             pointers[operands[0]] = operands[2]
         elif opcode == 30 and len(operands) >= 1:  # OpTypeStruct
             blocks[operands[0]] = operands[1:]
+        elif opcode == 28 and len(operands) == 3:  # OpTypeArray
+            arrays[operands[0]] = operands[1]
         elif opcode == 29 and len(operands) == 2:  # OpTypeRuntimeArray
-            arrays.add(operands[0])
+            arrays[operands[0]] = operands[1]
+            runtime_arrays.add(operands[0])
         elif opcode == 59 and len(operands) >= 3:  # OpVariable
             variables[operands[1]] = operands[0]
         cursor += count
+    def verify_members(identity, fields):
+        types = blocks.get(identity, ())
+        if len(types) != len(fields):
+            raise RuntimeError('Structured storage SPIR-V field count differs from reflection')
+        for index, (member_type, field) in enumerate(zip(types, fields)):
+            if offsets.get((identity, index)) != field['offset']:
+                raise RuntimeError(f"Structured storage SPIR-V offset differs for '{field['name']}'")
+            verify_value(member_type, field)
+
+    def verify_value(identity, shape):
+        if 'fields' in shape:
+            verify_members(identity, shape['fields'])
+        elif 'element' in shape:
+            # Slang's std430 lowering can wrap a fixed array in a one-field struct.
+            members = blocks.get(identity, ())
+            if len(members) == 1 and offsets.get((identity, 0)) == 0:
+                identity = members[0]
+            element = arrays.get(identity)
+            if element is None or identity in runtime_arrays or decorations.get((identity, 6)) != shape['stride']:
+                raise RuntimeError('Structured storage SPIR-V fixed-array stride differs from reflection')
+            verify_value(element, shape['element'])
+
     for entry in records:
         matches = [identity for identity in variables if decorations.get((identity, 33)) == entry['binding']
                    and decorations.get((identity, 34), 0) == 0]
         if len(matches) != 1:
             raise RuntimeError('Structured storage SPIR-V binding is missing or ambiguous')
         members = blocks.get(pointers.get(variables[matches[0]]), ())
-        if len(members) != 1 or members[0] not in arrays or decorations.get((members[0], 6)) != entry['size']:
+        if len(members) != 1 or members[0] not in runtime_arrays or decorations.get((members[0], 6)) != entry['size']:
             raise RuntimeError('Structured storage SPIR-V stride differs from reflected record')
+        if entry['fields']:
+            verify_members(arrays[members[0]], entry['fields'])
 
 
 def storage_record_layout(record):
-    """Validate a flat native scalar/vector record against reflected field offsets.
+    """Validate a native record against its reflected std430 layout."""
+    size, alignment, fields = storage_struct_layout(record)
+    return (size + alignment - 1) // alignment * alignment, fields
 
-    Native ray stages are emitted as SPIR-V std430 and translated to Metal by the
-    pinned SPIRV-Cross. Vec3 occupies twelve bytes with sixteen-byte alignment.
-    """
+
+def storage_struct_layout(record):
+    """Validate field offsets and return the occupied size, alignment and fields."""
     fields = record.get('fields', [])
     if not fields or len(fields) > 16:
-        raise RuntimeError('Native structured storage requires one to sixteen scalar/vector fields')
+        raise RuntimeError('Native structured storage requires one to sixteen fields per struct')
     offset, alignment, members = 0, 1, []
+    names = set()
     for field in fields:
         shape = field.get('type', {})
-        scalar = shape if shape.get('kind') == 'scalar' else shape.get('elementType', {})
-        width = 1 if shape.get('kind') == 'scalar' else shape.get('elementCount')
-        if shape.get('kind') not in ('scalar', 'vector') or scalar.get('scalarType') not in ('float32', 'uint32', 'int32') or width not in (1, 2, 3, 4):
-            raise RuntimeError('Native structured storage fields require scalar32 or vector32 values')
-        size = 4 * width
-        align = 16 if width == 3 else size
+        size, align, member = storage_value_layout(shape)
         offset = (offset + align - 1) // align * align
         layout = field.get('binding', {})
         if layout.get('kind') != 'uniform' or layout.get('offset') != offset or layout.get('size') != size:
             raise RuntimeError('Native structured storage field layout differs from std430')
-        if any(member['name'] == field.get('name') for member in members):
+        name = field['name']
+        if name in names:
             raise RuntimeError('Native structured storage field is duplicated')
-        members.append({'name': field['name'], 'scalar': scalar['scalarType'], 'width': width, 'offset': offset})
+        names.add(name)
+        members.append({'name': name, **member, 'offset': offset})
         alignment = max(alignment, align)
         offset += size
-    return (offset + alignment - 1) // alignment * alignment, members
+    return offset, alignment, members
+
+
+def storage_value_layout(shape):
+    kind = shape.get('kind')
+    if kind == 'struct':
+        size, alignment, fields = storage_struct_layout(shape)
+        return size, alignment, {'fields': fields}
+    if kind == 'array':
+        size, alignment, element = storage_value_layout(shape.get('elementType', {}))
+        stride = (size + alignment - 1) // alignment * alignment
+        count = shape.get('elementCount')
+        if type(count) is not int or count <= 0 or shape.get('uniformStride') != stride:
+            raise RuntimeError('Native structured storage requires fixed arrays with std430 element stride')
+        return stride * count, alignment, {'count': count, 'stride': stride, 'element': element}
+    scalar = shape if kind == 'scalar' else shape.get('elementType', {})
+    width = 1 if kind == 'scalar' else shape.get('elementCount')
+    if kind not in ('scalar', 'vector') or scalar.get('scalarType') not in ('float32', 'uint32', 'int32') or width not in (1, 2, 3, 4):
+        raise RuntimeError('Native structured storage requires 32-bit scalars or vectors, structs, or fixed arrays')
+    size = 4 * width
+    return size, 16 if width == 3 else size, {'scalar': scalar['scalarType'], 'width': width}
 
 
 def raster_interface_usage(document, stage):
