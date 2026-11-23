@@ -8,6 +8,7 @@
 #include <ludus/foundation/containers/static_array.hpp>
 #include <ludus/foundation/math/quaternion.hpp>
 #include <ludus/foundation/math/scalar.hpp>
+#include <ludus/foundation/strings/utf8.hpp>
 #include <ludus/graphics/renderer/atmosphere.hpp>
 
 namespace ludus::first_person
@@ -317,17 +318,21 @@ bool ReadBindings(JsonValue root, PlayableSnapshot& inoutSnapshot) noexcept
     return inoutSnapshot.Spawns.GetSize() != 0;
 }
 } // namespace
-bool DecodePlayableSnapshot(BorrowedView<const uint8> bytes, PlayableSnapshot& outSnapshot) noexcept
+void DecodePlayableSnapshot(BorrowedView<const uint8> bytes,
+                            PlayableSnapshot& outSnapshot,
+                            PlayableSnapshotDiagnostic& outDiagnostic) noexcept
 {
+    outDiagnostic = {};
+    outDiagnostic.Status = PlayableSnapshotStatus::Unreadable;
     if (bytes.IsValid() == false || bytes.IsEmpty() == true || bytes.GetSize() > MAX_PLAYABLE_SNAPSHOT_BYTES)
     {
-        return false;
+        return;
     }
     const std::string_view encoded(reinterpret_cast<const char*>(bytes.GetDataOrNull()), bytes.GetSize());
     const usize end = encoded.substr(0, format::MAX_PLAYABLE_MANIFEST_BYTES + 1).find('\n');
     if (end == std::string_view::npos)
     {
-        return false;
+        return;
     }
     PlayableSnapshot candidate;
     parsing::ParseError error;
@@ -338,7 +343,7 @@ bool DecodePlayableSnapshot(BorrowedView<const uint8> bytes, PlayableSnapshot& o
     limits.MaxObjectMembers = parsing::MAX_JSON_OBJECT_MEMBERS;
     if (candidate.Manifest.Read(encoded.substr(0, end), error, limits) != parsing::ParseStatus::Ok)
     {
-        return false;
+        return;
     }
     const JsonValue root = candidate.Manifest.Root();
     if (root.Fields({"version",
@@ -355,23 +360,42 @@ bool DecodePlayableSnapshot(BorrowedView<const uint8> bytes, PlayableSnapshot& o
                      "atmosphere",
                      "climate"}) == false)
     {
-        return false;
+        return;
     }
     std::string_view source;
     if (root.Get("source").String(source) == false || source.empty() == true ||
         IsDigestText(root.Get("worldSha256")) == false || HasValidArtifacts(root.Get("artifacts")) == false ||
         root.Get("warnings").Array() == false || root.Get("earthObserver").Object() == false)
     {
-        return false;
+        return;
     }
     uint64 version = 0;
     std::string_view renderer;
     std::string_view world;
     std::string_view digest;
     const std::span<const uint8> bundle(bytes.GetDataOrNull() + end + 1, bytes.GetSize() - end - 1);
+    // Separate an unsupported renderer from an unreadable file: once the manifest header is well-formed and names
+    // a valid renderer string, a renderer other than raster is a World the player cannot draw, not a corrupt file.
     if (root.Get("version").Integer(version) == false || version != format::PLAYABLE_WORLD_VERSION ||
-        root.Get("renderer").String(renderer) == false || renderer != format::PLAYABLE_RASTER_RENDERER ||
-        root.Get("world").String(world) == false || world.empty() == true ||
+        root.Get("renderer").String(renderer) == false)
+    {
+        return;
+    }
+    if (renderer != format::PLAYABLE_RASTER_RENDERER)
+    {
+        outDiagnostic.Status = PlayableSnapshotStatus::UnsupportedRenderer;
+        // The renderer came from the parsed manifest, so it is valid UTF-8; keep a bounded copy for the caller,
+        // truncating an improbably long name on a code-point boundary rather than dropping it.
+        foundation::Utf8View name;
+        usize errorOffset = 0;
+        if (foundation::ValidateUtf8(renderer, name, errorOffset) == foundation::StringStatus::Ok)
+        {
+            bool isTruncated = false;
+            outDiagnostic.Renderer.AssignTruncatedUtf8(name, isTruncated);
+        }
+        return;
+    }
+    if (root.Get("world").String(world) == false || world.empty() == true ||
         root.Get("sceneSha256").String(digest) == false || bundle.size() > format::MAX_ASSEMBLED_BUNDLE_BYTES ||
         MatchesDigest(digest, content::Hash(bundle)) == false ||
         (bundle.empty() == false &&
@@ -379,9 +403,16 @@ bool DecodePlayableSnapshot(BorrowedView<const uint8> bytes, PlayableSnapshot& o
         ReadAtmosphere(root.Get("atmosphere"), candidate.Atmosphere) == false ||
         ReadClimate(root.Get("climate"), candidate.Climate) == false || ReadBindings(root, candidate) == false)
     {
-        return false;
+        return;
     }
+    outDiagnostic.Status = PlayableSnapshotStatus::Ok;
     outSnapshot = Move(candidate);
-    return true;
+}
+
+bool DecodePlayableSnapshot(BorrowedView<const uint8> bytes, PlayableSnapshot& outSnapshot) noexcept
+{
+    PlayableSnapshotDiagnostic diagnostic;
+    DecodePlayableSnapshot(bytes, outSnapshot, diagnostic);
+    return diagnostic.Status == PlayableSnapshotStatus::Ok;
 }
 } // namespace ludus::first_person

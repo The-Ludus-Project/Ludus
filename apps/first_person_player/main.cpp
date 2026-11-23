@@ -32,8 +32,9 @@ void RequestStop(int) noexcept
     gShouldStop = 1;
 }
 
-bool Load(std::string_view path, PlayableSnapshot& outSnapshot) noexcept
+bool Load(std::string_view path, PlayableSnapshot& outSnapshot, PlayableSnapshotDiagnostic& outDiagnostic) noexcept
 {
+    outDiagnostic = {};
     const usize slash = path.rfind('/');
     const std::string_view root = slash == path.npos ? "." : slash == 0 ? "/" : path.substr(0, slash);
     filesystem::Directory directory;
@@ -46,8 +47,12 @@ bool Load(std::string_view path, PlayableSnapshot& outSnapshot) noexcept
         return false;
     }
     const filesystem::ReadResult read = file.ReadAt(0, {bytes.GetData(), bytes.GetSize()});
-    return read.Outcome.Succeeded() == true && read.BytesRead == bytes.GetSize() &&
-           DecodePlayableSnapshot(bytes.AsView(), outSnapshot) == true;
+    if (read.Outcome.Succeeded() == false || read.BytesRead != bytes.GetSize())
+    {
+        return false;
+    }
+    DecodePlayableSnapshot(bytes.AsView(), outSnapshot, outDiagnostic);
+    return outDiagnostic.Status == PlayableSnapshotStatus::Ok;
 }
 struct Controls final
 {
@@ -365,8 +370,17 @@ bool MountWeather(const PlayableSnapshot& snapshot,
 bool Run(std::string_view path, std::string_view entity, bool shouldVerifyFixture) noexcept
 {
     PlayableSnapshot snapshot;
-    if (Load(path, snapshot) == false)
+    PlayableSnapshotDiagnostic diagnostic;
+    if (Load(path, snapshot, diagnostic) == false)
     {
+        if (diagnostic.Status == PlayableSnapshotStatus::UnsupportedRenderer)
+        {
+            LUDUS_LOG_ERROR(LOG_PLAYER,
+                            "This World was prepared for the {} renderer, which the player cannot draw. Select Raster "
+                            "in the Editor and prepare the World again.",
+                            diagnostic.Renderer.GetView());
+            return false;
+        }
         LUDUS_LOG_ERROR(LOG_PLAYER, "Cannot read the cooked World. Prepare the World again and pass its .luplay file.");
         return false;
     }

@@ -35,6 +35,16 @@ bool Decode(const QByteArray& bytes, first_person::PlayableSnapshot& outSnapshot
         {reinterpret_cast<const foundation::uint8*>(bytes.constData()), static_cast<foundation::usize>(bytes.size())},
         outSnapshot);
 }
+first_person::PlayableSnapshotDiagnostic DecodeDiagnostic(const QByteArray& bytes,
+                                                          first_person::PlayableSnapshot& outSnapshot)
+{
+    first_person::PlayableSnapshotDiagnostic diagnostic;
+    first_person::DecodePlayableSnapshot(
+        {reinterpret_cast<const foundation::uint8*>(bytes.constData()), static_cast<foundation::usize>(bytes.size())},
+        outSnapshot,
+        diagnostic);
+    return diagnostic;
+}
 } // namespace
 TEST_CASE("Playable World freezes an applied glTF placement and admits only a complete replacement",
           "[world][playable-world]")
@@ -265,6 +275,27 @@ TEST_CASE("Playable World freezes an applied glTF placement and admits only a co
     {
         REQUIRE(PreparePlayableWorld(root, relative, world, QStringLiteral("reference"), output, nullptr, error) ==
                 false);
+    }
+    SECTION("the player names an unsupported renderer and still launches the raster snapshot")
+    {
+        // Change only the renderer in the otherwise valid accepted manifest; everything else is byte for byte.
+        const qsizetype newline = acceptedBytes.indexOf('\n');
+        QJsonObject header = QJsonDocument::fromJson(acceptedBytes.first(newline)).object();
+        REQUIRE(header.value("renderer"_L1).toString() == QStringLiteral("raster"));
+        header.insert("renderer"_L1, QStringLiteral("reference"));
+        const QByteArray reskinned =
+            QJsonDocument(header).toJson(QJsonDocument::Compact) + acceptedBytes.sliced(newline);
+        first_person::PlayableSnapshot rejected;
+        const first_person::PlayableSnapshotDiagnostic diagnostic = DecodeDiagnostic(reskinned, rejected);
+        // An unsupported renderer is a distinct, named outcome, not the generic unreadable-file rejection.
+        CHECK(diagnostic.Status == first_person::PlayableSnapshotStatus::UnsupportedRenderer);
+        CHECK(diagnostic.Renderer.GetView() == std::string_view("reference"));
+        // The original raster snapshot still decodes, so a supported World launches unchanged.
+        first_person::PlayableSnapshot launched;
+        const first_person::PlayableSnapshotDiagnostic rasterDiagnostic = DecodeDiagnostic(acceptedBytes, launched);
+        CHECK(rasterDiagnostic.Status == first_person::PlayableSnapshotStatus::Ok);
+        CHECK(rasterDiagnostic.Renderer.IsEmpty() == true);
+        REQUIRE(launched.Spawns.GetSize() == 1);
     }
     CHECK(ReadBytes(output) == acceptedBytes);
 }
