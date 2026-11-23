@@ -329,7 +329,8 @@ Status AppendGpuGraph(rhi::DeviceHandle device,
         {
             return status;
         }
-        const bool isRecordReader = job.HasNativeRayInvocation == true && state.NativeRecordBytes != 0 &&
+        const bool isRecordReader = (job.IsRecordReadCompute == true || job.HasNativeRayInvocation == true) &&
+                                    state.NativeRecordBytes != 0 &&
                                     slot + LUDUS_GRAPH_BUFFER0_BINDING == LUDUS_GRAPH_BUFFER1_BINDING;
         rhi::GraphVersion bound;
         if (isRecordReader == true)
@@ -487,8 +488,10 @@ Status AppendGpuGraph(rhi::DeviceHandle device,
     }
     const uint32 dispatchWidth = isBufferDispatch == true ? GetSceneWorkRowWidth(job.WorkItemCount) : job.Width;
     const uint32 dispatchRows = isBufferDispatch == true ? GetSceneWorkRowCount(job.WorkItemCount) : rows;
-    const rhi::ComputeDispatch dispatch{job.HasNativeRayInvocation == true ? state.NativeRayPipeline
-                                                                           : state.ComputePipeline,
+    const rhi::ComputePipelineHandle pipeline = job.IsRecordReadCompute == true      ? state.RecordReadComputePipeline
+                                                : job.HasNativeRayInvocation == true ? state.NativeRayPipeline
+                                                                                     : state.ComputePipeline;
+    const rhi::ComputeDispatch dispatch{pipeline,
                                         tilesOrNull != nullptr ? tilesOrNull->Bindings : job.ComputeBindings,
                                         {(dispatchWidth - 1) / state.WorkgroupWidth + 1,
                                          dispatchRows == 0 ? 1 : (dispatchRows - 1) / state.WorkgroupHeight + 1,

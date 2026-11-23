@@ -596,8 +596,9 @@ Status PackGpuScene(const ReferenceJob& job,
 }
 rhi::BindingLayoutHandle GetGpuComputeLayout(const GpuPreviewState& state, const GpuPreviewRecord& job) noexcept
 {
-    return job.HasNativeRayInvocation == true && state.NativeRecordBytes != 0 ? state.NativeRayLayout
-                                                                              : state.ComputeLayout;
+    return (job.HasNativeRayInvocation == true || job.IsRecordReadCompute == true) && state.NativeRecordBytes != 0
+               ? state.RecordReadLayout
+               : state.ComputeLayout;
 }
 
 // The compute bindings of a job, one per binding of the job's layout (GpuPreviewState::ComputeBindings), each chosen
@@ -1134,9 +1135,11 @@ void Renderer::State::ClearGpuPreview() noexcept
     static_cast<void>(rhi::Destroy(Device, state.ComputePipeline));
     static_cast<void>(rhi::Destroy(Device, state.NativeRayPipeline));
     static_cast<void>(rhi::Destroy(Device, state.NativeRayShader));
+    static_cast<void>(rhi::Destroy(Device, state.RecordReadComputePipeline));
+    static_cast<void>(rhi::Destroy(Device, state.RecordReadComputeShader));
     static_cast<void>(rhi::Destroy(Device, state.ImagePipeline));
     static_cast<void>(rhi::Destroy(Device, state.ComputeLayout));
-    static_cast<void>(rhi::Destroy(Device, state.NativeRayLayout));
+    static_cast<void>(rhi::Destroy(Device, state.RecordReadLayout));
     static_cast<void>(rhi::Destroy(Device, state.ImageLayout));
     static_cast<void>(rhi::Destroy(Device, state.ComputeShader));
     static_cast<void>(rhi::Destroy(Device, state.VertexShader));
@@ -1275,14 +1278,20 @@ Status Renderer::EnableGpuPreview(const rhi::RasterShaderDescription& compute,
         }
     }
     usize nativeRecordBytes = 0;
-    if (hasPersistentBuffers == true && options.NativeRayStagesOrNull != nullptr)
+    for (const rhi::RasterShaderDescription* readerOrNull :
+         {options.NativeRayStagesOrNull, options.RecordReadComputeOrNull})
     {
-        for (const rhi::RasterBinding& binding : options.NativeRayStagesOrNull->Bindings)
+        if (hasPersistentBuffers == false || readerOrNull == nullptr)
+        {
+            continue;
+        }
+        for (const rhi::RasterBinding& binding : readerOrNull->Bindings)
         {
             if (binding.Binding == LUDUS_GRAPH_BUFFER1_BINDING && binding.Kind == rhi::RasterBindingKind::StorageRead)
             {
                 if (binding.MinSize == 0 || binding.MinSize > caps.MaxStorageRange ||
-                    binding.MinSize % sizeof(uint32) != 0 || binding.Visibility != rhi::RasterVisibility::Compute)
+                    binding.MinSize % sizeof(uint32) != 0 || binding.Visibility != rhi::RasterVisibility::Compute ||
+                    (nativeRecordBytes != 0 && nativeRecordBytes != binding.MinSize))
                 {
                     return Status::InvalidDescription;
                 }
@@ -1369,6 +1378,7 @@ Status Renderer::EnableGpuPreview(const rhi::RasterShaderDescription& compute,
         state->StorageDescriptions[i] = options.StorageBuffers[i];
     }
     state->Options.NativeRayStagesOrNull = nullptr;
+    state->Options.RecordReadComputeOrNull = nullptr;
     state->Options.StorageBuffers = {state->StorageDescriptions.GetData(), options.StorageBuffers.GetSize()};
     state->WorkgroupWidth = compute.WorkgroupSize[0];
     state->WorkgroupHeight = compute.WorkgroupSize[1];
@@ -1426,6 +1436,26 @@ Status Renderer::EnableGpuPreview(const rhi::RasterShaderDescription& compute,
             return status;
         }
     }
+    if (options.RecordReadComputeOrNull != nullptr)
+    {
+        const rhi::RasterShaderDescription& reader = *options.RecordReadComputeOrNull;
+        if (nativeRecordBytes == 0 || reader.Artifact.HasNativeRayStages == true ||
+            reader.Artifact.Stage != rhi::ShaderStage::Compute || reader.WorkgroupSize[0] != compute.WorkgroupSize[0] ||
+            reader.WorkgroupSize[1] != compute.WorkgroupSize[1] || reader.WorkgroupSize[2] != compute.WorkgroupSize[2])
+        {
+            mState->ClearGpuPreview();
+            mState->ClearReference();
+            return Status::InvalidDescription;
+        }
+        status = rhi::CreateRasterShader(mState->Device, reader, target.RecordReadComputeShader);
+        target.HasRecordReadComputeShader = Accepted(status);
+        if (Accepted(status) == false)
+        {
+            mState->ClearGpuPreview();
+            mState->ClearReference();
+            return status;
+        }
+    }
     status = rhi::CreateRasterShader(mState->Device, compute, target.ComputeShader);
     if (Accepted(status))
     {
@@ -1458,6 +1488,27 @@ Status Renderer::EnableTriangleRayPipeline(const rhi::RasterShaderDescription& c
     }
     return status;
 }
+namespace
+{
+Status PrepareGpuPreviewComputeVariant(rhi::DeviceHandle device,
+                                       rhi::RasterShaderHandle shader,
+                                       rhi::BindingLayoutHandle layout,
+                                       rhi::ComputePipelineHandle& inoutPipeline,
+                                       bool& inoutIsCreated) noexcept
+{
+    if (inoutIsCreated == false)
+    {
+        const Status status = rhi::CreateComputePipeline(device, {shader, layout}, inoutPipeline);
+        inoutIsCreated = Accepted(status);
+        if (status != Status::Ready)
+        {
+            return status;
+        }
+    }
+    return rhi::GetStatus(device, inoutPipeline);
+}
+} // namespace
+
 Status Renderer::PollGpuPreview() noexcept
 {
     if (mState.Get() == nullptr || mState->GpuPreview.Get() == nullptr)
@@ -1494,6 +1545,14 @@ Status Renderer::PollGpuPreview() noexcept
                         break;
                     }
                 }
+                if (state.HasRecordReadComputeShader == true)
+                {
+                    status = rhi::GetStatus(mState->Device, state.RecordReadComputeShader);
+                    if (status != Status::Ready)
+                    {
+                        break;
+                    }
+                }
                 status = rhi::GetStatus(mState->Device, state.ComputeShader);
                 if (status == Status::Ready)
                 {
@@ -1515,7 +1574,7 @@ Status Renderer::PollGpuPreview() noexcept
                 status = rhi::GetStatus(mState->Device, state.ComputeLayout);
                 if (status == Status::Ready && state.NativeRecordBytes != 0)
                 {
-                    if (state.HasCreatedNativeRayLayout == false)
+                    if (state.HasCreatedRecordReadLayout == false)
                     {
                         StaticArray<rhi::RasterBinding, internal::GPU_PREVIEW_COMPUTE_BINDING_CAPACITY> bindings =
                             state.ComputeBindings;
@@ -1528,12 +1587,12 @@ Status Renderer::PollGpuPreview() noexcept
                         }
                         status = rhi::CreateBindingLayout(mState->Device,
                                                           {bindings.GetData(), state.ComputeBindingCount},
-                                                          state.NativeRayLayout);
-                        state.HasCreatedNativeRayLayout = Accepted(status);
+                                                          state.RecordReadLayout);
+                        state.HasCreatedRecordReadLayout = Accepted(status);
                     }
                     if (status == Status::Ready)
                     {
-                        status = rhi::GetStatus(mState->Device, state.NativeRayLayout);
+                        status = rhi::GetStatus(mState->Device, state.RecordReadLayout);
                     }
                 }
                 if (status == Status::Ready)
@@ -1553,22 +1612,27 @@ Status Renderer::PollGpuPreview() noexcept
                 }
                 break;
             case 3:
+                if (state.HasRecordReadComputeShader == true)
+                {
+                    status = PrepareGpuPreviewComputeVariant(mState->Device,
+                                                             state.RecordReadComputeShader,
+                                                             state.RecordReadLayout,
+                                                             state.RecordReadComputePipeline,
+                                                             state.HasCreatedRecordReadComputePipeline);
+                    if (status != Status::Ready)
+                    {
+                        break;
+                    }
+                }
                 if (state.HasNativeRayShader == true)
                 {
-                    if (state.HasCreatedNativeRayPipeline == false)
-                    {
-                        const rhi::BindingLayoutHandle layout =
-                            state.NativeRecordBytes != 0 ? state.NativeRayLayout : state.ComputeLayout;
-                        status = rhi::CreateComputePipeline(mState->Device,
-                                                            {state.NativeRayShader, layout},
-                                                            state.NativeRayPipeline);
-                        state.HasCreatedNativeRayPipeline = Accepted(status);
-                        if (status != Status::Ready)
-                        {
-                            break;
-                        }
-                    }
-                    status = rhi::GetStatus(mState->Device, state.NativeRayPipeline);
+                    const rhi::BindingLayoutHandle layout =
+                        state.NativeRecordBytes != 0 ? state.RecordReadLayout : state.ComputeLayout;
+                    status = PrepareGpuPreviewComputeVariant(mState->Device,
+                                                             state.NativeRayShader,
+                                                             layout,
+                                                             state.NativeRayPipeline,
+                                                             state.HasCreatedNativeRayPipeline);
                     if (status != Status::Ready)
                     {
                         break;
@@ -1739,6 +1803,11 @@ Status Renderer::BeginGpuPreview(Snapshot snapshot,
         mState->GpuPreview->HasNativeRayShader == false)
     {
         return Status::Unsupported;
+    }
+    if (invocationOrNull != nullptr && invocationOrNull->IsRecordReadCompute == true &&
+        (mState->GpuPreview->HasRecordReadComputeShader == false || invocationOrNull->HasNativeRayInvocation == true))
+    {
+        return Status::InvalidDescription;
     }
     if (Access::Owner(outOutput) != 0)
     {
@@ -2214,6 +2283,7 @@ Status Renderer::BeginGpuPreview(Snapshot snapshot,
     }
     uniform.Options.Y = invocationOrNull != nullptr ? invocationOrNull->ToneMappingExposure : state.Options.Exposure;
     job.HasNativeRayInvocation = invocationOrNull != nullptr && invocationOrNull->HasNativeRayInvocation == true;
+    job.IsRecordReadCompute = invocationOrNull != nullptr && invocationOrNull->IsRecordReadCompute == true;
     job.DenoisingQuality = invocationOrNull != nullptr ? invocationOrNull->DenoisingQuality : 0;
     job.RayPathCapture = hasRayPathCapture == true ? invocationOrNull->RayPathCapture : GpuPreviewGraphBuffer{};
     uniform.Sampling[2] |= job.DenoisingQuality != 0 ? LUDUS_GPU_PREVIEW_DENOISING_FLAG : 0;

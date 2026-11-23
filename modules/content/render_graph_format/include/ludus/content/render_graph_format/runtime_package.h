@@ -73,6 +73,8 @@
 /// Version 44 inserts the shared structured graph buffer stride before the storage records.
 /// The persistent compute stage writes its second graph binding; the native Metal stage reads
 /// that same binding. A zero stride leaves the older word-buffer layout in effect.
+/// Version 45 adds a read-only compute stage role and writes its callback mask after the stride.
+/// Its reader and writer stages may carry one program per ordered-scene compute target.
 namespace ludus::content::render_graph_format
 {
 /// "LURG" read as a little-endian uint32.
@@ -164,6 +166,8 @@ inline constexpr foundation::uint32 STORAGE_TEXTURE_PACKAGE_VERSION = 42;
 inline constexpr foundation::uint32 IMAGE_LAUNCH_PACKAGE_VERSION = 43;
 /// First package carrying the reflected stride for a shared structured graph buffer.
 inline constexpr foundation::uint32 NATIVE_GRAPH_RECORD_PACKAGE_VERSION = 44;
+/// First package with a separate structured-buffer reader for ordered compute invocations.
+inline constexpr foundation::uint32 RECORD_READER_PACKAGE_VERSION = 45;
 /// Default runtime generation layout. Use NATIVE_GRAPH_RECORD_PACKAGE_VERSION for a shared native record.
 inline constexpr foundation::uint32 PACKAGE_VERSION = IMAGE_LAUNCH_PACKAGE_VERSION;
 /// First package carrying explicit OIDN denoising quality per ray pass.
@@ -250,8 +254,10 @@ inline constexpr foundation::usize DEFERRED_PROBE_GBUFFER_STAGE_ROLE = FORWARD_R
 /// pixel so the resolve omits the baked lights' live diffuse. Present for every deferred target, or for none, when a
 /// deferred pass connects Baked Lighting.
 inline constexpr foundation::usize DEFERRED_SURFACE_CHART_GBUFFER_STAGE_ROLE = DEFERRED_PROBE_GBUFFER_STAGE_ROLE + 1;
+/// Ordered compute kernel whose shared graph record binding is read-only.
+inline constexpr foundation::usize RECORD_READ_COMPUTE_STAGE_ROLE = DEFERRED_SURFACE_CHART_GBUFFER_STAGE_ROLE + 1;
 /// Total number of admitted shader roles.
-inline constexpr foundation::usize STAGE_ROLE_COUNT = DEFERRED_SURFACE_CHART_GBUFFER_STAGE_ROLE + 1;
+inline constexpr foundation::usize STAGE_ROLE_COUNT = RECORD_READ_COMPUTE_STAGE_ROLE + 1;
 /// Return a raster pair's vertex (stage 0) or fragment (stage 1) role.
 /// @pre technique is a bounded raster role and stage is below TECHNIQUE_STAGE_COUNT.
 [[nodiscard]] LUDUS_INLINE constexpr foundation::usize GetRasterStageRole(Technique technique,

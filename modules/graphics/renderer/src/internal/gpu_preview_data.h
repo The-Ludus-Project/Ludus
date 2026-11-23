@@ -152,6 +152,7 @@ struct GpuPreviewRecord final
     /// Referenced GpuPreviewState::Scenes slot; Data, Texels and NativeGeometry below copy its handles.
     usize Scene = NO_GPU_PREVIEW_SCENE;
     bool HasNativeRayInvocation = false;
+    bool IsRecordReadCompute = false;
     bool HasExplicitImageLaunch = false;
     uint32 WorkItemCount = 0;
     uint64 Generation = 1;
@@ -246,13 +247,17 @@ struct GpuPreviewState final
     rhi::RasterShaderHandle ComputeShader{};
     rhi::RasterShaderHandle NativeRayShader{};
     rhi::ComputePipelineHandle NativeRayPipeline{};
+    rhi::RasterShaderHandle RecordReadComputeShader{};
+    rhi::ComputePipelineHandle RecordReadComputePipeline{};
+    bool HasRecordReadComputeShader = false;
+    bool HasCreatedRecordReadComputePipeline = false;
     bool HasNativeRayShader = false;
     bool HasCreatedNativeRayPipeline = false;
-    bool HasCreatedNativeRayLayout = false;
+    bool HasCreatedRecordReadLayout = false;
     rhi::RasterShaderHandle VertexShader{};
     rhi::RasterShaderHandle FragmentShader{};
     rhi::BindingLayoutHandle ComputeLayout{};
-    rhi::BindingLayoutHandle NativeRayLayout{};
+    rhi::BindingLayoutHandle RecordReadLayout{};
     rhi::BindingLayoutHandle ImageLayout{};
     rhi::ComputePipelineHandle ComputePipeline{};
     rhi::RasterPipelineHandle ImagePipeline{};

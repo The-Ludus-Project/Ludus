@@ -430,23 +430,31 @@ def group_profiles(plans, technique, build):
         native_uses = [use for operation in operations for use in operation.get('persistent_buffers', [])
                        if 'binding_slot' in use]
         uses_native_records = bool(native_uses)
+        record_readers = set()
         if uses_native_records:
             build.require(len({use['resource'] for use in native_uses}) == 1 and
                           {use['output_version'] is None for use in native_uses} == {False, True},
                           'Capability', plan['configuration'],
-                          'connect one native structured Buffer from a scene compute writer to a Metal ray reader')
+                          'connect one native structured Buffer from a scene compute writer to a reader')
+            has_hardware_record_reader = False
             for operation in operations:
                 variant = get_callback_variant(operation['pipeline'])
                 for use in operation.get('persistent_buffers', []):
                     if 'binding_slot' in use:
-                        build.require((use['output_version'] is None) == (variant in native_operations),
-                                      'Capability', operation['id'],
-                                      'native structured buffers are written by ordered compute and read by '
-                                      'a Metal hardware ray pass. Set the reader invocation to RayTracing.')
+                        is_hardware = variant in native_operations
+                        is_reader = use['output_version'] is None
+                        build.require(not is_hardware or is_reader, 'Capability', operation['id'],
+                                      'write the native structured Buffer in an ordered scene compute pass')
+                        if is_reader and not is_hardware:
+                            record_readers.add(variant)
+                        has_hardware_record_reader |= is_reader and is_hardware
                     else:
                         build.require(use['slot'] != buffers.NATIVE_RECORD_SLOT, 'Capability', operation['id'],
                                       'the native structured Buffer occupies the second graph binding. '
                                       'Use one positional Buffer in this configuration.')
+            build.require(not native_operations or has_hardware_record_reader, 'Capability', plan['configuration'],
+                          'connect the native structured Buffer as a read-only input of a hardware ray pass '
+                          'or use only compute invocations in this configuration')
         # With optional lighting helpers, share an artifact only between configurations
         # that use the same callbacks. Reflection can then omit the table per configuration.
         callbacks = ((tuple(sorted(variants)), tuple(sorted(native_operations)), plan['configuration'])
@@ -458,6 +466,7 @@ def group_profiles(plans, technique, build):
         group['variants'].update(variants)
         group['native_operations'].update(native_operations)
         group['native_graph_records'] = uses_native_records
+        group['record_readers'] = record_readers
         group['configurations'].append(plan['configuration'])
         group['structured_buffers'] |= any(operation.get('buffers') for operation in operations)
         group['scene_dispatch'] = group.get('scene_dispatch', False) or any('work_items' in operation for operation in operations)
@@ -499,6 +508,7 @@ def group_profiles(plans, technique, build):
         result.append({'workgroup': workgroup, 'visibility_buffer': has_visibility, 'native_ray_queries': has_native_queries,
                        'native_slots': native_slots, 'native_operations': group['native_operations'],
                        'native_graph_records': group.get('native_graph_records', False),
+                       'record_readers': sorted(group.get('record_readers', ())),
                        'configurations': sorted(group['configurations']) if callbacks or has_native_record_profile else [],
                        'scene_dispatch': group.get('scene_dispatch', False),
                        'variants': variants, 'color_input': has_color_input,

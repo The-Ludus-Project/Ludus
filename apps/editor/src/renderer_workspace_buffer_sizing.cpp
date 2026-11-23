@@ -625,7 +625,7 @@ void RendererWorkspace::editBufferSizing(QWidget& inoutParent, const BufferSizin
     mode->setObjectName(QStringLiteral("renderGraphBufferSizingMode"));
     mode->addItems({QStringLiteral("Fixed bytes"),
                     QStringLiteral("From shader struct"),
-                    QStringLiteral("Native structured buffer (Metal)")});
+                    QStringLiteral("Native structured buffer")});
     const bool isNativeStructured = record.value(QStringLiteral("access")).toString() == QStringLiteral("Structured");
     mode->setCurrentIndex(pendingOrNull != nullptr ? pendingOrNull->Mode : isNativeStructured == true ? 2 : 1);
     fields.addRow(QStringLiteral("Sizing"), mode);

@@ -1518,10 +1518,12 @@ A proposed `ris-projected-solid-angle` template follows the four-pass
 
 ### Native structured Buffer ports (proposed)
 
-The Metal path supports one shared structured Buffer per ordered configuration.
-An ordered scene compute pass writes it and a Metal hardware ray-generation
-pass reads it. The cooked runtime carries the reflected record stride and uses
-a read-only binding layout for the native reader. See
+Ordered scene compute on Metal and Vulkan supports one shared structured
+Buffer per configuration. The cooker links readers and writers into separate
+shader artifacts and stores the reader callback mask and reflected record
+stride. The renderer binds the same allocation through the two layouts and
+records the reader against the writer's latest resource version. Metal
+hardware ray callbacks can also read the shared record. See
 [Buffer sizing and shader access](../development/render-graph-authoring.md#access-an-ordered-buffer-by-port-name).
 
 A graph author can pass `resources.Edges` to a helper taking

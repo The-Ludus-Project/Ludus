@@ -1380,13 +1380,18 @@ The member name capitalizes the port's first letter and preserves the remaining
 spelling. Named views load and store whole records using the reflected layout.
 Supported fields are 32-bit scalars and vectors, nested records and fixed arrays.
 
-For a Metal graph with an ordered scene compute writer and a hardware ray
-reader, choose **Native structured buffer (Metal)** in Buffer sizing. Both
-passes bind the same graph allocation. Shader API shows the writer's
-`RWStructuredBuffer<EdgesData>` and the reader's `StructuredBuffer<EdgesData>`.
-Use a shared declaration and named Buffer access in both callbacks. The native
-record uses the second graph binding. A legacy positional Buffer can keep the
-first binding in the same configuration.
+Choose **Native structured buffer** in Buffer sizing for an ordered scene
+compute writer and a read-only consumer. The same graph allocation is bound
+as `RWStructuredBuffer<EdgesData>` in the writer and
+`StructuredBuffer<EdgesData>` in the reader. Use a shared declaration and
+named Buffer access in both shaders. One legacy positional Buffer can keep
+the first binding in the same configuration.
+
+For a graph that runs on Metal and Vulkan, use **Compute** invocation for a
+ray-generation reader and include the `metal` and `spirv` shader profiles.
+A Metal hardware ray pass can also read the buffer when the graph is authored
+for hardware invocation. Direct3D 12 and browser profiles currently lack the
+ordered scene compute shader targets used by this workflow.
 
 In the LUSL reader, include `graph_resources.luslh` and
 `scene_shader.luslh`. For an `EdgesData` table with capacity one, read the

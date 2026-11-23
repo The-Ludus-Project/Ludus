@@ -188,6 +188,8 @@ struct RenderGraphPackage::State final
     bool HasSceneStorageTexture = false;
     bool HasPersistentBuffers = false;
     uint32 NativeRecordStride = 0;
+    uint32 RecordReaderMask = 0;
+    bool CanHaveRecordReadCompute = false;
     bool HasForwardStages = false;
     bool CanHaveForwardSurfaceCharts = false;
     bool CanHaveDeferredProbeGBuffer = false;
@@ -306,6 +308,11 @@ RenderGraphPackageStatus RenderGraphPackage::State::DecodeStages(ByteReader& ino
         {
             return RenderGraphPackageStatus::Malformed;
         }
+        const bool isRecordReader = role == format::RECORD_READ_COMPUTE_STAGE_ROLE;
+        if (isRecordReader == true && CanHaveRecordReadCompute == false)
+        {
+            return RenderGraphPackageStatus::Malformed;
+        }
         const bool isDeferredRole =
             role >= format::DEFERRED_STAGE_ROLE_FIRST && role <= format::DEFERRED_OPAQUE_GBUFFER_STAGE_ROLE;
         const bool isSpecializedForward =
@@ -349,7 +356,7 @@ RenderGraphPackageStatus RenderGraphPackage::State::DecodeStages(ByteReader& ino
         const bool isRayRole =
             (role >= static_cast<uint32>(format::StageRole::RayCompute) && role < format::LEGACY_STAGE_ROLE_COUNT) ||
             role == static_cast<uint32>(format::StageRole::PersistentRayCompute) ||
-            role == format::NATIVE_RAY_STAGE_ROLE;
+            role == format::NATIVE_RAY_STAGE_ROLE || role == format::RECORD_READ_COMPUTE_STAGE_ROLE;
         const bool isVertex = isForwardRole == true
                                   ? (role == static_cast<uint32>(format::StageRole::ForwardVertex) ||
                                      role == static_cast<uint32>(format::StageRole::LightingVertex) ||
@@ -376,6 +383,7 @@ RenderGraphPackageStatus RenderGraphPackage::State::DecodeStages(ByteReader& ino
         const bool isCompute = role == static_cast<uint32>(format::StageRole::RayCompute) ||
                                role == static_cast<uint32>(format::StageRole::SceneRayCompute) ||
                                role == static_cast<uint32>(format::StageRole::PersistentRayCompute) ||
+                               role == format::RECORD_READ_COMPUTE_STAGE_ROLE ||
                                (role == format::NATIVE_RAY_STAGE_ROLE && HasExplicitNativeRayWorkgroup == true);
         StaticArray<uint32, format::RAY_WORKGROUP_DIMENSIONS> workgroup{};
         if (HasExplicitRayWorkgroup == true && isCompute == true)
@@ -755,9 +763,11 @@ RenderGraphPackageStatus RenderGraphPackage::State::AppendSceneResourceBindings(
     for (const usize role : {static_cast<usize>(format::StageRole::RayCompute),
                              static_cast<usize>(format::StageRole::SceneRayCompute),
                              persistentRole,
-                             format::NATIVE_RAY_STAGE_ROLE})
+                             format::NATIVE_RAY_STAGE_ROLE,
+                             format::RECORD_READ_COMPUTE_STAGE_ROLE})
     {
         const bool isNativeStages = role == format::NATIVE_RAY_STAGE_ROLE;
+        const bool isRecordReader = role == format::RECORD_READ_COMPUTE_STAGE_ROLE;
         if (hasArtifact(role) == false ||
             (isNativeStages == true && HasFailureSummary == false && NativeRecordStride == 0))
         {
@@ -770,7 +780,7 @@ RenderGraphPackageStatus RenderGraphPackage::State::AppendSceneResourceBindings(
             rhi::RasterShaderDescription description;
             SetRenderGraphRayInterface(description,
                                        rhi::ShaderStage::Compute,
-                                       role == persistentRole ||
+                                       role == persistentRole || isRecordReader == true ||
                                            (isNativeStages == true && hasArtifact(persistentRole)),
                                        hasVisibilityBuffer,
                                        HasNativeRayQueries);
@@ -781,7 +791,7 @@ RenderGraphPackageStatus RenderGraphPackage::State::AppendSceneResourceBindings(
                 if (NativeRecordStride != 0 && entry.Binding == LUDUS_GRAPH_BUFFER1_BINDING)
                 {
                     entry.MinSize = NativeRecordStride;
-                    if (isNativeStages == true)
+                    if (isNativeStages == true || isRecordReader == true)
                     {
                         entry.Kind = rhi::RasterBindingKind::StorageRead;
                     }
@@ -791,7 +801,9 @@ RenderGraphPackageStatus RenderGraphPackage::State::AppendSceneResourceBindings(
         // Native ray stages bind neither World-feature table: their kernels never define the slots.
         const bool hasAerialPerspective = HasAerialPerspective == true && isNativeStages == false;
         const bool hasAtmosphereSky = HasAtmosphereSky == true && isNativeStages == false;
+        const bool hasReaderCapture = IsRayPathCapture == true && isRecordReader == true;
         const usize appended =
+            (hasReaderCapture == true ? 1 : 0) +
             (HasLtcTable == true && isNativeStages == false ? LUDUS_GRAPH_LTC_TABLE_BINDING_COUNT : 0) +
             (HasFailureSummary == true ? LUDUS_GRAPH_FAILURE_BINDING_COUNT : 0) +
             (hasAerialPerspective == true ? 1 : 0) + (hasAtmosphereSky == true ? 1 : 0) +
@@ -799,6 +811,13 @@ RenderGraphPackageStatus RenderGraphPackage::State::AppendSceneResourceBindings(
         if (Bindings[role].GetSize() - BindingCounts[role] < appended)
         {
             return RenderGraphPackageStatus::CapacityExceeded;
+        }
+        if (hasReaderCapture == true)
+        {
+            Bindings[role][BindingCounts[role]++] = {LUDUS_RAY_PATH_CAPTURE_BINDING,
+                                                     rhi::RasterBindingKind::StorageReadWrite,
+                                                     rhi::RasterVisibility::Compute,
+                                                     LUDUS_RAY_PATH_CAPTURE_WORD_BYTES};
         }
         if (HasSceneStorageTexture == true)
         {
@@ -1041,10 +1060,10 @@ RenderGraphPackageStatus RenderGraphPackage::decode(BorrowedView<const uint8> by
     const uint32 magic = reader.ReadWord();
     const uint32 version = reader.ReadWord();
     if (magic != expectedMagic ||
-        (version != format::NATIVE_GRAPH_RECORD_PACKAGE_VERSION && version != format::IMAGE_LAUNCH_PACKAGE_VERSION &&
-         version != format::STORAGE_TEXTURE_PACKAGE_VERSION && version != format::SCENE_COLOR_INPUT_PACKAGE_VERSION &&
-         version != format::DIRECTIONAL_NEAR_PACKAGE_VERSION && version != format::SCENE_WORK_ITEMS_PACKAGE_VERSION &&
-         version != format::WORLD_FEATURE_PACKAGE_VERSION &&
+        (version != format::RECORD_READER_PACKAGE_VERSION && version != format::NATIVE_GRAPH_RECORD_PACKAGE_VERSION &&
+         version != format::IMAGE_LAUNCH_PACKAGE_VERSION && version != format::STORAGE_TEXTURE_PACKAGE_VERSION &&
+         version != format::SCENE_COLOR_INPUT_PACKAGE_VERSION && version != format::DIRECTIONAL_NEAR_PACKAGE_VERSION &&
+         version != format::SCENE_WORK_ITEMS_PACKAGE_VERSION && version != format::WORLD_FEATURE_PACKAGE_VERSION &&
          version != format::DEFERRED_SURFACE_CHART_GBUFFER_PACKAGE_VERSION &&
          version != format::DEFERRED_PROBE_GBUFFER_PACKAGE_VERSION && version != format::RECIPE_KEY_PACKAGE_VERSION &&
          version != format::FORWARD_SURFACE_CHART_PACKAGE_VERSION &&
@@ -1071,6 +1090,7 @@ RenderGraphPackageStatus RenderGraphPackage::decode(BorrowedView<const uint8> by
     }
     candidate->IsRayPathCapture = expectedMagic == format::RAY_PATH_CAPTURE_PACKAGE_MAGIC;
     candidate->IsCaptureProfile = expectedMagic == format::CAPTURE_PROFILE_PACKAGE_MAGIC;
+    candidate->CanHaveRecordReadCompute = version >= format::RECORD_READER_PACKAGE_VERSION;
     candidate->CanHaveDirectionalNearCascades = version >= format::DIRECTIONAL_NEAR_PACKAGE_VERSION;
     candidate->HasRelativeSizes = version >= format::VIEW_PACKAGE_VERSION;
     candidate->HasSceneData = version >= format::SCENE_PACKAGE_VERSION;
@@ -1152,6 +1172,15 @@ RenderGraphPackageStatus RenderGraphPackage::decode(BorrowedView<const uint8> by
     {
         candidate->NativeRecordStride = reader.ReadWord();
         const uint32 stride = candidate->NativeRecordStride;
+        if (candidate->CanHaveRecordReadCompute == true)
+        {
+            candidate->RecordReaderMask = reader.ReadWord();
+            constexpr uint32 MAX_RECORD_READER_MASK = (uint32{1} << format::MAX_RAY_PROGRAMS) - 1;
+            if (stride == 0 || candidate->RecordReaderMask == 0 || candidate->RecordReaderMask > MAX_RECORD_READER_MASK)
+            {
+                return RenderGraphPackageStatus::Malformed;
+            }
+        }
         if (reader.IsOk() == false || stride > format::MAX_RAY_BUFFER_BYTES || stride % sizeof(uint32) != 0)
         {
             return RenderGraphPackageStatus::Malformed;
@@ -1160,11 +1189,32 @@ RenderGraphPackageStatus RenderGraphPackage::decode(BorrowedView<const uint8> by
         {
             constexpr usize METAL_TARGET = static_cast<usize>(format::ShaderTarget::Metal);
             constexpr usize COMPUTE_ROLE = static_cast<usize>(format::StageRole::PersistentRayCompute);
-            if (candidate->Stages[COMPUTE_ROLE][METAL_TARGET].IsPresent == false ||
-                candidate->Stages[format::NATIVE_RAY_STAGE_ROLE][METAL_TARGET].IsPresent == false)
+            if (candidate->CanHaveRecordReadCompute == true)
+            {
+                bool hasReaderArtifact = false;
+                for (usize target = 0; target < format::SHADER_TARGET_COUNT; ++target)
+                {
+                    const State::StageView& writer = candidate->Stages[COMPUTE_ROLE][target];
+                    const State::StageView& recordReader =
+                        candidate->Stages[format::RECORD_READ_COMPUTE_STAGE_ROLE][target];
+                    if (recordReader.IsPresent != writer.IsPresent ||
+                        (recordReader.IsPresent == true && recordReader.WorkgroupSize != writer.WorkgroupSize))
+                    {
+                        return RenderGraphPackageStatus::Malformed;
+                    }
+                    hasReaderArtifact = hasReaderArtifact == true || recordReader.IsPresent == true;
+                }
+                if (hasReaderArtifact == false)
+                {
+                    return RenderGraphPackageStatus::Malformed;
+                }
+            }
+            else if (candidate->Stages[COMPUTE_ROLE][METAL_TARGET].IsPresent == false ||
+                     candidate->Stages[format::NATIVE_RAY_STAGE_ROLE][METAL_TARGET].IsPresent == false)
             {
                 return RenderGraphPackageStatus::Malformed;
             }
+            uint32 usedReaderMask = 0;
             uint32 resource = format::ABSENT;
             for (usize index = 0; index < candidate->Header.PassCount; ++index)
             {
@@ -1179,8 +1229,14 @@ RenderGraphPackageStatus RenderGraphPackage::decode(BorrowedView<const uint8> by
                     return RenderGraphPackageStatus::Malformed;
                 }
                 resource = pass.Buffer1;
+                if (pass.Traversal != format::RayTraversal::HardwarePipeline &&
+                    pass.RayProgram < format::MAX_RAY_PROGRAMS)
+                {
+                    usedReaderMask |= (uint32{1} << pass.RayProgram) & candidate->RecordReaderMask;
+                }
             }
-            if (resource == format::ABSENT || candidate->Resources[resource].Kind != format::Aspect::Buffer ||
+            if (usedReaderMask != candidate->RecordReaderMask || resource == format::ABSENT ||
+                candidate->Resources[resource].Kind != format::Aspect::Buffer ||
                 candidate->Resources[resource].Width < stride)
             {
                 return RenderGraphPackageStatus::Malformed;
@@ -1505,7 +1561,8 @@ RenderGraphPrograms RenderGraphPackage::GetPrograms(const rhi::RasterShaderDescr
          &result.LightingFragment,
          &result.LightingShadow},
     };
-    const StaticArray<rhi::RasterShaderDescription*, format::STAGE_ROLE_COUNT - format::DEFERRED_STAGE_ROLE_FIRST>
+    const StaticArray<rhi::RasterShaderDescription*,
+                      format::RECORD_READ_COMPUTE_STAGE_ROLE - format::DEFERRED_STAGE_ROLE_FIRST>
         deferredMembers{{&result.DeferredGBufferFragment,
                          &result.DeferredLightingVertex,
                          &result.DeferredLightingFragment,
@@ -1515,11 +1572,14 @@ RenderGraphPrograms RenderGraphPackage::GetPrograms(const rhi::RasterShaderDescr
                          &result.ForwardFragment,
                          &result.DeferredProbeGBufferFragment,
                          &result.DeferredSurfaceChartGBufferFragment}};
+    result.RecordReaderMask = state.RecordReaderMask;
     for (usize role = 0; role < format::STAGE_ROLE_COUNT; ++role)
     {
+        const bool isRecordReader = role == format::RECORD_READ_COMPUTE_STAGE_ROLE;
         rhi::RasterShaderDescription& description =
-            role >= format::DEFERRED_STAGE_ROLE_FIRST  ? *deferredMembers[role - format::DEFERRED_STAGE_ROLE_FIRST]
-            : role == format::FORWARD_DEPTH_STAGE_ROLE ? result.ForwardDepth
+            isRecordReader == true                      ? result.RecordReadCompute
+            : role >= format::DEFERRED_STAGE_ROLE_FIRST ? *deferredMembers[role - format::DEFERRED_STAGE_ROLE_FIRST]
+            : role == format::FORWARD_DEPTH_STAGE_ROLE  ? result.ForwardDepth
             : role == format::CLUSTERED_FORWARD_FRAGMENT_ROLE ? result.ForwardFragment
             : role == format::NATIVE_RAY_STAGE_ROLE           ? result.NativeRayStages
             : role >= format::FORWARD_STAGE_ROLE_FIRST        ? *forwardMembers[role - format::FORWARD_STAGE_ROLE_FIRST]
@@ -1542,7 +1602,7 @@ RenderGraphPrograms RenderGraphPackage::GetPrograms(const rhi::RasterShaderDescr
         const bool isRayRole =
             (role >= static_cast<uint32>(format::StageRole::RayCompute) && role < format::LEGACY_STAGE_ROLE_COUNT) ||
             role == static_cast<uint32>(format::StageRole::PersistentRayCompute) ||
-            role == format::NATIVE_RAY_STAGE_ROLE;
+            role == format::NATIVE_RAY_STAGE_ROLE || role == format::RECORD_READ_COMPUTE_STAGE_ROLE;
         const bool isVertex = isRayRole == true ? role == static_cast<uint32>(format::StageRole::RayImageVertex)
                                                 : role % format::TECHNIQUE_STAGE_COUNT == 0;
         description.Artifact.Stage = isVertex == true ? rhi::ShaderStage::Vertex : rhi::ShaderStage::Fragment;
@@ -1564,7 +1624,7 @@ RenderGraphPrograms RenderGraphPackage::GetPrograms(const rhi::RasterShaderDescr
         if (isRayRole == true)
         {
             const bool isPersistentCompute =
-                role == static_cast<usize>(format::StageRole::PersistentRayCompute) ||
+                role == static_cast<usize>(format::StageRole::PersistentRayCompute) || isRecordReader == true ||
                 (role == format::NATIVE_RAY_STAGE_ROLE && result.HasPersistentRayBuffers == true);
             description.Artifact.HasNativeRayStages = role == format::NATIVE_RAY_STAGE_ROLE;
             const bool isSceneCompute = role == static_cast<usize>(format::StageRole::SceneRayCompute) ||
@@ -1611,7 +1671,7 @@ RenderGraphPrograms RenderGraphPackage::GetPrograms(const rhi::RasterShaderDescr
         }
         if ((role >= format::FORWARD_STAGE_ROLE_FIRST && role < format::NATIVE_RAY_STAGE_ROLE) ||
             role == format::CLUSTERED_FORWARD_FRAGMENT_ROLE || role == format::FORWARD_DEPTH_STAGE_ROLE ||
-            role >= format::DEFERRED_STAGE_ROLE_FIRST)
+            (role >= format::DEFERRED_STAGE_ROLE_FIRST && isRecordReader == false))
         {
             SetRenderGraphForwardInterface(description,
                                            role == format::CLUSTERED_FORWARD_FRAGMENT_ROLE

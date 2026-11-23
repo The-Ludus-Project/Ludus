@@ -1307,9 +1307,8 @@ def prepare_sources(manifest, helper, *, root=None, ray_path_capture=False, capt
             compute_variants = profile['variants']
             dispatch_slots = None
             if profile['native_graph_records']:
-                require('metal' in value['profiles'], 'Capability', 'profiles',
-                        'add the Metal target profile to use a native structured Buffer')
-                compute_variants = [variant for variant in profile['variants'] if variant not in profile['native_slots']]
+                compute_variants = [variant for variant in profile['variants']
+                                    if variant not in profile['native_slots'] and variant not in profile['record_readers']]
                 require(compute_variants, 'Capability', profile['compute'],
                         'connect a scene compute producer to the native structured Buffer')
                 dispatch_slots = {variant: index for index, variant in enumerate(profile['variants'])}
@@ -1319,6 +1318,13 @@ def prepare_sources(manifest, helper, *, root=None, ray_path_capture=False, capt
                                           scene_dispatch=profile['scene_dispatch'], named_resources=named_resources,
                                           dispatch_slots=dispatch_slots)
             linked_programs.update(expanded)
+            if profile['record_readers']:
+                profile['record_read_compute'] = profile['compute'] + 'RecordRead'
+                linked_programs.update(ray.expand_programs(authored_programs, technique, snapshot, helper,
+                    sys.modules[__name__], profile['record_readers'], profile['persistent'], schemas,
+                    profile['record_read_compute'], profile['native_ray_queries'], ray_path_capture,
+                    workgroup=profile['workgroup'], scene_dispatch=profile['scene_dispatch'],
+                    named_resources=named_resources, dispatch_slots=dispatch_slots))
             if profile['native_slots']:
                 ray.validate_native_buffer_layouts(profile['native_operations'], authored_programs,
                                                    named_resources, snapshot, sys.modules[__name__])
@@ -1454,11 +1460,14 @@ def build_package(manifest, output, *, helper, compiler, validator=None, spirv_c
             pending, pending_keys = [], set()
             # Report-only attribution: miss, local cache hit, or reuse of a key this build already resolved.
             requests, loaded_keys, compile_seconds = {}, set(), {}
+            metal_record_programs = {profile[field] for profile in ray_profiles
+                                     if profile['native_graph_records'] and profile['native_slots']
+                                     for field in ('compute', 'record_read_compute') if field in profile}
             for pid, program in sorted(programs.items()):
                 closure = closures[pid]
                 configuration_reads = language.configuration_reads(snapshot, closure)
                 for target in sorted(value['profiles']):
-                    if (program.get('native_ray_pipeline') or program.get('native_graph_records')) and target != 'metal':
+                    if (program.get('native_ray_pipeline') or pid in metal_record_programs) and target != 'metal':
                         continue
                     if program.get('native_ray_profile') and target not in ('metal', 'spirv'):
                         continue
@@ -1525,7 +1534,7 @@ def build_package(manifest, output, *, helper, compiler, validator=None, spirv_c
                         if target not in ('metal', 'spirv'):
                             continue
                         for profile in ray_profiles:
-                            if profile['native_graph_records'] and target != 'metal':
+                            if profile['native_graph_records'] and profile['native_slots'] and target != 'metal':
                                 continue
                             record = {'technique': tid, 'profile': target, 'state': ray.resolve_state(technique['recipes'][0]),
                                 'compute': entries[(profile['compute'], target)], 'vertex': entries[(ray.IMAGE_VERTEX_ID, target)],
@@ -1535,6 +1544,10 @@ def build_package(manifest, output, *, helper, compiler, validator=None, spirv_c
                                 record['configurations'] = profile['configurations']
                             record['persistent_buffers'] = profile['persistent']
                             record['native_ray_queries'] = profile['native_ray_queries']
+                            if profile.get('record_read_compute'):
+                                record['record_read_compute'] = entries[(profile['record_read_compute'], target)]
+                                record['record_reader_mask'] = sum(1 << profile['variants'].index(variant)
+                                                                   for variant in profile['record_readers'])
                             if profile.get('native_compute') and target == 'metal':
                                 record['native_pipeline'] = entries[(profile['native_compute'], target)]
                             if profile['light_transformer_programs']:
