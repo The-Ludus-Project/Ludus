@@ -625,7 +625,8 @@ void CodeEditor::paintInlayHints(const QPaintEvent* event)
     painter.setRenderHint(QPainter::Antialiasing);
     const QFontMetricsF metrics(document()->defaultFont());
     QColor background = palette().color(QPalette::Text);
-    constexpr float64 BACKGROUND_OPACITY = 0.08;
+    // QColor::setAlphaF takes a float.
+    constexpr float32 BACKGROUND_OPACITY = 0.08F;
     background.setAlphaF(BACKGROUND_OPACITY);
     const QColor text = palette().color(QPalette::PlaceholderText);
     constexpr float64 CORNER_LINE_FRACTION = 0.25;

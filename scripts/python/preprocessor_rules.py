@@ -71,6 +71,14 @@ def compiled_out_spans(code: str) -> list[tuple[int, int]]:
     return spans
 
 
+# A local variable declared with an initializer at the start of a statement:
+# optional attributes and qualifiers, a type, then the name and "=" or "{".
+LOCAL_DECLARATION = re.compile(
+    r"(?:^|(?<=[;{}]))\s*(?:\[\[[^\]]*\]\]\s*)?(?:(?:const|constexpr|static|volatile)\s+)*"
+    r"([A-Za-z_][\w:]*(?:\s*<[^;{}()=]*>)?)(?:\s*(?:\bconst\b|[*&]))*\s+([A-Za-z_]\w*)\s*(?:=(?!=)|\{)"
+)
+STATEMENT_WORDS = CONTROL_WORDS | {"else", "case", "goto", "co_return", "co_await", "co_yield", "using",
+                                   "typedef", "operator", "template", "typename", "default"}
 CONSTANT_DECLARATION = re.compile(
     r"(?m)^[ \t]*(static\s+)?(inline\s+|extern\s+)?(?:constexpr|const)\b[^;(){}=]*?"
     r"\b([A-Za-z_]\w*)\s*(?:\[[^\]]*\]\s*)?(?:=|\{)"
@@ -358,6 +366,13 @@ def conditional_use_findings(path: str, source: str, code: str) -> list[tuple[in
             judge(parameter, function.start(2) + offset, signature, scope.closing + 1,
                   f"parameter {parameter} is used only under a preprocessor branch; "
                   f"discard it in the other branches with static_cast<void>({parameter})")
+        # Locals read only by compiled-out assertions are unused in those builds.
+        for local in LOCAL_DECLARATION.finditer(code, scope.opening + 1, scope.closing):
+            if local.group(1) in STATEMENT_WORDS or local.group(2) in STATEMENT_WORDS:
+                continue
+            name = local.group(2)
+            judge(name, local.start(2), local.start(2), scope.closing + 1,
+                  f"{name} is used only under a preprocessor branch; declare it under the same condition as its uses")
         enclosing = scopes.enclosing(start)
         prefix = code[start:function.start()]
         is_internal = re.search(r"\bstatic\b", prefix) is not None or any(item.kind == "anonymous" for item in enclosing)

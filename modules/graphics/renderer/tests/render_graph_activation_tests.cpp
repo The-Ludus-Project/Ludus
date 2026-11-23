@@ -573,7 +573,9 @@ TEST_CASE("RG3 malformed runtime packages reject without a partial generation", 
 {
     const Array<uint8> valid = MakePackageBytes({});
     PackageOptions options;
-    options.Version = format::RECORD_READER_PACKAGE_VERSION + 1;
+    // No release reaches the largest version; one past the newest becomes valid
+    // whenever a layout is added.
+    options.Version = std::numeric_limits<uint32>::max();
     CHECK(DecodeBytes(MakePackageBytes(options)) == renderer::RenderGraphPackageStatus::UnsupportedVersion);
     Array<uint8> truncated = Array<uint8>::FromRange(valid.AsView());
     truncated.RemoveLast();

@@ -547,6 +547,44 @@ void Check(uint32 count)
             "LUDUS_ASSERT_F(count > 0, \"count {}\", count);", "LUDUS_ASSERT(count > 0);\n    Store(count);")
         self.assertEqual(self.diagnose(kept), [])
 
+    def test_locals_read_only_by_assertions_are_maybe_unused(self):
+        # Batch 45234893860: the browser editor (Release) rejected a sort result that
+        # only LUDUS_ASSERT read, declared over several lines.
+        source = """QList<Hint> Sort(QList<Hint> decoded)
+{
+    QList<Hint> scratch = decoded;
+    const bool isSorted = StableSort(
+        decoded.data(),
+        scratch.data());
+    LUDUS_ASSERT(isSorted == true || decoded.isEmpty() == true);
+    Item* itemOrNull{Find()};
+    LUDUS_ASSERT_F(itemOrNull != nullptr, "item {}", 1);
+    int32 total = 0;
+    total += Count();
+    LUDUS_ASSERT(total > 0);
+    return decoded;
+}
+"""
+        findings = sorted(self.diagnose(source))
+        self.assertEqual([line for line, _ in findings], [4, 8], findings)
+        self.assertIn("isSorted is used only inside LUDUS_ASSERT", findings[0][1])
+        self.assertIn("itemOrNull is used only inside LUDUS_ASSERT", findings[1][1])
+        waived = source.replace("const bool isSorted", "[[maybe_unused]] const bool isSorted").replace(
+            "Item* itemOrNull", "[[maybe_unused]] Item* itemOrNull")
+        self.assertEqual(self.diagnose(waived), [])
+        # Statements that are not declarations name no local.
+        statements = """bool Compare(int32 value)
+{
+    return value == 1;
+    else value = 2;
+}
+void Use()
+{
+    LUDUS_ASSERT(Compare(1));
+}
+"""
+        self.assertEqual(self.diagnose(statements), [])
+
     def test_constants_used_only_under_a_branch_are_declared_there(self):
         # Batch 44900782876: the web build rejected a native-only tick limit.
         source = """namespace

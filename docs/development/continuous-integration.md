@@ -1106,8 +1106,8 @@ errors had one of the causes below, and these checks catch them before review:
 - **A symbol read only by an assertion.** `LUDUS_ASSERT` and `LUDUS_ASSERT_F`
   compile to nothing when assertions are off, as in Profile, Release and the
   browser builds, so their arguments are unused there. The same rule reports a
-  constant, internal function or parameter whose only uses are inside those
-  macros. Mark it `[[maybe_unused]]`. `LUDUS_REQUIRE` and `LUDUS_CHECK` stay in
+  constant, internal function, parameter or local variable whose only uses are
+  inside those macros. Mark it `[[maybe_unused]]`. `LUDUS_REQUIRE` and `LUDUS_CHECK` stay in
   every build and count as ordinary uses.
 - **Constant conditions and unreachable code.** MSVC reports a run-time `if`
   or `while` whose condition is constant as C4127, and unreachable code as
@@ -1121,6 +1121,11 @@ errors had one of the causes below, and these checks catch them before review:
   the warnings there would fail only batches. MSVC also follows calls that it
   inlines, such as one to a function that never returns, so declare such
   functions `[[noreturn]]`.
+- **Floating-point truncation.** MSVC reports a `float64` value passed or
+  assigned to a `float` as C4305 or C4244, an error under `/WX`; Qt's `F`
+  colour setters such as `QColor::setAlphaF` take `float`. Linux Clang builds
+  enable `-Wimplicit-float-conversion` for the same reason as the reachability
+  warnings. Spell such a value as `float32`.
 
 Both source rules apply to changed lines; a conditional use is reported at
 its declaration when the declaration or any use changed. They do not
@@ -1128,7 +1133,8 @@ evaluate the preprocessor: a branch counts as selectable even if no supported
 build selects it, as in a file that only Linux compiles. For such a deliberate
 case, append `// ludus-style: conditional-use <reason>` or
 `// ludus-style: constant-condition <reason>` to the reported line, or mark
-the declaration `[[maybe_unused]]`. Neither rule covers unused locals, private
+the declaration `[[maybe_unused]]`. A local counts only when it is declared
+with `=` or `{` at the start of a statement. Neither rule covers private
 fields, or code that compiles only in another build, such as a stale name in
 a browser-only `#else` branch. Those still need the browser or MSVC build.
 

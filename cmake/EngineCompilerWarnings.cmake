@@ -24,9 +24,15 @@ function(ludus_configure_project_warnings target_name)
     # which Clang does not, so they cannot catch every C4702. Linux only: web and Apple
     # code that MSVC never compiles (an `#if` early return for the browser, say) would
     # otherwise fail only in batch builds, the failure these warnings exist to prevent.
+    # Implicit double-to-float conversions that lose precision, which MSVC reports as
+    # C4305/C4244 errors under /WX (batch 45234893860: a float64 constant passed to
+    # QColor::setAlphaF). Linux only, for the same reason as the reachability warnings.
+    # The group also enables integer-to-float warnings, which MSVC does not report.
     set(clang_warnings
         -Wunreachable-code
         -Wunreachable-code-loop-increment
+        -Wimplicit-float-conversion
+        -Wno-implicit-int-float-conversion
     )
 
     target_compile_options(

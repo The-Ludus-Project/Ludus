@@ -247,7 +247,7 @@ QList<CodeInlayHint> DecodeInlayHints(const QJsonArray& hints,
     }
     // Servers usually answer in order; equal positions keep the server's order.
     QList<CodeInlayHint> scratch = decoded;
-    const bool isSorted = StableSort(
+    [[maybe_unused]] const bool isSorted = StableSort(
         decoded.data(),
         scratch.data(),
         static_cast<usize>(decoded.size()),
