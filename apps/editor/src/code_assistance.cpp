@@ -28,6 +28,8 @@ constexpr int32 MAX_LABEL_UNITS = 2048;
 constexpr int32 MAX_DOCUMENTATION_UNITS = 4096;
 // Analysis follows edits after this pause, so typing never sends per keystroke.
 constexpr int32 ANALYSIS_DELAY_MILLISECONDS = 100;
+// Code actions follow the caret after it rests this long, so moving through text sends nothing.
+constexpr int32 CODE_ACTION_DELAY_MILLISECONDS = 250;
 constexpr int32 MAX_ANALYSIS_MESSAGE_UNITS = 2048;
 // LSP DiagnosticSeverity: 1 error, 2 warning, 3 information, 4 hint.
 constexpr int32 SEVERITY_ERROR = 1;
@@ -99,7 +101,7 @@ bool IsWordCharacter(QChar character)
 
 CodeAssistance::CodeAssistance(CodeEditor& inoutEditor, CodeDocumentController& inoutDocument, QObject* parentOrNull)
     : QObject(parentOrNull), mEditor(inoutEditor), mDocument(inoutDocument), mClient(this),
-      mLayers(inoutEditor, mClient)
+      mLayers(inoutEditor, mClient), mActions(inoutEditor, inoutDocument, mClient)
 {
     connect(&mEditor, &CodeEditor::AssistanceRequested, this, &CodeAssistance::Request);
     connect(&mEditor.GetNavigation(), &CodeNavigation::Requested, this, &CodeAssistance::RequestNavigation);
@@ -110,6 +112,17 @@ CodeAssistance::CodeAssistance(CodeEditor& inoutEditor, CodeDocumentController& 
     connect(&mEditor, &CodeEditor::RenameRequested, this, &CodeAssistance::RequestRename);
     connect(&mEditor, &CodeEditor::RenameAccepted, this, &CodeAssistance::acceptRename);
     connect(&mEditor, &CodeEditor::RenameCancelled, this, [this]() { mRename = {}; });
+    connect(&mEditor, &CodeEditor::CodeActionsRequested, this, &CodeAssistance::RequestCodeActions);
+    connect(&mActions, &CodeActions::StatusChanged, this, &CodeAssistance::StatusChanged);
+    mCodeActionDelay.setSingleShot(true);
+    mCodeActionDelay.setInterval(CODE_ACTION_DELAY_MILLISECONDS);
+    connect(&mCodeActionDelay, &QTimer::timeout, this, [this]() { requestCodeActions(false); });
+    connect(&mEditor, &QPlainTextEdit::cursorPositionChanged, this, &CodeAssistance::scheduleCodeActions);
+    connect(&mDocument, &CodeDocumentController::TextAccepted, this, [this]() {
+        // The light bulb describes the text it was asked for.
+        mEditor.SetCodeActions(0, {});
+        scheduleCodeActions();
+    });
     connect(&mEditor, &CodeEditor::SignatureOverloadRequested, this, [this](int32 direction) {
         if (isCurrent() == true && mSignatures.isEmpty() == false)
         {
@@ -152,7 +165,8 @@ CodeAssistance::CodeAssistance(CodeEditor& inoutEditor, CodeDocumentController& 
             &LanguageClient::Replied,
             this,
             [this](int32 request, LanguageRequestKind kind, const QJsonValue& value) {
-                if (mLayers.Receive(request, kind, value, mDocument.Capture().Identity, mContext) == true)
+                if (mLayers.Receive(request, kind, value, mDocument.Capture().Identity, mContext) == true ||
+                    mActions.Receive(request, kind, value) == true)
                 {
                     return;
                 }
@@ -277,6 +291,7 @@ void CodeAssistance::applyAvailability()
     availability.SignatureUnavailableReason = mClient.GetUnavailableReason(LanguageRequestKind::SignatureHelp);
     availability.HoverUnavailableReason = mClient.GetUnavailableReason(LanguageRequestKind::Hover);
     availability.RenameUnavailableReason = mClient.GetUnavailableReason(LanguageRequestKind::Rename);
+    availability.CodeActionsUnavailableReason = mClient.GetUnavailableReason(LanguageRequestKind::CodeActions);
     const auto readTriggers = [this](const QString& capability, QString& outTriggers) {
         const QJsonObject options = mClient.GetCapabilities().value(capability).toObject();
         if (options.contains(QStringLiteral("triggerCharacters")) == false)
@@ -319,6 +334,10 @@ void CodeAssistance::clearAnalysis()
     mEditor.HideHover();
     mEditor.SetAnalysisDiagnostics({}, {});
     mLayers.Clear();
+    mCodeActionDelay.stop();
+    mAnalysisRecords.clear();
+    mAnalysisIdentity = {};
+    mActions.Clear();
 }
 
 bool CodeAssistance::buildUnit(CodeTextCapture& outCapture, QString& outSource, QString& outUnit) const
@@ -377,6 +396,8 @@ void CodeAssistance::receiveDiagnostics(const QString& uri, int32 version, const
     const int32 begin = static_cast<int32>(mPrefix.size());
     const int32 sourceEnd = begin + static_cast<int32>(source.size());
     QList<CodeAnalysisDiagnostic> markers;
+    mAnalysisRecords.clear();
+    mAnalysisIdentity = capture.Identity;
     for (const QJsonValue& value : diagnostics)
     {
         const QJsonObject diagnostic = value.toObject();
@@ -400,6 +421,7 @@ void CodeAssistance::receiveDiagnostics(const QString& uri, int32 version, const
         {
             continue;
         }
+        mAnalysisRecords.append({ .Diagnostic = diagnostic, .Start = start - begin, .End = end - begin });
         markers.append(
         {
             .Start = start - begin,
@@ -522,6 +544,7 @@ void CodeAssistance::Request(bool isSignature)
 #else
     mIsNavigation = false;
     mIsRename = false;
+    mIsCodeActions = false;
     mShouldTrackSignature = isSignature;
     mShouldTrackCompletion = isSignature == false;
     mIsSignature = isSignature;
@@ -543,6 +566,7 @@ void CodeAssistance::RequestNavigation(CodeNavigationKind kind)
 #else
     mIsNavigation = true;
     mIsRename = false;
+    mIsCodeActions = false;
     mNavigationKind = kind;
     beginRequest();
 #endif
@@ -588,6 +612,12 @@ void CodeAssistance::requestCurrent()
     while (mWordEnd < source.size() && IsWordCharacter(source.at(mWordEnd)) == true)
     {
         ++mWordEnd;
+    }
+    if (mIsCodeActions == true)
+    {
+        mHasIntent = false;
+        requestCodeActions(true);
+        return;
     }
     const int32 position = static_cast<int32>(mPrefix.size()) + mCaret;
     mClient.SetDocument(mUri, mUnit);
@@ -787,6 +817,89 @@ void CodeAssistance::receive(int32 request, const QJsonValue& value)
 void CodeAssistance::SetWorkspaceEditHost(CodeWorkspaceEditHost* hostOrNull) noexcept
 {
     mWorkspaceEditHostOrNull = hostOrNull;
+    mActions.SetWorkspaceEditHost(hostOrNull);
+}
+
+CodeWorkspaceEditContext CodeAssistance::makeWorkspaceEditContext(const QString& unit, const QString& source) const
+{
+    const int32 begin = static_cast<int32>(mPrefix.size());
+    return
+    {
+        .Uri = mUri,
+        .Unit = unit,
+        .SourceStart = begin,
+        .SourceEnd = begin + static_cast<int32>(source.size()),
+        .SentVersion = mClient.GetSentVersion(),
+        .Sources = mNavigationSources,
+        .Encoding = mClient.GetPositionEncoding(),
+        .CanEditOtherFiles = mWorkspaceEditHostOrNull != nullptr,
+    };
+}
+
+void CodeAssistance::RequestCodeActions()
+{
+    Cancel();
+    if (HasCodeLanguageService(mEditor.GetLanguage()) == false || mDocument.IsBound() == false ||
+        mEditor.isReadOnly() == true)
+    {
+        return;
+    }
+#if defined(Q_OS_WASM)
+    Q_EMIT StatusChanged(QStringLiteral("Code actions need native shader assistance; unavailable in the browser "
+                                        "editor."));
+#else
+    mIsNavigation = false;
+    mIsSignature = false;
+    mIsRename = false;
+    mIsCodeActions = true;
+    beginRequest();
+#endif
+}
+
+void CodeAssistance::scheduleCodeActions()
+{
+    if (mUri.isEmpty() == false && mClient.CanRequest(LanguageRequestKind::CodeActions) == true &&
+        HasCodeLanguageService(mEditor.GetLanguage()) == true && mEditor.isReadOnly() == false)
+    {
+        mCodeActionDelay.start();
+    }
+}
+
+void CodeAssistance::requestCodeActions(bool isExplicit)
+{
+    CodeTextCapture capture;
+    QString source;
+    QString unit;
+    if (isExplicit == true)
+    {
+        mCodeActionDelay.stop();
+    }
+    if (mUri.isEmpty() == true || mDocument.IsBound() == false || buildUnit(capture, source, unit) == false)
+    {
+        return;
+    }
+    mClient.SetDocument(mUri, unit);
+    const QTextCursor cursor = mEditor.textCursor();
+    CodeActionScope scope
+    {
+        .Identity = capture.Identity,
+        .Edit = makeWorkspaceEditContext(unit, source),
+        .Start = qBound(0, cursor.selectionStart(), static_cast<int32>(source.size())),
+        .End = qBound(0, cursor.selectionEnd(), static_cast<int32>(source.size())),
+        .Diagnostics = {},
+    };
+    // The diagnostics there are sent as the server published them, while they still describe this draft.
+    if (mAnalysisIdentity == capture.Identity)
+    {
+        for (const AnalysisRecord& record : mAnalysisRecords)
+        {
+            if (record.Start <= scope.End && record.End >= scope.Start)
+            {
+                scope.Diagnostics.append(record.Diagnostic);
+            }
+        }
+    }
+    mActions.Request(scope, isExplicit);
 }
 
 void CodeAssistance::RequestRename()
@@ -804,6 +917,7 @@ void CodeAssistance::RequestRename()
     mIsNavigation = false;
     mIsSignature = false;
     mIsRename = true;
+    mIsCodeActions = false;
     beginRequest();
 #endif
 }
@@ -929,18 +1043,7 @@ void CodeAssistance::receiveRename(int32 request, const QJsonValue& value)
                                             "was changed."));
         return;
     }
-    const int32 begin = static_cast<int32>(mPrefix.size());
-    const CodeWorkspaceEditContext context
-    {
-        .Uri = mUri,
-        .Unit = unit,
-        .SourceStart = begin,
-        .SourceEnd = begin + static_cast<int32>(source.size()),
-        .SentVersion = mClient.GetSentVersion(),
-        .Sources = mNavigationSources,
-        .Encoding = mClient.GetPositionEncoding(),
-        .CanEditOtherFiles = mWorkspaceEditHostOrNull != nullptr,
-    };
+    const CodeWorkspaceEditContext context = makeWorkspaceEditContext(unit, source);
     QList<CodeWorkspaceFileChange> changes;
     QString message;
     if (ReadCodeWorkspaceEdit(value.toObject(), context, changes, message) == false)
@@ -984,33 +1087,13 @@ void CodeAssistance::applyRename(const RenameRequest& rename, const QList<CodeWo
                                             "nothing was changed."));
         return;
     }
-    int32 caret = rename.Start;
     qsizetype editCount = 0;
-    const CodeWorkspaceFileChange* currentOrNull = nullptr;
     for (const CodeWorkspaceFileChange& change : changes)
     {
         editCount += change.Edits.size();
-        if (change.File.isEmpty() == true)
-        {
-            currentOrNull = &change;
-            caret = MapCodeWorkspacePosition(change.Edits, rename.Start);
-        }
     }
-    const CodeTextCapture capture = mDocument.Capture();
-    CodeEditStatus status = CodeEditStatus::Unavailable;
-    if (mWorkspaceEditHostOrNull != nullptr)
-    {
-        status = mWorkspaceEditHostOrNull->ApplyWorkspaceEdit(capture.Identity, changes, caret, "Rename Symbol");
-    }
-    else if (currentOrNull != nullptr)
-    {
-        QByteArray result;
-        usize caretBytes = 0;
-        status = ApplyCodeWorkspaceEditBytes(capture.Text, currentOrNull->Edits, result) == true &&
-                         GetCodeByteOffset(result, caret, caretBytes) == true
-                     ? mDocument.ApplyServiceText(capture.Identity, result, {caretBytes, caretBytes})
-                     : CodeEditStatus::InvalidText;
-    }
+    const CodeEditStatus status =
+        ApplyCodeWorkspaceChanges(mDocument, mWorkspaceEditHostOrNull, changes, rename.Start, "Rename Symbol");
     switch (status)
     {
         case CodeEditStatus::Ok:

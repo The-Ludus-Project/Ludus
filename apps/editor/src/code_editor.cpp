@@ -97,6 +97,10 @@ constexpr uint32 LIGHT_WARNING = 0x9A6700;
 constexpr uint32 DARK_WARNING = 0xE3B341;
 /// Marker diameter as a divisor of the line height.
 constexpr int32 DIAGNOSTIC_MARKER_DIVISOR = 2;
+// The light bulb's height as a fraction of a text line; its globe and stem split that height.
+constexpr float64 LIGHT_BULB_LINE_FRACTION = 0.75;
+constexpr float64 LIGHT_BULB_GLOBE_FRACTION = 0.75;
+constexpr float64 LIGHT_BULB_STEM_FRACTION = 1.0 - LIGHT_BULB_GLOBE_FRACTION;
 /// An out-of-date report keeps its squiggle, drawn this much more faintly (alpha, 0-255).
 constexpr int32 STALE_UNDERLINE_ALPHA = 140;
 /// Message callout under the caret's line: spacing, shape and how much of the message it shows.
@@ -156,7 +160,8 @@ private:
     }
     void mousePressEvent(QMouseEvent* event) override
     {
-        if (event->button() == Qt::LeftButton && mEditor->toggleGutterFold(event->position().toPoint()) == true)
+        if (event->button() == Qt::LeftButton && (mEditor->toggleGutterFold(event->position().toPoint()) == true ||
+                                                  mEditor->openGutterLightBulb(event->position().toPoint()) == true))
         {
             event->accept();
             return;
@@ -283,6 +288,20 @@ CodeEditor::CodeEditor(QWidget* parentOrNull)
     mRenameBox->setToolTip(QStringLiteral("Enter to rename, Shift+Enter to preview, Escape to cancel."));
     mRenameBox->installEventFilter(this);
     mRenameBox->hide();
+    // Code actions (CE10): Ctrl+. (Command+. on macOS), as in VS Code, or the light bulb.
+    mCodeActionsAction = new QAction(QStringLiteral("Show Code Actions"), this);
+    mCodeActionsAction->setObjectName(QStringLiteral("codeEditorCodeActions"));
+    mCodeActionsAction->setShortcut(QKeySequence(Qt::CTRL | Qt::Key_Period));
+    mCodeActionsAction->setShortcutContext(Qt::WidgetShortcut);
+    mCodeActionsAction->setEnabled(false);
+    connect(mCodeActionsAction, &QAction::triggered, this, [this]() { Q_EMIT CodeActionsRequested(); });
+    addAction(mCodeActionsAction);
+    connect(this, &QPlainTextEdit::cursorPositionChanged, this, [this]() {
+        if (mCodeActions.isEmpty() == false)
+        {
+            mGutter->update();
+        }
+    });
     // Inlay hints (CE10): a persisted toggle; Ctrl+Alt shows hidden hints while held.
     mInlayHintsAction = new QAction(QStringLiteral("Show Inlay Hints"), this);
     mInlayHintsAction->setObjectName(QStringLiteral("codeEditorInlayHints"));
@@ -816,6 +835,65 @@ void CodeEditor::SetAssistanceAvailability(const CodeAssistanceAvailability& ava
     mRenameAction->setEnabled(hasService == true && isReadOnly() == false &&
                               availability.RenameUnavailableReason.isEmpty() == true);
     mRenameAction->setToolTip(availability.RenameUnavailableReason);
+    mCodeActionsAction->setEnabled(hasService == true && isReadOnly() == false &&
+                                   availability.CodeActionsUnavailableReason.isEmpty() == true);
+    mCodeActionsAction->setToolTip(availability.CodeActionsUnavailableReason);
+}
+
+void CodeEditor::SetCodeActions(int32 position, const QList<CodeActionEntry>& actions)
+{
+    mCodeActions = actions;
+    mCodeActionPosition = QTextCursor(document());
+    mCodeActionPosition.setPosition(qBound(0, position, document()->characterCount() - 1));
+    mGutter->update();
+}
+
+bool CodeEditor::HasCodeActions() const
+{
+    return mCodeActions.isEmpty() == false && mCodeActionPosition.isNull() == false &&
+           mCodeActionPosition.block() == textCursor().block();
+}
+
+void CodeEditor::ShowCodeActionMenu()
+{
+    QMenu* menu = new QMenu(this);
+    menu->setObjectName(QStringLiteral("codeEditorCodeActionMenu"));
+    menu->setAttribute(Qt::WA_DeleteOnClose);
+    menu->setToolTipsVisible(true);
+    for (qsizetype index = 0; index < mCodeActions.size(); ++index)
+    {
+        const CodeActionEntry& entry = mCodeActions.at(index);
+        QAction* action = menu->addAction(entry.Title);
+        action->setEnabled(entry.DisabledReason.isEmpty() == true);
+        action->setToolTip(entry.DisabledReason);
+        if (entry.IsPreferred == true)
+        {
+            QFont font = action->font();
+            font.setBold(true);
+            action->setFont(font);
+        }
+        connect(action, &QAction::triggered, this, [this, index]() {
+            Q_EMIT CodeActionChosen(static_cast<int32>(index));
+        });
+    }
+    if (mCodeActions.isEmpty() == true)
+    {
+        QAction* none = menu->addAction(QStringLiteral("No code actions here"));
+        none->setEnabled(false);
+    }
+    menu->popup(viewport()->mapToGlobal(cursorRect().bottomLeft()));
+}
+
+bool CodeEditor::openGutterLightBulb(const QPoint& position)
+{
+    const QTextBlock block = cursorForPosition(QPoint(0, position.y())).block();
+    if (HasCodeActions() == false || block != textCursor().block() ||
+        position.x() >= getGutterWidth() - FOLD_CONTROL_WIDTH)
+    {
+        return false;
+    }
+    ShowCodeActionMenu();
+    return true;
 }
 
 void CodeEditor::ShowRenameBox(int32 start, int32 end, const QString& name)
@@ -1455,9 +1533,15 @@ bool CodeEditor::showGutterToolTip(const QHelpEvent& help)
         const int32 height = static_cast<int32>(blockBoundingRect(block).height());
         if (block.isVisible() == true && position.y() < top + height)
         {
-            const QString text = position.x() >= getGutterWidth() - FOLD_CONTROL_WIDTH
-                                     ? mStructure->DescribeFold(block.blockNumber())
-                                     : DescribeLineDiagnostics(block.blockNumber());
+            QString text = position.x() >= getGutterWidth() - FOLD_CONTROL_WIDTH
+                               ? mStructure->DescribeFold(block.blockNumber())
+                               : DescribeLineDiagnostics(block.blockNumber());
+            if (position.x() < getGutterWidth() - FOLD_CONTROL_WIDTH && block == textCursor().block() &&
+                HasCodeActions() == true)
+            {
+                const QString actions = QStringLiteral("Show code actions (Ctrl+.)");
+                text = text.isEmpty() == true ? actions : text + QStringLiteral("\n\n") + actions;
+            }
             if (text.isEmpty() == true)
             {
                 return false;
@@ -1592,6 +1676,20 @@ void CodeEditor::paintGutter(QPaintEvent* event)
                 painter.setBrush(mAreDiagnosticsCurrent == true ? QBrush(color) : QBrush(Qt::NoBrush));
                 painter.drawEllipse(
                     QRectF(GUTTER_MARGIN, top + (fontMetrics().height() - diameter) / 2.0, diameter, diameter));
+            }
+            if (block == textCursor().block() && HasCodeActions() == true)
+            {
+                // The light bulb's stem tells it apart from a diagnostic dot, which it rings when both apply.
+                const float64 bulb = fontMetrics().height() * LIGHT_BULB_LINE_FRACTION;
+                const QRectF globe(GUTTER_MARGIN - 1,
+                                   top + (fontMetrics().height() - bulb) / 2.0,
+                                   bulb,
+                                   bulb * LIGHT_BULB_GLOBE_FRACTION);
+                painter.setPen(QPen(palette().color(QPalette::Text), 1));
+                painter.setBrush(palette().color(QPalette::Highlight));
+                painter.drawEllipse(globe);
+                painter.drawLine(QPointF(globe.center().x(), globe.bottom()),
+                                 QPointF(globe.center().x(), globe.bottom() + bulb * LIGHT_BULB_STEM_FRACTION));
             }
             painter.setPen(palette().color(QPalette::Text));
             painter.drawText(0,

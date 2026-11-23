@@ -122,6 +122,16 @@ struct CodeInlayHint final
     [[nodiscard]] bool operator==(const CodeInlayHint& other) const = default;
 };
 
+/// One entry of the code actions list (code editor M4, CE10).
+struct CodeActionEntry final
+{
+    QString Title;
+    /// Why the entry cannot be applied, shown in its tooltip; empty when it can.
+    QString DisabledReason;
+    /// The server marks the fix it recommends; preferred entries are listed first.
+    bool IsPreferred = false;
+};
+
 /// What the current language server serves for completion and signature help,
 /// from its advertised capabilities (code editor M4, CE09).
 struct CodeAssistanceAvailability final
@@ -138,6 +148,8 @@ struct CodeAssistanceAvailability final
     QString HoverUnavailableReason;
     /// Why Rename Symbol is disabled, or empty when it is available.
     QString RenameUnavailableReason;
+    /// Why Show Code Actions is disabled, or empty when it is available.
+    QString CodeActionsUnavailableReason;
 };
 
 class CodeEditor final : public QPlainTextEdit
@@ -256,6 +268,15 @@ public:
     void ShowRenameBox(foundation::int32 start, foundation::int32 end, const QString& name);
     void HideRenameBox();
     [[nodiscard]] bool IsRenaming() const noexcept;
+    /// Replace the code actions found at UTF-16 `position` (code editor M4, CE10).
+    /// While the caret is on that line and `actions` is not empty, the gutter
+    /// shows a light bulb that opens them. Edits move the position.
+    void SetCodeActions(foundation::int32 position, const QList<CodeActionEntry>& actions);
+    /// Whether the light bulb is shown on the caret's line.
+    [[nodiscard]] bool HasCodeActions() const;
+    /// Open the code actions list at the caret. Choosing an enabled entry emits
+    /// CodeActionChosen with its index in the list SetCodeActions gave.
+    void ShowCodeActionMenu();
     [[nodiscard]] LUDUS_INLINE foundation::int32 GetDiagnosticCount() const noexcept
     {
         return static_cast<foundation::int32>(mDiagnostics.size());
@@ -334,6 +355,10 @@ Q_SIGNALS:
     void RenameAccepted(const QString& name, bool shouldPreview);
     /// The rename box was dismissed without renaming.
     void RenameCancelled();
+    /// Show Code Actions (Ctrl+.) ran at the caret.
+    void CodeActionsRequested();
+    /// An entry of the code actions list was chosen.
+    void CodeActionChosen(foundation::int32 index);
     void SignatureOverloadRequested(foundation::int32 direction);
     /// Analysis markers were replaced.
     void AnalysisDiagnosticsChanged();
@@ -356,6 +381,11 @@ private:
     QAction* mRenameAction;
     /// The rename box is being closed on purpose; its focus loss is not a cancel.
     bool mIsClosingRename = false;
+    QAction* mCodeActionsAction;
+    QList<CodeActionEntry> mCodeActions;
+    /// Where the code actions were found, anchored so edits move it.
+    QTextCursor mCodeActionPosition;
+    [[nodiscard]] bool openGutterLightBulb(const QPoint& position);
     void showCompletionDocumentation();
     bool eventFilter(QObject* watched, QEvent* event) override;
     friend class CodeEditorGutter;

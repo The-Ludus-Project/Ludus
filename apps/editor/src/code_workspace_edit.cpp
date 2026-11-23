@@ -4,6 +4,7 @@
 
 #include <ludus/foundation/containers/stable_sort.hpp>
 
+#include "internal/code_document_controller.h"
 #include "internal/code_file_limits.h"
 #include "internal/code_text.h"
 
@@ -262,5 +263,43 @@ int32 MapCodeWorkspacePosition(const QList<CodeWorkspaceTextEdit>& edits, int32 
         delta += static_cast<int32>(edit.NewText.size()) - (edit.End - edit.Start);
     }
     return position + delta;
+}
+CodeEditStatus ApplyCodeWorkspaceChanges(CodeDocumentController& inoutDocument,
+                                         CodeWorkspaceEditHost* hostOrNull,
+                                         const QList<CodeWorkspaceFileChange>& changes,
+                                         int32 caret,
+                                         const char* name)
+{
+    int32 mappedCaret = caret;
+    const CodeWorkspaceFileChange* currentOrNull = nullptr;
+    for (const CodeWorkspaceFileChange& change : changes)
+    {
+        if (change.File.isEmpty() == true)
+        {
+            currentOrNull = &change;
+            mappedCaret = MapCodeWorkspacePosition(change.Edits, caret);
+        }
+        else if (hostOrNull == nullptr)
+        {
+            return CodeEditStatus::Unavailable;
+        }
+    }
+    const CodeTextCapture capture = inoutDocument.Capture();
+    if (hostOrNull != nullptr)
+    {
+        return hostOrNull->ApplyWorkspaceEdit(capture.Identity, changes, mappedCaret, name);
+    }
+    if (currentOrNull == nullptr)
+    {
+        return CodeEditStatus::Unavailable;
+    }
+    QByteArray result;
+    usize caretBytes = 0;
+    if (ApplyCodeWorkspaceEditBytes(capture.Text, currentOrNull->Edits, result) == false ||
+        GetCodeByteOffset(result, mappedCaret, caretBytes) == false)
+    {
+        return CodeEditStatus::InvalidText;
+    }
+    return inoutDocument.ApplyServiceText(capture.Identity, result, {caretBytes, caretBytes});
 }
 } // namespace ludus::editor

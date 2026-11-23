@@ -28,6 +28,7 @@ enum class LanguageRequestKind : foundation::uint8
     Rename,
     CompletionResolve,
     WorkspaceSymbols,
+    CodeActionResolve,
     Count,
 };
 

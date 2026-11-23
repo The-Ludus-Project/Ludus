@@ -24,10 +24,14 @@
 #include <QDir>
 #include <QFile>
 #include <QInputMethodEvent>
+#include <QJsonArray>
+#include <QJsonDocument>
+#include <QJsonObject>
 #include <QKeySequence>
 #include <QLabel>
 #include <QLineEdit>
 #include <QListWidget>
+#include <QMenu>
 #include <QPushButton>
 #include <QScrollBar>
 #include <QSignalSpy>
@@ -1277,6 +1281,163 @@ TEST_CASE("Rename Symbol is disabled with its reason when the server cannot rena
     session.Prepare();
     REQUIRE(QTest::qWaitFor([rename]() { return rename->isEnabled() == false; }));
     CHECK(rename->toolTip() == QStringLiteral("The selected slangd does not support rename."));
+}
+
+namespace
+{
+// The prefix "// generated missing" is the unit's line 0, so the source starts on line 1.
+const QString CODE_ACTIONS = QStringLiteral(R"([
+    {"title": "Run command", "command": {"title": "Run", "command": "slang.run"}},
+    {"title": "Declare missing", "kind": "quickfix", "isPreferred": true,
+     "edit": {"changes": {"$URI": [{"range": {"start": {"line": 1, "character": 0}, "end": {"line": 1, "character": 0}},
+                                    "newText": "float missing;\n"}]}}},
+    {"title": "Not here", "disabled": {"reason": "Select a whole statement."}},
+    {"title": "Resolve me", "data": 3},
+    {"title": "Touch generated",
+     "edit": {"changes": {"$URI": [{"range": {"start": {"line": 0, "character": 0}, "end": {"line": 0, "character": 2}},
+                                    "newText": "##"}]}}}
+])");
+
+QStringList MakeCodeActionServer(const QString& record)
+{
+    QStringList options = DIAGNOSING_SERVER;
+    options[1] = QStringLiteral(R"({"completionProvider": {}, "codeActionProvider": {"resolveProvider": true}})");
+    options.append({QStringLiteral("--actions"),
+                    CODE_ACTIONS,
+                    QStringLiteral("--resolve-action-edit"),
+                    QStringLiteral(R"({"changes": {"$URI": [{"range": {"start": {"line": 1, "character": 0},
+                        "end": {"line": 1, "character": 0}}, "newText": "// resolved\n"}]}})"),
+                    QStringLiteral("--record"),
+                    record});
+    return options;
+}
+
+/// Run Show Code Actions and return the list once it is open.
+QMenu& OpenCodeActionMenu(CodeEditor& inoutEditor)
+{
+    QAction* actionsOrNull = nullptr;
+    for (QAction* action : inoutEditor.actions())
+    {
+        actionsOrNull = action->objectName() == QStringLiteral("codeEditorCodeActions") ? action : actionsOrNull;
+    }
+    REQUIRE(actionsOrNull != nullptr);
+    actionsOrNull->trigger();
+    QMenu* menuOrNull = nullptr;
+    REQUIRE(QTest::qWaitFor([&]() {
+        for (QMenu* menu : inoutEditor.findChildren<QMenu*>(QStringLiteral("codeEditorCodeActionMenu")))
+        {
+            menuOrNull = menu->isVisible() == true ? menu : menuOrNull;
+        }
+        return menuOrNull != nullptr;
+    }));
+    return *menuOrNull;
+}
+
+void ChooseCodeAction(QMenu& inoutMenu, const QString& title)
+{
+    for (QAction* action : inoutMenu.actions())
+    {
+        if (action->text() == title)
+        {
+            action->trigger();
+            inoutMenu.close();
+            return;
+        }
+    }
+    FAIL("Missing code action");
+}
+} // namespace
+
+TEST_CASE("Code actions show a light bulb and apply the chosen fix as one edit", "[editor][text][assistance]")
+{
+    QTemporaryDir records;
+    const QString record = records.filePath(QStringLiteral("record.jsonl"));
+    FakeAssistanceSession session("float a = missing;\n", MakeCodeActionServer(record));
+    CodeEditor& editor = session.Editor;
+    QSignalSpy status(&session.Assistance, &CodeAssistance::StatusChanged);
+    session.Prepare();
+    REQUIRE(QTest::qWaitFor([&editor]() { return editor.GetAnalysisDiagnosticCount() == 1; }));
+    QTest::keyClick(&editor, Qt::Key_Escape);
+    QTextCursor cursor(editor.document());
+    cursor.setPosition(static_cast<int32>(editor.toPlainText().indexOf(QStringLiteral("missing"))) + 2);
+    editor.setTextCursor(cursor);
+    // Resting the caret asks for actions; the light bulb shows when there are some.
+    REQUIRE(QTest::qWaitFor([&editor]() { return editor.HasCodeActions() == true; }));
+
+    QMenu& menu = OpenCodeActionMenu(editor);
+    const QList<QAction*> entries = menu.actions();
+    REQUIRE(entries.size() == 5);
+    CHECK(entries.at(0)->text() == QStringLiteral("Declare missing"));
+    CHECK(entries.at(0)->font().bold() == true);
+    CHECK(entries.at(1)->isEnabled() == false);
+    CHECK(entries.at(1)->toolTip().contains(QStringLiteral("server command")) == true);
+    CHECK(entries.at(2)->isEnabled() == false);
+    CHECK(entries.at(2)->toolTip() == QStringLiteral("Select a whole statement."));
+    CHECK(entries.at(3)->isEnabled() == true);
+    ChooseCodeAction(menu, QStringLiteral("Declare missing"));
+    REQUIRE(session.Host.GetState().Text == "float missing;\nfloat a = missing;\n");
+    CHECK(status.last().first().toString().startsWith(QStringLiteral("Applied 'Declare missing'")) == true);
+    CHECK(editor.HasCodeActions() == false);
+    REQUIRE(session.Host.Undo() == true);
+    CHECK(session.Host.CanUndo() == false);
+
+    // The request carried the analysis diagnostic at the caret.
+    QFile file(record);
+    REQUIRE(file.open(QIODevice::ReadOnly) == true);
+    bool hasDiagnostic = false;
+    for (const QByteArray& line : file.readAll().split('\n'))
+    {
+        const QJsonObject message = QJsonDocument::fromJson(line).object();
+        if (message.value(QStringLiteral("method")).toString() == QStringLiteral("textDocument/codeAction"))
+        {
+            const QJsonObject context =
+                message.value(QStringLiteral("params")).toObject().value(QStringLiteral("context")).toObject();
+            hasDiagnostic = hasDiagnostic == true || context.value(QStringLiteral("diagnostics")).toArray().size() == 1;
+        }
+    }
+    CHECK(hasDiagnostic == true);
+}
+
+TEST_CASE("A resolved code action applies its edit; one touching generated text changes nothing",
+          "[editor][text][assistance]")
+{
+    QTemporaryDir records;
+    FakeAssistanceSession session("float a = missing;\n",
+                                  MakeCodeActionServer(records.filePath(QStringLiteral("record.jsonl"))));
+    CodeEditor& editor = session.Editor;
+    QSignalSpy status(&session.Assistance, &CodeAssistance::StatusChanged);
+    session.Prepare();
+    REQUIRE(QTest::qWaitFor([&editor]() { return editor.GetAnalysisDiagnosticCount() == 1; }));
+    QTest::keyClick(&editor, Qt::Key_Escape);
+    ChooseCodeAction(OpenCodeActionMenu(editor), QStringLiteral("Resolve me"));
+    REQUIRE(
+        QTest::qWaitFor([&session]() { return session.Host.GetState().Text == "// resolved\nfloat a = missing;\n"; }));
+    REQUIRE(session.Host.Undo() == true);
+    session.Document.Synchronize(true);
+    ChooseCodeAction(OpenCodeActionMenu(editor), QStringLiteral("Touch generated"));
+    REQUIRE(QTest::qWaitFor([&status]() {
+        return status.isEmpty() == false && status.last().first().toString().contains(QStringLiteral("generated"));
+    }));
+    CHECK(session.Host.GetState().Text == "float a = missing;\n");
+    CHECK(session.Host.CanUndo() == false);
+}
+
+TEST_CASE("Show Code Actions is disabled with its reason when the server has none", "[editor][text][assistance]")
+{
+    FakeAssistanceSession session("float a = 1;\n",
+                                  {QStringLiteral("--capabilities"), QStringLiteral(R"({"completionProvider": {}})")});
+    CodeEditor& editor = session.Editor;
+    QAction* actionsOrNull = nullptr;
+    for (QAction* action : editor.actions())
+    {
+        actionsOrNull = action->objectName() == QStringLiteral("codeEditorCodeActions") ? action : actionsOrNull;
+    }
+    REQUIRE(actionsOrNull != nullptr);
+    CHECK(actionsOrNull->shortcut() == QKeySequence(Qt::CTRL | Qt::Key_Period));
+    session.Prepare();
+    REQUIRE(QTest::qWaitFor([actionsOrNull]() { return actionsOrNull->isEnabled() == false; }));
+    CHECK(actionsOrNull->toolTip() == QStringLiteral("The selected slangd does not support codeAction."));
+    CHECK(editor.HasCodeActions() == false);
 }
 
 TEST_CASE("Snippet tab stops edit mirrors together and end at the final position", "[editor][text][assistance]")

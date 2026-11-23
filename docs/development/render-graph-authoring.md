@@ -9233,7 +9233,18 @@ is saved until you save. Escape or clicking elsewhere leaves the name as it was.
 A rename that would change generated code, read-only shader context, a file
 outside the shader's context, or an older version of the text is refused with
 the reason, and nothing changes. The pinned `slangd` and `luslc` do not support
-rename yet, so the command is disabled with that reason for them. **Go to Declaration**, **Go to Type Definition** and
+rename yet, so the command is disabled with that reason for them.
+
+**Code actions** are fixes and refactorings the language server offers at the
+caret, such as declaring a missing name. When the caret rests on a line that
+has some, a light bulb appears in the gutter. Click it, or press **Ctrl+.**
+(Command+. on macOS, **Show Code Actions** in the context menu), to list them;
+the server's recommended fix is listed first in bold. Choosing one applies its
+change as one edit that a single **Undo** reverts, in every file it touched.
+Entries the server marks as unavailable, and actions that would run a server
+command, are listed but disabled, with the reason in their tooltip. An action
+that would change generated or read-only code is refused, and nothing changes.
+The pinned servers offer no code actions yet. **Go to Declaration**, **Go to Type Definition** and
 **Go to Implementation** (in the editor's context menu) behave the same way. **Go
 to Symbol in Workspace** asks the server for symbols named like the word at the
 caret across the captured context and lists those in authored sources. References cover the selected captured compiler context,

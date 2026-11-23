@@ -120,6 +120,12 @@ constexpr StaticArray<LanguageRequestDescriptor, LANGUAGE_REQUEST_KIND_COUNT> RE
      {},
      Priority::Workspace,
      false},
+    {Kind::CodeActionResolve,
+     QLatin1StringView("codeAction/resolve"),
+     QLatin1StringView("codeActionProvider"),
+     QLatin1StringView("resolveProvider"),
+     Priority::Interactive,
+     false},
 }};
 
 bool IsEnabled(const QJsonValue& value)

@@ -227,6 +227,25 @@ void LanguageClient::startProcess()
                                          {QStringLiteral("formats"), QJsonArray{QStringLiteral("relative")}},
                                          {QStringLiteral("overlappingTokenSupport"), false},
                                          {QStringLiteral("multilineTokenSupport"), false}};
+        // Code action literals with the fields the light bulb reads; edits may
+        // be resolved later. Server commands are not run (no executeCommand).
+        const QJsonObject codeAction{
+            {QStringLiteral("codeActionLiteralSupport"),
+             QJsonObject{{QStringLiteral("codeActionKind"),
+                          QJsonObject{{QStringLiteral("valueSet"),
+                                       QJsonArray{QStringLiteral(""),
+                                                  QStringLiteral("quickfix"),
+                                                  QStringLiteral("refactor"),
+                                                  QStringLiteral("refactor.extract"),
+                                                  QStringLiteral("refactor.inline"),
+                                                  QStringLiteral("refactor.rewrite"),
+                                                  QStringLiteral("source"),
+                                                  QStringLiteral("source.organizeImports")}}}}}},
+            {QStringLiteral("isPreferredSupport"), true},
+            {QStringLiteral("disabledSupport"), true},
+            {QStringLiteral("dataSupport"), true},
+            {QStringLiteral("resolveSupport"),
+             QJsonObject{{QStringLiteral("properties"), QJsonArray{QStringLiteral("edit")}}}}};
         const QJsonObject foldingRange{
             {QStringLiteral("lineFoldingOnly"), true},
             {QStringLiteral("foldingRangeKind"),
@@ -249,7 +268,9 @@ void LanguageClient::startProcess()
             {QStringLiteral("publishDiagnostics"), QJsonObject{{QStringLiteral("versionSupport"), true}}},
             {QStringLiteral("semanticTokens"), semanticTokens},
             {QStringLiteral("foldingRange"), foldingRange},
-            {QStringLiteral("inlayHint"), QJsonObject{{QStringLiteral("dynamicRegistration"), false}}}};
+            {QStringLiteral("inlayHint"), QJsonObject{{QStringLiteral("dynamicRegistration"), false}}},
+            {QStringLiteral("rename"), QJsonObject{{QStringLiteral("prepareSupport"), true}}},
+            {QStringLiteral("codeAction"), codeAction}};
         const QJsonObject capabilities{
             {QStringLiteral("general"),
              QJsonObject{{QStringLiteral("positionEncodings"),
@@ -258,7 +279,11 @@ void LanguageClient::startProcess()
             {QStringLiteral("workspace"),
              QJsonObject{{QStringLiteral("configuration"), true},
                          {QStringLiteral("inlayHint"), QJsonObject{{QStringLiteral("refreshSupport"), true}}},
-                         {QStringLiteral("semanticTokens"), QJsonObject{{QStringLiteral("refreshSupport"), true}}}}},
+                         {QStringLiteral("semanticTokens"), QJsonObject{{QStringLiteral("refreshSupport"), true}}},
+                         {QStringLiteral("workspaceEdit"),
+                          QJsonObject{{QStringLiteral("documentChanges"), true},
+                                      {QStringLiteral("resourceOperations"), QJsonArray{}},
+                                      {QStringLiteral("failureHandling"), QStringLiteral("abort")}}}}},
             {QStringLiteral("textDocument"), textDocument}};
         send({{QStringLiteral("id"), mInitializeRequest},
               {QStringLiteral("method"), QStringLiteral("initialize")},
