@@ -634,14 +634,20 @@ reimport. Renderers require resolved scattering. World draws the unresolved
 surface with an editor diagnostic and asks the author to choose a replacement.
 
 World level `material_definitions` optionally holds a created material per
-resolved material resource ID. An entry is `{"model":"diffuse","base_color"}`
-or `{"model":"metallic_roughness","base_color","metallic","roughness"}`, with a
-linear RGB `base_color` in [0, 1], `metallic` in [0, 1] and `roughness` in
-[0.045, 1]. Assembly writes every slot that resolves to the ID with that model
-and those values in one shared v7 record. A diffuse record has zero metallic
-and roughness 1. The record keeps the imported textures, emission, alpha mode
-and name, and the base colour scales the base colour map. Skin and hair-card
-slot overrides apply on top; a coating still needs a coated-diffuse material.
+resolved material resource ID. An entry is `{"model":"diffuse","base_color"}`,
+`{"model":"metallic_roughness","base_color","metallic","roughness"}`, or
+`{"model":"coated_diffuse","base_color","coating_alpha","coating_eta",
+"coating_thickness"}`, with a linear RGB `base_color` in [0, 1], `metallic` in
+[0, 1], `roughness` in [0.045, 1], `coating_alpha` in [0.001, 1], `coating_eta`
+in [1, 10000] and `coating_thickness` in [0, 10000]. Assembly writes every slot
+that resolves to the ID with that model and those values in one shared v7
+record. A diffuse record has zero metallic and roughness 1. A coated-diffuse
+record is an ordered dielectric coat over a diffuse substrate: its base colour
+is the substrate, and the coat controls seed the typed coat parameters that a
+slot or shared coating instance then overrides through the coating path. The
+record keeps the imported textures, emission, alpha mode and name, and the base
+colour scales the base colour map. Skin and hair-card slot overrides apply on
+top; a coating still needs a coated-diffuse material (imported or created).
 A source cannot be both a mapping source and a created material. The
 catalog is unchanged, so reimport resolves new slots through the same entry.
 Validation names the repair for an unknown model, missing or extra members and

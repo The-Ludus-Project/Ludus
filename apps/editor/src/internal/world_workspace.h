@@ -298,8 +298,15 @@ private:
     /// Explain a slot whose material the World created from an unsupported import, and offer to edit it.
     void addCreatedMaterial(QFormLayout& inoutRows);
     /// Open the creation dialog for an imported material: a new draft from its imported values, or its existing
-    /// created material. Applying it replaces the material for every slot that resolves to it in one edit.
-    void createImportedMaterial(const QString& source);
+    /// created material. When preferredModel names a model (for example coated_diffuse) and the source has no created
+    /// material yet, the new draft starts in that model. Applying it replaces the material for every slot that
+    /// resolves to it in one edit.
+    void createImportedMaterial(const QString& source, const QString& preferredModel = QString());
+    /// Offer Make Coated Diffuse on an ordinary resolved slot: create and assign an ordered dielectric coat over a
+    /// diffuse substrate (its base colour), through the material-definition path that a coating instance then edits.
+    void addCoatedDiffuseControls(QFormLayout& inoutRows,
+                                  const resources::SceneMaterial* materialOrNull,
+                                  const QJsonObject& placement);
     /// Offer component in the Add Component menu.
     void addComponentChoice(const QString& label, const QString& component);
     /// Give a long Add Component menu its search field, once every choice is in.

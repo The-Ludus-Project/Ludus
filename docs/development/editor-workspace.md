@@ -2059,9 +2059,23 @@ especially with very dark materials, use an independently calibrated swatch.
 
 ### Edit a coated-diffuse material from World
 
-Select an imported object whose Material model is **Coated diffuse** and choose
-**Edit Material…** in its inspector. You can also select a renderable in the
-**Materials** list and choose **Edit Material…** with Properties hidden.
+Author a coated-diffuse material on an ordinary slot with **Make Coated
+Diffuse…** in the **Material** group. It opens the create dialog on the
+**Coated diffuse (varnish over substrate)** model, with the slot's base colour
+as the diffuse substrate and the coat GGX alpha, coating index of refraction
+(IOR), and optical thickness starting from the shared coating defaults. The
+created material is an ordered dielectric coat over a diffuse substrate: the
+coat sits over the wood and attenuates it. Applying it creates and assigns the
+material for every slot that shares the source material, in one undoable edit,
+and the slot's Material model becomes **Coated diffuse**. The action is offered
+on a resolved reflection slot that is not already coated-diffuse and carries no
+override; a project BRDF, hair card, or skin slot returns to its material first.
+
+Select an object whose Material model is **Coated diffuse** (imported, or made
+with **Make Coated Diffuse…**) and choose **Edit Material…** in its inspector.
+You can also select a renderable in the **Materials** list and choose
+**Edit Material…** with Properties hidden. The document names the ordered
+layers, a dielectric coat over a diffuse substrate.
 
 The Material document shows the resource ID, all slots using it, and which slots
 have their own coating. Edit the isotropic GGX alpha, coating index of refraction
@@ -2094,7 +2108,10 @@ match the imported defaults. The built-in viewport reuses draw materials for
 matching nonemissive surfaces with the same tint.
 
 The raster view approximates changes in coat roughness. A compatible reference
-capture uses the authored alpha, IOR and optical thickness together.
+capture uses the authored alpha, IOR and optical thickness together. The coat
+runs an internal walk, so a fixed-dimension reference profile cannot capture it:
+the document names that limit and asks the author to choose a compatible
+reference profile or keep the raster approximation.
 [Coated-diffuse reference profile](../architecture/renderer-systems.md#non-scattering-coated-diffuse-reference)
 
 ### Assign and edit a project BRDF

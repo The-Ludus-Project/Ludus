@@ -2405,10 +2405,45 @@ void WorldWorkspace::addMaterialGroup()
         connect(restore, &QPushButton::clicked, this, &WorldWorkspace::restoreInheritedCoating);
         rows->addRow(restore);
     }
+    addCoatedDiffuseControls(*rows, materialOrNull, scene);
     addHairCardControls(*rows, materialOrNull, scene);
     addSkinControls(*rows, materialOrNull, scene);
     addProjectBrdfControls(*rows, materialOrNull, scene);
     Inspector_->addWidget(section);
+}
+
+void WorldWorkspace::addCoatedDiffuseControls(QFormLayout& inoutRows,
+                                              const resources::SceneMaterial* materialOrNull,
+                                              const QJsonObject& placement)
+{
+    using content::scene_format::MaterialModel;
+    QWidget* group = inoutRows.parentWidget();
+    // Offer the layered material only on an ordinary resolved reflection slot that is not already coated-diffuse and
+    // carries no override that would lose data. A project BRDF, hair card or skin slot returns to its material first;
+    // an unresolved slot uses Create material from import instead.
+    if (materialOrNull == nullptr || placement.contains(QStringLiteral("project_brdf")) == true ||
+        placement.contains(QStringLiteral("hair_card")) == true || placement.contains(QStringLiteral("skin")) == true ||
+        materialOrNull->Scattering.Model == MaterialModel::Unresolved ||
+        materialOrNull->Scattering.Model == MaterialModel::MediumInterface ||
+        materialOrNull->Scattering.Model == MaterialModel::CoatedDiffuse)
+    {
+        return;
+    }
+    const QString source = Document_.GetInheritedMaterialId(placement);
+    if (source.isEmpty() == true || Document_.GetSceneMaterialDefinition(source).isEmpty() == false)
+    {
+        return;
+    }
+    QPushButton* assign = new QPushButton(QStringLiteral("Make Coated Diffuse…"), group);
+    assign->setObjectName(QStringLiteral("worldMakeCoatedDiffuse"));
+    assign->setEnabled(Pending_ == false && SceneBusy() == false);
+    assign->setToolTip(
+        QStringLiteral("Create and assign an ordered dielectric coat over a diffuse substrate (this slot's base "
+                       "colour). Edit the coat IOR, optical thickness and GGX alpha in the Material document."));
+    connect(assign, &QPushButton::clicked, this, [this, source]() {
+        createImportedMaterial(source, QString::fromLatin1(CREATED_MATERIAL_COATED_DIFFUSE));
+    });
+    inoutRows.addRow(assign);
 }
 
 void WorldWorkspace::addHairCardControls(QFormLayout& inoutRows,
@@ -3054,7 +3089,7 @@ void WorldWorkspace::addCreatedMaterial(QFormLayout& inoutRows)
     inoutRows.addRow(edit);
 }
 
-void WorldWorkspace::createImportedMaterial(const QString& source)
+void WorldWorkspace::createImportedMaterial(const QString& source, const QString& preferredModel)
 {
     const RenderScene& presented = Scene_->PreviewScene();
     const resources::SceneMaterial* materialOrNull = GetSceneObjectMaterialOrNull(presented, Selected_);
@@ -3073,7 +3108,9 @@ void WorldWorkspace::createImportedMaterial(const QString& source)
     request.IsEditing = request.Draft.isEmpty() == false;
     if (request.IsEditing == false)
     {
-        request.Draft = MakeCreatedMaterialDraft(*materialOrNull);
+        request.Draft = preferredModel == QString::fromLatin1(CREATED_MATERIAL_COATED_DIFFUSE)
+                            ? MakeCoatedDiffuseMaterialDraft(*materialOrNull)
+                            : MakeCreatedMaterialDraft(*materialOrNull);
     }
     for (const QJsonValue value : Document_.Draft().value(QStringLiteral("entities")).toArray())
     {
@@ -3273,7 +3310,9 @@ bool WorldWorkspace::openMaterialDocument(const QString& entityId, QString& outE
         else
         {
             state.PreviewStatus = QStringLiteral(
-                "The raster viewport approximates coat roughness. Compatible reference captures use all three values.");
+                "The raster viewport approximates coat roughness. Compatible reference captures use all three values. "
+                "The coat runs an internal walk, so a fixed-dimension profile cannot capture it; choose a compatible "
+                "reference profile or keep the raster approximation.");
         }
         view->SetState(state);
     };

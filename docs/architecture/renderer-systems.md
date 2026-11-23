@@ -1818,6 +1818,21 @@ layer order or an invalid parameter fails the program with a message that names
 the fix (scene source) or keeps the edit buffer and the last drawable World
 until a valid revision is ready (World Material document).
 
+**Author it from a World slot.** An author also creates the layered material
+directly from a slot with
+[Make Coated Diffuse…](../development/editor-workspace.md#edit-a-coated-diffuse-material-from-world):
+a built-in coated-diffuse model whose ordered layers are a dielectric coat
+(typed coat GGX alpha, index of refraction and optical thickness) over the
+slot's diffuse base colour as the substrate. This is the shared built-in
+coated-diffuse evaluator rather than the closure program of the fixture; the two
+express the same ordered coat over a substrate. The Material document names the
+ordered layers and edits the typed coat parameters, with a shared instance for
+every inheriting slot and a per-slot override, through World's edit, history,
+save and preparation. An invalid coat value keeps the edit buffer and the last
+drawable World until a valid revision is ready, and because the coat runs an
+internal walk, the document names the fixed-dimension profile that cannot
+capture it and the compatible-profile or raster fallback.
+
 **Package it.** Cook the World and its materials with `ludus-cook import`, then
 consume the same cooked World and material revision from a project built against
 the installed SDK, the
@@ -1862,8 +1877,13 @@ dielectric coating over a conductor substrate.
    authored on the shared closure evaluator as an ordered dielectric varnish
    over a diffuse wood substrate (`materials/varnished-wood-panel.luscene.json`,
    the varnished-wood cook check), with a black companion patch for the coat
-   response on its own. The metallic-paint conductor layer extends the fixture
-   after [#1376](https://github.com/The-Ludus-Project/Ludus/issues/1376).
+   response on its own. World also authors the layered material directly from a
+   slot with **Make Coated Diffuse…**: a created coated-diffuse material (its
+   base colour the substrate, typed coat alpha, IOR and thickness the coat),
+   edited through the Material document's shared instance, per-slot override,
+   undo, redo, save and reopen, with the internal-walk profile diagnostic. The
+   metallic-paint conductor layer extends the fixture after
+   [#1376](https://github.com/The-Ludus-Project/Ludus/issues/1376).
 
 ### Hair and skin rendering
 
