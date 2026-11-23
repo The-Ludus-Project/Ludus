@@ -224,7 +224,9 @@ bool MakeFeatureMaterial(Feature feature, const Authored& authored, renderer::Sc
     outMaterial.Metallic = 0;
     format::MaterialScattering skin;
     skin.Model = format::MaterialModel::Skin;
-    skin.K = {{authored.SkinScatteringDistance.X, authored.SkinScatteringDistance.Y, authored.SkinScatteringDistance.Z}};
+    skin.K = {{authored.SkinScatteringDistance.X,
+               authored.SkinScatteringDistance.Y,
+               authored.SkinScatteringDistance.Z}};
     outMaterial.Scattering = skin;
     return format::IsMaterialScatteringValid(skin);
 }
@@ -238,7 +240,8 @@ void WriteProvenance(Profile profile, Feature feature, const QSize& extent, cons
     provenance["profile"] = QString::fromLatin1(ProfileName(profile));
     provenance["feature"] = QString::fromLatin1(FeatureName(feature));
     provenance["world_revision"] = SAVED_WORLD_REVISION;
-    provenance["world_sha256"] = QString::fromLatin1(QCryptographicHash::hash(world, QCryptographicHash::Sha256).toHex());
+    provenance["world_sha256"] =
+        QString::fromLatin1(QCryptographicHash::hash(world, QCryptographicHash::Sha256).toHex());
     provenance["sdk_version"] = QString::fromLatin1(LUDUS_SDK_VERSION);
     provenance["sdk_source_revision"] = QString::fromLatin1(LUDUS_SDK_SOURCE_REVISION);
     provenance["target"] = QString::fromLatin1(LUDUS_SDK_TARGET);
@@ -398,8 +401,10 @@ int Render(Profile profile, rhi::DeviceHandle device, rhi::SurfaceHandle surface
     inputs.Environment = ReadVector3(world["environment"].toObject()["irradiance"].toArray(), {});
 
     const QSize extent(1600, 1080);
+    const uint32 width = static_cast<uint32>(extent.width());
+    const uint32 height = static_cast<uint32>(extent.height());
     renderer::ViewDescription camera;
-    if (MakeCamera(world, static_cast<uint32>(extent.width()), static_cast<uint32>(extent.height()), camera) == false)
+    if (MakeCamera(world, width, height, camera) == false)
     {
         qCritical() << "The saved World camera is not a valid perspective view";
         return EXIT_FAILURE_CODE;
@@ -441,17 +446,13 @@ int Render(Profile profile, rhi::DeviceHandle device, rhi::SurfaceHandle surface
                                         revisions);
     if ((updated != Status::Ready && updated != Status::Pending) ||
         WaitFor(device, "scene upload", [&graph]() { return graph.Poll(); }) == false ||
-        rhi::SetFrameTarget(device,
-                            surface,
-                            {.Width = static_cast<uint32>(extent.width()),
-                             .Height = static_cast<uint32>(extent.height())}) != rhi::DeviceStatus::Ready)
+        rhi::SetFrameTarget(device, surface, { .Width = width, .Height = height }) != rhi::DeviceStatus::Ready)
     {
         return EXIT_FAILURE_CODE;
     }
 
     rhi::SubmissionToken completion;
-    const Status rendered =
-        graph.Render(surface, static_cast<uint32>(extent.width()), static_cast<uint32>(extent.height()), completion);
+    const Status rendered = graph.Render(surface, width, height, completion);
     if (rendered != Status::Ready && rendered != Status::Pending)
     {
         qCritical() << "Raster submission failed" << static_cast<uint32>(rendered);
@@ -470,8 +471,7 @@ int Render(Profile profile, rhi::DeviceHandle device, rhi::SurfaceHandle surface
     rhi::ReadbackTicket ticket;
     const Status requested = rhi::RequestTextureReadback(device,
                                                          texture,
-                                                         {.Width = static_cast<uint32>(extent.width()),
-                                                          .Height = static_cast<uint32>(extent.height())},
+                                                         { .Width = width, .Height = height },
                                                          static_cast<usize>(image.bytesPerLine()),
                                                          ticket);
     if (requested != Status::Ready && requested != Status::Pending)
@@ -536,7 +536,7 @@ int main(int argc, char** argv)
     rhi::DeviceDescription description;
     description.Required.PortableRaster = true;
     rhi::StartupInfo failure;
-    if (rhi::CreateDevice({}, {.Width = 96, .Height = 64}, description, device, surface, &failure) !=
+    if (rhi::CreateDevice({}, { .Width = 96, .Height = 64 }, description, device, surface, &failure) !=
         rhi::DeviceStatus::Ready)
     {
         qCritical() << "A GPU device is required to render the capture; startup error"
