@@ -257,7 +257,7 @@ private:
     void changeEvent(QEvent* event) override;
     void contextMenuEvent(QContextMenuEvent* event) override;
     void inputMethodEvent(QInputMethodEvent* event) override;
-    void insertFromMimeData(const QMimeData* source) override;
+    void insertFromMimeData(const QMimeData* sourceOrNull) override;
     void focusOutEvent(QFocusEvent* event) override;
     bool viewportEvent(QEvent* event) override;
     /// The structural-editing pairs for the current language, from the registry

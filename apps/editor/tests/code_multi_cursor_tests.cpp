@@ -260,6 +260,25 @@ TEST_CASE("Paste gives one clipboard line to each cursor when the counts match",
     CHECK(DraftOf(host) == QByteArray("a:one\nb:two\n"));
 }
 
+TEST_CASE("Slang multi-cursor paste checks each destination before repairing separators", "[code-editor][multi-cursor]")
+{
+    QTemporaryDir directory;
+    REQUIRE(directory.isValid() == true);
+    const QByteArray original = QByteArrayLiteral("void Main(){}\nString label = \"keep\";\n");
+    CodeFileDocument host = OpenHost(directory, original);
+    BoundView view(host);
+    view.Editor->SetLanguage(CodeLanguage::Slang);
+    PutCaret(*view.Editor, static_cast<int32>(original.indexOf('{')));
+    AddSecondaryCaret(*view.Editor, static_cast<int32>(original.indexOf("keep")));
+
+    REQUIRE(view.Editor->GetMultiCursor().HandlePaste(QStringLiteral("\u2028")) == true);
+    CHECK(DraftOf(host) == QStringLiteral("void Main()\n{}\nString label = \"\u2028keep\";\n").toUtf8());
+    QList<CodeTextSelection> undone;
+    REQUIRE(host.Undo(undone) == true);
+    CHECK(DraftOf(host) == original);
+    CHECK(host.CanUndo() == false);
+}
+
 TEST_CASE("Paste gives the whole clipboard to each cursor when the counts differ", "[code-editor][multi-cursor]")
 {
     QTemporaryDir directory;

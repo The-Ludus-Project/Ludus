@@ -4622,15 +4622,15 @@ void RendererWorkspace::renderSource()
         mDocument.GetPackageRoot() + QChar::Null + mDocument.GetRootGraph() + QChar::Null + QString::number(mEpoch);
     mSource->GetNavigation().BeginSource(navigationScope, file, mDocument.GetFiles());
     mSourceAssistance->Update(mProjectRoot, mEpoch, manifestFile(), file, mBuildSettings);
+    const QByteArray fileUtf8 = file.toUtf8();
+    mSource->SetLanguage(CodeLanguageRegistry::Get().ClassifyFileName(
+        foundation::BorrowedView<const char>(fileUtf8.constData(), static_cast<foundation::usize>(fileUtf8.size()))));
     mSourceDocument.Bind(file, mEpoch);
     mSourceController->Bind(file.isEmpty() == false && mDocument.IsLoaded() == true ? &mSourceDocument : nullptr);
     if (file.isEmpty() == true)
     {
         mSource->setPlainText({});
     }
-    const QByteArray fileUtf8 = file.toUtf8();
-    mSource->SetLanguage(CodeLanguageRegistry::Get().ClassifyFileName(
-        foundation::BorrowedView<const char>(fileUtf8.constData(), static_cast<foundation::usize>(fileUtf8.size()))));
     mSource->GetNavigation().EndSource();
     mSource->setEnabled(file.isEmpty() == false);
     mSource->SetCanFormat(canFormatSource());

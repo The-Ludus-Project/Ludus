@@ -290,6 +290,76 @@ TEST_CASE("Shift Return writes a source newline with the document's line ending"
     CHECK(document.CanUndo() == false);
 }
 
+TEST_CASE("opening a Slang draft repairs code line separators as one undo step", "[editor][text][history]")
+{
+    CodeEditor editor;
+    editor.SetLanguage(CodeLanguage::Slang);
+    const QString prefix = QStringLiteral("\ufeffString text = \"left\\\"\u2028right\";\r\n"
+                                          "String raw = R\"tag(left\"\r\n\u2028right)tag\";\r\n"
+                                          "/* block \u2028 comment */\r\n"
+                                          "// continued \\\r\n\u2028comment\r\n");
+    const QString signature = QStringLiteral("void SamplePointOnEdges()");
+    const QByteArray original = (prefix + signature + QStringLiteral("\u2028{}\r\n")).toUtf8();
+    const QByteArray repaired = (prefix + signature + QStringLiteral("\r\n{}\r\n")).toUtf8();
+    MemoryCodeDocument document(original);
+    CodeDocumentController controller(editor);
+    QSignalSpy accepted(&controller, &CodeDocumentController::TextAccepted);
+    controller.Bind(&document);
+    editor.moveCursor(QTextCursor::End);
+    const int32 position = editor.textCursor().position();
+    QCoreApplication::processEvents();
+
+    CHECK(document.GetState().Text == repaired);
+    CHECK(editor.textCursor().position() == position);
+    CHECK(accepted.count() == 1);
+    REQUIRE(document.Undo() == true);
+    controller.Synchronize(true);
+    QCoreApplication::processEvents();
+    CHECK(document.GetState().Text == original);
+    CHECK(editor.document()->toRawText().contains(QChar::LineSeparator) == true);
+    CHECK(accepted.count() == 1);
+    CHECK(document.CanUndo() == false);
+}
+
+TEST_CASE("a queued Slang line repair skips a tab that has rebound", "[editor][text][history]")
+{
+    CodeEditor editor;
+    editor.SetLanguage(CodeLanguage::Slang);
+    const QByteArray original = QStringLiteral("void Original()\u2028{}").toUtf8();
+    MemoryCodeDocument originalDocument(original);
+    MemoryCodeDocument currentDocument(QByteArrayLiteral("void Current() {}"));
+    CodeDocumentController controller(editor);
+    controller.Bind(&originalDocument);
+    controller.Bind(&currentDocument);
+    QCoreApplication::processEvents();
+
+    CHECK(originalDocument.GetState().Text == original);
+    CHECK(currentDocument.GetState().Text == QByteArrayLiteral("void Current() {}"));
+    CHECK(currentDocument.CanUndo() == false);
+}
+
+TEST_CASE("Slang paste repairs code separators and keeps separators in strings", "[editor][text][history]")
+{
+    CodeEditor editor;
+    editor.SetLanguage(CodeLanguage::Slang);
+    const QByteArray original = QByteArrayLiteral("void SamplePointOnEdges(){}\r\n");
+    MemoryCodeDocument document(original);
+    CodeDocumentController controller(editor);
+    controller.Bind(&document);
+    QTextCursor cursor = editor.textCursor();
+    cursor.setPosition(static_cast<int32>(original.indexOf('{')));
+    editor.setTextCursor(cursor);
+    QApplication::clipboard()->setText(QStringLiteral("\u2028{ String label = \"left\u2028right\"; }\u2028"));
+    editor.paste();
+
+    CHECK(document.GetState().Text ==
+          QStringLiteral("void SamplePointOnEdges()\r\n{ String label = \"left\u2028right\"; }\r\n{}\r\n").toUtf8());
+    CHECK(editor.textCursor().blockNumber() == 2);
+    REQUIRE(document.Undo() == true);
+    CHECK(document.GetState().Text == original);
+    CHECK(document.CanUndo() == false);
+}
+
 TEST_CASE("rejected text input preserves owner and view without an undo entry", "[editor][text][history]")
 {
     CodeEditor editor;

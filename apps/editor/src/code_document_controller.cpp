@@ -6,6 +6,7 @@
 
 #include "internal/code_text.h"
 
+#include <QMetaObject>
 #include <QScrollBar>
 #include <QStringEncoder>
 #include <QTextCursor>
@@ -110,7 +111,43 @@ void CodeDocumentController::Bind(CodeDocumentHost* hostOrNull)
         }
         mEditor.SetDocumentHistory(hostOrNull != nullptr);
     }
+    const CodeDocumentIdentity previous = mIdentity;
     Synchronize();
+    if (IsBound() == true && mEditor.GetLanguage() == CodeLanguage::Slang &&
+        (mIdentity.Document != previous.Document || mIdentity.Epoch != previous.Epoch))
+    {
+        queueSlangLineSeparatorRepair();
+    }
+}
+
+void CodeDocumentController::queueSlangLineSeparatorRepair()
+{
+    const QByteArray repaired = RepairSlangLineSeparators(mBytes);
+    if (repaired.isEmpty() == true)
+    {
+        return;
+    }
+    const CodeDocumentIdentity expected = mIdentity;
+    const CodeDocumentHost* host = mHostOrNull;
+    // Let the tab finish wiring up dirty state, undo, recovery and its other views
+    // before publishing this edit. A stale repair never replaces newer text.
+    QMetaObject::invokeMethod(
+        this,
+        [this, expected, host, repaired]() {
+            if (mIsEditorAlive == false || mHostOrNull != host || mIdentity != expected ||
+                mEditor.GetLanguage() != CodeLanguage::Slang || mEditor.isReadOnly() == true)
+            {
+                return;
+            }
+            const QTextCursor cursor = mEditor.textCursor();
+            CodeTextSelection selection;
+            if (GetCodeByteOffset(repaired, cursor.anchor(), selection.AnchorBytes) == true &&
+                GetCodeByteOffset(repaired, cursor.position(), selection.CaretBytes) == true)
+            {
+                static_cast<void>(ApplyServiceText(expected, repaired, selection));
+            }
+        },
+        Qt::QueuedConnection);
 }
 
 CodeTextCapture CodeDocumentController::Capture() const

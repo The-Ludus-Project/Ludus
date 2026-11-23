@@ -9064,6 +9064,10 @@ unified source/canvas undo, native shader completion and signature help are
 available. Symbol hover remains a future increment, described in the
 [shared editor architecture](../architecture/editor-gui-systems.md#source-editing-direction).
 
+When you open or paste Slang code, the editor converts Unicode line separators
+(U+2028) to the file's usual newlines. Separators inside literals and comments
+are preserved. The repair is undoable, and **Save** publishes the repaired draft.
+
 Use **Focus Source** or **Shift+Alt+Return** while a package tab is active to
 hide the surrounding tool windows and Shader API reference. **Restore Layout**
 or the same shortcut restores the previous arrangement, selection and active
