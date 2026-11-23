@@ -32,7 +32,11 @@ function(ludus_configure_project_options target_name)
     ludus_configure_target_identity(${target_name} INTERFACE)
 
     if(CMAKE_SYSTEM_NAME STREQUAL "Linux" AND CMAKE_CXX_COMPILER_ID MATCHES "Clang")
-        target_link_options(${target_name} INTERFACE -fuse-ld=lld)
+        # The host luslc tree (scripts/python/host_luslc.py) builds a build-machine tool for
+        # cross builds whose runners install Clang without LLD, so it keeps the default linker.
+        if(NOT LUDUS_LUSLC_ONLY)
+            target_link_options(${target_name} INTERFACE -fuse-ld=lld)
+        endif()
         # Map diagnostic literals without breaking DWARF's source/comp-dir pair.
         target_compile_options(${target_name} INTERFACE "-fmacro-prefix-map=${PROJECT_SOURCE_DIR}/=")
     endif()
