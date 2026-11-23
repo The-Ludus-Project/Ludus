@@ -1,5 +1,6 @@
 #pragma once
 
+#include <ludus/foundation/base/compiler.h>
 #include <ludus/foundation/base/types.h>
 
 #include <ludus/foundation/containers/static_array.hpp>
@@ -64,6 +65,16 @@ struct CodeNavigationTarget final
     bool IsReadOnly = false;
 };
 
+/// A Find References result for a references tool window (code editor M4,
+/// CE10): the symbol at the request caret and the copied, validated locations.
+struct CodeReferenceResults final
+{
+    QString Symbol;
+    QList<CodeNavigationTarget> Targets;
+    /// The provider's summary, such as how many locations were rejected.
+    QString Message;
+};
+
 class CodeNavigation;
 
 /// Presents package sources in the document area and restores live views for history.
@@ -71,6 +82,14 @@ class CodeNavigationViewHost
 {
 public:
     virtual ~CodeNavigationViewHost() = default;
+    /// Present `results` in a references tool window and return true, or return
+    /// false (the default) for the chooser beside the editor. `inoutOrigin` found them.
+    [[nodiscard]] virtual bool ShowReferences(CodeNavigation& inoutOrigin, const CodeReferenceResults& results)
+    {
+        static_cast<void>(inoutOrigin);
+        static_cast<void>(results);
+        return false;
+    }
     /// Open a validated location, returning null if its source is unavailable.
     [[nodiscard]] virtual CodeNavigation* OpenNavigationTarget(const CodeNavigationTarget& target) = 0;
     /// Restore an existing view or reopen its authored file, returning null on failure.
@@ -100,6 +119,22 @@ public:
     /// Show copied result labels without previewing/mutating source. The provider validates
     /// the captured identity again on ResultChosen before calling Navigate.
     void ShowResults(const QList<CodeNavigationTarget>& targets, const QString& message);
+    /// Present Find References results in the view host's references tool window,
+    /// or in the chooser when the host has none.
+    void ShowReferences(const CodeReferenceResults& results);
+    /// Request Find References at the caret, as the command does. False, without
+    /// emitting Requested, when the command is disabled.
+    bool RequestReferences();
+    /// Bring this view forward through its host, as Back and Forward do. False when
+    /// the host cannot show it; true without a host.
+    bool RevealView();
+    /// The editor this navigation presents; it owns this object.
+    [[nodiscard]] LUDUS_INLINE CodeEditor& GetEditor() const noexcept
+    {
+        return mEditor;
+    }
+    /// Why Find References is disabled, or empty when it is available.
+    [[nodiscard]] QString GetReferencesUnavailableReason() const;
     void Dismiss();
     /// Reveal a validated destination, or inspect generated text read-only. Missing files
     /// preserve the current selection/history and report failure in the chooser.

@@ -9211,8 +9211,13 @@ cancel. Filtering never previews a jump or changes a draft.
 functions, types and members. Hold Ctrl (Command on macOS) to underline the name
 under the pointer, and click it to request **Go to Definition** for that name.
 Names in comments, strings and keywords are not links. **Go to Definition** jumps directly when the compiler
-returns one mapped location; multiple definitions and **Find References** open the
-same filterable chooser. **Go to Declaration**, **Go to Type Definition** and
+returns one mapped location; multiple definitions open a filterable chooser.
+**Find References** lists its results in the **References** tool window
+(**View → References**), grouped by file with each use's line, column and text.
+The list stays while you follow it: activate a row to open that location. After
+you edit the shader, the rows describe the earlier text, so activating one says
+so instead of jumping to a wrong place; **Find Again** searches from the same
+symbol in the current text. **Go to Declaration**, **Go to Type Definition** and
 **Go to Implementation** (in the editor's context menu) behave the same way. **Go
 to Symbol in Workspace** asks the server for symbols named like the word at the
 caret across the captured context and lists those in authored sources. References cover the selected captured compiler context,
@@ -9321,8 +9326,15 @@ functions, parameters, properties and user types. The colors follow your edits
 at once; a name you are changing keeps its syntax color until the server
 analyses the new text. When a server reports folding ranges, it adds only kinds
 the editor's grammar does not produce (such as `imports`), so folds you have
-collapsed never move while a server starts, restarts or stops. Neither layer
-changes the text, its undo history or the saved file.
+collapsed never move while a server starts, restarts or stops.
+
+`slangd` also shows **inlay hints**: the parameter each argument binds (`value:`
+before it) and the type a `let` deduces (`: float` after its name), drawn in a
+muted box inside the line. Turn them off with **Show Inlay Hints** in the
+editor's context menu (the choice is remembered); while they are off, hold
+**Ctrl+Alt** (Command+Option on macOS) to show them until you release a key.
+A hint at the very start of a line is not shown. None of these layers changes
+the text, the clipboard, the undo history or the saved file.
 
 #### Compiler messages in the source
 

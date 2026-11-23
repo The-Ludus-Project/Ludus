@@ -158,6 +158,13 @@ CodeAssistance::CodeAssistance(CodeEditor& inoutEditor, CodeDocumentController& 
                 receive(request, value);
             });
     connect(&mClient, &LanguageClient::DiagnosticsPublished, this, &CodeAssistance::receiveDiagnostics);
+    // A server refresh re-asks for the layers after the same pause as an edit.
+    connect(&mClient, &LanguageClient::RefreshRequested, this, [this]() {
+        if (mUri.isEmpty() == false)
+        {
+            mAnalysisSync.start();
+        }
+    });
     connect(&mEditor, &CodeEditor::HoverRequested, this, &CodeAssistance::requestHover);
     mAnalysisSync.setSingleShot(true);
     mAnalysisSync.setInterval(ANALYSIS_DELAY_MILLISECONDS);
@@ -623,6 +630,15 @@ void CodeAssistance::receive(int32 request, const QJsonValue& value)
         if (IsCodeGoToNavigation(mNavigationKind) == true && mNavigationTargets.size() == 1)
         {
             acceptNavigation(0);
+        }
+        else if (mNavigationKind == CodeNavigationKind::References)
+        {
+            mEditor.GetNavigation().ShowReferences(
+            {
+                .Symbol = source.mid(mWordStart, mWordEnd - mWordStart),
+                .Targets = mNavigationTargets,
+                .Message = message,
+            });
         }
         else
         {

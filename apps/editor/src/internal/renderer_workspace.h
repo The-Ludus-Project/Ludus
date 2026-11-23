@@ -64,6 +64,7 @@ struct RenderGraphTemplate;
 struct RenderGraphResolutionSelection;
 class CodeEditor;
 class CodeEditorArea;
+class CodeReferencesWindow;
 class CodeDocumentTab;
 class CodeDocumentController;
 class CodeFormatter;
@@ -131,6 +132,10 @@ public:
     void SetProject(const QString& root, foundation::uint64 epoch);
     /// Attach the application's document tabs for shader editing and navigation.
     void SetCodeEditorArea(CodeEditorArea& inoutArea);
+    /// Show Find References results from package shaders in `windowOrNull` (the
+    /// References tool window, code editor M4) instead of the chooser beside the
+    /// editor. The window may be destroyed first; null restores the chooser.
+    void SetReferencesWindow(CodeReferencesWindow* windowOrNull);
     /// Open an exact package-relative source in Code, retaining the current canvas location.
     [[nodiscard]] bool OpenGraphSource(const QString& file, bool isPreview = false);
     [[nodiscard]] bool IsGraphCodeActive() const;
@@ -568,6 +573,7 @@ private:
     [[nodiscard]] CodeDocumentTab* openShaderCodeTab(const QString& file, bool isPreview);
     [[nodiscard]] CodeNavigation* OpenNavigationTarget(const CodeNavigationTarget& target) override;
     [[nodiscard]] CodeNavigation* ActivateNavigationView(CodeNavigation* viewOrNull, const QString& file) override;
+    [[nodiscard]] bool ShowReferences(CodeNavigation& inoutOrigin, const CodeReferenceResults& results) override;
     void revealShaderCodeTab(CodeDocumentTab& inoutTab);
     void updateGraphCodeContext();
     void rememberGraphCodeOrigin();
@@ -691,6 +697,7 @@ private:
     RenderGraphRecovery* mRecovery;
     RenderGraphCodeDocument mSourceDocument;
     QPointer<CodeEditorArea> mShaderCodeArea;
+    QPointer<CodeReferencesWindow> mReferencesWindow;
     RenderGraphNodeSelection mGraphCodeOrigin;
     bool mIsCodeFocused = false;
     BufferSizingDraft mPendingBufferSizing;

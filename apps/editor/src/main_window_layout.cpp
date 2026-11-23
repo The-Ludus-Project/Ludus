@@ -6,6 +6,7 @@
 #include "internal/code_editor_area.h"
 #include "internal/code_file_document.h"
 #include "internal/code_language_registry.h"
+#include "internal/code_references_window.h"
 #include "internal/code_status_bar.h"
 #include "internal/configuration_workspace.h"
 #include "internal/content_browser.h"
@@ -622,6 +623,18 @@ void MainWindow::BuildUi()
                 }
             });
 
+    // The References tool window (code editor M4): Find References in a package
+    // shader lists its result here, kept while the author follows it.
+    mReferencesDockOrNull = new QDockWidget(QStringLiteral("References"), this);
+    mReferencesDockOrNull->setObjectName(QStringLiteral("referencesDock"));
+    mReferencesDockOrNull->setWindowIcon(GetEditorIcon(EditorIcon::Error));
+    mReferencesOrNull = new CodeReferencesWindow(mReferencesDockOrNull);
+    mReferencesDockOrNull->setWidget(mReferencesOrNull);
+    Renderer_->SetReferencesWindow(mReferencesOrNull);
+    connect(mReferencesOrNull, &CodeReferencesWindow::ResultsShown, this, [this]() {
+        openToolWindow(mReferencesDockOrNull);
+    });
+
     InspectorDock_ = new QDockWidget(QStringLiteral("Live Inspector"), this);
     InspectorDock_->setObjectName(QStringLiteral("liveInspectorDock"));
     InspectorDock_->setWindowIcon(GetEditorIcon(EditorIcon::LiveInspector));
@@ -1090,6 +1103,7 @@ void MainWindow::arrangeDefaultDocks()
     tabifyDockWidget(mPropertiesDock, mHistoryDockOrNull);
     addDockWidget(Qt::BottomDockWidgetArea, mErrorListDock);
     tabifyDockWidget(mErrorListDock, mSearchDockOrNull);
+    tabifyDockWidget(mErrorListDock, mReferencesDockOrNull);
     tabifyDockWidget(mErrorListDock, OutputDock_);
     tabifyDockWidget(mErrorListDock, TimingDock_);
     tabifyDockWidget(mErrorListDock, mProfilingDock);
@@ -1113,6 +1127,7 @@ QList<QDockWidget*> MainWindow::getToolWindows() const
         mHistoryDockOrNull,
         mErrorListDock,
         mSearchDockOrNull,
+        mReferencesDockOrNull,
         OutputDock_,
         TimingDock_,
         mProfilingDock,
@@ -1225,10 +1240,15 @@ void MainWindow::applyDefaultDockSizes()
     const foundation::int32 properties =
         qBound(MIN_PROPERTIES_DOCK_PIXELS, width() * PROPERTIES_DOCK_PERCENT / PERCENT, MAX_PROPERTIES_DOCK_PIXELS);
     // The diagnostics group is closed until it has something to show: new errors or warnings reveal the
-    // Error List, a build reveals Output, a play session reveals Timing, recording reveals Profiling and
-    // Find in Files reveals Search.
-    for (QDockWidget* dock :
-         {mErrorListDock, mSearchDockOrNull, OutputDock_, TimingDock_, mProfilingDock, mHistoryDockOrNull})
+    // Error List, a build reveals Output, a play session reveals Timing, recording reveals Profiling,
+    // Find in Files reveals Search and Find References reveals References.
+    for (QDockWidget* dock : {mErrorListDock,
+                              mSearchDockOrNull,
+                              mReferencesDockOrNull,
+                              OutputDock_,
+                              TimingDock_,
+                              mProfilingDock,
+                              mHistoryDockOrNull})
     {
         if (dock != nullptr)
         {
@@ -1328,6 +1348,7 @@ void MainWindow::buildWindowMenu(QMenu* menu)
                               mPropertiesDock,
                               mErrorListDock,
                               mSearchDockOrNull,
+                              mReferencesDockOrNull,
                               OutputDock_,
                               mContentDock,
                               mRenderPreviewDock,

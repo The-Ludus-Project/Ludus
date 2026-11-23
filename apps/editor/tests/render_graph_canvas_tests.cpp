@@ -5,6 +5,7 @@
 #include "internal/code_editor.h"
 #include "internal/code_editor_area.h"
 #include "internal/code_navigation.h"
+#include "internal/code_references_window.h"
 #include "internal/error_list.h"
 #include "internal/render_graph_canvas.h"
 #include "internal/render_graph_document.h"
@@ -2017,6 +2018,58 @@ TEST_CASE("Analysis rows follow each open shader tab and select their range", "[
     // A replaced marker or a file without a tab reports failure instead of guessing.
     CHECK(workspace.ActivateAnalysisDiagnostic(callerFile, 1) == false);
     CHECK(workspace.ActivateAnalysisDiagnostic(QStringLiteral("main_shaders/missing.slang"), 0) == false);
+}
+
+TEST_CASE("Shader Find References results open in the References window across tabs",
+          "[editor][render-graph][code-navigation]")
+{
+    QTemporaryDir project;
+    const QString package = MakePackage(project);
+    const QString callerFile = QStringLiteral("main_shaders/color.slang");
+    const QString helperFile = QStringLiteral("main_shaders/helper.slang");
+    const QString helperText = QStringLiteral("float Helper() { return 1; }\n");
+    WriteFile(QDir(package).filePath(helperFile), helperText.toUtf8());
+    CodeEditorArea codeArea;
+    RendererWorkspace workspace({});
+    workspace.SetCodeEditorArea(codeArea);
+    workspace.SetProject(project.path(), 1);
+    REQUIRE(workspace.OpenGraph(QDir(package).filePath(GetRootGraph())) == true);
+    REQUIRE(workspace.OpenGraphSource(callerFile) == true);
+    CodeDocumentTab* callerTab = codeArea.GetActiveTabOrNull();
+    REQUIRE(callerTab != nullptr);
+    CodeEditor& caller = callerTab->GetEditor();
+    const QString callerText = caller.toPlainText();
+    REQUIRE(callerText.size() > 4);
+    const CodeReferenceResults results
+    {
+        .Symbol = QStringLiteral("Helper"),
+        .Targets = {{QStringLiteral("Current"), {}, callerText, 0, 4, false},
+                    {QStringLiteral("Helper"), helperFile, helperText, 6, 12, false}},
+        .Message = {},
+    };
+    // Without a References window the chooser beside the editor keeps them.
+    caller.GetNavigation().ShowReferences(results);
+    CHECK(caller.GetNavigation().IsChoosing() == true);
+    caller.GetNavigation().Dismiss();
+
+    CodeReferencesWindow window;
+    workspace.SetReferencesWindow(&window);
+    QSignalSpy shown(&window, &CodeReferencesWindow::ResultsShown);
+    caller.GetNavigation().ShowReferences(results);
+    CHECK(shown.size() == 1);
+    CHECK(caller.GetNavigation().IsChoosing() == false);
+    REQUIRE(window.GetResultCount() == 2);
+    // A row in another file opens its tab; a row in the finding file brings that tab back.
+    REQUIRE(window.ActivateResult(1) == true);
+    CodeDocumentTab* helperTab = codeArea.GetActiveTabOrNull();
+    REQUIRE(helperTab != nullptr);
+    CHECK(helperTab != callerTab);
+    CHECK(helperTab->GetEditor().textCursor().selectedText() == QStringLiteral("Helper"));
+    REQUIRE(window.ActivateResult(0) == true);
+    CHECK(codeArea.GetActiveTabOrNull() == callerTab);
+    CHECK(caller.textCursor().selectionStart() == 0);
+    CHECK(caller.textCursor().selectionEnd() == 4);
+    workspace.SetReferencesWindow(nullptr);
 }
 
 TEST_CASE("Shader definition tabs preserve navigation across authored and generated source",

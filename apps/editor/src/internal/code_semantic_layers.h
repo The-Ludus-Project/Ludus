@@ -34,7 +34,7 @@ struct CodeSemanticSource final
 /// relative to the previous token) against the server's `legend` into ordered,
 /// disjoint tokens of the authored source, with offsets relative to source.Start.
 /// Tokens outside the source, spanning lines, overlapping an earlier token or of
-/// a type with no role are dropped; at most MAX_SEMANTIC_TOKENS are kept.
+/// a type with no role are dropped; at most CodeSemanticLayers::MAX_SEMANTIC_TOKENS are kept.
 [[nodiscard]] QList<CodeSyntaxToken> DecodeSemanticTokens(const QJsonArray& data,
                                                           const QJsonObject& legend,
                                                           const QString& unit,
@@ -49,8 +49,18 @@ struct CodeSemanticSource final
 [[nodiscard]] QList<CodeSyntaxFold>
 DecodeFoldingRanges(const QJsonArray& ranges, const QString& unit, const CodeSemanticSource& source);
 
+/// Decode a `textDocument/inlayHint` result into hints of the authored source,
+/// ordered by position (relative to source.Start). A label is a string or the
+/// joined values of its parts; labels longer than MAX_INLAY_HINT_LABEL_UNITS end
+/// in an ellipsis. Hints outside the source, with an empty label or a label that
+/// spans lines are dropped; at most CodeSemanticLayers::MAX_INLAY_HINTS are kept.
+[[nodiscard]] QList<CodeInlayHint> DecodeInlayHints(const QJsonArray& hints,
+                                                    const QString& unit,
+                                                    LanguagePositionEncoding encoding,
+                                                    const CodeSemanticSource& source);
+
 /// Background semantic layers for one editor (code editor M4, CE10, CE26):
-/// semantic tokens over the syntax colors and the server's folding ranges. A
+/// semantic tokens over the syntax colors, inlay hints and the server's folding ranges. A
 /// layer is requested only when the ready server advertises it, after its
 /// virtual unit is synchronized, and a reply is applied only to the document
 /// revision and context it was asked for. Edits move the shown layers until the
@@ -60,6 +70,10 @@ class CodeSemanticLayers final
 public:
     /// Semantic tokens kept per document; a longer result keeps its first tokens.
     static constexpr foundation::int32 MAX_SEMANTIC_TOKENS = 131072;
+    /// Inlay hints kept per document; a longer result keeps its first hints.
+    static constexpr foundation::int32 MAX_INLAY_HINTS = 4096;
+    /// UTF-16 units of an inlay hint label shown before it is shortened.
+    static constexpr foundation::int32 MAX_INLAY_HINT_LABEL_UNITS = 64;
     CodeSemanticLayers(CodeEditor& inoutEditor, LanguageClient& inoutClient);
     /// Request every advertised layer for `unit`, which the caller has just passed
     /// to LanguageClient::SetDocument. `identity` and `context` name the draft and
@@ -92,5 +106,6 @@ private:
     LanguageClient& mClient;
     Pending mTokens;
     Pending mFolds;
+    Pending mHints;
 };
 } // namespace ludus::editor
