@@ -230,6 +230,56 @@ bool ValidateWorldPositionLightSampling(SceneContext scene, RayLaunch launch, Ra
     return incident.DistanceWorld > 0 && length(offsetWorld - incident.DirectionWorld * incident.DistanceWorld) <=
                                              CONNECTION_RELATIVE_TOLERANCE * incident.DistanceWorld;
 }
+bool ValidateStreamLightSampling(SceneContext scene,
+                                 RayLaunch launch,
+                                 RayQueryContext queries,
+                                 LightSelectionPolicy policy)
+{
+    const float3 positionWorld = float3(0, 0, 2);
+    const uint reservationSize = 1 + SCENE_INCIDENT_LIGHT_DIMENSION_COUNT;
+    const uint lastSelectionDimension = RANDOM_MAX_DIMENSION - SCENE_INCIDENT_LIGHT_DIMENSION_COUNT;
+    RayQueryContext streamQueries = queries;
+    SceneLightSample selected = SampleLight(scene, positionWorld, policy, streamQueries);
+    const uint lightCount = GetLightCount(scene);
+    if (lightCount == 0 || (policy == LightSelectionPolicy::NonMesh && lightCount == GetEmitterCount(scene)))
+        return selected.Selection.HasSample == false && streamQueries.HasFailed == false &&
+               streamQueries.NextRandomDimension == queries.NextRandomDimension;
+
+    // Start at a nonzero slot to check that light sampling follows the caller's stream position.
+    const uint secondSelectionDimension = streamQueries.NextRandomDimension;
+    SceneLightSample expected = SampleLight(scene,
+                                            positionWorld,
+                                            launch,
+                                            secondSelectionDimension,
+                                            secondSelectionDimension + 1,
+                                            policy,
+                                            queries);
+    SurfaceHit shadingHit = (SurfaceHit)0;
+    shadingHit.PositionWorld = positionWorld;
+    SceneLightSample actual = SampleLight(scene, shadingHit, policy, streamQueries);
+    if (streamQueries.HasFailed == true || selected.Selection.HasSample == false ||
+        secondSelectionDimension != queries.NextRandomDimension + reservationSize ||
+        streamQueries.NextRandomDimension != secondSelectionDimension + reservationSize ||
+        streamQueries.SurfaceQueries != queries.SurfaceQueries ||
+        streamQueries.VisibilityQueries != queries.VisibilityQueries || actual.Selection.HasSample == false ||
+        actual.Selection.LightIndex != expected.Selection.LightIndex ||
+        actual.Selection.SelectionPmf != expected.Selection.SelectionPmf ||
+        actual.Incident.HasSample != expected.Incident.HasSample ||
+        actual.Incident.ConditionalProbability != expected.Incident.ConditionalProbability ||
+        any(actual.Incident.DirectionWorld != expected.Incident.DirectionWorld))
+        return false;
+
+    streamQueries.NextRandomDimension = lastSelectionDimension;
+    SceneLightSample last = SampleLight(scene, positionWorld, policy, streamQueries);
+    if (last.Selection.HasSample == false || streamQueries.HasFailed == true ||
+        streamQueries.NextRandomDimension != RANDOM_MAX_DIMENSION + 1)
+        return false;
+    streamQueries.NextRandomDimension = lastSelectionDimension + 1;
+    SceneLightSample exhausted = SampleLight(scene, positionWorld, policy, streamQueries);
+    return exhausted.Selection.HasSample == false && exhausted.Incident.HasSample == false &&
+           streamQueries.HasFailed == true && streamQueries.FailureReason == LUDUS_SCENE_FAILURE_RANDOM_EXHAUSTED &&
+           streamQueries.NextRandomDimension == lastSelectionDimension + 1;
+}
 bool ValidateWorldOriginVisibility(SceneContext scene, RayQueryContext queries)
 {
     const float CONNECTION_DISTANCE_WORLD = 2;
@@ -272,8 +322,14 @@ float3 GenerateRay(SceneContext scene, RayLaunch launch, inout RayQueryContext q
         ValidateAddressedIncidentSampling(scene, launch, queries) == false ||
         ValidateWorldPositionLightSampling(scene, launch, queries) == false)
         FailSceneQuery(queries, LUDUS_SCENE_FAILURE_AUTHORED_FIRST);
-    if (all(launch.PositionPixel == launch.ExtentPixel / 2) && ValidateWorldOriginVisibility(scene, queries) == false)
-        FailSceneQuery(queries, LUDUS_SCENE_FAILURE_AUTHORED_FIRST);
+    if (all(launch.PositionPixel == launch.ExtentPixel / 2))
+    {
+        if (ValidateWorldOriginVisibility(scene, queries) == false ||
+            ValidateStreamLightSampling(scene, launch, queries, LightSelectionPolicy::Uniform) == false ||
+            ValidateStreamLightSampling(scene, launch, queries, LightSelectionPolicy::MeshPower) == false ||
+            ValidateStreamLightSampling(scene, launch, queries, LightSelectionPolicy::NonMesh) == false)
+            FailSceneQuery(queries, LUDUS_SCENE_FAILURE_AUTHORED_FIRST);
+    }
     // Check automatic initialization against the independently addressed public API.
     float first = SampleSceneRandom(queries);
     if (first != SampleUniformFloat01(launch, 0))
