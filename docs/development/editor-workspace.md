@@ -2207,6 +2207,19 @@ tooltips say so. The raster viewport draws them as a
 metallic-roughness approximation. The reference paths, Wave Tracing and
 Metropolis evaluate the program itself.
 
+A closure program authors an opaque layered material as a parameter blend.
+Import `tests/scenes/materials/varnished-wood-panel.luscene.json`, the
+[first opaque layered material](../architecture/renderer-systems.md#the-first-opaque-layered-material):
+an ordered dielectric varnish coat over a diffuse wood substrate, beside a black
+companion patch under the same coat. The panel's two lobes read as the layer
+order, the diffuse substrate first and the coat's cosine-power reflection over
+it. The viewport draws the metallic-roughness approximation; the reference paths
+evaluate the blended program. Change the coat reflectance constant or the
+substrate colour in the scene source and reimport to deepen or lighten the
+varnish; the black patch isolates the coat response. An invalid parameter or a
+reordered lobe that breaks the program fails the import with a message that
+names the fix, and World keeps the last drawable scene.
+
 A closure program can also replace an unsupported imported material: choose it
 under **Replacement**, as the next section describes. **Save World** and
 reimport keep the program. To change a program, edit its scene source and

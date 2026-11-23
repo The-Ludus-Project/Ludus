@@ -1781,6 +1781,57 @@ save, and scene preparation for slot overrides. The proposed composition canvas
 will share that validation and history. A later Scattering Lab can inspect
 lobes, sampled directions, energy, and raw CPU/GPU reference results.
 
+### The first opaque layered material
+
+The first authored opaque layered material is a dielectric varnish over a
+diffuse wood substrate, built on the shared closure evaluator of gate 2. It is
+the engine test scene
+[`materials/varnished-wood-panel.luscene.json`](scene-source-format.md#engine-test-scenes),
+with the panel beside a black companion patch under the same coat.
+
+The layer order is a parameter blend, the operation Davide Pesare names *pattern
+layering*: an ordered coat over a substrate whose weights blend before the lobes,
+distinct from mixing scattering responses or walking an attenuating coat. The
+coat is a `cosine_power` reflection highlight weighted by the coat's
+normal-incidence reflectance, and the diffuse wood substrate is weighted by the
+coat's complementary transmittance, so the coat sits over the wood and attenuates
+it. The reflectance is the Fresnel `((eta − 1) / (eta + 1))²` of the authored
+coat index 1.5, which is 0.04. The lobe order records the layer order: the
+substrate lobe first, the coat lobe over it.
+
+Because every lobe of the closure program is a fixed-dimension reflection, the
+layered material carries that same guarantee
+(`SupportsFixedDimensionReflection`), so the restricted estimators of gate 2
+accept it with unchanged graph source and the general graphs draw it too. A
+raster profile draws the material's metallic-roughness approximation
+(`base_color`, `metallic`, `roughness`), which is the author's visible
+approximation of the coat.
+
+**Author it.** Edit the panel's program in a
+[scene source](scene-source-format.md#closure-program), or import the fixture
+into World and edit the coat reflectance and the substrate colour as closure
+parameters. Raising the coat reflectance deepens the varnish; the black patch's
+black substrate leaves the coat reflection alone, so it reads the coat response
+on its own, the black-substrate control role of
+[PR #1364](https://github.com/The-Ludus-Project/Ludus/pull/1364). Changing the
+layer order or an invalid parameter fails the program with a message that names
+the fix (scene source) or keeps the edit buffer and the last drawable World
+until a valid revision is ready (World Material document).
+
+**Package it.** Cook the World and its materials with `ludus-cook import`, then
+consume the same cooked World and material revision from a project built against
+the installed SDK, the
+[installed-SDK project workflow](../development/project-sdk-workflow.md). The
+layered material is ordinary cooked content: it needs no engine source and no
+new renderer entry point, so a project on a compatible renderer profile draws
+the authored coat response while the author changes camera or lighting. A
+profile that cannot consume a material capability gives the author an explicit
+diagnostic or a named fallback, the same capability contract the Editor uses.
+
+The conductor layer (metallic paint) extends this fixture after
+[#1376](https://github.com/The-Ludus-Project/Ludus/issues/1376) qualifies the
+dielectric coating over a conductor substrate.
+
 ### Implementation gates
 
 1. Preserve existing material IDs and rendering behavior through adapters for
@@ -1806,7 +1857,13 @@ lobes, sampled directions, energy, and raw CPU/GPU reference results.
    Verify that the general graph accepts it with unchanged source and the
    restricted graph either admits it or identifies a missing guarantee.
    Expand physical layering and subsurface transport with raw linear CPU/GPU
-   parity and explicit profile coverage.
+   parity and explicit profile coverage. Status: the
+   [first opaque layered material](#the-first-opaque-layered-material) is
+   authored on the shared closure evaluator as an ordered dielectric varnish
+   over a diffuse wood substrate (`materials/varnished-wood-panel.luscene.json`,
+   the varnished-wood cook check), with a black companion patch for the coat
+   response on its own. The metallic-paint conductor layer extends the fixture
+   after [#1376](https://github.com/The-Ludus-Project/Ludus/issues/1376).
 
 ### Hair and skin rendering
 
