@@ -7414,24 +7414,50 @@ Shape "trianglemesh" "point3 P" [0 0 0 1 0 0 0 1 0] "integer indices" [0 1 2]
     QPushButton* makeOrNull = workspace.findChild<QPushButton*>(QStringLiteral("worldMakeCoatedDiffuse"));
     REQUIRE(makeOrNull != nullptr);
     REQUIRE(makeOrNull->isEnabled() == true);
-    QTimer::singleShot(0, [&workspace]() {
-        QDialog* creationOrNull = workspace.findChild<QDialog*>(QStringLiteral("worldMaterialCreation"));
-        REQUIRE(creationOrNull != nullptr);
-        QComboBox* modelOrNull = creationOrNull->findChild<QComboBox*>(QStringLiteral("worldMaterialCreationModel"));
-        REQUIRE(modelOrNull != nullptr);
-        CHECK(modelOrNull->currentData().toString() == QStringLiteral("coated_diffuse"));
-        const auto creationInput = [creationOrNull](const QString& name) {
+    // The callback runs inside the dialog's exec(). A thrown REQUIRE cannot leave a Windows event
+    // handler (batch 45273484047 hung for 600 s), so it only records failures, and it closes a
+    // dialog that stays open so the failure reports instead of blocking exec().
+    QTimer::singleShot(0, []() {
+        QDialog* creationOrNull = qobject_cast<QDialog*>(QApplication::activeModalWidget());
+        CHECK(creationOrNull != nullptr);
+        if (creationOrNull == nullptr)
+        {
+            return;
+        }
+        CHECK(creationOrNull->objectName() == QStringLiteral("worldMaterialCreation"));
+        const QComboBox* modelOrNull =
+            creationOrNull->findChild<QComboBox*>(QStringLiteral("worldMaterialCreationModel"));
+        CHECK(modelOrNull != nullptr);
+        if (modelOrNull != nullptr)
+        {
+            CHECK(modelOrNull->currentData().toString() == QStringLiteral("coated_diffuse"));
+        }
+        const auto setInput = [creationOrNull](const QString& name, const QString& text) {
             QLineEdit* inputOrNull = creationOrNull->findChild<QLineEdit*>(name);
-            REQUIRE(inputOrNull != nullptr);
-            return inputOrNull;
+            CHECK(inputOrNull != nullptr);
+            if (inputOrNull != nullptr)
+            {
+                inputOrNull->setText(text);
+            }
         };
-        Type(creationInput(QStringLiteral("worldMaterialCreationCoatingAlpha")), QStringLiteral("0.2"));
-        Type(creationInput(QStringLiteral("worldMaterialCreationCoatingEta")), QStringLiteral("1.5"));
-        Type(creationInput(QStringLiteral("worldMaterialCreationCoatingThickness")), QStringLiteral("0.05"));
+        setInput(QStringLiteral("worldMaterialCreationCoatingAlpha"), QStringLiteral("0.2"));
+        setInput(QStringLiteral("worldMaterialCreationCoatingEta"), QStringLiteral("1.5"));
+        setInput(QStringLiteral("worldMaterialCreationCoatingThickness"), QStringLiteral("0.05"));
         QPushButton* confirmOrNull =
             creationOrNull->findChild<QPushButton*>(QStringLiteral("worldConfirmMaterialCreation"));
-        REQUIRE(confirmOrNull != nullptr);
-        confirmOrNull->click();
+        CHECK(confirmOrNull != nullptr);
+        if (confirmOrNull != nullptr)
+        {
+            confirmOrNull->click();
+        }
+        if (creationOrNull->isVisible() == true)
+        {
+            const QLabel* errorOrNull =
+                creationOrNull->findChild<QLabel*>(QStringLiteral("worldMaterialCreationError"));
+            const QString reason = errorOrNull != nullptr ? errorOrNull->text() : QString();
+            FAIL_CHECK("The creation dialog stayed open after Create: " << reason.toUtf8().constData());
+            creationOrNull->reject();
+        }
     });
     makeOrNull->click();
     WaitForValidatedScene(workspace);
