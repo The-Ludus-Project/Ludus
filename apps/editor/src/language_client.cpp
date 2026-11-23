@@ -1,4 +1,4 @@
-#include "internal/slang_language_service.h"
+#include "internal/language_client.h"
 
 #include <ludus/foundation/base/parse_number.hpp>
 
@@ -13,8 +13,9 @@
 #endif
 
 // Thanks to Microsoft, Language Server Protocol 3.17, Base Protocol, textDocument/
-// completion and signatureHelp, and to the Slang contributors' language server.
-// Use the compiler's semantic results rather than a second shader parser.
+// completion and signatureHelp, and to the Slang contributors' language server,
+// the first profile of this generic client. Use each compiler's semantic results
+// rather than a second parser in the editor.
 // https://microsoft.github.io/language-server-protocol/specifications/lsp/3.17/specification/
 // https://github.com/shader-slang/slang-vscode-extension
 namespace ludus::editor
@@ -40,7 +41,7 @@ QJsonObject GetPosition(const QString& text, int32 offset)
 }
 } // namespace
 
-SlangLanguageService::SlangLanguageService(QObject* parentOrNull) : QObject(parentOrNull)
+LanguageClient::LanguageClient(QObject* parentOrNull) : QObject(parentOrNull)
 {
 #if !defined(Q_OS_WASM)
     connect(&mDecoder, &QFutureWatcher<QJsonDocument>::finished, this, [this]() {
@@ -50,27 +51,28 @@ SlangLanguageService::SlangLanguageService(QObject* parentOrNull) : QObject(pare
         {
             if (message.isObject() == false)
             {
-                fail(QStringLiteral("Invalid Slang response; retry assistance."));
+                fail(QStringLiteral("Invalid %1 response; retry assistance.").arg(mProfile->ProductName));
                 return;
             }
             receive(message.object());
         }
-        QTimer::singleShot(0, this, &SlangLanguageService::readMessages);
+        QTimer::singleShot(0, this, &LanguageClient::readMessages);
     });
 #endif
     mDeadline.setSingleShot(true);
     mDeadline.setInterval(REQUEST_TIMEOUT_MILLISECONDS);
     connect(&mDeadline, &QTimer::timeout, this, [this]() {
-        fail(QStringLiteral("Shader assistance timed out. Retry completion to restart Slang."));
+        fail(QStringLiteral("%1 timed out. Retry completion to restart %2.")
+                 .arg(mProfile->AssistanceTitle, mProfile->ProductName));
     });
 }
 
-SlangLanguageService::~SlangLanguageService()
+LanguageClient::~LanguageClient()
 {
     Stop();
 }
 
-void SlangLanguageService::Stop()
+void LanguageClient::Stop()
 {
     ++mGeneration;
     mDeadline.stop();
@@ -96,14 +98,19 @@ void SlangLanguageService::Stop()
 #endif
 }
 
-void SlangLanguageService::Start(const QString& program, const QString& workspace, const QStringList& arguments)
+void LanguageClient::Start(const LanguageServerProfile& profile,
+                           const QString& program,
+                           const QString& workspace,
+                           const QStringList& arguments)
 {
     Stop();
+    mProfile = &profile;
 #if defined(Q_OS_WASM)
     static_cast<void>(program);
     static_cast<void>(workspace);
     static_cast<void>(arguments);
-    Q_EMIT Failed(QStringLiteral("Shader assistance needs native Slang; unavailable in the browser editor."));
+    Q_EMIT Failed(QStringLiteral("%1 needs native %2; unavailable in the browser editor.")
+                      .arg(mProfile->AssistanceTitle, mProfile->ProductName));
 #else
     mProcessOrNull = new QProcess(this);
     QProcess* process = mProcessOrNull;
@@ -111,7 +118,7 @@ void SlangLanguageService::Start(const QString& program, const QString& workspac
         process->kill();
         static_cast<void>(process->waitForFinished(SHUTDOWN_WAIT_MILLISECONDS));
     });
-    connect(process, &QProcess::readyReadStandardOutput, this, &SlangLanguageService::readMessages);
+    connect(process, &QProcess::readyReadStandardOutput, this, &LanguageClient::readMessages);
     connect(process, &QProcess::readyReadStandardError, this, [this, process]() {
         // Count/discard a bounded diagnostic stream, independently of JSON frames.
         process->setReadChannel(QProcess::StandardError);
@@ -120,17 +127,19 @@ void SlangLanguageService::Start(const QString& program, const QString& workspac
         process->setReadChannel(QProcess::StandardOutput);
         if (mErrorBytes > MAX_ERROR_BYTES)
         {
-            fail(QStringLiteral("Slang exceeded its diagnostic budget. Check the selected tool and retry."));
+            fail(QStringLiteral("%1 exceeded its diagnostic budget. Check the selected tool and retry.")
+                     .arg(mProfile->ProductName));
         }
     });
     connect(process, &QProcess::errorOccurred, this, [this](QProcess::ProcessError error) {
         if (error == QProcess::FailedToStart)
         {
-            fail(QStringLiteral("Cannot start slangd. Repair project shader tools or check the compiler override."));
+            fail(QStringLiteral("Cannot start %1. %2").arg(mProfile->ServerName, mProfile->StartRepair));
         }
     });
     connect(process, &QProcess::finished, this, [this]() {
-        fail(QStringLiteral("Slang stopped. Retry completion to restart shader assistance."));
+        fail(QStringLiteral("%1 stopped. Retry completion to restart %2.")
+                 .arg(mProfile->ProductName, mProfile->AssistanceNoun));
     });
     connect(process, &QProcess::started, this, [this, workspace]() {
         mInitializeRequest = ++mNextRequest;
@@ -162,13 +171,13 @@ void SlangLanguageService::Start(const QString& program, const QString& workspac
 #endif
 }
 
-void SlangLanguageService::fail(const QString& message)
+void LanguageClient::fail(const QString& message)
 {
     Stop();
     Q_EMIT Failed(message);
 }
 
-void SlangLanguageService::send(const QJsonObject& message)
+void LanguageClient::send(const QJsonObject& message)
 {
 #if !defined(Q_OS_WASM)
     if (mProcessOrNull == nullptr)
@@ -180,7 +189,8 @@ void SlangLanguageService::send(const QJsonObject& message)
     const QByteArray body = QJsonDocument(envelope).toJson(QJsonDocument::Compact);
     if (body.size() > MAX_PROTOCOL_BYTES || mProcessOrNull->bytesToWrite() > MAX_PROTOCOL_BYTES)
     {
-        fail(QStringLiteral("Shader assistance exceeded its message budget. Reduce the shader context and retry."));
+        fail(QStringLiteral("%1 exceeded its message budget. Reduce the %2 and retry.")
+                 .arg(mProfile->AssistanceTitle, mProfile->ContextNoun));
         return;
     }
     const QByteArray frame =
@@ -191,12 +201,12 @@ void SlangLanguageService::send(const QJsonObject& message)
 #endif
 }
 
-void SlangLanguageService::notify(const QString& method, const QJsonObject& parameters)
+void LanguageClient::notify(const QString& method, const QJsonObject& parameters)
 {
     send({{QStringLiteral("method"), method}, {QStringLiteral("params"), parameters}});
 }
 
-void SlangLanguageService::Cancel()
+void LanguageClient::Cancel()
 {
     if (mPendingRequest != 0)
     {
@@ -206,7 +216,7 @@ void SlangLanguageService::Cancel()
     }
 }
 
-void SlangLanguageService::SetDocument(const QString& uri, const QString& text)
+void LanguageClient::SetDocument(const QString& uri, const QString& text)
 {
     mUri = uri;
     mText = text;
@@ -216,7 +226,7 @@ void SlangLanguageService::SetDocument(const QString& uri, const QString& text)
     }
 }
 
-void SlangLanguageService::synchronize()
+void LanguageClient::synchronize()
 {
     if (mUri != mSentUri)
     {
@@ -229,7 +239,7 @@ void SlangLanguageService::synchronize()
         notify(QStringLiteral("textDocument/didOpen"),
                {{QStringLiteral("textDocument"),
                  QJsonObject{{QStringLiteral("uri"), mUri},
-                             {QStringLiteral("languageId"), QStringLiteral("slang")},
+                             {QStringLiteral("languageId"), mProfile->LanguageId},
                              {QStringLiteral("version"), mVersion},
                              {QStringLiteral("text"), mText}}}});
         mSentUri = mUri;
@@ -269,7 +279,19 @@ void SlangLanguageService::synchronize()
     mSentText = mText;
 }
 
-bool SlangLanguageService::CanRequest(const QString& method) const
+bool LanguageClient::hasRequiredCapabilities(const QJsonObject& capabilities) const
+{
+    for (const QString& capability : mProfile->RequiredCapabilities)
+    {
+        if (capabilities.contains(capability) == false)
+        {
+            return false;
+        }
+    }
+    return true;
+}
+
+bool LanguageClient::CanRequest(const QString& method) const
 {
     if (mIsReady == false)
     {
@@ -288,7 +310,7 @@ bool SlangLanguageService::CanRequest(const QString& method) const
     return value.isObject() == true || value.toBool(false) == true;
 }
 
-int32 SlangLanguageService::Request(const QString& method, const QJsonObject& position)
+int32 LanguageClient::Request(const QString& method, const QJsonObject& position)
 {
     Cancel();
     if (mIsReady == false)
@@ -297,9 +319,9 @@ int32 SlangLanguageService::Request(const QString& method, const QJsonObject& po
     }
     if (CanRequest(method) == false)
     {
-        Q_EMIT RequestUnavailable(QStringLiteral("The selected slangd does not support %1. Use Find for text matches; "
+        Q_EMIT RequestUnavailable(QStringLiteral("The selected %1 does not support %2. Use Find for text matches; "
                                                  "current source and selection were retained.")
-                                      .arg(method.section(QLatin1Char('/'), -1)));
+                                      .arg(mProfile->ServerName, method.section(QLatin1Char('/'), -1)));
         return 0;
     }
     mPendingRequest = ++mNextRequest;
@@ -319,7 +341,7 @@ int32 SlangLanguageService::Request(const QString& method, const QJsonObject& po
     return mPendingRequest;
 }
 
-void SlangLanguageService::readMessages()
+void LanguageClient::readMessages()
 {
 #if !defined(Q_OS_WASM)
     if (mProcessOrNull == nullptr)
@@ -328,7 +350,7 @@ void SlangLanguageService::readMessages()
     }
     if (mProcessOrNull->bytesAvailable() + mInput.size() > MAX_PROTOCOL_BYTES)
     {
-        fail(QStringLiteral("Slang exceeded its protocol buffer budget; assistance stopped."));
+        fail(QStringLiteral("%1 exceeded its protocol buffer budget; assistance stopped.").arg(mProfile->ProductName));
         return;
     }
     if (mIsDecoding == true)
@@ -339,7 +361,7 @@ void SlangLanguageService::readMessages()
     mInput += chunk;
     if (mInput.size() > MAX_PROTOCOL_BYTES)
     {
-        fail(QStringLiteral("Slang response exceeded its message budget; assistance stopped."));
+        fail(QStringLiteral("%1 response exceeded its message budget; assistance stopped.").arg(mProfile->ProductName));
         return;
     }
     const isize split = mInput.indexOf(QByteArrayLiteral("\r\n\r\n"));
@@ -347,13 +369,13 @@ void SlangLanguageService::readMessages()
     {
         if (mInput.size() > MAX_HEADER_BYTES)
         {
-            fail(QStringLiteral("Invalid Slang protocol header; retry assistance."));
+            fail(QStringLiteral("Invalid %1 protocol header; retry assistance.").arg(mProfile->ProductName));
         }
         return;
     }
     if (split > MAX_HEADER_BYTES)
     {
-        fail(QStringLiteral("Slang protocol header exceeded its budget."));
+        fail(QStringLiteral("%1 protocol header exceeded its budget.").arg(mProfile->ProductName));
         return;
     }
     uint64 length = 0;
@@ -373,7 +395,7 @@ void SlangLanguageService::readMessages()
     constexpr isize HEADER_END_BYTES = 4;
     if (hasLength == false || length > static_cast<uint64>(MAX_PROTOCOL_BYTES - split - HEADER_END_BYTES))
     {
-        fail(QStringLiteral("Invalid Slang protocol length; retry assistance."));
+        fail(QStringLiteral("Invalid %1 protocol length; retry assistance.").arg(mProfile->ProductName));
         return;
     }
     const isize total = split + HEADER_END_BYTES + static_cast<isize>(length);
@@ -391,7 +413,7 @@ void SlangLanguageService::readMessages()
 #endif
 }
 
-void SlangLanguageService::receive(const QJsonObject& message)
+void LanguageClient::receive(const QJsonObject& message)
 {
     if (message.contains(QStringLiteral("method")) == true)
     {
@@ -404,13 +426,8 @@ void SlangLanguageService::receive(const QJsonObject& message)
                 for (const QJsonValue& value :
                      message.value(QStringLiteral("params")).toObject().value(QStringLiteral("items")).toArray())
                 {
-                    const QString section = value.toObject().value(QStringLiteral("section")).toString();
-                    values.append(section == QStringLiteral("slang.predefinedMacros") ||
-                                          section == QStringLiteral("slang.additionalSearchPaths")
-                                      ? QJsonValue(QJsonArray{})
-                                  : section == QStringLiteral("slang.searchInAllWorkspaceDirectories")
-                                      ? QJsonValue(false)
-                                      : QJsonValue::Null);
+                    values.append(
+                        mProfile->ConfigurationResponder(value.toObject().value(QStringLiteral("section")).toString()));
                 }
                 result = values;
             }
@@ -428,11 +445,10 @@ void SlangLanguageService::receive(const QJsonObject& message)
         if (message.contains(QStringLiteral("error")) == true || encoding != QStringLiteral("utf-16") ||
             capabilities.value(QStringLiteral("textDocumentSync")).toObject().value(QStringLiteral("change")).toInt() !=
                 INCREMENTAL_SYNC_KIND ||
-            capabilities.contains(QStringLiteral("completionProvider")) == false ||
-            capabilities.contains(QStringLiteral("signatureHelpProvider")) == false)
+            hasRequiredCapabilities(capabilities) == false)
         {
-            fail(QStringLiteral("This slangd does not support the required UTF-16 completion/signature protocol. Use "
-                                "the project's pinned tools."));
+            fail(QStringLiteral("This %1 does not support the required %2 protocol. Use the project's pinned tools.")
+                     .arg(mProfile->ServerName, mProfile->RequiredProtocol));
             return;
         }
         mInitializeRequest = 0;
@@ -456,13 +472,14 @@ void SlangLanguageService::receive(const QJsonObject& message)
                 METHOD_NOT_FOUND)
             {
                 Q_EMIT RequestUnavailable(
-                    QStringLiteral("The selected slangd does not implement that operation. Use Find for text matches; "
-                                   "current source and selection were retained."));
+                    QStringLiteral("The selected %1 does not implement that operation. Use Find for text matches; "
+                                   "current source and selection were retained.")
+                        .arg(mProfile->ServerName));
             }
             else
             {
-                Q_EMIT Failed(
-                    QStringLiteral("Slang could not answer this request. Repair the shader syntax and retry."));
+                Q_EMIT Failed(QStringLiteral("%1 could not answer this request. Repair the %2 and retry.")
+                                  .arg(mProfile->ProductName, mProfile->SyntaxNoun));
             }
         }
         else

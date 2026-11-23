@@ -45,7 +45,7 @@ bool IsWordCharacter(QChar character)
 } // namespace
 
 CodeAssistance::CodeAssistance(CodeEditor& inoutEditor, CodeDocumentController& inoutDocument, QObject* parentOrNull)
-    : QObject(parentOrNull), mEditor(inoutEditor), mDocument(inoutDocument), mService(this)
+    : QObject(parentOrNull), mEditor(inoutEditor), mDocument(inoutDocument), mClient(this)
 {
     connect(&mEditor, &CodeEditor::AssistanceRequested, this, &CodeAssistance::Request);
     connect(&mEditor.GetNavigation(), &CodeNavigation::Requested, this, &CodeAssistance::RequestNavigation);
@@ -90,16 +90,16 @@ CodeAssistance::CodeAssistance(CodeEditor& inoutEditor, CodeDocumentController& 
     });
     connect(&mDocument, &CodeDocumentController::BindingChanged, this, &CodeAssistance::ClearContext);
     connect(&mEditor, &QPlainTextEdit::cursorPositionChanged, this, invalidate);
-    connect(&mService, &SlangLanguageService::Replied, this, &CodeAssistance::receive);
-    connect(&mService, &SlangLanguageService::Ready, this, [this]() {
-        mEditor.GetNavigation().SetReferencesAvailable(mService.CanRequest(QStringLiteral("textDocument/references")));
+    connect(&mClient, &LanguageClient::Replied, this, &CodeAssistance::receive);
+    connect(&mClient, &LanguageClient::Ready, this, [this]() {
+        mEditor.GetNavigation().SetReferencesAvailable(mClient.CanRequest(QStringLiteral("textDocument/references")));
         requestCurrent();
     });
-    connect(&mService, &SlangLanguageService::RequestUnavailable, this, [this](const QString& message) {
+    connect(&mClient, &LanguageClient::RequestUnavailable, this, [this](const QString& message) {
         Cancel();
         Q_EMIT StatusChanged(message);
     });
-    connect(&mService, &SlangLanguageService::Failed, this, [this](const QString& message) {
+    connect(&mClient, &LanguageClient::Failed, this, [this](const QString& message) {
         Cancel();
         mServer.clear();
         Q_EMIT StatusChanged(message);
@@ -117,7 +117,7 @@ void CodeAssistance::Cancel()
 void CodeAssistance::cancelPending()
 {
     mRefresh.stop();
-    mService.Cancel();
+    mClient.Cancel();
     mHasIntent = false;
     mRequest = 0;
     mCompletions.clear();
@@ -170,9 +170,9 @@ void CodeAssistance::SetContext(const QString& server,
         mServer = server;
         mServerStamp = stamp;
         mServerArguments = serverArguments;
-        mService.Start(server, workspace, serverArguments);
+        mClient.Start(GetSlangServerProfile(), server, workspace, serverArguments);
     }
-    mEditor.GetNavigation().SetReferencesAvailable(mService.CanRequest(QStringLiteral("textDocument/references")));
+    mEditor.GetNavigation().SetReferencesAvailable(mClient.CanRequest(QStringLiteral("textDocument/references")));
     requestCurrent();
 }
 
@@ -262,7 +262,7 @@ void CodeAssistance::requestCurrent()
     const QJsonObject location{
         {QStringLiteral("line"), static_cast<int32>(mUnit.left(position).count(QLatin1Char('\n')))},
         {QStringLiteral("character"), position - previous - 1}};
-    mService.SetDocument(mUri, mUnit);
+    mClient.SetDocument(mUri, mUnit);
     QString method =
         mIsSignature == true ? QStringLiteral("textDocument/signatureHelp") : QStringLiteral("textDocument/completion");
     if (mIsNavigation == true)
@@ -271,7 +271,7 @@ void CodeAssistance::requestCurrent()
                  : mNavigationKind == CodeNavigationKind::Definition ? QStringLiteral("textDocument/definition")
                                                                      : QStringLiteral("textDocument/references");
     }
-    mRequest = mService.Request(method, location);
+    mRequest = mClient.Request(method, location);
     if (mRequest == 0 && mHasIntent == true)
     {
         Q_EMIT StatusChanged(QStringLiteral("Starting Slang shader assistance…"));

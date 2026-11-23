@@ -814,3 +814,32 @@ runs gave a 100-cursor handling p95 of 7.4-11.7 ms before the change and
 3.4-5.0 ms after it, so it also restores headroom on a busy machine. Both M2
 typing budgets are now recorded and met offscreen. The native keypress-to-paint
 qualification on quiet reference machines remains M9 work.
+
+## M4 - Generic language client
+
+### M4 batch 1: the generic client move (CE09, 2026-11-22)
+
+`SlangLanguageService` is now `LanguageClient`
+(`apps/editor/src/internal/language_client.h`), and its Slang specifics moved
+into a `LanguageServerProfile` (`internal/language_profiles.h`), as the first
+M4 task requires ([issue 1263](https://github.com/The-Ludus-Project/Ludus/issues/1263)).
+This is a structural move with no behavior change:
+
+- The client keeps the framing, bounds, off-thread decoding, deadline,
+  incremental synchronization and stale-generation rules unchanged.
+- The profile carries what was hard-coded for Slang: the `languageId`, the
+  capabilities that initialization requires (completion and signature help),
+  the `workspace/configuration` answers, and the vocabulary of the failure
+  messages. The Slang profile reproduces every earlier message exactly.
+- A profile never names an executable or adds arguments. Program resolution
+  stays with the context provider (`RenderGraphShaderAssistance`), so a project
+  file still cannot replace a server program.
+- LUSL sources keep using the Slang profile, as they did before. `luslc lsp`
+  advertises no signature help, so it fails the required-capability check; the
+  capability dispatch in the next batch makes signature help optional and adds
+  a LUSL profile.
+
+`language_client_tests.cpp` pins the Slang profile's configuration answers and
+the exact missing-server and unsupported-server messages, and drives a
+completion through the client against `slang_server_fixture.py`. The existing
+assistance and navigation cases run unchanged.
