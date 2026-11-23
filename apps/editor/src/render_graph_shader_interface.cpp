@@ -161,8 +161,10 @@ QString DescribeRayInterface(const QJsonObject& program,
                     const bool isWritable = field.value(QStringLiteral("writable")).toBool();
                     const QString type = field.value(QStringLiteral("type")).toString();
                     const bool isLegacyRaw = field.value(QStringLiteral("legacy_raw")).toBool();
+                    const bool isNativeStructured = field.value(QStringLiteral("native_structured")).toBool();
                     const QString operations =
-                        isLegacyRaw == true
+                        isNativeStructured == true ? QStringLiteral("[recordIndex].Field")
+                        : isLegacyRaw == true
                             ? QStringLiteral("[index], GetDimensions(count, stride)")
                             : (isWritable == true ? QStringLiteral("GetCount(), Load(index), Store(index, value)")
                                                   : QStringLiteral("GetCount(), Load(index)"));

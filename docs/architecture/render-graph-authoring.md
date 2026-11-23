@@ -1518,6 +1518,14 @@ A proposed `ris-projected-solid-angle` template follows the four-pass
 
 ### Native structured Buffer ports (proposed)
 
+Ordered scene compute supports one shared structured Buffer per configuration
+on Metal, Vulkan and WebGPU. WebGPU uses software traversal. The cooker links readers and writers into separate
+shader artifacts and stores the reader callback mask and reflected record
+stride. The renderer binds the same allocation through the two layouts and
+records the reader against the writer's latest resource version. Metal
+hardware ray callbacks can also read the shared record. See
+[Buffer sizing and shader access](../development/render-graph-authoring.md#access-an-ordered-buffer-by-port-name).
+
 A graph author can pass `resources.Edges` to a helper taking
 `RWStructuredBuffer<EdgesData>` and write `resources.Edges[0].Weights[edgeIndex]`
 directly. A consumer with a read-only connection receives
@@ -1525,8 +1533,8 @@ directly. A consumer with a read-only connection receives
 same graph-owned allocation. This extends the
 [named Buffer workflow](../development/render-graph-authoring.md#access-an-ordered-buffer-by-port-name)
 and builds on [the original named Buffer issue](https://github.com/The-Ludus-Project/Ludus/issues/2131).
-The design covers ordered scene compute and ray-generation callbacks on Metal and
-Vulkan, including the existing Metal hardware ray stage path.
+WebGPU cooks the software writer and reader directly to WGSL. The cooker verifies
+the emitted nested members, array strides and storage access against reflection.
 
 **Authoring.** Keep the existing Buffer node, struct picker and named ports.
 For a newly configured struct Buffer, **Structured** is the default once the
@@ -1581,10 +1589,11 @@ shared declaration. Store the verified binding requirements in the cooked recipe
 Validate pass recipe indices, storage access, allocation coverage and existing
 limits when opening the cooked package.
 The Slang and LUSL authoring paths must agree on resource direction and shape.
-The current LUSL checker rejects resource members even in `extern slang` structs.
-Teach it to model typed handles in generated Resources declarations and verify
-member indexing, helper calls and read-only rejection before enabling the mode
-for LUSL callbacks.
+LUSL can mirror structured buffer handles in `extern slang` structs. Generate
+those declarations for typed graph ports and verify member indexing, helper
+calls and read-only rejection before enabling the mode for LUSL callbacks.
+The LUSL scene interface exposes the array form of `SampleSceneWeightedIndex`
+so callbacks can pass a fixed array of weights directly.
 
 **Cost and acceptance.** Reuse the same allocation for all passes and calculate
 its size from the reflected stride and count. Key shader artifacts on the actual

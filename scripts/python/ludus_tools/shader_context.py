@@ -104,15 +104,18 @@ def _resource_api(snapshot, value, source):
                 continue
             entry['needs_upgrade'] = True
         entry['fields'] = [
-            {'name': field['field'], 'type': field['record']['type'] if field['record'] else 'uint4',
+            {'name': field['field'],
+             'type': buffers.record_view_name(field) if buffers.is_native_record(field['record'])
+             else field['record']['type'] if field['record'] else 'uint4',
              'writable': field['writable'],
-             **({'byte_access': True} if field['record'] else {}),
+             **({'native_structured': True} if buffers.is_native_record(field['record'])
+                else {'byte_access': True} if field['record'] else {}),
              **({'legacy_raw': True} if not field['record'] and not field['word_view'] else {})}
             for field in fields]
         if language.is_language_source(source):
             for field, description in zip(fields, entry['fields']):
                 record = field['record']
-                if record is None:
+                if record is None or buffers.is_native_record(record):
                     continue
                 layout = snapshot.buffer_record_layouts.get((record['source'], record['type']))
                 if layout is None:

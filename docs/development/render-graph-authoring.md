@@ -723,11 +723,11 @@ shader uses native traversal inside a compute invocation; dedicated ray stages o
 shader tables are not required for hardware acceleration. The default
 RayTracingPipeline traversal is native. The explicit triangle-loop and compute-BVH
 strategies described below use ordinary GPU compute and do not require ray hardware.
-WebGPU and WebGL2 do not execute this
-profile. Packages can retain browser raster targets alongside native targets;
-their `capability_profiles.ray_tracing` lists only `metal` and/or `spirv`, and no
-browser RT recipe or ray shader artifact is emitted. A browser-only RT manifest
-is rejected and needs an authored raster configuration. Metal cooking
+Native queries are available on Metal and Vulkan. Packages can also carry WGSL
+for eligible [ordered structured-buffer configurations](#access-an-ordered-buffer-by-port-name)
+that use software traversal. The package's `capability_profiles.ray_tracing`
+lists the targets for which it emitted scene compute or hardware ray recipes.
+Metal cooking
 requires the SDK-pinned SPIRV-Cross translator (`LUDUS_SPIRV_CROSS` in CMake or
 `--spirv-cross` for the package builder).
 
@@ -1380,8 +1380,37 @@ The member name capitalizes the port's first letter and preserves the remaining
 spelling. Named views load and store whole records using the reflected layout.
 Supported fields are 32-bit scalars and vectors, nested records and fixed arrays.
 
-In a named LUSL callback, a shared buffer record with a fixed array of structs
-also exposes `Load<Field>(recordIndex, elementIndex)`. Writable views expose
+Choose **Native structured buffer** in Buffer sizing for an ordered scene
+compute writer and a read-only consumer. The same graph allocation is bound
+as `RWStructuredBuffer<EdgesData>` in the writer and
+`StructuredBuffer<EdgesData>` in the reader. Use a shared declaration and
+named Buffer access in both shaders. One legacy positional Buffer can keep
+the first binding in the same configuration.
+
+Use **Compute** invocation for the ray-generation reader on Metal, Vulkan,
+and WebGPU. Include the shader profiles your project targets (`metal`, `spirv`,
+and `wgsl`, respectively). For WebGPU, set traversal on every scene pass in the
+configuration to **Compute BVH**. The WebGPU package binds the same structured
+allocation as read/write storage in the writer and read-only storage in the
+reader. Metal also supports a hardware ray reader.
+
+Direct3D 12 currently lacks this ordered scene shader profile. WebGL 2 has no
+compute or writable shader storage, so it needs an authored raster configuration.
+
+In the LUSL reader, include `graph_resources.luslh` and
+`scene_shader.luslh`. For an `EdgesData` table with capacity one, read the
+record at index zero and pass its fixed-size weights array to the scene sampler.
+
+```c
+EdgesData edges = resources.Edges[0];
+Edge first = edges.Edges[0];
+uint32 sampledIndex = SampleSceneWeightedIndex(inout inoutQueries, edges.Weights);
+```
+
+Keep unused weights zero and check the populated edge count before indexing.
+
+With **Packed words** access, a named LUSL buffer view for a shared record with
+a fixed array of structs exposes `Load<Field>(recordIndex, elementIndex)`. Writable views expose
 `Store<Field>(recordIndex, elementIndex, value)`. For an `EdgesData` buffer
 with capacity one and a member `Edge Edges[256]`, use
 `Edge edge = resources.Edges.LoadEdges(0, edgeIndex);` and

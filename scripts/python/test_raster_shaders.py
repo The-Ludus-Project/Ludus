@@ -548,6 +548,31 @@ class MaterialUniformLayoutTests(unittest.TestCase):
         self.assertEqual(uniform_shape(value),'Opaque')
 
 class NativeStorageRecordTests(unittest.TestCase):
+    def test_nested_edge_table_reflection_checks_array_strides(self):
+        from compile_raster import storage_record_layout
+
+        def field(name, shape, offset, size):
+            return {'name': name, 'type': shape,
+                    'binding': {'kind': 'uniform', 'offset': offset, 'size': size}}
+
+        def array(element, stride):
+            return {'kind': 'array', 'elementCount': 256, 'elementType': element, 'uniformStride': stride}
+
+        scalar = {'kind': 'scalar', 'scalarType': 'float32'}
+        endpoint = {'kind': 'vector', 'elementCount': 4, 'elementType': scalar}
+        edge = {'kind': 'struct', 'fields': [field('Begin', endpoint, 0, 16), field('End', endpoint, 16, 16)]}
+        table = {'kind': 'struct', 'fields': [field('Header', endpoint, 0, 16),
+                 field('Edges', array(edge, 32), 16, 8192), field('Weights', array(scalar, 4), 8208, 1024)]}
+        stride, fields = storage_record_layout(table)
+        self.assertEqual(9232, stride)
+        self.assertEqual((32, 4), (fields[1]['stride'], fields[2]['stride']))
+        for index in (1, 2):
+            with self.subTest(index=index):
+                invalid = copy.deepcopy(table)
+                invalid['fields'][index]['type']['uniformStride'] *= 2
+                with self.assertRaisesRegex(RuntimeError, 'std430 element stride'):
+                    storage_record_layout(invalid)
+
     def test_records_require_native_profile_and_match_reflected_offsets(self):
         data = RasterReflectionTests.compute_fixture(self)
         fields = [{'name': 'Weight', 'type': {'kind': 'scalar', 'scalarType': 'float32'},

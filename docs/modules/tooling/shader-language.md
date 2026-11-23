@@ -729,6 +729,18 @@ float32x4 FragmentMain(in CompositeVarying input)
 | `StructuredBuffer<T>` | a value type without `bool` | `buffer[uint32]`, read-only; `GetDimensions()` |
 | `RWStructuredBuffer<T>` | a value type without `bool` | `buffer[uint32]`, read and written; `GetDimensions()`; `int32`/`uint32` elements take `Interlocked` operations |
 
+An `extern slang` struct may mirror `StructuredBuffer<T>` and
+`RWStructuredBuffer<T>` fields declared by Slang. A helper taking that struct
+can index a field directly, such as `resources.Edges[0].Weights[edgeIndex]`.
+Only the writable resource type permits writes to its elements. The Slang
+caller supplies the handles. Buffer element types must contain storage values,
+so they cannot contain resource handles.
+
+An `extern slang` function can declare a one-dimensional input parameter as
+`in T values[]`. Call it with a fixed array of the same element type. LUSL
+keeps the argument's length, and Slang selects the matching array overload.
+The scene interface uses this declaration for `SampleSceneWeightedIndex`.
+
 `Sample(sampler, coordinate)` uses an implicit LOD. `SampleLevel` adds a
 `float32` LOD. For `Load` the final coordinate is the integer mip level.
 `Gather` returns the first component of the four neighboring texels in

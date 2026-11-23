@@ -309,4 +309,6 @@ extern slang
     uint32 SampleSceneWeightedIndex(inout RayQueryContext queries, in float32x2 weights);
     uint32 SampleSceneWeightedIndex(inout RayQueryContext queries, in float32x3 weights);
     uint32 SampleSceneWeightedIndex(inout RayQueryContext queries, in float32x4 weights);
+    /// Pass a fixed float32 array. Slang deduces its length from the argument.
+    uint32 SampleSceneWeightedIndex(inout RayQueryContext queries, in float32 weights[]);
 };

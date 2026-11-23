@@ -70,7 +70,7 @@ def emit_text_artifact(namespace, label, data):
 
 
 def verify_storage_record_strides(binary, interface):
-    """Cross-check structured element stride against the emitted SPIR-V ArrayStride.
+    """Cross-check reflected storage member offsets and array strides against SPIR-V.
 
     Raw reflection reports fields, while the binary owns the runtime array stride.
     Admit only a scalar binding whose block contains that one runtime array.
@@ -83,7 +83,8 @@ def verify_storage_record_strides(binary, interface):
     words = struct.unpack('<' + 'I' * (len(binary) // 4), binary)
     if words[0] != 0x07230203:
         raise RuntimeError('Structured storage requires SPIR-V magic')
-    decorations, pointers, blocks, arrays, variables = {}, {}, {}, set(), {}
+    decorations, offsets, pointers, blocks, arrays, variables = {}, {}, {}, {}, {}, {}
+    runtime_arrays = set()
     cursor = 5
     while cursor < len(words):
         count, opcode = words[cursor] >> 16, words[cursor] & 0xffff
@@ -92,53 +93,102 @@ def verify_storage_record_strides(binary, interface):
         operands = words[cursor + 1:cursor + count]
         if opcode == 71 and len(operands) == 3:  # OpDecorate
             decorations[(operands[0], operands[1])] = operands[2]
+        elif opcode == 72 and len(operands) == 4 and operands[2] == 35:  # OpMemberDecorate Offset
+            offsets[(operands[0], operands[1])] = operands[3]
         elif opcode == 32 and len(operands) == 3:  # OpTypePointer
             pointers[operands[0]] = operands[2]
         elif opcode == 30 and len(operands) >= 1:  # OpTypeStruct
             blocks[operands[0]] = operands[1:]
+        elif opcode == 28 and len(operands) == 3:  # OpTypeArray
+            arrays[operands[0]] = operands[1]
         elif opcode == 29 and len(operands) == 2:  # OpTypeRuntimeArray
-            arrays.add(operands[0])
+            arrays[operands[0]] = operands[1]
+            runtime_arrays.add(operands[0])
         elif opcode == 59 and len(operands) >= 3:  # OpVariable
             variables[operands[1]] = operands[0]
         cursor += count
+    def verify_members(identity, fields):
+        types = blocks.get(identity, ())
+        if len(types) != len(fields):
+            raise RuntimeError('Structured storage SPIR-V field count differs from reflection')
+        for index, (member_type, field) in enumerate(zip(types, fields)):
+            if offsets.get((identity, index)) != field['offset']:
+                raise RuntimeError(f"Structured storage SPIR-V offset differs for '{field['name']}'")
+            verify_value(member_type, field)
+
+    def verify_value(identity, shape):
+        if 'fields' in shape:
+            verify_members(identity, shape['fields'])
+        elif 'element' in shape:
+            # Slang's std430 lowering can wrap a fixed array in a one-field struct.
+            members = blocks.get(identity, ())
+            if len(members) == 1 and offsets.get((identity, 0)) == 0:
+                identity = members[0]
+            element = arrays.get(identity)
+            if element is None or identity in runtime_arrays or decorations.get((identity, 6)) != shape['stride']:
+                raise RuntimeError('Structured storage SPIR-V fixed-array stride differs from reflection')
+            verify_value(element, shape['element'])
+
     for entry in records:
         matches = [identity for identity in variables if decorations.get((identity, 33)) == entry['binding']
                    and decorations.get((identity, 34), 0) == 0]
         if len(matches) != 1:
             raise RuntimeError('Structured storage SPIR-V binding is missing or ambiguous')
         members = blocks.get(pointers.get(variables[matches[0]]), ())
-        if len(members) != 1 or members[0] not in arrays or decorations.get((members[0], 6)) != entry['size']:
+        if len(members) != 1 or members[0] not in runtime_arrays or decorations.get((members[0], 6)) != entry['size']:
             raise RuntimeError('Structured storage SPIR-V stride differs from reflected record')
+        if entry['fields']:
+            verify_members(arrays[members[0]], entry['fields'])
 
 
 def storage_record_layout(record):
-    """Validate a flat native scalar/vector record against reflected field offsets.
+    """Validate a native record against its reflected std430 layout."""
+    size, alignment, fields = storage_struct_layout(record)
+    return (size + alignment - 1) // alignment * alignment, fields
 
-    Native ray stages are emitted as SPIR-V std430 and translated to Metal by the
-    pinned SPIRV-Cross. Vec3 occupies twelve bytes with sixteen-byte alignment.
-    """
+
+def storage_struct_layout(record):
+    """Validate field offsets and return the occupied size, alignment and fields."""
     fields = record.get('fields', [])
     if not fields or len(fields) > 16:
-        raise RuntimeError('Native structured storage requires one to sixteen scalar/vector fields')
+        raise RuntimeError('Native structured storage requires one to sixteen fields per struct')
     offset, alignment, members = 0, 1, []
+    names = set()
     for field in fields:
         shape = field.get('type', {})
-        scalar = shape if shape.get('kind') == 'scalar' else shape.get('elementType', {})
-        width = 1 if shape.get('kind') == 'scalar' else shape.get('elementCount')
-        if shape.get('kind') not in ('scalar', 'vector') or scalar.get('scalarType') not in ('float32', 'uint32', 'int32') or width not in (1, 2, 3, 4):
-            raise RuntimeError('Native structured storage fields require scalar32 or vector32 values')
-        size = 4 * width
-        align = 16 if width == 3 else size
+        size, align, member = storage_value_layout(shape)
         offset = (offset + align - 1) // align * align
         layout = field.get('binding', {})
         if layout.get('kind') != 'uniform' or layout.get('offset') != offset or layout.get('size') != size:
             raise RuntimeError('Native structured storage field layout differs from std430')
-        if any(member['name'] == field.get('name') for member in members):
+        name = field['name']
+        if name in names:
             raise RuntimeError('Native structured storage field is duplicated')
-        members.append({'name': field['name'], 'scalar': scalar['scalarType'], 'width': width, 'offset': offset})
+        names.add(name)
+        members.append({'name': name, **member, 'offset': offset})
         alignment = max(alignment, align)
         offset += size
-    return (offset + alignment - 1) // alignment * alignment, members
+    return offset, alignment, members
+
+
+def storage_value_layout(shape):
+    kind = shape.get('kind')
+    if kind == 'struct':
+        size, alignment, fields = storage_struct_layout(shape)
+        return size, alignment, {'fields': fields}
+    if kind == 'array':
+        size, alignment, element = storage_value_layout(shape.get('elementType', {}))
+        stride = (size + alignment - 1) // alignment * alignment
+        count = shape.get('elementCount')
+        if type(count) is not int or count <= 0 or shape.get('uniformStride') != stride:
+            raise RuntimeError('Native structured storage requires fixed arrays with std430 element stride')
+        return stride * count, alignment, {'count': count, 'stride': stride, 'element': element}
+    scalar = shape if kind == 'scalar' else shape.get('elementType', {})
+    width = 1 if kind == 'scalar' else shape.get('elementCount')
+    if kind not in ('scalar', 'vector') or scalar.get('scalarType') not in ('float32', 'uint32', 'int32') or width not in (1, 2, 3, 4):
+        raise RuntimeError('Native structured storage requires 32-bit scalars or vectors, structs, or fixed arrays')
+    size = 4 * width
+    return size, 16 if width == 3 else size, {'scalar': scalar['scalarType'], 'width': width}
 
 
 def raster_interface_usage(document, stage):
@@ -481,6 +531,62 @@ def wgsl_uniform_type(code, kind, depth=0, *, compute=False):
     raise RuntimeError('Browser raster uniforms require float/vector/mat4 or bounded vec4/mat4 arrays')
 
 
+def wgsl_struct_members(body):
+    """Split emitted members at commas outside array and vector type arguments."""
+    start, depth = 0, 0
+    for index, char in enumerate(body):
+        depth += (char == '<') - (char == '>')
+        if depth < 0:
+            raise RuntimeError('WGSL member type brackets are malformed')
+        if char == ',' and depth == 0:
+            yield body[start:index]
+            start = index + 1
+    if depth:
+        raise RuntimeError('WGSL member type brackets are malformed')
+    if body[start:].strip():
+        yield body[start:]
+
+
+def wgsl_record_type(structures, kind, depth=0):
+    """Measure the emitted storage shape using WGSL size and alignment rules."""
+    if depth == 16:
+        raise RuntimeError('WGSL structured storage nesting exceeds the admitted profile')
+    if scalar := re.fullmatch(r'(?:([fiu]32)|vec([234])<([fiu]32)>)', kind):
+        width = int(scalar[2] or 1)
+        size = 4 * width
+        scalar_type = {'f32': 'float32', 'i32': 'int32', 'u32': 'uint32'}[scalar[1] or scalar[3]]
+        return size, 16 if width == 3 else size, {'scalar': scalar_type, 'width': width}
+    if array := re.fullmatch(r'array<(.+),\s*(?:[iu]32\((\d+)\)|(\d+)[iu]?)>', kind):
+        size, align, shape = wgsl_record_type(structures, array[1].strip(), depth + 1)
+        count = int(array[2] or array[3])
+        stride = (size + align - 1) // align * align
+        return stride * count, align, {'count': count, 'stride': stride, 'element': shape}
+    if kind not in structures:
+        raise RuntimeError('WGSL structured storage references an unknown type')
+    members = []
+    offset, alignment = 0, 1
+    for member in wgsl_struct_members(structures[kind]):
+        field = re.fullmatch(r'\s*(?:@align\((\d+)\)\s*)?(\w+)\s*:\s*(.+?)\s*', member)
+        if field is None:
+            raise RuntimeError('WGSL structured storage member is malformed')
+        explicit, name, child = field.groups()
+        size, natural, shape = wgsl_record_type(structures, child, depth + 1)
+        align = int(explicit) if explicit is not None else natural
+        if align < natural or align & (align - 1):
+            raise RuntimeError('WGSL structured storage alignment is invalid')
+        offset = (offset + align - 1) // align * align
+        members.append({'name': re.sub(r'_\d+$', '', name), **shape, 'offset': offset})
+        offset += size
+        alignment = max(alignment, align)
+    size = (offset + alignment - 1) // alignment * alignment
+    # Slang wraps arrays of std430 structs in a one-member aligned container.
+    if kind.startswith('_Array_std430_') and len(members) == 1 and members[0]['name'] == 'data' and 'count' in members[0]:
+        shape = {key: members[0][key] for key in ('count', 'stride', 'element')}
+    else:
+        shape = {'fields': members}
+    return size, alignment, shape
+
+
 def verify_wgsl_compute_storage(code, interface):
     """Verify each reflected compute storage buffer's emitted WGSL element type and access.
 
@@ -492,14 +598,24 @@ def verify_wgsl_compute_storage(code, interface):
     for binding in interface['entries']:
         if binding['kind'] not in ('StorageRead', 'StorageReadWrite'):
             continue
+        access = 'read' if binding['kind'] == 'StorageRead' else 'read_write'
+        declaration = (r'@binding\(' + str(binding['binding']) + r'\)\s+@group\(0\)\s+var<storage,\s*' +
+                       access + r'>\s+\w+\s*:\s*array<')
+        if 'fields' in binding:
+            record = re.search(declaration + r'(\w+)>\s*;', code)
+            if record is None:
+                raise RuntimeError('WGSL emitted structured storage binding is missing or has the wrong access')
+            structures = dict(re.findall(r'\bstruct\s+(\w+)\s*\{([^}]+)\}', code))
+            size, _, shape = wgsl_record_type(structures, record[1])
+            if size != binding['size'] or shape != {'fields': binding['fields']}:
+                raise RuntimeError('WGSL emitted structured storage layout differs from reflection')
+            continue
         scalar = {'float32': 'f32', 'uint32': 'u32', 'int32': 'i32'}[binding['scalar']]
         element = scalar if binding['width'] == 1 else f'vec{binding["width"]}<{scalar}>'
-        access = 'read' if binding['kind'] == 'StorageRead' else 'read_write'
         elements = [re.escape(element)]
         if access == 'read_write' and binding['width'] == 1 and scalar in ('u32', 'i32'):
             elements.append(re.escape(f'atomic<{scalar}>'))
-        pattern = (r'@binding\(' + str(binding['binding']) + r'\)\s+@group\(0\)\s+var<storage,\s*' + access +
-                   r'>\s+\w+\s*:\s*array<(?:' + '|'.join(elements) + r')>\s*;')
+        pattern = declaration + r'(?:' + '|'.join(elements) + r')>\s*;'
         if re.search(pattern, code) is None:
             raise RuntimeError('WGSL emitted storage packing/access differs from reflection')
 
@@ -555,17 +671,7 @@ def wgsl_contract(code, reflected, stage):
         occupied, alignment, offsets = 0, 1, {}
         # Commas inside array<T,N> are not field separators. Reject nested
         # structures/runtime arrays; fixed vec4/mat4 arrays have verified strides.
-        members, start, depth = [], 0, 0
-        for index, char in enumerate(structure[1]):
-            depth += (char == '<') - (char == '>')
-            if depth < 0:
-                raise RuntimeError('WGSL uniform type brackets are malformed')
-            if char == ',' and depth == 0:
-                members.append(structure[1][start:index]); start = index + 1
-        members.append(structure[1][start:])
-        for member in members:
-            if not member.strip():
-                continue
+        for member in wgsl_struct_members(structure[1]):
             field = re.fullmatch(r'\s*(?:@align\((\d+)\)\s*)?(\w+)\s*:\s*(.+?)\s*', member)
             if field is None:
                 raise RuntimeError('Browser raster uniform member is malformed')
@@ -817,18 +923,32 @@ def normalize_metal_storage_textures(code, interface, document):
 
 def normalize_metal_storage(code, interface):
     # Slang emits non-const device pointers for StructuredBuffer.
-    # Preserve the independently reflected read-only contract in MSL,
-    # including the compiler's context member and entry argument.
+    # Preserve the independently reflected read-only contract in MSL.
+    writable_bindings = [re.escape(binding['name']) for binding in interface['entries']
+                         if binding['kind'] == 'StorageReadWrite']
     for binding in interface['entries']:
         if binding['kind'] != 'StorageRead':
             continue
-        scalar = {'float32': 'float', 'uint32': 'uint', 'int32': 'int'}[binding['scalar']]
-        element = scalar if binding['width'] == 1 else scalar + str(binding['width'])
-        pattern = r'(?<!const )\b' + element + r'\s+device\s*\*\s+' + re.escape(binding['name']) + r'(?:_\d+)?\b'
+        name = re.escape(binding['name']) + r'(?:_\d+)?\b'
+        if 'fields' in binding:
+            # A record pointer can flow through callback arguments, locals and out
+            # parameters. Const must follow the entire chain, including the entry.
+            match = re.search(r'\b([A-Za-z_]\w*)\s+device\s*\*\s+' + name, code)
+            if match is None:
+                raise RuntimeError('Metal emitted read-only storage record parameter is missing')
+            record_pointer = r'\b' + re.escape(match[1]) + r'\s+device\s*\*'
+            if any(re.search(record_pointer + r'\s+' + writable + r'(?:_\d+)?\b', code)
+                   for writable in writable_bindings):
+                raise RuntimeError('Metal read-only storage record shares a type with a writable binding in this stage')
+            pattern = r'(?<!const )' + record_pointer
+        else:
+            scalar = {'float32': 'float', 'uint32': 'uint', 'int32': 'int'}[binding['scalar']]
+            element = scalar if binding['width'] == 1 else scalar + str(binding['width'])
+            pointer = r'\b' + element + r'\s+device\s*\*\s+' + name
+            if re.search(pointer, code) is None:
+                raise RuntimeError('Metal emitted read-only storage parameter is missing')
+            pattern = r'(?<!const )' + pointer
         code = re.sub(pattern, lambda match: 'const ' + match[0], code)
-        # Slang already emits vertex-stage storage reads as const device pointers.
-        if re.search(r'\bconst\s+' + element + r'\s+device\s*\*\s+' + re.escape(binding['name']) + r'(?:_\d+)?\b', code) is None:
-            raise RuntimeError('Metal emitted read-only storage parameter is missing')
     return code
 
 

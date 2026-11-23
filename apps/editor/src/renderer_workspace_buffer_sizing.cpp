@@ -643,8 +643,11 @@ void RendererWorkspace::editBufferSizing(QWidget& inoutParent, const BufferSizin
     QFormLayout fields(&dialog);
     QComboBox* mode = new QComboBox(&dialog);
     mode->setObjectName(QStringLiteral("renderGraphBufferSizingMode"));
-    mode->addItems({QStringLiteral("Fixed bytes"), QStringLiteral("From shader struct")});
-    mode->setCurrentIndex(pendingOrNull == nullptr ? 1 : pendingOrNull->Mode);
+    mode->addItems({QStringLiteral("Fixed bytes"),
+                    QStringLiteral("From shader struct"),
+                    QStringLiteral("Native structured buffer")});
+    const bool isNativeStructured = record.value(QStringLiteral("access")).toString() == QStringLiteral("Structured");
+    mode->setCurrentIndex(pendingOrNull != nullptr ? pendingOrNull->Mode : isNativeStructured == true ? 2 : 1);
     fields.addRow(QStringLiteral("Sizing"), mode);
 
     QComboBox* source = new QComboBox(&dialog);
@@ -716,7 +719,7 @@ void RendererWorkspace::editBufferSizing(QWidget& inoutParent, const BufferSizin
     connect(buttons, &QDialogButtonBox::rejected, &dialog, &QDialog::reject);
     const auto refresh =
         [&fields, mode, source, type, declarationActions, edit, alignmentNote, count, sizing, bytes, hint, apply]() {
-            const bool isFromStruct = mode->currentIndex() == 1;
+            const bool isFromStruct = mode->currentIndex() != 0;
             fields.setRowVisible(source, isFromStruct);
             fields.setRowVisible(declarationActions, isFromStruct);
             edit->setEnabled(source->currentIndex() >= 0);
@@ -744,6 +747,11 @@ void RendererWorkspace::editBufferSizing(QWidget& inoutParent, const BufferSizin
             else if (type->currentIndex() < 0)
             {
                 message = QStringLiteral("Choose the struct that describes one buffer element.");
+            }
+            else if (mode->currentIndex() == 2)
+            {
+                message = QStringLiteral("Use named Buffer access in a scene compute writer and a Metal hardware ray "
+                                         "reader. Open Shader API for the native resource type.");
             }
             else
             {
@@ -837,13 +845,17 @@ void RendererWorkspace::editBufferSizing(QWidget& inoutParent, const BufferSizin
             &dialog,
             [this, node, nodeFile, configuration, mode, source, type, count, bytes, hint, &dialog]() {
                 QJsonObject candidate = node;
-                if (mode->currentIndex() == 1)
+                if (mode->currentIndex() != 0)
                 {
                     candidate.remove(QStringLiteral("bytes"));
-                    candidate.insert(QStringLiteral("shader_struct"),
-                                     QJsonObject{{QStringLiteral("source"), source->currentText()},
-                                                 {QStringLiteral("type"), type->currentText()},
-                                                 {QStringLiteral("count"), count->value()}});
+                    QJsonObject shaderStruct{{QStringLiteral("source"), source->currentText()},
+                                             {QStringLiteral("type"), type->currentText()},
+                                             {QStringLiteral("count"), count->value()}};
+                    if (mode->currentIndex() == 2)
+                    {
+                        shaderStruct.insert(QStringLiteral("access"), QStringLiteral("Structured"));
+                    }
+                    candidate.insert(QStringLiteral("shader_struct"), shaderStruct);
                 }
                 else
                 {

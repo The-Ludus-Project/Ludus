@@ -221,7 +221,9 @@ def _validate_node(node, where):
     elif kind == "Buffer":
         if 'shader_struct' in node:
             record = node['shader_struct']
-            _keys(record, ('source', 'type', 'count'), where)
+            _keys(record, ('source', 'type', 'count'), where, ('access',))
+            if 'access' in record:
+                _enum(record['access'], ('Structured', 'PackedWords'), where + '/shader_struct/access')
             source = record['source']
             _require(type(source) is str and source.endswith(('.slang', '.luslh')) and
                      not any(character in source for character in ('\\', ':', '"', '\0', '\n', '\r')),
@@ -1026,10 +1028,16 @@ class _Compiler:
                                              identity, where, ())
                         version = written.version
                         buffer_outputs[output['id']] = written
-                    buffer_uses.append({'resource': source.resource, 'slot': slot,
-                                        'input_version': source.version, 'output_version': version})
+                    use = {'resource': source.resource, 'slot': slot,
+                           'input_version': source.version, 'output_version': version}
+                    if buffers.is_native_record(resource.get('shader_struct')):
+                        use['binding_slot'] = buffers.NATIVE_RECORD_SLOT
+                    buffer_uses.append(use)
                 _require(len({use['resource'] for use in buffer_uses}) == len(buffer_uses), 'MultipleWriters', where,
                          'one physical buffer cannot occupy both buffer inputs of a pass')
+                _require(len({use.get('binding_slot', use['slot']) for use in buffer_uses}) == len(buffer_uses),
+                         'Capability', where, 'the native structured Buffer reserves the second graph binding. '
+                         'Put the other Buffer input first or use Packed words for this configuration.')
                 attachments = {}
                 color_outputs = {}
                 if work_items == 0:

@@ -560,7 +560,7 @@ class NativeSceneComputeTests(unittest.TestCase):
             built = build.build_package(manifest_path, output, **options)
             self.assertIn({'node': 'hits', 'graph': 'main.lurender.json', 'configuration': configuration['id'],
                            'stride': 8208, 'bytes': 8208}, built['shader_buffer_layouts'])
-            _, wrapper = find_ray_compute(Path(built['package']), 'main_shaders/primary.lusl.slang')
+            _, wrapper = find_ray_compute(Path(built['package']), 'main_shaders/primary.lusl.slang', profile='metal')
             self.assertIn('Edge LoadEdges(uint recordIndex, uint elementIndex)', wrapper)
             self.assertIn('void StoreEdges(uint recordIndex, uint elementIndex, Edge element)', wrapper)
             self.assertIn('recordIndex * 2052u + 4u + elementIndex * 8u', wrapper)
@@ -570,6 +570,139 @@ class NativeSceneComputeTests(unittest.TestCase):
             with self.assertRaisesRegex(ToolingError, 'StoreEdges'):
                 build.build_package(manifest_path, output, **options)
             self.assertEqual(accepted, (output / 'current.json').read_bytes())
+
+    def test_native_edge_table_shares_the_cooked_buffer_between_passes(self):
+        self.check_shared_native_edge_table('metal', is_hardware_reader=True)
+
+    def test_ordered_compute_shares_one_native_edge_table_on_metal(self):
+        self.check_shared_native_edge_table('metal')
+
+    @unittest.skipUnless(os.environ.get('LUDUS_RG1_VALIDATOR'), 'requires pinned SPIR-V validator')
+    def test_ordered_compute_shares_one_native_edge_table_on_vulkan(self):
+        self.check_shared_native_edge_table('spirv')
+
+    def test_ordered_compute_shares_one_native_edge_table_on_webgpu(self):
+        self.check_shared_native_edge_table('wgsl')
+
+    def check_shared_native_edge_table(self, target, *, is_hardware_reader=False):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            source = root / 'source'
+            shutil.copytree(COMPUTE_MIXED, source)
+            graph_path = source / 'main.lurender.json'
+            document = json.loads(graph_path.read_text())
+            configuration = document['configurations'][0]
+            nodes = {node['id']: node for node in configuration['nodes']}
+            nodes['hits'].pop('bytes')
+            nodes['hits']['shader_struct'] = {
+                'source': 'main_shaders/edges.luslh', 'type': 'EdgesData',
+                'count': 1, 'access': 'Structured',
+            }
+            if is_hardware_reader:
+                nodes['shade']['invocation']['type'] = 'RayTracing'
+            if target == 'wgsl':
+                for node in (nodes['primary'], nodes['shade']):
+                    node['invocation']['traversal'] = 'ComputeBvh'
+            nodes['shade']['outputs'] = [port for port in nodes['shade']['outputs'] if port['id'] != 'hits']
+            graph_path.write_bytes(graph.canonical_asset(document))
+            manifest_path = source / 'main.lushader.json'
+            profiles = {'metal': ['metal', 'wgsl'], 'spirv': ['metal', 'spirv', 'wgsl'], 'wgsl': ['wgsl']}[target]
+            manifest = json.loads((source / 'main.lushader.json.in').read_text().replace(
+                '@RG2_TEST_PROFILES@', json.dumps(profiles)))
+            for program in manifest['programs']:
+                if program['id'] in ('Primary', 'Shade'):
+                    program['source'] = program['source'].replace('.slang', '.lusl')
+            manifest_path.write_text(json.dumps(manifest))
+            shaders = source / 'main_shaders'
+            (shaders / 'edges.luslh').write_text(
+                '#pragma once\n'
+                'static const uint32 MAX_EDGE_COUNT = 256;\n'
+                'struct Edge { float32x4 Begin; float32x4 End; };\n'
+                'struct EdgesData { uint32 EdgesCount; float32 TotalWeight; uint32x2 Padding; '
+                'Edge Edges[MAX_EDGE_COUNT]; float32 Weights[MAX_EDGE_COUNT]; };\n')
+            includes = '#include "scene_shader.luslh"\n#include "graph_resources.luslh"\n'
+            (shaders / 'primary.lusl').write_text(includes + '''
+float32x3 TracePrimary(in SceneContext scene, in RayLaunch launch,
+                       inout RayQueryContext inoutQueries, in TracePrimaryResources resources)
+{
+    if (launch.PositionPixel.x == 0 && launch.PositionPixel.y == 0)
+    {
+        resources.Hits[0].Edges[0].Begin = float32x4(0.0, 1.0, 0.0, 0.0);
+        resources.Hits[0].Weights[42] = 1.0;
+    }
+    return float32x3(0);
+}
+''')
+            (shaders / 'shade.lusl').write_text(includes + '''
+float32x3 ShadeRecordedHit(in SceneContext scene, in RayLaunch launch,
+                           inout RayQueryContext inoutQueries, in ShadeRecordedHitResources resources)
+{
+    EdgesData edges = resources.Hits[0];
+    Edge first = edges.Edges[0];
+    uint32 index = SampleSceneWeightedIndex(inout inoutQueries, edges.Weights);
+    return index == 42 ? first.Begin.xyz : float32x3(0);
+}
+''')
+            options = dict(helper=os.environ['LUDUS_RG1_HELPER'], compiler=os.environ['LUDUS_RG1_SLANG'],
+                           spirv_cross=os.environ['LUDUS_RG1_CROSS'])
+            if target == 'spirv':
+                options['validator'] = os.environ['LUDUS_RG1_VALIDATOR']
+            context = shader_context.export_context(manifest_path, root / 'editor', 'main_shaders/shade.lusl',
+                                                    helper=options['helper'], compiler=options['compiler'])
+            self.assertEqual({'name': 'Hits', 'type': 'StructuredBuffer<EdgesData>', 'writable': False,
+                              'native_structured': True}, context['resources'][0]['fields'][0])
+            built = build.build_package(manifest_path, root / 'build', **options)
+            package = Path(built['package'])
+            contents = execution._runtime_contents(str(package), configuration['id'])
+            writer, reader = contents['passes'][:2]
+            self.assertEqual(writer['Buffer1'], reader['Buffer1'])
+            self.assertNotEqual(execution.ABSENT, writer['Buffer1'])
+            self.assertEqual(9232, contents['resources'][writer['Buffer1']]['Width'])
+            writer_entries = contents['artifacts'][('RayTracing', 'compute', target)]['descriptor']['interface']['entries']
+            reader_role = 'NativeRayStages' if is_hardware_reader else 'RecordReadCompute'
+            reader_artifact = contents['artifacts'][(reader_role, 'compute', target)]
+            reader_entries = reader_artifact['descriptor']['interface']['entries']
+            self.assertIn((7, 'StorageReadWrite', 9232),
+                          [(entry['binding'], entry['kind'], entry['size']) for entry in writer_entries])
+            self.assertIn((7, 'StorageRead', 9232),
+                          [(entry['binding'], entry['kind'], entry['size']) for entry in reader_entries])
+            if is_hardware_reader:
+                metal = reader_artifact['bytes'].decode()
+                self.assertRegex(metal, r'const EdgesData_\d+ device\* GraphBuffer1_\d+ \[\[buffer\(7\)\]\]')
+                self.assertNotRegex(metal, r'(?<!const )\bEdgesData_\d+ device\*')
+            self.assertEqual(0 if is_hardware_reader else 1 << reader['RayProgram'], contents['record_reader_mask'])
+            self.assertEqual(9232, contents['native_record_stride'])
+            runtime = root / 'native-edges.lurgrt'
+            execution.cook_runtime(package, runtime)
+            expected_version = (execution.NATIVE_GRAPH_RECORD_PACKAGE_VERSION if is_hardware_reader else
+                                execution.RECORD_READER_PACKAGE_VERSION)
+            self.assertEqual(expected_version, int.from_bytes(runtime.read_bytes()[4:8], 'little'))
+            if not is_hardware_reader:
+                header = root / 'native-edges.h'
+                execution.emit_runtime(package, header, configuration=configuration['id'])
+                self.assertIn(f"result.RecordReaderMask = {1 << reader['RayProgram']};", header.read_text())
+            if target == 'wgsl':
+                fields = next(entry['fields'] for entry in reader_entries if entry['binding'] == 7)
+                self.assertEqual([('EdgesCount', 0), ('TotalWeight', 4), ('Padding', 8),
+                                  ('Edges', 16), ('Weights', 8208)],
+                                 [(field['name'], field['offset']) for field in fields])
+                self.assertEqual((256, 32), (fields[3]['count'], fields[3]['stride']))
+                self.assertEqual((256, 4), (fields[4]['count'], fields[4]['stride']))
+                self.assertEqual(['wgsl'], contents['package']['capability_profiles']['ray_tracing'])
+                accepted = (root / 'build/current.json').read_bytes()
+                nodes['shade']['invocation']['traversal'] = 'NativeQuery'
+                graph_path.write_bytes(graph.canonical_asset(document))
+                with self.assertRaisesRegex(ToolingError, 'WebGPU scene compute.*software traversal'):
+                    build.build_package(manifest_path, root / 'build', **options)
+                self.assertEqual(accepted, (root / 'build/current.json').read_bytes())
+            if target == 'spirv':
+                self.assertIn(('RecordReadCompute', 'compute', 'metal'), contents['artifacts'])
+                schemas = [schema for schema in contents['package']['schemas'] if schema['id'] == 'RendererStatic']
+                metal_stages = {key: item for key, item in contents['artifacts'].items() if key[2] != 'spirv'}
+                interface = {'version': 2, 'scene_shader': 'SceneShaderInputsV1',
+                             **execution._cpu_vertex_interface(schemas[0], metal_stages),
+                             'uniform_schemas': contents['uniform_interface']}
+                self.assertEqual(build.identity(interface), contents['interface_identity'])
 
     def test_named_edge_records_cross_compute_and_ray_passes(self):
         with tempfile.TemporaryDirectory() as temporary:
@@ -663,7 +796,7 @@ class NativeSceneComputeTests(unittest.TestCase):
             output = root / 'build'
             built = build.build_package(manifest_path, output, **options)
             package = Path(built['package'])
-            _, wrapper = find_ray_compute(package, 'main_shaders/primary.slang')
+            _, wrapper = find_ray_compute(package, 'main_shaders/primary.slang', profile='metal')
             self.assertIn('#include "main_shaders/edge.slang"', wrapper)
             self.assertIn('GraphWritableEdgeView Edges;', wrapper)
             self.assertIn('GraphReadOnlyEdgeView Edges;', wrapper)
@@ -676,7 +809,7 @@ class NativeSceneComputeTests(unittest.TestCase):
             nodes['shade']['inputs'].append(nodes['shade']['inputs'].pop(0))
             graph_path.write_bytes(graph.canonical_asset(document))
             rebuilt = build.build_package(manifest_path, output, **options)
-            _, reordered = find_ray_compute(Path(rebuilt['package']), 'main_shaders/primary.slang')
+            _, reordered = find_ray_compute(Path(rebuilt['package']), 'main_shaders/primary.slang', profile='metal')
             self.assertIn('GraphReadOnlyEdgeView(GraphBuffer0, 16u)', reordered)
             self.assertEqual(consumer, shade.read_text())
 
@@ -748,7 +881,7 @@ class NativeSceneComputeTests(unittest.TestCase):
             graph_path.write_bytes(graph.canonical_asset(document))
             primary.write_text((shaders / 'edge.slang').read_text() + producer)
             built = build.build_package(manifest_path, output, **options)
-            _, inline_wrapper = find_ray_compute(Path(built['package']), 'main_shaders/primary.slang')
+            _, inline_wrapper = find_ray_compute(Path(built['package']), 'main_shaders/primary.slang', profile='metal')
             self.assertRegex(inline_wrapper, r'typedef GraphSource\d+::Edge Edge;')
             self.assertIn('index * 8u', inline_wrapper)
             primary.write_text(producer)
@@ -764,7 +897,7 @@ class NativeSceneComputeTests(unittest.TestCase):
             built = build.build_package(manifest_path, output, **options)
             self.assertIn({'node': 'hits', 'graph': 'main.lurender.json', 'configuration': configuration['id'],
                            'stride': 32, 'bytes': 512}, built['shader_buffer_layouts'])
-            _, wrapper = find_ray_compute(Path(built['package']), 'main_shaders/primary.slang')
+            _, wrapper = find_ray_compute(Path(built['package']), 'main_shaders/primary.slang', profile='metal')
             self.assertIn('#include "main_shaders/edge.luslh.slang"', wrapper)
             self.assertIn('index * 8u', wrapper)
             accepted = (output / 'current.json').read_bytes()
