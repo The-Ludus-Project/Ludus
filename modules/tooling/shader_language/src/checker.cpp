@@ -2854,18 +2854,36 @@ private:
                    ComposeMessage("'extern slang' declarations take no initializer; the Slang file defines it"));
             initializer = NO_NODE;
         }
+        // A function-local `const` binds any value read-only; `static const` and top-level constants are
+        // compile-time (docs/architecture/shading-language.md#runtime-const-locals).
+        const bool isCompileTimeOnly = isGlobal == true || syntax.IsStatic == true;
+        bool isRuntimeConstant = false;
         IntegerConstant value;
-        if (initializer != NO_NODE && getKind(initializer) != SyntaxKind::VoidInitializer)
+        if (initializer != NO_NODE && getKind(initializer) == SyntaxKind::VoidInitializer && isConstant == true)
+        {
+            report(DiagnosticCode::InvalidInitializer,
+                   initializer,
+                   ComposeMessage("a const variable needs a value; '= void' leaves it unset"));
+        }
+        else if (initializer != NO_NODE && getKind(initializer) != SyntaxKind::VoidInitializer)
         {
             (void)checkExpression(initializer, type);
             (void)coerce(initializer, type, true);
-            if (isConstant == true && isConstantExpression(initializer) == false)
+            const bool isConstantInitializer = isConstantExpression(initializer);
+            if (isConstant == true && isConstantInitializer == false && isCompileTimeOnly == true)
             {
                 report(DiagnosticCode::NotConstant,
                        initializer,
-                       ComposeMessage("a const variable needs a constant initializer"));
+                       isGlobal == true
+                           ? ComposeMessage("a 'static const' variable needs a constant initializer")
+                           : ComposeMessage("a 'static const' variable needs a constant initializer; drop 'static' "
+                                            "to bind a runtime value read-only"));
             }
-            value = mModel.NodeIntegerConstants[initializer];
+            isRuntimeConstant = isConstant == true && isConstantInitializer == false;
+            if (isRuntimeConstant == false)
+            {
+                value = mModel.NodeIntegerConstants[initializer];
+            }
         }
         const uint32 symbol = createSymbol(SymbolKind::Variable, syntax.Token, node);
         if (symbol == NO_SYMBOL)
@@ -2875,6 +2893,7 @@ private:
         Symbol& declared = getSymbol(symbol);
         declared.Type = type;
         declared.IsConstant = isConstant;
+        declared.IsRuntimeConstant = isRuntimeConstant;
         declared.IsGroupshared = syntax.IsGroupshared;
         if (isResourceVariable == true && isGlobal == true && mIsInExtern == false && mIsSpecializing == false)
         {
@@ -6902,7 +6921,7 @@ private:
             case SyntaxKind::Name: {
                 const uint32 symbol = mModel.NodeSymbols[node];
                 return symbol != NO_SYMBOL && mModel.Symbols[symbol].Kind == SymbolKind::Variable &&
-                       mModel.Symbols[symbol].IsConstant == true;
+                       mModel.Symbols[symbol].IsConstant == true && mModel.Symbols[symbol].IsRuntimeConstant == false;
             }
             case SyntaxKind::CallExpression: {
                 if (mModel.NodeCallKinds[node] == CallKind::Function || mModel.NodeCallKinds[node] == CallKind::Method)

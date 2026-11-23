@@ -1023,13 +1023,31 @@ private:
             }
             default: {
                 const language::TypeNameText type = typeName(declared.Type);
-                inoutLine.Append(declared.IsConstant == true ? "static const " : "");
+                inoutLine.Append(getConstantQualifier(declared));
                 inoutLine.Append(type.GetView());
                 inoutLine.Append(" ");
                 inoutLine.Append(name);
                 return;
             }
         }
+    }
+
+    /// True for a `static const` variable; a function-local `const` belongs to its function.
+    [[nodiscard]] bool isStaticConstant(const language::Symbol& declared) const noexcept
+    {
+        return declared.Kind == language::SymbolKind::Variable && declared.IsConstant == true &&
+               declared.Declaration < mAnalysis.Tree.Nodes.GetSize() &&
+               mAnalysis.Tree.Nodes[declared.Declaration].IsStatic == true;
+    }
+
+    /// The qualifier a hover shows before the type of `declared`, as its declaration spells it.
+    [[nodiscard]] std::string_view getConstantQualifier(const language::Symbol& declared) const noexcept
+    {
+        if (declared.Kind != language::SymbolKind::Variable || declared.IsConstant == false)
+        {
+            return {};
+        }
+        return isStaticConstant(declared) == true ? "static const " : "const ";
     }
 
     void respondHover(const Message& message) noexcept
@@ -1368,7 +1386,7 @@ private:
                  declared.Kind == language::SymbolKind::Struct || declared.Kind == language::SymbolKind::Enum ||
                  declared.Kind == language::SymbolKind::Interface || declared.Kind == language::SymbolKind::Concept ||
                  (declared.Kind == language::SymbolKind::Variable &&
-                  (declared.IsConstant == true || declared.IsGroupshared == true ||
+                  (isStaticConstant(declared) == true || declared.IsGroupshared == true ||
                    declared.Slot != language::NO_LOCATION || declared.IsExtern == true)));
             if (isModuleLevel == true)
             {

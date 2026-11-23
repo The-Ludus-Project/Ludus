@@ -120,6 +120,20 @@ TEST_CASE("LUSL rejects values of different spaces meeting", "[shader-language][
         "    float32x4x4<Object, Clip> chain = camera.ViewToClip * objectToWorld;\n    return float32x4(0.0);");
 }
 
+TEST_CASE("LUSL const locals keep the spaces of their declared types", "[shader-language][spaces]")
+{
+    RequireValid(
+        "    const float32x3<World> lightWorld = normalize(normalWorld + float32x3(0.0, 1.0, 0.0));\n"
+        "    const Surface surface = { .NormalWorld = normalWorld, .Roughness = Shade(normalWorld, lightWorld) };\n"
+        "    const float32x4<World> positionWorld = objectToWorld * float32x4(positionObject, 1.0);\n"
+        "    return camera.ViewToClip * (camera.WorldToView * positionWorld) + float32x4(surface.Roughness);");
+    RequireMismatch("    const float32x3<World> lightWorld = normalView;\n    return float32x4(lightWorld.x);");
+    RequireMismatch("    const Surface surface = { .NormalWorld = normalView, .Roughness = 0.5 };\n"
+                    "    return float32x4(surface.Roughness);");
+    RequireMismatch("    const float32x3<World> lightWorld = normalize(normalWorld);\n"
+                    "    const float32 light = Shade(normalView, lightWorld);\n    return float32x4(light);");
+}
+
 TEST_CASE("LUSL space errors name both spaces and the repair", "[shader-language][spaces]")
 {
     const CheckedSource product(
