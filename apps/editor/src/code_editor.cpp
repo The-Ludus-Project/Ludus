@@ -2077,8 +2077,10 @@ void CodeEditor::handleKeyPress(QKeyEvent* event)
         IndentSelection(true);
         return;
     }
-    if (isReadOnly() == false && event->modifiers() == Qt::NoModifier &&
-        (event->key() == Qt::Key_Return || event->key() == Qt::Key_Enter))
+    // Qt's soft break inserts U+2028 inside a text block. Source editing needs a regular newline.
+    if (isReadOnly() == false &&
+        (event->matches(QKeySequence::InsertLineSeparator) == true ||
+         (event->modifiers() == Qt::NoModifier && (event->key() == Qt::Key_Return || event->key() == Qt::Key_Enter))))
     {
         QTextCursor cursor = textCursor();
         cursor.beginEditBlock();

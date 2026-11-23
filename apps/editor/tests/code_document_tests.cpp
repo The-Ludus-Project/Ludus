@@ -260,6 +260,36 @@ TEST_CASE("Unicode input and CRLF survive document history and formatting", "[ed
     CHECK(document.GetState().Text == QByteArray("\xEF\xBB\xBF") + QString::fromUtf8("文字😀\r\n\r\nnext").toUtf8());
 }
 
+TEST_CASE("Shift Return writes a source newline with the document's line ending", "[editor][text][history]")
+{
+    CodeEditor editor;
+    editor.SetLanguage(CodeLanguage::Slang);
+    QByteArray lineEnding = QByteArrayLiteral("\n");
+    SECTION("LF") {}
+    SECTION("CRLF")
+    {
+        lineEnding = QByteArrayLiteral("\r\n");
+    }
+    const QByteArray firstLine = QByteArrayLiteral("void SamplePointOnEdges()");
+    const QByteArray original = firstLine + "{}" + lineEnding;
+    MemoryCodeDocument document(original);
+    CodeDocumentController controller(editor);
+    controller.Bind(&document);
+    QTextCursor cursor = editor.textCursor();
+    cursor.setPosition(static_cast<int32>(firstLine.size()));
+    editor.setTextCursor(cursor);
+
+    QTest::keyClick(&editor, Qt::Key_Return, Qt::ShiftModifier);
+
+    CHECK(document.GetState().Text == firstLine + lineEnding + "{}" + lineEnding);
+    CHECK(editor.document()->findBlockByNumber(1).text() == QStringLiteral("{}"));
+    REQUIRE(document.Undo() == true);
+    controller.Synchronize();
+    CHECK(document.GetState().Text == original);
+    CHECK(editor.textCursor().blockNumber() == 0);
+    CHECK(document.CanUndo() == false);
+}
+
 TEST_CASE("rejected text input preserves owner and view without an undo entry", "[editor][text][history]")
 {
     CodeEditor editor;
