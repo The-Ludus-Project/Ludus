@@ -5,9 +5,21 @@ namespace ludus::tooling::shader_language::internal
 using foundation::uint32;
 using foundation::usize;
 
+bool MatchesInferredArrayLength(const TypeTable& types, uint32 from, uint32 to) noexcept
+{
+    if (from == NO_TYPE || to == NO_TYPE)
+    {
+        return false;
+    }
+    const SemanticType& source = types.Get(from);
+    const SemanticType& target = types.Get(to);
+    return source.Kind == TypeKind::Array && target.Kind == TypeKind::Array && source.Count != 0 && target.Count == 0 &&
+           source.Element == target.Element;
+}
+
 bool IsImplicitlyConvertible(const TypeTable& types, uint32 from, uint32 to) noexcept
 {
-    if (from == to)
+    if (from == to || MatchesInferredArrayLength(types, from, to) == true)
     {
         return true;
     }

@@ -131,6 +131,11 @@ def lower_plan(package, configuration):
     build.require(0 < len(operations) <= MAX_PASSES and 0 < len(resources) <= MAX_RESOURCES and len(cameras) <= MAX_CAMERAS,
                   'Capacity', configuration, 'Renderer execution limits exceeded')
     build.require(len({p['scene'] for p in rasters}) == 1, 'Configuration', configuration, 'one World extraction per execution profile')
+    native_resources = {use['resource'] for operation in operations for use in operation.get('persistent_buffers', [])
+                        if 'binding_slot' in use}
+    build.require(len(native_resources) <= 1, 'Package', configuration,
+                  'native structured shaders require one shared graph Buffer')
+    native_slot_resource = resources.index(next(iter(native_resources))) if native_resources else ABSENT
     ray_positions = [index for index, operation in enumerate(operations) if operation['kind'] == 'RayTracing']
     build.require(not ray_positions or ray_positions == list(range(ray_positions[0], ray_positions[-1] + 1)),
                   'Capability', configuration, 'ray passes must form one consecutive ordered sequence')
@@ -236,8 +241,11 @@ def lower_plan(package, configuration):
             build.require(variant in variants and all(recipe.get('ray_programs', variants) == variants for recipe in recipes),
                           'Package', operation['id'], 'ray callback selection differs between target artifacts')
             persistent_slots = [ABSENT] * ray.MAX_BUFFERS
+            # In the linked kernel, callbacks without a typed port leave this bound
+            # allocation untouched. Bind it anyway to satisfy the shader's layout.
+            persistent_slots[buffers.NATIVE_RECORD_SLOT] = native_slot_resource
             for use in operation.get('persistent_buffers', []):
-                persistent_slots[use['slot']] = resources.index(use['resource'])
+                persistent_slots[use.get('binding_slot', use['slot'])] = resources.index(use['resource'])
             pass_records.append({'Program': 'RayTracing', 'Camera': cameras.index(operation['view']) if 'view' in operation else ABSENT,
                 'Color': resources.index(color['resource']) if color else ABSENT, 'Depth': ABSENT,
                 'ColorLoad': color['load'] if color else 'Discard', 'ColorStore': 'Store' if color else 'Discard',
@@ -333,7 +341,7 @@ def stage_inputs(item):
     return [{k: v for k, v in x.items() if k != 'name'} for x in item['descriptor']['interface']['inputs']]
 
 
-def _cpu_vertex_interface(schema, stages):
+def _cpu_vertex_interface(schema, stages, *, share_native_targets=False):
     """Describe host-owned inputs without counting shader-pair copies of that contract.
 
     Renderer already packs both static and visibility vertex streams. Only the exact
@@ -352,14 +360,17 @@ def _cpu_vertex_interface(schema, stages):
         schema = {**schema, 'fields': fields[:len(STATIC_INPUTS)]}
     inputs, seen = [], set()
     for (name, stage, target), record in stages.items():
-        if stage != 'vertex' or name in ('RayTracing', 'NativeRayStages') or (name, stage) in forward.ROLE_KEYS:
+        if stage != 'vertex' or name in RAY_STAGE_PROGRAMS or (name, stage) in forward.ROLE_KEYS:
             continue
         stage_interface = stage_inputs(record)
         if has_visibility and stage_interface == VISIBILITY_INPUTS:
             stage_interface = STATIC_INPUTS
         # Extra shader pairs do not change what the host supplies for a target.
         # Keep different target interfaces distinct, including their existing order.
-        key = target, build.encoded(stage_interface)
+        # A portable record package may carry both native desktop targets.
+        # They consume the same CPU layout when their cooked inputs match.
+        cpu_target = 'desktop' if share_native_targets and target in ('metal', 'spirv') else target
+        key = cpu_target, build.encoded(stage_interface)
         if key not in seen:
             seen.add(key)
             inputs.append(stage_interface)
@@ -387,9 +398,12 @@ CAPTURE_PROFILE_PACKAGE_MAGIC = 0x4352554C
 # Version 39 appends the buffer-only scene dispatch work item count to each pass.
 # Version 42 appends a storage output's explicit 2D launch size and native Metal workgroup metadata.
 # Version 43 appends an independent 2D launch size for image returns.
-# Version 44 stores shader color access in the former storage-size pair and uses the shared launch dimensions.
-# Version 45 may append one fixed-width shader texture mapping per pass, following the names.
-PACKAGE_VERSION = 45
+PACKAGE_VERSION = 43
+NATIVE_GRAPH_RECORD_PACKAGE_VERSION = 44
+RECORD_READER_PACKAGE_VERSION = 45
+# Version 46 separates color access from dispatch size and can append named texture mappings.
+SHADER_TEXTURE_ACCESS_PACKAGE_VERSION = 46
+RAY_STAGE_PROGRAMS = ('RayTracing', 'NativeRayStages', 'RecordReadCompute')
 # render_graph_format::DisplayCurve codes, by index; zero (Reinhard) also marks a pass without a ToneMap.
 DISPLAY_CURVE_CODES = ('Reinhard', 'PbrNeutral')
 # Version 25 scene resource word: the linked ray kernel reads the renderer's LTC table.
@@ -418,6 +432,8 @@ def role(program, stage):
     """Numeric StageRole: two consecutive roles (vertex, fragment) per program."""
     if program == 'NativeRayStages':
         return NATIVE_RAY_STAGE_ROLE
+    if program == 'RecordReadCompute':
+        return role('DeferredSurfaceChartGBuffer', 'fragment') + 1
     if program == 'ForwardDepth':
         return FORWARD_DEPTH_STAGE_ROLE
     if program == 'RayTracing':
@@ -567,10 +583,15 @@ def _runtime_contents(path, configuration):
                 build.require(key not in stages or stages[key]['key'] == matches[0]['key'],
                               'Configuration', technique, 'multiple stage programs for one static role/profile')
                 stages[key] = matches[0]
-            if technique == ray.TECHNIQUE and ray.requires_native_pipeline(plan) and 'native_pipeline' in recipe:
-                matches = [p for p in package['programs'] if p['key'] == recipe['native_pipeline'] and p['profile'] == recipe['profile']]
-                build.require(len(matches) == 1, 'Package', technique, 'native ray stage identity is ambiguous')
-                stages[('NativeRayStages', 'compute', recipe['profile'])] = matches[0]
+            if technique == ray.TECHNIQUE:
+                for field, program in (('native_pipeline', 'NativeRayStages'),
+                                       ('record_read_compute', 'RecordReadCompute')):
+                    if field not in recipe or (field == 'native_pipeline' and not ray.requires_native_pipeline(plan)):
+                        continue
+                    matches = [p for p in package['programs']
+                               if p['key'] == recipe[field] and p['profile'] == recipe['profile']]
+                    build.require(len(matches) == 1, 'Package', technique, program + ' stage identity is ambiguous')
+                    stages[(program, 'compute', recipe['profile'])] = matches[0]
     has_forward = any('forward_stages' in recipe for recipe in package['recipes'] if recipe['technique'] in selected_techniques)
     is_clustered_forward = has_forward and any(recipe.get('clustered_forward', False) for recipe in package['recipes'] if recipe['technique'] in selected_techniques)
     if has_forward:
@@ -615,7 +636,7 @@ def _runtime_contents(path, configuration):
     for ordinal, (key, program) in enumerate(sorted(stages.items(), key=lambda x: (role(x[0][0], x[0][1]), TARGET_CODES[x[0][2]]))):
         program_name, stage, target = key
         descriptor = program['descriptor']
-        is_ray = program_name in ('RayTracing', 'NativeRayStages')
+        is_ray = program_name in RAY_STAGE_PROGRAMS
         is_forward = (program_name, stage) in forward.ROLE_KEYS
         build.require(is_ray or is_forward or (all(e['kind'] == 'UniformBuffer' for e in descriptor['interface']['entries']) and
                       len(descriptor['interface']['entries']) == len(descriptor.get('layouts', []))),
@@ -646,8 +667,13 @@ def _runtime_contents(path, configuration):
         artifacts[key] = {'ordinal': ordinal, 'descriptor': descriptor, 'bytes': artifact, 'entry': entry, 'blocks': names, 'textures': descriptor['interface'].get('textures', {}) if target == 'glsl' else {}}
     # CPU-visible interface: normalize only the renderer-supported visibility suffix
     # and repeated input contracts. Uniform schemas/bindings/layouts remain exact.
+    reader_masks = {recipe.get('record_reader_mask', 0) for recipe in ray_recipes}
+    build.require(len(reader_masks) <= 1, 'Package', configuration,
+                  'native record reader dispatch differs between target artifacts')
+    reader_mask = next(iter(reader_masks), 0)
     interface = {'version': 2, 'scene_shader': 'SceneShaderInputsV1',
-                 **_cpu_vertex_interface(vertex_schemas[0], stages), 'uniform_schemas': uniform_interface}
+                 **_cpu_vertex_interface(vertex_schemas[0], stages, share_native_targets=bool(reader_mask)),
+                 'uniform_schemas': uniform_interface}
     scene_versions = {r.get('scene_interface_version', 0) for r in ray_recipes}
     build.require(all(type(version) is int for version in scene_versions) and scene_versions <= {0, 1} and len(scene_versions) <= 1, 'Package', 'ray interface', 'inconsistent scene callback profile')
     warmup_profiles = [recipe.get('capture_warmup_samples', [0] * len(recipe.get('ray_programs', [None])))
@@ -670,20 +696,21 @@ def _runtime_contents(path, configuration):
     persistent = ray.TECHNIQUE in selected_techniques and any(recipe.get('persistent_buffers', False) for recipe in ray_recipes)
     ray_path_capture = ray.TECHNIQUE in selected_techniques and any(recipe.get('ray_path_capture', False) for recipe in ray_recipes)
     capture_profile = ray.TECHNIQUE in selected_techniques and any(recipe.get('capture_profile', False) for recipe in ray_recipes)
-    # Every target of the linked ray kernel must agree whether reflection kept the LTC table binding.
-    ltc_profiles = {any(entry['binding'] == ray.LTC_TABLE_SLOT for entry in item['descriptor']['interface']['entries'])
-                    for key, item in artifacts.items() if key[0] == 'RayTracing' and key[1] == 'compute'}
-    build.require(len(ltc_profiles) <= 1, 'ShaderInterface', 'ltc_table',
-                  'targets of the linked ray kernel disagree whether they read the LTC table')
-    # A World feature is drawn exactly when the compiled kernel calls its scene function, which keeps the table's slot.
-    world_feature_profiles = {}
-    for feature, slot in (('atmosphere_sky', ray.ATMOSPHERE_SKY_SLOT), ('aerial_perspective', ray.AERIAL_PERSPECTIVE_SLOT)):
-        world_feature_profiles[feature] = {
-            any(entry['binding'] == slot for entry in item['descriptor']['interface']['entries'])
-            for key, item in artifacts.items() if key[0] == 'RayTracing' and key[1] == 'compute'}
-        build.require(len(world_feature_profiles[feature]) <= 1, 'ShaderInterface', feature,
-                      'targets of the linked ray kernel disagree whether they read the ' + feature.replace('_', ' ') +
-                      ' table')
+    def uses_scene_slot(slot, name):
+        # Both compute kernels share the optional scene tables. Each target must
+        # agree on that union even when only the reader or writer refers to it.
+        profiles = {key[2] for key in artifacts if key[:2] == ('RayTracing', 'compute')}
+        used = {any(entry['binding'] == slot
+                    for key, item in artifacts.items()
+                    if key in (('RayTracing', 'compute', profile), ('RecordReadCompute', 'compute', profile))
+                    for entry in item['descriptor']['interface']['entries']) for profile in profiles}
+        build.require(len(used) <= 1, 'ShaderInterface', name,
+                      'target compute artifacts disagree on the optional scene binding')
+        return used == {True}
+
+    has_ltc_table = uses_scene_slot(ray.LTC_TABLE_SLOT, 'ltc_table')
+    has_atmosphere_sky = uses_scene_slot(ray.ATMOSPHERE_SKY_SLOT, 'atmosphere_sky')
+    has_aerial_perspective = uses_scene_slot(ray.AERIAL_PERSPECTIVE_SLOT, 'aerial_perspective')
     failure_profiles = {any(entry['binding'] == ray.FAILURE_SLOT for entry in item['descriptor']['interface']['entries'])
                         for key, item in artifacts.items() if key[0] == 'RayTracing' and key[1] == 'compute'}
     build.require(len(failure_profiles) <= 1, 'ShaderInterface', 'failure_summary',
@@ -694,10 +721,27 @@ def _runtime_contents(path, configuration):
                   ray_passes[0]['Traversal'] == 'ComputeBvh' and ray_passes[0]['Buffer0'] != ABSENT),
                   'Capability', 'light_transformer', 'use one ComputeBvh scene compute pass wired to an embedding Buffer')
     recipe_keys = _routed_recipe_keys(package, configuration, stage_techniques, ray_recipes, roles)
-    return {'recipe_keys': recipe_keys, 'capture_warmup_samples': capture_warmup_samples, 'light_transformer': has_light_transformer, 'ltc_table': ltc_profiles == {True}, 'atmosphere_sky': world_feature_profiles['atmosphere_sky'] == {True}, 'aerial_perspective': world_feature_profiles['aerial_perspective'] == {True}, 'failure_summary': failure_profiles == {True}, 'clustered_deferred': any(recipe.get('clustered_deferred', False) for recipe in package['recipes'] if recipe['technique'] in selected_techniques), 'clustered_forward': is_clustered_forward, 'forward_lit': has_forward, 'persistent_buffers': persistent, 'ray_path_capture': ray_path_capture, 'capture_profile': capture_profile, 'visibility_buffer': has_visibility, 'scene_interface': scene_versions == {1}, 'path': path, 'package': package, 'plan': plan, 'resources': resources, 'passes': passes,
+    has_native_record = any('binding_slot' in use for operation in plan['passes']
+                            for use in operation.get('persistent_buffers', []))
+    record_strides = set()
+    if has_native_record:
+        for (name, stage, _), item in artifacts.items():
+            if name not in RAY_STAGE_PROGRAMS or stage != 'compute':
+                continue
+            entries = [entry for entry in item['descriptor']['interface']['entries']
+                       if entry['binding'] == buffers.FIRST_SLOT + buffers.NATIVE_RECORD_SLOT and 'fields' in entry]
+            build.require(len(entries) == 1 and entries[0]['kind'] ==
+                          ('StorageReadWrite' if name == 'RayTracing' else 'StorageRead'),
+                          'Package', configuration, 'native record access is missing from a cooked compute artifact')
+            record_strides.add(entries[0]['size'])
+        build.require(len(record_strides) == 1, 'Package', configuration,
+                      'native record stride differs between target artifacts')
+    return {'recipe_keys': recipe_keys, 'capture_warmup_samples': capture_warmup_samples, 'light_transformer': has_light_transformer, 'ltc_table': has_ltc_table, 'atmosphere_sky': has_atmosphere_sky, 'aerial_perspective': has_aerial_perspective, 'failure_summary': failure_profiles == {True}, 'clustered_deferred': any(recipe.get('clustered_deferred', False) for recipe in package['recipes'] if recipe['technique'] in selected_techniques), 'clustered_forward': is_clustered_forward, 'forward_lit': has_forward, 'persistent_buffers': persistent, 'ray_path_capture': ray_path_capture, 'capture_profile': capture_profile, 'visibility_buffer': has_visibility, 'scene_interface': scene_versions == {1}, 'path': path, 'package': package, 'plan': plan, 'resources': resources, 'passes': passes,
             'cameras': cameras, 'camera_targets': camera_targets, 'artifacts': artifacts,
             'uniform_values': value_count, 'bindings': bindings, 'blocks': blocks, 'fields': fields,
             'storage_buffers': storage_buffers, 'uniform_interface': uniform_interface,
+            'native_record_stride': next(iter(record_strides), 0),
+            'record_reader_mask': reader_mask,
             'interface_identity': build.identity(interface), 'generation': path.name}
 
 
@@ -916,13 +960,15 @@ def _emit_runtime(path, destination, *, configuration='Default', name='DefaultGr
     # Generated headers always link the current ray kernel, which dispatches the uniform's tile region.
     if any(operation['kind'] == 'RayTracing' for operation in contents['plan']['passes']):
         lines.append('    result.HasRayTiles = true;')
-    for program_name in (*PROGRAM_CODES, *forward.SUPPORT, 'NativeRayStages'):
+    if contents.get('record_reader_mask'):
+        lines.append(f"    result.RecordReaderMask = {contents['record_reader_mask']};")
+    for program_name in (*PROGRAM_CODES, *forward.SUPPORT, *RAY_STAGE_PROGRAMS[1:]):
         stages_for_program = (forward.SUPPORT[program_name][1] if program_name in forward.SUPPORT else
-                              ('compute',) if program_name == 'NativeRayStages' else
+                              ('compute',) if program_name in RAY_STAGE_PROGRAMS[1:] else
                               ('compute', 'vertex', 'fragment') if program_name == 'RayTracing' else ('vertex', 'fragment'))
         for stage in stages_for_program:
-            member = 'NativeRayStages' if program_name == 'NativeRayStages' else program_member(program_name, stage)
-            declaration = member if program_name in forward.SUPPORT or program_name == 'NativeRayStages' or PROGRAM_CODES[program_name] < LEGACY_PROGRAM_COUNT else program_name + stage.title()
+            member = program_name if program_name in RAY_STAGE_PROGRAMS[1:] else program_member(program_name, stage)
+            declaration = member if program_name in forward.SUPPORT or program_name in RAY_STAGE_PROGRAMS[1:] or PROGRAM_CODES[program_name] < LEGACY_PROGRAM_COUNT else program_name + stage.title()
             keys = [key for key in artifact_labels if key[0] == program_name and key[1] == stage]
             if not keys:
                 continue
@@ -930,15 +976,15 @@ def _emit_runtime(path, destination, *, configuration='Default', name='DefaultGr
                 lines.append('    result.NativeRayStages.Artifact.HasNativeRayStages = true;')
             lines.append('    result.' + member + '.Artifact.Stage = rhi::ShaderStage::' + stage.title() + ';')
             if stage == 'vertex':
-                input_values = ray.IMAGE_INPUTS if program_name in ('RayTracing', 'NativeRayStages') else stage_inputs(contents['artifacts'][keys[0]])
+                input_values = ray.IMAGE_INPUTS if program_name in RAY_STAGE_PROGRAMS else stage_inputs(contents['artifacts'][keys[0]])
                 constant = declaration.upper() + '_INPUT_COUNT'
                 lines += [f'    static constexpr foundation::usize {constant} = {len(input_values)};',
                           f'    static constexpr foundation::StaticArray<rhi::RasterShaderInput, {constant}> {declaration}Inputs', '{', '        {']
                 lines += ['            {' + str(value['location']) + ', rhi::RasterVertexFormat::' + value['format'] + '},' for value in input_values]
                 lines += ['        },', '    };', f'    result.{member}.Inputs = {{{declaration}Inputs.GetData(), {declaration}Inputs.GetSize()}};']
-            if program_name in ('RayTracing', 'NativeRayStages'):
+            if program_name in RAY_STAGE_PROGRAMS:
                 lines += ['    renderer::SetRenderGraphRayInterface(result.' + member + ', rhi::ShaderStage::' + stage.title() + ', result.HasPersistentRayBuffers, result.HasVisibilityBuffer, ' + ('true' if ray.requires_native_queries(contents['plan']) else 'false') + ');']
-            if program_name in ('RayTracing', 'NativeRayStages') and stage == 'compute':
+            if program_name in RAY_STAGE_PROGRAMS and stage == 'compute':
                 shape = contents['artifacts'][keys[0]]['descriptor']['interface']['workgroup']
                 for axis, dimension in enumerate(shape):
                     lines.append(f'    result.{member}.WorkgroupSize[{axis}] = {dimension};')
@@ -947,11 +993,20 @@ def _emit_runtime(path, destination, *, configuration='Default', name='DefaultGr
                 interface = 'ForwardRealtimeFragment' if member == 'ForwardFragment' and cluster_argument == 'false' else member
                 lines += [f'    renderer::SetRenderGraphForwardInterface(result.{member}, format::StageRole::{interface}, {cluster_argument});']
             stage_bindings = _stage_bindings(program_name, stage, contents['bindings'])
-            if program_name in ('RayTracing', 'NativeRayStages') and stage == 'compute':
+            if program_name in RAY_STAGE_PROGRAMS and stage == 'compute':
                 # Slot order, as the runtime package decodes it; reflection order follows declaration order.
-                stage_bindings = [{'slot': entry['binding'], 'kind': entry['kind'], 'visibility': 'Compute', 'size': entry['size']}
-                                  for entry in sorted(contents['artifacts'][keys[0]]['descriptor']['interface']['entries'],
-                                                      key=lambda entry: entry['binding'])]
+                entries = {entry['binding']: entry
+                           for entry in contents['artifacts'][keys[0]]['descriptor']['interface']['entries']}
+                if contents['record_reader_mask'] and program_name in ('RayTracing', 'RecordReadCompute'):
+                    # The two layouts differ at the record binding and share the union of scene tables.
+                    companion = 'RecordReadCompute' if program_name == 'RayTracing' else 'RayTracing'
+                    other = contents['artifacts'][(companion, stage, keys[0][2])]
+                    scene_slots = (ray.LTC_TABLE_SLOT, ray.ATMOSPHERE_SKY_SLOT, ray.AERIAL_PERSPECTIVE_SLOT)
+                    for entry in other['descriptor']['interface']['entries']:
+                        if entry['binding'] in scene_slots:
+                            entries.setdefault(entry['binding'], entry)
+                stage_bindings = [{'slot': slot, 'kind': entry['kind'], 'visibility': 'Compute', 'size': entry['size']}
+                                  for slot, entry in sorted(entries.items())]
             if stage_bindings:
                 constant = declaration.upper() + '_BINDING_COUNT'
                 lines += [f'    static constexpr foundation::usize {constant} = {len(stage_bindings)};',
@@ -998,7 +1053,14 @@ def encode_runtime_package(contents, *, magic=PACKAGE_MAGIC):
     aspects = {'Color': 0, 'Depth': 1, 'Buffer': 2}
     loads, stores = {'Clear': 0, 'Load': 1, 'Discard': 2}, {'Store': 0, 'Discard': 1}
     stages = sorted(contents['artifacts'].items(), key=lambda item: item[1]['ordinal'])
-    data = bytearray(u32(magic, PACKAGE_VERSION, len(contents['resources']), len(contents['passes']),
+    record_stride = contents.get('native_record_stride', 0)
+    reader_mask = contents.get('record_reader_mask', 0)
+    has_named_textures = any(p.get('ShaderTextures') for p in contents['passes'])
+    has_shader_texture_access = has_named_textures or any(p.get('HasStorageTexture') for p in contents['passes'])
+    version = (SHADER_TEXTURE_ACCESS_PACKAGE_VERSION if has_shader_texture_access else
+               RECORD_READER_PACKAGE_VERSION if reader_mask else
+               NATIVE_GRAPH_RECORD_PACKAGE_VERSION if record_stride else PACKAGE_VERSION)
+    data = bytearray(u32(magic, version, len(contents['resources']), len(contents['passes']),
                          len(contents['camera_targets']), contents['uniform_values'], len(contents['bindings']),
                          len(contents['blocks']), len(contents['fields']), len(stages)))
     data += bytes.fromhex(contents['interface_identity']) + bytes.fromhex(contents['generation'])
@@ -1025,7 +1087,7 @@ def encode_runtime_package(contents, *, magic=PACKAGE_MAGIC):
         data += u32(f['Binding'], TARGET_CODES[f['Target']], f['ValueOffset'], f['Components'], f['ByteOffset'])
     for (program_name, stage, target), item in stages:
         inputs = (ray.IMAGE_INPUTS
-                  if program_name in ('RayTracing', 'NativeRayStages') and stage == 'vertex' else stage_inputs(item) if stage == 'vertex' else [])
+                  if program_name in RAY_STAGE_PROGRAMS and stage == 'vertex' else stage_inputs(item) if stage == 'vertex' else [])
         entry = item['entry'].encode()
         stage_role = (PERSISTENT_RAY_STAGE_ROLE if contents.get('persistent_buffers', False) else 11) if program_name == 'RayTracing' and stage == 'compute' and contents.get('scene_interface', False) else role(program_name, stage)
         if (program_name, stage) == ('ForwardLit', 'fragment'):
@@ -1033,7 +1095,7 @@ def encode_runtime_package(contents, *, magic=PACKAGE_MAGIC):
                           else role('ForwardSurfaceChart', 'fragment') + 1)
         data += u32(stage_role, TARGET_CODES[target], len(inputs), len(entry), len(item['bytes']),
                     len(item['blocks']))
-        if program_name in ('RayTracing', 'NativeRayStages') and stage == 'compute':
+        if program_name in RAY_STAGE_PROGRAMS and stage == 'compute':
             workgroup = item['descriptor']['interface']['workgroup']
             build.require(workgroup in ray.SUPPORTED_WORKGROUP_SIZES, 'ShaderInterface', program_name,
                           'ray workgroup differs from the admitted compiler policy')
@@ -1052,6 +1114,10 @@ def encode_runtime_package(contents, *, magic=PACKAGE_MAGIC):
                 data += u32(int(slot), texture['sampler'], len(text)) + text + bytes(-len(text) % 4)
         for blob in (entry, item['bytes']):
             data += blob + bytes(-len(blob) % 4)
+    if version >= NATIVE_GRAPH_RECORD_PACKAGE_VERSION:
+        data += u32(record_stride)
+    if version >= RECORD_READER_PACKAGE_VERSION:
+        data += u32(reader_mask)
     storage = contents.get('storage_buffers', [])
     data += u32(len(storage))
     for buffer in storage:
@@ -1074,7 +1140,7 @@ def encode_runtime_package(contents, *, magic=PACKAGE_MAGIC):
         build.require(0 < len(label) <= MAX_PASS_NAME_BYTES and b'\0' not in label,
                       'Capacity', operation['id'], 'pass debug name exceeds the runtime UTF-8 bound')
         data += u32(len(label)) + label + bytes(-len(label) % 4)
-    if any(p.get('ShaderTextures') for p in contents['passes']):
+    if has_named_textures:
         for p in contents['passes']:
             slots = p.get('ShaderTextures', [])
             data += u32(*slots, *([ABSENT] * (buffers.MAX_TEXTURES - len(slots))))

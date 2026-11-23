@@ -163,11 +163,13 @@ QString DescribeRayInterface(const QJsonObject& program,
                     const QString type = field.value(QStringLiteral("type")).toString();
                     const bool isLegacyRaw = field.value(QStringLiteral("legacy_raw")).toBool();
                     const bool isTexture = field.value(QStringLiteral("texture")).toBool();
+                    const bool isNativeStructured = field.value(QStringLiteral("native_structured")).toBool();
                     const QString operations =
                         isTexture == true
                             ? (isLusl == true
                                    ? QStringLiteral("Load(positionPixel), Store(positionPixel, value), GetDimensions()")
                                    : QStringLiteral("[positionPixel], GetDimensions(width, height)"))
+                        : isNativeStructured == true ? QStringLiteral("[recordIndex].Field")
                         : isLegacyRaw == true
                             ? QStringLiteral("[index], GetDimensions(count, stride)")
                             : (isWritable == true ? QStringLiteral("GetCount(), Load(index), Store(index, value)")

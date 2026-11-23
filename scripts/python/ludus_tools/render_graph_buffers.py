@@ -4,12 +4,17 @@ import re
 
 MAX_BUFFERS = 2
 FIRST_SLOT = 6
+NATIVE_RECORD_SLOT = MAX_BUFFERS - 1
 # Mirrors the named texture binding range in render_graph_format/plan.h.
 MAX_TEXTURES = 3
 FIRST_TEXTURE_SLOT = 8
 WRITABLE_TEXTURE_VIEW = 'GraphWritableTextureView'
 MAX_STRIDE = 4096
 MAX_ELEMENTS = 16 * 1024 * 1024
+
+
+def is_native_record(record):
+    return record is not None and record.get('access') == 'Structured'
 
 
 def requests_named_resources(program, snapshot):
@@ -56,6 +61,11 @@ def link_persistent_structs(plans, programs, snapshot, build, closures=None, *, 
                                   'column': 1, 'repair': 'add_buffer_access'})
                 if record is not None and program:
                     source = record['source']
+                    if is_native_record(record):
+                        build.require(is_named or pending_resources is not None, 'ShaderInterface', operation['id'],
+                                      'use Shader API → Add Resource Access for the native structured Buffer')
+                        build.require(source not in snapshot.inline_buffer_sources, 'ShaderInterface', operation['id'],
+                                      'select a shared .luslh or .slang declaration for a native structured Buffer')
                     if is_named and source_is_lusl and source in snapshot.inline_buffer_sources:
                         instance, node = use['resource'].rsplit('/', 1)
                         context = instances[instance]
@@ -81,7 +91,7 @@ def link_persistent_structs(plans, programs, snapshot, build, closures=None, *, 
                     build.require(all(previous['field'] != field for previous in fields),
                                   'ShaderInterface', operation['id'],
                                   f"Buffer ports map to the same shader member '{field}'. Rename one port.")
-                    fields.append({'field': field, 'slot': use['slot'], 'record': record,
+                    fields.append({'field': field, 'slot': use.get('binding_slot', use['slot']), 'record': record,
                                    'writable': is_writable,
                                    'word_view': record is None and not uses_legacy_word_binding})
             textures = operation.get('storage_textures', ())
@@ -110,7 +120,7 @@ def link_persistent_structs(plans, programs, snapshot, build, closures=None, *, 
                         del pending_resources[program_id]
                 continue
             signature = [(field['field'], field['writable'], field.get('texture', False), field['record'] and
-                          (field['record']['source'], field['record']['type'])) for field in ordered]
+                          (field['record']['source'], field['record']['type'], field['record'].get('access'))) for field in ordered]
             key = (program['source'], program['function'])
             build.require(signatures.setdefault(key, signature) == signature,
                           'ShaderInterface', operation['id'],
@@ -128,6 +138,8 @@ def record_view_name(field):
         if not field.get('word_view'):
             return 'RWStructuredBuffer<uint4>'
         return 'Graph' + ('Writable' if field['writable'] else 'ReadOnly') + 'BufferWordsView'
+    if is_native_record(record):
+        return f"{'RW' if field['writable'] else ''}StructuredBuffer<{record['type']}>"
     return 'Graph' + ('Writable' if field['writable'] else 'ReadOnly') + record['type'] + 'View'
 
 
@@ -174,6 +186,8 @@ def record_view_argument(field):
         handle = f'GraphWritableTexture{field["slot"]}'
         return f'{WRITABLE_TEXTURE_VIEW}({handle})' if field.get('texture_view') else handle
     handle = f'GraphBuffer{field["slot"]}'
+    if is_native_record(field['record']):
+        return handle
     if field['record']:
         return f'{record_view_name(field)}({handle}, {field["record"]["count"]}u)'
     return f'{record_view_name(field)}({handle})' if field.get('word_view') else handle
@@ -184,13 +198,26 @@ def collect_record_views(contracts, build):
     for fields in contracts:
         for field in fields:
             record = field['record']
-            if record is None:
+            if record is None or is_native_record(record):
                 continue
             view = record_view_name(field)
             key = (record['source'], record['type'], field['writable'])
             build.require(views.setdefault(view, key) == key, 'ShaderInterface', view,
                           'use one shared declaration per Buffer record type')
     return views
+
+
+def collect_native_records(contracts, build):
+    """One native declaration per physical slot in a linked shader artifact."""
+    records = {}
+    for fields in contracts:
+        for field in fields:
+            record = field['record']
+            if is_native_record(record):
+                key = (record['source'], record['type'], field['writable'])
+                build.require(records.setdefault(field['slot'], key) == key, 'ShaderInterface', record['type'],
+                              'passes sharing an artifact must agree on the native Buffer type and direction')
+    return records
 
 
 def qualify_record_type(source, type_name, namespaces):
@@ -384,6 +411,18 @@ def layout_probe(type_name):
         'void LudusLayoutMain()\n'
         '{ uint count; uint stride; LudusLayoutRecords.GetDimensions(count, stride);\n'
         '  LudusLayoutResult[0] = uint2(count, stride); }\n')
+
+
+def storage_shape(shape):
+    """Compare target storage recursively without reflection-only IDs and annotations."""
+    kind = shape.get('kind')
+    if kind == 'struct':
+        return kind, [(field['name'], field.get('binding', {}).get('offset'), storage_shape(field['type']))
+                      for field in shape['fields']]
+    if kind in ('array', 'vector'):
+        return (kind, shape.get('elementCount'), shape.get('uniformStride'),
+                storage_shape(shape.get('elementType', {})))
+    return kind, shape.get('scalarType')
 
 
 def reflect_record(source, type_name, snapshot, directory, compiler, cancel, build):

@@ -33,6 +33,8 @@ struct CodeFoldEditRange final
 class CodeStructureView final : public QObject
 {
 public:
+    /// Server folding ranges kept per document; a longer result keeps its first ranges.
+    static constexpr foundation::int32 MAX_SERVER_FOLDS = 4096;
     explicit CodeStructureView(CodeEditor* editor, const CodeSyntaxService& syntax);
     void UpdateHeader();
     [[nodiscard]] foundation::int32 GetHeaderHeight() const;
@@ -55,6 +57,14 @@ public:
     void RestoreFolds(const QJsonArray& records);
     [[nodiscard]] QList<CodeFoldEditRange> MapFolds(const QByteArray& before, const CodeEditSet& edits) const;
     void RestoreMappedFolds(const QList<CodeFoldEditRange>& folds, const QByteArray& after);
+    /// Replace the language server's folding ranges (code editor M4, CE26). A range
+    /// is offered only when its kind is one the language's grammar does not produce
+    /// and no syntax range starts on its first line, so server ranges never move or
+    /// replace syntax folds. The ranges are anchored in the text and move with edits
+    /// until the next replacement.
+    void SetServerFolds(const QList<CodeSyntaxFold>& folds);
+    /// The server ranges currently offered, in line order; for tests.
+    [[nodiscard]] QList<CodeSyntaxFold> GetServerFolds() const;
 
 private:
     struct CollapsedFold final
@@ -67,7 +77,16 @@ private:
         QString Label;
     };
 
+    struct ServerFold final
+    {
+        QTextCursor First;
+        QTextCursor Last;
+        CodeFoldKind Kind;
+        QString Label;
+    };
+
     void acceptResult();
+    void addServerFolds();
     void refreshVisibility();
     void addCollapsed(const CodeSyntaxFold& fold);
     void foldSelection();
@@ -95,6 +114,7 @@ private:
     QMap<foundation::int32, foundation::int32> mHiddenThrough;
     QMap<foundation::int32, QString> mPlaceholderLabels;
     QList<CollapsedFold> mCollapsed;
+    QList<ServerFold> mServerFolds;
     QList<QTextCursor> mSelectionHistory;
     QTextCursor mLastExpandedSelection;
     QJsonArray mRestore;

@@ -123,6 +123,10 @@ struct RenderGraphPrograms final
     rhi::RasterShaderDescription MaskedDepthFragment{}; ///< Separately authored void masked coverage entry.
     /// Native Metal ray stages; borrowed through graph preparation like RayCompute. Empty when unused.
     rhi::RasterShaderDescription NativeRayStages{};
+    /// Ordered compute callbacks that read the shared structured Buffer. Empty when unused.
+    rhi::RasterShaderDescription RecordReadCompute{};
+    /// Bits indexed by Pass::RayProgram that select RecordReadCompute for compute invocations.
+    foundation::uint32 RecordReaderMask = 0;
     rhi::RasterShaderDescription RayCompute{};       ///< Linked authored triangle ray functions and BVH traversal.
     rhi::RasterShaderDescription RayImageVertex{};   ///< Renderer-owned GPU-produced pixel presentation.
     rhi::RasterShaderDescription RayImageFragment{}; ///< Renderer-owned color copy; no host pixel transfer.
@@ -179,7 +183,7 @@ struct RenderGraphPrograms final
     rhi::RasterShaderDescription DeferredDepthCopyFragment{};
     /// Enable the opaque three-target deferred profile; requires the complete clustered material ABI.
     bool HasClusteredDeferred = false;
-    bool HasPersistentRayBuffers = false; ///< Extended ordered ray ABI with two persistent uint4 storage slots.
+    bool HasPersistentRayBuffers = false; ///< Extended ordered ray ABI with two persistent storage slots.
     bool HasSceneShaderInterface = false; ///< Opt-in material/light/query callback ABI, encoded in cooked stage roles.
     /// RayCompute is the diagnostic ray path capture variant (`LUDUS_RAY_PATH_CAPTURE`) of the same
     /// source snapshot: it also binds one read-write capture buffer at slot 10. RenderGraph appends

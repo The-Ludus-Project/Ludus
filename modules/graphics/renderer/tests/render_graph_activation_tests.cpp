@@ -69,6 +69,10 @@ struct PackageWriter final
     void WriteSceneResources(uint32 version, uint32 sceneResources = 0, uint32 warmup = 0, uint32 recipeCount = 0)
     // NOLINTEND(bugprone-easily-swappable-parameters)
     {
+        if (version >= format::NATIVE_GRAPH_RECORD_PACKAGE_VERSION)
+        {
+            WriteWord(0);
+        }
         if (version >= format::STORAGE_PACKAGE_VERSION)
         {
             WriteWord(0);
@@ -569,7 +573,7 @@ TEST_CASE("RG3 malformed runtime packages reject without a partial generation", 
 {
     const Array<uint8> valid = MakePackageBytes({});
     PackageOptions options;
-    options.Version = format::PACKAGE_VERSION + 1;
+    options.Version = format::RECORD_READER_PACKAGE_VERSION + 1;
     CHECK(DecodeBytes(MakePackageBytes(options)) == renderer::RenderGraphPackageStatus::UnsupportedVersion);
     Array<uint8> truncated = Array<uint8>::FromRange(valid.AsView());
     truncated.RemoveLast();

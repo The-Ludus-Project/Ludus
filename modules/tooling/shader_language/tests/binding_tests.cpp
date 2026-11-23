@@ -227,6 +227,121 @@ void Write(in uint32 index)
     CHECK(arguments.CountDiagnostics(DiagnosticCode::UnknownType) == 2);
 }
 
+TEST_CASE("LUSL mirrors structured buffer handles in Slang resource structs", "[shader-language][bindings]")
+{
+    constexpr std::string_view BINDINGS = R"(static const uint32 MAX_EDGE_COUNT = 256;
+extern slang
+{
+    struct Edge
+    {
+        float32x4 Begin;
+        float32x4 End;
+    };
+    struct EdgesData
+    {
+        uint32 EdgesCount;
+        float32 TotalWeight;
+        uint32x2 Padding;
+        Edge Edges[MAX_EDGE_COUNT];
+        float32 Weights[MAX_EDGE_COUNT];
+    };
+    struct ReadResources
+    {
+        StructuredBuffer<EdgesData> Edges;
+    };
+    struct WriteResources
+    {
+        RWStructuredBuffer<EdgesData> Edges;
+    };
+    struct RayQueryContext;
+    uint32 SampleSceneWeightedIndex(inout RayQueryContext queries, in float32 weights[]);
+};
+)";
+    SECTION("A typed producer writes a field and a reader forwards an array")
+    {
+        const std::string source = std::string(BINDINGS) + R"(
+void WriteWeight(in WriteResources resources, in uint32 edgeIndex)
+{
+    resources.Edges[0].Weights[edgeIndex] = 1.0;
+}
+uint32 SampleEdge(in ReadResources resources, inout RayQueryContext inoutQueries)
+{
+    EdgesData edges = resources.Edges[0];
+    Edge first = edges.Edges[0];
+    if (first.Begin.w == 0.0)
+    {
+        return 0;
+    }
+    return SampleSceneWeightedIndex(inout inoutQueries, edges.Weights);
+}
+)";
+        std::string slang;
+        const language::LoweringResult result = Lower(source, slang);
+        CHECK(result.Bindings.GetSize() == 0);
+        CHECK(Contains(slang, "resources.Edges[0u].Weights[edgeIndex] = 1.0"));
+        CHECK(Contains(slang, "return SampleSceneWeightedIndex(inoutQueries, edges.Weights);"));
+        CHECK(Contains(slang, "struct WriteResources") == false);
+    }
+    SECTION("Read-only elements and resource handles cannot be assigned")
+    {
+        const CheckedSource checked{std::string(BINDINGS) + R"(
+void WriteWeight(in ReadResources input, in WriteResources output, in WriteResources other)
+{
+    input.Edges[0].Weights[0] = 1.0;
+    output.Edges = other.Edges;
+}
+)"};
+        CHECK(checked.CountDiagnostics(DiagnosticCode::NotAssignable) == 2);
+    }
+    SECTION("Resource-bearing types cannot be stored in the buffer")
+    {
+        const CheckedSource checked{std::string(BINDINGS) + R"(
+struct Container
+{
+    WriteResources Nested;
+};
+StructuredBuffer<Container> invalid;
+)"};
+        CHECK(checked.FindDiagnosticOrNull(DiagnosticCode::TypeMismatch) != nullptr);
+    }
+}
+
+TEST_CASE("LUSL passes fixed arrays to Slang parameters with inferred lengths", "[shader-language][bindings]")
+{
+    constexpr std::string_view SOURCE = R"(static const uint32 SHORT_COUNT = 2;
+static const uint32 LONG_COUNT = 256;
+extern slang
+{
+    uint32 Sample(in float32 values[]);
+};
+uint32 Run(in float32 shortWeights[SHORT_COUNT], in float32 longWeights[LONG_COUNT])
+{
+    return Sample(shortWeights) + Sample(longWeights);
+}
+)";
+    std::string slang;
+    (void)Lower(SOURCE, slang);
+    CHECK(Contains(slang, "Sample(shortWeights) + Sample(longWeights)"));
+    for (const std::string_view invalid : {
+             "void Run(in float32 weights[]) {}",
+             "extern slang { void Write(out float32 weights[]); };",
+             "extern slang { void Read(in float32 weights[] = 0); };",
+             "struct Record { float32 Weights[]; };",
+         })
+    {
+        const CheckedSource checked{std::string(invalid)};
+        INFO(invalid);
+        CHECK(checked.GetStatus() == language::Status::Failed);
+    }
+    const CheckedSource wrongType{std::string(SOURCE) + R"(
+uint32 ReadIntegers(in uint32 weights[SHORT_COUNT])
+{
+    return Sample(weights);
+}
+)"};
+    CHECK(wrongType.FindDiagnosticOrNull(DiagnosticCode::TypeMismatch) != nullptr);
+}
+
 TEST_CASE("LUSL checks stage interfaces", "[shader-language][bindings]")
 {
     constexpr std::string_view STRUCTS = R"(struct Varying

@@ -361,24 +361,29 @@ float ComputeStandardNormalQuantile(float probability)
     }
     return q < 0 ? -magnitude : magnitude;
 }
-// Matches DecodeSrgb's bounded CPU contract. Thanks to W3C, "CSS Color Module
+// Decode a channel known to be in [0, 1]. Thanks to W3C, "CSS Color Module
 // Level 4", section 10.2, https://www.w3.org/TR/css-color-4/#predefined-sRGB,
 // for the piecewise transfer. GPU pow/division can round encoded white above one;
 // preserve exact endpoints and bound only normalized color, never radiance.
-float DecodeSrgb(float value)
+float DecodeNormalizedSrgb(float value)
 {
-    static const uint INVALID_COLOR_BITS = 0x7fc00000;
     static const float LINEAR_THRESHOLD = .04045;
     static const float LINEAR_SCALE = 12.92;
     static const float POWER_OFFSET = .055;
     static const float POWER_SCALE = 1.055;
     static const float GAMMA = 2.4;
-    if (isfinite(value) == false || value < 0 || value > 1)
-        return asfloat(INVALID_COLOR_BITS);
     if (value == 0 || value == 1)
         return value;
     float linear = value <= LINEAR_THRESHOLD ? value / LINEAR_SCALE : pow((value + POWER_OFFSET) / POWER_SCALE, GAMMA);
     return clamp(linear, 0, 1);
+}
+// Match the bounded CPU contract for callers with unvalidated input.
+float DecodeSrgb(float value)
+{
+    static const uint INVALID_COLOR_BITS = 0x7fc00000;
+    if (isfinite(value) == false || value < 0 || value > 1)
+        return asfloat(INVALID_COLOR_BITS);
+    return DecodeNormalizedSrgb(value);
 }
 // Exact 32x32->64-bit product from 16-bit limbs, because WGSL has no 64-bit
 // integers. Every partial sum stays below 2^32: a limb product is at most

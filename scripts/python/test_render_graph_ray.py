@@ -65,17 +65,18 @@ def find_wrapper_path(package, marker):
     return matches[0]
 
 
-def find_ray_compute(package, source):
+def find_ray_compute(package, source, *, profile=None):
     """Return the one ray-tracing recipe whose compute kernel compiles source, and its wrapper text.
 
     A package holds a ray recipe per configuration, in no configuration order, so a test names the authored
-    kernel source it examines instead of taking the first recipe or program directory listed.
+    kernel source and, for multi-profile packages, the shader profile it examines.
     """
     descriptor = json.loads((package / 'package.json').read_text())
     keys = {program['key'] for program in descriptor['programs'] if program['descriptor']['stage'] == 'compute'
             and program['descriptor']['source_map']['function'] == source}
     recipes = [recipe for recipe in descriptor['recipes']
-               if recipe['technique'] == ray.TECHNIQUE and recipe['compute'] in keys]
+               if recipe['technique'] == ray.TECHNIQUE and recipe['compute'] in keys
+               and (profile is None or recipe['profile'] == profile)]
     if len(recipes) != 1:
         raise AssertionError(f'{len(recipes)} ray recipes compile {source}; expected one')
     return recipes[0], (package / 'programs' / recipes[0]['compute'] / 'wrapper.slang').read_text()

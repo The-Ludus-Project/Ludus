@@ -2473,16 +2473,16 @@ private:
                     requirement = "a float32, int32 or uint32 scalar or vector";
                     break;
                 case ResourceKind::ConstantBuffer:
-                    isValid =
-                        shape.Kind == TypeKind::Struct && isOpaque(element) == false && containsBool(element) == false;
-                    requirement = "a struct without bool fields";
+                    isValid = shape.Kind == TypeKind::Struct && isOpaque(element) == false &&
+                              containsNonStorageValue(element) == false;
+                    requirement = "a struct without bool or resource fields";
                     break;
                 case ResourceKind::StructuredBuffer:
                 case ResourceKind::RWStructuredBuffer:
                     isValid = shape.Kind != TypeKind::Interface && shape.Kind != TypeKind::TypeParameter &&
                               shape.Kind != TypeKind::Resource && shape.Kind != TypeKind::Void &&
-                              isOpaque(element) == false && containsBool(element) == false;
-                    requirement = "a value type without bool";
+                              isOpaque(element) == false && containsNonStorageValue(element) == false;
+                    requirement = "a value type without bool or resources";
                     break;
                 case ResourceKind::Sampler:
                 case ResourceKind::ComparisonSampler:
@@ -2513,8 +2513,8 @@ private:
         return type;
     }
 
-    /// True when `type` is, or contains, a `bool`.
-    [[nodiscard]] bool containsBool(uint32 type) const noexcept
+    /// True when `type` contains a boolean or resource handle, neither of which has a storage layout.
+    [[nodiscard]] bool containsNonStorageValue(uint32 type) const noexcept
     {
         const SemanticType& shape = getType(type);
         switch (shape.Kind)
@@ -2523,14 +2523,16 @@ private:
             case TypeKind::Vector:
             case TypeKind::Matrix:
                 return shape.Scalar == ScalarKind::Bool;
+            case TypeKind::Resource:
+                return true;
             case TypeKind::Array:
-                return containsBool(shape.Element);
+                return containsNonStorageValue(shape.Element);
             case TypeKind::Struct: {
                 const Symbol& declared = mModel.Symbols[shape.Symbol];
                 for (uint32 i = 0; i < declared.MemberCount; ++i)
                 {
                     const Symbol& member = mModel.Symbols[mModel.Members[declared.FirstMember + i]];
-                    if (member.Kind == SymbolKind::Field && containsBool(member.Type) == true)
+                    if (member.Kind == SymbolKind::Field && containsNonStorageValue(member.Type) == true)
                     {
                         return true;
                     }
@@ -2569,7 +2571,10 @@ private:
     }
 
     /// Apply the ArraySize children that follow `child` to `element`, outermost first.
-    [[nodiscard]] uint32 applyArraySizes(uint32 element, uint32 child, bool canDeclareBindingArray = false) noexcept
+    [[nodiscard]] uint32 applyArraySizes(uint32 element,
+                                         uint32 child,
+                                         bool canDeclareBindingArray = false,
+                                         bool canInferArrayLength = false) noexcept
     {
         foundation::StaticArray<uint32, MAX_SYNTAX_DEPTH> counts{};
         usize dimensionCount = 0;
@@ -2588,7 +2593,20 @@ private:
                                       "'"));
                 element = TypeTable::ERROR_TYPE;
             }
-            else if (size != NO_NODE)
+            else if (size == NO_NODE)
+            {
+                const uint32 next = nextSibling(child);
+                if (canInferArrayLength == false || child != firstSize ||
+                    (next != NO_NODE && getKind(next) == SyntaxKind::ArraySize))
+                {
+                    report(DiagnosticCode::InvalidArraySize,
+                           child,
+                           ComposeMessage("write a named array size. An omitted size is valid only on a "
+                                          "one-dimensional 'in' parameter declared in 'extern slang'"));
+                    return TypeTable::ERROR_TYPE;
+                }
+            }
+            else
             {
                 if (isResourceElement == true && getKind(size) != SyntaxKind::Name)
                 {
@@ -3099,7 +3117,16 @@ private:
         }
         const uint32 typeNode = firstChild(node);
         uint32 type = rejectInterfaceValue(applyArraySizes(resolveType(typeNode), nextSibling(typeNode)), typeNode);
-        type = rejectResourceValue(type, typeNode, "a struct field");
+        if (isResource(type) == true)
+        {
+            const ResourceKind resource = getType(type).Resource;
+            const bool isStructuredBuffer =
+                resource == ResourceKind::StructuredBuffer || resource == ResourceKind::RWStructuredBuffer;
+            if (mIsInExtern == false || isStructuredBuffer == false)
+            {
+                type = rejectResourceValue(type, typeNode, "a struct field");
+            }
+        }
         if (isError(type) == false && getType(type).Kind == TypeKind::Struct &&
             getType(type).Symbol == mIncompleteStruct)
         {
@@ -3550,7 +3577,10 @@ private:
     {
         const SyntaxNode& syntax = getNode(node);
         const uint32 typeNode = firstChild(node);
-        uint32 type = rejectInterfaceValue(applyArraySizes(resolveType(typeNode), nextSibling(typeNode)), typeNode);
+        const bool canInferArrayLength = mIsInExtern == true && syntax.Direction == ParameterDirection::In;
+        uint32 type = rejectInterfaceValue(
+            applyArraySizes(resolveType(typeNode), nextSibling(typeNode), false, canInferArrayLength),
+            typeNode);
         if (isResource(type) == true && (stage != EntryStage::None || syntax.Direction == ParameterDirection::Out ||
                                          syntax.Direction == ParameterDirection::Inout))
         {
@@ -3581,7 +3611,13 @@ private:
         const uint32 defaultValue = child;
         if (defaultValue != NO_NODE)
         {
-            if (syntax.Direction == ParameterDirection::Out || syntax.Direction == ParameterDirection::Inout)
+            if (getType(type).Kind == TypeKind::Array && getType(type).Count == 0)
+            {
+                report(DiagnosticCode::InvalidInitializer,
+                       defaultValue,
+                       ComposeMessage("an array parameter with an inferred length cannot have a default"));
+            }
+            else if (syntax.Direction == ParameterDirection::Out || syntax.Direction == ParameterDirection::Inout)
             {
                 report(DiagnosticCode::DirectionMismatch,
                        defaultValue,
@@ -6446,7 +6482,12 @@ private:
             const uint32 position = bestBinding.ParameterOfArgument[i];
             const Symbol& parameter = mModel.Symbols[mModel.Members[function.FirstMember + position]];
             mModel.NodeParameters[argument] = position;
-            const uint32 parameterType = substitute(parameter.Type, best, bestBinding.TypeArguments);
+            uint32 parameterType = substitute(parameter.Type, best, bestBinding.TypeArguments);
+            if (getKind(value) != SyntaxKind::InitializerList &&
+                internal::MatchesInferredArrayLength(mTypes, mModel.NodeTypes[value], parameterType) == true)
+            {
+                parameterType = mModel.NodeTypes[value];
+            }
             if (getKind(value) == SyntaxKind::InitializerList)
             {
                 (void)checkExpression(value, parameterType);
@@ -6741,6 +6782,14 @@ private:
                 return false;
             }
             case SyntaxKind::MemberExpression: {
+                if (isResource(mModel.NodeTypes[node]) == true)
+                {
+                    report(DiagnosticCode::NotAssignable,
+                           node,
+                           ComposeMessage("The declaring Slang code binds this resource field. Write elements "
+                                          "through an RWStructuredBuffer"));
+                    return false;
+                }
                 if (mModel.NodeSymbols[node] == NO_SYMBOL)
                 {
                     bool hasRepeat = false;
@@ -7040,7 +7089,10 @@ TypeNameText FormatTypeName(const SemanticModel& model,
     for (usize i = 0; i < dimensionCount; ++i)
     {
         append("[");
-        appendNumber(dimensions[i]);
+        if (dimensions[i] != 0)
+        {
+            appendNumber(dimensions[i]);
+        }
         append("]");
     }
     return text;

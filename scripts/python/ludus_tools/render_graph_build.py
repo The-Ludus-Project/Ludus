@@ -424,8 +424,9 @@ def validate_manifest(value, *, check_ray_targets=True):
             require(is_scene or (declared_stages and
                                  tuple(programs[technique[stage]]['output'] for stage in ray.STAGES) == ('Ray', 'Color', 'Color')),
                     'ShaderInterface', ray.TECHNIQUE, 'callback signatures must match the selected scene/legacy profile')
+            ray_profiles = ('metal', 'spirv', 'wgsl') if is_scene else ('metal', 'spirv')
             require(ray.TECHNIQUE not in techniques and (not check_ray_targets or
-                    any(target in ('metal', 'spirv') for target in value['profiles'])),
+                    any(target in ray_profiles for target in value['profiles'])),
                     'Capability', ray.TECHNIQUE,
                     'Hardware raytracing requires native Metal or Vulkan; unsupported APIs need an authored raster configuration')
             techniques[ray.TECHNIQUE] = technique
@@ -532,7 +533,7 @@ def shader_source(program, schemas):
 def check_layout(program, schemas, result, raw):
     """Verify field identity/type/offset and declared read-only binding use."""
     if 'ray_wrapper' in program:
-        ray.check_interface(program, result, sys.modules[__name__])
+        ray.check_interface(program, result, sys.modules[__name__], raw)
         return []
     if 'forward_wrapper' in program:
         return forward.check_interface(program, result, sys.modules[__name__])
@@ -1186,8 +1187,8 @@ def prepare_sources(manifest, helper, *, root=None, ray_path_capture=False, capt
     if ray.TECHNIQUE in techniques:
         # A build can report an unsupported invocation at its graph node rather than its manifest.
         ray.validate_native_invocations(plans, value['profiles'], techniques[ray.TECHNIQUE], sys.modules[__name__])
-        require(any(target in ('metal', 'spirv') for target in value['profiles']), 'Capability', 'profiles',
-                'Hardware raytracing requires native Metal or Vulkan; select an authored raster configuration on unsupported APIs')
+        require(any(target in ('metal', 'spirv', 'wgsl') for target in value['profiles']), 'Capability', 'profiles',
+                'Scene compute requires Metal, Vulkan or WebGPU; select an authored raster configuration on unsupported APIs')
     manifest_label = Path(manifest).resolve().relative_to(snapshot.root).as_posix()
     # LUSL programs name their generated Slang module from here on.
     program_language_tool, snapshot.language_reports = language.lower_sources(
@@ -1308,11 +1309,27 @@ def prepare_sources(manifest, helper, *, root=None, ray_path_capture=False, capt
                     interface = technique['scene_interface']
                     interface['visibility_queries'] = interface.get('capture_visibility_queries',
                                                                     interface['visibility_queries'])
+            compute_variants = profile['variants']
+            dispatch_slots = None
+            if profile['native_graph_records']:
+                compute_variants = [variant for variant in profile['variants']
+                                    if variant not in profile['native_slots'] and variant not in profile['record_readers']]
+                require(compute_variants, 'Capability', profile['compute'],
+                        'connect a scene compute producer to the native structured Buffer')
+                dispatch_slots = {variant: index for index, variant in enumerate(profile['variants'])}
             expanded = ray.expand_programs(authored_programs, technique, snapshot, helper, sys.modules[__name__],
-                                          profile['variants'], profile['persistent'], schemas, profile['compute'],
+                                          compute_variants, profile['persistent'], schemas, profile['compute'],
                                           profile['native_ray_queries'], ray_path_capture, workgroup=profile['workgroup'],
-                                          scene_dispatch=profile['scene_dispatch'], named_resources=named_resources)
+                                          scene_dispatch=profile['scene_dispatch'], named_resources=named_resources,
+                                          dispatch_slots=dispatch_slots)
             linked_programs.update(expanded)
+            if profile['record_readers']:
+                profile['record_read_compute'] = profile['compute'] + 'RecordRead'
+                linked_programs.update(ray.expand_programs(authored_programs, technique, snapshot, helper,
+                    sys.modules[__name__], profile['record_readers'], profile['persistent'], schemas,
+                    profile['record_read_compute'], profile['native_ray_queries'], ray_path_capture,
+                    workgroup=profile['workgroup'], scene_dispatch=profile['scene_dispatch'],
+                    named_resources=named_resources, dispatch_slots=dispatch_slots))
             if profile['native_slots']:
                 ray.validate_native_buffer_layouts(profile['native_operations'], authored_programs,
                                                    named_resources, snapshot, sys.modules[__name__])
@@ -1321,6 +1338,11 @@ def prepare_sources(manifest, helper, *, root=None, ray_path_capture=False, capt
                     list(profile['native_slots']), profile['persistent'], schemas, profile['native_compute'],
                     True, ray_path_capture, native_slots=profile['native_slots'], workgroup=profile['workgroup'],
                     named_resources=named_resources))
+        require(any(target in ('metal', 'spirv') for target in value['profiles']) or
+                ('wgsl' in value['profiles'] and any(ray.supports_webgpu_records(profile) for profile in ray_profiles)),
+                'Capability', 'profiles',
+                'WebGPU scene compute requires an ordered native structured Buffer and software traversal. '
+                'Set every scene pass to ComputeBvh or select a raster configuration.')
         programs = linked_programs
         for program_identity in programs:
             if 'ray_wrapper' in programs[program_identity]:
@@ -1440,17 +1462,29 @@ def build_package(manifest, output, *, helper, compiler, validator=None, spirv_c
                 if program.get('named_record_views'):
                     program['ray_wrapper'] = buffers.define_record_views(
                         program, record_layouts, sys.modules[__name__], lusl_record_layouts=snapshot.buffer_record_layouts)
+                if program.get('native_graph_records'):
+                    program['native_graph_layouts'] = {
+                        buffers.FIRST_SLOT + slot: (record_layouts[(source, kind)], is_writable)
+                        for slot, (source, kind, is_writable) in program['native_graph_records'].items()}
             compiled, entries, hits, misses = {}, {}, 0, 0
             pending, pending_keys = [], set()
             # Report-only attribution: miss, local cache hit, or reuse of a key this build already resolved.
             requests, loaded_keys, compile_seconds = {}, set(), {}
+            metal_record_programs = {profile[field] for profile in ray_profiles
+                                     if profile['native_graph_records'] and profile['native_slots']
+                                     for field in ('compute', 'record_read_compute') if field in profile}
+            webgpu_record_programs = {profile[field] for profile in ray_profiles if ray.supports_webgpu_records(profile)
+                                      for field in ('compute', 'record_read_compute')}
+            if webgpu_record_programs:
+                webgpu_record_programs.update((ray.IMAGE_VERTEX_ID, ray.IMAGE_FRAGMENT_ID))
             for pid, program in sorted(programs.items()):
                 closure = closures[pid]
                 configuration_reads = language.configuration_reads(snapshot, closure)
                 for target in sorted(value['profiles']):
-                    if program.get('native_ray_pipeline') and target != 'metal':
+                    if (program.get('native_ray_pipeline') or pid in metal_record_programs) and target != 'metal':
                         continue
-                    if program.get('native_ray_profile') and target not in ('metal', 'spirv'):
+                    if program.get('native_ray_profile') and target not in ('metal', 'spirv') and (
+                            target != 'wgsl' or pid not in webgpu_record_programs):
                         continue
                     checkpoint(cancel)
                     used = {program['input'], *(b['schema'] for b in program['bindings'])}
@@ -1512,9 +1546,13 @@ def build_package(manifest, output, *, helper, compiler, validator=None, spirv_c
             for tid, technique in sorted(techniques.items()):
                 for target in sorted(value['profiles']):
                     if tid == ray.TECHNIQUE:
-                        if target not in ('metal', 'spirv'):
+                        if target not in ('metal', 'spirv', 'wgsl'):
                             continue
                         for profile in ray_profiles:
+                            if target == 'wgsl' and not ray.supports_webgpu_records(profile):
+                                continue
+                            if profile['native_graph_records'] and profile['native_slots'] and target != 'metal':
+                                continue
                             record = {'technique': tid, 'profile': target, 'state': ray.resolve_state(technique['recipes'][0]),
                                 'compute': entries[(profile['compute'], target)], 'vertex': entries[(ray.IMAGE_VERTEX_ID, target)],
                                 'fragment': entries[(ray.IMAGE_FRAGMENT_ID, target)], 'bindings': {'vertex': [], 'fragment': []}}
@@ -1523,6 +1561,10 @@ def build_package(manifest, output, *, helper, compiler, validator=None, spirv_c
                                 record['configurations'] = profile['configurations']
                             record['persistent_buffers'] = profile['persistent']
                             record['native_ray_queries'] = profile['native_ray_queries']
+                            if profile.get('record_read_compute'):
+                                record['record_read_compute'] = entries[(profile['record_read_compute'], target)]
+                                record['record_reader_mask'] = sum(1 << profile['variants'].index(variant)
+                                                                   for variant in profile['record_readers'])
                             if profile.get('native_compute') and target == 'metal':
                                 record['native_pipeline'] = entries[(profile['native_compute'], target)]
                             if profile['light_transformer_programs']:
@@ -1615,7 +1657,7 @@ def build_package(manifest, output, *, helper, compiler, validator=None, spirv_c
                        'schemas': value['schemas'], 'checks_pending': ['DeviceCapabilities', 'SceneCoverage', 'GpuExecution', 'PipelineReadiness']}
             if ray.TECHNIQUE in techniques:
                 payload['capability_profiles'] = {'ray_tracing': sorted(
-                    target for target in value['profiles'] if target in ('metal', 'spirv'))}
+                    {recipe['profile'] for recipe in recipes if recipe['technique'] == ray.TECHNIQUE})}
             # Manifest/graph source hashes are provenance, separate from semantic
             # generation identity so moving graph nodes does not rebuild shaders.
             payload['provenance'] = {p: digest(data) for p, data in sorted(snapshot.files.items())}

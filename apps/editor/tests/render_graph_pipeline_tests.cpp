@@ -2630,7 +2630,7 @@ TEST_CASE("scene compute nodes use automatic state and launch size while generic
     REQUIRE(canvasGroup != nullptr);
     REQUIRE(launchModeOrNull != nullptr);
     REQUIRE(workItemsOrNull != nullptr);
-    launchModeOrNull->setCurrentText(QStringLiteral("Buffer-only work items"));
+    launchModeOrNull->setCurrentText(QStringLiteral("Work items"));
     workItemsOrNull->setValue(7001);
     QJsonObject invocation = canvasEdit.value(QStringLiteral("invocation")).toObject();
     CHECK(invocation.value(QStringLiteral("work_items")).toInt() == 7001);

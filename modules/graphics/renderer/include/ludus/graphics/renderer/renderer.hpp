@@ -86,6 +86,8 @@ struct GpuPreviewGraphInvocation final
     /// Allow the returned image to use a different extent from the graph attachment. The image is placed
     /// at the attachment origin and clipped to its bounds after the attachment clear. Requires an image job.
     bool HasExplicitImageLaunch = false;
+    /// Use the ordered compute kernel with a read-only shared graph record binding.
+    bool IsRecordReadCompute = false;
     /// Independently bound storage allocations in shader-slot order. A null entry uses a private fallback.
     /// The graph keeps each allocation alive through job release and submitted completion.
     foundation::StaticArray<rhi::TextureHandle, content::render_graph_format::MAX_SHADER_TEXTURES> ShaderTextures{};

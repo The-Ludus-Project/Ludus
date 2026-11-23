@@ -3451,7 +3451,8 @@ Status RenderGraph::pollPreparation() noexcept
                      {state.StorageBuffers.GetData(), state.StorageBufferCount},
                      state.Programs.NativeRayStages.Artifact.HasNativeRayStages == true
                          ? &state.Programs.NativeRayStages
-                         : nullptr});
+                         : nullptr,
+                     state.Programs.RecordReaderMask != 0 ? &state.Programs.RecordReadCompute : nullptr});
                 if (IsAccepted(status) == false)
                 {
                     return status;
@@ -4339,6 +4340,8 @@ Status RenderGraph::updateScene(BorrowedView<const RenderGraphMesh> meshes,
             hasSceneSource == true ? &sceneSource : nullptr};
         invocation.ToneMappingCurve = GetToneCurve(operation);
         invocation.WorkItemCount = operation.WorkItemCount;
+        invocation.IsRecordReadCompute = invocation.HasNativeRayInvocation == false &&
+                                         (state.Programs.RecordReaderMask & (uint32{1} << operation.RayProgram)) != 0;
         const StaticArray<rhi::TextureHandle, format::MAX_RESOURCES>& textures =
             state.Resizing.Get() != nullptr ? state.Resizing->Textures : state.Textures;
         if (operation.SourceColor != format::ABSENT)

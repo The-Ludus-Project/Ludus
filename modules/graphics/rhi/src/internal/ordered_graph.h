@@ -2497,7 +2497,19 @@ RasterStatus ExecuteGraphCommands(DeviceHandle device,
             return ended == RasterStatus::Ready ? RasterStatus::InvalidDescription : ended;
         }
     }
-    GetRasterState().FrameSubmission = GetRasterState().Submissions.Next;
+    if (shouldSubmit == true)
+    {
+        GetRasterState().FrameSubmission = GetRasterState().Submissions.Next;
+    }
+    else
+    {
+        // A caller-owned frame may have no other draws to reserve backend completion.
+        const RasterStatus reserved = ReserveFrameSubmission();
+        if (reserved != RasterStatus::Ready)
+        {
+            return reserved;
+        }
+    }
     GetRasterState().IsGraphExecuting = true;
     // Backend synchronization calls below read their graph context from this site (R13a).
     const internal::GraphLoweringSiteReset siteReset;
