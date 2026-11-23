@@ -10,8 +10,8 @@ function upload(device, buffer, contract, width, height, elapsed) {
   const bytes = new ArrayBuffer(contract.size);
   const view = new DataView(bytes);
   // Byte offsets are independently checked from emitted WGSL by shader-probe.
-  const values = {resolution:[width,height], elapsedTime:[elapsed],
-    direction:[0.2,0.4,0.6], tint:[0.6,0.4,0.2,1]};
+  const values = {Resolution:[width,height], ElapsedTime:[elapsed],
+    Direction:[0.2,0.4,0.6], Tint:[0.6,0.4,0.2,1]};
   for (const [field, data] of Object.entries(values)) {
     data.forEach((value,i) => view.setFloat32(contract.offsets[field] + 4*i,value,true));
   }
@@ -46,8 +46,8 @@ async function start() {
   const uniform = device.createBuffer({size:48,usage:GPUBufferUsage.UNIFORM|GPUBufferUsage.COPY_DST});
   const group = device.createBindGroup({layout:bindings,entries:[{binding:0,resource:{buffer:uniform,size:48}}]});
   async function pipeline(format) {
-    return device.createRenderPipelineAsync({layout,vertex:{module,entryPoint:'vertexMain'},
-      fragment:{module,entryPoint:'fragmentMain',targets:[{format}]},
+    return device.createRenderPipelineAsync({layout,vertex:{module,entryPoint:'VertexMain'},
+      fragment:{module,entryPoint:'FragmentMain',targets:[{format}]},
       primitive:{topology:'triangle-list',cullMode:'none'}});
   }
   function draw(target, renderPipeline) {

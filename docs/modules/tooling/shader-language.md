@@ -884,9 +884,19 @@ ludus_compile_shader(TARGET my_game NAME composite
 
 - Pass `RASTER` for vertex and fragment shaders with resources, so the
   generated header carries the reflected binding table the RHI layout needs.
-- `cmake/shaders/lower_lusl.py` lowers it with `luslc` (the build tree's target
-  or the SDK's `bin/luslc`), and the generated module is compiled like a Slang
-  source. `INCLUDES` accepts shared roots outside the source directory. LUSL
+- `cmake/shaders/lower_lusl.py` lowers it with `luslc`, and the generated
+  module is compiled like a Slang source. The helper uses the native build
+  tree's `luslc` target, else `LUDUS_LUSLC`, else the SDK's `bin/luslc`.
+- **Cross builds take a host `luslc`.** An Emscripten build compiles `luslc` for
+  the browser, so it cannot run it. Set `LUDUS_LUSLC` to a host compiler built
+  from the same sources: `./scripts/bootstrap-luslc` configures a luslc-only
+  native tree (`LUDUS_LUSLC_ONLY`) in `out/build/host-luslc` with the pinned host
+  tools and prints the compiler path. Each run rebuilds it incrementally.
+  `scripts/build`, `scripts/test` and `scripts/check` for the `web-emscripten-*`
+  presets, and `scripts/build-web-editor`, run it and pass the result. An
+  installed browser SDK consumer that compiles a `.lusl` shader passes
+  `-DLUDUS_LUSLC=<path>` like `LUDUS_SLANG_COMPILER`. A missing setting fails
+  configuration and names that command. `INCLUDES` accepts shared roots outside the source directory. LUSL
   searches beside the file naming the include, then in the source directory,
   then in the supplied roots in order. A depfile tracks the original files
   behind the lowering snapshot.
