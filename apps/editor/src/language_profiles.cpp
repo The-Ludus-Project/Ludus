@@ -22,7 +22,7 @@ QJsonValue ConfigureSlangSection(const QString& section)
 
 const LanguageServerProfile& GetSlangServerProfile()
 {
-    static const LanguageServerProfile profile
+    static const LanguageServerProfile PROFILE
     {
         .LanguageId = QStringLiteral("slang"),
         .ProductName = QStringLiteral("Slang"),
@@ -36,6 +36,6 @@ const LanguageServerProfile& GetSlangServerProfile()
         .RequiredProtocol = QStringLiteral("UTF-16 completion/signature"),
         .ConfigurationResponder = &ConfigureSlangSection,
     };
-    return profile;
+    return PROFILE;
 }
 } // namespace ludus::editor
