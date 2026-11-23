@@ -858,7 +858,7 @@ float32x3 ShadeRecordedHit(in SceneContext scene, in RayLaunch launch,
             graph_path.write_bytes(graph.canonical_asset(document))
             primary.write_text((shaders / 'edge.slang').read_text() + producer)
             built = build.build_package(manifest_path, output, **options)
-            _, inline_wrapper = find_ray_compute(Path(built['package']), 'main_shaders/primary.slang')
+            _, inline_wrapper = find_ray_compute(Path(built['package']), 'main_shaders/primary.slang', profile='metal')
             self.assertRegex(inline_wrapper, r'typedef GraphSource\d+::Edge Edge;')
             self.assertIn('index * 8u', inline_wrapper)
             primary.write_text(producer)
@@ -874,7 +874,7 @@ float32x3 ShadeRecordedHit(in SceneContext scene, in RayLaunch launch,
             built = build.build_package(manifest_path, output, **options)
             self.assertIn({'node': 'hits', 'graph': 'main.lurender.json', 'configuration': configuration['id'],
                            'stride': 32, 'bytes': 512}, built['shader_buffer_layouts'])
-            _, wrapper = find_ray_compute(Path(built['package']), 'main_shaders/primary.slang')
+            _, wrapper = find_ray_compute(Path(built['package']), 'main_shaders/primary.slang', profile='metal')
             self.assertIn('#include "main_shaders/edge.luslh.slang"', wrapper)
             self.assertIn('index * 8u', wrapper)
             accepted = (output / 'current.json').read_bytes()
