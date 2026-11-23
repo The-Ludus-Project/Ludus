@@ -1862,6 +1862,60 @@ TEST_CASE("Buffer sizing previews the rounded storage size before applying", "[e
     CHECK(workspace.IsJobActive() == false);
 }
 
+TEST_CASE("Graph Code keeps the package draft and restores the originating canvas node",
+          "[editor][render-graph][graph-code]")
+{
+    QTemporaryDir project;
+    const QDir package(MakePackage(project));
+    CodeEditorArea code;
+    RendererWorkspace workspace({});
+    workspace.SetCodeEditorArea(code);
+    workspace.SetProject(project.path(), 1);
+    REQUIRE(workspace.OpenGraph(package.filePath(GetRootGraph())) == true);
+    const QString configuration = QStringLiteral("ColorAndDepth");
+    REQUIRE(workspace.SelectNode(GetLibrary(), configuration, QStringLiteral("draw")) == true);
+    const QString selection = workspace.GetSelection();
+    QSignalSpy opened(&workspace, &RendererWorkspace::ShaderCodeWorkspaceRequested);
+    QSignalSpy returned(&workspace, &RendererWorkspace::GraphWorkspaceRequested);
+    QPushButton* openSource = workspace.findChild<QPushButton*>(QStringLiteral("renderGraphModeSource"));
+    REQUIRE(openSource != nullptr);
+    openSource->click();
+    REQUIRE(opened.size() == 1);
+    const CodeDocumentTab* shader = code.GetActiveTabOrNull();
+    REQUIRE(shader != nullptr);
+    CHECK(shader->GetPath() == QStringLiteral("main_shaders/geometry.slang"));
+    QPushButton* api = code.findChild<QPushButton*>(QStringLiteral("renderGraphShaderApiToggle"));
+    QComboBox* files = code.findChild<QComboBox*>(QStringLiteral("renderGraphSourceFile"));
+    REQUIRE(api != nullptr);
+    REQUIRE(files != nullptr);
+    CHECK(api->isEnabled() == true);
+
+    const int32 graphIndex = files->findText(GetLibrary());
+    REQUIRE(graphIndex >= 0);
+    files->setCurrentIndex(graphIndex);
+    Q_EMIT files->activated(graphIndex);
+    CodeDocumentTab* json = code.GetActiveTabOrNull();
+    REQUIRE(json != nullptr);
+    CHECK(json->GetPath() == GetLibrary());
+    CHECK(json->IsReadOnly() == false);
+    CHECK(api->isEnabled() == false);
+    const QByteArray original = workspace.GetDocument().GetDraft(GetLibrary());
+    json->GetEditor().moveCursor(QTextCursor::End);
+    QTest::keyClicks(&json->GetEditor(), QStringLiteral(" "));
+    CHECK(workspace.GetDocument().GetDraft(GetLibrary()) == original + ' ');
+    CHECK(ReadFile(package.filePath(GetLibrary())) == original);
+
+    REQUIRE(workspace.SelectNode(GetLibrary(), configuration, {}) == true);
+    QPushButton* back = code.findChild<QPushButton*>(QStringLiteral("renderGraphReturnFromCode"));
+    REQUIRE(back != nullptr);
+    back->click();
+    CHECK(returned.size() == 1);
+    CHECK(workspace.GetSelection() == selection);
+    CHECK(workspace.GetCanvas().GetFile() == GetLibrary());
+    CHECK(workspace.Save() == true);
+    CHECK(ReadFile(package.filePath(GetLibrary())) == original + ' ');
+}
+
 TEST_CASE("Shader definition tabs preserve navigation across authored and generated source",
           "[editor][render-graph][code-navigation]")
 {
@@ -1876,12 +1930,10 @@ TEST_CASE("Shader definition tabs preserve navigation across authored and genera
     workspace.SetCodeEditorArea(codeArea);
     workspace.SetProject(project.path(), 1);
     REQUIRE(workspace.OpenGraph(QDir(package).filePath(GetRootGraph())) == true);
-    REQUIRE(workspace.ShowSourceView() == true);
-    QComboBox* files = workspace.findChild<QComboBox*>(QStringLiteral("renderGraphSourceFile"));
-    CodeEditor* source = workspace.findChild<CodeEditor*>(QStringLiteral("renderGraphSource"));
-    REQUIRE(files != nullptr);
-    REQUIRE(source != nullptr);
-    files->setCurrentText(callerFile);
+    REQUIRE(workspace.OpenGraphSource(callerFile) == true);
+    CodeDocumentTab* callerTab = codeArea.GetActiveTabOrNull();
+    REQUIRE(callerTab != nullptr);
+    CodeEditor* source = &callerTab->GetEditor();
     QTextCursor caller = source->textCursor();
     caller.setPosition(8);
     source->setTextCursor(caller);
@@ -1897,12 +1949,15 @@ TEST_CASE("Shader definition tabs preserve navigation across authored and genera
     CHECK(QApplication::activeModalWidget() == nullptr);
     CodeDocumentTab* preview = codeArea.GetActiveTabOrNull();
     REQUIRE(preview != nullptr);
-    CHECK(codeArea.GetTabCount() == 1);
+    CHECK(codeArea.GetTabCount() == 2);
     CHECK(preview->IsPreview() == true);
     CHECK(preview->IsReadOnly() == true);
     CHECK(codeArea.CanSaveActiveTab() == false);
     CHECK(preview->GetEditor().GetLanguage() == CodeLanguage::Slang);
     CHECK(preview->GetEditor().textCursor().selectedText() == QStringLiteral("Scene"));
+    const QPushButton* api = codeArea.findChild<QPushButton*>(QStringLiteral("renderGraphShaderApiToggle"));
+    REQUIRE(api != nullptr);
+    CHECK(api->isEnabled() == true);
     CHECK(codeArea.SaveState().value(QStringLiteral("tabs")).toArray().isEmpty() == true);
 
     QCoreApplication::sendPostedEvents(nullptr, QEvent::DeferredDelete);
@@ -1912,6 +1967,7 @@ TEST_CASE("Shader definition tabs preserve navigation across authored and genera
     CHECK(reopened->GetPath() == helperFile);
     CHECK(reopened->GetEditor().textCursor().position() == 12);
     reopened->GetEditor().GetNavigation().Back();
+    CHECK(codeArea.GetActiveTabOrNull() == callerTab);
     CHECK(source->textCursor().position() == 8);
     source->GetNavigation().Forward();
     CHECK(codeArea.GetActiveTabOrNull() == reopened);

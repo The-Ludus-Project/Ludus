@@ -114,9 +114,6 @@ public:
     /// Select Source without changing its accepted text/history, preferring a selected shader
     /// when opening from the canvas. False when no source is available. GUI thread only.
     [[nodiscard]] bool ShowSourceView();
-    /// Temporarily collapse graph navigation while Source shares the document well with a World.
-    /// Canvas/Plan navigation and the user's Sources visibility preference are preserved.
-    void SetSourceCompanionLayout(bool shouldUseCompactSource);
     /// Local view preferences only: project-relative graph, source selection and selected view.
     /// Never serializes draft bytes. Empty when no graph is loaded.
     [[nodiscard]] QJsonObject GetSourceViewState() const;
@@ -133,6 +130,10 @@ public:
     void SetProject(const QString& root, foundation::uint64 epoch);
     /// Attach the application's document tabs for shader editing and navigation.
     void SetCodeEditorArea(CodeEditorArea& inoutArea);
+    /// Open an exact package-relative source in Code, retaining the current canvas location.
+    [[nodiscard]] bool OpenGraphSource(const QString& file, bool isPreview = false);
+    [[nodiscard]] bool IsGraphCodeActive() const;
+    void SetCodeFocused(bool isFocused);
     /// Open a root .lurender.json inside the project; its directory is the package root.
     [[nodiscard]] bool OpenGraph(const QString& path);
     /// Create and open a built-in raster, ReSTIR DI or visibility offscreen Renderer template in the selected project's
@@ -557,10 +558,22 @@ private:
     [[nodiscard]] CodeNavigation* OpenNavigationTarget(const CodeNavigationTarget& target) override;
     [[nodiscard]] CodeNavigation* ActivateNavigationView(CodeNavigation* viewOrNull, const QString& file) override;
     void revealShaderCodeTab(CodeDocumentTab& inoutTab);
+    void updateGraphCodeContext();
+    void rememberGraphCodeOrigin();
+    void returnToGraph();
+    [[nodiscard]] CodeDocumentTab* activeGraphCodeTab() const;
+    [[nodiscard]] const CodeEditor& activeGraphSourceEditor() const;
+    [[nodiscard]] RenderGraphShaderAssistance* activeShaderAssistance() const;
+    [[nodiscard]] QString shaderInterfaceFile() const;
+    void setUpGraphCodeFormatting(CodeDocumentTab& inoutTab);
+    void applySourceDiagnostics(CodeEditor& inoutEditor, const QString& file);
+    void refreshGraphCodeDiagnostics();
+    void openGraphCodeLine(const QString& file, foundation::int32 line, foundation::int32 column);
     void refreshShaderCodeTabs();
     void resetShaderCodeTabs();
     void sourceTextEdited(const QString& file);
     void restoreShaderTabHistory(bool shouldRedo);
+    void restoreGraphCodeSelection(const RenderGraphTextState& state);
     enum class SharedShaderFilePurpose : foundation::uint8
     {
         Include,
@@ -634,6 +647,8 @@ private:
     void updateResourceInspection();
     void renderPreview();
     void renderSourceStatus();
+    void rememberSourceSplitter();
+    [[nodiscard]] bool isGraphCodeVisible() const;
     void updateSourceInterfaceVisibility();
     void updateSourceInterfaceContents();
     void updateChromeVisibility();
@@ -652,7 +667,6 @@ private:
     bool mIsRendering = false;
     bool mIsGraphSettingsSectionExpanded = false;
     bool mIsChromeVisible = true;
-    bool mShouldUseCompactSource = false;
     /// The outline was open when the Source view hid it, and comes back with the next view.
     bool mIsOutlineRestoredAfterSource = false;
     foundation::int32 mFocusRestoreView = 0;
@@ -662,6 +676,8 @@ private:
     RenderGraphRecovery* mRecovery;
     RenderGraphCodeDocument mSourceDocument;
     QPointer<CodeEditorArea> mShaderCodeArea;
+    RenderGraphNodeSelection mGraphCodeOrigin;
+    bool mIsCodeFocused = false;
     BufferSizingDraft mPendingBufferSizing;
     ExternalCodeEditor mCodeEditor;
     RenderGraphJob mJob;
@@ -701,6 +717,8 @@ private:
     /// The selection's connections, endpoint pickers and Connect/Disconnect; shown only with a selection.
     QWidget* mConnections;
     QLabel* mConnectionsHeading;
+    QWidget* mGraphSourceHeader;
+    QPushButton* mReturnToGraph;
     QComboBox* mSourceFile;
     CodeEditor* mSource;
     CodeDocumentController* mSourceController;
