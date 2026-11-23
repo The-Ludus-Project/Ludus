@@ -2920,7 +2920,7 @@ bool RendererWorkspace::startBuild(bool shouldPreview, RenderGraphSource source)
     return startJob(QStringLiteral("build"), arguments, true, shouldPreview, source);
 }
 
-void RendererWorkspace::appendBuildToolArguments(QStringList& inoutArguments) const
+void RendererWorkspace::appendShaderToolArguments(QStringList& inoutArguments) const
 {
     const bool shouldOverride = mBuildSettings.ShouldOverrideTools;
     const RenderGraphBuildTools& tools = mBuildSettings.Tools;
@@ -2933,6 +2933,13 @@ void RendererWorkspace::appendBuildToolArguments(QStringList& inoutArguments) co
         inoutArguments +=
             {QStringLiteral("--project"), mProjectRoot, QStringLiteral("--tooling-root"), mTooling.ToolingRoot};
     }
+}
+
+void RendererWorkspace::appendBuildToolArguments(QStringList& inoutArguments) const
+{
+    appendShaderToolArguments(inoutArguments);
+    const bool shouldOverride = mBuildSettings.ShouldOverrideTools;
+    const RenderGraphBuildTools& tools = mBuildSettings.Tools;
     if (shouldOverride == true && tools.Validator.isEmpty() == false)
     {
         inoutArguments += {QStringLiteral("--validator"), tools.Validator};
@@ -4186,65 +4193,6 @@ void RendererWorkspace::populateNodeFields(QFormLayout& outFields, QWidget& inou
             outFields.addRow(name, line);
         }
     }
-}
-
-void RendererWorkspace::populateBufferSizing(const QJsonObject& node, QFormLayout& outFields, QWidget& inoutParent)
-{
-    const QJsonObject record = node.value(QStringLiteral("shader_struct")).toObject();
-    if (record.isEmpty() == false)
-    {
-        const QString linkedStruct = QStringLiteral("%1 × %2\n%3")
-                                         .arg(record.value(QStringLiteral("count")).toInteger())
-                                         .arg(record.value(QStringLiteral("type")).toString(),
-                                              record.value(QStringLiteral("source")).toString());
-        QLabel* sizing = new QLabel(&inoutParent);
-        sizing->setObjectName(QStringLiteral("renderGraphBufferStructLayout"));
-        sizing->setTextFormat(Qt::PlainText);
-        sizing->setTextInteractionFlags(Qt::TextSelectableByMouse);
-        sizing->setWordWrap(true);
-        const auto refresh = [this,
-                              sizing,
-                              linkedStruct,
-                              file = mSelectedFile,
-                              configuration = mSelectedConfiguration,
-                              identity = mSelectedNode]() {
-            sizing->setText(linkedStruct + QStringLiteral("\nBuild Graph resolves the byte capacity."));
-            if (mHasResult == false || mLastResult.IsSuccessful == false ||
-                mLastResult.Request.InputIdentity.isEmpty() == true ||
-                mLastResult.Request.InputIdentity != getBuildIdentity(RenderGraphSource::Draft))
-            {
-                return;
-            }
-            const QJsonArray layouts = mLastResult.Payload.value(QStringLiteral("build"))
-                                           .toObject()
-                                           .value(QStringLiteral("shader_buffer_layouts"))
-                                           .toArray();
-            for (const QJsonValueConstRef value : layouts)
-            {
-                const QJsonObject layout = value.toObject();
-                if (layout.value(QStringLiteral("graph")).toString() == file &&
-                    layout.value(QStringLiteral("configuration")).toString() == configuration &&
-                    layout.value(QStringLiteral("node")).toString() == identity)
-                {
-                    sizing->setText(linkedStruct + QStringLiteral("\n%L1 bytes per element · %L2 bytes allocated")
-                                                       .arg(layout.value(QStringLiteral("stride")).toInteger())
-                                                       .arg(layout.value(QStringLiteral("bytes")).toInteger()));
-                    return;
-                }
-            }
-        };
-        connect(this, &RendererWorkspace::JobFinished, sizing, refresh);
-        refresh();
-        outFields.addRow(QStringLiteral("Shader struct"), sizing);
-    }
-    QPushButton* edit = new QPushButton(record.isEmpty() == true ? QStringLiteral("From shader struct…")
-                                                                 : QStringLiteral("Edit buffer sizing…"),
-                                        &inoutParent);
-    edit->setObjectName(QStringLiteral("renderGraphEditBufferSizing"));
-    edit->setProperty("renderGraphField", QStringLiteral("shader_struct"));
-    QWidget* parent = &inoutParent;
-    connect(edit, &QPushButton::clicked, this, [this, parent]() { editBufferSizing(*parent); });
-    outFields.addRow(edit);
 }
 
 void RendererWorkspace::populateGraphSettings(QFormLayout& outFields, QWidget& inoutParent)

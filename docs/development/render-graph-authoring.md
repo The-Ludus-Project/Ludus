@@ -1248,13 +1248,17 @@ offers Slang. Source and sizing edits have separate undo steps. **Save Render
 Graph** publishes both, and Cancel in Buffer sizing dismisses the pending sizing
 values.
 
-Build Graph lowers LUSL headers and reflects the storage stride with Slang.
-It multiplies the stride by the element capacity and rounds up to a 16-byte
-word. The Buffer shows both values after a successful build. Save changes to
-the declaration and run Build Graph again to update the allocation.
+For a shared declaration, **Storage size** in Buffer sizing and the Buffer's
+**Shader struct** summary show the reflected bytes per element and total bytes
+from the current draft. The preview multiplies the stride by the element
+capacity and rounds up to a 16-byte word. The total updates as you change
+**Element capacity**, even when an unrelated shader prevents the graph from
+building. Save the sizing and declaration changes and run **Build Graph** to
+apply the new allocation.
 
 An ordered Slang shader can declare the struct in its existing program file.
-Select that file and the type in **Buffer sizing**. Ordered Slang callbacks
+Select that file and the type in **Buffer sizing**. Previewing an inline
+declaration requires its linked shader context. Ordered Slang callbacks
 linked in the same shader context can use that layout, including through named
 Buffer ports. Use a shared declaration across separate contexts or with a named
 LUSL Buffer port. Named LUSL shaders get the linked type through

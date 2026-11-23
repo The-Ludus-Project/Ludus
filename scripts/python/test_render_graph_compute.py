@@ -371,6 +371,35 @@ class NativeSceneComputeTests(unittest.TestCase):
                           r'[^\n]*\n)*)default:', wrapper)
         return re.findall(r'case (\d+):', match[1]) if match else None
 
+    def test_shared_buffer_stride_is_available_when_callback_compilation_fails(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            source = Path(temporary) / 'source'
+            shutil.copytree(SCENE_COMPUTE, source)
+            graph_path = source / 'main.lurender.json'
+            document = json.loads(graph_path.read_text())
+            configuration = next(item for item in document['configurations'] if item['id'] == 'WorkItems')
+            buffer = next(node for node in configuration['nodes'] if node['id'] == 'hits')
+            header = 'main_shaders/edge_table.slang'
+            buffer['shader_struct'] = {'source': header, 'type': 'EdgeTable', 'count': 3}
+            graph_path.write_bytes(graph.canonical_asset(document))
+            manifest = source / 'main.lushader.json'
+            manifest.write_text((source / 'main.lushader.json.in').read_text().replace(
+                '@RG2_TEST_PROFILES@', '["metal"]'))
+            shader = source / 'main_shaders/work_items.slang'
+            shader.write_text('#include "edge_table.slang"\n' + shader.read_text()
+                              + '\nuint Broken() { return undefinedIdentifier; }\n')
+            options = dict(helper=os.environ['LUDUS_RG1_HELPER'], compiler=os.environ['LUDUS_RG1_SLANG'])
+            output = Path(temporary) / 'build'
+            (source / header).write_text('struct EdgeTable { uint Count; };\n')
+            with self.assertRaisesRegex(ToolingError, 'undefinedIdentifier'):
+                build.build_package(manifest, output, **options, spirv_cross=os.environ['LUDUS_RG1_CROSS'])
+            self.assertEqual(4, build.inspect_buffer_stride(manifest, header, 'EdgeTable', root=source, **options))
+            (source / header).write_text('struct EdgeTable { uint4 Header; uint4 Edges[2]; };\n')
+            self.assertEqual(48, build.inspect_buffer_stride(manifest, header, 'EdgeTable', root=source, **options))
+            with self.assertRaisesRegex(ToolingError, 'MissingRecord'):
+                build.inspect_buffer_stride(manifest, header, 'MissingRecord', root=source, **options)
+            self.assertFalse((output / 'current.json').exists())
+
     def test_ordered_buffer_capacity_tracks_shared_slang_struct(self):
         with tempfile.TemporaryDirectory() as temporary:
             source = Path(temporary) / 'source'
@@ -392,11 +421,18 @@ class NativeSceneComputeTests(unittest.TestCase):
             options = dict(helper=os.environ['LUDUS_RG1_HELPER'], compiler=os.environ['LUDUS_RG1_SLANG'],
                            spirv_cross=os.environ['LUDUS_RG1_CROSS'])
             output = Path(temporary) / 'build'
-            buffer['shader_struct']['source'] = 'main_shaders/work_items.slang'
+            inline_source = 'main_shaders/work_items.slang'
+            # Preview an inline struct while the Buffer is still sized in fixed bytes.
+            record = buffer.pop('shader_struct')
+            buffer['bytes'] = 16
             graph_path.write_bytes(graph.canonical_asset(document))
-            # The selected declaration lives alongside a callback which needs SceneContext
-            # and GraphBuffer0. The allocation probe must use that linked shader context.
             shader.write_text('struct EdgeTable { uint4 Header; uint4 Edges[2]; };\n' + original)
+            self.assertEqual(48, build.inspect_buffer_stride(
+                manifest, inline_source, 'EdgeTable', root=source,
+                helper=options['helper'], compiler=options['compiler']))
+            del buffer['bytes']
+            buffer['shader_struct'] = {**record, 'source': inline_source}
+            graph_path.write_bytes(graph.canonical_asset(document))
             inline = build.build_package(manifest, output, **options)
             self.assertIn({'node': 'hits', 'graph': 'main.lurender.json', 'configuration': 'WorkItems',
                            'stride': 48, 'bytes': 48}, inline['shader_buffer_layouts'])
