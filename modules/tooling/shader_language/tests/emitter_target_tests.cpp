@@ -1,6 +1,7 @@
 // Target tests: lowered LUSL compiled by the pinned Slang through Ludus::ShaderCompiler for every
 // portable target (docs/architecture/shading-language.md#testing).
 
+#include <ludus/foundation/base/config.h>
 #include <ludus/foundation/containers/array.hpp>
 #include <ludus/foundation/containers/static_array.hpp>
 #include <ludus/foundation/filesystem/filesystem.hpp>
@@ -897,6 +898,13 @@ void Main(in uint32x3 id : DispatchThreadId, in uint32 groupIndex : GroupIndex)
         INFO("target " << static_cast<int>(target) << "\n" << diagnostics);
         CHECK(status == compiler::Status::Ready);
     }
+#if LUDUS_TARGET_OS == LUDUS_OS_WINDOWS
+    // DXIL: the same module through the pinned DXC, which signs the container (Windows CI).
+    std::string dxilDiagnostics;
+    const compiler::Status dxilStatus = CompileFor(slang, files, compiler::Target::Dxil, dxilDiagnostics);
+    INFO("DXIL\n" << dxilDiagnostics);
+    CHECK(dxilStatus == compiler::Status::Ready);
+#endif
 
     // A structured buffer's length: Slang's direct Metal backend has no buffer-length query, so the
     // portable set (one session for SPIR-V, WGSL and Metal) rejects it, naming GetDimensions. The
@@ -920,6 +928,13 @@ void Main(in uint32x3 id : DispatchThreadId)
     INFO(portableDiagnostics);
     CHECK(portableDiagnostics.find("'metal'") != std::string::npos);
     CHECK(portableDiagnostics.find("GetDimensions") != std::string::npos);
+#if LUDUS_TARGET_OS == LUDUS_OS_WINDOWS
+    // DXIL has its own Slang session and a native structured-buffer length query.
+    std::string bufferDxilDiagnostics;
+    const compiler::Status bufferDxilStatus = CompileFor(slang, buffers, compiler::Target::Dxil, bufferDxilDiagnostics);
+    INFO("DXIL\n" << bufferDxilDiagnostics);
+    CHECK(bufferDxilStatus == compiler::Status::Ready);
+#endif
 
     // Storage an extern slang block declares keeps Slang's Interlocked functions. WGSL requires
     // atomic types that only the declaring Slang can provide, so the portable set rejects them,

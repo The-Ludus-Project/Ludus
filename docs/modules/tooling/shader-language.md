@@ -1690,6 +1690,9 @@ with and without bounds checks. It also checks:
   setting;
 - the [SDK declarations](#sdk-declarations).
 
+On Windows it also compiles the resource-query, atomic and barrier modules to
+signed DXIL. The Windows runtime qualification runs it.
+
 It is built when the native compiler library is (`LUDUS_BUILD_SHADER_WORKER=ON`).
 `luslc_tests` runs `luslc` on temporary snapshots and checks that every `.lusl`
 and `.luslh` file in the repository is formatted. The worker protocol test
