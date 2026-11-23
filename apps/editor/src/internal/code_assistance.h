@@ -100,6 +100,8 @@ private:
     /// Ask for code actions at the caret now; the light bulb shows the result.
     void requestCodeActions(bool isExplicit);
     void scheduleCodeActions();
+    /// The text of every open editor of this language, this one first, for word completion.
+    [[nodiscard]] QList<QString> collectOpenBuffers() const;
     /// The context a workspace edit from the server is read against.
     [[nodiscard]] CodeWorkspaceEditContext makeWorkspaceEditContext(const QString& unit, const QString& source) const;
     void resolveCompletion(foundation::int32 row);

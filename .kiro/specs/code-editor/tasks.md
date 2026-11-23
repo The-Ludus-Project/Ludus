@@ -267,7 +267,7 @@ Requirements: CE09-CE11, CE20. Prerequisite: M2, M3.
   `internal/language_positions.h/.cpp`, the LUSL profile and
   `tests/language_server_fixture.py`; the status-bar Show Log action lands with
   the diagnostics batch. See the [M4 batch 2 decision-log entry](../../../docs/architecture/code-editor-decision-log.md#m4-batch-2-capability-dispatch-and-the-request-table-ce09-ce20-2026-11-22).)*
-- [ ] Add hover, Analysis diagnostics, semantic tokens, inlay hints, folding
+- [x] Add hover, Analysis diagnostics, semantic tokens, inlay hints, folding
   ranges (merged by kind per CE26), document and workspace symbols, the remaining Go to commands, references window,
   completion resolve and snippets. *(Batch 3a: hover and Analysis markers; see the
   [M4 batch 3a decision-log entry](../../../docs/architecture/code-editor-decision-log.md#m4-batch-3a-hover-and-analysis-diagnostics-ce10-ce20-2026-11-23).
@@ -282,7 +282,11 @@ Requirements: CE09-CE11, CE20. Prerequisite: M2, M3.
   [M4 batch 3e decision-log entry](../../../docs/architecture/code-editor-decision-log.md#m4-batch-3e-the-references-tool-window-ce10-2026-11-23).
   Batch 3f: completion resolve, the documentation panel and server snippets
   with tab stops; see the
-  [M4 batch 3f decision-log entry](../../../docs/architecture/code-editor-decision-log.md#m4-batch-3f-completion-resolve-and-snippets-ce10-2026-11-23).)*
+  [M4 batch 3f decision-log entry](../../../docs/architecture/code-editor-decision-log.md#m4-batch-3f-completion-resolve-and-snippets-ce10-2026-11-23).
+  Batch 6: completion merges server items, built-in snippets and open-buffer
+  words, ranked by the palette's fuzzy matcher; see the
+  [M4 batch 6 decision-log entry](../../../docs/architecture/code-editor-decision-log.md#m4-batch-6-completion-aggregation-ce10-2026-11-23).
+  Ludus project symbols in completion belong to the M7 engine context.)*
 - [x] Add rename with preview, code actions with the light bulb, and workspace
   edits with transaction undo. *(Batch 4a: rename with preview and validated
   workspace edits applied as one package transaction; see the
@@ -309,10 +313,8 @@ editor groups (83 cases, one skipped without a native display). An offscreen
 capture of the native case shows `slangd`'s semantic colors and the `amount:`
 inlay hint.
 
-Open for the issue: interactive acceptance in the running editor, and the
-completion aggregation in the design (snippet, open-buffer word and project
-symbol sources merged with the server's items), which the third task's
-server-snippet work does not cover. The pinned `slangd` and `luslc lsp` offer
+Open for the issue: interactive acceptance in the running editor. Completion
+aggregation followed in batch 6; project symbols in completion belong to M7. The pinned `slangd` and `luslc lsp` offer
 no rename, code actions, folding ranges or (for `slangd`) references, so those
 features are verified against the fixture only.
 

@@ -612,6 +612,7 @@ add_library(ludus_editor_code STATIC
     src/internal/code_workspace_edit_preview.h src/code_workspace_edit_preview.cpp
     src/internal/code_actions.h src/code_actions.cpp
     src/internal/fuzzy_match.h src/fuzzy_match.cpp
+    src/internal/code_completion_sources.h src/code_completion_sources.cpp
     src/internal/code_assistance.h src/code_assistance.cpp)
 file(READ "${PROJECT_SOURCE_DIR}/config/tool_versions.json" editor_tool_versions)
 string(JSON editor_formatter_version GET "${editor_tool_versions}" minimum clang-format)
@@ -1303,7 +1304,7 @@ if(LUDUS_BUILD_TESTS AND NOT EMSCRIPTEN)
         set_tests_properties(ludus_editor_accessibility_tests PROPERTIES LABELS "unit;editor;native;accessibility"
             TIMEOUT 30 ENVIRONMENT "QT_QPA_PLATFORM=cocoa")
     endif()
-    add_executable(ludus_code_editor_tests tests/code_editor_tests.cpp tests/code_document_tests.cpp tests/code_navigation_tests.cpp tests/code_language_registry_tests.cpp tests/code_latency_probe_tests.cpp tests/code_file_document_tests.cpp tests/code_edit_set_tests.cpp tests/code_document_registry_tests.cpp tests/code_recovery_journal_tests.cpp tests/code_editor_area_tests.cpp tests/code_status_bar_tests.cpp tests/script_code_document_tests.cpp tests/code_multi_cursor_tests.cpp tests/code_find_overlay_tests.cpp tests/code_search_tests.cpp tests/code_pairs_tests.cpp tests/code_keymap_tests.cpp tests/code_syntax_runtime_tests.cpp tests/code_syntax_grammar_tests.cpp tests/code_syntax_service_tests.cpp tests/language_client_tests.cpp tests/code_semantic_layers_tests.cpp tests/code_references_window_tests.cpp tests/code_snippet_tests.cpp tests/code_workspace_edit_tests.cpp tests/code_editor_benchmark.cpp)
+    add_executable(ludus_code_editor_tests tests/code_editor_tests.cpp tests/code_document_tests.cpp tests/code_navigation_tests.cpp tests/code_language_registry_tests.cpp tests/code_latency_probe_tests.cpp tests/code_file_document_tests.cpp tests/code_edit_set_tests.cpp tests/code_document_registry_tests.cpp tests/code_recovery_journal_tests.cpp tests/code_editor_area_tests.cpp tests/code_status_bar_tests.cpp tests/script_code_document_tests.cpp tests/code_multi_cursor_tests.cpp tests/code_find_overlay_tests.cpp tests/code_search_tests.cpp tests/code_pairs_tests.cpp tests/code_keymap_tests.cpp tests/code_syntax_runtime_tests.cpp tests/code_syntax_grammar_tests.cpp tests/code_syntax_service_tests.cpp tests/language_client_tests.cpp tests/code_semantic_layers_tests.cpp tests/code_references_window_tests.cpp tests/code_snippet_tests.cpp tests/code_workspace_edit_tests.cpp tests/code_completion_sources_tests.cpp tests/code_editor_benchmark.cpp)
     target_include_directories(ludus_code_editor_tests PRIVATE src "${CMAKE_CURRENT_BINARY_DIR}/generated")
     target_compile_definitions(ludus_code_editor_tests PRIVATE QT_NO_KEYWORDS QT_NO_CAST_FROM_ASCII)
     configure_file(tests/formatter_fixture.py generated/formatter_fixture.py COPYONLY)

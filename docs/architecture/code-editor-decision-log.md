@@ -1180,3 +1180,33 @@ The gate results are recorded with the task list. Interactive acceptance in the
 running editor and the design's completion aggregation remain open on the
 issue.
 
+### M4 batch 6: completion aggregation (CE10, 2026-11-23)
+
+The design merges completion sources and ranks them with the command palette's
+matcher. This batch does that for three of the four sources the architecture
+names:
+
+- **Server items** are now kept when the typed word fuzzily matches their
+  `filterText` (or label), not only when it is a case-insensitive prefix.
+- **Snippets** come from a built-in table per language
+  (`internal/code_completion_sources.h`): `if`, `for`, `struct`, `func` and a
+  compute entry point, in each language's own syntax (Slang's
+  `[shader("compute")]` and `SV_DispatchThreadID`, LUSL's
+  `[stage(compute), threads(...)]` and `DispatchThreadId`). Continuation lines
+  are indented to the insertion line. They are ordinary snippet items, so they
+  reuse the batch 3f expansion, tab stops and single undo step.
+- **Words** come from every open editor of the same language, the edited buffer
+  first: distinct identifiers of 3 to 128 UTF-16 units matching the typed word,
+  at most 4,096, reading at most 1 Mi UTF-16 units in all; a server label is
+  not repeated as a word.
+- **Ranking.** `ScoreFuzzyMatch` moved from the command palette into the code
+  library (`internal/fuzzy_match.h`, a separate structural commit). Higher
+  scores come first; ties list server items, then snippets, then words, each in
+  its own order. The best 256 are shown. After `.`, only server items are
+  offered, since only the server knows the members.
+
+**Ludus project symbols** are the remaining source. The architecture defines
+them through the engine context (asset and entity references from the content
+catalog in Luau and JSON), which is the M7 milestone, so they are left to M7.
+User-defined snippets are not part of this batch either.
+
