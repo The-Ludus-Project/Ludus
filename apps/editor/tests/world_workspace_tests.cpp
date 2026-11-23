@@ -7396,37 +7396,54 @@ Shape "trianglemesh" "point3 P" [0 0 0 1 0 0 0 1 0] "integer indices" [0 1 2]
         REQUIRE(materialOrNull != nullptr);
         return *materialOrNull;
     };
-    REQUIRE(getMaterial(workspace, selected).Scattering.Model == format::MaterialModel::Diffuse);
+    const ludus::resources::SceneMaterial wood = getMaterial(workspace, selected);
+    REQUIRE(wood.Scattering.Model == format::MaterialModel::Diffuse);
+    const auto readSwatch = [](const WorldWorkspace& source, const ludus::resources::SceneMaterial& material) {
+        const RenderScene& scene = GetLevel(source).PreviewScene();
+        REQUIRE(scene.Definition != nullptr);
+        REQUIRE(material.Texture < scene.Definition->Textures.GetSize());
+        const ludus::resources::SceneTexture& texture = scene.Definition->Textures[material.Texture];
+        return QByteArray(reinterpret_cast<const char*>(texture.Pixels.GetData()),
+                          static_cast<qsizetype>(texture.Pixels.GetSize()));
+    };
+    // This PBRT import stores the wood colour in a swatch and uses a separate linear reflectance factor.
+    const QByteArray woodSwatch = readSwatch(workspace, wood);
+    REQUIRE(woodSwatch.isEmpty() == false);
 
     // Make Coated Diffuse opens the creation dialog pre-set to the layered model for the shared source material.
     QPushButton* makeOrNull = workspace.findChild<QPushButton*>(QStringLiteral("worldMakeCoatedDiffuse"));
     REQUIRE(makeOrNull != nullptr);
     REQUIRE(makeOrNull->isEnabled() == true);
+    QTimer::singleShot(0, [&workspace]() {
+        QDialog* creationOrNull = workspace.findChild<QDialog*>(QStringLiteral("worldMaterialCreation"));
+        REQUIRE(creationOrNull != nullptr);
+        QComboBox* modelOrNull = creationOrNull->findChild<QComboBox*>(QStringLiteral("worldMaterialCreationModel"));
+        REQUIRE(modelOrNull != nullptr);
+        CHECK(modelOrNull->currentData().toString() == QStringLiteral("coated_diffuse"));
+        const auto creationInput = [creationOrNull](const QString& name) {
+            QLineEdit* inputOrNull = creationOrNull->findChild<QLineEdit*>(name);
+            REQUIRE(inputOrNull != nullptr);
+            return inputOrNull;
+        };
+        Type(creationInput(QStringLiteral("worldMaterialCreationCoatingAlpha")), QStringLiteral("0.2"));
+        Type(creationInput(QStringLiteral("worldMaterialCreationCoatingEta")), QStringLiteral("1.5"));
+        Type(creationInput(QStringLiteral("worldMaterialCreationCoatingThickness")), QStringLiteral("0.05"));
+        QPushButton* confirmOrNull =
+            creationOrNull->findChild<QPushButton*>(QStringLiteral("worldConfirmMaterialCreation"));
+        REQUIRE(confirmOrNull != nullptr);
+        confirmOrNull->click();
+    });
     makeOrNull->click();
-    QDialog* creationOrNull = workspace.findChild<QDialog*>(QStringLiteral("worldMaterialCreation"));
-    REQUIRE(creationOrNull != nullptr);
-    QComboBox* modelOrNull = creationOrNull->findChild<QComboBox*>(QStringLiteral("worldMaterialCreationModel"));
-    REQUIRE(modelOrNull != nullptr);
-    CHECK(modelOrNull->currentData().toString() == QStringLiteral("coated_diffuse"));
-    const auto creationInput = [&](const QString& name) {
-        QLineEdit* inputOrNull = creationOrNull->findChild<QLineEdit*>(name);
-        REQUIRE(inputOrNull != nullptr);
-        return inputOrNull;
-    };
-    Type(creationInput(QStringLiteral("worldMaterialCreationCoatingAlpha")), QStringLiteral("0.2"));
-    Type(creationInput(QStringLiteral("worldMaterialCreationCoatingEta")), QStringLiteral("1.5"));
-    Type(creationInput(QStringLiteral("worldMaterialCreationCoatingThickness")), QStringLiteral("0.05"));
-    QPushButton* confirmOrNull =
-        creationOrNull->findChild<QPushButton*>(QStringLiteral("worldConfirmMaterialCreation"));
-    REQUIRE(confirmOrNull != nullptr);
-    confirmOrNull->click();
     WaitForValidatedScene(workspace);
 
     // Both slots now resolve to the ordered coat over the wood substrate.
     const auto checkCreated = [&](const WorldWorkspace& source, const QString& id) {
         const ludus::resources::SceneMaterial material = getMaterial(source, id);
         CHECK(material.Scattering.Model == format::MaterialModel::CoatedDiffuse);
-        CHECK(material.Reflectance.X == 0.32F);
+        CHECK(material.Reflectance.X == wood.Reflectance.X);
+        CHECK(material.Reflectance.Y == wood.Reflectance.Y);
+        CHECK(material.Reflectance.Z == wood.Reflectance.Z);
+        CHECK(readSwatch(source, material) == woodSwatch);
         CHECK(material.Scattering.CoatingEta == 1.5F);
         CHECK(material.Scattering.CoatingThickness == 0.05F);
         // The coat runs an internal walk, so a fixed-dimension profile cannot consume it.
