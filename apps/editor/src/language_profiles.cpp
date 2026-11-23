@@ -45,6 +45,7 @@ const LanguageServerProfile& GetSlangServerProfile()
         .SyntaxNoun = QStringLiteral("shader syntax"),
         .StartRepair = QStringLiteral("Repair project shader tools or check the compiler override."),
         .ConfigurationResponder = &ConfigureSlangSection,
+        .RequestTimeoutMilliseconds = LANGUAGE_SERVER_REQUEST_TIMEOUT_MILLISECONDS,
     };
     return PROFILE;
 }
@@ -62,6 +63,7 @@ const LanguageServerProfile& GetLuslServerProfile()
         .SyntaxNoun = QStringLiteral("LUSL syntax"),
         .StartRepair = QStringLiteral("Repair project tools or set LUDUS_LUSLC, then Retry assistance."),
         .ConfigurationResponder = &ConfigureNoSection,
+        .RequestTimeoutMilliseconds = LANGUAGE_SERVER_REQUEST_TIMEOUT_MILLISECONDS,
     };
     return PROFILE;
 }

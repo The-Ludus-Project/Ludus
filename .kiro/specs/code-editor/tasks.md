@@ -290,10 +290,31 @@ Requirements: CE09-CE11, CE20. Prerequisite: M2, M3.
   Batch 4b: code actions with the light bulb and resolve; see the
   [M4 batch 4b decision-log entry](../../../docs/architecture/code-editor-decision-log.md#m4-batch-4b-code-actions-and-the-light-bulb-ce10-ce11-2026-11-23).
   Server commands and the hover's Quick Fix link are not run or shown.)*
-- [ ] Add the fake LSP fixture and its failure-path tests.
+- [x] Add the fake LSP fixture and its failure-path tests. *(Batch 5:
+  oversized, over-long, doubly framed and invalid messages, a deadline from the
+  profile, replies to unknown requests and replies for a document the editor no
+  longer shows; see the
+  [M4 gate decision-log entry](../../../docs/architecture/code-editor-decision-log.md#m4-batch-5-failure-paths-and-the-gate-ce09-ce10-ce11-2026-11-23).)*
 
 Gate: the CE09-CE11 tests pass against the fake server, and the `[slangd]` tests
 pass against the pinned server.
+
+Gate evidence, 2026-11-23, macOS `macos-clang-development` with warnings as
+errors, offscreen. `ludus_code_editor_tests` passed all 226 cases with the
+pinned `slangd`; its `[assistance]` cases (CE09-CE11, against
+`language_server_fixture.py`) passed 56 of 57, the one skip being the pinned
+server case that needs `slangd`, and `[slang-native]` passed both cases.
+`ludus_editor_tests` passed the layout, diagnostics, navigation and code
+editor groups (83 cases, one skipped without a native display). An offscreen
+capture of the native case shows `slangd`'s semantic colors and the `amount:`
+inlay hint.
+
+Open for the issue: interactive acceptance in the running editor, and the
+completion aggregation in the design (snippet, open-buffer word and project
+symbol sources merged with the server's items), which the third task's
+server-snippet work does not cover. The pinned `slangd` and `luslc lsp` offer
+no rename, code actions, folding ranges or (for `slangd`) references, so those
+features are verified against the fixture only.
 
 ## M5 - Luau provider
 

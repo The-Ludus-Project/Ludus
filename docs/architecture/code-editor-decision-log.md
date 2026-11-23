@@ -1154,3 +1154,29 @@ Not done: the hover's Quick Fix link, and running server commands. With this
 batch the fourth M4 task is complete; the fixture failure paths and the M4 gate
 remain.
 
+### M4 batch 5: failure paths and the gate (CE09, CE10, CE11, 2026-11-23)
+
+The last M4 task adds the fixture failure paths the earlier batches deferred:
+
+- **Framing and bodies.** `language_server_fixture.py --corrupt METHOD:KIND`
+  answers with a length past the 4 MiB message budget, a header past 8 KiB, two
+  `Content-Length` headers, or a body that is not JSON. Each stops the
+  connection with the server's name and the repair, delivers no reply, and a
+  new start (Retry assistance) serves requests again.
+- **Deadline.** The ten-second initialize and request deadline is now the
+  profile's `RequestTimeoutMilliseconds`, defaulting to
+  `LANGUAGE_SERVER_REQUEST_TIMEOUT_MILLISECONDS`, as the architecture lists the
+  bounds as profile defaults. The built-in profiles keep ten seconds; a test
+  profile with a short deadline exercises `--silent METHOD` quickly.
+- **Unknown replies.** A response to an id the client never sent
+  (`--stray-reply`) is ignored and the connection stays ready.
+- **Stale replies across documents.** A held code action or hover reply for one
+  document, released after the editor is bound to another, changes neither
+  document and shows no light bulb, list or hover. The workspace edit refusals
+  (generated text, read-only and unknown files, older versions) came with
+  rename in batch 4a.
+
+The gate results are recorded with the task list. Interactive acceptance in the
+running editor and the design's completion aggregation remain open on the
+issue.
+
