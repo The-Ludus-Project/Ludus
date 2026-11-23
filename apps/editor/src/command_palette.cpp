@@ -33,11 +33,6 @@ namespace ludus::editor
 {
 namespace
 {
-constexpr int MATCH_SCORE = 10;
-constexpr int CONSECUTIVE_BONUS = 15;
-constexpr int WORD_START_BONUS = 12;
-constexpr int SUBSTRING_BONUS = 30;
-constexpr int PREFIX_BONUS = 20;
 constexpr int PALETTE_WIDTH = 560;
 constexpr int PALETTE_VISIBLE_ROWS = 10;
 constexpr int PALETTE_TOP_MARGIN = 80;
@@ -99,57 +94,6 @@ void CollectFromMenu(const QMenu& menu, const QString& group, QList<PaletteEntry
         entry.Action = action;
         outEntries.append(entry);
     }
-}
-
-/// The greedy in-order match behind ScoreFuzzyMatch, also reporting where each query letter landed.
-int MatchFuzzy(const QString& query, const QString& candidate, QList<int>& outPositions)
-{
-    outPositions.clear();
-    QString needle = query.toLower();
-    needle.remove(QLatin1Char(' '));
-    if (needle.isEmpty() == true)
-    {
-        return 0;
-    }
-    const QString haystack = candidate.toLower();
-    int score = 0;
-    int queryIndex = 0;
-    int previousMatch = -2;
-    for (int index = 0; index < haystack.size() && queryIndex < needle.size(); ++index)
-    {
-        if (haystack.at(index) != needle.at(queryIndex))
-        {
-            continue;
-        }
-        outPositions.append(index);
-        score += MATCH_SCORE;
-        if (index == previousMatch + 1)
-        {
-            score += CONSECUTIVE_BONUS;
-        }
-        if (index == 0 || haystack.at(index - 1).isLetterOrNumber() == false)
-        {
-            score += WORD_START_BONUS;
-        }
-        previousMatch = index;
-        ++queryIndex;
-    }
-    if (queryIndex < needle.size())
-    {
-        outPositions.clear();
-        return -1;
-    }
-    if (haystack.contains(needle) == true)
-    {
-        score += SUBSTRING_BONUS;
-    }
-    if (haystack.startsWith(needle) == true)
-    {
-        score += PREFIX_BONUS;
-    }
-    // Shorter candidates win ties: the same letters cover more of them. A match never scores below zero, which
-    // means no match.
-    return std::max(0, score - static_cast<int>(haystack.size() / MATCH_SCORE));
 }
 
 /// Paints the label on the left, with the letters the search matched in bold, and the group and shortcut in the
@@ -309,19 +253,6 @@ QList<PaletteEntry> CollectWindowPaletteEntries(const QMainWindow& window)
         }
     }
     return entries;
-}
-
-int ScoreFuzzyMatch(const QString& query, const QString& candidate)
-{
-    QList<int> positions;
-    return MatchFuzzy(query, candidate, positions);
-}
-
-QList<int> FindFuzzyMatchPositions(const QString& query, const QString& candidate)
-{
-    QList<int> positions;
-    static_cast<void>(MatchFuzzy(query, candidate, positions));
-    return positions;
 }
 
 PaletteIndexList RankPaletteEntries(const QList<PaletteEntry>& entries, const QString& query, bool isEnabledOnly)

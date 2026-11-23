@@ -611,6 +611,7 @@ add_library(ludus_editor_code STATIC
     src/internal/code_workspace_edit.h src/code_workspace_edit.cpp
     src/internal/code_workspace_edit_preview.h src/code_workspace_edit_preview.cpp
     src/internal/code_actions.h src/code_actions.cpp
+    src/internal/fuzzy_match.h src/fuzzy_match.cpp
     src/internal/code_assistance.h src/code_assistance.cpp)
 file(READ "${PROJECT_SOURCE_DIR}/config/tool_versions.json" editor_tool_versions)
 string(JSON editor_formatter_version GET "${editor_tool_versions}" minimum clang-format)
