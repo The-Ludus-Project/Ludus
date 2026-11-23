@@ -631,6 +631,15 @@ void CodeAssistance::receive(int32 request, const QJsonValue& value)
         {
             acceptNavigation(0);
         }
+        else if (mNavigationKind == CodeNavigationKind::References)
+        {
+            mEditor.GetNavigation().ShowReferences(
+            {
+                .Symbol = source.mid(mWordStart, mWordEnd - mWordStart),
+                .Targets = mNavigationTargets,
+                .Message = message,
+            });
+        }
         else
         {
             mEditor.GetNavigation().ShowResults(mNavigationTargets, message);

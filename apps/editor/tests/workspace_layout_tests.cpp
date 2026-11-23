@@ -2,6 +2,7 @@
 #include "internal/code_document_tab.h"
 #include "internal/code_editor.h"
 #include "internal/code_editor_area.h"
+#include "internal/code_references_window.h"
 #include "internal/controller.h"
 #include "internal/document_well.h"
 #include "internal/error_list.h"
@@ -523,6 +524,34 @@ TEST_CASE("Focus Viewport hides chrome around the World viewport and restores th
     CHECK(world->IsChromeVisible() == true);
 }
 
+TEST_CASE("A Find References result opens the References tool window", "[editor][layout][code-navigation]")
+{
+    QTemporaryDir directory;
+    EditorController controller(ToolingPaths{}, nullptr, directory.filePath(QStringLiteral("recent.json")));
+    MainWindow window(&controller, nullptr, directory.filePath(QStringLiteral("workspace.json")));
+    window.resize(1470, 920);
+    window.show();
+    QApplication::processEvents();
+    Reset(window);
+    QDockWidget* references = Dock(window, QStringLiteral("referencesDock"));
+    CHECK(references->isHidden() == true);
+    CHECK(window.findChild<QAction*>(QStringLiteral("viewReferencesToolWindow")) != nullptr);
+    CodeReferencesWindow* listOrNull = window.findChild<CodeReferencesWindow*>();
+    REQUIRE(listOrNull != nullptr);
+    CodeEditor editor;
+    editor.setPlainText(QStringLiteral("float Value();\n"));
+    listOrNull->Show(editor.GetNavigation(),
+                     {
+                         .Symbol = QStringLiteral("Value"),
+                         .Targets = {{QStringLiteral("Value"), {}, editor.toPlainText(), 6, 11, false}},
+                         .Message = {},
+                     });
+    QApplication::processEvents();
+    CHECK(references->isHidden() == false);
+    CHECK(window.dockWidgetArea(references) == Qt::BottomDockWidgetArea);
+    CHECK(listOrNull->GetSummary() == QStringLiteral("1 reference to 'Value'"));
+}
+
 TEST_CASE("The bottom tool windows start closed until a problem is reported", "[editor][layout][error-list]")
 {
     QTemporaryDir directory;
@@ -535,6 +564,7 @@ TEST_CASE("The bottom tool windows start closed until a problem is reported", "[
     QDockWidget* errors = Dock(window, QStringLiteral("errorListDock"));
     for (const QString& name : {QStringLiteral("errorListDock"),
                                 QStringLiteral("searchDock"),
+                                QStringLiteral("referencesDock"),
                                 QStringLiteral("outputDock"),
                                 QStringLiteral("timingDock"),
                                 QStringLiteral("profilingDock")})
