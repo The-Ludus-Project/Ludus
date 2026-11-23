@@ -274,8 +274,9 @@ Requirements: CE09-CE11, CE20. Prerequisite: M2, M3.
   Batch 3b: the Error List's Analysis rows, Go to Declaration, Type Definition and
   Implementation, and Go to Symbol in Workspace; see the
   [M4 batch 3b decision-log entry](../../../docs/architecture/code-editor-decision-log.md#m4-batch-3b-analysis-rows-and-the-remaining-go-to-commands-ce10-2026-11-23).
-  The references window, semantic tokens, inlay hints, folding ranges, completion
-  resolve and snippets follow.)*
+  Batch 3c: semantic tokens and server folding ranges merged by kind; see the
+  [M4 batch 3c decision-log entry](../../../docs/architecture/code-editor-decision-log.md#m4-batch-3c-semantic-tokens-and-server-folding-ranges-ce10-ce26-2026-11-23).
+  Inlay hints, the references window, completion resolve and snippets follow.)*
 - [ ] Add rename with preview, code actions with the light bulb, and workspace
   edits with transaction undo.
 - [ ] Add the fake LSP fixture and its failure-path tests.

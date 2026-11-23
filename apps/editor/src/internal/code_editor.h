@@ -37,6 +37,7 @@ namespace ludus::editor
 class CodeEditorGutter;
 class CodeSyntaxHighlighter;
 class CodeSyntaxService;
+class CodeSyntaxToken;
 class CodeStructureView;
 class CodeNavigation;
 
@@ -193,6 +194,13 @@ public:
     void HideHover();
     /// The text of the hover currently shown, or empty; for tests.
     [[nodiscard]] const QString& GetHoverText() const noexcept;
+    /// Replace the language server's semantic tokens (code editor M4, CE10): ordered,
+    /// disjoint UTF-16 ranges of this view's document, colored by their syntax role
+    /// over the syntax tokens. Edits move them until the next replacement; an empty
+    /// list leaves only syntax coloring.
+    void SetSemanticTokens(const QList<CodeSyntaxToken>& tokens);
+    /// The current semantic tokens at their edit-moved positions.
+    [[nodiscard]] const QList<CodeSyntaxToken>& GetSemanticTokens() const noexcept;
     [[nodiscard]] LUDUS_INLINE foundation::int32 GetDiagnosticCount() const noexcept
     {
         return static_cast<foundation::int32>(mDiagnostics.size());

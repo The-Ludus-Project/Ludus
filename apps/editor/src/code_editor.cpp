@@ -1030,6 +1030,16 @@ const QString& CodeEditor::GetHoverText() const noexcept
     return mHoverText;
 }
 
+void CodeEditor::SetSemanticTokens(const QList<CodeSyntaxToken>& tokens)
+{
+    mHighlighter->SetSemanticTokens(tokens);
+}
+
+const QList<CodeSyntaxToken>& CodeEditor::GetSemanticTokens() const noexcept
+{
+    return mHighlighter->GetSemanticTokens();
+}
+
 QTextCursor CodeEditor::GetDiagnosticRange(int32 index) const
 {
     return index >= 0 && index < mDiagnostics.size() ? mDiagnostics.at(index).Range : QTextCursor();

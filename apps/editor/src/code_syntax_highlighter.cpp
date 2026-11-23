@@ -206,11 +206,12 @@ CodeSyntaxHighlighter::CodeSyntaxHighlighter(QTextDocument* document, const Code
     QObject::disconnect(document, &QTextDocument::contentsChange, this, nullptr);
     rehighlight(); // Complete Qt's queued initial highlight while the document is empty.
     mDocumentRevision = document->revision();
-    connect(document, &QTextDocument::contentsChange, this, [this](int32 position, int32, int32 added) {
+    connect(document, &QTextDocument::contentsChange, this, [this](int32 position, int32 removed, int32 added) {
         const int32 revision = this->document()->revision();
         if (revision != mDocumentRevision)
         {
             mDocumentRevision = revision;
+            moveSemanticTokens(position, removed, added);
             rehighlightEdit(position, added);
         }
     });
@@ -223,6 +224,7 @@ void CodeSyntaxHighlighter::SetLanguage(CodeLanguage language)
     if (mLanguage != language)
     {
         mLanguage = language;
+        mSemanticTokens.clear();
         ScheduleReapply();
     }
 }
@@ -361,22 +363,60 @@ void CodeSyntaxHighlighter::reapplySlice()
     }
 }
 
-void CodeSyntaxHighlighter::applySyntaxTokens()
+void CodeSyntaxHighlighter::SetSemanticTokens(const QList<CodeSyntaxToken>& tokens)
 {
-    const CodeSyntaxResult* resultOrNull = mSyntax.GetCurrentResultOrNull();
-    if (resultOrNull == nullptr)
+    if (tokens == mSemanticTokens)
     {
         return;
     }
+    mSemanticTokens = tokens;
+    ScheduleReapply();
+}
+
+void CodeSyntaxHighlighter::moveSemanticTokens(int32 position, int32 removed, int32 added)
+{
+    if (mSemanticTokens.isEmpty() == true)
+    {
+        return;
+    }
+    // A token the edit touches no longer names what the server classified; later
+    // tokens move with the text so colors stay put until the next result.
+    const int32 removedEnd = position + removed;
+    const int32 delta = added - removed;
+    // An insertion at a token's start moves it; one at its end leaves it as it was.
+    mSemanticTokens.removeIf([position, removedEnd](const CodeSyntaxToken& token) {
+        return token.GetStart() < removedEnd && token.GetEnd() > position;
+    });
+    for (CodeSyntaxToken& token : mSemanticTokens)
+    {
+        if (token.GetStart() >= removedEnd)
+        {
+            token = CodeSyntaxToken({token.GetStart() + delta, token.GetEnd() + delta}, token.GetRole());
+        }
+    }
+}
+
+void CodeSyntaxHighlighter::applySyntaxTokens()
+{
+    const CodeSyntaxResult* resultOrNull = mSyntax.GetCurrentResultOrNull();
+    if (resultOrNull != nullptr)
+    {
+        applyTokens(resultOrNull->Tokens);
+    }
+    applyTokens(mSemanticTokens);
+}
+
+void CodeSyntaxHighlighter::applyTokens(const QList<CodeSyntaxToken>& tokens)
+{
     const QTextBlock block = currentBlock();
     const int32 start = block.position();
     const int32 end = start + block.length() - 1;
     qsizetype first = 0;
-    qsizetype last = resultOrNull->Tokens.size();
+    qsizetype last = tokens.size();
     while (first < last)
     {
         const qsizetype middle = first + (last - first) / 2;
-        if (resultOrNull->Tokens.at(middle).GetEnd() <= start)
+        if (tokens.at(middle).GetEnd() <= start)
         {
             first = middle + 1;
         }
@@ -385,9 +425,9 @@ void CodeSyntaxHighlighter::applySyntaxTokens()
             last = middle;
         }
     }
-    for (qsizetype index = first; index < resultOrNull->Tokens.size(); ++index)
+    for (qsizetype index = first; index < tokens.size(); ++index)
     {
-        const CodeSyntaxToken& token = resultOrNull->Tokens.at(index);
+        const CodeSyntaxToken& token = tokens.at(index);
         if (token.GetStart() >= end)
         {
             break;

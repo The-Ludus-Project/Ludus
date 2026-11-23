@@ -1495,6 +1495,11 @@ void CodeSyntaxService::SetLargeFileMode(bool isLarge)
     }
 }
 
+bool HasCodeSyntaxGrammar(CodeLanguage language) noexcept
+{
+    return GetGrammarOrNull(language) != nullptr;
+}
+
 const CodeSyntaxResult* CodeSyntaxService::GetCurrentResultOrNull() const noexcept
 {
     return mResult.Revision == mRevision ? &mResult : nullptr;

@@ -1,11 +1,13 @@
 #pragma once
 
+#include <ludus/foundation/base/compiler.h>
 #include <ludus/foundation/base/types.h>
 
 #include <ludus/foundation/containers/static_array.hpp>
 
 #include "internal/code_syntax_service.h"
 
+#include <QList>
 #include <QPalette>
 #include <QStringView>
 #include <QSyntaxHighlighter>
@@ -59,13 +61,25 @@ public:
     void ApplyVisibleBlocks(QTextBlock first, foundation::int32 lastLine);
     [[nodiscard]] bool UsesVisibleFallback() const;
     void ScheduleReapply();
+    /// Replace the language server's semantic tokens (code editor M4, CE10), drawn
+    /// over the syntax tokens. Tokens are ordered and disjoint UTF-16 ranges of
+    /// this document. Edits move later tokens and drop the ones they touch until
+    /// the next replacement; a language change clears them.
+    void SetSemanticTokens(const QList<CodeSyntaxToken>& tokens);
+    [[nodiscard]] LUDUS_INLINE const QList<CodeSyntaxToken>& GetSemanticTokens() const noexcept
+    {
+        return mSemanticTokens;
+    }
 
 private:
     void highlightBlock(const QString& text) override;
     void applySyntaxTokens();
+    void applyTokens(const QList<CodeSyntaxToken>& tokens);
+    void moveSemanticTokens(foundation::int32 position, foundation::int32 removed, foundation::int32 added);
     void rehighlightEdit(foundation::int32 position, foundation::int32 added);
     void reapplySlice();
     const CodeSyntaxService& mSyntax;
+    QList<CodeSyntaxToken> mSemanticTokens;
     QTimer mReapply;
     // The next block to reapply, by number. A stored QTextBlock would keep a fragment index that an edit or a
     // replaced document frees between slices.

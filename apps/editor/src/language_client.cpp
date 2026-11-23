@@ -199,6 +199,33 @@ void LanguageClient::startProcess()
         const QJsonObject parameterInformation{{QStringLiteral("labelOffsetSupport"), true}};
         const QJsonObject signatureInformation{{QStringLiteral("parameterInformation"), parameterInformation}};
         const QJsonObject signatureHelp{{QStringLiteral("signatureInformation"), signatureInformation}};
+        // Every standard token type and modifier, decoded through the server's legend.
+        QJsonArray tokenTypes;
+        for (const char* type :
+             {"namespace", "type",     "class",      "enum",   "interface", "struct",   "typeParameter", "parameter",
+              "variable",  "property", "enumMember", "event",  "function",  "method",   "macro",         "keyword",
+              "modifier",  "comment",  "string",     "number", "regexp",    "operator", "decorator"})
+        {
+            tokenTypes.append(QLatin1StringView(type));
+        }
+        const QJsonObject semanticTokens{{QStringLiteral("requests"), QJsonObject{{QStringLiteral("full"), true}}},
+                                         {QStringLiteral("tokenTypes"), tokenTypes},
+                                         {QStringLiteral("tokenModifiers"),
+                                          QJsonArray{QStringLiteral("declaration"),
+                                                     QStringLiteral("definition"),
+                                                     QStringLiteral("readonly"),
+                                                     QStringLiteral("static"),
+                                                     QStringLiteral("deprecated"),
+                                                     QStringLiteral("defaultLibrary")}},
+                                         {QStringLiteral("formats"), QJsonArray{QStringLiteral("relative")}},
+                                         {QStringLiteral("overlappingTokenSupport"), false},
+                                         {QStringLiteral("multilineTokenSupport"), false}};
+        const QJsonObject foldingRange{
+            {QStringLiteral("lineFoldingOnly"), true},
+            {QStringLiteral("foldingRangeKind"),
+             QJsonObject{{QStringLiteral("valueSet"),
+                          QJsonArray{QStringLiteral("comment"), QStringLiteral("imports"), QStringLiteral("region")}}}},
+            {QStringLiteral("foldingRange"), QJsonObject{{QStringLiteral("collapsedText"), true}}}};
         const QJsonObject textDocument{
             {QStringLiteral("synchronization"), QJsonObject{{QStringLiteral("dynamicRegistration"), false}}},
             {QStringLiteral("documentSymbol"),
@@ -212,7 +239,9 @@ void LanguageClient::startProcess()
             {QStringLiteral("hover"),
              QJsonObject{{QStringLiteral("contentFormat"),
                           QJsonArray{QStringLiteral("plaintext"), QStringLiteral("markdown")}}}},
-            {QStringLiteral("publishDiagnostics"), QJsonObject{{QStringLiteral("versionSupport"), true}}}};
+            {QStringLiteral("publishDiagnostics"), QJsonObject{{QStringLiteral("versionSupport"), true}}},
+            {QStringLiteral("semanticTokens"), semanticTokens},
+            {QStringLiteral("foldingRange"), foldingRange}};
         const QJsonObject capabilities{
             {QStringLiteral("general"),
              QJsonObject{{QStringLiteral("positionEncodings"),
