@@ -2991,8 +2991,7 @@ TEST_CASE("The World viewport draws the character bust through light edits, orbi
 // World and cooked-scene hashes, then captures ONE reference image at the SAVED camera and a fixed
 // extent, with no orbit, light-off or resize. verify.py sets the output paths through the environment
 // and compares this capture with the SDK app rendering the same scene.luscn and the same graph.
-TEST_CASE("The character bust World exports its cooked scene and a matched capture",
-          "[.sdk-hair-skin-bust-export]")
+TEST_CASE("The character bust World exports its cooked scene and a matched capture", "[.sdk-hair-skin-bust-export]")
 {
     namespace format = ludus::content::scene_format;
     // One saved World carries BOTH slots: Hair gets a hair card, Skin gets skin. The export writes one

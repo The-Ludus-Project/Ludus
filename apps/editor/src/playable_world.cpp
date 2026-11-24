@@ -454,12 +454,11 @@ QJsonArray DescribeMaterialSlots(const resources::SceneDefinition& scene)
     for (const resources::SceneMaterial& material : scene.Materials)
     {
         const std::string_view name = material.Name.View();
-        slots.append(QJsonObject{
-            {"name"_L1, QString::fromUtf8(name.data(), static_cast<qsizetype>(name.size()))},
-            {"model"_L1, MaterialModelName(material.Scattering.Model)},
-            {"alphaMasked"_L1, material.IsAlphaMasked},
-            {"alphaCutoff"_L1, static_cast<double>(material.AlphaCutoff)},
-            {"hasTexture"_L1, material.Texture != ~uint32{0}}});
+        slots.append(QJsonObject{{"name"_L1, QString::fromUtf8(name.data(), static_cast<qsizetype>(name.size()))},
+                                 {"model"_L1, MaterialModelName(material.Scattering.Model)},
+                                 {"alphaMasked"_L1, material.IsAlphaMasked},
+                                 {"alphaCutoff"_L1, static_cast<double>(material.AlphaCutoff)},
+                                 {"hasTexture"_L1, material.Texture != ~uint32{0}}});
     }
     return slots;
 }
@@ -529,17 +528,16 @@ bool ExportCookedWorldScene(const QString& root,
     {
         dependencies.append(QJsonObject{{"id"_L1, entry.key()}, {"key"_L1, entry.value()}});
     }
-    const QJsonObject manifest{
-        {"version"_L1, 1},
-        {"worldSha256"_L1, ComputeDigest(world.Encode())},
-        {"sceneSha256"_L1, ComputeDigest(bundle)},
-        {"camera"_L1, level.value("camera"_L1)},
-        {"materialSlots"_L1, DescribeMaterialSlots(*composed.Definition)},
-        {"objects"_L1, static_cast<int>(composed.Definition->Objects.GetSize())},
-        {"meshes"_L1, static_cast<int>(composed.Definition->Meshes.GetSize())},
-        {"textures"_L1, static_cast<int>(composed.Definition->Textures.GetSize())},
-        {"lights"_L1, static_cast<int>(composed.Definition->Lights.GetSize())},
-        {"artifacts"_L1, dependencies}};
+    const QJsonObject manifest{{"version"_L1, 1},
+                               {"worldSha256"_L1, ComputeDigest(world.Encode())},
+                               {"sceneSha256"_L1, ComputeDigest(bundle)},
+                               {"camera"_L1, level.value("camera"_L1)},
+                               {"materialSlots"_L1, DescribeMaterialSlots(*composed.Definition)},
+                               {"objects"_L1, static_cast<int>(composed.Definition->Objects.GetSize())},
+                               {"meshes"_L1, static_cast<int>(composed.Definition->Meshes.GetSize())},
+                               {"textures"_L1, static_cast<int>(composed.Definition->Textures.GetSize())},
+                               {"lights"_L1, static_cast<int>(composed.Definition->Lights.GetSize())},
+                               {"artifacts"_L1, dependencies}};
     QSaveFile sceneFile(sceneDestination);
     if (sceneFile.open(QIODevice::WriteOnly) == false || sceneFile.write(bundle) != bundle.size() ||
         sceneFile.commit() == false)
