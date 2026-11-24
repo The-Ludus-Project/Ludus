@@ -1,9 +1,14 @@
 """Tests of the ludus_compile_shader LUSL lowering helper (cmake/shaders/lower_lusl.py)."""
 
+import contextlib
 import importlib.util
+import io
+import os
+import sys
 import tempfile
 import unittest
 from pathlib import Path
+from unittest import mock
 
 HELPER = Path(__file__).resolve().parents[2] / 'cmake' / 'shaders' / 'lower_lusl.py'
 SPECIFICATION = importlib.util.spec_from_file_location('lower_lusl', HELPER)
@@ -92,6 +97,48 @@ class LowerLuslTests(unittest.TestCase):
                                       '#else', '#define _LUSL_SELECT_LUDUS_GLSL_ES 0', '#endif'])
         self.assertEqual(lines[6:], ['#if _LUSL_SELECT_LUDUS_GLSL_ES', 'float Flip();', '#else', 'float Identity();',
                                      '#endif'])
+
+    def test_defines_become_luslc_name_value_pairs(self):
+        self.assertEqual(lower_lusl.parse_defines(['DIAGNOSTIC_SCALE=0.5', 'FAST', 'EMPTY=']),
+                         ['DIAGNOSTIC_SCALE=0.5', 'FAST=1', 'EMPTY='])
+
+    def test_defines_reject_the_driver_macro_and_malformed_names(self):
+        for define in ('LUDUS_GLSL_ES=1', 'LUDUS_GLSL_ES', '2FAST=1', '=1', 'A-B=1'):
+            with self.subTest(define=define), contextlib.redirect_stderr(io.StringIO()) as errors:
+                with self.assertRaises(SystemExit):
+                    lower_lusl.parse_defines([define])
+                self.assertIn('DEFINES', errors.getvalue())
+
+    @unittest.skipIf(os.name == 'nt', 'the stand-in luslc is a POSIX script')
+    def test_defines_reach_every_lowering(self):
+        """The helper's DEFINES reach luslc, beside the driver macro's two lowerings."""
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            log = root / 'arguments.txt'
+            luslc = root / 'luslc'
+            luslc.write_text(f'#!{sys.executable}\n'
+                             'import sys\n'
+                             'arguments = sys.argv[1:]\n'
+                             f'open({str(log)!r}, "a").write(" ".join(arguments) + "\\n")\n'
+                             'value = lambda key: arguments[arguments.index(key) + 1]\n'
+                             'open(value("--output"), "w").write("// lowered\\n")\n'
+                             'open(value("--report"), "w").write("binding\\tmain.lusl:1\\tsettings\\tConstantBuffer\\t0\\n")\n')
+            luslc.chmod(0o755)
+            shaders = root / 'shaders'
+            shaders.mkdir()
+            (shaders / 'main.lusl').write_text('#if LUDUS_GLSL_ES\n#endif\n')
+            output = root / 'out'
+            arguments = ['lower_lusl.py', '--luslc', str(luslc), '--root', str(shaders), '--source', 'main.lusl',
+                         '--name', 'sample', '--output', str(output / 'sample.lusl.slang'),
+                         '--slots', str(output / 'sample_slots.h'), '--depfile', str(output / 'lusl.d'),
+                         '--define', 'DIAGNOSTIC_SCALE=0.5', '--define', 'FAST']
+            with mock.patch.object(sys, 'argv', arguments):
+                self.assertEqual(lower_lusl.main(), 0)
+            calls = log.read_text().splitlines()
+            self.assertEqual(len(calls), 2)
+            for call, glsl_es in zip(calls, ('0', '1')):
+                self.assertIn('--define DIAGNOSTIC_SCALE=0.5 --define FAST=1 --define LUDUS_GLSL_ES=' + glsl_es, call)
+            self.assertIn('SETTINGS = 0;', (output / 'sample_slots.h').read_text())
 
 
 if __name__ == '__main__':

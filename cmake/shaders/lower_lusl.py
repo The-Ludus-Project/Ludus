@@ -10,6 +10,9 @@ compile_shader.py defines LUDUS_GLSL_ES=1 only for the GLSL ES (WebGL 2) artifac
 preprocessor reads that macro before Slang sees it, so a source that tests it is lowered once with
 LUDUS_GLSL_ES=0 and once with =1; the module selects the lowering by the macro's value. Both
 lowerings must assign the same slots and locations, because host code binds one slot table.
+ludus_compile_shader forwards its DEFINES as --define, so the LUSL preprocessor sees them as
+compile_shader.py's Slang preprocessor sees them for a Slang source. LUDUS_GLSL_ES is the target's
+macro and cannot be defined.
 See docs/modules/tooling/shader-language.md, "Standalone shaders".
 """
 import argparse
@@ -29,6 +32,7 @@ LANGUAGE_FILES = ('.lusl', '.luslh')
 # Target macros that compile_shader.py defines for one artifact only (its GLSL ES variant).
 GLSL_ES_MACRO = 'LUDUS_GLSL_ES'
 IDENTIFIER = re.compile(r'[A-Za-z_][A-Za-z0-9_.]*\Z')
+MACRO_NAME = re.compile(r'[A-Za-z_][A-Za-z0-9_]*\Z')
 
 
 def fail(message):
@@ -166,6 +170,24 @@ def combine_variants(default, variant, macro):
             f'#if {selector}\n{ending(variant)}#else\n{ending(default)}#endif\n')
 
 
+def parse_defines(values):
+    """ludus_compile_shader DEFINES as luslc `--define NAME=VALUE` arguments.
+
+    A bare NAME means NAME=1, as Slang's -D gives it for a Slang source. LUDUS_GLSL_ES belongs to
+    the driver, which defines it for the GLSL ES artifact only.
+    """
+    defines = []
+    for define in values:
+        macro, separator, value = define.partition('=')
+        if MACRO_NAME.match(macro) is None:
+            fail(f"DEFINES entry '{define}' is not NAME or NAME=VALUE")
+        if macro == GLSL_ES_MACRO:
+            fail(f'{GLSL_ES_MACRO} is defined by the shader driver for the GLSL ES artifact only; '
+                 'remove it from DEFINES')
+        defines.append(f'{macro}={value}' if separator else f'{macro}=1')
+    return defines
+
+
 def lower(luslc, snapshot, directories, source, style, defines, directory):
     """Run `luslc lower` once; return the generated Slang text and the slot report."""
     report = Path(directory) / 'report.txt'
@@ -192,22 +214,24 @@ def main():
     for key in ('luslc', 'root', 'source', 'output', 'slots', 'depfile', 'name'):
         parser.add_argument('--' + key, required=True)
     parser.add_argument('--include-directory', action='append', default=[])
+    parser.add_argument('--define', action='append', default=[])
     parser.add_argument('--style', default='strict', choices=('strict', 'warn', 'off'))
     args = parser.parse_args()
     if IDENTIFIER.match(args.name) is None:
         fail(f"'{args.name}' is not a shader name")
+    defines = parse_defines(args.define)
     root = Path(args.root)
     with tempfile.TemporaryDirectory(prefix='ludus-lusl-') as directory:
         snapshot = Path(directory) / 'snapshot'
         directories, files = stage_snapshot(root, args.source, args.include_directory, snapshot)
-        variants = [[]]
+        variants = [defines]
         if references_macro(files, GLSL_ES_MACRO):
-            variants = [[f'{GLSL_ES_MACRO}=0'], [f'{GLSL_ES_MACRO}=1']]
+            variants = [[*defines, f'{GLSL_ES_MACRO}=0'], [*defines, f'{GLSL_ES_MACRO}=1']]
         lowered = []
-        for index, defines in enumerate(variants):
+        for index, variant in enumerate(variants):
             work = Path(directory) / f'variant{index}'
             work.mkdir()
-            text, report = lower(args.luslc, snapshot, directories, args.source, args.style, defines, work)
+            text, report = lower(args.luslc, snapshot, directories, args.source, args.style, variant, work)
             lowered.append((text, slot_header(args.name, report)))
         generated, slots = lowered[0]
         if len(lowered) > 1:

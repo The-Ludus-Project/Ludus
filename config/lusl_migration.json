@@ -41,6 +41,14 @@
     {
       "path": "scripts/python/fixtures",
       "reason": "Legacy-format render-graph template fixtures that the template update and capture warmup tests read"
+    },
+    {
+      "path": "tests/sdk_consumer/shaders/diagnostic.slang",
+      "reason": "Slang input of the installed shader helper's contract scripts (verify_shader_build.py and the macOS and Windows scripts) and differential oracle: the RHI parity test compares its pixels with diagnostic.lusl"
+    },
+    {
+      "path": "tests/sdk_consumer/shaders/uniforms.slang",
+      "reason": "Uniform block of diagnostic.slang that the helper contract scripts edit to check include rebuilds and the 16 KiB uniform bound"
     }
   ]
 }

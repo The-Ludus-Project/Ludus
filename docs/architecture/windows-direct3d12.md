@@ -542,8 +542,9 @@ builds them warning-clean and runs:
   repeated target resizes across both frame slots, explicit limits, legacy
   restart while recording, and a Win32 swap chain that resizes with its window
   and skips minimized frames. With the shader tools configured (`LUDUS_TEST_DXIL`)
-  it also compiles `tests/sdk_consumer/shaders/diagnostic.slang` to DXIL and
-  checks entry/stage rejection, the fullscreen image pixel by pixel across
+  it also lowers `tests/sdk_consumer/shaders/diagnostic.lusl` with the closure's
+  `luslc`, compiles it and its retained Slang original to DXIL, requires
+  identical pixels from the two, and checks entry/stage rejection, the fullscreen image pixel by pixel across
   resizes, a 40-frame burst over both frame slots, a 16384-byte uniform, restart
   with a recorded but unsubmitted draw, and drawing into a Win32 swap chain.
   The D4b case exercises required compute, dependent dispatch, indexed indirect

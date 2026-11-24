@@ -91,7 +91,8 @@ out/host-tools/emsdk/upstream/emscripten/emcmake out/host-tools/venv/bin/cmake \
   -DCMAKE_FIND_ROOT_PATH="$PWD/out/install/render-api-web" \
   -DLUDUS_SDK_RENDER_TESTS=ON \
   -DLUDUS_SLANG_COMPILER="$LUDUS_SHADER_COMPILER" \
-  -DLUDUS_SPIRV_VALIDATOR="$LUDUS_SHADER_VALIDATOR"
+  -DLUDUS_SPIRV_VALIDATOR="$LUDUS_SHADER_VALIDATOR" \
+  -DLUDUS_LUSLC="$(./scripts/bootstrap-luslc)"
 out/host-tools/venv/bin/cmake --build out/build/render-api-sdk-web -j2
 LUDUS_SHADER_PROBE_SOFTWARE=1 node tests/sdk_consumer/browser-test.mjs
 # Separately test the flag-free adapter; record failure without fallback:
