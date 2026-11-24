@@ -476,8 +476,13 @@ QString LanguageClient::GetUnavailableReason(LanguageRequestKind kind) const
         return {};
     }
     const LanguageRequestDescriptor& descriptor = DescribeLanguageRequest(kind);
+    // "textDocument/rename" reads as "rename"; other namespaces stay whole, since
+    // "workspace/symbol" would otherwise read as the document's "symbol".
+    const QString method(descriptor.Method);
+    const QLatin1StringView documentPrefix("textDocument/");
     return QStringLiteral("The selected %1 does not support %2.")
-        .arg(mProfile->ServerName, QString(descriptor.Method).section(QLatin1Char('/'), 1));
+        .arg(mProfile->ServerName,
+             method.startsWith(documentPrefix) == true ? method.sliced(documentPrefix.size()) : method);
 }
 
 const QJsonObject& LanguageClient::GetCapabilities() const noexcept

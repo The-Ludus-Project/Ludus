@@ -210,6 +210,8 @@ void CodeNavigation::RefreshActions()
         actions[index]->setEnabled(hasService == true && reason.isEmpty() == true);
         actions[index]->setToolTip(reason.isEmpty() == true ? descriptions[index]
                                                             : reason + QStringLiteral(" Use Find for text matches."));
+        SetCodeCommandUnavailableReason(*actions[index],
+                                        reason.isEmpty() == true ? QString() : actions[index]->toolTip());
     }
 }
 

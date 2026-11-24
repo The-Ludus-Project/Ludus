@@ -119,6 +119,7 @@ CodeAssistance::CodeAssistance(CodeEditor& inoutEditor, CodeDocumentController& 
     connect(&mEditor, &CodeEditor::RenameAccepted, this, &CodeAssistance::acceptRename);
     connect(&mEditor, &CodeEditor::RenameCancelled, this, [this]() { mRename = {}; });
     connect(&mEditor, &CodeEditor::CodeActionsRequested, this, &CodeAssistance::RequestCodeActions);
+    connect(&mEditor, &CodeEditor::UnavailableCommandRequested, this, &CodeAssistance::StatusChanged);
     connect(&mActions, &CodeActions::StatusChanged, this, &CodeAssistance::StatusChanged);
     mCodeActionDelay.setSingleShot(true);
     mCodeActionDelay.setInterval(CODE_ACTION_DELAY_MILLISECONDS);

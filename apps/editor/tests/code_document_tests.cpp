@@ -1388,6 +1388,52 @@ TEST_CASE("Rename Symbol is disabled with its reason when the server cannot rena
     CHECK(rename->toolTip() == QStringLiteral("The selected slangd does not support rename."));
 }
 
+TEST_CASE("Shortcuts of unsupported commands report their reason where they were pressed",
+          "[editor][text][assistance][code-navigation]")
+{
+    // A disabled action's shortcut never reaches its handler, so Cmd+T (Ctrl+T)
+    // against the pinned slangd used to do nothing at all (issue 1263).
+    FakeAssistanceSession session("float value = 1;\n",
+                                  {QStringLiteral("--capabilities"),
+                                   QStringLiteral(R"({"completionProvider": {}, "definitionProvider": true})")});
+    CodeEditor& editor = session.Editor;
+    QAction* rename = FindRenameAction(editor);
+    QAction* workspaceOrNull = nullptr;
+    for (QAction* action : editor.GetNavigation().GetActions())
+    {
+        workspaceOrNull = action->text() == QStringLiteral("Go to Symbol in Workspace") ? action : workspaceOrNull;
+    }
+    REQUIRE(workspaceOrNull != nullptr);
+    CHECK(workspaceOrNull->shortcut() == QKeySequence(Qt::CTRL | Qt::Key_T));
+    session.Prepare();
+    REQUIRE(QTest::qWaitFor(
+        [rename, workspaceOrNull]() { return rename->isEnabled() == false && workspaceOrNull->isEnabled() == false; }));
+    QTest::keyClick(&editor, Qt::Key_Escape);
+    QSignalSpy status(&session.Assistance, &CodeAssistance::StatusChanged);
+    const auto hasStatus = [&status](const QString& message) {
+        for (const QList<QVariant>& arguments : status)
+        {
+            if (arguments.first().toString() == message)
+            {
+                return true;
+            }
+        }
+        return false;
+    };
+    QTest::keyClick(&editor, Qt::Key_T, Qt::ControlModifier);
+    CHECK(hasStatus(QStringLiteral("Go to Symbol in Workspace is unavailable. The selected slangd does not support "
+                                   "workspace/symbol. Use Find for text matches.")) == true);
+    QTest::keyClick(&editor, Qt::Key_F2);
+    CHECK(hasStatus(QStringLiteral("Rename Symbol is unavailable. The selected slangd does not support rename.")) ==
+          true);
+    // The shortcuts change nothing: no text, no undo step and no rename box.
+    CHECK(session.Host.GetState().Text == "float value = 1;\n");
+    CHECK(session.Host.CanUndo() == false);
+    QLineEdit* renameBoxOrNull = editor.findChild<QLineEdit*>(QStringLiteral("codeEditorRenameBox"));
+    REQUIRE(renameBoxOrNull != nullptr);
+    CHECK(renameBoxOrNull->isVisible() == false);
+}
+
 namespace
 {
 // The prefix "// generated missing" is the unit's line 0, so the source starts on line 1.

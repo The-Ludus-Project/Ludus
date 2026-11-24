@@ -81,6 +81,8 @@ constexpr int32 COMPLETION_WIDTH = 420;
 constexpr int32 SIGNATURE_WIDTH = 680;
 // The pointer rests this long before a hover request, as in VS Code.
 constexpr int32 HOVER_DELAY_MILLISECONDS = 300;
+/// The QAction property that holds a language-service command's unavailable reason.
+constexpr const char* UNAVAILABLE_REASON_PROPERTY = "ludusUnavailableReason";
 constexpr int32 INDENT_GUIDE_ALPHA = 48;
 constexpr int32 GUTTER_MARGIN = 6;
 constexpr int32 FOLD_CONTROL_WIDTH = 17;
@@ -207,6 +209,16 @@ void SetCodeEditorTabMovesFocus(bool isTabMovingFocus)
 bool IsCodeEditorTabMovingFocus() noexcept
 {
     return isCodeTabMovingFocus;
+}
+
+void SetCodeCommandUnavailableReason(QAction& inoutAction, const QString& reason)
+{
+    inoutAction.setProperty(UNAVAILABLE_REASON_PROPERTY, reason);
+}
+
+QString GetCodeCommandUnavailableReason(const QAction& action)
+{
+    return action.property(UNAVAILABLE_REASON_PROPERTY).toString();
 }
 
 CodeEditor::CodeEditor(QWidget* parentOrNull)
@@ -845,9 +857,11 @@ void CodeEditor::SetAssistanceAvailability(const CodeAssistanceAvailability& ava
     mRenameAction->setEnabled(hasService == true && isReadOnly() == false &&
                               availability.RenameUnavailableReason.isEmpty() == true);
     mRenameAction->setToolTip(availability.RenameUnavailableReason);
+    SetCodeCommandUnavailableReason(*mRenameAction, availability.RenameUnavailableReason);
     mCodeActionsAction->setEnabled(hasService == true && isReadOnly() == false &&
                                    availability.CodeActionsUnavailableReason.isEmpty() == true);
     mCodeActionsAction->setToolTip(availability.CodeActionsUnavailableReason);
+    SetCodeCommandUnavailableReason(*mCodeActionsAction, availability.CodeActionsUnavailableReason);
 }
 
 void CodeEditor::SetCodeActions(int32 position, const QList<CodeActionEntry>& actions)
@@ -2459,8 +2473,40 @@ void CodeEditor::keyPressEvent(QKeyEvent* event)
     }
 }
 
+bool CodeEditor::reportUnavailableShortcut(const QKeyEvent& event)
+{
+    if (event.modifiers() == Qt::NoModifier && event.text().isEmpty() == false)
+    {
+        // Typing never matches a command shortcut; skip the scan on the hot path.
+        return false;
+    }
+    const QKeySequence pressed(event.keyCombination());
+    for (const QAction* action : actions())
+    {
+        const QString reason = GetCodeCommandUnavailableReason(*action);
+        if (action->isEnabled() == true || reason.isEmpty() == true)
+        {
+            continue;
+        }
+        for (const QKeySequence& shortcut : action->shortcuts())
+        {
+            if (shortcut.matches(pressed) == QKeySequence::ExactMatch)
+            {
+                Q_EMIT UnavailableCommandRequested(QStringLiteral("%1 is unavailable. %2").arg(action->text(), reason));
+                return true;
+            }
+        }
+    }
+    return false;
+}
+
 void CodeEditor::handleKeyPress(QKeyEvent* event)
 {
+    if (reportUnavailableShortcut(*event) == true)
+    {
+        event->accept();
+        return;
+    }
     if (mStructure->MoveAcrossFold(event) == true)
     {
         event->accept();

@@ -373,6 +373,10 @@ Q_SIGNALS:
     void AnalysisDiagnosticsChanged();
     /// The server lifecycle text or its detail changed.
     void LanguageServerStatusChanged();
+    /// The shortcut of a language-service command the server does not support
+    /// was pressed. `message` names the command and the reason, for the status
+    /// line where the user acted; the source and selection are unchanged.
+    void UnavailableCommandRequested(const QString& message);
     /// The pointer rested on `position` for the hover delay, or Show Hover ran at the caret.
     void HoverRequested(foundation::int32 position);
     /// The number of cursors changed (1 plus the secondary cursors, CE06). The
@@ -412,6 +416,10 @@ private:
     void keyPressEvent(QKeyEvent* event) override;
     void keyReleaseEvent(QKeyEvent* event) override;
     void handleKeyPress(QKeyEvent* event);
+    /// Report a pressed shortcut that belongs to an unavailable language-service
+    /// command. Qt ignores a disabled action's shortcut, so without this the key
+    /// would do nothing at all. Returns true when the key was reported.
+    [[nodiscard]] bool reportUnavailableShortcut(const QKeyEvent& event);
     void mousePressEvent(QMouseEvent* event) override;
     void mouseMoveEvent(QMouseEvent* event) override;
     void mouseReleaseEvent(QMouseEvent* event) override;
@@ -518,4 +526,13 @@ void SetCodeEditorTabMovesFocus(bool isTabMovingFocus);
 
 /// Whether Tab moves focus out of code editors instead of indenting. GUI thread only.
 [[nodiscard]] bool IsCodeEditorTabMovingFocus() noexcept;
+
+/// Record why the language-service command `inoutAction` is unavailable, or
+/// clear it with an empty reason. The owner still disables the action; a code
+/// editor reports the reason when the action's shortcut is pressed. GUI thread only.
+void SetCodeCommandUnavailableReason(QAction& inoutAction, const QString& reason);
+
+/// The reason recorded by SetCodeCommandUnavailableReason, or empty when the
+/// command is available or not a language-service command. GUI thread only.
+[[nodiscard]] QString GetCodeCommandUnavailableReason(const QAction& action);
 } // namespace ludus::editor
