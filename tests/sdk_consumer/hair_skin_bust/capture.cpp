@@ -156,7 +156,9 @@ bool ReadLocalFile(std::string_view name, usize cap, ludus::content::Bytes& outB
     const ludus::content::Status status = ludus::content::ReadFile(".", name, cap, outBytes);
     if (status != ludus::content::Status::Ok)
     {
-        LUDUS_LOG_ERROR(LOG_HAIR_SKIN, "Could not read required input {} (content status {})", name,
+        LUDUS_LOG_ERROR(LOG_HAIR_SKIN,
+                        "Could not read required input {} (content status {})",
+                        name,
                         static_cast<uint32>(status));
         return false;
     }
@@ -218,7 +220,8 @@ void MakeShaderMaterial(const resources::SceneDefinition& scene,
     if (source.Texture != ~uint32{0})
     {
         const resources::SceneTexture& texture = scene.Textures[source.Texture];
-        outMaterial.ColorTexture = {
+        outMaterial.ColorTexture =
+        {
             .Bytes = texture.Pixels.GetData(),
             .Size = texture.Pixels.GetSize(),
             .RowPitch = usize{texture.Width} * RGBA8_PIXEL_BYTES,
@@ -235,17 +238,16 @@ renderer::DirectLight MakeDirectLight(const resources::SceneLight& source, uint6
     renderer::DirectLight light;
     light.SourceId = sourceId;
     light.Kind = source.Kind == resources::SceneLightKind::Directional ? renderer::LightKind::Directional
-                 : source.Kind == resources::SceneLightKind::Spot       ? renderer::LightKind::Spot
-                                                                        : renderer::LightKind::Point;
+                 : source.Kind == resources::SceneLightKind::Spot      ? renderer::LightKind::Spot
+                                                                       : renderer::LightKind::Point;
     // The cooked IntensityRgb carries hue and magnitude together; split it into the renderer's hue
     // and scalar intensity, preserving the brighter channel as the intensity.
-    const float32 peak =
-        math::Max(source.IntensityRgb.X, math::Max(source.IntensityRgb.Y, source.IntensityRgb.Z));
+    const float32 peak = math::Max(source.IntensityRgb.X, math::Max(source.IntensityRgb.Y, source.IntensityRgb.Z));
     light.Intensity = peak;
-    light.Color = peak > 0 ? math::Vector3{source.IntensityRgb.X / peak,
-                                           source.IntensityRgb.Y / peak,
-                                           source.IntensityRgb.Z / peak}
-                           : math::Vector3{1, 1, 1};
+    light.Color =
+        peak > 0
+            ? math::Vector3{source.IntensityRgb.X / peak, source.IntensityRgb.Y / peak, source.IntensityRgb.Z / peak}
+            : math::Vector3{1, 1, 1};
     light.Position = source.PositionWorld;
     light.Direction = source.DirectionWorld;
     light.Range = source.Range;
@@ -354,9 +356,8 @@ bool BuildSceneBinding(const resources::SceneDefinition& scene, SceneBinding& ou
         item.SourceId = i + 1;
         item.MeshIndex = static_cast<uint32>(i);
         item.MeshToWorld = object.Transform;
-        item.Coverage = scene.Materials[object.Material].IsAlphaMasked == true
-                            ? renderer::RenderGraphMaterial::Masked
-                            : renderer::RenderGraphMaterial::Opaque;
+        item.Coverage = scene.Materials[object.Material].IsAlphaMasked == true ? renderer::RenderGraphMaterial::Masked
+                                                                               : renderer::RenderGraphMaterial::Opaque;
     }
     for (usize i = 0; i < scene.Lights.GetSize(); ++i)
     {
@@ -403,13 +404,20 @@ void WriteProvenance(Profile profile,
 {
     foundation::String text;
     const std::string_view fixed[] = {
-        "issue=1400\nprofile=",           ProfileName(profile),
-        "\nfeature=",                     FeatureName(feature),
-        "\npackage=",                     ProfilePackageFile(profile),
-        "\nsdk_version=",                 LUDUS_SDK_VERSION,
-        "\nsdk_source_revision=",         LUDUS_SDK_SOURCE_REVISION,
-        "\ntarget=",                      LUDUS_SDK_TARGET,
-        "\nadapter=",                     information.Adapter.Name.GetData(),
+        "issue=1400\nprofile=",
+        ProfileName(profile),
+        "\nfeature=",
+        FeatureName(feature),
+        "\npackage=",
+        ProfilePackageFile(profile),
+        "\nsdk_version=",
+        LUDUS_SDK_VERSION,
+        "\nsdk_source_revision=",
+        LUDUS_SDK_SOURCE_REVISION,
+        "\ntarget=",
+        LUDUS_SDK_TARGET,
+        "\nadapter=",
+        information.Adapter.Name.GetData(),
         "\nencoding=rgba8-unorm-top-left\n",
     };
     if (text.TryAppendMany({fixed, sizeof(fixed) / sizeof(fixed[0])}) != foundation::StringStatus::Ok)
@@ -430,8 +438,10 @@ void WriteProvenance(Profile profile,
         return;
     }
     const std::string_view view = text.GetView();
-    static_cast<void>(ludus::content::SaveFile(
-        ".", "capture.txt", {reinterpret_cast<const uint8*>(view.data()), view.size()}, nullptr));
+    static_cast<void>(ludus::content::SaveFile(".",
+                                               "capture.txt",
+                                               {reinterpret_cast<const uint8*>(view.data()), view.size()},
+                                               nullptr));
 }
 
 /// Report whether a selected profile can shade the requested feature on the cooked scene, with an
@@ -452,9 +462,12 @@ int CheckProfile(Feature feature, Profile profile)
         LUDUS_LOG_ERROR(LOG_HAIR_SKIN,
                         "Incompatible renderer profile: the '{}' profile cannot shade {} on the character-bust "
                         "World. It shades {} with ordinary lobes, losing the {}. Select the '{}' profile for {}.",
-                        ProfileName(profile), FeatureName(feature), FeatureName(feature),
+                        ProfileName(profile),
+                        FeatureName(feature),
+                        FeatureName(feature),
                         feature == Feature::Hair ? "authored strand highlight" : "subsurface diffusion",
-                        CompatibleProfileName(feature), FeatureName(feature));
+                        CompatibleProfileName(feature),
+                        FeatureName(feature));
         return EXIT_INCOMPATIBLE_PROFILE;
     }
     const usize featureObjects = CountFeatureObjects(scene, feature);
@@ -463,11 +476,16 @@ int CheckProfile(Feature feature, Profile profile)
         LUDUS_LOG_ERROR(LOG_HAIR_SKIN,
                         "Missing required dependency: the cooked scene carries no {} material. Re-cook the bust "
                         "level with its {} slot assigned before packaging.",
-                        FeatureName(feature), FeatureName(feature));
+                        FeatureName(feature),
+                        FeatureName(feature));
         return EXIT_MISSING_DEPENDENCY;
     }
-    LUDUS_LOG_INFO(LOG_HAIR_SKIN, "Profile '{}' shades {} on the bust: {} of {} objects carry the {} material.",
-                   ProfileName(profile), FeatureName(feature), featureObjects, scene.Objects.GetSize(),
+    LUDUS_LOG_INFO(LOG_HAIR_SKIN,
+                   "Profile '{}' shades {} on the bust: {} of {} objects carry the {} material.",
+                   ProfileName(profile),
+                   FeatureName(feature),
+                   featureObjects,
+                   scene.Objects.GetSize(),
                    FeatureName(feature));
     return EXIT_OK;
 }
@@ -483,7 +501,8 @@ int Render(Profile profile, rhi::DeviceHandle device, rhi::SurfaceHandle surface
     const usize featureObjects = CountFeatureObjects(scene, feature);
     if (featureObjects == 0)
     {
-        LUDUS_LOG_ERROR(LOG_HAIR_SKIN, "The cooked scene carries no {} material; re-cook the bust level.",
+        LUDUS_LOG_ERROR(LOG_HAIR_SKIN,
+                        "The cooked scene carries no {} material; re-cook the bust level.",
                         FeatureName(feature));
         return EXIT_MISSING_DEPENDENCY;
     }
@@ -508,9 +527,10 @@ int Render(Profile profile, rhi::DeviceHandle device, rhi::SurfaceHandle surface
         LUDUS_LOG_ERROR(LOG_HAIR_SKIN, "The packaged graph {} has no passes", ProfilePackageFile(profile));
         return EXIT_FAILURE_CODE;
     }
-    const Status initialized = graph.Initialize(device, plan,
-                                                 package.GetPrograms(ludus::shaders::renderer_composite::Vertex(),
-                                                                     ludus::shaders::renderer_composite::Fragment()));
+    const Status initialized = graph.Initialize(device,
+                                                plan,
+                                                package.GetPrograms(ludus::shaders::renderer_composite::Vertex(),
+                                                                    ludus::shaders::renderer_composite::Fragment()));
     if ((initialized != Status::Ready && initialized != Status::Pending) ||
         WaitFor(device, "graph preparation", [&graph]() { return graph.Poll(); }) == false)
     {
@@ -582,9 +602,8 @@ int Render(Profile profile, rhi::DeviceHandle device, rhi::SurfaceHandle surface
         LUDUS_LOG_ERROR(LOG_HAIR_SKIN, "Readback request rejected ({})", static_cast<uint32>(requested));
         return EXIT_FAILURE_CODE;
     }
-    const bool hasPixels =
-        WaitFor(device, "readback", [&]() { return rhi::GetStatus(device, ticket); }) == true &&
-        rhi::CopyReadback(device, ticket, pixels.GetData(), pixels.GetSize()) == Status::Ready;
+    const bool hasPixels = WaitFor(device, "readback", [&]() { return rhi::GetStatus(device, ticket); }) == true &&
+                           rhi::CopyReadback(device, ticket, pixels.GetData(), pixels.GetSize()) == Status::Ready;
     const Status released = rhi::Release(device, ticket);
     if (hasPixels == false || released != Status::Ready)
     {
@@ -598,8 +617,13 @@ int Render(Profile profile, rhi::DeviceHandle device, rhi::SurfaceHandle surface
         return EXIT_FAILURE_CODE;
     }
     WriteProvenance(profile, feature, scene, featureObjects, information);
-    LUDUS_LOG_INFO(LOG_HAIR_SKIN, "Rendered {} through the {} profile at {}x{} ({} draws)", FeatureName(feature),
-                   ProfileName(profile), CAPTURE_WIDTH, CAPTURE_HEIGHT, binding.Items.GetSize());
+    LUDUS_LOG_INFO(LOG_HAIR_SKIN,
+                   "Rendered {} through the {} profile at {}x{} ({} draws)",
+                   FeatureName(feature),
+                   ProfileName(profile),
+                   CAPTURE_WIDTH,
+                   CAPTURE_HEIGHT,
+                   binding.Items.GetSize());
     return EXIT_OK;
 }
 
@@ -610,10 +634,18 @@ int RunWithDevice(Profile profile)
     rhi::DeviceDescription description;
     description.Required.PortableRaster = true;
     rhi::StartupInfo failure;
-    if (rhi::CreateDevice({}, { .Width = PROBE_WIDTH, .Height = PROBE_HEIGHT }, description, device, surface,
+    if (rhi::CreateDevice({},
+                          {
+                              .Width = PROBE_WIDTH,
+                              .Height = PROBE_HEIGHT,
+                          },
+                          description,
+                          device,
+                          surface,
                           &failure) != rhi::DeviceStatus::Ready)
     {
-        LUDUS_LOG_ERROR(LOG_HAIR_SKIN, "A GPU device is required to render the capture; startup error {}",
+        LUDUS_LOG_ERROR(LOG_HAIR_SKIN,
+                        "A GPU device is required to render the capture; startup error {}",
                         static_cast<uint32>(failure.Error));
         rhi::Shutdown();
         return EXIT_MISSING_DEPENDENCY;
