@@ -69,8 +69,9 @@ public:
                const QStringList& arguments = {});
     void Stop();
     /// Retain the latest virtual unit; opens or changes it at the next debounce or
-    /// interactive request once the server is ready.
-    void SetDocument(const QString& uri, const QString& text);
+    /// interactive request once the server is ready. A refresh sends a new version
+    /// even if edits returned the unit to the last text sent.
+    void SetDocument(const QString& uri, const QString& text, bool shouldRefresh = false);
     /// Queue or send `kind` with `parameters`; the client adds `textDocument` for
     /// document-scoped kinds. Returns the request identifier, or 0 while the
     /// server is unavailable or initializing, or when it does not advertise `kind`
@@ -101,6 +102,8 @@ public:
     void Cancel();
 
 Q_SIGNALS:
+    /// A new process is starting, including after an automatic restart.
+    void Starting();
     void Ready();
     void Replied(foundation::int32 request, LanguageRequestKind kind, const QJsonValue& result);
     /// The connection stopped; editing is unaffected. The message names the fix.
@@ -174,6 +177,7 @@ private:
     foundation::int32 mSyncKind = 0;
     foundation::isize mErrorBytes = 0;
     bool mIsReady = false;
+    bool mShouldRefreshDocument = false;
 #if !defined(Q_OS_WASM)
     bool mIsDecoding = false;
 #endif

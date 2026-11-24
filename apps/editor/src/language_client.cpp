@@ -110,6 +110,7 @@ void LanguageClient::stopProcess()
     mDeadline.stop();
     mSynchronize.stop();
     mIsReady = false;
+    mShouldRefreshDocument = false;
     mCapabilities = {};
     mEncoding = LanguagePositionEncoding::Utf16;
     mSyncKind = 0;
@@ -162,6 +163,7 @@ void LanguageClient::startProcess()
     Q_EMIT Failed(QStringLiteral("%1 needs native %2; unavailable in the browser editor.")
                       .arg(mProfile->AssistanceTitle, mProfile->ProductName));
 #else
+    Q_EMIT Starting();
     mProcessOrNull = new QProcess(this);
     QProcess* process = mProcessOrNull;
     connect(QCoreApplication::instance(), &QCoreApplication::aboutToQuit, process, [process]() {
@@ -383,11 +385,12 @@ void LanguageClient::Cancel()
     }
 }
 
-void LanguageClient::SetDocument(const QString& uri, const QString& text)
+void LanguageClient::SetDocument(const QString& uri, const QString& text, bool shouldRefresh)
 {
     mUri = uri;
     mText = text;
-    if (mIsReady == true && (mUri != mSentUri || mText != mSentText))
+    mShouldRefreshDocument = mShouldRefreshDocument == true || shouldRefresh == true;
+    if (mIsReady == true && (mUri != mSentUri || mText != mSentText || mShouldRefreshDocument == true))
     {
         mSynchronize.start();
     }
@@ -395,6 +398,8 @@ void LanguageClient::SetDocument(const QString& uri, const QString& text)
 
 void LanguageClient::synchronize()
 {
+    const bool hasChange = mText != mSentText || mShouldRefreshDocument == true;
+    mShouldRefreshDocument = false;
     if (mUri != mSentUri)
     {
         if (mSentUri.isEmpty() == false)
@@ -411,14 +416,14 @@ void LanguageClient::synchronize()
                              {QStringLiteral("text"), mText}}}});
         mSentUri = mUri;
     }
-    else if (mText != mSentText && mSyncKind == FULL_SYNC_KIND)
+    else if (hasChange == true && mSyncKind == FULL_SYNC_KIND)
     {
         notify(QStringLiteral("textDocument/didChange"),
                {{QStringLiteral("textDocument"),
                  QJsonObject{{QStringLiteral("uri"), mUri}, {QStringLiteral("version"), ++mVersion}}},
                 {QStringLiteral("contentChanges"), QJsonArray{QJsonObject{{QStringLiteral("text"), mText}}}}});
     }
-    else if (mText != mSentText)
+    else if (hasChange == true)
     {
         int32 prefix = 0;
         while (prefix < mText.size() && prefix < mSentText.size() && mText.at(prefix) == mSentText.at(prefix))

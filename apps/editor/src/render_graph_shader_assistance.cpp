@@ -447,6 +447,7 @@ void RenderGraphShaderAssistance::publish()
     suffix.replace(QStringLiteral("\r\n"), QStringLiteral("\n"));
     suffix.replace(QLatin1Char('\r'), QLatin1Char('\n'));
     QMap<QString, CodeNavigationSource> navigationSources;
+    QString alternateUri;
     qsizetype totalBytes = 0;
     for (const QJsonValue& value : mResult.value(QStringLiteral("navigation_sources")).toArray())
     {
@@ -485,6 +486,12 @@ void RenderGraphShaderAssistance::publish()
             continue;
         }
         navigationSources.insert(sourceUri.toString(), {isAuthored == true ? authored : QString{}, text});
+        if (isLusl == false && isAuthored == true && authored == mFile)
+        {
+            // The captured authored file is beside the generated unit. Its
+            // language-server overlay uses the same generated surroundings.
+            alternateUri = QUrl::fromLocalFile(capturedPath).toString();
+        }
     }
     mAssistance.SetContext(server,
                            mTemporary.filePath(QStringLiteral("language")),
@@ -493,6 +500,7 @@ void RenderGraphShaderAssistance::publish()
                            suffix,
                            serverArguments,
                            navigationSources,
-                           isLusl == true ? GetLuslServerProfile() : GetSlangServerProfile());
+                           isLusl == true ? GetLuslServerProfile() : GetSlangServerProfile(),
+                           alternateUri);
 }
 } // namespace ludus::editor

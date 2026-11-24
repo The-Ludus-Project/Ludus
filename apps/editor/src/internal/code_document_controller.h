@@ -72,6 +72,8 @@ public:
 
 Q_SIGNALS:
     void TextAccepted();
+    /// The bound draft's text changed through an edit or a host refresh.
+    void DraftTextChanged();
     void BindingChanged();
     void Failed(const QString& message);
 

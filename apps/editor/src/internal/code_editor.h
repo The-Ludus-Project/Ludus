@@ -182,6 +182,16 @@ public:
     {
         return mLanguage;
     }
+    /// Present the attached server's lifecycle state. Empty text means no active server.
+    void SetLanguageServerStatus(const QString& text, const QString& detail = {});
+    [[nodiscard]] LUDUS_INLINE const QString& GetLanguageServerStatus() const noexcept
+    {
+        return mLanguageServerStatus;
+    }
+    [[nodiscard]] LUDUS_INLINE const QString& GetLanguageServerDetail() const noexcept
+    {
+        return mLanguageServerDetail;
+    }
     /// Apply a single native undo group; commands preserve read-only buffers.
     void IndentSelection(bool shouldOutdent = false);
     /// Multiple-cursor commands (CE06). AddCursorAbove/Below place a collapsed
@@ -215,8 +225,7 @@ public:
     /// isCurrent false says the report already describes an earlier text version.
     void SetDiagnostics(const QList<CodeDiagnostic>& diagnostics, bool isCurrent);
     /// Replace the language server's analysis markers. `source` names the server
-    /// ("slangd") in their descriptions. Ranges outside the document are ignored;
-    /// edits move the markers until the next replacement.
+    /// ("slangd") in their descriptions. Ranges outside the document are ignored.
     void SetAnalysisDiagnostics(const QList<CodeAnalysisDiagnostic>& diagnostics, const QString& source);
     [[nodiscard]] LUDUS_INLINE foundation::int32 GetAnalysisDiagnosticCount() const noexcept
     {
@@ -362,6 +371,8 @@ Q_SIGNALS:
     void SignatureOverloadRequested(foundation::int32 direction);
     /// Analysis markers were replaced.
     void AnalysisDiagnosticsChanged();
+    /// The server lifecycle text or its detail changed.
+    void LanguageServerStatusChanged();
     /// The pointer rested on `position` for the hover delay, or Show Hover ran at the caret.
     void HoverRequested(foundation::int32 position);
     /// The number of cursors changed (1 plus the secondary cursors, CE06). The
@@ -459,6 +470,8 @@ private:
     CodeSyntaxHighlighter* mHighlighter;
     CodeStructureView* mStructure;
     CodeLanguage mLanguage = CodeLanguage::PlainText;
+    QString mLanguageServerStatus;
+    QString mLanguageServerDetail;
     QTimer mSelectionUpdate;
     QTimer mVisibleSyntaxUpdate;
     QList<DiagnosticMarker> mDiagnostics;

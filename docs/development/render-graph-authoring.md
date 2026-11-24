@@ -9360,7 +9360,9 @@ selector with a repair message. After repairing them, use **Retry assistance**
 to refresh available contexts and start again. If the server exits unexpectedly,
 assistance restarts it after one second, then two; after a third exit within a
 minute it stays stopped until **Retry assistance**. LUSL sources use `luslc lsp`
-from the project SDK the same way. Ordinary editing stays available.
+from the project SDK the same way. The code status bar follows the active tab
+and shows when its server is starting, ready, restarting or failed. Ordinary
+editing stays available.
 
 The initial provider needs an executable program context. Unassigned source files,
 legacy compatibility rewrites of the editable file, repeated inclusion of that
@@ -9386,9 +9388,11 @@ messages appear with a dotted underline. They are labelled
 **Error List** with that origin, apart from the build's squiggles and rows,
 which remain authoritative for build errors. Analysis rows never bring the
 Error List forward while you type; activating one opens that shader's tab and
-selects the message's range. Messages about generated surroundings or from an earlier version of the
-text are not shown. **Show Log**, beside **Retry assistance**, shows the
-server's diagnostic output since it last started.
+selects the message's range. Editing the draft clears its existing Analysis
+underlines and rows while the server checks the new text. Reports for generated
+surroundings or with a superseded document version are discarded. **Show Log**,
+beside **Retry assistance**, shows the server's diagnostic output since it last
+started.
 
 With a prepared context, names are also colored by what the server knows about
 them, over the editor's own syntax colors: `slangd` distinguishes, for example,

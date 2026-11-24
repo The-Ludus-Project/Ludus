@@ -251,7 +251,8 @@ void CodeDocumentController::Synchronize(bool shouldRestoreView)
     const bool isNewBinding =
         snapshot.Identity.Epoch != mIdentity.Epoch || snapshot.Identity.Document != mIdentity.Document;
     const QByteArray bytes = CopyCodeText(snapshot.Text);
-    if (shouldRestoreView == true || isNewBinding == true || bytes != mBytes)
+    const bool hasTextChanged = bytes != mBytes;
+    if (shouldRestoreView == true || isNewBinding == true || hasTextChanged == true)
     {
         QString text;
         if (DecodeCodeText(bytes, text) == false)
@@ -331,6 +332,10 @@ void CodeDocumentController::Synchronize(bool shouldRestoreView)
     }
     mLastSelection = CaptureSelection();
     updateHistoryAvailability();
+    if (isNewBinding == false && hasTextChanged == true)
+    {
+        Q_EMIT DraftTextChanged();
+    }
 }
 
 void CodeDocumentController::updateHistoryAvailability()
@@ -516,6 +521,7 @@ void CodeDocumentController::commitPending()
     mIdentity = mHostOrNull->GetSnapshot().Identity;
     mLastSelection = CaptureSelection();
     updateHistoryAvailability();
+    Q_EMIT DraftTextChanged();
     Q_EMIT TextAccepted();
 }
 
