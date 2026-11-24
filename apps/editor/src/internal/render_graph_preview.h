@@ -267,6 +267,10 @@ public:
     [[nodiscard]] bool HasRasterRecovery() const;
     /// Failure from the newest load when it stopped before staging. Empty after a successful decode and stage.
     [[nodiscard]] const QString& GetLoadProblem() const noexcept;
+    /// The attached GPU session has stopped accepting work and must be recreated before retrying.
+    [[nodiscard]] bool HasFailedDevice() const noexcept;
+    /// Whether the engine raster package can be opened after resetting the preview.
+    [[nodiscard]] bool HasReadableRasterFallback() const;
     /// True when the requested package draws and Force raster would replace it with the authored raster
     /// fallback (the engine default raster graph in the World viewport).
     [[nodiscard]] bool CanSwitchToRasterFallback() const noexcept;

@@ -13,6 +13,7 @@
 #include <ludus/foundation/containers/static_array.hpp>
 #include <ludus/graphics/renderer/lighting.hpp>
 #include <ludus/graphics/renderer/tone_mapping.hpp>
+#include <ludus/graphics/rhi/rhi.h>
 #include <ludus/runtime/resources/scene.h>
 
 #include "internal/offscreen_frame_reader.h"
@@ -919,6 +920,10 @@ void RenderGraphPreview::Detach() noexcept
     {
         return;
     }
+    if (HasFailedDevice() == true)
+    {
+        state.LoadProblem.clear();
+    }
     state.Trace.Cancel("preview detached");
     state.FinishCandidateTrace("preview detached");
     EndViewportTrace(state.Active.Source.EditTrace.Lifetime, "preview detached");
@@ -1342,15 +1347,24 @@ const QString& RenderGraphPreview::GetAttemptedPackagePath() const noexcept
 bool RenderGraphPreview::HasRasterRecovery() const
 {
     const State& state = *mState;
-    const QFileInfo fallback(state.RasterFallbackPath);
     return state.ShouldForceRaster == false && state.RequestedPath.isEmpty() == false &&
            state.RequestedPath != state.RasterFallbackPath && state.AttemptedPackagePath != state.RasterFallbackPath &&
-           state.Active.PackagePath != state.RasterFallbackPath && fallback.isFile() == true &&
-           fallback.isReadable() == true;
+           state.Active.PackagePath != state.RasterFallbackPath && HasReadableRasterFallback() == true;
 }
 const QString& RenderGraphPreview::GetLoadProblem() const noexcept
 {
     return mState->LoadProblem;
+}
+bool RenderGraphPreview::HasFailedDevice() const noexcept
+{
+    const rhi::StartupState startup = rhi::GetStartup().State;
+    return mState->IsAttached == true &&
+           (startup == rhi::StartupState::Failed || startup == rhi::StartupState::DeviceLost);
+}
+bool RenderGraphPreview::HasReadableRasterFallback() const
+{
+    const QFileInfo fallback(mState->RasterFallbackPath);
+    return fallback.isFile() == true && fallback.isReadable() == true;
 }
 const QString& RenderGraphPreview::GetOutputTarget() const noexcept
 {

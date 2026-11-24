@@ -16,6 +16,7 @@
 #include <QLabel>
 #include <QPlainTextEdit>
 #include <QPushButton>
+#include <QToolButton>
 #include <QVBoxLayout>
 
 namespace ludus::editor
@@ -36,6 +37,9 @@ QString GetActionLabel(ViewportRenderAction action)
             return QStringLiteral("Build && Preview");
         case ViewportRenderAction::UseProjectRenderer:
             return QStringLiteral("Use project renderer");
+        case ViewportRenderAction::RestartPreview:
+        case ViewportRenderAction::RestartRasterPreview:
+            return QStringLiteral("Restore preview");
     }
     return {};
 }
@@ -86,12 +90,14 @@ ViewportRenderRecovery RendererWorkspace::GetViewportRenderRecovery() const
         mBuildProblem.isEmpty() == false && mSourceProblem.isEmpty() == true && mHasResult == true &&
         mLastResult.IsSuccessful == false && mLastResult.IsCancelled == false && request.ShouldPreview == true &&
         request.InputIdentity.isEmpty() == false && request.InputIdentity == getBuildIdentity(request.Source);
+    const bool hasDeviceFailure = preview.HasFailedDevice();
     const bool hasRuntimeFailure = mActivationProblem.isEmpty() == false && mSourceProblem.isEmpty() == true;
     const bool hasLoadFailure = hasRuntimeFailure == true && preview.GetLoadProblem().isEmpty() == false;
     const bool isRasterFailure = hasRuntimeFailure == true && preview.GetRasterFallbackPath().isEmpty() == false &&
                                  preview.GetAttemptedPackagePath() == preview.GetRasterFallbackPath() &&
                                  preview.GetAttemptedPackagePath() != preview.GetRequestedPackagePath();
-    const bool shouldShowBuildFailure = isCurrentBuildFailure == true && isRasterFailure == false;
+    const bool shouldShowBuildFailure =
+        isCurrentBuildFailure == true && isRasterFailure == false && hasDeviceFailure == false;
     const bool isRuntimeFailure = hasRuntimeFailure == true && shouldShowBuildFailure == false;
     const bool isActivationFailure = isRuntimeFailure == true && hasLoadFailure == false;
     const bool hasFrame = preview.GetPresentedGeneration() != 0;
@@ -100,7 +106,11 @@ ViewportRenderRecovery RendererWorkspace::GetViewportRenderRecovery() const
     recovery.Message = isRasterFailure == true          ? QStringLiteral("Raster fallback could not start.")
                        : shouldShowBuildFailure == true ? QStringLiteral("The renderer build failed.")
                                                         : QStringLiteral("The renderer preview could not update.");
-    recovery.Diagnostics = problem;
+    recovery.Diagnostics = hasDeviceFailure == true ? preview.GetDisplayStatus() : problem;
+    if (hasDeviceFailure == true)
+    {
+        recovery.Diagnostics.prepend(QStringLiteral("The graphics session stopped accepting work.\n"));
+    }
     const RenderGraphDeviceProfile device = mCanvas->GetDeviceProfile();
     if (device.DeviceName.isEmpty() == false)
     {
@@ -129,15 +139,36 @@ ViewportRenderRecovery RendererWorkspace::GetViewportRenderRecovery() const
                                     .arg(preview.GetPresentedGeneration())
                                     .arg(preview.GetPresentedRevision());
     }
-    recovery.CanUseRaster = preview.HasRasterRecovery();
+    recovery.CanUseRaster =
+        hasDeviceFailure == false && mPreviewSourceOrNull != nullptr && preview.HasRasterRecovery() == true;
 
     using graphics::renderer::RenderGraphCandidateState;
     using graphics::renderer::RenderGraphFailureStage;
-    if (isRasterFailure == true)
+    if (hasDeviceFailure == true)
+    {
+        recovery.Message = QStringLiteral("The graphics processor stopped drawing the preview.");
+        if (mPreviewSourceOrNull != nullptr)
+        {
+            const bool hasFallback = preview.HasReadableRasterFallback();
+            recovery.Action =
+                hasFallback == true ? ViewportRenderAction::RestartRasterPreview : ViewportRenderAction::RestartPreview;
+            recovery.Guidance = hasFallback == true
+                                    ? QStringLiteral("Restore preview reconnects the graphics processor and uses the "
+                                                     "standard renderer so you can keep editing.")
+                                    : QStringLiteral("Restore preview reconnects the graphics processor and tries "
+                                                     "drawing this World again.");
+        }
+        else
+        {
+            recovery.Guidance = QStringLiteral("Open a World to restore the preview.");
+        }
+    }
+    else if (isRasterFailure == true)
     {
         if (preview.ShouldForceRaster() == true)
         {
             recovery.Action = ViewportRenderAction::UseProjectRenderer;
+            recovery.Guidance = QStringLiteral("Switch back to the project renderer to try drawing this World again.");
         }
         else if (CanBuild() == true)
         {
@@ -146,11 +177,13 @@ ViewportRenderRecovery RendererWorkspace::GetViewportRenderRecovery() const
     }
     else if (isActivationFailure == true && report.Candidate == RenderGraphCandidateState::RestartRequired)
     {
-        recovery.Message += QStringLiteral(" Restart Ludus, then preview the graph again.");
+        recovery.Guidance = QStringLiteral("Close and reopen Ludus, then open this World again.");
     }
     else if (isActivationFailure == true && report.CandidateFailureStage == RenderGraphFailureStage::Resize)
     {
-        recovery.Message += QStringLiteral(" Reduce the RenderSize scale or make the viewport smaller.");
+        recovery.Message = QStringLiteral("The preview could not draw at this size.");
+        recovery.Guidance =
+            QStringLiteral("Make the viewport smaller or lower the graph's render scale, then try again.");
     }
     else if (isActivationFailure == true &&
              report.CandidateRejection != graphics::renderer::RenderGraphSceneRejection::None)
@@ -177,6 +210,8 @@ ViewportRenderRecovery RendererWorkspace::GetViewportRenderRecovery() const
         if (CanBuild() == true && (isRuntimeFailure == true || problem == mBuildProblem))
         {
             recovery.Action = ViewportRenderAction::RebuildGraph;
+            recovery.Guidance =
+                QStringLiteral("Build & Preview rebuilds the graph and tries to draw this World again.");
         }
     }
 
@@ -218,13 +253,20 @@ ViewportRenderRecovery RendererWorkspace::GetViewportRenderRecovery() const
             {
                 recovery.DiagnosticRow = row;
                 recovery.Action = action;
-                recovery.Message += QLatin1Char(' ') + description.section(QLatin1Char('\n'), 0, 0);
+                recovery.Guidance = action == ViewportRenderAction::OpenShader
+                                        ? QStringLiteral("Open the shader at the line that needs attention.")
+                                        : QStringLiteral("Open the graph at the node that needs attention.");
             }
         }
     }
     if (hasFrame == true)
     {
         recovery.Message += QStringLiteral(" The last rendered image is still shown.");
+    }
+    if (recovery.Guidance.isEmpty() == true && recovery.Action == ViewportRenderAction::ShowDiagnostics)
+    {
+        recovery.Guidance =
+            QStringLiteral("Copy the technical details to share with Ludus support if this keeps happening.");
     }
     return recovery;
 }
@@ -249,12 +291,25 @@ bool RendererWorkspace::OpenViewportRenderDiagnostic(foundation::uint64 request,
     return ActivateDiagnostic(row);
 }
 
-ViewportRenderRecoveryNotice::ViewportRenderRecoveryNotice(RendererWorkspace& inoutWorkspace,
-                                                           RenderPreview& inoutPreview,
-                                                           QWidget* parent)
-    : QWidget(parent), mWorkspace(inoutWorkspace), mPreview(inoutPreview), mMessage(new QLabel(this)),
-      mActionProblem(new QLabel(this)), mPrimary(new QPushButton(this)),
-      mDetails(new QPushButton(QStringLiteral("Show diagnostics"), this)),
+bool RendererWorkspace::RestoreViewportPreview(bool shouldUseRaster)
+{
+    if (mPreviewSourceOrNull == nullptr)
+    {
+        return false;
+    }
+    RenderPreview& preview = *mPreviewSourceOrNull;
+    preview.Stop();
+    if (shouldUseRaster == true)
+    {
+        preview.SetForceRaster(true);
+    }
+    preview.SetProjectGraphProblem({});
+    return preview.Start();
+}
+
+ViewportRenderRecoveryNotice::ViewportRenderRecoveryNotice(RendererWorkspace& inoutWorkspace, QWidget* parent)
+    : QWidget(parent), mWorkspace(inoutWorkspace), mMessage(new QLabel(this)), mActionProblem(new QLabel(this)),
+      mPrimary(new QPushButton(this)), mDetails(new QPushButton(QStringLiteral("Show diagnostics"), this)),
       mRaster(new QPushButton(QStringLiteral("Use raster preview"), this))
 {
     setObjectName(QStringLiteral("viewportRenderRecovery"));
@@ -287,7 +342,10 @@ ViewportRenderRecoveryNotice::ViewportRenderRecoveryNotice(RendererWorkspace& in
     connect(mRaster, &QPushButton::clicked, this, [this]() {
         if (mWorkspace.GetViewportRenderRecovery().CanUseRaster == true)
         {
-            mPreview.SetForceRaster(true);
+            if (RenderPreview* previewOrNull = mWorkspace.GetPreviewSourceOrNull(); previewOrNull != nullptr)
+            {
+                previewOrNull->SetForceRaster(true);
+            }
             refresh();
         }
     });
@@ -322,7 +380,9 @@ void ViewportRenderRecoveryNotice::refresh()
     }
     if (HasProblem() == true)
     {
-        mMessage->setText(mRecovery.Message);
+        mMessage->setText(mRecovery.Guidance.isEmpty() == true
+                              ? mRecovery.Message
+                              : mRecovery.Message + QLatin1Char('\n') + mRecovery.Guidance);
         mPrimary->setText(GetActionLabel(mRecovery.Action));
         mDetails->setVisible(mRecovery.Action != ViewportRenderAction::ShowDiagnostics);
         mRaster->setVisible(mRecovery.CanUseRaster);
@@ -360,9 +420,30 @@ void ViewportRenderRecoveryNotice::activatePrimary()
             }
             return;
         case ViewportRenderAction::UseProjectRenderer:
-            mPreview.SetForceRaster(false);
+            if (RenderPreview* previewOrNull = mWorkspace.GetPreviewSourceOrNull(); previewOrNull != nullptr)
+            {
+                previewOrNull->SetForceRaster(false);
+            }
             refresh();
             return;
+        case ViewportRenderAction::RestartPreview:
+        case ViewportRenderAction::RestartRasterPreview: {
+            const bool shouldUseRaster = mRecovery.Action == ViewportRenderAction::RestartRasterPreview;
+            const ViewportRenderRecovery failure = mRecovery;
+            if (mWorkspace.RestoreViewportPreview(shouldUseRaster) == false)
+            {
+                mRecovery = failure;
+                mRecovery.Message = QStringLiteral("The preview still couldn't start.");
+                mRecovery.Guidance = QStringLiteral("Close and reopen Ludus, then open this World again.");
+                mRecovery.Action = ViewportRenderAction::ShowDiagnostics;
+                mMessage->setText(mRecovery.Message + QLatin1Char('\n') + mRecovery.Guidance);
+                mPrimary->setText(GetActionLabel(mRecovery.Action));
+                mDetails->hide();
+                mRaster->hide();
+                show();
+            }
+            return;
+        }
         case ViewportRenderAction::ShowDiagnostics:
             showDiagnostics();
             return;
@@ -378,14 +459,37 @@ void ViewportRenderRecoveryNotice::showDiagnostics()
     QLabel* message = new QLabel(mRecovery.Message, dialog);
     message->setTextFormat(Qt::PlainText);
     message->setWordWrap(true);
+    QLabel* guidance = new QLabel(mRecovery.Guidance, dialog);
+    guidance->setTextFormat(Qt::PlainText);
+    guidance->setWordWrap(true);
+    QToolButton* technicalDetails = new QToolButton(dialog);
+    technicalDetails->setText(QStringLiteral("Technical details"));
+    technicalDetails->setCheckable(true);
     QPlainTextEdit* details = new QPlainTextEdit(mRecovery.Diagnostics, dialog);
     details->setReadOnly(true);
+    details->hide();
+    connect(technicalDetails, &QToolButton::toggled, details, &QWidget::setVisible);
     details->setAccessibleName(QStringLiteral("Renderer failure details"));
     QDialogButtonBox* buttons = new QDialogButtonBox(QDialogButtonBox::Close, dialog);
     QPushButton* copy = buttons->addButton(QStringLiteral("Copy diagnostics"), QDialogButtonBox::ActionRole);
     copy->setObjectName(QStringLiteral("viewportCopyRenderDiagnostics"));
     QVBoxLayout* layout = new QVBoxLayout(dialog);
     layout->addWidget(message);
+    layout->addWidget(guidance);
+    const ViewportRenderAction action = mRecovery.Action;
+    if (action != ViewportRenderAction::ShowDiagnostics)
+    {
+        QPushButton* next = buttons->addButton(GetActionLabel(action), QDialogButtonBox::ActionRole);
+        next->setDefault(true);
+        connect(next, &QPushButton::clicked, this, [this, dialog, action]() {
+            dialog->accept();
+            if (HasProblem() == true && mRecovery.Action == action)
+            {
+                activatePrimary();
+            }
+        });
+    }
+    layout->addWidget(technicalDetails, 0, Qt::AlignLeft);
     layout->addWidget(details, 1);
     layout->addWidget(buttons);
     connect(buttons, &QDialogButtonBox::rejected, dialog, &QDialog::reject);

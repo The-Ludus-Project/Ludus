@@ -2529,7 +2529,7 @@ void PreviewViewport::UseProjectGraph(RendererWorkspace& inoutWorkspace)
     mState->GraphViewOrNull->SetCanPresent(mState->IsAutomatic);
     mState->FrameLayoutOrNull->addWidget(mState->GraphViewOrNull);
     // Reserve a strip inside the viewport because QWidget controls cannot cover the native frame window.
-    ViewportRenderRecoveryNotice* recovery = new ViewportRenderRecoveryNotice(inoutWorkspace, *Preview_, this);
+    ViewportRenderRecoveryNotice* recovery = new ViewportRenderRecoveryNotice(inoutWorkspace, this);
     mState->Layout->addWidget(recovery);
     connect(recovery,
             &ViewportRenderRecoveryNotice::ProblemVisibilityChanged,

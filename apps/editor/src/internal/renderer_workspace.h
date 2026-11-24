@@ -59,6 +59,7 @@ namespace ludus::editor
 {
 struct WorldSurfaceBake;
 struct ViewportRenderRecovery;
+class ViewportRenderRecoveryNotice;
 class RenderGraphQuickAdd;
 class RenderGraphRecovery;
 struct RenderGraphTemplate;
@@ -395,6 +396,9 @@ public:
     [[nodiscard]] ViewportRenderRecovery GetViewportRenderRecovery() const;
     /// Open the diagnostic if it still belongs to the current renderer build and draft.
     [[nodiscard]] bool OpenViewportRenderDiagnostic(foundation::uint64 request, foundation::int32 row);
+    /// Restart the current World's graphics session, optionally selecting the engine raster renderer.
+    /// False when the World has no preview source or starting the replacement was rejected.
+    [[nodiscard]] bool RestoreViewportPreview(bool shouldUseRaster);
 #endif
     /// Advisory about how the displayed route lights the viewport's World, such as a slice-sampling luminaire panel
     /// placed for another scene. It never blocks preparation or rendering and is empty without one. Refreshed while
@@ -727,6 +731,8 @@ private:
     /// Status panel and the problem chip that replaces it while the Error List shows the problem.
     QWidget* mStatusRow;
     QToolButton* mProblemChip;
+    // Keep the layout shared with the graph authoring library, which is compiled independently of GPU preview.
+    ViewportRenderRecoveryNotice* mPreviewRecoveryOrNull = nullptr;
     QPushButton* mSourcesToggle;
     QTabWidget* mViews;
     QScrollArea* mInspectorPanel;

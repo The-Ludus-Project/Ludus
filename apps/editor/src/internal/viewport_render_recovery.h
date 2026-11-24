@@ -13,7 +13,6 @@ QT_END_NAMESPACE
 namespace ludus::editor
 {
 class RendererWorkspace;
-class RenderPreview;
 
 enum class ViewportRenderAction : foundation::uint8
 {
@@ -22,12 +21,15 @@ enum class ViewportRenderAction : foundation::uint8
     ShowGraphNode,
     RebuildGraph,
     UseProjectRenderer,
+    RestartPreview,
+    RestartRasterPreview,
 };
 
 /// Copied notice for the current viewport failure. The diagnostic row is scoped to its build request.
 struct ViewportRenderRecovery final
 {
     QString Message;
+    QString Guidance;
     QString Diagnostics;
     ViewportRenderAction Action = ViewportRenderAction::ShowDiagnostics;
     foundation::uint64 Request = 0;
@@ -40,7 +42,7 @@ class ViewportRenderRecoveryNotice final : public QWidget
 {
     Q_OBJECT
 public:
-    ViewportRenderRecoveryNotice(RendererWorkspace& inoutWorkspace, RenderPreview& inoutPreview, QWidget* parent);
+    ViewportRenderRecoveryNotice(RendererWorkspace& inoutWorkspace, QWidget* parent);
     [[nodiscard]] bool HasProblem() const;
 
 Q_SIGNALS:
@@ -51,7 +53,6 @@ private:
     void activatePrimary();
     void showDiagnostics();
     RendererWorkspace& mWorkspace;
-    RenderPreview& mPreview;
     QLabel* mMessage;
     QLabel* mActionProblem;
     QPushButton* mPrimary;

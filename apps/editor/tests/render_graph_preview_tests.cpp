@@ -2300,6 +2300,9 @@ TEST_CASE("Cold project shader timeout keeps the default rendering the current W
     detailsOrNull->click();
     QDialog* diagnosticsOrNull = viewport.findChild<QDialog*>(QStringLiteral("viewportRenderDiagnosticsDialog"));
     REQUIRE(diagnosticsOrNull != nullptr);
+    const QPlainTextEdit* technicalOrNull = diagnosticsOrNull->findChild<QPlainTextEdit*>();
+    REQUIRE(technicalOrNull != nullptr);
+    CHECK(technicalOrNull->isHidden() == true);
     QPushButton* copyOrNull =
         diagnosticsOrNull->findChild<QPushButton*>(QStringLiteral("viewportCopyRenderDiagnostics"));
     REQUIRE(copyOrNull != nullptr);
@@ -2420,6 +2423,18 @@ TEST_CASE("Force raster starts a World with a decoded runtime after a project sh
     CHECK(workspace.GetPreviewOrNull()->GetActivePackagePath() == GetDefaultRenderGraphRuntime());
     CHECK(workspace.GetRenderProblem().contains(QStringLiteral("invalid replacement shader")) == true);
     CHECK(failed.isEmpty() == true);
+    const uint64 oldDevice = source.GetDeviceSerial();
+    REQUIRE(workspace.RestoreViewportPreview(true) == true);
+    CHECK(source.GetDeviceSerial() > oldDevice);
+    CHECK(source.ShouldForceRaster() == true);
+    timer.restart();
+    while (source.FrameAvailable() == false && timer.elapsed() < TIMEOUT_MILLISECONDS)
+    {
+        QTest::qWait(1);
+        workspace.ServicePreview();
+    }
+    REQUIRE(source.FrameAvailable() == true);
+    CHECK(workspace.GetPreviewOrNull()->GetActivePackagePath() == GetDefaultRenderGraphRuntime());
     source.Stop();
     workspace.SetPreviewSource(nullptr);
     rhi::Shutdown();
