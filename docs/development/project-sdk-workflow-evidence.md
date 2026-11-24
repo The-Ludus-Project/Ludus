@@ -728,37 +728,45 @@ extend this original project-tooling milestone. Their limits and evidence live i
 ## Hair and skin standalone qualification (#1400)
 
 The standalone qualification of raster hair cards and real-time skin on the
-character bust is the `tests/sdk_consumer/hair_skin_bust` fixture: a game built
-against the installed SDK that cooks and packages the saved bust World, launches
-it from a clean relocated extraction and compares its captures with the Editor on
-the same fixture. Its user guide is
-[Qualify hair and skin in a standalone game](hair-skin-standalone-qualification.md).
+character bust is the `tests/sdk_consumer/hair_skin_bust` fixture: a **Qt-free**
+game built against the installed SDK that draws ONE real, cooked bust World — its
+meshes, material slots, the hair opacity texture and the skin inputs — through the
+packaged forward-lit and clustered-deferred graphs, launched from a clean
+relocated extraction and compared with the Editor on the same fixture. Its user
+guide is [Qualify hair and skin in a standalone game](hair-skin-standalone-qualification.md).
 
 Target and profiles: **macOS arm64 / Metal**, Development SDK. No single raster
-profile shades both features, so the one saved World is qualified through the
-**forward lit** profile for hair cards and the **clustered deferred** profile for
-skin, each inspecting the feature it owns. The app refuses an incompatible
-profile or a missing dependency with an actionable diagnostic before packaging.
+profile shades both features, so the one saved World is drawn through the
+**forward-lit** profile for hair cards and the **clustered-deferred** profile for
+skin. The scene is cooked once with the public `ludus-cook scene` pipeline
+(`new` → `import` the bust glTF → inject the authored Hair/Skin slot overrides →
+`assemble`), the same level schema the Editor's Make Hair Card / Make Skin
+produce; the app loads it through `Ludus::Resources::SceneDefinition::Decode`. The
+app links no Qt (files through `Ludus::Content`, render through
+`Ludus::GraphicsRenderer`, raw-RGBA readback written through `Ludus::Content`), so
+the extracted package has no Homebrew-Qt runtime dependency.
 
 Status (honest, per P15): **authored, not run** in the Kiro web sandbox
 (Amazon Linux 2023). The sandbox has only system Clang 15 and CMake 3.22 (below
 the `cmake_minimum_required(3.29)` the fixture declares), no Slang, no Qt6 and no
-GPU/Metal, so the native build, package, launch and the Editor-vs-app visual
+GPU/Metal, so the native cook, build, launch and the Editor-vs-app visual
 comparison **cannot run here** and are deferred to the macOS Metal lane.
 
-- **AVAILABLE and run here:** the saved World, scene source and World schema JSON
-  validate; `source_policy.py --base origin/develop` passes on the changed
-  sources; `python tests/sdk_consumer/hair_skin_bust/verify.py --plan` prints the
-  exact ordered build/package/extract/launch sequence; the consumer uses only
-  public SDK symbols read from the installed headers
-  (`MakeHairCardScattering`, `MaterialScattering{ .Model = Skin }`,
-  `IsHairCardValid`, `SceneShaderMaterial`, `RenderGraphPackage`/`RenderGraph`),
-  matching the `raster_baseline` consumer.
+- **AVAILABLE and run here:** the authored override JSON validates;
+  `source_policy.py --base origin/develop` passes on the changed sources;
+  `python tests/sdk_consumer/hair_skin_bust/verify.py --plan` prints the exact
+  ordered cook/build/stage/launch sequence; the consumer uses only public SDK
+  symbols read from the installed headers (`content::ReadFile`/`SaveFile`,
+  `resources::SceneDefinition::Decode`, `SceneShaderMaterial`/`SceneShaderInputs`,
+  `RenderGraphPackage`/`RenderGraph` Initialize/Update/Poll/Render/GetExport,
+  `RequestTextureReadback`/`CopyReadback`), matching the `raster_baseline` and
+  `reference-scene` consumers.
 - **UNAVAILABLE / deferred to the Metal lane:** the pinned Clang 23 / Slang build
-  of `hair_skin_capture`, `ludus_compile_render_graph` cooking of the forward lit
-  template, SDK relocation + dependency bundling, packaging and clean extraction,
-  the `hair_skin_capture --profile …` launches, the Editor `[skin][hair-card]`
-  reference capture and the `scripts/compare-render` comparison. The macOS CI
-  step `.github/actions/hair-skin-bust` runs `verify.py` end to end there; it is
-  not wired into the live `ci.yml` macOS job here, since a workflow edit reaches
+  of `hair_skin_capture`, the `ludus-cook scene` cook of `scene.luscn`, the
+  `ludus_compile_render_graph` cook of both graphs, SDK relocation + dependency
+  bundling, the clean-extraction launches, the no-Qt dependency assertion, the
+  runtime-dependency-removal check, the Editor `[skin][hair-card]` reference
+  capture and the `scripts/compare-render` comparison. The macOS CI step
+  `.github/actions/hair-skin-bust` runs `verify.py` end to end there; it is not
+  wired into the live `ci.yml` macOS job here, since a workflow edit reaches
   batches only after promotion and the develop-health gate owns that change.

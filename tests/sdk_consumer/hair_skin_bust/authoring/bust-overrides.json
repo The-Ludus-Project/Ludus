@@ -1,0 +1,28 @@
+{
+  "comment": "The authored hair-card and skin slot overrides verify.py injects onto the bust level's imported objects before cooking scene.luscn. They match the Editor's Make Hair Card / Make Skin edits and carry the same values as the [skin][hair-card] acceptance test. Keyed by the imported material slot name (the glTF slot).",
+  "slots": {
+    "Hair": {
+      "hair_card": {
+        "strand_direction_degrees": 90,
+        "primary_shift_degrees": -6,
+        "secondary_shift_degrees": 9,
+        "primary_weight": 0.12,
+        "secondary_weight": 0.06,
+        "alpha_cutoff": 0.5
+      }
+    },
+    "Skin": {
+      "skin": {
+        "scattering_distance": [0.0015, 0.00094, 0.00057],
+        "base_color": [0.76, 0.52, 0.43],
+        "roughness": 0.42
+      }
+    }
+  },
+  "camera": {
+    "comment": "The matched capture camera the Editor reference uses, written into the cooked level so the app and Editor share one view.",
+    "eye": [0.0, 0.08, 0.42],
+    "target": [0.0, 0.08, 0.0],
+    "up": [0.0, 1.0, 0.0]
+  }
+}
