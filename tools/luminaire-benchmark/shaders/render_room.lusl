@@ -1,0 +1,197 @@
+// Headless controlled-room driver. Sampling and physical emission come unchanged from the Ludus graph.
+// Triangle vertices/normals are loaded from the generated room OBJ files; all receivers are unit Lambertian.
+#include "luminaire_flow.luslh"
+
+/// Dispatch parameters; render_comparison.py packs them as eight little-endian uint32 values.
+struct RoomParameters
+{
+    uint32 Width;
+    uint32 Height;
+    uint32 SamplesPerDispatch;
+    uint32 Seed;
+    uint32 RowOffset;
+    uint32 RowCount;
+    uint32 ColumnOffset;
+    uint32 ColumnCount;
+};
+
+StructuredBuffer<float32x4> triangles;
+RWStructuredBuffer<float32x4> accumulation;
+ConstantBuffer<RoomParameters> parameters;
+
+static const uint32 ROOM_GROUP_WIDTH = 8;
+static const uint32 ROOM_GROUP_HEIGHT = 8;
+static const uint32 ROOM_RECORDS_PER_TRIANGLE = 4;
+static const uint32 ROOM_ACCUMULATION_RECORDS = 2;
+static const uint32 ROOM_INVALID_TRIANGLE = 0xffffffff;
+static const float32 ROOM_RAY_EPSILON_WORLD = 0.0001;
+static const float32 ROOM_CAMERA_DISTANCE_WORLD = 3.2;
+static const float32 ROOM_CAMERA_TARGET_HEIGHT_WORLD = -0.1;
+static const float32 ROOM_CAMERA_TANGENT_HALF_FOV = 0.414213562373095;
+static const uint32 ROOM_RANDOM_KEY = 0x524f4f4d;
+static const float32 ROOM_DEFENSIVE_FRACTION = 0.1;
+
+bool TryIntersectRoom(in float32x3 originWorld,
+                      in float32x3 directionWorld,
+                      in uint32 ignoredTriangle,
+                      in float32 farDistanceWorld,
+                      out float32 outDistanceWorld,
+                      out float32x3 outNormalWorld,
+                      out uint32 outTriangle)
+{
+    uint32 records = triangles.GetDimensions();
+    outDistanceWorld = farDistanceWorld;
+    outNormalWorld = 0;
+    outTriangle = ROOM_INVALID_TRIANGLE;
+    [loop]
+    for (uint32 triangle = 0; triangle < records / ROOM_RECORDS_PER_TRIANGLE; ++triangle)
+    {
+        if (triangle == ignoredTriangle)
+        {
+            continue;
+        }
+        uint32 base = triangle * ROOM_RECORDS_PER_TRIANGLE;
+        float32x3 firstWorld = triangles[base].xyz;
+        float32x3 edgeFirstWorld = triangles[base + 1].xyz - firstWorld;
+        float32x3 edgeSecondWorld = triangles[base + 2].xyz - firstWorld;
+        float32x3 crossedWorld = cross(directionWorld, edgeSecondWorld);
+        float32 determinantValue = dot(edgeFirstWorld, crossedWorld);
+        if (determinantValue == 0)
+        {
+            continue;
+        }
+        float32 inverse = 1 / determinantValue;
+        float32x3 offsetWorld = originWorld - firstWorld;
+        float32 u = dot(offsetWorld, crossedWorld) * inverse;
+        float32x3 secondCrossedWorld = cross(offsetWorld, edgeFirstWorld);
+        float32 v = dot(directionWorld, secondCrossedWorld) * inverse;
+        float32 t = dot(edgeSecondWorld, secondCrossedWorld) * inverse;
+        if (u >= 0 && v >= 0 && u + v <= 1 && t > ROOM_RAY_EPSILON_WORLD && t < outDistanceWorld)
+        {
+            outDistanceWorld = t;
+            outNormalWorld = triangles[base + ROOM_RECORDS_PER_TRIANGLE - 1].xyz;
+            outTriangle = triangle;
+        }
+    }
+    return outTriangle != ROOM_INVALID_TRIANGLE;
+}
+
+float32 DrawRoomRandom(in uint32x2 pixel, in uint32 sampleIndex, in uint32 dimension)
+{
+    return SampleRandomFloat01(uint32x2(parameters.Seed, ROOM_RANDOM_KEY),
+                               MakeRandomAddress(pixel, sampleIndex, dimension));
+}
+
+void RenderRoomPixel(in uint32x2 pixel, in bool isPureLight)
+{
+    if (pixel.x >= parameters.Width || pixel.y >= parameters.Height)
+    {
+        return;
+    }
+    uint32 index = (pixel.y * parameters.Width + pixel.x) * ROOM_ACCUMULATION_RECORDS;
+    float32x4 stored = accumulation[index];
+    uint32 sampleCount = asuint(stored.w);
+    float32x3 sum = stored.xyz;
+    float32x3 compensation = accumulation[index + 1].xyz;
+    uint32 nullCount = asuint(accumulation[index + 1].w);
+    float32x3 originWorld = float32x3(0, 0, -ROOM_CAMERA_DISTANCE_WORLD);
+    float32x3 forwardWorld =
+        normalize(float32x3(0, ROOM_CAMERA_TARGET_HEIGHT_WORLD, ROOM_CAMERA_DISTANCE_WORLD));
+    float32x3 rightWorld = normalize(cross(float32x3(0, 1, 0), forwardWorld));
+    float32x3 upWorld = cross(forwardWorld, rightWorld);
+    float32x2 screen =
+        (float32x2(pixel) + 0.5) / float32x2(float32(parameters.Width), float32(parameters.Height)) * 2 - 1;
+    float32x3 directionWorld =
+        normalize(forwardWorld + ROOM_CAMERA_TANGENT_HALF_FOV * (screen.x * rightWorld - screen.y * upWorld));
+    float32 distanceWorld;
+    float32x3 normalWorld;
+    uint32 triangle;
+    bool hasHit = TryIntersectRoom(originWorld,
+                                   directionWorld,
+                                   ROOM_INVALID_TRIANGLE,
+                                   ROOM_CAMERA_DISTANCE_WORLD * ROOM_CAMERA_DISTANCE_WORLD,
+                                   out distanceWorld,
+                                   out normalWorld,
+                                   out triangle);
+    float32x3 positionWorld = originWorld + distanceWorld * directionWorld;
+    Luminaire luminaire = MakeRoomLuminaire();
+    LuminaireReceiver receiver = MakeLuminaireReceiver(luminaire, positionWorld);
+    [loop]
+    for (uint32 offset = 0; offset < parameters.SamplesPerDispatch; ++offset)
+    {
+        float32x3 value = 0;
+        if (hasHit == true)
+        {
+            uint32 sampleIndex = sampleCount + offset;
+            float32x2 seed =
+                float32x2(DrawRoomRandom(pixel, sampleIndex, 0), DrawRoomRandom(pixel, sampleIndex, 1));
+            LuminaireLightSample light;
+            if (isPureLight == true)
+            {
+                light = SamplePortablePureLight(luminaire, receiver, seed);
+            }
+            else
+            {
+                light = SampleLuminaireDefensive(
+                    luminaire,
+                    receiver,
+                    ROOM_DEFENSIVE_FRACTION,
+                    DrawRoomRandom(pixel, sampleIndex, 2),
+                    seed,
+                    DrawRoomRandom(pixel, sampleIndex, ROOM_RECORDS_PER_TRIANGLE),
+                    float32x2(DrawRoomRandom(pixel, sampleIndex, ROOM_RECORDS_PER_TRIANGLE + 1),
+                              DrawRoomRandom(pixel, sampleIndex, ROOM_RECORDS_PER_TRIANGLE + 2)));
+            }
+            if (light.HasSample == true)
+            {
+                float32 cosine = max(dot(normalWorld, light.DirectionWorld), 0);
+                if (cosine > 0)
+                {
+                    float32 visibilityDistanceWorld;
+                    float32x3 visibilityNormalWorld;
+                    uint32 visibilityTriangle;
+                    float32 maximumWorld = length(light.PositionWorld - positionWorld) - ROOM_RAY_EPSILON_WORLD;
+                    bool isOccluded = TryIntersectRoom(positionWorld + normalWorld * ROOM_RAY_EPSILON_WORLD,
+                                                       light.DirectionWorld,
+                                                       triangle,
+                                                       maximumWorld,
+                                                       out visibilityDistanceWorld,
+                                                       out visibilityNormalWorld,
+                                                       out visibilityTriangle);
+                    if (isOccluded == false)
+                    {
+                        value = light.RadianceOverDensity * (cosine / PI);
+                    }
+                }
+            }
+            else
+            {
+                ++nullCount;
+            }
+        }
+        float32x3 corrected = value - compensation;
+        float32x3 updated = sum + corrected;
+        compensation = (updated - sum) - corrected;
+        sum = updated;
+    }
+    accumulation[index] = float32x4(sum, asfloat(sampleCount + parameters.SamplesPerDispatch));
+    accumulation[index + 1] = float32x4(compensation, asfloat(nullCount));
+}
+
+[stage(compute), threads(ROOM_GROUP_WIDTH, ROOM_GROUP_HEIGHT, 1)]
+void RenderRoomSlice(in uint32x3 index : DispatchThreadId)
+{
+    if (index.y < parameters.RowCount && index.x < parameters.ColumnCount)
+    {
+        RenderRoomPixel(uint32x2(index.x + parameters.ColumnOffset, index.y + parameters.RowOffset), false);
+    }
+}
+
+[stage(compute), threads(ROOM_GROUP_WIDTH, ROOM_GROUP_HEIGHT, 1)]
+void RenderRoomPureLight(in uint32x3 index : DispatchThreadId)
+{
+    if (index.y < parameters.RowCount && index.x < parameters.ColumnCount)
+    {
+        RenderRoomPixel(uint32x2(index.x + parameters.ColumnOffset, index.y + parameters.RowOffset), true);
+    }
+}

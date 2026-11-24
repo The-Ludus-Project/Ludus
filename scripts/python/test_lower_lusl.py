@@ -141,5 +141,22 @@ class LowerLuslTests(unittest.TestCase):
             self.assertIn('SETTINGS = 0;', (output / 'sample_slots.h').read_text())
 
 
+class LuslComputeSlotTests(unittest.TestCase):
+    """The benchmark drivers bind by the slots lusl_compute.py reads back from this helper's header."""
+
+    def test_read_slots_returns_bindings_but_not_locations(self):
+        sys.path.insert(0, str(Path(__file__).resolve().parent))
+        import lusl_compute
+
+        header = lower_lusl.slot_header('render', 'binding\tmain.lusl:1\tinputs\tStructuredBuffer\t0\n'
+                                                  'binding\tmain.lusl:2\tsceneData\tStructuredBuffer\t1\n'
+                                                  'binding\tmain.lusl:3\tparameters\tConstantBuffer\t2\n'
+                                                  'vertex-input\tmain.lusl:9\tinput.PositionUv\t5\n')
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / 'render_slots.h'
+            path.write_text(header)
+            self.assertEqual(lusl_compute.read_slots(path), {'INPUTS': 0, 'SCENE_DATA': 1, 'PARAMETERS': 2})
+
+
 if __name__ == '__main__':
     unittest.main()

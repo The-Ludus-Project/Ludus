@@ -1,0 +1,54 @@
+// Direct rough-pair estimators and their CPU-parity probe (docs/development/benchmark-scenes.md).
+#include "rough_pair.luslh"
+
+static const uint32 PROBE_RECORD_COUNT = 7;
+
+[stage(compute), threads(GROUP_SIZE, 1, 1)]
+void RenderRoughPairSlice(in uint32x3 invocation : DispatchThreadId)
+{
+    AccumulatePair(invocation.x, PairProposal::Slice);
+}
+
+[stage(compute), threads(GROUP_SIZE, 1, 1)]
+void RenderRoughPairBdpt(in uint32x3 invocation : DispatchThreadId)
+{
+    AccumulatePair(invocation.x, PairProposal::Bidirectional);
+}
+
+[stage(compute), threads(GROUP_SIZE, 1, 1)]
+void RenderRoughPairShift(in uint32x3 invocation : DispatchThreadId)
+{
+    AccumulatePair(invocation.x, PairProposal::ShiftMixture);
+}
+
+[stage(compute), threads(GROUP_SIZE, 1, 1)]
+void ProbeRoughPair(in uint32x3 invocation : DispatchThreadId)
+{
+    uint32 index = invocation.x;
+    if (index < parameters.Count)
+    {
+        float32x4 uniforms = probeDraws[2 * index];
+        float32 split = probeDraws[2 * index + 1].x;
+        uint32 outputIndex = PROBE_RECORD_COUNT * index;
+        float32x2 receiverWorld = receivers[index];
+        WriteProbe(outputIndex, SamplePair(true, uniforms, split, receiverWorld));
+        WriteProbe(outputIndex + 2, SamplePair(false, uniforms, split, receiverWorld));
+        PairResult shifted = SampleShiftMixture(uniforms, split, receiverWorld);
+        if (shifted.ShiftJacobian > 0)
+        {
+            float32x2 restoredFirstWorld;
+            float32x2 restoredSecondWorld;
+            if (MapPair(shifted.FirstPositionWorld,
+                        shifted.SecondPositionWorld,
+                        receiverWorld,
+                        receiverWorld - float32x2(parameters.SourceReceiverOffset, 0),
+                        out restoredFirstWorld,
+                        out restoredSecondWorld) == false)
+            {
+                shifted.HasFailed = 1;
+            }
+            probes[outputIndex + PROBE_RECORD_COUNT - 1] = float32x4(restoredFirstWorld, restoredSecondWorld);
+        }
+        WriteProbe(outputIndex + 4, shifted);
+    }
+}

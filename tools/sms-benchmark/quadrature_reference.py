@@ -21,6 +21,7 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--prepared', type=Path, required=True)
     parser.add_argument('--compiler', type=Path, required=True)
+    parser.add_argument('--luslc', type=Path, help='luslc that lowers the shaders (default: ./scripts/bootstrap-luslc)')
     parser.add_argument('--output', type=Path, required=True)
     parser.add_argument('--samples', type=int, default=262144)
     parser.add_argument('--replicates', type=int, default=8)
@@ -34,7 +35,8 @@ def main():
         parser.error('Use at least four independent complete-image shifts.')
     arguments.output.mkdir(parents=True, exist_ok=False)
     manifest = json.loads((arguments.prepared / 'manifest.json').read_text())
-    shader = compile_entry(arguments.output / 'renderer', arguments.compiler, 'quadrature_reference.slang', 'IntegrateConnections')
+    shader, slots = compile_entry(arguments.output / 'renderer', arguments.compiler, arguments.luslc,
+                                  'quadrature_reference.lusl', 'IntegrateConnections')
     import wgpu
     adapter = wgpu.gpu.request_adapter_sync(power_preference='high-performance')
     adapter_info = dict(adapter.info)
@@ -46,7 +48,7 @@ def main():
     pipeline = device.create_compute_pipeline(layout='auto', compute=dict(module=module, entry_point='IntegrateConnections'))
     entries = []
     buffers = []
-    for binding, name in [(0, 'inputs'), (2, 'slopes'), (3, 'scene')]:
+    for binding, name in [(slots['INPUTS'], 'inputs'), (slots['SLOPES'], 'slopes'), (slots['SCENE_DATA'], 'scene')]:
         data = np.load(arguments.prepared / f'{name}.npy', mmap_mode='r')
         buffer = device.create_buffer_with_data(data=data, usage=wgpu.BufferUsage.STORAGE)
         buffers.append(buffer)
@@ -56,7 +58,8 @@ def main():
     pixels_per_batch = 16
     partials = device.create_buffer(size=pixels_per_batch*blocks*16, usage=wgpu.BufferUsage.STORAGE | wgpu.BufferUsage.COPY_SRC)
     parameters = device.create_buffer(size=layout.QMC_PARAMETER_CODEC.size, usage=wgpu.BufferUsage.UNIFORM | wgpu.BufferUsage.COPY_DST)
-    entries.extend([dict(binding=1, resource=dict(buffer=partials)), dict(binding=5, resource=dict(buffer=parameters))])
+    entries.extend([dict(binding=slots['RESULTS'], resource=dict(buffer=partials)),
+                    dict(binding=slots['QUADRATURE_PARAMETERS'], resource=dict(buffer=parameters))])
     bindings = device.create_bind_group(layout=pipeline.get_bind_group_layout(0), entries=entries)
     extent = manifest['extent']
     pixel_count = extent*extent

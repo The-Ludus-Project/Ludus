@@ -1,0 +1,31 @@
+// Reflection-map and connection parity entry point; validate_transport.py compares it with the
+// CPU transport.
+#include "reflection_map.luslh"
+
+[stage(compute), threads(PARITY_GROUP_SIZE, 1, 1)]
+void ValidateFigure17Transport(in uint32x3 threadIndex : DispatchThreadId)
+{
+    uint32 count = inputs.GetDimensions();
+    uint32 index = threadIndex.x;
+    if (index >= count / INPUT_RECORD_COUNT)
+    {
+        return;
+    }
+    uint32 record = index * INPUT_RECORD_COUNT;
+    float32x4 first = inputs[record];
+    float32x3 receiverWorld = inputs[record + 1].xyz;
+    float32x2 lightCoordinatesUv = inputs[record + LIGHT_INPUT_RECORD].xy;
+    float32x3 lightWorld = sceneData[LIGHT_CENTER_RECORD].xyz +
+        (lightCoordinatesUv.x - 0.5) * sceneData[LIGHT_DERIVATIVE_U_RECORD].xyz +
+        (lightCoordinatesUv.y - 0.5) * sceneData[LIGHT_DERIVATIVE_V_RECORD].xyz;
+    ReflectionMap map = EvaluateReflectionMap(receiverWorld, lightWorld, first.xy, false);
+    uint32 outputRecord = index * OUTPUT_RECORD_COUNT;
+    results[outputRecord] = float32x4(map.Residual, map.DerivativeU);
+    results[outputRecord + 1] = float32x4(map.DerivativeV, map.IsValid == true ? 1.0 : 0.0, 0);
+    results[outputRecord + 2] = float32x4(EvaluateConnection(receiverWorld,
+                                                             inputs[record + RAY_ORIGIN_INPUT_RECORD].xyz,
+                                                             first.xy,
+                                                             lightCoordinatesUv,
+                                                             first.z),
+                                          0);
+}

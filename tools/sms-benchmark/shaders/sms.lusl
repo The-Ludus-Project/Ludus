@@ -1,0 +1,24 @@
+// Newton solver parity entry point; validate_transport.py compares it with the CPU solver.
+#include "sms.luslh"
+
+[stage(compute), threads(PARITY_GROUP_SIZE, 1, 1)]
+void ValidateFigure17Solver(in uint32x3 threadIndex : DispatchThreadId)
+{
+    uint32 count = inputs.GetDimensions();
+    uint32 index = threadIndex.x;
+    if (index >= count / INPUT_RECORD_COUNT)
+    {
+        return;
+    }
+    uint32 record = index * INPUT_RECORD_COUNT;
+    float32x4 first = inputs[record];
+    float32x3 receiverWorld = inputs[record + 1].xyz;
+    float32x3 lightWorld = inputs[record + LIGHT_INPUT_RECORD].xyz;
+    float32x4 initial = inputs[record + RAY_ORIGIN_INPUT_RECORD];
+    float32x2 coordinatesUv;
+    bool hasRoot =
+        SolveTwoStage(receiverWorld, lightWorld, first.xy, initial.xy, initial.zw, out coordinatesUv);
+    results[index * OUTPUT_RECORD_COUNT] = float32x4(coordinatesUv, hasRoot == true ? 1.0 : 0.0, 0);
+    results[index * OUTPUT_RECORD_COUNT + 1] = 0;
+    results[index * OUTPUT_RECORD_COUNT + 2] = 0;
+}

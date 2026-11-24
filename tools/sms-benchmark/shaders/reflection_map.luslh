@@ -1,0 +1,178 @@
+// Differentiated reflection map of the SMS Figure 17 reflector and its connection integrand.
+#pragma once
+
+#include "affine_slice.luslh"
+
+static const float32 HALF_VECTOR_HEMISPHERE_MINIMUM = 1e-6;
+
+struct DifferentiatedVector
+{
+    float32x3 ValueWorld;
+    float32x3 DerivativeUWorld;
+    float32x3 DerivativeVWorld;
+};
+
+DifferentiatedVector NormalizeDifferentiated(in DifferentiatedVector value)
+{
+    float32 inverseLength = 1 / length(value.ValueWorld);
+    float32x3 unit = value.ValueWorld * inverseLength;
+    DifferentiatedVector result =
+    {
+        .ValueWorld = unit,
+        .DerivativeUWorld = (value.DerivativeUWorld - unit * dot(unit, value.DerivativeUWorld)) * inverseLength,
+        .DerivativeVWorld = (value.DerivativeVWorld - unit * dot(unit, value.DerivativeVWorld)) * inverseLength,
+    };
+    return result;
+}
+
+DifferentiatedVector MakeDifferentiatedDirection(in float32x3 endpointWorld, in float32x3 positionWorld)
+{
+    DifferentiatedVector result =
+    {
+        .ValueWorld = endpointWorld - positionWorld,
+        .DerivativeUWorld = -sceneData[REFLECTOR_DERIVATIVE_U_RECORD].xyz,
+        .DerivativeVWorld = -sceneData[REFLECTOR_DERIVATIVE_V_RECORD].xyz,
+    };
+    return NormalizeDifferentiated(result);
+}
+
+void EvaluateSlopeDerivatives(in float32x2 coordinatesUv,
+                              out float32x2 outSlope,
+                              out float32x2 outDerivativeU,
+                              out float32x2 outDerivativeV)
+{
+    uint32 resolution = uint32(sceneData[BASE_TANGENT_RECORD].w);
+    float32x2 rawPositionTexel = frac(coordinatesUv) * float32(resolution) - 0.5;
+    float32x2 positionTexel = clamp(rawPositionTexel, 0, float32(resolution - 1));
+    uint32x2 lowerTexel = uint32x2(floor(positionTexel));
+    uint32x2 upperTexel = min(lowerTexel + 1, resolution - 1);
+    float32x2 weight = positionTexel - float32x2(lowerTexel);
+    float32x2 a = slopes[lowerTexel.y * resolution + lowerTexel.x].xy;
+    float32x2 b = slopes[lowerTexel.y * resolution + upperTexel.x].xy;
+    float32x2 c = slopes[upperTexel.y * resolution + lowerTexel.x].xy;
+    float32x2 d = slopes[upperTexel.y * resolution + upperTexel.x].xy;
+    outSlope = lerp(lerp(a, b, weight.x), lerp(c, d, weight.x), weight.y);
+    outDerivativeU = lerp(b - a, d - c, weight.y) * float32(resolution);
+    outDerivativeV = lerp(c - a, d - b, weight.x) * float32(resolution);
+    if (rawPositionTexel.x <= 0 || rawPositionTexel.x >= float32(resolution - 1))
+    {
+        outDerivativeU = 0;
+    }
+    if (rawPositionTexel.y <= 0 || rawPositionTexel.y >= float32(resolution - 1))
+    {
+        outDerivativeV = 0;
+    }
+}
+
+struct ReflectionMap
+{
+    float32x2 Residual;
+    float32x2 DerivativeU;
+    float32x2 DerivativeV;
+    bool IsValid;
+};
+
+ReflectionMap EvaluateReflectionMap(in float32x3 receiverWorld,
+                                    in float32x3 lightWorld,
+                                    in float32x2 coordinatesUv,
+                                    in bool isSmoothed)
+{
+    float32x2 slope;
+    float32x2 slopeDerivativeU;
+    float32x2 slopeDerivativeV;
+    EvaluateSlopeDerivatives(coordinatesUv, out slope, out slopeDerivativeU, out slopeDerivativeV);
+    if (isSmoothed == true)
+    {
+        slope = sceneData[SMOOTH_SLOPE_RECORD].xy;
+        slopeDerivativeU = 0;
+        slopeDerivativeV = 0;
+    }
+    float32x3 baseTangentWorld = sceneData[BASE_TANGENT_RECORD].xyz;
+    float32x3 baseBitangentWorld = sceneData[BASE_BITANGENT_RECORD].xyz;
+    DifferentiatedVector normal =
+    {
+        .ValueWorld = sceneData[BASE_NORMAL_RECORD].xyz - slope.x * baseTangentWorld - slope.y * baseBitangentWorld,
+        .DerivativeUWorld = -slopeDerivativeU.x * baseTangentWorld - slopeDerivativeU.y * baseBitangentWorld,
+        .DerivativeVWorld = -slopeDerivativeV.x * baseTangentWorld - slopeDerivativeV.y * baseBitangentWorld,
+    };
+    normal = NormalizeDifferentiated(normal);
+    DifferentiatedVector tangent =
+    {
+        .ValueWorld = baseTangentWorld - normal.ValueWorld * dot(normal.ValueWorld, baseTangentWorld),
+        .DerivativeUWorld = -normal.DerivativeUWorld * dot(normal.ValueWorld, baseTangentWorld) -
+        normal.ValueWorld * dot(normal.DerivativeUWorld, baseTangentWorld),
+        .DerivativeVWorld = -normal.DerivativeVWorld * dot(normal.ValueWorld, baseTangentWorld) -
+        normal.ValueWorld * dot(normal.DerivativeVWorld, baseTangentWorld),
+    };
+    tangent = NormalizeDifferentiated(tangent);
+    DifferentiatedVector bitangent =
+    {
+        .ValueWorld = cross(normal.ValueWorld, tangent.ValueWorld),
+        .DerivativeUWorld =
+        cross(normal.DerivativeUWorld, tangent.ValueWorld) + cross(normal.ValueWorld, tangent.DerivativeUWorld),
+        .DerivativeVWorld =
+        cross(normal.DerivativeVWorld, tangent.ValueWorld) + cross(normal.ValueWorld, tangent.DerivativeVWorld),
+    };
+    float32x3 positionWorld = sceneData[REFLECTOR_CENTER_RECORD].xyz +
+        (coordinatesUv.x - 0.5) * sceneData[REFLECTOR_DERIVATIVE_U_RECORD].xyz +
+        (coordinatesUv.y - 0.5) * sceneData[REFLECTOR_DERIVATIVE_V_RECORD].xyz;
+    DifferentiatedVector view = MakeDifferentiatedDirection(receiverWorld, positionWorld);
+    DifferentiatedVector light = MakeDifferentiatedDirection(lightWorld, positionWorld);
+    DifferentiatedVector halfway =
+    {
+        .ValueWorld = view.ValueWorld + light.ValueWorld,
+        .DerivativeUWorld = view.DerivativeUWorld + light.DerivativeUWorld,
+        .DerivativeVWorld = view.DerivativeVWorld + light.DerivativeVWorld,
+    };
+    halfway = NormalizeDifferentiated(halfway);
+    float32 denominator = dot(halfway.ValueWorld, normal.ValueWorld);
+    ReflectionMap result = { .IsValid = denominator > HALF_VECTOR_HEMISPHERE_MINIMUM };
+    if (result.IsValid == false)
+    {
+        return result;
+    }
+    result.Residual =
+        float32x2(dot(halfway.ValueWorld, tangent.ValueWorld), dot(halfway.ValueWorld, bitangent.ValueWorld)) /
+        denominator;
+    float32x2 numeratorDerivativeU = float32x2(
+        dot(halfway.DerivativeUWorld, tangent.ValueWorld) + dot(halfway.ValueWorld, tangent.DerivativeUWorld),
+        dot(halfway.DerivativeUWorld, bitangent.ValueWorld) + dot(halfway.ValueWorld, bitangent.DerivativeUWorld));
+    float32x2 numeratorDerivativeV = float32x2(
+        dot(halfway.DerivativeVWorld, tangent.ValueWorld) + dot(halfway.ValueWorld, tangent.DerivativeVWorld),
+        dot(halfway.DerivativeVWorld, bitangent.ValueWorld) + dot(halfway.ValueWorld, bitangent.DerivativeVWorld));
+    float32 denominatorDerivativeU =
+        dot(halfway.DerivativeUWorld, normal.ValueWorld) + dot(halfway.ValueWorld, normal.DerivativeUWorld);
+    float32 denominatorDerivativeV =
+        dot(halfway.DerivativeVWorld, normal.ValueWorld) + dot(halfway.ValueWorld, normal.DerivativeVWorld);
+    result.DerivativeU = (numeratorDerivativeU - result.Residual * denominatorDerivativeU) / denominator;
+    result.DerivativeV = (numeratorDerivativeV - result.Residual * denominatorDerivativeV) / denominator;
+    return result;
+}
+
+float32x3 EvaluateConnection(in float32x3 receiverWorld,
+                             in float32x3 color,
+                             in float32x2 coordinatesUv,
+                             in float32x2 lightCoordinatesUv,
+                             in float32 alpha)
+{
+    float32x3 positionWorld = sceneData[REFLECTOR_CENTER_RECORD].xyz +
+        (coordinatesUv.x - 0.5) * sceneData[REFLECTOR_DERIVATIVE_U_RECORD].xyz +
+        (coordinatesUv.y - 0.5) * sceneData[REFLECTOR_DERIVATIVE_V_RECORD].xyz;
+    float32x3 lightPositionWorld = sceneData[LIGHT_CENTER_RECORD].xyz +
+        (lightCoordinatesUv.x - 0.5) * sceneData[LIGHT_DERIVATIVE_U_RECORD].xyz +
+        (lightCoordinatesUv.y - 0.5) * sceneData[LIGHT_DERIVATIVE_V_RECORD].xyz;
+    float32x3 toReceiverWorld = receiverWorld - positionWorld;
+    float32x3 toLightWorld = lightPositionWorld - positionWorld;
+    float32x3 viewWorld = NormalizeOrZero(toReceiverWorld);
+    float32x3 lightWorld = NormalizeOrZero(toLightWorld);
+    float32 floorCosine = max(0, dot(sceneData[FLOOR_NORMAL_RECORD].xyz, -viewWorld));
+    float32 reflectorCosine = max(0, dot(sceneData[BASE_NORMAL_RECORD].xyz, viewWorld));
+    float32 emitterCosine = max(0, dot(sceneData[LIGHT_NORMAL_AREA_RECORD].xyz, -lightWorld));
+    float32 solidAngleUv =
+        sceneData[AREA_RADIANCE_RECORD].x * reflectorCosine / dot(toReceiverWorld, toReceiverWorld);
+    float32 emitted = sceneData[AREA_RADIANCE_RECORD].y * sceneData[LIGHT_NORMAL_AREA_RECORD].w * emitterCosine /
+        dot(toLightWorld, toLightWorld);
+    float32x3 normalWorld;
+    return color / PI * EvaluateBeckmann(coordinatesUv, viewWorld, lightWorld, alpha, out normalWorld) *
+        (floorCosine * solidAngleUv * emitted);
+}

@@ -13,13 +13,17 @@ import math
 from pathlib import Path
 import shutil
 import struct
-import subprocess
 import sys
 import time
 
 import numpy as np
 
 from benchmark import ROOT
+
+sys.path.insert(0, str(ROOT / 'scripts/python'))
+import lusl_compute  # noqa: E402
+
+SHADERS = Path(__file__).parent / 'shaders'
 
 
 def load_triangles(room):
@@ -41,15 +45,14 @@ def load_triangles(room):
 
 
 class Renderer:
-    def __init__(self, graph, room, compiler, output, extent):
+    def __init__(self, graph, room, compiler, luslc, output, extent):
         self.extent = extent
         source_root = output / 'source'
         shutil.copytree(graph / 'main_shaders', source_root)
-        for name, owner in [('math.slang', 'modules/foundation/math/shaders'),
-                            ('raster_bindings.slang', 'modules/graphics/rhi/shaders')]:
-            shutil.copyfile(ROOT / owner / name, source_root / name)
-        shader = source_root / 'render_room.slang'
-        shutil.copyfile(Path(__file__).parent / 'shaders/render_room.slang', shader)
+        for path in (ROOT / 'modules/foundation/math/shaders/math.luslh', ROOT / 'modules/foundation/math/shaders/math.slang',
+                     SHADERS / 'luminaire_flow.luslh', SHADERS / 'render_room.lusl'):
+            shutil.copyfile(path, source_root / path.name)
+        luslc = lusl_compute.resolve_luslc(luslc)
         import wgpu
         self.wgpu = wgpu
         adapter = wgpu.gpu.request_adapter_sync(power_preference='high-performance')
@@ -71,19 +74,15 @@ class Renderer:
         beginning = time.perf_counter()
         for method, entry in [('slice', 'RenderRoomSlice'), ('portable-purelight', 'RenderRoomPureLight')]:
             directory = output / ('compile-' + method)
-            command = [sys.executable, str(ROOT/'cmake/shaders/compile_shader.py'), '--source', str(shader),
-                       '--output', str(directory), '--name', entry, '--compiler', str(compiler),
-                       '--lock', str(ROOT/'config/shader_toolchain.json'), '--graph-stage', 'compute', '--graph-target', 'wgsl']
-            subprocess.run(command, check=True)
-            source = (directory / 'artifact.wgsl').read_text()
+            source, slots = lusl_compute.compile_compute(luslc, compiler, source_root, 'render_room.lusl', entry, directory)
             self.shader_hashes[method] = hashlib.sha256(source.encode()).hexdigest()
             module = self.device.create_shader_module(code=source)
             pipeline = self.device.create_compute_pipeline(layout='auto', compute=dict(module=module, entry_point=entry))
             self.pipelines[method] = pipeline
             self.bindings[method] = self.device.create_bind_group(layout=pipeline.get_bind_group_layout(0), entries=[
-                dict(binding=0, resource=dict(buffer=self.mesh, offset=0, size=self.triangles.nbytes)),
-                dict(binding=1, resource=dict(buffer=self.accumulation, offset=0, size=extent*extent*32)),
-                dict(binding=2, resource=dict(buffer=self.parameters, offset=0, size=32))])
+                dict(binding=slots['TRIANGLES'], resource=dict(buffer=self.mesh, offset=0, size=self.triangles.nbytes)),
+                dict(binding=slots['ACCUMULATION'], resource=dict(buffer=self.accumulation, offset=0, size=extent*extent*32)),
+                dict(binding=slots['PARAMETERS'], resource=dict(buffer=self.parameters, offset=0, size=32))])
         self.setup_seconds = time.perf_counter()-beginning
         self.reset()
 
@@ -177,6 +176,7 @@ def main():
     parser.add_argument('--graph', type=Path, required=True)
     parser.add_argument('--room', type=Path, required=True)
     parser.add_argument('--compiler', type=Path, required=True)
+    parser.add_argument('--luslc', type=Path, help='luslc that lowers the shaders (default: ./scripts/bootstrap-luslc)')
     parser.add_argument('--output', type=Path, required=True)
     parser.add_argument('--extent', type=int, default=128)
     parser.add_argument('--seconds', type=float, default=12)
@@ -185,7 +185,7 @@ def main():
     parser.add_argument('--pilot', action='store_true')
     args = parser.parse_args()
     args.output.mkdir(parents=True, exist_ok=False)
-    renderer = Renderer(args.graph, args.room, args.compiler, args.output, args.extent)
+    renderer = Renderer(args.graph, args.room, args.compiler, args.luslc, args.output, args.extent)
     print('adapter',renderer.adapter, flush=True)
     calibration = {}
     timings = {}
