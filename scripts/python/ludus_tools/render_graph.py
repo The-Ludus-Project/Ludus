@@ -1066,6 +1066,7 @@ class _Compiler:
                 occupied_textures = {inputs[key].resource for key in ('color', 'visibility', 'visibility_depth')
                                      if key in inputs}
                 occupied_textures.update(use['resource'] for use in sampled_textures)
+                output_ports = {port['id']: port for port in authored_pipeline['outputs']}
                 for key, port in input_mapping.items():
                     if not key.startswith('texture:'):
                         continue
@@ -1085,12 +1086,15 @@ class _Compiler:
                     if source.version == 0:
                         texture['initialized'] = True
                     texture['storage_texture'] = True
+                    output_port = output_ports[output_mapping[key]]
+                    load = output_port['load']
                     value = self.write(replace(source, defined=True) if source.version == 0 else source,
-                                       {'texture_load': 'Load', 'texture_store': 'Store'}, 'texture', where,
+                                       {'texture_load': load, 'texture_store': 'Store'}, 'texture', where,
                                        inputs['view'].cameras if 'view' in inputs else (), port=port)
-                    color_outputs[output_mapping[key]] = value
+                    color_outputs[output_port['id']] = value
                     storage_textures.append({'port': port, 'resource': value.resource,
-                                             'input_version': source.version, 'output_version': value.version})
+                                             'input_version': source.version, 'output_version': value.version,
+                                             **({'load': 'Clear'} if load == 'Clear' else {})})
                 storage = {}
                 storage_outputs = {}
                 for name in sorted(set(inputs) - {'scene', 'view', 'color', 'visibility', 'visibility_depth'}):

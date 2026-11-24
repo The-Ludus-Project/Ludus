@@ -1111,6 +1111,7 @@ void Renderer::State::DropGpuPreview(usize slot) noexcept
         texture = {};
     }
     job.HasShaderOutputsOnly = false;
+    job.ShaderTextureClearMask = 0;
     job.VisibilityTexture = {};
     static_cast<void>(rhi::Destroy(Device, job.ImageBindings));
     static_cast<void>(rhi::Destroy(Device, job.NativeScene));
@@ -1981,13 +1982,35 @@ Status Renderer::BeginGpuPreview(Snapshot snapshot,
                 return Status::InvalidDescription;
             }
         }
+        if ((invocationOrNull->ShaderTextureClearMask >> format::MAX_SHADER_TEXTURES) != 0)
+        {
+            return Status::InvalidDescription;
+        }
         bool hasShaderTexture = false;
         for (usize slot = 0; slot < invocationOrNull->ShaderTextures.GetSize(); ++slot)
         {
             const rhi::TextureHandle texture = invocationOrNull->ShaderTextures[slot];
+            const bool shouldClear = (invocationOrNull->ShaderTextureClearMask & (uint32{1} << slot)) != 0;
             if (rhi::IsNull(texture) == true)
             {
+                if (shouldClear == true)
+                {
+                    return Status::InvalidDescription;
+                }
                 continue;
+            }
+            if (shouldClear == true)
+            {
+                rhi::TextureDescription textureDescription;
+                const Status described = rhi::GetTextureDescription(mState->Device, texture, textureDescription);
+                if (described != Status::Ready)
+                {
+                    return described;
+                }
+                if (textureDescription.Attachment == false || textureDescription.IsStorage == false)
+                {
+                    return Status::InvalidDescription;
+                }
             }
             hasShaderTexture = true;
             if (slot >= state.ShaderTextureCount || texture == storageTexture || state.HasRayPathCapture == true)
@@ -2443,6 +2466,7 @@ Status Renderer::BeginGpuPreview(Snapshot snapshot,
     job.HasShaderOutputsOnly = hasShaderOutputsOnly;
     if (invocationOrNull != nullptr)
     {
+        job.ShaderTextureClearMask = invocationOrNull->ShaderTextureClearMask;
         for (uint32 textureSlot = 0; textureSlot < state.ShaderTextureCount; ++textureSlot)
         {
             job.ShaderTextures[textureSlot].Texture = invocationOrNull->ShaderTextures[textureSlot];

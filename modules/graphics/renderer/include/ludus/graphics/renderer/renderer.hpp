@@ -97,6 +97,9 @@ struct GpuPreviewGraphInvocation final
     /// Keep each supplied allocation alive through job release and submitted completion.
     foundation::StaticArray<rhi::TextureHandle, content::render_graph_format::MAX_ADDITIONAL_SAMPLED_TEXTURES>
         AdditionalSampledTextures{};
+    /// One bit per bound ShaderTextures slot. Clear the full attachment to transparent black before dispatch.
+    /// Each selected allocation must also support color attachment use.
+    foundation::uint32 ShaderTextureClearMask = 0;
 };
 namespace internal
 {

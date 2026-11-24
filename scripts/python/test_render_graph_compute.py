@@ -69,6 +69,17 @@ class SceneComputeLoweringTests(SceneComputeFixture):
         self.assertEqual([8, 8, 1], image_producer['dimensions'])
         self.assertNotIn('storage_texture', image_producer)
 
+    def test_named_shader_texture_clear_keeps_the_pass_and_dispatch_size(self):
+        self.configuration = next(config for config in self.document['configurations'] if config['id'] == 'NamedColorInputs')
+        self.document['default'] = self.configuration['id']
+        plan = self.compile()
+        producer = next(operation for operation in plan['passes'] if operation['id'] == 'Main/write')
+        self.assertEqual([8, 8, 1], producer['dimensions'])
+        self.assertEqual([('diffraction', 'Clear'), ('weights', 'Load'), ('mask', 'Load')],
+                         [(texture['port'], texture.get('load', 'Load')) for texture in producer['storage_textures']])
+        self.node('write')['outputs'][0]['load'] = 'Discard'
+        self.fails('Capability', 'requires Load/Store or Clear/Store')
+
     def test_scene_compute_node_lowers_to_a_ray_sequence_member(self):
         before = deepcopy(self.document)
         plan = self.compile()
@@ -1065,6 +1076,7 @@ float32x3 ShadeRecordedHit(in SceneContext scene, in RayLaunch launch,
                 consumer['inputs'].append({**consumer['inputs'][-1], 'id': 'weights'})
                 config['edges'].append({'from': 'utd.weights', 'to': 'shade.weights'})
                 if has_image:
+                    producer['outputs'][0]['load'] = 'Clear'
                     config['nodes'].append({**target, 'id': 'preview', 'extent': [64, 32]})
                     producer['inputs'].append({**producer['inputs'][-1], 'id': 'preview'})
                     producer['outputs'].append({key: value for key, value in producer['outputs'][0].items()
@@ -1144,7 +1156,10 @@ float32x3 ShadeRecordedHit(in SceneContext scene, in RayLaunch launch,
                 execution.cook_runtime(package, destination, configuration='ColorInput')
                 parsed = parse_runtime(destination.read_bytes())
                 self.assertEqual(tuple(writer['ShaderTextures']), parsed['shader_textures'][0][:2])
-                self.assertEqual(execution.SAMPLED_TEXTURES_PACKAGE_VERSION, parsed['version'])
+                expected_version = (execution.SHADER_TEXTURE_CLEAR_PACKAGE_VERSION if has_image else
+                                    execution.SAMPLED_TEXTURES_PACKAGE_VERSION)
+                self.assertEqual(expected_version, parsed['version'])
+                self.assertEqual([1, 0] if has_image else [], parsed['shader_texture_clear_masks'])
                 self.assertEqual((writer['ShaderTextures'][1], execution.ABSENT),
                                  parsed['additional_sampled_textures'][1])
                 header = root / 'named-textures.hpp'

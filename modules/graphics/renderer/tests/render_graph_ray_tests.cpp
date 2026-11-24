@@ -1693,7 +1693,7 @@ TEST_CASE("A buffer-only scene dispatch can trace more rays than there are pixel
     }
 }
 
-TEST_CASE("Scene compute reads each named color texture from the preceding pass",
+TEST_CASE("Scene compute clears one named shader texture per dispatch and preserves Load on the others",
           "[render-graph][gpu][compute-ray-tracing][sampled-color]")
 {
     GraphGpuFixture fixture{false, false};
@@ -1708,6 +1708,9 @@ TEST_CASE("Scene compute reads each named color texture from the preceding pass"
     const renderer::RenderGraphPlan plan = package->GetPlan();
     const renderer::RenderGraphPlan compiledPlan = packages::rg2_scene_named_color_inputs::MakePlan();
     REQUIRE(plan.Passes.GetSize() == 2);
+    REQUIRE(plan.Passes[0].ShaderTextureClearMask == 1);
+    CHECK(compiledPlan.Passes[0].ShaderTextureClearMask == plan.Passes[0].ShaderTextureClearMask);
+    CHECK(plan.Passes[1].ShaderTextureClearMask == 0);
     REQUIRE(format::GetSampledTextureCount(plan.Passes[1]) == format::MAX_SAMPLED_TEXTURES);
     for (uint32 slot = 0; slot < format::MAX_SAMPLED_TEXTURES; ++slot)
     {
@@ -1736,15 +1739,24 @@ TEST_CASE("Scene compute reads each named color texture from the preceding pass"
                                 report,
                                 nullptr,
                                 1));
-    ReadGraphFrame(fixture, plan.Passes[1].Color);
     constexpr usize CHANNEL_COUNT = 4;
     constexpr uint8 FULL_CHANNEL = 255;
-    REQUIRE(fixture.Pixels.GetSize() == WIDTH * HEIGHT * CHANNEL_COUNT);
-    for (usize pixel = 0; pixel < fixture.Pixels.GetSize(); pixel += CHANNEL_COUNT)
+    for (uint32 frame = 0; frame < 2; ++frame)
     {
-        REQUIRE(fixture.Pixels[pixel] == FULL_CHANNEL);
-        REQUIRE(fixture.Pixels[pixel + 1] == FULL_CHANNEL);
-        REQUIRE(fixture.Pixels[pixel + 2] == FULL_CHANNEL);
+        ReadGraphFrame(fixture, plan.Passes[1].Color);
+        REQUIRE(fixture.Pixels.GetSize() == WIDTH * HEIGHT * CHANNEL_COUNT);
+        for (usize y = 0; y < HEIGHT; ++y)
+        {
+            for (usize x = 0; x < WIDTH; ++x)
+            {
+                const bool isInLaunch = x < plan.Passes[0].ImageLaunchWidth && y < plan.Passes[0].ImageLaunchHeight;
+                const bool isFirstScatter = frame == 0 && x == WIDTH - 1 && y == HEIGHT - 1;
+                const usize pixel = (y * WIDTH + x) * CHANNEL_COUNT;
+                REQUIRE(fixture.Pixels[pixel] == (isInLaunch == true || isFirstScatter == true ? FULL_CHANNEL : 0));
+                REQUIRE(fixture.Pixels[pixel + 1] == (isInLaunch == true ? FULL_CHANNEL : 0));
+                REQUIRE(fixture.Pixels[pixel + 2] == (isInLaunch == true ? FULL_CHANNEL : 0));
+            }
+        }
     }
 }
 

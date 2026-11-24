@@ -174,6 +174,8 @@ inline constexpr foundation::uint32 PACKAGE_VERSION = IMAGE_LAUNCH_PACKAGE_VERSI
 inline constexpr foundation::uint32 SHADER_TEXTURE_ACCESS_PACKAGE_VERSION = 46;
 /// Version 47 appends additional sampled color IDs after the shader-storage texture table.
 inline constexpr foundation::uint32 SAMPLED_TEXTURES_PACKAGE_VERSION = 47;
+/// Adds one per-pass named shader texture clear mask after the sampled texture table.
+inline constexpr foundation::uint32 SHADER_TEXTURE_CLEAR_PACKAGE_VERSION = 48;
 /// First package carrying explicit OIDN denoising quality per ray pass.
 inline constexpr foundation::uint32 DENOISING_PACKAGE_VERSION = 16;
 /// First package carrying the renderer-owned bilinear image operation.

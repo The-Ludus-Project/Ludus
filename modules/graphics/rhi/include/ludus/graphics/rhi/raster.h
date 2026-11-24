@@ -234,9 +234,11 @@ struct TextureDescription final
     /// Stencil support is independent of depth sampling and MSAA.
     bool Stencil = false;
     /// Also allow write-only shader storage through Storage views (R12b). Requires a
-    /// format with enabled Uses.Storage, D2, one mip, one sample and complete upload bytes:
-    /// attachments, deferred initialization and retained CPU content reject. Sampled views
-    /// of the same allocation remain available; ordered graphs order writes before reads.
+    /// format with enabled Uses.Storage, D2, one mip and one sample. Non-attachments require
+    /// a complete upload. RGBA8Unorm attachments without stencil may also enable storage, using
+    /// an empty upload and an attachment Clear/Store before the first storage use.
+    /// Deferred initialization and retained CPU content reject. Ordered graphs can order
+    /// attachment, storage and sampled access to the same allocation in separate passes.
     bool IsStorage = false;
 };
 /// Sampled color or private depth/stencil aspect; capability-gated independently.

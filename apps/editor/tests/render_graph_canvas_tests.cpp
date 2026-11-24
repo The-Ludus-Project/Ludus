@@ -2949,11 +2949,21 @@ TEST_CASE("scene compute nodes are authored on the canvas with Properties hidden
         CHECK(modeOrNull->currentText() == QStringLiteral("Explicit size"));
         CHECK(workspace.GetDocument().GetRevision() == revision + 4);
         CHECK(workspace.GetDocument().GetDraft(GetRootGraph()).contains("ShaderReadWrite") == true);
+        QTableWidget* outputsOrNull = dialogOrNull->findChild<QTableWidget*>(QStringLiteral("outputs"));
+        REQUIRE(outputsOrNull != nullptr);
+        const int32 loadColumn =
+            static_cast<int32>(outputsOrNull->property("fields").toStringList().indexOf(QStringLiteral("load")));
+        QComboBox* loadOrNull = qobject_cast<QComboBox*>(outputsOrNull->cellWidget(0, loadColumn));
+        REQUIRE(loadOrNull != nullptr);
+        CHECK(loadOrNull->isEnabled() == true);
+        CHECK(loadOrNull->count() == 2);
+        loadOrNull->setCurrentText(QStringLiteral("Clear"));
+        CHECK(workspace.GetDocument().GetRevision() == revision + 5);
         QGroupBox* advancedOrNull = dialogOrNull->findChild<QGroupBox*>(QStringLiteral("renderGraphComputeAdvanced"));
         REQUIRE(advancedOrNull != nullptr);
         CHECK(advancedOrNull->isChecked() == false);
         advancedOrNull->setChecked(true);
-        CHECK(workspace.GetDocument().GetRevision() == revision + 5);
+        CHECK(workspace.GetDocument().GetRevision() == revision + 6);
         CHECK(workspace.GetDocument().GetDraft(GetRootGraph()).contains("group_size") == true);
         dialogOrNull->accept();
     });
@@ -2961,16 +2971,19 @@ TEST_CASE("scene compute nodes are authored on the canvas with Properties hidden
     CHECK(edited.value(QStringLiteral("invocation")).toObject().value(QStringLiteral("dimensions")).isArray() == true);
     const QJsonObject texture = edited.value(QStringLiteral("outputs")).toArray().at(0).toObject();
     CHECK(texture.value(QStringLiteral("access")) == QStringLiteral("ShaderReadWrite"));
-    CHECK(texture.value(QStringLiteral("load")) == QStringLiteral("Load"));
+    CHECK(texture.value(QStringLiteral("load")) == QStringLiteral("Clear"));
+    CHECK(texture.value(QStringLiteral("store")) == QStringLiteral("Store"));
     CHECK(edited.value(QStringLiteral("state")).toObject() ==
           QJsonObject{{QStringLiteral("group_size"), QJsonArray{64, 1, 1}}});
-    CHECK(workspace.GetDocument().GetRevision() == revision + 5);
+    CHECK(workspace.GetDocument().GetRevision() == revision + 6);
+    workspace.Undo();
     workspace.Undo();
     workspace.Undo();
     workspace.Undo();
     workspace.Undo();
     workspace.Undo();
     CHECK(workspace.GetDocument().GetDraft(GetRootGraph()) == generic);
+    workspace.Redo();
     workspace.Redo();
     workspace.Redo();
     workspace.Redo();

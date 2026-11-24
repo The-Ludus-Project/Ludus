@@ -251,9 +251,9 @@ def lower_ports(node, where, graph, noun, profile, *, is_buffer_dispatch=False, 
     texture_inputs = {port['target'] for port in textures}
     texture_outputs = {}
     for port in textures:
-        graph._require(port['load'] == 'Load' and port['store'] == 'Store', 'Capability', where,
-                       f"Shader read/write texture '{port['id']}' requires Load/Store.",
-                       port=port['id'], direction='output', repair='Set the texture to Load/Store.')
+        graph._require(port['load'] in ('Load', 'Clear') and port['store'] == 'Store', 'Capability', where,
+                       f"Shader read/write texture '{port['id']}' requires Load/Store or Clear/Store.",
+                       port=port['id'], direction='output', repair='Choose Load or Clear, and retain Store.')
         key = 'texture:' + port['target']
         mappings[key] = port['target']
         texture_outputs[key] = port['id']

@@ -50,6 +50,7 @@ struct GpuGraphResources final
         rhi::TextureHandle Handle{};
         rhi::GraphVersion Version{};
         bool IsWritten = false;
+        bool IsDefined = false;
     };
     struct SceneEntry final
     {
@@ -129,13 +130,18 @@ struct GpuGraphResources final
     Status ImportTexture(rhi::DeviceHandle device,
                          rhi::OrderedGraph graph,
                          rhi::TextureHandle texture,
-                         rhi::GraphVersion& outVersion) noexcept
+                         rhi::GraphVersion& outVersion,
+                         bool* outIsDefinedOrNull = nullptr) noexcept
     {
         for (usize index = 0; index < TextureCount; ++index)
         {
             if (Textures[index].Handle == texture)
             {
                 outVersion = Textures[index].Version;
+                if (outIsDefinedOrNull != nullptr)
+                {
+                    *outIsDefinedOrNull = Textures[index].IsDefined;
+                }
                 return Status::Ready;
             }
         }
@@ -156,7 +162,11 @@ struct GpuGraphResources final
         }
         if (status == Status::Ready)
         {
-            Textures[TextureCount++] = {texture, outVersion};
+            Textures[TextureCount++] = {texture, outVersion, false, state.ColorDefined};
+            if (outIsDefinedOrNull != nullptr)
+            {
+                *outIsDefinedOrNull = state.ColorDefined;
+            }
         }
         return status;
     }
@@ -194,6 +204,7 @@ struct GpuGraphResources final
             {
                 Textures[index].Version = version;
                 Textures[index].IsWritten = true;
+                Textures[index].IsDefined = true;
                 return;
             }
         }
@@ -228,6 +239,37 @@ Status AppendVisibilityProducer(rhi::DeviceHandle device,
     }
     return status;
 }
+// A clear-only attachment pass defines the version that the storage dispatch reads and updates.
+Status AppendShaderTextureClear(rhi::DeviceHandle device,
+                                rhi::OrderedGraph graph,
+                                rhi::TextureHandle texture,
+                                rhi::GraphVersion& inoutVersion) noexcept
+{
+    rhi::GraphVersion cleared;
+    const Status reserved = rhi::NextGraphVersion(device, graph, inoutVersion, cleared);
+    if (reserved != Status::Ready)
+    {
+        return reserved;
+    }
+    const rhi::GraphUse use{cleared, rhi::GraphAccessMode::ColorWrite};
+    rhi::GraphPassDescription clear;
+    clear.Name = "Clear shader texture";
+    clear.Attachment.Color = texture;
+    for (float32& channel : clear.Attachment.Clear)
+    {
+        channel = 0;
+    }
+    clear.Attachment.DepthLoad = rhi::RasterLoad::Discard;
+    clear.Uses = &use;
+    clear.UseCount = 1;
+    const Status added = rhi::AddGraphPass(device, graph, clear);
+    if (added == Status::Ready)
+    {
+        inoutVersion = cleared;
+    }
+    return added;
+}
+
 Status AppendGpuGraph(rhi::DeviceHandle device,
                       const GpuPreviewState& state,
                       const GpuPreviewRecord& job,
@@ -395,10 +437,17 @@ Status AppendGpuGraph(rhi::DeviceHandle device,
         }
         computeUses[computeUseCount++] = {sampled, rhi::GraphAccessMode::Sampled, 0, 0, rhi::RasterVisibility::Compute};
     }
-    const auto appendStorageTexture = [&](rhi::TextureHandle storageTexture) noexcept {
+    const auto appendStorageTexture = [&](rhi::TextureHandle storageTexture, bool shouldClear) noexcept {
         rhi::GraphVersion previous;
         rhi::GraphVersion next;
-        Status result = inoutResources.ImportTexture(device, graph, storageTexture, previous);
+        bool isDefined = false;
+        Status result = inoutResources.ImportTexture(device, graph, storageTexture, previous, &isDefined);
+        // A clear-capable allocation starts undefined after allocation or resize. Initialize it
+        // to zero even when an earlier pass uses Load, matching uploaded storage textures.
+        if (result == Status::Ready && (shouldClear == true || isDefined == false))
+        {
+            result = AppendShaderTextureClear(device, graph, storageTexture, previous);
+        }
         if (result == Status::Ready)
         {
             result = rhi::NextGraphVersion(device, graph, previous, next);
@@ -416,13 +465,15 @@ Status AppendGpuGraph(rhi::DeviceHandle device,
     };
     if (state.HasStorageTexture == true)
     {
-        status = appendStorageTexture(isStorageDispatch == true ? job.StorageTexture : state.DefaultStorageTexture);
+        status =
+            appendStorageTexture(isStorageDispatch == true ? job.StorageTexture : state.DefaultStorageTexture, false);
     }
     for (uint32 slot = 0; slot < state.ShaderTextureCount && status == Status::Ready; ++slot)
     {
         const rhi::TextureHandle shaderTexture = job.ShaderTextures[slot].Texture;
         status = appendStorageTexture(rhi::IsNull(shaderTexture) == true ? state.DefaultShaderTextures[slot].Texture
-                                                                         : shaderTexture);
+                                                                         : shaderTexture,
+                                      (job.ShaderTextureClearMask & (uint32{1} << slot)) != 0);
     }
     if (status != Status::Ready)
     {

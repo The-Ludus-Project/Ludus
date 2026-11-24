@@ -393,6 +393,8 @@ def parse_runtime(data):
     result['additional_sampled_textures'] = (
         [take(len(execution.buffers.SAMPLED_TEXTURE_SLOTS) - 1) for _ in range(passes)]
         if version >= execution.SAMPLED_TEXTURES_PACKAGE_VERSION else [])
+    result['shader_texture_clear_masks'] = (
+        [take(1)[0] for _ in range(passes)] if version >= execution.SHADER_TEXTURE_CLEAR_PACKAGE_VERSION else [])
     assert offset == len(data)
     return result
 
