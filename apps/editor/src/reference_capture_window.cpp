@@ -48,6 +48,7 @@
 #include <QScrollArea>
 #include <QShowEvent>
 #include <QSignalBlocker>
+#include <QSizePolicy>
 #include <QSpinBox>
 #include <QStandardItemModel>
 #include <QStringList>
@@ -78,6 +79,18 @@ constexpr int32 PREVIEW_MINIMUM_HEIGHT = 240;
 /// The window opens at this size: the settings column and a 16:10 image beside it.
 constexpr int32 DEFAULT_WINDOW_WIDTH = 1040;
 constexpr int32 DEFAULT_WINDOW_HEIGHT = 660;
+
+void FitCaptureMessage(QLabel& inoutLabel)
+{
+    // A path or package hash may be wider than the column. Keep its text selectable while letting the label
+    // use the available width and wrap at word boundaries.
+    inoutLabel.setTextFormat(Qt::PlainText);
+    inoutLabel.setWordWrap(true);
+    inoutLabel.setTextInteractionFlags(Qt::TextSelectableByMouse | Qt::TextSelectableByKeyboard);
+    QSizePolicy policy = inoutLabel.sizePolicy();
+    policy.setHorizontalPolicy(QSizePolicy::Ignored);
+    inoutLabel.setSizePolicy(policy);
+}
 
 bool WriteAtomically(const QString& path, const QByteArray& bytes, QString& outError)
 {
@@ -264,15 +277,12 @@ ReferenceCaptureWindow::ReferenceCaptureWindow(RenderPreview* preview, QWidget* 
     mGraph->setObjectName(QStringLiteral("referenceGraph"));
     mGraph->setProperty("visualRole", QStringLiteral("secondary"));
     mGraphTarget->setObjectName(QStringLiteral("referenceGraphTarget"));
+    // Library entries can contain a full graph path, configuration and output name.
+    mGraphTarget->setSizeAdjustPolicy(QComboBox::AdjustToMinimumContentsLengthWithIcon);
     mGraphTarget->insertItem(CAPTURE_GRAPH_VIEWPORT_INDEX, QStringLiteral("Viewport output"));
-    mGraphTarget->setToolTip(
-        QStringLiteral("What the Render graph source and the comparison render. Viewport output is what the World "
-                       "viewport shows. A library output is built once from the viewport's generation into its own "
-                       "package, so slow estimators can be captured offline while the viewport stays interactive."));
     form->addRow(QStringLiteral("Source"), mSource);
     mGraphProblem->setObjectName(QStringLiteral("referenceGraphProblem"));
-    mGraphProblem->setWordWrap(true);
-    mGraphProblem->setTextInteractionFlags(Qt::TextSelectableByMouse);
+    FitCaptureMessage(*mGraphProblem);
     mGraphProblem->hide();
     form->addRow(QStringLiteral("Graph"), mGraphTarget);
     form->addRow(QString(), mGraph);
@@ -320,11 +330,9 @@ ReferenceCaptureWindow::ReferenceCaptureWindow(RenderPreview* preview, QWidget* 
     mProgress->setValue(0);
     mProgress->hide();
     mStatus->setObjectName(QStringLiteral("referenceStatus"));
-    mStatus->setWordWrap(true);
-    mStatus->setTextInteractionFlags(Qt::TextSelectableByMouse);
+    FitCaptureMessage(*mStatus);
     mComparisonText->setObjectName(QStringLiteral("referenceComparison"));
-    mComparisonText->setWordWrap(true);
-    mComparisonText->setTextInteractionFlags(Qt::TextSelectableByMouse);
+    FitCaptureMessage(*mComparisonText);
     mImageView->setObjectName(QStringLiteral("referenceImage"));
     mImageView->setAccessibleName(QStringLiteral("Reference image"));
     mRasterView->setObjectName(QStringLiteral("referenceRasterImage"));
@@ -371,7 +379,6 @@ ReferenceCaptureWindow::ReferenceCaptureWindow(RenderPreview* preview, QWidget* 
     settingsScroll->setWidget(settings);
     settingsScroll->setWidgetResizable(true);
     settingsScroll->setFrameShape(QFrame::NoFrame);
-    settingsScroll->setHorizontalScrollBarPolicy(Qt::ScrollBarAlwaysOff);
     settingsScroll->setFixedWidth(SETTINGS_COLUMN_WIDTH);
 
     QHBoxLayout* layout = new QHBoxLayout(this);
@@ -615,6 +622,11 @@ QString ReferenceCaptureWindow::GetGraphText() const
 
 void ReferenceCaptureWindow::updateGraphDescription()
 {
+    mGraphTarget->setToolTip(
+        QStringLiteral("%1\n\nWhat the Render graph source and the comparison render. Viewport output is what the "
+                       "World viewport shows. A library output is built once from the viewport's generation into its "
+                       "own package, so slow estimators can be captured offline while the viewport stays interactive.")
+            .arg(mGraphTarget->currentText()));
     // Short enough for the settings column; the tooltip says why.
     QString text = QStringLiteral("None. RT1 reference only");
     QString explanation = QStringLiteral("This viewport has no project render graph, so only the RT1 reference can "
