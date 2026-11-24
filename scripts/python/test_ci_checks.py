@@ -1,6 +1,8 @@
 """Contracts of scripts/python/ci_checks.py, the batch job check runner."""
 from __future__ import annotations
 
+import contextlib
+import io
 import os
 from pathlib import Path
 import sys
@@ -21,9 +23,15 @@ class RunnerTests(unittest.TestCase):
     def tearDown(self):
         self.directory.cleanup()
 
+    def run_plan(self, checks, selected=None):
+        # Keep the runner's ::error workflow commands out of the job log, where GitHub
+        # would turn them into failure annotations on a passing job.
+        self.log = io.StringIO()
+        with contextlib.redirect_stdout(self.log):
+            return ci_checks.run_plan(checks, self.environment, self.root, selected)
+
     def run_checks(self, checks, selected=None):
-        return {outcome.check.id: outcome for outcome in
-                ci_checks.run_plan(checks, self.environment, self.root, selected)}
+        return {outcome.check.id: outcome for outcome in self.run_plan(checks, selected)}
 
     def test_a_failure_skips_only_its_dependents_and_later_checks_still_run(self):
         checks = [
@@ -71,7 +79,8 @@ class RunnerTests(unittest.TestCase):
     def test_outputs_and_summary_name_every_check(self):
         checks = [Check("build", "Build", "true"), Check("broken", "Broken", "exit 1", needs=("build",)),
                   Check("skipped", "Skipped", "true", needs=("broken",))]
-        outcomes = ci_checks.run_plan(checks, self.environment, self.root)
+        outcomes = self.run_plan(checks)
+        self.assertIn("::error title=Broken::Broken failed: exit status 1", self.log.getvalue())
         output = self.root / "output"
         summary = self.root / "summary"
         ci_checks.write_outputs(outcomes, str(output))
@@ -107,8 +116,10 @@ class PlanTests(unittest.TestCase):
         previous = {name: os.environ.get(name) for name in ("GITHUB_OUTPUT", "GITHUB_STEP_SUMMARY")}
         os.environ["GITHUB_OUTPUT"] = str(output)
         os.environ.pop("GITHUB_STEP_SUMMARY", None)
+        log = io.StringIO()
         try:
-            self.assertEqual(ci_checks.main([str(plan)]), 1)
+            with contextlib.redirect_stdout(log):
+                self.assertEqual(ci_checks.main([str(plan)]), 1)
         finally:
             for name, value in previous.items():
                 if value is None:
@@ -116,6 +127,7 @@ class PlanTests(unittest.TestCase):
                 else:
                     os.environ[name] = value
         self.assertEqual(output.read_text(), "one=failure\ntwo=failure\n")
+        self.assertIn("::error title=Two::Two failed: exit status 2", log.getvalue())
 
     def test_the_macos_native_plan_loads(self):
         plan = Path(__file__).resolve().parents[2] / "scripts/ci/macos_native.py"

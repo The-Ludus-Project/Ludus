@@ -1245,11 +1245,15 @@ if(LUDUS_BUILD_TESTS AND NOT EMSCRIPTEN)
     endif()
     set(content_editor_timeout 60)
     set(graph_configuration_timeout 180)
+    if(LUDUS_ENABLE_ASAN OR LUDUS_ENABLE_UBSAN)
+        # Hosted macOS ASan/UBSan took 158.2 s for render graph configuration shard 0
+        # (88% of 180 s) in batch 45442382423.
+        set(graph_configuration_timeout 300)
+    endif()
     if(WIN32 AND LUDUS_ENABLE_ASAN)
         # The instrumented content scan took 57 seconds on the hosted runner;
         # keep the process deadlines distinct from the tests' own assertions.
         set(content_editor_timeout 120)
-        set(graph_configuration_timeout 300)
     endif()
     add_executable(ludus_editor_texture_benchmark EXCLUDE_FROM_ALL
         tests/texture_display_benchmark.cpp src/texture_inspection.cpp)
