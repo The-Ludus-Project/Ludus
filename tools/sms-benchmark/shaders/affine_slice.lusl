@@ -1,0 +1,29 @@
+// Affine slice parity entry point; validate_affine.py compares it with the CPU guide.
+#include "affine_slice.luslh"
+
+[stage(compute), threads(PARITY_GROUP_SIZE, 1, 1)]
+void ValidateAffineSlice(in uint32x3 threadIndex : DispatchThreadId)
+{
+    uint32 count = inputs.GetDimensions();
+    uint32 index = threadIndex.x;
+    if (index >= count / INPUT_RECORD_COUNT)
+    {
+        return;
+    }
+    float32x4 first = inputs[index * INPUT_RECORD_COUNT];
+    float32x4 second = inputs[index * INPUT_RECORD_COUNT + 1];
+    uint32 resolution = uint32(second.z);
+    uint32 offset = uint32(second.w);
+    uint32 accelerationGuide = uint32(inputs[index * INPUT_RECORD_COUNT + 2].x);
+    uint32 rootCount;
+    float32 totalWeight;
+    float32x4 sample = SampleAffineSlice(
+        first.xy, first.z, first.w, resolution, offset, out rootCount, out totalWeight, accelerationGuide);
+    results[index * OUTPUT_RECORD_COUNT] = sample;
+    results[index * OUTPUT_RECORD_COUNT + 1] =
+        float32x4(float32(rootCount),
+                  totalWeight,
+                  EvaluateAffineDensity(second.xy, first.w, resolution, offset, accelerationGuide),
+                  0);
+    results[index * OUTPUT_RECORD_COUNT + 2] = 0;
+}

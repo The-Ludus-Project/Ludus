@@ -1,0 +1,42 @@
+// Execute the exported graph's exact flow code on raw inputs, independently of a scene or display
+// conversion. validate_compute.py compares the results with the NumPy model.
+#include "luminaire_flow.luslh"
+
+StructuredBuffer<float32x4> inputs;
+RWStructuredBuffer<float32x4> results;
+
+static const uint32 VALIDATION_GROUP_SIZE = 32;
+static const uint32 VALIDATION_INPUT_RECORDS = 2;
+static const uint32 VALIDATION_OUTPUT_RECORDS = 5;
+static const uint32 VALIDATION_RADIANCE_RECORD = 3;
+
+[stage(compute), threads(VALIDATION_GROUP_SIZE, 1, 1)]
+void ValidatePortableFlow(in uint32x3 threadIndex : DispatchThreadId)
+{
+    uint32 count = inputs.GetDimensions();
+    uint32 index = threadIndex.x;
+    if (index >= count / VALIDATION_INPUT_RECORDS)
+    {
+        return;
+    }
+    float32x4 input = inputs[index * VALIDATION_INPUT_RECORDS];
+    float32x3 positionWorld = input.xyz;
+    float32x2 seed = float32x2(input.w, inputs[index * VALIDATION_INPUT_RECORDS + 1].x);
+    Luminaire luminaire = MakeRoomLuminaire();
+    float32 distanceWorld = length(positionWorld - luminaire.CenterWorld);
+    float32 thetaCap = asin(PURELIGHT_RADIUS_WORLD / distanceWorld);
+    float32 logDensity;
+    float32x2 value = TransformPureLightFlow(luminaire, positionWorld, thetaCap, seed, true, out logDensity);
+    float32 replayDensity;
+    float32x2 restored = TransformPureLightFlow(luminaire, positionWorld, thetaCap, value, false, out replayDensity);
+    float32 densitySolidAngle;
+    float32x3 directionWorld = SamplePureLightCap(luminaire, positionWorld, seed, out densitySolidAngle);
+    LuminaireLightSample light =
+        SamplePortablePureLight(luminaire, MakeLuminaireReceiver(luminaire, positionWorld), seed);
+    results[index * VALIDATION_OUTPUT_RECORDS] = float32x4(value, logDensity, replayDensity);
+    results[index * VALIDATION_OUTPUT_RECORDS + 1] = float32x4(restored, directionWorld.xy);
+    results[index * VALIDATION_OUTPUT_RECORDS + 2] = float32x4(directionWorld.z, densitySolidAngle, 0, 0);
+    results[index * VALIDATION_OUTPUT_RECORDS + VALIDATION_RADIANCE_RECORD] =
+        float32x4(light.RadianceOverDensity, light.HasSample == true ? 1.0 : 0.0);
+    results[index * VALIDATION_OUTPUT_RECORDS + VALIDATION_OUTPUT_RECORDS - 1] = float32x4(light.DirectionWorld, 0);
+}

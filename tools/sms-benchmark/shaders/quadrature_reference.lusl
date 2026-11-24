@@ -1,0 +1,77 @@
+// An independent reference: shifted Hammersley points for the two-dimensional
+// surface/direction charts, independently uniform area-light endpoints, and
+// balance MIS. It does not use an affine guide, a Newton root or a re-hit PDF.
+#include "reflection_map.luslh"
+
+ConstantBuffer<QmcParameters> quadratureParameters;
+
+static const uint32 QMC_RANDOM_KEY = 0x17beef91;
+static const uint32 QMC_SHIFT_SAMPLE_ADDRESS = 0xffffffff;
+
+float32 ComputeReferenceFloorPdf(in float32x3 receiverWorld, in float32x2 coordinatesUv)
+{
+    float32x3 positionWorld = sceneData[REFLECTOR_CENTER_RECORD].xyz +
+        (coordinatesUv.x - 0.5) * sceneData[REFLECTOR_DERIVATIVE_U_RECORD].xyz +
+        (coordinatesUv.y - 0.5) * sceneData[REFLECTOR_DERIVATIVE_V_RECORD].xyz;
+    float32x3 displacementWorld = positionWorld - receiverWorld;
+    float32x3 directionWorld = NormalizeOrZero(displacementWorld);
+    float32 floorCosine = max(0, dot(sceneData[FLOOR_NORMAL_RECORD].xyz, directionWorld));
+    float32 reflectorCosine = max(0, dot(sceneData[BASE_NORMAL_RECORD].xyz, -directionWorld));
+    return floorCosine / PI * sceneData[AREA_RADIANCE_RECORD].x * reflectorCosine /
+        dot(displacementWorld, displacementWorld);
+}
+
+[stage(compute), threads(PARITY_GROUP_SIZE, 1, 1)]
+void IntegrateConnections(in uint32x3 threadIndex : DispatchThreadId)
+{
+    uint32 block = threadIndex.x % quadratureParameters.BlocksPerPixel;
+    uint32 pixelInBatch = threadIndex.x / quadratureParameters.BlocksPerPixel;
+    if (pixelInBatch >= quadratureParameters.PixelCount)
+    {
+        return;
+    }
+    uint32 pixel = quadratureParameters.PixelOffset + pixelInBatch;
+    float32x4 receiver = inputs[pixel * INPUT_RECORD_COUNT];
+    float32x3 color = inputs[pixel * INPUT_RECORD_COUNT + 1].xyz;
+    float32x3 total = 0;
+    if (receiver.w > 0)
+    {
+        uint32x2 key = uint32x2(quadratureParameters.Seed, QMC_RANDOM_KEY);
+        RandomAddress shiftAddress = MakeRandomAddress(uint32x2(pixel, QMC_SHIFT_SAMPLE_ADDRESS), 0, 0);
+        uint32x4 shiftBits = Philox4x32(PackRandomCounter(shiftAddress, 0), key);
+        float32x2 shift = float32x2(RandomFloat01(shiftBits.x), RandomFloat01(shiftBits.y));
+        for (uint32 localSample = 0; localSample < quadratureParameters.SamplesPerBlock; ++localSample)
+        {
+            uint32 sampleIndex = block * quadratureParameters.SamplesPerBlock + localSample;
+            if (sampleIndex >= quadratureParameters.SampleCount)
+            {
+                break;
+            }
+            float32x2 pointUv =
+                frac(float32x2((float32(sampleIndex) + 0.5) / float32(quadratureParameters.SampleCount),
+                               RandomFloat01(reversebits(sampleIndex))) +
+                     shift);
+            RandomAddress lightAddress = MakeRandomAddress(uint32x2(pixel, sampleIndex), 0, 0);
+            uint32x4 lightBits = Philox4x32(PackRandomCounter(lightAddress, 0), key);
+            float32x2 lightCoordinatesUv = float32x2(RandomFloat01(lightBits.z), RandomFloat01(lightBits.w));
+            // Deterministic allocation to both charts: each gets its own
+            // balance weight, so their two expectations sum to the integral.
+            float32 areaPdf = ComputeReferenceFloorPdf(receiver.xyz, pointUv);
+            total += EvaluateConnection(
+                receiver.xyz, color, pointUv, lightCoordinatesUv, quadratureParameters.Alpha) /
+                (1 + areaPdf);
+            float32 radius = sqrt(pointUv.x);
+            float32 angle = 2 * PI * pointUv.y;
+            float32x3 directionWorld = float32x3(radius * cos(angle), sqrt(max(0, 1 - pointUv.x)), radius * sin(angle));
+            float32x4 hit = IntersectRectangles(receiver.xyz, directionWorld);
+            if (hit.y == 1)
+            {
+                float32 cosinePdf = ComputeReferenceFloorPdf(receiver.xyz, hit.zw);
+                total += EvaluateConnection(
+                    receiver.xyz, color, hit.zw, lightCoordinatesUv, quadratureParameters.Alpha) /
+                    (1 + cosinePdf);
+            }
+        }
+    }
+    results[threadIndex.x] = float32x4(total, 0);
+}

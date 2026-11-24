@@ -1086,8 +1086,12 @@ consumer draw the fullscreen diagnostic from
 `tests/sdk_consumer/shaders/diagnostic.lusl`. `diagnostic.slang` and its
 `uniforms.slang` are retained: the installed helper's contract scripts use them
 to check that it still accepts Slang sources, and the RHI parity test compares
-the two programs' pixels on each backend in the same run. The tools' benchmarks and the other standalone SDK consumer
-shaders remain.
+the two programs' pixels on each backend in the same run. The benchmark tools'
+kernels (`tools/luminaire-benchmark/shaders`, `tools/sms-benchmark/shaders`) are
+migrated. They reach render-graph template code through `extern slang`.
+`portable_flow.slang` is retained, because the luminaire exporter splices it into
+the `slice_sampling_luminaire` template's Slang. The other standalone SDK
+consumer shaders remain.
 
 ### Acceptance
 

@@ -21,7 +21,15 @@
       "issue": 1735
     },
     {
+      "path": "tools/luminaire-benchmark/shaders",
+      "issue": 1735
+    },
+    {
       "path": "tools/shader-probe",
+      "issue": 1735
+    },
+    {
+      "path": "tools/sms-benchmark/shaders",
       "issue": 1735
     }
   ],
@@ -45,6 +53,10 @@
     {
       "path": "tests/sdk_consumer/shaders/diagnostic.slang",
       "reason": "Slang input of the installed shader helper's contract scripts (verify_shader_build.py and the macOS and Windows scripts) and differential oracle: the RHI parity test compares its pixels with diagnostic.lusl"
+    },
+    {
+      "path": "tools/luminaire-benchmark/shaders/portable_flow.slang",
+      "reason": "export_compute.py splices it into the slice_sampling_luminaire render-graph template's Slang shading; it migrates with that template (L5d wave 3)"
     },
     {
       "path": "tests/sdk_consumer/shaders/uniforms.slang",

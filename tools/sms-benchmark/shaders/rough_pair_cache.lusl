@@ -1,0 +1,123 @@
+// The same-seed map comes from Shlomi Steinberg's Slice Sampling draft,
+// Section 6.5. Each receiver uses its fresh draw and one cached draw from
+// its paired neighbor with Veach's multi-sample balance heuristic.
+#include "rough_pair.luslh"
+
+struct ReceiverLane
+{
+    uint32 SampleLane;
+    uint32 NeighborReceiver;
+    float32x2 PositionWorld;
+    bool IsActive;
+    bool HasNeighbor;
+};
+
+static const uint32 CACHE_SLOT_COUNT = 2;
+static const uint32 CACHE_RECORD_COUNT = CACHE_SLOT_COUNT * GROUP_SIZE;
+static const uint32 PROBE_RECORD_COUNT = 5;
+
+groupshared float32x4 cachedPositionsWorld[CACHE_RECORD_COUNT] = void;
+groupshared float32x4 cachedStatistics[CACHE_RECORD_COUNT] = void;
+
+ReceiverLane GetReceiverLane(in uint32 invocation)
+{
+    uint32 pairsPerRow = (parameters.ReceiverGridWidth + 1) / 2;
+    uint32 pairIndex = (invocation / 2) / parameters.ReplicasPerReceiver;
+    uint32 replica = (invocation / 2) % parameters.ReplicasPerReceiver;
+    uint32 row = pairIndex / pairsPerRow;
+    uint32 column = (pairIndex % pairsPerRow) * 2 + invocation % 2;
+    uint32 receiver = row * parameters.ReceiverGridWidth + column;
+    uint32 neighborColumn = column ^ 1;
+    ReceiverLane lane = 0;
+    lane.IsActive = row < parameters.ReceiverGridWidth && column < parameters.ReceiverGridWidth;
+    if (lane.IsActive == true)
+    {
+        lane.SampleLane = receiver * parameters.ReplicasPerReceiver + replica;
+        lane.PositionWorld = receivers[receiver];
+        lane.HasNeighbor = neighborColumn < parameters.ReceiverGridWidth;
+        lane.NeighborReceiver = row * parameters.ReceiverGridWidth + neighborColumn;
+    }
+    return lane;
+}
+
+CachedPairSample SampleCachedPair(in float32x4 uniforms, in ReceiverLane lane, in uint32 workgroupLane, in uint32 slot)
+{
+    CachedPairSample result = 0;
+    if (lane.IsActive == true)
+    {
+        result.Fresh = SamplePair(true, uniforms, 0, lane.PositionWorld);
+    }
+    // Alternate slots. The next barrier completes all reads of the previous
+    // slot before any lane can overwrite that slot two iterations later.
+    uint32 cacheIndex = slot * GROUP_SIZE + workgroupLane;
+    cachedPositionsWorld[cacheIndex] = float32x4(result.Fresh.FirstPositionWorld, result.Fresh.SecondPositionWorld);
+    cachedStatistics[cacheIndex] = float32x4(result.Fresh.Density, result.Fresh.HasFailed, 0, 0);
+    barrier groupshared;
+
+    result.FreshWeight = 1;
+    result.HasFailed = result.Fresh.HasFailed;
+    if (lane.HasNeighbor == true)
+    {
+        uint32 neighborIndex = cacheIndex ^ 1;
+        float32x4 positionsWorld = cachedPositionsWorld[neighborIndex];
+        float32x4 statistics = cachedStatistics[neighborIndex];
+        PairResult source =
+        {
+            .FirstPositionWorld = positionsWorld.xy,
+            .SecondPositionWorld = positionsWorld.zw,
+            .Density = statistics.x,
+            .HasFailed = statistics.y,
+        };
+        float32x2 sourceWorld = receivers[lane.NeighborReceiver];
+        return CombineCachedRoughPair(result.Fresh, source, lane.PositionWorld, sourceWorld);
+    }
+    result.Radiance = result.Fresh.Radiance;
+    return result;
+}
+
+[stage(compute), threads(GROUP_SIZE, 1, 1)]
+void RenderRoughPairCache(in uint32x3 invocation : DispatchThreadId, in uint32 workgroupLane : GroupIndex)
+{
+    ReceiverLane lane = GetReceiverLane(invocation.x);
+    float32x4 total = 0;
+    for (uint32 index = 0; index < parameters.Batch; ++index)
+    {
+        uint32 sampleIndex = parameters.Offset + index;
+        float32x4 uniforms = float32x4(DrawUniform(lane.SampleLane, sampleIndex, 0),
+                                       DrawUniform(lane.SampleLane, sampleIndex, 1),
+                                       DrawUniform(lane.SampleLane, sampleIndex, 2),
+                                       DrawUniform(lane.SampleLane, sampleIndex, 3));
+        CachedPairSample sample = SampleCachedPair(uniforms, lane, workgroupLane, index % CACHE_SLOT_COUNT);
+        total += float32x4(
+            sample.Radiance, sample.Radiance * sample.Radiance, sample.Radiance > 0 ? 0.0 : 1.0, sample.HasFailed);
+    }
+    if (lane.IsActive == true)
+    {
+        accumulation[lane.SampleLane] += total;
+    }
+}
+
+[stage(compute), threads(GROUP_SIZE, 1, 1)]
+void ProbeRoughPairCache(in uint32x3 invocation : DispatchThreadId, in uint32 workgroupLane : GroupIndex)
+{
+    ReceiverLane lane = GetReceiverLane(invocation.x);
+    uint32 receiver = lane.SampleLane / parameters.ReplicasPerReceiver;
+    uint32 replica = lane.SampleLane % parameters.ReplicasPerReceiver;
+    for (uint32 index = 0; index < parameters.Batch; ++index)
+    {
+        uint32 drawIndex = (receiver * parameters.Batch + index) * parameters.ReplicasPerReceiver + replica;
+        float32x4 uniforms = 0;
+        if (lane.IsActive == true)
+        {
+            uniforms = probeDraws[drawIndex];
+        }
+        CachedPairSample sample = SampleCachedPair(uniforms, lane, workgroupLane, index % CACHE_SLOT_COUNT);
+        if (lane.IsActive == true)
+        {
+            uint32 record = PROBE_RECORD_COUNT * drawIndex;
+            WriteProbe(record, sample.Fresh);
+            WriteProbe(record + 2, sample.Shifted);
+            probes[record + PROBE_RECORD_COUNT - 1] = float32x4(sample.FreshWeight, sample.Radiance, sample.HasFailed, 0);
+        }
+    }
+}
