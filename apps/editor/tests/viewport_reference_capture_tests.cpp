@@ -15,6 +15,7 @@
 #include "internal/renderer_workspace.h"
 #include "internal/viewport_reference_capture.h"
 #include "internal/viewport_tone_curve.h"
+#include "internal/workspace_style.h"
 #include "viewport_fixture.h"
 #include <ludus/content/scene_cook/scene_assets.h>
 
@@ -50,6 +51,8 @@
 #include <QLabel>
 #include <QProgressBar>
 #include <QPushButton>
+#include <QScrollArea>
+#include <QScrollBar>
 #include <QSignalSpy>
 #include <QSize>
 #include <QSpinBox>
@@ -989,30 +992,44 @@ TEST_CASE("Reference capture window keeps its settings in a column beside the im
     // The floating size a capture window takes beside the editor on a MacBook Air.
     constexpr int32 FLOATING_WIDTH = 680;
     constexpr int32 FLOATING_HEIGHT = 780;
+    constexpr int32 SHORT_HEIGHT = 400;
+    constexpr int32 LONG_GRAPH_SEGMENT_LENGTH = 100;
     ReferenceCaptureWindow window(nullptr);
-    window.show();
-    QWidget* settings = window.findChild<QWidget*>(QStringLiteral("referenceSettingsScroll"));
+    ApplyWorkspaceStyle(&window);
+    QScrollArea* settings = window.findChild<QScrollArea*>(QStringLiteral("referenceSettingsScroll"));
     QWidget* images = window.findChild<QTabWidget*>(QStringLiteral("referenceImages"));
     QLabel* graph = window.findChild<QLabel*>(QStringLiteral("referenceGraph"));
+    QComboBox* graphTarget = window.findChild<QComboBox*>(QStringLiteral("referenceGraphTarget"));
+    QLabel* status = window.findChild<QLabel*>(QStringLiteral("referenceStatus"));
     QPushButton* capture = window.findChild<QPushButton*>(QStringLiteral("referenceCapture"));
     QProgressBar* progress = window.findChild<QProgressBar*>(QStringLiteral("referenceProgress"));
     REQUIRE(settings != nullptr);
     REQUIRE(images != nullptr);
     REQUIRE(graph != nullptr);
+    REQUIRE(graphTarget != nullptr);
+    REQUIRE(status != nullptr);
     REQUIRE(capture != nullptr);
     REQUIRE(progress != nullptr);
     CHECK(capture->property("visualRole").toString() == QStringLiteral("primary"));
     // Nothing has run, so an empty bar would only take room.
-    CHECK(progress->isVisible() == false);
+    CHECK(progress->isHidden() == true);
     // Without a project graph the line stays short and the tooltip says why.
     CHECK(window.GetGraphText() == QStringLiteral("None. RT1 reference only"));
     CHECK(graph->toolTip().startsWith(QStringLiteral("This viewport has no project render graph")) == true);
+
+    const QString graphName = QStringLiteral("Library%1.lurender.json#ComputeRayTracing/FinalColor")
+                                  .arg(QString(LONG_GRAPH_SEGMENT_LENGTH, QLatin1Char('X')));
+    graphTarget->addItem(graphName);
+    graphTarget->setCurrentIndex(graphTarget->count() - 1);
+    const QString diagnostic = QStringLiteral("Building %1 for the capture.").arg(graphName);
+    status->setText(diagnostic);
+    window.show();
 
     const QSize defaultSize = window.size();
     CHECK(defaultSize.width() >= window.minimumSizeHint().width());
     CHECK(defaultSize.height() >= window.minimumSizeHint().height());
     CHECK(window.minimumSizeHint().width() <= FLOATING_WIDTH);
-    for (const QSize size : {defaultSize, QSize(FLOATING_WIDTH, FLOATING_HEIGHT)})
+    for (const QSize size : {defaultSize, QSize(FLOATING_WIDTH, FLOATING_HEIGHT), QSize(FLOATING_WIDTH, SHORT_HEIGHT)})
     {
         CAPTURE(size.width(), size.height());
         window.resize(size);
@@ -1029,9 +1046,18 @@ TEST_CASE("Reference capture window keeps its settings in a column beside the im
         // The summary is one line under the Graph choice, never wrapped to push the form down.
         CHECK(graph->height() < 2 * graph->fontMetrics().lineSpacing());
         // Every field and label sits whole inside the column; the form's labels share one leading edge.
-        QWidget* content = settings->findChild<QWidget*>(QStringLiteral("referenceSettings"));
+        QWidget* content = settings->widget();
         REQUIRE(content != nullptr);
-        CHECK(content->width() <= settings->width());
+        CHECK(content->width() <= settings->viewport()->width());
+        CHECK(settings->horizontalScrollBar()->maximum() == 0);
+        if (size.height() == SHORT_HEIGHT)
+        {
+            CHECK(settings->verticalScrollBar()->maximum() > 0);
+        }
+        CHECK(graphTarget->currentText() == graphName);
+        CHECK(graphTarget->toolTip().startsWith(graphName) == true);
+        CHECK(status->text() == diagnostic);
+        CHECK(status->height() >= status->heightForWidth(status->width()));
         QList<int32> labelEdges;
         QFormLayout* form = content->findChild<QFormLayout*>();
         REQUIRE(form != nullptr);
