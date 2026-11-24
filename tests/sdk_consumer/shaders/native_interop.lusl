@@ -1,0 +1,39 @@
+// Native bridge fixture: producer colors and foreign graphics sampling are GPU-only. The fixture
+// reads only the final validation buffer on the CPU. Host code, including the Vulkan bridge's own
+// descriptor set, binds the slots and the vertex input location in native_source_slots.h and
+// native_sample_slots.h.
+Texture2D<float32x4> sourceImage;
+SamplerState sourceSampler;
+
+// The producer target is TARGET_SIZE pixels square; its quadrants meet at HALF_SIZE.
+static const float32 TARGET_SIZE = 4;
+static const float32 HALF_SIZE = 2;
+
+struct NativeVarying
+{
+    float32x4 Position : ClipPosition;
+};
+
+[stage(vertex)]
+NativeVarying VertexMain(in float32x3 position)
+{
+    NativeVarying result = { .Position = float32x4(position, 1) };
+    return result;
+}
+
+// Red top-left, green top-right, blue bottom-left and white bottom-right quadrants. A fragment
+// reads the ClipPosition field as its pixel position, top-left origin.
+[stage(fragment)]
+float32x4 SourceMain(in NativeVarying input)
+{
+    bool isRight = input.Position.x >= HALF_SIZE;
+    bool isBottom = input.Position.y >= HALF_SIZE;
+    return isBottom == true ? (isRight == true ? float32x4(1, 1, 1, 1) : float32x4(0, 0, 1, 1))
+        : (isRight == true ? float32x4(0, 1, 0, 1) : float32x4(1, 0, 0, 1));
+}
+
+[stage(fragment)]
+float32x4 SampleMain(in NativeVarying input)
+{
+    return sourceImage.SampleLevel(sourceSampler, input.Position.xy / float32x2(TARGET_SIZE, TARGET_SIZE), 0);
+}

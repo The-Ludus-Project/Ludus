@@ -1,0 +1,66 @@
+// R11 wider binding-array fixture: four array, cube or 3D images in one fixed binding array and
+// two samplers in another, each sampled with a constant index in its quarter of the target. Every
+// build passes LUDUS_R11_WIDER_IMAGES: R11_ARRAY_IMAGES (r11wider), R11_CUBE_IMAGES (r11cube) or
+// R11_VOLUME_IMAGES (r11volume). Host code binds the slots and vertex input location in the
+// program's <NAME>_slots.h; each array reserves its count of consecutive slots.
+#define R11_ARRAY_IMAGES 0
+#define R11_CUBE_IMAGES 1
+#define R11_VOLUME_IMAGES 2
+
+struct Settings
+{
+    float32x4 Selection;
+};
+ConstantBuffer<Settings> settingsBuffer;
+
+static const uint32 IMAGE_COUNT = 4;
+static const uint32 SAMPLER_COUNT = 2;
+#if LUDUS_R11_WIDER_IMAGES == R11_CUBE_IMAGES
+TextureCube<float32x4> images[IMAGE_COUNT];
+#elif LUDUS_R11_WIDER_IMAGES == R11_VOLUME_IMAGES
+Texture3D<float32x4> images[IMAGE_COUNT];
+#else
+Texture2DArray<float32x4> images[IMAGE_COUNT];
+#endif
+SamplerState imageSamplers[SAMPLER_COUNT];
+
+// The four images cover the target in quarters from left to right.
+static const float32 QUARTER_WIDTH = 0.25;
+
+struct R11Input
+{
+    float32x2 PositionClip;
+};
+
+struct R11Varying
+{
+    float32x4 PositionClip : ClipPosition;
+    float32x2 Uv;
+};
+
+[stage(vertex)]
+R11Varying VertexMain(in R11Input input)
+{
+    R11Varying output =
+    {
+        .PositionClip = float32x4(input.PositionClip, 0, 1),
+        .Uv = input.PositionClip * float32x2(0.5, -0.5) + 0.5,
+    };
+    return output;
+}
+
+[stage(fragment)]
+float32x4 ConstantArrayMain(in R11Varying input)
+{
+#if LUDUS_R11_WIDER_IMAGES == R11_CUBE_IMAGES
+    // Every face of a 1 x 1 cube holds the image color; sample the +X face.
+    float32x3 coordinateTexture = float32x3(1, 0, 0);
+#else
+    float32x3 coordinateTexture = float32x3(input.Uv, 0);
+#endif
+    float32x4 color = input.Uv.x < QUARTER_WIDTH ? images[0].SampleLevel(imageSamplers[0], coordinateTexture, 0)
+        : input.Uv.x < 0.5 ? images[1].SampleLevel(imageSamplers[1], coordinateTexture, 0)
+        : input.Uv.x < 1 - QUARTER_WIDTH ? images[2].SampleLevel(imageSamplers[0], coordinateTexture, 0)
+        : images[3].SampleLevel(imageSamplers[1], coordinateTexture, 0);
+    return color * settingsBuffer.Selection;
+}

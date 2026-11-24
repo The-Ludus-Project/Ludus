@@ -951,9 +951,10 @@ headers alongside its renderer recipes.
   its Slang equivalent on the GPU and compares every result word.
 
 **Current limits.**
-- No binding arrays (bindless), cube or 3D textures, or manual slots yet. Render-graph programs
-  keep receiving their bindings from the graph.
-- `GetDimensions()` has no mip-level form and reports level 0.
+- Binding arrays hold sampled color textures or samplers and take constant indices: no
+  runtime-indexed (`NonUniformResourceIndex`) or runtime-sized arrays, no buffer arrays, and no
+  manual slots yet. Render-graph programs keep receiving their bindings from the graph.
+- `GetDimensions()` has no mip-level form and reports level 0; it does not return a mip count.
 - **Buffer lengths on Metal.** Slang's direct Metal backend has no buffer-length query, so a module
   that calls `GetDimensions()` on a structured buffer fails the portable target set. It compiles
   for ray-query SPIR-V; Metal artifacts come from SPIR-V through SPIRV-Cross, whose buffer-size

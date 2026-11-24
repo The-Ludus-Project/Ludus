@@ -1,0 +1,41 @@
+// Application-owned raster fixture: a tinted, textured quad whose instances add a clip-space
+// offset. Host code binds the slots and vertex input locations in raster_slots.h. raster.slang
+// stays as the Slang input of verify_raster_build.py's manual-binding checks
+// (config/lusl_migration.json).
+struct Tint
+{
+    float32x4 Color;
+};
+ConstantBuffer<Tint> tint;
+Texture2D<float32x4> image;
+SamplerState imageSampler;
+
+struct RasterInput
+{
+    float32x3 Position;
+    float32x2 Uv;
+    float32x2 Offset;
+};
+
+struct RasterVarying
+{
+    float32x4 Position : ClipPosition;
+    float32x2 Uv;
+};
+
+[stage(vertex)]
+RasterVarying VertexMain(in RasterInput input)
+{
+    RasterVarying output =
+    {
+        .Position = float32x4(input.Position.xy + input.Offset, input.Position.z, 1),
+        .Uv = input.Uv,
+    };
+    return output;
+}
+
+[stage(fragment)]
+float32x4 FragmentMain(in RasterVarying input)
+{
+    return image.Sample(imageSampler, input.Uv) * tint.Color;
+}

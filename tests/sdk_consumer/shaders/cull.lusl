@@ -1,0 +1,37 @@
+// One deterministic invocation compacts visible instances and publishes a bounded indexed
+// command. The CPU variant in ordered_frame.h uses the same authored candidates and predicate; no
+// atomics or cross-workgroup order needed. Host code binds the slots in cull_slots.h.
+StructuredBuffer<float32x2> candidates;
+RWStructuredBuffer<float32x2> visible;
+RWStructuredBuffer<uint32> arguments;
+
+static const uint32 CANDIDATE_COUNT = 4;
+// Clip-space half width inside which an instance offset is visible.
+static const float32 VISIBLE_HALF_WIDTH = 0.75;
+// The indexed command: six quad indices, the visible instance count, then zero first index, base
+// vertex and first instance.
+static const uint32 QUAD_INDEX_COUNT = 6;
+static const uint32 INSTANCE_COUNT_WORD = 1;
+static const uint32 FIRST_INDEX_WORD = 2;
+static const uint32 BASE_VERTEX_WORD = 3;
+static const uint32 FIRST_INSTANCE_WORD = 4;
+
+[stage(compute), threads(1, 1, 1)]
+void ComputeMain()
+{
+    uint32 count = 0;
+    for (uint32 i = 0; i < CANDIDATE_COUNT; ++i)
+    {
+        float32x2 offset = candidates[i];
+        if (offset.x >= -VISIBLE_HALF_WIDTH && offset.x <= VISIBLE_HALF_WIDTH)
+        {
+            visible[count] = offset;
+            ++count;
+        }
+    }
+    arguments[0] = QUAD_INDEX_COUNT;
+    arguments[INSTANCE_COUNT_WORD] = count;
+    arguments[FIRST_INDEX_WORD] = 0;
+    arguments[BASE_VERTEX_WORD] = 0;
+    arguments[FIRST_INSTANCE_WORD] = 0;
+}

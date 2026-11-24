@@ -21,6 +21,10 @@
       "issue": 1735
     },
     {
+      "path": "tests/sdk_consumer/shaders",
+      "issue": 1735
+    },
+    {
       "path": "tools/luminaire-benchmark/shaders",
       "issue": 1735
     },
@@ -61,6 +65,26 @@
     {
       "path": "tests/sdk_consumer/shaders/uniforms.slang",
       "reason": "Uniform block of diagnostic.slang that the helper contract scripts edit to check include rebuilds and the 16 KiB uniform bound"
+    },
+    {
+      "path": "tests/sdk_consumer/shaders/mip_streaming.slang",
+      "reason": "Mip-streaming fixture that reads the bound view's mip count through Slang's GetDimensions level form; LUSL's GetDimensions() returns level-zero extents only"
+    },
+    {
+      "path": "tests/sdk_consumer/shaders/r11.slang",
+      "reason": "RHI binding-array test of Slang input: r11arrays indexes images with NonUniformResourceIndex and r11runtime samples a runtime-sized array; LUSL binding arrays take constant indices and a named size"
+    },
+    {
+      "path": "tests/sdk_consumer/shaders/r11buffers.slang",
+      "reason": "RHI binding-array test of Slang input: a ConstantBuffer array, which LUSL binding arrays (sampled textures and samplers) do not express"
+    },
+    {
+      "path": "tests/sdk_consumer/shaders/r11storage.slang",
+      "reason": "RHI binding-array test of Slang input: an RWStructuredBuffer array, which LUSL binding arrays (sampled textures and samplers) do not express"
+    },
+    {
+      "path": "tests/sdk_consumer/shaders/raster.slang",
+      "reason": "Slang input of verify_raster_build.py's manual-binding checks (slot 15 accepted, group 1 and register t16 rejected), which LUSL's declaration-order slots cannot spell"
     }
   ]
 }

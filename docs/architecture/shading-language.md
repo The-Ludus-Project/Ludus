@@ -1090,8 +1090,16 @@ the two programs' pixels on each backend in the same run. The benchmark tools'
 kernels (`tools/luminaire-benchmark/shaders`, `tools/sms-benchmark/shaders`) are
 migrated. They reach render-graph template code through `extern slang`.
 `portable_flow.slang` is retained, because the luminaire exporter splices it into
-the `slice_sampling_luminaire` template's Slang. The other standalone SDK
-consumer shaders remain.
+the `slice_sampling_luminaire` template's Slang. The standalone SDK consumer
+shaders (`tests/sdk_consumer/shaders`) are migrated, and their host code binds by
+the generated `<NAME>_slots.h` constants. Five Slang files stay there, each
+listed in the retained list with its reason:
+- `raster.slang`: the helper's manual-binding checks in `verify_raster_build.py`.
+- `r11.slang`, `r11buffers.slang`, `r11storage.slang`: the non-uniform,
+  runtime-sized, constant-buffer and storage-buffer binding arrays. LUSL binding
+  arrays take sampled textures and samplers with constant indices.
+- `mip_streaming.slang`: it reads the bound view's mip count, and
+  `GetDimensions()` returns only level-zero extents.
 
 ### Acceptance
 

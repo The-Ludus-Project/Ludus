@@ -1,9 +1,13 @@
 #include "r10coverage.h"
 #include "r10depth.h"
+#include "r10depth_slots.h"
 #include "r10mask.h"
 #include "r10sample.h"
+#include "r10sample_slots.h"
 #include "r10stencil.h"
+#include "r10stencil_slots.h"
 #include "r10write.h"
+#include "r10write_slots.h"
 #include <ludus/foundation/base/config.h>
 #include <ludus/foundation/base/types.h>
 #include <ludus/foundation/containers/borrowed_view.hpp>
@@ -19,6 +23,12 @@ namespace
 {
 using namespace ludus::foundation;
 namespace rhi = ludus::graphics::rhi;
+// Slots and vertex input locations that the LUSL compiler assigned to r10.lusl; every r10 program
+// shares them, and each layout takes them from the program that samples the binding.
+namespace sample_slots = ludus::shaders::r10sample::slots;
+namespace depth_slots = ludus::shaders::r10depth::slots;
+namespace stencil_slots = ludus::shaders::r10stencil::slots;
+namespace r10_locations = ludus::shaders::r10write::locations;
 constexpr logging::LogCategory LOG_R10{"R10-Fixture"};
 constexpr usize COVERAGE_FRAGMENT_INDEX = 5;
 constexpr usize COVERAGE_PIPELINE_INDEX = 7;
@@ -224,10 +234,14 @@ bool ViewsAndShaders() noexcept
             return false;
         }
     }
-    const rhi::RasterBinding color[2]{{0, rhi::RasterBindingKind::Texture2D, rhi::RasterVisibility::Fragment, 0},
-                                      {1, rhi::RasterBindingKind::Sampler, rhi::RasterVisibility::Fragment, 0}};
-    const rhi::RasterBinding depth{2, rhi::RasterBindingKind::TextureDepth2D, rhi::RasterVisibility::Fragment, 0};
-    const rhi::RasterBinding stencilBinding{3,
+    const rhi::RasterBinding color[2]{
+        {sample_slots::COLOR_IMAGE, rhi::RasterBindingKind::Texture2D, rhi::RasterVisibility::Fragment, 0},
+        {sample_slots::COLOR_SAMPLER, rhi::RasterBindingKind::Sampler, rhi::RasterVisibility::Fragment, 0}};
+    const rhi::RasterBinding depth{depth_slots::DEPTH_IMAGE,
+                                   rhi::RasterBindingKind::TextureDepth2D,
+                                   rhi::RasterVisibility::Fragment,
+                                   0};
+    const rhi::RasterBinding stencilBinding{stencil_slots::STENCIL_IMAGE,
                                             rhi::RasterBindingKind::TextureStencil2D,
                                             rhi::RasterVisibility::Fragment,
                                             0};
@@ -240,7 +254,7 @@ bool PipelinesAndSets() noexcept
 {
     if (gStencilSample)
     {
-        const rhi::RasterBindingResource resource{ .Binding = 3, .Texture = gStencilView };
+        const rhi::RasterBindingResource resource{ .Binding = stencil_slots::STENCIL_IMAGE, .Texture = gStencilView };
         if (Accepted(rhi::CreateBindingSet(gDevice, gLayouts[3], {&resource, 1}, gSets[6])) == false)
         {
             return false;
@@ -259,41 +273,34 @@ bool PipelinesAndSets() noexcept
     for (usize i = 0; i < 5; ++i)
     {
         const rhi::RasterBindingResource resources[2]{
-        {
-            .Texture = gSampled[i],
-        },
-                                                      {
-                                                          .Binding = 1,
-                                                          .Sampler = gSampler,
-                                                      }};
+            { .Binding = sample_slots::COLOR_IMAGE, .Texture = gSampled[i] },
+            { .Binding = sample_slots::COLOR_SAMPLER, .Sampler = gSampler },
+        };
         if (Accepted(rhi::CreateBindingSet(gDevice, gLayouts[1], resources, gSets[i])) == false)
         {
             return false;
         }
     }
     const rhi::RasterBindingResource cubeResources[2]{
-    {
-        .Texture = gSampled[6],
-    },
-                                                      {
-                                                          .Binding = 1,
-                                                          .Sampler = gSampler,
-                                                      }};
+        { .Binding = sample_slots::COLOR_IMAGE, .Texture = gSampled[6] },
+        { .Binding = sample_slots::COLOR_SAMPLER, .Sampler = gSampler },
+    };
     if (Accepted(rhi::CreateBindingSet(gDevice, gLayouts[1], cubeResources, gSets[7])) == false)
     {
         return false;
     }
     if (gDepth)
     {
-        const rhi::RasterBindingResource resource{ .Binding = 2, .Texture = gSampled[5] };
+        const rhi::RasterBindingResource resource{ .Binding = depth_slots::DEPTH_IMAGE, .Texture = gSampled[5] };
         if (Accepted(rhi::CreateBindingSet(gDevice, gLayouts[2], {&resource, 1}, gSets[5])) == false)
         {
             return false;
         }
     }
     const rhi::RasterVertexStream stream{16, false};
-    const rhi::RasterVertexAttribute attributes[2]{{0, 0, 0, rhi::RasterVertexFormat::Float2},
-                                                   {1, 0, 8, rhi::RasterVertexFormat::Float2}};
+    const rhi::RasterVertexAttribute attributes[2]{
+        {r10_locations::INPUT_POSITION, 0, 0, rhi::RasterVertexFormat::Float2},
+        {r10_locations::INPUT_UV, 0, 8, rhi::RasterVertexFormat::Float2}};
     const rhi::RasterFormat colors[2]{rhi::RasterFormat::Rgba8Unorm, rhi::RasterFormat::Rgba8Unorm};
     for (usize i = 0; i < 7; ++i)
     {
@@ -546,6 +553,8 @@ bool DrawCase(bool graph) noexcept
         }
         outputs[i] = imports[i + 2];
     }
+    // Elements use their default member initializers; the check misreports them as zero enums.
+    // NOLINTNEXTLINE(bugprone-invalid-enum-default-initialization)
     rhi::GraphUse uses[6]{{imports[0], rhi::GraphAccessMode::Vertex, 0, 64},
                           {imports[1], rhi::GraphAccessMode::Index, 0, 12}};
     usize count = 2;

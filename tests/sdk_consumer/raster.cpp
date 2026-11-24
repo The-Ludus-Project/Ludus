@@ -7,9 +7,11 @@
 #include <ludus/graphics/rhi/measurement.h>
 
 #include "cull.h"
+#include "cull_slots.h"
 #include "merged_frame.h"
 #include "ordered_frame.h"
 #include "raster.h"
+#include "raster_slots.h"
 
 #include <cstring>
 
@@ -22,6 +24,10 @@ namespace
 {
 using namespace ludus::foundation;
 namespace rhi = ludus::graphics::rhi;
+// Slots and vertex input locations that the LUSL compiler assigned to cull.lusl and raster.lusl.
+namespace cull_slots = ludus::shaders::cull::slots;
+namespace raster_slots = ludus::shaders::raster::slots;
+namespace raster_locations = ludus::shaders::raster::locations;
 rhi::DeviceHandle gDevice;
 rhi::SurfaceHandle gSurface;
 rhi::RasterShaderHandle gVertex, gFragment;
@@ -424,9 +430,9 @@ void Tick() noexcept
         }
         if (gUseCompute)
         {
-            const rhi::RasterBindingResource computeBindings[]{{0, gCandidates, 0, 32},
-                                                               {1, gInstances, 0, 16},
-                                                               {2, gArguments, 0, 20}};
+            const rhi::RasterBindingResource computeBindings[]{{cull_slots::CANDIDATES, gCandidates, 0, 32},
+                                                               {cull_slots::VISIBLE, gInstances, 0, 16},
+                                                               {cull_slots::ARGUMENTS, gArguments, 0, 20}};
             if (Accepted(rhi::CreateBindingSet(gDevice, gComputeLayout, computeBindings, gDispatch.Bindings)) ==
                     false ||
                 Accepted(rhi::CreateComputePipeline(gDevice, {gComputeShader, gComputeLayout}, gDispatch.Pipeline)) ==
@@ -437,11 +443,12 @@ void Tick() noexcept
             }
         }
         rhi::RasterBindingResource bindings[3]{};
+        bindings[0].Binding = raster_slots::TINT;
         bindings[0].Buffer = gTint;
         bindings[0].Size = 16;
-        bindings[1].Binding = 1;
+        bindings[1].Binding = raster_slots::IMAGE;
         bindings[1].Texture = gView;
-        bindings[2].Binding = 2;
+        bindings[2].Binding = raster_slots::IMAGE_SAMPLER;
         bindings[2].Sampler = gSampler;
         if (Accepted(rhi::CreateBindingSet(gDevice, gLayout, bindings, gSet)) == false)
         {
@@ -465,9 +472,10 @@ void Tick() noexcept
             }
         }
         const rhi::RasterVertexStream streams[2]{{20, false}, {8, true}};
-        const rhi::RasterVertexAttribute attributes[3]{{0, 0, 0, rhi::RasterVertexFormat::Float3},
-                                                       {1, 0, 12, rhi::RasterVertexFormat::Float2},
-                                                       {2, 1, 0, rhi::RasterVertexFormat::Float2}};
+        const rhi::RasterVertexAttribute attributes[3]{
+            {raster_locations::INPUT_POSITION, 0, 0, rhi::RasterVertexFormat::Float3},
+            {raster_locations::INPUT_UV, 0, 12, rhi::RasterVertexFormat::Float2},
+            {raster_locations::INPUT_OFFSET, 1, 0, rhi::RasterVertexFormat::Float2}};
         if (info.Profile.Interface.MaxVertexStride == 252)
         {
             const rhi::RasterVertexStream invalidStreams[]{{256, false}, {8, true}};
