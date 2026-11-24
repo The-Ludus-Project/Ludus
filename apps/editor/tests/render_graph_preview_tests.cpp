@@ -6147,12 +6147,15 @@ TEST_CASE("A viewport graph capture converges an accumulating ray output and sav
     CHECK(info.SubmittedSamples == SAMPLES);
     CHECK(info.MinimumSamples == SAMPLES);
     REQUIRE(capture.GetPixels().GetSize() == static_cast<usize>(extent.width()) * extent.height());
-    const QImage image = capture.MakeDisplayImage();
+    const ViewportDisplayTransform display = capture.GetDisplayTransform();
+    CHECK(display.Exposure == 1);
+    CHECK(display.Curve == renderer::ToneCurve::Reinhard);
+    const QImage image = capture.MakeDisplayImage(display);
     CHECK(image.size() == extent);
 
     QTemporaryDir directory;
     const QString path = QDir(directory.path()).filePath(QStringLiteral("capture.lurgcap"));
-    REQUIRE(capture.Save(path, error) == true);
+    REQUIRE(capture.Save(path, error, display) == true);
     QFile saved(path);
     REQUIRE(saved.open(QIODevice::ReadOnly) == true);
     const QByteArray bytes = saved.readAll();
@@ -6165,7 +6168,8 @@ TEST_CASE("A viewport graph capture converges an accumulating ray output and sav
     REQUIRE(package.open(QIODevice::ReadOnly) == true);
     CHECK(bytes.mid(format::CAPTURE_PACKAGE_IDENTITY_OFFSET, format::CAPTURE_IDENTITY_BYTES) ==
           QCryptographicHash::hash(package.readAll(), QCryptographicHash::Sha256));
-    CHECK(QImage(ViewportGraphCapture::GetDisplayImagePath(path)).size() == extent);
+    const QImage savedImage(ViewportGraphCapture::GetDisplayImagePath(path));
+    CHECK(savedImage.convertToFormat(image.format()) == image);
     capture.Release();
     CHECK(capture.GetPhase() == renderer::RenderGraphCapturePhase::Idle);
 }

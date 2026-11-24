@@ -6088,9 +6088,10 @@ RasterizeGraph (ClusteredDeferred) → ToneMap → Export / Present
 {"id": "tonemap", "kind": "ToneMap", "exposure": 1, "curve": "PbrNeutral"}
 ```
 
-**Curve** selects the display curve. `Reinhard` applies `x / (1 + x)` to each
-channel independently, which can shift hue as bright channels compress by
-different amounts. Omit `curve` to use Reinhard. `PbrNeutral` subtracts a common
+**Curve** selects the display curve in Properties or the canvas's **Edit Node**
+action. Nodes that omit `curve` display **Reinhard** in both controls. `Reinhard`
+applies `x / (1 + x)` to each channel independently, which can shift hue as bright
+channels compress by different amounts. `PbrNeutral` subtracts a common
 offset from the channels, then compresses bright peaks and blends them toward
 white. The engine's default clustered deferred graph selects `PbrNeutral`
 explicitly.

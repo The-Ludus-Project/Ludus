@@ -3401,8 +3401,9 @@ Stopping the viewport's device cancels a running capture.
 In the native editor, the **Render graph** source runs the World viewport's
 render graph, with its package and output, to the requested samples per pixel at
 the frozen camera, and saves the linear mean as a `.lurgcap` file with a PNG
-beside it. It needs a project graph in the viewport; otherwise the source is
-unavailable. Maximum depth, traversal and comparison describe RT1 and are disabled.
+beside it. The preview and PNG use the captured ray pass's ToneMap curve and
+exposure multiplier when it has a ToneMap. It needs a project graph in the
+viewport. Maximum depth, traversal and comparison describe RT1 and are disabled.
 
 The **Graph** list chooses what the capture renders. **Viewport output**, the
 default, is what the viewport currently draws, and the line below names it, for

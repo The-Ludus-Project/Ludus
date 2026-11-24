@@ -3819,6 +3819,11 @@ void RendererWorkspace::renderInspector()
 void RendererWorkspace::populateNodeFields(QFormLayout& outFields, QWidget& inoutParent)
 {
     QJsonObject node = selectedNode();
+    if (node.value(QStringLiteral("kind")) == QStringLiteral("ToneMap") &&
+        node.contains(QStringLiteral("curve")) == false)
+    {
+        node.insert(QStringLiteral("curve"), QStringLiteral("Reinhard"));
+    }
     if (node.value(QStringLiteral("kind")) == QStringLiteral("Upscale") &&
         node.value(QStringLiteral("algorithm")) == QStringLiteral("metalfx-spatial") &&
         node.contains(QStringLiteral("color_processing")) == false)
@@ -4002,7 +4007,7 @@ void RendererWorkspace::populateNodeFields(QFormLayout& outFields, QWidget& inou
             connect(combo, &QComboBox::activated, this, [this, name, combo]() {
                 replaceSelectedField(name, combo->currentText());
             });
-            outFields.addRow(name, combo);
+            outFields.addRow(name == QStringLiteral("curve") ? QStringLiteral("Curve") : name, combo);
         }
         else if (node.value(QStringLiteral("kind")).toString() == QStringLiteral("Accumulate") &&
                  name == QStringLiteral("samples"))

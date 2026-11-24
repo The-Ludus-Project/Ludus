@@ -1168,6 +1168,7 @@ bool ReferenceCaptureWindow::startGraphSource()
                    .arg(samples);
     mProgressTarget = static_cast<int32>(samples);
 #if defined(LUDUS_EDITOR_NATIVE_PREVIEW)
+    mDisplay = mGraphCapture.GetDisplayTransform();
     const renderer::RenderGraphCaptureInfo info = mGraphCapture.GetInfo();
     if (info.WarmupSamples != 0)
     {
@@ -1327,7 +1328,7 @@ bool ReferenceCaptureWindow::SaveCapture(const QString& hdrPath, QString& outErr
 #if defined(LUDUS_EDITOR_NATIVE_PREVIEW)
     if (mIsCapturingGraph == true)
     {
-        return mGraphCapture.Save(hdrPath, outError);
+        return mGraphCapture.Save(hdrPath, outError, mDisplay);
     }
 #endif
     if (mCapture.Save(hdrPath, outError) == false)
@@ -1350,7 +1351,7 @@ bool ReferenceCaptureWindow::saveComparison(const QString& hdrPath, QString& out
     if (mIsGraphComparison == true)
     {
         const QString graphPath = GetComparisonPath(hdrPath, QStringLiteral("graph.lurgcap"));
-        if (mGraphCapture.Save(graphPath, outError) == false)
+        if (mGraphCapture.Save(graphPath, outError, mDisplay) == false)
         {
             return false;
         }
