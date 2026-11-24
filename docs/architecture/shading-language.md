@@ -1080,10 +1080,14 @@ helper lowers sources that name `LUDUS_GLSL_ES` once per value, as the
 describes. Browser builds lower LUSL with a host `luslc` (`LUDUS_LUSLC`, built
 by `./scripts/bootstrap-luslc`). With it, the Cornell box
 (`examples/cornell-box/shaders`), `apps/smoke/shaders` and the shader probe
-(`tools/shader-probe`) are migrated. The tools' benchmarks and the standalone
-SDK consumer shaders remain. That includes the fullscreen diagnostic, whose
-installed-helper tests pass `DEFINES` that the helper does not yet forward to
-`luslc`.
+(`tools/shader-probe`) are migrated. The helper forwards `DEFINES` to `luslc`.
+The RHI render tests (Vulkan, Metal and Direct3D 12) and the generic SDK render
+consumer draw the fullscreen diagnostic from
+`tests/sdk_consumer/shaders/diagnostic.lusl`. `diagnostic.slang` and its
+`uniforms.slang` are retained: the installed helper's contract scripts use them
+to check that it still accepts Slang sources, and the RHI parity test compares
+the two programs' pixels on each backend in the same run. The tools' benchmarks and the other standalone SDK consumer
+shaders remain.
 
 ### Acceptance
 

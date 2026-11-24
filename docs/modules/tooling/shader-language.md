@@ -910,6 +910,16 @@ ludus_compile_shader(TARGET my_game NAME composite
   outside the condition. A source that does not name the macro is lowered once.
   Without the helper, `luslc lower` needs an explicit `--define LUDUS_GLSL_ES=0`
   or `=1`; an undefined macro in `#if` is `LUSL0219`.
+- **`DEFINES` reach the LUSL preprocessor.** The helper passes each entry to
+  every lowering as `luslc lower --define`, so `#if` and `#ifndef` in the LUSL
+  source see the values a Slang source would see through `-D`. A bare `NAME`
+  means `NAME=1`. Changing `DEFINES` lowers and compiles the shader again.
+  They are configuration values: LUSL has no optional macros, so a source that
+  tests a name with `#if`, `#ifdef` or `#ifndef` needs it in every build's
+  `DEFINES` (otherwise `LUSL0219` or `LUSL0220`). A Slang
+  `#ifndef NAME / #define NAME <default>` becomes a value every consumer passes,
+  or a constant. `LUDUS_GLSL_ES` belongs to the driver; naming it in `DEFINES`
+  fails the build.
 - `<NAME>_slots.h` is generated beside `<NAME>.h`. Host code binds by these
   constants, never by a literal:
 

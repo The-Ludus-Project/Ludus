@@ -141,6 +141,11 @@ function(ludus_compile_shader)
             get_filename_component(path "${path}" ABSOLUTE BASE_DIR "${CMAKE_CURRENT_SOURCE_DIR}")
             list(APPEND lusl_includes --include-directory "${path}")
         endforeach()
+        # DEFINES reach the LUSL preprocessor, which runs before Slang sees the module.
+        set(lusl_defines)
+        foreach(define IN LISTS SH_DEFINES)
+            list(APPEND lusl_defines --define "${define}")
+        endforeach()
         set(lowered "${output}/${SH_NAME}.lusl.slang")
         add_custom_command(
             OUTPUT "${lowered}"
@@ -148,7 +153,7 @@ function(ludus_compile_shader)
             COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_FUNCTION_LIST_DIR}/shaders/lower_lusl.py"
                     --luslc "${luslc}" --root "${lusl_root}" --source "${lusl_name}" --name "${SH_NAME}"
                     --output "${lowered}" --slots "${output}/${SH_NAME}_slots.h" --depfile "${output}/lusl.d"
-                    ${lusl_includes}
+                    ${lusl_includes} ${lusl_defines}
             DEPENDS "${source}" "${CMAKE_CURRENT_FUNCTION_LIST_DIR}/shaders/lower_lusl.py" ${luslc_depends} ${SH_DEPENDS}
             DEPFILE "${output}/lusl.d"
             VERBATIM

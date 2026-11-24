@@ -184,6 +184,18 @@ if(LUDUS_BUILD_TESTS)
     set_tests_properties(ludus_rhi_lifecycle_tests PROPERTIES LABELS "unit;rhi;build-contract")
 endif()
 
+# LUSL L5d wave 1 (issue 1735): the fullscreen diagnostic in LUSL and its retained Slang original
+# (config/lusl_migration.json). The parity test draws both on one device in the same run and
+# requires identical pixels.
+function(ludus_add_rhi_diagnostic_shaders target)
+    set(diagnostic "${PROJECT_SOURCE_DIR}/tests/sdk_consumer/shaders/diagnostic")
+    ludus_compile_shader(TARGET ${target} NAME diagnostic
+        SOURCE "${diagnostic}.lusl" VERTEX VertexMain FRAGMENT FragmentMain)
+    ludus_compile_shader(TARGET ${target} NAME diagnostic_slang
+        SOURCE "${diagnostic}.slang" VERTEX VertexMain FRAGMENT FragmentMain)
+    target_sources(${target} PRIVATE "${CMAKE_CURRENT_FUNCTION_LIST_DIR}/tests/lusl_diagnostic_parity_tests.cpp")
+endfunction()
+
 if(LUDUS_BUILD_TESTS AND NOT APPLE AND NOT WIN32 AND LUDUS_SLANG_COMPILER AND LUDUS_SPIRV_VALIDATOR)
     target_compile_definitions(ludus_graphics_rhi PRIVATE LUDUS_RHI_TEST_READBACK=1)
     add_executable(ludus_rhi_render_tests tests/render_tests.cpp)
@@ -191,9 +203,7 @@ if(LUDUS_BUILD_TESTS AND NOT APPLE AND NOT WIN32 AND LUDUS_SLANG_COMPILER AND LU
     target_link_libraries(ludus_rhi_render_tests PRIVATE Ludus::FoundationThreading Ludus::FoundationTime Ludus::GraphicsRhi Ludus::FoundationLogging Catch2::Catch2WithMain)
     ludus_apply_project_defaults(ludus_rhi_render_tests)
     ludus_enable_test_exceptions(ludus_rhi_render_tests)
-    ludus_compile_shader(TARGET ludus_rhi_render_tests NAME diagnostic
-        SOURCE "${PROJECT_SOURCE_DIR}/tests/sdk_consumer/shaders/diagnostic.slang"
-        VERTEX VertexMain FRAGMENT FragmentMain)
+    ludus_add_rhi_diagnostic_shaders(ludus_rhi_render_tests)
     add_test(NAME ludus_rhi_render_pixels COMMAND ludus_rhi_render_tests)
     set_tests_properties(ludus_rhi_render_pixels PROPERTIES LABELS "rhi;gpu" TIMEOUT 60)
 endif()
@@ -230,9 +240,7 @@ if(LUDUS_BUILD_TESTS AND WIN32)
         set_tests_properties(ludus_rhi_windows_profile_smoke PROPERTIES LABELS "rhi;gpu;windows" TIMEOUT 120)
         target_compile_definitions(ludus_rhi_d3d12_tests PRIVATE LUDUS_TEST_DXIL=1)
         target_sources(ludus_rhi_d3d12_tests PRIVATE tests/portable_raster_conformance_tests.cpp)
-        ludus_compile_shader(TARGET ludus_rhi_d3d12_tests NAME diagnostic
-            SOURCE "${PROJECT_SOURCE_DIR}/tests/sdk_consumer/shaders/diagnostic.slang"
-            VERTEX VertexMain FRAGMENT FragmentMain)
+        ludus_add_rhi_diagnostic_shaders(ludus_rhi_d3d12_tests)
         ludus_compile_shader(TARGET ludus_rhi_d3d12_tests NAME raster RASTER
             SOURCE "${PROJECT_SOURCE_DIR}/tests/sdk_consumer/shaders/raster.slang"
             VERTEX vertexMain FRAGMENT fragmentMain)
@@ -260,9 +268,7 @@ if(LUDUS_BUILD_TESTS AND APPLE)
         target_link_libraries(ludus_rhi_render_tests PRIVATE Ludus::FoundationThreading Ludus::FoundationTime Ludus::GraphicsRhi Ludus::FoundationLogging Catch2::Catch2WithMain)
         ludus_apply_project_defaults(ludus_rhi_render_tests)
         ludus_enable_test_exceptions(ludus_rhi_render_tests)
-        ludus_compile_shader(TARGET ludus_rhi_render_tests NAME diagnostic
-            SOURCE "${PROJECT_SOURCE_DIR}/tests/sdk_consumer/shaders/diagnostic.slang"
-            VERTEX VertexMain FRAGMENT FragmentMain)
+        ludus_add_rhi_diagnostic_shaders(ludus_rhi_render_tests)
         add_test(NAME ludus_rhi_render_pixels COMMAND ludus_rhi_render_tests)
         set_tests_properties(ludus_rhi_render_pixels PROPERTIES LABELS "rhi;gpu;macos" TIMEOUT 60)
     endif()
