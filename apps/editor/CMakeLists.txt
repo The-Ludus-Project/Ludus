@@ -263,6 +263,7 @@ if(LUDUS_EDITOR_RENDER_PREVIEW AND NOT EMSCRIPTEN)
         src/internal/render_graph_library_capture.h src/render_graph_library_capture.cpp
         src/internal/graph_display_frames.h src/graph_display_frames.cpp
         src/internal/world_graph_view.h src/world_graph_view.cpp
+        src/internal/viewport_render_recovery.h src/viewport_render_recovery.cpp
         src/internal/render_graph_worker.h src/render_graph_worker.cpp)
     # Ray path inspection: the diagnostic capture run, its workflow, the inspector panel and its dock.
     list(APPEND editor_viewport_sources

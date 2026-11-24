@@ -34,6 +34,7 @@
 #include "internal/viewport_device_description.h"
 #include "internal/viewport_graph_capture.h"
 #include "internal/viewport_raster_capture.h"
+#include "internal/viewport_render_recovery.h"
 #include "internal/viewport_trace.h"
 #include "internal/world_demo_adapter.h"
 #include "internal/world_graph_view.h"
@@ -84,12 +85,14 @@
 #include <QAction>
 #include <QApplication>
 #include <QCheckBox>
+#include <QClipboard>
 #include <QColor>
 #include <QComboBox>
 #include <QCoreApplication>
 #include <QCryptographicHash>
 #include <QDateTime>
 #include <QDateTimeEdit>
+#include <QDialog>
 #include <QDir>
 #include <QDoubleSpinBox>
 #include <QElapsedTimer>
@@ -1329,6 +1332,11 @@ TEST_CASE("asynchronous activation failure reaches the shell Error List and reco
     CHECK(workspaceOrNull->GetActivationProblem().contains(QString::number(preview.GetReport().CandidateGeneration)) ==
           true);
     CHECK(workspaceOrNull->GetStatusText() == workspaceOrNull->GetActivationProblem());
+    const ViewportRenderRecovery recovery = workspaceOrNull->GetViewportRenderRecovery();
+    CHECK(recovery.Action == ViewportRenderAction::RebuildGraph);
+    CHECK(recovery.Message.contains(QStringLiteral("last rendered image")) == true);
+    CHECK(recovery.Diagnostics.contains(QStringLiteral("broken.lurgrt")) == true);
+    CHECK(recovery.Diagnostics.contains(QStringLiteral("Displayed generation: %1").arg(retainedGeneration)) == true);
     REQUIRE(errorsOrNull->GetCount(ErrorListSeverity::Error) == 1);
     CHECK(errorsOrNull->GetCount(ErrorListSeverity::Message) == 0);
     CHECK(errorsOrNull->GetEntries().first().Description == preview.GetDisplayStatus());
@@ -1351,6 +1359,7 @@ TEST_CASE("asynchronous activation failure reaches the shell Error List and reco
     REQUIRE(TickUntil(preview, [&]() { return preview.GetPresentedGeneration() > retainedGeneration; }) == true);
     CHECK(workspaceOrNull->GetActivationProblem().isEmpty() == true);
     CHECK(workspaceOrNull->GetRenderProblem().isEmpty() == true);
+    CHECK(workspaceOrNull->GetViewportRenderRecovery().Message.isEmpty() == true);
     CHECK(preview.GetDisplayStatus().isEmpty() == true);
     CHECK(errorsOrNull->GetCount(ErrorListSeverity::Message) == 1);
     workspaceOrNull->SetProject({}, 2);
@@ -2283,18 +2292,21 @@ TEST_CASE("Cold project shader timeout keeps the default rendering the current W
     REQUIRE(graphViewOrNull != nullptr);
     QLabel* statusOrNull = viewport.findChild<QLabel*>(QStringLiteral("worldGraphStatus"));
     REQUIRE(statusOrNull != nullptr);
-    // The picture carries a short chip; the compiler's words stay in the tooltip and the Error List.
-    CHECK(statusOrNull->text() == QStringLiteral("Shader build failed, using default renderer. Show in Error List"));
-    CHECK(statusOrNull->toolTip().contains(QStringLiteral("timed out")) == true);
-    CHECK(graphViewOrNull->HasProblemChip() == true);
-    // A real click reaches the view only while it is not transparent to the mouse.
-    CHECK(graphViewOrNull->testAttribute(Qt::WA_TransparentForMouseEvents) == false);
-    QSignalSpy errorListRequested(&workspace, &RendererWorkspace::ErrorListRequested);
-    if (graphViewOrNull->isVisible() == true && statusOrNull->isVisible() == true)
-    {
-        QTest::mouseClick(graphViewOrNull, Qt::LeftButton, Qt::NoModifier, statusOrNull->geometry().center());
-        CHECK(errorListRequested.count() == 1);
-    }
+    QPushButton* detailsOrNull = viewport.findChild<QPushButton*>(QStringLiteral("viewportRenderRecoveryDetails"));
+    REQUIRE(detailsOrNull != nullptr);
+    REQUIRE(detailsOrNull->isVisible() == true);
+    CHECK(statusOrNull->text().contains(QStringLiteral("Show in Error List")) == false);
+    CHECK(graphViewOrNull->HasProblemChip() == false);
+    detailsOrNull->click();
+    QDialog* diagnosticsOrNull = viewport.findChild<QDialog*>(QStringLiteral("viewportRenderDiagnosticsDialog"));
+    REQUIRE(diagnosticsOrNull != nullptr);
+    QPushButton* copyOrNull =
+        diagnosticsOrNull->findChild<QPushButton*>(QStringLiteral("viewportCopyRenderDiagnostics"));
+    REQUIRE(copyOrNull != nullptr);
+    copyOrNull->click();
+    CHECK(QApplication::clipboard()->text().contains(QStringLiteral("timed out")) == true);
+    CHECK(QApplication::clipboard()->text().contains(QStringLiteral("Configuration:")) == true);
+    diagnosticsOrNull->close();
     REQUIRE(waitFor([&]() { return graphViewOrNull->GetImage().isNull() == false; }) == true);
     CHECK(workspace.IsUsingDefaultRenderer() == true);
     CHECK(source.FrameAvailable() == true);
@@ -2383,12 +2395,16 @@ TEST_CASE("Force raster starts a World with a decoded runtime after a project sh
     CHECK(workspace.GetScenePreparationProblem().isEmpty() == true);
     RenderPreview source;
     PreviewViewport viewport(&source);
-    viewport.resize(WIDTH, HEIGHT);
+    viewport.resize(800, 600);
     viewport.show();
     viewport.UseProjectGraph(workspace);
     workspace.SetPreviewSource(&source);
     QSignalSpy failed(&source, &RenderPreview::Failed);
-    source.SetForceRaster(true);
+    QPushButton* rasterOrNull = viewport.findChild<QPushButton*>(QStringLiteral("viewportRenderRecoveryRaster"));
+    REQUIRE(rasterOrNull != nullptr);
+    REQUIRE(rasterOrNull->isVisible() == true);
+    rasterOrNull->click();
+    CHECK(source.ShouldForceRaster() == true);
     REQUIRE(source.SetScene(MakeScene({0, 0, 1, 1})) == true);
     REQUIRE(source.Start() == true);
     QElapsedTimer timer;
@@ -5257,6 +5273,36 @@ TEST_CASE("Force raster draws the engine default graph instead of an authored ra
     CHECK(preview.CanSwitchToRasterFallback() == true);
     preview.Detach();
 }
+TEST_CASE("Raster recovery loads the default package when the project package is missing",
+          "[editor][render-graph][selection][viewport-recovery]")
+{
+    QTemporaryDir project;
+    REQUIRE(project.isValid() == true);
+    const QString requested = QDir(project.path()).filePath(QStringLiteral("missing.lurgrt"));
+    const QString raster = GetDefaultRenderGraphRuntime();
+    REQUIRE(raster.isEmpty() == false);
+    RenderGraphPreview preview(
+        {default_graph::INTERFACE_IDENTITY.GetData(), default_graph::INTERFACE_IDENTITY.GetSize()},
+        shaders::renderer_composite::Vertex(),
+        shaders::renderer_composite::Fragment());
+    REQUIRE(preview.Load(requested, raster) == RenderGraphPreviewLoad::Unreadable);
+    CHECK(preview.GetAttemptedPackagePath() == requested);
+    CHECK(preview.GetLoadProblem().contains(QStringLiteral("missing.lurgrt")) == true);
+    REQUIRE(preview.HasRasterRecovery() == true);
+    preview.SetForceRaster(true);
+    REQUIRE(preview.Load(requested, raster) == RenderGraphPreviewLoad::Waiting);
+    CHECK(preview.GetLoadProblem().isEmpty() == true);
+    CHECK(preview.GetAttemptedPackagePath() == raster);
+    CHECK(preview.GetRequestedPackagePath() == requested);
+    CHECK(preview.HasRasterRecovery() == false);
+
+    const QString missingFallback = QDir(project.path()).filePath(QStringLiteral("missing-fallback.lurgrt"));
+    REQUIRE(preview.Load(requested, missingFallback) == RenderGraphPreviewLoad::Unreadable);
+    CHECK(preview.GetAttemptedPackagePath() == missingFallback);
+    CHECK(preview.GetLoadProblem().contains(QStringLiteral("missing-fallback.lurgrt")) == true);
+    CHECK(preview.HasRasterRecovery() == false);
+}
+
 TEST_CASE("Force raster switches the live hardware renderer and restores automatic selection",
           "[editor][render-graph][selection]")
 {

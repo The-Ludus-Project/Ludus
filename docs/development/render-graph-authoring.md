@@ -935,6 +935,15 @@ also re-evaluate selection against the new device's enabled capabilities. Pendin
 or failed replacements keep the last completed image until the new renderer
 presents. Automatic renderer selection never changes the authored traversal strategy or invokes CPU raytracing.
 
+When a renderer update fails, the viewport puts the next action beside the image.
+**Open shader** jumps to the reported source line, and **Show graph node** selects
+the node identified by the current build report. **Show diagnostics** gives you
+the failure, renderer context, and **Copy diagnostics** for sharing the report.
+If the engine's raster package is available, **Use raster preview** tries it
+while the last rendered image stays visible. If that fallback also fails,
+the viewport identifies it and offers **Use project renderer** to return to
+the project renderer selection.
+
 When a project graph is too slow to navigate, the viewport offers the engine's
 default raster graph itself. After three consecutive frames that each take at least one second,
 from the camera update before submission to presentation, a **Slow viewport**

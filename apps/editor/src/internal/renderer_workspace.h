@@ -58,6 +58,7 @@ QT_END_NAMESPACE
 namespace ludus::editor
 {
 struct WorldSurfaceBake;
+struct ViewportRenderRecovery;
 class RenderGraphQuickAdd;
 class RenderGraphRecovery;
 struct RenderGraphTemplate;
@@ -389,6 +390,12 @@ public:
     /// Failure that prevents scene preparation. A decoded, preparing or active runtime may
     /// render even when a newer source build has failed.
     [[nodiscard]] QString GetScenePreparationProblem() const;
+#if defined(LUDUS_EDITOR_NATIVE_PREVIEW)
+    /// Current viewport failure and its available recovery actions. Empty when the viewport has no error.
+    [[nodiscard]] ViewportRenderRecovery GetViewportRenderRecovery() const;
+    /// Open the diagnostic if it still belongs to the current renderer build and draft.
+    [[nodiscard]] bool OpenViewportRenderDiagnostic(foundation::uint64 request, foundation::int32 row);
+#endif
     /// Advisory about how the displayed route lights the viewport's World, such as a slice-sampling luminaire panel
     /// placed for another scene. It never blocks preparation or rendering and is empty without one. Refreshed while
     /// the viewport is serviced, when the World, draft or configuration changes; RenderProblemChanged reports it.
