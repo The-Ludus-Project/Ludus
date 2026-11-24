@@ -42,6 +42,7 @@
 namespace
 {
 using namespace ludus::foundation;
+namespace foundation = ludus::foundation;
 namespace renderer = ludus::graphics::renderer;
 namespace rhi = ludus::graphics::rhi;
 namespace format = ludus::content::scene_format;

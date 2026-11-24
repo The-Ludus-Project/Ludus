@@ -770,3 +770,40 @@ comparison **cannot run here** and are deferred to the macOS Metal lane.
   `.github/actions/hair-skin-bust` runs `verify.py` end to end there; it is not
   wired into the live `ci.yml` macOS job here, since a workflow edit reaches
   batches only after promotion and the develop-health gate owns that change.
+
+### Native-findings follow-up: Editor-saved World (after #2256)
+
+A native macOS arm64 / Clang 23 run of the merged #2256 fixture (recorded at
+[#1400](https://github.com/The-Ludus-Project/Ludus/issues/1400#issuecomment-7120003995))
+found three gaps, now fixed:
+
+- **`foundation::` qualifiers.** The provenance helpers in `capture.cpp` used
+  `foundation::String`/`StringStatus`, which the anonymous namespace's
+  `using namespace ludus::foundation` does not qualify; Clang 23 rejected seven
+  uses. Fixed by adding `namespace foundation = ludus::foundation;` (the same
+  pairing `modules/content/scene_cook/tests/scene_cook_tests.cpp` uses).
+- **The cook sequence.** `ludus-cook scene import` has no entry flag, so it falls
+  back to the pbrt reference profile and cannot import the bust glTF; and the
+  override step dropped `camera.fov`, which the assembler requires
+  (`HasExactKeys({eye,target,up,fov})`). Replaced the whole `ludus-cook scene`
+  path with the Editor: a new `ExportCookedWorldScene`
+  (`apps/editor/src/playable_world.cpp`) runs
+  `RenderScene::Load → AssembleImports → RenderScene::Merge(&bundle)` (without
+  Play's spawn gating) and writes the bare `scene.luscn` plus a manifest; the
+  camera (eye/target/up/fov) is carried by the saved level and embedded in the
+  bundle. The cook now produces a `scene.luscn` with the bust meshes, both
+  material-slot assignments, the hair opacity map and the authored skin and hair
+  parameters, verified by the export manifest's material-slot summary.
+- **The comparison hook.** The behavioural `[skin][hair-card]` test imports its
+  own fixture and orbits/switches the key light off/resizes, so it cannot
+  establish same-World parity. Added a dedicated hidden test
+  `[.sdk-hair-skin-bust-export]` that saves ONE World, exports its cooked
+  `scene.luscn` (the exact bytes the SDK app decodes), and captures at the saved
+  camera and a fixed 1600×1080 reverse-Z view with no orbit/light-off/resize.
+  `verify.py` now consumes the Editor-exported `scene.luscn` (no `ludus-cook`),
+  records the World/scene/graph hashes from the manifest, and additionally
+  asserts the extracted app depends on no checkout path.
+
+Still **authored, not run** in this sandbox; the native build, Editor export,
+launch and the Metal visual comparison remain deferred to the macOS lane via
+`verify.py` and `.github/actions/hair-skin-bust`.

@@ -14,16 +14,25 @@ depends on both raster features of
 > to the macOS Metal lane. `verify.py` is the repeatable sequence; see
 > [`docs/development/hair-skin-standalone-qualification.md`](../../../docs/development/hair-skin-standalone-qualification.md).
 
-## One real cooked scene
+## One real Editor-saved World
 
-`verify.py` cooks a single `scene.luscn` with the **public `ludus-cook scene`
-pipeline** — the same level schema the Editor's Make Hair Card / Make Skin
-produce: `scene new` → `scene import` the bust glTF → inject the authored Hair and
-Skin slot overrides (`authoring/bust-overrides.json`) onto the imported objects →
-`scene assemble`. The app loads that cooked scene through `Ludus::Resources`
+The Editor is the source of truth. The hidden Editor test *"The character bust
+World exports its cooked scene and a matched capture"*
+([`apps/editor/tests/render_graph_preview_tests.cpp`](../../../apps/editor/tests/render_graph_preview_tests.cpp),
+tag `[.sdk-hair-skin-bust-export]`) imports `infinite-head-hair.gltf` (which
+carries both the `Skin` and `Hair` slots), assigns the skin and hair-card
+materials with Make Skin / Make Hair Card, **saves one World** (`bust.world.json`),
+and **exports its cooked `scene.luscn`** plus a manifest (`ExportCookedWorldScene`
+in `apps/editor/src/playable_world.cpp`). The public `ludus-cook scene` CLI cannot
+import a glTF with slot overrides (it defaults to the pbrt reference profile), so
+this editor export — the same `RenderScene::Load → AssembleImports → Merge` path as
+Play, without Play's spawn gating — is the only faithful way to cook the bust.
+
+The SDK app loads that **same** `scene.luscn` through `Ludus::Resources`
 (`SceneDefinition::Decode`) and draws its real meshes, per-object material slots,
-the alpha-masked hair opacity texture and the skin scattering inputs. No editor
-internals are linked.
+the alpha-masked hair opacity texture and the skin scattering inputs. The manifest
+records the World, cooked-scene and graph SHA-256 hashes and the saved camera, so
+`verify.py` proves both hosts consume the identical cooked scene.
 
 ## No Qt
 
@@ -45,13 +54,11 @@ the matching one per capture and refuses an incompatible pairing before renderin
 
 | File | Role |
 | --- | --- |
-| `authoring/bust-overrides.json` | The authored Hair/Skin slot overrides (strand controls, mask cutoff, skin scattering distance, base colour, roughness) and the matched camera, injected onto the imported bust level before cooking. |
-| `capture.cpp` | The Qt-free installed-SDK app: loads `scene.luscn`, builds the render-graph scene from its meshes/slots/textures/lights, renders through the selected packaged graph and writes `capture.rgba` + `capture.txt`. |
+| `capture.cpp` | The Qt-free installed-SDK app: loads the Editor-exported `scene.luscn`, builds the render-graph scene from its meshes/slots/textures/lights, renders through the selected packaged graph and writes `capture.rgba` + `capture.txt`. |
 | `CMakeLists.txt`, `CMakePresets.json` | `find_package(Ludus CONFIG REQUIRED …)` (no Qt), the built-in shader recipes for both profiles, cooking both render-graph templates, and the relocatable install rules. |
-| `verify.py` | The reproducible driver: cook the scene, build, stage a clean extraction, launch each profile, assert no Qt dependency, test runtime-dependency removal, run the negative checks and compare with the Editor. |
+| `verify.py` | The reproducible driver: run the Editor export, build the app, stage a clean extraction, launch each profile, assert no Qt/checkout dependency, test required-input removal, run the incompatible-profile checks and compare with the Editor. |
 
-The bust glTF, its colour/normal maps and the RGBA hair strand texture are the
-committed fixtures under
-[`tests/scenes/characters/infinite-head`](../../scenes/characters/infinite-head);
-`verify.py` stages them into a scratch project so the cook and the clean
-extraction carry no engine-source or Editor paths.
+The one saved World is produced by the Editor from the committed bust fixtures
+under [`tests/scenes/characters/infinite-head`](../../scenes/characters/infinite-head);
+`verify.py` stages only the Editor-exported `scene.luscn` and the two cooked
+graphs into the clean extraction, so it carries no engine-source or Editor paths.

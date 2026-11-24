@@ -425,4 +425,135 @@ bool PrepareSavedPlayableWorld(const QString& root,
     }
     return PreparePlayableWorld(root, relativeWorld, world, renderer, destination, nullptr, outError, warningsOrNull);
 }
+
+namespace
+{
+/// Name of the resolved scattering model a cooked material carries, for the export manifest.
+QString MaterialModelName(content::scene_format::MaterialModel model)
+{
+    switch (model)
+    {
+        case content::scene_format::MaterialModel::HairCard:
+            return QStringLiteral("hair_card");
+        case content::scene_format::MaterialModel::Skin:
+            return QStringLiteral("skin");
+        case content::scene_format::MaterialModel::MetallicRoughness:
+            return QStringLiteral("metallic_roughness");
+        case content::scene_format::MaterialModel::Diffuse:
+            return QStringLiteral("diffuse");
+        default:
+            return QStringLiteral("other");
+    }
+}
+
+/// Describe each imported material slot of a cooked definition: its name, resolved model, alpha mask
+/// and whether it binds a texture, so a consumer can prove the hair opacity map and skin inputs survived.
+QJsonArray DescribeMaterialSlots(const resources::SceneDefinition& scene)
+{
+    QJsonArray slots;
+    for (const resources::SceneMaterial& material : scene.Materials)
+    {
+        const std::string_view name = material.Name.View();
+        slots.append(QJsonObject{{"name"_L1, QString::fromUtf8(name.data(), static_cast<qsizetype>(name.size()))},
+                                 {"model"_L1, MaterialModelName(material.Scattering.Model)},
+                                 {"alphaMasked"_L1, material.IsAlphaMasked},
+                                 {"alphaCutoff"_L1, static_cast<double>(material.AlphaCutoff)},
+                                 {"hasTexture"_L1, material.Texture != ~uint32{0}}});
+    }
+    return slots;
+}
+} // namespace
+
+bool ExportCookedWorldScene(const QString& root,
+                            const WorldDocument& world,
+                            const QString& sceneDestination,
+                            const QString& manifestDestination,
+                            QString& outError)
+{
+    if (sceneDestination.endsWith(".luscn"_L1) == false || manifestDestination.endsWith(".json"_L1) == false)
+    {
+        outError = QStringLiteral("Choose a .luscn scene output and a .json manifest output.");
+        return false;
+    }
+    RenderScene authored;
+    if (RenderScene::Load(root, world, authored, outError, false) == false)
+    {
+        return false;
+    }
+    if (authored.AtmosphereStatus.isEmpty() == false)
+    {
+        outError = QStringLiteral("Resolve the World atmosphere before exporting its scene: %1")
+                       .arg(authored.AtmosphereStatus);
+        return false;
+    }
+    QJsonObject level = world.SceneLevel();
+    if (level.isEmpty() == true)
+    {
+        outError = QStringLiteral("Import a scene into this World before exporting its cooked scene.");
+        return false;
+    }
+    cook::EditorSceneResult assembly;
+    if (AssembleImports(root, level, nullptr, assembly, outError) == false)
+    {
+        return false;
+    }
+    const QJsonObject response =
+        QJsonDocument::fromJson(QByteArray::fromRawData(reinterpret_cast<const char*>(assembly.Response.GetData()),
+                                                        static_cast<qsizetype>(assembly.Response.GetSize())))
+            .object();
+    const QJsonObject artifacts = response.value("artifacts"_L1).toObject();
+    const QByteArray imported = QByteArray::fromRawData(reinterpret_cast<const char*>(assembly.Scene.GetData()),
+                                                        static_cast<qsizetype>(assembly.Scene.GetSize()));
+    RenderScene composed;
+    QByteArray bundle;
+    if (RenderScene::Merge(authored, imported, level, composed, outError, artifacts, &bundle) == false)
+    {
+        return false;
+    }
+    if (bundle.isEmpty() == true || composed.Definition == nullptr)
+    {
+        outError = QStringLiteral("The cooked World scene is empty; import a scene with geometry.");
+        return false;
+    }
+    for (const PreviewSurface& surface : composed.Surfaces)
+    {
+        if (surface.HasUnresolvedMaterial == true)
+        {
+            outError = QStringLiteral("Map every imported material before exporting the cooked scene.");
+            return false;
+        }
+    }
+    QJsonArray dependencies;
+    for (QJsonObject::const_iterator entry = artifacts.constBegin(); entry != artifacts.constEnd(); ++entry)
+    {
+        dependencies.append(QJsonObject{{"id"_L1, entry.key()}, {"key"_L1, entry.value()}});
+    }
+    const QJsonObject manifest{{"version"_L1, 1},
+                               {"worldSha256"_L1, ComputeDigest(world.Encode())},
+                               {"sceneSha256"_L1, ComputeDigest(bundle)},
+                               {"camera"_L1, level.value("camera"_L1)},
+                               {"materialSlots"_L1, DescribeMaterialSlots(*composed.Definition)},
+                               {"objects"_L1, static_cast<int>(composed.Definition->Objects.GetSize())},
+                               {"meshes"_L1, static_cast<int>(composed.Definition->Meshes.GetSize())},
+                               {"textures"_L1, static_cast<int>(composed.Definition->Textures.GetSize())},
+                               {"lights"_L1, static_cast<int>(composed.Definition->Lights.GetSize())},
+                               {"artifacts"_L1, dependencies}};
+    QSaveFile sceneFile(sceneDestination);
+    if (sceneFile.open(QIODevice::WriteOnly) == false || sceneFile.write(bundle) != bundle.size() ||
+        sceneFile.commit() == false)
+    {
+        outError = QStringLiteral("Choose a writable scene destination. %1").arg(sceneFile.errorString());
+        return false;
+    }
+    const QByteArray manifestBytes = QJsonDocument(manifest).toJson(QJsonDocument::Indented);
+    QSaveFile manifestFile(manifestDestination);
+    if (manifestFile.open(QIODevice::WriteOnly) == false || manifestFile.write(manifestBytes) != manifestBytes.size() ||
+        manifestFile.commit() == false)
+    {
+        outError = QStringLiteral("Choose a writable manifest destination. %1").arg(manifestFile.errorString());
+        return false;
+    }
+    outError.clear();
+    return true;
+}
 } // namespace ludus::editor
