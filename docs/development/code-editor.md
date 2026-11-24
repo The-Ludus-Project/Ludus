@@ -3,7 +3,9 @@
 The editor opens every project text file as a **code tab** with a shared text
 surface, atomic save, external-change handling, crash recovery and a code status
 bar. Syntax highlighting and navigation are available from the same text
-surface in Code tabs and the Scripts work area.
+surface in Code tabs and the Scripts work area. Shader sources also get
+[language services](#language-services) from a language server: hover,
+diagnostics while you type, completion, rename and code actions.
 
 This page is a user guide for the code editor inside the native
 [editor workspace](editor-workspace.md). The authoritative contract is the
@@ -67,6 +69,138 @@ Collapsed lines are part of the text, including when copied in a selection.
 Going to a hidden line opens the folds that contain it. While the parser
 processes an edit, the current line uses lexical coloring. The outline and
 breadcrumbs become actionable when results for that revision are ready.
+
+## Language services
+
+Slang and LUSL sources in a render-graph package use a language server: the
+pinned `slangd` for Slang and `luslc lsp` for LUSL. This covers package shaders
+opened in **Code** and in the graph's Source pane. Ludus never runs a server
+named by project settings. Luau and C/C++ servers arrive in later milestones.
+The browser editor has no language server and reports these commands as
+unavailable.
+
+### Shader context
+
+The **Shader context** row above a package shader chooses the shader program
+whose compiler context the server analyzes. Opening a file starts nothing.
+The context is prepared, and the server started, the first time you ask for
+something: completion, a Go to command, Rename Symbol or Show Code Actions.
+From then on, diagnostics, semantic colors, inlay hints and the light bulb
+refresh by themselves about 100 ms after you stop typing.
+
+The same row shows the server's state and any failure, with its repair. Editing,
+saving and undo keep working whatever the server does:
+
+- **Retry assistance** rebuilds the draft's compiler context and restarts a
+  failed server.
+- **Show Log** shows what the server wrote to its standard error since it last
+  started.
+
+A server that exits unexpectedly restarts after 1 s, then 2 s. A third exit
+within a minute stops it until you choose Retry assistance.
+
+A command the running server does not support stays in the menu, disabled,
+with the reason in its tooltip. The pinned `slangd` and `luslc lsp` offer no
+Rename Symbol, code actions or server folding ranges, and `slangd` offers no
+Find References. Those commands work with any server that does offer them.
+
+### Commands
+
+In the table, Ctrl is Cmd on macOS. The source context menu lists every
+command.
+
+| Command | Default | What it does |
+| --- | --- | --- |
+| Completion | Ctrl+Space, or a trigger character such as `.` | Suggestions from the server, built-in snippets and words in open editors of the same language |
+| Signature help | Ctrl+Shift+Space, or `(` and `,` | The parameters of the call at the caret |
+| Show Hover | none (or rest the pointer) | The symbol's description and the diagnostics at that position |
+| Go to Definition | F12 | Jumps to the definition |
+| Go to Declaration, Go to Type Definition | none | Jump to the declaration or the type |
+| Go to Implementation | Ctrl+F12 | Jumps to the implementation |
+| Find References | Shift+F12 | Lists every use in the References window |
+| Go to Symbol | Ctrl+Shift+O | Declarations in the current file |
+| Go to Symbol in Workspace | Ctrl+T | Matching declarations in the package's sources |
+| Rename Symbol | F2 | Renames the symbol at the caret in every file |
+| Show Code Actions | Ctrl+. | Opens the fixes and refactorings for the caret or selection |
+| Show Inlay Hints | none (a toggle) | Shows or hides parameter names and deduced types |
+
+### Hover and diagnostics
+
+Rest the pointer on a name for 300 ms, or choose **Show Hover**, to see what
+the server knows about it. The hover also lists the build and analysis messages
+at that position. A hover never starts the server: before a context is prepared
+it shows only the build's messages.
+
+Diagnostics from the server are **Analysis** results, kept apart from the
+build's. They are drawn with a dotted underline beneath the build's wave
+squiggles. The Error List shows them as rows with the origin
+`Analysis (<server>)`; activating a row selects the range in its file. The list
+does not come forward when analysis changes, so typing never loses focus. F8
+and the gutter markers still step through build results.
+
+### Colors and inlay hints
+
+Semantic colors from the server are drawn over the syntax colors, so a
+parameter, a constant and a field can look different even when the grammar
+cannot tell them apart. Between replies, colors move with your edits instead of
+flickering.
+
+Inlay hints show parameter names and deduced types as gray text inside the
+line. They are never part of the file: copying, saving and undo ignore them, and
+the caret moves over the real characters only. **Show Inlay Hints** turns them
+on or off, and the choice is remembered. While they are off, hold Ctrl+Alt to
+show them briefly.
+
+### Completion and snippets
+
+The completion list combines four sources. They are ranked with the same fuzzy
+matching as the command palette:
+
+- the server's suggestions;
+- built-in snippets: `if`, `for`, `struct`, `func` and a compute entry point, in
+  the language's own syntax;
+- words from open editors of the same language;
+- after `.`, only the server's suggestions, since only the server knows a
+  type's members.
+
+Highlighting a suggestion shows its documentation in a panel beside the list.
+Enter accepts it as one undoable edit. A snippet then selects its first tab
+stop: Tab and Shift+Tab move between stops, and a stop that repeats is edited
+in every place at once. Escape, or moving the caret out of the inserted text,
+ends the snippet.
+
+### References
+
+**Find References** opens the **References** window. It is tabbed with the
+Error List and Search, and also listed under **View** and **Window**. Rows are
+grouped by file: the current source, other package files and read-only shader
+context. After you edit the text, a row no longer jumps to a position that may
+have moved. Instead it offers **Find Again**, which searches again from the
+original symbol.
+
+### Rename and code actions
+
+**Rename Symbol** opens a box over the symbol. Enter renames it. Shift+Enter,
+or a rename that reaches other files, first shows a preview of every file and
+change, with Apply and Cancel.
+
+When fixes exist on the caret's line, a light bulb appears in the gutter. Click
+it, or press Ctrl+., to list them; preferred fixes are shown first, in bold.
+Actions that would need the server to run its own command are listed disabled,
+with the reason.
+
+A rename or a code action is checked as a whole before anything changes. It is
+refused, with nothing changed and its repair named, when it would:
+
+- edit generated or read-only text;
+- edit a file outside the package;
+- apply to text that changed since the server answered;
+- create, rename or delete files;
+- contain overlapping edits.
+
+An accepted change is a single undo step across every file it touches: one Undo
+in any of those files reverts all of them. The files stay unsaved drafts until
+you save.
 
 ## Editing and saving
 
@@ -152,8 +286,9 @@ When a code view has focus the status bar shows, for the active view:
 - the **encoding** (UTF-8);
 - the **line endings** (LF or CRLF);
 - the **language** mode;
-- the **language-server state**, a placeholder until the language client arrives
-  in a later milestone.
+- the **language-server state** item, which is still a placeholder. For a
+  shader, the server's state, Retry assistance and Show Log are in the
+  [Shader context](#shader-context) row.
 
 Items you can change in this milestone are clickable: the position opens **Go to
 Line**, the language opens a picker that sets the view's mode, and the line
@@ -170,8 +305,12 @@ draft and clears history, so Undo never reaches a different script's text.
 
 ## What arrives later
 
-Syntax highlighting and folding (M3), multiple cursors and the find/replace
-overlay (M2), and hover, completion, diagnostics and the other language-server
-features (M4 onward) are not part of this milestone. The
-[architecture](../architecture/code-editor.md) and the
+The language services above cover shaders. These are not available yet:
+
+- Luau scripts (M5) and C/C++ (M6) language servers;
+- Ludus project symbols in completion, and the shader context picker in the
+  status bar (M7);
+- the debugger (M8).
+
+The [architecture](../architecture/code-editor.md) and the
 [task ledger](../../.kiro/specs/code-editor/tasks.md) track the full plan.
