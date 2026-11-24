@@ -2736,7 +2736,7 @@ TEST_CASE("disabling an Export node keeps its type and wire", "[editor][render-g
     CHECK(FindNode(workspace.GetDocument(), QStringLiteral("output")) == original);
 }
 
-TEST_CASE("tone mapping exposure edits through canvas and Properties with undo and save",
+TEST_CASE("tone mapping exposure and implicit curve edit through canvas and Properties with undo and save",
           "[editor][render-graph][tone-mapping]")
 {
     QTemporaryDir project;
@@ -2751,6 +2751,10 @@ TEST_CASE("tone mapping exposure edits through canvas and Properties with undo a
     REQUIRE(add != nullptr);
     kinds->setCurrentText(QStringLiteral("ToneMap"));
     add->click();
+    QJsonObject toneMap = FindNode(workspace.GetDocument(), QStringLiteral("tonemap"));
+    toneMap.remove(QStringLiteral("curve"));
+    REQUIRE(workspace.GetDocument().ReplaceNode(GetRootGraph(), GetDefaultConfiguration(), toneMap) ==
+            RenderGraphDocumentStatus::Ok);
     REQUIRE(workspace.SelectNode(GetRootGraph(), GetDefaultConfiguration(), QStringLiteral("tonemap")) == true);
     CHECK(workspace.GetCanvas().GetPortPosition(QStringLiteral("tonemap.color"), true).isNull() == false);
     CHECK(workspace.GetCanvas().GetPortPosition(QStringLiteral("tonemap.color"), false).isNull() == false);
@@ -2766,6 +2770,22 @@ TEST_CASE("tone mapping exposure edits through canvas and Properties with undo a
         CHECK(workspace.GetDocument().GetDraft(GetRootGraph()).contains("2.25") == false);
         workspace.Redo();
         CHECK(workspace.GetDocument().GetDraft(GetRootGraph()).contains("2.25") == true);
+
+        const QString curveField = QStringLiteral("curve");
+        const QString toneMapId = QStringLiteral("tonemap");
+        CHECK(FindNode(workspace.GetDocument(), toneMapId).contains(curveField) == false);
+        QComboBox* curveOrNull = inoutFields.findChild<QComboBox*>(QStringLiteral("renderGraphField_curve"));
+        REQUIRE(curveOrNull != nullptr);
+        CHECK(curveOrNull->currentText() == QStringLiteral("Reinhard"));
+        curveOrNull->setCurrentText(QStringLiteral("PbrNeutral"));
+        Q_EMIT curveOrNull->activated(curveOrNull->currentIndex());
+        CHECK(FindNode(workspace.GetDocument(), toneMapId).value(curveField).toString() ==
+              QStringLiteral("PbrNeutral"));
+        workspace.Undo();
+        CHECK(FindNode(workspace.GetDocument(), toneMapId).contains(curveField) == false);
+        workspace.Redo();
+        CHECK(FindNode(workspace.GetDocument(), toneMapId).value(curveField).toString() ==
+              QStringLiteral("PbrNeutral"));
         REQUIRE(workspace.Save() == true);
     };
     QWidget* properties = workspace.findChild<QWidget*>(QStringLiteral("renderGraphProperties"));

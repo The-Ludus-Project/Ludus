@@ -410,6 +410,25 @@ BorrowedView<const renderer::RenderGraphCapturePixel> ViewportGraphCapture::GetP
     return mCapture.GetPixels();
 }
 
+ViewportDisplayTransform ViewportGraphCapture::GetDisplayTransform() const noexcept
+{
+    if (mPackage.Get() == nullptr)
+    {
+        return {};
+    }
+    const renderer::RenderGraphPlan plan = mPackage->GetPlan();
+    const uint32 passIndex = mCapture.GetInfo().AccumulationPass;
+    if (passIndex >= plan.Passes.GetSize() || plan.Passes[passIndex].ToneMappingExposure <= 0)
+    {
+        return {};
+    }
+    const format::Pass& pass = plan.Passes[passIndex];
+    const renderer::ToneCurve curve = pass.ToneMappingCurve == format::DisplayCurve::PbrNeutral
+                                          ? renderer::ToneCurve::PbrNeutral
+                                          : renderer::ToneCurve::Reinhard;
+    return { .Exposure = pass.ToneMappingExposure, .Curve = curve };
+}
+
 QImage ViewportGraphCapture::MakeDisplayImage(const ViewportDisplayTransform& display) const
 {
     const renderer::RenderGraphCaptureInfo info = mCapture.GetInfo();
@@ -444,7 +463,9 @@ QString ViewportGraphCapture::GetDisplayImagePath(const QString& capturePath)
     return info.dir().filePath(info.completeBaseName() + QStringLiteral(".png"));
 }
 
-bool ViewportGraphCapture::Save(const QString& capturePath, QString& outError) const
+bool ViewportGraphCapture::Save(const QString& capturePath,
+                                QString& outError,
+                                const ViewportDisplayTransform& display) const
 {
     Array<uint8> bytes;
     if (mCapture.Encode(bytes) != graphics::rhi::RasterStatus::Ready)
@@ -452,7 +473,7 @@ bool ViewportGraphCapture::Save(const QString& capturePath, QString& outError) c
         outError = QStringLiteral("The render graph capture has no read-back pixels to save yet.");
         return false;
     }
-    const QImage image = MakeDisplayImage();
+    const QImage image = MakeDisplayImage(display);
     QSaveFile capture(capturePath);
     if (capture.open(QIODevice::WriteOnly) == false ||
         capture.write(reinterpret_cast<const char*>(bytes.GetData()), static_cast<qint64>(bytes.GetSize())) !=
