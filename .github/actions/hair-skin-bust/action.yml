@@ -1,0 +1,44 @@
+name: macOS Metal hair and skin standalone qualification
+description: >
+  Build the hair_skin_bust standalone game against a relocated installed SDK on macOS arm64 / Metal,
+  package and launch it from a clean extraction, and compare its hair-card and skin captures with the
+  Editor on the same character-bust World (#1400).
+inputs:
+  editor:
+    description: Built macOS Editor test executable (ludus_editor_tests).
+    required: true
+  graph:
+    description: The Editor's cooked render-graph runtime package (.lurgrt) for the bust World.
+    required: true
+runs:
+  using: composite
+  steps:
+    - name: Qualify hair and skin from the clean SDK package on Metal
+      shell: bash
+      env:
+        EDITOR_TESTS: ${{ inputs.editor }}
+        EDITOR_GRAPH: ${{ inputs.graph }}
+      run: |
+        set -euo pipefail
+        build=out/build/macos-clang-development
+        tools="$PWD/out/host-tools/venv/bin"
+        # Relocate the installed SDK to a fresh prefix with its bundled dependency closure, so the
+        # game links no engine-source or checkout path.
+        scratch="$(mktemp -d "$RUNNER_TEMP/hair-skin-bust.XXXXXX")"
+        "$tools/cmake" --install "$build" --prefix "$scratch/sdk"
+        "$tools/python" scripts/python/engine.py bundle-sdk-dependencies macos-clang-development --prefix "$scratch/sdk"
+        mv "$scratch/sdk" "$scratch/relocated-sdk"
+        "$tools/python" -m pip install numpy Pillow
+        "$tools/python" tests/sdk_consumer/hair_skin_bust/verify.py \
+          --tools "$PWD" \
+          --sdk "$scratch/relocated-sdk" \
+          --editor "$EDITOR_TESTS" \
+          --graph "$EDITOR_GRAPH" \
+          --evidence out/hair-skin-bust
+    - name: Retain hair and skin qualification captures, provenance and comparisons
+      if: always()
+      uses: actions/upload-artifact@v4
+      with:
+        name: hair-skin-bust-metal
+        path: out/hair-skin-bust/
+        retention-days: 14

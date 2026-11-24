@@ -2954,6 +2954,15 @@ TEST_CASE("The World viewport draws the character bust through light edits, orbi
     {
         CHECK(previewOrNull->GetActivePackagePath() == QStringLiteral(LUDUS_EDITOR_FORWARD_GRAPH_FIXTURE));
     }
+    // Optional matched reference capture for the standalone hair/skin qualification (#1400): save the
+    // Editor's bust viewport so tests/sdk_consumer/hair_skin_bust/verify.py can compare it with the
+    // clean SDK package on the same fixture. The driver sets the per-feature path.
+    const QString capture = qEnvironmentVariable(shouldAssignHair == true ? "LUDUS_EDITOR_WORLD_CAPTURE_HAIR"
+                                                                          : "LUDUS_EDITOR_WORLD_CAPTURE_SKIN");
+    if (capture.isEmpty() == false)
+    {
+        REQUIRE(graphView->GetImage().save(capture) == true);
+    }
     world.StopPreview();
     workspace.SetPreviewSource(nullptr);
     rhi::Shutdown();
