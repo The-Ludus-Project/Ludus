@@ -580,6 +580,13 @@ TEST_CASE("Viewport renderer recovery opens the exact current shader or graph no
     QPushButton* primaryOrNull = viewport.findChild<QPushButton*>(QStringLiteral("viewportRenderRecoveryPrimary"));
     REQUIRE(primaryOrNull != nullptr);
     REQUIRE(primaryOrNull->isVisible() == true);
+    QWidget* graphRecoveryOrNull = workspace.findChild<QWidget*>(QStringLiteral("renderGraphPreviewRecovery"));
+    REQUIRE(graphRecoveryOrNull != nullptr);
+    QPushButton* graphActionOrNull =
+        graphRecoveryOrNull->findChild<QPushButton*>(QStringLiteral("viewportRenderRecoveryPrimary"));
+    REQUIRE(graphActionOrNull != nullptr);
+    REQUIRE(graphActionOrNull->isVisible() == true);
+    CHECK(graphActionOrNull->text() == primaryOrNull->text());
     if (location.contains(QStringLiteral("line")) == true)
     {
         REQUIRE(primaryOrNull->text() == QStringLiteral("Open shader"));
@@ -590,8 +597,8 @@ TEST_CASE("Viewport renderer recovery opens the exact current shader or graph no
     }
     else
     {
-        REQUIRE(primaryOrNull->text() == QStringLiteral("Show graph node"));
-        primaryOrNull->click();
+        REQUIRE(graphActionOrNull->text() == QStringLiteral("Show graph node"));
+        graphActionOrNull->click();
         CHECK(workspace.GetCanvas().GetFile() == GetChild());
         CHECK(workspace.GetCanvas().GetSelectedNodes() == QStringList{QStringLiteral("tone")});
     }

@@ -55,6 +55,7 @@
 #    include "internal/render_graph_device_profile.h"
 #    include "internal/render_graph_preview.h"
 #    include "internal/texture_viewer.h"
+#    include "internal/viewport_render_recovery.h"
 #    include "renderer_composite.h"
 #endif
 
@@ -1498,6 +1499,16 @@ RendererWorkspace::RendererWorkspace(const ToolingPaths& tooling, QWidget* paren
         shaders::renderer_composite::Fragment(),
         this);
     connect(mPreviewOrNull, &RenderGraphPreview::Changed, this, &RendererWorkspace::renderPreview);
+    mPreviewRecoveryOrNull = new ViewportRenderRecoveryNotice(*this, this);
+    mPreviewRecoveryOrNull->setObjectName(QStringLiteral("renderGraphPreviewRecovery"));
+    layout->insertWidget(layout->indexOf(mStatusRow), mPreviewRecoveryOrNull);
+    connect(mPreviewRecoveryOrNull,
+            &ViewportRenderRecoveryNotice::ProblemVisibilityChanged,
+            this,
+            [this](bool hasProblem) {
+                mProblemChip->setVisible(hasProblem == false && IsRenderProblemInErrorList() == true);
+                mStatusPanel->setVisible(hasProblem == false && IsRenderProblemInErrorList() == false);
+            });
     connect(mPreviewOrNull, &RenderGraphPreview::PreparingSubmission, this, [this]() {
         if (mPreviewSourceOrNull != nullptr)
         {
@@ -4808,8 +4819,13 @@ void RendererWorkspace::renderStatus()
         mStatus->setText(GetRenderProblem());
     }
     const bool isListed = IsRenderProblemInErrorList();
-    mProblemChip->setVisible(isListed);
-    mStatusPanel->setVisible(isListed == false);
+#if defined(LUDUS_EDITOR_NATIVE_PREVIEW)
+    const bool hasRecovery = mPreviewRecoveryOrNull != nullptr && mPreviewRecoveryOrNull->HasProblem() == true;
+#else
+    constexpr bool hasRecovery = false;
+#endif
+    mProblemChip->setVisible(isListed == true && hasRecovery == false);
+    mStatusPanel->setVisible(isListed == false && hasRecovery == false);
     mProblemChip->setToolTip(
         isListed == true ? GetRenderProblem() + QStringLiteral("\n\nClick to show it in the Error List.") : QString());
     updateActions();
@@ -6226,9 +6242,11 @@ void RendererWorkspace::SetPreviewSource(RenderPreview* sourceOrNull)
             mPreviewSourceOrNull = nullptr;
             mCanvas->SetReferenceSize({});
             mPreviewDeviceSerial = 0;
+            Q_EMIT CommandsChanged();
         });
     }
     renderPreview();
+    Q_EMIT CommandsChanged();
 }
 
 bool RendererWorkspace::PreviewRuntime(RenderGraphSource source)
@@ -6465,8 +6483,16 @@ void RendererWorkspace::renderPreview()
         const bool hasFailed = mPreviewOrNull->GetLoadProblem().isEmpty() == false ||
                                candidate == RenderGraphCandidateState::Failed ||
                                candidate == RenderGraphCandidateState::RestartRequired;
-        if (hasFailed == true && (mPreviewInputIdentity == getBuildIdentity(mPreviewSourceVersion) ||
-                                  (mIsDefaultPreview == true && mPreviewInputIdentity.isEmpty() == true)))
+        const bool hasDeviceFailure = mPreviewOrNull->HasFailedDevice();
+        if (hasDeviceFailure == true)
+        {
+            setProblem(
+                mActivationProblem,
+                QStringLiteral(
+                    "The graphics processor stopped drawing the preview. Choose Restore preview to reconnect it."));
+        }
+        else if (hasFailed == true && (mPreviewInputIdentity == getBuildIdentity(mPreviewSourceVersion) ||
+                                       (mIsDefaultPreview == true && mPreviewInputIdentity.isEmpty() == true)))
         {
             setProblem(mActivationProblem, mPreviewOrNull->GetDisplayStatus());
         }
@@ -6475,7 +6501,7 @@ void RendererWorkspace::renderPreview()
             setProblem(mActivationProblem, {});
         }
         static_cast<PreviewImage*>(mPreviewImage)->SetImage(mPreviewOrNull->GetImage());
-        QString previewStatus = mPreviewOrNull->GetStatus();
+        QString previewStatus = hasDeviceFailure == true ? mActivationProblem : mPreviewOrNull->GetStatus();
         if (mPreviewSourceOrNull != nullptr && mPreviewSourceOrNull->Scene().AlwaysOnLightIds.isEmpty() == false)
         {
             const usize chartDraws = mPreviewOrNull->GetSurfaceChartDrawCount();
