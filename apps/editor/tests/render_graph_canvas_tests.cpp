@@ -22,6 +22,8 @@
 #include <catch2/catch_test_macros.hpp>
 
 #include <QAbstractButton>
+#include <QAbstractItemModel>
+#include <QAbstractItemView>
 #include <QAction>
 #include <QApplication>
 #include <QCheckBox>
@@ -48,6 +50,7 @@
 #include <QLineEdit>
 #include <QMenu>
 #include <QMessageBox>
+#include <QModelIndex>
 #include <QNativeGestureEvent>
 #include <QPlainTextEdit>
 #include <QPointer>
@@ -1983,6 +1986,42 @@ TEST_CASE("Graph Code keeps the package draft and restores the originating canva
     CHECK(workspace.GetCanvas().GetFile() == GetLibrary());
     CHECK(workspace.Save() == true);
     CHECK(ReadFile(package.filePath(GetLibrary())) == original + ' ');
+}
+
+TEST_CASE("Graph Code dropdown opens the selected shared LUSL header", "[editor][render-graph][graph-code]")
+{
+    QTemporaryDir project;
+    const QDir package(MakePackage(project));
+    const QString shader = QStringLiteral("main_shaders/color.slang");
+    const QString header = QStringLiteral("shared.luslh");
+    const QByteArray source = QByteArrayLiteral("#pragma once\nstruct Shared { uint32 Count; };\n");
+    WriteFile(package.filePath(header), source);
+    CodeEditorArea code;
+    RendererWorkspace workspace({});
+    workspace.SetCodeEditorArea(code);
+    workspace.SetProject(project.path(), 1);
+    REQUIRE(workspace.OpenGraph(package.filePath(GetRootGraph())) == true);
+    REQUIRE(workspace.OpenGraphSource(shader) == true);
+    code.show();
+
+    QComboBox* pickerOrNull = code.findChild<QComboBox*>(QStringLiteral("renderGraphSourceFile"));
+    REQUIRE(pickerOrNull != nullptr);
+    CHECK(pickerOrNull->currentText() == shader);
+    const int32 headerIndex = pickerOrNull->findText(header);
+    REQUIRE(headerIndex >= 0);
+    pickerOrNull->showPopup();
+    QAbstractItemView& popup = *pickerOrNull->view();
+    REQUIRE(popup.isVisible() == true);
+    const QModelIndex headerRow = popup.model()->index(headerIndex, pickerOrNull->modelColumn());
+    popup.setCurrentIndex(headerRow);
+    QTest::keyClick(&popup, Qt::Key_Return);
+
+    const CodeDocumentTab* selectedOrNull = code.GetActiveTabOrNull();
+    REQUIRE(selectedOrNull != nullptr);
+    CHECK(selectedOrNull->GetPath() == header);
+    CHECK(selectedOrNull->GetEditor().toPlainText().toUtf8() == source);
+    CHECK(selectedOrNull->IsReadOnly() == false);
+    CHECK(pickerOrNull->currentText() == header);
 }
 
 TEST_CASE("Analysis rows follow each open shader tab and select their range", "[editor][render-graph][diagnostics]")

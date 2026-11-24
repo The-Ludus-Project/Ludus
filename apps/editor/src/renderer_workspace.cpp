@@ -1593,8 +1593,12 @@ RendererWorkspace::RendererWorkspace(const ToolingPaths& tooling, QWidget* paren
         }
     });
     connect(mSourceFile, &QComboBox::currentTextChanged, this, [this]() {
-        mSourceController->BreakUndoGroup();
-        renderSource();
+        // In Code, syncing the picker here would reset Qt's selection before activated() reads it.
+        if (mShaderCodeArea.isNull() == true)
+        {
+            mSourceController->BreakUndoGroup();
+            renderSource();
+        }
     });
     connect(&mSource->GetNavigation(), &CodeNavigation::FileRequested, this, [this](const QString& file) {
         if (mDocument.GetFiles().contains(file) == true && mSourceFile->findText(file) >= 0)
