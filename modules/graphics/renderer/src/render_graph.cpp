@@ -90,6 +90,29 @@ bool IsRayStorageTarget(BorrowedView<const format::Pass> passes, usize resource)
     return false;
 }
 
+Status CreateRayStorageTarget(rhi::DeviceHandle device,
+                              const rhi::TextureDescription& attachment,
+                              BorrowedView<const format::Pass> passes,
+                              usize resource,
+                              rhi::TextureHandle& outTexture) noexcept
+{
+    for (const format::Pass& pass : passes)
+    {
+        for (uint32 slot = 0; slot < format::GetShaderTextureCount(pass); ++slot)
+        {
+            if (pass.ShaderTextures[slot] == resource && (pass.ShaderTextureClearMask & (uint32{1} << slot)) != 0)
+            {
+                rhi::TextureDescription description = attachment;
+                description.IsStorage = true;
+                return rhi::CreateTexture(device, description, {}, outTexture);
+            }
+        }
+    }
+    return internal::CreateGpuGraphStorageTexture(device,
+                                                  { .Width = attachment.Width, .Height = attachment.Height },
+                                                  outTexture);
+}
+
 bool IsAccepted(Status status) noexcept
 {
     return status == Status::Ready || status == Status::Pending;
@@ -324,6 +347,7 @@ void BindRayShaderTextures(const format::Pass& pass,
     {
         outInvocation.ShaderTextures[slot] = textures[pass.ShaderTextures[slot]];
     }
+    outInvocation.ShaderTextureClearMask = pass.ShaderTextureClearMask;
     outInvocation.HasShaderOutputsOnly = count != 0 && pass.Color == format::ABSENT && pass.WorkItemCount == 0;
 }
 /// An execution report with no lowering: every pass and resource mapping ABSENT.
@@ -573,6 +597,10 @@ Status ValidatePlan(const RenderGraphPlan& plan) noexcept
             }
         }
         const uint32 shaderTextures = format::GetShaderTextureCount(pass);
+        if ((pass.ShaderTextureClearMask >> shaderTextures) != 0)
+        {
+            return Status::InvalidDescription;
+        }
         const bool hasShaderOutputsOnly = shaderTextures != 0 && pass.Color == format::ABSENT;
         for (uint32 slot = 0; slot < format::MAX_SHADER_TEXTURES; ++slot)
         {
@@ -3237,9 +3265,7 @@ Status RenderGraph::Initialize(rhi::DeviceHandle device,
             continue;
         }
         status = isStorageTarget == true
-                     ? internal::CreateGpuGraphStorageTexture(device,
-                                                              { .Width = resource.Width, .Height = resource.Height },
-                                                              candidate->Textures[i])
+                     ? CreateRayStorageTarget(device, description, plan.Passes, i, candidate->Textures[i])
                      : rhi::CreateTexture(device, description, {}, candidate->Textures[i]);
         if (IsAccepted(status) == false)
         {
@@ -3352,12 +3378,11 @@ Status RenderGraph::Resize(uint32 referenceWidth, uint32 referenceHeight) noexce
         else
         {
             allocated = isStorageTarget == true
-                            ? internal::CreateGpuGraphStorageTexture(state.Device,
-                                                                     {
-                                                                         .Width = description.Width,
-                                                                         .Height = description.Height,
-                                                                     },
-                                                                     candidate->Textures[i])
+                            ? CreateRayStorageTarget(state.Device,
+                                                     description,
+                                                     {state.Passes.GetData(), state.Header.PassCount},
+                                                     i,
+                                                     candidate->Textures[i])
                             : rhi::CreateTexture(state.Device, description, {}, candidate->Textures[i]);
             state.Allocation.CreatedAllocations += IsAccepted(allocated) == true ? 1 : 0;
         }

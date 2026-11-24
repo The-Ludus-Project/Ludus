@@ -1288,9 +1288,12 @@ RasterStatus CreateTexture(DeviceHandle device,
         (description.RetainCpuContent &&
          (description.Attachment || description.Dimension != TextureDimension::D2 ||
           description.Format == RasterFormat::Rgba16Float || CompressedTexture(description.Format))) ||
-        (description.IsStorage && (description.Attachment || description.DeferredInitialization ||
-                                   description.RetainCpuContent || description.Dimension != TextureDimension::D2 ||
-                                   description.MipLevels != 1 || IsStorageTextureFormat(description.Format) == false)))
+        (description.IsStorage == true &&
+         (description.DeferredInitialization == true || description.RetainCpuContent == true ||
+          description.Dimension != TextureDimension::D2 || description.SampleCount != 1 || description.MipLevels != 1 ||
+          IsStorageTextureFormat(description.Format) == false ||
+          (description.Attachment == true &&
+           (description.Format != RasterFormat::Rgba8Unorm || description.Stencil == true)))))
     {
         return RasterStatus::InvalidDescription;
     }

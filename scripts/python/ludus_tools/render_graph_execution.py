@@ -324,11 +324,15 @@ def lower_plan(package, configuration):
             record['ImageLaunchWidth'], record['ImageLaunchHeight'] = operation['dimensions'][:2]
         if operation.get('storage_texture', False):
             record['HasStorageTexture'] = True
-        if operation.get('storage_textures'):
-            record['ShaderTextures'] = [resources.index(texture['resource']) for texture in operation['storage_textures']]
+        textures = operation.get('storage_textures', ())
+        if textures:
+            record['ShaderTextures'] = [resources.index(texture['resource']) for texture in textures]
         sampled_colors = buffers.get_sampled_textures(operation)
         if len(sampled_colors) > 1:
             record['AdditionalSampledTextures'] = [resources.index(use['resource']) for use in sampled_colors[1:]]
+        clear_mask = sum(1 << slot for slot, texture in enumerate(textures) if texture.get('load') == 'Clear')
+        if clear_mask:
+            record['ShaderTextureClearMask'] = clear_mask
         for attachment in operation.get('attachments', {}).values():
             build.require(not plan['resources'][attachment['resource']].get('storage_texture') or
                           operation.get('storage_texture', False), 'Capability', operation['id'],
@@ -406,6 +410,7 @@ RECORD_READER_PACKAGE_VERSION = 45
 # Version 46 separates color access from dispatch size and can append named texture mappings.
 SHADER_TEXTURE_ACCESS_PACKAGE_VERSION = 46
 SAMPLED_TEXTURES_PACKAGE_VERSION = 47
+SHADER_TEXTURE_CLEAR_PACKAGE_VERSION = 48
 RAY_STAGE_PROGRAMS = ('RayTracing', 'NativeRayStages', 'RecordReadCompute')
 # render_graph_format::DisplayCurve codes, by index; zero (Reinhard) also marks a pass without a ToneMap.
 DISPLAY_CURVE_CODES = ('Reinhard', 'PbrNeutral')
@@ -1063,7 +1068,9 @@ def encode_runtime_package(contents, *, magic=PACKAGE_MAGIC):
     has_named_textures = any(p.get('ShaderTextures') for p in contents['passes'])
     has_shader_texture_access = has_named_textures or any(p.get('HasStorageTexture') for p in contents['passes'])
     has_additional_sampled = any(p.get('AdditionalSampledTextures') for p in contents['passes'])
-    version = (SAMPLED_TEXTURES_PACKAGE_VERSION if has_additional_sampled else
+    has_shader_texture_clear = any(p.get('ShaderTextureClearMask') for p in contents['passes'])
+    version = (SHADER_TEXTURE_CLEAR_PACKAGE_VERSION if has_shader_texture_clear else
+               SAMPLED_TEXTURES_PACKAGE_VERSION if has_additional_sampled else
                SHADER_TEXTURE_ACCESS_PACKAGE_VERSION if has_shader_texture_access else
                RECORD_READER_PACKAGE_VERSION if reader_mask else
                NATIVE_GRAPH_RECORD_PACKAGE_VERSION if record_stride else PACKAGE_VERSION)
@@ -1151,10 +1158,12 @@ def encode_runtime_package(contents, *, magic=PACKAGE_MAGIC):
         for p in contents['passes']:
             slots = p.get('ShaderTextures', [])
             data += u32(*slots, *([ABSENT] * (buffers.MAX_TEXTURES - len(slots))))
-    if has_additional_sampled:
+    if has_additional_sampled or has_shader_texture_clear:
         for p in contents['passes']:
             slots = p.get('AdditionalSampledTextures', [])
             data += u32(*slots, *([ABSENT] * (len(buffers.SAMPLED_TEXTURE_SLOTS) - 1 - len(slots))))
+    if has_shader_texture_clear:
+        data += u32(*(p.get('ShaderTextureClearMask', 0) for p in contents['passes']))
     build.require(len(data) <= MAX_RUNTIME_BYTES, 'Capacity', 'runtime package', 'runtime generation exceeds 16 MiB')
     return bytes(data)
 

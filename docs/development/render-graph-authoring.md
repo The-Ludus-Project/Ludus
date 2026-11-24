@@ -1702,8 +1702,12 @@ On a **RayTracingPipeline** or scene **ComputePipeline**, add a writable
 **Texture access** to **Shader read/write**. Connect a separate offscreen,
 single-sample **RGBA8Unorm Target** to each paired input. Connect downstream
 passes to the corresponding outputs. Targets can have different fixed or
-view-relative extents. The editor sets **Load**/**Store** on each row. In graph
-source, this is `"access": "ShaderReadWrite"` on the output record.
+view-relative extents. In **Writable Resources**, select **Load**/**Store**
+to retain the texture contents or **Clear**/**Store** to reset the entire
+texture to transparent black immediately before each dispatch. The GPU clear
+uses the target extent, including after a resize. In graph source, set
+`"access": "ShaderReadWrite"` and select `"load": "Load"` or `"load": "Clear"`
+on the output record. Both choices use `"store": "Store"`.
 
 For a pass with only shader-writable textures, choose **Launch size → Explicit
 size**. A grid of `[64, 1, 1]` gives 64 invocations. Each invocation can trace

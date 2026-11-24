@@ -190,6 +190,7 @@ struct GpuPreviewRecord final
     bool HasStorageTextureView = false;
     StaticArray<GpuPreviewShaderTexture, content::render_graph_format::MAX_SHADER_TEXTURES> ShaderTextures{};
     bool HasShaderOutputsOnly = false;
+    uint32 ShaderTextureClearMask = 0;
     rhi::BindingSetHandle ComputeBindings{};
     rhi::BindingSetHandle ImageBindings{};
     foundation::StaticArray<GpuPreviewGraphBuffer, GPU_GRAPH_BUFFER_COUNT> GraphBuffers{};

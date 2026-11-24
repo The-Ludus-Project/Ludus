@@ -748,7 +748,18 @@ RenderGraphPipelineEditor::createTable(const QString& name, const QStringList& f
                 table->cellWidget(row, static_cast<int32>(fields.indexOf(QStringLiteral("store")))));
             const auto showAccess = [access, load, store]() {
                 const bool isShaderWritable = access->isEnabled() == true && access->currentData().isValid() == true;
-                load->setEnabled(isShaderWritable == false);
+                const QSignalBlocker blocker(load);
+                const QString currentLoad = load->currentText();
+                const QString discard = QStringLiteral("Discard");
+                const int32 discardIndex = load->findText(discard);
+                if (isShaderWritable == true && discardIndex >= 0 && currentLoad != discard)
+                {
+                    load->removeItem(discardIndex);
+                }
+                else if (isShaderWritable == false && discardIndex < 0)
+                {
+                    load->addItem(discard);
+                }
                 store->setEnabled(isShaderWritable == false);
             };
             access->setEnabled(type->currentText() == QStringLiteral("ColorTexture"));

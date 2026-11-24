@@ -409,13 +409,13 @@
             { "id": "mask", "type": "ColorTexture", "required": true }
           ],
           "outputs": [
-            { "id": "diffraction", "type": "ColorTexture", "target": "diffraction", "format": "RGBA8Unorm", "access": "ShaderReadWrite", "load": "Load", "store": "Store" },
+            { "id": "diffraction", "type": "ColorTexture", "target": "diffraction", "format": "RGBA8Unorm", "access": "ShaderReadWrite", "load": "Clear", "store": "Store" },
             { "id": "weights", "type": "ColorTexture", "target": "weights", "format": "RGBA8Unorm", "access": "ShaderReadWrite", "load": "Load", "store": "Store" },
             { "id": "mask", "type": "ColorTexture", "target": "mask", "format": "RGBA8Unorm", "access": "ShaderReadWrite", "load": "Load", "store": "Store" }
           ],
           "shaders": [{ "id": "compute", "stage": "compute", "program": "WriteSampledColors" }],
           "state": {},
-          "invocation": { "dimensions": [96, 64, 1], "traversal": "TriangleLoop" }
+          "invocation": { "dimensions": [8, 8, 1], "traversal": "TriangleLoop" }
         },
         {
           "id": "shade",

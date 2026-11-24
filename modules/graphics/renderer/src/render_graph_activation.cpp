@@ -1096,7 +1096,8 @@ RenderGraphPackageStatus RenderGraphPackage::decode(BorrowedView<const uint8> by
     const uint32 magic = reader.ReadWord();
     const uint32 version = reader.ReadWord();
     if (magic != expectedMagic ||
-        (version != format::SAMPLED_TEXTURES_PACKAGE_VERSION &&
+        (version != format::SHADER_TEXTURE_CLEAR_PACKAGE_VERSION &&
+         version != format::SAMPLED_TEXTURES_PACKAGE_VERSION &&
          version != format::SHADER_TEXTURE_ACCESS_PACKAGE_VERSION && version != format::RECORD_READER_PACKAGE_VERSION &&
          version != format::NATIVE_GRAPH_RECORD_PACKAGE_VERSION && version != format::IMAGE_LAUNCH_PACKAGE_VERSION &&
          version != format::STORAGE_TEXTURE_PACKAGE_VERSION && version != format::SCENE_COLOR_INPUT_PACKAGE_VERSION &&
@@ -1496,9 +1497,21 @@ RenderGraphPackageStatus RenderGraphPackage::decode(BorrowedView<const uint8> by
                 candidate->SampledTextureCount = count;
             }
         }
-        if (candidate->SampledTextureCount <= 1)
+        if (candidate->SampledTextureCount <= 1 && version < format::SHADER_TEXTURE_CLEAR_PACKAGE_VERSION)
         {
             return RenderGraphPackageStatus::Malformed;
+        }
+    }
+    if (version >= format::SHADER_TEXTURE_CLEAR_PACKAGE_VERSION)
+    {
+        for (uint32 index = 0; index < candidate->Header.PassCount; ++index)
+        {
+            format::Pass& pass = candidate->Passes[index];
+            pass.ShaderTextureClearMask = reader.ReadWord();
+            if ((pass.ShaderTextureClearMask >> format::GetShaderTextureCount(pass)) != 0)
+            {
+                return RenderGraphPackageStatus::Malformed;
+            }
         }
     }
     if (reader.IsComplete() == false)

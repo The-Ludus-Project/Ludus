@@ -315,6 +315,8 @@ struct Pass final
     foundation::uint32 ShaderTextures[MAX_SHADER_TEXTURES]{ABSENT, ABSENT, ABSENT};
     /// Sampled color inputs after SourceColor, in shader slot order. Unused trailing slots are ABSENT.
     foundation::uint32 AdditionalSampledTextures[MAX_ADDITIONAL_SAMPLED_TEXTURES]{ABSENT, ABSENT};
+    /// One bit per occupied ShaderTextures slot. Set to clear the full target to transparent black before dispatch.
+    foundation::uint32 ShaderTextureClearMask = 0;
 };
 /// Number of occupied slots. An admitted Pass has no gaps between bound slots.
 [[nodiscard]] LUDUS_INLINE constexpr foundation::uint32 GetShaderTextureCount(const Pass& pass) noexcept
