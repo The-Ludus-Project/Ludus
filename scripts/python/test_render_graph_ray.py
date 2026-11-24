@@ -1475,17 +1475,40 @@ class RayCompilerAcceptance(unittest.TestCase):
             manifest = source / 'main.lushader.json'
             manifest.write_text((source / 'main.lushader.json.in').read_text().replace(
                 '@RG2_TEST_PROFILES@', '["metal"]'))
+            graph_path = source / 'main.lurender.json'
+            document = json.loads(graph_path.read_text())
+            header = 'main_shaders/shared.luslh'
+            for configuration in document['configurations']:
+                configuration['nodes'].append(
+                    {'id': 'records', 'kind': 'Buffer',
+                     'shader_struct': {'source': header, 'type': 'Record', 'count': 1}})
+                pipeline_node = next(node for node in configuration['nodes'] if node['id'] == 'paths')
+                pipeline_node['inputs'].append({'id': 'records', 'type': 'Buffer', 'required': True})
+                configuration['edges'].append({'from': 'records.buffer', 'to': 'paths.records'})
+            graph_path.write_bytes(graph.canonical_asset(document))
+            shader = source / 'main_shaders/ray_path.slang'
+            shader.write_text(shader.read_text().replace(
+                'inout RayQueryContext queries)',
+                'inout RayQueryContext queries, TraceRayPathFixtureResources resources)').replace(
+                'float sampleColor =', 'float sampleColor = resources.Records.Load(0).Value +'))
+            (source / header).write_text('struct Record { uint32 Value; };\n')
             options = dict(helper=os.environ['LUDUS_RG1_HELPER'], compiler=os.environ['LUDUS_RG1_SLANG'],
                            spirv_cross=os.environ['LUDUS_RG1_CROSS'])
+            generated = header + '.slang'
+            (source / generated).write_text('// Authored collision.\n')
+            with self.assertRaisesRegex(ToolingError, 'reserved by the LUSL Buffer layout'):
+                build.build_package(manifest, root / 'build', **options)
+            (source / generated).unlink()
             plain = build.build_package(manifest, root / 'build', **options)
+            self.assertTrue((Path(plain['package']) / 'sources' / generated).is_file())
             runtime = execution.cook_runtime(plain['package'], root / 'plain.lurgrt')
             # Later edits to the live sources must not reach the capture of the published generation.
-            edited = next((source / 'main_shaders').glob('*.slang'))
-            edited.write_text(edited.read_text() + '\n// edited after publication\n')
+            (source / header).write_text('struct RenamedRecord { uint32 Value; };\n')
             destination = root / 'plain.lurgrd'
             result = reload.rebuild_ray_path_capture(root / 'build', root / 'capture', destination,
                                                      root=str(source), **options)
             self.assertEqual(result['source_generation'], plain['generation'])
+            build.verify_package(plain['package'])
             capture = Path(result['build']['package'])
             self.assertEqual({path.relative_to(Path(plain['package']) / 'sources'): path.read_bytes()
                               for path in (Path(plain['package']) / 'sources').rglob('*') if path.is_file()},

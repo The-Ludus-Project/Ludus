@@ -11,6 +11,7 @@ import time
 from . import render_graph_build as build, render_graph_execution as execution, render_graph_ray as ray
 from .buildlock import BuildTreeLock
 from .errors import ToolingError
+from .render_graph_language import collect_buffer_layout_headers
 
 
 def fingerprint(root):
@@ -60,14 +61,14 @@ def rebuild(manifest, output, runtime_package, *, configuration='Default', **opt
 
 
 def ray_path_capture_sources(generation):
-    """Return the verified generation, its saved source root and saved build manifest."""
+    """Return the verified generation, source root, manifest and lowered Buffer headers."""
     generation = execution.resolve_generation(generation)
     package = build.verify_package(generation)
     sources = generation / 'sources'
     manifest = sources / package['source_map']['build_manifest']
     build.require(manifest.resolve().is_relative_to(sources.resolve()) and manifest.is_file(), 'Package',
                   str(generation), 'the generation carries no saved build manifest')
-    return generation, sources, manifest
+    return generation, sources, manifest, collect_buffer_layout_headers(package['plans'])
 
 
 def declares_capture_budget(manifest, sources):
@@ -95,11 +96,12 @@ def rebuild_capture_profile(generation, output, destination, *, configuration='D
     reports a null capture_profile: its runtime package is the capture package. destination
     receives the `.lurgcp` (cook_capture_profile); a failure preserves the previous file.
     """
-    generation, sources, manifest = ray_path_capture_sources(generation)
+    generation, sources, manifest, saved_buffer_layouts = ray_path_capture_sources(generation)
     if not declares_capture_budget(manifest, sources):
         return {'capture_profile': None, 'source_generation': generation.name}
     options = {key: value for key, value in options.items() if key != 'root'}
-    report = build.build_package(manifest, output, root=sources, capture_profile=True, **options)
+    report = build.build_package(manifest, output, root=sources, capture_profile=True,
+                                 saved_buffer_layouts=saved_buffer_layouts, **options)
     build.checkpoint(options.get('cancel'))
     cooked = execution.cook_capture_profile(report['package'], destination, configuration=configuration)
     return {'build': report, 'capture_profile': cooked, 'source_generation': generation.name}
@@ -114,9 +116,10 @@ def rebuild_ray_path_capture(generation, output, destination, *, configuration='
     generation's tree; destination receives the editor-only diagnostic package
     (cook_ray_path_capture). A failure preserves the previous diagnostic package.
     """
-    generation, sources, manifest = ray_path_capture_sources(generation)
+    generation, sources, manifest, saved_buffer_layouts = ray_path_capture_sources(generation)
     options = {key: value for key, value in options.items() if key != 'root'}
-    report = build.build_package(manifest, output, root=sources, ray_path_capture=True, **options)
+    report = build.build_package(manifest, output, root=sources, ray_path_capture=True,
+                                 saved_buffer_layouts=saved_buffer_layouts, **options)
     build.checkpoint(options.get('cancel'))
     cooked = execution.cook_ray_path_capture(report['package'], destination, configuration=configuration)
     return {'build': report, 'ray_path_capture': cooked, 'source_generation': generation.name}
