@@ -71,6 +71,7 @@
 #include <ludus/runtime/resources/scene.h>
 
 #if defined(Q_OS_MACOS)
+#    include "internal/lifecycle.h"
 #    include "internal/readback.h"
 #endif
 
@@ -2338,6 +2339,30 @@ TEST_CASE("Cold project shader timeout keeps the default rendering the current W
     CHECK(workspace.GetRenderProblem().isEmpty() == true);
     CHECK(workspace.GetScenePreparationProblem().isEmpty() == true);
     CHECK(failed.isEmpty() == true);
+#if defined(Q_OS_MACOS)
+    // Metal keeps the failed session bound after a command-buffer error. A later
+    // successful shader build must reach a new device without a manual restart.
+    workspace.SetLivePreview(false);
+    const uint64 failedDeviceSerial = source.GetDeviceSerial();
+    const uint64 previousBuild = workspace.GetLastResult().Request.Request;
+    const QImage previousFrame = graphViewOrNull->GetImage();
+    rhi::DeviceInfo deviceInformation;
+    REQUIRE(rhi::GetDeviceInfo(source.GetDevice(), deviceInformation) == rhi::DeviceStatus::Ready);
+    rhi::internal::FaultRasterSession();
+    REQUIRE(rhi::GetDeviceInfo(source.GetDevice(), deviceInformation) == rhi::DeviceStatus::Failed);
+    REQUIRE(workspace.BuildAndPreview() == true);
+    CHECK(graphViewOrNull->GetImage() == previousFrame);
+    REQUIRE(waitFor([&]() {
+                return workspace.GetLastResult().Request.Request > previousBuild && workspace.IsJobActive() == false;
+            }) == true);
+    REQUIRE(workspace.GetLastResult().IsSuccessful == true);
+    REQUIRE(source.GetDeviceSerial() != failedDeviceSerial);
+    REQUIRE(waitFor([&]() {
+                return source.FrameAvailable() == true &&
+                       workspace.GetPreviewOrNull()->GetActivePackagePath() == workspace.GetRuntimePackagePath();
+            }) == true);
+    CHECK(workspace.GetRenderProblem().isEmpty() == true);
+#endif
     source.Stop();
     workspace.SetPreviewSource(nullptr);
     rhi::Shutdown();

@@ -10352,6 +10352,8 @@ beside the generation already shown. Live Preview rebuilds saved graph/shader so
 only; unsaved changes remain in the draft. A result for an older saved version never
 replaces the current request. Validation, compilation and activation failures preserve
 the last drawable view; successful replacements publish only after readiness.
+If the World preview's graphics session has failed, **Build & Preview** and a
+successful **Live Preview** rebuild open the cooked runtime on a fresh session.
 An activation failure appears in the **Error List** with its runtime status and
 candidate generation, independently of compiler results. When the renderer cannot
 attribute a scene-level cause, the message names the step that rejected the
