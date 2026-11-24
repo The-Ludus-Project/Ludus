@@ -267,7 +267,14 @@ def _lower(files, build, tool, source, style, specialization_budget, include_dir
         return output.read_bytes(), _parse_report(report.read_text(encoding='utf-8'), build, source, configuration)
 
 
-def lower_buffer_headers(snapshot, sources, helper, build, *, luslc=None, style='strict', cancel=None):
+def collect_buffer_layout_headers(plans):
+    """Collect the authored LUSL headers that supply Buffer records to these plans."""
+    return {resource['shader_struct']['source'] for plan in plans for resource in plan['resources'].values()
+            if resource.get('shader_struct', {}).get('source', '').endswith(HEADER_SUFFIX)}
+
+
+def lower_buffer_headers(snapshot, sources, helper, build, *, luslc=None, style='strict', cancel=None,
+                         saved_buffer_layouts=()):
     """Lower graph-owned LUSL layouts before shader resource interfaces are generated."""
     headers = sorted(source for source in sources if source.endswith(HEADER_SUFFIX))
     if not headers:
@@ -280,9 +287,12 @@ def lower_buffer_headers(snapshot, sources, helper, build, *, luslc=None, style=
         build.checkpoint(cancel)
         source = header + LANGUAGE_SUFFIX
         generated = header + GENERATED_SUFFIX
+        # A verified generation stores the previous lowered module beside the authored header.
+        # Regenerate it from the header for this build, just as for a LUSL program.
         for path in (source, generated):
-            build.require(path not in snapshot.files and not snapshot.path(path).exists(), 'Source', path,
-                          'this name is reserved by the LUSL Buffer layout; rename the authored file')
+            is_saved_module = path == generated and header in saved_buffer_layouts
+            build.require(path not in snapshot.files and (not snapshot.path(path).exists() or is_saved_module),
+                          'Source', path, 'this name is reserved by the LUSL Buffer layout; rename the authored file')
         files = _collect(snapshot, helper, build, header)
         files[source] = f'#include "{posixpath.basename(header)}"\n'.encode()
         data, _ = _lower(files, build, tool, source, style, None, [SDK_DIRECTORY], {}, False)

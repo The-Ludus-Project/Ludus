@@ -1102,7 +1102,8 @@ def compile_stages(jobs, stage, schemas, snapshot, helper, tools, cancel, worker
 
 
 def capture_graph_shader_inputs(manifest, *, helper, root=None, compiler=None, cancel=None, luslc=None,
-                                lusl_style='strict', check_ray_targets=True, allow_resource_upgrades=False):
+                                lusl_style='strict', check_ray_targets=True, allow_resource_upgrades=False,
+                                saved_buffer_layouts=()):
     """Capture graph connections and their shader interfaces before checking the editable sources."""
     manifest = Path(manifest).resolve()
     snapshot = Snapshot(root if root is not None else manifest.parent)
@@ -1126,7 +1127,7 @@ def capture_graph_shader_inputs(manifest, *, helper, root=None, compiler=None, c
     snapshot.inline_buffer_sources = layout_sources & {program['source'] for program in programs.values()}
     snapshot.language_tool = language.lower_buffer_headers(
         snapshot, layout_sources, Path(helper).resolve(), sys.modules[__name__],
-        luslc=luslc, style=lusl_style, cancel=cancel)
+        luslc=luslc, style=lusl_style, cancel=cancel, saved_buffer_layouts=saved_buffer_layouts)
     pending = snapshot.pending_resource_programs if allow_resource_upgrades else None
     named_resources = buffers.link_persistent_structs(plans, programs, snapshot, sys.modules[__name__],
                                                      pending_resources=pending)
@@ -1174,7 +1175,7 @@ def inspect_buffer_stride(manifest, source, type_name, *, root, helper, compiler
 
 def prepare_sources(manifest, helper, *, root=None, ray_path_capture=False, capture_profile=False, luslc=None,
                     lusl_style='strict', bounds_checks=False, compiler=None, cancel=None, allow_resource_upgrades=False,
-                    inline_layout_source=None):
+                    inline_layout_source=None, saved_buffer_layouts=()):
     """Capture and lower the same immutable shader contexts for compilation and editing.
 
     Reflects any LUSL-facing Buffer layouts but does not publish outputs. Returns package metadata, exact
@@ -1186,7 +1187,8 @@ def prepare_sources(manifest, helper, *, root=None, ray_path_capture=False, capt
     snapshot, value, schemas, programs, techniques, counts, plans, library, graph_path, named_resources = (
         capture_graph_shader_inputs(manifest, helper=helper, root=root, compiler=compiler, cancel=cancel,
                                     luslc=luslc, lusl_style=lusl_style, check_ray_targets=False,
-                                    allow_resource_upgrades=allow_resource_upgrades))
+                                    allow_resource_upgrades=allow_resource_upgrades,
+                                    saved_buffer_layouts=saved_buffer_layouts))
     if inline_layout_source is not None:
         # Keep the namespace for a selected declaration even before a Buffer adopts it.
         snapshot.inline_buffer_sources.add(inline_layout_source)
@@ -1376,7 +1378,7 @@ def prepare_sources(manifest, helper, *, root=None, ray_path_capture=False, capt
 
 def build_package(manifest, output, *, helper, compiler, validator=None, spirv_cross=None, root=None, cancel=None, worker_socket=None,
                   ray_path_capture=False, capture_profile=False, luslc=None, lusl_style=None, dxc=None,
-                  trace_shader_stages=False, bounds_checks=False):
+                  trace_shader_stages=False, bounds_checks=False, saved_buffer_layouts=()):
     """Build every authored technique/profile and atomically publish current.json.
 
     Sources/tools must remain identical to their captured snapshot at publication.
@@ -1394,6 +1396,7 @@ def build_package(manifest, output, *, helper, compiler, validator=None, spirv_c
     luslc lowers `.lusl` program sources (default: $LUDUS_LUSLC, then the SDK's bin/luslc), and
     lusl_style is their style setting, strict unless $LUDUS_LUSL_STYLE says otherwise.
     bounds_checks enables ray invocation diagnostics for checked LUSL indices.
+    saved_buffer_layouts identifies LUSL Buffer headers lowered in the verified source generation.
     dxc names the directory holding the pinned dxcompiler.dll and dxil.dll; a dxil profile
     requires it and a Windows host.
     """
@@ -1403,7 +1406,8 @@ def build_package(manifest, output, *, helper, compiler, validator=None, spirv_c
     lusl_style = lusl_style or os.environ.get('LUDUS_LUSL_STYLE') or 'strict'
     snapshot, value, schemas, programs, techniques, counts, closures, plans, library, graph_path, ray_profiles = prepare_sources(
         manifest, helper, root=root, ray_path_capture=ray_path_capture, capture_profile=capture_profile, luslc=luslc,
-        lusl_style=lusl_style, bounds_checks=bounds_checks, compiler=compiler, cancel=cancel)
+        lusl_style=lusl_style, bounds_checks=bounds_checks, compiler=compiler, cancel=cancel,
+        saved_buffer_layouts=saved_buffer_layouts)
     authored_programs_by_identity = {program['id']: program for program in value['programs']}
     manifest_label = manifest.relative_to(snapshot.root).as_posix()
     worker_socket = worker_socket or os.environ.get('LUDUS_SHADER_WORKER_SOCKET')
