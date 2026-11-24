@@ -1,14 +1,15 @@
 name: macOS Metal hair and skin standalone qualification
 description: >
-  Build the hair_skin_bust standalone game against a relocated installed SDK on macOS arm64 / Metal,
-  package and launch it from a clean extraction, and compare its hair-card and skin captures with the
-  Editor on the same character-bust World (#1400).
+  Cook one real character-bust scene, build the Qt-free hair_skin_bust standalone game against a
+  relocated installed SDK on macOS arm64 / Metal, launch it from a clean extraction through the
+  forward-lit and clustered-deferred graphs, and compare its hair-card and skin captures with the
+  Editor on the same World (#1400).
 inputs:
   editor:
     description: Built macOS Editor test executable (ludus_editor_tests).
     required: true
-  graph:
-    description: The Editor's cooked render-graph runtime package (.lurgrt) for the bust World.
+  cook:
+    description: Built ludus-cook executable that cooks the bust scene.luscn.
     required: true
 runs:
   using: composite
@@ -17,23 +18,20 @@ runs:
       shell: bash
       env:
         EDITOR_TESTS: ${{ inputs.editor }}
-        EDITOR_GRAPH: ${{ inputs.graph }}
+        LUDUS_COOK: ${{ inputs.cook }}
       run: |
         set -euo pipefail
-        build=out/build/macos-clang-development
         tools="$PWD/out/host-tools/venv/bin"
-        # Relocate the installed SDK to a fresh prefix with its bundled dependency closure, so the
-        # game links no engine-source or checkout path.
-        scratch="$(mktemp -d "$RUNNER_TEMP/hair-skin-bust.XXXXXX")"
-        "$tools/cmake" --install "$build" --prefix "$scratch/sdk"
-        "$tools/python" scripts/python/engine.py bundle-sdk-dependencies macos-clang-development --prefix "$scratch/sdk"
-        mv "$scratch/sdk" "$scratch/relocated-sdk"
+        # verify.py installs the engine SDK to a fresh prefix, bundles its dependency closure, cooks
+        # the bust scene with ludus-cook, builds the Qt-free app, stages scene.luscn + both graphs
+        # into a clean extraction and launches each profile on Metal.
+        "$tools/cmake" --install out/build/macos-clang-development --prefix "$RUNNER_TEMP/hair-skin-sdk"
         "$tools/python" -m pip install numpy Pillow
         "$tools/python" tests/sdk_consumer/hair_skin_bust/verify.py \
           --tools "$PWD" \
-          --sdk "$scratch/relocated-sdk" \
+          --cook "$LUDUS_COOK" \
+          --sdk "$RUNNER_TEMP/hair-skin-sdk" \
           --editor "$EDITOR_TESTS" \
-          --graph "$EDITOR_GRAPH" \
           --evidence out/hair-skin-bust
     - name: Retain hair and skin qualification captures, provenance and comparisons
       if: always()

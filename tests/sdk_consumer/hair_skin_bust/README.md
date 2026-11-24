@@ -1,42 +1,57 @@
 # Hair and skin qualification in a standalone game (#1400)
 
-A standalone application built against the **installed Ludus SDK** that cooks,
-packages, extracts and launches the saved character-bust World and renders its
-hair cards and real-time skin, so the clean package's output can be compared
-with the Editor on the same fixture. It depends on both raster features of
-[hair and skin rendering](../../../docs/architecture/renderer-systems.md#hair-and-skin-rendering)
-and extends the saved-World pattern of [`raster_baseline`](../raster_baseline).
+A standalone application built against the **installed Ludus SDK** that draws ONE
+real, cooked character-bust World — its meshes, material slots, the hair opacity
+texture and the skin inputs — through the packaged **forward-lit** graph (hair
+cards) and the packaged **clustered-deferred** graph (real-time skin), so the
+clean package's output can be compared with the Editor on the same fixture. It
+depends on both raster features of
+[hair and skin rendering](../../../docs/architecture/renderer-systems.md#hair-and-skin-rendering).
 
-> **Target:** macOS arm64 / Metal. **Authored, not run** in the Kiro web
-> sandbox (Amazon Linux 2023: no Clang 23, no CMake 3.29, no Slang, no Qt6, no
-> GPU/Metal). The native build, package, extract, launch and the Editor-vs-app
-> visual comparison are deferred to the macOS Metal lane. `verify.py` is the
-> repeatable sequence Codex runs there; see
+> **Target:** macOS arm64 / Metal. **Authored, not run** in the Kiro web sandbox
+> (Amazon Linux 2023: no Clang 23, no CMake 3.29, no Slang, no Metal GPU). The
+> native cook, build, launch and the Editor-vs-app visual comparison are deferred
+> to the macOS Metal lane. `verify.py` is the repeatable sequence; see
 > [`docs/development/hair-skin-standalone-qualification.md`](../../../docs/development/hair-skin-standalone-qualification.md).
 
-## Two raster profiles, one World
+## One real cooked scene
 
-No single raster profile shades both features. Hair cards need authored strand
-inputs, carried only by the **forward lit** profile; real-time skin diffusion is
-implemented only by the **clustered deferred** profile (the engine's default
-graph). `verify.py` therefore qualifies the one saved World through each profile
-and inspects the feature that profile owns. The fixture refuses a profile that
-cannot shade its requested feature with an actionable diagnostic before
-packaging (`--check-profile`); see the negative check below.
+`verify.py` cooks a single `scene.luscn` with the **public `ludus-cook scene`
+pipeline** — the same level schema the Editor's Make Hair Card / Make Skin
+produce: `scene new` → `scene import` the bust glTF → inject the authored Hair and
+Skin slot overrides (`authoring/bust-overrides.json`) onto the imported objects →
+`scene assemble`. The app loads that cooked scene through `Ludus::Resources`
+(`SceneDefinition::Decode`) and draws its real meshes, per-object material slots,
+the alpha-masked hair opacity texture and the skin scattering inputs. No editor
+internals are linked.
+
+## No Qt
+
+The app links **no Qt**: it reads files through `Ludus::Content`, renders through
+`Ludus::GraphicsRenderer`, and writes the raw RGBA capture back through
+`Ludus::Content`. `verify.py` converts the raw RGBA to PNG (Pillow) and compares.
+So the extracted package has no Homebrew-Qt runtime dependency, which the driver
+asserts with `otool -L` / `ldd`.
+
+## Two packaged graphs
+
+No single raster profile shades both features: hair cards need the forward-lit
+profile's authored strand inputs, and real-time skin diffusion is implemented
+only by the clustered-deferred default profile. The CMake build cooks **both**
+templates to `forward_lit.lurgrt` and `clustered_deferred.lurgrt`; the app selects
+the matching one per capture and refuses an incompatible pairing before rendering.
 
 ## Layout
 
 | File | Role |
 | --- | --- |
-| `authoring/bust.world.json` | The saved World: the imported bust meshes, the `Skin` and `Hair` slot material assignments and edited values, the matched camera and the key/fill lighting. |
-| `authoring/bust.scene.json` | The public scene-source companions: the `skin` and `hair_card` materials with their edited values, used for the cook round-trip and the flat hair-card patch control. |
-| `authoring/world.schema.json` | The World document schema the consumer validates the saved World against. |
-| `capture.cpp` | The standalone installed-SDK app: cooks the saved World, assigns hair and skin, renders a matched capture through the selected profile and writes `capture.png` and `capture.json`. |
-| `CMakeLists.txt`, `CMakePresets.json` | `find_package(Ludus CONFIG REQUIRED …)`, the built-in shader recipes for each profile, the cooked hair opacity texture, and the install rules used by packaging. |
-| `verify.py` | The reproducible driver: build, package, extract to a clean directory, launch, record provenance, compare with the Editor and run the negative checks. |
+| `authoring/bust-overrides.json` | The authored Hair/Skin slot overrides (strand controls, mask cutoff, skin scattering distance, base colour, roughness) and the matched camera, injected onto the imported bust level before cooking. |
+| `capture.cpp` | The Qt-free installed-SDK app: loads `scene.luscn`, builds the render-graph scene from its meshes/slots/textures/lights, renders through the selected packaged graph and writes `capture.rgba` + `capture.txt`. |
+| `CMakeLists.txt`, `CMakePresets.json` | `find_package(Ludus CONFIG REQUIRED …)` (no Qt), the built-in shader recipes for both profiles, cooking both render-graph templates, and the relocatable install rules. |
+| `verify.py` | The reproducible driver: cook the scene, build, stage a clean extraction, launch each profile, assert no Qt dependency, test runtime-dependency removal, run the negative checks and compare with the Editor. |
 
 The bust glTF, its colour/normal maps and the RGBA hair strand texture are the
 committed fixtures under
 [`tests/scenes/characters/infinite-head`](../../scenes/characters/infinite-head);
-`verify.py` stages them beside the app so the clean extraction carries no
-engine-source or Editor paths.
+`verify.py` stages them into a scratch project so the cook and the clean
+extraction carry no engine-source or Editor paths.
