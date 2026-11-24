@@ -261,6 +261,12 @@ public:
     /// Package of the active graph, including a raster fallback when selected.
     [[nodiscard]] const QString& GetActivePackagePath() const noexcept;
     [[nodiscard]] const QString& GetRasterFallbackPath() const noexcept;
+    /// Package selected for the latest attempted load, including a rejected raster fallback.
+    [[nodiscard]] const QString& GetAttemptedPackagePath() const noexcept;
+    /// True if a different, readable raster package can be selected by this preview.
+    [[nodiscard]] bool HasRasterRecovery() const;
+    /// Failure from the newest load when it stopped before staging. Empty after a successful decode and stage.
+    [[nodiscard]] const QString& GetLoadProblem() const noexcept;
     /// True when the requested package draws and Force raster would replace it with the authored raster
     /// fallback (the engine default raster graph in the World viewport).
     [[nodiscard]] bool CanSwitchToRasterFallback() const noexcept;

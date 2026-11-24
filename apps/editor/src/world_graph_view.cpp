@@ -663,6 +663,12 @@ void WorldGraphView::refreshFrame()
     refreshStatus();
     update();
 }
+void WorldGraphView::SetHasRecoveryNotice(bool hasNotice)
+{
+    mHasRecoveryNotice = hasNotice;
+    refreshStatus();
+}
+
 void WorldGraphView::refreshStatus()
 {
     QString text;
@@ -672,7 +678,12 @@ void WorldGraphView::refreshStatus()
     const bool isBuildFailure = mWorkspace.GetLastResult().Request.Request != 0 &&
                                 mWorkspace.GetLastResult().IsSuccessful == false &&
                                 mWorkspace.GetLastResult().Request.Action == QStringLiteral("build");
-    if (mWorkspace.GetRenderProblem().isEmpty() == false && isBuildFailure == true && mWorkspace.IsJobActive() == false)
+    if (mHasRecoveryNotice == true)
+    {
+        text = mWorkspace.IsJobActive() == true ? QStringLiteral("Compiling shaders…") : QString();
+    }
+    else if (mWorkspace.GetRenderProblem().isEmpty() == false && isBuildFailure == true &&
+             mWorkspace.IsJobActive() == false)
     {
         // The compiler's words are in the Error List and the tooltip; the picture only says what happened.
         mHasProblemChip = true;
@@ -733,7 +744,8 @@ void WorldGraphView::refreshStatus()
             mHasFeatureLink = true;
         }
     }
-    if (mHasProblemChip == false && mWorkspace.IsUsingDefaultRenderer() == true && mWorkspace.IsBuiltIn() == false)
+    if (mHasRecoveryNotice == false && mHasProblemChip == false && mWorkspace.IsUsingDefaultRenderer() == true &&
+        mWorkspace.IsBuiltIn() == false)
     {
         if (text.isEmpty() == false)
         {

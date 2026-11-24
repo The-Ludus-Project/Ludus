@@ -1,8 +1,10 @@
 #include "internal/error_list.h"
+#include "internal/preview_viewport.h"
 #include "internal/render_graph_diagnostics.h"
 #include "internal/render_graph_history.h"
 #include "internal/render_graph_live_build.h"
 #include "internal/render_graph_navigation.h"
+#include "internal/render_preview.h"
 #include "internal/renderer_workspace.h"
 
 #include <ludus/foundation/base/types.h>
@@ -27,6 +29,7 @@
 #include <QLineEdit>
 #include <QPixmap>
 #include <QPlainTextEdit>
+#include <QPushButton>
 #include <QScrollBar>
 #include <QSignalSpy>
 #include <QTabWidget>
@@ -523,3 +526,74 @@ TEST_CASE("a link to the World features warning selects its Error List row",
     CHECK(warningsOrNull->isChecked() == true);
     CHECK(selectedCode() == code);
 }
+
+#if defined(LUDUS_EDITOR_NATIVE_PREVIEW)
+TEST_CASE("Viewport renderer recovery opens the exact current shader or graph node",
+          "[editor][render-graph][diagnostic-navigation][viewport-recovery]")
+{
+    QTemporaryDir project;
+    QTemporaryDir tooling;
+    REQUIRE(project.isValid() == true);
+    REQUIRE(tooling.isValid() == true);
+    const QString package = QDir(tooling.path()).filePath(QStringLiteral("scripts/python/ludus_tools"));
+    REQUIRE(QDir().mkpath(package) == true);
+    const auto writeFile = [](const QString& path, const QByteArray& bytes) {
+        QFile file(path);
+        REQUIRE(file.open(QIODevice::WriteOnly | QIODevice::Truncate) == true);
+        REQUIRE(file.write(bytes) == bytes.size());
+    };
+    writeFile(QDir(package).filePath(QStringLiteral("render_graph.py")), {});
+    writeFile(QDir(project.path()).filePath(QStringLiteral("main.lushader.json")),
+              QByteArrayLiteral(R"JSON({"version":1,"programs":[]})JSON"));
+    RendererWorkspace workspace({QString::fromUtf8(LUDUS_TEST_PYTHON), {}, tooling.path()});
+    OpenWorkspace(workspace, project);
+    RenderPreview preview;
+    PreviewViewport viewport(&preview);
+    viewport.resize(800, 600);
+    viewport.UseProjectGraph(workspace);
+    viewport.show();
+
+    QJsonObject location;
+    SECTION("Shader diagnostic")
+    {
+        location = {{QStringLiteral("source"), QStringLiteral("test.slang")},
+                    {QStringLiteral("line"), 2},
+                    {QStringLiteral("column"), 3}};
+    }
+    SECTION("Node diagnostic in an included graph")
+    {
+        location = MakeLocation(QStringLiteral("tone"), GetChild());
+    }
+    REQUIRE(location.isEmpty() == false);
+    const QJsonObject error{
+        {QStringLiteral("code"), QStringLiteral("RenderGraphBuildShader")},
+        {QStringLiteral("message"), QStringLiteral("Preview build failed")},
+        {QStringLiteral("diagnostics"), QJsonArray{MakeIssue(QStringLiteral("TestError"), location)}}};
+    const QJsonObject report{{QStringLiteral("schema"), 1}, {QStringLiteral("error"), error}};
+    const QByteArray json = QJsonDocument(report).toJson(QJsonDocument::Compact);
+    writeFile(QDir(package).filePath(QStringLiteral("__main__.py")),
+              QByteArrayLiteral("print(r'''") + json + QByteArrayLiteral("''')\n"));
+    QSignalSpy finished(&workspace, &RendererWorkspace::JobFinished);
+    INFO(workspace.GetStatusText().toStdString());
+    REQUIRE(workspace.BuildAndPreview() == true);
+    REQUIRE(finished.wait() == true);
+    QPushButton* primaryOrNull = viewport.findChild<QPushButton*>(QStringLiteral("viewportRenderRecoveryPrimary"));
+    REQUIRE(primaryOrNull != nullptr);
+    REQUIRE(primaryOrNull->isVisible() == true);
+    if (location.contains(QStringLiteral("line")) == true)
+    {
+        REQUIRE(primaryOrNull->text() == QStringLiteral("Open shader"));
+        primaryOrNull->click();
+        CHECK(workspace.GetSourceFile() == QStringLiteral("test.slang"));
+        CHECK(workspace.GetSourceLine() == 2);
+        CHECK(workspace.GetSourceColumn() == 3);
+    }
+    else
+    {
+        REQUIRE(primaryOrNull->text() == QStringLiteral("Show graph node"));
+        primaryOrNull->click();
+        CHECK(workspace.GetCanvas().GetFile() == GetChild());
+        CHECK(workspace.GetCanvas().GetSelectedNodes() == QStringList{QStringLiteral("tone")});
+    }
+}
+#endif

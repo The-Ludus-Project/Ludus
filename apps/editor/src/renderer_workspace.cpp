@@ -6279,24 +6279,26 @@ bool RendererWorkspace::PreviewRuntime(RenderGraphSource source)
             provenance.RuntimeIdentity = runtimeResult.value(QStringLiteral("sha256")).toString().toLatin1();
         }
     }
+    const uint64 previousCandidate = mPreviewOrNull->GetReport().CandidateGeneration;
+    mPreviewInputIdentity = getBuildIdentity(source);
+    mPreviewSourceVersion = source;
     const RenderGraphPreviewLoad loaded = mPreviewOrNull->Load(runtime, GetDefaultRenderGraphRuntime(), provenance);
-    if (loaded == RenderGraphPreviewLoad::Staged || loaded == RenderGraphPreviewLoad::Waiting)
-    {
-        mPreviewInputIdentity = getBuildIdentity(source);
-        mPreviewSourceVersion = source;
-        setProblem(mBuildProblem, {});
-    }
-    else
+    const bool hasPublishedStatus = mPreviewOrNull->GetLoadProblem().isEmpty() == false ||
+                                    mPreviewOrNull->GetReport().CandidateGeneration != previousCandidate;
+    const bool isAccepted = loaded == RenderGraphPreviewLoad::Staged || loaded == RenderGraphPreviewLoad::Waiting;
+    if (isAccepted == false)
     {
         mIsDefaultPreview = isPreviousPreviewDefault;
-        setProblem(mBuildProblem, mPreviewOrNull->GetDisplayStatus());
     }
+    setProblem(mBuildProblem,
+               isAccepted == true || hasPublishedStatus == true ? QString() : mPreviewOrNull->GetDisplayStatus());
+    renderPreview();
     if (mPreviewSourceOrNull != nullptr && mPreviewSourceOrNull->HasDevice() == true)
     {
         mPreviewPump.Start();
     }
     ServicePreview();
-    return loaded == RenderGraphPreviewLoad::Staged || loaded == RenderGraphPreviewLoad::Waiting;
+    return isAccepted;
 #else
     static_cast<void>(source);
     return false;
@@ -6458,18 +6460,17 @@ void RendererWorkspace::renderPreview()
 #if defined(LUDUS_EDITOR_NATIVE_PREVIEW)
     if (mPreviewOrNull != nullptr)
     {
-        const graphics::renderer::RenderGraphCandidateState candidate = mPreviewOrNull->GetReport().Candidate;
-        if ((candidate == graphics::renderer::RenderGraphCandidateState::Failed ||
-             candidate == graphics::renderer::RenderGraphCandidateState::RestartRequired) &&
-            (mPreviewInputIdentity == getBuildIdentity(mPreviewSourceVersion) ||
-             (mIsDefaultPreview == true && mPreviewInputIdentity.isEmpty() == true)))
+        using graphics::renderer::RenderGraphCandidateState;
+        const RenderGraphCandidateState candidate = mPreviewOrNull->GetReport().Candidate;
+        const bool hasFailed = mPreviewOrNull->GetLoadProblem().isEmpty() == false ||
+                               candidate == RenderGraphCandidateState::Failed ||
+                               candidate == RenderGraphCandidateState::RestartRequired;
+        if (hasFailed == true && (mPreviewInputIdentity == getBuildIdentity(mPreviewSourceVersion) ||
+                                  (mIsDefaultPreview == true && mPreviewInputIdentity.isEmpty() == true)))
         {
             setProblem(mActivationProblem, mPreviewOrNull->GetDisplayStatus());
         }
-        else if (candidate == graphics::renderer::RenderGraphCandidateState::Preparing ||
-                 candidate == graphics::renderer::RenderGraphCandidateState::NeedsUpdate ||
-                 (candidate == graphics::renderer::RenderGraphCandidateState::None &&
-                  mPreviewOrNull->GetReport().ActiveGeneration != 0))
+        else
         {
             setProblem(mActivationProblem, {});
         }

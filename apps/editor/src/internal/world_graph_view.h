@@ -50,6 +50,8 @@ public:
     void SetObjectInteraction(ViewportObjectInteraction& inoutInteraction);
     /// Hold the last image while a candidate import waits for catalog publication.
     void SetCanPresent(bool canPresent);
+    /// The actionable viewport notice already presents the current renderer problem.
+    void SetHasRecoveryNotice(bool hasNotice);
     /// Explicitly clear this view, as when closing its World.
     void ClearFrame();
     /// Show live output statistics. The owning viewport persists this choice with navigation.
@@ -121,6 +123,7 @@ private:
     void refreshStatistics();
     /// Take pointer input only while the status chip or statistics overlay can be clicked.
     void updatePointerTransparency();
+    bool mHasRecoveryNotice = false;
     bool mHasProblemChip = false;
     bool mHasFeatureLink = false;
     RendererWorkspace& mWorkspace;

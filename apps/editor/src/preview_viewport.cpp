@@ -66,6 +66,7 @@
 #    include "internal/render_graph_preview.h"
 #    include "internal/renderer_workspace.h"
 #    include "internal/viewport_object_overlay_item.h"
+#    include "internal/viewport_render_recovery.h"
 #    include "internal/world_graph_view.h"
 #    include <QLibraryInfo>
 #    include <QQuickItem>
@@ -2527,6 +2528,14 @@ void PreviewViewport::UseProjectGraph(RendererWorkspace& inoutWorkspace)
     mState->GraphViewOrNull->setVisible(Preview_->Scene().Identity.isEmpty() == false);
     mState->GraphViewOrNull->SetCanPresent(mState->IsAutomatic);
     mState->FrameLayoutOrNull->addWidget(mState->GraphViewOrNull);
+    // Reserve a strip inside the viewport because QWidget controls cannot cover the native frame window.
+    ViewportRenderRecoveryNotice* recovery = new ViewportRenderRecoveryNotice(inoutWorkspace, *Preview_, this);
+    mState->Layout->addWidget(recovery);
+    connect(recovery,
+            &ViewportRenderRecoveryNotice::ProblemVisibilityChanged,
+            mState->GraphViewOrNull,
+            &WorldGraphView::SetHasRecoveryNotice);
+    mState->GraphViewOrNull->SetHasRecoveryNotice(recovery->HasProblem());
     connect(mState->GraphViewOrNull, &WorldGraphView::DebugViewChanged, this, &PreviewViewport::updateGraphDebugView);
     // Use the built-in view for a new World with no geometry or Atmosphere to draw.
     connect(Preview_, &RenderPreview::Changed, this, &PreviewViewport::updateEmptyWorldView);
