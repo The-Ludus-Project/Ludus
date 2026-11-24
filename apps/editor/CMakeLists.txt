@@ -1227,21 +1227,21 @@ if(LUDUS_BUILD_TESTS AND NOT EMSCRIPTEN)
     # Use native Windows widget metrics. Widget/logic suites do not submit GPU
     # frames; the dedicated native journeys below exercise WARP presentation.
     set(editor_test_environment "QT_QPA_PLATFORM=offscreen")
-    # The macOS hosted suite took 26 s, then reached the former 30 s limit when
-    # the language client crash tests added about 10 s of fixed restart backoff
-    # (local: 26.5 s wall, 5.7 s CPU). Individual performance assertions still
-    # enforce their own limits.
-    set(code_editor_timeout 60)
+    # The suite's wall time is mostly waiting (fixture servers, restart backoff),
+    # and hosted macOS runs it about 1.6 times slower than a local M-series Mac.
+    # Hosted macOS took 26 s, 40 s after the crash tests' fixed restart backoff,
+    # 56 s, then exceeded 60 s on 2026-11-24 (local: 34.7 s wall, 8.1 s CPU, 233
+    # cases). Individual performance assertions still enforce their own limits.
+    set(code_editor_timeout 120)
     if(WIN32)
         set(editor_test_environment "QT_QPA_PLATFORM=windows;QSG_RHI_PREFER_SOFTWARE_RENDERER=1;LUDUS_EDITOR_VIEWPORT=disabled")
-        # The full code editor suite can exceed 30 seconds on hosted Windows.
-        # Its individual performance assertions still enforce their own limits.
-        set(code_editor_timeout 90)
+        # Hosted Windows took 50.5 s on 2026-11-24.
+        set(code_editor_timeout 120)
     endif()
     if(LUDUS_ENABLE_ASAN OR LUDUS_ENABLE_UBSAN)
-        # The instrumented macOS suite takes 27-30 seconds on hosted runners.
-        # Its individual performance assertions still enforce their own limits.
-        set(code_editor_timeout 90)
+        # Hosted Windows MSVC ASan took 67.7 s on 2026-11-24, 75% of the former
+        # 90 s limit; instrumented macOS runs grow with the same suite.
+        set(code_editor_timeout 180)
     endif()
     set(content_editor_timeout 60)
     set(graph_configuration_timeout 180)
