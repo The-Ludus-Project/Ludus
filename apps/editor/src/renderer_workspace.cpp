@@ -47,6 +47,7 @@
 #include "internal/render_preview.h"
 #if defined(LUDUS_EDITOR_NATIVE_PREVIEW)
 #    include <ludus/foundation/profiling/profiling.hpp>
+#    include <ludus/graphics/rhi/device.h>
 
 #    include "editor_default_graph.h"
 #    include "editor_renderer_static.h"
@@ -94,6 +95,7 @@
 #include <QPair>
 #include <QPalette>
 #include <QPlainTextEdit>
+#include <QPointer>
 #include <QPushButton>
 #include <QRegularExpression>
 #include <QScrollArea>
@@ -6297,6 +6299,19 @@ bool RendererWorkspace::PreviewRuntime(RenderGraphSource source)
             provenance.RuntimeIdentity = runtimeResult.value(QStringLiteral("sha256")).toString().toLatin1();
         }
     }
+    QPointer<RenderPreview> restartSourceOrNull;
+    if (mPreviewSourceOrNull != nullptr && mPreviewSourceOrNull->HasDevice() == true)
+    {
+        graphics::rhi::DeviceInfo information;
+        const graphics::rhi::DeviceStatus status =
+            graphics::rhi::GetDeviceInfo(mPreviewSourceOrNull->GetDevice(), information);
+        if (status == graphics::rhi::DeviceStatus::Failed || status == graphics::rhi::DeviceStatus::DeviceLost)
+        {
+            // Stage the requested runtime while detached so startup opens the new package on the fresh device.
+            restartSourceOrNull = mPreviewSourceOrNull;
+            restartSourceOrNull->Stop();
+        }
+    }
     const uint64 previousCandidate = mPreviewOrNull->GetReport().CandidateGeneration;
     mPreviewInputIdentity = getBuildIdentity(source);
     mPreviewSourceVersion = source;
@@ -6311,6 +6326,15 @@ bool RendererWorkspace::PreviewRuntime(RenderGraphSource source)
     setProblem(mBuildProblem,
                isAccepted == true || hasPublishedStatus == true ? QString() : mPreviewOrNull->GetDisplayStatus());
     renderPreview();
+    if (isAccepted == true && restartSourceOrNull.isNull() == false &&
+        restartSourceOrNull.data() == mPreviewSourceOrNull)
+    {
+        restartSourceOrNull->SetProjectGraphProblem({});
+        if (restartSourceOrNull->Start() == false)
+        {
+            return false;
+        }
+    }
     if (mPreviewSourceOrNull != nullptr && mPreviewSourceOrNull->HasDevice() == true)
     {
         mPreviewPump.Start();
