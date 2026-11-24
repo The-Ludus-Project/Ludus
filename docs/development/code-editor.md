@@ -100,9 +100,20 @@ A server that exits unexpectedly restarts after 1 s, then 2 s. A third exit
 within a minute stops it until you choose Retry assistance.
 
 A command the running server does not support stays in the menu, disabled,
-with the reason in its tooltip. The pinned `slangd` and `luslc lsp` offer no
-Rename Symbol, code actions or server folding ranges, and `slangd` offers no
-Find References. Those commands work with any server that does offer them.
+with the reason in its tooltip. Pressing its shortcut shows the same reason in
+the status line under the source and changes nothing.
+
+The pinned servers support only part of the command table:
+
+| Feature | `slangd` | `luslc lsp` |
+| --- | --- | --- |
+| Completion, Show Hover, Go to Definition, Go to Symbol | Yes | Yes |
+| Signature help, semantic colors, inlay hints | Yes | No |
+| Go to Declaration, Go to Type Definition, Go to Implementation | No | No |
+| Go to Symbol in Workspace, Find References | No | No |
+| Rename Symbol, code actions, server folding ranges | No | No |
+
+The unsupported commands work with any server that offers them.
 
 ### Commands
 
