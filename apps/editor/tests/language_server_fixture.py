@@ -12,6 +12,7 @@ Options shape the server a test needs:
   --crash-starts PATH:N exit after initialize on the first N starts, counted in PATH
   --diagnose WORD       publish an error for every WORD after each text change
   --stale-diagnostics   publish them with the previous document version
+  --omit-empty-diagnostics  skip a report when the diagnosed word is absent
   --target WORD         answer definition-like requests and workspace/symbol with
                         the first WORD in the document
   --tokens WORD         answer semanticTokens/full with a token of legend type 0
@@ -52,6 +53,7 @@ parser.add_argument('--error', action='append', default=[])
 parser.add_argument('--crash-starts')
 parser.add_argument('--diagnose')
 parser.add_argument('--stale-diagnostics', action='store_true')
+parser.add_argument('--omit-empty-diagnostics', action='store_true')
 parser.add_argument('--target')
 parser.add_argument('--tokens')
 parser.add_argument('--folding-ranges')
@@ -131,6 +133,8 @@ def publish(uri, version):
         diagnostics.append({'range': {'start': position(start), 'end': position(end)}, 'severity': 1,
                             'message': 'unknown name ' + options.diagnose})
         start = text.find(options.diagnose, end)
+    if options.omit_empty_diagnostics and not diagnostics:
+        return
     if options.stale_diagnostics:
         version -= 1
     send({'method': 'textDocument/publishDiagnostics',

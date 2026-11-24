@@ -822,6 +822,16 @@ void CodeEditor::SetLanguage(CodeLanguage language)
     mSelectionUpdate.start(0);
 }
 
+void CodeEditor::SetLanguageServerStatus(const QString& text, const QString& detail)
+{
+    if (mLanguageServerStatus != text || mLanguageServerDetail != detail)
+    {
+        mLanguageServerStatus = text;
+        mLanguageServerDetail = detail;
+        Q_EMIT LanguageServerStatusChanged();
+    }
+}
+
 void CodeEditor::SetAssistanceAvailability(const CodeAssistanceAvailability& availability)
 {
     mAssistanceAvailability = availability;

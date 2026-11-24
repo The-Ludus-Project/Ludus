@@ -26,6 +26,8 @@ public:
     void ClearContext();
     /// Supply compiler-owned generated surroundings and the server's virtual URI.
     /// Source text is always taken from the current authoritative draft.
+    /// A second Slang file URI in the same snapshot lets the client refresh
+    /// diagnostics when slangd would otherwise suppress an identical report.
     void SetContext(const QString& server,
                     const QString& workspace,
                     const QString& uri,
@@ -33,7 +35,8 @@ public:
                     const QString& suffix,
                     const QStringList& serverArguments = {},
                     const CodeNavigationSources& navigationSources = {},
-                    const LanguageServerProfile& profile = GetSlangServerProfile());
+                    const LanguageServerProfile& profile = GetSlangServerProfile(),
+                    const QString& alternateUri = {});
     /// The connected server's retained standard error, for Show Log.
     [[nodiscard]] const QString& GetServerLog() const noexcept;
     /// Apply renames that reach other files through `hostOrNull`, which must
@@ -110,6 +113,7 @@ private:
     void synchronizeAnalysis();
     void receiveDiagnostics(const QString& uri, foundation::int32 version, const QJsonArray& diagnostics);
     void clearAnalysis();
+    void clearAnalysisDiagnostics();
     /// The current draft as the server's virtual unit, or false when it is not valid text.
     [[nodiscard]] bool buildUnit(CodeTextCapture& outCapture, QString& outSource, QString& outUnit) const;
     void resetAvailability();
@@ -135,6 +139,7 @@ private:
     QList<AnalysisRecord> mAnalysisRecords;
     /// The draft the analysis records describe.
     CodeDocumentIdentity mAnalysisIdentity;
+    foundation::int32 mDiscardedAnalysisVersion = 0;
     QTimer mCodeActionDelay;
     const LanguageServerProfile* mProfile = &GetSlangServerProfile();
     LanguageRequestKind mRequestKind = LanguageRequestKind::Completion;
@@ -157,6 +162,7 @@ private:
     QString mServerStamp;
     QStringList mServerArguments;
     QString mUri;
+    QString mAlternateUri;
     QString mPrefix;
     QString mSuffix;
     QString mUnit;

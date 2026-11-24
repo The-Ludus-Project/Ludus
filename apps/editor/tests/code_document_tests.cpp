@@ -24,6 +24,7 @@
 #include <QCoreApplication>
 #include <QDir>
 #include <QFile>
+#include <QFileInfo>
 #include <QInputMethodEvent>
 #include <QJsonArray>
 #include <QJsonDocument>
@@ -976,12 +977,114 @@ TEST_CASE("Analysis diagnostics follow the draft and stay apart from build resul
     // Typing re-synchronizes after a pause and the next report replaces the markers.
     editor.moveCursor(QTextCursor::End);
     QTest::keyClicks(&editor, QStringLiteral("missing"));
+    CHECK(editor.GetAnalysisDiagnosticCount() == 0);
     REQUIRE(QTest::qWaitFor([&editor]() { return editor.GetAnalysisDiagnosticCount() == 2; }));
     CHECK(editor.GetDiagnosticCount() == 1);
     // A new context clears analysis; the build report is not the client's to clear.
     session.Assistance.ClearContext();
     CHECK(editor.GetAnalysisDiagnosticCount() == 0);
     CHECK(editor.GetDiagnosticCount() == 1);
+}
+
+TEST_CASE("A shader repair drops old analysis while the server is quiet", "[editor][text][assistance]")
+{
+    QTemporaryDir records;
+    const QString record = records.filePath(QStringLiteral("record.jsonl"));
+    FakeAssistanceSession session("float a = unknownSampler;\n",
+                                  {QStringLiteral("--diagnose"),
+                                   QStringLiteral("unknownSampler"),
+                                   QStringLiteral("--omit-empty-diagnostics"),
+                                   QStringLiteral("--record"),
+                                   record});
+    session.Prepare();
+    CodeEditor& editor = session.Editor;
+    REQUIRE(QTest::qWaitFor([&editor]() { return editor.GetAnalysisDiagnosticCount() == 1; }));
+    editor.SetDiagnostics({{ .Line = 1, .Column = 1, .Length = 1, .Message = QStringLiteral("build report") }}, true);
+
+    QTextCursor cursor = editor.GetAnalysisDiagnosticRange(0);
+    cursor.insertText(QStringLiteral("1"));
+    CHECK(editor.GetAnalysisDiagnosticCount() == 0);
+    // Undo before the debounce returns the virtual unit to the last sent bytes.
+    REQUIRE(session.Host.Undo() == true);
+    session.Document.Synchronize(true);
+    REQUIRE(QTest::qWaitFor([&editor]() { return editor.GetAnalysisDiagnosticCount() == 1; }));
+
+    cursor = editor.GetAnalysisDiagnosticRange(0);
+    cursor.insertText(QStringLiteral("1"));
+    CHECK(editor.GetAnalysisDiagnosticCount() == 0);
+    CHECK(editor.GetDiagnosticCount() == 1);
+    REQUIRE(QTest::qWaitFor([&record]() {
+        QFile file(record);
+        return file.open(QIODevice::ReadOnly) == true && file.readAll().contains("float a = 1;") == true;
+    }));
+
+    // A newer report can still add a diagnostic, including after a host-side undo.
+    REQUIRE(session.Host.Undo() == true);
+    session.Document.Synchronize(true);
+    REQUIRE(QTest::qWaitFor([&editor]() { return editor.GetAnalysisDiagnosticCount() == 1; }));
+    REQUIRE(session.Host.Redo() == true);
+    session.Document.Synchronize(true);
+    CHECK(editor.GetAnalysisDiagnosticCount() == 0);
+    CHECK(editor.GetDiagnosticCount() == 1);
+}
+
+TEST_CASE("Native Slang republishes a surviving warning after a shader edit",
+          "[editor][text][assistance][slang-native]")
+{
+    const QString server = qEnvironmentVariable("LUDUS_TEST_SLANGD");
+    if (server.isEmpty() == true)
+    {
+        SKIP("Set LUDUS_TEST_SLANGD to exercise the installed Slang server.");
+    }
+    const QString source = QStringLiteral("#if MODE == 0\nfloat Probe() { return 0; }\n#endif\n");
+    const QString prefix = QStringLiteral("// generated shader context\n");
+    MemoryCodeDocument host(source.toUtf8());
+    CodeEditor editor;
+    CodeDocumentController document(editor);
+    document.Bind(&host);
+    editor.SetLanguage(CodeLanguage::Slang);
+    QTemporaryDir temporary;
+    QFile unit(temporary.filePath(QStringLiteral("unit.slang")));
+    REQUIRE(unit.open(QIODevice::WriteOnly) == true);
+    REQUIRE(unit.write((prefix + source).toUtf8()) > 0);
+    unit.close();
+    QFile capturedSource(temporary.filePath(QStringLiteral("source.slang")));
+    REQUIRE(capturedSource.open(QIODevice::WriteOnly) == true);
+    REQUIRE(capturedSource.write(source.toUtf8()) > 0);
+    capturedSource.close();
+    CodeAssistance assistance(editor, document);
+    QObject::connect(&assistance, &CodeAssistance::ContextRequested, &editor, [&]() {
+        assistance.SetContext(server,
+                              temporary.path(),
+                              QUrl::fromLocalFile(unit.fileName()).toString(),
+                              prefix,
+                              {},
+                              {},
+                              {},
+                              GetSlangServerProfile(),
+                              QUrl::fromLocalFile(QFileInfo(capturedSource).canonicalFilePath()).toString());
+    });
+    const auto hasMacroWarning = [&editor]() {
+        return editor.GetAnalysisDiagnosticCount() == 1 &&
+               editor.GetAnalysisDiagnostic(0).Message.contains(QStringLiteral("undefined identifier 'MODE'"));
+    };
+    assistance.Request(false);
+    REQUIRE(QTest::qWaitFor(hasMacroWarning));
+    for (const QString& edit : {QStringLiteral("// first edit\n"), QStringLiteral("// second edit\n")})
+    {
+        CAPTURE(edit.toStdString());
+        editor.moveCursor(QTextCursor::End);
+        editor.insertPlainText(edit);
+        CHECK(editor.GetAnalysisDiagnosticCount() == 0);
+        REQUIRE(QTest::qWaitFor(hasMacroWarning));
+    }
+    editor.moveCursor(QTextCursor::Start);
+    editor.insertPlainText(QStringLiteral("#define MODE 1\n#if NEXT_CHECK\n#endif\n"));
+    CHECK(editor.GetAnalysisDiagnosticCount() == 0);
+    REQUIRE(QTest::qWaitFor([&editor]() {
+        return editor.GetAnalysisDiagnosticCount() == 1 &&
+               editor.GetAnalysisDiagnostic(0).Message.contains(QStringLiteral("undefined identifier 'NEXT_CHECK'"));
+    }));
 }
 
 TEST_CASE("Analysis reports for an older version are discarded", "[editor][text][assistance]")

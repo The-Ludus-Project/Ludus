@@ -205,14 +205,36 @@ CodeAssistance::CodeAssistance(CodeEditor& inoutEditor, CodeDocumentController& 
     mAnalysisSync.setSingleShot(true);
     mAnalysisSync.setInterval(ANALYSIS_DELAY_MILLISECONDS);
     connect(&mAnalysisSync, &QTimer::timeout, this, &CodeAssistance::synchronizeAnalysis);
-    connect(&mDocument, &CodeDocumentController::TextAccepted, this, [this]() {
+    connect(&mDocument, &CodeDocumentController::DraftTextChanged, this, [this]() {
         mEditor.HideHover();
+        if (mEditor.GetAnalysisDiagnosticCount() > 0)
+        {
+            if (mAlternateUri.isEmpty() == false)
+            {
+                // slangd pushes only changed reports and omits their versions.
+                // Close the old overlay and request analysis under the other
+                // snapshot URI, so even unchanged warnings are published again.
+                mUri.swap(mAlternateUri);
+            }
+            else
+            {
+                mDiscardedAnalysisVersion = mClient.GetSentVersion();
+            }
+        }
+        clearAnalysisDiagnostics();
         if (mUri.isEmpty() == false && mClient.IsReady() == true)
         {
             mAnalysisSync.start();
         }
     });
+    connect(&mClient, &LanguageClient::Starting, this, [this]() {
+        // Ready will synchronize the current draft. The previous process may
+        // have exited before it received the latest edit.
+        mClient.SetDocument({}, {});
+        mEditor.SetLanguageServerStatus(QStringLiteral("%1 starting").arg(mProfile->ServerName));
+    });
     connect(&mClient, &LanguageClient::Ready, this, [this]() {
+        mEditor.SetLanguageServerStatus(QStringLiteral("%1 ready").arg(mProfile->ServerName));
         applyAvailability();
         requestCurrent();
         synchronizeAnalysis();
@@ -243,12 +265,17 @@ CodeAssistance::CodeAssistance(CodeEditor& inoutEditor, CodeDocumentController& 
                 }
             });
     // A restart keeps the intent: the next Ready re-sends it if it is still current.
-    connect(&mClient, &LanguageClient::Restarting, this, &CodeAssistance::StatusChanged);
+    connect(&mClient, &LanguageClient::Restarting, this, [this](const QString& message) {
+        clearAnalysis();
+        mEditor.SetLanguageServerStatus(QStringLiteral("%1 restarting").arg(mProfile->ServerName), message);
+        Q_EMIT StatusChanged(message);
+    });
     connect(&mClient, &LanguageClient::Failed, this, [this](const QString& message) {
         Cancel();
         mServer.clear();
         resetAvailability();
         clearAnalysis();
+        mEditor.SetLanguageServerStatus(QStringLiteral("%1 failed").arg(mProfile->ServerName), message);
         Q_EMIT StatusChanged(message);
     });
 }
@@ -338,12 +365,21 @@ void CodeAssistance::clearAnalysis()
     mAnalysisSync.stop();
     mHover = {};
     mEditor.HideHover();
-    mEditor.SetAnalysisDiagnostics({}, {});
+    clearAnalysisDiagnostics();
+    mDiscardedAnalysisVersion = 0;
     mLayers.Clear();
     mCodeActionDelay.stop();
+    mActions.Clear();
+}
+
+void CodeAssistance::clearAnalysisDiagnostics()
+{
     mAnalysisRecords.clear();
     mAnalysisIdentity = {};
-    mActions.Clear();
+    if (mEditor.GetAnalysisDiagnosticCount() > 0)
+    {
+        mEditor.SetAnalysisDiagnostics({}, {});
+    }
 }
 
 bool CodeAssistance::buildUnit(CodeTextCapture& outCapture, QString& outSource, QString& outUnit) const
@@ -368,7 +404,12 @@ void CodeAssistance::synchronizeAnalysis()
     if (mUri.isEmpty() == false && mDocument.IsBound() == true && mClient.IsReady() == true &&
         buildUnit(capture, source, unit) == true)
     {
-        mClient.SetDocument(mUri, unit);
+        // A quick undo can restore the last sent text before the edit reaches
+        // the server. Ask for diagnostics again if we cleared that version's rows.
+        const bool shouldRefresh =
+            mDiscardedAnalysisVersion > 0 && mDiscardedAnalysisVersion == mClient.GetSentVersion();
+        mDiscardedAnalysisVersion = 0;
+        mClient.SetDocument(mUri, unit, shouldRefresh);
         const int32 start = static_cast<int32>(mPrefix.size());
         mLayers.Refresh(capture.Identity,
                         mContext,
@@ -402,6 +443,7 @@ void CodeAssistance::receiveDiagnostics(const QString& uri, int32 version, const
     const int32 begin = static_cast<int32>(mPrefix.size());
     const int32 sourceEnd = begin + static_cast<int32>(source.size());
     QList<CodeAnalysisDiagnostic> markers;
+    mDiscardedAnalysisVersion = 0;
     mAnalysisRecords.clear();
     mAnalysisIdentity = capture.Identity;
     for (const QJsonValue& value : diagnostics)
@@ -479,6 +521,10 @@ void CodeAssistance::receiveHover(int32 request, const QJsonValue& value)
 
 void CodeAssistance::ClearContext()
 {
+    mClient.Stop();
+    mClient.SetDocument({}, {});
+    mServer.clear();
+    mEditor.SetLanguageServerStatus({});
     resetAvailability();
     clearAnalysis();
     mShouldTrackSignature = false;
@@ -486,6 +532,7 @@ void CodeAssistance::ClearContext()
     Cancel();
     ++mContext;
     mUri.clear();
+    mAlternateUri.clear();
     mPrefix.clear();
     mSuffix.clear();
     mNavigationSources.clear();
@@ -498,7 +545,8 @@ void CodeAssistance::SetContext(const QString& server,
                                 const QString& suffix,
                                 const QStringList& serverArguments,
                                 const CodeNavigationSources& navigationSources,
-                                const LanguageServerProfile& profile)
+                                const LanguageServerProfile& profile,
+                                const QString& alternateUri)
 {
     if (isCurrent() == false)
     {
@@ -507,7 +555,14 @@ void CodeAssistance::SetContext(const QString& server,
     const QUrl documentUri(uri);
     const QString canonical =
         documentUri.isLocalFile() == true ? QFileInfo(documentUri.toLocalFile()).canonicalFilePath() : QString{};
-    mUri = canonical.isEmpty() == true ? uri : QUrl::fromLocalFile(canonical).toString();
+    const QString contextUri = canonical.isEmpty() == true ? uri : QUrl::fromLocalFile(canonical).toString();
+    if (contextUri != mUri && contextUri != mAlternateUri)
+    {
+        clearAnalysisDiagnostics();
+        mDiscardedAnalysisVersion = 0;
+        mUri = contextUri;
+        mAlternateUri = alternateUri;
+    }
     mPrefix = prefix;
     mSuffix = suffix;
     mNavigationSources = navigationSources;
