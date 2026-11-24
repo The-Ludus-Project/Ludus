@@ -799,7 +799,8 @@ Create resources outside frames, then set a target, BeginFrame, DrawIndexed and
 EndFrame. Check every result. Portable draws and DrawFullscreen cannot share
 one frame. The complete public-only example is
 [`tests/sdk_consumer/raster.cpp`](../../tests/sdk_consumer/raster.cpp), with its
-[application-owned shader](../../tests/sdk_consumer/shaders/raster.slang).
+[application-owned LUSL shader](../../tests/sdk_consumer/shaders/raster.lusl), which it
+binds through the generated `raster_slots.h` constants.
 
 ### Destruction and validation evidence
 
@@ -1236,7 +1237,7 @@ The installed shader helper accepts one compute entry:
 
 ```cmake
 ludus_compile_shader(TARGET my_renderer NAME cull
-    SOURCE shaders/cull.slang COMPUTE computeMain)
+    SOURCE shaders/cull.lusl COMPUTE ComputeMain)
 ```
 
 The generated `ludus::shaders::cull::Compute()` description selects the native
@@ -1338,7 +1339,7 @@ preflight retry and partial-encoding failure follow R2/R3.
 
 The shared [`ordered_frame.h`](../../tests/sdk_consumer/ordered_frame.h) fixture
 has an authored CPU culling function and the
-[`cull.slang`](../../tests/sdk_consumer/shaders/cull.slang) GPU variant. A single
+[`cull.lusl`](../../tests/sdk_consumer/shaders/cull.lusl) GPU variant. A single
 invocation compacts four candidates into two visible instances and writes one
 indexed indirect command. GPU output buffers start at zero. Native tests read
 back the generated command through R2 and compare the complete rendered image
@@ -2441,6 +2442,14 @@ pressure across delayed completion, stale indices, retained array elements,
 Reflection regressions cover fixed/runtime counts, target registers, indexing
 modes and unsafe bounds.
 
+The scalar, compute and constant-index array programs are LUSL (`r11.lusl`,
+`r11compute.lusl`, `r11_constant.lusl` and `r11_wider.lusl`); the fixture binds
+them through their generated `<NAME>_slots.h` constants. The non-uniform,
+runtime-sized, constant-buffer and storage-buffer arrays stay Slang (`r11.slang`,
+`r11buffers.slang`, `r11storage.slang`), because LUSL binding arrays hold sampled
+textures and samplers indexed by constants
+([retained list](../../config/lusl_migration.json)).
+
 The native fixture reports CPU creation time for 32 static snapshots versus one
 reused dynamic snapshot, alongside populated descriptors and actual Vulkan pool
 reservations. R7 `AllocationTelemetry` adds `BindingDescriptors`,
@@ -2576,7 +2585,7 @@ boundaries.
 
 The portable conformance case `Portable R12a indirect commands honor offsets,
 counts, strides and dispatch arguments` (`ludus_rhi_render_tests` and the Windows
-`ludus_rhi_d3d12_tests`) cooks `tests/sdk_consumer/shaders/indirect_commands.slang`
+`ludus_rhi_d3d12_tests`) cooks `tests/sdk_consumer/shaders/indirect_commands.lusl`
 for every native target. One kernel writes every command; nothing is read back
 before use:
 

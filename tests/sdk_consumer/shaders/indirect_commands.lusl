@@ -1,0 +1,113 @@
+// R12a portable indirect-command fixture: one kernel writes every command, so no argument is ever
+// read back to the CPU before it is consumed. The C++ journeys compare the resulting image with the
+// direct-draw oracle and read back the indirect dispatch marks. The native conformance case
+// (modules/graphics/rhi/tests/portable_raster_conformance_tests.cpp) and the installed-SDK browser
+// fixture (tests/sdk_consumer/indirect.cpp) share this source and bind the slots and vertex input
+// locations in its generated <NAME>_slots.h.
+//
+// PrepareZeroFirstInstanceCommands writes zero FirstInstance values for a profile without
+// IndirectCapabilities::HasFirstInstance. The consumer then selects each color through its
+// instance-stream slice instead and orders the non-indexed draw first, so an ignored stride or an
+// executed zero-instance command still covers the right half with the left-half color.
+RWStructuredBuffer<uint32> arguments;
+RWStructuredBuffer<uint32> marks;
+
+// Word offsets and values must match portable_raster_conformance_tests.cpp and indirect.cpp.
+static const uint32 INDEXED_STRIDE_WORDS = 10;
+static const uint32 POISON_WORD = 5;
+static const uint32 NON_INDEXED_WORD = 16;
+static const uint32 DISPATCH_WORD = 20;
+static const uint32 EMPTY_DISPATCH_WORD = 24;
+static const uint32 QUAD_INDEX_COUNT = 6;
+static const uint32 QUAD_FIRST_INDEX = 3;
+static const uint32 LEFT_BASE_VERTEX = 4;
+static const uint32 RIGHT_FIRST_VERTEX = 8;
+static const uint32 FULL_BASE_VERTEX = 14;
+static const uint32 RED_INSTANCE = 0;
+static const uint32 GREEN_INSTANCE = 1;
+static const uint32 BLUE_INSTANCE = 2;
+static const uint32 MARKED_GROUPS = 3;
+static const uint32 MARK_BASE = 100;
+// Word positions inside one command record.
+static const uint32 INSTANCE_COUNT_WORD = 1;
+static const uint32 FIRST_INDEX_WORD = 2;
+static const uint32 BASE_VERTEX_WORD = 3;
+static const uint32 FIRST_INSTANCE_WORD = 4;
+static const uint32 NON_INDEXED_FIRST_VERTEX_WORD = 2;
+static const uint32 NON_INDEXED_FIRST_INSTANCE_WORD = 3;
+static const uint32 GROUP_COUNT_Y_WORD = 1;
+static const uint32 GROUP_COUNT_Z_WORD = 2;
+
+void WriteIndexed(in uint32 word, in uint32 instanceCount, in uint32 baseVertex, in uint32 firstInstance)
+{
+    arguments[word] = QUAD_INDEX_COUNT;
+    arguments[word + INSTANCE_COUNT_WORD] = instanceCount;
+    arguments[word + FIRST_INDEX_WORD] = QUAD_FIRST_INDEX;
+    arguments[word + BASE_VERTEX_WORD] = baseVertex;
+    arguments[word + FIRST_INSTANCE_WORD] = firstInstance;
+}
+
+void WriteCommands(in uint32 greenInstance, in uint32 blueInstance)
+{
+    // Indexed command 0: the left quad, offset by FirstIndex and BaseVertex, with the green instance.
+    WriteIndexed(0, 1, LEFT_BASE_VERTEX, greenInstance);
+    // Read only by a backend that ignored the 40-byte stride: a red full-image quad.
+    WriteIndexed(POISON_WORD, 1, FULL_BASE_VERTEX, RED_INSTANCE);
+    // Indexed command 1: zero instances, so the red full-image quad is culled.
+    WriteIndexed(INDEXED_STRIDE_WORDS, 0, FULL_BASE_VERTEX, RED_INSTANCE);
+    // Non-indexed command: the right quad's six vertices with the blue instance.
+    arguments[NON_INDEXED_WORD] = QUAD_INDEX_COUNT;
+    arguments[NON_INDEXED_WORD + INSTANCE_COUNT_WORD] = 1;
+    arguments[NON_INDEXED_WORD + NON_INDEXED_FIRST_VERTEX_WORD] = RIGHT_FIRST_VERTEX;
+    arguments[NON_INDEXED_WORD + NON_INDEXED_FIRST_INSTANCE_WORD] = blueInstance;
+    // A three-group dispatch and an empty dispatch.
+    arguments[DISPATCH_WORD] = MARKED_GROUPS;
+    arguments[DISPATCH_WORD + GROUP_COUNT_Y_WORD] = 1;
+    arguments[DISPATCH_WORD + GROUP_COUNT_Z_WORD] = 1;
+    arguments[EMPTY_DISPATCH_WORD] = 0;
+    arguments[EMPTY_DISPATCH_WORD + GROUP_COUNT_Y_WORD] = 1;
+    arguments[EMPTY_DISPATCH_WORD + GROUP_COUNT_Z_WORD] = 1;
+}
+
+[stage(compute), threads(1, 1, 1)]
+void PrepareCommands()
+{
+    WriteCommands(GREEN_INSTANCE, BLUE_INSTANCE);
+}
+
+[stage(compute), threads(1, 1, 1)]
+void PrepareZeroFirstInstanceCommands()
+{
+    WriteCommands(0, 0);
+}
+
+[stage(compute), threads(1, 1, 1)]
+void MarkGroups(in uint32x3 groupId : GroupId)
+{
+    marks[groupId.x] = MARK_BASE + groupId.x;
+}
+
+struct CommandInput
+{
+    float32x2 PositionClip;
+    float32x4 Color;
+};
+
+struct CommandVarying
+{
+    float32x4 PositionClip : ClipPosition;
+    float32x4 Color;
+};
+
+[stage(vertex)]
+CommandVarying CommandVertex(in CommandInput input)
+{
+    CommandVarying output = { .PositionClip = float32x4(input.PositionClip, 0.5, 1), .Color = input.Color };
+    return output;
+}
+
+[stage(fragment)]
+float32x4 CommandFragment(in CommandVarying input)
+{
+    return input.Color;
+}

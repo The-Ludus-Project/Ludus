@@ -10,8 +10,11 @@
 #include <ludus/graphics/rhi/lifetime.h>
 
 #include "indirect_draw.h"
+#include "indirect_draw_slots.h"
 #include "indirect_mark.h"
+#include "indirect_mark_slots.h"
 #include "indirect_prepare.h"
+#include "indirect_prepare_slots.h"
 #include "indirect_prepare_zero.h"
 
 #if defined(LUDUS_PLATFORM_WEB)
@@ -26,7 +29,7 @@
 // public API: one kernel writes offset, strided, zero-instance and non-indexed
 // commands plus two dispatch records, and the image must match the direct-draw
 // oracle. A profile without HasFirstInstance uses the zero-FirstInstance layout in
-// indirect_commands.slang. Without the feature (WebGL 2) it checks that the profile
+// indirect_commands.lusl. Without the feature (WebGL 2) it checks that the profile
 // is empty, that the argument buffer is refused, and that the authored direct
 // variant draws the same image. The browser harness is indirect-browser-test.mjs;
 // see docs/development/fullscreen-rendering.md#expanded-indirect-draws-and-dispatches-r12a.
@@ -44,7 +47,7 @@ constexpr usize PIXEL_BYTES = usize{HEIGHT} * ROW_BYTES;
 constexpr uint64 NATIVE_TIMEOUT_NANOSECONDS = 30 * time::NANOSECONDS_PER_SECOND;
 #endif
 
-// Byte layout written by indirect_commands.slang.
+// Byte layout written by indirect_commands.lusl.
 constexpr usize ARGUMENT_BYTES = 112;
 constexpr usize INDEXED_STRIDE = 40;
 constexpr uint32 INDEXED_COMMANDS = 2;
@@ -387,12 +390,9 @@ bool AreResourcesReady() noexcept
            IsReady(gMark.Shader) == true && IsReady(gMark.Layout) == true && IsReady(gEmptyMark.Shader) == true &&
            IsReady(gEmptyMark.Layout) == true;
 }
-bool CreateDispatch(const rhi::RasterShaderDescription& description,
-                    rhi::BufferHandle buffer,
-                    usize size,
-                    Kernel& inoutKernel) noexcept
+bool CreateDispatch(uint32 slot, rhi::BufferHandle buffer, usize size, Kernel& inoutKernel) noexcept
 {
-    const rhi::RasterBindingResource resource{description.Bindings[0].Binding, buffer, 0, size};
+    const rhi::RasterBindingResource resource{slot, buffer, 0, size};
     return IsAccepted(
                rhi::CreateBindingSet(gDevice, inoutKernel.Layout, {&resource, 1}, inoutKernel.Dispatch.Bindings)) ==
                true &&
@@ -404,7 +404,8 @@ bool CreatePipelines() noexcept
 {
     const StaticArray<rhi::RasterVertexStream, STREAM_COUNT> streams{{{POSITION_STRIDE, false}, {COLOR_STRIDE, true}}};
     const StaticArray<rhi::RasterVertexAttribute, STREAM_COUNT> attributes{
-        {{0, 0, 0, rhi::RasterVertexFormat::Float2}, {1, 1, 0, rhi::RasterVertexFormat::Float4}}};
+        {{ludus::shaders::indirect_draw::locations::INPUT_POSITION_CLIP, 0, 0, rhi::RasterVertexFormat::Float2},
+         {ludus::shaders::indirect_draw::locations::INPUT_COLOR, 1, 0, rhi::RasterVertexFormat::Float4}}};
     const bool isRasterCreated = IsAccepted(rhi::CreateBindingSet(gDevice, gRasterLayout, {}, gRasterSet)) == true &&
                                  IsAccepted(rhi::CreateRasterPipeline(gDevice,
                                                                       {gVertex,
@@ -420,12 +421,12 @@ bool CreatePipelines() noexcept
     {
         return isRasterCreated;
     }
-    const rhi::RasterShaderDescription prepare = gPath == Path::Indirect
-                                                     ? ludus::shaders::indirect_prepare::Compute()
-                                                     : ludus::shaders::indirect_prepare_zero::Compute();
-    if (CreateDispatch(prepare, gArguments, ARGUMENT_BYTES, gPrepare) == false ||
-        CreateDispatch(ludus::shaders::indirect_mark::Compute(), gMarks, MARK_BYTES, gMark) == false ||
-        CreateDispatch(ludus::shaders::indirect_mark::Compute(), gEmptyMarks, MARK_BYTES, gEmptyMark) == false)
+    // Both prepare programs come from indirect_commands.lusl and share its slot table.
+    constexpr uint32 ARGUMENT_SLOT = ludus::shaders::indirect_prepare::slots::ARGUMENTS;
+    constexpr uint32 MARK_SLOT = ludus::shaders::indirect_mark::slots::MARKS;
+    if (CreateDispatch(ARGUMENT_SLOT, gArguments, ARGUMENT_BYTES, gPrepare) == false ||
+        CreateDispatch(MARK_SLOT, gMarks, MARK_BYTES, gMark) == false ||
+        CreateDispatch(MARK_SLOT, gEmptyMarks, MARK_BYTES, gEmptyMark) == false)
     {
         return false;
     }

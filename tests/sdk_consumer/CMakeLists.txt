@@ -105,9 +105,9 @@ if(LUDUS_SDK_RENDER_TESTS)
     add_executable(ludus_sdk_raster_consumer raster.cpp)
     target_link_libraries(ludus_sdk_raster_consumer PRIVATE Ludus::GraphicsRhi Ludus::FoundationTime)
     target_compile_options(ludus_sdk_raster_consumer PRIVATE -Wall -Wextra -Wpedantic -Werror -fno-exceptions)
-    ludus_compile_shader(TARGET ludus_sdk_raster_consumer NAME cull SOURCE shaders/cull.slang COMPUTE computeMain)
-    ludus_compile_shader(TARGET ludus_sdk_raster_consumer NAME raster RASTER SOURCE shaders/raster.slang
-        VERTEX vertexMain FRAGMENT fragmentMain)
+    ludus_compile_shader(TARGET ludus_sdk_raster_consumer NAME cull SOURCE shaders/cull.lusl COMPUTE ComputeMain)
+    ludus_compile_shader(TARGET ludus_sdk_raster_consumer NAME raster RASTER SOURCE shaders/raster.lusl
+        VERTEX VertexMain FRAGMENT FragmentMain)
     if(EMSCRIPTEN)
         target_link_options(ludus_sdk_raster_consumer PRIVATE -fno-exceptions -g2 -sENVIRONMENT=web -sALLOW_MEMORY_GROWTH=1 -sASSERTIONS=1)
         set_target_properties(ludus_sdk_raster_consumer PROPERTIES OUTPUT_NAME raster SUFFIX ".js")

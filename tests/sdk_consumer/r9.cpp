@@ -10,6 +10,7 @@
 #include <ludus/graphics/rhi/lifetime.h>
 
 #include "r9.h"
+#include "r9_slots.h"
 
 #include <cstring>
 
@@ -22,6 +23,9 @@ namespace
 {
 using namespace ludus::foundation;
 namespace rhi = ludus::graphics::rhi;
+// Slots and vertex input locations that the LUSL compiler assigned to r9.lusl.
+namespace r9_slots = ludus::shaders::r9::slots;
+namespace r9_locations = ludus::shaders::r9::locations;
 constexpr logging::LogCategory LOG_R9{"R9-Fixture"};
 rhi::DeviceHandle gDevice;
 rhi::SurfaceHandle gSurface;
@@ -724,6 +728,8 @@ rhi::RasterStatus DrawGraph() noexcept
         {
             return rhi::RasterStatus::Failed;
         }
+        // Elements use their default member initializers; the check misreports them as zero enums.
+        // NOLINTNEXTLINE(bugprone-invalid-enum-default-initialization)
         rhi::GraphUse uses[11]{{versions[0], rhi::GraphAccessMode::Vertex, 0, 64},
                                {versions[1], rhi::GraphAccessMode::Index, 0, 12},
                                {versions[2], rhi::GraphAccessMode::Uniform, 0, 32}};
@@ -850,15 +856,15 @@ void Tick() noexcept
         {
             constexpr usize BINDING_COUNT = 8;
             const StaticArray<rhi::RasterBindingResource, BINDING_COUNT> resources{
-                {{ .Buffer = gUniforms[test], .Size = 32 },
-                 { .Binding = 1, .Texture = gViews[test == 16 ? 9 : 0] },
-                 { .Binding = 2, .Sampler = gSampler },
-                 { .Binding = 3, .Texture = gViews[test == 17 ? 10 : 1] },
-                 { .Binding = 4, .Texture = gViews[test == 18 ? 11 : 2] },
-                 { .Binding = 5, .Texture = gViews[3] },
-                 { .Binding = 6, .Texture = gViews[4] },
+                {{ .Binding = r9_slots::SETTINGS, .Buffer = gUniforms[test], .Size = 32 },
+                 { .Binding = r9_slots::IMAGE, .Texture = gViews[test == 16 ? 9 : 0] },
+                 { .Binding = r9_slots::IMAGE_SAMPLER, .Sampler = gSampler },
+                 { .Binding = r9_slots::LAYERS, .Texture = gViews[test == 17 ? 10 : 1] },
+                 { .Binding = r9_slots::FACES, .Texture = gViews[test == 18 ? 11 : 2] },
+                 { .Binding = r9_slots::VOLUME, .Texture = gViews[3] },
+                 { .Binding = r9_slots::HDR, .Texture = gViews[4] },
                  {
-                     .Binding = 7,
+                     .Binding = r9_slots::BLOCKS,
                      .Texture = gViews[test == 19   ? 12
                                        : test == 14 ? 7
                                        : test == 15 ? 8
@@ -874,8 +880,9 @@ void Tick() noexcept
             }
         }
         const rhi::RasterVertexStream stream{16, false};
-        const rhi::RasterVertexAttribute attributes[2]{{0, 0, 0, rhi::RasterVertexFormat::Float2},
-                                                       {1, 0, 8, rhi::RasterVertexFormat::Float2}};
+        const rhi::RasterVertexAttribute attributes[2]{
+            {r9_locations::INPUT_POSITION, 0, 0, rhi::RasterVertexFormat::Float2},
+            {r9_locations::INPUT_UV, 0, 8, rhi::RasterVertexFormat::Float2}};
         rhi::RasterPipelineDescription pipeline;
         pipeline.Vertex = gVertex;
         pipeline.Fragment = gFragment;

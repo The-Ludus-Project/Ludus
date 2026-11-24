@@ -9,6 +9,7 @@
 
 #include "cull.h"
 #include "raster.h"
+#include "raster_slots.h"
 
 #if defined(LUDUS_PLATFORM_WEB)
 #    include <emscripten.h>
@@ -19,6 +20,9 @@ namespace
 {
 using namespace ludus::foundation;
 namespace rhi = ludus::graphics::rhi;
+// Slots and vertex input locations that the LUSL compiler assigned to raster.lusl.
+namespace raster_slots = ludus::shaders::raster::slots;
+namespace raster_locations = ludus::shaders::raster::locations;
 constexpr usize OBJECTS = 72;
 constexpr ludus::foundation::logging::LogCategory LOG_R6{"R6-Fixture"};
 uint32 gStage = 0;
@@ -187,17 +191,26 @@ bool Link() noexcept
 {
     for (usize i = 0; i < OBJECTS; ++i)
     {
-        const rhi::RasterBindingResource resources[]{{ .Buffer = gBuffers[i], .Size = 16 },
-                                                     { .Binding = 1, .Texture = gViews[i] },
-                                                     { .Binding = 2, .Sampler = gSamplers[i] }};
+        const rhi::RasterBindingResource resources[]{
+        {
+            .Binding = raster_slots::TINT,
+            .Buffer = gBuffers[i],
+            .Size = 16,
+        },
+                                                     { .Binding = raster_slots::IMAGE, .Texture = gViews[i] },
+                                                     {
+                                                         .Binding = raster_slots::IMAGE_SAMPLER,
+                                                         .Sampler = gSamplers[i],
+                                                     }};
         if (Accepted(rhi::CreateBindingSet(gDevice, gLayouts[i], resources, gSets[i])) == false)
         {
             return false;
         }
         const rhi::RasterVertexStream streams[]{{20, false}, {8, true}};
-        const rhi::RasterVertexAttribute attributes[]{{0, 0, 0, rhi::RasterVertexFormat::Float3},
-                                                      {1, 0, 12, rhi::RasterVertexFormat::Float2},
-                                                      {2, 1, 0, rhi::RasterVertexFormat::Float2}};
+        const rhi::RasterVertexAttribute attributes[]{
+            {raster_locations::INPUT_POSITION, 0, 0, rhi::RasterVertexFormat::Float3},
+            {raster_locations::INPUT_UV, 0, 12, rhi::RasterVertexFormat::Float2},
+            {raster_locations::INPUT_OFFSET, 1, 0, rhi::RasterVertexFormat::Float2}};
         if (Accepted(rhi::CreateRasterPipeline(gDevice,
                                                {gShaders[i], gFragment, gLayouts[i], streams, attributes, false},
                                                gPipelines[i])) == false)

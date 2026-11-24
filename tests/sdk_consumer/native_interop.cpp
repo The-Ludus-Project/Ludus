@@ -1,5 +1,6 @@
 #include "native_interop_fixture.h"
 #include "native_source.h"
+#include "native_source_slots.h"
 
 #include <ludus/foundation/logging/log_format.hpp>
 #include <ludus/graphics/rhi/graph.h>
@@ -84,7 +85,9 @@ bool Run() noexcept
     NATIVE_REQUIRE(rhi::CreateBindingLayout(session.Device, {}, layout) == rhi::RasterStatus::Ready);
     NATIVE_REQUIRE(rhi::CreateBindingSet(session.Device, layout, {}, set) == rhi::RasterStatus::Ready);
     const rhi::RasterVertexStream streams[]{{ .Stride = native_fixture::VERTEX_STRIDE }};
-    const rhi::RasterVertexAttribute attributes[]{{ .Location = 0, .Format = rhi::RasterVertexFormat::Float3 }};
+    const rhi::RasterVertexAttribute attributes[]{
+        { .Location = ludus::shaders::native_source::locations::POSITION, .Format = rhi::RasterVertexFormat::Float3 },
+    };
     const rhi::RasterPipelineDescription state
     {
         .Vertex = vertex,
