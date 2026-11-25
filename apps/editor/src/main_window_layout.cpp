@@ -6,6 +6,7 @@
 #include "internal/code_editor_area.h"
 #include "internal/code_file_document.h"
 #include "internal/code_language_registry.h"
+#include "internal/code_references_window.h"
 #include "internal/code_status_bar.h"
 #include "internal/configuration_workspace.h"
 #include "internal/content_browser.h"
@@ -490,6 +491,13 @@ void MainWindow::BuildUi()
     Renderer_ = new RendererWorkspace(Controller_->Tooling(), mDocuments);
     mCodeArea = new CodeEditorArea(mDocuments);
     mCodeArea->setObjectName(QStringLiteral("codeEditorArea"));
+    Renderer_->SetCodeEditorArea(*mCodeArea);
+    connect(Renderer_, &RendererWorkspace::ShaderCodeWorkspaceRequested, this, [this]() {
+        static_cast<void>(mDocuments->OpenDocument(mCodeArea));
+    });
+    connect(Renderer_, &RendererWorkspace::GraphWorkspaceRequested, this, [this]() {
+        static_cast<void>(mDocuments->OpenDocument(Renderer_));
+    });
     // A code tab's load failure is surfaced where Open Externally stays available.
     connect(mCodeArea, &CodeEditorArea::OpenFailed, this, [this](const QString& file, const QString& explanation) {
         const QString message =
@@ -503,6 +511,7 @@ void MainWindow::BuildUi()
     // Save follows the active code tab, so its label and state track the tabs.
     connect(mCodeArea, &CodeEditorArea::TabsChanged, this, &MainWindow::RenderDocumentActions);
     connect(mCodeArea, &CodeEditorArea::ActiveTabChanged, this, &MainWindow::RenderDocumentActions);
+    connect(mCodeArea, &CodeEditorArea::ActiveTabChanged, this, &MainWindow::updateContextStrip);
     // Rendering resolution: the active renderer graph's output size and scale, saved with the project's settings.
     SettingsSection* renderingSection = new SettingsSection(QStringLiteral("Rendering resolution"), column);
     renderingSection->setObjectName(QStringLiteral("projectRenderingSection"));
@@ -614,6 +623,18 @@ void MainWindow::BuildUi()
                 }
             });
 
+    // The References tool window (code editor M4): Find References in a package
+    // shader lists its result here, kept while the author follows it.
+    mReferencesDockOrNull = new QDockWidget(QStringLiteral("References"), this);
+    mReferencesDockOrNull->setObjectName(QStringLiteral("referencesDock"));
+    mReferencesDockOrNull->setWindowIcon(GetEditorIcon(EditorIcon::Error));
+    mReferencesOrNull = new CodeReferencesWindow(mReferencesDockOrNull);
+    mReferencesDockOrNull->setWidget(mReferencesOrNull);
+    Renderer_->SetReferencesWindow(mReferencesOrNull);
+    connect(mReferencesOrNull, &CodeReferencesWindow::ResultsShown, this, [this]() {
+        openToolWindow(mReferencesDockOrNull);
+    });
+
     InspectorDock_ = new QDockWidget(QStringLiteral("Live Inspector"), this);
     InspectorDock_->setObjectName(QStringLiteral("liveInspectorDock"));
     InspectorDock_->setWindowIcon(GetEditorIcon(EditorIcon::LiveInspector));
@@ -711,8 +732,9 @@ void MainWindow::BuildUi()
     // while a code view has a tab active (architecture, "Status bar").
     mCodeStatusBarOrNull = new CodeStatusBar(this);
     statusBar()->addPermanentWidget(mCodeStatusBarOrNull);
-    mCodeStatusBarOrNull->SetActiveTab(mCodeArea->GetActiveTabOrNull());
-    connect(mCodeArea, &CodeEditorArea::ActiveTabChanged, mCodeStatusBarOrNull, &CodeStatusBar::SetActiveTab);
+    connect(mCodeArea, &CodeEditorArea::ActiveTabChanged, this, [this](CodeDocumentTab* tabOrNull) {
+        mCodeStatusBarOrNull->SetActiveTab(mDocuments->GetActiveDocumentOrNull() == mCodeArea ? tabOrNull : nullptr);
+    });
     // A save, edit or profile change can change the shown items (dirty, endings).
     connect(mCodeArea, &CodeEditorArea::TabsChanged, mCodeStatusBarOrNull, [this]() {
         mCodeStatusBarOrNull->Refresh();
@@ -1087,6 +1109,7 @@ void MainWindow::arrangeDefaultDocks()
     tabifyDockWidget(mPropertiesDock, mHistoryDockOrNull);
     addDockWidget(Qt::BottomDockWidgetArea, mErrorListDock);
     tabifyDockWidget(mErrorListDock, mSearchDockOrNull);
+    tabifyDockWidget(mErrorListDock, mReferencesDockOrNull);
     tabifyDockWidget(mErrorListDock, OutputDock_);
     tabifyDockWidget(mErrorListDock, TimingDock_);
     tabifyDockWidget(mErrorListDock, mProfilingDock);
@@ -1110,6 +1133,7 @@ QList<QDockWidget*> MainWindow::getToolWindows() const
         mHistoryDockOrNull,
         mErrorListDock,
         mSearchDockOrNull,
+        mReferencesDockOrNull,
         OutputDock_,
         TimingDock_,
         mProfilingDock,
@@ -1127,12 +1151,19 @@ void MainWindow::hideIdleRayPaths()
 void MainWindow::showCodeAndViewport()
 {
     setViewportFocused(false);
-    if (Renderer_->ShowSourceView() == false || mDocuments->ShowDocumentsSideBySide(Renderer_, World_) == false)
+    const bool isGraphCodeCurrent =
+        mDocuments->IsDocumentCurrent(mCodeArea) == true && Renderer_->IsGraphCodeActive() == true;
+    if ((isGraphCodeCurrent == false && Renderer_->ShowSourceView() == false) ||
+        mDocuments->ShowDocumentsSideBySide(mCodeArea, World_) == false)
     {
         statusBar()->showMessage(QStringLiteral("Open a project render graph with sources to use Code and Viewport."));
         return;
     }
-    Renderer_->FocusActiveView();
+    CodeDocumentTab* tabOrNull = mCodeArea->GetActiveTabOrNull();
+    if (tabOrNull != nullptr)
+    {
+        tabOrNull->GetEditor().setFocus(Qt::ShortcutFocusReason);
+    }
     updateContextStrip();
 }
 
@@ -1168,6 +1199,10 @@ void MainWindow::setViewportFocused(bool isFocused)
             Renderer_->SetChromeVisible(false);
             Renderer_->FocusActiveView();
         }
+        else if (mFocusRestoreDocumentOrNull == mCodeArea && Renderer_->IsGraphCodeActive() == true)
+        {
+            Renderer_->SetCodeFocused(true);
+        }
         else
         {
             World_->SetChromeVisible(false);
@@ -1178,6 +1213,7 @@ void MainWindow::setViewportFocused(bool isFocused)
     mIsViewportFocused = false;
     World_->SetChromeVisible(true);
     Renderer_->SetChromeVisible(true);
+    Renderer_->SetCodeFocused(false);
     if (restoreState(mFocusRestoreState, LAYOUT_VERSION) == false)
     {
         LUDUS_LOG_TEXT(LOG_EDITOR_LAYOUT, Warning, "Could not restore the layout from before Focus Viewport.");
@@ -1211,10 +1247,15 @@ void MainWindow::applyDefaultDockSizes()
     const foundation::int32 properties =
         qBound(MIN_PROPERTIES_DOCK_PIXELS, width() * PROPERTIES_DOCK_PERCENT / PERCENT, MAX_PROPERTIES_DOCK_PIXELS);
     // The diagnostics group is closed until it has something to show: new errors or warnings reveal the
-    // Error List, a build reveals Output, a play session reveals Timing, recording reveals Profiling and
-    // Find in Files reveals Search.
-    for (QDockWidget* dock :
-         {mErrorListDock, mSearchDockOrNull, OutputDock_, TimingDock_, mProfilingDock, mHistoryDockOrNull})
+    // Error List, a build reveals Output, a play session reveals Timing, recording reveals Profiling,
+    // Find in Files reveals Search and Find References reveals References.
+    for (QDockWidget* dock : {mErrorListDock,
+                              mSearchDockOrNull,
+                              mReferencesDockOrNull,
+                              OutputDock_,
+                              TimingDock_,
+                              mProfilingDock,
+                              mHistoryDockOrNull})
     {
         if (dock != nullptr)
         {
@@ -1314,6 +1355,7 @@ void MainWindow::buildWindowMenu(QMenu* menu)
                               mPropertiesDock,
                               mErrorListDock,
                               mSearchDockOrNull,
+                              mReferencesDockOrNull,
                               OutputDock_,
                               mContentDock,
                               mRenderPreviewDock,
@@ -1491,12 +1533,12 @@ void MainWindow::SetProjectWorkspace(const QString& root, bool restore)
     }
     hideIdleRayPaths();
     World_->RestoreSession(object.value(QStringLiteral("world")).toObject());
-    static_cast<void>(Renderer_->RestoreSourceViewState(object.value(QStringLiteral("renderer")).toObject()));
     // Reopen the project's code tabs before the document arrangement, so the
     // saved layout can show the Code document with its tabs already present.
     mCodeArea->RestoreState(object.value(QStringLiteral("codeTabs")).toObject());
     // Malformed or stale arrangements leave the project's default World document open.
     static_cast<void>(mDocuments->RestoreState(object.value(QStringLiteral("documents")).toObject()));
+    static_cast<void>(Renderer_->RestoreSourceViewState(object.value(QStringLiteral("renderer")).toObject()));
     if (mDocuments->GetActiveDocumentOrNull() == nullptr)
     {
         static_cast<void>(mDocuments->OpenDocument(World_));

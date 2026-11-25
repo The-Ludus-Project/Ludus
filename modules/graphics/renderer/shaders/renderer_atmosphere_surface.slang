@@ -138,10 +138,11 @@ void EvaluateVisibleAtmosphereEnvironment(in float3 normalWorld,
         EvaluateAtmosphereSpecular(normalWorld, viewDirectionWorld, roughness, f0, cosineView) * specularVisibility;
 }
 
-// The view segment from the camera to positionWorld: its transmittance and the radiance it scatters toward the camera.
-// A surface's radiance L reaches the camera as L * outTransmittance + outInscattered; outside the shell the segment
-// is empty (transmittance one, nothing scattered).
-void IntegrateAtmosphereViewSegment(in float3 positionWorld, out float3 outTransmittance, out float3 outInscattered)
+// The clear-air view segment from the camera to positionWorld: its transmittance and the radiance it scatters toward
+// the camera. Outside the shell the segment is empty (transmittance one, nothing scattered).
+void IntegrateClearAtmosphereViewSegment(in float3 positionWorld,
+                                         out float3 outTransmittance,
+                                         out float3 outInscattered)
 {
     outTransmittance = float3(1);
     outInscattered = float3(0);
@@ -181,6 +182,60 @@ void IntegrateAtmosphereViewSegment(in float3 positionWorld, out float3 outTrans
     outTransmittance = segment.Transmittance;
     outInscattered = deferredView.AtmosphereIlluminance.rgb * segment.Radiance;
 }
+// The view segment from the camera to positionWorld, through the clear air and the optional cloud layer. A surface's
+// radiance L reaches the camera as L * outTransmittance + outInscattered. The cloud sits between the air in front of
+// its entry and the rest of the segment (ComposeCloudLayer), which keeps the composition affine in L.
+void IntegrateAtmosphereViewSegment(in float3 positionWorld, out float3 outTransmittance, out float3 outInscattered)
+{
+    IntegrateClearAtmosphereViewSegment(positionWorld, outTransmittance, outInscattered);
+    CloudLayerParameters cloud = UnpackCloudLayer(deferredView.AtmosphereCloudLayer);
+    AuroraLayerParameters aurora = UnpackAuroraLayer(deferredView.AtmosphereAuroraLayer);
+    if (cloud.AxisXWorld.w <= 0 && aurora.AxisXWorld.w <= 0)
+    {
+        return;
+    }
+    float3 originWorld = deferredView.AtmosphereCameraWorld.xyz;
+    float3 offsetWorld = positionWorld - originWorld;
+    float distanceMetres = length(offsetWorld);
+    float3 rayWorld = offsetWorld / max(distanceMetres, DIRECTION_EPSILON);
+    float3 upWorld = deferredView.AtmosphereRadialUpWorld.xyz;
+    float3 sunWorld = deferredView.AtmosphereSunWorld.xyz;
+    if (aurora.AxisXWorld.w > 0 && distanceMetres > 0)
+    {
+        float height = deferredView.AtmosphereRadialUpWorld.w;
+        float3 emission =
+            IntegrateAuroraLayer(aurora, upWorld, rayWorld, height, distanceMetres * ATMOSPHERE_KILOMETRES_PER_METRE);
+        if (any(emission > 0))
+        {
+            outInscattered +=
+                emission * SampleTransmittance(atmosphereTransmittanceTexture, height, dot(upWorld, rayWorld));
+        }
+    }
+    if (cloud.AxisXWorld.w <= 0)
+    {
+        return;
+    }
+    CloudLayerSegment segment = IntegrateCloudLayer(atmosphereTransmittanceTexture,
+                                                    cloud,
+                                                    rayWorld,
+                                                    sunWorld,
+                                                    deferredView.AtmosphereIlluminance.rgb,
+                                                    deferredView.AtmosphereRadialUpWorld.w,
+                                                    clamp(dot(rayWorld, upWorld), -1, 1),
+                                                    clamp(dot(sunWorld, upWorld), -1, 1),
+                                                    distanceMetres);
+    if (segment.ExitMetres <= segment.EntryMetres)
+    {
+        return;
+    }
+    float3 airTransmittance;
+    float3 airInscattered;
+    IntegrateClearAtmosphereViewSegment(originWorld + rayWorld * segment.EntryMetres, airTransmittance, airInscattered);
+    outInscattered = airInscattered + airTransmittance * segment.Radiance +
+                     segment.Transmittance * (outInscattered - airInscattered);
+    outTransmittance *= segment.Transmittance;
+}
+
 float3 ComposeAtmosphereSegment(in float3 surfaceRadiance, in float3 positionWorld)
 {
     float3 transmittance;

@@ -6,6 +6,7 @@
 
 #include "internal/code_text.h"
 
+#include <QMetaObject>
 #include <QScrollBar>
 #include <QStringEncoder>
 #include <QTextCursor>
@@ -110,7 +111,43 @@ void CodeDocumentController::Bind(CodeDocumentHost* hostOrNull)
         }
         mEditor.SetDocumentHistory(hostOrNull != nullptr);
     }
+    const CodeDocumentIdentity previous = mIdentity;
     Synchronize();
+    if (IsBound() == true && mEditor.GetLanguage() == CodeLanguage::Slang &&
+        (mIdentity.Document != previous.Document || mIdentity.Epoch != previous.Epoch))
+    {
+        queueSlangLineSeparatorRepair();
+    }
+}
+
+void CodeDocumentController::queueSlangLineSeparatorRepair()
+{
+    const QByteArray repaired = RepairSlangLineSeparators(mBytes);
+    if (repaired.isEmpty() == true)
+    {
+        return;
+    }
+    const CodeDocumentIdentity expected = mIdentity;
+    const CodeDocumentHost* host = mHostOrNull;
+    // Let the tab finish wiring up dirty state, undo, recovery and its other views
+    // before publishing this edit. A stale repair never replaces newer text.
+    QMetaObject::invokeMethod(
+        this,
+        [this, expected, host, repaired]() {
+            if (mIsEditorAlive == false || mHostOrNull != host || mIdentity != expected ||
+                mEditor.GetLanguage() != CodeLanguage::Slang || mEditor.isReadOnly() == true)
+            {
+                return;
+            }
+            const QTextCursor cursor = mEditor.textCursor();
+            CodeTextSelection selection;
+            if (GetCodeByteOffset(repaired, cursor.anchor(), selection.AnchorBytes) == true &&
+                GetCodeByteOffset(repaired, cursor.position(), selection.CaretBytes) == true)
+            {
+                static_cast<void>(ApplyServiceText(expected, repaired, selection));
+            }
+        },
+        Qt::QueuedConnection);
 }
 
 CodeTextCapture CodeDocumentController::Capture() const
@@ -214,7 +251,8 @@ void CodeDocumentController::Synchronize(bool shouldRestoreView)
     const bool isNewBinding =
         snapshot.Identity.Epoch != mIdentity.Epoch || snapshot.Identity.Document != mIdentity.Document;
     const QByteArray bytes = CopyCodeText(snapshot.Text);
-    if (shouldRestoreView == true || isNewBinding == true || bytes != mBytes)
+    const bool hasTextChanged = bytes != mBytes;
+    if (shouldRestoreView == true || isNewBinding == true || hasTextChanged == true)
     {
         QString text;
         if (DecodeCodeText(bytes, text) == false)
@@ -294,6 +332,10 @@ void CodeDocumentController::Synchronize(bool shouldRestoreView)
     }
     mLastSelection = CaptureSelection();
     updateHistoryAvailability();
+    if (isNewBinding == false && hasTextChanged == true)
+    {
+        Q_EMIT DraftTextChanged();
+    }
 }
 
 void CodeDocumentController::updateHistoryAvailability()
@@ -479,6 +521,7 @@ void CodeDocumentController::commitPending()
     mIdentity = mHostOrNull->GetSnapshot().Identity;
     mLastSelection = CaptureSelection();
     updateHistoryAvailability();
+    Q_EMIT DraftTextChanged();
     Q_EMIT TextAccepted();
 }
 
@@ -656,6 +699,10 @@ CodeEditStatus CodeDocumentController::ApplyMultiCursorEdit(const QList<CodeRegi
     {
         return status;
     }
+    // Apply the accepted regions to the view in place, so Synchronize finds the
+    // projection already equal to the host text instead of replacing every line
+    // between the first and the last cursor (issue 1261).
+    projectRegionEdits(regionsInDocumentOrder);
     Synchronize();
 
     // The primary region's resulting caret becomes the single Qt cursor; every
@@ -683,5 +730,34 @@ CodeEditStatus CodeDocumentController::ApplyMultiCursorEdit(const QList<CodeRegi
     mEditor.horizontalScrollBar()->setValue(horizontal);
     Q_EMIT TextAccepted();
     return status;
+}
+
+void CodeDocumentController::projectRegionEdits(const QList<CodeRegionEdit>& regionsInDocumentOrder)
+{
+    // Last region first, so every earlier region's Qt positions stay valid. One
+    // edit block reports a single change to the layout, which clears the touched
+    // lines' layouts and lays out only what is painted. Each line keeps its
+    // QTextBlock (and its syntax state and fold data); replacing the span would
+    // delete and recreate every line between the first and the last cursor.
+    const bool wasSynchronizing = mIsSynchronizing;
+    mIsSynchronizing = true;
+    QTextCursor edit(mEditor.document());
+    edit.beginEditBlock();
+    for (isize index = regionsInDocumentOrder.size() - 1; index >= 0; --index)
+    {
+        const CodeRegionEdit& region = regionsInDocumentOrder.at(index);
+        edit.setPosition(region.Start);
+        edit.setPosition(region.End, QTextCursor::KeepAnchor);
+        if (region.Inserted.isEmpty() == true)
+        {
+            edit.removeSelectedText();
+        }
+        else
+        {
+            edit.insertText(region.Inserted);
+        }
+    }
+    edit.endEditBlock();
+    mIsSynchronizing = wasSynchronizing;
 }
 } // namespace ludus::editor

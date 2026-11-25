@@ -27,12 +27,17 @@ StructuredBuffer<NativeRayIntersectionTableToken> NativeRayIntersections;
     return asuint(SceneValue(Offsets.y + primitive).x);
 }
 
-[noinline] bool LudusNativeAcceptTriangle(uint primitive, uint geometry, float2 barycentric)
+[noinline] bool LudusNativeAcceptTriangle(uint primitive, uint geometry, float2 barycentric, uint2 excludedTriangles)
 {
-    if ((Sampling.z & LUDUS_GPU_PREVIEW_OPAQUE_FLAG) != 0 ||
-        ((Sampling.z & LUDUS_GPU_PREVIEW_MIXED_OPACITY_FLAG) != 0 && geometry == 0))
+    const bool isOpaque = (Sampling.z & LUDUS_GPU_PREVIEW_OPAQUE_FLAG) != 0 ||
+                          ((Sampling.z & LUDUS_GPU_PREVIEW_MIXED_OPACITY_FLAG) != 0 && geometry == 0);
+    if (isOpaque == true && all(excludedTriangles == uint2(LUDUS_GPU_PREVIEW_INVALID_TRIANGLE)) == true)
         return true;
-    uint triangle = LudusNativeResolveTriangle(primitive, geometry);
+    const uint triangle = LudusNativeResolveTriangle(primitive, geometry);
+    if (any(triangle == excludedTriangles) == true)
+        return false;
+    if (isOpaque == true)
+        return true;
     return asuint(Surface(triangle, LUDUS_GPU_PREVIEW_TEXTURE_OPTIONS_WORD).z) == 0 ||
            Texture(triangle, TexcoordUv(triangle, barycentric)).w * Surface(triangle, 2).w *
                    InterpolateTriangleColor(triangle, barycentric).w >=
@@ -42,20 +47,22 @@ StructuredBuffer<NativeRayIntersectionTableToken> NativeRayIntersections;
 // Opaque compiler tokens are legalized only by the independently verified MSL
 // adapter. They are never uploaded as buffers, dereferenced, or exposed in the
 // public shader layout. The resource registry owns the actual native tables.
-__target_intrinsic(metal, "LudusTraceNative($0, $1, $2, $3, $4, $5, $6, LUDUS_NATIVE_CONTEXT)") uint4
+__target_intrinsic(metal, "LudusTraceNative($0, $1, $2, $3, $4, $5, $6, $7, LUDUS_NATIVE_CONTEXT)") uint4
     TraceMetalRayPipeline(RaytracingAccelerationStructure scene,
                           StructuredBuffer<NativeRayIntersectionTableToken> intersections,
                           float3 originWorld,
                           float3 directionWorld,
                           float nearDistanceWorld,
                           float farDistanceWorld,
-                          bool isVisibility);
+                          bool isVisibility,
+                          uint2 excludedTriangles);
 
 Hit TraceNative(float3 originWorld,
                 float3 directionWorld,
                 float nearDistanceWorld,
                 float farDistanceWorld,
-                bool isVisibility = false)
+                bool isVisibility = false,
+                uint2 excludedTriangles = uint2(LUDUS_GPU_PREVIEW_INVALID_TRIANGLE))
 {
     Hit hit;
     // Graph invocations always use a positive depth. Retain the independently
@@ -64,7 +71,8 @@ Hit TraceNative(float3 originWorld,
     if (Dimensions.z == 0)
     {
         hit.Triangle = LudusNativeResolveTriangle(0, 0);
-        hit.DistanceWorld = LudusNativeAcceptTriangle(0, 0, float2(0)) ? nearDistanceWorld : farDistanceWorld;
+        hit.DistanceWorld =
+            LudusNativeAcceptTriangle(0, 0, float2(0), excludedTriangles) ? nearDistanceWorld : farDistanceWorld;
         hit.Barycentric = 0;
         return hit;
     }
@@ -74,7 +82,8 @@ Hit TraceNative(float3 originWorld,
                                          directionWorld,
                                          nearDistanceWorld,
                                          farDistanceWorld,
-                                         isVisibility);
+                                         isVisibility,
+                                         excludedTriangles);
     hit.Triangle = result.x;
     hit.DistanceWorld = asfloat(result.y);
     hit.Barycentric = ClampBarycentricToTriangle(asfloat(result.zw));

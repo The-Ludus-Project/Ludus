@@ -189,14 +189,12 @@ TEST_CASE("Cocoa Play sends relative look and movement to the hosted child and r
     REQUIRE(hasStartedPreview);
     REQUIRE(QTest::qWaitFor([&viewport]() { return viewport.PresentedFrames() > 0; }));
 
-    QString address;
-    QString reason;
-    const bool hasStarted = panel.BeginPlay(address, reason);
-    INFO(reason.toStdString());
-    REQUIRE(hasStarted);
+    const PlayViewportStartResult started = panel.BeginPlay();
+    INFO(started.Reason.toStdString());
+    REQUIRE(started.Address.isEmpty() == false);
     QProcess game;
     QProcessEnvironment environment = QProcessEnvironment::systemEnvironment();
-    environment.insert(QString::fromLatin1(ludus::platform::HOSTED_WINDOW_ENVIRONMENT_VARIABLE), address);
+    environment.insert(QString::fromLatin1(ludus::platform::HOSTED_WINDOW_ENVIRONMENT_VARIABLE), started.Address);
     game.setProcessEnvironment(environment);
     game.start(QStringLiteral(LUDUS_HOSTED_PRODUCER), {QStringLiteral("pointer")});
     REQUIRE(game.waitForStarted());

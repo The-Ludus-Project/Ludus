@@ -115,7 +115,7 @@ Macro expansion follows Dave Prosser's
 | --- | --- | --- |
 | `MAX_FILE_TOKENS` | 1,048,576 | Tokens lexed from one file or configuration value |
 | `MAX_OUTPUT_TOKENS` | 1,048,576 | Tokens in one translation unit |
-| `MAX_INCLUDE_DIRECTORIES` | 8 | `PreprocessRequest::IncludeDirectories` |
+| `MAX_INCLUDE_DIRECTORIES` | 16 | `PreprocessRequest::IncludeDirectories` |
 | `MAX_INCLUDE_DEPTH` | 32 | Include nesting, counting the root |
 | `MAX_CONDITIONAL_DEPTH` | 64 | `#if` nesting |
 | `MAX_CONDITION_NESTING` | 64 | Nesting inside one condition |
@@ -134,7 +134,7 @@ Macro expansion follows Dave Prosser's
 | `MAX_TEMPLATE_PARAMETERS` | 8 | Type parameters of one template or concept |
 | `MAX_SPECIALIZATIONS` | 256 | Template specializations per translation unit |
 | `MAX_CONSTRAINT_DEPTH` | 32 | Nested concept applications while a constraint is evaluated |
-| `MAX_BINDINGS` | 64 | Resource bindings per translation unit; RHI pipeline layouts admit fewer (`rhi::RASTER_BINDING_COUNT`) |
+| `MAX_BINDINGS` | 64 | Resource register slots per translation unit, including each array element; RHI pipeline layouts admit fewer (`rhi::RASTER_BINDING_COUNT`) |
 | `MAX_STAGE_LOCATIONS` | 32 | Vertex attributes, stage-interface varyings or color targets of one entry point |
 | `MAX_ARRAY_LENGTH` | 1,048,576 | Elements of one array dimension |
 | `MAX_DIAGNOSTICS` | 256 | Retained diagnostics; later ones are counted |
@@ -253,7 +253,7 @@ the name.
 | LUSL0549 | `invalid-constraint` | A malformed concept or constraint, an `if constexpr` condition that is not a constant bool, templates whose constraints do not order, or a specialized template called with template parameters |
 | LUSL0550 | `specialization-budget` | A call needs more template specializations than `CheckOptions::SpecializationBudget` allows; the message names the template and both repairs |
 | LUSL0551 | `invalid-stage-interface` | A vertex or fragment entry point whose attributes, stage interface or outputs break the layout rules, such as a missing `: ClipPosition`, two stage-interface structs in one module, or one struct in two roles |
-| LUSL0552 | `non-uniform-derivative` | `Sample`, `ddx`, `ddy`, or a call of a function that performs one, in non-uniform control flow; the message names the deciding line, the varying value and the repair |
+| LUSL0552 | `non-uniform-derivative` | `Sample`, `SampleCmp`, `Gather`, `ddx`, `ddy`, `fwidth`, or a call of a function that performs one, in non-uniform control flow; the message names the deciding line, the varying value and the repair |
 | LUSL0553 | `non-uniform-argument` | A varying argument for a `uniform` parameter |
 | LUSL0554 | `invalid-uniform-parameter` | `uniform` on an `out` or `inout` parameter, or on an entry point's parameter |
 | LUSL0555 | `space-mismatch` | Values of two coordinate spaces combined, assigned, passed or returned, or a matrix applied outside its source space; the message names both spaces and the matrix that would fix it |
@@ -388,6 +388,20 @@ bool CheckShade(const language::PreprocessRequest& request, const language::Prep
   contain itself.
 - **`enum class`:** the underlying type is an integer scalar. Enumerators number
   from zero or take constant values, and are named as `Mode::On`.
+- **`const` locals:** a function-local `const` binds any well-typed value
+  read-only, including a scalar or a struct a call returns, as in
+  `const LightSample sample = SampleIncidentLight(scene, receiver);`. The
+  initializer runs once each time execution reaches the declaration. A `const`
+  needs an initializer that produces a value, so a missing initializer or
+  `= void` is an error. Assigning the local, one of its fields, elements or
+  components, incrementing it, calling a `[mutating]` method on it, or passing
+  it or a subobject as `out` or `inout` is `not-assignable`; reads and value
+  copies are allowed. A local initialized by a constant expression is itself a
+  constant expression and may size an array or decide a `static_assert`; a
+  runtime-initialized local, or one built from it, may not (`not-constant`).
+  `static const`, at any scope, still requires a constant initializer. The local
+  keeps its initializer's uniformity and coordinate spaces
+  ([design](../../architecture/shading-language.md#runtime-const-locals)).
 - **Top-level variables** are `static const` (with a constant initializer),
   `groupshared`, or [resource bindings](#resources-and-bindings). Other globals
   come from render-graph bindings or `extern slang` blocks.
@@ -453,25 +467,41 @@ bool CheckShade(const language::PreprocessRequest& request, const language::Prep
   fields, distinct constant indices and disjoint swizzles are separate;
   run-time indices are assumed to overlap.
 
-Built-in functions take positional arguments and lower to the Slang intrinsic of
-the same name:
+Built-in functions take positional arguments. Most lower to the Slang intrinsic of the same name.
 
 | Signature | Functions |
 | --- | --- |
-| float T → T | `sqrt`, `rsqrt`, `exp`, `exp2`, `log`, `log2`, `sin`, `cos`, `tan`, `asin`, `acos`, `atan`, `floor`, `ceil`, `round`, `trunc`, `frac`, `saturate`, `ddx`, `ddy` |
+| float T → T | `sqrt`, `rsqrt`, `exp`, `exp2`, `log`, `log2`, `sin`, `cos`, `tan`, `asin`, `acos`, `atan`, `floor`, `ceil`, `round`, `trunc`, `frac`, `saturate`, `tanh`, `ddx`, `ddy`, `fwidth` |
 | float vector V → V | `normalize` |
 | numeric T → T | `abs` |
+| signed numeric T → matching `int32` shape | `sign` |
 | numeric (T, T) → T | `min`, `max` |
 | float (T, T) → T | `pow`, `atan2`, `step`, `fmod` |
 | numeric (T, T, T) → T | `clamp` |
-| float (T, T, T) → T | `lerp`, `smoothstep` |
+| float (T, T, T) → T | `lerp`, `smoothstep`, `fma` |
 | (V, V) → scalar | `dot` (numeric), `distance` (float) |
 | float V → scalar | `length` |
 | float (V, V) → V | `reflect`; `cross` for 3-vectors |
+| float (V, V, V) → V | `faceforward` |
+| float (V, V, scalar) → V | `refract` |
+| square float matrix → scalar | `determinant` |
+| (bool or matching bool vector, T, T) → T | `select(condition, whenTrue, whenFalse)` |
+| float T → void | `clip` |
 | bool T → bool | `any`, `all` |
 | 32-bit T → same shape | `asuint`, `asint`, `asfloat` |
 | 32-bit integer T → uint32 T | `countbits`, `firstbithigh`, `firstbitlow`, `reversebits` |
 | matrix R x C → C x R | `transpose` |
+
+`fwidth(x)` evaluates `x` once and returns `abs(ddx(x)) + abs(ddy(x))`. In a
+fragment shader, `clip(x)` discards the fragment if any component is negative.
+These lower through helpers accepted by the pinned Slang on Metal and WGSL.
+
+Metal fast math can fold `isfinite`, `isnan`, and `isinf`. Include
+FoundationMath's `math.luslh` and use the scalar bit tests `IsFiniteBits`,
+`IsNanBits`, and `IsInfBits`. The checker diagnoses the Slang spelling and
+offers a rename for a `float32` argument. For a vector, apply the scalar test
+per component to preserve the component mask. Use `IsFiniteBits(float32x3)`
+directly when the test should require all three components to be finite.
 
 In the two-, three-operand element-wise rows, a scalar may stand beside vectors:
 `lerp(a, b, 0.5)`, `max(v, 0)`.
@@ -563,7 +593,7 @@ use a matrix from Object, or transform the operand to World first`.
 
 When the flow rules pass, `Check` applies the
 [uniformity design](../../architecture/shading-language.md#uniformity).
-Implicit-derivative operations (`Texture2D.Sample`, `ddx` and `ddy`) must run
+Implicit-derivative operations (`Sample`, `SampleCmp`, `Gather`, `ddx`, `ddy` and `fwidth`) must run
 in uniform control flow, which WGSL requires and the other targets assume:
 
 ```c
@@ -701,16 +731,41 @@ float32x4 FragmentMain(in CompositeVarying input)
 
 | Type | Element | Operations |
 | --- | --- | --- |
-| `Texture2D<T>` | `float32`, `int32` or `uint32` scalar or vector | `Sample(sampler, uv)`, `SampleLevel(sampler, uv, level)`, `Load(int32x3)`, `GetDimensions()` |
+| `Texture2D<T>` | `float32`, `int32` or `uint32` scalar or vector | `Sample`, `SampleLevel`, `Gather` with `float32x2` UV; `Load(int32x3)`, `GetDimensions()` |
+| `Texture3D<T>` | as `Texture2D` | `Sample`, `SampleLevel` with `float32x3` UVW; `Load(int32x4)`, `GetDimensions()` |
+| `TextureCube<T>` | as `Texture2D` | `Sample`, `SampleLevel`, `Gather` with a `float32x3` direction; `GetDimensions()` |
+| `Texture2DArray<T>` | as `Texture2D` | `Sample`, `SampleLevel`, `Gather` with `float32x3` UV and layer; `Load(int32x4)`, `GetDimensions()` |
+| `DepthTexture2D` | implicit `float32` | `SampleCmp(comparisonSampler, uv, reference)`, `GetDimensions()` |
 | `RWTexture2D<T>` | as `Texture2D` | `texture[uint32x2]`, read and written; `GetDimensions()` |
-| `SamplerState` | none | an argument of `Sample` and `SampleLevel` |
+| `SamplerState` | none | color sampler for `Sample`, `SampleLevel`, and `Gather` |
+| `SamplerComparisonState` | none | depth comparison sampler for `SampleCmp` |
 | `ConstantBuffer<S>` | a struct without `bool` | `buffer.Field`, read-only |
 | `StructuredBuffer<T>` | a value type without `bool` | `buffer[uint32]`, read-only; `GetDimensions()` |
 | `RWStructuredBuffer<T>` | a value type without `bool` | `buffer[uint32]`, read and written; `GetDimensions()`; `int32`/`uint32` elements take `Interlocked` operations |
 
-**Sizes.** `GetDimensions()` returns by value: a texture's level-0 width and height as
-`uint32x2`, a structured buffer's element count as `uint32`. A size is a property of the binding,
-so it is uniform, also for writable resources.
+An `extern slang` struct may mirror `StructuredBuffer<T>` and
+`RWStructuredBuffer<T>` fields declared by Slang. A helper taking that struct
+can index a field directly, such as `resources.Edges[0].Weights[edgeIndex]`.
+Only the writable resource type permits writes to its elements. The Slang
+caller supplies the handles. Buffer element types must contain storage values,
+so they cannot contain resource handles.
+
+An `extern slang` function can declare a one-dimensional input parameter as
+`in T values[]`. Call it with a fixed array of the same element type. LUSL
+keeps the argument's length, and Slang selects the matching array overload.
+The scene interface uses this declaration for `SampleSceneWeightedIndex`.
+
+`Sample(sampler, coordinate)` uses an implicit LOD. `SampleLevel` adds a
+`float32` LOD. For `Load` the final coordinate is the integer mip level.
+`Gather` returns the first component of the four neighboring texels in
+Slang gather order. `SampleCmp` returns the filtered scalar comparison result.
+Comparison sampling requires a host API that binds depth textures and
+comparison samplers. The current Ludus raster sampler API exposes color samplers.
+
+**Sizes.** `GetDimensions()` returns the width and height of mip level zero as
+`uint32x2`, with a third component for depth or layer count on `Texture3D`
+and `Texture2DArray`. A structured buffer returns its element count as `uint32`.
+Binding sizes are uniform, including for writable resources.
 
 ```c
 uint32x2 size = image.GetDimensions();
@@ -770,15 +825,31 @@ for (uint32 stride = GROUP_SIZE / 2; stride > 0; stride = stride >> 1)
   is a binding. Resources in `extern slang` blocks are the including Slang
   code's bindings and take no slot.
 - Resources are handles. They can be passed as `in` arguments to LUSL
-  functions. They cannot be locals, fields, array elements, return values,
+  functions. They cannot be locals, fields, return values,
   `out`/`inout` arguments, entry point parameters, assigned or zeroed.
 - Resource indices are not bounds-checked; out-of-range buffer reads follow the
   target's robustness rules.
 
-**Slots.** One counter numbers the bindings from 0 in declaration order, after
-includes are expanded, across all kinds. Lowering writes each through the RHI
-boundary's annotations: `[[vk::binding(n, 0)]] Texture2D<float4> image :
-register(t0);`. There is no syntax for a manual slot.
+**Binding arrays.** Declare a sampled color texture or `SamplerState` as a
+one-dimensional top-level array, using a named positive `static const` length.
+Index the binding with an in-range integer constant. Pass an individual resource
+to a helper with an `in` parameter. The native raster shader build takes
+`NATIVE_BINDING_ARRAYS`; enabled target profiles set their own resource limits.
+For example:
+
+```c
+static const uint32 IMAGE_COUNT = 2;
+Texture2D<float32x4> images[IMAGE_COUNT];
+SamplerState imageSampler;
+```
+
+**Slots.** One counter starts at 0 and advances in declaration order after
+includes expand. Each binding has one group-zero slot; a fixed array has a
+descriptor count at that slot and reserves as many consecutive native register
+indices. In the example, `images` starts at 0 and `imageSampler` takes slot 2.
+Sampled color and depth textures and read-only structured buffers use `t`
+registers. Writable textures and buffers use `u`, both sampler kinds use `s`,
+and constant buffers use `b`.
 
 **Stage interfaces.**
 - **Vertex inputs** are a vertex entry point's `in` parameters: `float32`,
@@ -798,9 +869,10 @@ register(t0);`. There is no syntax for a manual slot.
 - Locations lower to `[[vk::location(n)]]` with `TEXCOORDn` semantics; every
   backend matches attributes by location.
 
-**The slot table.** `EmitResult::Bindings` lists each binding's name, kind and
-slot, and `EmitResult::VertexInputs` each vertex input's name and location.
-`luslc lower --report` writes them as `binding` and `vertex-input` lines.
+**The slot table.** `EmitResult::Bindings` lists each binding's name, kind,
+slot and descriptor count, and `EmitResult::VertexInputs` each vertex input's name and location.
+`luslc lower --report` writes them as `binding` and `vertex-input` lines. An array with multiple
+descriptors appends its count after the slot.
 
 **Building standalone shaders.** `ludus_compile_shader` accepts a `.lusl`
 `SOURCE`:
@@ -812,10 +884,42 @@ ludus_compile_shader(TARGET my_game NAME composite
 
 - Pass `RASTER` for vertex and fragment shaders with resources, so the
   generated header carries the reflected binding table the RHI layout needs.
-- `cmake/shaders/lower_lusl.py` lowers it with `luslc` (the build tree's target
-  or the SDK's `bin/luslc`), and the generated module is compiled like a Slang
-  source. `INCLUDES` below the source's directory become LUSL include
-  directories. A depfile lists every file the lowering may read.
+- `cmake/shaders/lower_lusl.py` lowers it with `luslc`, and the generated
+  module is compiled like a Slang source. The helper uses the native build
+  tree's `luslc` target, else `LUDUS_LUSLC`, else the SDK's `bin/luslc`.
+- **Cross builds take a host `luslc`.** An Emscripten build compiles `luslc` for
+  the browser, so it cannot run it. Set `LUDUS_LUSLC` to a host compiler built
+  from the same sources: `./scripts/bootstrap-luslc` configures a luslc-only
+  native tree (`LUDUS_LUSLC_ONLY`) in `out/build/host-luslc` with the pinned host
+  tools and prints the compiler path. Each run rebuilds it incrementally.
+  `scripts/build`, `scripts/test` and `scripts/check` for the `web-emscripten-*`
+  presets, and `scripts/build-web-editor`, run it and pass the result. An
+  installed browser SDK consumer that compiles a `.lusl` shader passes
+  `-DLUDUS_LUSLC=<path>` like `LUDUS_SLANG_COMPILER`. A missing setting fails
+  configuration and names that command. `INCLUDES` accepts shared roots outside the source directory. LUSL
+  searches beside the file naming the include, then in the source directory,
+  then in the supplied roots in order. A depfile tracks the original files
+  behind the lowering snapshot.
+- **The GLSL ES variant.** The shader driver defines `LUDUS_GLSL_ES=1` only
+  for the WebGL 2 artifact ([ADR 0013](../../decisions/0013-browser-glsl-es-shader-toolchain.md)),
+  but the LUSL preprocessor runs before that. When the source or one of its
+  headers names `LUDUS_GLSL_ES`, the helper lowers it twice, with `=0` and `=1`.
+  It then writes both lowerings into one module that selects one by the
+  macro's value. Both lowerings must assign the same slots and locations,
+  because host code binds one slot table. Keep resource and input declarations
+  outside the condition. A source that does not name the macro is lowered once.
+  Without the helper, `luslc lower` needs an explicit `--define LUDUS_GLSL_ES=0`
+  or `=1`; an undefined macro in `#if` is `LUSL0219`.
+- **`DEFINES` reach the LUSL preprocessor.** The helper passes each entry to
+  every lowering as `luslc lower --define`, so `#if` and `#ifndef` in the LUSL
+  source see the values a Slang source would see through `-D`. A bare `NAME`
+  means `NAME=1`. Changing `DEFINES` lowers and compiles the shader again.
+  They are configuration values: LUSL has no optional macros, so a source that
+  tests a name with `#if`, `#ifdef` or `#ifndef` needs it in every build's
+  `DEFINES` (otherwise `LUSL0219` or `LUSL0220`). A Slang
+  `#ifndef NAME / #define NAME <default>` becomes a value every consumer passes,
+  or a constant. `LUDUS_GLSL_ES` belongs to the driver; naming it in `DEFINES`
+  fails the build.
 - `<NAME>_slots.h` is generated beside `<NAME>.h`. Host code binds by these
   constants, never by a literal:
 
@@ -832,15 +936,25 @@ ludus_compile_shader(TARGET my_game NAME composite
   with `renderer_composite.slang`, compares every pixel, and checks the slot
   constants against the reflected bindings.
 
+Renderer recipes can include `point_search_layout.luslh`,
+`scene_shader_layout.luslh`, `renderer_gpu_preview_layout.luslh`, and
+`renderer_reference_layout.luslh`. These headers expose shared layout macros
+from the corresponding C++ headers. After changing an owner, run
+`python3 cmake/shaders/generate_lusl_layouts.py` and commit the regenerated
+headers. The generated-source check rejects drift. The preview layout exposes
+the host header's default workgroup dimensions. The SDK ships the same
+headers alongside its renderer recipes.
+
 - **Evidence:** `tests/shared_memory_tests.cpp` holds golden and diagnostic tests, and the target
   tests compile each construct for SPIR-V, ray-query SPIR-V, WGSL and Metal.
   `modules/graphics/renderer/tests/lusl_shared_memory` runs a LUSL kernel per construct beside
   its Slang equivalent on the GPU and compares every result word.
 
 **Current limits.**
-- No binding arrays (bindless), cube or 3D textures, or manual slots yet. Render-graph programs
-  keep receiving their bindings from the graph.
-- `GetDimensions()` has no mip-level form and reports level 0.
+- Binding arrays hold sampled color textures or samplers and take constant indices: no
+  runtime-indexed (`NonUniformResourceIndex`) or runtime-sized arrays, no buffer arrays, and no
+  manual slots yet. Render-graph programs keep receiving their bindings from the graph.
+- `GetDimensions()` has no mip-level form and reports level 0; it does not return a mip count.
 - **Buffer lengths on Metal.** Slang's direct Metal backend has no buffer-length query, so a module
   that calls `GetDimensions()` on a structured buffer fails the portable target set. It compiles
   for ray-query SPIR-V; Metal artifacts come from SPIR-V through SPIRV-Cross, whose buffer-size
@@ -927,9 +1041,14 @@ array, vector or matrix goes through a generated `_luslCheckIndexN`:
 
 The first failure is kept; zero means no check failed. `EmitResult::BoundsChecks`
 maps each failure code to its index expression. Constant indices are checked by
-the checker in every build, and release builds emit no checks. Reporting the
-latched code through the render graph's invocation failure arrives with the
-render-graph integration in L1e.
+the checker in every build, and release builds emit no checks. Debug and Development graph builds enable these checks for LUSL ray callbacks
+and scene compute passes. For a standalone graph build, pass `--bounds-checks`
+to `ludus_tools render-graph build`. A latched callback failure marks the ray
+invocation as failed even if the clamped access returned a valid color. The
+ray-pass summary reports the highest mapped LUSL line among the failures in
+that history. Use that line to check the index and its declared extent in the
+pass's LUSL sources. The mapping follows the original source, including macro
+use sites. Raster callbacks have no invocation failure channel.
 
 ### Line mapping
 
@@ -1010,7 +1129,8 @@ luslc format --root shaders --check main/shade.lusl main/common.luslh
     `specialization <template file:line> <Shade<CarPaint>> <generated name>`,
     `groupshared-clear <entry file:line> <variable file:line> <unpadded bytes>`,
     `binding <variable file:line> <name> <kind> <slot>` and
-    `vertex-input <entry file:line> <name> <location>`.
+    `vertex-input <entry file:line> <name> <location>`. Requests with defines
+    also report `configuration-read-mask <bits in --define order>`.
 - **`check`** reports diagnostics only.
 - **`lower`** writes the Slang module to `--output`, or to standard output.
   The output file is replaced atomically.
@@ -1128,7 +1248,8 @@ The SDK's `.luslh` headers are generated from Slang reflection, so they cannot
 drift from the Slang they declare.
 
 `math.luslh` declares FoundationMath's `math.slang` for LUSL:
-- its constants, such as `PI` and `RANDOM_MAX_DIMENSION`;
+- its [shader math and numeric constants](#shader-math-and-numeric-constants), plus constants such as
+  `RANDOM_MAX_DIMENSION`;
 - `RandomAddress`;
 - its functions, from `ComputeErrorFunction` to `ApplyNormalWorld`.
 
@@ -1137,6 +1258,54 @@ keep their Slang names and parameter names, so named arguments use the Slang
 parameter names: `MakeRandomAddress(scope = id.xy, event = 0, dimension = 1)`.
 A target test calls every declaration and compiles the module for SPIR-V, WGSL
 and Metal.
+
+Use `NearlyEqual(first, second, absoluteTolerance, relativeTolerance)` for
+scalars. Pass zero for the relative tolerance when the comparison has a fixed
+unit-based threshold. The three-argument `NearlyEqual` overload compares
+`float32x3` positions by Euclidean distance in world units. Both overloads
+reject non-finite operands and negative or non-finite tolerances.
+
+```c
+#include "math.luslh"
+
+bool AreEdgeEndpointsNear(in float32x3 firstWorld,
+                          in float32x3 secondWorld,
+                          in float32 toleranceWorld)
+{
+    return NearlyEqual(firstWorld, secondWorld, toleranceWorld);
+}
+```
+
+Slang shaders call the same overloads via `#include "math.slang"`.
+
+#### Shader math and numeric constants
+
+Include `math.luslh` in LUSL or `math.slang` in Slang. The headers expose the
+same typed constants for their shared scalar types.
+
+| Group | Constants |
+| --- | --- |
+| Angles | `PI`, `TAU`, `HALF_PI`, `QUARTER_PI`, `INV_PI`, `INV_TAU` |
+| Angle conversion | `DEGREES_TO_RADIANS`, `RADIANS_TO_DEGREES` |
+| Exponentials and roots | `E`, `LN_2`, `LN_10`, `LOG2_E`, `LOG10_E`, `SQRT_2`, `INV_SQRT_2` |
+| Signed integer limits | `INT16_MIN`, `INT16_MAX`, `INT32_MIN`, `INT32_MAX`, `INT64_MIN`, `INT64_MAX` |
+| Unsigned integer limits | `UINT16_MAX`, `UINT32_MAX`, `UINT64_MAX`. All unsigned minima are zero. |
+| Floating-point limits | `FLOAT16_EPSILON`, `FLOAT16_MIN_NORMAL`, `FLOAT16_MAX`, with the same names prefixed `FLOAT32_` and `FLOAT64_` for the other widths |
+
+Angles, conversion factors, exponentials and roots use binary32 by default.
+Append `_F64`, as in `PI_F64`, for the binary64 value. `EPSILON` is the gap from
+one to the next larger representable value. `MIN_NORMAL` is the least positive
+normal value and `MAX` is the greatest finite value. The least finite value is
+`-MAX` for that width.
+
+Using a constant of a capability-gated type requires the same target support
+as any other value of that type. The shared headers can be included by 32-bit
+shaders on every portable target. WGSL half-precision arithmetic requires its
+`f16` extension and WebGPU's `shader-f16` device feature. The worker's portable
+profile checks SPIR-V, WGSL and Metal together. For widths outside that common
+set, use a supported native profile or lower with `luslc` and compile for a
+specific target with Slang. Slang also exposes `INT8_MIN`, `INT8_MAX`, and
+`UINT8_MAX` on targets that support 8-bit integer values.
 
 `ray_shader.luslh` declares the ray callback types `Ray`, `RayLaunch` and
 `RayHit` for [render-graph programs](#render-graph-programs). The ray wrapper
@@ -1152,11 +1321,14 @@ wrapper includes `scene_shader.slang` before any callback:
   `IncidentLightMeasure` and `LightSelectionPolicy`;
 - `Ray`, the scene `RayLaunch` (with the camera and sampling state),
   `SceneContext`, `RayQueryContext`, `SurfaceHit`, `MaterialSample`,
-  `LightInfo`, `SelectedLight`, `LightSample`, `IncidentLightSample` and
-  `SceneInfo`;
+  `LightInfo`, `SelectedLight`, `LightSample`, `IncidentLightSample`,
+  `SceneLightSample` and `SceneInfo`;
 - the public operations, from `TraceClosest`, `TestVisibility`,
   `MakeCameraRay` and `SpawnSurfaceRay` to `EvaluateMaterial`, `SelectLight`,
-  `SampleIncidentLight` and every `SampleSceneRandom` overload;
+  `SampleIncidentLight`, both `SampleLight` overloads,
+  `SampleUniformFloat01` for explicit dimensions,
+  `SampleSceneRandom` for automatic draws and the vector overloads of
+  `SampleSceneWeightedIndex`;
 - the failure reasons as LUSL constants (`SCENE_FAILURE_AUTHORED_FIRST`, ...).
 
 It includes `math.luslh`. A scene-interface program includes
@@ -1381,6 +1553,18 @@ float32x3 ShadeWithFog(in M material, in float32x3 normalWorld, in FogParameters
 
 ## Render-graph programs
 
+Scene shader templates include the generated `graph_resources.luslh` and
+declare an `in <FunctionName>Resources resources` parameter. Connected Buffer
+ports supply the members, with `GetCount()` and `Load(index)` on readable views
+and `Store(index, value)` on writable views. The language server checks the same
+generated declarations as the build. See [access a Buffer by port
+name](../../development/render-graph-authoring.md#access-an-ordered-buffer-by-port-name).
+
+Textures marked **Shader read/write** also appear by port name in
+`resources`. Each texture view exposes `GetDimensions()`,
+`Load(positionPixel)`, and `Store(positionPixel, value)`. See
+[write a texture by port name](../../development/render-graph-authoring.md#write-a-storage-texture-at-an-independent-launch-size).
+
 A render-graph program's `source` may name a `.lusl` file:
 
 ```json
@@ -1435,7 +1619,20 @@ float32x3 ShadeMiss(in Ray ray)
 - **Build report.** `build-report.json` gains a `lusl` object, keyed by source,
   with each source's `specializations` (template location, name and generated
   name) and `groupshared_clears` (entry point, variable and unpadded bytes).
+  Configured sources also report `configuration_reads`, a map from macro name
+  to the selected integer value for each set bit in the preprocessor's read mask.
   Every build lowers again, so cache hits report them too.
+- **Configuration values.** An authored LUSL program in `.lushader.json` may
+  declare `"configuration_values": {"SHADOW_MODE": 2, "USE_SHADOWS": true}`.
+  Values are signed 32-bit integers or Booleans (passed as `0` or `1`).
+  Use the macro in the LUSL source, for example `#if SHADOW_MODE == 2`.
+  Programs sharing a source share one translation unit and must select the
+  same values. For multiple selections, declare distinct program records with
+  separate entry files and assign them through the graph's existing shader
+  program choices. Each linked stage keys its generated source and the macros
+  the preprocessor read. Editing an unread value reuses the cached stage.
+  Runtime parameters and graph options remain separate from these authored
+  compile-time inputs.
 - **Style setting.** The project-wide key is the CMake cache variable
   `LUDUS_LUSL_STYLE`, with the values `strict` (the default), `warn` and `off`.
   A game project sets it once, in its `CMakeLists.txt` before compiling graphs or
@@ -1472,9 +1669,10 @@ float32x3 ShadeMiss(in Ray ray)
     `ray_shader.luslh` for the Ray/Color profile, `scene_payload.luslh` (with
     `scene_shader.luslh`) for scene-interface techniques. Graph-owned typed storage belongs to a single ray job. Its contents persist
     across submissions until the graph replaces the storage.
-  - Configuration values do not reach LUSL programs from the render graph yet,
-    and render-graph builds emit no development bounds checks.
+  - Render-graph builds emit no development bounds checks.
 - **Evidence:**
+  - `rg2_bound_lusl` selects a color branch through a configuration macro.
+    Its GPU test compares every output byte with the equivalent Slang package.
   - `rg2_raytracing_lusl` is `rg2_raytracing` with its generation, miss and
     closest-hit callbacks ported to LUSL. A GPU test renders both packages and
     compares every pixel of three frames.
@@ -1553,6 +1751,9 @@ with and without bounds checks. It also checks:
 - `.lusl` requests: read masks, configuration values, diagnostics and the style
   setting;
 - the [SDK declarations](#sdk-declarations).
+
+On Windows it also compiles the resource-query, atomic and barrier modules to
+signed DXIL. The Windows runtime qualification runs it.
 
 It is built when the native compiler library is (`LUDUS_BUILD_SHADER_WORKER=ON`).
 `luslc_tests` runs `luslc` on temporary snapshots and checks that every `.lusl`

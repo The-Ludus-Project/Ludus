@@ -65,17 +65,18 @@ def find_wrapper_path(package, marker):
     return matches[0]
 
 
-def find_ray_compute(package, source):
+def find_ray_compute(package, source, *, profile=None):
     """Return the one ray-tracing recipe whose compute kernel compiles source, and its wrapper text.
 
     A package holds a ray recipe per configuration, in no configuration order, so a test names the authored
-    kernel source it examines instead of taking the first recipe or program directory listed.
+    kernel source and, for multi-profile packages, the shader profile it examines.
     """
     descriptor = json.loads((package / 'package.json').read_text())
     keys = {program['key'] for program in descriptor['programs'] if program['descriptor']['stage'] == 'compute'
             and program['descriptor']['source_map']['function'] == source}
     recipes = [recipe for recipe in descriptor['recipes']
-               if recipe['technique'] == ray.TECHNIQUE and recipe['compute'] in keys]
+               if recipe['technique'] == ray.TECHNIQUE and recipe['compute'] in keys
+               and (profile is None or recipe['profile'] == profile)]
     if len(recipes) != 1:
         raise AssertionError(f'{len(recipes)} ray recipes compile {source}; expected one')
     return recipes[0], (package / 'programs' / recipes[0]['compute'] / 'wrapper.slang').read_text()
@@ -428,7 +429,7 @@ class RayPipelineTests(unittest.TestCase):
         plan = self.compile()
         self.assertEqual(ray.HARDWARE_PIPELINE_TAG, ray.program_tuple(self.node)[-1])
         profiles = ray.group_profiles([plan], {}, build)
-        self.assertTrue(profiles[0]['native_pipeline'])
+        self.assertEqual({profiles[0]['variants'][0]: 0}, profiles[0]['native_slots'])
         self.assertFalse(profiles[0]['persistent'])
         self.assertTrue(ray.requires_native_queries(plan))
 
@@ -440,7 +441,7 @@ class RayPipelineTests(unittest.TestCase):
         self.assertEqual(1, len(profiles))
         self.assertEqual(1, len(profiles[0]['variants']))
         self.assertFalse(profiles[0]['persistent'])
-        self.assertTrue(profiles[0]['native_pipeline'])
+        self.assertEqual({profiles[0]['variants'][0]: 0}, profiles[0]['native_slots'])
 
     def test_hardware_invocation_rejects_compute_traversal_fields(self):
         self.node['invocation'].update(type='RayTracing', traversal='NativeQuery')
@@ -640,7 +641,7 @@ class RayPipelineTests(unittest.TestCase):
         original = deepcopy(self.node)
         changes = (lambda node: node['state'].update(max_recursion=2),
                    lambda node: node['state'].update(payload_bytes=16),
-                   lambda node: node['invocation'].update(dimensions=[1, 1, 1]),
+                   lambda node: node['invocation'].update(dimensions=[1, 1, 2]),
                    lambda node: node['outputs'][0].update(load='Load'),
                    lambda node: node['inputs'].append({'id': 'extra', 'type': 'Float32', 'required': False}))
         for change in changes:
@@ -662,20 +663,17 @@ class RayPipelineTests(unittest.TestCase):
             self.assertEqual('ColorTarget', operation['pipeline']['invocation']['dimensions'])
             self.assertEqual(self.document, json.loads(self.path.read_text()))
 
-    def test_explicit_launch_mismatch_reports_actual_expected_and_repair(self):
-        self.node['invocation']['dimensions'] = [1, 2, 1]
-        with self.assertRaises(ToolingError) as failure:
-            self.compile()
-        self.assertEqual('RenderGraphAttachmentMismatch', failure.exception.code)
-        self.assertIn('[1, 2, 1]', failure.exception.message)
-        self.assertIn('[96, 64, 1]', failure.exception.message)
-        self.assertIn('Main/color', failure.exception.message)
-        self.assertIn('Match color target', failure.exception.message)
-        self.assertEqual('invocation.dimensions', failure.exception.location['field'])
-        issue = failure.exception.diagnostics[0]
-        self.assertEqual('[96, 64, 1]', issue['expected'])
-        self.assertEqual('[1, 2, 1]', issue['actual'])
-        self.assertIn('Match color target', issue['repair'])
+    def test_explicit_launch_stays_fixed_when_the_target_extent_changes(self):
+        dimensions = [8, 8, 1]
+        self.node['invocation']['dimensions'] = dimensions
+        target = next(node for node in self.document['configurations'][0]['nodes'] if node['kind'] == 'Target')
+        for extent in ([3, 5], [96, 64]):
+            with self.subTest(extent=extent):
+                target['extent'] = extent
+                plan = self.compile()
+                operation = next(value for value in plan['passes'] if value['kind'] == 'RayTracing')
+                self.assertEqual(dimensions, operation['dimensions'])
+                self.assertEqual(extent, plan['resources'][operation['attachments']['color']['resource']]['extent'])
 
     def test_independent_pipeline_profile_errors_are_collected_before_resource_lowering(self):
         self.node['state']['max_recursion'] = 2
@@ -765,9 +763,19 @@ class RayPipelineTests(unittest.TestCase):
         with self.assertRaises(ToolingError):
             build.validate_manifest(value)
         value['programs'][-1]['output'] = 'ScenePayload'
-        techniques[ray.TECHNIQUE]['scene_interface']['surface_queries'] = 0
-        with self.assertRaises(ToolingError):
-            build.validate_manifest(value)
+        interface = techniques[ray.TECHNIQUE]['scene_interface']
+        maximum = ray.SCENE_QUERY_LIMITS['MAX_SURFACE_QUERIES']
+        for admitted in (17, maximum):
+            with self.subTest(surface_queries=admitted):
+                interface['surface_queries'] = admitted
+                build.validate_manifest(value)
+        for rejected in (0, maximum + 1):
+            with self.subTest(surface_queries=rejected):
+                interface['surface_queries'] = rejected
+                with self.assertRaises(ToolingError) as caught:
+                    build.validate_manifest(value)
+                self.assertEqual(caught.exception.code, 'RenderGraphBuildCapacity')
+                self.assertIn('surface query budget', caught.exception.message)
 
     def test_line_query_budget_is_optional_bounded_and_integral(self):
         fixture = ROOT / 'tests/sdk_consumer/rg2/scene_ray/main.lushader.json.in'
@@ -954,6 +962,8 @@ class RayCompilerAcceptance(unittest.TestCase):
             for stage in ('LudusNativeRayGeneration', 'LudusNativeClosestHit', 'LudusNativeMiss'):
                 self.assertIn('[[visible]] void ' + stage, code)
             self.assertIn('intersector.intersect(ray, scene', code)
+            self.assertIn('intersector.intersect(ray, scene, 255, intersections, excludedTriangles)', code)
+            self.assertIn('ray_data uint2& excludedTriangles [[payload]]', code)
             self.assertIn('functions[stage](packet, context)', code)
             # The fixed stage slots, then the failure summary the generation kernel counts latched pixels into.
             self.assertEqual(set(range(8)) | {ray.FAILURE_SLOT},
@@ -965,12 +975,65 @@ class RayCompilerAcceptance(unittest.TestCase):
             self.assertNotIn(('NativeRayStages', 'compute', 'metal'), default_contents['artifacts'])
             compute_artifact = default_contents['artifacts'][('RayTracing', 'compute', 'metal')]
             self.assertEqual([8, 8, 1], compute_artifact['descriptor']['interface']['workgroup'])
-            self.assertEqual([64, 1, 1], native['descriptor']['interface']['workgroup'])
+            # Since package version 42 (#2148) the native stages record the bundle's one workgroup shape.
+            self.assertEqual([8, 8, 1], native['descriptor']['interface']['workgroup'])
             execution.emit_runtime(str(package), root / 'default.h', configuration='Default')
             self.assertNotIn('result.NativeRayStages.Artifact.HasNativeRayStages = true', (root / 'default.h').read_text())
             execution.cook_runtime(str(package), root / 'hardware.lurgrt', configuration='Hardware')
             execution.emit_runtime(str(package), root / 'hardware.h', name='Hardware', configuration='Hardware')
             self.assertIn('result.NativeRayStages.Artifact.HasNativeRayStages = true', (root / 'hardware.h').read_text())
+
+    def test_native_ray_lighting_uses_reflected_resources_of_its_own_configuration(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            source = root / 'source'
+            shutil.copytree(ROOT / 'tests/sdk_consumer/rg2/scene_ray', source)
+            path = source / 'main.lurender.json'
+            document = json.loads(path.read_text())
+            hardware = deepcopy(document['configurations'][0])
+            hardware['id'] = 'Hardware'
+            node = next(item for item in hardware['nodes'] if item['kind'] == 'RayTracingPipeline')
+            node['invocation']['type'] = 'RayTracing'
+            next(row for row in node['shaders'] if row['stage'] == 'closest_hit')['program'] = 'HardwareClosest'
+            document['configurations'].append(hardware)
+            path.write_bytes(graph.canonical_asset(document))
+
+            value = json.loads((source / 'main.lushader.json.in').read_text()
+                               .replace('@RG2_TEST_PROFILES@', '["metal"]'))
+            technique = next(item for item in value['techniques'] if item['id'] == ray.TECHNIQUE)
+            technique['scene_interface']['polygonal_light_sampling'] = True
+            closest = next(item for item in value['programs'] if item['id'] == 'Closest')
+            hardware_source = 'main_shaders/hardware_closest.slang'
+            value['programs'].append({**closest, 'id': 'HardwareClosest', 'source': hardware_source})
+            manifest = source / 'main.lushader.json'
+            manifest.write_text(json.dumps(value))
+
+            ordinary = (source / closest['source']).read_text()
+            lit = ordinary.replace(
+                '    payload.Radiance = material.BaseColor',
+                '    payload.Radiance = LookupSpecularLtc(0.5, float3(0, 0, 1), float3(0.04)).Norm * material.BaseColor', 1)
+            self.assertNotEqual(ordinary, lit)
+            (source / closest['source']).write_text(lit)
+            (source / hardware_source).write_text(ordinary)
+            output = root / 'build'
+            options = dict(helper=os.environ['LUDUS_RG1_HELPER'], compiler=os.environ['LUDUS_RG1_SLANG'],
+                           spirv_cross=os.environ['LUDUS_RG1_CROSS'])
+            package = build.build_package(manifest, output, **options)['package']
+            self.assertTrue(execution._runtime_contents(package, 'Default')['ltc_table'])
+            hardware_contents = execution._runtime_contents(package, 'Hardware')
+            self.assertFalse(hardware_contents['ltc_table'])
+            self.assertEqual('HardwarePipeline', hardware_contents['passes'][0]['Traversal'])
+            stage = hardware_contents['artifacts'][('NativeRayStages', 'compute', 'metal')]
+            self.assertNotIn(ray.LTC_TABLE_SLOT, {entry['binding'] for entry in stage['descriptor']['interface']['entries']})
+            self.assertIn(b'intersector.intersect(ray, scene', stage['bytes'])
+            self.assertNotIn(b'LudusLtcTable', stage['bytes'])
+            execution.cook_runtime(package, root / 'hardware.lurgrt', configuration='Hardware')
+
+            accepted = (output / 'current.json').read_bytes()
+            (source / hardware_source).write_text(lit)
+            with self.assertRaisesRegex(ToolingError, 'hardware ray shader reads the polygonal-lighting table'):
+                build.build_package(manifest, output, **options)
+            self.assertEqual(accepted, (output / 'current.json').read_bytes())
 
     def test_reasonless_failures_in_ray_callbacks_are_located_warnings(self):
         # Linked ray kernels replace the authored callbacks in the build's program set; the scan
@@ -1424,17 +1487,40 @@ class RayCompilerAcceptance(unittest.TestCase):
             manifest = source / 'main.lushader.json'
             manifest.write_text((source / 'main.lushader.json.in').read_text().replace(
                 '@RG2_TEST_PROFILES@', '["metal"]'))
+            graph_path = source / 'main.lurender.json'
+            document = json.loads(graph_path.read_text())
+            header = 'main_shaders/shared.luslh'
+            for configuration in document['configurations']:
+                configuration['nodes'].append(
+                    {'id': 'records', 'kind': 'Buffer',
+                     'shader_struct': {'source': header, 'type': 'Record', 'count': 1}})
+                pipeline_node = next(node for node in configuration['nodes'] if node['id'] == 'paths')
+                pipeline_node['inputs'].append({'id': 'records', 'type': 'Buffer', 'required': True})
+                configuration['edges'].append({'from': 'records.buffer', 'to': 'paths.records'})
+            graph_path.write_bytes(graph.canonical_asset(document))
+            shader = source / 'main_shaders/ray_path.slang'
+            shader.write_text(shader.read_text().replace(
+                'inout RayQueryContext queries)',
+                'inout RayQueryContext queries, TraceRayPathFixtureResources resources)').replace(
+                'float sampleColor =', 'float sampleColor = resources.Records.Load(0).Value +'))
+            (source / header).write_text('struct Record { uint32 Value; };\n')
             options = dict(helper=os.environ['LUDUS_RG1_HELPER'], compiler=os.environ['LUDUS_RG1_SLANG'],
                            spirv_cross=os.environ['LUDUS_RG1_CROSS'])
+            generated = header + '.slang'
+            (source / generated).write_text('// Authored collision.\n')
+            with self.assertRaisesRegex(ToolingError, 'reserved by the LUSL Buffer layout'):
+                build.build_package(manifest, root / 'build', **options)
+            (source / generated).unlink()
             plain = build.build_package(manifest, root / 'build', **options)
+            self.assertTrue((Path(plain['package']) / 'sources' / generated).is_file())
             runtime = execution.cook_runtime(plain['package'], root / 'plain.lurgrt')
             # Later edits to the live sources must not reach the capture of the published generation.
-            edited = next((source / 'main_shaders').glob('*.slang'))
-            edited.write_text(edited.read_text() + '\n// edited after publication\n')
+            (source / header).write_text('struct RenamedRecord { uint32 Value; };\n')
             destination = root / 'plain.lurgrd'
             result = reload.rebuild_ray_path_capture(root / 'build', root / 'capture', destination,
                                                      root=str(source), **options)
             self.assertEqual(result['source_generation'], plain['generation'])
+            build.verify_package(plain['package'])
             capture = Path(result['build']['package'])
             self.assertEqual({path.relative_to(Path(plain['package']) / 'sources'): path.read_bytes()
                               for path in (Path(plain['package']) / 'sources').rglob('*') if path.is_file()},

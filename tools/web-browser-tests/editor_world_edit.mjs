@@ -83,6 +83,15 @@ async function observeEditor(page) {
       observe(globalThis.GPURenderPassEncoder?.prototype, method, () => ++trace.gpu.draws);
     }
     FileSystemFileHandle.prototype.createWritable = function (...parameters) {
+      // Hold one recovery checkpoint write open: the editor stays suspended in
+      // its folder call until the test releases it.
+      if (this.name === recoveryFile && trace.shouldHoldRecoveryWrite) {
+        trace.shouldHoldRecoveryWrite = false;
+        return new Promise(resolve => {
+          trace.releaseRecoveryWrite = () => resolve(createWritable.apply(this, parameters));
+          trace.heldRecoveryWrite = performance.now();
+        });
+      }
       if (this.name === worldFile && trace.isWriteRefused) {
         trace.refusals.push(performance.now());
         return Promise.reject(new DOMException('Qualification test refused this World write', 'NotAllowedError'));
@@ -369,9 +378,11 @@ export async function qualifyWorldEdits({browser, canvas, click, importScene, op
         await session.detach();
       }
 
-      async function edit(x, predicate, shouldResize = false) {
+      async function edit(x, predicate, {shouldResize = false, isTyped = false} = {}) {
         const gpuBefore = await page.evaluate(() => window.qaWorld.gpu);
-        await replaceField(page, x);
+        if (!isTyped) {
+          await replaceField(page, x);
+        }
         if (shouldResize) {
           const narrow = {width: 1200, height: viewport.height};
           await page.setViewportSize(narrow);
@@ -408,13 +419,29 @@ export async function qualifyWorldEdits({browser, canvas, click, importScene, op
       }
       await edit(firstEdit, offset => offset > initial.offsetPixels + 70);
       await edit(secondEdit, offset => offset < initial.offsetPixels - 70);
-      await edit(resizedEdit, offset => offset > initial.offsetPixels + 90, true);
+      await edit(resizedEdit, offset => offset > initial.offsetPixels + 90, {shouldResize: true});
       // Two distinct accepted edits with no frame wait between them. After the
       // latest revision becomes drawable, no earlier revision may replace it.
+      // The later edit is typed while the earlier edit's recovery checkpoint is
+      // still being written to the folder, so the editor is suspended and Qt
+      // queues the click and keys: none may be lost or applied out of order.
+      await page.evaluate(() => { window.qaWorld.shouldHoldRecoveryWrite = true; });
       await replaceField(page, -0.75);
       const earlierInput = await applyField(page);
       const earlier = await waitForCheckpoint(page, id, -0.75, earlierInput);
-      await edit(finalEdit, offset => offset > initial.offsetPixels + 120 && offset < initial.offsetPixels + 200);
+      await page.waitForFunction(() => window.qaWorld.heldRecoveryWrite !== undefined, null, {timeout: timeLimit});
+      await replaceField(page, finalEdit);
+      sample.typedDuringFolderWrite = await page.evaluate(() => ({
+        unsentQtEvents: window.qaEditor.qtSuspendResumeControl.pendingEvents.length,
+        focus: document.activeElement === document.body ? 'body' : document.activeElement?.id || document.activeElement?.tagName,
+      }));
+      await page.evaluate(() => window.qaWorld.releaseRecoveryWrite());
+      assert.ok(sample.typedDuringFolderWrite.unsentQtEvents > 0,
+        'The final edit must be typed while the folder write keeps the editor suspended');
+      assert.notEqual(sample.typedDuringFolderWrite.focus, 'body',
+        "A click queued during a folder write must not move focus out of Qt's window");
+      await edit(finalEdit, offset => offset > initial.offsetPixels + 120 && offset < initial.offsetPixels + 200,
+        {isTyped: true});
       const latest = sample.edits.at(-1).drawable;
       const laterRevisions = await page.evaluate(time => window.qaWorld.drawable
         .filter(frame => frame.milliseconds >= time).map(frame => frame.identity), latest.milliseconds);

@@ -440,7 +440,8 @@ TEST_CASE("Collider changes and world queries allocate nothing", "[collision][al
     // Releasing the last lease frees the mesh's storage: frees are expected, allocations are not.
 }
 
-TEST_CASE("Convex colliders, overlap queries and Any/All modes allocate nothing", "[collision][alloc][world]")
+TEST_CASE("Convex colliders, overlap and contact queries and Any/All modes allocate nothing",
+          "[collision][alloc][world]")
 {
     GeometryStore store;
     REQUIRE(store.TryInitialize({ .MaxShapes = 4 }) == Status::Success);
@@ -532,6 +533,18 @@ TEST_CASE("Convex colliders, overlap queries and Any/All modes allocate nothing"
                                               },
                                               BorrowedView<ColliderOverlap>(records.GetData(), RECORD_COUNT),
                                               overlap) == Status::Success;
+            // Contact generation: a closed-form pair, the general convex path and two mesh pairs.
+            StaticArray<ColliderHandle, RECORD_COUNT> candidates{};
+            ContactCandidateResult candidateResult;
+            ContactPairContacts contacts;
+            isEverySuccess =
+                isEverySuccess == true &&
+                view.FindContactCandidates({ .Collider = first, .MarginMeters = offset < 1.0 ? offset : 1.0 },
+                                           BorrowedView<ColliderHandle>(candidates.GetData(), RECORD_COUNT),
+                                           candidateResult) == Status::Success &&
+                view.GenerateContacts(first, second, {}, contacts) == Status::Success &&
+                view.GenerateContacts(first, third, {}, contacts) == Status::Success &&
+                view.GenerateContacts(third, second, {}, contacts) == Status::Success;
         }
     }
     isTrackingAllocations = false;

@@ -4,13 +4,22 @@
 #pragma once
 
 @extern "math.slang"
-@declare PI FLOAT_EXPONENT_BITS RANDOM_ADDRESS_LAYOUT_VERSION RANDOM_BOUNDED_MAPPING_VERSION
+@declare PI TAU HALF_PI QUARTER_PI INV_PI INV_TAU DEGREES_TO_RADIANS RADIANS_TO_DEGREES
+@declare E LN_2 LN_10 LOG2_E LOG10_E SQRT_2 INV_SQRT_2
+@declare PI_F64 TAU_F64 HALF_PI_F64 QUARTER_PI_F64 INV_PI_F64 INV_TAU_F64
+@declare DEGREES_TO_RADIANS_F64 RADIANS_TO_DEGREES_F64 E_F64 LN_2_F64 LN_10_F64 LOG2_E_F64 LOG10_E_F64
+@declare SQRT_2_F64 INV_SQRT_2_F64
+@declare FLOAT16_EPSILON FLOAT16_MIN_NORMAL FLOAT16_MAX FLOAT32_EPSILON FLOAT32_MIN_NORMAL FLOAT32_MAX
+@declare FLOAT64_EPSILON FLOAT64_MIN_NORMAL FLOAT64_MAX
+@declare INT16_MIN INT16_MAX UINT16_MAX INT32_MIN INT32_MAX UINT32_MAX INT64_MIN INT64_MAX UINT64_MAX
+@declare FLOAT_EXPONENT_BITS RANDOM_ADDRESS_LAYOUT_VERSION RANDOM_BOUNDED_MAPPING_VERSION
 @declare RANDOM_MAX_DIMENSION RANDOM_ATTEMPT_COUNT
 
 /// One addressed draw of the counter-based random generator.
 @declare RandomAddress
 
-@declare ComputeErrorFunction IsFiniteBits NormalizeOrZero HasPositiveComponent ComputeArctangent
+@declare ComputeErrorFunction IsFiniteBits IsNanBits IsInfBits NearlyEqual
+@declare NormalizeOrZero HasPositiveComponent ComputeArctangent
 @declare ComputeStandardNormalQuantile DecodeSrgb MultiplyWide MakeRandomAddress IsRandomAddressInRange
 @declare Philox4x32 PackRandomCounter SampleRandomUInt32 RandomFloat01 SampleRandomFloat01
 @declare TrySampleRandomBounded ApplyNormalWorld

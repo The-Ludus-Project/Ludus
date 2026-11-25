@@ -1,4 +1,5 @@
 #include <ludus/audio/audio_system.h>
+#include <ludus/foundation/math/scalar.hpp>
 
 #include <ludus/foundation/base/core.h>
 #include <ludus/foundation/logging/log.hpp>
@@ -140,6 +141,10 @@ void AudioSystem::Impl::ApplyOneCommand(const QueuedCommand& cmd) noexcept
                 v.State = VoiceState::Scheduled;
                 v.LastCause = StateCause::PlayConsumed;
                 v.StartFrame = cmd.StartFrame == 0 ? RenderFrame : cmd.StartFrame;
+                if (cmd.IsStream == true && cmd.Stream->Outgoing.IsValid() == true)
+                {
+                    v.StartFrame = 0; // The renderer acknowledges only a sealed transition.
+                }
                 // A command applied after its desired frame starts at this
                 // boundary and reports LateStart + lateness; never rewind or
                 // silently skip the transient.
@@ -163,6 +168,14 @@ void AudioSystem::Impl::ApplyOneCommand(const QueuedCommand& cmd) noexcept
                 {
                     ++StaleCommands;
                     break;
+                }
+                if (cmd.HasLayerGains == true && v.IsStream == true)
+                {
+                    internal::StreamData& group = *Streams[v.StreamSlotIndex].Data;
+                    group.PendingGains = cmd.LayerGains;
+                    group.GainFrame = cmd.StartFrame;
+                    group.PendingRamp = cmd.LayerRamp;
+                    group.HasGainEdit = true;
                 }
                 if (cmd.SetGain && IsFiniteF(cmd.Gain))
                 {
@@ -285,6 +298,10 @@ void AudioSystem::Impl::ResolveScheduledStarts() noexcept
         {
             continue;
         }
+        if (v.IsStream == true && Streams[v.StreamSlotIndex].Data->Outgoing.IsValid() == true)
+        {
+            continue;
+        }
         if (v.StartFrame < quantumEnd)
         {
             // Enter Mixed (A1: no physical-slot contention modeling yet; A2 adds
@@ -297,6 +314,66 @@ void AudioSystem::Impl::ResolveScheduledStarts() noexcept
             v.CursorFraction = 0.0;
         }
     }
+}
+
+uint32 AudioSystem::Impl::ResolveStreamTransitions(uint32 frames) noexcept
+{
+    // Seal on the control grid. Apply only after the outgoing media cursor has
+    // actually advanced to the boundary. If refill stalls inside this span the
+    // next pass observes its held frames and keeps the outgoing section alive.
+    const uint32 toQuantumEnd = CONTROL_QUANTUM_FRAMES - static_cast<uint32>(RenderFrame % CONTROL_QUANTUM_FRAMES);
+    for (uint32 i = 0; i < LogicalCapacity; ++i)
+    {
+        VoiceSlot& incoming = Voices[i];
+        if (incoming.InUse == false || incoming.IsStream == false || incoming.State != VoiceState::Scheduled)
+        {
+            continue;
+        }
+        internal::StreamData& data = *Streams[incoming.StreamSlotIndex].Data;
+        if (data.Outgoing.IsValid() == false)
+        {
+            continue;
+        }
+        const uint32 slot = FindVoiceSlot(data.Outgoing);
+        uint64 plan = data.TransitionFrame.load(std::memory_order_acquire);
+        if (plan == 0 || slot >= LogicalCapacity || Voices[slot].InUse == false ||
+            Voices[slot].State != VoiceState::Mixed)
+        {
+            TerminateVoice(i, TerminalReason::Cancelled, StateCause::Cancelled);
+            continue;
+        }
+        internal::StreamData& previous = *Streams[Voices[slot].StreamSlotIndex].Data;
+        const uint64 held = previous.HeldFrames.load(std::memory_order_relaxed);
+        const uint64 mediaTarget = plan & ~internal::StreamData::SEALED;
+        const uint64 mediaNow = RenderFrame - held;
+        const uint64 remaining = mediaTarget > mediaNow ? mediaTarget - mediaNow : 0;
+        if (remaining >= toQuantumEnd)
+        {
+            continue;
+        }
+        if (plan < internal::StreamData::SEALED &&
+            data.TransitionFrame.compare_exchange_strong(plan,
+                                                         plan | internal::StreamData::SEALED,
+                                                         std::memory_order_acq_rel) == false)
+        {
+            continue;
+        }
+        if (remaining != 0)
+        {
+            frames = ludus::foundation::math::Min(frames, static_cast<uint32>(remaining));
+            continue;
+        }
+        previous.FadeOutBegin = RenderFrame;
+        previous.EndRenderFrame = RenderFrame + data.CrossfadeFrames;
+        incoming.StartFrame = RenderFrame;
+        incoming.Lateness = mediaNow - mediaTarget;
+        incoming.LateStart = incoming.Lateness != 0;
+        incoming.State = VoiceState::Mixed;
+        incoming.LastCause = StateCause::StartFrameReached;
+        incoming.CursorFrame = 0;
+        incoming.CursorFraction = 0;
+    }
+    return frames;
 }
 
 void AudioSystem::Impl::SelectAndCharge() noexcept
@@ -622,6 +699,9 @@ void AudioSystem::Impl::ProcessControlBoundary() noexcept
     ResolveScheduledStarts();
     RecomputeBusGains();
     SelectAndCharge();
+    // Acknowledge consumption only after this boundary's commands reached renderer state.
+    Impl& owner = Control != nullptr ? *Control : *this;
+    owner.AppliedCommands.store(AcceptedCommands, std::memory_order_release);
 }
 
 // ---------------------------------------------------------------------------
@@ -691,6 +771,7 @@ Status AudioSystem::Impl::RenderFrames(std::span<float32> output,
 
         // Clear every bus accumulator for this span (child-before-parent fold
         // happens after all voices are routed).
+        span = ResolveStreamTransitions(span);
         BeginBusSpan(span);
 
         // Render every mixing/fading resident voice through the DSP kernel into
@@ -711,25 +792,62 @@ Status AudioSystem::Impl::RenderFrames(std::span<float32> output,
                     {
                         MixAccum[f] = 0;
                     }
-                    const auto rendered = stream->Render(MixAccum, {span, v.Gain, v.State == VoiceState::Stopping});
-                    const bool terminal = rendered.Terminal, error = rendered.Error;
+                    const uint32 offset =
+                        v.StartFrame > RenderFrame
+                            ? static_cast<uint32>(
+                                  ludus::foundation::math::Min<uint64>(span, v.StartFrame - RenderFrame))
+                            : 0;
+                    const bool hasCut = stream->EndRenderFrame != 0 && stream->EndRenderFrame <= RenderFrame + span;
+                    const uint32 end = hasCut ? static_cast<uint32>(stream->EndRenderFrame > RenderFrame
+                                                                        ? stream->EndRenderFrame - RenderFrame
+                                                                        : 0)
+                                              : span;
+                    const uint32 count = end > offset ? end - offset : 0;
+                    const internal::StreamRequest request{count, v.Gain, v.State == VoiceState::Stopping};
+                    float32* samples = MixAccum + usize{offset} * 2;
+                    const internal::StreamResult rendered =
+                        stream->MemberCount == 0 ? stream->Render(samples, request)
+                                                 : stream->RenderGroup(samples, request, RenderFrame + offset);
+                    if (stream->CrossfadeFrames != 0 || stream->EndRenderFrame > stream->FadeOutBegin)
+                    {
+                        for (uint32 frame = 0; frame < count; ++frame)
+                        {
+                            const uint64 position = RenderFrame + offset + frame;
+                            float32 envelope = 1;
+                            if (stream->CrossfadeFrames != 0 && position - v.StartFrame < stream->CrossfadeFrames)
+                            {
+                                envelope = static_cast<float32>(position - v.StartFrame) /
+                                           static_cast<float32>(stream->CrossfadeFrames);
+                            }
+                            if (stream->EndRenderFrame > stream->FadeOutBegin && position >= stream->FadeOutBegin)
+                            {
+                                envelope *= static_cast<float32>(stream->EndRenderFrame - position) /
+                                            static_cast<float32>(stream->EndRenderFrame - stream->FadeOutBegin);
+                            }
+                            samples[usize{frame} * 2] *= envelope;
+                            samples[usize{frame} * 2 + 1] *= envelope;
+                        }
+                    }
+                    const bool isTerminal = rendered.Terminal == true || hasCut == true;
+                    const bool hasError = rendered.Error;
                     v.CursorFrame += rendered.Frames;
                     v.FadeGain = stream->Fade;
-                    if (rendered.Frames < span && terminal == false && v.State != VoiceState::Stopping)
+                    if (rendered.Frames < count && isTerminal == false && v.State != VoiceState::Stopping)
                     {
+                        stream->HeldFrames.fetch_add(count - rendered.Frames, std::memory_order_release);
                         ++StreamStarvations;
                     }
                     RouteVoiceToBus(v.BusIndex, MixAccum, span);
-                    if (terminal)
+                    if (isTerminal == true)
                     {
-                        const bool stopped = v.State == VoiceState::Stopping;
+                        const bool isStopped = v.State == VoiceState::Stopping || hasCut == true;
                         TerminateVoice(i,
-                                       error     ? TerminalReason::StreamError
-                                       : stopped ? TerminalReason::Stopped
-                                                 : TerminalReason::Completed,
-                                       error     ? StateCause::None
-                                       : stopped ? StateCause::StopRequested
-                                                 : StateCause::NaturalEof);
+                                       hasError            ? TerminalReason::StreamError
+                                       : isStopped == true ? TerminalReason::Stopped
+                                                           : TerminalReason::Completed,
+                                       hasError            ? StateCause::None
+                                       : isStopped == true ? StateCause::StopRequested
+                                                           : StateCause::NaturalEof);
                     }
                 }
                 continue;

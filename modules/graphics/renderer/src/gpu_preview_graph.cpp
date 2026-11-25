@@ -1,8 +1,10 @@
 #include "internal/gpu_preview_graph.h"
+#include "internal/gpu_preview_data.h"
 #include "internal/ltc_table_data.h"
 #include <ludus/foundation/containers/borrowed_view.hpp>
 
 #include <ludus/content/render_graph_format/plan.h>
+#include <ludus/foundation/base/checked_integer.hpp>
 #include <ludus/foundation/containers/array.hpp>
 #include <ludus/foundation/containers/static_array.hpp>
 #include <ludus/foundation/math/vector.hpp>
@@ -47,6 +49,8 @@ struct GpuGraphResources final
     {
         rhi::TextureHandle Handle{};
         rhi::GraphVersion Version{};
+        bool IsWritten = false;
+        bool IsDefined = false;
     };
     struct SceneEntry final
     {
@@ -54,7 +58,10 @@ struct GpuGraphResources final
         rhi::GraphVersion Version{};
     };
     StaticArray<BufferEntry, GRAPH_SEQUENCE_RESOURCE_COUNT> Buffers{};
-    StaticArray<TextureEntry, content::render_graph_format::MAX_RAY_PASSES> Textures{};
+    // All plan textures can be live in the sequence, plus fallback bindings for absent inputs.
+    static constexpr usize TEXTURE_COUNT =
+        content::render_graph_format::MAX_RESOURCES + content::render_graph_format::MAX_SHADER_TEXTURES + 2;
+    StaticArray<TextureEntry, TEXTURE_COUNT> Textures{};
     StaticArray<SceneEntry, content::render_graph_format::MAX_RAY_PASSES> Scenes{};
     usize BufferCount = 0;
     usize TextureCount = 0;
@@ -123,13 +130,18 @@ struct GpuGraphResources final
     Status ImportTexture(rhi::DeviceHandle device,
                          rhi::OrderedGraph graph,
                          rhi::TextureHandle texture,
-                         rhi::GraphVersion& outVersion) noexcept
+                         rhi::GraphVersion& outVersion,
+                         bool* outIsDefinedOrNull = nullptr) noexcept
     {
         for (usize index = 0; index < TextureCount; ++index)
         {
             if (Textures[index].Handle == texture)
             {
                 outVersion = Textures[index].Version;
+                if (outIsDefinedOrNull != nullptr)
+                {
+                    *outIsDefinedOrNull = Textures[index].IsDefined;
+                }
                 return Status::Ready;
             }
         }
@@ -150,7 +162,11 @@ struct GpuGraphResources final
         }
         if (status == Status::Ready)
         {
-            Textures[TextureCount++] = {texture, outVersion};
+            Textures[TextureCount++] = {texture, outVersion, false, state.ColorDefined};
+            if (outIsDefinedOrNull != nullptr)
+            {
+                *outIsDefinedOrNull = state.ColorDefined;
+            }
         }
         return status;
     }
@@ -169,10 +185,13 @@ struct GpuGraphResources final
         }
         for (usize index = 0; index < TextureCount; ++index)
         {
-            const Status status = rhi::AddGraphRoot(device, graph, Textures[index].Version, rhi::GraphRoot::Export);
-            if (status != Status::Ready)
+            if (Textures[index].IsWritten == true)
             {
-                return status;
+                const Status status = rhi::AddGraphRoot(device, graph, Textures[index].Version, rhi::GraphRoot::Export);
+                if (status != Status::Ready)
+                {
+                    return status;
+                }
             }
         }
         return Status::Ready;
@@ -184,6 +203,8 @@ struct GpuGraphResources final
             if (Textures[index].Handle == texture)
             {
                 Textures[index].Version = version;
+                Textures[index].IsWritten = true;
+                Textures[index].IsDefined = true;
                 return;
             }
         }
@@ -218,6 +239,37 @@ Status AppendVisibilityProducer(rhi::DeviceHandle device,
     }
     return status;
 }
+// A clear-only attachment pass defines the version that the storage dispatch reads and updates.
+Status AppendShaderTextureClear(rhi::DeviceHandle device,
+                                rhi::OrderedGraph graph,
+                                rhi::TextureHandle texture,
+                                rhi::GraphVersion& inoutVersion) noexcept
+{
+    rhi::GraphVersion cleared;
+    const Status reserved = rhi::NextGraphVersion(device, graph, inoutVersion, cleared);
+    if (reserved != Status::Ready)
+    {
+        return reserved;
+    }
+    const rhi::GraphUse use{cleared, rhi::GraphAccessMode::ColorWrite};
+    rhi::GraphPassDescription clear;
+    clear.Name = "Clear shader texture";
+    clear.Attachment.Color = texture;
+    for (float32& channel : clear.Attachment.Clear)
+    {
+        channel = 0;
+    }
+    clear.Attachment.DepthLoad = rhi::RasterLoad::Discard;
+    clear.Uses = &use;
+    clear.UseCount = 1;
+    const Status added = rhi::AddGraphPass(device, graph, clear);
+    if (added == Status::Ready)
+    {
+        inoutVersion = cleared;
+    }
+    return added;
+}
+
 Status AppendGpuGraph(rhi::DeviceHandle device,
                       const GpuPreviewState& state,
                       const GpuPreviewRecord& job,
@@ -229,6 +281,8 @@ Status AppendGpuGraph(rhi::DeviceHandle device,
 {
     constexpr usize COLOR_BUFFER_INDEX = 3;
     const bool isBufferDispatch = job.WorkItemCount != 0;
+    const bool isStorageDispatch = rhi::IsNull(job.StorageTexture) == false;
+    const bool hasImage = isBufferDispatch == false && isStorageDispatch == false && job.HasShaderOutputsOnly == false;
     Status status = Status::Ready;
     // A tiled job reads the uniform copy whose Tile selects its prepared band, through that copy's bindings.
     const GpuPreviewTiles* tilesOrNull = job.TilesOrNull.Get();
@@ -244,7 +298,7 @@ Status AppendGpuGraph(rhi::DeviceHandle device,
     StaticArray<rhi::GraphVersion, JOB_BUFFER_COUNT> versions{};
     for (usize i = 0; i < JOB_BUFFER_COUNT; ++i)
     {
-        if (isBufferDispatch == true && i >= QUAD_BUFFER_INDEX && i <= IMAGE_PARAMETERS_INDEX)
+        if (hasImage == false && i >= QUAD_BUFFER_INDEX && i <= IMAGE_PARAMETERS_INDEX)
         {
             continue;
         }
@@ -259,7 +313,7 @@ Status AppendGpuGraph(rhi::DeviceHandle device,
     rhi::GraphVersion output;
     rhi::GraphVersion accumulation;
     rhi::GraphVersion colors;
-    if (isBufferDispatch == false)
+    if (hasImage == true)
     {
         status = inoutResources.ImportTexture(device, graph, target, texture);
         if (status == Status::Ready)
@@ -287,7 +341,9 @@ Status AppendGpuGraph(rhi::DeviceHandle device,
     // summary.
     StaticArray<rhi::GraphUse,
                 LUDUS_GRAPH_COMPUTE_BINDING_COUNT + 1 + LUDUS_GRAPH_LTC_TABLE_BINDING_COUNT +
-                    LUDUS_GRAPH_FAILURE_BINDING_COUNT + RAY_SCENE_USE_COUNT>
+                    LUDUS_GRAPH_FAILURE_BINDING_COUNT + RAY_SCENE_USE_COUNT +
+                    content::render_graph_format::MAX_SHADER_TEXTURES +
+                    content::render_graph_format::MAX_SAMPLED_TEXTURES + 1>
         computeUses{{{versions[0], rhi::GraphAccessMode::StorageRead, 0, job.DataBytes, rhi::RasterVisibility::Compute},
                      {versions[1],
                       rhi::GraphAccessMode::Uniform,
@@ -315,19 +371,31 @@ Status AppendGpuGraph(rhi::DeviceHandle device,
     {
         const GpuPreviewGraphBuffer& buffer = job.GraphBuffers[slot];
         rhi::GraphVersion previous;
-        rhi::GraphVersion next;
         status = inoutResources.ImportBuffer(device, graph, buffer.Buffer, previous);
-        if (status == Status::Ready)
-        {
-            status = rhi::NextGraphVersion(device, graph, previous, next);
-        }
         if (status != Status::Ready)
         {
             return status;
         }
-        inoutResources.SetBufferVersion(buffer.Buffer, next);
-        computeUses[computeUseCount++] = {next,
-                                          rhi::GraphAccessMode::StorageReadWrite,
+        const bool isRecordReader = (job.IsRecordReadCompute == true || job.HasNativeRayInvocation == true) &&
+                                    state.NativeRecordBytes != 0 &&
+                                    slot + LUDUS_GRAPH_BUFFER0_BINDING == LUDUS_GRAPH_BUFFER1_BINDING;
+        rhi::GraphVersion bound;
+        if (isRecordReader == true)
+        {
+            bound = previous;
+        }
+        else
+        {
+            status = rhi::NextGraphVersion(device, graph, previous, bound);
+            if (status != Status::Ready)
+            {
+                return status;
+            }
+            inoutResources.SetBufferVersion(buffer.Buffer, bound);
+        }
+        computeUses[computeUseCount++] = {bound,
+                                          isRecordReader == true ? rhi::GraphAccessMode::StorageRead
+                                                                 : rhi::GraphAccessMode::StorageReadWrite,
                                           0,
                                           buffer.Size,
                                           rhi::RasterVisibility::Compute};
@@ -346,6 +414,70 @@ Status AppendGpuGraph(rhi::DeviceHandle device,
                                           0,
                                           0,
                                           rhi::RasterVisibility::Compute};
+    }
+    for (uint32 slot = 0; slot < state.SampledTextureCount; ++slot)
+    {
+        const rhi::TextureHandle sampledTexture = job.SampledTextures[slot].Texture;
+        const rhi::TextureHandle colorInput =
+            rhi::IsNull(sampledTexture) == true ? state.DefaultColorInput : sampledTexture;
+        bool isAlreadySampled = false;
+        for (uint32 earlier = 0; earlier < slot; ++earlier)
+        {
+            isAlreadySampled = isAlreadySampled == true || job.SampledTextures[earlier].Texture == sampledTexture;
+        }
+        if (isAlreadySampled == true)
+        {
+            continue;
+        }
+        rhi::GraphVersion sampled;
+        status = inoutResources.ImportTexture(device, graph, colorInput, sampled);
+        if (status != Status::Ready)
+        {
+            return status;
+        }
+        computeUses[computeUseCount++] = {sampled, rhi::GraphAccessMode::Sampled, 0, 0, rhi::RasterVisibility::Compute};
+    }
+    const auto appendStorageTexture = [&](rhi::TextureHandle storageTexture, bool shouldClear) noexcept {
+        rhi::GraphVersion previous;
+        rhi::GraphVersion next;
+        bool isDefined = false;
+        Status result = inoutResources.ImportTexture(device, graph, storageTexture, previous, &isDefined);
+        // A clear-capable allocation starts undefined after allocation or resize. Initialize it
+        // to zero even when an earlier pass uses Load, matching uploaded storage textures.
+        if (result == Status::Ready && (shouldClear == true || isDefined == false))
+        {
+            result = AppendShaderTextureClear(device, graph, storageTexture, previous);
+        }
+        if (result == Status::Ready)
+        {
+            result = rhi::NextGraphVersion(device, graph, previous, next);
+        }
+        if (result == Status::Ready)
+        {
+            computeUses[computeUseCount++] = {next,
+                                              rhi::GraphAccessMode::StorageTextureWrite,
+                                              0,
+                                              0,
+                                              rhi::RasterVisibility::Compute};
+            inoutResources.SetTextureVersion(storageTexture, next);
+        }
+        return result;
+    };
+    if (state.HasStorageTexture == true)
+    {
+        status =
+            appendStorageTexture(isStorageDispatch == true ? job.StorageTexture : state.DefaultStorageTexture, false);
+    }
+    for (uint32 slot = 0; slot < state.ShaderTextureCount && status == Status::Ready; ++slot)
+    {
+        const rhi::TextureHandle shaderTexture = job.ShaderTextures[slot].Texture;
+        status = appendStorageTexture(rhi::IsNull(shaderTexture) == true ? state.DefaultShaderTextures[slot].Texture
+                                                                         : shaderTexture,
+                                      (job.ShaderTextureClearMask & (uint32{1} << slot)) != 0);
+    }
+    if (status != Status::Ready)
+    {
+        return status;
     }
     if (state.HasRayPathCapture == true)
     {
@@ -428,26 +560,29 @@ Status AppendGpuGraph(rhi::DeviceHandle device,
         computeUses[computeUseCount++] = {next,
                                           rhi::GraphAccessMode::StorageReadWrite,
                                           0,
-                                          LUDUS_GRAPH_FAILURE_BYTES,
+                                          GRAPH_FAILURE_BYTES,
                                           rhi::RasterVisibility::Compute};
     }
     const uint32 dispatchWidth = isBufferDispatch == true ? GetSceneWorkRowWidth(job.WorkItemCount) : job.Width;
     const uint32 dispatchRows = isBufferDispatch == true ? GetSceneWorkRowCount(job.WorkItemCount) : rows;
-    const rhi::ComputeDispatch dispatch{job.HasNativeRayInvocation == true ? state.NativeRayPipeline
-                                                                           : state.ComputePipeline,
+    const rhi::ComputePipelineHandle pipeline = job.IsRecordReadCompute == true      ? state.RecordReadComputePipeline
+                                                : job.HasNativeRayInvocation == true ? state.NativeRayPipeline
+                                                                                     : state.ComputePipeline;
+    const rhi::ComputeDispatch dispatch{pipeline,
                                         tilesOrNull != nullptr ? tilesOrNull->Bindings : job.ComputeBindings,
                                         {(dispatchWidth - 1) / state.WorkgroupWidth + 1,
                                          dispatchRows == 0 ? 1 : (dispatchRows - 1) / state.WorkgroupHeight + 1,
                                          1}};
     rhi::GraphPassDescription compute;
-    compute.Name = isBufferDispatch == true             ? "Scene buffer dispatch"
+    compute.Name = isStorageDispatch == true            ? "Scene storage texture dispatch"
+                   : isBufferDispatch == true           ? "Scene buffer dispatch"
                    : job.HasNativeRayInvocation == true ? "Native Metal ray stages"
                                                         : "GPU preview transport";
     compute.Uses = computeUses.GetData();
     compute.UseCount = computeUseCount;
     compute.Dispatch = &dispatch;
     status = rhi::AddGraphPass(device, graph, compute);
-    if (status != Status::Ready || isBufferDispatch == true)
+    if (status != Status::Ready || hasImage == false)
     {
         return status;
     }
@@ -506,6 +641,9 @@ Status AppendGpuGraph(rhi::DeviceHandle device,
     if (targetOrNull != nullptr)
     {
         present.Attachment.DepthStore = rhi::RasterStore::Discard;
+        // The full attachment clears, then the resolve reads only pixels present in the launch buffer.
+        present.Attachment.UseScissor = job.HasExplicitImageLaunch;
+        present.Attachment.Scissor = {0, 0, job.Width, job.Height};
     }
     present.Uses = imageUses.GetData();
     present.UseCount = imageUses.GetSize();
@@ -520,6 +658,36 @@ Status AppendGpuGraph(rhi::DeviceHandle device,
     return status;
 }
 } // namespace
+Status CreateGpuGraphStorageTexture(rhi::DeviceHandle device,
+                                    GraphStorageTextureSize size,
+                                    rhi::TextureHandle& outTexture) noexcept
+{
+    rhi::RasterCapabilities capabilities;
+    const Status ready = rhi::GetRasterCapabilities(device, capabilities);
+    if (ready != Status::Ready)
+    {
+        return ready;
+    }
+    const usize rowBytes = usize(size.Width) * LUDUS_GRAPH_TEXTURE_CHANNELS;
+    usize bytes = 0;
+    if (foundation::TryMultiply(rowBytes, usize(size.Height), bytes) == false ||
+        bytes > capabilities.MaxTextureUploadBytes)
+    {
+        return Status::CapacityExceeded;
+    }
+    Array<uint8> zeros;
+    if (zeros.TryResize(bytes) == false)
+    {
+        return Status::OutOfMemory;
+    }
+    rhi::TextureDescription description;
+    description.Width = size.Width;
+    description.Height = size.Height;
+    description.IsStorage = true;
+    description.AsyncUpload = true;
+    return rhi::CreateTexture(device, description, {{zeros.GetData(), bytes}, rowBytes}, outTexture);
+}
+
 Status BuildGpuGraphSequence(rhi::DeviceHandle device,
                              const GpuPreviewState& state,
                              BorrowedView<const GpuPreviewRecord*> jobs,

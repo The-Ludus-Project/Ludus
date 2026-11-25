@@ -480,7 +480,7 @@ Two executions have different, explicit purposes:
   The supplied upstream `render.py` currently requests one second, whereas the
   paper's Figure 17 reports five minutes; choose the budget explicitly.
 - `render_connections.py` executes sampling, connection transport, shading and
-  accumulation in Slang on a physical GPU. Its declared integral is only
+  accumulation in LUSL kernels on a physical GPU. Its declared integral is only
   **camera → diffuse floor → rough gold → area light**, with pixel-centre rays
   and level-zero bilinear textures. Camera hits on the gold are outside this
   integral and remain black. It retains every floor pixel, including contact
@@ -571,8 +571,17 @@ python tools/sms-benchmark/analyze_results.py --runs out/sms-connection-comparis
 Each output directory must be new. GPU execution requires `wgpu`, a physical
 adapter and timestamp-query support; software fallback is rejected. The uniform
 layout and sampler policy constants have one owner in `layout.py`, which emits
-the corresponding Slang declarations. Portable methods compile into separate
-entry points, avoiding unused solver code in the inexpensive baseline.
+the corresponding LUSL header, `layout.luslh`. Portable methods compile into
+separate entry points, avoiding unused solver code in the inexpensive baseline.
+
+The kernels in `tools/sms-benchmark/shaders` are LUSL: a `.luslh` library per
+stage and a `.lusl` file per parity or render entry point. Each GPU driver
+lowers its kernel with `luslc` before compiling it with the pinned Slang
+compiler (`scripts/python/lusl_compute.py`), and binds every buffer by the slot
+constant the lowering writes. Pass `--luslc <path>` to choose the compiler;
+without it, the driver builds the host compiler with `./scripts/bootstrap-luslc`.
+The rough-pair kernels call the `rough_pair_slice` template's
+`rough_pair_transport.slang` through `extern slang`.
 
 The connection-MIS baseline combines uniform reflector-area and cosine-weighted
 floor sampling. The recommended reference uses independently shifted Hammersley
@@ -660,7 +669,7 @@ projected-solid-angle measure per unit slope area is at most one.
   that work. See [Lin et al., GRIS](https://research.nvidia.com/labs/rtr/publication/lin2022generalized/)
   for the support contract for shift mappings.
 
-The float64 CPU oracle uses bracketed bisection, and the Slang GPU kernel
+The float64 CPU oracle uses bracketed bisection, and the GPU kernel
 uses safeguarded Newton iteration. The parity probe compares 4,096 matched
 draws per method, including patch membership, positions, proposal densities
 and raw contributions. It checks GPU shift round trips against the original
@@ -985,6 +994,12 @@ out/luminaire-env/bin/python tools/luminaire-benchmark/validate_compute.py --gra
 ```
 
 This uses wgpu solely as a verification driver for the same exported Slang code.
+The kernels in `tools/luminaire-benchmark/shaders` are LUSL and call the exported
+graph's `slice_sampling.slang` and `portable_flow.slang` through `extern slang`
+(`luminaire_flow.luslh`). `portable_flow.slang` stays Slang because
+`export_compute.py` splices it into the template's Slang shading. Both drivers
+lower their kernel with `luslc` first, as the SMS drivers do, and take the same
+optional `--luslc`.
 A physical GPU is required; software adapters are rejected. It saves raw inputs,
 CPU expectations, GPU outputs, tolerances and model/shader identities. The final
 Metal run on Apple M5 checked 256 draws across eight receivers and passed all five

@@ -12,14 +12,20 @@
 
 namespace ludus::foundation
 {
+/// Process-local allocation call-site identity; zero denotes unknown attribution.
+using AllocationSiteId = uint32;
+
+namespace memory_internal
+{
+class Observation;
+}
+
 /// @brief Stable, immutable identity for an allocation backend and its context.
 ///
 /// A domain binds the backend that must release a block to the allocation
-/// origin that its accounting charges. Routing is immutable; only its counters
-/// change. Every successful nonzero allocation and every non-null free updates
-/// the domain's checked counters with relaxed atomic operations, so a block
-/// freed on another thread, or after its allocating thread exited, still
-/// charges the domain that allocated it. Read them through
+/// origin that its accounting charges. Backend routing is immutable. Every successful nonzero allocation and every
+/// non-null free updates the domain's checked counters with relaxed atomic operations, so a block freed on another
+/// thread, or after its allocating thread exited, still charges the domain that allocated it. Read them through
 /// `GetAllocationStatistics` in `allocation_statistics.hpp`.
 ///
 /// @note The domain and context must outlive all allocations made through them.
@@ -70,12 +76,20 @@ public:
     /// @note The caller frees successful allocations through this same domain
     /// with the same size and alignment.
     [[nodiscard]] void* TryAllocate(usize bytes, usize alignment) const noexcept;
+    /// @brief Attempts the same allocation as TryAllocate with optional activity attribution.
+    /// @param bytes Requested storage size in bytes.
+    /// @param alignment Nonzero power-of-two storage alignment.
+    /// @param site Registered profiling site, or zero for unknown. An ID outside the
+    /// active capture's definitions is recorded as unknown.
+    /// @return Storage or nullptr under the same contract as TryAllocate.
+    [[nodiscard]] void* TryAllocateAtSite(usize bytes, usize alignment, AllocationSiteId site) const noexcept;
+
     /// @brief Releases an allocation through its original backend; nullptr is a no-op.
     ///
     /// The domain subtracts the requested bytes before calling the backend, so
     /// a reused address cannot be charged against an older lifetime. A null
     /// pointer changes no counter.
-    /// @param pointer Storage previously allocated through this domain, or nullptr.
+    /// @param pointerOrNull Storage previously allocated through this domain, or nullptr.
     /// @param bytes Original requested size in bytes.
     /// @param alignment Original allocation alignment.
     /// @pre A non-null pointer requires the original live context and free
@@ -83,11 +97,15 @@ public:
     /// the counters can observe (a zero size, an invalid alignment, or more
     /// bytes or blocks freed than are live) marks the domain's accounting
     /// invalid; the storage is still passed to the backend.
-    void Free(void* pointer, usize bytes, usize alignment) const noexcept;
+    void Free(void* pointerOrNull, usize bytes, usize alignment) const noexcept;
 
 private:
     /// FoundationMemory's private accounting implementation updates and reads the counters.
     friend struct AllocationAccounting;
+    /// @cond INTERNAL
+    // FoundationMemory's private recorder attaches or detaches at a safe point.
+    friend class memory_internal::Observation;
+    /// @endcond
 
     /// @brief Per-domain accounting storage; read it through `GetAllocationStatistics`.
     ///
@@ -108,10 +126,16 @@ private:
         uint32 ValidityFlags = 0;     ///< Sticky saturation and accounting-error bits.
     };
 
+    [[nodiscard]] void* allocateAndCount(usize bytes, usize alignment) const noexcept;
+    void freeAndCount(void* pointer, usize bytes, usize alignment) const noexcept;
+
     void* mContext;
     AllocateFunction mAllocate;
     FreeFunction mFree;
     mutable Counters mCounters{};
+    // Accessed only by whole operations and by the coordinator at an externally synchronized safe point.
+    mutable memory_internal::Observation* mObservationOrNull = nullptr;
+    mutable uint32 mObservationDomain = 0;
 };
 
 /// @brief Returns the process-lifetime system allocation domain.

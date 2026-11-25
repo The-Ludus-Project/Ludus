@@ -8,6 +8,7 @@
 #include "internal/activity_chip.h"
 #include "internal/audio_workspace.h"
 #include "internal/code_editor_area.h"
+#include "internal/code_status_bar.h"
 #include "internal/configuration_workspace.h"
 #include "internal/content_browser.h"
 #include "internal/controller.h"
@@ -118,8 +119,7 @@ void MainWindow::openProjectItem(ProjectItemKind kind, const QString& path)
             return;
         case ProjectItemKind::RenderGraph:
         case ProjectItemKind::Shader: {
-            // A shader opens the render-graph package that owns it; its source editor
-            // is the Render Graph document's Source tab.
+            // Load the owning package before opening its shader draft in Code.
             const QString graph =
                 kind == ProjectItemKind::RenderGraph ? path : FindPackageGraph(path, ProjectLayoutRoot_);
             const RenderGraphDocument& document = Renderer_->GetDocument();
@@ -136,6 +136,12 @@ void MainWindow::openProjectItem(ProjectItemKind kind, const QString& path)
                 return;
             }
             if (isCurrent == false && (Renderer_->ConfirmDiscard() == false || Renderer_->OpenGraph(graph) == false))
+            {
+                return;
+            }
+            if (kind == ProjectItemKind::Shader &&
+                Renderer_->OpenGraphSource(QDir(Renderer_->GetDocument().GetPackageRoot()).relativeFilePath(path),
+                                           true) == true)
             {
                 return;
             }
@@ -169,6 +175,12 @@ void MainWindow::openProjectItem(ProjectItemKind kind, const QString& path)
 void MainWindow::openCodeFile(const QString& path, bool isPreview)
 {
     if (path.isEmpty() == true)
+    {
+        return;
+    }
+    const RenderGraphDocument& graph = Renderer_->GetDocument();
+    if (graph.IsLoaded() == true &&
+        Renderer_->OpenGraphSource(QDir(graph.GetPackageRoot()).relativeFilePath(path), isPreview) == true)
     {
         return;
     }
@@ -270,11 +282,20 @@ void MainWindow::activateErrorEntry(const ErrorListEntry& entry)
         showToolWindow(mRenderPreviewDock);
         return;
     }
+    if (entry.Producer == ErrorListProducer::Analysis)
+    {
+        static_cast<void>(mDocuments->OpenDocument(Renderer_));
+        if (Renderer_->ActivateAnalysisDiagnostic(entry.File, entry.SourceIndex) == false)
+        {
+            statusBar()->showMessage(QStringLiteral("This analysis message was replaced. Choose its newer row."),
+                                     STATUS_MESSAGE_MILLISECONDS);
+        }
+        return;
+    }
     if (entry.Producer == ErrorListProducer::RenderGraph)
     {
         // RendererWorkspace owns the authored-location mapping (graph node, source line or
         // the manifest record of a generated wrapper); its rows match the Error List's.
-        static_cast<void>(mDocuments->OpenDocument(Renderer_));
         if (Renderer_->ActivateDiagnostic(entry.SourceIndex) == false)
         {
             statusBar()->showMessage(QStringLiteral("This diagnostic has no authored location in the open graph."),
@@ -297,6 +318,10 @@ void MainWindow::activateErrorEntry(const ErrorListEntry& entry)
 void MainWindow::renderActiveDocument()
 {
     QWidget* activeOrNull = mDocuments->GetActiveDocumentOrNull();
+    if (mCodeStatusBarOrNull != nullptr)
+    {
+        mCodeStatusBarOrNull->SetActiveTab(activeOrNull == mCodeArea ? mCodeArea->GetActiveTabOrNull() : nullptr);
+    }
     if (activeOrNull == World_)
     {
         mProperties->setCurrentIndex(WORLD_PROPERTIES_PAGE);
@@ -356,11 +381,11 @@ void MainWindow::renderActivity()
 
 void MainWindow::updateContextStrip()
 {
-    const bool isPaired = mDocuments->IsDocumentCurrent(Renderer_) == true &&
-                          mDocuments->IsDocumentCurrent(World_) == true &&
-                          mDocuments->GetGroupIndex(Renderer_) != mDocuments->GetGroupIndex(World_) &&
+    const bool isCodeCurrent =
+        mDocuments->IsDocumentCurrent(mCodeArea) == true && Renderer_->IsGraphCodeActive() == true;
+    const bool isPaired = isCodeCurrent == true && mDocuments->IsDocumentCurrent(World_) == true &&
+                          mDocuments->GetGroupIndex(mCodeArea) != mDocuments->GetGroupIndex(World_) &&
                           mDocuments->GetSplitOrientation() == Qt::Horizontal;
-    Renderer_->SetSourceCompanionLayout(isPaired);
     World_->SetChromeVisible(mIsViewportFocused == false && isPaired == false);
     // The render-graph group stays in place whichever document is active, so switching tabs never reflows the
     // toolbar row; only Focus Viewport hides it, with every other toolbar.
@@ -398,7 +423,7 @@ void MainWindow::renderDocumentTitles()
 void MainWindow::renderGraphCommands()
 {
     mCodeViewportAction->setEnabled(Renderer_->GetDocument().IsLoaded() == true &&
-                                    mDocuments->IsDocumentAvailable(Renderer_) == true &&
+                                    mDocuments->IsDocumentAvailable(mCodeArea) == true &&
                                     mDocuments->IsDocumentAvailable(World_) == true);
     mRemoveUnusedShadersAction->setEnabled(Renderer_->CanRemoveUnusedShaders());
     const bool canBuild = Renderer_->CanBuild();
@@ -472,7 +497,8 @@ void MainWindow::collapseResolvedGraphErrors()
     }
     // Only collapse the bottom tab group when Error List is the visible tab. An explicitly
     // selected Output, Search, Timing or Profiling view remains open; new problems reveal Error List.
-    for (QDockWidget* dock : {mErrorListDock, mSearchDockOrNull, OutputDock_, TimingDock_, mProfilingDock})
+    for (QDockWidget* dock :
+         {mErrorListDock, mSearchDockOrNull, mReferencesDockOrNull, OutputDock_, TimingDock_, mProfilingDock})
     {
         if (dock != nullptr)
         {

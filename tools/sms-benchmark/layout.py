@@ -59,55 +59,35 @@ QMC_PARAMETER_SCHEMA = (
 QMC_PARAMETER_CODEC = struct.Struct("<"+"".join("I" if kind == "uint" else "f" for _, kind in QMC_PARAMETER_SCHEMA))
 MAXIMUM_QMC_SAMPLES = 2**22
 
+SHADER_LAYOUT_NAME = "layout.luslh"
+# Constants the shaders read, in header order. Python ints become uint32 and floats float32.
+SHADER_CONSTANTS = (
+    "IOR_ETA_RECORD", "IOR_EXTINCTION_RECORD", "GPU_SCALAR_BYTES",
+    "METHOD_CONNECTION_MIS", "METHOD_SLICE", "METHOD_SMS", "METHOD_REFERENCE",
+    "REFLECTOR_CENTER_RECORD", "REFLECTOR_DERIVATIVE_U_RECORD", "REFLECTOR_DERIVATIVE_V_RECORD",
+    "LIGHT_CENTER_RECORD", "LIGHT_DERIVATIVE_U_RECORD", "LIGHT_DERIVATIVE_V_RECORD",
+    "LIGHT_NORMAL_AREA_RECORD", "FLOOR_NORMAL_RECORD", "AREA_RADIANCE_RECORD",
+    "SMOOTH_SLOPE_RECORD", "SMOOTH_COVARIANCE_RECORD", "SOLVER_ITERATIONS", "SOLVER_TOLERANCE",
+    "MINIMUM_MAP_DETERMINANT", "REHIT_DISTANCE_UV", "MAXIMUM_BERNOULLI_TRIALS", "DEFENSIVE_FRACTION",
+    "MINIMUM_TRIANGLE_DETERMINANT", "ACCELERATION_GRID_SIDE", "ACCELERATION_RECORD_COUNT",
+    "ACCELERATION_DISABLED", "INPUT_RECORD_COUNT", "OUTPUT_RECORD_COUNT", "LIGHT_INPUT_RECORD",
+    "RAY_ORIGIN_INPUT_RECORD", "RAY_DIRECTION_INPUT_RECORD", "BASE_TANGENT_RECORD",
+    "BASE_BITANGENT_RECORD", "BASE_NORMAL_RECORD", "INVERSE_TRANSFORM_RECORD",
+    "INVERSE_TRANSFORM_STRIDE", "RECTANGLE_COUNT", "PARITY_GROUP_SIZE", "SCENE_RECORD_COUNT",
+    "RECORD_COMPONENT_COUNT",
+)
+SHADER_TYPES = {"uint": "uint32", "float": "float32"}
+
+
 def write_shader_layout(directory):
-    """Emit matching constants and a uniform schema beside copied shader sources."""
-    lines = ["#pragma once"]
-    lines.append(f"static const uint IOR_ETA_RECORD = {IOR_ETA_RECORD}u;")
-    lines.append(f"static const uint IOR_EXTINCTION_RECORD = {IOR_EXTINCTION_RECORD}u;")
-    lines.append(f"static const uint GPU_SCALAR_BYTES = {GPU_SCALAR_BYTES}u;")
-    lines.append(f"static const uint METHOD_CONNECTION_MIS = {METHOD_CONNECTION_MIS}u;")
-    lines.append(f"static const uint METHOD_SLICE = {METHOD_SLICE}u;")
-    lines.append(f"static const uint METHOD_SMS = {METHOD_SMS}u;")
-    lines.append(f"static const uint METHOD_REFERENCE = {METHOD_REFERENCE}u;")
-    lines.append(f"static const uint REFLECTOR_CENTER_RECORD = {REFLECTOR_CENTER_RECORD}u;")
-    lines.append(f"static const uint REFLECTOR_DERIVATIVE_U_RECORD = {REFLECTOR_DERIVATIVE_U_RECORD}u;")
-    lines.append(f"static const uint REFLECTOR_DERIVATIVE_V_RECORD = {REFLECTOR_DERIVATIVE_V_RECORD}u;")
-    lines.append(f"static const uint LIGHT_CENTER_RECORD = {LIGHT_CENTER_RECORD}u;")
-    lines.append(f"static const uint LIGHT_DERIVATIVE_U_RECORD = {LIGHT_DERIVATIVE_U_RECORD}u;")
-    lines.append(f"static const uint LIGHT_DERIVATIVE_V_RECORD = {LIGHT_DERIVATIVE_V_RECORD}u;")
-    lines.append(f"static const uint LIGHT_NORMAL_AREA_RECORD = {LIGHT_NORMAL_AREA_RECORD}u;")
-    lines.append(f"static const uint FLOOR_NORMAL_RECORD = {FLOOR_NORMAL_RECORD}u;")
-    lines.append(f"static const uint AREA_RADIANCE_RECORD = {AREA_RADIANCE_RECORD}u;")
-    lines.append(f"static const uint SMOOTH_SLOPE_RECORD = {SMOOTH_SLOPE_RECORD}u;")
-    lines.append(f"static const uint SMOOTH_COVARIANCE_RECORD = {SMOOTH_COVARIANCE_RECORD}u;")
-    lines.append(f"static const uint SOLVER_ITERATIONS = {SOLVER_ITERATIONS}u;")
-    lines.append(f"static const float SOLVER_TOLERANCE = {SOLVER_TOLERANCE};")
-    lines.append(f"static const float MINIMUM_MAP_DETERMINANT = {MINIMUM_MAP_DETERMINANT};")
-    lines.append(f"static const float REHIT_DISTANCE_UV = {REHIT_DISTANCE_UV};")
-    lines.append(f"static const uint MAXIMUM_BERNOULLI_TRIALS = {MAXIMUM_BERNOULLI_TRIALS}u;")
-    lines.append(f"static const float DEFENSIVE_FRACTION = {DEFENSIVE_FRACTION};")
-    lines.append(f"static const float MINIMUM_TRIANGLE_DETERMINANT = {MINIMUM_TRIANGLE_DETERMINANT};")
-    lines.append(f"static const uint ACCELERATION_GRID_SIDE = {ACCELERATION_GRID_SIDE}u;")
-    lines.append(f"static const uint ACCELERATION_RECORD_COUNT = {ACCELERATION_RECORD_COUNT}u;")
-    lines.append(f"static const uint ACCELERATION_DISABLED = {ACCELERATION_DISABLED}u;")
-    lines.append(f"static const uint INPUT_RECORD_COUNT = {INPUT_RECORD_COUNT}u;")
-    lines.append(f"static const uint OUTPUT_RECORD_COUNT = {OUTPUT_RECORD_COUNT}u;")
-    lines.append(f"static const uint LIGHT_INPUT_RECORD = {LIGHT_INPUT_RECORD}u;")
-    lines.append(f"static const uint RAY_ORIGIN_INPUT_RECORD = {RAY_ORIGIN_INPUT_RECORD}u;")
-    lines.append(f"static const uint RAY_DIRECTION_INPUT_RECORD = {RAY_DIRECTION_INPUT_RECORD}u;")
-    lines.append(f"static const uint BASE_TANGENT_RECORD = {BASE_TANGENT_RECORD}u;")
-    lines.append(f"static const uint BASE_BITANGENT_RECORD = {BASE_BITANGENT_RECORD}u;")
-    lines.append(f"static const uint BASE_NORMAL_RECORD = {BASE_NORMAL_RECORD}u;")
-    lines.append(f"static const uint INVERSE_TRANSFORM_RECORD = {INVERSE_TRANSFORM_RECORD}u;")
-    lines.append(f"static const uint INVERSE_TRANSFORM_STRIDE = {INVERSE_TRANSFORM_STRIDE}u;")
-    lines.append(f"static const uint RECTANGLE_COUNT = {RECTANGLE_COUNT}u;")
-    lines.append(f"static const uint PARITY_GROUP_SIZE = {PARITY_GROUP_SIZE}u;")
-    lines.append(f"static const uint SCENE_RECORD_COUNT = {SCENE_RECORD_COUNT}u;")
-    lines.append(f"static const uint RECORD_COMPONENT_COUNT = {RECORD_COMPONENT_COUNT}u;")
-    lines.append("struct RenderParameters\n{")
-    lines.extend(f"    {kind} {name};" for name, kind in PARAMETER_SCHEMA)
-    lines.append("};")
-    lines.append("struct QmcParameters\n{")
-    lines.extend(f"    {kind} {name};" for name, kind in QMC_PARAMETER_SCHEMA)
-    lines.append("};")
-    (directory / "layout.slang").write_text("\n".join(lines)+"\n")
+    """Emit matching LUSL constants and uniform schemas beside copied shader sources."""
+    lines = ["// Generated by tools/sms-benchmark/layout.py; do not edit.", "#pragma once"]
+    for name in SHADER_CONSTANTS:
+        value = globals()[name]
+        kind = "float32" if isinstance(value, float) else "uint32"
+        lines.append(f"static const {kind} {name} = {value};")
+    for struct_name, schema in (("RenderParameters", PARAMETER_SCHEMA), ("QmcParameters", QMC_PARAMETER_SCHEMA)):
+        lines.append(f"struct {struct_name}\n{{")
+        lines.extend(f"    {SHADER_TYPES[kind]} {name};" for name, kind in schema)
+        lines.append("};")
+    (directory / SHADER_LAYOUT_NAME).write_text("\n".join(lines)+"\n")

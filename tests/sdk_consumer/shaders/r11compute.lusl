@@ -1,0 +1,14 @@
+// R11 compute fixture: the first invocation writes a marker word that the host reads back. Host
+// code binds the slot in r11compute_slots.h.
+RWStructuredBuffer<uint32> values;
+
+static const uint32 MARKER = 0x12345678;
+
+[stage(compute), threads(1, 1, 1)]
+void ComputeMain(in uint32x3 dispatchThreadId : DispatchThreadId)
+{
+    if (dispatchThreadId.x == 0)
+    {
+        values[0] = MARKER;
+    }
+}

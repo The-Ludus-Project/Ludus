@@ -1056,7 +1056,7 @@ bool WriteLevel(const Level& level, core::Array<char>& output) noexcept
 }
 std::string_view ExampleLevel() noexcept
 {
-    return BuiltinLevel("first-room");
+    return BuiltinLevel(EXAMPLE_LEVEL_ID);
 }
 std::string_view BuiltinLevel(std::string_view id) noexcept
 {

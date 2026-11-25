@@ -153,6 +153,12 @@ struct PreviewViewOptions final
     /// Null computes the bounds; a caller must not pass bounds of a different scene or transforms.
     const foundation::math::Aabb3* BoundsWorldOrNull = nullptr;
 };
+/// Authored photometry and Earth preset inputs retained for transient editor sampling.
+struct PreviewEarthLight final
+{
+    QJsonObject Properties;
+    graphics::renderer::DirectLight Authored;
+};
 struct RenderScene final
 {
     // Immutable decoded snapshot shared by every retained copy of the scene
@@ -175,6 +181,8 @@ struct RenderScene final
     foundation::uint64 AtmosphereMoonSourceId = 0;
     bool IsAtmosphereMoonSwitchedOff = false;
     QString AtmosphereStatus;
+    /// Enabled Earth lights, before the clock is applied. Imported and static lights are absent.
+    QVector<PreviewEarthLight> EarthLights;
     graphics::renderer::GiProbeGrid ProbeGrid{};
     QVector<foundation::uint64> GiProbeReceiverIds;
     /// Enabled World panel luminaires (the preview descriptor's `luminaire` binding), admitted by
@@ -255,6 +263,14 @@ struct RenderScene final
                                    bool shouldComposeLighting = true);
     /// Copy the atmosphere with preview light switches applied.
     [[nodiscard]] graphics::renderer::AtmosphereDescription GetAtmosphereForView() const noexcept;
+    /// Apply one Earth instant to this detached render snapshot. Failure preserves the snapshot.
+    [[nodiscard]] bool TrySampleEarthTime(foundation::float64 utcDays, QString& outError);
+    /// Describe the saved start camera at the output extent without navigating the live viewport.
+    [[nodiscard]] bool DescribeSavedView(foundation::uint32 width,
+                                         foundation::uint32 height,
+                                         bool shouldUseConventionalDepth,
+                                         graphics::renderer::ViewDescription& outView,
+                                         QString& outError) const;
     /// Illuminance in lux that the presented directional lights deliver to a plane facing upWorld: each light's
     /// luminance (BT.709 weights of its colour times its lux) times the cosine of its incidence, when positive.
     /// The Atmosphere's linked Sun is skipped, because MeterAtmosphereIlluminance meters it after transmittance.

@@ -1,0 +1,295 @@
+// Equal-sample connection renders of the SMS Figure 17 scene: connection MIS, affine slice
+// sampling, SMS and their mixture reference (docs/development/benchmark-scenes.md).
+#include "sms.luslh"
+
+ConstantBuffer<RenderParameters> parameters;
+
+static const uint32 RENDER_RANDOM_KEY = 0x17ca0571;
+static const uint32 RANDOM_LIGHT_U = 0;
+static const uint32 RANDOM_LIGHT_V = 1;
+static const uint32 RANDOM_COMPONENT = 2;
+static const uint32 RANDOM_POSITION_U = 3;
+static const uint32 RANDOM_POSITION_V = 4;
+static const uint32 RANDOM_BRANCH = 5;
+static const uint32 RANDOM_SMOOTH_U = 6;
+static const uint32 RANDOM_SMOOTH_V = 7;
+static const uint32 RANDOM_INITIAL_U = 8;
+static const uint32 RANDOM_INITIAL_V = 9;
+static const uint32 RANDOM_REFERENCE_COMPONENT = 10;
+static const float32 MINIMUM_OPEN_PROBABILITY = 1e-8;
+
+float32 DrawUniform(in uint32 pixel, in uint32 sampleIndex, in uint32 trial, in uint32 dimension)
+{
+    return SampleRandomFloat01(uint32x2(parameters.Seed, RENDER_RANDOM_KEY),
+                               MakeRandomAddress(uint32x2(pixel, sampleIndex), trial, dimension));
+}
+
+float32x2 DrawNormal(in uint32 pixel, in uint32 sampleIndex, in uint32 trial, in uint32 dimension)
+{
+    float32 first = max(MINIMUM_OPEN_PROBABILITY, DrawUniform(pixel, sampleIndex, trial, dimension));
+    float32 second = max(MINIMUM_OPEN_PROBABILITY, DrawUniform(pixel, sampleIndex, trial, dimension + 1));
+    return float32x2(ComputeStandardNormalQuantile(first), ComputeStandardNormalQuantile(second));
+}
+
+float32x3 GetLightPosition(in float32x2 coordinatesUv)
+{
+    return sceneData[LIGHT_CENTER_RECORD].xyz + (coordinatesUv.x - 0.5) * sceneData[LIGHT_DERIVATIVE_U_RECORD].xyz +
+        (coordinatesUv.y - 0.5) * sceneData[LIGHT_DERIVATIVE_V_RECORD].xyz;
+}
+
+float32 ComputeFloorPdfUv(in float32x3 receiverWorld, in float32x2 coordinatesUv)
+{
+    float32x3 positionWorld = sceneData[REFLECTOR_CENTER_RECORD].xyz +
+        (coordinatesUv.x - 0.5) * sceneData[REFLECTOR_DERIVATIVE_U_RECORD].xyz +
+        (coordinatesUv.y - 0.5) * sceneData[REFLECTOR_DERIVATIVE_V_RECORD].xyz;
+    float32x3 toReflectorWorld = positionWorld - receiverWorld;
+    float32x3 directionWorld = NormalizeOrZero(toReflectorWorld);
+    float32 floorCosine = max(0, dot(sceneData[FLOOR_NORMAL_RECORD].xyz, directionWorld));
+    float32 reflectorCosine = max(0, dot(sceneData[BASE_NORMAL_RECORD].xyz, -directionWorld));
+    return floorCosine / PI * sceneData[AREA_RADIANCE_RECORD].x * reflectorCosine /
+        dot(toReflectorWorld, toReflectorWorld);
+}
+
+float32x4 SampleConnectionMis(in uint32 pixel, in uint32 sampleIndex, in float32x3 receiverWorld)
+{
+    float32x2 coordinatesUv = float32x2(DrawUniform(pixel, sampleIndex, 0, RANDOM_POSITION_U),
+                                        DrawUniform(pixel, sampleIndex, 0, RANDOM_POSITION_V));
+    if (DrawUniform(pixel, sampleIndex, 0, RANDOM_COMPONENT) < 0.5)
+    {
+        // The original floor is horizontal and Y-up. A cosine-weighted floor
+        // direction plus first-hit projection defines its UV subdensity.
+        float32 radius = sqrt(coordinatesUv.x);
+        float32 angle = 2 * PI * coordinatesUv.y;
+        float32x3 directionWorld =
+            float32x3(radius * cos(angle), sqrt(max(0, 1 - coordinatesUv.x)), radius * sin(angle));
+        float32x4 hit = IntersectRectangles(receiverWorld, directionWorld);
+        if (hit.y != 1)
+        {
+            return float32x4(0);
+        }
+        coordinatesUv = hit.zw;
+    }
+    return float32x4(coordinatesUv, 0.5 + 0.5 * ComputeFloorPdfUv(receiverWorld, coordinatesUv), 1);
+}
+
+float32x4 SampleSliceConnection(in uint32 pixel, in uint32 sampleIndex, in uint32 guide)
+{
+    uint32 resolution = parameters.Resolution;
+    uint32 offset = guide * (resolution + 1) * (resolution + 1);
+    // Broaden only the proposal to tolerate interpolation error in the inverse
+    // map. Physical Beckmann alpha remains parameters.Alpha in the integrand.
+    float32 guideAlpha = max(parameters.Alpha, parameters.MinimumGuideAlpha);
+    if (DrawUniform(pixel, sampleIndex, 0, RANDOM_COMPONENT) < DEFENSIVE_FRACTION)
+    {
+        float32x2 coordinatesUv = float32x2(DrawUniform(pixel, sampleIndex, 0, RANDOM_POSITION_U),
+                                            DrawUniform(pixel, sampleIndex, 0, RANDOM_POSITION_V));
+        float32 density = EvaluateAffineDensity(coordinatesUv, guideAlpha, resolution, offset, guide);
+        return float32x4(coordinatesUv, density, 1);
+    }
+    float32x2 residual = DrawNormal(pixel, sampleIndex, 0, RANDOM_POSITION_U) * (guideAlpha / SQRT_2);
+    uint32 rootCount;
+    float32 totalWeight;
+    return SampleAffineSlice(residual,
+                             DrawUniform(pixel, sampleIndex, 0, RANDOM_BRANCH),
+                             guideAlpha,
+                             resolution,
+                             offset,
+                             out rootCount,
+                             out totalWeight,
+                             guide);
+}
+
+float32x4 SampleReferenceConnection(in uint32 pixel, in uint32 sampleIndex, in uint32 guide, in float32x3 receiverWorld)
+{
+    // The outer selector has its own random dimension: conditioning the same
+    // selector reused by either child would change that child's mixture law.
+    bool shouldUseSlice = DrawUniform(pixel, sampleIndex, 0, RANDOM_REFERENCE_COMPONENT) < 0.5;
+    float32x4 sample;
+    if (shouldUseSlice == true)
+    {
+        sample = SampleSliceConnection(pixel, sampleIndex, guide);
+    }
+    else
+    {
+        sample = SampleConnectionMis(pixel, sampleIndex, receiverWorld);
+    }
+    if (sample.w <= 0)
+    {
+        return float32x4(0);
+    }
+    float32 otherDensity;
+    if (shouldUseSlice == true)
+    {
+        otherDensity = 0.5 + 0.5 * ComputeFloorPdfUv(receiverWorld, sample.xy);
+    }
+    else
+    {
+        uint32 resolution = parameters.Resolution;
+        uint32 offset = guide * (resolution + 1) * (resolution + 1);
+        otherDensity = EvaluateAffineDensity(
+            sample.xy, max(parameters.Alpha, parameters.MinimumGuideAlpha), resolution, offset, guide);
+    }
+    sample.z = 0.5 * (sample.z + otherDensity);
+    return sample;
+}
+
+bool DrawSmsRoot(in uint32 pixel,
+                 in uint32 sampleIndex,
+                 in uint32 trial,
+                 in float32x3 receiverWorld,
+                 in float32x3 lightWorld,
+                 in float32x2 residual,
+                 out float32x2 outCoordinatesUv)
+{
+    float32x2 initialUv = float32x2(DrawUniform(pixel, sampleIndex, trial, RANDOM_INITIAL_U),
+                                    DrawUniform(pixel, sampleIndex, trial, RANDOM_INITIAL_V));
+    float32x2 normalDraw = DrawNormal(pixel, sampleIndex, trial, RANDOM_SMOOTH_U);
+    return SolveTwoStage(receiverWorld, lightWorld, residual, initialUv, normalDraw, out outCoordinatesUv);
+}
+
+float32x3 SampleSmsConnection(in uint32 pixel,
+                              in uint32 sampleIndex,
+                              in float32x3 receiverWorld,
+                              in float32x3 color,
+                              in float32x2 lightCoordinatesUv,
+                              out float32x3 outDiagnostics)
+{
+    outDiagnostics = float32x3(1, 0, 0);
+    float32x3 lightWorld = GetLightPosition(lightCoordinatesUv);
+    float32x2 residual = DrawNormal(pixel, sampleIndex, 0, RANDOM_POSITION_U) * (parameters.Alpha / SQRT_2);
+    float32x2 coordinatesUv;
+    if (DrawSmsRoot(pixel, sampleIndex, 0, receiverWorld, lightWorld, residual, out coordinatesUv) == false)
+    {
+        outDiagnostics.z = 1;
+        return float32x3(0);
+    }
+    ReflectionMap map = EvaluateReflectionMap(receiverWorld, lightWorld, coordinatesUv, false);
+    float32 jacobian = abs(ComputeDeterminant(map.DerivativeU, map.DerivativeV));
+    if (jacobian < MINIMUM_MAP_DETERMINANT)
+    {
+        outDiagnostics.z = 1;
+        return float32x3(0);
+    }
+    uint32 inverseProbability = 0;
+    for (uint32 trial = 1; trial <= MAXIMUM_BERNOULLI_TRIALS; ++trial)
+    {
+        float32x2 trialUv;
+        bool hasRoot = DrawSmsRoot(pixel, sampleIndex, trial, receiverWorld, lightWorld, residual, out trialUv);
+        outDiagnostics.x += 1;
+        if (hasRoot == true && length(trialUv - coordinatesUv) < REHIT_DISTANCE_UV)
+        {
+            inverseProbability = trial;
+            break;
+        }
+    }
+    if (inverseProbability == 0)
+    {
+        outDiagnostics.y = 1;
+        return float32x3(0);
+    }
+    // Densities are per slope area and per UV area, respectively. The light
+    // endpoint is uniform in its UV square in every method.
+    float32 guideDensity = exp(-dot(residual, residual) / (parameters.Alpha * parameters.Alpha)) /
+        (PI * parameters.Alpha * parameters.Alpha);
+    return EvaluateConnection(receiverWorld, color, coordinatesUv, lightCoordinatesUv, parameters.Alpha) *
+        (float32(inverseProbability) / (guideDensity * jacobian));
+}
+
+/// One batch of `method` (a METHOD_* constant from layout.luslh) for the pixel of `threadIndex`.
+void RenderConnectionMethod(in uint32x3 threadIndex, in uniform uint32 method)
+{
+    if (threadIndex.x >= parameters.PixelCount)
+    {
+        return;
+    }
+    uint32 pixel = parameters.PixelOffset + threadIndex.x;
+    uint32 inputRecord = pixel * INPUT_RECORD_COUNT;
+    uint32 outputRecord = pixel * OUTPUT_RECORD_COUNT;
+    float32x4 receiver = inputs[inputRecord];
+    float32x3 color = inputs[inputRecord + 1].xyz;
+    uint32 guide = uint32(inputs[inputRecord + 1].w);
+    float32x4 accumulation = results[outputRecord];
+    float32x4 secondMoment = results[outputRecord + 1];
+    float32x4 diagnostics = results[outputRecord + 2];
+    uint32 beginningSample = uint32(accumulation.w);
+    for (uint32 offset = 0; offset < parameters.Batch; ++offset)
+    {
+        uint32 sampleIndex = beginningSample + offset;
+        float32x3 contribution = 0;
+        if (receiver.w > 0)
+        {
+            float32x2 lightCoordinatesUv = float32x2(DrawUniform(pixel, sampleIndex, 0, RANDOM_LIGHT_U),
+                                                     DrawUniform(pixel, sampleIndex, 0, RANDOM_LIGHT_V));
+            if (method == METHOD_SMS)
+            {
+                float32x3 samplerDiagnostics;
+                contribution = SampleSmsConnection(
+                    pixel, sampleIndex, receiver.xyz, color, lightCoordinatesUv, out samplerDiagnostics);
+                diagnostics.xyz += samplerDiagnostics;
+            }
+            else
+            {
+                float32x4 sample;
+                if (method == METHOD_SLICE)
+                {
+                    sample = SampleSliceConnection(pixel, sampleIndex, guide);
+                }
+                else if (method == METHOD_REFERENCE)
+                {
+                    sample = SampleReferenceConnection(pixel, sampleIndex, guide, receiver.xyz);
+                }
+                else
+                {
+                    sample = SampleConnectionMis(pixel, sampleIndex, receiver.xyz);
+                }
+                if (sample.w > 0 && sample.z > 0)
+                {
+                    contribution =
+                        EvaluateConnection(receiver.xyz, color, sample.xy, lightCoordinatesUv, parameters.Alpha) /
+                        sample.z;
+                }
+                else
+                {
+                    diagnostics.z += 1;
+                }
+            }
+        }
+        // Metal fast math may fold isnan and isinf; the bit tests keep the guard on every target.
+        if (IsFiniteBits(contribution) == false || any(contribution < float32x3(0)) == true)
+        {
+            diagnostics.w += 1;
+            contribution = 0;
+        }
+        accumulation.xyz += contribution;
+        secondMoment.xyz += contribution * contribution;
+        secondMoment.w += any(contribution > float32x3(0)) == true ? 1.0 : 0.0;
+    }
+    accumulation.w += float32(parameters.Batch);
+    results[outputRecord] = accumulation;
+    results[outputRecord + 1] = secondMoment;
+    results[outputRecord + 2] = diagnostics;
+}
+
+[stage(compute), threads(PARITY_GROUP_SIZE, 1, 1)]
+void RenderConnectionsMis(in uint32x3 threadIndex : DispatchThreadId)
+{
+    RenderConnectionMethod(threadIndex, METHOD_CONNECTION_MIS);
+}
+
+[stage(compute), threads(PARITY_GROUP_SIZE, 1, 1)]
+void RenderConnectionsSlice(in uint32x3 threadIndex : DispatchThreadId)
+{
+    RenderConnectionMethod(threadIndex, METHOD_SLICE);
+}
+
+[stage(compute), threads(PARITY_GROUP_SIZE, 1, 1)]
+void RenderConnectionsSms(in uint32x3 threadIndex : DispatchThreadId)
+{
+    RenderConnectionMethod(threadIndex, METHOD_SMS);
+}
+
+[stage(compute), threads(PARITY_GROUP_SIZE, 1, 1)]
+void RenderConnectionsReference(in uint32x3 threadIndex : DispatchThreadId)
+{
+    RenderConnectionMethod(threadIndex, METHOD_REFERENCE);
+}

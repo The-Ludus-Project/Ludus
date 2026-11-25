@@ -724,3 +724,86 @@ for producer sysroot paths before building games.
 The later [native Editor port](editor-workspace-evidence.md#native-macos-port) and
 [macOS release packaging](game-packaging-publishing-evidence.md#macos-release-packaging)
 extend this original project-tooling milestone. Their limits and evidence live in those owners.
+
+## Hair and skin standalone qualification (#1400)
+
+The standalone qualification of raster hair cards and real-time skin on the
+character bust is the `tests/sdk_consumer/hair_skin_bust` fixture: a **Qt-free**
+game built against the installed SDK that draws ONE real, cooked bust World — its
+meshes, material slots, the hair opacity texture and the skin inputs — through the
+packaged forward-lit and clustered-deferred graphs, launched from a clean
+relocated extraction and compared with the Editor on the same fixture. Its user
+guide is [Qualify hair and skin in a standalone game](hair-skin-standalone-qualification.md).
+
+Target and profiles: **macOS arm64 / Metal**, Development SDK. No single raster
+profile shades both features, so the one saved World is drawn through the
+**forward-lit** profile for hair cards and the **clustered-deferred** profile for
+skin. The scene is cooked once with the public `ludus-cook scene` pipeline
+(`new` → `import` the bust glTF → inject the authored Hair/Skin slot overrides →
+`assemble`), the same level schema the Editor's Make Hair Card / Make Skin
+produce; the app loads it through `Ludus::Resources::SceneDefinition::Decode`. The
+app links no Qt (files through `Ludus::Content`, render through
+`Ludus::GraphicsRenderer`, raw-RGBA readback written through `Ludus::Content`), so
+the extracted package has no Homebrew-Qt runtime dependency.
+
+Status (honest, per P15): **authored, not run** in the Kiro web sandbox
+(Amazon Linux 2023). The sandbox has only system Clang 15 and CMake 3.22 (below
+the `cmake_minimum_required(3.29)` the fixture declares), no Slang, no Qt6 and no
+GPU/Metal, so the native cook, build, launch and the Editor-vs-app visual
+comparison **cannot run here** and are deferred to the macOS Metal lane.
+
+- **AVAILABLE and run here:** the authored override JSON validates;
+  `source_policy.py --base origin/develop` passes on the changed sources;
+  `python tests/sdk_consumer/hair_skin_bust/verify.py --plan` prints the exact
+  ordered cook/build/stage/launch sequence; the consumer uses only public SDK
+  symbols read from the installed headers (`content::ReadFile`/`SaveFile`,
+  `resources::SceneDefinition::Decode`, `SceneShaderMaterial`/`SceneShaderInputs`,
+  `RenderGraphPackage`/`RenderGraph` Initialize/Update/Poll/Render/GetExport,
+  `RequestTextureReadback`/`CopyReadback`), matching the `raster_baseline` and
+  `reference-scene` consumers.
+- **UNAVAILABLE / deferred to the Metal lane:** the pinned Clang 23 / Slang build
+  of `hair_skin_capture`, the `ludus-cook scene` cook of `scene.luscn`, the
+  `ludus_compile_render_graph` cook of both graphs, SDK relocation + dependency
+  bundling, the clean-extraction launches, the no-Qt dependency assertion, the
+  runtime-dependency-removal check, the Editor `[skin][hair-card]` reference
+  capture and the `scripts/compare-render` comparison. The macOS CI step
+  `.github/actions/hair-skin-bust` runs `verify.py` end to end there; it is not
+  wired into the live `ci.yml` macOS job here, since a workflow edit reaches
+  batches only after promotion and the develop-health gate owns that change.
+
+### Native-findings follow-up: Editor-saved World (after #2256)
+
+A native macOS arm64 / Clang 23 run of the merged #2256 fixture (recorded at
+[#1400](https://github.com/The-Ludus-Project/Ludus/issues/1400#issuecomment-7120003995))
+found three gaps, now fixed:
+
+- **`foundation::` qualifiers.** The provenance helpers in `capture.cpp` used
+  `foundation::String`/`StringStatus`, which the anonymous namespace's
+  `using namespace ludus::foundation` does not qualify; Clang 23 rejected seven
+  uses. Fixed by adding `namespace foundation = ludus::foundation;` (the same
+  pairing `modules/content/scene_cook/tests/scene_cook_tests.cpp` uses).
+- **The cook sequence.** `ludus-cook scene import` has no entry flag, so it falls
+  back to the pbrt reference profile and cannot import the bust glTF; and the
+  override step dropped `camera.fov`, which the assembler requires
+  (`HasExactKeys({eye,target,up,fov})`). Replaced the whole `ludus-cook scene`
+  path with the Editor: a new `ExportCookedWorldScene`
+  (`apps/editor/src/playable_world.cpp`) runs
+  `RenderScene::Load → AssembleImports → RenderScene::Merge(&bundle)` (without
+  Play's spawn gating) and writes the bare `scene.luscn` plus a manifest; the
+  camera (eye/target/up/fov) is carried by the saved level and embedded in the
+  bundle. The cook now produces a `scene.luscn` with the bust meshes, both
+  material-slot assignments, the hair opacity map and the authored skin and hair
+  parameters, verified by the export manifest's material-slot summary.
+- **The comparison hook.** The behavioural `[skin][hair-card]` test imports its
+  own fixture and orbits/switches the key light off/resizes, so it cannot
+  establish same-World parity. Added a dedicated hidden test
+  `[.sdk-hair-skin-bust-export]` that saves ONE World, exports its cooked
+  `scene.luscn` (the exact bytes the SDK app decodes), and captures at the saved
+  camera and a fixed 1600×1080 reverse-Z view with no orbit/light-off/resize.
+  `verify.py` now consumes the Editor-exported `scene.luscn` (no `ludus-cook`),
+  records the World/scene/graph hashes from the manifest, and additionally
+  asserts the extracted app depends on no checkout path.
+
+Still **authored, not run** in this sandbox; the native build, Editor export,
+launch and the Metal visual comparison remain deferred to the macOS lane via
+`verify.py` and `.github/actions/hair-skin-bust`.

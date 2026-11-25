@@ -1,7 +1,8 @@
-"""Persist local target selection for scripts and direct CMake/IDE builds."""
+"""Persist checkout-local setup choices for the GUI and build tools."""
 from __future__ import annotations
 
 import json
+import tempfile
 from pathlib import Path
 
 from init_denoiser import preset_supports
@@ -16,6 +17,32 @@ VARIABLES = {
     "with_shader_probe": "LUDUS_BUILD_SHADER_PROBE",
     "with_denoiser": "LUDUS_ENABLE_OIDN",
 }
+GUI_SELECTION_PATH = Path("out/init/gui-selection.json")
+
+
+def read_gui_selection(root: Path) -> dict[str, str | bool]:
+    try:
+        data = json.loads((root / GUI_SELECTION_PATH).read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return {}
+    if not isinstance(data, dict):
+        return {}
+    return {name: value for name, value in data.items() if isinstance(value, (str, bool))}
+
+
+def save_gui_selection(root: Path, selection: dict[str, str | bool]) -> None:
+    path = root / GUI_SELECTION_PATH
+    path.parent.mkdir(parents=True, exist_ok=True)
+    temporary = None
+    try:
+        with tempfile.NamedTemporaryFile(mode="w", encoding="utf-8", dir=path.parent, delete=False) as stream:
+            temporary = Path(stream.name)
+            json.dump(selection, stream, indent=2, sort_keys=True)
+            stream.write("\n")
+        temporary.replace(path)
+    finally:
+        if temporary is not None:
+            temporary.unlink(missing_ok=True)
 
 
 class OptionsError(RuntimeError):

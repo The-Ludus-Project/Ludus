@@ -44,6 +44,7 @@ namespace ludus::editor
 class WorldEntitySearch;
 // Desktop, project-owned schema UI. No runtime pools or project code are loaded.
 class PlayViewportSource;
+struct PlayViewportStartResult;
 class RenderPanel;
 class RenderPreview;
 class RendererWorkspace;
@@ -53,6 +54,7 @@ class InspectorSection;
 class WorldLightsPanel;
 class WorldMaterialDocument;
 class WorldMaterialsPanel;
+class WorldEnvironmentPanel;
 class WorldTerrainPanel;
 struct WorldLightChange;
 struct WorldLightRow;
@@ -126,11 +128,6 @@ public:
         return Pending_ == false && SceneBusy() == false && Document_.CanRedo();
     }
     void StopPreview() noexcept;
-    /// @brief Make the World viewport the window of the game about to be launched.
-    /// @param outAddress The game's `LUDUS_HOSTED_WINDOW` value, set on success.
-    /// @param outReason Why the game must open in its own window instead, set on failure.
-    /// @return True when the bound viewport hosts the game (Play in the viewport).
-    [[nodiscard]] bool BeginPlayInViewport(QString& outAddress, QString& outReason);
     /// The Play mode chosen next to Play saved World. Read from the editor's preferences at
     /// construction; InViewport when none was saved.
     [[nodiscard]] PlayMode GetPlayMode() const noexcept;
@@ -140,7 +137,7 @@ public:
     /// @brief Resolve a Play request before launching the game.
     ///
     /// SeparateWindow never touches the viewport, and the game is launched without a hosted
-    /// window. InViewport calls BeginPlayInViewport; when the viewport cannot host the game,
+    /// window. InViewport tries to host the game in the World viewport. On refusal,
     /// nothing is launched and the workspace shows the reason with a "Play in a separate
     /// window" offer, which emits PlayRequested(PlayMode::SeparateWindow). Play never switches
     /// modes silently.
@@ -150,6 +147,8 @@ public:
     [[nodiscard]] PlayWindow PreparePlay(PlayMode mode, QString& outAddress);
     /// Why Play in the viewport is unavailable, as the workspace shows it; empty while no refusal is shown.
     [[nodiscard]] QString GetPlayUnavailableText() const;
+    /// Resolve the selected spawn or the sole spawn in the current saved built-in World.
+    [[nodiscard]] bool GetBuiltInPlaySelection(QString& outWorld, QString& outSpawn, QString& outError) const;
     /// Label the World viewport while a game runs in its own window, or remove the label.
     void SetPlayingElsewhere(bool isPlayingElsewhere);
     /// Return the viewport to editing and close the game's window, if a game plays in it.
@@ -231,6 +230,7 @@ Q_SIGNALS:
     void StatusMessage(const QString& message, bool isFailure);
 
 private:
+    [[nodiscard]] PlayViewportStartResult beginPlayInViewport();
     bool eventFilter(QObject* watched, QEvent* event) override;
     [[nodiscard]] bool LoadProjectSchema(WorldDocument& candidate, QByteArray& schema, bool worldDemo = false);
     [[nodiscard]] bool Inside(const QString& path, bool existing) const;
@@ -281,6 +281,11 @@ private:
     void renderLights();
     /// Apply a light switch, Solo or Enable All from the light list as one undo step.
     void applyLightChange(const WorldLightChange& change, const QString& message);
+    /// Commit the Environment tool's climate (undefined removes it) as one undoable edit; a refusal stays in the
+    /// Environment tab with its repair.
+    void applyClimateChange(const QJsonValue& climate);
+    /// Draw the Environment draft's domain and regions in both viewports while the Environment tab is shown.
+    void updateClimateOverlay();
     /// Show the properties of a light selected in the light list: select its first World entity, or, for a light
     /// without one, clear the entity selection so the inspector shows the light's own values.
     void selectLight(const WorldLightRow& row);
@@ -293,8 +298,15 @@ private:
     /// Explain a slot whose material the World created from an unsupported import, and offer to edit it.
     void addCreatedMaterial(QFormLayout& inoutRows);
     /// Open the creation dialog for an imported material: a new draft from its imported values, or its existing
-    /// created material. Applying it replaces the material for every slot that resolves to it in one edit.
-    void createImportedMaterial(const QString& source);
+    /// created material. When preferredModel names a model (for example coated_diffuse) and the source has no created
+    /// material yet, the new draft starts in that model. Applying it replaces the material for every slot that
+    /// resolves to it in one edit.
+    void createImportedMaterial(const QString& source, const QString& preferredModel = QString());
+    /// Offer Make Coated Diffuse on an ordinary resolved slot: create and assign an ordered dielectric coat over a
+    /// diffuse substrate (its base colour), through the material-definition path that a coating instance then edits.
+    void addCoatedDiffuseControls(QFormLayout& inoutRows,
+                                  const resources::SceneMaterial* materialOrNull,
+                                  const QJsonObject& placement);
     /// Offer component in the Add Component menu.
     void addComponentChoice(const QString& label, const QString& component);
     /// Give a long Add Component menu its search field, once every choice is in.
@@ -396,6 +408,7 @@ private:
     WorldLightsPanel* mLightsPanel;
     QTabWidget* mWorldLists;
     WorldMaterialsPanel* mMaterialsPanel;
+    WorldEnvironmentPanel* mEnvironmentPanel;
     QPointer<WorldMaterialDocument> mMaterialDocumentOrNull;
     /// Splitter sizes captured when the chrome was hidden, restored when it is shown.
     QByteArray mSplitterStateBeforeChromeHidden;

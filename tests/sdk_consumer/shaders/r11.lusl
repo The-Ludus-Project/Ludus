@@ -1,0 +1,37 @@
+// R11 scalar fixture: one uniform color per draw, bound statically or with a dynamic offset. Host
+// code binds the slot and vertex input location in r11scalar_slots.h. The binding-array variants
+// are r11_constant.lusl and r11_wider.lusl; the dynamically indexed and runtime-sized arrays stay
+// in r11.slang (config/lusl_migration.json).
+struct Settings
+{
+    float32x4 Selection;
+};
+ConstantBuffer<Settings> settingsBuffer;
+
+struct R11Input
+{
+    float32x2 PositionClip;
+};
+
+struct R11Varying
+{
+    float32x4 PositionClip : ClipPosition;
+    float32x2 Uv;
+};
+
+[stage(vertex)]
+R11Varying VertexMain(in R11Input input)
+{
+    R11Varying output =
+    {
+        .PositionClip = float32x4(input.PositionClip, 0, 1),
+        .Uv = input.PositionClip * float32x2(0.5, -0.5) + 0.5,
+    };
+    return output;
+}
+
+[stage(fragment)]
+float32x4 FragmentMain(in R11Varying input)
+{
+    return settingsBuffer.Selection;
+}

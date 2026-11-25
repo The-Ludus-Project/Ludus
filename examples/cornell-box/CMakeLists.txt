@@ -20,8 +20,8 @@ if(APPLE)
 endif()
 target_include_directories(cornell_box PRIVATE src)
 target_link_libraries(cornell_box PRIVATE Ludus::FoundationBase Ludus::FoundationMath Ludus::FoundationLogging Ludus::Platform Ludus::GraphicsRhi Ludus::GameplayCamera)
-ludus_compile_shader(TARGET cornell_box NAME cornell SOURCE shaders/cornell.slang
-    VERTEX vertexMain FRAGMENT fragmentMain)
+ludus_compile_shader(TARGET cornell_box NAME cornell SOURCE shaders/cornell.lusl
+    VERTEX VertexMain FRAGMENT FragmentMain)
 option(CORNELL_ENABLE_SANITIZERS "Instrument the sample with ASan and UBSan" OFF)
 set(CORNELL_TARGETS cornell_box)
 if(BUILD_TESTING)

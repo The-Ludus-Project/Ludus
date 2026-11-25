@@ -27,6 +27,17 @@ constexpr float64 MAX_SAMPLE_NANOSECONDS = 60'000'000'000.0;
            state == GpuTimingState::Disjoint || state == GpuTimingState::Failed || state == GpuTimingState::Empty;
 }
 
+[[nodiscard]] bool IsValidDuration(float64 duration) noexcept
+{
+    return duration >= 0 && duration < MAX_SAMPLE_NANOSECONDS;
+}
+
+/// Round a valid device interval to the nearest nanosecond.
+[[nodiscard]] uint64 RoundDuration(float64 duration) noexcept
+{
+    return static_cast<uint64>(foundation::math::Floor(duration + 0.5));
+}
+
 [[nodiscard]] platform::HostedPassKind GetPassKind(GpuPassKind kind) noexcept
 {
     switch (kind)
@@ -95,6 +106,7 @@ bool HostedGpuRecorder::Attach(const platform::NativeWindowInfo& window,
     mPhase = Phase::Idle;
     mFrame = 0;
     mIsBatchArmed = false;
+    mIsFrameTiming = false;
     mBatchFrame = 0;
     mBatchRecording = 0;
     mPending = {};
@@ -138,6 +150,10 @@ void HostedGpuRecorder::answer(const platform::HostedRecordingRequest& request,
     if (request.Kind == platform::HostedRecordingRequestKind::Stop && result == platform::HostedRecordingResult::Ok)
     {
         acknowledgement.Coverage = mCoverage;
+    }
+    if (request.Kind == platform::HostedRecordingRequestKind::Start && result == platform::HostedRecordingResult::Ok)
+    {
+        acknowledgement.IsPassTimingSupported = mIsFrameTiming == false;
     }
     for (PendingAcknowledgement& pending : mPending)
     {
@@ -190,9 +206,10 @@ void HostedGpuRecorder::startRecording(DeviceHandle device, const platform::Host
         answer(request, platform::HostedRecordingResult::Busy, 0);
         return;
     }
-    // A batch still in flight proves pass timing works on this device. One that measured an
-    // earlier frame is claimed by no recording and is discarded when it resolves; one still
-    // waiting for a frame measures this recording's first frame.
+    // A batch still in flight proves its timing works on this device, so the recording keeps
+    // that batch's kind. One that measured an earlier frame is claimed by no recording and is
+    // discarded when it resolves; one still waiting for a frame measures this recording's
+    // first frame.
     if (mIsBatchArmed == true)
     {
         mBatchTicks = foundation::time::NowTicks();
@@ -200,11 +217,16 @@ void HostedGpuRecorder::startRecording(DeviceHandle device, const platform::Host
     }
     else if (hasBatch() == false)
     {
-        if (ArmGpuPassTimings(device) != RasterStatus::Ready)
+        // A device without per-pass counters still measures whole frames, and the
+        // acknowledgement says so; only a device that measures neither is Unsupported.
+        const RasterStatus passes = ArmGpuPassTimings(device);
+        const bool isFrameTiming = passes == RasterStatus::Unsupported && ArmGpuTiming(device) == RasterStatus::Ready;
+        if (passes != RasterStatus::Ready && isFrameTiming == false)
         {
             answer(request, platform::HostedRecordingResult::Unsupported, 0);
             return;
         }
+        mIsFrameTiming = isFrameTiming;
         mIsBatchArmed = true;
         mBatchFrame = 0;
         mBatchTicks = foundation::time::NowTicks();
@@ -231,8 +253,7 @@ void HostedGpuRecorder::deliverBatch(const GpuPassTimings& batch) noexcept
         const GpuPassTiming& pass = batch.Passes[index];
         const float64 duration = pass.Timing.DurationNanoseconds;
         platform::HostedRecordingSample sample;
-        if (pass.Timing.State != GpuTimingState::Available ||
-            (duration >= 0 && duration < MAX_SAMPLE_NANOSECONDS) == false ||
+        if (pass.Timing.State != GpuTimingState::Available || IsValidDuration(duration) == false ||
             TryCopyScopeName(pass.Scope, sample.Name) == false)
         {
             // Disjoint or failed intervals, and passes outside a named scope, carry no sample.
@@ -243,8 +264,7 @@ void HostedGpuRecorder::deliverBatch(const GpuPassTimings& batch) noexcept
         sample.Frame = mBatchFrame;
         sample.SubmissionTicks = mBatchTicks;
         sample.CollectionTicks = collected >= mBatchTicks ? collected : mBatchTicks;
-        // Round to the nearest nanosecond; the duration is nonnegative and below the limit above.
-        sample.DurationNanoseconds = static_cast<uint64>(foundation::math::Floor(duration + 0.5));
+        sample.DurationNanoseconds = RoundDuration(duration);
         sample.ScopeIdentity = pass.Scope.Identity;
         sample.ScopePassIndex = pass.ScopePassIndex;
         sample.LogicalPassCount = pass.Scope.LogicalPassCount;
@@ -256,20 +276,48 @@ void HostedGpuRecorder::deliverBatch(const GpuPassTimings& batch) noexcept
             sample.EndTicks = pass.EndTicks;
             sample.ClockUncertaintyNanoseconds = batch.ClockUncertaintyNanoseconds;
         }
-        const platform::HostedSurfaceStatus status = mChannelOrNull->SendSample(sample);
-        if (status == platform::HostedSurfaceStatus::Ok)
-        {
-            ++mCoverage.DeliveredSamples;
-        }
-        else if (status == platform::HostedSurfaceStatus::InvalidArgument)
-        {
-            ++mCoverage.InvalidSamples;
-        }
-        else
-        {
-            ++mCoverage.DroppedSamples;
-        }
+        sendSample(sample);
     }
+}
+
+void HostedGpuRecorder::deliverFrame(const GpuTiming& timing) noexcept
+{
+    if (timing.State != GpuTimingState::Available || IsValidDuration(timing.DurationNanoseconds) == false)
+    {
+        ++mCoverage.InvalidSamples;
+        return;
+    }
+    const uint64 collected = foundation::time::NowTicks();
+    platform::HostedRecordingSample sample;
+    sample.Recording = mRecording;
+    sample.Frame = mBatchFrame;
+    sample.SubmissionTicks = mBatchTicks;
+    sample.CollectionTicks = collected >= mBatchTicks ? collected : mBatchTicks;
+    sample.DurationNanoseconds = RoundDuration(timing.DurationNanoseconds);
+    sample.IsFrame = true;
+    sendSample(sample);
+}
+
+void HostedGpuRecorder::sendSample(const platform::HostedRecordingSample& sample) noexcept
+{
+    const platform::HostedSurfaceStatus status = mChannelOrNull->SendSample(sample);
+    if (status == platform::HostedSurfaceStatus::Ok)
+    {
+        ++mCoverage.DeliveredSamples;
+    }
+    else if (status == platform::HostedSurfaceStatus::InvalidArgument)
+    {
+        ++mCoverage.InvalidSamples;
+    }
+    else
+    {
+        ++mCoverage.DroppedSamples;
+    }
+}
+
+RasterStatus HostedGpuRecorder::armBatch(DeviceHandle device) const noexcept
+{
+    return mIsFrameTiming == true ? ArmGpuTiming(device) : ArmGpuPassTimings(device);
 }
 
 void HostedGpuRecorder::collectBatch(DeviceHandle device) noexcept
@@ -278,19 +326,28 @@ void HostedGpuRecorder::collectBatch(DeviceHandle device) noexcept
     {
         return;
     }
+    // The device is gone or failed when a poll is not Ready: the batch can no longer resolve.
     GpuPassTimings batch;
-    if (GetGpuPassTimings(device, batch) != RasterStatus::Ready)
+    GpuTiming frame;
+    if (mIsFrameTiming == true && GetGpuTiming(device, frame) != RasterStatus::Ready)
     {
-        // The device is gone or failed: the batch can no longer resolve.
+        frame.State = GpuTimingState::Failed;
+    }
+    if (mIsFrameTiming == false && GetGpuPassTimings(device, batch) != RasterStatus::Ready)
+    {
         batch.State = GpuTimingState::Failed;
     }
-    if (IsTerminal(batch.State) == false)
+    if (IsTerminal(mIsFrameTiming == true ? frame.State : batch.State) == false)
     {
         return;
     }
     const bool isClaimed = mPhase != Phase::Idle && mBatchRecording == mRecording &&
                            (mPhase == Phase::Recording || mBatchFrame <= mStopFrame);
-    if (isClaimed == true)
+    if (isClaimed == true && mIsFrameTiming == true)
+    {
+        deliverFrame(frame);
+    }
+    else if (isClaimed == true)
     {
         deliverBatch(batch);
     }
@@ -353,7 +410,7 @@ void HostedGpuRecorder::BeginFrame(DeviceHandle device) noexcept
             --mStopFramesLeft;
         }
     }
-    if (mPhase == Phase::Recording && hasBatch() == false && ArmGpuPassTimings(device) == RasterStatus::Ready)
+    if (mPhase == Phase::Recording && hasBatch() == false && armBatch(device) == RasterStatus::Ready)
     {
         mIsBatchArmed = true;
         mBatchFrame = 0;

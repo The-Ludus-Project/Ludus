@@ -1,4 +1,5 @@
 #include <ludus/graphics/renderer/viewport.hpp>
+#include <ludus/graphics/rhi/frame_producer.h>
 #include <ludus/graphics/rhi/gpu_scope.h>
 
 #include <ludus/foundation/containers/static_array.hpp>
@@ -28,10 +29,11 @@ struct RasterViewport::State final
     Renderer* SceneRenderer = nullptr;
     rhi::DeviceHandle Device{};
     rhi::TextureHandle SceneColor{};
-    rhi::TextureHandle Images[2]{};
-    rhi::SubmissionToken Producers[2]{};
+    static constexpr usize DISPLAY_IMAGE_COUNT = rhi::FrameProducer::SLOT_COUNT;
+    /// Display images named by Output's slots; Output owns their leases and producers.
+    StaticArray<rhi::TextureHandle, DISPLAY_IMAGE_COUNT> Images{};
+    rhi::FrameProducer Output;
     Presentation Display{};
-    static constexpr usize DISPLAY_IMAGE_COUNT = 2;
     StaticArray<Presentation, DISPLAY_IMAGE_COUNT> SurfaceDisplays{};
     StaticArray<bool, DISPLAY_IMAGE_COUNT> HasSurfaceDisplay{};
     bool ShouldPresentToSurface = false;
@@ -45,44 +47,9 @@ struct RasterViewport::State final
     PreparedView PendingView{};
     bool HasPendingView = false;
     uint64 Owner = 0;
-    uint64 Generations[2]{1, 1};
     uint32 Width = 0;
     uint32 Height = 0;
-    uint32 Latest = 0;
-    bool Leased[2]{};
-    bool Written[2]{};
-    bool Submitted[2]{};
     bool DisplayCreated = false;
-    bool FrameOpen = false;
-    uint32 Producing = 0;
-    rhi::SurfaceHandle ProducingSurface{};
-    Status RecordingStatus = Status::Ready;
-    Status Finish(rhi::SubmissionToken& completion) noexcept
-    {
-        const Status submitted = rhi::EndFrame(Device, completion);
-        const Status producer = rhi::GetStatus(Device, completion);
-        if (producer != Status::InvalidHandle)
-        {
-            Producers[Producing] = completion;
-            Submitted[Producing] = true;
-        }
-        rhi::FrameInfo frame;
-        FrameOpen = rhi::GetFrameInfo(Device, ProducingSurface, frame) == rhi::DeviceStatus::Ready;
-        if (FrameOpen)
-        {
-            return submitted;
-        }
-        if (RecordingStatus != Status::Ready)
-        {
-            return RecordingStatus;
-        }
-        if (submitted == Status::Ready)
-        {
-            Latest = Producing;
-            Written[Producing] = true;
-        }
-        return submitted;
-    }
     float32 Exposure = 1;
     ToneCurve Curve = ToneCurve::Reinhard;
     bool HasBackdrop = false;
@@ -143,6 +110,7 @@ Status RasterViewport::Initialize(Renderer& renderer,
     }
     candidate->SceneRenderer = &renderer;
     candidate->Device = device;
+    candidate->Output = rhi::FrameProducer{device};
     candidate->Width = width;
     candidate->Height = height;
     candidate->Owner = NextViewportOwner++;
@@ -269,17 +237,10 @@ Status RasterViewport::Poll() noexcept
             }
         }
     }
-    for (uint32 slot = 0; slot < 2; ++slot)
+    const Status producers = state.Output.PollProducers();
+    if (producers != Status::Ready)
     {
-        if (state.Submitted[slot] == false)
-        {
-            continue;
-        }
-        const Status producer = rhi::GetStatus(state.Device, state.Producers[slot]);
-        if (producer != Status::Ready)
-        {
-            return producer;
-        }
+        return producers;
     }
     if (state.HasPendingView == true)
     {
@@ -334,9 +295,9 @@ Status RasterViewport::Render(rhi::SurfaceHandle surface, rhi::SubmissionToken& 
     {
         return Status::InvalidDescription;
     }
-    if (mState && mState->FrameOpen)
+    if (mState.Get() != nullptr && mState->Output.IsFrameOpen() == true)
     {
-        return mState->Finish(completion);
+        return mState->Output.EndFrame(completion);
     }
     const Status setup = Poll();
     if (setup != Status::Ready)
@@ -349,85 +310,45 @@ Status RasterViewport::Render(rhi::SurfaceHandle surface, rhi::SubmissionToken& 
     {
         return state.HasPendingView == true && ready == Status::InvalidHandle ? Status::NotReady : ready;
     }
-    uint32 index = (state.Latest + 1) % 2;
-    if (state.Leased[index] || state.Generations[index] == ~uint64{0})
+    uint32 index = 0;
+    const Status started = state.Output.BeginFrame(surface, index);
+    if (started != Status::Ready)
     {
-        index = 1 - index;
+        return started;
     }
-    if (state.Leased[index])
-    {
-        return Status::NotReady;
-    }
-    if (state.Generations[index] == ~uint64{0})
-    {
-        return Status::IdentityExhausted;
-    }
-    const rhi::DeviceStatus started = rhi::BeginFrame(state.Device, surface);
-    switch (started)
-    {
-        case rhi::DeviceStatus::Ready:
-            break;
-        case rhi::DeviceStatus::Pending:
-            return Status::Pending;
-        case rhi::DeviceStatus::Skipped:
-        case rhi::DeviceStatus::NotReady:
-            return Status::NotReady;
-        case rhi::DeviceStatus::InvalidHandle:
-            return Status::InvalidHandle;
-        case rhi::DeviceStatus::InvalidDescription:
-            return Status::InvalidDescription;
-        case rhi::DeviceStatus::Unsupported:
-            return Status::Unsupported;
-        case rhi::DeviceStatus::DeviceLost:
-            return Status::DeviceLost;
-        case rhi::DeviceStatus::Failed:
-            return Status::Failed;
-        case rhi::DeviceStatus::InvalidState:
-            return Status::InvalidState;
-        case rhi::DeviceStatus::IdentityExhausted:
-            return Status::IdentityExhausted;
-        case rhi::DeviceStatus::SurfaceLost:
-            return Status::Failed;
-        case rhi::DeviceStatus::CapacityExceeded:
-            return Status::CapacityExceeded;
-    }
-    state.Written[index] = false;
-    state.FrameOpen = true;
-    state.Producing = index;
-    state.ProducingSurface = surface;
     rhi::GpuScopeDescription sceneScope;
     static_cast<void>(rhi::MakeGpuScope(1, {"Viewport/Scene", sizeof("Viewport/Scene") - 1}, sceneScope));
     {
         const rhi::GpuScope scope(state.Device, sceneScope);
         // An overlay depth-tests against this frame's scene depth, so keep it past the scene pass.
         const bool hasOverlay = state.OverlaysOrNull != nullptr;
-        state.RecordingStatus = state.SceneRenderer->DrawView(
+        state.Output.Record(state.SceneRenderer->DrawView(
             state.View,
             {
                 .Color = state.SceneColor,
                 .Clear = {0, 0, 0, state.HasBackdrop == true ? BACKDROP_CLEAR_ALPHA : OPAQUE_CLEAR_ALPHA},
                 .DepthStore = hasOverlay == true ? rhi::RasterStore::Store : rhi::RasterStore::Discard,
-            });
+            }));
     }
-    if (state.RecordingStatus == Status::Ready && state.OverlaysOrNull != nullptr)
+    if (state.Output.GetRecordingStatus() == Status::Ready && state.OverlaysOrNull != nullptr)
     {
         constexpr uint64 OVERLAY_SCOPE_ID = 4;
         rhi::GpuScopeDescription overlayScope;
         static_cast<void>(
             rhi::MakeGpuScope(OVERLAY_SCOPE_ID, {"Viewport/Overlay", sizeof("Viewport/Overlay") - 1}, overlayScope));
         const rhi::GpuScope scope(state.Device, overlayScope);
-        state.RecordingStatus = state.OverlaysOrNull->Draw(state.Overlay, { .Color = state.SceneColor });
+        state.Output.Record(state.OverlaysOrNull->Draw(state.Overlay, { .Color = state.SceneColor }));
     }
-    if (state.RecordingStatus == Status::Ready)
+    if (state.Output.GetRecordingStatus() == Status::Ready)
     {
         rhi::GpuScopeDescription compositeScope;
         static_cast<void>(
             rhi::MakeGpuScope(2, {"Viewport/Composite", sizeof("Viewport/Composite") - 1}, compositeScope));
         const rhi::GpuScope scope(state.Device, compositeScope);
-        state.RecordingStatus =
-            state.SceneRenderer->DrawLightingPresentation(state.Display, { .Color = state.Images[index] });
+        state.Output.Record(
+            state.SceneRenderer->DrawLightingPresentation(state.Display, { .Color = state.Images[index] }));
     }
-    if (state.RecordingStatus == Status::Ready && state.ShouldPresentToSurface == true)
+    if (state.Output.GetRecordingStatus() == Status::Ready && state.ShouldPresentToSurface == true)
     {
         constexpr uint64 PRESENT_SCOPE_ID = 3;
         rhi::GpuScopeDescription presentationScope;
@@ -435,14 +356,14 @@ Status RasterViewport::Render(rhi::SurfaceHandle surface, rhi::SubmissionToken& 
                                             {"Viewport/Present", sizeof("Viewport/Present") - 1},
                                             presentationScope));
         const rhi::GpuScope scope(state.Device, presentationScope);
-        state.RecordingStatus = state.SceneRenderer->DrawPresentation(state.SurfaceDisplays[index]);
+        state.Output.Record(state.SceneRenderer->DrawPresentation(state.SurfaceDisplays[index]));
     }
-    return state.Finish(completion);
+    return state.Output.EndFrame(completion);
 }
 
 Status RasterViewport::SetOverlay(OverlayRenderer* overlaysOrNull, PreparedOverlay overlay) noexcept
 {
-    if (mState.Get() == nullptr || mState->FrameOpen == true)
+    if (mState.Get() == nullptr || mState->Output.IsFrameOpen() == true)
     {
         return Status::InvalidState;
     }
@@ -478,36 +399,30 @@ Status RasterViewport::Acquire(ViewportFrame& inoutFrame, ViewportImage& outImag
         return Status::InvalidDescription;
     }
     State& state = *mState;
-    const uint32 index = state.Latest;
-    if (state.Written[index] == false || state.Leased[index] == true)
+    rhi::FrameLease lease;
+    rhi::SubmissionToken producer;
+    const Status acquired = state.Output.Acquire(lease, producer);
+    if (acquired != Status::Ready)
     {
-        return Status::NotReady;
+        return acquired;
     }
-    const Status completed = rhi::GetStatus(state.Device, state.Producers[index]);
-    if (completed != Status::Ready)
-    {
-        return completed;
-    }
-    if (state.Generations[index] == ~uint64{0})
-    {
-        return Status::IdentityExhausted;
-    }
-    state.Leased[index] = true;
     inoutFrame.mOwner = state.Owner;
-    inoutFrame.mGeneration = state.Generations[index];
-    inoutFrame.mSlot = index;
-    outImage = {state.Images[index], state.Producers[index], state.Width, state.Height};
+    inoutFrame.mGeneration = lease.Generation;
+    inoutFrame.mSlot = lease.Slot;
+    outImage = {state.Images[lease.Slot], producer, state.Width, state.Height};
     return Status::Ready;
 }
 Status RasterViewport::Release(ViewportFrame& inoutFrame) noexcept
 {
-    if (mState.Get() == nullptr || inoutFrame.mOwner != mState->Owner || inoutFrame.mSlot >= 2 ||
-        mState->Leased[inoutFrame.mSlot] == false || inoutFrame.mGeneration != mState->Generations[inoutFrame.mSlot])
+    if (mState.Get() == nullptr || inoutFrame.mOwner != mState->Owner)
     {
         return Status::InvalidHandle;
     }
-    mState->Leased[inoutFrame.mSlot] = false;
-    ++mState->Generations[inoutFrame.mSlot];
+    const Status released = mState->Output.Release({ .Slot = inoutFrame.mSlot, .Generation = inoutFrame.mGeneration });
+    if (released != Status::Ready)
+    {
+        return released;
+    }
     inoutFrame = {};
     return Status::Ready;
 }

@@ -1344,7 +1344,10 @@ private:
         {
             const uint32 size = createNode(SyntaxKind::ArraySize);
             ++mPosition;
-            addChild(size, parseExpression());
+            if (isPunctuator(Punctuator::RightBracket) == false)
+            {
+                addChild(size, parseExpression());
+            }
             (void)expect(Punctuator::RightBracket, "']' after the array size");
             finish(size);
             addChild(node, size);

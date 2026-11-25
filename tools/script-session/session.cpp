@@ -21,6 +21,9 @@ namespace ludus::s2
 namespace
 {
 using namespace runtime::scripting;
+constexpr usize CHECKPOINT_VERSION_OFFSET = sizeof(uint32);
+constexpr usize CHECKPOINT_SESSION_OFFSET = CHECKPOINT_VERSION_OFFSET + sizeof(uint32);
+constexpr usize CHECKPOINT_TICK_OFFSET = CHECKPOINT_SESSION_OFFSET + sizeof(uint64);
 bool Trusted(const Package& package, std::span<const Package* const> admitted) noexcept
 {
     for (const Package* entry : admitted)
@@ -273,10 +276,10 @@ bool Session::Checkpoint(std::span<uint8> output, usize& written) const noexcept
         return false;
     }
     uint8 bytes[168] = {};
-    (void)TryWriteLittleEndian(uint32{0x32504353}, std::span<uint8>{bytes});
-    (void)TryWriteLittleEndian(uint32{1}, std::span<uint8>{bytes}.subspan(4));
-    (void)TryWriteLittleEndian(mWorld.Session, std::span<uint8>{bytes}.subspan(8));
-    (void)TryWriteLittleEndian(mWorld.Tick, std::span<uint8>{bytes}.subspan(16));
+    (void)TryWriteLittleEndian(uint32{0x32504353}, bytes);
+    (void)TryWriteLittleEndian(uint32{1}, {bytes + CHECKPOINT_VERSION_OFFSET, sizeof(uint32)});
+    (void)TryWriteLittleEndian(mWorld.Session, {bytes + CHECKPOINT_SESSION_OFFSET, sizeof(uint64)});
+    (void)TryWriteLittleEndian(mWorld.Tick, {bytes + CHECKPOINT_TICK_OFFSET, sizeof(uint64)});
     std::memcpy(bytes + 24, mActive->Key, 64);
     for (uint32 i = 0; i < 2; ++i)
     {
@@ -302,10 +305,10 @@ bool Session::Restore(std::span<const uint8> input) noexcept
     uint32 version = 0;
     uint64 session = 0;
     uint64 tick = 0;
-    (void)TryReadLittleEndian(input, magic);
-    (void)TryReadLittleEndian(input.subspan(4), version);
-    (void)TryReadLittleEndian(input.subspan(8), session);
-    (void)TryReadLittleEndian(input.subspan(16), tick);
+    (void)TryReadLittleEndian({input.data(), input.size()}, magic);
+    (void)TryReadLittleEndian({input.data() + CHECKPOINT_VERSION_OFFSET, sizeof(uint32)}, version);
+    (void)TryReadLittleEndian({input.data() + CHECKPOINT_SESSION_OFFSET, sizeof(uint64)}, session);
+    (void)TryReadLittleEndian({input.data() + CHECKPOINT_TICK_OFFSET, sizeof(uint64)}, tick);
     const Package* source = nullptr;
     for (const Package* package : mCatalog)
     {

@@ -117,6 +117,26 @@ class DependencyDiagnosticsTests(unittest.TestCase):
                                 *args, f"-DLUDUS_SPIRV_CROSS={self.tool}")
         self.assertEqual(result.returncode, 0, result.stdout)
 
+    def test_lusl_source_needs_a_host_luslc_outside_the_source_tree(self):
+        # Without a luslc target or an SDK bin/luslc (as in an Emscripten build), the helper
+        # requires the host compiler that scripts/bootstrap-luslc builds.
+        self.shader = self.root / "sample.lusl"
+        self.shader.write_text("// fixture\n")
+        args = (f"-DLUDUS_SLANG_COMPILER={self.tool}", f"-DLUDUS_SPIRV_VALIDATOR={self.tool}",
+                f"-DLUDUS_SPIRV_CROSS={self.tool}")
+        Path(str(self.tool) + ".build.json").write_text("{}")
+        body = self.shader_body("Emscripten", "set(EMSCRIPTEN TRUE)\nset(CMAKE_CROSSCOMPILING TRUE)")
+        for value in ("", str(self.root / "removed/luslc")):
+            with self.subTest(value=value):
+                self.assert_failure(self.configure(body, *args, f"-DLUDUS_LUSLC={value}"),
+                                    "LUDUS_LUSLC", "./scripts/bootstrap-luslc", "sample.lusl")
+        result = self.configure(body, *args, f"-DLUDUS_LUSLC={self.tool}")
+        self.assertEqual(result.returncode, 0, result.stdout)
+        # A native consumer of an SDK without bin/luslc takes the same setting.
+        native = self.configure(self.shader_body(), f"-DLUDUS_SLANG_COMPILER={self.tool}",
+                                f"-DLUDUS_LUSLC={self.tool}")
+        self.assertEqual(native.returncode, 0, native.stdout)
+
     def test_missing_shader_source(self):
         self.shader.unlink()
         self.assert_failure(self.configure(self.shader_body(), f"-DLUDUS_SLANG_COMPILER={self.tool}"),

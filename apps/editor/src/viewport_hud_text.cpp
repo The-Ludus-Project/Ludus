@@ -73,6 +73,23 @@ QFont GetViewportHudFont()
     return MakeTabularFont(QApplication::font());
 }
 
+QFont GetViewportStatisticsFont()
+{
+    QFont font = GetViewportHudFont();
+    font.setPointSizeF(font.pointSizeF() * design::TYPE_SCALE_CAPTION);
+    return font;
+}
+
+QString MakeStatisticsOverlayText(const QString& compactText, const QString& summary)
+{
+    if (compactText.isEmpty() == true)
+    {
+        return {};
+    }
+    return IsViewportStatisticsOverlayCollapsed() == true ? QStringLiteral("▸ ") + summary
+                                                          : QStringLiteral("▾ Stats\n") + compactText;
+}
+
 qreal GetViewportHudColumnGap()
 {
     return design::SPACING_MEDIUM;
@@ -130,9 +147,44 @@ void PaintViewportHudGrid(QPainter& inoutPainter,
 
 HudGridLabel::HudGridLabel(QWidget* parent) : QLabel(parent)
 {
-    setContentsMargins(HudLabel::PADDING, HudLabel::PADDING, HudLabel::PADDING, HudLabel::PADDING);
-    setFont(GetViewportHudFont());
+    setContentsMargins(VIEWPORT_STATISTICS_PADDING,
+                       VIEWPORT_STATISTICS_PADDING,
+                       VIEWPORT_STATISTICS_PADDING,
+                       VIEWPORT_STATISTICS_PADDING);
+    setFont(GetViewportStatisticsFont());
     setTextFormat(Qt::PlainText);
+    setCursor(Qt::PointingHandCursor);
+    setToolTip(QStringLiteral("Click to collapse the overlay and keep more of the frame visible."));
+}
+
+void HudGridLabel::SetStatisticsText(const QString& compactText, const QString& fullText, const QString& summary)
+{
+    mCompactText = compactText;
+    mFullText = fullText;
+    mSummary = summary;
+    const QString hint = IsViewportStatisticsOverlayCollapsed() == true
+                             ? QStringLiteral("Click to expand.")
+                             : QStringLiteral("Click to collapse and keep more of the frame visible.");
+    setToolTip(fullText.isEmpty() == true ? hint : hint + QLatin1Char('\n') + fullText);
+    applyStatisticsDisplay();
+}
+
+void HudGridLabel::applyStatisticsDisplay()
+{
+    setText(MakeStatisticsOverlayText(mCompactText, mSummary));
+    adjustSize();
+}
+
+void HudGridLabel::mousePressEvent(QMouseEvent* event)
+{
+    if (event->button() == Qt::LeftButton && mCompactText.isEmpty() == false)
+    {
+        SetViewportStatisticsOverlayCollapsed(IsViewportStatisticsOverlayCollapsed() == false);
+        SetStatisticsText(mCompactText, mFullText, mSummary);
+        event->accept();
+        return;
+    }
+    QLabel::mousePressEvent(event);
 }
 
 QSize HudGridLabel::sizeHint() const
@@ -155,7 +207,7 @@ void HudGridLabel::paintEvent(QPaintEvent* event)
     painter.setRenderHint(QPainter::Antialiasing);
     painter.setPen(Qt::NoPen);
     painter.setBrush(QColor::fromRgba(
-        WithAlpha(GetViewportArgb(design::ThemeColour::SurfaceViewport), HudLabel::BACKGROUND_OPACITY)));
+        WithAlpha(GetViewportArgb(design::ThemeColour::SurfaceViewport), VIEWPORT_STATISTICS_BACKGROUND_OPACITY)));
     painter.drawRoundedRect(rect(), design::RADIUS_GROUP, design::RADIUS_GROUP);
     PaintViewportHudGrid(painter,
                          contentsRect(),

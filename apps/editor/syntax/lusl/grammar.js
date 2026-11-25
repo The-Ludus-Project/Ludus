@@ -53,7 +53,7 @@ module.exports = grammar({
     attribute_declaration: $ => choice(
       seq("[", choice("space", $.identifier), optional($.argument_list), "]"),
       seq("[[", $.identifier, optional($.argument_list), "]]")),
-    array_declarator: $ => seq("[", $._expression, "]"),
+    array_declarator: $ => seq("[", optional($._expression), "]"),
     parameter_declaration: $ => seq(repeat($._modifier), field("type", $.type_reference),
       field("name", $.identifier), repeat($.array_declarator), optional(seq(":", $.identifier)), optional(seq("=", $._expression))),
     parameter_list: $ => seq("(", optional(separated($.parameter_declaration, ",")), ")"),

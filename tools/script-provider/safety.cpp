@@ -151,6 +151,7 @@ bool SteppingBudget() noexcept
 }
 bool MetadataAndEntities() noexcept
 {
+    constexpr usize PACKAGE_TOTAL_OFFSET = 3 * sizeof(uint32);
     LuauProvider provider;
     if (Load(provider) != Status::Completed)
     {
@@ -164,7 +165,7 @@ bool MetadataAndEntities() noexcept
     {
         if (size >= 16)
         {
-            (void)TryWriteLittleEndian(static_cast<uint32>(size), std::span<uint8>{bytes}.subspan(12));
+            (void)TryWriteLittleEndian(static_cast<uint32>(size), {bytes + PACKAGE_TOTAL_OFFSET, sizeof(uint32)});
         }
         if (provider.Load(ludus::sample::SCHEMA, {bytes, size}) != Status::InvalidPackage ||
             provider.LiveBytes() != live)

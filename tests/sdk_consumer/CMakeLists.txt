@@ -7,7 +7,7 @@ set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_CXX_EXTENSIONS OFF)
 set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
 
-find_package(Ludus CONFIG REQUIRED COMPONENTS Resources GameplayCamera GameplaySequencer Animation FoundationReflection FoundationSerialization GamePropertyBinding Ui FoundationParsing FoundationParsingJson FoundationConfig FoundationConfigJson RuntimeConfiguration Localization StringDictionary StringDictionaryWriter OPTIONAL_COMPONENTS MissingUiTestComponent)
+find_package(Ludus CONFIG REQUIRED COMPONENTS Resources GameplayCamera GameplaySequencer Animation FoundationReflection FoundationSerialization GamePropertyBinding Ui FoundationParsing FoundationParsingJson FoundationConfig FoundationConfigJson RuntimeConfiguration RuntimeConfigurationSchemas AudioConfiguration Localization StringDictionary StringDictionaryWriter FoliagePages WeatherFormat ContentWeather GameplayWeather OPTIONAL_COMPONENTS MissingUiTestComponent)
 # Direct CMake exports and CLI/editor project admission must agree. A target can
 # be installed successfully while missing from the identity manifest (#196), so
 # every exported Ludus module must be listed. Bundled third-party libraries are
@@ -75,10 +75,12 @@ if(NOT EMSCRIPTEN)
     if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
         target_link_options(ludus_sdk_reflection_module PRIVATE "LINKER:--exclude-libs,ALL")
     endif()
-    add_executable(ludus_sdk_consumer main.cpp reflection.cpp network.cpp policy.cpp world.cpp strings.cpp string_dictionary.cpp time.cpp identity.cpp fluid.cpp collision.cpp filesystem.cpp pack.cpp async.cpp persistence.cpp ui.cpp containers.cpp threading.cpp parsing.cpp localization.cpp configuration.cpp curves.cpp content.cpp audio.cpp camera.cpp sequencer.cpp animation.cpp denoiser.cpp)
-    target_link_libraries(ludus_sdk_consumer PRIVATE consumer_reflection Ludus::AudioContent Ludus::Content Ludus::FoundationConfigJson Ludus::RuntimeConfiguration Ludus::NetworkCore Ludus::FoundationParsing Ludus::FoundationParsingJson Ludus::Localization Ludus::StringDictionary Ludus::StringDictionaryWriter Ludus::FoundationContainers Ludus::FoundationFilesystem Ludus::FoundationStrings Ludus::FoundationBase Ludus::FoundationMath Ludus::FoundationGeometry Ludus::FoundationThreading Ludus::FoundationTime Ludus::FoundationIdentity Ludus::Platform Ludus::GraphicsRhi Ludus::Input Ludus::GameplayWorld Ludus::GameplayCamera Ludus::GameplaySequencer Ludus::Animation Ludus::PhysicsFluid Ludus::PhysicsCollision Ludus::Ui Ludus::GraphicsRenderer)
+    add_executable(ludus_sdk_consumer main.cpp reflection.cpp network.cpp policy.cpp world.cpp strings.cpp string_dictionary.cpp foliage.cpp weather.cpp weather_golden_corpus.cpp time.cpp identity.cpp fluid.cpp collision.cpp rigid.cpp filesystem.cpp pack.cpp async.cpp persistence.cpp ui.cpp containers.cpp threading.cpp parsing.cpp localization.cpp configuration.cpp curves.cpp content.cpp audio.cpp camera.cpp sequencer.cpp animation.cpp denoiser.cpp)
+    target_link_libraries(ludus_sdk_consumer PRIVATE consumer_reflection Ludus::AudioContent Ludus::Content Ludus::FoundationConfigJson Ludus::RuntimeConfiguration Ludus::NetworkCore Ludus::FoundationParsing Ludus::FoundationParsingJson Ludus::Localization Ludus::StringDictionary Ludus::StringDictionaryWriter Ludus::FoliagePages Ludus::ContentWeather Ludus::GameplayWeather Ludus::FoundationContainers Ludus::FoundationFilesystem Ludus::FoundationStrings Ludus::FoundationBase Ludus::FoundationMath Ludus::FoundationGeometry Ludus::FoundationThreading Ludus::FoundationTime Ludus::FoundationIdentity Ludus::Platform Ludus::GraphicsRhi Ludus::Input Ludus::GameplayWorld Ludus::GameplayCamera Ludus::GameplaySequencer Ludus::Animation Ludus::PhysicsFluid Ludus::PhysicsCollision Ludus::PhysicsRigid Ludus::Ui Ludus::GraphicsRenderer)
     include("${CMAKE_CURRENT_SOURCE_DIR}/geometry.cmake")
     ludus_add_sdk_geometry_exercise(ludus_sdk_consumer)
+    # configuration.cpp exercises the schema catalog and the audio configuration adapters.
+    target_link_libraries(ludus_sdk_consumer PRIVATE Ludus::RuntimeConfigurationSchemas Ludus::AudioConfiguration)
     target_compile_definitions(ludus_sdk_consumer PRIVATE
         EXPECTED_DENOISER=$<BOOL:${Ludus_ENABLE_OIDN}>
         EXPECTED_FLAVOR=${Ludus_BUILD_FLAVOR_ID}
@@ -90,12 +92,13 @@ if(LUDUS_SDK_RENDER_TESTS)
     add_executable(ludus_sdk_render_consumer render.cpp)
     target_link_libraries(ludus_sdk_render_consumer PRIVATE Ludus::GraphicsRhi)
     target_compile_options(ludus_sdk_render_consumer PRIVATE -Wall -Wextra -Wpedantic -Werror -fno-exceptions)
-    ludus_compile_shader(TARGET ludus_sdk_render_consumer NAME diagnostic SOURCE shaders/diagnostic.slang
-        VERTEX VertexMain FRAGMENT FragmentMain INCLUDES shaders)
+    ludus_compile_shader(TARGET ludus_sdk_render_consumer NAME diagnostic SOURCE shaders/diagnostic.lusl
+        VERTEX VertexMain FRAGMENT FragmentMain)
     if(EMSCRIPTEN)
         target_link_options(ludus_sdk_render_consumer PRIVATE -fno-exceptions -g2 -sENVIRONMENT=web -sALLOW_MEMORY_GROWTH=1 -sASSERTIONS=1)
         set_target_properties(ludus_sdk_render_consumer PROPERTIES OUTPUT_NAME render SUFFIX ".js")
         configure_file(render.html index.html COPYONLY)
+        configure_file(render.html render.html COPYONLY)
     endif()
 endif()
 
@@ -103,9 +106,9 @@ if(LUDUS_SDK_RENDER_TESTS)
     add_executable(ludus_sdk_raster_consumer raster.cpp)
     target_link_libraries(ludus_sdk_raster_consumer PRIVATE Ludus::GraphicsRhi Ludus::FoundationTime)
     target_compile_options(ludus_sdk_raster_consumer PRIVATE -Wall -Wextra -Wpedantic -Werror -fno-exceptions)
-    ludus_compile_shader(TARGET ludus_sdk_raster_consumer NAME cull SOURCE shaders/cull.slang COMPUTE computeMain)
-    ludus_compile_shader(TARGET ludus_sdk_raster_consumer NAME raster RASTER SOURCE shaders/raster.slang
-        VERTEX vertexMain FRAGMENT fragmentMain)
+    ludus_compile_shader(TARGET ludus_sdk_raster_consumer NAME cull SOURCE shaders/cull.lusl COMPUTE ComputeMain)
+    ludus_compile_shader(TARGET ludus_sdk_raster_consumer NAME raster RASTER SOURCE shaders/raster.lusl
+        VERTEX VertexMain FRAGMENT FragmentMain)
     if(EMSCRIPTEN)
         target_link_options(ludus_sdk_raster_consumer PRIVATE -fno-exceptions -g2 -sENVIRONMENT=web -sALLOW_MEMORY_GROWTH=1 -sASSERTIONS=1)
         set_target_properties(ludus_sdk_raster_consumer PROPERTIES OUTPUT_NAME raster SUFFIX ".js")

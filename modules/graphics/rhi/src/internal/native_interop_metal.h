@@ -102,7 +102,7 @@ void NativeTextureDestroy(usize slot) noexcept
 }
 void NativeInteropDetachSurface() noexcept
 {
-    ShutdownRendering();
+    ReleaseFrameResources();
     DisconnectSurfaces();
     GetMetal().IsConnected = false;
 }

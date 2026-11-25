@@ -114,6 +114,10 @@ bool IsAccepted(Status status) noexcept
 }
 } // namespace
 
+// The shaders read the layer as this many float4 rows (renderer_cloud_layer.slang).
+static_assert(sizeof(CloudLayerUniform) == LUDUS_CLOUD_LAYER_UNIFORM_ROWS * sizeof(math::Vector4));
+static_assert(sizeof(AuroraLayerUniform) == LUDUS_AURORA_LAYER_UNIFORM_ROWS * sizeof(math::Vector4));
+
 struct AtmosphereViewUniform final
 {
     StaticArray<math::Vector4, CLIP_ROWS> ClipToEyeRows{};
@@ -131,6 +135,8 @@ struct AtmosphereViewUniform final
     math::Vector4 GalacticCenterWorld{};
     StaticArray<math::Vector4, ATMOSPHERE_PLANET_CAPACITY> PlanetDirectionsWorld{};
     StaticArray<math::Vector4, ATMOSPHERE_PLANET_CAPACITY> PlanetIlluminance{};
+    CloudLayerUniform CloudLayer{};
+    AuroraLayerUniform AuroraLayer{};
 };
 
 namespace
@@ -147,6 +153,71 @@ bool TryMakeOrbitalRayTransform(const ViewDescription& camera, math::Matrix4& ou
     constexpr usize TRANSLATION_COLUMN = CLIP_ROWS - 1;
     directionToClip.Columns[TRANSLATION_COLUMN] = {0, 0, 1, 0};
     return math::TryInverse(directionToClip, outClipToEye) == math::MathStatus::Success;
+}
+
+/// A disabled two-region fixture is always valid; an enabled one needs a nonzero normal and nonnegative regions.
+bool IsCloudLayerTestFieldValid(const CloudLayerTestField& field) noexcept
+{
+    if (field.IsEnabled == false)
+    {
+        return true;
+    }
+    math::Vector3 normalLocal;
+    if (math::IsFinite(field.SplitOffsetMetres) == false ||
+        math::TryNormalize(field.SplitNormalLocal, normalLocal) != math::MathStatus::Success)
+    {
+        return false;
+    }
+    for (const CloudLayerTestRegion& region : field.Regions)
+    {
+        const math::Vector3& source = region.SourceRadiance;
+        if (math::IsFinite(region.ExtinctionPerMetre) == false || region.ExtinctionPerMetre < 0 ||
+            math::IsFinite(source) == false || source.X < 0 || source.Y < 0 || source.Z < 0)
+        {
+            return false;
+        }
+    }
+    return true;
+}
+
+bool IsCloudLayerValid(const CloudLayerDescription& clouds) noexcept
+{
+    const auto isNonnegative = [](float32 value) noexcept { return math::IsFinite(value) == true && value >= 0; };
+    const auto isSize = [](float32 value) noexcept {
+        return math::IsFinite(value) == true && value > 0 && value <= CloudLayerDescription::MAX_SIZE_METRES;
+    };
+    const float64 top = static_cast<float64>(clouds.BaseHeightMetres) + static_cast<float64>(clouds.ThicknessMetres);
+    return isNonnegative(clouds.BaseHeightMetres) == true && math::IsFinite(clouds.ThicknessMetres) == true &&
+           clouds.ThicknessMetres > 0 && top < GetAtmosphereTopAltitude() && isSize(clouds.SizeXMetres) == true &&
+           isSize(clouds.SizeZMetres) == true && isNonnegative(clouds.EdgeFadeMetres) == true &&
+           isNonnegative(clouds.Density) == true && isNonnegative(clouds.ExtinctionPerMetre) == true &&
+           isNonnegative(clouds.SingleScatteringAlbedo) == true && clouds.SingleScatteringAlbedo <= 1 &&
+           math::IsFinite(clouds.PhaseAsymmetry) == true &&
+           math::Abs(clouds.PhaseAsymmetry) <= CloudLayerDescription::MAX_PHASE_ASYMMETRY &&
+           math::IsFinite(clouds.AxisXWorld) == true && IsCloudLayerTestFieldValid(clouds.TestField) == true;
+}
+
+/// Write a validated two-region fixture's rows and flag; a disabled field leaves them zero.
+void PackCloudLayerTestField(const CloudLayerTestField& field,
+                             float32 density,
+                             CloudLayerUniform& inoutUniform) noexcept
+{
+    math::Vector3 normalLocal;
+    if (field.IsEnabled == false ||
+        math::TryNormalize(field.SplitNormalLocal, normalLocal) != math::MathStatus::Success)
+    {
+        return;
+    }
+    inoutUniform.TestSplit = {normalLocal.X, normalLocal.Y, normalLocal.Z, field.SplitOffsetMetres};
+    for (usize i = 0; i < CloudLayerTestField::REGION_COUNT; ++i)
+    {
+        const CloudLayerTestRegion& region = field.Regions[i];
+        inoutUniform.TestRegions[i] = {region.SourceRadiance.X,
+                                       region.SourceRadiance.Y,
+                                       region.SourceRadiance.Z,
+                                       density * region.ExtinctionPerMetre};
+    }
+    inoutUniform.Phase.Y = 1;
 }
 
 bool TryPackNightSky(const CelestialBackgroundDescription& celestial, AtmosphereViewUniform& inoutUniform) noexcept
@@ -239,6 +310,112 @@ bool TryPackCelestial(const CelestialBackgroundDescription& celestial, Atmospher
     return true;
 }
 } // namespace
+
+bool TryPackCloudLayer(const AtmosphereDescription& atmosphere,
+                       const ViewDescription& camera,
+                       CloudLayerUniform& outUniform) noexcept
+{
+    const CloudLayerDescription& clouds = atmosphere.Clouds;
+    if (clouds.IsEnabled == false)
+    {
+        outUniform = {};
+        return true;
+    }
+    math::Vector3 upWorld;
+    if (IsCloudLayerValid(clouds) == false ||
+        math::TryNormalize(atmosphere.SurfaceUpWorld, upWorld) != math::MathStatus::Success)
+    {
+        return false;
+    }
+    math::Vector3 axisXWorld;
+    if (math::TryNormalize(clouds.AxisXWorld - upWorld * math::Dot(clouds.AxisXWorld, upWorld), axisXWorld) !=
+        math::MathStatus::Success)
+    {
+        return false;
+    }
+    float64 altitudeMetres = 0;
+    math::Vector3 radialUpWorld;
+    if (TryResolveObserver(atmosphere, camera.CameraPosition, altitudeMetres, radialUpWorld) == false)
+    {
+        return false;
+    }
+    if (camera.OrthographicCamera == true || altitudeMetres < 0 || altitudeMetres > GetAtmosphereTopAltitude())
+    {
+        outUniform = {};
+        return true;
+    }
+    const math::Vector3 axisZWorld = math::Cross(axisXWorld, upWorld);
+    const auto toDouble = [](math::Vector3 value) noexcept {
+        return math::Vector3d{static_cast<float64>(value.X),
+                              static_cast<float64>(value.Y),
+                              static_cast<float64>(value.Z)};
+    };
+    const math::Vector3d offsetWorld = toDouble(camera.CameraPosition) - toDouble(atmosphere.SurfaceAnchorWorld);
+    const float32 halfSizeX = clouds.SizeXMetres * 0.5F;
+    const float32 halfSizeZ = clouds.SizeZMetres * 0.5F;
+    const float32 extinction = clouds.Density * clouds.ExtinctionPerMetre;
+    CloudLayerUniform uniform;
+    uniform.AxisXWorld = {axisXWorld.X, axisXWorld.Y, axisXWorld.Z, 1};
+    uniform.UpWorld = {upWorld.X, upWorld.Y, upWorld.Z, clouds.BaseHeightMetres};
+    uniform.AxisZWorld = {axisZWorld.X, axisZWorld.Y, axisZWorld.Z, clouds.BaseHeightMetres + clouds.ThicknessMetres};
+    uniform.CameraLocal = {static_cast<float32>(math::Dot(offsetWorld, toDouble(axisXWorld))),
+                           static_cast<float32>(math::Dot(offsetWorld, toDouble(upWorld))),
+                           static_cast<float32>(math::Dot(offsetWorld, toDouble(axisZWorld))),
+                           math::Min(clouds.EdgeFadeMetres, math::Min(halfSizeX, halfSizeZ))};
+    uniform.Medium = {halfSizeX, halfSizeZ, extinction, extinction * clouds.SingleScatteringAlbedo};
+    uniform.Phase = {clouds.PhaseAsymmetry, 0, clouds.SingleScatteringAlbedo, 0};
+    PackCloudLayerTestField(clouds.TestField, clouds.Density, uniform);
+    if (math::IsFinite(uniform.Medium) == false || math::IsFinite(uniform.CameraLocal) == false ||
+        math::IsFinite(uniform.TestRegions[0]) == false || math::IsFinite(uniform.TestRegions[1]) == false)
+    {
+        return false;
+    }
+    outUniform = uniform;
+    return true;
+}
+
+bool TryPackAuroraLayer(const AtmosphereDescription& atmosphere,
+                        bool isOrthographic,
+                        bool isOrbital,
+                        AuroraLayerUniform& outUniform) noexcept
+{
+    const AuroraLayerDescription& aurora = atmosphere.Aurora;
+    if (aurora.IsEnabled == false || aurora.EmissionPerMetre == 0)
+    {
+        outUniform = {};
+        return true;
+    }
+    math::Vector3 upWorld;
+    if (math::IsFinite(aurora.EmissionPerMetre) == false || aurora.EmissionPerMetre < 0 ||
+        aurora.EmissionPerMetre > AuroraLayerDescription::MAXIMUM_EMISSION_PER_METRE ||
+        math::IsFinite(aurora.TimeSeconds) == false || aurora.TimeSeconds < 0 ||
+        aurora.TimeSeconds > AuroraLayerDescription::LOOP_SECONDS ||
+        math::TryNormalize(atmosphere.SurfaceUpWorld, upWorld) != math::MathStatus::Success)
+    {
+        return false;
+    }
+    math::Vector3 axisXWorld;
+    if (math::TryNormalize(aurora.AxisXWorld - upWorld * math::Dot(aurora.AxisXWorld, upWorld), axisXWorld) !=
+        math::MathStatus::Success)
+    {
+        return false;
+    }
+    if (isOrthographic == true || isOrbital == true)
+    {
+        outUniform = {};
+        return true;
+    }
+    const math::Vector3 axisZWorld = math::Cross(axisXWorld, upWorld);
+    const float32 phase = aurora.TimeSeconds == AuroraLayerDescription::LOOP_SECONDS
+                              ? 0
+                              : (aurora.TimeSeconds / AuroraLayerDescription::LOOP_SECONDS) * (2 * math::kPiF);
+    outUniform =
+    {
+        .AxisXWorld = {axisXWorld.X, axisXWorld.Y, axisXWorld.Z, aurora.EmissionPerMetre},
+        .AxisZWorld = {axisZWorld.X, axisZWorld.Y, axisZWorld.Z, phase},
+    };
+    return true;
+}
 
 struct AtmosphereSkyTable final
 {
@@ -606,6 +783,12 @@ Status RenderGraphAtmosphereView::Prepare(RenderGraphAtmosphereProgram& inoutPro
         }
         uniform.CameraForwardWorld = {forwardWorld.X, forwardWorld.Y, forwardWorld.Z, diskScale};
         uniform.Lighting.X = atmosphere.ShouldLightScene == true ? 1.0F : 0.0F;
+        // Orbital views draw the shell from outside, where the flat slab is not defined.
+        if (TryPackCloudLayer(atmosphere, camera, uniform.CloudLayer) == false ||
+            TryPackAuroraLayer(atmosphere, camera.OrthographicCamera, mIsOrbital, uniform.AuroraLayer) == false)
+        {
+            return Status::InvalidDescription;
+        }
         uniform.Output = {static_cast<float32>(width),
                           static_cast<float32>(height),
                           exposure,

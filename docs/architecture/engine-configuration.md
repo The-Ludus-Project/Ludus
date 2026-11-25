@@ -1,9 +1,12 @@
 # Engine configuration
 
-Status: first implementation. `FoundationConfig`, `FoundationConfigJson`, and
-`RuntimeConfiguration` are portable SDK modules. GameHost consumes its startup
-schema; the optional Qt Editor and native `ludus-config` tool share it. Existing
-subsystems migrate separately, retaining their ordinary options APIs.
+Status: first implementation. `FoundationConfig`, `FoundationConfigJson`,
+`RuntimeConfiguration`, `RuntimeConfigurationSchemas` and `AudioConfiguration`
+are portable SDK modules. GameHost consumes its startup schema. Audio owns the
+first Live apply group: user mix volumes reach the renderer at an owner safe
+point with renderer acknowledgement. The optional Qt Editor and native
+`ludus-config` tool select either schema explicitly. Other subsystems migrate
+separately, retaining their ordinary options APIs.
 
 The design keeps configuration work at control boundaries. Subsystems use plain,
 module-owned options in their hot loops. Human-readable names, layered overrides,
@@ -55,8 +58,8 @@ python3 tools/configuration/cook.py project.toml project.config.json \
 TOML cooking requires Python 3.11+; the ordinary host tools retain Python 3.10+
 support. The cooker validates against the actual runtime schema before publishing.
 
-GameHost accepts explicit `--config`, `--preferences` and supported command-line
-overrides. An explicit CLI override wins over the corresponding preference and
+GameHost accepts a cooked startup manifest or an explicit `--config` file,
+plus `--preferences` and supported command-line overrides. An explicit CLI override wins over the corresponding preference and
 project value. Use the schema/validator rather than guessing a JSON payload.
 
 The sections below define layers, transactions, source explanations, diagnostics
@@ -152,7 +155,9 @@ Ranks are fixed and independent of load order. V1 stores at most one assignment
 per key per rank. Named profile/device selection and same-rank file composition
 must happen outside the context with an explicit manifest; there is no include,
 glob, environment substitution, guessed platform path, or hidden current-directory
-search. GameHost accepts only explicit Project and Preference files today.
+search. GameHost loads the cooked startup selection in rank order. A legacy
+standalone Project file and a cooked startup selection are alternative inputs.
+An explicit Preference file and Launch options can override either input.
 
 Every supplied value is validated, including values masked by higher ranks.
 `Prepare(..., replace=true)` replaces an entire layer; a patch changes only named
@@ -203,10 +208,74 @@ counters: exhaustion is an explicit error.
 
 `Active` means the caller fulfilled this ownership contract; it is not asynchronous
 GPU/OS acknowledgement. The GameHost adapter publishes only startup settings and
-the Editor describes its context as an offline preview. Future live renderer/audio
-adapters must supply a safe resource handoff and acknowledgement protocol before
+the Editor describes its context as an offline preview. A live owner reports
+device application separately, after its device acknowledges the handoff; the
+[audio mix owner](#audio-configuration) is the first. Future live renderer
+adapters must supply the same safe resource handoff and acknowledgement before
 claiming device application. Restart pending values activate through a fresh
 context on restart; V1 deliberately has no misleading unconditional “acknowledge”.
+
+## Audio configuration
+
+`Ludus::AudioConfiguration` owns schema `ludus.audio.v1`:
+
+| Setting | Type and range | Apply | Group |
+| --- | --- | --- | --- |
+| `audio.volume.master` | float32 amplitude, 0 to 1 (default 1) | Live | 1 (mix) |
+| `audio.volume.music` | float32 amplitude, 0 to 1 (default 1) | Live | 1 (mix) |
+| `audio.volume.effects` | float32 amplitude, 0 to 1 (default 1) | Live | 1 (mix) |
+| `audio.session.sample_rate` | uint32 Hz, 8000 to 192000 (default 48000) | RestartSession | 2 (session) |
+
+All four may be saved as preferences. `ReadAudioSessionOptions` copies the active
+sample rate for `SystemConfig`; `ReadAudioMixOptions` copies the active volumes.
+The application maps each mix role to an index in its own bus tree
+(`AudioMixBuses`). A role mapped to `NO_BUS` is stored but never applied.
+
+`AudioMixOwner` is the Live owner. It shares the audio control-owner thread and
+borrows the context and `AudioSystem`:
+
+1. `Initialize` binds the mix settings, checks the mapped buses and publishes the
+   startup mix before `SealStartup`.
+2. The caller prepares an edit with `Context::Prepare`.
+3. `Apply` reads the prepared mix. If it changed, `Apply` requires a Ready
+   session, renderer command room for one `SetBusUserGain` per mapped role and no
+   publication awaiting acknowledgement. Only then does it commit the context and
+   submit the batch, which the renderer applies at its next 128-frame control
+   boundary.
+4. `Service` compares `AudioSystem::GetAppliedSequence` with the batch's
+   `BatchResult::Sequence`. The renderer advances that counter after the boundary
+   recomputes bus gains. On acknowledgement the published snapshot becomes the
+   applied snapshot and the superseded one retires.
+
+`GetReport` returns the published and applied volumes with their mix-group
+generations. Applied changes only after acknowledgement, so inspection never
+claims audio the renderer has not used. At most two snapshots are retained:
+applied and in flight.
+
+Each failure before publication discards the context candidate. The context, the
+published and applied snapshots and the renderer's bus gains stay unchanged:
+
+| Status | Cause | Repair |
+| --- | --- | --- |
+| `AudioNotReady` | Session not Ready (starting, suspended, shut down) | Retry after the session is Ready |
+| `QueueFull` | Not enough renderer command room | Call `AudioSystem::Service`/render, then prepare again |
+| `AwaitingAcknowledgement` | Previous mix not yet acknowledged | Call `Service` after the next boundary, then prepare again |
+| `ConfigurationFailed` | Context rejected the commit, such as a stale revision | Read the diagnostic, prepare against the current revision |
+
+Callers keep their own draft, so a retry re-prepares the same edits.
+Restart-only edits commit with `PendingRestart` and publish nothing: `Explain`
+shows the requested sample rate as pending, while the session keeps its active
+rate. To restart, shut down the `AudioSystem`, discard the owner, build a fresh
+context from the persisted layers, read the session options, create the new
+session and initialize a new owner. A sealed transaction cannot change mix and
+session settings together (`MixedApplyGroups`).
+
+Owner work is cold and bounded: it allocates nothing, never blocks on the
+renderer, and runs no callback in `Commit`. Device mode reads an acknowledgement
+the render thread publishes with release ordering. Offline mode advances it
+during `RenderOffline`. Commands still queued at shutdown are never
+acknowledged. Remote transport of live edits into a running game remains
+separate work.
 
 ## Representation, quotas, and errors
 
@@ -250,9 +319,25 @@ to a surprising configuration.
 ## Tools and Editor workflow
 
 Build `ludus_config`. It is also installed as `bin/ludus-config` in native SDKs.
-`--schema` emits the actual host descriptors; `--validate [project|preference]`
-reads a bundle from stdin and emits its canonical, normalized layer on stdout.
+`--schema` emits the selected schema's descriptors. `--validate` reads a bundle
+from stdin and emits its canonical layer on stdout. Choose `engine`, `project`
+(the default), `profile`, `device`, `quality`, or `preference`.
+A leading `--schema-id IDENTITY` selects an engine schema from the fixed
+`RuntimeConfigurationSchemas` catalog (`ludus.host.v1`, the default, or
+`ludus.audio.v1`). An unknown identity exits with status 2 and lists the
+available schemas. A bundle never validates against a schema it does not name.
 Errors use engine logging on stderr. It validates through the same core as runtime.
+
+The schema export lists settings in descriptor order. Each record exposes
+`allowed_sources` (the bitmask built by `SourceMask`, indexed by `Layer`),
+`group` (the schema-local application group ID), and the existing apply and
+persistence metadata. Numeric settings include inclusive descriptor `min` and
+`max`. Integer bounds use canonical decimal strings, including for 32-bit
+settings whose descriptor bounds can be wider than their value type. Real
+bounds are JSON numbers. Enum and string settings include `max_text_bytes`,
+which counts UTF-8 bytes without a terminator. Boolean settings have no bounds.
+Use native validation for the type range, Float32 rounding, preference
+eligibility, and cross-field constraints.
 
 ```toml
 # project.toml
@@ -269,6 +354,14 @@ out/build/linux-clang-development/apps/game_host/ludus_game_host \
   --preferences player.config.json --max-frames 20
 ```
 
+Cook audio preferences by naming the schema:
+
+```sh
+python3 tools/configuration/cook.py player-audio.toml player-audio.config.json \
+  --layer preference --schema-id ludus.audio.v1 \
+  --validator out/build/linux-clang-development/tools/configuration/ludus-config
+```
+
 The explicit CLI limit wins over preferences and project values. TOML cooking
 requires Python 3.11+ (`tomllib`) only for this optional authoring command; native
 validation and engine builds keep the repository's existing Python minimum. The
@@ -276,7 +369,67 @@ cooker accepts strict scalar types, rejects unknown keys/arrays/dates/nonfinite
 numbers, invokes the native validator, and atomically replaces the output only
 after validation. It never changes CMake/toolchain/project descriptors.
 
-The Editor's Configuration tab is a standalone offline workspace. It loads
+### Cook a named startup selection
+
+Keep the startup manifest in the project owner's source tree alongside the
+explicit TOML files it names. This `startup.toml` selects a preview profile.
+
+```toml
+version = 1
+engine = ["config/base.toml"]
+project = ["config/game.toml", "config/game-window.toml"]
+
+[profiles.preview]
+files = ["config/preview.toml"]
+devices = ["portable"]
+qualities = ["low"]
+
+[devices]
+portable = ["config/portable.toml"]
+
+[qualities]
+low = ["config/low.toml"]
+```
+
+```sh
+python3 tools/configuration/cook.py startup.toml startup.config.json \
+  --validator out/build/linux-clang-development/tools/configuration/ludus-config \
+  --profile preview --device portable --quality low
+out/build/linux-clang-development/apps/game_host/ludus_game_host \
+  --module /absolute/path/game.so --startup-config startup.config.json \
+  --preferences player.config.json --max-frames 20
+```
+
+Select one profile. A device and quality preset are optional. If specified, each
+must be declared and listed by that profile. Omitted selections contribute no
+layer. `engine` and `project` are optional file lists. Each profile requires a
+`files` list and may omit either compatibility list when it permits no choices
+of that kind. Selection names are case sensitive and use 1–64 ASCII letters,
+digits, hyphens or underscores, starting with a letter or digit.
+
+Paths are explicit, relative to the manifest directory, and use forward slashes
+without dot or parent components. Each list accepts up to 32 distinct `.toml`
+paths. The manifest, each source and the cooked startup file each have a 256 KiB
+limit. Only selected source contents are read. To compose a rank, assign each
+setting in at most one of its files. The cooker reports both sources for a duplicate.
+The same setting can appear in different ranks. The cooker validates every
+selected rank through the native validator, including assignments that higher
+ranks override, and replaces the destination only on success.
+
+The cooked version-1 file contains a `layers` object keyed by rank. Each entry
+is a canonical version-1 layer bundle with its original schema identity and
+source paths. GameHost applies Engine, Project, Profile, Device and Quality in
+that order regardless of the JSON member order. Preference and Launch retain
+their higher ranks. `--schema-id` applies to every rank of a manifest, so each
+cooked layer names the selected schema. Pass one of `--startup-config` and `--config`. Keep player
+preferences in the separate `--preferences` file.
+
+The Editor's Configuration tab is a standalone offline workspace. Its schema
+selector chooses the engine schema to preview, GameHost by default. Switching
+asks before discarding unsaved preferences. Loading a file that names another
+catalog schema switches to that schema. A clean preview switches
+automatically. A project bundle asks before discarding unsaved preferences, and
+cancelling keeps the draft and names the file's schema. The workspace loads
 explicit cooked Project/Preference files, displays shared defaults/types/help/
 requested values/source/apply policy, edits preferences, resets to inheritance,
 and saves a sparse layer with `QSaveFile` and no direct-write fallback. Edits do
@@ -309,14 +462,15 @@ work, not claims that these features are implemented or that new checks pass.
 | C1: shared metadata and SDK contracts | Export descriptor numeric bounds, allowed-source masks, groups and text limits alongside the metadata already emitted by `WriteSchema`. Document the configuration public API with Doxygen contracts and remove resolved undocumented-baseline entries. | Schema export agrees with native descriptors and validation, including exact integer limits. SDK API coverage and the documentation checks pass. |
 | C2: explicit layer selection | Define an owner-managed manifest for baseline files, named profile/device/quality selection and deterministic composition within a rank. Connect supported startup layers to the host/cooker workflow using the existing fixed precedence. | Selection and composition are independent of file load order; malformed, unknown, incompatible and oversized inputs fail explicitly. Existing Project/Preference/Launch precedence remains covered. |
 | C3: project and launcher integration | Associate explicit configuration inputs with the project store and expose the author, cook, preview, sparse-save and launch workflow in the Editor. Share validation with the native tool and preserve unrelated project/editor settings. | A project can launch with its selected cooked inputs without manually assembling configuration flags. Opening remains read-only and reports missing/stale inputs; explicit cooking or saving publishes atomically and preserves drafts on conflict/failure. |
-| C4: module owners and application | Select the first subsystem settings to migrate, define their module-owned descriptors and ordinary options adapters, and make the tool/Editor select the appropriate schema explicitly. Integrate at least one production Live apply group with fallible preparation, publication at an owner safe point, snapshot lifetime and any required device acknowledgement. | Integration tests demonstrate successful publication, preparation failure preserving existing options/resources, restart values staying pending, and safe resource retirement. Inspection only reports device application after the owner fulfills its contract. |
+| C4: module owners and application | Select the first subsystem settings to migrate, define their module-owned descriptors and ordinary options adapters, and make the tool/Editor select the appropriate schema explicitly. Integrate at least one production Live apply group with fallible preparation, publication at an owner safe point, snapshot lifetime and any required device acknowledgement. Implemented by the [audio mix owner](#audio-configuration) and the explicit schema catalog. | `ludus_audio_configuration_tests` cover these through the production offline renderer; `ludus_configuration_cooker_tests` and the Editor workspace tests cover schema selection. Integration tests demonstrate successful publication, preparation failure preserving existing options/resources, restart values staying pending, and safe resource retirement. Inspection only reports device application after the owner fulfills its contract. |
 | C5: validated initial baseline | Validate C1-C4 with the pinned native/web toolchains and installed SDK consumer. Record the initial implementation revision, supported schemas/targets, representative workloads and reproduction commands before research trials begin. | Relevant unit and integration tests, warning-clean builds, ASan/UBSan, format/tidy, browser smoke, SDK consumer and documentation checks pass. Record cold initialization/prepare/commit costs, allocation/storage bounds, apply latency and author-to-launch workflow evidence without inventing performance budgets. |
 
 C1-C3 can proceed while module owners define C4. C5 completes after all preceding
 gates have evidence. C2 selects explicitly named device configurations; automatic
 device probing and a richer profile selection UI retain their separate scope.
-C4 establishes the first integrated owners; broad subsystem migration, remote
-console transport and the other additions listed above remain separate work.
+C4 establishes the first integrated owner (audio mix volumes); renderer adapters,
+broad subsystem migration, remote console transport and the other additions
+listed above remain separate work.
 
 After C5, read the queued resources in priority order, propose bounded experiments,
 and compare them with the recorded baseline. Adopt, defer or reject each idea
@@ -331,7 +485,9 @@ revisions/bindings, atomic cross-field constraints, restart pending state, sourc
 permissions, simulation freezing, mixed apply groups, numeric/text validation,
 all initialization allocation failures, no allocations on prepare/commit, strict
 bundle decoding, exact 64-bit round trips, sparse preferences, cooker failures,
-Editor validation and external-change detection. A browser smoke and installed
+Editor validation and external-change detection, explicit schema selection, and
+the audio mix owner's publication, acknowledgement, preserved failures, pending
+restart and snapshot retirement. A browser smoke and installed
 SDK consumer exercise exported APIs. Native host acceptance verifies the actual
 configuration startup path, CLI precedence, and malformed input rejection.
 

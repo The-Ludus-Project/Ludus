@@ -41,6 +41,10 @@ enum class ErrorListProducer : foundation::uint8
     RenderGraph,
     RenderPreview,
     Build,
+    /// A language server's live analysis of the open source (code editor M4,
+    /// CE10). Shown with the Analysis origin, apart from the authoritative build
+    /// rows, and never brings the list forward while the author types.
+    Analysis,
 };
 
 /// One copied diagnostic.
@@ -55,7 +59,7 @@ struct ErrorListEntry final
     QString File;
     /// Compact position: `line:column` (e.g. `75:12`), a bare line, or a configuration/node path.
     QString Location;
-    /// "Render graph", "Shader", "Renderer preview" or "Build".
+    /// "Render graph", "Shader", "Renderer preview", "Build" or "Analysis".
     QString Origin;
     /// Producer-owned index used for navigation: the RendererWorkspace diagnostic row
     /// for render graphs, or the zero-based Output line for builds. Preview rows open Render Preview.
@@ -101,7 +105,8 @@ public:
     explicit ErrorList(QWidget* parentOrNull = nullptr);
 
     /// Replace every row owned by producer with entries (copied). Emits ProblemsReported when
-    /// the new rows include an error or warning and differ from that producer's previous rows.
+    /// the new rows include an error or warning and differ from that producer's previous rows,
+    /// except for Analysis rows, which change as the author types.
     void ReplaceEntries(ErrorListProducer producer, const QList<ErrorListEntry>& entries);
     /// All rows, filtered or not, in display order.
     [[nodiscard]] const QList<ErrorListEntry>& GetEntries() const noexcept

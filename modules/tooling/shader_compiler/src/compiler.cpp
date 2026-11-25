@@ -6,6 +6,7 @@
 #include <ludus/foundation/base/byte_order.hpp>
 #include <ludus/foundation/base/compiler.h>
 #include <ludus/foundation/base/config.h>
+#include <ludus/foundation/containers/span_compatibility.hpp>
 
 #include <ludus/foundation/containers/borrowed_view.hpp>
 #include <ludus/foundation/containers/static_array.hpp>
@@ -76,7 +77,9 @@ bool IsSignedDxilContainer(const void* bytes, usize size) noexcept
     uint32 containerSize = 0;
     if (size < DXIL_CONTAINER_HEADER_BYTES ||
         std::memcmp(data.data(), DXIL_CONTAINER_CODE.data(), DXIL_CONTAINER_CODE.size()) != 0 ||
-        TryReadLittleEndian<uint32>(data.subspan(DXIL_SIZE_OFFSET), containerSize) == false || containerSize != size)
+        TryReadLittleEndian<uint32>(ludus::foundation::MakeBorrowedView(data.subspan(DXIL_SIZE_OFFSET)),
+                                    containerSize) == false ||
+        containerSize != size)
     {
         return false;
     }

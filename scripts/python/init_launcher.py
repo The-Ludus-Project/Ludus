@@ -25,7 +25,7 @@ MACOS_APPLICATION_NAME = "Ludus Setup"
 MACOS_BUNDLE_IDENTIFIER = "org.ludus.setup"
 MACOS_EXECUTABLE_NAME = "ludus-setup"
 # Setup runs without a window, so the Dock never shows it.
-TERMINAL_ONLY_FLAGS = ("--cli", "--ci")
+TERMINAL_ONLY_FLAGS = ("--cli", "--ci", "--android-only")
 
 
 def interpreter_candidates(root):

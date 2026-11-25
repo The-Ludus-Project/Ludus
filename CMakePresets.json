@@ -5,7 +5,7 @@
     "minor": 29,
     "patch": 0
   },
-  "include": ["config/cmake/windows-msvc-presets.json"],
+  "include": ["config/cmake/windows-msvc-presets.json", "config/cmake/mobile-presets.json"],
   "configurePresets": [
     {
       "name": "linux-clang-base",

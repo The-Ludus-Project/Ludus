@@ -30,6 +30,12 @@ class InitTests(unittest.TestCase):
     def args(self, *options):
         return engine.make_parser().parse_args(["init", *options])
 
+    def test_ios_setup_requires_a_macos_native_preset(self):
+        for host, preset in (("Linux", "linux-clang-development"), ("Darwin", "web-emscripten-development")):
+            with self.subTest(host=host, preset=preset), patch.object(platform, "system", return_value=host):
+                with self.assertRaisesRegex(engine.EngineError, "--with-ios requires a macOS native setup preset"):
+                    init_ui.prepare_init(self.args("--cli", "--with-ios", preset), engine)
+
     def test_old_macos_tk_is_rejected_before_creating_window(self):
         tk = types.ModuleType("tkinter")
         tk.TkVersion = 8.5
@@ -38,7 +44,8 @@ class InitTests(unittest.TestCase):
         tk.ttk = Mock()
         with patch.dict("sys.modules", {"tkinter": tk}), patch("sys.platform", "darwin"):
             with self.assertRaisesRegex(init_ui.GuiUnavailable, "Tk 8.6 or later"):
-                init_ui.select_options(init_ui.apply_defaults(self.args()), engine)
+                defaults = init_ui.apply_defaults(self.args())
+                init_ui.select_options(defaults, engine, defaults=defaults)
         tk.Tk.assert_not_called()
 
     def test_persona_defaults_and_explicit_overrides(self):
@@ -144,6 +151,100 @@ class InitTests(unittest.TestCase):
         with patch.object(init_editor.platform, "system", return_value="Windows"):
             with self.assertRaisesRegex(engine.EngineError, "Linux x64"):
                 init_ui.prepare_init(self.args("--cli", "--with-editor"), engine)
+
+
+class RememberedSelectionTests(unittest.TestCase):
+    def setUp(self):
+        directory = tempfile.TemporaryDirectory()
+        self.addCleanup(directory.cleanup)
+        self.root = Path(directory.name)
+        self.path = self.root / init_options.GUI_SELECTION_PATH
+        root_patch = patch.object(engine, "repo_root", return_value=self.root)
+        root_patch.start()
+        self.addCleanup(root_patch.stop)
+
+    def prepare(self, *options):
+        return init_ui.prepare_init(engine.make_parser().parse_args(["init", *options]), engine)
+
+    def test_confirmed_choices_are_available_before_setup_and_cancel_preserves_them(self):
+        def accept(initial, _engine, *, defaults):
+            self.assertEqual(initial.persona, defaults.persona)
+            initial.persona = "browser"
+            initial.preset = "web-emscripten-release"
+            initial.preset_only = True
+            initial.with_web_probes = True
+            initial.with_denoiser = False
+            initial.with_smoke_app = False
+            return initial
+
+        def fail_setup(selection, *_arguments, **_keywords):
+            self.assertEqual(init_options.read_gui_selection(self.root)["preset"], selection.preset)
+            self.assertFalse(init_options.options_path(self.root).exists())
+            return 1
+
+        with patch.object(init_ui, "select_options", side_effect=accept), \
+                patch("init_window.run_setup", side_effect=fail_setup):
+            self.assertEqual(engine.main(["init", "--gui"]), 1)
+        saved = self.path.read_bytes()
+        with patch.object(init_ui, "select_options", return_value=None) as window:
+            self.assertIsNone(self.prepare("--gui"))
+        restored = window.call_args.args[0]
+        self.assertEqual((restored.persona, restored.preset), ("browser", "web-emscripten-release"))
+        self.assertTrue(restored.preset_only and restored.with_web_probes)
+        self.assertFalse(restored.with_smoke_app)
+        self.assertEqual(self.path.read_bytes(), saved)
+
+    def test_explicit_flags_override_remembered_values(self):
+        init_options.save_gui_selection(self.root, {
+            "persona": "application", "preset": engine.DEFAULT_PRESET, "preset_only": True,
+            "with_editor": True, "with_editor_preview": False, "with_denoiser": False,
+            "with_tests": False, "with_smoke_app": True, "no_system_install": True,
+        })
+        with patch.object(init_ui, "select_options", return_value=None) as window:
+            self.prepare("--gui", "--no-editor", "--with-editor-preview", "--no-smoke-app",
+                         "--all-presets", "--run-tests")
+        initial = window.call_args.args[0]
+        self.assertEqual(initial.persona, "application")
+        self.assertTrue(initial.all_presets and initial.with_editor_preview and initial.no_system_install)
+        self.assertTrue(initial.run_tests and initial.with_tests)
+        self.assertFalse(initial.preset_only or initial.with_editor or initial.with_smoke_app or initial.with_denoiser)
+
+    def test_explicit_workflow_and_different_preset_start_from_defaults(self):
+        init_options.save_gui_selection(self.root, {
+            "persona": "browser", "preset": "web-emscripten-release", "with_web_probes": True,
+        })
+        for options in (("--persona", "contributor"), (engine.DEFAULT_PRESET,)):
+            with self.subTest(options=options), patch.object(init_ui, "select_options", return_value=None) as window:
+                self.prepare("--gui", *options)
+                initial = window.call_args.args[0]
+                self.assertEqual((initial.persona, initial.preset), ("contributor", engine.DEFAULT_PRESET))
+                self.assertFalse(initial.with_web_probes)
+
+    def test_stale_corrupt_and_incompatible_choices_fall_back(self):
+        self.path.parent.mkdir(parents=True)
+        for contents in ('{', '{"persona":"contributor","preset":"removed"}',
+                         '{"persona":"browser","preset":"web-emscripten-development","with_tests":true}'):
+            with self.subTest(contents=contents), patch.object(init_ui, "select_options", return_value=None) as window:
+                self.path.write_text(contents, encoding="utf-8")
+                self.prepare("--gui")
+                self.assertEqual(window.call_args.args[0], window.call_args.kwargs["defaults"])
+                self.assertEqual(self.path.read_text(encoding="utf-8"), contents)
+
+    def test_terminal_ci_and_gui_fallback_use_invocation_defaults(self):
+        init_options.save_gui_selection(self.root, {
+            "persona": "browser", "preset": "web-emscripten-release", "with_web_probes": True,
+        })
+        with patch.object(init_options, "read_gui_selection", wraps=init_options.read_gui_selection) as read:
+            self.assertEqual(self.prepare("--cli").preset, engine.DEFAULT_PRESET)
+            self.assertEqual(self.prepare("--ci").preset, engine.DEFAULT_PRESET)
+        read.assert_not_called()
+        with patch.object(init_ui, "wants_gui", return_value=True), \
+                patch.object(init_ui, "select_options", side_effect=init_ui.GuiUnavailable("no Tk")) as window, \
+                contextlib.redirect_stderr(io.StringIO()):
+            fallback = self.prepare()
+        self.assertEqual(window.call_args.args[0].preset, "web-emscripten-release")
+        self.assertEqual(fallback.preset, engine.DEFAULT_PRESET)
+        self.assertEqual(init_options.read_gui_selection(self.root)["preset"], "web-emscripten-release")
 
 
 class EditorSetupTests(unittest.TestCase):
@@ -351,6 +452,14 @@ WINDOW_TIMEOUT_MILLISECONDS = 20000
 
 @unittest.skipUnless(os.environ.get("LUDUS_TEST_GUI") == "1", "requires a desktop display")
 class WindowTests(unittest.TestCase):
+    def setUp(self):
+        directory = tempfile.TemporaryDirectory()
+        self.addCleanup(directory.cleanup)
+        self.root = Path(directory.name)
+        android_pins = Path("config/android_toolchain.json")
+        (self.root / android_pins).parent.mkdir()
+        (self.root / android_pins).write_bytes((engine.repo_root() / android_pins).read_bytes())
+
     def select(self, action, *options):
         real_create_root = init_theme.create_root
         errors = []
@@ -382,15 +491,13 @@ class WindowTests(unittest.TestCase):
             window.after(WINDOW_TIMEOUT_MILLISECONDS, give_up)
             return window
 
-        args = init_ui.apply_defaults(engine.make_parser().parse_args(["init", "--gui", *options]))
-        # The selector logs where its window went; keep that out of the checkout's real setup log.
-        log_directory = tempfile.TemporaryDirectory()
-        self.addCleanup(log_directory.cleanup)
-        self.log_path = Path(log_directory.name) / "setup.log"
+        args = engine.make_parser().parse_args(["init", "--gui", *options])
+        self.log_path = self.root / "setup.log"
         with patch.object(init_theme, "create_root", side_effect=create_window), \
+                patch.object(engine, "repo_root", return_value=self.root), \
                 patch.object(init_failure, "LOG_RELATIVE_PATH", self.log_path), \
                 patch.object(init_theme, "_diagnostics", []):
-            result = init_ui.select_options(args, engine)
+            result = init_ui.prepare_init(args, engine)
         self.assertEqual(errors, [])
         self.assertEqual(timed_out, [], "the selector did not close after the test's action")
         return result
@@ -416,6 +523,30 @@ class WindowTests(unittest.TestCase):
         self.assertTrue(result.validate and result.skip_sdk)
         self.assertEqual(result.with_rad_debugger, linux)
         self.assertEqual(result.with_editor, linux)
+
+    def test_reopen_restores_confirmed_choices_and_reset_returns_to_launch_defaults(self):
+        def choose_browser(window, widgets):
+            workflow = next(widget for widget in widgets if widget.winfo_class() == "TCombobox")
+            workflow.set("Browser developer")
+            workflow.event_generate("<<ComboboxSelected>>")
+            next(widget for widget in widgets if widget.winfo_class() == "TButton"
+                 and widget.cget("text") == "Initialize").invoke()
+
+        def reset_and_accept(window, widgets):
+            buttons = {widget.cget("text"): widget for widget in widgets if widget.winfo_class() == "TButton"}
+            workflow, preset = [widget for widget in widgets if widget.winfo_class() == "TCombobox"]
+            self.assertEqual(workflow.get(), "Browser developer")
+            self.assertEqual(preset.get(), "web-emscripten-development")
+            buttons["Reset to defaults"].invoke()
+            self.assertEqual(workflow.get(), "Engine contributor")
+            self.assertEqual(preset.get(), engine.DEFAULT_PRESET)
+            buttons["Initialize"].invoke()
+
+        self.assertEqual(self.select(choose_browser).persona, "browser")
+        result = self.select(reset_and_accept, "--no-system-install", "--no-denoiser")
+        self.assertTrue(result.no_system_install and result.with_smoke_app)
+        self.assertFalse(result.preset_only or result.with_denoiser)
+        self.assertEqual(init_options.read_gui_selection(self.root)["persona"], "contributor")
 
     def test_short_screen_scrolls_the_options_and_keeps_the_buttons_on_screen(self):
         def accept(window, widgets):
@@ -463,6 +594,35 @@ class WindowTests(unittest.TestCase):
         self.assertIsNotNone(match)
         self.assertLessEqual(int(match.group(1)), 420)
 
+    def test_android_checkbox_reviews_license_and_passes_consent_to_worker(self):
+        def accept(window, widgets):
+            checkbox = next(widget for widget in widgets if widget.winfo_class() == "TCheckbutton"
+                            and widget.cget("text") == "Install Android SDK and NDK")
+            checkbox.invoke()
+
+            def accept_agreement():
+                dialog = next(widget for widget in window.winfo_children() if widget.winfo_class() == "Toplevel")
+                self.assertEqual(dialog.title(), "Android SDK License Agreement")
+                text = next(widget for widget in dialog.winfo_children() if widget.winfo_class() == "Text")
+                self.assertIn("Pinned Google terms", text.get("1.0", "end"))
+                next(button for frame in dialog.winfo_children() for button in frame.winfo_children()
+                     if button.winfo_class() == "TButton" and button.cget("text") == "Accept and install").invoke()
+
+            window.after(DRIVE_DELAY_MILLISECONDS, accept_agreement)
+            next(widget for widget in widgets if widget.winfo_class() == "TButton"
+                 and widget.cget("text") == "Initialize").invoke()
+
+        with patch("init_android.host_key", return_value="Darwin-arm64"), \
+                patch("init_android.has_accepted_license", return_value=False), \
+                patch("init_android.load_license_text", return_value="Pinned Google terms"):
+            result = self.select(accept, engine.NATIVE_PRESET_PREFIX + "-development")
+        self.assertTrue(result.with_android)
+        self.assertTrue(result.accept_android_sdk_license)
+        self.assertIn("--accept-android-sdk-license", init_ui.selection_to_argv(result))
+        saved = init_options.read_gui_selection(self.root)
+        self.assertTrue(saved["with_android"])
+        self.assertNotIn("accept_android_sdk_license", saved)
+
     def test_denoiser_checkbox_follows_host_support_and_opts_out(self):
         supported = init_denoiser.preset_supports(engine.NATIVE_PRESET_PREFIX + "-development")
 
@@ -489,6 +649,20 @@ class WindowTests(unittest.TestCase):
                  and widget.cget("text") == "Initialize").invoke()
         result = self.select(accept, engine.NATIVE_PRESET_PREFIX + "-development")
         self.assertTrue(result.with_editor)
+
+    def test_ios_checkbox_is_opt_in_and_requires_the_macos_native_workflow(self):
+        def accept(window, widgets):
+            ios = next(widget for widget in widgets if widget.winfo_class() == "TCheckbutton"
+                       and widget.cget("text") == init_ui.OPTION_LABELS["with_ios"])
+            is_macos = platform.system() == "Darwin"
+            self.assertEqual(ios.instate(["disabled"]), not is_macos)
+            self.assertFalse(ios.instate(["selected"]))
+            ios.invoke()
+            self.assertEqual(bool(window.getvar(ios.cget("variable"))), is_macos)
+            next(widget for widget in widgets if widget.winfo_class() == "TButton"
+                 and widget.cget("text") == "Initialize").invoke()
+        result = self.select(accept, engine.NATIVE_PRESET_PREFIX + "-development")
+        self.assertEqual(result.with_ios, platform.system() == "Darwin")
 
     def test_advanced_setup_can_disable_default_editor_preview(self):
         def accept(window, widgets):

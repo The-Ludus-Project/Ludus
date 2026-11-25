@@ -24,6 +24,7 @@ target_sources(
         src/precision.cpp
         src/random.cpp
         src/addressed_random.cpp
+        src/random_checkpoint.cpp
         src/batch.cpp
         src/dynamics.cpp
         src/cubic.cpp
@@ -58,6 +59,7 @@ target_sources(
             include/ludus/foundation/math/random.hpp
             include/ludus/foundation/math/addressed_random.hpp
             include/ludus/foundation/math/random_domains.hpp
+            include/ludus/foundation/math/random_checkpoint.hpp
             include/ludus/foundation/math/batch.hpp
             include/ludus/foundation/math/dynamics.hpp
             include/ludus/foundation/math/cubic.hpp
@@ -126,6 +128,7 @@ if(LUDUS_BUILD_TESTS)
             tests/random_tests.cpp
             tests/addressed_random_tests.cpp
             tests/random_domains_tests.cpp
+            tests/random_checkpoint_tests.cpp
             tests/batch_tests.cpp
             tests/layout_tests.cpp
             tests/dynamics_tests.cpp

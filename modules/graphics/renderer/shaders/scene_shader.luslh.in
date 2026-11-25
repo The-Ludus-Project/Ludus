@@ -42,11 +42,26 @@
 /// Renderer-initialized invocation state; forward the same value through all callbacks.
 @declare RayQueryContext
 @declare SurfaceHit MaterialSample LightInfo SelectedLight LightSample IncidentLightSample SceneInfo
+@declare SceneLightSample
 
 @declare FailSceneQuery MakeCameraRay SpawnSurfaceRay TraceClosest TestVisibility
+/// Trace one surface query, ignoring two packed GetTriangle indices. Use SCENE_INVALID_INDEX for an empty slot.
+@declare TraceClosestExcludingTriangles
+/// Trace light visibility while ignoring packed indices, with the ordinary visibility budget and endpoint handling.
+@declare TestVisibilityExcludingTriangles
+@declare TryMakeCameraRayFromWorldPosition
 @declare EvaluateMaterial EvaluateEmission EvaluateEnvironment ApplyAerialPerspective
 @declare GetSceneInfo GetLightCount GetLightInfo SelectLight SampleIncidentLight GetSurfaceHit
+/// Sample a scene light at a position in world metres or at a SurfaceHit.
+/// Pass launch and dimensions for addressed sampling, or omit them to draw from the invocation stream.
+/// Check Incident.HasSample before using the proposal.
+@declare SampleLight SCENE_INCIDENT_LIGHT_DIMENSION_COUNT
 @declare EvaluateLightPdfSolidAngle EvaluateEnvironmentPdfSolidAngle EvaluateLightSelectionPmf
 @declare GetSurfaceLightIndex GetEnvironmentLightIndex EvaluateIncidentLightPdfSolidAngle
-@declare EvaluateIncidentEnvironmentPdfSolidAngle SampleSceneRandom PixelRandomAddress
+@declare EvaluateIncidentEnvironmentPdfSolidAngle SampleUniformFloat01 SampleSceneRandom PixelRandomAddress
+/// Draw a weighted component index from finite, nonnegative weights.
+/// Returns SCENE_INVALID_INDEX and latches a failure if the draw or weights are invalid.
+@declare SampleSceneWeightedIndex
+    /// Pass a fixed float32 array. Slang deduces its length from the argument.
+    uint32 SampleSceneWeightedIndex(inout RayQueryContext queries, in float32 weights[]);
 @end

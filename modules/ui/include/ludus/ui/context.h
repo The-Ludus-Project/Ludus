@@ -98,6 +98,9 @@ struct PaintCommand final
     WidgetId Id = 0;
     Rect Bounds; ///< Already intersected with Clip. Solid rectangles only in U0.
     Color Fill;
+    /// Effective ancestor and viewport clip in logical pixels, identical to the clip hit testing uses.
+    /// Render adapters derive the command's scissor from it; Bounds never extends outside it.
+    Rect Clip;
 };
 enum class Status : uint8
 {

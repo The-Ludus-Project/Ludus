@@ -3,7 +3,8 @@
 // Generated editor-private build identity. dSYM/Mach-O UUIDs are the exact symbol lookup identity.
 namespace ludus::editor::crash_config
 {
-inline constexpr const char* DEFAULT_DSN = R"ludus(@LUDUS_EDITOR_SENTRY_DSN@)ludus";
+inline constexpr const char* DEFAULT_DSN = R"ludus(@editor_default_sentry_dsn@)ludus";
+inline constexpr bool HAS_TEAM_SENTRY_DEFAULT = @editor_has_team_sentry_default@;
 inline constexpr const char* REVISION = "@LUDUS_GIT_REVISION@";
 inline constexpr const char* BUILD_FLAVOR = "@LUDUS_BUILD_FLAVOR@";
 inline constexpr const char* RELEASE = "ludus-editor@@LUDUS_GIT_REVISION@";

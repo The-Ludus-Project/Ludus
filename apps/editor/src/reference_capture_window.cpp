@@ -6,6 +6,7 @@
 #include "internal/reference_comparison.h"
 #include "internal/render_preview.h"
 #if defined(LUDUS_EDITOR_NATIVE_PREVIEW)
+#    include "internal/celestial_time_lapse_window.h"
 #    include "internal/graph_comparison_window.h"
 #    include "internal/render_graph_capture_profile.h"
 #    include "internal/render_graph_preview.h"
@@ -47,6 +48,7 @@
 #include <QScrollArea>
 #include <QShowEvent>
 #include <QSignalBlocker>
+#include <QSizePolicy>
 #include <QSpinBox>
 #include <QStandardItemModel>
 #include <QStringList>
@@ -64,6 +66,9 @@ constexpr int32 CPU_ORACLE_INDEX = static_cast<int32>(renderer::ReferenceTravers
 constexpr int32 NATIVE_QUERIES_INDEX = static_cast<int32>(renderer::ReferenceTraversal::NativeQueries);
 constexpr int32 GPU_COMPUTE_INDEX = static_cast<int32>(renderer::ReferenceTraversal::GpuCompute);
 constexpr float64 MILLISECONDS_PER_SECOND = 1000;
+constexpr int32 QUICK_INSPECTION_SAMPLES = 16;
+constexpr int32 DETAILED_COMPARISON_SAMPLES = 128;
+constexpr int32 CUSTOM_SAMPLE_PRESET_INDEX = 2;
 /// The settings column beside the image, in logical pixels: room for the "Long side" label and a field that shows
 /// "Native ray queries" whole.
 constexpr int32 SETTINGS_COLUMN_WIDTH = 288;
@@ -74,6 +79,18 @@ constexpr int32 PREVIEW_MINIMUM_HEIGHT = 240;
 /// The window opens at this size: the settings column and a 16:10 image beside it.
 constexpr int32 DEFAULT_WINDOW_WIDTH = 1040;
 constexpr int32 DEFAULT_WINDOW_HEIGHT = 660;
+
+void FitCaptureMessage(QLabel& inoutLabel)
+{
+    // A path or package hash may be wider than the column. Keep its text selectable while letting the label
+    // use the available width and wrap at word boundaries.
+    inoutLabel.setTextFormat(Qt::PlainText);
+    inoutLabel.setWordWrap(true);
+    inoutLabel.setTextInteractionFlags(Qt::TextSelectableByMouse | Qt::TextSelectableByKeyboard);
+    QSizePolicy policy = inoutLabel.sizePolicy();
+    policy.setHorizontalPolicy(QSizePolicy::Ignored);
+    inoutLabel.setSizePolicy(policy);
+}
 
 bool WriteAtomically(const QString& path, const QByteArray& bytes, QString& outError)
 {
@@ -188,6 +205,7 @@ void UpdateReferenceTraversalAvailability(QComboBox& inoutChoice,
 
 ReferenceCaptureWindow::ReferenceCaptureWindow(RenderPreview* preview, QWidget* parentOrNull)
     : QWidget(parentOrNull, Qt::Window), mPreview(preview), mLongSide(new QSpinBox(this)), mSamples(new QSpinBox(this)),
+      mSamplePreset(new QComboBox(this)), mSamplePresetDescription(new QLabel(this)), mGraphSamples(new QSpinBox(this)),
       mMaxDepth(new QSpinBox(this)), mTraversal(new QComboBox(this)),
       mCenterRays(new QCheckBox(QStringLiteral("Trace pixel centres"), this)),
       mCompare(new QCheckBox(QStringLiteral("Compare with the render graph"), this)),
@@ -211,9 +229,22 @@ ReferenceCaptureWindow::ReferenceCaptureWindow(RenderPreview* preview, QWidget* 
                                          "A comparison uses the render graph's output extent for this size."));
     mSamples->setObjectName(QStringLiteral("referenceSamples"));
     mSamples->setRange(1, static_cast<int32>(MAXIMUM_REFERENCE_SAMPLES));
-    mSamples->setValue(static_cast<int32>(ViewportReferenceSettings{}.Samples));
+    mSamples->setValue(QUICK_INSPECTION_SAMPLES);
+    mSamples->setSuffix(QStringLiteral(" spp"));
     mSamples->setToolTip(QStringLiteral("Samples per pixel at completion. Noise falls with the square root "
                                         "of the sample count."));
+    // Thanks to Gregory J. Ward, Making Global Illumination User-Friendly (RT '95, §§4–5), for
+    // mapping qualitative choices to explicit settings. Here the presets only set the RT1 sample budget.
+    // https://radsite.lbl.gov/radiance/papers/erw95.1/paper.pdf
+    mSamplePreset->setObjectName(QStringLiteral("referenceSamplePreset"));
+    mSamplePreset->addItem(QStringLiteral("Quick inspection"), QUICK_INSPECTION_SAMPLES);
+    mSamplePreset->addItem(QStringLiteral("Detailed comparison"), DETAILED_COMPARISON_SAMPLES);
+    mSamplePreset->addItem(QStringLiteral("Custom"), 0);
+    mSamplePresetDescription->setWordWrap(true);
+    mSamplePresetDescription->setProperty("visualRole", QStringLiteral("secondary"));
+    mGraphSamples->setObjectName(QStringLiteral("referenceGraphSamples"));
+    mGraphSamples->setRange(1, static_cast<int32>(MAXIMUM_REFERENCE_SAMPLES));
+    mGraphSamples->setValue(static_cast<int32>(ViewportReferenceSettings{}.Samples));
     mMaxDepth->setObjectName(QStringLiteral("referenceMaxDepth"));
     mMaxDepth->setRange(1, static_cast<int32>(MAXIMUM_REFERENCE_DEPTH));
     mMaxDepth->setValue(static_cast<int32>(ViewportReferenceSettings{}.MaxDepth));
@@ -246,21 +277,22 @@ ReferenceCaptureWindow::ReferenceCaptureWindow(RenderPreview* preview, QWidget* 
     mGraph->setObjectName(QStringLiteral("referenceGraph"));
     mGraph->setProperty("visualRole", QStringLiteral("secondary"));
     mGraphTarget->setObjectName(QStringLiteral("referenceGraphTarget"));
+    // Library entries can contain a full graph path, configuration and output name.
+    mGraphTarget->setSizeAdjustPolicy(QComboBox::AdjustToMinimumContentsLengthWithIcon);
     mGraphTarget->insertItem(CAPTURE_GRAPH_VIEWPORT_INDEX, QStringLiteral("Viewport output"));
-    mGraphTarget->setToolTip(
-        QStringLiteral("What the Render graph source and the comparison render. Viewport output is what the World "
-                       "viewport shows. A library output is built once from the viewport's generation into its own "
-                       "package, so slow estimators can be captured offline while the viewport stays interactive."));
     form->addRow(QStringLiteral("Source"), mSource);
     mGraphProblem->setObjectName(QStringLiteral("referenceGraphProblem"));
-    mGraphProblem->setWordWrap(true);
-    mGraphProblem->setTextInteractionFlags(Qt::TextSelectableByMouse);
+    FitCaptureMessage(*mGraphProblem);
     mGraphProblem->hide();
     form->addRow(QStringLiteral("Graph"), mGraphTarget);
     form->addRow(QString(), mGraph);
     form->addRow(QString(), mGraphProblem);
     form->addRow(QStringLiteral("Long side"), mLongSide);
+    form->addRow(QStringLiteral("Sample preset"), mSamplePreset);
+    form->addRow(mSamplePresetDescription);
     form->addRow(QStringLiteral("Samples"), mSamples);
+    form->addRow(QStringLiteral("Samples"), mGraphSamples);
+    form->setRowVisible(mGraphSamples, false);
     form->addRow(QStringLiteral("Max depth"), mMaxDepth);
     form->addRow(QStringLiteral("Traversal"), mTraversal);
     form->addRow(mCenterRays);
@@ -298,11 +330,9 @@ ReferenceCaptureWindow::ReferenceCaptureWindow(RenderPreview* preview, QWidget* 
     mProgress->setValue(0);
     mProgress->hide();
     mStatus->setObjectName(QStringLiteral("referenceStatus"));
-    mStatus->setWordWrap(true);
-    mStatus->setTextInteractionFlags(Qt::TextSelectableByMouse);
+    FitCaptureMessage(*mStatus);
     mComparisonText->setObjectName(QStringLiteral("referenceComparison"));
-    mComparisonText->setWordWrap(true);
-    mComparisonText->setTextInteractionFlags(Qt::TextSelectableByMouse);
+    FitCaptureMessage(*mComparisonText);
     mImageView->setObjectName(QStringLiteral("referenceImage"));
     mImageView->setAccessibleName(QStringLiteral("Reference image"));
     mRasterView->setObjectName(QStringLiteral("referenceRasterImage"));
@@ -332,6 +362,14 @@ ReferenceCaptureWindow::ReferenceCaptureWindow(RenderPreview* preview, QWidget* 
     settingsLayout->addSpacing(design::SPACING_SMALL);
     settingsLayout->addLayout(buttons);
     settingsLayout->addLayout(resultButtons);
+#if defined(LUDUS_EDITOR_NATIVE_PREVIEW)
+    mTimeLapseButtonOrNull = new QPushButton(QStringLiteral("Time-lapse…"), this);
+    mTimeLapseButtonOrNull->setObjectName(QStringLiteral("referenceTimeLapse"));
+    mTimeLapseButtonOrNull->setToolTip(QStringLiteral("Set a range of Earth times and export from the saved World "
+                                                      "camera with this Source, Graph and quality."));
+    settingsLayout->addWidget(mTimeLapseButtonOrNull);
+    connect(mTimeLapseButtonOrNull, &QPushButton::clicked, this, &ReferenceCaptureWindow::openTimeLapse);
+#endif
     settingsLayout->addWidget(mProgress);
     settingsLayout->addWidget(mStatus);
     settingsLayout->addWidget(mComparisonText);
@@ -341,7 +379,6 @@ ReferenceCaptureWindow::ReferenceCaptureWindow(RenderPreview* preview, QWidget* 
     settingsScroll->setWidget(settings);
     settingsScroll->setWidgetResizable(true);
     settingsScroll->setFrameShape(QFrame::NoFrame);
-    settingsScroll->setHorizontalScrollBarPolicy(Qt::ScrollBarAlwaysOff);
     settingsScroll->setFixedWidth(SETTINGS_COLUMN_WIDTH);
 
     QHBoxLayout* layout = new QHBoxLayout(this);
@@ -366,7 +403,39 @@ ReferenceCaptureWindow::ReferenceCaptureWindow(RenderPreview* preview, QWidget* 
             updateStatus();
         });
     }
-    connect(mSource, &QComboBox::currentIndexChanged, this, [this]() {
+    const auto applySamplePreset = [this](int32 index) {
+        const int32 samples = mSamplePreset->itemData(index).toInt();
+        if (samples > 0)
+        {
+            const QSignalBlocker blocker(mSamples);
+            mSamples->setValue(samples);
+        }
+        switch (samples)
+        {
+            case QUICK_INSPECTION_SAMPLES:
+                mSamplePresetDescription->setText(
+                    QStringLiteral("Shorter wait for broad lighting and material checks."));
+                break;
+            case DETAILED_COMPARISON_SAMPLES:
+                mSamplePresetDescription->setText(
+                    QStringLiteral("Longer wait for less noise in subtle lighting comparisons."));
+                break;
+            default:
+                mSamplePresetDescription->setText(QStringLiteral("Enter your own samples per pixel."));
+                break;
+        }
+    };
+    connect(mSamplePreset, &QComboBox::currentIndexChanged, this, applySamplePreset);
+    connect(mSamples, &QSpinBox::valueChanged, this, [this]() {
+        mSamplePreset->setCurrentIndex(CUSTOM_SAMPLE_PRESET_INDEX);
+    });
+    applySamplePreset(mSamplePreset->currentIndex());
+    connect(mSource, &QComboBox::currentIndexChanged, this, [this, form]() {
+        const bool isReference = isGraphSource() == false;
+        form->setRowVisible(mSamplePreset, isReference);
+        form->setRowVisible(mSamplePresetDescription, isReference);
+        form->setRowVisible(mSamples, isReference);
+        form->setRowVisible(mGraphSamples, isReference == false);
         requestCaptureProfile();
         updateControls();
         updateStatus();
@@ -412,6 +481,11 @@ ReferenceCaptureWindow::ReferenceCaptureWindow(RenderPreview* preview, QWidget* 
 ReferenceCaptureWindow::~ReferenceCaptureWindow()
 {
 #if defined(LUDUS_EDITOR_NATIVE_PREVIEW)
+    if (mTimeLapse.isNull() == false)
+    {
+        disconnect(mTimeLapse, nullptr, this, nullptr);
+        delete mTimeLapse.data();
+    }
     if (mGraphComparison.isNull() == false)
     {
         disconnect(mGraphComparison, nullptr, this, nullptr);
@@ -548,6 +622,11 @@ QString ReferenceCaptureWindow::GetGraphText() const
 
 void ReferenceCaptureWindow::updateGraphDescription()
 {
+    mGraphTarget->setToolTip(
+        QStringLiteral("%1\n\nWhat the Render graph source and the comparison render. Viewport output is what the "
+                       "World viewport shows. A library output is built once from the viewport's generation into its "
+                       "own package, so slow estimators can be captured offline while the viewport stays interactive.")
+            .arg(mGraphTarget->currentText()));
     // Short enough for the settings column; the tooltip says why.
     QString text = QStringLiteral("None. RT1 reference only");
     QString explanation = QStringLiteral("This viewport has no project render graph, so only the RT1 reference can "
@@ -888,10 +967,17 @@ bool ReferenceCaptureWindow::startRasterCapture(const QSize& requestedSize, QSiz
 #endif
 }
 
-bool ReferenceCaptureWindow::startGraphCapture(const QSize& requestedSize, QSize& outExtent, QString& outError)
-{
 #if defined(LUDUS_EDITOR_NATIVE_PREVIEW)
-    mRasterSource = GetViewportRasterSource(*mProjectGraph);
+bool ReferenceCaptureWindow::resolveGraphSource(ViewportRasterSource& outSource,
+                                                QString& outProfilePath,
+                                                QString& outError) const
+{
+    if (mProjectGraph.isNull() == true)
+    {
+        outError = QStringLiteral("Select a project render graph in the World viewport first.");
+        return false;
+    }
+    ViewportRasterSource source = GetViewportRasterSource(*mProjectGraph);
     // The profile must belong to the generation this capture decodes; a newer generation needs its own.
     QString profilePath;
     RenderGraphCaptureTarget library;
@@ -900,7 +986,7 @@ bool ReferenceCaptureWindow::startGraphCapture(const QSize& requestedSize, QSize
         // A library output renders its own package, built from the viewport's current generation.
         QByteArray identity;
         if (mLibraryCapture.isNull() == true ||
-            ViewportGraphCapture::ReadGenerationIdentity(mRasterSource, identity, outError) == false)
+            ViewportGraphCapture::ReadGenerationIdentity(source, identity, outError) == false)
         {
             outError =
                 outError.isEmpty() == true ? QStringLiteral("This viewport cannot build library captures.") : outError;
@@ -918,12 +1004,12 @@ bool ReferenceCaptureWindow::startGraphCapture(const QSize& requestedSize, QSize
             return false;
         }
         // The package also exports the library's other required outputs; capture the generated root's Export.
-        mRasterSource = ViewportRasterSource{};
-        mRasterSource.PackagePath = mLibraryCapture->GetPackagePath();
-        mRasterSource.OutputTarget = QString::fromLatin1(LIBRARY_CAPTURE_EXPORT);
-        if (ViewportGraphCapture::FindExportResource(mRasterSource.PackagePath,
-                                                     mRasterSource.OutputTarget,
-                                                     mRasterSource.OutputResource,
+        source = ViewportRasterSource{};
+        source.PackagePath = mLibraryCapture->GetPackagePath();
+        source.OutputTarget = QString::fromLatin1(LIBRARY_CAPTURE_EXPORT);
+        if (ViewportGraphCapture::FindExportResource(source.PackagePath,
+                                                     source.OutputTarget,
+                                                     source.OutputResource,
                                                      outError) == false)
         {
             return false;
@@ -933,7 +1019,7 @@ bool ReferenceCaptureWindow::startGraphCapture(const QSize& requestedSize, QSize
     else if (mCaptureProfile.isNull() == false)
     {
         QByteArray identity;
-        if (ViewportGraphCapture::ReadGenerationIdentity(mRasterSource, identity, outError) == false)
+        if (ViewportGraphCapture::ReadGenerationIdentity(source, identity, outError) == false)
         {
             return false;
         }
@@ -949,13 +1035,85 @@ bool ReferenceCaptureWindow::startGraphCapture(const QSize& requestedSize, QSize
         }
         profilePath = mCaptureProfile->GetPackagePath();
     }
+    outSource = foundation::Move(source);
+    outProfilePath = foundation::Move(profilePath);
+    return true;
+}
+
+void ReferenceCaptureWindow::openTimeLapse()
+{
+    if (mTimeLapse.isNull() == false)
+    {
+        mTimeLapse->raise();
+        mTimeLapse->activateWindow();
+        return;
+    }
+    if (mServiceTimer.isActive() == true || mGraphComparison.isNull() == false)
+    {
+        return;
+    }
+    if (mPreview.isNull() == true || mPreview->HasDevice() == false)
+    {
+        mMessage = QStringLiteral("Open a World and wait for its first viewport frame before opening Time-lapse.");
+        updateStatus();
+        return;
+    }
+    CelestialTimeLapseSettings settings;
+    settings.ShouldCaptureGraph = isGraphSource();
+    settings.SourceLabel = mSource->currentText();
+    if (settings.ShouldCaptureGraph == true)
+    {
+        QString error;
+        if (resolveGraphSource(settings.Graph, settings.GraphProfile, error) == false)
+        {
+            mMessage = error;
+            updateStatus();
+            return;
+        }
+        settings.SourceLabel = GetGraphText();
+    }
+    settings.Reference.LongSide = static_cast<uint32>(mLongSide->value());
+    settings.Reference.Samples =
+        static_cast<uint32>(settings.ShouldCaptureGraph == true ? mGraphSamples->value() : mSamples->value());
+    settings.Reference.MaxDepth = static_cast<uint32>(mMaxDepth->value());
+    settings.Reference.Traversal = static_cast<renderer::ReferenceTraversal>(mTraversal->currentIndex());
+    settings.Reference.ShouldCenterRays = mCenterRays->isChecked();
+    settings.Extent = ComputeReferenceExtent(mPreview->GetDrawableSize(), settings.Reference.LongSide);
+    prepareCaptureView(settings.Exposure);
+    settings.Display = resolveDisplayTransform(settings.Exposure);
+    settings.ShouldMeterAtmosphere = mPreview->GetExposureMode() == ViewportExposureMode::Automatic;
+    if (mProjectGraph.isNull() == false)
+    {
+        settings.ToneMappingExposure = mProjectGraph->GetRasterToneMappingExposure();
+    }
+    mTimeLapse = new CelestialTimeLapseWindow(*mPreview, mProjectGraph.data(), settings, *this);
+    connect(mTimeLapse, &QObject::destroyed, this, [this]() {
+        mTimeLapse.clear();
+        updateControls();
+    });
+    mTimeLapse->show();
+    updateControls();
+}
+#endif
+
+bool ReferenceCaptureWindow::startGraphCapture(const QSize& requestedSize,
+                                               uint32 samples,
+                                               QSize& outExtent,
+                                               QString& outError)
+{
+#if defined(LUDUS_EDITOR_NATIVE_PREVIEW)
+    QString profilePath;
+    if (resolveGraphSource(mRasterSource, profilePath, outError) == false)
+    {
+        return false;
+    }
     QSize extent;
     if (mGraphCapture.Load(mPreview->GetDevice(),
                            mPreview->GetSurface(),
                            mRasterSource,
                            profilePath,
                            requestedSize,
-                           static_cast<uint32>(mSamples->value()),
+                           samples,
                            extent,
                            outError) == false)
     {
@@ -981,6 +1139,7 @@ bool ReferenceCaptureWindow::startGraphCapture(const QSize& requestedSize, QSize
     return true;
 #else
     static_cast<void>(requestedSize);
+    static_cast<void>(samples);
     static_cast<void>(outExtent);
     outError = QStringLiteral("Graph capture needs the native editor's project render graph viewport.");
     return false;
@@ -993,7 +1152,8 @@ bool ReferenceCaptureWindow::startGraphSource()
         ComputeReferenceExtent(mPreview->GetDrawableSize(), static_cast<uint32>(mLongSide->value()));
     QSize extent;
     QString error;
-    if (mIsComparisonAvailable == false || startGraphCapture(requestedExtent, extent, error) == false)
+    const uint32 samples = static_cast<uint32>(mGraphSamples->value());
+    if (mIsComparisonAvailable == false || startGraphCapture(requestedExtent, samples, extent, error) == false)
     {
         releaseCaptures();
         mMessage = error.isEmpty() == true ? QStringLiteral("Graph capture needs the viewport's project render graph.")
@@ -1005,9 +1165,10 @@ bool ReferenceCaptureWindow::startGraphSource()
     mMessage = QStringLiteral("Render graph capture, %1 × %2, %3 requested samples/pixel.")
                    .arg(extent.width())
                    .arg(extent.height())
-                   .arg(mSamples->value());
-    mProgressTarget = mSamples->value();
+                   .arg(samples);
+    mProgressTarget = static_cast<int32>(samples);
 #if defined(LUDUS_EDITOR_NATIVE_PREVIEW)
+    mDisplay = mGraphCapture.GetDisplayTransform();
     const renderer::RenderGraphCaptureInfo info = mGraphCapture.GetInfo();
     if (info.WarmupSamples != 0)
     {
@@ -1028,7 +1189,7 @@ bool ReferenceCaptureWindow::startGraphSource()
 bool ReferenceCaptureWindow::StartCapture()
 {
 #if defined(LUDUS_EDITOR_NATIVE_PREVIEW)
-    if (mGraphComparison.isNull() == false)
+    if (mGraphComparison.isNull() == false || mTimeLapse.isNull() == false)
     {
         return false;
     }
@@ -1082,7 +1243,7 @@ bool ReferenceCaptureWindow::StartCapture()
     {
 #if defined(LUDUS_EDITOR_NATIVE_PREVIEW)
         QString graphError;
-        mIsGraphComparison = startGraphCapture(requestedExtent, extent, graphError);
+        mIsGraphComparison = startGraphCapture(requestedExtent, settings.Samples, extent, graphError);
         mGraphFallbackReason = mIsGraphComparison == true ? QString{} : graphError;
         if (mIsGraphComparison == false && startRasterCapture(requestedExtent, extent, error) == false)
 #else
@@ -1131,7 +1292,7 @@ bool ReferenceCaptureWindow::StartCapture()
     hasToneMap = mProjectGraph.isNull() == false && mProjectGraph->GetRasterToneMappingExposure() > 0;
 #endif
     mMessage += DescribeDisplay(exposureView, mDisplay, hasToneMap);
-    mProgressTarget = mSamples->value();
+    mProgressTarget = static_cast<int32>(settings.Samples);
     mProgressSamples = 0;
     mCaptureTimer.start();
     mRefreshTimer.start();
@@ -1167,7 +1328,7 @@ bool ReferenceCaptureWindow::SaveCapture(const QString& hdrPath, QString& outErr
 #if defined(LUDUS_EDITOR_NATIVE_PREVIEW)
     if (mIsCapturingGraph == true)
     {
-        return mGraphCapture.Save(hdrPath, outError);
+        return mGraphCapture.Save(hdrPath, outError, mDisplay);
     }
 #endif
     if (mCapture.Save(hdrPath, outError) == false)
@@ -1190,7 +1351,7 @@ bool ReferenceCaptureWindow::saveComparison(const QString& hdrPath, QString& out
     if (mIsGraphComparison == true)
     {
         const QString graphPath = GetComparisonPath(hdrPath, QStringLiteral("graph.lurgcap"));
-        if (mGraphCapture.Save(graphPath, outError) == false)
+        if (mGraphCapture.Save(graphPath, outError, mDisplay) == false)
         {
             return false;
         }
@@ -1455,11 +1616,11 @@ void ReferenceCaptureWindow::updateControls()
     mGraphProblem->setVisible(isReference == false && canCaptureGraph == false);
     mStopButton->setEnabled(isRunning == true);
     mSaveButton->setEnabled(hasSamples == true);
-    for (QWidget* setting :
-         {static_cast<QWidget*>(mSource), static_cast<QWidget*>(mLongSide), static_cast<QWidget*>(mSamples)})
-    {
-        setting->setEnabled(isRunning == false);
-    }
+    mSource->setEnabled(isRunning == false);
+    mLongSide->setEnabled(isRunning == false);
+    mSamples->setEnabled(isRunning == false);
+    mSamplePreset->setEnabled(isRunning == false);
+    mGraphSamples->setEnabled(isRunning == false);
     // Depth, traversal, centre rays and comparison describe the RT1 reference; a graph capture runs the graph as
     // authored.
     mMaxDepth->setEnabled(isRunning == false && isReference == true);
@@ -1467,8 +1628,15 @@ void ReferenceCaptureWindow::updateControls()
     mCenterRays->setEnabled(isRunning == false && isReference == true);
     mCompare->setEnabled(isRunning == false && isReference == true && mIsComparisonAvailable == true);
 #if defined(LUDUS_EDITOR_NATIVE_PREVIEW)
-    mCompareGraphsOrNull->setEnabled(isRunning == false && mIsComparisonAvailable == true);
-    if (mGraphComparison.isNull() == false)
+    const bool hasOtherCapture = mGraphComparison.isNull() == false || mTimeLapse.isNull() == false;
+    mCompareGraphsOrNull->setEnabled(isRunning == false && mIsComparisonAvailable == true && hasOtherCapture == false);
+    if (mTimeLapseButtonOrNull != nullptr)
+    {
+        mTimeLapseButtonOrNull->setEnabled(isRunning == false && mGraphComparison.isNull() == true &&
+                                           isAwaitingCaptureProfile() == false &&
+                                           (isReference == true || canCaptureGraph == true));
+    }
+    if (hasOtherCapture == true)
     {
         mCaptureButton->setEnabled(false);
     }

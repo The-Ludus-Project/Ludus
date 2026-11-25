@@ -8,7 +8,6 @@
 #include <QAction>
 #include <QApplication>
 #include <QCoreApplication>
-#include <QDialog>
 #include <QFrame>
 #include <QJsonArray>
 #include <QJsonObject>
@@ -22,10 +21,10 @@
 #include <QRect>
 #include <QSignalSpy>
 #include <QTest>
+#include <QTextBlock>
 #include <QTextCursor>
 #include <QTextDocument>
 #include <QTextEdit>
-#include <QTimer>
 
 using namespace ludus::editor;
 using namespace ludus::foundation;
@@ -37,6 +36,7 @@ QJsonObject MakeRange(int32 line, int32 start, int32 end)
         {QStringLiteral("start"), QJsonObject{{QStringLiteral("line"), line}, {QStringLiteral("character"), start}}},
         {QStringLiteral("end"), QJsonObject{{QStringLiteral("line"), line}, {QStringLiteral("character"), end}}}};
 }
+
 } // namespace
 
 TEST_CASE("Navigation accepts compiler symbols and locations only through captured UTF-16 sources",
@@ -340,24 +340,38 @@ TEST_CASE("Ctrl+click on a Slang name requests its definition without selecting 
     CHECK(requested.size() == 1);
 }
 
-TEST_CASE("Generated definitions are inspected read-only without changing the authored buffer",
-          "[editor][code-navigation]")
+TEST_CASE("Navigation status names a single location and keeps the hint short", "[editor][code-navigation]")
 {
-    CodeEditor editor;
-    editor.setPlainText(QStringLiteral("authored"));
-    bool isReadOnly = false;
-    QTimer::singleShot(0, &editor, [&]() {
-        QPlainTextEdit* sourceOrNull = editor.findChild<QPlainTextEdit*>(QStringLiteral("codeNavigationReadOnly"));
-        if (sourceOrNull != nullptr)
-        {
-            isReadOnly = sourceOrNull->isReadOnly() == true &&
-                         sourceOrNull->textCursor().selectedText() == QStringLiteral("Scene");
-            static_cast<QDialog*>(sourceOrNull->parentWidget())->reject();
-        }
-    });
-    CHECK(editor.GetNavigation().Navigate(
-              {QStringLiteral("Scene API"), {}, QStringLiteral("struct Scene {};"), 7, 12, true}) == true);
-    CHECK(isReadOnly == true);
-    CHECK(editor.toPlainText() == QStringLiteral("authored"));
-    CHECK(editor.document()->isUndoAvailable() == false);
+    const QString uri = QStringLiteral("file:///context.slang");
+    const QString prefix = QStringLiteral("struct Generated {};\n");
+    const QString source = QStringLiteral("float Value() { return 1; }\n");
+    const QString unit = prefix + source;
+    const QJsonObject link{{QStringLiteral("targetUri"), uri},
+                           {QStringLiteral("targetSelectionRange"), MakeRange(0, 7, 16)}};
+    QString message;
+    const QList<CodeNavigationTarget> one = ReadCodeNavigationResults(CodeNavigationKind::Definition,
+                                                                      QJsonArray{link},
+                                                                      uri,
+                                                                      unit,
+                                                                      prefix,
+                                                                      source,
+                                                                      QStringLiteral("color.slang"),
+                                                                      {},
+                                                                      message);
+    REQUIRE(one.size() == 1);
+    CHECK(message == QStringLiteral("1 location. Enter to jump."));
+
+    const QJsonObject second{{QStringLiteral("targetUri"), uri},
+                             {QStringLiteral("targetSelectionRange"), MakeRange(0, 0, 6)}};
+    const QList<CodeNavigationTarget> many = ReadCodeNavigationResults(CodeNavigationKind::Definition,
+                                                                       QJsonArray{link, second},
+                                                                       uri,
+                                                                       unit,
+                                                                       prefix,
+                                                                       source,
+                                                                       QStringLiteral("color.slang"),
+                                                                       {},
+                                                                       message);
+    REQUIRE(many.size() == 2);
+    CHECK(message == QStringLiteral("2 locations. Enter to jump."));
 }

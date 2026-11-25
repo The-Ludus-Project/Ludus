@@ -29,7 +29,7 @@ DOCUMENTATION_FILES = frozenset({
     "scripts/python/test_wiki.py",
 })
 NATIVE_JOBS = (
-    "macos-compile", "macos-sanitizers", "macos-analysis", "formatting", "debug-runtime", "development",
+    "macos-compile", "macos-reference", "macos-sanitizers", "macos-analysis", "formatting", "debug-runtime", "development",
     "sanitizers", "filesystem-fuzz", "threading-races", "analysis", "editor",
     "assertion-policy", "pch", "build-budget", "scripting-qualification",
 )
@@ -37,6 +37,11 @@ FULL_TIER = "full"
 INTEGRATION_TIER = "integration"
 NIGHTLY_TIER = "nightly"
 NIGHTLY_JOBS = ("macos-analysis",)
+# Batches run main's ci.yml with this candidate script, and main wires a new job only after
+# the change adding it is promoted. A job listed here may be absent from the results; its
+# presence is still checked as usual. Remove an entry once main's ci.yml defines the job
+# (test_ci_scope.PendingPromotionJobTests reports entries main already has).
+PENDING_PROMOTION_JOBS: tuple[str, ...] = ()
 TIERS = frozenset({FULL_TIER, INTEGRATION_TIER, NIGHTLY_TIER})
 # Integration PRs check sources, compile the Editor configuration and run static
 # analysis, so a build or analysis break cannot reach develop and fail every
@@ -191,17 +196,28 @@ def gate_failures(results: dict, evidence_job: str = "") -> list[str]:
     if tier not in TIERS:
         return ["Change classification did not report a valid validation_tier output."]
     objcxx = outputs.get("objcxx_changed")
-    if objcxx not in {"true", "false"}:
+    # Batches run main's workflow with this candidate script. A workflow from before the
+    # Objective-C++ job wires neither its output nor its result; the batch analyzes .mm
+    # sources in the macOS native job, so there is nothing more to check.
+    has_objcxx_job = OBJCXX_JOB in results
+    absent = {name for name in PENDING_PROMOTION_JOBS if name not in results}
+    native_jobs = tuple(name for name in NATIVE_JOBS if name not in absent)
+    if objcxx is None and has_objcxx_job == False:
+        expected_jobs = {"changes", *native_jobs}
+    elif objcxx not in {"true", "false"}:
         return ["Change classification did not report a valid objcxx_changed output."]
-    if set(results) != {"changes", *NATIVE_JOBS, OBJCXX_JOB}:
+    else:
+        expected_jobs = {"changes", *native_jobs, OBJCXX_JOB}
+    if set(results) != expected_jobs:
         failures.append("Required native job inventory is incomplete or unexpected.")
-    # Batches and full-tier PRs analyze Objective-C++ in the macOS native jobs instead.
-    expected = ("success" if required == "true" and tier == INTEGRATION_TIER and objcxx == "true" and not is_scoped
-                else "skipped")
-    actual = results.get(OBJCXX_JOB, {}).get("result")
-    if actual != expected:
-        failures.append(f"{OBJCXX_JOB}: expected {expected}, received {actual}.")
-    for name in NATIVE_JOBS:
+    if objcxx is not None:
+        # Batches and full-tier PRs analyze Objective-C++ in the macOS native jobs instead.
+        expected = ("success" if required == "true" and tier == INTEGRATION_TIER and objcxx == "true"
+                    and not is_scoped else "skipped")
+        actual = results.get(OBJCXX_JOB, {}).get("result")
+        if actual != expected:
+            failures.append(f"{OBJCXX_JOB}: expected {expected}, received {actual}.")
+    for name in native_jobs:
         deferred = ((tier == INTEGRATION_TIER and name in INTEGRATION_JOBS)
                     or (tier != NIGHTLY_TIER and name in NIGHTLY_JOBS))
         is_selected = not is_scoped or name == evidence_job

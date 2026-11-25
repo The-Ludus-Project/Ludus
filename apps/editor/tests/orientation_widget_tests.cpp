@@ -9,6 +9,8 @@
 #include <QImage>
 #include <QPainter>
 
+#include <cmath>
+
 using namespace ludus::editor;
 using namespace ludus::foundation;
 
@@ -137,4 +139,45 @@ TEST_CASE("Handles paint back to front with a letter on every positive end", "[e
     const OrientationHandle& nearest = layout.Handles[ORIENTATION_HANDLE_COUNT - 1];
     const QRgb pixel = image.pixel(nearest.CentrePixel.toPoint());
     CHECK(qAlpha(pixel) > 0);
+}
+
+TEST_CASE("A hovered handle paints a quieter halo than its solid disc", "[editor][orientation-widget]")
+{
+    EditorCameraController controller;
+    REQUIRE(controller.TrySetOrbit({0, 0, 0}, {35, 25}, 4) == true);
+    const QRectF rect(0, 0, ORIENTATION_WIDGET_SIZE_PIXEL, ORIENTATION_WIDGET_SIZE_PIXEL);
+    const OrientationLayout layout = BuildOrientationLayout(controller.GetSample(), rect);
+    const OrientationHandle* handleOrNull = nullptr;
+    for (const OrientationHandle& handle : layout.Handles)
+    {
+        if (handle.Letter == 'X')
+        {
+            handleOrNull = &handle;
+            break;
+        }
+    }
+    REQUIRE(handleOrNull != nullptr);
+    const EditorAxisView hovered = handleOrNull->View;
+    auto paint = [&](const EditorAxisView* hoveredViewOrNull) {
+        QImage image(PAINT_IMAGE_SIZE, PAINT_IMAGE_SIZE, QImage::Format_ARGB32_Premultiplied);
+        image.fill(Qt::transparent);
+        QPainter painter(&image);
+        PaintOrientationWidget(painter, layout, controller.GetSample(), hoveredViewOrNull);
+        painter.end();
+        return image;
+    };
+    const QImage rest = paint(nullptr);
+    const QImage hover = paint(&hovered);
+    const QPoint centre = handleOrNull->CentrePixel.toPoint();
+    CHECK(qAlpha(hover.pixel(centre)) >= qAlpha(rest.pixel(centre)));
+    // The widget's background disc already tints every pixel here, so compare rest against hover.
+    // Walk a ring just outside the solid handle and pick a sample the halo actually reaches.
+    const QPointF toOrigin = layout.OriginPixel - handleOrNull->CentrePixel;
+    const qreal toOriginLength =
+        QPointF::dotProduct(toOrigin, toOrigin) > 0 ? std::sqrt(QPointF::dotProduct(toOrigin, toOrigin)) : 1;
+    const QPointF outward = QPointF(-toOrigin.x() / toOriginLength, -toOrigin.y() / toOriginLength);
+    const qreal sampleRadius = handleOrNull->RadiusPixel + 2;
+    const QPoint halo = (handleOrNull->CentrePixel + outward * sampleRadius).toPoint();
+    CHECK(qAlpha(hover.pixel(halo)) > qAlpha(rest.pixel(halo)));
+    CHECK(qAlpha(hover.pixel(halo)) < qAlpha(hover.pixel(centre)));
 }

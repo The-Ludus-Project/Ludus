@@ -92,6 +92,10 @@
       "id": "Color",
       "stage": "fragment",
       "source": "main_shaders/color.lusl",
+      "configuration_values": {
+        "LUDUS_USE_MATERIAL_TINT": true,
+        "LUDUS_UNUSED_QUALITY": 1
+      },
       "function": "PSMain",
       "input": "RasterVarying",
       "output": "Color",

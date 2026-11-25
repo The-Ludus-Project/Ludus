@@ -1,0 +1,135 @@
+// Bindings and samplers of the rough-pair transport experiment (benchmark_rough_pair.py). The
+// transport itself is rough_pair_transport.slang of the rough_pair_slice render-graph template,
+// which stays Slang until the template migrates (LUSL L5d wave 3); the driver copies it beside these
+// sources. Each declaration below mirrors the Slang one.
+#pragma once
+
+#include "math.luslh"
+
+extern slang "rough_pair_transport.slang"
+{
+    /// One sampled two-reflection path.
+    struct PairResult
+    {
+        float32x2 FirstPositionWorld;
+        float32x2 SecondPositionWorld;
+        float32 Density;
+        float32 Radiance;
+        float32 HasFailed;
+        float32 ShiftJacobian;
+    };
+
+    /// A fresh path combined with its neighbor's shifted path.
+    struct CachedPairSample
+    {
+        PairResult Fresh;
+        PairResult Shifted;
+        float32 FreshWeight;
+        float32 Radiance;
+        float32 HasFailed;
+    };
+
+    float32 ComputeRoughPairOpenUniform(in uint32 word);
+    PairResult SamplePair(in bool isSlice, in float32x4 uniforms, in float32 split, in float32x2 receiverWorld);
+    bool MapPair(in float32x2 firstWorld,
+                 in float32x2 secondWorld,
+                 in float32x2 sourceWorld,
+                 in float32x2 targetWorld,
+                 out float32x2 outFirstWorld,
+                 out float32x2 outSecondWorld);
+    PairResult ShiftPairSample(in PairResult source, in float32x2 sourceWorld, in float32x2 targetWorld);
+    float32 ComputeFreshMisWeight(in PairResult fresh,
+                                  in float32x2 targetWorld,
+                                  in float32x2 sourceWorld,
+                                  out bool outHasFailed);
+    CachedPairSample CombineCachedRoughPair(in PairResult fresh,
+                                            in PairResult source,
+                                            in float32x2 receiverWorld,
+                                            in float32x2 sourceWorld);
+};
+
+static const uint32 GROUP_SIZE = 32;
+static const uint32 RANDOM_KEY = 0x834095bc;
+
+/// Dispatch parameters; benchmark_rough_pair.py packs them with PARAMETER_LAYOUT.
+struct PairParameters
+{
+    uint32 Count;
+    uint32 Batch;
+    uint32 Offset;
+    uint32 Seed;
+    float32 SourceReceiverOffset;
+    uint32 ReplicasPerReceiver;
+    uint32 ReceiverGridWidth;
+    uint32 Padding;
+};
+
+StructuredBuffer<float32x2> receivers;
+ConstantBuffer<PairParameters> parameters;
+RWStructuredBuffer<float32x4> accumulation;
+StructuredBuffer<float32x4> probeDraws;
+RWStructuredBuffer<float32x4> probes;
+
+PairResult SampleShiftMixture(in float32x4 uniforms, in float32 component, in float32x2 receiverWorld)
+{
+    float32x2 sourceWorld = receiverWorld - float32x2(parameters.SourceReceiverOffset, 0);
+    if (component < 0.5)
+    {
+        return ShiftPairSample(SamplePair(true, uniforms, component, sourceWorld), sourceWorld, receiverWorld);
+    }
+    PairResult result = SamplePair(true, uniforms, component, receiverWorld);
+    bool hasFailed;
+    float32 weight = ComputeFreshMisWeight(result, receiverWorld, sourceWorld, out hasFailed);
+    if (weight > 0)
+    {
+        result.Density *= 0.5 / weight;
+        result.Radiance *= 2 * weight;
+    }
+    result.HasFailed = max(result.HasFailed, hasFailed == true ? 1.0 : 0.0);
+    return result;
+}
+
+enum class PairProposal : uint32
+{
+    Slice,
+    Bidirectional,
+    ShiftMixture,
+};
+
+float32 DrawUniform(in uint32 pixel, in uint32 sampleIndex, in uint32 dimension)
+{
+    uint32 word = SampleRandomUInt32(uint32x2(parameters.Seed, RANDOM_KEY),
+                                     MakeRandomAddress(uint32x2(pixel, sampleIndex), 0, dimension));
+    return ComputeRoughPairOpenUniform(word);
+}
+
+void AccumulatePair(in uint32 pixel, in PairProposal proposal)
+{
+    if (pixel >= parameters.Count)
+    {
+        return;
+    }
+    float32x2 receiverWorld = receivers[pixel / parameters.ReplicasPerReceiver];
+    float32x4 total = 0;
+    for (uint32 index = 0; index < parameters.Batch; ++index)
+    {
+        uint32 sampleIndex = parameters.Offset + index;
+        float32x4 uniforms = float32x4(DrawUniform(pixel, sampleIndex, 0),
+                                       DrawUniform(pixel, sampleIndex, 1),
+                                       DrawUniform(pixel, sampleIndex, 2),
+                                       DrawUniform(pixel, sampleIndex, 3));
+        float32 component = DrawUniform(pixel, sampleIndex, 4);
+        PairResult result = proposal == PairProposal::ShiftMixture
+            ? SampleShiftMixture(uniforms, component, receiverWorld)
+            : SamplePair(proposal == PairProposal::Slice, uniforms, component, receiverWorld);
+        total += float32x4(
+            result.Radiance, result.Radiance * result.Radiance, result.Density > 0 ? 0.0 : 1.0, result.HasFailed);
+    }
+    accumulation[pixel] += total;
+}
+
+void WriteProbe(in uint32 index, in PairResult result)
+{
+    probes[index] = float32x4(result.FirstPositionWorld, result.SecondPositionWorld);
+    probes[index + 1] = float32x4(result.Density, result.Radiance, result.HasFailed, result.ShiftJacobian);
+}

@@ -64,8 +64,14 @@ closed argument set and an implementation-only parser.
   header that includes `<span>`; include it only where code calls an existing
   `std::span` API. It is a migration adapter, not a precedent for new span APIs.
   See [container views](../architecture/container-systems.md#borrowed-contiguous-views).
+- FoundationBase owns the non-owning `BorrowedView` in
+  `ludus/foundation/base/borrowed_view.hpp`. The FoundationContainers header
+  remains an installed forwarding include. Byte-order codecs and
+  `DecodeMaterialProgram` accept byte views. Callers with an existing
+  `std::span` use `MakeBorrowedView` at the call boundary. This keeps the range
+  and its size together without making FoundationBase depend on containers.
 - GraphicsRhi's raster, fullscreen shader and uniform inputs use
-  FoundationContainers' `BorrowedView`. The former R1 `std::span` compatibility
+  FoundationBase's `BorrowedView`. The former R1 `std::span` compatibility
   exception is retired. Private legacy adapters may still construct spans from
   explicit pointer/count pairs. Shader resource names retain `std::string_view`.
   See the [portable raster contract](../development/fullscreen-rendering.md#portable-raster-r1)
@@ -236,6 +242,11 @@ suppress SIGPIPE. Browser builds return Unavailable without native IPC or Slang.
 Availability, interruption, malformed/disconnected peers and cancellation are
 covered by the native protocol tests. See the
 [native shader-worker contract](../development/render-graph-authoring.md#native-shader-worker-and-live-development-builds).
+
+The macOS first-person player registers its supervisor's stop signal with
+`sigaction` and `sigemptyset`. The signal handler only stores a stop flag in a
+`volatile sig_atomic_t`. The application's owner thread releases input and
+retires its renderer and device on exit.
 
 ### Platform hosted-window channel boundary
 

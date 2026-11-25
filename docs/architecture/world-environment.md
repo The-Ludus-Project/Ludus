@@ -14,7 +14,7 @@ authored regional schedules and bounded fields within a ground-based World.
 | Render graph integration | The renderer reports [World feature support](../development/render-graph-authoring.md#world-features) from the selected graph. Raster clear-sky support and RT1 sky support have different transport contracts. |
 | Clouds | [#1319](https://github.com/The-Ludus-Project/Ludus/issues/1319) tracks a bounded cloud transport prototype and its integration with aerial perspective. |
 | Wind | [PhysicsFluid](fluid-field.md) owns numerical grid operations. [Sandbox](drift-game-integration.md) owns its wind policy. [Foliage #1697](https://github.com/The-Ludus-Project/Ludus/issues/1697) needs a reusable World provider and owns plant response. |
-| Climate and precipitation | [Terrain fields](../modules/content/terrain.md) supply elevation-derived wetness and drainage for generation. Regional climate, runtime weather, precipitation and exposure-dependent surface wetness are proposed here. |
+| Climate and precipitation | [Terrain fields](../modules/content/terrain.md) supply elevation-derived wetness and drainage for generation. [GameplayWeather](../modules/gameplay/weather.md) cooks regional climates and resolves deterministic weather, including precipitation rate, at World positions. Exposure-dependent surface wetness is proposed here. |
 
 ## Ownership and data flow
 
@@ -216,6 +216,200 @@ extension must provide matched frozen inputs and the same declared integral
 under the [paired CPU/GPU contract](renderer-systems.md#cpu-and-gpu-reference-implementation-requirement).
 Use raw scene-linear comparisons before temporal or display filtering.
 
+### Controlled cloud layer
+
+The first cloud profile ([#1319](https://github.com/The-Ludus-Project/Ludus/issues/1319))
+is one bounded, homogeneous slab owned by the World's Atmosphere entity. It
+qualifies the layer's integration and composition before weather, shape or
+lighting work builds on it. The editor workflow is in
+[Add a clear-sky atmosphere](../development/editor-workspace.md#add-a-clear-sky-atmosphere).
+
+- **Inputs and units.** `AtmosphereDescription::Clouds`
+  (`CloudLayerDescription`) uses the Atmosphere's local frame. The origin is
+  the surface anchor, +Y is the anchor's up and +X is the entity's local X,
+  made perpendicular to up. The slab is flat in that tangent frame. It covers
+  |x| ≤ X size / 2, |z| ≤ Z size / 2 and base ≤ y ≤ base + thickness, all in
+  metres. Density is a dimensionless multiplier of the profile extinction in
+  inverse metres. The medium is grey: a single-scattering albedo in [0, 1]
+  and a Henyey–Greenstein phase function in inverse steradians, with
+  asymmetry |g| ≤ 0.99. Its cosine is between the view direction and the
+  direction toward the Sun, the Atmosphere's forward convention. Within the
+  edge fade of each side, density falls smoothly to zero; the base and top
+  are sharp. Sizes are limited to 200 km, where the flat slab is still within
+  about 0.8 km of the ground sphere. The top must stay below the shell. The
+  renderer rejects invalid fields with `InvalidDescription` and keeps the
+  last drawable view.
+- **Transport.** The slab's part of a view ray is clipped to its box and to
+  the first opaque surface or the ground. Thirty-two uniform midpoint steps
+  integrate single scattering of the Atmosphere's Sun. Each step uses the
+  homogeneous-step rule above, so a constant density has exact transmittance.
+  The source at a step is scattering × phase × the Sun's illuminance. The Sun
+  reaches the point through the clear air, read from the transmittance table
+  at the point's spherical altitude and zero in the planet's shadow. It is
+  also attenuated by the slab's exact box path toward the Sun, at that step's
+  density.
+- **Composition.** With `C` the clear-sky result of the whole ray and
+  `(L_air, T_air)` the clear air from the camera to the slab's entry, the
+  pixel is `L_air + T_air * L_cloud + T_cloud * (C − L_air)`. The air inside
+  and behind the slab stays in `C` behind the cloud, so the air is counted once.
+  Zero density reproduces `C` exactly. The sky draw uses the sky-view
+  table's `C` and a 16-step air segment to the entry. The deferred resolve
+  keeps the segment affine in surface radiance. It applies the same rule to
+  the existing camera-to-surface aerial perspective, also in the skin
+  resolve. All of this happens before exposure and tone mapping. Frostbite's
+  cloud and aerial-perspective composition, §5.9.1 of Hillaire's course notes
+  cited in the renderer, is the design reference.
+- **Two-region test field.** `CloudLayerDescription::TestField`
+  (`CloudLayerTestField`) is a renderer validation fixture that World
+  extraction and the Editor never author. A plane in the layer frame splits
+  the slab into two homogeneous regions. Each has its own extinction, still
+  multiplied by density and the edge fade, and a scene-linear source radiance
+  `S` in nits that emits `σ · S` per metre. A region of transmittance `T`
+  alone therefore adds `S · (1 − T)`. The view march splits the step that
+  crosses the plane into two homogeneous parts, so transmittance and source
+  are exact for the piecewise-constant field. The path toward the Sun is
+  split at the plane too. The source adds to the Sun's single scattering and
+  does not depend on the Atmosphere's illuminance. With the field disabled
+  the march is the homogeneous one above.
+- **Limits.** Perspective cameras inside the shell only. Orthographic and
+  orbital views, forward and ray-traced graphs, and RT1 reference captures
+  omit the layer. Ray graphs do not report it as a World feature yet. The
+  layer casts no shadows, leaves sky lighting and the specular environment
+  unchanged, and has no skylight or multiple scattering, so optically thick
+  clouds are darker than real ones. These items follow the remaining
+  #1319 controls and [#1708](https://github.com/The-Ludus-Project/Ludus/issues/1708).
+
+The `[cloud-layer]` renderer tests draw the default clustered deferred graph.
+They compare the central pixel's linear RGBA8 export with a binary64
+reference and repeat each probe under day and sunset Suns. The probes look at
+the zenith, obliquely, and toward the slab near the horizon from 30 km and
+60 km outside its footprint. The reference integrates the slab with 4096 view
+steps, exact box paths toward the Sun, and the clear-sky quadrature's air
+transmittance and Earth shadow. It composes the measured clear pixel with the
+rule above. The tolerance is one readback code plus 3% of the expected
+radiance. That covers half a code of rounding in each readback, the 32 shader
+steps, table interpolation and the 16-step air segment. A zero-density layer
+must match the clear frame byte for byte. A pure absorber isolates the
+transmittance `exp(−σd)`. An emissive surface seen without sunlight is
+unchanged in front of the slab. A surface 500 m inside it is attenuated by
+exactly `exp(−σ · 500 m)`.
+
+On Apple M5 Metal, the worst probe error was 0.0026, below one readback code.
+The tests' 96 × 64 export cannot show cost, so it was measured separately at
+1920 × 1080 over 40 frames alternating clear and clouded skies in one process.
+A slab that fills the view adds about 10–15 ms of frame GPU time; GPU clocks
+vary between runs. A 60° view toward the slab near the horizon from 30 km
+adds about 1 ms. Cutting the view steps from 32 to 8 recovered only part of
+the full-view cost; the rest is not yet attributed. A disabled layer costs
+one uniform branch. The traversal measurement in #1319 owns any cheaper path.
+
+#### Two-region controls
+
+Two further `[cloud-layer]` tests use the two-region test field without
+sunlight, so only the view ray's extinction and the test sources act. The
+slab is 800 m deep along Z and split at its middle. The camera sits at the
+slab's middle height, 500 m outside it, and an emissive triangle on the
+central ray is the opaque backdrop. A binary64 reference integrates each
+case with 65,536 midpoint steps that are not aligned to the plane. Its
+error, at most half a step of optical depth at the crossing, is within
+1e-5.
+
+- **Nonuniform transmittance.** The front region has σ₁ = 0.001 m⁻¹ and the
+  back region σ₂ = 0.0025 m⁻¹. Backdrops lie 300, 700, 1100 and 1500 m away
+  along Z: in front of the layer, inside the front region, inside the back
+  region and behind both. The test repeats them on a ray 36.87° off the
+  slab's normal, which lengthens every path by 1.25. The expected
+  transmittance is `exp(−σ₁d₁ − σ₂d₂)` with each length clipped to the
+  backdrop. The observed value is the clouded pixel divided by the clear
+  pixel, and the air in front cancels. At every depth an empty layer must
+  match the clear frame byte for byte. The tolerance is one readback code,
+  half a code of rounding in each of the two frames, because the split
+  march is exact up to float32 rounding.
+- **Region order.** Region A has σ = 0.002 m⁻¹ and source (0.8, 0.2, 0.1).
+  Region B has σ = 0.0005 m⁻¹ and source (0.1, 0.3, 0.9). Both are 400 m
+  deep, so swapping their coefficients reverses their order on the same
+  ray. The reference integrates each region alone for `L` and `T`. Three
+  frames keep the terms separately inspectable. Absorbers in front of the
+  emissive backdrop give `T_A · T_B`. The sources in front of a black
+  backdrop give `T_air · (L_A + T_A · L_B)`, where `T_air` is the clear air
+  to the entry. Both together give the composed pixel. The tolerances are
+  one code for each isolated term and 1.5 codes for the composed pixel,
+  which also carries the clear frame's rounding. Reversing the order must
+  move the cloud from red toward blue and leave the transmittance within
+  one code.
+
+| Case (Apple M5, Metal) | Expected | Observed (R, G, B) |
+| --- | --- | --- |
+| Head-on, 700 m | T = 0.8187 | 0.8174, 0.8167, 0.8186 |
+| Head-on, 1100 m | T = 0.4066 | 0.4083, 0.4059, 0.4060 |
+| Head-on, 1500 m | T = 0.2466 | 0.2458, 0.2489, 0.2457 |
+| Oblique, 700 m | T = 0.7788 | 0.7801, 0.7782, 0.7797 |
+| Oblique, 1100 m | T = 0.3247 | 0.3250, 0.3235, 0.3276 |
+| Oblique, 1500 m | T = 0.1738 | 0.1757, 0.1737, 0.1747 |
+| A in front: cloud radiance | 0.4472, 0.1337, 0.1265 | 0.4471, 0.1333, 0.1255 |
+| B in front: cloud radiance | 0.3776, 0.1436, 0.2051 | 0.3765, 0.1451, 0.2039 |
+| Either order: `T_A · T_B` | 0.3679 | 0.3651, 0.3710, 0.3667 |
+
+The 300 m backdrops in front of the layer read 1.0 exactly. The worst
+transmittance error was 0.68 codes, and the worst order-check error was
+0.0018, under half a code. The observed transmittance is quantized to
+about 1/clear code, which is why individual ratios scatter by a few
+thousandths.
+
+The same 1920 × 1080 in-process method as above measured the field's cost,
+with 12 alternating blocks of 20 frames on a heavily loaded Apple M5. For a
+view-filling slab in the sky draw, the frame medians were about 1.2 ms
+clear, 15.4 ms homogeneous and 17.0 ms with the two-region field. The
+per-block median difference between the field and the homogeneous layer
+was about 0.9 ms, within the run-to-run spread. With an opaque surface
+behind the slab, the deferred resolve medians were about 45, 76 and 76 ms.
+That deferred-path cost of about 30 ms is the existing per-pixel cloud and
+air-segment work, which the traversal measurement in #1319 owns. The field
+adds no measurable cost there. The extra split part per step is empty
+except where the ray crosses the plane, and a disabled field takes the
+homogeneous path.
+
+### Auroral curtains
+
+`AtmosphereDescription::Aurora` is an opt-in emission field for the native
+clustered deferred renderer. A folded arc and a fainter companion extend
+between 100 and 300 km above the Earth sphere. The Atmosphere entity sets the
+tangent frame. The arcs run along its local X axis with their centres toward
+local +Z. Broad creases deepen and relax at different points along the arcs.
+Individual shafts pulse at seeded rates and phases along the curtain. Bright
+patches gather above a sharp green lower edge, with a faint red upper trail in
+the most active regions. The shape and brightness vary over a 120-second loop
+independently of the Sun and celestial background. The authored brightness
+scale is scene-linear nits per metre.
+
+The renderer clips the ray to the emitting shell, each ribbon's bounds and the
+first opaque hit. The planet blocks rays that hit the ground before reaching
+the emitting shell. The ribbon profile is the product of a procedural
+footprint and an altitude-dependent emission profile, following Lawlor and
+Genetti's [Interactive Volume Rendering Aurora on the GPU](https://lawlor.cs.uaf.edu/~olawlor/papers/2010/aurora/lawlor_aurora_2010.pdf).
+The height and colour choices follow the observed green and red oxygen emission
+ranges described by [NASA](https://science.nasa.gov/sun/auroras/). The moving
+folds follow [NOAA's aurora observations](https://www.spaceweather.gov/content/aurora-tutorial).
+The renderer skips empty intervals using a conservative upper bound on the footprint's
+slope, then integrates the remaining intervals with bounded midpoint steps.
+
+The clear-air model ends at the aurora's base, so every visible sample along a
+ray shares the same camera-to-top transmittance. The view integral multiplies
+that transmittance by the sum of emission per metre times segment length. A
+constant emitter in vacuum would therefore add its emission per metre times
+visible length. The cloud pass attenuates the aurora behind it. The sky and
+opaque surface resolves add the result before exposure. Zero emission skips
+the layer entirely.
+
+This profile draws the curtains from perspective views inside the clear-air
+shell. For opaque geometry beyond the shell, use `ShouldLightScene` to enable
+the finite-distance resolve. Forward and ray graphs report the missing World
+feature. Orthographic, orbital and RT1 reference views omit the curtains.
+Aurora contributes to camera rays only. Environment lighting, exposure
+metering and reflections use the existing sky and lighting inputs.
+[#1932](https://github.com/The-Ludus-Project/Ludus/issues/1932)
+tracks the sampling and target-resolution qualification.
+
 ## Rain, wetness and authoring
 
 Sample a bounded world-space shelter mask at receivers. The initial fixture
@@ -277,7 +471,7 @@ physical WebGPU hardware before making browser performance claims.
 
 | Slice | Delivery gate |
 | --- | --- |
-| [Shared climate and weather](https://github.com/The-Ludus-Project/Ludus/issues/1704) | One default region and one feathered override. Compare per-tick golden samples/events across chunked stepping, pause, replay, save/load, iteration-order changes, and distinct view locations. Qualify Editor preview and SDK packaged play. |
+| [Shared climate and weather](https://github.com/The-Ludus-Project/Ludus/issues/1704) | One default region and one feathered override. Compare per-tick golden samples/events across chunked stepping, pause, replay, save/load, iteration-order changes, and distinct view locations. Qualify Editor preview and SDK packaged play. The [runtime](../modules/gameplay/weather.md#determinism-evidence) and its [pause, step, preview and reset semantics](../modules/gameplay/weather.md#pause-step-preview-and-reset) are in place, with [Environment tool authoring](../modules/gameplay/weather.md#edit-a-climate-in-the-environment-tool) and installed SDK components; Play-clock wiring remains. |
 | [Analytic World wind](https://github.com/The-Ludus-Project/Ludus/issues/1705) | Match sampled speed and direction at ground and cloud heights, calm, bounded falloff, and uninterrupted phase after clock restore and rebasing. Qualify two consumers using a cloud tracer marker and a ground receiver. |
 | Cloud prototype | Reuse [#1319](https://github.com/The-Ludus-Project/Ludus/issues/1319) and its analytic and scene-linear controls. |
 | [Weather-driven clouds](https://github.com/The-Ludus-Project/Ludus/issues/1706) | One authored coverage/type map, stable advection and accepted snapshots tied to World revisions. Verify clipping, horizon, day/night, clear recovery and profile fallback. |

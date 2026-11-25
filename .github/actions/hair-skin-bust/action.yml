@@ -1,0 +1,38 @@
+name: macOS Metal hair and skin standalone qualification
+description: >
+  Export one Editor-saved character-bust World (cooked scene.luscn + matched captures), build the
+  Qt-free hair_skin_bust standalone game against a relocated installed SDK on macOS arm64 / Metal,
+  launch it from a clean extraction through the forward-lit and clustered-deferred graphs, and compare
+  its hair-card and skin captures with the Editor on the SAME cooked scene (#1400).
+inputs:
+  editor:
+    description: Built macOS Editor test executable (ludus_editor_tests) that exports the saved bust World.
+    required: true
+runs:
+  using: composite
+  steps:
+    - name: Qualify hair and skin from the clean SDK package on Metal
+      shell: bash
+      env:
+        EDITOR_TESTS: ${{ inputs.editor }}
+      run: |
+        set -euo pipefail
+        tools="$PWD/out/host-tools/venv/bin"
+        # verify.py installs the engine SDK to a fresh prefix, bundles its dependency closure, runs the
+        # Editor export test to produce the saved World's cooked scene.luscn and matched captures,
+        # builds the Qt-free app, stages scene.luscn + both graphs into a clean extraction and launches
+        # each profile on Metal.
+        "$tools/cmake" --install out/build/macos-clang-development --prefix "$RUNNER_TEMP/hair-skin-sdk"
+        "$tools/python" -m pip install numpy Pillow
+        "$tools/python" tests/sdk_consumer/hair_skin_bust/verify.py \
+          --tools "$PWD" \
+          --sdk "$RUNNER_TEMP/hair-skin-sdk" \
+          --editor "$EDITOR_TESTS" \
+          --evidence out/hair-skin-bust
+    - name: Retain hair and skin qualification captures, provenance and comparisons
+      if: always()
+      uses: actions/upload-artifact@v4
+      with:
+        name: hair-skin-bust-metal
+        path: out/hair-skin-bust/
+        retention-days: 14

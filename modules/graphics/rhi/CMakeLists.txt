@@ -16,6 +16,7 @@ target_sources(ludus_graphics_rhi
         src/adapter.cpp
         src/device.cpp
         src/dxil_container.cpp
+        src/frame_producer.cpp
         src/gpu_scope.cpp
         src/gpu_pass_timing_buffer.cpp
         src/graphics_capture.cpp
@@ -29,7 +30,7 @@ target_sources(ludus_graphics_rhi
         FILE_SET public_headers
         TYPE HEADERS
         BASE_DIRS include
-        FILES include/ludus/graphics/rhi/adapter.h include/ludus/graphics/rhi/compute_cache.hpp include/ludus/graphics/rhi/compute_workload.hpp include/ludus/graphics/rhi/spatial_upscale.h include/ludus/graphics/rhi/native_compute.h include/ludus/graphics/rhi/gpu_scope.h include/ludus/graphics/rhi/graphics_capture.h include/ludus/graphics/rhi/native_interop.h include/ludus/graphics/rhi/hosted_recorder.h include/ludus/graphics/rhi/hosted_surface.h include/ludus/graphics/rhi/measurement.h include/ludus/graphics/rhi/ray.h include/ludus/graphics/rhi/profile.h include/ludus/graphics/rhi/compute.h include/ludus/graphics/rhi/graph.h include/ludus/graphics/rhi/lifetime.h include/ludus/graphics/rhi/pipeline_preparation.h include/ludus/graphics/rhi/rhi.h include/ludus/graphics/rhi/render.h include/ludus/graphics/rhi/device.h include/ludus/graphics/rhi/raster.h
+        FILES include/ludus/graphics/rhi/adapter.h include/ludus/graphics/rhi/compute_cache.hpp include/ludus/graphics/rhi/compute_workload.hpp include/ludus/graphics/rhi/frame_producer.h include/ludus/graphics/rhi/spatial_upscale.h include/ludus/graphics/rhi/native_compute.h include/ludus/graphics/rhi/gpu_scope.h include/ludus/graphics/rhi/graphics_capture.h include/ludus/graphics/rhi/native_interop.h include/ludus/graphics/rhi/hosted_recorder.h include/ludus/graphics/rhi/hosted_surface.h include/ludus/graphics/rhi/measurement.h include/ludus/graphics/rhi/ray.h include/ludus/graphics/rhi/profile.h include/ludus/graphics/rhi/compute.h include/ludus/graphics/rhi/graph.h include/ludus/graphics/rhi/lifetime.h include/ludus/graphics/rhi/pipeline_preparation.h include/ludus/graphics/rhi/rhi.h include/ludus/graphics/rhi/render.h include/ludus/graphics/rhi/device.h include/ludus/graphics/rhi/raster.h
 )
 
 target_link_libraries(ludus_graphics_rhi
@@ -85,7 +86,7 @@ elseif(WIN32)
     ludus_configure_win32_target(ludus_graphics_rhi)
     target_link_libraries(ludus_graphics_rhi PRIVATE d3d12 dxgi dxguid user32)
 else()
-    target_sources(ludus_graphics_rhi PRIVATE src/rhi_vulkan.cpp src/volk_impl.cpp src/vma.cpp src/hosted_vulkan.cpp src/hosted_consumer_vulkan.cpp)
+    target_sources(ludus_graphics_rhi PRIVATE src/rhi_vulkan.cpp src/surface_formats_vulkan.cpp src/volk_impl.cpp src/vma.cpp src/hosted_vulkan.cpp src/hosted_consumer_vulkan.cpp)
     target_link_libraries(ludus_graphics_rhi PRIVATE volk::volk_headers)
     file(READ "${PROJECT_SOURCE_DIR}/config/vulkan_memory_allocator.json" vma_pin)
     string(JSON vma_header_sha GET "${vma_pin}" sha256 "vk_mem_alloc.h")
@@ -127,6 +128,7 @@ if(LUDUS_BUILD_TESTS AND NOT APPLE AND NOT WIN32)
         tests/rhi_tests.cpp
         tests/buffer_access_vulkan_tests.cpp
         tests/buffer_range_vulkan_tests.cpp
+        tests/surface_formats_vulkan_tests.cpp
         tests/depth_barrier_vulkan_tests.cpp)
     target_include_directories(ludus_graphics_rhi_tests PRIVATE src)
     target_link_libraries(ludus_graphics_rhi_tests PRIVATE
@@ -156,6 +158,7 @@ if(LUDUS_BUILD_TESTS)
         tests/gpu_scope_tests.cpp
         tests/graphics_capture_tests.cpp
         tests/device_tests.cpp
+        tests/frame_producer_tests.cpp
         tests/profile_tests.cpp
         tests/raster_tests.cpp
         tests/binding_tests.cpp
@@ -165,6 +168,7 @@ if(LUDUS_BUILD_TESTS)
         tests/raster_storage_tests.cpp
         tests/indirect_tests.cpp
         tests/ray_graph_tests.cpp
+        tests/ray_update_tests.cpp
         tests/hosted_ring_tests.cpp
         tests/hosted_adapter_tests.cpp
         tests/dxil_container_tests.cpp
@@ -180,6 +184,18 @@ if(LUDUS_BUILD_TESTS)
     set_tests_properties(ludus_rhi_lifecycle_tests PROPERTIES LABELS "unit;rhi;build-contract")
 endif()
 
+# LUSL L5d wave 1 (issue 1735): the fullscreen diagnostic in LUSL and its retained Slang original
+# (config/lusl_migration.json). The parity test draws both on one device in the same run and
+# requires identical pixels.
+function(ludus_add_rhi_diagnostic_shaders target)
+    set(diagnostic "${PROJECT_SOURCE_DIR}/tests/sdk_consumer/shaders/diagnostic")
+    ludus_compile_shader(TARGET ${target} NAME diagnostic
+        SOURCE "${diagnostic}.lusl" VERTEX VertexMain FRAGMENT FragmentMain)
+    ludus_compile_shader(TARGET ${target} NAME diagnostic_slang
+        SOURCE "${diagnostic}.slang" VERTEX VertexMain FRAGMENT FragmentMain)
+    target_sources(${target} PRIVATE "${CMAKE_CURRENT_FUNCTION_LIST_DIR}/tests/lusl_diagnostic_parity_tests.cpp")
+endfunction()
+
 if(LUDUS_BUILD_TESTS AND NOT APPLE AND NOT WIN32 AND LUDUS_SLANG_COMPILER AND LUDUS_SPIRV_VALIDATOR)
     target_compile_definitions(ludus_graphics_rhi PRIVATE LUDUS_RHI_TEST_READBACK=1)
     add_executable(ludus_rhi_render_tests tests/render_tests.cpp)
@@ -187,9 +203,7 @@ if(LUDUS_BUILD_TESTS AND NOT APPLE AND NOT WIN32 AND LUDUS_SLANG_COMPILER AND LU
     target_link_libraries(ludus_rhi_render_tests PRIVATE Ludus::FoundationThreading Ludus::FoundationTime Ludus::GraphicsRhi Ludus::FoundationLogging Catch2::Catch2WithMain)
     ludus_apply_project_defaults(ludus_rhi_render_tests)
     ludus_enable_test_exceptions(ludus_rhi_render_tests)
-    ludus_compile_shader(TARGET ludus_rhi_render_tests NAME diagnostic
-        SOURCE "${PROJECT_SOURCE_DIR}/tests/sdk_consumer/shaders/diagnostic.slang"
-        VERTEX VertexMain FRAGMENT FragmentMain)
+    ludus_add_rhi_diagnostic_shaders(ludus_rhi_render_tests)
     add_test(NAME ludus_rhi_render_pixels COMMAND ludus_rhi_render_tests)
     set_tests_properties(ludus_rhi_render_pixels PROPERTIES LABELS "rhi;gpu" TIMEOUT 60)
 endif()
@@ -226,12 +240,10 @@ if(LUDUS_BUILD_TESTS AND WIN32)
         set_tests_properties(ludus_rhi_windows_profile_smoke PROPERTIES LABELS "rhi;gpu;windows" TIMEOUT 120)
         target_compile_definitions(ludus_rhi_d3d12_tests PRIVATE LUDUS_TEST_DXIL=1)
         target_sources(ludus_rhi_d3d12_tests PRIVATE tests/portable_raster_conformance_tests.cpp)
-        ludus_compile_shader(TARGET ludus_rhi_d3d12_tests NAME diagnostic
-            SOURCE "${PROJECT_SOURCE_DIR}/tests/sdk_consumer/shaders/diagnostic.slang"
-            VERTEX VertexMain FRAGMENT FragmentMain)
+        ludus_add_rhi_diagnostic_shaders(ludus_rhi_d3d12_tests)
         ludus_compile_shader(TARGET ludus_rhi_d3d12_tests NAME raster RASTER
-            SOURCE "${PROJECT_SOURCE_DIR}/tests/sdk_consumer/shaders/raster.slang"
-            VERTEX vertexMain FRAGMENT fragmentMain)
+            SOURCE "${PROJECT_SOURCE_DIR}/tests/sdk_consumer/shaders/raster.lusl"
+            VERTEX VertexMain FRAGMENT FragmentMain)
     else()
         message(STATUS "Direct3D 12 fullscreen pixel tests skipped: set LUDUS_SLANG_COMPILER and LUDUS_DXC_DIRECTORY")
     endif()
@@ -256,9 +268,7 @@ if(LUDUS_BUILD_TESTS AND APPLE)
         target_link_libraries(ludus_rhi_render_tests PRIVATE Ludus::FoundationThreading Ludus::FoundationTime Ludus::GraphicsRhi Ludus::FoundationLogging Catch2::Catch2WithMain)
         ludus_apply_project_defaults(ludus_rhi_render_tests)
         ludus_enable_test_exceptions(ludus_rhi_render_tests)
-        ludus_compile_shader(TARGET ludus_rhi_render_tests NAME diagnostic
-            SOURCE "${PROJECT_SOURCE_DIR}/tests/sdk_consumer/shaders/diagnostic.slang"
-            VERTEX VertexMain FRAGMENT FragmentMain)
+        ludus_add_rhi_diagnostic_shaders(ludus_rhi_render_tests)
         add_test(NAME ludus_rhi_render_pixels COMMAND ludus_rhi_render_tests)
         set_tests_properties(ludus_rhi_render_pixels PROPERTIES LABELS "rhi;gpu;macos" TIMEOUT 60)
     endif()
@@ -330,10 +340,10 @@ if(TARGET ludus_rhi_render_tests)
     target_sources(ludus_rhi_render_tests PRIVATE tests/raster_render_tests.cpp tests/portable_raster_conformance_tests.cpp)
     target_include_directories(ludus_rhi_render_tests PRIVATE "${PROJECT_SOURCE_DIR}/tests/sdk_consumer")
     ludus_compile_shader(TARGET ludus_rhi_render_tests NAME cull
-        SOURCE "${PROJECT_SOURCE_DIR}/tests/sdk_consumer/shaders/cull.slang" COMPUTE computeMain)
+        SOURCE "${PROJECT_SOURCE_DIR}/tests/sdk_consumer/shaders/cull.lusl" COMPUTE ComputeMain)
     ludus_compile_shader(TARGET ludus_rhi_render_tests NAME raster RASTER
-        SOURCE "${PROJECT_SOURCE_DIR}/tests/sdk_consumer/shaders/raster.slang"
-        VERTEX vertexMain FRAGMENT fragmentMain)
+        SOURCE "${PROJECT_SOURCE_DIR}/tests/sdk_consumer/shaders/raster.lusl"
+        VERTEX VertexMain FRAGMENT FragmentMain)
 endif()
 
 if(LUDUS_BUILD_TESTS AND NOT EMSCRIPTEN AND NOT WIN32 AND LUDUS_SLANG_COMPILER AND (APPLE OR LUDUS_SPIRV_VALIDATOR))
@@ -346,47 +356,48 @@ if(LUDUS_BUILD_TESTS AND NOT EMSCRIPTEN AND NOT WIN32 AND LUDUS_SLANG_COMPILER A
     target_link_libraries(ludus_rhi_r6_consumer PRIVATE Ludus::GraphicsRhi Ludus::FoundationTime)
     ludus_apply_project_defaults(ludus_rhi_r6_consumer)
     ludus_compile_shader(TARGET ludus_rhi_r6_consumer NAME cull
-        SOURCE "${PROJECT_SOURCE_DIR}/tests/sdk_consumer/shaders/cull.slang" COMPUTE computeMain)
+        SOURCE "${PROJECT_SOURCE_DIR}/tests/sdk_consumer/shaders/cull.lusl" COMPUTE ComputeMain)
     ludus_compile_shader(TARGET ludus_rhi_r6_consumer NAME raster RASTER
-        SOURCE "${PROJECT_SOURCE_DIR}/tests/sdk_consumer/shaders/raster.slang" VERTEX vertexMain FRAGMENT fragmentMain)
+        SOURCE "${PROJECT_SOURCE_DIR}/tests/sdk_consumer/shaders/raster.lusl" VERTEX VertexMain FRAGMENT FragmentMain)
     add_executable(ludus_rhi_r8_consumer "${PROJECT_SOURCE_DIR}/tests/sdk_consumer/r8.cpp")
     target_link_libraries(ludus_rhi_r8_consumer PRIVATE Ludus::GraphicsRhi Ludus::FoundationTime)
     ludus_apply_project_defaults(ludus_rhi_r8_consumer)
     ludus_compile_shader(TARGET ludus_rhi_r8_consumer NAME raster RASTER
-        SOURCE "${PROJECT_SOURCE_DIR}/tests/sdk_consumer/shaders/raster.slang" VERTEX vertexMain FRAGMENT fragmentMain)
+        SOURCE "${PROJECT_SOURCE_DIR}/tests/sdk_consumer/shaders/raster.lusl" VERTEX VertexMain FRAGMENT FragmentMain)
+    include("${PROJECT_SOURCE_DIR}/tests/sdk_consumer/mip_streaming.cmake")
+    ludus_add_mip_streaming_consumer(ludus_rhi_mip_streaming_consumer)
+    ludus_apply_project_defaults(ludus_rhi_mip_streaming_consumer)
     add_executable(ludus_rhi_r11_consumer "${PROJECT_SOURCE_DIR}/tests/sdk_consumer/r11.cpp")
     target_link_libraries(ludus_rhi_r11_consumer PRIVATE Ludus::GraphicsRhi Ludus::FoundationTime)
     ludus_apply_project_defaults(ludus_rhi_r11_consumer)
-    ludus_compile_shader(TARGET ludus_rhi_r11_consumer NAME r11compute SOURCE "${PROJECT_SOURCE_DIR}/tests/sdk_consumer/shaders/r11compute.slang" COMPUTE ComputeMain)
+    ludus_compile_shader(TARGET ludus_rhi_r11_consumer NAME r11compute
+        SOURCE "${PROJECT_SOURCE_DIR}/tests/sdk_consumer/shaders/r11compute.lusl" COMPUTE ComputeMain)
     ludus_compile_shader(TARGET ludus_rhi_r11_consumer NAME r11scalar RASTER
-        SOURCE "${PROJECT_SOURCE_DIR}/tests/sdk_consumer/shaders/r11.slang" VERTEX VertexMain FRAGMENT FragmentMain
-        INCLUDES "${PROJECT_SOURCE_DIR}/modules/graphics/rhi/shaders")
+        SOURCE "${PROJECT_SOURCE_DIR}/tests/sdk_consumer/shaders/r11.lusl" VERTEX VertexMain FRAGMENT FragmentMain)
     # Native binding-array shaders require the explicitly configured translator.
     # Setup/analysis configurations still compile and exercise the dynamic profile;
     # native SDK/GPU CI supplies the pinned translator and qualifies both profiles.
+    # r11arrays, r11buffers, r11storage and r11runtime stay Slang: LUSL binding arrays hold
+    # textures and samplers indexed by constants (config/lusl_migration.json).
     if(LUDUS_SPIRV_CROSS)
         target_compile_definitions(ludus_rhi_r11_consumer PRIVATE LUDUS_R11_NATIVE_ARRAYS=1)
-        foreach(entry IN ITEMS arrays constant)
-            if(entry STREQUAL "arrays")
-                set(fragment_entry FragmentMain)
-            else()
-                set(fragment_entry ConstantArrayMain)
-            endif()
-            ludus_compile_shader(TARGET ludus_rhi_r11_consumer NAME r11${entry} RASTER NATIVE_BINDING_ARRAYS
-                SOURCE "${PROJECT_SOURCE_DIR}/tests/sdk_consumer/shaders/r11.slang" VERTEX VertexMain FRAGMENT ${fragment_entry}
-                INCLUDES "${PROJECT_SOURCE_DIR}/modules/graphics/rhi/shaders" DEFINES LUDUS_R11_ARRAYS=1)
-        endforeach()
+        ludus_compile_shader(TARGET ludus_rhi_r11_consumer NAME r11arrays RASTER NATIVE_BINDING_ARRAYS
+            SOURCE "${PROJECT_SOURCE_DIR}/tests/sdk_consumer/shaders/r11.slang" VERTEX VertexMain FRAGMENT FragmentMain
+            INCLUDES "${PROJECT_SOURCE_DIR}/modules/graphics/rhi/shaders")
+        ludus_compile_shader(TARGET ludus_rhi_r11_consumer NAME r11constant RASTER NATIVE_BINDING_ARRAYS
+            SOURCE "${PROJECT_SOURCE_DIR}/tests/sdk_consumer/shaders/r11_constant.lusl"
+            VERTEX VertexMain FRAGMENT ConstantArrayMain)
     endif()
     if(LUDUS_SPIRV_CROSS AND NOT EMSCRIPTEN)
-        foreach(shape IN ITEMS cube volume)
-            string(TOUPPER "${shape}" shape_define)
+        foreach(shape IN ITEMS wider cube volume)
+            string(TOUPPER "R11_${shape}_IMAGES" shape_define)
+            if(shape STREQUAL "wider")
+                set(shape_define R11_ARRAY_IMAGES)
+            endif()
             ludus_compile_shader(TARGET ludus_rhi_r11_consumer NAME r11${shape} RASTER NATIVE_BINDING_ARRAYS
-            SOURCE "${PROJECT_SOURCE_DIR}/tests/sdk_consumer/shaders/r11.slang" VERTEX VertexMain FRAGMENT ConstantArrayMain
-            DEFINES LUDUS_R11_ARRAYS=1 LUDUS_R11C_WIDER=1 LUDUS_R11C_${shape_define}=1)
+                SOURCE "${PROJECT_SOURCE_DIR}/tests/sdk_consumer/shaders/r11_wider.lusl"
+                VERTEX VertexMain FRAGMENT ConstantArrayMain DEFINES LUDUS_R11_WIDER_IMAGES=${shape_define})
         endforeach()
-        ludus_compile_shader(TARGET ludus_rhi_r11_consumer NAME r11wider RASTER NATIVE_BINDING_ARRAYS
-        SOURCE "${PROJECT_SOURCE_DIR}/tests/sdk_consumer/shaders/r11.slang" VERTEX VertexMain FRAGMENT ConstantArrayMain
-        DEFINES LUDUS_R11_ARRAYS=1 LUDUS_R11C_WIDER=1)
         if(NOT APPLE)
             target_compile_definitions(ludus_rhi_r11_consumer PRIVATE LUDUS_R11C_RUNTIME=1)
             ludus_compile_shader(TARGET ludus_rhi_r11_consumer NAME r11buffers RASTER NATIVE_BINDING_ARRAYS
@@ -395,7 +406,7 @@ if(LUDUS_BUILD_TESTS AND NOT EMSCRIPTEN AND NOT WIN32 AND LUDUS_SLANG_COMPILER A
             SOURCE "${PROJECT_SOURCE_DIR}/tests/sdk_consumer/shaders/r11storage.slang" COMPUTE ComputeMain)
             ludus_compile_shader(TARGET ludus_rhi_r11_consumer NAME r11runtime RASTER NATIVE_BINDING_ARRAYS RUNTIME_BINDING_ARRAYS
             SOURCE "${PROJECT_SOURCE_DIR}/tests/sdk_consumer/shaders/r11.slang" VERTEX VertexMain FRAGMENT ConstantArrayMain
-            DEFINES LUDUS_R11_ARRAYS=1 LUDUS_R11C_RUNTIME=1)
+            DEFINES LUDUS_R11C_RUNTIME=1)
         endif()
     endif()
     add_test(NAME ludus_rhi_r11_consumer COMMAND ludus_rhi_r11_consumer)
@@ -403,27 +414,26 @@ if(LUDUS_BUILD_TESTS AND NOT EMSCRIPTEN AND NOT WIN32 AND LUDUS_SLANG_COMPILER A
     add_executable(ludus_rhi_r10_consumer "${PROJECT_SOURCE_DIR}/tests/sdk_consumer/r10.cpp")
     target_link_libraries(ludus_rhi_r10_consumer PRIVATE Ludus::GraphicsRhi Ludus::FoundationTime)
     ludus_apply_project_defaults(ludus_rhi_r10_consumer)
-    foreach(entry write mask sample depth stencil)
-        ludus_compile_shader(TARGET ludus_rhi_r10_consumer NAME r10${entry} RASTER
-            SOURCE "${PROJECT_SOURCE_DIR}/tests/sdk_consumer/shaders/r10.slang" VERTEX vertexMain FRAGMENT ${entry}Main)
+    # One program per r10.lusl fragment entry point: r10write uses WriteMain, and so on.
+    foreach(entry IN ITEMS Write Mask Sample Depth Stencil Coverage)
+        string(TOLOWER "${entry}" name)
+        ludus_compile_shader(TARGET ludus_rhi_r10_consumer NAME r10${name} RASTER
+            SOURCE "${PROJECT_SOURCE_DIR}/tests/sdk_consumer/shaders/r10.lusl" VERTEX VertexMain FRAGMENT ${entry}Main)
     endforeach()
-    ludus_compile_shader(TARGET ludus_rhi_r10_consumer NAME r10coverage RASTER
-        SOURCE "${PROJECT_SOURCE_DIR}/tests/sdk_consumer/shaders/r10_coverage.slang" VERTEX vertexMain FRAGMENT CoverageMain
-        DEPENDS "${PROJECT_SOURCE_DIR}/tests/sdk_consumer/shaders/r10.slang")
     add_test(NAME ludus_rhi_r10_consumer COMMAND ludus_rhi_r10_consumer)
     set_tests_properties(ludus_rhi_r10_consumer PROPERTIES LABELS "rhi;gpu;build-contract" TIMEOUT 45)
     add_executable(ludus_rhi_r18c_consumer "${PROJECT_SOURCE_DIR}/tests/sdk_consumer/r18c.cpp")
     target_link_libraries(ludus_rhi_r18c_consumer PRIVATE Ludus::GraphicsRhi Ludus::FoundationTime)
     ludus_apply_project_defaults(ludus_rhi_r18c_consumer)
     ludus_compile_shader(TARGET ludus_rhi_r18c_consumer NAME r18c
-        SOURCE "${PROJECT_SOURCE_DIR}/tests/sdk_consumer/shaders/r18c.slang" COMPUTE ComputeMain)
+        SOURCE "${PROJECT_SOURCE_DIR}/tests/sdk_consumer/shaders/r18c.lusl" COMPUTE ComputeMain)
     add_test(NAME ludus_rhi_r18c_consumer COMMAND ludus_rhi_r18c_consumer)
     set_tests_properties(ludus_rhi_r18c_consumer PROPERTIES LABELS "rhi;gpu;build-contract" TIMEOUT 60)
     add_executable(ludus_rhi_r9_consumer "${PROJECT_SOURCE_DIR}/tests/sdk_consumer/r9.cpp")
     target_link_libraries(ludus_rhi_r9_consumer PRIVATE Ludus::GraphicsRhi Ludus::FoundationTime)
     ludus_apply_project_defaults(ludus_rhi_r9_consumer)
     ludus_compile_shader(TARGET ludus_rhi_r9_consumer NAME r9 RASTER
-        SOURCE "${PROJECT_SOURCE_DIR}/tests/sdk_consumer/shaders/r9.slang" VERTEX vertexMain FRAGMENT fragmentMain)
+        SOURCE "${PROJECT_SOURCE_DIR}/tests/sdk_consumer/shaders/r9.lusl" VERTEX VertexMain FRAGMENT FragmentMain)
     add_test(NAME ludus_rhi_r9_consumer COMMAND ludus_rhi_r9_consumer)
     set_tests_properties(ludus_rhi_r9_consumer PROPERTIES LABELS "rhi;gpu;build-contract" TIMEOUT 45)
     add_test(NAME ludus_rhi_r8_consumer COMMAND ludus_rhi_r8_consumer)
@@ -451,10 +461,11 @@ endif()
 # Shared conformance uses the same authored shaders and image oracles on native backends.
 foreach(conformance_target IN ITEMS ludus_rhi_render_tests ludus_rhi_d3d12_tests)
     if(TARGET ${conformance_target} AND LUDUS_SLANG_COMPILER AND (NOT WIN32 OR LUDUS_DXC_DIRECTORY))
-        foreach(conformance_entry IN ITEMS write mask sample)
-            ludus_compile_shader(TARGET ${conformance_target} NAME conformance_${conformance_entry} RASTER
-                SOURCE "${PROJECT_SOURCE_DIR}/tests/sdk_consumer/shaders/r10.slang"
-                VERTEX vertexMain FRAGMENT ${conformance_entry}Main)
+        foreach(conformance_entry IN ITEMS Write Mask Sample)
+            string(TOLOWER "${conformance_entry}" conformance_name)
+            ludus_compile_shader(TARGET ${conformance_target} NAME conformance_${conformance_name} RASTER
+                SOURCE "${PROJECT_SOURCE_DIR}/tests/sdk_consumer/shaders/r10.lusl"
+                VERTEX VertexMain FRAGMENT ${conformance_entry}Main)
         endforeach()
         set(ordered_compute_shader "${CMAKE_CURRENT_SOURCE_DIR}/tests/shaders/ordered_compute.slang")
         ludus_compile_shader(TARGET ${conformance_target} NAME ordered_advance
@@ -464,7 +475,7 @@ foreach(conformance_target IN ITEMS ludus_rhi_render_tests ludus_rhi_d3d12_tests
         ludus_compile_shader(TARGET ${conformance_target} NAME ordered_draw RASTER
             SOURCE "${ordered_compute_shader}" VERTEX DrawVertex FRAGMENT DrawFragment)
         # R12a GPU-written indexed/non-indexed draws with offsets, counts and strides, and indirect dispatch.
-        set(indirect_commands_shader "${CMAKE_CURRENT_SOURCE_DIR}/tests/shaders/indirect_commands.slang")
+        set(indirect_commands_shader "${PROJECT_SOURCE_DIR}/tests/sdk_consumer/shaders/indirect_commands.lusl")
         ludus_compile_shader(TARGET ${conformance_target} NAME indirect_prepare
             SOURCE "${indirect_commands_shader}" COMPUTE PrepareCommands)
         ludus_compile_shader(TARGET ${conformance_target} NAME indirect_mark

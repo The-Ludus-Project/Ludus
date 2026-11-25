@@ -164,8 +164,9 @@ flowchart TB
 The existing classes map onto this as follows. `CodeEditor` stays the view.
 `CodeDocumentController` grows into the editing controller. `CodeAssistance`
 splits into the controller's request scheduler and a language-neutral result
-presenter. `SlangLanguageService` becomes the first profile of the generic
-language client. `CodeEditorPanel` is replaced by the find overlay.
+presenter. `SlangLanguageService` has become `LanguageClient` with a Slang
+`LanguageServerProfile`, the first profile of the generic language client (M4
+batch 1). `CodeEditorPanel` is replaced by the find overlay.
 `CodeNavigation` keeps the history and chooser. Each move is a structural change
 with its own regression coverage, separate from behavior changes
 ([incremental refactoring](../../AGENTS.md)).

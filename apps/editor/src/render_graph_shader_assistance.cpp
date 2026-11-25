@@ -15,6 +15,8 @@
 #include <QJsonDocument>
 #include <QLabel>
 #include <QLineEdit>
+#include <QMap>
+#include <QMessageBox>
 #include <QPushButton>
 #include <QSignalBlocker>
 #include <QUrl>
@@ -39,10 +41,12 @@ RenderGraphShaderAssistance::RenderGraphShaderAssistance(RenderGraphDocument& in
                                                          CodeDocumentController& inoutController,
                                                          const ToolingPaths& tooling,
                                                          QWidget* parentOrNull)
-    : QWidget(parentOrNull), mDocument(inoutDocument), mAssistance(inoutEditor, inoutController, this),
-      mTooling(tooling), mJob(this), mContexts(new QComboBox(this)), mStatus(new QLabel(this))
+    : QWidget(parentOrNull), mDocument(inoutDocument), mController(inoutController),
+      mAssistance(inoutEditor, inoutController, this), mTooling(tooling), mJob(this), mContexts(new QComboBox(this)),
+      mStatus(new QLabel(this))
 {
     setObjectName(QStringLiteral("renderGraphShaderAssistance"));
+    mAssistance.SetWorkspaceEditHost(this);
     QVBoxLayout* layout = new QVBoxLayout(this);
     layout->setContentsMargins(0, 0, 0, 0);
     QHBoxLayout* row = new QHBoxLayout;
@@ -60,7 +64,27 @@ RenderGraphShaderAssistance::RenderGraphShaderAssistance(RenderGraphDocument& in
     retry->setToolTip(
         QStringLiteral("Recreate the current draft's compiler context and restart failed shader assistance."));
     row->addWidget(retry);
+    // Show Log (CE20): the language server's retained diagnostic output.
+    QPushButton* log = new QPushButton(QStringLiteral("Show Log"), this);
+    log->setObjectName(QStringLiteral("shaderAssistanceLog"));
+    log->setToolTip(QStringLiteral("Show the language server's diagnostic output since it last started."));
+    row->addWidget(log);
     layout->addLayout(row);
+    connect(log, &QPushButton::clicked, this, [this]() {
+        const QString text = mAssistance.GetServerLog();
+        QMessageBox box(QMessageBox::Information,
+                        QStringLiteral("Language server log"),
+                        text.isEmpty() == true
+                            ? QStringLiteral("The language server has written no diagnostic output since it started.")
+                            : QStringLiteral("The language server's diagnostic output is in Show Details."),
+                        QMessageBox::Close,
+                        this);
+        if (text.isEmpty() == false)
+        {
+            box.setDetailedText(text);
+        }
+        box.exec();
+    });
     mStatus->setObjectName(QStringLiteral("shaderAssistanceStatus"));
     mStatus->setTextFormat(Qt::PlainText);
     mStatus->setWordWrap(false);
@@ -98,8 +122,9 @@ RenderGraphShaderAssistance::RenderGraphShaderAssistance(RenderGraphDocument& in
     });
 #if defined(Q_OS_WASM)
     retry->setEnabled(false);
+    log->setEnabled(false);
     mContexts->setEnabled(false);
-    setStatus(QStringLiteral("Native Slang completion and signature help are unavailable in the browser editor."));
+    setStatus(QStringLiteral("Shader completion and signature help are available in the native editor."));
 #endif
 }
 
@@ -130,6 +155,52 @@ QByteArray RenderGraphShaderAssistance::getIdentity() const
     return hash.result();
 }
 
+CodeEditStatus RenderGraphShaderAssistance::ApplyWorkspaceEdit(const CodeDocumentIdentity& expected,
+                                                               const QList<CodeWorkspaceFileChange>& changes,
+                                                               int32 caret,
+                                                               const char* name)
+{
+    if (mFile.isEmpty() == true || expected != mController.Capture().Identity)
+    {
+        return CodeEditStatus::Conflict;
+    }
+    // Every file is checked and rebuilt before the package changes anything.
+    QMap<QString, QByteArray> files;
+    for (const CodeWorkspaceFileChange& change : changes)
+    {
+        const QString file = change.File.isEmpty() == true ? mFile : change.File;
+        const QByteArray draft = mDocument.GetDraft(file);
+        QString text;
+        if (mDocument.GetFiles().contains(file) == false || DecodeCodeText(draft, text) == false ||
+            text != change.Text || files.contains(file) == true)
+        {
+            return CodeEditStatus::Conflict;
+        }
+        QByteArray result;
+        if (ApplyCodeWorkspaceEditBytes(draft, change.Edits, result) == false)
+        {
+            return CodeEditStatus::InvalidText;
+        }
+        files.insert(file, result);
+    }
+    const QByteArray current = files.value(mFile, mDocument.GetDraft(mFile));
+    usize caretBytes = 0;
+    if (GetCodeByteOffset(current, caret, caretBytes) == false)
+    {
+        caretBytes = 0;
+    }
+    const CodeEditStatus status = mDocument.ReplaceTexts(expected.Revision,
+                                                         files,
+                                                         name,
+                                                         {mFile, mController.CaptureSelection()},
+                                                         {mFile, {caretBytes, caretBytes}});
+    if (status == CodeEditStatus::Ok)
+    {
+        Q_EMIT WorkspaceEditApplied();
+    }
+    return status;
+}
+
 void RenderGraphShaderAssistance::Update(const QString& project,
                                          uint64 epoch,
                                          const QString& manifest,
@@ -144,6 +215,8 @@ void RenderGraphShaderAssistance::Update(const QString& project,
         mJob.Cancel();
         mAssistance.ClearContext();
         mResult = {};
+        mResourceApiRevision = 0;
+        mRequestedResourceRevision = 0;
         mSelectedContext.clear();
         mContexts->clear();
         mProject = project;
@@ -152,12 +225,31 @@ void RenderGraphShaderAssistance::Update(const QString& project,
         mFile = file;
         mSettings = settings;
 #if defined(Q_OS_WASM)
-        setStatus(QStringLiteral("Native Slang completion and signature help are unavailable in the browser editor."));
+        setStatus(QStringLiteral("Shader completion and signature help are available in the native editor."));
 #else
         setStatus({});
 #endif
     }
-    setVisible(file.endsWith(QStringLiteral(".slang")));
+    setVisible(file.endsWith(QStringLiteral(".slang")) || file.endsWith(QStringLiteral(".lusl")));
+}
+
+void RenderGraphShaderAssistance::RequestResourceApi()
+{
+#if !defined(Q_OS_WASM)
+    const uint64 revision = mDocument.GetRevision();
+    if (mRequestedResourceRevision != revision && mResourceApiRevision != revision &&
+        mDocument.GetDraft(mFile).contains("Resources") == true)
+    {
+        mRequestedResourceRevision = revision;
+        prepare();
+    }
+#endif
+}
+
+QJsonArray RenderGraphShaderAssistance::GetResourceApi() const
+{
+    return mResourceApiRevision == mDocument.GetRevision() ? mResult.value(QStringLiteral("resources")).toArray()
+                                                           : QJsonArray();
 }
 
 void RenderGraphShaderAssistance::prepare()
@@ -268,8 +360,8 @@ void RenderGraphShaderAssistance::accept(const RenderGraphJobResult& result)
     }
     if (result.Request.Revision != mDocument.GetRevision() || result.Request.InputIdentity != getIdentity())
     {
-        setStatus(QStringLiteral(
-            "Shader inputs changed while preparing assistance. Request completion or signature help again."));
+        setStatus(
+            QStringLiteral("Shader inputs changed. Request completion or Retry assistance to refresh Shader API."));
         return;
     }
     if (result.IsSuccessful == false)
@@ -280,6 +372,8 @@ void RenderGraphShaderAssistance::accept(const RenderGraphJobResult& result)
         return;
     }
     mResult = result.Payload;
+    mResourceApiRevision = result.Request.Revision;
+    Q_EMIT ResourceApiChanged();
     mSelectedContext = mResult.value(QStringLiteral("context")).toString();
     const QSignalBlocker blocker(mContexts);
     mContexts->clear();
@@ -353,6 +447,7 @@ void RenderGraphShaderAssistance::publish()
     suffix.replace(QStringLiteral("\r\n"), QStringLiteral("\n"));
     suffix.replace(QLatin1Char('\r'), QLatin1Char('\n'));
     QMap<QString, CodeNavigationSource> navigationSources;
+    QString alternateUri;
     qsizetype totalBytes = 0;
     for (const QJsonValue& value : mResult.value(QStringLiteral("navigation_sources")).toArray())
     {
@@ -391,6 +486,12 @@ void RenderGraphShaderAssistance::publish()
             continue;
         }
         navigationSources.insert(sourceUri.toString(), {isAuthored == true ? authored : QString{}, text});
+        if (isLusl == false && isAuthored == true && authored == mFile)
+        {
+            // The captured authored file is beside the generated unit. Its
+            // language-server overlay uses the same generated surroundings.
+            alternateUri = QUrl::fromLocalFile(capturedPath).toString();
+        }
     }
     mAssistance.SetContext(server,
                            mTemporary.filePath(QStringLiteral("language")),
@@ -398,6 +499,8 @@ void RenderGraphShaderAssistance::publish()
                            prefix,
                            suffix,
                            serverArguments,
-                           navigationSources);
+                           navigationSources,
+                           isLusl == true ? GetLuslServerProfile() : GetSlangServerProfile(),
+                           alternateUri);
 }
 } // namespace ludus::editor

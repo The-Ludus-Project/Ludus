@@ -205,6 +205,11 @@ public:
     {
         mDefinitions = {};
         mInitialRecipe = recipe;
+        if (recipe.isEmpty() == true)
+        {
+            // New terrain records the latest noise layout; an existing recipe keeps the layout it was saved with.
+            SetLatestTerrainNoiseLayout(mInitialRecipe);
+        }
         for (const QJsonValue entry : definition.value(QStringLiteral("properties")).toArray())
         {
             const QJsonObject property = entry.toObject();

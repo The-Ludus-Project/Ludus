@@ -71,8 +71,13 @@ def prepare(upstream, output, extent, resolution):
     (output / 'manifest.json').write_text(json.dumps(report, indent=2)+'\n')
 
 
+# Buffers of each method's kernel, by the slot constants of render_connections.lusl.
+SCENE_BINDINGS = ('INPUTS', 'RESULTS', 'SLOPES', 'SCENE_DATA', 'PARAMETERS')
+GUIDED_BINDINGS = (*SCENE_BINDINGS, 'GUIDE_VERTICES', 'GUIDE_ACCELERATION', 'GUIDE_BINS', 'GUIDE_TRIANGLES')
+
+
 class Renderer:
-    def __init__(self, prepared, output, compiler, minimum_guide_alpha, methods=None):
+    def __init__(self, prepared, output, compiler, luslc, minimum_guide_alpha, methods=None):
         import wgpu
         self.wgpu = wgpu
         self.manifest = json.loads((prepared / 'manifest.json').read_text())
@@ -95,32 +100,32 @@ class Renderer:
                              'max-buffer-size': max(256*1024*1024, largest)})
         self.queue = self.device.queue
         self.buffers = {}
-        entries = []
-        for binding, name in [(0, 'inputs'), (2, 'slopes'), (3, 'scene'), (4, 'vertices'),
-                              (6, 'acceleration'), (7, 'bins'), (8, 'identities')]:
+        buffers = {}
+        for slot, name in [('INPUTS', 'inputs'), ('SLOPES', 'slopes'), ('SCENE_DATA', 'scene'),
+                           ('GUIDE_VERTICES', 'vertices'), ('GUIDE_ACCELERATION', 'acceleration'),
+                           ('GUIDE_BINS', 'bins'), ('GUIDE_TRIANGLES', 'identities')]:
             data = np.load(prepared / f'{name}.npy', mmap_mode='r')
             buffer = self.device.create_buffer_with_data(data=data, usage=wgpu.BufferUsage.STORAGE)
             self.buffers[name] = buffer
-            entries.append(dict(binding=binding, resource=dict(buffer=buffer)))
+            buffers[slot] = buffer
         self.accumulation = self.device.create_buffer(size=self.pixel_count*3*4*4,
             usage=wgpu.BufferUsage.STORAGE | wgpu.BufferUsage.COPY_SRC | wgpu.BufferUsage.COPY_DST)
         self.parameters = self.device.create_buffer(size=layout.RENDER_PARAMETER_BYTES, usage=wgpu.BufferUsage.UNIFORM | wgpu.BufferUsage.COPY_DST)
-        entries.extend([dict(binding=1, resource=dict(buffer=self.accumulation)),
-                        dict(binding=5, resource=dict(buffer=self.parameters))])
+        buffers.update(RESULTS=self.accumulation, PARAMETERS=self.parameters)
         self.pipelines = {}
         self.bindings = {}
         self.shader_hash = {}
         for method, entry in [('connection-mis', 'RenderConnectionsMis'), ('slice', 'RenderConnectionsSlice'), ('sms', 'RenderConnectionsSms'), ('reference', 'RenderConnectionsReference')]:
             if methods is not None and method not in methods:
                 continue
-            shader = compile_entry(output / method, compiler, 'render_connections.slang', entry)
+            shader, slots = compile_entry(output / method, compiler, luslc, 'render_connections.lusl', entry)
             self.shader_hash[method] = hashlib.sha256(shader.encode()).hexdigest()
             module = self.device.create_shader_module(code=shader)
             pipeline = self.device.create_compute_pipeline(layout='auto', compute=dict(module=module, entry_point=entry))
             self.pipelines[method] = pipeline
-            used_bindings = set(range(9)) if method in ('slice', 'reference') else {0, 1, 2, 3, 5}
+            used = GUIDED_BINDINGS if method in ('slice', 'reference') else SCENE_BINDINGS
             self.bindings[method] = self.device.create_bind_group(layout=pipeline.get_bind_group_layout(0),
-                entries=[value for value in entries if value['binding'] in used_bindings])
+                entries=[dict(binding=slots[name], resource=dict(buffer=buffers[name])) for name in used])
         self.query = self.device.create_query_set(type='timestamp', count=2)
         self.timestamps = self.device.create_buffer(size=16, usage=wgpu.BufferUsage.QUERY_RESOLVE | wgpu.BufferUsage.COPY_SRC)
         self.setup_seconds = time.perf_counter()-beginning
@@ -225,7 +230,8 @@ def make_preview(output, rows, references):
 
 def run(arguments):
     arguments.output.mkdir(parents=True, exist_ok=False)
-    renderer = Renderer(arguments.prepared, arguments.output / 'renderer', arguments.compiler, arguments.minimum_guide_alpha,
+    renderer = Renderer(arguments.prepared, arguments.output / 'renderer', arguments.compiler, arguments.luslc,
+                        arguments.minimum_guide_alpha,
                         set(METHODS) if arguments.reference_directory is not None else None)
     rows = []
     references = {}
@@ -330,6 +336,7 @@ def main():
     command = commands.add_parser('run')
     command.add_argument('--prepared', type=Path, required=True)
     command.add_argument('--compiler', type=Path, required=True)
+    command.add_argument('--luslc', type=Path, help='luslc that lowers the shaders (default: ./scripts/bootstrap-luslc)')
     command.add_argument('--output', type=Path, required=True)
     command.add_argument('--seconds', type=float, default=10)
     command.add_argument('--runs', type=int, default=3)
@@ -340,6 +347,7 @@ def main():
     command = commands.add_parser('reference')
     command.add_argument('--prepared', type=Path, required=True)
     command.add_argument('--compiler', type=Path, required=True)
+    command.add_argument('--luslc', type=Path, help='luslc that lowers the shaders (default: ./scripts/bootstrap-luslc)')
     command.add_argument('--output', type=Path, required=True)
     command.add_argument('--samples', type=int, default=65536)
     command.add_argument('--minimum-guide-alpha', type=float, default=.05)
@@ -357,7 +365,7 @@ def main():
         if arguments.samples < 2:
             parser.error('Reference requires at least two samples.')
         arguments.output.mkdir(parents=True, exist_ok=False)
-        renderer = Renderer(arguments.prepared, arguments.output / 'renderer', arguments.compiler,
+        renderer = Renderer(arguments.prepared, arguments.output / 'renderer', arguments.compiler, arguments.luslc,
                             arguments.minimum_guide_alpha, {'reference'})
         records = []
         for alpha in arguments.alpha:

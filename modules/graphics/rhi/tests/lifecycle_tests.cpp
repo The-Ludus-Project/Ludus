@@ -76,27 +76,6 @@ void Shutdown() noexcept
 {
     ++ShutdownCount;
 }
-bool Initialize(const ApplicationInfo&) noexcept
-{
-    return false;
-}
-bool ConnectWindow(const WindowInfo&) noexcept
-{
-    return false;
-}
-bool InitializeRendering() noexcept
-{
-    return false;
-}
-void ShutdownRendering() noexcept {}
-bool BeginFrame() noexcept
-{
-    return false;
-}
-bool EndFrame() noexcept
-{
-    return false;
-}
 // R14b fake surfaces: AdditionalSurfaces sets the host limit; the slot SelectSurface
 // last chose receives SetTarget, Begin and End.
 foundation::usize AdditionalSurfaces = 0;
@@ -221,7 +200,7 @@ TEST_CASE("RHI request failures remain explicit and require shutdown before retr
         CHECK(GetStartup().Error == error);
         CHECK_FALSE(internal::Current(token));
         CHECK(Start({}, {}) == StartStatus::Busy);
-        CHECK_FALSE(BeginFrame());
+        CHECK(BeginFrameStatus() == FrameStatus::NotReady);
         Shutdown();
         backend::ImmediateError = error;
         CHECK(Start({}, {}) == StartStatus::Failed);

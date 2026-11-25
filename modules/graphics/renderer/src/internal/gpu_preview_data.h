@@ -7,6 +7,7 @@
 #include "render_graph_storage.h"
 
 #include <ludus/foundation/base/pointer.hpp>
+#include <ludus/foundation/base/types.h>
 #include <ludus/foundation/containers/static_array.hpp>
 #include <ludus/foundation/math/matrix.hpp>
 #include <ludus/foundation/math/scalar.hpp>
@@ -24,12 +25,15 @@ inline constexpr usize GPU_PREVIEW_RETAINED_SCENE_COUNT = 3;
 inline constexpr usize GPU_PREVIEW_JOB_COUNT =
     content::render_graph_format::MAX_RAY_PASSES * (GPU_PREVIEW_RETAINED_SCENE_COUNT + 1);
 inline constexpr usize GPU_GRAPH_BUFFER_COUNT = 2;
+inline constexpr foundation::usize GRAPH_FAILURE_BYTES = LUDUS_GRAPH_FAILURE_WORDS * sizeof(foundation::uint32);
+static_assert(sizeof(foundation::uint32) == LUDUS_GRAPH_FAILURE_WORD_BYTES);
 /// Every compute binding of one job: the frozen ABI, visibility textures, structured storage, the
 /// ray path capture buffer of a diagnostic capture-variant kernel, the aerial perspective table, the LTC table, the
 /// failure summary and, last, the Atmosphere sky.
 inline constexpr usize GPU_PREVIEW_COMPUTE_BINDING_CAPACITY =
-    LUDUS_GRAPH_VISIBILITY_BINDING_COUNT + content::render_graph_format::MAX_STORAGE_BUFFERS + 1 +
-    LUDUS_GRAPH_LTC_TABLE_BINDING_COUNT + LUDUS_GRAPH_FAILURE_BINDING_COUNT + LUDUS_GRAPH_WORLD_TABLE_BINDING_COUNT;
+    LUDUS_GRAPH_VISIBILITY_BINDING_COUNT + content::render_graph_format::MAX_STORAGE_BUFFERS +
+    content::render_graph_format::MAX_SHADER_TEXTURES + content::render_graph_format::MAX_SAMPLED_TEXTURES +
+    LUDUS_GRAPH_LTC_TABLE_BINDING_COUNT + LUDUS_GRAPH_FAILURE_BINDING_COUNT + LUDUS_GRAPH_WORLD_TABLE_BINDING_COUNT + 2;
 /// The presentation quad's four float2 corners and six uint16 indices.
 inline constexpr usize GPU_PREVIEW_QUAD_BYTES = 44;
 /// Components of GpuPreviewUniform::Tile: origin x, y, then exclusive end x, y.
@@ -144,11 +148,19 @@ struct GpuPreviewSceneRecord final
     /// World-feature table ranges packed with the scene; a reusing job binds the same ranges.
     GpuPreviewWorldTables WorldTables{};
 };
+struct GpuPreviewShaderTexture final
+{
+    rhi::TextureHandle Texture{};
+    rhi::TextureViewHandle View{};
+    bool HasView = false;
+};
 struct GpuPreviewRecord final
 {
     /// Referenced GpuPreviewState::Scenes slot; Data, Texels and NativeGeometry below copy its handles.
     usize Scene = NO_GPU_PREVIEW_SCENE;
     bool HasNativeRayInvocation = false;
+    bool IsRecordReadCompute = false;
+    bool HasExplicitImageLaunch = false;
     uint32 WorkItemCount = 0;
     uint64 Generation = 1;
     bool Used = false;
@@ -172,6 +184,13 @@ struct GpuPreviewRecord final
     rhi::TextureHandle VisibilityTexture{};
     rhi::TextureViewHandle VisibilityView{};
     rhi::TextureViewHandle VisibilityDepthView{};
+    StaticArray<GpuPreviewShaderTexture, content::render_graph_format::MAX_SAMPLED_TEXTURES> SampledTextures{};
+    rhi::TextureHandle StorageTexture{};
+    rhi::TextureViewHandle StorageTextureView{};
+    bool HasStorageTextureView = false;
+    StaticArray<GpuPreviewShaderTexture, content::render_graph_format::MAX_SHADER_TEXTURES> ShaderTextures{};
+    bool HasShaderOutputsOnly = false;
+    uint32 ShaderTextureClearMask = 0;
     rhi::BindingSetHandle ComputeBindings{};
     rhi::BindingSetHandle ImageBindings{};
     foundation::StaticArray<GpuPreviewGraphBuffer, GPU_GRAPH_BUFFER_COUNT> GraphBuffers{};
@@ -218,7 +237,18 @@ struct GpuPreviewState final
     bool IsGraphRayScene = false;
     bool HasNativeRayQueries = true;
     bool HasVisibilityBuffer = false;
+    uint32 SampledTextureCount = 0;
+    rhi::TextureHandle DefaultColorInput{};
+    rhi::TextureViewHandle DefaultColorInputView{};
+    bool HasDefaultColorInputView = false;
+    bool HasStorageTexture = false;
+    rhi::TextureHandle DefaultStorageTexture{};
+    rhi::TextureViewHandle DefaultStorageTextureView{};
+    bool HasDefaultStorageTextureView = false;
+    StaticArray<GpuPreviewShaderTexture, content::render_graph_format::MAX_SHADER_TEXTURES> DefaultShaderTextures{};
+    uint32 ShaderTextureCount = 0;
     bool HasPersistentBuffers = false;
+    usize NativeRecordBytes = 0;
     uint32 Phase = 0;
     bool QuadCreated = false;
     bool IndicesCreated = false;
@@ -227,11 +257,17 @@ struct GpuPreviewState final
     rhi::RasterShaderHandle ComputeShader{};
     rhi::RasterShaderHandle NativeRayShader{};
     rhi::ComputePipelineHandle NativeRayPipeline{};
+    rhi::RasterShaderHandle RecordReadComputeShader{};
+    rhi::ComputePipelineHandle RecordReadComputePipeline{};
+    bool HasRecordReadComputeShader = false;
+    bool HasCreatedRecordReadComputePipeline = false;
     bool HasNativeRayShader = false;
     bool HasCreatedNativeRayPipeline = false;
+    bool HasCreatedRecordReadLayout = false;
     rhi::RasterShaderHandle VertexShader{};
     rhi::RasterShaderHandle FragmentShader{};
     rhi::BindingLayoutHandle ComputeLayout{};
+    rhi::BindingLayoutHandle RecordReadLayout{};
     rhi::BindingLayoutHandle ImageLayout{};
     rhi::ComputePipelineHandle ComputePipeline{};
     rhi::RasterPipelineHandle ImagePipeline{};

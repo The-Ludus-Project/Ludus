@@ -1,3 +1,4 @@
+#include "internal/render_graph_shader_edits.h"
 #include "internal/render_graph_shader_interface.h"
 
 #include <ludus/foundation/base/types.h>
@@ -29,6 +30,104 @@ QByteArray ReadFixture(const QString& profile)
     return file.readAll().replace("@RG2_TEST_PROFILES@", "[\"metal\",\"wgsl\"]");
 }
 } // namespace
+
+TEST_CASE("Shader API describes the connected resource contract for either shader language", "[editor][shader-api]")
+{
+    QString extension = QStringLiteral(".slang");
+    QString returnType = QStringLiteral("float3");
+    QString parameter = QStringLiteral("BuildEdgesResources resources");
+    SECTION("Slang") {}
+    SECTION("LUSL")
+    {
+        extension = QStringLiteral(".lusl");
+        returnType = QStringLiteral("float32x3");
+        parameter.prepend(QStringLiteral("in "));
+    }
+    const QString file = QStringLiteral("edges") + extension;
+    const QJsonObject program{{QStringLiteral("id"), QStringLiteral("Edges")},
+                              {QStringLiteral("stage"), QStringLiteral("compute")},
+                              {QStringLiteral("source"), file},
+                              {QStringLiteral("function"), QStringLiteral("BuildEdges")},
+                              {QStringLiteral("input"), QStringLiteral("RayLaunch")},
+                              {QStringLiteral("output"), QStringLiteral("Radiance")}};
+    const QByteArray manifest = QJsonDocument(QJsonObject{{QStringLiteral("programs"), QJsonArray{program}}}).toJson();
+    const QJsonArray recordArrays{QJsonObject{{QStringLiteral("name"), QStringLiteral("Edges")},
+                                              {QStringLiteral("element_type"), QStringLiteral("Edge")},
+                                              {QStringLiteral("capacity"), 256}}};
+    QJsonObject field{{QStringLiteral("name"), QStringLiteral("Edges")},
+                      {QStringLiteral("type"), QStringLiteral("EdgesData")},
+                      {QStringLiteral("writable"), false},
+                      {QStringLiteral("record_arrays"), recordArrays}};
+    const QJsonArray resources{QJsonObject{{QStringLiteral("program"), QStringLiteral("Edges")},
+                                           {QStringLiteral("fields"), QJsonArray{field}}}};
+    const QString text = DescribeShaderInterface(manifest, file, {}, resources);
+    CHECK(text.contains(returnType + QStringLiteral(" BuildEdges(")) == true);
+    CHECK(text.contains(parameter) == true);
+    CHECK(text.contains(QStringLiteral("resources.Edges · EdgesData · read-only")) == true);
+    CHECK(text.contains(QStringLiteral("Load(index)")) == true);
+    CHECK(text.contains(QStringLiteral("Store(index, value)")) == false);
+    CHECK(text.contains(QStringLiteral("Edge Edges[256] · LoadEdges(recordIndex, elementIndex)")) == true);
+    CHECK(text.contains(QStringLiteral("StoreEdges(")) == false);
+    field.insert(QStringLiteral("writable"), true);
+    const QJsonArray writableResources{QJsonObject{{QStringLiteral("program"), QStringLiteral("Edges")},
+                                                   {QStringLiteral("fields"), QJsonArray{field}}}};
+    CHECK(DescribeShaderInterface(manifest, file, {}, writableResources)
+              .contains(QStringLiteral("StoreEdges(recordIndex, elementIndex, element)")) == true);
+}
+
+TEST_CASE("Buffer access updates existing shader source without replacing its body", "[editor][shader-api]")
+{
+    QString error;
+    const QString function = QStringLiteral("ShaderMain");
+    SECTION("Slang keeps the positional shader body and can add named access")
+    {
+        const QByteArray source =
+            "float3 ShaderMain(SceneContext scene, RayLaunch launch, inout RayQueryContext queries) {\n"
+            "    return float3(GraphBuffer0[0].x);\n}\n";
+        const QByteArray updated = AddShaderBufferParameter(source, function, false, error);
+        CHECK(error.isEmpty() == true);
+        CHECK(updated == QByteArrayLiteral(
+                             "float3 ShaderMain(SceneContext scene, RayLaunch launch, inout RayQueryContext queries, "
+                             "ShaderMainResources resources) {\n    return float3(GraphBuffer0[0].x);\n}\n"));
+        CHECK(AddShaderBufferParameter(updated, function, false, error) == updated);
+    }
+    SECTION("LUSL adds both edits and preserves comments and CRLF")
+    {
+        const QByteArray source = "// #include \"graph_resources.luslh\"\r\n"
+                                  "float32x3 ShaderMain(in SceneContext scene, in RayLaunch launch,\r\n"
+                                  "    inout RayQueryContext inoutQueries /* comment */) { return float32x3(0); }\r\n";
+        const QByteArray updated = AddShaderBufferParameter(source, function, true, error);
+        CHECK(error.isEmpty() == true);
+        CHECK(updated.startsWith("#include \"graph_resources.luslh\"\r\n") == true);
+        CHECK(updated.contains("inoutQueries, in ShaderMainResources resources /* comment */)") == true);
+        CHECK(AddShaderBufferParameter(updated, function, true, error) == updated);
+    }
+    SECTION("An unrecognized signature needs a manual edit")
+    {
+        CHECK(AddShaderBufferParameter(QByteArrayLiteral("float3 ShaderMain(RayLaunch launch) {}"),
+                                       function,
+                                       false,
+                                       error)
+                  .isNull() == true);
+        CHECK(error.contains(QStringLiteral("ShaderMainResources resources")) == true);
+    }
+}
+
+TEST_CASE("Shared shader includes use the source-relative path and preserve header guards", "[editor][shader-api]")
+{
+    const QString target = QStringLiteral("main_shaders/common.luslh");
+    const QString header = QStringLiteral("main_shaders/layout/edge.luslh");
+    const QString relative = GetSharedShaderIncludePath(target, header);
+    CHECK(relative == QStringLiteral("layout/edge.luslh"));
+    CHECK(GetSharedShaderIncludePath(QStringLiteral("main_shaders/producer.slang"), header).isEmpty() == true);
+    CHECK(GetSharedShaderIncludePath(QStringLiteral("main_shaders/producer.slang"), QStringLiteral("edge.slang"))
+              .isEmpty() == true);
+    const QByteArray source = QByteArrayLiteral("\xef\xbb\xbf#pragma once\r\nstruct Table {};\r\n");
+    const QByteArray updated = InsertShaderInclude(source, relative);
+    CHECK(updated ==
+          QByteArrayLiteral("\xef\xbb\xbf#pragma once\r\n#include \"layout/edge.luslh\"\r\nstruct Table {};\r\n"));
+    CHECK(InsertShaderInclude(updated, relative) == updated);
+}
 
 TEST_CASE("Ray callbacks expose their actual fields without scene-only APIs", "[editor][shader-api]")
 {

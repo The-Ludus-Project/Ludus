@@ -1,8 +1,9 @@
 // Code editor status bar (architecture, "Status bar"), task M1.6. The bar shows
 // the cursor position, selection, indentation, encoding, line endings, language
-// and a language-server placeholder, and emits a request for the items M1 can
+// and the language-server state, and emits a request for the items M1 can
 // change. Offscreen only.
 
+#include "internal/code_assistance.h"
 #include "internal/code_document_tab.h"
 #include "internal/code_editor.h"
 #include "internal/code_editor_area.h"
@@ -19,6 +20,7 @@
 #include <QTemporaryDir>
 #include <QTest>
 #include <QTextCursor>
+#include <QUrl>
 
 using namespace ludus::editor;
 
@@ -41,8 +43,6 @@ TEST_CASE("Status bar hides with no active code tab", "[code-editor][status-bar]
     bar.SetActiveTab(nullptr);
     CHECK(bar.isHidden() == true);
     CHECK(bar.GetPositionText().isEmpty() == true);
-    // The tool-state item is a placeholder until M4.
-    CHECK(bar.GetToolStateText().isEmpty() == false);
 }
 
 TEST_CASE("Status bar reflects the active code view", "[code-editor][status-bar]")
@@ -82,6 +82,51 @@ TEST_CASE("Status bar reflects the active code view", "[code-editor][status-bar]
     tab->GetEditor().setTextCursor(cursor);
     QCoreApplication::processEvents();
     CHECK(bar.GetSelectionText() == QStringLiteral("4 selected"));
+}
+
+TEST_CASE("Status bar follows the active tab's language server lifecycle", "[code-editor][status-bar]")
+{
+    QTemporaryDir directory;
+    REQUIRE(directory.isValid() == true);
+    const QString path = writeFile(directory, QStringLiteral("shader.slang"), QByteArray("float a;\n"));
+    CodeEditorArea area;
+    area.GetRegistry().SetProjectEpoch(1);
+    REQUIRE(area.OpenFile(path, false) == true);
+    CodeDocumentTab* tab = area.GetActiveTabOrNull();
+    REQUIRE(tab != nullptr);
+    CodeAssistance assistance(tab->GetEditor(), tab->GetController());
+    const QString unit = QUrl::fromLocalFile(directory.filePath(QStringLiteral("unit.slang"))).toString();
+    QString program = QString::fromUtf8(LUDUS_TEST_PYTHON);
+    const QString crashCounter = directory.filePath(QStringLiteral("starts")) + QStringLiteral(":1");
+    QObject::connect(&assistance, &CodeAssistance::ContextRequested, &assistance, [&]() {
+        assistance.SetContext(
+            program,
+            directory.path(),
+            unit,
+            {},
+            {},
+            {QString::fromUtf8(LUDUS_LANGUAGE_SERVER_FIXTURE), QStringLiteral("--crash-starts"), crashCounter});
+    });
+
+    CodeStatusBar bar;
+    bar.SetActiveTab(tab);
+    CHECK(bar.GetToolStateText() == QStringLiteral("No language server"));
+    assistance.Request(false);
+    CHECK(bar.GetToolStateText() == QStringLiteral("slangd starting"));
+    REQUIRE(QTest::qWaitFor([&bar]() { return bar.GetToolStateText() == QStringLiteral("slangd restarting"); }));
+    REQUIRE(QTest::qWaitFor([&bar]() { return bar.GetToolStateText() == QStringLiteral("slangd ready"); }));
+
+    CodeDocumentTab other(nullptr, QStringLiteral("notes.txt"));
+    bar.SetActiveTab(&other);
+    CHECK(bar.GetToolStateText() == QStringLiteral("No language server"));
+    bar.SetActiveTab(tab);
+    CHECK(bar.GetToolStateText() == QStringLiteral("slangd ready"));
+
+    assistance.ClearContext();
+    CHECK(bar.GetToolStateText() == QStringLiteral("No language server"));
+    program = directory.filePath(QStringLiteral("missing-slangd"));
+    assistance.Request(false);
+    REQUIRE(QTest::qWaitFor([&bar]() { return bar.GetToolStateText() == QStringLiteral("slangd failed"); }));
 }
 
 TEST_CASE("Status bar language change applies to the view", "[code-editor][status-bar]")

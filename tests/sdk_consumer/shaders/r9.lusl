@@ -1,0 +1,104 @@
+// R9 texture fixture: one fragment program samples, at an explicit LOD, the 2D, array, cube, 3D,
+// HDR or block-compressed image that Settings.Selection.x names. Host code binds the slots and
+// vertex input locations in r9_slots.h.
+struct Settings
+{
+    // x: the selection code below; y: the sampled LOD.
+    float32x4 Selection;
+    // xyz: the cube face direction or the array layer / volume depth in z.
+    float32x4 Coordinate;
+};
+ConstantBuffer<Settings> settings;
+Texture2D<float32x4> image;
+SamplerState imageSampler;
+Texture2DArray<float32x4> layers;
+TextureCube<float32x4> faces;
+Texture3D<float32x4> volume;
+Texture2D<float32x4> hdr;
+Texture2D<float32x4> blocks;
+
+// Selection codes, compared as Selection.x < code + 0.5 in this order; larger codes sample blocks.
+static const uint32 IMAGE_SELECTION = 0;
+static const uint32 LAYERS_SELECTION = 1;
+static const uint32 FACES_SELECTION = 2;
+static const uint32 VOLUME_SELECTION = 3;
+static const uint32 HDR_SELECTION = 4;
+
+struct R9Input
+{
+    float32x2 Position;
+    float32x2 Uv;
+};
+
+struct R9Varying
+{
+    float32x4 Position : ClipPosition;
+    float32x2 Uv;
+};
+
+bool IsSelected(in float32 selection, in uint32 code)
+{
+    return selection < float32(code) + 0.5;
+}
+
+// The direction of the cube face that Settings.Coordinate's sign names, through the face pixel p.
+float32x3 GetFaceDirection(in float32x3 face, in float32x2 p)
+{
+    if (face.x > 0.5)
+    {
+        return float32x3(1, -p.y, -p.x);
+    }
+    if (face.x < -0.5)
+    {
+        return float32x3(-1, -p.y, p.x);
+    }
+    if (face.y > 0.5)
+    {
+        return float32x3(p.x, 1, p.y);
+    }
+    if (face.y < -0.5)
+    {
+        return float32x3(p.x, -1, -p.y);
+    }
+    if (face.z > 0.5)
+    {
+        return float32x3(p.x, -p.y, 1);
+    }
+    return float32x3(-p.x, -p.y, -1);
+}
+
+[stage(vertex)]
+R9Varying VertexMain(in R9Input input)
+{
+    R9Varying output = { .Position = float32x4(input.Position, 0, 1), .Uv = input.Uv };
+    return output;
+}
+
+[stage(fragment)]
+float32x4 FragmentMain(in R9Varying input)
+{
+    float32 selection = settings.Selection.x;
+    float32 lod = settings.Selection.y;
+    if (IsSelected(selection, IMAGE_SELECTION) == true)
+    {
+        return image.SampleLevel(imageSampler, input.Uv, lod);
+    }
+    if (IsSelected(selection, LAYERS_SELECTION) == true)
+    {
+        return layers.SampleLevel(imageSampler, float32x3(input.Uv, settings.Coordinate.z), lod);
+    }
+    if (IsSelected(selection, FACES_SELECTION) == true)
+    {
+        float32x2 p = input.Uv * 2 - 1;
+        return faces.SampleLevel(imageSampler, GetFaceDirection(settings.Coordinate.xyz, p), lod);
+    }
+    if (IsSelected(selection, VOLUME_SELECTION) == true)
+    {
+        return volume.SampleLevel(imageSampler, float32x3(input.Uv, settings.Coordinate.z), lod);
+    }
+    if (IsSelected(selection, HDR_SELECTION) == true)
+    {
+        return hdr.SampleLevel(imageSampler, input.Uv, lod);
+    }
+    return blocks.SampleLevel(imageSampler, input.Uv, lod);
+}

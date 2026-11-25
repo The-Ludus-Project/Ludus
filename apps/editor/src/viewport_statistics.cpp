@@ -4,6 +4,7 @@
 #include <ludus/foundation/math/scalar.hpp>
 #include <ludus/foundation/time/time.hpp>
 
+#include <QSettings>
 #include <QStringList>
 
 namespace ludus::editor
@@ -346,20 +347,24 @@ const RollingAverage& GraphViewportStatistics::GetReadbackMilliseconds() const n
 {
     return mReadbackMilliseconds;
 }
-QString FormatGraphViewportStatistics(const GraphViewportStatistics& statistics,
-                                      const ViewportStatistics& deviceStatistics,
-                                      uint64 nowNanoseconds)
+namespace
+{
+using TimingFormatter = QString (*)(const RollingAverage&);
+QString BuildGraphViewportStatistics(const GraphViewportStatistics& statistics,
+                                     const ViewportStatistics& deviceStatistics,
+                                     uint64 nowNanoseconds,
+                                     TimingFormatter formatTiming)
 {
     const QString gpu = deviceStatistics.GpuState == ViewportGpuTimeState::Unavailable
                             ? QStringLiteral("n/a")
-                            : FormatTimingSummary(deviceStatistics.GpuMilliseconds);
+                            : formatTiming(deviceStatistics.GpuMilliseconds);
     // An on-demand viewport renders only when something changes, so a rate of zero means idle, not broken.
     const float64 framesPerSecond = statistics.GetFramesPerSecond(nowNanoseconds);
     QStringList rows{
         FormatRow(QStringLiteral("Updates"),
                   framesPerSecond > 0 ? QStringLiteral("%1 fps").arg(framesPerSecond, 0, 'f', FPS_DECIMALS)
                                       : QStringLiteral("idle, renders on change")),
-        FormatRow(VIEWPORT_EDITOR_CPU_LABEL, FormatTimingSummary(statistics.GetCpuMilliseconds())),
+        FormatRow(VIEWPORT_EDITOR_CPU_LABEL, formatTiming(statistics.GetCpuMilliseconds())),
         FormatRow(QStringLiteral("GPU"), gpu),
     };
     // Measurements that have not happened (no readback, inspection paused or idle) take no row.
@@ -383,6 +388,25 @@ QString FormatGraphViewportStatistics(const GraphViewportStatistics& statistics,
         rows.append(passes);
     }
     return rows.join(QLatin1Char('\n'));
+}
+} // namespace
+QString FormatGraphViewportStatistics(const GraphViewportStatistics& statistics,
+                                      const ViewportStatistics& deviceStatistics,
+                                      uint64 nowNanoseconds)
+{
+    return BuildGraphViewportStatistics(statistics, deviceStatistics, nowNanoseconds, FormatTimingSummary);
+}
+QString FormatCompactGraphViewportStatistics(const GraphViewportStatistics& statistics,
+                                             const ViewportStatistics& deviceStatistics,
+                                             uint64 nowNanoseconds)
+{
+    return BuildGraphViewportStatistics(statistics, deviceStatistics, nowNanoseconds, FormatMilliseconds);
+}
+QString FormatGraphViewportStatisticsSummary(const GraphViewportStatistics& statistics, uint64 nowNanoseconds)
+{
+    const float64 framesPerSecond = statistics.GetFramesPerSecond(nowNanoseconds);
+    return framesPerSecond > 0 ? QStringLiteral("Stats · %1 fps").arg(framesPerSecond, 0, 'f', FPS_DECIMALS)
+                               : QStringLiteral("Stats · idle");
 }
 QString FormatViewportPassLines(const ViewportStatistics& statistics)
 {
@@ -446,13 +470,15 @@ ViewportPassBars MakeViewportPassBars(const ViewportStatistics& statistics)
     bars.IsSlowestWarning = count > 1 && total > 0 && slowest * PERCENT > total * SLOWEST_PASS_WARNING_PERCENT;
     return bars;
 }
-QString FormatViewportStatistics(const ViewportStatistics& statistics)
+namespace
+{
+QString BuildViewportStatistics(const ViewportStatistics& statistics, TimingFormatter formatTiming)
 {
     const QString gpu = statistics.GpuState == ViewportGpuTimeState::Unavailable
                             ? QStringLiteral("n/a")
-                            : FormatTimingSummary(statistics.GpuMilliseconds);
+                            : formatTiming(statistics.GpuMilliseconds);
     const QString text = FormatRow(QStringLiteral("GPU"), gpu) + QLatin1Char('\n') +
-                         FormatRow(VIEWPORT_EDITOR_CPU_LABEL, FormatTimingSummary(statistics.CpuMilliseconds)) +
+                         FormatRow(VIEWPORT_EDITOR_CPU_LABEL, formatTiming(statistics.CpuMilliseconds)) +
                          QLatin1Char('\n') +
                          FormatRow(QStringLiteral("Image"),
                                    QStringLiteral("%1×%2 · %3 %4")
@@ -465,5 +491,26 @@ QString FormatViewportStatistics(const ViewportStatistics& statistics)
                             ? QString()
                             : FormatRow(QStringLiteral("API"), statistics.Api) + QLatin1Char('\n');
     return api + (passes.isEmpty() == true ? text : text + QLatin1Char('\n') + passes);
+}
+} // namespace
+QString FormatViewportStatistics(const ViewportStatistics& statistics)
+{
+    return BuildViewportStatistics(statistics, FormatTimingSummary);
+}
+QString FormatCompactViewportStatistics(const ViewportStatistics& statistics)
+{
+    return BuildViewportStatistics(statistics, FormatMilliseconds);
+}
+QString FormatViewportStatisticsSummary(const ViewportStatistics& statistics)
+{
+    return QStringLiteral("Stats · CPU ") + FormatMilliseconds(statistics.CpuMilliseconds);
+}
+bool IsViewportStatisticsOverlayCollapsed()
+{
+    return QSettings().value(VIEWPORT_STATISTICS_COLLAPSED_SETTINGS_KEY, false).toBool();
+}
+void SetViewportStatisticsOverlayCollapsed(bool isCollapsed)
+{
+    QSettings().setValue(VIEWPORT_STATISTICS_COLLAPSED_SETTINGS_KEY, isCollapsed);
 }
 } // namespace ludus::editor

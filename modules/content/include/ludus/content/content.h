@@ -1,11 +1,17 @@
 #pragma once
 
 #include <ludus/foundation/base/core.h>
+#include <ludus/foundation/base/pointer.hpp>
 
 #include <ludus/content/limits.h>
 
 #include <span>
 #include <string_view>
+
+namespace ludus::foundation
+{
+class AllocationDomain;
+}
 
 namespace ludus::content
 {
@@ -198,23 +204,54 @@ struct Resource final
 class Catalog final
 {
 public:
-    Catalog() noexcept = default;
+    /// Construct an empty catalog using the system allocation domain.
+    Catalog() noexcept;
+    /// Construct an empty catalog using a caller-supplied allocation domain.
+    /// @param domain Backs parser workspace and entry storage. The domain and its callback context
+    /// must outlive this catalog and any catalog to which its state is moved.
+    explicit Catalog(const AllocationDomain& domain) noexcept;
+    /// Release the entries through their original allocation domain.
     ~Catalog() noexcept;
+    /// Transfer the entries and allocation domain. The source becomes empty and can reuse its domain.
     Catalog(Catalog&& other) noexcept;
+    /// Release the current entries and transfer the source's entries and domain. Self-move preserves the catalog.
     Catalog& operator=(Catalog&& other) noexcept;
     Catalog(const Catalog&) = delete;
     Catalog& operator=(const Catalog&) = delete;
-    [[nodiscard]] Status Read(std::string_view json, Diagnostic& diagnostic) noexcept;
-    [[nodiscard]] Status Write(Bytes& output) const noexcept;
+    /// Decode a strict catalog and replace the entries only after full validation.
+    /// @param json Borrowed UTF-8 JSON bytes, needed only for this call.
+    /// @param outDiagnostic Cleared on success. Domain failures carry a NUL-terminated schema path
+    /// (for example `resources[3].path`) and `parsing::UNKNOWN_BYTE_OFFSET`. Syntax errors retain
+    /// their parser byte offsets when available.
+    /// @return Ok, Invalid for malformed input, Limit for an admission failure, or OutOfMemory.
+    /// Existing entries and borrows stay valid on failure. Success replaces all entries and
+    /// invalidates their borrows. Synchronize access to a catalog externally.
+    [[nodiscard]] Status Read(std::string_view json, Diagnostic& outDiagnostic) noexcept;
+    /// Write canonical JSON in resource ID order. Failure preserves the output bytes.
+    [[nodiscard]] Status Write(Bytes& outBytes) const noexcept;
+    /// Insert an owned copy in resource ID order. An identical existing entry succeeds without mutation.
+    /// A conflicting ID, invalid entry, resource count limit, or allocation failure preserves the catalog.
     [[nodiscard]] Status Put(const Resource& resource) noexcept;
+    /// Borrow the entry with the exact ID, or return nullptr if it is absent.
+    /// The borrow has the same lifetime as the view from Entries().
     [[nodiscard]] const Resource* Find(std::string_view id) const noexcept;
-    [[nodiscard]] std::span<const Resource> Entries() const noexcept
-    {
-        return {mEntries, mCount};
-    }
+    /// Borrow the entries in resource ID order until successful replacement, insertion, or destruction.
+    [[nodiscard]] std::span<const Resource> Entries() const noexcept;
 
 private:
-    Resource* mEntries = nullptr;
-    usize mCount = 0;
+    /// @cond INTERNAL
+    struct EntryDeleter final
+    {
+        const AllocationDomain* DomainOrNull;
+        usize Count;
+
+        void operator()(Resource* entries) const noexcept;
+    };
+    using EntryOwner = UniquePtr<Resource, EntryDeleter>;
+    [[nodiscard]] EntryOwner allocateEntries(usize count) const noexcept;
+
+    const AllocationDomain* mDomain;
+    EntryOwner mEntries;
+    /// @endcond
 };
 } // namespace ludus::content

@@ -21,7 +21,7 @@ inline bool TextureBinding(RasterBindingKind kind) noexcept
 // Sampled kinds above; write-only storage views are a separate R12b kind.
 inline bool StorageTextureBinding(RasterBindingKind kind) noexcept
 {
-    return kind == RasterBindingKind::StorageTexture2D;
+    return kind == RasterBindingKind::StorageTexture2D || kind == RasterBindingKind::StorageTexture2DReadWrite;
 }
 // Any binding whose snapshot slot names a texture view, sampled or storage.
 inline bool ViewBinding(RasterBindingKind kind) noexcept

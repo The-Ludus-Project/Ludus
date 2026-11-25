@@ -1,0 +1,234 @@
+// Thanks to Cornell University Program of Computer Graphics, "The Cornell Box":
+// https://bowers.cornell.edu/cornell-box. Adopt the open room, colored walls,
+// ceiling emitter and two blocks; use original normalized geometry and RGB colors,
+// not measured Cornell data or their radiosity method. This is direct lighting
+// only, with a small artistic ambient term. See docs/examples/cornell-box.md.
+struct DisplayUniforms
+{
+    float32x4 Viewport; // width, height, manual sRGB encoding (0/1), flat materials (0/1)
+    float32x4 Eye;
+    float32x4 Right; // world ray displacement at NDC X = 1
+    float32x4 Up; // world ray displacement at NDC Y = 1
+    float32x4 Forward;
+};
+ConstantBuffer<DisplayUniforms> display;
+
+// Distances and tolerances in room units (the room spans 2 units).
+static const float32 NO_HIT = 10000.0;
+static const float32 MISS_DISTANCE = 9999.0;
+static const float32 PARALLEL_TOLERANCE = 0.00001;
+static const float32 MINIMUM_DISTANCE = 0.0001;
+static const float32 SHADOW_OFFSET = 0.0005;
+static const float32 SHADOW_TOLERANCE = 0.001;
+// The ceiling emitter: a rectangle centered on the ceiling, 0.64 by 0.56 units.
+static const float32 EMITTER_HALF_WIDTH = 0.32;
+static const float32 EMITTER_HALF_DEPTH = 0.28;
+static const float32 EMITTER_WIDTH = 0.64;
+static const float32 EMITTER_DEPTH = 0.56;
+static const float32 EMITTER_HEIGHT = 1.999;
+static const float32 CEILING_TEST_HEIGHT = 1.9;
+static const int32 LIGHT_SAMPLES_PER_AXIS = 4;
+// The tutorial's six-digit pi, kept from the Slang original so the port renders the same pixels.
+static const float32 SAMPLE_PI = 3.141593;
+
+struct Hit
+{
+    float32 Distance;
+    float32x3 Normal;
+    float32x3 Albedo;
+    bool IsEmitter;
+};
+
+// Analytic rectangle intersection. axis is its normal axis, u/v span the plane.
+void IntersectRectangle(in float32x3 origin, in float32x3 direction, in int32 axis, in float32 plane,
+                        in float32x2 low, in float32x2 high, in float32x3 normal, in float32x3 albedo,
+                        inout Hit inoutHit)
+{
+    if (abs(direction[axis]) < PARALLEL_TOLERANCE)
+    {
+        return;
+    }
+    float32 t = (plane - origin[axis]) / direction[axis];
+    if (t <= MINIMUM_DISTANCE || t >= inoutHit.Distance)
+    {
+        return;
+    }
+    float32x3 p = origin + direction * t;
+    float32x2 uv = axis == 0 ? p.yz : axis == 1 ? p.xz : p.xy;
+    if (any(uv < low) == true || any(uv > high) == true)
+    {
+        return;
+    }
+    inoutHit.Distance = t;
+    inoutHit.Normal = normal;
+    inoutHit.Albedo = albedo;
+    inoutHit.IsEmitter = axis == 1 && plane > CEILING_TEST_HEIGHT && abs(p.x) < EMITTER_HALF_WIDTH &&
+        abs(p.z) < EMITTER_HALF_DEPTH;
+}
+
+float32x3 RotateY(in float32x3 p, in float32x2 rotation)
+{
+    return float32x3(rotation.x * p.x + rotation.y * p.z, p.y, -rotation.y * p.x + rotation.x * p.z);
+}
+
+// Slabs in block-local space. Parallel rays are tested before dividing, avoiding
+// infinities/NaNs on face-aligned rays. Both entry and exit normals are retained.
+void IntersectBlock(in float32x3 origin, in float32x3 direction, in float32x3 center, in float32x3 extent,
+                    in float32x2 rotation, inout Hit inoutHit)
+{
+    float32x3 o = RotateY(origin - center, float32x2(rotation.x, -rotation.y));
+    float32x3 d = RotateY(direction, float32x2(rotation.x, -rotation.y));
+    float32 nearT = -NO_HIT;
+    float32 farT = NO_HIT;
+    float32x3 nearNormal = 0;
+    float32x3 farNormal = 0;
+    for (int32 axis = 0; axis < 3; ++axis)
+    {
+        if (abs(d[axis]) < PARALLEL_TOLERANCE)
+        {
+            if (abs(o[axis]) > extent[axis])
+            {
+                return;
+            }
+        }
+        else
+        {
+            float32 a = (-extent[axis] - o[axis]) / d[axis];
+            float32 b = (extent[axis] - o[axis]) / d[axis];
+            float32x3 n = 0;
+            n[axis] = d[axis] > 0.0 ? -1.0 : 1.0;
+            if (min(a, b) > nearT)
+            {
+                nearT = min(a, b);
+                nearNormal = n;
+            }
+            if (max(a, b) < farT)
+            {
+                farT = max(a, b);
+                farNormal = -n;
+            }
+            if (nearT > farT)
+            {
+                return;
+            }
+        }
+    }
+    float32 t = nearT > MINIMUM_DISTANCE ? nearT : farT;
+    if (t <= MINIMUM_DISTANCE || t >= inoutHit.Distance)
+    {
+        return;
+    }
+    inoutHit.Distance = t;
+    inoutHit.Normal = RotateY(nearT > MINIMUM_DISTANCE ? nearNormal : farNormal, rotation);
+    inoutHit.Albedo = float32x3(0.73, 0.71, 0.67);
+    inoutHit.IsEmitter = false;
+}
+
+void IntersectBlocks(in float32x3 origin, in float32x3 direction, inout Hit inoutHit)
+{
+    IntersectBlock(origin, direction, float32x3(-0.40, 0.36, 0.35), float32x3(0.30, 0.36, 0.30),
+                   float32x2(0.939693, 0.342020), inout inoutHit);
+    IntersectBlock(origin, direction, float32x3(0.38, 0.65, -0.32), float32x3(0.30, 0.65, 0.30),
+                   float32x2(0.965926, -0.258819), inout inoutHit);
+}
+
+Hit IntersectScene(in float32x3 origin, in float32x3 direction)
+{
+    Hit hit = { .Distance = NO_HIT, .IsEmitter = false };
+    float32x3 white = float32x3(0.73, 0.71, 0.67);
+    IntersectRectangle(origin, direction, 0, -1.0, float32x2(0.0, -1.0), float32x2(2.0, 1.0),
+                       float32x3(1.0, 0.0, 0.0), float32x3(0.63, 0.065, 0.05), inout hit);
+    IntersectRectangle(origin, direction, 0, 1.0, float32x2(0.0, -1.0), float32x2(2.0, 1.0),
+                       float32x3(-1.0, 0.0, 0.0), float32x3(0.12, 0.45, 0.09), inout hit);
+    IntersectRectangle(origin, direction, 1, 0.0, float32x2(-1.0), float32x2(1.0), float32x3(0.0, 1.0, 0.0),
+                       white, inout hit);
+    IntersectRectangle(origin, direction, 1, 2.0, float32x2(-1.0), float32x2(1.0), float32x3(0.0, -1.0, 0.0),
+                       white, inout hit);
+    IntersectRectangle(origin, direction, 2, -1.0, float32x2(-1.0, 0.0), float32x2(1.0, 2.0),
+                       float32x3(0.0, 0.0, 1.0), white, inout hit);
+    IntersectBlocks(origin, direction, inout hit);
+    return hit;
+}
+
+float32x3 Shade(in float32x3 origin, in float32x3 direction)
+{
+    Hit hit = IntersectScene(origin, direction);
+    if (hit.Distance > MISS_DISTANCE)
+    {
+        return float32x3(0.012, 0.018, 0.027);
+    }
+    if (hit.IsEmitter == true)
+    {
+        return float32x3(4.0, 3.8, 3.4);
+    }
+    if (display.Viewport.w > 0.5)
+    {
+        return hit.Albedo;
+    }
+    float32x3 point = origin + hit.Distance * direction + hit.Normal * SHADOW_OFFSET;
+    float32 illumination = 0.0;
+    // Fixed 4x4 midpoint quadrature of the ceiling rectangle: soft shadows without
+    // random sampling, history textures, additional passes or indirect bounces.
+    for (int32 y = 0; y < LIGHT_SAMPLES_PER_AXIS; ++y)
+    {
+        for (int32 x = 0; x < LIGHT_SAMPLES_PER_AXIS; ++x)
+        {
+            float32x3 light =
+                float32x3(((float32(x) + 0.5) / float32(LIGHT_SAMPLES_PER_AXIS) - 0.5) * EMITTER_WIDTH,
+                          EMITTER_HEIGHT,
+                          ((float32(y) + 0.5) / float32(LIGHT_SAMPLES_PER_AXIS) - 0.5) * EMITTER_DEPTH);
+            float32x3 delta = light - point;
+            float32 distanceSquared = dot(delta, delta);
+            float32 distance = sqrt(distanceSquared);
+            float32x3 toLight = delta / distance;
+            Hit shadow = { .Distance = distance - SHADOW_TOLERANCE, .IsEmitter = false };
+            IntersectBlocks(point, toLight, inout shadow);
+            if (shadow.Distance >= distance - SHADOW_TOLERANCE)
+            {
+                illumination += max(dot(hit.Normal, toLight), 0.0) * max(toLight.y, 0.0) / distanceSquared;
+            }
+        }
+    }
+    return hit.Albedo * (0.035 + illumination * (EMITTER_WIDTH * EMITTER_DEPTH * 12.0 / (16.0 * SAMPLE_PI)));
+}
+
+float32x3 LinearToSrgb(in float32x3 color)
+{
+    return float32x3(color.x <= 0.0031308 ? 12.92 * color.x : 1.055 * pow(color.x, 1.0 / 2.4) - 0.055,
+                     color.y <= 0.0031308 ? 12.92 * color.y : 1.055 * pow(color.y, 1.0 / 2.4) - 0.055,
+                     color.z <= 0.0031308 ? 12.92 * color.z : 1.055 * pow(color.z, 1.0 / 2.4) - 0.055);
+}
+
+struct FullscreenVarying
+{
+    float32x4 Position : ClipPosition;
+};
+
+// One triangle covering the target: vertex indices 0, 1, 2 give clip corners (-1, -1), (3, -1), (-1, 3).
+[stage(vertex)]
+FullscreenVarying VertexMain(in uint32 vertexIndex : VertexIndex)
+{
+    float32x2 p = float32x2(float32((vertexIndex << 1) & 2), float32(vertexIndex & 2));
+    FullscreenVarying output = { .Position = float32x4(p * 2.0 - 1.0, 0.0, 1.0) };
+    return output;
+}
+
+[stage(fragment)]
+float32x4 FragmentMain(in FullscreenVarying input)
+{
+    // A fragment reads the ClipPosition field as its pixel position, top-left origin.
+    float32x2 positionPixel = input.Position.xy;
+#if LUDUS_GLSL_ES
+    positionPixel.y = display.Viewport.y - positionPixel.y;
+#endif
+    float32x2 screen = (positionPixel * 2.0 - display.Viewport.xy) / display.Viewport.xy;
+    screen.y = -screen.y;
+    float32x3 direction = normalize(display.Forward.xyz + screen.x * display.Right.xyz + screen.y * display.Up.xyz);
+    float32x3 color = Shade(display.Eye.xyz, direction);
+    color = color / (1.0 + color); // simple exposure/tone mapping
+    if (display.Viewport.z > 0.5)
+    {
+        color = LinearToSrgb(color);
+    }
+    return float32x4(color, 1.0);
+}

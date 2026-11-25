@@ -297,4 +297,74 @@ TryGetScatterCells(const ScatterRecipe& recipe, usize layerIndex, ScatterCellRan
                                                ScatterCellRange cells,
                                                foundation::BorrowedView<ScatterPlacement> storage,
                                                usize& outCount) noexcept;
+
+/// @brief The first stage of the scatter rule that decided a candidate.
+enum class ScatterDecisionStage : uint8
+{
+    /// The candidate was accepted.
+    Accepted,
+    /// The identity does not name a candidate of the recipe: its candidate index or cell lies outside the layer.
+    Recipe,
+    /// The candidate's position is outside the region or inside a keep-out.
+    Eligibility,
+    /// An eligible candidate of higher priority conflicts with it.
+    Thinning,
+};
+
+/// @brief The input or rule that decided a candidate.
+enum class ScatterDecisionRule : uint8
+{
+    /// The candidate was accepted.
+    Accepted,
+    /// The candidate index is not below the layer's candidate count.
+    CandidateIndex,
+    /// The cell lies outside the layer's region cells.
+    CellOutsideRegion,
+    /// The position lies outside the region.
+    OutsideRegion,
+    /// The position lies inside a keep-out; ScatterDecision::KeepOut names the first one.
+    KeepOut,
+    /// A higher-priority eligible candidate conflicts; ScatterDecision::Outranking names the first one found.
+    Conflict,
+    /// The identity's room has no scope in the compared input. Reported by generation comparisons, not the kernel.
+    ScopeRemoved,
+    /// The identity's layer is not in its scope's recipe. Reported by generation comparisons, not the kernel.
+    LayerRemoved,
+};
+
+/// @brief Why a candidate was or was not accepted.
+struct ScatterDecision final
+{
+    /// The first responsible stage.
+    ScatterDecisionStage Stage = ScatterDecisionStage::Accepted;
+    /// The input or rule within that stage.
+    ScatterDecisionRule Rule = ScatterDecisionRule::Accepted;
+    /// Index into the recipe's keep-outs for ScatterDecisionRule::KeepOut; otherwise zero.
+    usize KeepOut = 0;
+    /// The conflicting candidate for ScatterDecisionRule::Conflict, the lowest in canonical order; otherwise zero.
+    ScatterIdentity Outranking;
+
+    /// Whether the candidate was accepted.
+    [[nodiscard]] constexpr bool IsAccepted() const noexcept
+    {
+        return Stage == ScatterDecisionStage::Accepted;
+    }
+};
+
+/// @brief Explain one candidate's outcome under a recipe, by the same rule TryGenerateScatter applies.
+///
+/// A candidate the explanation accepts is exactly one TryGenerateScatter writes for its cell. Pure and
+/// allocation-free. The identity's room and layer must match the recipe and layer; its cell may lie anywhere.
+/// @param recipe A recipe that passes ValidateScatterRecipe.
+/// @param keys Keys from TryMakeScatterKeys.
+/// @param layerIndex Index into recipe.Layers.
+/// @param identity The candidate to explain.
+/// @param outDecision Written on success; unchanged on failure.
+/// @return Success; InvalidRecipe when the recipe is invalid, layerIndex is out of bounds, or the identity names
+///         another room or layer; or SamplingExhausted.
+[[nodiscard]] ScatterStatus TryExplainScatterCandidate(const ScatterRecipe& recipe,
+                                                       const ScatterKeys& keys,
+                                                       usize layerIndex,
+                                                       ScatterIdentity identity,
+                                                       ScatterDecision& outDecision) noexcept;
 } // namespace ludus::content::procedural

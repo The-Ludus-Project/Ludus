@@ -766,6 +766,49 @@ units, about 9 ms each. On the Linux libstdc++ budget job, `<span>` averages
 57 ms per unit because it includes `<array>`. The first batch **Build-time
 budget** after the merge is the measurement of record for the estimate above.
 
+
+## Span-free byte-order and material-program headers
+
+[Issue #1343](https://github.com/The-Ludus-Project/Ludus/issues/1343) moves
+`BorrowedView` to FoundationBase and removes `<span>` from the byte-order and
+material-program headers. Compiler dependency output confirms that
+`scene_format_tests.cpp` drops `<span>`. FoundationBase's
+`diagnostic_output.cpp` still includes it and serves as a control.
+
+The clean-compile comparison used the same sources from baseline `9c4b939fc`
+with each revision's headers. The compiler was Clang 23.1.3 with libc++ and
+macOS Debug flags, with the compiler cache disabled. These are the minima of
+three serial before/after pairs, with build order alternated. Times are Clang
+`-ftime-trace` **Total Frontend**, in milliseconds.
+
+| Translation unit | Before | After | Before range | After range |
+| --- | ---: | ---: | ---: | ---: |
+| `scene_format_tests.cpp` | 8,368 | 9,234 | 8,368–14,730 | 9,234–20,939 |
+| `diagnostic_output.cpp` (control) | 1,223 | 835 | 1,223–2,659 | 835–1,668 |
+
+The warm edit-to-test check used two equivalent, already-built Ninja trees
+with the same Debug flags, Catch2 and FoundationBase support libraries. It
+appended the same comment to the material-program test caller on each side.
+`ninja -v scene_format_tests` reran only the Clang compile of
+`scene_format_tests.cpp` and the link of `scene_format_tests`. Each build was
+followed by `./scene_format_tests '[scene_format][materials]'`. All runs passed.
+
+| Warm measurement, three interleaved pairs | Before | After |
+| --- | ---: | ---: |
+| Edit-triggered build through test result (seconds) | 5.472, 4.935, 5.538 | 5.539, 5.784, 5.680 |
+| Caller **Total Frontend** (milliseconds) | 3,410, 3,649, 3,939 | 4,095, 3,869, 3,252 |
+
+The host was shared and under heavy load. Both clean and warm differences were
+within run-to-run variation. The local result establishes the include removal
+and leaves the aggregate build-time benefit to the batch measurement. The
+[pre-change build budget](https://github.com/The-Ludus-Project/Ludus/actions/runs/44871868793/job/136748150276)
+recorded 268.7 s of frontend parsing and 251.6 s normalized against the 320 s
+budget. The [first successful batch containing the change](https://github.com/The-Ludus-Project/Ludus/actions/runs/45067503758/job/137347040844)
+built candidate `6a8ee3979` and recorded 298.6 s of frontend parsing and
+281.9 s normalized, within the same 320 s budget. Other changes landed
+between these measurements, so the aggregate difference cannot isolate
+the cost of removing `<span>`.
+
 ## Build graph check
 
 Header parse budgets miss work that the build graph itself repeats: a source

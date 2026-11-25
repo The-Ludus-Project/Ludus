@@ -24,7 +24,9 @@
 #include "internal/material_inspection.h"
 #include "internal/render_panel.h"
 #include "internal/state_view.h"
+#include "internal/world_climate.h"
 #include "internal/world_demo_adapter.h"
+#include "internal/world_environment_panel.h"
 #include "internal/world_lights_panel.h"
 #include "internal/world_material_creation.h"
 #include "internal/world_material_document.h"
@@ -567,8 +569,15 @@ void ConfigureCelestialLightFields(QWidget& inoutGroup,
     QObject::connect(driverOrNull, &QComboBox::currentIndexChanged, roleOrNull, updateRows);
     updateRows();
 }
+/// Keep a Properties group tall enough for its visible rows. A form without a visible word-wrapped row has no
+/// height for width, so it reports -1 and its size hint gives the height instead.
+void FitInspectorGroupHeight(QWidget& inoutGroup, const QFormLayout& rows)
+{
+    const foundation::int32 height = rows.totalHeightForWidth(WORLD_PROPERTY_LAYOUT_WIDTH);
+    inoutGroup.setMinimumHeight(height >= 0 ? height : rows.totalSizeHint().height());
+}
 /// Show which Earth date and place drive the Atmosphere's night sky, and hide the Sun disk size while the
-/// linked Sun's Earth preset supplies its own.
+/// linked Sun's Earth preset supplies its own. The cloud layer's fields show only while the layer is ticked.
 void ConfigureAtmosphereFields(QWidget& inoutGroup,
                                QFormLayout& inoutRows,
                                const QMap<QString, QWidget*>& fields,
@@ -613,11 +622,39 @@ void ConfigureAtmosphereFields(QWidget& inoutGroup,
                          FormatInspectorNumber(observer.value(WORLD_CELESTIAL_LATITUDE).toDouble()),
                          FormatInspectorNumber(observer.value(WORLD_CELESTIAL_LONGITUDE).toDouble())));
         }
-        inoutGroup.setMinimumHeight(inoutRows.totalHeightForWidth(WORLD_PROPERTY_LAYOUT_WIDTH));
+        FitInspectorGroupHeight(inoutGroup, inoutRows);
     };
     QObject::connect(sunOrNull, &QComboBox::currentIndexChanged, sky, update);
     QObject::connect(moonOrNull, &QComboBox::currentIndexChanged, sky, update);
     update();
+    const auto connectLayerFields = [&](const QString& toggle, const QString& propertyPrefix) {
+        QCheckBox* enabledOrNull = qobject_cast<QCheckBox*>(fields.value(FieldKey(component, toggle)));
+        if (enabledOrNull == nullptr)
+        {
+            return;
+        }
+        QList<QWidget*> layerRows;
+        const QString prefix = FieldKey(component, propertyPrefix);
+        for (const QString& key : fields.keys())
+        {
+            QWidget* field = fields.value(key);
+            if (key.startsWith(prefix) == true && field != enabledOrNull)
+            {
+                layerRows.append(GetFormRowWidget(inoutRows, field));
+            }
+        }
+        const auto updateLayer = [&inoutGroup, &inoutRows, layerRows, enabledOrNull]() {
+            for (QWidget* row : layerRows)
+            {
+                inoutRows.setRowVisible(row, enabledOrNull->isChecked());
+            }
+            FitInspectorGroupHeight(inoutGroup, inoutRows);
+        };
+        QObject::connect(enabledOrNull, &QCheckBox::toggled, enabledOrNull, updateLayer);
+        updateLayer();
+    };
+    connectLayerFields(QStringLiteral("clouds"), QStringLiteral("cloud"));
+    connectLayerFields(QStringLiteral("aurora"), QStringLiteral("aurora"));
 }
 QString Display(const QJsonValue& value)
 {
@@ -1048,6 +1085,11 @@ WorldWorkspace::WorldWorkspace(const ToolingPaths& tooling, QWidget* parent)
     mMaterialsPanel = new WorldMaterialsPanel(mWorldLists);
     mWorldLists->addTab(mLightsPanel, QStringLiteral("Lights"));
     mWorldLists->addTab(mMaterialsPanel, QStringLiteral("Materials"));
+    mEnvironmentPanel = new WorldEnvironmentPanel(mWorldLists);
+    mWorldLists->addTab(mEnvironmentPanel, QStringLiteral("Environment"));
+    connect(mEnvironmentPanel, &WorldEnvironmentPanel::ApplyRequested, this, &WorldWorkspace::applyClimateChange);
+    connect(mEnvironmentPanel, &WorldEnvironmentPanel::DraftChanged, this, &WorldWorkspace::updateClimateOverlay);
+    connect(mWorldLists, &QTabWidget::currentChanged, this, &WorldWorkspace::updateClimateOverlay);
     sections->setStretchFactor(0, ENTITY_SECTION_STRETCH);
     sections->setStretchFactor(1, WORLD_LISTS_SECTION_STRETCH);
     connect(mMaterialsPanel, &WorldMaterialsPanel::RenderableActivated, this, [this](const QString& id) {
@@ -1837,8 +1879,8 @@ void WorldWorkspace::RefreshScene()
         mPlacementDocumentGeneration = DocumentGeneration_;
         return;
     }
-    if (publication == PlacementPublication::Unchanged ||
-        (level == ValidatedScene_ && Document_.Encode() == ValidatedWorld_))
+    // A validated World can be hidden by an accepted inspector preview. Undo must show its own inputs again.
+    if (publication == PlacementPublication::Unchanged)
     {
         return;
     }
@@ -2059,6 +2101,10 @@ void WorldWorkspace::Render()
     renderLights();
     mMaterialsPanel->SetRows(
         CollectWorldMaterialRows(Document_, Scene_->GetPresentedLevel(), Scene_->GetPresentedScene()));
+    mEnvironmentPanel->SetCommittedClimate(Document_.Draft().value(WORLD_CLIMATE),
+                                           Document_.Loaded() == true && Document_.HasBuiltInSchema() == true,
+                                           false);
+    updateClimateOverlay();
     RenderInspector();
     const bool scene = Document_.Draft().contains(QStringLiteral("scene"));
     Viewport_->setVisible(scene);
@@ -2066,9 +2112,13 @@ void WorldWorkspace::Render()
     BoundViewport_->setVisible(scene == false);
     Render_->setVisible(scene == false);
     const bool isPlayable = IsWorldDemo(Document_);
-    PlayButton_->setVisible(isPlayable);
+    bool canPlayBuiltIn = false;
+#if defined(Q_OS_MACOS)
+    canPlayBuiltIn = Document_.Loaded() == true && Document_.HasBuiltInSchema() == true;
+#endif
+    PlayButton_->setVisible(isPlayable == true || canPlayBuiltIn == true);
     // The box only configures Play saved World; without the button it would be an unexplained control.
-    mPlayModeBox->setVisible(isPlayable);
+    mPlayModeBox->setVisible(isPlayable == true || canPlayBuiltIn == true);
     updateShownRenderPreview(scene);
 }
 void WorldWorkspace::renderLights()
@@ -2098,6 +2148,40 @@ void WorldWorkspace::applyLightChange(const WorldLightChange& change, const QStr
     Render();
     Snapshot();
     Changed(message);
+}
+void WorldWorkspace::applyClimateChange(const QJsonValue& climate)
+{
+    if (SceneBusy() == true || Pending_ == true)
+    {
+        mEnvironmentPanel->ShowStatus(
+            QStringLiteral("Apply or discard the pending World edits and wait for the scene to finish, then apply the "
+                           "climate again."));
+        return;
+    }
+    QString error;
+    if (Document_.SetClimate(climate, error) == false)
+    {
+        mEnvironmentPanel->ShowStatus(error);
+        return;
+    }
+    mEnvironmentPanel->SetCommittedClimate(Document_.Draft().value(WORLD_CLIMATE),
+                                           Document_.HasBuiltInSchema() == true,
+                                           true);
+    Render();
+    Snapshot();
+    const QString message =
+        climate.isUndefined() == true
+            ? QStringLiteral("Climate removed. Undo restores it.")
+            : QStringLiteral("Climate applied. Undo is available, and Play uses it after you save.");
+    mEnvironmentPanel->ShowStatus(message);
+    Changed(message);
+}
+void WorldWorkspace::updateClimateOverlay()
+{
+    const QJsonValue climate =
+        mWorldLists->currentWidget() == mEnvironmentPanel ? mEnvironmentPanel->GetDraft() : QJsonValue::Undefined;
+    Render_->GetViewport().GetObjectInteraction().SetClimateOverlay(climate);
+    Scene_->GetViewport().GetObjectInteraction().SetClimateOverlay(climate);
 }
 void WorldWorkspace::selectLight(const WorldLightRow& row)
 {
@@ -2321,10 +2405,45 @@ void WorldWorkspace::addMaterialGroup()
         connect(restore, &QPushButton::clicked, this, &WorldWorkspace::restoreInheritedCoating);
         rows->addRow(restore);
     }
+    addCoatedDiffuseControls(*rows, materialOrNull, scene);
     addHairCardControls(*rows, materialOrNull, scene);
     addSkinControls(*rows, materialOrNull, scene);
     addProjectBrdfControls(*rows, materialOrNull, scene);
     Inspector_->addWidget(section);
+}
+
+void WorldWorkspace::addCoatedDiffuseControls(QFormLayout& inoutRows,
+                                              const resources::SceneMaterial* materialOrNull,
+                                              const QJsonObject& placement)
+{
+    using content::scene_format::MaterialModel;
+    QWidget* group = inoutRows.parentWidget();
+    // Offer the layered material only on an ordinary resolved reflection slot that is not already coated-diffuse and
+    // carries no override that would lose data. A project BRDF, hair card or skin slot returns to its material first;
+    // an unresolved slot uses Create material from import instead.
+    if (materialOrNull == nullptr || placement.contains(QStringLiteral("project_brdf")) == true ||
+        placement.contains(QStringLiteral("hair_card")) == true || placement.contains(QStringLiteral("skin")) == true ||
+        materialOrNull->Scattering.Model == MaterialModel::Unresolved ||
+        materialOrNull->Scattering.Model == MaterialModel::MediumInterface ||
+        materialOrNull->Scattering.Model == MaterialModel::CoatedDiffuse)
+    {
+        return;
+    }
+    const QString source = Document_.GetInheritedMaterialId(placement);
+    if (source.isEmpty() == true || Document_.GetSceneMaterialDefinition(source).isEmpty() == false)
+    {
+        return;
+    }
+    QPushButton* assign = new QPushButton(QStringLiteral("Make Coated Diffuse…"), group);
+    assign->setObjectName(QStringLiteral("worldMakeCoatedDiffuse"));
+    assign->setEnabled(Pending_ == false && SceneBusy() == false);
+    assign->setToolTip(
+        QStringLiteral("Create and assign an ordered dielectric coat over a diffuse substrate (this slot's base "
+                       "colour). Edit the coat IOR, optical thickness and GGX alpha in the Material document."));
+    connect(assign, &QPushButton::clicked, this, [this, source]() {
+        createImportedMaterial(source, QString::fromLatin1(CREATED_MATERIAL_COATED_DIFFUSE));
+    });
+    inoutRows.addRow(assign);
 }
 
 void WorldWorkspace::addHairCardControls(QFormLayout& inoutRows,
@@ -2970,7 +3089,8 @@ void WorldWorkspace::addCreatedMaterial(QFormLayout& inoutRows)
     inoutRows.addRow(edit);
 }
 
-void WorldWorkspace::createImportedMaterial(const QString& source)
+// NOLINTNEXTLINE(bugprone-easily-swappable-parameters): the source resource ID and the preferred model are distinct.
+void WorldWorkspace::createImportedMaterial(const QString& source, const QString& preferredModel)
 {
     const RenderScene& presented = Scene_->PreviewScene();
     const resources::SceneMaterial* materialOrNull = GetSceneObjectMaterialOrNull(presented, Selected_);
@@ -2989,7 +3109,9 @@ void WorldWorkspace::createImportedMaterial(const QString& source)
     request.IsEditing = request.Draft.isEmpty() == false;
     if (request.IsEditing == false)
     {
-        request.Draft = MakeCreatedMaterialDraft(*materialOrNull);
+        request.Draft = preferredModel == QString::fromLatin1(CREATED_MATERIAL_COATED_DIFFUSE)
+                            ? MakeCoatedDiffuseMaterialDraft(*materialOrNull)
+                            : MakeCreatedMaterialDraft(*materialOrNull);
     }
     for (const QJsonValue value : Document_.Draft().value(QStringLiteral("entities")).toArray())
     {
@@ -3189,7 +3311,9 @@ bool WorldWorkspace::openMaterialDocument(const QString& entityId, QString& outE
         else
         {
             state.PreviewStatus = QStringLiteral(
-                "The raster viewport approximates coat roughness. Compatible reference captures use all three values.");
+                "The raster viewport approximates coat roughness. Compatible reference captures use all three values. "
+                "The coat runs an internal walk, so a fixed-dimension profile cannot capture it; choose a compatible "
+                "reference profile or keep the raster approximation.");
         }
         view->SetState(state);
     };
@@ -4293,6 +4417,7 @@ void WorldWorkspace::Changed(const QString& message)
     mEntitySearch->setEnabled(mEntities->isEnabled());
     mLightsPanel->setEnabled(Pending_ == false && isBusy == false);
     mMaterialsPanel->setEnabled(Pending_ == false && isBusy == false);
+    mEnvironmentPanel->setEnabled(Pending_ == false && isBusy == false);
     const bool isWorkerActive = isSceneWorkerActive();
     Import_->setEnabled(Document_.Loaded() && IsWorldDemo(Document_) == false && Pending_ == false &&
                         isWorkerActive == false);
@@ -5194,20 +5319,23 @@ RenderPreview& WorldWorkspace::GetRenderPreview() noexcept
 {
     return mShownRenderPreviewOrNull != nullptr ? *mShownRenderPreviewOrNull : Render_->Preview();
 }
-bool WorldWorkspace::BeginPlayInViewport(QString& outAddress, QString& outReason)
+PlayViewportStartResult WorldWorkspace::beginPlayInViewport()
 {
-    // Only the bound viewport of a World without an imported scene hosts Play today.
+    if (Document_.Loaded() == true && Document_.HasBuiltInSchema() == true && Render_->isHidden() == true &&
+        Scene_->PreviewRunning() == true)
+    {
+        return Render_->BeginPlayOn(Scene_->GetViewport(), Scene_->GetRenderPreview());
+    }
+    // The bound viewport hosts other Worlds, including the World Demo adapter.
     if (Document_.Loaded() == false || Document_.SceneLevel().isEmpty() == false || Render_->isHidden() == true)
     {
-        outReason = QStringLiteral("Play in the viewport needs this World shown in the World viewport.");
-        return false;
+        return { .Reason = QStringLiteral("Play in the viewport needs this World shown in the World viewport.") };
     }
     if (Render_->Preview().Running() == false)
     {
-        outReason = QStringLiteral("Play in the viewport needs the World viewport running; it is paused.");
-        return false;
+        return { .Reason = QStringLiteral("Play in the viewport needs the World viewport running; it is paused.") };
     }
-    return Render_->BeginPlay(outAddress, outReason);
+    return Render_->BeginPlay();
 }
 PlayMode WorldWorkspace::GetPlayMode() const noexcept
 {
@@ -5228,16 +5356,52 @@ PlayWindow WorldWorkspace::PreparePlay(PlayMode mode, QString& outAddress)
     {
         return PlayWindow::SeparateWindow;
     }
-    QString address;
-    QString reason;
-    if (BeginPlayInViewport(address, reason) == false)
+    PlayViewportStartResult started = beginPlayInViewport();
+    if (started.Address.isEmpty() == true)
     {
-        showPlayUnavailable(reason);
+        showPlayUnavailable(started.Reason);
         return PlayWindow::Unavailable;
     }
-    outAddress = foundation::Move(address);
+    outAddress = foundation::Move(started.Address);
     return PlayWindow::InViewport;
 }
+// NOLINTNEXTLINE(bugprone-easily-swappable-parameters)
+bool WorldWorkspace::GetBuiltInPlaySelection(QString& outWorld, QString& outSpawn, QString& outError) const
+{
+    if (Document_.HasBuiltInSchema() == false || Dirty() == true || QFileInfo(Path_).isFile() == false)
+    {
+        outError = QStringLiteral("Save this built-in World before starting Play.");
+        return false;
+    }
+    const QString relative = QDir(Root_).relativeFilePath(Path_);
+    if (QDir::isAbsolutePath(relative) == true || relative.startsWith(QStringLiteral("../")) == true)
+    {
+        outError = QStringLiteral("Save the World inside the project to play it.");
+        return false;
+    }
+    QStringList spawns;
+    for (const QJsonValueConstRef value : Document_.Draft().value(QStringLiteral("entities")).toArray())
+    {
+        const QString key = Document_.GetEntityKey(value.toObject());
+        if (HasWorldFirstPersonPlayer(Document_, key) == true)
+        {
+            spawns.append(key);
+        }
+    }
+    const QString spawn = spawns.contains(Selected_) == true ? Selected_
+                          : spawns.size() == 1               ? spawns.first()
+                                                             : QString();
+    if (spawn.isEmpty() == true)
+    {
+        outError = spawns.isEmpty() == true ? QStringLiteral("Add a First Person Player to the World and save it.")
+                                            : QStringLiteral("Select the First Person Player to use as the spawn.");
+        return false;
+    }
+    outWorld = relative;
+    outSpawn = spawn;
+    return true;
+}
+
 QString WorldWorkspace::GetPlayUnavailableText() const
 {
     return mPlayUnavailableLabel->isHidden() == true ? QString() : mPlayUnavailableLabel->text();

@@ -45,11 +45,11 @@ TEST_CASE("VkResult keeps its signed code in logging and assertions", "[rhi][dia
     }
 }
 
-TEST_CASE("A window cannot connect before RHI initialization", "[rhi]")
+TEST_CASE("Frames require a ready RHI session", "[rhi]")
 {
     graphics::rhi::Shutdown();
-    CHECK_FALSE(graphics::rhi::ConnectWindow({ .System = platform::WindowSystem::WebCanvas }));
-    graphics::rhi::Shutdown();
+    CHECK(graphics::rhi::BeginFrameStatus() == graphics::rhi::FrameStatus::NotReady);
+    CHECK(graphics::rhi::EndFrameStatus() == graphics::rhi::FrameStatus::NotReady);
 }
 
 #if defined(VK_USE_PLATFORM_WAYLAND_KHR)
@@ -111,20 +111,24 @@ TEST_CASE("Wayland surface and device lifecycle", "[rhi][wayland]")
     const ShutdownGuard guard;
 
     REQUIRE(manager.CreateWindow({ .Name = "Ludus Wayland lifecycle test" }, window));
-    const auto native = window->GetNativeWindowInfo();
+    const platform::NativeWindowInfo native = window->GetNativeWindowInfo();
     REQUIRE(native.System == platform::WindowSystem::Wayland);
+    CHECK(rhi::Start({}, { .System = platform::WindowSystem::WebCanvas }) == rhi::StartStatus::Failed);
+    CHECK(rhi::GetStartup().Error == rhi::StartupError::InvalidWindow);
+    rhi::Shutdown();
+    platform::NativeWindowInfo invalid = native;
+    invalid.Surface = nullptr;
+    CHECK(rhi::Start({}, invalid) == rhi::StartStatus::Failed);
+    CHECK(rhi::GetStartup().Error == rhi::StartupError::InvalidWindow);
+    rhi::Shutdown();
     for (int iteration = 0; iteration < 2; ++iteration)
     {
-        REQUIRE(graphics::rhi::Initialize({ .Name = "Wayland lifecycle test" }));
-        REQUIRE(vkCreateWaylandSurfaceKHR != nullptr);
-        CHECK_FALSE(graphics::rhi::ConnectWindow({ .System = platform::WindowSystem::WebCanvas }));
-        REQUIRE(graphics::rhi::ConnectWindow(native));
-        REQUIRE(graphics::rhi::ConnectWindow(native));
-        auto invalid = native;
-        invalid.Surface = nullptr;
-        CHECK_FALSE(graphics::rhi::ConnectWindow(invalid));
-        graphics::rhi::Shutdown();
-        graphics::rhi::Shutdown();
+        REQUIRE(rhi::Start({ .Name = "Wayland lifecycle test" }, native) == rhi::StartStatus::Ready);
+        REQUIRE(rhi::GetStartup().State == rhi::StartupState::Ready);
+        CHECK(vkCreateWaylandSurfaceKHR != nullptr);
+        CHECK(rhi::Start({}, native) == rhi::StartStatus::Busy);
+        rhi::Shutdown();
+        rhi::Shutdown();
     }
 #else
     SKIP("Wayland was disabled at build time.");

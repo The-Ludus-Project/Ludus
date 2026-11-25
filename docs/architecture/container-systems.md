@@ -604,8 +604,9 @@ allocation fails.
 
 ## Borrowed contiguous views
 
-`FoundationContainers` exports `BorrowedView<T>` in
-`ludus/foundation/containers/borrowed_view.hpp`. It carries an address and element
+`FoundationBase` exports `BorrowedView<T>` in
+`ludus/foundation/base/borrowed_view.hpp`. The former FoundationContainers
+include path still forwards to that header. A view carries an address and element
 count, allocates nothing, and neither owns storage nor extends its lifetime.
 Built-in arrays preserve their extent on construction. `Array`, `StaticArray`
 and `FixedArray` convert to a view of their live elements implicitly or through

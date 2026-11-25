@@ -37,6 +37,9 @@
 #include <QScreen>
 #include <QString>
 #if defined(LUDUS_EDITOR_CRASH_CAPTURE)
+#    include <QMessageBox>
+#    include <QProcess>
+#    include <QStringList>
 #    include <QTimer>
 #endif
 
@@ -142,7 +145,7 @@ int main(int argc, char** argv)
 
     QCommandLineParser parser;
     parser.setApplicationDescription(QStringLiteral("Ludus Editor workspace"));
-    parser.addHelpOption();
+    const QCommandLineOption helpOption = parser.addHelpOption();
     QCommandLineOption toolingRootOption(QStringLiteral("tooling-root"),
                                          QStringLiteral("Absolute trusted Ludus tooling checkout"),
                                          QStringLiteral("path"));
@@ -159,7 +162,21 @@ int main(int argc, char** argv)
     parser.addOption(pythonOption);
     parser.addOption(projectOption);
     parser.addOption(adapterOption);
-    parser.process(app);
+    // parse(), not process(): process() calls exit() for an invalid command line
+    // or --help, which skips the logging shutdown and destroys running loggers.
+    if (parser.parse(app.arguments()) == false)
+    {
+        QTextStream(stderr) << QCoreApplication::applicationName() << QStringLiteral(": ") << parser.errorText()
+                            << QStringLiteral("\nRun with --help to list the supported options.\n");
+        logging::LogSystem::Shutdown();
+        return 1;
+    }
+    if (parser.isSet(helpOption) == true || parser.isSet(QStringLiteral("help-all")) == true)
+    {
+        QTextStream(stdout) << parser.helpText();
+        logging::LogSystem::Shutdown();
+        return 0;
+    }
 
     ludus::editor::ToolingPaths tooling;
     tooling.ToolingRoot = parser.value(toolingRootOption);
@@ -195,5 +212,30 @@ int main(int argc, char** argv)
 
     const int code = app.exec();
     logging::LogSystem::Shutdown();
+#if defined(LUDUS_EDITOR_CRASH_CAPTURE)
+    if (window.ShouldRestart() == true)
+    {
+        QStringList arguments{
+            QStringLiteral("--tooling-root"),
+            tooling.ToolingRoot,
+            QStringLiteral("--python"),
+            tooling.PythonPath,
+            QStringLiteral("--adapter"),
+            tooling.AdapterPath,
+        };
+        const QString projectPath = controller.State().DescriptorPath;
+        if (projectPath.isEmpty() == false)
+        {
+            arguments.append({QStringLiteral("--project"), projectPath});
+        }
+        if (QProcess::startDetached(QCoreApplication::applicationFilePath(), arguments) == false)
+        {
+            QMessageBox::warning(nullptr,
+                                 QStringLiteral("Editor could not restart"),
+                                 QStringLiteral("Open the Editor again to use the saved crash reporting destination."));
+            return 1;
+        }
+    }
+#endif
     return code;
 }

@@ -41,9 +41,12 @@ struct GpuPreviewOptions final
     // Keep partial aggregate callers warning-clean when this optional field is omitted.
     // NOLINTNEXTLINE(readability-redundant-member-init)
     foundation::BorrowedView<const content::render_graph_format::StorageBuffer> StorageBuffers{};
-    /// Optional native Metal stage artifact, borrowed only during Enable. Requires the same public
-    /// binding/workgroup ABI as the compute artifact. Unsupported devices reject explicitly.
+    /// Optional native Metal stage artifact, borrowed during Enable. Its workgroup and shared record stride
+    /// must match the compute writer. Unsupported devices reject explicitly.
     const rhi::RasterShaderDescription* NativeRayStagesOrNull = nullptr;
+    /// Optional ordered compute kernel with read-only access to the shared graph record.
+    /// Borrowed during Enable. Its record stride and workgroup must match the writer.
+    const rhi::RasterShaderDescription* RecordReadComputeOrNull = nullptr;
 };
 /// Renderer-owned immutable GPU scene and progressive accumulation. Copies borrow;
 /// Release cancels future dispatches, while acquired output frames retain the job.

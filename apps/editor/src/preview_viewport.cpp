@@ -47,6 +47,7 @@
 #include <QSignalBlocker>
 #include <QStandardPaths>
 #include <QStyle>
+#include <QTimer>
 #include <QToolBar>
 #include <QToolButton>
 #include <QToolTip>
@@ -65,6 +66,7 @@
 #    include "internal/render_graph_preview.h"
 #    include "internal/renderer_workspace.h"
 #    include "internal/viewport_object_overlay_item.h"
+#    include "internal/viewport_render_recovery.h"
 #    include "internal/world_graph_view.h"
 #    include <QLibraryInfo>
 #    include <QQuickItem>
@@ -288,7 +290,7 @@ namespace
 {
 /// Inset of the statistics panel from the viewport's top-left corner, in logical pixels.
 constexpr qreal STATISTICS_MARGIN = design::SPACING_SMALL;
-/// Padding between the statistics panel edge and its text, in logical pixels.
+/// Padding of a viewport message chip, in logical pixels. Statistics use VIEWPORT_STATISTICS_PADDING.
 constexpr qreal STATISTICS_PADDING = design::SPACING_SMALL;
 /// Corner radius of the statistics panel, in logical pixels.
 constexpr qreal STATISTICS_CORNER_RADIUS = design::RADIUS_GROUP;
@@ -320,10 +322,6 @@ QString GetLiveShadersToolTip()
 }
 /// Stacking order above the frame item, so clearFrames recreating that item never covers it.
 constexpr qreal STATISTICS_Z = 1;
-QFont GetStatisticsFont()
-{
-    return GetViewportHudFont();
-}
 /// What an overlay panel holds: statistics are a label and value grid; messages are wrapped sentences, and an
 /// error message carries the danger colour.
 enum class OverlayKind : uint8
@@ -333,9 +331,22 @@ enum class OverlayKind : uint8
     ErrorMessage,
 };
 /// Padding at the left of a panel's text, which holds the severity edge of an error message.
+QFont GetOverlayFont(OverlayKind kind)
+{
+    return kind == OverlayKind::Statistics ? GetViewportStatisticsFont() : GetViewportHudFont();
+}
+qreal GetOverlayPadding(OverlayKind kind)
+{
+    return kind == OverlayKind::Statistics ? static_cast<qreal>(VIEWPORT_STATISTICS_PADDING) : STATISTICS_PADDING;
+}
+int GetOverlayBackgroundOpacity(OverlayKind kind)
+{
+    return kind == OverlayKind::Statistics ? VIEWPORT_STATISTICS_BACKGROUND_OPACITY : STATISTICS_BACKGROUND_OPACITY;
+}
 qreal GetOverlayLeftPadding(OverlayKind kind)
 {
-    return kind == OverlayKind::ErrorMessage ? STATISTICS_PADDING + MESSAGE_SEVERITY_EDGE_WIDTH : STATISTICS_PADDING;
+    return kind == OverlayKind::ErrorMessage ? GetOverlayPadding(kind) + MESSAGE_SEVERITY_EDGE_WIDTH
+                                             : GetOverlayPadding(kind);
 }
 /// Size of the padded overlay panel for text, in logical pixels; empty text has no panel.
 QSizeF MeasureStatistics(const QString& text, OverlayKind kind = OverlayKind::Statistics)
@@ -345,10 +356,10 @@ QSizeF MeasureStatistics(const QString& text, OverlayKind kind = OverlayKind::St
         return {};
     }
     const QSizeF content = kind == OverlayKind::Statistics
-                               ? MeasureViewportHudGrid(text, GetStatisticsFont())
-                               : QFontMetricsF(GetStatisticsFont()).boundingRect(QRectF(), Qt::AlignLeft, text).size();
-    return {content.width() + GetOverlayLeftPadding(kind) + STATISTICS_PADDING,
-            content.height() + 2 * STATISTICS_PADDING};
+                               ? MeasureViewportHudGrid(text, GetOverlayFont(kind))
+                               : QFontMetricsF(GetOverlayFont(kind)).boundingRect(QRectF(), Qt::AlignLeft, text).size();
+    return {content.width() + GetOverlayLeftPadding(kind) + GetOverlayPadding(kind),
+            content.height() + 2 * GetOverlayPadding(kind)};
 }
 /// Draw the pass bars behind the last lines of the text, which are the pass rows.
 void PaintPassBars(QPainter& inoutPainter, const QString& text, const QRectF& panel, const ViewportPassBars& bars)
@@ -359,12 +370,14 @@ void PaintPassBars(QPainter& inoutPainter, const QString& text, const QRectF& pa
     }
     const qsizetype lineCount = text.count(QLatin1Char('\n')) + 1;
     const qsizetype firstRow = lineCount - static_cast<qsizetype>(bars.RowCount + bars.TrailingLines);
-    PaintViewportPassBars(
-        inoutPainter,
-        panel.adjusted(STATISTICS_PADDING, STATISTICS_PADDING, -STATISTICS_PADDING, -STATISTICS_PADDING),
-        QFontMetricsF(GetStatisticsFont()).lineSpacing(),
-        firstRow,
-        bars);
+    PaintViewportPassBars(inoutPainter,
+                          panel.adjusted(VIEWPORT_STATISTICS_PADDING,
+                                         VIEWPORT_STATISTICS_PADDING,
+                                         -VIEWPORT_STATISTICS_PADDING,
+                                         -VIEWPORT_STATISTICS_PADDING),
+                          QFontMetricsF(GetOverlayFont(OverlayKind::Statistics)).lineSpacing(),
+                          firstRow,
+                          bars);
 }
 /// Paint an overlay panel (statistics or a viewport message) with its top-left corner at origin.
 void PaintStatistics(QPainter& inoutPainter,
@@ -381,11 +394,16 @@ void PaintStatistics(QPainter& inoutPainter,
     inoutPainter.save();
     inoutPainter.setRenderHint(QPainter::Antialiasing);
     inoutPainter.setPen(Qt::NoPen);
-    inoutPainter.setBrush(
-        QColor::fromRgba(kind == OverlayKind::ErrorMessage ? SHADER_ERROR_BACKGROUND : STATISTICS_BACKGROUND));
+    const QRgb background =
+        kind == OverlayKind::ErrorMessage
+            ? SHADER_ERROR_BACKGROUND
+            : WithAlpha(GetViewportArgb(design::ThemeColour::SurfaceViewport), GetOverlayBackgroundOpacity(kind));
+    inoutPainter.setBrush(QColor::fromRgba(background));
     inoutPainter.drawRoundedRect(panel, STATISTICS_CORNER_RADIUS, STATISTICS_CORNER_RADIUS);
-    const QRectF content =
-        panel.adjusted(GetOverlayLeftPadding(kind), STATISTICS_PADDING, -STATISTICS_PADDING, -STATISTICS_PADDING);
+    const QRectF content = panel.adjusted(GetOverlayLeftPadding(kind),
+                                          GetOverlayPadding(kind),
+                                          -GetOverlayPadding(kind),
+                                          -GetOverlayPadding(kind));
     if (kind == OverlayKind::ErrorMessage)
     {
         // The severity edge says "error" before the text is read, as the status colours do elsewhere.
@@ -397,11 +415,11 @@ void PaintStatistics(QPainter& inoutPainter,
     if (kind == OverlayKind::Statistics)
     {
         PaintPassBars(inoutPainter, text, panel, bars);
-        PaintViewportHudGrid(inoutPainter, content, text, GetStatisticsFont(), STATISTICS_LABEL, STATISTICS_TEXT);
+        PaintViewportHudGrid(inoutPainter, content, text, GetOverlayFont(kind), STATISTICS_LABEL, STATISTICS_TEXT);
     }
     else
     {
-        inoutPainter.setFont(GetStatisticsFont());
+        inoutPainter.setFont(GetOverlayFont(kind));
         inoutPainter.setPen(QColor::fromRgb(STATISTICS_TEXT));
         inoutPainter.drawText(content, Qt::AlignLeft | Qt::AlignTop, text);
     }
@@ -419,7 +437,7 @@ QString FitOverlayText(const QString& text, qreal maxWidth)
     {
         return text;
     }
-    const QFontMetricsF metrics(GetStatisticsFont());
+    const QFontMetricsF metrics(GetViewportHudFont());
     QStringList fitted;
     for (const QString& line : text.split(QLatin1Char('\n')))
     {
@@ -508,7 +526,7 @@ QLinearGradient MakeLegendGradient(PreviewLegendRamp ramp)
 /// Size of the padded legend panel, in logical pixels.
 QSizeF MeasureLegend(const PreviewLegend& legend)
 {
-    const QFontMetricsF metrics(GetStatisticsFont());
+    const QFontMetricsF metrics(GetViewportHudFont());
     const qreal labelsWidth =
         metrics.horizontalAdvance(legend.LowLabel) + LEGEND_LABEL_GAP + metrics.horizontalAdvance(legend.HighLabel);
     const qreal contentWidth = std::max({LEGEND_BAR_WIDTH, metrics.horizontalAdvance(legend.Title), labelsWidth});
@@ -519,13 +537,13 @@ QSizeF MeasureLegend(const PreviewLegend& legend)
 void PaintLegend(QPainter& inoutPainter, const PreviewLegend& legend, QPointF origin)
 {
     const QSizeF size = MeasureLegend(legend);
-    const QFontMetricsF metrics(GetStatisticsFont());
+    const QFontMetricsF metrics(GetViewportHudFont());
     inoutPainter.save();
     inoutPainter.setRenderHint(QPainter::Antialiasing);
     inoutPainter.setPen(Qt::NoPen);
     inoutPainter.setBrush(QColor::fromRgba(STATISTICS_BACKGROUND));
     inoutPainter.drawRoundedRect(QRectF(origin, size), STATISTICS_CORNER_RADIUS, STATISTICS_CORNER_RADIUS);
-    inoutPainter.setFont(GetStatisticsFont());
+    inoutPainter.setFont(GetViewportHudFont());
     inoutPainter.setPen(QColor::fromRgb(STATISTICS_TEXT));
     const qreal left = origin.x() + STATISTICS_PADDING;
     const qreal contentWidth = size.width() - 2 * STATISTICS_PADDING;
@@ -685,9 +703,23 @@ public:
         place();
         update();
     }
+    /// Quiet hover halo on this axis handle, or none when hasHover is false.
+    void SetHoveredView(bool hasHover, EditorAxisView view)
+    {
+        if (hasHover == mHasHover && view == mHoveredView)
+        {
+            return;
+        }
+        mHasHover = hasHover;
+        mHoveredView = view;
+        update();
+    }
     void paint(QPainter* painter) override
     {
-        PaintOrientationWidget(*painter, BuildOrientationLayout(mSample, QRectF(QPointF(0, 0), size())), mSample);
+        PaintOrientationWidget(*painter,
+                               BuildOrientationLayout(mSample, QRectF(QPointF(0, 0), size())),
+                               mSample,
+                               mHasHover == true ? &mHoveredView : nullptr);
     }
 
 private:
@@ -696,6 +728,8 @@ private:
         setPosition(GetOrientationWidgetRect(parentItem()->width()).topLeft());
     }
     gameplay::camera::CameraSample mSample;
+    EditorAxisView mHoveredView = EditorAxisView::Front;
+    bool mHasHover = false;
 };
 class FrameCanvas final : public QWidget
 {
@@ -744,6 +778,17 @@ public:
     {
         mOrientationSample = sample;
         mIsOrientationShown = isShown;
+        update();
+    }
+    /// Quiet hover halo on this axis handle, or none when hasHover is false.
+    void SetOrientationHover(bool hasHover, EditorAxisView view)
+    {
+        if (hasHover == mHasOrientationHover && view == mOrientationHover)
+        {
+            return;
+        }
+        mHasOrientationHover = hasHover;
+        mOrientationHover = view;
         update();
     }
     /// Legend key painted at the bottom-left; null hides it.
@@ -796,7 +841,8 @@ protected:
         {
             PaintOrientationWidget(painter,
                                    BuildOrientationLayout(mOrientationSample, GetOrientationWidgetRect(width())),
-                                   mOrientationSample);
+                                   mOrientationSample,
+                                   mHasOrientationHover == true ? &mOrientationHover : nullptr);
         }
         if (mHasLegend == true)
         {
@@ -811,7 +857,9 @@ private:
     PreviewLegend mLegend;
     bool mHasLegend = false;
     gameplay::camera::CameraSample mOrientationSample;
+    EditorAxisView mOrientationHover = EditorAxisView::Front;
     bool mIsOrientationShown = false;
+    bool mHasOrientationHover = false;
     QImage mImage;
     QString mStatisticsText;
     ViewportPassBars mStatisticsBars;
@@ -872,9 +920,13 @@ struct PreviewViewport::State final
         ++Presented;
         Q_EMIT Widget->ImagePresented(time::NowTicks());
     }
-    /// Statistics overlay text currently shown; empty while the overlay is off.
+    /// Statistics overlay text currently shown (full p95/max wording); empty while the overlay is off.
     QString StatisticsText;
-    /// Bars behind the pass rows that end StatisticsText; empty when it has none.
+    /// Compact mean-times grid painted on the overlay; the full text stays in StatisticsText.
+    QString StatisticsCompactText;
+    /// One-line readout for the collapsed statistics chip.
+    QString StatisticsSummary;
+    /// Bars behind the pass rows that end the compact statistics grid; empty when it has none.
     ViewportPassBars StatisticsBars;
     /// Browser statistics and status above the frame, where the DOM canvas leaves Qt text visible.
     QLabel* StatisticsLabelOrNull = nullptr;
@@ -1029,6 +1081,8 @@ struct PreviewViewport::State final
     StatisticsItem* ShaderStatusOrNull = nullptr;
     LegendItem* LegendOrNull = nullptr;
     OrientationItem* OrientationOrNull = nullptr;
+    EditorAxisView OrientationHover = EditorAxisView::Front;
+    bool HasOrientationHover = false;
     /// Live shader rebuilds of this viewport's preview; null where unsupported.
     PreviewShaderReload* ShaderReloadOrNull = nullptr;
     QWidget* Container = nullptr;
@@ -1089,11 +1143,13 @@ private:
     {
         if (StatisticsOrNull != nullptr)
         {
-            StatisticsOrNull->SetText(StatisticsText, OverlayKind::Statistics, StatisticsBars);
+            const QString display = MakeStatisticsOverlayText(StatisticsCompactText, StatisticsSummary);
+            StatisticsOrNull->SetText(display, OverlayKind::Statistics, StatisticsBars);
         }
         if (CanvasOrNull != nullptr)
         {
-            CanvasOrNull->SetStatisticsText(StatisticsText, StatisticsBars);
+            CanvasOrNull->SetStatisticsText(MakeStatisticsOverlayText(StatisticsCompactText, StatisticsSummary),
+                                            StatisticsBars);
         }
         applyShaderStatus();
     }
@@ -1124,13 +1180,19 @@ private:
         }
         const bool isShown = Widget->IsOrientationWidgetShown();
         const gameplay::camera::CameraSample& sample = Preview->GetVisibleCameraSample();
+        if (isShown == false)
+        {
+            HasOrientationHover = false;
+        }
         if (OrientationOrNull != nullptr)
         {
             OrientationOrNull->SetCamera(sample, isShown);
+            OrientationOrNull->SetHoveredView(HasOrientationHover, OrientationHover);
         }
         if (CanvasOrNull != nullptr)
         {
             CanvasOrNull->SetOrientation(sample, isShown);
+            CanvasOrNull->SetOrientationHover(HasOrientationHover, OrientationHover);
         }
     }
     void createItem()
@@ -1164,7 +1226,8 @@ private:
         }
         CanvasOrNull = new FrameCanvas(Widget, QStringLiteral("LudusOffscreenViewport"));
         CanvasOrNull->SetInteraction(Widget->GetObjectInteraction());
-        CanvasOrNull->SetStatisticsText(StatisticsText, StatisticsBars);
+        CanvasOrNull->SetStatisticsText(MakeStatisticsOverlayText(StatisticsCompactText, StatisticsSummary),
+                                        StatisticsBars);
         CanvasOrNull->SetShaderStatusText(ShaderStatusText, HasShaderError);
         applyLegend(Preview->GetShading());
         FrameLayoutOrNull->addWidget(CanvasOrNull);
@@ -1387,7 +1450,9 @@ private:
         ObjectOverlayOrNull = CreateViewportObjectOverlayItem(Widget->GetObjectInteraction(), *Window->contentItem());
         ObjectOverlayOrNull->setSize(Window->size());
         StatisticsOrNull = new StatisticsItem(Window->contentItem(), QStringLiteral("viewportStatisticsOverlay"));
-        StatisticsOrNull->SetText(StatisticsText, OverlayKind::Statistics, StatisticsBars);
+        StatisticsOrNull->SetText(MakeStatisticsOverlayText(StatisticsCompactText, StatisticsSummary),
+                                  OverlayKind::Statistics,
+                                  StatisticsBars);
         ShaderStatusOrNull =
             new StatisticsItem(Window->contentItem(), QStringLiteral("viewportShaderStatusOverlay"), true);
         applyShaderStatus();
@@ -1682,6 +1747,127 @@ private:
 #endif
     }
 };
+void PlaceViewportOverflowMenu(QMenu& inoutMenu,
+                               const QWidget& viewport,
+                               const QRect& overflowButtonGlobal,
+                               const QRect& gizmoGlobal)
+{
+    const QRect bounds(viewport.mapToGlobal(QPoint()), viewport.size());
+    QSize size = inoutMenu.sizeHint();
+    if (size.width() < 1)
+    {
+        size = inoutMenu.size();
+    }
+    // Below the chevron, right-aligned so the menu opens leftward into the viewport.
+    QPoint position(overflowButtonGlobal.right() - size.width() + 1, overflowButtonGlobal.bottom() + 1);
+    QRect proposed(position, size);
+    if (gizmoGlobal.isValid() == true && proposed.intersects(gizmoGlobal) == true)
+    {
+        position.setX(gizmoGlobal.left() - size.width());
+        proposed = QRect(position, size);
+        if (proposed.left() < bounds.left())
+        {
+            // No room beside the gizmo: sit below it, still inside the viewport.
+            position.setX(std::max(bounds.left(), bounds.right() - size.width() + 1));
+            position.setY(gizmoGlobal.bottom() + 1);
+            proposed = QRect(position, size);
+        }
+    }
+    if (proposed.right() > bounds.right())
+    {
+        position.setX(bounds.right() - size.width() + 1);
+    }
+    if (position.x() < bounds.left())
+    {
+        position.setX(bounds.left());
+    }
+    proposed = QRect(position, size);
+    if (proposed.bottom() > bounds.bottom())
+    {
+        const int available = bounds.bottom() - position.y() + 1;
+        if (available > 0 && available < size.height())
+        {
+            inoutMenu.setMaximumHeight(available);
+            size.setHeight(available);
+        }
+        else
+        {
+            position.setY(std::max(bounds.top(), bounds.bottom() - size.height() + 1));
+        }
+    }
+    else
+    {
+        inoutMenu.setMaximumHeight(QWIDGETSIZE_MAX);
+    }
+    if (position.y() < bounds.top())
+    {
+        position.setY(bounds.top());
+    }
+    inoutMenu.move(position);
+}
+namespace
+{
+/// Keeps the toolbar overflow menu inside the viewport and clear of the axis gizmo.
+class ViewportOverflowMenuGuard final : public QObject
+{
+public:
+    ViewportOverflowMenuGuard(QToolBar& inoutToolbar, PreviewViewport& inoutViewport)
+        : QObject(&inoutToolbar), mToolbar(inoutToolbar), mViewport(inoutViewport)
+    {
+        inoutToolbar.installEventFilter(this);
+        bind();
+    }
+
+protected:
+    bool eventFilter(QObject* watched, QEvent* event) override
+    {
+        const QEvent::Type type = event->type();
+        if (watched == &mToolbar && (type == QEvent::Resize || type == QEvent::LayoutRequest || type == QEvent::Show))
+        {
+            bind();
+        }
+        if (watched == mMenuOrNull && type == QEvent::Show)
+        {
+            place();
+        }
+        return false;
+    }
+
+private:
+    void bind()
+    {
+        QToolButton* chevronOrNull = mToolbar.findChild<QToolButton*>(QStringLiteral("qt_toolbar_ext_button"));
+        if (chevronOrNull == nullptr || chevronOrNull->menu() == nullptr)
+        {
+            return;
+        }
+        mChevronOrNull = chevronOrNull;
+        if (mMenuOrNull != chevronOrNull->menu())
+        {
+            mMenuOrNull = chevronOrNull->menu();
+            mMenuOrNull->installEventFilter(this);
+            QObject::connect(mMenuOrNull, &QMenu::aboutToShow, this, [this]() {
+                QTimer::singleShot(0, this, [this]() { place(); });
+            });
+        }
+    }
+    void place()
+    {
+        if (mMenuOrNull == nullptr || mChevronOrNull == nullptr)
+        {
+            return;
+        }
+        PlaceViewportOverflowMenu(*mMenuOrNull,
+                                  mViewport,
+                                  QRect(mChevronOrNull->mapToGlobal(QPoint()), mChevronOrNull->size()),
+                                  mViewport.GetOrientationWidgetGlobalRect());
+    }
+    QToolBar& mToolbar;
+    PreviewViewport& mViewport;
+    QToolButton* mChevronOrNull = nullptr;
+    QMenu* mMenuOrNull = nullptr;
+};
+} // namespace
 PreviewViewport::PreviewViewport(RenderPreview* preview, QWidget* parentOrNull, bool isAutomatic)
     : PreviewViewport(preview, preview, parentOrNull, isAutomatic)
 {
@@ -2115,6 +2301,7 @@ PreviewViewport::PreviewViewport(RenderPreview* preview,
     });
     mState->Layout->addWidget(controls);
     new ViewportFocusStrip(*this, *controls);
+    new ViewportOverflowMenuGuard(*controls, *this);
 #if defined(LUDUS_EDITOR_BROWSER_PREVIEW)
     mState->StatisticsLabelOrNull = new QLabel(this);
     mState->StatisticsLabelOrNull->setObjectName(QStringLiteral("viewportStatisticsOverlay"));
@@ -2341,6 +2528,14 @@ void PreviewViewport::UseProjectGraph(RendererWorkspace& inoutWorkspace)
     mState->GraphViewOrNull->setVisible(Preview_->Scene().Identity.isEmpty() == false);
     mState->GraphViewOrNull->SetCanPresent(mState->IsAutomatic);
     mState->FrameLayoutOrNull->addWidget(mState->GraphViewOrNull);
+    // Reserve a strip inside the viewport because QWidget controls cannot cover the native frame window.
+    ViewportRenderRecoveryNotice* recovery = new ViewportRenderRecoveryNotice(inoutWorkspace, this);
+    mState->Layout->addWidget(recovery);
+    connect(recovery,
+            &ViewportRenderRecoveryNotice::ProblemVisibilityChanged,
+            mState->GraphViewOrNull,
+            &WorldGraphView::SetHasRecoveryNotice);
+    mState->GraphViewOrNull->SetHasRecoveryNotice(recovery->HasProblem());
     connect(mState->GraphViewOrNull, &WorldGraphView::DebugViewChanged, this, &PreviewViewport::updateGraphDebugView);
     // Use the built-in view for a new World with no geometry or Atmosphere to draw.
     connect(Preview_, &RenderPreview::Changed, this, &PreviewViewport::updateEmptyWorldView);
@@ -2405,7 +2600,18 @@ void PreviewViewport::UseProjectGraph(RendererWorkspace& inoutWorkspace)
             }
         });
         connect(mState->GraphViewOrNull, &WorldGraphView::StatisticsChanged, this, [this]() {
+            const foundation::uint64 nowNanoseconds = foundation::time::Now().Nanoseconds;
             mState->StatisticsText = mState->GraphViewOrNull->GetStatisticsText();
+            mState->StatisticsCompactText =
+                Preview_->IsStatisticsVisible() == true
+                    ? FormatCompactGraphViewportStatistics(mState->ProjectGraph->GetStatistics(),
+                                                           Preview_->GetStatistics(),
+                                                           nowNanoseconds)
+                    : QString();
+            mState->StatisticsSummary =
+                Preview_->IsStatisticsVisible() == true
+                    ? FormatGraphViewportStatisticsSummary(mState->ProjectGraph->GetStatistics(), nowNanoseconds)
+                    : QString();
             mState->StatisticsBars = Preview_->IsStatisticsVisible() == true
                                          ? MakeViewportPassBars(Preview_->GetStatistics())
                                          : ViewportPassBars{};
@@ -2668,7 +2874,18 @@ bool PreviewViewport::IsOrientationWidgetShown() const noexcept
     return mPlayEndpointOrNull == nullptr && mIsInspectingRayPaths == false && mState->MessageOrNull != nullptr &&
            mState->MessageOrNull->isHidden() == true;
 }
-bool PreviewViewport::tryPickOrientationWidget(QPointF globalPosition)
+QRect PreviewViewport::GetOrientationWidgetGlobalRect() const
+{
+    if (mState->FrameLayoutOrNull == nullptr)
+    {
+        return {};
+    }
+    const QRect frame = mState->FrameLayoutOrNull->GetFrameRectangle();
+    const QRect gizmo =
+        GetOrientationWidgetRect(static_cast<qreal>(frame.width())).toRect().translated(frame.topLeft());
+    return QRect(mapToGlobal(gizmo.topLeft()), gizmo.size());
+}
+bool PreviewViewport::tryHitOrientationWidget(QPointF globalPosition, EditorAxisView& outView) const
 {
     if (IsOrientationWidgetShown() == false || mState->FrameLayoutOrNull == nullptr)
     {
@@ -2676,16 +2893,75 @@ bool PreviewViewport::tryPickOrientationWidget(QPointF globalPosition)
     }
     const QRect frame = mState->FrameLayoutOrNull->GetFrameRectangle();
     const QPointF local = getInteractionPosition(globalPosition) - QPointF(frame.topLeft());
+    return TryHitOrientationHandle(BuildOrientationLayout(Preview_->GetVisibleCameraSample(),
+                                                          GetOrientationWidgetRect(static_cast<qreal>(frame.width()))),
+                                   local,
+                                   outView);
+}
+bool PreviewViewport::tryPickOrientationWidget(QPointF globalPosition)
+{
     EditorAxisView view = EditorAxisView::Front;
-    if (TryHitOrientationHandle(BuildOrientationLayout(Preview_->GetVisibleCameraSample(),
-                                                       GetOrientationWidgetRect(static_cast<qreal>(frame.width()))),
-                                local,
-                                view) == false)
+    if (tryHitOrientationWidget(globalPosition, view) == false)
     {
         return false;
     }
     Preview_->SetAxisView(view);
     return true;
+}
+void PreviewViewport::updateOrientationHover(QPointF globalPosition)
+{
+#if defined(LUDUS_EDITOR_NATIVE_PREVIEW)
+    EditorAxisView view = EditorAxisView::Front;
+    const bool hasHover = tryHitOrientationWidget(globalPosition, view);
+    if (hasHover == mState->HasOrientationHover && (hasHover == false || view == mState->OrientationHover))
+    {
+        return;
+    }
+    mState->HasOrientationHover = hasHover;
+    mState->OrientationHover = view;
+    mState->applyOrientation();
+    if (hasHover == true)
+    {
+        setCursor(Qt::PointingHandCursor);
+        mHasGizmoCursor = true;
+    }
+    else
+    {
+        updateGizmoCursor();
+    }
+#else
+    static_cast<void>(globalPosition);
+#endif
+}
+bool PreviewViewport::tryToggleStatisticsOverlay(QPointF globalPosition)
+{
+#if defined(LUDUS_EDITOR_NATIVE_PREVIEW)
+    if (Preview_->IsStatisticsVisible() == false || mState->FrameLayoutOrNull == nullptr ||
+        mState->StatisticsCompactText.isEmpty() == true)
+    {
+        return false;
+    }
+    // The graph view's own label handles the click when it is the painted overlay.
+    if (mState->GraphViewOrNull != nullptr && mState->Window == nullptr)
+    {
+        return false;
+    }
+    const QRect frame = mState->FrameLayoutOrNull->GetFrameRectangle();
+    const QPointF local = getInteractionPosition(globalPosition) - QPointF(frame.topLeft());
+    const QString display = MakeStatisticsOverlayText(mState->StatisticsCompactText, mState->StatisticsSummary);
+    const QSizeF size = MeasureStatistics(display, OverlayKind::Statistics);
+    const QRectF panel({STATISTICS_MARGIN, STATISTICS_MARGIN}, size);
+    if (panel.contains(local) == false)
+    {
+        return false;
+    }
+    SetViewportStatisticsOverlayCollapsed(IsViewportStatisticsOverlayCollapsed() == false);
+    mState->applyStatistics();
+    return true;
+#else
+    static_cast<void>(globalPosition);
+    return false;
+#endif
 }
 bool PreviewViewport::tryActivateProblemChip(QPointF globalPosition)
 {
@@ -3117,28 +3393,41 @@ void PreviewViewport::updateStatistics()
         mState->GraphViewOrNull->SetStatisticsVisible(Preview_->IsStatisticsVisible());
         if (GetPresentation() == ViewportPresentation::SharedDevice)
         {
-            mState->StatisticsText = Preview_->IsStatisticsVisible() == true
+            const foundation::uint64 nowNanoseconds = foundation::time::Now().Nanoseconds;
+            const bool isVisible = Preview_->IsStatisticsVisible();
+            mState->StatisticsText = isVisible == true
                                          ? FormatGraphViewportStatistics(mState->ProjectGraph->GetStatistics(),
                                                                          Preview_->GetStatistics(),
-                                                                         foundation::time::Now().Nanoseconds)
-                                         : QString{};
-            mState->StatisticsBars = Preview_->IsStatisticsVisible() == true
-                                         ? MakeViewportPassBars(Preview_->GetStatistics())
-                                         : ViewportPassBars{};
+                                                                         nowNanoseconds)
+                                         : QString();
+            mState->StatisticsCompactText =
+                isVisible == true ? FormatCompactGraphViewportStatistics(mState->ProjectGraph->GetStatistics(),
+                                                                         Preview_->GetStatistics(),
+                                                                         nowNanoseconds)
+                                  : QString();
+            mState->StatisticsSummary =
+                isVisible == true
+                    ? FormatGraphViewportStatisticsSummary(mState->ProjectGraph->GetStatistics(), nowNanoseconds)
+                    : QString();
+            mState->StatisticsBars =
+                isVisible == true ? MakeViewportPassBars(Preview_->GetStatistics()) : ViewportPassBars{};
             mState->applyStatistics();
         }
         return;
     }
 #endif
-    const QString text =
-        Preview_->IsStatisticsVisible() == true ? FormatViewportStatistics(Preview_->GetStatistics()) : QString();
+    const bool isVisible = Preview_->IsStatisticsVisible();
+    const QString text = isVisible == true ? FormatViewportStatistics(Preview_->GetStatistics()) : QString();
     if (text == mState->StatisticsText)
     {
         return;
     }
     mState->StatisticsText = text;
-    mState->StatisticsBars =
-        Preview_->IsStatisticsVisible() == true ? MakeViewportPassBars(Preview_->GetStatistics()) : ViewportPassBars{};
+    mState->StatisticsCompactText =
+        isVisible == true ? FormatCompactViewportStatistics(Preview_->GetStatistics()) : QString();
+    mState->StatisticsSummary =
+        isVisible == true ? FormatViewportStatisticsSummary(Preview_->GetStatistics()) : QString();
+    mState->StatisticsBars = isVisible == true ? MakeViewportPassBars(Preview_->GetStatistics()) : ViewportPassBars{};
 #if defined(LUDUS_EDITOR_BROWSER_PREVIEW)
     mState->applyShaderStatus();
 #endif

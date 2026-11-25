@@ -1,4 +1,5 @@
 #include <ludus/foundation/base/byte_order.hpp>
+#include <ludus/foundation/containers/span_compatibility.hpp>
 
 #include <ludus/audio/audio_system.h>
 #include <ludus/audio/content/loader.h>
@@ -16,15 +17,15 @@ int ExerciseInstalledAudio() noexcept
     constexpr uint32 frames = 32768;
     uint8 wav[44 + frames * 2] = {'R', 'I', 'F', 'F', 0, 0, 0, 0, 'W', 'A', 'V', 'E', 'f', 'm', 't', ' '};
     std::span<uint8> bytes(wav);
-    if (TryWriteLittleEndian(uint32{36 + frames * 2}, bytes.subspan(4)) == false ||
-        TryWriteLittleEndian(uint32{16}, bytes.subspan(16)) == false ||
-        TryWriteLittleEndian(uint16{1}, bytes.subspan(20)) == false ||
-        TryWriteLittleEndian(uint16{1}, bytes.subspan(22)) == false ||
-        TryWriteLittleEndian(uint32{48000}, bytes.subspan(24)) == false ||
-        TryWriteLittleEndian(uint32{96000}, bytes.subspan(28)) == false ||
-        TryWriteLittleEndian(uint16{2}, bytes.subspan(32)) == false ||
-        TryWriteLittleEndian(uint16{16}, bytes.subspan(34)) == false ||
-        TryWriteLittleEndian(uint32{frames * 2}, bytes.subspan(40)) == false)
+    if (TryWriteLittleEndian(uint32{36 + frames * 2}, MakeBorrowedView(bytes.subspan(4))) == false ||
+        TryWriteLittleEndian(uint32{16}, MakeBorrowedView(bytes.subspan(16))) == false ||
+        TryWriteLittleEndian(uint16{1}, MakeBorrowedView(bytes.subspan(20))) == false ||
+        TryWriteLittleEndian(uint16{1}, MakeBorrowedView(bytes.subspan(22))) == false ||
+        TryWriteLittleEndian(uint32{48000}, MakeBorrowedView(bytes.subspan(24))) == false ||
+        TryWriteLittleEndian(uint32{96000}, MakeBorrowedView(bytes.subspan(28))) == false ||
+        TryWriteLittleEndian(uint16{2}, MakeBorrowedView(bytes.subspan(32))) == false ||
+        TryWriteLittleEndian(uint16{16}, MakeBorrowedView(bytes.subspan(34))) == false ||
+        TryWriteLittleEndian(uint32{frames * 2}, MakeBorrowedView(bytes.subspan(40))) == false)
     {
         return 30;
     }
@@ -34,7 +35,7 @@ int ExerciseInstalledAudio() noexcept
     wav[39] = 'a';
     for (usize i = 44; i < bytes.size(); i += 2)
     {
-        if (TryWriteLittleEndian(uint16{3276}, bytes.subspan(i)) == false)
+        if (TryWriteLittleEndian(uint16{3276}, MakeBorrowedView(bytes.subspan(i))) == false)
         {
             return 31;
         }

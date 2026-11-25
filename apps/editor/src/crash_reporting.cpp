@@ -29,6 +29,7 @@
 #include <QSysInfo>
 #include <QUrl>
 #include <QUrlQuery>
+#include <QVBoxLayout>
 
 namespace ludus::editor
 {
@@ -59,6 +60,32 @@ QString GetCrashDatabasePath()
 QString ReadDsn(const QSettings& settings)
 {
     return settings.value(DSN_KEY, QString::fromUtf8(crash_config::DEFAULT_DSN)).toString().trimmed();
+}
+
+QString SaveCrashReportingConsent(QSettings& inoutSettings,
+                                  const QString& selectedDsn,
+                                  bool hasConsent,
+                                  bool shouldSaveDestination)
+{
+    // A running handler's destination is immutable. Never enable the old endpoint after editing the DSN.
+    const QByteArray database = GetCrashDatabasePath().toUtf8();
+    if (SetCrashUploadsEnabled(database.constData(), selectedDsn == activeDsn && hasConsent == true) == false)
+    {
+        return QStringLiteral("Cannot update crash-report permissions. Preferences were not saved.");
+    }
+    if (shouldSaveDestination == true)
+    {
+        inoutSettings.setValue(DSN_KEY, selectedDsn);
+    }
+    inoutSettings.setValue(CONSENT_KEY, hasConsent);
+    inoutSettings.setValue(APPROVED_DSN_KEY, hasConsent == true ? selectedDsn : QString());
+    inoutSettings.sync();
+    if (inoutSettings.status() != QSettings::NoError)
+    {
+        SetCrashUploadsEnabled(database.constData(), false);
+        return QStringLiteral("Cannot save preferences. Submission has been disabled for this session.");
+    }
+    return {};
 }
 } // namespace
 
@@ -106,7 +133,12 @@ bool HasEditorCrashUploadConsent(const QSettings& settings, const QString& dsn)
 
 void InitializeEditorCrashReporting() noexcept
 {
-    QSettings settings(SETTINGS_ORGANIZATION, SETTINGS_APPLICATION);
+    const QSettings settings(SETTINGS_ORGANIZATION, SETTINGS_APPLICATION);
+    InitializeEditorCrashReporting(settings);
+}
+
+void InitializeEditorCrashReporting(const QSettings& settings) noexcept
+{
     activeDsn = ReadDsn(settings);
     const QString endpoint = MakeSentryMinidumpUrl(activeDsn);
     const bool canUpload = endpoint.isEmpty() == false && HasEditorCrashUploadConsent(settings, activeDsn) == true;
@@ -158,33 +190,40 @@ void InitializeEditorCrashReporting() noexcept
     }
 }
 
-void ShowEditorCrashReporting(QWidget* parentOrNull)
+bool ShowEditorCrashReporting(QWidget* parentOrNull)
 {
     QSettings settings(SETTINGS_ORGANIZATION, SETTINGS_APPLICATION);
+    const QString savedDsn = ReadDsn(settings);
+    bool shouldOfferRestart = false;
     QDialog dialog(parentOrNull);
     dialog.setObjectName(QStringLiteral("crashReportingDialog"));
     dialog.setWindowTitle(QStringLiteral("Crash Reporting"));
     dialog.setMinimumWidth(DIALOG_WIDTH_PIXELS);
     QFormLayout* form = new QFormLayout(&dialog);
+    form->setFieldGrowthPolicy(QFormLayout::AllNonFixedFieldsGrow);
     QLabel* explanation = new QLabel(
         QStringLiteral(
-            "Crash reports are saved on this Mac. If you enable submission, the separate crash handler sends "
-            "pending and future reports to the Ludus team's Sentry project, including after an offline session. "
-            "Capture can include child processes launched from this editor. Reports include thread stacks, "
-            "some process memory, loaded modules, OS details and build identity. "
-            "Memory may contain paths or research data. Project files, screenshots and session logs are not attached."),
+            "Crash reports are saved on this Mac. If you opt in, the crash handler sends pending and future reports "
+            "through Sentry so the maintainers of the selected project can diagnose crashes, including fatal "
+            "assertions. Uploads can resume after an offline session. Reports include thread stacks, some process "
+            "memory, loaded modules, OS details and "
+            "build identity. Memory may contain paths or research data. Reports can include child processes launched "
+            "from the Editor. Project files, screenshots and session logs are not attached. You can turn off uploads "
+            "here at any time."),
         &dialog);
     explanation->setWordWrap(true);
     form->addRow(explanation);
-    QLineEdit* dsn = new QLineEdit(ReadDsn(settings), &dialog);
+    QLineEdit* dsn = new QLineEdit(savedDsn, &dialog);
     dsn->setObjectName(QStringLiteral("crashReportingDsn"));
     dsn->setMaxLength(MAX_DSN_CHARACTERS);
     dsn->setPlaceholderText(QStringLiteral("https://public-key@host/project-id"));
+    dsn->setCursorPosition(0);
     form->addRow(QStringLiteral("Sentry project DSN"), dsn);
     QCheckBox* consent = new QCheckBox(QStringLiteral("Automatically send crash reports"), &dialog);
     consent->setObjectName(QStringLiteral("crashReportingConsent"));
-    consent->setChecked(HasEditorCrashUploadConsent(settings, activeDsn));
+    consent->setChecked(HasEditorCrashUploadConsent(settings, savedDsn));
     form->addRow(consent);
+    QObject::connect(dsn, &QLineEdit::textChanged, consent, [consent]() { consent->setChecked(false); });
     foundation::usize pending = 0;
     foundation::usize uploaded = 0;
     const QByteArray database = GetCrashDatabasePath().toUtf8();
@@ -193,6 +232,8 @@ void ShowEditorCrashReporting(QWidget* parentOrNull)
     status->setWordWrap(true);
     status->setObjectName(QStringLiteral("crashReportingStatus"));
     status->setText(captureProblem.isEmpty() == false ? captureProblem
+                    : savedDsn != activeDsn
+                        ? QStringLiteral("Restart the Editor to apply the saved destination. Uploads are paused.")
                     : hasCounts == true ? QStringLiteral("Local capture active. Pending: %1; uploaded: %2.")
                                               .arg(static_cast<foundation::uint64>(pending))
                                               .arg(static_cast<foundation::uint64>(uploaded))
@@ -215,35 +256,34 @@ void ShowEditorCrashReporting(QWidget* parentOrNull)
                 QStringLiteral("Enter a valid HTTPS project DSN, or disable submission and clear the DSN."));
             return;
         }
-        // A running handler's destination is immutable. Never enable the old endpoint after editing the DSN.
-        const bool hasEndpointChanged = selectedDsn != activeDsn;
-        const bool canUpload = hasEndpointChanged == false && consent->isChecked() == true;
-        if (SetCrashUploadsEnabled(database.constData(), canUpload) == false)
+        const QString problem = SaveCrashReportingConsent(settings, selectedDsn, consent->isChecked(), true);
+        if (problem.isEmpty() == false)
         {
-            status->setText(QStringLiteral("Cannot update crash-report permissions. Preferences were not saved."));
+            status->setText(problem);
             return;
         }
-        settings.setValue(DSN_KEY, selectedDsn);
-        settings.setValue(CONSENT_KEY, consent->isChecked());
-        settings.setValue(APPROVED_DSN_KEY, consent->isChecked() == true ? selectedDsn : QString());
-        settings.sync();
-        if (settings.status() != QSettings::NoError)
-        {
-            SetCrashUploadsEnabled(database.constData(), false);
-            status->setText(QStringLiteral("Cannot save preferences. Submission has been disabled for this session."));
-            return;
-        }
-        if (hasEndpointChanged == true)
-        {
-            QMessageBox::information(
-                &dialog,
-                QStringLiteral("Restart required"),
-                QStringLiteral(
-                    "Restart the editor to use the new reporting destination. Submission is disabled until then."));
-        }
+        shouldOfferRestart = selectedDsn != activeDsn;
         dialog.accept();
     });
+    consent->setFocus();
     dialog.exec();
+    if (shouldOfferRestart == false)
+    {
+        return false;
+    }
+
+    QMessageBox restart(QMessageBox::Information,
+                        QStringLiteral("Restart Editor?"),
+                        QStringLiteral("Restart the Editor to apply the new crash reporting destination. "
+                                       "Uploads are paused until then."),
+                        QMessageBox::NoButton,
+                        parentOrNull);
+    QPushButton* restartNow = restart.addButton(QStringLiteral("Restart Now"), QMessageBox::AcceptRole);
+    QPushButton* later = restart.addButton(QStringLiteral("Later"), QMessageBox::RejectRole);
+    restart.setDefaultButton(later);
+    restart.setEscapeButton(later);
+    restart.exec();
+    return restart.clickedButton() == restartNow;
 }
 
 void PresentEditorCrashReportingNotice(QWidget* parentOrNull)
@@ -257,10 +297,61 @@ void PresentEditorCrashReportingNotice(QWidget* parentOrNull)
     const QString noticeKey =
         QStringLiteral("crashReporting/notice/") +
         QString::fromLatin1(QCryptographicHash::hash(activeDsn.toUtf8(), QCryptographicHash::Sha256).toHex());
-    if (MakeSentryMinidumpUrl(activeDsn).isEmpty() == false && settings.value(noticeKey, false).toBool() == false)
+    if (MakeSentryMinidumpUrl(activeDsn).isEmpty() == true || settings.value(noticeKey, false).toBool() == true ||
+        HasEditorCrashUploadConsent(settings, activeDsn) == true)
     {
-        ShowEditorCrashReporting(parentOrNull);
-        settings.setValue(noticeKey, true);
+        return;
     }
+
+    QDialog dialog(parentOrNull);
+    dialog.setObjectName(QStringLiteral("crashReportingNotice"));
+    dialog.setWindowTitle(QStringLiteral("Send crash reports?"));
+    dialog.setMinimumWidth(DIALOG_WIDTH_PIXELS);
+    QVBoxLayout* layout = new QVBoxLayout(&dialog);
+    const bool hasTeamDestination =
+        crash_config::HAS_TEAM_SENTRY_DEFAULT == true && activeDsn == QString::fromUtf8(crash_config::DEFAULT_DSN);
+    QLabel* explanation = new QLabel(
+        hasTeamDestination == true
+            ? QStringLiteral("Help the Ludus team diagnose crashes by sending reports through Sentry.")
+            : QStringLiteral("Send crash reports to the configured Sentry project at %1 for its maintainers to review.")
+                  .arg(QUrl(activeDsn).host()),
+        &dialog);
+    explanation->setTextFormat(Qt::PlainText);
+    explanation->setWordWrap(true);
+    layout->addWidget(explanation);
+    QLabel* details = new QLabel(
+        QStringLiteral("Pending and future reports can include stack traces, system and build details, and parts of "
+                       "process memory, which may contain paths or sensitive data. This includes fatal assertions "
+                       "and crashes in child processes launched by the Editor. You can change your choice under "
+                       "Help > Crash Reporting."),
+        &dialog);
+    details->setTextFormat(Qt::PlainText);
+    details->setWordWrap(true);
+    layout->addWidget(details);
+    QLabel* status = new QLabel(&dialog);
+    status->setWordWrap(true);
+    status->hide();
+    layout->addWidget(status);
+    QDialogButtonBox* buttons = new QDialogButtonBox(&dialog);
+    QPushButton* keepLocal =
+        buttons->addButton(QStringLiteral("Keep Reports on This Mac"), QDialogButtonBox::RejectRole);
+    QPushButton* send = buttons->addButton(QStringLiteral("Send Crash Reports"), QDialogButtonBox::AcceptRole);
+    layout->addWidget(buttons);
+    send->setAutoDefault(false);
+    keepLocal->setDefault(true);
+    keepLocal->setFocus();
+    QObject::connect(buttons, &QDialogButtonBox::rejected, &dialog, &QDialog::reject);
+    QObject::connect(buttons, &QDialogButtonBox::accepted, &dialog, [&]() {
+        const QString problem = SaveCrashReportingConsent(settings, activeDsn, true, false);
+        if (problem.isEmpty() == false)
+        {
+            status->setText(problem);
+            status->show();
+            return;
+        }
+        dialog.accept();
+    });
+    dialog.exec();
+    settings.setValue(noticeKey, true);
 }
 } // namespace ludus::editor

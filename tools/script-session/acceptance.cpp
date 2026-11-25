@@ -63,7 +63,8 @@ bool Acceptance() noexcept
     {
         return false;
     }
-    (void)TryWriteLittleEndian(uint32{11}, std::span<uint8>{bytes}.subspan(28));
+    constexpr usize SECOND_FIELD_IDENTIFIER_OFFSET = 28;
+    (void)TryWriteLittleEndian(uint32{11}, {bytes + SECOND_FIELD_IDENTIFIER_OFFSET, sizeof(uint32)});
     if (Expect(DecodeState(std::span<const uint8>{bytes}.first(40), decoded) == false,
                "duplicate state tag rejected") == false)
     {

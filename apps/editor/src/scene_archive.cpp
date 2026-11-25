@@ -2,6 +2,7 @@
 
 #include <ludus/foundation/base/byte_order.hpp>
 #include <ludus/foundation/base/types.h>
+#include <ludus/foundation/containers/span_compatibility.hpp>
 #include <ludus/foundation/math/scalar.hpp>
 
 #include <QDir>
@@ -57,7 +58,7 @@ template <typename ValueType>
     {
         return false;
     }
-    return TryReadLittleEndian(bytes.subspan(offset), out);
+    return TryReadLittleEndian(ludus::foundation::MakeBorrowedView(bytes.subspan(offset)), out);
 }
 
 [[nodiscard]] bool isSafeEntryName(const QString& name)

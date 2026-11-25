@@ -29,6 +29,8 @@ Closest-hit can inspect materials, sample lights, issue visibility queries and
 write a continuation into the user's payload. The user chooses the estimator,
 BSDF, MIS weights, throughput, termination and bounce count. Standard BSDF and
 light-sampling routines are optional primitives, not mandatory shading policy.
+Templates can expose a project-owned draw and matching probability evaluator
+through the proposed [renderer sampling contract](renderer-sampling.md#project-authored-proposals).
 
 The initial target is `camera -> x0 -> light` plus
 `camera -> x0 -> x1 -> light`: direct illumination and one intermediate surface
@@ -209,10 +211,25 @@ EvaluateLightPdfSolidAngle(scene, distribution, receiver, emissionEndpoint) -> f
 EvaluateEnvironment(scene, directionWorld, textureEvaluation) -> float3
 
 TraceClosest(scene, inout queries, ray) -> {Surface, Miss, Failure} and SurfaceHit
+TraceClosestExcludingTriangles(scene, inout queries, ray, excludedTriangles) -> same result
 TestVisibility(scene, inout queries, receiver, lightSample) -> {Clear, Occluded, Failure}
 SpawnSurfaceRay(hit, directionWorld, maximumDistanceWorld) -> Ray or Failure
 TraceAndShade(scene, inout queries, ray, inout UserPayload) -> {Surface, Miss, Failure}
 ```
+
+`TraceClosestExcludingTriangles` skips up to two packed indices returned by
+`GetTriangle` for the same scene generation. Use `SCENE_INVALID_INDEX` for
+either unused slot. A valid call consumes one surface query, including on a
+miss. An out-of-range index fails the invocation. Exclusions are tested
+before accepting a triangle, so another triangle at the same distance
+remains eligible. `TestVisibilityExcludingTriangles` applies the same rule
+to light connections from an explicit origin and uses the visibility budget.
+Native query traversal checks excluded indices before committing a candidate.
+Metal's hardware RT pipeline passes the two indices to its intersection callback
+in a ray payload. ComputeBvh and TriangleLoop filter candidates in their own
+traversal. A Custom traversal uses the built-in triangle loop for filtered rays.
+With both slots unused, the selected traversal behaves as it does for
+`TraceClosest`.
 
 `RayLaunch.IsFullImageDispatch` is true only when the dispatched tile covers the
 entire image. Algorithms with cross-pixel dependencies can explicitly reject
@@ -254,10 +271,13 @@ For continuous sources Li contains no extra inverse-square factor; the solid-ang
 PDF conversion accounts for geometry. For delta point/spot samples the coefficient
 does include inverse-square attenuation. Do not multiply either case twice.
 
-TestVisibility traces only an occlusion segment: it never invokes authored hit or
-miss shading and never adds radiance. Offset the receiver robustly and the mesh
-endpoint toward the receiver using error bounds; exclude only the numerical end
-point, not the emitter instance. Other triangles of the same emitter can occlude.
+`TestVisibility` traces an occlusion segment without invoking authored shading.
+With a `SurfaceHit`, it offsets the ray origin using that triangle's error bound.
+With a world-space ray origin, it starts at that point. For a mesh
+light it offsets the endpoint against the sample's direction, toward the position
+the sample was taken from, and excludes the numerical endpoint from the segment.
+Offsetting toward the already offset ray origin would put both points on the same
+side when the endpoint lies on the origin's own surface, leaving no unit direction. Other triangles of the same emitter can occlude.
 An infinite endpoint traces to a conservative scene exit distance; this shadow
 range is not the camera far plane. Surface secondary rays have their own explicit
 maximum range. Finite transport cutoffs are reported as such, not exact infinity.
@@ -346,6 +366,33 @@ move its ray directions a sizeable fraction of a pixel off the raster projection
 (issue #1761), which a visibility-buffer reconstruction reports as a missed
 triangle. The renderer packs one eye-relative matrix for the graph kernels, the
 GPU preview and RT1 alike; RT1's CPU oracle builds the same ray.
+
+Use `TryMakeCameraRayFromWorldPosition(launch, positionWorld, ray)` to reconstruct
+a camera ray through a known position in world metres. It uses the same near and
+far clip distances as `MakeCameraRay`, with an eye origin for perspective cameras
+and a near-plane origin for orthographic cameras. Positions outside the image
+are valid. The helper returns false and clears the output if the projection is
+undefined or the position is at or behind a perspective camera.
+
+The overload `TryMakeCameraRayFromWorldPosition(launch, positionWorld, ray, positionClip)`
+also returns the projected `x/w` and `y/w`. It clears both outputs on failure.
+To find the destination pixel in an image dispatch, map the projected position to
+top-left-origin UVs, reject UVs outside `[0, 1)` on either axis, then scale by the
+full image extent. Check the hit's distance against the returned ray's clip
+distances when the contribution must lie inside the camera frustum.
+
+```slang
+Ray cameraRay;
+float2 positionClip;
+if (TryMakeCameraRayFromWorldPosition(launch, hit.PositionWorld, cameraRay, positionClip) == false)
+    return float3(0);
+
+float2 positionUv = float2(positionClip.x + 1, 1 - positionClip.y) * 0.5;
+if (any(positionUv < 0) == true || any(positionUv >= 1) == true)
+    return float3(0);
+
+uint2 positionPixel = min(uint2(positionUv * float2(launch.ExtentPixel)), launch.ExtentPixel - 1);
+```
 
 RayQueryContext is a separate invocation-local mutable context initialized once
 by the generated wrapper. It carries query counters and the failure latch;

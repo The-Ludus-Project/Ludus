@@ -21,6 +21,8 @@ inline constexpr std::string_view MIGRATION_MANIFEST_FORMAT = "ludus.identity-mi
 inline constexpr uint64 MIGRATION_MANIFEST_VERSION = 1;
 /// Largest accepted manifest text, in bytes.
 inline constexpr usize MAX_MANIFEST_BYTES = usize{1024} * 1024;
+/// Maximum requested heap bytes for one manifest decode, including the new tables.
+inline constexpr usize MAX_MANIFEST_DECODE_BYTES = usize{15} * 1024 * 1024;
 /// Most documents one manifest may describe.
 inline constexpr usize MAX_MANIFEST_DOCUMENTS = 64;
 /// Most objects one manifest document may map (the Editor's World entity limit).
@@ -154,6 +156,22 @@ public:
     /// @param outError Receives the failure; reset to Success on success.
     /// @return Success, or the failure; the manifest is unchanged on failure.
     [[nodiscard]] IdentityRecordStatus Read(std::string_view json, IdentityRecordError& outError) noexcept;
+
+    /// @brief Decode and validate a replacement under a requested-heap budget.
+    ///
+    /// The peak includes the parser pool, both owned candidate tables (including
+    /// their inline strings), and the temporary UUID index while each is live.
+    /// It excludes input, stack storage, allocator overhead and the previously
+    /// accepted manifest. Outputs describe this attempt even on failure.
+    /// @param json Borrowed input for the call, at most MAX_MANIFEST_BYTES.
+    /// @param outError Receives the failing field/element or parser byte offset when known.
+    /// @param outPeakBytes Peak successfully allocated bytes for this attempt.
+    /// @param maxDecodeBytes Requested cap, clamped to MAX_MANIFEST_DECODE_BYTES.
+    /// @return Success, or the failure with the previously accepted manifest unchanged.
+    [[nodiscard]] IdentityRecordStatus Read(std::string_view json,
+                                            IdentityRecordError& outError,
+                                            usize& outPeakBytes,
+                                            usize maxDecodeBytes = MAX_MANIFEST_DECODE_BYTES) noexcept;
 
     /// @brief Write the canonical JSON form: fixed member order, two-space indentation, trailing newline.
     /// @param outJson Replaced on success; unchanged on failure.

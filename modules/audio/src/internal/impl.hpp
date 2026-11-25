@@ -71,6 +71,8 @@ struct AudioSystem::Impl final
     std::atomic<bool> DeviceStopped{false};
     std::atomic<uint32> PublishedStopAll{1};
     std::atomic<uint64> PublishedFrame{0};
+    /// Command records the renderer has applied at a control boundary, published after bus gains are recomputed.
+    std::atomic<uint64> AppliedCommands{0};
     struct RenderRecord final
     {
         uint32 Slot = 0;
@@ -80,6 +82,7 @@ struct AudioSystem::Impl final
         float32 Gain = 0.0F;
         StateCause Cause = StateCause::None;
         SilenceCause Silence = SilenceCause::None;
+        uint64 StartFrame = 0;
     };
     SpscRing<RenderRecord, 1024> RenderSnapshots;
     struct RenderStats final
@@ -153,6 +156,19 @@ struct AudioSystem::Impl final
     uint32 MeterWindowFrames = 1024;
 
     SpscRing<QueuedCommand, COMMAND_QUEUE_CAPACITY> CommandRing;
+    uint64 PublishedCommands = 0; ///< Records published to CommandRing; matches renderer counts.
+    /// Owner-side publication to the renderer queue. Every CommandRing publication goes through here so
+    /// BatchResult::Sequence and GetAppliedSequence count the same records; returns false (publishing nothing)
+    /// when the batch does not fit.
+    [[nodiscard]] bool PublishCommands(std::span<const QueuedCommand> commands) noexcept
+    {
+        if (CommandRing.TryPublishBatch(commands) == false)
+        {
+            return false;
+        }
+        PublishedCommands += commands.size();
+        return true;
+    }
     SpscRing<internal::SnapshotRecord, 4> SnapshotRing;
 
     VoiceHandle LastBatchVoices[MAX_BATCH_RECORDS]{};
@@ -191,11 +207,15 @@ struct AudioSystem::Impl final
     [[nodiscard]] ClipHandle MakeClipHandle(uint32 slot) const noexcept;
 
     // --- Boundary / render (control_owner.cpp) -----------------------------
+    [[nodiscard]] Status ConfigureStreamGroup(std::span<const StreamHandle> streams,
+                                              std::span<const float32> gains) noexcept;
+    void FinishStreamGroup(std::span<const StreamHandle> streams, Status result) noexcept;
     void ProcessControlBoundary() noexcept;
     void ConsumeAndApplyBatch() noexcept;
     void ApplyOneCommand(const QueuedCommand& cmd) noexcept;
     void ApplyStopMailboxes() noexcept;
     void ResolveScheduledStarts() noexcept;
+    [[nodiscard]] uint32 ResolveStreamTransitions(uint32 frames) noexcept;
     void SelectAndCharge() noexcept;
     void AcknowledgeTerminals() noexcept;
 

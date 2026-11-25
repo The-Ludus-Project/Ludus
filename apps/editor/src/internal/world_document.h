@@ -231,6 +231,13 @@ public:
                                         const QJsonObject& lightBinding,
                                         const QVector<WorldLightEnable>& worldLights,
                                         QString& outError);
+    /// Replace or remove the World's authored climate (WORLD_CLIMATE) in one undoable "Edit Climate" step.
+    /// The edit's revisions are assigned by ReviseWorldClimate, and the cooker validates the result, so a
+    /// committed climate always cooks for Play.
+    /// @param climate The new member, or an undefined value to remove the World's climate.
+    /// @param outError Why the edit was refused, naming the failing record and its repair. Failure preserves
+    /// the draft and history; an unchanged climate adds no history.
+    [[nodiscard]] bool SetClimate(const QJsonValue& climate, QString& outError);
     [[nodiscard]] QJsonObject ScenePlacement(const QJsonObject& entity) const;
     /// Mesh-to-parent transform of a scene placement (basis, then Euler-degree rotation Rz*Ry*Rx and scale,
     /// then position), in float32. SceneLevel stores this basis with the authored position, and the viewport

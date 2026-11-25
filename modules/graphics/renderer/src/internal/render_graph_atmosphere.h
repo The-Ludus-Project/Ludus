@@ -2,6 +2,7 @@
 
 #include <ludus/foundation/containers/static_array.hpp>
 #include <ludus/foundation/math/vector.hpp>
+#include <ludus/graphics/renderer/atmosphere.hpp>
 #include <ludus/graphics/rhi/graph.h>
 #include <ludus/graphics/rhi/raster.h>
 
@@ -9,7 +10,6 @@
 
 namespace ludus::graphics::renderer
 {
-struct AtmosphereDescription;
 struct ViewDescription;
 namespace internal
 {
@@ -17,6 +17,43 @@ namespace internal
                                             foundation::math::Vector3 eyeWorld,
                                             foundation::float64& outAltitudeMetres,
                                             foundation::math::Vector3& outUpWorld) noexcept;
+
+/// Rows of CloudLayerParameters (renderer_cloud_layer.slang), shared by the sky and deferred resolve uniforms. All
+/// zero omits the layer.
+struct CloudLayerUniform final
+{
+    foundation::math::Vector4 AxisXWorld{};
+    foundation::math::Vector4 UpWorld{};
+    foundation::math::Vector4 AxisZWorld{};
+    foundation::math::Vector4 CameraLocal{};
+    foundation::math::Vector4 Medium{};
+    foundation::math::Vector4 Phase{};
+    /// CloudLayerTestField: unit split normal in the layer frame and the plane's offset in metres.
+    foundation::math::Vector4 TestSplit{};
+    /// Per region: source radiance in xyz and extinction (density applied) per metre in w.
+    foundation::StaticArray<foundation::math::Vector4, CloudLayerTestField::REGION_COUNT> TestRegions{};
+};
+
+/// Validate an Atmosphere's cloud layer (CloudLayerDescription) and pack it for one camera. A disabled layer, an
+/// orthographic camera, or an eye below the ground or above the shell writes the all-zero uniform, which omits the
+/// layer. The camera's position enters in binary64 relative to the surface anchor.
+/// @return False for invalid cloud fields or anchor, preserving outUniform; the caller rejects the description.
+[[nodiscard]] bool TryPackCloudLayer(const AtmosphereDescription& atmosphere,
+                                     const ViewDescription& camera,
+                                     CloudLayerUniform& outUniform) noexcept;
+
+// Mirrors AuroraLayerParameters in the sky and deferred resolve shaders.
+struct AuroraLayerUniform final
+{
+    foundation::math::Vector4 AxisXWorld{};
+    foundation::math::Vector4 AxisZWorld{};
+};
+
+/// Validate the emission, frame and time. Write zero for disabled or unsupported views.
+[[nodiscard]] bool TryPackAuroraLayer(const AtmosphereDescription& atmosphere,
+                                      bool isOrthographic,
+                                      bool isOrbital,
+                                      AuroraLayerUniform& outUniform) noexcept;
 
 struct AtmosphereLightingResources final
 {

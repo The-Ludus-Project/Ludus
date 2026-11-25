@@ -212,9 +212,9 @@ void EmptyWorldView::paintEvent(QPaintEvent* /*event*/)
         for (usize i = 0; i < count; ++i)
         {
             const renderer::WorldGridLine& line = lines[i];
-            const QColor colour = QColor::fromRgbF(static_cast<float64>(math::EncodeSrgb(line.Color.X)),
-                                                   static_cast<float64>(math::EncodeSrgb(line.Color.Y)),
-                                                   static_cast<float64>(math::EncodeSrgb(line.Color.Z)));
+            const QColor colour = QColor::fromRgbF(math::EncodeSrgb(line.Color.X),
+                                                   math::EncodeSrgb(line.Color.Y),
+                                                   math::EncodeSrgb(line.Color.Z));
             const DrawnLine drawn = DrawLine(painter, view, size(), line.StartWorld, line.EndWorld, colour.rgb());
             const int32 axis = GetAxisIndexOrNegative(line);
             if (axis >= 0 && drawn.IsVisible == true)

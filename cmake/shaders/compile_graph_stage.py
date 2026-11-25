@@ -109,7 +109,7 @@ def verify_ray_compute_metal(code, interface, requires_native_queries=True):
     if not requires_native_queries and (scenes or 'intersection_query<' in code or 'metal_raytracing' in code):
         raise RuntimeError('Software ray Metal artifact must not require native ray traversal')
     for binding in interface['entries']:
-        resource = 'texture' if binding['kind'] in ('Texture2D', 'TextureDepth2D') else 'buffer'
+        resource = 'texture' if binding['kind'] in ('Texture2D', 'TextureDepth2D', 'StorageTexture2DReadWrite') else 'buffer'
         # Slang reflects a World-feature table (renderer_gpu_preview_layout.h) from the call graph, which records
         # the graph's support; SPIRV-Cross may still drop a read its optimizer proved unreachable. The renderer
         # binding a buffer at an index the kernel never declares is harmless, so only a moved slot fails.
@@ -240,9 +240,9 @@ def compile_graph_stage(args, lock):
     if native_pipeline and (target != 'metal' or stage != 'compute'):
         raise RuntimeError('Native ray stages require the Metal ray pipeline backend')
     software_rays = getattr(args, 'graph_software_rays', False)
-    translated_compute = native_rays or software_rays
-    if software_rays and (native_rays or stage != 'compute' or target not in ('spirv', 'metal')):
-        raise RuntimeError('Software ray traversal requires an ordinary native compute target')
+    translated_compute = native_rays or (software_rays and target != 'wgsl')
+    if software_rays and (native_rays or stage != 'compute' or target not in ('spirv', 'metal', 'wgsl')):
+        raise RuntimeError('Software ray traversal requires a Metal, Vulkan or WebGPU compute target')
     if native_rays and (stage != 'compute' or target not in ('spirv', 'metal')):
         raise RuntimeError('Hardware ray queries require a native Metal or Vulkan compute target')
     metal = target == 'metal'
@@ -294,7 +294,8 @@ def compile_graph_stage(args, lock):
         artifact.write_text(code)
         reflection.write_text(json.dumps(document))
     interface = raster_interface(document, stage, metal and not translated_compute and not native_pipeline,
-                                 structured_records=translated_compute or native_pipeline, dxil=dxil)
+                                 structured_records=software_rays or native_rays or native_pipeline, dxil=dxil,
+                                 graph_storage_texture=getattr(args, 'graph_storage_texture', False))
     if translated_compute:
         from compile_raster import verify_storage_record_strides
         verify_storage_record_strides(intermediate.read_bytes(), interface)
@@ -315,6 +316,9 @@ def compile_graph_stage(args, lock):
         emitted = args.name
     elif target == 'wgsl':
         code = wgsl_contract(artifact.read_text(), interface, stage)
+        if software_rays:
+            from compile_raster import verify_wgsl_compute_storage
+            verify_wgsl_compute_storage(code, interface)
         names = re.findall(r'@' + stage + r'\s+(?:@workgroup_size\([^)]*\)\s+)?fn\s+(\w+)', code)
         if len(names) != 1:
             raise RuntimeError('RG1 requires exactly one emitted WGSL stage entry')

@@ -1,11 +1,13 @@
-add_library(ludus_localization STATIC src/catalog.cpp src/formatter.cpp)
+add_library(ludus_localization STATIC src/catalog.cpp src/formatter.cpp src/locale_publication.cpp
+    src/localized_view.cpp)
 add_library(Ludus::Localization ALIAS ludus_localization)
 set_target_properties(ludus_localization PROPERTIES EXPORT_NAME Localization)
 target_sources(ludus_localization PUBLIC FILE_SET public_headers TYPE HEADERS BASE_DIRS include
-    FILES include/ludus/localization/catalog.hpp include/ludus/localization/formatter.hpp)
+    FILES include/ludus/localization/catalog.hpp include/ludus/localization/formatter.hpp
+        include/ludus/localization/locale_publication.hpp)
 target_include_directories(ludus_localization PRIVATE src)
 target_link_libraries(ludus_localization PUBLIC Ludus::FoundationBase Ludus::FoundationMemory Ludus::FoundationStrings
-    PRIVATE Ludus::FoundationContainers)
+    Ludus::FoundationContainers)
 # The formatter API is always present; only LUDUS_BUILD_UNICODE builds link the
 # pinned ICU backend. Without it PrepareFormatterContext reports BackendUnavailable.
 if(LUDUS_BUILD_UNICODE)
@@ -35,7 +37,7 @@ endif()
 if(LUDUS_BUILD_TESTS)
     find_package(Catch2 3 REQUIRED CONFIG)
     add_executable(ludus_localization_tests tests/catalog_tests.cpp tests/release_tests.cpp tests/formatter_tests.cpp
-        "${_localization_fixture}")
+        tests/locale_publication_tests.cpp "${_localization_fixture}")
     target_include_directories(ludus_localization_tests PRIVATE "${CMAKE_CURRENT_BINARY_DIR}/generated")
     target_link_libraries(ludus_localization_tests PRIVATE Ludus::FoundationThreading Ludus::Localization Ludus::FoundationContainers Catch2::Catch2WithMain)
     if(LUDUS_BUILD_UNICODE)

@@ -47,6 +47,32 @@ TEST_CASE("preview diagnostics replace independently and reveal a changed activa
     CHECK(list.GetCount(ErrorListSeverity::Message) == 1);
 }
 
+TEST_CASE("Analysis rows stay apart from build rows and never bring the list forward",
+          "[editor][render-graph][diagnostics]")
+{
+    ErrorList list;
+    QSignalSpy problems(&list, &ErrorList::ProblemsReported);
+    ErrorListEntry analysis;
+    analysis.Severity = ErrorListSeverity::Error;
+    analysis.Producer = ErrorListProducer::Analysis;
+    analysis.Description = QStringLiteral("unknown name missing");
+    analysis.File = QStringLiteral("shaders/lighting.slang");
+    analysis.Location = QStringLiteral("3:11");
+    analysis.Origin = QStringLiteral("Analysis (slangd)");
+    list.ReplaceEntries(ErrorListProducer::Build, ParseBuildErrorEntries(QStringLiteral("game.cpp:1: error: failure")));
+    CHECK(problems.count() == 1);
+    list.ReplaceEntries(ErrorListProducer::Analysis, {analysis});
+    list.ReplaceEntries(ErrorListProducer::Analysis, {analysis, analysis});
+    // Typing changes analysis rows; only build and graph producers raise the list.
+    CHECK(problems.count() == 1);
+    CHECK(list.GetCount(ErrorListSeverity::Error) == 3);
+    // Each producer still replaces only its own rows.
+    list.ReplaceEntries(ErrorListProducer::Build, {});
+    CHECK(list.GetCount(ErrorListSeverity::Error) == 2);
+    list.ReplaceEntries(ErrorListProducer::Analysis, {});
+    CHECK(list.GetEntries().isEmpty() == true);
+}
+
 TEST_CASE("a World feature the graph does not render is a warning row, not an error",
           "[editor][render-graph][diagnostics]")
 {

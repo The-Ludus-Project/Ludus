@@ -8,8 +8,9 @@ You only edit the sample; the engine stays unchanged.
 ![The completed Cornell box running on macOS Metal](images/cornell-box-direct.png)
 
 The starting scene is an open room with a red left wall, green right wall, two
-white blocks and a ceiling light. Geometry and direct lighting live in a Slang
-shader drawn through Ludus's public fullscreen API. Mesh loading, general mesh
+white blocks and a ceiling light. Geometry and direct lighting live in a
+[LUSL](../modules/tooling/shader-language.md) shader drawn through Ludus's public
+fullscreen API. Mesh loading, general mesh
 rendering and path tracing are future work. There is no indirect illumination,
 color bleeding or progressive accumulation; a small constant ambient term keeps
 unlit faces visible. Sixteen fixed light samples give stable but stepped shadows.
@@ -19,7 +20,7 @@ unlit faces visible. Sixteen fixed light samples give stable but stepped shadows
 The **editor walkthrough below uses Linux x64** with a Wayland session and a
 Vulkan-capable driver. Follow [Install and launch](../wiki/getting-started/install.md)
 to prepare the editor and use [Building Ludus](../development/building.md) for
-system prerequisites. Keep a code editor available for C++ and Slang files.
+system prerequisites. Keep a code editor available for C++ and LUSL (`.lusl`) files.
 
 On macOS, use the sample's [command-line workflow](#manual-setup-and-command-line-workflow)
 for the numbered lessons. The screenshots show the sample running on macOS Metal.
@@ -110,7 +111,7 @@ Open the sample folder in your code editor. Start with these files:
 | `CMakeLists.txt` | SDK components, executable and shader compilation |
 | `src/main.cpp` | Logging, window creation, camera publication, RHI startup, frames and shutdown |
 | `src/camera.cpp` | Authored C0 eye/lens and checked framebuffer ray extraction |
-| `shaders/cornell.slang` | Room, blocks, supplied camera rays, materials and lighting |
+| `shaders/cornell.lusl` | Room, blocks, supplied camera rays, materials and lighting |
 | `CMakePresets.json` | Shared Debug, Development and Release profiles |
 | `CMakeUserPresets.json` | Ignored settings generated for this machine |
 
@@ -121,15 +122,15 @@ automatically. Do not edit generated `cornell.h` or files under `out/`.
 
 ## 5. Change a wall material
 
-In `shaders/cornell.slang`, find `Hit scene(...)`. The first `rectangle` call
-creates the left wall; its last `float3` before `hit` is the wall's RGB material.
-Change just that value:
+In `shaders/cornell.lusl`, find `Hit IntersectScene(...)`. The first
+`IntersectRectangle` call creates the left wall; its last `float32x3` before
+`inout hit` is the wall's RGB material. Change just that value:
 
 ```cpp
 // Before:
-float3(1.0, 0.0, 0.0), float3(0.63, 0.065, 0.05), hit);
+float32x3(1.0, 0.0, 0.0), float32x3(0.63, 0.065, 0.05), inout hit);
 // After:
-float3(1.0, 0.0, 0.0), float3(0.05, 0.12, 0.63), hit);
+float32x3(1.0, 0.0, 0.0), float32x3(0.05, 0.12, 0.63), inout hit);
 ```
 
 Save, then **Launch**.
@@ -141,21 +142,22 @@ right wall stays green and the geometry stays in place. These are linear RGB
 reflectance values, not display hex colors. White surfaces do not become blue:
 this renderer does not simulate light bouncing from the wall.
 
-Restore `float3(0.63, 0.065, 0.05)` before the next exercise.
+Restore `float32x3(0.63, 0.065, 0.05)` before the next exercise.
 
 ## 6. Move a block and its shadow
 
-Find `void blocks(...)`. In its first `block` call, change only the center:
+Find `void IntersectBlocks(...)`. In its first `IntersectBlock` call, change only
+the center:
 
 ```cpp
 // Before:
-float3(-0.40, 0.36, 0.35)
+float32x3(-0.40, 0.36, 0.35)
 // After:
-float3(-0.15, 0.36, 0.35)
+float32x3(-0.15, 0.36, 0.35)
 ```
 
 The center is `(x, y, z)` in this sample's normalized world units. Positive x
-moves the short block toward the right. The next `float3(0.30, 0.36, 0.30)` gives
+moves the short block toward the right. The next `float32x3(0.30, 0.36, 0.30)` gives
 its half extents, not its full dimensions. Its y center equals its y half extent,
 so its bottom still rests on the floor at y = 0. Save, then **Launch**.
 
@@ -163,21 +165,21 @@ so its bottom still rests on the floor at y = 0. Save, then **Launch**.
 
 **Checkpoint:** the short block moves right and its floor shadow moves with it;
 the tall block stays in place. Both visible geometry and shadow rays use
-`blocks`, so one edit updates both. This is procedural shader geometry rather
+`IntersectBlocks`, so one edit updates both. This is procedural shader geometry rather
 than an editor transform or a mesh entity.
 
 Restore the original center before continuing.
 
 ## 7. Adjust light strength
 
-At the end of `shade(...)`, change the direct-light multiplier from `12.0` to
+At the end of `Shade(...)`, change the direct-light multiplier from `12.0` to
 `6.0`, leaving the other values alone:
 
 ```cpp
 // Before:
-return hit.albedo * (0.035 + illumination * (0.64 * 0.56 * 12.0 / (16.0 * 3.141593)));
+return hit.Albedo * (0.035 + illumination * (EMITTER_WIDTH * EMITTER_DEPTH * 12.0 / (16.0 * SAMPLE_PI)));
 // After:
-return hit.albedo * (0.035 + illumination * (0.64 * 0.56 * 6.0 / (16.0 * 3.141593)));
+return hit.Albedo * (0.035 + illumination * (EMITTER_WIDTH * EMITTER_DEPTH * 6.0 / (16.0 * SAMPLE_PI)));
 ```
 
 Save, then **Launch**. **Checkpoint:** lit surfaces become dimmer, while
@@ -222,8 +224,8 @@ Open `src/main.cpp` and follow these functions in order:
 4. Renderer shutdown releases GPU resources before the window is destroyed.
 
 The host uploads five aligned `float32[4]` rows: framebuffer dimensions and
-display flags, then eye, right, up and forward ray vectors. Slang receives the
-same 80-byte layout at binding 0; generated reflection and C++ assertions check
+display flags, then eye, right, up and forward ray vectors. The shader receives the
+same 80-byte layout in its only resource, which the LUSL compiler assigns slot 0; generated reflection and C++ assertions check
 its size and offsets. If the attachment encodes
 sRGB, the shader leaves its output linear. Otherwise the shader encodes it after
 tone mapping. Errors return explicit statuses and use Ludus logging.
@@ -345,8 +347,9 @@ that engine preset first and update the environment; changing only the sample
 preset does not change the selected SDK.
 
 The build compiles `src/main.cpp` and `src/camera.cpp` and generates the
-application-owned `cornell.h` from `shaders/cornell.slang` using the installed
-`ludus_compile_shader` helper. Linux emits validated SPIR-V (and WGSL as part of
+application-owned `cornell.h` from `shaders/cornell.lusl` using the installed
+`ludus_compile_shader` helper. The SDK's `luslc` lowers the LUSL source to Slang,
+which the pinned Slang compiler then compiles. Linux emits validated SPIR-V (and WGSL as part of
 the existing helper); macOS emits MSL. Only native execution is covered here.
 The sample neither adds the engine as a subdirectory nor includes private RHI
 or backend headers.

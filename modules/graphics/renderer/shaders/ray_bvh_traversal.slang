@@ -141,7 +141,7 @@ bool IntersectBvhTriangle(uint triangle,
 /// Return the nearest accepted hit, preferring the lowest triangle at equal distances, or the
 /// first accepted hit for visibility. A miss keeps the invalid-triangle sentinel. A stack
 /// overflow sets HasExceededStack; callers must then ignore Triangle and report failure.
-BvhHit TraceBvh(BvhRay ray, bool isVisibility)
+BvhHit TraceBvh(BvhRay ray, bool isVisibility, uint2 excludedTriangles = uint2(LUDUS_GPU_PREVIEW_INVALID_TRIANGLE))
 {
     BvhHit result;
     result.Triangle = LUDUS_GPU_PREVIEW_INVALID_TRIANGLE;
@@ -178,6 +178,8 @@ BvhHit TraceBvh(BvhRay ray, bool isVisibility)
         for (uint slot = node.First; slot < node.First + node.Count; ++slot)
         {
             uint triangle = GetBvhLeafTriangle(slot);
+            if (any(triangle == excludedTriangles) == true)
+                continue;
             float distanceWorld;
             float2 barycentric;
             if (IntersectBvhTriangle(triangle, ray, closestWorld, distanceWorld, barycentric) == false ||
