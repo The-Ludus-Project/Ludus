@@ -94,15 +94,25 @@ out/host-tools/emsdk/upstream/emscripten/emcmake out/host-tools/venv/bin/cmake \
   -DLUDUS_SPIRV_VALIDATOR="$LUDUS_SHADER_VALIDATOR" \
   -DLUDUS_LUSLC="$(./scripts/bootstrap-luslc)"
 out/host-tools/venv/bin/cmake --build out/build/render-api-sdk-web -j2
-LUDUS_SHADER_PROBE_SOFTWARE=1 node tests/sdk_consumer/browser-test.mjs
-# Separately test the flag-free adapter; record failure without fallback:
-node tests/sdk_consumer/browser-test.mjs \
+node tests/sdk_consumer/browser-test.mjs
+# Separately record what the flag-free default adapter does:
+LUDUS_BROWSER_DEFAULT_ADAPTER=1 node tests/sdk_consumer/browser-test.mjs \
   out/build/render-api-sdk-web out/render-api-browser-default
 ```
 
 Emscripten searches packages through its root-path policy: set both prefix and
-find-root paths as above. Browser artifacts are `index.html`, `render.js` and
-`render.wasm` in the consumer build directory. Serve over localhost or HTTPS:
+find-root paths as above. Browser artifacts are `render.html` (also copied to
+`index.html`), `render.js` and `render.wasm` in the consumer build directory.
+`render.html?backend=webgpu` or `?backend=webgl2` forces an API; otherwise the
+consumer uses Auto. `browser-test.mjs` uses Chromium's SwiftShader software
+adapter by default. It renders on forced WebGPU, forced WebGL 2, Auto, and Auto
+with `navigator.gpu` removed, and checks every captured frame's pixels and
+orientation. It also runs the WebGPU fault cases.
+
+Batches run the same harness on the installed raster fixture
+(`tests/sdk_consumer/raster`), which builds this consumer for Emscripten. It is
+the fourth test of the `raster` suite in `tests/sdk_consumer/browser-suites.json`,
+with results under `fullscreen-diagnostic`. Serve over localhost or HTTPS:
 
 ```bash
 python3 -m http.server 8768 --bind 127.0.0.1 \

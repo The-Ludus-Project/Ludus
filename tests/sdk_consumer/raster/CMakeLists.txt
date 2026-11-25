@@ -132,6 +132,21 @@ if(EMSCRIPTEN)
     configure_file(../r11.html r11.html COPYONLY)
 endif()
 
+# Fullscreen diagnostic (render.cpp, the generic SDK render consumer) in the browser: the LUSL
+# diagnostic lowered to WGSL and to GLSL ES with LUDUS_GLSL_ES=1. Built here so the batch's raster
+# artifact carries render.html/.js/.wasm and the raster browser suite (browser-suites.json) runs
+# browser-test.mjs on forced WebGPU, forced WebGL 2 and Auto without a workflow change (issue 1735).
+if(EMSCRIPTEN)
+    add_executable(ludus_sdk_render_consumer ../render.cpp)
+    target_link_libraries(ludus_sdk_render_consumer PRIVATE Ludus::GraphicsRhi)
+    target_compile_options(ludus_sdk_render_consumer PRIVATE -Wall -Wextra -Wpedantic -Werror -fno-exceptions)
+    ludus_compile_shader(TARGET ludus_sdk_render_consumer NAME diagnostic SOURCE ../shaders/diagnostic.lusl
+        VERTEX VertexMain FRAGMENT FragmentMain)
+    target_link_options(ludus_sdk_render_consumer PRIVATE -fno-exceptions -g2 -sENVIRONMENT=web -sALLOW_MEMORY_GROWTH=1 -sASSERTIONS=1)
+    set_target_properties(ludus_sdk_render_consumer PROPERTIES OUTPUT_NAME render SUFFIX ".js")
+    configure_file(../render.html render.html COPYONLY)
+endif()
+
 # R14c browser device owners: two canvases, each API and one of each. Needs no shaders.
 if(EMSCRIPTEN)
     add_executable(ludus_sdk_r14c_consumer ../r14c.cpp)

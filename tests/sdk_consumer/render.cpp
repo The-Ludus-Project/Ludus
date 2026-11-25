@@ -50,26 +50,48 @@ bool gFailed = false;
 #if defined(LUDUS_PLATFORM_WEB)
 // Reporting belongs to the test application; no GPU handle or private header.
 // clang-format off
-EM_JS(void, Report, (int32 state, uint32 frames, int32 error), {
+EM_JS(void, Report, (int32 state, uint32 frames, int32 error, int32 backend), {
     const status = document.getElementById('status');
     status.dataset.state = state === 1 ? 'passed' : state === 2 ? 'failed' : 'rendering';
     status.dataset.frames = frames;
     status.dataset.error = error;
+    status.dataset.backend = backend === 1 ? 'webgpu' : backend === 2 ? 'webgl2' : 'none';
     status.textContent = status.dataset.state + ' frames=' + frames;
 });
 EM_JS(int32, Paused, (), { return globalThis.__qaPause ? 1 : 0; });
+// ?backend=webgpu or webgl2 forces that API; anything else is Auto.
+EM_JS(int32, Selection, (), {
+    const value = new URL(location.href).searchParams.get('backend');
+    return value === 'webgpu' ? 1 : value === 'webgl2' ? 2 : 0;
+});
 EM_JS(void, ResizeCanvas, (uint32 width, uint32 height), {
     const canvas = document.getElementById('canvas'); canvas.width = width; canvas.height = height;
 });
 // clang-format on
 #else
-void Report(int32, uint32, int32) noexcept {}
+void Report(int32, uint32, int32, int32) noexcept {}
 void ResizeCanvas(uint32, uint32) noexcept {}
 int32 Paused() noexcept
 {
     return 0;
 }
+int32 Selection() noexcept
+{
+    return 0;
+}
 #endif
+/// Backend reported to the page: 1 WebGPU, 2 WebGL 2, 0 none or native.
+int32 GetReportedBackend(rhi::DeviceStatus state, const rhi::DeviceInfo& info) noexcept
+{
+    if (state != rhi::DeviceStatus::Ready)
+    {
+        return 0;
+    }
+    return info.Startup.SelectedBackend == rhi::Backend::WebGPU   ? 1
+           : info.Startup.SelectedBackend == rhi::Backend::WebGL2 ? 2
+                                                                  : 0;
+}
+int32 gBackend = 0;
 bool Accepted(rhi::ResourceStatus status) noexcept
 {
     return status == rhi::ResourceStatus::Ready || status == rhi::ResourceStatus::Pending;
@@ -84,7 +106,11 @@ bool Start() noexcept
     window.CanvasSelector = "#canvas";
 #endif
     gSurface = {};
-    const auto result = rhi::CreateDevice({}, window, {}, gDevice, gSurface, &gCreationFailure);
+    rhi::DeviceDescription description;
+    description.Selection = Selection() == 1   ? rhi::BackendSelection::WebGPU
+                            : Selection() == 2 ? rhi::BackendSelection::WebGL2
+                                               : rhi::BackendSelection::Auto;
+    const rhi::DeviceStatus result = rhi::CreateDevice({}, window, description, gDevice, gSurface, &gCreationFailure);
     return result == rhi::DeviceStatus::Ready || result == rhi::DeviceStatus::Pending;
 }
 void Stop(bool failed) noexcept
@@ -96,7 +122,7 @@ void Stop(bool failed) noexcept
     const auto error =
         static_cast<int32>(state == rhi::DeviceStatus::InvalidHandle ? gCreationFailure.Error : info.Startup.Error);
     (void)rhi::DestroyDevice(gDevice);
-    Report(failed ? 2 : 1, gFrames, error);
+    Report(failed ? 2 : 1, gFrames, error, gBackend);
 #if defined(LUDUS_PLATFORM_WEB)
     emscripten_cancel_main_loop();
 #endif
@@ -122,6 +148,7 @@ void Tick() noexcept
         Stop(true);
         return;
     }
+    gBackend = GetReportedBackend(startup, info);
     if (gCreated == false)
     {
         if (Accepted(rhi::CreateShader(gDevice, ludus::shaders::diagnostic::Vertex(), gVertex)) == false ||
@@ -239,7 +266,7 @@ void Tick() noexcept
         return;
     }
     ++gFrames;
-    Report(0, gFrames, 0);
+    Report(0, gFrames, 0, gBackend);
     if (gFrames == 16 && gSession == 0)
     {
         const auto stale = gPipeline;
