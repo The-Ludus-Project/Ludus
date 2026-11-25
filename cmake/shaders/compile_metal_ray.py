@@ -5,7 +5,7 @@ Two reserved structured-buffer token types stand for native function tables;
 this adapter replaces only those types, attaches native stage visibility and
 supplies Metal intersector operations. Unknown compiler shapes fail closed.
 
-Thanks to Apple, WWDC20 sessions 10012 (triangle intersection functions, 12:16)
+Thanks to Apple, WWDC20 sessions 10012 (triangle intersection functions, 12:16, and ray payloads, 16:48)
 and 10013 (visible function tables), and WWDC22 session 10105 (call stack depth):
 https://developer.apple.com/videos/play/wwdc2020/10012/
 https://developer.apple.com/videos/play/wwdc2020/10013/
@@ -158,7 +158,8 @@ void LudusDispatchNativeStage(LudusNativeStageTable functions, {packet} thread* 
                               {context} thread* context);
 uint4 LudusTraceNative(raytracing::acceleration_structure<raytracing::instancing> scene,
                       LudusNativeIntersectionTable intersections, float3 originWorld, float3 directionWorld,
-                      float nearDistanceWorld, float farDistanceWorld, bool isVisibility, {context} thread* context);
+                      float nearDistanceWorld, float farDistanceWorld, bool isVisibility,
+                      uint2 excludedTriangles, {context} thread* context);
 '''
     code = code.replace('using namespace metal;', 'using namespace metal;\n' + prelude, 1)
     resolve = _one(r'\buint\s+(LudusNativeResolveTriangle_\d+)\s*\(', code, 'triangle mapping')[1]
@@ -195,14 +196,15 @@ void LudusDispatchNativeStage(LudusNativeStageTable functions, {packet} thread* 
 }}
 uint4 LudusTraceNative(raytracing::acceleration_structure<raytracing::instancing> scene,
                       LudusNativeIntersectionTable intersections, float3 originWorld, float3 directionWorld,
-                      float nearDistanceWorld, float farDistanceWorld, bool isVisibility, {context} thread* context)
+                      float nearDistanceWorld, float farDistanceWorld, bool isVisibility,
+                      uint2 excludedTriangles, {context} thread* context)
 {{
     raytracing::intersector<raytracing::triangle_data, raytracing::instancing> intersector;
     intersector.assume_geometry_type(raytracing::geometry_type::triangle);
     intersector.force_opacity(raytracing::forced_opacity::non_opaque);
     intersector.accept_any_intersection(isVisibility);
     raytracing::ray ray(originWorld, directionWorld, nearDistanceWorld, farDistanceWorld);
-    auto hit = intersector.intersect(ray, scene, 255, intersections);
+    auto hit = intersector.intersect(ray, scene, 255, intersections, excludedTriangles);
     if (hit.type == raytracing::intersection_type::none)
         return uint4(0xffffffffu, as_type<uint>(farDistanceWorld), 0, 0);
     return uint4({resolve}(hit.primitive_id, hit.geometry_id, context),
@@ -210,11 +212,12 @@ uint4 LudusTraceNative(raytracing::acceleration_structure<raytracing::instancing
 }}
 [[intersection(triangle, raytracing::triangle_data, raytracing::instancing)]]
 bool {abi['LUDUS_METAL_RAY_INTERSECTION']}(uint primitive [[primitive_id]], uint geometry [[geometry_id]],
-                                         float2 barycentric [[barycentric_coord]], {alpha_parameters})
+                                         float2 barycentric [[barycentric_coord]],
+                                         ray_data uint2& excludedTriangles [[payload]], {alpha_parameters})
 {{
     {context} context = {{}};
 {alpha_assignments}
-    return {accept}(primitive, geometry, barycentric, &context);
+    return {accept}(primitive, geometry, barycentric, excludedTriangles, &context);
 }}
 '''
     normalized = deepcopy(document)

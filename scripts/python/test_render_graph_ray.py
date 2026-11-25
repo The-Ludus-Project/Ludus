@@ -962,6 +962,8 @@ class RayCompilerAcceptance(unittest.TestCase):
             for stage in ('LudusNativeRayGeneration', 'LudusNativeClosestHit', 'LudusNativeMiss'):
                 self.assertIn('[[visible]] void ' + stage, code)
             self.assertIn('intersector.intersect(ray, scene', code)
+            self.assertIn('intersector.intersect(ray, scene, 255, intersections, excludedTriangles)', code)
+            self.assertIn('ray_data uint2& excludedTriangles [[payload]]', code)
             self.assertIn('functions[stage](packet, context)', code)
             # The fixed stage slots, then the failure summary the generation kernel counts latched pixels into.
             self.assertEqual(set(range(8)) | {ray.FAILURE_SLOT},
