@@ -224,9 +224,12 @@ miss. An out-of-range index fails the invocation. Exclusions are tested
 before accepting a triangle, so another triangle at the same distance
 remains eligible. `TestVisibilityExcludingTriangles` applies the same rule
 to light connections from an explicit origin and uses the visibility budget.
-With exclusions, ComputeBvh uses its packed BVH and the
-other traversal selections use the built-in triangle loop. With both slots
-unused, the selected traversal behaves as it does for `TraceClosest`.
+Native query traversal checks excluded indices before committing a candidate.
+Metal's hardware RT pipeline passes the two indices to its intersection callback
+in a ray payload. ComputeBvh and TriangleLoop filter candidates in their own
+traversal. A Custom traversal uses the built-in triangle loop for filtered rays.
+With both slots unused, the selected traversal behaves as it does for
+`TraceClosest`.
 
 `RayLaunch.IsFullImageDispatch` is true only when the dispatched tile covers the
 entire image. Algorithms with cross-pixel dependencies can explicitly reject

@@ -438,7 +438,13 @@ void EndRayPathCapture(float3 radiance)
 TraceNativeVisibility(float3 originWorld, float3 directionWorld, float nearDistanceWorld, float farDistanceWorld)
 {
     RayQuery<RAY_FLAG_NONE> query;
-    TraceNativeQuery(originWorld, directionWorld, nearDistanceWorld, farDistanceWorld, true, query);
+    TraceNativeQuery(originWorld,
+                     directionWorld,
+                     nearDistanceWorld,
+                     farDistanceWorld,
+                     true,
+                     uint2(LUDUS_GPU_PREVIEW_INVALID_TRIANGLE),
+                     query);
     return query.CommittedStatus() == COMMITTED_TRIANGLE_HIT;
 }
 
@@ -447,6 +453,7 @@ void TraceNativeQuery(float3 originWorld,
                       float nearDistanceWorld,
                       float farDistanceWorld,
                       bool isVisibility,
+                      uint2 excludedTriangles,
                       inout RayQuery<RAY_FLAG_NONE> inoutQuery)
 {
     RayDesc ray;
@@ -463,22 +470,34 @@ void TraceNativeQuery(float3 originWorld,
                  : (Sampling.z & LUDUS_GPU_PREVIEW_MIXED_OPACITY_FLAG) != 0 ? RAY_FLAG_NONE
                                                                             : RAY_FLAG_FORCE_NON_OPAQUE) |
                 RAY_FLAG_ACCEPT_FIRST_HIT_AND_END_SEARCH;
+    // Force candidate processing when a packed triangle can be excluded, including opaque geometry.
+    const bool hasExclusions = any(excludedTriangles != uint2(LUDUS_GPU_PREVIEW_INVALID_TRIANGLE));
+    if (hasExclusions == true)
+        flags = RAY_FLAG_FORCE_NON_OPAQUE |
+                (isVisibility == true ? RAY_FLAG_ACCEPT_FIRST_HIT_AND_END_SEARCH : RAY_FLAG_NONE);
     inoutQuery.TraceRayInline(rayScene, flags, LUDUS_GPU_PREVIEW_RAY_MASK, ray);
     while (inoutQuery.Proceed() == true)
     {
         if (inoutQuery.CandidateType() != CANDIDATE_NON_OPAQUE_TRIANGLE)
             continue;
         uint candidatePrimitive = inoutQuery.CandidatePrimitiveIndex();
-        if ((Sampling.z & LUDUS_GPU_PREVIEW_MIXED_OPACITY_FLAG) != 0)
+        const bool isMixedOpacity = (Sampling.z & LUDUS_GPU_PREVIEW_MIXED_OPACITY_FLAG) != 0;
+        const bool isOpaqueGeometry = isMixedOpacity == true && inoutQuery.CandidateGeometryIndex() == 0;
+        if (isOpaqueGeometry == true && hasExclusions == false)
         {
-            if (inoutQuery.CandidateGeometryIndex() == 0)
-            {
-                inoutQuery.CommitNonOpaqueTriangleHit();
-                continue;
-            }
-            candidatePrimitive += asuint(SceneValue(Offsets.y).y);
+            inoutQuery.CommitNonOpaqueTriangleHit();
+            continue;
         }
-        uint triangle = asuint(SceneValue(Offsets.y + candidatePrimitive).x);
+        if (isMixedOpacity == true && isOpaqueGeometry == false)
+            candidatePrimitive += asuint(SceneValue(Offsets.y).y);
+        const uint triangle = asuint(SceneValue(Offsets.y + candidatePrimitive).x);
+        if (any(triangle == excludedTriangles) == true)
+            continue;
+        if (isOpaqueGeometry == true || (Sampling.z & LUDUS_GPU_PREVIEW_OPAQUE_FLAG) != 0)
+        {
+            inoutQuery.CommitNonOpaqueTriangleHit();
+            continue;
+        }
         float2 barycentric = inoutQuery.CandidateTriangleBarycentrics();
         if (asuint(Surface(triangle, LUDUS_GPU_PREVIEW_TEXTURE_OPTIONS_WORD).z) != 0 &&
             Texture(triangle, TexcoordUv(triangle, barycentric)).w * Surface(triangle, 2).w *
@@ -503,14 +522,21 @@ void TraceNativeQuery(float3 originWorld,
                            float3 directionWorld,
                            float nearDistanceWorld,
                            float farDistanceWorld,
-                           bool isVisibility = false)
+                           bool isVisibility = false,
+                           uint2 excludedTriangles = uint2(LUDUS_GPU_PREVIEW_INVALID_TRIANGLE))
 {
     Hit hit;
     hit.Triangle = LUDUS_GPU_PREVIEW_INVALID_TRIANGLE;
     hit.DistanceWorld = farDistanceWorld;
     hit.Barycentric = 0;
     RayQuery<RAY_FLAG_NONE> query;
-    TraceNativeQuery(originWorld, directionWorld, nearDistanceWorld, farDistanceWorld, isVisibility, query);
+    TraceNativeQuery(originWorld,
+                     directionWorld,
+                     nearDistanceWorld,
+                     farDistanceWorld,
+                     isVisibility,
+                     excludedTriangles,
+                     query);
     if (query.CommittedStatus() == COMMITTED_TRIANGLE_HIT)
     {
         uint primitive = query.CommittedPrimitiveIndex();
@@ -585,30 +611,17 @@ Hit TraceWorld(float3 originWorld,
                bool isVisibility,
                uint2 excludedTriangles)
 {
-#ifdef LUDUS_SCENE_RAY_INTERFACE
-    if (any(excludedTriangles != uint2(LUDUS_GPU_PREVIEW_INVALID_TRIANGLE)) == true)
-    {
-        // Hardware and authored traversal interfaces cannot filter packed triangle identities.
-#    ifdef LUDUS_GRAPH_COMPUTE_BVH_TRAVERSAL
-        if (GetGraphTraversalStrategy() == LUDUS_GRAPH_TRAVERSAL_COMPUTE_BVH)
-            return TraceComputeBvh(originWorld,
-                                   directionWorld,
-                                   nearDistanceWorld,
-                                   farDistanceWorld,
-                                   isVisibility,
-                                   excludedTriangles);
-#    endif
-        return TraceTriangleLoop(originWorld,
-                                 directionWorld,
-                                 nearDistanceWorld,
-                                 farDistanceWorld,
-                                 isVisibility,
-                                 excludedTriangles);
-    }
-#endif
 #ifdef LUDUS_GRAPH_CUSTOM_RAY_TRAVERSAL
     if (GetGraphTraversalStrategy() == LUDUS_GRAPH_TRAVERSAL_CUSTOM)
     {
+        // The authored traversal callback has no triangle-exclusion parameter.
+        if (any(excludedTriangles != uint2(LUDUS_GPU_PREVIEW_INVALID_TRIANGLE)) == true)
+            return TraceTriangleLoop(originWorld,
+                                     directionWorld,
+                                     nearDistanceWorld,
+                                     farDistanceWorld,
+                                     isVisibility,
+                                     excludedTriangles);
         Hit hit = TraceCustomWorld(originWorld, directionWorld, nearDistanceWorld, farDistanceWorld, isVisibility);
         if (hit.Triangle == LUDUS_GPU_PREVIEW_INVALID_TRIANGLE || hit.Triangle == LUDUS_GPU_PREVIEW_FAILED_TRIANGLE)
             return hit;
@@ -623,16 +636,36 @@ Hit TraceWorld(float3 originWorld,
 #endif
 #ifdef LUDUS_GRAPH_COMPUTE_BVH_TRAVERSAL
     if (GetGraphTraversalStrategy() == LUDUS_GRAPH_TRAVERSAL_COMPUTE_BVH)
-        return TraceComputeBvh(originWorld, directionWorld, nearDistanceWorld, farDistanceWorld, isVisibility);
+        return TraceComputeBvh(originWorld,
+                               directionWorld,
+                               nearDistanceWorld,
+                               farDistanceWorld,
+                               isVisibility,
+                               excludedTriangles);
 #endif
 #ifdef LUDUS_SOFTWARE_RAY_TRAVERSAL
-    return TraceTriangleLoop(originWorld, directionWorld, nearDistanceWorld, farDistanceWorld, isVisibility);
+    return TraceTriangleLoop(originWorld,
+                             directionWorld,
+                             nearDistanceWorld,
+                             farDistanceWorld,
+                             isVisibility,
+                             excludedTriangles);
 #else
 #    ifdef LUDUS_GRAPH_TRAVERSAL_STRATEGIES
     if (GetGraphTraversalStrategy() == LUDUS_GRAPH_TRAVERSAL_TRIANGLE_LOOP)
-        return TraceTriangleLoop(originWorld, directionWorld, nearDistanceWorld, farDistanceWorld, isVisibility);
+        return TraceTriangleLoop(originWorld,
+                                 directionWorld,
+                                 nearDistanceWorld,
+                                 farDistanceWorld,
+                                 isVisibility,
+                                 excludedTriangles);
 #    endif
-    return TraceNative(originWorld, directionWorld, nearDistanceWorld, farDistanceWorld, isVisibility);
+    return TraceNative(originWorld,
+                       directionWorld,
+                       nearDistanceWorld,
+                       farDistanceWorld,
+                       isVisibility,
+                       excludedTriangles);
 #endif
 }
 /// Every scene traversal of the kernel; capture variants record the submitted ray and its result.
