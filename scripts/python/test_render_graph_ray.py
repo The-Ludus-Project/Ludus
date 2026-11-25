@@ -763,9 +763,19 @@ class RayPipelineTests(unittest.TestCase):
         with self.assertRaises(ToolingError):
             build.validate_manifest(value)
         value['programs'][-1]['output'] = 'ScenePayload'
-        techniques[ray.TECHNIQUE]['scene_interface']['surface_queries'] = 0
-        with self.assertRaises(ToolingError):
-            build.validate_manifest(value)
+        interface = techniques[ray.TECHNIQUE]['scene_interface']
+        maximum = ray.SCENE_QUERY_LIMITS['MAX_SURFACE_QUERIES']
+        for admitted in (17, maximum):
+            with self.subTest(surface_queries=admitted):
+                interface['surface_queries'] = admitted
+                build.validate_manifest(value)
+        for rejected in (0, maximum + 1):
+            with self.subTest(surface_queries=rejected):
+                interface['surface_queries'] = rejected
+                with self.assertRaises(ToolingError) as caught:
+                    build.validate_manifest(value)
+                self.assertEqual(caught.exception.code, 'RenderGraphBuildCapacity')
+                self.assertIn('surface query budget', caught.exception.message)
 
     def test_line_query_budget_is_optional_bounded_and_integral(self):
         fixture = ROOT / 'tests/sdk_consumer/rg2/scene_ray/main.lushader.json.in'

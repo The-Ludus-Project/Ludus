@@ -45,6 +45,10 @@
 @declare SceneLightSample
 
 @declare FailSceneQuery MakeCameraRay SpawnSurfaceRay TraceClosest TestVisibility
+/// Trace one surface query, ignoring two packed GetTriangle indices. Use SCENE_INVALID_INDEX for an empty slot.
+@declare TraceClosestExcludingTriangles
+/// Trace light visibility while ignoring packed indices, with the ordinary visibility budget and endpoint handling.
+@declare TestVisibilityExcludingTriangles
 @declare TryMakeCameraRayFromWorldPosition
 @declare EvaluateMaterial EvaluateEmission EvaluateEnvironment ApplyAerialPerspective
 @declare GetSceneInfo GetLightCount GetLightInfo SelectLight SampleIncidentLight GetSurfaceHit

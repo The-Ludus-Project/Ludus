@@ -211,10 +211,22 @@ EvaluateLightPdfSolidAngle(scene, distribution, receiver, emissionEndpoint) -> f
 EvaluateEnvironment(scene, directionWorld, textureEvaluation) -> float3
 
 TraceClosest(scene, inout queries, ray) -> {Surface, Miss, Failure} and SurfaceHit
+TraceClosestExcludingTriangles(scene, inout queries, ray, excludedTriangles) -> same result
 TestVisibility(scene, inout queries, receiver, lightSample) -> {Clear, Occluded, Failure}
 SpawnSurfaceRay(hit, directionWorld, maximumDistanceWorld) -> Ray or Failure
 TraceAndShade(scene, inout queries, ray, inout UserPayload) -> {Surface, Miss, Failure}
 ```
+
+`TraceClosestExcludingTriangles` skips up to two packed indices returned by
+`GetTriangle` for the same scene generation. Use `SCENE_INVALID_INDEX` for
+either unused slot. A valid call consumes one surface query, including on a
+miss. An out-of-range index fails the invocation. Exclusions are tested
+before accepting a triangle, so another triangle at the same distance
+remains eligible. `TestVisibilityExcludingTriangles` applies the same rule
+to light connections from an explicit origin and uses the visibility budget.
+With exclusions, ComputeBvh uses its packed BVH and the
+other traversal selections use the built-in triangle loop. With both slots
+unused, the selected traversal behaves as it does for `TraceClosest`.
 
 `RayLaunch.IsFullImageDispatch` is true only when the dispatched tile covers the
 entire image. Algorithms with cross-pixel dependencies can explicitly reject
