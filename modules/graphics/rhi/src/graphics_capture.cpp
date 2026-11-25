@@ -9,7 +9,7 @@
 #include <ludus/graphics/rhi/graphics_capture.h>
 
 #include "internal/backend.h"
-#include "internal/gpu_scope_backend.h"
+#include "internal/device.h"
 #include "internal/graphics_capture.h"
 #include "internal/lifecycle.h"
 #include "internal/measurement.h"
@@ -438,7 +438,7 @@ void AdvanceRecord() noexcept
 }
 [[nodiscard]] GraphicsCaptureError ValidateDevice(DeviceHandle device) noexcept
 {
-    switch (internal::ValidateMeasurementDevice(device))
+    switch (internal::ValidateDeviceReadiness(device))
     {
         case RasterStatus::Ready:
             return GraphicsCaptureError::None;

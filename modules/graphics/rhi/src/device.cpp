@@ -5,7 +5,6 @@
 #include "internal/adapter.h"
 #include "internal/backend.h"
 #include "internal/device.h"
-#include "internal/gpu_scope_backend.h"
 #include "internal/lifecycle.h"
 #include "internal/measurement.h"
 #include "internal/native_interop.h"
@@ -648,7 +647,7 @@ RasterStatus GetGpuTiming(DeviceHandle device, GpuTiming& output) noexcept
 }
 namespace internal
 {
-RasterStatus ValidateMeasurementDevice(DeviceHandle device) noexcept
+RasterStatus ValidateDeviceReadiness(DeviceHandle device) noexcept
 {
     if (Valid(device) == false)
     {

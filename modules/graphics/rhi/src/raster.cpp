@@ -1,4 +1,5 @@
 #include "internal/backend.h"
+#include "internal/device.h"
 #include "internal/dxil_container.h"
 #include <ludus/foundation/base/checked_integer.hpp>
 #include <ludus/foundation/base/compiler.h>
@@ -355,28 +356,19 @@ void DescribePipelinePreparation(const Record& pipeline, PipelinePreparation& ou
     }
     outPreparation = preparation;
 }
-RasterStatus Admission(DeviceHandle device, bool mutation = true) noexcept
+RasterStatus Admission(DeviceHandle device, bool shouldMutate = true) noexcept
 {
-    DeviceInfo info;
-    switch (GetDeviceInfo(device, info))
+    const RasterStatus status = ValidateDeviceReadiness(device);
+    if (status != RasterStatus::Ready)
     {
-        case DeviceStatus::InvalidHandle:
-            return RasterStatus::InvalidHandle;
-        case DeviceStatus::Ready:
-            break;
-        case DeviceStatus::Pending:
-            return RasterStatus::NotReady;
-        case DeviceStatus::DeviceLost:
-            return RasterStatus::DeviceLost;
-        default:
-            return RasterStatus::Failed;
+        return status;
     }
     // Resource preparation can precede complete draw-profile admission (D3a).
-    if (info.Profile.Raster.MaxBufferSize == 0)
+    if (CurrentDeviceProfile().Raster.MaxBufferSize == 0)
     {
         return RasterStatus::Unsupported;
     }
-    return mutation && FrameOpen() ? RasterStatus::InvalidState : RasterStatus::Ready;
+    return shouldMutate == true && FrameOpen() == true ? RasterStatus::InvalidState : RasterStatus::Ready;
 }
 template <typename T>
 Record* Resolve(T handle, RasterKind kind, bool published = true) noexcept
