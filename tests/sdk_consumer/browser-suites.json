@@ -5,7 +5,9 @@
     {"title": "Check addressed-random GPU parity on WebGPU against the Wasm CPU reference",
      "script": "random-parity-browser-test.mjs", "results": "random-parity"},
     {"title": "Check R12a indirect draws and dispatches on WebGPU, without indirect-first-instance and through the WebGL 2 direct variant",
-     "script": "indirect-browser-test.mjs", "results": "indirect"}
+     "script": "indirect-browser-test.mjs", "results": "indirect"},
+    {"title": "Render the installed LUSL fullscreen diagnostic on forced WebGPU, forced WebGL 2, Auto and Auto without WebGPU",
+     "script": "browser-test.mjs", "results": "fullscreen-diagnostic"}
   ],
   "renderer-baseline": [
     {"title": "Test installed L0/L1/L2/L3/L4 renderer against direct and cross-backend image oracles",

@@ -98,6 +98,7 @@ if(LUDUS_SDK_RENDER_TESTS)
         target_link_options(ludus_sdk_render_consumer PRIVATE -fno-exceptions -g2 -sENVIRONMENT=web -sALLOW_MEMORY_GROWTH=1 -sASSERTIONS=1)
         set_target_properties(ludus_sdk_render_consumer PROPERTIES OUTPUT_NAME render SUFFIX ".js")
         configure_file(render.html index.html COPYONLY)
+        configure_file(render.html render.html COPYONLY)
     endif()
 endif()
 
