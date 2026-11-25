@@ -652,7 +652,18 @@ bool IsSceneRayValid(Ray ray)
            ray.MaxDistanceWorld >= ray.MinDistanceWorld &&
            abs(dot(ray.DirectionWorld, ray.DirectionWorld) - 1) <= SCENE_UNIT_TOLERANCE;
 }
-SceneQuery TraceClosest(SceneContext scene, inout RayQueryContext queries, Ray ray, out SurfaceHit outHit)
+static bool AreSceneTriangleExclusionsValid(in uint2 excludedTriangles)
+{
+    return all((excludedTriangles < uint2(Counts.x)) | (excludedTriangles == uint2(SCENE_INVALID_INDEX)));
+}
+/// Trace a surface ray while skipping up to two packed triangle indices from GetTriangle.
+/// Use SCENE_INVALID_INDEX for an unused slot. A valid ray consumes one surface query.
+/// An out-of-range index fails the invocation and clears the hit.
+SceneQuery TraceClosestExcludingTriangles(in SceneContext scene,
+                                          inout RayQueryContext queries,
+                                          in Ray ray,
+                                          in uint2 excludedTriangles,
+                                          out SurfaceHit outHit)
 {
     outHit = (SurfaceHit)0;
     if (queries.HasFailed == true)
@@ -672,8 +683,18 @@ SceneQuery TraceClosest(SceneContext scene, inout RayQueryContext queries, Ray r
         FailSceneQuery(queries, LUDUS_SCENE_FAILURE_INVALID_RAY);
         return SceneQuery::Failure;
     }
+    if (AreSceneTriangleExclusionsValid(excludedTriangles) == false)
+    {
+        FailSceneQuery(queries, LUDUS_SCENE_FAILURE_INVALID_ARGUMENT);
+        return SceneQuery::Failure;
+    }
     queries.SurfaceQueries += 1;
-    Hit hit = Trace(ray.OriginWorld, ray.DirectionWorld, ray.MinDistanceWorld, ray.MaxDistanceWorld);
+    Hit hit = Trace(ray.OriginWorld,
+                    ray.DirectionWorld,
+                    ray.MinDistanceWorld,
+                    ray.MaxDistanceWorld,
+                    false,
+                    excludedTriangles);
     if (hit.Triangle == LUDUS_GPU_PREVIEW_FAILED_TRIANGLE)
     {
         FailSceneQuery(queries, LUDUS_SCENE_FAILURE_TRAVERSAL);
@@ -705,6 +726,10 @@ SceneQuery TraceClosest(SceneContext scene, inout RayQueryContext queries, Ray r
     outHit.IsFrontFace = dot(outHit.GeometricNormalWorld, -ray.DirectionWorld) > 0;
     outHit.IsValid = true;
     return SceneQuery::Surface;
+}
+SceneQuery TraceClosest(SceneContext scene, inout RayQueryContext queries, Ray ray, out SurfaceHit outHit)
+{
+    return TraceClosestExcludingTriangles(scene, queries, ray, uint2(SCENE_INVALID_INDEX), outHit);
 }
 Ray SpawnSurfaceRay(SurfaceHit hit, float3 directionWorld, float maximumDistanceWorld)
 {
@@ -1039,8 +1064,12 @@ LightSample SampleIncidentLight(SceneContext scene, SelectedLight selected, Surf
 /// endpoint against the sample's direction, toward the position it was sampled from. For an infinite
 /// light, use the sampled direction and the scene's shadow range. Uses the invocation's visibility query
 /// budget. Returns Miss for a clear connection, Surface for an occluder, or Failure with queries.HasFailed latched.
-SceneQuery
-TestVisibility(SceneContext scene, inout RayQueryContext queries, float3 originWorld, IncidentLightSample light)
+/// Skip up to two packed triangle indices from GetTriangle. Use SCENE_INVALID_INDEX for an unused slot.
+SceneQuery TestVisibilityExcludingTriangles(in SceneContext scene,
+                                            inout RayQueryContext queries,
+                                            in float3 originWorld,
+                                            in IncidentLightSample light,
+                                            in uint2 excludedTriangles)
 {
     if (queries.HasFailed == true)
         return SceneQuery::Failure;
@@ -1052,6 +1081,11 @@ TestVisibility(SceneContext scene, inout RayQueryContext queries, float3 originW
     if (queries.VisibilityQueries >= queries.MaximumVisibilityQueries)
     {
         FailSceneQuery(queries, LUDUS_SCENE_FAILURE_VISIBILITY_BUDGET);
+        return SceneQuery::Failure;
+    }
+    if (AreSceneTriangleExclusionsValid(excludedTriangles) == false)
+    {
+        FailSceneQuery(queries, LUDUS_SCENE_FAILURE_INVALID_ARGUMENT);
         return SceneQuery::Failure;
     }
     queries.VisibilityQueries += 1;
@@ -1092,13 +1126,19 @@ TestVisibility(SceneContext scene, inout RayQueryContext queries, float3 originW
         FailSceneQuery(queries, LUDUS_SCENE_FAILURE_INVALID_RAY);
         return SceneQuery::Failure;
     }
-    Hit hit = Trace(shadow.OriginWorld, shadow.DirectionWorld, 0, shadow.MaxDistanceWorld, true);
+    Hit hit = Trace(shadow.OriginWorld, shadow.DirectionWorld, 0, shadow.MaxDistanceWorld, true, excludedTriangles);
     if (hit.Triangle == LUDUS_GPU_PREVIEW_FAILED_TRIANGLE)
     {
         FailSceneQuery(queries, LUDUS_SCENE_FAILURE_TRAVERSAL);
         return SceneQuery::Failure;
     }
     return hit.Triangle == SCENE_INVALID_INDEX ? SceneQuery::Miss : SceneQuery::Surface;
+}
+/// Trace visibility from an explicit origin to an incident light sample.
+SceneQuery
+TestVisibility(SceneContext scene, inout RayQueryContext queries, float3 originWorld, IncidentLightSample light)
+{
+    return TestVisibilityExcludingTriangles(scene, queries, originWorld, light, uint2(SCENE_INVALID_INDEX));
 }
 /// Trace visibility from a surface hit, offsetting the ray origin using the hit's triangle.
 SceneQuery

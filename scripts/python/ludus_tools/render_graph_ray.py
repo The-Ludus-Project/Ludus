@@ -164,8 +164,8 @@ DEFAULT_PAYLOAD = '_ludus_ray/scene_payload.slang'
 # data through a module import at configure time; no Python interpreter enters the UI.
 SCENE_QUERY_LIMITS = {
     'MIN_SURFACE_QUERIES': 1,
-    # Eight path queries plus FollowSpecularChain's eight smooth-glass events (SCENE_SPECULAR_CHAIN_EVENTS).
-    'MAX_SURFACE_QUERIES': 16,
+    # Leave room for bounded iterative solvers; each callback still pays for every submitted ray.
+    'MAX_SURFACE_QUERIES': 16 * 1024,
     'MIN_VISIBILITY_QUERIES': 0,
     'MAX_VISIBILITY_QUERIES': 16,
     # A capture profile (scene_interface.capture_visibility_queries) may grant a frame capture's private

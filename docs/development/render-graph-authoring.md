@@ -4834,6 +4834,12 @@ triangle recipe state. Add this record to the manifest's
 }
 ```
 
+`surface_queries` admits 1 through 16,384 queries per invocation. Set it to
+the bound required by the technique's shaders, including iterations and
+backtracking. Every submitted closest-hit query counts, including misses.
+Exceeding the configured budget fails the invocation with the surface-budget
+diagnostic.
+
 Add `"line_queries": 1` (up to 8) only when a callback calls
 `FindVisibleLineIntervals`. An absent field means 0, and the generated wrapper is
 then byte-identical to one without the field.

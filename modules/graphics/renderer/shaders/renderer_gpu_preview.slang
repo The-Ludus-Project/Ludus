@@ -527,7 +527,8 @@ void TraceNativeQuery(float3 originWorld,
 }
 
 #endif
-#if defined(LUDUS_GRAPH_TRAVERSAL_STRATEGIES) || defined(LUDUS_SOFTWARE_RAY_TRAVERSAL)
+#if defined(LUDUS_GRAPH_TRAVERSAL_STRATEGIES) || defined(LUDUS_SOFTWARE_RAY_TRAVERSAL) ||                              \
+    defined(LUDUS_SCENE_RAY_INTERFACE)
 #    include "ray_triangle_loop.slang"
 #endif
 #ifdef LUDUS_GRAPH_COMPUTE_BVH_TRAVERSAL
@@ -553,14 +554,15 @@ Hit TraceComputeBvh(float3 originWorld,
                     float3 directionWorld,
                     float nearDistanceWorld,
                     float farDistanceWorld,
-                    bool isVisibility)
+                    bool isVisibility,
+                    uint2 excludedTriangles = uint2(LUDUS_GPU_PREVIEW_INVALID_TRIANGLE))
 {
     BvhRay ray;
     ray.OriginWorld = originWorld;
     ray.DirectionWorld = directionWorld;
     ray.MinimumDistanceWorld = nearDistanceWorld;
     ray.MaximumDistanceWorld = farDistanceWorld;
-    BvhHit traced = TraceBvh(ray, isVisibility);
+    BvhHit traced = TraceBvh(ray, isVisibility, excludedTriangles);
     Hit hit;
     hit.Triangle = LUDUS_GPU_PREVIEW_INVALID_TRIANGLE;
     hit.DistanceWorld = farDistanceWorld;
@@ -580,8 +582,30 @@ Hit TraceWorld(float3 originWorld,
                float3 directionWorld,
                float nearDistanceWorld,
                float farDistanceWorld,
-               bool isVisibility)
+               bool isVisibility,
+               uint2 excludedTriangles)
 {
+#ifdef LUDUS_SCENE_RAY_INTERFACE
+    if (any(excludedTriangles != uint2(LUDUS_GPU_PREVIEW_INVALID_TRIANGLE)) == true)
+    {
+        // Hardware and authored traversal interfaces cannot filter packed triangle identities.
+#    ifdef LUDUS_GRAPH_COMPUTE_BVH_TRAVERSAL
+        if (GetGraphTraversalStrategy() == LUDUS_GRAPH_TRAVERSAL_COMPUTE_BVH)
+            return TraceComputeBvh(originWorld,
+                                   directionWorld,
+                                   nearDistanceWorld,
+                                   farDistanceWorld,
+                                   isVisibility,
+                                   excludedTriangles);
+#    endif
+        return TraceTriangleLoop(originWorld,
+                                 directionWorld,
+                                 nearDistanceWorld,
+                                 farDistanceWorld,
+                                 isVisibility,
+                                 excludedTriangles);
+    }
+#endif
 #ifdef LUDUS_GRAPH_CUSTOM_RAY_TRAVERSAL
     if (GetGraphTraversalStrategy() == LUDUS_GRAPH_TRAVERSAL_CUSTOM)
     {
@@ -616,11 +640,13 @@ Hit Trace(float3 originWorld,
           float3 directionWorld,
           float nearDistanceWorld,
           float farDistanceWorld,
-          bool isVisibility = false)
+          bool isVisibility = false,
+          uint2 excludedTriangles = uint2(LUDUS_GPU_PREVIEW_INVALID_TRIANGLE))
 {
 #ifdef LUDUS_RAY_PATH_CAPTURE
     rayPathRejected = 0;
-    Hit hit = TraceWorld(originWorld, directionWorld, nearDistanceWorld, farDistanceWorld, isVisibility);
+    Hit hit =
+        TraceWorld(originWorld, directionWorld, nearDistanceWorld, farDistanceWorld, isVisibility, excludedTriangles);
     bool isValidRay = all(isfinite(originWorld)) == true && all(isfinite(directionWorld)) == true &&
                       isfinite(nearDistanceWorld) == true && isfinite(farDistanceWorld) == true &&
                       nearDistanceWorld >= 0 && farDistanceWorld >= nearDistanceWorld;
@@ -638,7 +664,12 @@ Hit Trace(float3 originWorld,
                        hit.Triangle);
     return hit;
 #else
-    return TraceWorld(originWorld, directionWorld, nearDistanceWorld, farDistanceWorld, isVisibility);
+    return TraceWorld(originWorld,
+                      directionWorld,
+                      nearDistanceWorld,
+                      farDistanceWorld,
+                      isVisibility,
+                      excludedTriangles);
 #endif
 }
 // Three outcomes preserve the existing software traversal failure contract.

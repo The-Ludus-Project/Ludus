@@ -243,6 +243,18 @@ extern slang
                               inout RayQueryContext queries,
                               in SurfaceHit receiver,
                               in LightSample light);
+    /// Trace one surface query, ignoring two packed GetTriangle indices. Use SCENE_INVALID_INDEX for an empty slot.
+    SceneQuery TraceClosestExcludingTriangles(in SceneContext scene,
+                                              inout RayQueryContext queries,
+                                              in Ray ray,
+                                              in uint32x2 excludedTriangles,
+                                              out SurfaceHit outHit);
+    /// Trace light visibility while ignoring packed indices, with the ordinary visibility budget and endpoint handling.
+    SceneQuery TestVisibilityExcludingTriangles(in SceneContext scene,
+                                                inout RayQueryContext queries,
+                                                in float32x3 originWorld,
+                                                in IncidentLightSample light,
+                                                in uint32x2 excludedTriangles);
     bool TryMakeCameraRayFromWorldPosition(in RayLaunch launch,
                                            in float32x3 positionWorld,
                                            out Ray outRay,
