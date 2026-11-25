@@ -13,6 +13,8 @@
 
 #if defined(LUDUS_PLATFORM_WEB)
 #    include <emscripten.h>
+#    include <ludus/foundation/base/pointer.hpp>
+#    include <ludus/platform/base/window.h>
 #endif
 namespace
 {
@@ -33,6 +35,14 @@ static_assert(offsetof(Uniforms, Elapsed) == 8);
 static_assert(offsetof(Uniforms, Direction) == 16);
 static_assert(offsetof(Uniforms, Tint) == 32);
 static_assert(sizeof(Uniforms) == 48 && alignof(Uniforms) == 16);
+// Initial canvas size in pixels; frames then alternate landscape and portrait.
+constexpr uint32 INITIAL_WIDTH = 96;
+constexpr uint32 INITIAL_HEIGHT = 64;
+rhi::WindowInfo gWindow;
+#if defined(LUDUS_PLATFORM_WEB)
+// Platform owns the canvas, so an Auto fallback from WebGPU can swap in a fresh node for WebGL 2.
+ludus::foundation::core::UniquePtr<ludus::platform::Window> gPlatformWindow;
+#endif
 rhi::DeviceHandle gDevice;
 rhi::SurfaceHandle gSurface;
 rhi::StartupInfo gCreationFailure;
@@ -96,21 +106,35 @@ bool Accepted(rhi::ResourceStatus status) noexcept
 {
     return status == rhi::ResourceStatus::Ready || status == rhi::ResourceStatus::Pending;
 }
+/// Creates the window every device session draws to; on the web, a Platform-owned canvas.
+bool CreateDrawingWindow() noexcept
+{
+#if defined(LUDUS_PLATFORM_WEB)
+    ludus::platform::WindowManager manager;
+    ludus::platform::WindowBase::CreateInfo windowDescription;
+    windowDescription.Width = INITIAL_WIDTH;
+    windowDescription.Height = INITIAL_HEIGHT;
+    windowDescription.CanvasSelector = "#canvas";
+    windowDescription.CaptureBrowserInput = false;
+    if (manager.Initialize({}) == false || manager.CreateWindow(windowDescription, gPlatformWindow) == false)
+    {
+        return false;
+    }
+    gWindow = gPlatformWindow->GetNativeWindowInfo();
+#else
+    gWindow.Width = INITIAL_WIDTH;
+    gWindow.Height = INITIAL_HEIGHT;
+#endif
+    return true;
+}
 bool Start() noexcept
 {
-    rhi::WindowInfo window;
-    window.Width = 96;
-    window.Height = 64;
-#if defined(LUDUS_PLATFORM_WEB)
-    window.System = ludus::platform::WindowSystem::WebCanvas;
-    window.CanvasSelector = "#canvas";
-#endif
     gSurface = {};
     rhi::DeviceDescription description;
     description.Selection = Selection() == 1   ? rhi::BackendSelection::WebGPU
                             : Selection() == 2 ? rhi::BackendSelection::WebGL2
                                                : rhi::BackendSelection::Auto;
-    const rhi::DeviceStatus result = rhi::CreateDevice({}, window, description, gDevice, gSurface, &gCreationFailure);
+    const rhi::DeviceStatus result = rhi::CreateDevice({}, gWindow, description, gDevice, gSurface, &gCreationFailure);
     return result == rhi::DeviceStatus::Ready || result == rhi::DeviceStatus::Pending;
 }
 void Stop(bool failed) noexcept
@@ -306,7 +330,7 @@ void Tick() noexcept
 int main(int argc, char** argv)
 {
     gCancelPending = argc > 1 && std::string_view(argv[1]) == "cancel-pending";
-    if (Start() == false)
+    if (CreateDrawingWindow() == false || Start() == false)
     {
         Stop(true);
         return 1;
